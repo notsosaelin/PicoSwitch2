@@ -16,13 +16,8 @@
 // Defined in my_platform.c
 struct uni_platform *get_my_platform(void);
 
-int
-main()
+void bluepad_core_task()
 {
-	stdio_init_all();
-
-	multicore_launch_core1(usb_core_task);
-
 	// initialize CYW43 driver architecture (will enable BT if/because CYW43_ENABLE_BLUETOOTH == 1)
 	if (cyw43_arch_init()) {
 		loge("failed to initialise cyw43_arch\n");
@@ -40,6 +35,15 @@ main()
 
 	// Does not return.
 	btstack_run_loop_execute();
+}
+
+int
+main()
+{
+	stdio_init_all();
+
+	multicore_launch_core1(bluepad_core_task);
+	usb_core_task();
 
 	return 0;
 }
