@@ -24,6 +24,7 @@
 static void trigger_event_on_gamepad(uni_hid_device_t *d);
 SwitchOutReport report[CONFIG_BLUEPAD32_MAX_DEVICES];
 SwitchIdxOutReport idx_r;
+uint8_t connected_controllers;
 
 // Helper functions
 static void
@@ -142,15 +143,24 @@ fill_gamepad_report(int idx, uni_gamepad_t *gp)
 		report[idx].buttons |= SWITCH_MASK_PLUS;
 }
 
+static void
+set_led_status() {
+	if (connected_controllers == 0)
+		cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
+	else
+		cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
+}
+
 //
 // Platform Overrides
 //
-
 static void pico_switch_platform_init(int argc, const char** argv) {
     ARG_UNUSED(argc);
     ARG_UNUSED(argv);
 
     logi("my_platform: init()\n");
+
+	connected_controllers = 0;
 
 	uni_gamepad_mappings_t mappings = GAMEPAD_DEFAULT_MAPPINGS;
 
@@ -196,6 +206,8 @@ static void pico_switch_platform_on_init_complete(void) {
 
 static void pico_switch_platform_on_device_connected(uni_hid_device_t* d) {
     logi("my_platform: device connected: %p\n", d);
+	connected_controllers++;
+	set_led_status();
 }
 
 static void pico_switch_platform_on_device_disconnected(uni_hid_device_t* d) {
@@ -212,6 +224,8 @@ static void pico_switch_platform_on_device_disconnected(uni_hid_device_t* d) {
 		idx_r.report = report[i];
 		set_global_gamepad_report(&idx_r);
 	}
+	connected_controllers--;
+	set_led_status();
 }
 
 static uni_error_t pico_switch_platform_on_device_ready(uni_hid_device_t* d) {
@@ -234,18 +248,6 @@ static void pico_switch_platform_on_controller_data(uni_hid_device_t* d, uni_con
 		idx_r.report = report[idx];
 		set_global_gamepad_report(&idx_r);
 		break;
-	case UNI_CONTROLLER_CLASS_BALANCE_BOARD:
-		// Do something
-		uni_balance_board_dump(&ctl->balance_board);
-		break;
-	case UNI_CONTROLLER_CLASS_MOUSE:
-		// Do something
-		uni_mouse_dump(&ctl->mouse);
-		break;
-	case UNI_CONTROLLER_CLASS_KEYBOARD:
-		// Do something
-		uni_keyboard_dump(&ctl->keyboard);
-		break;
 	default:
 		loge("Unsupported controller class: %d\n", ctl->klass);
 		break;
@@ -262,7 +264,7 @@ static void pico_switch_platform_on_oob_event(uni_platform_oob_event_t event, vo
     switch (event) {
         case UNI_PLATFORM_OOB_GAMEPAD_SYSTEM_BUTTON:
             // Optional: do something when "system" button gets pressed.
-            trigger_event_on_gamepad((uni_hid_device_t*)data);
+            // trigger_event_on_gamepad((uni_hid_device_t*)data);
             break;
 
         case UNI_PLATFORM_OOB_BLUETOOTH_ENABLED:
@@ -277,7 +279,7 @@ static void pico_switch_platform_on_oob_event(uni_platform_oob_event_t event, vo
 }
 
 //
-// Helpers
+// Helpers - UNUSED
 //
 static void trigger_event_on_gamepad(uni_hid_device_t* d) {
     if (d->report_parser.set_rumble != NULL) {
