@@ -237,21 +237,18 @@ static uni_error_t pico_switch_platform_on_device_ready(uni_hid_device_t* d) {
 
 static void pico_switch_platform_on_controller_data(uni_hid_device_t* d, uni_controller_t* ctl)
 {
+	if (ctl->klass != UNI_CONTROLLER_CLASS_GAMEPAD) {
+		return;
+	}
+
 	uni_gamepad_t *gp;
 	uint8_t idx = uni_hid_device_get_idx_for_instance(d);
 
-	switch (ctl->klass) {
-	case UNI_CONTROLLER_CLASS_GAMEPAD:
-		gp = &ctl->gamepad;
-		fill_gamepad_report(idx, gp);
-		idx_r.idx = idx;
-		idx_r.report = report[idx];
-		set_global_gamepad_report(&idx_r);
-		break;
-	default:
-		loge("Unsupported controller class: %d\n", ctl->klass);
-		break;
-	}
+	gp = &ctl->gamepad;
+	fill_gamepad_report(idx, gp);
+	idx_r.idx = idx;
+	idx_r.report = report[idx];
+	set_global_gamepad_report(&idx_r);
 }
 
 static const uni_property_t* pico_switch_platform_get_property(uni_property_idx_t idx) {
@@ -261,21 +258,24 @@ static const uni_property_t* pico_switch_platform_get_property(uni_property_idx_
 }
 
 static void pico_switch_platform_on_oob_event(uni_platform_oob_event_t event, void* data) {
-    switch (event) {
-        case UNI_PLATFORM_OOB_GAMEPAD_SYSTEM_BUTTON:
-            // Optional: do something when "system" button gets pressed.
-            // trigger_event_on_gamepad((uni_hid_device_t*)data);
-            break;
+	ARG_UNUSED(event);
+	ARG_UNUSED(data);
+	return;
+    // switch (event) {
+    //     case UNI_PLATFORM_OOB_GAMEPAD_SYSTEM_BUTTON:
+    //         // Optional: do something when "system" button gets pressed.
+    //         // trigger_event_on_gamepad((uni_hid_device_t*)data);
+    //         break;
 
-        case UNI_PLATFORM_OOB_BLUETOOTH_ENABLED:
-            // When the "bt scanning" is on / off. Could by triggered by different events
-            // Useful to notify the user
-            logi("pico_switch_platform_on_oob_event: Bluetooth enabled: %d\n", (bool)(data));
-            break;
+    //     case UNI_PLATFORM_OOB_BLUETOOTH_ENABLED:
+    //         // When the "bt scanning" is on / off. Could by triggered by different events
+    //         // Useful to notify the user
+    //         logi("pico_switch_platform_on_oob_event: Bluetooth enabled: %d\n", (bool)(data));
+    //         break;
 
-        default:
-            logi("pico_switch_platform_on_oob_event: unsupported event: 0x%04x\n", event);
-    }
+    //     default:
+    //         logi("pico_switch_platform_on_oob_event: unsupported event: 0x%04x\n", event);
+    // }
 }
 
 //
