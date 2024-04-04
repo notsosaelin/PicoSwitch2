@@ -229,10 +229,6 @@ static void pico_switch_platform_on_device_disconnected(uni_hid_device_t* d) {
 static uni_error_t pico_switch_platform_on_device_ready(uni_hid_device_t* d) {
     logi("my_platform: device ready: %p\n", d);
 
-	// if (d->controller_type != UNI_CONTROLLER_CLASS_GAMEPAD) {
-	// 	return UNI_ERROR_INVALID_DEVICE;
-	// } 
-
 	connected_controllers++;
 	set_led_status();
     return UNI_ERROR_SUCCESS;
@@ -270,10 +266,6 @@ static void pico_switch_platform_on_oob_event(uni_platform_oob_event_t event, vo
 // Helpers - UNUSED
 //
 static void trigger_event_on_gamepad(uni_hid_device_t* d) {
-    if (d->report_parser.set_rumble != NULL) {
-        d->report_parser.set_rumble(d, 0x80 /* value */, 15 /* duration */);
-    }
-
     if (d->report_parser.set_player_leds != NULL) {
         static uint8_t led = 0;
         led += 1;
