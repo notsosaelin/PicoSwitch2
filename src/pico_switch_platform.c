@@ -206,8 +206,6 @@ static void pico_switch_platform_on_init_complete(void) {
 
 static void pico_switch_platform_on_device_connected(uni_hid_device_t* d) {
     logi("my_platform: device connected: %p\n", d);
-	connected_controllers++;
-	set_led_status();
 }
 
 static void pico_switch_platform_on_device_disconnected(uni_hid_device_t* d) {
@@ -231,7 +229,12 @@ static void pico_switch_platform_on_device_disconnected(uni_hid_device_t* d) {
 static uni_error_t pico_switch_platform_on_device_ready(uni_hid_device_t* d) {
     logi("my_platform: device ready: %p\n", d);
 
-    // You can reject the connection by returning an error.
+	// if (d->controller_type != UNI_CONTROLLER_CLASS_GAMEPAD) {
+	// 	return UNI_ERROR_INVALID_DEVICE;
+	// } 
+
+	connected_controllers++;
+	set_led_status();
     return UNI_ERROR_SUCCESS;
 }
 
@@ -261,21 +264,6 @@ static void pico_switch_platform_on_oob_event(uni_platform_oob_event_t event, vo
 	ARG_UNUSED(event);
 	ARG_UNUSED(data);
 	return;
-    // switch (event) {
-    //     case UNI_PLATFORM_OOB_GAMEPAD_SYSTEM_BUTTON:
-    //         // Optional: do something when "system" button gets pressed.
-    //         // trigger_event_on_gamepad((uni_hid_device_t*)data);
-    //         break;
-
-    //     case UNI_PLATFORM_OOB_BLUETOOTH_ENABLED:
-    //         // When the "bt scanning" is on / off. Could by triggered by different events
-    //         // Useful to notify the user
-    //         logi("pico_switch_platform_on_oob_event: Bluetooth enabled: %d\n", (bool)(data));
-    //         break;
-
-    //     default:
-    //         logi("pico_switch_platform_on_oob_event: unsupported event: 0x%04x\n", event);
-    // }
 }
 
 //
