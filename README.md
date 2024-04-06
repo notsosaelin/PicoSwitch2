@@ -1,6 +1,8 @@
 # PicoSwitch-WirelessGamepadAdapter
 Use any bluetooth gamepad on your Nintendo Switch with a Raspberry Pi Pico W.
 
+[List of supported controllers](https://bluepad32.readthedocs.io/en/latest/supported_gamepads/)
+
 This project is possible thanks to [Bluepad32](https://github.com/ricardoquesada/bluepad32) and [TinyUSB](https://github.com/hathach/tinyusb).
 
 https://github.com/juan518munoz/PicoSwitch-WirelessGamepadAdapter/assets/62400508/e1148028-f1f3-4d5b-980a-72534b42acf7
