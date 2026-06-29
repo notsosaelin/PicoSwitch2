@@ -1,53 +1,46 @@
 #include "usb.h"
 
-#include <tusb.h>
 #include <stdint.h>
-#include <stdbool.h>
 
+#include <tusb.h>
 #include <pico/stdlib.h>
-#include <pico/cyw43_arch.h>
 #include <pico/multicore.h>
-#include <pico/async_context.h>
 
+#include "switch_pro.h"
 #include "report.h"
-#include "SwitchDescriptors.h"
 
-void
-usb_core_task()
-{
-	tusb_init();
+volatile bool usb_lockout_ready = false;
 
-	SwitchIdxOutReport r;
-	r.idx = 0;
-	r.report.buttons = 0;
-	r.report.hat = SWITCH_HAT_NOTHING;
-	r.report.lx = 0;
-	r.report.ly = 0;
-	r.report.rx = 0;
-	r.report.ry = 0;
+// Runs on core0. Owns the TinyUSB device stack and the per-interface Pro
+// Controller protocol state machine. Console commands arrive asynchronously via
+// tud_hid_set_report_cb() (see usb_descriptors.c); here we service the stack and
+// stream input / handshake reports on each interface's IN endpoint.
+void usb_core_task() {
+    tusb_init();
+    switch_pro_init();
 
-	// send empty reports while bluepad32 is still not set
-	uint8_t runs =
-	        50;  // run for at least 5 seconds sending empty reports, garanteeing host will see the device
-	while (multicore_fifo_get_status() & 1 == 0 || runs > 0) {
-		if (tud_hid_n_ready(r.idx)) {
-			tud_hid_n_report(r.idx, 0, &r.report, sizeof(r.report));
-		}
-		runs--;
-		sleep_ms(100);
-	}
+    // Register as a multicore lockout victim so the Bluetooth core can briefly
+    // park this core to sample the BOOTSEL button (shared flash CS pin).
+    multicore_lockout_victim_init();
+    usb_lockout_ready = true;
 
-	while (1) {
-		get_global_gamepad_report(&r);
+    uint8_t report[64];
 
-		tud_task();
-		if (tud_suspended()) {
-			tud_remote_wakeup();
-			continue;
-		}
+    while (1) {
+        tud_task();
 
-		if (tud_hid_n_ready(r.idx)) {
-			tud_hid_n_report(r.idx, 0, &r.report, sizeof(r.report));
-		}
-	}
+        // While the console is asleep (USB suspended) the BT core keeps running,
+        // so wake the console only when a controller button is actually pressed.
+        if (tud_suspended()) {
+            if (report_any_button_pressed())
+                tud_remote_wakeup();
+        }
+
+        for (uint8_t i = 0; i < SWITCH_PRO_MAX_CONTROLLERS; i++) {
+            if (tud_hid_n_ready(i)) {
+                switch_pro_generate_report(i, report);
+                tud_hid_n_report(i, 0, report, sizeof(report));
+            }
+        }
+    }
 }

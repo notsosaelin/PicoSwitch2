@@ -1,197 +1,255 @@
 /*
- * The MIT License (MIT)
+ * USB descriptors + TinyUSB HID callbacks for the emulated Nintendo Switch
+ * Pro Controller (VID 057E / PID 2009).
  *
- * Copyright (c) 2022 ave oezkal (ave.zone)
- * Copyright (c) 2019 Ha Thach (tinyusb.org)
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- *
+ * Descriptor byte arrays follow the genuine Pro Controller (values from
+ * dekuNukem's reverse-engineering notes via the bmelanman/retro-pico-switch
+ * reference, MIT). The interface exposes both an interrupt IN endpoint (input
+ * reports) and an interrupt OUT endpoint (console commands / handshake).
  */
+
+#include <string.h>
 
 #include "tusb.h"
-#include "SwitchDescriptors.h"
 
-/* A combination of interfaces must have a unique product id, since PC will save
- * device driver after the first plug. Same VID/PID with different interface e.g
- * MSC (first), then CDC (later) will possibly cause system error on PC.
- *
- * Auto ProductID layout's Bitmap:
- *   [MSB]         HID | MSC | CDC          [LSB]
- */
-#define _PID_MAP(itf, n) ((CFG_TUD_##itf) << (n))
+#include "switch_pro.h"
 
 //--------------------------------------------------------------------+
-// Device Descriptors
+// Device + string descriptors
 //--------------------------------------------------------------------+
 
-// Invoked when received GET DEVICE DESCRIPTOR
-// Application return pointer to descriptor
-uint8_t const *
-tud_descriptor_device_cb(void)
-{
-	return switch_device_descriptor;
-}
-
-//--------------------------------------------------------------------+
-// HID Report Descriptor
-//--------------------------------------------------------------------+
-
-// Invoked when received GET HID REPORT DESCRIPTOR
-// Application return pointer to descriptor
-// Descriptor contents must exist long enough for transfer to complete
-uint8_t const *
-tud_hid_descriptor_report_cb(uint8_t instance)
-{
-	return switch_report_descriptor;
-}
-
-//--------------------------------------------------------------------+
-// Configuration Descriptor
-//--------------------------------------------------------------------+
-
-enum { ITF_NUM_HID1, ITF_NUM_HID2, ITF_NUM_HID3, ITF_NUM_HID4, ITF_NUM_TOTAL };
-
-#define CONFIG_TOTAL_LEN                                                       \
-	(TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN + TUD_HID_DESC_LEN +           \
-	 TUD_HID_DESC_LEN + TUD_HID_DESC_LEN)
-
-#define EPNUM_HID1 0x81
-#define EPNUM_HID2 0x82
-#define EPNUM_HID3 0x83
-#define EPNUM_HID4 0x84
-
-uint8_t const desc_configuration[] = {
-	// Config number, interface count, string index, total length, attribute, power in mA
-	TUD_CONFIG_DESCRIPTOR(1,
-	                      ITF_NUM_TOTAL,
-	                      0,
-	                      CONFIG_TOTAL_LEN,
-	                      TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP,
-	                      500),
-
-	// Interface number, string index, protocol, report descriptor len, EP In address, size & polling interval
-	TUD_HID_DESCRIPTOR(ITF_NUM_HID1,
-	                   0,
-	                   HID_ITF_PROTOCOL_NONE,
-	                   sizeof(switch_report_descriptor),
-	                   EPNUM_HID1,
-	                   CFG_TUD_HID_EP_BUFSIZE,
-	                   1),
-	TUD_HID_DESCRIPTOR(ITF_NUM_HID2,
-	                   0,
-	                   HID_ITF_PROTOCOL_NONE,
-	                   sizeof(switch_report_descriptor),
-	                   EPNUM_HID2,
-	                   CFG_TUD_HID_EP_BUFSIZE,
-	                   1),
-	TUD_HID_DESCRIPTOR(ITF_NUM_HID3,
-	                   0,
-	                   HID_ITF_PROTOCOL_NONE,
-	                   sizeof(switch_report_descriptor),
-	                   EPNUM_HID3,
-	                   CFG_TUD_HID_EP_BUFSIZE,
-	                   1),
-	TUD_HID_DESCRIPTOR(ITF_NUM_HID4,
-	                   0,
-	                   HID_ITF_PROTOCOL_NONE,
-	                   sizeof(switch_report_descriptor),
-	                   EPNUM_HID4,
-	                   CFG_TUD_HID_EP_BUFSIZE,
-	                   1)
+static const uint8_t switch_pro_device_descriptor[] = {
+    0x12,        // bLength
+    0x01,        // bDescriptorType (Device)
+    0x00, 0x02,  // bcdUSB 2.00
+    0x00,        // bDeviceClass (use interface descriptors)
+    0x00,        // bDeviceSubClass
+    0x00,        // bDeviceProtocol
+    0x40,        // bMaxPacketSize0 64
+    0x7E, 0x05,  // idVendor 0x057E (Nintendo)
+    0x09, 0x20,  // idProduct 0x2009 (Pro Controller)
+    0x10, 0x02,  // bcdDevice 2.10
+    0x01,        // iManufacturer
+    0x02,        // iProduct
+    0x03,        // iSerialNumber
+    0x01,        // bNumConfigurations
 };
 
-// Invoked when received GET CONFIGURATION DESCRIPTOR
-// Application return pointer to descriptor
-// Descriptor contents must exist long enough for transfer to complete
-uint8_t const *
-tud_descriptor_configuration_cb(uint8_t index)
-{
-	// return switch_configuration_descriptor;
-	return desc_configuration;
-}
+static const char *switch_pro_strings[] = {
+    (const char[]){0x09, 0x04},  // 0: language id (en-US)
+    "Nintendo Co., Ltd.",        // 1: manufacturer
+    "Pro Controller",            // 2: product
+    "000000000001",              // 3: serial number
+};
 
 //--------------------------------------------------------------------+
-// String Descriptors
+// HID report descriptor (USB Pro Controller, 203 bytes)
 //--------------------------------------------------------------------+
+
+static const uint8_t switch_pro_report_descriptor[] = {
+    0x05, 0x01,        // Usage Page (Generic Desktop Ctrls)
+    0x15, 0x00,        // Logical Minimum (0)
+    0x09, 0x04,        // Usage (Joystick)
+    0xA1, 0x01,        // Collection (Application)
+    0x85, 0x30,        //   Report ID (48)
+    0x05, 0x01,        //   Usage Page (Generic Desktop Ctrls)
+    0x05, 0x09,        //   Usage Page (Button)
+    0x19, 0x01,        //   Usage Minimum (0x01)
+    0x29, 0x0A,        //   Usage Maximum (0x0A)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x25, 0x01,        //   Logical Maximum (1)
+    0x75, 0x01,        //   Report Size (1)
+    0x95, 0x0A,        //   Report Count (10)
+    0x55, 0x00,        //   Unit Exponent (0)
+    0x65, 0x00,        //   Unit (None)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
+    0x05, 0x09,        //   Usage Page (Button)
+    0x19, 0x0B,        //   Usage Minimum (0x0B)
+    0x29, 0x0E,        //   Usage Maximum (0x0E)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x25, 0x01,        //   Logical Maximum (1)
+    0x75, 0x01,        //   Report Size (1)
+    0x95, 0x04,        //   Report Count (4)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
+    0x75, 0x01,        //   Report Size (1)
+    0x95, 0x02,        //   Report Count (2)
+    0x81, 0x03,        //   Input (Const)
+    0x0B, 0x01, 0x00, 0x01, 0x00,  //   Usage (0x010001)
+    0xA1, 0x00,                    //   Collection (Physical)
+    0x0B, 0x30, 0x00, 0x01, 0x00,  //     Usage (0x010030) X
+    0x0B, 0x31, 0x00, 0x01, 0x00,  //     Usage (0x010031) Y
+    0x0B, 0x32, 0x00, 0x01, 0x00,  //     Usage (0x010032) Z
+    0x0B, 0x35, 0x00, 0x01, 0x00,  //     Usage (0x010035) Rz
+    0x15, 0x00,                    //     Logical Minimum (0)
+    0x27, 0xFF, 0xFF, 0x00, 0x00,  //     Logical Maximum (65534)
+    0x75, 0x10,                    //     Report Size (16)
+    0x95, 0x04,                    //     Report Count (4)
+    0x81, 0x02,                    //     Input (Data,Var,Abs)
+    0xC0,                          //   End Collection
+    0x0B, 0x39, 0x00, 0x01, 0x00,  //   Usage (0x010039) Hat switch
+    0x15, 0x00,                    //   Logical Minimum (0)
+    0x25, 0x07,                    //   Logical Maximum (7)
+    0x35, 0x00,                    //   Physical Minimum (0)
+    0x46, 0x3B, 0x01,              //   Physical Maximum (315)
+    0x65, 0x14,                    //   Unit (Eng Rotation: Degrees)
+    0x75, 0x04,                    //   Report Size (4)
+    0x95, 0x01,                    //   Report Count (1)
+    0x81, 0x02,                    //   Input (Data,Var,Abs)
+    0x05, 0x09,                    //   Usage Page (Button)
+    0x19, 0x0F,                    //   Usage Minimum (0x0F)
+    0x29, 0x12,                    //   Usage Maximum (0x12)
+    0x15, 0x00,                    //   Logical Minimum (0)
+    0x25, 0x01,                    //   Logical Maximum (1)
+    0x75, 0x01,                    //   Report Size (1)
+    0x95, 0x04,                    //   Report Count (4)
+    0x81, 0x02,                    //   Input (Data,Var,Abs)
+    0x75, 0x08,                    //   Report Size (8)
+    0x95, 0x34,                    //   Report Count (52)
+    0x81, 0x03,                    //   Input (Const)
+    0x06, 0x00, 0xFF,              //   Usage Page (Vendor Defined 0xFF00)
+    0x85, 0x21,                    //   Report ID (33)
+    0x09, 0x01,                    //   Usage (0x01)
+    0x75, 0x08,                    //   Report Size (8)
+    0x95, 0x3F,                    //   Report Count (63)
+    0x81, 0x03,                    //   Input (Const)
+    0x85, 0x81,                    //   Report ID (129)
+    0x09, 0x02,                    //   Usage (0x02)
+    0x75, 0x08,                    //   Report Size (8)
+    0x95, 0x3F,                    //   Report Count (63)
+    0x81, 0x03,                    //   Input (Const)
+    0x85, 0x01,                    //   Report ID (1)
+    0x09, 0x03,                    //   Usage (0x03)
+    0x75, 0x08,                    //   Report Size (8)
+    0x95, 0x3F,                    //   Report Count (63)
+    0x91, 0x83,                    //   Output (Const,Var,Abs,Volatile)
+    0x85, 0x10,                    //   Report ID (16)
+    0x09, 0x04,                    //   Usage (0x04)
+    0x75, 0x08,                    //   Report Size (8)
+    0x95, 0x3F,                    //   Report Count (63)
+    0x91, 0x83,                    //   Output (Const,Var,Abs,Volatile)
+    0x85, 0x80,                    //   Report ID (128)
+    0x09, 0x05,                    //   Usage (0x05)
+    0x75, 0x08,                    //   Report Size (8)
+    0x95, 0x3F,                    //   Report Count (63)
+    0x91, 0x83,                    //   Output (Const,Var,Abs,Volatile)
+    0x85, 0x82,                    //   Report ID (130)
+    0x09, 0x06,                    //   Usage (0x06)
+    0x75, 0x08,                    //   Report Size (8)
+    0x95, 0x3F,                    //   Report Count (63)
+    0x91, 0x83,                    //   Output (Const,Var,Abs,Volatile)
+    0xC0,                          // End Collection
+};
+
+// The genuine Pro Controller USB HID report descriptor is 203 bytes; a wrong
+// length here would make the console reject enumeration.
+_Static_assert(sizeof(switch_pro_report_descriptor) == 203,
+               "Pro Controller HID report descriptor must be 203 bytes");
+
+//--------------------------------------------------------------------+
+// Configuration descriptor: SWITCH_PRO_MAX_CONTROLLERS HID interfaces, each with
+// an interrupt IN + OUT endpoint pair (IN 0x81.., OUT 0x01..). One interface =
+// one Pro Controller = one player on the console.
+//--------------------------------------------------------------------+
+
+// One HID interface block (interface + HID + IN + OUT = 32 bytes), matching the
+// genuine Pro Controller layout, parameterized by interface number and endpoints.
+#define SWITCH_PRO_HID_INTERFACE(ifnum, ep_in, ep_out)                       \
+    0x09, 0x04, (ifnum), 0x00, 0x02, 0x03, 0x00, 0x00, 0x00, /* Interface */ \
+    0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22,                /* HID */       \
+    (uint8_t)(sizeof(switch_pro_report_descriptor) & 0xFF),                  \
+    (uint8_t)((sizeof(switch_pro_report_descriptor) >> 8) & 0xFF),           \
+    0x07, 0x05, (ep_in), 0x03, 0x40, 0x00, 0x08,             /* EP IN */      \
+    0x07, 0x05, (ep_out), 0x03, 0x40, 0x00, 0x08             /* EP OUT */
+
+#define SWITCH_PRO_IF_LEN 32
+#define SWITCH_PRO_CONFIG_LEN (9 + SWITCH_PRO_MAX_CONTROLLERS * SWITCH_PRO_IF_LEN)
+
+static const uint8_t switch_pro_config_descriptor[] = {
+    0x09,                                            // bLength
+    0x02,                                            // bDescriptorType (Configuration)
+    (uint8_t)(SWITCH_PRO_CONFIG_LEN & 0xFF),         // wTotalLength lo
+    (uint8_t)((SWITCH_PRO_CONFIG_LEN >> 8) & 0xFF),  // wTotalLength hi
+    SWITCH_PRO_MAX_CONTROLLERS,                       // bNumInterfaces
+    0x01,                                            // bConfigurationValue
+    0x00,                                            // iConfiguration
+    0xA0,                                            // bmAttributes (bus powered, remote wakeup)
+    0xFA,                                            // bMaxPower 500mA
+
+    SWITCH_PRO_HID_INTERFACE(0, 0x81, 0x01),
+#if SWITCH_PRO_MAX_CONTROLLERS > 1
+    SWITCH_PRO_HID_INTERFACE(1, 0x82, 0x02),
+#endif
+#if SWITCH_PRO_MAX_CONTROLLERS > 2
+    SWITCH_PRO_HID_INTERFACE(2, 0x83, 0x03),
+#endif
+#if SWITCH_PRO_MAX_CONTROLLERS > 3
+    SWITCH_PRO_HID_INTERFACE(3, 0x84, 0x04),
+#endif
+};
+
+_Static_assert(SWITCH_PRO_MAX_CONTROLLERS >= 1 && SWITCH_PRO_MAX_CONTROLLERS <= 4,
+               "SWITCH_PRO_MAX_CONTROLLERS must be 1..4");
+_Static_assert(sizeof(switch_pro_config_descriptor) == SWITCH_PRO_CONFIG_LEN,
+               "configuration descriptor size must match wTotalLength");
+
+//--------------------------------------------------------------------+
+// TinyUSB callbacks
+//--------------------------------------------------------------------+
+
+uint8_t const *tud_descriptor_device_cb(void) {
+    return switch_pro_device_descriptor;
+}
+
+uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
+    (void)index;
+    return switch_pro_config_descriptor;
+}
+
+uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
+    (void)instance;
+    return switch_pro_report_descriptor;
+}
 
 static uint16_t _desc_str[32];
 
-// Invoked when received GET STRING DESCRIPTOR request
-// Application return pointer to descriptor, whose contents must exist long enough for transfer to complete
-uint16_t const *
-tud_descriptor_string_cb(uint8_t index, uint16_t langid)
-{
-	(void) langid;
+uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
+    (void)langid;
+    uint8_t chr_count;
 
-	uint8_t chr_count;
+    if (index == 0) {
+        memcpy(&_desc_str[1], switch_pro_strings[0], 2);
+        chr_count = 1;
+    } else {
+        if (index >= (sizeof(switch_pro_strings) / sizeof(switch_pro_strings[0])))
+            return NULL;
+        const char *str = switch_pro_strings[index];
+        chr_count = (uint8_t)strlen(str);
+        if (chr_count > 31)
+            chr_count = 31;
+        for (uint8_t i = 0; i < chr_count; i++)
+            _desc_str[1 + i] = str[i];
+    }
 
-	if (index == 0) {
-		memcpy(&_desc_str[1], switch_string_descriptors[0], 2);
-		chr_count = 1;
-	} else {
-		// Note: the 0xEE index string is a Microsoft OS 1.0 Descriptors.
-		// https://docs.microsoft.com/en-us/windows-hardware/drivers/usbcon/microsoft-defined-usb-descriptors
-
-		if (!(index < sizeof(switch_string_descriptors) /
-		                      sizeof(switch_string_descriptors[0])))
-			return NULL;
-
-		const char *str = switch_string_descriptors[index];
-
-		// Cap at max char
-		chr_count = strlen(str);
-		if (chr_count > 31)
-			chr_count = 31;
-
-		// Convert ASCII string into UTF-16
-		for (uint8_t i = 0; i < chr_count; i++) {
-			_desc_str[1 + i] = str[i];
-		}
-	}
-
-	// first byte is length (including header), second byte is string type
-	_desc_str[0] = (TUSB_DESC_STRING << 8) | (2 * chr_count + 2);
-
-	return _desc_str;
+    _desc_str[0] = (uint16_t)((TUSB_DESC_STRING << 8) | (2 * chr_count + 2));
+    return _desc_str;
 }
 
-// Invoked when received GET_REPORT control request
-// Application must fill buffer report's content and return its length.
-// Return zero will cause the stack to STALL request
-uint16_t
-tud_hid_get_report_cb(uint8_t instance,
-                      uint8_t report_id,
-                      hid_report_type_t report_type,
-                      uint8_t *buffer,
-                      uint16_t reqlen)
-{
-	return 0;
+// GET_REPORT control request: the Switch drives input via the interrupt IN
+// endpoint, so stall control GET_REPORT.
+uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type,
+                               uint8_t *buffer, uint16_t reqlen) {
+    (void)instance;
+    (void)report_id;
+    (void)report_type;
+    (void)buffer;
+    (void)reqlen;
+    return 0;
 }
 
-// Invoked when received SET_REPORT control request or
-// received data on OUT endpoint ( Report ID = 0, Type = 0 )
-void
-tud_hid_set_report_cb(uint8_t itf,
-                      uint8_t report_id,
-                      hid_report_type_t report_type,
-                      uint8_t const *buffer,
-                      uint16_t bufsize)
-{
-	return;
+// SET_REPORT / OUT endpoint: console commands and handshake arrive here.
+void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type,
+                           uint8_t const *buffer, uint16_t bufsize) {
+    (void)report_id;
+    (void)report_type;
+    switch_pro_receive(instance, buffer, bufsize);
 }
