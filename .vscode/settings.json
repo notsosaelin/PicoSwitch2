@@ -1,96 +1,46 @@
 {
-    "files.associations": {
-        "array": "cpp",
-        "string_view": "cpp",
-        "initializer_list": "cpp",
-        "ranges": "cpp",
-        "utility": "cpp",
-        "random": "cpp",
-        "deque": "cpp",
-        "*.tcc": "cpp",
-        "cmath": "cpp",
-        "compare": "cpp",
-        "concepts": "cpp",
-        "cstdio": "cpp",
-        "cstdlib": "cpp",
-        "vector": "cpp",
-        "exception": "cpp",
-        "limits": "cpp",
-        "new": "cpp",
-        "cstdint": "cpp",
-        "type_traits": "cpp",
-        "typeinfo": "cpp",
-        "atomic": "cpp",
-        "bit": "cpp",
-        "cctype": "cpp",
-        "chrono": "cpp",
-        "cinttypes": "cpp",
-        "clocale": "cpp",
-        "cstdarg": "cpp",
-        "cstddef": "cpp",
-        "cstring": "cpp",
-        "ctime": "cpp",
-        "cwchar": "cpp",
-        "cwctype": "cpp",
-        "map": "cpp",
-        "unordered_map": "cpp",
-        "algorithm": "cpp",
-        "functional": "cpp",
-        "iterator": "cpp",
-        "memory": "cpp",
-        "memory_resource": "cpp",
-        "numeric": "cpp",
-        "optional": "cpp",
-        "ratio": "cpp",
-        "string": "cpp",
-        "system_error": "cpp",
-        "tuple": "cpp",
-        "iomanip": "cpp",
-        "iosfwd": "cpp",
-        "iostream": "cpp",
-        "istream": "cpp",
-        "ostream": "cpp",
-        "sstream": "cpp",
-        "stdexcept": "cpp",
-        "streambuf": "cpp",
-        "string.h": "c",
-        "uni_hid_device_vendors.h": "c",
-        "uni_platform.h": "c",
-        "uni_config.h": "c",
-        "uni_platform_pico.h": "c",
-        "sdkconfig.h": "c",
-        "uni.h": "c",
-        "cyw43_arch.h": "c",
-        "stdbool.h": "c",
-        "stdio.h": "c",
-        "switchdescriptors.h": "c",
-        "stdint.h": "c",
-        "async_context.h": "c",
-        "multicore.h": "c",
-        "report.h": "c",
-        "btstack_run_loop.h": "c",
-        "usb.h": "c"
-    },
-    // These settings tweaks to the cmake plugin will ensure
-    // that you debug using cortex-debug instead of trying to launch
-    // a Pico binary on the host
-    "cmake.statusbar.advanced": {
-        "debug": {
-            "visibility": "hidden"
+    "cmake.showSystemKits": false,
+    "cmake.options.statusBarVisibility": "hidden",
+    "cmake.options.advanced": {
+        "build": {
+            "statusBarVisibility": "hidden"
         },
         "launch": {
-            "visibility": "hidden"
+            "statusBarVisibility": "hidden"
         },
-        "build": {
-            "visibility": "default"
+        "debug": {
+            "statusBarVisibility": "hidden"
+        },
+        "variant": {
+            "statusBarVisibility": "compact",
         },
         "buildTarget": {
-            "visibility": "hidden"
+            "statusBarVisibility": "visible",
         }
     },
-    "cmake.buildBeforeRun": true,
-    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
-    "cortex-debug.openocdPath": "/usr/local/bin/openocd",
-    "cortex-debug.objdumpPath": "/usr/bin/arm-none-eabi-objdump",
-    "cortex-debug.gdbPath": "gdb-multiarch"
+    "cmake.configureOnEdit": true,
+    "cmake.automaticReconfigure": true,
+    "cmake.configureOnOpen": false,
+    "cmake.generator": "Ninja",
+    "cmake.cmakePath": "${userHome}/.pico-sdk/cmake/v3.31.5/bin/cmake",
+    "C_Cpp.debugShortcut": false,
+    "terminal.integrated.env.windows": {
+        "PICO_SDK_PATH": "${env:USERPROFILE}/.pico-sdk/sdk/2.2.0",
+        "PICO_TOOLCHAIN_PATH": "${env:USERPROFILE}/.pico-sdk/toolchain/14_2_Rel1",
+        "Path": "${env:USERPROFILE}/.pico-sdk/toolchain/14_2_Rel1/bin;${env:USERPROFILE}/.pico-sdk/picotool/2.2.0-a4/picotool;${env:USERPROFILE}/.pico-sdk/cmake/v3.31.5/bin;${env:USERPROFILE}/.pico-sdk/ninja/v1.12.1;${env:PATH}"
+    },
+    "terminal.integrated.env.osx": {
+        "PICO_SDK_PATH": "${env:HOME}/.pico-sdk/sdk/2.2.0",
+        "PICO_TOOLCHAIN_PATH": "${env:HOME}/.pico-sdk/toolchain/14_2_Rel1",
+        "PATH": "${env:HOME}/.pico-sdk/toolchain/14_2_Rel1/bin:${env:HOME}/.pico-sdk/picotool/2.2.0-a4/picotool:${env:HOME}/.pico-sdk/cmake/v3.31.5/bin:${env:HOME}/.pico-sdk/ninja/v1.12.1:${env:PATH}"
+    },
+    "terminal.integrated.env.linux": {
+        "PICO_SDK_PATH": "${env:HOME}/.pico-sdk/sdk/2.2.0",
+        "PICO_TOOLCHAIN_PATH": "${env:HOME}/.pico-sdk/toolchain/14_2_Rel1",
+        "PATH": "${env:HOME}/.pico-sdk/toolchain/14_2_Rel1/bin:${env:HOME}/.pico-sdk/picotool/2.2.0-a4/picotool:${env:HOME}/.pico-sdk/cmake/v3.31.5/bin:${env:HOME}/.pico-sdk/ninja/v1.12.1:${env:PATH}"
+    },
+    "raspberry-pi-pico.cmakeAutoConfigure": false,
+    "raspberry-pi-pico.useCmakeTools": true,
+    "raspberry-pi-pico.cmakePath": "${HOME}/.pico-sdk/cmake/v3.31.5/bin/cmake",
+    "raspberry-pi-pico.ninjaPath": "${HOME}/.pico-sdk/ninja/v1.12.1/ninja"
 }

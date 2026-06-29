@@ -99,14 +99,20 @@ extern "C"
 #endif
 
 //------------- CLASS -------------//
-#define CFG_TUD_HID 4
+// One HID interface per emulated Pro Controller. SWITCH_PRO_MAX_CONTROLLERS is
+// the single knob (set via -D in CMake); it must match the number of interfaces
+// in the USB configuration descriptor (usb_descriptors.c).
+#ifndef SWITCH_PRO_MAX_CONTROLLERS
+#define SWITCH_PRO_MAX_CONTROLLERS 4
+#endif
+#define CFG_TUD_HID SWITCH_PRO_MAX_CONTROLLERS
 #define CFG_TUD_CDC 0
 #define CFG_TUD_MSC 0
 #define CFG_TUD_MIDI 0
 #define CFG_TUD_VENDOR 0
 
-// HID buffer size Should be sufficient to hold ID (if any) + Data
-#define CFG_TUD_HID_EP_BUFSIZE 16
+// Pro Controller reports are 64 bytes (IN and OUT).
+#define CFG_TUD_HID_EP_BUFSIZE 64
 
 #ifdef __cplusplus
 }

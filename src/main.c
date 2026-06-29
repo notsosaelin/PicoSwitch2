@@ -7,6 +7,7 @@
 
 #include "sdkconfig.h"
 #include "usb.h"
+#include "report.h"
 
 // Sanity check
 #ifndef CONFIG_BLUEPAD32_PLATFORM_CUSTOM
@@ -21,7 +22,7 @@ void bluepad_core_task()
 	// initialize CYW43 driver architecture (will enable BT if/because CYW43_ENABLE_BLUETOOTH == 1)
 	if (cyw43_arch_init()) {
 		loge("failed to initialise cyw43_arch\n");
-		return -1;
+		return;
 	}
 
 	// Turn-on LED. Turn it off once init is done.
@@ -41,6 +42,9 @@ int
 main()
 {
 	stdio_init_all();
+
+	// Initialize the cross-core shared input state before either core uses it.
+	report_init();
 
 	multicore_launch_core1(bluepad_core_task);
 	usb_core_task();
