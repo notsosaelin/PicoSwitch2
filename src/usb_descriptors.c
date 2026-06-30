@@ -218,7 +218,7 @@ static const uint8_t cdc_device_descriptor[] = {
 };
 
 // Config mode is a composite device: CDC serial (the command link) + a
-// read-only Mass Storage disk (carries index.html so the dongle is self-contained).
+// read-only Mass Storage disk (carries CONFIG.HTM so the dongle is self-contained).
 enum { CDC_ITF_NOTIF = 0, CDC_ITF_DATA, MSC_ITF, CONFIG_ITF_COUNT };
 #define CDC_EP_NOTIF 0x81
 #define CDC_EP_OUT 0x02
