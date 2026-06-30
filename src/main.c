@@ -8,6 +8,7 @@
 #include "sdkconfig.h"
 #include "usb.h"
 #include "report.h"
+#include "config.h"
 
 // Sanity check
 #ifndef CONFIG_BLUEPAD32_PLATFORM_CUSTOM
@@ -45,6 +46,9 @@ main()
 
 	// Initialize the cross-core shared input state before either core uses it.
 	report_init();
+
+	// Load persistent settings (lightbar colours, etc.) from flash.
+	config_load();
 
 	multicore_launch_core1(bluepad_core_task);
 	usb_core_task();

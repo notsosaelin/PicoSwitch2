@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PicoSwitch Config</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         margin: 0; background: #14171c; color: #e6e8ea; line-height: 1.5; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+           padding: 12px 20px; background: #1b1f26; border-bottom: 1px solid #2b313b; }
+  header h1 { font-size: 18px; margin: 0; margin-right: auto; }
+  main { max-width: 820px; margin: 0 auto; padding: 20px; }
+  section { background: #1b1f26; border: 1px solid #2b313b; border-radius: 10px;
+            padding: 16px 18px; margin-bottom: 18px; }
+  section h2 { font-size: 14px; margin: 0 0 12px; color: #9fb3c8;
+               text-transform: uppercase; letter-spacing: .04em; }
+  button { font: inherit; cursor: pointer; border: 1px solid #3a4150; background: #2a3140;
+           color: #e6e8ea; padding: 7px 14px; border-radius: 7px; }
+  button:hover { background: #333c4d; }
+  button.primary { background: #2563eb; border-color: #2563eb; }
+  button.primary:hover { background: #1d4ed8; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  select { font: inherit; background: #11151b; color: #e6e8ea; border: 1px solid #3a4150;
+           border-radius: 6px; padding: 4px 8px; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 5px 8px; }
+  tr + tr td { border-top: 1px solid #232932; }
+  .pill { font-size: 12px; padding: 3px 10px; border-radius: 999px; background: #2a3140; }
+  .pill.ok { background: #14532d; color: #bbf7d0; }
+  .pill.bad { background: #4c1d1d; color: #fecaca; }
+  .muted { color: #7c8694; font-size: 13px; }
+  .hidden { display: none !important; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .actions-bar { display: flex; gap: 10px; flex-wrap: wrap; }
+  .player { display: grid; grid-template-columns: 70px 1fr 44px; gap: 10px 14px;
+            align-items: center; padding: 10px 0; }
+  .player + .player { border-top: 1px solid #232932; }
+  .player .name { font-weight: 600; }
+  .sliders { display: grid; gap: 4px; }
+  .sliders label { display: grid; grid-template-columns: 16px 1fr 38px; gap: 8px; align-items: center;
+                   font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: #9aa6b2; }
+  .sliders input[type=range] { width: 100%; }
+  .swatch { width: 44px; height: 44px; border-radius: 8px; border: 1px solid #3a4150; }
+  input[type=range].r { accent-color: #ef4444; }
+  input[type=range].g { accent-color: #22c55e; }
+  input[type=range].b { accent-color: #3b82f6; }
+  #log { background: #0d1016; border: 1px solid #2b313b; border-radius: 8px; padding: 10px 12px;
+         font-family: ui-monospace, Consolas, monospace; font-size: 12px; height: 130px;
+         overflow: auto; white-space: pre-wrap; color: #9aa6b2; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PicoSwitch Config</h1>
+  <span id="status" class="pill bad">Disconnected</span>
+  <button id="connectBtn" class="primary">Connect</button>
+</header>
+
+<main>
+  <section id="intro">
+    <p class="muted">
+      Chrome or Edge required (Web Serial). On the adapter, <b>hold BOOTSEL ~5s</b> to enter
+      config mode, then click <b>Connect</b> and choose the <b>PicoSwitch Config</b> port.
+    </p>
+    <p id="unsupported" class="pill bad hidden">
+      This browser doesn't support Web Serial — use Chrome or Edge on desktop.
+    </p>
+  </section>
+
+  <div id="ui" class="hidden">
+    <section>
+      <h2>Player lightbar colours</h2>
+      <p class="muted" style="margin-top:-4px">
+        Colour by player position for controllers with an RGB light (DualSense / DualShock 4).
+      </p>
+      <div id="players"></div>
+    </section>
+
+    <section>
+      <h2>Button mapping</h2>
+      <div class="row" style="margin-bottom:12px">
+        <label>Controller: <select id="familySel"></select></label>
+        <span class="muted">Each platform has its own profile, applied automatically when that controller connects.</span>
+      </div>
+      <table id="mapTable"><tbody></tbody></table>
+    </section>
+
+    <section>
+      <div class="actions-bar">
+        <button id="saveBtn" class="primary">Save to device</button>
+        <button id="reloadBtn">Reload</button>
+      </div>
+    </section>
+  </div>
+
+  <section>
+    <h2>Log</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const log = m => { const el = $("#log"); el.textContent += m + "\n"; el.scrollTop = el.scrollHeight; };
+
+// Platform families — order matches FAMILY_* in remap.h.
+const FAMILY_LABELS = ["Generic", "Nintendo", "PlayStation", "Xbox"];
+// Physical-button labels per family, in SRC_* order (remap.h).
+const SRC_BY_FAMILY = [
+  ["Bottom (south)", "Right (east)", "Left (west)", "Top (north)", "L", "R", "ZL", "ZR",
+   "L-stick click", "R-stick click", "Minus", "Plus", "Home", "Capture",
+   "D-pad Up", "D-pad Down", "D-pad Left", "D-pad Right"],
+  ["B", "A", "Y", "X", "L", "R", "ZL", "ZR", "L-stick (L3)", "R-stick (R3)",
+   "Minus", "Plus", "Home", "Capture", "D-pad Up", "D-pad Down", "D-pad Left", "D-pad Right"],
+  ["Cross", "Circle", "Square", "Triangle", "L1", "R1", "L2", "R2", "L3", "R3",
+   "Create / Share", "Options", "PS", "Mute", "D-pad Up", "D-pad Down", "D-pad Left", "D-pad Right"],
+  ["A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Left stick", "Right stick",
+   "View", "Menu", "Xbox", "Share", "D-pad Up", "D-pad Down", "D-pad Left", "D-pad Right"],
+];
+// Switch outputs (destinations) — DST_* order.
+const DST_LABELS = ["(none)", "A", "B", "X", "Y", "L", "R", "ZL", "ZR", "L3", "R3",
+  "Minus", "Plus", "Home", "Capture", "D-Up", "D-Down", "D-Left", "D-Right"];
+const NSRC = 18;
+
+let port = null, reader = null, writer = null, readBuf = "";
+const pending = [];
+const maps = [null, null, null, null];  // per-family arrays of NSRC destinations
+let family = 0;
+
+function setConnected(on) {
+  $("#status").textContent = on ? "Connected" : "Disconnected";
+  $("#status").className = "pill " + (on ? "ok" : "bad");
+  $("#connectBtn").disabled = on;
+  $("#ui").classList.toggle("hidden", !on);
+}
+
+// --- lightbar UI ---
+function buildPlayers() {
+  const host = $("#players");
+  host.innerHTML = "";
+  for (let p = 0; p < 4; p++) {
+    const row = document.createElement("div");
+    row.className = "player";
+    row.innerHTML = `
+      <div class="name">Player ${p + 1}</div>
+      <div class="sliders">
+        ${["r", "g", "b"].map(ch => `
+          <label>${ch.toUpperCase()}
+            <input type="range" min="0" max="255" value="0" class="${ch}" data-p="${p}" data-ch="${ch}">
+            <span class="val" data-p="${p}" data-ch="${ch}">0</span>
+          </label>`).join("")}
+      </div>
+      <div class="swatch" data-p="${p}"></div>`;
+    host.appendChild(row);
+  }
+  host.querySelectorAll("input[type=range]").forEach(inp => inp.oninput = () => render(+inp.dataset.p));
+}
+function cget(p, ch) { return +$(`input[data-p="${p}"][data-ch="${ch}"]`).value; }
+function cset(p, ch, v) { $(`input[data-p="${p}"][data-ch="${ch}"]`).value = v; $(`span[data-p="${p}"][data-ch="${ch}"]`).textContent = v; }
+function render(p) {
+  for (const ch of ["r", "g", "b"]) $(`span[data-p="${p}"][data-ch="${ch}"]`).textContent = cget(p, ch);
+  $(`.swatch[data-p="${p}"]`).style.background = `rgb(${cget(p,"r")},${cget(p,"g")},${cget(p,"b")})`;
+}
+
+// --- button mapping UI (per selected family) ---
+function buildFamilySel() {
+  $("#familySel").innerHTML = FAMILY_LABELS.map((n, i) => `<option value="${i}">${n}</option>`).join("");
+  $("#familySel").value = family;
+}
+function buildRemap() {
+  const tb = $("#mapTable tbody");
+  tb.innerHTML = "";
+  const opts = DST_LABELS.map((d, i) => `<option value="${i}">${d}</option>`).join("");
+  const cur = maps[family];
+  SRC_BY_FAMILY[family].forEach((label, s) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td style="width:170px">${label}</td><td><select class="dst" data-s="${s}">${opts}</select></td>`;
+    const sel = tr.querySelector("select");
+    sel.value = cur ? cur[s] : 0;
+    sel.onchange = () => { if (maps[family]) maps[family][s] = +sel.value; };
+    tb.appendChild(tr);
+  });
+}
+
+// --- serial I/O: one command -> one JSON line ---
+function sendCmd(line) {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => {
+      const i = pending.findIndex(p => p.timer === timer);
+      if (i >= 0) pending.splice(i, 1);
+      resolve(null);
+    }, 4000);
+    pending.push({ resolve, timer });
+    writer.write(new TextEncoder().encode(line + "\n"));
+    log("> " + line);
+  });
+}
+function onLine(line) {
+  line = line.trim();
+  if (!line) return;
+  log("< " + line);
+  const p = pending.shift();
+  if (p) { clearTimeout(p.timer); try { p.resolve(JSON.parse(line)); } catch { p.resolve({ raw: line }); } }
+}
+async function readLoop() {
+  const decoder = new TextDecoder();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      readBuf += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = readBuf.indexOf("\n")) >= 0) { onLine(readBuf.slice(0, nl)); readBuf = readBuf.slice(nl + 1); }
+    }
+  } catch (e) { log("! read ended: " + e.message); }
+}
+
+async function reload() {
+  const cfg = await sendCmd("get");
+  if (cfg && cfg.lightbar)
+    cfg.lightbar.forEach((rgb, p) => { cset(p, "r", rgb[0]); cset(p, "g", rgb[1]); cset(p, "b", rgb[2]); render(p); });
+  else log("! could not read colours");
+  for (let f = 0; f < 4; f++) {
+    const m = await sendCmd("getmap " + f);
+    maps[f] = (m && m.map && m.map.length === NSRC) ? m.map : null;
+  }
+  buildRemap();
+  log("== loaded current settings ==");
+}
+
+async function save() {
+  $("#saveBtn").disabled = true;
+  for (let p = 0; p < 4; p++) await sendCmd(`lb ${p} ${cget(p,"r")} ${cget(p,"g")} ${cget(p,"b")}`);
+  for (let f = 0; f < 4; f++) if (maps[f]) await sendCmd(`setmap ${f} ${maps[f].join(" ")}`);
+  const r = await sendCmd("save");
+  $("#saveBtn").disabled = false;
+  log(r && r.ok ? "== saved (reconnect a controller for it to take effect) ==" : "!! save failed");
+}
+
+async function connect() {
+  try {
+    port = await navigator.serial.requestPort({ filters: [{ usbVendorId: 0xCAFE, usbProductId: 0x4012 }] });
+    await port.open({ baudRate: 115200 });
+    writer = port.writable.getWriter();
+    reader = port.readable.getReader();
+    readLoop();
+    setConnected(true);
+    log("-- connected --");
+    const info = await sendCmd("info");
+    if (info && info.id === "picoswitch") log("== PicoSwitch detected (v" + info.version + ") ==");
+    else log("! warning: unexpected device (info=" + JSON.stringify(info) + ")");
+    await reload();
+  } catch (e) { log("! connect failed: " + e.message); }
+}
+
+buildPlayers();
+buildFamilySel();
+buildRemap();
+$("#familySel").onchange = e => { family = +e.target.value; buildRemap(); };
+$("#connectBtn").onclick = connect;
+$("#saveBtn").onclick = save;
+$("#reloadBtn").onclick = reload;
+if (!("serial" in navigator)) { $("#unsupported").classList.remove("hidden"); $("#connectBtn").disabled = true; }
+</script>
+</body>
+</html>

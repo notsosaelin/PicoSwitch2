@@ -13,6 +13,7 @@
 #include "tusb.h"
 
 #include "switch_pro.h"
+#include "usb.h"  // g_usb_config_mode
 
 //--------------------------------------------------------------------+
 // Device + string descriptors
@@ -193,16 +194,63 @@ _Static_assert(sizeof(switch_pro_config_descriptor) == SWITCH_PRO_CONFIG_LEN,
                "configuration descriptor size must match wTotalLength");
 
 //--------------------------------------------------------------------+
-// TinyUSB callbacks
+// Configuration-mode descriptors (USB CDC serial)
+//--------------------------------------------------------------------+
+
+#define CONFIG_USB_VID 0xCAFE
+#define CONFIG_USB_PID 0x4012
+
+static const uint8_t cdc_device_descriptor[] = {
+    0x12,        // bLength
+    0x01,        // bDescriptorType (Device)
+    0x00, 0x02,  // bcdUSB 2.00
+    0xEF,        // bDeviceClass (Misc)
+    0x02,        // bDeviceSubClass (common)
+    0x01,        // bDeviceProtocol (IAD)
+    0x40,        // bMaxPacketSize0 64
+    (uint8_t)(CONFIG_USB_VID & 0xFF), (uint8_t)(CONFIG_USB_VID >> 8),
+    (uint8_t)(CONFIG_USB_PID & 0xFF), (uint8_t)(CONFIG_USB_PID >> 8),
+    0x00, 0x01,  // bcdDevice 1.00
+    0x01,        // iManufacturer
+    0x02,        // iProduct
+    0x03,        // iSerialNumber
+    0x01,        // bNumConfigurations
+};
+
+// Config mode is a composite device: CDC serial (the command link) + a
+// read-only Mass Storage disk (carries index.html so the dongle is self-contained).
+enum { CDC_ITF_NOTIF = 0, CDC_ITF_DATA, MSC_ITF, CONFIG_ITF_COUNT };
+#define CDC_EP_NOTIF 0x81
+#define CDC_EP_OUT 0x02
+#define CDC_EP_IN 0x82
+#define MSC_EP_OUT 0x03
+#define MSC_EP_IN 0x83
+#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN + TUD_MSC_DESC_LEN)
+
+static const uint8_t cdc_config_descriptor[] = {
+    TUD_CONFIG_DESCRIPTOR(1, CONFIG_ITF_COUNT, 0, CONFIG_TOTAL_LEN, 0x00, 100),
+    TUD_CDC_DESCRIPTOR(CDC_ITF_NOTIF, 0, CDC_EP_NOTIF, 8, CDC_EP_OUT, CDC_EP_IN, 64),
+    TUD_MSC_DESCRIPTOR(MSC_ITF, 0, MSC_EP_OUT, MSC_EP_IN, 64),
+};
+
+static const char *config_strings[] = {
+    (const char[]){0x09, 0x04},  // 0: language id (en-US)
+    "518",                       // 1: manufacturer
+    "PicoSwitch Config",         // 2: product
+    "000000000001",              // 3: serial number
+};
+
+//--------------------------------------------------------------------+
+// TinyUSB callbacks (return HID or CDC descriptors per the current mode)
 //--------------------------------------------------------------------+
 
 uint8_t const *tud_descriptor_device_cb(void) {
-    return switch_pro_device_descriptor;
+    return g_usb_config_mode ? cdc_device_descriptor : switch_pro_device_descriptor;
 }
 
 uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
     (void)index;
-    return switch_pro_config_descriptor;
+    return g_usb_config_mode ? cdc_config_descriptor : switch_pro_config_descriptor;
 }
 
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
@@ -216,13 +264,17 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
     (void)langid;
     uint8_t chr_count;
 
+    const char **strings = g_usb_config_mode ? config_strings : switch_pro_strings;
+    size_t count = g_usb_config_mode ? (sizeof(config_strings) / sizeof(config_strings[0]))
+                                     : (sizeof(switch_pro_strings) / sizeof(switch_pro_strings[0]));
+
     if (index == 0) {
-        memcpy(&_desc_str[1], switch_pro_strings[0], 2);
+        memcpy(&_desc_str[1], strings[0], 2);
         chr_count = 1;
     } else {
-        if (index >= (sizeof(switch_pro_strings) / sizeof(switch_pro_strings[0])))
+        if (index >= count)
             return NULL;
-        const char *str = switch_pro_strings[index];
+        const char *str = strings[index];
         chr_count = (uint8_t)strlen(str);
         if (chr_count > 31)
             chr_count = 31;
