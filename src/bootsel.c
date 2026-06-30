@@ -49,7 +49,7 @@ static bool read_bootsel_locked(void) {
 }
 
 // Gesture timing.
-#define TAP_WINDOW_MS 400  // max gap between taps of the same gesture
+#define TAP_WINDOW_MS 500  // max gap between taps of the same gesture
 #define HOLD_MS 5000       // press duration that counts as a "hold"
 
 bootsel_gesture_t bootsel_poll(uint32_t now_ms) {

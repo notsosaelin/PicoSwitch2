@@ -14,6 +14,8 @@
 #include "report.h"
 #include "switch_pro.h"
 #include "bootsel.h"
+#include "config.h"
+#include "remap.h"
 
 // Sanity check
 #ifndef CONFIG_BLUEPAD32_PLATFORM_CUSTOM
@@ -79,56 +81,74 @@ static void make_neutral(switch_pro_input_t *in) {
     switch_pro_pack_stick(SWITCH_STICK_MID, SWITCH_STICK_MID, in->right_stick);
 }
 
+// Switch output bit (report byte index + mask) for each remap destination.
+// DST_NONE and any gap default to {0,0}, so applying them is a harmless no-op.
+static const struct {
+    uint8_t idx;
+    uint8_t mask;
+} DST_BIT[DST_COUNT] = {
+    [DST_A] = {0, SWITCH_MASK_A},   [DST_B] = {0, SWITCH_MASK_B},
+    [DST_X] = {0, SWITCH_MASK_X},   [DST_Y] = {0, SWITCH_MASK_Y},
+    [DST_R] = {0, SWITCH_MASK_R},   [DST_ZR] = {0, SWITCH_MASK_ZR},
+    [DST_L] = {2, SWITCH_MASK_L},   [DST_ZL] = {2, SWITCH_MASK_ZL},
+    [DST_L3] = {1, SWITCH_MASK_L3}, [DST_R3] = {1, SWITCH_MASK_R3},
+    [DST_MINUS] = {1, SWITCH_MASK_MINUS},     [DST_PLUS] = {1, SWITCH_MASK_PLUS},
+    [DST_HOME] = {1, SWITCH_MASK_HOME},       [DST_CAPTURE] = {1, SWITCH_MASK_CAPTURE},
+    [DST_DPAD_UP] = {2, SWITCH_MASK_DPAD_UP}, [DST_DPAD_DOWN] = {2, SWITCH_MASK_DPAD_DOWN},
+    [DST_DPAD_LEFT] = {2, SWITCH_MASK_DPAD_LEFT}, [DST_DPAD_RIGHT] = {2, SWITCH_MASK_DPAD_RIGHT},
+};
+
+static inline void apply_dst(switch_pro_input_t *in, uint8_t dst) {
+    if (dst < DST_COUNT)
+        in->buttons[DST_BIT[dst].idx] |= DST_BIT[dst].mask;
+}
+
+// Map a Bluetooth vendor id to a controller platform family (selects which
+// remap profile applies, and the button labels shown in the config UI).
+static uint8_t family_from_vendor(uint16_t vid) {
+    switch (vid) {
+        case 0x054C:
+            return FAMILY_PLAYSTATION;  // Sony
+        case 0x045E:
+            return FAMILY_XBOX;  // Microsoft
+        case 0x057E:
+            return FAMILY_NINTENDO;  // Nintendo
+        default:
+            return FAMILY_GENERIC;
+    }
+}
+
 // Translate a bluepad32 gamepad into the Pro Controller wire format.
-static void fill_input(const uni_gamepad_t *gp, switch_pro_input_t *in) {
+static void fill_input(const uni_gamepad_t *gp, switch_pro_input_t *in, uint8_t family) {
     memset(in, 0, sizeof(*in));
 
-    // Face buttons, position-faithful to a real Switch pad:
-    // south->B, east->A, west->Y, north->X (bluepad32 normalizes to Xbox positions).
-    if (gp->buttons & BUTTON_B)
-        in->buttons[0] |= SWITCH_MASK_A;
-    if (gp->buttons & BUTTON_A)
-        in->buttons[0] |= SWITCH_MASK_B;
-    if (gp->buttons & BUTTON_Y)
-        in->buttons[0] |= SWITCH_MASK_X;
-    if (gp->buttons & BUTTON_X)
-        in->buttons[0] |= SWITCH_MASK_Y;
+    // Gather active physical inputs (bluepad32 normalizes to Xbox positions),
+    // then route each through the configurable remap to a Switch output.
+    bool src[SRC_COUNT] = {false};
+    src[SRC_SOUTH] = gp->buttons & BUTTON_A;
+    src[SRC_EAST] = gp->buttons & BUTTON_B;
+    src[SRC_WEST] = gp->buttons & BUTTON_X;
+    src[SRC_NORTH] = gp->buttons & BUTTON_Y;
+    src[SRC_L] = gp->buttons & BUTTON_SHOULDER_L;
+    src[SRC_R] = gp->buttons & BUTTON_SHOULDER_R;
+    src[SRC_ZL] = (gp->buttons & BUTTON_TRIGGER_L) || gp->brake > 64;
+    src[SRC_ZR] = (gp->buttons & BUTTON_TRIGGER_R) || gp->throttle > 64;
+    src[SRC_L3] = gp->buttons & BUTTON_THUMB_L;
+    src[SRC_R3] = gp->buttons & BUTTON_THUMB_R;
+    src[SRC_MINUS] = gp->misc_buttons & MISC_BUTTON_SELECT;
+    src[SRC_PLUS] = gp->misc_buttons & MISC_BUTTON_START;
+    src[SRC_HOME] = gp->misc_buttons & MISC_BUTTON_SYSTEM;
+    src[SRC_CAPTURE] = gp->misc_buttons & MISC_BUTTON_CAPTURE;
+    src[SRC_DPAD_UP] = gp->dpad & DPAD_UP;
+    src[SRC_DPAD_DOWN] = gp->dpad & DPAD_DOWN;
+    src[SRC_DPAD_LEFT] = gp->dpad & DPAD_LEFT;
+    src[SRC_DPAD_RIGHT] = gp->dpad & DPAD_RIGHT;
 
-    // Shoulders and triggers (triggers may be buttons or analog brake/throttle).
-    if (gp->buttons & BUTTON_SHOULDER_L)
-        in->buttons[2] |= SWITCH_MASK_L;
-    if (gp->buttons & BUTTON_SHOULDER_R)
-        in->buttons[0] |= SWITCH_MASK_R;
-    if ((gp->buttons & BUTTON_TRIGGER_L) || gp->brake > 64)
-        in->buttons[2] |= SWITCH_MASK_ZL;
-    if ((gp->buttons & BUTTON_TRIGGER_R) || gp->throttle > 64)
-        in->buttons[0] |= SWITCH_MASK_ZR;
-
-    // Stick clicks
-    if (gp->buttons & BUTTON_THUMB_L)
-        in->buttons[1] |= SWITCH_MASK_L3;
-    if (gp->buttons & BUTTON_THUMB_R)
-        in->buttons[1] |= SWITCH_MASK_R3;
-
-    // Misc buttons
-    if (gp->misc_buttons & MISC_BUTTON_SYSTEM)
-        in->buttons[1] |= SWITCH_MASK_HOME;
-    if (gp->misc_buttons & MISC_BUTTON_CAPTURE)
-        in->buttons[1] |= SWITCH_MASK_CAPTURE;
-    if (gp->misc_buttons & MISC_BUTTON_SELECT)
-        in->buttons[1] |= SWITCH_MASK_MINUS;
-    if (gp->misc_buttons & MISC_BUTTON_START)
-        in->buttons[1] |= SWITCH_MASK_PLUS;
-
-    // D-pad: individual bits in the 0x30 report (not a hat).
-    if (gp->dpad & DPAD_UP)
-        in->buttons[2] |= SWITCH_MASK_DPAD_UP;
-    if (gp->dpad & DPAD_DOWN)
-        in->buttons[2] |= SWITCH_MASK_DPAD_DOWN;
-    if (gp->dpad & DPAD_LEFT)
-        in->buttons[2] |= SWITCH_MASK_DPAD_LEFT;
-    if (gp->dpad & DPAD_RIGHT)
-        in->buttons[2] |= SWITCH_MASK_DPAD_RIGHT;
+    uint8_t map[SRC_COUNT];
+    config_get_button_map(family, map);
+    for (int s = 0; s < SRC_COUNT; s++)
+        if (src[s])
+            apply_dst(in, map[s]);
 
     // Analog sticks (12-bit; Y axes inverted for the Switch up-positive convention).
     uint16_t lx = convert_axis_12bit(gp->axis_x, false);
@@ -164,52 +184,81 @@ static void fill_input(const uni_gamepad_t *gp, switch_pro_input_t *in) {
 // BOOTSEL double-tap. Triple-tap wipes all saved devices.
 #define CONTROL_TICK_MS 30
 #define PAIRING_WINDOW_MS 10000
+#define WIPE_FLASH_MS 1200  // duration of the fast "erasing" LED burst
 
 static btstack_timer_source_t control_timer;
 static uint32_t pairing_until_ms;  // 0 = locked; else window open until this time
+static uint32_t wipe_until_ms;     // 0 = idle; else show the fast wipe flash until this time
 static uint32_t control_tick;
 
 static void open_pairing_window(uint32_t now_ms) {
-    uni_bt_start_scanning_and_autoconnect_unsafe();
+    uni_bt_allowlist_set_enabled(false);  // lift the gate: admit any controller
     pairing_until_ms = now_ms + PAIRING_WINDOW_MS;
     logi("pico_switch: pairing window open\n");
+}
+
+// Triple-tap: drop every active controller, forget all bonds, and clear the
+// allow-list. All three are needed: disconnect drops the live links (del_keys
+// alone leaves them until they idle out); del_keys forgets the pairing keys; and
+// clearing + enforcing the allow-list makes the dongle *decline* the controller's
+// incoming reconnect attempts (it otherwise still pages us from memory).
+static void wipe_all_devices(void) {
+    static const bd_addr_t zero_addr = {0, 0, 0, 0, 0, 0};
+    for (int i = 0; i < CONFIG_BLUEPAD32_MAX_DEVICES; i++) {
+        uni_hid_device_t *d = uni_hid_device_get_instance_for_idx(i);
+        if (d && bd_addr_cmp(d->conn.btaddr, zero_addr) != 0)
+            uni_hid_device_disconnect(d);
+    }
+    uni_bt_del_keys_unsafe();
+    uni_bt_allowlist_remove_all();
+    uni_bt_allowlist_set_enabled(true);
 }
 
 static void control_timer_handler(btstack_timer_source_t *ts) {
     uint32_t now = to_ms_since_boot(get_absolute_time());
 
-    switch (bootsel_poll(now)) {
+    // In config mode, don't poll BOOTSEL (gestures aren't wanted while configuring).
+    bootsel_gesture_t gesture = g_usb_config_mode ? BOOTSEL_NONE : bootsel_poll(now);
+    switch (gesture) {
         case BOOTSEL_DOUBLE_TAP:
             open_pairing_window(now);
             break;
         case BOOTSEL_TRIPLE_TAP:
-            uni_bt_stop_scanning_unsafe();
             pairing_until_ms = 0;
-            uni_bt_del_keys_unsafe();
+            wipe_all_devices();
+            wipe_until_ms = now + WIPE_FLASH_MS;
             logi("pico_switch: wiped saved Bluetooth devices\n");
             break;
         case BOOTSEL_HOLD:
-            // TODO (next milestone): enter USB config mode.
-            logi("pico_switch: config-mode gesture (not yet implemented)\n");
+            // Signal the USB core to re-enumerate as a CDC config serial device.
+            g_usb_enter_config = true;
+            logi("pico_switch: entering config mode\n");
             break;
         case BOOTSEL_NONE:
             break;
     }
 
-    // Close an expired pairing window.
+    // Perform a pending settings flash-write (runs here on core1, parking core0).
+    config_service_save();
+
+    // Close an expired pairing window: re-enforce the allow-list (re-lock).
     if (pairing_until_ms && now >= pairing_until_ms) {
-        uni_bt_stop_scanning_unsafe();
+        uni_bt_allowlist_set_enabled(true);
         pairing_until_ms = 0;
     }
 
-    // LED state.
+    // LED state (priority: config > wipe burst > pairing window > connected > idle).
     bool led;
-    if (pairing_until_ms)
-        led = (control_tick / 4) % 2 == 0;  // fast blink (~240 ms period)
+    if (g_usb_config_mode)
+        led = (control_tick / 16) % 2 == 0;  // steady ~1s blink = config mode
+    else if (wipe_until_ms && now < wipe_until_ms)
+        led = (control_tick & 1);  // very fast flash = erasing pairings
+    else if (pairing_until_ms)
+        led = (control_tick / 4) % 2 == 0;  // fast blink = pairing window
     else if (connected_controllers > 0)
         led = true;  // solid
     else
-        led = (control_tick % 66) < 3;  // brief flash every ~2 s
+        led = (control_tick % 66) < 3;  // brief flash every ~2 s = idle/locked
     cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, led);
 
     control_tick++;
@@ -238,10 +287,13 @@ static void pico_switch_platform_on_init_complete(void) {
     // (BLE controllers such as Xbox are unaffected.) Role switch stays enabled.
     gap_set_default_link_policy_settings(LM_LINK_POLICY_ENABLE_ROLE_SWITCH);
 
-    // Persist bonds across reboots: do NOT delete keys here. Bonded controllers
-    // reconnect automatically; new ones can only pair during a window. Open a
-    // 10 s window at boot so first-time setup works without pressing BOOTSEL.
-    open_pairing_window(to_ms_since_boot(get_absolute_time()));
+    // Locked by default: enforce the allow-list so only previously-paired
+    // controllers may connect (incoming reconnects AND scanned discoveries are
+    // both gated). Keep scanning on so bonded controllers reconnect on their own
+    // — including BLE ones like Xbox. A BOOTSEL double-tap lifts enforcement for
+    // a window to admit new controllers; keys persist across reboots.
+    uni_bt_allowlist_set_enabled(true);
+    uni_bt_start_scanning_and_autoconnect_unsafe();
 
     // Start the combined BOOTSEL + LED control timer.
     btstack_run_loop_set_timer_handler(&control_timer, control_timer_handler);
@@ -260,6 +312,9 @@ static uni_error_t pico_switch_platform_on_device_discovered(bd_addr_t addr, con
 
 static void pico_switch_platform_on_device_connected(uni_hid_device_t *d) {
     logi("pico_switch: device connected: %p\n", d);
+    // Remember this controller so it's allowed to reconnect once the pairing
+    // window closes (and across reboots — the allow-list persists in flash).
+    uni_bt_allowlist_add_addr(d->conn.btaddr);
 }
 
 static void pico_switch_platform_on_device_disconnected(uni_hid_device_t *d) {
@@ -277,27 +332,18 @@ static void pico_switch_platform_on_device_disconnected(uni_hid_device_t *d) {
     // LED is updated by led_timer_handler().
 }
 
-// Per-player-position lightbar colors for controllers with an RGB light
-// (DualSense / DualShock 4). Static defaults for now; the planned web config
-// will make these user-selectable (R/G/B 0-255 per position).
-static const uint8_t s_player_colors[4][3] = {
-    {0x00, 0x00, 0xFF},  // P1 blue
-    {0xFF, 0x00, 0x00},  // P2 red
-    {0x00, 0xFF, 0x00},  // P3 green
-    {0xFF, 0xC0, 0x00},  // P4 yellow
-};
-
 static uni_error_t pico_switch_platform_on_device_ready(uni_hid_device_t *d) {
     logi("pico_switch: device ready: %p\n", d);
     connected_controllers++;
-    // LED is updated by led_timer_handler().
+    // LED is updated by the control timer.
 
-    // Give controllers with an RGB lightbar a per-position color so players can
-    // tell them apart (DualSense/DualShock 4 lack player-number indicators).
+    // Give controllers with an RGB lightbar their configured per-position color
+    // so players can tell them apart (DualSense/DualShock 4 lack player LEDs).
     uint8_t idx = uni_hid_device_get_idx_for_instance(d);
     if (idx < 4 && d->report_parser.set_lightbar_color != NULL) {
-        const uint8_t *c = s_player_colors[idx];
-        d->report_parser.set_lightbar_color(d, c[0], c[1], c[2]);
+        uint8_t rgb[3];
+        config_get_lightbar(idx, rgb);
+        d->report_parser.set_lightbar_color(d, rgb[0], rgb[1], rgb[2]);
     }
 
     return UNI_ERROR_SUCCESS;
@@ -308,8 +354,9 @@ static void pico_switch_platform_on_controller_data(uni_hid_device_t *d, uni_con
         return;
 
     uint8_t idx = uni_hid_device_get_idx_for_instance(d);
+    uint8_t family = family_from_vendor(uni_hid_device_get_vendor_id(d));
     switch_pro_input_t in;
-    fill_input(&ctl->gamepad, &in);
+    fill_input(&ctl->gamepad, &in, family);
     set_global_gamepad_input(idx, &in);
 
     // Forward any rumble the console requested for this controller.

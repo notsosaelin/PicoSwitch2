@@ -8,13 +8,15 @@
 
 #include "switch_pro.h"
 #include "report.h"
+#include "config.h"
 
 volatile bool usb_lockout_ready = false;
+volatile bool g_usb_enter_config = false;
+volatile bool g_usb_config_mode = false;
 
-// Runs on core0. Owns the TinyUSB device stack and the per-interface Pro
-// Controller protocol state machine. Console commands arrive asynchronously via
-// tud_hid_set_report_cb() (see usb_descriptors.c); here we service the stack and
-// stream input / handshake reports on each interface's IN endpoint.
+// Runs on core0. Owns the TinyUSB device stack. In normal mode it emulates the
+// Pro Controller(s); on a BOOTSEL hold it re-enumerates as a USB CDC serial
+// device and serves the configuration protocol.
 void usb_core_task() {
     tusb_init();
     switch_pro_init();
@@ -27,7 +29,20 @@ void usb_core_task() {
     uint8_t report[64];
 
     while (1) {
+        // Switch to configuration mode by re-enumerating as a CDC serial device.
+        if (g_usb_enter_config && !g_usb_config_mode) {
+            tud_disconnect();
+            sleep_ms(100);
+            g_usb_config_mode = true;
+            tud_connect();
+        }
+
         tud_task();
+
+        if (g_usb_config_mode) {
+            config_cdc_task();
+            continue;
+        }
 
         // While the console is asleep (USB suspended) the BT core keeps running,
         // so wake the console only when a controller button is actually pressed.

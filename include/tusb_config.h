@@ -106,13 +106,25 @@ extern "C"
 #define SWITCH_PRO_MAX_CONTROLLERS 4
 #endif
 #define CFG_TUD_HID SWITCH_PRO_MAX_CONTROLLERS
-#define CFG_TUD_CDC 0
-#define CFG_TUD_MSC 0
+// CDC is used only in configuration mode (the device re-enumerates as a serial
+// port for the Web Serial config page). Both classes are compiled in; only one
+// is active at a time depending on which configuration descriptor is returned.
+#define CFG_TUD_CDC 1
+// MSC serves the read-only config-page disk in configuration mode.
+#define CFG_TUD_MSC 1
 #define CFG_TUD_MIDI 0
 #define CFG_TUD_VENDOR 0
 
 // Pro Controller reports are 64 bytes (IN and OUT).
 #define CFG_TUD_HID_EP_BUFSIZE 64
+
+// CDC FIFO / endpoint sizes for the config serial link.
+#define CFG_TUD_CDC_RX_BUFSIZE 256
+#define CFG_TUD_CDC_TX_BUFSIZE 256
+#define CFG_TUD_CDC_EP_BUFSIZE 64
+
+// MSC block buffer (one 512-byte sector).
+#define CFG_TUD_MSC_EP_BUFSIZE 512
 
 #ifdef __cplusplus
 }
