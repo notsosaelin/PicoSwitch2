@@ -5,7 +5,7 @@ Usage: make_web_disk.py <input.html> <output.h>
 
 The dongle serves this image over USB Mass Storage in config mode, so the config
 page travels with the dongle. The script self-validates the generated image
-(re-parses the BPB + FAT chain and extracts INDEX.HTM, comparing byte-for-byte)
+(re-parses the BPB + FAT chain and extracts CONFIG.HTM, comparing byte-for-byte)
 and fails the build rather than ship a malformed disk.
 """
 import struct
@@ -78,7 +78,7 @@ def build(html):
     root[0:11] = b"PICOSWITCH "
     root[11] = 0x08  # volume label
     e = 32
-    root[e:e + 11] = b"INDEX   HTM"
+    root[e:e + 11] = b"CONFIG  HTM"
     root[e + 11] = 0x20  # archive
     struct.pack_into("<H", root, e + 26, first)       # start cluster
     struct.pack_into("<I", root, e + 28, len(html))   # file size
@@ -97,9 +97,9 @@ def validate(image, total_sectors, data_start, html):
     entry = None
     for i in range(ROOT_ENTRIES):
         ent = image[root_off + i * 32: root_off + i * 32 + 32]
-        if ent[0:11] == b"INDEX   HTM":
+        if ent[0:11] == b"CONFIG  HTM":
             entry = (struct.unpack_from("<H", ent, 26)[0], struct.unpack_from("<I", ent, 28)[0])
-    assert entry, "INDEX.HTM not in root directory"
+    assert entry, "CONFIG.HTM not in root directory"
     start, size = entry
     assert size == len(html), "size mismatch"
 

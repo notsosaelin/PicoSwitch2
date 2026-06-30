@@ -83,7 +83,7 @@ Repeat for up to four controllers. Player order follows connection order.
 Hold **BOOTSEL for ~5 seconds** to enter **config mode**. The dongle re-enumerates as a
 USB serial + read-only storage device (VID `CAFE` / PID `4012`) named **PICOSWITCH**.
 
-1. Open the **PICOSWITCH** drive and launch `index.html` in your browser. It uses the
+1. Open the **PICOSWITCH** drive and launch `CONFIG.HTM` in your browser. It uses the
    **Web Serial API**, so use **Chrome or Edge** (desktop).
 2. Click **Connect** and select the PicoSwitch serial port.
 3. Configure:
@@ -99,9 +99,31 @@ USB serial + read-only storage device (VID `CAFE` / PID `4012`) named **PICOSWIT
 ## Building
 
 PicoSwitch2 builds on **Windows** using the toolchain bundled with the official
-**Raspberry Pi Pico VS Code extension** — no global SDK install required. Installing that
-extension lays down everything needed under `%USERPROFILE%\.pico-sdk`
-(SDK 2.2.0, ARM GCC 14_2_Rel1, CMake 3.31.5, Ninja 1.12.1, picotool).
+**Raspberry Pi Pico VS Code extension**, so there are no global SDK installs to manage.
+
+### Prerequisites
+
+1. **VS Code** with the
+   **[Raspberry Pi Pico](https://marketplace.visualstudio.com/items?itemName=raspberry-pi.raspberry-pi-pico)**
+   extension. On first use it downloads a private toolchain to `%USERPROFILE%\.pico-sdk`
+   (Pico SDK, ARM GCC, CMake, Ninja, and picotool) — this is everything `build.ps1` needs.
+2. **Git**, to clone the repo with its Bluepad32 submodule.
+3. **Python 3** — only needed if you edit the config web page (see below).
+
+`build.ps1` looks for these specific toolchain versions under `%USERPROFILE%\.pico-sdk`:
+
+| Component | Version |
+|---|---|
+| Pico SDK | 2.2.0 |
+| ARM GCC  | 14_2_Rel1 |
+| CMake    | 3.31.5 |
+| Ninja    | 1.12.1 |
+| picotool | 2.2.0-a4 |
+
+If the extension installed different versions, update the matching variables at the top
+of `build.ps1` to the folder names you actually have under `%USERPROFILE%\.pico-sdk`.
+
+### Build
 
 ```powershell
 git clone --recursive https://github.com/notsosaelin/PicoSwitch2.git
@@ -113,18 +135,25 @@ cd PicoSwitch2
 ./build.ps1 -Clean     # wipe build dirs first, then build
 ```
 
-Artifacts land in `build/pico_w/PicoSwitchWGA-pico_w.uf2` and
-`build/pico2_w/PicoSwitchWGA-pico2_w.uf2`.
+Already cloned without `--recursive`? Fetch the submodule first:
+`git submodule update --init --recursive`.
 
-This is a standard pico-sdk CMake project, so it can also be built with your own SDK by
-selecting the board explicitly, e.g. `cmake -B build/pico_w -DPICO_BOARD=pico_w` (the
-firmware presents 4 USB HID interfaces; this is set in `CMakeLists.txt` via
-`-D SWITCH_PRO_MAX_CONTROLLERS=4`).
+Build artifacts:
+
+- `build/pico_w/PicoSwitchWGA-pico_w.uf2`
+- `build/pico2_w/PicoSwitchWGA-pico2_w.uf2`
+
+Flash them as described in [Install](#install).
+
+> **Not on Windows, or prefer your own SDK?** This is a standard pico-sdk CMake project.
+> With `PICO_SDK_PATH` set, build a board directly, e.g.
+> `cmake -B build/pico_w -G Ninja -DPICO_BOARD=pico_w && cmake --build build/pico_w`.
+> The 4-controller HID layout is baked into `CMakeLists.txt`, so no extra flags are needed.
 
 ### Editing the config web page
 
-The configuration page is embedded in the firmware as a FAT12 image. After editing
-`web/index.html`, regenerate the embedded copy before building:
+The configuration page is embedded in the firmware as a FAT12 image (`src/web_disk.h`).
+After editing `web/index.html`, regenerate that header before building:
 
 ```powershell
 python tools/make_web_disk.py web/index.html src/web_disk.h
