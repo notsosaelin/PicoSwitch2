@@ -249,6 +249,27 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
 
     // LED state (priority: config > wipe burst > pairing window > connected > idle).
     bool led;
+#if defined(NS2_PRO) && defined(NS2_DIAG)
+    // Diagnostic build: blink how far the console's init handshake progressed (0-10:
+    // 3 = configured, 4 = EP0 identity, 5 = pairing challenge, 6 = pairing finalised,
+    // 7 = calibration memory read, 8 = 0x11 query, 9 = feature configure/enable,
+    // 10 = report selected -> streaming input).
+    // stage 0 = slow continuous heartbeat (no host commands); otherwise N flashes spaced
+    // 1.5 s apart, then a ~10 s gap before repeating, so the count is easy to read on
+    // hardware. control_tick advances every CONTROL_TICK_MS (30 ms).
+    extern volatile uint8_t g_ns2_stage;
+    if (!g_usb_config_mode) {
+        uint8_t st = g_ns2_stage;
+        if (st == 0) {
+            led = (control_tick / 25) % 2 == 0;  // ~0.75 s on/off = waiting
+        } else {
+            uint32_t per = 50;                          // 1.5 s between flashes
+            uint32_t cycle = (uint32_t)st * per + 333;  // + ~10 s gap between phases
+            uint32_t pos = control_tick % cycle;
+            led = (pos < (uint32_t)st * per) && ((pos % per) < 10);  // 0.3 s flash each
+        }
+    } else
+#endif
     if (g_usb_config_mode)
         led = (control_tick / 16) % 2 == 0;  // steady ~1s blink = config mode
     else if (wipe_until_ms && now < wipe_until_ms)

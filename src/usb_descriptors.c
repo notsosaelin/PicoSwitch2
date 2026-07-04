@@ -15,10 +15,15 @@
 #include "switch_pro.h"
 #include "usb.h"  // g_usb_config_mode
 
+#ifdef NS2_PRO
+#include "switch_pro2.h"
+#endif
+
 //--------------------------------------------------------------------+
 // Device + string descriptors
 //--------------------------------------------------------------------+
 
+#ifndef NS2_PRO
 static const uint8_t switch_pro_device_descriptor[] = {
     0x12,        // bLength
     0x01,        // bDescriptorType (Device)
@@ -192,6 +197,7 @@ _Static_assert(SWITCH_PRO_MAX_CONTROLLERS >= 1 && SWITCH_PRO_MAX_CONTROLLERS <= 
                "SWITCH_PRO_MAX_CONTROLLERS must be 1..4");
 _Static_assert(sizeof(switch_pro_config_descriptor) == SWITCH_PRO_CONFIG_LEN,
                "configuration descriptor size must match wTotalLength");
+#endif  // !NS2_PRO
 
 //--------------------------------------------------------------------+
 // Configuration-mode descriptors (USB CDC serial)
@@ -245,17 +251,33 @@ static const char *config_strings[] = {
 //--------------------------------------------------------------------+
 
 uint8_t const *tud_descriptor_device_cb(void) {
+#ifdef NS2_PRO
+    if (g_usb_config_mode) return cdc_device_descriptor;
+    if (g_ns2_stage < 1) g_ns2_stage = 1;  // diag: host read our device descriptor
+    return ns2_device_descriptor();
+#else
     return g_usb_config_mode ? cdc_device_descriptor : switch_pro_device_descriptor;
+#endif
 }
 
 uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
     (void)index;
+#ifdef NS2_PRO
+    if (g_usb_config_mode) return cdc_config_descriptor;
+    if (g_ns2_stage < 2) g_ns2_stage = 2;  // diag: host read our config descriptor
+    return ns2_config_descriptor();
+#else
     return g_usb_config_mode ? cdc_config_descriptor : switch_pro_config_descriptor;
+#endif
 }
 
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
     (void)instance;
+#ifdef NS2_PRO
+    return ns2_hid_report_descriptor();
+#else
     return switch_pro_report_descriptor;
+#endif
 }
 
 static uint16_t _desc_str[32];
@@ -264,9 +286,27 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
     (void)langid;
     uint8_t chr_count;
 
-    const char **strings = g_usb_config_mode ? config_strings : switch_pro_strings;
-    size_t count = g_usb_config_mode ? (sizeof(config_strings) / sizeof(config_strings[0]))
-                                     : (sizeof(switch_pro_strings) / sizeof(switch_pro_strings[0]));
+#ifdef NS2_PRO
+    // MS OS 1.0: Windows probes string index 0xEE to discover the WinUSB binding.
+    if (index == 0xEE) {
+        const uint16_t *ms = ns2_ms_os_string_descriptor();
+        if (ms) return ms;
+    }
+#endif
+
+    const char **strings;
+    size_t count;
+    if (g_usb_config_mode) {
+        strings = config_strings;
+        count = sizeof(config_strings) / sizeof(config_strings[0]);
+    } else {
+#ifdef NS2_PRO
+        strings = ns2_string_table(&count);
+#else
+        strings = switch_pro_strings;
+        count = sizeof(switch_pro_strings) / sizeof(switch_pro_strings[0]);
+#endif
+    }
 
     if (index == 0) {
         memcpy(&_desc_str[1], strings[0], 2);
@@ -303,5 +343,10 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
                            uint8_t const *buffer, uint16_t bufsize) {
     (void)report_id;
     (void)report_type;
+#ifdef NS2_PRO
+    (void)instance;
+    ns2_hid_out_report(buffer, bufsize);
+#else
     switch_pro_receive(instance, buffer, bufsize);
+#endif
 }
