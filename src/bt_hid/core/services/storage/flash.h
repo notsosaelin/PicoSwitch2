@@ -1,0 +1,259 @@
+// core/services/storage/flash.h - Persistent settings storage in flash memory
+//
+// Uses journaled storage for BT-safe writes:
+// - 4KB sector = 16 x 256-byte slots (ring buffer)
+// - Each save writes to next empty slot (page program only, ~1ms)
+// - Sector erase (~45ms) only when full AND BT is idle
+// - Sequence number identifies newest entry
+//
+// Settings persist across power cycles and firmware updates (unless flash is erased).
+
+#ifndef FLASH_H
+#define FLASH_H
+
+#include <stdint.h>
+#include <stdbool.h>
+
+// ============================================================================
+// Custom Profile Storage
+// ============================================================================
+
+#define CUSTOM_PROFILE_NAME_LEN 12
+#define CUSTOM_PROFILE_BUTTON_COUNT 18
+#define CUSTOM_PROFILE_MAX_COUNT 4
+
+// Button mapping values:
+// 0x00 = passthrough (no remap, keep original button)
+// 0x01-0x18 = remap to JP_BUTTON_* (1-based: 1=B1, ... 18=A2, ... 23=F1, 24=F2)
+// 0xFF = disabled (button press ignored)
+#define BUTTON_MAP_MAX_TARGET 24  // Max valid remap target (F2)
+#define BUTTON_MAP_PASSTHROUGH 0x00
+#define BUTTON_MAP_DISABLED    0xFF
+
+// Custom profile structure (56 bytes)
+// Stored in flash, user-configurable via web config
+typedef struct {
+    char name[CUSTOM_PROFILE_NAME_LEN];  // 12 bytes, null-terminated
+    uint8_t button_map[CUSTOM_PROFILE_BUTTON_COUNT]; // 18 bytes
+    // Button indices: 0=B1, 1=B2, 2=B3, 3=B4, 4=L1, 5=R1, 6=L2, 7=R2,
+    //                 8=S1, 9=S2, 10=L3, 11=R3, 12=DU, 13=DD, 14=DL, 15=DR, 16=A1, 17=A2
+    uint8_t left_stick_sens;   // 0-200 (100 = 1.0x, 50 = 0.5x, 200 = 2.0x)
+    uint8_t right_stick_sens;  // 0-200
+    uint8_t flags;             // Bit 0: swap sticks, Bit 1: invert LY, Bit 2: invert RY,
+                               // Bit 3: invert LX, Bit 4: invert RX
+    uint8_t socd_mode;         // SOCD cleaning mode (0=passthrough, 1=neutral, 2=up-priority, 3=last-win)
+    uint8_t l2_threshold;      // Analog L2 → digital threshold; 0 = use default (128)
+    uint8_t r2_threshold;      // Analog R2 → digital threshold; 0 = use default (128)
+    uint8_t reserved[20];      // Future use
+} custom_profile_t;
+
+// Profile flags
+#define PROFILE_FLAG_SWAP_STICKS  (1 << 0)
+#define PROFILE_FLAG_INVERT_LY    (1 << 1)
+#define PROFILE_FLAG_INVERT_RY    (1 << 2)
+#define PROFILE_FLAG_INVERT_LX    (1 << 3)
+#define PROFILE_FLAG_INVERT_RX    (1 << 4)
+
+// ============================================================================
+// Flash Settings Structure
+// ============================================================================
+//
+// Schema versioning: bump FLASH_SCHEMA_VERSION whenever fields are added,
+// removed, or reinterpreted. On load, a magic-OK record with mismatched
+// schema_version is treated as stale and wiped — see flash_init().
+//
+// Pre-versioning records (v1.9.0 and v2.0.0) have schema_version == 0
+// because the byte was reserved and zero-initialized. Bumping to 1 forces
+// a one-time wipe for those users; subsequent bumps wipe their own range.
+#define FLASH_SCHEMA_VERSION 1
+
+// Settings structure stored in flash (256 bytes = 1 flash page)
+// 16 entries fit in one 4KB sector for journaled writes
+typedef struct {
+    // Header (8 bytes)
+    uint32_t magic;              // Validation magic number (0x47435052 = "GCPR")
+    uint32_t sequence;           // Sequence number (higher = newer, 0xFFFFFFFF = empty)
+
+    // Global settings (4 bytes)
+    uint8_t active_profile_index; // Currently selected profile (0=default, 1-4=custom)
+    uint8_t usb_output_mode;     // USB device output mode (0=HID, 1=XboxOG, etc.)
+    uint8_t wiimote_orient_mode; // Wiimote orientation mode (0=Auto, 1=Horizontal, 2=Vertical)
+    uint8_t custom_profile_count; // Number of custom profiles (0-4)
+
+    // Global settings (continued)
+    uint8_t ble_output_mode;     // BLE output mode (0=Standard composite, 1=Xbox BLE)
+    uint8_t router_saved;        // Non-zero if router settings were explicitly saved
+    uint8_t routing_mode;        // Router mode (0=simple, 1=merge, 2=broadcast)
+    uint8_t merge_mode;          // Merge mode (0=priority, 1=blend, 2=all)
+    uint8_t dpad_mode;           // D-pad mode (0=dpad, 1=left stick, 2=right stick)
+    uint8_t bt_input_enabled;    // BT Central scanning (0=off, 1=on)
+
+    // Native output pin overrides
+    uint8_t joybus_data_pin;     // 0 = compile-time default, 1-28 = override GPIO
+    uint8_t wii_sda_pin;         // 0 = compile-time default, 1-28 = override GPIO
+    uint8_t wii_scl_pin;         // 0 = compile-time default, 1-28 = override GPIO
+    uint8_t wii_mode;            // 0 = compile-time default, 1+ = wii_device_emulation_t + 1
+
+    // Schema version (1 byte) — must equal FLASH_SCHEMA_VERSION on load.
+    // Was reserved[0] in pre-v2.1 firmware (always zero) → reads as 0 on
+    // upgrade from v1.9.0 / v2.0.0, triggering a one-time wipe.
+    uint8_t schema_version;
+
+    // Swap shoulder buttons: L1<->L2 and R1<->R2 (0=off, 1=on). Carved from
+    // reserved[] so the 256-byte layout is unchanged; old flashes read 0=off.
+    uint8_t shoulder_swap;
+
+    // Reserved for future global settings (8 bytes)
+    uint8_t reserved[8];
+
+    // Custom profiles (4 x 56 = 224 bytes)
+    custom_profile_t profiles[CUSTOM_PROFILE_MAX_COUNT];
+} flash_t;
+
+// Verify size at compile time
+_Static_assert(sizeof(flash_t) == 256, "flash_t must be exactly 256 bytes");
+_Static_assert(sizeof(custom_profile_t) == 56, "custom_profile_t must be exactly 56 bytes");
+
+// ============================================================================
+// Flash API
+// ============================================================================
+
+// Initialize flash settings system
+void flash_init(void);
+
+// Load settings from flash (returns true if valid settings found)
+bool flash_load(flash_t* settings);
+
+// Save settings to flash (debounced - actual write happens after delay)
+void flash_save(const flash_t* settings);
+
+// Force immediate save (bypasses debouncing - use sparingly)
+void flash_save_now(const flash_t* settings);
+
+// Force immediate save, ignoring BT-active check (use before device reset)
+void flash_save_force(const flash_t* settings);
+
+// Factory reset — erase all stored data (settings, bonds, pad config)
+void flash_factory_reset(void);
+
+// Task function to handle debounced flash writes (call from main loop)
+void flash_task(void);
+
+// Notify flash system that BT has disconnected (safe to write now)
+void flash_on_bt_disconnect(void);
+
+// Check if there's a pending flash write waiting for BT to be idle
+bool flash_has_pending_write(void);
+
+// ============================================================================
+// Custom Profile Helpers
+// ============================================================================
+
+// Initialize a custom profile to default values (passthrough)
+void custom_profile_init(custom_profile_t* profile, const char* name);
+
+// Apply button mapping from custom profile
+// Returns remapped buttons, or original if profile is NULL
+uint32_t custom_profile_apply_buttons(const custom_profile_t* profile, uint32_t buttons);
+
+// Get custom profile by index (0-3), returns NULL if index >= count
+const custom_profile_t* flash_get_custom_profile(const flash_t* settings, uint8_t index);
+
+// ============================================================================
+// Custom Profile Runtime API
+// ============================================================================
+
+// Get the currently loaded flash settings (for runtime access)
+flash_t* flash_get_settings(void);
+
+// Get active custom profile index (0=Default/passthrough, 1-4=custom profiles)
+uint8_t flash_get_active_profile_index(void);
+
+// Set active custom profile index (immediate flash write — blocks ~50 ms
+// with interrupts disabled). Use for PROFILE.SET from the web config and
+// other rare deliberate-config paths where landing before a reboot
+// matters more than not stalling a hot path.
+void flash_set_active_profile_index(uint8_t index);
+
+// Same effect as flash_set_active_profile_index, but the flash write is
+// debounced (~5 s) instead of immediate. Safe to call from hot paths
+// like the SELECT+D-pad cycle hotkey where back-to-back immediate
+// writes would block the USB host / console-output timing and hang
+// the firmware.
+void flash_set_active_profile_index_deferred(uint8_t index);
+
+// Ephemeral variant of the above: update RAM only, do not write to flash.
+// For live-control flows (joypad-live) where many switches per session
+// would otherwise burn flash. Persistent boot default is unchanged.
+void flash_select_active_profile_index(uint8_t index);
+
+// ============================================================================
+// Runtime Overlay (OVERLAY.SET / OVERLAY.CLEAR)
+// ============================================================================
+// A RAM-only "live tweak" layer applied on top of whatever profile is active
+// (built-in, custom, or PROFILE.APPLY ephemeral). Fields set to 0 mean
+// "no change" so the overlay is strictly additive. Unlike PROFILE.APPLY,
+// the overlay does NOT replace the active button_map — it just adds stick /
+// SOCD / threshold transforms.
+//
+// Example: "invert stick X while keeping the current profile's button remap"
+//   OVERLAY.SET {"flags": 8}        // PROFILE_FLAG_INVERT_LX
+//   OVERLAY.CLEAR                   // remove the tweak
+
+typedef struct {
+    uint8_t flags;             // OR'd with profile flags (SWAP_STICKS, INVERT_*)
+    uint8_t left_stick_sens;   // 0 = no change; 1..200 replaces (100 = 1.0x)
+    uint8_t right_stick_sens;  // 0 = no change; 1..200 replaces
+    uint8_t socd_mode;         // 0 = no change; 1..3 overrides
+    uint8_t l2_threshold;      // 0 = no change; 1..255 overrides
+    uint8_t r2_threshold;      // 0 = no change; 1..255 overrides
+} runtime_overlay_t;
+
+// Copy o into the overlay slot and activate it. Pass NULL to deactivate.
+void flash_set_overlay(const runtime_overlay_t* o);
+
+// Deactivate the overlay (idempotent).
+void flash_clear_overlay(void);
+
+// Returns the active overlay, or NULL if none is set.
+const runtime_overlay_t* flash_get_overlay(void);
+
+// Get total profile count (1 default + custom_profile_count)
+uint8_t flash_get_total_profile_count(void);
+
+// Get active custom profile (returns NULL for index 0/default or if invalid)
+const custom_profile_t* flash_get_active_custom_profile(void);
+
+// Cycle to next/previous profile (wraps around)
+void flash_cycle_profile_next(void);
+void flash_cycle_profile_prev(void);
+
+// ============================================================================
+// Ephemeral Runtime Profile Override (PROFILE.APPLY)
+// ============================================================================
+// RAM-only profile slot that supersedes the flash-stored active profile while
+// set. Not persisted, not counted in PROFILE.LIST. Designed for crowd-control
+// / live-remap workflows where many unique maps flow in over short windows —
+// no flash wear, no 4-slot ceiling. Any explicit profile selection
+// (PROFILE.SET / SELECT+D-pad cycling) automatically clears it.
+
+// Copy the given profile into the ephemeral slot and activate it.
+// Pass NULL to deactivate (equivalent to flash_clear_ephemeral_profile).
+void flash_apply_ephemeral_profile(const custom_profile_t* cp);
+
+// Deactivate the ephemeral slot; flash_get_active_custom_profile() resumes
+// returning the flash-stored active profile.
+void flash_clear_ephemeral_profile(void);
+
+// True if an ephemeral profile is currently overriding the flash-stored one.
+bool flash_has_ephemeral_profile(void);
+
+// Persist the system-wide D-pad mode (0=dpad, 1=left stick, 2=right stick).
+// Marks router_saved=1 so apps that restore on boot know the value was
+// explicitly chosen (vs the default-zero from a freshly-erased flash).
+void flash_set_dpad_mode(uint8_t mode);
+
+// Persist the shoulder-swap toggle (L1<->L2, R1<->R2). Marks router_saved=1.
+void flash_set_shoulder_swap(uint8_t on);
+
+#endif // FLASH_H

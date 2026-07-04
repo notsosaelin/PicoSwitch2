@@ -87,9 +87,16 @@ endif()
 option(BT_STACK_JOYPAD "Use the joypad-os bthid Bluetooth stack instead of bluepad32 (WIP)" OFF)
 if(BT_STACK_JOYPAD)
     file(GLOB_RECURSE BT_HID_SOURCES "src/bt_hid/*.c")
+    # Phase 1: generic (Xbox, incl. Elite) + Sony (DualShock 3/4, DualSense/Edge)
+    # drivers. Nintendo/Google/Augmental stay excluded (gated behind NS2_BT_ALL_DRIVERS
+    # in bthid_registry.c) until their deps are wired. See docs/bluetooth/.
+    list(FILTER BT_HID_SOURCES EXCLUDE REGEX "/devices/vendors/(nintendo|google|augmental)/")
     target_sources(PicoSwitchWGA PRIVATE ${BT_HID_SOURCES})
-    target_include_directories(PicoSwitchWGA PRIVATE src/bt_hid)
-    target_compile_definitions(PicoSwitchWGA PRIVATE BT_STACK_JOYPAD=1)
+    target_include_directories(PicoSwitchWGA PRIVATE src/bt_hid src/bt_hid/bt/bthid)
+    # BTSTACK_USE_CYW43 selects the async_context run loop path in the vendored
+    # btstack_host/transport (matches the Pico W radio; compiles out the embedded
+    # run-loop calls). NS2_BT_SONY enables the Sony vendor drivers.
+    target_compile_definitions(PicoSwitchWGA PRIVATE BT_STACK_JOYPAD=1 BTSTACK_USE_CYW43=1 NS2_BT_SONY=1)
 endif()
 
 target_include_directories(PicoSwitchWGA PRIVATE

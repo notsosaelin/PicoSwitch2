@@ -3,12 +3,21 @@
 #include <pico/stdlib.h>
 #include <pico/multicore.h>
 #include <pico/async_context.h>
-#include <uni.h>
-
-#include "sdkconfig.h"
 #include "usb.h"
 #include "report.h"
 #include "config.h"
+
+#ifdef BT_STACK_JOYPAD
+
+// joypad-os Bluetooth stack — core1 entry (src/bt_hid/ns2_bt_host.c). Under this
+// build bluepad32 drives nothing (and is on track to be removed once the
+// joypad-os stack is proven at parity on hardware).
+void ns2_bt_core_task(void);
+
+#else  // bluepad32 (default, shipping)
+
+#include <uni.h>
+#include "sdkconfig.h"
 
 // Sanity check
 #ifndef CONFIG_BLUEPAD32_PLATFORM_CUSTOM
@@ -39,6 +48,8 @@ void bluepad_core_task()
 	btstack_run_loop_execute();
 }
 
+#endif  // BT_STACK_JOYPAD
+
 int
 main()
 {
@@ -50,7 +61,11 @@ main()
 	// Load persistent settings (lightbar colours, etc.) from flash.
 	config_load();
 
+#ifdef BT_STACK_JOYPAD
+	multicore_launch_core1(ns2_bt_core_task);
+#else
 	multicore_launch_core1(bluepad_core_task);
+#endif
 	usb_core_task();
 
 	return 0;
