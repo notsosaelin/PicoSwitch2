@@ -113,7 +113,15 @@ extern "C"
 // MSC serves the read-only config-page disk in configuration mode.
 #define CFG_TUD_MSC 1
 #define CFG_TUD_MIDI 0
+// The Switch 2 Pro Controller (NS2_PRO build) carries its command protocol on a
+// vendor-specific bulk interface (EP 0x02 OUT / 0x82 IN). Switch 1 does not.
+#ifdef NS2_PRO
+#define CFG_TUD_VENDOR 1
+#define CFG_TUD_VENDOR_RX_BUFSIZE 128
+#define CFG_TUD_VENDOR_TX_BUFSIZE 128
+#else
 #define CFG_TUD_VENDOR 0
+#endif
 
 // Pro Controller reports are 64 bytes (IN and OUT).
 #define CFG_TUD_HID_EP_BUFSIZE 64
