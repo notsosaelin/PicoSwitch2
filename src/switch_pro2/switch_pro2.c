@@ -558,7 +558,12 @@ static void ns2_build_report(uint8_t *p) {
     if (s1 & SWITCH_MASK_L3)    b1 |= 0x80;  // left stick click
     if (s1 & SWITCH_MASK_HOME)    b2 |= 0x01;
     if (s1 & SWITCH_MASK_CAPTURE) b2 |= 0x02;
-    // C / GL / GR (b2 0x10/0x08/0x04) are not exposed by bluepad32 -> left 0.
+    // Switch 2 extra buttons (in.extra): C / GL / GR. From the joypad-os stack these
+    // come from L4/R4 (Elite paddles / Edge back buttons) or a native Pro Controller 2;
+    // 0 otherwise (e.g. the bluepad32 build, which doesn't expose them).
+    if (in.extra & SWITCH_EXTRA_C)  b2 |= 0x10;
+    if (in.extra & SWITCH_EXTRA_GL) b2 |= 0x08;
+    if (in.extra & SWITCH_EXTRA_GR) b2 |= 0x04;
     p[0x02] = b0;
     p[0x03] = b1;
     p[0x04] = b2;

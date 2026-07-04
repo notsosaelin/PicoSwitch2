@@ -34,6 +34,13 @@
 #define SWITCH_MASK_L (1U << 6)
 #define SWITCH_MASK_ZL (1U << 7)
 
+// --- Switch 2 extra buttons (report 0x09 byte 2: C=0x10, GL=0x08, GR=0x04) ---
+// Carried separately in switch_pro_input_t.extra; 0 on Switch-1 controllers and on
+// non-Switch pads that don't expose grips (a real Pro Controller 2 passes them through).
+#define SWITCH_EXTRA_C (1U << 0)   // C (chat)
+#define SWITCH_EXTRA_GL (1U << 1)  // GL (left grip)
+#define SWITCH_EXTRA_GR (1U << 2)  // GR (right grip)
+
 // Switch analog sticks are 12-bit (0x000..0xFFF), centered at 0x800.
 #define SWITCH_STICK_MIN 0x000
 #define SWITCH_STICK_MID 0x800
@@ -45,6 +52,7 @@
 // Pro Controller's raw 16-bit units (filled in Phase 2; 0 = no motion).
 typedef struct {
     uint8_t buttons[3];      // SWITCH_MASK_* bitfields, indexed [0..2]
+    uint8_t extra;           // SWITCH_EXTRA_* — Switch 2 extra buttons (C / GL / GR)
     uint8_t left_stick[3];   // packed 12-bit lx/ly
     uint8_t right_stick[3];  // packed 12-bit rx/ry
     int16_t accel[3];        // x, y, z (raw Pro Controller accelerometer units)
