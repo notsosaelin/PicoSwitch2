@@ -100,6 +100,7 @@ void router_submit_input(const input_event_t *e) {
     }
 
     set_global_gamepad_input(ns2_slot(e->dev_addr), &in);
+    set_global_raw_buttons(ns2_slot(e->dev_addr), e->buttons);  // config live-view
 }
 
 // Controller dropped -> publish a neutral (centered, no buttons) state.

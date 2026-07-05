@@ -18,6 +18,12 @@ void report_init(void);
 void set_global_gamepad_input(uint8_t idx, const switch_pro_input_t *in);
 void get_global_gamepad_input(uint8_t idx, switch_pro_input_t *out);
 
+// Raw controller buttons (unified JP_BUTTON_* bitmap, before remap) — published by
+// the BT core alongside the mapped input, read by config mode's live-view for the
+// "controller input" column. 0 when no controller is connected to that slot.
+void set_global_raw_buttons(uint8_t idx, uint32_t jp_buttons);
+uint32_t get_global_raw_buttons(uint8_t idx);
+
 // Rumble: published by the USB core (decoded from console reports), consumed by
 // the Bluetooth core (forwarded to the controller).
 void report_set_rumble(uint8_t idx, uint8_t amplitude);

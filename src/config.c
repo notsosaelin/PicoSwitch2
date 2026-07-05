@@ -8,6 +8,8 @@
 
 #include "config.h"
 #include "remap.h"
+#include "report.h"      // get_global_raw_buttons / get_global_gamepad_input (live view)
+#include "switch_pro.h"  // switch_pro_input_t
 
 #include <string.h>
 #include <stdio.h>
@@ -210,6 +212,18 @@ static void cmd_setmap(char *args) {
     reply("{\"ok\":true}");
 }
 
+// Live input snapshot for the config-mode 2-column view: the connected controller's
+// raw buttons (unified JP_BUTTON_* bitmap) and the resulting Switch 2 output (the three
+// Pro-Controller button bytes + the C/GL/GR extras). Slot 0 (single-controller milestone).
+static void cmd_state(void) {
+    uint32_t raw = get_global_raw_buttons(0);
+    switch_pro_input_t in;
+    get_global_gamepad_input(0, &in);
+    snprintf(out, sizeof(out), "{\"raw\":%lu,\"out\":[%u,%u,%u,%u]}",
+             (unsigned long)raw, in.buttons[0], in.buttons[1], in.buttons[2], in.extra);
+    reply(out);
+}
+
 static void handle_line(char *cmd) {
     if (strcmp(cmd, "info") == 0) {
         reply("{\"id\":\"picoswitch\",\"product\":\"PicoSwitch Config\",\"version\":\"2.0\"}");
@@ -217,6 +231,8 @@ static void handle_line(char *cmd) {
         reply("{\"ok\":true}");
     } else if (strcmp(cmd, "get") == 0) {
         cmd_get();
+    } else if (strcmp(cmd, "state") == 0) {
+        cmd_state();
     } else if (strncmp(cmd, "getmap ", 7) == 0) {
         cmd_getmap(atoi(cmd + 7));
     } else if (strncmp(cmd, "setmap ", 7) == 0) {
