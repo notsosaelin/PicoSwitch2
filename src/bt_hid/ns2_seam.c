@@ -76,6 +76,10 @@ void router_submit_input(const input_event_t *e) {
     // C (chat) has no source on non-Switch pads (a real Pro Controller 2 passes it through).
     if (b & JP_BUTTON_L4) in.extra |= SWITCH_EXTRA_GL;
     if (b & JP_BUTTON_R4) in.extra |= SWITCH_EXTRA_GR;
+    // C (chat): the Switch 2 controllers expose it as A3 (switch2_ble driver). NOTE: the
+    // DualSense's Mute also maps to A3, so on a DualSense this currently drives C too —
+    // remappable once config mode lands.
+    if (b & JP_BUTTON_A3) in.extra |= SWITCH_EXTRA_C;
 
     // Sticks: 0-255 -> 12-bit; Y inverted (Switch is up-positive, HID is up=0).
     switch_pro_pack_stick(ns2_to12(e->analog[ANALOG_LX]),
@@ -161,6 +165,20 @@ uint32_t platform_time_ms(void) { return to_ms_since_boot(get_absolute_time()); 
 // FEEDBACK_LED_PLAYER*). The Sony drivers read this to drive the pad LED/lightbar.
 const uint8_t PLAYER_LEDS[11] = {
     0x00, 0x01, 0x02, 0x04, 0x08, 0x09, 0x0A, 0x0C, 0x0F, 0x0F, 0x0F};
+
+// Microseconds since boot (platform HAL — Nintendo/Wiimote driver timers).
+uint32_t platform_time_us(void) { return (uint32_t)to_us_since_boot(get_absolute_time()); }
+
+// We only bridge gamepads to the Switch, so there is no keyboard->button mapping.
+uint32_t keymap_keys_to_buttons(const uint8_t *keys, uint8_t nkeys, uint8_t modifier) {
+    (void)keys; (void)nkeys; (void)modifier;
+    return 0;
+}
+
+// Per-device persisted settings (e.g. Wiimote calibration). Not stored on our side —
+// report "none" so drivers use defaults; save is a no-op.
+bool flash_load(flash_t *settings) { (void)settings; return false; }
+void flash_save(const flash_t *settings) { (void)settings; }
 
 // The Phase-0 build compiles only the generic driver, but bthid.c's DualShock
 // report-ID reclassification references the Sony driver structs. Provide empty

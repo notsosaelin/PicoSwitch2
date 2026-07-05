@@ -643,10 +643,30 @@ void ns2_init(void) {
     ns2_streaming = false;
 }
 
+// Decode one HD-rumble motor's peak amplitude (0..1023) from its 5-byte packed LRA field.
+// 40-bit little-endian: freq_0[0:10] | amp_0[10:20] | freq_1[20:30] | amp_1[30:40]
+// (format from ndeadly's switch2_input_viewer.py send_vibration). We drive rumble off the
+// AMPLITUDE fields only — the old peak-of-all-bytes read the frequency fields, which are
+// non-zero at rest and produced a constant idle buzz on HD-rumble pads (Pro Controller 2).
+static uint16_t ns2_rumble_motor_amp(const uint8_t *p) {
+    uint64_t packed = (uint64_t)p[0] | ((uint64_t)p[1] << 8) | ((uint64_t)p[2] << 16) |
+                      ((uint64_t)p[3] << 24) | ((uint64_t)p[4] << 32);
+    uint16_t amp0 = (packed >> 10) & 0x3FF;
+    uint16_t amp1 = (packed >> 30) & 0x3FF;
+    return amp0 > amp1 ? amp0 : amp1;
+}
+
 void ns2_hid_out_report(const uint8_t *buf, uint16_t len) {
-    (void)buf;
-    (void)len;
-    // TODO(ns2): decode rumble report 0x02 and forward to bluepad32.
+    // Rumble output report 0x02: [id][16B left LRA][16B right LRA][9B reserved]; each motor
+    // block = [0x50|counter][5B packed freq/amp][zeros]. Take the peak amplitude of both
+    // motors, scale 10-bit -> 8-bit, and publish on the seam (feedback bridge -> the pad).
+    if (!buf || len < 7 || buf[0] != 0x02) return;
+    uint16_t amp = ns2_rumble_motor_amp(&buf[2]);     // left packed = bytes 2..6
+    if (len >= 23) {
+        uint16_t r = ns2_rumble_motor_amp(&buf[18]);  // right packed = bytes 18..22
+        if (r > amp) amp = r;
+    }
+    report_set_rumble(0, (uint8_t)(amp >> 2));  // 0..1023 -> 0..255
 }
 
 void ns2_task(void) {
