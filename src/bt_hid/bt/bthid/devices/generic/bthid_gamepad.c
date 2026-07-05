@@ -40,6 +40,7 @@ typedef struct {
     bool has_sim_triggers;      // true if triggers use Simulation Controls (Xbox-style)
     bool is_xbox;               // true if Microsoft VID (0x045E) — affects button map
     bool is_8bitdo;             // true if 8BitDo VID (0x2DC8) — paddle button order
+    bool is_elite2;             // true if Xbox Elite Series 2 — 4 back paddles in last report byte
     bool digital_shoulder_triggers; // controller has no real analog triggers; its
                                 // L2/R2 "trigger" axes are just the digital shoulder
                                 // buttons (e.g. 8BitDo M30). Suppress analog L2/R2 so
@@ -347,6 +348,8 @@ void bthid_gamepad_set_descriptor(bthid_device_t* device, const uint8_t* desc, u
 
     gp->map.is_xbox = (device->vendor_id == 0x045E);
     gp->map.is_8bitdo = (device->vendor_id == 0x2DC8);
+    gp->map.is_elite2 = (device->vendor_id == 0x045E &&
+                         (device->product_id == 0x0B05 || device->product_id == 0x0B22));
     gp->map.digital_shoulder_triggers = device_is_m30(device);
     gp->has_report_map = true;
     printf("[BTHID_GAMEPAD] Parsed: %d btns, X@%d Y@%d Z@%d RZ@%d RX@%d RY@%d hat@%d(min=%d) sim=%d xbox=%d 8bitdo=%d\n",
@@ -389,6 +392,8 @@ void bthid_gamepad_update_vid(bthid_device_t* device)
 
     gp->map.is_xbox = (device->vendor_id == 0x045E);
     gp->map.is_8bitdo = (device->vendor_id == 0x2DC8);
+    gp->map.is_elite2 = (device->vendor_id == 0x045E &&
+                         (device->product_id == 0x0B05 || device->product_id == 0x0B22));
     gp->map.digital_shoulder_triggers = device_is_m30(device);
 }
 
@@ -489,10 +494,21 @@ static void process_report_dynamic(bthid_gamepad_data_t* gp, const uint8_t* data
         }
     }
 
-    // Xbox extra byte: last byte of report, bit 0 (outside HID buttons bitfield)
-    // BLE (Series): Share button → A2
-    // Classic BT (One): Back/View button → S1
-    if (map->is_xbox && len > 0 && (data[len - 1] & 0x01)) {
+    // Xbox Elite Series 2: the 4 back paddles live in the last report byte (bits 0-3).
+    // They report raw ONLY when left UNMAPPED in the active on-board profile (a mapped
+    // paddle sends its assigned button instead). Captured on hardware in byte 19 of a
+    // 20-byte report: R4=0x01, R5=0x02, L4=0x04, L5=0x08. Left paddles -> GL, right -> GR.
+    // (Byte 17 = active profile 0-3; not mapped — it's a mode selector, not a button.)
+    if (map->is_elite2) {
+        if (len >= 20) {
+            uint8_t pad = data[19];
+            if (pad & (0x04 | 0x08)) buttons |= JP_BUTTON_L4;  // L4/L5 -> GL
+            if (pad & (0x01 | 0x02)) buttons |= JP_BUTTON_R4;  // R4/R5 -> GR
+        }
+    } else if (map->is_xbox && len > 0 && (data[len - 1] & 0x01)) {
+        // Xbox extra byte: last byte, bit 0 (outside the HID buttons bitfield).
+        // Series X/S Share (BLE) -> A2 ; Xbox One Back (Classic) -> S1. Skipped for the
+        // Elite 2 (it has no Share button — its byte-0 bit is the R4 paddle, handled above).
         if (gp->event.transport == INPUT_TRANSPORT_BT_BLE) {
             buttons |= JP_BUTTON_A2;
         } else {

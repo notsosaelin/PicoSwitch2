@@ -102,7 +102,13 @@ void router_submit_input(const input_event_t *e) {
 
     uint8_t slot = ns2_slot(e->dev_addr);
     set_global_gamepad_input(slot, &in);
-    set_global_raw_buttons(slot, e->buttons);  // config live-view
+    // Live-view raw buttons: also reflect analog triggers as L2/R2 so the input column
+    // lights for Xbox/DualSense (whose triggers are analog, not the digital JP bit) —
+    // matching the same threshold the ZL/ZR emit above uses.
+    uint32_t raw_live = e->buttons;
+    if (e->analog[ANALOG_L2] > 64) raw_live |= JP_BUTTON_L2;
+    if (e->analog[ANALOG_R2] > 64) raw_live |= JP_BUTTON_R2;
+    set_global_raw_buttons(slot, raw_live);  // config live-view
     // Publish the connected controller's identity for config mode's "input type" panel.
     const bthid_device_t *dev = bthid_get_device(e->dev_addr);
     if (dev)

@@ -164,8 +164,8 @@ _Static_assert(sizeof(switch_pro_report_descriptor) == 203,
     0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22,                /* HID */       \
     (uint8_t)(sizeof(switch_pro_report_descriptor) & 0xFF),                  \
     (uint8_t)((sizeof(switch_pro_report_descriptor) >> 8) & 0xFF),           \
-    0x07, 0x05, (ep_in), 0x03, 0x40, 0x00, 0x08,             /* EP IN */      \
-    0x07, 0x05, (ep_out), 0x03, 0x40, 0x00, 0x08             /* EP OUT */
+    0x07, 0x05, (ep_in), 0x03, 0x40, 0x00, 0x04,   /* EP IN,  bInterval 4 = 250Hz (genuine PC2) */ \
+    0x07, 0x05, (ep_out), 0x03, 0x40, 0x00, 0x04   /* EP OUT, bInterval 4 */
 
 #define SWITCH_PRO_IF_LEN 32
 #define SWITCH_PRO_CONFIG_LEN (9 + SWITCH_PRO_MAX_CONTROLLERS * SWITCH_PRO_IF_LEN)
