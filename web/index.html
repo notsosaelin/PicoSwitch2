@@ -108,6 +108,8 @@
           <thead><tr><th>Detected Button</th><th>Will Output As</th></tr></thead>
           <tbody id="mapBody"></tbody>
         </table>
+        <div id="rawReport" class="muted" title="Raw HID report from the controller — watch which byte changes when you press an unmapped button"
+             style="font-family:ui-monospace,Consolas,monospace;font-size:11px;margin-top:14px;word-break:break-all">raw: &mdash;</div>
       </section>
 
       <section class="q">
@@ -201,6 +203,11 @@ function renderLive(st) {
     $("#mo" + i).classList.toggle("on", !!((out[r[3]] || 0) & r[4]));
   });
 }
+function renderRaw(r) {
+  if (!r || r.bytes === undefined) return;
+  const grouped = (r.bytes || "").match(/.{1,2}/g);
+  $("#rawReport").textContent = "raw[" + (r.len || 0) + "]: " + (grouped ? grouped.join(" ") : "—");
+}
 const hex4 = n => "0x" + ((n | 0) & 0xFFFF).toString(16).toUpperCase().padStart(4, "0");
 function renderDevice(d) {
   if (!d) return;
@@ -254,6 +261,7 @@ async function pollLoop() {
   let tick = 0;
   while (port && polling) {
     renderLive(await sendCmd("state", true));
+    renderRaw(await sendCmd("raw", true));
     if (tick % 14 === 0) renderDevice(await sendCmd("device", true));  // name changes rarely
     tick++;
     await new Promise(r => setTimeout(r, 70));

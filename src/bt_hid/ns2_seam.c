@@ -119,6 +119,12 @@ void router_device_disconnected(uint8_t dev_addr, int8_t instance) {
     set_global_gamepad_input(ns2_slot(dev_addr), &in);
 }
 
+// Raw HID report passthrough for config mode's debug view (overrides bthid.c's weak
+// default). Lets us reverse-engineer inputs a driver doesn't parse yet (Elite paddles).
+void bthid_on_raw_report(uint8_t conn_index, const uint8_t *data, uint16_t len) {
+    set_global_raw_report(ns2_slot(conn_index), data, len);
+}
+
 // -------------------------------------------------------------------------
 // Feedback: drivers poll feedback_get_state() to learn what rumble to send to
 // the physical controller. Bridge it to the console-decoded amplitude the USB
