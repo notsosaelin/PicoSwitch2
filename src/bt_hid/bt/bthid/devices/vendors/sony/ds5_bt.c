@@ -78,10 +78,14 @@ typedef struct __attribute__((packed)) {
     };
 
     struct {
-        uint8_t ps      : 1;    // PlayStation button
-        uint8_t tpad    : 1;    // Touchpad click
-        uint8_t mute    : 1;    // Mute button
-        uint8_t pad     : 5;
+        uint8_t ps       : 1;   // 0x01 PlayStation button
+        uint8_t tpad     : 1;   // 0x02 Touchpad click
+        uint8_t mute     : 1;   // 0x04 Mute button
+        uint8_t edge_res : 1;   // 0x08 (unused)
+        uint8_t fn_left  : 1;   // 0x10 DualSense Edge: left function button
+        uint8_t fn_right : 1;   // 0x20 DualSense Edge: right function button
+        uint8_t paddle_left  : 1; // 0x40 DualSense Edge: left back paddle
+        uint8_t paddle_right : 1; // 0x80 DualSense Edge: right back paddle
     };
 
     uint8_t reserved1;          // 4th button byte
@@ -419,6 +423,16 @@ static void ds5_process_report(bthid_device_t* device, const uint8_t* data, uint
     if (rpt->tpad)     buttons |= JP_BUTTON_A2;
     if (rpt->mute)     buttons |= JP_BUTTON_A3;
 
+    // DualSense Edge extra inputs: same button byte as PS/touchpad/mute, upper bits
+    // (0 on a standard DualSense, so this is safe to parse unconditionally). Offsets
+    // per SDL's HIDAPI_DriverPS5 (0x10 FnL, 0x20 FnR, 0x40 left paddle, 0x80 right).
+    // User mapping: back paddles -> Switch grips GL/GR (via L4/R4); the two front Fn
+    // buttons -> Capture (screenshot) and C (via A2/A3).
+    if (rpt->paddle_left)  buttons |= JP_BUTTON_L4;   // -> GL
+    if (rpt->paddle_right) buttons |= JP_BUTTON_R4;   // -> GR
+    if (rpt->fn_left)      buttons |= JP_BUTTON_A2;   // -> Capture (screenshot)
+    if (rpt->fn_right)     buttons |= JP_BUTTON_A3;   // -> C
+
     // Update event
     ds5->event.buttons = buttons;
 
@@ -480,11 +494,9 @@ static void ds5_process_report(bthid_device_t* device, const uint8_t* data, uint
         uint16_t tx2 = ((rpt->tpad_f2_pos[1] & 0x0f) << 8) | (rpt->tpad_f2_pos[0] & 0xff);
         uint16_t ty2 = ((rpt->tpad_f2_pos[1] & 0xf0) >> 4) | ((rpt->tpad_f2_pos[2] & 0xff) << 4);
 
-        // Touchpad left/right click detection (touchpad is ~1920 wide, center at 960)
-        if (rpt->tpad && !rpt->tpad_f1_down && tx < 960)
-            ds5->event.buttons |= JP_BUTTON_L4;
-        if (rpt->tpad && !rpt->tpad_f1_down && tx >= 960)
-            ds5->event.buttons |= JP_BUTTON_R4;
+        // (Touchpad-halves were previously faked as L4/R4 back-paddles; the DualSense
+        // Edge now reports real paddles above, so that hack is gone. Touchpad click
+        // stays mapped to A2/Capture via the button parse.)
 
         // Touchpad swipe delta (horizontal)
         int8_t touchpad_delta_x = 0;
