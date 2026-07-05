@@ -20,6 +20,8 @@ static uint8_t s_rumble[INPUT_SLOTS];
 static char s_dev_name[INPUT_SLOTS][DEV_NAME_MAX];  // connected controller name (config live-view)
 static uint16_t s_dev_vid[INPUT_SLOTS];
 static uint16_t s_dev_pid[INPUT_SLOTS];
+static uint8_t s_raw_report[INPUT_SLOTS][RAW_REPORT_BYTES];  // raw HID report (config debug view)
+static uint16_t s_raw_report_len[INPUT_SLOTS];
 static critical_section_t s_lock;
 
 void report_init(void) {
@@ -39,6 +41,7 @@ void report_init(void) {
         s_dev_name[i][0] = '\0';
         s_dev_vid[i] = 0;
         s_dev_pid[i] = 0;
+        s_raw_report_len[i] = 0;
     }
 }
 
@@ -92,6 +95,29 @@ void set_global_device(uint8_t idx, const char *name, uint16_t vid, uint16_t pid
     s_dev_vid[idx] = vid;
     s_dev_pid[idx] = pid;
     critical_section_exit(&s_lock);
+}
+
+void set_global_raw_report(uint8_t idx, const uint8_t *data, uint16_t len) {
+    if (idx >= INPUT_SLOTS || data == NULL)
+        return;
+    if (len > RAW_REPORT_BYTES)
+        len = RAW_REPORT_BYTES;
+    critical_section_enter_blocking(&s_lock);
+    memcpy(s_raw_report[idx], data, len);
+    s_raw_report_len[idx] = len;
+    critical_section_exit(&s_lock);
+}
+
+uint16_t get_global_raw_report(uint8_t idx, uint8_t *out, uint16_t maxlen) {
+    if (idx >= INPUT_SLOTS || out == NULL)
+        return 0;
+    critical_section_enter_blocking(&s_lock);
+    uint16_t n = s_raw_report_len[idx];
+    if (n > maxlen)
+        n = maxlen;
+    memcpy(out, s_raw_report[idx], n);
+    critical_section_exit(&s_lock);
+    return n;
 }
 
 void get_global_device(uint8_t idx, char *name_out, uint16_t name_len, uint16_t *vid, uint16_t *pid) {

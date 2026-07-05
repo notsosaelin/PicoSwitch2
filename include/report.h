@@ -30,6 +30,14 @@ uint32_t get_global_raw_buttons(uint8_t idx);
 void set_global_device(uint8_t idx, const char *name, uint16_t vid, uint16_t pid);
 void get_global_device(uint8_t idx, char *name_out, uint16_t name_len, uint16_t *vid, uint16_t *pid);
 
+// Raw HID input report (first RAW_REPORT_BYTES bytes) as received from the controller,
+// captured by the BT stack before the driver parses it. For config mode's raw-report
+// debug view — used to reverse-engineer inputs a driver doesn't parse yet (e.g. Xbox
+// Elite paddles). Published by the BT core, read by config mode.
+#define RAW_REPORT_BYTES 48
+void set_global_raw_report(uint8_t idx, const uint8_t *data, uint16_t len);
+uint16_t get_global_raw_report(uint8_t idx, uint8_t *out, uint16_t maxlen);
+
 // Rumble: published by the USB core (decoded from console reports), consumed by
 // the Bluetooth core (forwarded to the controller).
 void report_set_rumble(uint8_t idx, uint8_t amplitude);

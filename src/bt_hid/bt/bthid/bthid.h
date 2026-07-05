@@ -119,6 +119,11 @@ bthid_device_t* bthid_get_device(uint8_t conn_index);
 // Get device count
 uint8_t bthid_get_device_count(void);
 
+// Optional hook: invoked with every raw input report before the driver parses it
+// (conn_index identifies the device). Default is a weak no-op; PicoSwitch overrides
+// it to expose the raw report to config mode's debug view for controller RE.
+void bthid_on_raw_report(uint8_t conn_index, const uint8_t *data, uint16_t len);
+
 // Re-evaluate driver for a device (call when VID/PID or name becomes available)
 void bthid_update_device_info(uint8_t conn_index, const char* name,
                                uint16_t vendor_id, uint16_t product_id);

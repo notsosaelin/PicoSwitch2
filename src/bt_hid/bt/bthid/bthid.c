@@ -26,6 +26,11 @@
 
 #define BTHID_MAX_DRIVERS       16  // Max registered drivers
 
+// Raw-report debug hook: weak no-op default (PicoSwitch's seam provides the real one).
+__attribute__((weak)) void bthid_on_raw_report(uint8_t conn_index, const uint8_t *data, uint16_t len) {
+    (void)conn_index; (void)data; (void)len;
+}
+
 // ============================================================================
 // STATIC DATA
 // ============================================================================
@@ -488,6 +493,9 @@ void bt_on_hid_report(uint8_t conn_index, const uint8_t* data, uint16_t len)
                         return;
                     }
                 }
+
+                // Raw-report debug hook (config-mode view); weak no-op by default.
+                bthid_on_raw_report(device->conn_index, report_data, report_len);
 
                 // Input report - route to driver
                 if (device->driver) {

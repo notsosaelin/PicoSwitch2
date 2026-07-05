@@ -243,6 +243,18 @@ static void cmd_device(void) {
     reply(out);
 }
 
+// Raw HID report of the connected controller (hex) for the debug view. Lets us
+// reverse-engineer inputs a driver doesn't parse yet (e.g. Xbox Elite paddles).
+static void cmd_raw(void) {
+    uint8_t buf[RAW_REPORT_BYTES];
+    uint16_t n = get_global_raw_report(0, buf, sizeof(buf));
+    int j = snprintf(out, sizeof(out), "{\"len\":%u,\"bytes\":\"", n);
+    for (uint16_t i = 0; i < n && j < (int)sizeof(out) - 4; i++)
+        j += snprintf(out + j, sizeof(out) - j, "%02x", buf[i]);
+    snprintf(out + j, sizeof(out) - j, "\"}");
+    reply(out);
+}
+
 static void handle_line(char *cmd) {
     if (strcmp(cmd, "info") == 0) {
         reply("{\"id\":\"picoswitch\",\"product\":\"PicoSwitch Config\",\"version\":\"2.0\"}");
@@ -254,6 +266,8 @@ static void handle_line(char *cmd) {
         cmd_state();
     } else if (strcmp(cmd, "device") == 0) {
         cmd_device();
+    } else if (strcmp(cmd, "raw") == 0) {
+        cmd_raw();
     } else if (strncmp(cmd, "getmap ", 7) == 0) {
         cmd_getmap(atoi(cmd + 7));
     } else if (strncmp(cmd, "setmap ", 7) == 0) {
