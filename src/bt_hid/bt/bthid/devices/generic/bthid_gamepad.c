@@ -502,8 +502,10 @@ static void process_report_dynamic(bthid_gamepad_data_t* gp, const uint8_t* data
     if (map->is_elite2) {
         if (len >= 20) {
             uint8_t pad = data[19];
-            if (pad & (0x04 | 0x08)) buttons |= JP_BUTTON_L4;  // L4/L5 -> GL
-            if (pad & (0x01 | 0x02)) buttons |= JP_BUTTON_R4;  // R4/R5 -> GR
+            if (pad & 0x04) buttons |= JP_BUTTON_L4;  // upper-left  paddle -> GL
+            if (pad & 0x08) buttons |= JP_BUTTON_L5;  // lower-left  paddle -> GL
+            if (pad & 0x01) buttons |= JP_BUTTON_R4;  // upper-right paddle -> GR
+            if (pad & 0x02) buttons |= JP_BUTTON_R5;  // lower-right paddle -> GR
         }
     } else if (map->is_xbox && len > 0 && (data[len - 1] & 0x01)) {
         // Xbox extra byte: last byte, bit 0 (outside the HID buttons bitfield).

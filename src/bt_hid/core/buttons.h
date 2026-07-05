@@ -80,6 +80,12 @@
 #define JP_BUTTON_L4 (1 << 20)  // P1        -         -          -
 #define JP_BUTTON_R4 (1 << 21)  // P2        -         -          -
 
+// PicoSwitch extensions: extra controller-specific buttons kept distinct so they
+// don't collide with touchpad/mute in the config view and can be remapped per device.
+#define JP_BUTTON_A5 (1 << 24)  // DualSense Edge Fn R
+#define JP_BUTTON_L5 (1 << 25)  // Xbox Elite lower-left paddle  (upper = L4)
+#define JP_BUTTON_R5 (1 << 26)  // Xbox Elite lower-right paddle (upper = R4)
+
 // Function keys (internal only — never output to host, only used in hotkey combos)
 #define JP_BUTTON_F1 (1 << 22)
 #define JP_BUTTON_F2 (1 << 23)
