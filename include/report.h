@@ -24,6 +24,12 @@ void get_global_gamepad_input(uint8_t idx, switch_pro_input_t *out);
 void set_global_raw_buttons(uint8_t idx, uint32_t jp_buttons);
 uint32_t get_global_raw_buttons(uint8_t idx);
 
+// Connected controller identity (name + USB VID/PID from SDP), published by the BT
+// core, read by config mode to label the "Current Input Type" panel. Empty name =
+// nothing connected in that slot.
+void set_global_device(uint8_t idx, const char *name, uint16_t vid, uint16_t pid);
+void get_global_device(uint8_t idx, char *name_out, uint16_t name_len, uint16_t *vid, uint16_t *pid);
+
 // Rumble: published by the USB core (decoded from console reports), consumed by
 // the Bluetooth core (forwarded to the controller).
 void report_set_rumble(uint8_t idx, uint8_t amplitude);

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PicoSwitch Config</title>
+<title>PicoSwitch 2 Config</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -12,54 +12,59 @@
   header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
            padding: 12px 20px; background: #1b1f26; border-bottom: 1px solid #2b313b; }
   header h1 { font-size: 18px; margin: 0; margin-right: auto; }
-  main { max-width: 820px; margin: 0 auto; padding: 20px; }
+  main { max-width: 1000px; margin: 0 auto; padding: 20px; }
   section { background: #1b1f26; border: 1px solid #2b313b; border-radius: 10px;
             padding: 16px 18px; margin-bottom: 18px; }
-  section h2 { font-size: 14px; margin: 0 0 12px; color: #9fb3c8;
-               text-transform: uppercase; letter-spacing: .04em; }
+  h2 { font-size: 14px; margin: 0 0 12px; color: #9fb3c8; text-transform: uppercase; letter-spacing: .04em; }
   button { font: inherit; cursor: pointer; border: 1px solid #3a4150; background: #2a3140;
            color: #e6e8ea; padding: 7px 14px; border-radius: 7px; }
   button:hover { background: #333c4d; }
   button.primary { background: #2563eb; border-color: #2563eb; }
   button.primary:hover { background: #1d4ed8; }
   button:disabled { opacity: .45; cursor: not-allowed; }
-  select { font: inherit; background: #11151b; color: #e6e8ea; border: 1px solid #3a4150;
-           border-radius: 6px; padding: 4px 8px; }
-  table { width: 100%; border-collapse: collapse; }
-  td { padding: 5px 8px; }
-  tr + tr td { border-top: 1px solid #232932; }
   .pill { font-size: 12px; padding: 3px 10px; border-radius: 999px; background: #2a3140; }
   .pill.ok { background: #14532d; color: #bbf7d0; }
   .pill.bad { background: #4c1d1d; color: #fecaca; }
   .muted { color: #7c8694; font-size: 13px; }
   .hidden { display: none !important; }
-  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .actions-bar { display: flex; gap: 10px; flex-wrap: wrap; }
-  .player { display: grid; grid-template-columns: 70px 1fr 44px; gap: 10px 14px;
-            align-items: center; padding: 10px 0; }
-  .player + .player { border-top: 1px solid #232932; }
-  .player .name { font-weight: 600; }
-  .sliders { display: grid; gap: 4px; }
+
+  /* four-quadrant layout: input | output / buttons | settings */
+  .quad { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 18px; }
+  @media (max-width: 780px) { .quad { grid-template-columns: 1fr; } }
+  .q { background: #1b1f26; border: 1px solid #2b313b; border-radius: 10px; padding: 16px 18px; }
+  .bigname { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+  .devimg { display: grid; place-items: center; height: 130px; margin-top: 14px;
+            border: 1px dashed #3a4150; border-radius: 8px; color: #6b7684; font-size: 12px; }
+
+  table.map { width: 100%; border-collapse: collapse; }
+  table.map th { text-align: left; font-size: 11px; color: #7c8694; text-transform: uppercase;
+                 letter-spacing: .04em; padding: 4px 8px 8px; border-bottom: 1px solid #2b313b; }
+  table.map td { padding: 4px 8px; }
+  table.map tr + tr td { border-top: 1px solid #20262f; }
+  .chip { display: inline-block; font-size: 12px; padding: 3px 9px; border-radius: 6px;
+          background: #232932; color: #6b7684; border: 1px solid #2b313b;
+          font-family: ui-monospace, Consolas, monospace; transition: background .04s; }
+  .chip.on { background: #2563eb; color: #fff; border-color: #2563eb; }
+  .chip.out.on { background: #16a34a; border-color: #16a34a; }
+
+  .sliders { display: grid; gap: 6px; max-width: 340px; }
   .sliders label { display: grid; grid-template-columns: 16px 1fr 38px; gap: 8px; align-items: center;
                    font-family: ui-monospace, Consolas, monospace; font-size: 12px; color: #9aa6b2; }
   .sliders input[type=range] { width: 100%; }
-  .swatch { width: 44px; height: 44px; border-radius: 8px; border: 1px solid #3a4150; }
   input[type=range].r { accent-color: #ef4444; }
   input[type=range].g { accent-color: #22c55e; }
   input[type=range].b { accent-color: #3b82f6; }
+  .swatch { width: 100%; max-width: 340px; height: 40px; border-radius: 8px; border: 1px solid #3a4150; margin-top: 10px; }
+
   #log { background: #0d1016; border: 1px solid #2b313b; border-radius: 8px; padding: 10px 12px;
-         font-family: ui-monospace, Consolas, monospace; font-size: 12px; height: 130px;
+         font-family: ui-monospace, Consolas, monospace; font-size: 12px; height: 120px;
          overflow: auto; white-space: pre-wrap; color: #9aa6b2; }
-  .colhead { font-size: 12px; color: #9fb3c8; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px; }
-  .btngrid { display: flex; flex-wrap: wrap; gap: 5px; min-height: 28px; }
-  .chip { font-size: 12px; padding: 4px 9px; border-radius: 6px; background: #232932; color: #6b7684;
-          border: 1px solid #2b313b; font-family: ui-monospace, Consolas, monospace; }
-  .chip.on { background: #2563eb; color: #fff; border-color: #2563eb; }
 </style>
 </head>
 <body>
 <header>
-  <h1>PicoSwitch Config</h1>
+  <h1>PicoSwitch 2 Config</h1>
   <span id="status" class="pill bad">Disconnected</span>
   <button id="connectBtn" class="primary">Connect</button>
 </header>
@@ -67,172 +72,151 @@
 <main>
   <section id="intro">
     <p class="muted">
-      Chrome or Edge required (Web Serial). On the adapter, <b>hold BOOTSEL ~5s</b> to enter
-      config mode, then click <b>Connect</b> and choose the <b>PicoSwitch Config</b> port.
+      Chrome or Edge required (Web Serial). On the adapter, <b>hold BOOTSEL ~5s</b> to enter config
+      mode, then click <b>Connect</b> and choose the <b>PicoSwitch Config</b> port. Pair a controller
+      <i>before</i> entering config mode &mdash; it stays connected and its input streams live below.
     </p>
     <p id="unsupported" class="pill bad hidden">
-      This browser doesn't support Web Serial — use Chrome or Edge on desktop.
+      This browser doesn't support Web Serial &mdash; use Chrome or Edge on desktop.
     </p>
   </section>
 
   <div id="ui" class="hidden">
-    <section>
-      <h2>Live input</h2>
-      <p class="muted" style="margin-top:-4px">
-        Left = what the connected controller reports; right = what the dongle outputs as a Switch 2
-        Pro Controller. Blue = pressed / mapped, grey = idle or unmapped.
-      </p>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">
-        <div><div class="colhead">Controller input</div><div id="liveIn" class="btngrid"></div></div>
-        <div><div class="colhead">Switch 2 output</div><div id="liveOut" class="btngrid"></div></div>
-      </div>
-    </section>
+    <div class="quad">
+      <section class="q">
+        <h2>Current Input Type</h2>
+        <div id="inName" class="bigname">No controller connected</div>
+        <div id="inMeta" class="muted">&nbsp;</div>
+        <div class="devimg">device image TBD</div>
+      </section>
+
+      <section class="q">
+        <h2>Current Output Type</h2>
+        <div class="bigname">Switch 2 Pro Controller</div>
+        <div class="muted">Nintendo Switch 2 &middot; USB wired &middot; VID 0x057E / PID 0x2069</div>
+        <div class="devimg">Pro Controller 2</div>
+      </section>
+
+      <section class="q">
+        <h2>Input Buttons &rarr; Output</h2>
+        <p class="muted" style="margin-top:-4px">
+          <span style="color:#7dd3fc">Blue</span> = controller button detected &middot;
+          <span style="color:#4ade80">green</span> = Switch output active. A blue cell with no green
+          beside it means that input isn't mapping through.
+        </p>
+        <table class="map">
+          <thead><tr><th>Detected Button</th><th>Will Output As</th></tr></thead>
+          <tbody id="mapBody"></tbody>
+        </table>
+      </section>
+
+      <section class="q">
+        <h2>Additional Settings</h2>
+        <p class="muted" style="margin-top:-4px">DualShock / DualSense lightbar colour.</p>
+        <div class="sliders">
+          <label>R <input type="range" min="0" max="255" value="0" class="r" id="ledR"><span id="ledRv">0</span></label>
+          <label>G <input type="range" min="0" max="255" value="0" class="g" id="ledG"><span id="ledGv">0</span></label>
+          <label>B <input type="range" min="0" max="255" value="0" class="b" id="ledB"><span id="ledBv">0</span></label>
+        </div>
+        <div class="swatch" id="ledSwatch"></div>
+        <div class="actions-bar" style="margin-top:14px">
+          <button id="saveBtn" class="primary">Save to device</button>
+          <button id="reloadBtn">Reload</button>
+        </div>
+      </section>
+    </div>
 
     <section>
-      <h2>Player lightbar colours</h2>
-      <p class="muted" style="margin-top:-4px">
-        Colour by player position for controllers with an RGB light (DualSense / DualShock 4).
-      </p>
-      <div id="players"></div>
-    </section>
-
-    <section>
-      <h2>Button mapping</h2>
-      <div class="row" style="margin-bottom:12px">
-        <label>Controller: <select id="familySel"></select></label>
-        <span class="muted">Each platform has its own profile, applied automatically when that controller connects.</span>
-      </div>
-      <table id="mapTable"><tbody></tbody></table>
-    </section>
-
-    <section>
-      <div class="actions-bar">
-        <button id="saveBtn" class="primary">Save to device</button>
-        <button id="reloadBtn">Reload</button>
-      </div>
+      <h2>Log</h2>
+      <div id="log"></div>
     </section>
   </div>
 
-  <section>
-    <h2>Log</h2>
-    <div id="log"></div>
+  <section id="logStandalone">
+    <h2>Status</h2>
+    <div class="muted" style="font-family:ui-monospace,Consolas,monospace;font-size:12px">
+      Not connected. Click <b>Connect</b> above to begin.
+    </div>
   </section>
 </main>
 
 <script>
 "use strict";
 const $ = s => document.querySelector(s);
-const log = m => { const el = $("#log"); el.textContent += m + "\n"; el.scrollTop = el.scrollHeight; };
+const log = m => {
+  const el = $("#log");
+  if (el && !$("#ui").classList.contains("hidden")) { el.textContent += m + "\n"; el.scrollTop = el.scrollHeight; }
+};
 
-// Platform families — order matches FAMILY_* in remap.h.
-const FAMILY_LABELS = ["Generic", "Nintendo", "PlayStation", "Xbox"];
-// Physical-button labels per family, in SRC_* order (remap.h).
-const SRC_BY_FAMILY = [
-  ["Bottom (south)", "Right (east)", "Left (west)", "Top (north)", "L", "R", "ZL", "ZR",
-   "L-stick click", "R-stick click", "Minus", "Plus", "Home", "Capture",
-   "D-pad Up", "D-pad Down", "D-pad Left", "D-pad Right"],
-  ["B", "A", "Y", "X", "L", "R", "ZL", "ZR", "L-stick (L3)", "R-stick (R3)",
-   "Minus", "Plus", "Home", "Capture", "D-pad Up", "D-pad Down", "D-pad Left", "D-pad Right"],
-  ["Cross", "Circle", "Square", "Triangle", "L1", "R1", "L2", "R2", "L3", "R3",
-   "Create / Share", "Options", "PS", "Mute", "D-pad Up", "D-pad Down", "D-pad Left", "D-pad Right"],
-  ["A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Left stick", "Right stick",
-   "View", "Menu", "Xbox", "Share", "D-pad Up", "D-pad Down", "D-pad Left", "D-pad Right"],
+// Each row: [JP_BUTTON bit, input label, Switch output label, out-byte index, out mask].
+// out-byte 0..2 = the three Pro Controller button bytes; 3 = the C/GL/GR extras byte.
+// (Masks mirror SWITCH_MASK_* / SWITCH_EXTRA_* and the seam's JP->Switch mapping.)
+const MAP_ROWS = [
+  [0,  "B1  (A / Cross)",     "B",       0, 0x04],
+  [1,  "B2  (B / Circle)",    "A",       0, 0x08],
+  [2,  "B3  (X / Square)",    "Y",       0, 0x01],
+  [3,  "B4  (Y / Triangle)",  "X",       0, 0x02],
+  [4,  "L1 / LB",             "L",       2, 0x40],
+  [5,  "R1 / RB",             "R",       0, 0x40],
+  [6,  "L2 / LT",             "ZL",      2, 0x80],
+  [7,  "R2 / RT",             "ZR",      0, 0x80],
+  [8,  "Select / Share",      "Minus",   1, 0x01],
+  [9,  "Start / Options",     "Plus",    1, 0x02],
+  [10, "L3",                  "L3",      1, 0x08],
+  [11, "R3",                  "R3",      1, 0x04],
+  [12, "D-Up",                "D-Up",    2, 0x02],
+  [13, "D-Down",              "D-Down",  2, 0x01],
+  [14, "D-Left",              "D-Left",  2, 0x08],
+  [15, "D-Right",             "D-Right", 2, 0x04],
+  [16, "Guide / PS",          "Home",    1, 0x10],
+  [17, "Capture / Touchpad",  "Capture", 1, 0x20],
+  [18, "Mute",                "C",       3, 0x01],
+  [20, "Paddle L (L4)",       "GL",      3, 0x02],
+  [21, "Paddle R (R4)",       "GR",      3, 0x04],
 ];
-// Switch outputs (destinations) — DST_* order.
-const DST_LABELS = ["(none)", "A", "B", "X", "Y", "L", "R", "ZL", "ZR", "L3", "R3",
-  "Minus", "Plus", "Home", "Capture", "D-Up", "D-Down", "D-Left", "D-Right"];
-const NSRC = 18;
-
-// --- live input view: unified JP_BUTTON_* bits (raw), and the Switch output bytes ---
-const JP_LABELS = ["B1","B2","B3","B4","L1","R1","L2","R2","Select","Start","L3","R3",
-  "↑","↓","←","→","Guide","Capture/TP","Mute/C","A4","Paddle L","Paddle R"];
-// [label, out-byte index (0-2 = SWITCH_MASK bytes, 3 = extra), bit mask]
-const OUT_BTNS = [["Y",0,0x01],["X",0,0x02],["B",0,0x04],["A",0,0x08],["R",0,0x40],["ZR",0,0x80],
-  ["Minus",1,0x01],["Plus",1,0x02],["R3",1,0x04],["L3",1,0x08],["Home",1,0x10],["Capture",1,0x20],
-  ["↓",2,0x01],["↑",2,0x02],["→",2,0x04],["←",2,0x08],["L",2,0x40],["ZL",2,0x80],
-  ["C",3,0x01],["GL",3,0x02],["GR",3,0x04]];
-let polling = false;
-function buildLive() {
-  $("#liveIn").innerHTML = JP_LABELS.map((l, i) => `<span class="chip" id="ji${i}">${l}</span>`).join("");
-  $("#liveOut").innerHTML = OUT_BTNS.map((b, i) => `<span class="chip" id="jo${i}">${b[0]}</span>`).join("");
-}
-function renderLive(st) {
-  if (!st) return;
-  const raw = st.raw | 0, out = st.out || [0, 0, 0, 0];
-  for (let i = 0; i < JP_LABELS.length; i++) $("#ji" + i).classList.toggle("on", !!(raw & (1 << i)));
-  for (let i = 0; i < OUT_BTNS.length; i++) $("#jo" + i).classList.toggle("on", !!((out[OUT_BTNS[i][1]] || 0) & OUT_BTNS[i][2]));
-}
-async function pollLoop() {
-  if (polling) return;
-  polling = true;
-  while (port && polling) {
-    renderLive(await sendCmd("state", true));
-    await new Promise(r => setTimeout(r, 70));
-  }
-  polling = false;
-}
 
 let port = null, reader = null, writer = null, readBuf = "";
 const pending = [];
-const maps = [null, null, null, null];  // per-family arrays of NSRC destinations
-let family = 0;
+let polling = false;
 
 function setConnected(on) {
   $("#status").textContent = on ? "Connected" : "Disconnected";
   $("#status").className = "pill " + (on ? "ok" : "bad");
   $("#connectBtn").disabled = on;
   $("#ui").classList.toggle("hidden", !on);
+  $("#logStandalone").classList.toggle("hidden", on);
 }
 
-// --- lightbar UI ---
-function buildPlayers() {
-  const host = $("#players");
-  host.innerHTML = "";
-  for (let p = 0; p < 4; p++) {
-    const row = document.createElement("div");
-    row.className = "player";
-    row.innerHTML = `
-      <div class="name">Player ${p + 1}</div>
-      <div class="sliders">
-        ${["r", "g", "b"].map(ch => `
-          <label>${ch.toUpperCase()}
-            <input type="range" min="0" max="255" value="0" class="${ch}" data-p="${p}" data-ch="${ch}">
-            <span class="val" data-p="${p}" data-ch="${ch}">0</span>
-          </label>`).join("")}
-      </div>
-      <div class="swatch" data-p="${p}"></div>`;
-    host.appendChild(row);
-  }
-  host.querySelectorAll("input[type=range]").forEach(inp => inp.oninput = () => render(+inp.dataset.p));
+// ---- live 2-column view ----
+function buildMap() {
+  $("#mapBody").innerHTML = MAP_ROWS.map((r, i) =>
+    `<tr><td><span class="chip" id="mi${i}">${r[1]}</span></td>` +
+    `<td><span class="chip out" id="mo${i}">${r[2]}</span></td></tr>`).join("");
 }
-function cget(p, ch) { return +$(`input[data-p="${p}"][data-ch="${ch}"]`).value; }
-function cset(p, ch, v) { $(`input[data-p="${p}"][data-ch="${ch}"]`).value = v; $(`span[data-p="${p}"][data-ch="${ch}"]`).textContent = v; }
-function render(p) {
-  for (const ch of ["r", "g", "b"]) $(`span[data-p="${p}"][data-ch="${ch}"]`).textContent = cget(p, ch);
-  $(`.swatch[data-p="${p}"]`).style.background = `rgb(${cget(p,"r")},${cget(p,"g")},${cget(p,"b")})`;
-}
-
-// --- button mapping UI (per selected family) ---
-function buildFamilySel() {
-  $("#familySel").innerHTML = FAMILY_LABELS.map((n, i) => `<option value="${i}">${n}</option>`).join("");
-  $("#familySel").value = family;
-}
-function buildRemap() {
-  const tb = $("#mapTable tbody");
-  tb.innerHTML = "";
-  const opts = DST_LABELS.map((d, i) => `<option value="${i}">${d}</option>`).join("");
-  const cur = maps[family];
-  SRC_BY_FAMILY[family].forEach((label, s) => {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td style="width:170px">${label}</td><td><select class="dst" data-s="${s}">${opts}</select></td>`;
-    const sel = tr.querySelector("select");
-    sel.value = cur ? cur[s] : 0;
-    sel.onchange = () => { if (maps[family]) maps[family][s] = +sel.value; };
-    tb.appendChild(tr);
+function renderLive(st) {
+  if (!st) return;
+  const raw = st.raw | 0, out = st.out || [0, 0, 0, 0];
+  MAP_ROWS.forEach((r, i) => {
+    $("#mi" + i).classList.toggle("on", !!(raw & (1 << r[0])));
+    $("#mo" + i).classList.toggle("on", !!((out[r[3]] || 0) & r[4]));
   });
 }
+const hex4 = n => "0x" + ((n | 0) & 0xFFFF).toString(16).toUpperCase().padStart(4, "0");
+function renderDevice(d) {
+  if (!d) return;
+  const name = (d.name && d.name.trim()) ? d.name : "No controller connected";
+  $("#inName").textContent = name;
+  $("#inMeta").innerHTML = (d.vid || d.pid) ? `VID ${hex4(d.vid)} &middot; PID ${hex4(d.pid)}` : "&nbsp;";
+}
 
-// --- serial I/O: one command -> one JSON line ---
+// ---- lightbar ----
+const ledGet = ch => +$("#led" + ch).value;
+function ledRender() {
+  for (const ch of ["R", "G", "B"]) $("#led" + ch + "v").textContent = $("#led" + ch).value;
+  $("#ledSwatch").style.background = `rgb(${ledGet("R")},${ledGet("G")},${ledGet("B")})`;
+}
+
+// ---- serial I/O: one command -> one JSON line ----
 function sendCmd(line, quiet) {
   return new Promise(resolve => {
     const timer = setTimeout(() => {
@@ -264,27 +248,33 @@ async function readLoop() {
     }
   } catch (e) { log("! read ended: " + e.message); } finally { polling = false; }
 }
+async function pollLoop() {
+  if (polling) return;
+  polling = true;
+  let tick = 0;
+  while (port && polling) {
+    renderLive(await sendCmd("state", true));
+    if (tick % 14 === 0) renderDevice(await sendCmd("device", true));  // name changes rarely
+    tick++;
+    await new Promise(r => setTimeout(r, 70));
+  }
+  polling = false;
+}
 
 async function reload() {
   const cfg = await sendCmd("get");
-  if (cfg && cfg.lightbar)
-    cfg.lightbar.forEach((rgb, p) => { cset(p, "r", rgb[0]); cset(p, "g", rgb[1]); cset(p, "b", rgb[2]); render(p); });
-  else log("! could not read colours");
-  for (let f = 0; f < 4; f++) {
-    const m = await sendCmd("getmap " + f);
-    maps[f] = (m && m.map && m.map.length === NSRC) ? m.map : null;
-  }
-  buildRemap();
-  log("== loaded current settings ==");
+  if (cfg && cfg.lightbar) {
+    const c = cfg.lightbar[0];
+    $("#ledR").value = c[0]; $("#ledG").value = c[1]; $("#ledB").value = c[2]; ledRender();
+  } else log("! could not read colours");
 }
 
 async function save() {
   $("#saveBtn").disabled = true;
-  for (let p = 0; p < 4; p++) await sendCmd(`lb ${p} ${cget(p,"r")} ${cget(p,"g")} ${cget(p,"b")}`);
-  for (let f = 0; f < 4; f++) if (maps[f]) await sendCmd(`setmap ${f} ${maps[f].join(" ")}`);
+  await sendCmd(`lb 0 ${ledGet("R")} ${ledGet("G")} ${ledGet("B")}`);
   const r = await sendCmd("save");
   $("#saveBtn").disabled = false;
-  log(r && r.ok ? "== saved (reconnect a controller for it to take effect) ==" : "!! save failed");
+  log(r && r.ok ? "== saved (reconnect the controller for it to take effect) ==" : "!! save failed");
 }
 
 async function connect() {
@@ -293,22 +283,20 @@ async function connect() {
     await port.open({ baudRate: 115200 });
     writer = port.writable.getWriter();
     reader = port.readable.getReader();
-    readLoop();
     setConnected(true);
+    readLoop();
     log("-- connected --");
     const info = await sendCmd("info");
-    if (info && info.id === "picoswitch") log("== PicoSwitch detected (v" + info.version + ") ==");
+    if (info && info.id === "picoswitch") log("== PicoSwitch 2 detected (v" + info.version + ") ==");
     else log("! warning: unexpected device (info=" + JSON.stringify(info) + ")");
     await reload();
     pollLoop();
   } catch (e) { log("! connect failed: " + e.message); }
 }
 
-buildPlayers();
-buildFamilySel();
-buildRemap();
-buildLive();
-$("#familySel").onchange = e => { family = +e.target.value; buildRemap(); };
+buildMap();
+ledRender();
+["R", "G", "B"].forEach(ch => $("#led" + ch).oninput = ledRender);
 $("#connectBtn").onclick = connect;
 $("#saveBtn").onclick = save;
 $("#reloadBtn").onclick = reload;

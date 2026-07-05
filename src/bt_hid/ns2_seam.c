@@ -19,6 +19,7 @@
 
 #include "report.h"                              // set_global_gamepad_input(), report_get_rumble()
 #include "switch_pro.h"                           // switch_pro_input_t, SWITCH_MASK_*, pack_stick
+#include "bt/bthid/bthid.h"                       // bthid_get_device() — connected controller identity
 
 #define NS2_SLOTS SWITCH_PRO_MAX_CONTROLLERS
 
@@ -99,8 +100,13 @@ void router_submit_input(const input_event_t *e) {
         in.gyro[2]  = ns2_clamp16( e->gyro[1] / 64);
     }
 
-    set_global_gamepad_input(ns2_slot(e->dev_addr), &in);
-    set_global_raw_buttons(ns2_slot(e->dev_addr), e->buttons);  // config live-view
+    uint8_t slot = ns2_slot(e->dev_addr);
+    set_global_gamepad_input(slot, &in);
+    set_global_raw_buttons(slot, e->buttons);  // config live-view
+    // Publish the connected controller's identity for config mode's "input type" panel.
+    const bthid_device_t *dev = bthid_get_device(e->dev_addr);
+    if (dev)
+        set_global_device(slot, dev->name, dev->vendor_id, dev->product_id);
 }
 
 // Controller dropped -> publish a neutral (centered, no buttons) state.

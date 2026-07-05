@@ -224,6 +224,25 @@ static void cmd_state(void) {
     reply(out);
 }
 
+// Connected controller identity for the "Current Input Type" panel. Slot 0.
+static void cmd_device(void) {
+    char name[40];
+    uint16_t vid = 0, pid = 0;
+    get_global_device(0, name, sizeof(name), &vid, &pid);
+    // Escape the SDP-supplied name for JSON (quotes, backslashes, control chars).
+    char esc[96];
+    int j = 0;
+    for (int i = 0; name[i] && j < (int)sizeof(esc) - 2; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (c == '"' || c == '\\')
+            esc[j++] = '\\';
+        esc[j++] = (c < 0x20) ? ' ' : (char)c;
+    }
+    esc[j] = '\0';
+    snprintf(out, sizeof(out), "{\"name\":\"%s\",\"vid\":%u,\"pid\":%u}", esc, vid, pid);
+    reply(out);
+}
+
 static void handle_line(char *cmd) {
     if (strcmp(cmd, "info") == 0) {
         reply("{\"id\":\"picoswitch\",\"product\":\"PicoSwitch Config\",\"version\":\"2.0\"}");
@@ -233,6 +252,8 @@ static void handle_line(char *cmd) {
         cmd_get();
     } else if (strcmp(cmd, "state") == 0) {
         cmd_state();
+    } else if (strcmp(cmd, "device") == 0) {
+        cmd_device();
     } else if (strncmp(cmd, "getmap ", 7) == 0) {
         cmd_getmap(atoi(cmd + 7));
     } else if (strncmp(cmd, "setmap ", 7) == 0) {
