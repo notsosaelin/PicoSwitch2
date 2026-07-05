@@ -346,7 +346,10 @@ void bthid_gamepad_set_descriptor(bthid_device_t* device, const uint8_t* desc, u
         }
     }
 
-    gp->map.is_xbox = (device->vendor_id == 0x045E);
+    // BLE PnP VID/PID often doesn't resolve, so also match Xbox by name (the driver
+    // already relies on the name; button output is correct, which proves is_xbox holds).
+    gp->map.is_xbox = (device->vendor_id == 0x045E) ||
+                      (device->name[0] && strstr(device->name, "Xbox") != NULL);
     gp->map.is_8bitdo = (device->vendor_id == 0x2DC8);
     gp->map.is_elite2 = (device->vendor_id == 0x045E &&
                          (device->product_id == 0x0B05 || device->product_id == 0x0B22));
@@ -390,7 +393,10 @@ void bthid_gamepad_update_vid(bthid_device_t* device)
     bthid_gamepad_data_t* gp = (bthid_gamepad_data_t*)device->driver_data;
     if (!gp || !gp->has_report_map) return;
 
-    gp->map.is_xbox = (device->vendor_id == 0x045E);
+    // BLE PnP VID/PID often doesn't resolve, so also match Xbox by name (the driver
+    // already relies on the name; button output is correct, which proves is_xbox holds).
+    gp->map.is_xbox = (device->vendor_id == 0x045E) ||
+                      (device->name[0] && strstr(device->name, "Xbox") != NULL);
     gp->map.is_8bitdo = (device->vendor_id == 0x2DC8);
     gp->map.is_elite2 = (device->vendor_id == 0x045E &&
                          (device->product_id == 0x0B05 || device->product_id == 0x0B22));
@@ -499,18 +505,20 @@ static void process_report_dynamic(bthid_gamepad_data_t* gp, const uint8_t* data
     // paddle sends its assigned button instead). Captured on hardware in byte 19 of a
     // 20-byte report: R4=0x01, R5=0x02, L4=0x04, L5=0x08. Left paddles -> GL, right -> GR.
     // (Byte 17 = active profile 0-3; not mapped — it's a mode selector, not a button.)
-    if (map->is_elite2) {
-        if (len >= 20) {
-            uint8_t pad = data[19];
-            if (pad & 0x04) buttons |= JP_BUTTON_L4;  // upper-left  paddle -> GL
-            if (pad & 0x08) buttons |= JP_BUTTON_L5;  // lower-left  paddle -> GL
-            if (pad & 0x01) buttons |= JP_BUTTON_R4;  // upper-right paddle -> GR
-            if (pad & 0x02) buttons |= JP_BUTTON_R5;  // lower-right paddle -> GR
-        }
+    // Xbox Elite Series 2: 20-byte report with the 4 paddles in byte 19 (R4=0x01,
+    // R5=0x02, L4=0x04, L5=0x08). Detected by "Xbox + 20-byte report" rather than the
+    // exact PID (which the BLE PnP query often fails to resolve); regular Xbox pads send
+    // 16-byte reports so they never hit this. Paddles report raw only when the active
+    // on-board profile leaves them unmapped.
+    if ((map->is_elite2 || map->is_xbox) && len >= 20) {
+        uint8_t pad = data[19];
+        if (pad & 0x04) buttons |= JP_BUTTON_L4;  // upper-left  paddle -> GL
+        if (pad & 0x08) buttons |= JP_BUTTON_L5;  // lower-left  paddle -> GL
+        if (pad & 0x01) buttons |= JP_BUTTON_R4;  // upper-right paddle -> GR
+        if (pad & 0x02) buttons |= JP_BUTTON_R5;  // lower-right paddle -> GR
     } else if (map->is_xbox && len > 0 && (data[len - 1] & 0x01)) {
         // Xbox extra byte: last byte, bit 0 (outside the HID buttons bitfield).
-        // Series X/S Share (BLE) -> A2 ; Xbox One Back (Classic) -> S1. Skipped for the
-        // Elite 2 (it has no Share button — its byte-0 bit is the R4 paddle, handled above).
+        // Series X/S Share (16-byte report, BLE) -> A2 ; Xbox One Back (Classic) -> S1.
         if (gp->event.transport == INPUT_TRANSPORT_BT_BLE) {
             buttons |= JP_BUTTON_A2;
         } else {

@@ -206,16 +206,27 @@ const SWITCH_ROWS = [
   [21, "GR",      "GR",      3, 0x04],
 ];
 
-// Pick the row set + a friendly kind label for the connected device (by VID/PID).
+// Pick the row set + a friendly kind label for the connected device. The BLE PnP
+// VID/PID often don't resolve (arrive as 0), so match primarily on the device NAME,
+// with VID/PID and the raw report length as extra signals (Elite sends 20-byte reports).
+let lastRawLen = 0;
 function profileFor(d) {
+  const name = ((d && d.name) || "").toLowerCase();
   const vid = d ? (d.vid | 0) : 0, pid = d ? (d.pid | 0) : 0;
-  if (vid === 0x054C) return (pid === 0x0DF2)
-    ? { rows: COMMON_ROWS.concat(DS_EDGE_ROWS), kind: "DualSense Edge", elite: false }
-    : { rows: COMMON_ROWS.concat(DS_ROWS), kind: "DualSense", elite: false };
-  if (vid === 0x045E) return (pid === 0x0B05 || pid === 0x0B22)
-    ? { rows: COMMON_ROWS.concat(ELITE_ROWS), kind: "Xbox Elite Series 2", elite: true }
-    : { rows: COMMON_ROWS.concat(XBOX_ROWS), kind: "Xbox controller", elite: false };
-  if (vid === 0x057E) return { rows: COMMON_ROWS.concat(SWITCH_ROWS), kind: "Nintendo controller", elite: false };
+  const isSony = vid === 0x054C || name.includes("dualsense") || name.includes("dualshock");
+  const isXbox = vid === 0x045E || name.includes("xbox") || name.includes("elite");
+  const isNin  = vid === 0x057E || name.includes("pro controller") || name.includes("joy-con") || name.includes("joycon");
+  if (isSony) {
+    const edge = pid === 0x0DF2 || name.includes("edge");
+    return edge ? { rows: COMMON_ROWS.concat(DS_EDGE_ROWS), kind: "DualSense Edge", elite: false }
+                : { rows: COMMON_ROWS.concat(DS_ROWS), kind: "DualSense", elite: false };
+  }
+  if (isXbox) {
+    const elite = pid === 0x0B05 || pid === 0x0B22 || name.includes("elite") || lastRawLen >= 20;
+    return elite ? { rows: COMMON_ROWS.concat(ELITE_ROWS), kind: "Xbox Elite Series 2", elite: true }
+                 : { rows: COMMON_ROWS.concat(XBOX_ROWS), kind: "Xbox controller", elite: false };
+  }
+  if (isNin) return { rows: COMMON_ROWS.concat(SWITCH_ROWS), kind: "Nintendo controller", elite: false };
   return { rows: COMMON_ROWS.slice(), kind: "connected controller", elite: false };
 }
 
@@ -256,7 +267,9 @@ function renderDevice(d) {
   const name = (d.name && d.name.trim()) ? d.name : "No controller connected";
   $("#inName").textContent = name;
   $("#inMeta").innerHTML = (d.vid || d.pid) ? `VID ${hex4(d.vid)} &middot; PID ${hex4(d.pid)}` : "&nbsp;";
-  const key = (d.vid | 0) + ":" + (d.pid | 0);
+  // Include name + report-length bucket in the key so the menu rebuilds when the name
+  // arrives late or the Elite's 20-byte report is first seen (VID/PID may stay 0).
+  const key = (d.vid | 0) + ":" + (d.pid | 0) + ":" + ((d.name || "").toLowerCase()) + ":" + (lastRawLen >= 20 ? "L" : "S");
   if (key !== currentKey) {                 // controller changed -> rebuild the dynamic menu
     currentKey = key;
     const p = profileFor(d);
@@ -270,6 +283,7 @@ function renderDevice(d) {
 // ---- raw report + Elite profile warning ----
 function renderRaw(r) {
   if (!r || r.bytes === undefined) return;
+  lastRawLen = r.len | 0;
   const hex = r.bytes || "";
   const grouped = hex.match(/.{1,2}/g);
   $("#rawReport").textContent = "raw[" + (r.len || 0) + "]: " + (grouped ? grouped.join(" ") : "—");
