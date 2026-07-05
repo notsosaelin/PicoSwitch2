@@ -605,6 +605,7 @@ static void ns2_build_report_05(uint8_t *p) {
     if (s1 & SWITCH_MASK_R3)      b1 |= 0x04;
     if (s1 & SWITCH_MASK_PLUS)    b1 |= 0x02;
     if (s1 & SWITCH_MASK_MINUS)   b1 |= 0x01;
+    if (in.extra & SWITCH_EXTRA_C) b1 |= 0x40;  // C (chat): byte1 bit6 (ndeadly format-0 layout)
     if (s2 & SWITCH_MASK_ZL) b2 |= 0x80;
     if (s2 & SWITCH_MASK_L)  b2 |= 0x40;
     if (s2 & SWITCH_MASK_DPAD_LEFT)  b2 |= 0x08;
@@ -613,7 +614,11 @@ static void ns2_build_report_05(uint8_t *p) {
     if (s2 & SWITCH_MASK_DPAD_DOWN)  b2 |= 0x01;
     p[0x4] = b0;
     p[0x5] = b1;
-    p[0x6] = b2;  // p[0x7] byte3 = GL/GR/Headset (not exposed by bluepad32) -> 0
+    p[0x6] = b2;
+    // byte3: Switch 2 grips + headset. GL/GR mirror the confirmed report-0x09 emit so PC/Steam
+    // (which reads report 0x05) sees them too. Layout from the ndeadly BLE viewer (format 0).
+    if (in.extra & SWITCH_EXTRA_GL) p[0x7] |= 0x02;
+    if (in.extra & SWITCH_EXTRA_GR) p[0x7] |= 0x01;
 
     memcpy(&p[0x0A], in.left_stick, 3);
     memcpy(&p[0x0D], in.right_stick, 3);

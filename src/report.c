@@ -12,9 +12,14 @@
 // bluepad32 may connect so writes are always in-bounds.
 #define INPUT_SLOTS CONFIG_BLUEPAD32_MAX_DEVICES
 
+#define DEV_NAME_MAX 40
+
 static switch_pro_input_t s_inputs[INPUT_SLOTS];
 static uint32_t s_raw_buttons[INPUT_SLOTS];  // unified JP_BUTTON_* bitmap (config live-view)
 static uint8_t s_rumble[INPUT_SLOTS];
+static char s_dev_name[INPUT_SLOTS][DEV_NAME_MAX];  // connected controller name (config live-view)
+static uint16_t s_dev_vid[INPUT_SLOTS];
+static uint16_t s_dev_pid[INPUT_SLOTS];
 static critical_section_t s_lock;
 
 void report_init(void) {
@@ -30,6 +35,10 @@ void report_init(void) {
     for (int i = 0; i < INPUT_SLOTS; i++) {
         s_inputs[i] = neutral;
         s_rumble[i] = 0;
+        s_raw_buttons[i] = 0;
+        s_dev_name[i][0] = '\0';
+        s_dev_vid[i] = 0;
+        s_dev_pid[i] = 0;
     }
 }
 
@@ -68,6 +77,42 @@ uint32_t get_global_raw_buttons(uint8_t idx) {
     uint32_t v = s_raw_buttons[idx];
     critical_section_exit(&s_lock);
     return v;
+}
+
+void set_global_device(uint8_t idx, const char *name, uint16_t vid, uint16_t pid) {
+    if (idx >= INPUT_SLOTS)
+        return;
+    critical_section_enter_blocking(&s_lock);
+    if (name) {
+        strncpy(s_dev_name[idx], name, DEV_NAME_MAX - 1);
+        s_dev_name[idx][DEV_NAME_MAX - 1] = '\0';
+    } else {
+        s_dev_name[idx][0] = '\0';
+    }
+    s_dev_vid[idx] = vid;
+    s_dev_pid[idx] = pid;
+    critical_section_exit(&s_lock);
+}
+
+void get_global_device(uint8_t idx, char *name_out, uint16_t name_len, uint16_t *vid, uint16_t *pid) {
+    if (name_out && name_len)
+        name_out[0] = '\0';
+    if (vid)
+        *vid = 0;
+    if (pid)
+        *pid = 0;
+    if (idx >= INPUT_SLOTS)
+        return;
+    critical_section_enter_blocking(&s_lock);
+    if (name_out && name_len) {
+        strncpy(name_out, s_dev_name[idx], name_len - 1);
+        name_out[name_len - 1] = '\0';
+    }
+    if (vid)
+        *vid = s_dev_vid[idx];
+    if (pid)
+        *pid = s_dev_pid[idx];
+    critical_section_exit(&s_lock);
 }
 
 void report_set_rumble(uint8_t idx, uint8_t amplitude) {
