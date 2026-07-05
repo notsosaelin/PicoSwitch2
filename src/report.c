@@ -13,6 +13,7 @@
 #define INPUT_SLOTS CONFIG_BLUEPAD32_MAX_DEVICES
 
 static switch_pro_input_t s_inputs[INPUT_SLOTS];
+static uint32_t s_raw_buttons[INPUT_SLOTS];  // unified JP_BUTTON_* bitmap (config live-view)
 static uint8_t s_rumble[INPUT_SLOTS];
 static critical_section_t s_lock;
 
@@ -50,6 +51,23 @@ void get_global_gamepad_input(uint8_t idx, switch_pro_input_t *out) {
     critical_section_enter_blocking(&s_lock);
     *out = s_inputs[idx];
     critical_section_exit(&s_lock);
+}
+
+void set_global_raw_buttons(uint8_t idx, uint32_t jp_buttons) {
+    if (idx >= INPUT_SLOTS)
+        return;
+    critical_section_enter_blocking(&s_lock);
+    s_raw_buttons[idx] = jp_buttons;
+    critical_section_exit(&s_lock);
+}
+
+uint32_t get_global_raw_buttons(uint8_t idx) {
+    if (idx >= INPUT_SLOTS)
+        return 0;
+    critical_section_enter_blocking(&s_lock);
+    uint32_t v = s_raw_buttons[idx];
+    critical_section_exit(&s_lock);
+    return v;
 }
 
 void report_set_rumble(uint8_t idx, uint8_t amplitude) {

@@ -50,6 +50,11 @@
   #log { background: #0d1016; border: 1px solid #2b313b; border-radius: 8px; padding: 10px 12px;
          font-family: ui-monospace, Consolas, monospace; font-size: 12px; height: 130px;
          overflow: auto; white-space: pre-wrap; color: #9aa6b2; }
+  .colhead { font-size: 12px; color: #9fb3c8; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px; }
+  .btngrid { display: flex; flex-wrap: wrap; gap: 5px; min-height: 28px; }
+  .chip { font-size: 12px; padding: 4px 9px; border-radius: 6px; background: #232932; color: #6b7684;
+          border: 1px solid #2b313b; font-family: ui-monospace, Consolas, monospace; }
+  .chip.on { background: #2563eb; color: #fff; border-color: #2563eb; }
 </style>
 </head>
 <body>
@@ -71,6 +76,18 @@
   </section>
 
   <div id="ui" class="hidden">
+    <section>
+      <h2>Live input</h2>
+      <p class="muted" style="margin-top:-4px">
+        Left = what the connected controller reports; right = what the dongle outputs as a Switch 2
+        Pro Controller. Blue = pressed / mapped, grey = idle or unmapped.
+      </p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px">
+        <div><div class="colhead">Controller input</div><div id="liveIn" class="btngrid"></div></div>
+        <div><div class="colhead">Switch 2 output</div><div id="liveOut" class="btngrid"></div></div>
+      </div>
+    </section>
+
     <section>
       <h2>Player lightbar colours</h2>
       <p class="muted" style="margin-top:-4px">
@@ -125,6 +142,35 @@ const SRC_BY_FAMILY = [
 const DST_LABELS = ["(none)", "A", "B", "X", "Y", "L", "R", "ZL", "ZR", "L3", "R3",
   "Minus", "Plus", "Home", "Capture", "D-Up", "D-Down", "D-Left", "D-Right"];
 const NSRC = 18;
+
+// --- live input view: unified JP_BUTTON_* bits (raw), and the Switch output bytes ---
+const JP_LABELS = ["B1","B2","B3","B4","L1","R1","L2","R2","Select","Start","L3","R3",
+  "↑","↓","←","→","Guide","Capture/TP","Mute/C","A4","Paddle L","Paddle R"];
+// [label, out-byte index (0-2 = SWITCH_MASK bytes, 3 = extra), bit mask]
+const OUT_BTNS = [["Y",0,0x01],["X",0,0x02],["B",0,0x04],["A",0,0x08],["R",0,0x40],["ZR",0,0x80],
+  ["Minus",1,0x01],["Plus",1,0x02],["R3",1,0x04],["L3",1,0x08],["Home",1,0x10],["Capture",1,0x20],
+  ["↓",2,0x01],["↑",2,0x02],["→",2,0x04],["←",2,0x08],["L",2,0x40],["ZL",2,0x80],
+  ["C",3,0x01],["GL",3,0x02],["GR",3,0x04]];
+let polling = false;
+function buildLive() {
+  $("#liveIn").innerHTML = JP_LABELS.map((l, i) => `<span class="chip" id="ji${i}">${l}</span>`).join("");
+  $("#liveOut").innerHTML = OUT_BTNS.map((b, i) => `<span class="chip" id="jo${i}">${b[0]}</span>`).join("");
+}
+function renderLive(st) {
+  if (!st) return;
+  const raw = st.raw | 0, out = st.out || [0, 0, 0, 0];
+  for (let i = 0; i < JP_LABELS.length; i++) $("#ji" + i).classList.toggle("on", !!(raw & (1 << i)));
+  for (let i = 0; i < OUT_BTNS.length; i++) $("#jo" + i).classList.toggle("on", !!((out[OUT_BTNS[i][1]] || 0) & OUT_BTNS[i][2]));
+}
+async function pollLoop() {
+  if (polling) return;
+  polling = true;
+  while (port && polling) {
+    renderLive(await sendCmd("state", true));
+    await new Promise(r => setTimeout(r, 70));
+  }
+  polling = false;
+}
 
 let port = null, reader = null, writer = null, readBuf = "";
 const pending = [];
@@ -187,23 +233,23 @@ function buildRemap() {
 }
 
 // --- serial I/O: one command -> one JSON line ---
-function sendCmd(line) {
+function sendCmd(line, quiet) {
   return new Promise(resolve => {
     const timer = setTimeout(() => {
       const i = pending.findIndex(p => p.timer === timer);
       if (i >= 0) pending.splice(i, 1);
       resolve(null);
     }, 4000);
-    pending.push({ resolve, timer });
+    pending.push({ resolve, timer, quiet });
     writer.write(new TextEncoder().encode(line + "\n"));
-    log("> " + line);
+    if (!quiet) log("> " + line);
   });
 }
 function onLine(line) {
   line = line.trim();
   if (!line) return;
-  log("< " + line);
   const p = pending.shift();
+  if (!p || !p.quiet) log("< " + line);
   if (p) { clearTimeout(p.timer); try { p.resolve(JSON.parse(line)); } catch { p.resolve({ raw: line }); } }
 }
 async function readLoop() {
@@ -216,7 +262,7 @@ async function readLoop() {
       let nl;
       while ((nl = readBuf.indexOf("\n")) >= 0) { onLine(readBuf.slice(0, nl)); readBuf = readBuf.slice(nl + 1); }
     }
-  } catch (e) { log("! read ended: " + e.message); }
+  } catch (e) { log("! read ended: " + e.message); } finally { polling = false; }
 }
 
 async function reload() {
@@ -254,12 +300,14 @@ async function connect() {
     if (info && info.id === "picoswitch") log("== PicoSwitch detected (v" + info.version + ") ==");
     else log("! warning: unexpected device (info=" + JSON.stringify(info) + ")");
     await reload();
+    pollLoop();
   } catch (e) { log("! connect failed: " + e.message); }
 }
 
 buildPlayers();
 buildFamilySel();
 buildRemap();
+buildLive();
 $("#familySel").onchange = e => { family = +e.target.value; buildRemap(); };
 $("#connectBtn").onclick = connect;
 $("#saveBtn").onclick = save;
