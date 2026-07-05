@@ -20,6 +20,7 @@
 #include "report.h"                              // set_global_gamepad_input(), report_get_rumble()
 #include "switch_pro.h"                           // switch_pro_input_t, SWITCH_MASK_*, pack_stick
 #include "bt/bthid/bthid.h"                       // bthid_get_device() — connected controller identity
+#include "config.h"                               // config_get_lightbar() — user lightbar colour
 
 #define NS2_SLOTS SWITCH_PRO_MAX_CONTROLLERS
 
@@ -73,14 +74,16 @@ void router_submit_input(const input_event_t *e) {
     if (b & JP_BUTTON_DL) in.buttons[2] |= SWITCH_MASK_DPAD_LEFT;
     if (b & JP_BUTTON_DR) in.buttons[2] |= SWITCH_MASK_DPAD_RIGHT;
 
-    // Switch 2 grips: Xbox Elite paddles / DualSense Edge back buttons (L4/R4) -> GL/GR.
-    // C (chat) has no source on non-Switch pads (a real Pro Controller 2 passes it through).
-    if (b & JP_BUTTON_L4) in.extra |= SWITCH_EXTRA_GL;
-    if (b & JP_BUTTON_R4) in.extra |= SWITCH_EXTRA_GR;
-    // C (chat): the Switch 2 controllers expose it as A3 (switch2_ble driver). NOTE: the
-    // DualSense's Mute also maps to A3, so on a DualSense this currently drives C too —
-    // remappable once config mode lands.
-    if (b & JP_BUTTON_A3) in.extra |= SWITCH_EXTRA_C;
+    // Switch 2 grips: DualSense Edge back paddles (L4/R4) + Xbox Elite paddles
+    // (upper L4/R4, lower L5/R5) -> GL/GR. C has no source on non-Switch pads (a real
+    // Pro Controller 2 passes it through). These are the built-in defaults; per-device
+    // remapping (config mode) can override them.
+    if (b & (JP_BUTTON_L4 | JP_BUTTON_L5)) in.extra |= SWITCH_EXTRA_GL;
+    if (b & (JP_BUTTON_R4 | JP_BUTTON_R5)) in.extra |= SWITCH_EXTRA_GR;
+    // C (chat): Switch 2 controllers expose it as A3 (switch2_ble); DualSense Mute is also
+    // A3; DualSense Edge Fn R is A5 -> C. DualSense Edge Fn L is A4 -> Capture (screenshot).
+    if (b & (JP_BUTTON_A3 | JP_BUTTON_A5)) in.extra |= SWITCH_EXTRA_C;
+    if (b & JP_BUTTON_A4) in.buttons[1] |= SWITCH_MASK_CAPTURE;
 
     // Sticks: 0-255 -> 12-bit; Y inverted (Switch is up-positive, HID is up=0).
     switch_pro_pack_stick(ns2_to12(e->analog[ANALOG_LX]),
@@ -145,6 +148,16 @@ feedback_state_t *feedback_get_state(uint8_t player_index) {
         s_fb[p].rumble.left = amp;
         s_fb[p].rumble.right = amp;
         s_fb[p].rumble_dirty = true;
+    }
+    // Lightbar colour from config (single connected controller = slot 0). Drivers with an
+    // RGB LED (DualSense/DualShock) apply fb->led when it's dirty; mark dirty on change.
+    uint8_t rgb[3];
+    config_get_lightbar(0, rgb);
+    if (rgb[0] != s_fb[p].led.r || rgb[1] != s_fb[p].led.g || rgb[2] != s_fb[p].led.b) {
+        s_fb[p].led.r = rgb[0];
+        s_fb[p].led.g = rgb[1];
+        s_fb[p].led.b = rgb[2];
+        s_fb[p].led_dirty = true;
     }
     return &s_fb[p];
 }

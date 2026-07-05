@@ -29,7 +29,6 @@
   .hidden { display: none !important; }
   .actions-bar { display: flex; gap: 10px; flex-wrap: wrap; }
 
-  /* four-quadrant layout: input | output / buttons | settings */
   .quad { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 18px; }
   @media (max-width: 780px) { .quad { grid-template-columns: 1fr; } }
   .q { background: #1b1f26; border: 1px solid #2b313b; border-radius: 10px; padding: 16px 18px; }
@@ -47,6 +46,8 @@
           font-family: ui-monospace, Consolas, monospace; transition: background .04s; }
   .chip.on { background: #2563eb; color: #fff; border-color: #2563eb; }
   .chip.out.on { background: #16a34a; border-color: #16a34a; }
+  .warn { background: #4a3a12; border: 1px solid #7a5c1a; color: #fde68a; border-radius: 8px;
+          padding: 8px 12px; font-size: 12px; margin-bottom: 12px; }
 
   .sliders { display: grid; gap: 6px; max-width: 340px; }
   .sliders label { display: grid; grid-template-columns: 16px 1fr 38px; gap: 8px; align-items: center;
@@ -99,10 +100,15 @@
 
       <section class="q">
         <h2>Input Buttons &rarr; Output</h2>
+        <div id="profileWarn" class="warn hidden">
+          &#9888; Elite <b>profile <span id="profNum">?</span></b> is active. The 4 back paddles only bind
+          when the controller is on the <b>base profile</b> (all profile lights off) or the paddles are left
+          unmapped in the Xbox Accessories app &mdash; otherwise they mirror whatever button the profile assigns.
+        </div>
         <p class="muted" style="margin-top:-4px">
-          <span style="color:#7dd3fc">Blue</span> = controller button detected &middot;
-          <span style="color:#4ade80">green</span> = Switch output active. A blue cell with no green
-          beside it means that input isn't mapping through.
+          Buttons for the <b id="ctrlKind">connected controller</b>.
+          <span style="color:#7dd3fc">Blue</span> = detected &middot;
+          <span style="color:#4ade80">green</span> = Switch output active.
         </p>
         <table class="map">
           <thead><tr><th>Detected Button</th><th>Will Output As</th></tr></thead>
@@ -114,7 +120,7 @@
 
       <section class="q">
         <h2>Additional Settings</h2>
-        <p class="muted" style="margin-top:-4px">DualShock / DualSense lightbar colour.</p>
+        <p class="muted" style="margin-top:-4px">DualShock / DualSense lightbar colour (applies live to the pad).</p>
         <div class="sliders">
           <label>R <input type="range" min="0" max="255" value="0" class="r" id="ledR"><span id="ledRv">0</span></label>
           <label>G <input type="range" min="0" max="255" value="0" class="g" id="ledG"><span id="ledGv">0</span></label>
@@ -150,10 +156,10 @@ const log = m => {
   if (el && !$("#ui").classList.contains("hidden")) { el.textContent += m + "\n"; el.scrollTop = el.scrollHeight; }
 };
 
-// Each row: [JP_BUTTON bit, input label, Switch output label, out-byte index, out mask].
+// Row = [JP_BUTTON bit, input label, Switch output label, out-byte index, out mask].
 // out-byte 0..2 = the three Pro Controller button bytes; 3 = the C/GL/GR extras byte.
-// (Masks mirror SWITCH_MASK_* / SWITCH_EXTRA_* and the seam's JP->Switch mapping.)
-const MAP_ROWS = [
+// The menu is DYNAMIC: common rows + the connected controller's extras (paddles/Fn/etc).
+const COMMON_ROWS = [
   [0,  "B1  (A / Cross)",     "B",       0, 0x04],
   [1,  "B2  (B / Circle)",    "A",       0, 0x08],
   [2,  "B3  (X / Square)",    "Y",       0, 0x01],
@@ -170,16 +176,55 @@ const MAP_ROWS = [
   [13, "D-Down",              "D-Down",  2, 0x01],
   [14, "D-Left",              "D-Left",  2, 0x08],
   [15, "D-Right",             "D-Right", 2, 0x04],
-  [16, "Guide / PS",          "Home",    1, 0x10],
-  [17, "Capture / Touchpad",  "Capture", 1, 0x20],
-  [18, "Mute",                "C",       3, 0x01],
-  [20, "Paddle L (L4)",       "GL",      3, 0x02],
-  [21, "Paddle R (R4)",       "GR",      3, 0x04],
+  [16, "Guide / PS / Home",   "Home",    1, 0x10],
 ];
+const DS_ROWS = [
+  [17, "Touchpad", "Capture", 1, 0x20],
+  [18, "Mute",     "C",       3, 0x01],
+];
+const DS_EDGE_ROWS = [
+  [17, "Touchpad",      "Capture", 1, 0x20],
+  [18, "Mute",          "C",       3, 0x01],
+  [20, "Back Paddle L", "GL",      3, 0x02],
+  [21, "Back Paddle R", "GR",      3, 0x04],
+  [19, "Fn L",          "Capture", 1, 0x20],
+  [24, "Fn R",          "C",       3, 0x01],
+];
+const XBOX_ROWS = [
+  [17, "Share", "Capture", 1, 0x20],
+];
+const ELITE_ROWS = [
+  [20, "Paddle P1 (upper L)", "GL", 3, 0x02],
+  [25, "Paddle P3 (lower L)", "GL", 3, 0x02],
+  [21, "Paddle P2 (upper R)", "GR", 3, 0x04],
+  [26, "Paddle P4 (lower R)", "GR", 3, 0x04],
+];
+const SWITCH_ROWS = [
+  [17, "Capture", "Capture", 1, 0x20],
+  [18, "C",       "C",       3, 0x01],
+  [20, "GL",      "GL",      3, 0x02],
+  [21, "GR",      "GR",      3, 0x04],
+];
+
+// Pick the row set + a friendly kind label for the connected device (by VID/PID).
+function profileFor(d) {
+  const vid = d ? (d.vid | 0) : 0, pid = d ? (d.pid | 0) : 0;
+  if (vid === 0x054C) return (pid === 0x0DF2)
+    ? { rows: COMMON_ROWS.concat(DS_EDGE_ROWS), kind: "DualSense Edge", elite: false }
+    : { rows: COMMON_ROWS.concat(DS_ROWS), kind: "DualSense", elite: false };
+  if (vid === 0x045E) return (pid === 0x0B05 || pid === 0x0B22)
+    ? { rows: COMMON_ROWS.concat(ELITE_ROWS), kind: "Xbox Elite Series 2", elite: true }
+    : { rows: COMMON_ROWS.concat(XBOX_ROWS), kind: "Xbox controller", elite: false };
+  if (vid === 0x057E) return { rows: COMMON_ROWS.concat(SWITCH_ROWS), kind: "Nintendo controller", elite: false };
+  return { rows: COMMON_ROWS.slice(), kind: "connected controller", elite: false };
+}
 
 let port = null, reader = null, writer = null, readBuf = "";
 const pending = [];
 let polling = false;
+let currentRows = COMMON_ROWS.slice();
+let currentKey = "";        // vid:pid of the built menu (rebuild only on change)
+let currentIsElite = false;
 
 function setConnected(on) {
   $("#status").textContent = on ? "Connected" : "Disconnected";
@@ -189,24 +234,21 @@ function setConnected(on) {
   $("#logStandalone").classList.toggle("hidden", on);
 }
 
-// ---- live 2-column view ----
-function buildMap() {
-  $("#mapBody").innerHTML = MAP_ROWS.map((r, i) =>
+// ---- live 2-column view (dynamic per controller) ----
+function buildMap(rows) {
+  currentRows = rows;
+  $("#mapBody").innerHTML = rows.map((r, i) =>
     `<tr><td><span class="chip" id="mi${i}">${r[1]}</span></td>` +
     `<td><span class="chip out" id="mo${i}">${r[2]}</span></td></tr>`).join("");
 }
 function renderLive(st) {
   if (!st) return;
   const raw = st.raw | 0, out = st.out || [0, 0, 0, 0];
-  MAP_ROWS.forEach((r, i) => {
-    $("#mi" + i).classList.toggle("on", !!(raw & (1 << r[0])));
-    $("#mo" + i).classList.toggle("on", !!((out[r[3]] || 0) & r[4]));
+  currentRows.forEach((r, i) => {
+    const mi = $("#mi" + i), mo = $("#mo" + i);
+    if (mi) mi.classList.toggle("on", !!(raw & (1 << r[0])));
+    if (mo) mo.classList.toggle("on", !!((out[r[3]] || 0) & r[4]));
   });
-}
-function renderRaw(r) {
-  if (!r || r.bytes === undefined) return;
-  const grouped = (r.bytes || "").match(/.{1,2}/g);
-  $("#rawReport").textContent = "raw[" + (r.len || 0) + "]: " + (grouped ? grouped.join(" ") : "—");
 }
 const hex4 = n => "0x" + ((n | 0) & 0xFFFF).toString(16).toUpperCase().padStart(4, "0");
 function renderDevice(d) {
@@ -214,6 +256,31 @@ function renderDevice(d) {
   const name = (d.name && d.name.trim()) ? d.name : "No controller connected";
   $("#inName").textContent = name;
   $("#inMeta").innerHTML = (d.vid || d.pid) ? `VID ${hex4(d.vid)} &middot; PID ${hex4(d.pid)}` : "&nbsp;";
+  const key = (d.vid | 0) + ":" + (d.pid | 0);
+  if (key !== currentKey) {                 // controller changed -> rebuild the dynamic menu
+    currentKey = key;
+    const p = profileFor(d);
+    currentIsElite = p.elite;
+    $("#ctrlKind").textContent = p.kind;
+    buildMap(p.rows);
+    if (!currentIsElite) $("#profileWarn").classList.add("hidden");
+  }
+}
+
+// ---- raw report + Elite profile warning ----
+function renderRaw(r) {
+  if (!r || r.bytes === undefined) return;
+  const hex = r.bytes || "";
+  const grouped = hex.match(/.{1,2}/g);
+  $("#rawReport").textContent = "raw[" + (r.len || 0) + "]: " + (grouped ? grouped.join(" ") : "—");
+  // Xbox Elite: byte 17 = active profile (0 = base). Paddles only bind on base.
+  if (currentIsElite && hex.length >= 36) {
+    const prof = parseInt(hex.substr(34, 2), 16) || 0;
+    $("#profNum").textContent = prof;
+    $("#profileWarn").classList.toggle("hidden", prof === 0);
+  } else {
+    $("#profileWarn").classList.add("hidden");
+  }
 }
 
 // ---- lightbar ----
@@ -282,7 +349,7 @@ async function save() {
   await sendCmd(`lb 0 ${ledGet("R")} ${ledGet("G")} ${ledGet("B")}`);
   const r = await sendCmd("save");
   $("#saveBtn").disabled = false;
-  log(r && r.ok ? "== saved (reconnect the controller for it to take effect) ==" : "!! save failed");
+  log(r && r.ok ? "== saved ==" : "!! save failed");
 }
 
 async function connect() {
@@ -302,7 +369,7 @@ async function connect() {
   } catch (e) { log("! connect failed: " + e.message); }
 }
 
-buildMap();
+buildMap(currentRows);
 ledRender();
 ["R", "G", "B"].forEach(ch => $("#led" + ch).oninput = ledRender);
 $("#connectBtn").onclick = connect;

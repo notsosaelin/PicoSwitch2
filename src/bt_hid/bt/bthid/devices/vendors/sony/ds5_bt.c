@@ -428,10 +428,12 @@ static void ds5_process_report(bthid_device_t* device, const uint8_t* data, uint
     // per SDL's HIDAPI_DriverPS5 (0x10 FnL, 0x20 FnR, 0x40 left paddle, 0x80 right).
     // User mapping: back paddles -> Switch grips GL/GR (via L4/R4); the two front Fn
     // buttons -> Capture (screenshot) and C (via A2/A3).
+    // Distinct bits (not touchpad A2 / mute A3) so the Fn buttons show as their own
+    // inputs in the config view. Seam defaults: paddles->GL/GR, FnL->Capture, FnR->C.
     if (rpt->paddle_left)  buttons |= JP_BUTTON_L4;   // -> GL
     if (rpt->paddle_right) buttons |= JP_BUTTON_R4;   // -> GR
-    if (rpt->fn_left)      buttons |= JP_BUTTON_A2;   // -> Capture (screenshot)
-    if (rpt->fn_right)     buttons |= JP_BUTTON_A3;   // -> C
+    if (rpt->fn_left)      buttons |= JP_BUTTON_A4;   // Fn L -> Capture (screenshot)
+    if (rpt->fn_right)     buttons |= JP_BUTTON_A5;   // Fn R -> C
 
     // Update event
     ds5->event.buttons = buttons;
