@@ -8,6 +8,7 @@
 
 #include "config.h"
 #include "remap.h"
+#include "ns2_remap.h"   // NS2_FAM_COUNT / NS2_SRC_COUNT / NS2_DST_* (joypad remap)
 #include "report.h"      // get_global_raw_buttons / get_global_gamepad_input (live view)
 #include "switch_pro.h"  // switch_pro_input_t
 
@@ -24,15 +25,29 @@
 #include "hardware/sync.h"
 
 #define CONFIG_MAGIC 0x50535731u  // 'PSW1'
-#define CONFIG_VERSION 3
+#define CONFIG_VERSION 4
 #define CONFIG_FLASH_OFFSET (PICO_FLASH_SIZE_BYTES - 4 * FLASH_SECTOR_SIZE)
 
 typedef struct {
     uint32_t magic;
     uint8_t version;
     uint8_t lightbar[4][3];                       // per-player-position R,G,B
-    uint8_t button_map[FAMILY_COUNT][SRC_COUNT];  // per-platform remap (v3)
+    uint8_t button_map[FAMILY_COUNT][SRC_COUNT];  // bluepad32 per-platform remap (v3)
+    uint8_t ns2_map[NS2_FAM_COUNT][NS2_SRC_COUNT];  // joypad-os per-family remap (v4)
 } pico_config_t;
+
+// Built-in joypad remap (source index -> NS2_DST_*). Reproduces the seam's hardcoded
+// mapping exactly, so an all-defaults config behaves identically to no remapping.
+// Order matches SRC_TO_JP[] in ns2_seam.c: B1 B2 B3 B4 L1 R1 L2 R2 S1 S2 L3 R3
+// DU DD DL DR A1 A2 A3 A4 L4 R4 A5 L5 R5.
+static const uint8_t NS2_DEFAULT_MAP[NS2_SRC_COUNT] = {
+    NS2_DST_B, NS2_DST_A, NS2_DST_Y, NS2_DST_X,
+    NS2_DST_L, NS2_DST_R, NS2_DST_ZL, NS2_DST_ZR,
+    NS2_DST_MINUS, NS2_DST_PLUS, NS2_DST_L3, NS2_DST_R3,
+    NS2_DST_DUP, NS2_DST_DDOWN, NS2_DST_DLEFT, NS2_DST_DRIGHT,
+    NS2_DST_HOME, NS2_DST_CAPTURE, NS2_DST_C, NS2_DST_CAPTURE,
+    NS2_DST_GL, NS2_DST_GR, NS2_DST_C, NS2_DST_GL, NS2_DST_GR,
+};
 
 // Default position-faithful map (reproduces the built-in behaviour).
 static const uint8_t REMAP_DEFAULT[SRC_COUNT] = {
@@ -58,6 +73,8 @@ static void load_defaults(void) {
     memcpy(cfg.lightbar, def, sizeof(def));
     for (int fam = 0; fam < FAMILY_COUNT; fam++)
         memcpy(cfg.button_map[fam], REMAP_DEFAULT, SRC_COUNT);
+    for (int fam = 0; fam < NS2_FAM_COUNT; fam++)
+        memcpy(cfg.ns2_map[fam], NS2_DEFAULT_MAP, NS2_SRC_COUNT);
 }
 
 void config_load(void) {
@@ -66,6 +83,12 @@ void config_load(void) {
     const pico_config_t *f = (const pico_config_t *)flash;
     if (f->magic == CONFIG_MAGIC && f->version == CONFIG_VERSION) {
         memcpy(&cfg, f, sizeof(cfg));
+    } else if (f->magic == CONFIG_MAGIC && f->version == 3) {
+        // v3 -> v4: keep colours + the bluepad32 map (same offsets), default the new
+        // joypad-os map (appended after button_map, so it isn't present in v3 flash).
+        load_defaults();
+        memcpy(cfg.lightbar, f->lightbar, sizeof(cfg.lightbar));
+        memcpy(cfg.button_map, f->button_map, sizeof(cfg.button_map));
     } else if (f->magic == CONFIG_MAGIC && f->version == 2) {
         // v2 had a single shared map (at the same offset as family 0's map):
         // keep colours and apply that map to every family.
@@ -118,6 +141,22 @@ static void set_button_map(uint8_t family, const uint8_t map_in[]) {
         return;
     critical_section_enter_blocking(&cfg_lock);
     memcpy(cfg.button_map[family], map_in, SRC_COUNT);
+    critical_section_exit(&cfg_lock);
+}
+
+void config_get_ns2_map(uint8_t family, uint8_t map_out[]) {
+    if (family >= NS2_FAM_COUNT)
+        family = NS2_FAM_COUNT - 1;  // generic
+    critical_section_enter_blocking(&cfg_lock);
+    memcpy(map_out, cfg.ns2_map[family], NS2_SRC_COUNT);
+    critical_section_exit(&cfg_lock);
+}
+
+static void set_ns2_map(uint8_t family, const uint8_t map_in[]) {
+    if (family >= NS2_FAM_COUNT)
+        return;
+    critical_section_enter_blocking(&cfg_lock);
+    memcpy(cfg.ns2_map[family], map_in, NS2_SRC_COUNT);
     critical_section_exit(&cfg_lock);
 }
 
@@ -212,6 +251,44 @@ static void cmd_setmap(char *args) {
     reply("{\"ok\":true}");
 }
 
+// Joypad-os per-family remap (NS2_SRC_COUNT entries).
+static void cmd_getns2map(int family) {
+    if (family < 0 || family >= NS2_FAM_COUNT) {
+        reply("{\"error\":\"bad family\"}");
+        return;
+    }
+    uint8_t m[NS2_SRC_COUNT];
+    config_get_ns2_map((uint8_t)family, m);
+    int n = snprintf(out, sizeof(out), "{\"map\":[");
+    for (int i = 0; i < NS2_SRC_COUNT; i++)
+        n += snprintf(out + n, sizeof(out) - n, "%s%u", i ? "," : "", m[i]);
+    snprintf(out + n, sizeof(out) - n, "]}");
+    reply(out);
+}
+
+// Parse "setns2map <family> d0 d1 ... d24" and store the family's joypad map.
+static void cmd_setns2map(char *args) {
+    char *p = args, *end;
+    long family = strtol(p, &end, 10);
+    if (end == p || family < 0 || family >= NS2_FAM_COUNT) {
+        reply("{\"error\":\"bad family\"}");
+        return;
+    }
+    p = end;
+    uint8_t m[NS2_SRC_COUNT];
+    for (int i = 0; i < NS2_SRC_COUNT; i++) {
+        long v = strtol(p, &end, 10);
+        if (end == p || v < 0 || v >= NS2_DST_COUNT) {
+            reply("{\"error\":\"bad map\"}");
+            return;
+        }
+        m[i] = (uint8_t)v;
+        p = end;
+    }
+    set_ns2_map((uint8_t)family, m);
+    reply("{\"ok\":true}");
+}
+
 // Live input snapshot for the config-mode 2-column view: the connected controller's
 // raw buttons (unified JP_BUTTON_* bitmap) and the resulting Switch 2 output (the three
 // Pro-Controller button bytes + the C/GL/GR extras). Slot 0 (single-controller milestone).
@@ -272,6 +349,10 @@ static void handle_line(char *cmd) {
         cmd_getmap(atoi(cmd + 7));
     } else if (strncmp(cmd, "setmap ", 7) == 0) {
         cmd_setmap(cmd + 7);
+    } else if (strncmp(cmd, "getns2map ", 10) == 0) {
+        cmd_getns2map(atoi(cmd + 10));
+    } else if (strncmp(cmd, "setns2map ", 10) == 0) {
+        cmd_setns2map(cmd + 10);
     } else if (strncmp(cmd, "lb ", 3) == 0) {
         int p, r, g, b;
         if (sscanf(cmd + 3, "%d %d %d %d", &p, &r, &g, &b) == 4 && p >= 0 && p < 4 && r >= 0 &&

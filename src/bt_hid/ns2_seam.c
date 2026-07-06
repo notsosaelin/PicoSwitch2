@@ -20,7 +20,8 @@
 #include "report.h"                              // set_global_gamepad_input(), report_get_rumble()
 #include "switch_pro.h"                           // switch_pro_input_t, SWITCH_MASK_*, pack_stick
 #include "bt/bthid/bthid.h"                       // bthid_get_device() — connected controller identity
-#include "config.h"                               // config_get_lightbar() — user lightbar colour
+#include "config.h"                               // config_get_lightbar() / config_get_ns2_map()
+#include "ns2_remap.h"                            // NS2_SRC_COUNT / NS2_DST_* (per-device remap)
 
 #define NS2_SLOTS SWITCH_PRO_MAX_CONTROLLERS
 
@@ -38,52 +39,83 @@ static inline int16_t ns2_clamp16(int32_t v) {
     return (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
 }
 
+// Remap source order: index -> JP button. MUST match NS2_DEFAULT_MAP in config.c and
+// the web UI's source indices. (analog L2/R2 are folded into JP_BUTTON_L2/R2 below.)
+static const uint32_t SRC_TO_JP[NS2_SRC_COUNT] = {
+    JP_BUTTON_B1, JP_BUTTON_B2, JP_BUTTON_B3, JP_BUTTON_B4,
+    JP_BUTTON_L1, JP_BUTTON_R1, JP_BUTTON_L2, JP_BUTTON_R2,
+    JP_BUTTON_S1, JP_BUTTON_S2, JP_BUTTON_L3, JP_BUTTON_R3,
+    JP_BUTTON_DU, JP_BUTTON_DD, JP_BUTTON_DL, JP_BUTTON_DR,
+    JP_BUTTON_A1, JP_BUTTON_A2, JP_BUTTON_A3, JP_BUTTON_A4,
+    JP_BUTTON_L4, JP_BUTTON_R4, JP_BUTTON_A5, JP_BUTTON_L5, JP_BUTTON_R5,
+};
+
+// Apply one remap destination to the Pro Controller output.
+static void ns2_apply_dst(uint8_t dst, switch_pro_input_t *in) {
+    switch (dst) {
+        case NS2_DST_B:       in->buttons[0] |= SWITCH_MASK_B; break;
+        case NS2_DST_A:       in->buttons[0] |= SWITCH_MASK_A; break;
+        case NS2_DST_Y:       in->buttons[0] |= SWITCH_MASK_Y; break;
+        case NS2_DST_X:       in->buttons[0] |= SWITCH_MASK_X; break;
+        case NS2_DST_L:       in->buttons[2] |= SWITCH_MASK_L; break;
+        case NS2_DST_R:       in->buttons[0] |= SWITCH_MASK_R; break;
+        case NS2_DST_ZL:      in->buttons[2] |= SWITCH_MASK_ZL; break;
+        case NS2_DST_ZR:      in->buttons[0] |= SWITCH_MASK_ZR; break;
+        case NS2_DST_L3:      in->buttons[1] |= SWITCH_MASK_L3; break;
+        case NS2_DST_R3:      in->buttons[1] |= SWITCH_MASK_R3; break;
+        case NS2_DST_MINUS:   in->buttons[1] |= SWITCH_MASK_MINUS; break;
+        case NS2_DST_PLUS:    in->buttons[1] |= SWITCH_MASK_PLUS; break;
+        case NS2_DST_HOME:    in->buttons[1] |= SWITCH_MASK_HOME; break;
+        case NS2_DST_CAPTURE: in->buttons[1] |= SWITCH_MASK_CAPTURE; break;
+        case NS2_DST_DUP:     in->buttons[2] |= SWITCH_MASK_DPAD_UP; break;
+        case NS2_DST_DDOWN:   in->buttons[2] |= SWITCH_MASK_DPAD_DOWN; break;
+        case NS2_DST_DLEFT:   in->buttons[2] |= SWITCH_MASK_DPAD_LEFT; break;
+        case NS2_DST_DRIGHT:  in->buttons[2] |= SWITCH_MASK_DPAD_RIGHT; break;
+        case NS2_DST_GL:      in->extra |= SWITCH_EXTRA_GL; break;
+        case NS2_DST_GR:      in->extra |= SWITCH_EXTRA_GR; break;
+        case NS2_DST_C:       in->extra |= SWITCH_EXTRA_C; break;
+        default: break;  // NS2_DST_NONE
+    }
+}
+
+// Controller family for remap selection (matches the web UI + config family order).
+static uint8_t ns2_family(uint8_t dev_addr) {
+    const bthid_device_t *dev = bthid_get_device(dev_addr);
+    if (!dev) return 3;  // Generic
+    uint16_t vid = dev->vendor_id;
+    const char *n = dev->name;
+    bool has = n && n[0];
+    if (vid == 0x054C || (has && (strstr(n, "DualSense") || strstr(n, "DualShock")))) return 0;  // Sony
+    if (vid == 0x045E || (has && (strstr(n, "Xbox") || strstr(n, "Elite"))))          return 1;  // Xbox
+    if (vid == 0x057E || (has && (strstr(n, "Pro Controller") || strstr(n, "Joy-Con")))) return 2;  // Nintendo
+    return 3;  // Generic
+}
+
 // -------------------------------------------------------------------------
 // Router: the ONE call every input driver makes. Translate the unified event
-// into the Pro Controller wire format and publish it on the seam. (GL/GR/C via
-// JP_BUTTON_L4/R4/A2 land in a later phase once switch_pro_input_t gains an
-// `extra` field; the buttons/sticks parity is here now.)
+// into the Pro Controller wire format (via the per-family remap) and publish it.
 // -------------------------------------------------------------------------
 void router_submit_input(const input_event_t *e) {
     if (!e) return;
     switch_pro_input_t in;
     memset(&in, 0, sizeof(in));
-    const uint32_t b = e->buttons;
 
-    // Face + shoulders (JP is normalized to physical position; Xbox labels):
-    //   B1/B2/B3/B4 (A/B/X/Y phys) -> Switch B/A/Y/X ; L1/R1 -> L/R ; L2/R2 -> ZL/ZR
-    if (b & JP_BUTTON_B1) in.buttons[0] |= SWITCH_MASK_B;
-    if (b & JP_BUTTON_B2) in.buttons[0] |= SWITCH_MASK_A;
-    if (b & JP_BUTTON_B3) in.buttons[0] |= SWITCH_MASK_Y;
-    if (b & JP_BUTTON_B4) in.buttons[0] |= SWITCH_MASK_X;
-    if (b & JP_BUTTON_R1) in.buttons[0] |= SWITCH_MASK_R;
-    if (b & JP_BUTTON_L1) in.buttons[2] |= SWITCH_MASK_L;
-    // Switch ZL/ZR are digital, but Xbox/DualSense triggers are analog and often set
-    // only analog[L2/R2] (not the digital JP bit). Fire on either (thresholded), like
-    // bluepad32's `brake/throttle > 64` did.
-    if ((b & JP_BUTTON_L2) || e->analog[ANALOG_L2] > 64) in.buttons[2] |= SWITCH_MASK_ZL;
-    if ((b & JP_BUTTON_R2) || e->analog[ANALOG_R2] > 64) in.buttons[0] |= SWITCH_MASK_ZR;
-    if (b & JP_BUTTON_S1) in.buttons[1] |= SWITCH_MASK_MINUS;
-    if (b & JP_BUTTON_S2) in.buttons[1] |= SWITCH_MASK_PLUS;
-    if (b & JP_BUTTON_L3) in.buttons[1] |= SWITCH_MASK_L3;
-    if (b & JP_BUTTON_R3) in.buttons[1] |= SWITCH_MASK_R3;
-    if (b & JP_BUTTON_A1) in.buttons[1] |= SWITCH_MASK_HOME;
-    if (b & JP_BUTTON_A2) in.buttons[1] |= SWITCH_MASK_CAPTURE;
-    if (b & JP_BUTTON_DU) in.buttons[2] |= SWITCH_MASK_DPAD_UP;
-    if (b & JP_BUTTON_DD) in.buttons[2] |= SWITCH_MASK_DPAD_DOWN;
-    if (b & JP_BUTTON_DL) in.buttons[2] |= SWITCH_MASK_DPAD_LEFT;
-    if (b & JP_BUTTON_DR) in.buttons[2] |= SWITCH_MASK_DPAD_RIGHT;
+    // Digital buttons, plus analog triggers folded in as L2/R2: Switch ZL/ZR are digital,
+    // but Xbox/DualSense triggers are analog and often don't set the digital JP bit.
+    uint32_t b = e->buttons;
+    if (e->analog[ANALOG_L2] > 64) b |= JP_BUTTON_L2;
+    if (e->analog[ANALOG_R2] > 64) b |= JP_BUTTON_R2;
 
-    // Switch 2 grips: DualSense Edge back paddles (L4/R4) + Xbox Elite paddles
-    // (upper L4/R4, lower L5/R5) -> GL/GR. C has no source on non-Switch pads (a real
-    // Pro Controller 2 passes it through). These are the built-in defaults; per-device
-    // remapping (config mode) can override them.
-    if (b & (JP_BUTTON_L4 | JP_BUTTON_L5)) in.extra |= SWITCH_EXTRA_GL;
-    if (b & (JP_BUTTON_R4 | JP_BUTTON_R5)) in.extra |= SWITCH_EXTRA_GR;
-    // C (chat): Switch 2 controllers expose it as A3 (switch2_ble); DualSense Mute is also
-    // A3; DualSense Edge Fn R is A5 -> C. DualSense Edge Fn L is A4 -> Capture (screenshot).
-    if (b & (JP_BUTTON_A3 | JP_BUTTON_A5)) in.extra |= SWITCH_EXTRA_C;
-    if (b & JP_BUTTON_A4) in.buttons[1] |= SWITCH_MASK_CAPTURE;
+    // Apply this controller family's remap: each pressed source -> its assigned output.
+    // The default map (NS2_DEFAULT_MAP) reproduces the built-in mapping exactly, so an
+    // unconfigured device behaves as before; the config UI overrides per family.
+    uint8_t slot = ns2_slot(e->dev_addr);
+    uint8_t map[NS2_SRC_COUNT];
+    config_get_ns2_map(ns2_family(e->dev_addr), map);
+    for (int src = 0; src < NS2_SRC_COUNT; src++) {
+        if (b & SRC_TO_JP[src])
+            ns2_apply_dst(map[src], &in);
+    }
 
     // Sticks: 0-255 -> 12-bit; Y inverted (Switch is up-positive, HID is up=0).
     switch_pro_pack_stick(ns2_to12(e->analog[ANALOG_LX]),
@@ -91,9 +123,8 @@ void router_submit_input(const input_event_t *e) {
     switch_pro_pack_stick(ns2_to12(e->analog[ANALOG_RX]),
                           (uint16_t)(4095 - ns2_to12(e->analog[ANALOG_RY])), in.right_stick);
 
-    // IMU passthrough — same DualSense->Switch axis transform + scaling the bluepad32
-    // path used (accel/2, gyro/64). Report 0x05 emits this today; report 0x09's 40-byte
-    // motion packing is still unknown, so the console gets no gyro yet (tracked separately).
+    // IMU passthrough — DualSense->Switch axis transform + scaling (accel/2, gyro/64).
+    // Report 0x05 emits this today; report 0x09's motion packing is still unknown (tracked).
     if (e->has_motion) {
         in.accel[0] = ns2_clamp16(-e->accel[2] / 2);
         in.accel[1] = ns2_clamp16(-e->accel[0] / 2);
@@ -103,15 +134,8 @@ void router_submit_input(const input_event_t *e) {
         in.gyro[2]  = ns2_clamp16( e->gyro[1] / 64);
     }
 
-    uint8_t slot = ns2_slot(e->dev_addr);
     set_global_gamepad_input(slot, &in);
-    // Live-view raw buttons: also reflect analog triggers as L2/R2 so the input column
-    // lights for Xbox/DualSense (whose triggers are analog, not the digital JP bit) —
-    // matching the same threshold the ZL/ZR emit above uses.
-    uint32_t raw_live = e->buttons;
-    if (e->analog[ANALOG_L2] > 64) raw_live |= JP_BUTTON_L2;
-    if (e->analog[ANALOG_R2] > 64) raw_live |= JP_BUTTON_R2;
-    set_global_raw_buttons(slot, raw_live);  // config live-view
+    set_global_raw_buttons(slot, b);  // b includes analog L2/R2, for the live view
     // Publish the connected controller's identity for config mode's "input type" panel.
     const bthid_device_t *dev = bthid_get_device(e->dev_addr);
     if (dev)
