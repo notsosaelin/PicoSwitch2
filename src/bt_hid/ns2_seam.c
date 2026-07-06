@@ -126,6 +126,7 @@ void router_submit_input(const input_event_t *e) {
     // IMU passthrough — DualSense->Switch axis transform + scaling (accel/2, gyro/64).
     // Report 0x05 emits this today; report 0x09's motion packing is still unknown (tracked).
     if (e->has_motion) {
+        in.has_motion = 1;
         in.accel[0] = ns2_clamp16(-e->accel[2] / 2);
         in.accel[1] = ns2_clamp16(-e->accel[0] / 2);
         in.accel[2] = ns2_clamp16( e->accel[1] / 2);

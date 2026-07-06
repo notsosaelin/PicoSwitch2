@@ -573,7 +573,23 @@ static void ns2_build_report(uint8_t *p) {
     memcpy(&p[0x08], in.right_stick, 3);
 
     p[0x0B] = 0x30;
-    // 0x0C NFC, 0x0D headset, 0x0E motion length = 0 (IMU off); rest reserved 0
+    // 0x0C NFC, 0x0D headset.
+
+    // Motion (IMU): length byte at 0x0E, data at 0x0F (enabled by feature bit 2). The
+    // packing is NOT officially documented (ndeadly: "unknown packed format", observed
+    // lengths {0,30,40}). This is a HYPOTHESIS following the Nintendo pattern — 3 samples
+    // per report of accel XYZ + gyro XYZ (int16 LE), using the same pre-scaled values
+    // report 0x05 emits (which works on PC). Pending console verification; only emitted
+    // for controllers that actually report motion (else length stays 0 = IMU off).
+    if (in.has_motion) {
+        p[0x0E] = 40;
+        for (int s = 0; s < 3; s++) {
+            uint8_t *m = &p[0x0F + s * 12];
+            memcpy(&m[0], in.accel, 6);  // accel X/Y/Z int16 LE
+            memcpy(&m[6], in.gyro, 6);   // gyro  X/Y/Z int16 LE
+        }
+        // p[0x33..0x36] (4 trailing bytes) left 0 — timestamp/reserved.
+    }
 }
 
 // Report 0x05 (common format): 4-byte buttons + DOCUMENTED accel/gyro block.
