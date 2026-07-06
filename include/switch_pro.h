@@ -57,6 +57,7 @@ typedef struct {
     uint8_t right_stick[3];  // packed 12-bit rx/ry
     int16_t accel[3];        // x, y, z (raw Pro Controller accelerometer units)
     int16_t gyro[3];         // x, y, z (raw Pro Controller gyroscope units)
+    uint8_t has_motion;      // 1 if this controller reports IMU (gate report-0x09 motion)
 } switch_pro_input_t;
 
 // Pack two 12-bit stick axes (0..4095) into the 3-byte Pro Controller format.
