@@ -46,6 +46,9 @@
           font-family: ui-monospace, Consolas, monospace; transition: background .04s; }
   .chip.on { background: #2563eb; color: #fff; border-color: #2563eb; }
   .chip.out.on { background: #16a34a; border-color: #16a34a; }
+  select.dst { font: inherit; background: #11151b; color: #e6e8ea; border: 1px solid #3a4150;
+               border-radius: 6px; padding: 3px 6px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  select.dst.act { border-color: #2563eb; box-shadow: 0 0 0 1px #2563eb; }
   .warn { background: #4a3a12; border: 1px solid #7a5c1a; color: #fde68a; border-radius: 8px;
           padding: 8px 12px; font-size: 12px; margin-bottom: 12px; }
 
@@ -106,9 +109,9 @@
           unmapped in the Xbox Accessories app &mdash; otherwise they mirror whatever button the profile assigns.
         </div>
         <p class="muted" style="margin-top:-4px">
-          Buttons for the <b id="ctrlKind">connected controller</b>.
-          <span style="color:#7dd3fc">Blue</span> = detected &middot;
-          <span style="color:#4ade80">green</span> = Switch output active.
+          Buttons for the <b id="ctrlKind">connected controller</b> &mdash; pick each one's Switch 2
+          output, then <b>Save to device</b>. Saved per controller family.
+          <span style="color:#7dd3fc">Blue</span> = pressed now.
         </p>
         <table class="map">
           <thead><tr><th>Detected Button</th><th>Will Output As</th></tr></thead>
@@ -129,6 +132,7 @@
         <div class="swatch" id="ledSwatch"></div>
         <div class="actions-bar" style="margin-top:14px">
           <button id="saveBtn" class="primary">Save to device</button>
+          <button id="resetBtn">Reset mapping</button>
           <button id="reloadBtn">Reload</button>
         </div>
       </section>
@@ -206,6 +210,19 @@ const SWITCH_ROWS = [
   [21, "GR",      "GR",      3, 0x04],
 ];
 
+// --- per-device remap ---
+// Remap destinations; index = NS2_DST_* value (ns2_remap.h / config.c).
+const DST_LABELS = ["(none)", "B", "A", "Y", "X", "L", "R", "ZL", "ZR", "L3", "R3",
+  "Minus", "Plus", "Home", "Capture", "D-Up", "D-Down", "D-Left", "D-Right", "GL", "GR", "C"];
+// JP button bit -> remap source index (must match SRC_TO_JP[] in ns2_seam.c).
+const JP_TO_SRC = { 0:0, 1:1, 2:2, 3:3, 4:4, 5:5, 6:6, 7:7, 8:8, 9:9, 10:10, 11:11,
+  12:12, 13:13, 14:14, 15:15, 16:16, 17:17, 18:18, 19:19, 20:20, 21:21, 24:22, 25:23, 26:24 };
+const NS2_SRC_COUNT = 25;
+// Built-in default map (src -> dst); mirrors NS2_DEFAULT_MAP in config.c.
+const NS2_DEFAULT_MAP = [1,2,3,4,5,6,7,8,11,12,9,10,15,16,17,18,13,14,21,14,19,20,21,19,20];
+let currentMap = NS2_DEFAULT_MAP.slice();
+let currentFamily = 3;
+
 // Pick the row set + a friendly kind label for the connected device. The BLE PnP
 // VID/PID often don't resolve (arrive as 0), so match primarily on the device NAME,
 // with VID/PID and the raw report length as extra signals (Elite sends 20-byte reports).
@@ -218,16 +235,16 @@ function profileFor(d) {
   const isNin  = vid === 0x057E || name.includes("pro controller") || name.includes("joy-con") || name.includes("joycon");
   if (isSony) {
     const edge = pid === 0x0DF2 || name.includes("edge");
-    return edge ? { rows: COMMON_ROWS.concat(DS_EDGE_ROWS), kind: "DualSense Edge", elite: false }
-                : { rows: COMMON_ROWS.concat(DS_ROWS), kind: "DualSense", elite: false };
+    return edge ? { rows: COMMON_ROWS.concat(DS_EDGE_ROWS), kind: "DualSense Edge", elite: false, fam: 0 }
+                : { rows: COMMON_ROWS.concat(DS_ROWS), kind: "DualSense", elite: false, fam: 0 };
   }
   if (isXbox) {
     const elite = pid === 0x0B05 || pid === 0x0B22 || name.includes("elite") || lastRawLen >= 20;
-    return elite ? { rows: COMMON_ROWS.concat(ELITE_ROWS), kind: "Xbox Elite Series 2", elite: true }
-                 : { rows: COMMON_ROWS.concat(XBOX_ROWS), kind: "Xbox controller", elite: false };
+    return elite ? { rows: COMMON_ROWS.concat(ELITE_ROWS), kind: "Xbox Elite Series 2", elite: true, fam: 1 }
+                 : { rows: COMMON_ROWS.concat(XBOX_ROWS), kind: "Xbox controller", elite: false, fam: 1 };
   }
-  if (isNin) return { rows: COMMON_ROWS.concat(SWITCH_ROWS), kind: "Nintendo controller", elite: false };
-  return { rows: COMMON_ROWS.slice(), kind: "connected controller", elite: false };
+  if (isNin) return { rows: COMMON_ROWS.concat(SWITCH_ROWS), kind: "Nintendo controller", elite: false, fam: 2 };
+  return { rows: COMMON_ROWS.slice(), kind: "connected controller", elite: false, fam: 3 };
 }
 
 let port = null, reader = null, writer = null, readBuf = "";
@@ -248,17 +265,26 @@ function setConnected(on) {
 // ---- live 2-column view (dynamic per controller) ----
 function buildMap(rows) {
   currentRows = rows;
-  $("#mapBody").innerHTML = rows.map((r, i) =>
-    `<tr><td><span class="chip" id="mi${i}">${r[1]}</span></td>` +
-    `<td><span class="chip out" id="mo${i}">${r[2]}</span></td></tr>`).join("");
+  const opts = DST_LABELS.map((l, i) => `<option value="${i}">${l}</option>`).join("");
+  $("#mapBody").innerHTML = rows.map((r, i) => {
+    const src = JP_TO_SRC[r[0]];
+    return `<tr><td><span class="chip" id="mi${i}">${r[1]}</span></td>` +
+           `<td><select class="dst" id="ms${i}" data-src="${src}">${opts}</select></td></tr>`;
+  }).join("");
+  // Seed the dropdowns from the current family map (loadMap refreshes from the device).
+  rows.forEach((r, i) => {
+    const src = JP_TO_SRC[r[0]];
+    if (src !== undefined) $("#ms" + i).value = currentMap[src];
+  });
 }
 function renderLive(st) {
   if (!st) return;
-  const raw = st.raw | 0, out = st.out || [0, 0, 0, 0];
+  const raw = st.raw | 0;
   currentRows.forEach((r, i) => {
-    const mi = $("#mi" + i), mo = $("#mo" + i);
-    if (mi) mi.classList.toggle("on", !!(raw & (1 << r[0])));
-    if (mo) mo.classList.toggle("on", !!((out[r[3]] || 0) & r[4]));
+    const on = !!(raw & (1 << r[0]));
+    const mi = $("#mi" + i), ms = $("#ms" + i);
+    if (mi) mi.classList.toggle("on", on);
+    if (ms) ms.classList.toggle("act", on);
   });
 }
 const hex4 = n => "0x" + ((n | 0) & 0xFFFF).toString(16).toUpperCase().padStart(4, "0");
@@ -274,9 +300,21 @@ function renderDevice(d) {
     currentKey = key;
     const p = profileFor(d);
     currentIsElite = p.elite;
+    currentFamily = p.fam;
     $("#ctrlKind").textContent = p.kind;
     buildMap(p.rows);
+    loadMap(p.fam);
     if (!currentIsElite) $("#profileWarn").classList.add("hidden");
+  }
+}
+async function loadMap(fam) {
+  const m = await sendCmd("getns2map " + fam);
+  if (m && m.map && m.map.length === NS2_SRC_COUNT) {
+    currentMap = m.map.slice();
+    currentRows.forEach((r, i) => {
+      const src = JP_TO_SRC[r[0]];
+      if (src !== undefined && $("#ms" + i)) $("#ms" + i).value = currentMap[src];
+    });
   }
 }
 
@@ -361,9 +399,23 @@ async function reload() {
 async function save() {
   $("#saveBtn").disabled = true;
   await sendCmd(`lb 0 ${ledGet("R")} ${ledGet("G")} ${ledGet("B")}`);
+  // Fold the visible dropdowns into the family map, then persist it.
+  currentRows.forEach((r, i) => {
+    const src = JP_TO_SRC[r[0]], ms = $("#ms" + i);
+    if (src !== undefined && ms) currentMap[src] = +ms.value;
+  });
+  await sendCmd(`setns2map ${currentFamily} ${currentMap.join(" ")}`);
   const r = await sendCmd("save");
   $("#saveBtn").disabled = false;
-  log(r && r.ok ? "== saved ==" : "!! save failed");
+  log(r && r.ok ? "== saved (mapping + colour) ==" : "!! save failed");
+}
+function resetMap() {
+  currentMap = NS2_DEFAULT_MAP.slice();
+  currentRows.forEach((r, i) => {
+    const src = JP_TO_SRC[r[0]];
+    if (src !== undefined && $("#ms" + i)) $("#ms" + i).value = currentMap[src];
+  });
+  log("mapping reset to defaults (Save to keep)");
 }
 
 async function connect() {
@@ -388,6 +440,7 @@ ledRender();
 ["R", "G", "B"].forEach(ch => $("#led" + ch).oninput = ledRender);
 $("#connectBtn").onclick = connect;
 $("#saveBtn").onclick = save;
+$("#resetBtn").onclick = resetMap;
 $("#reloadBtn").onclick = reload;
 if (!("serial" in navigator)) { $("#unsupported").classList.remove("hidden"); $("#connectBtn").disabled = true; }
 </script>

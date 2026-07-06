@@ -25,4 +25,8 @@ void config_get_lightbar(uint8_t player, uint8_t rgb[3]);
 // for the input mapping (core1, per controller report).
 void config_get_button_map(uint8_t family, uint8_t map_out[]);
 
+// Joypad-os stack per-family remap (NS2_SRC_COUNT entries, each an NS2_DST_* value).
+// Read by the seam per controller report (core1).
+void config_get_ns2_map(uint8_t family, uint8_t map_out[]);
+
 #endif
