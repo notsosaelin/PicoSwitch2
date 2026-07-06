@@ -582,13 +582,20 @@ static void ns2_build_report(uint8_t *p) {
     // report 0x05 emits (which works on PC). Pending console verification; only emitted
     // for controllers that actually report motion (else length stays 0 = IMU off).
     if (in.has_motion) {
+        static uint32_t mtime = 0;
         p[0x0E] = 40;
+        // Hypothesis 2: [timestamp u32 LE @0x0F][3 samples @0x13, each accel XYZ + gyro
+        // XYZ int16 LE]. 4 + 3*12 = 40 (the tidy read of the observed length). TommyWabg
+        // confirms accel-then-gyro int16 single-sample; the 3-sample batching is the
+        // Nintendo convention. Still a guess — the real format is undocumented and the
+        // reference captures are link-encrypted (undecryptable).
+        mtime += 3;
+        memcpy(&p[0x0F], &mtime, 4);
         for (int s = 0; s < 3; s++) {
-            uint8_t *m = &p[0x0F + s * 12];
+            uint8_t *m = &p[0x13 + s * 12];
             memcpy(&m[0], in.accel, 6);  // accel X/Y/Z int16 LE
             memcpy(&m[6], in.gyro, 6);   // gyro  X/Y/Z int16 LE
         }
-        // p[0x33..0x36] (4 trailing bytes) left 0 — timestamp/reserved.
     }
 }
 
