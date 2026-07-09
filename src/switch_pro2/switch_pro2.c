@@ -525,8 +525,8 @@ static void ns2_dispatch(const uint8_t *c, uint32_t n) {
 // Input report 0x09 (streamed on the HID IN endpoint)
 //--------------------------------------------------------------------+
 
-// Translate the shared Switch-1-layout input (report.c, published by bluepad32
-// on core1) into the Switch 2 Pro Controller report 0x09 layout.
+// Translate the shared input (report.c, published by the joypad-os seam on core1)
+// into the Switch 2 Pro Controller report 0x09 layout.
 static void ns2_build_report(uint8_t *p) {
     static uint8_t counter = 0;
     switch_pro_input_t in;
@@ -558,9 +558,8 @@ static void ns2_build_report(uint8_t *p) {
     if (s1 & SWITCH_MASK_L3)    b1 |= 0x80;  // left stick click
     if (s1 & SWITCH_MASK_HOME)    b2 |= 0x01;
     if (s1 & SWITCH_MASK_CAPTURE) b2 |= 0x02;
-    // Switch 2 extra buttons (in.extra): C / GL / GR. From the joypad-os stack these
-    // come from L4/R4 (Elite paddles / Edge back buttons) or a native Pro Controller 2;
-    // 0 otherwise (e.g. the bluepad32 build, which doesn't expose them).
+    // Switch 2 extra buttons (in.extra): C / GL / GR. These come from the joypad-os
+    // seam — Elite/Edge paddles and Fn buttons, or a native Pro Controller 2's own C/GL/GR.
     if (in.extra & SWITCH_EXTRA_C)  b2 |= 0x10;
     if (in.extra & SWITCH_EXTRA_GL) b2 |= 0x08;
     if (in.extra & SWITCH_EXTRA_GR) b2 |= 0x04;

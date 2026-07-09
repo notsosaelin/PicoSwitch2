@@ -3,10 +3,9 @@
 
 #include <stdint.h>
 
-// Per-device button remapping for the joypad-os Bluetooth stack. Unlike the
-// bluepad32 remap.h model, this covers the Switch 2 extended outputs (GL/GR/C) and
-// the extended sources (DualSense Edge Fn buttons, Xbox Elite lower paddles), so any
-// physical button on a supported pad can be reassigned per controller family.
+// Per-device button remapping. Covers the Switch 2 extended outputs (GL/GR/C) and the
+// extended sources (DualSense Edge Fn buttons, Xbox Elite lower paddles), so any physical
+// button on a supported pad can be reassigned per controller family.
 //
 // A map is uint8_t[NS2_SRC_COUNT] of NS2_DST_* values, stored per family. The source
 // index order is defined by SRC_TO_JP[] in ns2_seam.c and mirrored in the web UI;

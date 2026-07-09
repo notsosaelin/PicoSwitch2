@@ -21,9 +21,7 @@ set(PICO_BOARD pico_w CACHE STRING "Board type")
 
 cmake_minimum_required(VERSION 3.13)
 
-# Use the BTstack bundled with the Pico SDK (matches the upstream bluepad32
-# pico_w example). The SDK 2.x BTstack is current and avoids the extra
-# "missing sources" wiring that the bluepad32/external/btstack path needs.
+# Use the BTstack bundled with the Pico SDK (current 2.x; no external btstack wiring).
 set(BTSTACK_ROOT ${PICO_SDK_PATH}/lib/btstack)
 
 # initialize the SDK based on PICO_SDK_PATH
@@ -83,9 +81,8 @@ target_include_directories(PicoSwitchWGA PRIVATE
     src
     include)
 
-# `include` holds tusb_config.h; `src` holds btstack_config.h / sdkconfig.h.
-# These must be on the global include path so the SDK's TinyUSB and BTstack
-# (and libbluepad32) can find them.
+# `include` holds tusb_config.h; `src` holds btstack_config.h. These must be on the
+# global include path so the SDK's TinyUSB and BTstack can find them.
 include_directories(include src)
 
 # Needed when using BTstack from the SDK (bluedroid codecs + btstack headers).
