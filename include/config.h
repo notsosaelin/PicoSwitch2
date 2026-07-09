@@ -21,12 +21,8 @@ void config_service_save(void);
 // Read a player's configured lightbar colour (core1, when a controller connects).
 void config_get_lightbar(uint8_t player, uint8_t rgb[3]);
 
-// Copy a platform family's button remap (SRC_COUNT entries, each a DST_* value)
-// for the input mapping (core1, per controller report).
-void config_get_button_map(uint8_t family, uint8_t map_out[]);
-
-// Joypad-os stack per-family remap (NS2_SRC_COUNT entries, each an NS2_DST_* value).
-// Read by the seam per controller report (core1).
+// Copy a controller family's button remap (NS2_SRC_COUNT entries, each an NS2_DST_*
+// value) for the input mapping (core1, per controller report).
 void config_get_ns2_map(uint8_t family, uint8_t map_out[]);
 
 #endif
