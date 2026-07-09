@@ -23,9 +23,9 @@
 
 # Current Objective
 
-**First release.** bluepad32 is fully retired; joypad-os is the sole Bluetooth stack. Console
-gyro is deferred to the next sprint (its report-0x09 motion format is undocumented and the
-reference captures are encrypted — see below).
+**Console gyro (v1.1).** The report-0x09 motion format has been **decoded from a real controller's
+unencrypted USB capture** and implemented — awaiting on-console validation. First release (bluepad32
+retired, joypad-os the sole BT stack) is complete.
 
 ---
 
@@ -42,7 +42,7 @@ reference captures are encrypted — see below).
 | Rumble | ✅ | Console rumble decoded (report 0x02) and forwarded to the pad. |
 | Config web UI | ✅ | Live input↔output view, dynamic per-controller menu, per-device remapping, lightbar, raw-report debug. |
 | PC / Steam | ✅ | Enumerates as a Switch 2 Pro; report 0x05 incl. gyro works. |
-| Console gyro | 🔴 | Deferred. report-0x09 motion format undocumented; reference captures encrypted. |
+| Console gyro | 🔵 | Format **decoded** from a real controller's USB capture (len 30, accel@0x21 ±8g, gyro@0x1F) and implemented; pending on-console validation. See `docs/switch2/report-0x09-motion.md`. |
 | BT pairing reliability | 🟡 | Pro 2 reconnect sometimes needs a triple-tap; works but flaky. |
 | BLE VID/PID (DIS) | 🟡 | Often resolves to 0; worked around by name + report-length detection. |
 
@@ -66,12 +66,13 @@ reference captures are encrypted — see below).
 
 # Deferred / Blocked
 
-- **Console gyro (🔴 next sprint).** report 0x09's 40-byte motion block (offset 0x0F, length byte @0x0E,
-  observed {0,30,40}) is an undocumented packed format. ndeadly's procon2 motion captures are BLE
-  link-encrypted with **no in-capture handshake** → undecryptable without a fresh capture. Two blind
-  hypotheses tried on hardware = no motion. PC gyro (report 0x05) already works. **Definitive path:** a
-  decryptable BLE sniff of a real PC2↔console session (with the pairing/encryption handshake), then decrypt
-  with the LTK to read the exact bytes.
+- **Console gyro (🔵 decoded, pending HW validation).** The report-0x09 motion format is now **decoded
+  from real-controller bytes** — ndeadly's *unencrypted USB* capture (`captures/usb/rumble-procon-gccon`)
+  contains report 0x09 in the clear (the BLE captures are encrypted, but USB isn't). Length 30 @0x0E;
+  timestamp+temp header @0x0F; two interleaved `[gyro,accel]` samples; accel confirmed at 0x21/0x25/0x29
+  (±8g, 1g=4096) — exactly the scale our /2 accel, /64 gyro seam already produces. Implemented in
+  `ns2_build_report()`; full RE writeup in `docs/switch2/report-0x09-motion.md`. **Next: user flashes and
+  tests console gyro.** One lane group (sample-0 accel, possibly magnetometer) is the remaining unknown.
 - **BT pairing reliability (🟡).** Pro Controller 2 reconnect can need a triple-tap and remains flaky.
 - **BLE DIS VID/PID (🟡).** The PnP VID/PID frequently arrive as 0; detection is worked around by device
   name + report length. A proper DIS/SDP resolution fix would be cleaner.
@@ -86,7 +87,8 @@ Wake-console-over-USB (Switch 2 wakes only on a BLE advert from a bonded control
 # Reverse-Engineering Progress
 
 - **EP0 vendor identity handshake** — byte-exact vs a real PC2 (validated by MITM capture).
-- **report 0x09 (console)** — buttons/sticks/GL/GR/C layout confirmed on hardware; motion still unknown.
+- **report 0x09 (console)** — buttons/sticks/GL/GR/C confirmed on hardware; **motion decoded** from a
+  real controller's USB capture (`docs/switch2/report-0x09-motion.md`), pending on-console validation.
 - **report 0x05 (PC/common)** — buttons + accel@0x30 / gyro@0x36 int16 (matches TommyWabg's reader).
 - **Xbox Elite 2** — 4 paddles captured in report byte 19 (R4=0x01 R5=0x02 L4=0x04 L5=0x08); byte 17 =
   active profile (0=base); paddles only report raw when unmapped in the active profile.

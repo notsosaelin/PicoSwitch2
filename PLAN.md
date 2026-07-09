@@ -52,9 +52,11 @@ Switch, 8BitDo, …) with extended buttons (Edge paddles/Fn, Elite 4 paddles). F
 (live view, dynamic per-controller menu, **per-device remapping**, lightbar, raw-report debug).
 PC/Steam works incl. gyro. Builds on Pico W + Pico 2 W. bluepad32 removed.
 
-### 🔴 v1.1 — motion
-- **Console gyro** — decode report-0x09's motion packing (undocumented) and emit it. Blocked on a
-  decryptable BLE capture; see STATUS.md. PC gyro (report 0x05) already works.
+### 🔵 v1.1 — motion (decoded, validating)
+- **Console gyro** — report-0x09 motion **decoded** from ndeadly's unencrypted USB capture (length 30;
+  timestamp+temp header; two interleaved `[gyro,accel]` samples; accel ±8g @0x21/0x25/0x29 — the scale
+  our seam already emits). Implemented in `ns2_build_report()`; writeup in
+  `docs/switch2/report-0x09-motion.md`. **Awaiting on-console validation.** PC gyro (report 0x05) works.
 
 ### 🟡 v1.2 — reliability & polish
 - **BT pairing reliability** — fix the Pro 2 reconnect flakiness (triple-tap sometimes needed).
@@ -76,8 +78,10 @@ controllers; HD-rumble → DualSense haptics as a v1 feature.
 
 ## Reverse-engineering direction
 
-Treat the Pico as a protocol-analysis platform. The config-mode **raw-HID-report** view already lets
-us reverse new controllers live. Next instrument: a decryptable BLE sniff path for the console↔PC2
-link so the report-0x09 motion (and any future console-side unknowns) can be read directly rather
-than guessed. Every experiment belongs in `/docs/experiments` with question → hypothesis → method →
-result → remaining unknowns.
+Treat the Pico as a protocol-analysis platform. Two proven instruments so far: the config-mode
+**raw-HID-report** view (reverse new controllers live), and **direct capture parsing** — the report-0x09
+motion format was cracked by parsing ndeadly's *unencrypted USB* capture (the BLE captures are encrypted;
+USB is not — check the transport before assuming a wall). **Durable next step:** our dongle is itself a
+BT host that *decrypts* a real controller's reports, so the raw-report view can read any future Switch 2
+controller's format directly, with no external captures. Every experiment belongs in `/docs/experiments`
+with question → hypothesis → method → result → remaining unknowns.
