@@ -574,27 +574,31 @@ static void ns2_build_report(uint8_t *p) {
     p[0x0B] = 0x30;
     // 0x0C NFC, 0x0D headset.
 
-    // Motion (IMU): length byte at 0x0E, data at 0x0F (enabled by feature bit 2). The
-    // packing is NOT officially documented (ndeadly: "unknown packed format", observed
-    // lengths {0,30,40}). This is a HYPOTHESIS following the Nintendo pattern — 3 samples
-    // per report of accel XYZ + gyro XYZ (int16 LE), using the same pre-scaled values
-    // report 0x05 emits (which works on PC). Pending console verification; only emitted
-    // for controllers that actually report motion (else length stays 0 = IMU off).
+    // Motion (IMU): length byte @0x0E, data @0x0F (enabled by feature bit 2). Format
+    // DECODED from a real Pro Controller 2's report 0x09 in ndeadly's UNENCRYPTED USB
+    // capture (captures/usb/rumble-procon-gccon.pcapng). Length 30, then 15 int16 LE lanes:
+    //   0x0F timestamp (+4/report), 0x11 temperature (const ~0x0C00), then TWO IMU samples,
+    //   each interleaved [gyro_x, accel_x, gyro_y, accel_y, gyro_z, accel_z] (12 B), then a
+    //   2-byte trailer. Accel is +-8g (1g = 4096) and gyro ~16 LSB/dps — exactly what the
+    //   seam's /2 (accel) and /64 (gyro) scaling of the DualSense IMU already produces (the
+    //   same in.accel/in.gyro report 0x05 emits, which works on PC), so no rescale is
+    //   needed. See docs/switch2/report-0x09-motion.md. Emitted only when the pad has motion.
     if (in.has_motion) {
-        static uint32_t mtime = 0;
-        p[0x0E] = 40;
-        // Hypothesis 2: [timestamp u32 LE @0x0F][3 samples @0x13, each accel XYZ + gyro
-        // XYZ int16 LE]. 4 + 3*12 = 40 (the tidy read of the observed length). TommyWabg
-        // confirms accel-then-gyro int16 single-sample; the 3-sample batching is the
-        // Nintendo convention. Still a guess — the real format is undocumented and the
-        // reference captures are link-encrypted (undecryptable).
-        mtime += 3;
-        memcpy(&p[0x0F], &mtime, 4);
-        for (int s = 0; s < 3; s++) {
+        static uint16_t mtime;
+        mtime += 4;
+        p[0x0E] = 30;
+        p[0x0F] = (uint8_t)mtime;  p[0x10] = (uint8_t)(mtime >> 8);   // timestamp
+        p[0x11] = 0x00;            p[0x12] = 0x0C;                     // temperature ~0x0C00
+        for (int s = 0; s < 2; s++) {         // two samples, interleaved [gyro, accel] per axis
             uint8_t *m = &p[0x13 + s * 12];
-            memcpy(&m[0], in.accel, 6);  // accel X/Y/Z int16 LE
-            memcpy(&m[6], in.gyro, 6);   // gyro  X/Y/Z int16 LE
+            for (int ax = 0; ax < 3; ax++) {
+                m[ax * 4 + 0] = (uint8_t)in.gyro[ax];          // gyro  axis (int16 LE)
+                m[ax * 4 + 1] = (uint8_t)(in.gyro[ax] >> 8);
+                m[ax * 4 + 2] = (uint8_t)in.accel[ax];         // accel axis (int16 LE)
+                m[ax * 4 + 3] = (uint8_t)(in.accel[ax] >> 8);
+            }
         }
+        // 0x2B..0x2C trailer left 0.
     }
 }
 
