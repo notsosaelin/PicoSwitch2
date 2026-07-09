@@ -4,13 +4,9 @@
 
 #include "pico/critical_section.h"
 
-#include "sdkconfig.h"
 #include "switch_pro.h"
 
-// One slot per Bluetooth-connectable controller. The USB side only exposes the
-// first SWITCH_PRO_MAX_CONTROLLERS of these, but we keep room for every device
-// bluepad32 may connect so writes are always in-bounds.
-#define INPUT_SLOTS CONFIG_BLUEPAD32_MAX_DEVICES
+#define INPUT_SLOTS SWITCH_PRO_MAX_CONTROLLERS
 
 #define DEV_NAME_MAX 40
 

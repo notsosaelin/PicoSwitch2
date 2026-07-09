@@ -7,48 +7,8 @@
 #include "report.h"
 #include "config.h"
 
-#ifdef BT_STACK_JOYPAD
-
-// joypad-os Bluetooth stack — core1 entry (src/bt_hid/ns2_bt_host.c). Under this
-// build bluepad32 drives nothing (and is on track to be removed once the
-// joypad-os stack is proven at parity on hardware).
+// joypad-os Bluetooth stack — core1 entry (src/bt_hid/ns2_bt_host.c).
 void ns2_bt_core_task(void);
-
-#else  // bluepad32 (default, shipping)
-
-#include <uni.h>
-#include "sdkconfig.h"
-
-// Sanity check
-#ifndef CONFIG_BLUEPAD32_PLATFORM_CUSTOM
-#error "Pico W must use BLUEPAD32_PLATFORM_CUSTOM"
-#endif
-
-// Defined in my_platform.c
-struct uni_platform *get_my_platform(void);
-
-void bluepad_core_task()
-{
-	// initialize CYW43 driver architecture (will enable BT if/because CYW43_ENABLE_BLUETOOTH == 1)
-	if (cyw43_arch_init()) {
-		loge("failed to initialise cyw43_arch\n");
-		return;
-	}
-
-	// Turn-on LED. Turn it off once init is done.
-	cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
-
-	// Must be called before uni_main()
-	uni_platform_set_custom(get_my_platform());
-
-	// Initialize BP32
-	uni_init(0, NULL);
-
-	// Does not return.
-	btstack_run_loop_execute();
-}
-
-#endif  // BT_STACK_JOYPAD
 
 int
 main()
@@ -61,11 +21,7 @@ main()
 	// Load persistent settings (lightbar colours, etc.) from flash.
 	config_load();
 
-#ifdef BT_STACK_JOYPAD
 	multicore_launch_core1(ns2_bt_core_task);
-#else
-	multicore_launch_core1(bluepad_core_task);
-#endif
 	usb_core_task();
 
 	return 0;
