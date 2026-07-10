@@ -250,6 +250,23 @@ static void cmd_raw(void) {
     reply(out);
 }
 
+// Debug: the live IMU state the report builder consumes (has_motion + accel/gyro from
+// the shared cross-core state) plus the USB report state (active report id, streaming,
+// and the motion-length report 0x09 last emitted). Bisects the gyro pipeline: if accel/gyro
+// move live here, the break is downstream (report format / Steam); if frozen, it's upstream.
+extern void ns2_dbg_report_state(uint8_t *report_id, uint8_t *streaming, uint8_t *motion_len);
+static void cmd_imu(void) {
+    switch_pro_input_t in;
+    get_global_gamepad_input(0, &in);
+    uint8_t rid = 0, st = 0, mlen = 0;
+    ns2_dbg_report_state(&rid, &st, &mlen);
+    snprintf(out, sizeof(out),
+             "{\"hm\":%u,\"a\":[%d,%d,%d],\"g\":[%d,%d,%d],\"rid\":%u,\"stream\":%u,\"mlen\":%u}",
+             in.has_motion, in.accel[0], in.accel[1], in.accel[2],
+             in.gyro[0], in.gyro[1], in.gyro[2], rid, st, mlen);
+    reply(out);
+}
+
 static void handle_line(char *cmd) {
     if (strcmp(cmd, "info") == 0) {
         reply("{\"id\":\"picoswitch\",\"product\":\"PicoSwitch Config\",\"version\":\"2.0\"}");
@@ -263,6 +280,8 @@ static void handle_line(char *cmd) {
         cmd_device();
     } else if (strcmp(cmd, "raw") == 0) {
         cmd_raw();
+    } else if (strcmp(cmd, "imu") == 0) {
+        cmd_imu();
     } else if (strncmp(cmd, "getns2map ", 10) == 0) {
         cmd_getns2map(atoi(cmd + 10));
     } else if (strncmp(cmd, "setns2map ", 10) == 0) {
