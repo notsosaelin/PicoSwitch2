@@ -123,16 +123,19 @@ void router_submit_input(const input_event_t *e) {
     switch_pro_pack_stick(ns2_to12(e->analog[ANALOG_RX]),
                           (uint16_t)(4095 - ns2_to12(e->analog[ANALOG_RY])), in.right_stick);
 
-    // IMU passthrough — DualSense->Switch axis transform + scaling (accel/2, gyro/64).
-    // Report 0x05 emits this today; report 0x09's motion packing is still unknown (tracked).
+    // IMU passthrough — DualSense->Switch axis transform + scaling.
+    // accel /2 matches the genuine PC2 range (Experiment A). Gyro is passed ~1:1: the DualSense
+    // raw gyro is already close to the Switch int16 gyro scale. The old /64 collapsed it ~60x
+    // (Experiment A: genuine gyro peaked 7401 LSB, ours only 122) -> imperceptible in Steam.
+    // (Report 0x05 consumes these directly; report 0x09's int32 phase/Q16.16 rewrite is separate.)
     if (e->has_motion) {
         in.has_motion = 1;
         in.accel[0] = ns2_clamp16(-e->accel[2] / 2);
         in.accel[1] = ns2_clamp16(-e->accel[0] / 2);
         in.accel[2] = ns2_clamp16( e->accel[1] / 2);
-        in.gyro[0]  = ns2_clamp16(-e->gyro[2] / 64);
-        in.gyro[1]  = ns2_clamp16(-e->gyro[0] / 64);
-        in.gyro[2]  = ns2_clamp16( e->gyro[1] / 64);
+        in.gyro[0]  = ns2_clamp16(-e->gyro[2]);
+        in.gyro[1]  = ns2_clamp16(-e->gyro[0]);
+        in.gyro[2]  = ns2_clamp16( e->gyro[1]);
     }
 
     set_global_gamepad_input(slot, &in);

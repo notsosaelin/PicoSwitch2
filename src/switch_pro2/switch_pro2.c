@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "tusb.h"
+#include "pico/time.h"  // time_us_32() for the report-0x05 IMU timestamp
 
 #include "report.h"      // shared cross-core controller input
 #include "switch_pro.h"  // switch_pro_input_t + SWITCH_MASK_* (Switch 1 layout)
@@ -665,8 +666,22 @@ static void ns2_build_report_05(uint8_t *p) {
     p[0x29] = 0x01;  // always 0x01
 
     // Motion block @ 0x2A: timestamp(4) temp(2) accelXYZ(6) gyroXYZ(6) — int16 LE.
-    memcpy(&p[0x30], in.accel, 6);
-    memcpy(&p[0x36], in.gyro, 6);
+    // The IMU timestamp @0x2A is a free-running ~1 MHz counter. A real PC2 increments it every
+    // report; Steam integrates motion against it, so a frozen (all-zero) timestamp makes gyro
+    // appear stuck after one sample. Experiment A: genuine changed 19553/19553 reports, ours
+    // 0/20330 (docs/experiments/gyro-experiment-a-results.md). time_us_32() matches the genuine
+    // ~0.8 MHz cadence closely enough; only monotonic advance matters. Gated on has_motion so
+    // non-IMU pads keep an all-zero block (unchanged behavior) rather than a phantom timestamp.
+    if (in.has_motion) {
+        uint32_t ts = time_us_32();
+        p[0x2A] = (uint8_t)ts;
+        p[0x2B] = (uint8_t)(ts >> 8);
+        p[0x2C] = (uint8_t)(ts >> 16);
+        p[0x2D] = (uint8_t)(ts >> 24);
+        p[0x2E] = 0x01;  // constant byte a real PC2 sends here (Experiment A)
+        memcpy(&p[0x30], in.accel, 6);
+        memcpy(&p[0x36], in.gyro, 6);
+    }
 }
 
 //--------------------------------------------------------------------+
