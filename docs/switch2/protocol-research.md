@@ -103,8 +103,9 @@ New 8-byte command header (replaces the Switch 1 subcommand scheme):
 - **Byte1:** `80` LStick · `40` Minus · `20` ZL · `10` L · `08` Up · `04` Left · `02` Right · `01` Down
 - **Byte2:** `10` C · `08` GL (left grip) · `04` GR (right grip) · `02` Capture · `01` Home
 
-New buttons vs Switch 1: **C, GL, GR** (grip buttons). bluepad32 does **not** expose these
-(known project limitation) → they stay unmapped, which is fine.
+New buttons vs Switch 1: **C, GL, GR** (grip buttons). The joypad-os per-vendor drivers **do** expose
+these (via DualSense Edge paddles/Fn and Xbox Elite paddles, remappable in config) and they are
+confirmed working on-console.
 
 ## Output report `0x02` (42 bytes) — rumble
 `00` report id · 16 B HD-rumble left LRA · 16 B HD-rumble right LRA · 9 B reserved.
@@ -155,7 +156,10 @@ defeating cryptography.** Reasons:
 
 ---
 
-## 6. Proposed roadmap
+## 6. Roadmap — ✅ all shipped (v1.0 / v1.1)
+
+_Kept for historical context. Input maps via the joypad-os seam (`src/bt_hid/ns2_seam.c`), not
+bluepad32; report-0x05 gyro shipped; report-0x09 int32 motion pending._
 
 1. **Ground-truth capture** — pull ndeadly's raw `descriptors.md` hex + any USB pcap in
    `/captures`; produce an exact descriptor + handshake byte spec. *(no console needed)*
@@ -163,9 +167,10 @@ defeating cryptography.** Reasons:
    vendor + stub audio). Goal: Switch 2 enumerates it without rejecting. *(needs Switch 2)*
 3. **Command handshake** — new `src/switch_pro2/` module answering `0x07`/`0x03`/`0x0C`/
    `0x10`/`0x02`. Goal: console completes init and shows a connected PC2. *(needs Switch 2)*
-4. **Input reports** — map bluepad32 input → report `0x09` (12-bit sticks, 3-byte buttons).
+4. **Input reports** — map controller input → report `0x09` (12-bit sticks, 3-byte buttons).
    Goal: buttons/sticks work in-game. *(needs Switch 2)*
-5. **IMU + rumble** — motion passthrough into the 40-byte motion block; HD-rumble output.
+5. **IMU + rumble** — motion passthrough (report 0x05 shipped; report-0x09 int32 packing pending);
+   HD-rumble output (shipped).
 6. **Scope decision** — start with a **single** PC2 (a real PC2 is one device; 4× composite
    would be a huge descriptor). Multi-controller is a later question.
 
@@ -173,4 +178,4 @@ defeating cryptography.** Reasons:
 - `src/usb_descriptors.c` — the big one (new composite descriptor, mode-switched).
 - `src/switch_pro2/*` — new protocol module (parallel to `src/switch_pro/`).
 - `src/usb.c` — drive the new command channel + report cadence.
-- `src/pico_switch_platform.c` — map bluepad32 input into the new report format.
+- `src/bt_hid/ns2_seam.c` — map controller input into the report format (the seam).

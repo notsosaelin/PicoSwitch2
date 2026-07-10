@@ -24,30 +24,6 @@ The repository—not conversation history—must remain the authoritative source
 
 ---
 
-# Repository Updates Since Last Session
-
-The following work has already been completed outside of your previous context:
-
-* Project now builds cleanly through `build.ps1`.
-* Verified builds on:
-
-  * Raspberry Pi Pico
-  * Raspberry Pi Pico 2 W
-* BlueRetroPad32 has largely been removed.
-* Documentation infrastructure has begun.
-
-Additionally:
-
-Switch 2 has now been confirmed to support multiple native controllers through a USB hub.
-
-Multiple Switch 2 Pro Controllers enumerate and function correctly simultaneously.
-
-Reevaluate any previous assumptions regarding multiplayer support or composite device limitations.
-
-If limitations remain, determine the real architectural blocker.
-
----
-
 # Primary Mission
 
 This repository is becoming the definitive open-source implementation and technical reference for Nintendo Switch 2 controller emulation based on BlueRetro/Joypad-OS/PicoSwitch2 (My own original fork that worked as 4 pro 1 controllers).
@@ -189,9 +165,7 @@ This file changes infrequently.
 
 ## PLAN.md
 
-PLAN.md is the project roadmap. THE CURRENT PLAN.md is OUTDATED and needs to be rewritten accounting for all we have already accomplished, and updated to contain the below
-
-It should contain:
+PLAN.md is the project roadmap. Keep it current as milestones ship. It should contain:
 
 - Current objectives
 - Milestones
@@ -212,7 +186,7 @@ STATUS.md is a living snapshot of the repository.
 
 It should always reflect the current state of development.
 
-Update STATUS.md whenever significant work is completed. THIS IS NEW, THE FILE IS CURRENTLY A BLANK TEMPLATE, USE THE FORMAT IT'S IN MOVING FORWARD.
+Update STATUS.md whenever significant work is completed.
 
 It should include:
 

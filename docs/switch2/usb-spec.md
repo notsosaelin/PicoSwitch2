@@ -1,5 +1,16 @@
 # Switch 2 Pro Controller — Exact USB Emulation Spec
 
+> **⚠️ Historical bootstrap spec — the shipped code is now the source of truth.** This was the
+> pre-implementation spec; the firmware in `src/switch_pro2/` has since shipped and *legitimately
+> deviates* from parts of it. Where this doc and the code disagree, **the code + `STATUS.md` win.**
+> Known drifts corrected inline below; do not "fix" working code back toward this doc. Current
+> deviations of record: bcdDevice ships **0x0210** (not `00 02` — 0x0200 collides with a retail
+> unit's WinUSB cache; see the branch memory); input maps via the **joypad-os seam**
+> (`src/bt_hid/ns2_seam.c`), **not** bluepad32 (retired); **GL/GR/C are exposed** and confirmed
+> on-console; report-0x09 **motion is decoded** (int32 phase + Q16.16 — see
+> [report-0x09-motion.md](report-0x09-motion.md)). The load-bearing, still-correct parts — §5
+> handshake, §7 packing, §9 factory/calibration blob — are what to rely on.
+
 Byte-exact reference for making PicoSwitch2 enumerate to a Switch 2 as a **wired-USB
 Switch 2 Pro Controller** (VID `0x057E` / PID `0x2069`). Companion to the higher-level
 [protocol-research.md](protocol-research.md).
@@ -183,8 +194,8 @@ b2 = y >> 4
 
 ## 8. Output report `0x02` (rumble, received on HID `0x01`) — 42 bytes used
 `00` report id · `0x1..0x10` HD rumble left LRA (16B) · `0x11..0x20` HD rumble right LRA (16B)
-· 9B reserved. Real capture example (idle-ish sample): `02 5b8401101e0000…` repeated L/R. Packed
-HD-rumble format — decode later; first pass: non-zero → forward a generic rumble to bluepad32.
+· 9B reserved. Real capture example (idle-ish sample): `02 5b8401101e0000…` repeated L/R. The
+rumble is forwarded to the pad via the joypad-os per-vendor output-report path (shipped).
 
 ## 9. Factory / calibration blob for `0x02/04` memory reads
 
@@ -208,25 +219,34 @@ Serve on memory-read requests (real captured example values — safe to hardcode
 Memory outside these can return `0xFF` fill. Only `≥ 0x1F5000` is writable (`0x02/05`); reject
 writes below with status `0x81`. Back this with a small static table, not real flash.
 
-## 10. Mapping bluepad32 → report `0x09`
+## 10. Mapping controller input → report `0x09`
+Input arrives from the joypad-os bthid stack as `input_event_t` and is mapped in
+`src/bt_hid/ns2_seam.c` (per-family remap) → `switch_pro_input_t` → §7 packing.
 - Buttons: A/B/X/Y, L/R/ZL/ZR, Plus/Minus/Home/Capture, L3/R3, dpad → §7 bitmap.
-- **C, GL, GR are not exposed by bluepad32** (existing project limitation) → leave 0.
-- Sticks: bluepad32 axes → rescale to 0–4095, center 2048.
-- IMU/rumble: later phases (motion format unknown; rumble packing TBD).
+- **C, GL, GR are exposed** by the per-vendor drivers (DualSense Edge paddles/Fn, Xbox Elite
+  paddles → GL/GR/Capture/C via the config remap) and confirmed on-console.
+- Sticks: driver axes (0–255) → 12-bit (0–4095), center 2048, Y inverted.
+- IMU: report 0x05 shipped; report-0x09 int32 rewrite pending ([report-0x09-motion.md](report-0x09-motion.md)). Rumble: shipped (§8).
 
 ## 11. Open questions
 
 - ✅ **RESOLVED — USB command transport:** vendor-bulk EP2 for commands, HID EP1 for input+rumble.
 - ✅ **RESOLVED — response ACK bytes:** USB uses `00 f8` with `transport=0x00`.
-- **Is the `0x15` AES pairing mandatory for wired input?** Implement it (public key, mbedtls) to
-  be safe; a later test can tell whether it's skippable.
-- **Audio interfaces required?** Try Option B (no audio) first; fall back to Option A.
-- **Report `0x09` motion packing** (40B) — unknown; ship with IMU off first.
-- Which memory reads are strictly mandatory to reach "connected" (serve them all to be safe).
-- bcdDevice comment/byte discrepancy (use bytes `00 02`).
+- ✅ **RESOLVED — EP0 identity handshake:** after SET_CONFIGURATION the console reads 3 vendor
+  control requests on EP0 (0x03 identity / 0x02 info / 0x04 ack) *before* the bulk channel — this was
+  the real console-detection gate (see §5).
+- ✅ **RESOLVED — `0x15` AES pairing is not required for wired input.** Implemented anyway; a
+  well-formed but cryptographically-wrong `B2` is accepted (the wired session stores, not verifies).
+- ✅ **RESOLVED — audio interfaces:** the full Option-A descriptor (HID + vendor + 3 audio) ships and
+  the console accepts it (audio stubbed).
+- ✅ **RESOLVED — report `0x09` motion packing:** decoded — int32 phase + Q16.16 accel, len 30, gated
+  behind the `0x0C` enable. See [report-0x09-motion.md](report-0x09-motion.md).
+- ✅ **RESOLVED — bcdDevice:** ship **0x0210**. `00 02`/`0x0200` and `0x0201` collide with a retail
+  unit's Windows WinUSB cache; 0x0210 is console-neutral and keeps PC enumeration clean.
+- **Open:** which memory reads are strictly mandatory to reach "connected" (we serve them all).
 
-## 12. Recommended first milestone
-Option-B descriptor (`PID 0x2069`, HID + vendor bulk, no audio) + a command dispatcher on EP2
-that replays the §5 responses (**including a correct `0x15/02` AES reply**) + a static report
-`0x09` on EP1 (neutral sticks `0x0800`, no buttons). **Success = the Switch 2 shows a connected
-Pro Controller 2.** Then wire bluepad32 input → §7 packing, then IMU, then rumble.
+## 12. First milestone — ✅ achieved
+The bootstrap target (the Switch 2 shows a connected Pro Controller 2) shipped, then live input,
+rumble, and PC/Steam gyro on top. Historical path: an Option-B (no-audio) descriptor + the §5 EP2
+dispatcher + a static report `0x09` first reached "connected"; the shipped build uses the full
+Option-A descriptor and maps live input via the joypad-os seam (§10).
