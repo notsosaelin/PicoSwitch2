@@ -50,13 +50,20 @@ Native Switch 2 Pro Controller: console detection, all buttons incl. **GL/GR/C**
 **rumble**, **250 Hz** poll. Every joypad-os controller supported (DualSense/Edge, Xbox/Elite 2,
 Switch, 8BitDo, …) with extended buttons (Edge paddles/Fn, Elite 4 paddles). Full **config web UI**
 (live view, dynamic per-controller menu, **per-device remapping**, lightbar, raw-report debug).
-PC/Steam works incl. gyro. Builds on Pico W + Pico 2 W. bluepad32 removed.
+PC/Steam enumerates as a Switch 2 Pro with full buttons/sticks (gyro added in v1.1). Builds on
+Pico W + Pico 2 W. bluepad32 removed.
 
-### 🔵 v1.1 — motion (decoded, validating)
-- **Console gyro** — report-0x09 motion **decoded** from ndeadly's unencrypted USB capture (length 30;
-  timestamp+temp header; two interleaved `[gyro,accel]` samples; accel ±8g @0x21/0x25/0x29 — the scale
-  our seam already emits). Implemented in `ns2_build_report()`; writeup in
-  `docs/switch2/report-0x09-motion.md`. **Awaiting on-console validation.** PC gyro (report 0x05) works.
+### 🟡 v1.1 — motion (gyro)
+- **PC / Steam gyro (report 0x05) — ✅ working.** Root-caused via Experiment A (USBPcap genuine vs
+  ours): the IMU timestamp @`p[0x2A]` was never written (froze Steam's motion integration) and gyro
+  was ~60× under-scaled. Fixed (`ns2_build_report_05` timestamp + seam gyro `/64`→`/1`), validated
+  live in Steam. See `docs/experiments/gyro-experiment-a-results.md`.
+- **Console gyro (report 0x09) — 🔵 format corrected, firmware rewrite pending.** The motion block is
+  **three int32 angular-phase accumulators + three int32 Q16.16 accelerometer values** — *not* the
+  interleaved-int16 model first shipped (refuted, then verified on our capture:
+  `docs/switch2/report-0x09-motion.md`). Motion is a **negotiated feature**: streams `len=0` until the
+  `0x0C` feature-enable (mask `0x27`), not always-on (`docs/experiments/gyro-experiment-c-results.md`).
+  Next: rewrite `ns2_build_report()` to the int32 format + gate on the enable, then validate on-console.
 
 ### 🟡 v1.2 — reliability & polish
 - **BT pairing reliability** — fix the Pro 2 reconnect flakiness (triple-tap sometimes needed).

@@ -40,8 +40,8 @@ Every driver normalizes to this bitmask (bit index = W3C button index):
 Active-high. **Analog axes** (0–255, center 128; L2/R2 0=released): `LX,LY,RX,RY,L2,R2,RZ`.
 **Y convention:** 0=up, 255=down (HID standard); Nintendo pads (inverted Y) invert before submitting.
 
-The three columns that matter for us: `L4/R4/A2` are exactly the **GL/GR/C** the Switch 2 has and
-bluepad32 hides.
+The three columns that matter for us: `L4/R4/A2` are exactly the **GL/GR/C** the Switch 2 has —
+now exposed by these per-vendor drivers (bluepad32 hid them). Confirmed on-console.
 
 ---
 
@@ -101,11 +101,12 @@ controller, and confirms our stick/button wire layout from the receive side.
 
 ## 5. Gyro / IMU
 
-- **DualSense/DS4/Switch** expose gyro+accel; the driver decodes to signed rates. Our existing
-  `fill_input` already applies the proven **DualSense→Switch** axis transform
-  (`sw.x=−ds.z, sw.y=−ds.x, sw.z=+ds.y`) into `switch_pro_input_t.{accel,gyro}` — reuse it per-driver.
-- Emission: **report 0x05** carries documented accel/gyro (works on PC). **Report 0x09** (console)
-  motion packing is still unknown → tracked as a separate RE task, not blocking the migration.
+- **DualSense/DS4/Switch** expose gyro+accel; the driver decodes to signed rates. The seam
+  (`ns2_seam.c`) applies the proven **DualSense→Switch** axis transform
+  (`sw.x=−ds.z, sw.y=−ds.x, sw.z=+ds.y`) into `switch_pro_input_t.{accel,gyro}`.
+- Emission: **report 0x05** carries accel/gyro and **works on Steam** (after the Experiment A
+  timestamp + scale fix). **Report 0x09** (console) motion is decoded (int32 phase + Q16.16); the
+  firmware rewrite is tracked separately ([../switch2/report-0x09-motion.md](../switch2/report-0x09-motion.md)).
 
 ## 6. Rumble
 
