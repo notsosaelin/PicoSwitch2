@@ -119,6 +119,8 @@
         </table>
         <div id="rawReport" class="muted" title="Raw HID report from the controller — watch which byte changes when you press an unmapped button"
              style="font-family:ui-monospace,Consolas,monospace;font-size:11px;margin-top:14px;word-break:break-all">raw: &mdash;</div>
+        <div id="imuLine" class="muted" title="Live IMU state the report builder consumes — move the controller: accel/gyro should change"
+             style="font-family:ui-monospace,Consolas,monospace;font-size:11px;margin-top:6px;word-break:break-all">imu: &mdash;</div>
       </section>
 
       <section class="q">
@@ -318,6 +320,15 @@ async function loadMap(fam) {
   }
 }
 
+// ---- live IMU state (gyro-pipeline debug) ----
+function renderImu(d) {
+  if (!d || d.hm === undefined) return;
+  const a = d.a || [0, 0, 0], g = d.g || [0, 0, 0];
+  $("#imuLine").textContent =
+    `imu: has_motion=${d.hm} rid=0x${(d.rid || 0).toString(16)} stream=${d.stream} mlen=${d.mlen}`
+    + ` | accel=[${a.join(", ")}] gyro=[${g.join(", ")}]`;
+}
+
 // ---- raw report + Elite profile warning ----
 function renderRaw(r) {
   if (!r || r.bytes === undefined) return;
@@ -381,6 +392,7 @@ async function pollLoop() {
   while (port && polling) {
     renderLive(await sendCmd("state", true));
     renderRaw(await sendCmd("raw", true));
+    renderImu(await sendCmd("imu", true));
     if (tick % 14 === 0) renderDevice(await sendCmd("device", true));  // name changes rarely
     tick++;
     await new Promise(r => setTimeout(r, 70));

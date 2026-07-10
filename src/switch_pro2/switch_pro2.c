@@ -359,6 +359,15 @@ static uint8_t ns2_report_id = 0x09;
 // that sends unsolicited reports. A WinUSB PC also sends 0x03/0A, so Steam still works.
 static bool ns2_streaming = false;
 
+// Debug instrumentation: the motion length byte the last report-0x09 build emitted, and
+// a getter for the USB-side report state (read by config mode to bisect the gyro pipeline).
+static uint8_t ns2_dbg_motion_len = 0;
+void ns2_dbg_report_state(uint8_t *report_id, uint8_t *streaming, uint8_t *motion_len) {
+    if (report_id) *report_id = ns2_report_id;
+    if (streaming) *streaming = ns2_streaming ? 1 : 0;
+    if (motion_len) *motion_len = ns2_dbg_motion_len;
+}
+
 // Diagnostic (NS2_DIAG): how far the host got, blinked on the LED by
 // pico_switch_platform.c. 0 none · 1 device desc read · 2 config desc read ·
 // 3 configured (SET_CONFIGURATION) · 4 first vendor cmd · 5 pairing challenge
@@ -600,6 +609,7 @@ static void ns2_build_report(uint8_t *p) {
         }
         // 0x2B..0x2C trailer left 0.
     }
+    ns2_dbg_motion_len = p[0x0E];  // debug: motion length report 0x09 just emitted (0 or 30)
 }
 
 // Report 0x05 (common format): 4-byte buttons + DOCUMENTED accel/gyro block.
