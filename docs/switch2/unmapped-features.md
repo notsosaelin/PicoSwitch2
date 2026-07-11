@@ -15,9 +15,22 @@ While the core functionality of the PicoSwitch2 (connecting Bluetooth controller
 - **Current Behavior:** `ns2_hid_out_report` simply extracts the *peak amplitude* of the left and right LRAs and forwards a unified 0-255 amplitude back to the connected Bluetooth device. The frequency data and stereo-separation are lost.
 
 ### 3. NFC / Amiibo
-- **Status:** **Unmapped**
-- **Details:** The console can request NFC operations (command `0x01`).
-- **Current Behavior:** We hardcode an idle state / empty acknowledgment to satisfy the console. We do not read Amiibo data or forward NFC commands to connected controllers.
+- **Status:** **🔵 Partially reverse-engineered, still unmapped (implementation unchanged).**
+- **Details:** The console requests NFC operations via command `0x01`, whose subcommand family
+  and one full request/response pair (subcommand `0x0C`) are now traced to exact packets in this
+  repo's own genuine-controller capture, plus a second, previously-undocumented exchange
+  (subcommand `0x01`, bare acknowledgment). Full confidence-qualified inventory, six-claim
+  evidence separation (official confirmation vs. hardware ID vs. protocol behavior, per
+  controller type), and the next recommended capture/analysis task:
+  [`docs/switch2/nfc-protocol-inventory.md`](nfc-protocol-inventory.md). No NFC IC has been
+  identified in either controller; no real amiibo tag transaction (detect/read/write/mount/
+  unmount) has been observed in any capture this project holds.
+- **Current Behavior (unchanged this pass):** We hardcode an idle state / empty acknowledgment
+  (subcommand `0x0C` returns the real captured bytes `61 12 50 10`; all other subcommands return
+  an empty response) to satisfy the console. We do not read Amiibo data or forward NFC commands
+  to connected controllers. **Known discrepancy, not yet fixed:** the response "dir" byte is
+  hardcoded to `0x01` for every command response; the one genuine capture of a bare-ack NFC
+  response (subcommand `0x01`) used `dir=0x04` instead — see the inventory doc §2.3.
 
 ### 4. USB Audio
 - **Status:** **Stubbed / Nonfunctional**

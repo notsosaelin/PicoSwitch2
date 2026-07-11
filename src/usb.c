@@ -50,6 +50,9 @@ void usb_core_task() {
         tud_task();
 
         if (g_usb_config_mode) {
+#ifdef NS2_PRO
+            ns2_motion_debug_tick();
+#endif
             config_cdc_task();
             continue;
         }

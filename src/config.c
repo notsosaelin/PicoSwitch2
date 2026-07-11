@@ -10,6 +10,8 @@
 #include "ns2_remap.h"   // NS2_FAM_COUNT / NS2_SRC_COUNT / NS2_DST_*
 #include "report.h"      // get_global_raw_buttons / get_global_gamepad_input (live view)
 #include "switch_pro.h"  // switch_pro_input_t
+#include "switch_pro2.h" // ns2_dbg_* getters (report-0x09 motion/gyro debug instrumentation)
+#include "sw2_capture.h" // genuine Switch 2 BLE raw-traffic capture/export (2026-07-10)
 
 #include <string.h>
 #include <stdio.h>
@@ -149,7 +151,11 @@ void config_service_save(void) {
 #define LINE_MAX 128
 static char line[LINE_MAX];
 static uint16_t line_len;
-static char out[256];
+// 4096: sized for "sw2cap drain"'s batch reply (up to SW2CAP_DRAIN_MAX=16 entries, each up to
+// ~235 B with 64 hex-encoded payload bytes) — the largest reply this protocol produces. Also
+// comfortably covers "imuanom" (30 hex-encoded motion bytes + a 4-entry trail + per-axis
+// context), which no longer fits in the 256 B every simpler reply uses.
+static char out[4096];
 
 static void reply(const char *s) {
     tud_cdc_write_str(s);
@@ -254,17 +260,164 @@ static void cmd_raw(void) {
 // the shared cross-core state) plus the USB report state (active report id, streaming,
 // and the motion-length report 0x09 last emitted). Bisects the gyro pipeline: if accel/gyro
 // move live here, the break is downstream (report format / Steam); if frozen, it's upstream.
-extern void ns2_dbg_report_state(uint8_t *report_id, uint8_t *streaming, uint8_t *motion_len);
+// (Getter prototypes come from switch_pro2.h; bias/still added 2026-07-10 for the stillness-gate
+// hardware check, phase added the same day after the symptom was reclassified from gradual drift
+// to abrupt jumps, anom added the same day again for the mathematically-derived discontinuity
+// detector — see switch_pro2.c's NS2_MAX_PHASE_DELTA derivation.)
 static void cmd_imu(void) {
     switch_pro_input_t in;
     get_global_gamepad_input(0, &in);
     uint8_t rid = 0, st = 0, mlen = 0;
     ns2_dbg_report_state(&rid, &st, &mlen);
+    int32_t bias[3] = {0, 0, 0};
+    uint8_t still = 0;
+    ns2_dbg_motion_bias(bias, &still);
+    int32_t phase[3] = {0, 0, 0};
+    ns2_dbg_motion_phase(phase);
+    uint32_t anom_seq = ns2_dbg_motion_anomaly()->seq;
     snprintf(out, sizeof(out),
-             "{\"hm\":%u,\"a\":[%d,%d,%d],\"g\":[%d,%d,%d],\"rid\":%u,\"stream\":%u,\"mlen\":%u}",
+             "{\"hm\":%u,\"a\":[%d,%d,%d],\"g\":[%d,%d,%d],\"rid\":%u,\"stream\":%u,\"mlen\":%u,"
+             "\"bias\":[%ld,%ld,%ld],\"still\":%u,\"phase\":[%ld,%ld,%ld],\"anom\":%lu}",
              in.has_motion, in.accel[0], in.accel[1], in.accel[2],
-             in.gyro[0], in.gyro[1], in.gyro[2], rid, st, mlen);
+             in.gyro[0], in.gyro[1], in.gyro[2], rid, st, mlen,
+             (long)bias[0], (long)bias[1], (long)bias[2], still,
+             (long)phase[0], (long)phase[1], (long)phase[2], (unsigned long)anom_seq);
     reply(out);
+}
+
+// Full context for the most recent report-0x09 phase-discontinuity anomaly (see
+// switch_pro2.c's NS2_MAX_PHASE_DELTA — a bound derived from the encoder's own arithmetic
+// limits, not a heuristic threshold). Call after `imu`'s "anom" count is nonzero; the reply is
+// large (trail + 30 motion bytes), so it is its own command rather than folded into the
+// frequently-polled `imu` line.
+static void cmd_imuanom(void) {
+    const ns2_anom_capture_t *a = ns2_dbg_motion_anomaly();
+    if (!a->valid) {
+        reply("{\"valid\":0}");
+        return;
+    }
+    int j = snprintf(out, sizeof(out),
+        "{\"valid\":1,\"seq\":%lu,\"gyro\":[%d,%d,%d],\"accel\":[%d,%d,%d],"
+        "\"g\":[%ld,%ld,%ld],\"bias\":[%ld,%ld,%ld],\"still\":%u,\"dt_us\":%lu,"
+        "\"phase_before\":[%ld,%ld,%ld],\"phase_after\":[%ld,%ld,%ld],\"delta\":[%ld,%ld,%ld],"
+        "\"imu_tick\":%u,\"tick_count\":%u,\"imu_enabled\":%u,\"motion_len\":%u,\"bytes\":\"",
+        (unsigned long)a->seq, a->gyro[0], a->gyro[1], a->gyro[2],
+        a->accel[0], a->accel[1], a->accel[2],
+        (long)a->g[0], (long)a->g[1], (long)a->g[2],
+        (long)a->bias[0], (long)a->bias[1], (long)a->bias[2], a->still, (unsigned long)a->dt_us,
+        (long)a->phase_before[0], (long)a->phase_before[1], (long)a->phase_before[2],
+        (long)a->phase_after[0], (long)a->phase_after[1], (long)a->phase_after[2],
+        (long)a->delta[0], (long)a->delta[1], (long)a->delta[2],
+        a->imu_tick, a->tick_count, a->imu_enabled, a->motion_len);
+    for (int i = 0; i < 30 && j < (int)sizeof(out) - 6; i++)
+        j += snprintf(out + j, sizeof(out) - j, "%02x", a->motion_bytes[i]);
+    j += snprintf(out + j, sizeof(out) - j, "\",\"trail\":[");
+    for (int i = 0; i < NS2_ANOM_TRAIL && j < (int)sizeof(out) - 96; i++) {
+        const ns2_anom_trail_t *t = &a->trail[i];
+        j += snprintf(out + j, sizeof(out) - j,
+            "%s{\"gyro\":[%d,%d,%d],\"delta\":[%ld,%ld,%ld],\"still\":%u,\"dt_us\":%lu}",
+            i ? "," : "", t->gyro[0], t->gyro[1], t->gyro[2],
+            (long)t->delta[0], (long)t->delta[1], (long)t->delta[2],
+            t->still, (unsigned long)t->dt_us);
+    }
+    snprintf(out + j, sizeof(out) - j, "]}");
+    reply(out);
+}
+
+// Genuine Switch 2 BLE raw-traffic capture (2026-07-10) — see sw2_capture.h. Off by default;
+// `sw2cap on` starts a fresh session (clears the ring + drop counter), `sw2cap off` stops it,
+// `sw2cap stat` reports whether it's running and how many entries have been dropped (ring
+// overrun — meaningful only as "something didn't get read fast enough", not a data-quality
+// signal about the controller itself), `sw2cap drain` pops up to SW2CAP_DRAIN_MAX buffered
+// entries into one JSON reply (plus the same capturing/dropped fields `stat` reports, so a
+// client can poll `drain` alone and get full status + data in one round trip). Pull-based by
+// design — see sw2_capture.h's revision note on why this replaced auto-streaming.
+//
+// `sw2cap gattdisc on|off|stat` controls the separate, off-by-default one-shot GATT discovery
+// tool (see sw2_capture.h) — ground truth for raw ATT handle numbering.
+//
+// `sw2cap variant <0-6>` arms one of the v2 feature-enable experiment's six variants (0 = off);
+// `sw2cap variant stat` reports which is currently armed (see sw2_capture.h for what each
+// variant does). Independent of plain capture on/off, so a session can capture normal traffic
+// first and only arm an experiment when explicitly asked. Do not arm gattdisc and a variant in
+// the same session (see sw2_capture.h).
+#define SW2CAP_DRAIN_MAX 16
+static void cmd_sw2cap(const char *arg) {
+    if (strcmp(arg, "on") == 0) {
+        sw2_capture_set_enabled(true);
+        reply("{\"ok\":true,\"capturing\":true}");
+    } else if (strcmp(arg, "off") == 0) {
+        sw2_capture_set_enabled(false);
+        reply("{\"ok\":true,\"capturing\":false}");
+    } else if (strcmp(arg, "stat") == 0) {
+        snprintf(out, sizeof(out), "{\"capturing\":%s,\"dropped\":%lu}",
+                 sw2_capture_get_enabled() ? "true" : "false",
+                 (unsigned long)sw2_capture_dropped_count());
+        reply(out);
+    } else if (strcmp(arg, "drain") == 0) {
+        int j = snprintf(out, sizeof(out), "{\"capturing\":%s,\"dropped\":%lu,\"entries\":[",
+                          sw2_capture_get_enabled() ? "true" : "false",
+                          (unsigned long)sw2_capture_dropped_count());
+        sw2_cap_entry_t e;
+        int n = 0;
+        bool more = false;
+        while (n < SW2CAP_DRAIN_MAX) {
+            if (!sw2_capture_drain_one(&e)) break;
+            int entry_j = snprintf(out + j, sizeof(out) - j,
+                "%s{\"us\":%llu,\"kind\":\"%s\",\"handle\":\"0x%04X\",\"len\":%u,\"orig_len\":%u,\"bytes\":\"",
+                n ? "," : "", (unsigned long long)e.us, sw2_capture_kind_name(e.kind),
+                e.handle, e.len, e.orig_len);
+            j += entry_j;
+            for (int i = 0; i < e.len && j < (int)sizeof(out) - 8; i++)
+                j += snprintf(out + j, sizeof(out) - j, "%02x", e.data[i]);
+            j += snprintf(out + j, sizeof(out) - j, "\"}");
+            n++;
+        }
+        // Report whether more remain buffered right now (for adaptive client polling), without
+        // consuming an entry to check — has_more would need its own peek; cheaply approximated
+        // by "we stopped because we hit the cap, not because the ring was empty" is not quite
+        // right either, so just try one more non-destructive check via a drain+not-found probe
+        // is unnecessary complexity here: SW2CAP_DRAIN_MAX draining every ~40ms comfortably
+        // outpaces realistic BLE notification rates (see the protocol inventory doc), so treat
+        // "hit the cap" as the practical signal to poll again immediately.
+        more = (n == SW2CAP_DRAIN_MAX);
+        snprintf(out + j, sizeof(out) - j, "],\"more\":%s}", more ? "true" : "false");
+        reply(out);
+    } else if (strcmp(arg, "gattdisc on") == 0) {
+        sw2_set_gatt_discovery_enabled(true);
+        reply("{\"ok\":true,\"gattdisc\":true}");
+    } else if (strcmp(arg, "gattdisc off") == 0) {
+        sw2_set_gatt_discovery_enabled(false);
+        reply("{\"ok\":true,\"gattdisc\":false}");
+    } else if (strcmp(arg, "gattdisc stat") == 0) {
+        snprintf(out, sizeof(out), "{\"gattdisc\":%s}",
+                 sw2_get_gatt_discovery_enabled() ? "true" : "false");
+        reply(out);
+    } else if (strcmp(arg, "variant stat") == 0) {
+        snprintf(out, sizeof(out), "{\"variant\":%d}", sw2_get_v2_variant());
+        reply(out);
+    } else if (strncmp(arg, "variant ", 8) == 0) {
+        int n = atoi(arg + 8);
+        if (n < 0 || n > 6) {
+            reply("{\"error\":\"variant must be 0-6 (0=off)\"}");
+        } else {
+            sw2_set_v2_variant((uint8_t)n);
+            snprintf(out, sizeof(out), "{\"ok\":true,\"variant\":%d}", n);
+            reply(out);
+        }
+    } else if (strncmp(arg, "mark ", 5) == 0) {
+        // Capture-session annotation (see sw2_capture.h's sw2_capture_mark()) -- a pure logging
+        // call, does not touch the BLE connection/init/report path at all. Truncated to
+        // SW2_CAP_MAX_DATA (64 bytes) same as every other capture entry's payload.
+        const char *label = arg + 5;
+        size_t len = strlen(label);
+        if (len > 64) len = 64;
+        sw2_capture_mark((const uint8_t *)label, (uint16_t)len);
+        snprintf(out, sizeof(out), "{\"ok\":true,\"marked\":\"%.64s\"}", label);
+        reply(out);
+    } else {
+        reply("{\"error\":\"usage: sw2cap on|off|stat|drain|gattdisc on|off|stat|variant <0-6>|variant stat|mark <text>\"}");
+    }
 }
 
 static void handle_line(char *cmd) {
@@ -282,6 +435,10 @@ static void handle_line(char *cmd) {
         cmd_raw();
     } else if (strcmp(cmd, "imu") == 0) {
         cmd_imu();
+    } else if (strcmp(cmd, "imuanom") == 0) {
+        cmd_imuanom();
+    } else if (strncmp(cmd, "sw2cap ", 7) == 0) {
+        cmd_sw2cap(cmd + 7);
     } else if (strncmp(cmd, "getns2map ", 10) == 0) {
         cmd_getns2map(atoi(cmd + 10));
     } else if (strncmp(cmd, "setns2map ", 10) == 0) {
@@ -322,4 +479,6 @@ void config_cdc_task(void) {
             line[line_len++] = (char)c;
         }
     }
+    // BLE capture entries (see sw2_capture.h) are pulled explicitly via `sw2cap drain`, not
+    // auto-streamed here — a client (the web UI) polls it like any other command.
 }
