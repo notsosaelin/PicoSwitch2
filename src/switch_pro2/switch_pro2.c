@@ -360,6 +360,11 @@ static uint8_t ns2_report_id = 0x09;
 // that sends unsolicited reports. A WinUSB PC also sends 0x03/0A, so Steam still works.
 static bool ns2_streaming = false;
 
+// IMU feature gate. A real PC2 streams report 0x09 with motion length 0 until the host enables the
+// IMU via the 0x0C/0x04 feature command (mask 0x27) — Experiment C. We withhold the report-0x09
+// motion block until then (report 0x05 / Steam is unaffected). Reset per host session (tud_mount_cb).
+static bool ns2_imu_enabled = false;
+
 // Debug instrumentation: the motion length byte the last report-0x09 build emitted, and
 // a getter for the USB-side report state (read by config mode to bisect the gyro pipeline).
 static uint8_t ns2_dbg_motion_len = 0;
@@ -367,6 +372,230 @@ void ns2_dbg_report_state(uint8_t *report_id, uint8_t *streaming, uint8_t *motio
     if (report_id) *report_id = ns2_report_id;
     if (streaming) *streaming = ns2_streaming ? 1 : 0;
     if (motion_len) *motion_len = ns2_dbg_motion_len;
+}
+
+// Motion-integration state for report 0x09, promoted to file scope (was function-local
+// statics) so ns2_dbg_motion_bias() below can expose it live — see the 2026-07-10 (test 2)
+// hardware finding that the stillness gate may never fire; this lets the next hardware pass
+// confirm it directly instead of guessing again.
+static uint16_t ns2_imu_tick;
+static uint32_t ns2_phase[3] = { 0, 0, 0x80000000u };  // Z starts ~ -180 deg (from capture)
+static uint32_t ns2_motion_last_us;
+static int32_t  ns2_gyro_lp[3];      // gyro low-pass, <<6 fixed point
+static int32_t  ns2_gyro_bias[3];    // slow bias estimate, <<6 fixed point
+static int32_t  ns2_gyro_prev_raw[3];
+static int32_t  ns2_gyro_jitter[3];  // EMA of |raw - prev_raw|, <<6 fixed point — the stillness signal
+static uint8_t  ns2_dbg_still;       // stillness gate state from the most recent report
+
+// Debug: bias estimate (converted to raw LSB units) + whether the stillness gate is
+// currently open. If `still` never reads 1 while the controller sits motionless on real
+// hardware, the gate itself is broken (not just under-tuned) — read this before touching
+// the bias-tracker constants again.
+void ns2_dbg_motion_bias(int32_t bias_out[3], uint8_t *still_out) {
+    if (bias_out) for (int i = 0; i < 3; i++) bias_out[i] = ns2_gyro_bias[i] >> 6;
+    if (still_out) *still_out = ns2_dbg_still;
+}
+
+// Debug: the CURRENT report-0x09 phase[] accumulator (raw int32, binary-angle units — 2^32 ==
+// 360 deg), as it would be written into the report right now if the IMU were enabled. Added
+// 2026-07-10 after the symptom was reclassified from gradual "drift" to abrupt multidirectional
+// jumps: bias/still alone can't distinguish "our own phase computation has a discontinuity" from
+// "our math is smooth but the console expects a different value semantic (e.g. a bounded raw
+// sample rather than an unbounded accumulator, per the sibling native-BLE motion format —
+// docs/experiments/switch2_native_motion_map_DyCOOL.md)." Watching this while the controller sits
+// still answers the first question directly, with no console needed.
+void ns2_dbg_motion_phase(int32_t phase_out[3]) {
+    if (phase_out) for (int i = 0; i < 3; i++) phase_out[i] = (int32_t)ns2_phase[i];
+}
+
+// The tracked timing word for the CURRENT phase[] values (set inside ns2_motion_tick(),
+// consumed by ns2_build_report() when actually writing report bytes).
+static uint16_t ns2_motion_timing;
+
+// Serialize timing/temperature/phase/accel into the 30-byte report-0x09 motion block
+// (docs/switch2/report-0x09-motion.md layout). Shared by ns2_build_report() (the real,
+// transmitted report) and the anomaly capture below (ns2_last_anom.motion_bytes) — using
+// ONE function for both means "does the phase->bytes serialization ever diverge from what's
+// actually sent" is answered by code structure (it physically cannot: same function, same
+// inputs, called at the same point), not by a separate, potentially-drifting copy of the
+// byte-packing logic.
+static void ns2_encode_motion30(uint8_t out[30], uint16_t timing, const int32_t phase[3],
+                                 const int16_t accel[3]) {
+    out[0x00] = (uint8_t)timing;  out[0x01] = (uint8_t)(timing >> 8);
+    out[0x02] = 0x00;             out[0x03] = 0x0C;  // temperature 0x0C00
+    for (int ax = 0; ax < 3; ax++) {
+        uint8_t *q = &out[0x04 + ax * 4];
+        int32_t v = phase[ax];
+        q[0] = (uint8_t)v;         q[1] = (uint8_t)(v >> 8);
+        q[2] = (uint8_t)(v >> 16); q[3] = (uint8_t)(v >> 24);
+    }
+    for (int ax = 0; ax < 3; ax++) {  // accel -> Q16.16 (integer counts << 16; 4096 = 1 g)
+        int32_t a = (int32_t)accel[ax] * 65536;
+        uint8_t *q = &out[0x10 + ax * 4];
+        q[0] = (uint8_t)a;         q[1] = (uint8_t)(a >> 8);
+        q[2] = (uint8_t)(a >> 16); q[3] = (uint8_t)(a >> 24);
+    }
+    out[0x1C] = 0; out[0x1D] = 0;  // tail
+}
+
+// ---- Discontinuity detector: bound derived from ns2_motion_tick()'s own arithmetic, not
+// chosen. Every value that can flow into a single phase increment is independently bounded:
+//   - in->gyro[ax] is int16_t (type-bounded, [-32768,32767]) and additionally clamped to that
+//     same range by ns2_clamp16() in ns2_seam.c before it ever reaches here.
+//   - ns2_gyro_lp[] is an EMA (weight 1/4) of that bounded input. By induction (a convex
+//     combination — glp_next = glp + (input-glp)>>2 — of values already in [-M,M] with an
+//     input in [-M,M] stays in [-M,M], and glp starts at 0), |ns2_gyro_lp[ax]| <= 32768<<6.
+//   - ns2_gyro_bias[] is the same EMA shape (weight 1/256) tracking ns2_gyro_lp[], so by the
+//     same induction |ns2_gyro_bias[ax]| <= 32768<<6 too.
+//   - g = (ns2_gyro_lp - ns2_gyro_bias) >> 6. By the triangle inequality, |g| <=
+//     2 * 32768<<6 / 64 = 2 * 32768 -- the honest worst case if glp and bias were ever at
+//     opposite extremes simultaneously (not expected of well-behaved sensor data, but not
+//     excluded by the code's own logic, so used here rather than a tighter guess).
+//   - dt_us is clamped to [500,16000] by this same function, a few lines below.
+// NS2_MAX_PHASE_DELTA is the largest |phase increment| this arithmetic can produce without a
+// computation defect (overflow, a clamp bypassed, memory corruption). It is a ceiling derived
+// from the code as written, not a heuristic "this looks too big" guess -- exceeding it proves a
+// defect in this function specifically, independent of what the phase VALUE should mean.
+#define NS2_MAX_G_MAGNITUDE 65536   // 2 * int16 range; see derivation above
+#define NS2_MAX_DT_US       16000   // this function's own dt_us ceiling, a few lines below
+#define NS2_MAX_PHASE_DELTA \
+    ((int32_t)((int64_t)NS2_MAX_G_MAGNITUDE * NS2_MAX_DT_US * 72818 / 100000))  // ~763.5M, ~64.0 deg
+
+// Small ring buffer of recent ticks' lightweight state, kept purely so an anomaly capture (below)
+// has real preceding context ("surrounding" state), not just the offending tick in isolation.
+// NS2_ANOM_TRAIL is defined in switch_pro2.h (shared with ns2_anom_capture_t's trail[] sizing).
+static ns2_anom_trail_t ns2_anom_trail[NS2_ANOM_TRAIL];
+static uint8_t ns2_anom_trail_pos;
+
+// Full context captured the moment a phase increment exceeds NS2_MAX_PHASE_DELTA. Pure
+// observability: nothing here feeds back into ns2_phase[], the bias tracker, or the transmitted
+// report -- this task is explicitly "detect and expose," not "correct."
+static ns2_anom_capture_t ns2_last_anom;
+static uint32_t ns2_anom_seq;  // total anomalies seen since boot (0 = none yet)
+
+const ns2_anom_capture_t *ns2_dbg_motion_anomaly(void) { return &ns2_last_anom; }
+
+// One step of the motion integration/bias-tracking state machine (timing, stillness gate,
+// bias tracker, phase integration) — everything EXCEPT writing bytes into a report buffer.
+// Deliberately independent of ns2_imu_enabled/ns2_streaming: a genuine PC2 withholds the
+// motion BLOCK until the host negotiates it, but there's no reason the internal state has to
+// wait too, and (2026-07-10 hardware finding) it must not, structurally — see
+// ns2_motion_debug_tick() below for why.
+static void ns2_motion_tick(const switch_pro_input_t *in) {
+    // Real elapsed time since the last tick -> 800 Hz IMU ticks. The genuine timing word
+    // tracks REAL time (sample_count 3/4), not a fixed pattern; this also gives the exact dt
+    // for integration so the console's rate reconstruction is consistent.
+    uint32_t now = time_us_32();
+    uint32_t dt_us = now - ns2_motion_last_us;
+    ns2_motion_last_us = now;
+    if (dt_us < 500)   dt_us = 500;    // clamp (first tick / stalls): ~2 kHz .. ~60 Hz
+    if (dt_us > 16000) dt_us = 16000;
+    uint8_t count = (uint8_t)((dt_us + 625) / 1250);   // 1 tick = 1/800 s = 1250 us
+    if (count < 1)  count = 1;
+    if (count > 15) count = 15;
+    ns2_imu_tick = (uint16_t)((ns2_imu_tick + count) & 0x0FFF);
+    ns2_motion_timing = (uint16_t)(((uint16_t)count << 12) | ns2_imu_tick);
+
+    // Angular phase = integral of rate over real dt. The genuine gyro is extremely clean
+    // (~0.05 dps noise, ~0.03 dps bias); a DualSense is noisier AND has non-negligible bias,
+    // so low-pass the gyro first (EMA a=0.25, <<6 fixed point so slow aiming still resolves).
+    //
+    // Stationary drift fix, take 2 (2026-07-10, second hardware pass — see
+    // gyro-hardware-validation-2026-07-10.md §6). Take 1 gated the bias tracker on RAW GYRO
+    // MAGNITUDE (|raw| < 40 LSB), which is self-defeating: a MEMS gyro's constant zero-rate
+    // bias is part of its magnitude, so if the DualSense's bias alone exceeds the threshold
+    // (very plausible — consumer MEMS bias is commonly several dps, and 40 LSB is only ~2.4
+    // dps at this 16.384 LSB/dps scale), the "still" gate never opens even when the
+    // controller is dead still, the bias estimate never adapts, and the fix is a no-op —
+    // which matches the second test's symptom exactly (drift persisted unchanged). Stillness
+    // is redefined as a STEADY reading (small frame-to-frame delta), not a SMALL one: a
+    // constant bias offset held still has ~zero derivative regardless of its absolute size,
+    // so this gates correctly no matter how large the bias turns out to be. Only fast motion
+    // (a real derivative) closes the gate now.
+    // Per-us-per-LSB phase step (16.384 LSB/dps): 2^32 / (16.384*360*1e6) = 0.72818 (*72818/1e5).
+    bool still = true;
+    for (int ax = 0; ax < 3; ax++) {
+        int32_t d = (int32_t)in->gyro[ax] - ns2_gyro_prev_raw[ax];
+        ns2_gyro_prev_raw[ax] = in->gyro[ax];
+        if (d < 0) d = -d;
+        ns2_gyro_jitter[ax] += ((d << 6) - ns2_gyro_jitter[ax]) >> 3;  // EMA of the derivative
+        if (ns2_gyro_jitter[ax] > (6 << 6)) still = false;             // > ~6 LSB/report of change
+    }
+    ns2_dbg_still = still ? 1 : 0;
+
+    int32_t phase_before[3], g_val[3], increment[3];
+    bool anomaly = false;
+    for (int ax = 0; ax < 3; ax++) {
+        ns2_gyro_lp[ax] += (((int32_t)in->gyro[ax] << 6) - ns2_gyro_lp[ax]) >> 2;  // low-pass
+        if (still) ns2_gyro_bias[ax] += (ns2_gyro_lp[ax] - ns2_gyro_bias[ax]) >> 8;  // slow (~seconds)
+        int32_t g = (ns2_gyro_lp[ax] - ns2_gyro_bias[ax]) >> 6;
+        int32_t inc = (int32_t)(((int64_t)g * dt_us * 72818) / 100000);
+        phase_before[ax] = (int32_t)ns2_phase[ax];
+        g_val[ax] = g;
+        increment[ax] = inc;
+        ns2_phase[ax] += (uint32_t)inc;
+        if (inc > NS2_MAX_PHASE_DELTA || inc < -NS2_MAX_PHASE_DELTA) anomaly = true;
+    }
+
+    // Trail ring buffer updates every tick (anomalous or not) so a capture always has real
+    // preceding context, not just the tick that tripped the check.
+    ns2_anom_trail_t *slot = &ns2_anom_trail[ns2_anom_trail_pos];
+    for (int ax = 0; ax < 3; ax++) { slot->gyro[ax] = in->gyro[ax]; slot->delta[ax] = increment[ax]; }
+    slot->still = ns2_dbg_still;
+    slot->dt_us = dt_us;
+    ns2_anom_trail_pos = (uint8_t)((ns2_anom_trail_pos + 1) % NS2_ANOM_TRAIL);
+
+    if (anomaly) {
+        ns2_anom_seq++;
+        ns2_last_anom.valid = 1;
+        ns2_last_anom.seq = ns2_anom_seq;
+        // Chronological order, oldest first: the slot we're about to overwrite next is the
+        // oldest surviving entry right now.
+        for (int i = 0; i < NS2_ANOM_TRAIL; i++)
+            ns2_last_anom.trail[i] = ns2_anom_trail[(ns2_anom_trail_pos + i) % NS2_ANOM_TRAIL];
+        for (int ax = 0; ax < 3; ax++) {
+            ns2_last_anom.gyro[ax] = in->gyro[ax];
+            ns2_last_anom.accel[ax] = in->accel[ax];
+            ns2_last_anom.g[ax] = g_val[ax];
+            ns2_last_anom.bias[ax] = ns2_gyro_bias[ax] >> 6;
+            ns2_last_anom.phase_before[ax] = phase_before[ax];
+            ns2_last_anom.phase_after[ax] = (int32_t)ns2_phase[ax];
+            ns2_last_anom.delta[ax] = increment[ax];
+        }
+        ns2_last_anom.still = ns2_dbg_still;
+        ns2_last_anom.dt_us = dt_us;
+        ns2_last_anom.imu_tick = ns2_imu_tick;
+        ns2_last_anom.tick_count = (uint8_t)(ns2_motion_timing >> 12);
+        ns2_last_anom.imu_enabled = ns2_imu_enabled ? 1 : 0;
+        // What THIS tick's phase/accel would encode to, regardless of whether the IMU gate is
+        // currently open — answers "is the 30-byte serialization itself a source of
+        // discontinuity" independent of "was this tick actually transmitted." motion_len
+        // records whether it really was.
+        int32_t phase_now[3] = { (int32_t)ns2_phase[0], (int32_t)ns2_phase[1], (int32_t)ns2_phase[2] };
+        ns2_encode_motion30(ns2_last_anom.motion_bytes, ns2_motion_timing, phase_now, in->accel);
+        ns2_last_anom.motion_len = ns2_imu_enabled ? 30 : 0;
+    }
+}
+
+// Config-mode debug hook. ns2_task()/ns2_build_report() — the only place ns2_motion_tick() used
+// to run — are NEVER called while the dongle is in config mode (usb.c's main loop takes the
+// `if (g_usb_config_mode) { config_cdc_task(); continue; }` branch unconditionally). That made
+// the `imu` debug command's bias=[...]/still=... fields dead static memory, frozen at their
+// power-on zero, whenever read the only way they're reachable — a real bug found 2026-07-10 from
+// hardware output (`bias=[0,0,0] still=0` on a moving, motion-feeding DualSense, which is
+// impossible if the tracker were actually running). This runs the same tick independently,
+// rate-limited to ~250 Hz to match real HID-report cadence (the low-pass/jitter EMA time
+// constants are tuned per-call, not per-elapsed-time, so calling this faster than the real
+// streaming rate would make stillness detection behave differently than it will on-console).
+void ns2_motion_debug_tick(void) {
+    static uint32_t last_us = 0;
+    uint32_t now = time_us_32();
+    if (now - last_us < 3800) return;  // ~250 Hz cap
+    last_us = now;
+
+    switch_pro_input_t in;
+    get_global_gamepad_input(0, &in);
+    if (in.has_motion) ns2_motion_tick(&in);
 }
 
 // Diagnostic (NS2_DIAG): how far the host got, blinked on the LED by
@@ -466,6 +695,9 @@ static void ns2_dispatch(const uint8_t *c, uint32_t n) {
                 d[4] = c[12];
                 dl = 40;
             } else {  // set/clear/enable/disable mask
+                // 0x0C/0x04 with a non-zero feature mask (0x27) is the command that flips report-0x09
+                // motion on in the capture (Experiment C) — use it to gate the IMU block.
+                if (sub == 0x04 && n > 8) ns2_imu_enabled = (c[8] != 0);
                 dl = 4;
             }
             break;
@@ -584,33 +816,27 @@ static void ns2_build_report(uint8_t *p) {
     p[0x0B] = 0x30;
     // 0x0C NFC, 0x0D headset.
 
-    // Motion (IMU): length byte @0x0E, data @0x0F (enabled by feature bit 2). Format
-    // DECODED from a real Pro Controller 2's report 0x09 in ndeadly's UNENCRYPTED USB
-    // capture (captures/usb/rumble-procon-gccon.pcapng). Length 30, then 15 int16 LE lanes:
-    //   0x0F timestamp (+4/report), 0x11 temperature (const ~0x0C00), then TWO IMU samples,
-    //   each interleaved [gyro_x, accel_x, gyro_y, accel_y, gyro_z, accel_z] (12 B), then a
-    //   2-byte trailer. Accel is +-8g (1g = 4096) and gyro ~16 LSB/dps — exactly what the
-    //   seam's /2 (accel) and /64 (gyro) scaling of the DualSense IMU already produces (the
-    //   same in.accel/in.gyro report 0x05 emits, which works on PC), so no rescale is
-    //   needed. See docs/switch2/report-0x09-motion.md. Emitted only when the pad has motion.
+    // Motion (IMU) — report-0x09 int32 format, VERIFIED (docs/switch2/report-0x09-motion.md):
+    //   [0x0F] u16 timing    (low12 = 800 Hz IMU tick, high4 = ticks elapsed since last report)
+    //   [0x11] i16 temperature (0x0C00)
+    //   [0x13/0x17/0x1B] i32 angular phase X/Y/Z  (2^32 = 360 deg; the integral of gyro rate)
+    //   [0x1F/0x23/0x27] i32 accel X/Y/Z, Q16.16  (65536*4096 = 1 g; integer counts in the high 16)
+    //   [0x2B] u16 tail (0)
+    // Motion is a NEGOTIATED feature: emit length 0 until the host enables the IMU via 0x0C/0x04
+    // (Experiment C) — gates what's WRITTEN below, not the tracker state itself (ns2_motion_tick()
+    // always runs on live motion so it keeps working, and is debuggable, regardless of whether a
+    // host has negotiated the feature — see ns2_motion_tick()'s comment).
+    // FIRST CUT pending on-console validation: the phase-integration constant and axis SIGNS are
+    // best-effort — if the console reads rate too fast/slow, tune PHASE_K; if inverted, flip signs.
     if (in.has_motion) {
-        static uint16_t mtime;
-        mtime += 4;
-        p[0x0E] = 30;
-        p[0x0F] = (uint8_t)mtime;  p[0x10] = (uint8_t)(mtime >> 8);   // timestamp
-        p[0x11] = 0x00;            p[0x12] = 0x0C;                     // temperature ~0x0C00
-        for (int s = 0; s < 2; s++) {         // two samples, interleaved [gyro, accel] per axis
-            uint8_t *m = &p[0x13 + s * 12];
-            for (int ax = 0; ax < 3; ax++) {
-                m[ax * 4 + 0] = (uint8_t)in.gyro[ax];          // gyro  axis (int16 LE)
-                m[ax * 4 + 1] = (uint8_t)(in.gyro[ax] >> 8);
-                m[ax * 4 + 2] = (uint8_t)in.accel[ax];         // accel axis (int16 LE)
-                m[ax * 4 + 3] = (uint8_t)(in.accel[ax] >> 8);
-            }
+        ns2_motion_tick(&in);
+        if (ns2_imu_enabled) {
+            p[0x0E] = 30;
+            int32_t phase_now[3] = { (int32_t)ns2_phase[0], (int32_t)ns2_phase[1], (int32_t)ns2_phase[2] };
+            ns2_encode_motion30(&p[0x0F], ns2_motion_timing, phase_now, in.accel);
         }
-        // 0x2B..0x2C trailer left 0.
     }
-    ns2_dbg_motion_len = p[0x0E];  // debug: motion length report 0x09 just emitted (0 or 30)
+    ns2_dbg_motion_len = p[0x0E];  // debug: report-0x09 motion length just emitted (0 or 30)
 }
 
 // Report 0x05 (common format): 4-byte buttons + DOCUMENTED accel/gyro block.
@@ -691,12 +917,14 @@ static void ns2_build_report_05(uint8_t *p) {
 // Host completed SET_CONFIGURATION (device configured) — diagnostic stage 3.
 void tud_mount_cb(void) {
     if (g_ns2_stage < 3) g_ns2_stage = 3;
+    ns2_imu_enabled = false;  // new host session: IMU off until the host re-enables it (0x0C/0x04)
 }
 
 void ns2_init(void) {
     ns2_factory_init();
     ns2_report_id = 0x09;
     ns2_streaming = false;
+    ns2_imu_enabled = false;
 }
 
 // Decode one HD-rumble motor's peak amplitude (0..1023) from its 5-byte packed LRA field.

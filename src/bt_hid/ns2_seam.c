@@ -128,13 +128,33 @@ void router_submit_input(const input_event_t *e) {
     // raw gyro is already close to the Switch int16 gyro scale. The old /64 collapsed it ~60x
     // (Experiment A: genuine gyro peaked 7401 LSB, ours only 122) -> imperceptible in Steam.
     // (Report 0x05 consumes these directly; report 0x09's int32 phase/Q16.16 rewrite is separate.)
+    //
+    // Axis permutation — CORRECTED 2026-07-10 from a genuine-controller report-0x05 capture
+    // (usbpcaptures/genuine_procon_2.pcapng, Experiment A's golden trace). That capture's
+    // "still, then rotate pitch/yaw/roll in turn" protocol lets the raw gyro channels be
+    // identified: the genuine device's raw gyro **X** is the long, clean, first-rotated axis
+    // (=pitch, by capture order) — confirmed independently by accel: during that segment accel-X
+    // stays near its resting value while accel-Y/Z swing widely, i.e. X is the physical rotation
+    // axis, consistent with pitch about a roughly horizontal axis. Raw gyro **Z** is the second
+    // segment (=yaw) — this is the channel our *old* mapping already fed from DS5 yaw
+    // (e->gyro[1]), which matches the hardware report "yaw appears mostly correct"
+    // (SESSION.md 2026-07-10). By elimination raw gyro **Y** = roll, which the old mapping fed
+    // from DS5 pitch (e->gyro[0]) instead of DS5 roll (e->gyro[2]) — the "pitch/roll appear
+    // incorrect" symptom. Fix: route DS5 pitch (gyro[0]/accel[0]) to output X and DS5 roll
+    // (gyro[2]/accel[2]) to output Y, keep DS5 yaw (gyro[1]/accel[1]) on output Z unchanged.
+    // The old X/Y formulas are reused (not re-derived) so this is a **row swap**, which on its
+    // own would flip the transform's handedness (determinant -1, a mirror — physically
+    // impossible for a rigid IMU remount); the sign on the new Y row is flipped to restore a
+    // proper rotation (determinant +1). Roll's sign is therefore inferred from that constraint,
+    // not independently measured — the capture's third segment (roll) was not clean enough to
+    // read a sign off directly. 🔵 Unverified on hardware; see docs/switch2/report-0x09-motion.md.
     if (e->has_motion) {
         in.has_motion = 1;
-        in.accel[0] = ns2_clamp16(-e->accel[2] / 2);
-        in.accel[1] = ns2_clamp16(-e->accel[0] / 2);
+        in.accel[0] = ns2_clamp16(-e->accel[0] / 2);
+        in.accel[1] = ns2_clamp16( e->accel[2] / 2);
         in.accel[2] = ns2_clamp16( e->accel[1] / 2);
-        in.gyro[0]  = ns2_clamp16(-e->gyro[2]);
-        in.gyro[1]  = ns2_clamp16(-e->gyro[0]);
+        in.gyro[0]  = ns2_clamp16(-e->gyro[0]);
+        in.gyro[1]  = ns2_clamp16( e->gyro[2]);
         in.gyro[2]  = ns2_clamp16( e->gyro[1]);
     }
 

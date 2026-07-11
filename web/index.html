@@ -64,6 +64,35 @@
   #log { background: #0d1016; border: 1px solid #2b313b; border-radius: 8px; padding: 10px 12px;
          font-family: ui-monospace, Consolas, monospace; font-size: 12px; height: 120px;
          overflow: auto; white-space: pre-wrap; color: #9aa6b2; }
+
+  /* Switch 2 BLE Capture panel */
+  .cap-stats { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 10px 0; font-size: 12px; }
+  .cap-stats .stat { color: #9aa6b2; }
+  .cap-stats .stat b { color: #e6e8ea; font-family: ui-monospace, Consolas, monospace; }
+  .cap-stats .stat.bad b { color: #fca5a5; }
+  .cap-tags { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 12px; }
+  .cap-tag { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: #9aa6b2;
+             background: #232932; border: 1px solid #2b313b; border-radius: 5px; padding: 2px 7px; }
+  .cap-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+  .cap-filters select, .cap-filters input[type=text] { font: inherit; background: #11151b; color: #e6e8ea;
+             border: 1px solid #3a4150; border-radius: 6px; padding: 4px 8px; font-size: 12px; }
+  .cap-filters input[type=text] { width: 90px; font-family: ui-monospace, Consolas, monospace; }
+  .cap-filters button.mini { padding: 4px 9px; font-size: 11px; }
+  #capLive { background: #0d1016; border: 1px solid #2b313b; border-radius: 8px; padding: 6px 8px;
+             height: 260px; overflow: auto; font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
+  .cap-row { padding: 4px 4px; border-bottom: 1px solid #1a1f27; word-break: break-all; }
+  .cap-row .meta { color: #7c8694; }
+  .cap-row .k-input { color: #7dd3fc; } .cap-row .k-ack { color: #fbbf24; }
+  .cap-row .k-cmd_out { color: #86efac; } .cap-row .k-ccc_write { color: #c4b5fd; }
+  .cap-row .k-state { color: #fca5a5; }
+  .cap-row .k-gatt_svc { color: #f0abfc; } .cap-row .k-gatt_char { color: #f0abfc; }
+  .cap-row .k-gatt_desc { color: #f0abfc; } .cap-row .k-variant { color: #fdba74; }
+  .cap-row .k-write_status { color: #94a3b8; } .cap-row .k-marker { color: #4ade80; font-weight: 600; }
+  .cap-hex-hi { background: #3b2f0d; color: #fde68a; border-radius: 2px; }
+  .cap-legend { font-size: 11px; color: #7c8694; margin: 6px 0 10px; }
+  .cap-experiment { border: 1px solid #4a3418; background: #241b0e; border-radius: 8px;
+                     padding: 8px 10px; margin: 4px 0 10px; }
+  .cap-experiment .pill { margin-left: 6px; }
 </style>
 </head>
 <body>
@@ -121,6 +150,8 @@
              style="font-family:ui-monospace,Consolas,monospace;font-size:11px;margin-top:14px;word-break:break-all">raw: &mdash;</div>
         <div id="imuLine" class="muted" title="Live IMU state the report builder consumes — move the controller: accel/gyro should change"
              style="font-family:ui-monospace,Consolas,monospace;font-size:11px;margin-top:6px;word-break:break-all">imu: &mdash;</div>
+        <pre id="imuAnomBox" class="muted" title="Most recent report-0x09 phase-discontinuity anomaly (mathematically-derived bound, see docs) — appears once anom &gt; 0 above"
+             style="font-family:ui-monospace,Consolas,monospace;font-size:11px;margin-top:6px;white-space:pre-wrap;word-break:break-all;display:none"></pre>
       </section>
 
       <section class="q">
@@ -139,6 +170,117 @@
         </div>
       </section>
     </div>
+
+    <section>
+      <h2>Switch 2 BLE Capture <span id="capStatus" class="pill">idle</span></h2>
+      <p class="muted" style="margin-top:-4px">
+        Non-invasive raw capture of the genuine controller's BLE traffic this dongle's BT host
+        already sees (see <code>docs/switch2/ble-controller-protocol-inventory.md</code>). Records
+        exact bytes only &mdash; nothing here is decoded or assigned meaning.
+      </p>
+      <div class="actions-bar">
+        <button id="capStartBtn" class="primary">Start Capture</button>
+        <button id="capStopBtn" disabled>Stop Capture</button>
+        <button id="capClearBtn">Clear</button>
+        <button id="capDownloadBtn">Download NDJSON</button>
+      </div>
+      <div class="actions-bar" style="margin-top:6px">
+        <input type="text" id="capMarkerInput" placeholder="marker label (e.g. pitch_pos_start)"
+               style="flex:1;min-width:180px">
+        <button id="capMarkerBtn">Add Marker</button>
+      </div>
+      <div class="muted" style="font-size:11px;margin:2px 0 8px">
+        Inserts a timestamped label into the capture &mdash; logging only, does not touch the BLE
+        connection or controller state. Use during a controlled-motion session to mark exactly
+        when each phase starts/ends (see the procedure in the inventory doc).
+      </div>
+      <div class="cap-experiment">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <label style="font-size:12px"><b>v2 experiment variant:</b>
+            <select id="capVariantSelect">
+              <option value="0">off</option>
+              <option value="1">1 &mdash; control (reproduces v1 exactly)</option>
+              <option value="2">2 &mdash; mask 0x07&rarr;0xFF only</option>
+              <option value="3">3 &mdash; handle-write only</option>
+              <option value="4">4 &mdash; mask 0xFF + handle-write</option>
+              <option value="5">5 &mdash; calibration sequence</option>
+              <option value="6">6 &mdash; full reference sequence</option>
+            </select>
+          </label>
+          <span id="capVariantStatus" class="pill">off</span>
+        </div>
+        <div class="muted" style="font-size:11px;margin-top:2px">
+          Off by default. Selecting a variant arms it for the <em>next</em> BLE connection's
+          one-shot, post-init attempt (fires once, then disarms itself for that connection &mdash;
+          reconnect/power-cycle the controller to re-fire, even to repeat the same variant).
+          Performs real, unconfirmed protocol actions against the controller; nothing is decoded
+          or fed into normal input. See <code>sw2_capture.h</code> and
+          <code>docs/switch2/ble-controller-protocol-inventory.md</code> &sect;3.7 for what each
+          variant does and why.
+        </div>
+        <div style="margin-top:8px">
+          <label style="font-size:12px">
+            <input type="checkbox" id="capGattDiscToggle"> <b>GATT discovery</b> (one-shot &mdash;
+            walks every service/characteristic/descriptor for ground-truth raw handle numbers)
+          </label>
+          <span id="capGattDiscStatus" class="pill">off</span>
+          <div class="muted" style="font-size:11px;margin-top:2px">
+            Run this <em>alone</em>, not together with a variant &mdash; BTstack allows only one
+            outstanding GATT query per connection. See inventory doc &sect;3.7.1.
+          </div>
+        </div>
+      </div>
+      <div class="cap-stats">
+        <span class="stat">captured <b id="capCount">0</b></span>
+        <span class="stat" id="capDroppedStat">dropped <b id="capDropped">0</b></span>
+        <span class="stat">input <b id="capKInput">0</b></span>
+        <span class="stat">ack <b id="capKAck">0</b></span>
+        <span class="stat">cmd_out <b id="capKCmd">0</b></span>
+        <span class="stat">ccc_write <b id="capKCcc">0</b></span>
+        <span class="stat">state <b id="capKState">0</b></span>
+        <span class="stat">gatt_svc <b id="capKGattSvc">0</b></span>
+        <span class="stat">gatt_char <b id="capKGattChar">0</b></span>
+        <span class="stat">gatt_desc <b id="capKGattDesc">0</b></span>
+        <span class="stat">variant <b id="capKVariant">0</b></span>
+        <span class="stat">write_status <b id="capKWriteStatus">0</b></span>
+        <span class="stat">marker <b id="capKMarker">0</b></span>
+      </div>
+      <div class="muted" style="font-size:11px;margin-bottom:4px">Observed GATT handles</div>
+      <div class="cap-tags" id="capHandles"><span class="cap-tag">&mdash;</span></div>
+      <div class="muted" style="font-size:11px;margin-bottom:4px">Observed report lengths</div>
+      <div class="cap-tags" id="capLengths"><span class="cap-tag">&mdash;</span></div>
+      <div class="cap-filters">
+        <label class="muted" style="font-size:12px">Kind
+          <select id="capFilterKind">
+            <option value="all">all</option>
+            <option value="input">input</option>
+            <option value="ack">ack</option>
+            <option value="cmd_out">cmd_out</option>
+            <option value="ccc_write">ccc_write</option>
+            <option value="state">state</option>
+            <option value="gatt_svc">gatt_svc</option>
+            <option value="gatt_char">gatt_char</option>
+            <option value="gatt_desc">gatt_desc</option>
+            <option value="variant">variant</option>
+            <option value="write_status">write_status</option>
+            <option value="marker">marker</option>
+          </select>
+        </label>
+        <label class="muted" style="font-size:12px">Handle
+          <input type="text" id="capFilterHandle" placeholder="all">
+        </label>
+        <button class="mini" id="capHandleA">0x000A</button>
+        <button class="mini" id="capHandleE">0x000E</button>
+        <button class="mini" id="capHandleC">0x000C</button>
+        <button class="mini" id="capHandleAll">all</button>
+      </div>
+      <div class="cap-legend">
+        Highlighted bytes = offsets 16&ndash;29 of an <b>input</b> notification, shown only as a
+        viewing aid (this is where third-party decodes of a <i>sibling</i> BLE report place motion
+        data) &mdash; <b>not</b> a decoded or confirmed field in this report.
+      </div>
+      <div id="capLive"></div>
+    </section>
 
     <section>
       <h2>Log</h2>
@@ -321,12 +463,255 @@ async function loadMap(fam) {
 }
 
 // ---- live IMU state (gyro-pipeline debug) ----
+let lastAnomSeq = -1;
 function renderImu(d) {
   if (!d || d.hm === undefined) return;
-  const a = d.a || [0, 0, 0], g = d.g || [0, 0, 0];
+  const a = d.a || [0, 0, 0], g = d.g || [0, 0, 0], b = d.bias || [0, 0, 0];
+  const p = d.phase || [0, 0, 0];
+  const pdeg = p.map(v => ((v / 4294967296) * 360).toFixed(2));
+  const anom = d.anom || 0;
   $("#imuLine").textContent =
     `imu: has_motion=${d.hm} rid=0x${(d.rid || 0).toString(16)} stream=${d.stream} mlen=${d.mlen}`
-    + ` | accel=[${a.join(", ")}] gyro=[${g.join(", ")}]`;
+    + ` | accel=[${a.join(", ")}] gyro=[${g.join(", ")}]`
+    + ` | bias=[${b.join(", ")}] still=${d.still}`
+    + ` | phase=[${p.join(", ")}] (~[${pdeg.join(", ")}]°)`
+    + ` | anom=${anom}`;
+  // Fetch + show full context the first time (and every time) the anomaly count moves —
+  // this is what switch_pro2.c's NS2_MAX_PHASE_DELTA detector trips on a proven-impossible
+  // per-tick phase delta, not a heuristic "looks big" guess. See gyro-hardware-validation
+  // doc for the derivation and how to read this dump.
+  if (anom > 0 && anom !== lastAnomSeq) {
+    lastAnomSeq = anom;
+    fetchAnomaly();
+  }
+}
+
+async function fetchAnomaly() {
+  const a = await sendCmd("imuanom", true);
+  const box = $("#imuAnomBox");
+  if (!a || !a.valid) { box.style.display = "none"; return; }
+  box.style.display = "block";
+  box.textContent = "anomaly #" + a.seq + " (report-0x09 phase discontinuity):\n" + JSON.stringify(a, null, 1);
+}
+
+// ---- Switch 2 BLE capture panel ----
+// Firmware side: src/bt_hid/sw2_capture.c + config.c's `sw2cap on|off|stat|drain` commands.
+// Pull-based: `sw2cap drain` is polled from the same sequential pollLoop() every other command
+// already uses (see below), never as a separate concurrent loop — sendCmd()'s reply-matching is
+// strict FIFO-by-arrival-order, so interleaving two independent await chains on the same port
+// would risk misrouting replies. Polled unconditionally (not just while capturing) so `capturing`/
+// `dropped` stay live even if a capture session was started by another client (e.g. a raw serial
+// terminal) — satisfies "the page must reflect that state" and "sw2cap stat...automatically".
+const CAP_LIVE_MAX = 60;      // bounded DOM view; capSession below is the unbounded export copy
+let capActive = false;
+let capSession = [];          // every entry this session, retained for NDJSON export
+let capLiveView = [];         // most recent CAP_LIVE_MAX entries, for the bounded live list
+let capCounts = { input: 0, ack: 0, cmd_out: 0, ccc_write: 0, state: 0,
+                   gatt_svc: 0, gatt_char: 0, gatt_desc: 0, variant: 0,
+                   write_status: 0, marker: 0 };
+let capHandleCounts = new Map();
+let capLengthCounts = new Map();
+let capDropped = 0;
+let capFilterKind = "all";
+let capFilterHandle = "";     // "" = all
+let capVariant = 0;           // 0 = off, 1-6 = armed v2 experiment variant (sw2cap variant <n>)
+let capGattDisc = false;      // one-shot GATT discovery toggle (sw2cap gattdisc on|off|stat)
+
+const CAP_VARIANT_NAMES = { 0: "off", 1: "control", 2: "mask_ff", 3: "handle_write_only",
+                             4: "mask_ff_handle_write", 5: "calibration_seq", 6: "full_sequence" };
+
+function capRenderVariant() {
+  $("#capVariantSelect").value = String(capVariant);
+  const pill = $("#capVariantStatus");
+  pill.textContent = capVariant === 0 ? "off" : `armed: ${CAP_VARIANT_NAMES[capVariant]}`;
+  pill.className = "pill " + (capVariant === 0 ? "" : "ok");
+}
+async function capSetVariant(n) {
+  const r = await sendCmd("sw2cap variant " + n, true);
+  if (!r || r.error || r.ok !== true) {
+    log("!! sw2cap variant " + n + " failed: " + (r && r.error ? r.error : "no reply"));
+    capRenderVariant();  // revert the <select> to the last known-good value
+    return;
+  }
+  capVariant = n;
+  capRenderVariant();
+  log(n === 0 ? "== v2 experiment disarmed ==" :
+      `== v2 experiment armed: variant ${n} (${CAP_VARIANT_NAMES[n]}) — fires on next connection ==`);
+}
+async function capAddMarker() {
+  const input = $("#capMarkerInput");
+  const label = input.value.trim();
+  if (!label) { log("! marker label is empty, not sent"); return; }
+  const r = await sendCmd("sw2cap mark " + label, true);
+  if (!r || r.error || r.ok !== true) {
+    log("!! sw2cap mark failed: " + (r && r.error ? r.error : "no reply"));
+    return;
+  }
+  log(`== marker added: "${label}" ==`);
+  input.value = "";
+  input.focus();
+}
+function capRenderGattDisc() {
+  $("#capGattDiscToggle").checked = capGattDisc;
+  const pill = $("#capGattDiscStatus");
+  pill.textContent = capGattDisc ? "armed" : "off";
+  pill.className = "pill " + (capGattDisc ? "ok" : "");
+}
+async function capToggleGattDisc(on) {
+  const r = await sendCmd("sw2cap gattdisc " + (on ? "on" : "off"), true);
+  if (!r || r.error || r.ok !== true) {
+    log("!! sw2cap gattdisc " + (on ? "on" : "off") + " failed: " + (r && r.error ? r.error : "no reply"));
+    capGattDisc = !on;
+    capRenderGattDisc();
+    return;
+  }
+  capGattDisc = on;
+  capRenderGattDisc();
+  log("== GATT discovery " + (on ? "armed (fires on next connection)" : "disarmed") + " ==");
+}
+
+function capResetLocal() {
+  capSession = [];
+  capLiveView = [];
+  capCounts = { input: 0, ack: 0, cmd_out: 0, ccc_write: 0, state: 0,
+                gatt_svc: 0, gatt_char: 0, gatt_desc: 0, variant: 0 };
+  capHandleCounts = new Map();
+  capLengthCounts = new Map();
+}
+
+async function capStart() {
+  const r = await sendCmd("sw2cap on", true);
+  if (!r || r.error || r.ok !== true) {
+    log("!! sw2cap on failed: " + (r && r.error ? r.error : "no reply"));
+    return;
+  }
+  capActive = true;
+  capResetLocal();  // firmware also starts a fresh session on `on` — mirror that locally
+  capDropped = 0;
+  capRenderStatus();
+  capRenderStats();
+  log("== BLE capture started ==");
+}
+async function capStop() {
+  const r = await sendCmd("sw2cap off", true);
+  if (!r || r.error || r.ok !== true) {
+    log("!! sw2cap off failed: " + (r && r.error ? r.error : "no reply"));
+    return;
+  }
+  capActive = false;
+  capRenderStatus();
+  log("== BLE capture stopped (" + capSession.length + " records this session) ==");
+}
+function capClear() {
+  capResetLocal();
+  capRenderStats();
+  capRenderLive();
+  log("-- capture view cleared (browser-side only; firmware ring is independent) --");
+}
+function capDownload() {
+  if (!capSession.length) { log("! nothing to download yet"); return; }
+  const ndjson = capSession.map(e => JSON.stringify(e)).join("\n") + "\n";
+  const blob = new Blob([ndjson], { type: "application/x-ndjson" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  a.href = url;
+  a.download = `sw2_capture_${ts}.ndjson`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  log(`== downloaded ${capSession.length} records ==`);
+}
+
+function capRenderStatus() {
+  const pill = $("#capStatus");
+  pill.textContent = capActive ? "capturing" : "idle";
+  pill.className = "pill " + (capActive ? "ok" : "");
+  $("#capStartBtn").disabled = capActive;
+  $("#capStopBtn").disabled = !capActive;
+}
+function capRenderStats() {
+  $("#capCount").textContent = capSession.length;
+  $("#capDropped").textContent = capDropped;
+  $("#capDroppedStat").classList.toggle("bad", capDropped > 0);
+  $("#capKInput").textContent = capCounts.input;
+  $("#capKAck").textContent = capCounts.ack;
+  $("#capKCmd").textContent = capCounts.cmd_out;
+  $("#capKCcc").textContent = capCounts.ccc_write;
+  $("#capKState").textContent = capCounts.state;
+  $("#capKGattSvc").textContent = capCounts.gatt_svc;
+  $("#capKGattChar").textContent = capCounts.gatt_char;
+  $("#capKGattDesc").textContent = capCounts.gatt_desc;
+  $("#capKVariant").textContent = capCounts.variant;
+  $("#capKWriteStatus").textContent = capCounts.write_status;
+  $("#capKMarker").textContent = capCounts.marker;
+  const tagList = (m) => {
+    const entries = [...m.entries()].sort((a, b) => b[1] - a[1]);
+    return entries.length ? entries.map(([k, v]) => `<span class="cap-tag">${k}: ${v}</span>`).join("")
+                          : `<span class="cap-tag">&mdash;</span>`;
+  };
+  $("#capHandles").innerHTML = tagList(capHandleCounts);
+  $("#capLengths").innerHTML = tagList(capLengthCounts);
+}
+// Wrap an input notification's hex string with a non-semantic highlight over byte offsets
+// 16-29 (hex-char offsets 32..60) — a viewing aid only, per the explicit constraint that this
+// must not be labeled as decoded motion.
+function capHexMarkup(hex, kind) {
+  if (kind !== "input" || hex.length < 60) return hex;
+  const pre = hex.slice(0, 32), hi = hex.slice(32, 60), post = hex.slice(60);
+  return `${pre}<span class="cap-hex-hi" title="bytes 16-29 — view aid only, not decoded">${hi}</span>${post}`;
+}
+function capMatchesFilter(e) {
+  if (capFilterKind !== "all" && e.kind !== capFilterKind) return false;
+  if (capFilterHandle && e.handle.toLowerCase() !== capFilterHandle.toLowerCase()) return false;
+  return true;
+}
+function hexToText(hex) {
+  let s = "";
+  for (let i = 0; i < hex.length; i += 2) s += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+  return s;
+}
+function capRenderLive() {
+  const box = $("#capLive");
+  const rows = capLiveView.filter(capMatchesFilter);
+  box.innerHTML = rows.map(e =>
+    `<div class="cap-row"><span class="meta">${e.us}us</span> ` +
+    `<span class="k-${e.kind}">${e.kind}</span> ` +
+    `<span class="meta">${e.handle} len=${e.len}${e.len !== e.orig_len ? "/" + e.orig_len : ""}</span><br>` +
+    (e.kind === "marker" ? `<b>"${hexToText(e.bytes)}"</b>` : capHexMarkup(e.bytes, e.kind)) + `</div>`
+  ).join("") || `<div class="muted" style="padding:8px">no records match the current filter</div>`;
+}
+
+function capIngest(entries) {
+  for (const e of entries) {
+    capSession.push(e);
+    capLiveView.push(e);
+    if (capLiveView.length > CAP_LIVE_MAX) capLiveView.shift();
+    if (capCounts[e.kind] !== undefined) capCounts[e.kind]++;
+    capHandleCounts.set(e.handle, (capHandleCounts.get(e.handle) || 0) + 1);
+    capLengthCounts.set(e.len, (capLengthCounts.get(e.len) || 0) + 1);
+  }
+}
+
+// Called every pollLoop() tick (see below) — always, not just while capturing, so status stays
+// live regardless of what started/stopped the session.
+async function capPoll() {
+  const r = await sendCmd("sw2cap drain", true);
+  if (!r) return;
+  if (typeof r.capturing === "boolean" && r.capturing !== capActive) {
+    capActive = r.capturing;
+    capRenderStatus();
+  }
+  if (typeof r.dropped === "number" && r.dropped !== capDropped) {
+    capDropped = r.dropped;
+    capRenderStats();
+  }
+  if (r.entries && r.entries.length) {
+    capIngest(r.entries);
+    capRenderStats();
+    capRenderLive();
+  }
 }
 
 // ---- raw report + Elite profile warning ----
@@ -394,6 +779,7 @@ async function pollLoop() {
     renderRaw(await sendCmd("raw", true));
     renderImu(await sendCmd("imu", true));
     if (tick % 14 === 0) renderDevice(await sendCmd("device", true));  // name changes rarely
+    await capPoll();  // always, not just while capturing — keeps capturing/dropped live either way
     tick++;
     await new Promise(r => setTimeout(r, 70));
   }
@@ -443,6 +829,28 @@ async function connect() {
     if (info && info.id === "picoswitch") log("== PicoSwitch 2 detected (v" + info.version + ") ==");
     else log("! warning: unexpected device (info=" + JSON.stringify(info) + ")");
     await reload();
+    // Sync BLE-capture panel state immediately — if a session was already running (e.g. left on
+    // from a prior page load, or started by another client), reflect that instead of assuming idle.
+    const capStat = await sendCmd("sw2cap stat", true);
+    if (capStat && typeof capStat.capturing === "boolean") {
+      capActive = capStat.capturing;
+      capDropped = capStat.dropped || 0;
+      capRenderStatus();
+      capRenderStats();
+      if (capActive) log("== BLE capture already running (resumed from a prior session) ==");
+    }
+    const variantStat = await sendCmd("sw2cap variant stat", true);
+    if (variantStat && typeof variantStat.variant === "number") {
+      capVariant = variantStat.variant;
+      capRenderVariant();
+      if (capVariant !== 0) log(`== v2 experiment already armed: variant ${capVariant} (${CAP_VARIANT_NAMES[capVariant]}) ==`);
+    }
+    const gattDiscStat = await sendCmd("sw2cap gattdisc stat", true);
+    if (gattDiscStat && typeof gattDiscStat.gattdisc === "boolean") {
+      capGattDisc = gattDiscStat.gattdisc;
+      capRenderGattDisc();
+      if (capGattDisc) log("== GATT discovery already armed ==");
+    }
     pollLoop();
   } catch (e) { log("! connect failed: " + e.message); }
 }
@@ -454,6 +862,24 @@ $("#connectBtn").onclick = connect;
 $("#saveBtn").onclick = save;
 $("#resetBtn").onclick = resetMap;
 $("#reloadBtn").onclick = reload;
+$("#capStartBtn").onclick = capStart;
+$("#capStopBtn").onclick = capStop;
+$("#capClearBtn").onclick = capClear;
+$("#capDownloadBtn").onclick = capDownload;
+$("#capFilterKind").onchange = e => { capFilterKind = e.target.value; capRenderLive(); };
+$("#capFilterHandle").oninput = e => { capFilterHandle = e.target.value.trim(); capRenderLive(); };
+$("#capHandleA").onclick = () => { capFilterHandle = "0x000A"; $("#capFilterHandle").value = "0x000A"; capRenderLive(); };
+$("#capHandleE").onclick = () => { capFilterHandle = "0x000E"; $("#capFilterHandle").value = "0x000E"; capRenderLive(); };
+$("#capHandleC").onclick = () => { capFilterHandle = "0x000C"; $("#capFilterHandle").value = "0x000C"; capRenderLive(); };
+$("#capHandleAll").onclick = () => { capFilterHandle = ""; $("#capFilterHandle").value = ""; capRenderLive(); };
+$("#capVariantSelect").onchange = e => capSetVariant(+e.target.value);
+$("#capGattDiscToggle").onchange = e => capToggleGattDisc(e.target.checked);
+$("#capMarkerBtn").onclick = capAddMarker;
+$("#capMarkerInput").onkeydown = e => { if (e.key === "Enter") capAddMarker(); };
+capRenderStatus();
+capRenderStats();
+capRenderVariant();
+capRenderGattDisc();
 if (!("serial" in navigator)) { $("#unsupported").classList.remove("hidden"); $("#connectBtn").disabled = true; }
 </script>
 </body>

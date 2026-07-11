@@ -101,23 +101,219 @@ Likewise the "first sample" was the low/high halves of the 32-bit phase fields. 
   + zeros. Nonzero coefficient fields were **not** captured — internal scale/order still unknown.
 - The controller appears to apply its calibration internally at startup (not sent over the host
   protocol), so basic emulation can ignore it initially.
+- **Cross-checked 2026-07-10, two ways:** (1) a genuine unit's own SPI flash dump confirms this
+  region is `0xFF`-filled (uncalibrated) on real hardware exactly as expected — see
+  `docs/experiments/spi-dump-analysis-2026-07-10.md` §3.3. (2) External research into
+  `Dycool/NS-PC-Control` (`server/src/switch2_native.cpp`) independently confirms `0x1FC000` as the
+  real motion-calibration write target (`mem_write_user_motion_cal()`, persisted to a local file)
+  — but its write handler is for a **72-byte** payload, not 64. 🔵 Unresolved discrepancy, not
+  contradiction: 72 could be a wrapped/header-prefixed write frame around a 64-byte payload (their
+  code wasn't read at the byte-layout level, just the address/size it declares), or our documented
+  length could be incomplete. Worth resolving before ever implementing calibration *write* support
+  (not currently planned — basic emulation still doesn't need it).
+
+### ✅ Factory motion calibration (`0x13040`, `0x13100`) — decoded, distinct from the user region above
+
+Not to be confused with the *user* motion-calibration region (`0x1FC000`, still unprogrammed/unknown
+on every unit seen so far). This is a **separate, always-populated factory block**, and as of
+2026-07-10 its layout is confirmed by a working third-party BLE client (`tools/switch2_input_viewer.py`,
+added to this repo for reference — a PyQt/bleak tool that pairs with a genuine controller over BLE
+GATT and parses its reports/calibration live). Its `handle_read_response()` decodes:
+
+| Address | Size | Fields | Type |
+|---|---|---|---|
+| `0x13040` | 16 | `temperature` @ `[0:4]`, `gyro_bias` (x,y,z) @ `[4:16]` | `float32` each (IEEE-754 LE) |
+| `0x13100` | 24 | `magnetometer_bias` (x,y,z) @ `[0:12]`, `accelerometer_bias` (x,y,z) @ `[12:24]` | `float32` each |
+
+**Verified against our own SPI dump** (`dumps/2069_spi_dump_2026-07-10_1422.bin`, decoded with this
+exact field mapping):
+
+- `temperature` = **27.09** — plausible factory-calibration ambient temperature (°C).
+- `gyro_bias` = **(-0.0205, -0.00058, 0.00328)** — tiny, consistent with (and roughly matching the
+  order of magnitude of) this repo's already-documented "genuine gyro ~0.03 dps bias" figure. Units
+  not independently confirmed but plausibly dps.
+- `magnetometer_bias` = **(0, 0, 0)** — zero, consistent with this unit's magnetometer never having
+  been calibrated/used (matches the unprogrammed user-cal region and the negotiated, never-enabled
+  `0x80` feature bit on our captures).
+- `accelerometer_bias` = **(0.160, -0.0687, 10.38)** — the Z axis sits close to **standard gravity
+  (9.8 m/s²)**, strongly confirming these are **physical SI-unit floats (m/s²), not raw ADC/LSB
+  counts** — the controller was evidently lying flat (Z-up) during factory calibration capture.
+
+**Why this matters for report 0x09:** this is the first *direct* evidence that the genuine
+controller's internal calibration model operates in physical floating-point units (dps, m/s²), not
+fixed-point LSB counts like this repo's current implementation. It does not by itself prove
+anything about report-0x09's phase-field *semantics* (that calibration is applied before the raw
+ADC counts ever reach any report), but it raises the prior slightly on "the firmware does real
+floating-point sensor math internally" — relevant background for the still-open raw-integration-vs-
+fused-orientation question below.
+
+**Feature-flag bit table, also confirmed by this tool** (`FeatureFlagWidget.BIT_FLAGS`), cleanly
+matches and *names* the bits behind this repo's already-observed enable mask: bit0=buttons,
+bit1=analog sticks, **bit2=IMU**, bit3=unknown, bit4=mouse, bit5=battery current, bit6=unknown,
+**bit7=magnetometer**. Our captured enable mask `0x27` = `0b00100111` = bits 0,1,2,5 — buttons +
+sticks + IMU + battery-current, **not** bit 7 — independently confirming (a third time now, after
+this repo's own capture and `TommyWabg/Switch2Connect`'s `FEATURE_MAGNOMETER = 0x80`) that
+magnetometer was simply never requested, not hidden inside the existing fields.
+
+**Command-protocol cross-check:** `switch2_input_viewer.py`'s BLE `read_spi_memory()` sends
+`[0x02, 0x91, 0x01, 0x04, 0x00, 0x08, 0x00, 0x00, size, 0x7E, 0x00, 0x00, addr(4, LE)]` — the same
+`[id][0x91][transport][sub]...` shape, the same `id=0x02/sub=0x04` memory-read command, and the same
+`c[8]=len, c[12:16]=addr` field positions this repo's `ns2_dispatch()` already implements. **The
+command protocol is confirmed identical across USB and BLE transports** (only the framing changes),
+which is a meaningful cross-validation of this repo's existing capture-derived protocol model, not
+just this one field. (Its `write_spi_memory()` reuses `sub=0x04` rather than this repo's
+capture-derived `sub=0x05` for writes — 🔵 unverified whether that's a real alternate protocol
+detail or a bug in that tool; not adopted without a citation, since it conflicts with an existing
+capture-derived fact.)
+
+## Refuted: magnetometer / 9-axis IMU within report 0x09
+
+A research lead surfaced 2026-07-10 (after the second hardware test) asked whether the console's
+"angular phase" depends on more than 3-axis gyro + 3-axis accel — magnetometer data, sensor fusion,
+or a 9-axis IMU. **This does not fit the confirmed byte budget.** The motion block is **exactly**
+30 bytes for length-30 (the only length seen on hardware other than 0): timing(2) + temp(2) +
+phase×3(12) + accel×3(12) + tail(2) = 30, with **zero spare bytes** — every byte is already
+accounted for by the half-variance/Q16.16 proof above, independent of the magnetometer question.
+There is no room in this wire format for a magnetometer lane. (A genuine controller's IMU chip
+*could* still be 9-axis internally and simply not expose the extra axes over this report — that's
+a different, unfalsifiable-from-here question, and not relevant to fixing report 0x09.) The
+"second lane group at 0x15/0x19/0x1D" observation that originally motivated this lead was from the
+**refuted int16 model** (see "Why the int16 model looked partially right" above) — those offsets
+are inside the Q16.16 accel fields' fractional bytes, already explained, not a separate sensor.
+
+**Corroborated externally (2026-07-10):** `TommyWabg/Switch2Connect` (a PC-side BLE host for a
+genuine Pro Controller 2) confirms magnetometer is a real but **separately-negotiated** feature
+bit (`FEATURE_MAGNOMETER = 0x80` in its enable-mask protocol) with its own distinct report offset
+range — not packed inside the accel/gyro block. Our capture's enable mask was `0x27` (bits
+0,1,2,5 — does not include `0x80`), so magnetometer was simply never requested, consistent with
+(not contradicting) the 30-byte block having zero spare room. If we ever need magnetometer data,
+the model is "negotiate an additional feature bit," not "find hidden bytes in the existing block."
 
 ## Remaining unknowns / suggested experiments
 
 1. **Coordinate signs & axis order** the console expects (body-axis integration vs orientation
-   angles). *Best next capture:* controller still, then one slow rotation about each physical axis
-   separately — locks down sign, order, and phase scale.
+   angles). 🔵 **Partially resolved 2026-07-10** — re-mining the genuine controller's own
+   report-0x05 capture (its "still, then pitch/yaw/roll" protocol) identified raw gyro **X=pitch,
+   Z=yaw, Y=roll** with medium confidence (X/Z well-supported by two independent signals each; Y's
+   axis identity is by elimination and its sign is inferred from the rotation-properness
+   constraint, not measured — the capture's roll segment was too messy to read cleanly). Seam fixed
+   accordingly. See [gyro-hardware-validation-2026-07-10.md](../experiments/gyro-hardware-validation-2026-07-10.md).
+   *Still open:* an independently-measured roll sign, from a cleaner recapture (§4 of that doc).
 2. **Phase semantics** — Euler vs sensor-axis integrated vs proprietary filtered integrator; drift
    correction unknown. Treat as "integrated angular phase," not strict Euler, until proven.
+   🔵 **Reassessed 2026-07-10** against an unattributed third-party claim ("assumed to be some
+   form of compressed quaternion... field sizes almost certainly not multiples of 8 bits... motion
+   data size is also variable") relayed via `CORTEX_PARSE.md`. **The non-byte-aligned / bit-packed
+   part of that claim conflicts with hard evidence already in hand** and is not adopted: the
+   half-variance discriminator (§"Method" above) found that splitting each 32-bit accel field
+   *exactly* at the 16-bit boundary produces one half with SD≈11-35 (stable, matches gravity) and
+   the other with SD≈16-20k (fractional noise) — a genuinely bit-packed, non-byte-aligned format
+   would not produce a clean split at a power-of-two bit boundary by chance, across all three axes,
+   independently, on two separate captures. Field *boundaries* stay confirmed. The "variable size"
+   part is already known and undisputed (length is 0 or 30 today; a `40`-byte variant is
+   documented as seen elsewhere). **What does survive, and sharpens an existing open question**:
+   whether each byte-aligned int32 "phase" field's *value* is naive integrated rate (this repo's
+   current assumption) versus something more like a fused-orientation or quaternion-*component*
+   representation still living in that same byte-aligned slot — i.e. the disagreement that matters
+   is about semantics, not layout. This reading is also consistent with external evidence: see
+   `gyro-hardware-validation-2026-07-10.md` §7.5 — `TommyWabg/Switch2Connect` found that even
+   genuine hardware's *raw rate* stream (a different report, over BLE) needs full AHRS fusion
+   downstream to be drift-free, i.e. "orientation" is not something Nintendo hardware hands over
+   for free either. Distinguishing "raw integrated rate" from "fused orientation state" in the
+   USB report-0x09 phase fields is the highest-value remaining experiment for this field —
+   candidate method: hold the controller at a **fixed non-zero tilt** (not moving) and check
+   whether the phase value matches a static orientation reading (fusion) or drifts/resets (pure
+   rate integration has no "current orientation" concept without integrating from a known start).
+   🔵 **New reasoning, 2026-07-10** (from `tools/switch2_input_viewer.py`, a working third-party BLE
+   client added to this repo — see item 5 below): that tool shows the **same Pro Controller 2**
+   reports a **14-byte** motion block over one BLE path (GATT handle `0x000A`, all device types —
+   plausibly a single raw `temp+accelXYZ+gyroXYZ` int16 sample, per that tool's own commented-out
+   dtype) and a **40-byte** block over another (handle `0x000E`, Pro/GCN device types — undecoded
+   even by that tool). USB report 0x09 polls at 250 Hz; BLE typically negotiates a much lower
+   notification rate. A plausible, mundane explanation for *why* USB carries a single "integrated
+   phase" value rather than discrete samples: **at USB's high poll rate, few IMU ticks elapse
+   between reports, so one running/integrated value per report loses little** — whereas BLE's
+   slower cadence would need to batch multiple raw samples (hence a bigger, multi-sample block) to
+   avoid discarding IMU data between notifications. This doesn't prove the phase field is naive
+   rate-integration rather than fused orientation, but it **weakens the case that something exotic
+   (fusion/quaternion) is *required*** — a simple "integrate raw rate since last report" model is
+   sufficient to explain the format shape (single value, byte-aligned, scales with poll rate)
+   without needing onboard fusion. Net effect: this repo's existing implementation approach (rate
+   integration over real elapsed time) remains a reasonable default; the fixed-tilt experiment above
+   is still the right way to settle it empirically.
+   🔵 **Sharper alternative, 2026-07-10** (from `docs/experiments/switch2_native_motion_map_DyCOOL.md`,
+   a carefully validated third-party decode of the Switch 2's *native BLE* motion report): that
+   sibling format encodes raw, individually-clamped (±500°/s) gyro **samples**, not an accumulator —
+   a concrete, working alternative value semantic. Not proof for report 0x09 itself (that document's
+   own author leaves Pro Controller 2's report 0x09 explicitly unverified), and report 0x09's own
+   prior worked-example evidence (smooth, physically-plausible differentiated rates —
+   `report-0x09-motion-analysis.md`) still favors the accumulator model on its own terms. Ranked
+   analysis of this tension and a new direct-observation experiment (watch the phase accumulator
+   itself for discontinuities via a new debug field, no console needed):
+   [gyro-hardware-validation-2026-07-10.md](../experiments/gyro-hardware-validation-2026-07-10.md) §12.
 3. **Tail `motion[0x1C]`** — zero in all captures; purpose unknown.
 4. **Timing epoch/phase** — does the console require a specific starting tick, or only a consistent
    ~800 Hz progression with correct high-nibble deltas? (High-nibble delta is validated 299/299.)
-5. **Length-40 variant** — seen elsewhere, absent here; likely 3 samples at a higher rate.
+5. **Length-40 variant** — seen elsewhere, absent here; likely 3 samples at a higher rate. 🔵
+   **Located, still not decoded, 2026-07-10:** `tools/switch2_input_viewer.py` confirms a genuine
+   Pro Controller 2 emits exactly this 40-byte block over its BLE GATT notification at handle
+   `0x000E` (report offset `0xF:0x37`) — a *different transport* from USB report 0x09, so this is
+   not proof the USB `40` some other research mentioned is the same format, but it is now a known,
+   reachable, real occurrence of a 40-byte motion block worth decoding on its own if BLE motion work
+   is ever prioritized. That tool's own author left it undecoded (falls back to raw `int16` plotting,
+   no named fields) — still an open problem, not unique to this repo.
 6. **Whether the console strictly validates** beyond timing + physically plausible values.
 
 ## Implementation status
 
-`src/switch_pro2/switch_pro2.c` `ns2_build_report()` still emits the **old int16 model** and
-**always-on** motion. Rewriting it to the int32 layout above + gating on the `0x0C` feature-enable
-is the top firmware task (tracked in PLAN.md / STATUS.md). Not yet done — pending the current
-reverse-engineering pass (Experiment A resolves the Steam/report-0x05 side before implementation).
+🟢 **Validated on-console: the Switch 2 reads our gyro** (both Zeldas + Splatoon respond).
+`src/switch_pro2/switch_pro2.c` `ns2_build_report()` emits the int32 layout above and **gates motion
+on the `0x0C/0x04` IMU-enable** (`ns2_imu_enabled`, reset per host session in `tud_mount_cb`) —
+length 0 until the console enables it, matching a real PC2. Angular phase = the integral of
+`in.gyro` over **real elapsed time** (`time_us_32`), scaled `2^32 / (16.384 LSB/dps · 360° · 1e6) =
+0.72818` per µs·LSB; the 800 Hz timing word tracks real time (`count = dt_us/1250`); accel is
+`in.accel * 65536` (Q16.16).
+
+**First hardware test (2026-07-10): pipeline confirmed, math wrong.** Splatoon accepted the
+negotiated-feature gyro, but a **stationary controller still drifted the camera** — pure rate
+integration accumulating the DualSense's gyro bias with no correction (the genuine ~0.03 dps bias is
+negligible; a DualSense's is not, and any constant bias integrates without bound). **Take-1 fix**: a
+slow, stillness-gated per-axis bias tracker in `ns2_build_report()` before integration.
+
+**Second hardware test (2026-07-10, same day): take-1 fix made no observable difference** — Splatoon
+and Zelda both still showed unusable, unstable motion while stationary. Root cause: the take-1
+stillness gate tested raw gyro **magnitude** (`|raw| < 40 LSB`) against a threshold that a MEMS
+gyro's own constant zero-rate bias can plausibly exceed on its own — self-defeating (the gate would
+never open, so the bias estimate would never adapt, reproducing exactly the un-fixed behavior).
+**Take-2 fix**: the gate now tests the gyro's frame-to-frame **derivative** (steadiness) instead of
+its magnitude, so it opens correctly regardless of how large the underlying bias is. The bias/gate
+state is now exposed live via the config-mode `imu` debug command (`bias=[…] still=0|1`) so the next
+test can confirm the mechanism directly instead of inferring it from in-game symptoms. Full writeup
+(both tests + both fixes): [gyro-hardware-validation-2026-07-10.md](../experiments/gyro-hardware-validation-2026-07-10.md).
+
+**Axis signs / order** — reuses report-0x05's axis transform, which was **also found wrong** in the
+same test (pitch/roll swapped, yaw correct) and **fixed** in `ns2_seam.c` from a re-analysis of the
+genuine controller's own capture (🔵 medium confidence — see above and the hardware-validation doc).
+Both fixes are build-clean but **not yet hardware-tested**.
+
+Remaining knobs if jitter (not drift) persists: **low-pass strength** (EMA α 0.25→0.125). **Scale**
+`0.72818` (from 16.384 LSB/dps) and **initial phase** `Z = 0x80000000` (−180°) are unchanged from the
+first cut and still unverified against a moving on-console reference.
+
+**Symptom reclassified, 2026-07-10 (later).** The in-game stationary symptom is **abrupt
+multidirectional jumps, not gradual drift** — a meaningful correction, since "drift" implied
+gradual bias-accumulation error and biased the investigation toward bias-tracker work specifically.
+That work independently confirmed the take-2 stillness gate works correctly on hardware (a
+DualSense reads `still=1` stationary / `still=0` moving), which rules the gate itself out as the
+jump's cause without explaining the jumps. A new, carefully-validated third-party decode of the
+Switch 2's **native BLE** motion format (`docs/experiments/switch2_native_motion_map_DyCOOL.md`)
+shows that format uses raw, bounded, clamped gyro *samples* rather than an unbounded accumulator —
+a concrete alternative value semantic for report 0x09's still-open "phase field semantics"
+question (item 2 below), though not proof either way for report 0x09 specifically (that document's
+own author explicitly leaves Pro Controller 2's report 0x09 "to be verified"). Also gyro-scale
+mismatch was checked and **ruled out** as an explanation for the current DualSense test (the
+joypad-os framework's own `event->gyro_range = 2000` for DS4/DS5 matches this repo's `16.384
+LSB/dps` constant exactly). New instrumentation (`ns2_dbg_motion_phase()`, exposed on the
+config-mode `imu` line as `phase=[...]`) now lets the phase accumulator itself be watched directly
+for discontinuities, independent of any console. Full analysis:
+[gyro-hardware-validation-2026-07-10.md](../experiments/gyro-hardware-validation-2026-07-10.md) §12.

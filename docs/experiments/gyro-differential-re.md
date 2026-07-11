@@ -3,9 +3,12 @@
 **Status:** 🔵 partially executed. **Done:** Experiment C (console/report-0x09 — motion is a negotiated
 feature; format is int32 phase + Q16.16) → [gyro-experiment-c-results.md](gyro-experiment-c-results.md);
 Experiment A (Steam/report-0x05 — frozen timestamp + gyro scale, **fixed**) →
-[gyro-experiment-a-results.md](gyro-experiment-a-results.md). **Open:** B (canned real-stream replay),
-D/E (descriptor/timing), F (mutator/fuzzer), G (Pico host/MITM) — only if console-side validation needs
-them. **Goal:** stop guessing the report format; remove unknowns until the fix is obvious.
+[gyro-experiment-a-results.md](gyro-experiment-a-results.md); first hardware test of both + two
+follow-on fixes (axis-order swap, stationary-drift bias tracker) →
+[gyro-hardware-validation-2026-07-10.md](gyro-hardware-validation-2026-07-10.md). **Open:** B (canned
+real-stream replay), D/E (descriptor/timing), F (mutator/fuzzer), G (Pico host/MITM) — only if
+console-side validation needs them. **Goal:** stop guessing the report format; remove unknowns until
+the fix is obvious.
 
 ---
 

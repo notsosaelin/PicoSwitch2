@@ -87,6 +87,11 @@ extern void platform_reboot(void);
 extern int find_player_index(int dev_addr, int instance);
 #include "core/services/players/feedback.h"
 
+// Non-invasive raw-BLE-traffic capture (2026-07-10) — see sw2_capture.h. Off by default; adds
+// no behavior when disabled. sw2_capture.c avoids tusb.h/BTstack header conflicts itself (it
+// only needs tusb.h's tud_cdc_* calls, no BTstack types), so it's safe to include directly here.
+#include "sw2_capture.h"
+
 // ============================================================================
 // FLASH HELPERS (for TLV storage)
 // ============================================================================
@@ -3176,6 +3181,13 @@ static void register_ble_hid_listener(hci_con_handle_t con_handle)
 #define SW2_CMD_HANDLE              0x0014  // Command output
 #define SW2_ACK_CCC_HANDLE          0x001B  // ACK notification CCC
 
+// Opt-in motion-enable experiment (see sw2_capture.h) — UNVERIFIED for this device. Handle
+// numbering guessed from switch2_input_viewer.py's second input-report path plus this repo's own
+// observed characteristic/CCC handle pairing pattern (0x000A/0x000B, 0x0019/0x001A); never
+// independently confirmed via GATT discovery against a real Pro Controller 2.
+#define SW2_MOTION_HANDLE           0x000E  // UNVERIFIED: candidate richer/IMU input report
+#define SW2_MOTION_CCC_HANDLE       0x000F  // ASSUMED via the value_handle+1 CCC pattern
+
 // Switch 2 command constants
 #define SW2_CMD_PAIRING             0x15
 #define SW2_CMD_SET_LED             0x09
@@ -3217,6 +3229,12 @@ static void switch2_hid_notification_handler(uint8_t packet_type, uint16_t chann
     uint16_t value_handle = gatt_event_notification_get_value_handle(packet);
     uint16_t value_length = gatt_event_notification_get_value_length(packet);
     const uint8_t *value = gatt_event_notification_get_value(packet);
+
+    // Non-invasive raw capture (see sw2_capture.h) — the COMPLETE, unmodified notification,
+    // ahead of any parsing/filtering below. This is what removes the "bytes 16-59 discarded"
+    // blind spot: every byte this callback ever receives is now capturable, not just the
+    // buttons/sticks window process_report() happens to read.
+    sw2_capture_record(SW2_CAP_INPUT_NOTIFY, value_handle, value, value_length);
 
     // Debug first notification
     static bool sw2_notif_debug = false;
@@ -3300,6 +3318,7 @@ static void switch2_ack_ccc_write_callback(uint8_t packet_type, uint16_t channel
         // Now enable input report notifications
         static uint8_t ccc_enable[] = { 0x01, 0x00 };
         printf("[SW2_BLE] Enabling input notifications on CCC handle 0x%04X\n", SW2_CCC_HANDLE);
+        sw2_capture_record(SW2_CAP_CCC_WRITE, SW2_CCC_HANDLE, ccc_enable, sizeof(ccc_enable));
         gatt_client_write_value_of_characteristic(
             switch2_ccc_write_callback, handle, SW2_CCC_HANDLE, sizeof(ccc_enable), ccc_enable);
 
@@ -3319,11 +3338,471 @@ static hci_con_handle_t sw2_init_handle = 0;
 static gatt_client_notification_t switch2_ack_notification_listener;
 static gatt_client_characteristic_t switch2_ack_characteristic;
 
+// ============================================================================
+// ONE-SHOT GATT DISCOVERY — ground truth for raw ATT handle numbering (see sw2_capture.h)
+// ============================================================================
+
+#define SW2_GATT_DISC_MAX_SERVICES 8
+#define SW2_GATT_DISC_MAX_CHARS    32
+
+typedef enum {
+    SW2_GATT_DISC_IDLE = 0,
+    SW2_GATT_DISC_SERVICES,
+    SW2_GATT_DISC_CHARS,
+    SW2_GATT_DISC_DESCS,
+    SW2_GATT_DISC_DONE,
+} sw2_gatt_disc_state_t;
+
+static volatile bool s_sw2_gatt_disc_enabled = false;
+static bool s_sw2_gatt_disc_fired = false;  // per-connection one-shot guard
+static sw2_gatt_disc_state_t s_gatt_disc_state = SW2_GATT_DISC_IDLE;
+static gatt_client_service_t s_gatt_disc_services[SW2_GATT_DISC_MAX_SERVICES];
+static uint8_t s_gatt_disc_num_services, s_gatt_disc_svc_idx;
+static gatt_client_characteristic_t s_gatt_disc_chars[SW2_GATT_DISC_MAX_CHARS];
+static uint8_t s_gatt_disc_num_chars, s_gatt_disc_char_idx;
+
+void sw2_set_gatt_discovery_enabled(bool on) {
+    s_sw2_gatt_disc_enabled = on;
+    if (!on) s_sw2_gatt_disc_fired = false;
+}
+
+bool sw2_get_gatt_discovery_enabled(void) {
+    return s_sw2_gatt_disc_enabled;
+}
+
+static void sw2_gatt_disc_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size)
+{
+    UNUSED(channel);
+    UNUSED(size);
+    if (packet_type != HCI_EVENT_PACKET) return;
+    uint8_t event = hci_event_packet_get_type(packet);
+
+    switch (event) {
+        case GATT_EVENT_SERVICE_QUERY_RESULT: {
+            if (s_gatt_disc_num_services < SW2_GATT_DISC_MAX_SERVICES) {
+                gatt_client_service_t svc;
+                gatt_event_service_query_result_get_service(packet, &svc);
+                s_gatt_disc_services[s_gatt_disc_num_services++] = svc;
+                uint8_t data[20];
+                data[0] = (uint8_t)(svc.end_group_handle & 0xFF);
+                data[1] = (uint8_t)(svc.end_group_handle >> 8);
+                data[2] = (uint8_t)(svc.uuid16 & 0xFF);
+                data[3] = (uint8_t)(svc.uuid16 >> 8);
+                memcpy(&data[4], svc.uuid128, 16);
+                sw2_capture_record(SW2_CAP_GATT_SVC, svc.start_group_handle, data, sizeof(data));
+            }
+            break;
+        }
+        case GATT_EVENT_CHARACTERISTIC_QUERY_RESULT: {
+            gatt_client_characteristic_t ch;
+            gatt_event_characteristic_query_result_get_characteristic(packet, &ch);
+            if (s_gatt_disc_num_chars < SW2_GATT_DISC_MAX_CHARS) {
+                s_gatt_disc_chars[s_gatt_disc_num_chars++] = ch;
+            }
+            uint8_t data[24];
+            data[0] = (uint8_t)(ch.start_handle & 0xFF);
+            data[1] = (uint8_t)(ch.start_handle >> 8);
+            data[2] = (uint8_t)(ch.end_handle & 0xFF);
+            data[3] = (uint8_t)(ch.end_handle >> 8);
+            data[4] = (uint8_t)(ch.properties & 0xFF);
+            data[5] = (uint8_t)(ch.properties >> 8);
+            data[6] = (uint8_t)(ch.uuid16 & 0xFF);
+            data[7] = (uint8_t)(ch.uuid16 >> 8);
+            memcpy(&data[8], ch.uuid128, 16);
+            sw2_capture_record(SW2_CAP_GATT_CHAR, ch.value_handle, data, sizeof(data));
+            break;
+        }
+        case GATT_EVENT_ALL_CHARACTERISTIC_DESCRIPTORS_QUERY_RESULT: {
+            gatt_client_characteristic_descriptor_t d;
+            gatt_event_all_characteristic_descriptors_query_result_get_characteristic_descriptor(packet, &d);
+            uint8_t data[18];
+            data[0] = (uint8_t)(d.uuid16 & 0xFF);
+            data[1] = (uint8_t)(d.uuid16 >> 8);
+            memcpy(&data[2], d.uuid128, 16);
+            sw2_capture_record(SW2_CAP_GATT_DESC, d.handle, data, sizeof(data));
+            break;
+        }
+        case GATT_EVENT_QUERY_COMPLETE: {
+            hci_con_handle_t con = gatt_event_query_complete_get_handle(packet);
+            uint8_t status = gatt_event_query_complete_get_att_status(packet);
+            if (s_gatt_disc_state == SW2_GATT_DISC_SERVICES) {
+                printf("[SW2_GATT_DISC] %d services discovered (status=0x%02X)\n",
+                       s_gatt_disc_num_services, status);
+                s_gatt_disc_svc_idx = 0;
+                s_gatt_disc_num_chars = 0;
+                if (s_gatt_disc_num_services > 0) {
+                    s_gatt_disc_state = SW2_GATT_DISC_CHARS;
+                    gatt_client_discover_characteristics_for_service(
+                        sw2_gatt_disc_handler, con, &s_gatt_disc_services[0]);
+                } else {
+                    s_gatt_disc_state = SW2_GATT_DISC_DONE;
+                }
+            } else if (s_gatt_disc_state == SW2_GATT_DISC_CHARS) {
+                s_gatt_disc_svc_idx++;
+                if (s_gatt_disc_svc_idx < s_gatt_disc_num_services) {
+                    gatt_client_discover_characteristics_for_service(
+                        sw2_gatt_disc_handler, con, &s_gatt_disc_services[s_gatt_disc_svc_idx]);
+                } else {
+                    printf("[SW2_GATT_DISC] %d characteristics discovered\n", s_gatt_disc_num_chars);
+                    s_gatt_disc_char_idx = 0;
+                    if (s_gatt_disc_num_chars > 0) {
+                        s_gatt_disc_state = SW2_GATT_DISC_DESCS;
+                        gatt_client_discover_characteristic_descriptors(
+                            sw2_gatt_disc_handler, con, &s_gatt_disc_chars[0]);
+                    } else {
+                        s_gatt_disc_state = SW2_GATT_DISC_DONE;
+                    }
+                }
+            } else if (s_gatt_disc_state == SW2_GATT_DISC_DESCS) {
+                s_gatt_disc_char_idx++;
+                if (s_gatt_disc_char_idx < s_gatt_disc_num_chars) {
+                    gatt_client_discover_characteristic_descriptors(
+                        sw2_gatt_disc_handler, con, &s_gatt_disc_chars[s_gatt_disc_char_idx]);
+                } else {
+                    s_gatt_disc_state = SW2_GATT_DISC_DONE;
+                    printf("[SW2_GATT_DISC] Done: %d services, %d characteristics (+ their descriptors)\n",
+                           s_gatt_disc_num_services, s_gatt_disc_num_chars);
+                }
+            }
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+// One-shot: walk every primary service -> every characteristic in it -> every descriptor of each
+// characteristic, capturing raw ATT handles + UUIDs as ground truth. See sw2_capture.h.
+static void switch2_run_gatt_discovery(hci_con_handle_t con_handle)
+{
+    printf("[SW2_GATT_DISC] Starting full GATT discovery on handle 0x%04X\n", con_handle);
+    s_gatt_disc_num_services = 0;
+    s_gatt_disc_num_chars = 0;
+    s_gatt_disc_svc_idx = 0;
+    s_gatt_disc_char_idx = 0;
+    s_gatt_disc_state = SW2_GATT_DISC_SERVICES;
+    gatt_client_discover_primary_services(sw2_gatt_disc_handler, con_handle);
+}
+
+// ============================================================================
+// V2 FEATURE-ENABLE EXPERIMENT MATRIX (see sw2_capture.h)
+// ============================================================================
+
+// Best-supported hypothesis for the reference tool's "input_handle+3" descriptor write --
+// UNCONFIRMED pending a sw2_set_gatt_discovery_enabled() capture. Reasoning (full detail in
+// ble-controller-protocol-inventory.md §3.7.1): switch2_input_viewer.py consistently computes its
+// own "handle" as the raw/documented VALUE handle minus 1 (e.g. `input_handle = INPUT_HANDLES[0]
+// - 1`, and separately `write_gatt_char(0x0005 - 1, ...)`), and cross-checks against this repo's
+// three independently-confirmed value handles (0x000A, 0x0014, 0x001A and their secondary-triple
+// counterparts) are all consistent with that rule. Given this repo's CONFIRMED layout
+// 0x0009=decl(0x000A), 0x000A=value, 0x000B=CCC, and the v1-experiment-CONFIRMED 0x000E=value,
+// 0x000F=CCC, GATT's declaration-precedes-value invariant means 0x000E's declaration must be
+// 0x000D -- which leaves 0x000C as the only unassigned handle between 0x000A's CCC (0x000B) and
+// 0x000E's declaration (0x000D). input_handle(0x0009)+3 = 0x000C: most likely a THIRD, custom
+// descriptor attached to the 0x000A characteristic (not 0x000E) -- i.e. probably unrelated to the
+// 0x000E "richer format" question this experiment matrix is actually testing. Treated here as the
+// best current estimate, not a confirmed fact; a discovery capture may prove it wrong.
+#define SW2_REPORT_RATE_HANDLE_HYPOTHESIS 0x000C
+
+typedef struct {
+    uint32_t address;
+    uint8_t  size;
+} sw2_spi_read_t;
+
+// Exact address/size list from switch2_input_viewer.py's connection sequence, in its exact order
+// (primary stick cal, secondary stick cal, user cal, gyro cal, accel/mag cal, pairing data).
+static const sw2_spi_read_t SW2_V2_CAL_READS[] = {
+    { 0x13080,  0x40 },
+    { 0x130C0,  0x40 },
+    { 0x1FC040, 0x40 },
+    { 0x13040,  0x10 },
+    { 0x13100,  0x18 },
+    { 0x1FA000, 0x40 },
+};
+#define SW2_V2_CAL_COUNT (sizeof(SW2_V2_CAL_READS) / sizeof(SW2_V2_CAL_READS[0]))
+
+typedef struct {
+    uint8_t     id;
+    const char *name;
+    uint8_t     configure_flags;
+    uint8_t     enable_flags;
+    bool        do_cal_reads;
+    bool        do_handle_write;
+    bool        defer_ccc_subscribe;  // if true, the 0x000E CCC subscribe happens LAST, not first
+} sw2_v2_variant_t;
+
+static const sw2_v2_variant_t SW2_V2_VARIANTS[] = {
+    { 1, "control",              0x07, 0x07, false, false, false },
+    { 2, "mask_ff",               0xFF, 0xFF, false, false, false },
+    { 3, "handle_write_only",    0x07, 0x07, false, true,  false },
+    { 4, "mask_ff_handle_write", 0xFF, 0xFF, false, true,  false },
+    { 5, "calibration_seq",      0x07, 0x07, true,  false, false },
+    { 6, "full_sequence",        0xFF, 0x07, true,  true,  true  },
+};
+#define SW2_V2_VARIANT_COUNT (sizeof(SW2_V2_VARIANTS) / sizeof(SW2_V2_VARIANTS[0]))
+
+typedef enum {
+    SW2_V2_IDLE = 0,
+    SW2_V2_CCC_SUBSCRIBED,       // waiting for the (non-deferred) CCC write to complete
+    SW2_V2_CONFIGURE_SENT,       // waiting for the configure ACK (cmd=0x0C, subcmd=0x02)
+    SW2_V2_CAL_READ,             // waiting for a SPI-read ACK (cmd=0x02, subcmd=0x04)
+    SW2_V2_ENABLE_SENT,          // waiting for the enable ACK (cmd=0x0C, subcmd=0x04)
+    SW2_V2_HANDLE_WRITE_SENT,    // waiting for the descriptor-write completion
+    SW2_V2_CCC_SUBSCRIBED_LATE,  // waiting for the deferred (variant 6) CCC write to complete
+    SW2_V2_DONE,
+} sw2_v2_state_t;
+
+static volatile uint8_t s_sw2_v2_armed_variant = 0;  // 0 = off
+static bool s_sw2_v2_fired = false;                  // per-connection one-shot guard
+static sw2_v2_state_t s_sw2_v2_state = SW2_V2_IDLE;
+static const sw2_v2_variant_t *s_sw2_v2_active = NULL;
+static uint8_t s_sw2_v2_cal_index = 0;
+static gatt_client_notification_t sw2_motion_notification_listener;
+static gatt_client_characteristic_t sw2_motion_characteristic;
+
+void sw2_set_v2_variant(uint8_t variant) {
+    s_sw2_v2_armed_variant = variant;
+    if (variant == 0) s_sw2_v2_fired = false;
+}
+
+uint8_t sw2_get_v2_variant(void) {
+    return s_sw2_v2_armed_variant;
+}
+
+// Capture-only notification handler for 0x000E. Deliberately does NOT feed pending_ble_report /
+// router_submit_input — pure observation, same guarantee as every other sw2_capture_record() call
+// in this file.
+static void sw2_motion_notification_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size)
+{
+    UNUSED(channel);
+    UNUSED(size);
+
+    if (packet_type != HCI_EVENT_PACKET) return;
+    if (hci_event_packet_get_type(packet) != GATT_EVENT_NOTIFICATION) return;
+
+    uint16_t value_handle = gatt_event_notification_get_value_handle(packet);
+    uint16_t value_length = gatt_event_notification_get_value_length(packet);
+    const uint8_t *value = gatt_event_notification_get_value(packet);
+
+    printf("[SW2_V2] Notification: handle=0x%04X len=%d\n", value_handle, value_length);
+    sw2_capture_record(SW2_CAP_INPUT_NOTIFY, value_handle, value, value_length);
+}
+
+static void switch2_build_spi_read_cmd(uint8_t *out, uint32_t address, uint8_t size)
+{
+    // Byte-for-byte copy of switch2_input_viewer.py's read_spi_memory() command construction --
+    // deliberately not re-derived, since replicating a proven-working reference exactly is the
+    // whole point of this variant.
+    out[0] = SW2_CMD_READ_SPI;
+    out[1] = SW2_REQ_TYPE_REQ;
+    out[2] = SW2_REQ_INT_BLE;
+    out[3] = SW2_SUBCMD_READ_SPI;
+    out[4] = 0x00; out[5] = 0x08; out[6] = 0x00; out[7] = 0x00;
+    out[8] = size;
+    out[9] = 0x7E; out[10] = 0x00; out[11] = 0x00;
+    out[12] = (uint8_t)(address & 0xFF);
+    out[13] = (uint8_t)((address >> 8) & 0xFF);
+    out[14] = (uint8_t)((address >> 16) & 0xFF);
+    out[15] = (uint8_t)((address >> 24) & 0xFF);
+}
+
+static void switch2_v2_send_configure(hci_con_handle_t con_handle)
+{
+    uint8_t cmd[] = { 0x0c, SW2_REQ_TYPE_REQ, SW2_REQ_INT_BLE, 0x02, 0x00, 0x04, 0x00, 0x00,
+                      s_sw2_v2_active->configure_flags, 0x00, 0x00, 0x00 };
+    sw2_capture_record(SW2_CAP_CMD_OUT, SW2_CMD_HANDLE, cmd, sizeof(cmd));
+    gatt_client_write_value_of_characteristic_without_response(con_handle, SW2_CMD_HANDLE, sizeof(cmd), cmd);
+}
+
+static void switch2_v2_send_next_cal_read(hci_con_handle_t con_handle)
+{
+    const sw2_spi_read_t *r = &SW2_V2_CAL_READS[s_sw2_v2_cal_index];
+    uint8_t cmd[16];
+    switch2_build_spi_read_cmd(cmd, r->address, r->size);
+    sw2_capture_record(SW2_CAP_CMD_OUT, SW2_CMD_HANDLE, cmd, sizeof(cmd));
+    gatt_client_write_value_of_characteristic_without_response(con_handle, SW2_CMD_HANDLE, sizeof(cmd), cmd);
+}
+
+static void switch2_v2_send_enable(hci_con_handle_t con_handle)
+{
+    uint8_t cmd[] = { 0x0c, SW2_REQ_TYPE_REQ, SW2_REQ_INT_BLE, 0x04, 0x00, 0x04, 0x00, 0x00,
+                      s_sw2_v2_active->enable_flags, 0x00, 0x00, 0x00 };
+    sw2_capture_record(SW2_CAP_CMD_OUT, SW2_CMD_HANDLE, cmd, sizeof(cmd));
+    gatt_client_write_value_of_characteristic_without_response(con_handle, SW2_CMD_HANDLE, sizeof(cmd), cmd);
+}
+
+static void switch2_v2_handle_write_callback(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size);
+static void switch2_v2_ccc_write_callback(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size);
+
+static void switch2_v2_send_handle_write(hci_con_handle_t con_handle)
+{
+    // Exact bytes from switch2_input_viewer.py's "write report rate" step. Target handle is a
+    // reasoned hypothesis, not confirmed -- see SW2_REPORT_RATE_HANDLE_HYPOTHESIS above. Using
+    // the WITH-response GATT write (not _without_response) so a definitive ACK/error is captured.
+    uint8_t data[] = { 0x85, 0x00 };
+    sw2_capture_record(SW2_CAP_CMD_OUT, SW2_REPORT_RATE_HANDLE_HYPOTHESIS, data, sizeof(data));
+    gatt_client_write_value_of_characteristic(
+        switch2_v2_handle_write_callback, con_handle, SW2_REPORT_RATE_HANDLE_HYPOTHESIS,
+        sizeof(data), data);
+}
+
+static void switch2_v2_send_ccc_subscribe(hci_con_handle_t con_handle)
+{
+    memset(&sw2_motion_characteristic, 0, sizeof(sw2_motion_characteristic));
+    sw2_motion_characteristic.value_handle = SW2_MOTION_HANDLE;
+    sw2_motion_characteristic.end_handle = SW2_MOTION_HANDLE + 1;
+
+    gatt_client_listen_for_characteristic_value_updates(
+        &sw2_motion_notification_listener, sw2_motion_notification_handler, con_handle,
+        &sw2_motion_characteristic);
+
+    static uint8_t ccc_enable[] = { 0x01, 0x00 };
+    sw2_capture_record(SW2_CAP_CCC_WRITE, SW2_MOTION_CCC_HANDLE, ccc_enable, sizeof(ccc_enable));
+    gatt_client_write_value_of_characteristic(
+        switch2_v2_ccc_write_callback, con_handle, SW2_MOTION_CCC_HANDLE, sizeof(ccc_enable), ccc_enable);
+}
+
+static void switch2_v2_ccc_write_callback(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size)
+{
+    UNUSED(channel);
+    UNUSED(size);
+    if (packet_type != HCI_EVENT_PACKET) return;
+    if (hci_event_packet_get_type(packet) != GATT_EVENT_QUERY_COMPLETE) return;
+
+    uint8_t status = gatt_event_query_complete_get_att_status(packet);
+    hci_con_handle_t con_handle = gatt_event_query_complete_get_handle(packet);
+    printf("[SW2_V2] CCC write (0x%04X) status=0x%02X state=%d\n", SW2_MOTION_CCC_HANDLE, status,
+           s_sw2_v2_state);
+    // Closes a gap found analyzing the first v2 hardware run: this completion status previously
+    // only reached printf(), never the capture pipeline. Logged here, not before -- this is the
+    // actual ATT-level result of the write BTstack already issued; nothing about when this
+    // callback fires or what it does next is changed by adding this one line.
+    sw2_capture_record(SW2_CAP_WRITE_STATUS, SW2_MOTION_CCC_HANDLE, &status, 1);
+    if (!s_sw2_v2_active) return;
+
+    if (s_sw2_v2_state == SW2_V2_CCC_SUBSCRIBED) {
+        // Non-deferred variants: CCC first, then start the command sequence.
+        s_sw2_v2_state = SW2_V2_CONFIGURE_SENT;
+        switch2_v2_send_configure(con_handle);
+    } else if (s_sw2_v2_state == SW2_V2_CCC_SUBSCRIBED_LATE) {
+        // Deferred (variant 6): this was the final step.
+        printf("[SW2_V2] Variant %d complete (deferred CCC subscribe was last step)\n",
+               s_sw2_v2_active->id);
+        s_sw2_v2_state = SW2_V2_DONE;
+        s_sw2_v2_active = NULL;
+    }
+}
+
+static void switch2_v2_handle_write_callback(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size)
+{
+    UNUSED(channel);
+    UNUSED(size);
+    if (packet_type != HCI_EVENT_PACKET) return;
+    if (hci_event_packet_get_type(packet) != GATT_EVENT_QUERY_COMPLETE) return;
+
+    uint8_t status = gatt_event_query_complete_get_att_status(packet);
+    hci_con_handle_t con_handle = gatt_event_query_complete_get_handle(packet);
+    printf("[SW2_V2] Handle-write (0x%04X) status=0x%02X\n", SW2_REPORT_RATE_HANDLE_HYPOTHESIS, status);
+    // Same fix as switch2_v2_ccc_write_callback above -- log the ATT status that was already
+    // computed, without changing this callback's timing or subsequent behavior.
+    sw2_capture_record(SW2_CAP_WRITE_STATUS, SW2_REPORT_RATE_HANDLE_HYPOTHESIS, &status, 1);
+    if (!s_sw2_v2_active) return;
+
+    if (s_sw2_v2_active->defer_ccc_subscribe) {
+        s_sw2_v2_state = SW2_V2_CCC_SUBSCRIBED_LATE;
+        switch2_v2_send_ccc_subscribe(con_handle);
+    } else {
+        printf("[SW2_V2] Variant %d complete (handle write was last step)\n", s_sw2_v2_active->id);
+        s_sw2_v2_state = SW2_V2_DONE;
+        s_sw2_v2_active = NULL;
+    }
+}
+
+// Called from switch2_ack_notification_handler() for every ACK while a v2 variant is active.
+// Advances the variant's state machine; a cmd/subcmd that doesn't match the step currently being
+// waited on is silently ignored (it belongs to something else — e.g. the primary init sequence
+// finishing up, or an unrelated ACK — not an error).
+static void switch2_v2_handle_ack(hci_con_handle_t con_handle, uint8_t cmd, uint8_t subcmd)
+{
+    if (!s_sw2_v2_active) return;
+
+    switch (s_sw2_v2_state) {
+        case SW2_V2_CONFIGURE_SENT:
+            if (cmd == 0x0c && subcmd == 0x02) {
+                if (s_sw2_v2_active->do_cal_reads) {
+                    s_sw2_v2_cal_index = 0;
+                    s_sw2_v2_state = SW2_V2_CAL_READ;
+                    switch2_v2_send_next_cal_read(con_handle);
+                } else {
+                    s_sw2_v2_state = SW2_V2_ENABLE_SENT;
+                    switch2_v2_send_enable(con_handle);
+                }
+            }
+            break;
+        case SW2_V2_CAL_READ:
+            if (cmd == SW2_CMD_READ_SPI && subcmd == SW2_SUBCMD_READ_SPI) {
+                s_sw2_v2_cal_index++;
+                if (s_sw2_v2_cal_index < SW2_V2_CAL_COUNT) {
+                    switch2_v2_send_next_cal_read(con_handle);
+                } else {
+                    s_sw2_v2_state = SW2_V2_ENABLE_SENT;
+                    switch2_v2_send_enable(con_handle);
+                }
+            }
+            break;
+        case SW2_V2_ENABLE_SENT:
+            if (cmd == 0x0c && subcmd == 0x04) {
+                if (s_sw2_v2_active->do_handle_write) {
+                    s_sw2_v2_state = SW2_V2_HANDLE_WRITE_SENT;
+                    switch2_v2_send_handle_write(con_handle);
+                } else {
+                    printf("[SW2_V2] Variant %d complete (enable was last step)\n", s_sw2_v2_active->id);
+                    s_sw2_v2_state = SW2_V2_DONE;
+                    s_sw2_v2_active = NULL;
+                }
+            }
+            break;
+        default:
+            break;  // SW2_V2_HANDLE_WRITE_SENT/CCC_SUBSCRIBED_LATE finish via their own callbacks
+    }
+}
+
+// One-shot, opt-in RE experiment: run the armed variant (sw2_set_v2_variant()) against the
+// current connection. See sw2_capture.h for the full variant table and rationale. Does not touch
+// the normal init state machine, report 0x09, or input routing in any way.
+static void switch2_run_v2_experiment(hci_con_handle_t con_handle)
+{
+    uint8_t n = s_sw2_v2_armed_variant;
+    if (n < 1 || n > SW2_V2_VARIANT_COUNT) return;
+    const sw2_v2_variant_t *v = &SW2_V2_VARIANTS[n - 1];
+
+    printf("[SW2_V2] Starting variant %d (%s) on handle 0x%04X\n", v->id, v->name, con_handle);
+    uint8_t vid = v->id;
+    sw2_capture_record(SW2_CAP_VARIANT, 0, &vid, 1);
+
+    s_sw2_v2_active = v;
+    s_sw2_v2_cal_index = 0;
+
+    if (v->defer_ccc_subscribe) {
+        // Variant 6: subscribe LAST, mirroring the reference tool's actual operation order.
+        s_sw2_v2_state = SW2_V2_CONFIGURE_SENT;
+        switch2_v2_send_configure(con_handle);
+    } else {
+        s_sw2_v2_state = SW2_V2_CCC_SUBSCRIBED;
+        switch2_v2_send_ccc_subscribe(con_handle);
+    }
+}
+
 // Cleanup Switch 2 state on BLE disconnect (called from disconnect handler)
 static void switch2_cleanup_on_disconnect(void) {
     gatt_client_stop_listening_for_characteristic_value_updates(&switch2_ack_notification_listener);
     sw2_init_state = SW2_INIT_IDLE;
     sw2_init_handle = 0;
+    s_sw2_v2_fired = false;
+    s_sw2_v2_state = SW2_V2_IDLE;
+    s_sw2_v2_active = NULL;
+    s_sw2_gatt_disc_fired = false;
+    s_gatt_disc_state = SW2_GATT_DISC_IDLE;
 }
 
 // Forward declare
@@ -3342,6 +3821,12 @@ static void switch2_ack_notification_handler(uint8_t packet_type, uint16_t chann
     const uint8_t *value = gatt_event_notification_get_value(packet);
     hci_con_handle_t con_handle = gatt_event_notification_get_handle(packet);
 
+    // Non-invasive raw capture (see sw2_capture.h), ahead of the 0x001A filter below — this
+    // listener has been observed receiving notifications on handles other than 0x001A (see the
+    // pre-existing debug log just below), so capturing here, not after the filter, is what
+    // makes "every observed handle" actually true rather than assumed.
+    sw2_capture_record(SW2_CAP_ACK_NOTIFY, value_handle, value, value_length);
+
     // Debug: print all notifications (not just 0x001A) to see what's coming in
     static bool ack_notif_debug = false;
     if (!ack_notif_debug && value_handle != SW2_INPUT_REPORT_HANDLE) {
@@ -3358,6 +3843,12 @@ static void switch2_ack_notification_handler(uint8_t packet_type, uint16_t chann
 
     printf("[SW2_BLE] ACK: cmd=0x%02X subcmd=0x%02X state=%d len=%d\n",
            cmd, subcmd, sw2_init_state, value_length);
+
+    // Route to the v2 experiment's state machine too, if one is active (see sw2_capture.h). Safe
+    // to call unconditionally — it no-ops immediately when no variant is running, and only ever
+    // runs after SW2_INIT_DONE, so it can never observe an ACK the primary switch() below is
+    // still using to drive pairing.
+    switch2_v2_handle_ack(con_handle, cmd, subcmd);
 
     // Handle ACK based on current init state
     switch (cmd) {
@@ -3413,6 +3904,10 @@ static void switch2_ack_notification_handler(uint8_t packet_type, uint16_t chann
             if (sw2_init_state == SW2_INIT_SET_LED) {
                 printf("[SW2_BLE] LED set! Init done.\n");
                 sw2_init_state = SW2_INIT_DONE;
+                // Terminal state — not followed by switch2_send_init_cmd(), so captured here
+                // directly (every other transition is captured at the top of that function).
+                uint8_t s = (uint8_t)SW2_INIT_DONE;
+                sw2_capture_record(SW2_CAP_STATE, 0, &s, 1);
             }
             break;
     }
@@ -3421,6 +3916,15 @@ static void switch2_ack_notification_handler(uint8_t packet_type, uint16_t chann
 static void switch2_send_init_cmd(hci_con_handle_t con_handle)
 {
     printf("[SW2_BLE] Sending init cmd, state=%d\n", sw2_init_state);
+
+    // Non-invasive capture (see sw2_capture.h): every SW2_INIT_* state this host acts on. Every
+    // sw2_init_state transition in switch2_ack_notification_handler() is immediately followed
+    // by a call to this function (except the terminal SW2_INIT_DONE, captured separately at its
+    // assignment site) or by switch2_send_next_init_cmd(), so capturing here covers the sequence.
+    {
+        uint8_t s = (uint8_t)sw2_init_state;
+        sw2_capture_record(SW2_CAP_STATE, 0, &s, 1);
+    }
 
     switch (sw2_init_state) {
         case SW2_INIT_READ_INFO: {
@@ -3435,6 +3939,7 @@ static void switch2_send_init_cmd(hci_con_handle_t con_handle)
                 0x7e, 0x00, 0x00,       // Address type
                 0x00, 0x30, 0x01, 0x00  // SPI address
             };
+            sw2_capture_record(SW2_CAP_CMD_OUT, SW2_CMD_HANDLE, read_info, sizeof(read_info));
             gatt_client_write_value_of_characteristic_without_response(
                 con_handle, SW2_CMD_HANDLE, sizeof(read_info), read_info);
             printf("[SW2_BLE] READ_INFO sent\n");
@@ -3462,6 +3967,7 @@ static void switch2_send_init_cmd(hci_con_handle_t con_handle)
                 (uint8_t)(local_addr[0] - 1), local_addr[1], local_addr[2],
                 local_addr[3], local_addr[4], local_addr[5],
             };
+            sw2_capture_record(SW2_CAP_CMD_OUT, SW2_CMD_HANDLE, pair1, sizeof(pair1));
             gatt_client_write_value_of_characteristic_without_response(
                 con_handle, SW2_CMD_HANDLE, sizeof(pair1), pair1);
             break;
@@ -3478,6 +3984,7 @@ static void switch2_send_init_cmd(hci_con_handle_t con_handle)
                 0xea, 0xbd, 0x47, 0x13, 0x89, 0x35, 0x42, 0xc6,
                 0x79, 0xee, 0x07, 0xf2, 0x53, 0x2c, 0x6c, 0x31
             };
+            sw2_capture_record(SW2_CAP_CMD_OUT, SW2_CMD_HANDLE, pair2, sizeof(pair2));
             gatt_client_write_value_of_characteristic_without_response(
                 con_handle, SW2_CMD_HANDLE, sizeof(pair2), pair2);
             printf("[SW2_BLE] Pair Step 2 sent\n");
@@ -3495,6 +4002,7 @@ static void switch2_send_init_cmd(hci_con_handle_t con_handle)
                 0x40, 0xb0, 0x8a, 0x5f, 0xcd, 0x1f, 0x9b, 0x41,
                 0x12, 0x5c, 0xac, 0xc6, 0x3f, 0x38, 0xa0, 0x73
             };
+            sw2_capture_record(SW2_CAP_CMD_OUT, SW2_CMD_HANDLE, pair3, sizeof(pair3));
             gatt_client_write_value_of_characteristic_without_response(
                 con_handle, SW2_CMD_HANDLE, sizeof(pair3), pair3);
             printf("[SW2_BLE] Pair Step 3 sent\n");
@@ -3510,6 +4018,7 @@ static void switch2_send_init_cmd(hci_con_handle_t con_handle)
                 SW2_SUBCMD_PAIRING_STEP4, // 0x03
                 0x00, 0x01, 0x00, 0x00, 0x00
             };
+            sw2_capture_record(SW2_CAP_CMD_OUT, SW2_CMD_HANDLE, pair4, sizeof(pair4));
             gatt_client_write_value_of_characteristic_without_response(
                 con_handle, SW2_CMD_HANDLE, sizeof(pair4), pair4);
             printf("[SW2_BLE] Pair Step 4 sent\n");
@@ -3527,6 +4036,7 @@ static void switch2_send_init_cmd(hci_con_handle_t con_handle)
                 0x01,  // Player 1 LED pattern
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             };
+            sw2_capture_record(SW2_CAP_CMD_OUT, SW2_CMD_HANDLE, led_cmd, sizeof(led_cmd));
             gatt_client_write_value_of_characteristic_without_response(
                 con_handle, SW2_CMD_HANDLE, sizeof(led_cmd), led_cmd);
             printf("[SW2_BLE] LED command sent\n");
@@ -3608,6 +4118,7 @@ static void switch2_send_player_led(hci_con_handle_t con_handle, uint8_t pattern
         pattern,  // Player LED pattern
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     };
+    sw2_capture_record(SW2_CAP_CMD_OUT, SW2_CMD_HANDLE, led_cmd, sizeof(led_cmd));
     gatt_client_write_value_of_characteristic_without_response(
         con_handle, SW2_CMD_HANDLE, sizeof(led_cmd), led_cmd);
 }
@@ -3688,6 +4199,20 @@ static void switch2_handle_feedback(void)
 {
     // Only process if we have an active Switch 2 connection
     if (sw2_init_state != SW2_INIT_DONE || sw2_init_handle == 0) return;
+
+    // One-shot GATT discovery and v2 feature-enable experiment (see sw2_capture.h): each fires at
+    // most once per connection, after normal init has completed unchanged, only when explicitly
+    // armed via `sw2cap gattdisc on` / `sw2cap variant <n>`. Neither affects anything below this
+    // point. Do not arm both in the same session (see sw2_capture.h) -- if a user does, discovery
+    // is checked first and gets first use of the connection's single outstanding GATT query.
+    if (s_sw2_gatt_disc_enabled && !s_sw2_gatt_disc_fired) {
+        s_sw2_gatt_disc_fired = true;
+        switch2_run_gatt_discovery(sw2_init_handle);
+    }
+    if (s_sw2_v2_armed_variant != 0 && !s_sw2_v2_fired) {
+        s_sw2_v2_fired = true;
+        switch2_run_v2_experiment(sw2_init_handle);
+    }
 
     sw2_rumble_send_counter++;
 
@@ -3807,6 +4332,7 @@ static void register_switch2_hid_listener(hci_con_handle_t con_handle)
     // Enable notifications on ACK handle first (0x001B) - wait for confirmation
     static uint8_t ccc_enable[] = { 0x01, 0x00 };
     printf("[SW2_BLE] Enabling ACK notifications on CCC handle 0x%04X\n", SW2_ACK_CCC_HANDLE);
+    sw2_capture_record(SW2_CAP_CCC_WRITE, SW2_ACK_CCC_HANDLE, ccc_enable, sizeof(ccc_enable));
     gatt_client_write_value_of_characteristic(
         switch2_ack_ccc_write_callback, con_handle, SW2_ACK_CCC_HANDLE, sizeof(ccc_enable), ccc_enable);
 }

@@ -126,9 +126,11 @@ extern "C"
 // Pro Controller reports are 64 bytes (IN and OUT).
 #define CFG_TUD_HID_EP_BUFSIZE 64
 
-// CDC FIFO / endpoint sizes for the config serial link.
+// CDC FIFO / endpoint sizes for the config serial link. TX raised 256->1024->4096 (2026-07-10)
+// to fit config.c's largest reply, "sw2cap drain" (out[4096]: up to 16 batched BLE-capture
+// entries, each with up to 64 hex-encoded payload bytes).
 #define CFG_TUD_CDC_RX_BUFSIZE 256
-#define CFG_TUD_CDC_TX_BUFSIZE 256
+#define CFG_TUD_CDC_TX_BUFSIZE 4096
 #define CFG_TUD_CDC_EP_BUFSIZE 64
 
 // MSC block buffer (one 512-byte sector).
