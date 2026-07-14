@@ -25,9 +25,11 @@ supported, with their **extra buttons** (Edge paddles/Fn, Elite paddles) mapped 
 - **Self-contained config mode** — hold BOOTSEL ~5 s (cycling through any other USB personalities
   first, see below) and the dongle re-enumerates as a serial + storage device that **serves its own
   configuration web page** (no app or internet needed).
-- **NSO GameCube Controller output mode** (new, not yet hardware-validated on a real Switch 2) — a
-  second USB personality enumerating as the genuine `Nintendo GameCube Controller` (VID `057E` / PID
-  `2073`), reached via the BOOTSEL hold cycle below. See `docs/switch2-gc/` for full status.
+- **NSO GameCube Controller output mode** — a second USB personality enumerating as the genuine
+  `Nintendo GameCube Controller` (VID `057E` / PID `2073`), reached via the BOOTSEL hold cycle below.
+  **Hardware-validated**: recognized by a real Switch 2 console, streams live input, and buttons
+  (including the native Z button and independent L/R trigger detents) are confirmed working. Rumble
+  is still being refined — see `docs/switch2-gc/` and `DATA.md` for current status.
 - **Live config UI** — see the connected controller auto-detected, watch each input light up next to
   the Switch output it produces, and **remap any button per controller** — plus a lightbar colour picker.
 - **Works on PC too** — enumerates as a Switch 2 Pro (Steam etc.), including **gyro** over the common report.
@@ -169,6 +171,9 @@ critical section. `src/bt_hid/ns2_seam.c` maps each controller's inputs to the S
 - **One controller at a time.** Multi-player is on the roadmap (see [`PLAN.md`](PLAN.md)).
 - **Console gyro not yet supported** — the native motion-report format is undocumented and under
   reverse engineering. PC gyro (over the common report) works.
+- **GameCube mode rumble is still being tuned** — buttons, sticks, and triggers are confirmed working
+  on a real Switch 2, but rumble feel (especially during real gameplay) is under active refinement.
+  See `DATA.md` for current status.
 - **Bluetooth reconnect can be flaky** for the Switch 2 Pro Controller (sometimes needs a re-pair).
 - **Wake-from-sleep is not supported** — the Switch 2 wakes only on a BLE advertisement from a bonded
   controller, and this dongle is a USB device.
@@ -179,6 +184,9 @@ critical section. `src/bt_hid/ns2_seam.c` maps each controller's inputs to the S
   [PicoSwitch-WirelessGamepadAdapter](https://github.com/juan518munoz/PicoSwitch-WirelessGamepadAdapter).
 - [ndeadly](https://github.com/ndeadly) —
   [switch2_controller_research](https://github.com/ndeadly/switch2_controller_research) and MissionControl.
+- [Vicki Pfau](https://github.com/endrift) — the real Linux kernel `HID: nintendo` driver, whose
+  source clarified several protocol details for this project, notably the GameCube controller's
+  actual rumble model.
 - [joypad-os](https://github.com/joypad-ai/joypad-os) — the vendored Bluetooth HID host stack + drivers.
 - [hathach](https://github.com/hathach) — [TinyUSB](https://github.com/hathach/tinyusb).
 - [bmelanman](https://github.com/bmelanman) — [retro-pico-switch](https://github.com/bmelanman/retro-pico-switch),
