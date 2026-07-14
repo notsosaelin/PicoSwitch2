@@ -96,7 +96,12 @@ typedef struct __attribute__((packed)) {
 
     uint8_t reserved2[8];
 
-    // Total: 23 bytes for basic output
+    // Total: 21 bytes. Stale comment fixed 2026-07-12 (previously said 23,
+    // didn't match the field sum) — note this struct type is unused; the
+    // actual wire buffer is hand-built in ds4_send_output() as a raw
+    // uint8_t[79] against the real 78-byte hid-playstation.c layout, not
+    // this struct's (nonstandard, non-CRC-aware) layout. Kept for reference
+    // only; do not use to build the wire report.
 } ds4_bt_output_report_t;
 
 // ============================================================================
@@ -131,6 +136,32 @@ static ds4_bt_data_t ds4_data[BTHID_MAX_DEVICES];
 // must remain valid until the CAN_SEND_NOW callback fires.
 static uint8_t ds4_output_buf[79];
 
+// CRC32 for DS4 BT output reports — same algorithm/seed as ds5_bt.c's
+// ds5_bt_crc32(), which matches the Linux kernel's hid-playstation.c
+// (PS_OUTPUT_CRC32_SEED = 0xA2, shared across the whole PlayStation-family
+// output-report format regardless of which BT transport channel actually
+// carries it). Duplicated locally rather than shared with ds5_bt.c since
+// only two files need it today — revisit if a third Sony driver needs this.
+static uint32_t ds4_crc32_raw(uint32_t seed, const uint8_t* data, size_t len)
+{
+    uint32_t crc = seed;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int j = 0; j < 8; j++) {
+            crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
+        }
+    }
+    return crc;
+}
+
+static uint32_t ds4_bt_crc32(const uint8_t* report_data, size_t len)
+{
+    const uint8_t seed = 0xA2;  // PS_OUTPUT_CRC32_SEED
+    uint32_t crc = ds4_crc32_raw(0xFFFFFFFF, &seed, 1);
+    crc = ds4_crc32_raw(crc, report_data, len);
+    return ~crc;
+}
+
 static void ds4_send_output(bthid_device_t* device, uint8_t rumble_left, uint8_t rumble_right,
                             uint8_t r, uint8_t g, uint8_t b)
 {
@@ -138,21 +169,43 @@ static void ds4_send_output(bthid_device_t* device, uint8_t rumble_left, uint8_t
     if (!ds4) return;
 
     // DS4 BT output report - must use SET_REPORT on control channel
-    // Format: [SET_REPORT header][Report ID 0x11][flags][data...]
+    // Format: [SET_REPORT header][Report ID 0x11][hw_control][audio_control][valid_flag0]...
     // This also triggers enhanced report mode (0x11) on first send.
+    //
+    // Byte layout below verified 2026-07-12 against the Linux kernel's
+    // hid-playstation.c (struct dualshock4_output_report_bt /
+    // dualshock4_output_report_common — DS4_OUTPUT_REPORT_BT_SIZE = 78,
+    // matching this buffer's 79 = 1 SET_REPORT header + 78 report bytes).
+    // Two real bugs found and fixed here:
+    //  - byte[2] (report offset 1 = hw_control) was 0x80 (DS4_OUTPUT_HWCTL_HID
+    //    only) — missing DS4_OUTPUT_HWCTL_CRC32 (0x40), so even if a CRC were
+    //    present the controller wasn't told to expect/validate one.
+    //  - no CRC32 was ever computed; bytes 74-77 of the report (buf[75..78])
+    //    were left as zero from the memset. Modern DS4 firmware requires this
+    //    (the same PS_OUTPUT_CRC32_SEED-based CRC ds5_bt.c already computes)
+    //    to accept a BT output report at all.
+    // Neither of these has been hardware-tested against a real DS4 yet.
     memset(ds4_output_buf, 0, sizeof(ds4_output_buf));
 
     ds4_output_buf[0] = 0x52;  // SET_REPORT | Output (0x50 | 0x02)
     ds4_output_buf[1] = 0x11;  // Report ID
-    ds4_output_buf[2] = 0x80;  // Flags (BT)
-    ds4_output_buf[3] = 0x00;
-    ds4_output_buf[4] = 0xFF;  // Enable rumble+LED
+    ds4_output_buf[2] = 0xC0;  // hw_control: DS4_OUTPUT_HWCTL_HID (0x80) | DS4_OUTPUT_HWCTL_CRC32 (0x40)
+    ds4_output_buf[3] = 0x00;  // audio_control
+    ds4_output_buf[4] = 0x03;  // valid_flag0: DS4_OUTPUT_VALID_FLAG0_MOTOR (0x01) | _LED (0x02)
 
     ds4_output_buf[7] = rumble_right;  // High frequency motor
     ds4_output_buf[8] = rumble_left;   // Low frequency motor
     ds4_output_buf[9] = r;
     ds4_output_buf[10] = g;
     ds4_output_buf[11] = b;
+
+    // CRC32 over report_id..reserved (buf[1..74] = 74 bytes, the report minus
+    // its own trailing CRC field), seed handled internally by ds4_bt_crc32.
+    uint32_t crc = ds4_bt_crc32(&ds4_output_buf[1], 74);
+    ds4_output_buf[75] = (crc >> 0) & 0xFF;
+    ds4_output_buf[76] = (crc >> 8) & 0xFF;
+    ds4_output_buf[77] = (crc >> 16) & 0xFF;
+    ds4_output_buf[78] = (crc >> 24) & 0xFF;
 
     bt_send_control(device->conn_index, ds4_output_buf, sizeof(ds4_output_buf));
 
@@ -182,6 +235,20 @@ static bool ds4_match(const char* device_name, const uint8_t* class_of_device,
 
     // Don't match DualSense by VID/PID (DS5 driver handles those)
     if (vendor_id == 0x054C && (product_id == 0x0CE6 || product_id == 0x0DF2)) {
+        return false;
+    }
+
+    // Found 2026-07-12 (Gate 2 identity audit): if VID is already known and it's
+    // simply not Sony, the name-based fallback below must not override that —
+    // otherwise a generic/XInput-class clone that happens to advertise the same
+    // deliberately generic name Sony chose for DS4 ("Wireless Controller", per the
+    // comment below) would be permanently misrouted to this driver. This also
+    // closes a gap in the re-evaluation path: bthid_update_device_info() only
+    // re-searches when the *current* driver's own match() stops returning true: a
+    // name-only match that never re-checks a later-arriving, contradicting VID
+    // would never self-correct. VID/PID being simply *unknown* (0) still falls
+    // through to the name check below, unchanged from before.
+    if (vendor_id != 0 && vendor_id != 0x054C) {
         return false;
     }
 
@@ -530,6 +597,7 @@ static void ds4_disconnect(bthid_device_t* device)
 
 const bthid_driver_t ds4_bt_driver = {
     .name = "Sony DualShock 4",
+    .transports = BTHID_TRANSPORT_CLASSIC,  // DS4 BT pairing is Classic BT, not BLE
     .match = ds4_match,
     .init = ds4_init,
     .process_report = ds4_process_report,

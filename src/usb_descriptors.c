@@ -12,11 +12,13 @@
 
 #include "tusb.h"
 
+#include "hid_out_normalize.h"
 #include "switch_pro.h"
-#include "usb.h"  // g_usb_config_mode
+#include "usb.h"  // g_usb_config_mode, g_usb_personality
 
 #ifdef NS2_PRO
 #include "switch_pro2.h"
+#include "switch_gc.h"
 #endif
 
 //--------------------------------------------------------------------+
@@ -252,9 +254,18 @@ static const char *config_strings[] = {
 
 uint8_t const *tud_descriptor_device_cb(void) {
 #ifdef NS2_PRO
-    if (g_usb_config_mode) return cdc_device_descriptor;
-    if (g_ns2_stage < 1) g_ns2_stage = 1;  // diag: host read our device descriptor
-    return ns2_device_descriptor();
+    switch (g_usb_personality) {
+        case USB_PERSONALITY_CDC_CONFIG:
+            return cdc_device_descriptor;
+        case USB_PERSONALITY_NSO_GAMECUBE:
+            if (g_gc_stage < 1) g_gc_stage = 1;  // diag: host read our device descriptor
+            return switch_gc_device_descriptor();
+        case USB_PERSONALITY_SWITCH2_PRO2:
+        case USB_PERSONALITY_JOYCON2:  // reserved/unreachable -- fall back to the real default
+        default:
+            if (g_ns2_stage < 1) g_ns2_stage = 1;  // diag: host read our device descriptor
+            return ns2_device_descriptor();
+    }
 #else
     return g_usb_config_mode ? cdc_device_descriptor : switch_pro_device_descriptor;
 #endif
@@ -263,9 +274,18 @@ uint8_t const *tud_descriptor_device_cb(void) {
 uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
     (void)index;
 #ifdef NS2_PRO
-    if (g_usb_config_mode) return cdc_config_descriptor;
-    if (g_ns2_stage < 2) g_ns2_stage = 2;  // diag: host read our config descriptor
-    return ns2_config_descriptor();
+    switch (g_usb_personality) {
+        case USB_PERSONALITY_CDC_CONFIG:
+            return cdc_config_descriptor;
+        case USB_PERSONALITY_NSO_GAMECUBE:
+            if (g_gc_stage < 2) g_gc_stage = 2;  // diag: host read our config descriptor
+            return switch_gc_config_descriptor();
+        case USB_PERSONALITY_SWITCH2_PRO2:
+        case USB_PERSONALITY_JOYCON2:
+        default:
+            if (g_ns2_stage < 2) g_ns2_stage = 2;  // diag: host read our config descriptor
+            return ns2_config_descriptor();
+    }
 #else
     return g_usb_config_mode ? cdc_config_descriptor : switch_pro_config_descriptor;
 #endif
@@ -274,6 +294,8 @@ uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
     (void)instance;
 #ifdef NS2_PRO
+    if (g_usb_personality == USB_PERSONALITY_NSO_GAMECUBE)
+        return switch_gc_hid_report_descriptor();
     return ns2_hid_report_descriptor();
 #else
     return switch_pro_report_descriptor;
@@ -288,31 +310,58 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
 
 #ifdef NS2_PRO
     // MS OS 1.0: Windows probes string index 0xEE to discover the WinUSB binding.
+    // Personality-scoped -- each personality's own vendor interface needs its
+    // own compat-ID binding (see switch_gc.c's comment for why GameCube gained
+    // this in Stage B: real hardware testing found Windows reports error code
+    // 28 without it, matching how the genuine controller family apparently
+    // ships this exact mechanism -- Pro2 already relied on it for its own
+    // vendor interface).
     if (index == 0xEE) {
-        const uint16_t *ms = ns2_ms_os_string_descriptor();
+        const uint16_t *ms = NULL;
+        if (g_usb_personality == USB_PERSONALITY_SWITCH2_PRO2)
+            ms = ns2_ms_os_string_descriptor();
+        else if (g_usb_personality == USB_PERSONALITY_NSO_GAMECUBE)
+            ms = switch_gc_ms_os_string_descriptor();
         if (ms) return ms;
     }
 #endif
 
     const char **strings;
     size_t count;
+#ifdef NS2_PRO
+    switch (g_usb_personality) {
+        case USB_PERSONALITY_CDC_CONFIG:
+            strings = config_strings;
+            count = sizeof(config_strings) / sizeof(config_strings[0]);
+            break;
+        case USB_PERSONALITY_NSO_GAMECUBE:
+            strings = switch_gc_string_table(&count);
+            break;
+        case USB_PERSONALITY_SWITCH2_PRO2:
+        case USB_PERSONALITY_JOYCON2:
+        default:
+            strings = ns2_string_table(&count);
+            break;
+    }
+#else
     if (g_usb_config_mode) {
         strings = config_strings;
         count = sizeof(config_strings) / sizeof(config_strings[0]);
     } else {
-#ifdef NS2_PRO
-        strings = ns2_string_table(&count);
-#else
         strings = switch_pro_strings;
         count = sizeof(switch_pro_strings) / sizeof(switch_pro_strings[0]);
-#endif
     }
+#endif
 
     if (index == 0) {
         memcpy(&_desc_str[1], strings[0], 2);
         chr_count = 1;
     } else {
-        if (index >= count)
+        // A table entry may be NULL for a string index this project has not
+        // captured real text for yet (see switch_gc.c's iConfiguration/
+        // iInterface entries) -- stall that specific GET_DESCRIPTOR(STRING)
+        // request rather than fabricate placeholder text or dereference NULL.
+        if (index >= count || strings[index] == NULL)
             return NULL;
         const char *str = strings[index];
         chr_count = (uint8_t)strlen(str);
@@ -339,14 +388,67 @@ uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_t
 }
 
 // SET_REPORT / OUT endpoint: console commands and handshake arrive here.
+//
+// Phase 4 fix (2026-07-13): normalize TinyUSB's two divergent OUT-report transports (interrupt
+// OUT vs control SET_REPORT) into one consistent (id, data, data_len) triple before handing off
+// to the personality handlers -- see hid_out_normalize.h/.c (pure, host-tested,
+// tools/test_hid_out_normalize.c) for the audited TinyUSB 2.2.0 contract this implements. The
+// previous version of this dispatcher ignored `report_id` entirely and always treated buffer[0]
+// as the ID -- correct by coincidence for the interrupt-OUT path this device actually uses in
+// practice, but wrong for control SET_REPORT (would misread the first DATA byte as the ID, or
+// misalign every subsequent offset by one).
 void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type,
                            uint8_t const *buffer, uint16_t bufsize) {
-    (void)report_id;
     (void)report_type;
 #ifdef NS2_PRO
     (void)instance;
-    ns2_hid_out_report(buffer, bufsize);
+    hid_out_normalized_t n = hid_out_normalize(report_id, buffer, bufsize);
+    if (g_usb_personality == USB_PERSONALITY_NSO_GAMECUBE)
+        switch_gc_hid_out_report(n.report_id, n.data, n.data_len);
+    else
+        ns2_hid_out_report(n.report_id, n.data, n.data_len);
 #else
-    switch_pro_receive(instance, buffer, bufsize);
+    (void)report_id;
+    switch_pro_receive(instance, buffer, bufsize);  // Switch 1 path, unaudited/unchanged this pass
 #endif
 }
+
+//--------------------------------------------------------------------+
+// Centralized dispatch for the TinyUSB callbacks that can only have one
+// definition in the link (EP0 vendor control, SET_CONFIGURATION/mount, and
+// the app class-driver hook) -- see docs/switch2-gc/usb-personality.md
+// "TinyUSB dispatch and resource constraints". Each personality owns its own
+// plainly-named handler (ns2_*/switch_gc_*); nothing personality-specific
+// lives in this file beyond the routing itself.
+//--------------------------------------------------------------------+
+
+#ifdef NS2_PRO
+bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
+                                tusb_control_request_t const *request) {
+    switch (g_usb_personality) {
+        case USB_PERSONALITY_NSO_GAMECUBE:
+            return switch_gc_vendor_control_xfer(rhport, stage, request);
+        case USB_PERSONALITY_SWITCH2_PRO2:
+            return ns2_vendor_control_xfer(rhport, stage, request);
+        case USB_PERSONALITY_CDC_CONFIG:
+        case USB_PERSONALITY_JOYCON2:
+        default:
+            return false;
+    }
+}
+
+void tud_mount_cb(void) {
+    switch (g_usb_personality) {
+        case USB_PERSONALITY_NSO_GAMECUBE:
+            switch_gc_mount();
+            break;
+        case USB_PERSONALITY_SWITCH2_PRO2:
+            ns2_mount();
+            break;
+        case USB_PERSONALITY_CDC_CONFIG:
+        case USB_PERSONALITY_JOYCON2:
+        default:
+            break;
+    }
+}
+#endif  // NS2_PRO

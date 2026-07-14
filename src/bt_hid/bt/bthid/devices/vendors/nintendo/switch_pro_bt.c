@@ -175,6 +175,23 @@ static uint8_t scale_12bit_to_8bit(uint16_t val)
 // Encode rumble intensity to Switch rumble format (from USB Switch Pro driver)
 // Each motor uses 4 bytes: [amplitude, HF_freq, amplitude/2, LF_freq]
 // Neutral state: [00 01 40 40]
+//
+// KNOWN LIMITATION, found 2026-07-12 auditing this driver: the real Joy-Con/Pro
+// Controller HD-rumble amplitude byte is not linear in intensity — it's a log2-based
+// curve (dekuNukem/Nintendo_Switch_Reverse_Engineering's rumble_data_table.md documents
+// the actual formula, roughly log2f(8.7f*amp)*32.0f for the mid range, with a
+// precomputed hex_amp lookup table). This function uses a linear approximation
+// instead, so intensity-to-perceived-strength mapping is not faithful to real hardware
+// even after the fix below — flagged as Hypothesis, not Confirmed, pending a proper
+// port of the real table. Real amplitude/frequency values also have documented safe
+// maximums (exceeding them can damage the linear actuators) that this function does
+// not independently enforce beyond capping to uint8_t range.
+//
+// Fixed 2026-07-12: `scaled` already had `+64` folded in, then `amplitude` added a
+// second `+64` on top — an apparent copy/refactor duplication (found auditing this
+// file for the same class of bug as the Xbox rumble regression). This made even the
+// smallest nonzero intensity jump straight to amplitude=128 with no headroom near the
+// bottom of the range, and topped out at 230 rather than the intended ~166.
 static void encode_rumble(uint8_t intensity, uint8_t* out)
 {
     if (intensity == 0) {
@@ -184,8 +201,7 @@ static void encode_rumble(uint8_t intensity, uint8_t* out)
         out[3] = 0x40;
         return;
     }
-    uint16_t scaled = ((uint16_t)intensity * 102) / 255 + 64;
-    uint8_t amplitude = (uint8_t)(scaled + 64);
+    uint8_t amplitude = (uint8_t)(((uint16_t)intensity * 102) / 255 + 64);
     out[0] = amplitude;
     out[1] = 0x88;
     out[2] = amplitude / 2;
@@ -509,6 +525,12 @@ static void switch_disconnect(bthid_device_t* device)
 
 const bthid_driver_t switch_pro_bt_driver = {
     .name = "Switch Pro",
+    // Switch 1 hardware (Joy-Con/Pro Controller) is Classic-BT only — never BLE.
+    // See bthid_transport_mask_t in bthid.h for why this matters here specifically:
+    // this driver's name-based fallback ("Pro Controller" substring) would otherwise
+    // risk matching a BLE-connecting Switch 2 Pro Controller before switch2_ble.c
+    // gets a chance, since this driver is registered first.
+    .transports = BTHID_TRANSPORT_CLASSIC,
     .match = switch_match,
     .init = switch_init,
     .process_report = switch_process_report,

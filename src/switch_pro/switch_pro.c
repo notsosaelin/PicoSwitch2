@@ -299,20 +299,19 @@ static void build_usb_handshake(uint8_t instance, switch_pro_ctx_t *c, uint8_t *
     }
 }
 
-// Decode an approximate rumble amplitude (0..255) from a console rumble report.
-// The Switch's HD-rumble encoding is complex; we take the high-band amplitude of
-// whichever side is active, which is enough to drive a simple vibration motor.
-static uint8_t decode_rumble(const uint8_t *buf, uint16_t len) {
-    if (len < 10)
+// Decode an approximate rumble amplitude (0..255) from a console rumble report's left or right
+// HD-rumble motor block independently. The Switch's HD-rumble encoding is complex; we take the
+// high-band amplitude, which is enough to drive a simple vibration motor. Kept per-motor (not
+// collapsed to one shared peak) so joypad-os drivers with true per-motor output
+// (feedback_set_rumble()'s left/right — e.g. DualSense, Xbox) preserve stereo separation.
+static uint8_t decode_rumble_motor(const uint8_t *buf, uint16_t len, uint16_t band_off,
+                                    uint16_t amp_off) {
+    if (len <= amp_off)
         return 0;
-    bool l_valid = (buf[2] & 0x03) == 0x00 && (buf[5] & 0x40) == 0x40;
-    bool r_valid = (buf[6] & 0x03) == 0x00 && (buf[9] & 0x40) == 0x40;
-    uint8_t hi = 0;
-    if (l_valid && (buf[5] & 0x3F) > hi)
-        hi = buf[5] & 0x3F;
-    if (r_valid && (buf[9] & 0x3F) > hi)
-        hi = buf[9] & 0x3F;
-    uint16_t amp = (uint16_t)hi * 4;  // 0..63 -> 0..252
+    bool valid = (buf[band_off] & 0x03) == 0x00 && (buf[amp_off] & 0x40) == 0x40;
+    if (!valid)
+        return 0;
+    uint16_t amp = (uint16_t)(buf[amp_off] & 0x3F) * 4;  // 0..63 -> 0..252
     return amp > 255 ? 255 : (uint8_t)amp;
 }
 
@@ -322,8 +321,11 @@ void switch_pro_receive(uint8_t instance, const uint8_t *buf, uint16_t len) {
     switch_pro_ctx_t *c = &ctx[instance];
 
     uint8_t id = buf[0];
-    if (id == RID_RUMBLE_SUBCMD || id == RID_RUMBLE_ONLY || id == 0x11)
-        report_set_rumble(instance, decode_rumble(buf, len));
+    if (id == RID_RUMBLE_SUBCMD || id == RID_RUMBLE_ONLY || id == 0x11) {
+        uint8_t left = decode_rumble_motor(buf, len, 2, 5);
+        uint8_t right = decode_rumble_motor(buf, len, 6, 9);
+        report_set_rumble(instance, left, right);
+    }
 
     uint16_t n = len > sizeof(c->request) ? sizeof(c->request) : len;
     memset(c->request, 0, sizeof(c->request));

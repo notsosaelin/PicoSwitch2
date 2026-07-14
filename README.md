@@ -22,8 +22,12 @@ supported, with their **extra buttons** (Edge paddles/Fn, Elite paddles) mapped 
 - **Extended buttons mapped** — DualSense Edge back paddles → GL/GR and Fn → Capture/C; Xbox Elite
   Series 2 paddles → GL/GR. These are surfaced by dedicated driver parsing (a real gain over generic stacks).
 - **250 Hz USB poll**, matching the genuine Pro Controller 2.
-- **Self-contained config mode** — hold BOOTSEL ~5 s and the dongle re-enumerates as a serial +
-  storage device that **serves its own configuration web page** (no app or internet needed).
+- **Self-contained config mode** — hold BOOTSEL ~5 s (cycling through any other USB personalities
+  first, see below) and the dongle re-enumerates as a serial + storage device that **serves its own
+  configuration web page** (no app or internet needed).
+- **NSO GameCube Controller output mode** (new, not yet hardware-validated on a real Switch 2) — a
+  second USB personality enumerating as the genuine `Nintendo GameCube Controller` (VID `057E` / PID
+  `2073`), reached via the BOOTSEL hold cycle below. See `docs/switch2-gc/` for full status.
 - **Live config UI** — see the connected controller auto-detected, watch each input light up next to
   the Switch output it produces, and **remap any button per controller** — plus a lightbar colour picker.
 - **Works on PC too** — enumerates as a Switch 2 Pro (Steam etc.), including **gyro** over the common report.
@@ -54,7 +58,7 @@ supported, with their **extra buttons** (Edge paddles/Fn, Elite paddles) mapped 
 
 ### First-time pairing
 
-1. **Double-tap BOOTSEL** to open a **10-second pairing window** (LED blinks fast).
+1. **Double-tap BOOTSEL** to open a **30-second pairing window** (LED blinks fast).
 2. Put your controller into pairing mode (e.g. DualSense: hold **PS + Create** until the light pulses).
 3. When it connects, the LED goes **solid**. The controller is bonded and reconnects automatically.
 
@@ -62,9 +66,9 @@ supported, with their **extra buttons** (Edge paddles/Fn, Elite paddles) mapped 
 
 | BOOTSEL gesture | Action |
 |---|---|
-| **Double-tap** | Open a 10 s pairing window (admits any controller, then re-locks) |
+| **Double-tap** | Open a 30 s pairing window (admits any controller, then re-locks — extends automatically if a candidate is still connecting when the window would otherwise close) |
 | **Triple-tap** | Wipe all saved controllers and clear the allow-list |
-| **Hold ~5 s**  | Enter [config mode](#configuration) |
+| **Hold ~5 s**  | Cycle to the next USB output personality: **Switch 2 Pro Controller 2 → NSO GameCube Controller → [config mode](#configuration)**, then a power-cycle returns to Pro Controller 2. Not persisted — every boot starts as Pro Controller 2. On a `-DNS2_PRO=OFF` (Switch 1) build this still enters config mode directly, unchanged. |
 
 | LED pattern | Meaning |
 |---|---|
@@ -73,12 +77,14 @@ supported, with their **extra buttons** (Edge paddles/Fn, Elite paddles) mapped 
 | Solid on | A controller is connected |
 | Very fast flicker (~1 s burst) | Wiping saved controllers |
 | Steady ~1 s blink | Config mode active |
+| A few short flashes (~1.2 s), then back to normal | Acknowledges a BOOTSEL-hold mode change (1 flash = Pro Controller 2, 2 = GameCube, 3 = config mode) |
 
 ## Configuration
 
-Hold **BOOTSEL for ~5 seconds** to enter **config mode**. The dongle re-enumerates as a USB serial +
-read-only storage device (VID `CAFE` / PID `4012`) named **PICOSWITCH**. Pair a controller *before*
-entering config mode — it stays connected and streams live.
+Hold **BOOTSEL for ~5 seconds** (twice, from the default Pro Controller 2 mode — once to reach NSO
+GameCube mode, once more to reach config; see the gesture table above) to enter **config mode**. The
+dongle re-enumerates as a USB serial + read-only storage device (VID `CAFE` / PID `4012`) named
+**PICOSWITCH**. Pair a controller *before* entering config mode — it stays connected and streams live.
 
 1. Open the **PICOSWITCH** drive and launch `CONFIG.HTM`. It uses the **Web Serial API**, so use
    **Chrome or Edge** (desktop).

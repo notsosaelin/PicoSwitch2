@@ -12,7 +12,9 @@
 
 static switch_pro_input_t s_inputs[INPUT_SLOTS];
 static uint32_t s_raw_buttons[INPUT_SLOTS];  // unified JP_BUTTON_* bitmap (config live-view)
-static uint8_t s_rumble[INPUT_SLOTS];
+static uint8_t s_rumble_left[INPUT_SLOTS];
+static uint8_t s_rumble_right[INPUT_SLOTS];
+static uint32_t s_rumble_generation[INPUT_SLOTS];  // see report_get_rumble_gen()'s own comment
 static char s_dev_name[INPUT_SLOTS][DEV_NAME_MAX];  // connected controller name (config live-view)
 static uint16_t s_dev_vid[INPUT_SLOTS];
 static uint16_t s_dev_pid[INPUT_SLOTS];
@@ -32,7 +34,8 @@ void report_init(void) {
 
     for (int i = 0; i < INPUT_SLOTS; i++) {
         s_inputs[i] = neutral;
-        s_rumble[i] = 0;
+        s_rumble_left[i] = 0;
+        s_rumble_right[i] = 0;
         s_raw_buttons[i] = 0;
         s_dev_name[i][0] = '\0';
         s_dev_vid[i] = 0;
@@ -137,28 +140,59 @@ void get_global_device(uint8_t idx, char *name_out, uint16_t name_len, uint16_t 
     critical_section_exit(&s_lock);
 }
 
-void report_set_rumble(uint8_t idx, uint8_t amplitude) {
+void report_set_rumble(uint8_t idx, uint8_t left, uint8_t right) {
     if (idx >= INPUT_SLOTS)
         return;
     critical_section_enter_blocking(&s_lock);
-    s_rumble[idx] = amplitude;
+    s_rumble_left[idx] = left;
+    s_rumble_right[idx] = right;
+    s_rumble_generation[idx]++;  // unconditional -- every call is a distinct event, even if the
+                                 // value happens to match what was already stored (see
+                                 // report_get_rumble_gen()'s own comment for why this matters).
     critical_section_exit(&s_lock);
 }
 
-uint8_t report_get_rumble(uint8_t idx) {
-    if (idx >= INPUT_SLOTS)
-        return 0;
+void report_get_rumble(uint8_t idx, uint8_t *left, uint8_t *right) {
+    if (idx >= INPUT_SLOTS) {
+        if (left) *left = 0;
+        if (right) *right = 0;
+        return;
+    }
     critical_section_enter_blocking(&s_lock);
-    uint8_t v = s_rumble[idx];
+    uint8_t l = s_rumble_left[idx], r = s_rumble_right[idx];
     critical_section_exit(&s_lock);
-    return v;
+    if (left) *left = l;
+    if (right) *right = r;
+}
+
+void report_get_rumble_gen(uint8_t idx, uint8_t *left, uint8_t *right, uint32_t *generation) {
+    if (idx >= INPUT_SLOTS) {
+        if (left) *left = 0;
+        if (right) *right = 0;
+        if (generation) *generation = 0;
+        return;
+    }
+    critical_section_enter_blocking(&s_lock);
+    uint8_t l = s_rumble_left[idx], r = s_rumble_right[idx];
+    uint32_t g = s_rumble_generation[idx];
+    critical_section_exit(&s_lock);
+    if (left) *left = l;
+    if (right) *right = r;
+    if (generation) *generation = g;
 }
 
 bool report_any_button_pressed(void) {
     bool pressed = false;
     critical_section_enter_blocking(&s_lock);
     for (int i = 0; i < INPUT_SLOTS; i++) {
-        if (s_inputs[i].buttons[0] | s_inputs[i].buttons[1] | s_inputs[i].buttons[2]) {
+        // gc_extra is a discrete digital semantic bitmask (native Z / L,R detent) -- a real
+        // "pressed" signal like buttons[]. left_trigger/right_trigger are deliberately
+        // excluded: they're continuous analog and there's no existing threshold policy for
+        // treating trigger travel as a wake-worthy "button press" here. `extra` (C/GL/GR) was
+        // already excluded before this change -- not touched, to avoid an unrelated behavior
+        // change to existing wake semantics.
+        if (s_inputs[i].buttons[0] | s_inputs[i].buttons[1] | s_inputs[i].buttons[2] |
+            s_inputs[i].gc_extra) {
             pressed = true;
             break;
         }

@@ -348,18 +348,29 @@ Unknown behavior should drive new experiments.
 
 # Switch 2 GameCube Controller
 
+**Superseded 2026-07-13**: this is now the active, highest-priority feature, per explicit project
+owner direction (`NSO-GC.md`). The "documentation only, wait for Pro Controller 2 maturity" policy
+below is historical context, not current instruction.
+
 Current known information:
 
-* unique controller type
-* analog triggers
-* unique button mapping
+* unique controller type, native NSO identity `VID 0x057E : PID 0x2073`
+* analog triggers (continuous, plus separate digital L/R detent bits)
+* physically has ZL, C/GameChat, Home, and Capture — confirmed by the project owner directly on
+  genuine hardware
+* physically does **not** have L3/R3 (no clickable sticks) — confirmed by the project owner
 * no audio support
-* existing captures available
-* physical hardware available
+* existing captures available (`docs/experiments/nso-gc-*`, `docs/switch2-gc/*`)
+* physical hardware available and directly inspected
 
-Current priority is documentation only.
-
-Do not prioritize implementation until Switch 2 Pro Controller support reaches maturity.
+Stage A (research/architecture) and Stage B (USB personality/enumeration) are complete and
+hardware-validated. Stage C (report `0x0A` input construction + the 8BitDo NGC Modkit's
+GameCube-mode mapping) is implemented and host-tested, pending its own hardware validation. Stage D
+has a minimum evidence-backed streaming gate implemented (Confirmed against a real USB bulk
+capture, not just BLE-derived bytes); Stage E (rumble) has a provisional, explicitly-non-final
+implementation. See `docs/switch2-gc/protocol.md`, `docs/switch2-gc/usb-personality.md`,
+`docs/switch2-gc/mapping.md`, and `DATA.md` for the current evidence base and implementation status —
+those documents are the living source of truth for this feature, not this section.
 
 ---
 

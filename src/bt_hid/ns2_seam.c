@@ -22,6 +22,10 @@
 #include "bt/bthid/bthid.h"                       // bthid_get_device() — connected controller identity
 #include "config.h"                               // config_get_lightbar() / config_get_ns2_map()
 #include "ns2_remap.h"                            // NS2_SRC_COUNT / NS2_DST_* (per-device remap)
+#ifdef NS2_PRO
+#include "usb.h"                                  // g_usb_personality (read-only cross-core check,
+                                                   // GameCube-mode analog-fold suppression only)
+#endif
 
 #define NS2_SLOTS SWITCH_PRO_MAX_CONTROLLERS
 
@@ -102,9 +106,72 @@ void router_submit_input(const input_event_t *e) {
 
     // Digital buttons, plus analog triggers folded in as L2/R2: Switch ZL/ZR are digital,
     // but Xbox/DualSense triggers are analog and often don't set the digital JP bit.
+    // Skipped when the driver sets suppress_l2r2_analog_fold (e.g. the 8BitDo NGC Modkit,
+    // which has a real analog trigger it wants preserved AND has deliberately repurposed
+    // JP_BUTTON_L2/R2 for something unrelated to the trigger itself -- see input_event.h).
+    //
+    // Also skipped whenever the active USB output personality is NSO GameCube, for EVERY
+    // device, not just ones with a confirmed native GameCube layout: that personality's L/R are
+    // a real continuous analog trigger (already forwarded unconditionally below) with an
+    // independent digital detent, never a Pro2-style "any real press -> ZL/ZR" digital
+    // approximation -- see the generic-controller block further down for what GC mode does
+    // instead with a device that has no native layout of its own. This does NOT change Pro2's
+    // own behavior -- Pro2 mode still gets its existing fold unchanged, since g_usb_personality
+    // is only ever NSO_GAMECUBE when that personality is actually active.
+#ifdef NS2_PRO
+    bool gc_active = (g_usb_personality == USB_PERSONALITY_NSO_GAMECUBE);
+#else
+    bool gc_active = false;
+#endif
     uint32_t b = e->buttons;
-    if (e->analog[ANALOG_L2] > 64) b |= JP_BUTTON_L2;
-    if (e->analog[ANALOG_R2] > 64) b |= JP_BUTTON_R2;
+    if (!e->suppress_l2r2_analog_fold && !gc_active) {
+        if (e->analog[ANALOG_L2] > 64) b |= JP_BUTTON_L2;
+        if (e->analog[ANALOG_R2] > 64) b |= JP_BUTTON_R2;
+    }
+
+    // NSO GameCube-only fields: forwarded unconditionally regardless of active output
+    // personality (Pro2/Switch 1 encoders never read switch_pro_input_t's gc_extra/
+    // left_trigger/right_trigger). Placed before the Pro2-specific fold above per the
+    // continuous-trigger-value preservation requirement -- these are the RAW values, never
+    // thresholded or collapsed to booleans.
+    in.left_trigger = e->analog[ANALOG_L2];
+    in.right_trigger = e->analog[ANALOG_R2];
+    in.gc_extra = 0;
+    if (e->gc_native_z) in.gc_extra |= GC_MASK_Z;
+    if (e->gc_l_detent) in.gc_extra |= GC_MASK_L_DETENT;
+    if (e->gc_r_detent) in.gc_extra |= GC_MASK_R_DETENT;
+
+    // Generic (non-GameCube-native) controllers used in GC mode: Confirmed 2026-07-13 by direct
+    // hardware feedback (Xbox/DualSense tested in GC mode) that the Pro2-style pairing is wrong
+    // for this personality -- it's the reverse. Shoulder buttons (LB/RB) become ZL and Z (Z
+    // displays as "ZR" on the console's own Test Input screen, see switch_gc_encode.c), and the
+    // analog triggers (LT/RT) become the GC-native L/R: the continuous value is already
+    // unconditionally forwarded above, so only the digital detent click needs synthesizing here,
+    // from a high-press threshold approximating the real trigger's end-of-travel detent (a
+    // Hypothesis threshold, not hardware-derived -- no genuine GC trigger-to-detent curve data
+    // exists for a substitute controller's analog range). Gated on !gc_has_native_layout so the
+    // 8BitDo NGC Modkit's own real, already-validated per-button signals (usage 9/10/11) are
+    // never second-guessed by this synthesized approximation; harmless overlap for R1 -> Z is
+    // possible in principle (the Modkit's own Z usage already sets JP_BUTTON_R1 too, per
+    // mapping.md) but this block never runs for it at all since gc_has_native_layout is true.
+    if (gc_active && !e->gc_has_native_layout) {
+        if (b & JP_BUTTON_L1) in.buttons[2] |= SWITCH_MASK_ZL;
+        if (b & JP_BUTTON_R1) in.gc_extra |= GC_MASK_Z;
+        if (e->analog[ANALOG_L2] > 224) in.gc_extra |= GC_MASK_L_DETENT;
+        if (e->analog[ANALOG_R2] > 224) in.gc_extra |= GC_MASK_R_DETENT;
+        // Real bug found via hardware feedback (2026-07-13): some pads (DualSense, several
+        // 8BitDo tables -- not Xbox, whose own button map has no L2/R2 destination at all) have
+        // a genuine native digital click bit for the trigger, separate from its analog axis and
+        // from the seam's analog fold above (which is already suppressed for gc_active). That
+        // native click bit still flowed through the per-family remap loop below into its
+        // Pro2-appropriate legacy destination (NS2_DST_ZL/NS2_DST_ZR), stacking a second path on
+        // top of this block's own shoulder->ZL/Z mapping. Only the left side was visible --
+        // SWITCH_MASK_ZL has a live bit in the GC encoder, SWITCH_MASK_ZR does not -- which
+        // produced exactly the reported asymmetry (an early spurious "ZL" partway through the
+        // left trigger's travel, right trigger unaffected). Clear all four physical sources this
+        // block already owns before the family loop runs, so nothing routes them a second time.
+        b &= ~(JP_BUTTON_L1 | JP_BUTTON_R1 | JP_BUTTON_L2 | JP_BUTTON_R2);
+    }
 
     // Apply this controller family's remap: each pressed source -> its assigned output.
     // The default map (NS2_DEFAULT_MAP) reproduces the built-in mapping exactly, so an
@@ -184,18 +251,33 @@ void bthid_on_raw_report(uint8_t conn_index, const uint8_t *data, uint16_t len) 
 
 // -------------------------------------------------------------------------
 // Feedback: drivers poll feedback_get_state() to learn what rumble to send to
-// the physical controller. Bridge it to the console-decoded amplitude the USB
-// core publishes via report_set_rumble().
+// the physical controller. Bridge it to the console-decoded per-motor amplitudes
+// the USB core publishes via report_set_rumble() — forwarded independently (not
+// duplicated) so drivers with true per-motor output (DualSense, Xbox) preserve
+// stereo separation instead of both motors buzzing identically.
 // -------------------------------------------------------------------------
 static feedback_state_t s_fb[NS2_SLOTS];
+// Last report.c rumble generation this consumer has actually observed -- kept separate from
+// feedback_state_t (a vendored joypad-os struct, not something this seam should extend) rather
+// than added as a new field there. See report_get_rumble_gen()'s own comment
+// (include/report.h) for why generation-based change detection replaces plain value comparison:
+// Confirmed 2026-07-14 that comparing raw left/right values alone cannot tell "nothing happened"
+// apart from "it changed and changed back before this was last polled" -- both look identical
+// once the value returns to what was last seen, which could silently drop a real stop transition
+// on a downstream driver with a long hardware sustain (e.g. Xbox's ~10-minute pulse_sustain_10ms/
+// loop_count in bthid_gamepad.c).
+static uint32_t s_rumble_gen_seen[NS2_SLOTS];
 
 feedback_state_t *feedback_get_state(uint8_t player_index) {
     uint8_t p = (player_index < NS2_SLOTS) ? player_index : 0;
-    uint8_t amp = report_get_rumble(p);
-    if (amp != s_fb[p].rumble.left) {
-        s_fb[p].rumble.left = amp;
-        s_fb[p].rumble.right = amp;
+    uint8_t left, right;
+    uint32_t gen;
+    report_get_rumble_gen(p, &left, &right, &gen);
+    if (gen != s_rumble_gen_seen[p]) {
+        s_fb[p].rumble.left = left;
+        s_fb[p].rumble.right = right;
         s_fb[p].rumble_dirty = true;
+        s_rumble_gen_seen[p] = gen;
     }
     // Lightbar colour from config (single connected controller = slot 0). Drivers with an
     // RGB LED (DualSense/DualShock) apply fb->led when it's dirty; mark dirty on change.
@@ -226,7 +308,30 @@ void flash_on_bt_disconnect(void) {}
 // -------------------------------------------------------------------------
 int find_player_index(int dev_addr, int instance) {
     (void)instance;
-    return (dev_addr >= 0 && dev_addr < NS2_SLOTS) ? dev_addr : 0;
+    // Real, previously-latent bug (found 2026-07-12 tracing a hardware-reported rumble
+    // regression): this used to pass `dev_addr` (actually the caller's BTstack connection
+    // index — see every call site, all pass `event.dev_addr`/`conn_index`, never a real BT
+    // address) straight through whenever it happened to be < NS2_SLOTS (4, from
+    // SWITCH_PRO_MAX_CONTROLLERS, unconditional regardless of NS2_PRO). BLE connections are
+    // safe by accident (their conn_index is offset by BLE_CONN_INDEX_OFFSET, always >=
+    // NS2_SLOTS, so they always fell through to the 0 fallback) — but a *Classic* BT device
+    // landing in connection slot 1, 2, or 3 (btstack_host.c's find_free_classic_connection(),
+    // which is a real 4-slot allocator, not something this seam controls) got back that same
+    // nonzero index as its "player index," and every driver's feedback_get_state()/
+    // feedback_clear_dirty() call used it verbatim — while `ns2_hid_out_report()` (this
+    // project's single-controller NS2 milestone) always publishes rumble to hardcoded slot 0.
+    // Any Classic device outside slot 0 was reading/clearing a feedback slot that never
+    // received anything: dirty always false, rumble always (0,0), silently. This affected
+    // every driver identically (Sony/Microsoft/Nintendo/generic/Stadia all call this the same
+    // way) — a real, evidenced explanation for a rumble regression reported across multiple
+    // independent controller families, and one that predates and is unrelated to the L/R
+    // stereo-rumble refactor (a mono value published to slot 0 would have been just as
+    // invisible to a driver reading a different slot). This project has one output identity
+    // (single-controller milestone, matching this function's own pre-existing comment) — so
+    // always resolving to slot 0 is not a workaround, it's what this stand-in already claimed
+    // to do and didn't.
+    (void)dev_addr;
+    return 0;
 }
 
 void remove_players_by_address(int dev_addr, int instance) {

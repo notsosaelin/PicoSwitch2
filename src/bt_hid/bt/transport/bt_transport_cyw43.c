@@ -45,6 +45,8 @@ __attribute__((weak)) void btstack_host_power_on(void) {}
 __attribute__((weak)) bool btstack_host_is_powered_on(void) { return false; }
 __attribute__((weak)) void btstack_host_start_scan(void) {}
 __attribute__((weak)) void btstack_host_stop_scan(void) {}
+__attribute__((weak)) void btstack_host_close_pairing_window(void) {}
+__attribute__((weak)) bool btstack_host_pairing_close_deferred(void) { return false; }
 __attribute__((weak)) bool btstack_host_is_scanning(void) { return false; }
 __attribute__((weak)) uint8_t btstack_classic_get_connection_count(void) { return 0; }
 __attribute__((weak)) bool btstack_classic_get_connection(uint8_t idx, btstack_classic_conn_info_t *info) { (void)idx; (void)info; return false; }
@@ -211,13 +213,16 @@ static void cyw43_transport_set_pairing_mode(bool enable)
     if (enable) {
         btstack_host_start_scan();
     } else {
-        btstack_host_stop_scan();
+        // close_pairing_window(), not stop_scan() directly: if a candidate's
+        // connection attempt is in flight, defer the close instead of
+        // corrupting its connect-timeout watchdog. See btstack_host.c.
+        btstack_host_close_pairing_window();
     }
 }
 
 static bool cyw43_transport_is_pairing_mode(void)
 {
-    return btstack_host_is_scanning();
+    return btstack_host_is_scanning() || btstack_host_pairing_close_deferred();
 }
 
 // ============================================================================

@@ -42,7 +42,7 @@ Every finding below is tagged with which of these six claims it supports.
 | 2 | Joy-Con 2 NFC hardware identified | ⬜ **Unknown** | No IC/chip identified in any source reviewed this pass. Nintendo confirms a touchpoint (right stick) exists; no teardown or datasheet evidence found. |
 | 3 | Pro Controller 2 NFC hardware identified | ⬜ **Unknown** | Same — no IC/chip identified. No teardown evidence in this repo or any source reviewed. |
 | 4 | Protocol behavior demonstrated on Joy-Con 2 | 🔵 **Unclear attribution** | `ndeadly/switch2_controller_research/commands.md` documents the `0x01` subcommand family with real example bytes, but does not state which controller type(s) each example was captured from. Treat as **not confirmed Joy-Con-2-specific** until re-checked against that repo's raw captures. |
-| 5 | Protocol behavior demonstrated on Pro Controller 2 | ✅ **Confirmed, this repo** | `usbpcaptures/genuine_procon_2.pcapng` (this repo's own capture, explicitly identified as "device 7 = Pro Controller 2" in `switch_pro2.c`'s header comment) contains two real command-`0x01` request/response exchanges — see §2. |
+| 5 | Protocol behavior demonstrated on Pro Controller 2 | ✅ **Confirmed, this repo** | `usbpcaptures/genuine_procon_2.pcapng` (this repo's own capture) contains two real command-`0x01` request/response exchanges — see §2. **Device number corrected 2026-07-12** (see §2.5): the Pro Controller 2 in *this specific file* is USBPcap `device` 38, not 7 — "device 7" is a fact about a *different* file (`ndeadly`'s `captures/usb/rumble-procon-gccon.pcapng`, cited in `switch_pro2.c`'s header comment) that had been mistakenly cross-applied to this one. |
 | 6 | Switch 1 NFC behavior carries forward | ❌ **Refuted at the command-ID level** | Switch 1's NFC/IR control lives at MCU subcommands `0x21`/`0x22` inside an entirely different single-byte-subcommand protocol (`src/switch_pro/switch_pro.c`). Switch 2 uses a dedicated top-level command `0x01` with its own subcommand family and a different envelope shape (`[cmd][0x91][transport][sub][len_lo][len_hi]...`). The command *numbering scheme* does not transfer; deeper payload-level comparison not attempted (no evidence either format shares primitives). |
 
 ---
@@ -92,6 +92,14 @@ payload, distinct in shape from `0x0C`'s 4-byte data response.
 
 ### 2.3 A real, previously undocumented finding: the response "dir" byte is not always `0x01`
 
+**✅ Fixed 2026-07-12.** `ns2_dispatch()`'s `case 0x01` (NFC) now sends `dir=0x04` for its bare/
+no-data-payload fallback path, matching the genuine capture exactly, while `sub == 0x0C` (which
+carries a 4-byte payload) keeps `dir=0x01`. Scoped strictly to the NFC command per the discipline
+below (the "two data points across two top-level commands" hypothesis is *not* generalized to
+`0x08` or any other command — those already work on hardware and were left untouched). Still
+**untested on hardware** — NFC has never been exercised in play in this project, so this is a
+byte-exact-per-capture fix with no observable on-console symptom either way.
+
 `switch_pro2.c`'s own inline comment states the response header convention as *"echo cmd, dir=0x01,
 echo transport, echo subcmd, ACK 00 f8"* — and its code hardcodes `r[1] = 0x01` for **every**
 response, unconditionally (`ns2_dispatch()` line ~633).
@@ -114,15 +122,63 @@ explicit constraint).
 
 ### 2.4 Timing: NFC status is queried once, at connection time, not polled
 
-Both exchanges occur within an 18-packet window (#30520-#30538), interleaved with the console's
-mandatory init sequence — nearby packets carry `cmd=0x03/sub=0x0A` ("select report 09") and
-`cmd=0x08` (Charging Grip, per this repo's own command table) requests. This matches
-`docs/switch2/usb-spec.md`'s existing note that command `01/0c` NFC appears "interleaved (order
-not strict)" with the init handshake. **New precision this pass:** across all 164,242 packets in
-the capture, these are the *only* two NFC-command exchanges present — NFC status is queried
-exactly once per connection during setup, not polled during normal operation. (This does not
-rule out polling during an actual amiibo interaction — this capture almost certainly contains no
-amiibo tap; see §5.)
+Both exchanges occur within an 18-packet window (#30520-#30538), interleaved with the host's
+mandatory init sequence — nearby packets carry `cmd=0x03/sub=0x0A` (report-select — **corrected
+2026-07-12, see §2.5: this packet's actual payload selects report `0x05`, not `0x09`** as
+previously stated here) and `cmd=0x08` (Charging Grip, per this repo's own command table)
+requests. This matches `docs/switch2/usb-spec.md`'s existing note that command `01/0c` NFC appears
+"interleaved (order not strict)" with the init handshake. **New precision this pass:** across all
+164,242 packets in the capture, these are the *only* two NFC-command exchanges present — NFC
+status is queried exactly once per connection during setup, not polled during normal operation.
+(This does not rule out polling during an actual amiibo interaction — this capture almost
+certainly contains no amiibo tap; see §5.)
+
+### 2.5 Correction (2026-07-12): `genuine_procon_2.pcapng` is a PC/Windows session, not a console
+session — two documentation errors fixed, and this file cannot answer the report-0x09 NFC-state
+question
+
+Built a proper USBPcap-header-aware tool (`tools/extract_report09_timeseries.py`, parses the real
+27-byte `USBPCAP_BUFFER_PACKET_HEADER` struct — `headerLen`/`irpId`/`status`/`function`/`info`/
+`bus`/`device`/`endpoint`/`transfer`/`dataLength` — rather than scanning payload bytes) to execute
+the task queued since 2026-07-10 (§7 below, `STATUS.md`/`PLAN.md` "Next Recommended Tasks"): build
+a real report-`0x09` time series and check whether the NFC-state byte ever leaves `0x00`. Two real
+errors surfaced in the process, both now fixed here:
+
+1. **Device-number conflation, fixed.** Claim 5's table cell (§1) and this repo's own
+   `switch_pro2.c` header comment both say "Pro Controller 2 = device 7" — that fact is true of
+   **`ndeadly`'s own capture file** (`captures/usb/rumble-procon-gccon.pcapng`, a different file
+   from a different project), not of this repo's `usbpcaptures/genuine_procon_2.pcapng`. A 2026-07-10
+   session log entry (`SESSION.md`) incorrectly cross-applied it ("Pro Controller 2 = device 7 —
+   i.e. `usbpcaptures/genuine_procon_2.pcapng`"), and that claim propagated into this doc's §1.
+   **Verified directly** by parsing the exact packets already confirmed to carry the two NFC
+   exchanges (#30520/30526/30528/30532) and reading their USBPcap `device` field: **all four are
+   device 38**, not 7 — and their payload bytes match this doc's §2.1/§2.2 hex exactly, confirming
+   both the correction and that the new parser is reading the header correctly. No code or prior
+   *analysis* used "device 7" as an actual filter against this file (grepped `tools/*.py` to check)
+   — the error was confined to prose, so nothing upstream needs re-verification.
+2. **Report-select target, fixed.** §2.4 (before this correction) said the nearby `cmd=0x03/sub=0x0A`
+   packet "selects report 09." Its actual payload (packet #30539) is
+   `03 91 00 0a 00 04 00 00 05 00 00 00` — the report-ID byte (`c[8]` in this project's own
+   `ns2_dispatch()` convention) is **`0x05`, not `0x09`**.
+3. **Structural finding this corrects both errors point to: this whole capture is a PC/Windows
+   session with the real Pro Controller 2, never a console session.** Filtering strictly by USBPcap
+   header fields (`endpoint == 0x81`, `transfer == 1` Interrupt, `dataLength > 0` — i.e. real HID
+   IN completions on the confirmed input endpoint, not payload-content guessing) across all 164,242
+   packets finds **19,554 report-`0x05` records for device 38 and exactly zero report-`0x09`
+   records for any device.** The only four places byte `0x09` appears as a leading payload byte
+   anywhere for device 38 are non-HID coincidences: two USB Configuration Descriptor reads on EP0
+   (`bLength=0x09` — the *exact* collision §5 already documented, just recurring at different
+   packet numbers) and two command-channel (`cmd=0x09` = Player LEDs, per `usb-spec.md`) request/ack
+   pairs. **Consequence: the original task ("does the NFC-state byte in report 0x09 ever leave
+   idle across this session") cannot be answered from this file, structurally — report `0x09` is
+   simply never present.** This is a conclusive negative result, not a tooling failure: this
+   project's real console-only USB capture gap (already the long-standing blocker for report-0x09
+   gyro work, `docs/experiments/usb-relay-feasibility-audit-2026-07-10.md`) applies equally to NFC.
+   Answering "does NFC state ever change on the console" needs an actual console-side USB capture of
+   a genuine controller — a capture type this project has never obtained for *any* purpose. The
+   19,554 real report-`0x05` samples remain a genuine, newly-quantified asset for anything that
+   *does* use report `0x05` (e.g. `PLAN.md`'s report-0x05 roll-sign verification task) — not applied
+   to that here, out of scope for this pass.
 
 ---
 
@@ -146,21 +202,25 @@ controller-type attribution unclear per claim 4 above), annotated with this repo
 
 | Sub | Name (ndeadly) | Confidence | This pass's contribution |
 |---|---|---|---|
-| `0x01` | "Unknown" | 🔵 Partial | **New**: capture-confirmed bare-ack response (`dir=0x04`, no payload) on genuine Pro Controller 2, USB. Semantic meaning (start scan? reset? get-state trigger?) still unknown. |
-| `0x02` | — (not listed) | ⬜ Unknown | No evidence found this pass. |
-| `0x03` | "Unknown" | ⬜ Unknown | ndeadly has example bytes; not independently re-verified this pass. |
-| `0x04` | "Unknown" | ⬜ Unknown | Same. |
-| `0x05` | "Get status" | ⬜ Unknown (name only) | ndeadly has example bytes; not independently re-verified this pass. |
-| `0x06` | "Read device" | ⬜ Unknown (name only) | Same. |
-| `0x08` | "Write device" | ⬜ Unknown (name only) | Same. |
+| `0x01` | "Unknown" | 🔵 Partial | Capture-confirmed bare-ack response (`dir=0x04`, no payload) on genuine Pro Controller 2, USB. Semantic meaning (start scan? reset? get-state trigger?) still unknown. |
+| `0x02` | — (not listed) | ⬜ Unknown | No evidence found. |
+| `0x03` | "Unknown" | 🔵 Hypothesis (2026-07-12) | `Dycool/NS-PC-Control` implements this as "enter NFC scan mode" (schedules an HID-state advance ~40ms later per their cited capture). Unverified — their captures aren't bundled/re-checkable. See `docs/experiments/ns-pc-control-audit-2026-07-12.md` §2. |
+| `0x04` | "Unknown" | 🔵 Hypothesis (2026-07-12) | NS-PC-Control: "leave NFC scan mode," conditionally ejects the virtual tag. Same caveat as `0x03`. |
+| `0x05` | "Get status" | 🔵 Hypothesis (2026-07-12) | NS-PC-Control: 61-byte status payload (status byte, detail byte, 7-byte UID when a tag is present). Same caveat. |
+| `0x06` | "Read device" | 🔵 Hypothesis (2026-07-12) | NS-PC-Control: "begin read/write operation" — a zero UID in the `D0 07 ...` request selects read mode, a matching UID selects write mode. Same caveat. |
+| `0x08` | "Write device" | 🔵 Hypothesis (2026-07-12) | NS-PC-Control: commits a staged `0x14` write image; status becomes `0x05` afterward. Same caveat. |
 | `0x0C` | "Unknown" | ✅ Confirmed (this repo) | Real request/response traced to exact packets (#30520/#30526); response `61 12 50 10` already implemented in `switch_pro2.c` and now shown to be genuinely capture-sourced, not guessed. **Semantic meaning of the 4 bytes is still unknown** — plausible-but-unconfirmed hypothesis: an NFC controller IC identifier/version tag (common 4-byte chip-ID+rev pattern); no NFC IC datasheet cross-check performed. |
-| `0x14` | "Write buffer" | ⬜ Unknown (name only) | ndeadly has example bytes; not independently re-verified. |
-| `0x15` | "Read buffer" | ⬜ Unknown (name only) | ndeadly documents request field "Read offset" (u16) and response field "Unknown" (4 bytes); chunking/sequence numbers/checksums/max-transfer-size explicitly undocumented by ndeadly. Not independently re-verified this pass. |
+| `0x14` | "Write buffer" | 🔵 Hypothesis (2026-07-12) | NS-PC-Control: 454-byte staging image (`D0 07` header + UID + lock bytes + page-record count + `(page,length,data)` records, pages 5-129 only), sent as 6 chunks. Same caveat. |
+| `0x15` | "Read buffer" | 🔵 Hypothesis (2026-07-12) | NS-PC-Control: 622-byte payload (63-byte metadata incl. UID + NTAG originality signature + 9 bytes echoed from the preceding `0x06` + 540-byte raw NTAG215 dump + 19-byte trailer) — a concrete answer to ndeadly's previously-undocumented response field. Same caveat: unverified, not ported to this repo's code. |
 
-**Not evidenced at all, any source, this pass:** tag detect/mount/unmount transitions, a real
-amiibo read (NTAG215 540-byte EEPROM per general amiibo knowledge — not Switch-2-specific
-evidence), a real amiibo write, checksums/authentication/framing for multi-chunk transfers,
-timing/latency requirements for tag operations.
+**Not evidenced by this repo's own primary sources, any pass:** tag detect/mount/unmount
+transitions, a real amiibo read (NTAG215 540-byte EEPROM per general amiibo knowledge — not
+Switch-2-specific evidence), a real amiibo write, checksums/authentication/framing for multi-chunk
+transfers, timing/latency requirements for tag operations. **2026-07-12 update:** `Dycool/
+NS-PC-Control` has detailed, internally-consistent answers for all of the above (§4 table) — but
+sourced from private captures this project cannot re-verify. Treat as a structured hypothesis to
+test against, not as filling this gap. The gap remains genuinely open until this project captures
+its own real amiibo transaction.
 
 ---
 
@@ -172,10 +232,12 @@ state transition. Filter used: `payload[0] == 0x09` (report ID) on decoded USBPc
 **Result was a false lead**: only 17 packets matched, two with a nonzero "state" byte — but
 inspection showed all 17 are USB **Configuration Descriptors** (`bLength=0x09, bDescriptorType=0x02`),
 not HID input reports at all; `0x09` is simultaneously a valid report ID and a valid descriptor
-`bLength`, and the filter didn't distinguish them. **Correct approach, not implemented this pass**
-(scope: analysis/documentation only): filter by USBPcap header fields (endpoint address + transfer
-type = Interrupt IN on the known HID endpoint), not by first-payload-byte alone. Flagged as the
-concrete blocker for §6's proposed next task.
+`bLength`, and the filter didn't distinguish them. **Correct approach, implemented 2026-07-12**
+(§2.5): `tools/extract_report09_timeseries.py` filters by real USBPcap header fields (endpoint
+address + transfer type = Interrupt IN on the confirmed HID input endpoint), not by
+first-payload-byte. Result: report `0x09` never appears anywhere in this capture (it's a
+PC/Windows session — see §2.5 for the full finding), so the original question is unanswerable from
+this file, not merely hard to answer.
 
 ---
 
@@ -200,12 +262,21 @@ or branch 3 (no actionable evidence — not the case).
 **What this repository can validate from this pass, without new hardware:**
 - `switch_pro2.c`'s subcommand-`0x0C` response is now traced to its exact source packets, not
   merely "known to be capture-derived" — fully closed, no further action needed.
-- `switch_pro2.c`'s response `dir` byte (`0x01` for every response, unconditionally) conflicts
-  with the one genuine bare-ack response observed (`dir=0x04` for subcommand `0x01`, and for an
-  unrelated `cmd=0x08` response in the same window) — a precise, named validation target for
-  either a future capture-driven fix or a targeted hardware test to see if it matters in practice.
+- `switch_pro2.c`'s response `dir` byte for NFC bare acks — **fixed 2026-07-12** (§2.3): now sends
+  `dir=0x04`, matching the one genuine bare-ack response observed. Scoped to NFC only; the same
+  `dir=0x04` shape on the unrelated `cmd=0x08` response in the same capture window was *not*
+  generalized (two data points, one command each — not a confirmed universal rule). Still needs a
+  hardware pass to confirm it has any observable effect (NFC has never been exercised in play).
 - Subcommand `0x01`'s behavior (bare ack, no payload) is now a documented fact rather than an
   open "Unknown" — narrows, but does not close, ndeadly's own subcommand table.
+- **2026-07-12:** the report-`0x09` NFC-state time series task (§2.5) is now resolved as a
+  conclusive **negative-but-informative** result — not "not yet done." `genuine_procon_2.pcapng`
+  contains zero report-`0x09` records (it's a PC/Windows session with the real controller, which
+  only ever streams report `0x05`); the console-only NFC-state question needs an actual
+  console-side USB capture, a capture type this project has never obtained for any purpose. Two
+  incidental documentation errors (a device-number mix-up between this file and a different,
+  external capture; a mis-read report-select target) were found and fixed in the process — see
+  §2.5 for both.
 
 ---
 
@@ -226,12 +297,17 @@ this pass attributes ndeadly's example bytes to a specific controller type, and 
 controller" until re-checked, not "demonstrated on the Pro Controller 2" — only §2's two exchanges
 (this repo's own capture) carry that specific attribution.
 
-**(c) One exact next capture/analysis task:** properly filter `genuine_procon_2.pcapng`'s USBPcap
-records by endpoint address + transfer type (Interrupt IN on the confirmed HID input endpoint) —
-not by first-payload-byte, which §5 showed produces false positives against USB descriptor
-traffic — to build a real report-`0x09` time series across the full 164,242-packet capture, and
-check whether the NFC-state byte (offset `0x0C`) ever leaves `0x00` anywhere in the session. This
-extends `tools/extract_nfc_traffic.py`'s sibling need rather than replacing it.
+**(c) One exact next capture/analysis task — done 2026-07-12, result is a hard requirement, not a
+technique to try:** properly filtering `genuine_procon_2.pcapng`'s USBPcap records by endpoint
+address + transfer type (not first-payload-byte, which §5 showed produces false positives against
+USB descriptor traffic) proves report `0x09` never appears in this capture at all — it's a
+PC/Windows session, and the real controller only streams report `0x05` to a PC host. **The actual
+next task is now capture acquisition, not analysis technique**: answering whether NFC state ever
+changes on the console requires an actual console-side USB capture of a genuine controller, which
+this project has never obtained (the same evidence gap already blocking report-0x09 gyro work —
+`docs/experiments/usb-relay-feasibility-audit-2026-07-10.md` remains the most-developed path
+toward getting one). `tools/extract_report09_timeseries.py` (new) is ready to run against such a
+capture the moment one exists.
 
 **(d) Why this has higher information value than implementing NFC from Switch 1 assumptions:**
 Switch 1's NFC/IR scheme is already refuted at the command-ID level (claim 6, §1) — there is no

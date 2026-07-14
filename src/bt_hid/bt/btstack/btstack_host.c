@@ -898,6 +898,62 @@ void btstack_host_stop_scan(void)
 #endif
 }
 
+// See btstack_host_close_pairing_window()'s doc comment for the bug this
+// guards against: hid_state.state is read in exactly six places (the
+// BLE_CONNECT_TIMEOUT_MS watchdog, the idle-safety-net, the scan/state resync,
+// periodic bonded-reconnect, and the two new-device admission gates at the BLE
+// advertising and Classic inquiry handlers) — none of them past the raw
+// gap_connect() phase. So once a candidate reaches BLE_STATE_CONNECTED,
+// stop_scan()'s hid_state.state reset is inert; GATT discovery, SM
+// pairing/bonding, HID setup, and Switch 2's GATT init all key off
+// per-connection state instead and are already unaffected by scan/inquiry
+// being stopped. The only phase where stop_scan() is destructive is CONNECTING:
+// it silently disarms the BLE_CONNECT_TIMEOUT_MS watchdog for that specific
+// attempt (the watchdog requires state==CONNECTING to fire), leaving recovery
+// of a genuinely stuck attempt dependent on whatever timeout the HCI/radio
+// layer applies on its own -- unbounded from this firmware's point of view.
+//
+// Classic BT was traced too and found NOT vulnerable: its connection-establish
+// watchdog (CLASSIC_CONNECT_TIMEOUT_MS, ~1030 below) is keyed on each
+// classic_connection_t's own connect_time, set the moment hid_host_connect()
+// succeeds -- completely independent of hid_state.state/scan_active/
+// inquiry_active. Stopping inquiry mid-Classic-connect is harmless. No Classic
+// defer logic is needed or added.
+static bool pairing_close_deferred;
+
+void btstack_host_close_pairing_window(void)
+{
+    if (hid_state.state == BLE_STATE_CONNECTING) {
+        printf("[BTSTACK_HOST] Pairing window closing but a BLE connect is in flight -- "
+               "deferring close until it resolves\n");
+        pairing_close_deferred = true;
+        return;
+    }
+    btstack_host_stop_scan();
+}
+
+bool btstack_host_pairing_close_deferred(void)
+{
+    return pairing_close_deferred;
+}
+
+// Resolve a deferred pairing-window close once the in-flight BLE connect
+// attempt concludes (success -> BLE_STATE_CONNECTED, or failure). Called from
+// both branches of HCI_SUBEVENT_LE_CONNECTION_COMPLETE. The BLE_CONNECT_TIMEOUT_MS
+// watchdog's gap_connect_cancel() reaches this indirectly too: per the existing
+// design (see that watchdog's own comment), the cancel itself generates a
+// failure LE_CONNECTION_COMPLETE, which is handled by the failure branch here.
+// No-op if nothing is deferred, so it's always safe to call.
+static void resolve_deferred_pairing_close(void)
+{
+    if (!pairing_close_deferred) {
+        return;
+    }
+    pairing_close_deferred = false;
+    printf("[BTSTACK_HOST] Deferred pairing-window close: candidate resolved, closing now\n");
+    btstack_host_stop_scan();
+}
+
 void btstack_host_start_timed_scan(uint32_t timeout_ms)
 {
     scan_suppressed = false;  // Explicit scan request clears suppression
@@ -1894,6 +1950,25 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                         printf("[BTSTACK_HOST] Connection failed: 0x%02X\n", status);
                         hid_state.reconnect_attempt_time = 0;
 
+                        // Was this failing attempt a candidate whose pairing window had
+                        // already expired (btstack_host_close_pairing_window() deferred
+                        // the close because this attempt was in flight)? If so, and it
+                        // wasn't a reconnect to an already-bonded device, the window's
+                        // deadline has genuinely passed -- close cleanly instead of
+                        // falling into the generic "resume scanning" retry below, which
+                        // would otherwise silently re-open discovery past the deadline.
+                        // Bonded reconnects are explicitly exempted so their own
+                        // has_last_connected retry logic is untouched either way.
+                        bool pairing_window_expired = pairing_close_deferred;
+                        bool is_bonded_reconnect = hid_state.has_last_connected &&
+                            memcmp(hid_state.pending_addr, hid_state.last_connected_addr, 6) == 0;
+                        resolve_deferred_pairing_close();
+                        if (pairing_window_expired && !is_bonded_reconnect) {
+                            printf("[BTSTACK_HOST] Pairing candidate failed after window expiry -- closing cleanly, not resuming scan\n");
+                            hid_state.state = BLE_STATE_IDLE;
+                            break;
+                        }
+
                         // If scan is already running (e.g. safety net started it after
                         // gap_connect_cancel timeout), restore scanning state so the
                         // advertising handler can auto-connect to devices
@@ -1958,6 +2033,11 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                     }
 
                     hid_state.state = BLE_STATE_CONNECTED;
+                    // Raw connect succeeded -- from here, GATT discovery, SM pairing,
+                    // HID setup, and Switch 2 GATT init all key off per-connection state
+                    // (conn->state / conn->hid_ready), not hid_state.state, so it's now
+                    // safe to close a pairing window that was waiting on this attempt.
+                    resolve_deferred_pairing_close();
                     break;
                 }
 
@@ -2296,8 +2376,26 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 // BLE disconnect — manage BLE state and reconnection
                 hid_state.state = BLE_STATE_IDLE;
 
+                // Only chase a reconnect for reasons that indicate an unexpected link loss
+                // (e.g. CONNECTION_TIMEOUT / supervision timeout, CONNECTION_FAILED_TO_BE_ESTABLISHED).
+                // `reason` was captured above but never consulted before this fix — every
+                // disconnect, including ones the peer initiated on purpose (controller powered
+                // off, or the user explicitly disconnected it), triggered the same up-to-5×
+                // blind gap_connect() cascade (BLE_CONNECT_TIMEOUT_MS=10s each, ~50s worst case)
+                // to a device that has no intention of reconnecting. That's pure waste — it can
+                // only ever occupy the connect-attempt slot with a doomed retry, never help, and
+                // during that ~50s window `btstack_host_connect_ble()` calls `btstack_host_stop_scan()`
+                // at the top of every attempt, so any *other* device (or the same one re-advertising
+                // under a fresh session) also can't be discovered until the cascade exhausts. Real,
+                // reproducible-from-code fit for the documented "reconnect sometimes needs multiple
+                // tries" symptom — see docs/bluetooth/btstack-implementation.md "Reconnect reliability".
+                bool reason_warrants_reconnect =
+                    reason != ERROR_CODE_REMOTE_USER_TERMINATED_CONNECTION &&
+                    reason != ERROR_CODE_REMOTE_DEVICE_TERMINATED_CONNECTION_DUE_TO_POWER_OFF;
+
                 // Try to reconnect to last connected device if we have one stored
-                if (hid_state.has_last_connected && hid_state.reconnect_attempts < 5) {
+                if (hid_state.has_last_connected && hid_state.reconnect_attempts < 5 &&
+                    reason_warrants_reconnect) {
                     hid_state.reconnect_attempts++;
                     printf("[BTSTACK_HOST] Attempting BLE reconnection to stored device (attempt %d)...\n",
                            hid_state.reconnect_attempts);
@@ -2311,6 +2409,10 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                     hid_state.pending_name[sizeof(hid_state.pending_name) - 1] = '\0';
                     btstack_host_connect_ble(hid_state.last_connected_addr, hid_state.last_connected_addr_type);
                 } else if (btstack_classic_get_connection_count() == 0) {
+                    if (hid_state.has_last_connected && !reason_warrants_reconnect) {
+                        printf("[BTSTACK_HOST] Disconnect reason 0x%02X looks intentional (peer-initiated); "
+                               "not chasing a reconnect, resuming scan instead\n", reason);
+                    }
                     // Resume scanning only if no devices remain
                     btstack_host_start_scan();
                 }
@@ -3334,6 +3436,23 @@ static void switch2_ack_ccc_write_callback(uint8_t packet_type, uint16_t channel
 static sw2_init_state_t sw2_init_state = SW2_INIT_IDLE;
 static hci_con_handle_t sw2_init_handle = 0;
 
+// Retry timing for the init state machine (see switch2_send_init_cmd()/switch2_retry_init_if_needed()
+// below). SW2_INIT_RETRY_INTERVAL_MS is this project's pre-existing ~500ms retry intent — no primary
+// source (BlueRetro's own retry timing, a capture, or any other evidence) was found to establish that
+// value; it is preserved as an existing project policy, not promoted to a measured fact. What *is*
+// fixed here: the interval used to be a raw call-count modulo (assumed ~120Hz caller; the real
+// caller — ns2_bt_host.c's 30ms control_timer — runs at ~33Hz, so the old check fired every ~1.8s,
+// not ~500ms), and the counter was never reset on a state transition, disconnect, or new session, so
+// it also carried an essentially random phase into each new pairing step. Replaced with a real
+// monotonic deadline (btstack_run_loop_get_time_ms(), the same clock this file already uses for the
+// BLE reconnect-attempt timeout) that starts fresh every time a command is actually sent, plus a
+// bounded retry count with an explicit recovery transition (see switch2_retry_init_if_needed()).
+#define SW2_INIT_RETRY_INTERVAL_MS 500
+#define SW2_INIT_MAX_RETRIES 10  // ~5s of retries at the interval above before forcing a recovery disconnect
+static uint32_t sw2_init_cmd_sent_ms = 0;
+static uint8_t sw2_init_retry_count = 0;
+static sw2_init_state_t sw2_init_last_sent_state = SW2_INIT_IDLE;
+
 // ACK notification listener for Switch 2 commands
 static gatt_client_notification_t switch2_ack_notification_listener;
 static gatt_client_characteristic_t switch2_ack_characteristic;
@@ -3798,6 +3917,13 @@ static void switch2_cleanup_on_disconnect(void) {
     gatt_client_stop_listening_for_characteristic_value_updates(&switch2_ack_notification_listener);
     sw2_init_state = SW2_INIT_IDLE;
     sw2_init_handle = 0;
+    // Explicit reset (belt-and-suspenders with the state-change check in switch2_send_init_cmd()):
+    // a new session must never inherit a retry count or deadline phase from whatever this
+    // connection's init sequence last did, even in the edge case where the new session happens to
+    // get stuck at the exact same sw2_init_state as the old one.
+    sw2_init_retry_count = 0;
+    sw2_init_cmd_sent_ms = 0;
+    sw2_init_last_sent_state = SW2_INIT_IDLE;
     s_sw2_v2_fired = false;
     s_sw2_v2_state = SW2_V2_IDLE;
     s_sw2_v2_active = NULL;
@@ -3916,6 +4042,15 @@ static void switch2_ack_notification_handler(uint8_t packet_type, uint16_t chann
 static void switch2_send_init_cmd(hci_con_handle_t con_handle)
 {
     printf("[SW2_BLE] Sending init cmd, state=%d\n", sw2_init_state);
+
+    // Every send (whether the first for this state or a retry) refreshes the deadline. A genuinely
+    // NEW state (different from the last one this function was called for) also resets the retry
+    // count, so a slow-to-arrive step never inherits a near-exhausted budget from the step before it.
+    if (sw2_init_state != sw2_init_last_sent_state) {
+        sw2_init_retry_count = 0;
+        sw2_init_last_sent_state = sw2_init_state;
+    }
+    sw2_init_cmd_sent_ms = btstack_run_loop_get_time_ms();
 
     // Non-invasive capture (see sw2_capture.h): every SW2_INIT_* state this host acts on. Every
     // sw2_init_state transition in switch2_ack_notification_handler() is immediately followed
@@ -4064,20 +4199,44 @@ static void switch2_send_next_init_cmd(hci_con_handle_t con_handle)
     }
 }
 
-// Retry init if stuck (called from main loop)
+// Retry init if stuck (called from main loop, ~every CONTROL_TICK_MS via btstack_host_process() —
+// see the retry-timing comment above sw2_init_cmd_sent_ms for why this used to be call-count-based).
 static void switch2_retry_init_if_needed(void)
 {
-    static uint32_t retry_counter = 0;
-    retry_counter++;
-
-    if (sw2_init_state != SW2_INIT_IDLE && sw2_init_state != SW2_INIT_DONE && sw2_init_handle != 0) {
-        // Retry every ~500ms (assuming ~120Hz main loop = 60 counts)
-        if (retry_counter % 60 == 0) {
-            printf("[SW2_BLE] Retrying init cmd (state=%d, attempt=%lu)\n",
-                   sw2_init_state, (unsigned long)(retry_counter / 60));
-            switch2_send_init_cmd(sw2_init_handle);
-        }
+    if (sw2_init_state == SW2_INIT_IDLE || sw2_init_state == SW2_INIT_DONE || sw2_init_handle == 0) {
+        return;
     }
+
+    uint32_t now = btstack_run_loop_get_time_ms();
+    // Wrap-safe: unsigned subtraction is correct across a 32-bit ms rollover (~49.7 days) as long
+    // as the true elapsed time never exceeds ~24.8 days, which no single init attempt can.
+    if (now - sw2_init_cmd_sent_ms < SW2_INIT_RETRY_INTERVAL_MS) {
+        return;
+    }
+
+    if (sw2_init_retry_count >= SW2_INIT_MAX_RETRIES) {
+        // Recovery: the controller never advanced past this state after
+        // SW2_INIT_MAX_RETRIES real attempts, ~SW2_INIT_MAX_RETRIES*SW2_INIT_RETRY_INTERVAL_MS of
+        // wall-clock time. Retrying forever would leave a permanently stuck, silently-undiagnosable
+        // connection (no prior recovery path existed for this state machine at all — the link-layer
+        // reconnect cascade this project fixed separately only engages on an actual disconnect).
+        // Force one: gap_disconnect() here is a locally-initiated disconnect, which reports a
+        // reason code distinct from the two "peer disconnected on purpose" codes that BLE reconnect
+        // fix now excludes — so this composes correctly with that fix and triggers a fresh
+        // reconnect attempt rather than requiring the user to notice and manually intervene.
+        printf("[SW2_BLE] Init stuck in state=%d after %d retries (~%lums), forcing reconnect\n",
+               sw2_init_state, SW2_INIT_MAX_RETRIES,
+               (unsigned long)SW2_INIT_MAX_RETRIES * SW2_INIT_RETRY_INTERVAL_MS);
+        hci_con_handle_t stuck_handle = sw2_init_handle;
+        gap_disconnect(stuck_handle);
+        return;
+    }
+
+    sw2_init_retry_count++;
+    printf("[SW2_BLE] Retrying init cmd (state=%d, attempt=%d/%d, %lums since last send)\n",
+           sw2_init_state, sw2_init_retry_count, SW2_INIT_MAX_RETRIES,
+           (unsigned long)(now - sw2_init_cmd_sent_ms));
+    switch2_send_init_cmd(sw2_init_handle);
 }
 
 // ============================================================================
@@ -4523,6 +4682,19 @@ static void hids_client_handler(uint8_t packet_type, uint16_t channel, uint8_t *
                     uint16_t hid_desc_len = hids_client_descriptor_storage_get_descriptor_len(conn->hids_cid, 0);
                     if (hid_desc && hid_desc_len > 0) {
                         printf("[BTSTACK_HOST] BLE HID descriptor: %d bytes\n", hid_desc_len);
+                        // Raw hex dump for the 2026-07-12 BLE-rumble investigation: we've
+                        // never actually inspected a real Xbox Series BLE report map in
+                        // this repo. xbox_ble.c's rumble output assumes report ID 0x03
+                        // (copied from the documented Classic-BT format) has an Output
+                        // usage in THIS descriptor too — that's unverified. This dump
+                        // lets a hex decode confirm whether an Output report exists at
+                        // all, and at which report ID, instead of guessing again.
+                        printf("[BTSTACK_HOST] BLE HID descriptor bytes:");
+                        for (uint16_t i = 0; i < hid_desc_len; i++) {
+                            if ((i % 16) == 0) printf("\n  ");
+                            printf("%02X ", hid_desc[i]);
+                        }
+                        printf("\n");
                         bthid_set_hid_descriptor(conn->conn_index, hid_desc, hid_desc_len);
                     }
 

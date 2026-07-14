@@ -12,6 +12,9 @@
 #include "switch_pro.h"  // switch_pro_input_t
 #include "switch_pro2.h" // ns2_dbg_* getters (report-0x09 motion/gyro debug instrumentation)
 #include "sw2_capture.h" // genuine Switch 2 BLE raw-traffic capture/export (2026-07-10)
+#include "bt_identity_log.h" // controller identity/driver-binding event log (Gate 2, 2026-07-12)
+#include "bt/bthid/bthid.h" // bthid_get_cached_descriptor (btid desc command)
+#include "bt/bthid/devices/generic/bthid_gamepad.h" // bthid_gamepad_dump_map (btid desc command)
 
 #include <string.h>
 #include <stdio.h>
@@ -264,6 +267,11 @@ static void cmd_raw(void) {
 // hardware check, phase added the same day after the symptom was reclassified from gradual drift
 // to abrupt jumps, anom added the same day again for the mathematically-derived discontinuity
 // detector — see switch_pro2.c's NS2_MAX_PHASE_DELTA derivation.)
+// NS2_PRO-only: the ns2_dbg_* bodies only exist in switch_pro2.c, which is entirely #ifdef
+// NS2_PRO. Found 2026-07-12: this command (and cmd_imuanom below) had no guard at all, so
+// -DNS2_PRO=OFF (the plain Switch-1 build) failed to link ever since these commands were added
+// 2026-07-10 — a real, unnoticed regression, not something introduced by this pass.
+#ifdef NS2_PRO
 static void cmd_imu(void) {
     switch_pro_input_t in;
     get_global_gamepad_input(0, &in);
@@ -323,6 +331,7 @@ static void cmd_imuanom(void) {
     snprintf(out + j, sizeof(out) - j, "]}");
     reply(out);
 }
+#endif  // NS2_PRO
 
 // Genuine Switch 2 BLE raw-traffic capture (2026-07-10) — see sw2_capture.h. Off by default;
 // `sw2cap on` starts a fresh session (clears the ring + drop counter), `sw2cap off` stops it,
@@ -420,6 +429,72 @@ static void cmd_sw2cap(const char *arg) {
     }
 }
 
+// `btid dump` — drains the controller identity/driver-binding event log (bt_identity_log.h,
+// Gate 2). Always recording (no on/off toggle — one event per binding decision is low-frequency
+// enough that there's no cost to leaving it on, unlike sw2cap's per-packet traffic capture).
+// `btid stat` reports the dropped count; `btid clear` resets the ring for a fresh test session.
+// Pull-based for the same reason as sw2cap — see that command's comment.
+#define BTID_DRAIN_MAX 8
+static void cmd_btid(const char *arg) {
+    if (strcmp(arg, "clear") == 0) {
+        bt_identity_log_clear();
+        reply("{\"ok\":true}");
+    } else if (strcmp(arg, "stat") == 0) {
+        snprintf(out, sizeof(out), "{\"dropped\":%lu}",
+                 (unsigned long)bt_identity_log_dropped_count());
+        reply(out);
+    } else if (strcmp(arg, "dump") == 0) {
+        int j = snprintf(out, sizeof(out), "{\"dropped\":%lu,\"entries\":[",
+                          (unsigned long)bt_identity_log_dropped_count());
+        bt_identity_event_t e;
+        int n = 0;
+        while (n < BTID_DRAIN_MAX) {
+            if (!bt_identity_log_drain_one(&e)) break;
+            j += snprintf(out + j, sizeof(out) - j,
+                "%s{\"ms\":%lu,\"conn\":%u,\"transport\":\"%s\",\"name\":\"%.32s\","
+                "\"vid\":\"0x%04X\",\"pid\":\"0x%04X\",\"provenance\":\"%s\","
+                "\"cod\":\"%02X%02X%02X\",\"desc_len\":%u,\"desc_fp\":\"0x%04X\","
+                "\"driver\":\"%.24s\",\"reason\":\"%.32s\",\"slot\":%d}",
+                n ? "," : "", (unsigned long)e.timestamp_ms, e.conn_index,
+                e.is_ble ? "ble" : "classic", e.name, e.vendor_id, e.product_id,
+                bt_identity_provenance_name(e.provenance),
+                e.class_of_device[0], e.class_of_device[1], e.class_of_device[2],
+                e.desc_len, e.desc_fingerprint, e.driver_name, e.reason, e.player_slot);
+            n++;
+        }
+        bool more = (n == BTID_DRAIN_MAX);
+        snprintf(out + j, sizeof(out) - j, "],\"more\":%s}", more ? "true" : "false");
+        reply(out);
+    } else if (strcmp(arg, "desc") == 0) {
+        // Raw cached HID descriptor + generic driver's parsed field map — added 2026-07-12 to
+        // inspect real descriptor bytes/parse results directly instead of guessing from input
+        // symptoms (see the 8BitDo NGC trigger/shoulder investigation in
+        // docs/bluetooth/8bitdo-ngc-diy-profile.md). Single-slot cache, same as bthid.c's
+        // internal one — only useful for whichever one connection most recently had a
+        // descriptor arrive.
+        const uint8_t* desc = NULL;
+        uint16_t desc_len = 0;
+        uint8_t desc_conn = 0xFF;
+        int j = snprintf(out, sizeof(out), "{");
+        if (bthid_get_cached_descriptor(&desc, &desc_len, &desc_conn)) {
+            j += snprintf(out + j, sizeof(out) - j, "\"conn\":%u,\"len\":%u,\"bytes\":\"",
+                          desc_conn, desc_len);
+            for (int i = 0; i < desc_len && j < (int)sizeof(out) - 200; i++)
+                j += snprintf(out + j, sizeof(out) - j, "%02X", desc[i]);
+            j += snprintf(out + j, sizeof(out) - j, "\",\"map\":");
+            char mapbuf[1024];
+            bthid_gamepad_dump_map(desc_conn, mapbuf, sizeof(mapbuf));
+            j += snprintf(out + j, sizeof(out) - j, "%s", mapbuf);
+        } else {
+            j += snprintf(out + j, sizeof(out) - j, "\"error\":\"no descriptor cached\"");
+        }
+        snprintf(out + j, sizeof(out) - j, "}");
+        reply(out);
+    } else {
+        reply("{\"error\":\"usage: btid dump|stat|clear|desc\"}");
+    }
+}
+
 static void handle_line(char *cmd) {
     if (strcmp(cmd, "info") == 0) {
         reply("{\"id\":\"picoswitch\",\"product\":\"PicoSwitch Config\",\"version\":\"2.0\"}");
@@ -433,12 +508,16 @@ static void handle_line(char *cmd) {
         cmd_device();
     } else if (strcmp(cmd, "raw") == 0) {
         cmd_raw();
+#ifdef NS2_PRO
     } else if (strcmp(cmd, "imu") == 0) {
         cmd_imu();
     } else if (strcmp(cmd, "imuanom") == 0) {
         cmd_imuanom();
+#endif  // NS2_PRO
     } else if (strncmp(cmd, "sw2cap ", 7) == 0) {
         cmd_sw2cap(cmd + 7);
+    } else if (strncmp(cmd, "btid ", 5) == 0) {
+        cmd_btid(cmd + 5);
     } else if (strncmp(cmd, "getns2map ", 10) == 0) {
         cmd_getns2map(atoi(cmd + 10));
     } else if (strncmp(cmd, "setns2map ", 10) == 0) {

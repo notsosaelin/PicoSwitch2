@@ -382,6 +382,7 @@ static void switch2_ble_disconnect(bthid_device_t* device)
 
 const bthid_driver_t switch2_ble_driver = {
     .name = "Nintendo Switch 2 Controller (BLE)",
+    .transports = BTHID_TRANSPORT_BLE,  // Switch 2 controllers use BLE only, never Classic BT
     .match = switch2_ble_match,
     .init = switch2_ble_init,
     .process_report = switch2_ble_process_report,

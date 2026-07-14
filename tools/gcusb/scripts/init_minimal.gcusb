@@ -1,0 +1,15 @@
+# Minimum safe init sequence to reach input streaming, per PROMPT.md Experiment 2's
+# "smallest safe sequence" requirement. Deliberately excludes pairing (0x15) and any rumble
+# writes -- see docs/switch2-gc/protocol.md "USB init command sequence" for the byte provenance.
+# Run with: gcusb replay --target pico --script scripts/init_minimal.gcusb
+# Validate without hardware: gcusb replay --script scripts/init_minimal.gcusb --validate-only
+
+# 0x03/0x0D Initialise USB -- Confirmed bytes, protocol.md frame 370989
+SEND 0391000d000800000100f3b9348c8178
+SLEEP 50
+
+# 0x03/0x0A Select Input Report = 0x0A -- Confirmed bytes, protocol.md frame 376898
+SEND 0391000a000400000a000000
+SLEEP 50
+
+STOP-RUMBLE

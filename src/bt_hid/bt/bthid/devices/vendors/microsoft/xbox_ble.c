@@ -230,19 +230,32 @@ static void xbox_ble_task(bthid_device_t* device)
         uint8_t left = fb->rumble.left;
         uint8_t right = fb->rumble.right;
         if (left != xbox->rumble_left || right != xbox->rumble_right) {
-            // Xbox BLE rumble: Report ID 0x03, 8 bytes
-            // [0]=enable_actuators, [1]=lt_trigger, [2]=rt_trigger,
-            // [3]=strong_motor, [4]=weak_motor, [5]=duration, [6]=delay, [7]=repeat
+            // Xbox BLE rumble: Report ID 0x03, 8 bytes. Layout verified byte-for-byte
+            // 2026-07-12 against the Linux xpadneo driver (the reference Xbox-BLE HID
+            // driver, atar-axis/xpadneo, hid-xpadneo/src/xpadneo/xpadneo.h
+            // struct xpadneo_rumble_report / xpadneo_rumble_data):
+            // [0]=enable_actuators (bit0=weak,bit1=strong,bit2=right_trigger,bit3=left_trigger)
+            // [1]=left_trigger_magnitude, [2]=right_trigger_magnitude,
+            // [3]=strong_motor, [4]=weak_motor,
+            // [5]=pulse_sustain_10ms, [6]=pulse_release_10ms, [7]=loop_count
             // Xbox HID descriptor defines magnitude range as 0-100
             uint8_t buf[8];
             buf[0] = XBOX_BLE_RUMBLE_MOTORS;
-            buf[1] = 0;                                          // Left trigger (unused)
-            buf[2] = 0;                                          // Right trigger (unused)
+            buf[1] = 0;                                          // Left trigger magnitude (0: enable bits above don't request trigger motors)
+            buf[2] = 0;                                          // Right trigger magnitude (same)
             buf[3] = ((uint16_t)left * 100) / 255;               // Strong motor (0-100)
             buf[4] = ((uint16_t)right * 100) / 255;              // Weak motor (0-100)
-            buf[5] = 0xFF;                                       // Duration: continuous
-            buf[6] = 0x00;                                       // Delay: none
-            buf[7] = 0x00;                                       // Repeat: none
+            buf[5] = 0xFF;                                       // pulse_sustain_10ms: max (2550ms per pulse)
+            buf[6] = 0x00;                                       // pulse_release_10ms: no gap between pulses
+            // loop_count: xpadneo sets 0xEB (235) here to sustain the effect for
+            // ~10 minutes from a single command ("we pulse the motors for 60 minutes
+            // as the Windows driver does"), matching xpadneo/rumble.c's rumble_worker().
+            // We previously sent 0x00 ("repeat: none") — on real hardware that most
+            // likely means the motor stops after a single ~2.55s pulse_sustain burst,
+            // which would look exactly like "rumble doesn't work" for any effect that's
+            // supposed to hold steady, since we (correctly, matching xpadneo's own
+            // dirty-flag design) only resend when the amplitude actually changes.
+            buf[7] = 0xEB;
             bthid_send_output_report(device->conn_index, XBOX_BLE_REPORT_RUMBLE, buf, sizeof(buf));
             xbox->rumble_left = left;
             xbox->rumble_right = right;
@@ -273,6 +286,13 @@ static void xbox_ble_disconnect(bthid_device_t* device)
 
 const bthid_driver_t xbox_ble_driver = {
     .name = "Xbox Wireless Controller (BLE)",
+    // Already redundantly guarded by xbox_ble_match()'s own `if (!is_ble) return
+    // false;`, but declared here too now that this exists — the same real Xbox
+    // hardware supports BOTH Classic BT (xbox_bt.c) and BLE (this file); previously
+    // only registration order (xbox_ble before xbox_bt) kept these from stealing
+    // each other's connections, which was correct but fragile — a future reordering
+    // would have silently broken it with no compiler or runtime signal.
+    .transports = BTHID_TRANSPORT_BLE,
     .match = xbox_ble_match,
     .init = xbox_ble_init,
     .process_report = xbox_ble_process_report,

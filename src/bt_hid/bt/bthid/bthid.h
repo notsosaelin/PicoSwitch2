@@ -81,8 +81,39 @@ typedef struct {
 // DEVICE DRIVER INTERFACE
 // ============================================================================
 
+// Which physical transport(s) a driver's real hardware family can ever use.
+// Found 2026-07-12 during the Gate 2 reachability audit: switch_pro_bt.c (Switch 1,
+// Classic-BT-only hardware) had a name-based fallback ("Pro Controller" substring)
+// with no transport check, registered *before* switch2_ble.c — a BLE-connecting
+// Switch 2 Pro Controller (whose advertised name plausibly also contains "Pro
+// Controller") could be incorrectly claimed by the Switch 1 driver before
+// switch2_ble_match() ever ran. Worse, bthid_update_device_info()'s re-evaluation
+// logic (which re-checks a driver's own match() once accurate VID/PID arrives async)
+// would NOT catch this specific case, because switch_match() still returns true via
+// the name path even when called again with the correct Switch-2 PID — the bug
+// survives its own self-healing mechanism.
+//
+// Rather than patch that one driver with an ad-hoc `if (is_ble) return false;` (which
+// a future driver author could easily forget to replicate), every driver now declares
+// which transport(s) its real hardware can use, checked centrally in find_driver() and
+// the re-eval loop in bthid_update_device_info() *before* match() is ever called. This
+// closes the whole bug class at once, for present and future drivers. Default (0, i.e.
+// a driver that doesn't set this field) is BTHID_TRANSPORT_BOTH — deliberately
+// fail-open to "no new restriction" rather than fail-closed to "driver never matches
+// anything," since an accidentally-omitted field should not silently disable a
+// previously-working driver.
+typedef enum {
+    BTHID_TRANSPORT_CLASSIC = 1 << 0,
+    BTHID_TRANSPORT_BLE     = 1 << 1,
+    BTHID_TRANSPORT_BOTH    = BTHID_TRANSPORT_CLASSIC | BTHID_TRANSPORT_BLE,
+} bthid_transport_mask_t;
+
 typedef struct {
     const char* name;
+
+    // Real hardware transport(s) this driver's controller family can ever use.
+    // See bthid_transport_mask_t above. Checked before match() is called.
+    bthid_transport_mask_t transports;
 
     // Check if this driver handles a device (by VID/PID, name, COD, or transport)
     // Priority: VID/PID match > name match > COD match
@@ -160,6 +191,13 @@ void bthid_set_battery_level(uint8_t conn_index, uint8_t level);
 
 // Pass BLE HID descriptor to driver for report parsing
 void bthid_set_hid_descriptor(uint8_t conn_index, const uint8_t* desc, uint16_t desc_len);
+
+// Debug: retrieve the single-slot cached raw HID descriptor for the `btid desc` config command
+// (added 2026-07-12 to inspect real descriptor bytes instead of guessing from input symptoms).
+// Returns false if nothing is cached. This mirrors the existing internal single-slot cache
+// (bthid.c's cached_hid_desc/_len/_conn) used to hand descriptors to newly-created devices —
+// same one-at-a-time-connection assumption, fine for a single-controller test session.
+bool bthid_get_cached_descriptor(const uint8_t** out_data, uint16_t* out_len, uint8_t* out_conn);
 
 // Switch a device from its current vendor driver to the generic gamepad driver.
 // Used when a vendor driver detects an incompatible report format at runtime.

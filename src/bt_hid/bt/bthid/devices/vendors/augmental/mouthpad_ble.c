@@ -365,6 +365,7 @@ static void mouthpad_disconnect(bthid_device_t* device)
 // ----------------------------------------------------------------------------
 const bthid_driver_t mouthpad_ble_driver = {
     .name = "Augmental MouthPad BLE",
+    .transports = BTHID_TRANSPORT_BLE,  // already redundantly guarded in mouthpad_match() too
     .match = mouthpad_match,
     .init = mouthpad_init,
     .process_report = mouthpad_process_report,

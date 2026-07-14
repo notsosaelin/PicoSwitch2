@@ -12,6 +12,7 @@
 #include "tusb.h"
 #include "pico/time.h"  // time_us_32() for the report-0x05 IMU timestamp
 
+#include "ns2_pairing_crypto.h"  // shared AES-128/LTK-derivation pairing crypto
 #include "report.h"      // shared cross-core controller input
 #include "switch_pro.h"  // switch_pro_input_t + SWITCH_MASK_* (Switch 1 layout)
 #include "switch_pro2.h"
@@ -24,6 +25,7 @@
 
 #ifdef NS2_AUDIO
 #include "device/usbd_pvt.h"  // custom class-driver API for the audio stub
+#include "class/audio/audio.h"  // AUDIO_FU_CTRL_* constants only (self-contained; no CFG_TUD_AUDIO needed)
 #endif
 
 //--------------------------------------------------------------------+
@@ -125,8 +127,8 @@ static const uint8_t ns2_config_desc[] = {
     0x08, 0x0B, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00,
     0x09, 0x04, 0x00, 0x00, 0x02, 0x03, 0x00, 0x00, 0x00,
     0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x61, 0x00,  // HID desc, report len 97
-    0x07, 0x05, 0x81, 0x03, 0x40, 0x00, 0x04,  // EP 0x81 interrupt IN
-    0x07, 0x05, 0x01, 0x03, 0x40, 0x00, 0x04,  // EP 0x01 interrupt OUT
+    0x07, 0x05, 0x81, 0x03, 0x40, 0x00, 0x01,  // EP 0x81 interrupt IN, bInterval 1 = 1000Hz FS max
+    0x07, 0x05, 0x01, 0x03, 0x40, 0x00, 0x01,  // EP 0x01 interrupt OUT, bInterval 1
     // IAD + Interface 1: vendor bulk
     0x08, 0x0B, 0x01, 0x01, 0xFF, 0x00, 0x00, 0x00,
     0x09, 0x04, 0x01, 0x00, 0x02, 0xFF, 0x00, 0x00, 0x00,
@@ -141,8 +143,8 @@ static const uint8_t ns2_config_desc[] = {
     0x08, 0x0B, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00,
     0x09, 0x04, 0x00, 0x00, 0x02, 0x03, 0x00, 0x00, 0x00,
     0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x61, 0x00,
-    0x07, 0x05, 0x81, 0x03, 0x40, 0x00, 0x04,
-    0x07, 0x05, 0x01, 0x03, 0x40, 0x00, 0x04,
+    0x07, 0x05, 0x81, 0x03, 0x40, 0x00, 0x01,  // bInterval 1 = 1000Hz FS max (see Option B above)
+    0x07, 0x05, 0x01, 0x03, 0x40, 0x00, 0x01,
     // IAD + Interface 1: vendor bulk
     0x08, 0x0B, 0x01, 0x01, 0xFF, 0x00, 0x00, 0x00,
     0x09, 0x04, 0x01, 0x00, 0x02, 0xFF, 0x00, 0x00, 0x00,
@@ -229,11 +231,34 @@ static void ns2_factory_init(void) {
     fac(0x13022, (const uint8_t[]){0x32, 0x32, 0x32}, 3);  // grip
     fac(0x13040, (const uint8_t[]){0x3B, 0xE0, 0xD3, 0x41, 0xC6, 0x60, 0x6A, 0xBC, 0x4D, 0xD7,
                                    0xA2, 0xBB, 0x71, 0x1E, 0xDD, 0x37}, 16);
-    fac(0x13060, (const uint8_t[]){0x4C, 0x09, 0x00, 0x00}, 4);
+    // 0x13060..0x1307F (32 B) reads back erased/unprogrammed (0xFF) on a real unit, not the
+    // previously-hardcoded `4C 09 00 00` (source unknown/unannotated). Confirmed by TWO
+    // independent real-capture sources (2026-07-12): ndeadly's raw USB capture (a 32-byte read
+    // at this address, all 0xFF) and Dycool/NS-PC-Control's own factory-table comment ("reads
+    // back erased (0xFF) on the real unit — Captured read: addr=0x13060 len=0x20"). The
+    // factory[] array default-zero-fills anything not explicitly populated (see the memset
+    // above), so this region must be set to 0xFF explicitly, not just left unpopulated.
+    fac(0x13060, (const uint8_t[]){0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                   0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                   0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                   0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}, 32);
     fac(0x13080, blk, 40);
     fac(0x130A8, (const uint8_t[]){0xB3, 0x67, 0x83, 0x2E, 0x66, 0x5E, 0x3A, 0x06, 0x5F}, 9);  // L stick cal
     fac(0x130C0, blk, 40);
     fac(0x130E8, (const uint8_t[]){0x2C, 0x08, 0x84, 0xD1, 0x65, 0x63, 0x2A, 0x26, 0x62}, 9);  // R stick cal
+    // Magnetometer bias (zero, unit never calibrated) + accelerometer bias, both float32 x,y,z —
+    // decoded 2026-07-10 (docs/switch2/report-0x09-motion.md "Factory motion calibration") from
+    // this repo's own SPI dump but never wired into the served memory table until 2026-07-12,
+    // when a fresh independent decode of a real console-side USB capture (ndeadly's
+    // rumble-procon-gccon.pcapng, a DIFFERENT physical unit) confirmed the console actually reads
+    // this exact address (0x02/04, len 0x18) during init and expects non-zero data there — this
+    // repo was previously returning zero-fill (memset default) for any read at 0x13100, a real
+    // gap between documented-and-decoded vs. actually-served. Exact bytes are this repo's own
+    // unit's SPI dump (`dumps/SPI/2069_spi_dump_2026-07-10_1422.bin`), for internal consistency
+    // with the surrounding factory-block entries above.
+    fac(0x13100, (const uint8_t[]){0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                   0x00, 0x00, 0xC1, 0xF9, 0x23, 0x3E, 0x51, 0xAC, 0x8C, 0xBD,
+                                   0x21, 0x0F, 0x26, 0x41}, 24);
     fac(0x13140, (const uint8_t[]){0x00, 0xD7, 0xA3, 0xBC, 0x41, 0xD7, 0xA3, 0xBC, 0x41}, 9);
 
     // Identity block for the EP0 vendor 0x03 request = first 0x25 B of factory (01 00,
@@ -259,68 +284,13 @@ static void ns2_mem_read(uint32_t addr, uint8_t len, uint8_t *out) {
 // Verified against ndeadly's capture:
 //   LTK        = reverse(A1) XOR reverse(B1)      (A1 from 0x15/04, B1 public)
 //   B2(onwire) = AES128_ECB(LTK, reverse(A2))     (A2 from 0x15/02 challenge)
+// The actual AES-128/rev16/LTK-derivation math was extracted 2026-07-13 into the shared,
+// host-tested src/ns2_pairing_crypto.c (see include/ns2_pairing_crypto.h) so switch_gc.c can
+// also perform real pairing crypto instead of placeholder bytes -- this file just keeps its own
+// session-scoped key state and the two thin wrappers below, byte-for-byte identical behavior to
+// before the extraction (verified: tools/test_ns2_pairing_crypto.c's FIPS-197 vector + this
+// file's own unchanged hardware-validated pairing history).
 //--------------------------------------------------------------------+
-
-static const uint8_t aes_sbox[256] = {
-    0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
-    0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
-    0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,
-    0x04,0xc7,0x23,0xc3,0x18,0x96,0x05,0x9a,0x07,0x12,0x80,0xe2,0xeb,0x27,0xb2,0x75,
-    0x09,0x83,0x2c,0x1a,0x1b,0x6e,0x5a,0xa0,0x52,0x3b,0xd6,0xb3,0x29,0xe3,0x2f,0x84,
-    0x53,0xd1,0x00,0xed,0x20,0xfc,0xb1,0x5b,0x6a,0xcb,0xbe,0x39,0x4a,0x4c,0x58,0xcf,
-    0xd0,0xef,0xaa,0xfb,0x43,0x4d,0x33,0x85,0x45,0xf9,0x02,0x7f,0x50,0x3c,0x9f,0xa8,
-    0x51,0xa3,0x40,0x8f,0x92,0x9d,0x38,0xf5,0xbc,0xb6,0xda,0x21,0x10,0xff,0xf3,0xd2,
-    0xcd,0x0c,0x13,0xec,0x5f,0x97,0x44,0x17,0xc4,0xa7,0x7e,0x3d,0x64,0x5d,0x19,0x73,
-    0x60,0x81,0x4f,0xdc,0x22,0x2a,0x90,0x88,0x46,0xee,0xb8,0x14,0xde,0x5e,0x0b,0xdb,
-    0xe0,0x32,0x3a,0x0a,0x49,0x06,0x24,0x5c,0xc2,0xd3,0xac,0x62,0x91,0x95,0xe4,0x79,
-    0xe7,0xc8,0x37,0x6d,0x8d,0xd5,0x4e,0xa9,0x6c,0x56,0xf4,0xea,0x65,0x7a,0xae,0x08,
-    0xba,0x78,0x25,0x2e,0x1c,0xa6,0xb4,0xc6,0xe8,0xdd,0x74,0x1f,0x4b,0xbd,0x8b,0x8a,
-    0x70,0x3e,0xb5,0x66,0x48,0x03,0xf6,0x0e,0x61,0x35,0x57,0xb9,0x86,0xc1,0x1d,0x9e,
-    0xe1,0xf8,0x98,0x11,0x69,0xd9,0x8e,0x94,0x9b,0x1e,0x87,0xe9,0xce,0x55,0x28,0xdf,
-    0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16};
-
-static uint8_t aes_xtime(uint8_t a) { return (uint8_t)((a & 0x80) ? ((a << 1) ^ 0x1b) : (a << 1)); }
-
-static void aes128_encrypt(const uint8_t key[16], const uint8_t in[16], uint8_t out[16]) {
-    uint8_t rk[176];
-    memcpy(rk, key, 16);
-    uint8_t rcon = 1;
-    for (int i = 16; i < 176; i += 4) {
-        uint8_t t[4];
-        memcpy(t, rk + i - 4, 4);
-        if (i % 16 == 0) {
-            uint8_t tmp = t[0];
-            t[0] = aes_sbox[t[1]] ^ rcon;
-            t[1] = aes_sbox[t[2]];
-            t[2] = aes_sbox[t[3]];
-            t[3] = aes_sbox[tmp];
-            rcon = aes_xtime(rcon);
-        }
-        for (int j = 0; j < 4; j++) rk[i + j] = rk[i - 16 + j] ^ t[j];
-    }
-    uint8_t s[16];
-    memcpy(s, in, 16);
-    for (int j = 0; j < 16; j++) s[j] ^= rk[j];
-    for (int round = 1; round <= 10; round++) {
-        for (int j = 0; j < 16; j++) s[j] = aes_sbox[s[j]];
-        uint8_t t;
-        t = s[1];  s[1] = s[5];  s[5] = s[9];  s[9] = s[13];  s[13] = t;   // row 1 <<1
-        t = s[2];  s[2] = s[10]; s[10] = t;  t = s[6]; s[6] = s[14]; s[14] = t;  // row 2 <<2
-        t = s[15]; s[15] = s[11]; s[11] = s[7]; s[7] = s[3]; s[3] = t;     // row 3 <<3
-        if (round != 10) {
-            for (int c = 0; c < 4; c++) {
-                uint8_t *col = s + 4 * c;
-                uint8_t a0 = col[0], a1 = col[1], a2 = col[2], a3 = col[3];
-                col[0] = aes_xtime(a0) ^ (aes_xtime(a1) ^ a1) ^ a2 ^ a3;
-                col[1] = a0 ^ aes_xtime(a1) ^ (aes_xtime(a2) ^ a2) ^ a3;
-                col[2] = a0 ^ a1 ^ aes_xtime(a2) ^ (aes_xtime(a3) ^ a3);
-                col[3] = (aes_xtime(a0) ^ a0) ^ a1 ^ a2 ^ aes_xtime(a3);
-            }
-        }
-        for (int j = 0; j < 16; j++) s[j] ^= rk[round * 16 + j];
-    }
-    memcpy(out, s, 16);
-}
 
 // Public device key B1 (constant), used to derive the LTK with the console's A1.
 static const uint8_t ns2_device_key_b1[16] = {
@@ -328,23 +298,14 @@ static const uint8_t ns2_device_key_b1[16] = {
     0xBA, 0x2B, 0x63, 0x25, 0xC4, 0x1A, 0x5F, 0x10};
 static uint8_t ns2_ltk[16];
 
-static void ns2_rev16(const uint8_t *in, uint8_t *out) {
-    for (int i = 0; i < 16; i++) out[i] = in[15 - i];
-}
-
 // 0x15/04: LTK = reverse(A1) XOR reverse(B1).
 static void ns2_pair_set_ltk(const uint8_t *a1_wire) {
-    uint8_t a1r[16], b1r[16];
-    ns2_rev16(a1_wire, a1r);
-    ns2_rev16(ns2_device_key_b1, b1r);
-    for (int i = 0; i < 16; i++) ns2_ltk[i] = a1r[i] ^ b1r[i];
+    ns2_pairing_derive_ltk(a1_wire, ns2_device_key_b1, ns2_ltk);
 }
 
 // 0x15/02: B2(wire) = AES128_ECB(LTK, reverse(A2)).
 static void ns2_pair_challenge(const uint8_t *a2_wire, uint8_t *b2_wire) {
-    uint8_t a2r[16];
-    ns2_rev16(a2_wire, a2r);
-    aes128_encrypt(ns2_ltk, a2r, b2_wire);
+    ns2_pairing_challenge(ns2_ltk, a2_wire, b2_wire);
 }
 
 //--------------------------------------------------------------------+
@@ -577,6 +538,27 @@ static void ns2_motion_tick(const switch_pro_input_t *in) {
     }
 }
 
+// Shared ~250 Hz gate in front of ns2_motion_tick(). The low-pass/bias/jitter EMAs inside it use
+// fixed per-CALL right-shifts (>>2, >>3, >>8), not per-elapsed-time scaling, so their effective
+// real-time time-constants are inversely proportional to how often they're called — they were
+// tuned (first-cut, unvalidated — see STATUS.md "Technical Debt") assuming a 250 Hz caller.
+// The HID report cadence used to BE 250 Hz (bInterval 4), which made calling this once per
+// streamed report a no-op gate. Since the poll rate was raised to 1000Hz (bInterval 1, more
+// button/stick freshness), ns2_build_report() would otherwise call ns2_motion_tick() up to 4x more
+// often than before, silently compressing the bias tracker's ~1s adaptation time to ~250ms with
+// nobody having decided that — this gate keeps the tracker's cadence exactly as tuned regardless
+// of USB poll rate. (Phase integration itself is dt_us-scaled and unaffected either way; only the
+// EMA-shaped bias/jitter/low-pass state depends on call rate.) Shared by both callers: the normal
+// streaming path (ns2_build_report()) and the config-mode debug hook below.
+static bool ns2_motion_tick_gated(const switch_pro_input_t *in) {
+    static uint32_t last_us = 0;
+    uint32_t now = time_us_32();
+    if (now - last_us < 3800) return false;  // ~250 Hz cap
+    last_us = now;
+    ns2_motion_tick(in);
+    return true;
+}
+
 // Config-mode debug hook. ns2_task()/ns2_build_report() — the only place ns2_motion_tick() used
 // to run — are NEVER called while the dongle is in config mode (usb.c's main loop takes the
 // `if (g_usb_config_mode) { config_cdc_task(); continue; }` branch unconditionally). That made
@@ -584,18 +566,11 @@ static void ns2_motion_tick(const switch_pro_input_t *in) {
 // power-on zero, whenever read the only way they're reachable — a real bug found 2026-07-10 from
 // hardware output (`bias=[0,0,0] still=0` on a moving, motion-feeding DualSense, which is
 // impossible if the tracker were actually running). This runs the same tick independently,
-// rate-limited to ~250 Hz to match real HID-report cadence (the low-pass/jitter EMA time
-// constants are tuned per-call, not per-elapsed-time, so calling this faster than the real
-// streaming rate would make stillness detection behave differently than it will on-console).
+// through the shared ~250 Hz gate above.
 void ns2_motion_debug_tick(void) {
-    static uint32_t last_us = 0;
-    uint32_t now = time_us_32();
-    if (now - last_us < 3800) return;  // ~250 Hz cap
-    last_us = now;
-
     switch_pro_input_t in;
     get_global_gamepad_input(0, &in);
-    if (in.has_motion) ns2_motion_tick(&in);
+    if (in.has_motion) ns2_motion_tick_gated(&in);
 }
 
 // Diagnostic (NS2_DIAG): how far the host got, blinked on the LED by
@@ -749,7 +724,14 @@ static void ns2_dispatch(const uint8_t *c, uint32_t n) {
             break;
         case 0x01:  // NFC
             if (sub == 0x0C) { memcpy(d, (const uint8_t[]){0x61, 0x12, 0x50, 0x10}, 4); dl = 4; }
-            else dl = 0;
+            else {
+                // Bare/no-data NFC acks use dir=0x04, not the default 0x01 — confirmed against
+                // the genuine capture for sub 0x01 (packet #30532: `01 04 00 01 00 f8 00 00`),
+                // and the same dir=0x04-on-bare-ack shape recurs on an unrelated cmd=0x08 response
+                // in the same window. See docs/switch2/nfc-protocol-inventory.md §2.3.
+                r[1] = 0x04;
+                dl = 0;
+            }
             break;
         case 0x18:
             if (sub == 0x01) { memcpy(d, (const uint8_t[]){0, 0, 0x40, 0xF0, 0, 0, 0x60, 0}, 8); dl = 8; }
@@ -825,11 +807,13 @@ static void ns2_build_report(uint8_t *p) {
     // Motion is a NEGOTIATED feature: emit length 0 until the host enables the IMU via 0x0C/0x04
     // (Experiment C) — gates what's WRITTEN below, not the tracker state itself (ns2_motion_tick()
     // always runs on live motion so it keeps working, and is debuggable, regardless of whether a
-    // host has negotiated the feature — see ns2_motion_tick()'s comment).
+    // host has negotiated the feature — see ns2_motion_tick()'s comment). Rate-limited to ~250 Hz
+    // by ns2_motion_tick_gated() independent of the USB poll rate (see that function's comment) —
+    // this call site runs once per report, which is now up to 1000 Hz (bInterval 1).
     // FIRST CUT pending on-console validation: the phase-integration constant and axis SIGNS are
     // best-effort — if the console reads rate too fast/slow, tune PHASE_K; if inverted, flip signs.
     if (in.has_motion) {
-        ns2_motion_tick(&in);
+        ns2_motion_tick_gated(&in);
         if (ns2_imu_enabled) {
             p[0x0E] = 30;
             int32_t phase_now[3] = { (int32_t)ns2_phase[0], (int32_t)ns2_phase[1], (int32_t)ns2_phase[2] };
@@ -915,7 +899,9 @@ static void ns2_build_report_05(uint8_t *p) {
 //--------------------------------------------------------------------+
 
 // Host completed SET_CONFIGURATION (device configured) — diagnostic stage 3.
-void tud_mount_cb(void) {
+// Renamed from tud_mount_cb (2026-07-13): called from usb_descriptors.c's centralized
+// tud_mount_cb dispatcher. See docs/switch2-gc/usb-personality.md "TinyUSB dispatch...".
+void ns2_mount(void) {
     if (g_ns2_stage < 3) g_ns2_stage = 3;
     ns2_imu_enabled = false;  // new host session: IMU off until the host re-enables it (0x0C/0x04)
 }
@@ -932,6 +918,18 @@ void ns2_init(void) {
 // (format from ndeadly's switch2_input_viewer.py send_vibration). We drive rumble off the
 // AMPLITUDE fields only — the old peak-of-all-bytes read the frequency fields, which are
 // non-zero at rest and produced a constant idle buzz on HD-rumble pads (Pro Controller 2).
+// Cross-validated 2026-07-14 against a second, independent source: the real Linux kernel
+// "HID: nintendo" driver's switch2_encode_rumble() (Vicki Pfau, linux-input mailing list v11,
+// https://marc.info/?l=linux-input&w=2&r=1&s=hid+switch2&q=b) packs its own `switch2_hd_rumble`
+// struct (hi_freq/hi_amp/lo_freq/lo_amp, each 10 bits) into the identical four-consecutive-10-bit
+// field layout across 5 bytes -- same field order, same bit widths, same positions. This was
+// previously sourced from a single Python reference script; it now has two independent sources
+// agreeing byte-for-bit, which is the strongest evidence this decode has had. "amp0"/"amp1" here
+// correspond to the kernel's hi_amp/lo_amp -- two frequency bands of the SAME physical motor
+// (Nintendo's own dual-frequency HD Rumble composition), not left/right motors -- this function
+// is already called once per physical motor (see ns2_hid_out_report() below), so taking the max
+// of the two bands to get one scalar per motor remains the right collapse for a downstream
+// controller that only has a single amplitude per side.
 static uint16_t ns2_rumble_motor_amp(const uint8_t *p) {
     uint64_t packed = (uint64_t)p[0] | ((uint64_t)p[1] << 8) | ((uint64_t)p[2] << 16) |
                       ((uint64_t)p[3] << 24) | ((uint64_t)p[4] << 32);
@@ -940,17 +938,21 @@ static uint16_t ns2_rumble_motor_amp(const uint8_t *p) {
     return amp0 > amp1 ? amp0 : amp1;
 }
 
-void ns2_hid_out_report(const uint8_t *buf, uint16_t len) {
+void ns2_hid_out_report(uint8_t report_id, const uint8_t *data, uint16_t len) {
     // Rumble output report 0x02: [id][16B left LRA][16B right LRA][9B reserved]; each motor
-    // block = [0x50|counter][5B packed freq/amp][zeros]. Take the peak amplitude of both
-    // motors, scale 10-bit -> 8-bit, and publish on the seam (feedback bridge -> the pad).
-    if (!buf || len < 7 || buf[0] != 0x02) return;
-    uint16_t amp = ns2_rumble_motor_amp(&buf[2]);     // left packed = bytes 2..6
-    if (len >= 23) {
-        uint16_t r = ns2_rumble_motor_amp(&buf[18]);  // right packed = bytes 18..22
-        if (r > amp) amp = r;
-    }
-    report_set_rumble(0, (uint8_t)(amp >> 2));  // 0..1023 -> 0..255
+    // block = [0x50|counter][5B packed freq/amp][zeros]. Each physical motor's own peak (across
+    // its 2 internal frequency bands) is forwarded independently, not collapsed to one shared
+    // peak, so joypad-os drivers with true per-motor output (feedback_set_rumble()'s left/right —
+    // e.g. DualSense, Xbox) preserve stereo separation instead of both motors buzzing identically.
+    //
+    // `data`/`len` no longer include the report ID (normalized by usb_descriptors.c's
+    // tud_hid_set_report_cb() dispatcher, Phase 4 2026-07-13) -- every offset below is shifted
+    // by -1 versus this function's pre-2026-07-13 form, which read them out of a combined
+    // [id][...] buffer.
+    if (!data || report_id != 0x02 || len < 6) return;
+    uint16_t left = ns2_rumble_motor_amp(&data[1]);   // left packed = data bytes 1..5 (was buf 2..6)
+    uint16_t right = len >= 22 ? ns2_rumble_motor_amp(&data[17]) : 0;  // right packed = data 17..21 (was buf 18..22)
+    report_set_rumble(0, (uint8_t)(left >> 2), (uint8_t)(right >> 2));  // 0..1023 -> 0..255
 }
 
 void ns2_task(void) {
@@ -985,8 +987,11 @@ void ns2_task(void) {
 static const uint16_t ns2_ms_os_str[] = {
     0x0312, 'M', 'S', 'F', 'T', '1', '0', '0', MS_OS_VENDOR_CODE};
 
+// Personality-scoped (not just "not config mode"): GameCube has a distinct VID/PID/bcdDevice,
+// so Windows probes 0xEE fresh for it too -- must not hand back Pro2's WinUSB compat-ID binding
+// while a different personality is active (Stage B doesn't need or want WinUSB for GameCube).
 const uint16_t *ns2_ms_os_string_descriptor(void) {
-    return g_usb_config_mode ? NULL : ns2_ms_os_str;
+    return g_usb_personality == USB_PERSONALITY_SWITCH2_PRO2 ? ns2_ms_os_str : NULL;
 }
 
 // Extended Compat ID OS feature descriptor: WINUSB for interface 1 (vendor).
@@ -1014,8 +1019,12 @@ _Static_assert(sizeof(ns2_ms_compat_id) == 40, "MS compat ID descriptor must be 
 //       40 04 (OUT, wValue 0x0276)    -> no data, ACK
 //     Stalling these was why the console configured us (diag stage 3) then went silent.
 //     The Switch requests are console-specific; Windows/Steam never send them (no PC impact).
-bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
-                                tusb_control_request_t const *request) {
+// Renamed from tud_vendor_control_xfer_cb (2026-07-13): this personality's own EP0-vendor
+// handler, called from usb_descriptors.c's centralized tud_vendor_control_xfer_cb dispatcher
+// now that GameCube is a second personality that also needs a hook here. See
+// docs/switch2-gc/usb-personality.md "TinyUSB dispatch and resource constraints".
+bool ns2_vendor_control_xfer(uint8_t rhport, uint8_t stage, const void *request_v) {
+    tusb_control_request_t const *request = (tusb_control_request_t const *)request_v;
     if (stage != CONTROL_STAGE_SETUP) return true;
     if (g_usb_config_mode) return false;
 
@@ -1048,9 +1057,15 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
 
 #ifdef NS2_AUDIO
 //--------------------------------------------------------------------+
-// USB Audio stub driver — lets the PC2's 3 audio interfaces (IF2-4) enumerate
-// for fidelity without implementing USB audio. Alt-0 has no endpoints, so there
-// is nothing to service; audio-class control + alt-setting requests are stalled.
+// USB Audio stub driver — lets the PC2's 3 audio interfaces (IF2-4) enumerate for
+// fidelity without implementing USB audio. Alt-0 has no endpoints, so there is nothing
+// to service. Standard SET_INTERFACE/GET_INTERFACE alt-setting switches are NOT stalled
+// by this driver returning false — TinyUSB's usbd core provides a mandatory fallback ACK
+// for those two requests even when the owning class driver doesn't handle them (usbd.c,
+// process_control_request(), TUSB_REQ_RCPT_INTERFACE case) — confirmed by reading the
+// vendored TinyUSB source, not assumed. Audio-class-specific Mute/Volume GET_CUR on the
+// Feature Units is answered below with static values (spec-compliance polish only, no
+// functional audio); everything else (SET_CUR, RANGE, actual streaming) still stalls.
 //--------------------------------------------------------------------+
 
 static uint16_t audio_stub_open(uint8_t rhport, tusb_desc_interface_t const *itf_desc,
@@ -1073,12 +1088,38 @@ static uint16_t audio_stub_open(uint8_t rhport, tusb_desc_interface_t const *itf
     return consumed;
 }
 
+// UAC1 (not UAC2) request codes — this descriptor's AC header is bcdADC 0x0100, so GET/SET use
+// separate opcodes (unlike UAC2, where tinyusb's audio.h AUDIO_CS_REQ_* enum applies instead).
+// Table A-9, USB Audio Class 1.0 spec.
+#define UAC1_REQ_GET_CUR 0x81
+
+// Feature Unit IDs from ns2_config_desc's AC descriptors above: 0x02 = speaker path (2-channel,
+// feeds IF3 Audio Streaming OUT), 0x05 = mic path (mono, feeds IF4 Audio Streaming IN).
 static bool audio_stub_control(uint8_t rhport, uint8_t stage,
                                tusb_control_request_t const *request) {
-    (void)rhport;
-    (void)stage;
-    (void)request;
-    return false;  // stall audio control / alt-setting (unused during detection)
+    if (stage != CONTROL_STAGE_SETUP) return true;  // nothing to do outside setup
+
+    // Answer Mute/Volume GET_CUR on the two Feature Units so a real USB Audio Class host
+    // (e.g. Windows, if it ever binds a driver here) doesn't see failed control transfers on
+    // interfaces we otherwise let enumerate cleanly. Static, plausible values only (unmuted,
+    // 0 dB) — no functional audio behind this; everything else (SET_CUR, RANGE, alt-setting
+    // streaming) still stalls, unchanged. See docs/switch2/usb-spec.md "Audio stub".
+    if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_CLASS &&
+        request->bmRequestType_bit.recipient == TUSB_REQ_RCPT_INTERFACE &&
+        request->bRequest == UAC1_REQ_GET_CUR) {
+        uint8_t unit_id = tu_u16_high(request->wIndex);
+        uint8_t cs = tu_u16_high(request->wValue);
+        if (unit_id == 0x02 || unit_id == 0x05) {
+            if (cs == AUDIO_FU_CTRL_MUTE) {
+                static const uint8_t unmuted = 0x00;
+                return tud_control_xfer(rhport, request, (void *)&unmuted, 1);
+            } else if (cs == AUDIO_FU_CTRL_VOLUME) {
+                static const int16_t zero_db = 0x0000;  // UAC1 1/256 dB signed fixed-point
+                return tud_control_xfer(rhport, request, (void *)&zero_db, 2);
+            }
+        }
+    }
+    return false;  // everything else stalls (unused during detection; no functional audio)
 }
 
 static bool audio_stub_xfer(uint8_t rhport, uint8_t ep_addr, xfer_result_t result,
@@ -1101,7 +1142,15 @@ static const usbd_class_driver_t audio_stub_driver = {
     .xfer_cb = audio_stub_xfer,
 };
 
+// The audio stub only enumerates PC2's own audio interfaces (IF2-4), which only exist in
+// PC2's own config descriptor -- it must not be offered while a different personality
+// (GameCube, CDC config) is active and presenting a completely different interface set.
+// See docs/switch2-gc/usb-personality.md "TinyUSB dispatch and resource constraints".
 usbd_class_driver_t const *usbd_app_driver_get_cb(uint8_t *driver_count) {
+    if (g_usb_personality != USB_PERSONALITY_SWITCH2_PRO2) {
+        *driver_count = 0;
+        return NULL;
+    }
     *driver_count = 1;
     return &audio_stub_driver;
 }

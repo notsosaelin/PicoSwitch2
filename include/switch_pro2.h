@@ -32,8 +32,23 @@ void ns2_task(void);
 // from hardware output showing bias=[0,0,0] on a moving, motion-feeding DualSense).
 void ns2_motion_debug_tick(void);
 
-// Rumble output report 0x02 delivered on the HID OUT endpoint.
-void ns2_hid_out_report(const uint8_t *buf, uint16_t len);
+// Rumble output report 0x02 delivered on the HID OUT endpoint. `report_id`/`data`/`len` are
+// pre-normalized by usb_descriptors.c's tud_hid_set_report_cb() dispatcher (Phase 4,
+// 2026-07-13) -- `report_id` is always the real report ID regardless of transport
+// (interrupt OUT vs control SET_REPORT), and `data`/`len` never include it.
+void ns2_hid_out_report(uint8_t report_id, const uint8_t *data, uint16_t len);
+
+// This personality's own TinyUSB EP0-vendor-control and mount hooks, called
+// from usb_descriptors.c's centralized tud_vendor_control_xfer_cb/tud_mount_cb
+// dispatchers (renamed 2026-07-13 so a second personality, GameCube, can also
+// have a hook without two competing global TinyUSB callback definitions --
+// see docs/switch2-gc/usb-personality.md "TinyUSB dispatch..."). Declared with
+// an opaque `const void *` (matching switch_gc.h's analogous declaration) so
+// this header does not need to include tusb.h; usb_descriptors.c (which does
+// include it) passes the real tusb_control_request_t* straight through.
+#include <stdbool.h>
+bool ns2_vendor_control_xfer(uint8_t rhport, uint8_t stage, const void *request);
+void ns2_mount(void);
 
 //--------------------------------------------------------------------+
 // Report-0x09 motion debug/instrumentation (config.c's "imu" CDC command).

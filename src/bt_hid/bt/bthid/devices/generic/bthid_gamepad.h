@@ -18,4 +18,11 @@ void bthid_gamepad_set_descriptor(bthid_device_t* device, const uint8_t* desc, u
 // Update VID-dependent flags (e.g., is_xbox) when VID/PID arrives after descriptor parsing
 void bthid_gamepad_update_vid(bthid_device_t* device);
 
+// Debug: format the parsed report-field map for a connection into a compact JSON fragment
+// (no surrounding braces) for the `btid desc` config command — added 2026-07-12 to inspect
+// real HID descriptor parsing results without guessing from symptomatic input behavior.
+// Returns false (out set to "not-generic-or-no-map") if the device isn't on this driver or
+// hasn't parsed a descriptor yet.
+bool bthid_gamepad_dump_map(uint8_t conn_index, char* out, unsigned out_size);
+
 #endif // BTHID_GAMEPAD_H

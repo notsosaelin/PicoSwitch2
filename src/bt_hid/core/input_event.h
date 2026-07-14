@@ -184,6 +184,36 @@ typedef struct {
     bool has_rumble;            // Device supports rumble
     bool has_force_feedback;    // Device supports force feedback
 
+    // Found 2026-07-12 (8BitDo NGC Modkit): ns2_seam.c's router_submit_input() unconditionally
+    // folds analog[ANALOG_L2]/[ANALOG_R2] crossing a threshold into JP_BUTTON_L2/R2, on top of
+    // whatever the driver already put in `buttons` -- a deliberate fallback for controllers
+    // (Xbox/DualSense) whose driver never reports a distinct digital trigger-click bit, only the
+    // analog value. This breaks any device that (a) has a REAL analog trigger it wants preserved
+    // AND (b) has deliberately repurposed JP_BUTTON_L2/R2 for something unrelated to the trigger
+    // (e.g. the NGC Modkit maps its Z button to JP_BUTTON_R2 to reach NS2 ZR by default) --
+    // without this flag, the analog fold silently re-adds JP_BUTTON_R2 the instant the real R2
+    // trigger crosses the threshold, producing "Z and R2-trigger-click both act like ZR".
+    // Set true by a driver that already reports its own correct, complete L2/R2 digital
+    // semantics (or has none) and does not want this generic fallback applied on top.
+    bool suppress_l2r2_analog_fold;
+
+    // NSO GameCube-native semantic fields (2026-07-13). Set ONLY by drivers with confirmed
+    // hardware evidence for a device's true GameCube-shaped physical layout (currently: the
+    // 8BitDo NGC Modkit, gated on is_ngc_modkit -- see bthid_gamepad.c's process_report_dynamic()).
+    // False/0 for every other device. Consumed by ns2_seam.c's router_submit_input(), which
+    // forwards them unconditionally into switch_pro_input_t's own dedicated fields -- these are
+    // NOT part of the JP_BUTTON_* bitmap/NS2_DST_* remap table, because they are fixed,
+    // evidence-backed physical mappings for specific devices' GameCube identity, not
+    // user-remappable destinations.
+    bool gc_has_native_layout;  // true if native Z / independent L,R trigger detents are real,
+                                // distinct physical controls on this device (not a generic
+                                // analog-only trigger) -- gates GameCube-mode's suppression of
+                                // the generic analog->ZL/ZR fold below, so a device with no real
+                                // ZL/ZR doesn't get one synthesized in GameCube output mode.
+    bool gc_native_z;          // Modkit usage 11 (Z) -- only meaningful if gc_has_native_layout
+    bool gc_l_detent;          // Modkit usage 9 -- true mechanical L-trigger click
+    bool gc_r_detent;          // Modkit usage 10 -- true mechanical R-trigger click
+
     // Motion data (SIXAXIS/DualShock/DualSense)
     // Accelerometer: raw sensor values, typically ~512 center for DS3, signed for DS4/DS5
     // Gyroscope: angular velocity, DS3 only has Z axis (X/Y remain 0)
