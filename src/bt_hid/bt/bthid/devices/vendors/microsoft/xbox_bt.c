@@ -11,6 +11,7 @@
 #include "core/router/router.h"
 #include "core/buttons.h"
 #include "core/services/players/manager.h"
+#include "core/services/players/feedback.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -96,6 +97,8 @@ typedef struct __attribute__((packed)) {
 typedef struct {
     input_event_t event;
     bool initialized;
+    uint8_t rumble_left;   // Last sent rumble values (for change detection)
+    uint8_t rumble_right;
 } xbox_bt_data_t;
 
 static xbox_bt_data_t xbox_data[BTHID_MAX_DEVICES];
@@ -301,11 +304,57 @@ static void xbox_process_report(bthid_device_t* device, const uint8_t* data, uin
     router_submit_input(&xbox->event);
 }
 
+// Rumble output report constants — same HID report descriptor as Xbox BLE (same
+// hardware/firmware family, see the file header comment), so the same report ID/layout
+// applies over Classic BT. Report ID 0x03, 8 bytes, verified byte-for-byte 2026-07-12
+// against the Linux xpadneo driver (atar-axis/xpadneo, xpadneo.h's
+// xpadneo_rumble_report/xpadneo_rumble_data — the reference Xbox-BLE/BT HID driver):
+// [0]=enable_actuators, [1]=left_trigger_magnitude, [2]=right_trigger_magnitude,
+// [3]=strong_motor, [4]=weak_motor, [5]=pulse_sustain_10ms, [6]=pulse_release_10ms,
+// [7]=loop_count. Magnitude range is 0-100 per the HID descriptor.
+#define XBOX_BT_REPORT_RUMBLE   0x03
+#define XBOX_BT_RUMBLE_MOTORS   0x03  // enable strong (bit1) + weak (bit0) main motors
+
 static void xbox_task(bthid_device_t* device)
 {
-    (void)device;
-    // Xbox BT controllers don't need periodic maintenance
-    // Rumble is handled through HID output reports when needed
+    // Found 2026-07-12 tracing a hardware-reported "Xbox rumble doesn't work" regression:
+    // this was a complete no-op — the comment below claimed rumble was "handled through HID
+    // output reports when needed," but nothing in this file ever called feedback_get_state()
+    // or sent an output report. xbox_ble.c (the BLE variant of this same driver family) already
+    // has this working; mirrored here for Classic BT using the same report format.
+    xbox_bt_data_t* xbox = (xbox_bt_data_t*)device->driver_data;
+    if (!xbox) return;
+
+    int player_idx = find_player_index(xbox->event.dev_addr, xbox->event.instance);
+    if (player_idx < 0) return;
+
+    feedback_state_t* fb = feedback_get_state(player_idx);
+    if (!fb) return;
+
+    if (fb->rumble_dirty) {
+        uint8_t left = fb->rumble.left;
+        uint8_t right = fb->rumble.right;
+        if (left != xbox->rumble_left || right != xbox->rumble_right) {
+            uint8_t buf[8];
+            buf[0] = XBOX_BT_RUMBLE_MOTORS;
+            buf[1] = 0;                              // Left trigger magnitude (0: enable bits don't request trigger motors)
+            buf[2] = 0;                              // Right trigger magnitude (same)
+            buf[3] = ((uint16_t)left * 100) / 255;   // Strong motor (0-100)
+            buf[4] = ((uint16_t)right * 100) / 255;  // Weak motor (0-100)
+            buf[5] = 0xFF;                            // pulse_sustain_10ms: max (2550ms per pulse)
+            buf[6] = 0x00;                            // pulse_release_10ms: no gap between pulses
+            // loop_count: xpadneo sets 0xEB (235) to sustain ~10 minutes from one
+            // command ("we pulse the motors for 60 minutes as the Windows driver
+            // does" — rumble.c's rumble_worker()). We previously sent 0x00 here,
+            // which likely stopped the motor after one ~2.55s pulse_sustain burst,
+            // since we (correctly) only resend on an amplitude change.
+            buf[7] = 0xEB;
+            bthid_send_output_report(device->conn_index, XBOX_BT_REPORT_RUMBLE, buf, sizeof(buf));
+            xbox->rumble_left = left;
+            xbox->rumble_right = right;
+        }
+        feedback_clear_dirty(player_idx);
+    }
 }
 
 static void xbox_disconnect(bthid_device_t* device)
@@ -330,6 +379,10 @@ static void xbox_disconnect(bthid_device_t* device)
 
 const bthid_driver_t xbox_bt_driver = {
     .name = "Xbox Wireless Controller",
+    // Classic BT half of the same physical Xbox controller family as xbox_ble.c —
+    // see that file's .transports comment for why this is now declared explicitly
+    // instead of relying only on registration order.
+    .transports = BTHID_TRANSPORT_CLASSIC,
     .match = xbox_match,
     .init = xbox_init,
     .process_report = xbox_process_report,

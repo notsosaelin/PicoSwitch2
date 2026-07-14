@@ -39,9 +39,27 @@ void set_global_raw_report(uint8_t idx, const uint8_t *data, uint16_t len);
 uint16_t get_global_raw_report(uint8_t idx, uint8_t *out, uint16_t maxlen);
 
 // Rumble: published by the USB core (decoded from console reports), consumed by
-// the Bluetooth core (forwarded to the controller).
-void report_set_rumble(uint8_t idx, uint8_t amplitude);
-uint8_t report_get_rumble(uint8_t idx);
+// the Bluetooth core (forwarded to the controller). Left/right carry each HD-rumble
+// motor's amplitude independently — both Switch 1 and Switch 2 rumble packets encode
+// two distinct motors; forwarding them separately lets joypad-os drivers that support
+// independent per-motor amplitude (feedback_set_rumble()'s left/right, e.g. DualSense,
+// Xbox) preserve stereo separation instead of both motors buzzing identically.
+void report_set_rumble(uint8_t idx, uint8_t left, uint8_t right);
+void report_get_rumble(uint8_t idx, uint8_t *left, uint8_t *right);
+
+// Generation-counted variant -- Confirmed necessary 2026-07-14 (docs/experiments/
+// gcusb-rumble-lab-2026-07-14.md): plain left/right value comparison in a downstream consumer
+// (ns2_seam.c's feedback_get_state()) cannot distinguish "no change happened" from "it changed
+// and changed back before I last polled" -- both look identical if the value ends up equal to
+// what the consumer last saw. If an intervening nonzero excursion was ever forwarded to a
+// BT-connected controller with a long hardware sustain (e.g. Xbox's ~10-minute
+// pulse_sustain_10ms/loop_count, see bthid_gamepad.c), a same-value "no visible change" read can
+// silently mean a stop was never re-affirmed. `generation` increments on every
+// report_set_rumble() call regardless of whether the value actually differs from the previous
+// one, so a consumer comparing generations (not raw values) can never miss a transition merely
+// because it happened to poll after the value had already round-tripped back to something it
+// had seen before.
+void report_get_rumble_gen(uint8_t idx, uint8_t *left, uint8_t *right, uint32_t *generation);
 
 // True if any controller currently has a button pressed (used to wake the
 // console from sleep via USB remote wakeup).

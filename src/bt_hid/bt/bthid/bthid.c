@@ -9,6 +9,7 @@
 #include "devices/vendors/sony/ds4_bt.h"
 #include "devices/vendors/sony/ds5_bt.h"
 #include "core/services/storage/flash.h"
+#include "bt_identity_log.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -54,6 +55,8 @@ static bthid_device_t* find_or_create_device(uint8_t conn_index);
 static const bthid_driver_t* find_driver(const char* name, const uint8_t* cod,
                                           uint16_t vendor_id, uint16_t product_id,
                                           bool is_ble);
+static bool driver_transport_ok(const bthid_driver_t* driver, bool is_ble);
+static bt_identity_provenance_t identity_provenance_guess(bool is_ble, uint16_t vendor_id);
 static bthid_device_type_t classify_device(const uint8_t* class_of_device);
 static bool try_reclassify_sony_device(bthid_device_t* device, uint8_t report_id);
 
@@ -217,9 +220,10 @@ void bthid_update_device_info(uint8_t conn_index, const char* name,
         const bthid_driver_t* new_driver = NULL;
         for (int i = 0; i < driver_count; i++) {
             if (drivers[i] != current &&
-                drivers[i]->match && drivers[i]->match(device->name, cod,
-                                                        device->vendor_id, device->product_id,
-                                                        device->is_ble)) {
+                drivers[i]->match && driver_transport_ok(drivers[i], device->is_ble) &&
+                drivers[i]->match(device->name, cod,
+                                   device->vendor_id, device->product_id,
+                                   device->is_ble)) {
                 new_driver = drivers[i];
                 break;
             }
@@ -244,14 +248,31 @@ void bthid_update_device_info(uint8_t conn_index, const char* name,
                 new_driver->init(device);
             }
 
+            bt_identity_log_record(conn_index, device->is_ble, device->name,
+                                    device->vendor_id, device->product_id, 0,
+                                    identity_provenance_guess(device->is_ble, device->vendor_id),
+                                    cod, 0, NULL, new_driver->name, "reeval-rebind",
+                                    (int8_t)device->player_index);
+
             // Pass cached HID descriptor if switching to generic
             if (new_driver == &bthid_gamepad_driver &&
                 cached_hid_desc_len > 0 && cached_hid_desc_conn == conn_index) {
                 bthid_gamepad_set_descriptor(device, cached_hid_desc, cached_hid_desc_len);
             }
         } else if (current == &bthid_gamepad_driver) {
-            // Still generic but VID/PID changed — update VID-dependent flags
+            // Still generic but VID/PID changed — update VID-dependent flags.
+            //
+            // Found 2026-07-12 hardware-testing the identity log against a real 8BitDo NGC
+            // Modkit: this branch previously logged nothing at all, so the exact moment SDP/DIS
+            // resolved a real VID/PID (while staying correctly on the generic driver, since no
+            // more specific driver claims it) was invisible in btid dump — only inferable after
+            // the fact from whatever event happened to log next. Log it explicitly now.
             bthid_gamepad_update_vid(device);
+            bt_identity_log_record(conn_index, device->is_ble, device->name,
+                                    device->vendor_id, device->product_id, 0,
+                                    identity_provenance_guess(device->is_ble, device->vendor_id),
+                                    cod, 0, NULL, current->name, "vid-resolved-stayed-generic",
+                                    (int8_t)device->player_index);
         }
     }
 }
@@ -260,13 +281,35 @@ void bthid_update_device_info(uint8_t conn_index, const char* name,
 // DRIVER MATCHING
 // ============================================================================
 
+// A driver whose declared transports don't include this connection's actual
+// transport can never legitimately match it, regardless of what its match()
+// function would otherwise return (see bthid_transport_mask_t in bthid.h for why
+// this is checked centrally instead of inside each driver's match()).
+static bool driver_transport_ok(const bthid_driver_t* driver, bool is_ble)
+{
+    bthid_transport_mask_t mask = driver->transports ? driver->transports : BTHID_TRANSPORT_BOTH;
+    return is_ble ? (mask & BTHID_TRANSPORT_BLE) : (mask & BTHID_TRANSPORT_CLASSIC);
+}
+
+// Best-effort provenance inference shared by every bt_identity_log_record() call site (see
+// bt_identity_log.h for the full rationale). A single helper, not three copies, specifically
+// because a 2026-07-12 hardware test found one of the three original inline copies (the
+// descriptor-arrival hook) had drifted to a hardcoded BTID_PROV_UNKNOWN regardless of actual
+// state — exactly the kind of duplication bug a shared helper prevents from recurring.
+static bt_identity_provenance_t identity_provenance_guess(bool is_ble, uint16_t vendor_id)
+{
+    if (vendor_id == 0) return BTID_PROV_UNKNOWN;
+    return is_ble ? BTID_PROV_BLE_DIS_PNP : BTID_PROV_CLASSIC_SDP;
+}
+
 static const bthid_driver_t* find_driver(const char* name, const uint8_t* cod,
                                           uint16_t vendor_id, uint16_t product_id,
                                           bool is_ble)
 {
     // First try registered drivers
     for (int i = 0; i < driver_count; i++) {
-        if (drivers[i]->match && drivers[i]->match(name, cod, vendor_id, product_id, is_ble)) {
+        if (drivers[i]->match && driver_transport_ok(drivers[i], is_ble) &&
+            drivers[i]->match(name, cod, vendor_id, product_id, is_ble)) {
             return drivers[i];
         }
     }
@@ -400,6 +443,14 @@ void bt_on_hid_ready(uint8_t conn_index)
     const bthid_driver_t* driver = find_driver(device->name, conn->class_of_device,
                                                conn->vendor_id, conn->product_id,
                                                device->is_ble);
+    // Best-effort provenance for the identity log: DIS PnP ID hasn't run yet at this point
+    // for BLE (see the Gate 2 timing trace in btstack-implementation.md — it's deferred until
+    // after HID notifications enable), so a nonzero BLE VID/PID here can only have come from
+    // pre-connection advertisement manufacturer data (Switch 2's mechanism). Classic BT SDP
+    // typically completes before HID ready, so a nonzero Classic VID/PID here is attributed to
+    // SDP. This is a reasonable inference from the connection's own timing, not a guarantee.
+    bt_identity_provenance_t provenance = conn->vendor_id == 0 ? BTID_PROV_UNKNOWN
+        : (device->is_ble ? BTID_PROV_BLE_ADV_MFR_DATA : BTID_PROV_CLASSIC_SDP);
     if (driver) {
         printf("[BTHID] Using driver: %s\n", driver->name);
         device->driver = driver;
@@ -413,6 +464,11 @@ void bt_on_hid_ready(uint8_t conn_index)
             bthid_gamepad_driver.init(device);
         }
     }
+    bt_identity_log_record(conn_index, device->is_ble, device->name,
+                            conn->vendor_id, conn->product_id, 0, provenance,
+                            conn->class_of_device, 0, NULL,
+                            ((const bthid_driver_t*)device->driver)->name,
+                            driver ? "initial-bind" : "initial-bind-generic-fallback", -1);
 
     // Pass cached HID descriptor if available (often arrives before device creation)
     if ((const bthid_driver_t*)device->driver == &bthid_gamepad_driver &&
@@ -534,10 +590,36 @@ void bthid_set_hid_descriptor(uint8_t conn_index, const uint8_t* desc, uint16_t 
     bthid_device_t* device = bthid_get_device(conn_index);
     if (!device || !device->driver) return;
 
+    // HID report descriptor carries no VID/PID of its own — log it as its own event (fingerprint
+    // + length) rather than folding into the last identity event, since it often arrives on a
+    // separate timeline from VID/PID resolution (see the Gate 2 timing trace).
+    //
+    // Fixed 2026-07-12, found hardware-testing against a real 8BitDo NGC Modkit: this
+    // previously hardcoded BTID_PROV_UNKNOWN and NULL class_of_device unconditionally,
+    // regardless of device->vendor_id/product_id already being resolved and the connection's
+    // real COD being available — the log showed a stale/wrong snapshot instead of the device's
+    // actual state at this point in time.
+    const bt_connection_t* desc_conn = bt_get_connection(conn_index);
+    bt_identity_log_record(conn_index, device->is_ble, device->name,
+                            device->vendor_id, device->product_id, 0,
+                            identity_provenance_guess(device->is_ble, device->vendor_id),
+                            desc_conn ? desc_conn->class_of_device : NULL, desc_len, desc,
+                            ((const bthid_driver_t*)device->driver)->name,
+                            "descriptor-arrived", (int8_t)device->player_index);
+
     // Pass to generic gamepad driver for parsing
     if ((const bthid_driver_t*)device->driver == &bthid_gamepad_driver) {
         bthid_gamepad_set_descriptor(device, desc, desc_len);
     }
+}
+
+bool bthid_get_cached_descriptor(const uint8_t** out_data, uint16_t* out_len, uint8_t* out_conn)
+{
+    if (cached_hid_desc_len == 0) return false;
+    if (out_data) *out_data = cached_hid_desc;
+    if (out_len) *out_len = cached_hid_desc_len;
+    if (out_conn) *out_conn = cached_hid_desc_conn;
+    return true;
 }
 
 void bthid_fallback_to_generic(uint8_t conn_index)
@@ -607,7 +689,17 @@ bool bthid_send_output_report(uint8_t conn_index, uint8_t report_id,
     buf[1] = report_id;
     memcpy(&buf[2], data, len);
 
-    return bt_send_interrupt(conn_index, buf, len + 2);
+    // Diagnostic for the 2026-07-12 BLE-rumble investigation: this is the one
+    // choke point every non-DS4/DS5 driver's output report passes through
+    // before it reaches btstack_classic_send_report() (which, despite the
+    // name, branches to hids_client_send_write_report() for BLE conn_index
+    // values). Logging here proves whether a send was even attempted and
+    // what conn_index/report_id it used, independent of whatever the BTstack
+    // call itself reports back.
+    bool ok = bt_send_interrupt(conn_index, buf, len + 2);
+    printf("[BTHID] send_output_report conn=%d report_id=0x%02X len=%d -> %s\n",
+           conn_index, report_id, len, ok ? "queued" : "FAILED");
+    return ok;
 }
 
 bool bthid_send_feature_report(uint8_t conn_index, uint8_t report_id,

@@ -13,7 +13,8 @@
 #include "devices/vendors/nintendo/switch2_ble.h"
 #include "devices/vendors/nintendo/wii_u_pro_bt.h"
 #include "devices/vendors/nintendo/wiimote_bt.h"
-// xbox_bt.h and xbox_ble.h no longer registered — generic driver handles all Xbox
+#include "devices/vendors/microsoft/xbox_ble.h"
+#include "devices/vendors/microsoft/xbox_bt.h"
 #include "devices/vendors/google/stadia_bt.h"
 #include "devices/vendors/augmental/mouthpad_ble.h"
 
@@ -43,8 +44,22 @@ void bthid_registry_init(void)
     wii_u_pro_bt_register();  // Must be before wiimote (Wii U Pro has "-UC" suffix)
     wiimote_bt_register();
 
-    // Microsoft controllers — handled by generic gamepad driver via HID descriptor
-    // parsing (like BlueRetro). Covers all Xbox variants without layout assumptions.
+    // Microsoft controllers — re-registered 2026-07-12 (previously deliberately left
+    // unregistered in favor of the generic HID-descriptor driver "to cover all Xbox
+    // variants without layout assumptions" — see git history). Re-enabled after an
+    // audit found these files' input parsing to be evidence-backed:
+    // xbox_ble.c's BLE button/stick parsing is a single, fixed 16-byte format
+    // explicitly commented "verified from testing." xbox_bt.c (Classic BT) both
+    // still exclude Xbox Elite Series 2 (product_id 0x0B05/0x0B22), which falls
+    // through to the generic driver as before — these only claim standard/Series
+    // controllers. xbox_bt.c's own input parsing guesses between two different
+    // report struct layouts based on report length and has no equivalent "verified"
+    // comment — lower confidence than xbox_ble.c; watch for input regressions on
+    // Classic BT Xbox specifically and fall back to the generic driver (delete these
+    // register calls, or add an xbox_bt_match() exclusion) if real hardware shows
+    // its heuristic format detection picks the wrong struct.
+    xbox_ble_register();
+    xbox_bt_register();
 
     // Google controllers
     stadia_bt_register();

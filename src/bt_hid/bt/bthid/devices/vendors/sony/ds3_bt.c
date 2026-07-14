@@ -482,6 +482,7 @@ static void ds3_task(bthid_device_t* device)
 // Driver struct
 const bthid_driver_t ds3_bt_driver = {
     .name = "Sony DualShock 3",
+    .transports = BTHID_TRANSPORT_CLASSIC,  // DS3/Sixaxis predates BLE HID
     .match = ds3_match,
     .init = ds3_init,
     .process_report = ds3_process_report,

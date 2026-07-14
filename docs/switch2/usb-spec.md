@@ -8,8 +8,10 @@
 > unit's WinUSB cache; see the branch memory); input maps via the **joypad-os seam**
 > (`src/bt_hid/ns2_seam.c`), **not** bluepad32 (retired); **GL/GR/C are exposed** and confirmed
 > on-console; report-0x09 **motion is decoded** (int32 phase + Q16.16 — see
-> [report-0x09-motion.md](report-0x09-motion.md)). The load-bearing, still-correct parts — §5
-> handshake, §7 packing, §9 factory/calibration blob — are what to rely on.
+> [report-0x09-motion.md](report-0x09-motion.md)); **IF0 HID `bInterval` ships `0x01` (1000 Hz)**,
+> not the genuine `0x04` (250 Hz) — a deliberate latency-over-fidelity deviation, **untested on
+> console hardware** (see §12). The load-bearing, still-correct parts — §5 handshake, §7 packing,
+> §9 factory/calibration blob — are what to rely on.
 
 Byte-exact reference for making PicoSwitch2 enumerate to a Switch 2 as a **wired-USB
 Switch 2 Pro Controller** (VID `0x057E` / PID `0x2069`). Companion to the higher-level
@@ -55,6 +57,9 @@ Real device: `wTotalLength = 268 (0x010C)`, `bNumInterfaces = 5`, self-powered, 
 0x07,0x05,0x81,0x03,0x40,0x00,0x04,                 // EP 0x81 Interrupt IN  64B, bInterval 4
 0x07,0x05,0x01,0x03,0x40,0x00,0x04,                 // EP 0x01 Interrupt OUT 64B, bInterval 4
 ```
+⚠️ **This repo deliberately ships `bInterval = 0x01` (1000 Hz), not the genuine `0x04` (250 Hz)
+shown above** — see §13 "Poll-rate deviation" for rationale and hardware-test status. The bytes
+above remain the genuine reference value; do not "fix" the shipped code back to `0x04`.
 **IF1 (vendor bulk) — exact bytes:**
 ```
 0x08,0x0B,0x01,0x01,0xFF,0x00,0x00,0x00,            // IAD: IF1, class 0xFF (vendor)
@@ -243,6 +248,19 @@ Input arrives from the joypad-os bthid stack as `input_event_t` and is mapped in
   behind the `0x0C` enable. See [report-0x09-motion.md](report-0x09-motion.md).
 - ✅ **RESOLVED — bcdDevice:** ship **0x0210**. `00 02`/`0x0200` and `0x0201` collide with a retail
   unit's Windows WinUSB cache; 0x0210 is console-neutral and keeps PC enumeration clean.
+- 🔵 **Audio stub control requests (2026-07-12):** confirmed by reading TinyUSB's vendored
+  `usbd.c` source (`process_control_request()`, `TUSB_REQ_RCPT_INTERFACE` case) that standard
+  `SET_INTERFACE`/`GET_INTERFACE` on IF2-4 already get a mandatory core-level ACK fallback even
+  though our audio stub's `control_xfer_cb` stalls everything — so alt-setting switches were never
+  actually broken. The stub now also answers Feature-Unit Mute/Volume `GET_CUR` (UAC1 opcode
+  `0x81`) with static unmuted/0dB values, purely to avoid control-transfer retry noise if a host's
+  USB Audio class driver ever binds here — **not a functional-audio claim**; `SET_CUR`, `RANGE`,
+  and actual iso streaming still stall/are unserviced.
+- ✅ **RESOLVED — command framing (§14):** the whole EP2 handshake re-verified byte-exact against
+  the raw capture (not the summary table, which turned out to omit some trailing bytes); three
+  previously-undocumented subcommands confirmed real; one real, previously-unwired memory address
+  (`0x13100`) found and fixed; one real unexplained byte and one real cross-source value conflict
+  found and documented, neither fixed (insufficient evidence to act on either yet).
 - **Open:** which memory reads are strictly mandatory to reach "connected" (we serve them all).
 
 ## 12. First milestone — ✅ achieved
@@ -250,3 +268,117 @@ The bootstrap target (the Switch 2 shows a connected Pro Controller 2) shipped, 
 rumble, and PC/Steam gyro on top. Historical path: an Option-B (no-audio) descriptor + the §5 EP2
 dispatcher + a static report `0x09` first reached "connected"; the shipped build uses the full
 Option-A descriptor and maps live input via the joypad-os seam (§10).
+
+## 13. Poll-rate deviation (2026-07-12) — 🔵 untested on console hardware
+
+**Change:** IF0's HID interrupt IN/OUT endpoints ship `bInterval = 0x01` (1 ms = 1000 Hz, the
+fastest a Full-Speed interrupt endpoint can be polled), not the genuine `0x04` (250 Hz, §2). This
+is a deliberate **latency-over-fidelity** deviation — the first one in this doc's "deviations of
+record" that isn't forced by a Windows/console compatibility constraint (unlike bcdDevice). `bInterval`
+has never been observed to be part of any console compatibility gate in this project's history
+(the actual gate was the EP0 identity handshake and several post-pairing response mismatches, both
+long since fixed — see §11/§5) — but nothing about a USB descriptor field has been safe to assume
+without an actual hardware pass in this project, so this is recorded as **untested**, not fact,
+until confirmed on real Switch 2 hardware.
+
+**Side effect, handled:** `ns2_task()`'s streaming loop has no rate limiter of its own — it streams
+a report every time the endpoint goes ready, so raising `bInterval` directly raises how often
+`ns2_build_report()` runs. The report-0x09 motion tracker's bias/low-pass/jitter EMAs
+(`switch_pro2.c`, `ns2_motion_tick()`) use fixed per-call weights, not per-elapsed-time scaling, so
+their real-time time-constants are inversely proportional to call rate — running them at 1000 Hz
+instead of 250 Hz would have silently compressed the (already first-cut, unvalidated — see
+`STATUS.md` "Technical Debt") bias adaptation time from ~1s to ~250ms with nobody deciding that.
+Fixed by gating both callers of `ns2_motion_tick()` (the streaming path and the config-mode debug
+hook) through a shared `ns2_motion_tick_gated()` that caps the tracker's own call rate to ~250 Hz
+regardless of USB poll rate — button/stick freshness gets the full benefit, the paused gyro
+tracker's tuning is unaffected. Phase integration itself is already `dt_us`-scaled (real-time-based)
+and needed no change.
+
+**Not yet done:** the parallel Switch-1 `src/usb_descriptors.c` path (`main` branch, not
+`ns2-testing`) has the identical `bInterval = 4` pattern and could get the same treatment later —
+out of scope for this pass, which targets the active branch's actual target (the NS2/Switch 2
+path) only.
+
+## 14. Command-framing audit against the raw capture (2026-07-12) — ✅ done
+
+**Why:** `PLAN.md`'s "Controller surface inventory" ranked "Initialization / command framing (USB
+`0x03` family, unverified)" as Tier 1 — checkable directly against `switch_pro2.c` with zero new
+hardware, since this repo already holds `ndeadly`'s raw capture reference (`captures/usb/
+rumble-procon-gccon.pcapng.gz`, cited throughout this doc but not previously re-parsed at the raw
+link-layer level from a live session — earlier passes worked from tshark-summarized markdown
+tables). This pass re-cloned that capture, decompressed it (60 MB, Great Scott Gadgets USB-LL
+format — `usbll`/`usb` in Wireshark, not USBPcap's transfer-level format), and used `tshark`'s
+frame-reassembly (`-x` hex dump, correlated by USB address/endpoint 7.2) to extract every
+EP2 vendor-bulk request/response pair **byte-exact from the wire**, superseding the earlier
+markdown summary (which turned out to have silently truncated some trailing response bytes — see
+finding 4 below). Method note for reuse: `usbll.device_addr`/`usbll.endp` filter fields only
+populate on TOKEN packets (IN/OUT), not on the DATA packets that carry payload — filter by
+`frame.number` range instead and correlate DATA0/DATA1 (`usbll.pid` `0xc3`/`0x4b`) payloads by
+transaction order; `usb.data_len`/`usb.capdata` are unpopulated for this capture format (those are
+USBPcap-specific), use `-x`'s "USB transfer (N bytes):" reassembly annotation instead.
+
+**Finding 1 — three previously-undocumented subcommands confirmed real** (all bare-acked already,
+matching this repo's existing default-ACK fallback — no functional bug, just newly-confirmed
+evidence, closing three "Unknown" gaps):
+- `cmd=0x03 sub=0x0C`: request carries 4 bytes `01 00 00 00`; response is a bare ack. Occurs
+  *before* the previously-earliest-known `0x03/0x0D` ("Init USB") in the real sequence.
+- `cmd=0x0A sub=0x02`: request carries 4 bytes `03 00 00 00`; response is a bare ack.
+- `cmd=0x0A sub=0x08`: request carries 20 bytes (`01 ff ff ff ff ff ff ff 35 00 46 00 00 00 00 00
+  00 00 00`); response is a bare ack. (`0x0A` is the documented "vibration" command family —
+  this is host→device only, so no response content to verify beyond the ack shape.)
+
+**Finding 2 — `0x0C/0x04` (enable features) response DOES carry 4 data bytes, resolving an open
+question.** §5's summary table showed this response as exactly 8 bytes (`0c 01 00 04 00 f8 00 00`,
+implying `dl=0`), which looked like a mismatch against `switch_pro2.c`'s `dl=4`. The raw capture
+shows the true response is `0c 01 00 04 00 f8 00 00 00 00 00 00` — **12 bytes, 4 data bytes, all
+zero** — matching this repo's existing `dl=4` implementation exactly. The table's apparent
+8-byte response was an artifact of its own "(data truncated)" disclaimer, not a real 8-byte
+response. **No code change; a suspected bug is ruled out**, and the table's ambiguity is now
+resolved with primary evidence.
+
+**Finding 3 — `0x0C/0x06` (configure features) has an unexplained extra byte, not reproduced,
+not fixed.** Four real instances captured. All four match this repo's `memset(d,0,40); d[4]=
+c[12];` implementation (zero-filled 40-byte response echoing the requested feature ID at offset 4)
+— **except** the first instance, which has a nonzero byte `0x76` at offset 9 that the other three
+(same feature ID, later in the same session) do not have. Too little data (4 points, one outlier)
+to characterize what offset 9 means or whether it's meaningful protocol content vs. capture noise
+on this specific 3rd-party hardware — **flagged, not fixed**. If revisited: check a second capture
+session before changing the response shape.
+
+**Finding 4 — `0x13100` (magnetometer + accelerometer bias, float32×6): real, confirmed by TWO
+independent sources, but was never wired into `ns2_factory_init()` — fixed.** This address/layout
+was already decoded 2026-07-10 from this repo's own SPI dump
+(`docs/switch2/report-0x09-motion.md` "Factory motion calibration") but the actual 24-byte value
+was never added to the served factory table — any real `0x02/04` read at `0x13100` was silently
+answered with zero-fill instead. This pass's fresh capture decode (a **different** physical unit —
+`ndeadly`'s) independently confirms the console really does read exactly this address (`len=0x18`)
+during init and that it holds genuine non-zero, physically-plausible data there
+(accelerometer Z ≈ 9.84 m/s² on that unit, vs. ≈ 10.38 m/s² on this repo's own dumped unit — both
+near-gravity, confirming physical-unit floats independently on two separate controllers). **Fixed**
+in `switch_pro2.c` using this repo's own SPI-dumped bytes (for internal consistency with the
+surrounding factory-block entries, which are all sourced from the same dump where available).
+
+**Finding 5 — `0x13060`: real value conflicted with what was hardcoded — ✅ fixed 2026-07-12
+(same day, later pass) after a second independent source agreed.** This repo's factory table
+hardcoded `fac(0x13060, {0x4C, 0x09, 0x00, 0x00}, 4)` with no source annotation. The raw capture
+above showed a full 32-byte read spanning this address on `ndeadly`'s real unit returns **all
+`0xFF`** (unprogrammed flash) — no trace of `4C 09 00 00` anywhere in that span. Left unchanged
+at the time (one source, real regression risk, per-unit variance couldn't be ruled out). **A
+second, independent source removed that ambiguity the same day**: auditing `Dycool/NS-PC-Control`
+(a different project entirely) found its own factory table carries an explicit comment — "reads
+back erased (0xFF) on the real unit... Captured read: addr=0x13060 len=0x20" — describing the
+identical 32-byte all-`0xFF` span from *their* reference unit's capture. Two independent captures
+of two different physical units, in two unrelated projects, now agree. Fixed: `switch_pro2.c`
+explicitly fills this span with `0xFF`. Full audit:
+`docs/experiments/ns-pc-control-audit-2026-07-12.md`.
+
+**Finding 6 — memory-region reuse cross-validated.** The single `blk[40]` constant this repo reuses
+for both `0x13080` and `0x130C0` reads is confirmed correct against the raw capture: both real
+responses' first 40 bytes are byte-identical to each other and to this repo's `blk[40]`, on
+`ndeadly`'s unit too. Only the trailing per-unit stick-calibration bytes (at `0x130A8`/`0x130E8`,
+outside `blk`'s 40 bytes but within the same 64-byte reads) differ between units, as expected.
+
+**Not re-examined this pass** (out of scope, already extensively hardware-validated in prior
+sessions — see `docs/experiments/gyro-hardware-validation-2026-07-10.md` §9-14 and the branch
+history): the `0x15` pairing sequence, the `0x11` opaque-value replays, report-0x09's own byte
+layout. This audit targeted specifically the items `PLAN.md` flagged as "unverified."

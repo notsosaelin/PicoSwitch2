@@ -45,6 +45,21 @@ void btstack_host_start_scan(void);
 // Stop scanning
 void btstack_host_stop_scan(void);
 
+// Close an explicit pairing-discovery window. Unlike btstack_host_stop_scan(),
+// this is safe to call at any time: if a BLE connect attempt is genuinely in
+// flight (gap_connect() outstanding), the close is deferred until that attempt
+// resolves (success or failure) instead of corrupting its watchdog state. Use
+// this for user-facing "pairing window expired" closure; use stop_scan()
+// directly for anything that should close immediately regardless (app-level
+// scan suppression, timed-scan expiry). See btstack_host.c for the trace that
+// motivated this split.
+void btstack_host_close_pairing_window(void);
+
+// True while a pairing-window close is deferred, waiting for an in-flight
+// connect attempt to resolve. For UI (e.g. keep the pairing LED blinking
+// through the grace period instead of going idle prematurely).
+bool btstack_host_pairing_close_deferred(void);
+
 // Start scanning with a timeout (auto-stops after timeout_ms)
 void btstack_host_start_timed_scan(uint32_t timeout_ms);
 

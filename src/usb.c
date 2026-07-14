@@ -1,6 +1,7 @@
 #include "usb.h"
 
 #include <stdint.h>
+#include <stdio.h>
 
 #include <tusb.h>
 #include <pico/stdlib.h>
@@ -12,15 +13,111 @@
 
 #ifdef NS2_PRO
 #include "switch_pro2.h"
+#include "switch_gc.h"
+#include "usb_mode_cycle.h"
 #endif
 
 volatile bool usb_lockout_ready = false;
+
+#ifdef NS2_PRO
+
+volatile usb_personality_t g_usb_personality = USB_PERSONALITY_SWITCH2_PRO2;
+volatile bool g_usb_mode_cycle_requested = false;
+volatile uint32_t g_usb_mode_ack_until_ms = 0;
+volatile usb_personality_t g_usb_mode_ack_personality = USB_PERSONALITY_SWITCH2_PRO2;
+
+// How long the LED shows the post-transition acknowledgement pattern before
+// core1's control_timer_handler falls back to its normal status display.
+#define USB_MODE_ACK_MS 1200
+
+// Bounded detach interval between tud_disconnect() and tud_connect(). Kept at
+// the same 100ms this project's own CDC-config-mode entry has already used
+// reliably (this exact re-enumeration mechanism, just previously only ever
+// exercised for one specific transition) -- no new, unvalidated value
+// introduced. See docs/switch2-gc/usb-personality.md "Transition sequence".
+#define USB_DETACH_MS 100
+
+static const char *usb_personality_name(usb_personality_t p) {
+    switch (p) {
+        case USB_PERSONALITY_SWITCH2_PRO2: return "Switch2Pro2";
+        case USB_PERSONALITY_NSO_GAMECUBE: return "NSOGameCube";
+        case USB_PERSONALITY_JOYCON2:      return "JoyCon2(reserved)";
+        case USB_PERSONALITY_CDC_CONFIG:   return "CDCConfig";
+        default:                           return "?";
+    }
+}
+
+// usb_personality_available()/usb_next_personality(): see usb_mode_cycle.c --
+// extracted there so this pure enum-walking logic (no pico-sdk/TinyUSB
+// dependency) can be compiled and tested on the host. CDC_CONFIG is terminal
+// for this pass (no live path back to Pro2 -- see usb-personality.md "Runtime
+// mode cycle"), so calling usb_next_personality(CDC_CONFIG) correctly returns
+// CDC_CONFIG itself (no-op) rather than wrapping; in practice this never
+// happens anyway, since gestures are suppressed once g_usb_config_mode is
+// true (ns2_bt_host.c's control_timer_handler).
+
+// Bring up the personality we're about to switch TO with a guaranteed-clean
+// slate. This is sufficient to satisfy "old-personality state must not leak
+// into the new personality" (NSO-GC.md's transition requirement): each
+// personality's own state (ns2_streaming/report_id/imu_enabled/factory[] for
+// Pro2; presently nothing for GameCube's Stage-B stub) is entirely private to
+// that personality's own module and is never read while a DIFFERENT
+// personality is active, so resetting the incoming side to its own clean
+// baseline is equivalent to -- and simpler than -- separately tracking a
+// "reset the outgoing side" step.
+static void usb_reset_personality_state(usb_personality_t p) {
+    switch (p) {
+        case USB_PERSONALITY_SWITCH2_PRO2:
+            ns2_init();
+            break;
+        case USB_PERSONALITY_NSO_GAMECUBE:
+            switch_gc_reset();
+            break;
+        default:
+            break;  // CDC config has no equivalent per-session runtime state to reset
+    }
+}
+
+// Perform one full personality transition: disconnect, quiesce, switch,
+// reconnect. Called only from usb_core_task()'s own loop, between tud_task()
+// iterations -- never while TinyUSB is mid-enumeration, so the descriptor
+// callbacks always observe one coherent g_usb_personality value throughout
+// any single enumeration (NSO-GC.md's explicit requirement).
+static void usb_apply_mode_cycle(void) {
+    usb_personality_t old = g_usb_personality;
+    usb_personality_t next = usb_next_personality(old);
+    if (next == old) {
+        printf("[USB] Mode cycle requested but already terminal (%s); ignoring\n",
+               usb_personality_name(old));
+        return;
+    }
+
+    printf("[USB] Mode cycle: %s -> %s (BOOTSEL hold)\n",
+           usb_personality_name(old), usb_personality_name(next));
+
+    tud_disconnect();
+    sleep_ms(USB_DETACH_MS);
+    usb_reset_personality_state(next);
+    g_usb_personality = next;
+    tud_connect();
+
+    g_usb_mode_ack_personality = next;
+    g_usb_mode_ack_until_ms = to_ms_since_boot(get_absolute_time()) + USB_MODE_ACK_MS;
+
+    printf("[USB] Mode cycle complete: now %s\n", usb_personality_name(next));
+}
+
+#else  // !NS2_PRO: Switch 1 build -- unchanged two-state storage (see usb.h).
+
 volatile bool g_usb_enter_config = false;
 volatile bool g_usb_config_mode = false;
 
+#endif  // NS2_PRO
+
 // Runs on core0. Owns the TinyUSB device stack. In normal mode it emulates the
-// Pro Controller(s); on a BOOTSEL hold it re-enumerates as a USB CDC serial
-// device and serves the configuration protocol.
+// active USB personality (Switch 2 Pro Controller 2 or, since 2026-07-13, the
+// NSO GameCube Controller -- see usb_personality_t); on a BOOTSEL hold it
+// cycles to the next available personality, terminating at CDC config mode.
 void usb_core_task() {
     tusb_init();
 #ifdef NS2_PRO
@@ -39,13 +136,29 @@ void usb_core_task() {
 #endif
 
     while (1) {
+#ifdef NS2_PRO
+        // Advance the runtime USB personality cycle. Volatile, not persisted
+        // to flash -- see docs/switch2-gc/usb-personality.md "Runtime mode
+        // cycle". Consume the request before acting on it (edge-triggered):
+        // core1's gesture detector already latches BOOTSEL_HOLD to fire only
+        // once per qualifying press (bootsel.c's hold_fired), so this flag is
+        // never re-set while still true, but clearing it first here keeps
+        // this function itself idempotent against any future caller that
+        // isn't as careful.
+        if (g_usb_mode_cycle_requested) {
+            g_usb_mode_cycle_requested = false;
+            usb_apply_mode_cycle();
+        }
+#else
         // Switch to configuration mode by re-enumerating as a CDC serial device.
+        // Unchanged Switch-1 behavior -- see usb.h's !NS2_PRO branch.
         if (g_usb_enter_config && !g_usb_config_mode) {
             tud_disconnect();
             sleep_ms(100);
             g_usb_config_mode = true;
             tud_connect();
         }
+#endif
 
         tud_task();
 
@@ -65,7 +178,10 @@ void usb_core_task() {
         }
 
 #ifdef NS2_PRO
-        ns2_task();
+        if (g_usb_personality == USB_PERSONALITY_NSO_GAMECUBE)
+            switch_gc_task();
+        else
+            ns2_task();
 #else
         for (uint8_t i = 0; i < SWITCH_PRO_MAX_CONTROLLERS; i++) {
             if (tud_hid_n_ready(i)) {

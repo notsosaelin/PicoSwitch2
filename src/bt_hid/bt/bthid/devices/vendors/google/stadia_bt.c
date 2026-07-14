@@ -239,6 +239,7 @@ static void stadia_disconnect(bthid_device_t* device)
 
 const bthid_driver_t stadia_bt_driver = {
     .name = "Google Stadia BT",
+    .transports = BTHID_TRANSPORT_BLE,  // stadia_init() hardcodes INPUT_TRANSPORT_BT_BLE
     .match = stadia_match,
     .init = stadia_init,
     .process_report = stadia_process_report,

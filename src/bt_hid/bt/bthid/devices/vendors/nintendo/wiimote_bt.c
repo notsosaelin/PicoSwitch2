@@ -941,6 +941,7 @@ const char* wiimote_get_orient_mode_name(uint8_t mode)
 
 const bthid_driver_t wiimote_bt_driver = {
     .name = "Nintendo Wiimote",
+    .transports = BTHID_TRANSPORT_CLASSIC,  // Wiimote hardware predates BLE HID
     .match = wiimote_match,
     .init = wiimote_init,
     .process_report = wiimote_process_report,

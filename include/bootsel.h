@@ -12,7 +12,9 @@ typedef enum {
     BOOTSEL_NONE = 0,
     BOOTSEL_DOUBLE_TAP,   // enter pairing window
     BOOTSEL_TRIPLE_TAP,   // wipe saved Bluetooth devices
-    BOOTSEL_HOLD,         // enter configuration mode (>= 5s)
+    BOOTSEL_HOLD,         // >= 5s: NS2_PRO builds cycle to the next USB personality
+                          // (Pro2 -> GameCube -> CDC config); NS2_PRO=OFF builds enter
+                          // configuration mode directly, unchanged. See usb.h.
 } bootsel_gesture_t;
 
 // Run the gesture state machine once. Call periodically (~30 ms) with the

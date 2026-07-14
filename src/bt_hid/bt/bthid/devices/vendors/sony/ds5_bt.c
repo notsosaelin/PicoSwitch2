@@ -675,6 +675,7 @@ static void ds5_disconnect(bthid_device_t* device)
 
 const bthid_driver_t ds5_bt_driver = {
     .name = "Sony DualSense",
+    .transports = BTHID_TRANSPORT_CLASSIC,  // DualSense BT pairing is Classic BT, not BLE
     .match = ds5_match,
     .init = ds5_init,
     .process_report = ds5_process_report,

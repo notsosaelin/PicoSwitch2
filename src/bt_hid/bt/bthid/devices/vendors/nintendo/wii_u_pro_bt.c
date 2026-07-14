@@ -832,6 +832,7 @@ static void wii_u_disconnect(bthid_device_t* device)
 
 const bthid_driver_t wii_u_pro_bt_driver = {
     .name = "Nintendo Wii U Pro Controller",
+    .transports = BTHID_TRANSPORT_CLASSIC,  // Wiimote-family hardware predates BLE HID
     .match = wii_u_match,
     .init = wii_u_init,
     .process_report = wii_u_process_report,

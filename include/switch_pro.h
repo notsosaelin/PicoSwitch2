@@ -41,6 +41,18 @@
 #define SWITCH_EXTRA_GL (1U << 1)  // GL (left grip)
 #define SWITCH_EXTRA_GR (1U << 2)  // GR (right grip)
 
+// --- NSO GameCube-only semantic bits (switch_pro_input_t.gc_extra) ---
+// These do NOT reuse SWITCH_MASK_R/SWITCH_MASK_ZR/SWITCH_MASK_L or SWITCH_EXTRA_GL/GR --
+// native GameCube Z and the independent L/R trigger detents are physically distinct
+// controls from Pro2's own R/ZR/L/GL/GR concepts and must never be silently mapped
+// through them (see docs/switch2-gc/mapping.md "Internal normalized model requirements").
+// Populated only for input devices with confirmed evidence for these controls (currently
+// the 8BitDo NGC Modkit, see src/bt_hid/ns2_seam.c's router_submit_input()); 0 for every
+// other device. Pro2/Switch 1 encoders never read this field.
+#define GC_MASK_Z (1U << 0)          // native GameCube Z (distinct from Z/ZR routing elsewhere)
+#define GC_MASK_L_DETENT (1U << 1)   // independent left analog-trigger mechanical detent
+#define GC_MASK_R_DETENT (1U << 2)   // independent right analog-trigger mechanical detent
+
 // Switch analog sticks are 12-bit (0x000..0xFFF), centered at 0x800.
 #define SWITCH_STICK_MIN 0x000
 #define SWITCH_STICK_MID 0x800
@@ -58,6 +70,17 @@ typedef struct {
     int16_t accel[3];        // x, y, z (raw Pro Controller accelerometer units)
     int16_t gyro[3];         // x, y, z (raw Pro Controller gyroscope units)
     uint8_t has_motion;      // 1 if this controller reports IMU (gate report-0x09 motion)
+
+    // NSO GameCube-only fields (2026-07-13). Always present (not `#ifdef NS2_PRO`) so this
+    // struct's layout/size is identical across build configs; Pro2/Switch 1 encoders simply
+    // never read them, and their wire output must stay byte-for-byte unchanged. Populated by
+    // ns2_seam.c's router_submit_input() from input_event_t's own gc_* fields (see
+    // core/input_event.h), which are themselves only set by drivers with confirmed evidence
+    // for a device's real GameCube-native controls (currently the 8BitDo NGC Modkit).
+    uint8_t left_trigger;    // continuous 0..255, GameCube native analog L (raw passthrough,
+                             // never thresholded/collapsed to a boolean)
+    uint8_t right_trigger;   // continuous 0..255, GameCube native analog R
+    uint8_t gc_extra;        // GC_MASK_* -- native Z / independent L,R trigger detents
 } switch_pro_input_t;
 
 // Pack two 12-bit stick axes (0..4095) into the 3-byte Pro Controller format.
