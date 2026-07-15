@@ -8,12 +8,11 @@
 Last verified: 2026-07-15
 Branch: `ns2-testing`
 
-## Release readiness
+## Current release
 
-PicoSwitch2 is in release-candidate stabilization. Both Pico W and Pico 2 W builds succeed, all
-ten host-test executables pass, and the primary Pro Controller 2, NSO GameCube, DualSense, and
-BOOTSEL paths have recent physical validation. The next release should preserve this baseline
-before new protocol work begins.
+[`v1.1.0`](https://github.com/notsosaelin/PicoSwitch2/releases/tag/v1.1.0) was published on
+2026-07-15 with Pico W and Pico 2 W UF2 assets. All ten host-test executables pass, and the primary
+Pro Controller 2, NSO GameCube, DualSense, and BOOTSEL paths have recent physical validation.
 
 ## Hardware-confirmed behavior
 
@@ -100,8 +99,7 @@ The firmware builds under the Pico SDK 2.2.0 toolchain for `pico_w` and `pico2_w
 
 ## Next recommended work
 
-1. Tag and release the current hardware-confirmed baseline.
-2. Execute the compatibility matrix without changing protocol code mid-pass.
-3. Correct Joy-Con 2 mappings from explicit button-by-button observations.
-4. Add host coverage for BOOTSEL gesture progression under report-driven scheduling.
-5. Build a reproducible console-side capture path before resuming NFC or report `0x09` motion work.
+1. Execute the compatibility matrix without changing protocol code mid-pass.
+2. Correct Joy-Con 2 mappings from explicit button-by-button observations.
+3. Add host coverage for BOOTSEL gesture progression under report-driven scheduling.
+4. Build a reproducible console-side capture path before resuming NFC or report `0x09` motion work.
