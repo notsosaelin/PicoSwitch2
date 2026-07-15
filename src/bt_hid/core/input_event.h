@@ -199,7 +199,9 @@ typedef struct {
 
     // NSO GameCube-native semantic fields (2026-07-13). Set ONLY by drivers with confirmed
     // hardware evidence for a device's true GameCube-shaped physical layout (currently: the
-    // 8BitDo NGC Modkit, gated on is_ngc_modkit -- see bthid_gamepad.c's process_report_dynamic()).
+    // 8BitDo NGC Modkit -- see bthid_gamepad_quirk_bitdo_ngc_modkit.c's extract_extra(), the
+    // quirk profile that reports its true native controls after this file's own 2026-07-15
+    // split of bthid_gamepad.c into a shared engine + per-controller quirk files).
     // False/0 for every other device. Consumed by ns2_seam.c's router_submit_input(), which
     // forwards them unconditionally into switch_pro_input_t's own dedicated fields -- these are
     // NOT part of the JP_BUTTON_* bitmap/NS2_DST_* remap table, because they are fixed,

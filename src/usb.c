@@ -10,10 +10,12 @@
 #include "switch_pro.h"
 #include "report.h"
 #include "config.h"
+#include "bootsel.h"
 
 #ifdef NS2_PRO
 #include "switch_pro2.h"
 #include "switch_gc.h"
+#include "switch_joycon2.h"
 #include "usb_mode_cycle.h"
 #endif
 
@@ -37,11 +39,18 @@ volatile usb_personality_t g_usb_mode_ack_personality = USB_PERSONALITY_SWITCH2_
 // introduced. See docs/switch2-gc/usb-personality.md "Transition sequence".
 #define USB_DETACH_MS 100
 
+// Internal/log-facing identifier only -- NOT the USB string descriptor text a host sees (that's
+// switch_joycon2_strings_l/r's real, Confirmed-byte-exact "Joy-Con 2 (L)"/"(R)" strings, which
+// must stay authentic and are untouched by this). This is where "experimental" needs to be
+// visible per the project owner's explicit instruction: anywhere this project's own text shows a
+// personality name (currently: serial debug logs only), Joy-Con2 L/R must read unambiguously as
+// experimental/test personalities, not the recommended full-controller mode (that's Pro2).
 static const char *usb_personality_name(usb_personality_t p) {
     switch (p) {
         case USB_PERSONALITY_SWITCH2_PRO2: return "Switch2Pro2";
         case USB_PERSONALITY_NSO_GAMECUBE: return "NSOGameCube";
-        case USB_PERSONALITY_JOYCON2:      return "JoyCon2(reserved)";
+        case USB_PERSONALITY_JOYCON2_L:    return "Joy-Con 2 Left (Experimental)";
+        case USB_PERSONALITY_JOYCON2_R:    return "Joy-Con 2 Right (Experimental)";
         case USB_PERSONALITY_CDC_CONFIG:   return "CDCConfig";
         default:                           return "?";
     }
@@ -49,12 +58,12 @@ static const char *usb_personality_name(usb_personality_t p) {
 
 // usb_personality_available()/usb_next_personality(): see usb_mode_cycle.c --
 // extracted there so this pure enum-walking logic (no pico-sdk/TinyUSB
-// dependency) can be compiled and tested on the host. CDC_CONFIG is terminal
-// for this pass (no live path back to Pro2 -- see usb-personality.md "Runtime
-// mode cycle"), so calling usb_next_personality(CDC_CONFIG) correctly returns
-// CDC_CONFIG itself (no-op) rather than wrapping; in practice this never
-// happens anyway, since gestures are suppressed once g_usb_config_mode is
-// true (ns2_bt_host.c's control_timer_handler).
+// dependency) can be compiled and tested on the host. CDC_CONFIG has a live
+// BOOTSEL-hold exit back to Pro2 (2026-07-14 -- see usb-personality.md
+// "Runtime mode cycle"): usb_next_personality(CDC_CONFIG) wraps to Pro2, and
+// ns2_bt_host.c's control_timer_handler() no longer suppresses BOOTSEL_HOLD
+// detection while g_usb_config_mode is true (pairing/wipe gestures remain
+// suppressed there, since those still make no sense in config mode).
 
 // Bring up the personality we're about to switch TO with a guaranteed-clean
 // slate. This is sufficient to satisfy "old-personality state must not leak
@@ -72,6 +81,17 @@ static void usb_reset_personality_state(usb_personality_t p) {
             break;
         case USB_PERSONALITY_NSO_GAMECUBE:
             switch_gc_reset();
+            break;
+        case USB_PERSONALITY_JOYCON2_L:
+            // Side is set here, automatically, as a direct consequence of which of the two
+            // separate Joy-Con2 personalities was selected -- never a user-facing toggle inside
+            // the module itself (see switch_joycon2.h's own comment).
+            switch_joycon2_set_side(JOYCON2_SIDE_LEFT);
+            switch_joycon2_reset();
+            break;
+        case USB_PERSONALITY_JOYCON2_R:
+            switch_joycon2_set_side(JOYCON2_SIDE_RIGHT);
+            switch_joycon2_reset();
             break;
         default:
             break;  // CDC config has no equivalent per-session runtime state to reset
@@ -126,8 +146,11 @@ void usb_core_task() {
     switch_pro_init();
 #endif
 
-    // Register as a multicore lockout victim so the Bluetooth core can briefly
-    // park this core to sample the BOOTSEL button (shared flash CS pin).
+    // Register as a multicore lockout victim. NOTE: this is no longer for BOOTSEL -- core0 now
+    // samples BOOTSEL itself and parks core1 instead (see bootsel.h's ARCHITECTURE note; core0
+    // cannot grant a lockout promptly from this tight TinyUSB loop while streaming, which broke
+    // BOOTSEL and rumble in turn on 2026-07-15). This registration is still required for core1's
+    // flash writes (config_service_save() parks core0 before erase/program), so it must stay.
     multicore_lockout_victim_init();
     usb_lockout_ready = true;
 
@@ -162,6 +185,13 @@ void usb_core_task() {
 
         tud_task();
 
+        // Sample BOOTSEL from this core (self-rate-limited to ~5 ms; see bootsel.c). Core1 runs
+        // the gesture state machine off the value published here and never parks anyone itself,
+        // which is what keeps its rumble-forwarding timer on cadence. Placed after tud_task() so
+        // a sample can never delay USB servicing, and outside the config-mode early-continue
+        // below so gestures keep working in config mode (BOOTSEL_HOLD exits it on NS2_PRO).
+        bootsel_sample_core0();
+
         if (g_usb_config_mode) {
 #ifdef NS2_PRO
             ns2_motion_debug_tick();
@@ -180,6 +210,9 @@ void usb_core_task() {
 #ifdef NS2_PRO
         if (g_usb_personality == USB_PERSONALITY_NSO_GAMECUBE)
             switch_gc_task();
+        else if (g_usb_personality == USB_PERSONALITY_JOYCON2_L ||
+                 g_usb_personality == USB_PERSONALITY_JOYCON2_R)
+            switch_joycon2_task();
         else
             ns2_task();
 #else

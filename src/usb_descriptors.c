@@ -19,6 +19,7 @@
 #ifdef NS2_PRO
 #include "switch_pro2.h"
 #include "switch_gc.h"
+#include "switch_joycon2.h"
 #endif
 
 //--------------------------------------------------------------------+
@@ -260,8 +261,10 @@ uint8_t const *tud_descriptor_device_cb(void) {
         case USB_PERSONALITY_NSO_GAMECUBE:
             if (g_gc_stage < 1) g_gc_stage = 1;  // diag: host read our device descriptor
             return switch_gc_device_descriptor();
+        case USB_PERSONALITY_JOYCON2_L:
+        case USB_PERSONALITY_JOYCON2_R:
+            return switch_joycon2_device_descriptor();
         case USB_PERSONALITY_SWITCH2_PRO2:
-        case USB_PERSONALITY_JOYCON2:  // reserved/unreachable -- fall back to the real default
         default:
             if (g_ns2_stage < 1) g_ns2_stage = 1;  // diag: host read our device descriptor
             return ns2_device_descriptor();
@@ -280,8 +283,10 @@ uint8_t const *tud_descriptor_configuration_cb(uint8_t index) {
         case USB_PERSONALITY_NSO_GAMECUBE:
             if (g_gc_stage < 2) g_gc_stage = 2;  // diag: host read our config descriptor
             return switch_gc_config_descriptor();
+        case USB_PERSONALITY_JOYCON2_L:
+        case USB_PERSONALITY_JOYCON2_R:
+            return switch_joycon2_config_descriptor();
         case USB_PERSONALITY_SWITCH2_PRO2:
-        case USB_PERSONALITY_JOYCON2:
         default:
             if (g_ns2_stage < 2) g_ns2_stage = 2;  // diag: host read our config descriptor
             return ns2_config_descriptor();
@@ -296,6 +301,9 @@ uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
 #ifdef NS2_PRO
     if (g_usb_personality == USB_PERSONALITY_NSO_GAMECUBE)
         return switch_gc_hid_report_descriptor();
+    if (g_usb_personality == USB_PERSONALITY_JOYCON2_L ||
+        g_usb_personality == USB_PERSONALITY_JOYCON2_R)
+        return switch_joycon2_hid_report_descriptor();
     return ns2_hid_report_descriptor();
 #else
     return switch_pro_report_descriptor;
@@ -322,6 +330,9 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
             ms = ns2_ms_os_string_descriptor();
         else if (g_usb_personality == USB_PERSONALITY_NSO_GAMECUBE)
             ms = switch_gc_ms_os_string_descriptor();
+        else if (g_usb_personality == USB_PERSONALITY_JOYCON2_L ||
+                 g_usb_personality == USB_PERSONALITY_JOYCON2_R)
+            ms = switch_joycon2_ms_os_string_descriptor();
         if (ms) return ms;
     }
 #endif
@@ -337,8 +348,11 @@ uint16_t const *tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
         case USB_PERSONALITY_NSO_GAMECUBE:
             strings = switch_gc_string_table(&count);
             break;
+        case USB_PERSONALITY_JOYCON2_L:
+        case USB_PERSONALITY_JOYCON2_R:
+            strings = switch_joycon2_string_table(&count);
+            break;
         case USB_PERSONALITY_SWITCH2_PRO2:
-        case USB_PERSONALITY_JOYCON2:
         default:
             strings = ns2_string_table(&count);
             break;
@@ -405,6 +419,9 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
     hid_out_normalized_t n = hid_out_normalize(report_id, buffer, bufsize);
     if (g_usb_personality == USB_PERSONALITY_NSO_GAMECUBE)
         switch_gc_hid_out_report(n.report_id, n.data, n.data_len);
+    else if (g_usb_personality == USB_PERSONALITY_JOYCON2_L ||
+             g_usb_personality == USB_PERSONALITY_JOYCON2_R)
+        switch_joycon2_hid_out_report(n.report_id, n.data, n.data_len);
     else
         ns2_hid_out_report(n.report_id, n.data, n.data_len);
 #else
@@ -428,10 +445,12 @@ bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
     switch (g_usb_personality) {
         case USB_PERSONALITY_NSO_GAMECUBE:
             return switch_gc_vendor_control_xfer(rhport, stage, request);
+        case USB_PERSONALITY_JOYCON2_L:
+        case USB_PERSONALITY_JOYCON2_R:
+            return switch_joycon2_vendor_control_xfer(rhport, stage, request);
         case USB_PERSONALITY_SWITCH2_PRO2:
             return ns2_vendor_control_xfer(rhport, stage, request);
         case USB_PERSONALITY_CDC_CONFIG:
-        case USB_PERSONALITY_JOYCON2:
         default:
             return false;
     }
@@ -442,11 +461,14 @@ void tud_mount_cb(void) {
         case USB_PERSONALITY_NSO_GAMECUBE:
             switch_gc_mount();
             break;
+        case USB_PERSONALITY_JOYCON2_L:
+        case USB_PERSONALITY_JOYCON2_R:
+            switch_joycon2_mount();
+            break;
         case USB_PERSONALITY_SWITCH2_PRO2:
             ns2_mount();
             break;
         case USB_PERSONALITY_CDC_CONFIG:
-        case USB_PERSONALITY_JOYCON2:
         default:
             break;
     }

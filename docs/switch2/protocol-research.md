@@ -25,7 +25,10 @@ firmware currently emulates).
 | bcdDevice | — | `0x0200` (doc comment says 4.00, but bytes are `00 02`) |
 | bDeviceClass | HID (single iface) | **`0xEF` / `0x02` / `0x01`** (Misc, IAD composite) |
 
-Nintendo BLE Company ID: `0x0553`. Joy-Con 2 PIDs `0x2066`/`0x2067` (not our target).
+Nintendo BLE Company ID: `0x0553`. Joy-Con 2 PIDs `0x2066` (R)/`0x2067` (L) (not our target) — per
+the real Linux kernel "HID: nintendo" driver source (`USB_DEVICE_ID_NINTENDO_NS2_JOYCONL`=`0x2067`,
+`_JOYCONR`=`0x2066`); corrected 2026-07-14, see `docs/switch2-gc/usb-personality.md` for the citation
+and a prior, now-superseded ndeadly-sourced assignment that had L/R reversed.
 
 ### Configuration (composite, ~268 bytes, 5 interfaces)
 - **IF0 — HID**: interrupt IN + OUT. Carries the controller input reports + command channel.

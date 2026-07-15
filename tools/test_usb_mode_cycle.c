@@ -9,16 +9,27 @@
  *
  * Exit code 0 = all assertions passed.
  *
- * Covers the "mode-cycle next-available logic" / "Joy-Con 2 placeholder is
- * skipped while unavailable" / "Config is terminal until reset" / "default
- * personality is always Pro2 after boot" items from NSO-GC.md's required
- * validation list. The remaining items on that list (NS2_PRO=OFF hold stays
- * direct-to-Config; no L3/R3 GameCube output destination; ZL/C/Home/Capture
- * remain real GameCube capabilities) are not pure-logic properties this file
- * can exercise -- see docs/switch2-gc/usb-personality.md's validation section
- * for how each of those was verified instead (code-inspection for the
- * unchanged Switch-1 branch; tools/verify_gc_descriptors.py's structural
- * checks for the descriptor-content ones).
+ * Updated 2026-07-14: Joy-Con 2 split into two separate, always-available
+ * personalities (USB_PERSONALITY_JOYCON2_L / _R) instead of one reserved
+ * placeholder -- this file had gone stale after Joy-Con2's initial Stage B+C
+ * landing (it still asserted the old "reserved, unavailable" placeholder
+ * behavior) and was only caught while making this exact change.
+ *
+ * Updated again 2026-07-14: Config now has a live BOOTSEL-hold exit back to
+ * Pro2 (usb_next_personality(CDC_CONFIG) wraps instead of staying terminal) --
+ * this file's own "Config is terminal" assertion was rewritten accordingly.
+ *
+ * Covers the
+ * "mode-cycle next-available logic" / "Config is terminal until reset" /
+ * "default personality is always Pro2 after boot" items from NSO-GC.md's
+ * required validation list. The remaining items on that list (NS2_PRO=OFF
+ * hold stays direct-to-Config; no L3/R3 GameCube output destination;
+ * ZL/C/Home/Capture remain real GameCube capabilities) are not pure-logic
+ * properties this file can exercise -- see docs/switch2-gc/usb-personality.md's
+ * validation section for how each of those was verified instead
+ * (code-inspection for the unchanged Switch-1 branch;
+ * tools/verify_gc_descriptors.py's structural checks for the
+ * descriptor-content ones).
  */
 #include <stdio.h>
 #include <string.h>
@@ -47,35 +58,35 @@ int main(void) {
           "USB_PERSONALITY_SWITCH2_PRO2 is enum value 0 (correct boot default "
           "even under plain zero-initialization)");
 
-    // Availability table.
+    // Availability table. Joy-Con 2 L/R are real, always-available, individually-selectable
+    // experimental/test personalities -- not reserved placeholders, and not a merged/paired mode
+    // (see docs/switch2-joycon2/protocol.md "Why not simultaneous L+R").
     CHECK(usb_personality_available(USB_PERSONALITY_SWITCH2_PRO2) == true,
           "Switch2Pro2 is available");
     CHECK(usb_personality_available(USB_PERSONALITY_NSO_GAMECUBE) == true,
           "NSOGameCube is available");
-    CHECK(usb_personality_available(USB_PERSONALITY_JOYCON2) == false,
-          "JoyCon2 (reserved) is NOT available -- must never be enumerated");
+    CHECK(usb_personality_available(USB_PERSONALITY_JOYCON2_L) == true,
+          "JoyCon2 Left is available");
+    CHECK(usb_personality_available(USB_PERSONALITY_JOYCON2_R) == true,
+          "JoyCon2 Right is available");
     CHECK(usb_personality_available(USB_PERSONALITY_CDC_CONFIG) == true,
           "CDCConfig is available");
 
-    // Cycle order: Pro2 -> GameCube -> Config, with JoyCon2 transparently
-    // skipped (it sits between GameCube and Config in the enum but is
-    // unavailable).
+    // Cycle order: Pro2 -> GameCube -> Joy-Con2 Left -> Joy-Con2 Right -> Config. All five stops
+    // are real personalities now; nothing is skipped.
     CHECK(usb_next_personality(USB_PERSONALITY_SWITCH2_PRO2) == USB_PERSONALITY_NSO_GAMECUBE,
           "next(Pro2) == NSOGameCube");
-    CHECK(usb_next_personality(USB_PERSONALITY_NSO_GAMECUBE) == USB_PERSONALITY_CDC_CONFIG,
-          "next(NSOGameCube) == CDCConfig (JoyCon2 skipped)");
+    CHECK(usb_next_personality(USB_PERSONALITY_NSO_GAMECUBE) == USB_PERSONALITY_JOYCON2_L,
+          "next(NSOGameCube) == JoyCon2 Left");
+    CHECK(usb_next_personality(USB_PERSONALITY_JOYCON2_L) == USB_PERSONALITY_JOYCON2_R,
+          "next(JoyCon2 Left) == JoyCon2 Right");
+    CHECK(usb_next_personality(USB_PERSONALITY_JOYCON2_R) == USB_PERSONALITY_CDC_CONFIG,
+          "next(JoyCon2 Right) == CDCConfig");
 
-    // "Config is terminal until reset in this first cut": calling next()
-    // again from Config must be a no-op (stay put), not advance/wrap.
-    CHECK(usb_next_personality(USB_PERSONALITY_CDC_CONFIG) == USB_PERSONALITY_CDC_CONFIG,
-          "next(CDCConfig) == CDCConfig (terminal, no wrap)");
-
-    // Defensive: even if somehow asked to advance from the reserved,
-    // unavailable JoyCon2 state, the walk must still skip forward to the
-    // next real personality rather than getting stuck or returning JoyCon2
-    // itself.
-    CHECK(usb_next_personality(USB_PERSONALITY_JOYCON2) == USB_PERSONALITY_CDC_CONFIG,
-          "next(JoyCon2) == CDCConfig (defensive: skips past a reserved current value too)");
+    // "Config has a live exit back to Pro2" (2026-07-14, supersedes the original "terminal until
+    // reset" design): calling next() from Config must wrap back to Pro2, not stay put.
+    CHECK(usb_next_personality(USB_PERSONALITY_CDC_CONFIG) == USB_PERSONALITY_SWITCH2_PRO2,
+          "next(CDCConfig) == Pro2 (wraps, live exit via BOOTSEL hold)");
 
     printf("\n%s\n", failures == 0 ? "All checks passed." : "One or more checks FAILED.");
     return failures == 0 ? 0 : 1;

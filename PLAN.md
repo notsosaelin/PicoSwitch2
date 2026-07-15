@@ -518,6 +518,186 @@ the current single most important next step, not further rumble research. Full d
 `docs/experiments/gcusb-rumble-lab-2026-07-14.md`, `docs/experiments/refuted-hypotheses.md`,
 `DATA.md`.
 
+### 🔵 Joy-Con 2 Left/Right (Experimental) — Stage A-C implemented, hardware-tested at the enumeration level
+
+Previously documented as reserved-but-unimplemented (`USB_PERSONALITY_JOYCON2` in `include/usb.h`,
+skipped by the mode-cycle logic) with no hardware evidence at all — "60-70% templatable" from
+GameCube's own scaffolding at best. Superseded: the project owner obtained genuine Joy-Con 2 Left
+and Right hardware (a USB adapter, plus full SPI flash dumps of each), giving this personality real
+evidence for the first time. Full analysis: `docs/experiments/joycon2-spi-dump-analysis-2026-07-14.md`;
+Stage A protocol/architecture doc: `docs/switch2-joycon2/protocol.md`.
+
+Headline findings: Joy-Con 2 L/R USB PIDs (`0x2067`/`0x2066`) now **Confirmed** from the genuine
+unit's own flash, independently agreeing with the real Linux kernel driver source; a
+previously-undocumented per-model hardware type code (`HB`/`HC` vs Pro2's `HE`/GC's `HH`); a new
+finding that the factory-calibrated accelerometer axis order differs between Joy-Con and Pro
+Controller 2 (different physical IMU mounting orientation — relevant to any future motion support,
+not just a documentation curiosity); confirmation that a single Joy-Con only ever populates one of
+the two stick-calibration slots the shared factory layout provides (one physical stick, not two);
+and confirmation the Pro2-only "DSPH" audio DSP blob is absent on both Joy-Con and GameCube,
+consistent with it being tied to Pro Controller 2's headphone jack specifically (project owner's
+own hypothesis, adopted as the working explanation).
+
+**Update, same day — USB device + configuration descriptors Confirmed byte-exact.** Both Joy-Cons
+were already connected to the machine this project's tooling runs on; a USBPcap
+`--inject-descriptors` capture (same method as GameCube's Stage B) got byte-exact device and
+80-byte configuration descriptors for both L and R with no replug needed. The config descriptor is
+**structurally identical to GameCube's own** (same IAD+HID+vendor-bulk shape) — confirms GameCube,
+not Pro2, as the implementation template. A third Nintendo-VID device on the same hub (PID `0x2068`,
+hub-class) turned out to be the official Joy-Con 2 Charging Grip (owner-confirmed), not an
+aftermarket adapter — which per the owner also adds GL/GR when a Joy-Con is docked in it, most
+likely via rail-contact inputs rather than its own USB HID report (it enumerates as a bare hub).
+
+**Update, same day — HID Report descriptor also Confirmed byte-exact.** A software disable/enable
+cycle didn't force a real USB reset (tried first to avoid a physical replug); the owner did a real
+unplug/replug of Joy-Con 2 Left during a live capture instead, catching the full 100-byte HID Report
+descriptor plus two interface strings. Three report IDs: `5` (input, flat vendor blob), `7` (input,
+structured — 16 buttons + one 12-bit-packed stick + vendor data), `1` (output). **Report ID 7 as the
+console-facing extended report is new information** — Pro2/GameCube both use `0x0A` for that role,
+so a future implementation can't assume it carries over. The structured report's shape independently
+confirms "one stick, fewer buttons" from the SPI factory-data analysis, now from the wire format too.
+Raw captures: `docs/experiments/joycon2-captures/genuine-controller-descriptors-2026-07-14.pcap` and
+`genuine-controller-full-enumeration-replug-2026-07-14.pcap`. Full detail:
+`docs/switch2-joycon2/protocol.md`.
+
+**L/R architecture — superseded, see final correction below.** An earlier same-day pass considered
+one runtime-selectable personality with a three-way L/R/merged choice in the config UI; this was
+superseded first by "L and R only, no merged mode" and then, after further investigation, by the
+final settled architecture (below): two entirely separate personalities, no config-UI toggle at
+all. Full detail: `docs/switch2-joycon2/protocol.md` "Open questions" and "Why not simultaneous L+R".
+
+**Update, same day — Stage B+C implemented.** `usb_mode_cycle.c`'s `USB_PERSONALITY_JOYCON2_L`/`_R`
+are now `true`; new `switch_joycon2.h`/`.c`/`_encode.h`/`.c`, templated from `switch_gc.h`/`.c`. USB
+descriptors (device/config/HID Report, both sides) use this session's own Confirmed captured
+bytes; input report encoders implement the full Confirmed button/field layout from `ndeadly`'s
+docs and pass 32/32 new host-side golden tests (`tools/test_switch_joycon2_report.c`). EP0 identity
+handshake, vendor command responses beyond the shared family baseline, and rumble byte semantics
+are Hypothesis-tier, matching GameCube's own Stage D starting point before hardware correction.
+Side is never user-facing: `usb.c`'s `usb_reset_personality_state()` calls
+`switch_joycon2_set_side()` automatically based on which of the two separate personalities
+(`USB_PERSONALITY_JOYCON2_L`/`_R`) the BOOTSEL cycle just selected — there is no config-UI toggle
+and none is planned. "Both merged" mode dropped entirely (project owner correction) — combining two
+physical Joy-Cons is a host-side software merge on real hardware (Switch 1 Grip pairing, Steam's
+own toggle), not a third wire identity; only L and R need to exist.
+
+**Update, same day — first hardware test found and fixed a real bug.** Enumerated under Windows
+"Other devices" with Code 28 — the same WinUSB driver-binding cache collision Pro2 and GameCube
+each already hit, caused by using the real captured `bcdDevice` verbatim instead of the same
+deliberate deviation both of them apply. Fixed: `0x0100` → `0x0110` in both device descriptors.
+Not yet re-tested after the fix. Full detail: `STATUS.md`, `docs/switch2-joycon2/protocol.md`.
+
+**Final architecture correction (project owner, 2026-07-14): no merged/paired L+R mode, ever, on
+one Pico.** A same-day pass explored making both Joy-Con identities appear concurrently from a
+single Pico (driven by one paired controller, e.g. Xbox, as a "complete Joy-Con 2 set" for the
+console); this was investigated and conclusively ruled infeasible on current hardware —
+RP2040/RP2350 can only hold one USB device address at a time (register-level limit, confirmed from
+the SDK and TinyUSB's `dcd_rp2040.c`, not a software gap), a genuine Charging Grip is a real
+3-device USB hub topology (hub + independently-addressed L + R, confirmed via live USBPcap
+capture), and `Dycool/NS-PC-Control` (a comparable Linux-gadget project on more capable hardware)
+independently rejects L+R pair mode for the same reason. Settled final shape:
+
+- **Pro Controller 2** (`USB_PERSONALITY_SWITCH2_PRO2`) is the default, primary,
+  production-quality personality for using one paired controller as a complete Switch 2
+  controller. This is where validation effort should concentrate going forward — enumeration,
+  full button/stick mapping, rumble, motion, reconnect, wake behavior, long-term stability.
+- **Joy-Con 2 Left** and **Joy-Con 2 Right** remain two separate, individually-selectable
+  personalities (`USB_PERSONALITY_JOYCON2_L`/`_R`) for hardware validation only — explicitly
+  labeled experimental/test, never presented as the recommended full-controller mode. Named
+  `Joy-Con 2 Left (Experimental)` / `Joy-Con 2 Right (Experimental)` everywhere a personality name
+  is shown to a human (`usb.c`'s `usb_personality_name()`). Side is derived automatically from
+  which personality is active — there is no config-UI toggle and none is planned.
+- LED mode-cycle acknowledgement generalized to `flashes = personality_ordinal + 1` (1 Pro2 /
+  2 GameCube / 3 Joy-Con2 Left / 4 Joy-Con2 Right / 5 Config) — no personality gets special-cased
+  "experimental" LED behavior.
+
+Full evidence writeup: `docs/switch2-joycon2/protocol.md` "Why not simultaneous L+R".
+
+**Update, same day — button mapping audited; SL/SR was the only real gap, now fixed.** Checked
+what a generic bridged controller (Xbox/DualSense) needs mapped onto each Joy-Con2 personality:
+A/B/X/Y, D-pad, L/R, ZL/ZR, stick+click, Plus/Minus, Home/Capture, and C all already worked with
+zero new code (Joy-Con2's encoder reads the same fields Pro2's existing per-family remap pipeline
+already populates, just side-gated). Only **SL/SR** — real rail buttons on both Joy-Con units, no
+Pro2/GameCube equivalent — were missing, hardcoded to 0. Fixed: new `SWITCH_EXTRA_SL`/`SR` bits
+(`include/switch_pro.h`), wired into both encoders, sourced by reinterpreting the existing
+`NS2_DST_GL`/`NS2_DST_GR` destinations as SL/SR whenever a Joy-Con2 personality is active
+(`ns2_seam.c`) — GL/GR have no meaning for a lone Joy-Con (no grips), so the same paddle/extra
+source buttons that default to GL/GR in Pro2 mode now drive a real control here instead, with
+Pro2/GameCube mode provably unaffected. Also documented: the Switch's "sideways" single-Joy-Con
+behavior is entirely console-side software — this project only needs correct physical button
+positions, no rotation layer of its own. Full detail: `docs/switch2-joycon2/mapping.md`.
+Host-tested (`tools/test_switch_joycon2_report.c`, 43/43), both boards build clean, **not yet
+hardware-tested**.
+
+**Update, same day — Config mode gained a live BOOTSEL-hold exit back to Pro2.** Previously
+terminal-for-the-session by deliberate initial scope choice (`NSO-GC.md`); the project owner asked
+whether a live exit was possible, and it was — lifted the restriction rather than working around
+it. `usb_next_personality(CDC_CONFIG)` now wraps to `SWITCH2_PRO2`; `ns2_bt_host.c` no longer
+suppresses BOOTSEL_HOLD in config mode (pairing/wipe gestures still are). `!NS2_PRO` builds
+unaffected. Cycle is now a closed loop: `Pro2 → GameCube → Joy-Con2 L → Joy-Con2 R → Config →
+(hold) → Pro2`. Host-tested (`tools/test_usb_mode_cycle.c`, 11/11), both boards build clean, not
+yet hardware-tested.
+
+**Update, same day — three real bugs reported by the project owner after testing the above, all
+found and fixed:** (1) BOOTSEL gestures (mode-cycle/pairing/wipe) stopped registering while a
+controller was actively connected and used, only working again once it was powered off — root
+cause was an ungated per-report-change `printf()` in `switch2_ble.c` (no rate limit, unlike every
+sibling driver), flooding and starving the single-threaded core1 run loop badly enough to stall the
+30ms timer `bootsel_poll()` depends on; the exact failure class this project already hit once
+before with a different diagnostic. Fixed: rate-limited to 1/sec. (2) Joy-Con2 (L)/(R) not
+enumerating on a real console, the same symptom class GC/Pro2 originally had — `switch_joycon2.c`'s
+vendor dispatcher was missing `case 0x11`/`0x18` (GC's own fix for this exact symptom, landed after
+Joy-Con2 was templated from GC's earlier, pre-fix pattern). Fixed: added both, mirroring GC's
+values. (3) Stick mapping slightly off in Steam — `ns2_seam.c`'s `ns2_to12()` used a single linear
+`v*4095/255` scale, leaving the nominal center (128) 7-8 units off true center (2048), asymmetric
+between X and inverted-Y. Fixed: piecewise scaling so 0/128/255 map to exactly 0/2048/4095. All
+three: both boards build clean, all existing host tests re-run with no regressions. **None
+hardware-re-tested yet.** Full detail: `STATUS.md`.
+
+**Update, same day — item 1 recurred; found and fixed the real, deeper cause.** The owner
+confirmed the BOOTSEL-gesture failure happens specifically plugged into a real Switch 2 console
+with a controller paired, but not on PC with the same controller — ruling out anything
+Bluetooth-side and pointing at core0/USB-side behavior unique to a genuine console (only a real
+console completes the EP0 handshake and starts streaming, putting core0 in a continuous
+tight report-push loop). `bootsel.c` was using the unconditionally-blocking
+`multicore_lockout_start/end_blocking()`, which has no timeout — a busy core0 could stall core1's
+*entire* run loop, not just BOOTSEL sampling. Fixed: switched to the bounded
+`_timeout_us()` variants (2ms), treating a timed-out sample as "no observation this tick" rather
+than corrupting the gesture state machine. Both boards build clean. **Not yet hardware-re-tested**
+— next test should specifically repeat console+paired-controller+BOOTSEL-hold. Full detail:
+`STATUS.md`.
+
+**Update, same day — BOOTSEL fix confirmed working; found the real cause of Joy-Con2 never
+enumerating.** Key new signal from the owner: no "Paired" notification ever appears for Joy-Con2
+(L)/(R), unlike Pro2/GameCube — a much earlier failure point than the streaming-phase
+`0x11`/`0x18` gap already fixed. Found: `switch_joycon2.c`'s EP0 identity block (`bRequest=3`, also
+used for SPI reads at `0x13000`) had a real, concrete bug — its fictitious serial field used only 9
+digits instead of the Confirmed 11-digit/12-byte shape documented in this project's own genuine-unit
+SPI dump analysis, silently shifting VID/PID and everything after them 2 bytes earlier than the real
+layout. A misaligned identity block corrupts the exact data a console's recognition handshake reads
+— a strong candidate for "never reaches Paired." Fixed: extended the serial to the full 11 digits,
+correcting VID/PID/trailing fields back to their Confirmed offsets. Both boards build clean. **Not
+yet hardware-re-tested.** Full detail: `STATUS.md`.
+
+**Update, 2026-07-15 — `bthid_gamepad.c` split into a shared engine + one quirk file per
+controller.** After adding the 8BitDo Ultimate MG paddle mapping, the project owner asked why
+these went into the generic driver instead of dedicated files, then asked for a proper split
+before the file (1016 lines: 5 identity booleans, 5 button tables, several raw-byte quirk
+blocks, a vendor-gated rumble block) grew further — with an explicit naming requirement: name
+each quirk after the exact model when confirmed (e.g. `xbox_elite2`, not folded into a generic
+"xbox" bucket, leaving room for a future `xbox_elite1`/`elite3`), after the mechanism when it's
+a deliberate cross-model fallback (`bitdo_paddle`). Planned via `EnterPlanMode`/`ExitPlanMode`
+given the scope (new shared type, 7 new files, a core-file rewrite). Result: `gamepad_quirk_t`
+(`bthid_gamepad_quirks.h`) bundles a button-usage table (or a runtime `select_button_map`
+override for the two families that genuinely need one), an optional `extract_extra()`, and an
+optional `send_rumble()`; one ordered match table (`bthid_gamepad_quirks.c`) replaces the old
+implicit if/else-if priority; `xbox`/`xbox_elite2`/`bitdo_paddle`/`bitdo_ngc_modkit`/
+`bitdo_ultimate_mg`/`bitdo_m30`/`generic` each get their own file under `quirks/{xbox,bitdo}/`.
+A real correctness catch surfaced during the move, not just mechanical extraction: Elite
+Series 2 previously got Xbox rumble via a raw `vendor_id==0x045E` check, independent of any
+identity flag — naively giving the new Elite 2 quirk a NULL `send_rumble` would have silently
+dropped that. Both boards build clean, all host tests re-run with no regressions. Adding a
+future controller should now only ever touch a new `quirks/` file. Full detail: `STATUS.md`.
+
 ### Controller surface inventory, ranked (2026-07-10)
 
 Prioritization work only, per explicit instruction — **not** permission to start several unrelated
@@ -539,7 +719,7 @@ precise score.
 | Calibration (factory SPI cal) | M | H (`0x13040`/`0x13100`/`0x13080`/`0x130C0` decoded and cross-validated) | — | — | Already covered | 4 |
 | Memory regions (SPI dump) | L-M | H (bond table, battery curve, `"DSPH"` blob all characterized) | L for the DSP blob specifically (needs a second unit to diff against) | M (second physical unit for the DSP blob) | L for emulation fidelity, M for RE completeness | 3 |
 | Reconnect reliability | M (user-facing flakiness) | M (three candidate mechanisms identified from external research, unaudited against this repo's own code) | H (pure code audit, no new hardware) | None | M | **2** |
-| Wake-over-BLE | L (already out of scope, requires MAC spoofing) | M (mechanism understood, not attempted) | L | H (needs a bonded, sleeping console) | L | 5 |
+| Wake-over-BLE | M (raised 2026-07-14 — operator has a genuine already-bonded controller to capture an identity from) | M (capture-and-replay design scoped, `docs/bluetooth/wake-from-sleep-design.md`; not attempted) | M (needs a new passive BLE-advertisement capture diagnostic, code-only) | H (needs the genuine bonded controller + hardware to validate capture and replay) | M | 3 |
 | Mouse mode (feature-flag bit 4) | L (no known use case for this project) | L (bit identified, never exercised) | M | L | L | 5 |
 | Audio | L (explicitly out of scope for BT controllers) | L | L | M | L | 5 |
 | Haptics (HD-rumble fidelity) | M (backlog item, not blocking core function) | L-M (DSP blob is a candidate lead, unconfirmed) | L (needs a second SPI dump to diff) | M | M | 3 |
@@ -554,6 +734,21 @@ marginal value, or blocked on hardware/access this project doesn't currently hav
 recommended before Tier 1/2 items land.
 
 ### Backlog / longer-term
+- **Interactive controller-mapping tool in config mode** (raised 2026-07-15, after the
+  `bthid_gamepad_quirks` split) — pair a new controller, enter config mode, press buttons one at
+  a time, and have the dongle diff the raw report against a captured baseline to identify which
+  byte/bit changed, instead of manually reading raw-report dumps by hand (the workflow already
+  used ad hoc to find the 8BitDo Ultimate MG paddle bytes and several others this session). The
+  diff step itself is easy — config mode's existing raw-report capture
+  (`set_global_raw_report`/`get_global_raw_report`, `report.h`) already provides the raw bytes.
+  The real design gap: every quirk today is a compiled-in C struct (`gamepad_quirk_t`,
+  `bthid_gamepad_quirks.h`); there is no runtime format for "an arbitrary discovered byte/mask →
+  `JP_BUTTON_*` mapping" that could be saved to flash (alongside the existing per-family
+  `config_get_ns2_map()` persistence) and re-applied at connect time instead of/alongside the
+  hardcoded quirks. Needs its own design pass before implementation — not started. A smaller,
+  useful first step that needs no new persistence: an auto-diff readout in config mode (press a
+  button, get the byte/bit back immediately) to speed up the existing by-hand workflow without
+  building the save/label/persist path yet.
 - **Multi-controller** — lift the single-controller milestone toward 4 players (USB hub confirmed to
   work on the Switch 2; determine the real per-player output path).
 - **Advanced haptics** — capability-based translation (HD-rumble ⇄ DualSense) where practical.
@@ -567,11 +762,24 @@ recommended before Tier 1/2 items land.
   `docs/switch2/audio-passthrough-research.md`.
 - **Switch 2 GameCube controller** — documentation first (analog triggers, unique mapping), then support.
 - **Firmware-update passthrough** — receive/store the console's controller update for community archival.
+- **Wake-from-sleep via a crafted BLE advertisement** (raised 2026-07-14, substantially strengthened
+  same day) — the exact wake-advertisement byte format is now Confirmed from
+  `ndeadly/switch2_controller_research` (already cloned locally): it's the normal reconnection
+  advertisement with one flag bit changed, plus this project's own known VID/PID and its
+  already-SPI-decoded bonded-console BD_ADDR field. No capture step needed anymore — the remaining
+  question is purely whether this dongle's BTstack/CYW43 setup can transmit a raw BLE advertisement
+  at all. See `docs/bluetooth/wake-from-sleep-design.md`.
 - **BT bond-table realism** (new 2026-07-10, from SPI dump RE) — our `0x1FA000` memory-read always
   claims zero stored bonds; a genuine unit's flash shows a real two-record bond table (BD_ADDR +
-  shared 16-byte key, BR/EDR + LE pair for one host). Investigate whether presenting a plausible
-  bond record improves the "Pro 2 reconnect sometimes needs a triple-tap" flakiness. See
-  `docs/experiments/spi-dump-analysis-2026-07-10.md` §3.4.
+  shared 16-byte key, BR/EDR + LE pair for one host). See
+  `docs/experiments/spi-dump-analysis-2026-07-10.md` §3.4. **Update 2026-07-15**: the "Pro 2
+  reconnect sometimes needs a triple-tap" flakiness this item speculated bond-table realism might
+  help with has been separately root-caused and fixed — a stale BLE bond (from a genuine
+  controller being re-paired to another host between test sessions) wasn't self-healing on an
+  authentication-failure disconnect; see `STATUS.md`. This backlog item's own scope (this
+  dongle's *own emulated SPI flash content*, served to the console) is a different, still-open
+  concern, unrelated to that fix (which is about this dongle's own BTstack bond database as a
+  BLE *central* talking to a real controller, not the flash bytes it reports as a peripheral).
 - **Battery-curve fidelity** (new 2026-07-10) — a genuine unit's flash (`0x1FB000`) has a real
   per-unit discharge-curve table; our `0x0B` battery command currently returns fixed placeholder
   values. Low priority. See `spi-dump-analysis-2026-07-10.md` §3.5.
@@ -583,8 +791,9 @@ recommended before Tier 1/2 items land.
   See `spi-dump-analysis-2026-07-10.md` §3.6.
 
 ### Out of scope (confirmed)
-Wake-console-over-USB (needs a BLE advert from a bonded controller; our link is USB); audio over BT
-controllers; HD-rumble → DualSense haptics as a v1 feature.
+Wake-console-over-USB (needs a BLE advert from a bonded controller; our link is USB — this is why
+wake-from-sleep, above, requires a *separate* BLE identity/advertisement, not something reachable
+over the existing USB link); audio over BT controllers; HD-rumble → DualSense haptics as a v1 feature.
 
 ---
 

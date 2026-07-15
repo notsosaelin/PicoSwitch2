@@ -285,9 +285,19 @@ mode, power-cycle (not hold), confirm the board returns to Pro2 on the next boot
 ```text
 Switch 2 Pro Controller 2  (boot default)
     -> NSO GameCube Controller
-    -> CDC Config Mode                    (terminal for this powered session)
-    -> [power-cycle/reset] -> back to Switch 2 Pro Controller 2
+    -> CDC Config Mode
+    -> [BOOTSEL hold, live -- 2026-07-14] -> back to Switch 2 Pro Controller 2
+    -> [power-cycle/reset, still always available too] -> back to Switch 2 Pro Controller 2
 ```
+
+**Superseded, 2026-07-14: Config is no longer terminal.** `usb_next_personality(CDC_CONFIG)` now
+wraps back to `SWITCH2_PRO2` instead of returning itself unchanged, and `ns2_bt_host.c`'s
+`control_timer_handler()` no longer suppresses BOOTSEL_HOLD detection while `g_usb_config_mode` is
+true (pairing/wipe gestures — double-tap/triple-tap — remain suppressed in config mode, since
+those still make no sense there). This was a deliberate initial scope limit ("do not add a live
+Config-to-Pro2 exit path in this pass," `NSO-GC.md`), not a technical constraint — lifted per
+project owner request once the rest of the cycle was working. Power-cycle/reset still also returns
+to Pro2 unconditionally, as a second, independent recovery path requiring no gesture at all.
 
 `USB_PERSONALITY_JOYCON2` is a reserved enum value for forward compatibility (a stable identity for a
 future Joy-Con 2 output personality) but is **skipped at runtime** — no placeholder descriptor is
@@ -296,6 +306,15 @@ enumerated, no dead USB device appears. Once Joy-Con 2 output exists, the cycle 
 personality" logic must walk the enum and skip anything not actually implemented, not hard-code the
 two-personality cycle as a special case — this is what makes the future Joy-Con2 insertion a one-line
 change (mark it available) rather than a cycle-logic rewrite.
+
+**Superseded, 2026-07-14: Joy-Con 2 is implemented, as two separate enum values, not one.** The
+single reserved `USB_PERSONALITY_JOYCON2` described above was split into
+`USB_PERSONALITY_JOYCON2_L`/`_R` — two entirely separate, always-available, individually-selectable
+experimental/test personalities, not a single personality with an internal side toggle or a merged
+identity. The actual cycle is now `Pro2 → GameCube → Joy-Con2 Left → Joy-Con2 Right → Config`. See
+`docs/switch2-joycon2/protocol.md` ("Why not simultaneous L+R") and `STATUS.md`/`PLAN.md` for the
+full evidence and rationale; this section's enum snippet and two-personality cycle description above
+are kept only as the historical record of the original design decision.
 
 **Device identity for a future implementation — Confirmed, sourced 2026-07-14 from the real Linux
 kernel "HID: nintendo" driver** (Vicki Pfau, linux-input mailing list v11 patch series,

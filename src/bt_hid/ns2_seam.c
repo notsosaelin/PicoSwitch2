@@ -34,9 +34,23 @@ static inline uint8_t ns2_slot(uint8_t dev_addr) {
     return (dev_addr < NS2_SLOTS) ? dev_addr : 0;
 }
 
-// 0-255 (center 128) -> 12-bit (center ~2048).
+// 0-255 (center 128) -> 12-bit (center 2048). Piecewise linear, not a single `v*4095/255` scale:
+// that single-scale formula treats 0-255 as a plain linear range, but the source convention
+// (every bthid driver, `input_event_t.analog[]`) is "128 is the nominal rest/center value", and
+// 128 isn't the exact midpoint of 0..255 (127.5 is) -- so `128*4095/255` truncates to 2055, not
+// 2048, and the inverted Y axis (4095 - ns2_to12(v)) rests at 2040, leaving X and Y resting
+// 7-8 units off center in opposite directions. Confirmed 2026-07-14 as the cause of "stick
+// mapping slightly off" reported when calibrating in Steam (its calibration screen is sensitive
+// to exactly this kind of small, asymmetric center-point bias). Fixed by scaling each half of the
+// range (0..128 and 128..255) independently so v=0/128/255 map to exactly 0/2048/4095 -- the two
+// halves have very slightly different granularity (128 steps vs 127 steps), imperceptible for an
+// analog stick and the standard way to handle an odd-centered source range.
 static inline uint16_t ns2_to12(uint8_t v) {
-    return (uint16_t)(((uint32_t)v * 4095u) / 255u);
+    if (v == 128) return SWITCH_STICK_MID;
+    if (v < 128)
+        return (uint16_t)(((uint32_t)v * SWITCH_STICK_MID) / 128u);
+    return (uint16_t)(SWITCH_STICK_MID +
+                       (((uint32_t)(v - 128) * (SWITCH_STICK_MAX - SWITCH_STICK_MID)) / (255u - 128u)));
 }
 
 static inline int16_t ns2_clamp16(int32_t v) {
@@ -54,8 +68,14 @@ static const uint32_t SRC_TO_JP[NS2_SRC_COUNT] = {
     JP_BUTTON_L4, JP_BUTTON_R4, JP_BUTTON_A5, JP_BUTTON_L5, JP_BUTTON_R5,
 };
 
-// Apply one remap destination to the Pro Controller output.
-static void ns2_apply_dst(uint8_t dst, switch_pro_input_t *in) {
+// Apply one remap destination to the Pro Controller output. `joycon2_active` reinterprets
+// NS2_DST_GL/NS2_DST_GR as SL/SR (see include/switch_pro.h's SWITCH_EXTRA_SL/SR comment and
+// docs/switch2-joycon2/mapping.md): GL/GR mean "grip button", and a lone Joy-Con2 physically has
+// no grips to read, so the same generic-controller source buttons the per-family map already
+// assigns to GL/GR (typically paddle/extra buttons, unused on a standard pad) instead drive the
+// real SL/SR rail buttons a lone Joy-Con2 does have. This does not change Pro2/GameCube mode --
+// both keep reading GL/GR unchanged, since the reinterpretation is gated on joycon2_active alone.
+static void ns2_apply_dst(uint8_t dst, switch_pro_input_t *in, bool joycon2_active) {
     switch (dst) {
         case NS2_DST_B:       in->buttons[0] |= SWITCH_MASK_B; break;
         case NS2_DST_A:       in->buttons[0] |= SWITCH_MASK_A; break;
@@ -75,8 +95,8 @@ static void ns2_apply_dst(uint8_t dst, switch_pro_input_t *in) {
         case NS2_DST_DDOWN:   in->buttons[2] |= SWITCH_MASK_DPAD_DOWN; break;
         case NS2_DST_DLEFT:   in->buttons[2] |= SWITCH_MASK_DPAD_LEFT; break;
         case NS2_DST_DRIGHT:  in->buttons[2] |= SWITCH_MASK_DPAD_RIGHT; break;
-        case NS2_DST_GL:      in->extra |= SWITCH_EXTRA_GL; break;
-        case NS2_DST_GR:      in->extra |= SWITCH_EXTRA_GR; break;
+        case NS2_DST_GL:      in->extra |= joycon2_active ? SWITCH_EXTRA_SL : SWITCH_EXTRA_GL; break;
+        case NS2_DST_GR:      in->extra |= joycon2_active ? SWITCH_EXTRA_SR : SWITCH_EXTRA_GR; break;
         case NS2_DST_C:       in->extra |= SWITCH_EXTRA_C; break;
         default: break;  // NS2_DST_NONE
     }
@@ -120,8 +140,11 @@ void router_submit_input(const input_event_t *e) {
     // is only ever NSO_GAMECUBE when that personality is actually active.
 #ifdef NS2_PRO
     bool gc_active = (g_usb_personality == USB_PERSONALITY_NSO_GAMECUBE);
+    bool joycon2_active = (g_usb_personality == USB_PERSONALITY_JOYCON2_L ||
+                            g_usb_personality == USB_PERSONALITY_JOYCON2_R);
 #else
     bool gc_active = false;
+    bool joycon2_active = false;
 #endif
     uint32_t b = e->buttons;
     if (!e->suppress_l2r2_analog_fold && !gc_active) {
@@ -181,7 +204,7 @@ void router_submit_input(const input_event_t *e) {
     config_get_ns2_map(ns2_family(e->dev_addr), map);
     for (int src = 0; src < NS2_SRC_COUNT; src++) {
         if (b & SRC_TO_JP[src])
-            ns2_apply_dst(map[src], &in);
+            ns2_apply_dst(map[src], &in, joycon2_active);
     }
 
     // Sticks: 0-255 -> 12-bit; Y inverted (Switch is up-positive, HID is up=0).
