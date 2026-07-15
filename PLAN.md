@@ -4,10 +4,11 @@
 > [`docs/archive/roadmap-through-2026-07-15.md`](docs/archive/roadmap-through-2026-07-15.md) for
 > the completed milestone narrative.
 
-## Current objective: release stabilization
+## Current objective: post-release compatibility closure
 
-Preserve the hardware-confirmed Pro Controller 2, NSO GameCube, DualSense/Edge, rumble, pairing,
-and BOOTSEL behavior as a tagged release before beginning new protocol work.
+Version `v1.1.0` now preserves the hardware-confirmed Pro Controller 2, NSO GameCube,
+DualSense/Edge, rumble, pairing, and BOOTSEL baseline. Close the remaining mapping and regression
+matrix gaps before beginning new protocol work.
 
 ### Release gate
 
@@ -19,7 +20,7 @@ and BOOTSEL behavior as a tagged release before beginning new protocol work.
 - [x] NSO GameCube input and rumble on a real Switch 2
 - [x] Reconcile documentation and archive superseded development logs
 - [x] Complete source-comment evidence cleanup
-- [ ] Push the release commit and publish both UF2 artifacts
+- [x] Push the release commit and publish both UF2 artifacts (`v1.1.0`, 2026-07-15)
 
 ## Next: compatibility closure
 
