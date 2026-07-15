@@ -176,22 +176,8 @@ static uint8_t scale_12bit_to_8bit(uint16_t val)
 // Each motor uses 4 bytes: [amplitude, HF_freq, amplitude/2, LF_freq]
 // Neutral state: [00 01 40 40]
 //
-// KNOWN LIMITATION, found 2026-07-12 auditing this driver: the real Joy-Con/Pro
-// Controller HD-rumble amplitude byte is not linear in intensity — it's a log2-based
-// curve (dekuNukem/Nintendo_Switch_Reverse_Engineering's rumble_data_table.md documents
-// the actual formula, roughly log2f(8.7f*amp)*32.0f for the mid range, with a
-// precomputed hex_amp lookup table). This function uses a linear approximation
-// instead, so intensity-to-perceived-strength mapping is not faithful to real hardware
-// even after the fix below — flagged as Hypothesis, not Confirmed, pending a proper
-// port of the real table. Real amplitude/frequency values also have documented safe
-// maximums (exceeding them can damage the linear actuators) that this function does
-// not independently enforce beyond capping to uint8_t range.
-//
-// Fixed 2026-07-12: `scaled` already had `+64` folded in, then `amplitude` added a
-// second `+64` on top — an apparent copy/refactor duplication (found auditing this
-// file for the same class of bug as the Xbox rumble regression). This made even the
-// smallest nonzero intensity jump straight to amplitude=128 with no headroom near the
-// bottom of the range, and topped out at 230 rather than the intended ~166.
+// This is a bounded linear approximation, not Nintendo's logarithmic HD-rumble curve.
+// Fidelity and safe-range research is tracked in docs/bluetooth/output-open-questions.md.
 static void encode_rumble(uint8_t intensity, uint8_t* out)
 {
     if (intensity == 0) {

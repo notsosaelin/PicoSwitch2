@@ -1,9 +1,8 @@
 # USB Output Personality Architecture
 
-> Status: 🟢 Stage B (implementation) — in progress. This document defines the architecture for a
-> native NSO GameCube Controller output personality alongside the existing Switch 2 Pro Controller 2
-> personality, without coupling GameCube logic into `switch_pro2.c` and without breaking the existing
-> Switch 1 Pro Controller build path.
+> Current status (2026-07-15): implemented and hardware-validated for enumeration, input, and
+> rumble. This document preserves the architecture and the dated implementation trail. Current
+> behavior is summarized in `STATUS.md`.
 >
 > **2026-07-13 product decision, superseding the "Live switching mechanism"/"Persistence" sections
 > below**: personality selection is a **volatile runtime BOOTSEL-hold cycle**, not a persisted,
@@ -22,14 +21,9 @@ controller's own operation was unaffected (see the `bcdDevice` fix below, which 
 made this coexistence possible). Two real bugs were found and fixed via this hardware round — see the
 two subsections immediately below.
 
-Steam recognizes the Pico as a device named "Nintendo GameCube Controller" but offers a **"Begin
-Setup"** prompt rather than treating it as a fully-supported native controller (the genuine unit gets
-no such prompt). This is the expected, already-documented Stage B boundary, not a new bug: Steam's
-native (no-manual-setup) recognition depends on the device actually responding to an initialization
-handshake over the vendor interface, which Stage B intentionally does not implement
-(`switch_gc_vendor_control_xfer()` stalls everything except the WinUSB probe; `switch_gc_task()`
-deliberately stays silent — see each function's own comment). That handshake is Stage D's job. This
-is real, hardware-confirmed evidence for exactly where Stage B's boundary sits, not a regression.
+The initial Stage B build appeared in Steam with a **Begin Setup** prompt because the vendor
+initialization channel was not implemented yet. That dated observation is retained here as the
+boundary that motivated Stage D; it does not describe the current implementation.
 
 ### Microsoft OS 1.0 WinUSB auto-bind (found + fixed via first hardware round, 2026-07-13)
 
@@ -457,8 +451,8 @@ existing files' existing `#ifdef`/ternary sites widened to a third arm.
 2. ~~Hardware gate: validate Stage B's enumeration and mode cycle on the actual Pico~~ **Done
    2026-07-13.** Confirmed on real hardware with a genuine controller connected simultaneously; see
    STATUS.md "NSO GameCube Controller: Stage B... hardware-validated."
-3. ~~Stage C: implement report `0x0A` construction~~ **Implemented 2026-07-13, second pass
-   (`PROMPT.md`).** `switch_gc_build_report()`/`switch_gc_encode_report()`
+3. ~~Stage C: implement report `0x0A` construction~~ **Implemented 2026-07-13, second pass.**
+   `switch_gc_build_report()`/`switch_gc_encode_report()`
    (`src/switch_gc/switch_gc.c`, `src/switch_gc/switch_gc_encode.c` — the latter extracted as a
    pure, host-testable module mirroring `usb_mode_cycle.c`'s pattern) construct the full 63-byte
    body for **every** documented field: counter, power-info default, A/B/X/Y, D-pad,
@@ -485,25 +479,17 @@ existing files' existing `#ifdef`/ternary sites widened to a third arm.
    sent the Select-Input-Report command with value `0x0A` — mirrors `switch_pro2.c`'s own
    `ns2_streaming` gate exactly. `bRequest=2`'s EP0 vendor request remains Hypothesis (unrelated to
    this bulk-channel gate) and was not touched this pass.
-5. ~~Stage E (rumble)~~ **Provisional implementation, not a permanent protocol conclusion**, per
-   explicit 2026-07-13 project-owner direction: `switch_gc_hid_out_report()` preserves the Confirmed
-   zero-length-packet idle behavior exactly, corrects the report to 4 rumble-data bytes + 59 reserved
-   bytes, and treats any nonzero rumble data opaquely — mapping it to one conservative fixed motor
-   level rather than decoding intensity. Also fixed a real, previously-latent bug in the *plumbing*
+5. ~~Stage E (rumble)~~ **Implemented and hardware-validated.**
+   `switch_gc_hid_out_report()` preserves zero-length idle behavior, uses the captured binary-state
+   decoder, and bounds ON pulses so output cannot hang. It also relies on a plumbing fix:
    this pass: the shared `tud_hid_set_report_cb()` dispatcher ignored TinyUSB's separate `report_id`
    parameter and always treated `buffer[0]` as the report ID — correct by coincidence for interrupt
    OUT (the transport this device actually uses) but wrong for control `SET_REPORT` (which strips
    the ID into that parameter instead). Fixed centrally via a new pure `hid_out_normalize()` helper
    (`src/hid_out_normalize.c`, host-tested), shared by both Pro2's and GameCube's rumble handlers.
-   Byte-level rumble semantics stay explicitly unresolved until a deliberate multi-level hardware
-   sweep exists; do not treat the fixed-default behavior as evidence of the real encoding.
+   Remaining semantic questions are tracked in `docs/switch2-gc/open-questions.md`.
 6. Stage F (persistence/selection) is **done** as of the 2026-07-13 product decision (volatile
    runtime cycle, not persisted) — superseding the original Stage F plan referenced elsewhere in this
    document.
-7. **Hardware checkpoint, not yet run.** Everything above is host-tested and build-verified but
-   **not hardware-validated** — see `DATA.md` for the exact test procedure and its one honest gap:
-   Steam/Windows has no reason to ever send the Stage D command sequence on its own (that's
-   Nintendo-console-specific vendor protocol, not something a generic PC host issues), so the
-   streaming gate can only be exercised by a real Switch 2 console or a purpose-built raw-bulk-write
-   test tool, neither of which exists yet for this project. Do not claim Stage C/D
-   hardware-validated until one of those actually happens.
+7. **Hardware checkpoint complete.** Enumeration, the console-only Stage D command path, input
+   streaming, native controls, and rumble have all run successfully on a real Switch 2.

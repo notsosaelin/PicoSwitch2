@@ -348,9 +348,10 @@ Unknown behavior should drive new experiments.
 
 # Switch 2 GameCube Controller
 
-**Superseded 2026-07-13**: this is now the active, highest-priority feature, per explicit project
-owner direction (`NSO-GC.md`). The "documentation only, wait for Pro Controller 2 maturity" policy
-below is historical context, not current instruction.
+**Current status (2026-07-15):** this personality is implemented and hardware-validated for
+enumeration, input streaming, buttons, sticks, analog/digital triggers, and rumble. Earlier staged
+plans below are historical context; [STATUS.md](STATUS.md) and
+[docs/status/compatibility-matrix.md](docs/status/compatibility-matrix.md) are authoritative.
 
 Current known information:
 
@@ -363,14 +364,10 @@ Current known information:
 * existing captures available (`docs/experiments/nso-gc-*`, `docs/switch2-gc/*`)
 * physical hardware available and directly inspected
 
-Stage A (research/architecture) and Stage B (USB personality/enumeration) are complete and
-hardware-validated. Stage C (report `0x0A` input construction + the 8BitDo NGC Modkit's
-GameCube-mode mapping) is implemented and host-tested, pending its own hardware validation. Stage D
-has a minimum evidence-backed streaming gate implemented (Confirmed against a real USB bulk
-capture, not just BLE-derived bytes); Stage E (rumble) has a provisional, explicitly-non-final
-implementation. See `docs/switch2-gc/protocol.md`, `docs/switch2-gc/usb-personality.md`,
-`docs/switch2-gc/mapping.md`, and `DATA.md` for the current evidence base and implementation status —
-those documents are the living source of truth for this feature, not this section.
+See `docs/switch2-gc/protocol.md`, `docs/switch2-gc/usb-personality.md`, and
+`docs/switch2-gc/mapping.md` for the durable evidence base. Deleted session handoffs such as
+`NSO-GC.md` and `DATA.md` are catalogued only for historical traceability in
+`docs/archive/ephemeral-handoff-index.md`.
 
 ---
 

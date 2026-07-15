@@ -1,5 +1,12 @@
 # BTStack Implementation (`joypad-os`)
 
+> Current-status note (2026-07-15): this document contains the detailed, dated implementation
+> history. The authoritative runtime architecture is `docs/architecture/overview.md`; current
+> controller and BOOTSEL results are in `STATUS.md` and
+> `docs/status/compatibility-matrix.md`. DualSense/Edge input, LEDs, rumble, and BOOTSEL gestures
+> are now hardware-confirmed. Treat older "pending hardware" statements below as dated snapshots
+> unless the compatibility matrix still lists the item as open.
+
 This project implements a native Bluetooth HID host stack based on [joypad-os](https://github.com/joypad-ai/joypad-os) to handle controller connections and inputs. **Bluepad32 has been completely removed** from this project in favor of this implementation, which provides much finer-grained control and parses extra controller features (e.g., paddles, capture buttons).
 
 ## Architecture & Submodules

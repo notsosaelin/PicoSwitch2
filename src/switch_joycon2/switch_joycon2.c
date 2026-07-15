@@ -207,11 +207,8 @@ const char **switch_joycon2_string_table(size_t *count) {
 }
 
 //--------------------------------------------------------------------+
-// Microsoft OS 1.0 descriptors -- same WinUSB auto-bind mechanism as switch_gc.c's identical
-// block; see that file's own comment for the full rationale. Untested for Joy-Con 2 specifically
-// (Hypothesis this personality needs the same treatment GameCube/Pro2 both required) but cheap
-// and harmless to include proactively rather than wait for a Windows enumeration failure to
-// prove it's needed.
+// Microsoft OS 1.0 WinUSB auto-bind descriptors, matching the other vendor-interface
+// personalities. Windows-specific questions are tracked in docs/switch2-joycon2/open-questions.md.
 //--------------------------------------------------------------------+
 
 #define JOYCON2_MS_OS_VENDOR_CODE 0x21  // distinct from Pro2's/GameCube's own values -- these
@@ -263,10 +260,9 @@ static void switch_joycon2_build_report05(uint8_t *p) {
 }
 
 //--------------------------------------------------------------------+
-// EP0 vendor control -- Nintendo Switch 2 console identity handshake. Templated from
-// switch_gc.c's already-hardware-validated pattern (same gate Pro2/GameCube both required before
-// a real console will touch the bulk command channel). NOT independently confirmed for Joy-Con 2
-// against a real console -- Hypothesis, same evidence tier GameCube's Stage D started at.
+// EP0 vendor control -- Nintendo Switch 2 console identity handshake. Both side personalities now
+// pass real-console enumeration and streaming; opaque field semantics remain documented outside
+// source in docs/switch2-joycon2/open-questions.md.
 //--------------------------------------------------------------------+
 
 // Identity block (64 B), returned for both bRequest=3 and SPI reads at 0x13000. Structurally
@@ -325,19 +321,15 @@ static const uint8_t *switch_joycon2_ctrl_identity(void) {
     return s_side == JOYCON2_SIDE_LEFT ? switch_joycon2_ctrl_identity_l : switch_joycon2_ctrl_identity_right();
 }
 
-// Response to EP0 vendor bRequest=2 (16 bytes) -- Hypothesis, NOT independently captured for
-// Joy-Con 2 (unlike GameCube's own equivalent, which reused a real captured value). Templated
-// structurally from Pro2/GameCube's own shape; the exact byte semantics are unconfirmed.
+// Response to EP0 vendor bRequest=2 (16 bytes). Family framing is known; Joy-Con-specific opaque
+// byte semantics are not. See docs/switch2-joycon2/open-questions.md.
 static const uint8_t switch_joycon2_ctrl_info[16] = {
     0x01, 0x01, 0x07, 0x00, 0x00, 0x00, 0x0C, 0x00,
     0x00, 0x00, 0x02, 0xBB, 0x5E, 0xAB, 0xA9, 0x3C};
 
 static const uint8_t JOYCON2_DEVICE_KEY_B1[16] = {
     0x5C, 0xF6, 0xEE, 0x79, 0x2C, 0xDF, 0x05, 0xE1,
-    0xBA, 0x2B, 0x63, 0x25, 0xC4, 0x1A, 0x5F, 0x10};  // ASSUMPTION -- reuses switch_pro2.c's/
-                                                       // switch_gc.c's own public constant, no
-                                                       // Joy-Con-2-specific capture of this
-                                                       // exchange exists yet.
+    0xBA, 0x2B, 0x63, 0x25, 0xC4, 0x1A, 0x5F, 0x10};  // shared working family key; see open questions
 static uint8_t s_joycon2_ltk[16];
 
 // Factory/SPI memory read emulation, mirroring switch_gc_mem_read()'s approach but using
@@ -487,10 +479,7 @@ static void switch_joycon2_vendor_dispatch(const uint8_t *c, uint32_t n) {
                 // capture, see docs/switch2-joycon2/protocol.md), not something this dongle emulates.
         dl = 0;
         break;
-    case 0x10:  // firmware info -- structurally mirrors switch_gc.c/switch_pro2.c; the "type"
-                // byte position is HYPOTHESIS for Joy-Con 2 (no confirmed capture of this exact
-                // field). Uses 0x07 as a placeholder distinct from Pro2's 0x02 and GameCube's
-                // 0x04, matching this file's own EP0 info block placeholder.
+    case 0x10:  // family-shaped firmware info; Joy-Con type byte remains opaque (see open questions)
         memcpy(d, (const uint8_t[]){0x01, 0x01, 0x05, 0x07, 0x0C, 0x00, 0x00, 0x00,
                                     0xFF, 0xFF, 0xFF, 0xFF}, 12);
         dl = 12;
@@ -506,16 +495,9 @@ static void switch_joycon2_vendor_dispatch(const uint8_t *c, uint32_t n) {
         r[1] = 0x04;
         dl = 0;
         break;
-    // Added 2026-07-14 after the project owner reported Joy-Con 2 (L)/(R) not being recognized on
-    // a real console -- exactly the class of bug GC's own 0x11/0x18 fix (above, this file's own
-    // switch_gc.c sibling) already describes: this dispatcher was falling through to a bare 0-byte
-    // ACK for these two command IDs instead of the specific structured replies Pro2/GC actually
-    // send, when Joy-Con 2 was templated from GC's pattern before that fix existed. Reused
-    // byte-for-byte from switch_gc.c's own values (Hypothesis-tier for Joy-Con 2 specifically --
-    // same evidence tier as every other value in this dispatcher, not independently confirmed).
-    case 0x11:  // unknown, but Pro2's own comment notes "last 16B are a constant shared across
-                // units, so replaying is safe" -- reused verbatim, same assumption GC's own 0x11
-                // case makes.
+    // Structured family replies required by the real-console path. Joy-Con-specific meanings of
+    // the opaque constants are not assigned here; see docs/switch2-joycon2/open-questions.md.
+    case 0x11:
         if (sub == 0x01) { d[0] = 0x03; dl = 4; }  // USB form (0x03; the BLE form is 0x01)
         else if (sub == 0x03) {
             memcpy(d, (const uint8_t[]){
@@ -552,16 +534,9 @@ static void switch_joycon2_vendor_dispatch(const uint8_t *c, uint32_t n) {
 }
 
 //--------------------------------------------------------------------+
-// Output report 0x01 (rumble/LED) -- PROVISIONAL, not a resolved byte decode. ndeadly's
-// bluetooth_interface.md documents the BLE framing as 16 bytes of "packed rumble data for LRA"
-// but does not decode it to bit level; this project's own GameCube work found that assuming a
-// naive "byte = linear amplitude" model can be actively wrong (see
-// docs/experiments/refuted-hypotheses.md and switch_gc.c's own gc_rumble_state_t history) --
-// that lesson is deliberately NOT assumed to transfer here without evidence, but this
-// implementation is kept maximally conservative for exactly that reason: treat any nonzero data
-// in the rumble field as "on" at a fixed, moderate amplitude, forwarded to the downstream
-// Bluetooth-connected controller's own motor, rather than trying to decode a specific byte as
-// intensity. Revisit with a real hardware capture before assuming anything more specific.
+// Output report 0x01 (rumble/LED). Until a side-specific decode is captured, any nonzero packed
+// LRA field becomes a fixed moderate motor request with a watchdog. See
+// docs/switch2-joycon2/open-questions.md.
 //--------------------------------------------------------------------+
 
 #define JOYCON2_RUMBLE_ON_AMPLITUDE 0xB0

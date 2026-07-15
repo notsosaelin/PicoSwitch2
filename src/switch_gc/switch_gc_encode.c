@@ -51,11 +51,7 @@ void switch_gc_encode_report(const switch_pro_input_t *in, uint8_t counter, uint
     out[0x3] = b1;
     out[0x4] = b2;
 
-    // Sticks arrive already packed 12-bit-in-3-bytes (identical convention to report
-    // 0x05/0x09's sticks -- Strong assumption that GC's report 0x0A shares the same packing,
-    // not independently bit-verified against a live non-neutral sample, but internally
-    // consistent with the already-Confirmed report 0x05 packing and this project's own
-    // switch_pro_pack_stick()).
+    // Sticks arrive packed as two 12-bit values in 3 bytes, the shared Switch 2 report convention.
     memcpy(&out[0x5], in->left_stick, 3);
     memcpy(&out[0x8], in->right_stick, 3);
 
@@ -72,8 +68,8 @@ void switch_gc_encode_report(const switch_pro_input_t *in, uint8_t counter, uint
 // found Steam selects report ID 0x05 exclusively, never 0x0A -- see
 // docs/switch2-gc/protocol.md "Input Report 0x05" and the capture evidence cited in
 // docs/experiments/nso-gc-usb-capture-decode-2026-07-13.md. Report 0x0A remains implemented for
-// whatever a real Switch 2 console turns out to request (Stage G, still untested); 0x05 is what
-// PC/Steam hosts actually use for every Switch-family controller, GC included -- exactly like
+// the real Switch 2 console path; 0x05 is what PC/Steam hosts use for every Switch-family
+// controller, GC included -- exactly like
 // switch_pro2.c's own ns2_build_report_05() already does for Pro Controller 2.
 //
 // Deliberately a SEPARATE, independent encoder rather than calling into switch_pro2.c's static

@@ -95,31 +95,21 @@ static void open_pairing_window(uint32_t now_ms) {
 }
 
 static void wipe_all_devices(void) {
-    btstack_host_disconnect_all_devices();
+    // Lock admission and erase trust first. The actual disconnects complete
+    // asynchronously, so this prevents their completion events from reopening a
+    // reconnect path before the wipe has taken effect.
     btstack_host_delete_all_bonds();
+    btstack_host_disconnect_all_devices();
 }
 
-// Dedicated fast poll purely so `gamepad_task()` (and any other driver `.task()`) observes
-// rumble-state changes at a cadence that can keep up with a real console's ~4ms GC rumble
-// traffic -- see RUMBLE_TICK_MS's own comment for the full root-cause account. Intentionally
-// does nothing else (no LED/BOOTSEL/pairing logic here) so it stays cheap to run this often.
-static void rumble_timer_handler(btstack_timer_source_t *ts) {
-    bthid_task();
-    btstack_run_loop_set_timer(ts, RUMBLE_TICK_MS);
-    btstack_run_loop_add_timer(ts);
-}
-
-static void control_timer_handler(btstack_timer_source_t *ts) {
-    uint32_t now = to_ms_since_boot(get_absolute_time());
-
-    // BOOTSEL gestures. Pairing/wipe are still fully suppressed in config mode (they make no
-    // sense there and could interfere with an in-progress config-mode session) -- but the HOLD
-    // gesture itself is no longer suppressed for NS2_PRO builds: Config's live exit back to Pro2
-    // (2026-07-14, usb_mode_cycle.c's usb_next_personality() now wraps CDC_CONFIG -> Pro2 instead
-    // of staying terminal) needs BOOTSEL_HOLD to still be detected while g_usb_config_mode is
-    // true. !NS2_PRO builds are unaffected: no live Config exit exists there (NSO-GC.md's Switch-1
-    // behavior must stay exactly as before), so BOOTSEL_HOLD's action stays gated on !in_config
-    // exactly as it always was.
+// Advance the gesture state machine and dispatch a completed gesture. This is
+// intentionally separate from the 30 ms control timer: sustained Classic HID
+// traffic can delay that timer, but the BOOTSEL sample itself is now serviced
+// at report boundaries. Polling here as well lets the corresponding edges and
+// deadlines be observed in the same traffic-driven path.
+static void service_bootsel_gestures(uint32_t now) {
+    // Pairing/wipe remain suppressed in config mode, while NS2_PRO's hold is
+    // allowed there so the personality cycle can wrap from Config to Pro2.
     bool in_config = g_usb_config_mode;
     bootsel_gesture_t gesture = bootsel_poll(now);
     switch (gesture) {
@@ -135,9 +125,7 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
             break;
         case BOOTSEL_HOLD:
 #ifdef NS2_PRO
-            // Request the next USB personality (Pro2 -> GameCube -> Joy-Con2 L -> Joy-Con2 R ->
-            // CDC config -> back to Pro2). core0 (usb.c) owns the actual transition; core1 only
-            // requests it -- see docs/switch2-gc/usb-personality.md "Request/acknowledge handoff".
+            // Core0 owns the actual USB transition; core1 only requests it.
             g_usb_mode_cycle_requested = true;
 #else
             if (!in_config) g_usb_enter_config = true;
@@ -147,6 +135,40 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
         default:
             break;
     }
+}
+
+// Dedicated fast poll purely so `gamepad_task()` (and any other driver `.task()`) observes
+// rumble-state changes at a cadence that can keep up with a real console's ~4ms GC rumble
+// traffic -- see RUMBLE_TICK_MS's own comment for the full root-cause account. Intentionally
+// does nothing else (no LED/BOOTSEL/pairing logic here) so it stays cheap to run this often.
+static void rumble_timer_handler(btstack_timer_source_t *ts) {
+    // Cooperative SRAM park point for core0's BOOTSEL sample. Unlike the old
+    // 200 us multicore-lockout IRQ deadline, this is guaranteed to be observed
+    // on the next timer callback even under high-rate DualSense Classic traffic.
+    bootsel_core1_service();
+    bthid_task();
+    btstack_run_loop_set_timer(ts, RUMBLE_TICK_MS);
+    btstack_run_loop_add_timer(ts);
+}
+
+// Called by bthid at the start of every inbound HID report. Classic Bluetooth
+// traffic (most visibly DualSense/Edge) can keep BTstack busy enough to delay
+// timer callbacks. Make that traffic drive all three jobs it was starving:
+// BOOTSEL's cooperative park, BOOTSEL gesture recognition, and per-device tasks
+// (including DS5's initial LED/output setup and live rumble forwarding). This
+// runs on core1 in the same BTstack run-loop context as the timers; the timers
+// remain the fallback while a controller is quiet or disconnected.
+void bthid_on_report_boundary(void) {
+    bootsel_core1_service();
+    service_bootsel_gestures(to_ms_since_boot(get_absolute_time()));
+    bthid_task();
+}
+
+static void control_timer_handler(btstack_timer_source_t *ts) {
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+
+    // Also poll from the ordinary 30 ms path for quiet/disconnected periods.
+    service_bootsel_gestures(now);
 
     // Pending settings flash-write (runs here on core1, parking core0).
     config_service_save();
@@ -254,12 +276,7 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
 
 // core1 entry (launched from main.c under BT_STACK_JOYPAD).
 void ns2_bt_core_task(void) {
-    // Register THIS core as a multicore lockout victim so core0 can briefly park it to sample
-    // BOOTSEL (see bootsel.h's ARCHITECTURE note -- the sampling direction was inverted on
-    // 2026-07-15 because core0 cannot grant a lockout promptly from its TinyUSB loop, which cost
-    // us either BOOTSEL or rumble depending on which way that dead end was resolved). Must happen
-    // before btstack_run_loop_execute() below, which never returns. Parking core1 costs ~20 us
-    // per 5 ms sample, so the run loop's timers (incl. the 3 ms rumble timer) stay on cadence.
+    // Arm the cooperative core1 SRAM park used by core0's BOOTSEL sampler.
     bootsel_core1_lockout_init();
 
     // Register the HID drivers first, then bring up BTstack + the HID host. The

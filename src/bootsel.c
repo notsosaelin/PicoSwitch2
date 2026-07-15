@@ -39,7 +39,7 @@ static bool __no_inline_not_in_flash_func(read_bootsel_raw)(void) {
 }
 
 // ============================================================================
-// CORE0 SAMPLER
+// COOPERATIVE CROSS-CORE SAMPLER
 // ============================================================================
 //
 // Why core0 samples and core1 consumes: see bootsel.h's ARCHITECTURE note. Short version --
@@ -53,8 +53,10 @@ static bool __no_inline_not_in_flash_func(read_bootsel_raw)(void) {
 //   - a 2 ms bounded timeout -> core1 healthy and rumble fine, but the sample never succeeded
 //     while a controller was connected, so bootsel_poll() returned BOOTSEL_NONE forever and every
 //     gesture silently did nothing. Worst with DualSense (Classic BT), which loads core0 hardest.
-// Core1 is a cooperative BTstack run loop that reaches a safe point almost immediately, so
-// parking *it* is cheap and bounded. Hence the inversion.
+// The original inversion still asked multicore_lockout to interrupt core1 and acknowledge within
+// 200 us. Hardware testing with a DualSense proved that deadline can miss indefinitely under
+// Classic-BT traffic. Use a cooperative request/ack instead: core0 never waits, core1 enters this
+// RAM-resident park from its 3 ms timer, and core0 samples on a later USB-loop iteration.
 
 // Published by core0, consumed by core1. Single-writer/single-reader of a naturally atomic type,
 // so no lock is needed: core1 only ever reads the most recent sample, and a bool cannot tear.
@@ -62,7 +64,9 @@ static bool __no_inline_not_in_flash_func(read_bootsel_raw)(void) {
 // 5 s hold) are wildly tolerant of.
 static volatile bool g_bootsel_pressed;
 static volatile bool g_bootsel_sampled;    // false until core0 lands its first successful sample
-static volatile bool g_core1_lockout_ready;
+static volatile bool g_core1_coop_ready;
+static volatile bool g_sample_requested;
+static volatile bool g_core1_parked;
 
 // Sample cadence. MUST stay coarse -- 30 ms, matching the CONTROL_TICK_MS rate the old core1-side
 // sampler used and which the gesture machine was always tuned around (500 ms tap window, 5 s
@@ -77,40 +81,48 @@ static volatile bool g_core1_lockout_ready;
 // well outside that endpoint's cadence.
 #define BOOTSEL_SAMPLE_INTERVAL_US 30000
 
-// Bounded so a momentarily unresponsive core1 can never stall core0's USB loop -- core0 is the
-// core that must never be late (TinyUSB + a ~4 ms console rumble endpoint). Kept tight for that
-// reason: core1 is a cooperative run loop that parks in microseconds, so 200 us is already
-// generous, and a miss is genuinely harmless here -- core0 retries on the next 30 ms tick and
-// core1 keeps using the previous sample, so no gesture is lost. A miss costs latency, not
-// function, which is why the same "bounded timeout" idea that silently killed BOOTSEL on the
-// core1 side is safe on this side of the split.
-#define BOOTSEL_CORE1_PARK_TIMEOUT_US 200
-
 void bootsel_core1_lockout_init(void) {
-    multicore_lockout_victim_init();
-    g_core1_lockout_ready = true;
+    g_core1_coop_ready = true;
+}
+
+void __no_inline_not_in_flash_func(bootsel_core1_service)(void) {
+    if (!g_sample_requested) return;
+
+    // From this point until the request clears, core1 executes only from SRAM
+    // with interrupts disabled, so it cannot touch flash while CS is tri-stated.
+    uint32_t flags = save_and_disable_interrupts();
+    g_core1_parked = true;
+    __dmb();
+    while (g_sample_requested) {
+        __asm volatile("nop");
+    }
+    g_core1_parked = false;
+    __dmb();
+    restore_interrupts(flags);
 }
 
 void bootsel_sample_core0(void) {
-    if (!g_core1_lockout_ready)
-        return;  // core1 not up yet; nothing safe to park
+    if (!g_core1_coop_ready) return;
 
     static uint32_t last_sample_us = 0;
     uint32_t now_us = time_us_32();
+
+    if (g_sample_requested) {
+        if (!g_core1_parked) return;  // asynchronous: keep servicing USB while core1 reaches us
+
+        bool pressed = read_bootsel_raw();
+        g_bootsel_pressed = pressed;
+        g_bootsel_sampled = true;
+        __dmb();
+        g_sample_requested = false;   // releases core1's SRAM park loop
+        return;
+    }
+
     if (last_sample_us != 0 && (now_us - last_sample_us) < BOOTSEL_SAMPLE_INTERVAL_US)
         return;
     last_sample_us = now_us;
-
-    if (!multicore_lockout_start_timeout_us(BOOTSEL_CORE1_PARK_TIMEOUT_US))
-        return;  // core1 busy this instant -- keep the last sample, retry on the next tick
-
-    bool pressed = read_bootsel_raw();
-
-    // Release must also be bounded, for the same reason the acquire is.
-    (void)multicore_lockout_end_timeout_us(BOOTSEL_CORE1_PARK_TIMEOUT_US);
-
-    g_bootsel_pressed = pressed;
-    g_bootsel_sampled = true;
+    g_sample_requested = true;
+    __dmb();
 }
 
 // ============================================================================
@@ -128,7 +140,7 @@ bootsel_gesture_t bootsel_poll(uint32_t now_ms) {
     static uint8_t tap_count = 0;
     static uint32_t last_tap_ms = 0;
 
-    // Nothing sampled yet (core0 hasn't reached its loop, or core1's victim registration hasn't
+    // Nothing sampled yet (core0 hasn't reached its loop, or core1's cooperative service hasn't
     // run). Report no gesture rather than treating "unknown" as "released", which would fabricate
     // a release edge the moment the first real sample arrives.
     if (!g_bootsel_sampled)

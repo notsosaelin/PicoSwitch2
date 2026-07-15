@@ -152,7 +152,7 @@ static void force_stop_rumble(void) {
     uint64_t t0 = now_us();
     bool ok_data = hid_write_report(g_active_hid_out, 0x03, stop, 4);
     log_event(target_name(g_active_target), "hid-out", "interrupt", "out", NULL, 0,
-              (const uint8_t[]){0x03, 0, 0, 0, 0}, 5, NULL, 0,
+              (const uint8_t[]){0x03, 0, 2, 0, 0}, 5, NULL, 0,
               ok_data ? "ok" : "error", (uint32_t)(now_us() - t0));
     t0 = now_us();
     bool ok_zlp = hid_write_zlp(g_active_hid_out);

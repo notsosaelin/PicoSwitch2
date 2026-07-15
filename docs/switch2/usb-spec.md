@@ -9,8 +9,9 @@
 > (`src/bt_hid/ns2_seam.c`), **not** bluepad32 (retired); **GL/GR/C are exposed** and confirmed
 > on-console; report-0x09 **motion is decoded** (int32 phase + Q16.16 — see
 > [report-0x09-motion.md](report-0x09-motion.md)); **IF0 HID `bInterval` ships `0x01` (1000 Hz)**,
-> not the genuine `0x04` (250 Hz) — a deliberate latency-over-fidelity deviation, **untested on
-> console hardware** (see §12). The load-bearing, still-correct parts — §5 handshake, §7 packing,
+> not the genuine `0x04` (250 Hz) — a deliberate latency-over-fidelity deviation that works on
+> console hardware; its latency benefit has not been measured (see §13). The load-bearing,
+> still-correct parts — §5 handshake, §7 packing,
 > §9 factory/calibration blob — are what to rely on.
 
 Byte-exact reference for making PicoSwitch2 enumerate to a Switch 2 as a **wired-USB
@@ -269,7 +270,7 @@ rumble, and PC/Steam gyro on top. Historical path: an Option-B (no-audio) descri
 dispatcher + a static report `0x09` first reached "connected"; the shipped build uses the full
 Option-A descriptor and maps live input via the joypad-os seam (§10).
 
-## 13. Poll-rate deviation (2026-07-12) — 🔵 untested on console hardware
+## 13. Poll-rate deviation (2026-07-12) — console-compatible, latency benefit unmeasured
 
 **Change:** IF0's HID interrupt IN/OUT endpoints ship `bInterval = 0x01` (1 ms = 1000 Hz, the
 fastest a Full-Speed interrupt endpoint can be polled), not the genuine `0x04` (250 Hz, §2). This

@@ -22,8 +22,8 @@
 // ============================================================================
 
 // Product IDs (VID 0x057E - Nintendo)
-#define SW2_LJC_PID     0x2066  // Left Joy-Con 2
-#define SW2_RJC_PID     0x2067  // Right Joy-Con 2
+#define SW2_LJC_PID     0x2067  // Left Joy-Con 2
+#define SW2_RJC_PID     0x2066  // Right Joy-Con 2
 #define SW2_PRO2_PID    0x2069  // Pro Controller 2
 #define SW2_GC_PID      0x2073  // NSO GameCube Controller
 

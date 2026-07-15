@@ -13,13 +13,8 @@
  * reference's real decrypted BLE captures), docs/experiments/joycon2-spi-dump-analysis-2026-07-14.md
  * (factory data block, from the project owner's own genuine-unit SPI dumps).
  *
- * Status: Stage B+C -- USB enumeration and input report construction are backed by real,
- * Confirmed evidence. EP0 vendor identity handshake and vendor bulk command dispatch are
- * templated from switch_gc.c's own already-hardware-validated pattern (same command
- * architecture, confirmed shared across the whole controller family by
- * ndeadly's commands.md) but are NOT independently confirmed for Joy-Con 2 against a real
- * console -- same evidence tier GameCube's Stage D started at. Rumble (output report 0x01) is
- * PROVISIONAL, not a resolved byte decode -- see switch_joycon2.c's own comment.
+ * Both side personalities enumerate and stream on real Switch 2 hardware. Mapping and output
+ * semantics still need dedicated captures; see docs/switch2-joycon2/open-questions.md.
  *
  * L vs R: this module tracks which side to present via an internal joycon2_side_t, set through
  * switch_joycon2_set_side() -- but the CALLER (usb.c's usb_reset_personality_state()) is what

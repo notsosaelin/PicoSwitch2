@@ -12,6 +12,7 @@
 #include "tusb.h"
 
 #include "report.h"       // report_set_rumble, get_global_gamepad_input
+#include "switch_gc_rumble_decode.h"
 #include "switch_gc.h"
 #include "switch_gc_encode.h"  // switch_gc_encode_report (pure, host-testable encoder)
 #include "ns2_pairing_crypto.h"  // shared AES-128/LTK-derivation pairing crypto
@@ -281,55 +282,14 @@ void switch_gc_build_report(uint8_t *p) {
 static uint8_t s_selected_report_id = GC_REPORT_ID_NONE;
 static uint32_t s_report05_counter = 0;  // independent 32-bit counter, report 0x05's own width
 
-// Report 0x03 rumble-data byte layout -- Strong (not yet independently hardware-confirmed by this
-// project), sourced 2026-07-14 from the real Linux kernel "HID: nintendo" driver patch series
-// (Vicki Pfau, linux-input mailing list, v11, threads "Add preliminary Switch 2 support" / "Add
-// rumble support for Switch 2" -- https://marc.info/?l=linux-input&w=2&r=1&s=hid+switch2&q=b).
-// This SUPERSEDES the earlier "data[0] is a 0-255 linear amplitude" Hypothesis (see
-// docs/experiments/refuted-hypotheses.md for that entry's full history) -- the kernel driver's own
-// `switch2_rumble_work()` shows the GameCube controller has no continuous-amplitude rumble
-// hardware at all: it's a simple ERM (eccentric rotating mass) motor with only three real states
-// (`enum gc_rumble { GC_RUMBLE_OFF = 0, GC_RUMBLE_ON = 1, GC_RUMBLE_STOP = 2 }`, sent at
-// `data[1]`), and the *host* simulates a continuous amplitude by rapidly toggling ON/OFF at a duty
-// cycle computed via delta-sigma/error-accumulation modulation (`rumble.sd.error`/`amplitude` in
-// the kernel source) -- i.e. "50% intensity" is realized as roughly half ON, half OFF over time,
-// not as a single byte's magnitude. `data[0]` is a separate, incrementing command/sequence byte
-// (kernel: `0x50 | rumble_seq`-shaped), not amplitude at all -- reading it as intensity (this
-// project's approach from 2026-07-14's sixteenth pass onward) meant virtually every real rumble
-// packet looked like "some nonzero amplitude" regardless of the game's actual intended OFF/ON
-// state, since a rolling sequence byte is essentially never exactly zero. This plausibly explains
-// the entire observed bug arc: "immediate rumble on GameCube-mode entry" (an early real packet
-// with state=OFF/STOP but a nonzero sequence byte read as "motor on"), and "normal small rumbles
-// smash outputs" becoming "one powerful continuous" rumble (literally every packet during an
-// active rumble session has nonzero data[0], so the OLD decode showed "on" continuously regardless
-// of the real per-packet state). `data[2]`/`data[3]` remain Unknown.
-typedef enum {
-    GC_RUMBLE_STATE_OFF = 0,
-    GC_RUMBLE_STATE_ON = 1,
-    GC_RUMBLE_STATE_STOP = 2,
-} gc_rumble_state_t;
-
-// Fixed "motor engaged" amplitude for GC_RUMBLE_STATE_ON, forwarded to the downstream
-// Bluetooth-connected controller's own (possibly continuous-amplitude-capable) motor. Since the
-// genuine GC motor itself has no amplitude control -- perceived intensity comes entirely from how
-// often the host toggles ON vs OFF, not from any single command's own level -- driving ON at a
-// firm, but not maximum, fixed level is the most faithful single-command choice; the felt
-// "texture"/lower intensities should emerge from the toggling cadence itself (see
-// GC_RUMBLE_WATCHDOG_MS and bthid_gamepad.c's pulse_sustain_10ms, both already short enough to let
-// rapid toggling come through rather than smear into one sustained buzz). Tunable -- flagged
-// Hypothesis, not measured against real hardware feel.
+// Native GC output is binary ERM state, not Pro2 HD-rumble amplitude. The decoder accepts the two
+// captured state-byte forms. Stretch ON into a bounded pulse because Bluetooth output cannot
+// reliably reproduce millisecond-scale edges; OFF/ZLP do not refresh it and STOP ends it now.
+// Evidence and unresolved semantics: docs/switch2-gc/open-questions.md.
 #define GC_RUMBLE_ON_AMPLITUDE 0xB0
-
-// Rumble watchdog: Confirmed 2026-07-13 by direct hardware feedback (PC/Steam) that the motor
-// could get stuck on indefinitely. Bounds the failure mode with a timeout: a GC_RUMBLE_STATE_ON
-// command latches the motor on for at most `GC_RUMBLE_WATCHDOG_MS`, re-armed by each subsequent
-// ON command; if the host stops sending anything at all (no further OUT reports of any kind, not
-// even ZLPs), the motor is forced off automatically instead of buzzing forever. The exact timeout
-// is a Hypothesis, not derived from a measured host refresh cadence -- long enough to bridge a
-// plausible refresh gap, short enough to bound the stuck-on symptom to a fraction of a second.
-#define GC_RUMBLE_WATCHDOG_MS 500
-static uint32_t s_rumble_last_nonzero_ms = 0;
-static bool s_rumble_watchdog_armed = false;
+#define GC_RUMBLE_PULSE_MS 40
+static uint32_t s_rumble_pulse_until_ms = 0;
+static bool s_rumble_pulse_armed = false;
 
 // Identity + info blocks the console fetches over EP0 vendor control BEFORE it will touch the
 // bulk command channel -- the SAME gate `switch_pro2.c`'s `ns2_vendor_control_xfer()` already
@@ -366,35 +326,21 @@ _Static_assert(sizeof(switch_gc_ctrl_identity) == 64, "GC EP0 identity block mus
 // Response to EP0 vendor bRequest=2 (16 bytes) -- Confirmed real bytes from this project's own
 // GC capture (docs/switch2-gc/protocol.md "EP0 vendor control requests"; byte 2 = 0x02 is
 // GC's own value, cross-compared against Pro Controller 2's 0x05 for the identical request).
-// Reused verbatim, not fictionalized: this field is not a per-unit serial (Pro2's own shipped
-// `ns2_ctrl_info` does the same -- reuses its real captured bytes for this exact field type
-// unchanged), though bytes 10-12 remain Hypothesis-tier for what they actually encode.
+// Reused verbatim, not fictionalized: this field is not a per-unit serial. Opaque-field research
+// is tracked in docs/switch2-gc/open-questions.md.
 static const uint8_t switch_gc_ctrl_info[16] = {
     0x01, 0x01, 0x02, 0x00, 0x00, 0x00, 0x0C, 0x00,
     0x00, 0x00, 0x02, 0xBB, 0x5E, 0xAB, 0xA9, 0x3C};
 
-// Pairing crypto state, added 2026-07-13 -- see the 0x15 case in switch_gc_vendor_dispatch()
-// below for why real crypto turned out to be required (ndeadly's own docs: "the Switch 2 console
-// requires successful pairing... via both Bluetooth and USB connections"). GC_DEVICE_KEY_B1 is an
-// ASSUMPTION -- reuses switch_pro2.c's own public constant, since no GC-specific capture of this
-// exchange exists yet to confirm whether GC controllers use the same constant or a different one.
-// s_gc_ltk is session-scoped (derived fresh each real pairing attempt via 0x15/sub 0x04), reset
-// alongside other session state in switch_gc_init()/mount() so a stale key never survives across
-// a fresh connection attempt.
+// USB pairing crypto. The public device key is shared with the working Pro2 path; a GC-specific
+// capture has not distinguished it. The derived LTK is session-scoped and reset on init/mount.
 static const uint8_t GC_DEVICE_KEY_B1[16] = {
     0x5C, 0xF6, 0xEE, 0x79, 0x2C, 0xDF, 0x05, 0xE1,
     0xBA, 0x2B, 0x63, 0x25, 0xC4, 0x1A, 0x5F, 0x10};
 static uint8_t s_gc_ltk[16];
 
-// Synthetic-but-plausible stick/trigger calibration record, reused byte-for-byte from
-// switch_pro2.c's own `blk[40]` (its factory table duplicates this same block at both 0x13080
-// and 0x130C0) -- NOT this unit's real calibration (which this project's own SPI dump analysis
-// flagged as Hypothesis-only and unsafe to reuse verbatim, see
-// docs/experiments/nso-gc-spi-dump-analysis-2026-07-13.md). Reusing Pro2's already-proven-working
-// synthetic shape here is a deliberate bet that the console validates *shape*, not exact values
-// -- added 2026-07-13 after real hardware testing showed pairing now succeeds but the console
-// still stalls before selecting an input report; returning 0xFF (uninitialised) for calibration
-// data the console reads right after pairing is the leading suspect for that remaining stall.
+// Synthetic calibration record with the same working shape as Pro2; never copy private per-unit
+// calibration from a dump. See docs/experiments/nso-gc-spi-dump-analysis-2026-07-13.md.
 static const uint8_t switch_gc_synthetic_cal_blk[40] = {
     0x01, 0xAD, 0xD9, 0x9A, 0x55, 0x56, 0x65, 0xA0, 0x00, 0x0A, 0xA0, 0x00, 0x0A, 0xE2,
     0x20, 0x0E, 0xE2, 0x20, 0x0E, 0x9A, 0xAD, 0xD9, 0x9A, 0xAD, 0xD9, 0x0A, 0xA5, 0x50,
@@ -433,30 +379,10 @@ static void switch_gc_mem_read(uint32_t addr, uint8_t len, uint8_t *out) {
     }
 }
 
-// Fuller Stage D command dispatch on the vendor bulk interface (IF1), extended 2026-07-13 after
-// the owner's real-console hardware test showed GC mode still not recognized even after the EP0
-// identity fix above. Root cause, by direct analogy with switch_pro2.c's own already-solved
-// history: this dispatcher previously stayed SILENT (no response at all) for any command outside
-// the minimal 0x03 family, whereas switch_pro2.c's ns2_dispatch() answers EVERY command it
-// receives -- even ones it doesn't semantically understand get a bare 8-byte ACK via its
-// `default:` case ("0x06 shutdown, 0x0A vibration, and anything else -> bare ACK"). A real
-// console's initialization sequence includes several more command families (Bluetooth-pairing-
-// shaped 0x15/0x16/0x07, player LEDs 0x09, feature flags 0x0C, SPI memory reads 0x02, vibration/
-// firmware-info/etc.) that this project's own documented BLE-equivalent init sequence shows a
-// genuine controller receiving -- if the console is waiting for a response to any of these
-// before it will treat the device as fully initialized, GC's previous silence would explain
-// exactly the observed symptom (works on Steam, which never sends most of these, but not on a
-// real console, which very likely does).
-//
-// Response header shape (id/0x01/transport/sub/0x00/0xF8) is Confirmed byte-exact for the 0x03
-// family (see below) and reused as a PATTERN (not reused bytes) for every other command,
-// identical to switch_pro2.c's own ns2_dispatch() envelope. Per NSO-GC.md's explicit exclusion
-// rule, no real per-unit serial/pairing/calibration data is used anywhere below -- memory reads
-// and the pairing-shaped 0x15 family use fabricated-but-structurally-plausible placeholder bytes,
-// not any real captured unit's private data. GC has no real Bluetooth bond to establish over a
-// wired USB connection, so 0x15's sub-commands are answered with safe placeholders rather than
-// real AES key derivation (unlike switch_pro2.c's ns2_pair_challenge()/ns2_pair_set_ltk(), which
-// perform real crypto because Pro2 genuinely does pair over BLE).
+// Vendor bulk command dispatch. Every request receives at least the standard 8-byte response
+// envelope; required families add their captured or family-shaped payload. No private per-unit
+// serial, bond, or calibration bytes are copied from reference hardware. Protocol history and
+// remaining opaque fields live in docs/switch2-gc/{protocol,open-questions}.md.
 // NS2_DIAG: total bulk vendor commands received this session -- see switch_gc_vendor_dispatch()'s
 // own comment for why stage 5 alone (fires on ANY command) wasn't enough signal: it can't tell
 // "only one command ever arrived, then the console gave up" from "many commands arrived but the
@@ -561,20 +487,8 @@ static void switch_gc_vendor_dispatch(const uint8_t *c, uint32_t n) {
         }
         break;
     }
-    case 0x0C:  // feature select -- GC's own documented feature-flag value is 0x27 (vs Pro2's
-                // 0x37; the missing bit is Strong-hypothesized as "has mouse data", which GC
-                // hardware doesn't have -- protocol.md "GC-specific BLE init sequence").
-        if (sub == 0x01) {  // get feature info: echo per-bit capability levels for whichever
-                             // features the console asked about in c[8], mirroring
-                             // switch_pro2.c's own per-bit breakdown exactly (same bit
-                             // positions/levels -- Strong assumption this scheme is shared
-                             // across controller types, not independently confirmed for GC).
-                             // CORRECTED 2026-07-13: previously returned all-zero regardless of
-                             // what was asked, i.e. "supports none of the requested features" --
-                             // added after real hardware testing showed pairing now succeeds but
-                             // the console still stalls before selecting an input report; an
-                             // all-zero capability reply is a plausible reason a console would
-                             // decide not to proceed further.
+    case 0x0C:  // feature select; GC's captured feature mask is 0x27
+        if (sub == 0x01) {  // echo per-bit family capability levels for the requested mask
             uint8_t f = (n > 8) ? c[8] : 0;
             d[4] = (f & 0x01) ? 0x07 : 0x00;
             d[5] = (f & 0x02) ? 0x07 : 0x00;
@@ -615,12 +529,7 @@ static void switch_gc_vendor_dispatch(const uint8_t *c, uint32_t n) {
         } else if (sub == 0x03) {  // finalise
             d[0] = 0x01;
             dl = 1;
-        } else if (sub == 0x04) {  // exchange keys: derive LTK from A1, return our public B1.
-                                    // GC_DEVICE_KEY_B1 is an ASSUMPTION (Hypothesis, not
-                                    // Confirmed for GC specifically) -- reuses Pro2's own public
-                                    // constant since no GC-specific capture of this exchange
-                                    // exists yet; if pairing still fails after this fix, a
-                                    // GC-specific key is the next thing to suspect.
+        } else if (sub == 0x04) {  // derive LTK from A1 and return the shared working public B1
             ns2_pairing_derive_ltk(&c[9], GC_DEVICE_KEY_B1, s_gc_ltk);  // A1 = c[9..24]
             d[0] = 0x01;
             memcpy(&d[1], GC_DEVICE_KEY_B1, 16);
@@ -645,12 +554,7 @@ static void switch_gc_vendor_dispatch(const uint8_t *c, uint32_t n) {
     // of the specific structured replies Pro2 actually sends. A console asking for a 12-byte
     // firmware-info block or a 29-byte block (0x11/sub 0x03) and getting 0 bytes back is a much
     // larger deviation than a wrong calibration value, and is now the leading suspect.
-    case 0x10:  // firmware info. Byte layout mirrors switch_pro2.c's exactly; the "type" byte
-                // (Pro2 uses 0x02 = "Pro Controller" at this position) is HYPOTHESIS for GC --
-                // no confirmed capture of this exact field exists yet. Uses 0x04 as a working
-                // guess, since that's the one GC-specific discriminant byte this project does
-                // have evidence for (the EP0 identity block's "01 04 01" marker, Confirmed,
-                // vs Pro2's own "01 06 01" at the identical structural position).
+    case 0x10:  // family-shaped firmware info; GC type byte remains opaque (see open questions)
         memcpy(d, (const uint8_t[]){0x01, 0x01, 0x05, 0x04, 0x0C, 0x00, 0x00, 0x00,
                                     0xFF, 0xFF, 0xFF, 0xFF}, 12);
         dl = 12;
@@ -660,9 +564,7 @@ static void switch_gc_vendor_dispatch(const uint8_t *c, uint32_t n) {
         if (sub == 0x03) { memcpy(d, (const uint8_t[]){0xA5, 0x0E, 0x00, 0x00}, 4); dl = 4; }
         else if (sub == 0x04) { memcpy(d, (const uint8_t[]){0x34, 0x00, 0x83, 0x00}, 4); dl = 4; }
         break;
-    case 0x11:  // unknown, but Pro2's own comment notes "last 16B are a constant shared across
-                // units, so replaying is safe" -- reused verbatim as a working assumption for GC
-                // too (Hypothesis: shared-family constant, not independently confirmed for GC).
+    case 0x11:  // opaque family response retained for console interoperability
         if (sub == 0x01) { d[0] = 0x03; dl = 4; }  // USB form (0x03; the BLE form is 0x01)
         else if (sub == 0x03) {
             memcpy(d, (const uint8_t[]){
@@ -719,7 +621,7 @@ void switch_gc_init(void) {
     memset(s_gc_ltk, 0, sizeof(s_gc_ltk));  // no stale key survives into a fresh session
     g_gc_stage = 0;  // NS2_DIAG: fresh personality entry, no USB activity observed yet
     report_set_rumble(0, 0, 0);
-    s_rumble_watchdog_armed = false;  // a fresh session never inherits a stuck-on motor
+    s_rumble_pulse_armed = false;
 }
 
 void switch_gc_reset(void) {
@@ -736,7 +638,7 @@ void switch_gc_mount(void) {
     s_bulk_cmd_count = 0;
     memset(s_gc_ltk, 0, sizeof(s_gc_ltk));
     report_set_rumble(0, 0, 0);
-    s_rumble_watchdog_armed = false;  // a fresh mount never inherits a stuck-on motor
+    s_rumble_pulse_armed = false;
     // NS2_DIAG: SET_CONFIGURATION always implies device+config descriptor reads already
     // happened, so this is a direct set (not a high-water-mark floor) -- correctly resets a
     // stale higher value from a previous connection attempt, since a fresh mount() really is a
@@ -757,12 +659,12 @@ void switch_gc_task(void) {
         uint32_t n = tud_vendor_read(cmd, sizeof(cmd));
         switch_gc_vendor_dispatch(cmd, n);
     }
-    // Rumble watchdog: see s_rumble_watchdog_armed's own comment for why this exists. Checked
-    // every task tick (cheap: one armed-flag check in the common case).
-    if (s_rumble_watchdog_armed &&
-        (uint32_t)(to_ms_since_boot(get_absolute_time()) - s_rumble_last_nonzero_ms) > GC_RUMBLE_WATCHDOG_MS) {
+    // A pulse can only be extended by another decoded ON command. OFF/ZLP therefore cannot
+    // recreate the old latched-rumble failure, even if an explicit STOP is lost.
+    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+    if (s_rumble_pulse_armed && (int32_t)(now_ms - s_rumble_pulse_until_ms) >= 0) {
         report_set_rumble(0, 0, 0);
-        s_rumble_watchdog_armed = false;
+        s_rumble_pulse_armed = false;
     }
     // Stream input only after the host has selected a supported report ID via the Confirmed
     // 0x03/0x0A command above -- mirrors switch_pro2.c's own ns2_streaming/ns2_report_id gate
@@ -790,11 +692,9 @@ void switch_gc_hid_out_report(uint8_t report_id, const uint8_t *data, uint16_t l
     // rumble-data field, 59-byte reserved padding (63 data bytes total;
     // corrected 2026-07-13 from an earlier 37-byte miscount inherited from
     // ndeadly's table -- see docs/switch2-gc/protocol.md "Output Report 0x03").
-    // Idle/no-rumble state: Confirmed -- a zero-length OUT packet, not an
-    // all-zero report (exhaustive re-scan of the only USB rumble capture that
-    // exists found 36 of its 44 total writes to this endpoint were ZLPs, see
-    // docs/experiments/nso-gc-usb-capture-decode-2026-07-13.md "Rumble-endpoint
-    // idle behavior").
+    // Genuine captured command forms are decoded in switch_gc_rumble_decode.c. In particular,
+    // active USB samples are `sequence 00 01 00`, which the previous data[1]-only decoder
+    // misclassified as OFF and therefore never forwarded to any physical controller.
     //
     // `report_id`/`data`/`len` are already normalized by usb_descriptors.c's
     // tud_hid_set_report_cb() dispatcher (Phase 4, 2026-07-13) so this function
@@ -804,42 +704,26 @@ void switch_gc_hid_out_report(uint8_t report_id, const uint8_t *data, uint16_t l
     // contract. `data` here is ALWAYS the 4-byte rumble field only (report ID
     // already removed), so offsets are data[0..3], not data[1..4].
     //
-    // Byte semantics: see gc_rumble_state_t's own comment (Strong evidence, sourced from the real
-    // Linux kernel "HID: nintendo" driver, 2026-07-14) -- data[1] is a 3-value state enum
-    // (OFF/ON/STOP), NOT an amplitude; data[0] is an incrementing sequence/command byte, also not
-    // amplitude. This supersedes every earlier revision of this function (see
-    // docs/experiments/refuted-hypotheses.md "data[0] as linear amplitude" for that full,
-    // now-obsolete history) -- those were reasonable, evidence-consistent readings of only 8
-    // isolated manual-test samples, but the kernel source shows the actual field boundaries were
-    // wrong the whole time. Do not revert to reading data[0] as intensity.
-    // Behavior:
-    //   - ZLP (report_id==0, len==0) -> motor off. Confirmed idle/no-rumble behavior.
-    //   - data[1] == GC_RUMBLE_STATE_ON -> motor on at GC_RUMBLE_ON_AMPLITUDE (fixed -- the
-    //     genuine motor has no amplitude control of its own; perceived intensity is supposed to
-    //     come from how often the host toggles ON vs OFF, not from any single command).
-    //   - data[1] == GC_RUMBLE_STATE_OFF or GC_RUMBLE_STATE_STOP (or anything else/malformed) ->
-    //     motor off.
-    //   - Watchdog backstop (s_rumble_watchdog_armed, GC_RUMBLE_WATCHDOG_MS): bounds the motor to
-    //     at most 500ms of "on" since the last qualifying ON packet, in case a host stops sending
-    //     any further OUT reports at all without an explicit off.
-    // Not yet hardware-validated against this corrected model -- the next real console/gameplay
-    // test is what would move this from Strong to Confirmed.
-    if (report_id == 0 && len == 0) {
-        report_set_rumble(0, 0, 0);  // ZLP -- Confirmed idle/no-rumble behavior
-        s_rumble_watchdog_armed = false;
-        return;
-    }
-    if (report_id != 0x03) return;  // not the rumble report
+    switch_gc_rumble_command_t command = switch_gc_decode_rumble(report_id, data, len);
+    if (command == SWITCH_GC_RUMBLE_NO_CHANGE) return;
 
-    gc_rumble_state_t state = len >= 2 ? (gc_rumble_state_t)data[1] : GC_RUMBLE_STATE_OFF;
-    if (state != GC_RUMBLE_STATE_ON) {
+    if (command == SWITCH_GC_RUMBLE_STOP) {
         report_set_rumble(0, 0, 0);
-        s_rumble_watchdog_armed = false;
+        s_rumble_pulse_armed = false;
         return;
     }
+
+    if (command == SWITCH_GC_RUMBLE_OFF) {
+        // Do not erase a just-issued ON before core1's 3 ms feedback poll can observe it. The
+        // bounded pulse expiry above will stop it, and OFF never extends the deadline.
+        if (!s_rumble_pulse_armed) report_set_rumble(0, 0, 0);
+        return;
+    }
+
+    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
     report_set_rumble(0, GC_RUMBLE_ON_AMPLITUDE, GC_RUMBLE_ON_AMPLITUDE);
-    s_rumble_last_nonzero_ms = to_ms_since_boot(get_absolute_time());
-    s_rumble_watchdog_armed = true;
+    s_rumble_pulse_until_ms = now_ms + GC_RUMBLE_PULSE_MS;
+    s_rumble_pulse_armed = true;
 }
 
 bool switch_gc_vendor_control_xfer(uint8_t rhport, uint8_t stage, const void *request_v) {

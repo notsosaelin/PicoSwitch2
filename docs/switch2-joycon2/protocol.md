@@ -30,7 +30,7 @@
 | Genuine Joy-Con 2 Left + Right (SPI flash dump via USB adapter) | Primary hardware | 2026-07-14 | `dumps/SWITCH2_JOYCON_L_1.bin`, `SWITCH2_JOYCON_R_1.bin` — see `docs/experiments/joycon2-spi-dump-analysis-2026-07-14.md` |
 | Real Linux kernel "HID: nintendo" driver | Primary hardware-adjacent (PC-facing driver source, not a console) | 2026-07-14 | Vicki Pfau, linux-input mailing list v11 patch series, `https://marc.info/?l=linux-input&w=2&r=1&s=hid+switch2&q=b` |
 | This project's own Pro Controller 2 / GameCube Controller work | Primary hardware (cross-family comparison) | 2026-07-06 – 2026-07-13 | `docs/switch2-gc/protocol.md`, `docs/experiments/spi-dump-analysis-2026-07-10.md` |
-| `ndeadly/switch2_controller_research` | Documentation + raw BLE/USB captures (real decrypted BLE traffic, nRF52840 sniffer + Ubertooth One) | 2026-07-14 | Already cloned to `E:\nso-gc-refs\switch2_controller_research` (used previously for GameCube); its `descriptors.md`, `hid_reports.md`, `bluetooth_interface.md`, and `commands.md` have full Joy-Con 2 sections not previously read for this document |
+| `ndeadly/switch2_controller_research` | Documentation + raw BLE/USB captures (real decrypted BLE traffic, nRF52840 sniffer + Ubertooth One) | 2026-07-14 | Optional ignored clone under `nso-gc-refs/`; its `descriptors.md`, `hid_reports.md`, `bluetooth_interface.md`, and `commands.md` contain Joy-Con 2 sections |
 
 **Note on this pass**: the USB descriptor captures earlier in this document were taken independently
 by this project (via live USBPcap, before checking whether ndeadly's repo already had them). They

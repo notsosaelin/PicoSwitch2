@@ -199,16 +199,21 @@ further searching this same file is low relative to the effort.
 
 ## Output Report `0x03` (rumble) — 8 real byte-exact samples
 
-**The interpretation below is SUPERSEDED as of 2026-07-14** — the "byte1=intensity,
+**Hardware correction 2026-07-15:** a firmware decoder that treated only byte2 (`data[1]`) as the
+OFF/ON/STOP state produced no rumble on a real Switch 2. Four captured packets below contain
+`byte2=00, byte3=01`; the current bounded test decoder treats that confirmed `00 01` form as active
+while also accepting the previously documented `01 00` form. This is a new **Hypothesis**, not a
+claim that the exact field boundary is settled.
+
+**The interpretation below was superseded as of 2026-07-14 and then contradicted in hardware on
+2026-07-15** — the "byte1=intensity,
 byte2/3=mode selector" reading was a reasonable interpretation of these 8 samples alone, but is
 refuted by the real Linux kernel "HID: nintendo" driver source (see
 `docs/experiments/refuted-hypotheses.md` "GC rumble data[0] as a linear amplitude byte" for the
-full account, and `docs/switch2-gc/protocol.md` "Output Report `0x03`" for the corrected model).
+full account, and `docs/switch2-gc/protocol.md` "Output Report `0x03`" for the current model).
 **The raw byte samples below remain valid, Confirmed ground truth** — only the field-boundary
-interpretation was wrong. Corrected reading: byte1 (`data[0]`) is an incrementing sequence/command
-byte, not intensity; byte2 (`data[1]`) is a 3-value state enum (OFF=0/ON=1/STOP=2), not a "mode."
-Re-reading the table below with that lens: every sample's byte2 is either `0x00` (OFF) or `0x02`
-(STOP) — consistent with this being a sparse manual test that never happened to be captured mid-ON.
+interpretation was wrong. Byte1 (`data[0]`) remains a plausible sequence/command byte, but the
+remaining three-byte field boundary is unresolved; the real `00 01` samples must not be discarded.
 
 Eight distinct interrupt OUT reports were captured in what is clearly a deliberate rumble test burst
 late in the capture session (frames ~1,282,317 – 1,337,857), each a 64-byte USB transfer:

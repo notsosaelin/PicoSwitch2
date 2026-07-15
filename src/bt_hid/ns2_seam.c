@@ -115,6 +115,11 @@ static uint8_t ns2_family(uint8_t dev_addr) {
     return 3;  // Generic
 }
 
+static bool ns2_is_switch2_pro(uint8_t dev_addr) {
+    const bthid_device_t *dev = bthid_get_device(dev_addr);
+    return dev && dev->vendor_id == 0x057E && dev->product_id == 0x2069;
+}
+
 // -------------------------------------------------------------------------
 // Router: the ONE call every input driver makes. Translate the unified event
 // into the Pro Controller wire format (via the per-family remap) and publish it.
@@ -164,20 +169,27 @@ void router_submit_input(const input_event_t *e) {
     if (e->gc_l_detent) in.gc_extra |= GC_MASK_L_DETENT;
     if (e->gc_r_detent) in.gc_extra |= GC_MASK_R_DETENT;
 
-    // Generic (non-GameCube-native) controllers used in GC mode: Confirmed 2026-07-13 by direct
-    // hardware feedback (Xbox/DualSense tested in GC mode) that the Pro2-style pairing is wrong
-    // for this personality -- it's the reverse. Shoulder buttons (LB/RB) become ZL and Z (Z
-    // displays as "ZR" on the console's own Test Input screen, see switch_gc_encode.c), and the
-    // analog triggers (LT/RT) become the GC-native L/R: the continuous value is already
-    // unconditionally forwarded above, so only the digital detent click needs synthesizing here,
-    // from a high-press threshold approximating the real trigger's end-of-travel detent (a
-    // Hypothesis threshold, not hardware-derived -- no genuine GC trigger-to-detent curve data
-    // exists for a substitute controller's analog range). Gated on !gc_has_native_layout so the
-    // 8BitDo NGC Modkit's own real, already-validated per-button signals (usage 9/10/11) are
-    // never second-guessed by this synthesized approximation; harmless overlap for R1 -> Z is
-    // possible in principle (the Modkit's own Z usage already sets JP_BUTTON_R1 too, per
-    // mapping.md) but this block never runs for it at all since gc_has_native_layout is true.
-    if (gc_active && !e->gc_has_native_layout) {
+    // GC-mode policy: generic shoulders become ZL/Z, while analog triggers supply native L/R and
+    // a high-press detent. Native-layout devices bypass this synthesis. The provisional threshold
+    // and physical test matrix live in docs/switch2-gc/mapping.md.
+    if (gc_active && !e->gc_has_native_layout && ns2_is_switch2_pro(e->dev_addr)) {
+        // A real Pro Controller 2 already names these four controls L/R/ZL/ZR.
+        // Preserve those names in the GC personality: its digital L/R buttons
+        // synthesize a full trigger pull plus detent, while ZL/ZR become the
+        // GC personality's ZL/Z buttons. The generic Xbox/DualSense policy
+        // below intentionally remains unchanged.
+        if (b & JP_BUTTON_L1) {
+            in.left_trigger = 0xFF;
+            in.gc_extra |= GC_MASK_L_DETENT;
+        }
+        if (b & JP_BUTTON_R1) {
+            in.right_trigger = 0xFF;
+            in.gc_extra |= GC_MASK_R_DETENT;
+        }
+        if (b & JP_BUTTON_L2) in.buttons[2] |= SWITCH_MASK_ZL;
+        if (b & JP_BUTTON_R2) in.gc_extra |= GC_MASK_Z;
+        b &= ~(JP_BUTTON_L1 | JP_BUTTON_R1 | JP_BUTTON_L2 | JP_BUTTON_R2);
+    } else if (gc_active && !e->gc_has_native_layout) {
         if (b & JP_BUTTON_L1) in.buttons[2] |= SWITCH_MASK_ZL;
         if (b & JP_BUTTON_R1) in.gc_extra |= GC_MASK_Z;
         if (e->analog[ANALOG_L2] > 224) in.gc_extra |= GC_MASK_L_DETENT;

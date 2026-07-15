@@ -44,6 +44,7 @@ __attribute__((weak)) void bthid_task(void) {}
 __attribute__((weak)) void btstack_host_power_on(void) {}
 __attribute__((weak)) bool btstack_host_is_powered_on(void) { return false; }
 __attribute__((weak)) void btstack_host_start_scan(void) {}
+__attribute__((weak)) void btstack_host_clear_pairing_lockout(void) {}
 __attribute__((weak)) void btstack_host_stop_scan(void) {}
 __attribute__((weak)) void btstack_host_close_pairing_window(void) {}
 __attribute__((weak)) bool btstack_host_pairing_close_deferred(void) { return false; }
@@ -211,6 +212,8 @@ static void cyw43_transport_disconnect(uint8_t conn_index)
 static void cyw43_transport_set_pairing_mode(bool enable)
 {
     if (enable) {
+        // A user gesture is the sole authority that re-opens admission after a wipe.
+        btstack_host_clear_pairing_lockout();
         btstack_host_start_scan();
     } else {
         // close_pairing_window(), not stop_scan() directly: if a candidate's

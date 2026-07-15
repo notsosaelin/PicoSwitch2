@@ -1,7 +1,8 @@
 # NSO GameCube Output Personality — Mapping Policy
 
-> Status: 🟢 Implemented 2026-07-13 (Stage C + the 8BitDo NGC Modkit's GameCube-mode mapping),
-> pending its own hardware validation. `switch_gc_build_report()`/`switch_gc_encode_report()`
+> Current status (2026-07-15): the native GameCube output mapping is implemented and its primary
+> controls are hardware-validated. Per-input-controller edge cases still require a full matrix.
+> `switch_gc_build_report()`/`switch_gc_encode_report()`
 > (`src/switch_gc/switch_gc.c`, `src/switch_gc/switch_gc_encode.c`) implement the full report
 > `0x0A` construction: A/B/X/Y, D-pad, Plus/Minus, Home/Capture, C, ZL, both analog sticks, **and**
 > native Z, independent L/R trigger detents, and continuous analog L/R trigger — the latter three

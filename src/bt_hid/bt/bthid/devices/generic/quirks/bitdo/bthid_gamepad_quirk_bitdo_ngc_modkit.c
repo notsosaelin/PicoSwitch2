@@ -1,61 +1,12 @@
-// bthid_gamepad_quirk_bitdo_ngc_modkit.c - 8BitDo NGC Modkit (VID 0x2DC8, PID 0x286A
-// specifically -- NOT the same physical layout as the paddle-equipped 8BitDo Ultimate/Pro 2
-// that bthid_gamepad_quirk_bitdo_paddle.c's BITDO_BUTTON_MAP is for). A GameCube-shell modkit;
-// button_cnt also happens to be 16 like the paddle controllers, which is exactly why this needs
-// its own PID-specific quirk rather than falling into the generic 8BitDo+buttonCnt>14 rule --
-// confirmed 2026-07-12 via live hardware capture (see docs/bluetooth/8bitdo-ngc-diy-profile.md
-// and docs/experiments/gate2-identity-log-hardware-captures-2026-07-12.md for the full raw
-// report evidence, including two design iterations this table went through before the owner
-// confirmed the final mapping on real hardware -- see that doc for what was tried and rejected,
-// and why).
+// 8BitDo NGC Modkit, VID:PID 2DC8:286A. PID-specific because its 16-button report is not the
+// paddle-controller layout. Evidence: docs/bluetooth/8bitdo-ngc-diy-profile.md.
 
 #include "bt/bthid/devices/generic/bthid_gamepad_quirks.h"
 #include "core/buttons.h"
 
-// Face buttons are DIRECT, not rotated: this is a GameCube-shaped controller, so physical
-// A/B/X/Y should land on Switch A/B/X/Y directly -- unlike Xbox/PlayStation pads, which use the
-// standard rotated convention (physical "A" position -> Switch B slot, etc.) baked into
-// JP_BUTTON_B1..B4's own default remap. Getting the *labels* right here means picking the
-// JP_BUTTON_* source whose DEFAULT destination is the matching letter (see NS2_DEFAULT_MAP in
-// config.c): JP_BUTTON_B2->NS2 A, JP_BUTTON_B1->NS2 B, JP_BUTTON_B4->NS2 X, JP_BUTTON_B3->NS2 Y.
-//
-// Usages 3, 6, 13, 16 are not wired to any physical control on this unit (interactively
-// confirmed -- pressed every remaining button on the controller, nothing else fires).
-//
-// Usages 7/8 (partial-travel echo bits, fire well before the real click -- see the R2/L2
-// investigation in the capture doc) and usages 9/10 (the TRUE mechanical click) are ALL
-// suppressed here (mapped to 0). This was NOT the original design -- an earlier iteration
-// mapped 9/10 to JP_BUTTON_L1/R1 for discrete "L/R pressed" semantics, but the owner wants the
-// simpler, hardware-owner-confirmed behavior instead: the trigger's continuous ANALOG value
-// (bytes 6/7, already fed to ANALOG_L2/ANALOG_R2 correctly) is what should drive ZL/ZR, via
-// this project's existing generic seam-level fold in ns2_seam.c's router_submit_input()
-// (`if (analog[ANALOG_L2] > 64) ... JP_BUTTON_L2`, which NS2_DEFAULT_MAP already routes to
-// NS2_DST_ZL/ZR) -- "any real press" registers as ZL/ZR, not just the discrete click. No digital
-// bit needs to come from the button-usage table at all for this to work correctly.
-//
-// Usage 11 (Z) maps to JP_BUTTON_R1 (NOT R2/L2 -- deliberately a different bit than whatever the
-// analog fold touches, so Z can never conflict with a simultaneous real trigger press), which
-// NS2_DEFAULT_MAP routes to plain NS2_DST_R. Nothing here ever emits JP_BUTTON_L1, so NS2 "L"
-// correctly never fires (there's no left-side equivalent of Z on a real GameCube controller).
-// NS2 "C" (Gamechat) also never fires -- nothing maps to JP_BUTTON_A3/A5, its only sources.
-//
-// Usages 14/15 (physical L3/R3 stick clicks) are deliberately repurposed, not passed through
-// as L3/R3: a genuine GameCube controller has no clickable sticks at all, so this modkit's
-// extra hardware becomes CAPTURE/HOME instead (JP_BUTTON_A2/A1, routed by NS2_DEFAULT_MAP to
-// NS2_DST_CAPTURE/NS2_DST_HOME) -- explicit product decision, not a claim about printed labels.
-//
-// This is Pro-Controller-2-mode-specific: it approximates "trigger touched" as a digital ZL/ZR
-// press because that's all today's output supports. The eventual NSO GameCube USB personality
-// (Gate 3, not started) will differ: real continuous L/R analog output instead of the ZL/ZR
-// approximation, and Z will very likely target ZR (or whatever NSO's own GC-adapter convention
-// turns out to be) rather than plain R -- do not assume this table's choices carry over
-// unchanged when that work starts; re-derive against NSO's actual behavior.
-//
-// This table covers the pairing mode captured 2026-07-12 (Classic BT, resolved via SDP as
-// 0x2DC8:0x286A). The controller is reported to also support a second "Android/D-Input" BLE
-// pairing mode -- unconfirmed whether it uses the same PID or the same report shape; needs its
-// own capture before this table can be assumed to cover it. See the profile doc's "Status"
-// section.
+// Direct face labels; analog triggers are handled by the seam; Z stays distinct; stick clicks
+// are intentionally repurposed as Capture/Home. Unwired and suppressed usages remain explicit in
+// the table. The Android/D-Input mode still needs a separate capture; see the profile document.
 static const uint32_t NGC_MODKIT_BUTTON_MAP[17] = {
     0,                  // usage 0: invalid
     JP_BUTTON_B2,       // usage 1: A -> NS2 A (direct, not rotated)

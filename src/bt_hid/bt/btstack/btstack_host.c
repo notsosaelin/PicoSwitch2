@@ -351,6 +351,49 @@ typedef struct {
 
 static wiimote_connection_t wiimote_conn;
 
+// Direct-L2CAP output is used by Sony controllers on CYW43 (to avoid their
+// problematic SDP path) as well as the Wiimote family. l2cap_send() is not a
+// queue: calling it outside a can-send window can reject and lose the report.
+// Preserve the current promised report, coalesce later churn into one latest
+// successor, and drain both from L2CAP_EVENT_CAN_SEND_NOW. This keeps required
+// setup ordering without accumulating stale rumble transitions.
+typedef struct {
+    bool pending;
+    uint16_t len;
+    uint8_t data[80];
+    bool next_pending;
+    uint16_t next_len;
+    uint8_t next_data[80];
+} direct_output_queue_t;
+
+static direct_output_queue_t direct_output_queue;
+
+static void direct_output_try_send(uint16_t cid)
+{
+    if (!direct_output_queue.pending) return;
+    if (!l2cap_can_send_packet_now(cid)) {
+        l2cap_request_can_send_now_event(cid);
+        return;
+    }
+
+    uint8_t status = l2cap_send(cid, direct_output_queue.data,
+                                direct_output_queue.len);
+    if (status != ERROR_CODE_SUCCESS) {
+        l2cap_request_can_send_now_event(cid);
+        return;
+    }
+
+    if (direct_output_queue.next_pending) {
+        memcpy(direct_output_queue.data, direct_output_queue.next_data,
+               direct_output_queue.next_len);
+        direct_output_queue.len = direct_output_queue.next_len;
+        direct_output_queue.next_pending = false;
+        l2cap_request_can_send_now_event(cid);
+    } else {
+        direct_output_queue.pending = false;
+    }
+}
+
 // Forward declaration
 static void wiimote_l2cap_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size);
 
@@ -749,8 +792,54 @@ void btstack_host_power_on(void)
 // LAST CONNECTED DEVICE PERSISTENCE (via BTstack TLV)
 // ============================================================================
 
-// TLV tag 'JPLC' = Joypad Last Connected
+// TLV tags: 'JPLC' = Joypad Last Connected, 'JPLK' = post-wipe pairing lock.
 #define TLV_TAG_LAST_CONNECTED (((uint32_t)'J' << 24) | ((uint32_t)'P' << 16) | ((uint32_t)'L' << 8) | 'C')
+#define TLV_TAG_PAIRING_LOCKOUT (((uint32_t)'J' << 24) | ((uint32_t)'P' << 16) | ((uint32_t)'L' << 8) | 'K')
+
+// This is global by design. Triple-tap means "forget everything," so a MAC
+// denylist would miss powered-off devices, private-address rotation, and the
+// Switch 2 custom ATT path that never creates a BTstack bond.
+static bool pairing_lockout;
+
+static void btstack_host_store_pairing_lockout(bool locked)
+{
+    const btstack_tlv_t *tlv_impl = NULL;
+    void *tlv_context = NULL;
+    btstack_tlv_get_instance(&tlv_impl, &tlv_context);
+    if (!tlv_impl) return;
+
+    if (locked) {
+        const uint8_t value = 1;
+        tlv_impl->store_tag(tlv_context, TLV_TAG_PAIRING_LOCKOUT, &value, sizeof(value));
+    } else {
+        tlv_impl->delete_tag(tlv_context, TLV_TAG_PAIRING_LOCKOUT);
+    }
+}
+
+static void btstack_host_restore_pairing_lockout(void)
+{
+    const btstack_tlv_t *tlv_impl = NULL;
+    void *tlv_context = NULL;
+    uint8_t value = 0;
+    btstack_tlv_get_instance(&tlv_impl, &tlv_context);
+    pairing_lockout = tlv_impl &&
+        tlv_impl->get_tag(tlv_context, TLV_TAG_PAIRING_LOCKOUT, &value, sizeof(value)) == sizeof(value) &&
+        value == 1;
+}
+
+static void btstack_host_clear_last_connected(void)
+{
+    memset(hid_state.last_connected_addr, 0, sizeof(hid_state.last_connected_addr));
+    memset(hid_state.last_connected_name, 0, sizeof(hid_state.last_connected_name));
+    hid_state.has_last_connected = false;
+    hid_state.reconnect_attempts = 0;
+    hid_state.reconnect_attempt_time = 0;
+
+    const btstack_tlv_t *tlv_impl = NULL;
+    void *tlv_context = NULL;
+    btstack_tlv_get_instance(&tlv_impl, &tlv_context);
+    if (tlv_impl) tlv_impl->delete_tag(tlv_context, TLV_TAG_LAST_CONNECTED);
+}
 
 typedef struct {
     bd_addr_t addr;
@@ -837,6 +926,9 @@ void btstack_host_start_scan(void)
 #ifdef BTSTACK_DEFER_SCAN
     if (!btstack_host_scan_enabled) return;
 #endif
+    if (pairing_lockout) {
+        return;  // A triple-tap wipe requires a new explicit pairing window.
+    }
     if (scan_suppressed) {
         return;  // App suppressed scanning (e.g. BT host disabled)
     }
@@ -920,6 +1012,33 @@ void btstack_host_stop_scan(void)
 // inquiry_active. Stopping inquiry mid-Classic-connect is harmless. No Classic
 // defer logic is needed or added.
 static bool pairing_close_deferred;
+
+bool btstack_host_pairing_locked(void)
+{
+    return pairing_lockout;
+}
+
+static int btstack_host_classic_connection_filter(bd_addr_t addr, hci_link_type_t link_type)
+{
+    UNUSED(addr);
+    UNUSED(link_type);
+    return pairing_lockout ? 0 : 1;
+}
+
+void btstack_host_clear_pairing_lockout(void)
+{
+    if (!pairing_lockout) return;
+
+    pairing_lockout = false;
+    btstack_host_store_pairing_lockout(false);
+    classic_state.recovery_start_time = 0;
+    printf("[BTSTACK_HOST] Pairing admission re-enabled by explicit pairing window\n");
+
+#if !defined(BTSTACK_USE_ESP32) && !defined(BTSTACK_USE_NRF) && !defined(CONFIG_USB2BLE)
+    gap_discoverable_control(1);
+    gap_connectable_control(1);
+#endif
+}
 
 void btstack_host_close_pairing_window(void)
 {
@@ -1118,7 +1237,7 @@ void btstack_host_process(void)
 
     // Recovery watchdog: if we cleaned up a stuck connection but BT transport
     // appears dead (no inquiry events received within 10s), force a reboot.
-    if (classic_state.recovery_start_time != 0 &&
+    if (!pairing_lockout && classic_state.recovery_start_time != 0 &&
         (btstack_run_loop_get_time_ms() - classic_state.recovery_start_time) >= 10000) {
         printf("[BTSTACK_HOST] No BT activity after connection timeout recovery, rebooting\n");
         platform_reboot();
@@ -1133,6 +1252,7 @@ void btstack_host_process(void)
     //   - Classic connection setup in progress (name request, HID connect pending)
 #ifndef CONFIG_USB2BLE
     if (hid_state.powered_on &&
+        !pairing_lockout &&
         !scan_suppressed &&
         hid_state.state == BLE_STATE_IDLE &&
         hid_state.reconnect_attempt_time == 0 &&
@@ -1288,11 +1408,13 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 // Reset scan state (in case of reconnect)
                 hid_state.scan_active = false;
                 classic_state.inquiry_active = false;
+                btstack_host_restore_pairing_lockout();
 
 #if !defined(BTSTACK_USE_ESP32) && !defined(BTSTACK_USE_NRF)
                 // Set master role policy for incoming Classic connections
                 // Wiimotes (including Wii U Pro) REQUIRE us to be master
                 hci_set_master_slave_policy(0);  // 0 = always try to become master
+                gap_register_classic_connection_filter(btstack_host_classic_connection_filter);
                 printf("[BTSTACK_HOST] Set master role policy\n");
 #endif
 
@@ -1346,18 +1468,22 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
 
                 // Make host discoverable and connectable for incoming connections
                 // Required for Sony controllers (DS3, DS4, DS5) which initiate connections
-                gap_discoverable_control(1);
-                gap_connectable_control(1);
+                gap_discoverable_control(pairing_lockout ? 0 : 1);
+                gap_connectable_control(pairing_lockout ? 0 : 1);
 #endif
                 // USB2BLE: Classic BT stays non-discoverable/non-connectable by default
 #endif
 
 #ifndef CONFIG_USB2BLE
-                // Restore last connected device from NVS (for reconnection after reboot)
-                btstack_host_restore_last_connected();
+                if (!pairing_lockout) {
+                    // Restore last connected device from NVS (for reconnection after reboot)
+                    btstack_host_restore_last_connected();
 
-                // Always start scanning (discovers new devices + triggers periodic reconnect)
-                btstack_host_start_scan();
+                    // Normal operation continuously scans for controllers.
+                    btstack_host_start_scan();
+                } else {
+                    printf("[BTSTACK_HOST] Pairing admission locked after wipe; waiting for pairing gesture\n");
+                }
 #endif
             }
             break;
@@ -1508,8 +1634,8 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 const char* type_str;
                 if (profile == &BT_PROFILE_SWITCH2) {
                     switch (sw2_pid) {
-                        case 0x2066: type_str = "Switch 2 Joy-Con L"; break;
-                        case 0x2067: type_str = "Switch 2 Joy-Con R"; break;
+                        case 0x2067: type_str = "Switch 2 Joy-Con L"; break;
+                        case 0x2066: type_str = "Switch 2 Joy-Con R"; break;
                         case 0x2069: type_str = "Switch 2 Pro"; break;
                         case 0x2073: type_str = "Switch 2 GameCube"; break;
                         default:     type_str = "Switch 2 Controller"; break;
@@ -1718,6 +1844,13 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             printf("[BTSTACK_HOST] Incoming connection: %02X:%02X:%02X:%02X:%02X:%02X COD=0x%06X link=%d\n",
                    addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], (unsigned)cod, link_type);
 
+            if (pairing_lockout) {
+                // The registered HCI filter rejects this before admission. Do not create
+                // pending bookkeeping if BTstack still forwards the request event.
+                printf("[BTSTACK_HOST] Rejecting Classic connection while pairing is locked\n");
+                break;
+            }
+
             // Save pending connection info for use when HID connection is established
             // Note: device name is not available yet at CONNECTION_REQUEST time.
             // Wiimote detection is deferred to CONNECTION_COMPLETE or later when
@@ -1745,6 +1878,12 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
 
             // Handle connection complete for both incoming and outgoing connections
             if (status == 0) {
+                if (pairing_lockout) {
+                    printf("[BTSTACK_HOST] Disconnecting late Classic connection after pairing wipe\n");
+                    gap_disconnect(handle);
+                    classic_state.pending_valid = false;
+                    break;
+                }
                 if (classic_state.pending_valid &&
                     bd_addr_cmp(addr, classic_state.pending_addr) == 0) {
                     uint32_t cod = classic_state.pending_cod;
@@ -2001,6 +2140,17 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                     }
 
                     printf("[BTSTACK_HOST] Connected! handle=0x%04X\n", handle);
+
+                    if (pairing_lockout) {
+                        // Covers a connection-complete event already queued when the wipe
+                        // occurred. No GATT, SM, or Switch 2 custom handshake may proceed.
+                        printf("[BTSTACK_HOST] Disconnecting late BLE connection after pairing wipe\n");
+                        gap_disconnect(handle);
+                        hid_state.reconnect_attempt_time = 0;
+                        hid_state.state = BLE_STATE_IDLE;
+                        resolve_deferred_pairing_close();
+                        break;
+                    }
 
                     // Find or create connection entry
                     ble_connection_t *conn = find_free_connection();
@@ -3635,20 +3785,8 @@ static void switch2_run_gatt_discovery(hci_con_handle_t con_handle)
 // V2 FEATURE-ENABLE EXPERIMENT MATRIX (see sw2_capture.h)
 // ============================================================================
 
-// Best-supported hypothesis for the reference tool's "input_handle+3" descriptor write --
-// UNCONFIRMED pending a sw2_set_gatt_discovery_enabled() capture. Reasoning (full detail in
-// ble-controller-protocol-inventory.md §3.7.1): switch2_input_viewer.py consistently computes its
-// own "handle" as the raw/documented VALUE handle minus 1 (e.g. `input_handle = INPUT_HANDLES[0]
-// - 1`, and separately `write_gatt_char(0x0005 - 1, ...)`), and cross-checks against this repo's
-// three independently-confirmed value handles (0x000A, 0x0014, 0x001A and their secondary-triple
-// counterparts) are all consistent with that rule. Given this repo's CONFIRMED layout
-// 0x0009=decl(0x000A), 0x000A=value, 0x000B=CCC, and the v1-experiment-CONFIRMED 0x000E=value,
-// 0x000F=CCC, GATT's declaration-precedes-value invariant means 0x000E's declaration must be
-// 0x000D -- which leaves 0x000C as the only unassigned handle between 0x000A's CCC (0x000B) and
-// 0x000E's declaration (0x000D). input_handle(0x0009)+3 = 0x000C: most likely a THIRD, custom
-// descriptor attached to the 0x000A characteristic (not 0x000E) -- i.e. probably unrelated to the
-// 0x000E "richer format" question this experiment matrix is actually testing. Treated here as the
-// best current estimate, not a confirmed fact; a discovery capture may prove it wrong.
+// Candidate handle used only by the opt-in capture matrix. Its derivation and uncertainty are in
+// docs/bluetooth/switch2-v2-experiments.md; it is not shipping connection policy.
 #define SW2_REPORT_RATE_HANDLE_HYPOTHESIS 0x000C
 
 typedef struct {
@@ -3783,9 +3921,8 @@ static void switch2_v2_ccc_write_callback(uint8_t packet_type, uint16_t channel,
 
 static void switch2_v2_send_handle_write(hci_con_handle_t con_handle)
 {
-    // Exact bytes from switch2_input_viewer.py's "write report rate" step. Target handle is a
-    // reasoned hypothesis, not confirmed -- see SW2_REPORT_RATE_HANDLE_HYPOTHESIS above. Using
-    // the WITH-response GATT write (not _without_response) so a definitive ACK/error is captured.
+    // Exact reference-viewer bytes. Write-with-response is intentional so the capture records a
+    // definitive ATT result for the unconfirmed candidate handle.
     uint8_t data[] = { 0x85, 0x00 };
     sw2_capture_record(SW2_CAP_CMD_OUT, SW2_REPORT_RATE_HANDLE_HYPOTHESIS, data, sizeof(data));
     gatt_client_write_value_of_characteristic(
@@ -4901,6 +5038,12 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
             bd_addr_t incoming_addr;
             hid_subevent_incoming_connection_get_address(packet, incoming_addr);
 
+            if (pairing_lockout) {
+                printf("[BTSTACK_HOST] Declining incoming HID connection while pairing is locked\n");
+                hid_host_decline_connection(hid_cid);
+                break;
+            }
+
             // For Wiimotes/Wii U Pro: accept HID Host connection for reconnection
             if (wiimote_conn.active && memcmp(incoming_addr, wiimote_conn.addr, 6) == 0) {
                 printf("[BTSTACK_HOST] Wiimote HID incoming - accepting\n");
@@ -5291,6 +5434,8 @@ static void wiimote_l2cap_packet_handler(uint8_t packet_type, uint16_t channel, 
                     // Interrupt channel opened - connection complete!
                     printf("[BTSTACK_HOST] Wiimote: Interrupt channel connected - HID READY!\n");
                     wiimote_conn.state = WIIMOTE_STATE_CONNECTED;
+                    direct_output_queue.pending = false;
+                    direct_output_queue.next_pending = false;
                     classic_state.pending_hid_connect = false;
 
                     // Stop scanning now that we have a connected device
@@ -5342,6 +5487,11 @@ static void wiimote_l2cap_packet_handler(uint8_t packet_type, uint16_t channel, 
                     }
                 }
 
+            } else if (event_type == L2CAP_EVENT_CAN_SEND_NOW) {
+                uint16_t local_cid = l2cap_event_can_send_now_get_local_cid(packet);
+                if (local_cid == wiimote_conn.interrupt_cid && direct_output_queue.pending) {
+                    direct_output_try_send(local_cid);
+                }
             } else if (event_type == L2CAP_EVENT_CHANNEL_CLOSED) {
                 uint16_t local_cid = l2cap_event_channel_closed_get_local_cid(packet);
                 printf("[BTSTACK_HOST] Wiimote L2CAP closed: cid=0x%04X\n", local_cid);
@@ -5356,6 +5506,8 @@ static void wiimote_l2cap_packet_handler(uint8_t packet_type, uint16_t channel, 
                             memset(&classic_state.connections[wiimote_conn.conn_index], 0, sizeof(classic_connection_t));
                         }
                     }
+                    direct_output_queue.pending = false;
+                    direct_output_queue.next_pending = false;
                     memset(&wiimote_conn, 0, sizeof(wiimote_conn));
                 }
             }
@@ -5476,14 +5628,28 @@ bool btstack_classic_send_report(uint8_t conn_index, uint8_t report_id,
     if (conn->hid_cid == 0xFFFF && wiimote_conn.active &&
         wiimote_conn.conn_index == conn_index &&
         wiimote_conn.state == WIIMOTE_STATE_CONNECTED) {
-        // Build HID packet: 0xA2 (DATA|OUTPUT) + report_id + data
-        // Buffer must fit DS5 BT output (79 bytes: 0xA2 + 78-byte report with CRC)
-        static uint8_t wiimote_send_buf[80];
-        if (len + 2 > sizeof(wiimote_send_buf)) return false;
-        wiimote_send_buf[0] = 0xA2;  // DATA | OUTPUT
-        wiimote_send_buf[1] = report_id;
-        memcpy(wiimote_send_buf + 2, data, len);
-        return l2cap_send(wiimote_conn.interrupt_cid, wiimote_send_buf, len + 2) == ERROR_CODE_SUCCESS;
+        // Build HID packet: 0xA2 (DATA|OUTPUT) + report_id + data. Accept it
+        // into a bounded/coalescing queue even when L2CAP cannot send this instant;
+        // the packet handler drains it from L2CAP_EVENT_CAN_SEND_NOW.
+        if (len + 2 > sizeof(direct_output_queue.data)) return false;
+        uint8_t *dst;
+        if (!direct_output_queue.pending) {
+            dst = direct_output_queue.data;
+            direct_output_queue.len = len + 2;
+            direct_output_queue.pending = true;
+        } else {
+            // Preserve the report already promised to the driver (notably
+            // DualSense's one-time setup), while coalescing any further state
+            // churn to one latest successor instead of building a stale queue.
+            dst = direct_output_queue.next_data;
+            direct_output_queue.next_len = len + 2;
+            direct_output_queue.next_pending = true;
+        }
+        dst[0] = 0xA2;
+        dst[1] = report_id;
+        memcpy(dst + 2, data, len);
+        direct_output_try_send(wiimote_conn.interrupt_cid);
+        return true;
     }
 
     // hid_host_send_report stores a pointer to the data and sends asynchronously.
@@ -5718,7 +5884,7 @@ void btstack_host_disconnect_all_devices(void)
 
     for (int i = 0; i < MAX_CLASSIC_CONNECTIONS; i++) {
         classic_connection_t* c = &classic_state.connections[i];
-        if (!c->active || !c->hid_cid) continue;
+        if (!c->active) continue;
         // Drop the underlying ACL link, not just the HID profile. Closing
         // only HID (hid_host_disconnect) leaves the ACL up and some pads
         // (notably the DS4) hold their "connected to host" state past the
@@ -5729,7 +5895,7 @@ void btstack_host_disconnect_all_devices(void)
             c->addr, BD_ADDR_TYPE_ACL);
         if (hci_conn) {
             gap_disconnect(hci_conn->con_handle);
-        } else {
+        } else if (c->hid_cid != 0 && c->hid_cid != 0xFFFF) {
             hid_host_disconnect(c->hid_cid);  // fallback
         }
     }
@@ -5752,6 +5918,22 @@ void btstack_host_delete_all_bonds(void)
 {
     printf("[BTSTACK_HOST] Deleting all Bluetooth bonds...\n");
 
+    // Close admission before touching databases so asynchronous disconnect/
+    // connection-complete events cannot race the wipe and immediately re-admit a pad.
+    pairing_lockout = true;
+    pairing_close_deferred = false;
+    scan_timeout_end = 0;
+    classic_state.recovery_start_time = 0;
+    classic_state.waiting_for_incoming_time = 0;
+    classic_state.pending_valid = false;
+    if (hid_state.state == BLE_STATE_CONNECTING) gap_connect_cancel();
+    btstack_host_stop_scan();
+
+#if !defined(BTSTACK_USE_ESP32) && !defined(BTSTACK_USE_NRF) && !defined(CONFIG_USB2BLE)
+    gap_discoverable_control(0);
+    gap_connectable_control(0);
+#endif
+
 #if !defined(BTSTACK_USE_CYW43) && !defined(BTSTACK_USE_ESP32) && !defined(BTSTACK_USE_NRF)
     // Erase BTstack flash banks to force clean re-initialization
     // This is more reliable than using BTstack's delete APIs when flash was corrupted
@@ -5768,9 +5950,17 @@ void btstack_host_delete_all_bonds(void)
     printf("[BTSTACK_HOST] Classic BT link keys deleted\n");
 
     int ble_count = le_device_db_count();
-    le_device_db_init();
+    // le_device_db_init() is a no-op for the TLV backend used by CYW43. Remove
+    // every slot explicitly or the supposedly wiped LE keys survive in flash.
+    for (int i = le_device_db_max_count() - 1; i >= 0; --i) {
+        le_device_db_remove(i);
+    }
     printf("[BTSTACK_HOST] BLE bonds deleted (was %d devices)\n", ble_count);
 #endif
+
+    btstack_host_clear_last_connected();
+    // Store after a flash-bank erase/re-init so the post-wipe lock survives reboot.
+    btstack_host_store_pairing_lockout(true);
 
     printf("[BTSTACK_HOST] All bonds cleared. Devices will need to re-pair.\n");
 }

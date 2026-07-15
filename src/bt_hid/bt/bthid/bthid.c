@@ -32,6 +32,12 @@ __attribute__((weak)) void bthid_on_raw_report(uint8_t conn_index, const uint8_t
     (void)conn_index; (void)data; (void)len;
 }
 
+// Platform safe-point hook. PicoSwitch uses this to service its cooperative
+// BOOTSEL flash-sampling handshake. Keeping the hook here means sustained HID
+// traffic creates safe points instead of starving the timer that normally
+// supplies them. Other bthid users retain a zero-cost no-op.
+__attribute__((weak)) void bthid_on_report_boundary(void) {}
+
 // ============================================================================
 // STATIC DATA
 // ============================================================================
@@ -500,6 +506,10 @@ void bt_on_disconnect(uint8_t conn_index)
 
 void bt_on_hid_report(uint8_t conn_index, const uint8_t* data, uint16_t len)
 {
+    // Run before validation/routing: even an unbound or malformed high-rate
+    // source must not be able to starve platform maintenance indefinitely.
+    bthid_on_report_boundary();
+
     if (len < 1) {
         return;
     }
