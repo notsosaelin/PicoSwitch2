@@ -655,7 +655,7 @@ static void ns2_dispatch(const uint8_t *c, uint32_t n) {
             break;
         case 0x0C:  // feature select
             if (sub == 0x01) {  // get feature info
-                uint8_t f = c[8];
+                uint8_t f = (n > 8) ? c[8] : 0;
                 d[4] = (f & 0x01) ? 0x07 : 0x00;
                 d[5] = (f & 0x02) ? 0x07 : 0x00;
                 d[6] = (f & 0x04) ? 0x01 : 0x00;
@@ -667,7 +667,7 @@ static void ns2_dispatch(const uint8_t *c, uint32_t n) {
                 // Real PC2 replies with 40 data bytes: zeros except data[4] = the requested
                 // feature id (request data[4] = c[12]). Capture frames 9494-9687.
                 memset(d, 0, 40);
-                d[4] = c[12];
+                d[4] = (n > 12) ? c[12] : 0;
                 dl = 40;
             } else {  // set/clear/enable/disable mask
                 // 0x0C/0x04 with a non-zero feature mask (0x27) is the command that flips report-0x09
@@ -735,7 +735,7 @@ static void ns2_dispatch(const uint8_t *c, uint32_t n) {
             break;
         case 0x18:
             if (sub == 0x01) { memcpy(d, (const uint8_t[]){0, 0, 0x40, 0xF0, 0, 0, 0x60, 0}, 8); dl = 8; }
-            else if (sub == 0x03) { d[0] = c[8]; dl = 1; }
+            else if (sub == 0x03) { d[0] = (n > 8) ? c[8] : 0; dl = 1; }
             else dl = 0;
             break;
         default:  // 0x06 shutdown, 0x0A vibration, and anything else -> bare ACK

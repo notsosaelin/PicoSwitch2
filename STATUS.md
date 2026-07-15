@@ -25,7 +25,700 @@ never opened). Redesigned the gate around steadiness (frame-to-frame derivative)
 magnitude, and added a live bias/gate debug readout so the next test can confirm the mechanism
 directly — **pending hardware test 3.**
 
-**Last Updated:** 2026-07-14 — **NSO GameCube Controller: button mapping fully confirmed working on
+**Last Updated:** 2026-07-14 — **Three real bugs reported directly by the project owner after
+testing the Joy-Con2/mapping/mode-cycle work above, all found and fixed same-day:**
+
+1. **BOOTSEL gestures (mode-cycle, pairing window, wipe) stopped registering while a controller
+   was actively connected and being used, only working again after powering the controller off.**
+   Root cause: `src/bt_hid/bt/bthid/devices/vendors/nintendo/switch2_ble.c`'s "print when buttons
+   change" debug block had no rate limit or one-time gate (unlike every sibling driver's own debug
+   prints), so it fired on essentially every button edge during active use — the exact printf-flood
+   failure class this project already root-caused once before (see the "Same day, earlier pass"
+   Sony-pairing regression entry below), here stalling the single-threaded core1 run loop badly
+   enough that `control_timer_handler`'s 30ms tick — the only thing that calls `bootsel_poll()`,
+   which all three BOOTSEL gestures depend on — effectively stopped running with useful regularity
+   while a controller was connected and streaming. **Fixed**: rate-limited to 1/sec, matching
+   `switch_gc.c`'s own established `last_unknown_log_ms` convention.
+2. **Joy-Con 2 (L) and (R) not enumerating/being recognized on a real Switch 2 console** — the
+   same class of bug GC and Pro2 originally hit ("it took matching all the system's expected
+   calls"). Root cause: `switch_joycon2.c`'s vendor bulk command dispatcher was missing `case 0x11:`
+   and `case 0x18:` entirely (both fall through to a bare 0-byte ACK instead of the specific
+   structured replies), even though GC's own 2026-07-13 fix for the identical symptom explicitly
+   documents these two command families as the leading suspect. Joy-Con2 was templated from GC's
+   pattern *before* that fix existed, so it never got carried over. **Fixed**: added both cases,
+   byte-for-byte identical to GC's own values (Hypothesis-tier for Joy-Con2 specifically, same
+   evidence tier as the rest of this dispatcher — not independently confirmed).
+3. **Stick mapping slightly off in Steam.** Root cause: `ns2_seam.c`'s `ns2_to12()` used a single
+   `v*4095/255` linear scale, but the source convention (every bthid driver) treats 128 as the
+   nominal rest/center value — and 128 isn't the exact midpoint of 0..255 (127.5 is), so
+   `128*4095/255` truncated to 2055, not 2048, with the inverted Y axis resting at 2040 — X and Y
+   were 7-8 units off center in opposite directions, for every device and every personality. Exactly
+   the kind of small, asymmetric bias Steam's calibration screen is sensitive to. **Fixed**:
+   `ns2_to12()` now scales the 0..128 and 128..255 halves of the range independently, so
+   0/128/255 map to exactly 0/2048/4095.
+
+All three fixed in code, both boards build clean, existing host tests re-run with no regressions
+(`test_usb_mode_cycle` 11/11, `test_switch_joycon2_report` 43/43, `test_switch_gc_report` all
+passing). **None of the three have been hardware-re-tested yet** — that's the immediate next step.
+
+**Update, same day — item 1 above recurred; the printf-rate-limit fix was real but not the whole
+story.** The project owner re-tested and confirmed the BOOTSEL-gesture failure specifically while
+the Pico is plugged into a real Switch 2 console with a controller (DualSense) paired — but
+explicitly **not** while plugged into a PC with the same controller paired. That rules out anything
+Bluetooth-side (core1 doesn't know or care what's on the other end of the USB cable), and points at
+core0/USB-side behavior that differs specifically against a genuine console. The concrete
+architectural difference: `ns2_streaming` (`switch_pro2.c`, and the equivalent gates for
+GameCube/Joy-Con2) only ever goes true against a real console, since only a genuine console
+completes the full EP0/vendor identity handshake before selecting a report and starting to poll — a
+PC/Steam session typically never reaches that state. Once streaming, core0's main loop
+(`usb_core_task()`) becomes a continuous, tight HID-report-push loop (`tud_hid_n_report()` +
+`get_global_gamepad_input()`'s `critical_section_enter_blocking()`, every cycle) — much busier than
+an idle/PC-connected core0. `bootsel.c`'s `read_bootsel_locked()` was using
+`multicore_lockout_start_blocking()`/`_end_blocking()`, which have **no timeout**: if core0 can't
+reach a safe point to grant the lockout promptly under that load, the call — and with it core1's
+*entire* cooperative run loop (LED, rumble, the whole BTstack event loop, not just BOOTSEL
+sampling) — simply waits, however long that takes. **Fixed**: switched to
+`multicore_lockout_start_timeout_us()`/`_end_timeout_us()` with a 2ms bound
+(`BOOTSEL_LOCKOUT_TIMEOUT_US`); a timed-out sample is treated as "no observation this tick" in
+`bootsel_poll()` rather than corrupting the press/release edge tracker with a guessed value — the
+hold/tap timers are wall-clock-based, so they still resolve correctly across skipped samples as
+long as *some* sample succeeds while the button is actually held/tapped, and a bounded 2ms cost per
+tick means core0 being briefly busy can no longer stall core1 altogether. Confirmed via SDK source
+read (`multicore.c`) that a timed-out `_end_` call still asynchronously signals core0's release
+(fire-and-forget event, not waiting for acknowledgment) — no scenario leaves core0 stuck parked.
+Both boards build clean, host tests unaffected (pure C-level logic untouched). **Not yet
+hardware-re-tested** — the next test should specifically repeat the failing scenario (console +
+paired controller, hold BOOTSEL) to confirm this resolves it.
+
+**Update, same day — the BOOTSEL fix worked; confirmed Joy-Con2's real remaining bug.** The
+project owner confirmed the bounded-lockout fix resolved mode-cycling on console. Joy-Con 2 (L)/(R)
+still don't enumerate on a real console, and critically: **no "Paired" notification appears at all**
+when switching to either Joy-Con2 personality, unlike Pro2/GameCube (which both show it) — a much
+earlier failure point than the vendor-bulk-command gap (`case 0x11`/`0x18`) already fixed, which
+only affects the *streaming* phase after pairing succeeds. Comparing `switch_joycon2.c`'s EP0
+identity block (`switch_joycon2_ctrl_identity_l[64]`, returned for `bRequest=3` and for SPI reads at
+`0x13000`) against the project's own genuine-unit SPI dump analysis
+(`docs/experiments/joycon2-spi-dump-analysis-2026-07-14.md` §3.3/3.4, which documents the real,
+Confirmed layout: header(2) + type code(2) at `0x13002` + **serial (12 bytes: "W"+11 digits) at
+`0x13004`-`0x1300F`** + 2 reserved zero bytes + VID/PID at `0x13012`-`0x13015`) found a real,
+concrete bug: the array's fictitious serial used only **9** digits after `'W'` (a 10-byte field)
+instead of the Confirmed 11-digit/12-byte shape — 2 bytes short, silently shifting VID, PID, and
+every byte after them 2 positions earlier than the real layout (VID landing at offset 16 instead of
+the Confirmed 18). A misaligned identity block corrupts the very data (VID/PID) a console's initial
+recognition handshake reads — a much more plausible explanation for never reaching "Paired" at all
+than the streaming-phase gap fixed earlier. **Fixed**: extended the fictitious serial to the full
+11 digits (matching the doc this file already cited), which pushes VID/PID/the trailing "01 08"
+fixed bytes/colour placeholder to their Confirmed offsets; the Right-side derivation's PID-patch
+indices were updated from 18/19 to the now-correct 20/21 to match. Both boards build clean, host
+tests unaffected. **Not yet hardware-re-tested** — this is the leading candidate for why Joy-Con2
+never showed "Paired"; worth testing before further investigating the streaming phase.
+
+**Update, same day — Confirmed on real hardware: Joy-Con 2 (L) and (R) both enumerate, pair, and
+stream on a genuine Switch 2 console.** The identity-block offset fix above was the actual root
+cause — both personalities now show "Paired" and function, closing out the enumeration gap.
+**Joy-Con2 output personalities move from Hypothesis-tier ("templated from GC, not independently
+confirmed") to Confirmed for USB enumeration, EP0 identity handshake, and input streaming.** Button
+mapping is reported as "off" (exact symptom not yet detailed) — next task, expected to be a small,
+targeted fix rather than a re-architecture given the underlying report construction
+(`switch_joycon2_encode.c`) already passes its full host-side golden-test suite. Remaining
+Hypothesis-tier items for Joy-Con2: rumble byte semantics, motion/gyro (no source yet), NFC (Right
+only, not emulated).
+
+**Update, same day (side task) — 8BitDo Ultimate 2 "MG" (VID `0x2DC8`/PID `0x200B`) back-paddle
+mapping added.** This controller was already correctly identified (VID/PID/name resolve, shown
+in config mode's device panel) via the generic gamepad driver, but its 2 back paddles were
+unmapped. The project owner captured raw input-report bytes directly (config mode's raw-report
+debug view) for both paddles: byte 8 differs (`0x20` = left paddle, `0x04` = right paddle), every
+other byte identical between the two captures. Rather than assume this model's back-paddle usage
+numbers match `BITDO_BUTTON_MAP`'s existing convention (usage 3/6, established for a *different*
+8BitDo paddle model) — the same "don't assume one 8BitDo model matches another" lesson the NGC
+Modkit's own `is_ngc_modkit` special-case already established — added a new `is_ultimate_mg` flag
+(`bthid_gamepad.c`, VID+PID gated) and a fixed-byte-offset check mirroring the existing Xbox Elite
+Series 2 back-paddle pattern exactly: `data[8] & 0x20` → `JP_BUTTON_L4`, `data[8] & 0x04` →
+`JP_BUTTON_R4`. These already have a working default destination with zero additional remap-table
+work: `NS2_DEFAULT_MAP` routes L4/R4 to GL/GR in Pro2 mode, and `ns2_seam.c`'s Joy-Con2
+`joycon2_active` reinterpretation (added earlier this session) routes them to SL/SR in Joy-Con2
+mode. Both boards build clean, existing host tests unaffected. **Not yet hardware-tested.**
+
+**Last Updated:** 2026-07-15 — **`bthid_gamepad.c` split into a shared parsing engine + one
+quirk file per exact controller model/mechanism**, per explicit project owner direction after
+noticing it had grown to 1016 lines of accumulating inline special cases (5 identity booleans,
+5 button-usage tables, several raw-byte quirk blocks, a vendor-gated rumble block) while adding
+the 8BitDo Ultimate MG paddle mapping above. New shared type `gamepad_quirk_t`
+(`bthid_gamepad_quirks.h`) bundles a quirk's button-usage table (or a `select_button_map`
+override for Xbox's BLE-vs-Classic and 8BitDo's paddle-vs-not distinctions), an optional
+`extract_extra()` for raw-byte reads beyond the standard table (paddles, GC-native Z/detent
+bits), and an optional `send_rumble()`. One ordered, most-specific-first match table
+(`bthid_gamepad_quirks.c`) replaces the old implicit if/else-if priority. Seven quirks, one file
+each under `quirks/{xbox,bitdo}/`: `xbox`, `xbox_elite2`, `bitdo_paddle` (the "Ultimate/Pro 2,
+etc." usage-3/6 convention — named for the *mechanism*, since no exact PID list was ever
+confirmed), `bitdo_ngc_modkit`, `bitdo_ultimate_mg`, `bitdo_m30`, plus `generic` as the
+fallback. Naming rule going forward: name a quirk after the exact model when PID-confirmed
+(so a future Xbox Elite 1/3 gets its own file, never folded into `xbox`/`elite2`), after the
+mechanism when it's a deliberate cross-model fallback. Real correctness catch made during the
+move (not just a mechanical extraction): Elite Series 2 controllers previously got Xbox rumble
+because the old code checked `device->vendor_id == 0x045E` directly, ignoring identity
+booleans entirely — naively giving `QUIRK_XBOX_ELITE2` a NULL `send_rumble` would have silently
+dropped rumble for Elite 2 controllers, so both quirks now explicitly share the same
+`xbox_send_rumble()`. `gamepad_task()`'s rumble dispatch re-resolves the quirk fresh (rather than
+trusting the cached one) specifically so a Classic BT device that never went through descriptor
+parsing still gets rumble exactly as before. Both boards build clean, all existing host tests
+re-run with no regressions. Behavior-preserving refactor, not independently hardware-tested
+(no protocol bytes changed) — pending routine re-confirmation next time each affected controller
+(Xbox, Xbox Elite 2, 8BitDo Ultimate MG/NGC Modkit/M30, any generic pad) is on hand.
+
+**Update, same day — comment-accuracy sweep, triggered by a project owner question about why
+Xbox isn't under `vendors/microsoft/`.** Answering it surfaced a real, confirmed stale comment:
+`bthid_gamepad_quirk_xbox.c`'s rumble comment (copied verbatim from the pre-refactor
+`bthid_gamepad.c` during the split above) claimed `vendors/microsoft/xbox_bt.c`/`xbox_ble.c` were
+"never registered... dead code... since removed," making the generic driver "the only Xbox
+rumble implementation in the tree." **Confirmed false by direct inspection**: both files exist,
+are registered (`bthid_registry.c`'s `xbox_bt_register()`/`xbox_ble_register()`), are compiled in
+(`NS2_BT_ALL_DRIVERS` is defined for the real build, `CMakeLists.txt`), and each has its own
+independently-working rumble implementation. The claim was true at an earlier point in the
+project (see `docs/bluetooth/driver-reachability-audit.md`/`btstack-implementation.md` for the
+real, accurately-historicized bug hunt and its "re-register as the primary Xbox path" resolution)
+but was never updated afterward, and got propagated into new code during today's refactor simply
+by being copied verbatim. **Fixed**: rewrote that comment to state the actual current architecture
+(dedicated files own standard Xbox/Series traffic; the generic driver's Xbox quirks are reachable
+only for Elite Series 2, which both dedicated files explicitly exclude by PID, plus any edge case
+where a standard Xbox device fails to match them). Also found and fixed one more instance of the
+same underlying staleness: `bthid_registry.c`'s own top comment still described a "Phase 0, vendor
+drivers not compiled yet" bring-up state that hasn't matched the real build since `NS2_BT_ALL_DRIVERS`
+was defined — rewritten to describe the current state. Swept the wider `src/bt_hid` tree and
+`docs/bluetooth/` for the same class of claim (dead code / never registered / "the only X in the
+tree") — the docs already correctly historicize the original bug and its fix; no other stale
+instances found. Both boards build clean.
+
+**Last Updated:** 2026-07-15 (late) — **🟡 BOOTSEL sampling moved from core1 to core0. This is the
+real fix for a conflict that had been mis-diagnosed all day; both prior "fixes" were opposite
+halves of the same dead end.**
+
+**Root cause (hardware-confirmed from both directions).** BOOTSEL's raw sample must tri-state the
+flash CS pin with the *other* core parked. Sampling lived on core1, which meant parking **core0** —
+but core0 runs TinyUSB in a tight, unbounded loop and **cannot grant a lockout promptly while
+streaming to a host**. That gave two mutually exclusive failures, both observed on real hardware:
+- `multicore_lockout_start_blocking()` (committed version): core1 waits however long core0 takes →
+  **BOOTSEL works, rumble breaks.** Core1's whole run loop — including rumble forwarding on its
+  3 ms timer — stalls with it, so rumble stop commands land late and Xbox motors run on (loop_count
+  `0xEB` keeps pulsing ~11.75 s per trigger unless superseded) → *"rumbling uncontrollably"*.
+- 2 ms bounded timeout (uncommitted 2026-07-14 22:25): the sample never succeeds while a controller
+  is connected → `bootsel_poll()` returns `BOOTSEL_NONE` forever → **rumble works, BOOTSEL silently
+  dead.** Worst on DualSense (Classic BT), which loads core0 hardest — the project owner's own
+  observation that BOOTSEL worked on Xbox/Switch 2 (BLE) but not DualSense is what pinned this down.
+
+**Fix: invert the direction.** Core0 samples BOOTSEL itself (`bootsel_sample_core0()`, called from
+`usb_core_task()`, self-rate-limited to ~5 ms) and parks **core1**, which is a cooperative BTstack
+run loop that yields almost immediately (~20 µs park, <1% of core1's time). Core1's `bootsel_poll()`
+now only *reads* the published sample — it never parks anyone and cannot stall, so rumble stays on
+cadence. A missed sample is harmless here (retry in 5 ms, previous value retained), which is why the
+same "bounded timeout" idea that broke BOOTSEL before is safe on this side of the split. Core0 stays
+a lockout victim because `config_service_save()` still parks it for flash writes.
+
+**Both boards build clean. NOT yet hardware-tested.** Expected: BOOTSEL works on all controllers
+incl. DualSense, *and* Xbox/GC rumble behave (no more late stop commands). Sony rumble was reported
+still absent and is **not** explained by this — the DS5 output construction was audited (wire format
+`0xA2`+`0x31`+77 B payload, CRC span, buffer bounds all correct) with no defect found; treat it as a
+separate open issue.
+
+**Damage done this session, recorded honestly:** the refactored `bthid_gamepad.c` (quirk split) was
+destroyed by a `git checkout HEAD --` with no backup — never committed, no editor history, not
+recoverable. Lost: the architectural split and the 8BitDo Ultimate MG paddle mapping (**project
+owner reports MG mappings still work on the current build**, so the loss may be limited to the
+architecture). NOT lost: the Xbox rumble tuning (committed at 11:35, verified byte-identical to the
+quirk version) and every `quirks/*.c` file, preserved under `_reverted_quirk_split/`.
+
+**Process lesson that caused most of today's damage:** the working tree held a pile of
+**never-flashed** changes from the prior night. The build the owner was running at 7-8am predated
+them, so the first build of the day was the first time any of it ran on hardware — and I repeatedly
+blamed my own edits instead of checking `ls -la` / mtimes against the last commit. **Check what has
+actually been flashed before diagnosing a "regression."**
+
+---
+
+**Superseded:** 🔴 THE TREE WAS REVERTED TO ITS PRE-2026-07-15 STATE.
+Two attempts at the triple-tap wipe fix were made; both were removed. `btstack_host.c` carries only
+the 2026-07-14 stale-bond fix (28 lines) that predates this work. Read the "BOOTSEL still broken"
+entry below BEFORE touching this area again — the root-cause chain this file previously asserted
+is now known to rest on a false premise.**
+
+## 🔴 BOOTSEL dead once a controller is paired — UNRESOLVED, cause unknown
+
+Project owner, 2026-07-15 evening, on the reverted-plus-relanded build: **no BOOTSEL gesture
+registers once a controller is paired — no mode swap, no pairing, no wipe.** Reported on Xbox
+**and DualSense**, on **PC and Switch 2**. This blocks launch.
+
+**Critical correction — the "printf flood starves core1" theory is almost certainly WRONG.**
+`CMakeLists.txt` lines 106-107 set `pico_enable_stdio_usb(PicoSwitchWGA 0)` and
+`pico_enable_stdio_uart(PicoSwitchWGA 0)`: **both stdio backends are disabled, so `printf` has no
+output driver.** It costs some formatting CPU and writes nowhere — it cannot block on UART/CDC I/O.
+That undermines the stated root cause of the 2026-07-14 `switch2_ble.c` fix, the 2026-07-15
+pairing-gate diagnosis, and the six rate-limits added during the stack audit (all now reverted).
+Those `printf`s may still be worth bounding on CPU grounds, but **"logging flood" should not be
+assumed to be the mechanism again without measuring it.** Verify this claim against the build
+before relying on it either way.
+
+**What is actually known:**
+- The symptom is `bootsel_poll()` (`bootsel.c`) returning `BOOTSEL_NONE`. It does that in exactly
+  two places: `!usb_lockout_ready`, or `multicore_lockout_start_timeout_us(2000)` /
+  `multicore_lockout_end_timeout_us(2000)` failing (`BOOTSEL_LOCKOUT_TIMEOUT_US`).
+- **The 2026-07-14 bounded-lockout change converts "core0 too busy to grant the lockout within
+  2 ms" directly into "BOOTSEL silently does nothing"** — which is precisely this symptom. That
+  change predates the 2026-07-15 work and is uncommitted in the working tree. It is the leading
+  suspect and was never ruled out.
+- DualSense reproducing it matters: DualSense is **Classic BT**, so any BLE-only explanation
+  (advertising handler, GATT, Switch 2 paths, connection parameters) cannot be the whole story.
+  Whatever it is, it is on a **shared** path or on core0.
+- **A clean baseline has never actually been tested.** Both 2026-07-15 attempts were reverted and
+  relanded without an intervening hardware run, so "the revert restores BOOTSEL" is an assumption,
+  not an observation. The build now in `build/` is that untested baseline.
+
+**Next step must be measurement, not another theory.** Suggested order: (1) flash the reverted
+build and confirm whether BOOTSEL works with a controller paired — this alone splits the problem
+in half; (2) if still broken, instrument `bootsel_poll()`'s two failure exits (a counter surfaced
+via LED blink or config mode — **not** `printf`, which goes nowhere) to learn whether it is
+`usb_lockout_ready` or the lockout timeout; (3) only then decide whether core0's USB/streaming
+loop is genuinely unable to grant a 2 ms lockout, and if so whether BOOTSEL sampling belongs on
+core0 instead of core1.
+
+---
+
+**Historical (2026-07-15, both attempts now REVERTED — kept for the analysis, not as current
+state).** Root cause of the *wipe* bug, traced through `btstack_host.c`:
+none of the **four** admission points that decide whether a controller gets connected — BLE
+advertising auto-connect (`GAP_EVENT_ADVERTISING_REPORT`), Classic inquiry auto-connect
+(`GAP_EVENT_INQUIRY_RESULT`), the device-initiated `HCI_EVENT_CONNECTION_REQUEST`/
+`HCI_EVENT_CONNECTION_COMPLETE` path (DS3/DS4/DS5-style), and `HID_SUBEVENT_INCOMING_CONNECTION`'s
+unconditional `hid_host_accept_connection()` — ever consulted bond state. Each only
+checks "is this a recognized controller type" (advertised manufacturer ID/name/class-of-device),
+and background BLE scanning + Classic inquiry run continuously (see the entry below this one).
+So `btstack_host_delete_all_bonds()` deleted the *old* crypto bond, but nothing stopped the
+always-on auto-connect/auto-accept loop from silently rebuilding a *new* one on the very next
+advertisement/inquiry result — or, for Switch 2's custom `SW2_CMD_PAIRING` handshake, completing
+a handshake that never used BTstack bonding to begin with (`btstack_host.c`'s
+`profile->ble == BT_BLE_CUSTOM` branch skips SM pairing entirely). Separately, the wipe never
+cleared `hid_state.has_last_connected`, so the periodic 20s bonded-reconnect loop kept calling
+`gap_connect()` back to the wiped device's own address regardless of any of the above.
+
+**First attempt (reverted, do not resurrect).** It added a `pairing_required` flag with
+`!pairing_required` gates on three of the four admission points, rejecting path 3 by
+`gap_disconnect()`-ing the ACL after BTstack had already auto-accepted it. It built clean on both
+boards and on `-DNS2_PRO=OFF`. **On real hardware (project owner, 2026-07-15, Xbox + DualSense, on
+both PC and a Switch 2) it broke two things that worked before it: BOOTSEL gestures stopped
+registering while a controller was connected, and rumble stopped working entirely.** Two defects,
+both found by code trace afterward:
+
+1. **There are FOUR admission paths, not three.** `HID_SUBEVENT_INCOMING_CONNECTION` calls
+   `hid_host_accept_connection()` unconditionally (`btstack_host.c`, ~line 4979) and was never
+   gated. So the `HCI_EVENT_CONNECTION_COMPLETE` reject fought the HID layer's accept, producing
+   connect/reject churn plus a printf per cycle. That starves core1's cooperative run loop, so
+   `bootsel_poll()`'s 2 ms budget (`BOOTSEL_LOCKOUT_TIMEOUT_US`, `bootsel.c`) times out every tick
+   and returns `BOOTSEL_NONE` forever — the same core1-starvation class already documented twice in
+   this file. Input still trickles through, so the device *looks* paired and working.
+2. **The reject path set `classic_state.pending_valid = false`**, which skips the name/COD copy at
+   `HID_SUBEVENT_INCOMING_CONNECTION` (~line 4993). The device is then accepted with no name →
+   driver matching falls through to the generic gamepad driver → `send_rumble` is NULL for
+   DualSense → silent rumble loss. This is the reported rumble regression.
+
+**Correction to an earlier claim in this file:** that attempt also added a flash write
+(`btstack_host_save_last_connected()`) inside `btstack_host_delete_all_bonds()`, and this file
+previously called that the "likely reason" the flag got stuck. **That claim was speculation and is
+withdrawn** — `btstack_host_delete_all_bonds()` *already* does TLV flash I/O from that same core1
+timer context via `gap_delete_all_link_keys()`/`le_device_db_init()`, and `config_service_save()`
+does an explicit `multicore_lockout_start_blocking()` erase+program from the very same
+`control_timer_handler`, both long-established and working. Flash I/O there is a real hazard class
+worth respecting, but it was never demonstrated to be a cause here. Defects 1 and 2 above are the
+code-proven ones.
+
+## Post-wipe pairing lockout (⬜ REVERTED 2026-07-15 — design kept for a future reland only)
+
+**This code is NOT in the tree.** It was written, build-verified, and removed the same day when
+BOOTSEL remained broken on hardware. The design is recorded because it is sound and worth
+resurrecting *after* the BOOTSEL problem above is genuinely understood — but note it was never
+validated, and its safety argument leaned partly on the printf-flood theory that the stdio finding
+above now casts serious doubt on. Contract, per explicit project-owner direction: *triple-tap =
+forget everything and reject every controller until the user explicitly opens a pairing window.*
+The mechanism was deliberately the opposite shape of the first attempt: **never reject anything
+after the fact — stop the dongle from being reachable at all.** A `pairing_lockout` flag set by
+`btstack_host_delete_all_bonds()`, cleared only by `btstack_host_clear_pairing_lockout()` (wired
+into `cyw43_transport_set_pairing_mode(true)`, the double-tap path), closing all four paths at the
+two choke points upstream of them:
+
+- `btstack_host_start_scan()` returns early → no scan, no inquiry → **paths 1 and 2** can never
+  fire (their handlers require `BLE_STATE_SCANNING` / `inquiry_active`).
+- `gap_connectable_control(0)` + `gap_discoverable_control(0)` → no incoming ACL is ever
+  established → **paths 3 and 4** can never fire. No `gap_disconnect()` churn, because there is no
+  connection to reject.
+
+**The safety argument made at the time** was: when `pairing_lockout` is false, every path is
+byte-for-byte the baseline; the flag is read in only four places (`start_scan()`, the recovery
+watchdog, the idle safety net, its accessors), all cheap bool reads; nothing is added to the
+connected/streaming path or to any of the four admission handlers. **That argument appears to have
+been correct as far as it went — and BOOTSEL was still broken with this code in the tree.** Which
+is the strongest available evidence that the BOOTSEL fault is independent of all of it, and was
+likely never caused by the 2026-07-15 work at all. Do not read this section as "the lockout broke
+BOOTSEL"; read it as "the lockout did not fix it and did not obviously cause it."
+
+Two defects were found by tracing during implementation and fixed before landing (both real, and
+both worth re-applying in any reland):
+
+1. **The idle safety net would have printf-flooded every tick.** During a lockout *every* condition
+   it tests is satisfied (state `IDLE`, nothing connected, not scanning), and its
+   `"Safety: idle with no connections, resuming scan"` log fires *before* the `start_scan()` call —
+   so guarding `start_scan()` alone was **not** sufficient. Now guarded on `!pairing_lockout`.
+2. **The classic recovery watchdog would have rebooted the board after 10s**, silently discarding
+   the lockout (it is session state) and letting every wiped controller back in. It infers "BT
+   transport is dead" from absent inquiry activity, which a lockout guarantees;
+   `recovery_start_time` is cleared *only* by `GAP_EVENT_INQUIRY_COMPLETE`. Reachable in practice
+   because the connection-timeout loop can set it *after* a wipe (connection slots are cleared
+   asynchronously on `HCI_EVENT_DISCONNECTION_COMPLETE`). Now guarded on `!pairing_lockout` and
+   explicitly disarmed in the wipe.
+
+Also handled: `pairing_close_deferred` is cleared by the wipe, so `ns2_bt_host.c`'s
+`open_pairing_window()` early-return can never strand the lockout with no way to clear it. The
+in-memory last-connected record is cleared (no flash write — not needed, see above). Both boards
+build clean; `-DNS2_PRO=OFF` (shared Switch-1 path) verified clean.
+
+**Reland preconditions:** do not restore this until (a) the BOOTSEL fault above is understood and
+fixed, and (b) the wipe bug is re-confirmed to still exist on a known-good build. Also note the
+lockout creates a **trap** if BOOTSEL is unreliable: a triple-tap engages it, and *only* a
+double-tap clears it — if BOOTSEL is dead, no controller can ever connect again until reflash.
+Any reland should carry a non-BOOTSEL escape hatch (timeout or config-mode clear).
+
+**Known limitation (deliberate, documented in code):** the lockout is session state — a power-cycle
+clears it, after which a wiped controller can be auto-admitted and silently re-bonded (SSP
+auto-accept). Closing that needs a persistent per-device trust record, which is required for
+Switch 2 anyway (it never creates a BTstack bond to delete) and remains the tracked follow-up.
+
+## Bluetooth stack audit (2026-07-15) — findings kept, code REVERTED
+
+Full read-only audit of `src/bt_hid/**`. **The six rate-limits described below were reverted along
+with everything else; the tree does not contain them.** They are recorded as findings, not fixes.
+
+⚠️ **Read the stdio correction in the BOOTSEL entry above first.** This audit was framed around
+"unbounded `printf` starves core1", but `printf` has **no stdio backend** in this build
+(`CMakeLists.txt` 106-107), so it writes nowhere and cannot block on I/O. These sites are still
+unbounded formatting work on a per-report path and are defensible to bound on CPU grounds — but the
+severity claimed here was inherited from an unverified mechanism, and **the fault this audit was
+meant to explain persisted with all six rate-limits applied.** Treat the table as "unbounded work
+in a hot path, priority unknown", not as a root cause. Each site fires on **every report** at the
+controller's full rate once its condition holds:
+
+| Site | Condition that triggers it |
+|---|---|
+| `bthid.c` (default transaction case) | **Any** BT device sending a non-DATA/non-HANDSHAKE transaction — e.g. DATC (`0xB0`) continuation fragments. Shared path for every device. |
+| `switch2_ble.c` (`!sw2` no driver data) | Init failed / no free device slot — floods exactly when something is already wrong |
+| `switch2_ble.c` (report too short) | Any short notification routed here; SW2 notifies on more than one characteristic |
+| `ds4_bt.c` (unknown report) | Any `0x11` < 12 B, any `0x01` < 10 B, or unknown ID — DS4 **clones** commonly deviate |
+| `ds5_bt.c` (unknown report) | Same shape as DS4 |
+| `stadia_bt.c` (report too short) | Any persistently short report |
+
+The reverted patch used the convention already established in `wiimote_bt.c` (~line 582) and
+`switch_gc.c` (`last_unknown_log_ms`): a 1–2 s window. It was logging-frequency only, altering no
+control flow. Still worth noting regardless of mechanism: `switch2_ble.c`'s 2026-07-14 fix
+rate-limited one `printf` in `switch2_ble_process_report()` and left two others (`!sw2` no-driver-
+data, and report-too-short) unguarded in the same function.
+
+**Audited and found correct (no change made):** output-report buffers are bounds-checked before
+`memcpy` (`btstack_host.c` ~5585/5595, incl. the 79-byte DS5 BT case); `bthid_set_hid_descriptor()`
+bounds-checks against `BTHID_MAX_DESC_LEN`; DS4/DS5 report structs are length-checked before cast;
+`wiimote_bt.c` and `xbox_ble.c`'s diagnostics are already guarded (the latter swaps drivers, so it
+is effectively one-shot); `bthid.c`'s unknown-device log is capped at 3.
+
+### 🔵 Latency: BLE connection parameters are left at BTstack's defaults — NOT changed, needs a hardware A/B
+
+`gap_set_connection_parameters()` and `gap_request_connection_parameter_update()` are **never
+called anywhere in this repo**, so every BLE connection we initiate (we are always central) uses
+BTstack's defaults from `hci.c` ~5032:
+
+| Parameter | BTstack default | Appropriate for a gamepad |
+|---|---|---|
+| `le_connection_interval_min` | `0x0008` = 10 ms | 6 (7.5 ms) |
+| `le_connection_interval_max` | `0x0018` = **30 ms** | `0x000C` = 15 ms |
+| `le_connection_latency` | **4** | **0** |
+| `le_supervision_timeout` | `0x0048` = 720 ms | unchanged |
+
+These are BTstack's power-saving defaults aimed at sensors. `latency = 4` is simply wrong for HID:
+slave latency lets the peripheral skip up to 4 connection events, which mainly delays
+**central→peripheral** traffic — i.e. **rumble** — by up to `latency × interval` (≈120 ms at the
+default 30 ms). Input (peripheral→central) is less affected, since a peripheral with data may
+transmit at the next event, but the 30 ms interval still caps input rate.
+
+**Why this was NOT applied despite being a real finding:** (a) the benefit is device-dependent and
+unmeasurable without hardware — BTstack *auto-accepts* peripheral-requested parameter updates
+within `le_connection_parameter_range` (`l2cap.c` ~4346), so controllers that request their own
+preferred interval already get it, and these defaults only bind devices that never ask; (b) more
+importantly, **Switch 2's GATT init retry timing is hardware-tuned** (see the 2026-07-12 entry) and
+plausibly interacts with connection-interval changes — shipping that unvalidated alongside an
+already-untested lockout fix would confound the next hardware session, which is exactly the mistake
+that produced the regression above.
+
+**Proposed patch, ready to apply once the lockout is validated** — one call in `packet_handler()`'s
+`HCI_STATE_WORKING` block, before `btstack_host_start_scan()`:
+```c
+// conn_scan_interval, conn_scan_window (BTstack defaults), interval_min, interval_max,
+// latency, supervision_timeout, min_ce_len, max_ce_len
+gap_set_connection_parameters(0x0060, 0x0030, 0x0006, 0x000C, 0, 0x0048, 0, 0);
+```
+Validity check: supervision timeout must exceed `(1 + latency) × interval_max × 2` = 30 ms; 720 ms
+passes with wide margin. Test as its own A/B: confirm BLE controllers still connect and stay
+connected, then compare rumble responsiveness (the parameter with the clearest predicted effect).
+
+**Also worth noting:** the software input path itself is already tight and offers little to gain —
+reports are event-driven (BTstack callback → driver → `router_submit_input()`), not polled, and
+rumble forwarding already runs on a dedicated 3 ms timer (`RUMBLE_TICK_MS`). The remaining latency
+is dominated by the BLE connection interval above and the USB poll rate, not by our own code.
+
+**Previous update:** 2026-07-15 — **Real bug found and fixed: stale BLE bonds weren't
+self-healing, forcing a manual BOOTSEL triple-tap (wipe bonds) to re-pair a genuine Pro
+Controller 2 / GameCube controller.** The project owner reported a "small regression" —
+needing to triple-tap instead of just entering the controller's own pairing mode — and clarified
+no double-tap step was involved at all, which ruled out gesture detection (`bootsel.c`, changed
+this session) as the cause; confirmed via `git diff` that `btstack_host.c` (the actual bonding/
+reconnect logic) had zero changes this session. Root cause, traced through the code: background
+BLE scanning and periodic bonded-device reconnect run continuously (`btstack_host_start_scan()`'s
+`scan_start_time`/`BLE_RECONNECT_INTERVAL_MS` tracking), not just during an explicit pairing
+window. A genuine controller's BLE key relationship gets re-established whenever it's re-paired
+elsewhere (e.g. back to the owner's actual Switch 2 between test sessions with this dongle),
+making this dongle's stored bond stale. `SM_EVENT_REENCRYPTION_COMPLETE`'s failure branch already
+auto-deletes a stale bond and re-pairs — but only if the failed attempt reaches a clean SM
+completion event. If the peer instead just drops the link outright (an HCI-level authentication
+failure or missing-key condition, the more likely real behavior for a genuine key mismatch),
+`HCI_EVENT_DISCONNECTION_COMPLETE`'s handler was blindly retrying the *same* stale bond up to 5
+times before giving up — never touching the bond itself. **Fixed**: that handler now checks for
+`ERROR_CODE_AUTHENTICATION_FAILURE`/`ERROR_CODE_PIN_OR_KEY_MISSING` specifically and deletes the
+local bond before retrying, so the next connect attempt performs a genuinely fresh pairing
+instead of repeating the same doomed handshake — scoped narrowly to those two reasons so a real
+supervision timeout/link-quality disconnect still retries with the existing bond unchanged, as
+before. Both boards build clean, host tests unaffected (file has no host-testable pure-logic
+surface). **Not yet hardware-tested** — the next real-hardware session should confirm a
+Pro Controller 2/GameCube controller re-pairs automatically after this fix, without needing a
+manual bond wipe, the next time its key gets rotated by pairing to another host.
+
+**Previous update:** 2026-07-14 — **Joy-Con 2 moves from "complete blank slate" to real hardware
+evidence.** The project owner obtained genuine Joy-Con 2 L and R hardware plus full SPI flash dumps
+of each (`dumps/SWITCH2_JOYCON_L_1.bin`/`_R_1.bin`). Full analysis:
+`docs/experiments/joycon2-spi-dump-analysis-2026-07-14.md`; new Stage A doc:
+`docs/switch2-joycon2/protocol.md`. Highlights: Joy-Con 2 L/R USB PIDs (`0x2067`/`0x2066`) now
+**Confirmed** from a second, independent source (the genuine unit's own flash, not just the kernel
+driver); a previously-undocumented per-model hardware type code (`HB`/`HC`, vs `HE` Pro2/`HH` GC); a
+genuinely new finding that the factory-calibrated accelerometer bias lands on a different axis
+position for Joy-Con than for Pro Controller 2 (different IMU mounting orientation — a real
+implementation can't reuse Pro2's axis mapping as-is); confirmation that a single Joy-Con's stick
+calibration only populates one of the two available calibration slots (hardware has one stick, not
+two); and confirmation the Pro2-only "DSPH" audio DSP blob is absent on both Joy-Con and GameCube,
+consistent with it being tied to Pro2's headphone jack specifically.
+
+**Update, same day — USB device + configuration descriptors now Confirmed byte-exact for both
+sides.** Both Joy-Cons were already connected to this machine and enumerated in Windows; a USBPcap
+`--inject-descriptors` capture (same non-destructive method as GameCube's own Stage B evidence)
+replayed their cached descriptor-fetch transactions with zero replug needed. Result: byte-exact
+device descriptors (PID-only difference between L/R, `bcdDevice 0x0100` both — a *third* independent
+source now agreeing with the kernel driver and the SPI flash on the PID assignment) and a
+byte-exact, 80-byte configuration descriptor **structurally identical to GameCube's own** (same
+IAD+HID+vendor-bulk shape, same endpoint addresses/types/sizes) — strong direct confirmation that
+GameCube, not Pro2, is the right implementation template. Also found: a third Nintendo-VID USB
+device on the same hub, PID `0x2068`, hub-class — the owner's own USB adapter, not a controller.
+Not yet captured (at that point): the HID Report descriptor body and string descriptor text — both
+need a live capture spanning a replug, not just the injected-cache method. Raw capture:
+`docs/experiments/joycon2-captures/genuine-controller-descriptors-2026-07-14.pcap`.
+
+**Update, same day — HID Report descriptor also now Confirmed byte-exact.** A software
+disable/enable cycle (tried first, to avoid asking for a physical replug) doesn't trigger a real USB
+bus reset — no lower-level reset tool was available either. The project owner did a real
+unplug/replug of Joy-Con 2 Left while a live capture ran, catching the full enumeration: the 100-byte
+HID Report descriptor (three report IDs — `5` input flat-vendor, `7` input structured [16 buttons +
+one 12-bit X/Y stick + vendor data], `1` output — confirming the single-stick/fewer-buttons shape
+already inferred from the SPI factory data, this time from the wire format itself), plus interface
+strings `"If_Hid"` (index 5, same as GameCube's) and `"Joy-Con 2 (L)"` (index 6). **Report ID 7 as
+the console-facing extended report is new information** — Pro2/GameCube both use `0x0A` for this
+role; a future implementation must not assume that carries over. Raw capture:
+`docs/experiments/joycon2-captures/genuine-controller-full-enumeration-replug-2026-07-14.pcap`. Full
+writeup: `docs/switch2-joycon2/protocol.md`.
+
+**Update, same day — full field-level button/report mapping found in already-cloned reference
+material.** `ndeadly/switch2_controller_research` (cloned earlier for GameCube work, at
+`E:\nso-gc-refs\switch2_controller_research`) turned out to already have complete Joy-Con 2
+sections in `descriptors.md` (byte-for-byte matching this project's own fresh USB capture — good
+cross-validation), `hid_reports.md` (full field-level button bitmaps and report layout for both L
+and R, backed by real decrypted nRF52840 BLE captures), and `bluetooth_interface.md`. Confirms R's
+USB HID report ID is `8` (matching the BLE-side numbering already documented there, so no separate
+R-side USB capture was needed), gives complete button bitmaps for both sides, confirms NFC exists
+only on the Right Joy-Con 2, and reveals a "mouse mode" (relative delta-X/Y sensor data) neither this
+project nor its docs had previously known about. Also found: real component datasheets (a TDK
+ICM-42670-P IMU, an NXP PN7160/7161 NFC controller, a MAX98388/98389 audio amp consistent with the
+"Pro2-only DSPH blob = headphone jack" theory) — noted but not analyzed in depth this pass.
+
+**Also same day — wake-from-sleep design substantially strengthened.** The same reference repo's
+`bluetooth_interface.md`/`commands.md` document the exact byte-exact wake advertisement format: it's
+the ordinary reconnection advertisement with **one flag bit changed** (`0x81` vs `0x00` at a fixed
+offset), plus the target's VID/PID (already known) and the bonded console's own BD_ADDR (already
+structurally decoded from this project's own SPI dump analysis). There's even a documented command
+(`0x03`/`0x01`, "Bluetooth Wake") that a genuine controller responds to by broadcasting this. This
+moves the feature from "unknown payload, needs a capture" to "known payload, needs a BLE
+advertising-transmit implementation" — `docs/bluetooth/wake-from-sleep-design.md` fully rewritten.
+
+**Remaining open architectural question**: the project owner has decided Joy-Con 2 L/R should be
+**one runtime-selectable personality**, configurable in the existing CDC config UI to present as L,
+R, or **both sides merged into a single virtual controller identity** (Switch 1 "Joy-Con Grip"-style
+pairing) — a three-way choice, not a simple side-select toggle. The merged-input policy (how two
+physical source controllers' — or one controller's — worth of input folds into one Joy-Con2 report
+stream) is not designed yet; flagged as the next real design question, not blocking further evidence
+gathering. See `docs/switch2-joycon2/protocol.md` "Open questions."
+
+**Update, same day — Joy-Con 2 Stage B+C implemented, both boards build clean, 32/32 host-side
+golden tests pass.** New `include/switch_joycon2.h`/`switch_joycon2_encode.h` +
+`src/switch_joycon2/switch_joycon2.c`/`switch_joycon2_encode.c`, templated closely from
+`switch_gc.h`/`.c`. `USB_PERSONALITY_JOYCON2_L`/`_R` are now `true` in `usb_mode_cycle.c` — the BOOTSEL
+mode-cycle is Pro2 → GameCube → Joy-Con2 Left → Joy-Con2 Right → Config. What's solid: USB device/config/HID Report
+descriptors for both sides are the real Confirmed bytes from this session's captures; the input
+report encoders (report `0x07`/`0x08` structured, report `0x05` shared) implement the full
+Confirmed field/button layout from `ndeadly`'s docs, verified by `tools/test_switch_joycon2_report.c`
+(32 checks, all passing) the same way `switch_gc_encode.c` has its own golden tests. What's
+Hypothesis, matching exactly the evidence tier GameCube's own Stage D started at before hardware
+testing corrected it: the EP0 identity handshake bytes, the vendor bulk command responses beyond
+what's structurally shared across the whole controller family, and the rumble byte semantics
+(deliberately implemented as a conservative "any nonzero = on at a fixed amplitude" model, *not*
+assuming GameCube's own "not a linear amplitude byte" lesson transfers without evidence — see the
+file's own comment). Side is never user-facing: `USB_PERSONALITY_JOYCON2_L` and `_R` are two
+separate, always-available personalities, and `usb.c`'s `usb_reset_personality_state()` calls
+`switch_joycon2_set_side()` automatically based on which one the BOOTSEL cycle just selected —
+there is no config-UI toggle and none is planned.
+
+**Final architecture correction (project owner, 2026-07-14): no merged/paired L+R mode, ever, on
+one Pico.** An earlier same-day pass explored making both Joy-Con identities appear concurrently
+from a single Pico (driven by one paired controller, e.g. Xbox, as a "complete Joy-Con 2 set");
+that was investigated and conclusively ruled infeasible on current hardware — RP2040/RP2350 can
+only hold one USB device address at a time (register-level limit, not a TinyUSB gap), a genuine
+Charging Grip is a real 3-device USB hub topology (hub + independently-addressed L + R, confirmed
+via live capture), and `Dycool/NS-PC-Control` (a comparable Linux-gadget project) independently
+rejects L+R pair mode for the same reason. Settled final shape: Pro Controller 2
+(`USB_PERSONALITY_SWITCH2_PRO2`) is the default, primary, production-quality personality for using
+one paired controller as a complete Switch 2 controller. Joy-Con 2 Left and Right remain two
+separate, individually-selectable **experimental/test** personalities for hardware validation only
+— never presented as the recommended full-controller mode, and named `Joy-Con 2 Left
+(Experimental)` / `Joy-Con 2 Right (Experimental)` everywhere a personality name is shown to a
+human. See `docs/switch2-joycon2/protocol.md` "Why not simultaneous L+R" for the full evidence
+writeup. LED mode-cycle acknowledgement was generalized to `flashes = personality_ordinal + 1`
+(1 Pro2 / 2 GameCube / 3 Joy-Con2 Left / 4 Joy-Con2 Right / 5 Config) — no personality gets
+special-cased "experimental" LED behavior, Joy-Con2 L/R just occupy their ordinary slot in the same
+counting scheme every other personality already uses.
+
+**Update, same day — Joy-Con2 button mapping: the SL/SR gap fixed, everything else already
+worked.** Auditing what a generic bridged controller (Xbox/DualSense) actually needs mapped onto
+each Joy-Con2 personality found that A/B/X/Y, D-pad, L/R, ZL/ZR, stick+click, Plus/Minus, Home/
+Capture, and C all already worked correctly with zero new code — Joy-Con2's encoder reads the same
+`SWITCH_MASK_*`/`SWITCH_EXTRA_*` fields Pro2 already populates via the existing per-family remap
+pipeline (`ns2_seam.c`'s `router_submit_input()`), just side-gated. The one genuine gap: **SL/SR**,
+real physical rail buttons on both Joy-Con units with no Pro2/GameCube equivalent, hardcoded to 0
+and explicitly marked "not sourced" in the encoder. Fixed: new `SWITCH_EXTRA_SL`/`SR` bits
+(`include/switch_pro.h`), wired into both the structured report 7/8 encoder and the shared report
+`0x05` encoder (`switch_joycon2_encode.c`), sourced by reinterpreting the existing
+`NS2_DST_GL`/`NS2_DST_GR` destinations as SL/SR whenever a Joy-Con2 personality is active
+(`ns2_seam.c`'s `ns2_apply_dst()`, gated the same way GameCube's own `gc_active` analog-fold
+suppression already is) — GL/GR mean "grip button," which a lone Joy-Con2 physically doesn't have,
+so the same generic-controller paddle/extra source buttons that default to GL/GR in Pro2 mode
+instead drive a real Joy-Con control here. Pro2/GameCube mode unaffected (gated on
+`joycon2_active` alone). Also clarified and documented (project owner framing, 2026-07-14): the
+Switch's "sideways" single-Joy-Con reinterpretation is entirely console-side software — this
+project only needs to report physical button positions correctly, exactly as a genuine Joy-Con
+does, with no rotation/remap layer of its own. Full writeup:
+`docs/switch2-joycon2/mapping.md`. Host-tested: `tools/test_switch_joycon2_report.c`, 43/43 checks
+(8 new SL/SR cases added). Both boards build clean. **Not yet hardware-tested.**
+
+**Update, same day — Config mode is no longer terminal; BOOTSEL hold now exits it live back to
+Pro2.** Raised by the project owner as a usability gap: previously, once in CDC Config mode, the
+only way out was unplug/replug or reset (deliberate initial scope limit from `NSO-GC.md`, "do not
+add a live Config-to-Pro2 exit path in this pass" — not a technical constraint). Fixed:
+`usb_mode_cycle.c`'s `usb_next_personality()` now wraps `CDC_CONFIG` back to `SWITCH2_PRO2` instead
+of returning itself unchanged, and `ns2_bt_host.c`'s `control_timer_handler()` no longer suppresses
+BOOTSEL_HOLD detection while `g_usb_config_mode` is true — only the pairing/wipe gestures
+(double-tap/triple-tap) stay suppressed there, since those still make no sense mid-config-session.
+`!NS2_PRO` (Switch-1-only) builds are unaffected — no cycle exists there, so this doesn't change
+that build's behavior at all. Full cycle is now `Pro2 → GameCube → Joy-Con2 Left → Joy-Con2 Right →
+Config → (BOOTSEL hold) → Pro2`, a closed loop; power-cycle/reset still also returns to Pro2
+unconditionally, as an independent recovery path. Host-tested: `tools/test_usb_mode_cycle.c`,
+11/11 checks (wrap assertion rewritten). Both boards build clean. **Not yet hardware-tested.**
+
+**Update, same day — first hardware test, and a real bug found + fixed.** The Joy-Con2(L)
+personality enumerated under Windows "Other devices" with **Code 28** ("no compatible drivers") —
+the exact symptom Pro2 and GameCube each already hit and fixed via a deliberate `bcdDevice`
+deviation (`docs/switch2-gc/usb-personality.md` "`bcdDevice` WinUSB-cache collision"). Root cause
+here: this implementation used the real captured `bcdDevice` (`0x0100`) verbatim instead of
+applying that same fix — and this exact machine has genuine Joy-Con 2 L/R hardware whose own real
+binding was already cached from this session's earlier captures, so the collision was closer to
+guaranteed than hypothetical. **Fixed**: both device descriptors now use `0x0110` (1.10), matching
+the established pattern. **Not yet re-tested after this fix** — next thing to flash and check.
+
+**Same day, earlier pass — REGRESSION found and fixed, after the Gate 2 driver-audit
+pass below broke Sony pairing entirely (DualSense, DualSense Edge, DualShock 4 all stopped pairing
+— reported directly by the owner while testing).** Root cause: `HCI_EVENT_CONNECTION_COMPLETE`'s
+direct-L2CAP outgoing-connect branch (the path all Sony devices are forced through on CYW43,
+`btstack_host.c` ~line 1799) issues a narrow SDP PnP-ID query using the *shared*
+`classic_state.pending_vid`/`pending_pid` scratch fields — but, unlike the `hid_host_connect()` path
+used by Xbox/etc. (which explicitly zeroes these two fields immediately before its own equivalent
+query, ~line 5172), this direct-L2CAP path never did. A stale VID left over from a previous
+connection attempt (or an unanswered/failed query for the current device) could sit in those fields
+and then get handed to `bthid_update_device_info()` as if it were freshly resolved. This was
+harmless before today, because nothing downstream ever rejected a driver over a wrong VID — but the
+"Gate 2" VID-reject guards (`ds4_bt.c`'s original 2026-07-12 one, and today's newly-added ds3/ds5/
+wiimote/wii_u_pro ones) now DO reject on exactly that signal, so a stale non-Sony VID would cause a
+correctly-bound Sony driver to be discarded mid-pairing. **This is very likely also the actual root
+cause of the original "DS4 won't pair" complaint that started this whole investigation** — DS4's own
+guard, landed 2026-07-12, could have been silently breaking DS4 via this same mechanism the whole
+time, which fits "really weird"/intermittent far better than any of the hypotheses considered
+earlier that day.
+
+**First fix attempt (partial, not sufficient on its own):** reset
+`classic_state.pending_vid = 0; classic_state.pending_pid = 0;` immediately before the
+direct-L2CAP path's SDP query, mirroring what the `hid_host_connect()` path already does. Both
+boards built clean, but **hardware re-test showed all three (DualSense, DualSense Edge, DualShock
+4) still would not pair** — the scratch-field staleness was real and worth fixing regardless, but
+it was not the whole story (or not the dominant factor) behind this specific regression.
+
+**Second fix attempt (also not sufficient on its own): removed the VID-reject guards entirely**
+from `ds3_bt.c`, `ds4_bt.c`, `ds5_bt.c`, `wii_u_pro_bt.c`, and `wiimote_bt.c` — reverted today's
+Gate-2-consistency additions in the last four back to byte-identical-with-pre-session (confirmed via
+`git diff`), and removed `ds4_bt.c`'s original 2026-07-12 guard too. Both boards built clean, but
+**hardware re-test showed DualSense/DualSense Edge/DualShock 4 still would not pair** — confirmed
+directly by the project owner, who also confirmed they perform a fresh triple-tap (wipe all bonds)
+before every pairing attempt, ruling out stale bond/link-key data as an explanation. Since
+`ds3_bt.c`/`ds5_bt.c`/`wii_u_pro_bt.c`/`wiimote_bt.c` were at this point byte-identical to
+pre-session and DualSense (handled by `ds5_bt.c`) still failed, the cause had to be in
+`btstack_host.c`, the one Classic-BT-relevant file still carrying session changes.
+
+**Third fix: removed the passive "wake-from-sleep capture" diagnostic** added earlier this session
+to the BLE `GAP_EVENT_ADVERTISING_REPORT` handler — it logged every unrecognized BLE advertisement's
+full raw payload via a byte-by-byte `printf()` loop, which could plausibly flood the single-threaded
+cooperative run loop shared with the Classic BT connection state machine. **Hardware re-test
+confirmed this fixed pairing** — DualSense/DualSense Edge/DualShock 4 all paired again. But the same
+test surfaced two NEW symptoms: DualSense/Edge had no rumble, and BOOTSEL gestures (including the
+mode-cycle hold, blocking the NSO GameCube personality switch) and the pairing LED were misbehaving.
+
+**Fourth fix: reverted the `pending_vid`/`pending_pid` reset from the first fix attempt.** That
+reset was specifically added to protect against the (now-removed) VID-reject guards acting on stale
+data — with the guards gone, the reset no longer serves that purpose, and was reconsidered as a
+likely cause of the new rumble symptom instead: `bthid_update_device_info()` (which re-confirms or
+re-binds a device's driver, by name as well as VID) is only called when
+`classic_state.pending_vid || classic_state.pending_pid` is nonzero. Forcing both to zero right
+before a PnP-ID SDP query means that if the query gets no response — plausible for Sony devices
+given this whole code path exists because their SDP responses are unreliable on this chip — that
+re-confirmation call is silently skipped, leaving the device on whatever driver it was initially
+bound to instead of being properly reconfirmed. Reverting this leaves `btstack_host.c` with only two
+changes versus its pre-session state: the direct-L2CAP-for-Sony consolidation (verified
+behavior-identical to the original triplicated code via `git diff`) and a cosmetic Joy-Con 2 L/R
+display-label fix scoped to an unrelated BLE codepath. Both boards build clean.
+**Not yet hardware-retested.**
+
+**On the BOOTSEL/LED/mode-switch reports specifically:** verified via `git status`/`git diff` that
+`ns2_bt_host.c` (BOOTSEL gesture handling, LED rendering, mode-cycle request), `usb.c` (mode-cycle
+handling on core0), `bootsel.c` (gesture/tap detection), and `config.c` are **completely untouched**
+by any change this session — zero diff against pre-session HEAD. Nothing currently in this session's
+changeset touches those files or any state they read. If these symptoms persist on the next test,
+they are very unlikely to be caused by anything in this session's work, and are worth checking
+against whether they predate today entirely.
+
+**Same day, earlier passes:** NSO GameCube Controller: button mapping fully confirmed working on
 real hardware. Rumble's original P0 bug (immediate full-strength rumble on GameCube-mode entry) is
 Confirmed fixed by real hardware re-test; a follow-up gameplay bug (small rumble ticks smearing
 into one continuous buzz) is fixed in code pending re-test; and a foundational correction to the
@@ -39,7 +732,55 @@ which retroactively explains the entire rumble bug arc across four revisions. Fu
 refuted-hypotheses.md` archive. `tools/gcusb` (the PC-side USB protocol lab `PROMPT.md` asked for)
 is built, fixed, and confirmed working end-to-end against real hardware — see its own dated
 entries below for the full build-out and debugging story. Current next step: flash and re-test
-(`DATA.md` §9). Earlier the same week: a real Switch 2 console fully recognizes the Pico as a
+(`DATA.md` §9).
+
+**Same day, later pass (2026-07-14):** investigated a user report that a DS4 (DualShock 4) won't
+pair over Bluetooth. Code audit of `btstack_host.c`'s Classic BT connection layer found the
+routing itself is **not** DS4-specific — DS4 and DualSense (DS5) share the exact same
+`BT_PROFILE_SONY` profile and the same CYW43 direct-L2CAP-forced connection path (`bt_device_db.c`),
+so if DS5 pairs, the shared BT-layer machinery is very unlikely to be the DS4-specific cause. Along
+the way, found and fixed a real DRY violation: the "force direct L2CAP for Sony on CYW43" check was
+duplicated inline at 3 outgoing-connect call sites (with an identical `printf`) — consolidated into
+one `bt_cyw43_force_sony_direct_l2cap()` helper so future changes to the condition can't drift out
+of sync between sites again. Behavior-preserving, not yet hardware-tested. The leading remaining
+suspect for the actual "can't pair" symptom is downstream of pairing: `ds4_bt.c`'s CRC32/`hw_control`
+output-report fix (2026-07-12) is still marked not-hardware-tested, and `ds4_task()` sends that
+report unconditionally ~100ms after connect to trigger enhanced report mode — if malformed, this
+could cause the DS4 to drop the link right after connecting, which would look like a failed pairing
+rather than an output/rumble bug. Recommended next diagnostic when hardware is available: check
+whether disabling that first `ds4_send_output()` call changes the symptom (isolates BT-layer pairing
+from the output-report handshake).
+
+**Stronger finding, same pass, from tracing the fallback path directly (not yet fixed — see
+reasoning below for why):** confirmed DS4 and DS5 share the exact same `BT_PROFILE_SONY` profile
+struct, so the routing itself can't differ between them by device type — but there's a real,
+confirmed logic gap in `HCI_EVENT_REMOTE_NAME_REQUEST_COMPLETE`'s failure branch (name-request-failed
+fallback). If a device's name isn't in the inquiry EIR *and* the subsequent remote name request
+times out or fails, `classic_state.pending_profile` is guaranteed to still be `BT_PROFILE_DEFAULT`
+(it can only become Sony via a name match, and there was never a name) — so
+`bt_cyw43_force_sony_direct_l2cap()` can never return true here, and the connection falls through to
+plain `hid_host_connect()`, the exact SDP path this whole direct-L2CAP detour exists to avoid ("SDP
+responses from DS4/DS5 crash the CYW43 SPI bus"). The comment directly above this code says it
+"handles DS4, DS3, and other controllers that may not respond to name requests" — but by the time
+this branch runs, there is no longer any information left to actually detect Sony. This would present
+as intermittent, seemingly random pairing failures specifically when a controller's BT radio doesn't
+answer a name request promptly — a good match for "really weird" behavior reported by a user, more so
+than a hard, always-reproducing failure.
+
+**Deliberately not fixed this pass.** The one available fallback signal at this point is Class of
+Device (`is_gamepad`/`is_joystick`, already parsed from `cod`), but COD alone can't safely
+disambiguate Sony (needs direct L2CAP) from other Gamepad-COD devices like Xbox controllers (which
+correctly want `hid_host_connect()` and have no SDP-crash problem) — defaulting name-resolution
+failures to direct L2CAP would fix this DS4 gap but could misroute an Xbox controller hitting the
+exact same rare edge case. This is a real trade-off, not a mechanical bug fix, so it's documented
+here for a deliberate decision rather than silently coded.
+
+Also scoped (design-only, no firmware changes) a wake-from-sleep
+feature request: cloning an already-console-bonded genuine controller's BLE identity to wake the
+Switch 2, informed by `Dycool/NS-PC-Control`'s capture-and-replay precedent — see
+`docs/bluetooth/wake-from-sleep-design.md` (new).
+
+Earlier the same week: a real Switch 2 console fully recognizes the Pico as a
 genuine GameCube Controller and
 streams live input via report `0x0A`, reached after an eleven-pass same-day hardware-debugging arc
 (EP0 identity handshake,
@@ -1632,27 +2373,60 @@ meaningfully bigger lift than the one-line summary suggests, if ever revisited.
 
 # Next Recommended Tasks
 
+**Immediate, added 2026-07-14, updated same day after a regression:**
+
+- **DS4/DS5/DualSense Edge pairing — hardware re-test needed NOW, top priority.** The investigation
+  into the original "DS4 won't pair" complaint led to adding VID-reject guards across the Sony and
+  Wiimote-family drivers (Gate 2 consistency pass) — which then caused a confirmed regression
+  (DualSense, DualSense Edge, and DualShock 4 all stopped pairing entirely, reported directly during
+  hardware testing). A first fix (resetting stale `classic_state.pending_vid`/`pending_pid` scratch
+  fields before the direct-L2CAP path's SDP query) did not resolve it on retest. Current state: **all
+  the VID-reject guards have been removed** from `ds3_bt.c`, `ds4_bt.c` (including its original
+  2026-07-12 one), `ds5_bt.c`, `wii_u_pro_bt.c`, and `wiimote_bt.c` — a deliberate step back to the
+  simpler, previously-working name-based matching for this whole family, since the guard mechanism
+  itself is now the leading suspect rather than just needing a smaller fix. Both boards build clean.
+  **Needs an immediate hardware re-test** of DualSense/DualSense Edge/DualShock 4 pairing before
+  anything else in this file. Full account, including the two fix attempts and why the first wasn't
+  enough: see the dated entry at the top of this file.
+- If pairing is *still* broken after this, the guards were not the (sole) cause and the next step is
+  a fresh hardware capture of the debug printfs already present in `bthid_update_device_info()`/
+  `find_driver()` during a live failed attempt — don't re-guess blind again.
+- **Wake-from-sleep — design doc only, no firmware yet.** `docs/bluetooth/wake-from-sleep-design.md`
+  scopes a capture-and-replay approach (clone an already-bonded genuine controller's BLE identity),
+  revising the prior flat "out of scope" verdict now that a genuine bonded controller is available to
+  capture from. Next concrete step needs hardware: add the passive advertisement-capture diagnostic
+  described there, then bring a genuine controller into range and see what it logs.
+
+**Longer-standing backlog:**
+
 1. **Hardware-validate Gate 2's 2026-07-12 identity/driver-binding work — still highest priority for
    the identity/logging system itself (fix (c) in item 7 above takes priority for actual pairing
    reliability).** Reachability audit, fresh upstream comparison, the `bthid_transport_mask_t`
-   structural fix, the `ds4_bt.c` VID-reject fix, and the new `bt_identity_log.c`/`btid dump` facility
-   are build-verified; hardware coverage so far: 8BitDo NGC Modkit (Classic, full profile
-   confirmed), **Switch 2 Pro Controller (BLE, identity/driver-binding confirmed clean, 2026-07-13
-   — see item 7(c) and the experiment doc "Capture 2")**, and unconfirmed-but-reported-pairing-
-   successful passes for Xbox/DualSense/a generic Switch Pro Controller (no `btid dump` pulled for
-   those yet). Still fully untested: Switch 1 Pro Controller, Wiimote +/- attachment, generic/XInput
-   with a captured `btid dump`, 8BitDo NGC DIY's second "Android/D-Input" mode. Specifically still
-   watch: (a) does Classic BT Xbox input still parse correctly now that `xbox_bt.c` is live (flagged
-   as this pass's top risk — its report-format detection was never hardware-verified); (b) does
-   `ds4_bt.c`'s new VID-reject guard leave DS4 itself unaffected. Full detail:
+   structural fix, and the new `bt_identity_log.c`/`btid dump` facility are build-verified; hardware
+   coverage so far: 8BitDo NGC Modkit (Classic, full profile confirmed), **Switch 2 Pro Controller
+   (BLE, identity/driver-binding confirmed clean, 2026-07-13 — see item 7(c) and the experiment doc
+   "Capture 2")**, and unconfirmed-but-reported-pairing-successful passes for Xbox/DualSense/a
+   generic Switch Pro Controller (no `btid dump` pulled for those yet). Still fully untested: Switch
+   1 Pro Controller, Wiimote +/- attachment, generic/XInput with a captured `btid dump`, 8BitDo NGC
+   DIY's second "Android/D-Input" mode. **Note: the `ds4_bt.c` VID-reject fix mentioned in earlier
+   versions of this entry was removed 2026-07-14** — it caused a pairing regression across the whole
+   Sony family; see the dated entry at the top of this file. Specifically still watch: does Classic
+   BT Xbox input still parse correctly now that `xbox_bt.c` is live (flagged as this pass's top risk
+   — its report-format detection was never hardware-verified). Full detail:
    `docs/bluetooth/driver-reachability-audit.md`,
    `docs/bluetooth/joypad-os-upstream-comparison-2026-07-12.md`,
    `docs/bluetooth/btstack-implementation.md` "Gate 2" section.
-2. **Continue Gate 2**: audit the remaining drivers (`ds3_bt`, `ds5_bt`, `wii_u_pro_bt`,
-   `wiimote_bt`, `xbox_bt`, `xbox_ble`, `stadia_bt`) for the same "known-contradicting-VID should
-   reject before name fallback" pattern already fixed in `ds4_bt.c` — not yet done for the rest.
-   Preserve narrower rumble follow-ups: left/right fidelity, stop/reconnect, generic non-Microsoft
-   XInput, and the flagged Wiimote channel question.
+2. **Continue Gate 2 — REVERSED 2026-07-14, do not re-add without hardware evidence.** The
+   "known-contradicting-VID should reject before name fallback" pattern was extended from `ds4_bt.c`
+   to `ds3_bt`/`ds5_bt`/`wii_u_pro_bt`/`wiimote_bt`/`switch_pro_bt`, then found to cause (or at least
+   correlate strongly with) a real pairing regression across the whole Sony family — all five
+   additions were reverted the same day, along with `ds4_bt.c`'s original guard. `xbox_bt.c`/
+   `xbox_ble.c`/`stadia_bt.c` guards were LEFT IN (different connection path, not implicated). Any
+   future attempt to re-add VID-reject guards to the Sony/Wiimote-family drivers needs a real
+   hardware pairing test in the loop, not just a code-consistency argument — see the dated entry at
+   the top of this file for the full account of why this seemed safe and wasn't. Preserve narrower
+   rumble follow-ups: left/right fidelity, stop/reconnect, generic non-Microsoft XInput, and the flagged
+   Wiimote channel question.
 3. ~~8BitDo NGC DIY: once `btid dump` is validated on hardware, use it to capture the controller's
    real identity, then decide whether a small profile layered on the generic driver is safer than
    a standalone driver~~ **DONE 2026-07-12.** `btid dump`/`btid desc` validated end-to-end on real

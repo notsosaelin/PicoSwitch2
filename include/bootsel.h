@@ -4,10 +4,23 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// BOOTSEL-button gestures. The Pico's only button doubles as the flash chip
-// select, so reading it at runtime requires briefly tri-stating that pin with
-// the *other* core parked (see bootsel.c). Poll from the Bluetooth core; the USB
-// core must have called multicore_lockout_victim_init() first.
+// BOOTSEL-button gestures. The Pico's only button doubles as the flash chip select, so reading
+// it at runtime requires briefly tri-stating that pin with the *other* core parked (see
+// bootsel.c).
+//
+// ARCHITECTURE (rewritten 2026-07-15 -- read this before moving the sampling back):
+// The raw sample is taken by CORE0 (bootsel_sample_core0(), called from usb_core_task()'s loop),
+// which parks core1. The gesture state machine runs on CORE1 (bootsel_poll()), reading the
+// value core0 published -- core1 never parks anyone and therefore never stalls.
+//
+// It used to be the other way around (core1 sampled, parking core0) and that is unfixable as a
+// design: core0 runs TinyUSB in a tight, continuous loop and cannot grant a lockout promptly
+// while streaming to a host, so core1 either blocked for tens of ms per tick (BOOTSEL worked,
+// but core1's stalls delayed rumble forwarding -- Xbox motors kept running because their stop
+// command arrived late) or bailed out on a short timeout (rumble fine, but BOOTSEL silently did
+// nothing). Both failure modes were observed on real hardware on 2026-07-15. Core1 is a
+// cooperative BTstack run loop that reaches a safe point almost immediately, so parking *it* is
+// cheap and bounded -- which is why the direction is now inverted.
 typedef enum {
     BOOTSEL_NONE = 0,
     BOOTSEL_DOUBLE_TAP,   // enter pairing window
@@ -17,8 +30,19 @@ typedef enum {
                           // configuration mode directly, unchanged. See usb.h.
 } bootsel_gesture_t;
 
-// Run the gesture state machine once. Call periodically (~30 ms) with the
-// current millisecond timestamp. Returns a recognized gesture, else BOOTSEL_NONE.
+// CORE0 ONLY. Sample the BOOTSEL pin and publish it for bootsel_poll(). Call from core0's main
+// loop; it self-rate-limits, so calling it every iteration is fine and costs almost nothing
+// between samples. Requires core1 to have called bootsel_core1_lockout_init() first; until then
+// it is a no-op and bootsel_poll() reports no gestures.
+void bootsel_sample_core0(void);
+
+// CORE1 ONLY. Register core1 as a multicore lockout victim so core0 can park it to sample.
+// Call once from the core1 entry point before its run loop starts.
+void bootsel_core1_lockout_init(void);
+
+// Run the gesture state machine once. Call periodically (~30 ms) with the current millisecond
+// timestamp. Returns a recognized gesture, else BOOTSEL_NONE. Never parks a core and never
+// blocks -- it only reads the value core0 last published.
 bootsel_gesture_t bootsel_poll(uint32_t now_ms);
 
 #endif  // _BOOTSEL_H_

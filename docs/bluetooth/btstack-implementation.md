@@ -1069,7 +1069,7 @@ verified compiling clean: both boards' default `NS2_PRO=ON NS2_AUDIO=ON`, plus s
 - **`PAIRING_WINDOW_MS`'s exact value (30s)** — chosen for usability per explicit instruction, not
   derived from any protocol constant; treat it as adjustable UX, not load-bearing.
 
-## BLE wake-from-sleep (research only — feature remains out of scope)
+## BLE wake-from-sleep (design revised 2026-07-14 — no longer flatly out of scope)
 
 `docs/wakeup.md` in the same external repo documents how the Switch 2 actually wakes from BLE: a
 setup wizard captures a **real, already-paired Joy-Con 2's own HOME-button BLE advertisement**
@@ -1079,9 +1079,12 @@ shipped feature** (previously described from an older/different source): the act
 is **simpler than previously characterized here** — no mention of stopping `bluetoothd`, disabling
 BlueZ, or spoofing the adapter's own public address via `btmgmt public-addr`; it's a captured
 MAC + advertising payload replayed via a chosen `hci` device, apparently alongside normal BlueZ
-operation. This refines (simplifies) but does **not change** the "out of scope" conclusion: the
-mechanism still fundamentally requires **impersonating a specific, already-bonded Joy-Con 2's exact
-identity**, which requires a real Joy-Con 2 to capture the advertisement from in the first place —
-this project's dongle has no such device to capture from, and isn't itself a bonded Joy-Con 2
-identity. Not pursued — filed as context only, in case this project's Bluetooth radio capability is
-ever repurposed for it. Full detail: `docs/experiments/ns-pc-control-audit-2026-07-12.md` §6.
+operation. Full detail: `docs/experiments/ns-pc-control-audit-2026-07-12.md` §6.
+
+Previously filed flatly out of scope here on the reasoning that "this project's dongle has no such
+device to capture from." That assumption no longer holds — and turned out to be moot anyway: the
+exact wake-advertisement byte format is fully documented in `ndeadly/switch2_controller_research`
+(already cloned locally for GameCube work), so no capture is even needed. See
+**`docs/bluetooth/wake-from-sleep-design.md`** for the byte-exact format and its remaining,
+narrower unknowns (chiefly whether this dongle's BTstack/CYW43 setup can transmit a raw
+advertisement at all).

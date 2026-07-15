@@ -15,6 +15,7 @@
 #include "core/services/players/manager.h"
 #include <string.h>
 #include <stdio.h>
+#include "pico/time.h"
 
 // ============================================================================
 // SWITCH 2 CONSTANTS
@@ -227,13 +228,29 @@ static void switch2_ble_process_report(bthid_device_t* device, const uint8_t* da
                            ((uint32_t)report[6] << 16) |
                            ((uint32_t)report[7] << 24);
 
-    // Debug: print when buttons change
+    // Debug: print when buttons change, rate-limited to 1/sec. Confirmed 2026-07-14 as a real,
+    // previously-unbounded printf flood: during active use, `sw2_buttons` changes on essentially
+    // every press/release edge (and can toggle from noisy analog/trigger bits mapped into the same
+    // word), so this fired continuously rather than once -- the exact bug class already
+    // root-caused once before in this project (a printf-flooding BLE-advertisement diagnostic
+    // starving the single-threaded core1 run loop, see docs/bluetooth/btstack-implementation.md),
+    // here stalling `control_timer_handler`'s 30ms tick (and therefore bootsel_poll()) badly enough
+    // that BOOTSEL gestures (mode-cycle, pairing window, wipe) stopped registering while a
+    // controller was actively connected and being used, only recovering once it was disconnected
+    // and the run loop went idle again. Matches every sibling driver's own one-time/rate-limited
+    // debug-print convention (e.g. switch_gc.c's `last_unknown_log_ms`) instead of firing
+    // unconditionally on every change.
     if (sw2_buttons != last_buttons_raw) {
-        printf("[SW2_BLE] Buttons raw: 0x%08lX (bytes: %02X %02X %02X %02X)\n",
-               (unsigned long)sw2_buttons, report[4], report[5], report[6], report[7]);
-        printf("[SW2_BLE] Report[0-7]: %02X %02X %02X %02X %02X %02X %02X %02X\n",
-               report[0], report[1], report[2], report[3],
-               report[4], report[5], report[6], report[7]);
+        static uint32_t last_change_log_ms = 0;
+        uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+        if (now_ms - last_change_log_ms > 1000) {
+            printf("[SW2_BLE] Buttons raw: 0x%08lX (bytes: %02X %02X %02X %02X)\n",
+                   (unsigned long)sw2_buttons, report[4], report[5], report[6], report[7]);
+            printf("[SW2_BLE] Report[0-7]: %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                   report[0], report[1], report[2], report[3],
+                   report[4], report[5], report[6], report[7]);
+            last_change_log_ms = now_ms;
+        }
         last_buttons_raw = sw2_buttons;
     }
 

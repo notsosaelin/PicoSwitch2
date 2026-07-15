@@ -2393,6 +2393,34 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                     reason != ERROR_CODE_REMOTE_USER_TERMINATED_CONNECTION &&
                     reason != ERROR_CODE_REMOTE_DEVICE_TERMINATED_CONNECTION_DUE_TO_POWER_OFF;
 
+                // Confirmed 2026-07-15 (project owner report + code trace): a genuine controller
+                // whose BLE key relationship gets re-established elsewhere (e.g. re-paired to its
+                // actual Switch 2 between test sessions with this dongle) makes OUR stored bond
+                // stale. `SM_EVENT_REENCRYPTION_COMPLETE`'s failure branch already auto-deletes a
+                // stale bond and re-pairs (see that handler, further down this file) -- but that
+                // only fires if the failed re-encryption attempt reaches a *clean* SM completion
+                // event. If the peer instead just drops the link outright (the more likely real
+                // behavior for a genuine key mismatch -- an authentication failure or missing-key
+                // condition at the HCI level), the disconnect lands here instead, and this block
+                // was blindly retrying the SAME stale bond up to 5 times before giving up -- a
+                // real, reproducible-from-code fit for "reconnect doesn't work, only a bond wipe
+                // (BOOTSEL triple-tap) fixes it," reported directly by the project owner. Fixed:
+                // treat these two reasons as "stale key, not a real link-quality problem" and
+                // delete the local bond before retrying, so the very next connect attempt (still
+                // using the same stored address) performs a genuinely fresh pairing instead of
+                // repeating the same doomed handshake. Scoped narrowly to these two reasons only
+                // -- a real supervision timeout or generic link loss must still just retry with
+                // the existing bond unchanged, since that connection was never actually broken at
+                // the key/authentication level.
+                if (hid_state.has_last_connected &&
+                    (reason == ERROR_CODE_AUTHENTICATION_FAILURE ||
+                     reason == ERROR_CODE_PIN_OR_KEY_MISSING)) {
+                    printf("[BTSTACK_HOST] Disconnect reason 0x%02X looks like a stale/mismatched "
+                           "bond, not a link-quality problem; deleting local bond before retrying\n",
+                           reason);
+                    gap_delete_bonding(hid_state.last_connected_addr_type, hid_state.last_connected_addr);
+                }
+
                 // Try to reconnect to last connected device if we have one stored
                 if (hid_state.has_last_connected && hid_state.reconnect_attempts < 5 &&
                     reason_warrants_reconnect) {

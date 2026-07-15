@@ -1,0 +1,675 @@
+/*
+ * Joy-Con 2 USB emulation. See include/switch_joycon2.h for the module contract and evidence
+ * tier of each entry point. Only compiled under -DNS2_PRO, mirroring switch_gc.c's own scoping.
+ */
+#include <stdio.h>
+#include <string.h>
+
+#include "pico/time.h"
+#include "tusb.h"
+
+#include "report.h"       // report_set_rumble, get_global_gamepad_input
+#include "switch_joycon2.h"
+#include "switch_joycon2_encode.h"
+#include "ns2_pairing_crypto.h"
+#include "switch_pro.h"
+#include "usb.h"
+
+#ifdef NS2_PRO
+
+static joycon2_side_t s_side = JOYCON2_SIDE_LEFT;
+
+void switch_joycon2_set_side(joycon2_side_t side) { s_side = side; }
+joycon2_side_t switch_joycon2_get_side(void) { return s_side; }
+
+//--------------------------------------------------------------------+
+// Descriptors -- Confirmed byte-exact, live USBPcap capture 2026-07-14 (both device and
+// configuration descriptors), cross-validated byte-for-byte against
+// ndeadly/switch2_controller_research's own independently-captured descriptors.md. See
+// docs/switch2-joycon2/protocol.md "USB descriptors" / "USB identity" for the full citation and
+// raw capture files.
+//--------------------------------------------------------------------+
+
+static const uint8_t switch_joycon2_device_desc_l[] = {
+    0x12,        // bLength
+    0x01,        // bDescriptorType (Device)
+    0x00, 0x02,  // bcdUSB 2.00
+    0xEF,        // bDeviceClass (Misc, IAD composite)
+    0x02,        // bDeviceSubClass
+    0x01,        // bDeviceProtocol
+    0x40,        // bMaxPacketSize0 64
+    0x7E, 0x05,  // idVendor 0x057E (Nintendo)
+    0x67, 0x20,  // idProduct 0x2067 (Joy-Con 2 Left)
+    0x10, 0x01,  // bcdDevice 1.10 -- DELIBERATELY NOT the real captured value (1.00, bytes
+                 // 00,01). Confirmed 2026-07-14 by direct hardware evidence, real-time: this
+                 // project's first hardware test connected the Pico's Joy-Con2(L) personality to
+                 // the SAME machine that has genuine Joy-Con 2 L/R hardware already connected
+                 // (used earlier the same session for the SPI dump/USB captures this whole
+                 // personality is built from) -- it enumerated under "Other devices" with Code 28
+                 // ("no compatible drivers"), the exact symptom Pro2's and GameCube's own
+                 // bcdDevice fixes both already solved. Root cause (established there, carried
+                 // over here by direct analogy, not yet independently re-verified after this
+                 // fix): Windows keys its WinUSB driver-binding cache on VID+PID+bcdDevice: using
+                 // the real captured bcdDevice made this device indistinguishable from the
+                 // genuine unit's own cached binding. Fixed the same way both prior personalities
+                 // were: a plausible-looking but deliberately different minor version.
+    0x01,        // iManufacturer
+    0x02,        // iProduct
+    0x03,        // iSerialNumber
+    0x01,        // bNumConfigurations
+};
+
+static const uint8_t switch_joycon2_device_desc_r[] = {
+    0x12, 0x01, 0x00, 0x02, 0xEF, 0x02, 0x01, 0x40,
+    0x7E, 0x05,  // idVendor 0x057E
+    0x66, 0x20,  // idProduct 0x2066 (Joy-Con 2 Right)
+    0x10, 0x01,  // bcdDevice 1.10 -- same deliberate deviation as Left, same reasoning (see
+                 // that descriptor's own comment above; Right was not itself hardware-tested
+                 // this pass, but shares the identical real captured bcdDevice and collision risk).
+    0x01, 0x02, 0x03, 0x01,
+};
+
+// Configuration descriptor: byte-for-byte identical between Left and Right (only the device
+// descriptor's PID differs) -- Confirmed, same capture as above.
+#define SWITCH_JOYCON2_CONFIG_LEN 80
+static const uint8_t switch_joycon2_config_desc[] = {
+    0x09, 0x02, (SWITCH_JOYCON2_CONFIG_LEN & 0xFF), (SWITCH_JOYCON2_CONFIG_LEN >> 8),
+    0x02,        // bNumInterfaces
+    0x01,        // bConfigurationValue
+    0x04,        // iConfiguration (string index 4 -- text not captured)
+    0xC0,        // bmAttributes: self-powered, no remote wakeup
+    0xFA,        // bMaxPower 500mA
+    // IAD + Interface 0: HID
+    0x08, 0x0B, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00,
+    0x09, 0x04, 0x00, 0x00, 0x02, 0x03, 0x00, 0x00, 0x05,  // iInterface=5 ("If_Hid", Confirmed)
+    0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x64, 0x00,  // HID desc, bcdHID 1.11, report len 100
+    0x07, 0x05, 0x81, 0x03, 0x40, 0x00, 0x04,  // EP 0x81 interrupt IN,  64B, bInterval 4
+    0x07, 0x05, 0x01, 0x03, 0x40, 0x00, 0x04,  // EP 0x01 interrupt OUT, 64B, bInterval 4
+    // IAD + Interface 1: vendor bulk
+    0x08, 0x0B, 0x01, 0x01, 0xFF, 0x00, 0x00, 0x00,
+    0x09, 0x04, 0x01, 0x00, 0x02, 0xFF, 0x00, 0x00, 0x06,  // iInterface=6 ("Joy-Con 2 (L/R)")
+    0x07, 0x05, 0x02, 0x02, 0x40, 0x00, 0x00,  // EP 0x02 bulk OUT, 64B
+    0x07, 0x05, 0x82, 0x02, 0x40, 0x00, 0x00,  // EP 0x82 bulk IN,  64B
+};
+_Static_assert(sizeof(switch_joycon2_config_desc) == SWITCH_JOYCON2_CONFIG_LEN,
+               "Joy-Con 2 configuration descriptor size must match wTotalLength");
+
+// HID report descriptor (100 bytes) -- Confirmed, live capture across a physical replug
+// (docs/experiments/joycon2-captures/genuine-controller-full-enumeration-replug-2026-07-14.pcap),
+// cross-validated against ndeadly's own independently-captured descriptor. Left and Right differ
+// in exactly one byte: the Report ID tag for the structured "extended" input report (7 vs 8).
+static const uint8_t switch_joycon2_report_desc_l[] = {
+    0x05, 0x01,        // Usage Page (Generic Desktop Ctrls)
+    0x09, 0x05,        // Usage (Game Pad)
+    0xA1, 0x01,        // Collection (Application)
+    0x85, 0x05,        //   Report ID (5)
+    0x05, 0xFF,        //   Usage Page (Reserved 0xFF)
+    0x09, 0x01,        //   Usage (0x01)
+    0x15, 0x00,        //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,  //   Logical Maximum (255)
+    0x95, 0x3F,        //   Report Count (63)
+    0x75, 0x08,        //   Report Size (8)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
+    0x85, 0x07,        //   Report ID (7) -- Left
+    0x09, 0x01,        //   Usage (0x01)
+    0x95, 0x02,        //   Report Count (2)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
+    0x05, 0x09,        //   Usage Page (Button)
+    0x19, 0x01,        //   Usage Minimum (0x01)
+    0x29, 0x10,        //   Usage Maximum (0x10)
+    0x25, 0x01,        //   Logical Maximum (1)
+    0x95, 0x10,        //   Report Count (16)
+    0x75, 0x01,        //   Report Size (1)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
+    0x05, 0xFF,        //   Usage Page (Reserved 0xFF)
+    0x09, 0x01,        //   Usage (0x01)
+    0x26, 0xFF, 0x00,  //   Logical Maximum (255)
+    0x95, 0x01,        //   Report Count (1)
+    0x75, 0x08,        //   Report Size (8)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
+    0x05, 0x01,        //   Usage Page (Generic Desktop Ctrls)
+    0x09, 0x01,        //   Usage (Pointer)
+    0xA1, 0x00,        //   Collection (Physical)
+    0x09, 0x30,        //     Usage (X)
+    0x09, 0x31,        //     Usage (Y)
+    0x26, 0xFF, 0x0F,  //     Logical Maximum (4095)
+    0x95, 0x02,        //     Report Count (2)
+    0x75, 0x0C,        //     Report Size (12)
+    0x81, 0x02,        //     Input (Data,Var,Abs)
+    0xC0,              //   End Collection
+    0x05, 0xFF,        //   Usage Page (Reserved 0xFF)
+    0x09, 0x02,        //   Usage (0x02)
+    0x26, 0xFF, 0x00,  //   Logical Maximum (255)
+    0x95, 0x37,        //   Report Count (55)
+    0x75, 0x08,        //   Report Size (8)
+    0x81, 0x02,        //   Input (Data,Var,Abs)
+    0x85, 0x01,        //   Report ID (1)
+    0x09, 0x01,        //   Usage (0x01)
+    0x95, 0x3F,        //   Report Count (63)
+    0x91, 0x02,        //   Output (Data,Var,Abs)
+    0xC0,              // End Collection
+};
+_Static_assert(sizeof(switch_joycon2_report_desc_l) == 100,
+               "Joy-Con 2 HID report descriptor must be 100 bytes (Confirmed wDescriptorLength)");
+
+// Identical to the Left descriptor except byte 24 (Report ID 7 -> 8).
+static uint8_t switch_joycon2_report_desc_r[sizeof(switch_joycon2_report_desc_l)];
+static bool switch_joycon2_report_desc_r_built = false;
+
+static const uint8_t *switch_joycon2_report_desc_right(void) {
+    if (!switch_joycon2_report_desc_r_built) {
+        memcpy(switch_joycon2_report_desc_r, switch_joycon2_report_desc_l,
+               sizeof(switch_joycon2_report_desc_l));
+        switch_joycon2_report_desc_r[24] = 0x08;  // Report ID 8 -- Right (Confirmed, matches
+                                                   // ndeadly's own independently-captured R
+                                                   // descriptor exactly)
+        switch_joycon2_report_desc_r_built = true;
+    }
+    return switch_joycon2_report_desc_r;
+}
+
+// Strings -- Manufacturer/Serial Confirmed (ndeadly's descriptors.md, cross-checked structurally
+// against this project's own captured index values); Product and IF1 iInterface text Confirmed
+// directly from this project's own live capture for Left, and from ndeadly's descriptors.md for
+// Right (not independently re-captured by this project for Right, per the project owner's
+// direction that the Left capture already settled the pattern). "If_Hid" Confirmed live for
+// Left, identical string GameCube also uses for its own HID interface.
+static const char *switch_joycon2_strings_l[] = {
+    (const char[]){0x09, 0x04},          // 0: language id (en-US)
+    "Nintendo",                          // 1: manufacturer -- Confirmed
+    "Joy-Con 2 (L)",                     // 2: product -- Confirmed
+    "00",                                // 3: serial -- Confirmed (literal, not a real per-unit serial)
+    NULL,                                // 4: iConfiguration -- not captured; stalls this index
+    "If_Hid",                            // 5: iInterface (IF0, HID) -- Confirmed live
+    "Joy-Con 2 (L)",                     // 6: iInterface (IF1, vendor) -- Confirmed live
+};
+
+static const char *switch_joycon2_strings_r[] = {
+    (const char[]){0x09, 0x04},
+    "Nintendo",
+    "Joy-Con 2 (R)",
+    "00",
+    NULL,
+    "If_Hid",
+    "Joy-Con 2 (R)",
+};
+
+const uint8_t *switch_joycon2_device_descriptor(void) {
+    return s_side == JOYCON2_SIDE_LEFT ? switch_joycon2_device_desc_l : switch_joycon2_device_desc_r;
+}
+const uint8_t *switch_joycon2_config_descriptor(void) { return switch_joycon2_config_desc; }
+const uint8_t *switch_joycon2_hid_report_descriptor(void) {
+    return s_side == JOYCON2_SIDE_LEFT ? switch_joycon2_report_desc_l : switch_joycon2_report_desc_right();
+}
+const char **switch_joycon2_string_table(size_t *count) {
+    *count = sizeof(switch_joycon2_strings_l) / sizeof(switch_joycon2_strings_l[0]);
+    return (const char **)(s_side == JOYCON2_SIDE_LEFT ? switch_joycon2_strings_l : switch_joycon2_strings_r);
+}
+
+//--------------------------------------------------------------------+
+// Microsoft OS 1.0 descriptors -- same WinUSB auto-bind mechanism as switch_gc.c's identical
+// block; see that file's own comment for the full rationale. Untested for Joy-Con 2 specifically
+// (Hypothesis this personality needs the same treatment GameCube/Pro2 both required) but cheap
+// and harmless to include proactively rather than wait for a Windows enumeration failure to
+// prove it's needed.
+//--------------------------------------------------------------------+
+
+#define JOYCON2_MS_OS_VENDOR_CODE 0x21  // distinct from Pro2's/GameCube's own values -- these
+                                        // only need to be internally self-consistent per
+                                        // personality, never simultaneously active, see
+                                        // switch_gc.c's identical reasoning.
+
+static const uint16_t switch_joycon2_ms_os_str[] = {
+    0x0312, 'M', 'S', 'F', 'T', '1', '0', '0', JOYCON2_MS_OS_VENDOR_CODE};
+
+const uint16_t *switch_joycon2_ms_os_string_descriptor(void) {
+    return switch_joycon2_ms_os_str;
+}
+
+static const uint8_t switch_joycon2_ms_compat_id[] = {
+    0x28, 0x00, 0x00, 0x00,              // dwLength = 40
+    0x00, 0x01,                          // bcdVersion 1.00
+    0x04, 0x00,                          // wIndex = 0x0004 (Compatible ID)
+    0x01,                                // bCount = 1 function section
+    0, 0, 0, 0, 0, 0, 0,                 // reserved[7]
+    0x01, 0x01,                          // bFirstInterfaceNumber = 1, reserved = 1
+    'W', 'I', 'N', 'U', 'S', 'B', 0, 0,  // compatibleID
+    0, 0, 0, 0, 0, 0, 0, 0,              // subCompatibleID
+    0, 0, 0, 0, 0, 0,                    // reserved[6]
+};
+_Static_assert(sizeof(switch_joycon2_ms_compat_id) == 40, "MS compat ID descriptor must be 40 bytes");
+
+//--------------------------------------------------------------------+
+// Input report construction -- Stage C. Field layout Confirmed (see switch_joycon2_encode.c's
+// own citations); the actual encoders are pure/host-testable, this is just the runtime glue.
+//--------------------------------------------------------------------+
+
+static uint8_t s_report_counter = 0;
+static uint32_t s_report05_counter = 0;
+static uint8_t s_selected_report_id = 0;  // 0 = none selected yet (matches switch_gc.c's
+                                           // GC_REPORT_ID_NONE convention; 0 is never a valid
+                                           // Joy-Con 2 input report ID)
+
+static void switch_joycon2_build_report(uint8_t *p) {
+    switch_pro_input_t in;
+    get_global_gamepad_input(0, &in);
+    switch_joycon2_encode_report(&in, s_side, s_report_counter++, p);
+}
+
+static void switch_joycon2_build_report05(uint8_t *p) {
+    switch_pro_input_t in;
+    get_global_gamepad_input(0, &in);
+    switch_joycon2_encode_report05(&in, s_side, s_report05_counter++, p);
+}
+
+//--------------------------------------------------------------------+
+// EP0 vendor control -- Nintendo Switch 2 console identity handshake. Templated from
+// switch_gc.c's already-hardware-validated pattern (same gate Pro2/GameCube both required before
+// a real console will touch the bulk command channel). NOT independently confirmed for Joy-Con 2
+// against a real console -- Hypothesis, same evidence tier GameCube's Stage D started at.
+//--------------------------------------------------------------------+
+
+// Identity block (64 B), returned for both bRequest=3 and SPI reads at 0x13000. Structurally
+// modeled on this project's own genuine-unit SPI dump analysis
+// (docs/experiments/joycon2-spi-dump-analysis-2026-07-14.md) -- header, per-model type code
+// ("HB"=Left/"HC"=Right, Confirmed from real flash at 0x13002), the 12-byte serial field at
+// 0x13004-0x1300F (Confirmed "W" + 11 digits, same shape as Pro2/GC's own), 2 reserved zero bytes,
+// VID/PID (Confirmed at 0x13012-0x13015), and the fixed "01 08"-shaped bytes observed immediately
+// after PID on the real dump. Per this project's established exclusion policy (matching
+// switch_gc.c's own fictitious serial), the serial field is a FICTITIOUS value, not either real
+// dumped unit's actual serial -- structurally plausible but deliberately wrong so it can never
+// collide with real hardware. Colour bytes are a neutral placeholder, not either real unit's
+// actual colour.
+//
+// Fixed 2026-07-14: this array previously used only 9 digits after 'W' (10-byte serial) instead
+// of the Confirmed 11-digit/12-byte shape -- 2 bytes short, silently shifting VID, PID, and every
+// byte after them 2 positions earlier than the real dump's actual layout (offset 16/18 instead of
+// the Confirmed 18/20). The project owner reported Joy-Con 2 (L)/(R) never showing the "Paired"
+// notification a genuine console gives Pro2/GameCube -- unlike the earlier vendor-bulk-command gap
+// (case 0x11/0x18, already fixed), which only affects the *streaming* phase after pairing, a
+// misaligned identity block corrupts the very data (VID/PID) the console's initial recognition
+// handshake reads, a much more plausible explanation for never reaching "Paired" at all.
+static const uint8_t switch_joycon2_ctrl_identity_l[64] = {
+    0x01, 0x00,                                                                   // fixed header
+    'H', 'B',                                                                     // type code (Left)
+    'W', '9', '9', '9', '9', '9', '9', '9', '9', '9', '9', '9',                   // fictitious serial (12B: "W"+11 digits)
+    0x00, 0x00,                                                                   // 2 reserved zero bytes
+    0x7E, 0x05,                                                                   // VID 0x057E
+    0x67, 0x20,                                                                   // PID 0x2067 (Left)
+    0x01, 0x08,                                                                   // fixed bytes (Confirmed shape from SPI dump)
+    0x02, 0x32, 0x32, 0x32, 0xAA, 0xAA, 0xAA, 0x00, 0x00, 0x00, 0x32, 0x32, 0x32, // colour (neutral placeholder)
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+};
+_Static_assert(sizeof(switch_joycon2_ctrl_identity_l) == 64, "Joy-Con 2 EP0 identity block must be 64 bytes");
+
+static uint8_t switch_joycon2_ctrl_identity_r[64];
+static bool switch_joycon2_ctrl_identity_r_built = false;
+
+static const uint8_t *switch_joycon2_ctrl_identity_right(void) {
+    if (!switch_joycon2_ctrl_identity_r_built) {
+        memcpy(switch_joycon2_ctrl_identity_r, switch_joycon2_ctrl_identity_l, 64);
+        switch_joycon2_ctrl_identity_r[2] = 'H';
+        switch_joycon2_ctrl_identity_r[3] = 'C';  // type code "HC" -- Right (Confirmed from SPI dump)
+        switch_joycon2_ctrl_identity_r[20] = 0x66;
+        switch_joycon2_ctrl_identity_r[21] = 0x20;  // PID 0x2066 (Right) -- offset 20/21, corrected
+                                                     // from the pre-fix 18/19 alongside the array's
+                                                     // own serial-length fix above
+        switch_joycon2_ctrl_identity_r_built = true;
+    }
+    return switch_joycon2_ctrl_identity_r;
+}
+
+static const uint8_t *switch_joycon2_ctrl_identity(void) {
+    return s_side == JOYCON2_SIDE_LEFT ? switch_joycon2_ctrl_identity_l : switch_joycon2_ctrl_identity_right();
+}
+
+// Response to EP0 vendor bRequest=2 (16 bytes) -- Hypothesis, NOT independently captured for
+// Joy-Con 2 (unlike GameCube's own equivalent, which reused a real captured value). Templated
+// structurally from Pro2/GameCube's own shape; the exact byte semantics are unconfirmed.
+static const uint8_t switch_joycon2_ctrl_info[16] = {
+    0x01, 0x01, 0x07, 0x00, 0x00, 0x00, 0x0C, 0x00,
+    0x00, 0x00, 0x02, 0xBB, 0x5E, 0xAB, 0xA9, 0x3C};
+
+static const uint8_t JOYCON2_DEVICE_KEY_B1[16] = {
+    0x5C, 0xF6, 0xEE, 0x79, 0x2C, 0xDF, 0x05, 0xE1,
+    0xBA, 0x2B, 0x63, 0x25, 0xC4, 0x1A, 0x5F, 0x10};  // ASSUMPTION -- reuses switch_pro2.c's/
+                                                       // switch_gc.c's own public constant, no
+                                                       // Joy-Con-2-specific capture of this
+                                                       // exchange exists yet.
+static uint8_t s_joycon2_ltk[16];
+
+// Factory/SPI memory read emulation, mirroring switch_gc_mem_read()'s approach but using
+// Joy-Con 2's own Confirmed factory-data findings: only ONE stick-calibration slot is ever
+// populated on real hardware (Confirmed, joycon2-spi-dump-analysis-2026-07-14.md §3.8 -- a lone
+// Joy-Con has exactly one physical stick), so the second slot deliberately reads back 0xFF
+// (unprogrammed) rather than a synthetic value, unlike GameCube's own two-slot synthetic
+// duplication. Stick calibration itself is synthetic (reused from switch_pro2.c's own proven
+// working shape), NOT either real dumped unit's actual per-unit calibration.
+static const uint8_t switch_joycon2_synthetic_cal_blk[40] = {
+    0x01, 0xAD, 0xD9, 0x9A, 0x55, 0x56, 0x65, 0xA0, 0x00, 0x0A, 0xA0, 0x00, 0x0A, 0xE2,
+    0x20, 0x0E, 0xE2, 0x20, 0x0E, 0x9A, 0xAD, 0xD9, 0x9A, 0xAD, 0xD9, 0x0A, 0xA5, 0x50,
+    0x0A, 0xA5, 0x50, 0x2F, 0xF6, 0x62, 0x2F, 0xF6, 0x62, 0x0A, 0xFF, 0xFF};
+
+static void switch_joycon2_mem_read(uint32_t addr, uint8_t len, uint8_t *out) {
+    const uint8_t *identity = switch_joycon2_ctrl_identity();
+    for (uint8_t i = 0; i < len; i++) {
+        uint32_t a = addr + i;
+        if (a >= 0x13000 && a < 0x13000 + 64) {
+            out[i] = identity[a - 0x13000];
+        } else if (a >= 0x13080 && a < 0x13080 + 40) {
+            out[i] = switch_joycon2_synthetic_cal_blk[a - 0x13080];  // the one real stick's cal
+        } else if (a >= 0x130C0 && a < 0x130C0 + 40) {
+            out[i] = 0xFF;  // second slot -- Confirmed unprogrammed on real hardware, don't
+                             // synthesize a value here (see this function's own comment)
+        } else if (a >= 0x13100 && a < 0x13100 + 24) {
+            out[i] = 0x00;  // motion calibration bias -- safe "no bias" default (0.0f pattern)
+        } else if (a == 0x1FA000) {
+            out[i] = 0x00;  // Bluetooth pairing entry count = 0 (no bonds over USB)
+        } else {
+            out[i] = 0xFF;  // uninitialised/erased flash
+        }
+    }
+}
+
+static uint32_t s_bulk_cmd_count = 0;
+
+static void switch_joycon2_vendor_dispatch(const uint8_t *c, uint32_t n) {
+    if (n < 8) return;
+    uint8_t id = c[0], transport = c[2], sub = c[3];
+    s_bulk_cmd_count++;
+
+    static uint32_t last_unknown_log_ms = 0;
+
+    uint8_t r[64];
+    memset(r, 0, sizeof(r));
+    r[0] = id;
+    r[1] = 0x01;
+    r[2] = transport;
+    r[3] = sub;
+    r[4] = 0x00;
+    r[5] = 0xF8;
+    uint8_t *d = &r[8];
+    uint16_t dl = 0;  // default: bare 8-byte ACK -- never silent, matches switch_gc.c's own
+                      // `default:` case.
+
+    switch (id) {
+    case 0x03:
+        if (sub == 0x0D || sub == 0x03) {  // Initialise USB / Enable USB HID Reports
+            d[0] = 0x01;
+            dl = 4;
+        } else if (sub == 0x0A) {  // Select Input Report -- accepts 0x05 or this side's own
+                                    // extended report ID (7 Left / 8 Right); anything else is
+                                    // ACKed but does not arm streaming, matching switch_gc.c's
+                                    // documented "invalid report IDs are ignored" semantics.
+            uint8_t extended_id = (s_side == JOYCON2_SIDE_LEFT) ? 0x07 : 0x08;
+            if (n > 8 && (c[8] == 0x05 || c[8] == extended_id)) {
+                s_selected_report_id = c[8];
+            }
+        }
+        break;
+    case 0x02: {  // SPI/flash memory
+        uint32_t addr = (uint32_t)c[12] | ((uint32_t)c[13] << 8) |
+                        ((uint32_t)c[14] << 16) | ((uint32_t)c[15] << 24);
+        if (sub == 0x04) {  // memory read, variable length
+            uint8_t len = c[8];
+            if (len > 0x28) len = 0x28;  // r[] is 64 bytes total; 8 (header) + 4 (echo) + 0x28 fits
+            d[0] = len;
+            d[4] = c[12]; d[5] = c[13]; d[6] = c[14]; d[7] = c[15];
+            switch_joycon2_mem_read(addr, len, &d[8]);
+            dl = (uint16_t)(8 + len);
+        } else if (sub == 0x01) {  // read a fixed 0x28-byte block
+            d[0] = 0x28;
+            d[4] = c[12]; d[5] = c[13]; d[6] = c[14]; d[7] = c[15];
+            switch_joycon2_mem_read(addr, 0x28, &d[8]);
+            dl = 8 + 0x28;
+        } else if (sub == 0x05) {  // memory write -> ack (never persisted)
+            d[4] = c[12]; d[5] = c[13]; d[6] = c[14]; d[7] = c[15];
+            dl = 8;
+        }
+        break;
+    }
+    case 0x0C:  // feature select -- structurally mirrors switch_gc.c/switch_pro2.c exactly;
+                // per-bit capability levels not independently confirmed for Joy-Con 2.
+        if (sub == 0x01) {
+            uint8_t f = (n > 8) ? c[8] : 0;
+            d[4] = (f & 0x01) ? 0x07 : 0x00;
+            d[5] = (f & 0x02) ? 0x07 : 0x00;
+            d[6] = (f & 0x04) ? 0x01 : 0x00;
+            d[7] = (f & 0x80) ? 0x01 : 0x00;
+            d[8] = (f & 0x10) ? 0x01 : 0x00;
+            d[9] = (f & 0x20) ? 0x03 : 0x00;
+            dl = 12;
+        } else if (sub == 0x06) {
+            d[4] = (n > 12) ? c[12] : 0;
+            dl = 40;
+        } else {
+            dl = 4;
+        }
+        break;
+    case 0x15:  // Bluetooth-pairing-shaped commands over USB -- real AES-128 key derivation,
+                // byte-for-byte the same algorithm switch_pro2.c's/switch_gc.c's own
+                // hardware-validated pairing uses (ns2_pairing_crypto.h).
+        if (sub == 0x01) {
+            memcpy(d, (const uint8_t[]){0x01, 0x08, 0x01,
+                   switch_joycon2_ctrl_info[10], switch_joycon2_ctrl_info[11], switch_joycon2_ctrl_info[12],
+                   switch_joycon2_ctrl_info[13], switch_joycon2_ctrl_info[14], switch_joycon2_ctrl_info[15]}, 9);
+            dl = 9;
+        } else if (sub == 0x02) {
+            d[0] = 0x01;
+            ns2_pairing_challenge(s_joycon2_ltk, &c[9], &d[1]);
+            dl = 17;
+        } else if (sub == 0x03) {
+            d[0] = 0x01;
+            dl = 1;
+        } else if (sub == 0x04) {
+            ns2_pairing_derive_ltk(&c[9], JOYCON2_DEVICE_KEY_B1, s_joycon2_ltk);
+            d[0] = 0x01;
+            memcpy(&d[1], JOYCON2_DEVICE_KEY_B1, 16);
+            dl = 17;
+        }
+        break;
+    case 0x16:  // unknown, 24 zero bytes (matches switch_gc.c's/switch_pro2.c's own equivalent)
+        dl = 24;
+        break;
+    case 0x07:  // first-init command
+        d[0] = 0x00;
+        dl = 1;
+        break;
+    case 0x09:  // player LEDs -> bare ack
+        dl = 0;
+        break;
+    case 0x08:  // Charging Grip commands -- Confirmed to exist and documented
+                // (ndeadly's commands.md "Command 0x08"), but not implemented beyond a bare ACK
+                // this pass: this project has no Charging Grip hardware of its own to source
+                // GL/GR from, and the grip itself is a passive USB hub (Confirmed via live
+                // capture, see docs/switch2-joycon2/protocol.md), not something this dongle emulates.
+        dl = 0;
+        break;
+    case 0x10:  // firmware info -- structurally mirrors switch_gc.c/switch_pro2.c; the "type"
+                // byte position is HYPOTHESIS for Joy-Con 2 (no confirmed capture of this exact
+                // field). Uses 0x07 as a placeholder distinct from Pro2's 0x02 and GameCube's
+                // 0x04, matching this file's own EP0 info block placeholder.
+        memcpy(d, (const uint8_t[]){0x01, 0x01, 0x05, 0x07, 0x0C, 0x00, 0x00, 0x00,
+                                    0xFF, 0xFF, 0xFF, 0xFF}, 12);
+        dl = 12;
+        break;
+    case 0x0B:  // battery -- structurally mirrors switch_gc.c/switch_pro2.c; values not
+                // independently confirmed for Joy-Con 2.
+        if (sub == 0x03) { memcpy(d, (const uint8_t[]){0xA5, 0x0E, 0x00, 0x00}, 4); dl = 4; }
+        else if (sub == 0x04) { memcpy(d, (const uint8_t[]){0x34, 0x00, 0x83, 0x00}, 4); dl = 4; }
+        break;
+    case 0x01:  // NFC -- Confirmed neither side emulates real NFC hardware (Left genuinely has
+                // none; Right does but this project doesn't emulate it). Reuses switch_gc.c's
+                // own bare-ack shape (dir=0x04) for the same command family.
+        r[1] = 0x04;
+        dl = 0;
+        break;
+    // Added 2026-07-14 after the project owner reported Joy-Con 2 (L)/(R) not being recognized on
+    // a real console -- exactly the class of bug GC's own 0x11/0x18 fix (above, this file's own
+    // switch_gc.c sibling) already describes: this dispatcher was falling through to a bare 0-byte
+    // ACK for these two command IDs instead of the specific structured replies Pro2/GC actually
+    // send, when Joy-Con 2 was templated from GC's pattern before that fix existed. Reused
+    // byte-for-byte from switch_gc.c's own values (Hypothesis-tier for Joy-Con 2 specifically --
+    // same evidence tier as every other value in this dispatcher, not independently confirmed).
+    case 0x11:  // unknown, but Pro2's own comment notes "last 16B are a constant shared across
+                // units, so replaying is safe" -- reused verbatim, same assumption GC's own 0x11
+                // case makes.
+        if (sub == 0x01) { d[0] = 0x03; dl = 4; }  // USB form (0x03; the BLE form is 0x01)
+        else if (sub == 0x03) {
+            memcpy(d, (const uint8_t[]){
+                0x01, 0xC0, 0x03, 0x00, 0x00, 0xE7, 0xD0, 0x1C, 0x3B, 0x79, 0x22, 0xA0, 0x3A,
+                0x0A, 0xE8, 0x9C, 0x42, 0x58, 0xA0, 0x0B, 0x42, 0x0A, 0xE8, 0x9C, 0x41, 0x58,
+                0xA0, 0x0B, 0x41}, 29);
+            dl = 29;
+        }
+        break;
+    case 0x18:  // structurally mirrors switch_gc.c/switch_pro2.c; values not independently
+                // confirmed for Joy-Con 2.
+        if (sub == 0x01) { memcpy(d, (const uint8_t[]){0,0,0x40,0xF0,0,0,0x60,0}, 8); dl = 8; }
+        else if (sub == 0x03) { d[0] = (n > 8) ? c[8] : 0; dl = 1; }
+        break;
+    default:  // vibration, and anything else not specifically handled -> bare ACK. Never
+              // silent, matching switch_gc.c's own `default:` case.
+        dl = 0;
+        break;
+    }
+
+    if (id != 0x03 && id != 0x02 && id != 0x0C && id != 0x15 && id != 0x16 &&
+        id != 0x07 && id != 0x09 && id != 0x08 && id != 0x10 && id != 0x0B && id != 0x01 &&
+        id != 0x11 && id != 0x18) {
+        uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+        if (now_ms - last_unknown_log_ms > 1000) {
+            printf("[JOYCON2] vendor bulk cmd id=0x%02x sub=0x%02x len=%lu answered with bare ACK\n",
+                   id, sub, (unsigned long)n);
+            last_unknown_log_ms = now_ms;
+        }
+    }
+
+    tud_vendor_write(r, (uint16_t)(8 + dl));
+    tud_vendor_write_flush();
+}
+
+//--------------------------------------------------------------------+
+// Output report 0x01 (rumble/LED) -- PROVISIONAL, not a resolved byte decode. ndeadly's
+// bluetooth_interface.md documents the BLE framing as 16 bytes of "packed rumble data for LRA"
+// but does not decode it to bit level; this project's own GameCube work found that assuming a
+// naive "byte = linear amplitude" model can be actively wrong (see
+// docs/experiments/refuted-hypotheses.md and switch_gc.c's own gc_rumble_state_t history) --
+// that lesson is deliberately NOT assumed to transfer here without evidence, but this
+// implementation is kept maximally conservative for exactly that reason: treat any nonzero data
+// in the rumble field as "on" at a fixed, moderate amplitude, forwarded to the downstream
+// Bluetooth-connected controller's own motor, rather than trying to decode a specific byte as
+// intensity. Revisit with a real hardware capture before assuming anything more specific.
+//--------------------------------------------------------------------+
+
+#define JOYCON2_RUMBLE_ON_AMPLITUDE 0xB0
+#define JOYCON2_RUMBLE_WATCHDOG_MS 500
+static uint32_t s_rumble_last_nonzero_ms = 0;
+static bool s_rumble_watchdog_armed = false;
+
+void switch_joycon2_hid_out_report(uint8_t report_id, const uint8_t *data, uint16_t len) {
+    if (report_id == 0 && len == 0) {
+        report_set_rumble(0, 0, 0);
+        s_rumble_watchdog_armed = false;
+        return;
+    }
+    if (report_id != 0x01) return;
+
+    bool any_nonzero = false;
+    for (uint16_t i = 0; i < len && i < 16; i++) {
+        if (data[i] != 0) { any_nonzero = true; break; }
+    }
+    if (!any_nonzero) {
+        report_set_rumble(0, 0, 0);
+        s_rumble_watchdog_armed = false;
+        return;
+    }
+    report_set_rumble(0, JOYCON2_RUMBLE_ON_AMPLITUDE, JOYCON2_RUMBLE_ON_AMPLITUDE);
+    s_rumble_last_nonzero_ms = to_ms_since_boot(get_absolute_time());
+    s_rumble_watchdog_armed = true;
+}
+
+bool switch_joycon2_vendor_control_xfer(uint8_t rhport, uint8_t stage, const void *request_v) {
+    tusb_control_request_t const *request = (tusb_control_request_t const *)request_v;
+    if (stage != CONTROL_STAGE_SETUP) return true;
+
+    if (request->bRequest == JOYCON2_MS_OS_VENDOR_CODE && request->wIndex == 0x0004) {
+        return tud_control_xfer(rhport, request, (void *)switch_joycon2_ms_compat_id,
+                                sizeof(switch_joycon2_ms_compat_id));
+    }
+
+    switch (request->bRequest) {
+        case 0x03: {  // identity block (64 B)
+            const uint8_t *identity = switch_joycon2_ctrl_identity();
+            uint16_t len = request->wLength < 64 ? request->wLength : 64;
+            return tud_control_xfer(rhport, request, (void *)identity, len);
+        }
+        case 0x02: {  // firmware/version info (16 B)
+            uint16_t len = request->wLength < sizeof(switch_joycon2_ctrl_info)
+                               ? request->wLength : (uint16_t)sizeof(switch_joycon2_ctrl_info);
+            return tud_control_xfer(rhport, request, (void *)switch_joycon2_ctrl_info, len);
+        }
+        case 0x04:  // OUT, no data -> ACK
+            return tud_control_status(rhport, request);
+    }
+
+    return false;
+}
+
+//--------------------------------------------------------------------+
+// Lifecycle
+//--------------------------------------------------------------------+
+
+void switch_joycon2_init(void) {
+    s_report_counter = 0;
+    s_report05_counter = 0;
+    s_selected_report_id = 0;
+    s_bulk_cmd_count = 0;
+    memset(s_joycon2_ltk, 0, sizeof(s_joycon2_ltk));
+    report_set_rumble(0, 0, 0);
+    s_rumble_watchdog_armed = false;
+}
+
+void switch_joycon2_reset(void) {
+    switch_joycon2_init();
+}
+
+void switch_joycon2_mount(void) {
+    s_report_counter = 0;
+    s_report05_counter = 0;
+    s_selected_report_id = 0;
+    s_bulk_cmd_count = 0;
+    memset(s_joycon2_ltk, 0, sizeof(s_joycon2_ltk));
+    report_set_rumble(0, 0, 0);
+    s_rumble_watchdog_armed = false;
+}
+
+void switch_joycon2_task(void) {
+    if (tud_vendor_available()) {
+        uint8_t cmd[64];
+        uint32_t n = tud_vendor_read(cmd, sizeof(cmd));
+        switch_joycon2_vendor_dispatch(cmd, n);
+    }
+    if (s_rumble_watchdog_armed &&
+        (uint32_t)(to_ms_since_boot(get_absolute_time()) - s_rumble_last_nonzero_ms) > JOYCON2_RUMBLE_WATCHDOG_MS) {
+        report_set_rumble(0, 0, 0);
+        s_rumble_watchdog_armed = false;
+    }
+
+    uint8_t extended_id = (s_side == JOYCON2_SIDE_LEFT) ? 0x07 : 0x08;
+    if (tud_hid_n_ready(0)) {
+        uint8_t report[63];
+        if (s_selected_report_id == 0x05) {
+            switch_joycon2_build_report05(report);
+            tud_hid_n_report(0, 0x05, report, sizeof(report));
+        } else if (s_selected_report_id == extended_id) {
+            switch_joycon2_build_report(report);
+            tud_hid_n_report(0, extended_id, report, sizeof(report));
+        }
+        // No report selected yet: stay silent, matches switch_gc.c's own identical behavior.
+    }
+}
+
+#endif  // NS2_PRO

@@ -86,8 +86,10 @@ Output: `bthid_send_output_report(conn, report_id, data, len)` for rumble/LEDs.
 
 From `switch2_ble.h` + ndeadly (`docs/switch2/`):
 
-- PIDs: `0x2066` L-JoyCon2, `0x2067` R-JoyCon2, **`0x2069` Pro Controller 2**, `0x2073` NSO GC.
-  BLE advertisement manufacturer company id **`0x0553`**.
+- PIDs: `0x2066` R-JoyCon2, `0x2067` L-JoyCon2, **`0x2069` Pro Controller 2**, `0x2073` NSO GC.
+  BLE advertisement manufacturer company id **`0x0553`**. (L/R corrected 2026-07-14 — this
+  ndeadly/BLE-sourced entry had them reversed; the real Linux kernel "HID: nintendo" driver source
+  is authoritative here, see `docs/switch2-gc/usb-personality.md`.)
 - Input report (0x09/0x05): sticks are 12-bit packed at report byte 10 (`raw_lx = b10 | ((b11&0x0F)<<8)`,
   `raw_ly = (b11>>4) | (b12<<4)`, then RX/RY at 13–15) — **identical packing to what we already emit**.
 - **GL/GR/C** are native bits (report 0x09 byte 2: `0x10`=C, `0x08`=GL, `0x04`=GR — matches our

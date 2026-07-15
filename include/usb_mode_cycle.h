@@ -14,14 +14,21 @@
 
 #ifdef NS2_PRO
 
-// Is this personality actually implemented/enumerable right now? Only
-// USB_PERSONALITY_JOYCON2 is reserved-but-unavailable today.
+// Is this personality actually implemented/enumerable right now? All four
+// (Pro2, GameCube, Joy-Con2 Left, Joy-Con2 Right) plus CDC config are
+// available -- Joy-Con2 L/R are experimental/test personalities, not the
+// recommended full-controller mode (that's Pro Controller 2), but they are
+// real, individually-selectable, always-available cycle stops, not reserved
+// placeholders.
 bool usb_personality_available(usb_personality_t p);
 
-// Walk forward from `current`, skipping anything not yet available, and
-// return the next real personality to switch to. Returns `current` unchanged
-// if already at the last available personality (e.g. CDC_CONFIG, which is
-// terminal for this pass).
+// Walk forward from `current`, skipping anything not yet available, and return the next real
+// personality to switch to. Wraps from the last available personality (CDC_CONFIG) back to the
+// first (SWITCH2_PRO2) rather than staying put -- a live BOOTSEL-hold exit from Config back to
+// Pro2 (2026-07-14 addition; Config was originally terminal-for-the-session by deliberate initial
+// scope limit, not a technical constraint -- see docs/switch2-gc/usb-personality.md "Runtime mode
+// cycle"). Only returns `current` unchanged in the truly-degenerate case where NO personality is
+// available (impossible in practice, since Pro2 is always available).
 usb_personality_t usb_next_personality(usb_personality_t current);
 
 #endif  // NS2_PRO

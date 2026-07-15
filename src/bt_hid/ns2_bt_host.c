@@ -112,25 +112,35 @@ static void rumble_timer_handler(btstack_timer_source_t *ts) {
 static void control_timer_handler(btstack_timer_source_t *ts) {
     uint32_t now = to_ms_since_boot(get_absolute_time());
 
-    // BOOTSEL gestures (suppressed in config mode).
-    bootsel_gesture_t gesture = g_usb_config_mode ? BOOTSEL_NONE : bootsel_poll(now);
+    // BOOTSEL gestures. Pairing/wipe are still fully suppressed in config mode (they make no
+    // sense there and could interfere with an in-progress config-mode session) -- but the HOLD
+    // gesture itself is no longer suppressed for NS2_PRO builds: Config's live exit back to Pro2
+    // (2026-07-14, usb_mode_cycle.c's usb_next_personality() now wraps CDC_CONFIG -> Pro2 instead
+    // of staying terminal) needs BOOTSEL_HOLD to still be detected while g_usb_config_mode is
+    // true. !NS2_PRO builds are unaffected: no live Config exit exists there (NSO-GC.md's Switch-1
+    // behavior must stay exactly as before), so BOOTSEL_HOLD's action stays gated on !in_config
+    // exactly as it always was.
+    bool in_config = g_usb_config_mode;
+    bootsel_gesture_t gesture = bootsel_poll(now);
     switch (gesture) {
         case BOOTSEL_DOUBLE_TAP:
-            open_pairing_window(now);
+            if (!in_config) open_pairing_window(now);
             break;
         case BOOTSEL_TRIPLE_TAP:
-            pairing_until_ms = 0;
-            wipe_all_devices();
-            wipe_until_ms = now + WIPE_FLASH_MS;
+            if (!in_config) {
+                pairing_until_ms = 0;
+                wipe_all_devices();
+                wipe_until_ms = now + WIPE_FLASH_MS;
+            }
             break;
         case BOOTSEL_HOLD:
 #ifdef NS2_PRO
-            // Request the next USB personality (Pro2 -> GameCube -> CDC config).
-            // core0 (usb.c) owns the actual transition; core1 only requests it --
-            // see docs/switch2-gc/usb-personality.md "Request/acknowledge handoff".
+            // Request the next USB personality (Pro2 -> GameCube -> Joy-Con2 L -> Joy-Con2 R ->
+            // CDC config -> back to Pro2). core0 (usb.c) owns the actual transition; core1 only
+            // requests it -- see docs/switch2-gc/usb-personality.md "Request/acknowledge handoff".
             g_usb_mode_cycle_requested = true;
 #else
-            g_usb_enter_config = true;
+            if (!in_config) g_usb_enter_config = true;
 #endif
             break;
         case BOOTSEL_NONE:
@@ -168,11 +178,14 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
     bool led;
 #ifdef NS2_PRO
     if (g_usb_mode_ack_until_ms && now < g_usb_mode_ack_until_ms) {
-        // N short flashes (N = 1 Pro2 / 2 GameCube / 3 Config), 150ms on/150ms off,
-        // then LED goes dark for the remainder of the ack window.
-        int flashes = (g_usb_mode_ack_personality == USB_PERSONALITY_NSO_GAMECUBE) ? 2
-                    : (g_usb_mode_ack_personality == USB_PERSONALITY_CDC_CONFIG)   ? 3
-                                                                                     : 1;
+        // N short flashes, 150ms on/150ms off, then LED goes dark for the remainder of the ack
+        // window. N = the personality's position in the cycle + 1 (1 Pro2 / 2 GameCube /
+        // 3 Joy-Con2 Left / 4 Joy-Con2 Right / 5 Config) -- derived directly from the enum's
+        // ordinal value (usb.h) rather than a hardcoded per-personality chain, so this stays
+        // correct automatically if the cycle ever gains or loses a stage. No personality gets
+        // special-cased "experimental" LED behavior -- Joy-Con2 L/R just occupy their ordinary
+        // position in the same counting scheme every other personality already uses.
+        int flashes = (int)g_usb_mode_ack_personality + 1;
         uint32_t elapsed = USB_MODE_ACK_MS_FOR_LED - (g_usb_mode_ack_until_ms - now);
         uint32_t slot = elapsed / 150;
         led = (slot % 2 == 0) && (slot < (uint32_t)(2 * flashes));
@@ -241,6 +254,14 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
 
 // core1 entry (launched from main.c under BT_STACK_JOYPAD).
 void ns2_bt_core_task(void) {
+    // Register THIS core as a multicore lockout victim so core0 can briefly park it to sample
+    // BOOTSEL (see bootsel.h's ARCHITECTURE note -- the sampling direction was inverted on
+    // 2026-07-15 because core0 cannot grant a lockout promptly from its TinyUSB loop, which cost
+    // us either BOOTSEL or rumble depending on which way that dead end was resolved). Must happen
+    // before btstack_run_loop_execute() below, which never returns. Parking core1 costs ~20 us
+    // per 5 ms sample, so the run loop's timers (incl. the 3 ms rumble timer) stay on cadence.
+    bootsel_core1_lockout_init();
+
     // Register the HID drivers first, then bring up BTstack + the HID host. The
     // CYW43 transport's init() performs cyw43_arch_init + btstack_cyw43_init and
     // powers on the controller, so no separate cyw43_arch_init() is needed here.

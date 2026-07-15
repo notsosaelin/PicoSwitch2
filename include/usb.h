@@ -14,14 +14,23 @@ extern volatile bool usb_lockout_ready;
 // flash (see docs/switch2-gc/usb-personality.md "Runtime mode cycle").
 //
 // USB_PERSONALITY_SWITCH2_PRO2 = 0 so the correct boot default falls out of
-// zero-initialization with no explicit init needed. USB_PERSONALITY_JOYCON2 is
-// a reserved identity for a not-yet-implemented future personality -- it must
-// never be enumerated; the mode-cycle logic skips it (see usb_next_personality()
-// in usb.c).
+// zero-initialization with no explicit init needed -- Pro Controller 2 is the
+// primary, recommended, production-quality personality for using one paired
+// controller as a complete Switch 2 controller. USB_PERSONALITY_JOYCON2_L/_R
+// (Stage B+C implemented 2026-07-14) are separate, individually-selectable
+// EXPERIMENTAL/test personalities, not a recommended full-controller mode --
+// see docs/switch2-joycon2/protocol.md "Why not simultaneous L+R" for why
+// there is deliberately no combined/paired Joy-Con personality: real Joy-Con
+// pairs are two independently-addressed USB devices behind a genuine hub
+// (the Charging Grip), and this project's single Pico USB peripheral can
+// only ever hold one USB address at a time (confirmed at the register level,
+// not a TinyUSB limitation) -- so Left and Right exist as two separate,
+// individually-cycled personalities, never a merged/paired one.
 typedef enum {
     USB_PERSONALITY_SWITCH2_PRO2 = 0,
     USB_PERSONALITY_NSO_GAMECUBE,
-    USB_PERSONALITY_JOYCON2,       // reserved, not implemented -- always skipped
+    USB_PERSONALITY_JOYCON2_L,
+    USB_PERSONALITY_JOYCON2_R,
     USB_PERSONALITY_CDC_CONFIG,
 } usb_personality_t;
 
