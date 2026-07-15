@@ -5,6 +5,7 @@
 // Bytes: 0-1:lx, 2-3:ly, 4-5:rx, 6-7:ry, 8-9:lt, 10-11:rt, 12:hat, 13-14:buttons, 15:pad
 
 #include "xbox_ble.h"
+#include "xbox_rumble.h"
 #include "bt/bthid/bthid.h"
 #include "core/input_event.h"
 #include "core/router/router.h"
@@ -33,11 +34,6 @@
 // Share button: NOT in the buttons bitfield — sent as byte 15 (bit 0) of the
 // 16-byte report, replacing what was padding on pre-Series controllers
 #define XBOX_BLE_SHARE           0x01
-
-// Rumble output report (Report ID 0x03, 8 bytes)
-#define XBOX_BLE_REPORT_RUMBLE    0x03
-// Actuator enable bits: 0=weak(right), 1=strong(left), 2=right_trigger, 3=left_trigger
-#define XBOX_BLE_RUMBLE_MOTORS    0x03  // Enable strong (bit 1) + weak (bit 0) main motors
 
 // ============================================================================
 // DRIVER DATA
@@ -239,24 +235,13 @@ static void xbox_ble_task(bthid_device_t* device)
             // [3]=strong_motor, [4]=weak_motor,
             // [5]=pulse_sustain_10ms, [6]=pulse_release_10ms, [7]=loop_count
             // Xbox HID descriptor defines magnitude range as 0-100
-            uint8_t buf[8];
-            buf[0] = XBOX_BLE_RUMBLE_MOTORS;
-            buf[1] = 0;                                          // Left trigger magnitude (0: enable bits above don't request trigger motors)
-            buf[2] = 0;                                          // Right trigger magnitude (same)
-            buf[3] = ((uint16_t)left * 100) / 255;               // Strong motor (0-100)
-            buf[4] = ((uint16_t)right * 100) / 255;              // Weak motor (0-100)
-            buf[5] = 0xFF;                                       // pulse_sustain_10ms: max (2550ms per pulse)
-            buf[6] = 0x00;                                       // pulse_release_10ms: no gap between pulses
-            // loop_count: xpadneo sets 0xEB (235) here to sustain the effect for
-            // ~10 minutes from a single command ("we pulse the motors for 60 minutes
-            // as the Windows driver does"), matching xpadneo/rumble.c's rumble_worker().
-            // We previously sent 0x00 ("repeat: none") — on real hardware that most
-            // likely means the motor stops after a single ~2.55s pulse_sustain burst,
-            // which would look exactly like "rumble doesn't work" for any effect that's
-            // supposed to hold steady, since we (correctly, matching xpadneo's own
-            // dirty-flag design) only resend when the amplitude actually changes.
-            buf[7] = 0xEB;
-            bthid_send_output_report(device->conn_index, XBOX_BLE_REPORT_RUMBLE, buf, sizeof(buf));
+            uint8_t buf[XBOX_RUMBLE_DATA_LEN];
+            xbox_rumble_build_payload(left, right, buf);
+            if (!bthid_send_output_report(device->conn_index, XBOX_RUMBLE_REPORT_ID,
+                                           buf, sizeof(buf))) {
+                // Do not consume a transition the Bluetooth transport did not queue.
+                return;
+            }
             xbox->rumble_left = left;
             xbox->rumble_right = right;
         }

@@ -127,11 +127,8 @@ uint32_t gcusb_clamp_rumble_duration_ms(uint32_t requested_ms, bool allow_unsafe
  * a real gap if finer-grained amplitude testing is needed later. out must be a 4-byte buffer. */
 void gcusb_build_rumble_data(uint8_t requested, uint8_t out[4]);
 
-/* The unconditional "make it stop" payload -- all-zero 4-byte data field, the best-evidence
- * report-0x03 stop per docs/experiments/nso-gc-usb-capture-decode-2026-07-13.md's ZLP/all-zero
- * findings. A ZLP (zero-length OUT transfer) is the OTHER candidate stop mechanism and is not
- * representable as data bytes -- gcusb_win.c's stop-rumble path must try both, independently,
- * per PROMPT.md's explicit requirement. */
+/* The unconditional "make it stop" payload: state 2 in data byte 1. State 0 is only one OFF
+ * sample in the genuine controller's delta-sigma stream, while state 2 ends the effect. */
 void gcusb_build_rumble_stop_data(uint8_t out[4]);
 
 /* ---------------------------------------------------------------------------------------------

@@ -8,6 +8,7 @@
 
 #include "bthid_gamepad.h"
 #include "bt/bthid/bthid.h"
+#include "bt/bthid/devices/vendors/microsoft/xbox_rumble.h"
 #include "bt/transport/bt_transport.h"
 #include "core/input_event.h"
 #include "core/router/router.h"
@@ -33,25 +34,16 @@ typedef struct {
 typedef struct {
     ble_usage_loc_t xLoc, yLoc, zLoc, rzLoc, rxLoc, ryLoc;
     ble_usage_loc_t hatLoc;
-    uint8_t hat_min;            // Logical Minimum of hat (0 or 1)
+    uint8_t hat_min;
     ble_usage_loc_t buttonLoc[BLE_MAX_BUTTONS];
     uint8_t buttonCnt;
-    uint8_t report_id;          // Expected gamepad input report ID (0 = none)
-    bool has_sim_triggers;      // true if triggers use Simulation Controls (Xbox-style)
-    bool is_xbox;               // true if Microsoft VID (0x045E) — affects button map
-    bool is_8bitdo;             // true if 8BitDo VID (0x2DC8) — paddle button order
-    bool is_elite2;             // true if Xbox Elite Series 2 — 4 back paddles in last report byte
-    bool digital_shoulder_triggers; // controller has no real analog triggers; its
-                                // L2/R2 "trigger" axes are just the digital shoulder
-                                // buttons (e.g. 8BitDo M30). Suppress analog L2/R2 so
-                                // the digital buttons remain remappable.
-    bool is_ngc_modkit;         // true if 8BitDo NGC Modkit specifically (PID 0x286A, not
-                                // just the shared 0x2DC8 8BitDo VID) -- a GameCube-shell
-                                // modkit with a different physical layout than 8BitDo's
-                                // paddle controllers (Ultimate/Pro 2), which BITDO_BUTTON_MAP
-                                // below is actually for. See NGC_MODKIT_BUTTON_MAP's own
-                                // comment for the mapping rationale, confirmed 2026-07-12
-                                // via live hardware capture.
+    uint8_t report_id;
+    bool has_sim_triggers;
+    bool is_xbox;
+    bool is_8bitdo;
+    bool is_elite2;
+    bool digital_shoulder_triggers;
+    bool is_ngc_modkit;
 } ble_report_map_t;
 
 // ============================================================================
@@ -169,60 +161,11 @@ static const uint32_t BITDO_BUTTON_MAP[17] = {
     JP_BUTTON_A2,       // usage 16: Capture
 };
 
-// 8BitDo NGC Modkit (VID 0x2DC8, PID 0x286A specifically -- NOT the same physical layout as
-// the paddle-equipped 8BitDo Ultimate/Pro 2 that BITDO_BUTTON_MAP above is for). A GameCube-
-// shell modkit; button_cnt also happens to be 16 like the paddle controllers, which is exactly
-// why this needs its own PID-specific table rather than falling into BITDO_BUTTON_MAP's
-// is_8bitdo+buttonCnt>14 rule -- confirmed 2026-07-12 via live hardware capture (see
-// docs/bluetooth/8bitdo-ngc-diy-profile.md and
-// docs/experiments/gate2-identity-log-hardware-captures-2026-07-12.md for the full raw report
-// evidence, including two design iterations this table went through before the owner confirmed
-// the final mapping on real hardware -- see that doc for what was tried and rejected, and why).
-//
-// Face buttons are DIRECT, not rotated: this is a GameCube-shaped controller, so physical
-// A/B/X/Y should land on Switch A/B/X/Y directly -- unlike Xbox/PlayStation pads, which use the
-// standard rotated convention (physical "A" position -> Switch B slot, etc.) baked into
-// JP_BUTTON_B1..B4's own default remap. Getting the *labels* right here means picking the
-// JP_BUTTON_* source whose DEFAULT destination is the matching letter (see NS2_DEFAULT_MAP in
-// config.c): JP_BUTTON_B2->NS2 A, JP_BUTTON_B1->NS2 B, JP_BUTTON_B4->NS2 X, JP_BUTTON_B3->NS2 Y.
-//
-// Usages 3, 6, 13, 16 are not wired to any physical control on this unit (interactively
-// confirmed -- pressed every remaining button on the controller, nothing else fires).
-//
-// Usages 7/8 (partial-travel echo bits, fire well before the real click -- see the R2/L2
-// investigation in the capture doc) and usages 9/10 (the TRUE mechanical click) are ALL
-// suppressed here (mapped to 0). This was NOT the original design -- an earlier iteration
-// mapped 9/10 to JP_BUTTON_L1/R1 for discrete "L/R pressed" semantics, but the owner wants the
-// simpler, hardware-owner-confirmed behavior instead: the trigger's continuous ANALOG value
-// (bytes 6/7, already fed to ANALOG_L2/ANALOG_R2 correctly) is what should drive ZL/ZR, via
-// this project's existing generic seam-level fold in ns2_seam.c's router_submit_input()
-// (`if (analog[ANALOG_L2] > 64) ... JP_BUTTON_L2`, which NS2_DEFAULT_MAP already routes to
-// NS2_DST_ZL/ZR) -- "any real press" registers as ZL/ZR, not just the discrete click. No digital
-// bit needs to come from the button-usage table at all for this to work correctly.
-//
-// Usage 11 (Z) maps to JP_BUTTON_R1 (NOT R2/L2 -- deliberately a different bit than whatever the
-// analog fold touches, so Z can never conflict with a simultaneous real trigger press), which
-// NS2_DEFAULT_MAP routes to plain NS2_DST_R. Nothing here ever emits JP_BUTTON_L1, so NS2 "L"
-// correctly never fires (there's no left-side equivalent of Z on a real GameCube controller).
-// NS2 "C" (Gamechat) also never fires -- nothing maps to JP_BUTTON_A3/A5, its only sources.
-//
-// Usages 14/15 (physical L3/R3 stick clicks) are deliberately repurposed, not passed through
-// as L3/R3: a genuine GameCube controller has no clickable sticks at all, so this modkit's
-// extra hardware becomes CAPTURE/HOME instead (JP_BUTTON_A2/A1, routed by NS2_DEFAULT_MAP to
-// NS2_DST_CAPTURE/NS2_DST_HOME) -- explicit product decision, not a claim about printed labels.
-//
-// This is Pro-Controller-2-mode-specific: it approximates "trigger touched" as a digital ZL/ZR
-// press because that's all today's output supports. The eventual NSO GameCube USB personality
-// (Gate 3, not started) will differ: real continuous L/R analog output instead of the ZL/ZR
-// approximation, and Z will very likely target ZR (or whatever NSO's own GC-adapter convention
-// turns out to be) rather than plain R -- do not assume this table's choices carry over
-// unchanged when that work starts; re-derive against NSO's actual behavior.
-//
-// This table covers the pairing mode captured 2026-07-12 (Classic BT, resolved via SDP as
-// 0x2DC8:0x286A). The controller is reported to also support a second "Android/D-Input" BLE
-// pairing mode -- unconfirmed whether it uses the same PID or the same report shape; needs its
-// own capture before this table can be assumed to cover it. See the profile doc's "Status"
-// section.
+// 8BitDo NGC Modkit, specifically VID:PID 2DC8:286A in the captured Classic-BT mode. This
+// PID-specific table avoids the unrelated paddle-controller layout. Face buttons are direct;
+// analog triggers are handled by the seam; Z is kept distinct; the two stick-click controls are
+// intentionally repurposed as Capture/Home. Exact evidence and rejected mappings are documented
+// in docs/bluetooth/8bitdo-ngc-diy-profile.md.
 static const uint32_t NGC_MODKIT_BUTTON_MAP[17] = {
     0,                  // usage 0: invalid
     JP_BUTTON_B2,       // usage 1: A -> NS2 A (direct, not rotated)
@@ -844,26 +787,7 @@ static void gamepad_process_report(bthid_device_t* device, const uint8_t* data, 
     router_submit_input(&gp->event);
 }
 
-// Xbox rumble output report constants
-#define XBOX_RUMBLE_REPORT_ID   0x03
-#define XBOX_RUMBLE_MOTORS      0x03  // Enable strong (bit 1) + weak (bit 0) main motors
-
-// KNOWN GAP, documented not silently left (found 2026-07-12 tracing a hardware-reported
-// "generic/XInput-class controller rumble doesn't work" regression): this generic fallback
-// driver matches ANY unrecognized BLE HID gamepad, or any Classic device whose Class-of-Device
-// says Peripheral/Joystick/Gamepad (see gamepad_match() above) — a wide, format-unknown net.
-// It only ever *sends* a rumble output report for vendor_id == 0x045E (the one format it
-// knows, verified against real Xbox hardware). For every other vendor ID matched by this
-// generic driver, the block below is skipped entirely and rumble_dirty is still cleared at
-// the bottom — an honest "we don't know how to rumble this device," not a bug in the sense of
-// broken logic, but a real, user-visible capability gap for non-Xbox-vendor "XInput-class"
-// pads. Not fixed here: blindly sending the Xbox-format report to an arbitrary device this
-// driver matched (which could have a completely different, unknown output-report shape) is a
-// real hardware risk that cannot be validated without a physical device and is not
-// evidence-backed the way the Xbox-format assumption is for actual Xbox hardware. If a
-// specific generic/XInput pad is confirmed (via a hardware capture of its own HID report
-// descriptor) to accept this same format, extend the condition below explicitly for that
-// device rather than removing the vendor check outright.
+// The generic driver only knows the hardware-validated Xbox output format.
 static void gamepad_task(bthid_device_t* device)
 {
     bthid_gamepad_data_t* gp = (bthid_gamepad_data_t*)device->driver_data;
@@ -879,69 +803,13 @@ static void gamepad_task(bthid_device_t* device)
     uint8_t right = fb->rumble.right;
 
     if (left != gp->rumble_left || right != gp->rumble_right) {
-        // Xbox controllers (VID 0x045E): Report ID 0x03, 8 bytes. Verified byte-for-byte
-        // 2026-07-12 against the Linux xpadneo driver (atar-axis/xpadneo, xpadneo.h's
-        // xpadneo_rumble_report/xpadneo_rumble_data — the reference Xbox-BLE/BT HID driver):
-        // [0]=enable_actuators, [1]=left_trigger_magnitude, [2]=right_trigger_magnitude,
-        // [3]=strong_motor, [4]=weak_motor, [5]=pulse_sustain_10ms, [6]=pulse_release_10ms,
-        // [7]=loop_count
-        //
-        // THIS is the actually-reachable Xbox rumble path — xbox_bt.c/xbox_ble.c look like
-        // dedicated Xbox drivers but are never registered (bthid_registry.c: "generic driver
-        // handles all Xbox"), so every real Xbox controller lands here regardless of
-        // transport. An earlier pass in this same investigation fixed the loop_count bug
-        // below in xbox_bt.c/xbox_ble.c first, without realizing those files were dead code —
-        // the actual regression was still live here the whole time. Both dead files have
-        // since been removed; this is now the only Xbox rumble implementation in the tree.
         if (device->vendor_id == 0x045E) {
-            bool stopping = (left == 0 && right == 0);
-            uint8_t buf[8];
-            // Confirmed 2026-07-14 by direct research into a documented, near-identical bug
-            // class (atar-axis/xpadneo issue #400, "8BitDo Pro 2 non-stop rumble on connect",
-            // fixed in commit 94ad82a): that bug was root-caused to the enable/motor-mask bits
-            // staying set on a stop command, with only the magnitude zeroed -- some controllers'
-            // firmware do not reliably treat "enabled, magnitude 0" as equivalent to "disabled".
-            // This driver had exactly that shape (buf[0] was unconditionally XBOX_RUMBLE_MOTORS
-            // regardless of amplitude) before this fix. Disabling the enable bits entirely on a
-            // genuine stop is strictly more correct and costs nothing -- apply it regardless of
-            // whether it's confirmed to be *this specific* project's trigger.
-            buf[0] = stopping ? 0x00 : XBOX_RUMBLE_MOTORS;
-            buf[1] = 0;                              // Left trigger magnitude (0: enable bits don't request trigger motors)
-            buf[2] = 0;                              // Right trigger magnitude (same)
-            buf[3] = ((uint16_t)left * 100) / 255;   // Strong motor (0-100)
-            buf[4] = ((uint16_t)right * 100) / 255;  // Weak motor (0-100)
-            // pulse_sustain_10ms: Confirmed 2026-07-14 by real hardware feedback to be the actual
-            // bug, distinct from the enable-bits fix above. This was 0xFF (max, ~2550ms PER
-            // TRIGGER) regardless of amplitude -- fine for a single isolated rumble command, but
-            // real gameplay (Smash Bros) sends a rapid stream of brief, deliberately small/
-            // textured rumble ticks, never a single one-shot trigger. Each of those legitimate
-            // ticks was independently re-arming a ~2.55s hold with no release gap (buf[6]=0), so
-            // any two ticks landing within 2.55s of each other (near-guaranteed for "textured"
-            // gameplay rumble sent every few tens of ms) smeared into one continuous motor
-            // engagement instead of a series of distinct short buzzes -- reported as "a powerful
-            // continuous [rumble]" that "only stops if there's a transition screen where normally
-            // nothing would send any rumble signal at all" (i.e. only when NO trigger arrives for
-            // a full ~2.55s) and persisting briefly even right after pausing (whatever trigger
-            // landed in the last ~2.55s before the pause keeps holding). Shortened to 0x05 (50ms)
-            // so each individual trigger decays quickly on its own unless genuinely refreshed
-            // faster than that by the host -- long enough to feel like a distinct tick, short
-            // enough that a stream of separate small ticks reads as a texture, not one sustained
-            // buzz. Still 0 on an explicit stop (see `stopping` above).
-            buf[5] = stopping ? 0x00 : 0x05;
-            buf[6] = 0x00;                           // pulse_release_10ms: no gap between pulses
-            // loop_count: xpadneo sets 0xEB (235) to sustain ~10 minutes from one command
-            // ("we pulse the motors for 60 minutes as the Windows driver does" —
-            // rumble.c's rumble_worker()). This was 0x00 ("repeat: none"), which likely
-            // stopped the motor after a single ~2.55s pulse_sustain burst and never
-            // resumed, since this driver (correctly) only resends on an amplitude change.
-            // Set to 0 on an explicit stop (see `stopping` above) so a stop command can never
-            // itself be interpreted as "sustain this (zero) state for up to 10 minutes" --
-            // it should mean "off, now," not "off, for a while." Kept at 0xEB for a genuine
-            // trigger -- with pulse_sustain now shortened to 0x05, the worst-case total duration
-            // if a trigger is somehow never followed by anything else is 235*50ms ~= 11.75s, not
-            // ~10 minutes -- a much safer bound while this is still not fully confirmed.
-            buf[7] = stopping ? 0x00 : 0xEB;
-            bthid_send_output_report(device->conn_index, XBOX_RUMBLE_REPORT_ID, buf, sizeof(buf));
+            uint8_t buf[XBOX_RUMBLE_DATA_LEN];
+            xbox_rumble_build_payload(left, right, buf);
+            if (!bthid_send_output_report(device->conn_index, XBOX_RUMBLE_REPORT_ID,
+                                           buf, sizeof(buf))) {
+                return;  // Preserve dirty state and cache so failed OFF transitions retry.
+            }
         }
 
         gp->rumble_left = left;

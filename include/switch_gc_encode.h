@@ -17,8 +17,7 @@
 // Native Z / independent L,R trigger detents / continuous analog L,R trigger are sourced
 // from `in`'s gc_extra/left_trigger/right_trigger fields -- see include/switch_pro.h's
 // GC_MASK_* comment and docs/switch2-gc/mapping.md "Internal normalized model requirements".
-// Expected to be used by a real Switch 2 console (Stage G, untested) -- PC/Steam hosts use
-// switch_gc_encode_report05() below instead (Confirmed via live capture, 2026-07-13).
+// Used by the real Switch 2 console; PC/Steam hosts use switch_gc_encode_report05() below.
 void switch_gc_encode_report(const switch_pro_input_t *in, uint8_t counter, uint8_t out[63]);
 
 // Construct the 63-byte report 0x05 input report body -- the common Switch-family format

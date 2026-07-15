@@ -5,6 +5,7 @@
 // Report format is similar to USB but with BT HID report structure
 
 #include "xbox_bt.h"
+#include "xbox_rumble.h"
 #include "bt/bthid/bthid.h"
 #include "bt/transport/bt_transport.h"
 #include "core/input_event.h"
@@ -312,9 +313,6 @@ static void xbox_process_report(bthid_device_t* device, const uint8_t* data, uin
 // [0]=enable_actuators, [1]=left_trigger_magnitude, [2]=right_trigger_magnitude,
 // [3]=strong_motor, [4]=weak_motor, [5]=pulse_sustain_10ms, [6]=pulse_release_10ms,
 // [7]=loop_count. Magnitude range is 0-100 per the HID descriptor.
-#define XBOX_BT_REPORT_RUMBLE   0x03
-#define XBOX_BT_RUMBLE_MOTORS   0x03  // enable strong (bit1) + weak (bit0) main motors
-
 static void xbox_task(bthid_device_t* device)
 {
     // Found 2026-07-12 tracing a hardware-reported "Xbox rumble doesn't work" regression:
@@ -335,21 +333,14 @@ static void xbox_task(bthid_device_t* device)
         uint8_t left = fb->rumble.left;
         uint8_t right = fb->rumble.right;
         if (left != xbox->rumble_left || right != xbox->rumble_right) {
-            uint8_t buf[8];
-            buf[0] = XBOX_BT_RUMBLE_MOTORS;
-            buf[1] = 0;                              // Left trigger magnitude (0: enable bits don't request trigger motors)
-            buf[2] = 0;                              // Right trigger magnitude (same)
-            buf[3] = ((uint16_t)left * 100) / 255;   // Strong motor (0-100)
-            buf[4] = ((uint16_t)right * 100) / 255;  // Weak motor (0-100)
-            buf[5] = 0xFF;                            // pulse_sustain_10ms: max (2550ms per pulse)
-            buf[6] = 0x00;                            // pulse_release_10ms: no gap between pulses
-            // loop_count: xpadneo sets 0xEB (235) to sustain ~10 minutes from one
-            // command ("we pulse the motors for 60 minutes as the Windows driver
-            // does" — rumble.c's rumble_worker()). We previously sent 0x00 here,
-            // which likely stopped the motor after one ~2.55s pulse_sustain burst,
-            // since we (correctly) only resend on an amplitude change.
-            buf[7] = 0xEB;
-            bthid_send_output_report(device->conn_index, XBOX_BT_REPORT_RUMBLE, buf, sizeof(buf));
+            uint8_t buf[XBOX_RUMBLE_DATA_LEN];
+            xbox_rumble_build_payload(left, right, buf);
+            if (!bthid_send_output_report(device->conn_index, XBOX_RUMBLE_REPORT_ID,
+                                           buf, sizeof(buf))) {
+                // Keep rumble_dirty set and the last-sent cache unchanged. In particular,
+                // a failed GameCube OFF/STOP must be retried instead of remembered as sent.
+                return;
+            }
             xbox->rumble_left = left;
             xbox->rumble_right = right;
         }

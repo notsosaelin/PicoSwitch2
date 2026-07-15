@@ -5,12 +5,10 @@
 > consistent, plus a corroborating analysis) / **Hypothesis** (documented but not independently
 > reproduced) / **Unknown**.
 >
-> **Status: 🟢 Stage B (USB enumeration) implemented and build-verified 2026-07-13, not yet
-> hardware-validated** — see `docs/switch2-gc/usb-personality.md` "Implementation status". This
-> document's evidence is unchanged by that implementation pass (Stage B only consumed it; it did not
-> generate new evidence). This document remains the evidence base implementation work must cite
-> against; do not write personality code from memory of this document without re-checking the
-> citation.
+> **Current status (2026-07-15): hardware-validated** for Switch 2 enumeration, input streaming,
+> native controls, and rumble. This remains the byte-level evidence reference; current compatibility
+> claims live in `STATUS.md`, and unresolved interpretations live in
+> `docs/switch2-gc/open-questions.md`.
 
 ## Sources
 
@@ -18,8 +16,8 @@
 |---|---|---|---|
 | Genuine NSO GameCube Controller (live, USB) | Primary hardware | 2026-07-13 | N/A (physical unit, VID:PID `057E:2073`) |
 | `dumps/NSO_GC_SPI_DUMP_1.bin` / `_2.bin` | Primary hardware (SPI flash dump) | Provided pre-session | See `docs/experiments/nso-gc-spi-dump-analysis-2026-07-13.md` |
-| `ndeadly/switch2_controller_research` | Documentation + raw BLE/USB captures | 2026-07-13 | `d1c5a7f7ba298f83017fae84952a4e6d2ef8fc92` (branch `master`), cloned to `E:\nso-gc-refs\switch2_controller_research` |
-| `SoulCalDan/Low-Latency-Gamecube-Controller-to-USB-Adapter-for-Switch-1-2-and-PC` | FPGA implementation source | 2026-07-13 | `dd8c9ecc690d5e6560ad9897584389e5fdbccc22` (branch `main`), cloned to `E:\nso-gc-refs\Low-Latency-Gamecube-Controller-to-USB-Adapter` |
+| `ndeadly/switch2_controller_research` | Documentation + raw BLE/USB captures | 2026-07-13 | `d1c5a7f7ba298f83017fae84952a4e6d2ef8fc92` (branch `master`); optional local clone under ignored `nso-gc-refs/` |
+| `SoulCalDan/Low-Latency-Gamecube-Controller-to-USB-Adapter-for-Switch-1-2-and-PC` | FPGA implementation source | 2026-07-13 | `dd8c9ecc690d5e6560ad9897584389e5fdbccc22` (branch `main`); optional local clone under ignored `nso-gc-refs/` |
 
 **Critical framing, established this session**: SoulCalDan's repo does **not** implement the native
 NSO GameCube Controller protocol. It implements the classic Wii U GameCube Adapter identity
@@ -29,9 +27,8 @@ original 1998 SI-bus protocol and repackaging it. `grep`ing all its Verilog sour
 returns zero matches. **ndeadly's repository is therefore the sole primary source for the actual
 protocol this project needs to emulate.** SoulCalDan's repo is retained as secondary evidence only
 for genuine GC-controller electrical/trigger behavior (see "Trigger and stick electrical behavior"
-below), not for anything USB/BLE-protocol-shaped. Full audit trail:
-`C:\Users\notso\.claude\jobs\ac4234f1\tmp\nso-gc-refs-audit.md` (not yet moved into the repo — see
-"Follow-up" at the end of this document).
+below), not for anything USB/BLE-protocol-shaped. The durable audit trail is
+`docs/experiments/nso-gc-reference-repo-audit-2026-07-13.md`.
 
 ## USB identity — Confirmed (raw byte-exact capture, this session)
 
@@ -237,7 +234,7 @@ button — not established).
 NSO-GC.md's explicit physical correction, the genuine controller has no L3/R3 stick-click hardware**
 — these bits are expected to always read 0 on real GC hardware; not yet directly observed to confirm.
 
-## Output Report `0x03` — GC rumble — **Confirmed framing**, byte semantics **Strong** (2026-07-14)
+## Output Report `0x03` — GC rumble — hardware-confirmed decoder
 
 Report ID is literally `0x03` on the wire for USB (resolving ndeadly's "always `00` for Bluetooth
 connections" caveat — that's BT-only framing behavior, USB sends the actual ID byte). The 4-byte
@@ -245,59 +242,28 @@ rumble-data field and **59-byte** reserved-zero padding (this project's own HID 
 capture declares 63 data bytes total via `Report Count 0x3F`) are both **Confirmed** in
 framing/length.
 
-```
-| Offset | Size | Value                | Comment                                                    |
-| 0x0    | 0x1  | Report ID            | Always `00` for Bluetooth connections; `0x03` on the wire for USB |
-| 0x1    | 0x1  | Sequence/command byte | Strong -- increments per command, NOT amplitude (see below) |
-| 0x2    | 0x1  | Rumble state          | Strong -- 0=OFF, 1=ON, 2=STOP (see below), NOT amplitude   |
-| 0x3    | 0x2  | Unknown                | Always 0 in every real sample seen so far                  |
-| 0x5    | 0x3B | Reserved              | Unused — 59 bytes, matching `Report Count 0x3F` on EP `0x01` OUT |
-```
+| Wire offset | Size | Meaning |
+|---|---:|---|
+| `0x00` | 1 | USB report ID `0x03` |
+| `0x01` | 1 | Sequence/command byte; not amplitude |
+| `0x02` | 1 | Candidate state position in one documented host form |
+| `0x03` | 1 | Candidate state position in the genuine USB capture form |
+| `0x04` | 1 | Opaque; zero in current samples |
+| `0x05` | 59 | Reserved zero padding |
 
-**Byte-level semantics — Strong, sourced 2026-07-14 from the real Linux kernel "HID: nintendo"
-driver** (Vicki Pfau, linux-input mailing list, patch series v11: "Add preliminary Switch 2
-support" / "Add rumble support for Switch 2" —
-`https://marc.info/?l=linux-input&w=2&r=1&s=hid+switch2&q=b`). This **supersedes** every earlier
-revision of this section — see `docs/experiments/refuted-hypotheses.md` "GC rumble data[0] as a
-linear amplitude byte" for that full, now-obsolete history (multiple firmware revisions across
-2026-07-13/14 all assumed a byte in this field was a continuous amplitude; none of them were).
+The genuine controller uses a binary ERM state (`0` OFF, `1` ON, `2` STOP), unlike Pro Controller
+2's packed dual-LRA HD rumble. Two observed packet forms place that state in either candidate byte.
+The firmware checks both, gives STOP precedence, accepts ON from either, and interprets two zeros
+as OFF. A zero-length interrupt slot carries no new command.
 
-The genuine GameCube controller has **no continuous-amplitude rumble hardware** — it's a simple
-ERM (eccentric rotating mass) motor with exactly three real states:
-```c
-enum gc_rumble {
-    GC_RUMBLE_OFF  = 0,
-    GC_RUMBLE_ON   = 1,
-    GC_RUMBLE_STOP = 2,
-};
-```
-sent at offset `0x2` (the byte immediately after the sequence/command byte). The *host* (a real
-console or game) simulates a continuous perceived amplitude by rapidly toggling ON/OFF at a duty
-cycle computed via **delta-sigma / error-accumulation modulation** — the kernel driver's own
-`switch2_rumble_work()` tracks a running `error` term against the desired `amplitude` and emits ON
-when the accumulated error exceeds it, OFF otherwise, exactly like a 1-bit DAC. "50% intensity" is
-therefore realized as roughly half of all commands being ON over time, never as a single byte's
-magnitude. Offset `0x1` is a separate, incrementing sequence/command byte (kernel-observed shape:
-combined with a fixed high nibble, e.g. `0x50 | sequence`), unrelated to intensity. Offsets
-`0x3`/`0x4` remain **Unknown** (always `0x00` in every real sample seen so far, including the 8
-manual-test samples in `docs/experiments/nso-gc-usb-capture-decode-2026-07-13.md`).
+Real-console testing confirms this decoder produces GameCube rumble without the previous
+full-power hang. Each ON becomes a short bounded downstream pulse; repeated ON refreshes it, OFF
+does not, and STOP ends it immediately. This preserves captured binary behavior without treating
+either candidate byte as a continuous amplitude.
 
-This model **retroactively explains** the entire earlier rumble bug arc without needing a new
-capture: reading offset `0x1` (the sequence byte, essentially never exactly zero) as amplitude
-meant nearly every real rumble packet looked like "some nonzero intensity" regardless of the
-game's actual OFF/ON/STOP intent — both "immediate rumble on GameCube-mode entry" (an early real
-packet with state=OFF/STOP but a nonzero sequence byte) and "normal small gameplay rumbles
-becoming one continuous buzz" (every active-session packet has nonzero sequence, so the old decode
-showed "on" continuously) are consistent with this. **Implemented** in
-`switch_gc_hid_out_report()` (`src/switch_gc/switch_gc.c`, see `gc_rumble_state_t`): reads offset
-`0x2` as the state enum, drives the downstream motor at a fixed level for `GC_RUMBLE_ON`, off
-otherwise. **Not yet hardware-validated against this corrected model** — the next real
-console/gameplay test is what would move this from Strong to Confirmed.
-
-Structurally much simpler than Joy-Con2/Pro2's 16-32-byte packed-LRA HD-rumble formats, consistent
-with the GC controller having a single ERM-style motor rather than dual LRA actuators — the kernel
-driver's own struct naming makes this explicit (`switch2_erm_rumble` for GC vs. the packed 10-bit
-frequency/amplitude fields of `switch2_hd_rumble` for Joy-Con/Pro Controller).
+Why the state position differs remains unknown. Evidence, rejected amplitude models, and future
+capture questions are in `docs/switch2-gc/open-questions.md` and
+`docs/experiments/refuted-hypotheses.md`.
 
 ## GATT service map (BLE) — Strong (ndeadly `hid_reports.md:17-26`, `bluetooth_interface.md:110-154`)
 

@@ -42,6 +42,13 @@ void btstack_host_power_on(void);
 // Start scanning for BLE and Classic BT devices
 void btstack_host_start_scan(void);
 
+// Clear the persistent admission lock installed by a full pairing wipe. Call
+// only for an explicit user-opened pairing window.
+void btstack_host_clear_pairing_lockout(void);
+
+// True after a full wipe and until an explicit pairing window is opened.
+bool btstack_host_pairing_locked(void);
+
 // Stop scanning
 void btstack_host_stop_scan(void);
 

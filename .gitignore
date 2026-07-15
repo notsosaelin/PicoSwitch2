@@ -33,5 +33,6 @@
 
 build
 
-# USB capture storage (large binaries; kept locally, not tracked)
-usbpcaptures/nso-gc-refs/
+# Local reference clones and USB captures (large or independently versioned)
+/nso-gc-refs/
+/usbpcaptures/

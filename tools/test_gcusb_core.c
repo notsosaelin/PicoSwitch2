@@ -105,8 +105,8 @@ int main(void) {
         CHECK(data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 0,
               "rumble data: zero request -> GC_RUMBLE_STATE_OFF (0) in byte1");
         gcusb_build_rumble_stop_data(data);
-        CHECK(data[0] == 0 && data[1] == 0 && data[2] == 0 && data[3] == 0,
-              "rumble stop data: all-zero 4-byte field");
+        CHECK(data[0] == 0 && data[1] == 2 && data[2] == 0 && data[3] == 0,
+              "rumble stop data: GC_RUMBLE_STATE_STOP (2) in byte1");
     }
 
     // --- NDJSON formatting ---

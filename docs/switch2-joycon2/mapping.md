@@ -1,12 +1,8 @@
 # Joy-Con 2 Left/Right (Experimental) Output Personalities — Mapping Policy
 
-> Status: 🟡 SL/SR wiring implemented 2026-07-14 (`include/switch_pro.h`'s `SWITCH_EXTRA_SL`/`SR`,
-> `src/switch_joycon2/switch_joycon2_encode.c`, `src/bt_hid/ns2_seam.c`'s `ns2_apply_dst()`),
-> host-tested (`tools/test_switch_joycon2_report.c`, 43/43 checks), build-verified on both boards.
-> **Not yet hardware-tested.** Every other native button (A/B/X/Y, D-pad, L/R, ZL/ZR, stick +
-> click, Plus/Minus, Home/Capture, C) was already wired and passing tests before this pass — see
-> `docs/switch2-joycon2/protocol.md` "Wire input/output report contents" for the underlying wire
-> format this section maps onto.
+> Current status (2026-07-15): both sides enumerate and stream on a real Switch 2, but the complete
+> button mapping is not yet hardware-validated and has been reported as incorrect in places.
+> SL/SR wiring is host-tested. See `open-questions.md` for the remaining physical test matrix.
 
 ## Why "mapping" is a smaller problem here than it looks
 

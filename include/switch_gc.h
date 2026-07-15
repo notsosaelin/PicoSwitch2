@@ -5,15 +5,9 @@
  * runtime-selectable personality alongside Switch 2 Pro Controller 2, not a
  * separate build axis).
  *
- * Stage B (exact enumeration) done and hardware-validated. Stage C (report
- * 0x0A input construction) implemented for the fields the shared input
- * struct currently carries -- native Z, digital L/R trigger detent, and
- * continuous analog L/R trigger remain unmapped pending a struct extension.
- * Stage E (rumble) has a PROVISIONAL opaque-intensity implementation, not a
- * resolved byte decode. EP0/bulk command handling (Stage D, init/factory)
- * remains a stub. See each function's own comment for its exact Stage
- * boundary and evidence tier. Full evidence base: docs/switch2-gc/protocol.md,
- * docs/switch2-gc/mapping.md, docs/experiments/nso-gc-usb-capture-decode-2026-07-13.md.
+ * Hardware-validated for enumeration, report 0x0A input, native controls,
+ * vendor initialization, and rumble. Evidence and remaining questions:
+ * docs/switch2-gc/{protocol,mapping,open-questions}.md.
  *
  * USB layout (Confirmed, byte-exact, cross-validated against two independent
  * genuine units -- see docs/switch2-gc/protocol.md "USB descriptor topology"):
@@ -88,8 +82,7 @@ void switch_gc_reset(void);
 // Thin wrapper around switch_gc_encode_report() (switch_gc_encode.h): reads the live shared
 // input state and this personality's own report counter (module-static, reset by
 // switch_gc_init()/switch_gc_reset()/switch_gc_mount() -- see the .c file). `p` must point
-// to a buffer of at least 63 bytes. Streamed when a host selects report 0x0A (expected: a real
-// Switch 2 console, Stage G, untested).
+// to a buffer of at least 63 bytes. Streamed when a host selects report 0x0A.
 void switch_gc_build_report(uint8_t *p);
 
 // Thin wrapper around switch_gc_encode_report05() (switch_gc_encode.h), same shape as
@@ -101,16 +94,9 @@ void switch_gc_build_report05(uint8_t *p);
 // TinyUSB transport already normalized by usb_descriptors.c's tud_hid_set_report_cb()
 // dispatcher (Phase 4, 2026-07-13): `report_id` is always the real report ID regardless of
 // whether the transfer arrived via interrupt OUT or control SET_REPORT, and `data`/`len`
-// never include it. Stage E, PROVISIONAL: byte framing is Confirmed (report ID 0x03,
-// 4-byte data field, 59-byte reserved padding -- corrected 2026-07-13,
-// docs/switch2-gc/protocol.md "Output Report 0x03"), and idle/no-rumble state is Confirmed
-// to be a zero-length OUT packet (report_id==0 && len==0; see
-// docs/experiments/nso-gc-usb-capture-decode-2026-07-13.md "Rumble-endpoint idle
-// behavior"). The 4 rumble-data bytes' bit-level meaning remains Hypothesis (8 real
-// samples, exhaustively confirmed complete, no confirmed encoding) -- per explicit
-// project-owner direction, this function treats any nonzero rumble data opaquely and
-// drives one conservative fixed motor level rather than decoding intensity. Not a
-// permanent protocol conclusion -- revisit only with a new deliberate multi-level capture.
+// never include it. Report framing is 4 bytes plus 59 reserved bytes. The state decoder accepts
+// both captured state-byte positions, ignores idle ZLPs, and bounds every ON pulse. See
+// docs/switch2-gc/open-questions.md for unresolved semantics.
 void switch_gc_hid_out_report(uint8_t report_id, const uint8_t *data, uint16_t len);
 
 // EP0 vendor control request entry point, called from the centralized

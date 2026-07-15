@@ -150,7 +150,7 @@ void gcusb_build_rumble_data(uint8_t requested, uint8_t out[4]) {
 
 void gcusb_build_rumble_stop_data(uint8_t out[4]) {
     out[0] = 0;
-    out[1] = 0;
+    out[1] = 2;  /* GC_RUMBLE_STATE_STOP -- distinct from modulation OFF (0) */
     out[2] = 0;
     out[3] = 0;
 }

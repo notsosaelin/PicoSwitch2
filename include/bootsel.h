@@ -8,10 +8,10 @@
 // it at runtime requires briefly tri-stating that pin with the *other* core parked (see
 // bootsel.c).
 //
-// ARCHITECTURE (rewritten 2026-07-15 -- read this before moving the sampling back):
+// ARCHITECTURE (rewritten 2026-07-15/16 -- read this before moving the sampling back):
 // The raw sample is taken by CORE0 (bootsel_sample_core0(), called from usb_core_task()'s loop),
-// which parks core1. The gesture state machine runs on CORE1 (bootsel_poll()), reading the
-// value core0 published -- core1 never parks anyone and therefore never stalls.
+// which parks core1 cooperatively through an SRAM handshake. The gesture state machine runs on
+// CORE1 (bootsel_poll()), reading the value core0 published.
 //
 // It used to be the other way around (core1 sampled, parking core0) and that is unfixable as a
 // design: core0 runs TinyUSB in a tight, continuous loop and cannot grant a lockout promptly
@@ -19,8 +19,10 @@
 // but core1's stalls delayed rumble forwarding -- Xbox motors kept running because their stop
 // command arrived late) or bailed out on a short timeout (rumble fine, but BOOTSEL silently did
 // nothing). Both failure modes were observed on real hardware on 2026-07-15. Core1 is a
-// cooperative BTstack run loop that reaches a safe point almost immediately, so parking *it* is
-// cheap and bounded -- which is why the direction is now inverted.
+// A first inverted implementation still used multicore_lockout with a 200 us FIFO-IRQ timeout;
+// real DualSense traffic could prevent core1 acknowledging inside that deadline indefinitely.
+// The current handshake is asynchronous: core0 requests and returns to USB, core1 voluntarily
+// parks from its timer callback, then core0 samples on a later loop iteration without waiting.
 typedef enum {
     BOOTSEL_NONE = 0,
     BOOTSEL_DOUBLE_TAP,   // enter pairing window
@@ -36,9 +38,10 @@ typedef enum {
 // it is a no-op and bootsel_poll() reports no gestures.
 void bootsel_sample_core0(void);
 
-// CORE1 ONLY. Register core1 as a multicore lockout victim so core0 can park it to sample.
-// Call once from the core1 entry point before its run loop starts.
+// CORE1 ONLY. Initialize and service the cooperative SRAM park point. Service returns immediately
+// unless core0 has requested a sample and must be called frequently from the BTstack run loop.
 void bootsel_core1_lockout_init(void);
+void bootsel_core1_service(void);
 
 // Run the gesture state machine once. Call periodically (~30 ms) with the current millisecond
 // timestamp. Returns a recognized gesture, else BOOTSEL_NONE. Never parks a core and never

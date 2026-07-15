@@ -7,6 +7,7 @@
 #include "bt/bthid/devices/generic/bthid_gamepad_quirks.h"
 #include "core/buttons.h"
 #include "bt/bthid/bthid.h"  // bthid_send_output_report
+#include "bt/bthid/devices/vendors/microsoft/xbox_rumble.h"
 #include <stddef.h>
 
 // Xbox BT HID: buttons 1-15 with gaps at 3,6,9,10
@@ -96,10 +97,6 @@ static void extract_extra(const ble_report_map_t *map, const uint8_t *data, uint
     }
 }
 
-// Xbox rumble output report constants
-#define XBOX_RUMBLE_REPORT_ID   0x03
-#define XBOX_RUMBLE_MOTORS      0x03  // Enable strong (bit 1) + weak (bit 0) main motors
-
 // Xbox controllers (VID 0x045E): Report ID 0x03, 8 bytes. Verified byte-for-byte 2026-07-12
 // against the Linux xpadneo driver (atar-axis/xpadneo, xpadneo.h's
 // xpadneo_rumble_report/xpadneo_rumble_data — the reference Xbox-BLE/BT HID driver):
@@ -125,53 +122,8 @@ static void extract_extra(const ble_report_map_t *map, const uint8_t *data, uint
 // Non-static (shared with QUIRK_XBOX_ELITE2, which uses the same rumble format).
 bool xbox_send_rumble(uint8_t conn_index, uint8_t left, uint8_t right)
 {
-    bool stopping = (left == 0 && right == 0);
-    uint8_t buf[8];
-    // Confirmed 2026-07-14 by direct research into a documented, near-identical bug
-    // class (atar-axis/xpadneo issue #400, "8BitDo Pro 2 non-stop rumble on connect",
-    // fixed in commit 94ad82a): that bug was root-caused to the enable/motor-mask bits
-    // staying set on a stop command, with only the magnitude zeroed -- some controllers'
-    // firmware do not reliably treat "enabled, magnitude 0" as equivalent to "disabled".
-    // This driver had exactly that shape (buf[0] was unconditionally XBOX_RUMBLE_MOTORS
-    // regardless of amplitude) before this fix. Disabling the enable bits entirely on a
-    // genuine stop is strictly more correct and costs nothing -- apply it regardless of
-    // whether it's confirmed to be *this specific* project's trigger.
-    buf[0] = stopping ? 0x00 : XBOX_RUMBLE_MOTORS;
-    buf[1] = 0;                              // Left trigger magnitude (0: enable bits don't request trigger motors)
-    buf[2] = 0;                              // Right trigger magnitude (same)
-    buf[3] = ((uint16_t)left * 100) / 255;   // Strong motor (0-100)
-    buf[4] = ((uint16_t)right * 100) / 255;  // Weak motor (0-100)
-    // pulse_sustain_10ms: Confirmed 2026-07-14 by real hardware feedback to be the actual
-    // bug, distinct from the enable-bits fix above. This was 0xFF (max, ~2550ms PER
-    // TRIGGER) regardless of amplitude -- fine for a single isolated rumble command, but
-    // real gameplay (Smash Bros) sends a rapid stream of brief, deliberately small/
-    // textured rumble ticks, never a single one-shot trigger. Each of those legitimate
-    // ticks was independently re-arming a ~2.55s hold with no release gap (buf[6]=0), so
-    // any two ticks landing within 2.55s of each other (near-guaranteed for "textured"
-    // gameplay rumble sent every few tens of ms) smeared into one continuous motor
-    // engagement instead of a series of distinct short buzzes -- reported as "a powerful
-    // continuous [rumble]" that "only stops if there's a transition screen where normally
-    // nothing would send any rumble signal at all" (i.e. only when NO trigger arrives for
-    // a full ~2.55s) and persisting briefly even right after pausing (whatever trigger
-    // landed in the last ~2.55s before the pause keeps holding). Shortened to 0x05 (50ms)
-    // so each individual trigger decays quickly on its own unless genuinely refreshed
-    // faster than that by the host -- long enough to feel like a distinct tick, short
-    // enough that a stream of separate small ticks reads as a texture, not one sustained
-    // buzz. Still 0 on an explicit stop (see `stopping` above).
-    buf[5] = stopping ? 0x00 : 0x05;
-    buf[6] = 0x00;                           // pulse_release_10ms: no gap between pulses
-    // loop_count: xpadneo sets 0xEB (235) to sustain ~10 minutes from one command
-    // ("we pulse the motors for 60 minutes as the Windows driver does" —
-    // rumble.c's rumble_worker()). This was 0x00 ("repeat: none"), which likely
-    // stopped the motor after a single ~2.55s pulse_sustain burst and never
-    // resumed, since this driver (correctly) only resends on an amplitude change.
-    // Set to 0 on an explicit stop (see `stopping` above) so a stop command can never
-    // itself be interpreted as "sustain this (zero) state for up to 10 minutes" --
-    // it should mean "off, now," not "off, for a while." Kept at 0xEB for a genuine
-    // trigger -- with pulse_sustain now shortened to 0x05, the worst-case total duration
-    // if a trigger is somehow never followed by anything else is 235*50ms ~= 11.75s, not
-    // ~10 minutes -- a much safer bound while this is still not fully confirmed.
-    buf[7] = stopping ? 0x00 : 0xEB;
+    uint8_t buf[XBOX_RUMBLE_DATA_LEN];
+    xbox_rumble_build_payload(left, right, buf);
     return bthid_send_output_report(conn_index, XBOX_RUMBLE_REPORT_ID, buf, sizeof(buf));
 }
 
