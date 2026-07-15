@@ -64,18 +64,27 @@ static volatile bool g_bootsel_pressed;
 static volatile bool g_bootsel_sampled;    // false until core0 lands its first successful sample
 static volatile bool g_core1_lockout_ready;
 
-// Sample cadence. The gesture machine only needs edges resolved well inside its 500 ms tap
-// window, so ~5 ms is far finer than required while keeping core1's parked time negligible
-// (~20 us per sample => well under 1% of core1's time; its 3 ms rumble timer is unaffected).
-// Deliberately NOT sampling on every core0 iteration: that loop is unbounded in rate, and
-// parking core1 that often would be exactly the self-inflicted starvation this rewrite removes.
-#define BOOTSEL_SAMPLE_INTERVAL_US 5000
+// Sample cadence. MUST stay coarse -- 30 ms, matching the CONTROL_TICK_MS rate the old core1-side
+// sampler used and which the gesture machine was always tuned around (500 ms tap window, 5 s
+// hold), so nothing is lost by it.
+//
+// Do NOT shorten this "for responsiveness". A first cut used 5 ms and broke NSO GameCube rumble
+// on real hardware (2026-07-15): a genuine console polls the GC rumble OUT endpoint every ~4 ms
+// (see ns2_bt_host.c's RUMBLE_TICK_MS comment), and every sample here both disables interrupts on
+// core0 for ~20 us (read_bootsel_raw) and parks core1 -- i.e. it drops a cross-core handshake and
+// an IRQ blackout right on top of a 4 ms-critical USB endpoint, 200x/second, while also
+// interrupting the CYW43/BTstack core. At 30 ms the same work costs ~0.7% of each core and sits
+// well outside that endpoint's cadence.
+#define BOOTSEL_SAMPLE_INTERVAL_US 30000
 
-// Bounded so a momentarily unresponsive core1 can never stall core0's USB loop. Unlike the old
-// core1-side bound, a miss here is genuinely harmless: core0 retries in 5 ms and core1 keeps
-// using the previous sample, so no gesture is lost -- a miss costs latency, not function. This
-// is why the same "bounded" idea that broke BOOTSEL before is safe on this side of the split.
-#define BOOTSEL_CORE1_PARK_TIMEOUT_US 500
+// Bounded so a momentarily unresponsive core1 can never stall core0's USB loop -- core0 is the
+// core that must never be late (TinyUSB + a ~4 ms console rumble endpoint). Kept tight for that
+// reason: core1 is a cooperative run loop that parks in microseconds, so 200 us is already
+// generous, and a miss is genuinely harmless here -- core0 retries on the next 30 ms tick and
+// core1 keeps using the previous sample, so no gesture is lost. A miss costs latency, not
+// function, which is why the same "bounded timeout" idea that silently killed BOOTSEL on the
+// core1 side is safe on this side of the split.
+#define BOOTSEL_CORE1_PARK_TIMEOUT_US 200
 
 void bootsel_core1_lockout_init(void) {
     multicore_lockout_victim_init();
@@ -93,7 +102,7 @@ void bootsel_sample_core0(void) {
     last_sample_us = now_us;
 
     if (!multicore_lockout_start_timeout_us(BOOTSEL_CORE1_PARK_TIMEOUT_US))
-        return;  // core1 busy this instant -- keep the last sample, retry in 5 ms
+        return;  // core1 busy this instant -- keep the last sample, retry on the next tick
 
     bool pressed = read_bootsel_raw();
 
