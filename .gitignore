@@ -34,4 +34,4 @@
 build
 
 # USB capture storage (large binaries; kept locally, not tracked)
-usbpcaptures/
+usbpcaptures/nso-gc-refs/
