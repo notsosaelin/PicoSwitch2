@@ -130,13 +130,35 @@ Actual ordered sequence on EP2 after enumeration (request → response, data tru
 | 9 | Memory reads | `02 91 00 04 00 08 00 00 <len> 7e 00 00 <addr LE>` | `02 01 00 04 00 f8 00 00 <len> 00 00 00 <addr> <data>` |
 | 10 | Enable features | `0c 91 00 04 00 04 00 00 27 00 00 00` | `0c 01 00 04 00 f8 00 00` |
 | 11 | Select report 09 | `03 91 00 0a 00 04 00 00 09 00 00 00` | `03 01 00 0a 00 f8 00 00` |
-| 12 | Firmware info | `10 91 00 01 00 00 00 00` | `10 01 00 01 00 f8 00 00 01 01 05 02 0c 00 00 00 ff ff ff ff` (type `02`=Pro) |
+| 12 | Firmware info | `10 91 00 01 00 00 00 00` | Captured older retail unit: `10 01 00 01 00 f8 00 00 01 01 05 02 0c 00 00 00 ff ff ff ff` (FW 1.1.5, type `02`=Pro, BT 12.0.0, no DSP) |
 
 Interleaved (order not strict): `03/0c`, `0a/02` vibration, `0c/06` configure, `11/01`, `11/03`,
 `01/0c` NFC, `18/01`. Feature mask **`0x27`** = buttons(01)+sticks(02)+IMU(04)+rumble(20). After
 step 11 the controller streams input report `0x09` on EP1 IN. **Implement a dispatcher keyed on
 `cmd+subcmd`, reply to whatever arrives (order-independent), and only begin streaming input once
 report `0x09` is selected + features enabled.**
+
+### Firmware-version compatibility
+
+The bundled USB capture above is a genuine but older Pro Controller 2 running controller firmware
+`1.1.5`, Bluetooth patch `12.0.0`, with no DSP firmware reported. Current consoles try to update a
+PicoSwitch2 that repeats those bytes. A later retail Pro Controller 2 capture cited as
+`PC2_Gyro_*.pcapng` by NS-PC-Control reports:
+
+```
+02 00 11 02 0C 00 00 00 00 02 02 00
+```
+
+That decodes as controller firmware `2.0.17`, type `0x02` (Pro), Bluetooth patch `12.0.0`, and DSP
+firmware `0.2.2`. PicoSwitch2 reports this later genuine version from both the EP0 firmware triplet
+and command `0x10/0x01`. The reference capture is privately held, so this is **Strong Evidence**,
+not independently byte-verified in this repository; real-console prompt suppression is the required
+hardware validation.
+
+The console's `0x0D` firmware-update protocol transfers an approximately 240 KiB controller image,
+checks CRC32, switches failsafe banks, and reboots the controller. That image targets Nintendo's
+controller MCU and cannot be installed as RP2040/RP2350 firmware. PicoSwitch2 therefore reports the
+compatible retail version instead of pretending to accept or persist Nintendo firmware writes.
 
 ### The 0x15 pairing exchange happens over USB
 The console runs the full Bluetooth pairing handshake (`0x15/01→02→03`) **over the wired USB

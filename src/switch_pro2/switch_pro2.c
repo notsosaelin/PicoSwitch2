@@ -198,16 +198,40 @@ const char **ns2_string_table(size_t *count) {
 #define FACTORY_SIZE 0x160u
 static uint8_t factory[FACTORY_SIZE];
 
+// Version reported by an updated retail Pro Controller 2 in Dycool's
+// PC2_Gyro_*.pcapng capture.  Our older bundled USB capture predates that
+// update and reports 1.1.5 with no DSP firmware.  Keep these named bytes as
+// the single source for both version surfaces below: the console reads the
+// EP0 block during enumeration and command 0x10 during controller init.
+#define NS2_PRO_FW_MAJOR 0x02
+#define NS2_PRO_FW_MINOR 0x00
+#define NS2_PRO_FW_MICRO 0x11
+#define NS2_PRO_BT_MAJOR 0x0C
+#define NS2_PRO_BT_MINOR 0x00
+#define NS2_PRO_BT_MICRO 0x00
+#define NS2_PRO_DSP_MAJOR 0x00
+#define NS2_PRO_DSP_MINOR 0x02
+#define NS2_PRO_DSP_MICRO 0x02
+
 // Identity + info blocks the console fetches over EP0 vendor control BEFORE it will
 // touch the bulk command channel (verified from ndeadly's USB capture, PC2 = device 7;
 // see tud_vendor_control_xfer_cb). ns2_ctrl_identity is the first 64 B of factory memory
 // (0x13000: 01 00, serial, VID, PID, 01 06 01, colours) with a 0xFF tail; built in
 // ns2_factory_init once `factory` is populated. ns2_ctrl_info is the fixed 16-B reply to
-// vendor request 0x02 (firmware/version + a per-unit id, taken verbatim from the capture).
+// vendor request 0x02 (firmware/version + a per-unit id). The opaque middle and
+// per-unit bytes remain verbatim from our capture; only the documented leading
+// firmware triplet advances to the updated retail version.
 static uint8_t ns2_ctrl_identity[64];
 static const uint8_t ns2_ctrl_info[16] = {
-    0x01, 0x01, 0x05, 0x00, 0x00, 0x00, 0x0C, 0x00,
+    NS2_PRO_FW_MAJOR, NS2_PRO_FW_MINOR, NS2_PRO_FW_MICRO, 0x00, 0x00, 0x00, NS2_PRO_BT_MAJOR, 0x00,
     0x00, 0x00, 0x9E, 0x2B, 0xAB, 0xAB, 0xA9, 0x3C};
+
+// Command 0x10/0x01 response payload:
+// firmware[3], controller type, Bluetooth patch[3], pad, DSP[3], pad.
+static const uint8_t ns2_firmware_info[12] = {
+    NS2_PRO_FW_MAJOR, NS2_PRO_FW_MINOR, NS2_PRO_FW_MICRO, 0x02,
+    NS2_PRO_BT_MAJOR, NS2_PRO_BT_MINOR, NS2_PRO_BT_MICRO, 0x00,
+    NS2_PRO_DSP_MAJOR, NS2_PRO_DSP_MINOR, NS2_PRO_DSP_MICRO, 0x00};
 
 static void fac(uint32_t addr, const uint8_t *d, size_t n) {
     uint32_t o = addr - FACTORY_BASE;
@@ -708,9 +732,8 @@ static void ns2_dispatch(const uint8_t *c, uint32_t n) {
             break;
         }
         case 0x10:  // firmware info (type byte 0x02 = Pro Controller)
-            memcpy(d, (const uint8_t[]){0x01, 0x01, 0x05, 0x02, 0x0C, 0x00, 0x00, 0x00,
-                                        0xFF, 0xFF, 0xFF, 0xFF}, 12);
-            dl = 12;
+            memcpy(d, ns2_firmware_info, sizeof(ns2_firmware_info));
+            dl = sizeof(ns2_firmware_info);
             break;
         case 0x0B:  // battery
             if (sub == 0x03) { memcpy(d, (const uint8_t[]){0xA5, 0x0E, 0x00, 0x00}, 4); dl = 4; }
