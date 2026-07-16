@@ -3,8 +3,8 @@
 **Status:** ✅ Implemented and hardware-confirmed 2026-07-16. The exact wake advertisement was
 first confirmed from `ndeadly/switch2_controller_research`'s `bluetooth_interface.md` and
 `commands.md`; PicoSwitch2 now learns the required console/controller identity during the ordinary
-USB pairing exchange and transmits the advertisement with its own CYW43 radio. Both manual BOOTSEL
-single-tap wake and automatic wake from real controller input work on a real Switch 2.
+USB pairing exchange and transmits the advertisement with its own CYW43 radio. Automatic wake from
+real controller input works on a real Switch 2.
 
 This supersedes both the original flat "out of scope" verdict
 (`docs/bluetooth/btstack-implementation.md` "BLE wake-from-sleep",
@@ -103,19 +103,18 @@ input that put the console to sleep and the neutral reports controllers send aft
 power cycle. Wake is one-shot until USB becomes active again. If HID setup briefly owns the radio,
 the request remains latched and retries every 500 ms.
 
-The feature is restricted to the Pro Controller 2 USB personality. BOOTSEL single-tap remains a
-manual fallback; double-tap pairing, triple-tap wipe, and five-second personality cycling retain
-their existing meanings.
+The feature is restricted to the Pro Controller 2 USB personality. BOOTSEL single-tap is unused;
+double-tap pairing, triple-tap wipe, and five-second personality cycling retain their existing
+meanings.
 
 ## 5. Hardware validation and remaining boundary
 
 Confirmed on a real Switch 2 on 2026-07-16:
 
 1. Put the console to sleep; the dock briefly removes power and the Pico/controller links recover.
-2. A BOOTSEL single-tap wakes the console and normal controller operation resumes.
-3. With no BOOTSEL action, the first real controller input automatically sends the wake request and
-   wakes the console.
-4. Neutral reconnect traffic alone does not immediately re-wake the console.
+2. The first real controller input automatically sends the wake request, wakes the console, and
+   resumes normal controller operation.
+3. Neutral reconnect traffic alone does not immediately re-wake the console.
 
 Controller sleep is a separate problem and is not part of this implementation. DualSense/Edge
 (Classic Bluetooth in this firmware) naturally powers down during the dock outage. Xbox Series BLE

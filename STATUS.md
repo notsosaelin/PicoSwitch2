@@ -27,7 +27,7 @@ Pro Controller 2, NSO GameCube, DualSense, and BOOTSEL paths have recent physica
 | DualSense/Edge LEDs and rumble | ✅ Confirmed | Real hardware after report-boundary scheduler fix |
 | BOOTSEL double-tap, triple-tap, and five-second hold with DualSense paired | ✅ Confirmed | Real hardware after report-boundary gesture service |
 | Triple-tap post-wipe admission lock | ✅ Confirmed for the reported workflow | Wipe disconnects and requires an explicit new pairing window |
-| Switch 2 wake from sleep | ✅ Confirmed | Manual BOOTSEL single-tap and first real post-sleep controller input on real Switch 2 hardware |
+| Switch 2 wake from sleep | ✅ Confirmed | First real post-sleep controller input on real Switch 2 hardware |
 | Pico W and Pico 2 W builds | ✅ Confirmed | Local release builds |
 
 ## Current USB personalities

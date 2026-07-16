@@ -74,8 +74,8 @@ stages: enumeration, identity handshake, buttons, timing fidelity, then feature-
 Status: ✅ implemented and hardware-confirmed in Pro Controller 2 mode.
 
 The console identity is learned from the completed USB `0x15` pairing exchange and persisted after
-the timing-sensitive handshake. A BOOTSEL single-tap provides manual wake; the first non-neutral
-controller report after stable USB inactivity provides automatic wake. See
+the timing-sensitive handshake. The first non-neutral controller report after stable USB
+inactivity provides automatic wake. See
 [`docs/bluetooth/wake-from-sleep-design.md`](docs/bluetooth/wake-from-sleep-design.md).
 
 Do not conflate console wake with controller sleep. Some controllers naturally power down during

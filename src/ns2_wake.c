@@ -90,7 +90,7 @@ bool ns2_wake_request(void) {
     bool started = btstack_host_start_wake_advertisement(
         advertiser_addr, advertisements, identity.host_count);
     if (started) auto_wake_sent = true;
-    printf("[NS2_WAKE] Manual wake request %s\n",
+    printf("[NS2_WAKE] Wake advertisement request %s\n",
            started ? "started" : "deferred/rejected while radio is busy");
     return started;
 }

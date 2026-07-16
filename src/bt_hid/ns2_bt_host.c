@@ -114,18 +114,6 @@ static void service_bootsel_gestures(uint32_t now) {
     bool in_config = g_usb_config_mode;
     bootsel_gesture_t gesture = bootsel_poll(now);
     switch (gesture) {
-        case BOOTSEL_SINGLE_TAP:
-#ifdef NS2_PRO
-            // Initial wake proof-of-concept: explicit/manual only, and only
-            // while the authentic Pro Controller 2 personality is selected.
-            // The BTstack side is non-blocking and rejects an in-flight
-            // controller connection rather than disturbing it.
-            if (!in_config &&
-                g_usb_personality == USB_PERSONALITY_SWITCH2_PRO2) {
-                ns2_wake_request();
-            }
-#endif
-            break;
         case BOOTSEL_DOUBLE_TAP:
             if (!in_config) open_pairing_window(now);
             break;
