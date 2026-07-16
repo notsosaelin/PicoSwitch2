@@ -20,6 +20,7 @@
 
 #include "bootsel.h"
 #include "config.h"
+#include "ns2_wake.h"
 #include "usb.h"
 
 // The CYW43 transport instance (src/bt_hid/bt/transport/bt_transport_cyw43.c).
@@ -113,6 +114,18 @@ static void service_bootsel_gestures(uint32_t now) {
     bool in_config = g_usb_config_mode;
     bootsel_gesture_t gesture = bootsel_poll(now);
     switch (gesture) {
+        case BOOTSEL_SINGLE_TAP:
+#ifdef NS2_PRO
+            // Initial wake proof-of-concept: explicit/manual only, and only
+            // while the authentic Pro Controller 2 personality is selected.
+            // The BTstack side is non-blocking and rejects an in-flight
+            // controller connection rather than disturbing it.
+            if (!in_config &&
+                g_usb_personality == USB_PERSONALITY_SWITCH2_PRO2) {
+                ns2_wake_request();
+            }
+#endif
+            break;
         case BOOTSEL_DOUBLE_TAP:
             if (!in_config) open_pairing_window(now);
             break;
@@ -159,8 +172,10 @@ static void rumble_timer_handler(btstack_timer_source_t *ts) {
 // runs on core1 in the same BTstack run-loop context as the timers; the timers
 // remain the fallback while a controller is quiet or disconnected.
 void bthid_on_report_boundary(void) {
+    uint32_t now = to_ms_since_boot(get_absolute_time());
     bootsel_core1_service();
-    service_bootsel_gestures(to_ms_since_boot(get_absolute_time()));
+    service_bootsel_gestures(now);
+    ns2_wake_service(now);
     bthid_task();
 }
 
@@ -169,6 +184,7 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
 
     // Also poll from the ordinary 30 ms path for quiet/disconnected periods.
     service_bootsel_gestures(now);
+    ns2_wake_service(now);
 
     // Pending settings flash-write (runs here on core1, parking core0).
     config_service_save();

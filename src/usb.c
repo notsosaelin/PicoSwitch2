@@ -16,6 +16,7 @@
 #include "switch_pro2.h"
 #include "switch_gc.h"
 #include "switch_joycon2.h"
+#include "ns2_wake.h"
 #include "usb_mode_cycle.h"
 #endif
 
@@ -184,6 +185,14 @@ void usb_core_task() {
 #endif
 
         tud_task();
+
+#ifdef NS2_PRO
+        // Publish TinyUSB lifecycle state to core1's automatic-wake gate. This
+        // also covers a cold boot while the console is already asleep, where
+        // no suspend callback from the previous powered session can survive.
+        ns2_wake_publish_usb_state(tud_mounted(), tud_suspended(),
+                                   to_ms_since_boot(get_absolute_time()));
+#endif
 
         // Sample BOOTSEL from this core (self-rate-limited to ~5 ms; see bootsel.c). Core1 runs
         // the gesture state machine off the value published here and never parks anyone itself,

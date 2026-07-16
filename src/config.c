@@ -29,15 +29,28 @@
 #include "hardware/sync.h"
 
 #define CONFIG_MAGIC 0x50535731u  // 'PSW1'
-#define CONFIG_VERSION 5
+#define CONFIG_VERSION 6
 #define CONFIG_FLASH_OFFSET (PICO_FLASH_SIZE_BYTES - 4 * FLASH_SECTOR_SIZE)
+#define CONFIG_WAKE_VALID 0xA5
+#define CONFIG_WAKE_SAVE_DELAY_MS 5000
 
 typedef struct {
     uint32_t magic;
     uint8_t version;
     uint8_t lightbar[4][3];                         // per-player-position R,G,B
     uint8_t ns2_map[NS2_FAM_COUNT][NS2_SRC_COUNT];  // per-family button remap
+    uint8_t wake_valid;
+    config_wake_identity_t wake_identity;
 } pico_config_t;
+
+// Exact v5 prefix, used only to migrate existing lightbar colours and button
+// remaps. Do not cast an old flash page to the larger v6 structure and copy it.
+typedef struct {
+    uint32_t magic;
+    uint8_t version;
+    uint8_t lightbar[4][3];
+    uint8_t ns2_map[NS2_FAM_COUNT][NS2_SRC_COUNT];
+} pico_config_v5_t;
 
 // Built-in joypad remap (source index -> NS2_DST_*). Reproduces the seam's hardcoded
 // mapping exactly, so an all-defaults config behaves identically to no remapping.
@@ -57,6 +70,7 @@ _Static_assert(sizeof(pico_config_t) <= FLASH_PAGE_SIZE, "config must fit in one
 static pico_config_t cfg;
 static critical_section_t cfg_lock;
 static volatile bool save_requested;
+static volatile uint32_t save_not_before_ms;
 
 static void load_defaults(void) {
     memset(&cfg, 0, sizeof(cfg));
@@ -75,10 +89,15 @@ void config_load(void) {
     if (f->magic == CONFIG_MAGIC && f->version == CONFIG_VERSION) {
         memcpy(&cfg, f, sizeof(cfg));
     } else if (f->magic == CONFIG_MAGIC) {
-        // Any older layout (pre-v5 carried the now-removed bluepad32 button_map):
-        // the lightbar is at a stable offset, so keep it and default the remap.
+        // The lightbar is at a stable offset in all prior layouts. v5 also has
+        // the current remap table, so preserve it during the v6 wake-identity
+        // migration instead of silently resetting a user's mappings.
         load_defaults();
         memcpy(cfg.lightbar, f->lightbar, sizeof(cfg.lightbar));
+        if (f->version == 5) {
+            const pico_config_v5_t *v5 = (const pico_config_v5_t *)flash;
+            memcpy(cfg.ns2_map, v5->ns2_map, sizeof(cfg.ns2_map));
+        }
     } else {
         load_defaults();
     }
@@ -114,6 +133,63 @@ void config_get_ns2_map(uint8_t family, uint8_t map_out[]) {
     critical_section_exit(&cfg_lock);
 }
 
+static bool address_is_nonzero(const uint8_t addr[6]) {
+    uint8_t any = 0;
+    for (int i = 0; i < 6; i++) any |= addr[i];
+    return any != 0;
+}
+
+bool config_get_wake_identity(config_wake_identity_t *out) {
+    if (!out) return false;
+
+    bool valid;
+    critical_section_enter_blocking(&cfg_lock);
+    valid = cfg.wake_valid == CONFIG_WAKE_VALID &&
+            cfg.wake_identity.host_count > 0 &&
+            cfg.wake_identity.host_count <= CONFIG_WAKE_MAX_HOSTS &&
+            address_is_nonzero(cfg.wake_identity.controller_addr_wire);
+    if (valid) {
+        for (uint8_t i = 0; i < cfg.wake_identity.host_count; i++) {
+            if (!address_is_nonzero(cfg.wake_identity.host_addr_wire[i])) {
+                valid = false;
+                break;
+            }
+        }
+    }
+    if (valid) *out = cfg.wake_identity;
+    critical_section_exit(&cfg_lock);
+    return valid;
+}
+
+void config_store_wake_identity(const config_wake_identity_t *identity) {
+    if (!identity || identity->host_count == 0 ||
+        identity->host_count > CONFIG_WAKE_MAX_HOSTS ||
+        !address_is_nonzero(identity->controller_addr_wire)) {
+        return;
+    }
+    for (uint8_t i = 0; i < identity->host_count; i++) {
+        if (!address_is_nonzero(identity->host_addr_wire[i])) return;
+    }
+
+    critical_section_enter_blocking(&cfg_lock);
+    bool changed = cfg.wake_valid != CONFIG_WAKE_VALID ||
+                   memcmp(&cfg.wake_identity, identity, sizeof(*identity)) != 0;
+    if (changed) {
+        cfg.wake_identity = *identity;
+        cfg.wake_valid = CONFIG_WAKE_VALID;
+    }
+    critical_section_exit(&cfg_lock);
+
+    // The console may repeat its pairing exchange on later USB sessions. Do
+    // not erase/program flash again when the learned identity is unchanged.
+    if (!changed) return;
+
+    // Pairing continues for several USB commands after 0x15/03. A flash erase
+    // parks core0, so postpone it until that timing-sensitive exchange is over.
+    save_not_before_ms = to_ms_since_boot(get_absolute_time()) + CONFIG_WAKE_SAVE_DELAY_MS;
+    save_requested = true;
+}
+
 static void set_ns2_map(uint8_t family, const uint8_t map_in[]) {
     if (family >= NS2_FAM_COUNT)
         return;
@@ -124,6 +200,11 @@ static void set_ns2_map(uint8_t family, const uint8_t map_in[]) {
 
 void config_service_save(void) {
     if (!save_requested)
+        return;
+
+    uint32_t not_before = save_not_before_ms;
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    if (not_before != 0 && (int32_t)(now - not_before) < 0)
         return;
 
     pico_config_t snap;
@@ -145,6 +226,7 @@ void config_service_save(void) {
     multicore_lockout_end_blocking();
 
     save_requested = false;
+    save_not_before_ms = 0;
 }
 
 //--------------------------------------------------------------------+
@@ -532,6 +614,8 @@ static void handle_line(char *cmd) {
             reply("{\"error\":\"bad args\"}");
         }
     } else if (strcmp(cmd, "save") == 0) {
+        // An explicit config-mode save overrides any deferred automatic save.
+        save_not_before_ms = 0;
         save_requested = true;
         // Wait (pumping USB) for core1's control tick to perform the flash write.
         absolute_time_t deadline = make_timeout_time_ms(2000);

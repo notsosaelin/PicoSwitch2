@@ -71,10 +71,18 @@ stages: enumeration, identity handshake, buttons, timing fidelity, then feature-
 
 ### Wake from sleep
 
-Status: 🔵 design complete, implementation not started.
+Status: ✅ implemented and hardware-confirmed in Pro Controller 2 mode.
 
-Start with passive advertisement capture and replay validation described in
+The console identity is learned from the completed USB `0x15` pairing exchange and persisted after
+the timing-sensitive handshake. A BOOTSEL single-tap provides manual wake; the first non-neutral
+controller report after stable USB inactivity provides automatic wake. See
 [`docs/bluetooth/wake-from-sleep-design.md`](docs/bluetooth/wake-from-sleep-design.md).
+
+Do not conflate console wake with controller sleep. Some controllers naturally power down during
+the dock's brief VBUS outage (confirmed for DualSense/Edge), while Xbox Series BLE can reconnect
+before its own search timeout. The failed generic ACL-disconnect experiment stranded the existing
+controller relationship and was fully reverted. Continue researching a controller-side solution;
+do not delete bonds, install an admission gate, or suppress incoming connections for this feature.
 
 ## Longer-term
 

@@ -1,10 +1,10 @@
 # Wake-from-sleep via a crafted BLE advertisement
 
-**Status:** 🔵 Partial — design substantially strengthened, no firmware implemented yet. Written
-2026-07-14, prompted by the project owner. **Major update, same day**: the exact wake advertisement
-byte format is now **Confirmed** from `ndeadly/switch2_controller_research`'s
-`bluetooth_interface.md` and `commands.md` — this is no longer a "capture an unknown payload"
-problem, it's an implementation problem against an already-fully-documented protocol.
+**Status:** ✅ Implemented and hardware-confirmed 2026-07-16. The exact wake advertisement was
+first confirmed from `ndeadly/switch2_controller_research`'s `bluetooth_interface.md` and
+`commands.md`; PicoSwitch2 now learns the required console/controller identity during the ordinary
+USB pairing exchange and transmits the advertisement with its own CYW43 radio. Both manual BOOTSEL
+single-tap wake and automatic wake from real controller input work on a real Switch 2.
 
 This supersedes both the original flat "out of scope" verdict
 (`docs/bluetooth/btstack-implementation.md` "BLE wake-from-sleep",
@@ -18,11 +18,10 @@ to this project at the time. That reference existed all along in the already-clo
 ## 1. Why the console wakes at all
 
 The Switch 2 wakes from sleep only in response to a specific BLE advertisement from a controller
-already bonded to it. This dongle presents to the console purely as a **USB** device
-(`src/usb.c`/`src/usb_descriptors.c`), so nothing it currently does can trigger this — USB and the
-console's BLE wake mechanism are architecturally unrelated. Implementing this would require the
-dongle's own Bluetooth radio (currently used only as a central/host, connecting to a physical
-controller) to also transmit a BLE advertisement directly to the console.
+already bonded to it. PicoSwitch2 still presents to the console as a **USB** controller, but its
+CYW43 radio temporarily changes from its ordinary central/scanning role to transmit that exact
+non-connectable legacy advertisement directly to the console. It then restores the public-address
+central configuration and resumes any discovery that was active before the wake request.
 
 ## 2. The wake advertisement — Confirmed, byte-exact
 
@@ -65,8 +64,9 @@ redacted in both docs, but the *field* is fully understood). PDU type is plain `
 structure is `0x06` (`GeneralDiscovery | BrEdrNotSupported`) — both standard, already
 straightforward for BTstack to construct.
 
-**This is no longer a "what bytes do we send" question — that's answered.** The open question is
-purely whether this dongle's BTstack/CYW43 setup can transmit a raw advertisement at all (see §4).
+The implementation in `src/ns2_wake_protocol.c` constructs this byte-exact 31-byte advertising
+payload. `tools/test_ns2_wake_protocol.c` locks the output to the independently hardware-tested
+Joy-Con 2 example and also validates malformed pairing-data rejection.
 
 ## 3. How a genuine controller triggers this itself
 
@@ -80,40 +80,46 @@ that a genuine controller's own firmware is what actually starts transmitting it
 need to do the equivalent itself, not receive this command from anywhere (nothing on this dongle's
 USB side would ever send it `0x03`/`0x01`, since the dongle *is* the USB device, not a host).
 
-## 4. What's still genuinely unknown
+## 4. Shipping implementation
 
-- **Whether this dongle's BTstack/CYW43 configuration can transmit a raw BLE advertisement at all,
-  concurrently with or separately from its existing central/host role.** `src/btstack_config.h`
-  already defines `ENABLE_LE_PERIPHERAL` (inherited from the bluepad32 template this file was based
-  on) but it's currently inert — no advertising-parameter or advertising-enable API is called
-  anywhere in `src/`. This is the one real remaining technical unknown, and it's an implementation
-  question, not an evidence-gathering one — the next step is simply to try calling BTstack's
-  `gap_advertisements_set_data()`/`gap_advertisements_enable()` (or equivalent) and see if it works,
-  not to capture more data first.
-- **Whether address+payload match is sufficient for the console to actually wake**, or whether it
-  additionally validates something a simple advertisement can't satisfy (e.g. checking the address
-  is in its own bond list before waking, which is likely and satisfiable, since this project already
-  knows its own bonded host's address from the SPI-decoded bond table — versus something exotic like
-  a rolling counter or challenge-response, which the advertisement's own byte layout above gives no
-  evidence of: every field is either constant or the two pieces of info already listed in §2).
-- **Whether the Pico stays powered while the console sleeps** — needed for it to transmit anything
-  during that window at all. Depends on whether the Switch 2's USB port keeps VBUS live in sleep;
-  not confirmed here.
-- **When to actually transmit** — presumably only while no controller is connected and the console is
-  presumed asleep, mirroring `0x03`/`0x01`'s own semantics (advertise "when argument is nonzero",
-  i.e. on command, not continuously) — not designed yet, but no longer blocked on missing byte-level
-  evidence.
+The implementation is deliberately split by responsibility:
 
-## 5. Suggested next steps
+- `switch_pro2.c` stages the identity from USB command `0x15/01` and commits it only after the
+  console finalises pairing with `0x15/03`.
+- `config.c` stores the validated controller address, up to two host addresses, and PID. Flash work
+  is deferred five seconds so it cannot stall the remaining USB pairing handshake. Config v5
+  lightbar and remap settings migrate intact to v6.
+- `ns2_wake_protocol.c` parses the Nintendo wire order and builds the advertisement without any
+  BTstack dependency.
+- `ns2_wake.c` owns the manual request and the automatic one-shot policy.
+- `btstack_host.c` pauses BLE scan/Classic inquiry, advertises for 1.2 seconds per host identity,
+  restores the ordinary public BLE address, and resumes discovery. Existing controller ACLs are
+  never disconnected.
 
-1. **Attempt a minimal BLE advertising test**: construct the exact byte sequence from §2 (using this
-   dongle's own real bonded-console address, decodable via the same SPI-bond-table understanding
-   already in this project, or simply observed live once connected) and try to get BTstack to
-   actually transmit it as a raw advertisement. This is now a firmware/BTstack-API question, testable
-   independent of whether it actually wakes anything (a nearby BLE scanner — e.g. this project's own
-   passive advertisement logging, or a phone's BLE scanner app — can confirm the bytes go out
-   correctly before ever testing against a real sleeping console).
-2. Only once (1) works: test against a real sleeping, bonded Switch 2.
-3. If it doesn't wake the console, that's the point to investigate deeper validation requirements
-   (§4) — not before, since there's no evidence yet that anything beyond the documented byte format
-   is required.
+Automatic wake is intentionally conservative. Core 0 publishes TinyUSB mounted/suspended state.
+Core 1 waits for 750 ms of stable USB inactivity plus a 2 s cold-boot grace, then accepts only a
+non-neutral controller button report received after that boundary. This rejects the HOME/gameplay
+input that put the console to sleep and the neutral reports controllers send after the dock's brief
+power cycle. Wake is one-shot until USB becomes active again. If HID setup briefly owns the radio,
+the request remains latched and retries every 500 ms.
+
+The feature is restricted to the Pro Controller 2 USB personality. BOOTSEL single-tap remains a
+manual fallback; double-tap pairing, triple-tap wipe, and five-second personality cycling retain
+their existing meanings.
+
+## 5. Hardware validation and remaining boundary
+
+Confirmed on a real Switch 2 on 2026-07-16:
+
+1. Put the console to sleep; the dock briefly removes power and the Pico/controller links recover.
+2. A BOOTSEL single-tap wakes the console and normal controller operation resumes.
+3. With no BOOTSEL action, the first real controller input automatically sends the wake request and
+   wakes the console.
+4. Neutral reconnect traffic alone does not immediately re-wake the console.
+
+Controller sleep is a separate problem and is not part of this implementation. DualSense/Edge
+(Classic Bluetooth in this firmware) naturally powers down during the dock outage. Xbox Series BLE
+can advertise long enough to reconnect. A generic post-sleep ACL-disconnect experiment made the
+same controller unable to reconnect without pairing and was fully reverted. Future work must not
+delete bonds, install a pairing/admission gate, or suppress incoming connections merely to make a
+controller sleep.

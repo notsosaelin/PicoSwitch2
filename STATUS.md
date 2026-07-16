@@ -5,7 +5,7 @@
 > Planned work belongs in [`PLAN.md`](PLAN.md); evidence and protocol details belong under
 > [`docs/`](docs/README.md).
 
-Last verified: 2026-07-15
+Last verified: 2026-07-16
 Branch: `ns2-testing`
 
 ## Current release
@@ -27,6 +27,7 @@ Pro Controller 2, NSO GameCube, DualSense, and BOOTSEL paths have recent physica
 | DualSense/Edge LEDs and rumble | ✅ Confirmed | Real hardware after report-boundary scheduler fix |
 | BOOTSEL double-tap, triple-tap, and five-second hold with DualSense paired | ✅ Confirmed | Real hardware after report-boundary gesture service |
 | Triple-tap post-wipe admission lock | ✅ Confirmed for the reported workflow | Wipe disconnects and requires an explicit new pairing window |
+| Switch 2 wake from sleep | ✅ Confirmed | Manual BOOTSEL single-tap and first real post-sleep controller input on real Switch 2 hardware |
 | Pico W and Pico 2 W builds | ✅ Confirmed | Local release builds |
 
 ## Current USB personalities
@@ -65,7 +66,7 @@ See [`docs/architecture/overview.md`](docs/architecture/overview.md) and
 | P1 | Confirm the Pro Controller 2 physical L/R mapping correction | 🟡 Needs hardware validation |
 | P2 | Joy-Con 2 Left is shown by Steam/Windows as a generic controller while Right is recognized | 🔵 PC-only compatibility issue; real-console enumeration works |
 | P2 | Complete the controller/personality regression matrix, including rumble STOP and reconnect | 🟡 In progress |
-| P2 | Wake-from-sleep advertisement support | ⬜ Designed, not implemented |
+| P2 | Let reconnecting BLE controllers sleep with the console without touching bonds or admission | 🔵 Research; current automatic wake behavior is preserved |
 | P3 | Console-native report `0x09` motion semantics | 🔴 Blocked on better primary evidence |
 | P3 | NFC/amiibo transactions | 🔴 Blocked on a genuine console-side capture |
 
@@ -79,6 +80,7 @@ Current automated coverage includes:
 - GameCube and Joy-Con 2 input report encoders
 - HID output normalization
 - Switch 2 pairing cryptography
+- Switch 2 wake identity parsing and byte-exact advertisement construction
 - USB personality cycling
 - `gcusb` safety and protocol helpers
 

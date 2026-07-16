@@ -1076,7 +1076,7 @@ verified compiling clean: both boards' default `NS2_PRO=ON NS2_AUDIO=ON`, plus s
 - **`PAIRING_WINDOW_MS`'s exact value (30s)** — chosen for usability per explicit instruction, not
   derived from any protocol constant; treat it as adjustable UX, not load-bearing.
 
-## BLE wake-from-sleep (design revised 2026-07-14 — no longer flatly out of scope)
+## BLE wake-from-sleep (implemented and hardware-confirmed 2026-07-16)
 
 `docs/wakeup.md` in the same external repo documents how the Switch 2 actually wakes from BLE: a
 setup wizard captures a **real, already-paired Joy-Con 2's own HOME-button BLE advertisement**
@@ -1089,9 +1089,10 @@ MAC + advertising payload replayed via a chosen `hci` device, apparently alongsi
 operation. Full detail: `docs/experiments/ns-pc-control-audit-2026-07-12.md` §6.
 
 Previously filed flatly out of scope here on the reasoning that "this project's dongle has no such
-device to capture from." That assumption no longer holds — and turned out to be moot anyway: the
-exact wake-advertisement byte format is fully documented in `ndeadly/switch2_controller_research`
-(already cloned locally for GameCube work), so no capture is even needed. See
-**`docs/bluetooth/wake-from-sleep-design.md`** for the byte-exact format and its remaining,
-narrower unknowns (chiefly whether this dongle's BTstack/CYW43 setup can transmit a raw
-advertisement at all).
+device to capture from." That assumption was wrong. The implementation now learns the console
+address from the completed USB `0x15` pairing exchange, persists it after the timing-sensitive
+handshake, and uses a timer-driven BTstack advertiser that temporarily pauses discovery without
+disconnecting controllers or blocking the run loop. Manual BOOTSEL single-tap wake and automatic
+wake from the first real post-sleep controller input are both confirmed on a real Switch 2. See
+**`docs/bluetooth/wake-from-sleep-design.md`** for the byte-exact payload, state machine, safety
+gates, and validation record.
