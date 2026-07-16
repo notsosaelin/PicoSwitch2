@@ -13,6 +13,7 @@
 #include "pico/time.h"  // time_us_32() for the report-0x05 IMU timestamp
 
 #include "ns2_pairing_crypto.h"  // shared AES-128/LTK-derivation pairing crypto
+#include "ns2_wake.h"    // learn the console wake identity from USB pairing
 #include "report.h"      // shared cross-core controller input
 #include "switch_pro.h"  // switch_pro_input_t + SWITCH_MASK_* (Switch 1 layout)
 #include "switch_pro2.h"
@@ -637,12 +638,19 @@ static void ns2_dispatch(const uint8_t *c, uint32_t n) {
                 static const uint8_t a[] = {0x01, 0x04, 0x01, 0x9E, 0x2B, 0xAB, 0xAB, 0xA9, 0x3C};
                 memcpy(d, a, sizeof(a));
                 dl = sizeof(a);
+                // The request contains the console address(es) needed by the
+                // Switch 2 wake advertisement. Stage now, but persist only if
+                // the console later finalises this pairing with 0x15/03.
+                if (n >= 8) {
+                    ns2_wake_pairing_stage(&c[8], n - 8, 0x2069, &a[3]);
+                }
             } else if (sub == 0x02) {  // confirm LTK: B2(wire) = AES128(LTK, rev(A2))
                 d[0] = 0x01;
                 ns2_pair_challenge(&c[9], &d[1]);  // A2 = c[9..24]
                 dl = 17;
             } else if (sub == 0x03) {  // finalise
                 d[0] = 0x01; dl = 1;
+                ns2_wake_pairing_commit();
             } else if (sub == 0x04) {  // exchange keys: derive LTK from A1, return B1
                 ns2_pair_set_ltk(&c[9]);  // A1 = c[9..24]
                 d[0] = 0x01;
@@ -908,6 +916,7 @@ void ns2_mount(void) {
 
 void ns2_init(void) {
     ns2_factory_init();
+    ns2_wake_pairing_reset();
     ns2_report_id = 0x09;
     ns2_streaming = false;
     ns2_imu_enabled = false;

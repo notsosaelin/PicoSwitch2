@@ -127,7 +127,9 @@ retain only wire layouts, invariants, and implementation constraints.
 - Joy-Con 2 Left and Right enumerate and stream on real hardware, but their mappings still
   require complete hardware validation. On Windows/Steam, Left may appear as a generic
   `Nintendo Joy-Con 2 (L)` requiring setup; Right is recognized normally.
-- Wake-from-sleep is not implemented.
+- Switch 2 wake-from-sleep is implemented in Pro Controller 2 mode. A single BOOTSEL tap sends a
+  manual wake request; after the console has entered sleep, the first real controller input sends
+  the same request automatically. Neutral reconnect reports never trigger wake.
 
 See [PLAN.md](PLAN.md) for the prioritized roadmap and
 [docs/status/compatibility-matrix.md](docs/status/compatibility-matrix.md) for the test matrix.

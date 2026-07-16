@@ -904,6 +904,158 @@ static void btstack_host_restore_last_connected(void)
 static uint32_t scan_timeout_end = 0;  // 0 = no timeout (indefinite scan)
 static bool scan_suppressed = false;   // App can suppress auto-restart (e.g. USB device connected)
 
+// ============================================================================
+// TEMPORARY BLE WAKE ADVERTISING
+// ============================================================================
+
+// A known-good Switch 2 wake replay only needs about one second of legacy BLE
+// advertising. Use 1.2 s for margin and a short disabled interval before the
+// first burst / between payloads so HCI parameter and address changes cannot be
+// coalesced with a still-enabled advertiser.
+#define WAKE_ADV_BURST_MS 1200
+#define WAKE_ADV_QUIESCE_MS 100
+
+typedef enum {
+    WAKE_ADV_PHASE_IDLE,
+    WAKE_ADV_PHASE_PREPARE,
+    WAKE_ADV_PHASE_BROADCAST,
+    WAKE_ADV_PHASE_BETWEEN,
+    WAKE_ADV_PHASE_RESTORE,
+} wake_adv_phase_t;
+
+static struct {
+    bool active;
+    bool resume_ble_scan;
+    bool resume_classic_inquiry;
+    bool scan_requested;
+    wake_adv_phase_t phase;
+    uint8_t index;
+    uint8_t count;
+    bd_addr_t advertiser_addr;
+    uint8_t data[BTSTACK_HOST_WAKE_MAX_PAYLOADS][BTSTACK_HOST_WAKE_ADV_LEN];
+    btstack_timer_source_t timer;
+} wake_adv;
+
+static void wake_adv_arm(uint32_t delay_ms);
+
+static void wake_adv_timer_handler(btstack_timer_source_t *ts) {
+    (void)ts;
+    bd_addr_t null_addr = {0};
+
+    switch (wake_adv.phase) {
+        case WAKE_ADV_PHASE_PREPARE:
+            // The emulated controller address is replayed exactly. It is not
+            // the CYW43's public address and must not alter Classic identity.
+            hci_le_set_own_address_type(BD_ADDR_TYPE_LE_RANDOM);
+            hci_le_random_address_set(wake_adv.advertiser_addr);
+            gap_advertisements_set_params(0x0020, 0x0040, 0x03,
+                                          BD_ADDR_TYPE_LE_PUBLIC, null_addr,
+                                          0x07, 0x00);
+            gap_advertisements_set_data(BTSTACK_HOST_WAKE_ADV_LEN,
+                                        wake_adv.data[wake_adv.index]);
+            gap_advertisements_enable(1);
+            wake_adv.phase = WAKE_ADV_PHASE_BROADCAST;
+            wake_adv_arm(WAKE_ADV_BURST_MS);
+            break;
+
+        case WAKE_ADV_PHASE_BROADCAST:
+            gap_advertisements_enable(0);
+            wake_adv.index++;
+            if (wake_adv.index < wake_adv.count) {
+                wake_adv.phase = WAKE_ADV_PHASE_BETWEEN;
+            } else {
+                wake_adv.phase = WAKE_ADV_PHASE_RESTORE;
+            }
+            wake_adv_arm(WAKE_ADV_QUIESCE_MS);
+            break;
+
+        case WAKE_ADV_PHASE_BETWEEN:
+            gap_advertisements_set_data(BTSTACK_HOST_WAKE_ADV_LEN,
+                                        wake_adv.data[wake_adv.index]);
+            gap_advertisements_enable(1);
+            wake_adv.phase = WAKE_ADV_PHASE_BROADCAST;
+            wake_adv_arm(WAKE_ADV_BURST_MS);
+            break;
+
+        case WAKE_ADV_PHASE_RESTORE: {
+            // All ordinary BLE-central operations in this host use the public
+            // address. Restore it before allowing discovery/reconnect again.
+            hci_le_set_own_address_type(BD_ADDR_TYPE_LE_PUBLIC);
+            bool resume_scan = wake_adv.resume_ble_scan ||
+                               wake_adv.resume_classic_inquiry ||
+                               wake_adv.scan_requested ||
+                               scan_timeout_end != 0;
+            wake_adv.phase = WAKE_ADV_PHASE_IDLE;
+            wake_adv.active = false;
+            printf("[BTSTACK_HOST] Wake advertisement complete\n");
+            if (resume_scan) btstack_host_start_scan();
+            break;
+        }
+
+        case WAKE_ADV_PHASE_IDLE:
+        default:
+            break;
+    }
+}
+
+static void wake_adv_arm(uint32_t delay_ms) {
+    btstack_run_loop_set_timer_handler(&wake_adv.timer, wake_adv_timer_handler);
+    btstack_run_loop_set_timer(&wake_adv.timer, delay_ms);
+    btstack_run_loop_add_timer(&wake_adv.timer);
+}
+
+bool btstack_host_start_wake_advertisement(
+    const uint8_t advertiser_addr[6],
+    const uint8_t advertisements[][BTSTACK_HOST_WAKE_ADV_LEN],
+    uint8_t advertisement_count) {
+    if (!advertiser_addr || !advertisements || !hid_state.initialized ||
+        !hid_state.powered_on || wake_adv.active || advertisement_count == 0 ||
+        advertisement_count > BTSTACK_HOST_WAKE_MAX_PAYLOADS) {
+        return false;
+    }
+
+    // Do not perturb a controller admission attempt. Existing HID links remain
+    // active: this operation pauses discovery only, never HCI power or ACL.
+    if (hid_state.state == BLE_STATE_CONNECTING || classic_state.pending_valid ||
+        classic_state.pending_hid_connect) {
+        return false;
+    }
+
+    memset(&wake_adv, 0, sizeof(wake_adv));
+    wake_adv.active = true;  // gates every scan restart before scans are paused
+    wake_adv.phase = WAKE_ADV_PHASE_PREPARE;
+    wake_adv.count = advertisement_count;
+    memcpy(wake_adv.advertiser_addr, advertiser_addr, 6);
+    memcpy(wake_adv.data, advertisements,
+           advertisement_count * BTSTACK_HOST_WAKE_ADV_LEN);
+
+    wake_adv.resume_ble_scan = hid_state.scan_active;
+    wake_adv.resume_classic_inquiry = classic_state.inquiry_active;
+    if (hid_state.scan_active) {
+        gap_stop_scan();
+        hid_state.scan_active = false;
+    }
+#if !defined(BTSTACK_USE_ESP32) && !defined(BTSTACK_USE_NRF)
+    if (classic_state.inquiry_active) {
+        gap_inquiry_stop();
+        classic_state.inquiry_active = false;
+    }
+#endif
+
+    gap_advertisements_enable(0);
+    printf("[BTSTACK_HOST] Starting wake advertisement as "
+           "%02X:%02X:%02X:%02X:%02X:%02X (%u payload%s)\n",
+           advertiser_addr[0], advertiser_addr[1], advertiser_addr[2],
+           advertiser_addr[3], advertiser_addr[4], advertiser_addr[5],
+           advertisement_count, advertisement_count == 1 ? "" : "s");
+    wake_adv_arm(WAKE_ADV_QUIESCE_MS);
+    return true;
+}
+
+bool btstack_host_wake_advertisement_active(void) {
+    return wake_adv.active;
+}
+
 // Pending BLE gamepad: when we see a gamepad appearance or HID UUID but no name in the
 // ADV packet, stash the address and wait for the scan response (which typically contains
 // the name). This prevents connecting to Xbox controllers as "Generic BLE Gamepad".
@@ -926,6 +1078,10 @@ void btstack_host_start_scan(void)
 #ifdef BTSTACK_DEFER_SCAN
     if (!btstack_host_scan_enabled) return;
 #endif
+    if (wake_adv.active) {
+        wake_adv.scan_requested = true;
+        return;  // wake replay owns the LE advertiser until its restore phase
+    }
     if (pairing_lockout) {
         return;  // A triple-tap wipe requires a new explicit pairing window.
     }
@@ -1252,6 +1408,7 @@ void btstack_host_process(void)
     //   - Classic connection setup in progress (name request, HID connect pending)
 #ifndef CONFIG_USB2BLE
     if (hid_state.powered_on &&
+        !wake_adv.active &&
         !pairing_lockout &&
         !scan_suppressed &&
         hid_state.state == BLE_STATE_IDLE &&
@@ -1277,7 +1434,8 @@ void btstack_host_process(void)
     // bonding — they expect the central to connect directly via gap_connect().
     // After the rapid reconnect attempts (right after disconnect) are exhausted,
     // alternate between scanning and reconnection attempts.
-    if (hid_state.state == BLE_STATE_SCANNING &&
+    if (!wake_adv.active &&
+        hid_state.state == BLE_STATE_SCANNING &&
         hid_state.has_last_connected &&
         hid_state.scan_start_time != 0 &&
         (btstack_run_loop_get_time_ms() - hid_state.scan_start_time) >= BLE_RECONNECT_INTERVAL_MS) {

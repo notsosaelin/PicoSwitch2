@@ -74,6 +74,18 @@ void btstack_host_start_timed_scan(uint32_t timeout_ms);
 // Explicit start_timed_scan clears suppression.
 void btstack_host_suppress_scan(bool suppress);
 
+// Temporarily pause discovery and emit one or two non-connectable legacy BLE
+// advertisements from an exact random address. Used for Switch 2 wake replay;
+// the sequence is timer-driven and never blocks the BTstack run loop. Returns
+// false if the radio is not ready or a connection/wake operation is in flight.
+#define BTSTACK_HOST_WAKE_ADV_LEN 31
+#define BTSTACK_HOST_WAKE_MAX_PAYLOADS 2
+bool btstack_host_start_wake_advertisement(
+    const uint8_t advertiser_addr[6],
+    const uint8_t advertisements[][BTSTACK_HOST_WAKE_ADV_LEN],
+    uint8_t advertisement_count);
+bool btstack_host_wake_advertisement_active(void);
+
 // Connect to a BLE device
 void btstack_host_connect_ble(bd_addr_t addr, bd_addr_type_t addr_type);
 

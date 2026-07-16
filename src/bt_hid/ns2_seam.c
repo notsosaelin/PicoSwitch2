@@ -22,6 +22,8 @@
 #include "bt/bthid/bthid.h"                       // bthid_get_device() — connected controller identity
 #include "config.h"                               // config_get_lightbar() / config_get_ns2_map()
 #include "ns2_remap.h"                            // NS2_SRC_COUNT / NS2_DST_* (per-device remap)
+#include "ns2_wake.h"                             // post-sleep real-input wake intent
+#include "platform/platform.h"                    // platform_time_ms()
 #ifdef NS2_PRO
 #include "usb.h"                                  // g_usb_personality (read-only cross-core check,
                                                    // GameCube-mode analog-fold suppression only)
@@ -262,6 +264,9 @@ void router_submit_input(const input_event_t *e) {
 
     set_global_gamepad_input(slot, &in);
     set_global_raw_buttons(slot, b);  // b includes analog L2/R2, for the live view
+    // A neutral reconnect after the dock's sleep power-cycle is not user
+    // intent. Only an actual controller button report may arm automatic wake.
+    ns2_wake_note_controller_input(b != 0, platform_time_ms());
     // Publish the connected controller's identity for config mode's "input type" panel.
     const bthid_device_t *dev = bthid_get_device(e->dev_addr);
     if (dev)

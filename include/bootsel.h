@@ -25,6 +25,7 @@
 // parks from its timer callback, then core0 samples on a later loop iteration without waiting.
 typedef enum {
     BOOTSEL_NONE = 0,
+    BOOTSEL_SINGLE_TAP,   // send a stored Switch 2 wake advertisement (Pro2 mode)
     BOOTSEL_DOUBLE_TAP,   // enter pairing window
     BOOTSEL_TRIPLE_TAP,   // wipe saved Bluetooth devices
     BOOTSEL_HOLD,         // >= 5s: NS2_PRO builds cycle to the next USB personality
