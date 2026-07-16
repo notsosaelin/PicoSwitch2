@@ -179,8 +179,7 @@ bootsel_gesture_t bootsel_poll(uint32_t now_ms) {
             return BOOTSEL_DOUBLE_TAP;
         if (n >= 3)
             return BOOTSEL_TRIPLE_TAP;
-        if (n == 1)
-            return BOOTSEL_SINGLE_TAP;
+        // single tap: unused
     }
     return BOOTSEL_NONE;
 }

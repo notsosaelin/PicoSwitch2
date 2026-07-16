@@ -1092,7 +1092,7 @@ Previously filed flatly out of scope here on the reasoning that "this project's 
 device to capture from." That assumption was wrong. The implementation now learns the console
 address from the completed USB `0x15` pairing exchange, persists it after the timing-sensitive
 handshake, and uses a timer-driven BTstack advertiser that temporarily pauses discovery without
-disconnecting controllers or blocking the run loop. Manual BOOTSEL single-tap wake and automatic
-wake from the first real post-sleep controller input are both confirmed on a real Switch 2. See
+disconnecting controllers or blocking the run loop. Automatic wake from the first real post-sleep
+controller input is confirmed on a real Switch 2. See
 **`docs/bluetooth/wake-from-sleep-design.md`** for the byte-exact payload, state machine, safety
 gates, and validation record.
