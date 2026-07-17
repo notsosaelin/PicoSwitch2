@@ -129,57 +129,14 @@ void bootsel_sample_core0(void) {
 // CORE1 GESTURE STATE MACHINE
 // ============================================================================
 
-// Gesture timing.
-#define TAP_WINDOW_MS 500  // max gap between taps of the same gesture
-#define HOLD_MS 5000       // press duration that counts as a "hold"
+static bootsel_gesture_state_t g_bootsel_gesture_state;
 
 bootsel_gesture_t bootsel_poll(uint32_t now_ms) {
-    static bool was_pressed = false;
-    static uint32_t press_started = 0;
-    static bool hold_fired = false;
-    static uint8_t tap_count = 0;
-    static uint32_t last_tap_ms = 0;
-
     // Nothing sampled yet (core0 hasn't reached its loop, or core1's cooperative service hasn't
-    // run). Report no gesture rather than treating "unknown" as "released", which would fabricate
-    // a release edge the moment the first real sample arrives.
-    if (!g_bootsel_sampled)
-        return BOOTSEL_NONE;
-
-    // Just a read of core0's published sample -- no lockout, no blocking, no way for this to
-    // stall core1's run loop. That property is the entire point of this design; preserve it.
+    // run). The pure recognizer preserves the established "unknown is not released" behavior.
+    // Both inputs are single-read snapshots of core0's published atomic bools; no lockout or
+    // blocking is introduced here.
+    bool sample_valid = g_bootsel_sampled;
     bool pressed = g_bootsel_pressed;
-
-    if (pressed && !was_pressed) {  // press edge
-        press_started = now_ms;
-        hold_fired = false;
-    }
-
-    if (pressed && !hold_fired && (now_ms - press_started) >= HOLD_MS) {  // hold (fires once)
-        hold_fired = true;
-        tap_count = 0;
-        was_pressed = pressed;
-        return BOOTSEL_HOLD;
-    }
-
-    if (!pressed && was_pressed) {  // release edge
-        if (!hold_fired) {
-            tap_count++;
-            last_tap_ms = now_ms;
-        }
-        hold_fired = false;
-    }
-    was_pressed = pressed;
-
-    // No further taps within the window -> classify the gesture.
-    if (tap_count > 0 && (now_ms - last_tap_ms) >= TAP_WINDOW_MS) {
-        uint8_t n = tap_count;
-        tap_count = 0;
-        if (n == 2)
-            return BOOTSEL_DOUBLE_TAP;
-        if (n >= 3)
-            return BOOTSEL_TRIPLE_TAP;
-        // single tap: unused
-    }
-    return BOOTSEL_NONE;
+    return bootsel_gesture_update(&g_bootsel_gesture_state, sample_valid, pressed, now_ms);
 }

@@ -103,12 +103,27 @@ Automatic wake is intentionally conservative. Core 0 publishes TinyUSB mounted/s
 Core 1 waits for 750 ms of stable USB inactivity plus a 2 s cold-boot grace, then accepts only a
 non-neutral controller button report received after that boundary. This rejects the HOME/gameplay
 input that put the console to sleep and the neutral reports controllers send after the dock's brief
-power cycle. Wake is one-shot until USB becomes active again. If HID setup briefly owns the radio,
-the request remains latched and retries every 500 ms.
+power cycle. Each new Bluetooth controller session must report neutral once before it becomes
+wake-eligible, so a reconnect's restored/startup button state cannot masquerade as a new physical
+edge. Controllers that remain connected through console sleep are already baselined and retain
+first-press wake. Each distinct neutral-to-pressed edge can make one wake attempt; continuously
+streamed held reports cannot repeat it. If an early reconnect-time press starts an advertisement but
+does not wake the console, releasing and pressing again permits one fresh attempt while USB remains
+inactive. If HID setup briefly owns the radio before an attempt starts, the request remains latched
+and retries every 500 ms.
+
+Drivers may mark a short initialization/report-mode window as ineligible for wake without stopping
+normal input routing. While marked, the seam continually discards wake intent and clears that
+source's baseline. The first stable report after initialization must therefore be neutral before a
+later press can wake. The Switch 1 Pro Bluetooth driver uses this only for genuine-Pro candidates
+while negotiating simple report `0x3F` to full report `0x30`; the hardware-confirmed first-generation
+8BitDo Ultimate path is explicitly exempt.
 
 The feature is restricted to the Pro Controller 2 USB personality. BOOTSEL single-tap is unused;
 double-tap pairing, triple-tap wipe, and five-second personality cycling retain their existing
-meanings.
+meanings. Triple-tap suppresses wake-input handling for its existing 1.2-second wipe window; this
+closes the race where a pending or final in-flight HID report could send wake after the asynchronous
+disconnect freed the radio.
 
 ## 5. Hardware validation and remaining boundary
 
@@ -119,9 +134,21 @@ Confirmed on a real Switch 2 on 2026-07-16:
    resumes normal controller operation.
 3. Neutral reconnect traffic alone does not immediately re-wake the console.
 
+Follow-up field testing on 2026-07-17 found two gaps beyond that original test: some reconnects
+restored a non-neutral startup state, and an asleep-console triple-tap could release a previously
+latched wake intent. The session-neutral baseline and bounded triple-tap suppression corrected both
+on most tested controllers. A genuine Switch 1 Pro still produced a wake edge from its input-mode
+initialization stream, so that driver now quarantines only its initialization window as described
+above. The focused policy regression and Pico W, Pico 2 W, and legacy Switch 1 Pico W builds pass;
+hardware revalidation on 2026-07-17 confirmed that the genuine Switch 1 Pro now reconnects without
+waking the sleeping console and that a later fresh input still wakes it normally. Wiimote-family
+and Switch 1 controller regression coverage also passed on the same firmware.
+
 Controller sleep is a separate problem and is not part of this implementation. DualSense/Edge
 (Classic Bluetooth in this firmware) naturally powers down during the dock outage. Xbox Series BLE
 can advertise long enough to reconnect. A generic post-sleep ACL-disconnect experiment made the
 same controller unable to reconnect without pairing and was fully reverted. Future work must not
 delete bonds, install a pairing/admission gate, or suppress incoming connections merely to make a
-controller sleep.
+controller sleep. The completed host-side feasibility review is recorded in
+[`controller-sleep-research.md`](controller-sleep-research.md); it found no safe generic mechanism
+that preserves immediate reconnect and this wake path.

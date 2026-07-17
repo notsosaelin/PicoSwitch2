@@ -38,6 +38,8 @@ pico_sdk_init()
 # Re-run configuration when a source file is added or removed. Without
 # CONFIGURE_DEPENDS, an existing build directory silently omits new modules.
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.c")
+list(APPEND SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/8Bitdo/integration/switch_pro_8bitdo.c")
 add_executable(PicoSwitchWGA ${SOURCES})
 
 # Name the binary after the board so pico_w / pico2_w outputs don't clobber.
@@ -81,7 +83,8 @@ target_compile_definitions(PicoSwitchWGA PRIVATE BTSTACK_USE_CYW43=1 NS2_BT_ALL_
 
 target_include_directories(PicoSwitchWGA PRIVATE
     src
-    include)
+    include
+    8Bitdo/integration)
 
 # `include` holds tusb_config.h; `src` holds btstack_config.h. These must be on the
 # global include path so the SDK's TinyUSB and BTstack can find them.

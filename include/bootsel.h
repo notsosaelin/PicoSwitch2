@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "bootsel_gesture.h"
+
 // BOOTSEL-button gestures. The Pico's only button doubles as the flash chip select, so reading
 // it at runtime requires briefly tri-stating that pin with the *other* core parked (see
 // bootsel.c).
@@ -23,14 +25,11 @@
 // real DualSense traffic could prevent core1 acknowledging inside that deadline indefinitely.
 // The current handshake is asynchronous: core0 requests and returns to USB, core1 voluntarily
 // parks from its timer callback, then core0 samples on a later loop iteration without waiting.
-typedef enum {
-    BOOTSEL_NONE = 0,
-    BOOTSEL_DOUBLE_TAP,   // enter pairing window
-    BOOTSEL_TRIPLE_TAP,   // wipe saved Bluetooth devices
-    BOOTSEL_HOLD,         // >= 5s: NS2_PRO builds cycle to the next USB personality
-                          // (Pro2 -> GameCube -> CDC config); NS2_PRO=OFF builds enter
-                          // configuration mode directly, unchanged. See usb.h.
-} bootsel_gesture_t;
+// Gesture meanings remain:
+//   BOOTSEL_DOUBLE_TAP -> enter pairing window
+//   BOOTSEL_TRIPLE_TAP -> wipe saved Bluetooth devices
+//   BOOTSEL_HOLD       -> >= 5s: cycle USB personality under NS2_PRO, or enter configuration
+//                         mode in Switch 1 builds. See usb.h.
 
 // CORE0 ONLY. Sample the BOOTSEL pin and publish it for bootsel_poll(). Call from core0's main
 // loop; it self-rate-limits, so calling it every iteration is fine and costs almost nothing
@@ -43,9 +42,10 @@ void bootsel_sample_core0(void);
 void bootsel_core1_lockout_init(void);
 void bootsel_core1_service(void);
 
-// Run the gesture state machine once. Call periodically (~30 ms) with the current millisecond
-// timestamp. Returns a recognized gesture, else BOOTSEL_NONE. Never parks a core and never
-// blocks -- it only reads the value core0 last published.
+// Run the gesture state machine once. This Pico wrapper passes the latest published hardware
+// sample into the pure bootsel_gesture_update() recognizer. Call periodically (~30 ms) or at HID
+// report boundaries with the current millisecond timestamp. Returns a recognized gesture, else
+// BOOTSEL_NONE. Never parks a core and never blocks.
 bootsel_gesture_t bootsel_poll(uint32_t now_ms);
 
 #endif  // _BOOTSEL_H_

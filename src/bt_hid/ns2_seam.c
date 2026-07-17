@@ -31,6 +31,8 @@
 #endif
 
 #define NS2_SLOTS SWITCH_PRO_MAX_CONTROLLERS
+#define NS2_WAKE_SESSION_SOURCES 8
+static bool wake_session_active[NS2_WAKE_SESSION_SOURCES];
 
 // bthid conn_index (0..N) arrives as dev_addr; map it to an output slot.
 static inline uint8_t ns2_slot(uint8_t dev_addr) {
@@ -160,6 +162,7 @@ void router_submit_input(const input_event_t *e) {
     in.left_trigger = e->analog[ANALOG_L2];
     in.right_trigger = e->analog[ANALOG_R2];
     in.gc_extra = 0;
+    if (e->gc_native_zl) in.gc_extra |= GC_MASK_ZL;
     if (e->gc_native_z) in.gc_extra |= GC_MASK_Z;
     if (e->gc_l_detent) in.gc_extra |= GC_MASK_L_DETENT;
     if (e->gc_r_detent) in.gc_extra |= GC_MASK_R_DETENT;
@@ -167,7 +170,15 @@ void router_submit_input(const input_event_t *e) {
     // GC-mode policy: generic shoulders become ZL/Z, while analog triggers supply native L/R and
     // a high-press detent. Native-layout devices bypass this synthesis. The provisional threshold
     // and physical test matrix live in docs/switch2-gc/mapping.md.
-    if (gc_active && !e->gc_has_native_layout && ns2_is_switch2_pro(e->dev_addr)) {
+    if (gc_active && e->gc_has_native_layout) {
+        // BattlerGC transports its physical trigger clicks in XInput's L3/R3
+        // slots. They are the SAME physical actions as the native L/R trigger
+        // detents, so aliasing them to Capture/C makes every full trigger click
+        // fire two gameplay controls. The NSO GameCube output has no L3/R3:
+        // discard those transported meanings and retain only analog L/R plus
+        // gc_l/r_detent. Pro2 never enters this branch and keeps normal L3/R3.
+        b &= ~(JP_BUTTON_L3 | JP_BUTTON_R3);
+    } else if (gc_active && ns2_is_switch2_pro(e->dev_addr)) {
         // A real Pro Controller 2 already names these four controls L/R/ZL/ZR.
         // Preserve those names in the GC personality: its digital L/R buttons
         // synthesize a full trigger pull plus detent, while ZL/ZR become the
@@ -184,7 +195,7 @@ void router_submit_input(const input_event_t *e) {
         if (b & JP_BUTTON_L2) in.buttons[2] |= SWITCH_MASK_ZL;
         if (b & JP_BUTTON_R2) in.gc_extra |= GC_MASK_Z;
         b &= ~(JP_BUTTON_L1 | JP_BUTTON_R1 | JP_BUTTON_L2 | JP_BUTTON_R2);
-    } else if (gc_active && !e->gc_has_native_layout) {
+    } else if (gc_active) {
         if (b & JP_BUTTON_L1) in.buttons[2] |= SWITCH_MASK_ZL;
         if (b & JP_BUTTON_R1) in.gc_extra |= GC_MASK_Z;
         if (e->analog[ANALOG_L2] > 224) in.gc_extra |= GC_MASK_L_DETENT;
@@ -257,9 +268,21 @@ void router_submit_input(const input_event_t *e) {
 
     set_global_gamepad_input(slot, &in);
     set_global_raw_buttons(slot, b);  // b includes analog L2/R2, for the live view
+    uint8_t wake_source = e->dev_addr < NS2_WAKE_SESSION_SOURCES ? e->dev_addr : 0;
+    if (!wake_session_active[wake_source]) {
+        ns2_wake_controller_session_started(wake_source);
+        wake_session_active[wake_source] = true;
+    }
     // A neutral reconnect after the dock's sleep power-cycle is not user
     // intent. Only an actual controller button report may arm automatic wake.
-    ns2_wake_note_controller_input(b != 0, platform_time_ms());
+    // Some controller protocols briefly route startup reports while changing
+    // input modes. Keep their gameplay state live, but repeatedly discard wake
+    // intent until the driver declares the stream stable.
+    if (e->suppress_wake_input) {
+        ns2_wake_controller_rebaseline(wake_source);
+    } else {
+        ns2_wake_note_controller_input(wake_source, b != 0, platform_time_ms());
+    }
     // Publish the connected controller's identity for config mode's "input type" panel.
     const bthid_device_t *dev = bthid_get_device(e->dev_addr);
     if (dev)
@@ -273,7 +296,14 @@ void router_device_disconnected(uint8_t dev_addr, int8_t instance) {
     memset(&in, 0, sizeof(in));
     switch_pro_pack_stick(SWITCH_STICK_MID, SWITCH_STICK_MID, in.left_stick);
     switch_pro_pack_stick(SWITCH_STICK_MID, SWITCH_STICK_MID, in.right_stick);
-    set_global_gamepad_input(ns2_slot(dev_addr), &in);
+    uint8_t slot = ns2_slot(dev_addr);
+    uint8_t wake_source = dev_addr < NS2_WAKE_SESSION_SOURCES ? dev_addr : 0;
+    set_global_gamepad_input(slot, &in);
+    set_global_raw_buttons(slot, 0);
+    if (wake_session_active[wake_source]) {
+        wake_session_active[wake_source] = false;
+        ns2_wake_controller_session_ended(wake_source);
+    }
 }
 
 // Raw HID report passthrough for config mode's debug view (overrides bthid.c's weak

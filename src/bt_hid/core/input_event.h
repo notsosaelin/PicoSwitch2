@@ -197,11 +197,16 @@ typedef struct {
     // semantics (or has none) and does not want this generic fallback applied on top.
     bool suppress_l2r2_analog_fold;
 
+    // Input still routes to the active USB personality, but it is not eligible
+    // to request an automatic console wake. This is for short controller
+    // initialization/report-mode transitions whose packets can contain stale
+    // or synthetic button state. While true, the NS2 seam continually clears
+    // wake intent and requires a new neutral baseline once the driver is ready.
+    bool suppress_wake_input;
+
     // NSO GameCube-native semantic fields (2026-07-13). Set ONLY by drivers with confirmed
-    // hardware evidence for a device's true GameCube-shaped physical layout (currently: the
-    // 8BitDo NGC Modkit -- see bthid_gamepad_quirk_bitdo_ngc_modkit.c's extract_extra(), the
-    // quirk profile that reports its true native controls after this file's own 2026-07-15
-    // split of bthid_gamepad.c into a shared engine + per-controller quirk files).
+    // hardware evidence for a device's true GameCube-shaped physical layout (currently the
+    // 8BitDo NGC Modkit and Retro Fighters BattlerGC Pro).
     // False/0 for every other device. Consumed by ns2_seam.c's router_submit_input(), which
     // forwards them unconditionally into switch_pro_input_t's own dedicated fields -- these are
     // NOT part of the JP_BUTTON_* bitmap/NS2_DST_* remap table, because they are fixed,
@@ -212,7 +217,8 @@ typedef struct {
                                 // analog-only trigger) -- gates GameCube-mode's suppression of
                                 // the generic analog->ZL/ZR fold below, so a device with no real
                                 // ZL/ZR doesn't get one synthesized in GameCube output mode.
-    bool gc_native_z;          // Modkit usage 11 (Z) -- only meaningful if gc_has_native_layout
+    bool gc_native_zl;         // true physical NSO-GC ZL shoulder
+    bool gc_native_z;          // true physical NSO-GC Z shoulder
     bool gc_l_detent;          // Modkit usage 9 -- true mechanical L-trigger click
     bool gc_r_detent;          // Modkit usage 10 -- true mechanical R-trigger click
 

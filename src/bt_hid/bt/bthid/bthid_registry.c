@@ -15,6 +15,7 @@
 #include "devices/vendors/nintendo/wiimote_bt.h"
 #include "devices/vendors/microsoft/xbox_ble.h"
 #include "devices/vendors/microsoft/xbox_bt.h"
+#include "devices/vendors/retrofighters/battlergc_pro.h"
 #include "devices/vendors/google/stadia_bt.h"
 #include "devices/vendors/augmental/mouthpad_ble.h"
 
@@ -43,6 +44,10 @@ void bthid_registry_init(void)
     switch2_ble_register();  // Switch 2 BLE controllers (Pro2, Joy-Con 2, GC NSO)
     wii_u_pro_bt_register();  // Must be before wiimote (Wii U Pro has "-UC" suffix)
     wiimote_bt_register();
+
+    // BattlerGC deliberately impersonates the exact unresolved Classic Xbox
+    // name, so its narrower model profile must run before the Xbox fallback.
+    battlergc_pro_register();
 
     // Microsoft controllers — re-registered 2026-07-12 (previously deliberately left
     // unregistered in favor of the generic HID-descriptor driver "to cover all Xbox

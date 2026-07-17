@@ -38,7 +38,7 @@ void switch_gc_encode_report(const switch_pro_input_t *in, uint8_t counter, uint
     //         0x10 L detent | 0x08 Up | 0x04 Left | 0x02 Right | 0x01 Down
     if (s1 & SWITCH_MASK_MINUS) b1 |= 0x40;
     if (in->gc_extra & GC_MASK_L_DETENT) b1 |= 0x10;
-    if (s2 & SWITCH_MASK_ZL) b1 |= 0x20;
+    if ((s2 & SWITCH_MASK_ZL) || (in->gc_extra & GC_MASK_ZL)) b1 |= 0x20;
     if (s2 & SWITCH_MASK_DPAD_UP) b1 |= 0x08;
     if (s2 & SWITCH_MASK_DPAD_LEFT) b1 |= 0x04;
     if (s2 & SWITCH_MASK_DPAD_RIGHT) b1 |= 0x02;
@@ -103,7 +103,7 @@ void switch_gc_encode_report05(const switch_pro_input_t *in, uint32_t counter, u
     if (s1 & SWITCH_MASK_PLUS)    b1 |= 0x02;
     if (s1 & SWITCH_MASK_MINUS)   b1 |= 0x01;
     if (in->extra & SWITCH_EXTRA_C) b1 |= 0x40;
-    if (s2 & SWITCH_MASK_ZL) b2 |= 0x80;
+    if ((s2 & SWITCH_MASK_ZL) || (in->gc_extra & GC_MASK_ZL)) b2 |= 0x80;
     if (s2 & SWITCH_MASK_DPAD_LEFT)  b2 |= 0x08;
     if (s2 & SWITCH_MASK_DPAD_RIGHT) b2 |= 0x04;
     if (s2 & SWITCH_MASK_DPAD_UP)    b2 |= 0x02;

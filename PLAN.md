@@ -4,17 +4,18 @@
 > [`docs/archive/roadmap-through-2026-07-15.md`](docs/archive/roadmap-through-2026-07-15.md) for
 > the completed milestone narrative.
 
-## Current objective: post-release compatibility closure
+## Current objective: post-v1.3 compatibility closure
 
-Version `v1.2.0` now preserves the hardware-confirmed Pro Controller 2, NSO GameCube, individual
-Joy-Con 2, appearance-control, DualSense/Edge, rumble, pairing, wake, and BOOTSEL baseline. Close
-the remaining compatibility gap before beginning new protocol work.
+Version `v1.3.0` extends the hardware-confirmed Pro Controller 2, NSO GameCube, individual Joy-Con
+2, appearance-control, DualSense/Edge, rumble, pairing, wake, and BOOTSEL baseline with the Retro
+Fighters BattlerGC Pro, first-generation 8BitDo Ultimate paddles, NGC Modkit rumble, late BLE
+identity correction, and reconnect false-wake protection.
 
 ### Release gate
 
 - [x] Pico W release build
 - [x] Pico 2 W release build
-- [x] Thirteen host-test executables
+- [x] Twenty host-test executables
 - [x] DualSense/Edge input, extra buttons, LEDs, and rumble on hardware
 - [x] BOOTSEL double-tap, triple-tap, and hold while DualSense is connected
 - [x] NSO GameCube input and rumble on a real Switch 2
@@ -22,26 +23,43 @@ the remaining compatibility gap before beginning new protocol work.
 - [x] Configurable Pro2/Joy-Con colors, Sony lightbar matching, and DualSense player dots
 - [x] Reconcile documentation and archive superseded development logs
 - [x] Complete source-comment evidence cleanup
-- [x] Push the release commit and publish both UF2 artifacts (`v1.2.0`, 2026-07-16)
+- [x] Push the release commit and publish both UF2 artifacts (`v1.3.0`, 2026-07-17)
 
 ## Next: compatibility closure
 
 Use [`docs/status/compatibility-matrix.md`](docs/status/compatibility-matrix.md) as the single test
 matrix. Do not combine mapping changes with unrelated Bluetooth or USB protocol changes.
 
-1. Classify the Joy-Con 2 Left Steam/Windows behavior separately from real-console compatibility.
+1. [x] Classify and fix the Joy-Con 2 Left Steam/Windows behavior separately from real-console
+   compatibility. The missing Microsoft OS 1.0 Extended Properties descriptor prevented libusb
+   from discovering WinUSB interface 1; fresh Windows and Steam UI tests confirm the fix.
 
 Completed closure checks: rumble ON/STOP/reconnect across the tested controller/personality
 matrix, individual Joy-Con 2 rumble, triple-tap admission blocking, and explicit re-pairing after
 opening a new pairing window are hardware-confirmed. The real Pro Controller 2's physical
 L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
 
+2. [x] Reverse-engineer the first-generation 8BitDo Ultimate Bluetooth P1/P2 path. Stock
+   Bluetooth reports suppress the rear switches; a reversible physical-profile encoding now emits
+   independent held signatures, and an OUI-scoped Switch-driver module converts them to GL/GR.
+3. [x] Hardware-validate the encoded 8BitDo profile on Pico: P1->GL, P2->GR, simultaneous
+   paddles, no injected-button leakage, ordinary input, and console wake. Its inherently slow
+   Classic reconnect remains controller-specific; the rejected timing experiment is retained but
+   blocked from flashing because it did not improve speed and broke wake.
+4. [x] Hardware-validate the Retro Fighters BattlerGC Pro Classic-XInput mapping: direct A/B/X/Y
+   labels, centered sticks, D-pad, Start/Select/Home, distinct ZL/Z shoulders, continuous analog
+   triggers, click-gated `HOME+B` detents, and GameCube-mode L3/R3 suppression.
+5. [ ] Run targeted BattlerGC Pro rumble and reconnect/wake regression checks.
+
 ## Reliability and maintainability
 
-- Extract or wrap the BOOTSEL gesture state machine for a host-side starvation regression test.
-- Keep report-boundary maintenance and timer fallback behavior documented together.
-- Resolve BLE Device Information Service VID/PID without delaying driver binding or starving input
-  notifications.
+- [x] Extract the pure BOOTSEL gesture recognizer and cover timer-only, report-only starvation,
+  mixed scheduling, one-shot hold, unknown-sample, and timestamp-wrap behavior on the host.
+- [x] Keep report-boundary maintenance and timer fallback behavior documented together.
+- [x] Resolve late BLE Device Information Service VID/PID on the consuming side: retain immediate
+  HID/name binding and notification-first GATT setup, then re-evaluate Xbox BLE, Stadia, and
+  MouthPad provisional matches when authoritative VID/PID arrives. Host coverage pins input before
+  and after corrective rebinds; the resulting build is hardware-confirmed with Xbox Series BLE.
 - Add a release checklist that records board, firmware revision, controller firmware, console
   firmware, and test result.
 
@@ -109,8 +127,12 @@ inactivity provides automatic wake. See
 Do not conflate console wake with controller sleep. Some controllers naturally power down during
 the dock's brief VBUS outage (confirmed for DualSense/Edge), while Xbox Series BLE can reconnect
 before its own search timeout. The failed generic ACL-disconnect experiment stranded the existing
-controller relationship and was fully reverted. Continue researching a controller-side solution;
-do not delete bonds, install an admission gate, or suppress incoming connections for this feature.
+controller relationship and was fully reverted. The 2026-07-17 follow-up found no safe generic
+host-only solution: disconnecting does not command power-off, BLE low-power parameters retain the
+link, and preventing the central from acting on advertisements necessarily delays reconnect and
+therefore automatic wake. Keep current controller-managed idle sleep until a verified per-family
+sleep command or distinguishable wake advertisement is captured. See
+[`docs/bluetooth/controller-sleep-research.md`](docs/bluetooth/controller-sleep-research.md).
 
 ## Longer-term
 

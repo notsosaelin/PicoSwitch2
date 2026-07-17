@@ -188,9 +188,15 @@ static void test_extra_inputs(void) {
 static void test_rumble(void) {
     const gamepad_quirk_t *generic = identify(0, 0, "Generic", 12, "generic");
     CHECK(generic->send_rumble == NULL, "generic controller does not invent rumble");
+    CHECK(!gamepad_quirk_can_send_rumble(generic, 0),
+          "generic controller cannot authorize output");
 
     const gamepad_quirk_t *xbox = identify(0x045E, 0x02FD, "Xbox", 16, "xbox");
     CHECK(xbox->send_rumble != NULL, "Xbox quirk provides rumble");
+    CHECK(!gamepad_quirk_can_send_rumble(xbox, 0),
+          "name-only Xbox cannot send rumble before VID resolves");
+    CHECK(gamepad_quirk_can_send_rumble(xbox, 0x045E),
+          "resolved Microsoft VID authorizes Xbox rumble");
     memset(&sent, 0, sizeof(sent));
     sent.result = true;
     CHECK(xbox->send_rumble(3, 255, 128), "Xbox rumble propagates send success");
@@ -205,6 +211,28 @@ static void test_rumble(void) {
                                              "xbox_elite2");
     CHECK(elite->send_rumble == xbox->send_rumble,
           "Elite reuses the validated Xbox rumble implementation");
+    CHECK(elite->rumble_vendor_id == 0x045E,
+          "Elite preserves resolved-Microsoft-VID output gate");
+
+    const gamepad_quirk_t *ngc = identify(0x2DC8, 0x286A, "8BitDo NGC Modkit", 16,
+                                           "bitdo_ngc_modkit");
+    CHECK(ngc->send_rumble != NULL, "NGC Modkit quirk provides rumble");
+    CHECK(!gamepad_quirk_can_send_rumble(ngc, 0),
+          "NGC Modkit waits for resolved identity before output");
+    CHECK(!gamepad_quirk_can_send_rumble(ngc, 0x045E),
+          "wrong vendor cannot authorize NGC Modkit output");
+    CHECK(gamepad_quirk_can_send_rumble(ngc, 0x2DC8),
+          "resolved 8BitDo VID authorizes NGC Modkit rumble");
+    memset(&sent, 0, sizeof(sent));
+    sent.result = true;
+    CHECK(ngc->send_rumble(2, 0xA0, 0x35),
+          "NGC Modkit rumble propagates send success");
+    CHECK(sent.calls == 1 && sent.conn_index == 2 &&
+          sent.report_id == 0xA5 && sent.len == 3,
+          "NGC Modkit rumble output framing");
+    CHECK(sent.data[0] == 0xDB && sent.data[1] == 0xA0 &&
+          sent.data[2] == 0x35,
+          "NGC Modkit rumble payload preserves low/high-frequency power");
 }
 
 int main(void) {

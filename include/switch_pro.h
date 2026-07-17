@@ -47,11 +47,12 @@
 // controls from Pro2's own R/ZR/L/GL/GR concepts and must never be silently mapped
 // through them (see docs/switch2-gc/mapping.md "Internal normalized model requirements").
 // Populated only for input devices with confirmed evidence for these controls (currently
-// the 8BitDo NGC Modkit, see src/bt_hid/ns2_seam.c's router_submit_input()); 0 for every
-// other device. Pro2/Switch 1 encoders never read this field.
+// the 8BitDo NGC Modkit and Retro Fighters BattlerGC Pro); 0 for every other device.
+// Pro2/Switch 1 encoders never read this field.
 #define GC_MASK_Z (1U << 0)          // native GameCube Z (distinct from Z/ZR routing elsewhere)
 #define GC_MASK_L_DETENT (1U << 1)   // independent left analog-trigger mechanical detent
 #define GC_MASK_R_DETENT (1U << 2)   // independent right analog-trigger mechanical detent
+#define GC_MASK_ZL (1U << 3)         // native GameCube ZL shoulder
 
 // Switch analog sticks are 12-bit (0x000..0xFFF), centered at 0x800.
 #define SWITCH_STICK_MIN 0x000
@@ -76,7 +77,8 @@ typedef struct {
     // never read them, and their wire output must stay byte-for-byte unchanged. Populated by
     // ns2_seam.c's router_submit_input() from input_event_t's own gc_* fields (see
     // core/input_event.h), which are themselves only set by drivers with confirmed evidence
-    // for a device's real GameCube-native controls (currently the 8BitDo NGC Modkit).
+    // for a device's real GameCube-native controls (currently the 8BitDo NGC Modkit and
+    // Retro Fighters BattlerGC Pro).
     uint8_t left_trigger;    // continuous 0..255, GameCube native analog L (raw passthrough,
                              // never thresholded/collapsed to a boolean)
     uint8_t right_trigger;   // continuous 0..255, GameCube native analog R

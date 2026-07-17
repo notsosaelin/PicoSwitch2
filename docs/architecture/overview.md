@@ -55,6 +55,22 @@ routed to supported Sony RGB lightbars. Separately, Switch 2 command `0x09` play
 cores through generation-counted shared state and are translated into controller-specific player
 indicators (including DualSense dots).
 
+## Late BLE identity invariant
+
+BLE HID readiness is not blocked on Device Information Service. The host binds from advertisement
+identity or a provisional name, enables report notifications, and only then runs the serialized
+DIS → BAS sequence. Every valid DIS PnP result is subsequently delivered to BTHID, even when the
+connection cache already held the same IDs. Vendor name fallbacks remain valid while VID/PID is
+unknown, but known contradictory identity invalidates the Xbox BLE, Stadia, and MouthPad provisional
+matches and triggers the existing disconnect/init rebind at the consuming layer.
+
+`tools/test_bthid_late_identity.c` links the production BTHID state machine to mock drivers and
+transport state. It pins reports before DIS, corrective provisional-to-specific and
+generic-to-specific rebinds, fallback to generic, transport gating, repeated-DIS idempotence, and
+delivery of the next input notification after a rebind. GATT serialization itself remains covered
+by firmware build inspection and hardware behavior rather than simulated by that host test. The
+combined notification-first and late-identity path is hardware-confirmed with Xbox Series BLE.
+
 ## Scheduling invariant
 
 Core 1 runs BTstack's non-returning event loop. Timer callbacks alone are not a sufficient
@@ -67,6 +83,13 @@ maintenance mechanism under sustained Classic HID traffic. Each inbound HID repo
 The 3 ms rumble timer and 30 ms control timer remain fallbacks when reports are quiet or absent.
 This invariant was hardware-confirmed with DualSense and DualSense Edge after timer-only scheduling
 caused output and gestures to disappear.
+
+Gesture recognition itself is isolated in the pure `bootsel_gesture_update()` state machine; the
+Pico wrapper only supplies the latest sampled state. `tools/test_bootsel_gesture.c` drives that same
+production recognizer with timer-only calls, a sustained report-only stream with zero timer calls,
+and mixed calls. This pins starvation resistance and prevents either servicing path from emitting a
+completed gesture twice. Physical QSPI sampling and the cross-core SRAM park remain hardware-only
+concerns and are deliberately outside that host test.
 
 ## BOOTSEL sampling
 

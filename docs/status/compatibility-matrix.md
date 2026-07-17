@@ -1,6 +1,6 @@
 # Compatibility Matrix
 
-Last updated: 2026-07-16
+Last updated: 2026-07-17
 
 This matrix records observed behavior, not inferred support. "Source-tested" means host tests or
 code inspection only; it is weaker than physical hardware confirmation.
@@ -21,13 +21,15 @@ code inspection only; it is weaker than physical hardware confirmation.
 |---|---|---|---|---|---|
 | DualSense | ✅ Confirmed | N/A | ✅ Confirmed | ✅ Confirmed | Current regression pass complete |
 | DualSense Edge | ✅ Confirmed | ✅ Paddles/Fn/mute | ✅ Confirmed | ✅ Confirmed | Current regression pass complete |
-| Xbox family | ✅ Previously confirmed | Elite paddles supported | N/A | ✅ Confirmed | ON/STOP/reconnect confirmed |
+| Xbox family | ✅ Confirmed | Elite paddles supported | N/A | ✅ Confirmed | Late BLE DIS identity plus ON/STOP/reconnect confirmed |
 | Switch 2 Pro Controller | ✅ Confirmed | C/GL/GR supported | Player LED path present | ✅ Confirmed | Pro2 and NSO-GC L/R/ZL/ZR paths confirmed |
 | Joy-Con 2 input | ✅ Confirmed | Side-specific controls | Player LED path present | 🔵 Source-tested | Mapping and rumble fidelity |
-| Switch 1 Pro Controller | ✅ Previously confirmed | Standard controls | Player LED path present | ✅ Previously confirmed | Fresh release regression pass |
-| 8BitDo NGC Modkit | ✅ Confirmed | Native GC capability mapping | N/A | 🔵 Source-tested | Second Android/D-input pairing mode |
+| Switch 1 Pro Controller | ✅ Confirmed | ✅ Standard controls | ✅ Player LEDs | ✅ Confirmed | Current regression pass complete; reconnect remains asleep and a later fresh press wakes |
+| Retro Fighters BattlerGC Pro | ✅ Confirmed mapping | ✅ Dedicated native GC profile | N/A | 🔵 Xbox-compatible output | Labels, ZL/Z, click-gated triggers, Home report `02`, and GC L3/R3 suppression confirmed; screenshot and P1/P2 emit no independent Bluetooth state |
+| 8BitDo NGC Modkit | ✅ Confirmed | Native GC capability mapping | N/A | ✅ Confirmed | BlueRetro-derived `0xA5 / DB LL RR` rumble works on hardware; second Android/D-input pairing mode |
 | 8BitDo Ultimate 2 MG | ✅ Confirmed | ✅ Paddles confirmed | N/A | 🔵 Source-tested | Quirk-refactor hardware regression pass complete |
-| Wiimote family | ✅ Previously confirmed | Attachment parsing present | Player LEDs | ✅ Previously confirmed | Channel/fidelity regression pass |
+| 8BitDo Ultimate Bluetooth (first model) | ✅ Confirmed | ✅ P1/P2 custom transport to GL/GR | Player LED path present | 🔵 Existing Switch output | Custom firmware paddles and console wake confirmed; reconnect remains slower than other Classic controllers |
+| Wiimote family | ✅ Confirmed | ✅ Standalone and attachment input | ✅ Player LEDs | ✅ Confirmed | Current regression pass complete |
 
 ## BOOTSEL and pairing
 

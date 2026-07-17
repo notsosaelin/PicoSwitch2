@@ -7,7 +7,8 @@
 > `0x0A` construction: A/B/X/Y, D-pad, Plus/Minus, Home/Capture, C, ZL, both analog sticks, **and**
 > native Z, independent L/R trigger detents, and continuous analog L/R trigger — the latter three
 > via new dedicated `switch_pro_input_t` fields (`gc_extra`/`left_trigger`/`right_trigger`, see
-> include/switch_pro.h's `GC_MASK_*`), populated only for the 8BitDo NGC Modkit
+> include/switch_pro.h's `GC_MASK_*`), populated for evidence-backed native layouts including the
+> 8BitDo NGC Modkit and Retro Fighters BattlerGC Pro
 > (`gc_has_native_layout`-gated, `src/bt_hid/bt/bthid/devices/generic/bthid_gamepad.c`). L3/R3
 > remain hardcoded to 0 per this document's own constraint. Host-tested:
 > `tools/test_switch_gc_report.c` (10-point golden coverage). The generic analog→ZL/ZR fold is
@@ -176,6 +177,25 @@ hardware — the 8BitDo Modkit connected while the Pico is in GameCube mode and 
 (gated on Stage D, also implemented this pass — see `docs/switch2-gc/protocol.md` "USB init command
 sequence"). `docs/bluetooth/8bitdo-ngc-diy-profile.md` "Future NSO GameCube mode" has been updated
 to point here rather than duplicating its own now-stale speculation.
+
+### Retro Fighters BattlerGC Pro specifically
+
+The dedicated Classic-Bluetooth profile preserves this controller's real GameCube topology rather
+than treating it as the `Xbox Wireless Controller` name it impersonates:
+
+| Physical control | Pro2 output | NSO GameCube output |
+|---|---|---|
+| Printed A/B/X/Y | Direct printed labels | Direct printed labels |
+| Left upper shoulder | L | Native ZL (`GC_MASK_ZL`) |
+| Right upper shoulder | R | Native Z (`GC_MASK_Z`, displayed as ZR) |
+| L/R analog trigger | Existing Pro2 ZL/ZR fold | Continuous native analog L/R |
+| L/R mechanical click | Full trigger + transported L3/R3 | Analog value 255 + native detent; transported L3/R3 discarded |
+
+The captured raw analog range reaches its maximum around half the physical travel and contains no
+later position information. It is mapped into output `0..223`; only the real click produces `255`.
+This keeps the available continuous range without displaying a premature full press. Full
+implementation and evidence details live in
+`docs/bluetooth/retrofighters-battlergc-pro.md`.
 
 ### Devices lacking controls
 

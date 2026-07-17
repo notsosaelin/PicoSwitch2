@@ -2,6 +2,7 @@
 // paddle-controller layout. Evidence: docs/bluetooth/8bitdo-ngc-diy-profile.md.
 
 #include "bt/bthid/devices/generic/bthid_gamepad_quirks.h"
+#include "bt/bthid/bthid.h"
 #include "core/buttons.h"
 
 // Direct face labels; analog triggers are handled by the seam; Z stays distinct; stick clicks
@@ -63,9 +64,23 @@ static void extract_extra(const ble_report_map_t *map, const uint8_t *data, uint
     // does.
 }
 
+// BlueRetro's hardware-backed 8BitDo NGC Modkit special case:
+// Classic HID output report 0xA5, payload DB <low-frequency> <high-frequency>.
+// Source reviewed at BlueRetro e1a9831, main/adapter/wireless/hid_generic.c.
+#define NGC_MODKIT_RUMBLE_REPORT_ID 0xA5
+
+static bool send_rumble(uint8_t conn_index, uint8_t left, uint8_t right)
+{
+    const uint8_t payload[3] = {0xDB, left, right};
+    return bthid_send_output_report(conn_index, NGC_MODKIT_RUMBLE_REPORT_ID,
+                                     payload, sizeof(payload));
+}
+
 const gamepad_quirk_t QUIRK_BITDO_NGC_MODKIT = {
     .name = "bitdo_ngc_modkit",
     .button_map = NGC_MODKIT_BUTTON_MAP,
     .button_map_size = sizeof(NGC_MODKIT_BUTTON_MAP) / sizeof(NGC_MODKIT_BUTTON_MAP[0]),
     .extract_extra = extract_extra,
+    .rumble_vendor_id = 0x2DC8,
+    .send_rumble = send_rumble,
 };

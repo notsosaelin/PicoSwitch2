@@ -25,6 +25,7 @@
 
 #include "mouthpad_ble.h"
 #include "bt/bthid/bthid.h"
+#include "bt/bthid/bthid_identity.h"
 #include "core/input_event.h"
 #include "core/router/router.h"
 #include "core/buttons.h"
@@ -151,16 +152,26 @@ static inline int16_t sext12(uint16_t v)
 static bool mouthpad_match(const char* device_name, const uint8_t* class_of_device,
                            uint16_t vendor_id, uint16_t product_id, bool is_ble)
 {
+    static const uint16_t mouthpad_pids[] = { MP_DIS_PID };
+
     (void)class_of_device;
 
     // MouthPad is BLE-only.
     if (!is_ble) return false;
-    // Primary: advertised name contains "MouthPad" (available at connect time).
-    if (device_name && strstr(device_name, "MouthPad") != NULL) return true;
-    // Fallback: DIS PnP VID/PID — names can be reset to dev values (e.g. "TL_DEV")
+    // DIS PnP VID/PID also recognizes names reset to dev values (e.g. "TL_DEV")
     // that lack "MouthPad". VID/PID arrive after connect (DIS); bthid re-evaluates
     // the driver then, so this still selects the MouthPad driver.
     if (vendor_id == MP_DIS_VID && product_id == MP_DIS_PID) return true;
+
+    // The advertised-name match is intentionally provisional. If DIS later
+    // resolves a different identity, return false so bthid can correct the
+    // early binding without moving DIS ahead of HID notification setup.
+    if (!bthid_name_fallback_allowed(vendor_id, product_id, MP_DIS_VID,
+                                      mouthpad_pids,
+                                      sizeof(mouthpad_pids) / sizeof(mouthpad_pids[0]))) {
+        return false;
+    }
+    if (device_name && strstr(device_name, "MouthPad") != NULL) return true;
     return false;
 }
 

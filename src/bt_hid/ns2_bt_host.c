@@ -120,6 +120,10 @@ static void service_bootsel_gestures(uint32_t now) {
         case BOOTSEL_TRIPLE_TAP:
             if (!in_config) {
                 pairing_until_ms = 0;
+                // Consume any input edge before the asynchronous disconnect
+                // frees the radio. A wipe gesture is maintenance, never wake
+                // intent, even while the console is already asleep.
+                ns2_wake_set_input_suppressed(true);
                 wipe_all_devices();
                 wipe_until_ms = now + WIPE_FLASH_MS;
             }
@@ -169,6 +173,11 @@ void bthid_on_report_boundary(void) {
 
 static void control_timer_handler(btstack_timer_source_t *ts) {
     uint32_t now = to_ms_since_boot(get_absolute_time());
+
+    if (wipe_until_ms && now >= wipe_until_ms) {
+        wipe_until_ms = 0;
+        ns2_wake_set_input_suppressed(false);
+    }
 
     // Also poll from the ordinary 30 ms path for quiet/disconnected periods.
     service_bootsel_gestures(now);

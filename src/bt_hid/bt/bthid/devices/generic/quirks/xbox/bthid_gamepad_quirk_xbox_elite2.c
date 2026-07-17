@@ -42,5 +42,6 @@ const gamepad_quirk_t QUIRK_XBOX_ELITE2 = {
     .name = "xbox_elite2",
     .select_button_map = xbox_select_button_map,
     .extract_extra = xbox_extract_extra,
+    .rumble_vendor_id = 0x045E,
     .send_rumble = xbox_send_rumble,
 };
