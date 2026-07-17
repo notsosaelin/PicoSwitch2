@@ -74,6 +74,14 @@ void btstack_host_start_timed_scan(uint32_t timeout_ms);
 // Explicit start_timed_scan clears suppression.
 void btstack_host_suppress_scan(bool suppress);
 
+// One-controller scope: idle background scan/inquiry while a controller is
+// connected so it does not steal radio time from the active link (retired
+// multi-controller discovery; most visibly this fixes DualSense audio
+// dropouts). Pass true when an explicit pairing window is open so discovery
+// keeps running to admit a new/replacement controller. Call periodically;
+// reconnect scanning resumes automatically once no controller remains.
+void btstack_host_update_scan_for_connection_state(bool pairing_window_open);
+
 // Temporarily pause discovery and emit one or two non-connectable legacy BLE
 // advertisements from an exact random address. Used for Switch 2 wake replay;
 // the sequence is timer-driven and never blocks the BTstack run loop. Returns

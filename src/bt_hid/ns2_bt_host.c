@@ -222,6 +222,14 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
         pairing_until_ms = 0;
     }
 
+    // One dongle serves one controller: once a controller is connected, stop the
+    // always-on background scan/inquiry left over from the multi-controller
+    // design. It otherwise steals radio time from the active link and starves
+    // continuous DualSense audio into periodic dropouts. An open pairing window
+    // (double-tap) keeps discovery running to admit a replacement; reconnect
+    // scanning resumes automatically on disconnect. See btstack_host.c.
+    btstack_host_update_scan_for_connection_state(pairing_until_ms != 0);
+
     // Service the Bluetooth stack. `bt_task()` (via cyw43_transport_task()) already calls
     // bthid_task() once per invocation; the dedicated rumble_timer above now additionally drives
     // it every RUMBLE_TICK_MS, so no separate explicit call is needed here anymore (removed
