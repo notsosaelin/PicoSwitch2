@@ -1,6 +1,6 @@
 # Compatibility Matrix
 
-Last updated: 2026-07-15
+Last updated: 2026-07-16
 
 This matrix records observed behavior, not inferred support. "Source-tested" means host tests or
 code inspection only; it is weaker than physical hardware confirmation.
@@ -11,18 +11,18 @@ code inspection only; it is weaker than physical hardware confirmation.
 |---|---|---|---|---|
 | Pro Controller 2 | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Primary/default mode; 1000 Hz USB interval is a deliberate deviation |
 | NSO GameCube | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Genuine-capture state decoder; native Z and trigger detents supported |
-| Joy-Con 2 Left | ✅ Confirmed | ✅ Confirmed | 🔵 Provisional | Button mapping needs a complete real-console pass |
-| Joy-Con 2 Right | ✅ Confirmed | ✅ Confirmed | 🔵 Provisional | Button mapping needs a complete real-console pass |
+| Joy-Con 2 Left | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Sideways buttons, stick mapping, rumble, STOP, and reconnect confirmed |
+| Joy-Con 2 Right | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Sideways buttons, stick mapping, rumble, STOP, and reconnect confirmed |
 | CDC/config | ✅ Confirmed | N/A | N/A | Web Serial configuration and read-only MSC page |
 
 ## Bluetooth controllers
 
 | Controller | Pair/input | Extra controls | LED/output | Rumble | Open validation |
 |---|---|---|---|---|---|
-| DualSense | ✅ Confirmed | N/A | ✅ Confirmed | ✅ Confirmed | Regression matrix across every output personality |
-| DualSense Edge | ✅ Confirmed | ✅ Paddles/Fn/mute | ✅ Confirmed | ✅ Confirmed | Regression matrix across every output personality |
-| Xbox family | ✅ Previously confirmed | Elite paddles supported | N/A | ✅ Pro2 and GC paths observed during development | Explicit STOP/reconnect matrix |
-| Switch 2 Pro Controller | ✅ Confirmed | C/GL/GR supported | Player LED path present | 🔵 Source-tested | Physical L/R mapping correction |
+| DualSense | ✅ Confirmed | N/A | ✅ Confirmed | ✅ Confirmed | Current regression pass complete |
+| DualSense Edge | ✅ Confirmed | ✅ Paddles/Fn/mute | ✅ Confirmed | ✅ Confirmed | Current regression pass complete |
+| Xbox family | ✅ Previously confirmed | Elite paddles supported | N/A | ✅ Confirmed | ON/STOP/reconnect confirmed |
+| Switch 2 Pro Controller | ✅ Confirmed | C/GL/GR supported | Player LED path present | ✅ Confirmed | Pro2 and NSO-GC L/R/ZL/ZR paths confirmed |
 | Joy-Con 2 input | ✅ Confirmed | Side-specific controls | Player LED path present | 🔵 Source-tested | Mapping and rumble fidelity |
 | Switch 1 Pro Controller | ✅ Previously confirmed | Standard controls | Player LED path present | ✅ Previously confirmed | Fresh release regression pass |
 | 8BitDo NGC Modkit | ✅ Confirmed | Native GC capability mapping | N/A | 🔵 Source-tested | Second Android/D-input pairing mode |
@@ -38,7 +38,7 @@ code inspection only; it is weaker than physical hardware confirmation.
 | Five-second mode hold with DualSense/Edge connected | ✅ Confirmed |
 | DualSense/Edge rumble while gestures remain responsive | ✅ Confirmed |
 | Post-wipe automatic readmission remains blocked | ✅ Confirmed for reported workflow; include in release matrix |
-| Re-pair after explicit new pairing window | 🟡 Include in release matrix |
+| Re-pair after explicit new pairing window | ✅ Confirmed |
 
 ## PC-specific behavior
 

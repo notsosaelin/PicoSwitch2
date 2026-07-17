@@ -8,6 +8,7 @@
 
 typedef struct {
     bool initialize_compat;
+    bool setup_lightbar;
     bool update_rumble;
     bool update_leds;
     uint8_t rumble_left;

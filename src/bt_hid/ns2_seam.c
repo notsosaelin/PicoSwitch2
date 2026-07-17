@@ -20,8 +20,9 @@
 #include "report.h"                              // set_global_gamepad_input(), report_get_rumble()
 #include "switch_pro.h"                           // switch_pro_input_t, SWITCH_MASK_*, pack_stick
 #include "bt/bthid/bthid.h"                       // bthid_get_device() — connected controller identity
-#include "config.h"                               // config_get_lightbar() / config_get_ns2_map()
+#include "config.h"                               // config_get_body_color() / config_get_ns2_map()
 #include "ns2_remap.h"                            // NS2_SRC_COUNT / NS2_DST_* (per-device remap)
+#include "ns2_player_led.h"                       // Switch wire bitfield -> player number
 #include "ns2_wake.h"                             // post-sleep real-input wake intent
 #include "platform/platform.h"                    // platform_time_ms()
 #ifdef NS2_PRO
@@ -70,14 +71,9 @@ static const uint32_t SRC_TO_JP[NS2_SRC_COUNT] = {
     JP_BUTTON_L4, JP_BUTTON_R4, JP_BUTTON_A5, JP_BUTTON_L5, JP_BUTTON_R5,
 };
 
-// Apply one remap destination to the Pro Controller output. `joycon2_active` reinterprets
-// NS2_DST_GL/NS2_DST_GR as SL/SR (see include/switch_pro.h's SWITCH_EXTRA_SL/SR comment and
-// docs/switch2-joycon2/mapping.md): GL/GR mean "grip button", and a lone Joy-Con2 physically has
-// no grips to read, so the same generic-controller source buttons the per-family map already
-// assigns to GL/GR (typically paddle/extra buttons, unused on a standard pad) instead drive the
-// real SL/SR rail buttons a lone Joy-Con2 does have. This does not change Pro2/GameCube mode --
-// both keep reading GL/GR unchanged, since the reinterpretation is gated on joycon2_active alone.
-static void ns2_apply_dst(uint8_t dst, switch_pro_input_t *in, bool joycon2_active) {
+// Apply one remap destination to the shared Pro Controller semantic input. Output personalities
+// may translate those semantics further (for example, the single-Joy-Con sideways profile).
+static void ns2_apply_dst(uint8_t dst, switch_pro_input_t *in) {
     switch (dst) {
         case NS2_DST_B:       in->buttons[0] |= SWITCH_MASK_B; break;
         case NS2_DST_A:       in->buttons[0] |= SWITCH_MASK_A; break;
@@ -97,8 +93,8 @@ static void ns2_apply_dst(uint8_t dst, switch_pro_input_t *in, bool joycon2_acti
         case NS2_DST_DDOWN:   in->buttons[2] |= SWITCH_MASK_DPAD_DOWN; break;
         case NS2_DST_DLEFT:   in->buttons[2] |= SWITCH_MASK_DPAD_LEFT; break;
         case NS2_DST_DRIGHT:  in->buttons[2] |= SWITCH_MASK_DPAD_RIGHT; break;
-        case NS2_DST_GL:      in->extra |= joycon2_active ? SWITCH_EXTRA_SL : SWITCH_EXTRA_GL; break;
-        case NS2_DST_GR:      in->extra |= joycon2_active ? SWITCH_EXTRA_SR : SWITCH_EXTRA_GR; break;
+        case NS2_DST_GL:      in->extra |= SWITCH_EXTRA_GL; break;
+        case NS2_DST_GR:      in->extra |= SWITCH_EXTRA_GR; break;
         case NS2_DST_C:       in->extra |= SWITCH_EXTRA_C; break;
         default: break;  // NS2_DST_NONE
     }
@@ -147,11 +143,8 @@ void router_submit_input(const input_event_t *e) {
     // is only ever NSO_GAMECUBE when that personality is actually active.
 #ifdef NS2_PRO
     bool gc_active = (g_usb_personality == USB_PERSONALITY_NSO_GAMECUBE);
-    bool joycon2_active = (g_usb_personality == USB_PERSONALITY_JOYCON2_L ||
-                            g_usb_personality == USB_PERSONALITY_JOYCON2_R);
 #else
     bool gc_active = false;
-    bool joycon2_active = false;
 #endif
     uint32_t b = e->buttons;
     if (!e->suppress_l2r2_analog_fold && !gc_active) {
@@ -218,7 +211,7 @@ void router_submit_input(const input_event_t *e) {
     config_get_ns2_map(ns2_family(e->dev_addr), map);
     for (int src = 0; src < NS2_SRC_COUNT; src++) {
         if (b & SRC_TO_JP[src])
-            ns2_apply_dst(map[src], &in, joycon2_active);
+            ns2_apply_dst(map[src], &in);
     }
 
     // Sticks: 0-255 -> 12-bit; Y inverted (Switch is up-positive, HID is up=0).
@@ -307,6 +300,7 @@ static feedback_state_t s_fb[NS2_SLOTS];
 // on a downstream driver with a long hardware sustain (e.g. Xbox's ~10-minute pulse_sustain_10ms/
 // loop_count in bthid_gamepad.c).
 static uint32_t s_rumble_gen_seen[NS2_SLOTS];
+static uint32_t s_player_led_gen_seen[NS2_SLOTS];
 
 feedback_state_t *feedback_get_state(uint8_t player_index) {
     uint8_t p = (player_index < NS2_SLOTS) ? player_index : 0;
@@ -319,10 +313,31 @@ feedback_state_t *feedback_get_state(uint8_t player_index) {
         s_fb[p].rumble_dirty = true;
         s_rumble_gen_seen[p] = gen;
     }
-    // Lightbar colour from config (single connected controller = slot 0). Drivers with an
-    // RGB LED (DualSense/DualShock) apply fb->led when it's dirty; mark dirty on change.
+    uint8_t player_wire;
+    report_get_player_leds(p, &player_wire, &gen);
+    if (gen != s_player_led_gen_seen[p]) {
+        uint8_t player_number;
+        if (ns2_player_led_decode(player_wire, &player_number)) {
+            // feedback.pattern uses one bit per player, unlike Nintendo's
+            // cumulative 1/3/7/F wire convention.
+            s_fb[p].led.pattern = (uint8_t)(1u << (player_number - 1u));
+            s_fb[p].led_dirty = true;
+        }
+        s_player_led_gen_seen[p] = gen;
+    }
+    // Match supported physical RGB lights to the appearance advertised by the
+    // active output personality. Player-indicator patterns remain independent.
     uint8_t rgb[3];
-    config_get_lightbar(0, rgb);
+#ifdef NS2_PRO
+    if (g_usb_personality == USB_PERSONALITY_JOYCON2_L)
+        config_get_joycon2_accent(false, rgb);
+    else if (g_usb_personality == USB_PERSONALITY_JOYCON2_R)
+        config_get_joycon2_accent(true, rgb);
+    else
+        config_get_body_color(rgb);  // Pro2 plus GC/config fallback
+#else
+    config_get_body_color(rgb);
+#endif
     if (rgb[0] != s_fb[p].led.r || rgb[1] != s_fb[p].led.g || rgb[2] != s_fb[p].led.b) {
         s_fb[p].led.r = rgb[0];
         s_fb[p].led.g = rgb[1];
@@ -387,7 +402,8 @@ void platform_reboot(void) {}
 uint32_t platform_time_ms(void) { return to_ms_since_boot(get_absolute_time()); }
 
 // Player-indicator LED patterns (index 0 = none; values per feedback.h
-// FEEDBACK_LED_PLAYER*). The Sony drivers read this to drive the pad LED/lightbar.
+// FEEDBACK_LED_PLAYER*). Sony drivers use this only for player indicators; RGB
+// lightbars independently follow the active personality's configured appearance.
 const uint8_t PLAYER_LEDS[11] = {
     0x00, 0x01, 0x02, 0x04, 0x08, 0x09, 0x0A, 0x0C, 0x0F, 0x0F, 0x0F};
 

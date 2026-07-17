@@ -125,7 +125,7 @@ Actual ordered sequence on EP2 after enumeration (request → response, data tru
 | 4 | Pair: exch addr | `15 91 00 01 00 0e 00 00 00 02 <6B host1> <6B host2>` | `15 01 00 01 00 f8 00 00 01 04 01 <6B ctrl addr>` |
 | 5 | Pair: confirm LTK | `15 91 00 02 00 11 00 00 00 <16B A2 challenge>` | `15 01 00 02 00 f8 00 00 01 <16B B2=AES128(LTK,A2)>` |
 | 6 | Pair: finalise | `15 91 00 03 00 01 00 00 00` | `15 01 00 03 00 f8 00 00 01` |
-| 7 | LED pattern | `09 91 00 07 00 08 00 00 <8B>` | `09 01 00 07 00 f8 00 00` |
+| 7 | Player LEDs | `09 91 00 07 00 08 00 00 <mask> <7B zero>` | `09 01 00 07 00 f8 00 00` |
 | 8 | Set feature mask | `0c 91 00 02 00 04 00 00 27 00 00 00` | `0c 01 00 02 00 f8 00 00 00 00 00 00` |
 | 9 | Memory reads | `02 91 00 04 00 08 00 00 <len> 7e 00 00 <addr LE>` | `02 01 00 04 00 f8 00 00 <len> 00 00 00 <addr> <data>` |
 | 10 | Enable features | `0c 91 00 04 00 04 00 00 27 00 00 00` | `0c 01 00 04 00 f8 00 00` |
@@ -137,6 +137,15 @@ Interleaved (order not strict): `03/0c`, `0a/02` vibration, `0c/06` configure, `
 step 11 the controller streams input report `0x09` on EP1 IN. **Implement a dispatcher keyed on
 `cmd+subcmd`, reply to whatever arrives (order-independent), and only begin streaming input once
 report `0x09` is selected + features enabled.**
+
+Command `0x09/0x07` is distinct from input report ID `0x09`. Payload byte 0 (absolute request
+offset 8) is the player-light bitmask. A genuine capture confirms `0x01` for Player 1. The current
+decoder also accepts the Switch-family cumulative convention `01/03/07/0F` for Players 1–4 and
+`10/30/70/F0` for their flashing forms; the P2–P4 Switch 2 values remain a strong prediction until
+captured or hardware-observed. The active personality publishes each assignment through shared,
+generation-counted feedback state, and the Bluetooth seam converts it to a one-bit player number
+for controller-specific indicators such as the DualSense dots. RGB body/lightbar color remains an
+independent setting.
 
 ### Firmware-version compatibility
 
@@ -235,7 +244,7 @@ Serve on memory-read requests (real captured example values — safe to hardcode
 | 0x13002 | 16 | serial, e.g. `48 45 4A 37 31 30 30 31 31 32 31 32 34 37 00 00` |
 | 0x13012 | 2 | `7E 05` (VID) |
 | 0x13014 | 2 | `69 20` (PID) |
-| 0x13019 | 3 | body colour `23 23 23` |
+| 0x13019 | 3 | configured body colour; default `23 23 23` (genuine retail charcoal) |
 | 0x1301C | 3 | button colour `A0 A0 A0` |
 | 0x1301F | 3 | highlight `E6 E6 E6` |
 | 0x13022 | 3 | grip `32 32 32` |
@@ -246,6 +255,13 @@ Serve on memory-read requests (real captured example values — safe to hardcode
 
 Memory outside these can return `0xFF` fill. Only `≥ 0x1F5000` is writable (`0x02/05`); reject
 writes below with status `0x81`. Back this with a small static table, not real flash.
+
+Config v8 stores one Pro2 `body_color`, applies it here before the identity block is built, and uses
+it for supported DualShock 4 / DualSense RGB lightbars while Pro2 is active. Button, highlight, and
+grip retain genuine retail defaults. The console reads the identity during enumeration, so a saved
+body change appears after returning from CDC configuration mode to Pro Controller 2 (or after a
+power cycle); the physical Sony lightbar can update live. Config v8 also adds independent Joy-Con 2
+Left/Right accent colors; those belong to the separate Joy-Con identity blocks and lightbar modes.
 
 ## 10. Mapping controller input → report `0x09`
 Input arrives from the joypad-os bthid stack as `input_event_t` and is mapped in

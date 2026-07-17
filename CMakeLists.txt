@@ -35,7 +35,9 @@ set(CMAKE_CXX_STANDARD 17)
 # initialize the Raspberry Pi Pico SDK
 pico_sdk_init()
 
-file(GLOB_RECURSE SOURCES "src/*.c")
+# Re-run configuration when a source file is added or removed. Without
+# CONFIGURE_DEPENDS, an existing build directory silently omits new modules.
+file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.c")
 add_executable(PicoSwitchWGA ${SOURCES})
 
 # Name the binary after the board so pico_w / pico2_w outputs don't clobber.

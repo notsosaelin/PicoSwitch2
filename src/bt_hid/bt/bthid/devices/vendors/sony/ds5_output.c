@@ -10,6 +10,8 @@
 #define DS5_FLAG0_HAPTICS_SELECT       0x02
 #define DS5_FLAG1_LIGHTBAR_CONTROL     0x04
 #define DS5_FLAG1_PLAYER_INDICATOR     0x10
+#define DS5_FLAG2_LIGHTBAR_SETUP       0x02
+#define DS5_LIGHTBAR_SETUP_LIGHT_OUT   0x02
 #define DS5_DAIDR_VALID_BASELINE       0xF7
 
 // Report offsets from Linux's packed dualsense_output_report_bt/common structs.
@@ -64,6 +66,14 @@ void ds5_build_bt_output_report(uint8_t sequence,
         // previous LIGHT_OUT-only setup left tested controllers dark and with
         // non-functional compatibility rumble.
         out[DS5_OFS_VALID_FLAG0] = DS5_DAIDR_VALID_BASELINE;
+    }
+
+    if (state->setup_lightbar) {
+        // DualSense ignores later RGB programming until the host explicitly
+        // releases/configures its lightbar. Linux hid-playstation performs this
+        // one-time LIGHT_OUT transaction before ordinary color updates.
+        out[DS5_OFS_VALID_FLAG2] |= DS5_FLAG2_LIGHTBAR_SETUP;
+        out[DS5_OFS_LIGHTBAR_SETUP] = DS5_LIGHTBAR_SETUP_LIGHT_OUT;
     }
 
     if (state->update_rumble) {

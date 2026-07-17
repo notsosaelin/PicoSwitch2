@@ -30,16 +30,19 @@ typedef enum {
 // from ndeadly/switch2_controller_research's hid_reports.md, cross-checked against real decrypted
 // BLE captures). Button bitfield meaning Confirmed per side. Mouse data, NFC state, and motion
 // data are always zero/absent -- this project has no source data for any of them yet.
-void switch_joycon2_encode_report(const switch_pro_input_t *in, joycon2_side_t side,
-                                   uint8_t counter, uint8_t out[63]);
+// `source_buttons` is the normalized physical JP_BUTTON_* bitmap, deliberately bypassing the
+// configurable Pro2 semantic remap for the explicit sideways face/shoulder/trigger layout.
+// Capture and C/GameChat still come from `in` so their configured Pro2 sources are preserved.
+void switch_joycon2_encode_report(const switch_pro_input_t *in, uint32_t source_buttons,
+                                   joycon2_side_t side, uint8_t counter, uint8_t out[63]);
 
 // Construct the 63-byte report 0x05 input report body -- the common Switch-family format shared
 // by every Switch 2 controller type (Confirmed, ndeadly's hid_reports.md "Input Report 0x05" --
 // same table this project's own switch_gc_encode_report05() already implements a subset of).
 // `counter` is a free-running 32-bit value. Populates the side-specific L/R/ZL/ZR bits this
-// project's existing GameCube encoder leaves at zero (a lone Joy-Con genuinely has one of each),
-// in addition to the already-shared A/B/X/Y/Plus/Minus/Capture/Home/dpad/GL/GR bits.
-void switch_joycon2_encode_report05(const switch_pro_input_t *in, joycon2_side_t side,
-                                     uint32_t counter, uint8_t out[63]);
+// project's existing GameCube encoder leaves at zero (a lone Joy-Con genuinely has one of each).
+// Uses the same sideways translation as report 0x07/0x08.
+void switch_joycon2_encode_report05(const switch_pro_input_t *in, uint32_t source_buttons,
+                                     joycon2_side_t side, uint32_t counter, uint8_t out[63]);
 
 #endif  // SWITCH_JOYCON2_ENCODE_H

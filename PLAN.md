@@ -27,12 +27,12 @@ matrix gaps before beginning new protocol work.
 Use [`docs/status/compatibility-matrix.md`](docs/status/compatibility-matrix.md) as the single test
 matrix. Do not combine mapping changes with unrelated Bluetooth or USB protocol changes.
 
-1. Record a button-by-button Joy-Con 2 Left and Right test on the real console.
-2. Confirm the Pro Controller 2 physical L/R mapping correction.
-3. Verify rumble ON/STOP/reconnect behavior for the major controller families in Pro2 and GameCube
-   output modes.
-4. Verify triple-tap prevents automatic readmission until a new double-tap pairing window.
-5. Classify the Joy-Con 2 Left Steam/Windows behavior separately from real-console compatibility.
+1. Classify the Joy-Con 2 Left Steam/Windows behavior separately from real-console compatibility.
+
+Completed closure checks: rumble ON/STOP/reconnect across the tested controller/personality
+matrix, individual Joy-Con 2 rumble, triple-tap admission blocking, and explicit re-pairing after
+opening a new pairing window are hardware-confirmed. The real Pro Controller 2's physical
+L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
 
 ## Reliability and maintainability
 
@@ -44,6 +44,34 @@ matrix. Do not combine mapping changes with unrelated Bluetooth or USB protocol 
   notifications.
 - Add a release checklist that records board, firmware revision, controller firmware, console
   firmware, and test result.
+
+## Controller appearance customization
+
+- [x] Replace the unused per-player lightbar array with one persistent `body_color` source.
+- [x] Preserve the previously effective slot-0 color and all v6 remap/wake data during migration.
+- [x] Apply `body_color` to Pro Controller 2 factory offset `0x13019`.
+- [x] Drive DualShock 4 and DualSense lightbars from the same RGB value, including black/off,
+  without coupling the lightbar hue to player assignment.
+- [x] Hardware-validate that the Switch 2 configuration menu renders the configured body color.
+- [x] Hardware-validate Sony lightbar matching and persistence after the revised two-stage
+  DualSense lightbar initialization.
+- [x] Add independently configurable Joy-Con 2 Left/Right accents, defaulting to their genuine
+  retail highlight colors and driving the Sony lightbar in the matching active personality.
+- [x] Hardware-validate both configurable Joy-Con accents in the Switch UI and Sony lightbar.
+- [x] Parse console command `0x09` and drive physical player-indicator LEDs from the real console
+  slot while keeping this state independent from `body_color`.
+- [x] Hardware-validate that DualSense player dots follow Switch menu reordering.
+
+## Individual Joy-Con sideways mapping
+
+- [x] Translate both Joy-Con personalities from normalized physical paired-controller inputs,
+  retaining configurable Pro2 semantics specifically for Capture and C/GameChat.
+- [x] Map L1/R1 to SL/SR and L2/R2 to each side's requested shoulder/trigger pair.
+- [x] Rotate face buttons into the Left D-pad and Right face cluster.
+- [x] Feed the lone stick from both the paired left stick and D-pad, with per-side axis rotation.
+- [x] Reuse Pro2 Capture, Home, and C/GameChat sources.
+- [x] Lock both report formats with host-side golden tests.
+- [x] Complete a physical button, D-pad-to-stick, and analog-direction pass on Switch 2.
 
 ## Protocol research
 

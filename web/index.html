@@ -156,13 +156,33 @@
 
       <section class="q">
         <h2>Additional Settings</h2>
-        <p class="muted" style="margin-top:-4px">DualShock / DualSense lightbar colour (applies live to the pad).</p>
+        <h3>Pro Controller 2 body</h3>
+        <p class="muted" style="margin-top:-4px">Advertised in Pro Controller 2 mode and applied live to a connected DualShock / DualSense lightbar.</p>
         <div class="sliders">
           <label>R <input type="range" min="0" max="255" value="0" class="r" id="ledR"><span id="ledRv">0</span></label>
           <label>G <input type="range" min="0" max="255" value="0" class="g" id="ledG"><span id="ledGv">0</span></label>
           <label>B <input type="range" min="0" max="255" value="0" class="b" id="ledB"><span id="ledBv">0</span></label>
         </div>
         <div class="swatch" id="ledSwatch"></div>
+
+        <h3>Joy-Con 2 Left accent</h3>
+        <p class="muted" style="margin-top:-4px">Advertised as the Left Joy-Con highlight and used for the Sony lightbar while that personality is active.</p>
+        <div class="sliders">
+          <label>R <input type="range" min="0" max="255" value="155" class="r" id="jclR"><span id="jclRv">155</span></label>
+          <label>G <input type="range" min="0" max="255" value="225" class="g" id="jclG"><span id="jclGv">225</span></label>
+          <label>B <input type="range" min="0" max="255" value="230" class="b" id="jclB"><span id="jclBv">230</span></label>
+        </div>
+        <div class="swatch" id="jclSwatch"></div>
+
+        <h3>Joy-Con 2 Right accent</h3>
+        <p class="muted" style="margin-top:-4px">Advertised as the Right Joy-Con highlight and used for the Sony lightbar while that personality is active.</p>
+        <div class="sliders">
+          <label>R <input type="range" min="0" max="255" value="255" class="r" id="jcrR"><span id="jcrRv">255</span></label>
+          <label>G <input type="range" min="0" max="255" value="140" class="g" id="jcrG"><span id="jcrGv">140</span></label>
+          <label>B <input type="range" min="0" max="255" value="95" class="b" id="jcrB"><span id="jcrBv">95</span></label>
+        </div>
+        <div class="swatch" id="jcrSwatch"></div>
+
         <div class="actions-bar" style="margin-top:14px">
           <button id="saveBtn" class="primary">Save to device</button>
           <button id="resetBtn">Reset mapping</button>
@@ -731,11 +751,18 @@ function renderRaw(r) {
   }
 }
 
-// ---- lightbar ----
+// ---- output-personality appearance + Sony lightbar colours ----
 const ledGet = ch => +$("#led" + ch).value;
 function ledRender() {
   for (const ch of ["R", "G", "B"]) $("#led" + ch + "v").textContent = $("#led" + ch).value;
   $("#ledSwatch").style.background = `rgb(${ledGet("R")},${ledGet("G")},${ledGet("B")})`;
+}
+const accentGet = (side, ch) => +$("#jc" + side + ch).value;
+function accentRender(side) {
+  for (const ch of ["R", "G", "B"])
+    $("#jc" + side + ch + "v").textContent = $("#jc" + side + ch).value;
+  $("#jc" + side + "Swatch").style.background =
+    `rgb(${accentGet(side,"R")},${accentGet(side,"G")},${accentGet(side,"B")})`;
 }
 
 // ---- serial I/O: one command -> one JSON line ----
@@ -788,15 +815,21 @@ async function pollLoop() {
 
 async function reload() {
   const cfg = await sendCmd("get");
-  if (cfg && cfg.lightbar) {
-    const c = cfg.lightbar[0];
+  if (cfg && (cfg.body_color || cfg.lightbar)) {
+    const c = cfg.body_color || cfg.lightbar[0]; // lightbar fallback supports pre-v7 firmware
     $("#ledR").value = c[0]; $("#ledG").value = c[1]; $("#ledB").value = c[2]; ledRender();
+    const jl = cfg.joycon2_left_accent || [155, 225, 230];
+    const jr = cfg.joycon2_right_accent || [255, 140, 95];
+    $("#jclR").value = jl[0]; $("#jclG").value = jl[1]; $("#jclB").value = jl[2]; accentRender("l");
+    $("#jcrR").value = jr[0]; $("#jcrG").value = jr[1]; $("#jcrB").value = jr[2]; accentRender("r");
   } else log("! could not read colours");
 }
 
 async function save() {
   $("#saveBtn").disabled = true;
-  await sendCmd(`lb 0 ${ledGet("R")} ${ledGet("G")} ${ledGet("B")}`);
+  await sendCmd(`body ${ledGet("R")} ${ledGet("G")} ${ledGet("B")}`);
+  await sendCmd(`jcl ${accentGet("l","R")} ${accentGet("l","G")} ${accentGet("l","B")}`);
+  await sendCmd(`jcr ${accentGet("r","R")} ${accentGet("r","G")} ${accentGet("r","B")}`);
   // Fold the visible dropdowns into the family map, then persist it.
   currentRows.forEach((r, i) => {
     const src = JP_TO_SRC[r[0]], ms = $("#ms" + i);
@@ -805,7 +838,7 @@ async function save() {
   await sendCmd(`setns2map ${currentFamily} ${currentMap.join(" ")}`);
   const r = await sendCmd("save");
   $("#saveBtn").disabled = false;
-  log(r && r.ok ? "== saved (mapping + colour) ==" : "!! save failed");
+  log(r && r.ok ? "== saved (mapping + personality/lightbar colours) ==" : "!! save failed");
 }
 function resetMap() {
   currentMap = NS2_DEFAULT_MAP.slice();
@@ -858,6 +891,9 @@ async function connect() {
 buildMap(currentRows);
 ledRender();
 ["R", "G", "B"].forEach(ch => $("#led" + ch).oninput = ledRender);
+accentRender("l"); accentRender("r");
+for (const side of ["l", "r"])
+  ["R", "G", "B"].forEach(ch => $("#jc" + side + ch).oninput = () => accentRender(side));
 $("#connectBtn").onclick = connect;
 $("#saveBtn").onclick = save;
 $("#resetBtn").onclick = resetMap;

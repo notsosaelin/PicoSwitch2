@@ -29,7 +29,7 @@
 #include "hardware/sync.h"
 
 #define CONFIG_MAGIC 0x50535731u  // 'PSW1'
-#define CONFIG_VERSION 6
+#define CONFIG_VERSION 8
 #define CONFIG_FLASH_OFFSET (PICO_FLASH_SIZE_BYTES - 4 * FLASH_SECTOR_SIZE)
 #define CONFIG_WAKE_VALID 0xA5
 #define CONFIG_WAKE_SAVE_DELAY_MS 5000
@@ -37,20 +37,42 @@
 typedef struct {
     uint32_t magic;
     uint8_t version;
-    uint8_t lightbar[4][3];                         // per-player-position R,G,B
+    uint8_t body_color[3];                          // Pro2 body/lightbar R,G,B
+    uint8_t joycon2_left_accent[3];                 // Joy-Con 2 L highlight/lightbar
+    uint8_t joycon2_right_accent[3];                // Joy-Con 2 R highlight/lightbar
     uint8_t ns2_map[NS2_FAM_COUNT][NS2_SRC_COUNT];  // per-family button remap
     uint8_t wake_valid;
     config_wake_identity_t wake_identity;
 } pico_config_t;
 
-// Exact v5 prefix, used only to migrate existing lightbar colours and button
-// remaps. Do not cast an old flash page to the larger v6 structure and copy it.
+// Exact legacy layouts used to migrate the former per-player lightbar setting.
+// Slot 0 was the only value consumed by the single-controller NS2 seam, so it
+// becomes v7's canonical body colour. Do not cast an old flash page to v7: the
+// remap table moved when lightbar[4][3] was replaced by body_color[3].
 typedef struct {
     uint32_t magic;
     uint8_t version;
     uint8_t lightbar[4][3];
     uint8_t ns2_map[NS2_FAM_COUNT][NS2_SRC_COUNT];
 } pico_config_v5_t;
+
+typedef struct {
+    uint32_t magic;
+    uint8_t version;
+    uint8_t lightbar[4][3];
+    uint8_t ns2_map[NS2_FAM_COUNT][NS2_SRC_COUNT];
+    uint8_t wake_valid;
+    config_wake_identity_t wake_identity;
+} pico_config_v6_t;
+
+typedef struct {
+    uint32_t magic;
+    uint8_t version;
+    uint8_t body_color[3];
+    uint8_t ns2_map[NS2_FAM_COUNT][NS2_SRC_COUNT];
+    uint8_t wake_valid;
+    config_wake_identity_t wake_identity;
+} pico_config_v7_t;
 
 // Built-in joypad remap (source index -> NS2_DST_*). Reproduces the seam's hardcoded
 // mapping exactly, so an all-defaults config behaves identically to no remapping.
@@ -76,8 +98,18 @@ static void load_defaults(void) {
     memset(&cfg, 0, sizeof(cfg));
     cfg.magic = CONFIG_MAGIC;
     cfg.version = CONFIG_VERSION;
-    static const uint8_t def[4][3] = {{0, 0, 255}, {255, 0, 0}, {0, 255, 0}, {255, 192, 0}};
-    memcpy(cfg.lightbar, def, sizeof(def));
+    // Genuine retail Pro Controller 2 body colour. Users can replace this with
+    // any RGB value in config mode; it drives Sony lights while Pro2 is active.
+    cfg.body_color[0] = 0x23;
+    cfg.body_color[1] = 0x23;
+    cfg.body_color[2] = 0x23;
+    // Genuine retail Joy-Con 2 accent colours from the project's L/R SPI dumps.
+    cfg.joycon2_left_accent[0] = 0x9B;
+    cfg.joycon2_left_accent[1] = 0xE1;
+    cfg.joycon2_left_accent[2] = 0xE6;
+    cfg.joycon2_right_accent[0] = 0xFF;
+    cfg.joycon2_right_accent[1] = 0x8C;
+    cfg.joycon2_right_accent[2] = 0x5F;
     for (int fam = 0; fam < NS2_FAM_COUNT; fam++)
         memcpy(cfg.ns2_map[fam], NS2_DEFAULT_MAP, NS2_SRC_COUNT);
 }
@@ -89,39 +121,58 @@ void config_load(void) {
     if (f->magic == CONFIG_MAGIC && f->version == CONFIG_VERSION) {
         memcpy(&cfg, f, sizeof(cfg));
     } else if (f->magic == CONFIG_MAGIC) {
-        // The lightbar is at a stable offset in all prior layouts. v5 also has
-        // the current remap table, so preserve it during the v6 wake-identity
-        // migration instead of silently resetting a user's mappings.
+        // Start with v8 defaults so older configs gain genuine Joy-Con accents,
+        // then copy every field that existed in their exact historical layout.
         load_defaults();
-        memcpy(cfg.lightbar, f->lightbar, sizeof(cfg.lightbar));
         if (f->version == 5) {
             const pico_config_v5_t *v5 = (const pico_config_v5_t *)flash;
+            memcpy(cfg.body_color, v5->lightbar[0], sizeof(cfg.body_color));
             memcpy(cfg.ns2_map, v5->ns2_map, sizeof(cfg.ns2_map));
+        } else if (f->version == 6) {
+            const pico_config_v6_t *v6 = (const pico_config_v6_t *)flash;
+            memcpy(cfg.body_color, v6->lightbar[0], sizeof(cfg.body_color));
+            memcpy(cfg.ns2_map, v6->ns2_map, sizeof(cfg.ns2_map));
+            cfg.wake_valid = v6->wake_valid;
+            cfg.wake_identity = v6->wake_identity;
+        } else if (f->version == 7) {
+            const pico_config_v7_t *v7 = (const pico_config_v7_t *)flash;
+            memcpy(cfg.body_color, v7->body_color, sizeof(cfg.body_color));
+            memcpy(cfg.ns2_map, v7->ns2_map, sizeof(cfg.ns2_map));
+            cfg.wake_valid = v7->wake_valid;
+            cfg.wake_identity = v7->wake_identity;
         }
     } else {
         load_defaults();
     }
 }
 
-void config_get_lightbar(uint8_t player, uint8_t rgb[3]) {
+void config_get_body_color(uint8_t rgb[3]) {
     critical_section_enter_blocking(&cfg_lock);
-    if (player < 4) {
-        rgb[0] = cfg.lightbar[player][0];
-        rgb[1] = cfg.lightbar[player][1];
-        rgb[2] = cfg.lightbar[player][2];
-    } else {
-        rgb[0] = rgb[1] = rgb[2] = 0;
-    }
+    memcpy(rgb, cfg.body_color, sizeof(cfg.body_color));
     critical_section_exit(&cfg_lock);
 }
 
-static void set_lightbar(uint8_t player, uint8_t r, uint8_t g, uint8_t b) {
-    if (player >= 4)
-        return;
+void config_get_joycon2_accent(bool right, uint8_t rgb[3]) {
     critical_section_enter_blocking(&cfg_lock);
-    cfg.lightbar[player][0] = r;
-    cfg.lightbar[player][1] = g;
-    cfg.lightbar[player][2] = b;
+    const uint8_t *accent = right ? cfg.joycon2_right_accent : cfg.joycon2_left_accent;
+    memcpy(rgb, accent, 3);
+    critical_section_exit(&cfg_lock);
+}
+
+static void set_body_color(uint8_t r, uint8_t g, uint8_t b) {
+    critical_section_enter_blocking(&cfg_lock);
+    cfg.body_color[0] = r;
+    cfg.body_color[1] = g;
+    cfg.body_color[2] = b;
+    critical_section_exit(&cfg_lock);
+}
+
+static void set_joycon2_accent(bool right, uint8_t r, uint8_t g, uint8_t b) {
+    critical_section_enter_blocking(&cfg_lock);
+    uint8_t *accent = right ? cfg.joycon2_right_accent : cfg.joycon2_left_accent;
+    accent[0] = r;
+    accent[1] = g;
+    accent[2] = b;
     critical_section_exit(&cfg_lock);
 }
 
@@ -249,14 +300,24 @@ static void reply(const char *s) {
 }
 
 static void cmd_get(void) {
-    uint8_t lb[4][3];
+    uint8_t body[3];
+    uint8_t joy_l[3];
+    uint8_t joy_r[3];
     critical_section_enter_blocking(&cfg_lock);
-    memcpy(lb, cfg.lightbar, sizeof(lb));
+    memcpy(body, cfg.body_color, sizeof(body));
+    memcpy(joy_l, cfg.joycon2_left_accent, sizeof(joy_l));
+    memcpy(joy_r, cfg.joycon2_right_accent, sizeof(joy_r));
     critical_section_exit(&cfg_lock);
+    // Keep the old lightbar shape as a read-only compatibility alias for a
+    // cached pre-v7 CONFIG.HTM. All four entries intentionally name one value.
     snprintf(out, sizeof(out),
-             "{\"lightbar\":[[%u,%u,%u],[%u,%u,%u],[%u,%u,%u],[%u,%u,%u]]}",
-             lb[0][0], lb[0][1], lb[0][2], lb[1][0], lb[1][1], lb[1][2],
-             lb[2][0], lb[2][1], lb[2][2], lb[3][0], lb[3][1], lb[3][2]);
+             "{\"body_color\":[%u,%u,%u],\"joycon2_left_accent\":[%u,%u,%u],"
+             "\"joycon2_right_accent\":[%u,%u,%u],\"lightbar\":[[%u,%u,%u],[%u,%u,%u],"
+             "[%u,%u,%u],[%u,%u,%u]]}",
+             body[0], body[1], body[2],
+             joy_l[0], joy_l[1], joy_l[2], joy_r[0], joy_r[1], joy_r[2],
+             body[0], body[1], body[2], body[0], body[1], body[2],
+             body[0], body[1], body[2], body[0], body[1], body[2]);
     reply(out);
 }
 
@@ -604,11 +665,32 @@ static void handle_line(char *cmd) {
         cmd_getns2map(atoi(cmd + 10));
     } else if (strncmp(cmd, "setns2map ", 10) == 0) {
         cmd_setns2map(cmd + 10);
+    } else if (strncmp(cmd, "body ", 5) == 0) {
+        int r, g, b;
+        if (sscanf(cmd + 5, "%d %d %d", &r, &g, &b) == 3 &&
+            r >= 0 && r < 256 && g >= 0 && g < 256 && b >= 0 && b < 256) {
+            set_body_color((uint8_t)r, (uint8_t)g, (uint8_t)b);
+            reply("{\"ok\":true}");
+        } else {
+            reply("{\"error\":\"bad args\"}");
+        }
+    } else if (strncmp(cmd, "jcl ", 4) == 0 || strncmp(cmd, "jcr ", 4) == 0) {
+        int r, g, b;
+        if (sscanf(cmd + 4, "%d %d %d", &r, &g, &b) == 3 &&
+            r >= 0 && r < 256 && g >= 0 && g < 256 && b >= 0 && b < 256) {
+            set_joycon2_accent(cmd[2] == 'r', (uint8_t)r, (uint8_t)g, (uint8_t)b);
+            reply("{\"ok\":true}");
+        } else {
+            reply("{\"error\":\"bad args\"}");
+        }
     } else if (strncmp(cmd, "lb ", 3) == 0) {
+        // Backward-compatible alias for a cached v6 config page. Only slot 0
+        // ever affected this single-controller firmware, so reject stale
+        // attempts to configure the now-removed independent player colours.
         int p, r, g, b;
-        if (sscanf(cmd + 3, "%d %d %d %d", &p, &r, &g, &b) == 4 && p >= 0 && p < 4 && r >= 0 &&
-            r < 256 && g >= 0 && g < 256 && b >= 0 && b < 256) {
-            set_lightbar((uint8_t)p, (uint8_t)r, (uint8_t)g, (uint8_t)b);
+        if (sscanf(cmd + 3, "%d %d %d %d", &p, &r, &g, &b) == 4 && p == 0 &&
+            r >= 0 && r < 256 && g >= 0 && g < 256 && b >= 0 && b < 256) {
+            set_body_color((uint8_t)r, (uint8_t)g, (uint8_t)b);
             reply("{\"ok\":true}");
         } else {
             reply("{\"error\":\"bad args\"}");
