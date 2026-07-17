@@ -43,15 +43,16 @@ parser or unrelated controllers.
 | `bitdo_paddle` | 8BitDo VID with more than 14 buttons | Usage 3/6 paddle layout |
 | `bitdo_ultimate_mg` | `2DC8:200B` | 8BitDo map selection plus raw byte-8 L4/R4 paddles |
 | `bitdo_m30` | M30 name or known PID | Sequential map with synthesized analog triggers suppressed |
-| `bitdo_ngc_modkit` | `2DC8:286A` | Native GC button map, Z, and independent L/R detents |
+| `bitdo_ngc_modkit` | `2DC8:286A` | Native GC button map, Z, independent L/R detents, and BlueRetro-derived `A5 DB LL RR` rumble |
 
 ## Preserved behavior constraints
 
 - Profile resolution runs after descriptor parsing and again when asynchronous VID/PID data
   arrives. It also runs during initialization so descriptorless fallback devices have a profile.
 - Xbox name matching remains valid for input when VID/PID is unavailable.
-- Generic-driver Xbox rumble retains the v1.2 Microsoft-VID gate. The refactor does not send an
-  Xbox output packet to an arbitrary name-only or generic HID device.
+- Each rumble-capable profile declares its required resolved vendor ID. Generic-driver Xbox rumble
+  retains the v1.2 Microsoft-VID gate, and NGC Modkit rumble requires the resolved 8BitDo VID; a
+  name-only or generic HID device cannot receive either output protocol.
 - Failed Xbox output sends keep the dirty state and rumble cache unchanged so STOP retries.
 - All profile-owned native fields are cleared before every extraction, preventing stale detent/Z
   state across reports.
@@ -60,7 +61,8 @@ parser or unrelated controllers.
 ## Validation and rollback
 
 `tools/test_bthid_gamepad_quirks.c` pins registry priority, every button-map variant, M30 trigger
-policy, NGC native fields, MG/Elite paddles, Xbox Share/Back handling, and Xbox rumble dispatch.
+policy, NGC native fields, MG/Elite paddles, Xbox Share/Back handling, per-profile output
+authorization, Xbox rumble dispatch, and NGC Modkit `0xA5` framing/payload.
 The full host matrix contains 14 passing suites after adding it. Pico W, Pico 2 W, and the legacy
 Switch 1 configuration all build successfully.
 

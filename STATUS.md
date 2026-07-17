@@ -5,15 +5,16 @@
 > Planned work belongs in [`PLAN.md`](PLAN.md); evidence and protocol details belong under
 > [`docs/`](docs/README.md).
 
-Last verified: 2026-07-16
+Last verified: 2026-07-17
 Branch: `ns2-testing`
 
 ## Current release
 
-[`v1.2.0`](https://github.com/notsosaelin/PicoSwitch2/releases/tag/v1.2.0) was published on
-2026-07-16 with Pico W and Pico 2 W UF2 assets. All 13 host-test executables pass. Pro Controller 2,
+[`v1.3.0`](https://github.com/notsosaelin/PicoSwitch2/releases/tag/v1.3.0) was published on
+2026-07-17 with Pico W and Pico 2 W UF2 assets. All 20 host-test executables pass. Pro Controller 2,
 NSO GameCube, both individual Joy-Con 2 personalities, appearance controls, DualSense/Edge,
-rumble, pairing, wake, and BOOTSEL have recent physical validation.
+rumble, pairing, wake, BOOTSEL, the BattlerGC Pro mapping, and first-generation 8BitDo Ultimate
+paddles have recent physical validation.
 
 ## Hardware-confirmed behavior
 
@@ -24,6 +25,7 @@ rumble, pairing, wake, and BOOTSEL have recent physical validation.
 | NSO GameCube rumble | ✅ Confirmed | Real Switch 2; genuine-capture decoder |
 | Real Pro Controller 2 input in NSO GameCube mode | ✅ Confirmed | L/R full-pull detents; ZL/ZR become GC ZL/Z |
 | Joy-Con 2 Left and Right enumeration/input streaming | ✅ Confirmed | Real Switch 2 |
+| Joy-Con 2 Left PC/Steam classification | ✅ Confirmed | Fresh Windows node and Steam UI; SDL Switch 2 driver enabled |
 | Joy-Con 2 Left and Right sideways mappings | ✅ Confirmed | Real Switch 2; face/shoulder/trigger/stick profile |
 | Joy-Con 2 rumble and STOP/reconnect behavior | ✅ Confirmed | Real Switch 2 |
 | DualSense and DualSense Edge input | ✅ Confirmed | Real Switch 2 and Steam |
@@ -31,9 +33,14 @@ rumble, pairing, wake, and BOOTSEL have recent physical validation.
 | DualSense/Edge LEDs and rumble | ✅ Confirmed | Real hardware after report-boundary scheduler fix |
 | Pro2 body/Joy-Con accents, Sony lightbar matching, and DualSense player-slot dots | ✅ Confirmed | Real Switch 2 and DualSense; config v8 hardware pass |
 | BOOTSEL double-tap, triple-tap, and five-second hold with DualSense paired | ✅ Confirmed | Real hardware after report-boundary gesture service |
+| Late BLE DIS VID/PID handoff and input continuity | ✅ Confirmed | Xbox Series BLE hardware regression after notification-first identity fix |
 | Triple-tap post-wipe admission lock | ✅ Confirmed for the reported workflow | Wipe disconnects and requires an explicit new pairing window |
 | Explicit re-pair after triple-tap wipe | ✅ Confirmed | Real hardware |
 | Switch 2 wake from sleep | ✅ Confirmed | First real post-sleep controller input on real Switch 2 hardware |
+| Reconnect/triple-tap false-wake protection | ✅ Confirmed | Most-controller pass plus genuine Switch 1 Pro initialization/reconnect regression |
+| 8BitDo NGC Modkit rumble | ✅ Confirmed | Real hardware with BlueRetro-derived `0xA5 / DB LL RR` output |
+| Retro Fighters BattlerGC Pro mapping | ✅ Confirmed | Pairing, labels, shoulders, analog/click triggers, L3/R3 suppression, and separate Home report |
+| 8BitDo Ultimate Bluetooth P1/P2 | ✅ Confirmed | Custom firmware transport maps independent paddles to GL/GR and preserves wake |
 | Pico W and Pico 2 W builds | ✅ Confirmed | Local release builds |
 
 ## Current USB personalities
@@ -60,6 +67,11 @@ The selection is not persisted across power cycles.
 - Incoming HID report boundaries service raw BOOTSEL sampling, gesture recognition, and
   `bthid_task()`. This prevents sustained DualSense Classic traffic from starving controller output
   or button gestures. The timers remain the quiet/disconnected fallback.
+- BLE HID binds immediately from the best identity available and enables report notifications
+  before querying Device Information Service. A later DIS VID/PID is always handed to BTHID for an
+  idempotent re-evaluation; contradictory Xbox BLE, Stadia, and MouthPad name matches can no longer
+  pin the wrong parser while input is already streaming. The updated path is hardware-confirmed
+  with Xbox Series BLE.
 
 See [`docs/architecture/overview.md`](docs/architecture/overview.md) and
 [`docs/bluetooth/btstack-implementation.md`](docs/bluetooth/btstack-implementation.md).
@@ -68,8 +80,7 @@ See [`docs/architecture/overview.md`](docs/architecture/overview.md) and
 
 | Priority | Issue | State |
 |---|---|---|
-| P2 | Joy-Con 2 Left is shown by Steam/Windows as a generic controller while Right is recognized | 🔵 PC-only compatibility issue; real-console enumeration works |
-| P2 | Let reconnecting BLE controllers sleep with the console without touching bonds or admission | 🔵 Research; current automatic wake behavior is preserved |
+| P2 | Let reconnecting BLE controllers sleep with the console without touching bonds or admission | 🔵 Research concluded: no safe generic host-only path; controller-specific evidence required |
 | P3 | Console-native report `0x09` motion semantics | 🔴 Blocked on better primary evidence |
 | P3 | NFC/amiibo transactions | 🔴 Blocked on a genuine console-side capture |
 
@@ -86,11 +97,22 @@ Current automated coverage includes:
 - HID output normalization
 - Switch 2 pairing cryptography
 - Switch 2 wake identity parsing and byte-exact advertisement construction
+- Automatic wake policy across reconnect startup state, per-controller session cleanup, repeated
+  held reports, BOOTSEL triple-tap maintenance suppression, and Switch 1 Pro initialization
+  quarantine
 - USB personality cycling
+- BOOTSEL gesture timing under timer-only, report-only starvation, and mixed scheduling
+- Late BLE identity correction, including provisional and generic binding, transport filtering,
+  idempotent confirmation, and input notifications immediately before and after a driver rebind
+- First-generation 8BitDo Ultimate Bluetooth identity gating and P1/P2 signature conversion to
+  L4/R4 (GL/GR by default), including simultaneous and ordinary-input preservation
+- 8BitDo NGC Modkit rumble report framing, per-profile VID authorization, and send-result
+  propagation
 - `gcusb` safety and protocol helpers
 
-The firmware builds under the Pico SDK 2.2.0 toolchain for `pico_w` and `pico2_w`; the legacy
-`NS2_PRO=OFF` Pico W configuration also passes its compile gate.
+The firmware builds under the Pico SDK 2.2.0 toolchain for `pico_w` and `pico2_w`; both legacy
+`NS2_PRO=OFF` Pico W build directories also pass their compile gates. The current release has 20
+passing host-test executables.
 
 Config v8 stores a Pro Controller 2 body color plus independent Joy-Con 2 Left/Right accent colors.
 Existing v5/v6 users retain their effective slot-0 color and remap/wake data; v7 body, remap, and
@@ -114,7 +136,7 @@ player-dot reordering, and the prior wake/input/rumble baseline are hardware-con
 
 ## Next recommended work
 
-1. Classify the Joy-Con 2 Left Steam/Windows behavior separately from real-console compatibility.
-2. Add host coverage for BOOTSEL gesture progression under report-driven scheduling.
-3. Research controller-specific sleep behavior without changing the confirmed console-wake path.
-4. Build a reproducible console-side capture path before resuming NFC or report `0x09` motion work.
+1. Add a reproducible release checklist with board, firmware, controller, console, and result data.
+2. Build a reproducible console-side capture path before resuming NFC or report `0x09` motion work.
+3. Revisit controller sleep only after capturing a verified per-family sleep command or a stable
+   distinction between automatic-reconnect and user-wake advertisements.

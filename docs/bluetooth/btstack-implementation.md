@@ -379,7 +379,7 @@ alone are insufficient):
 
 ---
 
-## Gate 2: identity and driver-binding architecture (🟡 in progress — 2026-07-12)
+## Gate 2: identity and driver-binding architecture (✅ BLE closure hardware-confirmed — 2026-07-16)
 
 > Confidence key: **Confirmed** (read directly in code, traced to the call site) / **Strong
 > Evidence** (real mechanism, impact not independently hardware-measured) / **Hypothesis** /
@@ -396,8 +396,8 @@ Bluetooth GATT spec: 1 byte `vendor_id_source` + 2 bytes `vendor_id` (LE) + 2 by
 (LE) + 2 bytes `product_version` (LE). Verified directly in BTstack's own generated accessors
 (`btstack_event.h`): `vendor_source_id` at event byte 6, `vendor_id`/`product_id`/`product_version`
 as little-endian `uint16` at bytes 7/9/11 respectively — spec-correct. This project's
-`dis_client_handler()` (`btstack_host.c`) is byte-for-byte identical to upstream's, which is also
-correct. **The 7-byte structure has never been the problem.**
+`dis_client_handler()` (`btstack_host.c`) uses those generated accessors directly; the extraction
+is spec-correct. **The 7-byte structure has never been the problem.**
 
 **The actual cause is timing, confirmed from the real event sequence:**
 `device_information_service_client_query()` — the call that starts the DIS/PnP-ID GATT read — is
@@ -424,8 +424,8 @@ has to be on the *consuming* side (re-evaluation), not by fighting the GATT cont
 
 Because identity legitimately arrives late, this project already has a re-evaluation mechanism
 (`bthid_update_device_info()`, `bthid.c`) that re-checks driver selection once accurate VID/PID
-arrives. Tracing it against every registered driver's `match()` function found two concrete gaps,
-both from the same root pattern: **a driver's `match()` returning `true` from a name-based fallback
+arrives. Tracing it against registered drivers found several concrete gaps from the same root
+pattern: **a driver's `match()` returning `true` from a name-based fallback
 that never gets invalidated once contradicting VID/PID evidence arrives**, because the re-eval logic
 only asks "does the *current* driver's own `match()` still return true?" — and a name fallback that
 doesn't check VID/PID at all will always say yes, regardless of what VID/PID later turns out to be.
@@ -442,7 +442,7 @@ doesn't check VID/PID at all will always say yes, regardless of what VID/PID lat
 2. **`ds4_bt.c` could permanently misclaim a non-Sony device** — DS4 deliberately advertises the
    generic name "Wireless Controller" (own comment), which a cheap generic/XInput-class clone could
    plausibly also use. The VID/PID check excluded DualSense explicitly but didn't reject *other*
-   known-non-Sony VIDs before falling through to the name check, so even after a later DIS query
+   known-non-Sony VIDs before falling through to the name check, so even after a later SDP query
    resolved a clearly-non-Sony VID, `ds4_match()` would still return `true` via the name path on
    re-evaluation. **Fixed**: added an explicit `if (vendor_id != 0 && vendor_id != 0x054C) return
    false;` guard before the name fallback — VID/PID being simply *unknown* (`0`) still allows the
@@ -450,13 +450,32 @@ doesn't check VID/PID at all will always say yes, regardless of what VID/PID lat
    forecloses it. Confirmed upstream shares this exact gap (byte-for-byte identical `ds4_match()`) —
    not a PicoSwitch2 regression, but a real bug worth fixing locally regardless.
 
-**Not yet audited for the same pattern**: `ds3_bt.c`, `ds5_bt.c`, `wii_u_pro_bt.c`, `wiimote_bt.c`,
-`xbox_bt.c`, `xbox_ble.c`, `stadia_bt.c` all have VID/PID-then-name-fallback logic with the same
-general shape; none were traced for a *concrete*, plausible real-world name collision the way DS4's
-"Wireless Controller" was (DS4 was prioritized because it directly matches DATA.md's own flagged
-"generic non-Microsoft XInput controller identity" concern). Recommend the same audit pass for the
-remaining drivers before considering this fully closed — the fix pattern (explicit reject on a
-*known, contradicting* VID before the name fallback) is now established and cheap to repeat.
+3. **The 2026-07-16 BLE closure audit covered every registered BLE name fallback.** `xbox_ble.c`,
+   `stadia_bt.c`, and `mouthpad_ble.c` now share the pure
+   `bthid_name_fallback_allowed()` policy. An unknown VID still permits the immediate pre-DIS name
+   bind. A known non-Microsoft VID invalidates Xbox's vendor-wide name fallback; Stadia and
+   MouthPad additionally reject a known wrong PID for their expected vendor. Their exact identity
+   paths are unchanged. `switch2_ble.c` already requires an exact Nintendo VID/PID and needed no
+   name correction.
+4. **A valid DIS result is always delivered to BTHID.** The connection cache is still updated first,
+   but equality with advertisement-derived IDs no longer suppresses `bthid_update_device_info()`.
+   Repeating the same identity is intentionally idempotent, while generic parsing can refresh its
+   VID-dependent quirk state and the identity log can record DIS provenance.
+5. **Host regression coverage exercises the production rebind state machine.**
+   `tools/test_bthid_late_identity.c` proves immediate input on provisional and generic drivers,
+   correction after authoritative VID/PID, transport-mask enforcement, safe fallback, repeated-DIS
+   idempotence, and delivery of the first notification after rebind. The DIS query remains after
+   notification setup; no GATT operation was moved earlier.
+
+> **Hardware validation update, 2026-07-16:** the user flashed the resulting build and confirmed
+> the Xbox Series BLE regression pass works correctly. Pair/input continuity and the previously
+> confirmed output behavior remain intact with the notification-first DIS ordering and late
+> identity handoff in place.
+
+Classic-only name fallbacks (`ds3_bt.c`, `ds5_bt.c`, `wii_u_pro_bt.c`, `wiimote_bt.c`, and
+`xbox_bt.c`) are outside this BLE DIS timing closure and remain candidates for a separate late-SDP
+identity audit. The already-fixed DS4 guard and central transport masks continue to protect the
+known concrete Classic cases.
 
 ### `vendor_source_id` is parsed correctly but currently discarded — flagged, not fixed
 
@@ -484,7 +503,7 @@ Per DATA.md's requested ranking, strongest to weakest, as actually observed in t
 2. **BLE GATT DIS PnP ID (`0x2A50`)** — spec-correct once it arrives, but arrives *after* initial
    driver binding for every device that doesn't have path 1 above (see timing section). Strongest
    *available* evidence once present; requires the re-evaluation path to actually act on it (now
-   hardened per the fixes above).
+   hardened across every registered BLE name-fallback driver per the fixes above).
 3. **Classic BT SDP PnP information** — not separately re-audited this pass; existing code paths for
    Wiimote-family devices explicitly default VID/PID (`device->vendor_id = 0x057E` etc. in
    `wii_u_pro_bt.c`'s `wii_u_init()`) when SDP doesn't supply it, since "Wiimote-family lacks PnP
@@ -496,7 +515,8 @@ Per DATA.md's requested ranking, strongest to weakest, as actually observed in t
 5. **Exact hardware-tested name string** — the fallback every driver already has; now correctly
    demoted below known-contradicting VID/PID per the DS4/Switch-1 fixes above, but not below an
    *unknown* (zero) VID/PID, which is the correct behavior (name is still the best evidence
-   available when nothing stronger exists yet).
+   available when nothing stronger exists yet). All registered BLE name-fallback drivers now apply
+   this rule; the separate Classic late-SDP audit remains open.
 6. **Class of Device / generic HID fallback** — `bthid_gamepad_driver`, lowest priority by
    registration order, matches last per `find_driver()`'s first-match loop.
 

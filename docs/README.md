@@ -14,7 +14,10 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Compatibility results | [`status/compatibility-matrix.md`](status/compatibility-matrix.md) |
 | Evidence and RE rules | [`re-methodology/evidence-standards.md`](re-methodology/evidence-standards.md) |
 | Bluetooth implementation | [`bluetooth/btstack-implementation.md`](bluetooth/btstack-implementation.md) |
+| Controller sleep research | [`bluetooth/controller-sleep-research.md`](bluetooth/controller-sleep-research.md) |
 | Generic Bluetooth gamepad quirks | [`bluetooth/generic-gamepad-quirks.md`](bluetooth/generic-gamepad-quirks.md) |
+| Retro Fighters BattlerGC Pro | [`bluetooth/retrofighters-battlergc-pro.md`](bluetooth/retrofighters-battlergc-pro.md) |
+| 8BitDo Ultimate Bluetooth paddles | [`../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md`](../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md) |
 | Pro Controller 2 USB protocol | [`switch2/usb-spec.md`](switch2/usb-spec.md) |
 | NSO GameCube protocol | [`switch2-gc/protocol.md`](switch2-gc/protocol.md) |
 | Joy-Con 2 protocol | [`switch2-joycon2/protocol.md`](switch2-joycon2/protocol.md) |

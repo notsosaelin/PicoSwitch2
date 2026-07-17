@@ -4,6 +4,7 @@
 // Reference: https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering
 
 #include "switch_pro_bt.h"
+#include "switch_pro_8bitdo.h"
 #include "bt/bthid/bthid.h"
 #include "bt/transport/bt_transport.h"
 #include "core/input_event.h"
@@ -170,6 +171,57 @@ static uint8_t scale_12bit_to_8bit(uint16_t val)
 {
     if (val == 0) return 1;
     return 1 + ((val * 254) / 4095);
+}
+
+static uint32_t switch_translate_vendor_paddles(const bthid_device_t *device,
+                                                uint32_t buttons,
+                                                uint8_t firmware_paddle_bits)
+{
+    // Reserved full-report bits are the custom controller-firmware transport,
+    // so consume them independently of name/OUI/SDP timing. Genuine Switch
+    // controllers leave them clear.
+    buttons = switch_pro_translate_reserved_paddles(
+        buttons, firmware_paddle_bits);
+
+    // The stock-profile chord fallback is controller-specific and remains
+    // restricted to the captured 8BitDo identity.
+    if (device &&
+        switch_pro_8bitdo_ultimate_match(device->bd_addr, device->name,
+                                         device->vendor_id,
+                                         device->product_id)) {
+        return switch_pro_8bitdo_ultimate_translate_paddles(
+            buttons, 0);
+    }
+    return buttons;
+}
+
+static bool switch_quarantine_pro_wake_input(const bthid_device_t *device,
+                                             const switch_bt_data_t *sw)
+{
+    if (!device || !sw || sw->init_state == SWITCH_STATE_ACTIVE) {
+        return false;
+    }
+
+    // The genuine Switch 1 Pro emits temporary simple-mode input while the
+    // driver negotiates report 0x30. On a dock sleep power-cycle, that startup
+    // stream can contain a neutral report followed by synthetic/restored
+    // button state, which looks like a real neutral->pressed wake edge.
+    //
+    // Continue routing those reports to USB, but exclude them from automatic
+    // wake until all initialization subcommands have settled. The known
+    // first-generation 8BitDo Ultimate path already has confirmed reconnect/
+    // wake behavior and deliberately remains unchanged.
+    if (switch_pro_8bitdo_ultimate_match(device->bd_addr, device->name,
+                                         device->vendor_id,
+                                         device->product_id)) {
+        return false;
+    }
+
+    const bool pro_name =
+        device->name && strstr(device->name, "Pro Controller") != NULL;
+    const bool pro_pid =
+        device->vendor_id == 0x057E && device->product_id == 0x2009;
+    return pro_name || pro_pid;
 }
 
 // Encode rumble intensity to Switch rumble format (from USB Switch Pro driver)
@@ -341,7 +393,12 @@ static void switch_process_report(bthid_device_t* device, const uint8_t* data, u
         if (rpt->left)   buttons |= JP_BUTTON_DL;
         if (rpt->right)  buttons |= JP_BUTTON_DR;
 
-        sw->event.buttons = buttons;
+        // Read the reserved extension bits from the wire byte explicitly.
+        // This avoids implementation-defined C bitfield packing.
+        const uint8_t firmware_paddle_bits =
+            switch_pro_extract_reserved_paddles(data, len);
+        sw->event.buttons = switch_translate_vendor_paddles(
+            device, buttons, firmware_paddle_bits);
 
         // Unpack 12-bit sticks
         uint16_t lx = unpack_stick_12bit(rpt->left_stick, false);
@@ -360,6 +417,8 @@ static void switch_process_report(bthid_device_t* device, const uint8_t* data, u
         sw->event.battery_level = (bat_raw > 8) ? 100 : bat_raw * 12 + 5;
         sw->event.battery_charging = (rpt->battery_conn & 0x08) != 0;
 
+        sw->event.suppress_wake_input =
+            switch_quarantine_pro_wake_input(device, sw);
         router_submit_input(&sw->event);
 
     } else if (report_id == SWITCH_REPORT_INPUT_SIMPLE && len >= 12) {
@@ -389,13 +448,18 @@ static void switch_process_report(bthid_device_t* device, const uint8_t* data, u
         if (rpt->hat >= 3 && rpt->hat <= 5) buttons |= JP_BUTTON_DD;
         if (rpt->hat >= 5 && rpt->hat <= 7) buttons |= JP_BUTTON_DL;
 
-        sw->event.buttons = buttons;
+        // The controller firmware patch intentionally exposes paddles only in
+        // normal full-report mode. Ignore simple-report reserved bits so the
+        // stock firmware's transient bit 7 behavior cannot become a paddle.
+        sw->event.buttons = switch_translate_vendor_paddles(device, buttons, 0);
         // 16-bit sticks scaled to 8-bit (0-65535 → 0-255)
         sw->event.analog[ANALOG_LX] = rpt->lx >> 8;
         sw->event.analog[ANALOG_LY] = 255 - (rpt->ly >> 8);  // Invert Y (Nintendo: up=high, HID: up=low)
         sw->event.analog[ANALOG_RX] = rpt->rx >> 8;
         sw->event.analog[ANALOG_RY] = 255 - (rpt->ry >> 8);  // Invert Y (Nintendo: up=high, HID: up=low)
 
+        sw->event.suppress_wake_input =
+            switch_quarantine_pro_wake_input(device, sw);
         router_submit_input(&sw->event);
     }
 }

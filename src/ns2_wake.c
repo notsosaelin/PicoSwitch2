@@ -18,6 +18,7 @@
 #define NS2_WAKE_USB_INACTIVE_DEBOUNCE_MS 750
 #define NS2_WAKE_BOOT_GRACE_MS 2000
 #define NS2_WAKE_RETRY_MS 500
+#define NS2_WAKE_INPUT_SOURCES 8
 
 static config_wake_identity_t pending_identity;
 static bool pending_valid;
@@ -32,6 +33,10 @@ static volatile uint32_t usb_state_changed_ms;
 // Controller input and all automatic-wake state are owned by core1.
 static volatile bool controller_input_pending;
 static volatile uint32_t controller_input_ms;
+static uint8_t controller_input_pending_source;
+static bool controller_input_active[NS2_WAKE_INPUT_SOURCES];
+static bool controller_input_baselined[NS2_WAKE_INPUT_SOURCES];
+static bool controller_input_suppressed;
 static bool auto_wake_initialized;
 static bool auto_wake_armed;
 static bool auto_wake_sent;
@@ -102,14 +107,78 @@ void ns2_wake_publish_usb_state(bool mounted, bool suspended, uint32_t now_ms) {
     usb_state_changed_ms = now_ms;
 }
 
-void ns2_wake_note_controller_input(bool non_neutral, uint32_t now_ms) {
+static void ns2_wake_cancel_pending_input(void) {
+    controller_input_pending = false;
+    auto_wake_retry_ms = 0;
+}
+
+void ns2_wake_set_input_suppressed(bool suppressed) {
+    controller_input_suppressed = suppressed;
+    if (suppressed) ns2_wake_cancel_pending_input();
+}
+
+static uint8_t ns2_wake_source(uint8_t source) {
+    return source < NS2_WAKE_INPUT_SOURCES ? source : 0;
+}
+
+void ns2_wake_controller_rebaseline(uint8_t source) {
+    // A reconnect or controller protocol transition can restore a stale/startup
+    // report before the user has touched it. Do not interpret that state as a
+    // fresh edge. Wake becomes eligible again only after a neutral report
+    // establishes a real released baseline.
+    source = ns2_wake_source(source);
+    if (controller_input_pending &&
+        controller_input_pending_source == source) {
+        ns2_wake_cancel_pending_input();
+    }
+    controller_input_active[source] = false;
+    controller_input_baselined[source] = false;
+}
+
+void ns2_wake_controller_session_started(uint8_t source) {
+    ns2_wake_controller_rebaseline(source);
+}
+
+void ns2_wake_controller_session_ended(uint8_t source) {
+    // A pending edge belongs to the session that produced it. It must not
+    // survive an asynchronous disconnect and fire after reconnect or after a
+    // BOOTSEL wipe frees the radio.
+    source = ns2_wake_source(source);
+    if (controller_input_pending &&
+        controller_input_pending_source == source) {
+        ns2_wake_cancel_pending_input();
+    }
+    controller_input_active[source] = false;
+    controller_input_baselined[source] = false;
+}
+
+void ns2_wake_note_controller_input(uint8_t source, bool non_neutral, uint32_t now_ms) {
+    source = ns2_wake_source(source);
+    if (controller_input_suppressed) return;
     // Deliberately latch only real input. Controllers commonly reconnect after
     // the dock's sleep power-cycle and immediately send neutral reports; using
     // connection alone would wake the console again every time it went to sleep.
-    if (non_neutral) {
+    //
+    // A newly-connected controller is not eligible until it reports neutral.
+    // This rejects restored/stale startup button state without imposing a
+    // timer or reconnect blackout. A controller that remained connected while
+    // the console slept was already baselined and retains first-press wake.
+    if (!controller_input_baselined[source]) {
+        controller_input_active[source] = non_neutral;
+        if (!non_neutral) controller_input_baselined[source] = true;
+        return;
+    }
+
+    // Latch only the neutral -> pressed edge. Some controllers continuously
+    // stream the same held state, which must not queue repeated advertisements.
+    // A later release and new press is a new explicit wake intent, however, and
+    // may retry if an earlier reconnect-time press did not wake the console.
+    if (non_neutral && !controller_input_active[source]) {
         controller_input_ms = now_ms;
+        controller_input_pending_source = source;
         controller_input_pending = true;
     }
+    controller_input_active[source] = non_neutral;
 }
 
 void ns2_wake_service(uint32_t now_ms) {
@@ -122,14 +191,19 @@ void ns2_wake_service(uint32_t now_ms) {
     if (g_usb_personality != USB_PERSONALITY_SWITCH2_PRO2) {
         auto_wake_armed = false;
         auto_wake_sent = false;
-        controller_input_pending = false;
+        ns2_wake_cancel_pending_input();
         return;
     }
 #else
     (void)now_ms;
-    controller_input_pending = false;
+    ns2_wake_cancel_pending_input();
     return;
 #endif
+
+    if (controller_input_suppressed) {
+        ns2_wake_cancel_pending_input();
+        return;
+    }
 
     bool host_awake = usb_host_mounted && !usb_host_suspended;
     if (host_awake) {
@@ -138,8 +212,7 @@ void ns2_wake_service(uint32_t now_ms) {
         }
         auto_wake_armed = false;
         auto_wake_sent = false;
-        auto_wake_retry_ms = 0;
-        controller_input_pending = false;
+        ns2_wake_cancel_pending_input();
         return;
     }
 
@@ -169,9 +242,19 @@ void ns2_wake_service(uint32_t now_ms) {
         printf("[NS2_WAKE] USB host inactive; waiting for controller input\n");
     }
 
-    if (!controller_input_pending || auto_wake_sent ||
+    if (!controller_input_pending ||
         (auto_wake_retry_ms != 0 && (int32_t)(now_ms - auto_wake_retry_ms) < 0)) {
         return;
+    }
+
+    if (auto_wake_sent) {
+        // The previous distinct press already started its complete advertising
+        // sequence. Wait until that radio operation is over, then allow this
+        // newly-latched press to make one fresh attempt if USB is still asleep.
+        // This is intentionally not a timer-driven automatic retry: a neutral
+        // release followed by another real press is required.
+        if (btstack_host_wake_advertisement_active()) return;
+        auto_wake_sent = false;
     }
 
     printf("[NS2_WAKE] Controller input while host inactive; sending wake\n");

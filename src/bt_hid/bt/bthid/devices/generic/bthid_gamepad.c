@@ -406,6 +406,7 @@ static void process_report_dynamic(bthid_gamepad_data_t* gp, const uint8_t* data
     // Reset profile-owned state every report before the optional extractor
     // adds raw-byte controls or native semantic fields.
     gp->event.gc_has_native_layout = false;
+    gp->event.gc_native_zl = false;
     gp->event.gc_native_z = false;
     gp->event.gc_l_detent = false;
     gp->event.gc_r_detent = false;
@@ -570,9 +571,12 @@ static void gamepad_task(bthid_device_t* device)
     uint8_t right = fb->rumble.right;
 
     if (left != gp->rumble_left || right != gp->rumble_right) {
-        // Preserve the v1.2 behavior gate: name-only Xbox matches parse input,
-        // but generic-driver rumble is sent only after Microsoft VID resolves.
-        if (device->vendor_id == 0x045E && gp->map.quirk->send_rumble) {
+        // Output is profile-owned and additionally gated by that profile's
+        // resolved vendor ID. This preserves the v1.2 rule that a name-only
+        // Xbox match cannot receive output while allowing other exact,
+        // hardware-evidenced profiles (such as the 8BitDo NGC Modkit).
+        if (gamepad_quirk_can_send_rumble(gp->map.quirk,
+                                          device->vendor_id)) {
             if (!gp->map.quirk->send_rumble(device->conn_index, left, right)) {
                 return;  // Preserve dirty state and cache so failed OFF transitions retry.
             }

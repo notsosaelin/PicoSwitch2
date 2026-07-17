@@ -127,6 +127,12 @@ int main(void) {
         switch_gc_encode_report(&in, 0, out);
         CHECK(out[0x3] == 0x20, "ZL alone -> byte1 0x20");
         CHECK((out[0x2] & 0x20) == 0, "ZL alone does NOT set byte0 0x20 (native Z bit)");
+
+        in = neutral_input();
+        in.gc_extra = GC_MASK_ZL;
+        switch_gc_encode_report(&in, 0, out);
+        CHECK(out[0x3] == 0x20, "native-layout ZL alone -> byte1 0x20");
+        CHECK((out[0x2] & 0x20) == 0, "native-layout ZL does NOT alias native Z");
     }
 
     // 5. Analog L/R at 0x00, an intermediate value, and 0xFF.
@@ -267,6 +273,9 @@ int main(void) {
 
         in = neutral_input(); in.buttons[2] = SWITCH_MASK_ZL;
         switch_gc_encode_report05(&in, 0, out); CHECK(out[0x6] == 0x80, "report05: ZL -> byte0x6 0x80");
+
+        in = neutral_input(); in.gc_extra = GC_MASK_ZL;
+        switch_gc_encode_report05(&in, 0, out); CHECK(out[0x6] == 0x80, "report05: native ZL -> byte0x6 0x80");
 
         in = neutral_input(); in.buttons[2] = SWITCH_MASK_DPAD_UP;
         switch_gc_encode_report05(&in, 0, out); CHECK(out[0x6] == 0x02, "report05: D-pad Up -> byte0x6 0x02");

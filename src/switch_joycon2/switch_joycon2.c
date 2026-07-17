@@ -238,6 +238,37 @@ static const uint8_t switch_joycon2_ms_compat_id[] = {
 };
 _Static_assert(sizeof(switch_joycon2_ms_compat_id) == 40, "MS compat ID descriptor must be 40 bytes");
 
+// Extended Properties OS feature descriptor: register the WinUSB device-interface GUID for IF1.
+// The Compatible ID descriptor above is sufficient to load WinUSB, but it does not create the
+// discoverable device interface that libusb (and therefore SDL/Steam) needs in order to open IF1.
+// Windows requests this descriptor with the same vendor code and wIndex=0x0005. The GUID is the
+// value observed on the working Joy-Con 2 (R) WinUSB node on 2026-07-16; one device-family GUID is
+// intentionally shared by both sides.
+static const uint8_t switch_joycon2_ms_ext_props[] = {
+    // Header (10 bytes)
+    0x8E, 0x00, 0x00, 0x00,              // dwLength = 142
+    0x00, 0x01,                          // bcdVersion = 1.00
+    0x05, 0x00,                          // wIndex = 0x0005 (Extended Properties)
+    0x01, 0x00,                          // wCount = 1 custom property
+
+    // Custom property section (132 bytes)
+    0x84, 0x00, 0x00, 0x00,              // dwSize = 132
+    0x01, 0x00, 0x00, 0x00,              // dwPropertyDataType = REG_SZ
+    0x28, 0x00,                          // wPropertyNameLength = 40 bytes
+    'D', 0, 'e', 0, 'v', 0, 'i', 0, 'c', 0, 'e', 0,
+    'I', 0, 'n', 0, 't', 0, 'e', 0, 'r', 0, 'f', 0, 'a', 0, 'c', 0, 'e', 0,
+    'G', 0, 'U', 0, 'I', 0, 'D', 0, 0, 0,
+    0x4E, 0x00, 0x00, 0x00,              // dwPropertyDataLength = 78 bytes
+    '{', 0, '6', 0, 'F', 0, '1', 0, '3', 0, '7', 0, '2', 0, '5', 0, 'E', 0,
+    '-', 0, 'E', 0, 'F', 0, '0', 0, 'E', 0,
+    '-', 0, '4', 0, 'F', 0, 'D', 0, '3', 0,
+    '-', 0, 'A', 0, 'E', 0, '5', 0, 'F', 0,
+    '-', 0, 'B', 0, '2', 0, 'D', 0, 'E', 0, '9', 0, '8', 0, '9', 0, 'E', 0,
+    'C', 0, '8', 0, '2', 0, '5', 0, '}', 0, 0, 0,
+};
+_Static_assert(sizeof(switch_joycon2_ms_ext_props) == 142,
+               "MS extended properties descriptor must be 142 bytes");
+
 //--------------------------------------------------------------------+
 // Input report construction -- Stage C. Field layout Confirmed (see switch_joycon2_encode.c's
 // own citations); the actual encoders are pure/host-testable, this is just the runtime glue.
@@ -554,6 +585,10 @@ bool switch_joycon2_vendor_control_xfer(uint8_t rhport, uint8_t stage, const voi
     if (request->bRequest == JOYCON2_MS_OS_VENDOR_CODE && request->wIndex == 0x0004) {
         return tud_control_xfer(rhport, request, (void *)switch_joycon2_ms_compat_id,
                                 sizeof(switch_joycon2_ms_compat_id));
+    }
+    if (request->bRequest == JOYCON2_MS_OS_VENDOR_CODE && request->wIndex == 0x0005) {
+        return tud_control_xfer(rhport, request, (void *)switch_joycon2_ms_ext_props,
+                                sizeof(switch_joycon2_ms_ext_props));
     }
 
     switch (request->bRequest) {

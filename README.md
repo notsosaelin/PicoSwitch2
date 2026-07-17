@@ -126,9 +126,10 @@ retain only wire layouts, invariants, and implementation constraints.
 - One Bluetooth controller is routed at a time.
 - Native Switch 2 console motion output remains under reverse engineering; common PC motion
   input is supported.
-- Joy-Con 2 Left and Right enumerate and stream on real hardware, but their mappings still
-  require complete hardware validation. On Windows/Steam, Left may appear as a generic
-  `Nintendo Joy-Con 2 (L)` requiring setup; Right is recognized normally.
+- Joy-Con 2 Left and Right are separate sideways controller personalities; they are not combined
+  into one paired-controller USB identity.
+- The first-generation 8BitDo Ultimate Bluetooth controller requires the guarded custom controller
+  firmware under `8Bitdo/` to expose P1/P2 independently.
 - Switch 2 wake-from-sleep is implemented in Pro Controller 2 mode. After the console has entered
   sleep, the first real controller input sends the wake request automatically. Neutral reconnect
   reports never trigger wake.

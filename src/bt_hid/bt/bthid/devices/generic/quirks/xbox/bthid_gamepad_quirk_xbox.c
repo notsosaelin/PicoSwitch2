@@ -133,5 +133,6 @@ const gamepad_quirk_t QUIRK_XBOX = {
     .name = "xbox",
     .select_button_map = xbox_select_button_map,
     .extract_extra = xbox_extract_extra,
+    .rumble_vendor_id = 0x045E,
     .send_rumble = xbox_send_rumble,
 };

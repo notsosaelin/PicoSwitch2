@@ -1,6 +1,7 @@
 // stadia_bt.c - Google Stadia Controller Bluetooth driver
 #include "stadia_bt.h"
 #include "bt/bthid/bthid.h"
+#include "bt/bthid/bthid_identity.h"
 #include "bt/transport/bt_transport.h"
 #include "core/input_event.h"
 #include "core/router/router.h"
@@ -71,12 +72,22 @@ static stadia_bt_data_t stadia_data[BTHID_MAX_DEVICES];
 static bool stadia_match(const char* device_name, const uint8_t* class_of_device,
                          uint16_t vendor_id, uint16_t product_id, bool is_ble)
 {
+    static const uint16_t stadia_pids[] = { STADIA_PID };
+
     (void)class_of_device;
     (void)is_ble;
 
     // Match by VID/PID
     if (vendor_id == GOOGLE_VID && product_id == STADIA_PID) {
         return true;
+    }
+
+    // Keep the advertised-name fallback for the pre-DIS bind, but do not let
+    // it override a later contradictory Google VID/PID identity.
+    if (!bthid_name_fallback_allowed(vendor_id, product_id, GOOGLE_VID,
+                                      stadia_pids,
+                                      sizeof(stadia_pids) / sizeof(stadia_pids[0]))) {
+        return false;
     }
 
     // Match by name (BLE advertises as "Stadia...")

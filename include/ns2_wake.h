@@ -18,10 +18,20 @@ void ns2_wake_pairing_commit(void);
 bool ns2_wake_request(void);
 
 // Automatic wake coordination. Core0 publishes TinyUSB host state; core1
-// latches real controller input and services the one-shot wake decision.
-// A bare controller connection/neutral report never wakes the console.
+// latches real controller input and services the wake decision. Each distinct
+// neutral-to-pressed edge can make one attempt; a held button cannot repeat it.
+// A new controller session must establish a neutral baseline before a pressed
+// report can become wake intent. A bare reconnect/restored startup state never
+// wakes the console.
 void ns2_wake_publish_usb_state(bool mounted, bool suspended, uint32_t now_ms);
-void ns2_wake_note_controller_input(bool non_neutral, uint32_t now_ms);
+void ns2_wake_controller_session_started(uint8_t source);
+void ns2_wake_controller_session_ended(uint8_t source);
+// Forget any startup/protocol-transition input observed in the current
+// connection and require a fresh neutral baseline. Drivers use this while a
+// controller is negotiating an input mode whose reports are not user intent.
+void ns2_wake_controller_rebaseline(uint8_t source);
+void ns2_wake_note_controller_input(uint8_t source, bool non_neutral, uint32_t now_ms);
+void ns2_wake_set_input_suppressed(bool suppressed);
 void ns2_wake_service(uint32_t now_ms);
 
 #endif

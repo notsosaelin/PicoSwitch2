@@ -41,6 +41,24 @@ referenced elsewhere in this codebase's `is_8bitdo` checks); trust `0x2DC8`.
 cleanly, which is good news but not yet proof of consistency across sessions), and the second
 pairing mode noted above.
 
+## Rumble output — Implemented, hardware validation pending
+
+BlueRetro commit `e1a9831a875f5313a923160a1379a7ebbfaa2b11` contains an explicit
+`BT_QUIRK_8BITDO_GC` output path for this advertised model. It sends Classic HID output report
+`0xA5` with a three-byte payload:
+
+```text
+DB <low-frequency power> <high-frequency power>
+```
+
+PicoSwitch2 now reproduces that exact framing through the Modkit's existing PID-specific generic
+gamepad quirk. The shared output task authorizes the callback only after VID `0x2DC8` resolves;
+PID `0x286A` is already required to select the quirk. This does not widen output access to other
+8BitDo or generic controllers, and the separate Microsoft-VID gate for Xbox-family quirks remains
+intact. The host contract test pins ON intensity bytes, report ID, payload length, wrong/unresolved
+VID rejection, and transport-send result propagation. Pico W, Pico 2 W, and legacy Switch 1 builds
+pass. Physical ON/OFF, intensity, and reconnect validation remain pending.
+
 ## Final confirmed mapping — Switch 2 Pro Controller 2 mode
 
 | Physical control | HID usage | Output | Notes |

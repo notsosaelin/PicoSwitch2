@@ -30,8 +30,11 @@
 *.exe
 *.out
 *.app
+__pycache__/
+*.py[cod]
 
 build
+/8Bitdo/research/
 
 # Local reference clones and USB captures (large or independently versioned)
 /nso-gc-refs/

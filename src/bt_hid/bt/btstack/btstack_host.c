@@ -91,6 +91,7 @@ extern int find_player_index(int dev_addr, int instance);
 // no behavior when disabled. sw2_capture.c avoids tusb.h/BTstack header conflicts itself (it
 // only needs tusb.h's tud_cdc_* calls, no BTstack types), so it's safe to include directly here.
 #include "sw2_capture.h"
+#include "bt_identity_log.h"
 
 // ============================================================================
 // FLASH HELPERS (for TLV storage)
@@ -311,6 +312,28 @@ static struct {
     // Connection timeout recovery
     uint32_t recovery_start_time;        // When recovery started (0 = no recovery pending)
 } classic_state;
+
+// Pre-HID Classic pairing diagnostics. The normal identity log begins at
+// bt_on_hid_ready(), which leaves no evidence when a controller is discovered
+// but authentication or HID channel setup fails first. Record only the sparse
+// state transitions needed to diagnose that boundary; this is RAM-only,
+// pull-based through `btid dump`, and does not alter connection behavior.
+static void classic_pair_diag(uint8_t conn_index, const char *name, uint32_t cod,
+                              uint16_t vendor_id, uint16_t product_id,
+                              const char *reason)
+{
+    uint8_t cod_bytes[3] = {
+        (uint8_t)(cod & 0xFF),
+        (uint8_t)((cod >> 8) & 0xFF),
+        (uint8_t)((cod >> 16) & 0xFF),
+    };
+    bt_identity_log_record(conn_index, false, name,
+                           vendor_id, product_id, 0,
+                           (vendor_id || product_id) ? BTID_PROV_CLASSIC_SDP
+                                                     : BTID_PROV_UNKNOWN,
+                           cod_bytes, 0, NULL,
+                           "BTstack pre-HID", reason, -1);
+}
 
 // ============================================================================
 // WIIMOTE DIRECT L2CAP STATE
@@ -1866,6 +1889,8 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 }
 
                 printf("[BTSTACK_HOST] Classic gamepad found, connecting...\n");
+                classic_pair_diag(0xFF, name, cod, 0, 0,
+                                  "classic-candidate-admitted");
                 btstack_host_stop_scan();  // Stop inquiry
 
                 // Save pending info for PIN code handler and deferred connection
@@ -2034,6 +2059,16 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             printf("[BTSTACK_HOST] Connection complete: status=%d handle=0x%04X addr=%02X:%02X:%02X:%02X:%02X:%02X\n",
                    status, handle, addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
 
+            if (classic_state.pending_valid &&
+                bd_addr_cmp(addr, classic_state.pending_addr) == 0) {
+                char reason[BTID_REASON_LEN];
+                snprintf(reason, sizeof(reason), "classic-acl-status-0x%02X", status);
+                classic_pair_diag(0xFF, classic_state.pending_name,
+                                  classic_state.pending_cod,
+                                  classic_state.pending_vid,
+                                  classic_state.pending_pid, reason);
+            }
+
             // Handle connection complete for both incoming and outgoing connections
             if (status == 0) {
                 if (pairing_lockout) {
@@ -2073,6 +2108,24 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                         // Requesting auth here concurrently with SDP causes CYW43 SPI
                         // bus failures on devices with large HID descriptors (DS4 clones).
                         if (classic_state.pending_hid_connect && wiimote_conn.active) {
+                            gap_request_security_level(handle, LEVEL_2);
+                        } else if (strcmp(classic_state.pending_name,
+                                          "Xbox Wireless Controller") == 0) {
+                            // Retro Fighters BattlerGC Pro Bluetooth XInput mode uses
+                            // this exact Classic name and valid gamepad COD (0x002508),
+                            // but stalls after a successful ACL open: no auth,
+                            // encryption, SDP, or HID-open event follows. BlueRetro's
+                            // successful trace for the same model explicitly starts
+                            // SSP authentication at this boundary before SDP/HID.
+                            //
+                            // Keep this exception name+transport scoped. Broad early
+                            // auth is unsafe here because the Sony/CYW43 SDP race above
+                            // is already hardware-evidenced.
+                            classic_pair_diag(0xFF, classic_state.pending_name,
+                                              classic_state.pending_cod,
+                                              classic_state.pending_vid,
+                                              classic_state.pending_pid,
+                                              "classic-early-auth-request");
                             gap_request_security_level(handle, LEVEL_2);
                         }
                     } else {
@@ -2758,6 +2811,15 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 // or the outgoing HID failure handler. If we're waiting for an incoming
                 // reconnection, don't restart scanning here.
                 printf("[BTSTACK_HOST] Classic disconnect: handle=0x%04X (BLE state unchanged)\n", handle);
+                {
+                    char diag_reason[BTID_REASON_LEN];
+                    snprintf(diag_reason, sizeof(diag_reason),
+                             "classic-acl-drop-0x%02X", reason);
+                    classic_pair_diag(0xFF, classic_state.pending_name,
+                                      classic_state.pending_cod,
+                                      classic_state.pending_vid,
+                                      classic_state.pending_pid, diag_reason);
+                }
 
                 // Clear pending connection state if this was the pending device.
                 // Handles cases where ACL drops before HID opens (e.g., auth failure).
@@ -2855,6 +2917,14 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             uint8_t status = packet[2];
             hci_con_handle_t handle = little_endian_read_16(packet, 3);
             printf("[BTSTACK_HOST] Authentication complete: handle=0x%04X status=0x%02X\n", handle, status);
+            {
+                char reason[BTID_REASON_LEN];
+                snprintf(reason, sizeof(reason), "classic-auth-status-0x%02X", status);
+                classic_pair_diag(0xFF, classic_state.pending_name,
+                                  classic_state.pending_cod,
+                                  classic_state.pending_vid,
+                                  classic_state.pending_pid, reason);
+            }
 
             // Handle PIN_OR_KEY_MISSING (0x06): controller cleared its link key
             // (e.g., put in pairing mode) but we still have a stale stored key.
@@ -2881,6 +2951,14 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
 
             printf("[BTSTACK_HOST] Encryption change: handle=0x%04X status=0x%02X enabled=%d\n",
                    handle, status, enabled);
+            {
+                char reason[BTID_REASON_LEN];
+                snprintf(reason, sizeof(reason), "classic-encrypt-%02X-%u", status, enabled);
+                classic_pair_diag(0xFF, classic_state.pending_name,
+                                  classic_state.pending_cod,
+                                  classic_state.pending_vid,
+                                  classic_state.pending_pid, reason);
+            }
 
             // For Wiimotes, create L2CAP control channel after encryption is enabled
             // This handles both initial pairing (state=IDLE) and reconnection (state=W4_CONTROL_CONNECTED)
@@ -4909,10 +4987,19 @@ static void dis_client_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
                    vendor_source, vid, pid, handle);
 
             ble_connection_t *conn = find_connection_by_handle(handle);
-            if (conn && (conn->vid != vid || conn->pid != pid)) {
+            if (conn && (vid || pid)) {
+                bool changed = conn->vid != vid || conn->pid != pid;
                 conn->vid = vid;
                 conn->pid = pid;
-                printf("[BTSTACK_HOST] DIS: updating device info for conn_index=%d\n", conn->conn_index);
+
+                // Always deliver a valid DIS result to the consuming layer,
+                // even when advertisement data happened to populate the same
+                // IDs first. This makes the late authoritative handoff
+                // idempotent and prevents connection-cache timing from
+                // suppressing driver/quirk re-evaluation. HID binding and
+                // report notifications remain earlier in the sequence.
+                printf("[BTSTACK_HOST] DIS: %s device info for conn_index=%d\n",
+                       changed ? "updating" : "confirming", conn->conn_index);
                 bthid_update_device_info(conn->conn_index, conn->name, vid, pid);
             }
             // Recognize the MouthPad by its Augmental DIS PnP ID (0x1915:0xEEEE)
@@ -5285,6 +5372,23 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
         case HID_SUBEVENT_CONNECTION_OPENED: {
             uint16_t hid_cid = hid_subevent_connection_opened_get_hid_cid(packet);
             uint8_t status = hid_subevent_connection_opened_get_status(packet);
+            classic_connection_t* opening_conn = find_classic_connection_by_cid(hid_cid);
+            {
+                char reason[BTID_REASON_LEN];
+                snprintf(reason, sizeof(reason), "classic-hid-open-0x%02X", status);
+                classic_pair_diag(
+                    opening_conn ? (uint8_t)(opening_conn - classic_state.connections) : 0xFF,
+                    opening_conn && opening_conn->name[0] ? opening_conn->name
+                                                          : classic_state.pending_name,
+                    opening_conn
+                        ? ((uint32_t)opening_conn->class_of_device[0] |
+                           ((uint32_t)opening_conn->class_of_device[1] << 8) |
+                           ((uint32_t)opening_conn->class_of_device[2] << 16))
+                        : classic_state.pending_cod,
+                    opening_conn ? opening_conn->vendor_id : classic_state.pending_vid,
+                    opening_conn ? opening_conn->product_id : classic_state.pending_pid,
+                    reason);
+            }
 
             // Reset security level if we elevated it for Wiimote
             if (classic_state.pending_hid_connect) {
@@ -5501,6 +5605,17 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
         case HID_SUBEVENT_CONNECTION_CLOSED: {
             uint16_t hid_cid = hid_subevent_connection_closed_get_hid_cid(packet);
             printf("[BTSTACK_HOST] HID connection closed, cid=0x%04X\n", hid_cid);
+            classic_connection_t* closing_conn = find_classic_connection_by_cid(hid_cid);
+            if (closing_conn) {
+                classic_pair_diag(
+                    (uint8_t)(closing_conn - classic_state.connections),
+                    closing_conn->name,
+                    (uint32_t)closing_conn->class_of_device[0] |
+                        ((uint32_t)closing_conn->class_of_device[1] << 8) |
+                        ((uint32_t)closing_conn->class_of_device[2] << 16),
+                    closing_conn->vendor_id, closing_conn->product_id,
+                    "classic-hid-closed");
+            }
 
             // Reset debug flag so reconnections produce debug output
             btstack_report_debug_done = false;

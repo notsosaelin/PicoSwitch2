@@ -5,6 +5,7 @@
 // Report format is similar to USB but with BT HID report structure
 
 #include "xbox_bt.h"
+#include "xbox_bt_report.h"
 #include "xbox_rumble.h"
 #include "bt/bthid/bthid.h"
 #include "bt/transport/bt_transport.h"
@@ -20,20 +21,6 @@
 // XBOX BT CONSTANTS
 // ============================================================================
 
-// Standard format button masks — matches HID descriptor button usages 1-15
-// Same layout as Xbox BLE (same hardware, same HID report descriptor)
-// Button usages have gaps: 1,2,_,4,5,_,7,8,_,_,11,12,13,14,15
-#define XBOX_BT_A               0x0001  // Button 1
-#define XBOX_BT_B               0x0002  // Button 2
-#define XBOX_BT_X               0x0008  // Button 4
-#define XBOX_BT_Y               0x0010  // Button 5
-#define XBOX_BT_LEFT_SHOULDER   0x0040  // Button 7 (LB)
-#define XBOX_BT_RIGHT_SHOULDER  0x0080  // Button 8 (RB)
-#define XBOX_BT_BACK            0x0400  // Button 11 (View)
-#define XBOX_BT_START           0x0800  // Button 12 (Menu)
-#define XBOX_BT_GUIDE           0x1000  // Button 13 (Xbox)
-#define XBOX_BT_LEFT_THUMB      0x2000  // Button 14 (L3)
-#define XBOX_BT_RIGHT_THUMB     0x4000  // Button 15 (R3)
 // Share button: NOT in the buttons bitfield — sent as a separate byte (data[16])
 // after the standard 16-byte report on Xbox Series X/S controllers
 #define XBOX_BT_SHARE           0x01
@@ -63,10 +50,10 @@
 typedef struct __attribute__((packed)) {
     uint8_t report_id;          // Report ID
 
-    int16_t lx;                 // Left stick X (-32768 to 32767)
-    int16_t ly;                 // Left stick Y (-32768 to 32767)
-    int16_t rx;                 // Right stick X (-32768 to 32767)
-    int16_t ry;                 // Right stick Y (-32768 to 32767)
+    uint16_t lx;                // Left stick X (0 to 65535)
+    uint16_t ly;                // Left stick Y (0 to 65535)
+    uint16_t rx;                // Right stick X (0 to 65535)
+    uint16_t ry;                // Right stick Y (0 to 65535)
 
     uint16_t lt;                // Left trigger (0-1023)
     uint16_t rt;                // Right trigger (0-1023)
@@ -108,7 +95,9 @@ static xbox_bt_data_t xbox_data[BTHID_MAX_DEVICES];
 // HELPER FUNCTIONS
 // ============================================================================
 
-// Scale 16-bit signed stick value to 8-bit unsigned (1-255, 128 center)
+// Scale 16-bit signed stick value to 8-bit unsigned (1-255, 128 center).
+// Retained for the older alternative report format only; the standard report
+// is unsigned and decoded by xbox_bt_decode_standard_report().
 static uint8_t scale_stick_16to8(int16_t val)
 {
     // Scale from [-32768, 32767] to [1, 255]
@@ -116,13 +105,6 @@ static uint8_t scale_stick_16to8(int16_t val)
     if (scaled <= 0) return 1;
     if (scaled >= 255) return 255;
     return (uint8_t)scaled;
-}
-
-// Scale 10-bit trigger value to 8-bit (0-255)
-static uint8_t scale_trigger_10to8(uint16_t val)
-{
-    // Scale from [0, 1023] to [0, 255]
-    return (uint8_t)(val >> 2);
 }
 
 // ============================================================================
@@ -182,6 +164,9 @@ static bool xbox_init(bthid_device_t* device)
             xbox_data[i].event.dev_addr = device->conn_index;
             xbox_data[i].event.instance = 0;
             xbox_data[i].event.button_count = 10;
+            xbox_data[i].event.layout = LAYOUT_MODERN_4FACE;
+            xbox_data[i].rumble_left = 0;
+            xbox_data[i].rumble_right = 0;
 
             device->driver_data = &xbox_data[i];
 
@@ -211,47 +196,33 @@ static void xbox_process_report(bthid_device_t* device, const uint8_t* data, uin
     // Try to detect based on report length and parse accordingly
 
     if (len >= sizeof(xbox_bt_input_report_t)) {
-        // Standard HID gamepad format (longer report)
-        const xbox_bt_input_report_t* rpt = (const xbox_bt_input_report_t*)data;
-
-        // Parse sticks
-        lx = scale_stick_16to8(rpt->lx);
-        ly = scale_stick_16to8(-rpt->ly);  // Invert Y
-        rx = scale_stick_16to8(rpt->rx);
-        ry = scale_stick_16to8(-rpt->ry);  // Invert Y
-
-        // Parse triggers
-        lt = scale_trigger_10to8(rpt->lt);
-        rt = scale_trigger_10to8(rpt->rt);
-
-        // Parse D-pad (hat format: 0=center, 1=N, 2=NE, 3=E, 4=SE, 5=S, 6=SW, 7=W, 8=NW)
-        uint8_t dpad = rpt->dpad;
-        if (dpad == 1 || dpad == 2 || dpad == 8) buttons |= JP_BUTTON_DU;
-        if (dpad >= 2 && dpad <= 4)              buttons |= JP_BUTTON_DR;
-        if (dpad >= 4 && dpad <= 6)              buttons |= JP_BUTTON_DD;
-        if (dpad >= 6 && dpad <= 8)              buttons |= JP_BUTTON_DL;
-
-        // Parse buttons
-        uint16_t btn = rpt->buttons;
-        if (btn & XBOX_BT_A)              buttons |= JP_BUTTON_B1;
-        if (btn & XBOX_BT_B)              buttons |= JP_BUTTON_B2;
-        if (btn & XBOX_BT_X)              buttons |= JP_BUTTON_B3;
-        if (btn & XBOX_BT_Y)              buttons |= JP_BUTTON_B4;
-        if (btn & XBOX_BT_LEFT_SHOULDER)  buttons |= JP_BUTTON_L1;
-        if (btn & XBOX_BT_RIGHT_SHOULDER) buttons |= JP_BUTTON_R1;
-        if (lt > 10)                      buttons |= JP_BUTTON_L2;
-        if (rt > 10)                      buttons |= JP_BUTTON_R2;
-        if (btn & XBOX_BT_BACK)           buttons |= JP_BUTTON_S1;
-        if (btn & XBOX_BT_START)          buttons |= JP_BUTTON_S2;
-        if (btn & XBOX_BT_LEFT_THUMB)     buttons |= JP_BUTTON_L3;
-        if (btn & XBOX_BT_RIGHT_THUMB)    buttons |= JP_BUTTON_R3;
-        if (btn & XBOX_BT_GUIDE)          buttons |= JP_BUTTON_A1;
+        xbox_bt_decoded_report_t decoded;
+        if (!xbox_bt_decode_standard_report(data, len, &decoded)) {
+            return;
+        }
+        buttons = decoded.buttons;
+        lx = decoded.lx;
+        ly = decoded.ly;
+        rx = decoded.rx;
+        ry = decoded.ry;
+        lt = decoded.lt;
+        rt = decoded.rt;
+        xbox->event.gc_has_native_layout = false;
+        xbox->event.gc_native_zl = false;
+        xbox->event.gc_native_z = false;
+        xbox->event.gc_l_detent = false;
+        xbox->event.gc_r_detent = false;
 
         // Share button: Xbox Series X/S sends it as an extra byte after the
         // standard 16-byte report (byte 16, bit 0) — not in the buttons bitfield
         if (len > 16 && (data[16] & XBOX_BT_SHARE)) buttons |= JP_BUTTON_A2;
 
     } else if (len >= sizeof(xbox_bt_input_alt_t)) {
+        xbox->event.gc_has_native_layout = false;
+        xbox->event.gc_native_zl = false;
+        xbox->event.gc_native_z = false;
+        xbox->event.gc_l_detent = false;
+        xbox->event.gc_r_detent = false;
         // Alternative format (older controllers or different firmware)
         const xbox_bt_input_alt_t* rpt = (const xbox_bt_input_alt_t*)data;
 

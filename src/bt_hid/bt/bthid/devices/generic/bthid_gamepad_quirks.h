@@ -66,10 +66,22 @@ typedef struct {
                            input_event_t *event);
 
     // Optional device-specific rumble output report. NULL = rumble silently unsupported (the
-    // existing, honest behavior for every device this driver matches that isn't Xbox -- see
-    // bthid_gamepad.c's gamepad_task() for why that gap is deliberate, not an oversight).
+    // honest default for generic HID devices without a hardware-evidenced output protocol).
+    //
+    // A sender is authorized only after the resolved device VID matches
+    // rumble_vendor_id. Zero deliberately disables output even if a callback
+    // was accidentally populated, preserving the name-only Xbox safety gate.
+    uint16_t rumble_vendor_id;
     bool (*send_rumble)(uint8_t conn_index, uint8_t left, uint8_t right);
 } gamepad_quirk_t;
+
+static inline bool gamepad_quirk_can_send_rumble(const gamepad_quirk_t *quirk,
+                                                  uint16_t vendor_id)
+{
+    return quirk && quirk->send_rumble &&
+           quirk->rumble_vendor_id != 0 &&
+           quirk->rumble_vendor_id == vendor_id;
+}
 
 struct ble_report_map_s {
     ble_usage_loc_t xLoc, yLoc, zLoc, rzLoc, rxLoc, ryLoc;

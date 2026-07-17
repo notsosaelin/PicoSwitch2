@@ -7,6 +7,7 @@
 #include "xbox_ble.h"
 #include "xbox_rumble.h"
 #include "bt/bthid/bthid.h"
+#include "bt/bthid/bthid_identity.h"
 #include "core/input_event.h"
 #include "core/router/router.h"
 #include "core/buttons.h"
@@ -71,6 +72,13 @@ static bool xbox_ble_match(const char* device_name, const uint8_t* class_of_devi
     // VID match — Microsoft = 0x045E (from GATT DIS PnP ID, available after connection)
     if (vendor_id == 0x045E) {
         return true;
+    }
+
+    // A name match is only provisional while DIS has not resolved a VID. Once
+    // a known non-Microsoft VID arrives, let bthid re-evaluate this device
+    // instead of allowing the early name to pin it to the Xbox parser forever.
+    if (!bthid_name_fallback_allowed(vendor_id, product_id, 0x045E, NULL, 0)) {
+        return false;
     }
 
     if (!device_name) {
