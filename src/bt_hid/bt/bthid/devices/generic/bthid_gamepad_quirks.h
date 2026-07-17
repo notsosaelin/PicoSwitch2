@@ -8,6 +8,8 @@
 // A future Xbox Elite 1 or 3 gets its own quirk file/name -- never folded into "xbox" or
 // "elite2". See STATUS.md's 2026-07-15 entry for the full rationale behind this split (this
 // driver had grown to 1016 lines of accumulating per-controller special cases before it).
+// Current architecture and the mandatory hardware gate are documented in
+// docs/bluetooth/generic-gamepad-quirks.md.
 #ifndef BTHID_GAMEPAD_QUIRKS_H
 #define BTHID_GAMEPAD_QUIRKS_H
 
