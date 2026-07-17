@@ -6,21 +6,23 @@
 
 ## Current objective: post-release compatibility closure
 
-Version `v1.1.0` now preserves the hardware-confirmed Pro Controller 2, NSO GameCube,
-DualSense/Edge, rumble, pairing, and BOOTSEL baseline. Close the remaining mapping and regression
-matrix gaps before beginning new protocol work.
+Version `v1.2.0` now preserves the hardware-confirmed Pro Controller 2, NSO GameCube, individual
+Joy-Con 2, appearance-control, DualSense/Edge, rumble, pairing, wake, and BOOTSEL baseline. Close
+the remaining compatibility gap before beginning new protocol work.
 
 ### Release gate
 
 - [x] Pico W release build
 - [x] Pico 2 W release build
-- [x] Ten host-test executables
+- [x] Thirteen host-test executables
 - [x] DualSense/Edge input, extra buttons, LEDs, and rumble on hardware
 - [x] BOOTSEL double-tap, triple-tap, and hold while DualSense is connected
 - [x] NSO GameCube input and rumble on a real Switch 2
+- [x] Joy-Con 2 Left/Right sideways mappings and rumble on a real Switch 2
+- [x] Configurable Pro2/Joy-Con colors, Sony lightbar matching, and DualSense player dots
 - [x] Reconcile documentation and archive superseded development logs
 - [x] Complete source-comment evidence cleanup
-- [x] Push the release commit and publish both UF2 artifacts (`v1.1.0`, 2026-07-15)
+- [x] Push the release commit and publish both UF2 artifacts (`v1.2.0`, 2026-07-16)
 
 ## Next: compatibility closure
 
