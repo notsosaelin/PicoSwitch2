@@ -42,8 +42,8 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
 - Keep report-boundary maintenance and timer fallback behavior documented together.
 - [x] Reconstruct the generic-gamepad quirk split behind a 14-suite host regression matrix on
   `refactor/quirk-split`; keep `_reverted_quirk_split/` archival rather than copying it blindly.
-- [ ] Hardware-regression-test generic, Xbox Elite 2, 8BitDo MG/M30/NGC profiles before merging
-  the refactor into `ns2-testing`.
+- [x] Hardware-regression-test the generic-gamepad quirk refactor before merging into
+  `ns2-testing` (owner-confirmed with no regressions, 2026-07-16).
 - Resolve BLE Device Information Service VID/PID without delaying driver binding or starving input
   notifications.
 - Add a release checklist that records board, firmware revision, controller firmware, console

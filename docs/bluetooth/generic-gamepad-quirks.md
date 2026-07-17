@@ -1,7 +1,7 @@
 # Generic Bluetooth Gamepad Quirk Architecture
 
-Status: reconstructed on `refactor/quirk-split`; source/build/host-test validated, hardware
-regression pass required before merge into `ns2-testing`.
+Status: reconstructed on `refactor/quirk-split`; source/build/host-test validated and
+owner-confirmed on hardware with no regressions on 2026-07-16.
 
 ## Purpose
 
@@ -73,7 +73,10 @@ separate recovery commits:
 `_reverted_quirk_split/` remains an archival copy until hardware validation is complete. It is not
 compiled and must not be copied over current sources; the active profiles include later fixes.
 
-## Hardware gate before merge
+## Hardware regression gate
+
+The project owner completed the hardware check on 2026-07-16 and reported no regressions. The
+validated areas were defined by this gate:
 
 - Generic controller: ordinary buttons, both sticks, triggers, and D-pad.
 - 8BitDo Ultimate 2 MG: ordinary controls and both back buttons.
@@ -82,4 +85,3 @@ compiled and must not be copied over current sources; the active profiles includ
 - Xbox Elite Series 2: ordinary controls, all four paddles, rumble ON/STOP, and reconnect.
 - Recheck BOOTSEL gestures and wake once with a generic-driver controller connected; this refactor
   does not touch scheduling, but those are release invariants.
-
