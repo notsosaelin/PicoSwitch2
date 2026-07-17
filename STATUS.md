@@ -10,9 +10,10 @@ Branch: `ns2-testing`
 
 ## Current release
 
-[`v1.1.0`](https://github.com/notsosaelin/PicoSwitch2/releases/tag/v1.1.0) was published on
-2026-07-15 with Pico W and Pico 2 W UF2 assets. All ten host-test executables pass, and the primary
-Pro Controller 2, NSO GameCube, DualSense, and BOOTSEL paths have recent physical validation.
+[`v1.2.0`](https://github.com/notsosaelin/PicoSwitch2/releases/tag/v1.2.0) was published on
+2026-07-16 with Pico W and Pico 2 W UF2 assets. All 13 host-test executables pass. Pro Controller 2,
+NSO GameCube, both individual Joy-Con 2 personalities, appearance controls, DualSense/Edge,
+rumble, pairing, wake, and BOOTSEL have recent physical validation.
 
 ## Hardware-confirmed behavior
 
