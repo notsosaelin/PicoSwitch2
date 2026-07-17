@@ -26,7 +26,7 @@ code inspection only; it is weaker than physical hardware confirmation.
 | Joy-Con 2 input | ✅ Confirmed | Side-specific controls | Player LED path present | 🔵 Source-tested | Mapping and rumble fidelity |
 | Switch 1 Pro Controller | ✅ Previously confirmed | Standard controls | Player LED path present | ✅ Previously confirmed | Fresh release regression pass |
 | 8BitDo NGC Modkit | ✅ Confirmed | Native GC capability mapping | N/A | 🔵 Source-tested | Second Android/D-input pairing mode |
-| 8BitDo Ultimate 2 MG | ✅ Identity captured | Paddles implemented | N/A | 🔵 Source-tested | Paddle hardware re-test |
+| 8BitDo Ultimate 2 MG | ✅ Confirmed | ✅ Paddles confirmed | N/A | 🔵 Source-tested | Quirk-refactor hardware regression pass complete |
 | Wiimote family | ✅ Previously confirmed | Attachment parsing present | Player LEDs | ✅ Previously confirmed | Channel/fidelity regression pass |
 
 ## BOOTSEL and pairing

@@ -40,10 +40,6 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
 
 - Extract or wrap the BOOTSEL gesture state machine for a host-side starvation regression test.
 - Keep report-boundary maintenance and timer fallback behavior documented together.
-- [x] Reconstruct the generic-gamepad quirk split behind a 14-suite host regression matrix on
-  `refactor/quirk-split`; keep `_reverted_quirk_split/` archival rather than copying it blindly.
-- [x] Hardware-regression-test the generic-gamepad quirk refactor before merging into
-  `ns2-testing` (owner-confirmed with no regressions, 2026-07-16).
 - Resolve BLE Device Information Service VID/PID without delaying driver binding or starving input
   notifications.
 - Add a release checklist that records board, firmware revision, controller firmware, console

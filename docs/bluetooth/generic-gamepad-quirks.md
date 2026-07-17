@@ -70,8 +70,9 @@ separate recovery commits:
 1. `7cb7d55` — characterization tests and the preserved Elite fallback correction.
 2. `b88279f` — shared-driver integration.
 
-`_reverted_quirk_split/` remains an archival copy until hardware validation is complete. It is not
-compiled and must not be copied over current sources; the active profiles include later fixes.
+The obsolete `_reverted_quirk_split/` working-tree backup was removed after the 2026-07-16
+hardware pass. Its historical checkpoint remains recoverable from Git, but must not be copied over
+current sources; the active profiles include later fixes and the reconstructed driver integration.
 
 ## Hardware regression gate
 
