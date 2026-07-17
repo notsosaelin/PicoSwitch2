@@ -8,7 +8,7 @@
 
 #include "bthid_gamepad.h"
 #include "bt/bthid/bthid.h"
-#include "bt/bthid/devices/vendors/microsoft/xbox_rumble.h"
+#include "bt/bthid/devices/generic/bthid_gamepad_quirks.h"
 #include "bt/transport/bt_transport.h"
 #include "core/input_event.h"
 #include "core/router/router.h"
@@ -18,33 +18,6 @@
 #include "usb/usbh/hid/devices/generic/hid_parser.h"
 #include <string.h>
 #include <stdio.h>
-
-// ============================================================================
-// REPORT MAP TYPES (mirrors USB hid_gamepad.c dinput_usage_t)
-// ============================================================================
-
-#define BLE_MAX_BUTTONS 16
-
-typedef struct {
-    uint8_t byteIndex;
-    uint16_t bitMask;
-    uint32_t max;
-} ble_usage_loc_t;
-
-typedef struct {
-    ble_usage_loc_t xLoc, yLoc, zLoc, rzLoc, rxLoc, ryLoc;
-    ble_usage_loc_t hatLoc;
-    uint8_t hat_min;
-    ble_usage_loc_t buttonLoc[BLE_MAX_BUTTONS];
-    uint8_t buttonCnt;
-    uint8_t report_id;
-    bool has_sim_triggers;
-    bool is_xbox;
-    bool is_8bitdo;
-    bool is_elite2;
-    bool digital_shoulder_triggers;
-    bool is_ngc_modkit;
-} ble_report_map_t;
 
 // ============================================================================
 // DRIVER DATA
@@ -69,121 +42,6 @@ static bthid_gamepad_data_t gamepad_data[BTHID_MAX_DEVICES];
 
 static const uint8_t HAT_SWITCH_TO_DIRECTION_BUTTONS[] = {
     0b0001, 0b0011, 0b0010, 0b0110, 0b0100, 0b1100, 0b1000, 0b1001, 0b0000
-};
-
-// ============================================================================
-// BUTTON USAGE MAPPING TABLES
-// ============================================================================
-
-// Xbox BT HID: buttons 1-15 with gaps at 3,6,9,10
-// A=1, B=2, X=4, Y=5, LB=7, RB=8, View=11, Menu=12, Xbox=13, L3=14, R3=15
-static const uint32_t XBOX_BUTTON_MAP[17] = {
-    0,                  // usage 0: invalid
-    JP_BUTTON_B1,       // usage 1: A
-    JP_BUTTON_B2,       // usage 2: B
-    0,                  // usage 3: (pad)
-    JP_BUTTON_B3,       // usage 4: X
-    JP_BUTTON_B4,       // usage 5: Y
-    0,                  // usage 6: (pad)
-    JP_BUTTON_L1,       // usage 7: LB
-    JP_BUTTON_R1,       // usage 8: RB
-    0,                  // usage 9: (pad)
-    0,                  // usage 10: (pad)
-    JP_BUTTON_S1,       // usage 11: View
-    JP_BUTTON_S2,       // usage 12: Menu
-    JP_BUTTON_A1,       // usage 13: Xbox
-    JP_BUTTON_L3,       // usage 14: L3
-    JP_BUTTON_R3,       // usage 15: R3
-    JP_BUTTON_A2,       // usage 16: Share (Series X/S)
-};
-
-// Xbox Classic BT: sequential buttons 1-15 (no gaps like BLE), different order from generic
-static const uint32_t XBOX_SEQ_BUTTON_MAP[16] = {
-    0,                  // usage 0: invalid
-    JP_BUTTON_B1,       // usage 1: A
-    JP_BUTTON_B2,       // usage 2: B
-    JP_BUTTON_B3,       // usage 3: X
-    JP_BUTTON_B4,       // usage 4: Y
-    JP_BUTTON_L1,       // usage 5: LB
-    JP_BUTTON_R1,       // usage 6: RB
-    JP_BUTTON_S1,       // usage 7: Back/View
-    JP_BUTTON_S2,       // usage 8: Start/Menu
-    JP_BUTTON_L3,       // usage 9: L3
-    JP_BUTTON_R3,       // usage 10: R3
-    JP_BUTTON_A1,       // usage 11: Guide
-    0,                  // usage 12
-    0,                  // usage 13
-    0,                  // usage 14
-    JP_BUTTON_A2,       // usage 15: Share (Series X/S)
-};
-
-// Standard sequential HID gamepads: shoulders before triggers
-// Used by most generic controllers
-static const uint32_t SEQ_BUTTON_MAP[16] = {
-    0,                  // usage 0: invalid
-    JP_BUTTON_B1,       // usage 1: face 1 (A/Cross)
-    JP_BUTTON_B2,       // usage 2: face 2 (B/Circle)
-    JP_BUTTON_B3,       // usage 3: face 3 (X/Square)
-    JP_BUTTON_B4,       // usage 4: face 4 (Y/Triangle)
-    JP_BUTTON_L1,       // usage 5: left shoulder
-    JP_BUTTON_R1,       // usage 6: right shoulder
-    JP_BUTTON_L2,       // usage 7: left trigger (digital)
-    JP_BUTTON_R2,       // usage 8: right trigger (digital)
-    JP_BUTTON_S1,       // usage 9: select/back
-    JP_BUTTON_S2,       // usage 10: start/menu
-    JP_BUTTON_L3,       // usage 11: left stick
-    JP_BUTTON_R3,       // usage 12: right stick
-    JP_BUTTON_A1,       // usage 13: guide/home
-    JP_BUTTON_A2,       // usage 14: capture/share
-    JP_BUTTON_A3,       // usage 15: assistant/mute
-};
-
-// 8BitDo controllers with back paddles (Ultimate, Pro 2, etc.)
-// VID 0x2DC8. Descriptor order inserts R4 at 3 and L4 at 6:
-//   A B R4 X Y L4 LB RB LT RT Select Start L3 R3 Home Capture
-static const uint32_t BITDO_BUTTON_MAP[17] = {
-    0,                  // usage 0: invalid
-    JP_BUTTON_B1,       // usage 1: A
-    JP_BUTTON_B2,       // usage 2: B
-    JP_BUTTON_R4,       // usage 3: R4 (back paddle)
-    JP_BUTTON_B3,       // usage 4: X
-    JP_BUTTON_B4,       // usage 5: Y
-    JP_BUTTON_L4,       // usage 6: L4 (back paddle)
-    JP_BUTTON_L1,       // usage 7: LB
-    JP_BUTTON_R1,       // usage 8: RB
-    JP_BUTTON_L2,       // usage 9: LT (digital)
-    JP_BUTTON_R2,       // usage 10: RT (digital)
-    JP_BUTTON_S1,       // usage 11: Select
-    JP_BUTTON_S2,       // usage 12: Start
-    JP_BUTTON_A1,       // usage 13: Home
-    JP_BUTTON_L3,       // usage 14: L3
-    JP_BUTTON_R3,       // usage 15: R3
-    JP_BUTTON_A2,       // usage 16: Capture
-};
-
-// 8BitDo NGC Modkit, specifically VID:PID 2DC8:286A in the captured Classic-BT mode. This
-// PID-specific table avoids the unrelated paddle-controller layout. Face buttons are direct;
-// analog triggers are handled by the seam; Z is kept distinct; the two stick-click controls are
-// intentionally repurposed as Capture/Home. Exact evidence and rejected mappings are documented
-// in docs/bluetooth/8bitdo-ngc-diy-profile.md.
-static const uint32_t NGC_MODKIT_BUTTON_MAP[17] = {
-    0,                  // usage 0: invalid
-    JP_BUTTON_B2,       // usage 1: A -> NS2 A (direct, not rotated)
-    JP_BUTTON_B1,       // usage 2: B -> NS2 B
-    0,                  // usage 3: not wired on this unit
-    JP_BUTTON_B4,       // usage 4: X -> NS2 X
-    JP_BUTTON_B3,       // usage 5: Y -> NS2 Y
-    0,                  // usage 6: not wired on this unit
-    0,                  // usage 7: L-trigger partial-travel echo -- suppressed
-    0,                  // usage 8: R-trigger partial-travel echo -- suppressed
-    0,                  // usage 9: L trigger true click -- suppressed; analog fold drives ZL instead
-    0,                  // usage 10: R trigger true click -- suppressed; analog fold drives ZR instead
-    JP_BUTTON_R1,       // usage 11: Z -> NS2 "R" (not ZR -- must not collide with the analog fold)
-    JP_BUTTON_S2,       // usage 12: Start
-    0,                  // usage 13: not wired on this unit (no Home/Menu button)
-    JP_BUTTON_A2,       // usage 14: physical L3 repurposed -> CAPTURE
-    JP_BUTTON_A1,       // usage 15: physical R3 repurposed -> HOME
-    0,                  // usage 16: not wired on this unit
 };
 
 // ============================================================================
@@ -214,8 +72,6 @@ static uint16_t extract_field(const uint8_t* data, uint16_t len, ble_usage_loc_t
     }
     return (raw & loc->bitMask) >> __builtin_ctz(loc->bitMask);
 }
-
-static bool device_is_m30(const bthid_device_t* device);
 
 void bthid_gamepad_set_descriptor(bthid_device_t* device, const uint8_t* desc, uint16_t desc_len)
 {
@@ -370,47 +226,16 @@ void bthid_gamepad_set_descriptor(bthid_device_t* device, const uint8_t* desc, u
         }
     }
 
-    // BLE PnP VID/PID often doesn't resolve, so also match Xbox by name (the driver
-    // already relies on the name; button output is correct, which proves is_xbox holds).
-    gp->map.is_xbox = (device->vendor_id == 0x045E) ||
-                      (device->name[0] && strstr(device->name, "Xbox") != NULL);
-    gp->map.is_8bitdo = (device->vendor_id == 0x2DC8);
-    gp->map.is_elite2 = (device->vendor_id == 0x045E &&
-                         (device->product_id == 0x0B05 || device->product_id == 0x0B22));
-    gp->map.is_ngc_modkit = (device->vendor_id == 0x2DC8 && device->product_id == 0x286A);
-    gp->map.digital_shoulder_triggers = device_is_m30(device);
+    gp->map.quirk = gamepad_quirks_identify(device->vendor_id, device->product_id,
+                                             device->name, gp->map.buttonCnt);
     gp->has_report_map = true;
-    printf("[BTHID_GAMEPAD] Parsed: %d btns, X@%d Y@%d Z@%d RZ@%d RX@%d RY@%d hat@%d(min=%d) sim=%d xbox=%d 8bitdo=%d\n",
+    printf("[BTHID_GAMEPAD] Parsed: %d btns, X@%d Y@%d Z@%d RZ@%d RX@%d RY@%d hat@%d(min=%d) sim=%d quirk=%s\n",
            btns_count,
            gp->map.xLoc.byteIndex, gp->map.yLoc.byteIndex,
            gp->map.zLoc.byteIndex, gp->map.rzLoc.byteIndex,
            gp->map.rxLoc.byteIndex, gp->map.ryLoc.byteIndex,
            gp->map.hatLoc.byteIndex, gp->map.hat_min, gp->map.has_sim_triggers,
-           gp->map.is_xbox, gp->map.is_8bitdo);
-}
-
-// 8BitDo M30: Genesis/Saturn-style pad with NO analog triggers — its L2/R2 are
-// digital shoulder buttons that the HID report also exposes as trigger axes.
-// Reporting them as analog L2/R2 makes the trigger output bypass button
-// remapping (the analog axis isn't remapped), so users can't reassign L2/R2.
-//
-// Identify primarily by the device NAME: it's the one identifier stable across
-// M30 firmware revisions / power-on modes (which report different BT PIDs), and
-// some units never resolve VID/PID at all (matched only by BT class-of-device,
-// so vendor_id/product_id stay 0). VID/PID is a secondary match for when the
-// SDP Device ID query does succeed.
-static bool device_is_m30(const bthid_device_t* device)
-{
-    // Require BOTH "8BitDo" and "M30" in the name so unrelated devices that just
-    // happen to contain "M30" (phones, other pads) don't get their real analog
-    // triggers zeroed. The advertised name is "8BitDo M30 gamepad".
-    const char* name = device->name;
-    if (name[0] && strstr(name, "8BitDo") && strstr(name, "M30")) {
-        return true;
-    }
-    return (device->vendor_id == 0x2DC8 &&
-            (device->product_id == 0x0651 ||   // M30 over Bluetooth (SDP Device ID)
-             device->product_id == 0x5006));   // M30 USB PID (defensive)
+           gp->map.quirk->name);
 }
 
 void bthid_gamepad_update_vid(bthid_device_t* device)
@@ -418,15 +243,8 @@ void bthid_gamepad_update_vid(bthid_device_t* device)
     bthid_gamepad_data_t* gp = (bthid_gamepad_data_t*)device->driver_data;
     if (!gp || !gp->has_report_map) return;
 
-    // BLE PnP VID/PID often doesn't resolve, so also match Xbox by name (the driver
-    // already relies on the name; button output is correct, which proves is_xbox holds).
-    gp->map.is_xbox = (device->vendor_id == 0x045E) ||
-                      (device->name[0] && strstr(device->name, "Xbox") != NULL);
-    gp->map.is_8bitdo = (device->vendor_id == 0x2DC8);
-    gp->map.is_elite2 = (device->vendor_id == 0x045E &&
-                         (device->product_id == 0x0B05 || device->product_id == 0x0B22));
-    gp->map.is_ngc_modkit = (device->vendor_id == 0x2DC8 && device->product_id == 0x286A);
-    gp->map.digital_shoulder_triggers = device_is_m30(device);
+    gp->map.quirk = gamepad_quirks_identify(device->vendor_id, device->product_id,
+                                             device->name, gp->map.buttonCnt);
 }
 
 // Debug: format the parsed report-field map — see bthid_gamepad.h for why this exists
@@ -444,6 +262,15 @@ bool bthid_gamepad_dump_map(uint8_t conn_index, char* out, unsigned out_size)
         return false;
     }
     ble_report_map_t* m = &gp->map;
+    // Preserve the existing diagnostic JSON contract even though runtime
+    // dispatch now uses one resolved profile instead of these booleans.
+    bool is_xbox = device->vendor_id == 0x045E ||
+                   (device->name[0] && strstr(device->name, "Xbox") != NULL);
+    bool is_8bitdo = device->vendor_id == 0x2DC8;
+    bool is_elite2 = device->vendor_id == 0x045E &&
+                     (device->product_id == 0x0B05 || device->product_id == 0x0B22);
+    bool is_ngc_modkit = device->vendor_id == 0x2DC8 && device->product_id == 0x286A;
+    bool digital_shoulder_triggers = m->quirk && m->quirk->digital_shoulder_triggers;
     int j = snprintf(out, out_size,
         "{\"report_id\":%u,\"button_cnt\":%u,\"is_xbox\":%s,\"is_8bitdo\":%s,"
         "\"is_elite2\":%s,\"is_ngc_modkit\":%s,\"has_sim_triggers\":%s,\"digital_shoulder_triggers\":%s,"
@@ -455,10 +282,10 @@ bool bthid_gamepad_dump_map(uint8_t conn_index, char* out, unsigned out_size)
         "\"rx\":{\"byte\":%u,\"mask\":\"0x%02X\",\"max\":%lu},"
         "\"ry\":{\"byte\":%u,\"mask\":\"0x%02X\",\"max\":%lu},"
         "\"buttons\":[",
-        m->report_id, m->buttonCnt, m->is_xbox ? "true" : "false",
-        m->is_8bitdo ? "true" : "false", m->is_elite2 ? "true" : "false",
-        m->is_ngc_modkit ? "true" : "false",
-        m->has_sim_triggers ? "true" : "false", m->digital_shoulder_triggers ? "true" : "false",
+        m->report_id, m->buttonCnt, is_xbox ? "true" : "false",
+        is_8bitdo ? "true" : "false", is_elite2 ? "true" : "false",
+        is_ngc_modkit ? "true" : "false",
+        m->has_sim_triggers ? "true" : "false", digital_shoulder_triggers ? "true" : "false",
         m->hatLoc.byteIndex, m->hatLoc.bitMask, m->hat_min,
         m->xLoc.byteIndex, m->xLoc.bitMask, (unsigned long)m->xLoc.max,
         m->yLoc.byteIndex, m->yLoc.bitMask, (unsigned long)m->yLoc.max,
@@ -513,7 +340,7 @@ static void process_report_dynamic(bthid_gamepad_data_t* gp, const uint8_t* data
     // Controllers whose "triggers" are really digital shoulder buttons (M30):
     // drop the synthesized analog so L2/R2 come only from the digital buttons,
     // which stay subject to button remapping.
-    if (map->digital_shoulder_triggers) {
+    if (map->quirk->digital_shoulder_triggers) {
         l2 = 0;
         r2 = 0;
     }
@@ -538,49 +365,19 @@ static void process_report_dynamic(bthid_gamepad_data_t* gp, const uint8_t* data
         if (dpad & 0x08) buttons |= JP_BUTTON_DL;
     }
 
-    // Map buttons by HID usage number using descriptor-derived layout detection
-    // Simulation Controls triggers (Brake/Accelerator) = Xbox gap pattern
-    // Generic Desktop triggers (Rx/Ry) = sequential button layout
-    const uint32_t* btn_map;
-    uint8_t btn_map_size;
-    if (map->is_xbox && map->has_sim_triggers) {
-        // Xbox BLE: gap-pattern buttons with Simulation Controls triggers
-        btn_map = XBOX_BUTTON_MAP;
-        btn_map_size = sizeof(XBOX_BUTTON_MAP) / sizeof(XBOX_BUTTON_MAP[0]);
-    } else if (map->is_xbox) {
-        // Xbox Classic BT: sequential buttons (no gaps), different order
-        btn_map = XBOX_SEQ_BUTTON_MAP;
-        btn_map_size = sizeof(XBOX_SEQ_BUTTON_MAP) / sizeof(XBOX_SEQ_BUTTON_MAP[0]);
-    } else if (map->is_ngc_modkit) {
-        // 8BitDo NGC Modkit (PID 0x286A): checked BEFORE the generic is_8bitdo+buttonCnt>14
-        // rule below on purpose -- this device ALSO has 16 buttons like the paddle
-        // controllers that rule is for, which is exactly the bug this PID-specific check
-        // exists to avoid repeating. See NGC_MODKIT_BUTTON_MAP's own comment for evidence.
-        btn_map = NGC_MODKIT_BUTTON_MAP;
-        btn_map_size = sizeof(NGC_MODKIT_BUTTON_MAP) / sizeof(NGC_MODKIT_BUTTON_MAP[0]);
-    } else if (map->is_8bitdo && map->buttonCnt > 14) {
-        // 8BitDo with paddles (Ultimate, etc.): R4 at usage 3, L4 at usage 6
-        // Models without paddles (SN30 Pro, M30) have ≤14 buttons and use SEQ map
-        btn_map = BITDO_BUTTON_MAP;
-        btn_map_size = sizeof(BITDO_BUTTON_MAP) / sizeof(BITDO_BUTTON_MAP[0]);
-    } else {
-        btn_map = SEQ_BUTTON_MAP;
-        btn_map_size = sizeof(SEQ_BUTTON_MAP) / sizeof(SEQ_BUTTON_MAP[0]);
+    // The shared engine owns descriptor parsing; the resolved profile owns only
+    // the usage-number interpretation for this controller family/model.
+    const uint32_t *btn_map = map->quirk->button_map;
+    uint8_t btn_map_size = map->quirk->button_map_size;
+    if (map->quirk->select_button_map) {
+        map->quirk->select_button_map(map->buttonCnt, map->has_sim_triggers,
+                                      &btn_map, &btn_map_size);
     }
-
-    // NSO GameCube-native semantic bits (2026-07-13). Only the 8BitDo NGC Modkit has confirmed
-    // evidence for these -- see docs/bluetooth/8bitdo-ngc-diy-profile.md "Raw hardware
-    // observations": usage 9 (byte9 0x01) and usage 10 (byte9 0x02) are the TRUE mechanical
-    // trigger clicks (confirmed to fire only at full press, composing cleanly with no bit
-    // aliasing); usage 11 (byte9 0x04) is Z. Usages 7/8 are deliberately NOT used here -- they
-    // are a partial-travel echo that fires well before the true click and stays asserted
-    // through it (confirmed: "L full/click" shows byte8=0x40 AND byte9=0x01 simultaneously),
-    // so using them would double-fire/false-trigger the detent early. These are independent of
-    // (and never OR'd into) `buttons`/btn_map -- they reach the router via their own
-    // gc_native_z/gc_l_detent/gc_r_detent fields, not the JP_BUTTON_*/NS2_DST_* remap table,
-    // since they are fixed evidence-backed physical mappings for this exact PID, not a
-    // user-remappable destination.
-    bool gc_native_z = false, gc_l_detent = false, gc_r_detent = false;
+    if (!btn_map || btn_map_size == 0) {
+        // gamepad_quirks_identify() always returns a complete profile. Keep a
+        // defensive neutral result if a future incomplete profile violates it.
+        btn_map_size = 0;
+    }
 
     uint8_t buttonCount = 0;
     for (int i = 0; i < BLE_MAX_BUTTONS; i++) {
@@ -593,38 +390,7 @@ static void process_report_dynamic(bthid_gamepad_data_t* gp, const uint8_t* data
                 if (usage < btn_map_size) {
                     buttons |= btn_map[usage];
                 }
-                if (map->is_ngc_modkit) {
-                    if (usage == 9) gc_l_detent = true;
-                    else if (usage == 10) gc_r_detent = true;
-                    else if (usage == 11) gc_native_z = true;
-                }
             }
-        }
-    }
-
-    // Xbox Elite Series 2: the 4 back paddles live in the last report byte (bits 0-3).
-    // They report raw ONLY when left UNMAPPED in the active on-board profile (a mapped
-    // paddle sends its assigned button instead). Captured on hardware in byte 19 of a
-    // 20-byte report: R4=0x01, R5=0x02, L4=0x04, L5=0x08. Left paddles -> GL, right -> GR.
-    // (Byte 17 = active profile 0-3; not mapped — it's a mode selector, not a button.)
-    // Xbox Elite Series 2: 20-byte report with the 4 paddles in byte 19 (R4=0x01,
-    // R5=0x02, L4=0x04, L5=0x08). Detected by "Xbox + 20-byte report" rather than the
-    // exact PID (which the BLE PnP query often fails to resolve); regular Xbox pads send
-    // 16-byte reports so they never hit this. Paddles report raw only when the active
-    // on-board profile leaves them unmapped.
-    if ((map->is_elite2 || map->is_xbox) && len >= 20) {
-        uint8_t pad = data[19];
-        if (pad & 0x04) buttons |= JP_BUTTON_L4;  // upper-left  paddle -> GL
-        if (pad & 0x08) buttons |= JP_BUTTON_L5;  // lower-left  paddle -> GL
-        if (pad & 0x01) buttons |= JP_BUTTON_R4;  // upper-right paddle -> GR
-        if (pad & 0x02) buttons |= JP_BUTTON_R5;  // lower-right paddle -> GR
-    } else if (map->is_xbox && len > 0 && (data[len - 1] & 0x01)) {
-        // Xbox extra byte: last byte, bit 0 (outside the HID buttons bitfield).
-        // Series X/S Share (16-byte report, BLE) -> A2 ; Xbox One Back (Classic) -> S1.
-        if (gp->event.transport == INPUT_TRANSPORT_BT_BLE) {
-            buttons |= JP_BUTTON_A2;
-        } else {
-            buttons |= JP_BUTTON_S1;
         }
     }
 
@@ -636,17 +402,16 @@ static void process_report_dynamic(bthid_gamepad_data_t* gp, const uint8_t* data
     gp->event.analog[ANALOG_RY] = ry;
     gp->event.analog[ANALOG_L2] = l2;
     gp->event.analog[ANALOG_R2] = r2;
-    gp->event.gc_has_native_layout = map->is_ngc_modkit;
-    gp->event.gc_native_z = gc_native_z;
-    gp->event.gc_l_detent = gc_l_detent;
-    gp->event.gc_r_detent = gc_r_detent;
-    // NGC Modkit does NOT need suppress_l2r2_analog_fold: an earlier iteration mapped Z to
-    // JP_BUTTON_R2 (colliding with the seam's analog-fold, which also drives JP_BUTTON_R2 from
-    // ANALOG_R2) and needed this flag to avoid the conflict. The current design maps Z to
-    // JP_BUTTON_R1 instead (see NGC_MODKIT_BUTTON_MAP) and deliberately WANTS the analog fold to
-    // keep driving ZL/ZR from the real trigger values -- so nothing to suppress here anymore.
-    // suppress_l2r2_analog_fold itself (input_event.h) is left in place as available
-    // infrastructure for a future device that has the same kind of collision this one no longer does.
+
+    // Reset profile-owned state every report before the optional extractor
+    // adds raw-byte controls or native semantic fields.
+    gp->event.gc_has_native_layout = false;
+    gp->event.gc_native_z = false;
+    gp->event.gc_l_detent = false;
+    gp->event.gc_r_detent = false;
+    if (map->quirk->extract_extra) {
+        map->quirk->extract_extra(map, data, len, &gp->event);
+    }
 
     router_submit_input(&gp->event);
 }
@@ -701,6 +466,8 @@ static bool gamepad_init(bthid_device_t* device)
             gamepad_data[i].initialized = true;
             gamepad_data[i].has_report_map = false;
             memset(&gamepad_data[i].map, 0, sizeof(ble_report_map_t));
+            gamepad_data[i].map.quirk = gamepad_quirks_identify(
+                device->vendor_id, device->product_id, device->name, 0);
 
             // Set device info
             gamepad_data[i].event.type = INPUT_TYPE_GAMEPAD;
@@ -787,7 +554,7 @@ static void gamepad_process_report(bthid_device_t* device, const uint8_t* data, 
     router_submit_input(&gp->event);
 }
 
-// The generic driver only knows the hardware-validated Xbox output format.
+// The generic driver only forwards hardware-validated output through a resolved profile.
 static void gamepad_task(bthid_device_t* device)
 {
     bthid_gamepad_data_t* gp = (bthid_gamepad_data_t*)device->driver_data;
@@ -803,11 +570,10 @@ static void gamepad_task(bthid_device_t* device)
     uint8_t right = fb->rumble.right;
 
     if (left != gp->rumble_left || right != gp->rumble_right) {
-        if (device->vendor_id == 0x045E) {
-            uint8_t buf[XBOX_RUMBLE_DATA_LEN];
-            xbox_rumble_build_payload(left, right, buf);
-            if (!bthid_send_output_report(device->conn_index, XBOX_RUMBLE_REPORT_ID,
-                                           buf, sizeof(buf))) {
+        // Preserve the v1.2 behavior gate: name-only Xbox matches parse input,
+        // but generic-driver rumble is sent only after Microsoft VID resolves.
+        if (device->vendor_id == 0x045E && gp->map.quirk->send_rumble) {
+            if (!gp->map.quirk->send_rumble(device->conn_index, left, right)) {
                 return;  // Preserve dirty state and cache so failed OFF transitions retry.
             }
         }
