@@ -211,11 +211,11 @@ Xbox path was never `xbox_task()`), and the BLE Xbox hardware test that motivate
 investigation was testing a completely different code path than the one that got fixed.
 
 The actually-reachable Xbox rumble implementation *at the time of the hardware test* was inside the
-**generic HID-descriptor driver**, `src/bt_hid/bt/bthid/devices/generic/bthid_gamepad.c`'s
-`gamepad_task()` (~line 697), which has its own independent, separately-written copy of the same
-Xbox rumble report format (vendor-ID-gated on `0x045E`) — and had the **identical, still-live**
-`loop_count = 0x00` bug at line 724, since it was never touched by any fix until the dead-code
-discovery. **Fixed there** (`loop_count = 0xEB`, same citation/rationale as above).
+monolithic generic HID-descriptor driver and had an independent copy of the same Xbox rumble
+format, including the live `loop_count = 0x00` bug. That was fixed using the shared
+`xbox_rumble_build_payload()` implementation. The later generic-gamepad quirk split moved the
+generic fallback's dispatch into the `xbox`/`xbox_elite2` profiles while deliberately retaining
+the same Microsoft-VID gate and failed-send retry behavior.
 
 **Resolution (user decision): re-register `xbox_bt.c`/`xbox_ble.c` as the primary Xbox path rather
 than delete them**, retiring the generic driver's Xbox-specific code path in favor of the
@@ -234,9 +234,8 @@ choice, not leftover Phase-0 staging:
   risk** — re-registered per explicit instruction, but this is a real, acknowledged possibility of
   regressing currently-working Classic BT Xbox button/stick input (which the user has not reported
   as broken — only rumble was). Both files still exclude Xbox Elite Series 2 (`product_id 0x0B05`/
-  `0x0B22`), which continues to fall through to the generic driver as before — `bthid_gamepad.c`'s
-  Xbox rumble block was therefore kept in place (not removed) as the correct fallback for Elite
-  Series 2 and any other `0x045E`-vendor device the more specific matchers reject.
+  `0x0B22`), which continues to fall through to the generic driver as before. Its resolved
+  `xbox_elite2` profile owns the same validated rumble sender and paddle extractor.
 
 **If a hardware test shows Classic BT Xbox input regressed** (wrong buttons, dead sticks, etc.),
 the fix is either to add an `xbox_bt_match()` exclusion for the affected model (same pattern as the
@@ -256,8 +255,9 @@ primary path anymore):
 - The BLE `HID_SERVICE_CONNECTED` handler (`btstack_host.c`) hex-dumps the full raw GATT HID report
   descriptor once per connection.
 
-**5. Known, deliberately NOT fixed: the generic driver (`bthid_gamepad.c`) only sends rumble for
-Xbox's vendor ID (`0x045E`).** This driver matches *any* unrecognized BLE HID gamepad or any
+**5. Known, deliberately NOT fixed: the generic driver only sends rumble for Xbox's vendor ID
+(`0x045E`), through a resolved profile with a validated sender.** This driver matches *any*
+unrecognized BLE HID gamepad or any
 Classic device whose Class-of-Device says Peripheral/Joystick/Gamepad — a wide, output-format-
 unknown net. It computes `left`/`right` and tracks "last sent" state as if committed to sending,
 but for any vendor ID other than `0x045E` it clears `rumble_dirty` without ever transmitting — a
@@ -330,7 +330,7 @@ mismatches. A dedicated audit of every vendor/generic driver plus the feedback s
 | Fix the shared root cause first | ✅ Item 1 |
 | Preserve independent L/R values | ✅ Untouched — stereo refactor was never the defect |
 | Explicit mono fallback only where genuinely single-motor | N/A — no mono fallback needed; the bug was routing, not encoding |
-| Never clear `rumble_dirty` until the correct consumer accepted the update | ✅ `ds5_bt.c`/`xbox_bt.c`/`xbox_ble.c` all clear only alongside an actual send-or-genuinely-nothing-changed; `bthid_gamepad.c`'s Xbox-only gate clears dirty without sending for non-0x045E devices — documented, not fixed (item 4) |
+| Never clear `rumble_dirty` until the correct consumer accepted the update | ✅ `ds5_bt.c`/`xbox_bt.c`/`xbox_ble.c` all clear only alongside an actual send-or-genuinely-nothing-changed; the generic driver's Xbox-only gate clears dirty without sending for non-0x045E devices — documented, not fixed (item 4) |
 | Preserve reliable zero/stop delivery | ✅ Same dirty-flag/compare-and-send pattern handles `(0,0)` identically to any other value — no special-cased "nonzero only" path exists anywhere in the traced code |
 | Avoid indefinite dirty-state spam when disconnected | ✅ Unchanged — `feedback_get_state`/`feedback_clear_dirty` are per-slot and only polled by an active driver's task, which stops running once the device disconnects |
 | Keep per-player state isolated | 🔵 By design, this project has exactly one player (slot 0) — "isolated" now correctly means "always the same slot," matching the single-controller milestone, not literal multi-player isolation (out of scope until multi-controller is implemented) |
@@ -513,9 +513,8 @@ DATA.md asks for a stable identity key design to support future per-device mappi
 controller-specific quirks. **Important baseline fact**: this project currently has no per-device
 mapping *storage* to migrate — `pico_config_t` (`config.c`'s flash-backed settings) holds only
 global settings (the output-personality appearance/Sony-lightbar colors and the NS2 button remap table), not anything keyed per controller
-model or per physical unit. Today's controller-specific behavior (`is_xbox`, `is_elite2`,
-`is_8bitdo`, `digital_shoulder_triggers` in `bthid_gamepad.c`) is derived fresh every connection
-from live VID/PID/name/report-shape evidence — it's compiled-in driver logic, not stored
+model or per physical unit. Today's controller-specific behavior is resolved into a compiled-in
+`gamepad_quirk_t` profile every connection from live VID/PID/name/report-shape evidence — it is not stored
 configuration, so there's nothing to migrate yet. This design is infrastructure for *when* a
 per-device mapping feature is actually built, not a retrofit of an existing one.
 

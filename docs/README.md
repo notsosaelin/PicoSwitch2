@@ -14,6 +14,7 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Compatibility results | [`status/compatibility-matrix.md`](status/compatibility-matrix.md) |
 | Evidence and RE rules | [`re-methodology/evidence-standards.md`](re-methodology/evidence-standards.md) |
 | Bluetooth implementation | [`bluetooth/btstack-implementation.md`](bluetooth/btstack-implementation.md) |
+| Generic Bluetooth gamepad quirks | [`bluetooth/generic-gamepad-quirks.md`](bluetooth/generic-gamepad-quirks.md) |
 | Pro Controller 2 USB protocol | [`switch2/usb-spec.md`](switch2/usb-spec.md) |
 | NSO GameCube protocol | [`switch2-gc/protocol.md`](switch2-gc/protocol.md) |
 | Joy-Con 2 protocol | [`switch2-joycon2/protocol.md`](switch2-joycon2/protocol.md) |
