@@ -78,8 +78,10 @@ void xbox_select_button_map(uint8_t button_count, bool has_sim_triggers,
 // can't drift apart on the actual byte layout.
 extern void xbox_elite2_extract_paddles(const uint8_t *data, uint16_t len, input_event_t *event);
 
-static void extract_extra(const ble_report_map_t *map, const uint8_t *data, uint16_t len,
-                          input_event_t *event)
+// Shared with the Elite 2 profile so exact-PID identification cannot accidentally
+// discard the base Xbox short-report Share/Back fallback.
+void xbox_extract_extra(const ble_report_map_t *map, const uint8_t *data, uint16_t len,
+                        input_event_t *event)
 {
     (void)map;
     if (len >= 20) {
@@ -130,6 +132,6 @@ bool xbox_send_rumble(uint8_t conn_index, uint8_t left, uint8_t right)
 const gamepad_quirk_t QUIRK_XBOX = {
     .name = "xbox",
     .select_button_map = xbox_select_button_map,
-    .extract_extra = extract_extra,
+    .extract_extra = xbox_extract_extra,
     .send_rumble = xbox_send_rumble,
 };

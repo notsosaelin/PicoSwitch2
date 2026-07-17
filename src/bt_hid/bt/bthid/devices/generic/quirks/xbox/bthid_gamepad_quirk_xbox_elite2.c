@@ -11,6 +11,8 @@
 
 extern void xbox_select_button_map(uint8_t button_count, bool has_sim_triggers,
                                     const uint32_t **out_map, uint8_t *out_size);
+extern void xbox_extract_extra(const ble_report_map_t *map, const uint8_t *data, uint16_t len,
+                               input_event_t *event);
 extern bool xbox_send_rumble(uint8_t conn_index, uint8_t left, uint8_t right);
 
 // Xbox Elite Series 2: the 4 back paddles live in the last report byte (bits 0-3).
@@ -36,16 +38,9 @@ void xbox_elite2_extract_paddles(const uint8_t *data, uint16_t len, input_event_
     if (pad & 0x02) event->buttons |= JP_BUTTON_R5;  // lower-right paddle -> GR
 }
 
-static void extract_extra(const ble_report_map_t *map, const uint8_t *data, uint16_t len,
-                          input_event_t *event)
-{
-    (void)map;
-    xbox_elite2_extract_paddles(data, len, event);
-}
-
 const gamepad_quirk_t QUIRK_XBOX_ELITE2 = {
     .name = "xbox_elite2",
     .select_button_map = xbox_select_button_map,
-    .extract_extra = extract_extra,
+    .extract_extra = xbox_extract_extra,
     .send_rumble = xbox_send_rumble,
 };
