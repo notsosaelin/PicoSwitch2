@@ -140,7 +140,8 @@ player-dot reordering, and the prior wake/input/rumble baseline are hardware-con
 - [`docs/status/compatibility-matrix.md`](docs/status/compatibility-matrix.md) — controller/personality validation
 - [`docs/architecture/overview.md`](docs/architecture/overview.md) — runtime architecture and data flow
 - [`docs/re-methodology/evidence-standards.md`](docs/re-methodology/evidence-standards.md) — evidence tiers and experiment rules
-- [`docs/switch2/`](docs/switch2/) — Pro Controller 2 protocol
+- [`docs/switch2/`](docs/switch2/) — Pro Controller 2 protocol, including the
+  [DualSense audio bridge as-built reference](docs/switch2/dualsense-audio-bridge.md)
 - [`docs/switch2-gc/`](docs/switch2-gc/) — NSO GameCube protocol and mapping
 - [`docs/switch2-joycon2/`](docs/switch2-joycon2/) — Joy-Con 2 protocol and mapping
 - [`docs/bluetooth/`](docs/bluetooth/) — Bluetooth host, identity, pairing, and controller profiles
