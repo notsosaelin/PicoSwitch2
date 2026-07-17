@@ -61,6 +61,12 @@ void report_get_rumble(uint8_t idx, uint8_t *left, uint8_t *right);
 // had seen before.
 void report_get_rumble_gen(uint8_t idx, uint8_t *left, uint8_t *right, uint32_t *generation);
 
+// Player LEDs: raw Switch 2 command-0x09 wire bitfield, published by the active
+// USB personality and consumed by the Bluetooth feedback seam. Generation is
+// incremented for every received assignment, including repeated values.
+void report_set_player_leds(uint8_t idx, uint8_t wire_mask);
+void report_get_player_leds(uint8_t idx, uint8_t *wire_mask, uint32_t *generation);
+
 // True if any controller currently has a button pressed (used to wake the
 // console from sleep via USB remote wakeup).
 bool report_any_button_pressed(void);

@@ -1,6 +1,6 @@
 # PicoSwitch2 Architecture
 
-Status: ✅ current as of 2026-07-15
+Status: ✅ current as of 2026-07-16
 
 ## Purpose
 
@@ -50,6 +50,10 @@ Switch 2 / PC interrupt OUT
 
 GameCube rumble is decoded as an ON/OFF/STOP state and converted to a bounded downstream pulse.
 DualSense and Xbox use their own packet builders and preserve explicit zero-magnitude STOP writes.
+The active output personality's configured appearance (Pro2 body or per-side Joy-Con 2 accent) is
+routed to supported Sony RGB lightbars. Separately, Switch 2 command `0x09` player assignments cross
+cores through generation-counted shared state and are translated into controller-specific player
+indicators (including DualSense dots).
 
 ## Scheduling invariant
 

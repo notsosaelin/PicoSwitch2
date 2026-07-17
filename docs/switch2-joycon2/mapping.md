@@ -1,114 +1,83 @@
-# Joy-Con 2 Left/Right (Experimental) Output Personalities — Mapping Policy
+# Joy-Con 2 Left/Right Output Personalities — Sideways Mapping Policy
 
-> Current status (2026-07-15): both sides enumerate and stream on a real Switch 2, but the complete
-> button mapping is not yet hardware-validated and has been reported as incorrect in places.
-> SL/SR wiring is host-tested. See `open-questions.md` for the remaining physical test matrix.
+> Current policy (2026-07-16): each individual Joy-Con personality is intended for the
+> Switch's horizontal single-controller mode. The translation is host-tested in both report
+> formats (`0x07`/`0x08` and `0x05`) and hardware-confirmed on Switch 2.
 
-## Why "mapping" is a smaller problem here than it looks
+## Input model
 
-Joy-Con 2 L and R reuse the exact same cross-core model (`switch_pro_input_t`,
-`include/switch_pro.h`) and the exact same generic-controller remap pipeline
-(`config_get_ns2_map()`/`NS2_DST_*`, `src/bt_hid/ns2_seam.c`'s `router_submit_input()`) that
-Pro Controller 2 already uses. `switch_joycon2_encode_report()`/`_report05()`
-(`src/switch_joycon2/switch_joycon2_encode.c`) just read a subset of the same
-`SWITCH_MASK_*`/`SWITCH_EXTRA_*` bits Pro2's own encoder reads, side-gated by which of the two
-personalities is active. Concretely, for a generic controller (Xbox, DualSense, etc.) used to
-drive a Joy-Con2 personality, the default per-family remap already produces the physically
-correct result with **zero new code**, because a lone Joy-Con's own physical controls line up
-directly with a generic pad's:
+Bluetooth drivers expose both a normalized physical button bitmap and the configurable Pro
+Controller 2 semantic mapping. The explicit face, shoulder, trigger, Select/Start, Home, L3, and
+D-pad sources below read the normalized physical bitmap directly. This is intentional: the table
+describes controls on the paired controller and must not change because a persistent Pro2 remap
+assigns those controls different semantic names.
 
-| Generic source | Default destination (unchanged from Pro2) | Joy-Con2 (L) physical meaning | Joy-Con2 (R) physical meaning |
-|---|---|---|---|
-| Face buttons (B1-B4) | A/B/X/Y | (unused — L has no A/B/X/Y) | A/B/X/Y |
-| D-pad | Up/Down/Left/Right | Up/Down/Left/Right | (unused — R has no D-pad) |
-| Shoulder L1/R1 | plain L / R | L | R |
-| Trigger L2/R2 (analog, folded past a threshold — unchanged Pro2 fold, **not** suppressed for Joy-Con2, see below) | ZL / ZR | ZL | ZR |
-| Left/right stick click | L3 / R3 | Stick click (the one physical stick a lone Joy-Con has) | Stick click |
-| Select/Start | Minus / Plus | Minus | Plus |
-| Aux buttons (A1-A4 default) | Home / Capture / C / Capture | Capture | Home / C |
+Capture and C/GameChat are the two deliberate exceptions. They read the configured Pro2 Capture
+and C destinations so controller-specific controls such as DualSense Touchpad/Mute, Switch 2
+Capture/C, Edge Fn buttons, and user remaps continue to behave exactly like the Pro2 personality.
 
-The one genuine gap was **SL/SR** — real physical rail buttons present on *both* Joy-Con units
-(used as shoulder-equivalents when a lone Joy-Con is held sideways), which have no equivalent
-concept on Pro Controller 2 or the GameCube controller and so had no field in
-`switch_pro_input_t` at all. Fixed this pass — see below.
+## Joy-Con 2 (L), held sideways to the left
 
-## Native capability set — Confirmed (`docs/switch2-joycon2/protocol.md`)
+| Joy-Con 2 (L) output | Paired controller source |
+|---|---|
+| SL | L1 / LB |
+| SR | R1 / RB |
+| Minus | Select / Create / Back |
+| Stick | Left stick and D-pad |
+| Stick click | L3 |
+| D-pad Up | Square / X (left face button) |
+| D-pad Down | Circle / B (right face button) |
+| D-pad Right | Triangle / Y (top face button) |
+| D-pad Left | Cross / A (bottom face button) |
+| L | L2 / LT |
+| ZL | R2 / RT |
+| Capture | The configured Pro2 Capture source (DualSense touchpad by default) |
 
-| Capability | Left | Right | Confidence |
-|---|---|---|---|
-| A, B, X, Y | — (physically absent) | Yes | Confirmed |
-| D-pad (Up/Down/Left/Right) | Yes | — (physically absent) | Confirmed |
-| Plus / Minus | Minus only | Plus only | Confirmed |
-| L / ZL (plain shoulder + trigger) | Yes | — | Confirmed |
-| R / ZR | — | Yes | Confirmed |
-| SL / SR (rail buttons) | Yes (this unit's own) | Yes (this unit's own) | Confirmed |
-| Stick + click | Yes (one stick, one click) | Yes | Confirmed |
-| Home | — | Yes | Confirmed |
-| Capture | Yes | — | Confirmed |
-| C / GameChat | — (no physical control) | Yes | Confirmed |
-| NFC | — (no hardware) | Yes (hardware present, not emulated) | Confirmed |
-| Motion (gyro/accel) | Yes (hardware present, not emulated) | Yes | Confirmed |
+## Joy-Con 2 (R), held sideways to the right
 
-Byte-level bit positions for all of the above: `docs/switch2-joycon2/protocol.md` "Report ID 7/8".
+| Joy-Con 2 (R) output | Paired controller source |
+|---|---|
+| SL | L1 / LB |
+| SR | R1 / RB |
+| Plus | Start / Options / Menu |
+| Stick | Left stick and D-pad |
+| Stick click | L3 |
+| B | Square / X (left face button) |
+| X | Circle / B (right face button) |
+| Y | Triangle / Y (top face button) |
+| A | Cross / A (bottom face button) |
+| R | L2 / LT |
+| ZR | R2 / RT |
+| Home | Home / Guide / PS |
+| C / GameChat | The configured Pro2 C source (DualSense Mute and Switch 2 C by default) |
 
-## SL/SR — the real gap, now fixed
+## Stick and D-pad synthesis
 
-**Problem**: SL/SR are genuine physical controls on a real Joy-Con 2, not a Pro2/GameCube concept,
-so no field in `switch_pro_input_t` carried them — the encoder hardcoded both bits to 0
-unconditionally, correctly documented in-code as "not sourced from anything yet," not a silent
-omission.
+The paired controller's left analog stick remains analog. Its D-pad is a second source for that
+same Joy-Con stick and overrides only the pressed axis at full deflection. This permits digital
+diagonals and also permits, for example, digital horizontal plus analog vertical input. Opposing
+directions cancel on their axis and leave the analog value in control. The paired D-pad never
+leaks into the Joy-Con's physical D-pad or face-button cluster; those are sourced only from the
+paired face buttons in the tables above.
 
-**Fix**: added `SWITCH_EXTRA_SL`/`SWITCH_EXTRA_SR` bits to the existing `extra` field
-(`include/switch_pro.h`) — generic, not per-side, since exactly one Joy-Con2 personality is ever
-active at a time (same convention already used for `SWITCH_MASK_L3`/`R3`, "the stick that's
-active"). `switch_joycon2_encode_report()` now reads them unconditionally into report 7/8's byte 1
-(`0x80`/`0x40`, both sides — same bit position regardless of which side is active); the shared
-report `0x05` encoder reads them side-gated into its own distinct SL/SR bit positions (byte 0
-`0x20`/`0x10` for Right, byte 2 `0x20`/`0x10` for Left), matching how it already side-gates
-ZL/L and ZR/R.
+Axes are rotated into the sideways Joy-Con shell's local coordinates:
 
-**Source**: `src/bt_hid/ns2_seam.c`'s `ns2_apply_dst()` reinterprets the existing
-`NS2_DST_GL`/`NS2_DST_GR` destinations as SL/SR whenever a Joy-Con2 personality is active
-(`joycon2_active`, computed from `g_usb_personality` the same way GameCube mode's own
-`gc_active` already is). This is deliberate, not a workaround: GL/GR mean "grip button," and a
-lone Joy-Con2 physically has no grips to read (it's not docked in a Charging Grip in this
-project's scope), so the exact same generic-controller source buttons the per-family map already
-assigns to GL/GR by default (`L4`, `R4`, `L5`, `R5` — paddle/extra slots, typically unused on a
-standard Xbox/DualSense pad) instead drive a real control the personality *does* have. Pro2 and
-GameCube mode are unaffected — the reinterpretation is gated on `joycon2_active` alone, and their
-own GL/GR default mapping and behavior is provably unchanged (same pattern already established by
-GameCube's own analog-fold suppression in the same function).
+- Left applies a clockwise input transform because the emulated shell is held 90 degrees
+  counter-clockwise. Paired Up therefore becomes the Left Joy-Con's local Right.
+- Right applies a counter-clockwise input transform because the shell is held 90 degrees
+  clockwise. Paired Up therefore becomes the Right Joy-Con's local Left.
 
-No new persisted config field, no new remap-table schema, no new source-button slot — this reuses
-the existing per-family customizable map (`config_get_ns2_map()`) exactly as designed. A user who
-wants SL/SR on a *different* physical button (e.g. an Xbox Elite paddle, if one is ever bound to
-this project) can already reassign it via the existing config UI once a `NS2_DST_SL`/`NS2_DST_SR`-style
-selector is exposed there — not yet done, since the config UI's destination list still reads
-Pro2/GameCube-flavored names; flagged as a small follow-up if the paddle-default proves confusing
-in practice, not a functional gap.
+The transform preserves the exact 12-bit center and endpoints despite the asymmetric
+`0x000..0xFFF` range around center `0x800`.
 
-## "Sideways mode" — why no rotation/remapping is needed on this project's side
+## Report coverage and deliberate exclusions
 
-The project owner's own framing (2026-07-14): both individual Joy-Con2 output personalities will
-be used in the Switch's "sideways" single-Joy-Con configuration once mapped. This does **not**
-require any button-rotation or reinterpretation in this project's firmware. On genuine hardware, a
-lone Joy-Con always reports its physical buttons in their fixed physical positions (Up/Down/
-Left/Right for L; X/Y/A/B for R) regardless of how it's held — the Switch console's own system
-software is what reinterprets "sideways" semantics (e.g. presenting the D-pad as a virtual
-face-button cluster), not the controller. Since this project's whole design goal is to mimic
-genuine hardware at the wire level (not to build a custom ergonomic remap), correctly populating
-the physical bit positions documented above is the entire job; the console will apply the same
-sideways reinterpretation it already applies to a real Joy-Con. No experiment or implementation
-work is needed here beyond what's already done — flagged explicitly so a future contributor
-doesn't invent an unnecessary rotation layer.
+`switch_joycon2_encode_report()` and `switch_joycon2_encode_report05()` implement the same policy;
+the latter merely writes the translated controls into the shared report `0x05` positions.
+Pro2 GL/GR paddle destinations no longer become Joy-Con SL/SR. SL/SR now have the unambiguous
+L1/R1 sources requested for a standard paired controller, and spare paddles remain unused in
+individual Joy-Con mode.
 
-## Non-goals for this document
-
-- A `NS2_DST_SL`/`NS2_DST_SR` destination enum surfaced in the config UI's per-family remap
-  editor — the GL/GR-slot reinterpretation above is a working default; exposing it as an explicit,
-  independently reassignable destination is future work if the default proves insufficient.
-- Docked-in-Charging-Grip behavior (GL/GR reaching the host from a docked Joy-Con2, whether
-  through a reserved bit or otherwise) — out of scope per `docs/switch2-joycon2/protocol.md`'s own
-  open question; this project does not emulate a Charging Grip.
-- Mouse mode, NFC, and motion data — no source exists in this project for any of them yet (see
-  `protocol.md`); left zeroed exactly as before this pass.
+Mouse mode, NFC, and motion data remain outside this mapping pass because the project does not
+currently supply those data streams. The physical capability and byte layouts remain documented
+in `protocol.md`.

@@ -543,7 +543,8 @@ static void switch_gc_vendor_dispatch(const uint8_t *c, uint32_t n) {
         d[0] = 0x00;
         dl = 1;
         break;
-    case 0x09:  // player LEDs -> bare ack
+    case 0x09:  // console-assigned player LED bitfield
+        if (n > 8) report_set_player_leds(0, c[8]);
         dl = 0;
         break;
     // Everything below added 2026-07-13 after real hardware testing showed pairing now succeeds

@@ -18,7 +18,7 @@ main()
 	// Initialize the cross-core shared input state before either core uses it.
 	report_init();
 
-	// Load persistent settings (lightbar colours, etc.) from flash.
+	// Load persistent settings (controller body/lightbar colour, mappings, etc.) from flash.
 	config_load();
 
 	multicore_launch_core1(ns2_bt_core_task);

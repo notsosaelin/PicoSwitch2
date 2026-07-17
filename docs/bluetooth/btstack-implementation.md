@@ -512,7 +512,7 @@ logic proves too fragile to keep extending case-by-case.
 DATA.md asks for a stable identity key design to support future per-device mapping profiles and
 controller-specific quirks. **Important baseline fact**: this project currently has no per-device
 mapping *storage* to migrate — `pico_config_t` (`config.c`'s flash-backed settings) holds only
-global settings (lightbar colors, the NS2 button remap table), not anything keyed per controller
+global settings (the output-personality appearance/Sony-lightbar colors and the NS2 button remap table), not anything keyed per controller
 model or per physical unit. Today's controller-specific behavior (`is_xbox`, `is_elite2`,
 `is_8bitdo`, `digital_shoulder_triggers` in `bthid_gamepad.c`) is derived fresh every connection
 from live VID/PID/name/report-shape evidence — it's compiled-in driver logic, not stored

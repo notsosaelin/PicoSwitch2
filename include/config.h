@@ -19,8 +19,13 @@ void config_cdc_task(void);
 // core0 during the flash write. Safe to call every control tick.
 void config_service_save(void);
 
-// Read a player's configured lightbar colour (core1, when a controller connects).
-void config_get_lightbar(uint8_t player, uint8_t rgb[3]);
+// Read the configured Pro Controller 2 body colour.
+void config_get_body_color(uint8_t rgb[3]);
+
+// Read one configured Joy-Con 2 highlight/accent colour. Each side advertises
+// its own value in the factory identity; the active Joy-Con personality also
+// uses that value for supported physical-controller lightbars.
+void config_get_joycon2_accent(bool right, uint8_t rgb[3]);
 
 // Copy a controller family's button remap (NS2_SRC_COUNT entries, each an NS2_DST_*
 // value) for the input mapping (core1, per controller report).

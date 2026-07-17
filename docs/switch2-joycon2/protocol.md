@@ -269,6 +269,11 @@ relevant to a future implementation:
   load-bearing for emulation.
 - **Serial number** (`0x13004`–`0x1300F`, 12-char ASCII) — same shape as Pro2/GC's, per-unit,
   not reproduced in docs (redaction policy, see the analysis doc).
+- **Appearance colors** (`0x13019`–`0x13024`) — body/button/grip remain genuine fixed values.
+  Config v8 makes the highlight/accent at `0x1301F` independently configurable per side, defaulting
+  to the genuine dumped colors `9B E1 E6` (Left) and `FF 8C 5F` (Right). The active side's accent
+  also drives supported Sony RGB lightbars. The console reads these bytes during enumeration, so a
+  saved UI change requires re-entering that Joy-Con personality; the physical lightbar updates live.
 - **Stick calibration**: the classic Switch-family 9-byte packed format, **confirmed present in only
   one of the two calibration slots** the shared layout provides (`0x13080`/`0x130A8` populated,
   `0x130C0`/`0x130E8` entirely unprogrammed on both L and R). Directly reflects the real hardware:

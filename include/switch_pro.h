@@ -41,19 +41,6 @@
 #define SWITCH_EXTRA_GL (1U << 1)  // GL (left grip)
 #define SWITCH_EXTRA_GR (1U << 2)  // GR (right grip)
 
-// SL/SR: real physical rail buttons on BOTH Joy-Con 2 units (used as shoulder-equivalents
-// when a lone Joy-Con is held sideways). Generic, not per-side -- exactly one Joy-Con2
-// personality is ever active at a time, so "SL"/"SR" unambiguously means "this side's own
-// SL/SR", the same convention already used for SWITCH_MASK_L3 (see
-// switch_joycon2_encode.c's own comment). 0 for every other personality (Pro2/GameCube have
-// no SL/SR concept and never read these bits). Populated by ns2_seam.c's router_submit_input()
-// only while a Joy-Con2 personality is active, by reinterpreting the same generic-controller
-// paddle/extra source buttons that otherwise drive GL/GR in Pro2 mode (see
-// docs/switch2-joycon2/mapping.md) -- GL/GR have no meaning for a lone Joy-Con (no grips to
-// read), so repurposing those same source slots for SL/SR is a real, not a synthesized, button.
-#define SWITCH_EXTRA_SL (1U << 3)
-#define SWITCH_EXTRA_SR (1U << 4)
-
 // --- NSO GameCube-only semantic bits (switch_pro_input_t.gc_extra) ---
 // These do NOT reuse SWITCH_MASK_R/SWITCH_MASK_ZR/SWITCH_MASK_L or SWITCH_EXTRA_GL/GR --
 // native GameCube Z and the independent L/R trigger detents are physically distinct

@@ -18,6 +18,7 @@ int main(void) {
 
     memset(&state, 0, sizeof(state));
     state.initialize_compat = true;
+    state.setup_lightbar = true;
     state.update_leds = true;
     state.player_leds = 0x04;
     state.led_r = 1;
@@ -26,11 +27,11 @@ int main(void) {
     ds5_build_bt_output_report(0, &state, report);
     assert(report[0] == 0x31 && report[1] == 0x00 && report[2] == 0x10);
     assert(report[3] == 0xF7 && report[4] == 0xF7);
-    assert(report[41] == 0 && report[44] == 0);
+    assert(report[41] == 0x02 && report[44] == 0x02);
     assert(report[45] == 1 && report[46] == 0x04);
     assert(report[47] == 1 && report[48] == 2 && report[49] == 3);
     // Independently generated with zlib.crc32(A2 || report[0:74]).
-    assert(report_crc(report) == 0xCC238A8Au);
+    assert(report_crc(report) == 0xD9076D7Cu);
 
     memset(&state, 0, sizeof(state));
     state.update_rumble = true;

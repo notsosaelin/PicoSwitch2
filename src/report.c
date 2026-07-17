@@ -15,6 +15,8 @@ static uint32_t s_raw_buttons[INPUT_SLOTS];  // unified JP_BUTTON_* bitmap (conf
 static uint8_t s_rumble_left[INPUT_SLOTS];
 static uint8_t s_rumble_right[INPUT_SLOTS];
 static uint32_t s_rumble_generation[INPUT_SLOTS];  // see report_get_rumble_gen()'s own comment
+static uint8_t s_player_led_wire[INPUT_SLOTS];
+static uint32_t s_player_led_generation[INPUT_SLOTS];
 static char s_dev_name[INPUT_SLOTS][DEV_NAME_MAX];  // connected controller name (config live-view)
 static uint16_t s_dev_vid[INPUT_SLOTS];
 static uint16_t s_dev_pid[INPUT_SLOTS];
@@ -36,6 +38,8 @@ void report_init(void) {
         s_inputs[i] = neutral;
         s_rumble_left[i] = 0;
         s_rumble_right[i] = 0;
+        s_player_led_wire[i] = 0;
+        s_player_led_generation[i] = 0;
         s_raw_buttons[i] = 0;
         s_dev_name[i][0] = '\0';
         s_dev_vid[i] = 0;
@@ -179,6 +183,28 @@ void report_get_rumble_gen(uint8_t idx, uint8_t *left, uint8_t *right, uint32_t 
     if (left) *left = l;
     if (right) *right = r;
     if (generation) *generation = g;
+}
+
+void report_set_player_leds(uint8_t idx, uint8_t wire_mask) {
+    if (idx >= INPUT_SLOTS) return;
+    critical_section_enter_blocking(&s_lock);
+    s_player_led_wire[idx] = wire_mask;
+    s_player_led_generation[idx]++;
+    critical_section_exit(&s_lock);
+}
+
+void report_get_player_leds(uint8_t idx, uint8_t *wire_mask, uint32_t *generation) {
+    if (idx >= INPUT_SLOTS) {
+        if (wire_mask) *wire_mask = 0;
+        if (generation) *generation = 0;
+        return;
+    }
+    critical_section_enter_blocking(&s_lock);
+    uint8_t mask = s_player_led_wire[idx];
+    uint32_t gen = s_player_led_generation[idx];
+    critical_section_exit(&s_lock);
+    if (wire_mask) *wire_mask = mask;
+    if (generation) *generation = gen;
 }
 
 bool report_any_button_pressed(void) {

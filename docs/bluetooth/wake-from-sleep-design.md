@@ -88,7 +88,10 @@ The implementation is deliberately split by responsibility:
   console finalises pairing with `0x15/03`.
 - `config.c` stores the validated controller address, up to two host addresses, and PID. Flash work
   is deferred five seconds so it cannot stall the remaining USB pairing handshake. Config v5
-  lightbar and remap settings migrate intact to v6.
+  lightbar and remap settings migrate intact to v6. Config v7 subsequently promotes v6's
+  actually-consumed slot-0 lightbar value to the shared emulated-body/Sony-lightbar color while
+  preserving the remap table and wake identity. Config v8 adds per-side Joy-Con 2 accent colors
+  while preserving all v7 body, remap, and wake fields.
 - `ns2_wake_protocol.c` parses the Nintendo wire order and builds the advertisement without any
   BTstack dependency.
 - `ns2_wake.c` owns the manual request and the automatic one-shot policy.

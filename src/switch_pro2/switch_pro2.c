@@ -14,6 +14,7 @@
 
 #include "ns2_pairing_crypto.h"  // shared AES-128/LTK-derivation pairing crypto
 #include "ns2_wake.h"    // learn the console wake identity from USB pairing
+#include "config.h"      // configured body colour shared with Sony lightbars
 #include "report.h"      // shared cross-core controller input
 #include "switch_pro.h"  // switch_pro_input_t + SWITCH_MASK_* (Switch 1 layout)
 #include "switch_pro2.h"
@@ -250,7 +251,9 @@ static void ns2_factory_init(void) {
     fac(0x13012, (const uint8_t[]){0x7E, 0x05}, 2);  // VID
     fac(0x13014, (const uint8_t[]){0x69, 0x20}, 2);  // PID
     fac(0x13016, (const uint8_t[]){0x01, 0x06, 0x01}, 3);
-    fac(0x13019, (const uint8_t[]){0x23, 0x23, 0x23}, 3);  // body colour
+    uint8_t body_color[3];
+    config_get_body_color(body_color);
+    fac(0x13019, body_color, sizeof(body_color));          // configured body colour
     fac(0x1301C, (const uint8_t[]){0xA0, 0xA0, 0xA0}, 3);  // button colour
     fac(0x1301F, (const uint8_t[]){0xE6, 0xE6, 0xE6}, 3);  // highlight
     fac(0x13022, (const uint8_t[]){0x32, 0x32, 0x32}, 3);  // grip
@@ -682,7 +685,8 @@ static void ns2_dispatch(const uint8_t *c, uint32_t n) {
                 dl = 17;
             }
             break;
-        case 0x09:  // player LEDs -> ACK only
+        case 0x09:  // console-assigned player LED bitfield
+            if (n > 8) report_set_player_leds(0, c[8]);
             dl = 0;
             break;
         case 0x0C:  // feature select

@@ -16,14 +16,6 @@
 #include <string.h>
 #include <stdio.h>
 
-// Player LED colors (RGB values)
-static const uint8_t PLAYER_COLORS[][3] = {
-    {  0,   0,  64 },   // Player 1: Blue
-    { 64,   0,   0 },   // Player 2: Red
-    {  0,  64,   0 },   // Player 3: Green
-    { 64,   0,  64 },   // Player 4: Pink/Fuchsia
-};
-
 // ============================================================================
 // DS4 REPORT STRUCTURE (same as USB, but BT has 2-byte header offset)
 // ============================================================================
@@ -501,10 +493,16 @@ static void ds4_task(bthid_device_t* device)
 
         case 1:  // Send initial LED output (also triggers enhanced report mode)
             if (now - ds4->activation_time >= 100) {
-                // Set initial LED color (blue for player 1)
+                int player_idx = find_player_index(ds4->event.dev_addr, ds4->event.instance);
+                feedback_state_t* fb = feedback_get_state(player_idx >= 0 ? player_idx : 0);
+                uint8_t r = fb ? fb->led.r : 0;
+                uint8_t g = fb ? fb->led.g : 0;
+                uint8_t b = fb ? fb->led.b : 0;
+                // The configured emulated-controller body colour owns the
+                // lightbar from the first packet; slot assignment does not.
                 // First SET_REPORT Output triggers DS4 to switch from basic (0x01)
                 // to enhanced (0x11) report mode with motion/touchpad data.
-                ds4_send_output(device, 0, 0, 0, 0, 64);
+                ds4_send_output(device, 0, 0, r, g, b);
                 ds4->activation_state = 2;
             }
             break;
@@ -525,30 +523,11 @@ static void ds4_task(bthid_device_t* device)
 
                     // Check LED from feedback system
                     if (fb->led_dirty) {
-                        if (fb->led.r != 0 || fb->led.g != 0 || fb->led.b != 0) {
-                            // Host specified RGB color directly
-                            r = fb->led.r;
-                            g = fb->led.g;
-                            b = fb->led.b;
-                        } else if (fb->led.pattern != 0) {
-                            // Player LED pattern - convert to RGB color
-                            // Pattern bits: 0x01=P1, 0x02=P2, 0x04=P3, 0x08=P4
-                            int player_num = 0;
-                            if (fb->led.pattern & 0x01) player_num = 0;
-                            else if (fb->led.pattern & 0x02) player_num = 1;
-                            else if (fb->led.pattern & 0x04) player_num = 2;
-                            else if (fb->led.pattern & 0x08) player_num = 3;
-
-                            r = PLAYER_COLORS[player_num][0];
-                            g = PLAYER_COLORS[player_num][1];
-                            b = PLAYER_COLORS[player_num][2];
-                        } else {
-                            // Default to player index-based color
-                            int color_idx = player_idx % 4;
-                            r = PLAYER_COLORS[color_idx][0];
-                            g = PLAYER_COLORS[color_idx][1];
-                            b = PLAYER_COLORS[color_idx][2];
-                        }
+                        // RGB is independent of player assignment. All-zero is
+                        // a valid configured body colour (lightbar off).
+                        r = fb->led.r;
+                        g = fb->led.g;
+                        b = fb->led.b;
                         need_update = true;
                     }
 

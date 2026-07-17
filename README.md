@@ -26,7 +26,9 @@ project's hardware captures and
 - DualSense and DualSense Edge input, including Edge paddles, Fn and mute buttons,
   LEDs, and rumble.
 - Xbox-family, Switch-family, 8BitDo, and other supported Bluetooth HID controllers.
-- A local configuration page for remapping buttons and setting supported lightbar colors.
+- A local configuration page for remapping buttons and independently setting the Pro Controller 2
+  body and Joy-Con 2 Left/Right accent colors. The active personality's appearance is shared with
+  supported DualShock/DualSense lightbars.
 - Builds for both RP2040 Pico W and RP2350 Pico 2 W.
 
 The Pro Controller 2 personality deliberately uses a 1 ms USB interrupt interval
@@ -80,7 +82,7 @@ and read-only storage device named **PICOSWITCH**.
 
 1. Open `CONFIG.HTM` from the mounted drive in desktop Chrome or Edge.
 2. Select the PicoSwitch serial port.
-3. Inspect live input, change mappings or supported lightbar colors, and save.
+3. Inspect live input, change mappings or Pro2/Joy-Con appearance colors, and save.
 4. Power-cycle to return directly to Pro Controller 2 mode.
 
 The embedded page is generated from `web/index.html`. After editing it, run:

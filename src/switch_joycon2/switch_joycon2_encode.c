@@ -4,142 +4,162 @@
 #include <string.h>
 
 #include "switch_joycon2_encode.h"
+#include "core/buttons.h"  // normalized physical JP_BUTTON_* sources
+
+static uint16_t joycon2_axis_from_delta(int32_t delta) {
+    if (delta < -(int32_t)SWITCH_STICK_MID) delta = -(int32_t)SWITCH_STICK_MID;
+    if (delta > (int32_t)(SWITCH_STICK_MAX - SWITCH_STICK_MID))
+        delta = (int32_t)(SWITCH_STICK_MAX - SWITCH_STICK_MID);
+    return (uint16_t)((int32_t)SWITCH_STICK_MID + delta);
+}
+
+static int32_t joycon2_negate_axis_delta(int32_t delta) {
+    // The 12-bit range has one more value below center than above it. Preserve
+    // center and both exact endpoints when reflecting an axis.
+    if (delta == (int32_t)(SWITCH_STICK_MAX - SWITCH_STICK_MID))
+        return -(int32_t)SWITCH_STICK_MID;
+    if (delta == -(int32_t)SWITCH_STICK_MID)
+        return (int32_t)(SWITCH_STICK_MAX - SWITCH_STICK_MID);
+    return -delta;
+}
+
+static void joycon2_pack_sideways_stick(const switch_pro_input_t *in, uint32_t source_buttons,
+                                         joycon2_side_t side,
+                                         uint8_t out[3]) {
+    uint16_t x = (uint16_t)(in->left_stick[0] |
+                            ((uint16_t)(in->left_stick[1] & 0x0F) << 8));
+    uint16_t y = (uint16_t)((in->left_stick[1] >> 4) |
+                            ((uint16_t)in->left_stick[2] << 4));
+
+    // The paired controller's D-pad is a second, digital source for the lone
+    // Joy-Con stick. A direction overrides only its own analog axis, so a
+    // digital horizontal direction can still combine with analog vertical input.
+    // Opposing directions cancel and leave that analog axis unchanged.
+    const bool left = (source_buttons & JP_BUTTON_DL) != 0;
+    const bool right = (source_buttons & JP_BUTTON_DR) != 0;
+    const bool up = (source_buttons & JP_BUTTON_DU) != 0;
+    const bool down = (source_buttons & JP_BUTTON_DD) != 0;
+    if (left != right) x = left ? SWITCH_STICK_MIN : SWITCH_STICK_MAX;
+    if (up != down) y = up ? SWITCH_STICK_MAX : SWITCH_STICK_MIN;
+
+    // The Switch sees axes in the Joy-Con shell's local coordinates. Convert the
+    // normally-held paired controller into those coordinates: L is held 90 degrees
+    // counter-clockwise (so apply the inverse/clockwise rotation); R is held clockwise.
+    const int32_t dx = (int32_t)x - SWITCH_STICK_MID;
+    const int32_t dy = (int32_t)y - SWITCH_STICK_MID;
+    const int32_t rotated_x = side == JOYCON2_SIDE_LEFT ? dy : joycon2_negate_axis_delta(dy);
+    const int32_t rotated_y = side == JOYCON2_SIDE_LEFT ? joycon2_negate_axis_delta(dx) : dx;
+    switch_pro_pack_stick(joycon2_axis_from_delta(rotated_x),
+                          joycon2_axis_from_delta(rotated_y), out);
+}
 
 // Report 0x07 (Left) / 0x08 (Right) -- Confirmed byte layout and button bitmaps, see
-// docs/switch2-joycon2/protocol.md "Wire input/output report contents".
-void switch_joycon2_encode_report(const switch_pro_input_t *in, joycon2_side_t side,
-                                   uint8_t counter, uint8_t out[63]) {
+// docs/switch2-joycon2/protocol.md "Wire input/output report contents". The source-side
+// translation implements the project's deliberate single-Joy-Con sideways profile; the
+// SWITCH_MASK_* names still describe the paired controller's Pro2 remap destinations.
+void switch_joycon2_encode_report(const switch_pro_input_t *in, uint32_t source_buttons,
+                                   joycon2_side_t side, uint8_t counter, uint8_t out[63]) {
     memset(out, 0, 63);
     out[0x0] = counter;
-    out[0x1] = 0x25;  // power: external power + not charging + battery level 9/9 -- same safe
-                       // default as switch_gc_encode_report()'s identical field, no real
-                       // battery-telemetry source for a USB-tethered Pico.
+    out[0x1] = 0x25;  // external power, not charging, battery level 9/9
 
-    uint8_t s0 = in->buttons[0], s1 = in->buttons[1], s2 = in->buttons[2];
+    const uint8_t s1 = in->buttons[1];
     uint8_t b0 = 0, b1 = 0;
 
     if (side == JOYCON2_SIDE_LEFT) {
-        // Byte 0: 0x80 Stick(click) | 0x40 Minus | 0x20 ZL | 0x10 L | 0x08 Up | 0x04 Left |
-        //         0x02 Right | 0x01 Down
-        if (s1 & SWITCH_MASK_L3) b0 |= 0x80;  // Left stick click -- L3 is this project's shared
-                                               // name for "left stick pressed", the correct source
-                                               // regardless of which physical side is emulated.
-        if (s1 & SWITCH_MASK_MINUS) b0 |= 0x40;
-        if (s2 & SWITCH_MASK_ZL) b0 |= 0x20;
-        if (s2 & SWITCH_MASK_L) b0 |= 0x10;
-        if (s2 & SWITCH_MASK_DPAD_UP) b0 |= 0x08;
-        if (s2 & SWITCH_MASK_DPAD_LEFT) b0 |= 0x04;
-        if (s2 & SWITCH_MASK_DPAD_RIGHT) b0 |= 0x02;
-        if (s2 & SWITCH_MASK_DPAD_DOWN) b0 |= 0x01;
-        // Byte 1: 0x80 SL | 0x40 SR | 0x01 Capture.
-        if (in->extra & SWITCH_EXTRA_SL) b1 |= 0x80;
-        if (in->extra & SWITCH_EXTRA_SR) b1 |= 0x40;
+        // Paired controller -> sideways Joy-Con 2 (L):
+        // L3->stick, Select->Minus, R2->ZL, L2->L,
+        // Square/X->Up, Cross/A->Left, Triangle/Y->Right, Circle/B->Down.
+        if (source_buttons & JP_BUTTON_L3) b0 |= 0x80;
+        if (source_buttons & JP_BUTTON_S1) b0 |= 0x40;
+        if (source_buttons & JP_BUTTON_R2) b0 |= 0x20;
+        if (source_buttons & JP_BUTTON_L2) b0 |= 0x10;
+        if (source_buttons & JP_BUTTON_B3) b0 |= 0x08;
+        if (source_buttons & JP_BUTTON_B1) b0 |= 0x04;
+        if (source_buttons & JP_BUTTON_B4) b0 |= 0x02;
+        if (source_buttons & JP_BUTTON_B2) b0 |= 0x01;
+        // L1/R1 become the rail buttons; Capture keeps the Pro2 family mapping.
+        if (source_buttons & JP_BUTTON_L1) b1 |= 0x80;
+        if (source_buttons & JP_BUTTON_R1) b1 |= 0x40;
         if (s1 & SWITCH_MASK_CAPTURE) b1 |= 0x01;
     } else {  // JOYCON2_SIDE_RIGHT
-        // Byte 0: 0x80 Stick(click) | 0x40 Plus | 0x20 ZR | 0x10 R | 0x08 X | 0x04 Y | 0x02 A |
-        //         0x01 B
-        if (s1 & SWITCH_MASK_R3) b0 |= 0x80;
-        if (s1 & SWITCH_MASK_PLUS) b0 |= 0x40;
-        if (s0 & SWITCH_MASK_ZR) b0 |= 0x20;
-        if (s0 & SWITCH_MASK_R) b0 |= 0x10;
-        if (s0 & SWITCH_MASK_X) b0 |= 0x08;
-        if (s0 & SWITCH_MASK_Y) b0 |= 0x04;
-        if (s0 & SWITCH_MASK_A) b0 |= 0x02;
-        if (s0 & SWITCH_MASK_B) b0 |= 0x01;
-        // Byte 1: 0x80 SL | 0x40 SR | 0x10 C | 0x01 Home.
-        if (in->extra & SWITCH_EXTRA_SL) b1 |= 0x80;
-        if (in->extra & SWITCH_EXTRA_SR) b1 |= 0x40;
+        // Paired controller -> sideways Joy-Con 2 (R):
+        // L3->stick, Start->Plus, R2->ZR, L2->R,
+        // Square/X->B, Triangle/Y->Y, Cross/A->A, Circle/B->X.
+        if (source_buttons & JP_BUTTON_L3) b0 |= 0x80;
+        if (source_buttons & JP_BUTTON_S2) b0 |= 0x40;
+        if (source_buttons & JP_BUTTON_R2) b0 |= 0x20;
+        if (source_buttons & JP_BUTTON_L2) b0 |= 0x10;
+        if (source_buttons & JP_BUTTON_B2) b0 |= 0x08;
+        if (source_buttons & JP_BUTTON_B4) b0 |= 0x04;
+        if (source_buttons & JP_BUTTON_B1) b0 |= 0x02;
+        if (source_buttons & JP_BUTTON_B3) b0 |= 0x01;
+        // L1/R1 become the rail buttons; C/Home keep the Pro2 family mapping.
+        if (source_buttons & JP_BUTTON_L1) b1 |= 0x80;
+        if (source_buttons & JP_BUTTON_R1) b1 |= 0x40;
         if (in->extra & SWITCH_EXTRA_C) b1 |= 0x10;
-        if (s1 & SWITCH_MASK_HOME) b1 |= 0x01;
+        if (source_buttons & JP_BUTTON_A1) b1 |= 0x01;
     }
     out[0x2] = b0;
     out[0x3] = b1;
+    out[0x4] = 0x07;  // observed constant on both sides
 
-    out[0x4] = 0x07;  // Unknown, observed always 0x07 on both sides (hid_reports.md) -- not
-                       // understood, replayed as a safe constant.
+    joycon2_pack_sideways_stick(in, source_buttons, side, &out[0x5]);
 
-    // Analog stick: a lone Joy-Con 2 has exactly one physical stick (Confirmed,
-    // docs/experiments/joycon2-spi-dump-analysis-2026-07-14.md §3.8 -- only one of the two
-    // factory calibration slots is ever populated). Deliberate design choice, not evidence-based:
-    // always source from `in->left_stick` regardless of emulated side, since this project's
-    // shared input model conventionally carries a source device's primary/movement stick there.
-    // Revisit if a real source device's mapping convention turns out to disagree.
-    memcpy(&out[0x5], in->left_stick, 3);
-
-    out[0x8] = 0;      // Unknown
-    // 0x9..0xD mouse data: left zero, no source. 0xE NFC state: 0 (idle/none) on both sides --
-    // correct as-is for Left (which genuinely has no NFC hardware); a safe "not present" default
-    // for Right (which does have real NFC hardware but this project emulates none).
-    // 0xF motion data length: 0, no motion source. 0x10..0x37 motion data, 0x38..0x3E reserved:
-    // left zeroed by the memset above.
+    // 0x8 unknown; 0x9..0xD mouse; 0xE NFC state; 0xF motion length; remaining motion and
+    // reserved fields stay zero. This project currently has no source for them.
 }
 
-// Report 0x05 -- Confirmed shared format (ndeadly's hid_reports.md "Input Report 0x05"), same
-// table switch_gc_encode_report05() already implements a subset of. Adds the side-specific
-// L/R/ZL/ZR bits a lone Joy-Con genuinely has (unlike GameCube, which has no equivalent and
-// leaves these at zero) via the ordinary shared SWITCH_MASK_L/ZL/R/ZR fields.
-void switch_joycon2_encode_report05(const switch_pro_input_t *in, joycon2_side_t side,
-                                     uint32_t counter, uint8_t out[63]) {
+// Report 0x05 -- shared Switch-family format. Apply the exact same sideways translation as
+// report 0x07/0x08, then place the translated controls in this format's physical-side fields.
+void switch_joycon2_encode_report05(const switch_pro_input_t *in, uint32_t source_buttons,
+                                     joycon2_side_t side, uint32_t counter, uint8_t out[63]) {
     memset(out, 0, 63);
     out[0] = (uint8_t)counter;
     out[1] = (uint8_t)(counter >> 8);
     out[2] = (uint8_t)(counter >> 16);
     out[3] = (uint8_t)(counter >> 24);
 
-    uint8_t s0 = in->buttons[0], s1 = in->buttons[1], s2 = in->buttons[2];
-    uint8_t b0 = 0, b1 = 0, b2 = 0, b3 = 0;
-    // Byte 0: 0x80 ZR | 0x40 R | 0x20 SL(right) | 0x10 SR(right) | 0x08 A | 0x04 B | 0x02 X | 0x01 Y
-    if (s0 & SWITCH_MASK_A) b0 |= 0x08;
-    if (s0 & SWITCH_MASK_B) b0 |= 0x04;
-    if (s0 & SWITCH_MASK_X) b0 |= 0x02;
-    if (s0 & SWITCH_MASK_Y) b0 |= 0x01;
-    if (side == JOYCON2_SIDE_RIGHT) {
-        if (s0 & SWITCH_MASK_ZR) b0 |= 0x80;
-        if (s0 & SWITCH_MASK_R) b0 |= 0x40;
-        if (in->extra & SWITCH_EXTRA_SL) b0 |= 0x20;
-        if (in->extra & SWITCH_EXTRA_SR) b0 |= 0x10;
-    }
-    // Byte 1: 0x40 C | 0x20 Capture | 0x10 Home | 0x08 Left stick | 0x04 Right stick | 0x02 Plus
-    //         | 0x01 Minus
-    if (s1 & SWITCH_MASK_CAPTURE) b1 |= 0x20;
-    if (s1 & SWITCH_MASK_HOME)    b1 |= 0x10;
-    if (s1 & SWITCH_MASK_PLUS)    b1 |= 0x02;
-    if (s1 & SWITCH_MASK_MINUS)   b1 |= 0x01;
-    if (in->extra & SWITCH_EXTRA_C) b1 |= 0x40;
-    if (s1 & SWITCH_MASK_L3) b1 |= 0x08;
-    if (s1 & SWITCH_MASK_R3) b1 |= 0x04;
-    // Byte 2: 0x80 ZL | 0x40 L | 0x20 SL(left) | 0x10 SR(left) | 0x08 Left | 0x04 Right |
-    //         0x02 Up | 0x01 Down
-    if (s2 & SWITCH_MASK_DPAD_LEFT)  b2 |= 0x08;
-    if (s2 & SWITCH_MASK_DPAD_RIGHT) b2 |= 0x04;
-    if (s2 & SWITCH_MASK_DPAD_UP)    b2 |= 0x02;
-    if (s2 & SWITCH_MASK_DPAD_DOWN)  b2 |= 0x01;
+    const uint8_t s1 = in->buttons[1];
+    uint8_t b0 = 0, b1 = 0, b2 = 0;
+
     if (side == JOYCON2_SIDE_LEFT) {
-        if (s2 & SWITCH_MASK_ZL) b2 |= 0x80;
-        if (s2 & SWITCH_MASK_L) b2 |= 0x40;
-        if (in->extra & SWITCH_EXTRA_SL) b2 |= 0x20;
-        if (in->extra & SWITCH_EXTRA_SR) b2 |= 0x10;
+        if (s1 & SWITCH_MASK_CAPTURE) b1 |= 0x20;
+        if (source_buttons & JP_BUTTON_S1) b1 |= 0x01;
+        if (source_buttons & JP_BUTTON_L3) b1 |= 0x08;
+
+        if (source_buttons & JP_BUTTON_R2) b2 |= 0x80;
+        if (source_buttons & JP_BUTTON_L2) b2 |= 0x40;
+        if (source_buttons & JP_BUTTON_L1) b2 |= 0x20;
+        if (source_buttons & JP_BUTTON_R1) b2 |= 0x10;
+        if (source_buttons & JP_BUTTON_B1) b2 |= 0x08;
+        if (source_buttons & JP_BUTTON_B4) b2 |= 0x04;
+        if (source_buttons & JP_BUTTON_B3) b2 |= 0x02;
+        if (source_buttons & JP_BUTTON_B2) b2 |= 0x01;
+    } else {
+        if (source_buttons & JP_BUTTON_R2) b0 |= 0x80;
+        if (source_buttons & JP_BUTTON_L2) b0 |= 0x40;
+        if (source_buttons & JP_BUTTON_L1) b0 |= 0x20;
+        if (source_buttons & JP_BUTTON_R1) b0 |= 0x10;
+        if (source_buttons & JP_BUTTON_B1) b0 |= 0x08;
+        if (source_buttons & JP_BUTTON_B3) b0 |= 0x04;
+        if (source_buttons & JP_BUTTON_B2) b0 |= 0x02;
+        if (source_buttons & JP_BUTTON_B4) b0 |= 0x01;
+
+        if (in->extra & SWITCH_EXTRA_C) b1 |= 0x40;
+        if (source_buttons & JP_BUTTON_A1) b1 |= 0x10;
+        if (source_buttons & JP_BUTTON_L3) b1 |= 0x04;
+        if (source_buttons & JP_BUTTON_S2) b1 |= 0x02;
     }
-    // Byte 3: 0x02 GL | 0x01 GR (0x10 Headset not modeled -- no source)
-    if (in->extra & SWITCH_EXTRA_GL) b3 |= 0x02;
-    if (in->extra & SWITCH_EXTRA_GR) b3 |= 0x01;
+
     out[0x4] = b0;
     out[0x5] = b1;
     out[0x6] = b2;
-    out[0x7] = b3;
 
-    // Left/right analog stick fields both exist in this shared format regardless of controller
-    // type (Confirmed, ndeadly's table). Same design choice as switch_joycon2_encode_report()
-    // above: always source the single physical stick from in->left_stick, leave right_stick at
-    // its neutral (zeroed = 0,0 raw, not centered -- matches switch_gc_encode_report05()'s
-    // identical treatment of its own unused stick fields) rather than inventing a centered value.
-    memcpy(&out[0xA], in->left_stick, 3);
+    joycon2_pack_sideways_stick(in, source_buttons, side, &out[0xA]);
 
-    out[0x1F] = 0xA0;  // battery voltage ~4000 mV (0x0FA0 LE) -- same safe default as
-    out[0x20] = 0x0F;  // switch_gc_encode_report05()'s identical field.
+    out[0x1F] = 0xA0;  // battery voltage ~4000 mV (0x0FA0 LE)
+    out[0x20] = 0x0F;
     out[0x21] = 0x20;  // charge state
-    out[0x29] = 0x01;  // always 0x01, per documented layout
-    // 0x10..0x18 mouse data, 0x19..0x1E magnetometer, 0x22..0x28 unknown/battery-current,
-    // 0x2A..0x3B motion, 0x3C..0x3E (GameCube-only trigger tail, not applicable here): left
-    // zeroed by the memset above -- no source for any of them yet.
+    out[0x29] = 0x01;  // documented constant
 }

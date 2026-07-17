@@ -18,17 +18,6 @@
 #include <string.h>
 #include <stdio.h>
 
-// Player LED colors (RGB values) - same as DS4
-static const uint8_t PLAYER_COLORS[][3] = {
-    {  0,   0,  64 },   // Player 1: Blue
-    { 64,   0,   0 },   // Player 2: Red
-    {  0,  64,   0 },   // Player 3: Green
-    { 64,   0,  64 },   // Player 4: Pink/Fuchsia
-    { 64,  64,   0 },   // Player 5: Yellow
-    {  0,  64,  64 },   // Player 6: Cyan
-    { 64,  32,   0 },   // Player 7: Orange
-};
-
 // Player LED patterns for DS5 (5 LEDs in a row)
 // Pattern is a bitmask: bit 0=leftmost, bit 4=rightmost
 static const uint8_t PLAYER_LED_PATTERNS[] = {
@@ -172,6 +161,7 @@ static ds5_bt_data_t ds5_data[BTHID_MAX_DEVICES];
 // ============================================================================
 
 static bool ds5_send_output(bthid_device_t* device, bool initialize_compat,
+                            bool setup_lightbar,
                             bool update_rumble, bool update_leds,
                             uint8_t rumble_left, uint8_t rumble_right,
                             uint8_t r, uint8_t g, uint8_t b, uint8_t player_led)
@@ -181,6 +171,7 @@ static bool ds5_send_output(bthid_device_t* device, bool initialize_compat,
 
     ds5_output_state_t state = {
         .initialize_compat = initialize_compat,
+        .setup_lightbar = setup_lightbar,
         .update_rumble = update_rumble,
         .update_leds = update_leds,
         .rumble_left = rumble_left,
@@ -214,8 +205,9 @@ static bool ds5_send_output(bthid_device_t* device, bool initialize_compat,
         ds5->player_led = player_led;
     }
 
-    printf("[DS5_BT] Output queued: setup=%d rumble=%d L=%d R=%d leds=%d\n",
-           initialize_compat, update_rumble, rumble_left, rumble_right, update_leds);
+    printf("[DS5_BT] Output queued: compat=%d lightbar_setup=%d rumble=%d L=%d R=%d leds=%d\n",
+           initialize_compat, setup_lightbar, update_rumble,
+           rumble_left, rumble_right, update_leds);
     return true;
 }
 
@@ -478,13 +470,25 @@ static void ds5_task(bthid_device_t* device)
             if (now - ds5->activation_time >= 100) {
                 int player_idx = find_player_index(ds5->event.dev_addr, ds5->event.instance);
                 int idx = (player_idx >= 0 && player_idx < 7) ? player_idx : 0;
-                int pat_idx = (idx < 5) ? idx : idx % 5;
-                // Match daidr/dualsense-tester's working first output report:
-                // flag0=0xF7, flag1=0xF7, with the initial LED state in the same
-                // packet. This replaces the LIGHT_OUT-only setup that left all
-                // three tested controllers dark and without compatibility rumble.
-                if (ds5_send_output(device, true, false, true, 0, 0,
-                                    PLAYER_COLORS[idx][0], PLAYER_COLORS[idx][1], PLAYER_COLORS[idx][2],
+                feedback_state_t* fb = feedback_get_state(idx);
+                uint8_t r = fb ? fb->led.r : 0;
+                uint8_t g = fb ? fb->led.g : 0;
+                uint8_t b = fb ? fb->led.b : 0;
+                int player_num = idx;
+                if (fb && fb->led.pattern != 0) {
+                    player_num = 0;
+                    for (int p = 1; p <= 7; p++) {
+                        if (fb->led.pattern == PLAYER_LEDS[p]) {
+                            player_num = p - 1;
+                            break;
+                        }
+                    }
+                }
+                int pat_idx = (player_num < 5) ? player_num : player_num % 5;
+                // Keep the hardware-proven compatibility flags, but also issue
+                // the one-time LIGHT_OUT setup required before RGB writes.
+                if (ds5_send_output(device, true, true, false, false, 0, 0,
+                                    r, g, b,
                                     PLAYER_LED_PATTERNS[pat_idx])) {
                     ds5->activation_state = 2;
                     ds5->activation_time = now;
@@ -492,8 +496,30 @@ static void ds5_task(bthid_device_t* device)
             }
             break;
 
-        case 2:  // Let the asynchronous HID/L2CAP setup report leave before live updates
-            if (now - ds5->activation_time >= 30) ds5->activation_state = 3;
+        case 2:  // Program RGB/player LEDs after the setup packet has left
+            if (now - ds5->activation_time >= 30) {
+                int player_idx = find_player_index(ds5->event.dev_addr, ds5->event.instance);
+                int idx = (player_idx >= 0 && player_idx < 7) ? player_idx : 0;
+                feedback_state_t* fb = feedback_get_state(idx);
+                uint8_t r = fb ? fb->led.r : 0;
+                uint8_t g = fb ? fb->led.g : 0;
+                uint8_t b = fb ? fb->led.b : 0;
+                int player_num = idx;
+                if (fb && fb->led.pattern != 0) {
+                    player_num = 0;
+                    for (int p = 1; p <= 7; p++) {
+                        if (fb->led.pattern == PLAYER_LEDS[p]) {
+                            player_num = p - 1;
+                            break;
+                        }
+                    }
+                }
+                int pat_idx = (player_num < 5) ? player_num : player_num % 5;
+                if (ds5_send_output(device, false, false, false, true, 0, 0,
+                                    r, g, b, PLAYER_LED_PATTERNS[pat_idx])) {
+                    ds5->activation_state = 3;
+                }
+            }
             break;
 
         case 3:  // Activated - monitor feedback system for rumble/LED updates
@@ -540,31 +566,11 @@ static void ds5_task(bthid_device_t* device)
 
                     // Check RGB lightbar from feedback
                     if (fb->led_dirty) {
-                        if (fb->led.r != 0 || fb->led.g != 0 || fb->led.b != 0) {
-                            // Host specified RGB color directly
-                            r = fb->led.r;
-                            g = fb->led.g;
-                            b = fb->led.b;
-                        } else if (fb->led.pattern != 0) {
-                            // Use player color based on pattern via PLAYER_LEDS[] lookup
-                            int player_num = 0;
-                            for (int p = 1; p <= 7; p++) {
-                                if (fb->led.pattern == PLAYER_LEDS[p]) {
-                                    player_num = p - 1;
-                                    break;
-                                }
-                            }
-                            int color_idx = (player_num < 7) ? player_num : player_num % 7;
-                            r = PLAYER_COLORS[color_idx][0];
-                            g = PLAYER_COLORS[color_idx][1];
-                            b = PLAYER_COLORS[color_idx][2];
-                        } else {
-                            // Default to player index color
-                            int idx = (player_idx < 7) ? player_idx : player_idx % 7;
-                            r = PLAYER_COLORS[idx][0];
-                            g = PLAYER_COLORS[idx][1];
-                            b = PLAYER_COLORS[idx][2];
-                        }
+                        // RGB is independent of the player-dot pattern. All-zero
+                        // is a valid configured body colour (lightbar off).
+                        r = fb->led.r;
+                        g = fb->led.g;
+                        b = fb->led.b;
                         player_led = calc_player_led;
                         led_update = true;
                     }
@@ -584,7 +590,7 @@ static void ds5_task(bthid_device_t* device)
                         led_update = true;
 
                     if ((rumble_update || led_update) &&
-                        ds5_send_output(device, false, rumble_update, led_update,
+                        ds5_send_output(device, false, false, rumble_update, led_update,
                                         rumble_left, rumble_right, r, g, b, player_led)) {
                         // Only consume feedback after BTstack has accepted the
                         // report. A failed STOP is therefore retried instead of

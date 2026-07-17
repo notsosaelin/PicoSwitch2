@@ -12,6 +12,8 @@
 #include "switch_joycon2.h"
 #include "switch_joycon2_encode.h"
 #include "ns2_pairing_crypto.h"
+#include "ns2_joycon2_identity.h"
+#include "config.h"
 #include "switch_pro.h"
 #include "usb.h"
 
@@ -250,13 +252,14 @@ static uint8_t s_selected_report_id = 0;  // 0 = none selected yet (matches swit
 static void switch_joycon2_build_report(uint8_t *p) {
     switch_pro_input_t in;
     get_global_gamepad_input(0, &in);
-    switch_joycon2_encode_report(&in, s_side, s_report_counter++, p);
+    switch_joycon2_encode_report(&in, get_global_raw_buttons(0), s_side, s_report_counter++, p);
 }
 
 static void switch_joycon2_build_report05(uint8_t *p) {
     switch_pro_input_t in;
     get_global_gamepad_input(0, &in);
-    switch_joycon2_encode_report05(&in, s_side, s_report05_counter++, p);
+    switch_joycon2_encode_report05(&in, get_global_raw_buttons(0), s_side,
+                                    s_report05_counter++, p);
 }
 
 //--------------------------------------------------------------------+
@@ -274,10 +277,10 @@ static void switch_joycon2_build_report05(uint8_t *p) {
 // after PID on the real dump. Per this project's established exclusion policy (matching
 // switch_gc.c's own fictitious serial), the serial field is a FICTITIOUS value, not either real
 // dumped unit's actual serial -- structurally plausible but deliberately wrong so it can never
-// collide with real hardware. Colour bytes are a neutral placeholder, not either real unit's
-// actual colour.
+// collide with real hardware. Body/button/grip use genuine values; the highlight at 0x1301F is
+// filled from the per-side user configuration when this personality starts.
 //
-// Fixed 2026-07-14: this array previously used only 9 digits after 'W' (10-byte serial) instead
+// Fixed 2026-07-14: the identity template previously used only 9 digits after 'W' (10-byte serial) instead
 // of the Confirmed 11-digit/12-byte shape -- 2 bytes short, silently shifting VID, PID, and every
 // byte after them 2 positions earlier than the real dump's actual layout (offset 16/18 instead of
 // the Confirmed 18/20). The project owner reported Joy-Con 2 (L)/(R) never showing the "Paired"
@@ -285,40 +288,17 @@ static void switch_joycon2_build_report05(uint8_t *p) {
 // (case 0x11/0x18, already fixed), which only affects the *streaming* phase after pairing, a
 // misaligned identity block corrupts the very data (VID/PID) the console's initial recognition
 // handshake reads, a much more plausible explanation for never reaching "Paired" at all.
-static const uint8_t switch_joycon2_ctrl_identity_l[64] = {
-    0x01, 0x00,                                                                   // fixed header
-    'H', 'B',                                                                     // type code (Left)
-    'W', '9', '9', '9', '9', '9', '9', '9', '9', '9', '9', '9',                   // fictitious serial (12B: "W"+11 digits)
-    0x00, 0x00,                                                                   // 2 reserved zero bytes
-    0x7E, 0x05,                                                                   // VID 0x057E
-    0x67, 0x20,                                                                   // PID 0x2067 (Left)
-    0x01, 0x08,                                                                   // fixed bytes (Confirmed shape from SPI dump)
-    0x02, 0x32, 0x32, 0x32, 0xAA, 0xAA, 0xAA, 0x00, 0x00, 0x00, 0x32, 0x32, 0x32, // colour (neutral placeholder)
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-};
-_Static_assert(sizeof(switch_joycon2_ctrl_identity_l) == 64, "Joy-Con 2 EP0 identity block must be 64 bytes");
+static uint8_t switch_joycon2_ctrl_identity_active[64];
 
-static uint8_t switch_joycon2_ctrl_identity_r[64];
-static bool switch_joycon2_ctrl_identity_r_built = false;
-
-static const uint8_t *switch_joycon2_ctrl_identity_right(void) {
-    if (!switch_joycon2_ctrl_identity_r_built) {
-        memcpy(switch_joycon2_ctrl_identity_r, switch_joycon2_ctrl_identity_l, 64);
-        switch_joycon2_ctrl_identity_r[2] = 'H';
-        switch_joycon2_ctrl_identity_r[3] = 'C';  // type code "HC" -- Right (Confirmed from SPI dump)
-        switch_joycon2_ctrl_identity_r[20] = 0x66;
-        switch_joycon2_ctrl_identity_r[21] = 0x20;  // PID 0x2066 (Right) -- offset 20/21, corrected
-                                                     // from the pre-fix 18/19 alongside the array's
-                                                     // own serial-length fix above
-        switch_joycon2_ctrl_identity_r_built = true;
-    }
-    return switch_joycon2_ctrl_identity_r;
+static void switch_joycon2_build_identity(void) {
+    bool right = s_side == JOYCON2_SIDE_RIGHT;
+    uint8_t accent[3];
+    config_get_joycon2_accent(right, accent);
+    ns2_joycon2_build_identity(right, accent, switch_joycon2_ctrl_identity_active);
 }
 
 static const uint8_t *switch_joycon2_ctrl_identity(void) {
-    return s_side == JOYCON2_SIDE_LEFT ? switch_joycon2_ctrl_identity_l : switch_joycon2_ctrl_identity_right();
+    return switch_joycon2_ctrl_identity_active;
 }
 
 // Response to EP0 vendor bRequest=2 (16 bytes). Family framing is known; Joy-Con-specific opaque
@@ -469,7 +449,8 @@ static void switch_joycon2_vendor_dispatch(const uint8_t *c, uint32_t n) {
         d[0] = 0x00;
         dl = 1;
         break;
-    case 0x09:  // player LEDs -> bare ack
+    case 0x09:  // console-assigned player LED bitfield
+        if (n > 8) report_set_player_leds(0, c[8]);
         dl = 0;
         break;
     case 0x08:  // Charging Grip commands -- Confirmed to exist and documented
@@ -598,6 +579,7 @@ bool switch_joycon2_vendor_control_xfer(uint8_t rhport, uint8_t stage, const voi
 //--------------------------------------------------------------------+
 
 void switch_joycon2_init(void) {
+    switch_joycon2_build_identity();
     s_report_counter = 0;
     s_report05_counter = 0;
     s_selected_report_id = 0;
