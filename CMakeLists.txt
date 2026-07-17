@@ -60,11 +60,48 @@ if(NS2_PRO)
 endif()
 
 # NS2 Option A: present the full retail descriptor including the 3 USB audio
-# interfaces (enumerated by a stub class driver; no functional audio). Only
-# meaningful with NS2_PRO. -DNS2_AUDIO=OFF falls back to the 2-interface Option B.
+# interfaces. A PC2-specific UAC1 driver owns the two isochronous streams and
+# Feature Unit controls. Only meaningful with NS2_PRO. -DNS2_AUDIO=OFF falls
+# back to the 2-interface Option B.
 option(NS2_AUDIO "NS2: include the audio interfaces (Option A, full descriptor)" ON)
 if(NS2_PRO AND NS2_AUDIO)
     target_compile_definitions(PicoSwitchWGA PRIVATE NS2_AUDIO=1)
+endif()
+
+# Audible DualSense Bluetooth audio requires the RP2350 memory/CPU budget.
+# Live encoding remains opt-in while its updated scheduler is hardware-tested.
+# The USB endpoint already delivers exact 48 kHz stereo; the live bridge
+# accumulates ten 1 ms packets directly into each 480-frame Opus window.
+option(NS2_DS5_AUDIO "NS2: experimental live USB-to-DualSense Opus bridge" OFF)
+option(NS2_DS5_AUDIO_TEST_TONE
+       "NS2: diagnostic fixed DualSense tone (no live Opus encoder)" OFF)
+if(NS2_PRO AND NS2_AUDIO AND
+   (NS2_DS5_AUDIO OR NS2_DS5_AUDIO_TEST_TONE) AND
+   PICO_PLATFORM MATCHES "^rp2350")
+    target_compile_definitions(PicoSwitchWGA PRIVATE NS2_DS5_AUDIO=1)
+endif()
+
+if(NS2_PRO AND NS2_AUDIO AND NS2_DS5_AUDIO AND
+   PICO_PLATFORM MATCHES "^rp2350")
+    set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+    set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+    add_subdirectory(third_party/opus EXCLUDE_FROM_ALL)
+    target_compile_definitions(PicoSwitchWGA PRIVATE NS2_DS5_AUDIO_LIVE_OPUS=1)
+    # The SDK's automatic core1 stack is linked into the 4 KiB SCRATCH_X bank,
+    # which is too small for Opus. Disable that allocation; main.c supplies a
+    # 48 KiB stack from ordinary SRAM via multicore_launch_core1_with_stack().
+    # The pinned reference measured roughly 26 KiB at the encoder's deepest
+    # point, leaving useful headroom for the surrounding BTstack timer call.
+    target_compile_definitions(PicoSwitchWGA PRIVATE PICO_CORE1_STACK_SIZE=0)
+    target_link_libraries(PicoSwitchWGA opus)
+endif()
+
+if(NS2_PRO AND NS2_AUDIO AND NS2_DS5_AUDIO_TEST_TONE AND
+   PICO_PLATFORM MATCHES "^rp2350")
+    target_compile_definitions(PicoSwitchWGA PRIVATE
+                               NS2_DS5_AUDIO_TEST_TONE=1)
 endif()
 
 # NS2 diagnostic: blink the onboard LED to report how far the console's init

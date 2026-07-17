@@ -6,7 +6,9 @@
 // BT output reports require CRC32
 
 #include "ds5_bt.h"
+#include "ds5_audio_packet.h"
 #include "ds5_output.h"
+#include "ds5_audio_bridge.h"
 #include "bt/bthid/bthid.h"
 #include "bt/transport/bt_transport.h"
 #include "core/input_event.h"
@@ -14,6 +16,7 @@
 #include "core/buttons.h"
 #include "core/services/players/manager.h"
 #include "core/services/players/feedback.h"
+#include "controller_battery.h"
 #include "platform/platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -142,6 +145,18 @@ typedef struct {
     uint8_t activation_state;
     uint32_t activation_time;
     uint8_t output_seq;
+#ifdef NS2_DS5_AUDIO
+    uint8_t audio_packet_counter;
+    uint8_t audio_control_state;
+    uint32_t audio_control_time;
+    bool audio_mic_status_known;
+    bool audio_mic_status;
+    bool headset_connected;
+    bool audio_speaker_control_known;
+    bool audio_speaker_muted;
+    bool audio_speaker_headphones;
+    uint8_t audio_speaker_volume;
+#endif
 
     // Current feedback state (for change detection)
     uint8_t rumble_left;
@@ -211,6 +226,121 @@ static bool ds5_send_output(bthid_device_t* device, bool initialize_compat,
     return true;
 }
 
+#ifdef NS2_DS5_AUDIO
+static void ds5_audio_task(bthid_device_t *device, ds5_bt_data_t *ds5,
+                           bool run_codec) {
+    if (!ds5_audio_bridge_owns_connection(device->conn_index)) return;
+    if (run_codec) ds5_audio_bridge_codec_task(device->conn_index);
+
+    bool speaker_muted;
+    uint8_t speaker_volume;
+    ds5_audio_bridge_get_speaker_control(&speaker_muted, &speaker_volume);
+    bool const use_headphones = ds5->headset_connected;
+
+    // Report 0x39 is ignored until the extended 0x32 state transaction enables
+    // AudioControl. The same transaction explicitly supplies the route,
+    // non-zero volume, and unmuted/muted state rather than relying on values
+    // retained from a previous host. Preserve it as an ordered activation step. The
+    // direct-L2CAP transport reports queue acceptance rather than completed
+    // transmission, so mirror the existing LED activation state machine's
+    // settling delay before allowing status/stream traffic to follow it.
+    bool const speaker_control_changed =
+        !ds5->audio_speaker_control_known ||
+        ds5->audio_speaker_muted != speaker_muted ||
+        ds5->audio_speaker_volume != speaker_volume ||
+        ds5->audio_speaker_headphones != use_headphones;
+    if (ds5->audio_control_state == 0 ||
+        (ds5->audio_control_state == 2 && speaker_control_changed)) {
+        static uint8_t control_buf[1 + DS5_AUDIO_CONTROL_REPORT_LEN];
+        control_buf[0] = 0xA2;
+        ds5_audio_build_control_report(ds5->output_seq, use_headphones,
+                                       speaker_muted, speaker_volume,
+                                       control_buf + 1);
+        if (bt_send_interrupt(device->conn_index, control_buf,
+                              sizeof(control_buf))) {
+            ds5->output_seq = (uint8_t)((ds5->output_seq + 1u) & 0x0Fu);
+            ds5->audio_speaker_control_known = true;
+            ds5->audio_speaker_muted = speaker_muted;
+            ds5->audio_speaker_volume = speaker_volume;
+            ds5->audio_speaker_headphones = use_headphones;
+            if (ds5->audio_control_state == 0) {
+                ds5->audio_control_state = 1;
+                ds5->audio_control_time = platform_time_ms();
+            }
+        }
+        return;
+    }
+    if (ds5->audio_control_state == 1) {
+        if (platform_time_ms() - ds5->audio_control_time < 30u) return;
+        ds5->audio_control_state = 2;
+    }
+
+    bool const mic_active = ds5_audio_bridge_mic_active();
+    if (!ds5->audio_mic_status_known || ds5->audio_mic_status != mic_active) {
+        static uint8_t status_buf[1 + DS5_AUDIO_MIC_STATUS_REPORT_LEN];
+        status_buf[0] = 0xA2;
+        ds5_audio_build_mic_status_report(ds5->output_seq, mic_active,
+                                          status_buf + 1);
+        if (bt_send_interrupt(device->conn_index, status_buf,
+                              sizeof(status_buf))) {
+            ds5->output_seq = (uint8_t)((ds5->output_seq + 1u) & 0x0Fu);
+            ds5->audio_mic_status = mic_active;
+            ds5->audio_mic_status_known = true;
+        }
+        // Keep this state transaction ordered ahead of the first stream
+        // packet. The direct L2CAP path has only a current+next queue.
+        return;
+    }
+
+    static uint8_t frame_a[DS5_AUDIO_OPUS_FRAME_LEN];
+    static uint8_t frame_b[DS5_AUDIO_OPUS_FRAME_LEN];
+    if (!ds5_audio_bridge_peek_speaker_pair(frame_a, frame_b)) return;
+
+    static uint8_t stream_buf[1 + DS5_AUDIO_STREAM_REPORT_LEN];
+    uint8_t const next_packet_counter =
+        (uint8_t)(ds5->audio_packet_counter + 2u);
+    stream_buf[0] = 0xA2;
+    ds5_audio_build_stream_report(
+        ds5->output_seq, next_packet_counter, mic_active,
+        ds5->headset_connected, 64, frame_a, frame_b, stream_buf + 1);
+    if (bt_send_interrupt(device->conn_index, stream_buf,
+                          sizeof(stream_buf))) {
+        ds5->output_seq = (uint8_t)((ds5->output_seq + 1u) & 0x0Fu);
+        ds5->audio_packet_counter = next_packet_counter;
+        ds5_audio_bridge_commit_speaker_pair();
+    }
+}
+
+static void ds5_audio_service_all(bool run_codec) {
+    for (unsigned i = 0; i < BTHID_MAX_DEVICES; ++i) {
+        ds5_bt_data_t *ds5 = &ds5_data[i];
+        if (!ds5->initialized || ds5->activation_state != 3) continue;
+        bthid_device_t *device = bthid_get_device(ds5->event.dev_addr);
+        if (device && device->driver_data == ds5)
+            ds5_audio_task(device, ds5, run_codec);
+    }
+}
+
+void ds5_bt_audio_service(void) {
+    ds5_audio_service_all(true);
+}
+
+void ds5_bt_audio_report_service(void) {
+#ifdef NS2_DS5_AUDIO_TEST_TONE
+    // The fixed diagnostic has no encoder: its "codec" task is only a time
+    // comparison and can safely run inside the inbound report safe point.
+    ds5_audio_service_all(true);
+#else
+    // Live Opus is deliberately excluded from the deep receive callback.
+    // Already encoded pairs may still be transported from this safe point.
+    ds5_audio_service_all(false);
+#endif
+}
+#else
+void ds5_bt_audio_service(void) {}
+void ds5_bt_audio_report_service(void) {}
+#endif
+
 // ============================================================================
 // DRIVER IMPLEMENTATION
 // ============================================================================
@@ -252,6 +382,18 @@ static bool ds5_init(bthid_device_t* device)
             ds5_data[i].activation_state = 0;
             ds5_data[i].activation_time = 0;
             ds5_data[i].output_seq = 0;
+#ifdef NS2_DS5_AUDIO
+            ds5_data[i].audio_packet_counter = 0;
+            ds5_data[i].audio_control_state = 0;
+            ds5_data[i].audio_control_time = 0;
+            ds5_data[i].audio_mic_status_known = false;
+            ds5_data[i].audio_mic_status = false;
+            ds5_data[i].headset_connected = false;
+            ds5_data[i].audio_speaker_control_known = false;
+            ds5_data[i].audio_speaker_muted = false;
+            ds5_data[i].audio_speaker_headphones = false;
+            ds5_data[i].audio_speaker_volume = 100;
+#endif
             ds5_data[i].rumble_left = 0;
             ds5_data[i].rumble_right = 0;
             ds5_data[i].led_r = 0;
@@ -269,6 +411,9 @@ static bool ds5_init(bthid_device_t* device)
             ds5_data[i].event.has_motion = true;
 
             device->driver_data = &ds5_data[i];
+#ifdef NS2_DS5_AUDIO
+            ds5_audio_bridge_connect(device->conn_index);
+#endif
 
             // Activation happens in task (state machine with delays)
             return true;
@@ -295,6 +440,18 @@ static void ds5_process_report(bthid_device_t* device, const uint8_t* data, uint
     uint8_t report_id = data[0];
     const uint8_t* report_data = NULL;
     uint16_t report_len = 0;
+
+#ifdef NS2_DS5_AUDIO
+    // Audio mode multiplexes 71-byte microphone Opus frames into report 0x31.
+    // Treating their payload as sticks/buttons caused the severe random-input
+    // spam seen in the first speaker hardware experiment.
+    if (ds5_audio_is_mic_input_report(data, len)) {
+        // Microphone decode/USB return is a later milestone. Dropping the frame
+        // here is intentional; report-boundary maintenance has already run in
+        // bthid before dispatch, so BOOTSEL still receives service.
+        return;
+    }
+#endif
 
     if (report_id == DS5_REPORT_BT_INPUT && len >= 12) {
         // Full BT report: report_id (1) + header (1) = skip 2 bytes
@@ -384,32 +541,22 @@ static void ds5_process_report(bthid_device_t* device, const uint8_t* data, uint
         ds5->event.has_motion = false;
     }
 
-    // Battery: status byte at report_data[52] — bits 0-3 = level (0-10), bits 4-7 = status
-    // Per Linux kernel hid-playstation.c: 0=discharging, 1=charging, 2=full, 0xa/0xb/0xf=error
+    // Battery: status byte at report_data[52].
     if (report_len > 52) {
-        uint8_t raw = report_data[52];
-        uint8_t level = raw & 0x0F;
-        uint8_t status = (raw >> 4) & 0x0F;
-
-        switch (status) {
-            case 0x0:  // Discharging
-                ds5->event.battery_level = (level > 10) ? 100 : level * 10 + 5;
-                ds5->event.battery_charging = false;
-                break;
-            case 0x1:  // Charging
-                ds5->event.battery_level = (level > 10) ? 100 : level * 10 + 5;
-                ds5->event.battery_charging = true;
-                break;
-            case 0x2:  // Full
-                ds5->event.battery_level = 100;
-                ds5->event.battery_charging = false;
-                break;
-            default:   // 0xa=voltage/temp, 0xb=temp, 0xf=charge error
-                ds5->event.battery_level = 0;
-                ds5->event.battery_charging = false;
-                break;
+        controller_battery_t battery;
+        if (controller_battery_decode_ds5(report_data[52], &battery)) {
+            input_event_set_native_battery(&ds5->event, battery.level,
+                                           battery.charging);
         }
     }
+
+#ifdef NS2_DS5_AUDIO
+    // Headset insertion is reported in the full 0x31 status byte. The
+    // DualSense audio transport selects speaker (0x13) or headphones (0x16)
+    // when the next paired Opus report is built.
+    if (report_id == DS5_REPORT_BT_INPUT)
+        ds5->headset_connected = ds5_audio_headset_connected(data, len);
+#endif
 
     // Touchpad (only in full 0x31 reports that include touch fields)
     if (report_len >= sizeof(ds5_input_report_t)) {
@@ -609,6 +756,9 @@ static void ds5_disconnect(bthid_device_t* device)
 
     ds5_bt_data_t* ds5 = (ds5_bt_data_t*)device->driver_data;
     if (ds5) {
+#ifdef NS2_DS5_AUDIO
+        ds5_audio_bridge_disconnect(device->conn_index);
+#endif
         // Clear router state first (sends zeroed input report)
         router_device_disconnected(ds5->event.dev_addr, ds5->event.instance);
         // Remove player assignment

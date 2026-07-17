@@ -1,17 +1,28 @@
-# DualSense Audio Passthrough — Research Notes (Future Feature)
+# DualSense Audio Passthrough — Research and Implementation Notes
 
-> Status: ⬜ **Not started — research only.** No code in this repo implements any part of this.
-> Deferred per explicit user direction (2026-07-12): audio is a real long-term goal, but not
-> current work. This doc exists so a future session can act directly instead of re-deriving the
-> protocol from scratch.
+> Status (2026-07-17): 🟡 **USB milestone hardware-validated; Pico 2 W speaker transport under
+> diagnosis after the first live bridge failed hardware validation.**
+> The old descriptor-only class stub has been replaced by a PC2-specific UAC1 driver. It opens
+> both 192-byte/1-ms isochronous endpoints, consumes speaker PCM, continuously supplies silent
+> microphone PCM, and implements writable mute/volume controls. The RP2350 build now queues USB
+> PCM across cores, converts the proven 51.2 kHz cadence to 48 kHz, encodes fixed 10 ms stereo Opus
+> frames, and emits DualSense reports `0x39`/`0x32`. Windows starts both USB audio endpoints without
+> Device Manager Code 10, and the UAC1-only hardware pass found no controller regressions. The
+> first live-Opus pass failed with no audio and severe DualSense scheduling/input regressions, so
+> live encoding is disabled by default. A codec-free tone pass fixed those regressions but remained
+> silent through an AudioControl retest. A subsequent byte audit found that the existing
+> compatibility initialization explicitly applied zero headphone/speaker/microphone volume and an
+> implicit route. The consolidated diagnostic now applies nonzero volume, explicitly selects and
+> unmutes the controller speaker, forwards Windows UAC mute/volume changes, validates the
+> negotiated 548-byte L2CAP path, and uses a louder host-decoded 1 kHz Opus stream.
 
 ## 1. Goal
 
 The Switch 2 Pro Controller has a genuine headset jack; our USB descriptor already advertises the
-matching 3 audio interfaces (`src/switch_pro2/switch_pro2.c`, `NS2_AUDIO` Option A) so the console
-accepts the device, but they're served by a stub class driver (`audio_stub_*`) that claims the
-interfaces and answers a couple of Feature-Unit control requests (2026-07-12 polish pass) with no
-real audio I/O behind them. The aspirational feature: when the connected Bluetooth controller is a
+matching 3 audio interfaces (`src/switch_pro2/switch_pro2.c`, `NS2_AUDIO` Option A). As of
+2026-07-17, a real UAC1 endpoint/control driver services those interfaces; its initial transport
+milestone deliberately sinks speaker PCM and emits silent microphone PCM. The complete feature:
+when the connected Bluetooth controller is a
 **DualSense** (which has its own onboard speaker, 3.5 mm jack, and mic), bridge the Switch 2's USB
 audio stream to and from the DualSense's own audio hardware — so a headset plugged into the Pro
 Controller-shaped dongle, or the DualSense's own speaker/mic, actually works.
@@ -44,7 +55,7 @@ unhandled here:
   - bytes 0-3: report ID + sequence counter + flags
   - bytes 4-11: audio config/packet sequencing
   - bytes 12-139: two 64-byte haptic-feedback blocks
-  - bytes 140-279: two 200-byte speaker Opus frames (when audio is enabled)
+  - bytes 140-541: speaker block header plus two 200-byte Opus frames (when audio is enabled)
 - **Report `0x32`** — microphone *status* updates (separate from the actual mic audio data, which
   arrives via `0x39`-shaped packets too, decoded through `mic_add_queue()`).
 
@@ -59,13 +70,14 @@ the report rate can't carry it) — it uses **Opus**, tuned aggressively low-lat
 
 ### 2.3 USB-side plumbing (DS5Dongle, PC-facing — would need Switch2-facing adaptation)
 
-- Real TinyUSB `tud_audio_*` API (`CFG_TUD_AUDIO`), **not** the class-driver-stub approach this
-  repo currently uses for its audio interfaces. Adapting this means swapping our
-  `audio_stub_driver` for a real `CFG_TUD_AUDIO`-based one, while keeping our already
-  byte-verified Switch2-faithful descriptor bytes (`ns2_config_desc` under `NS2_AUDIO`).
+- Real TinyUSB audio endpoint lifecycle. Pico SDK 2.2.0's generic `tud_audio_*` driver cannot be
+  used unchanged here: its `open()` explicitly accepts UAC2 interface protocol only, while the
+  byte-verified retail PC2 descriptor is UAC1. PicoSwitch2 therefore implements the equivalent
+  UAC1 endpoint/control lifecycle in its narrow PC2 class driver while retaining the retail bytes.
 - Speaker: USB OUT delivers 384-byte PCM blocks (192 frames, 4ch, 16-bit — DS5Dongle multiplexes 2
-  speaker channels + 2 haptic channels into one USB audio stream); channels 0-1 buffered to
-  512-frame blocks, resampled 48→51.2 kHz, Opus-encoded on core1.
+   speaker channels + 2 haptic channels into one USB audio stream); channels 0-1 buffered to
+   512-frame blocks, interpreted at the proven 51.2 kHz cadence, resampled to 480-frame/48 kHz
+   Opus windows, and encoded on core1.
 - Mic: DualSense's Opus packets decoded on core1 to 480-frame PCM, mono duplicated to stereo (for
   Windows compatibility — may not be needed for a console host), written via `tud_audio_write()`.
 - **Runs entirely on core1**, `__not_in_flash_func()`-marked (RAM execution — avoids XIP flash
@@ -99,18 +111,44 @@ items from the 2026-07-12 pass. Rough shape of the work, for whenever it's picke
    0) can coexist with the existing joypad-os BTstack loop on one RP2350 core, or whether the
    architecture needs to change (e.g. move some BT work to core0, currently TinyUSB-only). This is
    the load-bearing open question — everything else is detail work until this is answered.
-2. **Extend `ds5_bt.c`** (or add a sibling file) to handle report `0x39`/`0x32` — subscribe,
-   parse/build the packet shapes in §2.1, wire to a new audio queue (mirroring how `ns2_seam.c`
-   bridges input, not reusing it directly — this is a different data path).
-3. **Replace `audio_stub_driver`** with a real `CFG_TUD_AUDIO` implementation, keeping the existing
-   byte-verified descriptor. Console-side behavior is unverified either way (the console has never
-   been observed sending/expecting real audio traffic in any capture this project holds) — treat
-   the first real hardware pass here as an open question, not an assumption.
-4. **Vendor Opus** (BSD-3-Clause, low risk) **and resolve WDL's actual license** before vendoring
-   any resampling code from it — or use a different resampler if WDL's terms don't fit.
+2. 🟡 **Extend `ds5_bt.c` for report `0x39`/`0x32`.** Speaker report construction, CRC, bounded
+   queues, Opus encoding, and direct-L2CAP transmission are implemented for Pico 2 W and covered
+   by host tests, but the first live-encoder hardware architecture failed. Audio-bearing incoming
+   `0x31` reports are now filtered from gamepad parsing. The first deterministic-tone pass was
+   stable but silent and exposed a missing prerequisite: DS5Dongle sends an extended `0x32`
+   `AllowAudioControl` state transaction before `0x39`. Adding it preserved stability but did not
+   restore sound. The next audit found separate conflicts: the pre-existing compatibility report
+   marked all volume and audio-route fields valid but wrote zeros, and the UAC driver stored host
+   mute/volume changes without forwarding them. The consolidated diagnostic now retains the
+   confirmed rumble/LED flags while applying headphone/speaker volume 100, microphone volume 64,
+   explicit speaker routing and unmute in both initialization paths, and subsequent host-control
+   updates. That pass produced audible controller-speaker output and Windows mute correctly
+   silenced it, confirming activation, routing, Opus decode, and host-control forwarding. The tone
+   was discontinuous; its guaranteed 21.333 ms pacing for 20 ms of encoded audio and a headset
+   status off-by-one were corrected, followed by USB-idle isolation and lossless queue
+   backpressure. Each correction improved but did not eliminate the intermittent tone. The next
+   diagnostic addresses the remaining project-local starvation path by servicing lightweight
+   transport at inbound report boundaries and using a ten-entry RP2350 audio FIFO; live encoding
+   remains outside the deep receive callback. Reserved/haptics zeros and the disabled microphone
+   path are intentional.
+3. ✅ **Replace the descriptor-only stub with operational UAC1 USB plumbing.** Implemented
+   2026-07-17 without changing the byte-verified descriptor. The first Windows hardware pass is
+   confirmed that Device Manager Code 10 is gone with no known controller regressions.
+4. ✅ **Vendor Opus without importing WDL.** Opus is pinned as a submodule to the reference's
+   known-working commit. The immutable 512-to-480 conversion is a small project-owned linear
+   resampler with host coverage, avoiding another dependency and its licensing ambiguity.
 5. Scope to **DualSense only** first (per the user's framing) — Xbox/other controllers with
    headset jacks are a separate, later generalization (`unmapped-features.md` "Audio Over
    Bluetooth" already tracks this as unmapped for all controller families).
+
+### 3.1 The captured DSPH blob is not the USB audio engine
+
+The 2 MiB Pro Controller 2 SPI dumps contain a `DSPH` region at offset `0x175000`. It is useful
+evidence for Nintendo firmware/update compatibility and may contain headset-DSP firmware or
+coefficients for the retail controller's own hardware. The Pico cannot execute that target-specific
+blob, and serving it does not create USB endpoints, buffering, or Bluetooth audio transport. It is
+therefore retained for later updater/DSP research but is not a substitute for the UAC1 and Opus
+implementations described above.
 
 ## 4. Cross-references
 

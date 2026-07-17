@@ -6,9 +6,19 @@
 #include "usb.h"
 #include "report.h"
 #include "config.h"
+#include "ds5_audio_bridge.h"
 
 // joypad-os Bluetooth stack — core1 entry (src/bt_hid/ns2_bt_host.c).
 void ns2_bt_core_task(void);
+
+#ifdef NS2_DS5_AUDIO_LIVE_OPUS
+// Opus cannot use the SDK's normal core1 stack allocation: that section lives
+// in the RP2350's 4 KiB SCRATCH_X bank. Keep the larger codec stack in ordinary
+// SRAM and launch core1 explicitly with it.
+#define NS2_AUDIO_CORE1_STACK_BYTES (48u * 1024u)
+static uint32_t core1_audio_stack[NS2_AUDIO_CORE1_STACK_BYTES / sizeof(uint32_t)]
+	__attribute__((aligned(8)));
+#endif
 
 int
 main()
@@ -20,8 +30,14 @@ main()
 
 	// Load persistent settings (controller body/lightbar colour, mappings, etc.) from flash.
 	config_load();
+	ds5_audio_bridge_init();
 
+#ifdef NS2_DS5_AUDIO_LIVE_OPUS
+	multicore_launch_core1_with_stack(ns2_bt_core_task, core1_audio_stack,
+	                                 sizeof(core1_audio_stack));
+#else
 	multicore_launch_core1(ns2_bt_core_task);
+#endif
 	usb_core_task();
 
 	return 0;

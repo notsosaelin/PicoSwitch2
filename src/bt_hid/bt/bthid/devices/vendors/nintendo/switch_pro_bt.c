@@ -12,6 +12,7 @@
 #include "core/buttons.h"
 #include "core/services/players/manager.h"
 #include "core/services/players/feedback.h"
+#include "controller_battery.h"
 #include "platform/platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -412,10 +413,11 @@ static void switch_process_report(bthid_device_t* device, const uint8_t* data, u
         sw->event.analog[ANALOG_RX] = scale_12bit_to_8bit(rx);
         sw->event.analog[ANALOG_RY] = 255 - scale_12bit_to_8bit(ry);
 
-        // Battery: bits 7-4 = level (0/2/4/6/8), bit 3 = charging
-        uint8_t bat_raw = rpt->battery_conn >> 4;
-        sw->event.battery_level = (bat_raw > 8) ? 100 : bat_raw * 12 + 5;
-        sw->event.battery_charging = (rpt->battery_conn & 0x08) != 0;
+        controller_battery_t battery;
+        if (controller_battery_decode_switch_pro(rpt->battery_conn, &battery)) {
+            input_event_set_native_battery(&sw->event, battery.level,
+                                           battery.charging);
+        }
 
         sw->event.suppress_wake_input =
             switch_quarantine_pro_wake_input(device, sw);

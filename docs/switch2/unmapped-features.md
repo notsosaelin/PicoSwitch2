@@ -38,10 +38,10 @@ While the core functionality of the PicoSwitch2 (connecting Bluetooth controller
   to validate against if this project ever captures its own real amiibo transaction.
 
 ### 4. USB Audio
-- **Status:** **Stubbed / Nonfunctional** (hardened 2026-07-12 — see below)
+- **Status:** **USB function operational; Bluetooth speaker diagnostic pending**
 - **Details:** A full Switch 2 Pro Controller exposes 3 distinct audio interfaces (`Audio Control`, `Audio Streaming IN`, `Audio Streaming OUT`) for headset and microphone passthrough.
-- **Current Behavior:** We expose these interfaces (Option A) so the console recognizes the controller perfectly, but the endpoints are connected to a stub class driver that stalls or ignores the audio stream. **2026-07-12:** confirmed (by reading TinyUSB's own `usbd.c`) that `SET_INTERFACE`/`GET_INTERFACE` alt-setting switches were never actually broken — the framework ACKs those regardless of what our stub does; added static Mute/Volume `GET_CUR` answers on both Feature Units so a host's audio driver doesn't see failed control transfers. Still no functional audio routing — spec-compliance polish only.
-- **Research for an actual future implementation:** [`docs/switch2/audio-passthrough-research.md`](audio-passthrough-research.md) — a working MIT-licensed reference (`awalol/DS5Dongle`) does the structurally identical PC-facing bridge for DualSense's own onboard audio (Opus codec over BT report `0x39`/`0x32`, real `tud_audio` USB side). Not started; documented so a future session doesn't have to re-derive the protocol.
+- **Current Behavior (2026-07-17):** Option A now has a PC2-specific UAC1 driver instead of the descriptor-only stub. It owns both isochronous endpoints, accepts 48 kHz stereo speaker PCM, supplies continuous silent microphone PCM, and implements writable master mute/volume controls including `GET_CUR/MIN/MAX/RES`. Windows starts the audio function without Code 10 and no controller regressions were found. The first Pico 2 W live-Opus bridge pass failed and is disabled by default; a codec-free diagnostic now sends an independently decoded 1 kHz stream with explicit DualSense volume, routing, unmute, and host-control updates. Normal Pico W/Pico 2 W builds retain the hardware-confirmed UAC1 sink/silence behavior until speaker transport is confirmed.
+- **Implementation plan:** [`docs/switch2/audio-passthrough-research.md`](audio-passthrough-research.md) — isolate report transport with the deterministic tone build, redesign codec scheduling, then add microphone decode and USB return.
 
 ### 5. Config / Memory Writes
 - **Status:** **Unmapped**

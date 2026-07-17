@@ -128,6 +128,9 @@ void router_submit_input(const input_event_t *e) {
     if (!e) return;
     switch_pro_input_t in;
     memset(&in, 0, sizeof(in));
+    in.battery_level = e->battery_level;
+    in.battery_valid = e->battery_source != INPUT_BATTERY_NONE;
+    in.battery_charging = e->battery_charging;
 
     // Digital buttons, plus analog triggers folded in as L2/R2: Switch ZL/ZR are digital,
     // but Xbox/DualSense triggers are analog and often don't set the digital JP bit.
@@ -310,6 +313,13 @@ void router_device_disconnected(uint8_t dev_addr, int8_t instance) {
 // default). Lets us reverse-engineer inputs a driver doesn't parse yet (Elite paddles).
 void bthid_on_raw_report(uint8_t conn_index, const uint8_t *data, uint16_t len) {
     set_global_raw_report(ns2_slot(conn_index), data, len);
+}
+
+// Strong override of bthid.c's weak battery hook. BAS notifications can arrive
+// while the controller is otherwise idle, so republish its cached input state
+// to make the new level visible without waiting for a button report.
+void bthid_on_battery_update(input_event_t *event) {
+    router_submit_input(event);
 }
 
 // -------------------------------------------------------------------------

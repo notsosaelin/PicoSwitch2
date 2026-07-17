@@ -71,6 +71,9 @@ typedef struct {
     int16_t accel[3];        // x, y, z (raw Pro Controller accelerometer units)
     int16_t gyro[3];         // x, y, z (raw Pro Controller gyroscope units)
     uint8_t has_motion;      // 1 if this controller reports IMU (gate report-0x09 motion)
+    uint8_t battery_level;   // normalized 0..100 percentage
+    uint8_t battery_valid;   // 1 when the source controller reported a level
+    uint8_t battery_charging;// 1 when the source controller reports charging
 
     // NSO GameCube-only fields (2026-07-13). Always present (not `#ifdef NS2_PRO`) so this
     // struct's layout/size is identical across build configs; Pro2/Switch 1 encoders simply

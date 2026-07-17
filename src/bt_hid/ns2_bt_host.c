@@ -16,6 +16,7 @@
 #include "bt/transport/bt_transport.h"
 #include "bt/bthid/bthid.h"
 #include "bt/bthid/bthid_registry.h"
+#include "bt/bthid/devices/vendors/sony/ds5_bt.h"
 #include "bt/btstack/btstack_host.h"
 
 #include "bootsel.h"
@@ -66,6 +67,10 @@ extern const bt_transport_t bt_transport_cyw43;
 
 static btstack_timer_source_t control_timer;
 static btstack_timer_source_t rumble_timer;  // see RUMBLE_TICK_MS's own comment above
+#ifdef NS2_DS5_AUDIO
+static btstack_timer_source_t audio_timer;
+#define AUDIO_TICK_MS 2
+#endif
 static uint32_t control_tick;
 static uint32_t pairing_until_ms;  // 0 = locked; else scan window open until this time
 static uint32_t wipe_until_ms;     // 0 = idle; else show the fast wipe flash until this time
@@ -156,6 +161,19 @@ static void rumble_timer_handler(btstack_timer_source_t *ts) {
     btstack_run_loop_add_timer(ts);
 }
 
+#ifdef NS2_DS5_AUDIO
+// Opus runs only from this shallow run-loop timer callback, never from
+// bthid_on_report_boundary()'s nested L2CAP/HID receive stack. The callback is
+// cooperative: most ticks only drain PCM; an encode occurs once per 512 input
+// frames and produces one fixed 10 ms frame.
+static void audio_timer_handler(btstack_timer_source_t *ts) {
+    bootsel_core1_service();
+    ds5_bt_audio_service();
+    btstack_run_loop_set_timer(ts, AUDIO_TICK_MS);
+    btstack_run_loop_add_timer(ts);
+}
+#endif
+
 // Called by bthid at the start of every inbound HID report. Classic Bluetooth
 // traffic (most visibly DualSense/Edge) can keep BTstack busy enough to delay
 // timer callbacks. Make that traffic drive all three jobs it was starving:
@@ -169,6 +187,13 @@ void bthid_on_report_boundary(void) {
     service_bootsel_gestures(now);
     ns2_wake_service(now);
     bthid_task();
+#ifdef NS2_DS5_AUDIO
+    // DualSense Classic reports can keep the run loop busy enough to delay
+    // timers. Drive the lightweight audio transport from the same proven
+    // report-boundary safe point used for BOOTSEL and rumble. Live Opus encode
+    // remains confined to the shallow audio timer.
+    ds5_bt_audio_report_service();
+#endif
 }
 
 static void control_timer_handler(btstack_timer_source_t *ts) {
@@ -305,6 +330,12 @@ void ns2_bt_core_task(void) {
     btstack_run_loop_set_timer_handler(&rumble_timer, rumble_timer_handler);
     btstack_run_loop_set_timer(&rumble_timer, RUMBLE_TICK_MS);
     btstack_run_loop_add_timer(&rumble_timer);
+
+#ifdef NS2_DS5_AUDIO
+    btstack_run_loop_set_timer_handler(&audio_timer, audio_timer_handler);
+    btstack_run_loop_set_timer(&audio_timer, AUDIO_TICK_MS);
+    btstack_run_loop_add_timer(&audio_timer);
+#endif
 
     btstack_run_loop_execute();  // does not return
 }

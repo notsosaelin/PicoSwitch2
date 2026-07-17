@@ -2,7 +2,8 @@
  * Host-compilable golden tests for the pure Joy-Con 2 sideways report encoders.
  *
  *   gcc -I include -I src/bt_hid -o test_switch_joycon2_report \
- *       tools/test_switch_joycon2_report.c src/switch_joycon2/switch_joycon2_encode.c
+ *       tools/test_switch_joycon2_report.c src/switch_joycon2/switch_joycon2_encode.c \
+ *       src/controller_battery.c
  */
 #include <stdio.h>
 #include <string.h>
@@ -112,6 +113,24 @@ int main(void) {
         CHECK(out[0] == 0x5A && out[1] == 0x25 && out[4] == 0x07,
               "ext: counter, power, and constant fields preserved");
         CHECK(out[2] == 0 && out[3] == 0, "ext: neutral buttons stay neutral");
+    }
+
+    {
+        switch_pro_input_t in = neutral_input();
+        in.battery_valid = 1;
+        in.battery_level = 50;
+        in.battery_charging = 1;
+        switch_joycon2_encode_report(&in, 0, JOYCON2_SIDE_LEFT, 0, out);
+        CHECK(out[0x1] == 0x17,
+              "L battery: half-full charging source passes through");
+        switch_joycon2_encode_report(&in, 0, JOYCON2_SIDE_RIGHT, 0, out);
+        CHECK(out[0x1] == 0x17,
+              "R battery: half-full charging source passes through");
+        in.battery_level = 0;
+        in.battery_charging = 0;
+        switch_joycon2_encode_report(&in, 0, JOYCON2_SIDE_LEFT, 0, out);
+        CHECK(out[0x1] == 0x01,
+              "Joy-Con battery: valid empty is distinct from unknown");
     }
 
     // The paired D-pad drives the single stick, never the Joy-Con's physical button cluster.

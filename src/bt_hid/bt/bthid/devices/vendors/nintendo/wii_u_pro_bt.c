@@ -15,6 +15,7 @@
 #include "core/input_event.h"
 #include "core/router/router.h"
 #include "core/buttons.h"
+#include "controller_battery.h"
 #include "core/services/players/manager.h"
 #include "core/services/players/feedback.h"
 #include <string.h>
@@ -376,10 +377,11 @@ static void wii_u_process_report(bthid_device_t* device, const uint8_t* data, ui
         wii->event.analog[ANALOG_RX] = scale_stick(rx);
         wii->event.analog[ANALOG_RY] = 255 - scale_stick(ry); // Invert Y
 
-        // Battery: ext[10] bits 6-4 = level (0-4, 4=full), bit 3 = USB (active-low), bit 2 = charging (active-low)
-        uint8_t battery_raw = (ext[10] >> 4) & 0x07;
-        wii->event.battery_level = (battery_raw >= 4) ? 100 : battery_raw * 25;
-        wii->event.battery_charging = (ext[10] & 0x04) == 0;
+        controller_battery_t battery;
+        if (controller_battery_decode_wii_u_pro(ext[10], &battery)) {
+            input_event_set_native_battery(&wii->event, battery.level,
+                                           battery.charging);
+        }
 
         router_submit_input(&wii->event);
 
@@ -453,10 +455,11 @@ static void wii_u_process_report(bthid_device_t* device, const uint8_t* data, ui
         wii->event.analog[ANALOG_RX] = scale_stick(rx);
         wii->event.analog[ANALOG_RY] = 255 - scale_stick(ry); // Invert Y
 
-        // Battery: ext[10] bits 6-4 = level (0-4, 4=full), bit 3 = USB (active-low), bit 2 = charging (active-low)
-        uint8_t battery_raw = (ext[10] >> 4) & 0x07;
-        wii->event.battery_level = (battery_raw >= 4) ? 100 : battery_raw * 25;
-        wii->event.battery_charging = (ext[10] & 0x04) == 0;
+        controller_battery_t battery;
+        if (controller_battery_decode_wii_u_pro(ext[10], &battery)) {
+            input_event_set_native_battery(&wii->event, battery.level,
+                                           battery.charging);
+        }
 
         router_submit_input(&wii->event);
 
@@ -507,10 +510,11 @@ static void wii_u_process_report(bthid_device_t* device, const uint8_t* data, ui
         wii->event.analog[ANALOG_RX] = scale_stick(rx);
         wii->event.analog[ANALOG_RY] = 255 - scale_stick(ry);
 
-        // Battery: ext[10] bits 6-4 = level (0-4, 4=full), bit 3 = USB (active-low), bit 2 = charging (active-low)
-        uint8_t battery_raw = (ext[10] >> 4) & 0x07;
-        wii->event.battery_level = (battery_raw >= 4) ? 100 : battery_raw * 25;
-        wii->event.battery_charging = (ext[10] & 0x04) == 0;
+        controller_battery_t battery;
+        if (controller_battery_decode_wii_u_pro(ext[10], &battery)) {
+            input_event_set_native_battery(&wii->event, battery.level,
+                                           battery.charging);
+        }
 
         router_submit_input(&wii->event);
 

@@ -456,7 +456,14 @@ function renderDevice(d) {
   if (!d) return;
   const name = (d.name && d.name.trim()) ? d.name : "No controller connected";
   $("#inName").textContent = name;
-  $("#inMeta").innerHTML = (d.vid || d.pid) ? `VID ${hex4(d.vid)} &middot; PID ${hex4(d.pid)}` : "&nbsp;";
+  const meta = [];
+  if (d.vid || d.pid) meta.push(`VID ${hex4(d.vid)} &middot; PID ${hex4(d.pid)}`);
+  if (name !== "No controller connected") {
+    meta.push(d.batteryValid
+      ? `Battery ${Math.max(0, Math.min(100, d.battery | 0))}%${d.charging ? " &middot; charging" : ""}`
+      : "Battery unavailable");
+  }
+  $("#inMeta").innerHTML = meta.length ? meta.join(" &middot; ") : "&nbsp;";
   // Include name + report-length bucket in the key so the menu rebuilds when the name
   // arrives late or the Elite's 20-byte report is first seen (VID/PID may stay 0).
   const key = (d.vid | 0) + ":" + (d.pid | 0) + ":" + ((d.name || "").toLowerCase()) + ":" + (lastRawLen >= 20 ? "L" : "S");

@@ -12,6 +12,7 @@
 #include "core/buttons.h"
 #include "core/services/players/manager.h"
 #include "core/services/players/feedback.h"
+#include "controller_battery.h"
 #include "platform/platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -404,33 +405,12 @@ static void ds4_process_report(bthid_device_t* device, const uint8_t* data, uint
         ds4->event.has_motion = false;
     }
 
-    // Battery: status[0] at report_data[29] — bits 0-3 = level, bit 4 = cable connected
-    // Level interpretation differs based on cable state (per Linux kernel hid-playstation.c)
+    // Battery: status[0] at report_data[29].
     if (report_len > 29) {
-        uint8_t raw = report_data[29];
-        uint8_t battery_data = (raw & 0x0F);
-        bool cable_connected = (raw & 0x10) != 0;
-
-        if (cable_connected) {
-            if (battery_data < 10) {
-                ds4->event.battery_level = battery_data * 10 + 5;
-                ds4->event.battery_charging = true;
-            } else if (battery_data == 10) {
-                ds4->event.battery_level = 100;
-                ds4->event.battery_charging = true;
-            } else if (battery_data == 11) {
-                ds4->event.battery_level = 100;
-                ds4->event.battery_charging = false;  // Full
-            } else {
-                ds4->event.battery_level = 0;  // Error (14=voltage/temp, 15=charge)
-                ds4->event.battery_charging = false;
-            }
-        } else {
-            if (battery_data < 10)
-                ds4->event.battery_level = battery_data * 10 + 5;
-            else
-                ds4->event.battery_level = 100;
-            ds4->event.battery_charging = false;
+        controller_battery_t battery;
+        if (controller_battery_decode_ds4(report_data[29], &battery)) {
+            input_event_set_native_battery(&ds4->event, battery.level,
+                                           battery.charging);
         }
     }
 

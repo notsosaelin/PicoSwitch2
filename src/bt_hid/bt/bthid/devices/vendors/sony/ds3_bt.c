@@ -14,6 +14,7 @@
 #include "core/buttons.h"
 #include "core/services/players/manager.h"
 #include "core/services/players/feedback.h"
+#include "controller_battery.h"
 #include "platform/platform.h"
 #include <string.h>
 #include <stdio.h>
@@ -355,17 +356,12 @@ static void ds3_process_report(bthid_device_t* device, const uint8_t* data, uint
     ds3->event.pressure[10] = rpt->reserved4[2]; // cross
     ds3->event.pressure[11] = rpt->reserved4[3]; // square
 
-    // Battery: data[29] (after report ID stripped)
-    // Per Linux kernel hid-sony.c: 0-5 = discharge lookup, 0xEE = charging, 0xEF = full
+    // Battery: data[29] (after report ID stripped).
     if (len > 29) {
-        static const uint8_t ds3_battery[] = { 0, 1, 25, 50, 75, 100 };
-        uint8_t charge = data[29];
-        if (charge >= 0xEE) {
-            ds3->event.battery_level = 100;
-            ds3->event.battery_charging = (charge & 0x01) == 0;  // 0xEE=charging, 0xEF=full
-        } else if (charge <= 5) {
-            ds3->event.battery_level = ds3_battery[charge];
-            ds3->event.battery_charging = false;
+        controller_battery_t battery;
+        if (controller_battery_decode_ds3(data[29], &battery)) {
+            input_event_set_native_battery(&ds3->event, battery.level,
+                                           battery.charging);
         }
     }
 

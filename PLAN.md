@@ -50,6 +50,32 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
    labels, centered sticks, D-pad, Start/Select/Home, distinct ZL/Z shoulders, continuous analog
    triggers, click-gated `HOME+B` detents, and GameCube-mode L3/R3 suppression.
 5. [ ] Run targeted BattlerGC Pro rumble and reconnect/wake regression checks.
+6. [x] Hardware-validate Bluetooth battery passthrough across native-HID, BLE BAS, and unsupported
+   Classic fallback families. Software coverage pins DualShock 3/4, DualSense, Switch Pro,
+   Wii U Pro, Wiimote, recurring BAS updates/source priority, and every console-native USB
+   personality; use [`docs/bluetooth/battery-passthrough.md`](docs/bluetooth/battery-passthrough.md)
+   as the physical test matrix.
+
+## Audio and controller-update investigation
+
+- [x] Replace the descriptor-only Pro Controller 2 audio stub with a UAC1 driver that owns both
+  isochronous endpoints, consumes 48 kHz speaker PCM, emits continuous silent microphone PCM, and
+  implements writable mute/volume controls.
+- [x] Confirm on Windows that the audio function starts without Device Manager Code 10 and that
+  existing controller behavior remains regression-free.
+- [ ] Isolate and redesign the Pico 2 W DualSense speaker bridge. The first live-Opus hardware pass
+  failed: no audio, unstable Windows endpoint, random DualSense input, and BOOTSEL starvation.
+  Microphone-bearing `0x31` packets are now excluded from gamepad parsing, unsafe live encoding is
+  disabled by default, and the fixed 1 kHz diagnostic confirmed stable input/BOOTSEL/USB behavior
+  but remained silent through the first AudioControl retest. A full preflight audit then corrected
+  zero volume, implicit output routing, and missing Windows mute/volume forwarding; it also added
+  an MTU guard and a louder host-decoded Opus diagnostic while retaining the confirmed rumble/LED
+  flags. Consolidated hardware retest is pending. See
+  [`docs/experiments/2026-07-17-dualsense-live-opus-failure.md`](docs/experiments/2026-07-17-dualsense-live-opus-failure.md).
+- [ ] Add DualSense microphone report decoding and Opus-to-USB return after speaker playback is
+  physically stable.
+- [ ] Re-test the Switch 2 “Update this controller” prompt after USB audio is healthy; if it
+  remains, capture and isolate the firmware/DSP version or memory-read gate separately.
 
 ## Reliability and maintainability
 

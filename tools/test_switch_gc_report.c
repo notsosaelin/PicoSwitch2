@@ -4,7 +4,8 @@
  * and run directly with a host C compiler:
  *
  *   gcc -I include -o test_switch_gc_report \
- *       tools/test_switch_gc_report.c src/switch_gc/switch_gc_encode.c
+ *       tools/test_switch_gc_report.c src/switch_gc/switch_gc_encode.c \
+ *       src/controller_battery.c
  *   ./test_switch_gc_report
  *
  * Exit code 0 = all assertions passed.
@@ -62,6 +63,20 @@ int main(void) {
         bool reserved_zero = true;
         for (int i = 0x37; i <= 0x3E; i++) if (out[i] != 0) reserved_zero = false;
         CHECK(reserved_zero, "neutral: reserved tail (0x37-0x3E) all zero");
+    }
+
+    {
+        switch_pro_input_t in = neutral_input();
+        in.battery_valid = 1;
+        in.battery_level = 0;
+        switch_gc_encode_report(&in, 0, out);
+        CHECK(out[0x1] == 0x01,
+              "battery: valid empty source reports 0/9 with external power");
+        in.battery_level = 50;
+        in.battery_charging = 1;
+        switch_gc_encode_report(&in, 0, out);
+        CHECK(out[0x1] == 0x17,
+              "battery: half-full charging source passes through power info");
     }
 
     // 2. Each existing button group, one at a time.

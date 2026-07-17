@@ -375,7 +375,9 @@ static void cmd_state(void) {
 static void cmd_device(void) {
     char name[40];
     uint16_t vid = 0, pid = 0;
+    switch_pro_input_t in;
     get_global_device(0, name, sizeof(name), &vid, &pid);
+    get_global_gamepad_input(0, &in);
     // Escape the SDP-supplied name for JSON (quotes, backslashes, control chars).
     char esc[96];
     int j = 0;
@@ -386,7 +388,11 @@ static void cmd_device(void) {
         esc[j++] = (c < 0x20) ? ' ' : (char)c;
     }
     esc[j] = '\0';
-    snprintf(out, sizeof(out), "{\"name\":\"%s\",\"vid\":%u,\"pid\":%u}", esc, vid, pid);
+    snprintf(out, sizeof(out),
+             "{\"name\":\"%s\",\"vid\":%u,\"pid\":%u,"
+             "\"batteryValid\":%u,\"battery\":%u,\"charging\":%u}",
+             esc, vid, pid, in.battery_valid, in.battery_level,
+             in.battery_charging);
     reply(out);
 }
 

@@ -182,7 +182,8 @@ bool bthid_send_feature_report(uint8_t conn_index, uint8_t report_id,
 // BATTERY
 // ============================================================================
 
-// Set battery level from BLE Battery Service (only if driver hasn't set it)
+// Update battery level from BLE Battery Service. Accepts recurring updates and
+// a valid 0%; controller-native HID telemetry remains authoritative.
 void bthid_set_battery_level(uint8_t conn_index, uint8_t level);
 
 // ============================================================================
