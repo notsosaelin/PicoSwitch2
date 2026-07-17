@@ -21,6 +21,7 @@
 
 #include "pico/stdlib.h"
 
+#include "controller_battery.h"
 #include "report.h"
 
 // Output report ids (controller -> console)
@@ -48,9 +49,6 @@ typedef enum {
     SUBCMD_IMU_SENSITIVITY = 0x41,
     SUBCMD_ENABLE_VIBRATION = 0x48,
 } switch_subcommand_t;
-
-// Battery (full) + connection (wired/powered) nibble.
-#define CONN_INFO 0x81
 
 static const uint8_t VIB_OPTS[4] = {0x0a, 0x0c, 0x0b, 0x09};
 
@@ -108,7 +106,8 @@ static void build_input_core(uint8_t instance, switch_pro_ctx_t *c, uint8_t *out
 
     out[0] = report_id;
     out[1] = advance_timer(c);
-    out[2] = CONN_INFO;
+    out[2] = controller_battery_switch1_connection_info(
+        in.battery_valid != 0, in.battery_level);
     memcpy(out + 3, in.buttons, 3);
     memcpy(out + 6, in.left_stick, 3);
     memcpy(out + 9, in.right_stick, 3);

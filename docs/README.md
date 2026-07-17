@@ -14,6 +14,7 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Compatibility results | [`status/compatibility-matrix.md`](status/compatibility-matrix.md) |
 | Evidence and RE rules | [`re-methodology/evidence-standards.md`](re-methodology/evidence-standards.md) |
 | Bluetooth implementation | [`bluetooth/btstack-implementation.md`](bluetooth/btstack-implementation.md) |
+| Battery passthrough and validation matrix | [`bluetooth/battery-passthrough.md`](bluetooth/battery-passthrough.md) |
 | Controller sleep research | [`bluetooth/controller-sleep-research.md`](bluetooth/controller-sleep-research.md) |
 | Generic Bluetooth gamepad quirks | [`bluetooth/generic-gamepad-quirks.md`](bluetooth/generic-gamepad-quirks.md) |
 | Retro Fighters BattlerGC Pro | [`bluetooth/retrofighters-battlergc-pro.md`](bluetooth/retrofighters-battlergc-pro.md) |

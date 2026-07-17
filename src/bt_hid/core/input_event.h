@@ -118,6 +118,12 @@ typedef enum {
 // Unified Input Event Structure
 // ============================================================================
 
+typedef enum {
+    INPUT_BATTERY_NONE = 0,
+    INPUT_BATTERY_BAS,          // Standard BLE Battery Service fallback
+    INPUT_BATTERY_NATIVE_HID,   // Controller-native report (authoritative)
+} input_battery_source_t;
+
 typedef struct {
     // Device identification
     uint8_t dev_addr;           // Device address (USB: 1-127, BT: conn_index, Native: port)
@@ -244,14 +250,43 @@ typedef struct {
     } touch[2];
     bool has_touch;             // Touch data is valid
 
-    // Battery level
-    uint8_t battery_level;      // 0-100 percent (0 = unknown/not reported)
+    // Battery level. Source is the validity marker: unlike the old
+    // battery_level==0 convention, this preserves a genuine empty reading.
+    uint8_t battery_level;      // 0-100 percent
     bool battery_charging;      // True if charging / cable connected
+    input_battery_source_t battery_source;
 } input_event_t;
 
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+static inline void input_event_set_native_battery(input_event_t *event,
+                                                   uint8_t level,
+                                                   bool charging) {
+    if (!event) return;
+    event->battery_level = level > 100 ? 100 : level;
+    event->battery_charging = charging;
+    event->battery_source = INPUT_BATTERY_NATIVE_HID;
+}
+
+// Returns true when a BAS reading changed the normalized event. Native HID
+// telemetry wins permanently because it is controller-specific and generally
+// includes charging state, while BAS only supplies a percentage.
+static inline bool input_event_set_bas_battery(input_event_t *event,
+                                                uint8_t level) {
+    if (!event || event->battery_source == INPUT_BATTERY_NATIVE_HID) {
+        return false;
+    }
+    if (level > 100) level = 100;
+    bool changed = event->battery_source != INPUT_BATTERY_BAS ||
+                   event->battery_level != level ||
+                   event->battery_charging;
+    event->battery_level = level;
+    event->battery_charging = false;
+    event->battery_source = INPUT_BATTERY_BAS;
+    return changed;
+}
 
 // Initialize event with safe defaults
 static inline void init_input_event(input_event_t* event) {

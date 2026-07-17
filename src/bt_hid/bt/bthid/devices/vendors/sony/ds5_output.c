@@ -19,6 +19,10 @@
 #define DS5_OFS_VALID_FLAG1    4
 #define DS5_OFS_MOTOR_RIGHT    5
 #define DS5_OFS_MOTOR_LEFT     6
+#define DS5_OFS_HEADPHONE_VOL  7
+#define DS5_OFS_SPEAKER_VOL    8
+#define DS5_OFS_MIC_VOL        9
+#define DS5_OFS_AUDIO_FLAGS    10
 #define DS5_OFS_VALID_FLAG2   41
 #define DS5_OFS_LIGHTBAR_SETUP 44
 #define DS5_OFS_LED_BRIGHTNESS 45
@@ -27,6 +31,7 @@
 #define DS5_OFS_LIGHTBAR_G     48
 #define DS5_OFS_LIGHTBAR_B     49
 #define DS5_OFS_CRC            74
+#define DS5_AUDIO_ROUTE_SPEAKER 0x30
 
 static uint32_t ds5_crc32_raw(uint32_t seed, const uint8_t *data, size_t len) {
     uint32_t crc = seed;
@@ -66,6 +71,17 @@ void ds5_build_bt_output_report(uint8_t sequence,
         // previous LIGHT_OUT-only setup left tested controllers dark and with
         // non-functional compatibility rumble.
         out[DS5_OFS_VALID_FLAG0] = DS5_DAIDR_VALID_BASELINE;
+
+        // Bits 4-7 of that baseline mark the volume and audio-routing bytes
+        // valid. Leaving their zero-filled defaults here explicitly programs
+        // all three volumes to zero and leaves the output route implicit.
+        // Normal input, LEDs, and rumble conceal that mistake, but Bluetooth
+        // speaker packets remain inaudible. Program the documented conservative
+        // volume and internal-speaker settings in the same transaction.
+        out[DS5_OFS_HEADPHONE_VOL] = 100;
+        out[DS5_OFS_SPEAKER_VOL] = 100;
+        out[DS5_OFS_MIC_VOL] = 64;
+        out[DS5_OFS_AUDIO_FLAGS] = DS5_AUDIO_ROUTE_SPEAKER;
     }
 
     if (state->setup_lightbar) {

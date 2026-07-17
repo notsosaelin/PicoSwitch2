@@ -1,5 +1,6 @@
 #include <string.h>
 
+#include "controller_battery.h"
 #include "switch_gc_encode.h"
 
 // Right Stick/Left Stick click bits (byte 0x2/0x3, bit 0x80) are hardcoded to 0 always and
@@ -9,8 +10,9 @@
 void switch_gc_encode_report(const switch_pro_input_t *in, uint8_t counter, uint8_t out[63]) {
     memset(out, 0, 63);
     out[0x0] = counter;
-    out[0x1] = 0x25;  // power: external power + not charging + battery level 9/9 (safe default;
-                      // no real battery-telemetry source for a USB-tethered Pico)
+    out[0x1] = controller_battery_switch2_power_info(
+        in->battery_valid != 0, in->battery_level,
+        in->battery_charging != 0);
 
     uint8_t s0 = in->buttons[0], s1 = in->buttons[1], s2 = in->buttons[2];
     uint8_t b0 = 0, b1 = 0, b2 = 0;

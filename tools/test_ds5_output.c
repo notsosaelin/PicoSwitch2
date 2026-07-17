@@ -27,11 +27,13 @@ int main(void) {
     ds5_build_bt_output_report(0, &state, report);
     assert(report[0] == 0x31 && report[1] == 0x00 && report[2] == 0x10);
     assert(report[3] == 0xF7 && report[4] == 0xF7);
+    assert(report[7] == 100 && report[8] == 100 && report[9] == 64);
+    assert(report[10] == 0x30);
     assert(report[41] == 0x02 && report[44] == 0x02);
     assert(report[45] == 1 && report[46] == 0x04);
     assert(report[47] == 1 && report[48] == 2 && report[49] == 3);
     // Independently generated with zlib.crc32(A2 || report[0:74]).
-    assert(report_crc(report) == 0xD9076D7Cu);
+    assert(report_crc(report) == 0x3746B528u);
 
     memset(&state, 0, sizeof(state));
     state.update_rumble = true;

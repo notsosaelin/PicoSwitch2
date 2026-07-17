@@ -3,6 +3,7 @@
  */
 #include <string.h>
 
+#include "controller_battery.h"
 #include "switch_joycon2_encode.h"
 #include "core/buttons.h"  // normalized physical JP_BUTTON_* sources
 
@@ -61,7 +62,9 @@ void switch_joycon2_encode_report(const switch_pro_input_t *in, uint32_t source_
                                    joycon2_side_t side, uint8_t counter, uint8_t out[63]) {
     memset(out, 0, 63);
     out[0x0] = counter;
-    out[0x1] = 0x25;  // external power, not charging, battery level 9/9
+    out[0x1] = controller_battery_switch2_power_info(
+        in->battery_valid != 0, in->battery_level,
+        in->battery_charging != 0);
 
     const uint8_t s1 = in->buttons[1];
     uint8_t b0 = 0, b1 = 0;

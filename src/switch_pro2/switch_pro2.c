@@ -17,6 +17,8 @@
 #include "config.h"      // configured body colour shared with Sony lightbars
 #include "report.h"      // shared cross-core controller input
 #include "switch_pro.h"  // switch_pro_input_t + SWITCH_MASK_* (Switch 1 layout)
+#include "controller_battery.h"
+#include "ds5_audio_bridge.h"
 #include "switch_pro2.h"
 #include "usb.h"         // g_usb_config_mode
 
@@ -26,8 +28,8 @@
 #ifdef NS2_PRO
 
 #ifdef NS2_AUDIO
-#include "device/usbd_pvt.h"  // custom class-driver API for the audio stub
-#include "class/audio/audio.h"  // AUDIO_FU_CTRL_* constants only (self-contained; no CFG_TUD_AUDIO needed)
+#include "device/usbd_pvt.h"    // custom UAC1 class-driver API
+#include "class/audio/audio.h"  // AUDIO_FU_CTRL_* constants (CFG_TUD_AUDIO stays disabled)
 #endif
 
 //--------------------------------------------------------------------+
@@ -119,7 +121,7 @@ _Static_assert(sizeof(ns2_report_desc) == 97, "PC2 HID report descriptor must be
 // Configuration descriptor. Two build variants selected by NS2_AUDIO:
 //   Option B (default off): IF0 HID + IF1 vendor bulk only (80 B, 2 interfaces).
 //   Option A (NS2_AUDIO):   adds the real PC2's 3 audio interfaces (268 B, 5 IF),
-//                           enumerated by a stub driver (no functional audio).
+//                           serviced by the PC2-specific UAC1 driver below.
 // iConfiguration / iInterface are 0 (the retail strings 4/5/6 are unknown).
 #ifndef NS2_AUDIO
 #define NS2_CONFIG_LEN 80
@@ -793,7 +795,8 @@ static void ns2_build_report(uint8_t *p) {
 
     memset(p, 0, 63);
     p[0x00] = counter++;
-    p[0x01] = 0x25;  // power: external power + battery full
+    p[0x01] = controller_battery_switch2_power_info(
+        in.battery_valid != 0, in.battery_level, in.battery_charging != 0);
 
     // Remap the 3-byte button field: report.c uses the Switch 1 Pro bit layout,
     // report 0x09 uses a different assignment (see docs/switch2/usb-spec.md §7).
@@ -1093,20 +1096,71 @@ bool ns2_vendor_control_xfer(uint8_t rhport, uint8_t stage, const void *request_
 
 #ifdef NS2_AUDIO
 //--------------------------------------------------------------------+
-// USB Audio stub driver — lets the PC2's 3 audio interfaces (IF2-4) enumerate for
-// fidelity without implementing USB audio. Alt-0 has no endpoints, so there is nothing
-// to service. Standard SET_INTERFACE/GET_INTERFACE alt-setting switches are NOT stalled
-// by this driver returning false — TinyUSB's usbd core provides a mandatory fallback ACK
-// for those two requests even when the owning class driver doesn't handle them (usbd.c,
-// process_control_request(), TUSB_REQ_RCPT_INTERFACE case) — confirmed by reading the
-// vendored TinyUSB source, not assumed. Audio-class-specific Mute/Volume GET_CUR on the
-// Feature Units is answered below with static values (spec-compliance polish only, no
-// functional audio); everything else (SET_CUR, RANGE, actual streaming) still stalls.
+// USB Audio Class 1 driver for the retail PC2 descriptor above.
+//
+// Pico SDK 2.2.0's generic TinyUSB audio driver accepts UAC2 only (its open()
+// explicitly requires bInterfaceProtocol == AUDIO_INT_PROTOCOL_CODE_V2), while
+// the PC2 is UAC1. Keep this narrow driver instead of altering the retail
+// descriptor. It implements the endpoint lifecycle Windows expects:
+//   - IF3 alt 1: 48 kHz stereo 16-bit speaker OUT, consumed into a sink
+//   - IF4 alt 1: 48 kHz stereo 16-bit microphone IN, currently silent
+//   - writable master mute/volume controls for Feature Units 0x02 and 0x05
+//
+// The streams are intentionally PCM-complete before Bluetooth audio transport
+// is added. Receiving/discarding speaker PCM and continuously supplying silent
+// microphone PCM makes the USB audio function operational without claiming that
+// audio has already been bridged to a wireless controller.
 //--------------------------------------------------------------------+
 
-static uint16_t audio_stub_open(uint8_t rhport, tusb_desc_interface_t const *itf_desc,
-                                uint16_t max_len) {
-    (void)rhport;
+#define NS2_AUDIO_SPEAKER_ITF 0x03
+#define NS2_AUDIO_MIC_ITF     0x04
+#define NS2_AUDIO_SPEAKER_EP  0x03
+#define NS2_AUDIO_MIC_EP      0x83
+#define NS2_AUDIO_PACKET_SIZE 192u
+
+// Standard endpoint descriptors copied byte-for-byte from ns2_config_desc.
+// Keeping dedicated copies avoids depending on fragile offsets into the full
+// configuration descriptor when an alternate setting is selected.
+static const uint8_t ns2_audio_speaker_ep_desc[] = {
+    0x07, TUSB_DESC_ENDPOINT, NS2_AUDIO_SPEAKER_EP, 0x0D,
+    (NS2_AUDIO_PACKET_SIZE & 0xFF), (NS2_AUDIO_PACKET_SIZE >> 8), 0x01,
+};
+static const uint8_t ns2_audio_mic_ep_desc[] = {
+    0x07, TUSB_DESC_ENDPOINT, NS2_AUDIO_MIC_EP, 0x0D,
+    (NS2_AUDIO_PACKET_SIZE & 0xFF), (NS2_AUDIO_PACKET_SIZE >> 8), 0x01,
+};
+
+CFG_TUD_MEM_SECTION CFG_TUSB_MEM_ALIGN
+static uint8_t ns2_audio_speaker_packet[NS2_AUDIO_PACKET_SIZE];
+CFG_TUD_MEM_SECTION CFG_TUSB_MEM_ALIGN
+static uint8_t ns2_audio_mic_silence[NS2_AUDIO_PACKET_SIZE];
+
+static uint8_t ns2_audio_alt_speaker;
+static uint8_t ns2_audio_alt_mic;
+static uint8_t ns2_audio_control_data[2];
+
+// UAC1 volume is signed 1/256 dB. These conservative controls expose -60 dB
+// through 0 dB in 1 dB steps, matching what Windows' mixer expects to query.
+#define NS2_AUDIO_VOLUME_MIN ((int16_t)-15360)
+#define NS2_AUDIO_VOLUME_MAX ((int16_t)0)
+#define NS2_AUDIO_VOLUME_RES ((int16_t)256)
+
+typedef struct {
+    uint8_t mute;
+    int16_t volume;
+} ns2_audio_feature_state_t;
+
+static ns2_audio_feature_state_t ns2_audio_speaker_feature;
+static ns2_audio_feature_state_t ns2_audio_mic_feature;
+
+static ns2_audio_feature_state_t *ns2_audio_feature(uint8_t unit_id) {
+    if (unit_id == 0x02) return &ns2_audio_speaker_feature;
+    if (unit_id == 0x05) return &ns2_audio_mic_feature;
+    return NULL;
+}
+
+static uint16_t ns2_audio_open(uint8_t rhport, tusb_desc_interface_t const *itf_desc,
+                               uint16_t max_len) {
     if (itf_desc->bInterfaceClass != TUSB_CLASS_AUDIO) return 0;  // not ours
     // Claim the whole audio function: consume descriptors until the next
     // interface of a different class (or the end of this config descriptor).
@@ -1121,64 +1175,196 @@ static uint16_t audio_stub_open(uint8_t rhport, tusb_desc_interface_t const *itf
         consumed += l;
         p += l;
     }
+#ifdef TUP_DCD_EDPT_ISO_ALLOC
+    // RP2040/RP2350 cannot open an isochronous endpoint through the ordinary
+    // dcd_edpt_open path. Reserve DPRAM once while the configuration is opened,
+    // then activate the relevant endpoint when its interface selects alt 1.
+    if (!usbd_edpt_iso_alloc(rhport, NS2_AUDIO_SPEAKER_EP, NS2_AUDIO_PACKET_SIZE))
+        return 0;
+    if (!usbd_edpt_iso_alloc(rhport, NS2_AUDIO_MIC_EP, NS2_AUDIO_PACKET_SIZE))
+        return 0;
+#else
+    (void)rhport;
+#endif
     return consumed;
 }
 
 // UAC1 (not UAC2) request codes — this descriptor's AC header is bcdADC 0x0100, so GET/SET use
 // separate opcodes (unlike UAC2, where tinyusb's audio.h AUDIO_CS_REQ_* enum applies instead).
 // Table A-9, USB Audio Class 1.0 spec.
+#define UAC1_REQ_SET_CUR 0x01
 #define UAC1_REQ_GET_CUR 0x81
+#define UAC1_REQ_GET_MIN 0x82
+#define UAC1_REQ_GET_MAX 0x83
+#define UAC1_REQ_GET_RES 0x84
 
 // Feature Unit IDs from ns2_config_desc's AC descriptors above: 0x02 = speaker path (2-channel,
 // feeds IF3 Audio Streaming OUT), 0x05 = mic path (mono, feeds IF4 Audio Streaming IN).
-static bool audio_stub_control(uint8_t rhport, uint8_t stage,
-                               tusb_control_request_t const *request) {
-    if (stage != CONTROL_STAGE_SETUP) return true;  // nothing to do outside setup
+static bool ns2_audio_set_alt(uint8_t rhport, uint8_t itf, uint8_t alt) {
+    if (alt > 1) return false;
 
-    // Answer Mute/Volume GET_CUR on the two Feature Units so a real USB Audio Class host
-    // (e.g. Windows, if it ever binds a driver here) doesn't see failed control transfers on
-    // interfaces we otherwise let enumerate cleanly. Static, plausible values only (unmuted,
-    // 0 dB) — no functional audio behind this; everything else (SET_CUR, RANGE, alt-setting
-    // streaming) still stalls, unchanged. See docs/switch2/usb-spec.md "Audio stub".
-    if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_CLASS &&
-        request->bmRequestType_bit.recipient == TUSB_REQ_RCPT_INTERFACE &&
-        request->bRequest == UAC1_REQ_GET_CUR) {
-        uint8_t unit_id = tu_u16_high(request->wIndex);
-        uint8_t cs = tu_u16_high(request->wValue);
-        if (unit_id == 0x02 || unit_id == 0x05) {
-            if (cs == AUDIO_FU_CTRL_MUTE) {
-                static const uint8_t unmuted = 0x00;
-                return tud_control_xfer(rhport, request, (void *)&unmuted, 1);
-            } else if (cs == AUDIO_FU_CTRL_VOLUME) {
-                static const int16_t zero_db = 0x0000;  // UAC1 1/256 dB signed fixed-point
-                return tud_control_xfer(rhport, request, (void *)&zero_db, 2);
-            }
+    uint8_t *current_alt;
+    uint8_t ep_addr;
+    tusb_desc_endpoint_t const *ep_desc;
+    uint8_t *packet;
+
+    if (itf == NS2_AUDIO_SPEAKER_ITF) {
+        current_alt = &ns2_audio_alt_speaker;
+        ep_addr = NS2_AUDIO_SPEAKER_EP;
+        ep_desc = (tusb_desc_endpoint_t const *)ns2_audio_speaker_ep_desc;
+        packet = ns2_audio_speaker_packet;
+    } else if (itf == NS2_AUDIO_MIC_ITF) {
+        current_alt = &ns2_audio_alt_mic;
+        ep_addr = NS2_AUDIO_MIC_EP;
+        ep_desc = (tusb_desc_endpoint_t const *)ns2_audio_mic_ep_desc;
+        packet = ns2_audio_mic_silence;
+    } else {
+        return false;
+    }
+
+    if (*current_alt == alt) return true;
+    if (*current_alt != 0) usbd_edpt_close(rhport, ep_addr);
+    *current_alt = 0;
+
+    if (alt != 0) {
+#ifdef TUP_DCD_EDPT_ISO_ALLOC
+        if (!usbd_edpt_iso_activate(rhport, ep_desc)) return false;
+#else
+        if (!usbd_edpt_open(rhport, ep_desc)) return false;
+#endif
+        *current_alt = alt;
+        if (!usbd_edpt_xfer(rhport, ep_addr, packet, NS2_AUDIO_PACKET_SIZE)) {
+            usbd_edpt_close(rhport, ep_addr);
+            *current_alt = 0;
+            return false;
         }
     }
-    return false;  // everything else stalls (unused during detection; no functional audio)
+    ds5_audio_bridge_set_usb_streams(ns2_audio_alt_speaker != 0,
+                                     ns2_audio_alt_mic != 0);
+    return true;
 }
 
-static bool audio_stub_xfer(uint8_t rhport, uint8_t ep_addr, xfer_result_t result,
-                            uint32_t xferred_bytes) {
-    (void)rhport;
-    (void)ep_addr;
-    (void)result;
+static bool ns2_audio_control(uint8_t rhport, uint8_t stage,
+                              tusb_control_request_t const *request) {
+    uint8_t const recipient = request->bmRequestType_bit.recipient;
+    uint8_t const type = request->bmRequestType_bit.type;
+
+    // TinyUSB forwards standard alternate-setting requests to the owning class
+    // driver. Open/close the isochronous endpoint before completing SET_INTERFACE.
+    if (type == TUSB_REQ_TYPE_STANDARD && recipient == TUSB_REQ_RCPT_INTERFACE) {
+        uint8_t const itf = tu_u16_low(request->wIndex);
+        if (stage != CONTROL_STAGE_SETUP) return true;
+        if (request->bRequest == TUSB_REQ_GET_INTERFACE) {
+            uint8_t *alt = NULL;
+            if (itf == NS2_AUDIO_SPEAKER_ITF) alt = &ns2_audio_alt_speaker;
+            if (itf == NS2_AUDIO_MIC_ITF) alt = &ns2_audio_alt_mic;
+            return alt ? tud_control_xfer(rhport, request, alt, 1) : false;
+        }
+        if (request->bRequest == TUSB_REQ_SET_INTERFACE) {
+            uint8_t const alt = tu_u16_low(request->wValue);
+            return ns2_audio_set_alt(rhport, itf, alt)
+                       ? tud_control_status(rhport, request)
+                       : false;
+        }
+        return false;
+    }
+
+    if (type != TUSB_REQ_TYPE_CLASS || recipient != TUSB_REQ_RCPT_INTERFACE)
+        return false;
+
+    uint8_t const unit_id = tu_u16_high(request->wIndex);
+    uint8_t const cs = tu_u16_high(request->wValue);
+    uint8_t const channel = tu_u16_low(request->wValue);
+    ns2_audio_feature_state_t *feature = ns2_audio_feature(unit_id);
+    if (!feature || channel != 0) return false;  // only master controls are advertised
+
+    if (request->bRequest == UAC1_REQ_SET_CUR) {
+        uint16_t expected_len;
+        if (cs == AUDIO_FU_CTRL_MUTE) expected_len = 1;
+        else if (cs == AUDIO_FU_CTRL_VOLUME) expected_len = 2;
+        else return false;
+        if (request->wLength != expected_len) return false;
+
+        if (stage == CONTROL_STAGE_SETUP)
+            return tud_control_xfer(rhport, request, ns2_audio_control_data, expected_len);
+        if (stage == CONTROL_STAGE_DATA) {
+            if (cs == AUDIO_FU_CTRL_MUTE) {
+                feature->mute = ns2_audio_control_data[0] ? 1 : 0;
+            } else {
+                int16_t value = (int16_t)((uint16_t)ns2_audio_control_data[0] |
+                                          ((uint16_t)ns2_audio_control_data[1] << 8));
+                if (value < NS2_AUDIO_VOLUME_MIN) value = NS2_AUDIO_VOLUME_MIN;
+                if (value > NS2_AUDIO_VOLUME_MAX) value = NS2_AUDIO_VOLUME_MAX;
+                feature->volume = value;
+            }
+            if (unit_id == 0x02) {
+                ds5_audio_bridge_set_speaker_control(
+                    ns2_audio_speaker_feature.mute != 0,
+                    ns2_audio_speaker_feature.volume);
+            }
+        }
+        return true;
+    }
+
+    if (stage != CONTROL_STAGE_SETUP) return true;
+    if (cs == AUDIO_FU_CTRL_MUTE && request->bRequest == UAC1_REQ_GET_CUR)
+        return tud_control_xfer(rhport, request, &feature->mute, 1);
+
+    if (cs == AUDIO_FU_CTRL_VOLUME) {
+        int16_t const *value = NULL;
+        static const int16_t volume_min = NS2_AUDIO_VOLUME_MIN;
+        static const int16_t volume_max = NS2_AUDIO_VOLUME_MAX;
+        static const int16_t volume_res = NS2_AUDIO_VOLUME_RES;
+        if (request->bRequest == UAC1_REQ_GET_CUR) value = &feature->volume;
+        else if (request->bRequest == UAC1_REQ_GET_MIN) value = &volume_min;
+        else if (request->bRequest == UAC1_REQ_GET_MAX) value = &volume_max;
+        else if (request->bRequest == UAC1_REQ_GET_RES) value = &volume_res;
+        if (value) return tud_control_xfer(rhport, request, (void *)value, 2);
+    }
+    return false;
+}
+
+static bool ns2_audio_xfer(uint8_t rhport, uint8_t ep_addr, xfer_result_t result,
+                           uint32_t xferred_bytes) {
     (void)xferred_bytes;
-    return true;  // no endpoints opened; not expected to be called
+    if (result != XFER_RESULT_SUCCESS) return true;
+
+    if (ep_addr == NS2_AUDIO_SPEAKER_EP && ns2_audio_alt_speaker != 0) {
+        ds5_audio_bridge_submit_speaker_pcm(ns2_audio_speaker_packet,
+                                            (uint16_t)xferred_bytes);
+        return usbd_edpt_xfer(rhport, ep_addr, ns2_audio_speaker_packet,
+                              NS2_AUDIO_PACKET_SIZE);
+    }
+    if (ep_addr == NS2_AUDIO_MIC_EP && ns2_audio_alt_mic != 0)
+        return usbd_edpt_xfer(rhport, ep_addr, ns2_audio_mic_silence,
+                              NS2_AUDIO_PACKET_SIZE);
+    return true;
 }
 
-static void audio_stub_init(void) {}
-static void audio_stub_reset(uint8_t rhport) { (void)rhport; }
+static void ns2_audio_init(void) {
+    ns2_audio_alt_speaker = 0;
+    ns2_audio_alt_mic = 0;
+    ns2_audio_speaker_feature = (ns2_audio_feature_state_t){0, 0};
+    ns2_audio_mic_feature = (ns2_audio_feature_state_t){0, 0};
+    ds5_audio_bridge_set_speaker_control(false, 0);
+    memset(ns2_audio_mic_silence, 0, sizeof(ns2_audio_mic_silence));
+    ds5_audio_bridge_set_usb_streams(false, false);
+}
 
-static const usbd_class_driver_t audio_stub_driver = {
-    .init = audio_stub_init,
-    .reset = audio_stub_reset,
-    .open = audio_stub_open,
-    .control_xfer_cb = audio_stub_control,
-    .xfer_cb = audio_stub_xfer,
+static void ns2_audio_reset(uint8_t rhport) {
+    (void)rhport;
+    ns2_audio_init();
+}
+
+static const usbd_class_driver_t ns2_audio_driver = {
+    .init = ns2_audio_init,
+    .reset = ns2_audio_reset,
+    .open = ns2_audio_open,
+    .control_xfer_cb = ns2_audio_control,
+    .xfer_cb = ns2_audio_xfer,
 };
 
-// The audio stub only enumerates PC2's own audio interfaces (IF2-4), which only exist in
+// The audio driver only owns PC2's audio interfaces (IF2-4), which only exist in
 // PC2's own config descriptor -- it must not be offered while a different personality
 // (GameCube, CDC config) is active and presenting a completely different interface set.
 // See docs/switch2-gc/usb-personality.md "TinyUSB dispatch and resource constraints".
@@ -1188,7 +1374,7 @@ usbd_class_driver_t const *usbd_app_driver_get_cb(uint8_t *driver_count) {
         return NULL;
     }
     *driver_count = 1;
-    return &audio_stub_driver;
+    return &ns2_audio_driver;
 }
 #endif  // NS2_AUDIO
 

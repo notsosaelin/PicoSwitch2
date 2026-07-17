@@ -3,10 +3,10 @@
 This firmware emulates a **Switch 2 Pro Controller** (VID `0x057E` / PID `0x2069`) over wired USB. The relevant code resides in `src/switch_pro2/`.
 
 ## USB Descriptors & Identity (`switch_pro2.c`)
-- **Device & Configuration:** The device enumerates as a composite IAD device (Misc/02/01). We output an "Option A" configuration which exposes two primary device functions via Interface Association Descriptors (IADs): the **Controller Input** (HID + Vendor Bulk) and a **Nonfunctional Audio Device** (Audio Control + Streaming).
+- **Device & Configuration:** The device enumerates as a composite IAD device (Misc/02/01). We output an "Option A" configuration which exposes two primary device functions via Interface Association Descriptors (IADs): the **Controller Input** (HID + Vendor Bulk) and a **UAC1 Audio Device** (Audio Control + Streaming).
 - **Interface 0 (HID):** Endpoints `0x81` (IN) and `0x01` (OUT) handle all input streaming and HD rumble output.
 - **Interface 1 (Vendor Bulk):** Endpoints `0x82` (IN) and `0x02` (OUT) handle the initial command and handshake protocol, which includes device memory reads and BLE pairing initialization.
-- **Interfaces 2-4 (Audio):** Stub interfaces that satisfy the Switch 2's expectation for a Pro Controller with a headset jack. These currently do not process functional audio.
+- **Interfaces 2-4 (Audio):** Operational UAC1 interface/endpoint plumbing: 48 kHz stereo PCM OUT is consumed and PCM IN is continuously supplied as silence. Bluetooth audio routing is not connected yet.
 
 ## Command Protocol & Handshake
 Initialization of the controller operates over the Vendor Bulk Interface. 

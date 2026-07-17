@@ -41,6 +41,9 @@ paddles have recent physical validation.
 | 8BitDo NGC Modkit rumble | ✅ Confirmed | Real hardware with BlueRetro-derived `0xA5 / DB LL RR` output |
 | Retro Fighters BattlerGC Pro mapping | ✅ Confirmed | Pairing, labels, shoulders, analog/click triggers, L3/R3 suppression, and separate Home report |
 | 8BitDo Ultimate Bluetooth P1/P2 | ✅ Confirmed | Custom firmware transport maps independent paddles to GL/GR and preserves wake |
+| Bluetooth battery passthrough | ✅ Confirmed | Native HID/BLE sources and console-native USB power fields |
+| Pro Controller 2 UAC1 USB audio function | ✅ Confirmed | Windows audio endpoints start without Code 10; no controller regressions |
+| DualSense Bluetooth speaker activation | ✅ Confirmed | Fixed Opus tone is audible; Windows endpoint mute silences the controller |
 | Pico W and Pico 2 W builds | ✅ Confirmed | Local release builds |
 
 ## Current USB personalities
@@ -80,6 +83,7 @@ See [`docs/architecture/overview.md`](docs/architecture/overview.md) and
 
 | Priority | Issue | State |
 |---|---|---|
+| P1 | DualSense Bluetooth audio/Opus bridge | 🟡 Speaker activation and Windows mute confirmed; user advanced from synthetic-tone diagnosis to live Windows PCM, exact 480-frame cadence build pending hardware test |
 | P2 | Let reconnecting BLE controllers sleep with the console without touching bonds or admission | 🔵 Research concluded: no safe generic host-only path; controller-specific evidence required |
 | P3 | Console-native report `0x09` motion semantics | 🔴 Blocked on better primary evidence |
 | P3 | NFC/amiibo transactions | 🔴 Blocked on a genuine console-side capture |
@@ -104,15 +108,23 @@ Current automated coverage includes:
 - BOOTSEL gesture timing under timer-only, report-only starvation, and mixed scheduling
 - Late BLE identity correction, including provisional and generic binding, transport filtering,
   idempotent confirmation, and input notifications immediately before and after a driver rebind
+- Battery decoding for DualShock 3/4, DualSense, Switch Pro, Wii U Pro, and Wiimote; recurring BLE
+  BAS updates with native-HID priority; and power-field encoding for Switch 1 Pro, Pro Controller 2,
+  NSO GameCube, and both Joy-Con 2 personalities
 - First-generation 8BitDo Ultimate Bluetooth identity gating and P1/P2 signature conversion to
   L4/R4 (GL/GR by default), including simultaneous and ordinary-input preservation
 - 8BitDo NGC Modkit rumble report framing, per-profile VID authorization, and send-result
   propagation
 - `gcusb` safety and protocol helpers
+- Pro Controller 2 UAC1 descriptor topology, advertised Feature Units, both 192-byte isochronous
+  streams, RP2040/RP2350 allocation path, and full mute/volume request surface
+- DualSense audio report `0x39`/`0x32` byte layout and CRC, plus the fixed 512-to-480 stereo
+  resampler's constant-signal, channel-isolation, and ramp behavior
 
 The firmware builds under the Pico SDK 2.2.0 toolchain for `pico_w` and `pico2_w`; both legacy
 `NS2_PRO=OFF` Pico W build directories also pass their compile gates. The current release has 20
-passing host-test executables.
+passing host-test executables; the post-release development tree has 23, adding battery
+decoder/source/encoder, DualSense audio packet, and audio resampler suites.
 
 Config v8 stores a Pro Controller 2 body color plus independent Joy-Con 2 Left/Right accent colors.
 Existing v5/v6 users retain their effective slot-0 color and remap/wake data; v7 body, remap, and
@@ -136,7 +148,14 @@ player-dot reordering, and the prior wake/input/rumble baseline are hardware-con
 
 ## Next recommended work
 
-1. Add a reproducible release checklist with board, firmware, controller, console, and result data.
-2. Build a reproducible console-side capture path before resuming NFC or report `0x09` motion work.
-3. Revisit controller sleep only after capturing a verified per-family sleep command or a stable
+1. Hardware-retest the fixed 1 kHz DualSense tone build after correcting the compatibility
+   transaction's valid-but-zero headphone/speaker/microphone volume bytes.
+2. Once fixed-tone playback is audible, redesign live encoding so it cannot execute inside or
+   starve the BTstack core.
+3. After speaker playback is stable, add DualSense microphone Opus decode and USB return.
+4. Re-test the Switch 2 controller-update prompt against the now-operational audio stack.
+5. Add a reproducible release checklist with board, firmware revision, controller firmware,
+   console firmware, and result data.
+6. Build a reproducible console-side capture path before resuming NFC or report `0x09` motion work.
+7. Revisit controller sleep only after capturing a verified per-family sleep command or a stable
    distinction between automatic-reconnect and user-wake advertisements.

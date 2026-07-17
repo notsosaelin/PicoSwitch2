@@ -281,20 +281,29 @@ Input arrives from the joypad-os bthid stack as `input_event_t` and is mapped in
   the real console-detection gate (see §5).
 - ✅ **RESOLVED — `0x15` AES pairing is not required for wired input.** Implemented anyway; a
   well-formed but cryptographically-wrong `B2` is accepted (the wired session stores, not verifies).
-- ✅ **RESOLVED — audio interfaces:** the full Option-A descriptor (HID + vendor + 3 audio) ships and
-  the console accepts it (audio stubbed).
+- 🟡 **Audio interfaces:** the full Option-A descriptor (HID + vendor + 3 audio) ships and the
+  console accepts it. On 2026-07-17 the descriptor-only stub was replaced by a PC2-specific UAC1
+  driver with real isochronous endpoint lifecycle, speaker PCM consumption, silent microphone PCM,
+  and writable Feature Unit controls. Windows hardware validation confirms that the audio function
+  starts without Code 10 and existing controller behavior remains intact. The first Pico 2 W
+  live-Opus bridge failed hardware validation with no audio, an unstable Windows endpoint,
+  DualSense input corruption, and BOOTSEL starvation. Live encoding is therefore disabled by
+  default. Incoming DualSense microphone-bearing reports are now excluded from gamepad parsing,
+  and a fixed 1 kHz Opus build tests report transport without running an encoder on the Bluetooth
+  core. Its first passes were stable but silent. Adding DS5Dongle's extended `0x32` AudioControl
+  activation was insufficient; a subsequent audit found the earlier compatibility report was
+  explicitly applying zero speaker/headphone/microphone volume. Those fields now use nonzero safe
+  defaults. Pico W and normal Pico 2 W builds retain the operational USB sink/silence layer.
 - ✅ **RESOLVED — report `0x09` motion packing:** decoded — int32 phase + Q16.16 accel, len 30, gated
   behind the `0x0C` enable. See [report-0x09-motion.md](report-0x09-motion.md).
 - ✅ **RESOLVED — bcdDevice:** ship **0x0210**. `00 02`/`0x0200` and `0x0201` collide with a retail
   unit's Windows WinUSB cache; 0x0210 is console-neutral and keeps PC enumeration clean.
-- 🔵 **Audio stub control requests (2026-07-12):** confirmed by reading TinyUSB's vendored
-  `usbd.c` source (`process_control_request()`, `TUSB_REQ_RCPT_INTERFACE` case) that standard
-  `SET_INTERFACE`/`GET_INTERFACE` on IF2-4 already get a mandatory core-level ACK fallback even
-  though our audio stub's `control_xfer_cb` stalls everything — so alt-setting switches were never
-  actually broken. The stub now also answers Feature-Unit Mute/Volume `GET_CUR` (UAC1 opcode
-  `0x81`) with static unmuted/0dB values, purely to avoid control-transfer retry noise if a host's
-  USB Audio class driver ever binds here — **not a functional-audio claim**; `SET_CUR`, `RANGE`,
-  and actual iso streaming still stall/are unserviced.
+- ✅ **UAC1 class requests and streams (2026-07-17):** the class driver now handles
+  `SET_INTERFACE`/`GET_INTERFACE` itself, allocates and activates RP2040/RP2350 isochronous
+  endpoints correctly, continuously schedules both streams, and handles `SET_CUR`,
+  `GET_CUR/MIN/MAX/RES` for the advertised master mute/volume controls. The generic Pico SDK
+  TinyUSB audio driver was not used because its `open()` requires UAC2 while the retail PC2
+  descriptor is UAC1.
 - ✅ **RESOLVED — command framing (§14):** the whole EP2 handshake re-verified byte-exact against
   the raw capture (not the summary table, which turned out to omit some trailing bytes); three
   previously-undocumented subcommands confirmed real; one real, previously-unwired memory address

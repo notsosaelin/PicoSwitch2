@@ -377,43 +377,66 @@ static wiimote_connection_t wiimote_conn;
 // Direct-L2CAP output is used by Sony controllers on CYW43 (to avoid their
 // problematic SDP path) as well as the Wiimote family. l2cap_send() is not a
 // queue: calling it outside a can-send window can reject and lose the report.
-// Preserve the current promised report, coalesce later churn into one latest
-// successor, and drain both from L2CAP_EVENT_CAN_SEND_NOW. This keeps required
-// setup ordering without accumulating stale rumble transitions.
+// Preserve promised reports and drain them from L2CAP_EVENT_CAN_SEND_NOW.
+// Ordinary builds retain the original two-entry footprint. RP2350 audio builds
+// use the same ten-entry depth as DS5Dongle so short radio scheduling stalls do
+// not immediately become audible Opus holes.
+#ifdef NS2_DS5_AUDIO
+#define DIRECT_OUTPUT_QUEUE_DEPTH 10u
+#else
+#define DIRECT_OUTPUT_QUEUE_DEPTH 2u
+#endif
+#define DIRECT_OUTPUT_MAX_LEN 548u
+
 typedef struct {
-    bool pending;
     uint16_t len;
-    uint8_t data[80];
-    bool next_pending;
-    uint16_t next_len;
-    uint8_t next_data[80];
+    // DualSense audio report 0x39 is 547 bytes plus the 0xA2 transaction byte.
+    // Ordinary controller reports remain <=80 bytes; the larger bound is used
+    // only by Sony's direct-L2CAP path on RP2350 audio builds.
+    uint8_t data[DIRECT_OUTPUT_MAX_LEN];
+} direct_output_entry_t;
+
+typedef struct {
+    uint8_t head;
+    uint8_t count;
+    direct_output_entry_t entries[DIRECT_OUTPUT_QUEUE_DEPTH];
 } direct_output_queue_t;
 
 static direct_output_queue_t direct_output_queue;
 
+static void direct_output_clear(void)
+{
+    direct_output_queue.head = 0;
+    direct_output_queue.count = 0;
+}
+
+static bool direct_output_pending(void)
+{
+    return direct_output_queue.count != 0;
+}
+
 static void direct_output_try_send(uint16_t cid)
 {
-    if (!direct_output_queue.pending) return;
+    if (!direct_output_pending()) return;
     if (!l2cap_can_send_packet_now(cid)) {
         l2cap_request_can_send_now_event(cid);
         return;
     }
 
-    uint8_t status = l2cap_send(cid, direct_output_queue.data,
-                                direct_output_queue.len);
+    direct_output_entry_t *entry =
+        &direct_output_queue.entries[direct_output_queue.head];
+    uint8_t status = l2cap_send(cid, entry->data, entry->len);
     if (status != ERROR_CODE_SUCCESS) {
         l2cap_request_can_send_now_event(cid);
         return;
     }
 
-    if (direct_output_queue.next_pending) {
-        memcpy(direct_output_queue.data, direct_output_queue.next_data,
-               direct_output_queue.next_len);
-        direct_output_queue.len = direct_output_queue.next_len;
-        direct_output_queue.next_pending = false;
+    direct_output_queue.head =
+        (uint8_t)((direct_output_queue.head + 1u) %
+                  DIRECT_OUTPUT_QUEUE_DEPTH);
+    direct_output_queue.count--;
+    if (direct_output_pending()) {
         l2cap_request_can_send_now_event(cid);
-    } else {
-        direct_output_queue.pending = false;
     }
 }
 
@@ -645,8 +668,19 @@ static void setup_hid_handlers(void)
     sdp_register_service(device_id_sdp_service_buffer);
     printf("[BTSTACK_HOST] SDP server initialized\n");
 
-    // Allow sniff mode and role switch for classic BT (improves compatibility)
-    gap_set_default_link_policy_settings(LM_LINK_POLICY_ENABLE_SNIFF_MODE | LM_LINK_POLICY_ENABLE_ROLE_SWITCH);
+    // Sniff mode improves idle-controller compatibility and power use, but its
+    // periodic radio anchors cannot sustain a 548-byte DualSense audio report
+    // every 20 ms. A regular beep/silence duty cycle on hardware showed the
+    // link delivering one 20 ms payload roughly every 40 ms. Keep the
+    // hardware-confirmed ordinary policy everywhere except the explicitly
+    // experimental RP2350 audio builds.
+#ifdef NS2_DS5_AUDIO
+    gap_set_default_link_policy_settings(LM_LINK_POLICY_ENABLE_ROLE_SWITCH);
+#else
+    gap_set_default_link_policy_settings(
+        LM_LINK_POLICY_ENABLE_SNIFF_MODE |
+        LM_LINK_POLICY_ENABLE_ROLE_SWITCH);
+#endif
 
     // Register for HCI events
     printf("[BTSTACK_HOST] Register event handlers...\n");
@@ -5707,8 +5741,7 @@ static void wiimote_l2cap_packet_handler(uint8_t packet_type, uint16_t channel, 
                     // Interrupt channel opened - connection complete!
                     printf("[BTSTACK_HOST] Wiimote: Interrupt channel connected - HID READY!\n");
                     wiimote_conn.state = WIIMOTE_STATE_CONNECTED;
-                    direct_output_queue.pending = false;
-                    direct_output_queue.next_pending = false;
+                    direct_output_clear();
                     classic_state.pending_hid_connect = false;
 
                     // Stop scanning now that we have a connected device
@@ -5762,7 +5795,8 @@ static void wiimote_l2cap_packet_handler(uint8_t packet_type, uint16_t channel, 
 
             } else if (event_type == L2CAP_EVENT_CAN_SEND_NOW) {
                 uint16_t local_cid = l2cap_event_can_send_now_get_local_cid(packet);
-                if (local_cid == wiimote_conn.interrupt_cid && direct_output_queue.pending) {
+                if (local_cid == wiimote_conn.interrupt_cid &&
+                    direct_output_pending()) {
                     direct_output_try_send(local_cid);
                 }
             } else if (event_type == L2CAP_EVENT_CHANNEL_CLOSED) {
@@ -5779,8 +5813,7 @@ static void wiimote_l2cap_packet_handler(uint8_t packet_type, uint16_t channel, 
                             memset(&classic_state.connections[wiimote_conn.conn_index], 0, sizeof(classic_connection_t));
                         }
                     }
-                    direct_output_queue.pending = false;
-                    direct_output_queue.next_pending = false;
+                    direct_output_clear();
                     memset(&wiimote_conn, 0, sizeof(wiimote_conn));
                 }
             }
@@ -5904,20 +5937,40 @@ bool btstack_classic_send_report(uint8_t conn_index, uint8_t report_id,
         // Build HID packet: 0xA2 (DATA|OUTPUT) + report_id + data. Accept it
         // into a bounded/coalescing queue even when L2CAP cannot send this instant;
         // the packet handler drains it from L2CAP_EVENT_CAN_SEND_NOW.
-        if (len + 2 > sizeof(direct_output_queue.data)) return false;
-        uint8_t *dst;
-        if (!direct_output_queue.pending) {
-            dst = direct_output_queue.data;
-            direct_output_queue.len = len + 2;
-            direct_output_queue.pending = true;
-        } else {
-            // Preserve the report already promised to the driver (notably
-            // DualSense's one-time setup), while coalescing any further state
-            // churn to one latest successor instead of building a stale queue.
-            dst = direct_output_queue.next_data;
-            direct_output_queue.next_len = len + 2;
-            direct_output_queue.next_pending = true;
+        if (len + 2 > DIRECT_OUTPUT_MAX_LEN) return false;
+        // A 0x39 audio packet needs a 548-byte interrupt MTU. Detect a
+        // permanently undersized negotiated channel here instead of accepting
+        // the report and retrying L2CAP_DATA_LEN_EXCEEDS_REMOTE_MTU forever.
+        uint16_t const remote_mtu =
+            l2cap_get_remote_mtu_for_local_cid(wiimote_conn.interrupt_cid);
+        if (remote_mtu != 0 && len + 2 > remote_mtu) {
+            printf("[BTSTACK_HOST] Direct output len=%u exceeds interrupt MTU=%u\n",
+                   (unsigned)(len + 2), (unsigned)remote_mtu);
+            return false;
         }
+        uint8_t entry_index;
+        if (direct_output_queue.count < DIRECT_OUTPUT_QUEUE_DEPTH) {
+            entry_index =
+                (uint8_t)((direct_output_queue.head +
+                           direct_output_queue.count) %
+                          DIRECT_OUTPUT_QUEUE_DEPTH);
+            direct_output_queue.count++;
+        } else {
+            // Preserve audio losslessly. Ordinary LED/rumble churn may still
+            // coalesce into the newest queued entry when the FIFO is full.
+            bool const incoming_audio = report_id == 0x39u;
+            entry_index =
+                (uint8_t)((direct_output_queue.head +
+                           direct_output_queue.count - 1u) %
+                          DIRECT_OUTPUT_QUEUE_DEPTH);
+            bool const queued_audio =
+                direct_output_queue.entries[entry_index].data[1] == 0x39u;
+            if (incoming_audio || queued_audio) return false;
+        }
+        direct_output_entry_t *entry =
+            &direct_output_queue.entries[entry_index];
+        uint8_t *dst = entry->data;
+        entry->len = len + 2;
         dst[0] = 0xA2;
         dst[1] = report_id;
         memcpy(dst + 2, data, len);

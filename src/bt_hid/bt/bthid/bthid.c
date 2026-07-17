@@ -32,6 +32,12 @@ __attribute__((weak)) void bthid_on_raw_report(uint8_t conn_index, const uint8_t
     (void)conn_index; (void)data; (void)len;
 }
 
+// Battery-publish hook. PicoSwitch's seam republishes the cached controller
+// state immediately; standalone/host users can leave this as a no-op.
+__attribute__((weak)) void bthid_on_battery_update(input_event_t *event) {
+    (void)event;
+}
+
 // Platform safe-point hook. PicoSwitch uses this to service its cooperative
 // BOOTSEL flash-sampling handshake. Keeping the hook here means sustained HID
 // traffic creates safe points instead of starving the timer that normally
@@ -675,10 +681,14 @@ void bthid_set_battery_level(uint8_t conn_index, uint8_t level)
     // All driver data structs have input_event_t as their first field
     input_event_t* event = (input_event_t*)device->driver_data;
 
-    // Only set if driver hasn't already provided battery from HID reports
-    if (event->battery_level == 0 && level > 0) {
-        event->battery_level = level;
+    // BAS remains a live fallback: accept 0% and recurring notifications, but
+    // never overwrite controller-native HID telemetry (which can also include
+    // a reliable charging state).
+    if (input_event_set_bas_battery(event, level)) {
         printf("[BTHID] BAS battery: %d%% (conn %d)\n", level, conn_index);
+        // Battery notifications may arrive while the controller is otherwise
+        // idle, so publish the cached buttons/axes with the new power state.
+        bthid_on_battery_update(event);
     }
 }
 

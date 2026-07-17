@@ -16,6 +16,7 @@
 #include "core/services/players/manager.h"
 #include "core/services/players/feedback.h"
 #include "core/services/storage/flash.h"
+#include "controller_battery.h"
 #include <string.h>
 #include <stdio.h>
 #include "platform/platform.h"
@@ -609,6 +610,14 @@ static void wiimote_process_report(bthid_device_t* device, const uint8_t* data, 
         uint8_t lf_byte = data[3];
         uint8_t flags = lf_byte & 0x0F;  // Low nibble is flags
         bool ext_now = (flags & 0x02) != 0;
+
+        if (len >= 7) {
+            controller_battery_t battery;
+            if (controller_battery_decode_wiimote(data[6], &battery)) {
+                input_event_set_native_battery(&wii->event, battery.level,
+                                               battery.charging);
+            }
+        }
 
         printf("[WIIMOTE] Status: LF=0x%02X flags=0x%X ext=%d\n", lf_byte, flags, ext_now);
 
