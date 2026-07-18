@@ -1302,6 +1302,37 @@ void btstack_host_suppress_scan(bool suppress)
     }
 }
 
+// True when a controller is fully connected (HID ready) on either transport.
+// Keying on hid_ready (setup complete) rather than a raw connection count means
+// callers never act on a mid-handshake connection.
+static bool any_controller_hid_ready(void)
+{
+    for (int i = 0; i < MAX_CLASSIC_CONNECTIONS; i++) {
+        if (classic_state.connections[i].active &&
+            classic_state.connections[i].hid_ready) {
+            return true;
+        }
+    }
+    for (int i = 0; i < MAX_BLE_CONNECTIONS; i++) {
+        if (hid_state.connections[i].handle != HCI_CON_HANDLE_INVALID &&
+            hid_state.connections[i].hid_ready) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 1 dongle : 1 controller. Used to retire the always-on multi-controller
+// discovery: a controller finishing connection closes the pairing window (LED
+// goes solid) and lets discovery idle. The host stays connectable/discoverable
+// (set at init), so a bonded Classic controller still reconnects by paging in
+// and a bonded BLE controller reconnects once discovery resumes at 0 connections
+// (btstack_host_process safety-net).
+bool btstack_host_controller_connected(void)
+{
+    return any_controller_hid_ready();
+}
+
 // ============================================================================
 // CONNECTION
 // ============================================================================
