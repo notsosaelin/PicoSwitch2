@@ -222,6 +222,18 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
         pairing_until_ms = 0;
     }
 
+    // One dongle serves one controller: a controller finishing connection
+    // fulfills an open pairing window's purpose. Close it immediately so the LED
+    // goes solid (via the "connected" branch below) instead of blinking for the
+    // rest of the 30 s window, and discovery stops. Keyed on hid_ready so it
+    // never closes on a mid-handshake connection. bt_set_pairing_mode(false)
+    // routes through close_pairing_window(), which defers if a BLE candidate is
+    // still in flight -- see btstack_host.c.
+    if (pairing_until_ms && btstack_host_controller_connected()) {
+        bt_set_pairing_mode(false);
+        pairing_until_ms = 0;
+    }
+
     // Service the Bluetooth stack. `bt_task()` (via cyw43_transport_task()) already calls
     // bthid_task() once per invocation; the dedicated rumble_timer above now additionally drives
     // it every RUMBLE_TICK_MS, so no separate explicit call is needed here anymore (removed

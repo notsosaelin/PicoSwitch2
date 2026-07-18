@@ -74,6 +74,10 @@ void btstack_host_start_timed_scan(uint32_t timeout_ms);
 // Explicit start_timed_scan clears suppression.
 void btstack_host_suppress_scan(bool suppress);
 
+// True when a controller is fully connected (HID ready) on either transport.
+// Used for the 1-dongle-1-controller discovery gating.
+bool btstack_host_controller_connected(void);
+
 // Temporarily pause discovery and emit one or two non-connectable legacy BLE
 // advertisements from an exact random address. Used for Switch 2 wake replay;
 // the sequence is timer-driven and never blocks the BTstack run loop. Returns
