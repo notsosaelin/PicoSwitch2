@@ -212,3 +212,165 @@ commit onto a fresh branch and hardware-validate it alone.
 - `src/ds5_audio_bridge.c`, `src/bt_hid/bt/bthid/devices/vendors/sony/ds5_bt.c`,
   `.../sony/ds5_audio_packet.c` — the bridge, transport, and report builder (at
   `7d9d47d` / reverted commits).
+
+---
+
+# Deep-dive research (2026-07-18)
+
+Reference-implementation and hardware/protocol study to locate the root cause of the
+periodic stall and map every audio path involved. **No firmware was modified.** Local
+sources studied (full clones, pinned):
+
+- `nso-gc-refs/DS5Dongle/` — [awalol/DS5Dongle](https://github.com/awalol/DS5Dongle)
+  @ `750bde8` (MPL/MIT). The working reference: same bridge, PC host instead of Switch 2.
+- `nso-gc-refs/switch2_controller_research/` —
+  [ndeadly/switch2_controller_research](https://github.com/ndeadly/switch2_controller_research)
+  @ `d1c5a7f`. Genuine Switch 2 controller protocol reverse-engineering.
+- `dumps/SPI/2069_spi_dump_*.bin` — genuine Pro Controller 2 (`057E:2069`) SPI flash.
+- `dumps/SWITCH2_JOYCON_{L,R}_1.bin` — genuine Joy-Con 2 SPI flash.
+
+## 12. DS5Dongle architecture — how the working reference stays continuous
+
+The single most important finding. DS5Dongle and PicoSwitch2 emit **byte-identical**
+`0x39`/`0x32` reports (verified earlier), yet DS5Dongle streams cleanly. The difference
+is entirely in **where code runs**.
+
+### 12.1 Threading (`src/main.cpp`, `src/audio.cpp`)
+
+```
+DS5Dongle:
+  core0  main() { while(1): cyw43_arch_poll()  // BTstack run loop
+                            tud_task()          // USB
+                            audio_loop()        // USB read + audio_bt_task() -> bt_write()
+                            interrupt_loop() ... }
+  core1  core1_entry() { while(1): speaker_proc()  // opus_encode
+                                   mic_proc()    } // opus_decode
+```
+
+- **BTstack + the BT-audio transport + USB all live on core0's single flat, untimed
+  loop.** `bt_write()` is called right after `cyw43_arch_poll()` every iteration, so a
+  `0x39` goes out the instant the FIFO fills and the radio is ready — no 2 ms timer, no
+  cross-core hop.
+- **Only the Opus codec is on core1**, in its own tight `while(1)`. The encoder never
+  competes with the BTstack run loop.
+
+### 12.2 Pipeline (`src/audio.cpp`)
+
+- USB OUT delivers **4 channels** (2 speaker + 2 haptics) @ 48 kHz. core0 `audio_loop`
+  splits them: speaker → `audio_fifo` (512-frame float blocks); haptics → 48 k→**3 kHz**
+  resample → int8 → `haptics_fifo`.
+- core1 `speaker_proc`: `audio_fifo` → **adaptive WDL resample 512→480** (`SetRates(51200,
+  48000)`, feed mode) → `opus_encode_float` (480 samples/10 ms, 200 B, VBR off,
+  complexity 0, 160 kbps) → `audio_spk_fifo`.
+- core0 `audio_bt_task`: when `audio_spk_fifo ≥ 2` **and** `haptics_fifo ≥ 2`, build the
+  547 B `0x39` (2×64 B haptics + 2×200 B Opus) and `bt_write`. FIFO depth is **2**
+  (shallow — same as PicoSwitch2). The send FIFO is depth **10**, `CAN_SEND_NOW`-drained
+  — **identical** to PicoSwitch2's `direct_output_queue`.
+
+### 12.3 What DS5Dongle does that PicoSwitch2 does not
+
+| Aspect | DS5Dongle | PicoSwitch2 (live/tone bridge) |
+|---|---|---|
+| BTstack run loop | **core0**, flat loop | **core1** |
+| BT-audio transport | **core0**, same loop as BTstack | core1, 2 ms timer + report boundaries |
+| Opus codec | **core1, isolated** | **core1, shares the run loop with BTstack** |
+| core0 workload | trivial (DualSense passthrough) | **full Switch 2 controller USB emulation** |
+| USB→Opus rate | adaptive WDL resample 512→480 | direct 48 kHz accumulation, no resample |
+| Haptics in `0x39` | **real 3 kHz data** | zeros |
+| Send FIFO | 10-deep, CAN_SEND_NOW | 10-deep, CAN_SEND_NOW (same) |
+| BTstack config | Classic-only, no BLE, no host flow control | BLE+Classic+ERTM, CYW43 flow control |
+
+**Conclusion.** DS5Dongle structurally cannot suffer core-1 contention: the codec is
+isolated and the transport rides the same flat loop as the radio poll. PicoSwitch2 runs
+BTstack *and* the encoder on core1 while core0 is busy emulating a full Switch 2
+controller — so anything that briefly monopolises core1 stalls the transport. This
+directly supports the leading **core-1-freeze** hypothesis (§5–§7), and it explains why
+even the *encoder-free tone build* still stalls: the blocker is a periodic core-1 event
+(≈ 57 ms every ≈ 540 ms = 18 × the 30 ms control tick), not the encoder itself.
+
+## 13. DualSense audio architecture (the BT-Classic side)
+
+- Transport is **BT Classic HID output/input reports — not A2DP.** The host owns timing
+  by pushing HID reports; there is no negotiated A2DP jitter buffer, so continuity is
+  purely a function of steady `0x39` delivery.
+- **`0x39`** (547 B, output): seq, `0x91`, len 6, mic flag `0x7E/0x7F`, buffer-length ×4,
+  packet counter (`+= 2`), `0xD2`/64, two 64 B haptics blocks, route byte
+  (`0x13` speaker / `0x16` headset, `| 0xC0`), `200`, two 200 B Opus frames, CRC32.
+- **`0x32`** (142 B, output): the `SetStateData` control block — `AllowAudioControl`,
+  `AllowSpeaker/Headphone/MicVolume`, `AllowMuteLight`, `SpeakerCompPreGain`, `MicSelect`,
+  route, mute. Sent before streaming and on control change.
+- **`0x31`** (input): gamepad; the controller **mic** is multiplexed in via header bit
+  (`data[2] & 0x02`), with the 71 B Opus mic frame at `data+4`. Headset-present is
+  `data[56] & 1` (raw, incl. `0xA1`) → byte 55 after BTstack strips the transaction byte.
+- Codec is **Opus** on every path (BT-Classic HID bandwidth cannot carry raw PCM):
+  speaker 200 B/10 ms stereo; mic 71 B/10 ms mono.
+
+## 14. Switch 2 native audio (the console side — what PicoSwitch2 emulates)
+
+Genuine Switch 2 controller audio is **completely different** from the DualSense's, on
+both transports (from `switch2_controller_research`):
+
+- **Wireless (BLE GATT), Pro Controller only, firmware ≥ 2.0.0:** output handle
+  **`0x002c`** (WRITE-NO-RESPONSE, console→controller headset audio) and input handle
+  **`0x002e`** (NOTIFY, controller→console mic). Updated-firmware controllers add these
+  attributes, shifting later handles by +8.
+- **Input report `0x3F`** carries headset audio inline: state @ `0xD`
+  (`0x07/0x0F` headset, `0x05/0x0D` headphones, `0x00` none), length @ `0xE` (always
+  `0x32` = 50), then **50 bytes of "unknown format" audio** @ `0xF`. Not labelled Opus;
+  likely a proprietary low-bitrate codec the on-controller DSP handles.
+- **Wired (USB UAC1):** Audio Control + Audio Streaming interfaces, **2-channel speaker +
+  1-channel mic** (`descriptors.md`). **This is the path PicoSwitch2 emulates** and
+  bridges to the DualSense.
+- So PicoSwitch2's job is: Switch 2 USB UAC1 PCM → DualSense BT-Classic Opus `0x39`. The
+  console's native *wireless* audio format (BLE `0x3F`, 50 B chunks, DSP-processed) is a
+  separate, unexplored avenue and is **not needed** for the USB-bridge approach.
+
+## 15. The `DSPH` DSP blob (`dumps/SPI/2069_*`)
+
+- `DSPH` magic at flash **`0x175000`**; region `0x175000–0x1F9FFF` (`0x85000`), of which
+  ~207 KB is real content (rest is erased `0xFF`). Header size field `0x00032ab0`
+  (207024) matches. String **`MT3616A0 DSP`** at `0x175318`. Identical across both
+  genuine Pro Controller 2 dumps.
+- It is the **MT3616A0 audio-DSP firmware** for the controller's own 3.5 mm headset jack
+  (MediaTek DSP/codec). `commands.md` exposes a "DSP firmware version" field, present only
+  on updated-firmware Pro Controllers; `memory_layout.md` marks the region "DSP firmware …
+  for the audio jack output."
+- **Not usable by the Pico or the bridge**: it is target code for the MT3616 chip, not a
+  USB audio engine and not an Opus implementation. The **Joy-Con 2 dumps contain no DSP
+  blob** (`grep` for `DSPH`/`MT3616` → none) — consistent with their having no headset
+  jack. This confirms the earlier note in `audio-passthrough-research.md` §3.1.
+
+## 16. Bluetooth audio transfer — the two paradigms in play
+
+- **A2DP** (standard BT stereo profile, SBC/AAC, negotiated buffering) is **not** used by
+  any device here.
+- **Vendor HID-report audio** is: DualSense `0x39` (Opus over BT-Classic HID) and Switch 2
+  `0x3F` (proprietary over BLE GATT). In both, the *link owner* paces delivery via
+  reports/notifications, so audio continuity is entirely at the mercy of report-scheduling
+  jitter — exactly the failure mode PicoSwitch2 hits and DS5Dongle's flat-loop transport
+  avoids.
+
+## 17. Synthesis and recommended direction (no code changed)
+
+1. **The stall is an architecture/scheduling problem, not a protocol problem.** Every
+   protocol byte matches the working reference; the difference is core-1 contention on a
+   platform whose core0 is committed to Switch 2 USB emulation and core1 to BTstack + the
+   encoder.
+2. **Decisive next measurement remains the stall meter** (§8): `core1MaxGapUs` vs
+   `sendMaxGapUs` will confirm core-1-freeze vs radio-block. §12 predicts core-1-freeze.
+3. **If core-1-freeze is confirmed**, the fixes worth evaluating (in rough order):
+   - Find and remove/relocate the periodic core-1 blocker (the ~540 ms / 18-tick event —
+     inspect everything the control timer and `btstack_host_process()` do per tick,
+     including any `multicore_lockout`/flash path and BTstack housekeeping).
+   - Move the *transport* (not the whole stack) so a queued `0x39` can reach L2CAP without
+     waiting on the encoder or the timer — i.e., approximate DS5Dongle's "assemble-and-send
+     right after the radio poll" flat-loop behaviour.
+   - Only then consider matching DS5Dongle's secondary choices (adaptive 512→480 resample;
+     real non-zero haptics) — lower-probability, but cheap to try once continuity holds.
+4. **Out of scope for the bridge:** the MT3616 DSP blob and the Switch 2 wireless `0x3F`
+   audio format — documented here for completeness, not required for USB→DualSense audio.
+
+### Sources
+- `nso-gc-refs/DS5Dongle/src/{main,audio,bt,btstack_config}.*` @ `750bde8`
+- `nso-gc-refs/switch2_controller_research/{bluetooth_interface,hid_reports,commands,descriptors,memory_layout}.md` @ `d1c5a7f`
+- `dumps/SPI/2069_spi_dump_*.bin`, `dumps/SWITCH2_JOYCON_{L,R}_1.bin`
