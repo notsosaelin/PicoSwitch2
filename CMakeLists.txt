@@ -32,17 +32,6 @@ project(PicoSwitchWGA C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
-# DualSense audio BT pipeline tuning. Must precede pico_sdk_init() so the SDK's
-# BTstack library (added as a child directory inside pico_sdk_init) inherits this
-# definition; a target-private define on PicoSwitchWGA would not reach BTstack's
-# own translation units, and btstack_config.h is compiled with them. This
-# firmware is BT-only, so deepening the ACL pipeline for the experimental audio
-# builds does not risk the WiFi/BT shared-bus overrun the conservative defaults
-# guard against. See src/btstack_config.h and docs/switch2/dualsense-audio-bridge.md.
-if(NS2_DS5_AUDIO OR NS2_DS5_AUDIO_TEST_TONE)
-    add_compile_definitions(NS2_DS5_AUDIO_BT_DEEP_PIPELINE=1)
-endif()
-
 # initialize the Raspberry Pi Pico SDK
 pico_sdk_init()
 

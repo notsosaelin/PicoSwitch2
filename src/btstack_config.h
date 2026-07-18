@@ -58,35 +58,16 @@
 #define MAX_NR_WHITELIST_ENTRIES 16
 #define MAX_NR_LE_DEVICE_DB_ENTRIES 16
 
-// ACL/SCO flow control. The conservative counts below are the pico-examples
-// defaults, sized to protect the CYW43 SPI bus when WiFi and Bluetooth share it.
-// This firmware is BT-only (pico_cyw43_arch_none): there is no WiFi traffic on
-// that bus, so the same protection needlessly throttles the outgoing pipeline.
-// Continuous DualSense speaker audio is ~50 x 548-byte reports/s, and a 3-deep
-// pipeline plus 3-buffer host flow control gates it well below that, producing
-// the choppy/half-rate tone observed on hardware. Audio builds
-// (NS2_DS5_AUDIO_BT_DEEP_PIPELINE, injected from CMake before pico_sdk_init so
-// the BTstack library inherits it) deepen the pipeline toward the BT-only
-// DS5Dongle reference. Ordinary builds keep the hardware-confirmed values.
-//
-// See docs/switch2/dualsense-audio-bridge.md and the 2026-07-17 experiment log.
-#ifdef NS2_DS5_AUDIO_BT_DEEP_PIPELINE
-#define MAX_NR_CONTROLLER_ACL_BUFFERS 12
-#define MAX_NR_CONTROLLER_SCO_PACKETS 3
-#define ENABLE_HCI_CONTROLLER_TO_HOST_FLOW_CONTROL
-#define HCI_HOST_ACL_PACKET_LEN 1024
-#define HCI_HOST_ACL_PACKET_NUM 12
-#define HCI_HOST_SCO_PACKET_LEN 120
-#define HCI_HOST_SCO_PACKET_NUM 3
-#else
+// Limit number of ACL/SCO Buffer to use by stack to avoid cyw43 shared bus overrun
 #define MAX_NR_CONTROLLER_ACL_BUFFERS 3
 #define MAX_NR_CONTROLLER_SCO_PACKETS 3
+
+// Enable and configure HCI Controller to Host Flow Control to avoid cyw43 shared bus overrun
 #define ENABLE_HCI_CONTROLLER_TO_HOST_FLOW_CONTROL
 #define HCI_HOST_ACL_PACKET_LEN 1024
 #define HCI_HOST_ACL_PACKET_NUM 3
 #define HCI_HOST_SCO_PACKET_LEN 120
 #define HCI_HOST_SCO_PACKET_NUM 3
-#endif
 
 // Link Key DB and LE Device DB using TLV on top of Flash Sector interface
 #define NVM_NUM_DEVICE_DB_ENTRIES 16
