@@ -21,6 +21,7 @@
 
 #include "bootsel.h"
 #include "config.h"
+#include "ds5_audio_bridge.h"
 #include "ns2_wake.h"
 #include "usb.h"
 
@@ -167,6 +168,10 @@ static void rumble_timer_handler(btstack_timer_source_t *ts) {
 // cooperative: most ticks only drain PCM; an encode occurs once per 512 input
 // frames and produces one fixed 10 ms frame.
 static void audio_timer_handler(btstack_timer_source_t *ts) {
+    // Diagnostics: a core-1 freeze (e.g. a blocking flash write) shows up here
+    // as this ~2 ms tick suddenly arriving tens of ms late. If audio gaps but
+    // this stays ~2 ms, the stall is in the radio/send path, not core 1.
+    ds5_audio_diag_note_core1_tick(time_us_32());
     bootsel_core1_service();
     ds5_bt_audio_service();
     btstack_run_loop_set_timer(ts, AUDIO_TICK_MS);

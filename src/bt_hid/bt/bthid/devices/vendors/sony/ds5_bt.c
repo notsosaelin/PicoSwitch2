@@ -20,6 +20,7 @@
 #include "platform/platform.h"
 #include <string.h>
 #include <stdio.h>
+#include "pico/time.h"  // time_us_32() for audio diagnostics
 
 // Player LED patterns for DS5 (5 LEDs in a row)
 // Pattern is a bitmask: bit 0=leftmost, bit 4=rightmost
@@ -308,6 +309,10 @@ static void ds5_audio_task(bthid_device_t *device, ds5_bt_data_t *ds5,
         ds5->output_seq = (uint8_t)((ds5->output_seq + 1u) & 0x0Fu);
         ds5->audio_packet_counter = next_packet_counter;
         ds5_audio_bridge_commit_speaker_pair();
+        // Diagnostics: interval between successful stream sends. If this spikes
+        // while the core-1 tick gap stays ~2 ms, delivery (radio/L2CAP) is the
+        // stall, not a core-1 freeze.
+        ds5_audio_diag_note_send(time_us_32());
     }
 }
 
