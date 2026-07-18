@@ -15,6 +15,8 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Evidence and RE rules | [`re-methodology/evidence-standards.md`](re-methodology/evidence-standards.md) |
 | Bluetooth implementation | [`bluetooth/btstack-implementation.md`](bluetooth/btstack-implementation.md) |
 | Battery passthrough and validation matrix | [`bluetooth/battery-passthrough.md`](bluetooth/battery-passthrough.md) |
+| DualSense live-audio implementation/result | [`../DS5-NS2_AUDIO.md`](../DS5-NS2_AUDIO.md) |
+| DualSense audio investigation history | [`../AUDIO-INVESTIGATION.md`](../AUDIO-INVESTIGATION.md) |
 | Controller sleep research | [`bluetooth/controller-sleep-research.md`](bluetooth/controller-sleep-research.md) |
 | Generic Bluetooth gamepad quirks | [`bluetooth/generic-gamepad-quirks.md`](bluetooth/generic-gamepad-quirks.md) |
 | Retro Fighters BattlerGC Pro | [`bluetooth/retrofighters-battlergc-pro.md`](bluetooth/retrofighters-battlergc-pro.md) |

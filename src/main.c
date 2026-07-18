@@ -3,6 +3,10 @@
 #include <pico/stdlib.h>
 #include <pico/multicore.h>
 #include <pico/async_context.h>
+#ifdef NS2_DS5_AUDIO_OVERCLOCK_KHZ
+#include <hardware/clocks.h>
+#include <hardware/vreg.h>
+#endif
 #include "usb.h"
 #include "report.h"
 #include "config.h"
@@ -23,6 +27,14 @@ static uint32_t core1_audio_stack[NS2_AUDIO_CORE1_STACK_BYTES / sizeof(uint32_t)
 int
 main()
 {
+#ifdef NS2_DS5_AUDIO_OVERCLOCK_KHZ
+	// Apply the experimental clock before USB or CYW43 is initialized. Each
+	// build selects a CYW43 PIO divider that keeps its bus at or below 75 MHz.
+	vreg_set_voltage(VREG_VOLTAGE_1_20);
+	sleep_ms(1000);
+	set_sys_clock_khz(NS2_DS5_AUDIO_OVERCLOCK_KHZ, true);
+#endif
+
 	stdio_init_all();
 
 	// Initialize the cross-core shared input state before either core uses it.

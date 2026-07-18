@@ -1,16 +1,18 @@
 # DualSense Bluetooth Audio — Investigation Log
 
-> **Status (2026-07-18): 🔴 unsolved.** Speaker activation, `0x39` transport, Opus
-> decode, routing, volume, and Windows mute forwarding are all confirmed working on
-> hardware, but audio arrives with a **periodic ~57 ms dropout every ~560 ms**. This
-> file records what was tried, what was measured, and what was ruled out, so the
-> remaining work starts from evidence instead of re-running solved experiments.
+> **Status (2026-07-18): 🟢 live internal-speaker audio is continuous on the
+> opt-in 300 MHz Pico 2 W build.** A hardware run consumed and encoded all 13,225
+> delivered PCM blocks with zero drops/errors. LED/BOOTSEL, config persistence,
+> cold boot, and ten wake attempts with every known controller passed. The
+> remaining audio work is Switch 2 headset-presence/routing, real-console
+> input/rumble coexistence once that route exists, microphone return, and an
+> extended thermal soak.
 >
-> **Important:** the implementation and tooling described here were developed on
-> `ns2-testing` and then **reverted** (commit `e6c43b0`) because one change broke
-> pairing — see [§9](#9-what-broke-pairing--the-clean-build-lesson). Everything is
-> preserved in git history; the commit hashes are in [§10](#10-commit-map). The
-> working baseline is `7d9d47d`.
+> **Historical note:** early implementation/tooling was reverted in `e6c43b0`
+> after a stale incremental build was mistaken for a pairing regression. Later
+> increments were selectively re-applied and validated. Sections describing those
+> attempts are chronological evidence, not the current-state summary; current
+> architecture and results are consolidated in `DS5-NS2_AUDIO.md`.
 
 ---
 
@@ -44,7 +46,8 @@ The only defect is **continuity**: the audio is chopped by a periodic gap.
 
 Early descriptions were subjective ("garbled and dropping", "010101", "Morse-like",
 "beep beep beep"). A recording of the fixed diagnostic tone
-(`dumps/beeps.m4a`, ~21 s) analyzed with `tools/analyze_audio_capture.py` turned that
+(`dumps/audio/dualsense/tone-22_5ms.m4a`, ~21 s) analyzed with
+`tools/analyze_audio_capture.py` turned that
 into numbers:
 
 | Quantity | Value |
@@ -56,10 +59,11 @@ into numbers:
 | Gap rate | ~1.9 / s |
 | Tone frequency | ~925 Hz (Goertzel), ~937 Hz (zero-cross) — the real ~1 kHz tone |
 
-**Interpretation:** this is **not** a per-report (20 ms) throughput problem. The
-transport delivers ~25 reports back-to-back perfectly, then **something stalls for a
-fixed ~57 ms**, ~1.9 times a second. The tone frequency confirms we are measuring the
-genuine embedded tone, not an artifact.
+**Corrected interpretation:** this is a controller-buffer resynchronization caused by
+the wrong stream clock, not a periodic host stall. The measured ~937 Hz frequency is
+the decisive clue: a nominal 1 kHz/48 kHz Opus tone played on the controller's
+effective 45 kHz clock becomes `1000 × 45/48 = 937.5 Hz`. The same mismatch makes a
+20 ms two-frame producer overfill a stream the controller consumes every 21.3333 ms.
 
 The test conditions that produced this measurement: **PC host** (not a Switch 2),
 fixed-tone build, recording taken ~1 minute after pairing (well past the 30 s pairing
@@ -72,7 +76,7 @@ window).
 | Hypothesis | Verdict | Evidence |
 |---|---|---|
 | **Live Opus encoder / its scheduling** | ❌ Ruled out | The **fixed-tone** build (no encoder, just replays two pre-encoded frames) has the *same* gaps. The encoder is not in the path that fails. |
-| **Clock drift / DualSense buffer under-/overflow** | ❌ Ruled out (physics) | A 57 ms gap per 560 ms is ~10 % of the audio missing. Crystal mismatch is ~0.01 %, not 10 %. A rate deficit cannot produce this; it is a genuine **stall**, not a buffer drain. |
+| **DualSense stream-clock mismatch / buffer resync** | ✅ **Root cause** | This is not crystal drift. The controller protocol deliberately consumes nominal 48 kHz Opus at an effective 45 kHz clock. DS5Dongle implements this as 512 real 48 kHz samples → 480 encoded samples; daidr implements it as 45 kHz source data labeled 48 kHz. The recorded ~939 Hz tone independently matches the predicted 937.5 Hz. |
 | **Classic sniff mode** (periodic radio anchors) | ❌ Not the cause | Sniff was globally enabled for idle power; it was disabled in audio builds (`gap_set_default_link_policy_settings` role-switch only). The gaps persisted. |
 | **Config flash writes** (a `multicore_lockout` freeze fits ~57 ms) | ❌ Ruled out on PC | The only two `save_requested` triggers are the Switch 2 wake-identity `0x15` handshake (needs the console; has no callers on the PC path) and a config-mode CDC command. Neither fires during a PC audio test. |
 | **ACL TX pipeline depth** | ❌ Doesn't apply | Deepened `MAX_NR_CONTROLLER_ACL_BUFFERS`/host buffers 3→12 for audio builds; no change. Root reason: the producer only ever holds **one report** (see §6), so nothing ever queues deep enough for buffer depth to matter. |
@@ -88,9 +92,9 @@ window).
 
 ---
 
-## 5. Strong-evidence clue not yet exploited
+## 5. Superseded timer-period hypothesis
 
-The period ~540 ms is almost exactly **18 × the 30 ms control-timer tick**
+The period ~540 ms appeared close to **18 × the 30 ms control-timer tick**
 (`CONTROL_TICK_MS`), and the jitter (~520–560 ms) is ±1 tick. That points at a
 **periodic blocking operation reached from the control-timer path** (or something
 else on the core-1 BTstack run loop) that takes ~57 ms roughly every 18 ticks. The
@@ -98,19 +102,18 @@ else on the core-1 BTstack run loop) that takes ~57 ms roughly every 18 ticks. T
 `multicore_lockout_start_blocking()` (freezes both cores) — but config flash is ruled
 out on PC (§4), so the candidate would be **btstack's own TLV/bond flash bank**
 (`btstack_tlv_flash_bank`, backing link-key + LE device DB) or another
-`multicore_lockout` user. This was **not** confirmed — it is the top hypothesis.
+`multicore_lockout` user. The later stall meter disproved this: core-1 and L2CAP
+submission remain steady through the audible gaps. The reference-clock match and
+recorded pitch now explain the apparent timer multiple without that hypothesis.
 
 ---
 
 ## 6. Key architectural facts learned
 
-- **The producer holds only one report of slack.** Fixed-tone uses a single
-  `test_tone_pair_ready` bool; live Opus caps `encoded_count` at 2 (= one `0x39`
-  report). It produces one report, sends it, waits, produces the next — **zero
-  jitter tolerance and no pipelining.** DS5Dongle instead fills a **deep speaker
-  FIFO** and drains it opportunistically (`audio_bt_task` sends whenever ≥2 frames
-  exist and BT can accept), which absorbs link jitter. This is the biggest
-  architectural gap vs. the working reference.
+- **Both implementations use shallow producer queues.** PicoSwitch2 holds one
+  ready `0x39`; DS5Dongle's raw, encoded-speaker, and haptics queues are each depth
+  two. DS5Dongle drains a report whenever two Opus and two haptics frames exist.
+  Queue depth is therefore not the key architectural difference; source cadence is.
 - **The DualSense uses the direct-L2CAP path**, not HID-host: it is tracked in
   `wiimote_conn` with `hid_cid == 0xFFFF`, drained via `L2CAP_EVENT_CAN_SEND_NOW`
   into a bounded `direct_output_queue`. A 548-byte `0x39` report *requires* this path
@@ -129,21 +132,34 @@ out on PC (§4), so the candidate would be **btstack's own TLV/bond flash bank**
 
 ---
 
-## 7. Remaining hypotheses (unresolved, ranked)
+## 7. Current conclusion and next validation
 
-1. **Core-1 freeze from a periodic blocking op** (btstack TLV/bond flash write, or
-   another `multicore_lockout` user) — best fit for the 57 ms duration + 18-tick
-   period. **Not confirmed.**
-2. **Radio / L2CAP send stall** — core 1 stays live but delivery of the 548-byte
-   report periodically stalls.
-3. **DualSense-side behavior** — the controller itself pauses/re-syncs its speaker
-   every ~560 ms in response to how we stream (e.g. buffer management, a periodic
-   status expectation). Least explored.
+The host-side hypotheses are resolved. Hardware diagnostics repeatedly show core-1
+max gaps near 6 ms, successful L2CAP submission below 27 ms, and submitted/completed
+ACL totals tracking without loss. HCI completion notifications batch up to two
+packets and can arrive about 70 ms apart, but changing the producer cadence changes
+the acoustic cycle exactly as a controller-buffer rate error predicts.
 
-The **decisive next measurement** distinguishes #1 from #2: instrument the interval
-between core-1 audio-timer ticks. If it spikes to ~57 ms → core-1 freeze (#1). If it
-stays ~2 ms while audio still gaps → send/radio stall (#2). If neither stalls →
-controller-side (#3). That instrument was built (§8) but **not yet read on hardware**.
+The next test is no longer a fitted cadence experiment. Flash the reference-derived
+tone build using buffer length 64 and an exact long-term 21.3333 ms report period. If
+continuous, move directly to the live build, which now accumulates 512 real 48 kHz
+frames, resamples them to 480, and encodes one controller-clocked Opus frame.
+
+> **Hardware result:** the reference-derived tone remained completely solid with
+> no gaps through checkpoints at 30, 60, 90, and 120 seconds. This confirms the
+> stream-clock mismatch as the periodic-dropout root cause and rules out CYW43/HCI
+> completion batching as an audible continuity fault under this load. Proceed to
+> live Windows-audio validation with the same 512→480 conversion.
+>
+> **First live result after the clock fix:** fixed transport remains proven, but
+> Windows audio is still severely chopped. Acoustic analysis of
+> `dumps/audio/dualsense/live-initial-garbled.m4a` found about 49-64 ms audible
+> clips separated by a median
+> 507 ms silence (9.2% duty). Roughly 64 ms is three 21.333 ms reports, strongly
+> indicating that the live producer supplies the verified transport in short
+> three-report bursts. The next diagnostic increment measures USB PCM packet
+> cadence/content, queue drops, Opus frame cadence/encode time, pipeline resets,
+> and the already-existing L2CAP/HCI stages in one `audiostat` snapshot.
 
 ---
 
@@ -160,6 +176,195 @@ controller-side (#3). That instrument was built (§8) but **not yet read on hard
 never touched pairing — flash the `-Tone` build, let it beep ~15 s, then read the
 web-UI verdict. One number settles core-1-freeze vs radio-block and ends the
 guessing.
+
+> **Implementation update (2026-07-18, current working tree):** the stall meter is
+> re-applied on top of `4ebb073` without `bc647ae` or the ruled-out deep-ACL tuning.
+> It is more precise than the reverted version: core-1 liveness is sampled at both
+> the 2 ms audio timer and inbound HID report boundaries, so ordinary timer
+> starvation cannot masquerade as a frozen core; the send interval is recorded
+> only after a successful report-`0x39` `l2cap_send()`, not at earlier queue
+> admission. Config mode exposes `audiostat` / `audiostat reset` and the web verdict
+> panel. Safe dedicated `build.ps1 -Tone` / `-Audio` build directories are restored
+> without restoring the ACL-buffer experiment. The clean tone build, live-Opus
+> build, both ordinary board builds, and all 25 available host-test executables pass.
+> Hardware measurement is the only remaining step for this diagnostic increment.
+
+> **First stall-meter result:** over 3,476 audio reports (about 69.5 seconds),
+> `core1MaxGapUs=75600` with only 3 gaps over 10 ms, while
+> `sendMaxGapUs=24100` with no gaps over 40 ms. The original web verdict called
+> this a core-1 stall, but that conclusion is contradicted by the simultaneous
+> send cadence: a 75.6 ms core freeze during active streaming must also delay the
+> next core-1-owned `l2cap_send()`, which did not happen. The three core gaps were
+> therefore setup/pre-stream events, not the recurring roughly 560 ms audio
+> defect. The diagnostic now scores core liveness only after the first audio
+> report and separately measures the active ACL handle's HCI
+> `Number Of Completed Packets` cadence. This distinguishes stable BTstack
+> submission from CYW43/link-side completion batching. Audio behavior is
+> unchanged by this refinement.
+
+> **Hardware localization and buffer experiment (2026-07-18):** refined
+> measurements show a steady core-1 run loop (max 5.6-6.9 ms) and steady BTstack
+> submission (max 22.7-24.7 ms), while HCI completion events arrive as much as
+> 65.7-69.8 ms apart in batches of at most two. Submitted and completed packet
+> totals remain effectively equal; the completion total also includes other ACL
+> traffic, so a small positive difference is expected. This rules out host-side
+> report loss and local scheduling starvation. Completion-event timing alone is
+> not an over-air arrival trace, but the fault is now localized after successful
+> L2CAP submission.
+>
+> Raising the tone build's controller `AudioBufferLength` from 64 to 128 roughly
+> doubled the continuous-tone interval. Adding a six-pair (120 ms) startup prefill
+> made the next dropout arrive sooner. Both observations identify controller
+> buffer overflow/resynchronization rather than underrun. Slowing only the
+> deterministic tone from 20 ms to 22.5 ms increased the continuous interval to
+> about two seconds. Quantitative analysis of
+> `dumps/audio/dualsense/tone-22_5ms.m4a` found a
+> 2.070 s median tone, 110 ms median gap, and 2.182 s median period (92.4% duty).
+> Results were identical at 1 ms and 2 ms envelope windows. Combining that period
+> with the earlier buffer-64, 20 ms / 560 ms-period result estimates the
+> controller's equilibrium cadence at 25.9-26.0 ms per report pair. The next
+> isolated tone build therefore tests 26.0 ms; live PCM pacing remains unchanged
+> pending hardware confirmation.
+>
+> **26 ms correction:** hardware immediately disproved the linear-capacity
+> assumption behind that estimate. `dumps/audio/dualsense/tone-26ms.m4a` has a stable main
+> pattern of approximately 642 ms tone / 86 ms silence (about a 728 ms period),
+> so 26 ms crossed to the underrun side instead of approaching zero drift.
+> The 22.5 ms and 26 ms captures therefore bracket the actual cadence. Weighting
+> their opposing drift times gives about 23.25 ms per report pair. The next
+> tone-only build tests that value with `AudioBufferLength=128`; live audio remains
+> unchanged.
+>
+> **23.25 ms refinement:** `dumps/audio/dualsense/tone-23_25ms.m4a` measured a stable main
+> pattern of approximately 1.33 s tone / 74 ms silence (about a 1.418 s median
+> period at a 2 ms analysis window). This is longer than the 26 ms result but
+> shorter than the 22.5 ms result, placing 23.25 ms on the underrun side and
+> narrowing the opposing-rate bracket to 22.5-23.25 ms. Weighting the two nearest
+> measured drift times estimates zero drift at 22.79 ms. The next isolated build
+> tests 22.8 ms.
+>
+> **Reference verification supersedes cadence fitting:** direct source review of
+> current `daidr/dualsense-tester` and DS5Dongle gives the protocol clock exactly.
+> DS5Dongle accumulates 512 samples from a real 48 kHz USB stream, resamples
+> 512→480, encodes a nominal 10 ms Opus frame, and sends two frames per `0x39`.
+> daidr independently resamples source audio to 45 kHz, labels it 48 kHz to the
+> Opus encoder, and schedules one-frame `0x36` reports every `480/45000` seconds.
+> Both therefore use 10.6667 ms per Opus frame and 21.3333 ms per two-frame
+> `0x39`, with audio-buffer fields set to `0x40` (64). The acoustic captures
+> corroborate this: the nominal 1 kHz diagnostic was recorded near 939 Hz,
+> matching the expected `1000 × 45/48 = 937.5 Hz` when true-48-kHz PCM is encoded
+> without the required conversion.
+>
+> The working tree now follows those reference semantics instead of fitting a
+> cadence from beep periods: tone reports use an exact long-term `64/3` ms
+> schedule, the live bridge restores its existing tested 512→480 resampler, and
+> both tone and live reports use buffer length 64. The report format remains
+> DS5Dongle's proven two-frame `0x39`; daidr's newer one-frame `0x36` format is
+> valuable independent confirmation of the 45 kHz controller clock but is not
+> needed for this transport.
+>
+> **Hardware result:** the reference-clock tone remained continuous with no gaps
+> after 30, 60, 90, and 120 seconds. That validates the `0x39` format, controller
+> setup, Bluetooth FIFO, and 21.3333 ms report cadence. Windows audio on the first
+> live build was still severely chopped:
+> `dumps/audio/dualsense/live-initial-garbled.m4a` measured roughly
+> 49 ms audible bursts separated by roughly 471 ms gaps, with only 9.2% audible
+> duty. The approximately 64 ms common burst is three valid `0x39` reports, so
+> the fault moved upstream of the now-proven transport.
+>
+> A second line-by-line reference comparison found the remaining architectural
+> difference. DS5Dongle accumulates a complete 512-frame USB source window on its
+> USB core, queues two complete windows, and only then lets its codec core
+> resample and encode them. `dualsense-tester` similarly decouples playback by
+> pre-encoding the full source before scheduling reports. Our first live bridge
+> instead crossed cores as individual 1 ms / 192-byte USB packets with only
+> about 12 ms of queue slack, then assembled windows incrementally under
+> Bluetooth load. The live bridge now mirrors DS5Dongle's producer contract:
+> core0 assembles complete 512-frame stereo blocks, a depth-two whole-block FIFO
+> crosses cores, and core1 consumes complete blocks into the existing two-frame
+> Opus pair. The Bluetooth report FIFO was already depth ten, matching
+> DS5Dongle, and remains unchanged.
+>
+> DS5Dongle also inherits TinyUSB's isochronous OUT behavior: its audio transfer
+> callback always rearms the endpoint even when the preceding packet was lost.
+> The custom UAC1 driver previously returned immediately on a non-success
+> transfer, leaving speaker OUT unarmed until Windows recovered the interface.
+> That is a direct mechanism for the recording's short PCM bursts and long
+> silence. The callback now submits only successful payloads but rearms speaker
+> and microphone endpoints after either result, matching TinyUSB's audio driver.
+>
+> Resetting counters in Config mode before every live test is not a useful
+> validation workflow: audio exists only in the Pro Controller 2 personality.
+> Reading the accumulated counters in Config mode *after* playback is useful and
+> was subsequently confirmed to preserve the evidence needed below. Dedicated
+> live, tone, ordinary Pico W/Pico 2 W builds and all 25 available host-test
+> executables pass; the whole-block live path is awaiting one direct Pro
+> Controller 2 hardware playback test.
+>
+> **Whole-block hardware result and corrected diagnostic conclusion:** the
+> counters did remain readable after the test without an explicit reset, so the
+> earlier assumption that Config mode necessarily loses them was incorrect.
+> Over 21,194 continuous USB packets (maximum gap 1.4 ms), the bridge encoded
+> only 276 frames and submitted 138 reports, while 1,710 complete PCM blocks
+> were dropped. Opus took as much as 9.3 ms per frame; Bluetooth report gaps
+> reached 235 ms and HCI completion gaps reached 6.5 seconds. This is not a USB
+> delivery or queue-sizing problem. At that input duration approximately 1,987
+> encoded frames were required, so the encoder/BT core produced only about 14%
+> of real time and the depth-two queue correctly exposed the starvation.
+>
+> The final relevant DS5Dongle optimization had not yet been ported: its build
+> relocates libopus code and read-only tables (roughly 220 KiB in that build)
+> into SRAM because XIP cache stalls previously prevented real-time encoding at
+> the stock 150 MHz clock. It also supplies SRAM-resident `memcpy`, `memset`, and
+> `memmove`, and runs the codec wrapper/resampler from SRAM. Our live image was
+> still running all of those from flash on the same core as Bluetooth. The live
+> build now applies the same strategy: linked Opus code/tables, codec wrapper,
+> 512→480 resampler, and common memory primitives all resolve to `0x200...`
+> SRAM addresses. Binary inspection confirms the relocation. This leaves the
+> USB and Bluetooth protocol behavior unchanged while removing the measured
+> encoder-side XIP contention.
+>
+> **SRAM-relocated hardware result:** performance improved materially but was
+> still below real time. Across 96,833 continuous USB packets, 3,104 Opus frames
+> and 1,552 reports were produced; approximately 9,078 frames and 4,539 reports
+> were required. Complete-block drops reached 5,974. Maximum encode time fell
+> from 9.3 ms to 4.2 ms, proving the relocation worked, but core-1 gaps still
+> reached 14.1 ms, L2CAP report gaps 111.2 ms, and HCI completion gaps 6.376 s.
+> Every encoded pair was submitted (`3104 / 2 = 1552`), so the codec was being
+> backpressured by the transport rather than failing or accumulating unsent
+> frames.
+>
+> The live codec loop was still encoding both available frames consecutively in
+> one BTstack timer callback. At the measured maximum that monopolized the
+> Bluetooth core for roughly 8.4 ms before the run loop could service CYW43/HCI.
+> It now encodes at most one frame per callback, guaranteeing a run-loop return
+> and radio-service opportunity between frames. The 2 ms timer plus one 4.2 ms
+> encode still has ample margin against the required 10.667 ms source-frame
+> cadence. In addition, the encoder now uses
+> `OPUS_APPLICATION_RESTRICTED_LOWDELAY`, matching daidr's explicitly required
+> pure-CELT mode and reducing work on the shared core while preserving the same
+> 200-byte, nominal-10-ms Opus payload accepted by the controller.
+>
+> **Interleaved-frame hardware result:** audio improved audibly and BT run-loop
+> liveness became effectively healthy (10.3 ms maximum, one event over 10 ms),
+> but real-time throughput still failed. Over 88,853 USB packets the codec
+> produced 2,101 frames and submitted 1,050 complete reports, while 6,226 PCM
+> blocks were dropped. The source required about 8,330 frames. The output pair
+> remained the backpressure boundary, and matching 21.33-second maxima appeared
+> across USB, Opus, L2CAP, and HCI during a stream reset/pause. This proves that
+> merely interleaving Opus and Bluetooth on the same core is insufficient even
+> after SRAM relocation.
+>
+> The live build now adopts DS5Dongle's actual core ownership rather than only
+> its buffering and memory optimizations. Core0 initializes the CYW43
+> threadsafe-background BTstack context and then runs the existing TinyUSB
+> foreground loop; core1 owns only the SRAM-resident Opus worker. The former
+> shared `encoded_pair` state is replaced by a thread-safe depth-two encoded
+> frame FIFO. Each frame carries a pipeline generation so a connect,
+> disconnect, or Windows alternate-setting reset cannot race an in-progress
+> encode and combine stale/new frames. BOOTSEL's cooperative core1 park and the
+> flash lockout victim move with codec/core1 in this live-only layout. Ordinary
+> firmware and the tone build retain their established core ownership.
 
 ---
 
@@ -369,6 +574,82 @@ both transports (from `switch2_controller_research`):
      real non-zero haptics) — lower-probability, but cheap to try once continuity holds.
 4. **Out of scope for the bridge:** the MT3616 DSP blob and the Switch 2 wireless `0x3F`
    audio format — documented here for completeness, not required for USB→DualSense audio.
+
+## 18. Live-audio core split: rejected after hardware regressions
+
+The first attempt to reserve core1 for Opus moved Bluetooth initialization to core0 but
+left the target on `pico_cyw43_arch_none` and never executed the BTstack run loop there.
+Hardware made the failure unambiguous: the status LED, BOOTSEL gestures, and pairing were
+all nonfunctional because their BTstack timers never advanced. Do not reuse that UF2.
+
+A second attempt used `pico_cyw43_arch_poll` with `CYW43_LWIP=0` and explicitly called
+the poll pump beside `tud_task()`. Although it compiled and passed the host suites, the
+result did not enumerate as a controller on hardware. This proves that source/build tests
+were insufficient validation for changing ownership of the SDK's USB and Bluetooth
+contexts.
+
+The entire core-split experiment was therefore reverted. Core0 again owns TinyUSB and
+core1 again owns CYW43/BTstack, its timers, and cooperative Opus work on the established
+48 KiB stack. The earlier audio improvements remain: complete 512-frame PCM blocks,
+512→480 resampling, low-delay Opus, SRAM relocation, and the reference-derived report
+clock. Future work must optimize or budget the established architecture without moving
+Bluetooth into the USB execution context.
+
+## 19. Clock A/B proves the live-audio drop point; foreground worker implemented
+
+Hardware captures of the same continuous 1 kHz source at 150 and 200 MHz correlate exactly
+with the PCM diagnostics:
+
+| Clock | Expected PCM blocks (`USB packets × 48 / 512`) | Encoded | Queue-dropped | Encoded share | Recorded audible duty |
+|---|---:|---:|---:|---:|---:|
+| 150 MHz | 16,231 | 6,160 | 10,070 | 38.0% | 38.2% |
+| 200 MHz | 16,781 | 14,608 | 2,170 | 87.1% | 87.1% |
+
+Thus every silent interval is accounted for by a complete PCM block discarded before
+encoding. The USB speaker interface stayed active across each playback (one on edge, one
+off edge), and submitted `0x39` reports closely matched completed ACL packets. The live
+fault is therefore not the source recording, Windows alternate-setting gating, the
+DualSense decoder, or downstream packet loss.
+
+Inspection of the Pico SDK `threadsafe_background` architecture changed the safe solution.
+BTstack/CYW43 is serviced by a low-priority IRQ on core1; the foreground call to
+`btstack_run_loop_execute()` otherwise waits. Live Opus had been run from a 2 ms BTstack
+timer callback, making encoding wait for and then occupy the Bluetooth context.
+
+The current live build instead runs a non-returning
+`ds5_audio_bridge_codec_worker()` in core1 foreground. It blocks directly on the PCM
+queue, wakes on core0's producer notification, and immediately resamples/encodes one real
+block. The background Bluetooth IRQ may preempt it and the 2 ms timer remains responsible
+only for short maintenance and transport of completed frame pairs. USB remains on core0;
+BTstack initialization, ownership, and service remain on core1. This is not the rejected
+core split.
+
+Clean hardware-test variants are available at 150 MHz, 200 MHz/1.20 V, and experimental
+300 MHz/1.20 V. CYW43 PIO is held at or below its ordinary 75 MHz rate (divider 3 at
+200 MHz and divider 4 at 300 MHz). Test 200 MHz first to isolate the scheduling change;
+use 300 MHz only if the lower clock still drops PCM or for a separate stability/headroom
+experiment.
+
+> **Hardware result:** the 200 MHz foreground-worker image remained audibly choppy.
+> The 300 MHz image sounded continuous/perfect by ear. Its accounting is complete:
+> 141,070 USB packets correspond to 13,225.3 complete 512-frame blocks; the worker
+> made 13,225 calls, dequeued and encoded 13,225 frames, reported zero errors and zero
+> dropped PCM blocks, and submitted 6,612 two-frame audio reports. Queue depth peaked
+> at one. The single remaining encoded frame is the expected odd frame at the end.
+>
+> The displayed `USB PCM DELIVERY STALL` verdict is a stale-threshold false positive.
+> It is triggered by one 992 ms historical maximum even though no delivered PCM was
+> lost. The `>10 ms` codec-call count is also expected under the blocking worker because
+> source blocks arrive every 10.667 ms; that counter was meaningful for the former 2 ms
+> polling callback, not the new producer-paced loop.
+>
+> **300 MHz regression result:** LED and BOOTSEL behavior passed; mapping/color
+> configuration persisted and read back after reconnect; cold boot passed; and console
+> wake passed ten attempts with every known controller. Real-console input and rumble
+> during audio could not yet be exercised because the bridge routes to the DualSense
+> internal speaker and the Switch does not report a headset attached to the emulated
+> controller. Treat headset presence/routing as a separate open issue, not a confirmed
+> input or rumble regression.
 
 ### Sources
 - `nso-gc-refs/DS5Dongle/src/{main,audio,bt,btstack_config}.*` @ `750bde8`

@@ -123,6 +123,13 @@
         <div class="devimg">device image TBD</div>
       </section>
 
+      <section class="q" id="audioDiag">
+        <h2>DualSense Audio Diagnostics</h2>
+        <div id="audioVerdict" class="bigname">&mdash;</div>
+        <div id="audioMeta" class="muted">Connect a DualSense in a tone/audio build to measure.</div>
+        <button id="audioResetBtn" type="button">Reset counters</button>
+      </section>
+
       <section class="q">
         <h2>Current Output Type</h2>
         <div class="bigname">Switch 2 Pro Controller</div>
@@ -452,6 +459,58 @@ function renderLive(st) {
   });
 }
 const hex4 = n => "0x" + ((n | 0) & 0xFFFF).toString(16).toUpperCase().padStart(4, "0");
+function renderAudioStat(d) {
+  if (!d || d.core1MaxGapUs === undefined) return;
+  const coreMs = d.core1MaxGapUs / 1000;
+  const sendMs = d.sendMaxGapUs / 1000;
+  const hciMs = (d.hciMaxGapUs || 0) / 1000;
+  const pcmMs = (d.pcmMaxGapUs || 0) / 1000;
+  const opusMs = (d.opusMaxGapUs || 0) / 1000;
+  const encodeMs = (d.opusEncodeMaxUs || 0) / 1000;
+  const codecMs = (d.codecMaxGapUs || 0) / 1000;
+  const speakerSeconds = (d.usbSpeakerActiveUs || 0) / 1000000;
+  const clockMhz = (d.sysClockKhz || 0) / 1000;
+  const pairedFrames = (d.sends | 0) * 2;
+  const pipelineLossless =
+    (d.sends | 0) >= 10 &&
+    (d.pcmDropped | 0) === 0 &&
+    (d.opusErrors | 0) === 0 &&
+    (d.codecCalls | 0) === (d.codecBlocks | 0) &&
+    (d.codecBlocks | 0) === (d.opusFrames | 0) &&
+    Math.abs((d.opusFrames | 0) - pairedFrames) <= 1;
+  let verdict;
+  if ((d.sends | 0) < 10) verdict = "waiting for audio...";
+  else if (pipelineLossless) verdict = "PCM → OPUS PIPELINE LOSSLESS";
+  else if ((d.pcmDropped | 0) > 0) verdict = "PCM QUEUE OVERRUN";
+  else if ((d.pcmPackets | 0) > 10 && pcmMs >= 10) verdict = "USB PCM DELIVERY STALL";
+  else if ((d.opusFrames | 0) > 2 && opusMs >= 40) verdict = "LIVE OPUS PRODUCER STARVATION";
+  else if (coreMs >= 40) verdict = "BT RUN-LOOP STALL DURING AUDIO";
+  else if (sendMs >= 40) verdict = "BTSTACK / L2CAP SUBMISSION STALL";
+  else if (hciMs >= 40) verdict = "CYW43 / ACL COMPLETION STALL";
+  else verdict = "HOST DELIVERY STEADY (investigate controller playback/protocol)";
+  $("#audioVerdict").textContent = verdict;
+  $("#audioMeta").textContent =
+    `System clock ${clockMhz.toFixed(1)} MHz | ` +
+    `core-1 max ${coreMs.toFixed(1)} ms (${d.core1GapsOver10ms | 0} over 10 ms) | ` +
+    `L2CAP send max ${sendMs.toFixed(1)} ms (${d.sendGapsOver40ms | 0} over 40 ms) | ` +
+    `HCI complete max ${hciMs.toFixed(1)} ms (${d.hciGapsOver40ms | 0} over 40 ms, ` +
+    `max batch ${d.hciMaxBatch | 0}) | ${d.sends | 0} audio reports submitted, ` +
+    `${d.hciPackets | 0} ACL packets completed | ` +
+    `USB PCM: ${d.pcmPackets | 0} packets (${d.pcmNonzero | 0} nonzero, ` +
+    `${d.pcmShort | 0} short, ${d.pcmDropped | 0} dropped), max gap ${pcmMs.toFixed(1)} ms, ` +
+    `queue max ${d.pcmQueueMax | 0} | Opus: ${d.opusFrames | 0} frames, ` +
+    `${d.opusErrors | 0} errors, max gap ${opusMs.toFixed(1)} ms, ` +
+    `encode max ${encodeMs.toFixed(1)} ms, resets ${d.pipelineResets | 0} | ` +
+    `Codec calls ${d.codecCalls | 0}: ${d.codecBlocks | 0} blocks, ` +
+    `${d.codecNoPcm | 0} no PCM, ${d.codecUsbInactive | 0} USB inactive, ` +
+    `${d.codecDisconnected | 0} disconnected, ${d.codecNoEncoder | 0} no encoder; ` +
+    `wake max ${codecMs.toFixed(1)} ms, >10 ms ${d.codecGapsOver10ms | 0} (10.667 ms nominal), ` +
+    `hist <=3/7/12/25/>25 ms ${d.codecGapLe3ms | 0}/${d.codecGapLe7ms | 0}/` +
+    `${d.codecGapLe12ms | 0}/${d.codecGapLe25ms | 0}/${d.codecGapOver25ms | 0} | ` +
+    `USB speaker edges on/off ${d.usbSpeakerOnEdges | 0}/${d.usbSpeakerOffEdges | 0}, ` +
+    `active ${speakerSeconds.toFixed(1)} s, current ${d.usbSpeakerActive ? "on" : "off"}`;
+}
+
 function renderDevice(d) {
   if (!d) return;
   const name = (d.name && d.name.trim()) ? d.name : "No controller connected";
@@ -813,6 +872,7 @@ async function pollLoop() {
     renderRaw(await sendCmd("raw", true));
     renderImu(await sendCmd("imu", true));
     if (tick % 14 === 0) renderDevice(await sendCmd("device", true));  // name changes rarely
+    if (tick % 3 === 0) renderAudioStat(await sendCmd("audiostat", true));
     await capPoll();  // always, not just while capturing — keeps capturing/dropped live either way
     tick++;
     await new Promise(r => setTimeout(r, 70));
@@ -909,6 +969,7 @@ $("#capStartBtn").onclick = capStart;
 $("#capStopBtn").onclick = capStop;
 $("#capClearBtn").onclick = capClear;
 $("#capDownloadBtn").onclick = capDownload;
+$("#audioResetBtn").onclick = () => sendCmd("audiostat reset");
 $("#capFilterKind").onchange = e => { capFilterKind = e.target.value; capRenderLive(); };
 $("#capFilterHandle").oninput = e => { capFilterHandle = e.target.value.trim(); capRenderLive(); };
 $("#capHandleA").onclick = () => { capFilterHandle = "0x000A"; $("#capFilterHandle").value = "0x000A"; capRenderLive(); };

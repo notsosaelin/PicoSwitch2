@@ -6,6 +6,11 @@
 // HID Host for Classic BT HID devices.
 
 #include "btstack_host.h"
+#include "ds5_audio_bridge.h"
+
+#ifdef NS2_DS5_AUDIO
+#include "pico/time.h"
+#endif
 
 #ifdef BTSTACK_DEFER_SCAN
 static bool btstack_host_scan_enabled = false;
@@ -430,6 +435,14 @@ static void direct_output_try_send(uint16_t cid)
         l2cap_request_can_send_now_event(cid);
         return;
     }
+
+#ifdef NS2_DS5_AUDIO
+    // Record the actual successful L2CAP submission, not the earlier direct
+    // queue admission. This makes a send-only spike evidence of radio/L2CAP
+    // backpressure while a flat core-1 heartbeat rules out a run-loop stall.
+    if (entry->len >= 2u && entry->data[1] == 0x39u)
+        ds5_audio_diag_note_l2cap_send(time_us_32());
+#endif
 
     direct_output_queue.head =
         (uint8_t)((direct_output_queue.head + 1u) %
@@ -1661,6 +1674,27 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
     if (event_type == GATT_EVENT_NOTIFICATION) {
         printf("[BTSTACK_HOST] >>> RAW GATT NOTIFICATION! len=%d\n", size);
     }
+
+#ifdef NS2_DS5_AUDIO
+    // l2cap_send() only confirms that BTstack/HCI accepted an ACL packet. The
+    // controller reports actual radio-side completion later through this HCI
+    // event, potentially batching several packets. Experimental audio builds
+    // already enforce the project's one-controller invariant, so count every
+    // post-stream ACL completion. Filtering on wiimote_conn.acl_handle is not
+    // reliable across Sony's incoming HID-Host/direct-output reconnect path:
+    // that path can have a valid interrupt CID while retaining a different
+    // bookkeeping handle, which made the first completion meter read zero.
+    if (event_type == HCI_EVENT_NUMBER_OF_COMPLETED_PACKETS && size >= 3u) {
+        uint8_t const num_handles = packet[2];
+        uint16_t offset = 3u;
+        for (uint8_t i = 0; i < num_handles && offset + 4u <= size; ++i) {
+            uint16_t const completed =
+                little_endian_read_16(packet, offset + 2u);
+            offset += 4u;
+            ds5_audio_diag_note_hci_completion(time_us_32(), completed);
+        }
+    }
+#endif
 
     switch (event_type) {
         case BTSTACK_EVENT_STATE:

@@ -21,6 +21,7 @@
 
 #include "bootsel.h"
 #include "config.h"
+#include "ds5_audio_bridge.h"
 #include "ns2_wake.h"
 #include "usb.h"
 
@@ -162,11 +163,13 @@ static void rumble_timer_handler(btstack_timer_source_t *ts) {
 }
 
 #ifdef NS2_DS5_AUDIO
-// Opus runs only from this shallow run-loop timer callback, never from
-// bthid_on_report_boundary()'s nested L2CAP/HID receive stack. The callback is
-// cooperative: most ticks only drain PCM; an encode occurs once per 512 input
-// frames and produces one fixed 10 ms frame.
+// Live Opus runs in core1's foreground worker, never from this background
+// BTstack timer or bthid_on_report_boundary()'s nested receive stack. This
+// callback only performs short maintenance and transports completed frames.
 static void audio_timer_handler(btstack_timer_source_t *ts) {
+    // Combined with the report-boundary sample below, this is a core-1
+    // liveness heartbeat rather than a timer-punctuality-only measurement.
+    ds5_audio_diag_note_core1_activity(time_us_32());
     bootsel_core1_service();
     ds5_bt_audio_service();
     btstack_run_loop_set_timer(ts, AUDIO_TICK_MS);
@@ -183,6 +186,12 @@ static void audio_timer_handler(btstack_timer_source_t *ts) {
 // remain the fallback while a controller is quiet or disconnected.
 void bthid_on_report_boundary(void) {
     uint32_t now = to_ms_since_boot(get_absolute_time());
+#ifdef NS2_DS5_AUDIO
+    // If inbound HID traffic delays the audio timer while core 1 remains live,
+    // report boundaries keep this heartbeat moving. A long gap therefore means
+    // the BTstack core itself stopped making progress, not just timer starvation.
+    ds5_audio_diag_note_core1_activity(time_us_32());
+#endif
     bootsel_core1_service();
     service_bootsel_gestures(now);
     ns2_wake_service(now);
@@ -356,6 +365,12 @@ void ns2_bt_core_task(void) {
     btstack_run_loop_set_timer(&audio_timer, AUDIO_TICK_MS);
     btstack_run_loop_add_timer(&audio_timer);
 #endif
-
+#ifdef NS2_DS5_AUDIO_LIVE_OPUS
+    // The CYW43 threadsafe-background context owns BTstack on a core1 IRQ.
+    // Its normal execute() foreground only sleeps. Give that foreground to
+    // the blocking PCM/Opus worker while leaving all Bluetooth ownership here.
+    ds5_audio_bridge_codec_worker();  // does not return
+#else
     btstack_run_loop_execute();  // does not return
+#endif
 }
