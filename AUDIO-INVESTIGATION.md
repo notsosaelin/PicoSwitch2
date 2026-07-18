@@ -78,6 +78,14 @@ window).
 | **ACL TX pipeline depth** | ❌ Doesn't apply | Deepened `MAX_NR_CONTROLLER_ACL_BUFFERS`/host buffers 3→12 for audio builds; no change. Root reason: the producer only ever holds **one report** (see §6), so nothing ever queues deep enough for buffer depth to matter. |
 | **Background scan/inquiry as simple radio contention** | ❌ Not cleanly the cause / entangled | A gentle "stop scan when connected" (`bc647ae`) stopped scanning by the 1‑minute mark, yet the beep was unchanged. A "hard-suppress scan at connect" instead **killed all audio** — stopping scan during connection setup breaks the DualSense link entirely. So scanning is *entangled with connection establishment* but is not the periodic-gap source, and must **not** be aggressively stopped. |
 
+> **Update 2026-07-18:** the 1-dongle-1-controller scope landed (`0798012`, `b6bc3c9`):
+> discovery now idles once a controller is HID-ready and resumes at zero connections, keyed on
+> `hid_ready` so it never stops scan mid-handshake (the flaw that made the "hard-suppress" attempt
+> kill audio). Hardware-confirmed with no regressions (Classic + BLE reconnect, wake, wipe/re-pair).
+> This removes the general scanning contention, but per the row above it is **not expected to
+> resolve the 57 ms / 560 ms periodic stall** — that was shown independent of scan state. The stall
+> meter (§8) remains the decisive next step.
+
 ---
 
 ## 5. Strong-evidence clue not yet exploited

@@ -163,12 +163,14 @@ sleep command or distinguishable wake advertisement is captured. See
 ## Longer-term
 
 - Capability-based haptic translation, including DualSense adaptive triggers where useful.
-- Multi-controller output architecture after single-controller behavior is release-stable.
 - Declarative controller profiles where report formats permit them.
 - Complete NFC and console-native motion only when evidence supports indistinguishable behavior.
 
 ## Out of scope for the current release
 
+- Multi-controller / local 4-player: the scope is now one dongle to one controller. Background
+  discovery idles once a controller is connected (hardware-confirmed; see STATUS.md). Actively
+  rejecting a 2nd bonded controller that pages in is a possible future increment, not done here.
 - Pretending a paired Joy-Con 2 L/R pair is one combined USB identity
 - Persisting the volatile USB personality across power cycles
 - Shipping speculative NFC or motion packet semantics
