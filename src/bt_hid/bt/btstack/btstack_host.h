@@ -78,6 +78,11 @@ void btstack_host_suppress_scan(bool suppress);
 // Used for the 1-dongle-1-controller discovery gating.
 bool btstack_host_controller_connected(void);
 
+// Idle background scan/inquiry while a controller is connected (1 dongle : 1
+// controller). Call periodically, outside an open pairing window. Discovery
+// resumes automatically at 0 connections.
+void btstack_host_idle_scan_if_connected(void);
+
 // Temporarily pause discovery and emit one or two non-connectable legacy BLE
 // advertisements from an exact random address. Used for Switch 2 wake replay;
 // the sequence is timer-driven and never blocks the BTstack run loop. Returns

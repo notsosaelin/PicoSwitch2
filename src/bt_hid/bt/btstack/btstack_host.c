@@ -1333,6 +1333,23 @@ bool btstack_host_controller_connected(void)
     return any_controller_hid_ready();
 }
 
+// Idle background BLE scan + Classic inquiry while a controller is connected.
+// This is the steady-state / reconnect path (fresh pairing closes its window via
+// btstack_host_controller_connected() instead). stop_scan() also leaves the BLE
+// state machine IDLE, so the inquiry-complete handler stops re-arming. Discovery
+// resumes automatically at 0 connections via btstack_host_process()'s safety-net.
+// Caller gates out the pairing window so fresh pairing keeps scanning.
+void btstack_host_idle_scan_if_connected(void)
+{
+    if (pairing_close_deferred) {
+        return;  // let an in-flight pairing candidate resolve first
+    }
+    if (any_controller_hid_ready() &&
+        (hid_state.scan_active || classic_state.inquiry_active)) {
+        btstack_host_stop_scan();
+    }
+}
+
 // ============================================================================
 // CONNECTION
 // ============================================================================
