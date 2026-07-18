@@ -64,6 +64,13 @@ The selection is not persisted across power cycles.
 - Core 1 runs BTstack plus the vendored joypad-os HID layer.
 - A persistent global pairing lock is installed before triple-tap disconnect/erase begins. Only an
   explicit double-tap pairing window reopens admission.
+- One dongle serves one controller. Background BLE scan and Classic inquiry run only while no
+  controller is connected; once a controller is HID-ready the pairing window closes (LED goes
+  solid) and discovery idles, freeing Bluetooth bandwidth. The host stays connectable/discoverable,
+  so a bonded Classic controller reconnects by paging in and a bonded BLE controller reconnects once
+  discovery resumes at zero connections. Hardware-confirmed (Classic + BLE reconnect, wake, wipe/
+  re-pair). Retiring the always-on multi-controller discovery is the general fix for the scanning
+  radio contention noted in [`AUDIO-INVESTIGATION.md`](AUDIO-INVESTIGATION.md).
 - Switch 2 controllers use a custom ATT pairing handshake, so the wipe policy cannot depend only on
   BTstack's LE bond database.
 - Core 0 samples BOOTSEL using a cooperative cross-core SRAM handshake at a 30 ms cadence.
