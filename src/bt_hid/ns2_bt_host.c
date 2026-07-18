@@ -234,6 +234,14 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
         pairing_until_ms = 0;
     }
 
+    // Outside a pairing window, keep discovery off while a controller is
+    // connected (retired multi-controller scanning; frees Bluetooth bandwidth).
+    // The host stays connectable, so a bonded controller still reconnects;
+    // discovery resumes at 0 connections via btstack_host_process()'s safety-net.
+    if (pairing_until_ms == 0) {
+        btstack_host_idle_scan_if_connected();
+    }
+
     // Service the Bluetooth stack. `bt_task()` (via cyw43_transport_task()) already calls
     // bthid_task() once per invocation; the dedicated rumble_timer above now additionally drives
     // it every RUMBLE_TICK_MS, so no separate explicit call is needed here anymore (removed
