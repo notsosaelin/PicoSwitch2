@@ -230,7 +230,7 @@ static bool ds5_send_output(bthid_device_t* device, bool initialize_compat,
 static void ds5_audio_task(bthid_device_t *device, ds5_bt_data_t *ds5,
                            bool run_codec) {
     if (!ds5_audio_bridge_owns_connection(device->conn_index)) return;
-    if (run_codec) ds5_audio_bridge_codec_task(device->conn_index);
+    if (run_codec) ds5_audio_bridge_codec_task();
 
     bool speaker_muted;
     uint8_t speaker_volume;
@@ -299,10 +299,14 @@ static void ds5_audio_task(bthid_device_t *device, ds5_bt_data_t *ds5,
     static uint8_t stream_buf[1 + DS5_AUDIO_STREAM_REPORT_LEN];
     uint8_t const next_packet_counter =
         (uint8_t)(ds5->audio_packet_counter + 2u);
+    // Both DS5Dongle's working report 0x39 path and daidr's independent report
+    // 0x36 path use 0x40 for the controller audio-buffer fields.
+    uint8_t const audio_buffer_length = 64u;
     stream_buf[0] = 0xA2;
     ds5_audio_build_stream_report(
         ds5->output_seq, next_packet_counter, mic_active,
-        ds5->headset_connected, 64, frame_a, frame_b, stream_buf + 1);
+        ds5->headset_connected, audio_buffer_length,
+        frame_a, frame_b, stream_buf + 1);
     if (bt_send_interrupt(device->conn_index, stream_buf,
                           sizeof(stream_buf))) {
         ds5->output_seq = (uint8_t)((ds5->output_seq + 1u) & 0x0Fu);
@@ -322,7 +326,13 @@ static void ds5_audio_service_all(bool run_codec) {
 }
 
 void ds5_bt_audio_service(void) {
+#ifdef NS2_DS5_AUDIO_LIVE_OPUS
+    // Live encoding runs in core1's foreground worker. This background
+    // BTstack safe point only activates audio and transports completed pairs.
+    ds5_audio_service_all(false);
+#else
     ds5_audio_service_all(true);
+#endif
 }
 
 void ds5_bt_audio_report_service(void) {

@@ -1,7 +1,14 @@
 #include "ds5_audio_resample.h"
 
-void ds5_audio_resample_512_to_480_stereo(const int16_t *input,
-                                          int16_t *output) {
+#if defined(PICO_ON_DEVICE) && defined(NS2_DS5_AUDIO_LIVE_OPUS)
+#include "pico.h"
+#define DS5_AUDIO_RESAMPLE_FUNC(name) __not_in_flash_func(name)
+#else
+#define DS5_AUDIO_RESAMPLE_FUNC(name) name
+#endif
+
+void DS5_AUDIO_RESAMPLE_FUNC(ds5_audio_resample_512_to_480_stereo)(
+    const int16_t *input, int16_t *output) {
     for (uint32_t out_frame = 0;
          out_frame < DS5_AUDIO_RESAMPLE_OUTPUT_FRAMES; ++out_frame) {
         uint32_t const position =

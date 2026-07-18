@@ -63,15 +63,18 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
   implements writable mute/volume controls.
 - [x] Confirm on Windows that the audio function starts without Device Manager Code 10 and that
   existing controller behavior remains regression-free.
-- [ ] Isolate and redesign the Pico 2 W DualSense speaker bridge. The first live-Opus hardware pass
-  failed: no audio, unstable Windows endpoint, random DualSense input, and BOOTSEL starvation.
-  Microphone-bearing `0x31` packets are now excluded from gamepad parsing, unsafe live encoding is
-  disabled by default, and the fixed 1 kHz diagnostic confirmed stable input/BOOTSEL/USB behavior
-  but remained silent through the first AudioControl retest. A full preflight audit then corrected
-  zero volume, implicit output routing, and missing Windows mute/volume forwarding; it also added
-  an MTU guard and a louder host-decoded Opus diagnostic while retaining the confirmed rumble/LED
-  flags. Consolidated hardware retest is pending. See
-  [`docs/experiments/2026-07-17-dualsense-live-opus-failure.md`](docs/experiments/2026-07-17-dualsense-live-opus-failure.md).
+- [x] Isolate and redesign the Pico 2 W DualSense speaker bridge. The final opt-in
+  configuration uses the controller's effective 45 kHz clock, whole 512-frame PCM
+  blocks, SRAM-resident Opus/hot memory routines, and a producer-paced core1
+  foreground worker at 300 MHz/1.20 V. Hardware playback is continuous with zero
+  PCM drops/errors; LED/BOOTSEL, config persistence, cold boot, and wake regressions
+  pass. The 150/200 MHz controls remain below the real-time threshold. See
+  [`DS5-NS2_AUDIO.md`](DS5-NS2_AUDIO.md) and
+  [`AUDIO-INVESTIGATION.md`](AUDIO-INVESTIGATION.md).
+- [ ] Expose the correct Pro Controller 2 headset-presence/audio route to Switch 2.
+  Current audio reaches the DualSense internal speaker, so real-console input and
+  rumble during an audio session cannot yet be tested.
+- [ ] Run an extended playback and thermal soak of the 300 MHz audio build.
 - [ ] Add DualSense microphone report decoding and Opus-to-USB return after speaker playback is
   physically stable.
 - [ ] Re-test the Switch 2 “Update this controller” prompt after USB audio is healthy; if it

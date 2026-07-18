@@ -1,6 +1,6 @@
 # Compatibility Matrix
 
-Last updated: 2026-07-17
+Last updated: 2026-07-18
 
 This matrix records observed behavior, not inferred support. "Source-tested" means host tests or
 code inspection only; it is weaker than physical hardware confirmation.
@@ -41,6 +41,18 @@ code inspection only; it is weaker than physical hardware confirmation.
 | DualSense/Edge rumble while gestures remain responsive | ✅ Confirmed |
 | Post-wipe automatic readmission remains blocked | ✅ Confirmed for reported workflow; include in release matrix |
 | Re-pair after explicit new pairing window | ✅ Confirmed |
+
+## Opt-in DualSense audio build
+
+| Scenario | Status |
+|---|---|
+| Live Windows PCM → DualSense internal speaker at 300 MHz | ✅ Confirmed continuous; zero PCM drops/errors |
+| LED and BOOTSEL during 300 MHz regression pass | ✅ Confirmed |
+| Config save/readback after reconnect | ✅ Confirmed (mappings and colors) |
+| Cold boot | ✅ Confirmed |
+| Console wake | ✅ Ten attempts with every known controller |
+| Real-console input/rumble during audio | ⏸ Blocked: Switch 2 does not yet expose a connected headset |
+| Extended playback/thermal soak | 🟡 Pending |
 
 ## PC-specific behavior
 

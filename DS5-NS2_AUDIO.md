@@ -1,93 +1,103 @@
-# DualSense ↔ NS2 Audio Bridge — Core-1 Scheduling Problem & Path Forward
+# DualSense ↔ NS2 Audio Bridge — Live Codec Scheduling and Clock A/B
 
 > Focused engineering analysis of *why live USB→DualSense audio is choppy* and what to do
 > about it. This complements `AUDIO-INVESTIGATION.md` (the full history + protocol/reference
-> study); this file is specifically about the **scheduling/architecture bottleneck** surfaced
-> by the live-audio diagnostics on 2026-07-18, plus theories, recommendations, and candidate
-> solves.
+> study); this file is specifically about the live-codec scheduling bottleneck surfaced
+> by the 2026-07-18 diagnostics and the contained fix being tested.
 >
-> Status: 🟡 root cause narrowed to **core-1 contention** (strong evidence); one software
-> alternative (`usb_speaker_active` gating) not yet excluded. No fix committed.
+> Status: 🟢 **300 MHz foreground-worker build is hardware-confirmed continuous by
+> listening test with zero PCM drops.** LED/BOOTSEL, persistent configuration,
+> cold boot, and console wake are also hardware-confirmed without regression. The
+> 200 MHz foreground-worker build remained choppy.
 
 ## 1. Symptom
 
-- **Fixed tone** build: plays, but with the pre-existing periodic ~57 ms dropout every ~560 ms
-  (see `AUDIO-INVESTIGATION.md` §3).
+- **Fixed tone** build: reference-clock correction is hardware-confirmed continuous for at
+  least 120 seconds. The former ~57 ms/~560 ms dropout was a controller-clock mismatch,
+  not the current live-audio fault.
 - **Live USB audio** build: **super choppy** — far worse than the tone.
 
-## 2. Diagnostics (live audio, on hardware)
+## 2. Diagnostics and recording correlation
 
-| Measurement | Value |
-|---|---|
-| USB speaker packets received (core0) | ~88,000 (≈ 88 s @ 1 ms/packet) |
-| Opus frames actually produced (core1) | **2,101** |
-| PCM consumed vs delivered | **~25%** |
-| Complete 512-frame PCM blocks discarded (queue full) | **~75%** |
-| Core-1 max unresponsive gap | **10.3 ms** |
-| Single Opus encode time | **≤ 4.2 ms** |
+The same continuous 1 kHz source was captured at
+`dumps/audio/dualsense/live-150mhz.m4a` and
+`dumps/audio/dualsense/live-200mhz.m4a`. Five-millisecond RMS-window analysis produced:
 
-Downstream, the L2CAP/HCI gaps are a *consequence* of there being no encoded audio ready —
-not the primary fault.
+| Build | USB packets | Expected 512-frame blocks | Encoded | Queue-dropped | Encoded share | Recorded audible duty |
+|---|---:|---:|---:|---:|---:|---:|
+| 150 MHz | 173,130 | 16,231 | 6,160 | 10,070 | **38.0%** | **38.2%** |
+| 200 MHz | 179,000 | 16,781 | 14,608 | 2,170 | **87.1%** | **87.1%** |
 
-## 3. The pipeline (as built)
+Expected blocks are `USB packets × 48 stereo frames / 512`. In both runs,
+`encoded + dropped ≈ expected`, and the encoded ratio independently matches the audible
+duty cycle. This proves that the chopped silence is created by complete PCM blocks being
+dropped **before Opus encoding**. It is not an audio-file problem, a controller decoder
+problem, or loss after L2CAP submission. Submitted audio reports and completed ACL
+packets also remained closely matched.
 
-Three stages across two cores (`src/ds5_audio_bridge.c`, `NS2_DS5_AUDIO_LIVE_OPUS`):
+The 200 MHz improvement further proves that encoder service rate is the limiting resource.
+Single-encode time improved from at most 4.2 ms to 3.3 ms. The required rate is 93.75 Opus
+frames/s: 48,000 real input frames/s divided into 512-frame blocks, each resampled to the
+DualSense's 480-sample effective-45-kHz frame.
+
+The USB alternate-setting theory is rejected for these captures. Speaker activity had one
+on edge and one off edge across the playback, rather than repeatedly gating the codec.
+
+## 3. The pipeline (old and new)
+
+Before the current change:
 
 ```
-core0 (USB)                         core1 (BTstack run loop)
-─────────────────────────────       ───────────────────────────────────────────
-submit_speaker_pcm()                ds5_audio_bridge_codec_task()   [2 ms timer]
-  accumulate 512-frame block   ─▶     queue_try_remove(pcm_block)   (ONE per call)
-  speaker_pcm_block_queue (depth 2)   resample 512→480
-                                      opus_encode (≤4.2 ms)
-                                      speaker_encoded_frame_queue (depth 2)
-                                                    │
-                                    ds5_audio_task() transport: peek 2 frames → 0x39 → L2CAP
+core0 USB producer                  core1 CYW43 background IRQ
+─────────────────────────────       ─────────────────────────────────────────
+accumulate 512-frame PCM       ─▶   2 ms BTstack timer callback
+depth-2 PCM queue                     dequeue one block
+                                       resample 512→480 + Opus encode
+                                       depth-2 encoded queue
+                                       transport pairs as 0x39 reports
 ```
 
-Both FIFOs are **depth 2** (matching DS5Dongle). `codec_task` consumes **exactly one block per
-call** (`ds5_audio_bridge.c:521`) and is called **only** from the 2 ms BTstack audio timer on
-core1 (`ns2_bt_host.c audio_timer_handler` → `ds5_bt_audio_service` → `ds5_audio_task(run_codec=true)`).
+The Pico SDK `threadsafe_background` architecture does not run BTstack in the foreground
+call to `btstack_run_loop_execute()`. BTstack/CYW43 work is dispatched by a low-priority IRQ
+on core1; the core1 foreground was effectively waiting/sleeping. Encoding inside its timer
+therefore both waited for a BTstack callback and lengthened that callback.
 
-## 4. Root cause — encode speed ≠ throughput
+The current live build keeps all ownership unchanged but uses the otherwise-idle foreground:
 
-The 4.2 ms encode time is a **red herring**. It says a single frame is cheap; it says nothing
-about how often the encoder *gets to run*. `codec_task` lives inside the **core-1 BTstack run
-loop**, sharing it with:
+```
+core0 USB producer                  core1
+─────────────────────────────       ─────────────────────────────────────────
+accumulate 512-frame PCM       ─▶   foreground: block on PCM queue
+depth-2 PCM queue                     wake immediately, resample + encode
+                                       │
+                                    background IRQ: BTstack/CYW43 may preempt
+                                      short 2 ms timer maintains/activates audio
+                                      transport completed pairs as 0x39 reports
+```
 
-- every incoming DualSense report (parse + `bthid_on_report_boundary`: bootsel/gesture/wake/transport),
-- the control (30 ms), rumble (3 ms), and audio (2 ms) timers,
-- the audio transport,
-- and the encode itself, which **blocks the whole run loop for its full 4.2 ms**.
+`ds5_audio_bridge_codec_worker()` is non-returning, blocks directly on the cross-core
+PCM queue, and encodes as soon as a complete block arrives. The SDK queue notification wakes
+the core from core0. Bluetooth can preempt the encoder, but Opus no longer waits for or occupies
+a BTstack timer callback. The timer remains a short Bluetooth-safe maintenance and transport
+point.
 
-So the codec's effective duty cycle is set by *how much of core1 is left after BTstack* — not by
-encode speed. In **audio mode the DualSense's report rate rises** (mic data multiplexed into
-`0x31`), so per-report core-1 work grows exactly when the codec needs slots. The encoder ends up
-getting ~1 of every 4 block-arrival windows (blocks arrive every ~10.7 ms; the depth-2 queue
-tolerates only ~21 ms), so **core0 drops ~75% of blocks at a full `speaker_pcm_block_queue`**, and
-the transport starves. That is the measured 25%.
+This is deliberately not the failed core split. USB is still on core0; BTstack and CYW43
+are still initialized and serviced on core1. Only previously-unused core1 foreground time
+has been assigned to Opus.
 
-**Load arithmetic:** 100 frames/s × 4.2 ms = **~42% of one core just to encode**. DS5Dongle spends
-that 42% on a *dedicated* core1 (58% idle → fine). PicoSwitch2 spends it on a core1 that BTstack
-already loads heavily during audio → **overload → starvation.**
+## 4. Why the tone is fine but live was not
 
-### Why the tone is fine but live is not
-The tone build has **no encoder and no PCM queue** — it just replays two pre-encoded frames, so
-there is no block-drop cascade. It exposes only the raw transport jitter (the 57 ms/560 ms stall).
-Live audio stacks the **codec-starvation discard cascade** on top → *super* choppy.
+The tone build has no live encoder and no PCM queue: it replays pre-encoded frames. Once its
+reference clock was corrected, hardware confirmed a solid tone past 120 seconds. Live audio
+added the PCM overrun/drop cascade, explaining why an identical Bluetooth transport could
+sound much worse.
 
-## 5. The architectural constraint (the crux)
+## 5. Constraints preserved
 
-RP2350 has **two cores, and both are already committed**:
-
-- **core0** = the full **Switch 2 controller USB device** (enumeration, HID, UAC1 audio) — heavy,
-  hard 1 ms USB timing.
-- **core1** = **BTstack** + every vendor driver + wake + BOOTSEL + the timers + (now) the codec.
-
-DS5Dongle's continuity trick is a **spare core for the codec**, which it has only because its USB is
-a *trivial DualSense passthrough*. PicoSwitch2's USB is an order of magnitude heavier, so **there is
-no free core to hand the codec.** This is the whole difference — protocol bytes are identical
-(`AUDIO-INVESTIGATION.md` §12).
+- core0 remains the full Switch 2 USB controller/UAC1 device.
+- core1 remains the owner of CYW43, BTstack, vendor drivers, wake, BOOTSEL, and timers.
+- Opus uses core1 foreground; Bluetooth uses the SDK background IRQ on that same core.
+- The protocol, FIFO depths, USB descriptors, and report format are unchanged.
 
 ## 6. Why "move BTstack to core0" fails (tested — broke everything)
 
@@ -113,90 +123,118 @@ out for PicoSwitch2.**
 So the cheap CPU headroom (XIP-miss elimination) is **already claimed**; the 4.2 ms is the
 RAM-resident cost at the default 150 MHz.
 
-## 8. Theories (ranked, with how to confirm)
+## 8. Foreground-worker validation
 
-1. **Core-1 CPU contention (leading).** BTstack's audio-mode load + the ~42% encode exceed core1's
-   budget; the codec is starved of run-loop slots. *Confirm:* codec-task counters (below).
-2. **`usb_speaker_active` gating (not excluded — check first).** `codec_task` early-returns at
-   `ds5_audio_bridge.c:517` when `!usb_speaker_active`. Windows shared-mode can **idle the speaker
-   alternate setting during gaps** — and the choppiness creates gaps → a feedback loop that would
-   *look* like 25% consumption but is a **software gate, not CPU.** If this is it, core work is
-   irrelevant. *Confirm:* log `usb_speaker_active` transitions + count early-returns.
-3. **Tone-build 57 ms/560 ms stall (separate, still open).** A periodic core-1 blocker unrelated to
-   the encoder (≈ 18 × the 30 ms control tick). *Confirm:* the stall meter (`AUDIO-INVESTIGATION.md`
-   §8), `core1MaxGapUs` vs `sendMaxGapUs`.
+Hardware result:
 
-### The one measurement that must come first
-Instrument `codec_task` with three counters — **calls**, **early-returns (and the reason)**, and
-**actual encodes** — plus a histogram of the codec-task *inter-call interval*, and a log of
-`usb_speaker_active` edges. This separates theory 1 (few real slots) from theory 2 (many calls,
-early-return) **before** any core restructuring. Restructuring cores to fix a software gate would be
-wasted effort.
+| Clock | Listening result | PCM blocks | Dropped | Encoded frames | Audio reports |
+|---|---|---:|---:|---:|---:|
+| 200 MHz | still choppy, possibly worse | not captured | not captured | not captured | not captured |
+| 300 MHz | **continuous/perfect by ear** | 13,225 | **0** | 13,225 | 6,612 |
 
-## 9. Recommendations / candidate solves (ordered by leverage ÷ risk)
+At 300 MHz, 141,070 USB packets contain
+`141070 × 48 / 512 = 13225.3` complete source blocks. The worker dequeued and encoded
+13,225 blocks with zero errors and the transport submitted 6,612 two-frame reports,
+leaving only the expected single unpaired frame. The PCM queue reached depth one but never
+overflowed. This accounts for the entire pipeline and confirms real-time operation.
 
-**A. Measure before restructuring.** §8's counters. Cheap, decisive, and can turn a "big rework" into
-a one-line gate fix if it's theory 2.
+Expected diagnostic signature:
 
-**B. Overclock the RP2350 (if CPU-bound).** The default is 150 MHz; DS5Dongle's own build runs
-200 MHz (with a vreg bump) on its larger boards. The Pico 2 / RP2350 is **widely reported to
-overclock stably well beyond 150 MHz** (e.g. Pimoroni,
-<https://learn.pimoroni.com/article/overclocking-the-pico-2>, and community reports of 200–300 MHz).
-Even 200 MHz cuts the encode from ~42% toward ~31% of a core — **~33% more core-1 headroom**, and it
-may simply make codec+BTstack fit. Lowest-risk high-leverage lever remaining. Validate: input,
-enumeration, flash writes, and thermal/stability over a long session.
+- `Codec calls` should be approximately equal to `blocks`.
+- `no PCM` calls should fall to zero because the worker blocks for a real queue item.
+- complete PCM blocks dropped should ideally be zero.
+- the codec inter-call histogram now describes real PCM-block arrival, not a 2 ms polling
+  callback.
 
-**C. Trim per-incoming-report core-1 work during audio.** In audio mode the DualSense floods reports;
-each runs bootsel/gesture/wake/transport at the report boundary. Gate that heavy path down while
-audio is actively streaming so the codec reclaims slots.
+The successful result matches this signature exactly: calls = blocks = encoded frames,
+with zero `no PCM`, inactive, disconnected, no-encoder, encode-error, or dropped counts.
 
-**D. Reshape *core1* (not core0) into a flat interleaved loop.** Keep BTstack on core1 (USB stays
-safe on core0), but replace the async-timer model — where the codec is one competing timer callback —
-with a **flat poll loop**: bounded `cyw43_arch_poll()` then exactly one codec encode, every
-iteration, so the codec gets a guaranteed slot each pass. This is DS5Dongle's flat-loop idea applied
-to core1 instead of core0 — the *contained* version of the failed experiment, with no USB risk.
-Higher effort; do only if A–C are insufficient.
+The headline `USB PCM DELIVERY STALL` is a diagnostic-classifier false positive for this
+run. It reacts to a single historical maximum gap of 992 ms even though the complete
+packet-to-block accounting and zero-drop result prove that the bridge consumed everything
+Windows delivered. Likewise, `codec gaps over 10 ms` is no longer an error criterion:
+real 512-frame blocks arrive every 10.667 ms, so most blocking-worker wake intervals should
+exceed 10 ms. These thresholds were designed for the old 2 ms polling callback.
 
-**E. (Ruled out) Move BTstack to core0.** §6. Structurally incompatible with a full controller USB
-stack.
+### 300 MHz regression validation
 
-### Notes on encode cost
-Already using `OPUS_APPLICATION_RESTRICTED_LOWDELAY` (pure CELT), complexity 0, VBR off, RAM-resident.
-The 10 ms/200 B frame cadence is **fixed by the DualSense `0x39` protocol** (two 200 B frames per
-report), so batching to longer Opus frames is not available. Fixed-point Opus is unlikely to beat the
-M33 FPU's float path. So the encode cost is close to floor for this codec — meaning the fix lives in
-**scheduling/headroom**, not in making one encode cheaper.
+Hardware-confirmed after the continuous-audio result:
 
-## 10. DS5Dongle vs PicoSwitch2 (why one is continuous)
+- LED and BOOTSEL behavior works.
+- Config mode saves mapping and color changes and reads them back after reconnect.
+- Wake from console sleep passed ten attempts with each known controller.
+- Cold boot behavior works.
 
-| Aspect | DS5Dongle (works) | PicoSwitch2 (choppy) |
+Real-console input and rumble during audio remain untested for a routing reason rather
+than a known controller regression: audio currently targets the DualSense internal
+speaker, while the Switch does not identify a headset as connected to the emulated
+controller. Headset-detection/routing behavior remains a separate open item pending
+additional hardware observations.
+
+## 9. Clock variants and the working 300 MHz configuration
+
+Three clean live-audio images are produced from the same foreground-worker source:
+
+| Build flag | System clock | Core voltage | CYW43 divider | Effective CYW43 PIO clock |
+|---|---:|---:|---:|---:|
+| `-Audio` | 150 MHz | SDK default | SDK default (2) | 75 MHz |
+| `-AudioOverclock` | 200 MHz | 1.20 V | 3 | 66.7 MHz |
+| `-AudioOverclock300` | 300 MHz | 1.20 V | 4 | 75 MHz |
+
+The 300 MHz image is a useful experimental ceiling, not the default recommendation. The
+official RP2350 rating is up to 150 MHz and an ambient operating range through 85 °C.
+Pimoroni demonstrated 312 MHz at 1.1 V and 25.6 °C on an early sample, followed by seven
+samples reaching 316–336 MHz at 1.1 V. That makes 300 MHz plausible, but it does not qualify
+every board, flash chip, temperature, or workload.
+
+A heatsink can reduce junction temperature; it cannot correct marginal core/PLL timing,
+flash timing, power integrity, or silicon variance. The 300 MHz build therefore needs long
+audio, cold-start, reconnect/wake, configuration-write, and ordinary controller regression
+testing. Its CYW43 bus is deliberately held to the normal 75 MHz rather than being
+overclocked with the CPU.
+
+Test order:
+
+1. **300 MHz foreground worker is the working live-audio configuration.**
+2. Keep 200 MHz as a non-working comparison until/unless its hardware diagnostics are
+   needed to explain the threshold.
+3. Retain 150 MHz as the scheduler-only control.
+
+All overclock builds retain the existing one-second startup delay before the clock change.
+
+## 10. DS5Dongle vs current PicoSwitch2
+
+| Aspect | DS5Dongle | PicoSwitch2 foreground-worker build |
 |---|---|---|
-| core0 | trivial DualSense passthrough | **full Switch 2 controller USB emulation** |
-| BTstack run loop | core0, flat untimed poll loop | core1, async timers |
-| BT-audio transport | core0, same loop as radio poll | core1, 2 ms timer + report boundaries |
-| **Opus codec** | **core1, dedicated (whole core)** | **core1, shares the run loop with BTstack** |
-| libopus / resampler in RAM | yes | **yes (already)** |
-| Clock | up to 200 MHz (big boards) | 150 MHz default (**overclock unspent**) |
-| Encoded/PCM FIFO depth | 2 / 2 | 2 / 2 (same) |
-| Result | continuous | ~25% PCM encoded → super choppy |
+| core0 | trivial DualSense passthrough + BT poll | full Switch 2 controller USB/UAC1 |
+| Bluetooth | core0 flat poll loop | core1 SDK background IRQ |
+| Opus | core1 tight foreground loop | core1 blocking foreground worker |
+| Bluetooth/codec relationship | separate cores | same core, Bluetooth preempts codec |
+| libopus / resampler in SRAM | yes | yes |
+| PCM / encoded FIFO depth | 2 / 2 | 2 / 2 |
+| report format | DualSense `0x39` | byte-compatible DualSense `0x39` |
 
-**Takeaway:** identical protocol and identical RAM optimization; the sole meaningful difference is
-that DS5Dongle gives the codec a **whole core** and PicoSwitch2 cannot (no free core). Everything in
-§9 is about buying back that headroom on a shared core1.
+The new design reproduces the important property of DS5Dongle—Opus has an immediate
+foreground work loop—without moving PicoSwitch2's latency-sensitive USB or changing
+Bluetooth ownership.
 
 ## 11. Feasibility verdict
 
-**Not hardware-limited** — the same bridge runs on the same silicon in DS5Dongle. It is a
-**core-allocation** problem on a 2-core chip whose cores are both fully committed, with the easy
-(RAM) lever already spent. Likely path: measure (A) → overclock + trim (B, C) → reshape core1 (D)
-only if needed. It is a real project, appropriately weighed against being a bonus feature on an
-otherwise-solid controller emulator.
+The bridge is not blocked by protocol or radio throughput. Earlier recordings proved that
+every missing audible interval corresponded to a locally dropped PCM block. The 300 MHz
+foreground-worker run eliminated those drops completely and sounded continuous, while
+200 MHz remained below the real-time threshold. The principal 300 MHz platform
+regressions are now hardware-cleared. Remaining audio work includes extended
+playback/thermal soak testing and headset-presence/routing behavior; real-console input
+and rumble during an audio session can be validated once the console exposes that route.
 
 ## 12. References
 
 - `AUDIO-INVESTIGATION.md` — full history, protocol, reference-implementation and DSP-blob study.
 - `nso-gc-refs/DS5Dongle/` @ `750bde8` — `src/{main,audio,bt}.cpp`, `cmake/relocate_to_ram.cmake`,
-  `CMakeLists.txt` (RAM relocation + 200 MHz clock).
+  `CMakeLists.txt` (RAM relocation; separate clock configurations by board).
 - `src/ds5_audio_bridge.c`, `src/bt_hid/ns2_bt_host.c`,
   `src/bt_hid/bt/bthid/devices/vendors/sony/ds5_bt.c` — the live bridge, timer, and transport.
-- Pico 2 / RP2350 overclocking: <https://learn.pimoroni.com/article/overclocking-the-pico-2>.
+- Raspberry Pi RP2350 datasheet: <https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf>.
+- Pimoroni Pico 2 overclock experiments:
+  <https://learn.pimoroni.com/article/overclocking-the-pico-2>.

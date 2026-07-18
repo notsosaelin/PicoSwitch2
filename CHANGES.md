@@ -7,6 +7,16 @@ tagged release was [`v1.3.0`](https://github.com/notsosaelin/PicoSwitch2/release
 ## 2026-07-18
 
 ### Changed
+- **Live Windows PCM → DualSense speaker audio is continuous on the opt-in Pico 2 W
+  300 MHz build.** The bridge now follows the independently corroborated DualSense
+  45 kHz effective stream clock (512 real 48 kHz frames → 480 Opus samples), rearms
+  isochronous USB endpoints after failed transfers, relocates Opus and hot memory
+  primitives to SRAM, and runs a producer-paced Opus worker in core1 foreground while
+  CYW43/BTstack remains in its established background IRQ context. A hardware run
+  encoded all 13,225 delivered PCM blocks with zero drops/errors; LED/BOOTSEL,
+  persistent configuration, cold boot, and ten wake attempts with every known
+  controller passed. Ordinary builds retain their normal clock with live Opus
+  disabled; headset routing, microphone return, and long thermal soak remain open.
 - **DualSense Edge Fn L / Fn R now default to GL / GR** (previously Capture / C), per
   community feedback — they join the back paddles, which already default to GL/GR. Both
   Fn buttons keep distinct source bits and remain independently reassignable in config

@@ -14,6 +14,7 @@
 #include "sw2_capture.h" // genuine Switch 2 BLE raw-traffic capture/export (2026-07-10)
 #include "bt_identity_log.h" // controller identity/driver-binding event log (Gate 2, 2026-07-12)
 #include "bt/bthid/bthid.h" // bthid_get_cached_descriptor (btid desc command)
+#include "ds5_audio_bridge.h" // DualSense audio stall diagnostics
 #include "bt/bthid/devices/generic/bthid_gamepad.h" // bthid_gamepad_dump_map (btid desc command)
 
 #include <string.h>
@@ -26,6 +27,7 @@
 #include "pico/multicore.h"
 #include "pico/critical_section.h"
 #include "hardware/flash.h"
+#include "hardware/clocks.h"
 #include "hardware/sync.h"
 
 #define CONFIG_MAGIC 0x50535731u  // 'PSW1'
@@ -374,6 +376,79 @@ static void cmd_state(void) {
     reply(out);
 }
 
+static void cmd_audiostat(bool reset) {
+    if (reset) {
+        ds5_audio_diag_reset();
+        reply("{\"ok\":true}");
+        return;
+    }
+
+    ds5_audio_diag_t d;
+    ds5_audio_diag_get(&d);
+    snprintf(out, sizeof(out),
+             "{\"sysClockKhz\":%lu,"
+             "\"core1MaxGapUs\":%lu,\"core1GapsOver10ms\":%lu,"
+             "\"sendMaxGapUs\":%lu,\"sendGapsOver40ms\":%lu,\"sends\":%lu,"
+             "\"hciMaxGapUs\":%lu,\"hciGapsOver40ms\":%lu,"
+             "\"hciEvents\":%lu,\"hciPackets\":%lu,\"hciMaxBatch\":%lu,"
+             "\"pcmPackets\":%lu,\"pcmNonzero\":%lu,\"pcmShort\":%lu,"
+             "\"pcmDropped\":%lu,\"pcmMaxGapUs\":%lu,\"pcmGapsOver2ms\":%lu,"
+             "\"pcmQueueMax\":%lu,\"opusFrames\":%lu,\"opusErrors\":%lu,"
+             "\"opusMaxGapUs\":%lu,\"opusGapsOver20ms\":%lu,"
+             "\"opusEncodeMaxUs\":%lu,\"pipelineResets\":%lu,"
+             "\"codecCalls\":%lu,\"codecNoEncoder\":%lu,"
+             "\"codecDisconnected\":%lu,\"codecUsbInactive\":%lu,"
+             "\"codecNoPcm\":%lu,\"codecBlocks\":%lu,"
+             "\"codecMaxGapUs\":%lu,\"codecGapsOver10ms\":%lu,"
+             "\"codecGapLe3ms\":%lu,\"codecGapLe7ms\":%lu,"
+             "\"codecGapLe12ms\":%lu,\"codecGapLe25ms\":%lu,"
+             "\"codecGapOver25ms\":%lu,\"usbSpeakerOnEdges\":%lu,"
+             "\"usbSpeakerOffEdges\":%lu,\"usbSpeakerActiveUs\":%lu,"
+             "\"usbSpeakerActive\":%u}",
+             (unsigned long)(clock_get_hz(clk_sys) / 1000u),
+             (unsigned long)d.core1_max_gap_us,
+             (unsigned long)d.core1_gaps_over_10ms,
+             (unsigned long)d.send_max_gap_us,
+             (unsigned long)d.send_gaps_over_40ms,
+             (unsigned long)d.sends_total,
+             (unsigned long)d.hci_complete_max_gap_us,
+             (unsigned long)d.hci_complete_gaps_over_40ms,
+             (unsigned long)d.hci_complete_events,
+             (unsigned long)d.hci_completed_packets,
+             (unsigned long)d.hci_complete_max_batch,
+             (unsigned long)d.pcm_packets_total,
+             (unsigned long)d.pcm_nonzero_packets,
+             (unsigned long)d.pcm_short_packets,
+             (unsigned long)d.pcm_dropped_packets,
+             (unsigned long)d.pcm_max_gap_us,
+             (unsigned long)d.pcm_gaps_over_2ms,
+             (unsigned long)d.pcm_queue_max_depth,
+             (unsigned long)d.opus_frames_total,
+             (unsigned long)d.opus_encode_errors,
+             (unsigned long)d.opus_max_gap_us,
+             (unsigned long)d.opus_gaps_over_20ms,
+             (unsigned long)d.opus_encode_max_us,
+             (unsigned long)d.pipeline_resets,
+             (unsigned long)d.codec_calls_total,
+             (unsigned long)d.codec_no_encoder,
+             (unsigned long)d.codec_disconnected,
+             (unsigned long)d.codec_usb_inactive,
+             (unsigned long)d.codec_no_pcm,
+             (unsigned long)d.codec_blocks_dequeued,
+             (unsigned long)d.codec_call_max_gap_us,
+             (unsigned long)d.codec_call_gaps_over_10ms,
+             (unsigned long)d.codec_gap_le_3ms,
+             (unsigned long)d.codec_gap_le_7ms,
+             (unsigned long)d.codec_gap_le_12ms,
+             (unsigned long)d.codec_gap_le_25ms,
+             (unsigned long)d.codec_gap_over_25ms,
+             (unsigned long)d.usb_speaker_on_edges,
+             (unsigned long)d.usb_speaker_off_edges,
+             (unsigned long)d.usb_speaker_active_us,
+             d.usb_speaker_active ? 1u : 0u);
+    reply(out);
+}
+
 // Connected controller identity for the "Current Input Type" panel. Slot 0.
 static void cmd_device(void) {
     char name[40];
@@ -658,6 +733,10 @@ static void handle_line(char *cmd) {
         cmd_state();
     } else if (strcmp(cmd, "device") == 0) {
         cmd_device();
+    } else if (strcmp(cmd, "audiostat") == 0) {
+        cmd_audiostat(false);
+    } else if (strcmp(cmd, "audiostat reset") == 0) {
+        cmd_audiostat(true);
     } else if (strcmp(cmd, "raw") == 0) {
         cmd_raw();
 #ifdef NS2_PRO

@@ -1,6 +1,6 @@
 # PicoSwitch2 Architecture
 
-Status: ✅ current as of 2026-07-16
+Status: ✅ current as of 2026-07-18
 
 ## Purpose
 
@@ -17,6 +17,7 @@ not block each other.
 | BOOTSEL raw sampler | 0 | Safe flash-CS sample after cooperative core-1 park |
 | BTstack/CYW43 | 1 | Discovery, pairing, reconnection, HID/GATT transport |
 | joypad-os bthid | 1 | Controller identity, input parsing, output tasks |
+| Live DualSense Opus worker (opt-in) | 1 foreground | Blocks on complete PCM windows; CYW43/BTstack background IRQ may preempt |
 | Seam/router | 1 | Unified input → Switch button/capability model |
 | BOOTSEL gestures and LED | 1 | Pairing, wipe, personality requests, status indication |
 
@@ -90,6 +91,18 @@ production recognizer with timer-only calls, a sustained report-only stream with
 and mixed calls. This pins starvation resistance and prevents either servicing path from emitting a
 completed gesture twice. Physical QSPI sampling and the cross-core SRAM park remain hardware-only
 concerns and are deliberately outside that host test.
+
+### Opt-in live-audio scheduling
+
+The Pico SDK `threadsafe_background` CYW43 architecture services Bluetooth from a
+low-priority IRQ on core1; `btstack_run_loop_execute()` otherwise leaves the foreground
+waiting. In the Pico 2 W live-audio build, that foreground runs a blocking Opus worker:
+core0 accumulates a complete 512-frame stereo PCM window, the queue wake schedules core1
+immediately, and the worker resamples 512→480 and encodes one frame. The background
+Bluetooth context may preempt encoding and transports completed frames in two-frame
+DualSense report `0x39` packets. USB remains on core0 and Bluetooth ownership remains on
+core1, avoiding the enumeration and BOOTSEL regressions observed when the cores were split
+differently.
 
 ## BOOTSEL sampling
 

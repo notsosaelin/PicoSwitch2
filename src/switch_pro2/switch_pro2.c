@@ -1326,12 +1326,16 @@ static bool ns2_audio_control(uint8_t rhport, uint8_t stage,
 
 static bool ns2_audio_xfer(uint8_t rhport, uint8_t ep_addr, xfer_result_t result,
                            uint32_t xferred_bytes) {
-    (void)xferred_bytes;
-    if (result != XFER_RESULT_SUCCESS) return true;
-
     if (ep_addr == NS2_AUDIO_SPEAKER_EP && ns2_audio_alt_speaker != 0) {
-        ds5_audio_bridge_submit_speaker_pcm(ns2_audio_speaker_packet,
-                                            (uint16_t)xferred_bytes);
+        // Isochronous packets are allowed to be lost. TinyUSB's own audio
+        // driver deliberately ignores the prior transfer result and always
+        // rearms the endpoint; leaving it unarmed after one missed packet
+        // stops PCM delivery until Windows recovers the interface. Only feed a
+        // successful payload to the bridge, but keep listening either way.
+        if (result == XFER_RESULT_SUCCESS && xferred_bytes != 0) {
+            ds5_audio_bridge_submit_speaker_pcm(ns2_audio_speaker_packet,
+                                                (uint16_t)xferred_bytes);
+        }
         return usbd_edpt_xfer(rhport, ep_addr, ns2_audio_speaker_packet,
                               NS2_AUDIO_PACKET_SIZE);
     }
