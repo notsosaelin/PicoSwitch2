@@ -83,9 +83,12 @@ static const uint8_t NS2_DEFAULT_MAP[NS2_SRC_COUNT] = {
     NS2_DST_L, NS2_DST_R, NS2_DST_ZL, NS2_DST_ZR,
     NS2_DST_MINUS, NS2_DST_PLUS, NS2_DST_L3, NS2_DST_R3,
     NS2_DST_DUP, NS2_DST_DDOWN, NS2_DST_DLEFT, NS2_DST_DRIGHT,
-    NS2_DST_HOME, NS2_DST_CAPTURE, NS2_DST_C, NS2_DST_CAPTURE,
-    NS2_DST_GL, NS2_DST_GR, NS2_DST_C, NS2_DST_GL, NS2_DST_GR,
+    NS2_DST_HOME, NS2_DST_CAPTURE, NS2_DST_C, NS2_DST_GL,   // A1 A2 A3 A4; A4 = Edge Fn L -> GL
+    NS2_DST_GL, NS2_DST_GR, NS2_DST_GR, NS2_DST_GL, NS2_DST_GR, // L4 R4 A5 L5 R5; A5 = Edge Fn R -> GR
 };
+// DualSense Edge Fn L/R default to GL/GR (community-requested 2026-07-18), joining
+// the back paddles which also default to GL/GR. Both remain independently
+// reassignable per family in config mode (the Fn buttons keep distinct source bits).
 
 _Static_assert(sizeof(pico_config_t) <= FLASH_PAGE_SIZE, "config must fit in one flash page");
 

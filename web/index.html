@@ -355,8 +355,8 @@ const DS_EDGE_ROWS = [
   [18, "Mute",          "C",       3, 0x01],
   [20, "Back Paddle L", "GL",      3, 0x02],
   [21, "Back Paddle R", "GR",      3, 0x04],
-  [19, "Fn L",          "Capture", 1, 0x20],
-  [24, "Fn R",          "C",       3, 0x01],
+  [19, "Fn L",          "GL",      1, 0x20],
+  [24, "Fn R",          "GR",      3, 0x01],
 ];
 const XBOX_ROWS = [
   [17, "Share", "Capture", 1, 0x20],
@@ -383,7 +383,7 @@ const JP_TO_SRC = { 0:0, 1:1, 2:2, 3:3, 4:4, 5:5, 6:6, 7:7, 8:8, 9:9, 10:10, 11:
   12:12, 13:13, 14:14, 15:15, 16:16, 17:17, 18:18, 19:19, 20:20, 21:21, 24:22, 25:23, 26:24 };
 const NS2_SRC_COUNT = 25;
 // Built-in default map (src -> dst); mirrors NS2_DEFAULT_MAP in config.c.
-const NS2_DEFAULT_MAP = [1,2,3,4,5,6,7,8,11,12,9,10,15,16,17,18,13,14,21,14,19,20,21,19,20];
+const NS2_DEFAULT_MAP = [1,2,3,4,5,6,7,8,11,12,9,10,15,16,17,18,13,14,21,19,19,20,20,19,20];
 let currentMap = NS2_DEFAULT_MAP.slice();
 let currentFamily = 3;
 

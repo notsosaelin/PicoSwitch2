@@ -505,14 +505,15 @@ static void ds5_process_report(bthid_device_t* device, const uint8_t* data, uint
     // DualSense Edge extra inputs: same button byte as PS/touchpad/mute, upper bits
     // (0 on a standard DualSense, so this is safe to parse unconditionally). Offsets
     // per SDL's HIDAPI_DriverPS5 (0x10 FnL, 0x20 FnR, 0x40 left paddle, 0x80 right).
-    // User mapping: back paddles -> Switch grips GL/GR (via L4/R4); the two front Fn
-    // buttons -> Capture (screenshot) and C (via A2/A3).
-    // Distinct bits (not touchpad A2 / mute A3) so the Fn buttons show as their own
-    // inputs in the config view. Seam defaults: paddles->GL/GR, FnL->Capture, FnR->C.
+    // Back paddles and the two front Fn buttons all default to the Switch grips
+    // GL/GR. The Fn buttons keep distinct source bits (A4/A5, not touchpad A2 /
+    // mute A3) so they still show as their own inputs and can be reassigned
+    // separately in the config view. Seam defaults (NS2_DEFAULT_MAP, config.c):
+    // paddles->GL/GR, FnL->GL, FnR->GR.
     if (rpt->paddle_left)  buttons |= JP_BUTTON_L4;   // -> GL
     if (rpt->paddle_right) buttons |= JP_BUTTON_R4;   // -> GR
-    if (rpt->fn_left)      buttons |= JP_BUTTON_A4;   // Fn L -> Capture (screenshot)
-    if (rpt->fn_right)     buttons |= JP_BUTTON_A5;   // Fn R -> C
+    if (rpt->fn_left)      buttons |= JP_BUTTON_A4;   // Fn L -> GL (default)
+    if (rpt->fn_right)     buttons |= JP_BUTTON_A5;   // Fn R -> GR (default)
 
     // Update event
     ds5->event.buttons = buttons;
