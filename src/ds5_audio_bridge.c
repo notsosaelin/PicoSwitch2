@@ -19,53 +19,6 @@ void ds5_audio_bridge_get_speaker_control(bool *muted, uint8_t *volume) {
     if (volume) *volume = speaker_control_volume;
 }
 
-// --- Diagnostics (always compiled; fed only from core 1 in audio builds) -----
-static volatile uint32_t diag_core1_max_gap_us;
-static volatile uint32_t diag_core1_gaps_over_10ms;
-static volatile uint32_t diag_send_max_gap_us;
-static volatile uint32_t diag_send_gaps_over_40ms;
-static volatile uint32_t diag_sends_total;
-static uint32_t diag_core1_last_us;
-static uint32_t diag_send_last_us;
-
-void ds5_audio_diag_note_core1_tick(uint32_t now_us) {
-    if (diag_core1_last_us) {
-        uint32_t gap = now_us - diag_core1_last_us;
-        if (gap > diag_core1_max_gap_us) diag_core1_max_gap_us = gap;
-        if (gap > 10000u) diag_core1_gaps_over_10ms++;
-    }
-    diag_core1_last_us = now_us;
-}
-
-void ds5_audio_diag_note_send(uint32_t now_us) {
-    if (diag_send_last_us) {
-        uint32_t gap = now_us - diag_send_last_us;
-        if (gap > diag_send_max_gap_us) diag_send_max_gap_us = gap;
-        if (gap > 40000u) diag_send_gaps_over_40ms++;
-    }
-    diag_send_last_us = now_us;
-    diag_sends_total++;
-}
-
-void ds5_audio_diag_get(ds5_audio_diag_t *out) {
-    if (!out) return;
-    out->core1_max_gap_us = diag_core1_max_gap_us;
-    out->core1_gaps_over_10ms = diag_core1_gaps_over_10ms;
-    out->send_max_gap_us = diag_send_max_gap_us;
-    out->send_gaps_over_40ms = diag_send_gaps_over_40ms;
-    out->sends_total = diag_sends_total;
-}
-
-void ds5_audio_diag_reset(void) {
-    diag_core1_max_gap_us = 0;
-    diag_core1_gaps_over_10ms = 0;
-    diag_send_max_gap_us = 0;
-    diag_send_gaps_over_40ms = 0;
-    diag_sends_total = 0;
-    diag_core1_last_us = 0;
-    diag_send_last_us = 0;
-}
-
 #if defined(NS2_DS5_AUDIO_TEST_TONE)
 
 #include "ds5_audio_test_tone.h"

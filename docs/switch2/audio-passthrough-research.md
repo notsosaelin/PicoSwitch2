@@ -1,18 +1,12 @@
 # DualSense Audio Passthrough — Research and Implementation Notes
 
-> **This is the feasibility/research trail.** For the durable *as-built* description of the shipped
-> bridge (build modes, data flow, `0x39` layout, rate contract, threading), read
-> [`dualsense-audio-bridge.md`](dualsense-audio-bridge.md) first.
-
 > Status (2026-07-17): 🟡 **USB milestone hardware-validated; Pico 2 W speaker transport under
 > diagnosis after the first live bridge failed hardware validation.**
 > The old descriptor-only class stub has been replaced by a PC2-specific UAC1 driver. It opens
 > both 192-byte/1-ms isochronous endpoints, consumes speaker PCM, continuously supplies silent
 > microphone PCM, and implements writable mute/volume controls. The RP2350 build now queues USB
-> PCM across cores, encodes fixed 10 ms stereo Opus frames from exact 48 kHz packets, and emits
-> DualSense reports `0x39`/`0x32`. (The 512→480 resampler this doc originally described is now
-> vestigial — see [`dualsense-audio-bridge.md`](dualsense-audio-bridge.md) §7.) Windows starts both
-> USB audio endpoints without
+> PCM across cores, converts the proven 51.2 kHz cadence to 48 kHz, encodes fixed 10 ms stereo Opus
+> frames, and emits DualSense reports `0x39`/`0x32`. Windows starts both USB audio endpoints without
 > Device Manager Code 10, and the UAC1-only hardware pass found no controller regressions. The
 > first live-Opus pass failed with no audio and severe DualSense scheduling/input regressions, so
 > live encoding is disabled by default. A codec-free tone pass fixed those regressions but remained
@@ -141,10 +135,8 @@ items from the 2026-07-12 pass. Rough shape of the work, for whenever it's picke
    2026-07-17 without changing the byte-verified descriptor. The first Windows hardware pass is
    confirmed that Device Manager Code 10 is gone with no known controller regressions.
 4. ✅ **Vendor Opus without importing WDL.** Opus is pinned as a submodule to the reference's
-   known-working commit. A small project-owned 512-to-480 linear resampler was written to avoid the
-   WDL dependency and its licensing ambiguity. The as-built live path later dropped resampling
-   entirely (exact 48 kHz accumulation), leaving that module vestigial — see
-   [`dualsense-audio-bridge.md`](dualsense-audio-bridge.md) §7.
+   known-working commit. The immutable 512-to-480 conversion is a small project-owned linear
+   resampler with host coverage, avoiding another dependency and its licensing ambiguity.
 5. Scope to **DualSense only** first (per the user's framing) — Xbox/other controllers with
    headset jacks are a separate, later generalization (`unmapped-features.md` "Audio Over
    Bluetooth" already tracks this as unmapped for all controller families).

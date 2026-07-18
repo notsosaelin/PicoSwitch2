@@ -1302,44 +1302,6 @@ void btstack_host_suppress_scan(bool suppress)
     }
 }
 
-// True when at least one HID controller is connected on either transport.
-static bool any_hid_controller_connected(void)
-{
-    if (btstack_classic_get_connection_count() > 0) {
-        return true;
-    }
-    for (int i = 0; i < MAX_BLE_CONNECTIONS; i++) {
-        if (hid_state.connections[i].handle != HCI_CON_HANDLE_INVALID &&
-            hid_state.connections[i].hid_ready) {
-            return true;
-        }
-    }
-    return false;
-}
-
-// One-controller scope: idle background scan/inquiry while a controller is
-// connected. The retired multi-controller design kept BLE scanning and a
-// continuous Classic inquiry (6.4 s GIAC/LIAC cycles) running at all times so
-// additional pads could join; now that one dongle serves one controller, that
-// discovery only steals radio time from the active link -- most visibly
-// starving the continuous ~50 x 548-byte/s DualSense audio stream into periodic
-// dropouts, while tiny HID input tolerates the contention. Stopping scan also
-// leaves the BLE state machine IDLE, so the inquiry-complete handler does not
-// re-arm. An explicit pairing window (pairing_window_open) or an in-flight
-// admitted candidate keeps discovery running so a new/replacement controller can
-// still be admitted. Reconnect scanning resumes through the existing disconnect
-// and safety-resume paths once no controller remains. Call periodically.
-void btstack_host_update_scan_for_connection_state(bool pairing_window_open)
-{
-    if (pairing_window_open || pairing_close_deferred) {
-        return;
-    }
-    if (any_hid_controller_connected() &&
-        (hid_state.scan_active || classic_state.inquiry_active)) {
-        btstack_host_stop_scan();
-    }
-}
-
 // ============================================================================
 // CONNECTION
 // ============================================================================
