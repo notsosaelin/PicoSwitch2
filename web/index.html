@@ -123,6 +123,13 @@
         <div class="devimg">device image TBD</div>
       </section>
 
+      <section class="q" id="audioDiag">
+        <h2>DualSense Audio Diagnostics</h2>
+        <div id="audioVerdict" class="bigname">&mdash;</div>
+        <div id="audioMeta" class="muted">connect a DualSense in an audio build to measure</div>
+        <button id="audioResetBtn" type="button">Reset counters</button>
+      </section>
+
       <section class="q">
         <h2>Current Output Type</h2>
         <div class="bigname">Switch 2 Pro Controller</div>
@@ -452,6 +459,21 @@ function renderLive(st) {
   });
 }
 const hex4 = n => "0x" + ((n | 0) & 0xFFFF).toString(16).toUpperCase().padStart(4, "0");
+function renderAudioStat(d) {
+  if (!d || d.core1MaxGapUs === undefined) return;
+  const c1 = d.core1MaxGapUs / 1000, sm = d.sendMaxGapUs / 1000;
+  let verdict;
+  if ((d.sends | 0) < 10) verdict = "waiting for audio…";
+  else if (c1 >= 15) verdict = "CORE-1 FREEZE (a blocking op stalls the BT loop)";
+  else if (sm >= 40) verdict = "RADIO / SEND STALL (delivery, not core-1)";
+  else verdict = "no host-side stall (gap is controller-side)";
+  $("#audioVerdict").textContent = verdict;
+  $("#audioMeta").textContent =
+    `core-1 max ${c1.toFixed(1)} ms (${d.core1GapsOver10ms | 0} over 10 ms) · ` +
+    `send max ${sm.toFixed(1)} ms (${d.sendGapsOver40ms | 0} over 40 ms) · ` +
+    `${d.sends | 0} reports sent`;
+}
+
 function renderDevice(d) {
   if (!d) return;
   const name = (d.name && d.name.trim()) ? d.name : "No controller connected";
@@ -813,6 +835,7 @@ async function pollLoop() {
     renderRaw(await sendCmd("raw", true));
     renderImu(await sendCmd("imu", true));
     if (tick % 14 === 0) renderDevice(await sendCmd("device", true));  // name changes rarely
+    if (tick % 3 === 0) renderAudioStat(await sendCmd("audiostat", true));  // audio stall meter
     await capPoll();  // always, not just while capturing — keeps capturing/dropped live either way
     tick++;
     await new Promise(r => setTimeout(r, 70));
@@ -909,6 +932,7 @@ $("#capStartBtn").onclick = capStart;
 $("#capStopBtn").onclick = capStop;
 $("#capClearBtn").onclick = capClear;
 $("#capDownloadBtn").onclick = capDownload;
+$("#audioResetBtn").onclick = () => sendCmd("audiostat reset");
 $("#capFilterKind").onchange = e => { capFilterKind = e.target.value; capRenderLive(); };
 $("#capFilterHandle").oninput = e => { capFilterHandle = e.target.value.trim(); capRenderLive(); };
 $("#capHandleA").onclick = () => { capFilterHandle = "0x000A"; $("#capFilterHandle").value = "0x000A"; capRenderLive(); };

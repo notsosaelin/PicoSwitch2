@@ -14,6 +14,7 @@
 #include "sw2_capture.h" // genuine Switch 2 BLE raw-traffic capture/export (2026-07-10)
 #include "bt_identity_log.h" // controller identity/driver-binding event log (Gate 2, 2026-07-12)
 #include "bt/bthid/bthid.h" // bthid_get_cached_descriptor (btid desc command)
+#include "ds5_audio_bridge.h" // ds5_audio_diag_* (audiostat command)
 #include "bt/bthid/devices/generic/bthid_gamepad.h" // bthid_gamepad_dump_map (btid desc command)
 
 #include <string.h>
@@ -371,6 +372,27 @@ static void cmd_state(void) {
     reply(out);
 }
 
+// DualSense audio-bridge stall diagnostics (localizes the periodic dropout:
+// core-1 freeze vs. radio/send stall). See include/ds5_audio_bridge.h.
+static void cmd_audiostat(bool reset) {
+    if (reset) {
+        ds5_audio_diag_reset();
+        reply("{\"ok\":true}");
+        return;
+    }
+    ds5_audio_diag_t d;
+    ds5_audio_diag_get(&d);
+    snprintf(out, sizeof(out),
+             "{\"core1MaxGapUs\":%lu,\"core1GapsOver10ms\":%lu,"
+             "\"sendMaxGapUs\":%lu,\"sendGapsOver40ms\":%lu,\"sends\":%lu}",
+             (unsigned long)d.core1_max_gap_us,
+             (unsigned long)d.core1_gaps_over_10ms,
+             (unsigned long)d.send_max_gap_us,
+             (unsigned long)d.send_gaps_over_40ms,
+             (unsigned long)d.sends_total);
+    reply(out);
+}
+
 // Connected controller identity for the "Current Input Type" panel. Slot 0.
 static void cmd_device(void) {
     char name[40];
@@ -655,6 +677,10 @@ static void handle_line(char *cmd) {
         cmd_state();
     } else if (strcmp(cmd, "device") == 0) {
         cmd_device();
+    } else if (strcmp(cmd, "audiostat") == 0) {
+        cmd_audiostat(false);
+    } else if (strcmp(cmd, "audiostat reset") == 0) {
+        cmd_audiostat(true);
     } else if (strcmp(cmd, "raw") == 0) {
         cmd_raw();
 #ifdef NS2_PRO
