@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "controller_headset.h"
+
 #define DS5_AUDIO_OPUS_FRAME_LEN 200u
 #define DS5_AUDIO_STREAM_REPORT_LEN 547u
 #define DS5_AUDIO_CONTROL_REPORT_LEN 142u
@@ -18,6 +20,7 @@ bool ds5_audio_is_mic_input_report(const uint8_t *report, uint16_t len);
 // The report begins at its ID; the outer 0xA1 HID transaction byte has already
 // been removed by bthid.
 bool ds5_audio_headset_connected(const uint8_t *report, uint16_t len);
+uint8_t ds5_audio_headset_state(const uint8_t *report, uint16_t len);
 
 // Build complete Bluetooth HID output reports, beginning with report ID and
 // ending with the CRC32. The HID transaction byte (0xA2) is not included.
@@ -26,6 +29,10 @@ void ds5_audio_build_stream_report(
     uint8_t packet_counter,
     bool mic_enabled,
     bool use_headphones,
+#ifdef NS2_DS5_AUDIO
+    uint8_t haptic_left,
+    uint8_t haptic_right,
+#endif
     uint8_t buffer_length,
     const uint8_t frame_a[DS5_AUDIO_OPUS_FRAME_LEN],
     const uint8_t frame_b[DS5_AUDIO_OPUS_FRAME_LEN],

@@ -154,8 +154,9 @@ typedef struct {
     bool headset_connected;
     bool audio_speaker_control_known;
     bool audio_speaker_muted;
-    bool audio_speaker_headphones;
     uint8_t audio_speaker_volume;
+    bool audio_headset_path_active;
+    bool audio_haptics_active;
 #endif
 
     // Current feedback state (for change detection)
@@ -235,25 +236,32 @@ static void ds5_audio_task(bthid_device_t *device, ds5_bt_data_t *ds5,
     bool speaker_muted;
     uint8_t speaker_volume;
     ds5_audio_bridge_get_speaker_control(&speaker_muted, &speaker_volume);
-    bool const use_headphones = ds5->headset_connected;
 
     // Report 0x39 is ignored until the extended 0x32 state transaction enables
-    // AudioControl. The same transaction explicitly supplies the route,
-    // non-zero volume, and unmuted/muted state rather than relying on values
-    // retained from a previous host. Preserve it as an ordered activation step. The
+    // AudioControl. The same transaction supplies non-zero volume and
+    // unmuted/muted state rather than relying on values retained from a
+    // previous host. Hardware also requires AudioControl 0x02 on headset
+    // insertion. Latch that path for the rest of this Bluetooth connection:
+    // sending the reverse 0x30 transaction on removal was observed to poison
+    // the console session, while report 0x39 already selects the live output
+    // destination per audio block. Preserve activation as an ordered step. The
     // direct-L2CAP transport reports queue acceptance rather than completed
     // transmission, so mirror the existing LED activation state machine's
     // settling delay before allowing status/stream traffic to follow it.
+    bool const headset_path_pending =
+        ds5->headset_connected && !ds5->audio_headset_path_active;
     bool const speaker_control_changed =
         !ds5->audio_speaker_control_known ||
         ds5->audio_speaker_muted != speaker_muted ||
         ds5->audio_speaker_volume != speaker_volume ||
-        ds5->audio_speaker_headphones != use_headphones;
+        headset_path_pending;
     if (ds5->audio_control_state == 0 ||
         (ds5->audio_control_state == 2 && speaker_control_changed)) {
         static uint8_t control_buf[1 + DS5_AUDIO_CONTROL_REPORT_LEN];
+        bool const use_headset_path =
+            ds5->audio_headset_path_active || ds5->headset_connected;
         control_buf[0] = 0xA2;
-        ds5_audio_build_control_report(ds5->output_seq, use_headphones,
+        ds5_audio_build_control_report(ds5->output_seq, use_headset_path,
                                        speaker_muted, speaker_volume,
                                        control_buf + 1);
         if (bt_send_interrupt(device->conn_index, control_buf,
@@ -262,7 +270,7 @@ static void ds5_audio_task(bthid_device_t *device, ds5_bt_data_t *ds5,
             ds5->audio_speaker_control_known = true;
             ds5->audio_speaker_muted = speaker_muted;
             ds5->audio_speaker_volume = speaker_volume;
-            ds5->audio_speaker_headphones = use_headphones;
+            ds5->audio_headset_path_active = use_headset_path;
             if (ds5->audio_control_state == 0) {
                 ds5->audio_control_state = 1;
                 ds5->audio_control_time = platform_time_ms();
@@ -305,7 +313,8 @@ static void ds5_audio_task(bthid_device_t *device, ds5_bt_data_t *ds5,
     stream_buf[0] = 0xA2;
     ds5_audio_build_stream_report(
         ds5->output_seq, next_packet_counter, mic_active,
-        ds5->headset_connected, audio_buffer_length,
+        ds5->headset_connected, ds5->rumble_left, ds5->rumble_right,
+        audio_buffer_length,
         frame_a, frame_b, stream_buf + 1);
     if (bt_send_interrupt(device->conn_index, stream_buf,
                           sizeof(stream_buf))) {
@@ -401,8 +410,9 @@ static bool ds5_init(bthid_device_t* device)
             ds5_data[i].headset_connected = false;
             ds5_data[i].audio_speaker_control_known = false;
             ds5_data[i].audio_speaker_muted = false;
-            ds5_data[i].audio_speaker_headphones = false;
             ds5_data[i].audio_speaker_volume = 100;
+            ds5_data[i].audio_headset_path_active = false;
+            ds5_data[i].audio_haptics_active = false;
 #endif
             ds5_data[i].rumble_left = 0;
             ds5_data[i].rumble_right = 0;
@@ -564,9 +574,14 @@ static void ds5_process_report(bthid_device_t* device, const uint8_t* data, uint
 #ifdef NS2_DS5_AUDIO
     // Headset insertion is reported in the full 0x31 status byte. The
     // DualSense audio transport selects speaker (0x13) or headphones (0x16)
-    // when the next paired Opus report is built.
-    if (report_id == DS5_REPORT_BT_INPUT)
-        ds5->headset_connected = ds5_audio_headset_connected(data, len);
+    // when the next paired Opus report is built. Preserve headphone-vs-headset
+    // separately so the emulated Pro Controller 2 can expose the matching
+    // Nintendo state only while the physical jack is occupied.
+    if (report_id == DS5_REPORT_BT_INPUT) {
+        ds5->event.headset_state = ds5_audio_headset_state(data, len);
+        ds5->headset_connected =
+            ds5->event.headset_state != CONTROLLER_HEADSET_NONE;
+    }
 #endif
 
     // Touchpad (only in full 0x31 reports that include touch fields)
@@ -695,6 +710,14 @@ static void ds5_task(bthid_device_t* device)
                     uint8_t player_led = ds5->player_led;
                     uint8_t rumble_left = ds5->rumble_left;
                     uint8_t rumble_right = ds5->rumble_right;
+#ifdef NS2_DS5_AUDIO
+                    bool const audio_haptics_active =
+                        ds5->headset_connected ||
+                        ds5_audio_bridge_speaker_requested();
+                    bool const audio_haptics_ended =
+                        ds5->audio_haptics_active && !audio_haptics_active;
+                    ds5->audio_haptics_active = audio_haptics_active;
+#endif
 
                     // Calculate player LED from pattern (like DS3)
                     // DS5 has separate player LED bar and RGB lightbar
@@ -747,6 +770,42 @@ static void ds5_task(bthid_device_t* device)
                         player_led != ds5->player_led)
                         led_update = true;
 
+#ifdef NS2_DS5_AUDIO
+                    bool rumble_consumed_by_audio = false;
+                    // Report 0x39 already has two 64-byte 3 kHz haptic PCM
+                    // blocks, separate from its two Opus speaker blocks. Take
+                    // ownership as soon as a headset/audio path is requested,
+                    // before the first stream packet. Waiting for a successful
+                    // 0x39 allowed repeated console rumble generations to keep
+                    // filling the ordinary 0x31 output path, starving the
+                    // activation/stream traffic required to end that fallback.
+                    if (rumble_update && audio_haptics_active) {
+                        ds5->rumble_left = rumble_left;
+                        ds5->rumble_right = rumble_right;
+                        rumble_update = false;
+                        rumble_consumed_by_audio = true;
+                    }
+                    // When the USB host closes its audio stream, restore the
+                    // established legacy path immediately using the last
+                    // commanded values (including a zero-magnitude STOP).
+                    if (audio_haptics_ended) rumble_update = true;
+
+                    bool output_accepted = false;
+                    if (rumble_update || led_update) {
+                        output_accepted =
+                            ds5_send_output(device, false, false,
+                                            rumble_update, led_update,
+                                            rumble_left, rumble_right,
+                                            r, g, b, player_led);
+                    }
+                    if (output_accepted ||
+                        (rumble_consumed_by_audio && !led_update)) {
+                        // Only consume feedback after BTstack has accepted the
+                        // report, or after live audio has taken ownership of the
+                        // haptic values. A failed legacy STOP is still retried.
+                        feedback_clear_dirty(player_idx);
+                    }
+#else
                     if ((rumble_update || led_update) &&
                         ds5_send_output(device, false, false, rumble_update, led_update,
                                         rumble_left, rumble_right, r, g, b, player_led)) {
@@ -755,6 +814,7 @@ static void ds5_task(bthid_device_t* device)
                         // leaving a previous motor command latched.
                         feedback_clear_dirty(player_idx);
                     }
+#endif
                 }
             }
             break;

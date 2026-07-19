@@ -1,20 +1,16 @@
 # DualSense Audio Passthrough — Research and Implementation Notes
 
-> Status (2026-07-17): 🟡 **USB milestone hardware-validated; Pico 2 W speaker transport under
-> diagnosis after the first live bridge failed hardware validation.**
-> The old descriptor-only class stub has been replaced by a PC2-specific UAC1 driver. It opens
-> both 192-byte/1-ms isochronous endpoints, consumes speaker PCM, continuously supplies silent
-> microphone PCM, and implements writable mute/volume controls. The RP2350 build now queues USB
-> PCM across cores, converts the proven 51.2 kHz cadence to 48 kHz, encodes fixed 10 ms stereo Opus
-> frames, and emits DualSense reports `0x39`/`0x32`. Windows starts both USB audio endpoints without
-> Device Manager Code 10, and the UAC1-only hardware pass found no controller regressions. The
-> first live-Opus pass failed with no audio and severe DualSense scheduling/input regressions, so
-> live encoding is disabled by default. A codec-free tone pass fixed those regressions but remained
-> silent through an AudioControl retest. A subsequent byte audit found that the existing
-> compatibility initialization explicitly applied zero headphone/speaker/microphone volume and an
-> implicit route. The consolidated diagnostic now applies nonzero volume, explicitly selects and
-> unmutes the controller speaker, forwards Windows UAC mute/volume changes, validates the
-> negotiated 548-byte L2CAP path, and uses a louder host-decoded 1 kHz Opus stream.
+> Status (2026-07-18): 🟢 **The standard Pico 2 W 300 MHz build produces
+> hardware-confirmed continuous DualSense audio with zero PCM drops/errors.**
+> The PC2-specific UAC1 driver owns both 192-byte/1-ms isochronous endpoints,
+> consumes speaker PCM, supplies silent microphone PCM, and implements writable
+> mute/volume controls. A producer-paced, SRAM-resident Opus path converts each
+> 512-frame 48 kHz input window into the controller's 480-sample effective stream.
+> Pico W is intentionally non-audio after its fixed-point/XIP experiment failed
+> hardware playback. Bonded HID Host reconnect transport and conditional
+> DualSense physical-jack advertisement are now implemented. Real Switch 2
+> insertion/output are confirmed; bonded reconnect and revised unplug recovery
+> remain pending.
 
 ## 1. Goal
 
@@ -121,7 +117,7 @@ items from the 2026-07-12 pass. Rough shape of the work, for whenever it's picke
    marked all volume and audio-route fields valid but wrote zeros, and the UAC driver stored host
    mute/volume changes without forwarding them. The consolidated diagnostic now retains the
    confirmed rumble/LED flags while applying headphone/speaker volume 100, microphone volume 64,
-   explicit speaker routing and unmute in both initialization paths, and subsequent host-control
+   automatic AudioControl paths and unmute in both initialization paths, and subsequent host-control
    updates. That pass produced audible controller-speaker output and Windows mute correctly
    silenced it, confirming activation, routing, Opus decode, and host-control forwarding. The tone
    was discontinuous; its guaranteed 21.333 ms pacing for 20 ms of encoded audio and a headset
@@ -129,8 +125,23 @@ items from the 2026-07-12 pass. Rough shape of the work, for whenever it's picke
    backpressure. Each correction improved but did not eliminate the intermittent tone. The next
    diagnostic addresses the remaining project-local starvation path by servicing lightweight
    transport at inbound report boundaries and using a ten-entry RP2350 audio FIFO; live encoding
-   remains outside the deep receive callback. Reserved/haptics zeros and the disabled microphone
-   path are intentional.
+   remains outside the deep receive callback. A real-console pass then confirmed physical-headset
+   recognition and output, but found that jack removal killed input and legacy rumble interrupted
+   audio. A follow-up pass showed that suppressing the reverse removal transaction restores
+   ordinary rumble after unplug, but zero AudioControl is silent; it also exposed a repeated
+   alt-setting activation stall on headset reinsert. The restored/latched audible `0x02`
+   activation and persistent RP2350 ISO endpoint now pass repeated removal/reinsert plus
+   controller/dongle reconnect without input or ordinary-rumble regressions.
+
+   Report `0x39` keeps its two 64-byte 3 kHz haptic PCM blocks (bytes 12..139) separate
+   from its two Opus speaker frames (bytes 142..541). A transient build produced audio
+   plus lighter native haptics, while a recent-flow ownership gate produced full legacy
+   rumble but no audio. Recurring legacy `0x31` generations could occupy the ordinary
+   output path before the first `0x39`, creating a self-sustaining startup deadlock.
+   Native ownership now begins at physical-headset/USB-speaker request time, before the
+   first stream packet, and removal restores the legacy path.
+   The disabled microphone path remains intentional; audio/haptic coexistence and
+   bonded-reconnect audio await focused hardware retest.
 3. ✅ **Replace the descriptor-only stub with operational UAC1 USB plumbing.** Implemented
    2026-07-17 without changing the byte-verified descriptor. The first Windows hardware pass is
    confirmed that Device Manager Code 10 is gone with no known controller regressions.

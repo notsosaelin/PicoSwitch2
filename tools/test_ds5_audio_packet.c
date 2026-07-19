@@ -27,14 +27,31 @@ int main(void) {
     assert(!ds5_audio_headset_connected(NULL, 0));
     assert(!ds5_audio_headset_connected(bt_input, 55));
     assert(!ds5_audio_headset_connected(bt_input, sizeof(bt_input)));
+    assert(ds5_audio_headset_state(bt_input, sizeof(bt_input)) ==
+           CONTROLLER_HEADSET_NONE);
     bt_input[55] = 0x01;
     assert(ds5_audio_headset_connected(bt_input, sizeof(bt_input)));
+    assert(ds5_audio_headset_state(bt_input, sizeof(bt_input)) ==
+           CONTROLLER_HEADSET_HEADPHONES);
+    bt_input[55] = 0x03;
+    assert(ds5_audio_headset_state(bt_input, sizeof(bt_input)) ==
+           CONTROLLER_HEADSET_HEADSET);
     bt_input[55] = 0;
     bt_input[56] = 0x01;
     assert(!ds5_audio_headset_connected(bt_input, sizeof(bt_input)));
     bt_input[0] = 0x01;
     bt_input[55] = 0x01;
     assert(!ds5_audio_headset_connected(bt_input, sizeof(bt_input)));
+
+    assert(controller_headset_switch2_state(CONTROLLER_HEADSET_NONE, 0) == 0);
+    assert(controller_headset_switch2_state(CONTROLLER_HEADSET_HEADPHONES, 0) ==
+           0x05);
+    assert(controller_headset_switch2_state(CONTROLLER_HEADSET_HEADPHONES, 1) ==
+           0x0D);
+    assert(controller_headset_switch2_state(CONTROLLER_HEADSET_HEADSET, 0) ==
+           0x07);
+    assert(controller_headset_switch2_state(CONTROLLER_HEADSET_HEADSET, 1) ==
+           0x0F);
 
     uint8_t frame_a[DS5_AUDIO_OPUS_FRAME_LEN];
     uint8_t frame_b[DS5_AUDIO_OPUS_FRAME_LEN];
@@ -44,7 +61,7 @@ int main(void) {
     }
 
     uint8_t stream[DS5_AUDIO_STREAM_REPORT_LEN];
-    ds5_audio_build_stream_report(3, 0x22, false, false, 64,
+    ds5_audio_build_stream_report(3, 0x22, false, false, 0, 0, 64,
                                   frame_a, frame_b, stream);
     assert(stream[0] == 0x39 && stream[1] == 0x30);
     assert(stream[2] == 0x91 && stream[3] == 6 && stream[4] == 0x7E);
@@ -59,10 +76,27 @@ int main(void) {
     // Independently generated with zlib.crc32(A2 || report[0:543]).
     assert(report_crc(stream, sizeof(stream)) == 0x903B700Eu);
 
-    ds5_audio_build_stream_report(15, 0x24, true, true, 48,
+    ds5_audio_build_stream_report(15, 0x24, true, true, 0, 0, 48,
                                   frame_a, frame_b, stream);
     assert(stream[1] == 0xF0 && stream[4] == 0x7F);
     assert(stream[5] == 48 && stream[140] == 0xD6);
+
+    ds5_audio_build_stream_report(4, 0x26, false, true, 255, 128, 64,
+                                  frame_a, frame_b, stream);
+    // 3 kHz stereo signed-8 haptic PCM: fixed 187.5 Hz sine, with
+    // independent left/right magnitude scaling in both 64-byte blocks.
+    assert((int8_t)stream[12] == 0 && (int8_t)stream[13] == 0);
+    assert((int8_t)stream[14] == 49 && (int8_t)stream[15] == 24);
+    assert((int8_t)stream[20] == 127 && (int8_t)stream[21] == 63);
+    assert((int8_t)stream[44] == 0 && (int8_t)stream[45] == 0);
+    assert((int8_t)stream[76] == 0 && (int8_t)stream[77] == 0);
+    assert((int8_t)stream[108] == 0 && (int8_t)stream[109] == 0);
+    // Haptic PCM occupies only bytes 12..139. It must never modify either
+    // independently encoded speaker block.
+    for (unsigned i = 0; i < DS5_AUDIO_OPUS_FRAME_LEN; ++i) {
+        assert(stream[142 + i] == frame_a[i]);
+        assert(stream[342 + i] == frame_b[i]);
+    }
 
     uint8_t control[DS5_AUDIO_CONTROL_REPORT_LEN];
     ds5_audio_build_control_report(7, false, false, 100, control);

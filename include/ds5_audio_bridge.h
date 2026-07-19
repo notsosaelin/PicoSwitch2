@@ -29,6 +29,13 @@ bool ds5_audio_bridge_peek_speaker_pair(
     uint8_t frame_a[DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN],
     uint8_t frame_b[DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN]);
 void ds5_audio_bridge_commit_speaker_pair(void);
+#ifdef NS2_DS5_AUDIO
+// True once the USB host requests the speaker alternate setting. The Sony
+// driver must reserve the combined report-0x39 audio/haptic path before the
+// first packet: allowing legacy rumble to churn until a successful 0x39 can
+// starve the very activation/stream reports needed to break that condition.
+bool ds5_audio_bridge_speaker_requested(void);
+#endif
 bool ds5_audio_bridge_mic_active(void);
 void ds5_audio_bridge_get_speaker_control(bool *muted, uint8_t *volume);
 

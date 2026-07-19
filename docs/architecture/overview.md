@@ -17,7 +17,7 @@ not block each other.
 | BOOTSEL raw sampler | 0 | Safe flash-CS sample after cooperative core-1 park |
 | BTstack/CYW43 | 1 | Discovery, pairing, reconnection, HID/GATT transport |
 | joypad-os bthid | 1 | Controller identity, input parsing, output tasks |
-| Live DualSense Opus worker (opt-in) | 1 foreground | Blocks on complete PCM windows; CYW43/BTstack background IRQ may preempt |
+| Live DualSense Opus worker (Pico 2 W) | 1 foreground | Blocks on complete PCM windows; CYW43/BTstack background IRQ may preempt |
 | Seam/router | 1 | Unified input → Switch button/capability model |
 | BOOTSEL gestures and LED | 1 | Pairing, wipe, personality requests, status indication |
 
@@ -36,7 +36,9 @@ Bluetooth report
 ```
 
 Controller-specific drivers own wire parsing. The seam owns policy: which normalized button becomes
-which Switch 2 destination for the active output personality.
+which Switch 2 destination for the active output personality. In Pico 2 W audio
+builds, the same event also carries the DualSense physical-jack state. Pro Controller
+2 reports advertise a headset only while that jack is occupied.
 
 ## Output path
 
@@ -51,6 +53,14 @@ Switch 2 / PC interrupt OUT
 
 GameCube rumble is decoded as an ON/OFF/STOP state and converted to a bounded downstream pulse.
 DualSense and Xbox use their own packet builders and preserve explicit zero-magnitude STOP writes.
+Fresh Sony pairing sends through raw direct L2CAP. Bonded Sony reconnects receive
+through BTstack HID Host, but the oversized DualSense `0x32`/`0x39` audio reports
+bypass its eight-bit output-length API through the already-negotiated interrupt CID.
+All ordinary reconnect output remains on HID Host.
+While DualSense USB audio is active, rumble is not sent as a competing legacy
+output report. The current left/right magnitudes are rendered into report
+`0x39`'s two native 64-byte stereo signed-8 haptic PCM blocks at 3 kHz. Closing
+USB audio restores the established legacy report path, including an explicit STOP.
 The active output personality's configured appearance (Pro2 body or per-side Joy-Con 2 accent) is
 routed to supported Sony RGB lightbars. Separately, Switch 2 command `0x09` player assignments cross
 cores through generation-counted shared state and are translated into controller-specific player
@@ -92,17 +102,22 @@ and mixed calls. This pins starvation resistance and prevents either servicing p
 completed gesture twice. Physical QSPI sampling and the cross-core SRAM park remain hardware-only
 concerns and are deliberately outside that host test.
 
-### Opt-in live-audio scheduling
+### Standard live-audio scheduling
 
 The Pico SDK `threadsafe_background` CYW43 architecture services Bluetooth from a
 low-priority IRQ on core1; `btstack_run_loop_execute()` otherwise leaves the foreground
-waiting. In the Pico 2 W live-audio build, that foreground runs a blocking Opus worker:
+waiting. In the standard Pico 2 W build, that foreground runs a blocking Opus worker:
 core0 accumulates a complete 512-frame stereo PCM window, the queue wake schedules core1
 immediately, and the worker resamples 512→480 and encodes one frame. The background
 Bluetooth context may preempt encoding and transports completed frames in two-frame
 DualSense report `0x39` packets. USB remains on core0 and Bluetooth ownership remains on
 core1, avoiding the enumeration and BOOTSEL regressions observed when the cores were split
 differently.
+
+Pico 2 W keeps the hardware-confirmed floating-point Opus archive and hot memory
+primitives in SRAM with a 48 KiB stack. The attempted Pico W fixed-point/XIP
+profile passed build and memory gates but barely played audio on hardware; it
+was removed, leaving Pico W on its prior non-audio architecture.
 
 ## BOOTSEL sampling
 
@@ -146,8 +161,11 @@ centralization and transition mechanics.
 
 ## Build configurations
 
-- Default: Pico W, Pro2-capable multi-personality firmware
-- `PICO_BOARD=pico2_w`: Pico 2 W
+- Default: Pico W, Pro2-capable multi-personality firmware without the
+  DualSense Bluetooth audio bridge
+- `PICO_BOARD=pico2_w`: Pico 2 W with live DualSense Opus audio at the
+  hardware-confirmed 300 MHz/1.20 V system clock
+- `NS2_PICO2_SYSTEM_CLOCK_MHZ=150|200`: lower-clock Pico 2 W diagnostic comparisons
 - `NS2_PRO=OFF`: legacy Switch 1 Pro Controller target
 
 Both board targets use the same source tree and are release-gated together.

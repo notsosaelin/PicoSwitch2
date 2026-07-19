@@ -42,16 +42,22 @@ code inspection only; it is weaker than physical hardware confirmation.
 | Post-wipe automatic readmission remains blocked | ✅ Confirmed for reported workflow; include in release matrix |
 | Re-pair after explicit new pairing window | ✅ Confirmed |
 
-## Opt-in DualSense audio build
+## DualSense audio
 
 | Scenario | Status |
 |---|---|
-| Live Windows PCM → DualSense internal speaker at 300 MHz | ✅ Confirmed continuous; zero PCM drops/errors |
+| Pico 2 W: live Windows PCM → DualSense internal speaker at 300 MHz | ✅ Confirmed continuous; zero PCM drops/errors |
+| Pico W: fixed-point/XIP live PCM at 300 MHz | ❌ Rejected; audio barely played on hardware and the standard build is non-audio |
+| Existing-bond reconnect without a fresh pair | 🟡 Fix built; current hardware still reported no audio after reconnect, revised build pending controller-only and dongle power-cycle tests |
+| No physical headset connected | 🟡 Source-tested: reports no headset so the Switch should not route audio to the bare speaker |
+| Physical headset insertion and console output | ✅ Confirmed: Switch 2 recognizes the jack and plays through DualSense-connected headphones |
+| Physical headset removal/reinsert | ✅ Input lifecycle and ordinary rumble remain stable through repeated cycles; audio restoration on reinsert awaits focused retest |
 | LED and BOOTSEL during 300 MHz regression pass | ✅ Confirmed |
 | Config save/readback after reconnect | ✅ Confirmed (mappings and colors) |
 | Cold boot | ✅ Confirmed |
 | Console wake | ✅ Ten attempts with every known controller |
-| Real-console input/rumble during audio | ⏸ Blocked: Switch 2 does not yet expose a connected headset |
+| Real-console input/wake during audio | ✅ Confirmed |
+| Real-console rumble during audio | 🟡 Transient audio/native-haptic coexistence worked with lighter rumble; recent-flow gating let full legacy rumble starve audio startup. Pre-stream `0x39` ownership awaits retest |
 | Extended playback/thermal soak | 🟡 Pending |
 
 ## PC-specific behavior

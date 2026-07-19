@@ -25,9 +25,10 @@ project's hardware captures and
 - Experimental Joy-Con 2 Left and Right output personalities.
 - DualSense and DualSense Edge input, including Edge paddles, Fn and mute buttons,
   LEDs, and rumble.
-- Opt-in Pico 2 W live Windows-audio output through a paired DualSense internal
-  speaker. The hardware-confirmed build uses a 300 MHz RP2350 clock and is not part
-  of the ordinary release firmware.
+- Live Windows-audio output through a paired DualSense internal speaker on
+  Pico 2 W. Its standard artifact uses the hardware-confirmed
+  floating-point/SRAM codec path at 300 MHz/1.20 V. Pico W remains on its
+  validated non-audio configuration.
 - Xbox-family, Switch-family, 8BitDo, and other supported Bluetooth HID controllers.
 - A local configuration page for remapping buttons and independently setting the Pro Controller 2
   body and Joy-Con 2 Left/Right accent colors. The active personality's appearance is shared with
@@ -102,18 +103,18 @@ CMake 3.31.5, Ninja 1.12.1, and picotool 2.2.0-a4.
 
 ```powershell
 ./build.ps1            # both boards
-./build.ps1 pico_w     # RP2040 Pico W
-./build.ps1 pico2_w    # RP2350 Pico 2 W
+./build.ps1 pico_w     # RP2040 Pico W, validated non-audio build
+./build.ps1 pico2_w    # RP2350 Pico 2 W, live audio at 300 MHz
 ./build.ps1 -Clean     # clean, then build both
 ./build.ps1 -Tone      # Pico 2 W fixed DualSense diagnostic tone
-./build.ps1 -AudioOverclock300 # validated live DualSense audio, 300 MHz
+./build.ps1 -Audio     # Pico 2 W live-audio 150 MHz comparison
+./build.ps1 -AudioOverclock # Pico 2 W live-audio 200 MHz comparison
 ```
 
 Artifacts are written to:
 
 - `build/pico_w/PicoSwitchWGA-pico_w.uf2`
 - `build/pico2_w/PicoSwitchWGA-pico2_w.uf2`
-- `build/pico2_w_audio_300mhz/PicoSwitchWGA-pico2_w.uf2` (opt-in audio)
 
 This is also a standard Pico SDK CMake project for environments with `PICO_SDK_PATH` set.
 
@@ -139,9 +140,18 @@ retain only wire layouts, invariants, and implementation constraints.
 - Switch 2 wake-from-sleep is implemented in Pro Controller 2 mode. After the console has entered
   sleep, the first real controller input sends the wake request automatically. Neutral reconnect
   reports never trigger wake.
-- Live DualSense speaker output is Pico 2 W-only and currently requires the experimental
-  300 MHz/1.20 V build. It routes to the controller's internal speaker; Switch 2 headset-presence
-  reporting and the DualSense microphone return path remain open.
+- Live DualSense speaker output is Pico 2 W-only. A saved DualSense bond is
+  sufficient: every reconnect resets the audio session and resends the
+  controller's audio-enable transaction, so a fresh pair is not expected. The
+  bonded HID Host path now bypasses its small-report limit for the two oversized
+  Sony audio reports; hardware reconnect validation is pending.
+  The Pico W fixed-point/XIP experiment barely produced audio on hardware and
+  was removed from its standard build. On Pico 2 W, the physical DualSense jack
+  conditionally drives Switch 2 headset presence so a bare controller does not
+  capture console audio. Real-console insertion and headphone output are confirmed.
+  Repeated unplug/replug recovery, report-flow-gated haptic rumble, bonded audio
+  reconnect, extended thermal-soak testing, and the DualSense microphone return
+  remain open.
 
 See [PLAN.md](PLAN.md) for the prioritized roadmap and
 [docs/status/compatibility-matrix.md](docs/status/compatibility-matrix.md) for the test matrix.

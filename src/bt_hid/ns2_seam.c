@@ -268,6 +268,9 @@ void router_submit_input(const input_event_t *e) {
         in.gyro[1]  = ns2_clamp16( e->gyro[2]);
         in.gyro[2]  = ns2_clamp16( e->gyro[1]);
     }
+#ifdef NS2_DS5_AUDIO
+    in.headset_state = e->headset_state;
+#endif
 
     set_global_gamepad_input(slot, &in);
     set_global_raw_buttons(slot, b);  // b includes analog L2/R2, for the live view

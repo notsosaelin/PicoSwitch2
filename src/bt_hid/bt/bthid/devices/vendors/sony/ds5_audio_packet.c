@@ -19,10 +19,10 @@
 #define DS5_AUDIO_CONTROL_ALLOW_MUTE          0x02u
 #define DS5_AUDIO_CONTROL_HP_VOLUME_OFFSET    8u
 #define DS5_AUDIO_CONTROL_SPK_VOLUME_OFFSET   9u
-#define DS5_AUDIO_CONTROL_ROUTE_OFFSET       11u
+#define DS5_AUDIO_CONTROL_PATH_OFFSET        11u
 #define DS5_AUDIO_CONTROL_MUTE_OFFSET        13u
-#define DS5_AUDIO_ROUTE_HEADPHONES           0x02u
-#define DS5_AUDIO_ROUTE_SPEAKER              0x30u
+#define DS5_AUDIO_CONTROL_HEADSET_PATH        0x02u
+#define DS5_AUDIO_CONTROL_SPEAKER_PATH        0x30u
 #define DS5_AUDIO_MUTE_SPEAKER_AND_HP        0x60u
 
 bool ds5_audio_is_mic_input_report(const uint8_t *report, uint16_t len) {
@@ -31,13 +31,32 @@ bool ds5_audio_is_mic_input_report(const uint8_t *report, uint16_t len) {
 }
 
 bool ds5_audio_headset_connected(const uint8_t *report, uint16_t len) {
-    // Reference captures count the outer 0xA1 transaction byte and place this
-    // flag at byte 56. bthid removes that byte before driver dispatch, making
-    // byte 55 the corresponding offset here.
+#ifdef NS2_DS5_AUDIO
+    return ds5_audio_headset_state(report, len) != CONTROLLER_HEADSET_NONE;
+#else
     return report && len > DS5_AUDIO_HEADSET_STATUS_OFFSET &&
            report[0] == DS5_AUDIO_INPUT_REPORT_ID &&
            (report[DS5_AUDIO_HEADSET_STATUS_OFFSET] & 0x01u) != 0;
+#endif
 }
+
+#ifdef NS2_DS5_AUDIO
+uint8_t ds5_audio_headset_state(const uint8_t *report, uint16_t len) {
+    // Reference captures count the outer 0xA1 transaction byte and place this
+    // flag at byte 56. bthid removes that byte before driver dispatch, making
+    // byte 55 the corresponding offset here. Bit 0 means headphones are
+    // physically inserted; bit 1 distinguishes a microphone-equipped headset.
+    if (!report || len <= DS5_AUDIO_HEADSET_STATUS_OFFSET ||
+        report[0] != DS5_AUDIO_INPUT_REPORT_ID) {
+        return CONTROLLER_HEADSET_NONE;
+    }
+    uint8_t const status = report[DS5_AUDIO_HEADSET_STATUS_OFFSET];
+    if ((status & 0x01u) == 0) return CONTROLLER_HEADSET_NONE;
+    return (status & 0x02u) != 0
+        ? CONTROLLER_HEADSET_HEADSET
+        : CONTROLLER_HEADSET_HEADPHONES;
+}
+#endif
 
 static uint32_t ds5_audio_crc32_raw(uint32_t seed,
                                     const uint8_t *data,
@@ -71,11 +90,45 @@ static void ds5_audio_store_crc(uint8_t *report, size_t report_len) {
     report[offset + 3] = (uint8_t)(crc >> 24);
 }
 
+#ifdef NS2_DS5_AUDIO
+// Report 0x39 carries two consecutive 64-byte haptic blocks. Each block is
+// 32 stereo signed-8 PCM frames at 3 kHz, matching DS5Dongle's hardware-proven
+// path. The ordinary Nintendo rumble seam currently supplies one magnitude per
+// physical side rather than the original HD-rumble frequencies, so render a
+// phase-continuous fixed 187.5 Hz sine (two LUT steps per 3 kHz sample).
+//
+// A complete 0x39 packet contains exactly four cycles, so restarting the LUT
+// at the next packet boundary is continuous. Zero magnitude remains byte-zero
+// silence, preserving the previous packet output when rumble is idle.
+static void ds5_audio_write_haptics(uint8_t *out,
+                                    uint8_t left,
+                                    uint8_t right) {
+    static const int8_t sine32[32] = {
+          0,  25,  49,  71,  90, 106, 117, 125,
+        127, 125, 117, 106,  90,  71,  49,  25,
+          0, -25, -49, -71, -90,-106,-117,-125,
+       -127,-125,-117,-106, -90, -71, -49, -25,
+    };
+
+    for (unsigned frame = 0; frame < 64u; ++frame) {
+        int16_t const wave = sine32[(frame * 2u) & 31u];
+        int16_t const sample_left = (int16_t)(wave * left) / 255;
+        int16_t const sample_right = (int16_t)(wave * right) / 255;
+        out[12u + frame * 2u] = (uint8_t)(int8_t)sample_left;
+        out[13u + frame * 2u] = (uint8_t)(int8_t)sample_right;
+    }
+}
+#endif
+
 void ds5_audio_build_stream_report(
     uint8_t sequence,
     uint8_t packet_counter,
     bool mic_enabled,
     bool use_headphones,
+#ifdef NS2_DS5_AUDIO
+    uint8_t haptic_left,
+    uint8_t haptic_right,
+#endif
     uint8_t buffer_length,
     const uint8_t frame_a[DS5_AUDIO_OPUS_FRAME_LEN],
     const uint8_t frame_b[DS5_AUDIO_OPUS_FRAME_LEN],
@@ -93,11 +146,12 @@ void ds5_audio_build_stream_report(
     out[8] = buffer_length;
     out[9] = packet_counter;
 
-    // Two 64-byte haptics blocks occupy bytes 12..139. PicoSwitch2's retail
-    // PC2 USB descriptor exposes two PCM channels rather than DS5Dongle's
-    // four-channel speaker+haptics layout, so those blocks remain zero here.
+    // Two 64-byte haptic PCM blocks occupy bytes 12..139.
     out[10] = 0xD2;
     out[11] = 64;
+#ifdef NS2_DS5_AUDIO
+    ds5_audio_write_haptics(out, haptic_left, haptic_right);
+#endif
 
     // 0x13 selects the controller speaker; 0x16 selects its headset output.
     // Bits 6 and 7 mark the block valid in the DualSense audio transport.
@@ -129,11 +183,14 @@ void ds5_audio_build_control_report(
         DS5_AUDIO_CONTROL_ALLOW_MUTE;
     out[DS5_AUDIO_CONTROL_HP_VOLUME_OFFSET] = speaker_volume;
     out[DS5_AUDIO_CONTROL_SPK_VOLUME_OFFSET] = speaker_volume;
-    // Explicitly select the destination. Zero is "automatic" and left the
-    // fixed speaker diagnostic dependent on whatever route the controller
-    // retained from its previous host.
-    out[DS5_AUDIO_CONTROL_ROUTE_OFFSET] =
-        use_headphones ? DS5_AUDIO_ROUTE_HEADPHONES : DS5_AUDIO_ROUTE_SPEAKER;
+    // Hardware establishes that the audible Bluetooth setup needs these
+    // AudioControl values in addition to report 0x39's per-block destination.
+    // They are not simple route enums: 0x02 selects the external MicSelect
+    // state while retaining the default output channel path, whereas 0x30 is
+    // the compatibility value used by the established speaker setup.
+    out[DS5_AUDIO_CONTROL_PATH_OFFSET] =
+        use_headphones ? DS5_AUDIO_CONTROL_HEADSET_PATH
+                       : DS5_AUDIO_CONTROL_SPEAKER_PATH;
     out[DS5_AUDIO_CONTROL_MUTE_OFFSET] =
         speaker_muted ? DS5_AUDIO_MUTE_SPEAKER_AND_HP : 0;
 

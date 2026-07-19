@@ -63,7 +63,7 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
   implements writable mute/volume controls.
 - [x] Confirm on Windows that the audio function starts without Device Manager Code 10 and that
   existing controller behavior remains regression-free.
-- [x] Isolate and redesign the Pico 2 W DualSense speaker bridge. The final opt-in
+- [x] Isolate and redesign the Pico 2 W DualSense speaker bridge. The standard Pico 2 W
   configuration uses the controller's effective 45 kHz clock, whole 512-frame PCM
   blocks, SRAM-resident Opus/hot memory routines, and a producer-paced core1
   foreground worker at 300 MHz/1.20 V. Hardware playback is continuous with zero
@@ -71,10 +71,24 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
   pass. The 150/200 MHz controls remain below the real-time threshold. See
   [`DS5-NS2_AUDIO.md`](DS5-NS2_AUDIO.md) and
   [`AUDIO-INVESTIGATION.md`](AUDIO-INVESTIGATION.md).
-- [ ] Expose the correct Pro Controller 2 headset-presence/audio route to Switch 2.
-  Current audio reaches the DualSense internal speaker, so real-console input and
-  rumble during an audio session cannot yet be tested.
-- [ ] Run an extended playback and thermal soak of the 300 MHz audio build.
+- [x] Merge the validated 300 MHz/live-audio configuration into the normal
+  `PicoSwitchWGA-pico2_w.uf2` artifact.
+- [x] Evaluate a Pico W port at 300 MHz. The fixed-point/XIP image passed build
+  and memory gates but barely played audio on hardware, so the experiment was
+  rejected and Pico W was restored to its validated non-audio configuration.
+- [x] Implement bonded-reconnect audio without requiring a fresh pair. The Pico 2 W
+  path captures the HID Host interrupt CID and bypasses its eight-bit/80-byte output
+  limit only for DualSense `0x32`/`0x39` audio reports.
+- [x] Implement conditional Pro Controller 2 headset presence from the physical
+  DualSense jack; no jack continues to advertise no headset.
+- [ ] Hardware-validate audio after bonded reconnect and native haptic coexistence.
+  The latched audible activation and persistent ISO endpoint lifecycle now pass
+  repeated jack removal/reinsert plus ordinary controller/dongle reconnect without
+  input or rumble regressions. A transient build produced audio with lighter native
+  haptics; the recent-flow-gated build restored full legacy rumble but starved audio
+  startup. Retest pre-stream `0x39` ownership, continuous audio during rumble, legacy
+  rumble restoration after unplug, and audio restoration after replug/reconnect.
+- [ ] Run an extended playback and thermal soak of the Pico 2 W 300 MHz audio build.
 - [ ] Add DualSense microphone report decoding and Opus-to-USB return after speaker playback is
   physically stable.
 - [ ] Re-test the Switch 2 “Update this controller” prompt after USB audio is healthy; if it

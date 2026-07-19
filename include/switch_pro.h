@@ -4,6 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "controller_headset.h"
+
 // Number of emulated Pro Controllers (USB HID interfaces). Single knob, set via
 // -D SWITCH_PRO_MAX_CONTROLLERS in CMake; must equal CFG_TUD_HID and the number
 // of interfaces in the USB configuration descriptor. Max 4 (Switch supports 4).
@@ -74,6 +76,9 @@ typedef struct {
     uint8_t battery_level;   // normalized 0..100 percentage
     uint8_t battery_valid;   // 1 when the source controller reported a level
     uint8_t battery_charging;// 1 when the source controller reports charging
+#ifdef NS2_DS5_AUDIO
+    uint8_t headset_state;   // CONTROLLER_HEADSET_* physical jack state
+#endif
 
     // NSO GameCube-only fields (2026-07-13). Always present (not `#ifdef NS2_PRO`) so this
     // struct's layout/size is identical across build configs; Pro2/Switch 1 encoders simply
