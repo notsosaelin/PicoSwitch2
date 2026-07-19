@@ -54,6 +54,14 @@
 - **NFC-state byte** in the console-native input report (Pro2 report `0x09` offset `0xC`; right
   JoyCon `0x08` offset `0xE`): `0x00`–`0x07`, `0x00 = Idle`. Drives the console's "tag present / read
   in progress" state.
+
+> **Report `0x09` is a shared multi-field container, not an NFC-specific report.** The same Pro
+> Controller 2 console-native report carries Counter (0x0), Power Info/battery (0x1), Buttons (0x2),
+> sticks (0x5/0x8), **NFC state (0xC)**, Headset Audio State (0xD), and **Motion/gyro data (0xF,
+> 0x28 bytes)**. So the NFC-state byte here and the console-side **motion/gyro** field the project's
+> `0x09` motion RE targets live in the *same* report — different offsets. This matters for RE
+> economy: one genuine console-side `0x09` capture would unblock **both** the NFC-state and the
+> motion questions at once (both are gated on the same missing capture — `inventory` §2.5).
 - **Timing:** in the (PC) capture, NFC status is queried **once at connection setup**, not polled;
   polling during an actual amiibo interaction is likely but uncaptured (`inventory` §2.4).
 
