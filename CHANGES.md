@@ -7,6 +7,19 @@ tagged release was [`v1.3.0`](https://github.com/notsosaelin/PicoSwitch2/release
 ## 2026-07-18
 
 ### Changed
+- **DualSense native haptic mode now survives headset replug, with capture-derived
+  envelope preservation under test.** Hardware confirms first-insertion audio,
+  3× native PCM, unplugged legacy rumble, and repeated audio/haptic restoration.
+  The explicit report-`0x32` selector clears the persistent
+  `UseRumbleNotHaptics` mode after legacy report-`0x31` use. Genuine Switch 2
+  capture replay then showed latest-value sampling loses the interval peak in
+  74–78% of active DualSense packets, so the focused follow-up accumulates
+  independent left/right scalar peaks between audio reports without changing
+  Opus bytes, packet layout, or the validated legacy path.
+  Hardware preferred the native PCM character but found it slightly light, so the
+  current comparison candidate preserves that waveform and raises only its fixed
+  gain from 3× to 13/4× (3.25×). The capture's maximum scalar remains unsaturated
+  at a 110/127 PCM peak.
 - **Real Switch 2 DualSense-headset lifecycle is stable; audio/haptic startup
   ownership is revised for focused retest.** The audible `0x02` activation remains
   latched and the persistent RP2350 ISO endpoint survives alt-setting cycles.

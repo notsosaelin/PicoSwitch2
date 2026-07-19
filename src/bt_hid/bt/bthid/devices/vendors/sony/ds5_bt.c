@@ -18,6 +18,7 @@
 #include "core/services/players/feedback.h"
 #include "controller_battery.h"
 #include "platform/platform.h"
+#include "report.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -305,6 +306,9 @@ static void ds5_audio_task(bthid_device_t *device, ds5_bt_data_t *ds5,
     if (!ds5_audio_bridge_peek_speaker_pair(frame_a, frame_b)) return;
 
     static uint8_t stream_buf[1 + DS5_AUDIO_STREAM_REPORT_LEN];
+    uint8_t haptic_left;
+    uint8_t haptic_right;
+    report_take_rumble_audio_peak(0, &haptic_left, &haptic_right);
     uint8_t const next_packet_counter =
         (uint8_t)(ds5->audio_packet_counter + 2u);
     // Both DS5Dongle's working report 0x39 path and daidr's independent report
@@ -313,7 +317,7 @@ static void ds5_audio_task(bthid_device_t *device, ds5_bt_data_t *ds5,
     stream_buf[0] = 0xA2;
     ds5_audio_build_stream_report(
         ds5->output_seq, next_packet_counter, mic_active,
-        ds5->headset_connected, ds5->rumble_left, ds5->rumble_right,
+        ds5->headset_connected, haptic_left, haptic_right,
         audio_buffer_length,
         frame_a, frame_b, stream_buf + 1);
     if (bt_send_interrupt(device->conn_index, stream_buf,
@@ -582,6 +586,8 @@ static void ds5_process_report(bthid_device_t* device, const uint8_t* data, uint
         ds5->event.headset_state = ds5_audio_headset_state(data, len);
         ds5->headset_connected =
             ds5->event.headset_state != CONTROLLER_HEADSET_NONE;
+        if (!was_connected && ds5->headset_connected)
+            report_reset_rumble_audio_peak(0);
         if (!was_connected && ds5->headset_connected &&
             ds5->audio_headset_path_active) {
             // A headset-free interval uses compatible report-0x31 rumble,
@@ -725,9 +731,13 @@ static void ds5_task(bthid_device_t* device)
                     bool const audio_haptics_active =
                         ds5->headset_connected ||
                         ds5_audio_bridge_speaker_requested();
+                    bool const audio_haptics_started =
+                        !ds5->audio_haptics_active && audio_haptics_active;
                     bool const audio_haptics_ended =
                         ds5->audio_haptics_active && !audio_haptics_active;
                     ds5->audio_haptics_active = audio_haptics_active;
+                    if (audio_haptics_started)
+                        report_reset_rumble_audio_peak(0);
 #endif
 
                     // Calculate player LED from pattern (like DS3)
