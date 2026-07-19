@@ -380,83 +380,8 @@ typedef struct {
 static wiimote_connection_t wiimote_conn;
 
 #ifdef NS2_DS5_AUDIO
-// HID Host owns bonded reconnect channels, but its public output API accepts
-// only an 8-bit report length and therefore cannot carry DualSense audio. Keep
-// a read-only record of the already-negotiated HID CIDs so only the oversized
-// Sony reports can bypass HID Host's output wrapper.
-typedef struct {
-    bool active;
-    bd_addr_t addr;
-    hci_con_handle_t acl_handle;
-    uint16_t control_cid;
-    uint16_t interrupt_cid;
-} hid_host_l2cap_capture_t;
-
-static hid_host_l2cap_capture_t
-    hid_host_l2cap_captures[MAX_CLASSIC_CONNECTIONS];
-
-static hid_host_l2cap_capture_t *
-hid_host_l2cap_capture_find_addr(const bd_addr_t addr)
-{
-    for (int i = 0; i < MAX_CLASSIC_CONNECTIONS; ++i) {
-        hid_host_l2cap_capture_t *capture = &hid_host_l2cap_captures[i];
-        if (capture->active && bd_addr_cmp(capture->addr, addr) == 0)
-            return capture;
-    }
-    return NULL;
-}
-
-static hid_host_l2cap_capture_t *
-hid_host_l2cap_capture_get(const bd_addr_t addr, hci_con_handle_t handle)
-{
-    hid_host_l2cap_capture_t *capture =
-        hid_host_l2cap_capture_find_addr(addr);
-    if (capture) {
-        capture->acl_handle = handle;
-        return capture;
-    }
-    for (int i = 0; i < MAX_CLASSIC_CONNECTIONS; ++i) {
-        capture = &hid_host_l2cap_captures[i];
-        if (!capture->active) {
-            memset(capture, 0, sizeof(*capture));
-            capture->active = true;
-            capture->acl_handle = handle;
-            memcpy(capture->addr, addr, sizeof(bd_addr_t));
-            return capture;
-        }
-    }
-    return NULL;
-}
-
-static void hid_host_l2cap_capture_channel(const bd_addr_t addr,
-                                           hci_con_handle_t handle,
-                                           uint16_t psm, uint16_t cid)
-{
-    if (psm != PSM_HID_CONTROL && psm != PSM_HID_INTERRUPT) return;
-    hid_host_l2cap_capture_t *capture =
-        hid_host_l2cap_capture_get(addr, handle);
-    if (!capture) return;
-    if (psm == PSM_HID_CONTROL)
-        capture->control_cid = cid;
-    else
-        capture->interrupt_cid = cid;
-}
-
-static uint16_t hid_host_l2cap_interrupt_cid(const bd_addr_t addr)
-{
-    hid_host_l2cap_capture_t *capture =
-        hid_host_l2cap_capture_find_addr(addr);
-    return capture ? capture->interrupt_cid : 0;
-}
-
-static void hid_host_l2cap_capture_clear_handle(hci_con_handle_t handle)
-{
-    for (int i = 0; i < MAX_CLASSIC_CONNECTIONS; ++i) {
-        hid_host_l2cap_capture_t *capture = &hid_host_l2cap_captures[i];
-        if (capture->active && capture->acl_handle == handle)
-            memset(capture, 0, sizeof(*capture));
-    }
-}
+#include "bt_hid/bt/btstack/hid_host_long_report.h"
+#include "ds5_reconnect_transport.h"
 #endif
 
 // Direct-L2CAP output is used by Sony controllers on CYW43 (to avoid their
@@ -532,40 +457,6 @@ static void direct_output_try_send(uint16_t cid)
         l2cap_request_can_send_now_event(cid);
     }
 }
-
-#ifdef NS2_DS5_AUDIO
-// Bonded Sony reconnections are received through BTstack's HID Host, but the
-// audio reports still have to bypass hid_host_send_report(): that API takes an
-// 8-bit length and cannot represent report 0x39's 546-byte payload. The HID
-// Host path has already negotiated the interrupt channel, whose CID is captured
-// from the L2CAP events. Send only when L2CAP can accept the packet now and return
-// false otherwise; the DualSense audio state machine retains and retries both
-// control and stream reports at its next 2 ms service point.
-static bool direct_audio_output_try_send_now(uint16_t cid, uint8_t report_id,
-                                             const uint8_t *data,
-                                             uint16_t len)
-{
-    if (cid == 0 || len + 2u > DIRECT_OUTPUT_MAX_LEN) return false;
-    uint16_t const remote_mtu = l2cap_get_remote_mtu_for_local_cid(cid);
-    if (remote_mtu != 0 && len + 2u > remote_mtu) {
-        printf("[BTSTACK_HOST] Reconnect audio len=%u exceeds interrupt MTU=%u\n",
-               (unsigned)(len + 2u), (unsigned)remote_mtu);
-        return false;
-    }
-    if (!l2cap_can_send_packet_now(cid)) return false;
-
-    static uint8_t packet[DIRECT_OUTPUT_MAX_LEN];
-    packet[0] = 0xA2;
-    packet[1] = report_id;
-    if (len != 0) memcpy(packet + 2, data, len);
-    uint8_t const status = l2cap_send(cid, packet, len + 2u);
-    if (status != ERROR_CODE_SUCCESS) return false;
-
-    if (report_id == 0x39u)
-        ds5_audio_diag_note_l2cap_send(time_us_32());
-    return true;
-}
-#endif
 
 // Forward declaration
 static void wiimote_l2cap_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size);
@@ -2462,10 +2353,6 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             l2cap_event_incoming_connection_get_address(packet, addr);
             printf("[BTSTACK_HOST] L2CAP incoming: PSM=0x%04X cid=0x%04X handle=0x%04X\n", psm, cid, handle);
 
-#ifdef NS2_DS5_AUDIO
-            hid_host_l2cap_capture_channel(addr, handle, psm, cid);
-#endif
-
             // For Wiimotes during reconnection, we create outgoing L2CAP channels ourselves.
             // If the Wiimote also tries to create incoming channels, decline them at L2CAP level
             // to force the Wiimote to use our outgoing channels.
@@ -2501,14 +2388,6 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             l2cap_event_channel_opened_get_address(packet, l2cap_addr);
             printf("[BTSTACK_HOST] L2CAP opened: status=%d PSM=0x%04X cid=0x%04X addr=%s\n",
                    status, psm, cid, bd_addr_to_str(l2cap_addr));
-
-#ifdef NS2_DS5_AUDIO
-            if (status == ERROR_CODE_SUCCESS) {
-                hci_con_handle_t const handle =
-                    l2cap_event_channel_opened_get_handle(packet);
-                hid_host_l2cap_capture_channel(l2cap_addr, handle, psm, cid);
-            }
-#endif
 
             // Capture L2CAP CIDs for Wiimote connections (for direct L2CAP sending)
             // HID Host handles receiving, but we need direct L2CAP CIDs for sending
@@ -2936,10 +2815,6 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             uint8_t reason = hci_event_disconnection_complete_get_reason(packet);
 
             printf("[BTSTACK_HOST] Disconnected: handle=0x%04X reason=0x%02X\n", handle, reason);
-
-#ifdef NS2_DS5_AUDIO
-            hid_host_l2cap_capture_clear_handle(handle);
-#endif
 
             ble_connection_t *conn = find_connection_by_handle(handle);
             if (conn && conn->conn_index > 0) {
@@ -6143,23 +6018,15 @@ bool btstack_classic_send_report(uint8_t conn_index, uint8_t report_id,
 
 #ifdef NS2_DS5_AUDIO
     // Fresh Sony pairing uses the raw direct-L2CAP connection below. A bonded
-    // controller reconnects through HID Host and therefore has a real hid_cid,
-    // but its captured interrupt CID is still the only path capable of carrying
-    // the 142-byte 0x32 activation and 547-byte 0x39 stream reports.
-    bool const audio_report = report_id == 0x32u || report_id == 0x39u;
-    uint16_t const reconnect_interrupt_cid =
-        hid_host_l2cap_interrupt_cid(conn->addr);
-    bool const sony_profile =
-        conn->vendor_id == 0x054C ||
-        (conn->profile && conn->profile->default_vid == 0x054C) ||
-        (conn->name[0] &&
-         bt_device_lookup_by_name(conn->name)->default_vid == 0x054C);
-    bool const sony_hid_host_reconnect =
-        conn->hid_cid != 0xFFFF && sony_profile &&
-        reconnect_interrupt_cid != 0;
-    if (audio_report && sony_hid_host_reconnect) {
-        return direct_audio_output_try_send_now(
-            reconnect_interrupt_cid, report_id, data, len);
+    // controller reconnects through HID Host and therefore has a real hid_cid.
+    // Route only the exact oversized DualSense protocol shapes through the
+    // 16-bit-length extension. Do not depend on name/VID metadata: HID becomes
+    // ready before late identity resolution during a normal bonded reconnect.
+    if (conn->hid_cid != 0xFFFF &&
+        ds5_reconnect_uses_long_hid_report(report_id, len)) {
+        uint8_t const status = ns2_hid_host_send_long_report(
+            conn->hid_cid, report_id, data, len);
+        return status == ERROR_CODE_SUCCESS;
     }
 #endif
 

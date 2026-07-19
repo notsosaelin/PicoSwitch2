@@ -16,9 +16,10 @@
 > identified a startup scheduling deadlock: recurring legacy `0x31` output could
 > prevent the first combined `0x39` audio/haptic report whose arrival was required
 > to transfer ownership. The current build reserves `0x39` ownership when the
-> headset/audio path is requested, before the first stream packet. Audio after a
-> bonded reconnect and audio/haptic coexistence remain hardware-pending. Remaining work is
-> microphone return and an extended thermal soak. A 300 MHz Pico W fixed-point/XIP port cleared compile
+> headset/audio path is requested, before the first stream packet. Audio/native
+> haptics, repeated jack removal/reinsert, and saved-bond controller/dongle
+> reconnects are hardware-confirmed. Remaining work is microphone return and an
+> extended thermal soak. A 300 MHz Pico W fixed-point/XIP port cleared compile
 > and memory gates but barely played audio on hardware. It was rejected, and
 > Pico W is locked to its prior validated non-audio configuration.
 >
@@ -553,11 +554,19 @@ bits, and PicoSwitch2's normal HID Host persistence buffer is 80 bytes, so that 
 not represent either the 142-byte `0x32` activation or 547-byte `0x39` stream report. Input
 therefore reconnected while audio silently stopped.
 
-The Pico 2 W audio build now records the control/interrupt CIDs of each already-negotiated
-HID Host connection. Only Sony audio reports bypass the length-limited wrapper and use that
-captured interrupt CID; ordinary controller output remains on the established HID Host path.
-The audio state machine keeps ownership of retry timing, so a temporarily busy L2CAP channel
-does not turn a failed immediate send into a false success.
+The first reconnect implementation tried to record HID Host's negotiated interrupt CID from
+the application's global HCI callback. That cannot be reliable: BTstack dispatches dynamic
+L2CAP channel events only to the channel owner's private packet handler. The bypass therefore
+had neither a dependable CID nor a dependable early Sony identity, because HID becomes ready
+before late name/VID resolution.
+
+The revised Pico 2 W build keeps bonded reconnect output inside HID Host. A build-local
+compatibility extension exposes the 16-bit `report_len` already present in BTstack's internal
+connection state, while preserving the stock eight-bit API for every ordinary caller. Only the
+exact post-framing DualSense shapes enter it: report `0x32` with 141 payload bytes and report
+`0x39` with 546. The extension accepts a report only while HID Host is idle/established, so the
+DualSense state machine retains and retries ordered activation/stream output rather than
+overwriting an in-flight HID report. Fresh pairing and all ordinary HID output are unchanged.
 
 DualSense report `0x31` status byte 55 is normalized as none, headphones, or headset and
 crosses the existing input-event seam. Pro Controller 2 report `0x09` then emits `0x00`,
@@ -665,6 +674,31 @@ approximately 102/127. A small 13/4× (3.25×) adjustment raises that to 110/127
 without clipping the observed sequence. This is only an 8.3% gain increase; packet
 layout, peak accumulation, Opus data, selector state, and lifecycle logic remain
 unchanged.
+
+That 3.25× peak-preserving state was hardware-confirmed as the closest HD-rumble
+feel observed on a non-Nintendo controller and checkpointed at `2930c90`. The next
+isolated candidate extends the same native renderer to headset-free DualSense use:
+
+- standard Pico 2 W builds consume console rumble into report `0x39` instead of
+  sending compatibility-rumble report `0x31`;
+- the codec core generates two valid 200-byte steady-state Opus-silence frames
+  once, after ten pre-roll frames, and resets the encoder before real audio;
+- a host encode/decode replay repeated that pair for 200 frames with maximum
+  decoded `|sample| = 0`;
+- silence is sent only while rumble is nonzero, followed by exactly two packets
+  after STOP. The first can carry a peak retained from the prior 4 ms Nintendo
+  interval; the second guarantees zero;
+- repeated zero reports do not extend that tail, so idle Bluetooth bandwidth
+  returns to zero; and
+- queued console audio always takes priority, and a silent packet neither consumes
+  nor resets the real Opus queue.
+
+The controller remains in native mode after the short stream stops. This avoids a
+mode flip for every effect while leaving LED-only report `0x31`, input, wake, and
+headset detection unchanged. Pico W and the fixed-tone diagnostic retain their
+previous compatibility-rumble behavior. Hardware confirmed the standard Pico 2 W
+path across headset-free rumble, live audio/native haptics, controller reconnect,
+and dongle power cycle.
 
 ## 15. The `DSPH` DSP blob (`dumps/SPI/2069_*`)
 
@@ -790,7 +824,8 @@ the standard artifact.
 > configuration persisted and read back after reconnect; cold boot passed; and console
 > wake passed ten attempts with every known controller. Real-console headset insertion
 > and audio output are confirmed, including input/rumble/wake while connected. The
-> corrected unplug transition and in-band haptic PCM build remain hardware-pending.
+> corrected unplug transition, in-band haptic PCM, headset-free native rumble,
+> and saved-bond reconnect recovery are hardware-confirmed.
 
 ### Sources
 - `nso-gc-refs/DS5Dongle/src/{main,audio,bt,btstack_config}.*` @ `750bde8`

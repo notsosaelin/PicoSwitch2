@@ -244,12 +244,16 @@ bond must therefore work after ordinary power-off/reconnect.
 The reconnect defect was below `ds5_init()`: fresh pairing used raw direct L2CAP,
 while a bonded reconnect used BTstack HID Host. Its output API has an eight-bit
 report length and the local persistence buffer is 80 bytes, so it could not send
-the 142-byte activation or 547-byte stream report. The Pico 2 W audio build now
-captures each HID Host connection's negotiated interrupt CID and bypasses only
-the oversized Sony audio reports through that CID. Ordinary HID output is
-unchanged. This is compile-tested and pending the two physical reconnect cases:
-controller power-cycle with the dongle attached, and dongle power-cycle with the
-saved bond.
+the 142-byte activation or 547-byte stream report. The first attempted repair
+captured the interrupt CID from the global HCI callback, but dynamic L2CAP channel
+events are private to HID Host and early Sony VID/name data is not guaranteed.
+
+The revised Pico 2 W build instead extends HID Host's existing internal 16-bit
+report-length path and selects it only for exact DualSense `0x32`/`0x39` wire
+shapes. HID Host still owns its channel and scheduling; ordinary output and fresh
+pairing are unchanged. Host tests, standard/fixed-tone Pico 2 W builds, and the
+unchanged Pico W build pass. Hardware validation remains for controller power-cycle
+with the dongle attached and dongle power-cycle with the saved bond.
 
 DualSense report `0x31` also supplies the physical jack state. Status bit 0 means
 headphones are inserted and bit 1 distinguishes a microphone-equipped headset.
@@ -327,6 +331,26 @@ from 3× to 13/4× (3.25×): the capture's largest collapsed scalar (68) moves f
 roughly 102/127 to 110/127, remaining unsaturated. This preserves the detail of the
 preferred waveform while making the smallest practical strength adjustment.
 
+Hardware confirmed that 3.25× peak-preserving result and it was checkpointed at
+`2930c90`. A separate headset-free candidate now reuses the exact renderer instead
+of asking DualSense firmware to synthesize compatibility rumble:
+
+1. The codec core pre-rolls twelve zero-PCM Opus frames, retains the final pair,
+   then resets the encoder before live console audio.
+2. A native `0x39` stream starts only for nonzero rumble. Real queued audio always
+   wins; otherwise the valid silent pair fills the mandatory audio blocks.
+3. STOP sends two bounded packets, accounting for the peak accumulator potentially
+   retaining one last nonzero interval and then guaranteeing an explicit zero.
+4. The stream goes idle without changing back to compatibility mode. A later
+   effect resumes the same native state without another selector transition.
+
+Native host tests cover start, sustained state, bounded STOP, repeated-zero
+suppression, and restart during the tail. A host Opus encoder/decoder replay of 200
+repeated silent frames produced maximum absolute PCM sample zero. Standard Pico 2 W,
+Pico W, and the fixed-tone diagnostic all compile. Hardware confirms headset-free
+native rumble plus audio/native-rumble recovery after controller and dongle power
+cycles through a saved bond.
+
 ## 10. DS5Dongle vs current PicoSwitch2
 
 | Aspect | DS5Dongle | PicoSwitch2 foreground-worker build |
@@ -349,9 +373,10 @@ The Pico 2 W bridge is not blocked by protocol or radio throughput. Earlier reco
 every missing audible interval corresponded to a locally dropped PCM block. The 300 MHz
 foreground-worker run eliminated those drops completely and sounded continuous, while
 200 MHz remained below the real-time threshold. The principal 300 MHz platform
-regressions are now hardware-cleared. Headset insertion and real-console output
-are hardware-confirmed. Bonded reconnect, corrected unplug recovery, and in-band
-haptic coexistence remain hardware-pending, followed by extended playback/thermal soak.
+regressions are now hardware-cleared. Headset insertion, real-console output,
+bonded reconnect, corrected unplug/reinsert recovery, headset-free native rumble,
+and in-band haptic coexistence are hardware-confirmed. Extended playback/thermal
+soak remains.
 The Pico W experiment showed that fitting the encoder is not sufficient: its
 fixed-point/XIP worker did not sustain useful playback on hardware. Audio is
 therefore locked to Pico 2 W builds.

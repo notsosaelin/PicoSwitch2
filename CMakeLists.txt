@@ -90,6 +90,30 @@ if(NS2_PRO AND NS2_AUDIO AND
    (NS2_DS5_AUDIO OR NS2_DS5_AUDIO_TEST_TONE) AND
    PICO_PLATFORM MATCHES "^rp2350")
     target_compile_definitions(PicoSwitchWGA PRIVATE NS2_DS5_AUDIO=1)
+
+    # Pico SDK 2.2.0's BTstack HID Host accepts only an 8-bit report length at
+    # its public API even though the internal connection state and L2CAP path
+    # use 16 bits. Bonded DualSense reconnects are owned by HID Host, so replace
+    # just that upstream translation unit with a compatibility wrapper which
+    # adds a 16-bit entry point for the 547-byte audio report.
+    get_target_property(_ns2_btstack_classic_sources
+                        pico_btstack_classic INTERFACE_SOURCES)
+    set(_ns2_btstack_hid_host_source
+        "${BTSTACK_ROOT}/src/classic/hid_host.c")
+    file(TO_CMAKE_PATH "${_ns2_btstack_hid_host_source}"
+         _ns2_btstack_hid_host_source)
+    list(FIND _ns2_btstack_classic_sources
+         "${_ns2_btstack_hid_host_source}" _ns2_btstack_hid_host_index)
+    if(_ns2_btstack_hid_host_index EQUAL -1)
+        message(FATAL_ERROR
+                "Cannot locate BTstack hid_host.c for the NS2 long-report compatibility extension")
+    endif()
+    list(REMOVE_ITEM _ns2_btstack_classic_sources
+         "${_ns2_btstack_hid_host_source}")
+    set_property(TARGET pico_btstack_classic PROPERTY INTERFACE_SOURCES
+                 "${_ns2_btstack_classic_sources}")
+    target_sources(PicoSwitchWGA PRIVATE
+                   cmake/btstack_hid_host_long_report.c)
 endif()
 
 if(PICO_PLATFORM MATCHES "^rp2350")

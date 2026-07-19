@@ -10,11 +10,12 @@ Branch: `ns2-testing`
 
 ## Current release
 
-[`v1.3.0`](https://github.com/notsosaelin/PicoSwitch2/releases/tag/v1.3.0) was published on
-2026-07-17 with Pico W and Pico 2 W UF2 assets. All 20 host-test executables pass. Pro Controller 2,
-NSO GameCube, both individual Joy-Con 2 personalities, appearance controls, DualSense/Edge,
-rumble, pairing, wake, BOOTSEL, the BattlerGC Pro mapping, and first-generation 8BitDo Ultimate
-paddles have recent physical validation.
+[`v1.4.0`](https://github.com/notsosaelin/PicoSwitch2/releases/tag/v1.4.0) was published on
+2026-07-18 with Pico W and Pico 2 W UF2 assets. All 28 host-test executables pass. Pico 2 W adds
+hardware-confirmed live DualSense audio, conditional headset routing, native PCM rumble with and
+without a headset, and saved-bond reconnect recovery. Pico W retains its validated non-audio
+configuration. The prior controller, personality, pairing, wake, BOOTSEL, battery, and mapping
+baseline remains intact.
 
 ## Hardware-confirmed behavior
 
@@ -46,10 +47,11 @@ paddles have recent physical validation.
 | DualSense Bluetooth internal-speaker audio — Pico 2 W | ✅ Confirmed | Standard 300 MHz build; 13,225/13,225 PCM blocks encoded, zero drops/errors |
 | DualSense Bluetooth internal-speaker audio — Pico W | ❌ Not supported | Fixed-point/XIP 300 MHz experiment barely played audio; standard build restored to validated non-audio profile |
 | Standard 300 MHz Pico 2 W platform regression | ✅ Confirmed | LED/BOOTSEL, config persistence/readback, cold boot, and ten wake attempts per known controller |
-| DualSense audio after bonded reconnect | 🟡 Revised build pending | First hardware pass still had no audio after reconnect; HID Host interrupt CID bypass remains implemented and no fresh pair is intended |
+| DualSense audio after bonded reconnect | ✅ Confirmed | Controller and dongle power cycles restore audio and native rumble through the saved bond; no fresh pair required |
 | Switch 2 headset insertion and output | ✅ Confirmed | Physical DualSense jack is recognized; console audio plays through connected headphones with input/rumble/wake intact |
 | Switch 2 headset removal/reinsert | ✅ Confirmed | Repeated cycles restore input, audio, and native haptics; unplugged full legacy rumble remains stable |
-| DualSense rumble during console audio | 🟡 Fine gain candidate pending | Native-mode restoration, 3× PCM, and capture-derived peak preservation are stable and feel more accurate than compatibility rumble; a waveform-preserving 3.25× gain candidate awaits comparison |
+| DualSense rumble during console audio | ✅ Confirmed | Native-mode restoration, capture-derived peak preservation, and the waveform-preserving 3.25× curve are stable and judged close to HD Rumble |
+| DualSense rumble without headset/audio | ✅ Confirmed | Pico 2 W reuses the native renderer with valid Opus silence only during active rumble plus a bounded two-packet STOP tail; Pico W retains compatibility rumble |
 | Pico W and Pico 2 W builds | ✅ Compile-confirmed | Pico W uses the validated non-audio profile; Pico 2 W includes live audio at 300 MHz |
 
 ## Current USB personalities
@@ -96,8 +98,8 @@ See [`docs/architecture/overview.md`](docs/architecture/overview.md) and
 
 | Priority | Issue | State |
 |---|---|---|
-| P1 | Validate bonded audio reconnect, repeated plug/unplug recovery, and in-band haptics | 🟡 First insertion/output confirmed; revised controller/dongle reconnect, replug, and rumble-with-audio tests pending |
 | P2 | DualSense microphone return | 🟡 Headset presence is implemented; microphone Opus decode and USB return remain |
+| P2 | Pro Controller 2 update prompt | 🟡 Re-test against the now-operational audio stack; isolate firmware/DSP gating if it remains |
 | P2 | Let reconnecting BLE controllers sleep with the console without touching bonds or admission | 🔵 Research concluded: no safe generic host-only path; controller-specific evidence required |
 | P3 | Console-native report `0x09` motion semantics | 🔴 Blocked on better primary evidence |
 | P3 | NFC/amiibo transactions | 🔴 Blocked on a genuine console-side capture |
@@ -133,16 +135,18 @@ Current automated coverage includes:
 - Pro Controller 2 UAC1 descriptor topology, advertised Feature Units, both 192-byte isochronous
   streams, RP2040/RP2350 allocation path, and full mute/volume request surface
 - DualSense audio report `0x39`/`0x32` byte layout and CRC, physical-jack parsing,
-  Nintendo headset-state encoding, plus the fixed 512-to-480 stereo resampler's
-  constant-signal, channel-isolation, and ramp behavior
+  Nintendo headset-state encoding, exact reconnect transport selection, native-haptic
+  start/STOP lifecycle, interval peak preservation, plus the fixed 512-to-480 stereo
+  resampler's constant-signal, channel-isolation, and ramp behavior
 
 The firmware builds under the Pico SDK 2.2.0 toolchain. The standard `pico_w`
 artifact retains its validated non-audio clock, memory layout, and Bluetooth
 scheduling. The standard `pico2_w` artifact uses the hardware-confirmed
 floating-point/SRAM audio path at 300 MHz/1.20 V. Both legacy `NS2_PRO=OFF`
-Pico W build directories also pass their compile gates. The current release has 20
-passing host-test executables; the post-release development tree has 25, including battery
-decoder/source/encoder, DualSense audio packet/control/tone, and audio resampler suites.
+Pico W build directories also pass their compile gates. The current release has 28
+passing host-test executables, including battery decoder/source/encoder, DualSense
+audio packet/control/tone/resampler, native-haptic lifecycle, peak preservation, and
+bonded-reconnect transport suites.
 
 Config v8 stores a Pro Controller 2 body color plus independent Joy-Con 2 Left/Right accent colors.
 Existing v5/v6 users retain their effective slot-0 color and remap/wake data; v7 body, remap, and
@@ -166,13 +170,11 @@ player-dot reordering, and the prior wake/input/rumble baseline are hardware-con
 
 ## Next recommended work
 
-1. Hardware-validate audio after an existing-bond controller reconnect and dongle power cycle.
-2. Validate Switch 2 no-jack, headset plug, audio/input/rumble, and unplug behavior.
-3. Add DualSense microphone Opus decode and USB return.
-4. Run an extended playback/thermal soak on the Pico 2 W 300 MHz build.
-5. Re-test the Switch 2 controller-update prompt against the now-operational audio stack.
-6. Add a reproducible release checklist with board, firmware revision, controller firmware,
+1. Add DualSense microphone Opus decode and USB return.
+2. Run an extended playback/thermal soak on the Pico 2 W 300 MHz build.
+3. Re-test the Switch 2 controller-update prompt against the now-operational audio stack.
+4. Add a reproducible release checklist with board, firmware revision, controller firmware,
    console firmware, and result data.
-7. Build a reproducible console-side capture path before resuming NFC or report `0x09` motion work.
-8. Revisit controller sleep only after capturing a verified per-family sleep command or a stable
+5. Build a reproducible console-side capture path before resuming NFC or report `0x09` motion work.
+6. Revisit controller sleep only after capturing a verified per-family sleep command or a stable
    distinction between automatic-reconnect and user-wake advertisements.

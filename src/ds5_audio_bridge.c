@@ -439,6 +439,8 @@ static encoded_frame_t transport_pair[2];
 static uint8_t transport_pair_count;
 static volatile uint32_t pipeline_reset_generation;
 static uint32_t codec_reset_generation;
+static uint8_t silent_frames[2][DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN];
+static volatile bool silent_frames_ready;
 
 static void __not_in_flash_func(bridge_encode_input_frame)(
     const pcm_block_t *block, uint32_t generation) {
@@ -499,6 +501,28 @@ static bool __not_in_flash_func(bridge_prepare_encoder)(void) {
             OPUS_SET_BITRATE(DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN * 8 * 100));
         opus_encoder_ctl(speaker_encoder, OPUS_SET_VBR(0));
         opus_encoder_ctl(speaker_encoder, OPUS_SET_COMPLEXITY(0));
+
+        // Report 0x39 always contains two Opus blocks, even when it is being
+        // used only for native haptic PCM. Generate a steady-state silence
+        // pair once on the large codec-core stack, then reset so this pre-roll
+        // cannot influence real console audio. Repeating these valid frames is
+        // preferable to zero-filled bytes, which are not an Opus packet.
+        memset(resampled_pcm, 0, sizeof(resampled_pcm));
+        bool silence_ok = true;
+        for (unsigned frame = 0; frame < 12u; ++frame) {
+            uint8_t discard[DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN];
+            uint8_t *destination =
+                frame >= 10u ? silent_frames[frame - 10u] : discard;
+            int const encoded =
+                opus_encode(speaker_encoder, resampled_pcm, PCM_OUTPUT_FRAMES,
+                            destination, DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN);
+            if (encoded != DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN) {
+                silence_ok = false;
+                break;
+            }
+        }
+        opus_encoder_ctl(speaker_encoder, OPUS_RESET_STATE);
+        silent_frames_ready = silence_ok;
     }
     return speaker_encoder != NULL;
 }
@@ -529,6 +553,7 @@ void ds5_audio_bridge_init(void) {
     codec_reset_generation = 0;
     speaker_encoder = NULL;
     speaker_encoder_init_attempted = false;
+    silent_frames_ready = false;
 }
 
 void ds5_audio_bridge_set_usb_streams(bool speaker_active, bool mic_active) {
@@ -680,6 +705,15 @@ bool ds5_audio_bridge_peek_speaker_pair(
 
 void ds5_audio_bridge_commit_speaker_pair(void) {
     if (transport_pair_count >= 2) transport_pair_count = 0;
+}
+
+bool ds5_audio_bridge_get_silent_pair(
+    uint8_t frame_a[DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN],
+    uint8_t frame_b[DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN]) {
+    if (!silent_frames_ready || !frame_a || !frame_b) return false;
+    memcpy(frame_a, silent_frames[0], DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN);
+    memcpy(frame_b, silent_frames[1], DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN);
+    return true;
 }
 
 bool ds5_audio_bridge_speaker_requested(void) {

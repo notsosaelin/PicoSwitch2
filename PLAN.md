@@ -4,18 +4,17 @@
 > [`docs/archive/roadmap-through-2026-07-15.md`](docs/archive/roadmap-through-2026-07-15.md) for
 > the completed milestone narrative.
 
-## Current objective: post-v1.3 compatibility closure
+## Current objective: post-v1.4 protocol work
 
-Version `v1.3.0` extends the hardware-confirmed Pro Controller 2, NSO GameCube, individual Joy-Con
-2, appearance-control, DualSense/Edge, rumble, pairing, wake, and BOOTSEL baseline with the Retro
-Fighters BattlerGC Pro, first-generation 8BitDo Ultimate paddles, NGC Modkit rumble, late BLE
-identity correction, and reconnect false-wake protection.
+Version `v1.4.0` adds hardware-confirmed Pico 2 W live DualSense audio, conditional
+Switch 2 headset routing, native PCM haptics with and without a headset, and saved-bond
+audio/rumble reconnect recovery. Pico W retains its validated non-audio behavior.
 
 ### Release gate
 
 - [x] Pico W release build
 - [x] Pico 2 W release build
-- [x] Twenty host-test executables
+- [x] Twenty-eight host-test executables
 - [x] DualSense/Edge input, extra buttons, LEDs, and rumble on hardware
 - [x] BOOTSEL double-tap, triple-tap, and hold while DualSense is connected
 - [x] NSO GameCube input and rumble on a real Switch 2
@@ -23,7 +22,8 @@ identity correction, and reconnect false-wake protection.
 - [x] Configurable Pro2/Joy-Con colors, Sony lightbar matching, and DualSense player dots
 - [x] Reconcile documentation and archive superseded development logs
 - [x] Complete source-comment evidence cleanup
-- [x] Push the release commit and publish both UF2 artifacts (`v1.3.0`, 2026-07-17)
+- [x] Hardware-validate live audio, headset removal/reinsert, native rumble, and bonded reconnect
+- [x] Push the release commit and publish both UF2 artifacts (`v1.4.0`, 2026-07-18)
 
 ## Next: compatibility closure
 
@@ -77,11 +77,12 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
   and memory gates but barely played audio on hardware, so the experiment was
   rejected and Pico W was restored to its validated non-audio configuration.
 - [x] Implement bonded-reconnect audio without requiring a fresh pair. The Pico 2 W
-  path captures the HID Host interrupt CID and bypasses its eight-bit/80-byte output
-  limit only for DualSense `0x32`/`0x39` audio reports.
+  path extends HID Host's internal 16-bit report-length state only for exact
+  DualSense `0x32`/`0x39` shapes; it does not depend on late VID/name resolution
+  or inaccessible private L2CAP channel events.
 - [x] Implement conditional Pro Controller 2 headset presence from the physical
   DualSense jack; no jack continues to advertise no headset.
-- [ ] Hardware-validate audio after bonded reconnect; native haptic coexistence
+- [x] Hardware-validate audio after bonded reconnect; native haptic coexistence
   and repeated headset removal/reinsert are confirmed.
   The latched audible activation and persistent ISO endpoint lifecycle now pass
   repeated jack removal/reinsert plus ordinary controller/dongle reconnect without
@@ -89,11 +90,11 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
   haptics; the recent-flow-gated build restored full legacy rumble but starved audio
   startup. Retest pre-stream `0x39` ownership, continuous audio during rumble, legacy
   Rumble restoration after unplug and audio/native-haptic restoration after
-  replug are confirmed. Bonded reconnect audio remains pending; compare the
-  The 3× native PCM curve and capture-derived interval-peak accumulator are
-  validated and closer but still usually lighter. The native PCM character is
-  preferred over compatible rumble, so compare a waveform-preserving 13/4×
-  (3.25×) gain candidate.
+  replug, bonded reconnect audio, and bonded reconnect native rumble are confirmed.
+  The capture-derived interval-peak accumulator and waveform-preserving 13/4×
+  (3.25×) curve are hardware-confirmed and checkpointed at `2930c90`. The
+  standard Pico 2 W build also uses this native renderer without a headset,
+  with valid Opus silence and a bounded two-packet STOP tail.
 - [ ] Run an extended playback and thermal soak of the Pico 2 W 300 MHz audio build.
 - [ ] Add DualSense microphone report decoding and Opus-to-USB return after speaker playback is
   physically stable.
