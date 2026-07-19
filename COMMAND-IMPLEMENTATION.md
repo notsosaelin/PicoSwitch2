@@ -52,6 +52,13 @@ the **USB** capture (`usb-spec.md` table) shows `00 f8`. So **`00 f8` is correct
 `10 78` is the BT-transport ACK. (If a future BT-direct command path is added, it must switch to
 `10 78` — currently moot.) — **Strong Evidence.**
 
+**Direction byte (`header[1]`) has *two* bare-ACK forms.** The A/B diff
+([`docs/experiments/2026-07-19-usb-command-ab-diff.md`](docs/experiments/2026-07-19-usb-command-ab-diff.md))
+confirmed the genuine controller answers some bare ACKs with **dir `0x04`** (NFC `0x01`, **and grip
+`0x08/02`**) rather than the usual `0x01`. We handle this for NFC but **not** for `0x08` (it hits the
+`default:` dir `0x01`) — a confirmed, still-live shape divergence. The set of commands that use
+dir `0x04` is not fully mapped; a console-side capture would complete it.
+
 ## 2. The three dispatchers
 
 All three console-native USB personalities carry their own dispatcher; the protocol is identical,
@@ -91,7 +98,7 @@ fill.
 | `0x04` | Unused (ndeadly) | ⬜ bare ACK | `default` | — |
 | `0x05` | Unknown/unused | ⬜ bare ACK | `default` | — |
 | `0x06` | Shutdown (`0x02`) / Reboot (`0x03`) | ⬜ bare ACK | `default` | Strong (purpose known) |
-| `0x08` | Charging Grip info | 🟥 bare ACK (genuine returns `0x20`/`0x40` bytes) | `default` | Strong |
+| `0x08` | Charging Grip info / **`0x02` enable GL/GR** | 🟥 bare ACK — **and `0x02` uses wrong dir byte**: genuine `08 04 …`, we send `08 01 …` (§ verified by A/B diff) | `default` | Confirmed divergence |
 | `0x0A` | Vibration (`0x02` sample, `0x08` data) | ⬜ bare ACK (**rumble uses HID OUT reports, not this command**) | `default` | Strong |
 | `0x0D` | **Firmware update** | 🟥 bare ACK (no transport) — **the big gap** | `default` | see Firmware doc |
 | `0x0E` | Unused | ⬜ bare ACK | `default` | — |
@@ -239,10 +246,11 @@ genuine console session.
 
 ## 8. Recommended experiments (ranked, all documentation/analysis — no firmware change)
 
-1. **A/B-diff `picoswitch_2_dongle.pcapng` vs `genuine_procon_2.pcapng`.** Enumerate every command
-   the genuine console sends and confirm our reply matches in ID/sub/length/ACK. Produces the
-   definitive "what does the real console actually ask for" list and catches shape divergences. Pure
-   analysis of existing files.
+1. ✅ **DONE — A/B-diff `picoswitch_2_dongle.pcapng` vs `genuine_procon_2.pcapng`**
+   ([`docs/experiments/2026-07-19-usb-command-ab-diff.md`](docs/experiments/2026-07-19-usb-command-ab-diff.md)).
+   Result: 8/12 exercised replies byte-identical; found the live `0x08/02` dir-byte divergence and the
+   factory `0x00`-vs-`0xFF` padding bug; confirmed the capture is a PC-tool init session that does
+   **not** exercise `0x10/0x15/0x0D/0x16/0x17/0x18` or EP0 vendor requests.
 2. **Resolve `0x17`/`0x18` from a headset-present capture.** If `genuine_procon_2.pcapng` lacks a
    headset session, this needs one new genuine capture; the payoff is unblocking realistic headset
    audio config (ties into `DS5-NS2_AUDIO.md`).
