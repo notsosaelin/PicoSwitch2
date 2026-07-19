@@ -244,28 +244,73 @@ Each response must mirror the genuine ACK shape (`0d 01 01 0X 10 78 00 00`, `dir
 `ack=0x10/0x78` — note `0x0D` uses the `10 78` ack form, not the `00 f8` form used by init commands;
 verify against a real capture before trusting the exact ACK bytes — **Unknown** until captured).
 
-### 7.3 Where the bytes go (RP2040/RP2350 constraints)
+### 7.3 Where the bytes go — this is a **two-phase, capture-on-console / read-out-on-PC** flow
 
-An image is ~240 KiB — too big to sit in SRAM and awkward in the Pico's limited spare flash. Options,
-best first:
+**Critical constraint (drives the whole design): the capture and the read-out cannot overlap.** The
+update `0x0D` stream arrives only while the dongle is plugged into the **console**; config mode / the
+CDC channel is only reachable while plugged into the **PC**. The Pico has **one** USB port, so it is
+never connected to both at once. And unplugging from the console is a **full power loss** — the Pico
+is bus-powered with no battery/RTC-backup domain, so **SRAM does not survive the move to the PC.**
 
-1. **Stream out over the config CDC channel** to the host PC as chunks arrive (reuse the existing
-   web/CDC plumbing). The PC reassembles the full image off-device; the Pico holds only a small
-   ring buffer. **Preferred** — no flash pressure, unlimited image size, immediate offload.
-2. **Sink to a reserved flash region** if untethered capture is needed, then dump later over CDC.
-   Costs a dedicated ≥256 KiB partition and wear; only if PC-tethered capture is impractical.
-3. **Hybrid:** CRC-32 and metadata on-device (cheap), full body streamed to PC.
+Consequently:
 
-Emit a **metadata sidecar** with: timestamp, `region_id`, target `failsafe_addr`, declared
-`image_size`, declared CRC-32, observed byte count, computed CRC-32, and transport (USB vs BT — BT
-uses the `4147423d-…` characteristic, handle `0x0018`, 0xB5C-byte blocks of 30×0x64 chunks, so a BT
-capture path must hook that characteristic, not just the command channel).
+- ❌ **"Stream chunks to the PC over CDC as they arrive" is impossible here** (an earlier draft's
+  "preferred" option). At capture time there is no PC attached. Discard this path for
+  console-sourced updates.
+- ✅ **The capture MUST be committed to internal flash on-device**, because flash is the *only*
+  storage that persists across the unplug-from-console → replug-into-PC power cycle. **Yes — a blob
+  written to flash persists across that unplug/replug.** This is exactly how `config.c` already
+  survives power cycles: it writes to the last 4 flash sectors
+  (`CONFIG_FLASH_OFFSET = PICO_FLASH_SIZE_BYTES - 4*FLASH_SECTOR_SIZE`) via
+  `multicore_lockout_start_blocking()` → `save_and_disable_interrupts()` → `flash_range_erase()` →
+  `flash_range_program()` (`config.c:277-281`). A capture sink reuses the same primitives with a
+  larger reserved partition.
+
+**The flow:**
+
+```
+Phase 1 — on the CONSOLE:  capture 0x0D chunks  →  commit to a reserved flash region
+Phase 2 — unplug (image persists in flash across the power loss)
+Phase 3 — plug into the PC, enter config mode  →  read the blob + sidecar out over CDC
+```
+
+**Flash-write engineering (two real constraints):**
+
+1. **Flash ops stall both cores.** `flash_range_erase`/`program` require locking out the other core
+   and disabling interrupts (XIP can't run during a flash op), so you cannot block for a sector erase
+   in the middle of a high-rate transfer. Exploit the **ACK-gated** `0x0D/04` protocol: buffer one
+   sector (4 KiB) in SRAM, and **defer the per-chunk ACK until the flush completes** — the console
+   waits, which paces the transfer around the flash writes automatically.
+2. **Board-dependent buffering.**
+   - **Pico 2 W (RP2350, 520 KiB SRAM, 4 MB flash):** could hold the whole ~240 KiB image in SRAM and
+     do a **single** flash commit at `0x0D/07` finalise (while still on console power), then persist
+     across the unplug.
+   - **Pico W (RP2040, 264 KiB SRAM, 2 MB flash):** too little SRAM for the whole image → must
+     **flush progressively**, sector by sector, during the transfer.
+   - **Progressive sector-flushing is the more robust choice on both boards:** a partial capture
+     survives even if the transfer aborts or the user unplugs early. The image needs a **reserved
+     ≥256 KiB (~60 sector) partition** clear of both the firmware and the `config.c` region — trivial
+     on Pico 2 W's 4 MB, tighter but feasible on Pico W's 2 MB.
+
+**Commit-before-unplug is mandatory.** Anything still only in SRAM when VBUS drops is lost. Progressive
+flushing (or committing at finalise, which happens while still console-powered) guarantees the persisted
+image is complete before you can pull the plug.
+
+Emit a **metadata sidecar** (also in the reserved flash region) with: timestamp, `region_id`, target
+`failsafe_addr`, declared `image_size`, declared CRC-32, observed byte count, computed CRC-32, capture
+completeness flag, and transport (USB vs BT — BT uses the `4147423d-…` characteristic, handle
+`0x0018`, 0xB5C-byte blocks of 30×0x64 chunks, so a BT capture path must hook that characteristic, not
+just the command channel).
 
 ### 7.4 Ending the transaction
 
-Three candidate endings; which avoids a retry storm is itself an experiment (**Unknown**):
+The `0x06/03` "reboot controller" is a **logical** command we answer however we like — it is *not* a
+real power cycle, so it never threatens the flash commit (that only happens when the user physically
+unplugs, by which point Phase 1 is already persisted). The captured image is read out later in a
+separate **PC** session (Phase 3), independent of how Phase 1 ends. Three candidate endings; which
+avoids a retry storm is itself an experiment (**Unknown**):
 
-- **Report success** (`0x0D/07` + accept `0x06/03` reboot) then **re-enumerate advertising the new
+- **Report success** (`0x0D/07` + ACK `0x06/03` reboot) then **re-enumerate advertising the new
   version** we now know from the captured header — cleanest if the console then stops nagging.
 - **Report benign failure** at `0x06`/`0x07` — simplest, but may re-prompt on next boot.
 - **Silently ACK and drop** — captures bytes but likely leaves the console believing the update
