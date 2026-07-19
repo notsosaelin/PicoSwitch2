@@ -81,13 +81,16 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
   limit only for DualSense `0x32`/`0x39` audio reports.
 - [x] Implement conditional Pro Controller 2 headset presence from the physical
   DualSense jack; no jack continues to advertise no headset.
-- [ ] Hardware-validate audio after bonded reconnect and native haptic coexistence.
+- [ ] Hardware-validate audio after bonded reconnect; native haptic coexistence
+  and repeated headset removal/reinsert are confirmed.
   The latched audible activation and persistent ISO endpoint lifecycle now pass
   repeated jack removal/reinsert plus ordinary controller/dongle reconnect without
   input or rumble regressions. A transient build produced audio with lighter native
   haptics; the recent-flow-gated build restored full legacy rumble but starved audio
   startup. Retest pre-stream `0x39` ownership, continuous audio during rumble, legacy
-  rumble restoration after unplug, and audio restoration after replug/reconnect.
+  Rumble restoration after unplug and audio/native-haptic restoration after
+  replug are confirmed. Bonded reconnect audio remains pending; compare the
+  isolated 3× native PCM curve against the validated but lighter 2× result.
 - [ ] Run an extended playback and thermal soak of the Pico 2 W 300 MHz audio build.
 - [ ] Add DualSense microphone report decoding and Opus-to-USB return after speaker playback is
   physically stable.

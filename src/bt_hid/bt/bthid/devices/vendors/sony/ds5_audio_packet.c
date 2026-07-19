@@ -12,6 +12,7 @@
 // 4; bit 7 of the first byte marks AudioControl as valid. This is the same
 // activation transaction used by DS5Dongle before it starts report 0x39.
 #define DS5_AUDIO_CONTROL_VALID_FLAGS_OFFSET 4u
+#define DS5_AUDIO_CONTROL_ENABLE_RUMBLE_EMULATION 0x01u
 #define DS5_AUDIO_CONTROL_ALLOW_HP_VOLUME    0x10u
 #define DS5_AUDIO_CONTROL_ALLOW_SPK_VOLUME   0x20u
 #define DS5_AUDIO_CONTROL_ALLOW_AUDIO        0x80u
@@ -24,6 +25,7 @@
 #define DS5_AUDIO_CONTROL_HEADSET_PATH        0x02u
 #define DS5_AUDIO_CONTROL_SPEAKER_PATH        0x30u
 #define DS5_AUDIO_MUTE_SPEAKER_AND_HP        0x60u
+#define DS5_AUDIO_HAPTIC_GAIN                 3
 
 bool ds5_audio_is_mic_input_report(const uint8_t *report, uint16_t len) {
     return report && len > 1u && report[0] == DS5_AUDIO_INPUT_REPORT_ID &&
@@ -112,8 +114,14 @@ static void ds5_audio_write_haptics(uint8_t *out,
 
     for (unsigned frame = 0; frame < 64u; ++frame) {
         int16_t const wave = sine32[(frame * 2u) & 31u];
-        int16_t const sample_left = (int16_t)(wave * left) / 255;
-        int16_t const sample_right = (int16_t)(wave * right) / 255;
+        int32_t sample_left =
+            ((int32_t)wave * left * DS5_AUDIO_HAPTIC_GAIN) / 255;
+        int32_t sample_right =
+            ((int32_t)wave * right * DS5_AUDIO_HAPTIC_GAIN) / 255;
+        if (sample_left > 127) sample_left = 127;
+        if (sample_left < -127) sample_left = -127;
+        if (sample_right > 127) sample_right = 127;
+        if (sample_right < -127) sample_right = -127;
         out[12u + frame * 2u] = (uint8_t)(int8_t)sample_left;
         out[13u + frame * 2u] = (uint8_t)(int8_t)sample_right;
     }
@@ -176,6 +184,7 @@ void ds5_audio_build_control_report(
     out[2] = 0x90;
     out[3] = 0x3F;
     out[DS5_AUDIO_CONTROL_VALID_FLAGS_OFFSET] =
+        DS5_AUDIO_CONTROL_ENABLE_RUMBLE_EMULATION |
         DS5_AUDIO_CONTROL_ALLOW_HP_VOLUME |
         DS5_AUDIO_CONTROL_ALLOW_SPK_VOLUME |
         DS5_AUDIO_CONTROL_ALLOW_AUDIO;

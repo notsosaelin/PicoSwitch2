@@ -86,8 +86,8 @@ int main(void) {
     // 3 kHz stereo signed-8 haptic PCM: fixed 187.5 Hz sine, with
     // independent left/right magnitude scaling in both 64-byte blocks.
     assert((int8_t)stream[12] == 0 && (int8_t)stream[13] == 0);
-    assert((int8_t)stream[14] == 49 && (int8_t)stream[15] == 24);
-    assert((int8_t)stream[20] == 127 && (int8_t)stream[21] == 63);
+    assert((int8_t)stream[14] == 127 && (int8_t)stream[15] == 73);
+    assert((int8_t)stream[20] == 127 && (int8_t)stream[21] == 127);
     assert((int8_t)stream[44] == 0 && (int8_t)stream[45] == 0);
     assert((int8_t)stream[76] == 0 && (int8_t)stream[77] == 0);
     assert((int8_t)stream[108] == 0 && (int8_t)stream[109] == 0);
@@ -102,7 +102,7 @@ int main(void) {
     ds5_audio_build_control_report(7, false, false, 100, control);
     assert(control[0] == 0x32 && control[1] == 0x70);
     assert(control[2] == 0x90 && control[3] == 0x3F);
-    assert(control[4] == 0xB0 && control[5] == 0x02);
+    assert(control[4] == 0xB1 && control[5] == 0x02);
     assert(control[8] == 100 && control[9] == 100);
     assert(control[11] == 0x30 && control[13] == 0);
     for (unsigned i = 6; i < sizeof(control) - 4; ++i) {
@@ -110,12 +110,12 @@ int main(void) {
         assert(control[i] == 0);
     }
     // Independently generated with zlib.crc32(A2 || report[0:138]).
-    assert(report_crc(control, sizeof(control)) == 0x83C3B98Du);
+    assert(report_crc(control, sizeof(control)) == 0x79D14E9Bu);
 
     ds5_audio_build_control_report(9, true, true, 40, control);
     assert(control[1] == 0x90 && control[8] == 40 && control[9] == 40);
     assert(control[11] == 0x02 && control[13] == 0x60);
-    assert(report_crc(control, sizeof(control)) == 0xA9CA125Au);
+    assert(report_crc(control, sizeof(control)) == 0x53D8E54Cu);
 
     uint8_t mic[DS5_AUDIO_MIC_STATUS_REPORT_LEN];
     ds5_audio_build_mic_status_report(5, false, mic);

@@ -578,9 +578,20 @@ static void ds5_process_report(bthid_device_t* device, const uint8_t* data, uint
     // separately so the emulated Pro Controller 2 can expose the matching
     // Nintendo state only while the physical jack is occupied.
     if (report_id == DS5_REPORT_BT_INPUT) {
+        bool const was_connected = ds5->headset_connected;
         ds5->event.headset_state = ds5_audio_headset_state(data, len);
         ds5->headset_connected =
             ds5->event.headset_state != CONTROLLER_HEADSET_NONE;
+        if (!was_connected && ds5->headset_connected &&
+            ds5->audio_headset_path_active) {
+            // A headset-free interval uses compatible report-0x31 rumble,
+            // which selects UseRumbleNotHaptics. On re-insertion replay the
+            // ordered 0x32 control transaction: its bit-0 valid selector with
+            // bit 1 clear returns the controller to native haptic PCM while
+            // preserving the already-tested audio route and packet layout.
+            ds5->audio_speaker_control_known = false;
+            ds5->audio_control_state = 0;
+        }
     }
 #endif
 
