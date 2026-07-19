@@ -142,16 +142,16 @@ retain only wire layouts, invariants, and implementation constraints.
   reports never trigger wake.
 - Live DualSense speaker output is Pico 2 W-only. A saved DualSense bond is
   sufficient: every reconnect resets the audio session and resends the
-  controller's audio-enable transaction, so a fresh pair is not expected. The
-  bonded HID Host path now bypasses its small-report limit for the two oversized
-  Sony audio reports; hardware reconnect validation is pending.
+  controller's audio-enable transaction, so a fresh pair is not required. The
+  bonded HID Host path extends its report length only for the two exact
+  oversized Sony audio shapes; controller and dongle power-cycle reconnects are
+  hardware-confirmed.
   The Pico W fixed-point/XIP experiment barely produced audio on hardware and
   was removed from its standard build. On Pico 2 W, the physical DualSense jack
   conditionally drives Switch 2 headset presence so a bare controller does not
-  capture console audio. Real-console insertion and headphone output are confirmed.
-  Repeated unplug/replug recovery, report-flow-gated haptic rumble, bonded audio
-  reconnect, extended thermal-soak testing, and the DualSense microphone return
-  remain open.
+  capture console audio. Real-console insertion, headphone output, repeated
+  unplug/replug recovery, and native haptic rumble are confirmed. Extended
+  thermal-soak testing and the DualSense microphone return remain open.
 
 See [PLAN.md](PLAN.md) for the prioritized roadmap and
 [docs/status/compatibility-matrix.md](docs/status/compatibility-matrix.md) for the test matrix.

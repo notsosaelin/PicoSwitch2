@@ -48,25 +48,24 @@ code inspection only; it is weaker than physical hardware confirmation.
 |---|---|
 | Pico 2 W: live Windows PCM → DualSense internal speaker at 300 MHz | ✅ Confirmed continuous; zero PCM drops/errors |
 | Pico W: fixed-point/XIP live PCM at 300 MHz | ❌ Rejected; audio barely played on hardware and the standard build is non-audio |
-| Existing-bond reconnect without a fresh pair | 🟡 Fix built; current hardware still reported no audio after reconnect, revised build pending controller-only and dongle power-cycle tests |
-| No physical headset connected | 🟡 Source-tested: reports no headset so the Switch should not route audio to the bare speaker |
+| Existing-bond reconnect without a fresh pair | ✅ Confirmed after controller-only and dongle power cycles; audio and native rumble return |
+| No physical headset connected | ✅ Confirmed: Switch does not route console audio to the bare DualSense speaker |
 | Physical headset insertion and console output | ✅ Confirmed: Switch 2 recognizes the jack and plays through DualSense-connected headphones |
-| Physical headset removal/reinsert | ✅ Input lifecycle and ordinary rumble remain stable through repeated cycles; audio restoration on reinsert awaits focused retest |
+| Physical headset removal/reinsert | ✅ Input, audio, and native haptics restore through repeated cycles |
 | LED and BOOTSEL during 300 MHz regression pass | ✅ Confirmed |
 | Config save/readback after reconnect | ✅ Confirmed (mappings and colors) |
 | Cold boot | ✅ Confirmed |
 | Console wake | ✅ Ten attempts with every known controller |
 | Real-console input/wake during audio | ✅ Confirmed |
-| Real-console rumble during audio | 🟡 Transient audio/native-haptic coexistence worked with lighter rumble; recent-flow gating let full legacy rumble starve audio startup. Pre-stream `0x39` ownership awaits retest |
+| Real-console rumble during audio | ✅ Confirmed with peak-preserving 3.25× native PCM; judged close to HD Rumble |
 | Extended playback/thermal soak | 🟡 Pending |
 
 ## PC-specific behavior
 
 - Pro Controller 2 and NSO GameCube enumerate on Windows/Steam.
 - Joy-Con 2 Right is recognized by Steam.
-- Joy-Con 2 Left currently appears as a generic `Nintendo Joy-Con 2 (L)` with a setup prompt.
-  Real-console enumeration works, so this is tracked as a Windows/Steam identity/cache issue rather
-  than a Switch 2 protocol failure.
+- Joy-Con 2 Left and Right are recognized after the Windows WinUSB interface-property fix;
+  fresh Windows-node and Steam UI validation is complete.
 
 ## Release test record template
 

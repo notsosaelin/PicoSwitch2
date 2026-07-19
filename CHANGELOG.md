@@ -3,6 +3,49 @@
 Release notes describe user-visible behavior. Detailed implementation history remains in
 `docs/archive/` and the experiment records.
 
+## 1.4.0 — 2026-07-18
+
+### Added
+
+- Full Pro Controller 2 UAC1 speaker/microphone USB function, replacing the descriptor-only
+  audio stub.
+- Live Switch 2/Windows audio output through a paired DualSense on Pico 2 W, using the
+  hardware-confirmed 300 MHz floating-point/SRAM Opus path.
+- Conditional Switch 2 headset presence from the DualSense physical jack, including stable
+  removal and reinsertion without freezing controller input.
+- DualSense native PCM haptics during console audio and headset-free rumble, with
+  peak-preserving 3.25× rendering and a bounded two-packet STOP tail.
+- Bluetooth battery passthrough across native HID telemetry, BLE Battery Service, and every
+  console-facing USB personality.
+
+### Changed
+
+- Pico 2 W now uses the validated 300 MHz live-audio configuration by default. Pico W retains
+  its previously validated non-audio clock and Bluetooth scheduling.
+- DualSense and DualSense Edge rumble now use the more accurate native PCM renderer on Pico 2 W,
+  whether or not a headset is connected.
+- DualSense Edge Fn L/Fn R default to GL/GR.
+- Bluetooth discovery idles after one controller connects, making one dongle to one controller
+  the explicit supported scope and preserving radio bandwidth for audio.
+
+### Fixed
+
+- Audio and native rumble after a saved-bond DualSense reconnect or dongle power cycle; no fresh
+  pair is required.
+- DualSense headset unplug/replug input freezes and failure to restore audio/haptics.
+- Chopped DualSense playback caused by incorrect stream timing, Opus scheduling, XIP stalls, and
+  underspeed RP2350 execution.
+- Native haptic intensity loss caused by sampling only the latest Nintendo rumble value instead
+  of preserving each audio interval's left/right peaks.
+
+### Known limitations
+
+- Live DualSense audio is Pico 2 W-only; the Pico W experiment could not sustain playback.
+- DualSense microphone return is not implemented.
+- Extended 300 MHz thermal soak testing and the Pro Controller 2 update-prompt investigation
+  remain open.
+- Native console motion report `0x09` and NFC/amiibo remain blocked on stronger capture evidence.
+
 ## 1.3.0 — 2026-07-17
 
 ### Added

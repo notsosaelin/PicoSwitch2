@@ -17,6 +17,9 @@
 #include "core/services/players/manager.h"
 #include "core/services/players/feedback.h"
 #include "controller_battery.h"
+#ifdef NS2_DS5_AUDIO_LIVE_OPUS
+#include "ds5_native_haptics.h"
+#endif
 #include "platform/platform.h"
 #include "report.h"
 #include <string.h>
@@ -158,6 +161,11 @@ typedef struct {
     uint8_t audio_speaker_volume;
     bool audio_headset_path_active;
     bool audio_haptics_active;
+#ifdef NS2_DS5_AUDIO_LIVE_OPUS
+    ds5_native_haptic_state_t native_haptics;
+    uint32_t native_haptic_deadline_us;
+    uint8_t native_haptic_interval_phase;
+#endif
 #endif
 
     // Current feedback state (for change detection)
@@ -229,6 +237,41 @@ static bool ds5_send_output(bthid_device_t* device, bool initialize_compat,
 }
 
 #ifdef NS2_DS5_AUDIO
+#ifdef NS2_DS5_AUDIO_LIVE_OPUS
+#define DS5_NATIVE_PACKET_INTERVAL_BASE_US 21333u
+#define DS5_NATIVE_PACKET_INTERVAL_MAX_US  21334u
+
+static uint32_t ds5_native_next_interval_us(ds5_bt_data_t *ds5) {
+    ds5->native_haptic_interval_phase++;
+    if (ds5->native_haptic_interval_phase == 3u) {
+        ds5->native_haptic_interval_phase = 0;
+        return DS5_NATIVE_PACKET_INTERVAL_MAX_US;
+    }
+    return DS5_NATIVE_PACKET_INTERVAL_BASE_US;
+}
+
+static bool ds5_native_packet_due(const ds5_bt_data_t *ds5,
+                                  uint32_t now_us) {
+    return ds5->native_haptic_deadline_us == 0 ||
+           (int32_t)(now_us - ds5->native_haptic_deadline_us) >= 0;
+}
+
+static void ds5_native_packet_accepted(ds5_bt_data_t *ds5,
+                                       uint32_t now_us) {
+    uint32_t const interval = ds5_native_next_interval_us(ds5);
+    if (ds5->native_haptic_deadline_us == 0 ||
+        now_us - ds5->native_haptic_deadline_us >=
+            DS5_NATIVE_PACKET_INTERVAL_MAX_US) {
+        ds5->native_haptic_deadline_us = now_us + interval;
+    } else {
+        ds5->native_haptic_deadline_us += interval;
+    }
+    ds5_native_haptics_packet_sent(&ds5->native_haptics);
+    if (!ds5_native_haptics_stream_requested(&ds5->native_haptics))
+        ds5->native_haptic_deadline_us = 0;
+}
+#endif
+
 static void ds5_audio_task(bthid_device_t *device, ds5_bt_data_t *ds5,
                            bool run_codec) {
     if (!ds5_audio_bridge_owns_connection(device->conn_index)) return;
@@ -303,7 +346,23 @@ static void ds5_audio_task(bthid_device_t *device, ds5_bt_data_t *ds5,
 
     static uint8_t frame_a[DS5_AUDIO_OPUS_FRAME_LEN];
     static uint8_t frame_b[DS5_AUDIO_OPUS_FRAME_LEN];
-    if (!ds5_audio_bridge_peek_speaker_pair(frame_a, frame_b)) return;
+    bool const live_pair =
+        ds5_audio_bridge_peek_speaker_pair(frame_a, frame_b);
+#ifdef NS2_DS5_AUDIO_LIVE_OPUS
+    bool const haptic_only =
+        !ds5->headset_connected &&
+        !ds5_audio_bridge_speaker_requested() &&
+        ds5_native_haptics_stream_requested(&ds5->native_haptics);
+    uint32_t const now_us = platform_time_us();
+    if (!live_pair) {
+        if (!haptic_only || !ds5_native_packet_due(ds5, now_us) ||
+            !ds5_audio_bridge_get_silent_pair(frame_a, frame_b)) {
+            return;
+        }
+    }
+#else
+    if (!live_pair) return;
+#endif
 
     static uint8_t stream_buf[1 + DS5_AUDIO_STREAM_REPORT_LEN];
     uint8_t haptic_left;
@@ -324,7 +383,19 @@ static void ds5_audio_task(bthid_device_t *device, ds5_bt_data_t *ds5,
                           sizeof(stream_buf))) {
         ds5->output_seq = (uint8_t)((ds5->output_seq + 1u) & 0x0Fu);
         ds5->audio_packet_counter = next_packet_counter;
-        ds5_audio_bridge_commit_speaker_pair();
+        if (live_pair) {
+            ds5_audio_bridge_commit_speaker_pair();
+#ifdef NS2_DS5_AUDIO_LIVE_OPUS
+            // A real audio packet carries the same native haptic block and
+            // therefore satisfies one pending STOP-tail transmission too.
+            ds5_native_haptics_packet_sent(&ds5->native_haptics);
+#endif
+        }
+#ifdef NS2_DS5_AUDIO_LIVE_OPUS
+        else if (haptic_only) {
+            ds5_native_packet_accepted(ds5, now_us);
+        }
+#endif
     }
 }
 
@@ -417,6 +488,11 @@ static bool ds5_init(bthid_device_t* device)
             ds5_data[i].audio_speaker_volume = 100;
             ds5_data[i].audio_headset_path_active = false;
             ds5_data[i].audio_haptics_active = false;
+#ifdef NS2_DS5_AUDIO_LIVE_OPUS
+            ds5_native_haptics_reset(&ds5_data[i].native_haptics);
+            ds5_data[i].native_haptic_deadline_us = 0;
+            ds5_data[i].native_haptic_interval_phase = 0;
+#endif
 #endif
             ds5_data[i].rumble_left = 0;
             ds5_data[i].rumble_right = 0;
@@ -728,13 +804,23 @@ static void ds5_task(bthid_device_t* device)
                     uint8_t rumble_left = ds5->rumble_left;
                     uint8_t rumble_right = ds5->rumble_right;
 #ifdef NS2_DS5_AUDIO
+#ifdef NS2_DS5_AUDIO_LIVE_OPUS
+                    bool const native_rumble_requested =
+                        ds5_native_haptics_stream_requested(
+                            &ds5->native_haptics);
+#else
+                    bool const native_rumble_requested = false;
+#endif
                     bool const audio_haptics_active =
                         ds5->headset_connected ||
-                        ds5_audio_bridge_speaker_requested();
+                        ds5_audio_bridge_speaker_requested() ||
+                        native_rumble_requested;
                     bool const audio_haptics_started =
                         !ds5->audio_haptics_active && audio_haptics_active;
+#ifndef NS2_DS5_AUDIO_LIVE_OPUS
                     bool const audio_haptics_ended =
                         ds5->audio_haptics_active && !audio_haptics_active;
+#endif
                     ds5->audio_haptics_active = audio_haptics_active;
                     if (audio_haptics_started)
                         report_reset_rumble_audio_peak(0);
@@ -795,21 +881,38 @@ static void ds5_task(bthid_device_t* device)
                     bool rumble_consumed_by_audio = false;
                     // Report 0x39 already has two 64-byte 3 kHz haptic PCM
                     // blocks, separate from its two Opus speaker blocks. Take
-                    // ownership as soon as a headset/audio path is requested,
-                    // before the first stream packet. Waiting for a successful
-                    // 0x39 allowed repeated console rumble generations to keep
-                    // filling the ordinary 0x31 output path, starving the
-                    // activation/stream traffic required to end that fallback.
+                    // ownership as soon as a native stream is requested,
+                    // before the first stream packet. Standard Pico 2 W builds
+                    // also use this path without a headset; the diagnostic
+                    // non-live build retains its established fallback below.
+#ifdef NS2_DS5_AUDIO_LIVE_OPUS
+                    if (rumble_update) {
+                        ds5_native_haptics_note_rumble(
+                            &ds5->native_haptics,
+                            rumble_left, rumble_right);
+                        if (ds5_native_haptics_stream_requested(
+                                &ds5->native_haptics) &&
+                            !ds5->audio_haptics_active) {
+                            ds5->audio_haptics_active = true;
+                            ds5->native_haptic_deadline_us = 0;
+                            report_reset_rumble_audio_peak(0);
+                        }
+                        ds5->rumble_left = rumble_left;
+                        ds5->rumble_right = rumble_right;
+                        rumble_update = false;
+                        rumble_consumed_by_audio = true;
+                    }
+#else
                     if (rumble_update && audio_haptics_active) {
                         ds5->rumble_left = rumble_left;
                         ds5->rumble_right = rumble_right;
                         rumble_update = false;
                         rumble_consumed_by_audio = true;
                     }
-                    // When the USB host closes its audio stream, restore the
-                    // established legacy path immediately using the last
-                    // commanded values (including a zero-magnitude STOP).
+                    // The fixed-tone diagnostic has no silent native stream.
+                    // Preserve its legacy fallback when its audio path ends.
                     if (audio_haptics_ended) rumble_update = true;
+#endif
 
                     bool output_accepted = false;
                     if (rumble_update || led_update) {

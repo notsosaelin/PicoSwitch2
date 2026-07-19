@@ -1,14 +1,22 @@
 # Changes
 
-Reverse-chronological log of notable changes on the `ns2-testing` branch. The last
-tagged release was [`v1.3.0`](https://github.com/notsosaelin/PicoSwitch2/releases/tag/v1.3.0)
-(2026-07-17); entries below are post-release development.
+Reverse-chronological log of notable changes on the `ns2-testing` branch. The
+2026-07-18 entries below are included in
+[`v1.4.0`](https://github.com/notsosaelin/PicoSwitch2/releases/tag/v1.4.0).
 
 ## 2026-07-18
 
 ### Changed
-- **DualSense native haptic mode now survives headset replug, with capture-derived
-  envelope preservation under test.** Hardware confirms first-insertion audio,
+- **Headset-free DualSense native PCM rumble is hardware-confirmed on Pico 2 W.**
+  The hardware-confirmed 3.25× peak-preserving renderer now has an
+  event-driven no-headset path using valid Opus silence in report `0x39`.
+  Streaming exists only for active rumble plus a two-packet STOP tail; repeated
+  zeros cannot keep it alive. Live console audio has priority and its queue is
+  not consumed by silence. Pico W and the fixed-tone diagnostic keep their
+  existing compatibility path. Bonded controller and dongle-power-cycle
+  reconnections restore native rumble without requiring a fresh pair.
+- **DualSense native haptic mode survives headset replug with capture-derived
+  envelope preservation.** Hardware confirms first-insertion audio,
   3× native PCM, unplugged legacy rumble, and repeated audio/haptic restoration.
   The explicit report-`0x32` selector clears the persistent
   `UseRumbleNotHaptics` mode after legacy report-`0x31` use. Genuine Switch 2
@@ -17,9 +25,9 @@ tagged release was [`v1.3.0`](https://github.com/notsosaelin/PicoSwitch2/release
   independent left/right scalar peaks between audio reports without changing
   Opus bytes, packet layout, or the validated legacy path.
   Hardware preferred the native PCM character but found it slightly light, so the
-  current comparison candidate preserves that waveform and raises only its fixed
-  gain from 3× to 13/4× (3.25×). The capture's maximum scalar remains unsaturated
-  at a 110/127 PCM peak.
+  final renderer preserves that waveform and raises only its fixed gain from 3×
+  to 13/4× (3.25×). The capture's maximum scalar remains unsaturated at a 110/127
+  PCM peak, and hardware judged the result close to HD Rumble.
 - **Real Switch 2 DualSense-headset lifecycle is stable; audio/haptic startup
   ownership is revised for focused retest.** The audible `0x02` activation remains
   latched and the persistent RP2350 ISO endpoint survives alt-setting cycles.
@@ -34,13 +42,15 @@ tagged release was [`v1.3.0`](https://github.com/notsosaelin/PicoSwitch2/release
 - **Bonded DualSense reconnect audio and conditional Switch 2 headset presence are
   implemented for Pico 2 W.** Bonded reconnects arrive through BTstack HID Host,
   whose eight-bit report length and 80-byte persistence buffer could not represent
-  the 142-byte audio activation or 547-byte stream report. The audio build now
-  captures the negotiated HID interrupt CID and bypasses only those Sony audio
-  reports. DualSense physical-jack status is normalized through the input seam and
+  the 142-byte audio activation or 547-byte stream report. The original interrupt-CID
+  bypass was invalid because those channel events are private to HID Host. The revised
+  build gives HID Host a narrowly scoped 16-bit-length entry point for the exact
+  DualSense `0x32`/`0x39` shapes. DualSense physical-jack status is normalized
+  through the input seam and
   emitted as the documented Pro Controller 2 report-`0x09`/`0x05` headset states;
   no jack continues to advertise none. Both clean firmware builds, the full host
   suite, and the audio verifier pass. Switch 2 insertion/output are now confirmed;
-  reconnect and the revised unplug path remain pending.
+  reconnect, removal/reinsert, audio, and native rumble are hardware-confirmed.
 - **Live Windows PCM → DualSense speaker audio is continuous in the standard Pico 2 W
   300 MHz build.** The bridge now follows the independently corroborated DualSense
   45 kHz effective stream clock (512 real 48 kHz frames → 480 Opus samples), rearms
