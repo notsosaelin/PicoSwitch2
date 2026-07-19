@@ -7,11 +7,13 @@
 #   ./build.ps1 pico2_w        # build only pico2_w
 #   ./build.ps1 -Clean         # wipe build dirs first, then build
 #
-# Experimental RP2350-only DualSense-audio variants use dedicated build dirs:
+# Standard Pico 2 W builds include live DualSense audio at 300 MHz/1.20 V.
+# Pico W retains its validated non-audio configuration. Lower-clock Pico 2
+# diagnostics use dedicated dirs:
 #   ./build.ps1 -Tone          # fixed diagnostic tone, no Opus encoder
-#   ./build.ps1 -Audio          # 150 MHz live-audio diagnostic control
+#   ./build.ps1 -Audio          # 150 MHz live-audio comparison
 #   ./build.ps1 -AudioOverclock # 200 MHz non-working comparison
-#   ./build.ps1 -AudioOverclock300 # validated 300 MHz live-audio configuration
+#   ./build.ps1 -AudioOverclock300 # compatibility alias for pico2_w
 #
 # Output: build/<dir>/PicoSwitchWGA-<board>.uf2
 param(
@@ -54,32 +56,50 @@ $extraArgs = @()
 $dirSuffix = ''
 if ($Tone) {
     $Boards = @('pico2_w')
-    $extraArgs = @('-DNS2_DS5_AUDIO_TEST_TONE=ON')
+    $extraArgs = @('-DNS2_DS5_AUDIO=OFF',
+                   '-DNS2_DS5_AUDIO_TEST_TONE=ON',
+                   '-DNS2_PICO2_SYSTEM_CLOCK_MHZ=150')
     $dirSuffix = '_tone'
 }
 if ($Audio) {
     $Boards = @('pico2_w')
-    $extraArgs = @('-DNS2_DS5_AUDIO=ON')
+    $extraArgs = @('-DNS2_DS5_AUDIO=ON',
+                   '-DNS2_DS5_AUDIO_TEST_TONE=OFF',
+                   '-DNS2_PICO2_SYSTEM_CLOCK_MHZ=150')
     $dirSuffix = '_audio'
 }
 if ($AudioOverclock) {
     $Boards = @('pico2_w')
-    $extraArgs = @('-DNS2_DS5_AUDIO=ON', '-DNS2_DS5_AUDIO_OVERCLOCK=ON')
+    $extraArgs = @('-DNS2_DS5_AUDIO=ON',
+                   '-DNS2_DS5_AUDIO_TEST_TONE=OFF',
+                   '-DNS2_PICO2_SYSTEM_CLOCK_MHZ=200')
     $dirSuffix = '_audio_200mhz'
 }
 if ($AudioOverclock300) {
     $Boards = @('pico2_w')
-    $extraArgs = @('-DNS2_DS5_AUDIO=ON',
-                   '-DNS2_DS5_AUDIO_OVERCLOCK=ON',
-                   '-DNS2_DS5_AUDIO_OVERCLOCK_MHZ=300')
-    $dirSuffix = '_audio_300mhz'
+    Write-Warning "-AudioOverclock300 is now the standard pico2_w build"
 }
 
 foreach ($b in $Boards) {
+    $boardArgs = @($extraArgs)
+    if (-not ($Tone -or $Audio -or $AudioOverclock)) {
+        if ($b -eq 'pico2_w') {
+            # Pass these explicitly so an existing CMake cache cannot preserve
+            # the former non-audio Pico 2 W defaults.
+            $boardArgs += @('-DNS2_DS5_AUDIO=ON',
+                            '-DNS2_DS5_AUDIO_TEST_TONE=OFF',
+                            '-DNS2_PICO2_SYSTEM_CLOCK_MHZ=300')
+        } elseif ($b -eq 'pico_w') {
+            # Pass OFF explicitly so a prior experimental Pico W audio cache
+            # cannot leak into the standard artifact.
+            $boardArgs += @('-DNS2_DS5_AUDIO=OFF',
+                            '-DNS2_DS5_AUDIO_TEST_TONE=OFF')
+        }
+    }
     $bdir = "$root\build\$b$dirSuffix"
     if ($Clean -and (Test-Path $bdir)) { Remove-Item -Recurse -Force $bdir }
     Write-Host "=== Configuring $b$dirSuffix ===" -ForegroundColor Cyan
-    & $cmake -S $root -B $bdir -G Ninja "-DCMAKE_MAKE_PROGRAM=$ninja" "-DPICO_BOARD=$b" @extraArgs 2>&1 | ForEach-Object { "$_" }
+    & $cmake -S $root -B $bdir -G Ninja "-DCMAKE_MAKE_PROGRAM=$ninja" "-DPICO_BOARD=$b" @boardArgs 2>&1 | ForEach-Object { "$_" }
     if ($LASTEXITCODE -ne 0) { throw "configure failed for $b$dirSuffix" }
     Write-Host "=== Building $b$dirSuffix ===" -ForegroundColor Cyan
     & $cmake --build $bdir 2>&1 | ForEach-Object { "$_" }

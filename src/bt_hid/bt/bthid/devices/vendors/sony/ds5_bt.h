@@ -12,8 +12,8 @@ extern const bthid_driver_t ds5_bt_driver;
 // Register the DualSense BT driver
 void ds5_bt_register(void);
 
-// RP2350-only audio transport service. The diagnostic tone also advances here;
-// live Opus encoding runs in ds5_audio_bridge_codec_worker() instead.
+// Audio transport service. The diagnostic tone also advances here; live Opus
+// encoding runs in ds5_audio_bridge_codec_worker() instead.
 void ds5_bt_audio_service(void);
 
 // Transport-only safe point for sustained inbound-report traffic. The

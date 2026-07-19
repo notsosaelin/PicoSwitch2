@@ -20,7 +20,7 @@ void ds5_audio_bridge_get_speaker_control(bool *muted, uint8_t *volume) {
 }
 
 // Always compiled so config-mode diagnostics remain linkable in ordinary
-// builds. Only RP2350 audio builds feed these counters. Aligned uint32_t loads
+// builds. Live-audio builds feed these counters. Aligned uint32_t loads
 // and stores are atomic on RP2040/RP2350; an occasionally mixed snapshot while
 // core 1 updates is acceptable for monotonic diagnostic counters.
 static volatile uint32_t diag_core1_max_gap_us;
@@ -387,6 +387,10 @@ bool ds5_audio_bridge_mic_active(void) {
     return false;
 }
 
+bool ds5_audio_bridge_speaker_requested(void) {
+    return bridge_connected;
+}
+
 #elif defined(NS2_DS5_AUDIO_LIVE_OPUS)
 
 #include "opus.h"
@@ -601,8 +605,8 @@ bool ds5_audio_bridge_owns_connection(uint8_t conn_index) {
 
 void __not_in_flash_func(ds5_audio_bridge_codec_task)(void) {
     ds5_audio_diag_note_codec_call(time_us_32());
-    // Codec construction and all encode calls stay on core1's explicit 48 KiB
-    // stack. Core0's normal SDK stack is intentionally much smaller.
+    // Codec construction and all encode calls stay on core1's explicit
+    // platform-sized audio stack. Core0's normal SDK stack is much smaller.
     if (!bridge_prepare_encoder()) {
         diag_codec_no_encoder++;
         return;
@@ -676,6 +680,10 @@ bool ds5_audio_bridge_peek_speaker_pair(
 
 void ds5_audio_bridge_commit_speaker_pair(void) {
     if (transport_pair_count >= 2) transport_pair_count = 0;
+}
+
+bool ds5_audio_bridge_speaker_requested(void) {
+    return usb_speaker_active && bridge_connected;
 }
 
 bool ds5_audio_bridge_mic_active(void) {

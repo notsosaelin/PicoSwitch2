@@ -1,12 +1,26 @@
 # DualSense Bluetooth Audio — Investigation Log
 
-> **Status (2026-07-18): 🟢 live internal-speaker audio is continuous on the
-> opt-in 300 MHz Pico 2 W build.** A hardware run consumed and encoded all 13,225
+> **Status (2026-07-18): 🟢 live internal-speaker audio is continuous in the
+> standard 300 MHz Pico 2 W build.** A hardware run consumed and encoded all 13,225
 > delivered PCM blocks with zero drops/errors. LED/BOOTSEL, config persistence,
-> cold boot, and ten wake attempts with every known controller passed. The
-> remaining audio work is Switch 2 headset-presence/routing, real-console
-> input/rumble coexistence once that route exists, microphone return, and an
-> extended thermal soak.
+> cold boot, and ten wake attempts with every known controller passed. A real
+> Switch 2 now recognizes a physical DualSense headset and plays console audio
+> through it with input, rumble, and wake intact. That first pass exposed two
+> follow-ups: legacy rumble interrupted audio, and jack removal killed input
+> until the console restarted. Follow-up hardware passes confirmed that the
+> audible activation must remain enabled and that the persistent RP2350 ISO
+> endpoint must survive repeated alt-setting cycles. Input, ordinary rumble,
+> repeated jack removal/reinsert, and controller/dongle reconnect are now stable.
+> A transient build produced audio plus lighter native haptics, while the final
+> flow-gated build produced full legacy rumble but no audio. That A/B result
+> identified a startup scheduling deadlock: recurring legacy `0x31` output could
+> prevent the first combined `0x39` audio/haptic report whose arrival was required
+> to transfer ownership. The current build reserves `0x39` ownership when the
+> headset/audio path is requested, before the first stream packet. Audio after a
+> bonded reconnect and audio/haptic coexistence remain hardware-pending. Remaining work is
+> microphone return and an extended thermal soak. A 300 MHz Pico W fixed-point/XIP port cleared compile
+> and memory gates but barely played audio on hardware. It was rejected, and
+> Pico W is locked to its prior validated non-audio configuration.
 >
 > **Historical note:** early implementation/tooling was reverted in `e6c43b0`
 > after a stale incremental build was mistaken for a pairing regression. Later
@@ -506,7 +520,8 @@ even the *encoder-free tone build* still stalls: the blocker is a periodic core-
   route, mute. Sent before streaming and on control change.
 - **`0x31`** (input): gamepad; the controller **mic** is multiplexed in via header bit
   (`data[2] & 0x02`), with the 71 B Opus mic frame at `data+4`. Headset-present is
-  `data[56] & 1` (raw, incl. `0xA1`) → byte 55 after BTstack strips the transaction byte.
+  `data[56] & 1` (raw, incl. `0xA1`) → byte 55 after BTstack strips the transaction byte;
+  the adjacent bit distinguishes headphones from a microphone-equipped headset.
 - Codec is **Opus** on every path (BT-Classic HID bandwidth cannot carry raw PCM):
   speaker 200 B/10 ms stereo; mic 71 B/10 ms mono.
 
@@ -529,6 +544,62 @@ both transports (from `switch2_controller_research`):
 - So PicoSwitch2's job is: Switch 2 USB UAC1 PCM → DualSense BT-Classic Opus `0x39`. The
   console's native *wireless* audio format (BLE `0x3F`, 50 B chunks, DSP-processed) is a
   separate, unexplored avenue and is **not needed** for the USB-bridge approach.
+
+### Bonded reconnect and conditional headset advertisement
+
+Fresh Sony pairing uses PicoSwitch2's raw direct-L2CAP path. A bonded DualSense reconnects
+through BTstack HID Host instead. BTstack's `hid_host_send_report()` length is only eight
+bits, and PicoSwitch2's normal HID Host persistence buffer is 80 bytes, so that path could
+not represent either the 142-byte `0x32` activation or 547-byte `0x39` stream report. Input
+therefore reconnected while audio silently stopped.
+
+The Pico 2 W audio build now records the control/interrupt CIDs of each already-negotiated
+HID Host connection. Only Sony audio reports bypass the length-limited wrapper and use that
+captured interrupt CID; ordinary controller output remains on the established HID Host path.
+The audio state machine keeps ownership of retry timing, so a temporarily busy L2CAP channel
+does not turn a failed immediate send into a false success.
+
+DualSense report `0x31` status byte 55 is normalized as none, headphones, or headset and
+crosses the existing input-event seam. Pro Controller 2 report `0x09` then emits `0x00`,
+alternating `0x05/0x0D`, or alternating `0x07/0x0F`; report `0x05` mirrors the common
+headset-present bit. The state is nonzero only while the physical DualSense jack is occupied,
+preventing a bare controller speaker from capturing ordinary console audio.
+
+The first real-console pass confirmed insertion, recognition, and console audio through
+the physical jack, with input, rumble, and wake still functional. It also found that removal
+stopped input for the remainder of the console session. The removal edge had been sending
+another `0x32` transaction because byte 11 was incorrectly treated as a simple
+speaker/headphone route. `SetStateData` instead identifies that byte as `AudioControl`
+(`MicSelect` plus input/output channel paths); report `0x39` byte 140 is the
+per-block speaker/headphone selector.
+
+The next hardware pass supplied decisive A/B evidence. Leaving AudioControl at zero
+made the console recognize the headset but produced no DualSense audio. Suppressing
+the reverse transaction did allow ordinary rumble to return on removal, so that part
+of the diagnosis was sound. Re-inserting the headset then stopped input and audio
+until the dongle was unplugged. The RP2350 ISO allocation API keeps endpoints allocated
+and does not actually close them at alt 0; the custom driver was reactivating and
+rearming that still-live endpoint on alt 1. The revised build restores the known-audible
+`0x02` headset AudioControl value, latches it for the Bluetooth connection so removal
+never sends the harmful `0x30` reverse transaction, and preserves endpoint activation/
+pending-transfer state across alt 1 → 0 → 1.
+
+The same hardware pass confirmed that a separate legacy `0x31` rumble report causes
+an audible gap while `0x39` audio is live. DS5Dongle establishes why: bytes 12..139
+of every `0x39` packet are two 64-byte stereo signed-8 haptic PCM blocks at 3 kHz,
+while bytes 142..541 are the two independent Opus speaker frames. Host coverage
+asserts that nonzero haptics do not modify either Opus range.
+
+The latest A/B hardware pass exposed a scheduling rather than a packet-layout fault.
+A transient revision produced audio plus lighter native haptics. The subsequent
+recent-flow gate produced full legacy rumble but no audio: recurring legacy `0x31`
+generations could fill the ordinary output path before the first `0x39`, while the
+code waited for that first accepted `0x39` before suppressing legacy output. The
+current revision breaks that loop by reserving native audio/haptic ownership as soon
+as the physical headset or USB speaker path requests it. Removal returns ownership
+to the validated full-strength legacy path. Input, rumble, repeated unplug/replug,
+and ordinary controller/dongle reconnect are hardware-confirmed stable; audio/haptic
+coexistence and audio after bonded reconnect await focused validation.
 
 ## 15. The `DSPH` DSP blob (`dumps/SPI/2069_*`)
 
@@ -624,11 +695,18 @@ only for short maintenance and transport of completed frame pairs. USB remains o
 BTstack initialization, ownership, and service remain on core1. This is not the rejected
 core split.
 
-Clean hardware-test variants are available at 150 MHz, 200 MHz/1.20 V, and experimental
-300 MHz/1.20 V. CYW43 PIO is held at or below its ordinary 75 MHz rate (divider 3 at
-200 MHz and divider 4 at 300 MHz). Test 200 MHz first to isolate the scheduling change;
-use 300 MHz only if the lower clock still drops PCM or for a separate stability/headroom
-experiment.
+Clean hardware-test variants remain available at 150 MHz and 200 MHz/1.20 V; the
+standard Pico 2 W build uses the hardware-confirmed 300 MHz/1.20 V configuration.
+CYW43 PIO is held at or below its ordinary 75 MHz rate (divider 3 at 200 MHz and
+divider 4 at 300 MHz). The lower clocks are retained as non-working comparisons
+for diagnosing the real-time threshold.
+
+The Pico W port used the same 300 MHz/1.20 V system clock but a different codec
+placement: fixed-point Opus from XIP flash, a 36 KiB core1 stack, and `/4` boot2
+flash/CYW43 dividers. Although it cleared compile and memory gates, hardware
+playback barely worked. The experiment is retained here as negative evidence;
+all Pico W audio, overclock, codec, stack, and divider changes were removed from
+the standard artifact.
 
 > **Hardware result:** the 200 MHz foreground-worker image remained audibly choppy.
 > The 300 MHz image sounded continuous/perfect by ear. Its accounting is complete:
@@ -645,11 +723,9 @@ experiment.
 >
 > **300 MHz regression result:** LED and BOOTSEL behavior passed; mapping/color
 > configuration persisted and read back after reconnect; cold boot passed; and console
-> wake passed ten attempts with every known controller. Real-console input and rumble
-> during audio could not yet be exercised because the bridge routes to the DualSense
-> internal speaker and the Switch does not report a headset attached to the emulated
-> controller. Treat headset presence/routing as a separate open issue, not a confirmed
-> input or rumble regression.
+> wake passed ten attempts with every known controller. Real-console headset insertion
+> and audio output are confirmed, including input/rumble/wake while connected. The
+> corrected unplug transition and in-band haptic PCM build remain hardware-pending.
 
 ### Sources
 - `nso-gc-refs/DS5Dongle/src/{main,audio,bt,btstack_config}.*` @ `750bde8`

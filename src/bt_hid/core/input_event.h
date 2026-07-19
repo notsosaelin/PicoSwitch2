@@ -9,6 +9,8 @@
 #include <stdbool.h>
 #include <string.h>
 
+#include "controller_headset.h"
+
 // ============================================================================
 // Device Type Classification
 // ============================================================================
@@ -189,6 +191,9 @@ typedef struct {
     uint8_t button_count;       // Number of face buttons (2, 3, 4, 6, etc.)
     bool has_rumble;            // Device supports rumble
     bool has_force_feedback;    // Device supports force feedback
+#ifdef NS2_DS5_AUDIO
+    uint8_t headset_state;      // CONTROLLER_HEADSET_* physical jack state
+#endif
 
     // Found 2026-07-12 (8BitDo NGC Modkit): ns2_seam.c's router_submit_input() unconditionally
     // folds analog[ANALOG_L2]/[ANALOG_R2] crossing a threshold into JP_BUTTON_L2/R2, on top of

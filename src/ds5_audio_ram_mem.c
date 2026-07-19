@@ -1,14 +1,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#ifdef NS2_DS5_AUDIO_LIVE_OPUS
+#ifdef NS2_DS5_AUDIO_RAM_MEM
 
 #include "pico.h"
 
-// The live Opus hot path is deliberately SRAM-resident. Keep its common memory
-// primitives there too; otherwise every encode still jumps back into newlib's
-// XIP-flash memcpy/memset implementations. This follows the optimization used
-// by DS5Dongle, with simple aligned word loops suitable for the RP2350.
+// RP2350 lacks RP2040's boot-ROM memory operations. Keep the common live-audio
+// memory primitives in SRAM alongside the relocated floating-point Opus
+// archive. Pico W deliberately retains its accelerated boot-ROM implementation.
+// This follows the DS5Dongle optimization with simple aligned word loops.
 //
 // This translation unit is built with builtin/pattern recognition disabled in
 // CMake so the compiler cannot lower these loops into recursive calls.

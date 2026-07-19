@@ -3,7 +3,7 @@
 #include <pico/stdlib.h>
 #include <pico/multicore.h>
 #include <pico/async_context.h>
-#ifdef NS2_DS5_AUDIO_OVERCLOCK_KHZ
+#ifdef NS2_PICO2_SYSTEM_CLOCK_KHZ
 #include <hardware/clocks.h>
 #include <hardware/vreg.h>
 #endif
@@ -16,10 +16,11 @@
 void ns2_bt_core_task(void);
 
 #ifdef NS2_DS5_AUDIO_LIVE_OPUS
-// Opus cannot use the SDK's normal core1 stack allocation: that section lives
-// in the RP2350's 4 KiB SCRATCH_X bank. Keep the larger codec stack in ordinary
-// SRAM and launch core1 explicitly with it.
+// Opus cannot use the SDK's normal core1 stack allocation. Keep the codec/BT
+// IRQ stack in ordinary SRAM and launch core1 explicitly with it.
+#ifndef NS2_AUDIO_CORE1_STACK_BYTES
 #define NS2_AUDIO_CORE1_STACK_BYTES (48u * 1024u)
+#endif
 static uint32_t core1_audio_stack[NS2_AUDIO_CORE1_STACK_BYTES / sizeof(uint32_t)]
 	__attribute__((aligned(8)));
 #endif
@@ -27,12 +28,12 @@ static uint32_t core1_audio_stack[NS2_AUDIO_CORE1_STACK_BYTES / sizeof(uint32_t)
 int
 main()
 {
-#ifdef NS2_DS5_AUDIO_OVERCLOCK_KHZ
-	// Apply the experimental clock before USB or CYW43 is initialized. Each
-	// build selects a CYW43 PIO divider that keeps its bus at or below 75 MHz.
+#ifdef NS2_PICO2_SYSTEM_CLOCK_KHZ
+	// Apply the validated Pico 2 W clock before USB or CYW43 is initialized.
+	// CMake selects a CYW43 PIO divider that keeps its bus at or below 75 MHz.
 	vreg_set_voltage(VREG_VOLTAGE_1_20);
 	sleep_ms(1000);
-	set_sys_clock_khz(NS2_DS5_AUDIO_OVERCLOCK_KHZ, true);
+	set_sys_clock_khz(NS2_PICO2_SYSTEM_CLOCK_KHZ, true);
 #endif
 
 	stdio_init_all();

@@ -68,27 +68,47 @@ if(NS2_PRO AND NS2_AUDIO)
     target_compile_definitions(PicoSwitchWGA PRIVATE NS2_AUDIO=1)
 endif()
 
-# Audible DualSense Bluetooth audio requires the RP2350 memory/CPU budget.
-# The hardware-confirmed configuration is the opt-in 300 MHz live-audio build;
-# ordinary Pico W/Pico 2 W firmware remains at its normal clock without Opus.
+# Audible DualSense Bluetooth audio requires the RP2350 memory/CPU budget and
+# is standard only on Pico 2 W. Pico W retains its validated non-audio clock,
+# memory layout, and Bluetooth scheduling.
 # The USB endpoint delivers exact 48 kHz stereo. DualSense Bluetooth consumes
 # nominal 480-sample Opus frames at an effective 45 kHz clock, so the live
 # bridge accumulates 512 real input frames and resamples them to 480 before
 # encoding, matching both DS5Dongle and daidr/dualsense-tester.
-option(NS2_DS5_AUDIO "NS2: experimental live USB-to-DualSense Opus bridge" OFF)
-option(NS2_DS5_AUDIO_OVERCLOCK
-       "NS2: overclock the RP2350 live-audio build" OFF)
-set(NS2_DS5_AUDIO_OVERCLOCK_MHZ "200" CACHE STRING
-    "Experimental RP2350 live-audio system clock in MHz")
+set(NS2_DS5_AUDIO_DEFAULT OFF)
+if(PICO_PLATFORM MATCHES "^rp2350")
+    set(NS2_DS5_AUDIO_DEFAULT ON)
+endif()
+option(NS2_DS5_AUDIO
+       "NS2: Pico 2 W live USB-to-DualSense Opus bridge"
+       ${NS2_DS5_AUDIO_DEFAULT})
+set(NS2_PICO2_SYSTEM_CLOCK_MHZ "300" CACHE STRING
+    "Pico 2 W system clock in MHz; the validated standard build uses 300")
 option(NS2_DS5_AUDIO_TEST_TONE
        "NS2: diagnostic fixed DualSense tone (no live Opus encoder)" OFF)
-if(NS2_DS5_AUDIO_OVERCLOCK AND NOT NS2_DS5_AUDIO)
-    message(FATAL_ERROR "NS2_DS5_AUDIO_OVERCLOCK requires NS2_DS5_AUDIO=ON")
-endif()
 if(NS2_PRO AND NS2_AUDIO AND
    (NS2_DS5_AUDIO OR NS2_DS5_AUDIO_TEST_TONE) AND
    PICO_PLATFORM MATCHES "^rp2350")
     target_compile_definitions(PicoSwitchWGA PRIVATE NS2_DS5_AUDIO=1)
+endif()
+
+if(PICO_PLATFORM MATCHES "^rp2350")
+    if(NS2_PICO2_SYSTEM_CLOCK_MHZ LESS 150 OR
+       NS2_PICO2_SYSTEM_CLOCK_MHZ GREATER 350)
+        message(FATAL_ERROR
+                "Pico 2 W system clock must be from 150 through 350 MHz")
+    endif()
+    if(NS2_PICO2_SYSTEM_CLOCK_MHZ GREATER 150)
+        math(EXPR NS2_PICO2_SYSTEM_CLOCK_KHZ
+             "${NS2_PICO2_SYSTEM_CLOCK_MHZ} * 1000")
+        # Keep the CYW43 PIO bus at or below its normal 75 MHz rate:
+        # 200/3 = 66.7 MHz and 300/4 = 75 MHz.
+        math(EXPR NS2_PICO2_CYW43_DIV
+             "(${NS2_PICO2_SYSTEM_CLOCK_MHZ} + 74) / 75")
+        target_compile_definitions(PicoSwitchWGA PRIVATE
+            NS2_PICO2_SYSTEM_CLOCK_KHZ=${NS2_PICO2_SYSTEM_CLOCK_KHZ}
+            CYW43_PIO_CLOCK_DIV_INT=${NS2_PICO2_CYW43_DIV})
+    endif()
 endif()
 
 if(NS2_PRO AND NS2_AUDIO AND NS2_DS5_AUDIO AND
@@ -97,30 +117,15 @@ if(NS2_PRO AND NS2_AUDIO AND NS2_DS5_AUDIO AND
     set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
     set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
     set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+    set(OPUS_FIXED_POINT OFF CACHE BOOL "" FORCE)
+    set(OPUS_ENABLE_FLOAT_API ON CACHE BOOL "" FORCE)
     add_subdirectory(third_party/opus EXCLUDE_FROM_ALL)
     target_compile_definitions(PicoSwitchWGA PRIVATE NS2_DS5_AUDIO_LIVE_OPUS=1)
-    if(NS2_DS5_AUDIO_OVERCLOCK)
-        if(NS2_DS5_AUDIO_OVERCLOCK_MHZ LESS_EQUAL 150 OR
-           NS2_DS5_AUDIO_OVERCLOCK_MHZ GREATER 350)
-            message(FATAL_ERROR
-                    "Audio overclock must be greater than 150 and at most 350 MHz")
-        endif()
-        math(EXPR NS2_DS5_AUDIO_OVERCLOCK_KHZ
-             "${NS2_DS5_AUDIO_OVERCLOCK_MHZ} * 1000")
-        # Keep the CYW43 PIO bus at or below its normal 75 MHz rate:
-        # 200/3 = 66.7 MHz and 300/4 = 75 MHz.
-        math(EXPR NS2_DS5_CYW43_DIV
-             "(${NS2_DS5_AUDIO_OVERCLOCK_MHZ} + 74) / 75")
-        target_compile_definitions(PicoSwitchWGA PRIVATE
-            NS2_DS5_AUDIO_OVERCLOCK_KHZ=${NS2_DS5_AUDIO_OVERCLOCK_KHZ}
-            CYW43_PIO_CLOCK_DIV_INT=${NS2_DS5_CYW43_DIV})
-    endif()
     # DS5Dongle's current RP2350 implementation relocates libopus code and
     # read-only tables into SRAM. Running the encoder from XIP flash caused
     # enough cache stalls to miss its real-time deadline even when the codec
-    # had a dedicated core. It is more important here because codec and
-    # Bluetooth share core1. The archive is about 220 KiB in RAM; the live
-    # Pico 2 W image has ample headroom after its codec stack and queues.
+    # had a dedicated core. The archive is about 220 KiB in RAM; Pico 2 W has
+    # enough headroom after its codec stack and queues.
     add_custom_command(
         OUTPUT ${CMAKE_BINARY_DIR}/opus_ram_relocate.stamp
         COMMAND ${CMAKE_OBJCOPY}
@@ -137,14 +142,13 @@ if(NS2_PRO AND NS2_AUDIO AND NS2_DS5_AUDIO AND
     add_custom_target(opus_ram_relocate ALL
                       DEPENDS ${CMAKE_BINARY_DIR}/opus_ram_relocate.stamp)
     add_dependencies(PicoSwitchWGA opus_ram_relocate)
+    target_compile_definitions(PicoSwitchWGA PRIVATE
+                               NS2_DS5_AUDIO_RAM_MEM=1
+                               NS2_AUDIO_CORE1_STACK_BYTES=49152)
     set_source_files_properties(src/ds5_audio_ram_mem.c PROPERTIES
         COMPILE_OPTIONS "-fno-builtin;-fno-tree-loop-distribute-patterns")
-    # The SDK's automatic core1 stack is linked into the 4 KiB SCRATCH_X bank,
-    # which is too small for Opus. Disable that allocation; main.c supplies a
-    # 48 KiB stack from ordinary SRAM via multicore_launch_core1_with_stack().
-    # The pinned reference measured roughly 26 KiB at the encoder's deepest
-    # point, leaving useful headroom for the foreground worker while the
-    # core1 CYW43/BTstack background IRQ may preempt it.
+    # The SDK's automatic core1 stack is too small for Opus. Disable that
+    # allocation; main.c supplies a 48 KiB stack from ordinary SRAM.
     target_compile_definitions(PicoSwitchWGA PRIVATE PICO_CORE1_STACK_SIZE=0)
     target_link_libraries(PicoSwitchWGA opus)
 endif()
