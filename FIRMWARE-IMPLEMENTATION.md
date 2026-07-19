@@ -226,6 +226,37 @@ a genuine PC2 update image. Fully documented here; **no code written.**
 - Deliverable: a byte-exact image file + a metadata sidecar, analyzed against the known header
   formats (`0xAA640001` "SYS " at `0x0`/`0x15000`; `DSPH`/`MT3616A0` at `0x175000`).
 
+### 7.1a Interaction model — the commit is **autonomous** (no dongle interaction in Phase 1)
+
+While the dongle is on the console it is a black box: no BOOTSEL gesture, no config mode, no button
+is reachable. **There is therefore no manual "commit" step.** The capture firmware commits *itself*,
+driven entirely by the `0x0D` packets the console sends:
+
+- `0x0D/01` (init) → **arms** the sink.
+- each `0x0D/04` chunk → buffered and **auto-flushed to flash a sector at a time** as 4 KiB fills.
+  This *is* the commit — continuous, protocol-triggered, zero input.
+- `0x0D/05`/`07` (end/finalise) → write the metadata sidecar + completeness flag, close the sink.
+
+Runtime flash writes during normal operation are already proven safe in this codebase — `config.c`
+does exactly that at runtime (`config.c:277-281`, multicore lockout + interrupts disabled + the flash
+routine running from SRAM). No human trigger is involved there either.
+
+**The only interaction the operator has is on the *Switch*, not the dongle:** tapping **"Update"** on
+the console's own controller-update prompt (the same prompt that fails today) is what makes the
+console emit the `0x0D` stream. That is fully available to the operator; the dongle merely reacts.
+
+**Feedback without input:** the one output visible while on the console is the **LED**. The firmware
+already blinks it as a diagnostic tracer (`g_ns2_stage`, driven by the platform layer). A capture
+build reuses it — a distinct pattern for *armed → capturing → committed* — so the operator can see
+the capture finished before unplugging, despite having no input path.
+
+**End-to-end operator workflow (no "reach into the dongle" moment):**
+
+1. **PC, beforehand:** flash a **capture-enabled build** via the normal BOOTSEL/UF2 route.
+2. **Switch:** plug in, connect a controller, **accept the update prompt on-screen**.
+3. **Dongle (autonomous):** captures + flushes to flash by itself; LED confirms completion.
+4. **Unplug**, plug into PC, enter config mode, **read the blob + sidecar out over CDC** (Phase 3).
+
 ### 7.2 State machine (proposed `case 0x0D`)
 
 ```
