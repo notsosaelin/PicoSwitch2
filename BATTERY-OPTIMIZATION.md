@@ -187,3 +187,112 @@ slightly under-scales vs `*12.5`. Legacy path, low priority.
   `hid-wiimote-modules.c` (Wiimote + Wii U Pro).
 - dekuNukem `Nintendo_Switch_Reverse_Engineering/bluetooth_hid_notes.md` (Switch Pro battery byte).
 - ndeadly `switch2_controller_research/{hid_reports,commands,bluetooth_interface}.md` @ `d1c5a7f`.
+
+---
+
+# 10. Output fidelity — are we outputting in a Switch 2-native fashion?
+
+Method: compared our encoder output to ndeadly's genuine report spec and to the genuine captures
+in the repo (`usbpcaptures/genuine_procon_2.pcapng`, `dumps/BLE CAPTURE/*.ndjson`). Note on
+evidence: the BLE captures are **report `0x05`** (32-bit counter + battery **voltage** at `0x1F` +
+charge-state at `0x21`), and the genuine USB capture is the **command/setup exchange** — so the
+dump set contains **no genuine report `0x09`/`0x0A` streaming capture** (the one carrying the
+0–9 Power Info byte). Format is therefore verified against the spec; live power-info **values** are
+inferred from the related report-`0x05` battery fields.
+
+## 10.1 Power Info byte — ✅ native in format
+Offset `0x1` of every console-native report; bits `[0]`=ext power, `[1]`=charging, `[2:5]`=level
+0–9, `[6:7]`=reserved. Our `switch2_power_info()` emits `0x01 | (charging?0x02:0) | (level<<2)`:
+level occupies bits 2–5, **reserved bits 6–7 stay 0**, level is clamped 0–9. All four personalities
+fill offset `0x1` identically (`switch_pro2.c:803`, `switch_gc_encode.c:13`,
+`switch_joycon2_encode.c:65`) and ndeadly shows Power Info at `0x1` for `0x07/0x08/0x09/0x0A` alike.
+**The byte's shape, position, and range are native.**
+
+## 10.2 `external power` bit — ⚠️ non-native hybrid
+Hardcoded to `1`. Genuine evidence from the report-`0x05` **charge-state byte (`0x21`)**: it reads
+**`0x00` while wireless/discharging** (our BLE "still" capture: every sample `0x00`), rising toward
+`0x34` when charging and `0x20` when full. So a genuine **wireless** pad presents as on-battery
+(ext = 0), and a genuine **wired** pad presents as charging (ext = 1, charging = 1, level climbing
+to full). Our dongle is USB-wired to the console, so `ext = 1` imitates a wired pad — but we pair
+it with the **wireless** controller's *discharging* level and `charging = 0`. That trio
+(wired + discharging + not charging) is a state a genuine controller never emits. Since the intent
+is to surface the *wireless* pad's battery, the more native fiction is **`ext = 0`** (a
+battery-powered wireless controller). Worth an A/B on hardware (§8).
+
+## 10.3 Voltage & charge-state — 🟡 fixed, non-native (low impact for the icon)
+Genuine report-`0x05` voltage (`0x1F`) is **dynamic** — the capture shows **3669–3670 mV** at that
+charge and it drifts; charge-state (`0x21`) is `0x00`/`0x34`/`0x20` as above. We replay a **fixed
+3749 mV** and a **fixed `0x34`** ("charging") for command `0x0B`, and leave report `0x05`
+placeholders. Two consequences: (a) any voltage-based surface reads a constant; (b) our fixed
+`0x34` **claims charging** even for a discharging pad — inconsistent with our own Power Info
+charging bit. Per §0 the *icon* uses Power Info, so this is low priority, but the internal
+inconsistency is worth removing.
+
+## 10.4 Level span / endpoints — ⬜ unconfirmed
+We emit the full 0–9 span via linear rounding. Whether a genuine Pro2 actually uses all of 0–9 (or,
+say, never emits 0 and tops at 8, and where its low-battery warning trips) is **not confirmed** —
+no genuine report-`0x09` discharge capture exists in the dump set. **Recommended capture:** a
+genuine Pro Controller 2 streaming report `0x09` across a full charge→empty discharge, to calibrate
+the level curve and the empty/low/full endpoints (§11.2).
+
+**Verdict:** the level+charging output is **byte-native in format and position**; the only real
+deviations are the hardcoded `external power` bit (10.2) and the fixed voltage/charge-state (10.3),
+the latter largely cosmetic for the icon.
+
+---
+
+# 11. Getting precise readings from coarse-battery controllers
+
+**Fundamental limit:** you cannot recover more resolution than the controller reports —
+DualSense/DS4 = 11 buckets (0–10), DS3 = 6, Switch Pro / Wii U Pro = 5, Wiimote = a single
+non-linear byte. The Switch 2 *icon* is itself coarse, so the achievable wins are, in order:
+**(a) stability**, **(b) correct bucket→icon placement**, **(c) sub-bucket estimation from
+temporal behavior**. These are presentation/estimation strategies, not new controller data.
+
+## 11.1 Stability — highest value, low complexity
+- **Hysteresis / dead-band at bucket edges.** Change the shown 0–9 only after a *sustained* move
+  (e.g. N consecutive agreeing reports, or a ≥1.5-bucket delta). A coarse gauge that dithers between
+  two adjacent buckets otherwise makes the icon flicker — a large chunk of "looks inaccurate."
+- **EWMA / long-time-constant low-pass.** Battery moves over hours, so a τ of minutes removes noise
+  with no meaningful lag. Apply on the normalized % before the 0–9 encode.
+- **Monotonic-while-discharging clamp.** When `charging == 0`, never let the estimate rise; only a
+  charging state may raise it. Matches real cell physics and stops upward bounces from noisy reads.
+
+## 11.2 Correct bucket→icon placement
+- **Skip the 0–100% waypoint for coarse native sources** (§4): map native buckets **directly** to
+  0–9 with a fixed table (e.g. DualSense 0–10 → 0–9) instead of `bucket → % → 0–9`, removing the
+  double quantization.
+- **Endpoint calibration** against the §10.4 genuine capture, so "empty"/"low warning"/"full" land
+  where the console expects them (today's `+5` midpoint shows empty at 5% and full at 95%).
+- **Per-controller discharge curve.** Li-ion voltage→charge is non-linear; where a source's buckets
+  are voltage-derived (DualSense fuel gauge), map with a matching curve so "half charge" lands on
+  the icon's half rather than at a linear midpoint.
+
+## 11.3 Sub-bucket estimation — real added precision, higher complexity
+- **Drain-rate interpolation ("gas gauge").** Track wall-clock dwell time in each bucket and the
+  observed drain rate; between transitions, interpolate a finer % from elapsed time. Example: a
+  DualSense held at level 5 (~55%) for 25 min, historically draining ~1 bucket per ~45 min, is
+  ~44% — sub-bucket resolution derived purely from temporal data.
+- **Activity-weighted coulomb-ish counting.** Integrate estimated drain between coarse updates
+  (optionally weighting for rumble/audio load, which draw more), and **re-anchor to the coarse
+  reading on every bucket transition** to bound drift.
+- **State handling.** Keep per-controller estimator state (last bucket, dwell, rate) keyed by
+  controller identity so a reconnect resumes; **reset on disconnect and on any charge-state change**
+  (charging invalidates the discharge model).
+
+## 11.4 Per-source strategy
+
+| Source | Native resolution | Recommended precision strategy |
+|---|---|---|
+| DualSense / DS4 | 11 (0–10) | direct 11→0–9 table + hysteresis; optional drain-rate interpolation (§11.3) |
+| DualShock 3 | 6 | curve-map 6→0–9 + hysteresis |
+| Switch Pro / 8BitDo | 5 | after the §3.4 bug fix: direct 5→0–9 + hysteresis |
+| Wii U Pro | 5 | after the §3.5 fix: direct 5→0–9 + hysteresis |
+| Wiimote | non-linear byte | non-linearity LUT + heavy EWMA; drain-rate interpolation viable |
+| BAS (Xbox / Switch 2 / Stadia / MouthPad / generic) | true 0–100% | already fine — light smoothing only; supply charging from a secondary source if available |
+
+## 11.5 Optional: a precise voltage path
+If any Switch surface ever shows a **numeric %** (it would read voltage — report `0x05:0x1F` or
+command `0x0B/0x03`, currently fixed per §10.3), the sub-bucket estimate from §11.3 could be emitted
+as a **derived voltage** via a Li-ion %→mV curve, giving a precise numeric readout even from a
+coarse source. Only worthwhile if such a surface exists; the battery **icon** does not use it.
