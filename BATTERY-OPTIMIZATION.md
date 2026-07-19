@@ -1,147 +1,189 @@
-# Battery Passthrough — Scaling Audit
+# Battery Passthrough — Accuracy Audit & Optimization
 
-> Audit of the controller→dongle→Switch battery reporting path, focused on **scaling
-> accuracy**. Research/documentation only — **no code was changed.** Sources: the live
-> code (`src/controller_battery.c` and its callers), ndeadly's genuine Switch 2 protocol
-> docs (`nso-gc-refs/switch2_controller_research/` @ `d1c5a7f`), and standard controller
-> battery references.
+> Deep audit of the controller→dongle→Switch battery path, aimed at making the reported
+> state **as close to native as possible**. Research/documentation only — **NO CODE WAS
+> CHANGED.** Verified against the live code and authoritative references (Linux HID drivers,
+> dekuNukem Switch RE, ndeadly's Switch 2 RE `@ d1c5a7f`).
 >
-> Status: 🟡 several concrete scaling issues found; the single decisive unknown (which
-> channel the console *displays* from) needs a hardware A/B test (§6).
+> Status: 🟡 core scaling is sound; **two concrete decode bugs found** (Switch Pro, Wii U Pro)
+> plus several accuracy refinements. Prioritized in §7.
 
-## 1. The data flow
+## 0. Corrected framing (important)
+
+The Switch 2 shows controller battery as an **icon**, not a percentage. On hardware it **tracks
+the controller's charge and reflects charging state**. Therefore the console is displaying from
+the **dynamic Power Info byte** (`[1]=charging`, `[2:5]=level 0–9`), **not** from the battery
+voltage. This **demotes** the earlier fixed-voltage finding (now §6.2) and makes the real work
+the **per-controller decode accuracy** and the **level→0–9 mapping** below.
+
+## 1. Pipeline
 
 ```
-BT controller report ─▶ controller_battery_decode_*(raw)  ─▶ 0..100% + charging
-                        (src/controller_battery.c)
-   ─▶ input_event_set_native_battery(level, charging)      ─▶ event.battery_level (0..100)
-   ─▶ controller_battery_switch2_power_info(valid,level,ch) ─▶ power byte in the
-                        (fills report offset 0x01)             console-native report (0x07..0x0A)
+BT report ─▶ controller_battery_decode_<pad>(raw)  ─▶ {level 0..100, charging}   (controller_battery.c)
+          ─▶ input_event_set_native_battery(level, charging)                     (input_event.h)
+     OR   ─▶ input_event_set_bas_battery(level)   [BLE Battery Service, true 0..100%]
+          ─▶ controller_battery_switch2_power_info(valid, level, charging)        (power byte, offset 0x01)
 ```
+Native HID wins permanently over BAS (`input_event_set_bas_battery` no-ops once a native reading
+exists). Encoder call sites: `switch_pro2.c:803`, `switch_gc_encode.c:13`, `switch_joycon2_encode.c:65`.
 
-Call sites: `switch_pro2.c:803`, `switch_gc_encode.c:13`, `switch_joycon2_encode.c:65`
-(Switch 2 power byte); `switch_pro.c:109` (legacy Switch 1 nibble).
+## 2. The Switch 2 battery model (ndeadly)
 
-## 2. What the genuine Switch 2 actually consumes (ndeadly)
+- **Power Info byte** (every console-native report `0x07..0x0A`, offset `0x01`): bitfield
+  `[0]`=external power, `[1]`=charging, `[2:5]`=level **0–9**, `[6:7]`=reserved. **This drives the icon.**
+- Battery **voltage (mV)** — report `0x05:0x1F` and command `0x0B/0x03`; **charge status** —
+  `0x05:0x21` and `0x0B/0x04`. Present but (per §0) not the icon source.
 
-A real Pro Controller 2 exposes battery on **three** channels, and PicoSwitch2 handles them
-very differently:
+The exact 0–9 → icon-segment thresholds are console-internal and unknown to us. A genuine Pro
+Controller 2 derives its 0–9 from a Li-ion voltage curve. Best we can do: emit the **same 0–9 a
+genuine pad would emit at the same true charge** — i.e. an accurate % and a faithful %→0–9 map.
 
-| Channel | Where | Genuine content | PicoSwitch2 |
-|---|---|---|---|
-| **Power Info byte** | every console-native report `0x07..0x0A`, offset `0x01` | bitfield: `[0]`=external power, `[1]`=charging, `[2:5]`=level **0–9**, `[6:7]`=reserved | **dynamic** — `switch2_power_info()` |
-| **Battery Voltage** | input report `0x05` offset `0x1F`; also **command `0x0B/0x03`** | battery voltage in **mV** | **FIXED** — see F1 |
-| **Charge Status** | input report `0x05` offset `0x21`; also **command `0x0B/0x04`** | charge status | **FIXED** — see F1 |
+## 3. Per-controller decode analysis
 
-The console defaults to report **#2** (`0x09` for a Pro Controller), which carries the Power
-Info byte. Report `0x05` (#1, with voltage) is "common to all controllers" but ndeadly notes
-it is "not known if input report ID #1 is currently used officially." The console **does**
-issue command `0x0B` (that is why PicoSwitch2 implements it), at least during init.
+Legend: ✅ matches authority · ⚠️ inaccuracy · 🔴 bug.
 
-## 3. Findings (by severity × confidence)
+### 3.1 DualSense / DualSense Edge — ✅ (source: Linux `hid-playstation.c`)
+Raw at BT `report_data[52]`: `capacity = status[0] & 0x0F` (0–10), `charging = status[0] >> 4`.
+Linux: case `0x0` discharging / `0x1` charging → `min(cap*10+5,100)`; `0x2` full → 100; `0xa/0xb/0xf`
+→ 0/unknown. **PicoSwitch2 matches exactly** for 0x0/0x1/0x2 (`level*10+5`, clamp 100). Differences,
+both defensible: full (0x2) is reported **not charging** (genuine "full on cable" ≈ charging-complete);
+error states (0xa/0xb/0xf) `return false` → **retain previous** (avoids flicker to 0%). Native
+resolution is **11 buckets** with a `+5` midpoint estimate — this is the dominant DualSense limit,
+not a bug.
 
-### F1 — Battery voltage & charge status are hardcoded replay values 🔴 (confirmed code fact)
-`switch_pro2.c:744-747`:
+### 3.2 DualShock 4 — ✅ (source: Linux `hid-playstation.c`)
+Raw at `report_data[29]`: `cap = raw & 0x0F`, `cable = raw & 0x10`. PicoSwitch2 mirrors Linux:
+no-cable `raw<10→raw*10+5, ==10→100` (discharging); cable `<10→*10+5`, `==10→100` (charging),
+`==11→100` (full, not charging), else retain. **Correct.**
+
+### 3.3 DualShock 3 — ✅ (source: Linux `hid-sony` `sixaxis_battery_capacity[]`)
+Raw at `data[29]`: table `{0,1,25,50,75,100}` for 0–5, `0xEE`→charging/100, `0xEF`→100.
+**Exactly the Linux table.** Coarse by nature (6 states).
+
+### 3.4 Switch Pro / Joy-Con / Switch-format 8BitDo — 🔴 BUG (source: dekuNukem RE)
+Authoritative byte-2 layout: **high nibble** = battery `8=full, 6, 4, 2, 0=empty`, **LSB of that
+nibble = charging** (byte mask `0x10`); low nibble = connection info.
+
+Current `controller_battery_decode_switch_pro(battery_conn)`:
 ```c
-case 0x0B:  // battery
-    if (sub == 0x03) { memcpy(d, (const uint8_t[]){0xA5,0x0E,0x00,0x00}, 4); ... } // voltage
-    else if (sub == 0x04) { memcpy(d, (const uint8_t[]){0x34,0x00,0x83,0x00}, 4); ... } // charge
+uint8_t raw = battery_conn >> 4;                 // includes the charging LSB in the level
+uint16_t level = raw > 8 ? 100 : raw * 12 + 5;   // charging inflates the level by ~one half-step
+return store(out, level, (battery_conn & 0x08) != 0);  // 0x08 is a *connection-info* bit, not charging
 ```
-`0xA5,0x0E` little-endian = `0x0EA5` = **3749 mV**, the exact value from ndeadly's capture. So
-the queried **voltage is constant (~50% of a Li-ion 3.30–4.20 V range) and the charge status is
-constant**, independent of the real controller. Report `0x05`'s voltage field (offset `0x1F`)
-is likewise a placeholder (see the "battery voltage/current placeholders" note in
-`docs/bluetooth/battery-passthrough.md`).
-**Impact:** if the console's battery UI (or any "precise %") derives from voltage, it will read
-a **fixed ~50% regardless of the real charge** — the most concrete candidate for "not accurate."
-This is the #1 thing to verify on hardware (§6).
+Two defects:
+1. **Level includes the charging LSB.** When charging, the nibble is odd (9/7/5/3/1); e.g. medium+charging
+   = 7 → `7*12+5 = 89%` instead of ~77% for medium (6). Charging states read ~12% too high.
+2. **Charging read from the wrong bit** (`0x08` = connection-info bit 3; the real charging bit is `0x10`).
+   → Switch Pro/8BitDo charging indication is effectively wrong.
 
-### F2 — `external power` bit is hardcoded to 1 on every report 🟠 (confirmed code fact)
-`controller_battery_switch2_power_info()` returns `0x01 | (charging?0x02:0) | (level<<2)` — bit 0
-(`external power`) is **always set**, and the invalid-default `0x25` sets it too. A wireless
-controller running on its own battery is *not* externally powered; asserting it may make the
-console render a plugged/charging state (and possibly de-prioritise or freeze the displayed
-level). It is arguable that the *dongle* is USB-powered so "external power" is technically true —
-but then the reported *level* (the wireless pad's battery, which the dongle is **not** charging)
-is semantically inconsistent with it. Worth testing `external power = 0` to see if the console
-then shows the wireless pad's level faithfully.
+**Native-faithful mapping:** `level3 = (battery_conn >> 5) & 0x07` (0–4), `%= level3*25`
+(`0/25/50/75/100`); `charging = (battery_conn & 0x10) != 0`. (This is the one Nintendo-native source —
+it should round-trip to the console almost perfectly.)
 
-### F3 — The 0–9 level is coarse, and the %→level map assumes linearity 🟠 (design)
-`switch2_power_info()`: `switch_level = (pct*9 + 50)/100` → correct **linear** rounding into 0–9.
-But a genuine controller derives its 0–9 level from a **non-linear Li-ion voltage curve**
-(flat through the mid-range). If the console interprets each level per that genuine curve, a
-linear %→level map is skewed wherever the real curve is non-linear (e.g. our "50%→5" may not be
-the console's idea of level 5). Only 10 display steps exist here regardless, so this channel is
-inherently coarse.
+### 3.5 Wii U Pro — 🔴 BUG (source: Linux `hid-wiimote-modules.c`)
+Authoritative extension byte 10 layout (MSB→LSB): `BATTERY[bits 5–7] | USB[bit4] | CHARG[bit3] |
+LTHUM[bit2] | RTHUM[bit1]`; BATTERY 0–4 (000 empty…100 full); USB active-low; **CHARG active-low
+(0=charging)**.
 
-### F4 — Double quantization from coarse controller sources 🟡 (design)
-The DualSense reports battery in **11 buckets (0–10)**; the decoder expands to % via a
-midpoint (`level*10+5`), then the encoder re-quantises to **10 buckets (0–9)**. Worked example
-(DualSense → Switch level):
+Current `controller_battery_decode_wii_u_pro(status)`:
+```c
+uint8_t raw = (status >> 4) & 0x07;         // reads bits 4–6, should be bits 5–7 (>> 5)
+uint16_t level = raw >= 4 ? 100 : raw * 25;
+return store(out, level, (status & 0x04) == 0); // reads bit 2 (LTHUM), CHARG is bit 3 (0x08)
+```
+Both fields are shifted **one bit low**: the level mixes in the USB bit and drops the MSB, and
+charging reads the left-thumb-button bit. A full, unplugged pad can decode as ~25%. The `*25`
+scaling and active-low polarity are otherwise right.
+**Native-faithful mapping:** `bat = (status >> 5) & 0x07` (0–4), `% = bat*25`;
+`charging = (status & 0x08) == 0`.
+> ⚠️ Verify against a real Wii U Pro extension capture before acting — the bug is inferred from the
+> Linux doc diagram; the consistent one-bit offset strongly implies it, but a capture confirms it.
 
-| DS raw level | decoded % | Switch 0–9 |
-|---:|---:|---:|
-| 0 | 5 | 0 |
-| 1 | 15 | 1 |
-| 5 | 55 | 5 |
-| 9 | 95 | 9 |
-| 10 | 100 | 9 |
+### 3.6 Wiimote — ✅ formula, ⚠️ inherently rough (source: Linux `hid-wiimote-modules.c`)
+Raw at status-report `data[6]`: `% = raw * 100 / 255` — matches Linux exactly. But the Wiimote's
+raw byte vs. AA-cell charge is **markedly non-linear**, so any linear scale is a coarse estimate;
+no charging (AA cells) — correctly `false`.
 
-Monotonic and roughly right, but two lossy quantizations plus a 100% waypoint shift some buckets
-(e.g. DS levels 9 and 10 both land on Switch 9; DS level 0 lands on empty).
+### 3.7 BLE Battery Service pads — ✅ best source (Xbox, Switch 2, Stadia, MouthPad, generic)
+Standard BAS characteristic delivers a **true 0–100%** (`bas_client_handler` → `bthid_set_battery_level`).
+This is the **most accurate** input and maps cleanly to 0–9. Caveat: BAS carries **no charging
+state**, so these always report not-charging; and the *controller's own* % may itself be coarse
+(e.g. Xbox firmware reports few internal levels). Native-HID readings correctly override BAS.
 
-### F5 — Legacy Switch 1 encoder drops charging state 🟡 (minor, legacy path)
-`switch1_connection_info()` maps % → `{0,2,4,6,8}` (5 levels) and ORs a fixed low nibble `0x01`;
-the Switch 1 "charging" convention (odd battery nibble) is never emitted, so a charging pad on a
-Switch 1 host shows as discharging. Legacy path; low priority.
+### 3.8 No battery (Classic Xbox, BattlerGC Pro, generic Classic HID)
+No telemetry → the encoder's safe default (`0x25`: external power, not charging, level 9). Shows a
+full/wired icon. Acceptable, but see §6.1 (it also asserts external power).
 
-### F6 — Per-decoder accuracy notes 🟢 (reference)
+## 4. The %→0–9 encode
 
-| Decoder | Raw resolution | Mapping | Notes |
-|---|---|---|---|
-| DS5 | 0–10 (+status nibble) | `level*10+5`, clamp 100 | midpoint estimate; standard hid-playstation-style |
-| DS4 | 0–11 (+cable bit) | `level*10+5`; 10/11→100 | same family |
-| DS3 | 0–5 discrete | `{0,1,25,50,75,100}`; `0xEE/0xEF`→100 | very coarse (6 states) |
-| Switch Pro | 0–8 nibble | `raw*12+5`, clamp 100 | should be ~`*12.5`; `*12` slightly under-scales top |
-| Wii U Pro | 0–4 | `raw*25`; ≥4→100 | 25% steps; charging active-low (correct) |
-| Wiimote | 0–255 | `raw*100/255` | fine-grained byte but the raw value is **non-linear** vs charge; only a rough estimate |
+`switch2_power_info`: `level09 = (pct*9 + 50)/100` — **correct linear rounding**. Two accuracy notes:
+- **Double quantization** for coarse native sources: DualSense 11 buckets → % (midpoint) → 10
+  buckets. Perceptually minor for a coarse icon, but a **direct native-bucket→0–9 map** (skipping the
+  % waypoint) would be strictly more faithful for DualSense/DS4/DS3/SwitchPro/WiiUPro.
+- **Endpoint bias:** the `+5` midpoint makes "empty" read as 5% and "full-ish" as 95%; combined with
+  rounding, a nearly-empty pad can land on level 0 (empty icon) and levels 9/10 both on 9. If the
+  console's low-battery warning triggers at a specific level, this endpoint handling is where a
+  visible mismatch would come from.
 
-## 4. Summary of scaling correctness
+## 5. Summary matrix
 
-- **Power Info level (0–9):** the %→0–9 arithmetic is **correct** (linear round). Limits are (a)
-  coarseness, (b) the linear-vs-genuine-curve assumption (F3), (c) upstream double-quantization
-  (F4), (d) the `external power` bit (F2).
-- **Voltage / charge status:** **not scaled at all — fixed replay values (F1).** This is the
-  most likely source of a visibly wrong reading *if the console uses this channel.*
+| Source | Native res. | Decode vs authority | Charging | Notes |
+|---|---|---|---|---|
+| DualSense/Edge | 11 (0–10) | ✅ Linux | ✅ (full→not charging) | midpoint `+5`; dominant coarseness |
+| DualShock 4 | 11 + cable | ✅ Linux | ✅ | — |
+| DualShock 3 | 6 | ✅ Linux table | ✅ (EE/EF) | very coarse |
+| **Switch Pro / 8BitDo** | 5 (0/2/4/6/8) | 🔴 level+charging bit wrong | 🔴 wrong bit | Nintendo-native; should be near-perfect once fixed |
+| **Wii U Pro** | 5 (0–4) | 🔴 one-bit-low on both fields | 🔴 wrong bit | verify vs capture |
+| Wiimote | 256 (non-linear) | ✅ formula | n/a | inherently rough |
+| Xbox/Switch2/Stadia/MouthPad/generic (BAS) | 0–100% | ✅ true % | ❌ none in BAS | **best source** |
+| Classic Xbox / BattlerGC / generic Classic | none | default 0x25 | — | full/wired fallback |
 
-## 5. Recommendations (no code changed here)
+## 6. Secondary encode issues
 
-1. **Decide the console's display source first (§6) — do not tune blind.** If it reads voltage,
-   fixing the 0–9 map does nothing; if it reads the level, the fixed voltage is harmless.
-2. **Make voltage/charge track the real battery (F1).** Derive a plausible mV from the normalised
-   % via a Li-ion curve (or a simple linear 3300–4200 mV map) so command `0x0B/0x03`, `0x0B/0x04`,
-   and report `0x05:0x1F/0x21` move with the pad instead of sitting at 3749 mV.
-3. **Reconsider the `external power` bit (F2).** Test `0`; set it (and charging) from the
-   controller's actual cable/charge state rather than a constant.
-4. **If the console uses the level, consider a non-linear %↔level map (F3)** matched to the
-   genuine voltage curve, and/or map the controller's native buckets straight to 0–9 to avoid the
-   double quantization (F4).
-5. **Low priority:** emit Switch 1 charging (F5); refine Switch Pro `*12`→`*12.5` (F6).
+### 6.1 `external power` bit hardcoded to 1 — 🟠
+`switch2_power_info` always ORs `0x01`. Since the icon still tracks level (§0), it isn't hiding the
+level, but a battery-powered wireless pad is not externally powered; the console may render a
+persistent plug/AC hint. Consider driving it from the pad's actual cable/charge state (0 for a
+discharging wireless pad), and test whether the icon then matches native more closely.
 
-## 6. Decisive hardware experiment
+### 6.2 Fixed voltage / charge status (`0x0B`, report `0x05`) — 🟡 (demoted)
+`switch_pro2.c:744` replays constants (`0xA5,0x0E` = 3749 mV; `0x34,0x00,0x83,0x00`). Harmless for
+the **icon** (§0), but wrong if any Switch surface (e.g. a detailed/settings view) reads voltage.
+Low priority; derive from the normalized % if ever needed.
 
-Vary a controller's real charge (e.g. a DualSense at ~90% vs ~20%) and watch the Switch 2 UI:
-- **Reading barely moves / sits near ~50%** → the console is using the **fixed voltage** (F1) —
-  highest-value fix.
-- **Reading tracks but is off by a level or shows plugged/charging** → the **Power Info** path
-  (F2/F3/F4) — tune the level map and the `external power` bit.
-- Cross-check by reading config mode's own battery readout (the normalised %, pre-encode) against
-  what the Switch shows; a divergence localises the fault to the **encode/console** side vs the
-  **decode** side.
+### 6.3 Legacy Switch 1 encoder drops charging — 🟡
+`switch1_connection_info` maps %→`{0,2,4,6,8}` and never sets the Switch 1 charging nibble; `*12`
+slightly under-scales vs `*12.5`. Legacy path, low priority.
 
-## 7. Sources
-- `src/controller_battery.c`, `include/controller_battery.h`; callers in
-  `src/switch_pro2/switch_pro2.c` (incl. the `0x0B` handler ~L744), `src/switch_gc/…`,
-  `src/switch_joycon2/…`, `src/switch_pro/…`.
-- `nso-gc-refs/switch2_controller_research/{hid_reports,commands,bluetooth_interface}.md` @ `d1c5a7f`.
-- `docs/bluetooth/battery-passthrough.md` (existing behaviour + test matrix).
+## 7. Recommendations, prioritized (no code changed here)
+
+1. **Fix Switch Pro decode (§3.4)** — mask the charging LSB out of the level and read charging from
+   `0x10`. Highest value: it is the Nintendo-native source, so a correct decode should round-trip to
+   the console almost exactly. Also fixes Switch-format 8BitDo pads.
+2. **Fix Wii U Pro bit alignment (§3.5)** — battery `>>5`, charging `& 0x08` — after confirming with a
+   real extension capture.
+3. **Re-evaluate the `external power` bit (§6.1)** — set from real state; test icon fidelity at `0`.
+4. **Consider direct native-bucket→0–9 maps (§4)** for coarse sources to drop the double quantization,
+   and align the empty/low/full endpoints with the console's icon thresholds.
+5. **Prefer/照 keep BAS as the high-accuracy path** where available (§3.7); it needs no scaling and only
+   lacks charging.
+6. Low priority: Switch 1 charging + `*12.5` (§6.3); voltage derivation (§6.2).
+
+## 8. Verification experiments (hardware)
+- **Localize decode vs encode:** compare config mode's normalized % (pre-encode) against the Switch
+  icon at several real charge points. Divergence with a *correct* normalized % ⇒ encode/console side;
+  a wrong normalized % ⇒ decode side.
+- **Switch Pro / Wii U Pro:** capture the raw battery byte at known charge/charging states and confirm
+  the §3.4/§3.5 bit layouts before/after any change.
+- **`external power`:** A/B `0`-vs-`1` and observe the icon/plug rendering.
+- **Charging fidelity:** plug/unplug each pad; confirm the console's charging indicator follows (this
+  is where the Switch Pro/Wii U Pro charging-bit bugs would show).
+
+## 9. Sources
+- `src/controller_battery.c`, `include/controller_battery.h`; decoders' call sites in
+  `src/bt_hid/bt/bthid/devices/vendors/{sony,nintendo}/*.c`; encoder in `src/switch_pro2/switch_pro2.c`
+  (incl. `0x0B` at ~L744) and the per-personality encoders.
+- Linux: `drivers/hid/hid-playstation.c` (DS4/DS5), `hid-sony` (`sixaxis_battery_capacity`),
+  `hid-wiimote-modules.c` (Wiimote + Wii U Pro).
+- dekuNukem `Nintendo_Switch_Reverse_Engineering/bluetooth_hid_notes.md` (Switch Pro battery byte).
+- ndeadly `switch2_controller_research/{hid_reports,commands,bluetooth_interface}.md` @ `d1c5a7f`.
