@@ -290,6 +290,27 @@ headset or active USB speaker path requests audio, before the first `0x39`; remo
 returns to the established legacy path. Haptic strength/quality, audio continuity,
 and audio after bonded reconnect require focused hardware validation.
 
+The rejected full-frequency follow-up proved that changing waveform/state plumbing
+can regress the otherwise working stream even when isolated packet tests pass. It
+was fully removed, and the rebuilt source reproduced the last confirmed artifact's
+SHA-256 exactly (`A890974E…9272`).
+
+The alternative approach begins at the source boundary. Pro Controller 2 advertises
+only stereo headset PCM; report `0x02` is the separate and sole native rumble source.
+The remaining replug symptom instead matches a DualSense mode latch: legacy `0x31`
+selects `UseRumbleNotHaptics`, while the old replug AudioControl transaction never
+explicitly selected native PCM again. The focused candidate adds bit 0 and leaves
+bit 1 clear in that ordered `0x32` state, replaying it only when a previously active
+headset path is reinserted. It also applies bounded 2× gain inside the unchanged
+fixed-wave haptic fields. No Nintendo speaker PCM, Opus offset, or report length is
+altered.
+
+Hardware validated that model: audio works on first insertion, legacy rumble works
+after removal, native audio plus haptics return after reinsert, and repeated cycles
+remain stable. The 2× PCM improved native strength but remained lighter than the
+controller's internal compatible-rumble curve. A follow-up candidate changes only
+the saturating PCM gain to 3×; the validated selector and packet layout are unchanged.
+
 ## 10. DS5Dongle vs current PicoSwitch2
 
 | Aspect | DS5Dongle | PicoSwitch2 foreground-worker build |

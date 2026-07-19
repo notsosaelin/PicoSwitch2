@@ -601,6 +601,40 @@ to the validated full-strength legacy path. Input, rumble, repeated unplug/replu
 and ordinary controller/dongle reconnect are hardware-confirmed stable; audio/haptic
 coexistence and audio after bonded reconnect await focused validation.
 
+### Source-boundary correction after the rejected full-waveform experiment
+
+The genuine Pro Controller 2 USB descriptor rules out a hidden haptic-audio
+channel: its speaker endpoint is ordinary 48 kHz, 16-bit, two-channel PCM.
+Nintendo actuator commands remain on independent HID report `0x02`. DS5Dongle's
+four-channel USB stream (speaker L/R plus haptic L/R) is a DualSense-facing PC
+convention and must not be projected onto the Switch 2 endpoint.
+
+A first attempt to preserve all Switch 2 frequency fields and synthesize a new
+waveform changed enough hot-path code/state to regress both audio and haptics.
+It was rejected in hardware and completely reverted; artifact SHA-256
+`A890974E5EAB673257F98F10ABCBA02C8757AA25FE318D7B30E7B7F8CC259272`
+is the byte-identical restored baseline.
+
+The next candidate keeps that baseline's proven fixed-wave report construction.
+It addresses two narrower facts:
+
+1. Compatible report-`0x31` rumble sets DualSense's `UseRumbleNotHaptics`
+   selector during the headset-free interval. Replugging previously replayed
+   AudioControl without explicitly returning that selector to native PCM. The
+   report-`0x32` control state now sets the rumble-emulation valid bit while
+   leaving `UseRumbleNotHaptics` clear, and a genuine reinsert replays that
+   ordered transaction.
+2. The first native path was intentionally conservative. Its existing signed-8
+   PCM is now scaled by the independently proven maximum 2× gain with saturation;
+   zero-rumble packets remain byte-zero and Opus offsets are unchanged.
+
+Hardware confirmed the selector correction: first-insertion audio, unplugged
+legacy rumble, audio plus native haptics after replug, and repeated unplug/replug
+all work without regressions. The 2× native PCM was clearly stronger than the
+original but still lighter than DualSense's internal compatible-rumble path.
+The next isolated candidate raises only that PCM curve to a conservative 3×;
+all validated transport and state logic remains unchanged.
+
 ## 15. The `DSPH` DSP blob (`dumps/SPI/2069_*`)
 
 - `DSPH` magic at flash **`0x175000`**; region `0x175000–0x1F9FFF` (`0x85000`), of which
