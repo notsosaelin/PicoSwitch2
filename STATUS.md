@@ -49,7 +49,7 @@ paddles have recent physical validation.
 | DualSense audio after bonded reconnect | 🟡 Revised build pending | First hardware pass still had no audio after reconnect; HID Host interrupt CID bypass remains implemented and no fresh pair is intended |
 | Switch 2 headset insertion and output | ✅ Confirmed | Physical DualSense jack is recognized; console audio plays through connected headphones with input/rumble/wake intact |
 | Switch 2 headset removal/reinsert | ✅ Confirmed | Repeated cycles restore input, audio, and native haptics; unplugged full legacy rumble remains stable |
-| DualSense rumble during console audio | 🟡 Strength tuning | Native haptic-mode restoration is confirmed; 2× PCM improved strength but remained lighter than legacy, so an isolated 3× curve awaits comparison |
+| DualSense rumble during console audio | 🟡 Fine gain candidate pending | Native-mode restoration, 3× PCM, and capture-derived peak preservation are stable and feel more accurate than compatibility rumble; a waveform-preserving 3.25× gain candidate awaits comparison |
 | Pico W and Pico 2 W builds | ✅ Compile-confirmed | Pico W uses the validated non-audio profile; Pico 2 W includes live audio at 300 MHz |
 
 ## Current USB personalities

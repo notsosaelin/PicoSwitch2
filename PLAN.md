@@ -90,7 +90,10 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
   startup. Retest pre-stream `0x39` ownership, continuous audio during rumble, legacy
   Rumble restoration after unplug and audio/native-haptic restoration after
   replug are confirmed. Bonded reconnect audio remains pending; compare the
-  isolated 3× native PCM curve against the validated but lighter 2× result.
+  The 3× native PCM curve and capture-derived interval-peak accumulator are
+  validated and closer but still usually lighter. The native PCM character is
+  preferred over compatible rumble, so compare a waveform-preserving 13/4×
+  (3.25×) gain candidate.
 - [ ] Run an extended playback and thermal soak of the Pico 2 W 300 MHz audio build.
 - [ ] Add DualSense microphone report decoding and Opus-to-USB return after speaker playback is
   physically stable.

@@ -311,6 +311,22 @@ remain stable. The 2× PCM improved native strength but remained lighter than th
 controller's internal compatible-rumble curve. A follow-up candidate changes only
 the saturating PCM gain to 3×; the validated selector and packet layout are unchanged.
 
+The 3× comparison remained stable and briefly matched legacy peak strength, but was
+usually lighter. Capture replay shows why: Nintendo updates at 4 ms while one
+DualSense audio packet spans 21.333 ms. Keeping only the last scalar misses the
+Nintendo interval peak in approximately three quarters of active packets and retains
+only 61–66% of peak magnitude on average. The focused follow-up therefore preserves
+the maximum left/right scalar seen during each native packet interval, resetting at
+audio-session start to prevent stale peaks. It does not alter the validated 3× PCM
+curve, selector, Opus blocks, or headset lifecycle.
+
+The peak-envelope hardware pass felt fuller, while direct comparison judged its
+native PCM character more accurate than headset-free compatibility rumble. The next
+candidate therefore does not change frequency content. It raises fixed gain only
+from 3× to 13/4× (3.25×): the capture's largest collapsed scalar (68) moves from
+roughly 102/127 to 110/127, remaining unsaturated. This preserves the detail of the
+preferred waveform while making the smallest practical strength adjustment.
+
 ## 10. DS5Dongle vs current PicoSwitch2
 
 | Aspect | DS5Dongle | PicoSwitch2 foreground-worker build |

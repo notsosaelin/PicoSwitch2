@@ -61,6 +61,12 @@ void report_get_rumble(uint8_t idx, uint8_t *left, uint8_t *right);
 // had seen before.
 void report_get_rumble_gen(uint8_t idx, uint8_t *left, uint8_t *right, uint32_t *generation);
 
+// Audio-native haptics run at a slower packet cadence than Switch 2 report
+// 0x02. Return and reset the maximum scalar observed since the previous audio
+// packet so short Nintendo peaks are not discarded by latest-value sampling.
+void report_take_rumble_audio_peak(uint8_t idx, uint8_t *left, uint8_t *right);
+void report_reset_rumble_audio_peak(uint8_t idx);
+
 // Player LEDs: raw Switch 2 command-0x09 wire bitfield, published by the active
 // USB personality and consumed by the Bluetooth feedback seam. Generation is
 // incremented for every received assignment, including repeated values.

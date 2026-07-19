@@ -635,6 +635,37 @@ original but still lighter than DualSense's internal compatible-rumble path.
 The next isolated candidate raises only that PCM curve to a conservative 3×;
 all validated transport and state logic remains unchanged.
 
+The 3× hardware pass again preserved every lifecycle and audio behavior. It felt
+closer to legacy rumble and briefly reached the same perceived peak, but usually
+remained lighter. Replaying ndeadly's genuine 4 ms report-`0x02` sequence against
+the 64-frame/3 kHz (`21.333 ms`) DualSense packet cadence identified a temporal
+reduction that gain cannot fix:
+
+- latest-value sampling misses the interval peak in 74–78% of active packets,
+  depending on relative packet phase;
+- roughly one third retain less than half of the peak observed during that same
+  packet interval; and
+- mean retained magnitude is only 61–66% of the interval peak.
+
+The next isolated candidate adds a scalar peak accumulator beside the existing
+current rumble state. Console updates continue to drive legacy controllers exactly
+as before; each native audio packet consumes the independent left/right maxima
+observed since its predecessor. A new audio session resets the accumulator to the
+live current value so stale headset-free peaks cannot leak into the first packet.
+STOP can be held for at most one native packet (21.333 ms) when it arrives just
+after a consume boundary. No frequency synthesis, Opus data, audio scheduling, or
+DualSense packet layout changes.
+
+Hardware found that envelope candidate fuller but still lighter than headset-free
+compatible rumble. Importantly, direct comparison also found the headset/native-PCM
+feel more accurate, so the follow-up deliberately preserves its 187.5 Hz waveform
+instead of trying to imitate Sony's opaque compatibility synthesis. The genuine
+capture's largest collapsed scalar is 68: the validated 3× curve renders a peak of
+approximately 102/127. A small 13/4× (3.25×) adjustment raises that to 110/127
+without clipping the observed sequence. This is only an 8.3% gain increase; packet
+layout, peak accumulation, Opus data, selector state, and lifecycle logic remain
+unchanged.
+
 ## 15. The `DSPH` DSP blob (`dumps/SPI/2069_*`)
 
 - `DSPH` magic at flash **`0x175000`**; region `0x175000–0x1F9FFF` (`0x85000`), of which

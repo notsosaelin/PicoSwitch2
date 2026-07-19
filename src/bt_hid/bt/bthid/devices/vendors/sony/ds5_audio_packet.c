@@ -25,7 +25,8 @@
 #define DS5_AUDIO_CONTROL_HEADSET_PATH        0x02u
 #define DS5_AUDIO_CONTROL_SPEAKER_PATH        0x30u
 #define DS5_AUDIO_MUTE_SPEAKER_AND_HP        0x60u
-#define DS5_AUDIO_HAPTIC_GAIN                 3
+#define DS5_AUDIO_HAPTIC_GAIN_NUMERATOR       13
+#define DS5_AUDIO_HAPTIC_GAIN_DENOMINATOR      4
 
 bool ds5_audio_is_mic_input_report(const uint8_t *report, uint16_t len) {
     return report && len > 1u && report[0] == DS5_AUDIO_INPUT_REPORT_ID &&
@@ -102,6 +103,12 @@ static void ds5_audio_store_crc(uint8_t *report, size_t report_len) {
 // A complete 0x39 packet contains exactly four cycles, so restarting the LUT
 // at the next packet boundary is continuous. Zero magnitude remains byte-zero
 // silence, preserving the previous packet output when rumble is idle.
+//
+// Hardware comparison preferred this native waveform's feel over compatible
+// rumble but found it slightly light. The 13/4 (3.25x) curve is an 8.3% bump
+// over the validated 3x path. In the genuine Switch 2 capture used for tuning,
+// the strongest collapsed scalar was 68: its PCM peak rises from 102 to 110
+// without clipping. Saturation remains the guard for larger console commands.
 static void ds5_audio_write_haptics(uint8_t *out,
                                     uint8_t left,
                                     uint8_t right) {
@@ -115,9 +122,11 @@ static void ds5_audio_write_haptics(uint8_t *out,
     for (unsigned frame = 0; frame < 64u; ++frame) {
         int16_t const wave = sine32[(frame * 2u) & 31u];
         int32_t sample_left =
-            ((int32_t)wave * left * DS5_AUDIO_HAPTIC_GAIN) / 255;
+            ((int32_t)wave * left * DS5_AUDIO_HAPTIC_GAIN_NUMERATOR) /
+            (255 * DS5_AUDIO_HAPTIC_GAIN_DENOMINATOR);
         int32_t sample_right =
-            ((int32_t)wave * right * DS5_AUDIO_HAPTIC_GAIN) / 255;
+            ((int32_t)wave * right * DS5_AUDIO_HAPTIC_GAIN_NUMERATOR) /
+            (255 * DS5_AUDIO_HAPTIC_GAIN_DENOMINATOR);
         if (sample_left > 127) sample_left = 127;
         if (sample_left < -127) sample_left = -127;
         if (sample_right > 127) sample_right = 127;

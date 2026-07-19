@@ -5,6 +5,7 @@
 #include "pico/critical_section.h"
 
 #include "switch_pro.h"
+#include "rumble_peak.h"
 
 #define INPUT_SLOTS SWITCH_PRO_MAX_CONTROLLERS
 
@@ -15,6 +16,7 @@ static uint32_t s_raw_buttons[INPUT_SLOTS];  // unified JP_BUTTON_* bitmap (conf
 static uint8_t s_rumble_left[INPUT_SLOTS];
 static uint8_t s_rumble_right[INPUT_SLOTS];
 static uint32_t s_rumble_generation[INPUT_SLOTS];  // see report_get_rumble_gen()'s own comment
+static rumble_peak_t s_rumble_audio_peak[INPUT_SLOTS];
 static uint8_t s_player_led_wire[INPUT_SLOTS];
 static uint32_t s_player_led_generation[INPUT_SLOTS];
 static char s_dev_name[INPUT_SLOTS][DEV_NAME_MAX];  // connected controller name (config live-view)
@@ -38,6 +40,7 @@ void report_init(void) {
         s_inputs[i] = neutral;
         s_rumble_left[i] = 0;
         s_rumble_right[i] = 0;
+        s_rumble_audio_peak[i] = (rumble_peak_t){0, 0};
         s_player_led_wire[i] = 0;
         s_player_led_generation[i] = 0;
         s_raw_buttons[i] = 0;
@@ -150,9 +153,33 @@ void report_set_rumble(uint8_t idx, uint8_t left, uint8_t right) {
     critical_section_enter_blocking(&s_lock);
     s_rumble_left[idx] = left;
     s_rumble_right[idx] = right;
+    rumble_peak_push(&s_rumble_audio_peak[idx], left, right);
     s_rumble_generation[idx]++;  // unconditional -- every call is a distinct event, even if the
                                  // value happens to match what was already stored (see
                                  // report_get_rumble_gen()'s own comment for why this matters).
+    critical_section_exit(&s_lock);
+}
+
+void report_take_rumble_audio_peak(uint8_t idx, uint8_t *left, uint8_t *right) {
+    if (idx >= INPUT_SLOTS) {
+        if (left) *left = 0;
+        if (right) *right = 0;
+        return;
+    }
+    critical_section_enter_blocking(&s_lock);
+    rumble_peak_t const value =
+        rumble_peak_take(&s_rumble_audio_peak[idx],
+                         s_rumble_left[idx], s_rumble_right[idx]);
+    critical_section_exit(&s_lock);
+    if (left) *left = value.left;
+    if (right) *right = value.right;
+}
+
+void report_reset_rumble_audio_peak(uint8_t idx) {
+    if (idx >= INPUT_SLOTS) return;
+    critical_section_enter_blocking(&s_lock);
+    rumble_peak_reset(&s_rumble_audio_peak[idx],
+                      s_rumble_left[idx], s_rumble_right[idx]);
     critical_section_exit(&s_lock);
 }
 

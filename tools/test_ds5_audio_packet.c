@@ -86,7 +86,7 @@ int main(void) {
     // 3 kHz stereo signed-8 haptic PCM: fixed 187.5 Hz sine, with
     // independent left/right magnitude scaling in both 64-byte blocks.
     assert((int8_t)stream[12] == 0 && (int8_t)stream[13] == 0);
-    assert((int8_t)stream[14] == 127 && (int8_t)stream[15] == 73);
+    assert((int8_t)stream[14] == 127 && (int8_t)stream[15] == 79);
     assert((int8_t)stream[20] == 127 && (int8_t)stream[21] == 127);
     assert((int8_t)stream[44] == 0 && (int8_t)stream[45] == 0);
     assert((int8_t)stream[76] == 0 && (int8_t)stream[77] == 0);
@@ -97,6 +97,12 @@ int main(void) {
         assert(stream[142 + i] == frame_a[i]);
         assert(stream[342 + i] == frame_b[i]);
     }
+
+    // The capture-derived peak scalar remains below saturation after the
+    // deliberately small 3x -> 3.25x increase.
+    ds5_audio_build_stream_report(5, 0x28, false, true, 68, 68, 64,
+                                  frame_a, frame_b, stream);
+    assert((int8_t)stream[20] == 110 && (int8_t)stream[21] == 110);
 
     uint8_t control[DS5_AUDIO_CONTROL_REPORT_LEN];
     ds5_audio_build_control_report(7, false, false, 100, control);
