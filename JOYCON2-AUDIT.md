@@ -269,7 +269,85 @@ Proposed additions:
   button/stick passthrough lands.
 - **No firmware change in this document** — this scopes the work; nothing is implemented.
 
-## 11. References
+## 11. Orientation is registered by an SL+SR chord (updates §5)
+
+**New evidence (project owner, real hardware):** you put a single Joy-Con into **sideways** mode by
+pressing **SL + SR simultaneously** on the console's controller screen. This resolves the §5 crux:
+
+- **Orientation is console-owned, selected by a controller gesture — not declared by the
+  controller.** There is no orientation field/command to emulate (consistent with the command set in
+  `commands.md` having none, and the reports carrying no orientation byte). Any *valid* emulated
+  Joy-Con is automatically eligible for **both** upright (default) and sideways (post-chord) modes,
+  exactly like genuine hardware.
+- **The one hard requirement on our side: SL and SR must be reachable and pressable together** from
+  whatever source drives the emulated Joy-Con. If they aren't, the user can never register sideways
+  through the dongle.
+- **Implication for the pre-rotation debate (§5):** because the console distinguishes the modes
+  itself, the cleanest model is to emit the Joy-Con's **native canonical layout** and let the
+  console apply orientation. The current profile pre-rotates and is hardware-confirmed *in the state
+  it was tested* (`mapping.md:5`); whether that state was the sideways-registered one — and therefore
+  whether upright needs an **un-rotated** emit — is precisely what experiment §9 #3 must settle, now
+  with a concrete trigger (register via SL+SR, then compare native vs pre-rotated emit in-game).
+
+### The gap this exposes: both source drivers drop SL/SR
+
+The SL+SR chord works today **only for generic pads**, and only because the encoder sources SL/SR
+from L1/R1 (`switch_joycon2_encode.c:85-86`) — so a generic user presses **LB+RB**. It is **broken
+for a real Joy-Con source**: both Nintendo drivers parse the rail bits and then discard them —
+
+- `switch2_ble.c:52-55` defines `SW2_*_SR/SL` but never maps them (defect #2).
+- `switch_pro_bt.c:59-60,82-83` declares `sl_l/sr_l/sl_r/sr_r` bitfields that are **never** turned
+  into any `JP_BUTTON_*` (Confirmed — no usage anywhere in the file).
+
+So a person holding an actual Joy-Con (1 **or** 2) and pressing its real SL+SR gets nothing through
+the dongle — they cannot register sideways. Fixing the drop (below) is the enabling change for
+this whole feature.
+
+## 12. Optimized cross-source mapping for Joy-Con mode
+
+Unify all sources under the profile model (§7), with SL/SR as first-class controls:
+
+| Source | Profile | Stick | SL / SR | Notes |
+|---|---|---|---|---|
+| **Real Joy-Con 2** (PID 0x2066/67) | `IDENTITY` | native, un-rotated | native SL/SR → emulated SL/SR | full passthrough (§5); needs the drop fixed |
+| **Switch-1 Joy-Con** (PID 0x2006/07) | `IDENTITY`−C | native, un-rotated | native SL/SR → emulated SL/SR | near-1:1: JC1 topology = JC2 **minus C/GameChat**; it is *already* a single-Joy-Con shape |
+| **Generic 2-stick pad** (Xbox/PS5/8BitDo/…) | `SIDEWAYS` or `UPRIGHT` (config) | rotated (sideways) / straight (upright) | **LB/RB** (L1/R1) | must synthesize the single-Joy-Con shape from a 2-stick pad |
+
+**Joy-Con 1 is the easy case, not a special case.** A lone JC1 has one stick + four
+direction/face buttons + ±/Capture(L) or Home(R) + L·ZL (L) or R·ZR (R) + **native SL/SR** — the
+JC2 layout minus C. Mapping it is the same `IDENTITY` path as a real JC2 with C forced off. **But
+today it's mangled:** `switch_pro_bt.c` parses a lone Joy-Con through the *full-Pro* button table
+(`:372-399` — B→B1, A→B2, L→L1, ZL→L2, …), which assumes a two-handed controller and drops SL/SR.
+A single-Joy-Con-aware parse (or the `IDENTITY` profile consuming its native fields) fixes both.
+
+### The enabling change: give SL/SR a home in the normalized model
+
+The generic `JP_BUTTON_*` space has **no SL/SR** (`buttons.h:48-91`; audit defect #6). Options,
+in order of preference:
+
+1. **Add dedicated `JP_BUTTON_SL`/`JP_BUTTON_SR`** (there are unused bits). Both Nintendo drivers
+   then map their parsed rail bits into them, and the encoder sources emulated SL/SR from them for
+   real Joy-Cons, while keeping the **L1/R1 → SL/SR** fallback for generic pads (so LB+RB still
+   registers sideways). Cleanest; benefits any future SL/SR-bearing device.
+2. **Route driver SL/SR onto L1/R1** — no vocab change, but **collides** on a lone Joy-Con, whose
+   own L (or R) already claims L1/R1. Rejected for real Joy-Cons; only viable for devices with no
+   separate shoulder. Documented so the collision isn't rediscovered.
+
+### Concrete mapping deltas to implement (once §9 #3 settles rotation)
+
+- **Both drivers:** map parsed SL/SR → `JP_BUTTON_SL/SR` (stop dropping them). *(fixes defects #2 and
+  the JC1 equivalent, and unblocks real-Joy-Con sideways registration.)*
+- **Encoder:** emulated SL/SR = `JP_BUTTON_SL/SR` **OR** (generic fallback) `L1/R1`. Keeps the LB+RB
+  chord for generic pads; adds native-SL/SR passthrough for real Joy-Cons.
+- **`UPRIGHT` profile:** the sideways table **minus the 90° rotation**, face buttons kept natural
+  (§6). Selectable in config to match whichever orientation the user registered on the console.
+- **JC1 source:** single-Joy-Con-aware handling (or `IDENTITY`−C) so a lone Joy-Con isn't parsed as
+  a full Pro.
+
+**Guarantee to preserve:** in *every* profile, SL and SR must remain a **simultaneously-pressable
+pair** — it is the console's sideways-registration gesture, not just a gameplay button.
+
+## 13. References
 
 - `src/switch_joycon2/switch_joycon2_encode.c:27-114` — `joycon2_pack_sideways_stick`,
   `switch_joycon2_encode_report` (unconditional sideways translation; header comment lines 57-60).
@@ -285,4 +363,13 @@ Proposed additions:
 - `src/bt_hid/core/buttons.h:48-91` — normalized `JP_BUTTON_*` vocabulary (no SL/SR).
 - `src/config.c:43-44,160-177` — `joycon2_*_accent` settings (the pattern a `joycon2_orientation`
   setting would follow).
+- `src/bt_hid/bt/bthid/devices/vendors/nintendo/switch_pro_bt.c:59-60,82-83` (Switch-1 Joy-Con
+  `sl/sr` bitfields — parsed, never mapped), `:298-303` (JC1 PIDs 0x2006/0x2007),
+  `:372-399` (full-Pro button parse applied to lone Joy-Cons).
+- `docs/switch2-joycon2/mapping.md:23-24,40-41` (current SL=L1 / SR=R1 policy),
+  `:77-79` (SL/SR sourced from L1/R1 by design), `:5` (sideways hardware-confirmed).
+- `nso-gc-refs/switch2_controller_research/commands.md` (command set 0x01-0x18 — **no** orientation
+  command), `commands.md` "Command 0x08 — Charging Grip" (docking, not hand-orientation).
+- Real-hardware fact (project owner): single Joy-Con sideways is registered by pressing **SL+SR**
+  simultaneously on the console controller screen.
 - Protocol layout: `docs/switch2-joycon2/protocol.md`; motion: `docs/switch2/report-0x09-motion.md`.
