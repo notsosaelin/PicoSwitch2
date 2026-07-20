@@ -290,11 +290,14 @@ captures: an 18 s baseline (descriptors + idle HID/mic), and a second while WAV 
 the "Headphones (Switch 2 Pro Controller)" endpoint to force an isochronous OUT stream. Decoded with a
 Python parser + Wireshark `tshark`. **No firmware/code modified.**
 
-## Captures (committed to the repo)
+## Captures (local — `usbpcaptures/` is `.gitignore`d, per repo convention for capture binaries)
 
 - `usbpcaptures/genuine_procon2_headset_2026-07-19.pcap` — full config descriptor + idle traffic.
 - `usbpcaptures/genuine_procon2_headset_audio_2026-07-19.pcap` — trimmed slice of the genuine
   **headphones isochronous OUT** stream.
+
+Both stay on the capture machine (like the other `usbpcaptures/*.pcapng`); the decoded findings in
+this doc are the durable, committed record.
 
 Environment: Windows host; controller enumerated as `VID_057E&PID_2069` composite device with Windows
 audio endpoints **"Headphones (Switch 2 Pro Controller)"** and **"Microphone (Switch 2 Pro
