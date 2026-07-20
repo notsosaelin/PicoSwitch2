@@ -30,9 +30,14 @@
 - **Data format: Confirmed against a real capture.** Joy-Con 2 native reports (`0x07` L / `0x08` R)
   carry **relative** ΔX/ΔY + a lift-off byte at offset `0x9`; report `0x05` carries an **absolute**
   X/Y variant at offset `0x10`.
-- **PicoSwitch2 feasibility: HIGH for output emulation.** We already ingest Bluetooth mouse motion
-  (`INPUT_TYPE_MOUSE`, int16 `delta_x/delta_y`; MouthPad precedent) and the Joy-Con 2 encoder already
-  **reserves `0x9..0xD` for mouse**. The gaps are small and enumerated in §6–§7.
+- **PicoSwitch2 feasibility: HIGH for the output format; MEDIUM end-to-end.** The wire format is
+  understood and the Joy-Con 2 encoder already **reserves `0x9..0xD` for mouse**, and the input
+  *data model* exists (`INPUT_TYPE_MOUSE`, int16 `delta_x/delta_y`, the MouthPad precedent). **But
+  the input path for a real Bluetooth mouse does not exist yet** (audit, §6): there is **no generic
+  BT/BLE mouse driver** — a plain paired mouse is *classified* but never *parsed* — and
+  **`ns2_seam.c` carries no mouse motion to the Switch 2 personality at all** (even the MouthPad's
+  motion only reaches the SInput path, never a Joy-Con 2). Those two pieces are the actual feature,
+  designed in §7 as **"pair a Bluetooth mouse and use it as a Joy-Con 2 in mouse mode."**
 
 ## 1. The physical mechanism
 
@@ -126,53 +131,105 @@ console sets feature bit 4, streams mouse deltas in report `0x07`/`0x08`. The in
 
 ## 6. Current PicoSwitch2 state (audited)
 
-**Already present:**
-- **Mouse input ingestion.** `input_event.h` defines `INPUT_TYPE_MOUSE` and int16 `delta_x`/`delta_y`
-  (+`delta_wheel`), explicitly for "high-resolution pointers." The **MouthPad** driver already submits
-  as `INPUT_TYPE_MOUSE` at 12-bit precision (`mouthpad_ble.c:19,103`), and the generic BT-HID stack
-  classifies mice as `BTHID_DEVICE_MOUSE` (`bthid.c:354`). So **Bluetooth mouse motion already flows
-  into the system.**
-- **Reserved output field.** The Joy-Con 2 encoder explicitly reserves the mouse bytes:
-  `switch_joycon2_encode.c:112` — *"0x9..0xD mouse … This project currently has no source for them."*
-  The field is currently zero-filled.
-- **The report descriptor** advertises the Joy-Con 2 report length that includes this region.
+**Already present (the data model + one precedent):**
+- **Mouse data model.** `input_event.h` defines `INPUT_TYPE_MOUSE`, int16 `delta_x`/`delta_y`
+  (+`delta_wheel`), and an `as_gamepad` flag ("present a MOUSE-type device ALSO as a gamepad …
+  plain mice leave this false"). The vocabulary to carry mouse motion exists.
+- **MouthPad precedent — but a narrow one.** The **MouthPad** driver submits `INPUT_TYPE_MOUSE`
+  deltas (`mouthpad_ble.c:103,257-258`), proving a pointing device *can* drive an emulated output.
+  **Caveats the earlier draft glossed over:** it is matched **by name** (a device-specific driver,
+  not a generic mouse), and its mouse motion drives the **SInput** mouse interface — **not** a
+  Joy-Con 2.
+- **Classification only.** The BT-HID stack classifies a paired pointing device as
+  `BTHID_DEVICE_MOUSE` from its Class-of-Device (`bthid.c:354`) — but classification is *not*
+  parsing (see gap 0).
+- **Reserved output field.** The Joy-Con 2 encoder reserves the mouse bytes
+  (`switch_joycon2_encode.c:112` — *"0x9..0xD mouse … no source for them"*), currently zero-filled.
 
-**Missing (the actual work):**
-1. **Feature-bit-4 gating.** The Joy-Con 2 `0x0C` handler (`switch_joycon2.c:436-453`) mirrors the
-   Pro2/GC structure and does not yet track a "mouse enabled" flag on `0x0C/04` when mask & `0x10`
-   (analogous to how Pro2 gates the IMU on bit `0x04`).
-2. **Input-seam carry.** `switch_pro_input_t` (the encoder's input struct, `include/switch_pro.h`)
-   has **no mouse-delta fields** — the BT-side `delta_x/delta_y` are not propagated to the personality
-   encoder. This seam needs a small extension (carry the deltas + a "has_mouse" flag).
-3. **Populate `0x9..0xD`** from the carried deltas when mouse mode is enabled (int16 ΔX @ `0x9`, ΔY @
-   `0xB`, lift-off @ `0xD`), replacing the zero-fill.
-4. **Routing/UX.** Decide how a paired mouse maps to the active Joy-Con 2 slot (a mouse is
-   `INPUT_TYPE_MOUSE`, not a gamepad — the seam already handles "MOUSE-type device also as gamepad"
-   for MouthPad, a useful precedent).
+**Missing (the actual work — larger than the first draft claimed):**
+0. **No generic BT/BLE mouse driver.** A plain paired Bluetooth mouse is *classified*
+   `BTHID_DEVICE_MOUSE` but **never parsed** — nothing turns its standard HID mouse report (buttons +
+   relative X/Y + wheel) into `INPUT_TYPE_MOUSE` deltas. Only the MouthPad's bespoke driver does.
+   **This is new work, not "already flows."**
+1. **`ns2_seam.c` drops mouse entirely.** The Switch 2 seam (`router_submit_input`) fills only
+   gamepad fields; it has **no `INPUT_TYPE_MOUSE`/`delta_x`/`delta_y` handling**, so mouse motion
+   never reaches the NS2 global input or a Joy-Con 2 — even from the MouthPad. This is the concrete
+   form of the `switch_pro_input_t` gap below, and it **corrects the earlier claim** that "Bluetooth
+   mouse motion already flows into the system" (it flows only to the SInput path).
+2. **Feature-bit-4 gating.** The Joy-Con 2 `0x0C` handler (`switch_joycon2.c:436-453`) does not yet
+   track a "mouse enabled" flag on `0x0C/04` when mask & `0x10` (as Pro2 gates the IMU on `0x04`).
+3. **Input-seam carry + populate.** `switch_pro_input_t` (`include/switch_pro.h`) has **no
+   mouse-delta fields**; add them (+ a `has_mouse` flag), carry them through `ns2_seam`, and populate
+   `0x9..0xD` (int16 ΔX @ `0x9`, ΔY @ `0xB`, lift-off @ `0xD`) when mouse mode is enabled.
+4. **Routing/UX.** A mouse is `INPUT_TYPE_MOUSE`, not a gamepad, so decide how it maps to the active
+   Joy-Con 2 slot — mouse-only, or mouse + a paired gamepad (the `as_gamepad` precedent). See §7.
 
-## 7. Proposed architecture (design, not implemented)
+## 7. Proposed architecture — pair a Bluetooth mouse as a Joy-Con 2 mouse (design, not implemented)
+
+The requested feature end to end: **pair an ordinary Bluetooth mouse to the dongle; the console sees
+a Joy-Con 2 whose optical mouse it can enable, and the mouse drives it.** Four new links, from the
+radio to the wire:
 
 ```
-BT mouse / MouthPad ──INPUT_TYPE_MOUSE──▶ input_event (delta_x, delta_y int16)
-        │                                        │
-        │                       (seam: add mouse deltas + has_mouse to switch_pro_input_t)
-        ▼                                        ▼
- report.c shared state ─────────────▶ switch_joycon2_encode_report07/08()
-                                             │ if console set feature bit 4 (mouse_enabled):
-                                             │   out[0x9..0xA] = clamp16(delta_x)
-                                             │   out[0xB..0xC] = clamp16(delta_y)
-                                             │   out[0xD]      = lift-off (see §8)
-                                             ▼
-                                     Joy-Con 2 report 0x07/0x08 → console
+BT/BLE mouse ──▶ (NEW) generic mouse driver ──INPUT_TYPE_MOUSE──▶ input_event{delta_x/y, buttons}
+   (or MouthPad, existing)                                              │
+                                                                        ▼
+                                     (NEW) ns2_seam mouse handling: carry delta_x/y (+has_mouse,
+                                     +click→button) into switch_pro_input_t via set_global_gamepad_input
+                                                                        │
+                                                                        ▼
+                              switch_joycon2_encode_report07/08()  — if console set feature bit 4:
+                                   out[0x9..0xA] = scale·Δx     (DPI, §8)
+                                   out[0xB..0xC] = scale·Δy
+                                   out[0xD]      = lift-off (synthesized on-surface const, §8)
+                                                                        │
+                                                                        ▼
+                                              Joy-Con 2 report 0x07/0x08 → console
 ```
+
+### 7.1 The new generic mouse driver
+A plain mouse has no bespoke driver today (§6 gap 0). Two report shapes to cover:
+- **BT-Classic HID mouse:** request **boot protocol** (`SET_PROTOCOL` boot) → fixed
+  `[buttons][Δx:i8][Δy:i8]( [wheel:i8] )`. Simplest MVP — trivial fixed parse, works for the vast
+  majority of mice.
+- **BLE HID mouse (HOGP):** report-protocol only; parse the device's **HID report map** for the
+  Generic-Desktop X/Y (usages `0x30`/`0x31`), buttons, and wheel — the project already has a HID
+  report-descriptor parser (`usb/usbh/hid/devices/generic/hid_parser.c`) and the MouthPad shows the
+  hand-rolled BLE pattern. Deltas may be 8/12/16-bit; sign-extend and normalize to the int16
+  `delta_x/delta_y`.
+- Output `INPUT_TYPE_MOUSE` with `delta_x/delta_y`, and map **L/R/M clicks + wheel** into the event
+  (as buttons and `delta_wheel`).
+
+### 7.2 ns2_seam mouse handling (the missing bridge)
+`ns2_seam.c` must gain an `INPUT_TYPE_MOUSE` path (it has none, §6 gap 1): accumulate `delta_x/y`
+into the NS2 input state and set `has_mouse`, so `switch_joycon2_build_report()` sees fresh deltas
+each poll. Mouse motion is **per-poll relative** — accumulate between the encoder's report ticks and
+zero after emitting, so no motion is dropped or double-counted at differing BT vs USB rates.
+
+### 7.3 Assignment model (mouse alone vs mouse + gamepad)
+A bare mouse can't press a stick or face buttons, so decide the slot policy:
+- **Mouse-only Joy-Con** — motion + clicks only. Enough for the console's mouse-mode titles (the
+  whole point of feature bit 4); clicks map to a couple of Joy-Con buttons.
+- **Mouse + gamepad combo** — a paired gamepad drives stick/buttons while the mouse fills the mouse
+  field, mirroring the `as_gamepad` precedent (one logical Joy-Con from two devices). Best "full
+  controller + mouse" experience.
+
+### 7.4 Click, lift-off, and scaling
+- **Clicks:** L/R/M → Joy-Con buttons (e.g. L→one face/trigger, R→another); user-remappable later.
+- **Lift-off (`0xD`):** a desktop mouse has no proximity sensor, so **synthesize a constant
+  on-surface value** (observed genuine range `0x10`–`0x1e`, §3a) — a mouse only reports while on a
+  surface, so "always on-surface" is correct.
+- **DPI/scaling (§8):** genuine sensor counts ≠ mouse counts; apply a scale (config-tunable) so feel
+  matches. MVP 1:1 then tune.
 
 **Phasing (each hardware-testable):**
-- **Phase 1 — enable + plumbing:** track mouse-enabled from `0x0C/04` mask bit `0x10`; extend the
-  input seam to carry deltas; emit them in `0x9..0xC`. Fixed lift-off constant (e.g. mid-range
-  `~0x18`, matching the observed on-surface range). Test: a paired BT mouse moves the Switch 2 cursor.
-- **Phase 2 — lift-off / accuracy:** model lift-off (present ~`0x14` while "moving", higher when
-  idle?) and per-axis scaling to match genuine feel (§8).
-- **Phase 3 — polish:** wheel/click mapping, absolute (`0x05`) path if any host needs it, DPI scaling.
+- **Phase 1 — enable + boot-mouse plumbing:** generic BT-Classic boot-protocol mouse driver;
+  `ns2_seam` mouse path; feature-bit-4 gating; emit `0x9..0xC` with a fixed on-surface lift-off.
+  **Test: a paired USB/BT mouse moves the Switch 2 cursor via the Joy-Con 2 personality.**
+- **Phase 2 — BLE mice + accuracy:** BLE HOGP report-map parsing; per-axis DPI scaling; lift-off
+  refinement (§8).
+- **Phase 3 — polish:** click/wheel remapping, mouse + gamepad combo (§7.3), absolute (`0x05`) path
+  if any host needs it.
 
 ## 8. Unknowns & hypotheses
 
@@ -194,6 +251,11 @@ BT mouse / MouthPad ──INPUT_TYPE_MOUSE──▶ input_event (delta_x, delta_
 3. **Scan Joy-Con 2 SPI dumps** for a mouse/optical calibration block (§8).
 4. **(Needs hardware)** capture a mouse session that selects report `0x05` to observe the absolute
    form; and an on-vs-off-surface sequence to decode the lift-off byte.
+5. **Survey real mice for boot-protocol support** (§7.1) — confirm the pragmatic MVP: do common
+   BT-Classic mice honor `SET_PROTOCOL` boot (fixed `[buttons][Δx][Δy][wheel]`)? Determines whether
+   Phase 1 can skip report-map parsing entirely.
+6. **BLE HOGP report-map parse test** (§7.1) — validate the existing HID parser
+   (`hid_parser.c`) against a BLE mouse's report map to extract X/Y/buttons/wheel offsets.
 
 ## 10. Risks & notes
 
@@ -214,6 +276,12 @@ BT mouse / MouthPad ──INPUT_TYPE_MOUSE──▶ input_event (delta_x, delta_
   — decoded in §3a (handle `0x000E`).
 - `src/switch_joycon2/switch_joycon2_encode.c:112` (reserved `0x9..0xD`),
   `src/switch_joycon2/switch_joycon2.c:436-453` (`0x0C` handler).
-- `src/bt_hid/core/input_event.h:159-173` (mouse deltas), `mouthpad_ble.c` (mouse-as-gamepad seam).
+- `src/bt_hid/core/input_event.h:159-177` (mouse deltas + `as_gamepad` flag),
+  `src/bt_hid/bt/bthid/devices/vendors/augmental/mouthpad_ble.c:103,257-258` (the only
+  `INPUT_TYPE_MOUSE` producer — device-specific, SInput-path only).
+- `src/bt_hid/bt/bthid/bthid.c:354` (mouse *classified* but not parsed),
+  `src/bt_hid/usb/usbh/hid/devices/generic/hid_parser.c` (reusable HID report-map parser for §7.1).
+- `src/bt_hid/ns2_seam.c` `router_submit_input` (no `INPUT_TYPE_MOUSE` path today — §6 gap 1);
+  `src/report.c` `set_global_gamepad_input` (where carried deltas would land).
 - `docs/experiments/2026-07-19-usb-command-ab-diff.md` Exp 2 (mask `0x37` discovery).
 - External: **Dycool / NS-PC-Control** — reference Joy-Con 2 mouse implementation (audit pending).
