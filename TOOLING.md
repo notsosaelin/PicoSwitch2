@@ -35,14 +35,47 @@ CYW43** (WiFi+BT) already initialized for BTstack.
 
 | Ch. | Channel | Pros | Cons | Verdict |
 |---|---|---|---|---|
-| **A** | **UART over GPIO** (2 pins → USB-UART dongle to PC) | Simple, robust, works on every board, no radio contention, deterministic timing | Needs GPIO header/solder access + a $3 adapter | **Default.** Enable `stdio_uart` on spare pins or a dedicated structured-trace UART. |
+| **A** | **UART over GPIO** (2 pins → USB-UART dongle to PC) | Simple, robust, works on every board, no radio contention, deterministic timing | Needs GPIO header/solder access + a $3 adapter | ✅ **CHOSEN ROUTE** — simplest, broadest coverage (every board). See §0.1. |
 | **B** | **WiFi telemetry** (CYW43 → UDP/TCP to PC) | **Zero cable conflict**, fully wireless, high bandwidth | Shares the one CYW43 radio with Bluetooth (controllers are BT) → **coex contention**; adds a network dependency | **Best when it works** on W boards; validate BT+WiFi coex under load before trusting timing. |
 | **C** | **Companion "sniffer" Pico** (main dongle → GPIO → 2nd Pico → USB CDC to PC) | Clean separation, 2nd Pico can also host the wire tap (Ch. D), offloads formatting | Second board + wiring | Great for a bench rig; overkill for quick iteration. |
 | **D** | **Passive USB-C interposer / D+·D- tap** (between dongle and console) | **Ground truth** of the actual wire, independent of our firmware | Captures bytes, **not** firmware-internal decisions; needs a tap board + USBPcap/logic analyzer | Complement, not replacement — pair with A/B for "wire vs. what we thought we sent." |
 
-**Recommendation:** ship **UART-over-GPIO (A)** as the baseline trace channel (universal, boring,
-reliable); offer **WiFi (B)** as an opt-in on W boards once coex is validated; keep **D** in the
-bench kit for ground-truth cross-checks. Everything below assumes one of these carries the data out.
+**Decision (committed):** we are pursuing **UART-over-GPIO (Channel A)** as the trace channel. It is
+the simplest to stand up and the broadest in coverage — it works on **every** board (not just the W
+variants), needs no radio-coex validation, and gives deterministic timing. WiFi (B) remains a
+future opt-in on W boards once coex is proven; the companion Pico (C) and USB-C tap (D) stay in the
+bench kit as ground-truth complements. Everything below assumes Channel A carries the data out.
+
+### 0.1 Channel A — chosen hardware & wiring
+
+**Cable:** a **USB-to-TTL 3.3V-signal serial cable (FT232RL)** — e.g. a 4-pin `5V power / 3.3V TTL
+signal` cable. Only the **3.3V signal** rating matters; the 5V is on the power pin we do not use.
+The FT232RL enumerates as a COM port on Windows/Linux/macOS.
+
+**Pico 2 W default UART0:** `GP0 = TX` (physical pin 1), `GP1 = RX` (physical pin 2), `GND`
+(physical pin 3).
+
+| Cable wire | Pico 2 W pin | Note |
+|---|---|---|
+| **TX** (out) | **GP1 / pin 2** (Pico RX) | TX→RX — **must cross** |
+| **RX** (in) | **GP0 / pin 1** (Pico TX) | RX→TX — **must cross** |
+| **GND** | **GND / pin 3** | required — shared reference |
+| **VCC / 5V power** | **leave disconnected** | Pico is powered from the Switch over USB-C; connecting VCC back-powers it *and* would put 5V in the circuit |
+
+**Safety:** GPIO safety is set by the *signal* level (3.3V, matching the not-5V-tolerant RP2350),
+not the power pin. With VCC left off, 5V is never in the circuit. For clone cables, verify the
+cable's **TX idles at ~3.3V** (measure TX→GND) before connecting it to the Pico's RX; the reverse
+direction (Pico 3.3V TX → cable RX) is always fine.
+
+**Firmware prerequisite:** UART output is currently compiled out
+(`CMakeLists.txt:227-228`, `pico_enable_stdio_uart 0`). Enabling it is a one-line change:
+- **Minimal:** `pico_enable_stdio_uart(PicoSwitchWGA 1)` → existing driver `printf`s stream out GP0
+  at **115200 8N1**; open the COM port in any terminal. First proof the channel works.
+- **Full:** the §1.1 tracer writes **binary, rate-limited** trace records to this UART (not `printf`,
+  to avoid the core1-flood failure mode). This is the real payoff.
+
+The dongle stays plugged into the Switch over USB-C the entire time; the UART pins are physically
+independent, so controller operation and PC tracing run concurrently.
 
 ---
 
@@ -211,7 +244,9 @@ bench kit for ground-truth cross-checks. Everything below assumes one of these c
 
 ## Build order (dependency-ranked)
 
-1. **§0 out-of-band channel (UART-over-GPIO)** — nothing live works without it. *(enabler)*
+1. **§0 out-of-band channel (UART-over-GPIO, chosen)** — nothing live works without it. First
+   concrete step: flip `pico_enable_stdio_uart` to `1` (§0.1) and confirm live logs over the FT232RL
+   cable. *(enabler)*
 2. **1.1 on-device tracer** — the keystone; unblocks the most.
 3. **3.2 capture corpus index** — cheap, compounds immediately, do it in parallel.
 4. **2.1 fault-injection harness** — highest-value *active* tool; needs 1.1 to read reactions.
