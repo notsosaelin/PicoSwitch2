@@ -1,4 +1,4 @@
-# Experiment — USB command A/B diff: genuine Pro Controller 2 vs PicoSwitch2 dongle
+# Experiment — capture analyses: USB command A/B diff, and Joy-Con mouse mode / command `0x13`
 
 - **Date:** 2026-07-19
 - **Author:** repository maintenance pass (analysis of existing captures; **no code modified**)
@@ -6,6 +6,13 @@
   [`FIRMWARE-IMPLEMENTATION.md`](../../FIRMWARE-IMPLEMENTATION.md),
   [`docs/switch2/nfc-protocol-inventory.md`](../switch2/nfc-protocol-inventory.md) §2.3,
   [`docs/switch2/usb-spec.md`](../switch2/usb-spec.md)
+
+Two analyses of existing dumps/captures: **(1)** a USB command A/B diff of the genuine Pro Controller 2
+vs the dongle, and **(2)** a BLE analysis resolving whether command `0x13` drives Joy-Con mouse mode.
+
+---
+
+# Experiment 1 — USB command A/B diff: genuine Pro Controller 2 vs PicoSwitch2 dongle
 
 ## Question
 
@@ -159,3 +166,107 @@ and were excluded from the diff.
   genuinely-observed bare-ack command) `dir=0x04`; change the factory fill byte to `0xFF`. Both are
   small, evidence-backed, and improve indistinguishability. Not applied in this pass (documentation
   only).
+
+---
+
+# Experiment 2 — Does command `0x13` drive Joy-Con mouse mode?
+
+## Question
+
+`commands.md` marks command `0x13` "Unknown. Seems to only be used on JoyCon controllers," and
+[`COMMAND-IMPLEMENTATION.md`](../../COMMAND-IMPLEMENTATION.md) §6 hypothesised it toggles a Joy-Con-only
+feature such as **mouse mode**. Does the genuine Joy-Con 2 use command `0x13` to enter mouse mode?
+
+## Hypothesis
+
+Entering mouse mode issues a `0x13` command (the JoyCon-only command), which is why we've never needed
+it for the Pro2/GC personalities.
+
+## Method
+
+Byte-scanned every **decrypted** nRF52840 BLE capture in
+`nso-gc-refs/switch2_controller_research/captures/nrf52840/` for command frames (`id ∈ 0x01–0x18`,
+`dir ∈ {0x91,0x01,0x04}`, `transport ∈ {0x00,0x01}`, reserved bytes zero). Command frames ride inside
+ATT writes/notifications on the BLE command characteristic; the 8-byte header appears contiguously in
+the value, so a byte scan of decrypted payloads reliably recovers them. Then extracted the full,
+timestamped **request** stream (`dir=0x91`, distinctive/low-false-positive) from the mouse-mode
+session specifically. **No code modified.**
+
+## Captures (all in-repo, decrypted)
+
+`btle_joycon2_mouse_mode_decrypted.pcapng` (10,817 pkts, primary), plus
+`btle_joycon2_{pairing,reconnect,wake_console,ota_update}_decrypted.pcapng` and
+`btle_procon2_{pairing,reconnect,wake_console}_decrypted.pcapng` as controls.
+
+## Results
+
+### `0x13` appears in **none** of the eight decrypted captures — including mouse mode
+
+The scan is proven sound: it recovered a broad genuine command set in the mouse session
+(`0x01/0C`, `0x02/04`×6, `0x07/01`, `0x09/07`, `0x0A/02`, `0x0A/08`, `0x0C/02`, `0x0C/04`, `0x0F/00`,
+`0x10/01`, `0x11/01`, `0x11/03`, `0x16/01`). **`0x13` is absent from every file** —
+mouse/pairing/reconnect/wake/OTA for Joy-Con 2 and Pro2 alike. The hypothesis is **refuted**.
+
+### Mouse mode is enabled by the **feature-select command `0x0C` with the mouse bit**, not `0x13`
+
+The timestamped request stream from the mouse-mode session:
+
+```
+t+0.000  0x07/01                       first-init
+t+0.010  0x02/04  40 7e 00 00 00300100  memory read @0x013000 (factory)
+t+0.020  0x10/01                       firmware info
+t+0.030  0x16/01
+t+0.570  0x0A/02  03000000             play vibration sample 0x03 (connection tone)
+t+0.580  0x09/07  01000000…            player LED 1
+t+0.590  0x0C/02  37 00 00 00          SET FEATURE MASK = 0x37   ← mouse bit set
+t+0.84…  0x02/04  …                    memory reads (0x013080, 0x1FC040 user calib, …)
+t+0.900  0x11/03
+t+0.930  0x0A/08  0159090000…          vibration data
+t+0.950  0x11/01
+t+0.965  0x0C/04  37 00 00 00          ENABLE FEATURES = 0x37    ← mouse bit set
+t+1.025  0x01/0C                       NFC id
+t+4.835  0x0F/00                       (command 0x0F — see below)
+```
+
+The feature mask is **`0x37`**. Decomposed against the `commands.md` feature-flag table:
+
+| Bit | Mask | Feature | In `0x37`? |
+|---|---|---|---|
+| 0 | 0x01 | Button state | ✅ |
+| 1 | 0x02 | Analog sticks | ✅ |
+| 2 | 0x04 | IMU (accel+gyro) | ✅ |
+| 4 | **0x10** | **Mouse data (JoyCon only)** | ✅ |
+| 5 | 0x20 | Rumble | ✅ |
+
+`0x37 = 0x27 + 0x10`. The Pro Controller 2 / GameCube init uses **`0x27`** (buttons+sticks+IMU+rumble);
+the Joy-Con mouse session adds exactly the **`0x10` "Mouse data"** bit. So **mouse mode is negotiated
+through the ordinary `0x0C` feature mechanism** (`0x0C/02` set-mask + `0x0C/04` enable), and the
+mouse-data fields then appear in the streamed input report. Command `0x13` is not involved.
+
+### Bonus observation — command `0x0F` is real
+
+`0x0F/00` (no data) is genuinely issued ~3.8 s after init settles (`t+4.835`), the first hard evidence
+of the otherwise-"Unknown" command `0x0F` in this repo. Purpose still unknown; it is bare-ACKed by our
+`default:` today, which appears sufficient (this Joy-Con session proceeds normally). Logged for the
+`COMMAND-IMPLEMENTATION.md` §6 unknown-command backlog.
+
+## Conclusion
+
+- **Refuted:** command `0x13` does **not** drive Joy-Con mouse mode, and is **absent from every
+  decrypted capture we hold.** Its purpose remains genuinely Unknown — the "JoyCon-only" note stands
+  but is unobserved in pairing, reconnect, wake, OTA, or mouse sessions.
+- **Resolved mechanism:** mouse mode = feature mask **`0x37`** via `0x0C/02`+`0x0C/04` (the `0x10`
+  "Mouse data" bit on top of the standard `0x27`). This is a declarative feature toggle, not a
+  dedicated command.
+- **Implication for PicoSwitch2:** none of the console-native personalities need `0x13`. If Joy-Con 2
+  mouse *output* were ever emulated, it would be gated by advertising/accepting the `0x10` feature bit
+  in the `0x0C` handler and adding mouse fields to the report — not by implementing `0x13`.
+
+## Remaining questions / future work
+
+- **Where is `0x13` actually used?** Not in any state we've captured. Candidates to capture next: a
+  brand-new Joy-Con↔console first-time setup, charging-grip attach/detach, or a calibration flow. Until
+  observed, treat `0x13` as Unknown and leave it bare-ACKed.
+- **`0x0F` semantics** — now confirmed real; needs a request/response correlation from a capture where
+  its effect is observable.
+- These findings do not require any firmware change; `0x13`/`0x0F` remain correctly bare-ACKed.

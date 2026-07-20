@@ -102,7 +102,7 @@ fill.
 | `0x0A` | Vibration (`0x02` sample, `0x08` data) | ⬜ bare ACK (**rumble uses HID OUT reports, not this command**) | `default` | Strong |
 | `0x0D` | **Firmware update** | 🟥 bare ACK (no transport) — **the big gap** | `default` | see Firmware doc |
 | `0x0E` | Unused | ⬜ bare ACK | `default` | — |
-| `0x0F` | Unknown | ⬜ bare ACK | `default` | Unknown |
+| `0x0F` | Unknown (**observed real**) | ⬜ bare ACK (sufficient — Joy-Con session proceeds normally) | `default` | Strong (`0x0F/00` seen in mouse capture) |
 | `0x12` | Unused | ⬜ bare ACK | `default` | — |
 | `0x13` | **Unknown (Joy-Con only)** | ⬜ bare ACK | `default` | Unknown |
 | `0x14` | **Unknown** | ⬜ bare ACK | `default` | Unknown |
@@ -183,11 +183,13 @@ Always 24 zero bytes in every capture. **Hypothesis:** a reserved/status query t
 in a state we haven't captured (error flags?). **Test:** grep all captures for a non-zero `0x16`
 response; if none, treating it as constant-zero is safe.
 
-### `0x13` — **Joy-Con-only feature (hypothesis)**
-`commands.md`: "Seems to only be used on JoyCon controllers." **Hypothesis:** Joy-Con-specific —
-mouse-mode toggle, magnetometer, or SL/SR/rail state. **Test:** we hold decisive evidence —
-`captures/nrf52840/btle_joycon2_mouse_mode_{decrypted,encrypted}.pcapng` — search these for `0x13`
-and correlate with mouse-mode entry. This is the best-resourced unknown in the repo.
+### `0x13` — Joy-Con-only feature (**mouse-mode hypothesis refuted; still Unknown**)
+`commands.md`: "Seems to only be used on JoyCon controllers." **Tested** against all eight decrypted
+BLE captures (`docs/experiments/2026-07-19-usb-command-ab-diff.md` Exp 2): **`0x13` appears in none of
+them** — not even the mouse-mode session. **Mouse mode is instead enabled by the `0x0C` feature mask
+`0x37`** (= standard `0x27` + bit `0x10` "Mouse data"), a declarative feature toggle, *not* `0x13`. So
+`0x13`'s purpose is still **Unknown**; it is unobserved in pairing/reconnect/wake/OTA/mouse. **Next
+test:** a first-time Joy-Con↔console setup or charging-grip attach capture. Bare-ACK remains correct.
 
 ### `0x06` — **shutdown/reboot (purpose known, reply unconfirmed)**
 `0x06/02` = shutdown (sent when console sleeps **docked**); `0x06/03` = reboot (after a firmware
@@ -254,7 +256,9 @@ genuine console session.
 2. **Resolve `0x17`/`0x18` from a headset-present capture.** If `genuine_procon_2.pcapng` lacks a
    headset session, this needs one new genuine capture; the payoff is unblocking realistic headset
    audio config (ties into `DS5-NS2_AUDIO.md`).
-3. **Resolve `0x13` from the mouse-mode BLE captures** (already in-repo, decrypted). Zero new hardware.
+3. ✅ **DONE — tested `0x13` against the mouse-mode (and 7 other) BLE captures** (Exp 2, same doc).
+   Result: `0x13` absent everywhere; mouse mode is the `0x0C` mask `0x37` (`0x10` bit), not `0x13`.
+   Also confirmed command `0x0F` is genuinely issued. `0x13` remains Unknown pending a new capture.
 4. **Grep all captures for `0x11`, `0x16`, non-zero unknowns**; diff `0x11/03` against the SPI factory
    region to test the calibration hypothesis.
 5. **Console-side capture path** (the standing infrastructure gap, `STATUS.md` #5) — would deliver
