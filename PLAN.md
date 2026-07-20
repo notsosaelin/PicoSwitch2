@@ -165,6 +165,11 @@ Status: 🟡 recommended next research investment.
 A reproducible control/bulk/interrupt capture path would unblock both motion and NFC. Validate it in
 stages: enumeration, identity handshake, buttons, timing fidelity, then feature-specific traffic.
 
+The full tooling wishlist and build order — the on-device tracer, the out-of-band trace channel
+(the dongle's single USB-C port is occupied by the console), the fault-injection harness, and the
+capture/analysis tools — live in [TOOLING.md](TOOLING.md), the canonical home for all tooling
+planning.
+
 ### Wake from sleep
 
 Status: ✅ implemented and hardware-confirmed in Pro Controller 2 mode.
