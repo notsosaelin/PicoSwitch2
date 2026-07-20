@@ -216,7 +216,8 @@ A bare mouse can't press a stick or face buttons, so decide the slot policy:
   controller + mouse" experience.
 
 ### 7.4 Click, lift-off, and scaling
-- **Clicks:** L/R/M → Joy-Con buttons (e.g. L→one face/trigger, R→another); user-remappable later.
+- **Clicks:** mapped per the base map in §7.5.2 (Left→shoulder, Right→trigger, Middle→Home,
+  Back→B, Forward→A); user-remappable.
 - **Lift-off (`0xD`):** a desktop mouse has no proximity sensor, so **synthesize a constant
   on-surface value** (observed genuine range `0x10`–`0x1e`, §3a) — a mouse only reports while on a
   surface, so "always on-surface" is correct.
@@ -263,21 +264,38 @@ mouse — 3-button, 5-button, or 12-button — with no per-device code.
   `JP_BUTTON_* → Joy-Con` step is the encoder's job and is subject to the mapping profiles in
   [`JOYCON2-AUDIT.md`](JOYCON2-AUDIT.md) §7/§12.
 
-**Default index → `JP_BUTTON_*` map** (a starting point, fully remappable; the eventual Joy-Con
-output depends on side/orientation per JOYCON2-AUDIT):
+**Default (base) map.** Keyed off the near-universal side-button convention — **button 4 = Back,
+button 5 = Forward** (browser navigation) — so the two side buttons are reliably present and
+meaningful on essentially any 5-button mouse. Fully remappable; this is the shipped starting point:
 
-| Mouse button | Default `JP_BUTTON_*` | Rationale (mouse-mode aim games) |
+| Mouse button | Joy-Con output (target) | Normalized `JP_BUTTON_*` emitted |
 |---|---|---|
-| 1 — Left | `JP_BUTTON_R2` (ZR) | primary = fire/trigger |
-| 2 — Right | `JP_BUTTON_L2` (ZL) | secondary = aim/trigger |
-| 3 — Middle | `JP_BUTTON_L3` | stick click |
-| 4 — Back | `JP_BUTTON_B1` | face button |
-| 5 — Forward | `JP_BUTTON_B2` | face button |
-| 6 | `JP_BUTTON_L4` | extended slot |
-| 7 | `JP_BUTTON_R4` | extended slot |
-| 8 | `JP_BUTTON_A3` | extended slot |
+| **1 — Left click** | **L / R** (shoulder, by side) | `JP_BUTTON_L1` |
+| **2 — Right click** | **ZL / ZR** (trigger, by side) | `JP_BUTTON_L2` |
+| **3 — Middle click** | **Home** | `JP_BUTTON_A1` |
+| **4 — Back** (side) | **B** | `JP_BUTTON_B1` |
+| **5 — Forward** (side) | **A** | `JP_BUTTON_B2` |
+| 6…N — extras | extended (remap) | `JP_BUTTON_L4 / R4 / A3 …` |
 
 Wheel → `delta_wheel`; AC Pan (horizontal wheel) → a second wheel/button if present.
+
+Two things this base map depends on:
+
+- **"L or R" / "ZL or ZR" = the active Joy-Con side.** The driver emits one normalized `JP_BUTTON_*`;
+  the encoder resolves it to the single Joy-Con's actual button by side (Left JC → `L`/`ZL`, Right JC
+  → `R`/`ZR`). Mouse-mode buttons take a **direct** route — they are *not* run through the sideways
+  stick rotation (that transform is motion-only; a mouse has no stick), so this map does not inherit
+  the sideways face-button remap. See [`JOYCON2-AUDIT.md`](JOYCON2-AUDIT.md) §7/§12.
+- **Right-Joy-Con-oriented, with Left substitutions.** `A`, `B`, and `Home` exist on the **Right**
+  Joy-Con (and Pro); the **Left** Joy-Con has directional buttons + `Capture`/`Minus` instead. So the
+  base map targets the Right Joy-Con's set cleanly; on a Left personality, `A/B → ` two direction
+  buttons and `Home → Capture` (documented substitutions, remappable). Mouse-in-right-hand ≈ Right
+  Joy-Con is the expected common case.
+
+**Side buttons that arrive as Consumer usages.** Some mice report Back/Forward not as mouse Buttons
+4/5 but as **Consumer Control `AC Back` (`0x0224`) / `AC Forward` (`0x0225`)** (HID usage page
+`0x0C`). Route those via the existing `consumer_usage` field / the quirks path (§7.5.2) to the same
+`B`/`A` outputs, so the base map holds regardless of which representation a given mouse uses.
 
 #### 7.5.3 Worked example — 8BitDo Retro R8 Mouse (4 programmable buttons)
 The **Retro R8** is a real 8BitDo product (editions: Xbox/N/C64/Forest; ships with a "Retro R8
