@@ -270,3 +270,102 @@ of the otherwise-"Unknown" command `0x0F` in this repo. Purpose still unknown; i
 - **`0x0F` semantics** — now confirmed real; needs a request/response correlation from a capture where
   its effect is observable.
 - These findings do not require any firmware change; `0x13`/`0x0F` remain correctly bare-ACKed.
+
+---
+
+# Experiment 3 — Live USB capture: genuine Pro Controller 2 with headset plugged in
+
+## Question
+
+With a real Pro Controller 2 + headset attached to a PC, (a) can we capture the vendor `0x17`/`0x18`
+audio-config commands, (b) what is the genuine USB audio (UAC) descriptor/format with a headset
+present, and (c) how does the genuine device compare byte-for-byte to PicoSwitch2's descriptors?
+
+## Method
+
+**Live capture** (the user attached a genuine Pro Controller 2 with headset and authorized it).
+Elevated `USBPcapCMD.exe` on the controller's root hub (`\\.\USBPcap1`, located by probing all three
+hubs), `--inject-descriptors` to dump the connected device's descriptors at capture start. Two
+captures: an 18 s baseline (descriptors + idle HID/mic), and a second while WAV audio was played to
+the "Headphones (Switch 2 Pro Controller)" endpoint to force an isochronous OUT stream. Decoded with a
+Python parser + Wireshark `tshark`. **No firmware/code modified.**
+
+## Captures (committed to the repo)
+
+- `usbpcaptures/genuine_procon2_headset_2026-07-19.pcap` — full config descriptor + idle traffic.
+- `usbpcaptures/genuine_procon2_headset_audio_2026-07-19.pcap` — trimmed slice of the genuine
+  **headphones isochronous OUT** stream.
+
+Environment: Windows host; controller enumerated as `VID_057E&PID_2069` composite device with Windows
+audio endpoints **"Headphones (Switch 2 Pro Controller)"** and **"Microphone (Switch 2 Pro
+Controller)"** both present → headset detected.
+
+## Results
+
+### Full genuine configuration descriptor (headset present) — decoded
+
+268-byte config, **5 interfaces**, self-powered, `bMaxPower` 250 (500 mA):
+
+| Iface | Class | Endpoints | Notes |
+|---|---|---|---|
+| 0 | HID (0x03) | INT `0x81` IN + `0x01` OUT, 64 B, **`bInterval`=4** | game controller |
+| 1 | Vendor (0xFF) | **BULK `0x02` OUT + `0x82` IN, 64 B** | command channel |
+| 2 | Audio Control (UAC 1.0) | — | topology below |
+| 3 | Audio Streaming | ISO `0x03` OUT, 192 B, `bInterval`=1 | Headphones |
+| 4 | Audio Streaming | ISO `0x83` IN, 192 B, `bInterval`=1 | Mic |
+
+**UAC topology:** USB-stream (term 1) → Feature (2) → **Headphones OUT (term type `0x0302`)**; and
+**Microphone (term type `0x0201`, term 4)** → Feature (5) → USB-stream OUT (6). Both streaming
+interfaces declare **`FORMAT_TYPE`: 2 ch, 16-bit, `tSamFreq` = `80 bb 00` = 48000 Hz**.
+
+### `0x17` = 48 kHz — corroborated (not directly captured)
+
+The descriptor's `tSamFreq` bytes **`80 bb 00`** are the *exact* value in command `0x17`'s request
+(`80 bb 00 00 02 f0 00`, `COMMAND-IMPLEMENTATION.md` §6). This independently supports **`0x17` =
+audio sample-rate config**. The command itself did **not** appear (see negative results).
+
+### Genuine headphones iso OUT stream (audio capture)
+
+All iso frames on EP `0x03`. Payload **192 B per 1 ms frame** (48000 × 2ch × 2B ÷ 1000), and the
+Windows host submits URBs of **1920 B = 10 frames (10 ms) each**. Confirms the 48 kHz/16-bit/stereo
+format from the descriptor and shows the host's 10 ms URB batching — useful reference for our own
+audio-bridge buffering.
+
+### Byte-for-byte comparison to PicoSwitch2 (`switch_pro2.c`)
+
+- **Audio function (IAD + iface 2/3/4, all AC/AS/format/endpoint descriptors): IDENTICAL** to
+  `ns2_config_desc` (`switch_pro2.c:157-181`). Our UAC audio descriptor is already an exact match —
+  strong validation of the audio implementation.
+- **Vendor bulk interface (`0x02`/`0x82`, 64 B): IDENTICAL** (`switch_pro2.c:152-156`).
+- **HID interrupt endpoints — DIVERGE:** genuine uses **`bInterval`=4** (≈250 Hz poll); we use
+  **`bInterval`=1** (`switch_pro2.c:150-151`, ≈1000 Hz). Deliberate low-latency choice on our side,
+  but a real, verifiable difference from genuine hardware. Trade-off: latency vs. indistinguishability.
+
+### Negative results (important scoping)
+
+- **No bulk/vendor traffic at all** → Windows never issues `0x17`/`0x18` (or any command). Those are
+  **console-driven**; a PC host alone cannot produce them. Confirms the Exp 1 finding.
+- **No UAC control handshake** (SET_INTERFACE alt-1, `SAMPLING_FREQ_CONTROL` SET_CUR) in the audio
+  window — the audio interface was already active/open when capture started, so the one-time setup
+  fell outside the window.
+
+## Conclusion
+
+- Genuine headset-present descriptor set captured and decoded for the first time in-repo; **our audio
+  and vendor descriptors are byte-identical** to genuine.
+- Audio format nailed down: **48 kHz / 16-bit / stereo, iso EP `0x03` (HP) & `0x83` (mic), 192 B/frame**.
+- **`0x17` = sample rate (48000)** strongly corroborated by the descriptor, though the vendor command
+  is unobtainable from a PC host.
+- One genuine divergence found: **HID `bInterval` 4 (genuine) vs 1 (ours)**.
+
+## Remaining questions / future work
+
+- **To actually capture `0x17`/`0x18`:** either (a) run the PC console-init tool that produced
+  `genuine_procon_2.pcapng` **with the headset attached** (it drives the bulk channel and may issue
+  the audio-config commands), or (b) interpose on a real Switch 2 ↔ controller link. A PC audio
+  session alone will not.
+- **To capture the UAC control handshake:** start the capture *before* opening the audio device (e.g.,
+  re-plug the headset or toggle the Windows endpoint while capturing) to record SET_INTERFACE alt-1 +
+  the sample-rate SET_CUR.
+- **HID `bInterval`:** consider whether matching genuine (4 ms) matters for indistinguishability vs.
+  keeping 1 ms for latency — a deliberate, documented choice, not a defect. No change made here.

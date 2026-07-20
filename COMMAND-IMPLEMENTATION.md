@@ -153,15 +153,14 @@ Even the ✅/🟨 commands have unhandled subcommands worth cataloguing:
 Each is a concrete, testable hypothesis. "Test" names the specific capture/dump or experiment that
 would resolve it.
 
-### `0x17` — **audio sample-rate config (strong hypothesis)**
+### `0x17` — **audio sample-rate config (strong hypothesis, corroborated)**
 Request example `17 91 01 02 00 07 00 00` + `80 bb 00 00 02 f0 00`. **`80 bb 00 00` (LE) = 0x0000BB80
-= 48000** — a textbook 48 kHz sample rate. The trailing `02 f0 00` plausibly encodes channels/format
-or a second rate. **Hypothesis:** `0x17/02` configures the headset/DSP audio path (sample rate +
-format), issued when a headset is present. **Why it matters:** directly adjacent to the live DualSense
-audio work (`DS5-NS2_AUDIO.md`) and the Pro2 headset-presence feature. **Test:** search
-`usbpcaptures/genuine_procon_2.pcapng` for a `0x17` exchange; capture a genuine Pro2 **with a headset
-plugged** and diff against headset-absent; correlate the rate byte with the DSP blob's rate fields
-(`0x175000`).
+= 48000** — a textbook 48 kHz sample rate. **Corroborated** by the live headset capture
+(`docs/experiments/2026-07-19-usb-command-ab-diff.md` Exp 3): the genuine UAC audio descriptor's
+`FORMAT_TYPE.tSamFreq` is **the exact same bytes `80 bb 00` = 48000**, for both the headphones and mic
+streams. So `0x17/02` almost certainly configures the audio path sample rate. **Still not directly
+captured** — a PC host issues no vendor commands; obtaining the command itself needs the console-init
+tool run *with* a headset, or a console interposer. Ties into `DS5-NS2_AUDIO.md`.
 
 ### `0x18` — **audio/DSP or analog config (hypothesis)**
 `0x18/01` → `00 00 40 f0 00 00 60 00`; `0x18/03` echoes a byte (`07`). The `40 f0` / `60 00` groups
@@ -227,7 +226,10 @@ genuine console session.
   test starts here** — but note it lacks a console-side amiibo/update interaction (the standing gap).
 - `usbpcaptures/picoswitch_2_dongle.pcapng` — **our own dongle's** USB output. **A/B diff against the
   genuine capture is the single most useful validation** — it shows exactly where our replies deviate
-  in shape/length/timing.
+  in shape/length/timing. (Done: Exp 1.)
+- `usbpcaptures/genuine_procon2_headset_2026-07-19.pcap` — genuine Pro2 **with headset**: full config
+  descriptor (UAC audio function, endpoints). `usbpcaptures/genuine_procon2_headset_audio_2026-07-19.pcap`
+  — genuine headphones **isochronous OUT** stream (192 B/frame, 48 kHz/16-bit/stereo). (Exp 3.)
 
 **BLE captures** (`nso-gc-refs/switch2_controller_research/captures/`):
 - `nrf52840/btle_joycon2_ota_update_{decrypted,encrypted}.pcapng` — **OTA firmware update** over BLE.
