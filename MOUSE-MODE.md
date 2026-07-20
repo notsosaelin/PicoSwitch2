@@ -191,7 +191,8 @@ BT/BLE mouse ──▶ (NEW) generic mouse driver ──INPUT_TYPE_MOUSE──�
 A plain mouse has no bespoke driver today (§6 gap 0). Two report shapes to cover:
 - **BT-Classic HID mouse:** request **boot protocol** (`SET_PROTOCOL` boot) → fixed
   `[buttons][Δx:i8][Δy:i8]( [wheel:i8] )`. Simplest MVP — trivial fixed parse, works for the vast
-  majority of mice.
+  majority of mice. **Ceiling:** boot protocol exposes only **3 buttons** (L/R/M); **side/extra
+  buttons require report protocol** and report-map parsing — see §7.5.
 - **BLE HID mouse (HOGP):** report-protocol only; parse the device's **HID report map** for the
   Generic-Desktop X/Y (usages `0x30`/`0x31`), buttons, and wheel — the project already has a HID
   report-descriptor parser (`usb/usbh/hid/devices/generic/hid_parser.c`) and the MouthPad shows the
@@ -221,6 +222,81 @@ A bare mouse can't press a stick or face buttons, so decide the slot policy:
   surface, so "always on-surface" is correct.
 - **DPI/scaling (§8):** genuine sensor counts ≠ mouse counts; apply a scale (config-tunable) so feel
   matches. MVP 1:1 then tune.
+
+### 7.5 Mouse buttons — variable count and side buttons (incl. 8BitDo Retro R8)
+
+Different mice expose different button counts, so **buttons cannot be a fixed layout** — they must
+be **discovered** from the mouse and mapped by *index*. This is the same problem the generic gamepad
+path already solves, and the solution reuses those exact mechanisms.
+
+#### 7.5.1 The protocol: how HID reports mouse buttons
+- **Boot protocol = 3 buttons, hard ceiling.** Byte 0 is `[bit0=L][bit1=R][bit2=M]`; there is no room
+  for more. Any mouse with side buttons **must** be driven in **report protocol** (§7.1).
+- **Report protocol = declared, variable count.** The mouse's HID report map declares a button field
+  as **Usage Page `0x09` (Button), Usage Minimum `0x01`, Usage Maximum `N`**, with `ReportCount = N`
+  one-bit fields (often padded to a byte). **`N` is the exact button count** — read it from the
+  report map (`hid_parser.c` already extracts Usage Min/Max, `ReportCount`, `ReportSize`). This is
+  how "different mice, different counts" is resolved by *discovery*, not assumption.
+- **Standard button numbering (HID convention):** `1`=Left (primary), `2`=Right, `3`=Middle/wheel,
+  `4`=**Back** (side), `5`=**Forward** (side), `6+`=vendor-defined extras. Motion/wheel follow as
+  Generic-Desktop `X 0x30` / `Y 0x31` / `Wheel 0x38`, plus optional Consumer **AC Pan** (`0x0C`,
+  usage `0x0238`) for a horizontal/tilt wheel.
+
+| Mouse class | Buttons | Usages |
+|---|---|---|
+| Boot / basic | 3 | L, R, M |
+| Standard 5-button | 5 | + Back(4), Forward(5) |
+| **8BitDo Retro R8** | core + **4 programmable** | needs capture — §7.5.3 |
+| Gaming mice | 6–12+ | vendor extras (Buttons 6…N) |
+
+#### 7.5.2 The design: discover-then-map by index (reuse existing machinery)
+The mouse driver runs the **same usage-number button loop** the generic gamepad parser already uses
+(`bthid_gamepad.c`): for each declared button *i*, set one normalized `JP_BUTTON_*` by a fixed
+**index → button** table. Because it's driven by the parsed count `N`, one code path adapts to any
+mouse — 3-button, 5-button, or 12-button — with no per-device code.
+
+- **Core three** land on primary controls; **side buttons and extras land in the existing extended
+  `JP_BUTTON_*` space** — `buttons.h:83` already reserves "extra controller-specific buttons"
+  (`L4/R4/L5/R5/A3/A4/A5/F1/F2`), which is exactly where mouse buttons 4…N go.
+- Once in `JP_BUTTON_*`, mouse buttons flow through the **normal Joy-Con button pipeline** and are
+  **user-remappable like any controller** — the mouse driver never hard-codes a Joy-Con output; the
+  `JP_BUTTON_* → Joy-Con` step is the encoder's job and is subject to the mapping profiles in
+  [`JOYCON2-AUDIT.md`](JOYCON2-AUDIT.md) §7/§12.
+
+**Default index → `JP_BUTTON_*` map** (a starting point, fully remappable; the eventual Joy-Con
+output depends on side/orientation per JOYCON2-AUDIT):
+
+| Mouse button | Default `JP_BUTTON_*` | Rationale (mouse-mode aim games) |
+|---|---|---|
+| 1 — Left | `JP_BUTTON_R2` (ZR) | primary = fire/trigger |
+| 2 — Right | `JP_BUTTON_L2` (ZL) | secondary = aim/trigger |
+| 3 — Middle | `JP_BUTTON_L3` | stick click |
+| 4 — Back | `JP_BUTTON_B1` | face button |
+| 5 — Forward | `JP_BUTTON_B2` | face button |
+| 6 | `JP_BUTTON_L4` | extended slot |
+| 7 | `JP_BUTTON_R4` | extended slot |
+| 8 | `JP_BUTTON_A3` | extended slot |
+
+Wheel → `delta_wheel`; AC Pan (horizontal wheel) → a second wheel/button if present.
+
+#### 7.5.3 Worked example — 8BitDo Retro R8 Mouse (4 programmable buttons)
+The **Retro R8** is a real 8BitDo product (editions: Xbox/N/C64/Forest; ships with a "Retro R8
+Adapter" 2.4 GHz receiver and Bluetooth), programmed by 8BitDo's Ultimate/Advance software
+(`8Bitdo/research/.../LanguageTools.cs:256+`). Its 4 programmable buttons are the concrete
+"side-button" target — with **one 8BitDo-specific caveat (Hypothesis, needs capture):**
+
+- 8BitDo programmables can be assigned to **mouse buttons, keyboard keys, or macros**. So the R8's 4
+  extra buttons may appear as **mouse Buttons 4–7** *or*, depending on how they're programmed, arrive
+  in a **separate keyboard/consumer HID report** entirely — the same dual-nature behavior the repo
+  already handles for the 8BitDo **Ultimate controller** (`switch_pro_8bitdo_ultimate_*`,
+  `switch_pro_bt.c:190,215`).
+- **Resolution path:** capture the R8's **report map** (which fields/usages it declares) *and* a
+  **live press of each of the 4 buttons in its default mode** to learn whether they are mouse buttons
+  or remapped keys. If mouse buttons → the §7.5.2 index loop handles them for free. If keyboard/
+  consumer → handle them via the **quirks mechanism** (`bthid_gamepad_quirks.h` — "optional per-report
+  extraction beyond the standard usage-number button loop"), mapping those usages into the same
+  extended `JP_BUTTON_*` slots. Either way, **no new core path** — this is why the discover-then-map
+  design scales from a 3-button mouse to the R8 to a 12-button gaming mouse.
 
 **Phasing (each hardware-testable):**
 - **Phase 1 — enable + boot-mouse plumbing:** generic BT-Classic boot-protocol mouse driver;
@@ -256,6 +332,10 @@ A bare mouse can't press a stick or face buttons, so decide the slot policy:
    Phase 1 can skip report-map parsing entirely.
 6. **BLE HOGP report-map parse test** (§7.1) — validate the existing HID parser
    (`hid_parser.c`) against a BLE mouse's report map to extract X/Y/buttons/wheel offsets.
+7. **8BitDo Retro R8 button classification** (§7.5.3) — capture the R8's report map + a live press of
+   each of its 4 programmable buttons in default mode; determine whether they are HID mouse Buttons
+   4–7 or a separate keyboard/consumer report. Settles whether the R8 needs a quirk or is handled by
+   the plain index loop.
 
 ## 10. Risks & notes
 
@@ -283,5 +363,12 @@ A bare mouse can't press a stick or face buttons, so decide the slot policy:
   `src/bt_hid/usb/usbh/hid/devices/generic/hid_parser.c` (reusable HID report-map parser for §7.1).
 - `src/bt_hid/ns2_seam.c` `router_submit_input` (no `INPUT_TYPE_MOUSE` path today — §6 gap 1);
   `src/report.c` `set_global_gamepad_input` (where carried deltas would land).
+- Button-mapping machinery to reuse (§7.5): `src/bt_hid/bt/bthid/devices/generic/bthid_gamepad.c`
+  (usage-number button loop), `bthid_gamepad_quirks.h:39-61` (per-report extraction beyond that loop),
+  `src/bt_hid/core/buttons.h:83` (extended `JP_BUTTON_*` slots for extra buttons),
+  `src/bt_hid/bt/bthid/devices/vendors/nintendo/switch_pro_bt.c:190,215`
+  (`switch_pro_8bitdo_ultimate_*` — programmable-button dual-nature precedent).
+- 8BitDo Retro R8 Mouse: `8Bitdo/research/mixed-software/8bitdo-v2-decompiled/AdvanceSuper.Data/LanguageTools.cs:256+`
+  (product/editions + Retro R8 Adapter), programmed by 8BitDo Ultimate/Advance software.
 - `docs/experiments/2026-07-19-usb-command-ab-diff.md` Exp 2 (mask `0x37` discovery).
 - External: **Dycool / NS-PC-Control** — reference Joy-Con 2 mouse implementation (audit pending).
