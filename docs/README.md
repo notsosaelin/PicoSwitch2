@@ -13,6 +13,7 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Runtime architecture | [`architecture/overview.md`](architecture/overview.md) |
 | Compatibility results | [`status/compatibility-matrix.md`](status/compatibility-matrix.md) |
 | Evidence and RE rules | [`re-methodology/evidence-standards.md`](re-methodology/evidence-standards.md) |
+| What we discovered vs. inherited | [`provenance.md`](provenance.md) |
 | Bluetooth implementation | [`bluetooth/btstack-implementation.md`](bluetooth/btstack-implementation.md) |
 | Battery passthrough and validation matrix | [`bluetooth/battery-passthrough.md`](bluetooth/battery-passthrough.md) |
 | DualSense live-audio implementation/result | [`../DS5-NS2_AUDIO.md`](../DS5-NS2_AUDIO.md) |
