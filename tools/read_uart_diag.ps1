@@ -69,6 +69,7 @@ $serial = [System.IO.Ports.SerialPort]::new(
 $serial.Handshake = [System.IO.Ports.Handshake]::None
 $serial.DtrEnable = $false
 $serial.RtsEnable = $false
+$serial.ReadBufferSize = 65536
 $serial.ReadTimeout = $TimeoutMs
 $serial.WriteTimeout = $TimeoutMs
 $serial.NewLine = "`n"
@@ -77,14 +78,70 @@ try {
     $serial.Open()
     Start-Sleep -Milliseconds 100
     $serial.DiscardInBuffer()
-    $serial.Write("$Command`n")
-    $response = $serial.ReadLine().Trim()
-
-    # Validate the framing before returning the original one-line JSON, which
-    # is easiest to paste into an issue/session without PowerShell reformatting.
-    $null = $response | ConvertFrom-Json
     Write-Host "UART $Port @ 115200: $Command" -ForegroundColor Cyan
-    Write-Output $response
+    if ($Command -eq 'trace dump') {
+        # Pull one retained record per request. This keeps the Pico, USB-UART
+        # bridge, SerialPort receive buffer, JSON parser, and console output in
+        # lockstep instead of relying on sustained unsolicited transmission.
+        $serial.Write("trace dump`n")
+        $manifestLine = $serial.ReadLine().Trim()
+        $manifest = $manifestLine | ConvertFrom-Json
+        if ($manifest.trace -ne 'dump' -or
+            $manifest.PSObject.Properties.Name -notcontains 'count' -or
+            $manifest.PSObject.Properties.Name -notcontains 'overwritten') {
+            throw "Invalid trace manifest: $manifestLine"
+        }
+
+        $lines = [System.Collections.Generic.List[string]]::new()
+        $previousSequence = $null
+        for ($index = 0; $index -lt [int]$manifest.count; $index++) {
+            $serial.Write("trace read $index`n")
+            $line = $serial.ReadLine().Trim()
+            $parsed = $line | ConvertFrom-Json
+            if ($parsed.trace -ne 'record') {
+                throw "Expected trace record $index, received: $line"
+            }
+            $required = @('seq', 't_us', 'personality', 'kind', 'dir',
+                          'id', 'sub', 'length', 'captured', 'payload')
+            foreach ($name in $required) {
+                if ($parsed.PSObject.Properties.Name -notcontains $name) {
+                    throw "Trace record is incomplete (missing '$name'): $line"
+                }
+            }
+            if ($null -ne $previousSequence -and
+                [uint64]$parsed.seq -ne ([uint64]$previousSequence + 1)) {
+                throw "Trace sequence discontinuity after ${previousSequence}: $line"
+            }
+            if ($parsed.personality -notin @('pro2', 'gc', 'joycon_l', 'joycon_r', 'config') -or
+                $parsed.kind -notin @('ep0_setup', 'ep0_response', 'bulk_command',
+                                      'bulk_response', 'hid_output') -or
+                $parsed.dir -notin @('console_to_device', 'device_to_console')) {
+                throw "Trace enum framing mismatch at sequence $($parsed.seq): $line"
+            }
+            if ($parsed.payload -notmatch '^[0-9A-F]*$' -or
+                $parsed.payload.Length -ne ([int]$parsed.captured * 2)) {
+                throw "Trace payload framing mismatch at sequence $($parsed.seq): $line"
+            }
+            $previousSequence = [uint64]$parsed.seq
+            $lines.Add($line)
+        }
+        foreach ($line in $lines) {
+            Write-Output $line
+        }
+        $end = [ordered]@{
+            trace = 'end'
+            records = $lines.Count
+            overwritten = [uint64]$manifest.overwritten
+        } | ConvertTo-Json -Compress
+        Write-Output $end
+    } else {
+        $serial.Write("$Command`n")
+        $response = $serial.ReadLine().Trim()
+        # Validate the framing before returning the original one-line JSON,
+        # which is easiest to paste into an issue/session without reformatting.
+        $null = $response | ConvertFrom-Json
+        Write-Output $response
+    }
 } catch [System.TimeoutException] {
     throw "Timed out waiting for PicoSwitch2 on $Port. Check crossed TX/RX, shared GND, 3.3 V signal level, and leave VCC disconnected."
 } finally {

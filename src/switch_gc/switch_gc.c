@@ -12,6 +12,7 @@
 #include "tusb.h"
 
 #include "ns2_gc_identity.h"
+#include "ns2_protocol_trace.h"
 #include "report.h"       // report_set_rumble, get_global_gamepad_input
 #include "switch_gc_rumble_decode.h"
 #include "switch_gc.h"
@@ -390,6 +391,9 @@ static uint32_t s_bulk_cmd_count = 0;
 static void switch_gc_vendor_dispatch(const uint8_t *c, uint32_t n) {
     if (n < 8) return;
     uint8_t id = c[0], transport = c[2], sub = c[3];
+    ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
+                              NS2_TRACE_BULK_COMMAND,
+                              NS2_TRACE_CONSOLE_TO_DEVICE, id, sub, c, n);
     // NS2_DIAG: stage = 5 + (count of distinct bulk commands received so far, capped at 9), so
     // the LED flash count directly answers "how many commands did the console send before it
     // stopped" -- much more diagnostic than a flat "at least one arrived" signal. Capped to keep
@@ -603,7 +607,12 @@ static void switch_gc_vendor_dispatch(const uint8_t *c, uint32_t n) {
         }
     }
 
-    tud_vendor_write(r, (uint16_t)(8 + dl));
+    uint16_t response_length = (uint16_t)(8 + dl);
+    ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
+                              NS2_TRACE_BULK_RESPONSE,
+                              NS2_TRACE_DEVICE_TO_CONSOLE, id, sub, r,
+                              response_length);
+    tud_vendor_write(r, response_length);
     tud_vendor_write_flush();
 }
 
@@ -745,15 +754,29 @@ bool switch_gc_vendor_control_xfer(uint8_t rhport, uint8_t stage, const void *re
         case 0x03: {  // identity block (64 B)
             uint16_t len = request->wLength < sizeof(switch_gc_ctrl_identity)
                                ? request->wLength : (uint16_t)sizeof(switch_gc_ctrl_identity);
+            ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
+                                      NS2_TRACE_EP0_RESPONSE,
+                                      NS2_TRACE_DEVICE_TO_CONSOLE,
+                                      request->bRequest, 0,
+                                      switch_gc_ctrl_identity, len);
             return tud_control_xfer(rhport, request, (void *)switch_gc_ctrl_identity, len);
         }
         case 0x02: {  // firmware/version info (16 B)
             ns2_gc_build_ep0_info(SWITCH_GC_UNIT_ID, switch_gc_ctrl_info);
             uint16_t len = request->wLength < sizeof(switch_gc_ctrl_info)
                                ? request->wLength : (uint16_t)sizeof(switch_gc_ctrl_info);
+            ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
+                                      NS2_TRACE_EP0_RESPONSE,
+                                      NS2_TRACE_DEVICE_TO_CONSOLE,
+                                      request->bRequest, 0,
+                                      switch_gc_ctrl_info, len);
             return tud_control_xfer(rhport, request, (void *)switch_gc_ctrl_info, len);
         }
         case 0x04:  // OUT, no data -> ACK
+            ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
+                                      NS2_TRACE_EP0_RESPONSE,
+                                      NS2_TRACE_DEVICE_TO_CONSOLE,
+                                      request->bRequest, 0, NULL, 0);
             return tud_control_status(rhport, request);
     }
 

@@ -4,6 +4,7 @@
 
 #include "ns2_firmware_profile.h"
 #include "ns2_bt_version_probe.h"
+#include "ns2_protocol_trace.h"
 
 #include <hardware/gpio.h>
 #include <hardware/uart.h>
@@ -20,7 +21,7 @@
 #define NS2_UART_RX_LINE_SIZE 96u
 #define NS2_UART_TX_BUFFER_SIZE 2304u
 #define NS2_UART_TASK_RX_BUDGET 16u
-#define NS2_UART_TASK_TX_BUDGET 32u
+#define NS2_UART_TASK_TX_BUDGET 8u
 
 static char rx_line[NS2_UART_RX_LINE_SIZE];
 static size_t rx_length;
@@ -28,7 +29,11 @@ static bool rx_overflow;
 static char tx_buffer[NS2_UART_TX_BUFFER_SIZE];
 static size_t tx_length;
 static size_t tx_position;
+static bool tx_wait_idle;
 static bool reenumerate_requested;
+static ns2_protocol_trace_record_t trace_format_record;
+static char trace_format_payload[NS2_PROTOCOL_TRACE_PAYLOAD_MAX * 2u + 1u];
+static char trace_format_response[384];
 
 static bool tx_pending(void) {
     return tx_position < tx_length;
@@ -89,6 +94,72 @@ static void queue_bt_version(void) {
     queue_text(response);
 }
 
+static const char *trace_personality_name(uint8_t personality) {
+    switch (personality) {
+        case 0: return "pro2";
+        case 1: return "gc";
+        case 2: return "joycon_l";
+        case 3: return "joycon_r";
+        case 4: return "config";
+        default: return "unknown";
+    }
+}
+
+static const char *trace_kind_name(uint8_t kind) {
+    switch ((ns2_protocol_trace_kind_t)kind) {
+        case NS2_TRACE_EP0_SETUP: return "ep0_setup";
+        case NS2_TRACE_EP0_RESPONSE: return "ep0_response";
+        case NS2_TRACE_BULK_COMMAND: return "bulk_command";
+        case NS2_TRACE_BULK_RESPONSE: return "bulk_response";
+        case NS2_TRACE_HID_OUTPUT: return "hid_output";
+        default: return "unknown";
+    }
+}
+
+static void queue_trace_status(const char *event) {
+    ns2_protocol_trace_status_t status;
+    char response[256];
+    ns2_protocol_trace_get_status(&status);
+    snprintf(response, sizeof(response),
+             "{\"trace\":\"%s\",\"enabled\":%s,\"count\":%u,"
+             "\"capacity\":%u,\"overwritten\":%lu,\"next_sequence\":%lu}",
+             event, status.enabled ? "true" : "false", status.count,
+             status.capacity, (unsigned long)status.overwritten,
+             (unsigned long)status.next_sequence);
+    queue_text(response);
+}
+
+static void queue_trace_record(uint16_t index) {
+    if (!ns2_protocol_trace_get(index, &trace_format_record)) {
+        snprintf(trace_format_response, sizeof(trace_format_response),
+                 "{\"trace\":\"error\",\"error\":\"record out of range\","
+                 "\"index\":%u}", index);
+        queue_text(trace_format_response);
+        return;
+    }
+
+    for (size_t i = 0; i < trace_format_record.captured_length; i++)
+        snprintf(&trace_format_payload[i * 2u], 3, "%02X",
+                 trace_format_record.payload[i]);
+    trace_format_payload[trace_format_record.captured_length * 2u] = '\0';
+
+    snprintf(trace_format_response, sizeof(trace_format_response),
+             "{\"trace\":\"record\",\"seq\":%lu,\"t_us\":%lu,"
+             "\"personality\":\"%s\",\"kind\":\"%s\",\"dir\":\"%s\","
+             "\"id\":%u,\"sub\":%u,\"length\":%u,\"captured\":%u,"
+             "\"payload\":\"%s\"}",
+             (unsigned long)trace_format_record.sequence,
+             (unsigned long)trace_format_record.timestamp_us,
+             trace_personality_name(trace_format_record.personality),
+             trace_kind_name(trace_format_record.kind),
+             trace_format_record.direction == NS2_TRACE_DEVICE_TO_CONSOLE ?
+                 "device_to_console" : "console_to_device",
+             trace_format_record.id, trace_format_record.subcommand,
+             trace_format_record.total_length,
+             trace_format_record.captured_length, trace_format_payload);
+    queue_text(trace_format_response);
+}
+
 static void handle_command(void) {
     rx_line[rx_length] = '\0';
     if (rx_overflow) {
@@ -138,11 +209,45 @@ static void handle_command(void) {
         queue_text("{\"ok\":true,\"state\":\"requested\"}");
     } else if (strcmp(rx_line, "btversion") == 0) {
         queue_bt_version();
+    } else if (strcmp(rx_line, "trace") == 0 || strcmp(rx_line, "trace status") == 0) {
+        queue_trace_status("status");
+    } else if (strcmp(rx_line, "trace clear") == 0) {
+        ns2_protocol_trace_clear();
+        queue_trace_status("cleared");
+    } else if (strcmp(rx_line, "trace start") == 0) {
+        ns2_protocol_trace_set_enabled(true);
+        queue_trace_status("started");
+    } else if (strcmp(rx_line, "trace stop") == 0) {
+        ns2_protocol_trace_set_enabled(false);
+        queue_trace_status("stopped");
+    } else if (strcmp(rx_line, "trace dump") == 0) {
+        ns2_protocol_trace_status_t status;
+        ns2_protocol_trace_set_enabled(false);
+        ns2_protocol_trace_get_status(&status);
+        snprintf(trace_format_response, sizeof(trace_format_response),
+                 "{\"trace\":\"dump\",\"count\":%u,\"overwritten\":%lu}",
+                 status.count, (unsigned long)status.overwritten);
+        queue_text(trace_format_response);
+    } else if (strncmp(rx_line, "trace read ", 11) == 0) {
+        unsigned int index;
+        char trailing;
+        if (sscanf(rx_line + 11, "%u%c", &index, &trailing) != 1 ||
+            index > UINT16_MAX) {
+            queue_text("{\"trace\":\"error\",\"error\":\"usage: trace read N\"}");
+        } else {
+            queue_trace_record((uint16_t)index);
+        }
+    } else if (strcmp(rx_line, "reenumerate") == 0) {
+        reenumerate_requested = true;
+        queue_text("{\"ok\":true,\"reenumerate\":true}");
     } else if (strcmp(rx_line, "help") == 0) {
         queue_text("{\"commands\":[\"ping\",\"fwreads\",\"status\",\"clear\","
                    "\"profile\",\"profile default\","
                    "\"profile C.M.m B.M.m D.M.m\",\"btversion request\","
-                   "\"btversion\",\"help\"]}");
+                   "\"btversion\",\"trace status\",\"trace clear\","
+                   "\"trace start\",\"trace stop\",\"trace dump\","
+                   "\"trace read N\","
+                   "\"reenumerate\",\"help\"]}");
     } else if (rx_length != 0) {
         queue_text("{\"error\":\"unknown command\"}");
     }
@@ -162,7 +267,10 @@ void ns2_uart_diag_init(void) {
     rx_overflow = false;
     tx_length = 0;
     tx_position = 0;
+    tx_wait_idle = false;
     reenumerate_requested = false;
+    ns2_protocol_trace_set_enabled(false);
+    ns2_protocol_trace_clear();
     while (uart_is_readable(NS2_UART_ID)) (void)uart_getc(NS2_UART_ID);
 }
 
@@ -173,9 +281,26 @@ bool ns2_uart_diag_take_reenumerate_request(void) {
 }
 
 void ns2_uart_diag_task(void) {
+    if (tx_wait_idle) {
+        if (uart_get_hw(NS2_UART_ID)->fr & UART_UARTFR_BUSY_BITS) return;
+        tx_wait_idle = false;
+    }
+
     uint8_t tx_budget = NS2_UART_TASK_TX_BUDGET;
-    while (tx_budget-- && tx_pending() && uart_is_writable(NS2_UART_ID))
+    uint8_t tx_sent = 0;
+    while (tx_budget-- && tx_pending() && uart_is_writable(NS2_UART_ID)) {
         uart_putc_raw(NS2_UART_ID, tx_buffer[tx_position++]);
+        tx_sent++;
+    }
+
+    // Deliberately allow the FIFO and shift register to drain after each small
+    // chunk. Continuous full-rate JSON exceeded the reliable sustained receive
+    // behavior of the bench CP2102 path despite correct framing and large PC
+    // buffers. This remains nonblocking and affects UART diagnostics only.
+    if (tx_sent) {
+        tx_wait_idle = true;
+        return;
+    }
 
     if (tx_pending()) return;
     tx_length = 0;

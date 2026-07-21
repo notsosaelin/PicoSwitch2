@@ -163,10 +163,16 @@ this project captures and validates a real read/write exchange.
 
 ### Console-side capture infrastructure
 
-Status: 🟡 recommended next research investment.
+Status: 🔵 retained command tracer implemented and hardware-validated.
 
-A reproducible control/bulk/interrupt capture path would unblock both motion and NFC. Validate it in
-stages: enumeration, identity handshake, buttons, timing fidelity, then feature-specific traffic.
+A bounded, opt-in UART trace ring now records EP0 setup/replies, vendor bulk commands/replies, and
+HID output reports across all native personalities. It is disabled by default, performs no UART or
+formatting work inside USB callbacks, and has host coverage for truncation and overflow behavior.
+The full `trace clear/start/reenumerate/stop/dump` workflow is hardware-validated on a real Switch 2:
+the pull transport delivered a complete 63-record Pro2 initialization capture with zero overwrites
+or framing loss while a genuine Pro Controller 2 was paired to the dongle. Broader input, rumble,
+wake, audio, GC, and Joy-Con trace regression coverage remains before adding sampled input or
+audio-control events.
 
 The full tooling wishlist and build order — the on-device tracer, the out-of-band trace channel
 (the dongle's single USB-C port is occupied by the console), the fault-injection harness, and the

@@ -10,6 +10,7 @@
 
 #include <string.h>
 
+#include "pico/time.h"
 #include "tusb.h"
 
 #include "hid_out_normalize.h"
@@ -17,6 +18,7 @@
 #include "usb.h"  // g_usb_config_mode, g_usb_personality
 
 #ifdef NS2_PRO
+#include "ns2_protocol_trace.h"
 #include "switch_pro2.h"
 #include "switch_gc.h"
 #include "switch_joycon2.h"
@@ -417,6 +419,10 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
 #ifdef NS2_PRO
     (void)instance;
     hid_out_normalized_t n = hid_out_normalize(report_id, buffer, bufsize);
+    ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
+                              NS2_TRACE_HID_OUTPUT,
+                              NS2_TRACE_CONSOLE_TO_DEVICE, n.report_id,
+                              instance, n.data, n.data_len);
     if (g_usb_personality == USB_PERSONALITY_NSO_GAMECUBE)
         switch_gc_hid_out_report(n.report_id, n.data, n.data_len);
     else if (g_usb_personality == USB_PERSONALITY_JOYCON2_L ||
@@ -442,6 +448,14 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
 #ifdef NS2_PRO
 bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
                                 tusb_control_request_t const *request) {
+    if (stage == CONTROL_STAGE_SETUP) {
+        uint8_t setup[8];
+        memcpy(setup, request, sizeof(setup));
+        ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
+                                  NS2_TRACE_EP0_SETUP,
+                                  NS2_TRACE_CONSOLE_TO_DEVICE,
+                                  request->bRequest, 0, setup, sizeof(setup));
+    }
     switch (g_usb_personality) {
         case USB_PERSONALITY_NSO_GAMECUBE:
             return switch_gc_vendor_control_xfer(rhport, stage, request);

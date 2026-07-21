@@ -129,14 +129,14 @@ static void usb_apply_mode_cycle(void) {
     printf("[USB] Mode cycle complete: now %s\n", usb_personality_name(next));
 }
 
-// Apply an in-RAM firmware identity experiment without cycling personalities
-// or resetting the Bluetooth core. This uses the same detach interval and
-// incoming-personality reset path as the hardware-validated BOOTSEL cycle.
+// Apply a UART-requested same-personality re-enumeration without resetting the
+// Bluetooth core. Firmware-profile experiments use this in Pro2 mode; the
+// protocol tracer also uses it to capture a fresh handshake in every native
+// Switch 2 personality without unplugging the console-side USB cable.
 static void usb_apply_diag_reenumeration(void) {
-    if (g_usb_personality != USB_PERSONALITY_SWITCH2_PRO2) return;
     tud_disconnect();
     sleep_ms(USB_DETACH_MS);
-    usb_reset_personality_state(USB_PERSONALITY_SWITCH2_PRO2);
+    usb_reset_personality_state(g_usb_personality);
     tud_connect();
 }
 
