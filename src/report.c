@@ -71,6 +71,46 @@ void get_global_gamepad_input(uint8_t idx, switch_pro_input_t *out) {
     critical_section_exit(&s_lock);
 }
 
+static int16_t clamp_mouse_delta(int32_t value) {
+    if (value < -32768) return -32768;
+    if (value > 32767) return 32767;
+    return (int16_t)value;
+}
+
+static int8_t clamp_mouse_wheel(int16_t value) {
+    if (value < -127) return -127;
+    if (value > 127) return 127;
+    return (int8_t)value;
+}
+
+void accumulate_global_mouse_input(uint8_t idx, const switch_pro_input_t *in) {
+    if (idx >= INPUT_SLOTS || in == NULL) return;
+    critical_section_enter_blocking(&s_lock);
+    int16_t dx = clamp_mouse_delta((int32_t)s_inputs[idx].mouse_delta_x + in->mouse_delta_x);
+    int16_t dy = clamp_mouse_delta((int32_t)s_inputs[idx].mouse_delta_y + in->mouse_delta_y);
+    int8_t wheel = clamp_mouse_wheel((int16_t)s_inputs[idx].mouse_delta_wheel +
+                                     in->mouse_delta_wheel);
+    s_inputs[idx] = *in;
+    s_inputs[idx].mouse_delta_x = dx;
+    s_inputs[idx].mouse_delta_y = dy;
+    s_inputs[idx].mouse_delta_wheel = wheel;
+    critical_section_exit(&s_lock);
+}
+
+void take_global_gamepad_input(uint8_t idx, switch_pro_input_t *out) {
+    if (out == NULL) return;
+    if (idx >= INPUT_SLOTS) {
+        memset(out, 0, sizeof(*out));
+        return;
+    }
+    critical_section_enter_blocking(&s_lock);
+    *out = s_inputs[idx];
+    s_inputs[idx].mouse_delta_x = 0;
+    s_inputs[idx].mouse_delta_y = 0;
+    s_inputs[idx].mouse_delta_wheel = 0;
+    critical_section_exit(&s_lock);
+}
+
 void set_global_raw_buttons(uint8_t idx, uint32_t jp_buttons) {
     if (idx >= INPUT_SLOTS)
         return;

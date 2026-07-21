@@ -131,6 +131,10 @@ void router_submit_input(const input_event_t *e) {
     in.battery_level = e->battery_level;
     in.battery_valid = e->battery_source != INPUT_BATTERY_NONE;
     in.battery_charging = e->battery_charging;
+    if (e->joycon_side == INPUT_JOYCON_SIDE_LEFT)
+        in.source_joycon_side = SWITCH_SOURCE_JOYCON_LEFT;
+    else if (e->joycon_side == INPUT_JOYCON_SIDE_RIGHT)
+        in.source_joycon_side = SWITCH_SOURCE_JOYCON_RIGHT;
 
     // Digital buttons, plus analog triggers folded in as L2/R2: Switch ZL/ZR are digital,
     // but Xbox/DualSense triggers are analog and often don't set the digital JP bit.
@@ -272,7 +276,15 @@ void router_submit_input(const input_event_t *e) {
     in.headset_state = e->headset_state;
 #endif
 
-    set_global_gamepad_input(slot, &in);
+    if (e->type == INPUT_TYPE_MOUSE) {
+        in.has_mouse = 1;
+        in.mouse_delta_x = e->delta_x;
+        in.mouse_delta_y = e->delta_y;
+        in.mouse_delta_wheel = e->delta_wheel;
+        accumulate_global_mouse_input(slot, &in);
+    } else {
+        set_global_gamepad_input(slot, &in);
+    }
     set_global_raw_buttons(slot, b);  // b includes analog L2/R2, for the live view
     uint8_t wake_source = e->dev_addr < NS2_WAKE_SESSION_SOURCES ? e->dev_addr : 0;
     if (!wake_session_active[wake_source]) {
@@ -322,7 +334,21 @@ void bthid_on_raw_report(uint8_t conn_index, const uint8_t *data, uint16_t len) 
 // while the controller is otherwise idle, so republish its cached input state
 // to make the new level visible without waiting for a button report.
 void bthid_on_battery_update(input_event_t *event) {
+    if (!event) return;
+    // A BAS update republishes cached state but is not a new mouse packet.
+    // Prevent it from replaying the last relative movement.
+    int16_t dx = event->delta_x;
+    int16_t dy = event->delta_y;
+    int8_t wheel = event->delta_wheel;
+    if (event->type == INPUT_TYPE_MOUSE) {
+        event->delta_x = 0;
+        event->delta_y = 0;
+        event->delta_wheel = 0;
+    }
     router_submit_input(event);
+    event->delta_x = dx;
+    event->delta_y = dy;
+    event->delta_wheel = wheel;
 }
 
 // -------------------------------------------------------------------------

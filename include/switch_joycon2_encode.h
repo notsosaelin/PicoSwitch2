@@ -28,8 +28,9 @@ typedef enum {
 // bytes and never includes the report ID (TinyUSB's tud_hid_n_report() prepends it separately).
 // Layout Confirmed (docs/switch2-joycon2/protocol.md "Wire input/output report contents", sourced
 // from ndeadly/switch2_controller_research's hid_reports.md, cross-checked against real decrypted
-// BLE captures). Button bitfield meaning Confirmed per side. Mouse data, NFC state, and motion
-// data are always zero/absent -- this project has no source data for any of them yet.
+// BLE captures). Button bitfield meaning Confirmed per side. A paired mouse supplies the native
+// relative optical block after the console enables feature bit 0x10; a stationary posture block
+// is synthesized because a desktop mouse has no Joy-Con IMU.
 // `source_buttons` is the normalized physical JP_BUTTON_* bitmap, deliberately bypassing the
 // configurable Pro2 semantic remap for the explicit sideways face/shoulder/trigger layout.
 // Capture and C/GameChat still come from `in` so their configured Pro2 sources are preserved.

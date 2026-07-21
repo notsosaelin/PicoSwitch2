@@ -126,6 +126,15 @@ typedef enum {
     INPUT_BATTERY_NATIVE_HID,   // Controller-native report (authoritative)
 } input_battery_source_t;
 
+// Physical single-Joy-Con provenance. Output personalities use this only to
+// preserve a matching Joy-Con half's canonical controls; ordinary gamepads and
+// full-size Nintendo controllers leave it at NONE.
+typedef enum {
+    INPUT_JOYCON_SIDE_NONE = 0,
+    INPUT_JOYCON_SIDE_LEFT,
+    INPUT_JOYCON_SIDE_RIGHT,
+} input_joycon_side_t;
+
 typedef struct {
     // Device identification
     uint8_t dev_addr;           // Device address (USB: 1-127, BT: conn_index, Native: port)
@@ -133,6 +142,7 @@ typedef struct {
     input_device_type_t type;   // Device type classification
     input_transport_t transport; // Connection type (USB, BT, native)
     controller_layout_t layout; // Physical button layout (for 6-button controllers)
+    input_joycon_side_t joycon_side; // Physical single-Joy-Con half, or NONE
 
     // Digital inputs
     uint32_t buttons;           // Button bitmap (JP_BUTTON_* defines from globals.h)

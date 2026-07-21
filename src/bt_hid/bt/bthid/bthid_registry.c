@@ -6,6 +6,7 @@
 
 // Include all BT HID drivers
 #include "devices/generic/bthid_gamepad.h"
+#include "devices/generic/bthid_mouse.h"
 #include "devices/vendors/sony/ds3_bt.h"
 #include "devices/vendors/sony/ds4_bt.h"
 #include "devices/vendors/sony/ds5_bt.h"
@@ -72,6 +73,11 @@ void bthid_registry_init(void)
     // Augmental MouthPad (BLE mouse/keyboard/consumer — matches by name)
     mouthpad_ble_register();
 #endif  // NS2_BT_ALL_DRIVERS
+
+    // Generic mouse must precede the catch-all BLE gamepad fallback. Classic
+    // mice match by Class-of-Device; descriptor-time reclassification in
+    // bthid.c catches unnamed BLE HOGP mice.
+    bthid_mouse_register();
 
     // Generic gamepad driver (fallback, lowest priority)
     bthid_gamepad_register();
