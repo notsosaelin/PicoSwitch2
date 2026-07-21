@@ -416,12 +416,28 @@ handshake (`switch_pro2.c:1063-1093`, per `docs/switch2-gc/usb-personality.md`'s
 — a genuinely promising, evidence-backed reuse opportunity worth exploring at Stage D, not just a
 new-from-scratch mechanism.
 
-## Firmware-type identification field — Strong (ndeadly `commands.md:1072-1097`, exact quote)
+## Live firmware identity — Confirmed (2026-07-21)
+
+The UART↔BLE bridge sent native command `0x10/0x01` to an updated genuine NSO GameCube controller
+paired to PicoSwitch2. Its raw 12-byte reply was:
+
+```
+01 01 02 03 0C 00 00 00 FF FF FF FF
+```
+
+This confirms controller firmware `1.1.2`, type `0x03` (GameCube), Bluetooth `12.0.0`, and no DSP
+firmware (`FF FF FF` plus pad). PicoSwitch2's EP0 surface already reported `1.1.2 / 12.x`, but its
+command `0x10` reply incorrectly reported controller `1.1.5` and type `0x04`. Both surfaces now use
+one shared identity builder and reproduce the genuine tuple. The Switch 2 Update Controllers check
+already reported this personality up to date before the correction, so this closes an internal
+protocol inconsistency rather than working around an active update prompt.
+
+## Firmware-type identification field — Confirmed
 
 > Subcommand `0x01` — Get Firmware Version Info, response offset `0x3` (1 byte): "Controller firmware
 > type — `00` = JoyCon (L), `01` = JoyCon (R), `02` = Pro Controller, `03` = Gamecube"
 
-Strong signal for how PicoSwitch2's GC personality should self-identify in its own `0x01` response:
+The live reply above independently confirms that PicoSwitch2's GC personality must identify with
 firmware-type byte `0x03`.
 
 ## SPI/factory-data memory map — Strong (ndeadly `memory_layout.md`), Confirmed region boundaries (this session's SPI dump cross-check)

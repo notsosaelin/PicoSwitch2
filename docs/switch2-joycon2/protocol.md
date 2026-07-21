@@ -189,6 +189,23 @@ the machine used. Noted for future reference: **a real physical replug was neces
 alone was not sufficient, unlike the injected-descriptor method used for the device/config
 descriptors (which works precisely because it *doesn't* need a fresh enumeration).
 
+## Live firmware identity — Confirmed (2026-07-21)
+
+The out-of-band UART↔BLE bridge queried updated genuine Joy-Con 2 Left and Right controllers with
+native command `0x10/0x01` while each was paired to PicoSwitch2. Raw 12-byte payloads:
+
+```
+Left:  02 01 04 00 0C 00 00 00 00 00 00 00
+Right: 02 01 04 01 0C 00 00 00 00 00 00 00
+```
+
+Both decode as controller firmware `2.1.4`, Bluetooth `12.0.0`, and no DSP firmware (`0.0.0`), with
+type `0x00` for Left and `0x01` for Right. The previous emulation had internally inconsistent stale
+identities—EP0 `1.1.7`, command `0x10` controller `1.1.5`, type `0x07`, and `FF` DSP padding—and the
+console offered an update. Both version surfaces now come from one side-aware builder. On
+2026-07-21, the Switch 2's Settings → Update Controllers check reported both emulated Left and Right
+personalities up to date, independently hardware-validating the corrected identities.
+
 ## Wire input/output report contents — Confirmed (`ndeadly/switch2_controller_research`)
 
 This project's own captures established the HID Report *descriptor* shape (§ above): three report

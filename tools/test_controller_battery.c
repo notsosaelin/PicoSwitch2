@@ -79,10 +79,20 @@ int main(void)
     CHECK(!controller_battery_decode_ds5(0xA4, &battery),
           "DualSense error status is rejected");
 
-    check_battery(controller_battery_decode_switch_pro(0x40, &battery),
-                  &battery, 53, false, "Switch Pro native level");
+    check_battery(controller_battery_decode_switch_pro(0x01, &battery),
+                  &battery, 0, false, "Switch Pro empty bucket");
+    check_battery(controller_battery_decode_switch_pro(0x21, &battery),
+                  &battery, 25, false, "Switch Pro critical bucket");
+    check_battery(controller_battery_decode_switch_pro(0x41, &battery),
+                  &battery, 50, false, "Switch Pro low bucket");
+    check_battery(controller_battery_decode_switch_pro(0x61, &battery),
+                  &battery, 75, false, "Switch Pro medium bucket");
+    check_battery(controller_battery_decode_switch_pro(0x81, &battery),
+                  &battery, 100, false, "Switch Pro full bucket");
+    check_battery(controller_battery_decode_switch_pro(0x71, &battery),
+                  &battery, 75, true, "Switch Pro charging bit is high-nibble LSB");
     check_battery(controller_battery_decode_switch_pro(0x68, &battery),
-                  &battery, 77, true, "Switch Pro charging bit");
+                  &battery, 75, false, "Switch Pro connection nibble cannot imply charging");
     check_battery(controller_battery_decode_wii_u_pro(0x24, &battery),
                   &battery, 50, false, "Wii U Pro native level");
     check_battery(controller_battery_decode_wii_u_pro(0x20, &battery),

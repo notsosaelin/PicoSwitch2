@@ -29,6 +29,7 @@ baseline remains intact.
 | Joy-Con 2 Left PC/Steam classification | ✅ Confirmed | Fresh Windows node and Steam UI; SDL Switch 2 driver enabled |
 | Joy-Con 2 Left and Right sideways mappings | ✅ Confirmed | Real Switch 2; face/shoulder/trigger/stick profile |
 | Joy-Con 2 rumble and STOP/reconnect behavior | ✅ Confirmed | Real Switch 2 |
+| Switch 2 controller firmware identity/update status | ✅ Confirmed | Genuine `0x10/01` replies plus Switch 2 Update Controllers; Pro2, NSO GC, and both Joy-Con 2 personalities report up to date |
 | DualSense and DualSense Edge input | ✅ Confirmed | Real Switch 2 and Steam |
 | Edge paddles, Fn buttons, and mute mapping | ✅ Confirmed | Real hardware |
 | DualSense/Edge LEDs and rumble | ✅ Confirmed | Real hardware after report-boundary scheduler fix |
@@ -99,7 +100,6 @@ See [`docs/architecture/overview.md`](docs/architecture/overview.md) and
 | Priority | Issue | State |
 |---|---|---|
 | P2 | DualSense microphone return | 🟡 Headset presence is implemented; microphone Opus decode and USB return remain |
-| P2 | Pro Controller 2 update prompt | 🟡 Re-test against the now-operational audio stack; isolate firmware/DSP gating if it remains |
 | P2 | Let reconnecting BLE controllers sleep with the console without touching bonds or admission | 🔵 Research concluded: no safe generic host-only path; controller-specific evidence required |
 | P3 | Console-native report `0x09` motion semantics | 🔴 Blocked on better primary evidence |
 | P3 | NFC/amiibo transactions | 🔴 Blocked on a genuine console-side capture |
@@ -172,9 +172,8 @@ player-dot reordering, and the prior wake/input/rumble baseline are hardware-con
 
 1. Add DualSense microphone Opus decode and USB return.
 2. Run an extended playback/thermal soak on the Pico 2 W 300 MHz build.
-3. Re-test the Switch 2 controller-update prompt against the now-operational audio stack.
-4. Add a reproducible release checklist with board, firmware revision, controller firmware,
+3. Add a reproducible release checklist with board, firmware revision, controller firmware,
    console firmware, and result data.
-5. Build a reproducible console-side capture path before resuming NFC or report `0x09` motion work.
-6. Revisit controller sleep only after capturing a verified per-family sleep command or a stable
+4. Build a reproducible console-side capture path before resuming NFC or report `0x09` motion work.
+5. Revisit controller sleep only after capturing a verified per-family sleep command or a stable
    distinction between automatic-reconnect and user-wake advertisements.

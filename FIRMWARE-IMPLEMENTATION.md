@@ -1,18 +1,18 @@
 # Controller Firmware Versioning — Implementation & Analysis
 
 > Comprehensive breakdown of how the Switch 2 decides a Pro Controller 2 needs a firmware update, how
-> PicoSwitch2 answers the relevant queries, **why raising the reported version did not stop the
-> "update available → update failed" prompt**, whether the update image can be *read/captured* or
+> PicoSwitch2 answers the relevant queries, **how the exact current retail tuple eliminated the
+> "controller update available" prompt**, whether the update image can be *read/captured* or
 > *applied*, and how the reported version + firmware-region data are maintained.
 >
-> **Documentation only — no code changed by this file.** It is the durable reference behind the
-> `STATUS.md` P2 item *"Pro Controller 2 update prompt"* and `usb-spec.md` §"Firmware-version
-> compatibility".
+> This is the durable reference behind the resolved controller-update compatibility work and
+> `usb-spec.md` §"Firmware-version compatibility".
 >
 > Evidence base in this repo: `src/switch_pro2/switch_pro2.c`, `docs/switch2/usb-spec.md`,
 > `nso-gc-refs/switch2_controller_research/{commands,memory_layout,hid_reports}.md` (ndeadly), and
-> **two genuine 2 MB PC2 SPI dumps** (`dumps/SPI/2069_spi_dump_*.bin`) that this revision reads
-> directly. Confidence tags: **Confirmed** (byte-verified here), **Strong Evidence** (external
+> **one genuine 2 MB PC2 SPI image stored under two byte-identical filenames**
+> (`dumps/SPI/2069_spi_dump_*.bin`) that this revision reads directly. Confidence tags:
+> **Confirmed** (byte-verified here), **Strong Evidence** (external
 > capture, consistent), **Hypothesis**, **Unknown**.
 
 ## 0. The honest reality up front
@@ -22,11 +22,11 @@
    controller MCU and **physically cannot be flashed onto the Pico** (§6). "Firmware support" here
    means: answer the console's version/memory queries convincingly, and — optionally, as research —
    *capture* the encrypted update stream for offline analysis (§7).
-2. **The update prompt is not driven by the version string alone.** This is the corrected core
-   finding of this document (§3). The user raised the reported version *above retail* and the prompt
-   **still appeared** — proving the console's decision consults **more than** the `0x10`/EP0 version
-   triplet. The genuine SPI dumps show what that "more" is (§3).
-3. **The prompt then fails because we do not implement the `0x0D` update transport** (§5). Even if
+2. **The prompt is suppressed by the exact current retail tuple, not an arbitrary high value.** A
+   live genuine-controller query returned `2.1.4 / 12.0.0 / 0.2.3`; applying that tuple to both
+   version surfaces made Settings → Update Controllers report all known controllers up to date.
+   `255.255.255` still prompted, disproving a simple numeric minimum comparison (§3).
+3. **An actual update attempt fails because we do not implement the `0x0D` transport** (§5). Even if
    the console starts an update, we bare-ACK the transfer instead of running the multi-subcommand
    protocol, so it aborts. That is *by design* — we never accept Nintendo firmware writes. The
    controller keeps working regardless; the nag is cosmetic.
@@ -34,11 +34,36 @@
    wrong/invalid version could plausibly break enumeration or trigger worse update behavior, so the
    version stays a compile-time constant updated in the app.
 
+### Implemented and hardware-validated — 2026-07-21
+
+The first deliberately narrow experiment is now implemented:
+
+- `include/ns2_firmware_profile.h` and `src/ns2_firmware_profile.c` are the single source for the
+  controller, Bluetooth and DSP triplets. EP0 request `0x02` and command `0x10/01` are constructed
+  from that same profile, so they cannot drift apart.
+- The default is the hardware-queried and console-validated tuple **2.1.4 / 12.0.0 / 0.2.3**.
+- Maintainers can select an exact expected tuple at configure time with
+  `NS2_PRO_FIRMWARE_VERSION`, `NS2_PRO_BLUETOOTH_VERSION`, and `NS2_PRO_DSP_VERSION`. `build.ps1`
+  passes all three explicitly so stale CMake cache values cannot leak into a normal build.
+- The observed post-update bytes at `0x1FD010-0x1FD013` are served as zero. This is controlled by
+  `NS2_PRO_UPDATED_STATE`. **Hardware result:** the prompt still appeared, proving this state alone
+  is not sufficient to suppress it.
+- No firmware-image headers, encrypted images, DSP blob, flash writes, or update transport are
+  fabricated. The console trace proved none of those regions were read before the prompt decision.
+- A compact read-only diagnostic records how often the two version surfaces are queried and the
+  unique command-`0x02` flash address/length pairs requested. It stores no returned memory bytes and
+  no command-`0x0D` update payload. The dedicated GP0/GP1 UART channel exposes that trace while USB-C
+  remains attached to the console: run `tools/read_uart_diag.ps1 -Port COMx -Command fwreads` after
+  reproducing the prompt. Config mode retains the same formatter for PC-only inspection, but is not
+  the console-live transport.
+- The same UART channel has a RAM-only `profile` override plus soft USB re-enumeration for rapid A/B
+  tests, and a `btversion` bridge that sends read-only command `0x10/01` to a genuine Switch 2
+  controller paired upstream over BLE. These are maintainer diagnostics, not persisted user config.
+
 ## 1. Where firmware version is reported — the surfaces the console reads
 
-The console gathers controller-version information from **several** places during bring-up. Only the
-first two are simple "version strings"; the rest are **memory reads** that turn out to matter more
-(§3).
+The console can gather controller-version information from **several** places during bring-up. The
+first two are confirmed version strings; memory reads are a candidate validation surface (§3).
 
 ### Surface A — EP0 vendor control request `0x02` (enumeration, 16 bytes) — **Confirmed**
 
@@ -47,7 +72,7 @@ Read over endpoint 0 during USB enumeration, before the bulk command channel
 
 | Offset | Bytes | Field | Current value |
 |---|---|---|---|
-| 0 | 3 | Controller firmware major/minor/micro | `02 00 11` → 2.0.17 |
+| 0 | 3 | Controller firmware major/minor/micro | `02 01 04` → 2.1.4 |
 | 3 | 3 | reserved | `00 00 00` |
 | 6 | 1 | Bluetooth patch major | `0C` → 12 |
 | 7 | 3 | reserved | `00 00 00` |
@@ -60,51 +85,63 @@ layout per `commands.md` §"Command 0x10":
 
 | Offset | Bytes | Field | Current value |
 |---|---|---|---|
-| 0 | 3 | Controller firmware major/minor/micro | `02 00 11` → 2.0.17 |
+| 0 | 3 | Controller firmware major/minor/micro | `02 01 04` → 2.1.4 |
 | 3 | 1 | Controller type (`00`=JoyCon L, `01`=JoyCon R, `02`=Pro, `03`=GameCube) | `02` |
 | 4 | 3 | Bluetooth patch major/minor/micro | `0C 00 00` → 12.0.0 |
 | 7 | 1 | pad | `00` |
-| 8 | 3 | **DSP firmware** major/minor/micro (*"Only present on Pro Controller with updated firmware"*) | `00 02 02` → 0.2.2 |
+| 8 | 3 | **DSP firmware** major/minor/micro (*"Only present on Pro Controller with updated firmware"*) | `00 02 03` → 0.2.3 |
 | 11 | 1 | pad | `00` |
 
-### Surface C — flash **memory reads** via command `0x02` (the decisive surface) — **see §3**
+### Surface C — flash **memory reads** via command `0x02` (candidate validation surface) — **see §3**
 
 Command `0x02/0x04` (memory read, ≤0x50 B) and `0x02/0x01` (0x40-byte block) let the console read
-**any** address in the controller's 2 MB flash (`commands.md` §"Command 0x02"; our handler
-`switch_pro2.c:717-738` → `ns2_mem_read` `:300-310`). The console uses this to inspect the actual
-firmware images, the DSP blob, and update-state flags — **not** just the version strings. This is
-where PicoSwitch2 diverges hardest from a genuine controller (§3).
+**any** address in the controller's 2 MB flash (`commands.md` §"Command 0x02"; our handler routes
+these through `ns2_mem_read`). Captures prove that the protocol can read firmware/DSP regions, but
+we do not yet have console-side evidence identifying which addresses are consulted when the update
+prompt is decided. This is nevertheless where PicoSwitch2 diverges most visibly from genuine
+hardware (§3).
 
 ### Byte-encoding rule
 
-Each component byte's **hex value equals the decimal version number.** `0x11` = **17** → "2.0.17";
+Each component byte's **hex value equals the decimal version number.** `0x04` = **4** → "2.1.4";
 `0x0C` = **12**. To report 3.0.0 set `03 00 00`; version `.20` = `0x14`.
 
 ## 2. What we report today, and where it came from
 
 | Surface | Value | Source |
 |---|---|---|
-| Ctrl firmware (A+B) | **2.0.17** | Dycool `PC2_Gyro_*.pcapng` (updated retail unit) |
+| Ctrl firmware (A+B) | **2.1.4** | Live genuine PC2 `0x10/01` via UART↔BLE bridge, raw `02 01 04` |
 | Type | 0x02 (Pro) | Constant |
 | BT patch | **12.0.0** | Stable across captures |
-| DSP firmware (B) | **0.2.2** | From the same capture |
-| Memory region C | **all `0xFF`** except the 0x160-byte factory identity window at `0x13000` | `ns2_mem_read` (`switch_pro2.c:300-310`) |
+| DSP firmware (B) | **0.2.3** | Same live reply, raw `00 02 03`; agrees with genuine SPI dump |
+| Memory region C | Factory identity at `0x13000`, pairing count at `0x1FA000`, post-update state `00 00 00 00` at `0x1FD010`; otherwise erased `0xFF` | `ns2_mem_read` + `ns2_firmware_profile_flash_byte` |
 
-The repo's bundled USB capture is an **older** genuine PC2 (**1.1.5 / no DSP**); the constants were
-advanced to 2.0.17 to try to out-rank the console's known-latest. **That did not stop the prompt**
-— §3 explains why.
+The repo's bundled USB capture is an **older** genuine PC2 (**1.1.5 / no DSP**). A later private
+capture supplied **2.0.17 / 12.0.0 / 0.2.2**, which was also stale. The live bridge removed that
+dependency and queried the user's current genuine controller directly.
 
-## 3. Root cause — why a higher version still nagged (**corrected**)
+## 3. Root cause and hardware proof
 
-**The update decision is memory-content–driven, not version-string–driven.** A genuine controller
-carries real firmware **images** and **update-state flags** in flash; PicoSwitch2 returns `0xFF`
-(blank) for every one of those regions because `ns2_mem_read` only backs the 0x160-byte identity
-window at `0x13000` and answers `0xFF` everywhere else (`switch_pro2.c:303-308`). So no matter what
-triplet Surfaces A/B report, the console's **Surface C memory reads** see a controller that looks
-**un-imaged and never-updated** → it offers/forces an update.
+The console uses a known exact/coherent version identity rather than accepting any numerically high
+tuple. The hardware sequence on 2026-07-21 established this directly:
 
-This is now **byte-verified** against `dumps/SPI/2069_spi_dump_2026-07-10_1422.bin` (a genuine,
-already-updated PC2). Genuine bytes vs. what we serve:
+1. UART tracing showed the console queried EP0 firmware info once and command `0x10/01` once.
+2. Its only command-`0x02` reads were `0x13080`, `0x130C0`, `0x1FC040`, `0x13040`, `0x13100`, and
+   `0x13060`—calibration/user-data regions. It did **not** read firmware banks, the DSP image, or
+   `0x1FD010` before offering the update.
+3. A RAM-only tuple of `255.255.255 / 255.255.255 / 255.255.255` still triggered the update.
+4. A genuine Pro Controller 2 paired to the dongle returned raw command-`0x10/01` payload
+   `02 01 04 02 0C 00 00 00 00 02 03 00`.
+5. Applying the decoded `2.1.4 / 12.0.0 / 0.2.3` tuple live, with no other response change, made
+   Settings → Update Controllers report all known controllers up to date.
+
+This isolates the stale reported tuple as the root cause for this console firmware. Firmware-image
+headers and sparse update-state bytes remain genuine/Pico differences, but they do not participate
+in the observed prompt decision.
+
+The following **byte differences** are verified against
+`dumps/SPI/2069_spi_dump_2026-07-10_1422.bin` (a genuine, already-updated PC2). The differences are
+confirmed; their participation in the update decision is not:
 
 | Region (memory_layout.md) | Genuine dump | PicoSwitch2 `ns2_mem_read` | Divergent? |
 |---|---|---|---|
@@ -115,27 +152,19 @@ already-updated PC2). Genuine bytes vs. what we serve:
 | `0x75000` FW bank #2 | `01 00 64 AA "SYS " …` (real image, size `00 03 D5 70`) | `0xFF …` | **YES** (⇒ this unit *was* updated: bank #2 is blank on factory firmware) |
 | `0x175000` DSP firmware | `DSPH … 00 02 03 …` (**DSP 0.2.3**, `MT3616A0`) | `0xFF …` | **YES** |
 | `0x1FD000` shipment flag | `FF …` (cleared after first console pairing) | `0xFF …` | no |
-| `0x1FD010` "updated" flag | `00 00 00 00` (*set after a firmware update*) | `0xFF …` | **YES** (⇒ we read as **never updated**) |
+| `0x1FD010` post-update state | `00 00 00 00` (*appears after a firmware update*) | `00 00 00 00` in the 2026-07-21 experiment | no |
 
-**Ranked candidate triggers** (each is a concrete, testable hypothesis; the console-side capture to
-confirm *which* it checks does not exist yet):
+**Former candidate triggers, now resolved for this prompt path:**
 
-1. **`0x1FD010` never-updated flag — Strong Hypothesis.** memory_layout.md: bytes `0x1FD010-13`
-   are "set after updating controller firmware." Genuine updated unit = `00 00 00 00`; we return
-   `0xFF` = "never updated." A console that reads this byte to decide "does this controller have the
-   current firmware?" would nag every PicoSwitch2 forever, **independent of the version string** —
-   exactly the observed symptom.
-2. **DSP version mismatch (`0x175000+0xC`) — Strong Hypothesis.** We *claim* DSP 0.2.2 in Surface B
-   but serve `0xFF` at `0x175000`. Our own dump has **0.2.3**. If the console validates the DSP blob
-   (or its version) via memory read and finds blank / a mismatch with its known-latest, it prompts.
-3. **Missing FW image headers (`0x0`, `0x15000`) — Hypothesis.** If the console reads the image
-   header (magic/size/hash) to gauge the installed version rather than trusting the `0x10` string, a
-   blank (`0xFF`) region reads as "no valid firmware."
+1. **`0x1FD010` post-update state — not consulted.** The 2026-07-21 build returned the four observed
+   zero bytes, but the console did not read this address during the prompt decision.
+2. **DSP blob mismatch — not consulted.** The console never read `0x175000`; changing the reported
+   DSP component alone to 0.2.3 did not suppress the prompt.
+3. **Missing FW image headers — not consulted.** The console never read `0x0`, `0x15000`, or
+   `0x75000` during the decision path.
 
-> **Why raising the version "obviously missed something": Confirmed.** Surfaces A/B were the *only*
-> thing changed, but the console's verdict is dominated by Surface C, which we don't populate. This
-> is the corrected model; the earlier "reported < latest → prompt" note in v1 of this doc was
-> incomplete.
+> **Why raising the version failed:** the console does not treat the tuple as a simple monotonic
+> minimum. The exact current genuine tuple succeeded where an all-255 ceiling failed.
 
 ## 4. Evaluation of ndeadly's `commands.md` (what it tells us)
 
@@ -192,23 +221,22 @@ The image targets Nintendo's controller MCU; it cannot execute or be flashed on 
 (`usb-spec.md:168-169`, and the encrypted `0xAA640001`/"SYS " images seen in the dump at `0x0`/
 `0x15000`/`0x75000`). We must never write it into our own flash.
 
-### 6b. Change the *reported* version — **maintainer-updated constants, not user-configurable.**
+### 6b. Change the *reported* version — **maintainer-selected release profile.**
 
 Per project decision, the version is **not** exposed for end users to set (an invalid value could
-break enumeration or provoke worse update behavior). It stays a compile-time constant block the
-maintainer bumps and re-releases:
+break enumeration or provoke worse update behavior). It stays a compile-time profile the maintainer
+selects and releases:
 
-1. Edit `src/switch_pro2/switch_pro2.c:209-217` (`NS2_PRO_FW_*`, `NS2_PRO_BT_*`, `NS2_PRO_DSP_*`),
-   honoring the decimal-in-hex rule (§1). One block feeds both Surfaces A and B, so they can't desync.
-2. **Clean rebuild** (`build.ps1 <board> -Clean` — clean-build-after-revert lesson).
+1. Select the complete tuple through CMake (`NS2_PRO_FIRMWARE_VERSION`,
+   `NS2_PRO_BLUETOOTH_VERSION`, `NS2_PRO_DSP_VERSION`) or the matching `build.ps1` parameters. Each
+   component must be decimal `0..255`.
+2. **Clean rebuild** (`build.ps1 <board> -Clean` — clean-build-after-revert lesson). The build script
+   passes all three values explicitly even without `-Clean`, preventing a stale experimental cache.
 
-**Important caveat given §3:** bumping these constants alone will **not** clear the prompt, because
-the console's decision is dominated by Surface C (blank firmware/DSP regions + the `0x1FD010`
-never-updated flag). Fully suppressing the nag requires *also* teaching `ns2_mem_read` to serve
-plausible firmware-region bytes — most promisingly `0x1FD010 = 00 00 00 00` and a valid `DSPH`
-header at `0x175000` matching the reported DSP version — which is **not done** and needs on-console
-experiments to confirm which region the console actually gates on (§8). This file does **not** change
-that code; it records the design so a future, deliberate increment can.
+The UART `profile` command is an explicitly diagnostic, RAM-only exception. It updates both version
+surfaces together and soft re-enumerates USB for rapid maintainer A/B testing; it never writes config
+flash and disappears on power cycle. The successful `2.1.4 / 12.0.0 / 0.2.3` result was promoted to
+the compiled default, so end users do not need or receive a version setting.
 
 ## 7. Capture-analysis design sketch (research; **not implemented**)
 
@@ -372,56 +400,50 @@ avoids a retry storm is itself an experiment (**Unknown**):
 |---|---|---|
 | **DSP firmware version** | **Yes** | `0x175000+0xC` in the `DSPH` blob. Our dump = `00 02 03` → **0.2.3** (Confirmed, byte-read here). |
 | **Firmware image presence / size / update state** | **Yes** | Headers at `0x0`/`0x15000`/`0x75000` (`0xAA640001` "SYS ", size fields); "updated" flag at `0x1FD010`; shipment flag `0x1FD000`. All read directly from our dump. |
-| **Which regions the console *checks* to decide on an update** | **No** | Requires a **console-side command capture** (the sequence of `0x02` memory reads the console issues during init). We have only a PC session — this is the standing gap. |
-| **The controller-firmware `major.minor.micro` string (e.g. "2.0.17")** | **Not reliably** | memory_layout.md exposes **no** plain "controller firmware version" field. The triplet reported by `0x10`/EP0 lives in the MCU program image (the encrypted `0x0`/`0x15000` blobs) or is computed by firmware — **not** trivially extractable from the SPI dump. Get it from a **live `0x10/01` command capture** instead. |
+| **Which regions the console *checks* to decide on an update** | **Not from SPI; now captured live** | UART tracing recorded the complete pre-prompt read set; it contained calibration/user regions only, not firmware/DSP/update-state regions. |
+| **The controller-firmware `major.minor.micro` string (e.g. "2.1.4")** | **Not reliably from SPI; now queryable live** | `btversion` asks a genuine controller paired to the dongle for native `0x10/01`; the validated unit returned `2.1.4`. |
 
 **Recommended method to characterize a real controller fully (no code changes):**
 
-1. **SPI dump** (we already have two: `dumps/SPI/2069_spi_dump_*.bin`) → extract DSP version
+1. **SPI dump** (one image stored under two byte-identical filenames:
+   `dumps/SPI/2069_spi_dump_*.bin`) → extract DSP version
    (`0x175000+0xC`), FW image sizes (`0x15000`/`0x75000`), and update flags (`0x1FD010`). Done in §3
    here.
-2. **Live command capture** of `0x10/01` (+ EP0 `0x02`) from the genuine controller → the exact
-   reported controller-FW / BT / DSP triplets on the wire.
-3. **Console-side capture** (the missing piece) → which `0x02` memory addresses the console reads
-   before prompting, and the full `0x0D` update exchange. This single capture would unblock §3's
-   ranking, §6b's suppression work, and §7's capture path simultaneously.
+2. **Live `btversion` bridge** → exact genuine controller-FW / BT / DSP triplets on the wire. Done.
+3. **Console-side UART trace** → exact `0x02` memory addresses read before prompting. Done for normal
+   enumeration. The full `0x0D` update exchange remains deliberately uncaptured (§7).
 
-So: to read the **DSP version and update state**, the SPI dumps we already hold are enough (and this
-doc extracts them). To read the **wire version string**, use a `0x10` capture. To understand the
-**console's update decision** (the thing that actually controls the prompt), you need a console-side
-capture we do not yet have.
+So: SPI remains useful for image layout and persistent state, while UART now supplies both sides of
+the live decision—the console's queries and the genuine controller's native version response.
 
 ## 9. Risks & open questions
 
-- **Which Surface-C region gates the prompt is Unknown.** §3 ranks `0x1FD010` and the DSP blob first,
-  but only an on-console experiment (serve one region at a time; observe the prompt) or a console
-  capture can confirm. Do not tune blindly.
-- **DSP/version desync.** We report DSP 0.2.2 (Surface B) but the genuine dump is DSP 0.2.3, and we
-  serve blank at `0x175000`. Any future suppression work must keep the reported DSP triplet, the
-  `0x175000` `DSPH` header, and the console's known-latest mutually consistent.
+- **Future console updates can change the exact accepted tuple.** Re-run `btversion` against an
+  updated genuine controller, then validate a RAM-only `profile` override before changing defaults.
+- **The DSP image remains blank in emulation.** This is currently harmless because the console does
+  not read it on the validated prompt path; do not fabricate a blob unless a future trace requires it.
 - **`0x0D` ACK/timing shapes unconfirmed here.** The subcommand map is Strong Evidence (ndeadly); the
   exact ACK bytes, chunk cadence, and `06`/`07` semantics need a genuine console-side update capture.
-- **No console-side capture at all** — the same standing gap that blocks NFC
-  (`nfc-protocol-inventory.md` §2.5) and report-`0x09` motion. A reproducible console-side capture
-  path (`STATUS.md` next-steps #5) unblocks all of them.
+- **The general console-side tracer is still incomplete.** Firmware-query summaries are live, but
+  NFC, report-`0x09` motion, and arbitrary command timing still need the structured Tier-1 stream.
 
 ## 10. Summary
 
 | Question | Answer |
 |---|---|
-| How does the Switch 2 read firmware version? | EP0 req `0x02` + bulk `0x10/01` (version strings) **and** `0x02` memory reads of the firmware/DSP regions + update flags (the decisive surface). |
-| Why did a *higher* reported version still nag? | The decision is **memory-content–driven**. We serve `0xFF` for every firmware/DSP region and the `0x1FD010` never-updated flag, so the console sees an un-imaged, never-updated controller regardless of the string. **Byte-verified against a genuine dump.** |
+| How does the Switch 2 read firmware version? | EP0 req `0x02` + bulk `0x10/01`; UART confirmed one query of each before the prompt decision. |
+| Why did a *higher* reported version still nag? | The console expects a known coherent tuple, not a numeric minimum. Genuine `2.1.4 / 12.0.0 / 0.2.3` passed; all-255 failed. |
 | Why does the update *fail*? | No `0x0D` update-transport handler — it bare-ACKs and aborts (by design). |
 | Can we apply an update? | **No** — image targets Nintendo's MCU, unflashable on RP2040/RP2350. |
 | Can we *capture* one? | **Feasible, unimplemented** — a `0x0D` capture sink streaming chunks to the PC over CDC (§7); gated on a console-side capture. |
-| Is an SPI dump enough to check version? | **For DSP version + update state, yes** (extracted in §3/§8). **For the wire version string, no** — needs a `0x10` capture. **For the console's decision logic, no** — needs a console-side capture. |
-| How is our version changed? | Maintainer-edited constants (`switch_pro2.c:209-217`) + clean rebuild; **not** user-configurable. Note this alone won't clear the prompt (§6b). |
+| Is an SPI dump enough to check version? | For DSP image version + update state, yes; for the live wire tuple, use the UART `btversion` bridge. |
+| How is our version changed? | Maintainer-selected CMake/build profile. UART offers a non-persistent RAM-only A/B override, not an end-user setting. |
 
 ## 11. References
 
-- `src/switch_pro2/switch_pro2.c:204-237` (version constants + Surfaces A/B), `:300-310`
-  (`ns2_mem_read`, Surface C — the `0xFF` fill), `:717-742` (`0x02`/`0x10` handlers), `:646-781`
-  (dispatcher + `default:` that swallows `0x0D`).
+- `include/ns2_firmware_profile.h` + `src/ns2_firmware_profile.c` (coherent version profile and
+  sparse post-update state); `src/switch_pro2/switch_pro2.c` (`ns2_mem_read`, EP0 and command
+  `0x10` integration, plus the dispatcher `default:` that swallows `0x0D`).
 - `nso-gc-refs/switch2_controller_research/commands.md` — `0x02` flash memory, `0x0D` firmware
   update (full subcommand map), `0x10` firmware info, `0x06/03` reboot.
 - `nso-gc-refs/switch2_controller_research/memory_layout.md` — the 2 MB map: FW banks
@@ -429,7 +451,7 @@ capture we do not yet have.
 - `dumps/SPI/2069_spi_dump_2026-07-10_1422.bin` — genuine updated PC2; DSP **0.2.3**, both FW banks
   imaged, `0x1FD010 = 00 00 00 00` (verified in §3).
 - `docs/switch2/usb-spec.md:150-170` — firmware-version compatibility + `0x0D` overview.
-- `STATUS.md` (P2 "Pro Controller 2 update prompt"), `PLAN.md` ("Re-test the 'Update this
-  controller' prompt").
+- `STATUS.md` (hardware-confirmed firmware identity/update status), `PLAN.md` (completed controller
+  update compatibility work).
 - Dycool / NS-PC-Control `PC2_Gyro_*.pcapng` — the 2.0.17 / DSP-0.2.2 source (private; Strong
   Evidence).

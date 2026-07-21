@@ -151,18 +151,24 @@ independent setting.
 
 The bundled USB capture above is a genuine but older Pro Controller 2 running controller firmware
 `1.1.5`, Bluetooth patch `12.0.0`, with no DSP firmware reported. Current consoles try to update a
-PicoSwitch2 that repeats those bytes. A later retail Pro Controller 2 capture cited as
-`PC2_Gyro_*.pcapng` by NS-PC-Control reports:
+PicoSwitch2 that repeats those bytes. A previously current retail Pro Controller 2 capture cited as
+`PC2_Gyro_*.pcapng` by NS-PC-Control reported:
 
 ```
 02 00 11 02 0C 00 00 00 00 02 02 00
 ```
 
-That decodes as controller firmware `2.0.17`, type `0x02` (Pro), Bluetooth patch `12.0.0`, and DSP
-firmware `0.2.2`. PicoSwitch2 reports this later genuine version from both the EP0 firmware triplet
-and command `0x10/0x01`. The reference capture is privately held, so this is **Strong Evidence**,
-not independently byte-verified in this repository; real-console prompt suppression is the required
-hardware validation.
+That tuple later became stale. On 2026-07-21, PicoSwitch2's UART↔BLE bridge queried a current genuine
+Pro Controller 2 directly and received:
+
+```
+02 01 04 02 0C 00 00 00 00 02 03 00
+```
+
+This decodes as controller firmware `2.1.4`, type `0x02` (Pro), Bluetooth `12.0.0`, and DSP `0.2.3`.
+Reporting that exact tuple from both EP0 and command `0x10/0x01` made the console's Update
+Controllers screen report all known controllers up to date. An all-`255.255.255` test still
+prompted, confirming this is not a simple numeric minimum-version comparison.
 
 The console's `0x0D` firmware-update protocol transfers an approximately 240 KiB controller image,
 checks CRC32, switches failsafe banks, and reboots the controller. That image targets Nintendo's

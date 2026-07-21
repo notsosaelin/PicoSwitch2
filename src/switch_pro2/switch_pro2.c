@@ -20,6 +20,7 @@
 #include "controller_battery.h"
 #include "ds5_audio_bridge.h"
 #include "switch_pro2.h"
+#include "ns2_firmware_profile.h"
 #include "usb.h"         // g_usb_config_mode
 
 // This whole module is only built into the NS2 firmware. The vendor-class calls
@@ -201,21 +202,6 @@ const char **ns2_string_table(size_t *count) {
 #define FACTORY_SIZE 0x160u
 static uint8_t factory[FACTORY_SIZE];
 
-// Version reported by an updated retail Pro Controller 2 in Dycool's
-// PC2_Gyro_*.pcapng capture.  Our older bundled USB capture predates that
-// update and reports 1.1.5 with no DSP firmware.  Keep these named bytes as
-// the single source for both version surfaces below: the console reads the
-// EP0 block during enumeration and command 0x10 during controller init.
-#define NS2_PRO_FW_MAJOR 0x02
-#define NS2_PRO_FW_MINOR 0x00
-#define NS2_PRO_FW_MICRO 0x11
-#define NS2_PRO_BT_MAJOR 0x0C
-#define NS2_PRO_BT_MINOR 0x00
-#define NS2_PRO_BT_MICRO 0x00
-#define NS2_PRO_DSP_MAJOR 0x00
-#define NS2_PRO_DSP_MINOR 0x02
-#define NS2_PRO_DSP_MICRO 0x02
-
 // Identity + info blocks the console fetches over EP0 vendor control BEFORE it will
 // touch the bulk command channel (verified from ndeadly's USB capture, PC2 = device 7;
 // see tud_vendor_control_xfer_cb). ns2_ctrl_identity is the first 64 B of factory memory
@@ -225,16 +211,11 @@ static uint8_t factory[FACTORY_SIZE];
 // per-unit bytes remain verbatim from our capture; only the documented leading
 // firmware triplet advances to the updated retail version.
 static uint8_t ns2_ctrl_identity[64];
-static const uint8_t ns2_ctrl_info[16] = {
-    NS2_PRO_FW_MAJOR, NS2_PRO_FW_MINOR, NS2_PRO_FW_MICRO, 0x00, 0x00, 0x00, NS2_PRO_BT_MAJOR, 0x00,
-    0x00, 0x00, 0x9E, 0x2B, 0xAB, 0xAB, 0xA9, 0x3C};
+static uint8_t ns2_ctrl_info[16];
 
 // Command 0x10/0x01 response payload:
 // firmware[3], controller type, Bluetooth patch[3], pad, DSP[3], pad.
-static const uint8_t ns2_firmware_info[12] = {
-    NS2_PRO_FW_MAJOR, NS2_PRO_FW_MINOR, NS2_PRO_FW_MICRO, 0x02,
-    NS2_PRO_BT_MAJOR, NS2_PRO_BT_MINOR, NS2_PRO_BT_MICRO, 0x00,
-    NS2_PRO_DSP_MAJOR, NS2_PRO_DSP_MINOR, NS2_PRO_DSP_MICRO, 0x00};
+static uint8_t ns2_firmware_info[12];
 
 static void fac(uint32_t addr, const uint8_t *d, size_t n) {
     uint32_t o = addr - FACTORY_BASE;
@@ -242,11 +223,14 @@ static void fac(uint32_t addr, const uint8_t *d, size_t n) {
 }
 
 static void ns2_factory_init(void) {
+    static const uint8_t unit_id[6] = {0x9E, 0x2B, 0xAB, 0xAB, 0xA9, 0x3C};
     static const uint8_t blk[40] = {
         0x01, 0xAD, 0xD9, 0x9A, 0x55, 0x56, 0x65, 0xA0, 0x00, 0x0A, 0xA0, 0x00, 0x0A, 0xE2,
         0x20, 0x0E, 0xE2, 0x20, 0x0E, 0x9A, 0xAD, 0xD9, 0x9A, 0xAD, 0xD9, 0x0A, 0xA5, 0x50,
         0x0A, 0xA5, 0x50, 0x2F, 0xF6, 0x62, 0x2F, 0xF6, 0x62, 0x0A, 0xFF, 0xFF};
     memset(factory, 0, sizeof(factory));
+    ns2_firmware_build_ep0_info(ns2_ctrl_info, unit_id);
+    ns2_firmware_build_command_info(0x02, ns2_firmware_info);  // 0x02 = Pro Controller
     fac(0x13000, (const uint8_t[]){0x01, 0x00}, 2);
     fac(0x13002, (const uint8_t[]){0x48, 0x45, 0x4A, 0x37, 0x31, 0x30, 0x30, 0x31, 0x31, 0x32,
                                    0x31, 0x32, 0x34, 0x37, 0x00, 0x00}, 16);  // serial
@@ -297,15 +281,19 @@ static void ns2_factory_init(void) {
     memcpy(ns2_ctrl_identity, factory, 0x25);
 }
 
-static void ns2_mem_read(uint32_t addr, uint8_t len, uint8_t *out) {
+static void ns2_mem_read(uint8_t subcommand, uint32_t addr, uint8_t len, uint8_t *out) {
+    ns2_firmware_diagnostics_record_read(subcommand, addr, len);
     for (uint8_t i = 0; i < len; i++) {
         uint32_t a = addr + i;
         if (a >= FACTORY_BASE && a < FACTORY_BASE + FACTORY_SIZE)
             out[i] = factory[a - FACTORY_BASE];
         else if (a == 0x1FA000)
             out[i] = 0x00;  // Bluetooth pairing entry count = 0 (no bonds over USB)
-        else
-            out[i] = 0xFF;  // uninitialised flash reads as 0xFF
+        else {
+            // Sparse, observed post-update state supplied by the selected profile.
+            if (!ns2_firmware_profile_flash_byte(a, &out[i]))
+                out[i] = 0xFF;  // uninitialised flash reads as 0xFF
+        }
     }
 }
 
@@ -722,12 +710,12 @@ static void ns2_dispatch(const uint8_t *c, uint32_t n) {
                 if (len > 0x50) len = 0x50;
                 d[0] = len;
                 d[4] = c[12]; d[5] = c[13]; d[6] = c[14]; d[7] = c[15];
-                ns2_mem_read(addr, len, &d[8]);
+                ns2_mem_read(sub, addr, len, &d[8]);
                 dl = 8 + len;
             } else if (sub == 0x01) {  // read 0x40 block
                 d[0] = 0x40;
                 d[4] = c[12]; d[5] = c[13]; d[6] = c[14]; d[7] = c[15];
-                ns2_mem_read(addr, 0x40, &d[8]);
+                ns2_mem_read(sub, addr, 0x40, &d[8]);
                 dl = 8 + 0x40;
             } else if (sub == 0x05) {  // memory write -> ack (we don't persist)
                 d[4] = c[12]; d[5] = c[13]; d[6] = c[14]; d[7] = c[15];
@@ -738,6 +726,7 @@ static void ns2_dispatch(const uint8_t *c, uint32_t n) {
             break;
         }
         case 0x10:  // firmware info (type byte 0x02 = Pro Controller)
+            ns2_firmware_diagnostics_record_command();
             memcpy(d, ns2_firmware_info, sizeof(ns2_firmware_info));
             dl = sizeof(ns2_firmware_info);
             break;
@@ -960,6 +949,7 @@ void ns2_mount(void) {
 }
 
 void ns2_init(void) {
+    ns2_firmware_diagnostics_reset();
     ns2_factory_init();
     ns2_wake_pairing_reset();
     ns2_report_id = 0x09;
@@ -1097,6 +1087,7 @@ bool ns2_vendor_control_xfer(uint8_t rhport, uint8_t stage, const void *request_
         }
         case 0x02: {  // firmware/version info (16 B)
             if (g_ns2_stage < 4) g_ns2_stage = 4;
+            ns2_firmware_diagnostics_record_ep0();
             uint16_t len = request->wLength < sizeof(ns2_ctrl_info)
                                ? request->wLength : (uint16_t)sizeof(ns2_ctrl_info);
             return tud_control_xfer(rhport, request, (void *)ns2_ctrl_info, len);

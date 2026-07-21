@@ -11,6 +11,7 @@
 #include "report.h"
 #include "config.h"
 #include "ds5_audio_bridge.h"
+#include "ns2_uart_diag.h"
 
 // joypad-os Bluetooth stack — core1 entry (src/bt_hid/ns2_bt_host.c).
 void ns2_bt_core_task(void);
@@ -37,6 +38,7 @@ main()
 #endif
 
 	stdio_init_all();
+	ns2_uart_diag_init();
 
 	// Initialize the cross-core shared input state before either core uses it.
 	report_init();

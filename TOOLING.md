@@ -35,7 +35,7 @@ CYW43** (WiFi+BT) already initialized for BTstack.
 
 | Ch. | Channel | Pros | Cons | Verdict |
 |---|---|---|---|---|
-| **A** | **UART over GPIO** (2 pins → USB-UART dongle to PC) | Simple, robust, works on every board, no radio contention, deterministic timing | Needs GPIO header/solder access + a $3 adapter | ✅ **CHOSEN ROUTE** — simplest, broadest coverage (every board). See §0.1. |
+| **A** | **UART over GPIO** (2 pins → USB-UART dongle to PC) | Simple, robust, works on every board, no radio contention, deterministic timing | Needs GPIO header/solder access + a $3 adapter | ✅ **ACTIVE ROUTE** — live query channel implemented; full protocol stream remains Tier 1. See §0.1–0.2. |
 | **B** | **WiFi telemetry** (CYW43 → UDP/TCP to PC) | **Zero cable conflict**, fully wireless, high bandwidth | Shares the one CYW43 radio with Bluetooth (controllers are BT) → **coex contention**; adds a network dependency | **Best when it works** on W boards; validate BT+WiFi coex under load before trusting timing. |
 | **C** | **Companion "sniffer" Pico** (main dongle → GPIO → 2nd Pico → USB CDC to PC) | Clean separation, 2nd Pico can also host the wire tap (Ch. D), offloads formatting | Second board + wiring | Great for a bench rig; overkill for quick iteration. |
 | **D** | **Passive USB-C interposer / D+·D- tap** (between dongle and console) | **Ground truth** of the actual wire, independent of our firmware | Captures bytes, **not** firmware-internal decisions; needs a tap board + USBPcap/logic analyzer | Complement, not replacement — pair with A/B for "wire vs. what we thought we sent." |
@@ -48,9 +48,11 @@ bench kit as ground-truth complements. Everything below assumes Channel A carrie
 
 ### 0.1 Channel A — chosen hardware & wiring
 
-**Cable:** a **USB-to-TTL 3.3V-signal serial cable (FT232RL)** — e.g. a 4-pin `5V power / 3.3V TTL
-signal` cable. Only the **3.3V signal** rating matters; the 5V is on the power pin we do not use.
-The FT232RL enumerates as a COM port on Windows/Linux/macOS.
+**Cable:** a **USB-to-TTL 3.3V-signal serial cable** — FT232RL was the original example; the bench
+cable obtained for this project identifies as a Silicon Labs CP2102 (`VID_10C4:PID_EA60`) and is
+equally suitable once its CP210x VCP driver is installed. Only the **3.3V signal** rating matters;
+any 5V supply wire is a power output we do not use. The adapter enumerates as a COM port on
+Windows/Linux/macOS.
 
 **Pico 2 W default UART0:** `GP0 = TX` (physical pin 1), `GP1 = RX` (physical pin 2), `GND`
 (physical pin 3).
@@ -67,28 +69,72 @@ not the power pin. With VCC left off, 5V is never in the circuit. For clone cabl
 cable's **TX idles at ~3.3V** (measure TX→GND) before connecting it to the Pico's RX; the reverse
 direction (Pico 3.3V TX → cable RX) is always fine.
 
-**Firmware prerequisite:** UART output is currently compiled out
-(`CMakeLists.txt:227-228`, `pico_enable_stdio_uart 0`). Enabling it is a one-line change:
-- **Minimal:** `pico_enable_stdio_uart(PicoSwitchWGA 1)` → existing driver `printf`s stream out GP0
-  at **115200 8N1**; open the COM port in any terminal. First proof the channel works.
-- **Full:** the §1.1 tracer writes **binary, rate-limited** trace records to this UART (not `printf`,
-  to avoid the core1-flood failure mode). This is the real payoff.
+**Firmware status:** implemented without enabling stdio. `pico_enable_stdio_uart(..., 0)` remains
+unchanged, so the project's many existing `printf` calls cannot flood or block the controller run
+loops. `src/ns2_uart_diag.c` owns UART0 directly and performs only bounded FIFO reads/writes from
+core 0. Standard NS2 builds enable it with `NS2_UART_DIAG=ON`; `build.ps1 -NoUartDiag` provides an
+explicit opt-out.
 
 The dongle stays plugged into the Switch over USB-C the entire time; the UART pins are physically
 independent, so controller operation and PC tracing run concurrently.
+
+### 0.2 Implemented live query channel
+
+The initial UART tooling milestone is complete. It intentionally solves the immediate
+controller-update investigation before expanding into the high-rate Tier-1 tracer:
+
+- **Transport:** UART0, GP0 TX / GP1 RX, **115200 8N1**, no flow control.
+- **Scheduling:** `ns2_uart_diag_task()` runs after TinyUSB service with a maximum of 16 RX and 32 TX
+  bytes considered per core-0 loop. It checks FIFO readiness before every byte and never waits for
+  the PC or for UART space.
+- **Framing:** one ASCII command line in, one single-line JSON response out. This low-rate query path
+  is appropriate for retained summaries; the future high-rate §1.1 event stream should still use
+  compact binary framing.
+- **Commands:** `ping`, `fwreads` (alias `status`), `clear`, `profile`,
+  `profile default`, `profile C.M.m B.M.m D.M.m`, `btversion request`, `btversion`, and `help`.
+- **Current data:** exact active controller/BT/DSP profile, EP0 firmware-info query count, command
+  `0x10` query count, and every unique command-`0x02` memory-read subcommand/address/length/count.
+  No memory response bytes and no command-`0x0D` update payload are retained.
+- **Live firmware-profile A/B:** `profile C.M.m B.M.m D.M.m` replaces all three version tuples in
+  RAM and requests a same-personality 100 ms USB detach/reconnect. Both EP0 and command `0x10`
+  are rebuilt from the same active profile. It does not write flash or reset Bluetooth; a power
+  cycle or `profile default` restores the compiled identity.
+- **Genuine-controller version bridge:** after a real Switch 2 controller is paired to the dongle,
+  `btversion request` marshals the read-only native command `0x10/0x01` onto the BTstack thread;
+  `btversion` returns its raw 12-byte reply and decoded controller/BT/DSP tuple. It performs no
+  controller memory write, configuration change, or firmware-update command.
+- **Windows reader:** `tools/read_uart_diag.ps1`; it recognizes FTDI, CP210x, CH34x and PL2303
+  adapters automatically when exactly one is present, or accepts an explicit COM port.
+
+Usage while USB-C remains attached to the Switch:
+
+```powershell
+.\tools\read_uart_diag.ps1 -List
+.\tools\read_uart_diag.ps1 -Port COM5 -Command ping
+.\tools\read_uart_diag.ps1 -Port COM5 -Command fwreads
+.\tools\read_uart_diag.ps1 -Port COM5 -Command 'profile 255.255.255 255.255.255 255.255.255'
+.\tools\read_uart_diag.ps1 -Port COM5 -Command 'profile default'
+.\tools\read_uart_diag.ps1 -Port COM5 -Command 'btversion request'
+.\tools\read_uart_diag.ps1 -Port COM5 -Command btversion
+```
+
+The firmware initializes UART only after the Pico 2 W's selected system clock is applied, so the
+validated 300 MHz build still derives the requested baud correctly.
 
 ---
 
 ## Tier 1 — Observability (build first)
 
-### 1.1 On-device protocol tracer 🔴→⬜ *(keystone)*
+### 1.1 On-device protocol tracer 🔵 *(keystone; firmware-update subset implemented)*
 - **What:** structured, timestamped log of everything the console solicits and we answer — every EP0
   vendor request (`bRequest` 0x02/03/04), every command `0x01`–`0x18` + subcommand, every report-ID
   selection, feature-mask negotiation (`0x0C`), memory read address/length, and the report cadence.
 - **Unblocks:** the Joy-Con 2 rotation/registration question, motion `0x09`, NFC, wake, and every
   "does the console actually read this?" question. Converts *"the console rejected us"* into
   *"console asked X at T+3ms, we answered Y, it stopped soliciting Z."*
-- **Current:** none. Driver `printf`s exist but stdio is compiled out; nothing is structured.
+- **Current 🔵:** the §0.2 live query channel and retained firmware-prompt trace cover both version
+  surfaces plus command-`0x02` memory-read metadata. The general command/report/event stream below
+  remains to be built.
 - **Sketch:** a ring buffer of fixed-size trace records (`{t_us, dir, kind, addr/cmd, len, first_N
   bytes}`) filled at the EP0/command/report seams, drained over the Ch. A/B channel by a low-priority
   task. Binary framing (not printf) so it survives high rates without flooding core1 (the project has
@@ -244,9 +290,8 @@ independent, so controller operation and PC tracing run concurrently.
 
 ## Build order (dependency-ranked)
 
-1. **§0 out-of-band channel (UART-over-GPIO, chosen)** — nothing live works without it. First
-   concrete step: flip `pico_enable_stdio_uart` to `1` (§0.1) and confirm live logs over the FT232RL
-   cable. *(enabler)*
+1. **§0 out-of-band channel (UART-over-GPIO, chosen)** — ✅ live query/A-B/BLE-bridge channel
+   implemented and hardware-validated over the bench CP2102 cable while attached to a Switch 2.
 2. **1.1 on-device tracer** — the keystone; unblocks the most.
 3. **3.2 capture corpus index** — cheap, compounds immediately, do it in parallel.
 4. **2.1 fault-injection harness** — highest-value *active* tool; needs 1.1 to read reactions.

@@ -57,6 +57,68 @@ target_compile_definitions(PicoSwitchWGA PRIVATE SWITCH_PRO_MAX_CONTROLLERS=4)
 option(NS2_PRO "Emulate the Switch 2 Pro Controller (PID 0x2069)" ON)
 if(NS2_PRO)
     target_compile_definitions(PicoSwitchWGA PRIVATE NS2_PRO=1)
+
+    # One authoritative, maintainer-selected Pro Controller 2 firmware tuple.
+    # All version-bearing protocol replies are built from these values. This
+    # makes an exact known console expectation selectable without editing C or
+    # allowing EP0 and command 0x10 to drift apart.
+    set(NS2_PRO_FIRMWARE_VERSION "2.1.4" CACHE STRING
+        "Reported Pro Controller 2 firmware version (major.minor.micro)")
+    set(NS2_PRO_BLUETOOTH_VERSION "12.0.0" CACHE STRING
+        "Reported Pro Controller 2 Bluetooth firmware version")
+    set(NS2_PRO_DSP_VERSION "0.2.3" CACHE STRING
+        "Reported Pro Controller 2 DSP firmware version")
+    option(NS2_PRO_UPDATED_STATE
+           "Expose the observed post-update flash state at 0x1FD010" ON)
+    option(NS2_UART_DIAG
+           "NS2: nonblocking UART0 diagnostics on GP0/GP1 at 115200 8N1" ON)
+
+    function(ns2_parse_version version prefix)
+        string(REPLACE "." ";" parts "${version}")
+        list(LENGTH parts part_count)
+        if(NOT part_count EQUAL 3)
+            message(FATAL_ERROR "${prefix} must be major.minor.micro, got '${version}'")
+        endif()
+        foreach(index RANGE 0 2)
+            list(GET parts ${index} part)
+            if(NOT part MATCHES "^[0-9]+$")
+                message(FATAL_ERROR "${prefix} contains a non-decimal component: '${version}'")
+            endif()
+            if(part GREATER 255)
+                message(FATAL_ERROR "${prefix} components must be from 0 through 255: '${version}'")
+            endif()
+            if(index EQUAL 0)
+                set(suffix MAJOR)
+            elseif(index EQUAL 1)
+                set(suffix MINOR)
+            else()
+                set(suffix MICRO)
+            endif()
+            set(${prefix}_${suffix} ${part} PARENT_SCOPE)
+        endforeach()
+    endfunction()
+
+    ns2_parse_version("${NS2_PRO_FIRMWARE_VERSION}" NS2_PRO_FW)
+    ns2_parse_version("${NS2_PRO_BLUETOOTH_VERSION}" NS2_PRO_BT)
+    ns2_parse_version("${NS2_PRO_DSP_VERSION}" NS2_PRO_DSP)
+    target_compile_definitions(PicoSwitchWGA PRIVATE
+        NS2_PRO_FW_MAJOR=${NS2_PRO_FW_MAJOR}
+        NS2_PRO_FW_MINOR=${NS2_PRO_FW_MINOR}
+        NS2_PRO_FW_MICRO=${NS2_PRO_FW_MICRO}
+        NS2_PRO_BT_MAJOR=${NS2_PRO_BT_MAJOR}
+        NS2_PRO_BT_MINOR=${NS2_PRO_BT_MINOR}
+        NS2_PRO_BT_MICRO=${NS2_PRO_BT_MICRO}
+        NS2_PRO_DSP_MAJOR=${NS2_PRO_DSP_MAJOR}
+        NS2_PRO_DSP_MINOR=${NS2_PRO_DSP_MINOR}
+        NS2_PRO_DSP_MICRO=${NS2_PRO_DSP_MICRO})
+    if(NS2_PRO_UPDATED_STATE)
+        target_compile_definitions(PicoSwitchWGA PRIVATE NS2_PRO_UPDATED_STATE=1)
+    else()
+        target_compile_definitions(PicoSwitchWGA PRIVATE NS2_PRO_UPDATED_STATE=0)
+    endif()
+    if(NS2_UART_DIAG)
+        target_compile_definitions(PicoSwitchWGA PRIVATE NS2_UART_DIAG=1)
+    endif()
 endif()
 
 # NS2 Option A: present the full retail descriptor including the 3 USB audio
@@ -222,6 +284,9 @@ target_link_libraries(PicoSwitchWGA
     pico_multicore
     hardware_flash
 )
+if(NS2_PRO AND NS2_UART_DIAG)
+    target_link_libraries(PicoSwitchWGA hardware_uart)
+endif()
 
 # USB is used as the HID device to the console, so it cannot be a stdio CDC.
 pico_enable_stdio_usb(PicoSwitchWGA 0)

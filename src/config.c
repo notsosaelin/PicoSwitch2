@@ -11,6 +11,7 @@
 #include "report.h"      // get_global_raw_buttons / get_global_gamepad_input (live view)
 #include "switch_pro.h"  // switch_pro_input_t
 #include "switch_pro2.h" // ns2_dbg_* getters (report-0x09 motion/gyro debug instrumentation)
+#include "ns2_firmware_profile.h" // firmware prompt read-address diagnostics
 #include "sw2_capture.h" // genuine Switch 2 BLE raw-traffic capture/export (2026-07-10)
 #include "bt_identity_log.h" // controller identity/driver-binding event log (Gate 2, 2026-07-12)
 #include "bt/bthid/bthid.h" // bthid_get_cached_descriptor (btid desc command)
@@ -558,6 +559,11 @@ static void cmd_imuanom(void) {
     snprintf(out + j, sizeof(out) - j, "]}");
     reply(out);
 }
+
+static void cmd_fwreads(void) {
+    ns2_firmware_diagnostics_format_json(out, sizeof(out));
+    reply(out);
+}
 #endif  // NS2_PRO
 
 // Genuine Switch 2 BLE raw-traffic capture (2026-07-10) — see sw2_capture.h. Off by default;
@@ -744,6 +750,8 @@ static void handle_line(char *cmd) {
         cmd_imu();
     } else if (strcmp(cmd, "imuanom") == 0) {
         cmd_imuanom();
+    } else if (strcmp(cmd, "fwreads") == 0) {
+        cmd_fwreads();
 #endif  // NS2_PRO
     } else if (strncmp(cmd, "sw2cap ", 7) == 0) {
         cmd_sw2cap(cmd + 7);
