@@ -23,6 +23,7 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Retro Fighters BattlerGC Pro | [`bluetooth/retrofighters-battlergc-pro.md`](bluetooth/retrofighters-battlergc-pro.md) |
 | 8BitDo Ultimate Bluetooth paddles | [`../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md`](../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md) |
 | Pro Controller 2 USB protocol | [`switch2/usb-spec.md`](switch2/usb-spec.md) |
+| UART trace capture, decoding, and comparison | [`switch2/uart-trace-tooling.md`](switch2/uart-trace-tooling.md) |
 | NSO GameCube protocol | [`switch2-gc/protocol.md`](switch2-gc/protocol.md) |
 | Joy-Con 2 protocol | [`switch2-joycon2/protocol.md`](switch2-joycon2/protocol.md) |
 
