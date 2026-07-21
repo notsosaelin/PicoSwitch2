@@ -73,9 +73,13 @@ bool controller_battery_decode_ds5(uint8_t raw, controller_battery_t *out)
 bool controller_battery_decode_switch_pro(uint8_t battery_conn,
                                           controller_battery_t *out)
 {
-    uint8_t raw = battery_conn >> 4;
-    uint16_t level = raw > 8 ? 100 : raw * 12 + 5;
-    return store(out, level, (battery_conn & 0x08) != 0);
+    // Nintendo's high nibble is {level[2:0], charging}: even values
+    // 0/2/4/6/8 are the five battery buckets and bit 0 (wire bit 0x10)
+    // is set while charging. The low nibble is connection information and
+    // must never influence either field.
+    uint8_t bucket = (battery_conn >> 5) & 0x07;
+    uint16_t level = bucket >= 4 ? 100 : bucket * 25;
+    return store(out, level, (battery_conn & 0x10) != 0);
 }
 
 bool controller_battery_decode_wii_u_pro(uint8_t status,

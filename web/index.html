@@ -130,6 +130,13 @@
         <button id="audioResetBtn" type="button">Reset counters</button>
       </section>
 
+      <section class="q" id="firmwareDiag">
+        <h2>Controller Update Diagnostics</h2>
+        <div id="firmwareDiagSummary" class="bigname">Waiting for trace</div>
+        <pre id="firmwareDiagReads" class="muted"
+             style="font-family:ui-monospace,Consolas,monospace;font-size:11px;white-space:pre-wrap;word-break:break-all">&mdash;</pre>
+      </section>
+
       <section class="q">
         <h2>Current Output Type</h2>
         <div class="bigname">Switch 2 Pro Controller</div>
@@ -537,6 +544,20 @@ function renderDevice(d) {
     if (!currentIsElite) $("#profileWarn").classList.add("hidden");
   }
 }
+
+function renderFirmwareDiagnostics(d) {
+  if (!d || !d.profile) return;
+  const p = d.profile;
+  $("#firmwareDiagSummary").textContent =
+    `FW ${p.controller} · BT ${p.bluetooth} · DSP ${p.dsp}`;
+  const reads = (d.reads || []).map(r =>
+    `sub ${r.sub}  ${r.address}  len ${r.length}  ×${r.count}`);
+  $("#firmwareDiagReads").textContent =
+    `EP0 info ×${d.ep0 || 0} · command 0x10 ×${d.command10 || 0}` +
+    ` · updated-state ${p.updated_state ? "on" : "off"}` +
+    ` · dropped ${d.dropped || 0}\n` +
+    (reads.length ? reads.join("\n") : "No command 0x02 memory reads observed");
+}
 async function loadMap(fam) {
   const m = await sendCmd("getns2map " + fam);
   if (m && m.map && m.map.length === NS2_SRC_COUNT) {
@@ -872,6 +893,7 @@ async function pollLoop() {
     renderRaw(await sendCmd("raw", true));
     renderImu(await sendCmd("imu", true));
     if (tick % 14 === 0) renderDevice(await sendCmd("device", true));  // name changes rarely
+    if (tick % 14 === 0) renderFirmwareDiagnostics(await sendCmd("fwreads", true));
     if (tick % 3 === 0) renderAudioStat(await sendCmd("audiostat", true));
     await capPoll();  // always, not just while capturing — keeps capturing/dropped live either way
     tick++;

@@ -400,11 +400,13 @@ static const uint8_t *switch_joycon2_ctrl_identity(void) {
     return switch_joycon2_ctrl_identity_active;
 }
 
-// Response to EP0 vendor bRequest=2 (16 bytes). Family framing is known; Joy-Con-specific opaque
-// byte semantics are not. See docs/switch2-joycon2/open-questions.md.
-static const uint8_t switch_joycon2_ctrl_info[16] = {
-    0x01, 0x01, 0x07, 0x00, 0x00, 0x00, 0x0C, 0x00,
-    0x00, 0x00, 0x02, 0xBB, 0x5E, 0xAB, 0xA9, 0x3C};
+// Both version-bearing surfaces are rebuilt together on personality reset.
+// Current values/type bytes are from a live genuine Joy-Con 2 query via the
+// UART↔BLE bridge, not inherited from the older reference capture.
+static const uint8_t switch_joycon2_unit_id[6] = {
+    0x02, 0xBB, 0x5E, 0xAB, 0xA9, 0x3C};
+static uint8_t switch_joycon2_ctrl_info[NS2_JOYCON2_EP0_INFO_LEN];
+static uint8_t switch_joycon2_firmware_info[NS2_JOYCON2_COMMAND_INFO_LEN];
 
 static const uint8_t JOYCON2_DEVICE_KEY_B1[16] = {
     0x5C, 0xF6, 0xEE, 0x79, 0x2C, 0xDF, 0x05, 0xE1,
@@ -575,10 +577,9 @@ static void switch_joycon2_vendor_dispatch(const uint8_t *c, uint32_t n) {
                 // capture, see docs/switch2-joycon2/protocol.md), not something this dongle emulates.
         dl = 0;
         break;
-    case 0x10:  // family-shaped firmware info; Joy-Con type byte remains opaque (see open questions)
-        memcpy(d, (const uint8_t[]){0x01, 0x01, 0x05, 0x07, 0x0C, 0x00, 0x00, 0x00,
-                                    0xFF, 0xFF, 0xFF, 0xFF}, 12);
-        dl = 12;
+    case 0x10:  // firmware 2.1.4, side-specific type, BT 12.0.0, no DSP
+        memcpy(d, switch_joycon2_firmware_info, sizeof(switch_joycon2_firmware_info));
+        dl = sizeof(switch_joycon2_firmware_info);
         break;
     case 0x0B:  // battery -- structurally mirrors switch_gc.c/switch_pro2.c; values not
                 // independently confirmed for Joy-Con 2.
@@ -712,6 +713,9 @@ void switch_joycon2_init(void) {
 }
 
 void switch_joycon2_reset(void) {
+    ns2_joycon2_build_ep0_info(switch_joycon2_unit_id, switch_joycon2_ctrl_info);
+    ns2_joycon2_build_command_info(s_side == JOYCON2_SIDE_RIGHT,
+                                   switch_joycon2_firmware_info);
     switch_joycon2_init();
 }
 

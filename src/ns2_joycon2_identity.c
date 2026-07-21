@@ -30,3 +30,24 @@ void ns2_joycon2_build_identity(bool right, const uint8_t accent[3],
     }
     memcpy(&out[0x1F], accent, 3);
 }
+
+void ns2_joycon2_build_ep0_info(const uint8_t unit_id[6],
+                                uint8_t out[NS2_JOYCON2_EP0_INFO_LEN]) {
+    memset(out, 0, NS2_JOYCON2_EP0_INFO_LEN);
+    out[0] = 0x02;
+    out[1] = 0x01;
+    out[2] = 0x04;  // current genuine Joy-Con 2: controller firmware 2.1.4
+    out[6] = 0x0C;  // Bluetooth 12.x
+    memcpy(&out[10], unit_id, 6);
+}
+
+void ns2_joycon2_build_command_info(bool right,
+                                    uint8_t out[NS2_JOYCON2_COMMAND_INFO_LEN]) {
+    memset(out, 0, NS2_JOYCON2_COMMAND_INFO_LEN);
+    out[0] = 0x02;
+    out[1] = 0x01;
+    out[2] = 0x04;
+    out[3] = right ? 0x01 : 0x00;
+    out[4] = 0x0C;
+    // out[8..10] = 00 00 00: genuine current Joy-Con 2 has no DSP firmware.
+}

@@ -6,6 +6,10 @@
 #   ./build.ps1 pico_w         # build only pico_w
 #   ./build.ps1 pico2_w        # build only pico2_w
 #   ./build.ps1 -Clean         # wipe build dirs first, then build
+#   ./build.ps1 pico2_w -NoUartDiag # omit the GP0/GP1 live diagnostic channel
+#   ./build.ps1 pico2_w -NS2FirmwareVersion 2.1.4 `
+#       -NS2BluetoothVersion 12.0.0 -NS2DspVersion 0.2.3
+#                              # select one coherent firmware identity tuple
 #
 # Standard Pico 2 W builds include live DualSense audio at 300 MHz/1.20 V.
 # Pico W retains its validated non-audio configuration. Lower-clock Pico 2
@@ -18,6 +22,10 @@
 # Output: build/<dir>/PicoSwitchWGA-<board>.uf2
 param(
     [string[]]$Boards = @('pico_w', 'pico2_w'),
+    [string]$NS2FirmwareVersion = '2.1.4',
+    [string]$NS2BluetoothVersion = '12.0.0',
+    [string]$NS2DspVersion = '0.2.3',
+    [switch]$NoUartDiag,
     [switch]$Clean,
     [switch]$Tone,
     [switch]$Audio,
@@ -79,6 +87,13 @@ if ($AudioOverclock300) {
     $Boards = @('pico2_w')
     Write-Warning "-AudioOverclock300 is now the standard pico2_w build"
 }
+
+# Always configure the complete identity tuple explicitly. This prevents a
+# previous experimental CMake cache value from leaking into an ordinary build.
+$extraArgs += @("-DNS2_PRO_FIRMWARE_VERSION=$NS2FirmwareVersion",
+                "-DNS2_PRO_BLUETOOTH_VERSION=$NS2BluetoothVersion",
+                "-DNS2_PRO_DSP_VERSION=$NS2DspVersion",
+                "-DNS2_UART_DIAG=$(if ($NoUartDiag) { 'OFF' } else { 'ON' })")
 
 foreach ($b in $Boards) {
     $boardArgs = @($extraArgs)

@@ -96,6 +96,7 @@ extern int find_player_index(int dev_addr, int instance);
 // no behavior when disabled. sw2_capture.c avoids tusb.h/BTstack header conflicts itself (it
 // only needs tusb.h's tud_cdc_* calls, no BTstack types), so it's safe to include directly here.
 #include "sw2_capture.h"
+#include "ns2_bt_version_probe.h"
 #include "bt_identity_log.h"
 
 // ============================================================================
@@ -3991,6 +3992,63 @@ static sw2_init_state_t sw2_init_last_sent_state = SW2_INIT_IDLE;
 static gatt_client_notification_t switch2_ack_notification_listener;
 static gatt_client_characteristic_t switch2_ack_characteristic;
 
+// Read-only command-0x10 version probe requested by the out-of-band UART
+// tooling. The request is marshalled onto the BTstack run loop; the raw reply
+// is published before READY with release/acquire ordering for core0.
+static uint8_t s_sw2_version_state = NS2_BT_VERSION_IDLE;
+static uint8_t s_sw2_version_length;
+static uint8_t s_sw2_version_raw[12];
+static btstack_context_callback_registration_t s_sw2_version_cb;
+
+static void switch2_version_probe_run(void *context) {
+    (void)context;
+    if (sw2_init_state != SW2_INIT_DONE || sw2_init_handle == 0) {
+        __atomic_store_n(&s_sw2_version_state, NS2_BT_VERSION_NO_CONTROLLER,
+                         __ATOMIC_RELEASE);
+        return;
+    }
+
+    uint8_t command[] = {
+        0x10, SW2_REQ_TYPE_REQ, SW2_REQ_INT_BLE, 0x01, 0x00, 0x00, 0x00, 0x00};
+    s_sw2_version_length = 0;
+    __atomic_store_n(&s_sw2_version_state, NS2_BT_VERSION_SENT, __ATOMIC_RELEASE);
+    sw2_capture_record(SW2_CAP_CMD_OUT, SW2_CMD_HANDLE, command, sizeof(command));
+    gatt_client_write_value_of_characteristic_without_response(
+        sw2_init_handle, SW2_CMD_HANDLE, sizeof(command), command);
+}
+
+void ns2_bt_version_probe_request(void) {
+    __atomic_store_n(&s_sw2_version_state, NS2_BT_VERSION_REQUESTED,
+                     __ATOMIC_RELEASE);
+    s_sw2_version_cb.callback = switch2_version_probe_run;
+    s_sw2_version_cb.context = NULL;
+    btstack_run_loop_execute_on_main_thread(&s_sw2_version_cb);
+}
+
+void ns2_bt_version_probe_snapshot(ns2_bt_version_result_t *out) {
+    ns2_bt_version_state_t state = (ns2_bt_version_state_t)__atomic_load_n(
+        &s_sw2_version_state, __ATOMIC_ACQUIRE);
+    out->state = state;
+    out->length = 0;
+    memset(out->raw, 0, sizeof(out->raw));
+    if (state == NS2_BT_VERSION_READY || state == NS2_BT_VERSION_PROTOCOL_ERROR) {
+        out->length = s_sw2_version_length;
+        memcpy(out->raw, s_sw2_version_raw, sizeof(out->raw));
+    }
+}
+
+const char *ns2_bt_version_state_name(ns2_bt_version_state_t state) {
+    switch (state) {
+        case NS2_BT_VERSION_IDLE: return "idle";
+        case NS2_BT_VERSION_REQUESTED: return "requested";
+        case NS2_BT_VERSION_SENT: return "sent";
+        case NS2_BT_VERSION_READY: return "ready";
+        case NS2_BT_VERSION_NO_CONTROLLER: return "no_controller";
+        case NS2_BT_VERSION_PROTOCOL_ERROR: return "protocol_error";
+        default: return "unknown";
+    }
+}
+
 // ============================================================================
 // ONE-SHOT GATT DISCOVERY — ground truth for raw ATT handle numbering (see sw2_capture.h)
 // ============================================================================
@@ -4450,6 +4508,11 @@ static void switch2_cleanup_on_disconnect(void) {
     s_sw2_v2_active = NULL;
     s_sw2_gatt_disc_fired = false;
     s_gatt_disc_state = SW2_GATT_DISC_IDLE;
+    uint8_t version_state = __atomic_load_n(&s_sw2_version_state, __ATOMIC_ACQUIRE);
+    if (version_state == NS2_BT_VERSION_REQUESTED || version_state == NS2_BT_VERSION_SENT) {
+        __atomic_store_n(&s_sw2_version_state, NS2_BT_VERSION_NO_CONTROLLER,
+                         __ATOMIC_RELEASE);
+    }
 }
 
 // Forward declare
@@ -4487,6 +4550,25 @@ static void switch2_ack_notification_handler(uint8_t packet_type, uint16_t chann
     if (value_length < 4) return;
     uint8_t cmd = value[0];
     uint8_t subcmd = value[3];
+
+    if (cmd == 0x10 && subcmd == 0x01 &&
+        __atomic_load_n(&s_sw2_version_state, __ATOMIC_ACQUIRE) == NS2_BT_VERSION_SENT) {
+        if (value_length >= 20) {
+            memcpy(s_sw2_version_raw, &value[8], sizeof(s_sw2_version_raw));
+            s_sw2_version_length = sizeof(s_sw2_version_raw);
+            __atomic_store_n(&s_sw2_version_state, NS2_BT_VERSION_READY,
+                             __ATOMIC_RELEASE);
+        } else {
+            s_sw2_version_length = value_length > 8 ? (uint8_t)(value_length - 8) : 0;
+            if (s_sw2_version_length > sizeof(s_sw2_version_raw))
+                s_sw2_version_length = sizeof(s_sw2_version_raw);
+            memset(s_sw2_version_raw, 0, sizeof(s_sw2_version_raw));
+            if (s_sw2_version_length)
+                memcpy(s_sw2_version_raw, &value[8], s_sw2_version_length);
+            __atomic_store_n(&s_sw2_version_state, NS2_BT_VERSION_PROTOCOL_ERROR,
+                             __ATOMIC_RELEASE);
+        }
+    }
 
     printf("[SW2_BLE] ACK: cmd=0x%02X subcmd=0x%02X state=%d len=%d\n",
            cmd, subcmd, sw2_init_state, value_length);

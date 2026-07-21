@@ -11,6 +11,7 @@
 #include "report.h"
 #include "config.h"
 #include "bootsel.h"
+#include "ns2_uart_diag.h"
 
 #ifdef NS2_PRO
 #include "switch_pro2.h"
@@ -128,6 +129,17 @@ static void usb_apply_mode_cycle(void) {
     printf("[USB] Mode cycle complete: now %s\n", usb_personality_name(next));
 }
 
+// Apply an in-RAM firmware identity experiment without cycling personalities
+// or resetting the Bluetooth core. This uses the same detach interval and
+// incoming-personality reset path as the hardware-validated BOOTSEL cycle.
+static void usb_apply_diag_reenumeration(void) {
+    if (g_usb_personality != USB_PERSONALITY_SWITCH2_PRO2) return;
+    tud_disconnect();
+    sleep_ms(USB_DETACH_MS);
+    usb_reset_personality_state(USB_PERSONALITY_SWITCH2_PRO2);
+    tud_connect();
+}
+
 #else  // !NS2_PRO: Switch 1 build -- unchanged two-state storage (see usb.h).
 
 volatile bool g_usb_enter_config = false;
@@ -173,6 +185,9 @@ void usb_core_task() {
             g_usb_mode_cycle_requested = false;
             usb_apply_mode_cycle();
         }
+        if (ns2_uart_diag_take_reenumerate_request()) {
+            usb_apply_diag_reenumeration();
+        }
 #else
         // Switch to configuration mode by re-enumerating as a CDC serial device.
         // Unchanged Switch-1 behavior -- see usb.h's !NS2_PRO branch.
@@ -200,6 +215,10 @@ void usb_core_task() {
         // a sample can never delay USB servicing, and outside the config-mode early-continue
         // below so gestures keep working in config mode (BOOTSEL_HOLD exits it on NS2_PRO).
         bootsel_sample_core0();
+
+        // Independent GP0/GP1 tooling link. Bounded, FIFO-only work: never waits
+        // for the PC and remains available while USB is owned by the console.
+        ns2_uart_diag_task();
 
         if (g_usb_config_mode) {
 #ifdef NS2_PRO

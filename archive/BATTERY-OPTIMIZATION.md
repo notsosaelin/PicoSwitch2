@@ -1,12 +1,14 @@
 # Battery Passthrough — Accuracy Audit & Optimization
 
 > Deep audit of the controller→dongle→Switch battery path, aimed at making the reported
-> state **as close to native as possible**. Research/documentation only — **NO CODE WAS
-> CHANGED.** Verified against the live code and authoritative references (Linux HID drivers,
+> state **as close to native as possible**. Verified against the live code and authoritative references (Linux HID drivers,
 > dekuNukem Switch RE, ndeadly's Switch 2 RE `@ d1c5a7f`).
 >
-> Status: 🟡 core scaling is sound; **two concrete decode bugs found** (Switch Pro, Wii U Pro)
-> plus several accuracy refinements. Prioritized in §7.
+> Implementation review (2026-07-21): the Switch Pro bug is confirmed and fixed. The proposed
+> Wii U Pro change is rejected: the cited Linux diagram is MSB-to-LSB, with a fixed bit 7,
+> BATTERY at bits 6–4, USB at bit 3, CHARG at bit 2, and thumb buttons at bits 1–0. Therefore the
+> existing `>>4` / `0x04` decode is correct; changing it to `>>5` / `0x08` would introduce the
+> one-bit error. Speculative output/estimation changes remain deferred pending the captures in §8.
 
 ## 0. Corrected framing (important)
 
@@ -60,44 +62,40 @@ no-cable `raw<10→raw*10+5, ==10→100` (discharging); cable `<10→*10+5`, `==
 Raw at `data[29]`: table `{0,1,25,50,75,100}` for 0–5, `0xEE`→charging/100, `0xEF`→100.
 **Exactly the Linux table.** Coarse by nature (6 states).
 
-### 3.4 Switch Pro / Joy-Con / Switch-format 8BitDo — 🔴 BUG (source: dekuNukem RE)
+### 3.4 Switch Pro / Joy-Con / Switch-format 8BitDo — ✅ FIXED (source: dekuNukem RE)
 Authoritative byte-2 layout: **high nibble** = battery `8=full, 6, 4, 2, 0=empty`, **LSB of that
 nibble = charging** (byte mask `0x10`); low nibble = connection info.
 
-Current `controller_battery_decode_switch_pro(battery_conn)`:
+Previous `controller_battery_decode_switch_pro(battery_conn)`:
 ```c
 uint8_t raw = battery_conn >> 4;                 // includes the charging LSB in the level
 uint16_t level = raw > 8 ? 100 : raw * 12 + 5;   // charging inflates the level by ~one half-step
 return store(out, level, (battery_conn & 0x08) != 0);  // 0x08 is a *connection-info* bit, not charging
 ```
-Two defects:
+That implementation had two defects:
 1. **Level includes the charging LSB.** When charging, the nibble is odd (9/7/5/3/1); e.g. medium+charging
    = 7 → `7*12+5 = 89%` instead of ~77% for medium (6). Charging states read ~12% too high.
 2. **Charging read from the wrong bit** (`0x08` = connection-info bit 3; the real charging bit is `0x10`).
    → Switch Pro/8BitDo charging indication is effectively wrong.
 
-**Native-faithful mapping:** `level3 = (battery_conn >> 5) & 0x07` (0–4), `%= level3*25`
+**Implemented native-faithful mapping:** `level3 = (battery_conn >> 5) & 0x07` (0–4), `%= level3*25`
 (`0/25/50/75/100`); `charging = (battery_conn & 0x10) != 0`. (This is the one Nintendo-native source —
 it should round-trip to the console almost perfectly.)
 
-### 3.5 Wii U Pro — 🔴 BUG (source: Linux `hid-wiimote-modules.c`)
-Authoritative extension byte 10 layout (MSB→LSB): `BATTERY[bits 5–7] | USB[bit4] | CHARG[bit3] |
-LTHUM[bit2] | RTHUM[bit1]`; BATTERY 0–4 (000 empty…100 full); USB active-low; **CHARG active-low
-(0=charging)**.
+### 3.5 Wii U Pro — ✅ current decode is correct (source: Linux `hid-wiimote-modules.c`)
+Authoritative extension byte layout (MSB→LSB): `fixed 1[bit7] | BATTERY[bits 4–6] | USB[bit3] |
+CHARG[bit2] | LTHUM[bit1] | RTHUM[bit0]`; BATTERY 0–4 (000 empty…100 full); USB active-low;
+**CHARG active-low (0=charging)**.
 
 Current `controller_battery_decode_wii_u_pro(status)`:
 ```c
-uint8_t raw = (status >> 4) & 0x07;         // reads bits 4–6, should be bits 5–7 (>> 5)
+uint8_t raw = (status >> 4) & 0x07;         // battery bits 4–6
 uint16_t level = raw >= 4 ? 100 : raw * 25;
-return store(out, level, (status & 0x04) == 0); // reads bit 2 (LTHUM), CHARG is bit 3 (0x08)
+return store(out, level, (status & 0x04) == 0); // CHARG bit 2, active-low
 ```
-Both fields are shifted **one bit low**: the level mixes in the USB bit and drops the MSB, and
-charging reads the left-thumb-button bit. A full, unplugged pad can decode as ~25%. The `*25`
-scaling and active-low polarity are otherwise right.
-**Native-faithful mapping:** `bat = (status >> 5) & 0x07` (0–4), `% = bat*25`;
-`charging = (status & 0x08) == 0`.
-> ⚠️ Verify against a real Wii U Pro extension capture before acting — the bug is inferred from the
-> Linux doc diagram; the consistent one-bit offset strongly implies it, but a capture confirms it.
+These expressions select exactly the correct fields: battery `(status >> 4) & 0x07`, charging
+`(status & 0x04) == 0`. The earlier proposed `>>5` / `0x08` change came from overlooking the
+diagram's fixed leading bit and would decode the USB flag as charging.
 
 ### 3.6 Wiimote — ✅ formula, ⚠️ inherently rough (source: Linux `hid-wiimote-modules.c`)
 Raw at status-report `data[6]`: `% = raw * 100 / 255` — matches Linux exactly. But the Wiimote's
@@ -132,8 +130,8 @@ full/wired icon. Acceptable, but see §6.1 (it also asserts external power).
 | DualSense/Edge | 11 (0–10) | ✅ Linux | ✅ (full→not charging) | midpoint `+5`; dominant coarseness |
 | DualShock 4 | 11 + cable | ✅ Linux | ✅ | — |
 | DualShock 3 | 6 | ✅ Linux table | ✅ (EE/EF) | very coarse |
-| **Switch Pro / 8BitDo** | 5 (0/2/4/6/8) | 🔴 level+charging bit wrong | 🔴 wrong bit | Nintendo-native; should be near-perfect once fixed |
-| **Wii U Pro** | 5 (0–4) | 🔴 one-bit-low on both fields | 🔴 wrong bit | verify vs capture |
+| **Switch Pro / 8BitDo** | 5 (0/2/4/6/8) | ✅ fixed | ✅ fixed | Nintendo-native; near-perfect bucket passthrough |
+| **Wii U Pro** | 5 (0–4) | ✅ matches Linux diagram | ✅ active-low bit 2 | hardware capture still useful |
 | Wiimote | 256 (non-linear) | ✅ formula | n/a | inherently rough |
 | Xbox/Switch2/Stadia/MouthPad/generic (BAS) | 0–100% | ✅ true % | ❌ none in BAS | **best source** |
 | Classic Xbox / BattlerGC / generic Classic | none | default 0x25 | — | full/wired fallback |
@@ -155,13 +153,12 @@ Low priority; derive from the normalized % if ever needed.
 `switch1_connection_info` maps %→`{0,2,4,6,8}` and never sets the Switch 1 charging nibble; `*12`
 slightly under-scales vs `*12.5`. Legacy path, low priority.
 
-## 7. Recommendations, prioritized (no code changed here)
+## 7. Recommendations, prioritized
 
-1. **Fix Switch Pro decode (§3.4)** — mask the charging LSB out of the level and read charging from
-   `0x10`. Highest value: it is the Nintendo-native source, so a correct decode should round-trip to
-   the console almost exactly. Also fixes Switch-format 8BitDo pads.
-2. **Fix Wii U Pro bit alignment (§3.5)** — battery `>>5`, charging `& 0x08` — after confirming with a
-   real extension capture.
+1. **Switch Pro decode (§3.4) — completed.** The charging LSB is masked out of the level and
+   charging is read from `0x10`; this also fixes Switch-format 8BitDo pads.
+2. **Wii U Pro (§3.5) — no code change.** Preserve `>>4` / `0x04`; validate with a real extension
+   capture if available, but do not apply the rejected one-bit shift.
 3. **Re-evaluate the `external power` bit (§6.1)** — set from real state; test icon fidelity at `0`.
 4. **Consider direct native-bucket→0–9 maps (§4)** for coarse sources to drop the double quantization,
    and align the empty/low/full endpoints with the console's icon thresholds.
@@ -176,8 +173,7 @@ slightly under-scales vs `*12.5`. Legacy path, low priority.
 - **Switch Pro / Wii U Pro:** capture the raw battery byte at known charge/charging states and confirm
   the §3.4/§3.5 bit layouts before/after any change.
 - **`external power`:** A/B `0`-vs-`1` and observe the icon/plug rendering.
-- **Charging fidelity:** plug/unplug each pad; confirm the console's charging indicator follows (this
-  is where the Switch Pro/Wii U Pro charging-bit bugs would show).
+- **Charging fidelity:** plug/unplug each pad; confirm the console's charging indicator follows.
 
 ## 9. Sources
 - `src/controller_battery.c`, `include/controller_battery.h`; decoders' call sites in
@@ -286,8 +282,8 @@ temporal behavior**. These are presentation/estimation strategies, not new contr
 |---|---|---|
 | DualSense / DS4 | 11 (0–10) | direct 11→0–9 table + hysteresis; optional drain-rate interpolation (§11.3) |
 | DualShock 3 | 6 | curve-map 6→0–9 + hysteresis |
-| Switch Pro / 8BitDo | 5 | after the §3.4 bug fix: direct 5→0–9 + hysteresis |
-| Wii U Pro | 5 | after the §3.5 fix: direct 5→0–9 + hysteresis |
+| Switch Pro / 8BitDo | 5 | direct 5→0–9 + hysteresis, if console captures justify it |
+| Wii U Pro | 5 | direct 5→0–9 + hysteresis, if console captures justify it |
 | Wiimote | non-linear byte | non-linearity LUT + heavy EWMA; drain-rate interpolation viable |
 | BAS (Xbox / Switch 2 / Stadia / MouthPad / generic) | true 0–100% | already fine — light smoothing only; supply charging from a secondary source if available |
 

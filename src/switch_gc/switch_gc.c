@@ -11,6 +11,7 @@
 #include "pico/time.h"
 #include "tusb.h"
 
+#include "ns2_gc_identity.h"
 #include "report.h"       // report_set_rumble, get_global_gamepad_input
 #include "switch_gc_rumble_decode.h"
 #include "switch_gc.h"
@@ -323,14 +324,10 @@ static const uint8_t switch_gc_ctrl_identity[64] = {
 };
 _Static_assert(sizeof(switch_gc_ctrl_identity) == 64, "GC EP0 identity block must be 64 bytes");
 
-// Response to EP0 vendor bRequest=2 (16 bytes) -- Confirmed real bytes from this project's own
-// GC capture (docs/switch2-gc/protocol.md "EP0 vendor control requests"; byte 2 = 0x02 is
-// GC's own value, cross-compared against Pro Controller 2's 0x05 for the identical request).
-// Reused verbatim, not fictionalized: this field is not a per-unit serial. Opaque-field research
-// is tracked in docs/switch2-gc/open-questions.md.
-static const uint8_t switch_gc_ctrl_info[16] = {
-    0x01, 0x01, 0x02, 0x00, 0x00, 0x00, 0x0C, 0x00,
-    0x00, 0x00, 0x02, 0xBB, 0x5E, 0xAB, 0xA9, 0x3C};
+// Synthetic per-unit ID retained from the validated EP0 reply. Version bytes are
+// assembled beside command 0x10 from the shared current GC identity builder.
+static const uint8_t SWITCH_GC_UNIT_ID[6] = {0x02, 0xBB, 0x5E, 0xAB, 0xA9, 0x3C};
+static uint8_t switch_gc_ctrl_info[NS2_GC_EP0_INFO_LEN];
 
 // USB pairing crypto. The public device key is shared with the working Pro2 path; a GC-specific
 // capture has not distinguished it. The derived LTK is session-scoped and reset on init/mount.
@@ -555,10 +552,9 @@ static void switch_gc_vendor_dispatch(const uint8_t *c, uint32_t n) {
     // of the specific structured replies Pro2 actually sends. A console asking for a 12-byte
     // firmware-info block or a 29-byte block (0x11/sub 0x03) and getting 0 bytes back is a much
     // larger deviation than a wrong calibration value, and is now the leading suspect.
-    case 0x10:  // family-shaped firmware info; GC type byte remains opaque (see open questions)
-        memcpy(d, (const uint8_t[]){0x01, 0x01, 0x05, 0x04, 0x0C, 0x00, 0x00, 0x00,
-                                    0xFF, 0xFF, 0xFF, 0xFF}, 12);
-        dl = 12;
+    case 0x10:  // genuine NSO GC firmware identity (live-query confirmed 2026-07-21)
+        ns2_gc_build_command_info(d);
+        dl = NS2_GC_COMMAND_INFO_LEN;
         break;
     case 0x0B:  // battery -- structurally mirrors switch_pro2.c; values not independently
                 // confirmed for GC, kept only for envelope-shape/length consistency.
@@ -752,6 +748,7 @@ bool switch_gc_vendor_control_xfer(uint8_t rhport, uint8_t stage, const void *re
             return tud_control_xfer(rhport, request, (void *)switch_gc_ctrl_identity, len);
         }
         case 0x02: {  // firmware/version info (16 B)
+            ns2_gc_build_ep0_info(SWITCH_GC_UNIT_ID, switch_gc_ctrl_info);
             uint16_t len = request->wLength < sizeof(switch_gc_ctrl_info)
                                ? request->wLength : (uint16_t)sizeof(switch_gc_ctrl_info);
             return tud_control_xfer(rhport, request, (void *)switch_gc_ctrl_info, len);

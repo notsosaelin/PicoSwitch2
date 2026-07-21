@@ -19,6 +19,8 @@ audio/rumble reconnect recovery. Pico W retains its validated non-audio behavior
 - [x] BOOTSEL double-tap, triple-tap, and hold while DualSense is connected
 - [x] NSO GameCube input and rumble on a real Switch 2
 - [x] Joy-Con 2 Left/Right sideways mappings and rumble on a real Switch 2
+- [x] Match genuine current Pro Controller 2, NSO GameCube, and Joy-Con 2 Left/Right firmware
+  identities; hardware confirms all four emulated personalities are up to date
 - [x] Configurable Pro2/Joy-Con colors, Sony lightbar matching, and DualSense player dots
 - [x] Reconcile documentation and archive superseded development logs
 - [x] Complete source-comment evidence cleanup
@@ -98,8 +100,9 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
 - [ ] Run an extended playback and thermal soak of the Pico 2 W 300 MHz audio build.
 - [ ] Add DualSense microphone report decoding and Opus-to-USB return after speaker playback is
   physically stable.
-- [ ] Re-test the Switch 2 “Update this controller” prompt after USB audio is healthy; if it
-  remains, capture and isolate the firmware/DSP version or memory-read gate separately.
+- [x] Eliminate the Switch 2 “Update this controller” prompt by querying genuine controllers through
+  the UART↔BLE bridge and matching their exact coherent tuples. Pro Controller 2 and both Joy-Con 2
+  personalities are hardware-confirmed up to date.
 
 ## Reliability and maintainability
 

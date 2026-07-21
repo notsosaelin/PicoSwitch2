@@ -1,6 +1,6 @@
 # Compatibility Matrix
 
-Last updated: 2026-07-18
+Last updated: 2026-07-21
 
 This matrix records observed behavior, not inferred support. "Source-tested" means host tests or
 code inspection only; it is weaker than physical hardware confirmation.
@@ -10,9 +10,9 @@ code inspection only; it is weaker than physical hardware confirmation.
 | Personality | Switch 2 enumeration | Input streaming | Rumble | Notes |
 |---|---|---|---|---|
 | Pro Controller 2 | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Primary/default mode; 1000 Hz USB interval is a deliberate deviation |
-| NSO GameCube | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Genuine-capture state decoder; native Z and trigger detents supported |
-| Joy-Con 2 Left | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Sideways buttons, stick mapping, rumble, STOP, and reconnect confirmed |
-| Joy-Con 2 Right | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Sideways buttons, stick mapping, rumble, STOP, and reconnect confirmed |
+| NSO GameCube | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Genuine `1.1.2 / 12.0.0` firmware identity and up-to-date status confirmed; native Z and trigger detents supported |
+| Joy-Con 2 Left | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Sideways buttons, stick mapping, rumble, STOP, reconnect, and current firmware identity confirmed; console reports up to date |
+| Joy-Con 2 Right | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Sideways buttons, stick mapping, rumble, STOP, reconnect, and current firmware identity confirmed; console reports up to date |
 | CDC/config | ✅ Confirmed | N/A | N/A | Web Serial configuration and read-only MSC page |
 
 ## Bluetooth controllers
