@@ -1,9 +1,11 @@
 #!/usr/bin/env pwsh
 # Read PicoSwitch2's out-of-band UART0 diagnostic channel through a USB-to-TTL
 # adapter while the Pico's USB-C port remains attached to the Switch.
+# Use -OutputPath with trace dump to save validated JSONL for ns2_trace.py.
 param(
     [string]$Port,
     [string]$Command = 'fwreads',
+    [string]$OutputPath,
     [ValidateRange(250, 30000)]
     [int]$TimeoutMs = 5000,
     [switch]$List
@@ -31,6 +33,26 @@ function Get-SerialDevices {
             [pscustomobject]@{ Port = $_; Name = $_; PnpId = '' }
         })
     }
+}
+
+function Write-DiagnosticLines {
+    param([string[]]$Lines)
+
+    if ($OutputPath) {
+        $resolved = if ([System.IO.Path]::IsPathRooted($OutputPath)) {
+            [System.IO.Path]::GetFullPath($OutputPath)
+        } else {
+            [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $OutputPath))
+        }
+        $parent = [System.IO.Path]::GetDirectoryName($resolved)
+        if (-not [System.IO.Directory]::Exists($parent)) {
+            throw "Output directory does not exist: $parent"
+        }
+        [System.IO.File]::WriteAllLines(
+            $resolved, $Lines, [System.Text.UTF8Encoding]::new($false))
+        Write-Host "Saved $($Lines.Count) JSON line(s) to $resolved" -ForegroundColor Green
+    }
+    Write-Output $Lines
 }
 
 $devices = @(Get-SerialDevices)
@@ -125,22 +147,20 @@ try {
             $previousSequence = [uint64]$parsed.seq
             $lines.Add($line)
         }
-        foreach ($line in $lines) {
-            Write-Output $line
-        }
         $end = [ordered]@{
             trace = 'end'
             records = $lines.Count
             overwritten = [uint64]$manifest.overwritten
         } | ConvertTo-Json -Compress
-        Write-Output $end
+        $lines.Add($end)
+        Write-DiagnosticLines -Lines $lines.ToArray()
     } else {
         $serial.Write("$Command`n")
         $response = $serial.ReadLine().Trim()
         # Validate the framing before returning the original one-line JSON,
         # which is easiest to paste into an issue/session without reformatting.
         $null = $response | ConvertFrom-Json
-        Write-Output $response
+        Write-DiagnosticLines -Lines @($response)
     }
 } catch [System.TimeoutException] {
     throw "Timed out waiting for PicoSwitch2 on $Port. Check crossed TX/RX, shared GND, 3.3 V signal level, and leave VCC disconnected."

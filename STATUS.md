@@ -31,6 +31,7 @@ baseline remains intact.
 | Joy-Con 2 rumble and STOP/reconnect behavior | ✅ Confirmed | Real Switch 2 |
 | Switch 2 controller firmware identity/update status | ✅ Confirmed | Genuine `0x10/01` replies plus Switch 2 Update Controllers; Pro2, NSO GC, and both Joy-Con 2 personalities report up to date |
 | Out-of-band UART protocol tracer | ✅ Confirmed | Real Switch 2 + genuine Pro Controller 2 source; complete 63-record Pro2 re-enumeration capture, zero overwrites, pull-transport framing validated |
+| UART trace decoder and semantic differ | ✅ Host + live-capture confirmed | Known EP0/bulk/HID fields, sensitive-field redaction, strict comparison, timestamp wrap, corruption rejection, and two-capture Pro2 A/B workflow |
 | DualSense and DualSense Edge input | ✅ Confirmed | Real Switch 2 and Steam |
 | Edge paddles, Fn buttons, and mute mapping | ✅ Confirmed | Real hardware |
 | DualSense/Edge LEDs and rumble | ✅ Confirmed | Real hardware after report-boundary scheduler fix |
@@ -118,6 +119,8 @@ Current automated coverage includes:
 - HID output normalization
 - Retained UART protocol-trace disabled mode, payload truncation, chronological wraparound, and
   overwrite accounting
+- UART trace JSONL validation, known-field decoding, default sensitive-data redaction, timestamp
+  rollover, address-aware semantic alignment, and strict raw-prefix comparison
 - Switch 2 pairing cryptography
 - Switch 2 wake identity parsing and byte-exact advertisement construction
 - Automatic wake policy across reconnect startup state, per-controller session cleanup, repeated

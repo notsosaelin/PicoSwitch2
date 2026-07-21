@@ -172,7 +172,9 @@ The full `trace clear/start/reenumerate/stop/dump` workflow is hardware-validate
 the pull transport delivered a complete 63-record Pro2 initialization capture with zero overwrites
 or framing loss while a genuine Pro Controller 2 was paired to the dongle. Broader input, rumble,
 wake, audio, GC, and Joy-Con trace regression coverage remains before adding sampled input or
-audio-control events.
+audio-control events. The first PC-side decoder/differ now validates JSONL, renders known protocol
+fields, redacts session material by default, and aligns semantic A/B differences; a live UI and
+high-rate trace support remain future increments.
 
 The full tooling wishlist and build order — the on-device tracer, the out-of-band trace channel
 (the dongle's single USB-C port is occupied by the console), the fault-injection harness, and the

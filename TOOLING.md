@@ -122,7 +122,12 @@ protocol-trace increment:
   touching Bluetooth, allowing a fresh Pro2, GC, or Joy-Con 2 handshake to be captured while the
   UART cable stays attached.
 - **Windows reader:** `tools/read_uart_diag.ps1`; it recognizes FTDI, CP210x, CH34x and PL2303
-  adapters automatically when exactly one is present, or accepts an explicit COM port.
+  adapters automatically when exactly one is present, or accepts an explicit COM port. Its
+  `-OutputPath` option writes the validated trace as UTF-8 JSONL for later decoding and comparison.
+- **Decoder/differ:** `tools/ns2_trace.py decode` renders a timestamped semantic timeline;
+  `tools/ns2_trace.py diff` aligns two traces and distinguishes known fields, unknown bytes, and
+  redacted session-specific pairing material. `--strict` restores byte-for-byte prefix comparison.
+  See [`docs/switch2/uart-trace-tooling.md`](docs/switch2/uart-trace-tooling.md).
 - **Hardware validation (2026-07-21):** the pull reader recovered all 63 chronological records from
   a Pro2 same-personality re-enumeration on a real Switch 2 with zero ring overwrites or transport
   corruption. The paired genuine Pro Controller 2 returned raw version tuple
@@ -143,7 +148,9 @@ Usage while USB-C remains attached to the Switch:
 .\tools\read_uart_diag.ps1 -Port COM5 -Command 'trace start'
 .\tools\read_uart_diag.ps1 -Port COM5 -Command reenumerate
 .\tools\read_uart_diag.ps1 -Port COM5 -Command 'trace stop'
-.\tools\read_uart_diag.ps1 -Port COM5 -Command 'trace dump'
+.\tools\read_uart_diag.ps1 -Port COM5 -Command 'trace dump' -OutputPath dumps/pro2-a.jsonl
+python tools/ns2_trace.py decode dumps/pro2-a.jsonl
+python tools/ns2_trace.py diff dumps/pro2-a.jsonl dumps/pro2-b.jsonl
 ```
 
 The firmware initializes UART only after the Pico 2 W's selected system clock is applied, so the
@@ -171,11 +178,14 @@ validated 300 MHz build still derives the requested baud correctly.
   already been bitten by printf-flood starving the run loop — `switch2_ble.c:231-242`).
 - **Effort:** medium. **Depends on:** §0 channel. **This is the single highest-value tool.**
 
-### 1.2 PC-side live trace viewer/decoder ⬜
+### 1.2 PC-side trace viewer/decoder 🔵
 - **What:** host program that reads the Ch. A/B stream and renders it as a readable, filterable,
   timeline of decoded events (using the Tier-3 decoder library for byte→meaning).
 - **Unblocks:** actually *using* 1.1 in real time; correlating on-screen console behavior with wire
   events.
+- **Current 🔵:** the dependency-free `tools/ns2_trace.py` validates retained JSONL, renders the
+  decoded command timeline, and semantically diffs two captures with sensitive session fields
+  redacted by default. A continuously updating UI, filters, and high-rate binary input remain.
 - **Sketch:** thin CLI/TUI first (tail + decode + color), optional web UI later reusing the config
   web-disk assets.
 - **Effort:** low–medium. **Depends on:** 1.1, 3.1.
@@ -229,9 +239,10 @@ validated 300 MHz build still derives the requested baud correctly.
   input — USBPcap, nRF52840 BLE, SPI dump, or a Tier-1 trace — into structured, diffable, timestamped
   events.
 - **Unblocks:** everything analysis-shaped; kills the accreting one-off scripts.
-- **Current 🔵:** ~15 ad-hoc scripts in `tools/` (`analyze_sw2_*.py`, `extract_*.py`,
-  `pcapng_parse.py`, `verify_*.py`, `switch2_input_viewer.py`) each re-implement parsing. Consolidate
-  their knowledge into one grammar.
+- **Current 🔵:** `ns2_trace.py` is the first shared grammar/CLI for retained UART records and known
+  USB command fields. ~15 older scripts in `tools/` (`analyze_sw2_*.py`, `extract_*.py`,
+  `pcapng_parse.py`, `verify_*.py`, `switch2_input_viewer.py`) still re-implement USBPcap, BLE,
+  input-report, and factory parsing; those formats remain to be consolidated.
 - **Effort:** medium. **Highest analysis ROI.**
 
 ### 3.2 Indexed capture corpus + manifest 🔵→⬜
@@ -249,6 +260,9 @@ validated 300 MHz build still derives the requested baud correctly.
 - **Unblocks:** the A/B methodology that has already produced the highest-yield findings
   (`docs/experiments/2026-07-19-usb-command-ab-diff.md`) — as a standing tool, not per-experiment
   scripts.
+- **Current 🔵:** retained UART traces have a field-aware differ with address-aware alignment,
+  session-material redaction, strict raw-prefix mode, and live two-capture hardware validation.
+  Cross-format USBPcap/BLE comparison awaits the remaining 3.1 adapters.
 - **Effort:** medium. **Depends on:** 3.1.
 
 ### 3.4 SPI factory-data decoder 🔵→⬜
@@ -326,8 +340,10 @@ validated 300 MHz build still derives the requested baud correctly.
    sampled input/audio and high-rate binary streaming remain.
 3. **3.2 capture corpus index** — cheap, compounds immediately, do it in parallel.
 4. **2.1 fault-injection harness** — highest-value *active* tool; needs 1.1 to read reactions.
-5. **3.1 decoder library** + **1.2 trace viewer** — make 1.1/2.1 output legible.
-6. **3.3 semantic differ**, **4.3 corpus-driven conformance**, **2.2 sweep mode** — force-multipliers.
+5. **3.1 decoder library** + **1.2 trace viewer** — 🔵 retained UART trace path implemented;
+   USBPcap/BLE/factory adapters and a live UI remain.
+6. **3.3 semantic differ** — 🔵 UART-to-UART comparison implemented; cross-format comparison remains.
+   **4.3 corpus-driven conformance** and **2.2 sweep mode** follow as force-multipliers.
 7. **Tier 4 profile tooling** — alongside the architecture work.
 8. **Tier 5 bench rig** (5.1 tap → 5.2 companion → 5.4 injector → 5.3 loop) — as time/hardware allow.
 
