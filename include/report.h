@@ -18,6 +18,12 @@ void report_init(void);
 void set_global_gamepad_input(uint8_t idx, const switch_pro_input_t *in);
 void get_global_gamepad_input(uint8_t idx, switch_pro_input_t *out);
 
+// Mouse reports are relative events, not persistent axes. Accumulate producer
+// deltas under the cross-core lock and consume them exactly once from the USB
+// report loop.
+void accumulate_global_mouse_input(uint8_t idx, const switch_pro_input_t *in);
+void take_global_gamepad_input(uint8_t idx, switch_pro_input_t *out);
+
 // Raw controller buttons (unified JP_BUTTON_* bitmap, before remap) — published by
 // the BT core alongside the mapped input, read by config mode's live-view for the
 // "controller input" column. 0 when no controller is connected to that slot.

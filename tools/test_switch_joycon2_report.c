@@ -57,10 +57,12 @@ static uint16_t stick_y(const uint8_t p[3]) {
 }
 
 static void check_button_cases(const button_case_t *cases, size_t count,
-                               joycon2_side_t side, bool report05) {
+                               joycon2_side_t side, uint8_t source_joycon_side,
+                               bool report05) {
     uint8_t out[63];
     for (size_t i = 0; i < count; ++i) {
         switch_pro_input_t in = neutral_input();
+        in.source_joycon_side = source_joycon_side;
         uint32_t raw = 0;
         set_source(&in, &raw, cases[i].field, cases[i].source);
         if (report05)
@@ -103,9 +105,43 @@ int main(void) {
     };
 
     check_button_cases(left_ext, sizeof(left_ext) / sizeof(left_ext[0]),
-                       JOYCON2_SIDE_LEFT, false);
+                       JOYCON2_SIDE_LEFT, SWITCH_SOURCE_JOYCON_NONE, false);
     check_button_cases(right_ext, sizeof(right_ext) / sizeof(right_ext[0]),
-                       JOYCON2_SIDE_RIGHT, false);
+                       JOYCON2_SIDE_RIGHT, SWITCH_SOURCE_JOYCON_NONE, false);
+
+    const button_case_t native_left_ext[] = {
+        {SRC_RAW, JP_BUTTON_L3, 0x2, 0x80, "native L ext: stick click"},
+        {SRC_RAW, JP_BUTTON_S1, 0x2, 0x40, "native L ext: Minus"},
+        {SRC_RAW, JP_BUTTON_L2, 0x2, 0x20, "native L ext: ZL"},
+        {SRC_RAW, JP_BUTTON_L1, 0x2, 0x10, "native L ext: L"},
+        {SRC_RAW, JP_BUTTON_DU, 0x2, 0x08, "native L ext: D-pad Up"},
+        {SRC_RAW, JP_BUTTON_DL, 0x2, 0x04, "native L ext: D-pad Left"},
+        {SRC_RAW, JP_BUTTON_DR, 0x2, 0x02, "native L ext: D-pad Right"},
+        {SRC_RAW, JP_BUTTON_DD, 0x2, 0x01, "native L ext: D-pad Down"},
+        {SRC_RAW, JP_BUTTON_SL, 0x3, 0x80, "native L ext: SL"},
+        {SRC_RAW, JP_BUTTON_SR, 0x3, 0x40, "native L ext: SR"},
+        {SRC_RAW, JP_BUTTON_A2, 0x3, 0x01, "native L ext: Capture"},
+    };
+    const button_case_t native_right_ext[] = {
+        {SRC_RAW, JP_BUTTON_R3, 0x2, 0x80, "native R ext: stick click"},
+        {SRC_RAW, JP_BUTTON_S2, 0x2, 0x40, "native R ext: Plus"},
+        {SRC_RAW, JP_BUTTON_R2, 0x2, 0x20, "native R ext: ZR"},
+        {SRC_RAW, JP_BUTTON_R1, 0x2, 0x10, "native R ext: R"},
+        {SRC_RAW, JP_BUTTON_B4, 0x2, 0x08, "native R ext: X"},
+        {SRC_RAW, JP_BUTTON_B3, 0x2, 0x04, "native R ext: Y"},
+        {SRC_RAW, JP_BUTTON_B2, 0x2, 0x02, "native R ext: A"},
+        {SRC_RAW, JP_BUTTON_B1, 0x2, 0x01, "native R ext: B"},
+        {SRC_RAW, JP_BUTTON_SL, 0x3, 0x80, "native R ext: SL"},
+        {SRC_RAW, JP_BUTTON_SR, 0x3, 0x40, "native R ext: SR"},
+        {SRC_RAW, JP_BUTTON_A3, 0x3, 0x10, "native R ext: C / GameChat"},
+        {SRC_RAW, JP_BUTTON_A1, 0x3, 0x01, "native R ext: Home"},
+    };
+    check_button_cases(native_left_ext,
+                       sizeof(native_left_ext) / sizeof(native_left_ext[0]),
+                       JOYCON2_SIDE_LEFT, SWITCH_SOURCE_JOYCON_LEFT, false);
+    check_button_cases(native_right_ext,
+                       sizeof(native_right_ext) / sizeof(native_right_ext[0]),
+                       JOYCON2_SIDE_RIGHT, SWITCH_SOURCE_JOYCON_RIGHT, false);
 
     {
         switch_pro_input_t in = neutral_input();
@@ -194,9 +230,107 @@ int main(void) {
     };
 
     check_button_cases(left_05, sizeof(left_05) / sizeof(left_05[0]),
-                       JOYCON2_SIDE_LEFT, true);
+                       JOYCON2_SIDE_LEFT, SWITCH_SOURCE_JOYCON_NONE, true);
     check_button_cases(right_05, sizeof(right_05) / sizeof(right_05[0]),
-                       JOYCON2_SIDE_RIGHT, true);
+                       JOYCON2_SIDE_RIGHT, SWITCH_SOURCE_JOYCON_NONE, true);
+
+    const button_case_t native_left_05[] = {
+        {SRC_RAW, JP_BUTTON_A2, 0x5, 0x20, "native L 05: Capture"},
+        {SRC_RAW, JP_BUTTON_S1, 0x5, 0x01, "native L 05: Minus"},
+        {SRC_RAW, JP_BUTTON_L3, 0x5, 0x08, "native L 05: stick click"},
+        {SRC_RAW, JP_BUTTON_L2, 0x6, 0x80, "native L 05: ZL"},
+        {SRC_RAW, JP_BUTTON_L1, 0x6, 0x40, "native L 05: L"},
+        {SRC_RAW, JP_BUTTON_SL, 0x6, 0x20, "native L 05: SL"},
+        {SRC_RAW, JP_BUTTON_SR, 0x6, 0x10, "native L 05: SR"},
+        {SRC_RAW, JP_BUTTON_DL, 0x6, 0x08, "native L 05: D-pad Left"},
+        {SRC_RAW, JP_BUTTON_DR, 0x6, 0x04, "native L 05: D-pad Right"},
+        {SRC_RAW, JP_BUTTON_DU, 0x6, 0x02, "native L 05: D-pad Up"},
+        {SRC_RAW, JP_BUTTON_DD, 0x6, 0x01, "native L 05: D-pad Down"},
+    };
+    const button_case_t native_right_05[] = {
+        {SRC_RAW, JP_BUTTON_R2, 0x4, 0x80, "native R 05: ZR"},
+        {SRC_RAW, JP_BUTTON_R1, 0x4, 0x40, "native R 05: R"},
+        {SRC_RAW, JP_BUTTON_SL, 0x4, 0x20, "native R 05: SL"},
+        {SRC_RAW, JP_BUTTON_SR, 0x4, 0x10, "native R 05: SR"},
+        {SRC_RAW, JP_BUTTON_B2, 0x4, 0x08, "native R 05: A"},
+        {SRC_RAW, JP_BUTTON_B1, 0x4, 0x04, "native R 05: B"},
+        {SRC_RAW, JP_BUTTON_B4, 0x4, 0x02, "native R 05: X"},
+        {SRC_RAW, JP_BUTTON_B3, 0x4, 0x01, "native R 05: Y"},
+        {SRC_RAW, JP_BUTTON_A3, 0x5, 0x40, "native R 05: C / GameChat"},
+        {SRC_RAW, JP_BUTTON_A1, 0x5, 0x10, "native R 05: Home"},
+        {SRC_RAW, JP_BUTTON_R3, 0x5, 0x04, "native R 05: stick click"},
+        {SRC_RAW, JP_BUTTON_S2, 0x5, 0x02, "native R 05: Plus"},
+    };
+    check_button_cases(native_left_05,
+                       sizeof(native_left_05) / sizeof(native_left_05[0]),
+                       JOYCON2_SIDE_LEFT, SWITCH_SOURCE_JOYCON_LEFT, true);
+    check_button_cases(native_right_05,
+                       sizeof(native_right_05) / sizeof(native_right_05[0]),
+                       JOYCON2_SIDE_RIGHT, SWITCH_SOURCE_JOYCON_RIGHT, true);
+
+    {
+        switch_pro_input_t in = neutral_input();
+        switch_pro_pack_stick(0x234, 0x567, in.left_stick);
+        switch_pro_pack_stick(0x89A, 0xBCD, in.right_stick);
+
+        in.source_joycon_side = SWITCH_SOURCE_JOYCON_LEFT;
+        switch_joycon2_encode_report(&in, JP_BUTTON_DU, JOYCON2_SIDE_LEFT, 0, out);
+        CHECK(stick_x(&out[5]) == 0x234 && stick_y(&out[5]) == 0x567,
+              "native L stick is emitted unrotated and D-pad stays a button");
+        CHECK(out[2] == 0x08, "native L D-pad remains in its canonical button field");
+
+        in.source_joycon_side = SWITCH_SOURCE_JOYCON_RIGHT;
+        switch_joycon2_encode_report(&in, JP_BUTTON_B1, JOYCON2_SIDE_RIGHT, 0, out);
+        CHECK(stick_x(&out[5]) == 0x89A && stick_y(&out[5]) == 0xBCD,
+              "native R stick uses the physical right slot without rotation");
+        CHECK(out[2] == 0x01, "native R physical B keeps the canonical B bit");
+
+        // A physical half only gets the native path when it matches the USB
+        // personality. This protects the already-enumerated side identity.
+        in.source_joycon_side = SWITCH_SOURCE_JOYCON_LEFT;
+        switch_joycon2_encode_report(&in, JP_BUTTON_B1, JOYCON2_SIDE_RIGHT, 0, out);
+        CHECK(out[2] == 0x02,
+              "mismatched physical half retains the generic mapping safely");
+    }
+
+    {
+        switch_pro_input_t in = neutral_input();
+        in.has_mouse = 1;
+        in.mouse_enabled = 1;
+        in.mouse_delta_x = -321;
+        in.mouse_delta_y = 1234;
+        in.mouse_motion_timing = 0x2345;
+        switch_joycon2_encode_report(&in, 0, JOYCON2_SIDE_RIGHT, 0, out);
+        CHECK(out[0x9] == 0xBF && out[0xA] == 0xFE,
+              "mouse: signed delta X is emitted little-endian");
+        CHECK(out[0xB] == 0xD2 && out[0xC] == 0x04,
+              "mouse: signed delta Y is emitted little-endian");
+        CHECK(out[0xD] == 0x17, "mouse: synthesized lift-off matches the working reference");
+        CHECK(out[0x8] == 0x38, "mouse: steady-state Joy-Con report status is present");
+        CHECK(out[0xF] == 30 && out[0x10] == 0x45 && out[0x11] == 0x23,
+              "mouse: stationary posture block has length and advancing timing");
+        CHECK(out[0x12] == 0x00 && out[0x13] == 0x0C && out[0x23] == 0x10,
+              "mouse: stationary posture carries temperature and +X gravity");
+
+        uint8_t expected_stick[3];
+        in.mouse_scroll = 1;
+        switch_joycon2_encode_report(&in, 0, JOYCON2_SIDE_RIGHT, 0, out);
+        switch_pro_pack_stick(SWITCH_STICK_MID, 0, expected_stick);
+        CHECK(memcmp(&out[0x5], expected_stick, sizeof(expected_stick)) == 0,
+              "mouse: wheel up holds the local Joy-Con stick Up");
+
+        in.mouse_scroll = -1;
+        switch_joycon2_encode_report(&in, 0, JOYCON2_SIDE_LEFT, 0, out);
+        switch_pro_pack_stick(SWITCH_STICK_MID, SWITCH_STICK_MAX, expected_stick);
+        CHECK(memcmp(&out[0x5], expected_stick, sizeof(expected_stick)) == 0,
+              "mouse: wheel down holds the local Joy-Con stick Down");
+
+        in.mouse_enabled = 0;
+        switch_joycon2_encode_report(&in, 0, JOYCON2_SIDE_RIGHT, 0, out);
+        CHECK(out[0x9] == 0 && out[0xA] == 0 && out[0xB] == 0 &&
+              out[0xC] == 0 && out[0xD] == 0 && out[0xF] == 0,
+              "mouse: fields stay zero until the console enables feature bit 0x10");
+    }
 
     {
         switch_pro_input_t in = neutral_input();

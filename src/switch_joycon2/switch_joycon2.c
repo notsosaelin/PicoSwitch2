@@ -279,16 +279,84 @@ static uint32_t s_report05_counter = 0;
 static uint8_t s_selected_report_id = 0;  // 0 = none selected yet (matches switch_gc.c's
                                            // GC_REPORT_ID_NONE convention; 0 is never a valid
                                            // Joy-Con 2 input report ID)
+#define JOYCON2_DEFAULT_FEATURE_MASK 0x37u  // buttons, sticks, IMU, mouse, rumble
+static uint8_t s_feature_mask = JOYCON2_DEFAULT_FEATURE_MASK;
+static uint8_t s_enabled_features = 0;
+static uint16_t s_mouse_motion_timing = 0;
+static int8_t s_mouse_scroll_direction = 0;
+static uint32_t s_mouse_scroll_until_ms = 0;
+
+static void switch_joycon2_reset_mouse_runtime(void) {
+    s_mouse_motion_timing = 0;
+    s_mouse_scroll_direction = 0;
+    s_mouse_scroll_until_ms = 0;
+}
+
+static void switch_joycon2_update_mouse_scroll(switch_pro_input_t *in, uint32_t now_ms) {
+    if (!in->mouse_enabled || !in->has_mouse) {
+        // Disconnect and source changes must end a held wheel deflection
+        // immediately; otherwise a stale mouse could keep navigating after a
+        // gamepad takes the slot.
+        switch_joycon2_reset_mouse_runtime();
+        in->mouse_scroll = 0;
+        return;
+    }
+
+    if (in->mouse_delta_wheel != 0) {
+        int8_t direction = in->mouse_delta_wheel > 0 ? 1 : -1;
+        uint32_t notches = in->mouse_delta_wheel > 0
+            ? (uint32_t)in->mouse_delta_wheel
+            : (uint32_t)(-(int16_t)in->mouse_delta_wheel);
+        uint32_t duration_ms = notches * 40u;
+        if (duration_ms > 400u) duration_ms = 400u;
+
+        // Repeated notches in the same direction extend the current pulse.
+        // Reversing direction starts a new pulse immediately.
+        uint32_t base = now_ms;
+        if (direction == s_mouse_scroll_direction &&
+            (int32_t)(s_mouse_scroll_until_ms - now_ms) > 0) {
+            base = s_mouse_scroll_until_ms;
+        }
+        s_mouse_scroll_direction = direction;
+        s_mouse_scroll_until_ms = base + duration_ms;
+    }
+
+    if ((int32_t)(s_mouse_scroll_until_ms - now_ms) > 0)
+        in->mouse_scroll = s_mouse_scroll_direction;
+    else {
+        s_mouse_scroll_direction = 0;
+        s_mouse_scroll_until_ms = 0;
+        in->mouse_scroll = 0;
+    }
+}
 
 static void switch_joycon2_build_report(uint8_t *p) {
     switch_pro_input_t in;
-    get_global_gamepad_input(0, &in);
+    // Consume relative mouse deltas on every extended report, even while the
+    // feature is disabled, so enabling cannot release stale motion as a burst.
+    take_global_gamepad_input(0, &in);
+    in.mouse_enabled = (s_enabled_features & 0x10) != 0;
+    uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+    switch_joycon2_update_mouse_scroll(&in, now_ms);
+    if (in.mouse_enabled && in.has_mouse) {
+        // The native motion clock advances at 800 Hz; extended reports are
+        // nominally 250 Hz, so three ticks per emitted report matches the
+        // working reference closely and gives the console a stable sideways
+        // posture signal for mouse-mode activation.
+        s_mouse_motion_timing = (uint16_t)(s_mouse_motion_timing + 3u);
+        if (s_mouse_motion_timing == 0) s_mouse_motion_timing = 3;
+        in.mouse_motion_timing = s_mouse_motion_timing;
+    } else {
+        in.mouse_motion_timing = 0;
+    }
     switch_joycon2_encode_report(&in, get_global_raw_buttons(0), s_side, s_report_counter++, p);
 }
 
 static void switch_joycon2_build_report05(uint8_t *p) {
     switch_pro_input_t in;
-    get_global_gamepad_input(0, &in);
+    // Absolute mouse report-0x05 is not implemented yet; still consume relative
+    // events so a later switch to 0x07/0x08 cannot replay stale movement.
+    take_global_gamepad_input(0, &in);
     switch_joycon2_encode_report05(&in, get_global_raw_buttons(0), s_side,
                                     s_report05_counter++, p);
 }
@@ -434,20 +502,36 @@ static void switch_joycon2_vendor_dispatch(const uint8_t *c, uint32_t n) {
         break;
     }
     case 0x0C:  // feature select -- structurally mirrors switch_gc.c/switch_pro2.c exactly;
-                // per-bit capability levels not independently confirmed for Joy-Con 2.
+                // Joy-Con 2 uses the 10 78 status and level 0x03 for its
+                // sensor-backed capabilities (including the optical mouse).
+        r[4] = 0x10;
+        r[5] = 0x78;
         if (sub == 0x01) {
             uint8_t f = (n > 8) ? c[8] : 0;
             d[4] = (f & 0x01) ? 0x07 : 0x00;
             d[5] = (f & 0x02) ? 0x07 : 0x00;
-            d[6] = (f & 0x04) ? 0x01 : 0x00;
-            d[7] = (f & 0x80) ? 0x01 : 0x00;
-            d[8] = (f & 0x10) ? 0x01 : 0x00;
+            d[6] = (f & 0x04) ? 0x03 : 0x00;
+            d[7] = (f & 0x80) ? 0x03 : 0x00;
+            d[8] = (f & 0x10) ? 0x03 : 0x00;
             d[9] = (f & 0x20) ? 0x03 : 0x00;
             dl = 12;
         } else if (sub == 0x06) {
             d[4] = (n > 12) ? c[12] : 0;
             dl = 40;
         } else {
+            uint8_t requested = (n > 8) ? c[8] : 0;
+            if (sub == 0x02) {
+                s_feature_mask = requested;
+            } else if (sub == 0x03) {
+                s_feature_mask &= (uint8_t)~requested;
+                s_enabled_features &= (uint8_t)~requested;
+                if (requested & 0x10) switch_joycon2_reset_mouse_runtime();
+            } else if (sub == 0x04) {
+                s_enabled_features |= requested & s_feature_mask;
+            } else if (sub == 0x05) {
+                s_enabled_features &= (uint8_t)~(requested & s_feature_mask);
+                if (requested & 0x10) switch_joycon2_reset_mouse_runtime();
+            }
             dl = 4;
         }
         break;
@@ -618,6 +702,9 @@ void switch_joycon2_init(void) {
     s_report_counter = 0;
     s_report05_counter = 0;
     s_selected_report_id = 0;
+    s_feature_mask = JOYCON2_DEFAULT_FEATURE_MASK;
+    s_enabled_features = 0;
+    switch_joycon2_reset_mouse_runtime();
     s_bulk_cmd_count = 0;
     memset(s_joycon2_ltk, 0, sizeof(s_joycon2_ltk));
     report_set_rumble(0, 0, 0);
@@ -632,6 +719,9 @@ void switch_joycon2_mount(void) {
     s_report_counter = 0;
     s_report05_counter = 0;
     s_selected_report_id = 0;
+    s_feature_mask = JOYCON2_DEFAULT_FEATURE_MASK;
+    s_enabled_features = 0;
+    switch_joycon2_reset_mouse_runtime();
     s_bulk_cmd_count = 0;
     memset(s_joycon2_ltk, 0, sizeof(s_joycon2_ltk));
     report_set_rumble(0, 0, 0);

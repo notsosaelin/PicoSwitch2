@@ -154,6 +154,10 @@ static bool switch2_ble_init(bthid_device_t* device)
             switch2_data[i].event.dev_addr = device->conn_index;
             switch2_data[i].event.instance = 0;
             switch2_data[i].event.button_count = 14;
+            if (pid == SW2_LJC_PID)
+                switch2_data[i].event.joycon_side = INPUT_JOYCON_SIDE_LEFT;
+            else if (pid == SW2_RJC_PID)
+                switch2_data[i].event.joycon_side = INPUT_JOYCON_SIDE_RIGHT;
 
             device->driver_data = &switch2_data[i];
 
@@ -355,6 +359,16 @@ static void switch2_ble_process_report(bthid_device_t* device, const uint8_t* da
     // Grip buttons (L4/R4)
     if (sw2_buttons & (1 << SW2_GL)) buttons |= JP_BUTTON_L4;
     if (sw2_buttons & (1 << SW2_GR)) buttons |= JP_BUTTON_R4;
+
+    // Rail buttons are independent of L/R and must survive together: SL+SR is
+    // how the console registers a single Joy-Con for sideways use.
+    if (sw2->pid == SW2_LJC_PID) {
+        if (sw2_buttons & (1 << SW2_L_SL)) buttons |= JP_BUTTON_SL;
+        if (sw2_buttons & (1 << SW2_L_SR)) buttons |= JP_BUTTON_SR;
+    } else if (sw2->pid == SW2_RJC_PID) {
+        if (sw2_buttons & (1 << SW2_R_SL)) buttons |= JP_BUTTON_SL;
+        if (sw2_buttons & (1 << SW2_R_SR)) buttons |= JP_BUTTON_SR;
+    }
 
     // Fill event struct
     sw2->event.buttons = buttons;

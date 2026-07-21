@@ -61,6 +61,10 @@
 #define SWITCH_STICK_MID 0x800
 #define SWITCH_STICK_MAX 0xFFF
 
+#define SWITCH_SOURCE_JOYCON_NONE  0
+#define SWITCH_SOURCE_JOYCON_LEFT  1
+#define SWITCH_SOURCE_JOYCON_RIGHT 2
+
 // Per-controller input state produced by the Bluetooth core (core1) and
 // consumed by the USB core (core0). Sticks are pre-packed into the Pro
 // Controller's 12-bit-in-3-bytes wire format. IMU values are pre-scaled to the
@@ -76,6 +80,14 @@ typedef struct {
     uint8_t battery_level;   // normalized 0..100 percentage
     uint8_t battery_valid;   // 1 when the source controller reported a level
     uint8_t battery_charging;// 1 when the source controller reports charging
+    uint8_t source_joycon_side; // SWITCH_SOURCE_JOYCON_* physical source provenance
+    int16_t mouse_delta_x;   // accumulated relative motion, consumed by Joy-Con 2 reports
+    int16_t mouse_delta_y;
+    int8_t mouse_delta_wheel;// accumulated one-shot wheel notches
+    int8_t mouse_scroll;     // runtime held scroll direction: +1 up/left, -1 down/right
+    uint16_t mouse_motion_timing; // synthetic stationary posture clock for Joy-Con 2 mouse mode
+    uint8_t has_mouse;       // source is a pointing device
+    uint8_t mouse_enabled;   // runtime copy: console enabled feature bit 0x10
 #ifdef NS2_DS5_AUDIO
     uint8_t headset_state;   // CONTROLLER_HEADSET_* physical jack state
 #endif

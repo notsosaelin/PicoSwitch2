@@ -86,6 +86,12 @@
 #define JP_BUTTON_L5 (1 << 25)  // Xbox Elite lower-left paddle  (upper = L4)
 #define JP_BUTTON_R5 (1 << 26)  // Xbox Elite lower-right paddle (upper = R4)
 
+// Joy-Con rail buttons. Keep these distinct from L/R: a single Joy-Con has
+// both its top shoulder and the two rail buttons, and SL+SR is the console's
+// registration chord for changing the half between upright and sideways use.
+#define JP_BUTTON_SL (1u << 27)
+#define JP_BUTTON_SR (1u << 28)
+
 // Function keys (internal only — never output to host, only used in hotkey combos)
 #define JP_BUTTON_F1 (1 << 22)
 #define JP_BUTTON_F2 (1 << 23)

@@ -196,6 +196,20 @@ static uint32_t switch_translate_vendor_paddles(const bthid_device_t *device,
     return buttons;
 }
 
+static input_joycon_side_t switch_joycon_side(const bthid_device_t *device)
+{
+    if (!device) return INPUT_JOYCON_SIDE_NONE;
+    if (device->vendor_id == 0x057E) {
+        if (device->product_id == 0x2006) return INPUT_JOYCON_SIDE_LEFT;
+        if (device->product_id == 0x2007) return INPUT_JOYCON_SIDE_RIGHT;
+    }
+    if (device->name) {
+        if (strstr(device->name, "Joy-Con (L)") != NULL) return INPUT_JOYCON_SIDE_LEFT;
+        if (strstr(device->name, "Joy-Con (R)") != NULL) return INPUT_JOYCON_SIDE_RIGHT;
+    }
+    return INPUT_JOYCON_SIDE_NONE;
+}
+
 static bool switch_quarantine_pro_wake_input(const bthid_device_t *device,
                                              const switch_bt_data_t *sw)
 {
@@ -343,6 +357,7 @@ static bool switch_init(bthid_device_t* device)
             switch_data[i].event.dev_addr = device->conn_index;
             switch_data[i].event.instance = 0;
             switch_data[i].event.button_count = 10;
+            switch_data[i].event.joycon_side = switch_joycon_side(device);
 
             device->driver_data = &switch_data[i];
             return true;
@@ -379,6 +394,17 @@ static void switch_process_report(bthid_device_t* device, const uint8_t* data, u
         if (rpt->r)      buttons |= JP_BUTTON_R1;
         if (rpt->zl)     buttons |= JP_BUTTON_L2;
         if (rpt->zr)     buttons |= JP_BUTTON_R2;
+
+        // Full report 0x30 preserves the two rail buttons separately from the
+        // top shoulder. Simple report 0x3F has no SL/SR fields.
+        sw->event.joycon_side = switch_joycon_side(device);
+        if (sw->event.joycon_side == INPUT_JOYCON_SIDE_LEFT) {
+            if (rpt->sl_l) buttons |= JP_BUTTON_SL;
+            if (rpt->sr_l) buttons |= JP_BUTTON_SR;
+        } else if (sw->event.joycon_side == INPUT_JOYCON_SIDE_RIGHT) {
+            if (rpt->sl_r) buttons |= JP_BUTTON_SL;
+            if (rpt->sr_r) buttons |= JP_BUTTON_SR;
+        }
 
         // System buttons
         if (rpt->minus)  buttons |= JP_BUTTON_S1;

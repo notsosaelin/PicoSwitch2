@@ -5,7 +5,10 @@
 > design for two goals — **(A)** real Joy-Con 2 controllers pass through faithfully, and **(B)** any
 > other controller works in Joy-Con mode in **either** orientation (sideways *or* upright).
 >
-> **Documentation only — no code changed.** Companion to `SERIAL-GENERATION.md` / `MOUSE-MODE.md`.
+> **Implementation update (2026-07-21):** the physical-side provenance, native SL/SR decoding,
+> canonical Joy-Con passthrough, and console-owned orientation behavior described by this audit are
+> now implemented and hardware-validated. The detailed audit below is retained as design history.
+> Companion to `SERIAL-GENERATION.md` / `MOUSE-MODE.md`.
 > Primary sources read for this audit: `src/switch_joycon2/switch_joycon2_encode.c`,
 > `src/switch_joycon2/switch_joycon2.c`, `src/bt_hid/bt/bthid/devices/vendors/nintendo/switch2_ble.c`,
 > `src/bt_hid/ns2_seam.c`, `src/report.c`, `src/bt_hid/core/buttons.h`.

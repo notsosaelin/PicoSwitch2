@@ -4,7 +4,12 @@
 > format (validated against a genuine capture), what PicoSwitch2 already has, and a feasibility/design
 > path to emulating it from a paired Bluetooth mouse.
 >
-> **Documentation only — no code changed.** Companion to
+> **Implementation update (2026-07-21):** generic Bluetooth HID mouse classification/parsing,
+> relative-motion delivery, Joy-Con feature negotiation, pointer posture, click mapping, and
+> wheel-to-local-stick scrolling are implemented. Pointer activation and buttons are
+> hardware-validated; wheel direction/cadence awaits the next hardware check. Mouse output is
+> gated by both a structurally identified mouse source and console feature bit `0x10`, and mouse
+> disconnect clears the shared state and held scroll pulse. Companion to
 > [`COMMAND-IMPLEMENTATION.md`](COMMAND-IMPLEMENTATION.md) §6 (command surface) and
 > [`docs/experiments/2026-07-19-usb-command-ab-diff.md`](docs/experiments/2026-07-19-usb-command-ab-diff.md)
 > Exp 2 (where the enable mechanism was first found).

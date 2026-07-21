@@ -5,6 +5,7 @@
 #include "core/input_event.h"
 #include "bt/transport/bt_transport.h"
 #include "devices/generic/bthid_gamepad.h"
+#include "devices/generic/bthid_mouse.h"
 #include "devices/vendors/sony/ds3_bt.h"
 #include "devices/vendors/sony/ds4_bt.h"
 #include "devices/vendors/sony/ds5_bt.h"
@@ -221,7 +222,12 @@ void bthid_update_device_info(uint8_t conn_index, const char* name,
     bool needs_reval = (current == &bthid_gamepad_driver);
 
     // Check if current vendor driver still matches with updated info
-    if (!needs_reval && current && current->match) {
+    // A generic mouse may have been selected from its HID descriptor because
+    // BLE has no COD or because a Classic device advertises the keyboard+mouse
+    // combo class. That structural evidence is stronger than the name/COD
+    // heuristics accepted by match(); do not let a late VID/PID update undo it
+    // and bind the device back to the generic gamepad parser.
+    if (!needs_reval && current != &bthid_mouse_driver && current && current->match) {
         if (!current->match(device->name, cod, device->vendor_id,
                             device->product_id, device->is_ble)) {
             needs_reval = true;
@@ -266,10 +272,12 @@ void bthid_update_device_info(uint8_t conn_index, const char* name,
                                     cod, 0, NULL, new_driver->name, "reeval-rebind",
                                     (int8_t)device->player_index);
 
-            // Pass cached HID descriptor if switching to generic
+            // Pass cached HID descriptor through the central classifier. A
+            // vendor fallback can still turn out to be a descriptor-defined
+            // mouse and must not bypass mouse reclassification.
             if (new_driver == &bthid_gamepad_driver &&
                 cached_hid_desc_len > 0 && cached_hid_desc_conn == conn_index) {
-                bthid_gamepad_set_descriptor(device, cached_hid_desc, cached_hid_desc_len);
+                bthid_set_hid_descriptor(conn_index, cached_hid_desc, cached_hid_desc_len);
             }
         } else if (current == &bthid_gamepad_driver) {
             // Still generic but VID/PID changed — update VID-dependent flags.
@@ -482,10 +490,13 @@ void bt_on_hid_ready(uint8_t conn_index)
                             ((const bthid_driver_t*)device->driver)->name,
                             driver ? "initial-bind" : "initial-bind-generic-fallback", -1);
 
-    // Pass cached HID descriptor if available (often arrives before device creation)
-    if ((const bthid_driver_t*)device->driver == &bthid_gamepad_driver &&
+    // Pass cached HID descriptor if available (often arrives before device creation).
+    // Route through the central hook so an unnamed BLE mouse initially claimed
+    // by the catch-all gamepad fallback can be reclassified structurally.
+    const bthid_driver_t *bound = (const bthid_driver_t*)device->driver;
+    if ((bound == &bthid_gamepad_driver || bound == &bthid_mouse_driver) &&
         cached_hid_desc_len > 0 && cached_hid_desc_conn == conn_index) {
-        bthid_gamepad_set_descriptor(device, cached_hid_desc, cached_hid_desc_len);
+        bthid_set_hid_descriptor(conn_index, cached_hid_desc, cached_hid_desc_len);
     }
 
     // Debug: confirm device state directly from array
@@ -598,7 +609,7 @@ void bthid_set_hid_descriptor(uint8_t conn_index, const uint8_t* desc, uint16_t 
 {
     // Always cache — descriptor often arrives before device is created (Classic BT)
     if (desc_len <= BTHID_MAX_DESC_LEN) {
-        memcpy(cached_hid_desc, desc, desc_len);
+        memmove(cached_hid_desc, desc, desc_len);
         cached_hid_desc_len = desc_len;
         cached_hid_desc_conn = conn_index;
     }
@@ -623,8 +634,22 @@ void bthid_set_hid_descriptor(uint8_t conn_index, const uint8_t* desc, uint16_t 
                             ((const bthid_driver_t*)device->driver)->name,
                             "descriptor-arrived", (int8_t)device->player_index);
 
-    // Pass to generic gamepad driver for parsing
-    if ((const bthid_driver_t*)device->driver == &bthid_gamepad_driver) {
+    const bthid_driver_t *current = (const bthid_driver_t*)device->driver;
+    if (current == &bthid_gamepad_driver &&
+        bthid_mouse_descriptor_is_mouse(desc, desc_len)) {
+        // BLE has no Class-of-Device, and many mice advertise opaque product
+        // names. The relative X+Y descriptor is the authoritative discriminator.
+        printf("[BTHID] Descriptor reclassify: generic gamepad -> generic mouse (%s)\n",
+               device->name);
+        if (current->disconnect) current->disconnect(device);
+        device->driver_data = NULL;
+        device->driver = &bthid_mouse_driver;
+        device->type = BTHID_DEVICE_MOUSE;
+        if (bthid_mouse_driver.init && bthid_mouse_driver.init(device))
+            bthid_mouse_set_descriptor(device, desc, desc_len);
+    } else if (current == &bthid_mouse_driver) {
+        bthid_mouse_set_descriptor(device, desc, desc_len);
+    } else if (current == &bthid_gamepad_driver) {
         bthid_gamepad_set_descriptor(device, desc, desc_len);
     }
 }
@@ -663,7 +688,7 @@ void bthid_fallback_to_generic(uint8_t conn_index)
 
     // Pass cached HID descriptor if available for this device
     if (cached_hid_desc_len > 0 && cached_hid_desc_conn == conn_index) {
-        bthid_gamepad_set_descriptor(device, cached_hid_desc, cached_hid_desc_len);
+        bthid_set_hid_descriptor(conn_index, cached_hid_desc, cached_hid_desc_len);
     }
 }
 
