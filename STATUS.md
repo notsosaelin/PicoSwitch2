@@ -5,7 +5,7 @@
 > Planned work belongs in [`PLAN.md`](PLAN.md); evidence and protocol details belong under
 > [`docs/`](docs/README.md).
 
-Last verified: 2026-07-18
+Last verified: 2026-07-21
 Branch: `ns2-testing`
 
 ## Current release
@@ -30,6 +30,7 @@ baseline remains intact.
 | Joy-Con 2 Left and Right sideways mappings | ✅ Confirmed | Real Switch 2; face/shoulder/trigger/stick profile |
 | Joy-Con 2 rumble and STOP/reconnect behavior | ✅ Confirmed | Real Switch 2 |
 | Switch 2 controller firmware identity/update status | ✅ Confirmed | Genuine `0x10/01` replies plus Switch 2 Update Controllers; Pro2, NSO GC, and both Joy-Con 2 personalities report up to date |
+| Out-of-band UART protocol tracer | ✅ Confirmed | Real Switch 2 + genuine Pro Controller 2 source; complete 63-record Pro2 re-enumeration capture, zero overwrites, pull-transport framing validated |
 | DualSense and DualSense Edge input | ✅ Confirmed | Real Switch 2 and Steam |
 | Edge paddles, Fn buttons, and mute mapping | ✅ Confirmed | Real hardware |
 | DualSense/Edge LEDs and rumble | ✅ Confirmed | Real hardware after report-boundary scheduler fix |
@@ -115,6 +116,8 @@ Current automated coverage includes:
 - GameCube and Joy-Con 2 input report encoders
 - Joy-Con 2 per-side identity and configurable accent placement
 - HID output normalization
+- Retained UART protocol-trace disabled mode, payload truncation, chronological wraparound, and
+  overwrite accounting
 - Switch 2 pairing cryptography
 - Switch 2 wake identity parsing and byte-exact advertisement construction
 - Automatic wake policy across reconnect startup state, per-controller session cleanup, repeated

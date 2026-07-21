@@ -21,6 +21,7 @@
 #include "ds5_audio_bridge.h"
 #include "switch_pro2.h"
 #include "ns2_firmware_profile.h"
+#include "ns2_protocol_trace.h"
 #include "usb.h"         // g_usb_config_mode
 
 // This whole module is only built into the NS2 firmware. The vendor-class calls
@@ -606,6 +607,9 @@ static void vend_send(const uint8_t *r, uint16_t len) {
 static void ns2_dispatch(const uint8_t *c, uint32_t n) {
     if (n < 8) return;
     uint8_t id = c[0], transport = c[2], sub = c[3];
+    ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
+                              NS2_TRACE_BULK_COMMAND,
+                              NS2_TRACE_CONSOLE_TO_DEVICE, id, sub, c, n);
 
     // Fine-grained handshake milestones for the LED tracer, to pinpoint where the console
     // stalls in the long post-pairing sequence (these are strictly ordered in the capture).
@@ -768,7 +772,12 @@ static void ns2_dispatch(const uint8_t *c, uint32_t n) {
             dl = 0;
             break;
     }
-    vend_send(r, (uint16_t)(8 + dl));
+    uint16_t response_length = (uint16_t)(8 + dl);
+    ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
+                              NS2_TRACE_BULK_RESPONSE,
+                              NS2_TRACE_DEVICE_TO_CONSOLE, id, sub, r,
+                              response_length);
+    vend_send(r, response_length);
 }
 
 //--------------------------------------------------------------------+
@@ -1083,6 +1092,10 @@ bool ns2_vendor_control_xfer(uint8_t rhport, uint8_t stage, const void *request_
             if (g_ns2_stage < 4) g_ns2_stage = 4;  // console is now talking to us
             uint16_t len = request->wLength < sizeof(ns2_ctrl_identity)
                                ? request->wLength : (uint16_t)sizeof(ns2_ctrl_identity);
+            ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
+                                      NS2_TRACE_EP0_RESPONSE,
+                                      NS2_TRACE_DEVICE_TO_CONSOLE,
+                                      request->bRequest, 0, ns2_ctrl_identity, len);
             return tud_control_xfer(rhport, request, ns2_ctrl_identity, len);
         }
         case 0x02: {  // firmware/version info (16 B)
@@ -1090,10 +1103,18 @@ bool ns2_vendor_control_xfer(uint8_t rhport, uint8_t stage, const void *request_
             ns2_firmware_diagnostics_record_ep0();
             uint16_t len = request->wLength < sizeof(ns2_ctrl_info)
                                ? request->wLength : (uint16_t)sizeof(ns2_ctrl_info);
+            ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
+                                      NS2_TRACE_EP0_RESPONSE,
+                                      NS2_TRACE_DEVICE_TO_CONSOLE,
+                                      request->bRequest, 0, ns2_ctrl_info, len);
             return tud_control_xfer(rhport, request, (void *)ns2_ctrl_info, len);
         }
         case 0x04:  // OUT, no data -> ACK
             if (g_ns2_stage < 4) g_ns2_stage = 4;
+            ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
+                                      NS2_TRACE_EP0_RESPONSE,
+                                      NS2_TRACE_DEVICE_TO_CONSOLE,
+                                      request->bRequest, 0, NULL, 0);
             return tud_control_status(rhport, request);
     }
     return false;

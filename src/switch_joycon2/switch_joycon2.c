@@ -13,6 +13,7 @@
 #include "switch_joycon2_encode.h"
 #include "ns2_pairing_crypto.h"
 #include "ns2_joycon2_identity.h"
+#include "ns2_protocol_trace.h"
 #include "config.h"
 #include "switch_pro.h"
 #include "usb.h"
@@ -451,6 +452,9 @@ static uint32_t s_bulk_cmd_count = 0;
 static void switch_joycon2_vendor_dispatch(const uint8_t *c, uint32_t n) {
     if (n < 8) return;
     uint8_t id = c[0], transport = c[2], sub = c[3];
+    ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
+                              NS2_TRACE_BULK_COMMAND,
+                              NS2_TRACE_CONSOLE_TO_DEVICE, id, sub, c, n);
     s_bulk_cmd_count++;
 
     static uint32_t last_unknown_log_ms = 0;
@@ -626,7 +630,12 @@ static void switch_joycon2_vendor_dispatch(const uint8_t *c, uint32_t n) {
         }
     }
 
-    tud_vendor_write(r, (uint16_t)(8 + dl));
+    uint16_t response_length = (uint16_t)(8 + dl);
+    ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
+                              NS2_TRACE_BULK_RESPONSE,
+                              NS2_TRACE_DEVICE_TO_CONSOLE, id, sub, r,
+                              response_length);
+    tud_vendor_write(r, response_length);
     tud_vendor_write_flush();
 }
 
@@ -680,14 +689,27 @@ bool switch_joycon2_vendor_control_xfer(uint8_t rhport, uint8_t stage, const voi
         case 0x03: {  // identity block (64 B)
             const uint8_t *identity = switch_joycon2_ctrl_identity();
             uint16_t len = request->wLength < 64 ? request->wLength : 64;
+            ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
+                                      NS2_TRACE_EP0_RESPONSE,
+                                      NS2_TRACE_DEVICE_TO_CONSOLE,
+                                      request->bRequest, 0, identity, len);
             return tud_control_xfer(rhport, request, (void *)identity, len);
         }
         case 0x02: {  // firmware/version info (16 B)
             uint16_t len = request->wLength < sizeof(switch_joycon2_ctrl_info)
                                ? request->wLength : (uint16_t)sizeof(switch_joycon2_ctrl_info);
+            ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
+                                      NS2_TRACE_EP0_RESPONSE,
+                                      NS2_TRACE_DEVICE_TO_CONSOLE,
+                                      request->bRequest, 0,
+                                      switch_joycon2_ctrl_info, len);
             return tud_control_xfer(rhport, request, (void *)switch_joycon2_ctrl_info, len);
         }
         case 0x04:  // OUT, no data -> ACK
+            ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
+                                      NS2_TRACE_EP0_RESPONSE,
+                                      NS2_TRACE_DEVICE_TO_CONSOLE,
+                                      request->bRequest, 0, NULL, 0);
             return tud_control_status(rhport, request);
     }
 

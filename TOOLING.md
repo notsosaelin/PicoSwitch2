@@ -78,20 +78,23 @@ explicit opt-out.
 The dongle stays plugged into the Switch over USB-C the entire time; the UART pins are physically
 independent, so controller operation and PC tracing run concurrently.
 
-### 0.2 Implemented live query channel
+### 0.2 Implemented live query and retained-trace channel
 
-The initial UART tooling milestone is complete. It intentionally solves the immediate
-controller-update investigation before expanding into the high-rate Tier-1 tracer:
+The UART tooling now covers both the controller-update investigation and the first bounded Tier-1
+protocol-trace increment:
 
 - **Transport:** UART0, GP0 TX / GP1 RX, **115200 8N1**, no flow control.
-- **Scheduling:** `ns2_uart_diag_task()` runs after TinyUSB service with a maximum of 16 RX and 32 TX
+- **Scheduling:** `ns2_uart_diag_task()` runs after TinyUSB service with a maximum of 16 RX and 8 TX
   bytes considered per core-0 loop. It checks FIFO readiness before every byte and never waits for
   the PC or for UART space.
-- **Framing:** one ASCII command line in, one single-line JSON response out. This low-rate query path
-  is appropriate for retained summaries; the future high-rate §1.1 event stream should still use
-  compact binary framing.
+- **Framing:** one ASCII command line in, JSON-lines out. Ordinary queries return one line.
+  `trace dump` freezes the retained snapshot and returns its manifest; the PC reader then pulls each
+  record individually with `trace read N` and synthesizes the final `trace:end` line. Keeping one
+  request and one response in flight avoids sustained-stream loss across shallow USB-UART bridges.
 - **Commands:** `ping`, `fwreads` (alias `status`), `clear`, `profile`,
-  `profile default`, `profile C.M.m B.M.m D.M.m`, `btversion request`, `btversion`, and `help`.
+  `profile default`, `profile C.M.m B.M.m D.M.m`, `btversion request`, `btversion`,
+  `trace status|clear|start|stop|dump`, internal pull command `trace read N`, `reenumerate`, and
+  `help`.
 - **Current data:** exact active controller/BT/DSP profile, EP0 firmware-info query count, command
   `0x10` query count, and every unique command-`0x02` memory-read subcommand/address/length/count.
   No memory response bytes and no command-`0x0D` update payload are retained.
@@ -103,8 +106,28 @@ controller-update investigation before expanding into the high-rate Tier-1 trace
   `btversion request` marshals the read-only native command `0x10/0x01` onto the BTstack thread;
   `btversion` returns its raw 12-byte reply and decoded controller/BT/DSP tuple. It performs no
   controller memory write, configuration change, or firmware-update command.
+- **Retained protocol trace:** disabled by default. When explicitly started, USB/core0 copies EP0
+  setup/reply, vendor bulk command/reply, and HID output events into a 128-record RAM ring. Each
+  record retains its timestamp, direction, active personality, command/report identifiers, original
+  length, and first 24 payload bytes. A full ring overwrites the oldest record and counts the loss.
+  UART output is paced in eight-byte chunks separated by a nonblocking hardware-idle boundary. The
+  PC reader pulls, parses, and validates one record before requesting the next; it verifies sequential
+  record numbers, enum values, required fields, and payload framing. No JSON formatting or UART
+  access occurs in USB callbacks. High-rate HID input reports are
+  deliberately excluded from this first increment so they cannot erase the handshake immediately.
+  Trace payloads can contain controller/console addresses, synthetic serial data, calibration
+  prefixes, and pairing challenge material; treat dumps as bench data and redact them before adding
+  them to public issues or commits.
+- **Same-personality re-enumeration:** `reenumerate` uses the validated 100 ms detach path without
+  touching Bluetooth, allowing a fresh Pro2, GC, or Joy-Con 2 handshake to be captured while the
+  UART cable stays attached.
 - **Windows reader:** `tools/read_uart_diag.ps1`; it recognizes FTDI, CP210x, CH34x and PL2303
   adapters automatically when exactly one is present, or accepts an explicit COM port.
+- **Hardware validation (2026-07-21):** the pull reader recovered all 63 chronological records from
+  a Pro2 same-personality re-enumeration on a real Switch 2 with zero ring overwrites or transport
+  corruption. The paired genuine Pro Controller 2 returned raw version tuple
+  `020104020C00000000020300`, matching the emulated `2.1.4 / 12.0.0 / 0.2.3` response observed in
+  the same console handshake.
 
 Usage while USB-C remains attached to the Switch:
 
@@ -116,6 +139,11 @@ Usage while USB-C remains attached to the Switch:
 .\tools\read_uart_diag.ps1 -Port COM5 -Command 'profile default'
 .\tools\read_uart_diag.ps1 -Port COM5 -Command 'btversion request'
 .\tools\read_uart_diag.ps1 -Port COM5 -Command btversion
+.\tools\read_uart_diag.ps1 -Port COM5 -Command 'trace clear'
+.\tools\read_uart_diag.ps1 -Port COM5 -Command 'trace start'
+.\tools\read_uart_diag.ps1 -Port COM5 -Command reenumerate
+.\tools\read_uart_diag.ps1 -Port COM5 -Command 'trace stop'
+.\tools\read_uart_diag.ps1 -Port COM5 -Command 'trace dump'
 ```
 
 The firmware initializes UART only after the Pico 2 W's selected system clock is applied, so the
@@ -125,16 +153,18 @@ validated 300 MHz build still derives the requested baud correctly.
 
 ## Tier 1 — Observability (build first)
 
-### 1.1 On-device protocol tracer 🔵 *(keystone; firmware-update subset implemented)*
+### 1.1 On-device protocol tracer 🔵 *(keystone; retained command tracer implemented)*
 - **What:** structured, timestamped log of everything the console solicits and we answer — every EP0
   vendor request (`bRequest` 0x02/03/04), every command `0x01`–`0x18` + subcommand, every report-ID
   selection, feature-mask negotiation (`0x0C`), memory read address/length, and the report cadence.
 - **Unblocks:** the Joy-Con 2 rotation/registration question, motion `0x09`, NFC, wake, and every
   "does the console actually read this?" question. Converts *"the console rejected us"* into
   *"console asked X at T+3ms, we answered Y, it stopped soliciting Z."*
-- **Current 🔵:** the §0.2 live query channel and retained firmware-prompt trace cover both version
-  surfaces plus command-`0x02` memory-read metadata. The general command/report/event stream below
-  remains to be built.
+- **Current 🔵:** the §0.2 retained ring captures the low-rate, semantically important EP0, vendor
+  bulk, and HID-output seams across all four native personalities. Host tests pin disabled mode,
+  truncation, wrap order, and overwrite accounting. Remaining increments are selective/sampled HID
+  input capture, audio-class control events, compact binary streaming for larger captures, and the
+  decoded viewer in §1.2.
 - **Sketch:** a ring buffer of fixed-size trace records (`{t_us, dir, kind, addr/cmd, len, first_N
   bytes}`) filled at the EP0/command/report seams, drained over the Ch. A/B channel by a low-priority
   task. Binary framing (not printf) so it survives high rates without flooding core1 (the project has
@@ -292,7 +322,8 @@ validated 300 MHz build still derives the requested baud correctly.
 
 1. **§0 out-of-band channel (UART-over-GPIO, chosen)** — ✅ live query/A-B/BLE-bridge channel
    implemented and hardware-validated over the bench CP2102 cable while attached to a Switch 2.
-2. **1.1 on-device tracer** — the keystone; unblocks the most.
+2. **1.1 on-device tracer** — 🔵 retained command tracer and pull transport are hardware-validated;
+   sampled input/audio and high-rate binary streaming remain.
 3. **3.2 capture corpus index** — cheap, compounds immediately, do it in parallel.
 4. **2.1 fault-injection harness** — highest-value *active* tool; needs 1.1 to read reactions.
 5. **3.1 decoder library** + **1.2 trace viewer** — make 1.1/2.1 output legible.
