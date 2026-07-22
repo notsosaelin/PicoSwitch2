@@ -4,6 +4,24 @@ Reverse-chronological log of notable changes on the `ns2-testing` branch. The
 2026-07-21 and 2026-07-22 entries below are included in
 [`v1.5.0`](https://github.com/notsosaelin/PicoSwitch2/releases/tag/v1.5.0).
 
+## Unreleased
+
+### Fixed
+
+- **Genuine Pro Controller 2 headphone audio is hardware-confirmed.** Each 20 ms interval is one
+  240-byte, 48 kHz stereo Opus/CELT packet at 96 kbit/s, divided only for GATT transport into an
+  ordered 120-byte `0x04` first half and 120-byte `0x02` continuation. The earlier independent-frame
+  interpretation produced recognizable but severely distorted audio. The corrected direct-CELT
+  encoder, fixed-idle synchronization, and commit-after-both-writes scheduling produce clean console
+  audio through the controller's headphone jack while preserving input, native gyro, rumble,
+  headset insertion/removal, LED behavior, and BOOTSEL handling.
+
+### Validation
+
+- Pico W and Pico 2 W firmware targets compile, all 36 host-test executables pass, the production-
+  shaped codec probe round-trips a 240-byte frame as 960 samples, and all 1,846 genuine capture
+  pairs decode in `0x04 + 0x02` order with zero failures or duration mismatches.
+
 ## 2026-07-22
 
 ### Fixed

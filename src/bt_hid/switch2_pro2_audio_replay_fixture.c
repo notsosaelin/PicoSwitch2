@@ -1,8 +1,9 @@
 #include "switch2_pro2_audio_replay_fixture.h"
 
-// Original 0x002C stream-0x02 haptic frames at the CSV's real
-// 49.206..49.766-second timestamps.
-// The last two frames are the genuine all-zero silence representation.
+// Original second halves of 0x002C speaker Opus packets at the CSV's real
+// 49.206..49.766-second timestamps. Each block followed its matching 120-byte
+// stream-0x04 first half; the last two blocks are the genuine all-zero idle
+// continuation.
 const uint8_t switch2_pro2_replay_frames
     [SW2_PRO2_REPLAY_FRAME_COUNT][SW2_PRO2_REPLAY_FRAME_BYTES] = {
     {

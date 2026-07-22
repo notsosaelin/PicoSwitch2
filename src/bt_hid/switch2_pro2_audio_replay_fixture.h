@@ -6,8 +6,8 @@
 #define SW2_PRO2_REPLAY_FRAME_BYTES 120u
 #define SW2_PRO2_REPLAY_FRAME_COUNT 29u
 
-// A captured HD-haptic burst copied byte-for-byte from a decrypted genuine
-// Pro Controller 2 0x002C capture. Diagnostic replay only; not a codec.
+// Captured second halves of genuine 240-byte speaker Opus packets. Diagnostic
+// replay only; these blocks are not independently decodable codec frames.
 extern const uint8_t switch2_pro2_replay_frames
     [SW2_PRO2_REPLAY_FRAME_COUNT][SW2_PRO2_REPLAY_FRAME_BYTES];
 

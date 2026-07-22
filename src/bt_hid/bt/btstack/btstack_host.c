@@ -5372,9 +5372,10 @@ static bool switch2_pro2_replay_write(hci_con_handle_t con_handle,
     return true;
 }
 
-// UART-only endpoint discriminator: replay a genuine captured stream-0x02
-// haptic burst using the order and timing preserved by the USB analyzer CSV.
-// This intentionally does not consume live console PCM yet.
+// UART-only historical endpoint discriminator: pair captured second halves
+// with the fixed idle first half. This proved that stream 0x02 reaches the
+// headphone decoder, but it is deliberately not a reconstruction of the
+// original 240-byte Opus packets. The live path below is the valid codec path.
 void btstack_host_service_switch2_pro2_audio_replay(void)
 {
     const bool requested = __atomic_load_n(
@@ -5412,12 +5413,11 @@ void btstack_host_service_switch2_pro2_audio_replay(void)
         0x00, 0x17, 0x91, 0x01, 0x02, 0x00, 0x07, 0x00,
         0x00, 0x80, 0xBB, 0x00, 0x00, 0x02, 0xF0, 0x00};
     // The original Total Phase USB capture retained its real timestamps even
-    // though the derived pcapng did not. It proves both streams repeat every
-    // 20 ms, with stream 0x04 about 5 ms before stream 0x02. Stream 0x04 is
-    // standard Opus carrying headphone audio; its idle packet starts FC FF FE.
-    // Stream 0x02 carries sparse HD haptics and idles as all zeroes. The fixture below
-    // is the exact contiguous 49.206-49.766 s stream-0x02 capture, including
-    // its final two genuine silence frames.
+    // though the derived pcapng did not. One 240-byte Opus packet repeats every
+    // 20 ms: stream 0x04 carries bytes 0..119 about 5 ms before stream 0x02
+    // carries bytes 120..239. The fixture is the exact contiguous
+    // 49.206..49.766-second sequence of second halves, including two all-zero
+    // idle continuations. This replay intentionally supplies idle first halves.
     uint8_t stream4_packet[3 + SW2_PRO2_REPLAY_FRAME_BYTES] = {
         0x00, 0x04, SW2_PRO2_REPLAY_FRAME_BYTES, 0xFC, 0xFF, 0xFE};
     uint8_t stream2_packet[3 + SW2_PRO2_REPLAY_FRAME_BYTES] = {
@@ -5521,10 +5521,10 @@ static void switch2_pro2_live_advance(uint32_t now_us, uint32_t interval_us)
             : scheduled;
 }
 
-// UART-gated first production-shaped path: console USB PCM is encoded on the
-// codec worker into one 120-byte stereo Opus frame per 20 ms stream-0x04
-// packet. Stream 0x02 remains zero for this audio-isolation pass; native Pro2
-// haptic translation is intentionally a separate follow-up.
+// UART-gated production-shaped path: console USB PCM is encoded into one
+// 240-byte stereo Opus packet per 20 ms interval. The real transport divides
+// that packet into a 120-byte 0x04 first chunk and a 120-byte 0x02 second
+// chunk. These are packet halves, not independent audio and haptic codecs.
 void btstack_host_service_switch2_pro2_audio_live(void)
 {
     const bool requested = __atomic_load_n(
@@ -5577,8 +5577,10 @@ void btstack_host_service_switch2_pro2_audio_live(void)
     static uint8_t setup_two[] = {
         0x00, 0x17, 0x91, 0x01, 0x02, 0x00, 0x07, 0x00,
         0x00, 0x80, 0xBB, 0x00, 0x00, 0x02, 0xF0, 0x00};
-    static uint8_t stream4_packet[3 + SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN];
-    static uint8_t stream2_packet[3 + SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN];
+    static uint8_t stream4_packet[3 + SWITCH2_PRO2_AUDIO_CHUNK_LEN];
+    static uint8_t stream2_packet[3 + SWITCH2_PRO2_AUDIO_CHUNK_LEN];
+    static uint8_t opus_packet[SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN];
+    static bool opus_packet_encoded;
 
     switch (s_sw2_pro2_live_state) {
         case SW2_PRO2_LIVE_SETUP_ONE:
@@ -5598,29 +5600,24 @@ void btstack_host_service_switch2_pro2_audio_live(void)
         case SW2_PRO2_LIVE_STREAM4: {
             stream4_packet[0] = 0x00;
             stream4_packet[1] = 0x04;
-            stream4_packet[2] = SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN;
-            memset(&stream4_packet[3], 0,
-                   SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN);
-            // Exact steady-state idle Opus packet observed from the real
-            // console; use it until the first encoded PCM window is ready.
-            stream4_packet[3] = 0xFC;
-            stream4_packet[4] = 0xFF;
-            stream4_packet[5] = 0xFE;
-            const bool encoded = s_sw2_pro2_live_prime_count >= 8u &&
-                ds5_audio_bridge_peek_switch2_pro2_frame(
-                    &stream4_packet[3]);
+            stream4_packet[2] = SWITCH2_PRO2_AUDIO_CHUNK_LEN;
+            // Exact steady-state 240-byte idle Opus packet observed from the
+            // real console. Its first half begins FC FF FE; the rest of both
+            // chunks is zero.
+            memset(opus_packet, 0, sizeof(opus_packet));
+            opus_packet[0] = 0xFC;
+            opus_packet[1] = 0xFF;
+            opus_packet[2] = 0xFE;
+            opus_packet_encoded = s_sw2_pro2_live_prime_count >= 8u &&
+                ds5_audio_bridge_peek_switch2_pro2_frame(opus_packet);
+            memcpy(&stream4_packet[3], opus_packet,
+                   SWITCH2_PRO2_AUDIO_CHUNK_LEN);
             if (!switch2_pro2_live_write(
                     sw2_init_handle, SW2_PRO2_AUDIO_OUTPUT_HANDLE,
                     stream4_packet, sizeof(stream4_packet))) return;
-            if (encoded)
-                ds5_audio_bridge_commit_switch2_pro2_frame();
-            else if (s_sw2_pro2_live_prime_count >= 8u &&
-                     ds5_audio_bridge_usb_speaker_active())
-                s_sw2_pro2_live_underruns++;
             s_sw2_pro2_live_last_toc = stream4_packet[3];
             memcpy(s_sw2_pro2_live_prefix, &stream4_packet[3],
                    sizeof(s_sw2_pro2_live_prefix));
-            s_sw2_pro2_live_frames_sent++;
             s_sw2_pro2_live_state = SW2_PRO2_LIVE_STREAM2;
             switch2_pro2_live_advance(now_us, 5000u);
             break;
@@ -5629,10 +5626,25 @@ void btstack_host_service_switch2_pro2_audio_live(void)
         case SW2_PRO2_LIVE_STREAM2:
             memset(stream2_packet, 0, sizeof(stream2_packet));
             stream2_packet[1] = 0x02;
-            stream2_packet[2] = SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN;
+            stream2_packet[2] = SWITCH2_PRO2_AUDIO_CHUNK_LEN;
+            memcpy(&stream2_packet[3],
+                   &opus_packet[SWITCH2_PRO2_AUDIO_CHUNK_LEN],
+                   SWITCH2_PRO2_AUDIO_CHUNK_LEN);
             if (!switch2_pro2_live_write(
                     sw2_init_handle, SW2_PRO2_AUDIO_OUTPUT_HANDLE,
                     stream2_packet, sizeof(stream2_packet))) return;
+            if (opus_packet_encoded)
+                ds5_audio_bridge_commit_switch2_pro2_frame();
+            else {
+                // The controller consumed one complete fixed idle packet.
+                // Advance our stateful encoder through matching silence before
+                // the next live packet so CELT prediction starts in phase.
+                ds5_audio_bridge_note_switch2_pro2_idle_frame();
+                if (s_sw2_pro2_live_prime_count >= 8u &&
+                    ds5_audio_bridge_usb_speaker_active())
+                    s_sw2_pro2_live_underruns++;
+            }
+            s_sw2_pro2_live_frames_sent++;
             if (s_sw2_pro2_live_prime_count < 8u &&
                 ++s_sw2_pro2_live_prime_count == 8u)
                 ds5_audio_bridge_set_switch2_pro2_active(true);

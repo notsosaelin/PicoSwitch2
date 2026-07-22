@@ -565,6 +565,7 @@ bool ds5_audio_bridge_peek_switch2_pro2_frame(
     return false;
 }
 void ds5_audio_bridge_commit_switch2_pro2_frame(void) {}
+void ds5_audio_bridge_note_switch2_pro2_idle_frame(void) {}
 
 #elif defined(NS2_DS5_AUDIO_LIVE_OPUS)
 
@@ -614,6 +615,7 @@ static volatile bool usb_mic_active;
 static volatile bool bridge_connected;
 static volatile uint8_t bridge_conn_index;
 static volatile bool pro2_bridge_active;
+static volatile uint32_t pro2_idle_frames_pending;
 
 // TinyUSB/core0 owns this accumulator. This is deliberately the same
 // producer boundary as DS5Dongle: cross to the codec core only after a full
@@ -729,7 +731,7 @@ static bool __not_in_flash_func(bridge_configure_encoder)(
         status |= celt_encoder_ctl(pro2_encoder,
                                    OPUS_SET_COMPLEXITY(complexity));
         status |= celt_encoder_ctl(pro2_encoder, OPUS_SET_VBR(0));
-        status |= celt_encoder_ctl(pro2_encoder, OPUS_SET_BITRATE(48000));
+        status |= celt_encoder_ctl(pro2_encoder, OPUS_SET_BITRATE(96000));
         status |= celt_encoder_ctl(pro2_encoder,
                                    CELT_GET_MODE(&pro2_celt_mode));
         tonality_analysis_init(pro2_analysis, 48000);
@@ -802,6 +804,40 @@ static void __not_in_flash_func(bridge_encode_pro2_pcm)(
         pro2_encoder_applied_complexity = requested_complexity;
         pro2_encoder_applied_analysis = analysis_enabled;
     }
+    uint8_t discard[SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN];
+    uint32_t pending_idle = __atomic_exchange_n(
+        &pro2_idle_frames_pending, 0, __ATOMIC_ACQ_REL);
+    // After several identical silence frames CELT's predictor and tonality
+    // history have converged. Cap a long USB-inactive interval so resuming
+    // audio never causes a burst of hundreds of catch-up encodes.
+    if (pending_idle > 8u) pending_idle = 8u;
+    if (pending_idle != 0) {
+        memset(pro2_encoder_pcm, 0,
+               PRO2_PCM_SAMPLES * sizeof(*pro2_encoder_pcm));
+        for (uint32_t frame = 0; frame < pending_idle; ++frame) {
+            AnalysisInfo idle_analysis;
+            AnalysisInfo *idle_analysis_ptr = NULL;
+            if (analysis_enabled) {
+                memset(&idle_analysis, 0, sizeof(idle_analysis));
+                run_analysis(pro2_analysis, pro2_celt_mode,
+                             pro2_encoder_pcm, PRO2_PCM_FRAMES,
+                             PRO2_PCM_FRAMES, 0, -2, PCM_CHANNELS, 48000,
+                             16, downmix_float, &idle_analysis);
+                idle_analysis_ptr = &idle_analysis;
+            }
+            if (celt_encoder_ctl(pro2_encoder,
+                                 CELT_SET_ANALYSIS(idle_analysis_ptr)) !=
+                OPUS_OK) return;
+            discard[0] = 0xFC;
+            int const idle_bytes = celt_encode_with_ec(
+                pro2_encoder, pro2_encoder_pcm, PRO2_PCM_FRAMES,
+                discard + 1, SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN - 1u,
+                NULL);
+            if (idle_bytes !=
+                (int)SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN - 1) return;
+        }
+    }
+
     for (unsigned i = 0; i < PRO2_PCM_SAMPLES; ++i)
         pro2_encoder_pcm[i] = (float)pro2_pcm[i] * (1.0f / 32768.0f);
 
@@ -819,8 +855,10 @@ static void __not_in_flash_func(bridge_encode_pro2_pcm)(
         OPUS_OK) return;
 
     uint32_t const encode_start_us = time_us_32();
-    // Genuine packets are one full-band stereo CELT frame with a 0xFC Opus
-    // TOC byte followed by a fixed 119-byte range-coded payload.
+    // A genuine transport interval is one 240-byte full-band stereo Opus
+    // packet. GATT splits it into two 120-byte writes, but that split is below
+    // the codec layer: byte zero is the 0xFC TOC and all remaining 239 bytes
+    // belong to one range-coded CELT frame.
     pro2_codec_frame.data[0] = 0xFC;
     int const payload_bytes = celt_encode_with_ec(
         pro2_encoder, pro2_encoder_pcm, PRO2_PCM_FRAMES,
@@ -950,6 +988,7 @@ void ds5_audio_bridge_init(void) {
     bridge_connected = false;
     bridge_conn_index = 0xFF;
     pro2_bridge_active = false;
+    pro2_idle_frames_pending = 0;
     producer_samples = 0;
     producer_pcm_block.nonzero = false;
     pro2_pcm_samples = 0;
@@ -1140,6 +1179,8 @@ void ds5_audio_bridge_commit_speaker_pair(void) {
 void ds5_audio_bridge_set_switch2_pro2_active(bool active) {
     if (pro2_bridge_active == active) return;
     if (active) ds5_audio_pcm_capture_stop();
+    if (!active)
+        __atomic_store_n(&pro2_idle_frames_pending, 0, __ATOMIC_RELEASE);
     pro2_bridge_active = active;
     // This setter is called from BTstack's background IRQ on core1. Draining
     // queues here can re-enter a queue lock held by the preempted codec worker.
@@ -1174,6 +1215,10 @@ bool ds5_audio_bridge_peek_switch2_pro2_frame(
 
 void ds5_audio_bridge_commit_switch2_pro2_frame(void) {
     pro2_transport_valid = false;
+}
+
+void ds5_audio_bridge_note_switch2_pro2_idle_frame(void) {
+    __atomic_fetch_add(&pro2_idle_frames_pending, 1, __ATOMIC_ACQ_REL);
 }
 
 bool ds5_audio_bridge_get_silent_pair(
@@ -1234,6 +1279,7 @@ bool ds5_audio_bridge_peek_switch2_pro2_frame(
     return false;
 }
 void ds5_audio_bridge_commit_switch2_pro2_frame(void) {}
+void ds5_audio_bridge_note_switch2_pro2_idle_frame(void) {}
 bool ds5_audio_bridge_mic_active(void) { return false; }
 
 #endif

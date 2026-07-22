@@ -5,7 +5,11 @@
 #include <stdint.h>
 
 #define DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN 200u
-#define SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN 120u
+#define SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN 240u
+#define SWITCH2_PRO2_AUDIO_CHUNK_LEN 120u
+#if SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN != 2u * SWITCH2_PRO2_AUDIO_CHUNK_LEN
+#error "Pro Controller 2 Opus frames must split into two equal GATT chunks"
+#endif
 #define DS5_AUDIO_PCM_CAPTURE_BYTES 4096u
 #define DS5_AUDIO_PCM_CAPTURE_READ_MAX 256u
 
@@ -64,6 +68,9 @@ bool ds5_audio_bridge_usb_speaker_active(void);
 bool ds5_audio_bridge_peek_switch2_pro2_frame(
     uint8_t frame[SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN]);
 void ds5_audio_bridge_commit_switch2_pro2_frame(void);
+// Keep the stateful CELT encoder synchronized whenever transport substitutes
+// the genuine fixed idle packet instead of consuming an encoded frame.
+void ds5_audio_bridge_note_switch2_pro2_idle_frame(void);
 
 // Live bridge instrumentation retained for regression and performance checks.
 // "core1" measures the longest interval between known BTstack activity points
