@@ -188,6 +188,50 @@ void btstack_host_get_reconnect_diag(btstack_host_reconnect_diag_t *out);
 // target identity is retained so the next SYNC advertisement is recognized.
 void btstack_host_force_switch2_fresh_pairing(void);
 
+// Off-by-default genuine Pro Controller 2 headset transport experiment. This
+// switches the controller from its ordinary 0x000E native report to the
+// firmware-2.x 0x002E extended input/audio report while preserving buttons and
+// native motion. The replay command transmits a captured genuine haptic burst;
+// the separately gated live path encodes console PCM onto stream 0x04.
+typedef struct {
+    bool requested;
+    bool active;
+    uint8_t state;
+    uint8_t last_att_status;
+    uint8_t last_headset_raw;
+    uint8_t last_audio_length;
+    uint16_t source_pid;
+    uint16_t connection_handle;
+    uint16_t last_report_length;
+    uint16_t max_report_length;
+    uint32_t notifications;
+    uint32_t compact_failures;
+    bool replay_requested;
+    bool replay_active;
+    uint8_t replay_state;
+    uint8_t replay_last_send_status;
+    uint16_t replay_frames_sent;
+    bool live_requested;
+    bool live_active;
+    uint8_t live_state;
+    uint8_t live_last_send_status;
+    uint8_t live_last_toc;
+    uint8_t live_prefix[6];
+    uint8_t live_prime_count;
+    uint32_t live_frames_sent;
+    uint32_t live_underruns;
+} btstack_host_pro2_audio_diag_t;
+
+void btstack_host_set_switch2_pro2_audio_capture(bool enabled);
+void btstack_host_get_switch2_pro2_audio_diag(btstack_host_pro2_audio_diag_t *out);
+void btstack_host_request_switch2_pro2_audio_replay(bool enabled);
+void btstack_host_request_switch2_pro2_audio_live(bool enabled);
+// Service the diagnostic replay from the existing 2 ms audio timer. Its wire
+// format requires a 5 ms stream offset and 20 ms long-term packet cadence, so
+// the ordinary 30 ms Bluetooth control tick cannot drive it correctly.
+void btstack_host_service_switch2_pro2_audio_replay(void);
+void btstack_host_service_switch2_pro2_audio_live(void);
+
 // ============================================================================
 // CLASSIC BT CONNECTION INFO (for bthid driver matching)
 // ============================================================================

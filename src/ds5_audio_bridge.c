@@ -1,10 +1,17 @@
 #include "ds5_audio_bridge.h"
 #include "ds5_audio_resample.h"
 
+#include <stdlib.h>
 #include <string.h>
+
+#ifdef NS2_DS5_AUDIO
+#include "pico/time.h"
+#endif
 
 static volatile bool speaker_control_muted;
 static volatile uint8_t speaker_control_volume = 100;
+static volatile uint8_t switch2_pro2_encoder_complexity;
+static volatile bool switch2_pro2_encoder_analysis;
 
 void ds5_audio_bridge_set_speaker_control(bool muted, int16_t volume_db_256) {
     int32_t volume = 100 + volume_db_256 / 256;
@@ -17,6 +24,27 @@ void ds5_audio_bridge_set_speaker_control(bool muted, int16_t volume_db_256) {
 void ds5_audio_bridge_get_speaker_control(bool *muted, uint8_t *volume) {
     if (muted) *muted = speaker_control_muted;
     if (volume) *volume = speaker_control_volume;
+}
+
+void ds5_audio_bridge_set_switch2_pro2_complexity(uint8_t complexity) {
+    if (complexity > 10u) complexity = 10u;
+    __atomic_store_n(&switch2_pro2_encoder_complexity, complexity,
+                     __ATOMIC_RELEASE);
+}
+
+uint8_t ds5_audio_bridge_switch2_pro2_complexity(void) {
+    return __atomic_load_n(&switch2_pro2_encoder_complexity,
+                           __ATOMIC_ACQUIRE);
+}
+
+void ds5_audio_bridge_set_switch2_pro2_analysis(bool enabled) {
+    __atomic_store_n(&switch2_pro2_encoder_analysis, enabled,
+                     __ATOMIC_RELEASE);
+}
+
+bool ds5_audio_bridge_switch2_pro2_analysis(void) {
+    return __atomic_load_n(&switch2_pro2_encoder_analysis,
+                           __ATOMIC_ACQUIRE);
 }
 
 // Always compiled so config-mode diagnostics remain linkable in ordinary
@@ -267,6 +295,143 @@ void ds5_audio_diag_reset(void) {
     diag_usb_speaker_last_edge_us = 0;
 }
 
+#ifdef NS2_DS5_AUDIO
+
+#if defined(NS2_DS5_AUDIO_LIVE_OPUS)
+// UART PCM capture and Pro2 live encoding are deliberately mutually
+// exclusive diagnostics. Overlay their ~4 KiB workspaces so the signal-path
+// stack can grow without increasing total RP2350 SRAM use.
+static union {
+    uint8_t capture[DS5_AUDIO_PCM_CAPTURE_BYTES];
+    int16_t pro2[960u * 2u];
+} pcm_workspace;
+#define pcm_capture_data pcm_workspace.capture
+#define pro2_pcm pcm_workspace.pro2
+#else
+static uint8_t pcm_capture_data[DS5_AUDIO_PCM_CAPTURE_BYTES];
+#endif
+static volatile bool pcm_capture_armed;
+static volatile bool pcm_capture_complete;
+static volatile uint16_t pcm_capture_length;
+static volatile uint16_t pcm_capture_packets;
+static volatile uint32_t pcm_capture_start_us;
+static volatile uint32_t pcm_capture_end_us;
+
+static void ds5_audio_pcm_capture_submit(const uint8_t *data, uint16_t len,
+                                         bool nonzero) {
+    if (!pcm_capture_armed || !data || len == 0) return;
+    // Arming while the console is streaming silence is useful only if the
+    // capture waits for an audible packet. Once triggered, retain every byte,
+    // including zero crossings and any later silence within the window.
+    if (pcm_capture_length == 0 && !nonzero) return;
+
+    if (pcm_capture_length == 0) pcm_capture_start_us = time_us_32();
+    uint16_t const remaining =
+        (uint16_t)(DS5_AUDIO_PCM_CAPTURE_BYTES - pcm_capture_length);
+    uint16_t const copy_len = len < remaining ? len : remaining;
+    memcpy(&pcm_capture_data[pcm_capture_length], data, copy_len);
+    pcm_capture_length = (uint16_t)(pcm_capture_length + copy_len);
+    pcm_capture_packets++;
+
+    if (pcm_capture_length == DS5_AUDIO_PCM_CAPTURE_BYTES) {
+        pcm_capture_end_us = time_us_32();
+        pcm_capture_armed = false;
+        pcm_capture_complete = true;
+    }
+}
+
+void ds5_audio_pcm_capture_arm(void) {
+    if (ds5_audio_bridge_switch2_pro2_active()) return;
+    pcm_capture_armed = false;
+    pcm_capture_complete = false;
+    pcm_capture_length = 0;
+    pcm_capture_packets = 0;
+    pcm_capture_start_us = 0;
+    pcm_capture_end_us = 0;
+    pcm_capture_armed = true;
+}
+
+void ds5_audio_pcm_capture_stop(void) {
+    pcm_capture_armed = false;
+    if (pcm_capture_length != 0) {
+        pcm_capture_end_us = time_us_32();
+        pcm_capture_complete = true;
+    }
+}
+
+static uint32_t pcm_capture_crc32(const uint8_t *data, uint16_t len) {
+    uint32_t crc = UINT32_MAX;
+    for (uint16_t i = 0; i < len; ++i) {
+        crc ^= data[i];
+        for (uint8_t bit = 0; bit < 8; ++bit)
+            crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)-(int32_t)(crc & 1u));
+    }
+    return crc ^ UINT32_MAX;
+}
+
+void ds5_audio_pcm_capture_get_status(ds5_audio_pcm_capture_status_t *out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->armed = pcm_capture_armed;
+    out->complete = pcm_capture_complete;
+    out->captured_bytes = pcm_capture_length;
+    out->capacity_bytes = DS5_AUDIO_PCM_CAPTURE_BYTES;
+    out->packets = pcm_capture_packets;
+    out->start_us = pcm_capture_start_us;
+    out->end_us = pcm_capture_end_us;
+    out->crc32 = pcm_capture_crc32(pcm_capture_data, pcm_capture_length);
+
+    uint16_t const frames = (uint16_t)(pcm_capture_length / 4u);
+    for (uint16_t frame = 0; frame < frames; ++frame) {
+        uint16_t const offset = (uint16_t)(frame * 4u);
+        int16_t const left = (int16_t)((uint16_t)pcm_capture_data[offset] |
+                                      ((uint16_t)pcm_capture_data[offset + 1u] << 8));
+        int16_t const right = (int16_t)((uint16_t)pcm_capture_data[offset + 2u] |
+                                       ((uint16_t)pcm_capture_data[offset + 3u] << 8));
+        int32_t const left_abs = left < 0 ? -(int32_t)left : left;
+        int32_t const right_abs = right < 0 ? -(int32_t)right : right;
+        if ((uint32_t)left_abs > out->peak_left)
+            out->peak_left = (uint16_t)left_abs;
+        if ((uint32_t)right_abs > out->peak_right)
+            out->peak_right = (uint16_t)right_abs;
+        out->sum_left += left;
+        out->sum_right += right;
+        out->sum_squares_left += (uint64_t)((int32_t)left * left);
+        out->sum_squares_right += (uint64_t)((int32_t)right * right);
+    }
+}
+
+uint16_t ds5_audio_pcm_capture_read(uint16_t offset, uint8_t *out,
+                                    uint16_t max_len) {
+    if (!out || max_len == 0 || pcm_capture_armed ||
+        offset >= pcm_capture_length) return 0;
+    uint16_t available = (uint16_t)(pcm_capture_length - offset);
+    if (max_len > DS5_AUDIO_PCM_CAPTURE_READ_MAX)
+        max_len = DS5_AUDIO_PCM_CAPTURE_READ_MAX;
+    uint16_t const copy_len = available < max_len ? available : max_len;
+    memcpy(out, &pcm_capture_data[offset], copy_len);
+    return copy_len;
+}
+
+#else
+
+void ds5_audio_pcm_capture_arm(void) {}
+void ds5_audio_pcm_capture_stop(void) {}
+void ds5_audio_pcm_capture_get_status(ds5_audio_pcm_capture_status_t *out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->capacity_bytes = DS5_AUDIO_PCM_CAPTURE_BYTES;
+}
+uint16_t ds5_audio_pcm_capture_read(uint16_t offset, uint8_t *out,
+                                    uint16_t max_len) {
+    (void)offset;
+    (void)out;
+    (void)max_len;
+    return 0;
+}
+
+#endif
+
 #if defined(NS2_DS5_AUDIO_TEST_TONE)
 
 #include "ds5_audio_test_tone.h"
@@ -391,9 +556,22 @@ bool ds5_audio_bridge_speaker_requested(void) {
     return bridge_connected;
 }
 
+void ds5_audio_bridge_set_switch2_pro2_active(bool active) { (void)active; }
+bool ds5_audio_bridge_switch2_pro2_active(void) { return false; }
+bool ds5_audio_bridge_usb_speaker_active(void) { return false; }
+bool ds5_audio_bridge_peek_switch2_pro2_frame(
+    uint8_t frame[SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN]) {
+    (void)frame;
+    return false;
+}
+void ds5_audio_bridge_commit_switch2_pro2_frame(void) {}
+
 #elif defined(NS2_DS5_AUDIO_LIVE_OPUS)
 
 #include "opus.h"
+#include "celt.h"
+#include "cpu_support.h"
+#include "analysis.h"
 #include "pico/time.h"
 #include "pico/util/queue.h"
 
@@ -404,9 +582,12 @@ bool ds5_audio_bridge_speaker_requested(void) {
 #define PCM_OUTPUT_FRAMES DS5_AUDIO_RESAMPLE_OUTPUT_FRAMES
 #define PCM_CHANNELS DS5_AUDIO_RESAMPLE_CHANNELS
 #define PCM_BLOCK_SAMPLES (PCM_INPUT_FRAMES * PCM_CHANNELS)
+#define PRO2_PCM_FRAMES 960u
+#define PRO2_PCM_SAMPLES (PRO2_PCM_FRAMES * PCM_CHANNELS)
 
 typedef struct {
     int16_t samples[PCM_BLOCK_SAMPLES];
+    bool nonzero;
 } pcm_block_t;
 
 typedef struct {
@@ -414,12 +595,25 @@ typedef struct {
     uint8_t data[DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN];
 } encoded_frame_t;
 
+typedef struct {
+    uint32_t generation;
+    uint8_t data[SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN];
+} pro2_encoded_frame_t;
+
+typedef enum {
+    BRIDGE_ENCODER_NONE = 0,
+    BRIDGE_ENCODER_DS5,
+    BRIDGE_ENCODER_PRO2,
+} bridge_encoder_mode_t;
+
 static queue_t speaker_pcm_block_queue;
 static queue_t speaker_encoded_frame_queue;
+static queue_t pro2_encoded_frame_queue;
 static volatile bool usb_speaker_active;
 static volatile bool usb_mic_active;
 static volatile bool bridge_connected;
 static volatile uint8_t bridge_conn_index;
+static volatile bool pro2_bridge_active;
 
 // TinyUSB/core0 owns this accumulator. This is deliberately the same
 // producer boundary as DS5Dongle: cross to the codec core only after a full
@@ -430,20 +624,148 @@ static pcm_block_t producer_discard_block;
 static uint16_t producer_samples;
 
 static OpusEncoder *speaker_encoder;
-static bool speaker_encoder_init_attempted;
+static void *pro2_encoder_allocation;
+static CELTEncoder *pro2_encoder;
+static float *pro2_encoder_pcm;
+static TonalityAnalysisState *pro2_analysis;
+static const CELTMode *pro2_celt_mode;
+static uint8_t pro2_encoder_applied_complexity;
+static bool pro2_encoder_applied_analysis;
+static bridge_encoder_mode_t speaker_encoder_mode;
 static pcm_block_t codec_pcm_block;
 static int16_t resampled_pcm[PCM_OUTPUT_FRAMES * PCM_CHANNELS];
+static uint16_t pro2_pcm_samples;
+static bool pro2_pcm_nonzero;
 static encoded_frame_t codec_encoded_frame;
 static encoded_frame_t codec_discard_frame;
 static encoded_frame_t transport_pair[2];
 static uint8_t transport_pair_count;
+static pro2_encoded_frame_t pro2_codec_frame;
+static pro2_encoded_frame_t pro2_discard_frame;
+static pro2_encoded_frame_t pro2_transport_frame;
+static bool pro2_transport_valid;
 static volatile uint32_t pipeline_reset_generation;
 static uint32_t codec_reset_generation;
 static uint8_t silent_frames[2][DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN];
 static volatile bool silent_frames_ready;
 
+static bool bridge_encoder_available(bridge_encoder_mode_t mode) {
+    if (speaker_encoder_mode != mode) return false;
+    if (mode == BRIDGE_ENCODER_DS5) return speaker_encoder != NULL;
+    if (mode == BRIDGE_ENCODER_PRO2)
+        return pro2_encoder != NULL && pro2_encoder_pcm != NULL;
+    return false;
+}
+
+static void bridge_destroy_encoder(void) {
+    if (speaker_encoder) {
+        opus_encoder_destroy(speaker_encoder);
+        speaker_encoder = NULL;
+    }
+    free(pro2_encoder_allocation);
+    pro2_encoder_allocation = NULL;
+    pro2_encoder = NULL;
+    pro2_encoder_pcm = NULL;
+    pro2_analysis = NULL;
+    pro2_celt_mode = NULL;
+    pro2_encoder_applied_complexity = UINT8_MAX;
+    pro2_encoder_applied_analysis = false;
+    speaker_encoder_mode = BRIDGE_ENCODER_NONE;
+}
+
+static bool __not_in_flash_func(bridge_configure_encoder)(
+    bridge_encoder_mode_t mode) {
+    if (bridge_encoder_available(mode)) return true;
+
+    // Keep the byte-for-byte validated general Opus encoder for DualSense.
+    // Pro Controller 2 uses the hardware-safe direct CELT path: the public
+    // 20 ms wrapper exceeds the BT/codec core's memory budget and prevents
+    // that core from reaching its run loop.
+    bridge_destroy_encoder();
+    if (mode == BRIDGE_ENCODER_PRO2) {
+        int const encoder_size = celt_encoder_get_size(PCM_CHANNELS);
+        if (encoder_size <= 0) return false;
+        size_t const encoder_alignment = _Alignof(float);
+        size_t const encoder_bytes =
+            ((size_t)encoder_size + encoder_alignment - 1u) &
+            ~(encoder_alignment - 1u);
+        size_t const pcm_bytes =
+            PRO2_PCM_SAMPLES * sizeof(*pro2_encoder_pcm);
+        size_t const analysis_alignment = _Alignof(TonalityAnalysisState);
+        size_t const analysis_offset =
+            (encoder_bytes + pcm_bytes + analysis_alignment - 1u) &
+            ~(analysis_alignment - 1u);
+        size_t const allocation_bytes =
+            analysis_offset + sizeof(*pro2_analysis);
+        pro2_encoder_allocation = malloc(allocation_bytes);
+        if (!pro2_encoder_allocation) return false;
+        uint8_t *const allocation = pro2_encoder_allocation;
+        pro2_encoder = (CELTEncoder *)allocation;
+        pro2_encoder_pcm = (float *)(allocation + encoder_bytes);
+        pro2_analysis =
+            (TonalityAnalysisState *)(allocation + analysis_offset);
+        if (celt_encoder_init(pro2_encoder, 48000, PCM_CHANNELS,
+                              opus_select_arch()) != OPUS_OK) {
+            bridge_destroy_encoder();
+            return false;
+        }
+    } else if (mode == BRIDGE_ENCODER_DS5) {
+        int error = OPUS_OK;
+        speaker_encoder = opus_encoder_create(48000, PCM_CHANNELS,
+            OPUS_APPLICATION_RESTRICTED_LOWDELAY, &error);
+        if (!speaker_encoder || error != OPUS_OK) {
+            speaker_encoder = NULL;
+            return false;
+        }
+    } else {
+        return false;
+    }
+
+    int status = OPUS_OK;
+    if (mode == BRIDGE_ENCODER_PRO2) {
+        status |= celt_encoder_ctl(pro2_encoder, CELT_SET_SIGNALLING(0));
+        uint8_t const complexity =
+            ds5_audio_bridge_switch2_pro2_complexity();
+        status |= celt_encoder_ctl(pro2_encoder,
+                                   OPUS_SET_COMPLEXITY(complexity));
+        status |= celt_encoder_ctl(pro2_encoder, OPUS_SET_VBR(0));
+        status |= celt_encoder_ctl(pro2_encoder, OPUS_SET_BITRATE(48000));
+        status |= celt_encoder_ctl(pro2_encoder,
+                                   CELT_GET_MODE(&pro2_celt_mode));
+        tonality_analysis_init(pro2_analysis, 48000);
+        pro2_analysis->application = OPUS_APPLICATION_RESTRICTED_CELT;
+        pro2_encoder_applied_complexity = complexity;
+        pro2_encoder_applied_analysis =
+            ds5_audio_bridge_switch2_pro2_analysis();
+    } else if (mode == BRIDGE_ENCODER_DS5) {
+        status |= opus_encoder_ctl(
+            speaker_encoder,
+            OPUS_SET_EXPERT_FRAME_DURATION(OPUS_FRAMESIZE_10_MS));
+        status |= opus_encoder_ctl(
+            speaker_encoder,
+            OPUS_SET_BITRATE(DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN * 8 * 100));
+        status |= opus_encoder_ctl(speaker_encoder,
+                                   OPUS_SET_FORCE_CHANNELS(OPUS_AUTO));
+        status |= opus_encoder_ctl(speaker_encoder,
+                                   OPUS_SET_BANDWIDTH(OPUS_AUTO));
+        status |= opus_encoder_ctl(speaker_encoder,
+                                   OPUS_SET_SIGNAL(OPUS_AUTO));
+        status |= opus_encoder_ctl(speaker_encoder, OPUS_SET_COMPLEXITY(0));
+        status |= opus_encoder_ctl(speaker_encoder, OPUS_SET_VBR(0));
+        status |= opus_encoder_ctl(speaker_encoder, OPUS_RESET_STATE);
+    }
+    if (status != OPUS_OK ||
+        (mode == BRIDGE_ENCODER_PRO2 && !pro2_celt_mode)) {
+        bridge_destroy_encoder();
+        return false;
+    }
+    speaker_encoder_mode = mode;
+    return true;
+}
+
 static void __not_in_flash_func(bridge_encode_input_frame)(
     const pcm_block_t *block, uint32_t generation) {
+    if (!bridge_configure_encoder(BRIDGE_ENCODER_DS5)) return;
     ds5_audio_resample_512_to_480_stereo(block->samples, resampled_pcm);
     uint32_t const encode_start_us = time_us_32();
     int const encoded = opus_encode(
@@ -465,43 +787,115 @@ static void __not_in_flash_func(bridge_encode_input_frame)(
     queue_try_add(&speaker_encoded_frame_queue, &codec_encoded_frame);
 }
 
+static void __not_in_flash_func(bridge_encode_pro2_pcm)(
+    uint32_t generation) {
+    if (!bridge_configure_encoder(BRIDGE_ENCODER_PRO2)) return;
+    uint8_t const requested_complexity =
+        ds5_audio_bridge_switch2_pro2_complexity();
+    bool const analysis_enabled =
+        ds5_audio_bridge_switch2_pro2_analysis();
+    if (requested_complexity != pro2_encoder_applied_complexity ||
+        analysis_enabled != pro2_encoder_applied_analysis) {
+        if (celt_encoder_ctl(pro2_encoder,
+                            OPUS_SET_COMPLEXITY(requested_complexity)) !=
+            OPUS_OK) return;
+        pro2_encoder_applied_complexity = requested_complexity;
+        pro2_encoder_applied_analysis = analysis_enabled;
+    }
+    for (unsigned i = 0; i < PRO2_PCM_SAMPLES; ++i)
+        pro2_encoder_pcm[i] = (float)pro2_pcm[i] * (1.0f / 32768.0f);
+
+    AnalysisInfo analysis_info;
+    AnalysisInfo *analysis_ptr = NULL;
+    if (analysis_enabled) {
+        memset(&analysis_info, 0, sizeof(analysis_info));
+        run_analysis(pro2_analysis, pro2_celt_mode, pro2_encoder_pcm,
+                     PRO2_PCM_FRAMES, PRO2_PCM_FRAMES, 0, -2,
+                     PCM_CHANNELS, 48000, 16, downmix_float,
+                     &analysis_info);
+        analysis_ptr = &analysis_info;
+    }
+    if (celt_encoder_ctl(pro2_encoder, CELT_SET_ANALYSIS(analysis_ptr)) !=
+        OPUS_OK) return;
+
+    uint32_t const encode_start_us = time_us_32();
+    // Genuine packets are one full-band stereo CELT frame with a 0xFC Opus
+    // TOC byte followed by a fixed 119-byte range-coded payload.
+    pro2_codec_frame.data[0] = 0xFC;
+    int const payload_bytes = celt_encode_with_ec(
+        pro2_encoder, pro2_encoder_pcm, PRO2_PCM_FRAMES,
+        pro2_codec_frame.data + 1,
+        SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN - 1u, NULL);
+    uint32_t const encode_end_us = time_us_32();
+    int const encoded_bytes =
+        payload_bytes < 0 ? payload_bytes : payload_bytes + 1;
+    bool const success =
+        encoded_bytes == SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN;
+    ds5_audio_diag_note_opus_frame(encode_end_us,
+                                   encode_end_us - encode_start_us, success);
+    if (!success || generation != pipeline_reset_generation) return;
+
+    pro2_codec_frame.generation = generation;
+    if (queue_is_full(&pro2_encoded_frame_queue)) {
+        queue_try_remove(&pro2_encoded_frame_queue, &pro2_discard_frame);
+    }
+    queue_try_add(&pro2_encoded_frame_queue, &pro2_codec_frame);
+}
+
+static void __not_in_flash_func(bridge_consume_pro2_block)(
+    const pcm_block_t *block, uint32_t generation) {
+    uint16_t source_samples = 0;
+    while (source_samples < PCM_BLOCK_SAMPLES) {
+        uint16_t const remaining =
+            (uint16_t)(PCM_BLOCK_SAMPLES - source_samples);
+        uint16_t const room = (uint16_t)(PRO2_PCM_SAMPLES - pro2_pcm_samples);
+        uint16_t const copy_samples = remaining < room ? remaining : room;
+        memcpy(&pro2_pcm[pro2_pcm_samples], &block->samples[source_samples],
+               copy_samples * sizeof(int16_t));
+        pro2_pcm_nonzero |= block->nonzero;
+        pro2_pcm_samples += copy_samples;
+        source_samples += copy_samples;
+        if (pro2_pcm_samples == PRO2_PCM_SAMPLES) {
+            // Keep the stateful CELT encoder synchronized with the controller's
+            // decoder across digital silence. Substituting the fixed idle
+            // packet here freezes only our encoder state, so prediction can
+            // diverge when nonzero audio resumes. The transport still uses the
+            // console's exact FC FF FE idle packet during startup or a genuine
+            // encoded-frame underrun.
+            bridge_encode_pro2_pcm(generation);
+            pro2_pcm_samples = 0;
+            pro2_pcm_nonzero = false;
+        }
+    }
+}
+
 static void bridge_clear_pipeline(void) {
     // Invalidate an encode already in progress before draining. Encoded frames
     // carry this generation too, so core0 can reject any stale frame that
     // crosses the queue during the reset race.
     pipeline_reset_generation++;
     producer_samples = 0;
+    producer_pcm_block.nonzero = false;
     while (queue_try_remove(&speaker_pcm_block_queue,
                             &producer_discard_block)) {}
     while (queue_try_remove(&speaker_encoded_frame_queue,
                             &transport_pair[0])) {}
+    while (queue_try_remove(&pro2_encoded_frame_queue,
+                            &pro2_discard_frame)) {}
     transport_pair_count = 0;
+    pro2_transport_valid = false;
     ds5_audio_diag_note_pipeline_reset();
 }
 
 static bool __not_in_flash_func(bridge_prepare_encoder)(void) {
-    if (!speaker_encoder && !speaker_encoder_init_attempted) {
-        speaker_encoder_init_attempted = true;
-        int error = OPUS_OK;
+    bridge_encoder_mode_t const requested_mode = pro2_bridge_active
+        ? BRIDGE_ENCODER_PRO2 : BRIDGE_ENCODER_DS5;
+    if (!bridge_configure_encoder(requested_mode)) return false;
+    if (requested_mode == BRIDGE_ENCODER_DS5 && !silent_frames_ready) {
         // daidr's independently working DualSense path explicitly requires
         // low-delay Opus (pure CELT). It produces the same 200-byte/10-ms
         // payload accepted by the controller while avoiding general audio
         // mode work on the Bluetooth-shared codec core.
-        speaker_encoder =
-            opus_encoder_create(48000, PCM_CHANNELS,
-                                OPUS_APPLICATION_RESTRICTED_LOWDELAY, &error);
-        if (!speaker_encoder || error != OPUS_OK) {
-            speaker_encoder = NULL;
-            return false;
-        }
-        opus_encoder_ctl(speaker_encoder,
-                         OPUS_SET_EXPERT_FRAME_DURATION(OPUS_FRAMESIZE_10_MS));
-        opus_encoder_ctl(
-            speaker_encoder,
-            OPUS_SET_BITRATE(DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN * 8 * 100));
-        opus_encoder_ctl(speaker_encoder, OPUS_SET_VBR(0));
-        opus_encoder_ctl(speaker_encoder, OPUS_SET_COMPLEXITY(0));
-
         // Report 0x39 always contains two Opus blocks, even when it is being
         // used only for native haptic PCM. Generate a steady-state silence
         // pair once on the large codec-core stack, then reset so this pre-roll
@@ -524,14 +918,20 @@ static bool __not_in_flash_func(bridge_prepare_encoder)(void) {
         opus_encoder_ctl(speaker_encoder, OPUS_RESET_STATE);
         silent_frames_ready = silence_ok;
     }
-    return speaker_encoder != NULL;
+    return bridge_encoder_available(requested_mode);
 }
 
 static uint32_t __not_in_flash_func(bridge_sync_encoder_generation)(void) {
     uint32_t const requested_generation = pipeline_reset_generation;
     if (codec_reset_generation != requested_generation) {
-        if (speaker_encoder)
+        if (speaker_encoder_mode == BRIDGE_ENCODER_DS5 && speaker_encoder)
             opus_encoder_ctl(speaker_encoder, OPUS_RESET_STATE);
+        else if (speaker_encoder_mode == BRIDGE_ENCODER_PRO2 && pro2_encoder) {
+            celt_encoder_ctl(pro2_encoder, OPUS_RESET_STATE);
+            if (pro2_analysis) tonality_analysis_reset(pro2_analysis);
+        }
+        pro2_pcm_samples = 0;
+        pro2_pcm_nonzero = false;
         codec_reset_generation = requested_generation;
     }
     return requested_generation;
@@ -543,16 +943,30 @@ void ds5_audio_bridge_init(void) {
                PCM_BLOCK_QUEUE_DEPTH);
     queue_init(&speaker_encoded_frame_queue, sizeof(encoded_frame_t),
                ENCODED_FRAME_QUEUE_DEPTH);
+    queue_init(&pro2_encoded_frame_queue, sizeof(pro2_encoded_frame_t),
+               ENCODED_FRAME_QUEUE_DEPTH);
     usb_speaker_active = false;
     usb_mic_active = false;
     bridge_connected = false;
     bridge_conn_index = 0xFF;
+    pro2_bridge_active = false;
     producer_samples = 0;
+    producer_pcm_block.nonzero = false;
+    pro2_pcm_samples = 0;
+    pro2_pcm_nonzero = false;
     transport_pair_count = 0;
+    pro2_transport_valid = false;
     pipeline_reset_generation = 0;
     codec_reset_generation = 0;
     speaker_encoder = NULL;
-    speaker_encoder_init_attempted = false;
+    pro2_encoder_allocation = NULL;
+    pro2_encoder = NULL;
+    pro2_encoder_pcm = NULL;
+    pro2_analysis = NULL;
+    pro2_celt_mode = NULL;
+    pro2_encoder_applied_complexity = UINT8_MAX;
+    pro2_encoder_applied_analysis = false;
+    speaker_encoder_mode = BRIDGE_ENCODER_NONE;
     silent_frames_ready = false;
 }
 
@@ -583,6 +997,8 @@ void ds5_audio_bridge_submit_speaker_pcm(const uint8_t *data, uint16_t len) {
     bool const short_packet = len != PCM_USB_PACKET_BYTES;
     bool dropped = false;
 
+    ds5_audio_pcm_capture_submit(data, len, nonzero);
+
     uint16_t source_samples = len / sizeof(int16_t);
     uint8_t const *source = data;
     while (source_samples != 0) {
@@ -591,6 +1007,7 @@ void ds5_audio_bridge_submit_speaker_pcm(const uint8_t *data, uint16_t len) {
             source_samples < room ? source_samples : room;
         memcpy(producer_pcm_block.samples + producer_samples, source,
                copy_samples * sizeof(int16_t));
+        producer_pcm_block.nonzero |= nonzero;
         producer_samples += copy_samples;
         source += copy_samples * sizeof(int16_t);
         source_samples -= copy_samples;
@@ -603,6 +1020,7 @@ void ds5_audio_bridge_submit_speaker_pcm(const uint8_t *data, uint16_t len) {
             }
             queue_try_add(&speaker_pcm_block_queue, &producer_pcm_block);
             producer_samples = 0;
+            producer_pcm_block.nonzero = false;
         }
     }
 
@@ -637,7 +1055,8 @@ void __not_in_flash_func(ds5_audio_bridge_codec_task)(void) {
         return;
     }
     uint32_t const requested_generation = bridge_sync_encoder_generation();
-    if (!bridge_connected) {
+    bool const pro2_active = pro2_bridge_active;
+    if (!bridge_connected && !pro2_active) {
         diag_codec_disconnected++;
         return;
     }
@@ -650,7 +1069,12 @@ void __not_in_flash_func(ds5_audio_bridge_codec_task)(void) {
     // complete source block per call.
     if (queue_try_remove(&speaker_pcm_block_queue, &codec_pcm_block)) {
         diag_codec_blocks_dequeued++;
-        bridge_encode_input_frame(&codec_pcm_block, requested_generation);
+        if (pro2_active)
+            bridge_consume_pro2_block(&codec_pcm_block,
+                                      requested_generation);
+        else
+            bridge_encode_input_frame(&codec_pcm_block,
+                                      requested_generation);
     } else {
         diag_codec_no_pcm++;
     }
@@ -674,7 +1098,8 @@ void __not_in_flash_func(ds5_audio_bridge_codec_worker)(void) {
         }
         uint32_t const requested_generation =
             bridge_sync_encoder_generation();
-        if (!bridge_connected) {
+        bool const pro2_active = pro2_bridge_active;
+        if (!bridge_connected && !pro2_active) {
             diag_codec_disconnected++;
             continue;
         }
@@ -684,7 +1109,12 @@ void __not_in_flash_func(ds5_audio_bridge_codec_worker)(void) {
         }
 
         diag_codec_blocks_dequeued++;
-        bridge_encode_input_frame(&codec_pcm_block, requested_generation);
+        if (pro2_active)
+            bridge_consume_pro2_block(&codec_pcm_block,
+                                      requested_generation);
+        else
+            bridge_encode_input_frame(&codec_pcm_block,
+                                      requested_generation);
     }
 }
 
@@ -705,6 +1135,45 @@ bool ds5_audio_bridge_peek_speaker_pair(
 
 void ds5_audio_bridge_commit_speaker_pair(void) {
     if (transport_pair_count >= 2) transport_pair_count = 0;
+}
+
+void ds5_audio_bridge_set_switch2_pro2_active(bool active) {
+    if (pro2_bridge_active == active) return;
+    if (active) ds5_audio_pcm_capture_stop();
+    pro2_bridge_active = active;
+    // This setter is called from BTstack's background IRQ on core1. Draining
+    // queues here can re-enter a queue lock held by the preempted codec worker.
+    // Generation invalidation is lock-free; stale queued frames are discarded
+    // lazily by their consumers and the codec core resets its own accumulator.
+    pipeline_reset_generation++;
+    pro2_transport_valid = false;
+    ds5_audio_diag_note_pipeline_reset();
+}
+
+bool ds5_audio_bridge_switch2_pro2_active(void) {
+    return pro2_bridge_active;
+}
+
+bool ds5_audio_bridge_usb_speaker_active(void) {
+    return usb_speaker_active;
+}
+
+bool ds5_audio_bridge_peek_switch2_pro2_frame(
+    uint8_t frame[SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN]) {
+    if (!frame) return false;
+    while (!pro2_transport_valid) {
+        if (!queue_try_remove(&pro2_encoded_frame_queue,
+                              &pro2_transport_frame)) return false;
+        if (pro2_transport_frame.generation == pipeline_reset_generation)
+            pro2_transport_valid = true;
+    }
+    memcpy(frame, pro2_transport_frame.data,
+           SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN);
+    return true;
+}
+
+void ds5_audio_bridge_commit_switch2_pro2_frame(void) {
+    pro2_transport_valid = false;
 }
 
 bool ds5_audio_bridge_get_silent_pair(
@@ -756,6 +1225,15 @@ bool ds5_audio_bridge_peek_speaker_pair(
     return false;
 }
 void ds5_audio_bridge_commit_speaker_pair(void) {}
+void ds5_audio_bridge_set_switch2_pro2_active(bool active) { (void)active; }
+bool ds5_audio_bridge_switch2_pro2_active(void) { return false; }
+bool ds5_audio_bridge_usb_speaker_active(void) { return false; }
+bool ds5_audio_bridge_peek_switch2_pro2_frame(
+    uint8_t frame[SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN]) {
+    (void)frame;
+    return false;
+}
+void ds5_audio_bridge_commit_switch2_pro2_frame(void) {}
 bool ds5_audio_bridge_mic_active(void) { return false; }
 
 #endif

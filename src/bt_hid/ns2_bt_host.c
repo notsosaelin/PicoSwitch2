@@ -172,6 +172,11 @@ static void audio_timer_handler(btstack_timer_source_t *ts) {
     ds5_audio_diag_note_core1_activity(time_us_32());
     bootsel_core1_service();
     ds5_bt_audio_service();
+    // The genuine Pro Controller 2 transport interleaves Opus headphone audio
+    // and sparse HD-haptic streams 5 ms apart on a 20 ms cycle. Keep its UART-gated replay on
+    // this existing fast timer; btstack_host_process() runs only every 30 ms.
+    btstack_host_service_switch2_pro2_audio_replay();
+    btstack_host_service_switch2_pro2_audio_live();
     btstack_run_loop_set_timer(ts, AUDIO_TICK_MS);
     btstack_run_loop_add_timer(ts);
 }

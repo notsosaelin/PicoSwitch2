@@ -45,6 +45,8 @@
 #define SW2_C           14  // C button (under right stick on Pro2)
 #define SW2_GR          24  // Right grip button
 #define SW2_GL          25  // Left grip button
+#define SW2_HEADSET     28  // Synthetic normalized bit: physical jack occupied
+#define SW2_HEADSET_MIC 29  // Synthetic normalized bit: attached headset has a microphone
 #define SW2_DOWN        16
 #define SW2_UP          17
 #define SW2_RIGHT       18
@@ -378,6 +380,15 @@ static void switch2_ble_process_report(bthid_device_t* device, const uint8_t* da
     sw2->event.analog[ANALOG_RY] = ry;
     sw2->event.analog[ANALOG_L2] = lt;
     sw2->event.analog[ANALOG_R2] = rt;
+#ifdef NS2_DS5_AUDIO
+    if (!(sw2_buttons & (1u << SW2_HEADSET))) {
+        sw2->event.headset_state = CONTROLLER_HEADSET_NONE;
+    } else if (sw2_buttons & (1u << SW2_HEADSET_MIC)) {
+        sw2->event.headset_state = CONTROLLER_HEADSET_HEADSET;
+    } else {
+        sw2->event.headset_state = CONTROLLER_HEADSET_HEADPHONES;
+    }
+#endif
 
     // Submit to router
     router_submit_input(&sw2->event);

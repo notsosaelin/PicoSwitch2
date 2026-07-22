@@ -650,7 +650,7 @@ static void cmd_sw2cap(const char *arg) {
     } else if (strncmp(arg, "mark ", 5) == 0) {
         // Capture-session annotation (see sw2_capture.h's sw2_capture_mark()) -- a pure logging
         // call, does not touch the BLE connection/init/report path at all. Truncated to
-        // SW2_CAP_MAX_DATA (64 bytes) same as every other capture entry's payload.
+        // SW2_CAP_MAX_DATA same as every other capture entry's payload.
         const char *label = arg + 5;
         size_t len = strlen(label);
         if (len > 64) len = 64;

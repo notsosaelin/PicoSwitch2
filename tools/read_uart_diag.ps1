@@ -101,7 +101,76 @@ try {
     Start-Sleep -Milliseconds 100
     $serial.DiscardInBuffer()
     Write-Host "UART $Port @ 115200: $Command" -ForegroundColor Cyan
-    if ($Command -eq 'trace dump') {
+    if ($Command -eq 'pro2audio pcm dump') {
+        if (-not $OutputPath) {
+            throw 'pro2audio pcm dump requires -OutputPath ending in .wav'
+        }
+        $resolved = if ([System.IO.Path]::IsPathRooted($OutputPath)) {
+            [System.IO.Path]::GetFullPath($OutputPath)
+        } else {
+            [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $OutputPath))
+        }
+        $parent = [System.IO.Path]::GetDirectoryName($resolved)
+        if (-not [System.IO.Directory]::Exists($parent)) {
+            throw "Output directory does not exist: $parent"
+        }
+
+        $serial.Write("pro2audio pcm status`n")
+        $statusLine = $serial.ReadLine().Trim()
+        $status = $statusLine | ConvertFrom-Json
+        if ($status.pro2audio_pcm -ne 'status' -or -not $status.complete -or
+            [int]$status.captured -le 0) {
+            throw "PCM capture is not complete: $statusLine"
+        }
+
+        $pcm = [System.Collections.Generic.List[byte]]::new([int]$status.captured)
+        $offset = 0
+        while ($offset -lt [int]$status.captured) {
+            $serial.Write("pro2audio pcm read $offset`n")
+            $line = $serial.ReadLine().Trim()
+            $record = $line | ConvertFrom-Json
+            if ($record.pro2audio_pcm -ne 'data' -or
+                [int]$record.offset -ne $offset -or
+                $record.payload -notmatch '^[0-9A-F]*$' -or
+                $record.payload.Length -ne ([int]$record.length * 2) -or
+                [int]$record.total -ne [int]$status.captured) {
+                throw "Invalid PCM record at offset ${offset}: $line"
+            }
+            for ($i = 0; $i -lt $record.payload.Length; $i += 2) {
+                $pcm.Add([Convert]::ToByte($record.payload.Substring($i, 2), 16))
+            }
+            $offset += [int]$record.length
+        }
+        if ($pcm.Count -ne [int]$status.captured -or ($pcm.Count % 4) -ne 0) {
+            throw "PCM length mismatch: received $($pcm.Count), expected $($status.captured)"
+        }
+
+        $stream = [System.IO.File]::Open(
+            $resolved, [System.IO.FileMode]::Create,
+            [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $writer = [System.IO.BinaryWriter]::new($stream)
+        try {
+            $writer.Write([System.Text.Encoding]::ASCII.GetBytes('RIFF'))
+            $writer.Write([uint32](36 + $pcm.Count))
+            $writer.Write([System.Text.Encoding]::ASCII.GetBytes('WAVE'))
+            $writer.Write([System.Text.Encoding]::ASCII.GetBytes('fmt '))
+            $writer.Write([uint32]16)
+            $writer.Write([uint16]1)       # PCM
+            $writer.Write([uint16]2)       # stereo
+            $writer.Write([uint32]48000)
+            $writer.Write([uint32]192000)  # 48k * 2ch * 16-bit
+            $writer.Write([uint16]4)
+            $writer.Write([uint16]16)
+            $writer.Write([System.Text.Encoding]::ASCII.GetBytes('data'))
+            $writer.Write([uint32]$pcm.Count)
+            $writer.Write($pcm.ToArray())
+        } finally {
+            $writer.Dispose()
+            $stream.Dispose()
+        }
+        Write-Host "Saved $($pcm.Count) PCM bytes to $resolved" -ForegroundColor Green
+        Write-Output $statusLine
+    } elseif ($Command -eq 'trace dump') {
         # Pull one retained record per request. This keeps the Pico, USB-UART
         # bridge, SerialPort receive buffer, JSON parser, and console output in
         # lockstep instead of relying on sustained unsolicited transmission.

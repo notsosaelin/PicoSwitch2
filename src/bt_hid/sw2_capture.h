@@ -79,7 +79,7 @@ typedef enum {
                                 // units and supervision timeout in 10ms units.
 } sw2_capture_kind_t;
 
-#define SW2_CAP_MAX_DATA 64  // largest single Switch 2 BLE payload observed anywhere so far
+#define SW2_CAP_MAX_DATA 128 // Includes the 112-byte Pro2 headset/audio input report (0x002E).
 
 typedef struct {
     uint64_t us;      // capture timestamp, time_us_64() (monotonic since boot, not wall-clock)

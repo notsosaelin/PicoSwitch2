@@ -22,9 +22,23 @@ void ns2_bt_core_task(void);
 #ifndef NS2_AUDIO_CORE1_STACK_BYTES
 #define NS2_AUDIO_CORE1_STACK_BYTES (48u * 1024u)
 #endif
+#define NS2_AUDIO_STACK_FILL 0xA5A5A5A5u
 static uint32_t core1_audio_stack[NS2_AUDIO_CORE1_STACK_BYTES / sizeof(uint32_t)]
 	__attribute__((aligned(8)));
 #endif
+
+uint32_t ns2_audio_core1_stack_free_bytes(void)
+{
+#ifdef NS2_DS5_AUDIO_LIVE_OPUS
+	size_t free_words = 0;
+	while (free_words < NS2_AUDIO_CORE1_STACK_BYTES / sizeof(uint32_t) &&
+	       core1_audio_stack[free_words] == NS2_AUDIO_STACK_FILL)
+		free_words++;
+	return (uint32_t)(free_words * sizeof(uint32_t));
+#else
+	return 0;
+#endif
+}
 
 int
 main()
@@ -48,6 +62,8 @@ main()
 	ds5_audio_bridge_init();
 
 #ifdef NS2_DS5_AUDIO_LIVE_OPUS
+	for (size_t i = 0; i < NS2_AUDIO_CORE1_STACK_BYTES / sizeof(uint32_t); ++i)
+		core1_audio_stack[i] = NS2_AUDIO_STACK_FILL;
 	multicore_launch_core1_with_stack(ns2_bt_core_task, core1_audio_stack,
 	                                 sizeof(core1_audio_stack));
 #else
