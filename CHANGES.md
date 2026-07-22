@@ -1,8 +1,30 @@
 # Changes
 
 Reverse-chronological log of notable changes on the `ns2-testing` branch. The
-2026-07-18 entries below are included in
-[`v1.4.0`](https://github.com/notsosaelin/PicoSwitch2/releases/tag/v1.4.0).
+2026-07-21 and 2026-07-22 entries below are included in
+[`v1.5.0`](https://github.com/notsosaelin/PicoSwitch2/releases/tag/v1.5.0).
+
+## 2026-07-22
+
+### Fixed
+
+- **Genuine Pro Controller 2 bonded HOME reconnect is hardware-confirmed.** The custom ATT bond's
+  LTK is restored through BTstack's Security Manager instead of raw HCI encryption, which had
+  encrypted the ACL without restoring the controller's active session. Input and native gyro now
+  return without SYNC, and the P1 LED is reasserted after each controller power cycle. Twenty
+  consecutive controller-off/HOME cycles passed.
+
+### Added
+
+- **UART protocol tracer and reconnect diagnostics.** The headered Pico 2 W can expose console USB
+  transactions, firmware reads, raw BLE captures, SM state, and native-motion ownership while the
+  primary USB port remains connected to the Switch 2.
+- **Current Switch 2 firmware identities.** Pro Controller 2, NSO GameCube, and both Joy-Con 2
+  personalities report up to date on real hardware.
+
+### Validation
+
+- All 35 host-test executables pass. Pico W and Pico 2 W release targets compile successfully.
 
 ## 2026-07-21
 

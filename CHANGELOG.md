@@ -5,10 +5,16 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ## Unreleased
 
+## 1.5.0 — 2026-07-22
+
 ### Added
 
 - Native motion passthrough from a genuine Switch 2 Pro Controller to the Pro Controller 2 output
   personality, including automatic reconnect recovery and stationary source-off hold.
+- Out-of-band UART protocol tracing and diagnostics for console USB traffic, BLE capture,
+  firmware reads, bonded reconnect state, and native-motion ownership.
+- Genuine current firmware identities for Pro Controller 2, NSO GameCube, and both Joy-Con 2
+  personalities; the Switch 2 now reports each emulated personality as up to date.
 
 ### Changed
 
@@ -16,10 +22,29 @@ Release notes describe user-visible behavior. Detailed implementation history re
   handles, and a 7.5 ms BLE interval in a named production profile. UART variants remain isolated
   diagnostics.
 
+### Fixed
+
+- Genuine Pro Controller 2 bonded HOME reconnect now restores the controller through BTstack's
+  Security Manager instead of raw HCI encryption, preserving input and native gyro without SYNC.
+- Player 1 LED state is reasserted after controller power cycles instead of remaining in the
+  running/search pattern after a successful reconnect.
+- Switch 2 custom pairing now serializes GATT transactions, preserves the controller's
+  authoritative LTK and raw-HCI address order, and retains the durable bond across recoverable
+  reconnect failures.
+
 ### Validation
 
 - Splatoon 3 confirms correct native motion aim and stable reconnect behavior.
+- Twenty consecutive controller-off/HOME cycles restored input, P1 LED, and gyro without SYNC.
+- All 35 host-test executables pass; Pico W and Pico 2 W release builds compile successfully.
 - An eight-hour 300 MHz Pico 2 W gameplay soak completed without an observed stability issue.
+
+### Known limitations
+
+- Translating motion from non-Nintendo controllers into genuine Pro Controller 2 native PDUs
+  remains unresolved; the current native path is specific to a genuine Pro Controller 2 source.
+- Joy-Con 2 bonded HOME reconnect has not received the same 20-cycle regression pass.
+- NFC/amiibo passthrough remains research-only.
 
 ## 1.4.0 — 2026-07-18
 
