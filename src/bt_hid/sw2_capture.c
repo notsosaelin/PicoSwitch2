@@ -11,8 +11,8 @@
 #include "pico/time.h"
 #include "pico/critical_section.h"
 
-#define SW2_CAP_RING 256  // ~256 * ~80B =~ 20KB RAM; deep enough to absorb bursts between polls
-                          // from a pull-based (Web Serial round-trip latency) consumer
+#define SW2_CAP_RING 128  // ~128 * ~144B =~ 18KB RAM. Full 0x002E audio reports fit without
+                          // truncation while preserving the capture facility's prior RAM budget.
 
 static sw2_cap_entry_t s_ring[SW2_CAP_RING];
 static uint32_t s_head;  // next write index

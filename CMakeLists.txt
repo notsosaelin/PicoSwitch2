@@ -207,6 +207,12 @@ if(NS2_PRO AND NS2_AUDIO AND NS2_DS5_AUDIO AND
     set(OPUS_ENABLE_FLOAT_API ON CACHE BOOL "" FORCE)
     add_subdirectory(third_party/opus EXCLUDE_FROM_ALL)
     target_compile_definitions(PicoSwitchWGA PRIVATE NS2_DS5_AUDIO_LIVE_OPUS=1)
+    # Pro Controller 2 uses Opus's lower-stack CELT encoder directly. Keep
+    # these internal headers local to the firmware target; DualSense continues
+    # to use the public Opus API.
+    target_include_directories(PicoSwitchWGA PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/opus/celt
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/opus/src)
     # DS5Dongle's current RP2350 implementation relocates libopus code and
     # read-only tables into SRAM. Running the encoder from XIP flash caused
     # enough cache stalls to miss its real-time deadline even when the codec
@@ -234,7 +240,8 @@ if(NS2_PRO AND NS2_AUDIO AND NS2_DS5_AUDIO AND
     set_source_files_properties(src/ds5_audio_ram_mem.c PROPERTIES
         COMPILE_OPTIONS "-fno-builtin;-fno-tree-loop-distribute-patterns")
     # The SDK's automatic core1 stack is too small for Opus. Disable that
-    # allocation; main.c supplies a 48 KiB stack from ordinary SRAM.
+    # allocation; main.c supplies the hardware-validated 48 KiB stack from
+    # ordinary SRAM. Do not grow this statically: doing so starves BT/BOOTSEL.
     target_compile_definitions(PicoSwitchWGA PRIVATE PICO_CORE1_STACK_SIZE=0)
     target_link_libraries(PicoSwitchWGA opus)
 endif()

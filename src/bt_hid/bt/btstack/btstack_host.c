@@ -95,6 +95,8 @@ extern int find_player_index(int dev_addr, int instance);
 // no behavior when disabled. sw2_capture.c avoids tusb.h/BTstack header conflicts itself (it
 // only needs tusb.h's tud_cdc_* calls, no BTstack types), so it's safe to include directly here.
 #include "sw2_capture.h"
+#include "switch2_pro2_audio_transport.h"
+#include "switch2_pro2_audio_replay_fixture.h"
 #include "ns2_bt_version_probe.h"
 #include "ns2_native_motion.h"
 #include "bt_identity_log.h"
@@ -4354,6 +4356,14 @@ static void register_ble_hid_listener(hci_con_handle_t con_handle)
 #define SW2_MOTION_HANDLE           0x000E  // UNVERIFIED: candidate richer/IMU input report
 #define SW2_MOTION_CCC_HANDLE       0x000F  // ASSUMED via the value_handle+1 CCC pattern
 
+// Pro Controller 2 firmware 2.x headset transport. These handles were found by
+// this repo's own live GATT discovery and independently match decrypted
+// controller traffic: 0x002C is host->controller speaker/haptic audio, 0x002E
+// is the extended controller->host input/mic report, and 0x002F is its CCC.
+#define SW2_PRO2_AUDIO_OUTPUT_HANDLE 0x002C
+#define SW2_PRO2_AUDIO_INPUT_HANDLE  0x002E
+#define SW2_PRO2_AUDIO_CCC_HANDLE    0x002F
+
 // Switch 2 command constants
 #define SW2_CMD_PAIRING             0x15
 #define SW2_CMD_SET_LED             0x09
@@ -4918,6 +4928,145 @@ static gatt_client_characteristic_t sw2_motion_characteristic;
 static void sw2_motion_notification_handler(uint8_t packet_type, uint16_t channel,
                                             uint8_t *packet, uint16_t size);
 
+typedef enum {
+    SW2_PRO2_AUDIO_OFF = 0,
+    SW2_PRO2_AUDIO_SUBSCRIBE_PENDING,
+    SW2_PRO2_AUDIO_ACTIVE,
+    SW2_PRO2_AUDIO_UNSUBSCRIBE_PENDING,
+    SW2_PRO2_AUDIO_RESTORE_MOTION_PENDING,
+    SW2_PRO2_AUDIO_ERROR,
+} sw2_pro2_audio_state_t;
+
+static volatile bool s_sw2_pro2_audio_requested;
+static volatile sw2_pro2_audio_state_t s_sw2_pro2_audio_state = SW2_PRO2_AUDIO_OFF;
+static volatile uint8_t s_sw2_pro2_audio_last_att_status;
+static volatile uint8_t s_sw2_pro2_audio_last_headset_raw;
+static volatile uint8_t s_sw2_pro2_audio_last_data_len;
+static volatile uint16_t s_sw2_pro2_audio_last_report_len;
+static volatile uint16_t s_sw2_pro2_audio_max_report_len;
+static volatile uint32_t s_sw2_pro2_audio_notifications;
+static volatile uint32_t s_sw2_pro2_audio_compact_failures;
+static volatile uint32_t s_sw2_motion_last_notification_us;
+static gatt_client_notification_t sw2_pro2_audio_notification_listener;
+static gatt_client_characteristic_t sw2_pro2_audio_characteristic;
+
+typedef enum {
+    SW2_PRO2_REPLAY_IDLE = 0,
+    SW2_PRO2_REPLAY_SETUP_ONE,
+    SW2_PRO2_REPLAY_SETUP_TWO,
+    SW2_PRO2_REPLAY_PRIME,
+    SW2_PRO2_REPLAY_AUDIO,
+    SW2_PRO2_REPLAY_TAIL,
+    SW2_PRO2_REPLAY_DONE,
+    SW2_PRO2_REPLAY_ERROR,
+} sw2_pro2_replay_state_t;
+
+static volatile bool s_sw2_pro2_replay_requested;
+static volatile sw2_pro2_replay_state_t s_sw2_pro2_replay_state;
+static volatile uint8_t s_sw2_pro2_replay_last_send_status;
+static volatile uint16_t s_sw2_pro2_replay_frames_sent;
+static uint8_t s_sw2_pro2_replay_index;
+static uint8_t s_sw2_pro2_replay_silence_count;
+static uint8_t s_sw2_pro2_replay_send_failures;
+static bool s_sw2_pro2_replay_stream4_next;
+static uint32_t s_sw2_pro2_replay_next_us;
+
+typedef enum {
+    SW2_PRO2_LIVE_IDLE = 0,
+    SW2_PRO2_LIVE_SETUP_ONE,
+    SW2_PRO2_LIVE_SETUP_TWO,
+    SW2_PRO2_LIVE_STREAM4,
+    SW2_PRO2_LIVE_STREAM2,
+    SW2_PRO2_LIVE_ERROR,
+} sw2_pro2_live_state_t;
+
+static volatile bool s_sw2_pro2_live_requested;
+static volatile sw2_pro2_live_state_t s_sw2_pro2_live_state;
+static volatile uint8_t s_sw2_pro2_live_last_send_status;
+static volatile uint8_t s_sw2_pro2_live_last_toc;
+static uint8_t s_sw2_pro2_live_prefix[6];
+static volatile uint32_t s_sw2_pro2_live_frames_sent;
+static volatile uint32_t s_sw2_pro2_live_underruns;
+static volatile uint8_t s_sw2_pro2_live_prime_count;
+static uint8_t s_sw2_pro2_live_send_failures;
+static uint32_t s_sw2_pro2_live_next_us;
+
+void btstack_host_request_switch2_pro2_audio_live(bool enabled)
+{
+    __atomic_store_n(&s_sw2_pro2_live_requested, enabled, __ATOMIC_RELEASE);
+    if (enabled) {
+        // Diagnostic replay and live PCM own the same 0x002C stream and must
+        // never be interleaved.
+        __atomic_store_n(&s_sw2_pro2_replay_requested, false,
+                         __ATOMIC_RELEASE);
+        s_sw2_pro2_replay_state = SW2_PRO2_REPLAY_IDLE;
+    } else {
+        s_sw2_pro2_live_state = SW2_PRO2_LIVE_IDLE;
+        ds5_audio_bridge_set_switch2_pro2_active(false);
+    }
+}
+
+void btstack_host_request_switch2_pro2_audio_replay(bool enabled)
+{
+    if (enabled) btstack_host_request_switch2_pro2_audio_live(false);
+    __atomic_store_n(&s_sw2_pro2_replay_requested, enabled, __ATOMIC_RELEASE);
+    if (!enabled || s_sw2_pro2_replay_state == SW2_PRO2_REPLAY_DONE ||
+        s_sw2_pro2_replay_state == SW2_PRO2_REPLAY_ERROR)
+        s_sw2_pro2_replay_state = SW2_PRO2_REPLAY_IDLE;
+}
+
+void btstack_host_set_switch2_pro2_audio_capture(bool enabled)
+{
+    __atomic_store_n(&s_sw2_pro2_audio_requested, enabled, __ATOMIC_RELEASE);
+    // A failed ATT operation is deliberately latched so the 1 ms feedback
+    // service cannot hammer the GATT queue. An explicit off command rearms it.
+    if (!enabled && s_sw2_pro2_audio_state == SW2_PRO2_AUDIO_ERROR)
+        s_sw2_pro2_audio_state = SW2_PRO2_AUDIO_OFF;
+    if (!enabled) {
+        btstack_host_request_switch2_pro2_audio_replay(false);
+        btstack_host_request_switch2_pro2_audio_live(false);
+    }
+}
+
+void btstack_host_get_switch2_pro2_audio_diag(btstack_host_pro2_audio_diag_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    ble_connection_t *conn = find_connection_by_handle(sw2_init_handle);
+    out->requested = __atomic_load_n(&s_sw2_pro2_audio_requested, __ATOMIC_ACQUIRE);
+    out->active = s_sw2_pro2_audio_state == SW2_PRO2_AUDIO_ACTIVE;
+    out->state = (uint8_t)s_sw2_pro2_audio_state;
+    out->last_att_status = s_sw2_pro2_audio_last_att_status;
+    out->last_headset_raw = s_sw2_pro2_audio_last_headset_raw;
+    out->last_audio_length = s_sw2_pro2_audio_last_data_len;
+    out->source_pid = conn ? conn->pid : 0;
+    out->connection_handle = sw2_init_handle;
+    out->last_report_length = s_sw2_pro2_audio_last_report_len;
+    out->max_report_length = s_sw2_pro2_audio_max_report_len;
+    out->notifications = s_sw2_pro2_audio_notifications;
+    out->compact_failures = s_sw2_pro2_audio_compact_failures;
+    out->replay_requested = __atomic_load_n(
+        &s_sw2_pro2_replay_requested, __ATOMIC_ACQUIRE);
+    out->replay_active = s_sw2_pro2_replay_state != SW2_PRO2_REPLAY_IDLE &&
+                         s_sw2_pro2_replay_state != SW2_PRO2_REPLAY_DONE &&
+                         s_sw2_pro2_replay_state != SW2_PRO2_REPLAY_ERROR;
+    out->replay_state = (uint8_t)s_sw2_pro2_replay_state;
+    out->replay_last_send_status = s_sw2_pro2_replay_last_send_status;
+    out->replay_frames_sent = s_sw2_pro2_replay_frames_sent;
+    out->live_requested = __atomic_load_n(
+        &s_sw2_pro2_live_requested, __ATOMIC_ACQUIRE);
+    out->live_active = s_sw2_pro2_live_state != SW2_PRO2_LIVE_IDLE &&
+                       s_sw2_pro2_live_state != SW2_PRO2_LIVE_ERROR;
+    out->live_state = (uint8_t)s_sw2_pro2_live_state;
+    out->live_last_send_status = s_sw2_pro2_live_last_send_status;
+    out->live_last_toc = s_sw2_pro2_live_last_toc;
+    memcpy(out->live_prefix, s_sw2_pro2_live_prefix,
+           sizeof(out->live_prefix));
+    out->live_frames_sent = s_sw2_pro2_live_frames_sent;
+    out->live_underruns = s_sw2_pro2_live_underruns;
+    out->live_prime_count = s_sw2_pro2_live_prime_count;
+}
+
 static void switch2_capture_link_params(uint8_t phase, uint8_t status,
                                         hci_con_handle_t con_handle, uint16_t interval,
                                         uint16_t latency, uint16_t supervision_timeout)
@@ -5011,6 +5160,16 @@ static bool switch2_normalize_pro_000e(const uint8_t *src, uint16_t len, uint8_t
     if (b2 & 0x08) dst[7] |= 0x02; // GL
     if (b2 & 0x10) dst[5] |= 0x40; // C
 
+#ifdef NS2_DS5_AUDIO
+    // Native Pro2 report 0x000E and extended report 0x002E both carry the
+    // physical jack state at 0x0D. Preserve both occupancy (synthetic bit 28)
+    // and microphone capability (synthetic bit 29) in the common-format
+    // report so the normal input seam can advertise the exact jack type.
+    const uint8_t headset_state = switch2_pro2_audio_headset_state(src[0x0D]);
+    if (headset_state != CONTROLLER_HEADSET_NONE) dst[7] |= 0x10;
+    if (headset_state == CONTROLLER_HEADSET_HEADSET) dst[7] |= 0x20;
+#endif
+
     memcpy(&dst[10], &src[5], 6);
     return true;
 }
@@ -5028,6 +5187,7 @@ static void sw2_motion_notification_handler(uint8_t packet_type, uint16_t channe
     const uint8_t *value = gatt_event_notification_get_value(packet);
 
     sw2_capture_record(SW2_CAP_INPUT_NOTIFY, value_handle, value, value_length);
+    s_sw2_motion_last_notification_us = time_us_32();
 
     hci_con_handle_t con_handle = gatt_event_notification_get_handle(packet);
     ble_connection_t *conn = find_connection_by_handle(con_handle);
@@ -5049,6 +5209,445 @@ static void sw2_motion_notification_handler(uint8_t packet_type, uint16_t channe
     pending_ble_report_len = sizeof(normalized);
     pending_ble_conn_index = (uint8_t)conn_index;
     ble_report_pending = true;
+}
+
+static void sw2_pro2_audio_notification_handler(uint8_t packet_type, uint16_t channel,
+                                                uint8_t *packet, uint16_t size)
+{
+    UNUSED(channel);
+    UNUSED(size);
+    if (packet_type != HCI_EVENT_PACKET ||
+        hci_event_packet_get_type(packet) != GATT_EVENT_NOTIFICATION) return;
+
+    const uint16_t value_handle = gatt_event_notification_get_value_handle(packet);
+    const uint16_t value_length = gatt_event_notification_get_value_length(packet);
+    const uint8_t *value = gatt_event_notification_get_value(packet);
+    if (value_handle != SW2_PRO2_AUDIO_INPUT_HANDLE) return;
+
+    sw2_capture_record(SW2_CAP_INPUT_NOTIFY, value_handle, value, value_length);
+    s_sw2_pro2_audio_notifications++;
+    s_sw2_pro2_audio_last_report_len = value_length;
+    if (value_length > s_sw2_pro2_audio_max_report_len)
+        s_sw2_pro2_audio_max_report_len = value_length;
+    if (value_length > 0x0D) s_sw2_pro2_audio_last_headset_raw = value[0x0D];
+    if (value_length > 0x0E) s_sw2_pro2_audio_last_data_len = value[0x0E];
+
+    hci_con_handle_t con_handle = gatt_event_notification_get_handle(packet);
+    ble_connection_t *conn = find_connection_by_handle(con_handle);
+    if (!conn || conn->pid != 0x2069) return;
+    int conn_index = get_ble_conn_index_by_handle(con_handle);
+    if (conn_index < 0) return;
+
+    const uint32_t now_us = time_us_32();
+    if (!switch2_pro2_audio_needs_input_fallback(
+            now_us, s_sw2_motion_last_notification_us)) return;
+
+    uint8_t compact[SW2_PRO2_AUDIO_COMPACT_LEN];
+    if (!switch2_pro2_audio_compact_input(value, value_length, compact)) {
+        s_sw2_pro2_audio_compact_failures++;
+        return;
+    }
+
+    // If ordinary 0x000E actually stops, feed 0x002E's relocated native-motion
+    // block and controls into the exact same validated paths as a fallback.
+    ns2_native_motion_publish((uint8_t)conn_index, compact, sizeof(compact), now_us);
+    if (ble_report_pending) return;
+    uint8_t normalized[63];
+    if (!switch2_normalize_pro_000e(compact, sizeof(compact), normalized)) return;
+    memcpy(pending_ble_report, normalized, sizeof(normalized));
+    pending_ble_report_len = sizeof(normalized);
+    pending_ble_conn_index = (uint8_t)conn_index;
+    ble_report_pending = true;
+}
+
+static void sw2_pro2_audio_ccc_callback(uint8_t packet_type, uint16_t channel,
+                                       uint8_t *packet, uint16_t size)
+{
+    UNUSED(channel);
+    UNUSED(size);
+    if (packet_type != HCI_EVENT_PACKET ||
+        hci_event_packet_get_type(packet) != GATT_EVENT_QUERY_COMPLETE) return;
+
+    const uint8_t status = gatt_event_query_complete_get_att_status(packet);
+    const hci_con_handle_t con_handle = gatt_event_query_complete_get_handle(packet);
+    s_sw2_pro2_audio_last_att_status = status;
+    const uint16_t completed_handle =
+        s_sw2_pro2_audio_state == SW2_PRO2_AUDIO_RESTORE_MOTION_PENDING
+            ? SW2_MOTION_CCC_HANDLE
+            : SW2_PRO2_AUDIO_CCC_HANDLE;
+    sw2_capture_record(SW2_CAP_WRITE_STATUS, completed_handle, &status, 1);
+
+    if (status != ATT_ERROR_SUCCESS) {
+        s_sw2_pro2_audio_state = SW2_PRO2_AUDIO_ERROR;
+        printf("[SW2_PRO2_AUDIO] CCC operation failed: 0x%02X\n", status);
+        return;
+    }
+
+    if (s_sw2_pro2_audio_state == SW2_PRO2_AUDIO_SUBSCRIBE_PENDING) {
+        s_sw2_pro2_audio_state = SW2_PRO2_AUDIO_ACTIVE;
+        printf("[SW2_PRO2_AUDIO] Extended input/audio notifications active\n");
+    } else if (s_sw2_pro2_audio_state == SW2_PRO2_AUDIO_UNSUBSCRIBE_PENDING) {
+        static uint8_t ccc_enable[] = { 0x01, 0x00 };
+        s_sw2_pro2_audio_state = SW2_PRO2_AUDIO_RESTORE_MOTION_PENDING;
+        sw2_capture_record(SW2_CAP_CCC_WRITE, SW2_MOTION_CCC_HANDLE,
+                           ccc_enable, sizeof(ccc_enable));
+        gatt_client_write_value_of_characteristic(
+            sw2_pro2_audio_ccc_callback, con_handle, SW2_MOTION_CCC_HANDLE,
+            sizeof(ccc_enable), ccc_enable);
+    } else if (s_sw2_pro2_audio_state == SW2_PRO2_AUDIO_RESTORE_MOTION_PENDING) {
+        s_sw2_pro2_audio_state = SW2_PRO2_AUDIO_OFF;
+        printf("[SW2_PRO2_AUDIO] Ordinary native-motion notifications restored\n");
+    }
+}
+
+static void switch2_service_pro2_audio_capture(void)
+{
+    const bool requested =
+        __atomic_load_n(&s_sw2_pro2_audio_requested, __ATOMIC_ACQUIRE);
+    ble_connection_t *conn = find_connection_by_handle(sw2_init_handle);
+    if (!conn || conn->pid != 0x2069) return;
+
+    if (requested && s_sw2_pro2_audio_state == SW2_PRO2_AUDIO_OFF) {
+        // Do not overlap the production native-motion setup's outstanding GATT
+        // procedure. UART may arm this at any time; service it only once that
+        // already-validated sequence is fully idle.
+        if (s_sw2_v2_active != NULL ||
+            (s_sw2_v2_state != SW2_V2_IDLE && s_sw2_v2_state != SW2_V2_DONE)) return;
+
+        memset(&sw2_pro2_audio_characteristic, 0,
+               sizeof(sw2_pro2_audio_characteristic));
+        sw2_pro2_audio_characteristic.value_handle = SW2_PRO2_AUDIO_INPUT_HANDLE;
+        sw2_pro2_audio_characteristic.end_handle = 0x0030;
+        gatt_client_listen_for_characteristic_value_updates(
+            &sw2_pro2_audio_notification_listener,
+            sw2_pro2_audio_notification_handler, sw2_init_handle,
+            &sw2_pro2_audio_characteristic);
+
+        static uint8_t ccc_enable[] = { 0x01, 0x00 };
+        s_sw2_pro2_audio_state = SW2_PRO2_AUDIO_SUBSCRIBE_PENDING;
+        sw2_capture_record(SW2_CAP_CCC_WRITE, SW2_PRO2_AUDIO_CCC_HANDLE,
+                           ccc_enable, sizeof(ccc_enable));
+        gatt_client_write_value_of_characteristic(
+            sw2_pro2_audio_ccc_callback, sw2_init_handle,
+            SW2_PRO2_AUDIO_CCC_HANDLE, sizeof(ccc_enable), ccc_enable);
+        printf("[SW2_PRO2_AUDIO] Enabling 0x002E notifications\n");
+    } else if (!requested && s_sw2_pro2_audio_state == SW2_PRO2_AUDIO_ACTIVE) {
+        static uint8_t ccc_disable[] = { 0x00, 0x00 };
+        s_sw2_pro2_audio_state = SW2_PRO2_AUDIO_UNSUBSCRIBE_PENDING;
+        sw2_capture_record(SW2_CAP_CCC_WRITE, SW2_PRO2_AUDIO_CCC_HANDLE,
+                           ccc_disable, sizeof(ccc_disable));
+        gatt_client_write_value_of_characteristic(
+            sw2_pro2_audio_ccc_callback, sw2_init_handle,
+            SW2_PRO2_AUDIO_CCC_HANDLE, sizeof(ccc_disable), ccc_disable);
+        printf("[SW2_PRO2_AUDIO] Disabling 0x002E notifications\n");
+    }
+}
+
+static bool switch2_pro2_replay_due(uint32_t now_us, uint32_t target_us)
+{
+    return (int32_t)(now_us - target_us) >= 0;
+}
+
+static bool switch2_pro2_replay_write(hci_con_handle_t con_handle,
+                                      uint16_t value_handle,
+                                      uint8_t *data, uint16_t len)
+{
+    const uint8_t status = gatt_client_write_value_of_characteristic_without_response(
+        con_handle, value_handle, len, data);
+    s_sw2_pro2_replay_last_send_status = status;
+    if (status != ERROR_CODE_SUCCESS) {
+        // A busy controller can reject a write-without-response transiently.
+        // Retry at the audio cadence, but latch an error instead of hammering
+        // BTstack forever if the transport never becomes writable.
+        s_sw2_pro2_replay_next_us = time_us_32() + 8000u;
+        if (++s_sw2_pro2_replay_send_failures >= 16) {
+            s_sw2_pro2_replay_state = SW2_PRO2_REPLAY_ERROR;
+            __atomic_store_n(&s_sw2_pro2_replay_requested, false,
+                             __ATOMIC_RELEASE);
+        }
+        return false;
+    }
+    s_sw2_pro2_replay_send_failures = 0;
+    sw2_capture_record(SW2_CAP_CMD_OUT, value_handle, data, len);
+    return true;
+}
+
+// UART-only endpoint discriminator: replay a genuine captured stream-0x02
+// haptic burst using the order and timing preserved by the USB analyzer CSV.
+// This intentionally does not consume live console PCM yet.
+void btstack_host_service_switch2_pro2_audio_replay(void)
+{
+    const bool requested = __atomic_load_n(
+        &s_sw2_pro2_replay_requested, __ATOMIC_ACQUIRE);
+    if (!requested) return;
+
+    ble_connection_t *conn = find_connection_by_handle(sw2_init_handle);
+    if (!conn || conn->pid != 0x2069) {
+        s_sw2_pro2_replay_state = SW2_PRO2_REPLAY_ERROR;
+        return;
+    }
+
+    if (s_sw2_pro2_replay_state == SW2_PRO2_REPLAY_IDLE) {
+        // Require the extended report and a physically occupied jack. This
+        // prevents accidental replay through a controller with no headphones.
+        if (s_sw2_pro2_audio_state != SW2_PRO2_AUDIO_ACTIVE ||
+            switch2_pro2_audio_headset_state(s_sw2_pro2_audio_last_headset_raw) ==
+                CONTROLLER_HEADSET_NONE) return;
+        s_sw2_pro2_replay_index = 0;
+        s_sw2_pro2_replay_silence_count = 0;
+        s_sw2_pro2_replay_send_failures = 0;
+        s_sw2_pro2_replay_stream4_next = true;
+        s_sw2_pro2_replay_frames_sent = 0;
+        s_sw2_pro2_replay_last_send_status = 0;
+        s_sw2_pro2_replay_next_us = time_us_32();
+        s_sw2_pro2_replay_state = SW2_PRO2_REPLAY_SETUP_ONE;
+    }
+
+    const uint32_t now_us = time_us_32();
+    if (!switch2_pro2_replay_due(now_us, s_sw2_pro2_replay_next_us)) return;
+
+    static uint8_t setup_one[] = {
+        0x00, 0x18, 0x91, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x07};
+    static uint8_t setup_two[] = {
+        0x00, 0x17, 0x91, 0x01, 0x02, 0x00, 0x07, 0x00,
+        0x00, 0x80, 0xBB, 0x00, 0x00, 0x02, 0xF0, 0x00};
+    // The original Total Phase USB capture retained its real timestamps even
+    // though the derived pcapng did not. It proves both streams repeat every
+    // 20 ms, with stream 0x04 about 5 ms before stream 0x02. Stream 0x04 is
+    // standard Opus carrying headphone audio; its idle packet starts FC FF FE.
+    // Stream 0x02 carries sparse HD haptics and idles as all zeroes. The fixture below
+    // is the exact contiguous 49.206-49.766 s stream-0x02 capture, including
+    // its final two genuine silence frames.
+    uint8_t stream4_packet[3 + SW2_PRO2_REPLAY_FRAME_BYTES] = {
+        0x00, 0x04, SW2_PRO2_REPLAY_FRAME_BYTES, 0xFC, 0xFF, 0xFE};
+    uint8_t stream2_packet[3 + SW2_PRO2_REPLAY_FRAME_BYTES] = {
+        0x00, 0x02, SW2_PRO2_REPLAY_FRAME_BYTES};
+
+    switch (s_sw2_pro2_replay_state) {
+        case SW2_PRO2_REPLAY_SETUP_ONE:
+            if (!switch2_pro2_replay_write(sw2_init_handle, 0x0032,
+                                            setup_one, sizeof(setup_one))) return;
+            s_sw2_pro2_replay_state = SW2_PRO2_REPLAY_SETUP_TWO;
+            s_sw2_pro2_replay_next_us += 25000u;
+            break;
+
+        case SW2_PRO2_REPLAY_SETUP_TWO:
+            if (!switch2_pro2_replay_write(sw2_init_handle, 0x0032,
+                                            setup_two, sizeof(setup_two))) return;
+            s_sw2_pro2_replay_state = SW2_PRO2_REPLAY_PRIME;
+            s_sw2_pro2_replay_next_us += 10000u;
+            break;
+
+        case SW2_PRO2_REPLAY_PRIME:
+        case SW2_PRO2_REPLAY_AUDIO:
+        case SW2_PRO2_REPLAY_TAIL:
+            if (s_sw2_pro2_replay_stream4_next) {
+                if (!switch2_pro2_replay_write(
+                        sw2_init_handle, SW2_PRO2_AUDIO_OUTPUT_HANDLE,
+                        stream4_packet, sizeof(stream4_packet))) return;
+                s_sw2_pro2_replay_stream4_next = false;
+                s_sw2_pro2_replay_next_us += 5000u;
+                return;
+            }
+
+            if (s_sw2_pro2_replay_state == SW2_PRO2_REPLAY_AUDIO)
+                memcpy(&stream2_packet[3],
+                       switch2_pro2_replay_frames[s_sw2_pro2_replay_index],
+                       SW2_PRO2_REPLAY_FRAME_BYTES);
+            if (!switch2_pro2_replay_write(
+                    sw2_init_handle, SW2_PRO2_AUDIO_OUTPUT_HANDLE,
+                    stream2_packet, sizeof(stream2_packet))) return;
+            s_sw2_pro2_replay_stream4_next = true;
+            s_sw2_pro2_replay_next_us += 15000u;
+
+            if (s_sw2_pro2_replay_state == SW2_PRO2_REPLAY_PRIME) {
+                if (++s_sw2_pro2_replay_silence_count >= 8) {
+                    s_sw2_pro2_replay_silence_count = 0;
+                    s_sw2_pro2_replay_state = SW2_PRO2_REPLAY_AUDIO;
+                }
+            } else if (s_sw2_pro2_replay_state == SW2_PRO2_REPLAY_AUDIO) {
+                s_sw2_pro2_replay_index++;
+                s_sw2_pro2_replay_frames_sent++;
+                if (s_sw2_pro2_replay_index >= SW2_PRO2_REPLAY_FRAME_COUNT)
+                    s_sw2_pro2_replay_state = SW2_PRO2_REPLAY_TAIL;
+            } else {
+                if (++s_sw2_pro2_replay_silence_count >= 8) {
+                    s_sw2_pro2_replay_state = SW2_PRO2_REPLAY_DONE;
+                    __atomic_store_n(&s_sw2_pro2_replay_requested, false,
+                                     __ATOMIC_RELEASE);
+                }
+            }
+            break;
+
+        case SW2_PRO2_REPLAY_DONE:
+        case SW2_PRO2_REPLAY_ERROR:
+        case SW2_PRO2_REPLAY_IDLE:
+        default:
+            break;
+    }
+}
+
+static bool switch2_pro2_live_write(hci_con_handle_t con_handle,
+                                    uint16_t value_handle,
+                                    uint8_t *data, uint16_t len)
+{
+    const uint8_t status =
+        gatt_client_write_value_of_characteristic_without_response(
+            con_handle, value_handle, len, data);
+    s_sw2_pro2_live_last_send_status = status;
+    if (status != ERROR_CODE_SUCCESS) {
+        s_sw2_pro2_live_next_us = time_us_32() + 2000u;
+        if (++s_sw2_pro2_live_send_failures >= 16u) {
+            s_sw2_pro2_live_state = SW2_PRO2_LIVE_ERROR;
+            __atomic_store_n(&s_sw2_pro2_live_requested, false,
+                             __ATOMIC_RELEASE);
+            ds5_audio_bridge_set_switch2_pro2_active(false);
+        }
+        return false;
+    }
+    s_sw2_pro2_live_send_failures = 0;
+    sw2_capture_record(SW2_CAP_CMD_OUT, value_handle, data, len);
+    return true;
+}
+
+static void switch2_pro2_live_advance(uint32_t now_us, uint32_t interval_us)
+{
+    uint32_t const scheduled = s_sw2_pro2_live_next_us + interval_us;
+    // Preserve the measured 5/15 ms interleave during normal timer jitter, but
+    // never catch up a long Bluetooth stall by bursting stale packets.
+    s_sw2_pro2_live_next_us =
+        (int32_t)(now_us - scheduled) >= 20000
+            ? now_us + interval_us
+            : scheduled;
+}
+
+// UART-gated first production-shaped path: console USB PCM is encoded on the
+// codec worker into one 120-byte stereo Opus frame per 20 ms stream-0x04
+// packet. Stream 0x02 remains zero for this audio-isolation pass; native Pro2
+// haptic translation is intentionally a separate follow-up.
+void btstack_host_service_switch2_pro2_audio_live(void)
+{
+    const bool requested = __atomic_load_n(
+        &s_sw2_pro2_live_requested, __ATOMIC_ACQUIRE);
+    if (!requested) {
+        if (s_sw2_pro2_live_state != SW2_PRO2_LIVE_IDLE ||
+            ds5_audio_bridge_switch2_pro2_active()) {
+            s_sw2_pro2_live_state = SW2_PRO2_LIVE_IDLE;
+            ds5_audio_bridge_set_switch2_pro2_active(false);
+        }
+        return;
+    }
+
+    ble_connection_t *conn = find_connection_by_handle(sw2_init_handle);
+    const bool ready = conn && conn->pid == 0x2069 &&
+        s_sw2_pro2_audio_state == SW2_PRO2_AUDIO_ACTIVE &&
+        switch2_pro2_audio_headset_state(
+            s_sw2_pro2_audio_last_headset_raw) != CONTROLLER_HEADSET_NONE;
+    if (!ready) {
+        if (s_sw2_pro2_live_state != SW2_PRO2_LIVE_IDLE ||
+            ds5_audio_bridge_switch2_pro2_active()) {
+            s_sw2_pro2_live_state = SW2_PRO2_LIVE_IDLE;
+            ds5_audio_bridge_set_switch2_pro2_active(false);
+        }
+        return;
+    }
+
+    if (s_sw2_pro2_live_state == SW2_PRO2_LIVE_IDLE) {
+        s_sw2_pro2_live_send_failures = 0;
+        s_sw2_pro2_live_last_send_status = 0;
+        s_sw2_pro2_live_last_toc = 0;
+        memset(s_sw2_pro2_live_prefix, 0,
+               sizeof(s_sw2_pro2_live_prefix));
+        s_sw2_pro2_live_frames_sent = 0;
+        s_sw2_pro2_live_underruns = 0;
+        s_sw2_pro2_live_prime_count = 0;
+        // Match the successful capture replay: establish the controller's
+        // transport with eight exact idle stream pairs before codec work can
+        // contend with setup writes or their ACL completions.
+        ds5_audio_bridge_set_switch2_pro2_active(false);
+        s_sw2_pro2_live_next_us = time_us_32();
+        s_sw2_pro2_live_state = SW2_PRO2_LIVE_SETUP_ONE;
+    }
+
+    const uint32_t now_us = time_us_32();
+    if (!switch2_pro2_replay_due(now_us, s_sw2_pro2_live_next_us)) return;
+
+    static uint8_t setup_one[] = {
+        0x00, 0x18, 0x91, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x07};
+    static uint8_t setup_two[] = {
+        0x00, 0x17, 0x91, 0x01, 0x02, 0x00, 0x07, 0x00,
+        0x00, 0x80, 0xBB, 0x00, 0x00, 0x02, 0xF0, 0x00};
+    static uint8_t stream4_packet[3 + SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN];
+    static uint8_t stream2_packet[3 + SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN];
+
+    switch (s_sw2_pro2_live_state) {
+        case SW2_PRO2_LIVE_SETUP_ONE:
+            if (!switch2_pro2_live_write(sw2_init_handle, 0x0032,
+                                          setup_one, sizeof(setup_one))) return;
+            s_sw2_pro2_live_state = SW2_PRO2_LIVE_SETUP_TWO;
+            switch2_pro2_live_advance(now_us, 25000u);
+            break;
+
+        case SW2_PRO2_LIVE_SETUP_TWO:
+            if (!switch2_pro2_live_write(sw2_init_handle, 0x0032,
+                                          setup_two, sizeof(setup_two))) return;
+            s_sw2_pro2_live_state = SW2_PRO2_LIVE_STREAM4;
+            switch2_pro2_live_advance(now_us, 10000u);
+            break;
+
+        case SW2_PRO2_LIVE_STREAM4: {
+            stream4_packet[0] = 0x00;
+            stream4_packet[1] = 0x04;
+            stream4_packet[2] = SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN;
+            memset(&stream4_packet[3], 0,
+                   SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN);
+            // Exact steady-state idle Opus packet observed from the real
+            // console; use it until the first encoded PCM window is ready.
+            stream4_packet[3] = 0xFC;
+            stream4_packet[4] = 0xFF;
+            stream4_packet[5] = 0xFE;
+            const bool encoded = s_sw2_pro2_live_prime_count >= 8u &&
+                ds5_audio_bridge_peek_switch2_pro2_frame(
+                    &stream4_packet[3]);
+            if (!switch2_pro2_live_write(
+                    sw2_init_handle, SW2_PRO2_AUDIO_OUTPUT_HANDLE,
+                    stream4_packet, sizeof(stream4_packet))) return;
+            if (encoded)
+                ds5_audio_bridge_commit_switch2_pro2_frame();
+            else if (s_sw2_pro2_live_prime_count >= 8u &&
+                     ds5_audio_bridge_usb_speaker_active())
+                s_sw2_pro2_live_underruns++;
+            s_sw2_pro2_live_last_toc = stream4_packet[3];
+            memcpy(s_sw2_pro2_live_prefix, &stream4_packet[3],
+                   sizeof(s_sw2_pro2_live_prefix));
+            s_sw2_pro2_live_frames_sent++;
+            s_sw2_pro2_live_state = SW2_PRO2_LIVE_STREAM2;
+            switch2_pro2_live_advance(now_us, 5000u);
+            break;
+        }
+
+        case SW2_PRO2_LIVE_STREAM2:
+            memset(stream2_packet, 0, sizeof(stream2_packet));
+            stream2_packet[1] = 0x02;
+            stream2_packet[2] = SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN;
+            if (!switch2_pro2_live_write(
+                    sw2_init_handle, SW2_PRO2_AUDIO_OUTPUT_HANDLE,
+                    stream2_packet, sizeof(stream2_packet))) return;
+            if (s_sw2_pro2_live_prime_count < 8u &&
+                ++s_sw2_pro2_live_prime_count == 8u)
+                ds5_audio_bridge_set_switch2_pro2_active(true);
+            s_sw2_pro2_live_state = SW2_PRO2_LIVE_STREAM4;
+            switch2_pro2_live_advance(now_us, 15000u);
+            break;
+
+        case SW2_PRO2_LIVE_ERROR:
+            ds5_audio_bridge_set_switch2_pro2_active(false);
+            break;
+
+        case SW2_PRO2_LIVE_IDLE:
+        default:
+            break;
+    }
 }
 
 static void switch2_build_spi_read_cmd(uint8_t *out, uint32_t address, uint8_t size)
@@ -5297,6 +5896,7 @@ static void switch2_run_v2_experiment(hci_con_handle_t con_handle)
 static void switch2_cleanup_on_disconnect(void) {
     gatt_client_stop_listening_for_characteristic_value_updates(&switch2_ack_notification_listener);
     gatt_client_stop_listening_for_characteristic_value_updates(&sw2_motion_notification_listener);
+    gatt_client_stop_listening_for_characteristic_value_updates(&sw2_pro2_audio_notification_listener);
     sw2_init_state = SW2_INIT_IDLE;
     sw2_init_handle = 0;
     // Explicit reset (belt-and-suspenders with the state-change check in switch2_send_init_cmd()):
@@ -5325,6 +5925,27 @@ static void switch2_cleanup_on_disconnect(void) {
     s_sw2_v2_active = NULL;
     s_sw2_gatt_disc_fired = false;
     s_gatt_disc_state = SW2_GATT_DISC_IDLE;
+    s_sw2_pro2_audio_state = SW2_PRO2_AUDIO_OFF;
+    s_sw2_pro2_audio_last_att_status = 0;
+    s_sw2_pro2_audio_last_headset_raw = 0;
+    s_sw2_pro2_audio_last_data_len = 0;
+    s_sw2_pro2_audio_last_report_len = 0;
+    s_sw2_pro2_audio_max_report_len = 0;
+    s_sw2_pro2_audio_notifications = 0;
+    s_sw2_pro2_audio_compact_failures = 0;
+    s_sw2_motion_last_notification_us = 0;
+    __atomic_store_n(&s_sw2_pro2_replay_requested, false, __ATOMIC_RELEASE);
+    s_sw2_pro2_replay_state = SW2_PRO2_REPLAY_IDLE;
+    s_sw2_pro2_replay_last_send_status = 0;
+    s_sw2_pro2_replay_frames_sent = 0;
+    ds5_audio_bridge_set_switch2_pro2_active(false);
+    s_sw2_pro2_live_state = SW2_PRO2_LIVE_IDLE;
+    s_sw2_pro2_live_last_send_status = 0;
+    s_sw2_pro2_live_last_toc = 0;
+    memset(s_sw2_pro2_live_prefix, 0, sizeof(s_sw2_pro2_live_prefix));
+    s_sw2_pro2_live_frames_sent = 0;
+    s_sw2_pro2_live_underruns = 0;
+    s_sw2_pro2_live_prime_count = 0;
     ns2_native_motion_source_disconnected(time_us_32());
     uint8_t version_state = __atomic_load_n(&s_sw2_version_state, __ATOMIC_ACQUIRE);
     if (version_state == NS2_BT_VERSION_REQUESTED || version_state == NS2_BT_VERSION_SENT) {
@@ -5935,6 +6556,8 @@ static void switch2_handle_feedback(void)
         }
     }
 #endif
+
+    switch2_service_pro2_audio_capture();
 
     sw2_rumble_send_counter++;
 

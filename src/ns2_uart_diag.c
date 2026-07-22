@@ -7,6 +7,7 @@
 #include "ns2_protocol_trace.h"
 #include "sw2_capture.h"
 #include "ns2_native_motion.h"
+#include "ds5_audio_bridge.h"
 #include "report.h"
 #include "switch_pro2.h"
 #include "bt/btstack/btstack_host.h"
@@ -19,6 +20,8 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+extern uint32_t ns2_audio_core1_stack_free_bytes(void);
 
 #define NS2_UART_ID uart0
 #define NS2_UART_BAUD 115200u
@@ -42,7 +45,10 @@ static char trace_format_payload[NS2_PROTOCOL_TRACE_PAYLOAD_MAX * 2u + 1u];
 static char trace_format_response[1536];
 static sw2_cap_entry_t ble_format_record;
 static char ble_format_payload[SW2_CAP_MAX_DATA * 2u + 1u];
-static char ble_format_response[384];
+static char ble_format_response[512];
+static uint8_t pcm_format_data[DS5_AUDIO_PCM_CAPTURE_READ_MAX];
+static char pcm_format_payload[DS5_AUDIO_PCM_CAPTURE_READ_MAX * 2u + 1u];
+static char pcm_format_response[896];
 
 static bool tx_pending(void) {
     return tx_position < tx_length;
@@ -196,6 +202,51 @@ static void queue_ble_record(void) {
     queue_text(ble_format_response);
 }
 
+static void queue_pcm_status(const char *event) {
+    ds5_audio_pcm_capture_status_t status;
+    ds5_audio_pcm_capture_get_status(&status);
+    snprintf(pcm_format_response, sizeof(pcm_format_response),
+             "{\"pro2audio_pcm\":\"%s\",\"armed\":%s,\"complete\":%s,"
+             "\"captured\":%u,\"capacity\":%u,\"packets\":%u,"
+             "\"start_us\":%lu,\"end_us\":%lu,\"frames\":%u,"
+             "\"crc32\":\"%08lX\",\"peak_l\":%u,\"peak_r\":%u,"
+             "\"sum_l\":%lld,\"sum_r\":%lld,"
+             "\"sum_sq_l\":%llu,\"sum_sq_r\":%llu}",
+             event, status.armed ? "true" : "false",
+             status.complete ? "true" : "false", status.captured_bytes,
+             status.capacity_bytes, status.packets,
+             (unsigned long)status.start_us, (unsigned long)status.end_us,
+             status.captured_bytes / 4u, (unsigned long)status.crc32,
+             status.peak_left, status.peak_right,
+             (long long)status.sum_left, (long long)status.sum_right,
+             (unsigned long long)status.sum_squares_left,
+             (unsigned long long)status.sum_squares_right);
+    queue_text(pcm_format_response);
+}
+
+static void queue_pcm_record(uint16_t offset) {
+    ds5_audio_pcm_capture_status_t status;
+    ds5_audio_pcm_capture_get_status(&status);
+    if (status.armed) {
+        queue_text("{\"pro2audio_pcm\":\"error\",\"error\":\"capture still armed\"}");
+        return;
+    }
+    uint16_t const length = ds5_audio_pcm_capture_read(
+        offset, pcm_format_data, sizeof(pcm_format_data));
+    if (length == 0) {
+        queue_text("{\"pro2audio_pcm\":\"error\",\"error\":\"offset out of range\"}");
+        return;
+    }
+    for (uint16_t i = 0; i < length; ++i)
+        snprintf(&pcm_format_payload[i * 2u], 3, "%02X", pcm_format_data[i]);
+    pcm_format_payload[length * 2u] = '\0';
+    snprintf(pcm_format_response, sizeof(pcm_format_response),
+             "{\"pro2audio_pcm\":\"data\",\"offset\":%u,\"length\":%u,"
+             "\"total\":%u,\"payload\":\"%s\"}",
+             offset, length, status.captured_bytes, pcm_format_payload);
+    queue_text(pcm_format_response);
+}
+
 static void handle_command(void) {
     rx_line[rx_length] = '\0';
     if (rx_overflow) {
@@ -347,6 +398,138 @@ static void handle_command(void) {
                  fresh ? motion.source_conn_index : 0xFFu,
                  (fresh && motion.held_after_disconnect) ? "true" : "false");
         queue_text(trace_format_response);
+    } else if (strcmp(rx_line, "audio") == 0 ||
+               strcmp(rx_line, "audio status") == 0) {
+        ds5_audio_diag_t d;
+        ds5_audio_diag_get(&d);
+        snprintf(trace_format_response, sizeof(trace_format_response),
+                 "{\"audio\":true,\"usb_active\":%s,"
+                 "\"pcm_packets\":%lu,\"pcm_nonzero\":%lu,"
+                 "\"pcm_dropped\":%lu,\"pcm_queue_max\":%lu,"
+                 "\"opus_frames\":%lu,\"opus_errors\":%lu,"
+                 "\"opus_encode_max_us\":%lu,\"opus_gap_max_us\":%lu,"
+                 "\"codec_calls\":%lu,\"codec_blocks\":%lu,"
+                 "\"codec_no_pcm\":%lu,\"codec_disconnected\":%lu,"
+                 "\"codec_usb_inactive\":%lu,\"core1_gap_max_us\":%lu,"
+                 "\"core1_stack_free\":%lu}",
+                 d.usb_speaker_active ? "true" : "false",
+                 (unsigned long)d.pcm_packets_total,
+                 (unsigned long)d.pcm_nonzero_packets,
+                 (unsigned long)d.pcm_dropped_packets,
+                 (unsigned long)d.pcm_queue_max_depth,
+                 (unsigned long)d.opus_frames_total,
+                 (unsigned long)d.opus_encode_errors,
+                 (unsigned long)d.opus_encode_max_us,
+                 (unsigned long)d.opus_max_gap_us,
+                 (unsigned long)d.codec_calls_total,
+                 (unsigned long)d.codec_blocks_dequeued,
+                 (unsigned long)d.codec_no_pcm,
+                 (unsigned long)d.codec_disconnected,
+                 (unsigned long)d.codec_usb_inactive,
+                 (unsigned long)d.core1_max_gap_us,
+                 (unsigned long)ns2_audio_core1_stack_free_bytes());
+        queue_text(trace_format_response);
+    } else if (strcmp(rx_line, "audio clear") == 0) {
+        ds5_audio_diag_reset();
+        queue_text("{\"audio\":\"cleared\"}");
+    } else if (strcmp(rx_line, "pro2audio on") == 0) {
+        btstack_host_set_switch2_pro2_audio_capture(true);
+        queue_text("{\"pro2audio\":\"requested\",\"enabled\":true}");
+    } else if (strcmp(rx_line, "pro2audio off") == 0) {
+        btstack_host_set_switch2_pro2_audio_capture(false);
+        queue_text("{\"pro2audio\":\"requested\",\"enabled\":false}");
+    } else if (strcmp(rx_line, "pro2audio live on") == 0) {
+        btstack_host_request_switch2_pro2_audio_live(true);
+        queue_text("{\"pro2audio\":\"live_requested\",\"enabled\":true}");
+    } else if (strcmp(rx_line, "pro2audio live off") == 0) {
+        btstack_host_request_switch2_pro2_audio_live(false);
+        queue_text("{\"pro2audio\":\"live_requested\",\"enabled\":false}");
+    } else if (strncmp(rx_line, "pro2audio complexity ", 21) == 0) {
+        unsigned int complexity;
+        char trailing;
+        if (sscanf(rx_line + 21, "%u%c", &complexity, &trailing) != 1 ||
+            complexity > 10u) {
+            queue_text("{\"pro2audio\":\"error\",\"error\":\"usage: pro2audio complexity 0-10\"}");
+        } else {
+            ds5_audio_bridge_set_switch2_pro2_complexity(
+                (uint8_t)complexity);
+            snprintf(trace_format_response, sizeof(trace_format_response),
+                     "{\"pro2audio\":\"complexity\",\"value\":%u}",
+                     complexity);
+            queue_text(trace_format_response);
+        }
+    } else if (strcmp(rx_line, "pro2audio analysis on") == 0) {
+        ds5_audio_bridge_set_switch2_pro2_analysis(true);
+        queue_text("{\"pro2audio\":\"analysis\",\"enabled\":true}");
+    } else if (strcmp(rx_line, "pro2audio analysis off") == 0) {
+        ds5_audio_bridge_set_switch2_pro2_analysis(false);
+        queue_text("{\"pro2audio\":\"analysis\",\"enabled\":false}");
+    } else if (strcmp(rx_line, "pro2audio replay") == 0) {
+        btstack_host_request_switch2_pro2_audio_replay(true);
+        queue_text("{\"pro2audio\":\"replay_requested\"}");
+    } else if (strcmp(rx_line, "pro2audio replay stop") == 0) {
+        btstack_host_request_switch2_pro2_audio_replay(false);
+        queue_text("{\"pro2audio\":\"replay_stopped\"}");
+    } else if (strcmp(rx_line, "pro2audio pcm capture") == 0) {
+        ds5_audio_pcm_capture_arm();
+        queue_pcm_status("armed");
+    } else if (strcmp(rx_line, "pro2audio pcm stop") == 0) {
+        ds5_audio_pcm_capture_stop();
+        queue_pcm_status("stopped");
+    } else if (strcmp(rx_line, "pro2audio pcm") == 0 ||
+               strcmp(rx_line, "pro2audio pcm status") == 0) {
+        queue_pcm_status("status");
+    } else if (strncmp(rx_line, "pro2audio pcm read ", 19) == 0) {
+        unsigned int offset;
+        char trailing;
+        if (sscanf(rx_line + 19, "%u%c", &offset, &trailing) != 1 ||
+            offset > UINT16_MAX) {
+            queue_text("{\"pro2audio_pcm\":\"error\",\"error\":\"usage: pro2audio pcm read OFFSET\"}");
+        } else {
+            queue_pcm_record((uint16_t)offset);
+        }
+    } else if (strcmp(rx_line, "pro2audio") == 0 ||
+               strcmp(rx_line, "pro2audio status") == 0) {
+        btstack_host_pro2_audio_diag_t d;
+        btstack_host_get_switch2_pro2_audio_diag(&d);
+        snprintf(trace_format_response, sizeof(trace_format_response),
+                 "{\"pro2audio\":true,\"requested\":%s,\"active\":%s,"
+                 "\"state\":%u,\"att_status\":\"0x%02X\","
+                 "\"pid\":\"0x%04X\",\"handle\":\"0x%04X\","
+                 "\"notifications\":%lu,\"last_len\":%u,\"max_len\":%u,"
+                 "\"headset_raw\":\"0x%02X\",\"audio_len\":%u,"
+                 "\"compact_failures\":%lu,"
+                 "\"replay_requested\":%s,\"replay_active\":%s,"
+                 "\"replay_state\":%u,\"replay_status\":\"0x%02X\","
+                 "\"replay_frames\":%u,"
+                 "\"live_requested\":%s,\"live_active\":%s,"
+                 "\"live_state\":%u,\"live_status\":\"0x%02X\","
+                 "\"live_toc\":\"0x%02X\","
+                 "\"live_prefix\":\"%02X%02X%02X%02X%02X%02X\","
+                 "\"complexity\":%u,"
+                 "\"analysis\":%s,"
+                 "\"live_prime\":%u,\"live_frames\":%lu,"
+                 "\"live_underruns\":%lu}",
+                 d.requested ? "true" : "false", d.active ? "true" : "false",
+                 d.state, d.last_att_status, d.source_pid, d.connection_handle,
+                 (unsigned long)d.notifications, d.last_report_length,
+                 d.max_report_length, d.last_headset_raw, d.last_audio_length,
+                 (unsigned long)d.compact_failures,
+                 d.replay_requested ? "true" : "false",
+                 d.replay_active ? "true" : "false", d.replay_state,
+                 d.replay_last_send_status, d.replay_frames_sent,
+                 d.live_requested ? "true" : "false",
+                 d.live_active ? "true" : "false", d.live_state,
+                 d.live_last_send_status, d.live_last_toc,
+                 d.live_prefix[0], d.live_prefix[1], d.live_prefix[2],
+                 d.live_prefix[3], d.live_prefix[4], d.live_prefix[5],
+                 ds5_audio_bridge_switch2_pro2_complexity(),
+                 ds5_audio_bridge_switch2_pro2_analysis()
+                    ? "true" : "false",
+                 d.live_prime_count,
+                 (unsigned long)d.live_frames_sent,
+                 (unsigned long)d.live_underruns);
+        queue_text(trace_format_response);
     } else if (strcmp(rx_line, "btreconnect") == 0) {
         btstack_host_reconnect_diag_t d;
         btstack_host_get_reconnect_diag(&d);
@@ -453,7 +636,9 @@ static void handle_command(void) {
                    "\"blecap dump\",\"blecap read\",\"blecap variant 0-9\","
                    "\"blecap gattdisc on|off|status\","
                    "\"blecap mark TEXT\","
-                   "\"motionauto\",\"motionusb\",\"btreconnect\",\"btfresh\","
+                   "\"motionauto\",\"motionusb\",\"audio status|clear\","
+                   "\"pro2audio on|off|status|live on|live off|complexity 0-10|analysis on|analysis off|replay|replay stop\","
+                   "\"btreconnect\",\"btfresh\","
                    "\"reenumerate\",\"help\"]}");
     } else if (rx_length != 0) {
         queue_text("{\"error\":\"unknown command\"}");

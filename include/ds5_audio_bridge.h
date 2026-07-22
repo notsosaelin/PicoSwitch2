@@ -5,6 +5,9 @@
 #include <stdint.h>
 
 #define DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN 200u
+#define SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN 120u
+#define DS5_AUDIO_PCM_CAPTURE_BYTES 4096u
+#define DS5_AUDIO_PCM_CAPTURE_READ_MAX 256u
 
 // Initialize before core1 launches. On builds without NS2_DS5_AUDIO these are
 // cheap no-op stubs so Pico W retains the same USB behavior.
@@ -46,6 +49,21 @@ bool ds5_audio_bridge_speaker_requested(void);
 #endif
 bool ds5_audio_bridge_mic_active(void);
 void ds5_audio_bridge_get_speaker_control(bool *muted, uint8_t *volume);
+
+// The Pico 2 W has one shared USB PCM producer and one codec worker. Only one
+// Bluetooth controller is admitted at a time, so the worker can switch between
+// DualSense's validated public-Opus path and Pro Controller 2's lower-stack
+// direct-CELT path without keeping both encoder states allocated.
+void ds5_audio_bridge_set_switch2_pro2_active(bool active);
+bool ds5_audio_bridge_switch2_pro2_active(void);
+void ds5_audio_bridge_set_switch2_pro2_complexity(uint8_t complexity);
+uint8_t ds5_audio_bridge_switch2_pro2_complexity(void);
+void ds5_audio_bridge_set_switch2_pro2_analysis(bool enabled);
+bool ds5_audio_bridge_switch2_pro2_analysis(void);
+bool ds5_audio_bridge_usb_speaker_active(void);
+bool ds5_audio_bridge_peek_switch2_pro2_frame(
+    uint8_t frame[SWITCH2_PRO2_AUDIO_OPUS_FRAME_LEN]);
+void ds5_audio_bridge_commit_switch2_pro2_frame(void);
 
 // Live bridge instrumentation retained for regression and performance checks.
 // "core1" measures the longest interval between known BTstack activity points
@@ -106,5 +124,32 @@ void ds5_audio_diag_note_usb_pcm(uint32_t now_us, bool nonzero,
 void ds5_audio_diag_note_opus_frame(uint32_t now_us, uint32_t encode_us,
                                     bool success);
 void ds5_audio_diag_note_pipeline_reset(void);
+
+// UART-gated probe of the raw UAC1 speaker PCM received from the console.
+// Capture waits for the first nonzero packet, then retains about 21.3 ms of
+// 48-kHz stereo int16 PCM. Reading happens only after capture, so 115200-baud
+// UART diagnostics never interfere with the live USB audio callback.
+typedef struct {
+    bool armed;
+    bool complete;
+    uint16_t captured_bytes;
+    uint16_t capacity_bytes;
+    uint16_t packets;
+    uint32_t start_us;
+    uint32_t end_us;
+    uint32_t crc32;
+    uint16_t peak_left;
+    uint16_t peak_right;
+    int64_t sum_left;
+    int64_t sum_right;
+    uint64_t sum_squares_left;
+    uint64_t sum_squares_right;
+} ds5_audio_pcm_capture_status_t;
+
+void ds5_audio_pcm_capture_arm(void);
+void ds5_audio_pcm_capture_stop(void);
+void ds5_audio_pcm_capture_get_status(ds5_audio_pcm_capture_status_t *out);
+uint16_t ds5_audio_pcm_capture_read(uint16_t offset, uint8_t *out,
+                                    uint16_t max_len);
 
 #endif  // DS5_AUDIO_BRIDGE_H
