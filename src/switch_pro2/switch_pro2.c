@@ -22,6 +22,7 @@
 #include "switch_pro2.h"
 #include "ns2_firmware_profile.h"
 #include "ns2_protocol_trace.h"
+#include "ns2_native_motion.h"
 #include "usb.h"         // g_usb_config_mode
 
 // This whole module is only built into the NS2 firmware. The vendor-class calls
@@ -366,6 +367,8 @@ static int32_t  ns2_gyro_bias[3];    // slow bias estimate, <<6 fixed point
 static int32_t  ns2_gyro_prev_raw[3];
 static int32_t  ns2_gyro_jitter[3];  // EMA of |raw - prev_raw|, <<6 fixed point — the stillness signal
 static uint8_t  ns2_dbg_still;       // stillness gate state from the most recent report
+static bool     ns2_native_hold_active;
+static uint16_t ns2_native_hold_previous_tick;
 
 // Debug: bias estimate (converted to raw LSB units) + whether the stillness gate is
 // currently open. If `still` never reads 1 while the controller sits motionless on real
@@ -860,7 +863,45 @@ static void ns2_build_report(uint8_t *p) {
     // this call site runs once per report, which is now up to 1000 Hz (bInterval 1).
     // FIRST CUT pending on-console validation: the phase-integration constant and axis SIGNS are
     // best-effort — if the console reads rate too fast/slow, tune PHASE_K; if inverted, flip signs.
-    if (in.has_motion) {
+    // A genuine Pro Controller 2 can supply the console's native variable-length motion PDU
+    // directly over BLE. Prefer that opaque, controller-generated block when fresh: decoding its
+    // still-partly-unknown representation only to synthesize the same bytes again would add failure
+    // modes without adding information. The side channel publishes only PID 0x2069 report-0x000E
+    // data and expires quickly, so every other controller keeps the existing generic IMU path.
+    uint16_t source_vid = 0;
+    uint16_t source_pid = 0;
+    get_global_device(0, NULL, 0, &source_vid, &source_pid);
+    ns2_native_motion_snapshot_t native_motion;
+    bool native_motion_fresh = ns2_native_motion_snapshot(
+        &native_motion, time_us_32(), 50000u); // >6 packets at the verified 133Hz cadence
+    bool native_motion_owned = native_motion_fresh &&
+        native_motion.source_conn_index == 0 && source_vid == 0x057E && source_pid == 0x2069;
+    if (ns2_imu_enabled && native_motion_owned) {
+        p[0x0E] = native_motion.length;
+        memcpy(&p[0x0F], native_motion.data, native_motion.length);
+        if (native_motion.held_after_disconnect && native_motion.length == 0x1E) {
+            // Preserve the last genuine phase+accel values, but keep the 800Hz timing word
+            // advancing so the console receives an explicit zero-angular-velocity sample instead
+            // of a disappearing motion block. The USB builder owns this tiny emit-side state;
+            // the cross-core snapshot remains immutable.
+            uint16_t base_timing = (uint16_t)p[0x0F] | ((uint16_t)p[0x10] << 8);
+            uint16_t base_tick = base_timing & 0x0FFFu;
+            uint32_t elapsed_us = time_us_32() - native_motion.captured_us;
+            uint16_t tick = (uint16_t)((base_tick + 1u + elapsed_us / 1250u) & 0x0FFFu);
+            if (!ns2_native_hold_active) {
+                ns2_native_hold_previous_tick = base_tick;
+                ns2_native_hold_active = true;
+            }
+            uint16_t count = (uint16_t)((tick - ns2_native_hold_previous_tick) & 0x0FFFu);
+            if (count > 15u) count = 15u;
+            ns2_native_hold_previous_tick = tick;
+            uint16_t held_timing = (uint16_t)((count << 12) | tick);
+            p[0x0F] = (uint8_t)held_timing;
+            p[0x10] = (uint8_t)(held_timing >> 8);
+        } else {
+            ns2_native_hold_active = false;
+        }
+    } else if (in.has_motion) {
         ns2_motion_tick_gated(&in);
         if (ns2_imu_enabled) {
             p[0x0E] = 30;

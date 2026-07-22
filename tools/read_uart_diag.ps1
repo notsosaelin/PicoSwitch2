@@ -154,6 +154,46 @@ try {
         } | ConvertTo-Json -Compress
         $lines.Add($end)
         Write-DiagnosticLines -Lines $lines.ToArray()
+    } elseif ($Command -eq 'blecap dump') {
+        # Stop capture, snapshot its retained count, then pull exactly that many
+        # records. BLE and console USB remain live throughout; UART is the only
+        # transport used for this diagnostic data.
+        $serial.Write("blecap dump`n")
+        $manifestLine = $serial.ReadLine().Trim()
+        $manifest = $manifestLine | ConvertFrom-Json
+        if ($manifest.blecap -ne 'dump' -or
+            $manifest.PSObject.Properties.Name -notcontains 'count' -or
+            $manifest.PSObject.Properties.Name -notcontains 'dropped') {
+            throw "Invalid BLE capture manifest: $manifestLine"
+        }
+
+        $lines = [System.Collections.Generic.List[string]]::new()
+        for ($index = 0; $index -lt [int]$manifest.count; $index++) {
+            $serial.Write("blecap read`n")
+            $line = $serial.ReadLine().Trim()
+            $parsed = $line | ConvertFrom-Json
+            if ($parsed.blecap -ne 'record') {
+                throw "Expected BLE capture record $index, received: $line"
+            }
+            foreach ($name in @('t_us', 'kind', 'handle', 'length', 'captured', 'payload')) {
+                if ($parsed.PSObject.Properties.Name -notcontains $name) {
+                    throw "BLE capture record is incomplete (missing '$name'): $line"
+                }
+            }
+            if ($parsed.payload -notmatch '^[0-9A-F]*$' -or
+                $parsed.payload.Length -ne ([int]$parsed.captured * 2)) {
+                throw "BLE capture payload framing mismatch at record ${index}: $line"
+            }
+            $lines.Add($line)
+        }
+        $end = [ordered]@{
+            blecap = 'end'
+            records = $lines.Count
+            dropped = [uint64]$manifest.dropped
+            variant = [int]$manifest.variant
+        } | ConvertTo-Json -Compress
+        $lines.Add($end)
+        Write-DiagnosticLines -Lines $lines.ToArray()
     } else {
         $serial.Write("$Command`n")
         $response = $serial.ReadLine().Trim()

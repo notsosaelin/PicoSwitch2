@@ -1,9 +1,14 @@
 # Switch 2 Pro Controller — Report 0x09 Motion (IMU) Format
 
-**Status:** ✅ **Format confirmed** (int32 angular-phase + Q16.16 accelerometer), cross-validated
-on two independent captures. 🔵 Coordinate signs/axis order and phase filtering still inferred.
-**Confidence:** Very high for field boundaries, timing word, accel Q16.16 scale; High (inferred)
-for the 32-bit *angular-phase* semantics; Unknown for exact console-expected signs/permutation.
+**Current status (2026-07-21):** ✅ a genuine Pro Controller 2's native BLE motion is passed
+byte-for-byte into console-facing report `0x09` and is hardware-confirmed in Splatoon 3. Correct
+aim axes, stationary behavior, controller power-cycle, bonded reconnect, and source-off hold all
+pass. 🔵 Synthesizing equivalent data from DualSense or another generic IMU remains unresolved.
+
+The legacy length-30 USB field analysis below remains useful for the generic encoder and historical
+captures. It is no longer the production path for a genuine PID `057E:2069` source; that controller
+provides its own variable-length `0x1E`/`0x28` PDU. See
+[`native-pro2-motion-passthrough-2026-07-21.md`](../experiments/native-pro2-motion-passthrough-2026-07-21.md).
 
 > **Supersedes the earlier int16 interpretation.** This document previously described the block as
 > two interleaved `int16` `[gyro,accel]` samples. That model is **refuted** — see §"Why the int16
@@ -40,8 +45,9 @@ at `0x0F`). Earlier blind hypotheses (3 samples length 40; int16 interleaved len
 ## Format (length = 30)
 
 Motion block begins at report offset `0x0F` (`motion[k]` below = report byte `0x0F + k`). The
-length byte is at report offset `0x0E` (`0` = IMU off, `30` = IMU on; a `40` variant seen in other
-research is absent from all our captures).
+length byte is at report offset `0x0E` (`0` = IMU off, `30` = IMU on). The original direct USB
+captures contained no length-40 records; the live native BLE bridge now observes and successfully
+forwards genuine length-40 blocks alongside length-30 blocks.
 
 | motion off | Size | Type | Field | Notes |
 |---|---|---|---|---|
@@ -82,8 +88,8 @@ IMU feature over bulk EP2:
 0c 91 00 06 00 04 00 00 …          # configure motion features (ids 0x02/0x03)
 0c 91 00 04 00 04 00 00 27 00 00 00 # feature mask 0x27 (IMU bit set, no magnetometer) -> motion ON
 ```
-(~174–251 zero-length reports precede motion-on in the captures.) **Our firmware currently emits
-motion always-on — the inverse of the hardware.** See Experiment C for the exact packet trace.
+(~174–251 zero-length reports precede motion-on in the captures.) The current firmware gates motion
+on this negotiated feature, matching the genuine device. See Experiment C for the original trace.
 
 ## Why the int16 model looked partially right
 
@@ -266,8 +272,15 @@ the model is "negotiate an additional feature bit," not "find hidden bytes in th
 
 ## Implementation status
 
-🟢 **Validated on-console: the Switch 2 reads our gyro** (both Zeldas + Splatoon respond).
-`src/switch_pro2/switch_pro2.c` `ns2_build_report()` emits the int32 layout above and **gates motion
+🟢 **Current genuine-source path:** a real Pro Controller 2's controller-generated `0x1E`/`0x28`
+blocks are transported opaquely and hardware-confirmed in Splatoon 3. This avoids relying on the
+generated value semantics discussed below. On disconnect, the last genuine length-30 state is held
+stationary while its timing word advances; source-slot and VID/PID ownership prevent reuse by a
+different controller.
+
+🔵 **Historical/generic encoder path:** the Switch 2 reads the generated gyro pipeline (both Zeldas
+and Splatoon respond), but its exact fidelity remains unresolved. `src/switch_pro2/switch_pro2.c`
+`ns2_build_report()` emits the int32 layout above and **gates motion
 on the `0x0C/0x04` IMU-enable** (`ns2_imu_enabled`, reset per host session in `tud_mount_cb`) —
 length 0 until the console enables it, matching a real PC2. Angular phase = the integral of
 `in.gyro` over **real elapsed time** (`time_us_32`), scaled `2^32 / (16.384 LSB/dps · 360° · 1e6) =

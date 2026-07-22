@@ -32,6 +32,7 @@ baseline remains intact.
 | Switch 2 controller firmware identity/update status | ✅ Confirmed | Genuine `0x10/01` replies plus Switch 2 Update Controllers; Pro2, NSO GC, and both Joy-Con 2 personalities report up to date |
 | Out-of-band UART protocol tracer | ✅ Confirmed | Real Switch 2 + genuine Pro Controller 2 source; complete 63-record Pro2 re-enumeration capture, zero overwrites, pull-transport framing validated |
 | UART trace decoder and semantic differ | ✅ Host + live-capture confirmed | Known EP0/bulk/HID fields, sensitive-field redaction, strict comparison, timestamp wrap, corruption rejection, and two-capture Pro2 A/B workflow |
+| Genuine Pro Controller 2 native motion passthrough | ✅ Confirmed | Splatoon 3 axes/aim, stationary behavior, power-off hold, controller power-cycle, and bonded reconnect; native `0x1E`/`0x28` PDUs at 133 Hz |
 | DualSense and DualSense Edge input | ✅ Confirmed | Real Switch 2 and Steam |
 | Edge paddles, Fn buttons, and mute mapping | ✅ Confirmed | Real hardware |
 | DualSense/Edge LEDs and rumble | ✅ Confirmed | Real hardware after report-boundary scheduler fix |
@@ -50,6 +51,7 @@ baseline remains intact.
 | DualSense Bluetooth internal-speaker audio — Pico 2 W | ✅ Confirmed | Standard 300 MHz build; 13,225/13,225 PCM blocks encoded, zero drops/errors |
 | DualSense Bluetooth internal-speaker audio — Pico W | ❌ Not supported | Fixed-point/XIP 300 MHz experiment barely played audio; standard build restored to validated non-audio profile |
 | Standard 300 MHz Pico 2 W platform regression | ✅ Confirmed | LED/BOOTSEL, config persistence/readback, cold boot, and ten wake attempts per known controller |
+| Standard 300 MHz Pico 2 W extended stability soak | ✅ Confirmed | Eight-hour Smash session with no observed thermal or stability issue; temperature was not instrumented |
 | DualSense audio after bonded reconnect | ✅ Confirmed | Controller and dongle power cycles restore audio and native rumble through the saved bond; no fresh pair required |
 | Switch 2 headset insertion and output | ✅ Confirmed | Physical DualSense jack is recognized; console audio plays through connected headphones with input/rumble/wake intact |
 | Switch 2 headset removal/reinsert | ✅ Confirmed | Repeated cycles restore input, audio, and native haptics; unplugged full legacy rumble remains stable |
@@ -103,7 +105,7 @@ See [`docs/architecture/overview.md`](docs/architecture/overview.md) and
 |---|---|---|
 | P2 | DualSense microphone return | 🟡 Headset presence is implemented; microphone Opus decode and USB return remain |
 | P2 | Let reconnecting BLE controllers sleep with the console without touching bonds or admission | 🔵 Research concluded: no safe generic host-only path; controller-specific evidence required |
-| P3 | Console-native report `0x09` motion semantics | 🔴 Blocked on better primary evidence |
+| P3 | Generic controller IMU → console-native report `0x09` translation | 🔵 Native Pro2 passthrough is confirmed; synthesized Nintendo motion for DualSense/other IMUs still needs primary evidence |
 | P3 | NFC/amiibo transactions | 🔴 Blocked on a genuine console-side capture |
 
 ## Validation
@@ -119,6 +121,8 @@ Current automated coverage includes:
 - HID output normalization
 - Retained UART protocol-trace disabled mode, payload truncation, chronological wraparound, and
   overwrite accounting
+- Native Pro2 motion snapshot validation for length-30/length-40 packets, source-slot ownership,
+  freshness and timer wrap, malformed input, disconnect hold, and clear semantics
 - UART trace JSONL validation, known-field decoding, default sensitive-data redaction, timestamp
   rollover, address-aware semantic alignment, and strict raw-prefix comparison
 - Switch 2 pairing cryptography
@@ -177,9 +181,11 @@ player-dot reordering, and the prior wake/input/rumble baseline are hardware-con
 ## Next recommended work
 
 1. Add DualSense microphone Opus decode and USB return.
-2. Run an extended playback/thermal soak on the Pico 2 W 300 MHz build.
+2. Reconcile remaining deliberate USB deviations from genuine hardware, beginning with the Pro2
+   HID endpoint interval, one independently hardware-tested change at a time.
 3. Add a reproducible release checklist with board, firmware revision, controller firmware,
    console firmware, and result data.
-4. Build a reproducible console-side capture path before resuming NFC or report `0x09` motion work.
+4. Use the validated UART/BLE bridge to capture NFC or other unknown console behavior before
+   implementing it; keep generic IMU translation separate from native Pro2 passthrough.
 5. Revisit controller sleep only after capturing a verified per-family sleep command or a stable
    distinction between automatic-reconnect and user-wake advertisements.

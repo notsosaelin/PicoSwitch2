@@ -578,7 +578,7 @@ static void cmd_fwreads(void) {
 // `sw2cap gattdisc on|off|stat` controls the separate, off-by-default one-shot GATT discovery
 // tool (see sw2_capture.h) — ground truth for raw ATT handle numbering.
 //
-// `sw2cap variant <0-6>` arms one of the v2 feature-enable experiment's six variants (0 = off);
+// `sw2cap variant <0-9>` arms one of the v2 feature-enable experiment variants (0 = off);
 // `sw2cap variant stat` reports which is currently armed (see sw2_capture.h for what each
 // variant does). Independent of plain capture on/off, so a session can capture normal traffic
 // first and only arm an experiment when explicitly asked. Do not arm gattdisc and a variant in
@@ -640,8 +640,8 @@ static void cmd_sw2cap(const char *arg) {
         reply(out);
     } else if (strncmp(arg, "variant ", 8) == 0) {
         int n = atoi(arg + 8);
-        if (n < 0 || n > 6) {
-            reply("{\"error\":\"variant must be 0-6 (0=off)\"}");
+        if (n < 0 || n > 9) {
+            reply("{\"error\":\"variant must be 0-9 (0=off)\"}");
         } else {
             sw2_set_v2_variant((uint8_t)n);
             snprintf(out, sizeof(out), "{\"ok\":true,\"variant\":%d}", n);
@@ -658,7 +658,7 @@ static void cmd_sw2cap(const char *arg) {
         snprintf(out, sizeof(out), "{\"ok\":true,\"marked\":\"%.64s\"}", label);
         reply(out);
     } else {
-        reply("{\"error\":\"usage: sw2cap on|off|stat|drain|gattdisc on|off|stat|variant <0-6>|variant stat|mark <text>\"}");
+        reply("{\"error\":\"usage: sw2cap on|off|stat|drain|gattdisc on|off|stat|variant <0-9>|variant stat|mark <text>\"}");
     }
 }
 

@@ -4,14 +4,15 @@
 // Purpose: switch2_ble.c's process_report() only reads report bytes 0-15 (buttons/sticks) and
 // 60-61 (GC triggers) out of a 63-64 byte packet — bytes 16-59 (which the sibling native-BLE
 // motion format, docs/experiments/switch2_native_motion_map_DyCOOL.md, places motion inside)
-// are received, decrypted by the BT stack, and then silently discarded. This module captures
+// were originally received, decrypted by the BT stack, and then silently discarded. The
+// production Pro2 path now preserves native 0x000E motion separately; this module still captures
 // the COMPLETE raw bytes of every notification/command/state-transition this repo's BLE host
 // code already sees, unmodified, with a timestamp — so a captured session can be inspected
 // offline instead of guessing at what an undecoded byte range might contain.
 //
 // Design constraints (deliberate):
 //   - Capture NEVER blocks or affects BT stack behavior: the producer (core1, BT stack
-//     callbacks) drops an entry and counts it if the ring buffer is full, rather than waiting.
+//     callbacks) overwrites the oldest entry and counts it if the ring is full, rather than waiting.
 //   - Capture does not decode, interpret, or alter anything — it stores exact bytes as received/
 //     sent, plus a kind tag and the GATT handle involved. Any semantic decoding happens later,
 //     offline, from the exported log — never inline in the capture path.
@@ -51,7 +52,7 @@ typedef enum {
     SW2_CAP_GATT_DESC    = 8,  // one discovered descriptor of the characteristic most recently
                                 // seen via SW2_CAP_GATT_CHAR. handle=descriptor handle (raw ATT);
                                 // data = [uuid16:u16-LE][uuid128:16B]
-    SW2_CAP_VARIANT      = 9,  // v2 experiment variant starting. data[0] = variant id (1-6, see
+    SW2_CAP_VARIANT      = 9,  // v2 experiment variant starting. data[0] = variant id (1-9, see
                                 // sw2_set_v2_variant()); logged once, before that variant's first
                                 // protocol action, so it's unambiguous which variant produced the
                                 // entries that follow it in an exported NDJSON file
@@ -70,6 +71,12 @@ typedef enum {
                                 // NUL-terminated in-frame; length is `len`). Purely additive
                                 // logging -- see sw2_capture_mark()'s own comment for the exact
                                 // non-invasiveness guarantee.
+    SW2_CAP_LINK_PARAMS  = 12, // BLE connection parameters. handle=HCI connection handle; data =
+                                // [phase][status][interval:u16-LE][latency:u16-LE]
+                                // [supervision_timeout:u16-LE]. phase: 1=snapshot before an
+                                // experimental update, 2=update request submitted,
+                                // 3=HCI LE Connection Update Complete. Interval is in 1.25ms
+                                // units and supervision timeout in 10ms units.
 } sw2_capture_kind_t;
 
 #define SW2_CAP_MAX_DATA 64  // largest single Switch 2 BLE payload observed anywhere so far
@@ -98,7 +105,8 @@ const char *sw2_capture_kind_name(uint8_t kind);
 
 void sw2_capture_set_enabled(bool on);
 bool sw2_capture_get_enabled(void);
-uint32_t sw2_capture_dropped_count(void);  // entries lost to a full ring buffer since last enable
+uint32_t sw2_capture_dropped_count(void);  // oldest entries overwritten since last enable
+uint16_t sw2_capture_buffered_count(void); // entries currently waiting to be drained
 
 // ---- One-shot GATT discovery: ground truth for raw ATT handle numbering (2026-07-10) ----
 // OFF by default. The v1 motion-enable experiment (superseded by the v2 matrix below) worked --
@@ -106,9 +114,8 @@ uint32_t sw2_capture_dropped_count(void);  // entries lost to a full ring buffer
 // exposed that this repo had no independently-confirmed mapping for handles beyond the ones its
 // own fixed #defines already use (0x000A/B, 0x0012, 0x0014, 0x001A/B) or the reference tool's
 // documented value handles (0x000E, 0x0016, 0x001E). In particular, a "write report rate" step in
-// that reference tool targets a handle derived by bleak-offset arithmetic that turned out
-// genuinely ambiguous on paper (see ble-controller-protocol-inventory.md §3.7.1 for the two
-// competing derivations, 0x000C vs 0x000D). Rather than guess, this walks the actual GATT table
+// that reference tool initially had ambiguous Bleak-to-ATT arithmetic. The completed discovery
+// identifies descriptor 0x0010 as the actual target. This facility walks the actual GATT table
 // BTstack itself discovers on the live connection -- every primary service, every characteristic
 // (declaration handle + value handle + properties + UUID), and every descriptor (handle + UUID)
 // -- and captures each one via the existing sw2_capture_record() pipeline (SW2_CAP_GATT_SVC/
@@ -141,17 +148,45 @@ bool sw2_get_gatt_discovery_enabled(void);
 //                                  descriptor write, AND (unique to this variant) the 0x000E CCC
 //                                  subscribe deferred to the very end -- mirroring the reference
 //                                  tool's actual operation order, not just its command bytes
+//   7. reset_then_imu             -- disable all features, then configure/enable 0x07
+//   8. console_motion_core        -- console-captured configure=0x27, exact console calibration
+//                                  reads, enable=0x27, report-rate descriptor 0x0085, then deferred
+//                                  0x000E subscription; this is the first console-grounded variant
+//   9. console_motion_fast_link   -- exactly variant 8, followed by a standard-compliant 7.5ms
+//                                  central-side BLE connection-interval update after subscription;
+//                                  isolates the observed 30ms link bottleneck without changing v8
 // Selecting a variant arms it for the next connection's post-SW2_INIT_DONE one-shot firing (same
 // trigger point v1 used). Exactly one variant is armed at a time; each variant fires once per
 // connection (the guard resets on disconnect), so testing a different variant -- or re-testing
 // the same one -- requires a fresh reconnect/power-cycle between attempts, by construction. Every
 // command, CCC write, and ACK this produces is captured via sw2_capture_record() exactly like
 // v1 was, plus one SW2_CAP_VARIANT marker at the start identifying which variant is running.
-// Nothing here is decoded, and nothing feeds normal input routing or report 0x09.
+// The UART selector remains an opt-in RE control surface. Production native Pro2 motion uses a
+// separately named profile with the same console-confirmed sequence; its 0x000E notification is
+// normalized for buttons/sticks and transported opaquely into report 0x09.
 // See docs/switch2/ble-controller-protocol-inventory.md §3.7 for the full design, the
 // handle-numbering analysis, and what each variant is meant to isolate.
-void sw2_set_v2_variant(uint8_t variant);  // 0 = off/disarmed, 1-6 = variant id per the list above
+void sw2_set_v2_variant(uint8_t variant);  // 0 = off/disarmed, 1-9 = variant id per the list above
 uint8_t sw2_get_v2_variant(void);
+
+typedef struct {
+    uint32_t checks;
+    uint32_t starts;
+    uint32_t wait_elapsed_ms;
+    uint16_t source_pid;
+    uint8_t personality;
+    uint8_t init_state;
+    uint8_t v2_state;
+    uint8_t auto_fired;
+    uint8_t armed_variant;
+    uint8_t gatt_discovery;
+    uint8_t block_mask; // bit0 wait, bit1 armed, bit2 discovery, bit3 personality,
+                        // bit4 no source, bit5 PID mismatch, bit6 v2 busy
+} sw2_native_auto_diag_t;
+
+// Read-only automatic native-motion gate state, exposed over UART as `motionauto` so a failed
+// cold boot identifies the exact gate instead of requiring another speculative firmware change.
+void sw2_native_auto_diag_snapshot(sw2_native_auto_diag_t *out);
 
 // ---- Capture annotation marker (2026-07-10) ----
 // Inserts a single SW2_CAP_MARKER entry, timestamped like everything else, carrying an arbitrary

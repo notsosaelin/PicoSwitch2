@@ -5,6 +5,7 @@
 #include "ns2_firmware_profile.h"
 #include "ns2_bt_version_probe.h"
 #include "ns2_protocol_trace.h"
+#include "sw2_capture.h"
 
 #include <hardware/gpio.h>
 #include <hardware/uart.h>
@@ -34,6 +35,9 @@ static bool reenumerate_requested;
 static ns2_protocol_trace_record_t trace_format_record;
 static char trace_format_payload[NS2_PROTOCOL_TRACE_PAYLOAD_MAX * 2u + 1u];
 static char trace_format_response[384];
+static sw2_cap_entry_t ble_format_record;
+static char ble_format_payload[SW2_CAP_MAX_DATA * 2u + 1u];
+static char ble_format_response[384];
 
 static bool tx_pending(void) {
     return tx_position < tx_length;
@@ -160,6 +164,33 @@ static void queue_trace_record(uint16_t index) {
     queue_text(trace_format_response);
 }
 
+static void queue_ble_status(const char *event) {
+    char response[256];
+    snprintf(response, sizeof(response),
+             "{\"blecap\":\"%s\",\"enabled\":%s,\"count\":%u,\"dropped\":%lu,\"variant\":%u}",
+             event, sw2_capture_get_enabled() ? "true" : "false",
+             sw2_capture_buffered_count(), (unsigned long)sw2_capture_dropped_count(),
+             sw2_get_v2_variant());
+    queue_text(response);
+}
+
+static void queue_ble_record(void) {
+    if (!sw2_capture_drain_one(&ble_format_record)) {
+        queue_text("{\"blecap\":\"empty\"}");
+        return;
+    }
+    for (size_t i = 0; i < ble_format_record.len; i++)
+        snprintf(&ble_format_payload[i * 2u], 3, "%02X", ble_format_record.data[i]);
+    ble_format_payload[ble_format_record.len * 2u] = '\0';
+    snprintf(ble_format_response, sizeof(ble_format_response),
+             "{\"blecap\":\"record\",\"t_us\":%llu,\"kind\":\"%s\","
+             "\"handle\":\"0x%04X\",\"length\":%u,\"captured\":%u,\"payload\":\"%s\"}",
+             (unsigned long long)ble_format_record.us,
+             sw2_capture_kind_name(ble_format_record.kind), ble_format_record.handle,
+             ble_format_record.orig_len, ble_format_record.len, ble_format_payload);
+    queue_text(ble_format_response);
+}
+
 static void handle_command(void) {
     rx_line[rx_length] = '\0';
     if (rx_overflow) {
@@ -237,6 +268,57 @@ static void handle_command(void) {
         } else {
             queue_trace_record((uint16_t)index);
         }
+    } else if (strcmp(rx_line, "blecap") == 0 || strcmp(rx_line, "blecap status") == 0) {
+        queue_ble_status("status");
+    } else if (strcmp(rx_line, "blecap start") == 0) {
+        sw2_capture_set_enabled(true);
+        queue_ble_status("started");
+    } else if (strcmp(rx_line, "blecap stop") == 0) {
+        sw2_capture_set_enabled(false);
+        queue_ble_status("stopped");
+    } else if (strcmp(rx_line, "blecap dump") == 0) {
+        sw2_capture_set_enabled(false);
+        queue_ble_status("dump");
+    } else if (strcmp(rx_line, "blecap read") == 0) {
+        queue_ble_record();
+    } else if (strcmp(rx_line, "blecap gattdisc on") == 0) {
+        sw2_set_gatt_discovery_enabled(true);
+        queue_text("{\"blecap\":\"gattdisc\",\"enabled\":true}");
+    } else if (strcmp(rx_line, "blecap gattdisc off") == 0) {
+        sw2_set_gatt_discovery_enabled(false);
+        queue_text("{\"blecap\":\"gattdisc\",\"enabled\":false}");
+    } else if (strcmp(rx_line, "blecap gattdisc status") == 0) {
+        queue_text(sw2_get_gatt_discovery_enabled()
+            ? "{\"blecap\":\"gattdisc\",\"enabled\":true}"
+            : "{\"blecap\":\"gattdisc\",\"enabled\":false}");
+    } else if (strncmp(rx_line, "blecap variant ", 15) == 0) {
+        unsigned int variant;
+        char trailing;
+        if (sscanf(rx_line + 15, "%u%c", &variant, &trailing) != 1 || variant > 9) {
+            queue_text("{\"blecap\":\"error\",\"error\":\"usage: blecap variant 0-9\"}");
+        } else {
+            sw2_set_v2_variant((uint8_t)variant);
+            queue_ble_status("variant");
+        }
+    } else if (strncmp(rx_line, "blecap mark ", 12) == 0) {
+        const char *label = rx_line + 12;
+        size_t length = strlen(label);
+        if (length > SW2_CAP_MAX_DATA) length = SW2_CAP_MAX_DATA;
+        sw2_capture_mark((const uint8_t *)label, (uint16_t)length);
+        queue_ble_status("marked");
+    } else if (strcmp(rx_line, "motionauto") == 0) {
+        sw2_native_auto_diag_t d;
+        sw2_native_auto_diag_snapshot(&d);
+        snprintf(trace_format_response, sizeof(trace_format_response),
+                 "{\"motionauto\":true,\"checks\":%lu,\"starts\":%lu,"
+                 "\"wait_ms\":%lu,\"pid\":\"0x%04X\",\"personality\":%u,"
+                 "\"init_state\":%u,\"v2_state\":%u,\"fired\":%s,"
+                 "\"armed\":%u,\"gattdisc\":%s,\"block_mask\":\"0x%02X\"}",
+                 (unsigned long)d.checks, (unsigned long)d.starts,
+                 (unsigned long)d.wait_elapsed_ms, d.source_pid, d.personality,
+                 d.init_state, d.v2_state, d.auto_fired ? "true" : "false",
+                 d.armed_variant, d.gatt_discovery ? "true" : "false", d.block_mask);
+        queue_text(trace_format_response);
     } else if (strcmp(rx_line, "reenumerate") == 0) {
         reenumerate_requested = true;
         queue_text("{\"ok\":true,\"reenumerate\":true}");
@@ -247,7 +329,11 @@ static void handle_command(void) {
                    "\"btversion\",\"trace status\",\"trace clear\","
                    "\"trace start\",\"trace stop\",\"trace dump\","
                    "\"trace read N\","
-                   "\"reenumerate\",\"help\"]}");
+                   "\"blecap status\",\"blecap start\",\"blecap stop\","
+                   "\"blecap dump\",\"blecap read\",\"blecap variant 0-9\","
+                   "\"blecap gattdisc on|off|status\","
+                   "\"blecap mark TEXT\","
+                   "\"motionauto\",\"reenumerate\",\"help\"]}");
     } else if (rx_length != 0) {
         queue_text("{\"error\":\"unknown command\"}");
     }

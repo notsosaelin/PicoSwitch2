@@ -46,6 +46,15 @@ void sw2_capture_set_enabled(bool on) {
 bool sw2_capture_get_enabled(void) { return s_enabled; }
 uint32_t sw2_capture_dropped_count(void) { return s_dropped; }
 
+uint16_t sw2_capture_buffered_count(void) {
+    ensure_lock();
+    critical_section_enter_blocking(&s_lock);
+    uint32_t count = (s_head >= s_tail) ? (s_head - s_tail) :
+                                          (SW2_CAP_RING - s_tail + s_head);
+    critical_section_exit(&s_lock);
+    return (uint16_t)count;
+}
+
 void sw2_capture_record(sw2_capture_kind_t kind, uint16_t handle, const uint8_t *data, uint16_t len) {
     if (!s_enabled) return;
     ensure_lock();
@@ -53,9 +62,13 @@ void sw2_capture_record(sw2_capture_kind_t kind, uint16_t handle, const uint8_t 
     critical_section_enter_blocking(&s_lock);
     uint32_t next = (s_head + 1) % SW2_CAP_RING;
     if (next == s_tail) {
+        // Keep the newest traffic. Human-directed captures commonly run longer than the
+        // ~1.9 seconds represented by this buffer at the native 133 Hz fast link. Retaining the
+        // oldest entries loses the motion/event that happened after the instruction reached the
+        // tester. Advancing
+        // the tail makes this a true ring while still never waiting for the consumer.
+        s_tail = (s_tail + 1) % SW2_CAP_RING;
         s_dropped++;
-        critical_section_exit(&s_lock);
-        return;  // ring full -- drop, never wait for the consumer
     }
     sw2_cap_entry_t *e = &s_ring[s_head];
     e->us = time_us_64();
@@ -95,6 +108,7 @@ const char *sw2_capture_kind_name(uint8_t k) {
         case SW2_CAP_VARIANT:      return "variant";
         case SW2_CAP_WRITE_STATUS: return "write_status";
         case SW2_CAP_MARKER:       return "marker";
+        case SW2_CAP_LINK_PARAMS:  return "link_params";
         default:                   return "?";
     }
 }

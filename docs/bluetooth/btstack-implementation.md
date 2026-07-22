@@ -1115,3 +1115,20 @@ disconnecting controllers or blocking the run loop. Automatic wake from the firs
 controller input is confirmed on a real Switch 2. See
 **`docs/bluetooth/wake-from-sleep-design.md`** for the byte-exact payload, state machine, safety
 gates, and validation record.
+
+## Genuine Pro Controller 2 native motion (hardware-confirmed 2026-07-21)
+
+The console/UART bridge, live GATT discovery, and controlled BLE captures resolved the production
+sequence for PID `057E:2069`: configure features `0x27`, perform the console's six calibration
+reads, enable `0x27`, write `{0x85,0x00}` to descriptor `0x0010`, subscribe to report `0x000E`, and
+request a 7.5 ms central-side connection interval. The resulting native stream runs at about
+133 Hz and interleaves length-30 and length-40 motion PDUs.
+
+This path starts automatically only in the Pro Controller 2 USB personality, after a 250 ms
+post-init guard. UART-selected experiment variants and GATT discovery suppress it. Because
+enabling `0x000E` stops the controller's ordinary `0x000A` report, the host normalizes buttons and
+sticks from the new report while transporting its motion block opaquely across cores. Each motion
+snapshot carries its Bluetooth source slot, and the USB side also requires output slot 0 to retain
+the genuine Pro2 VID/PID before consuming it. Splatoon 3 validates axes, stationary behavior,
+power-cycle, reconnect, and source-off hold. Full evidence:
+[`native-pro2-motion-passthrough-2026-07-21.md`](../experiments/native-pro2-motion-passthrough-2026-07-21.md).

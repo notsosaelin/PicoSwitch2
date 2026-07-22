@@ -7,10 +7,7 @@
 
 #include "btstack_host.h"
 #include "ds5_audio_bridge.h"
-
-#ifdef NS2_DS5_AUDIO
 #include "pico/time.h"
-#endif
 
 #ifdef BTSTACK_DEFER_SCAN
 static bool btstack_host_scan_enabled = false;
@@ -97,7 +94,11 @@ extern int find_player_index(int dev_addr, int instance);
 // only needs tusb.h's tud_cdc_* calls, no BTstack types), so it's safe to include directly here.
 #include "sw2_capture.h"
 #include "ns2_bt_version_probe.h"
+#include "ns2_native_motion.h"
 #include "bt_identity_log.h"
+#ifdef NS2_PRO
+#include "usb.h" // read-only personality gate for automatic native Pro2 motion setup
+#endif
 
 // ============================================================================
 // FLASH HELPERS (for TLV storage)
@@ -552,6 +553,14 @@ static ble_connection_t* find_free_connection(void);
 static void start_hids_client(ble_connection_t *conn);
 static void register_ble_hid_listener(hci_con_handle_t con_handle);
 static void register_switch2_hid_listener(hci_con_handle_t con_handle);
+enum {
+    SW2_LINK_PHASE_SNAPSHOT = 1,
+    SW2_LINK_PHASE_REQUEST  = 2,
+    SW2_LINK_PHASE_COMPLETE = 3,
+};
+static void switch2_capture_link_params(uint8_t phase, uint8_t status,
+                                        hci_con_handle_t con_handle, uint16_t interval,
+                                        uint16_t latency, uint16_t supervision_timeout);
 // MouthPad NUS client hooks (defined in the NUS section below)
 static void mp_nus_mark_pending(hci_con_handle_t handle);
 static void mp_nus_disconnected(hci_con_handle_t handle);
@@ -2523,6 +2532,26 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                     break;
                 }
 
+                case HCI_SUBEVENT_LE_CONNECTION_UPDATE_COMPLETE: {
+                    hci_con_handle_t handle =
+                        hci_subevent_le_connection_update_complete_get_connection_handle(packet);
+                    uint8_t status =
+                        hci_subevent_le_connection_update_complete_get_status(packet);
+                    uint16_t interval =
+                        hci_subevent_le_connection_update_complete_get_conn_interval(packet);
+                    uint16_t latency =
+                        hci_subevent_le_connection_update_complete_get_conn_latency(packet);
+                    uint16_t timeout =
+                        hci_subevent_le_connection_update_complete_get_supervision_timeout(packet);
+                    printf("[BTSTACK_HOST] LE params: handle=0x%04X status=0x%02X "
+                           "interval=%u.%02ums latency=%u timeout=%ums\n",
+                           handle, status, interval * 125u / 100u,
+                           25u * (interval & 3u), latency, timeout * 10u);
+                    switch2_capture_link_params(SW2_LINK_PHASE_COMPLETE, status, handle,
+                                                interval, latency, timeout);
+                    break;
+                }
+
             }
             break;
         }
@@ -4199,9 +4228,11 @@ static void switch2_run_gatt_discovery(hci_con_handle_t con_handle)
 // V2 FEATURE-ENABLE EXPERIMENT MATRIX (see sw2_capture.h)
 // ============================================================================
 
-// Candidate handle used only by the opt-in capture matrix. Its derivation and uncertainty are in
-// docs/bluetooth/switch2-v2-experiments.md; it is not shipping connection policy.
-#define SW2_REPORT_RATE_HANDLE_HYPOTHESIS 0x000C
+// The console writes {0x85, 0x00} to descriptor 0x0010 immediately before enabling the native
+// 0x000E input stream. Our earlier 0x000C arithmetic guess accepted a write but left the stream at
+// 30 ms; the server research export identifies 0x0010 explicitly, and live GATT discovery is now
+// exposed over UART and confirmed against the controller's actual attribute table.
+#define SW2_NATIVE_REPORT_RATE_HANDLE 0x0010
 
 typedef struct {
     uint32_t address;
@@ -4220,6 +4251,20 @@ static const sw2_spi_read_t SW2_V2_CAL_READS[] = {
 };
 #define SW2_V2_CAL_COUNT (sizeof(SW2_V2_CAL_READS) / sizeof(SW2_V2_CAL_READS[0]))
 
+// Motion-relevant reads observed directly over this project's console UART bridge during a
+// genuine Pro Controller 2 / report-0x09 enumeration. This deliberately excludes the BLE bond
+// table read used by the reference PC viewer and includes the console's 0x13060 read instead.
+static const sw2_spi_read_t SW2_V2_CONSOLE_CAL_READS[] = {
+    { 0x13080,  0x40 },
+    { 0x130C0,  0x40 },
+    { 0x1FC040, 0x40 },
+    { 0x13040,  0x10 },
+    { 0x13100,  0x18 },
+    { 0x13060,  0x20 },
+};
+#define SW2_V2_CONSOLE_CAL_COUNT \
+    (sizeof(SW2_V2_CONSOLE_CAL_READS) / sizeof(SW2_V2_CONSOLE_CAL_READS[0]))
+
 typedef struct {
     uint8_t     id;
     const char *name;
@@ -4227,22 +4272,46 @@ typedef struct {
     uint8_t     enable_flags;
     bool        do_cal_reads;
     bool        do_handle_write;
+    bool        disable_all_first; // send 0x0C/0x05 mask 0xFF before configuring this run
     bool        defer_ccc_subscribe;  // if true, the 0x000E CCC subscribe happens LAST, not first
+    bool        use_console_cal_reads; // use the reads captured from console report-0x09 init
+    bool        request_fast_link; // request a 7.5ms BLE interval after the final CCC write
 } sw2_v2_variant_t;
 
 static const sw2_v2_variant_t SW2_V2_VARIANTS[] = {
-    { 1, "control",              0x07, 0x07, false, false, false },
-    { 2, "mask_ff",               0xFF, 0xFF, false, false, false },
-    { 3, "handle_write_only",    0x07, 0x07, false, true,  false },
-    { 4, "mask_ff_handle_write", 0xFF, 0xFF, false, true,  false },
-    { 5, "calibration_seq",      0x07, 0x07, true,  false, false },
-    { 6, "full_sequence",        0xFF, 0x07, true,  true,  true  },
+    { 1, "control",              0x07, 0x07, false, false, false, false, false, false },
+    { 2, "mask_ff",              0xFF, 0xFF, false, false, false, false, false, false },
+    { 3, "handle_write_only",    0x07, 0x07, false, true,  false, false, false, false },
+    { 4, "mask_ff_handle_write", 0xFF, 0xFF, false, true,  false, false, false, false },
+    { 5, "calibration_seq",      0x07, 0x07, true,  false, false, false, false, false },
+    { 6, "full_sequence",        0xFF, 0x07, true,  true,  false, true,  false, false },
+    // Establish a clean feature state before requesting buttons + sticks + IMU. The bitmap
+    // distinguishes the desired 0x1E live-orientation payload from the 0x28 magnetometer payload;
+    // earlier variants only added feature bits and could inherit magnetometer from a prior run.
+    { 7, "reset_then_imu",       0x07, 0x07, false, false, true,  false, false, false },
+    // Grounded in the console-side UART trace, not a third-party viewer: configure and enable
+    // exactly 0x27, perform the exact six calibration reads the console made, write 0x0085 to
+    // the report-rate descriptor, then subscribe to the native Pro2 report last.
+    { 8, "console_motion_core",   0x27, 0x27, true,  true,  false, true,  true,  false },
+    // Same console-grounded controller setup as variant 8. The only added variable is a
+    // central-side HCI update to the minimum standard BLE interval (6 * 1.25ms = 7.5ms), made
+    // after the native-report CCC write completes. The real console reportedly uses a vendor
+    // path below the standard minimum; this test deliberately does not depend on that quirk.
+    { 9, "console_motion_fast_link", 0x27, 0x27, true, true, false, true, true, true },
 };
 #define SW2_V2_VARIANT_COUNT (sizeof(SW2_V2_VARIANTS) / sizeof(SW2_V2_VARIANTS[0]))
+
+// Production profile for a genuine Pro Controller 2 source. Keep this named separately from
+// the UART-selectable RE matrix: variant 9 remains available for repeatable captures, but normal
+// controller operation must not depend on an array position or an armed experiment.
+static const sw2_v2_variant_t SW2_NATIVE_PRO2_PROFILE = {
+    9, "native_pro2", 0x27, 0x27, true, true, false, true, true, true
+};
 
 typedef enum {
     SW2_V2_IDLE = 0,
     SW2_V2_CCC_SUBSCRIBED,       // waiting for the (non-deferred) CCC write to complete
+    SW2_V2_DISABLE_SENT,          // waiting for disable-all ACK (cmd=0x0C, subcmd=0x05)
     SW2_V2_CONFIGURE_SENT,       // waiting for the configure ACK (cmd=0x0C, subcmd=0x02)
     SW2_V2_CAL_READ,             // waiting for a SPI-read ACK (cmd=0x02, subcmd=0x04)
     SW2_V2_ENABLE_SENT,          // waiting for the enable ACK (cmd=0x0C, subcmd=0x04)
@@ -4253,11 +4322,49 @@ typedef enum {
 
 static volatile uint8_t s_sw2_v2_armed_variant = 0;  // 0 = off
 static bool s_sw2_v2_fired = false;                  // per-connection one-shot guard
+static bool s_sw2_native_auto_fired = false;         // production Pro2 path, reset on disconnect
+static uint32_t s_sw2_init_done_ms;
+static volatile uint32_t s_sw2_native_auto_checks;
+static volatile uint32_t s_sw2_native_auto_starts;
+static volatile uint32_t s_sw2_native_auto_wait_elapsed_ms;
+static volatile uint16_t s_sw2_native_auto_source_pid;
+static volatile uint8_t s_sw2_native_auto_personality;
+static volatile uint8_t s_sw2_native_auto_block_mask;
 static sw2_v2_state_t s_sw2_v2_state = SW2_V2_IDLE;
 static const sw2_v2_variant_t *s_sw2_v2_active = NULL;
 static uint8_t s_sw2_v2_cal_index = 0;
 static gatt_client_notification_t sw2_motion_notification_listener;
 static gatt_client_characteristic_t sw2_motion_characteristic;
+
+static void switch2_capture_link_params(uint8_t phase, uint8_t status,
+                                        hci_con_handle_t con_handle, uint16_t interval,
+                                        uint16_t latency, uint16_t supervision_timeout)
+{
+    uint8_t data[8] = {
+        phase, status,
+        (uint8_t)interval, (uint8_t)(interval >> 8),
+        (uint8_t)latency, (uint8_t)(latency >> 8),
+        (uint8_t)supervision_timeout, (uint8_t)(supervision_timeout >> 8),
+    };
+    sw2_capture_record(SW2_CAP_LINK_PARAMS, con_handle, data, sizeof(data));
+}
+
+static void switch2_v2_request_fast_link(hci_con_handle_t con_handle)
+{
+    // The Pico is the LE central, so use HCI LE Connection Update rather than the L2CAP
+    // parameter-request procedure intended for a peripheral asking its central. Six units is
+    // the Bluetooth-spec minimum (7.5ms); latency 0 prevents skipped connection events.
+    const uint16_t interval = 6;
+    const uint16_t latency = 0;
+    const uint16_t supervision_timeout = 400; // 4s, comfortably valid for a 7.5ms link
+    switch2_capture_link_params(SW2_LINK_PHASE_SNAPSHOT, 0, con_handle,
+                                gap_le_connection_interval(con_handle), 0, 0);
+    int status = gap_update_connection_parameters(con_handle, interval, interval, latency,
+                                                   supervision_timeout);
+    switch2_capture_link_params(SW2_LINK_PHASE_REQUEST, (uint8_t)status, con_handle,
+                                interval, latency, supervision_timeout);
+    printf("[SW2_V2] Fast-link request status=0x%02X interval=7.5ms\n", status);
+}
 
 void sw2_set_v2_variant(uint8_t variant) {
     s_sw2_v2_armed_variant = variant;
@@ -4268,9 +4375,64 @@ uint8_t sw2_get_v2_variant(void) {
     return s_sw2_v2_armed_variant;
 }
 
-// Capture-only notification handler for 0x000E. Deliberately does NOT feed pending_ble_report /
-// router_submit_input — pure observation, same guarantee as every other sw2_capture_record() call
-// in this file.
+void sw2_native_auto_diag_snapshot(sw2_native_auto_diag_t *out)
+{
+    if (!out) return;
+    out->checks = __atomic_load_n(&s_sw2_native_auto_checks, __ATOMIC_ACQUIRE);
+    out->starts = __atomic_load_n(&s_sw2_native_auto_starts, __ATOMIC_ACQUIRE);
+    out->wait_elapsed_ms = __atomic_load_n(&s_sw2_native_auto_wait_elapsed_ms, __ATOMIC_ACQUIRE);
+    out->source_pid = __atomic_load_n(&s_sw2_native_auto_source_pid, __ATOMIC_ACQUIRE);
+    out->personality = __atomic_load_n(&s_sw2_native_auto_personality, __ATOMIC_ACQUIRE);
+    out->block_mask = __atomic_load_n(&s_sw2_native_auto_block_mask, __ATOMIC_ACQUIRE);
+    out->init_state = (uint8_t)sw2_init_state;
+    out->v2_state = (uint8_t)s_sw2_v2_state;
+    out->auto_fired = s_sw2_native_auto_fired ? 1u : 0u;
+    out->armed_variant = s_sw2_v2_armed_variant;
+    out->gatt_discovery = s_sw2_gatt_disc_enabled ? 1u : 0u;
+}
+
+// Translate Pro/GC-format 0x000E buttons/sticks into the common 0x000A layout consumed by the
+// existing Switch 2 BLE driver. Enabling this report makes genuine Pro Controller 2 firmware stop
+// sending 0x000A completely, so treating 0x000E as motion-only freezes all controller input.
+static bool switch2_normalize_pro_000e(const uint8_t *src, uint16_t len, uint8_t dst[63])
+{
+    if (!src || len < 15) return false;
+    memset(dst, 0, 63);
+    dst[0] = src[0];
+    dst[1] = src[1];
+
+    const uint8_t b0 = src[2];
+    const uint8_t b1 = src[3];
+    const uint8_t b2 = src[4];
+
+    if (b0 & 0x01) dst[4] |= 0x04; // B
+    if (b0 & 0x02) dst[4] |= 0x08; // A
+    if (b0 & 0x04) dst[4] |= 0x01; // Y
+    if (b0 & 0x08) dst[4] |= 0x02; // X
+    if (b0 & 0x10) dst[4] |= 0x40; // R
+    if (b0 & 0x20) dst[4] |= 0x80; // ZR
+    if (b0 & 0x40) dst[5] |= 0x02; // Plus
+    if (b0 & 0x80) dst[5] |= 0x04; // Right stick
+
+    if (b1 & 0x01) dst[6] |= 0x01; // Down
+    if (b1 & 0x02) dst[6] |= 0x04; // Right
+    if (b1 & 0x04) dst[6] |= 0x08; // Left
+    if (b1 & 0x08) dst[6] |= 0x02; // Up
+    if (b1 & 0x10) dst[6] |= 0x40; // L
+    if (b1 & 0x20) dst[6] |= 0x80; // ZL
+    if (b1 & 0x40) dst[5] |= 0x01; // Minus
+    if (b1 & 0x80) dst[5] |= 0x08; // Left stick
+
+    if (b2 & 0x01) dst[5] |= 0x10; // Home
+    if (b2 & 0x02) dst[5] |= 0x20; // Capture
+    if (b2 & 0x04) dst[7] |= 0x01; // GR
+    if (b2 & 0x08) dst[7] |= 0x02; // GL
+    if (b2 & 0x10) dst[5] |= 0x40; // C
+
+    memcpy(&dst[10], &src[5], 6);
+    return true;
+}
+
 static void sw2_motion_notification_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size)
 {
     UNUSED(channel);
@@ -4283,8 +4445,28 @@ static void sw2_motion_notification_handler(uint8_t packet_type, uint16_t channe
     uint16_t value_length = gatt_event_notification_get_value_length(packet);
     const uint8_t *value = gatt_event_notification_get_value(packet);
 
-    printf("[SW2_V2] Notification: handle=0x%04X len=%d\n", value_handle, value_length);
     sw2_capture_record(SW2_CAP_INPUT_NOTIFY, value_handle, value, value_length);
+
+    hci_con_handle_t con_handle = gatt_event_notification_get_handle(packet);
+    ble_connection_t *conn = find_connection_by_handle(con_handle);
+    if (!conn || conn->pid != 0x2069) return; // Nintendo Switch 2 Pro Controller
+
+    int conn_index = get_ble_conn_index_by_handle(con_handle);
+    if (conn_index < 0) return;
+
+    // Preserve the genuine controller's opaque native motion PDU for the console-facing USB
+    // report builder. This is intentionally separate from button/stick normalization below:
+    // no quaternion decoding, axis conversion, or generic gamepad structure can alter it.
+    ns2_native_motion_publish((uint8_t)conn_index, value, value_length, time_us_32());
+
+    if (ble_report_pending) return;
+
+    uint8_t normalized[63];
+    if (!switch2_normalize_pro_000e(value, value_length, normalized)) return;
+    memcpy(pending_ble_report, normalized, sizeof(normalized));
+    pending_ble_report_len = sizeof(normalized);
+    pending_ble_conn_index = (uint8_t)conn_index;
+    ble_report_pending = true;
 }
 
 static void switch2_build_spi_read_cmd(uint8_t *out, uint32_t address, uint8_t size)
@@ -4313,9 +4495,20 @@ static void switch2_v2_send_configure(hci_con_handle_t con_handle)
     gatt_client_write_value_of_characteristic_without_response(con_handle, SW2_CMD_HANDLE, sizeof(cmd), cmd);
 }
 
+static void switch2_v2_send_disable_all(hci_con_handle_t con_handle)
+{
+    uint8_t cmd[] = { 0x0c, SW2_REQ_TYPE_REQ, SW2_REQ_INT_BLE, 0x05, 0x00, 0x04, 0x00, 0x00,
+                      0xFF, 0x00, 0x00, 0x00 };
+    sw2_capture_record(SW2_CAP_CMD_OUT, SW2_CMD_HANDLE, cmd, sizeof(cmd));
+    gatt_client_write_value_of_characteristic_without_response(con_handle, SW2_CMD_HANDLE,
+                                                                 sizeof(cmd), cmd);
+}
+
 static void switch2_v2_send_next_cal_read(hci_con_handle_t con_handle)
 {
-    const sw2_spi_read_t *r = &SW2_V2_CAL_READS[s_sw2_v2_cal_index];
+    const sw2_spi_read_t *reads = s_sw2_v2_active->use_console_cal_reads
+        ? SW2_V2_CONSOLE_CAL_READS : SW2_V2_CAL_READS;
+    const sw2_spi_read_t *r = &reads[s_sw2_v2_cal_index];
     uint8_t cmd[16];
     switch2_build_spi_read_cmd(cmd, r->address, r->size);
     sw2_capture_record(SW2_CAP_CMD_OUT, SW2_CMD_HANDLE, cmd, sizeof(cmd));
@@ -4338,9 +4531,9 @@ static void switch2_v2_send_handle_write(hci_con_handle_t con_handle)
     // Exact reference-viewer bytes. Write-with-response is intentional so the capture records a
     // definitive ATT result for the unconfirmed candidate handle.
     uint8_t data[] = { 0x85, 0x00 };
-    sw2_capture_record(SW2_CAP_CMD_OUT, SW2_REPORT_RATE_HANDLE_HYPOTHESIS, data, sizeof(data));
+    sw2_capture_record(SW2_CAP_CMD_OUT, SW2_NATIVE_REPORT_RATE_HANDLE, data, sizeof(data));
     gatt_client_write_value_of_characteristic(
-        switch2_v2_handle_write_callback, con_handle, SW2_REPORT_RATE_HANDLE_HYPOTHESIS,
+        switch2_v2_handle_write_callback, con_handle, SW2_NATIVE_REPORT_RATE_HANDLE,
         sizeof(data), data);
 }
 
@@ -4348,7 +4541,9 @@ static void switch2_v2_send_ccc_subscribe(hci_con_handle_t con_handle)
 {
     memset(&sw2_motion_characteristic, 0, sizeof(sw2_motion_characteristic));
     sw2_motion_characteristic.value_handle = SW2_MOTION_HANDLE;
-    sw2_motion_characteristic.end_handle = SW2_MOTION_HANDLE + 1;
+    // Live discovery confirms this characteristic spans declaration 0x000D through descriptor
+    // 0x0010 (value 0x000E, CCC 0x000F, report-rate descriptor 0x0010).
+    sw2_motion_characteristic.end_handle = SW2_NATIVE_REPORT_RATE_HANDLE;
 
     gatt_client_listen_for_characteristic_value_updates(
         &sw2_motion_notification_listener, sw2_motion_notification_handler, con_handle,
@@ -4380,14 +4575,24 @@ static void switch2_v2_ccc_write_callback(uint8_t packet_type, uint16_t channel,
 
     if (s_sw2_v2_state == SW2_V2_CCC_SUBSCRIBED) {
         // Non-deferred variants: CCC first, then start the command sequence.
-        s_sw2_v2_state = SW2_V2_CONFIGURE_SENT;
-        switch2_v2_send_configure(con_handle);
+        if (s_sw2_v2_active->disable_all_first) {
+            s_sw2_v2_state = SW2_V2_DISABLE_SENT;
+            switch2_v2_send_disable_all(con_handle);
+        } else {
+            s_sw2_v2_state = SW2_V2_CONFIGURE_SENT;
+            switch2_v2_send_configure(con_handle);
+        }
     } else if (s_sw2_v2_state == SW2_V2_CCC_SUBSCRIBED_LATE) {
-        // Deferred (variant 6): this was the final step.
+        // Deferred variants: this is the last GATT step. Variant 9 adds one asynchronous HCI
+        // connection update after it, keeping the controller command sequence identical to v8.
         printf("[SW2_V2] Variant %d complete (deferred CCC subscribe was last step)\n",
                s_sw2_v2_active->id);
+        bool request_fast_link = s_sw2_v2_active->request_fast_link;
         s_sw2_v2_state = SW2_V2_DONE;
         s_sw2_v2_active = NULL;
+        if (request_fast_link && status == ERROR_CODE_SUCCESS) {
+            switch2_v2_request_fast_link(con_handle);
+        }
     }
 }
 
@@ -4400,10 +4605,10 @@ static void switch2_v2_handle_write_callback(uint8_t packet_type, uint16_t chann
 
     uint8_t status = gatt_event_query_complete_get_att_status(packet);
     hci_con_handle_t con_handle = gatt_event_query_complete_get_handle(packet);
-    printf("[SW2_V2] Handle-write (0x%04X) status=0x%02X\n", SW2_REPORT_RATE_HANDLE_HYPOTHESIS, status);
+    printf("[SW2_V2] Handle-write (0x%04X) status=0x%02X\n", SW2_NATIVE_REPORT_RATE_HANDLE, status);
     // Same fix as switch2_v2_ccc_write_callback above -- log the ATT status that was already
     // computed, without changing this callback's timing or subsequent behavior.
-    sw2_capture_record(SW2_CAP_WRITE_STATUS, SW2_REPORT_RATE_HANDLE_HYPOTHESIS, &status, 1);
+    sw2_capture_record(SW2_CAP_WRITE_STATUS, SW2_NATIVE_REPORT_RATE_HANDLE, &status, 1);
     if (!s_sw2_v2_active) return;
 
     if (s_sw2_v2_active->defer_ccc_subscribe) {
@@ -4425,6 +4630,12 @@ static void switch2_v2_handle_ack(hci_con_handle_t con_handle, uint8_t cmd, uint
     if (!s_sw2_v2_active) return;
 
     switch (s_sw2_v2_state) {
+        case SW2_V2_DISABLE_SENT:
+            if (cmd == 0x0c && subcmd == 0x05) {
+                s_sw2_v2_state = SW2_V2_CONFIGURE_SENT;
+                switch2_v2_send_configure(con_handle);
+            }
+            break;
         case SW2_V2_CONFIGURE_SENT:
             if (cmd == 0x0c && subcmd == 0x02) {
                 if (s_sw2_v2_active->do_cal_reads) {
@@ -4440,7 +4651,9 @@ static void switch2_v2_handle_ack(hci_con_handle_t con_handle, uint8_t cmd, uint
         case SW2_V2_CAL_READ:
             if (cmd == SW2_CMD_READ_SPI && subcmd == SW2_SUBCMD_READ_SPI) {
                 s_sw2_v2_cal_index++;
-                if (s_sw2_v2_cal_index < SW2_V2_CAL_COUNT) {
+                const size_t cal_count = s_sw2_v2_active->use_console_cal_reads
+                    ? SW2_V2_CONSOLE_CAL_COUNT : SW2_V2_CAL_COUNT;
+                if (s_sw2_v2_cal_index < cal_count) {
                     switch2_v2_send_next_cal_read(con_handle);
                 } else {
                     s_sw2_v2_state = SW2_V2_ENABLE_SENT;
@@ -4465,16 +4678,16 @@ static void switch2_v2_handle_ack(hci_con_handle_t con_handle, uint8_t cmd, uint
     }
 }
 
-// One-shot, opt-in RE experiment: run the armed variant (sw2_set_v2_variant()) against the
-// current connection. See sw2_capture.h for the full variant table and rationale. Does not touch
-// the normal init state machine, report 0x09, or input routing in any way.
-static void switch2_run_v2_experiment(hci_con_handle_t con_handle)
+// Run one controller-side native-report setup profile. UART-selected variants use this for
+// repeatable RE; the production Pro2 path uses the separately named profile above. The sequence
+// intentionally changes the source's active BLE report, so 0x000E input normalization and the
+// native report-0x09 side channel are both part of normal operation once it completes.
+static void switch2_start_v2_variant(hci_con_handle_t con_handle,
+                                     const sw2_v2_variant_t *v, bool automatic)
 {
-    uint8_t n = s_sw2_v2_armed_variant;
-    if (n < 1 || n > SW2_V2_VARIANT_COUNT) return;
-    const sw2_v2_variant_t *v = &SW2_V2_VARIANTS[n - 1];
-
-    printf("[SW2_V2] Starting variant %d (%s) on handle 0x%04X\n", v->id, v->name, con_handle);
+    printf("[SW2_V2] Starting %svariant %d (%s) on handle 0x%04X\n",
+           automatic ? "automatic " : "", v->id, v->name, con_handle);
+    ns2_native_motion_clear();
     uint8_t vid = v->id;
     sw2_capture_record(SW2_CAP_VARIANT, 0, &vid, 1);
 
@@ -4491,9 +4704,17 @@ static void switch2_run_v2_experiment(hci_con_handle_t con_handle)
     }
 }
 
+static void switch2_run_v2_experiment(hci_con_handle_t con_handle)
+{
+    uint8_t n = s_sw2_v2_armed_variant;
+    if (n < 1 || n > SW2_V2_VARIANT_COUNT) return;
+    switch2_start_v2_variant(con_handle, &SW2_V2_VARIANTS[n - 1], false);
+}
+
 // Cleanup Switch 2 state on BLE disconnect (called from disconnect handler)
 static void switch2_cleanup_on_disconnect(void) {
     gatt_client_stop_listening_for_characteristic_value_updates(&switch2_ack_notification_listener);
+    gatt_client_stop_listening_for_characteristic_value_updates(&sw2_motion_notification_listener);
     sw2_init_state = SW2_INIT_IDLE;
     sw2_init_handle = 0;
     // Explicit reset (belt-and-suspenders with the state-change check in switch2_send_init_cmd()):
@@ -4504,10 +4725,19 @@ static void switch2_cleanup_on_disconnect(void) {
     sw2_init_cmd_sent_ms = 0;
     sw2_init_last_sent_state = SW2_INIT_IDLE;
     s_sw2_v2_fired = false;
+    s_sw2_native_auto_fired = false;
+    s_sw2_init_done_ms = 0;
+    __atomic_store_n(&s_sw2_native_auto_checks, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_sw2_native_auto_starts, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_sw2_native_auto_wait_elapsed_ms, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_sw2_native_auto_source_pid, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_sw2_native_auto_personality, 0xFF, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_sw2_native_auto_block_mask, 0, __ATOMIC_RELEASE);
     s_sw2_v2_state = SW2_V2_IDLE;
     s_sw2_v2_active = NULL;
     s_sw2_gatt_disc_fired = false;
     s_gatt_disc_state = SW2_GATT_DISC_IDLE;
+    ns2_native_motion_source_disconnected(time_us_32());
     uint8_t version_state = __atomic_load_n(&s_sw2_version_state, __ATOMIC_ACQUIRE);
     if (version_state == NS2_BT_VERSION_REQUESTED || version_state == NS2_BT_VERSION_SENT) {
         __atomic_store_n(&s_sw2_version_state, NS2_BT_VERSION_NO_CONTROLLER,
@@ -4633,6 +4863,7 @@ static void switch2_ack_notification_handler(uint8_t packet_type, uint16_t chann
             if (sw2_init_state == SW2_INIT_SET_LED) {
                 printf("[SW2_BLE] LED set! Init done.\n");
                 sw2_init_state = SW2_INIT_DONE;
+                s_sw2_init_done_ms = btstack_run_loop_get_time_ms();
                 // Terminal state — not followed by switch2_send_init_cmd(), so captured here
                 // directly (every other transition is captured at the top of that function).
                 uint8_t s = (uint8_t)SW2_INIT_DONE;
@@ -4975,6 +5206,41 @@ static void switch2_handle_feedback(void)
         s_sw2_v2_fired = true;
         switch2_run_v2_experiment(sw2_init_handle);
     }
+
+#ifdef NS2_PRO
+    // Production native-motion path, promoted only after hardware validation of variant 9:
+    // genuine Pro Controller 2 -> Pro2 USB personality, console-captured feature sequence,
+    // verified 7.5ms/133Hz BLE link, then byte-exact opaque PDU pass-through. Explicit RE
+    // variants and GATT discovery retain priority and suppress this automatic path so diagnostic
+    // sessions remain isolated and attributable.
+    if (!s_sw2_native_auto_fired) {
+        ble_connection_t *motion_source = find_connection_by_handle(sw2_init_handle);
+        uint32_t elapsed = btstack_run_loop_get_time_ms() - s_sw2_init_done_ms;
+        uint8_t blocked = 0;
+        if (elapsed < 250u) blocked |= 0x01;
+        if (s_sw2_v2_armed_variant != 0) blocked |= 0x02;
+        if (s_sw2_gatt_disc_enabled) blocked |= 0x04;
+        if (g_usb_personality != USB_PERSONALITY_SWITCH2_PRO2) blocked |= 0x08;
+        if (!motion_source) blocked |= 0x10;
+        if (motion_source && motion_source->pid != 0x2069) blocked |= 0x20;
+        if (s_sw2_v2_active != NULL ||
+            (s_sw2_v2_state != SW2_V2_IDLE && s_sw2_v2_state != SW2_V2_DONE)) blocked |= 0x40;
+
+        __atomic_add_fetch(&s_sw2_native_auto_checks, 1u, __ATOMIC_RELAXED);
+        __atomic_store_n(&s_sw2_native_auto_wait_elapsed_ms, elapsed, __ATOMIC_RELEASE);
+        __atomic_store_n(&s_sw2_native_auto_source_pid,
+                         motion_source ? motion_source->pid : 0u, __ATOMIC_RELEASE);
+        __atomic_store_n(&s_sw2_native_auto_personality, (uint8_t)g_usb_personality,
+                         __ATOMIC_RELEASE);
+        __atomic_store_n(&s_sw2_native_auto_block_mask, blocked, __ATOMIC_RELEASE);
+
+        if (blocked == 0) {
+            s_sw2_native_auto_fired = true;
+            __atomic_add_fetch(&s_sw2_native_auto_starts, 1u, __ATOMIC_RELEASE);
+            switch2_start_v2_variant(sw2_init_handle, &SW2_NATIVE_PRO2_PROFILE, true);
+        }
+    }
+#endif
 
     sw2_rumble_send_counter++;
 
