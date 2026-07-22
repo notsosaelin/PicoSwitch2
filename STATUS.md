@@ -17,6 +17,10 @@ current firmware identities, and bonded HOME reconnect through BTstack SM. Twent
 controller-off/HOME cycles restored input, P1 LED, and gyro without SYNC. Pico 2 W retains its
 300 MHz live-audio/native-haptic build; Pico W retains its validated non-audio configuration.
 
+The post-release `ns2-testing` branch also has hardware-confirmed genuine Pro Controller 2 headphone
+output. Its 240-byte Opus/CELT framing now produces clean console audio while preserving input,
+native gyro, rumble, headset insertion/removal, LED behavior, and BOOTSEL handling.
+
 ## Hardware-confirmed behavior
 
 | Area | Status | Evidence |
@@ -48,6 +52,7 @@ controller-off/HOME cycles restored input, P1 LED, and gyro without SYNC. Pico 2
 | 8BitDo Ultimate Bluetooth P1/P2 | ✅ Confirmed | Custom firmware transport maps independent paddles to GL/GR and preserves wake |
 | Bluetooth battery passthrough | ✅ Confirmed | Native HID/BLE sources and console-native USB power fields |
 | Pro Controller 2 UAC1 USB audio function | ✅ Confirmed | Windows audio endpoints start without Code 10; no controller regressions |
+| Genuine Pro Controller 2 headphone audio — Pico 2 W | ✅ Confirmed | Clean Switch 2 console audio through the physical jack; input, gyro, rumble, headset lifecycle, LED, and BOOTSEL regression checks pass |
 | DualSense Bluetooth internal-speaker audio — Pico 2 W | ✅ Confirmed | Standard 300 MHz build; 13,225/13,225 PCM blocks encoded, zero drops/errors |
 | DualSense Bluetooth internal-speaker audio — Pico W | ❌ Not supported | Fixed-point/XIP 300 MHz experiment barely played audio; standard build restored to validated non-audio profile |
 | Standard 300 MHz Pico 2 W platform regression | ✅ Confirmed | LED/BOOTSEL, config persistence/readback, cold boot, and ten wake attempts per known controller |

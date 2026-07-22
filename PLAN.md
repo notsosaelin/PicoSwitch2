@@ -100,6 +100,11 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
   with valid Opus silence and a bounded two-packet STOP tail.
 - [x] Run an extended playback and thermal soak of the Pico 2 W 300 MHz audio build. An eight-hour
   Smash session completed with no observed thermal or stability issue (temperature not instrumented).
+- [x] Decode and hardware-validate genuine Pro Controller 2 headphone output. The controller consumes
+  one 240-byte, 48 kHz stereo Opus/CELT packet per 20 ms interval, split into ordered 120-byte `0x04`
+  and `0x02` GATT writes. Live console audio is clean and input, gyro, rumble, headset lifecycle,
+  LED, and BOOTSEL behavior remain regression-free. See
+  [`docs/switch2/pro2-headset-audio.md`](docs/switch2/pro2-headset-audio.md).
 - [ ] Add DualSense microphone report decoding and Opus-to-USB return after speaker playback is
   physically stable.
 - [x] Eliminate the Switch 2 “Update this controller” prompt by querying genuine controllers through
