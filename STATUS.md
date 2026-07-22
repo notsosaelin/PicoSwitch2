@@ -5,17 +5,17 @@
 > Planned work belongs in [`PLAN.md`](PLAN.md); evidence and protocol details belong under
 > [`docs/`](docs/README.md).
 
-Last verified: 2026-07-21
+Last verified: 2026-07-22
 Branch: `ns2-testing`
 
 ## Current release
 
-[`v1.4.0`](https://github.com/notsosaelin/PicoSwitch2/releases/tag/v1.4.0) was published on
-2026-07-18 with Pico W and Pico 2 W UF2 assets. All 28 host-test executables pass. Pico 2 W adds
-hardware-confirmed live DualSense audio, conditional headset routing, native PCM rumble with and
-without a headset, and saved-bond reconnect recovery. Pico W retains its validated non-audio
-configuration. The prior controller, personality, pairing, wake, BOOTSEL, battery, and mapping
-baseline remains intact.
+[`v1.5.0`](https://github.com/notsosaelin/PicoSwitch2/releases/tag/v1.5.0) was published on
+2026-07-22 with Pico W and Pico 2 W UF2 assets. All 35 host-test executables pass. This release adds
+hardware-confirmed genuine Pro Controller 2 native-motion passthrough, UART protocol tracing,
+current firmware identities, and bonded HOME reconnect through BTstack SM. Twenty consecutive
+controller-off/HOME cycles restored input, P1 LED, and gyro without SYNC. Pico 2 W retains its
+300 MHz live-audio/native-haptic build; Pico W retains its validated non-audio configuration.
 
 ## Hardware-confirmed behavior
 

@@ -4,17 +4,18 @@
 > [`docs/archive/roadmap-through-2026-07-15.md`](docs/archive/roadmap-through-2026-07-15.md) for
 > the completed milestone narrative.
 
-## Current objective: post-v1.4 protocol work
+## Current objective: post-v1.5 protocol work
 
-Version `v1.4.0` adds hardware-confirmed Pico 2 W live DualSense audio, conditional
-Switch 2 headset routing, native PCM haptics with and without a headset, and saved-bond
-audio/rumble reconnect recovery. Pico W retains its validated non-audio behavior.
+Version `v1.5.0` adds genuine Pro Controller 2 native-motion passthrough, UART protocol tracing,
+current Switch 2 controller firmware identities, and hardware-confirmed bonded HOME reconnect with
+input, P1 LED, and gyro restoration. Pico 2 W retains live DualSense audio/native haptics; Pico W
+retains its validated non-audio behavior.
 
 ### Release gate
 
 - [x] Pico W release build
 - [x] Pico 2 W release build
-- [x] Twenty-eight host-test executables
+- [x] Thirty-five host-test executables
 - [x] DualSense/Edge input, extra buttons, LEDs, and rumble on hardware
 - [x] BOOTSEL double-tap, triple-tap, and hold while DualSense is connected
 - [x] NSO GameCube input and rumble on a real Switch 2
@@ -25,7 +26,7 @@ audio/rumble reconnect recovery. Pico W retains its validated non-audio behavior
 - [x] Reconcile documentation and archive superseded development logs
 - [x] Complete source-comment evidence cleanup
 - [x] Hardware-validate live audio, headset removal/reinsert, native rumble, and bonded reconnect
-- [x] Push the release commit and publish both UF2 artifacts (`v1.4.0`, 2026-07-18)
+- [x] Push the release commit and publish both UF2 artifacts (`v1.5.0`, 2026-07-22)
 
 ## Next: compatibility closure
 
