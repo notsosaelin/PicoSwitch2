@@ -9,7 +9,7 @@ code inspection only; it is weaker than physical hardware confirmation.
 
 | Personality | Switch 2 enumeration | Input streaming | Rumble | Notes |
 |---|---|---|---|---|
-| Pro Controller 2 | ✅ Confirmed | ✅ Confirmed, including native motion from a genuine Pro2 source | ✅ Confirmed | Primary/default mode; 1000 Hz USB interval remains a deliberate deviation from genuine 250 Hz |
+| Pro Controller 2 | ✅ Confirmed | ✅ Confirmed, including native motion from a genuine Pro2 source | ✅ Confirmed | Primary/default mode; 1000 Hz USB interval remains a required deviation for current native-motion passthrough |
 | NSO GameCube | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Genuine `1.1.2 / 12.0.0` firmware identity and up-to-date status confirmed; native Z and trigger detents supported |
 | Joy-Con 2 Left | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Sideways buttons, stick mapping, rumble, STOP, reconnect, and current firmware identity confirmed; console reports up to date |
 | Joy-Con 2 Right | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Sideways buttons, stick mapping, rumble, STOP, reconnect, and current firmware identity confirmed; console reports up to date |
@@ -22,7 +22,7 @@ code inspection only; it is weaker than physical hardware confirmation.
 | DualSense | ✅ Confirmed | N/A | ✅ Confirmed | ✅ Confirmed | Current regression pass complete |
 | DualSense Edge | ✅ Confirmed | ✅ Paddles/Fn/mute | ✅ Confirmed | ✅ Confirmed | Current regression pass complete |
 | Xbox family | ✅ Confirmed | Elite paddles supported | N/A | ✅ Confirmed | Late BLE DIS identity plus ON/STOP/reconnect confirmed |
-| Switch 2 Pro Controller | ✅ Confirmed | C/GL/GR plus native motion passthrough | Player LED path present | ✅ Confirmed | Pro2 and NSO-GC L/R/ZL/ZR paths confirmed; Splatoon 3 motion axes, stationary hold, power-cycle, and reconnect confirmed |
+| Switch 2 Pro Controller | ✅ Confirmed | C/GL/GR plus native motion passthrough | ✅ P1 restores after HOME reconnect | ✅ Confirmed | Splatoon 3 axes/stationary hold plus 20 controller-off/HOME reconnect cycles confirmed without SYNC; input, LED, and gyro restore |
 | Joy-Con 2 input | ✅ Confirmed | Side-specific controls | Player LED path present | 🔵 Source-tested | Mapping and rumble fidelity |
 | Switch 1 Pro Controller | ✅ Confirmed | ✅ Standard controls | ✅ Player LEDs | ✅ Confirmed | Current regression pass complete; reconnect remains asleep and a later fresh press wakes |
 | Retro Fighters BattlerGC Pro | ✅ Confirmed mapping | ✅ Dedicated native GC profile | N/A | 🔵 Xbox-compatible output | Labels, ZL/Z, click-gated triggers, Home report `02`, and GC L3/R3 suppression confirmed; screenshot and P1/P2 emit no independent Bluetooth state |

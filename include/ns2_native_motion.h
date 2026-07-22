@@ -38,4 +38,9 @@ void ns2_native_motion_clear(void);
 // console extrapolating the last non-zero angular velocity.
 void ns2_native_motion_source_disconnected(uint32_t disconnected_us);
 
+// Convert BTstack's transport connection index to the same output slot policy used by ns2_seam.
+// Classic indices 0..3 map directly; BLE indices begin at 4 and fold to slot 0 in the supported
+// one-controller configuration.
+uint8_t ns2_native_motion_output_slot(uint8_t source_conn_index);
+
 #endif

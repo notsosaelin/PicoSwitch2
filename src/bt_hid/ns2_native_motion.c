@@ -1,4 +1,5 @@
 #include "ns2_native_motion.h"
+#include "switch_pro.h"
 
 #include <string.h>
 
@@ -99,4 +100,9 @@ void ns2_native_motion_source_disconnected(uint32_t disconnected_us)
         s_state.valid = 0;
     }
     end_write();
+}
+
+uint8_t ns2_native_motion_output_slot(uint8_t source_conn_index)
+{
+    return source_conn_index < SWITCH_PRO_MAX_CONTROLLERS ? source_conn_index : 0u;
 }

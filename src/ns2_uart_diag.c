@@ -6,9 +6,14 @@
 #include "ns2_bt_version_probe.h"
 #include "ns2_protocol_trace.h"
 #include "sw2_capture.h"
+#include "ns2_native_motion.h"
+#include "report.h"
+#include "switch_pro2.h"
+#include "bt/btstack/btstack_host.h"
 
 #include <hardware/gpio.h>
 #include <hardware/uart.h>
+#include <pico/time.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -34,7 +39,7 @@ static bool tx_wait_idle;
 static bool reenumerate_requested;
 static ns2_protocol_trace_record_t trace_format_record;
 static char trace_format_payload[NS2_PROTOCOL_TRACE_PAYLOAD_MAX * 2u + 1u];
-static char trace_format_response[384];
+static char trace_format_response[1536];
 static sw2_cap_entry_t ble_format_record;
 static char ble_format_payload[SW2_CAP_MAX_DATA * 2u + 1u];
 static char ble_format_response[384];
@@ -319,6 +324,121 @@ static void handle_command(void) {
                  d.init_state, d.v2_state, d.auto_fired ? "true" : "false",
                  d.armed_variant, d.gatt_discovery ? "true" : "false", d.block_mask);
         queue_text(trace_format_response);
+    } else if (strcmp(rx_line, "motionusb") == 0) {
+        uint8_t report_id = 0;
+        uint8_t streaming = 0;
+        uint8_t motion_len = 0;
+        uint16_t source_vid = 0;
+        uint16_t source_pid = 0;
+        ns2_native_motion_snapshot_t motion;
+        ns2_dbg_report_state(&report_id, &streaming, &motion_len);
+        get_global_device(0, NULL, 0, &source_vid, &source_pid);
+        bool fresh = ns2_native_motion_snapshot(&motion, time_us_32(), 50000u);
+        bool owned = fresh && ns2_native_motion_output_slot(motion.source_conn_index) == 0 &&
+                     source_vid == 0x057E && source_pid == 0x2069;
+        snprintf(trace_format_response, sizeof(trace_format_response),
+                 "{\"motionusb\":true,\"report_id\":%u,\"streaming\":%s,"
+                 "\"emitted_len\":%u,\"vid\":\"0x%04X\",\"pid\":\"0x%04X\","
+                 "\"native_fresh\":%s,\"native_owned\":%s,\"native_len\":%u,"
+                 "\"source_conn\":%u,\"held\":%s}",
+                 report_id, streaming ? "true" : "false", motion_len,
+                 source_vid, source_pid, fresh ? "true" : "false",
+                 owned ? "true" : "false", fresh ? motion.length : 0u,
+                 fresh ? motion.source_conn_index : 0xFFu,
+                 (fresh && motion.held_after_disconnect) ? "true" : "false");
+        queue_text(trace_format_response);
+    } else if (strcmp(rx_line, "btreconnect") == 0) {
+        btstack_host_reconnect_diag_t d;
+        btstack_host_get_reconnect_diag(&d);
+        snprintf(trace_format_response, sizeof(trace_format_response),
+                 "{\"btreconnect\":true,\"powered\":%s,\"state\":%u,"
+                 "\"scanning\":%s,\"connected_ble\":%u,"
+                 "\"has_target\":%s,\"ltk_ready\":%s,\"fresh_fallback\":%s,"
+                 "\"attempt_active\":%s,\"attempts\":%u,"
+                 "\"addr_type\":%u,\"ble_strategy\":%u,"
+                 "\"vid\":\"0x%04X\",\"pid\":\"0x%04X\","
+                 "\"local_addr\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
+                 "\"addr\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
+                 "\"name\":\"%s\",\"adv\":%lu,\"target_adv\":%lu,"
+                 "\"switch2_adv\":%lu,\"target_adv_type\":%u,"
+                 "\"target_connects\":%lu,\"target_success\":%lu,"
+                 "\"target_fail\":%lu,\"last_status\":\"0x%02X\","
+                 "\"reencrypt_start\":%lu,\"reencrypt_ok\":%lu,"
+                 "\"reencrypt_fail\":%lu,\"reencrypt_status\":\"0x%02X\","
+                 "\"direct_active\":%s,\"direct_handle\":\"0x%04X\","
+                 "\"direct_ms\":%lu,\"encrypt_phase\":%u,\"link_key_size\":%u,\"hci_cmd_ready\":%s,"
+                 "\"cmd_status_n\":%lu,\"cmd_status_opcode\":\"0x%04X\",\"cmd_status\":\"0x%02X\","
+                 "\"cmd_complete_n\":%lu,\"cmd_complete_opcode\":\"0x%04X\",\"cmd_complete_status\":\"0x%02X\","
+                 "\"encrypt_evt_n\":%lu,\"encrypt_evt_status\":\"0x%02X\",\"encrypt_enabled\":%u,"
+                 "\"disconnect_n\":%lu,\"disconnect_reason\":\"0x%02X\","
+                 "\"ltk_reads\":%lu,\"spi_ltk_valid\":%s,\"spi_ltk_phase\":%u,"
+                 "\"spi_norm_matches_derived\":%s,\"spi_raw_matches_derived\":%s,"
+                 "\"spi_ltk_raw\":\"%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X\","
+                 "\"spi_ltk_normalized\":\"%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X\"}",
+                 d.powered_on ? "true" : "false", d.state,
+                 d.scan_active ? "true" : "false", d.connected_ble_count,
+                 d.has_last_connected ? "true" : "false",
+                 d.has_last_connected_ltk ? "true" : "false",
+                 d.force_fresh_custom_pairing ? "true" : "false",
+                 d.connect_attempt_active ? "true" : "false", d.reconnect_attempts,
+                 d.last_connected_addr_type, d.last_connected_ble_strategy,
+                 d.last_connected_vid, d.last_connected_pid,
+                 d.local_addr[0], d.local_addr[1], d.local_addr[2],
+                 d.local_addr[3], d.local_addr[4], d.local_addr[5],
+                 d.last_connected_addr[0], d.last_connected_addr[1],
+                 d.last_connected_addr[2], d.last_connected_addr[3],
+                 d.last_connected_addr[4], d.last_connected_addr[5],
+                 d.last_connected_name,
+                 (unsigned long)d.advertising_reports,
+                 (unsigned long)d.target_advertising_reports,
+                 (unsigned long)d.switch2_advertising_reports,
+                 d.last_target_advertising_event_type,
+                 (unsigned long)d.target_connect_attempts,
+                 (unsigned long)d.target_connect_successes,
+                 (unsigned long)d.target_connect_failures,
+                 d.last_target_connect_status,
+                 (unsigned long)d.reencryption_started,
+                 (unsigned long)d.reencryption_successes,
+                 (unsigned long)d.reencryption_failures,
+                 d.last_reencryption_status,
+                 d.direct_reencrypt_active ? "true" : "false",
+                 d.direct_reencrypt_handle,
+                 (unsigned long)d.direct_reencrypt_elapsed_ms,
+                 d.direct_encrypt_phase,
+                 d.direct_link_key_size,
+                 d.hci_command_ready ? "true" : "false",
+                 (unsigned long)d.direct_cmd_status_events,
+                 d.last_direct_cmd_status_opcode, d.last_direct_cmd_status,
+                 (unsigned long)d.direct_cmd_complete_events,
+                 d.last_direct_cmd_complete_opcode, d.last_direct_cmd_complete_status,
+                 (unsigned long)d.direct_encrypt_events,
+                 d.last_direct_encrypt_status, d.last_direct_encrypt_enabled,
+                 (unsigned long)d.switch2_disconnect_events,
+                 d.last_switch2_disconnect_reason,
+                 (unsigned long)d.pairing_ltk_reads,
+                 d.pairing_ltk_valid ? "true" : "false", d.pairing_ltk_phase,
+                 d.pairing_ltk_matches_derived ? "true" : "false",
+                 d.pairing_ltk_raw_matches_derived ? "true" : "false",
+                 d.pairing_ltk_raw[0], d.pairing_ltk_raw[1],
+                 d.pairing_ltk_raw[2], d.pairing_ltk_raw[3],
+                 d.pairing_ltk_raw[4], d.pairing_ltk_raw[5],
+                 d.pairing_ltk_raw[6], d.pairing_ltk_raw[7],
+                 d.pairing_ltk_raw[8], d.pairing_ltk_raw[9],
+                 d.pairing_ltk_raw[10], d.pairing_ltk_raw[11],
+                 d.pairing_ltk_raw[12], d.pairing_ltk_raw[13],
+                 d.pairing_ltk_raw[14], d.pairing_ltk_raw[15],
+                 d.pairing_ltk_normalized[0], d.pairing_ltk_normalized[1],
+                 d.pairing_ltk_normalized[2], d.pairing_ltk_normalized[3],
+                 d.pairing_ltk_normalized[4], d.pairing_ltk_normalized[5],
+                 d.pairing_ltk_normalized[6], d.pairing_ltk_normalized[7],
+                 d.pairing_ltk_normalized[8], d.pairing_ltk_normalized[9],
+                 d.pairing_ltk_normalized[10], d.pairing_ltk_normalized[11],
+                 d.pairing_ltk_normalized[12], d.pairing_ltk_normalized[13],
+                 d.pairing_ltk_normalized[14], d.pairing_ltk_normalized[15]);
+        queue_text(trace_format_response);
+    } else if (strcmp(rx_line, "btfresh") == 0) {
+        btstack_host_force_switch2_fresh_pairing();
+        queue_text("{\"ok\":true,\"btfresh\":\"scheduled\"}");
     } else if (strcmp(rx_line, "reenumerate") == 0) {
         reenumerate_requested = true;
         queue_text("{\"ok\":true,\"reenumerate\":true}");
@@ -333,7 +453,8 @@ static void handle_command(void) {
                    "\"blecap dump\",\"blecap read\",\"blecap variant 0-9\","
                    "\"blecap gattdisc on|off|status\","
                    "\"blecap mark TEXT\","
-                   "\"motionauto\",\"reenumerate\",\"help\"]}");
+                   "\"motionauto\",\"motionusb\",\"btreconnect\",\"btfresh\","
+                   "\"reenumerate\",\"help\"]}");
     } else if (rx_length != 0) {
         queue_text("{\"error\":\"unknown command\"}");
     }

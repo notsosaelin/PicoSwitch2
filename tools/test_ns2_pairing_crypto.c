@@ -10,7 +10,8 @@
  * Exit code 0 = all assertions passed. Verifies the extracted AES-128 core against the
  * standard, publicly-documented FIPS-197 test vector (independent of anything Nintendo-specific
  * -- this alone proves the block cipher itself is correct), plus the rev16/LTK-derivation/
- * challenge composition against a self-consistency round-trip.
+ * challenge composition against both a self-consistency round-trip and the exact
+ * genuine Pro Controller 2 BLE exchange retained in this repository.
  */
 #include <stdio.h>
 #include <string.h>
@@ -73,9 +74,37 @@ int main(void) {
         CHECK(memcmp(ltk, expect, 16) == 0, "LTK derivation: identical A1/B1 XOR to all-zero");
     }
 
-    // Challenge composition: B2 = AES128(LTK, reverse(A2)) -- verify it's deterministic and
-    // that changing the LTK changes the output (sanity, not a specific known-answer test since
-    // no real captured (A1,A2,B2) triple is available/safe to embed here).
+    // Genuine Pro Controller 2 BLE pairing fixture captured in
+    // dumps/BLE CAPTURE/sw2_uart_variant7_clean_reconnect_2026-07-21.jsonl.
+    // These protocol values are transmitted over the air and are not secrets.
+    // This locks the HOME-reconnect LTK to the same exchange that the controller
+    // accepted, preventing byte-order or key-component drift.
+    {
+        const uint8_t a1[16] = {
+            0xEA,0xBD,0x47,0x13,0x89,0x35,0x42,0xC6,
+            0x79,0xEE,0x07,0xF2,0x53,0x2C,0x6C,0x31};
+        const uint8_t b1[16] = {
+            0x5C,0xF6,0xEE,0x79,0x2C,0xDF,0x05,0xE1,
+            0xBA,0x2B,0x63,0x25,0xC4,0x1A,0x5F,0x10};
+        const uint8_t expected_ltk[16] = {
+            0x21,0x33,0x36,0x97,0xD7,0x64,0xC5,0xC3,
+            0x27,0x47,0xEA,0xA5,0x6A,0xA9,0x4B,0xB6};
+        const uint8_t a2[16] = {
+            0x40,0xB0,0x8A,0x5F,0xCD,0x1F,0x9B,0x41,
+            0x12,0x5C,0xAC,0xC6,0x3F,0x38,0xA0,0x73};
+        const uint8_t expected_b2[16] = {
+            0xD8,0xF0,0x12,0x8B,0x49,0x29,0xAC,0x18,
+            0x92,0x95,0xA4,0x65,0xDA,0x08,0x1C,0x14};
+        uint8_t ltk[16], b2[16];
+        ns2_pairing_derive_ltk(a1, b1, ltk);
+        ns2_pairing_challenge(ltk, a2, b2);
+        CHECK(memcmp(ltk, expected_ltk, 16) == 0,
+              "Pro Controller 2 BLE capture derives the expected LTK");
+        CHECK(memcmp(b2, expected_b2, 16) == 0,
+              "Pro Controller 2 BLE capture reproduces the controller challenge response");
+    }
+
+    // Generic challenge-composition sanity checks.
     {
         uint8_t ltk1[16]; memset(ltk1, 0x11, 16);
         uint8_t ltk2[16]; memset(ltk2, 0x22, 16);

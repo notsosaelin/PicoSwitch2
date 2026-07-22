@@ -7,6 +7,7 @@
 
 #include "btstack_host.h"
 #include "ds5_audio_bridge.h"
+#include "ns2_pairing_crypto.h"
 #include "pico/time.h"
 
 #ifdef BTSTACK_DEFER_SCAN
@@ -39,6 +40,7 @@ extern void btstack_memory_init(void);
 #include "ad_parser.h"
 #include "gap.h"
 #include "hci.h"
+#include "hci_cmd.h"
 #include "l2cap.h"
 #include "ble/sm.h"
 #include "ble/gatt_client.h"
@@ -222,6 +224,10 @@ static struct {
     bd_addr_type_t pending_addr_type;
     char pending_name[48];
     const bt_device_profile_t* pending_profile;
+    // Identity established by the parsed manufacturer advertisement. These
+    // fields select the bthid driver, Switch 2 custom ATT reconnect path, and
+    // native-motion eligibility. Do not overwrite them from an incompletely
+    // decoded command/SPI response merely because two bytes resemble VID/PID.
     uint16_t pending_vid;
     uint16_t pending_pid;
 
@@ -229,10 +235,30 @@ static struct {
     bd_addr_t last_connected_addr;
     bd_addr_type_t last_connected_addr_type;
     char last_connected_name[48];
+    const bt_device_profile_t* last_connected_profile;
+    // Durable copy of the validated connection identity above. In particular,
+    // Pro Controller 2 gyro requires 057E:2069 and reboot reconnect requires
+    // BT_BLE_CUSTOM. Changing either from speculative bytes breaks both paths.
+    uint16_t last_connected_vid;
+    uint16_t last_connected_pid;
+    uint8_t last_connected_ltk[16];
+    bool has_last_connected_ltk;
     bool has_last_connected;
     uint32_t reconnect_attempt_time;
     uint8_t reconnect_attempts;
     uint32_t scan_start_time;          // When current scan started (for periodic reconnect)
+    uint32_t advertising_reports;
+    uint32_t target_advertising_reports;
+    uint32_t switch2_advertising_reports;
+    uint32_t target_connect_attempts;
+    uint32_t target_connect_successes;
+    uint32_t target_connect_failures;
+    uint32_t reencryption_started;
+    uint32_t reencryption_successes;
+    uint32_t reencryption_failures;
+    uint8_t last_target_advertising_event_type;
+    uint8_t last_target_connect_status;
+    uint8_t last_reencryption_status;
 
     // Connections
     ble_connection_t connections[MAX_BLE_CONNECTIONS];
@@ -884,6 +910,56 @@ void btstack_host_power_on(void)
 // denylist would miss powered-off devices, private-address rotation, and the
 // Switch 2 custom ATT path that never creates a BTstack bond.
 static bool pairing_lockout;
+static bool switch2_force_fresh_custom_pairing;
+
+// Authoritative Switch 2 bond-key snapshot read from controller SPI during
+// the custom ATT init sequence. Declared with reconnect persistence because
+// successful init consumes it when updating the durable target record.
+static uint8_t sw2_pairing_ltk_raw[16];
+static uint8_t sw2_pairing_ltk_normalized[16];
+static uint32_t sw2_pairing_ltk_reads;
+static hci_con_handle_t sw2_pairing_ltk_handle = HCI_CON_HANDLE_INVALID;
+static uint8_t sw2_pairing_ltk_phase;
+static bool sw2_pairing_ltk_valid;
+static bool sw2_pairing_ltk_matches_derived;
+static bool sw2_pairing_ltk_raw_matches_derived;
+static bool switch2_direct_reencrypt_active;
+static hci_con_handle_t switch2_direct_reencrypt_handle = HCI_CON_HANDLE_INVALID;
+static uint32_t switch2_direct_reencrypt_started_ms;
+static uint32_t switch2_direct_cmd_status_events;
+static uint32_t switch2_direct_cmd_complete_events;
+static uint32_t switch2_direct_encrypt_events;
+static uint32_t switch2_disconnect_events;
+static uint16_t switch2_last_cmd_status_opcode;
+static uint16_t switch2_last_cmd_complete_opcode;
+static uint8_t switch2_last_cmd_status;
+static uint8_t switch2_last_cmd_complete_status;
+static uint8_t switch2_last_encrypt_status;
+static uint8_t switch2_last_encrypt_enabled;
+static uint8_t switch2_last_disconnect_reason;
+// BTstack's SM key-size query remains zero because Switch 2 HOME encryption is
+// started directly with HCI LE Start Encryption. Track the successful HCI
+// Encryption Change event per link instead of consulting SM-owned metadata.
+static bool switch2_link_encrypted;
+static hci_con_handle_t switch2_link_encrypted_handle = HCI_CON_HANDLE_INVALID;
+enum {
+    SW2_ENCRYPT_NONE = 0,
+    SW2_ENCRYPT_RECONNECT = 1,
+};
+static uint8_t switch2_direct_encrypt_phase;
+
+// A1 is the fixed host key component sent by this implementation in
+// SW2_SUBCMD_PAIRING_STEP2. B1 is returned by genuine Switch 2 controllers and
+// is the same public device component used by the wired personalities. Their
+// derived LTK is the key the controller requires for HOME reconnect link-layer
+// encryption. Keep these beside the persistence code so changing the pairing
+// command cannot silently desynchronise the reconnect key.
+static const uint8_t SW2_BLE_HOST_A1[16] = {
+    0xEA, 0xBD, 0x47, 0x13, 0x89, 0x35, 0x42, 0xC6,
+    0x79, 0xEE, 0x07, 0xF2, 0x53, 0x2C, 0x6C, 0x31};
+static const uint8_t SW2_BLE_DEVICE_B1[16] = {
+    0x5C, 0xF6, 0xEE, 0x79, 0x2C, 0xDF, 0x05, 0xE1,
+    0xBA, 0x2B, 0x63, 0x25, 0xC4, 0x1A, 0x5F, 0x10};
 
 static void btstack_host_store_pairing_lockout(bool locked)
 {
@@ -915,6 +991,11 @@ static void btstack_host_clear_last_connected(void)
 {
     memset(hid_state.last_connected_addr, 0, sizeof(hid_state.last_connected_addr));
     memset(hid_state.last_connected_name, 0, sizeof(hid_state.last_connected_name));
+    hid_state.last_connected_profile = NULL;
+    hid_state.last_connected_vid = 0;
+    hid_state.last_connected_pid = 0;
+    memset(hid_state.last_connected_ltk, 0, sizeof(hid_state.last_connected_ltk));
+    hid_state.has_last_connected_ltk = false;
     hid_state.has_last_connected = false;
     hid_state.reconnect_attempts = 0;
     hid_state.reconnect_attempt_time = 0;
@@ -929,7 +1010,40 @@ typedef struct {
     bd_addr_t addr;
     uint8_t addr_type;
     char name[48];
-} __attribute__((packed)) last_connected_record_t;
+} __attribute__((packed)) last_connected_record_v1_t;
+
+// V2 appends identity required to choose the correct BLE transport after a
+// dongle reboot. The restore path still accepts the original address/name-only
+// record so existing non-Switch-2 bonds are not discarded on upgrade.
+typedef struct {
+    last_connected_record_v1_t v1;
+    uint16_t vid;
+    uint16_t pid;
+} __attribute__((packed)) last_connected_record_v2_t;
+
+typedef struct {
+    last_connected_record_v2_t v2;
+    uint8_t ltk[16];
+    uint8_t ltk_valid;
+} __attribute__((packed)) last_connected_record_v3_t;
+
+static bool btstack_host_is_switch2_identity(uint16_t vid, uint16_t pid)
+{
+    return vid == 0x057E &&
+        (pid == 0x2066 || pid == 0x2067 || pid == 0x2069 || pid == 0x2073);
+}
+
+static const bt_device_profile_t *btstack_host_reconnect_profile(
+    const char *name, uint16_t vid, uint16_t pid)
+{
+    // Switch 2 display names are synthesized ("Switch 2 Pro", etc.) and do
+    // not occur in bt_device_db's advertising-name table. VID/PID is therefore
+    // the durable discriminator for its custom ATT transport.
+    if (btstack_host_is_switch2_identity(vid, pid)) {
+        return &BT_PROFILE_SWITCH2;
+    }
+    return bt_device_lookup_by_name(name);
+}
 
 static void btstack_host_save_last_connected(void)
 {
@@ -938,14 +1052,236 @@ static void btstack_host_save_last_connected(void)
     btstack_tlv_get_instance(&tlv_impl, &tlv_context);
     if (!tlv_impl) return;
 
-    last_connected_record_t record;
-    memcpy(record.addr, hid_state.last_connected_addr, 6);
-    record.addr_type = (uint8_t)hid_state.last_connected_addr_type;
-    strncpy(record.name, hid_state.last_connected_name, sizeof(record.name) - 1);
-    record.name[sizeof(record.name) - 1] = '\0';
+    last_connected_record_v3_t record;
+    memset(&record, 0, sizeof(record));
+    memcpy(record.v2.v1.addr, hid_state.last_connected_addr, 6);
+    record.v2.v1.addr_type = (uint8_t)hid_state.last_connected_addr_type;
+    strncpy(record.v2.v1.name, hid_state.last_connected_name, sizeof(record.v2.v1.name) - 1);
+    record.v2.v1.name[sizeof(record.v2.v1.name) - 1] = '\0';
+    record.v2.vid = hid_state.last_connected_vid;
+    record.v2.pid = hid_state.last_connected_pid;
+    memcpy(record.ltk, hid_state.last_connected_ltk, sizeof(record.ltk));
+    record.ltk_valid = hid_state.has_last_connected_ltk ? 1u : 0u;
 
     tlv_impl->store_tag(tlv_context, TLV_TAG_LAST_CONNECTED,
                         (const uint8_t *)&record, sizeof(record));
+}
+
+static int btstack_host_find_le_device(const bd_addr_t addr, bd_addr_type_t addr_type)
+{
+    for (int i = 0; i < le_device_db_max_count(); i++) {
+        int stored_type = BD_ADDR_TYPE_UNKNOWN;
+        bd_addr_t stored_addr;
+        le_device_db_info(i, &stored_type, stored_addr, NULL);
+        if (stored_type == (int)addr_type &&
+            memcmp(stored_addr, addr, sizeof(bd_addr_t)) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static bool btstack_host_install_switch2_ltk(void)
+{
+    if (!hid_state.has_last_connected || !hid_state.has_last_connected_ltk ||
+        !btstack_host_is_switch2_identity(hid_state.last_connected_vid,
+                                          hid_state.last_connected_pid)) {
+        return false;
+    }
+
+    int index = btstack_host_find_le_device(hid_state.last_connected_addr,
+                                             hid_state.last_connected_addr_type);
+    if (index < 0) {
+        sm_key_t zero_irk = {0};
+        index = le_device_db_add(hid_state.last_connected_addr_type,
+                                 hid_state.last_connected_addr, zero_irk);
+    }
+    if (index < 0) {
+        printf("[SW2_BLE] Failed to allocate LE bond record for HOME reconnect\n");
+        return false;
+    }
+
+    uint8_t zero_rand[8] = {0};
+    le_device_db_encryption_set(index, 0, zero_rand,
+                                hid_state.last_connected_ltk, 16,
+                                0, 0, 1);
+    printf("[SW2_BLE] Installed custom-pairing LTK in LE bond slot %d\n", index);
+    return true;
+}
+
+// Low-level encryption helper retained as a diagnostic fallback. Production
+// HOME reconnect uses BTstack's Security Manager so the stack restores both
+// link encryption and its per-connection bonded/security state.
+static bool btstack_host_start_switch2_encryption(hci_con_handle_t handle,
+                                                   const uint8_t normalized_ltk[16],
+                                                   uint8_t phase)
+{
+    if (!normalized_ltk || phase == SW2_ENCRYPT_NONE) return false;
+
+    uint8_t raw_ltk[16];
+    for (size_t i = 0; i < sizeof(raw_ltk); ++i) {
+        raw_ltk[i] = normalized_ltk[15u - i];
+    }
+
+    uint8_t status = hci_send_cmd(&hci_le_start_encryption,
+                                  handle, 0u, 0u, 0u, raw_ltk);
+    if (status != ERROR_CODE_SUCCESS) {
+        printf("[SW2_BLE] Direct HCI re-encryption command rejected locally: 0x%02X\n",
+               status);
+        hid_state.last_reencryption_status = status;
+        return false;
+    }
+
+    switch2_direct_reencrypt_active = true;
+    switch2_direct_reencrypt_handle = handle;
+    switch2_direct_encrypt_phase = phase;
+    switch2_direct_reencrypt_started_ms = btstack_run_loop_get_time_ms();
+    hid_state.reencryption_started++;
+    hid_state.last_reencryption_status = ERROR_CODE_SUCCESS;
+    printf("[SW2_BLE] Direct HCI LTK encryption started (phase=%u)\n", phase);
+    return true;
+}
+
+static bool btstack_host_start_switch2_reencryption(hci_con_handle_t handle)
+{
+    if (!hid_state.has_last_connected_ltk) return false;
+    return btstack_host_start_switch2_encryption(
+        handle, hid_state.last_connected_ltk, SW2_ENCRYPT_RECONNECT);
+}
+
+static btstack_context_callback_registration_t switch2_force_fresh_cb;
+
+static void btstack_host_force_switch2_fresh_pairing_run(void *context)
+{
+    (void)context;
+    switch2_force_fresh_custom_pairing = true;
+
+    // UART access is itself an explicit local diagnostic action, equivalent
+    // to opening the bounded pairing window with BOOTSEL. A freshly wiped
+    // device deliberately restores pairing_lockout across reboot, so merely
+    // calling start_scan() below would otherwise be a silent no-op.
+    btstack_host_clear_pairing_lockout();
+
+    // `btfresh` deliberately abandons any in-flight HOME encryption attempt.
+    // Do this before requesting the disconnect so a custom BLE connection that
+    // has not reached bthid registration cannot leave the old handle/phase
+    // blocking (or being mistaken for) the next clean pairing session.
+    switch2_direct_reencrypt_active = false;
+    switch2_direct_reencrypt_handle = HCI_CON_HANDLE_INVALID;
+    switch2_direct_encrypt_phase = SW2_ENCRYPT_NONE;
+
+    if (hid_state.has_last_connected &&
+        btstack_host_is_switch2_identity(hid_state.last_connected_vid,
+                                         hid_state.last_connected_pid)) {
+        gap_delete_bonding(hid_state.last_connected_addr_type,
+                           hid_state.last_connected_addr);
+    }
+
+    for (int i = 0; i < MAX_BLE_CONNECTIONS; ++i) {
+        ble_connection_t *conn = &hid_state.connections[i];
+        if (conn->handle == HCI_CON_HANDLE_INVALID || !conn->profile ||
+            conn->profile->ble != BT_BLE_CUSTOM) continue;
+        printf("[SW2_BLE] UART forcing fresh custom pairing; disconnecting handle 0x%04X\n",
+               conn->handle);
+        gap_disconnect(conn->handle);
+        return;
+    }
+
+    if (hid_state.state == BLE_STATE_CONNECTING &&
+        hid_state.reconnect_attempt_time != 0) {
+        printf("[SW2_BLE] UART fresh pairing cancelling directed reconnect in flight\n");
+        gap_connect_cancel();
+        hid_state.state = BLE_STATE_IDLE;
+        hid_state.reconnect_attempt_time = 0;
+    }
+
+    printf("[SW2_BLE] UART armed fresh custom pairing; scanning for SYNC advertisement\n");
+    btstack_host_start_scan();
+}
+
+void btstack_host_force_switch2_fresh_pairing(void)
+{
+    switch2_force_fresh_cb.callback = btstack_host_force_switch2_fresh_pairing_run;
+    switch2_force_fresh_cb.context = NULL;
+    btstack_run_loop_execute_on_main_thread(&switch2_force_fresh_cb);
+}
+
+// Remember a BLE device only after its protocol-specific setup has actually
+// succeeded. Switch 2 controllers use a custom ATT pairing sequence and never
+// emit BTstack's SM_EVENT_PAIRING_COMPLETE, so relying on the SM callbacks alone
+// silently left them without a durable reconnect target.
+static void btstack_host_remember_ble_connection(ble_connection_t *conn)
+{
+    if (!conn) return;
+
+    const bool same_addr = hid_state.has_last_connected &&
+        memcmp(hid_state.last_connected_addr, conn->addr, sizeof(bd_addr_t)) == 0;
+    const char *name = conn->name;
+    if (name[0] == '\0' && same_addr) {
+        name = hid_state.last_connected_name;
+    }
+
+    bool changed = !same_addr ||
+        hid_state.last_connected_addr_type != conn->addr_type ||
+        hid_state.last_connected_vid != conn->vid ||
+        hid_state.last_connected_pid != conn->pid ||
+        strncmp(hid_state.last_connected_name, name,
+                sizeof(hid_state.last_connected_name)) != 0;
+
+    uint8_t switch2_ltk[16];
+    bool switch2_ltk_valid = false;
+    if (btstack_host_is_switch2_identity(conn->vid, conn->pid)) {
+        // Prefer the controller's authoritative post-pairing SPI value. The
+        // derived value remains a compatibility fallback for an older
+        // controller/firmware that does not answer the read, never the source
+        // of truth when the controller supplied its stored key.
+        if (sw2_pairing_ltk_valid && sw2_pairing_ltk_handle == conn->handle) {
+            memcpy(switch2_ltk, sw2_pairing_ltk_normalized, sizeof(switch2_ltk));
+        } else {
+            ns2_pairing_derive_ltk(SW2_BLE_HOST_A1, SW2_BLE_DEVICE_B1,
+                                   switch2_ltk);
+        }
+        switch2_ltk_valid = true;
+        if (!hid_state.has_last_connected_ltk ||
+            memcmp(hid_state.last_connected_ltk, switch2_ltk,
+                   sizeof(switch2_ltk)) != 0) {
+            changed = true;
+        }
+    }
+
+    memcpy(hid_state.last_connected_addr, conn->addr, sizeof(bd_addr_t));
+    hid_state.last_connected_addr_type = conn->addr_type;
+    hid_state.last_connected_profile = conn->profile;
+    hid_state.last_connected_vid = conn->vid;
+    hid_state.last_connected_pid = conn->pid;
+    if (switch2_ltk_valid) {
+        memcpy(hid_state.last_connected_ltk, switch2_ltk,
+               sizeof(hid_state.last_connected_ltk));
+        hid_state.has_last_connected_ltk = true;
+    }
+    strncpy(hid_state.last_connected_name, name,
+            sizeof(hid_state.last_connected_name) - 1);
+    hid_state.last_connected_name[sizeof(hid_state.last_connected_name) - 1] = '\0';
+    hid_state.has_last_connected = true;
+    hid_state.reconnect_attempts = 0;
+
+    // Avoid rewriting flash on every successful reconnect when the target did
+    // not change. A first successful custom-ATT pairing always writes it.
+    if (changed) {
+        btstack_host_save_last_connected();
+    }
+    if (conn->profile == &BT_PROFILE_SWITCH2 &&
+        hid_state.has_last_connected_ltk) {
+        btstack_host_install_switch2_ltk();
+        switch2_force_fresh_custom_pairing = false;
+    }
+
+    printf("[BTSTACK_HOST] Reconnect target ready: %02X:%02X:%02X:%02X:%02X:%02X "
+           "type=%u vid=0x%04X pid=0x%04X name='%s'%s\n",
+           conn->addr[5], conn->addr[4], conn->addr[3], conn->addr[2],
+           conn->addr[1], conn->addr[0], (unsigned)conn->addr_type,
+           conn->vid, conn->pid, hid_state.last_connected_name,
+           changed ? " (persisted)" : "");
 }
 
 static void btstack_host_restore_last_connected(void)
@@ -957,28 +1293,56 @@ static void btstack_host_restore_last_connected(void)
     btstack_tlv_get_instance(&tlv_impl, &tlv_context);
     if (!tlv_impl) return;
 
-    last_connected_record_t record;
+    last_connected_record_v3_t record;
+    memset(&record, 0, sizeof(record));
     int len = tlv_impl->get_tag(tlv_context, TLV_TAG_LAST_CONNECTED,
                                 (uint8_t *)&record, sizeof(record));
-    if (len != sizeof(record)) return;
+    if (len != sizeof(last_connected_record_v1_t) &&
+        len != sizeof(last_connected_record_v2_t) && len != sizeof(record)) return;
 
     // Validate — addr must not be all zeros
     bool valid = false;
     for (int i = 0; i < 6; i++) {
-        if (record.addr[i] != 0) { valid = true; break; }
+        if (record.v2.v1.addr[i] != 0) { valid = true; break; }
     }
     if (!valid) return;
 
-    memcpy(hid_state.last_connected_addr, record.addr, 6);
-    hid_state.last_connected_addr_type = (bd_addr_type_t)record.addr_type;
-    strncpy(hid_state.last_connected_name, record.name, sizeof(hid_state.last_connected_name) - 1);
+    memcpy(hid_state.last_connected_addr, record.v2.v1.addr, 6);
+    hid_state.last_connected_addr_type = (bd_addr_type_t)record.v2.v1.addr_type;
+    strncpy(hid_state.last_connected_name, record.v2.v1.name, sizeof(hid_state.last_connected_name) - 1);
     hid_state.last_connected_name[sizeof(hid_state.last_connected_name) - 1] = '\0';
+    if (len >= sizeof(last_connected_record_v2_t)) {
+        hid_state.last_connected_vid = record.v2.vid;
+        hid_state.last_connected_pid = record.v2.pid;
+    }
+    if (len == sizeof(record) && record.ltk_valid) {
+        memcpy(hid_state.last_connected_ltk, record.ltk,
+               sizeof(hid_state.last_connected_ltk));
+        hid_state.has_last_connected_ltk = true;
+    } else if (btstack_host_is_switch2_identity(hid_state.last_connected_vid,
+                                                hid_state.last_connected_pid)) {
+        // V2 migration: every Switch 2 record written by the preceding build
+        // came from this exact fixed A1/B1 exchange, so its LTK is recoverable.
+        ns2_pairing_derive_ltk(SW2_BLE_HOST_A1, SW2_BLE_DEVICE_B1,
+                               hid_state.last_connected_ltk);
+        hid_state.has_last_connected_ltk = true;
+    }
+    hid_state.last_connected_profile = btstack_host_reconnect_profile(
+        hid_state.last_connected_name, hid_state.last_connected_vid,
+        hid_state.last_connected_pid);
     hid_state.has_last_connected = true;
     hid_state.reconnect_attempts = 0;
 
     printf("[BTSTACK_HOST] Restored last connected: %02X:%02X:%02X:%02X:%02X:%02X name='%s'\n",
-           record.addr[5], record.addr[4], record.addr[3], record.addr[2], record.addr[1], record.addr[0],
+           record.v2.v1.addr[5], record.v2.v1.addr[4], record.v2.v1.addr[3],
+           record.v2.v1.addr[2], record.v2.v1.addr[1], record.v2.v1.addr[0],
            hid_state.last_connected_name);
+    if (hid_state.has_last_connected_ltk) {
+        btstack_host_install_switch2_ltk();
+        // Upgrade a V2 record in place so future boots do not depend on the
+        // migration assumption above.
+        if (len != sizeof(record)) btstack_host_save_last_connected();
+    }
 }
 
 // ============================================================================
@@ -1397,6 +1761,11 @@ void btstack_host_connect_ble(bd_addr_t addr, bd_addr_type_t addr_type)
     hid_state.state = BLE_STATE_CONNECTING;
     hid_state.reconnect_attempt_time = btstack_run_loop_get_time_ms();
 
+    if (hid_state.has_last_connected &&
+        memcmp(addr, hid_state.last_connected_addr, sizeof(bd_addr_t)) == 0) {
+        hid_state.target_connect_attempts++;
+    }
+
     // Create connection
     uint8_t status = gap_connect(addr, addr_type);
     printf("[BTSTACK_HOST] gap_connect returned status=%d\n", status);
@@ -1567,6 +1936,7 @@ void btstack_host_process(void)
     // After the rapid reconnect attempts (right after disconnect) are exhausted,
     // alternate between scanning and reconnection attempts.
     if (!wake_adv.active &&
+        !switch2_force_fresh_custom_pairing &&
         hid_state.state == BLE_STATE_SCANNING &&
         hid_state.has_last_connected &&
         hid_state.scan_start_time != 0 &&
@@ -1575,6 +1945,9 @@ void btstack_host_process(void)
                hid_state.last_connected_name);
         strncpy(hid_state.pending_name, hid_state.last_connected_name, sizeof(hid_state.pending_name) - 1);
         hid_state.pending_name[sizeof(hid_state.pending_name) - 1] = '\0';
+        hid_state.pending_profile = hid_state.last_connected_profile;
+        hid_state.pending_vid = hid_state.last_connected_vid;
+        hid_state.pending_pid = hid_state.last_connected_pid;
         btstack_host_connect_ble(hid_state.last_connected_addr, hid_state.last_connected_addr_type);
     }
 }
@@ -1808,6 +2181,13 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             const uint8_t *adv_data = gap_event_advertising_report_get_data(packet);
             uint8_t adv_event_type = gap_event_advertising_report_get_advertising_event_type(packet);
 
+            hid_state.advertising_reports++;
+            if (hid_state.has_last_connected &&
+                memcmp(addr, hid_state.last_connected_addr, sizeof(bd_addr_t)) == 0) {
+                hid_state.target_advertising_reports++;
+                hid_state.last_target_advertising_event_type = adv_event_type;
+            }
+
             // Parse name, appearance, and manufacturer data from advertising data
             char name[48] = {0};
             uint16_t mfr_company_id = 0;
@@ -1853,6 +2233,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 if (type == BLUETOOTH_DATA_TYPE_MANUFACTURER_SPECIFIC_DATA && len >= 2) {
                     mfr_company_id = data[0] | (data[1] << 8);
                     if (mfr_company_id == 0x0553) {
+                        hid_state.switch2_advertising_reports++;
                         // Debug: print raw manufacturer data
                         printf("[SW2_BLE] Mfr data (%d bytes):", len);
                         for (int i = 0; i < len && i < 12; i++) {
@@ -1966,6 +2347,9 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                     strncpy(hid_state.pending_name, type_str, sizeof(hid_state.pending_name) - 1);
                 }
                 hid_state.pending_name[sizeof(hid_state.pending_name) - 1] = '\0';
+                // This is the authoritative Switch 2 identity source currently
+                // validated on hardware. Later protocol replies must not replace
+                // it until their field layout is independently proven.
                 hid_state.pending_profile = profile;
                 hid_state.pending_vid = sw2_vid;
                 hid_state.pending_pid = sw2_pid;
@@ -2425,6 +2809,17 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 case HCI_SUBEVENT_LE_CONNECTION_COMPLETE: {
                     hci_con_handle_t handle = hci_subevent_le_connection_complete_get_connection_handle(packet);
                     uint8_t status = hci_subevent_le_connection_complete_get_status(packet);
+                    bool target_attempt = hid_state.has_last_connected &&
+                        memcmp(hid_state.pending_addr, hid_state.last_connected_addr,
+                               sizeof(bd_addr_t)) == 0;
+                    if (target_attempt) {
+                        hid_state.last_target_connect_status = status;
+                        if (status == ERROR_CODE_SUCCESS) {
+                            hid_state.target_connect_successes++;
+                        } else {
+                            hid_state.target_connect_failures++;
+                        }
+                    }
 
                     if (status != 0) {
                         printf("[BTSTACK_HOST] Connection failed: 0x%02X\n", status);
@@ -2461,7 +2856,9 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                         hid_state.state = BLE_STATE_IDLE;
 
                         // If reconnection attempt failed, try again or resume scanning
-                        if (hid_state.has_last_connected && hid_state.reconnect_attempts < 5) {
+                        if (hid_state.has_last_connected &&
+                            !switch2_force_fresh_custom_pairing &&
+                            hid_state.reconnect_attempts < 5) {
                             hid_state.reconnect_attempts++;
                             printf("[BTSTACK_HOST] Retrying reconnection (attempt %d)...\n",
                                    hid_state.reconnect_attempts);
@@ -2481,6 +2878,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                     }
 
                     printf("[BTSTACK_HOST] Connected! handle=0x%04X\n", handle);
+                    hid_state.reconnect_attempt_time = 0;
 
                     if (pairing_lockout) {
                         // Covers a connection-complete event already queued when the wipe
@@ -2511,11 +2909,26 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                                conn->name, conn->profile ? conn->profile->name : "default",
                                conn->vid, conn->pid);
 
-                        // Route based on BLE strategy
+                        // A saved Switch 2 target must first re-establish its
+                        // encrypted BLE link with the LTK derived during the
+                        // custom 0x15 exchange. SYNC-mode first pairing still
+                        // uses direct ATT because no link key exists yet.
                         if (conn->profile && conn->profile->ble == BT_BLE_CUSTOM) {
-                            printf("[BTSTACK_HOST] %s: Skipping SM pairing, using direct ATT setup\n",
-                                   conn->profile->name);
-                            register_switch2_hid_listener(handle);
+                            bool encrypted_reconnect = target_attempt &&
+                                hid_state.has_last_connected_ltk &&
+                                !switch2_force_fresh_custom_pairing;
+                            if (encrypted_reconnect) {
+                                printf("[SW2_BLE] Saved target connected; requesting bonded SM re-encryption\n");
+                                if (!btstack_host_install_switch2_ltk()) {
+                                    gap_disconnect(handle);
+                                } else {
+                                    sm_request_pairing(handle);
+                                }
+                            } else {
+                                printf("[BTSTACK_HOST] %s: fresh custom pairing via direct ATT setup\n",
+                                       conn->profile->name);
+                                register_switch2_hid_listener(handle);
+                            }
                         } else {
                             // Request pairing (SM will handle Secure Connections)
                             printf("[BTSTACK_HOST] Requesting pairing...\n");
@@ -2840,6 +3253,32 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             break;
         }
 
+        case HCI_EVENT_COMMAND_STATUS: {
+            uint16_t opcode = hci_event_command_status_get_command_opcode(packet);
+            if (opcode == HCI_OPCODE_HCI_LE_START_ENCRYPTION) {
+                switch2_direct_cmd_status_events++;
+                switch2_last_cmd_status_opcode = opcode;
+                switch2_last_cmd_status = hci_event_command_status_get_status(packet);
+                printf("[SW2_BLE] HCI Start Encryption command status=0x%02X\n",
+                       switch2_last_cmd_status);
+            }
+            break;
+        }
+
+        case HCI_EVENT_COMMAND_COMPLETE: {
+            uint16_t opcode = hci_event_command_complete_get_command_opcode(packet);
+            if (opcode == HCI_OPCODE_HCI_LE_START_ENCRYPTION) {
+                switch2_direct_cmd_complete_events++;
+                switch2_last_cmd_complete_opcode = opcode;
+                const uint8_t *params =
+                    hci_event_command_complete_get_return_parameters(packet);
+                switch2_last_cmd_complete_status = size > 5 ? params[0] : 0xFF;
+                printf("[SW2_BLE] HCI Start Encryption command complete status=0x%02X\n",
+                       switch2_last_cmd_complete_status);
+            }
+            break;
+        }
+
         case HCI_EVENT_DISCONNECTION_COMPLETE: {
             hci_con_handle_t handle = hci_event_disconnection_complete_get_connection_handle(packet);
             uint8_t reason = hci_event_disconnection_complete_get_reason(packet);
@@ -2847,11 +3286,27 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             printf("[BTSTACK_HOST] Disconnected: handle=0x%04X reason=0x%02X\n", handle, reason);
 
             ble_connection_t *conn = find_connection_by_handle(handle);
-            if (conn && conn->conn_index > 0) {
-                // Notify bthid layer before clearing connection
-                // conn_index for BLE uses BLE_CONN_INDEX_OFFSET to distinguish from Classic
-                printf("[BTSTACK_HOST] BLE disconnect: notifying bthid (conn_index=%d)\n", conn->conn_index);
-                bt_on_disconnect(conn->conn_index);
+            if ((switch2_direct_reencrypt_active &&
+                 switch2_direct_reencrypt_handle == handle) ||
+                (conn && conn->profile && conn->profile->ble == BT_BLE_CUSTOM)) {
+                switch2_disconnect_events++;
+                switch2_last_disconnect_reason = reason;
+            }
+            if (conn) {
+                // An ACL is already a BLE connection as soon as it owns one of
+                // our BLE slots. During Switch 2 HOME authentication it can
+                // disconnect before bthid assigns conn_index; treating that as
+                // Classic leaked the slot and left the global encryption/init
+                // state attached to a dead handle. Notify bthid only when it
+                // was registered, but always tear down the BLE slot/state.
+                if (conn->conn_index > 0) {
+                    // conn_index for BLE uses BLE_CONN_INDEX_OFFSET to distinguish from Classic
+                    printf("[BTSTACK_HOST] BLE disconnect: notifying bthid (conn_index=%d)\n", conn->conn_index);
+                    bt_on_disconnect(conn->conn_index);
+                } else {
+                    printf("[BTSTACK_HOST] BLE disconnect before bthid registration; cleaning handle 0x%04X\n",
+                           handle);
+                }
                 uint16_t dcid = conn->hids_cid;   // capture before the memset clears it
                 memset(conn, 0, sizeof(*conn));
                 conn->handle = HCI_CON_HANDLE_INVALID;
@@ -2933,7 +3388,9 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 }
 
                 // Try to reconnect to last connected device if we have one stored
-                if (hid_state.has_last_connected && hid_state.reconnect_attempts < 5 &&
+                if (hid_state.has_last_connected &&
+                    !switch2_force_fresh_custom_pairing &&
+                    hid_state.reconnect_attempts < 5 &&
                     reason_warrants_reconnect) {
                     hid_state.reconnect_attempts++;
                     printf("[BTSTACK_HOST] Attempting BLE reconnection to stored device (attempt %d)...\n",
@@ -3094,13 +3551,54 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             break;
         }
 
-        case HCI_EVENT_ENCRYPTION_CHANGE: {
-            hci_con_handle_t handle = hci_event_encryption_change_get_connection_handle(packet);
-            uint8_t status = hci_event_encryption_change_get_status(packet);
-            uint8_t enabled = hci_event_encryption_change_get_encryption_enabled(packet);
+        case HCI_EVENT_ENCRYPTION_CHANGE:
+        case HCI_EVENT_ENCRYPTION_CHANGE_V2: {
+            bool event_v2 = event_type == HCI_EVENT_ENCRYPTION_CHANGE_V2;
+            hci_con_handle_t handle = event_v2 ?
+                hci_event_encryption_change_v2_get_connection_handle(packet) :
+                hci_event_encryption_change_get_connection_handle(packet);
+            uint8_t status = event_v2 ?
+                hci_event_encryption_change_v2_get_status(packet) :
+                hci_event_encryption_change_get_status(packet);
+            uint8_t enabled = event_v2 ?
+                hci_event_encryption_change_v2_get_encryption_enabled(packet) :
+                hci_event_encryption_change_get_encryption_enabled(packet);
 
             printf("[BTSTACK_HOST] Encryption change: handle=0x%04X status=0x%02X enabled=%d\n",
                    handle, status, enabled);
+
+            if (switch2_direct_reencrypt_active &&
+                switch2_direct_reencrypt_handle == handle) {
+                switch2_direct_encrypt_events++;
+                switch2_last_encrypt_status = status;
+                switch2_last_encrypt_enabled = enabled;
+                uint8_t encrypt_phase = switch2_direct_encrypt_phase;
+                switch2_direct_reencrypt_active = false;
+                switch2_direct_reencrypt_handle = HCI_CON_HANDLE_INVALID;
+                switch2_direct_encrypt_phase = SW2_ENCRYPT_NONE;
+                hid_state.last_reencryption_status = status;
+
+                ble_connection_t *conn = find_connection_by_handle(handle);
+                if (status == ERROR_CODE_SUCCESS && enabled != 0) {
+                    hid_state.reencryption_successes++;
+                    switch2_link_encrypted = true;
+                    switch2_link_encrypted_handle = handle;
+                    printf("[SW2_BLE] Direct HCI HOME re-encryption succeeded\n");
+                    if (conn) {
+                        btstack_host_remember_ble_connection(conn);
+                        register_switch2_hid_listener(handle);
+                    }
+                } else {
+                    hid_state.reencryption_failures++;
+                    printf("[SW2_BLE] Direct HCI encryption failed: phase=%u status=0x%02X enabled=%u\n",
+                           encrypt_phase, status, enabled);
+                    if (conn) {
+                        gap_delete_bonding(conn->addr_type, conn->addr);
+                        switch2_force_fresh_custom_pairing = true;
+                    }
+                    gap_disconnect(handle);
+                }
+            }
             {
                 char reason[BTID_REASON_LEN];
                 snprintf(reason, sizeof(reason), "classic-encrypt-%02X-%u", status, enabled);
@@ -3203,14 +3701,7 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *pa
                 printf("[BTSTACK_HOST] SM: Pairing successful!\n");
                 ble_connection_t* conn = find_connection_by_handle(handle);
                 if (conn) {
-                    // Store for reconnection
-                    memcpy(hid_state.last_connected_addr, conn->addr, 6);
-                    hid_state.last_connected_addr_type = conn->addr_type;
-                    strncpy(hid_state.last_connected_name, conn->name, sizeof(hid_state.last_connected_name) - 1);
-                    hid_state.last_connected_name[sizeof(hid_state.last_connected_name) - 1] = '\0';
-                    hid_state.has_last_connected = true;
-                    hid_state.reconnect_attempts = 0;
-                    btstack_host_save_last_connected();
+                    btstack_host_remember_ble_connection(conn);
                     printf("[BTSTACK_HOST] Stored device for reconnection: %02X:%02X:%02X:%02X:%02X:%02X name='%s'\n",
                            conn->addr[5], conn->addr[4], conn->addr[3], conn->addr[2], conn->addr[1], conn->addr[0],
                            hid_state.last_connected_name);
@@ -3240,28 +3731,29 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *pa
 
         case SM_EVENT_REENCRYPTION_STARTED:
             printf("[BTSTACK_HOST] SM: Re-encryption started\n");
+            hid_state.reencryption_started++;
             break;
 
         case SM_EVENT_REENCRYPTION_COMPLETE: {
             hci_con_handle_t handle = sm_event_reencryption_complete_get_handle(packet);
             uint8_t status = sm_event_reencryption_complete_get_status(packet);
+            hid_state.last_reencryption_status = status;
+            if (status == ERROR_CODE_SUCCESS) {
+                hid_state.reencryption_successes++;
+            } else {
+                hid_state.reencryption_failures++;
+            }
             printf("[BTSTACK_HOST] SM: Re-encryption complete, handle=0x%04X status=0x%02X\n", handle, status);
             if (status == ERROR_CODE_SUCCESS) {
                 printf("[BTSTACK_HOST] SM: Re-encryption successful!\n");
                 ble_connection_t* conn = find_connection_by_handle(handle);
                 if (conn) {
-                    // Reset reconnect counter on successful re-encryption
-                    hid_state.reconnect_attempts = 0;
-
-                    // Update stored device info (in case address type changed or for reconnection)
-                    memcpy(hid_state.last_connected_addr, conn->addr, 6);
-                    hid_state.last_connected_addr_type = conn->addr_type;
-                    if (conn->name[0] != '\0') {
-                        strncpy(hid_state.last_connected_name, conn->name, sizeof(hid_state.last_connected_name) - 1);
-                        hid_state.last_connected_name[sizeof(hid_state.last_connected_name) - 1] = '\0';
+                    if (conn->profile && conn->profile->ble == BT_BLE_CUSTOM) {
+                        switch2_link_encrypted = true;
+                        switch2_link_encrypted_handle = handle;
                     }
-                    hid_state.has_last_connected = true;
-                    btstack_host_save_last_connected();
+                    // Refresh the durable target, including transport identity.
+                    btstack_host_remember_ble_connection(conn);
 
                     // Route based on BLE strategy
                     if (conn->profile && conn->profile->ble == BT_BLE_DIRECT_ATT) {
@@ -3281,14 +3773,22 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *pa
                     }
                 }
             } else {
-                // Re-encryption failed - remote likely lost bonding info
-                // Delete local bonding and request fresh pairing
-                printf("[BTSTACK_HOST] SM: Re-encryption failed, deleting bond and re-pairing...\n");
-                bd_addr_t addr;
-                sm_event_reencryption_complete_get_address(packet, addr);
-                bd_addr_type_t addr_type = sm_event_reencryption_complete_get_addr_type(packet);
-                gap_delete_bonding(addr_type, addr);
-                sm_request_pairing(handle);
+                ble_connection_t* conn = find_connection_by_handle(handle);
+                if (conn && conn->profile && conn->profile->ble == BT_BLE_CUSTOM) {
+                    // Preserve the durable Nintendo custom bond. An SM failure
+                    // can be a local state/timing error and must not silently
+                    // force the user back through SYNC pairing.
+                    printf("[SW2_BLE] SM re-encryption failed; preserving custom bond for retry\n");
+                    btstack_host_install_switch2_ltk();
+                    gap_disconnect(handle);
+                } else {
+                    // Standard BLE devices can fall back to ordinary pairing.
+                    bd_addr_t addr;
+                    sm_event_reencryption_complete_get_address(packet, addr);
+                    bd_addr_type_t addr_type = sm_event_reencryption_complete_get_addr_type(packet);
+                    gap_delete_bonding(addr_type, addr);
+                    sm_request_pairing(handle);
+                }
             }
             break;
         }
@@ -3869,15 +4369,16 @@ static void register_ble_hid_listener(hci_con_handle_t con_handle)
 #define SW2_SUBCMD_PAIRING_STEP3    0x02  // Send magic bytes 2
 #define SW2_SUBCMD_PAIRING_STEP4    0x03  // Complete pairing
 
-// Init state machine states (matching BlueRetro's sequence)
+// Fresh-SYNC custom ATT initialization states, confirmed against live hardware.
 typedef enum {
     SW2_INIT_IDLE = 0,
     SW2_INIT_READ_INFO,             // Read device info from SPI
-    SW2_INIT_READ_LTK,              // Read LTK to check if paired
+    SW2_INIT_READ_LTK,              // Read the controller's existing bond key
     SW2_INIT_PAIR_STEP1,            // Pairing step 1 (BD addr)
     SW2_INIT_PAIR_STEP2,            // Pairing step 2
     SW2_INIT_PAIR_STEP3,            // Pairing step 3
     SW2_INIT_PAIR_STEP4,            // Pairing step 4
+    SW2_INIT_READ_NEW_LTK,          // Read authoritative key written by pairing
     SW2_INIT_SET_LED,               // Set player LED
     SW2_INIT_DONE                   // Init complete
 } sw2_init_state_t;
@@ -3931,6 +4432,25 @@ static void switch2_hid_notification_handler(uint8_t packet_type, uint16_t chann
 
 // Forward declarations for Switch 2
 static void switch2_send_next_init_cmd(hci_con_handle_t con_handle);
+static bool switch2_resume_encrypted_session(hci_con_handle_t con_handle);
+static void switch2_send_player_led(hci_con_handle_t con_handle, uint8_t pattern);
+static uint8_t sw2_last_player_led;
+
+static void switch2_publish_hid_ready(hci_con_handle_t con_handle)
+{
+    ble_connection_t *conn = find_connection_by_handle(con_handle);
+    if (!conn) return;
+
+    // Driver selection must see the resolved identity before readiness.
+    printf("[SW2_BLE] Updating device info: VID=0x%04X PID=0x%04X\n",
+           conn->vid, conn->pid);
+    bthid_update_device_info(conn->conn_index, conn->name, conn->vid, conn->pid);
+    btstack_host_stop_scan();
+    scan_timeout_end = 0;
+    printf("[SW2_BLE] Calling bt_on_hid_ready(%d) for Switch 2 device\n",
+           conn->conn_index);
+    bt_on_hid_ready(conn->conn_index);
+}
 
 // CCC write completion handler for Switch 2 input reports
 static void switch2_ccc_write_callback(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size)
@@ -3947,20 +4467,17 @@ static void switch2_ccc_write_callback(uint8_t packet_type, uint16_t channel, ui
     if (status == ATT_ERROR_SUCCESS) {
         printf("[SW2_BLE] Input notifications enabled for handle 0x%04X\n", handle);
 
-        // Now register the notification listener
-        ble_connection_t* conn = find_connection_by_handle(handle);
-        if (conn) {
-            // Update bthid with VID/PID BEFORE calling bt_on_hid_ready
-            // so driver selection has correct info
-            printf("[SW2_BLE] Updating device info: VID=0x%04X PID=0x%04X\n", conn->vid, conn->pid);
-            bthid_update_device_info(conn->conn_index, conn->name, conn->vid, conn->pid);
-
-            // Notify bthid layer that device is ready
-            btstack_host_stop_scan();
-            scan_timeout_end = 0;
-            printf("[SW2_BLE] Calling bt_on_hid_ready(%d) for Switch 2 device\n", conn->conn_index);
-            bt_on_hid_ready(conn->conn_index);
+        if (switch2_link_encrypted && switch2_link_encrypted_handle == handle) {
+            // Player LEDs are controller-local state and return to the running
+            // search pattern after a controller power cycle even though the
+            // bonded SM session, input, and motion have resumed. Reassert the
+            // one-controller dongle's P1 assignment after the input CCC
+            // transaction completes and before native setup begins.
+            sw2_last_player_led = 0x01;
+            switch2_send_player_led(handle, 0x01);
         }
+
+        switch2_publish_hid_ready(handle);
     } else {
         printf("[SW2_BLE] Failed to enable input notifications: status=0x%02X\n", status);
     }
@@ -3981,15 +4498,17 @@ static void switch2_ack_ccc_write_callback(uint8_t packet_type, uint16_t channel
     if (status == ATT_ERROR_SUCCESS) {
         printf("[SW2_BLE] ACK notifications enabled for handle 0x%04X\n", handle);
 
-        // Now enable input report notifications
-        static uint8_t ccc_enable[] = { 0x01, 0x00 };
-        printf("[SW2_BLE] Enabling input notifications on CCC handle 0x%04X\n", SW2_CCC_HANDLE);
-        sw2_capture_record(SW2_CAP_CCC_WRITE, SW2_CCC_HANDLE, ccc_enable, sizeof(ccc_enable));
-        gatt_client_write_value_of_characteristic(
-            switch2_ccc_write_callback, handle, SW2_CCC_HANDLE, sizeof(ccc_enable), ccc_enable);
+        if (switch2_resume_encrypted_session(handle)) {
+            return;
+        }
 
-        // Start the pairing sequence
-        printf("[SW2_BLE] Starting pairing sequence\n");
+        // Do not overlap another ATT request with the command state machine.
+        // The prior code launched the input-CCC write and then emitted the
+        // first write-command ~sub-millisecond later while the CCC transaction
+        // was still outstanding. Fresh links happened to tolerate it; captured
+        // encrypted HOME links silently discarded every command. Complete the
+        // command/ACK sequence first and enable input only at its terminal ACK.
+        printf("[SW2_BLE] Starting serialized controller init\n");
         switch2_send_next_init_cmd(handle);
     } else {
         printf("[SW2_BLE] Failed to enable ACK notifications: status=0x%02X\n", status);
@@ -4000,9 +4519,42 @@ static void switch2_ack_ccc_write_callback(uint8_t packet_type, uint16_t channel
 static sw2_init_state_t sw2_init_state = SW2_INIT_IDLE;
 static hci_con_handle_t sw2_init_handle = 0;
 
+// Switch 2's custom ATT pairing writes the link-layer key into its SPI bond
+// table. Live reads confirm the authoritative 16 bytes at 0x1FA01A after
+// pairing. BTstack's LE database uses
+// the opposite (human/crypto) byte order and reverses it again when formatting
+// that HCI command, so `normalized` below is always reverse(`raw`). Keeping
+// both forms and their comparison results visible over UART makes an endian or
+// key-derivation mistake diagnosable without perturbing the proven input/gyro
+// report path.
+static void switch2_record_pairing_ltk(hci_con_handle_t con_handle,
+                                       const uint8_t raw_ltk[16], uint8_t phase)
+{
+    uint8_t derived[16];
+    ns2_pairing_derive_ltk(SW2_BLE_HOST_A1, SW2_BLE_DEVICE_B1, derived);
+
+    memcpy(sw2_pairing_ltk_raw, raw_ltk, sizeof(sw2_pairing_ltk_raw));
+    for (size_t i = 0; i < sizeof(sw2_pairing_ltk_normalized); ++i) {
+        sw2_pairing_ltk_normalized[i] = raw_ltk[15u - i];
+    }
+    sw2_pairing_ltk_handle = con_handle;
+    sw2_pairing_ltk_phase = phase;
+    sw2_pairing_ltk_valid = true;
+    sw2_pairing_ltk_matches_derived =
+        memcmp(sw2_pairing_ltk_normalized, derived, sizeof(derived)) == 0;
+    sw2_pairing_ltk_raw_matches_derived =
+        memcmp(sw2_pairing_ltk_raw, derived, sizeof(derived)) == 0;
+    sw2_pairing_ltk_reads++;
+
+    printf("[SW2_BLE] SPI LTK %s: normalized=%s derived, raw=%s derived\n",
+           phase == 2 ? "after pairing" : "before pairing",
+           sw2_pairing_ltk_matches_derived ? "matches" : "differs from",
+           sw2_pairing_ltk_raw_matches_derived ? "matches" : "differs from");
+}
+
 // Retry timing for the init state machine (see switch2_send_init_cmd()/switch2_retry_init_if_needed()
 // below). SW2_INIT_RETRY_INTERVAL_MS is this project's pre-existing ~500ms retry intent — no primary
-// source (BlueRetro's own retry timing, a capture, or any other evidence) was found to establish that
+// source or capture was found to establish that
 // value; it is preserved as an existing project policy, not promoted to a measured fact. What *is*
 // fixed here: the interval used to be a raw call-count modulo (assumed ~120Hz caller; the real
 // caller — ns2_bt_host.c's 30ms control_timer — runs at ~33Hz, so the old check fired every ~1.8s,
@@ -4016,6 +4568,35 @@ static hci_con_handle_t sw2_init_handle = 0;
 static uint32_t sw2_init_cmd_sent_ms = 0;
 static uint8_t sw2_init_retry_count = 0;
 static sw2_init_state_t sw2_init_last_sent_state = SW2_INIT_IDLE;
+static uint32_t s_sw2_init_done_ms;
+
+static bool switch2_resume_encrypted_session(hci_con_handle_t con_handle)
+{
+    if (!switch2_link_encrypted || switch2_link_encrypted_handle != con_handle) {
+        return false;
+    }
+
+    /*
+     * HOME reconnect resumes an established controller session. Captures show
+     * the encrypted controller ignores first-connection READ_INFO and pairing
+     * commands, while current BLE clients restore subscriptions and consume
+     * input immediately. The full init sequence remains exclusive to a fresh
+     * SYNC connection.
+     */
+    sw2_init_state = SW2_INIT_DONE;
+    s_sw2_init_done_ms = btstack_run_loop_get_time_ms();
+    uint8_t state = (uint8_t)SW2_INIT_DONE;
+    sw2_capture_record(SW2_CAP_STATE, 0, &state, 1);
+
+    static uint8_t input_ccc_enable[] = { 0x01, 0x00 };
+    printf("[SW2_BLE] Resuming encrypted session; enabling input notifications\n");
+    sw2_capture_record(SW2_CAP_CCC_WRITE, SW2_CCC_HANDLE,
+                       input_ccc_enable, sizeof(input_ccc_enable));
+    gatt_client_write_value_of_characteristic(
+        switch2_ccc_write_callback, con_handle, SW2_CCC_HANDLE,
+        sizeof(input_ccc_enable), input_ccc_enable);
+    return true;
+}
 
 // ACK notification listener for Switch 2 commands
 static gatt_client_notification_t switch2_ack_notification_listener;
@@ -4323,7 +4904,6 @@ typedef enum {
 static volatile uint8_t s_sw2_v2_armed_variant = 0;  // 0 = off
 static bool s_sw2_v2_fired = false;                  // per-connection one-shot guard
 static bool s_sw2_native_auto_fired = false;         // production Pro2 path, reset on disconnect
-static uint32_t s_sw2_init_done_ms;
 static volatile uint32_t s_sw2_native_auto_checks;
 static volatile uint32_t s_sw2_native_auto_starts;
 static volatile uint32_t s_sw2_native_auto_wait_elapsed_ms;
@@ -4335,6 +4915,8 @@ static const sw2_v2_variant_t *s_sw2_v2_active = NULL;
 static uint8_t s_sw2_v2_cal_index = 0;
 static gatt_client_notification_t sw2_motion_notification_listener;
 static gatt_client_characteristic_t sw2_motion_characteristic;
+static void sw2_motion_notification_handler(uint8_t packet_type, uint16_t channel,
+                                            uint8_t *packet, uint16_t size);
 
 static void switch2_capture_link_params(uint8_t phase, uint8_t status,
                                         hci_con_handle_t con_handle, uint16_t interval,
@@ -4724,6 +5306,12 @@ static void switch2_cleanup_on_disconnect(void) {
     sw2_init_retry_count = 0;
     sw2_init_cmd_sent_ms = 0;
     sw2_init_last_sent_state = SW2_INIT_IDLE;
+    switch2_link_encrypted = false;
+    switch2_link_encrypted_handle = HCI_CON_HANDLE_INVALID;
+    sw2_pairing_ltk_handle = HCI_CON_HANDLE_INVALID;
+    switch2_direct_reencrypt_active = false;
+    switch2_direct_reencrypt_handle = HCI_CON_HANDLE_INVALID;
+    switch2_direct_encrypt_phase = SW2_ENCRYPT_NONE;
     s_sw2_v2_fired = false;
     s_sw2_native_auto_fired = false;
     s_sw2_init_done_ms = 0;
@@ -4818,14 +5406,64 @@ static void switch2_ack_notification_handler(uint8_t packet_type, uint16_t chann
                     uint16_t vid = value[30] | (value[31] << 8);
                     uint16_t pid = value[32] | (value[33] << 8);
                     printf("[SW2_BLE] Device info: VID=0x%04X PID=0x%04X\n", vid, pid);
+                    // These legacy offsets are retained as an investigation
+                    // log only. Hardware returned 0x3238/0x0000 here for a
+                    // confirmed 0x057E/0x2069 Pro Controller 2, so they must
+                    // not replace the validated advertising identity.
                 }
-                // Skip LTK check for now, go straight to pairing
-                sw2_init_state = SW2_INIT_PAIR_STEP1;
+                // Read the controller's existing bond key before deciding
+                // whether custom pairing is necessary. This read does not
+                // alter controller state.
+                sw2_init_state = SW2_INIT_READ_LTK;
                 switch2_send_init_cmd(con_handle);
             } else if (sw2_init_state == SW2_INIT_READ_LTK) {
-                // Check LTK, for now just proceed to pairing
-                sw2_init_state = SW2_INIT_PAIR_STEP1;
+                bool valid_ltk_response = value_length >= 32 && value[8] >= 16 &&
+                    value[12] == 0x1A && value[13] == 0xA0 &&
+                    value[14] == 0x1F && value[15] == 0x00;
+                if (valid_ltk_response) {
+                    switch2_record_pairing_ltk(con_handle, &value[16], 1);
+                }
+
+                // An already encrypted HOME reconnect with the same SPI key
+                // must not rewrite the controller's bond. A SYNC/fresh link is
+                // unencrypted here and intentionally runs the custom pairing
+                // exchange even if stale local storage happens to match.
+                bool encrypted_key_matches = valid_ltk_response &&
+                    gap_encryption_key_size(con_handle) > 0 &&
+                    hid_state.has_last_connected_ltk &&
+                    memcmp(hid_state.last_connected_ltk,
+                           sw2_pairing_ltk_normalized, 16) == 0;
+                sw2_init_state = encrypted_key_matches ?
+                    SW2_INIT_SET_LED : SW2_INIT_PAIR_STEP1;
+                printf("[SW2_BLE] Existing bond %s; %s custom pairing\n",
+                       encrypted_key_matches ? "matches encrypted link" : "not reusable",
+                       encrypted_key_matches ? "skipping" : "running");
                 switch2_send_init_cmd(con_handle);
+            } else if (sw2_init_state == SW2_INIT_READ_NEW_LTK) {
+                bool valid_ltk_response = value_length >= 32 && value[8] >= 16 &&
+                    value[12] == 0x1A && value[13] == 0xA0 &&
+                    value[14] == 0x1F && value[15] == 0x00;
+                if (valid_ltk_response) {
+                    switch2_record_pairing_ltk(con_handle, &value[16], 2);
+                } else {
+                    printf("[SW2_BLE] Post-pairing SPI LTK response malformed (len=%u)\n",
+                           value_length);
+                }
+                if (valid_ltk_response) {
+                    // The custom 0x15 exchange establishes and stores the
+                    // relationship, but this initial SYNC link remains
+                    // unencrypted. The LTK is first exercised through BTstack
+                    // SM re-encryption on a later HOME reconnect. Hardware
+                    // returns 0x06 if encryption is forced here immediately,
+                    // even though the SPI key is readable.
+                    sw2_init_state = SW2_INIT_SET_LED;
+                    switch2_send_init_cmd(con_handle);
+                } else {
+                    // Retain a bounded compatibility path for firmware that
+                    // answers the custom exchange but not the SPI read.
+                    sw2_init_state = SW2_INIT_SET_LED;
+                    switch2_send_init_cmd(con_handle);
+                }
             }
             break;
 
@@ -4851,8 +5489,8 @@ static void switch2_ack_notification_handler(uint8_t packet_type, uint16_t chann
                     break;
                 case SW2_SUBCMD_PAIRING_STEP4:
                     if (sw2_init_state == SW2_INIT_PAIR_STEP4) {
-                        printf("[SW2_BLE] Pairing complete! Setting LED...\n");
-                        sw2_init_state = SW2_INIT_SET_LED;
+                        printf("[SW2_BLE] Pairing complete! Reading stored LTK...\n");
+                        sw2_init_state = SW2_INIT_READ_NEW_LTK;
                         switch2_send_init_cmd(con_handle);
                     }
                     break;
@@ -4864,10 +5502,28 @@ static void switch2_ack_notification_handler(uint8_t packet_type, uint16_t chann
                 printf("[SW2_BLE] LED set! Init done.\n");
                 sw2_init_state = SW2_INIT_DONE;
                 s_sw2_init_done_ms = btstack_run_loop_get_time_ms();
+                // The Nintendo custom ATT path deliberately skips BTstack SM,
+                // so this successful terminal ACK is its equivalent of a
+                // pairing-complete event. Persist the peer now, never merely
+                // from an advertisement or raw ACL connection.
+                btstack_host_remember_ble_connection(
+                    find_connection_by_handle(con_handle));
                 // Terminal state — not followed by switch2_send_init_cmd(), so captured here
                 // directly (every other transition is captured at the top of that function).
                 uint8_t s = (uint8_t)SW2_INIT_DONE;
                 sw2_capture_record(SW2_CAP_STATE, 0, &s, 1);
+
+                // Init is now terminal and no GATT command request is in
+                // flight. Enable the input CCC as its own serialized request;
+                // its completion callback publishes the device to bthid.
+                static uint8_t ccc_enable[] = { 0x01, 0x00 };
+                printf("[SW2_BLE] Enabling input notifications on CCC handle 0x%04X\n",
+                       SW2_CCC_HANDLE);
+                sw2_capture_record(SW2_CAP_CCC_WRITE, SW2_CCC_HANDLE,
+                                   ccc_enable, sizeof(ccc_enable));
+                gatt_client_write_value_of_characteristic(
+                    switch2_ccc_write_callback, con_handle, SW2_CCC_HANDLE,
+                    sizeof(ccc_enable), ccc_enable);
             }
             break;
     }
@@ -4897,7 +5553,7 @@ static void switch2_send_init_cmd(hci_con_handle_t con_handle)
 
     switch (sw2_init_state) {
         case SW2_INIT_READ_INFO: {
-            // Read device info from SPI (BlueRetro's first step)
+            // Read the controller identity block from SPI.
             uint8_t read_info[] = {
                 SW2_CMD_READ_SPI,       // 0x02
                 SW2_REQ_TYPE_REQ,       // 0x91
@@ -4915,13 +5571,49 @@ static void switch2_send_init_cmd(hci_con_handle_t con_handle)
             break;
         }
 
+        case SW2_INIT_READ_LTK:
+        case SW2_INIT_READ_NEW_LTK: {
+            // Read only the key field from the first bond record. Response
+            // data begins at ACK byte 16.
+            uint8_t read_ltk[] = {
+                SW2_CMD_READ_SPI,
+                SW2_REQ_TYPE_REQ,
+                SW2_REQ_INT_BLE,
+                SW2_SUBCMD_READ_SPI,
+                0x00, 0x08, 0x00, 0x00,
+                0x10,
+                0x7e, 0x00, 0x00,
+                0x1a, 0xa0, 0x1f, 0x00
+            };
+            sw2_capture_record(SW2_CAP_CMD_OUT, SW2_CMD_HANDLE,
+                               read_ltk, sizeof(read_ltk));
+            gatt_client_write_value_of_characteristic_without_response(
+                con_handle, SW2_CMD_HANDLE, sizeof(read_ltk), read_ltk);
+            printf("[SW2_BLE] READ_%s_LTK sent\n",
+                   sw2_init_state == SW2_INIT_READ_NEW_LTK ? "NEW" : "EXISTING");
+            break;
+        }
+
         case SW2_INIT_PAIR_STEP1: {
-            // Pairing step 1: Send our BD address
+            // Pairing step 1 consumes the controller address in the raw order
+            // returned by HCI Read BD_ADDR. BTstack exposes
+            // gap_local_bd_addr() in display order, so convert at this API
+            // boundary. A prior SPI
+            // table read showed that the controller transforms this field when
+            // storing its bond record; that stored representation must not be
+            // mistaken for the ATT command's byte order. Using display order
+            // here produced a readable LTK and working fresh input, but HOME
+            // reconnect repeatedly stalled after LE Start Encryption because
+            // the bond belonged to the wrong serialized host identity.
             bd_addr_t local_addr;
             gap_local_bd_addr(local_addr);
+            uint8_t hci_addr[6] = {
+                local_addr[5], local_addr[4], local_addr[3],
+                local_addr[2], local_addr[1], local_addr[0],
+            };
             printf("[SW2_BLE] Pair Step 1: BD addr = %02X:%02X:%02X:%02X:%02X:%02X\n",
-                   local_addr[5], local_addr[4], local_addr[3],
-                   local_addr[2], local_addr[1], local_addr[0]);
+                   local_addr[0], local_addr[1], local_addr[2],
+                   local_addr[3], local_addr[4], local_addr[5]);
 
             uint8_t pair1[] = {
                 SW2_CMD_PAIRING,        // 0x15
@@ -4929,12 +5621,12 @@ static void switch2_send_init_cmd(hci_con_handle_t con_handle)
                 SW2_REQ_INT_BLE,        // 0x01
                 SW2_SUBCMD_PAIRING_STEP1, // 0x01
                 0x00, 0x0e, 0x00, 0x00, 0x00, 0x02,
-                // 6 bytes: our BD addr
-                local_addr[0], local_addr[1], local_addr[2],
-                local_addr[3], local_addr[4], local_addr[5],
-                // 6 bytes: our BD addr - 1
-                (uint8_t)(local_addr[0] - 1), local_addr[1], local_addr[2],
-                local_addr[3], local_addr[4], local_addr[5],
+                // 6 bytes: our raw HCI-order BD addr
+                hci_addr[0], hci_addr[1], hci_addr[2],
+                hci_addr[3], hci_addr[4], hci_addr[5],
+                // 6 bytes: the second controller bond identity decrements raw byte 0
+                (uint8_t)(hci_addr[0] - 1), hci_addr[1], hci_addr[2],
+                hci_addr[3], hci_addr[4], hci_addr[5],
             };
             sw2_capture_record(SW2_CAP_CMD_OUT, SW2_CMD_HANDLE, pair1, sizeof(pair1));
             gatt_client_write_value_of_characteristic_without_response(
@@ -4943,7 +5635,7 @@ static void switch2_send_init_cmd(hci_con_handle_t con_handle)
         }
 
         case SW2_INIT_PAIR_STEP2: {
-            // Pairing step 2: Magic bytes (from BlueRetro)
+            // Pairing step 2: captured controller handshake bytes.
             uint8_t pair2[] = {
                 SW2_CMD_PAIRING,        // 0x15
                 SW2_REQ_TYPE_REQ,       // 0x91
@@ -5020,7 +5712,8 @@ static void switch2_send_init_cmd(hci_con_handle_t con_handle)
 
 static void switch2_send_next_init_cmd(hci_con_handle_t con_handle)
 {
-    // Start the init sequence with READ_INFO (like BlueRetro does)
+    // ACK notification setup is complete before this begins. On a HOME
+    // reconnect it also runs only after HCI encryption succeeded.
     if (sw2_init_state == SW2_INIT_IDLE) {
         printf("[SW2_BLE] Starting init sequence with READ_INFO...\n");
         sw2_init_state = SW2_INIT_READ_INFO;
@@ -5037,7 +5730,8 @@ static void switch2_send_next_init_cmd(hci_con_handle_t con_handle)
 // see the retry-timing comment above sw2_init_cmd_sent_ms for why this used to be call-count-based).
 static void switch2_retry_init_if_needed(void)
 {
-    if (sw2_init_state == SW2_INIT_IDLE || sw2_init_state == SW2_INIT_DONE || sw2_init_handle == 0) {
+    if (sw2_init_state == SW2_INIT_IDLE ||
+        sw2_init_state == SW2_INIT_DONE || sw2_init_handle == 0) {
         return;
     }
 
@@ -5087,9 +5781,6 @@ static uint8_t sw2_last_rumble_left = 0;
 static uint8_t sw2_last_rumble_right = 0;
 static uint8_t sw2_rumble_tid = 0;
 static uint32_t sw2_rumble_send_counter = 0;
-
-// Player LED state tracking
-static uint8_t sw2_last_player_led = 0;
 
 // Player LED patterns (cumulative, matching joypad-web)
 static const uint8_t SW2_PLAYER_LED_PATTERNS[] = {
@@ -5222,6 +5913,9 @@ static void switch2_handle_feedback(void)
         if (s_sw2_gatt_disc_enabled) blocked |= 0x04;
         if (g_usb_personality != USB_PERSONALITY_SWITCH2_PRO2) blocked |= 0x08;
         if (!motion_source) blocked |= 0x10;
+        // conn->pid comes from the validated Nintendo manufacturer advertisement.
+        // Keep this strict: native opaque motion is Pro Controller 2-specific,
+        // but never feed conn->pid from speculative SPI/command offsets.
         if (motion_source && motion_source->pid != 0x2069) blocked |= 0x20;
         if (s_sw2_v2_active != NULL ||
             (s_sw2_v2_state != SW2_V2_IDLE && s_sw2_v2_state != SW2_V2_DONE)) blocked |= 0x40;
@@ -5329,6 +6023,9 @@ static void register_switch2_hid_listener(hci_con_handle_t con_handle)
     conn->hid_ready = true;
     sw2_init_handle = con_handle;
     sw2_init_state = SW2_INIT_IDLE;
+    sw2_pairing_ltk_valid = false;
+    sw2_pairing_ltk_handle = HCI_CON_HANDLE_INVALID;
+    sw2_pairing_ltk_phase = 0;
 
     printf("[SW2_BLE] Connection: VID=0x%04X PID=0x%04X conn_index=%d\n",
            conn->vid, conn->pid, conn->conn_index);
@@ -5724,6 +6421,75 @@ bool btstack_host_is_powered_on(void)
 bool btstack_host_is_scanning(void)
 {
     return hid_state.scan_active || classic_state.inquiry_active;
+}
+
+void btstack_host_get_reconnect_diag(btstack_host_reconnect_diag_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->powered_on = hid_state.powered_on;
+    out->scan_active = hid_state.scan_active;
+    out->has_last_connected = hid_state.has_last_connected;
+    out->has_last_connected_ltk = hid_state.has_last_connected_ltk;
+    out->force_fresh_custom_pairing = switch2_force_fresh_custom_pairing;
+    out->connect_attempt_active = hid_state.reconnect_attempt_time != 0;
+    out->state = (uint8_t)hid_state.state;
+    out->reconnect_attempts = hid_state.reconnect_attempts;
+    out->last_connected_addr_type = (uint8_t)hid_state.last_connected_addr_type;
+    out->last_connected_ble_strategy = hid_state.last_connected_profile ?
+        (uint8_t)hid_state.last_connected_profile->ble : (uint8_t)BT_BLE_NONE;
+    out->last_connected_vid = hid_state.last_connected_vid;
+    out->last_connected_pid = hid_state.last_connected_pid;
+    out->advertising_reports = hid_state.advertising_reports;
+    out->target_advertising_reports = hid_state.target_advertising_reports;
+    out->switch2_advertising_reports = hid_state.switch2_advertising_reports;
+    out->target_connect_attempts = hid_state.target_connect_attempts;
+    out->target_connect_successes = hid_state.target_connect_successes;
+    out->target_connect_failures = hid_state.target_connect_failures;
+    out->reencryption_started = hid_state.reencryption_started;
+    out->reencryption_successes = hid_state.reencryption_successes;
+    out->reencryption_failures = hid_state.reencryption_failures;
+    out->pairing_ltk_reads = sw2_pairing_ltk_reads;
+    out->direct_reencrypt_active = switch2_direct_reencrypt_active;
+    out->direct_reencrypt_handle = switch2_direct_reencrypt_handle;
+    out->direct_reencrypt_elapsed_ms = switch2_direct_reencrypt_active ?
+        btstack_run_loop_get_time_ms() - switch2_direct_reencrypt_started_ms : 0;
+    out->hci_command_ready = hci_can_send_command_packet_now();
+    out->direct_link_key_size = switch2_direct_reencrypt_handle != HCI_CON_HANDLE_INVALID ?
+        gap_encryption_key_size(switch2_direct_reencrypt_handle) : 0;
+    out->direct_encrypt_phase = switch2_direct_encrypt_phase;
+    out->direct_cmd_status_events = switch2_direct_cmd_status_events;
+    out->direct_cmd_complete_events = switch2_direct_cmd_complete_events;
+    out->direct_encrypt_events = switch2_direct_encrypt_events;
+    out->switch2_disconnect_events = switch2_disconnect_events;
+    out->last_direct_cmd_status_opcode = switch2_last_cmd_status_opcode;
+    out->last_direct_cmd_complete_opcode = switch2_last_cmd_complete_opcode;
+    out->last_direct_cmd_status = switch2_last_cmd_status;
+    out->last_direct_cmd_complete_status = switch2_last_cmd_complete_status;
+    out->last_direct_encrypt_status = switch2_last_encrypt_status;
+    out->last_direct_encrypt_enabled = switch2_last_encrypt_enabled;
+    out->last_switch2_disconnect_reason = switch2_last_disconnect_reason;
+    out->last_target_advertising_event_type = hid_state.last_target_advertising_event_type;
+    out->last_target_connect_status = hid_state.last_target_connect_status;
+    out->last_reencryption_status = hid_state.last_reencryption_status;
+    out->pairing_ltk_phase = sw2_pairing_ltk_phase;
+    out->pairing_ltk_valid = sw2_pairing_ltk_valid;
+    out->pairing_ltk_matches_derived = sw2_pairing_ltk_matches_derived;
+    out->pairing_ltk_raw_matches_derived = sw2_pairing_ltk_raw_matches_derived;
+    gap_local_bd_addr(out->local_addr);
+    memcpy(out->pairing_ltk_raw, sw2_pairing_ltk_raw,
+           sizeof(out->pairing_ltk_raw));
+    memcpy(out->pairing_ltk_normalized, sw2_pairing_ltk_normalized,
+           sizeof(out->pairing_ltk_normalized));
+    memcpy(out->last_connected_addr, hid_state.last_connected_addr,
+           sizeof(out->last_connected_addr));
+    strncpy(out->last_connected_name, hid_state.last_connected_name,
+            sizeof(out->last_connected_name) - 1);
+    for (int i = 0; i < MAX_BLE_CONNECTIONS; i++) {
+        if (hid_state.connections[i].handle != HCI_CON_HANDLE_INVALID) {
+            out->connected_ble_count++;
+        }
+    }
 }
 
 // ============================================================================
