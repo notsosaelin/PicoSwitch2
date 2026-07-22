@@ -12,6 +12,27 @@ as one evidence path:
 The tracer is disabled by default and does not include high-rate controller input or USB audio
 packets in this first increment.
 
+## Bluetooth capture/control over the same UART
+
+The same UART command channel also controls the separate Switch 2 BLE capture ring while the dongle
+remains console-attached:
+
+```powershell
+./tools/read_uart_diag.ps1 -Port COM11 -Command 'blecap start'
+./tools/read_uart_diag.ps1 -Port COM11 -Command 'blecap gattdisc on'
+./tools/read_uart_diag.ps1 -Port COM11 -Command 'blecap variant 9'
+./tools/read_uart_diag.ps1 -Port COM11 -Command 'blecap status'
+./tools/read_uart_diag.ps1 -Port COM11 -Command 'blecap dump' -OutputPath 'dumps/BLE CAPTURE/run.jsonl'
+./tools/read_uart_diag.ps1 -Port COM11 -Command motionauto
+```
+
+GATT discovery and a numbered variant are mutually exclusive per connection. The normal production
+path requires neither: it automatically starts the named native-Pro2 profile after ordinary BLE
+initialization. `motionauto` is read-only and reports why that automatic gate has or has not fired.
+The 2026-07-21 workflow used these commands to establish descriptor `0x0010`, compare the 30 ms and
+7.5 ms link rates, and validate no-UART automatic startup. See the linked native-motion experiment
+in [`report-0x09-motion.md`](report-0x09-motion.md).
+
 ## Capture workflow
 
 With the Pico connected to the Switch and the 3.3 V UART adapter connected to the PC:

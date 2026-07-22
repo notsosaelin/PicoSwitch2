@@ -1,5 +1,13 @@
 # Genuine Switch 2 Controller — BLE Protocol Inventory, Capture Facility, and RE Plan
 
+> **✅ Production resolution, 2026-07-21:** the UART console bridge and a new live GATT discovery
+> capture resolved the native Pro2 path. Report `0x000E` value/CCC/descriptor handles are
+> `0x000E/0x000F/0x0010`; the console uses feature mask `0x27`; and a 7.5 ms central interval
+> yields an interleaved 133 Hz `0x1E`/`0x28` stream. The dongle now transports those opaque PDUs
+> into USB report `0x09`, hardware-confirmed in Splatoon 3. Sections describing the earlier v1-v6
+> search and handle hypotheses are retained as experiment history, not current instructions. See
+> [`native-pro2-motion-passthrough-2026-07-21.md`](../experiments/native-pro2-motion-passthrough-2026-07-21.md).
+
 > **🔴 Semantic decoding of the `0x000E` 40-byte motion block is PAUSED (2026-07-10)** — three full
 > analysis passes (direction correlation, orientation-invariant vector interpretation, periodic
 > native-FIFO packet structure) failed to converge; see
@@ -565,7 +573,7 @@ further `-1`), which is the simpler and better-supported reading, since only *ch
 have the declaration/value split that motivates the `-1` rule in the first place; a descriptor is
 a single attribute with no such split.
 
-**Conclusion: `0x000C` is the best-supported estimate**, correcting §3.6's earlier `0x000D`
+**Historical conclusion (now refuted): `0x000C` was the best-supported estimate**, correcting §3.6's earlier `0x000D`
 guess — and it most likely names a **third descriptor on the `0x000A` characteristic** (report
 rate for the *base* "Common" format), not anything belonging to `0x000E`. If that's right, this
 write may be unrelated to unlocking `0x000E`'s content at all. **This entire derivation is

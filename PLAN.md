@@ -97,7 +97,8 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
   (3.25×) curve are hardware-confirmed and checkpointed at `2930c90`. The
   standard Pico 2 W build also uses this native renderer without a headset,
   with valid Opus silence and a bounded two-packet STOP tail.
-- [ ] Run an extended playback and thermal soak of the Pico 2 W 300 MHz audio build.
+- [x] Run an extended playback and thermal soak of the Pico 2 W 300 MHz audio build. An eight-hour
+  Smash session completed with no observed thermal or stability issue (temperature not instrumented).
 - [ ] Add DualSense microphone report decoding and Opus-to-USB return after speaker playback is
   physically stable.
 - [x] Eliminate the Switch 2 “Update this controller” prompt by querying genuine controllers through
@@ -148,11 +149,16 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
 
 ### Console-native motion (`0x09`)
 
-Status: 🔴 paused pending new primary evidence.
+Status: ✅ genuine Pro Controller 2 passthrough confirmed; 🔵 generic translation remains open.
 
-The byte layout is documented, but generated value semantics remain unresolved. Resume only after
-obtaining a genuine console-side trace or another experiment capable of distinguishing competing
-models. Do not tune the encoder against symptoms alone.
+The UART↔console bridge and live GATT discovery established the real controller sequence and
+attribute handles. A genuine PID `0x2069` source now supplies its native length-30/length-40 motion
+PDUs directly to Pro2 USB report `0x09` at a verified 7.5 ms BLE interval. Splatoon 3 confirms
+correct axes/aim, no stationary drift, reconnect recovery, and a stable power-off hold. See
+[`docs/experiments/native-pro2-motion-passthrough-2026-07-21.md`](docs/experiments/native-pro2-motion-passthrough-2026-07-21.md).
+
+Do not generalize this result to DualSense or other IMUs: producing Nintendo-native motion from
+generic accel/gyro remains an independent synthesis problem and should not be tuned from symptoms.
 
 ### NFC / amiibo
 
@@ -163,7 +169,7 @@ this project captures and validates a real read/write exchange.
 
 ### Console-side capture infrastructure
 
-Status: 🔵 retained command tracer implemented and hardware-validated.
+Status: ✅ retained command tracer implemented, hardware-validated, and used to unlock native motion.
 
 A bounded, opt-in UART trace ring now records EP0 setup/replies, vendor bulk commands/replies, and
 HID output reports across all native personalities. It is disabled by default, performs no UART or

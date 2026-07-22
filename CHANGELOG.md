@@ -3,6 +3,24 @@
 Release notes describe user-visible behavior. Detailed implementation history remains in
 `docs/archive/` and the experiment records.
 
+## Unreleased
+
+### Added
+
+- Native motion passthrough from a genuine Switch 2 Pro Controller to the Pro Controller 2 output
+  personality, including automatic reconnect recovery and stationary source-off hold.
+
+### Changed
+
+- The controller-side native-report setup now uses console-captured commands, verified GATT
+  handles, and a 7.5 ms BLE interval in a named production profile. UART variants remain isolated
+  diagnostics.
+
+### Validation
+
+- Splatoon 3 confirms correct native motion aim and stable reconnect behavior.
+- An eight-hour 300 MHz Pico 2 W gameplay soak completed without an observed stability issue.
+
 ## 1.4.0 — 2026-07-18
 
 ### Added

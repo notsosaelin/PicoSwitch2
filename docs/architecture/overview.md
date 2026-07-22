@@ -1,6 +1,6 @@
 # PicoSwitch2 Architecture
 
-Status: ✅ current as of 2026-07-18
+Status: ✅ current as of 2026-07-21
 
 ## Purpose
 
@@ -34,6 +34,14 @@ Bluetooth report
   → active USB personality encoder
   → TinyUSB interrupt IN
 ```
+
+For a genuine Pro Controller 2 source in the Pro2 personality, native motion follows a parallel
+opaque side channel: BTstack enables GATT report `0x000E`, records the source connection slot, and
+publishes its length-30/length-40 PDU through a cross-core seqlock snapshot. The USB encoder accepts
+that snapshot only when output slot 0 still identifies as `057E:2069`, then copies it into report
+`0x09` without quaternion decoding or regeneration. Buttons and sticks from `0x000E` are normalized
+back through the ordinary input path because the controller stops sending `0x000A` after native
+motion is enabled. Other controllers remain on the generic normalized IMU path.
 
 Controller-specific drivers own wire parsing. The seam owns policy: which normalized button becomes
 which Switch 2 destination for the active output personality. In Pico 2 W audio
@@ -157,6 +165,8 @@ centralization and transition mechanics.
 - Cross-core input and feedback state uses the repository's critical-section/generation mechanisms.
 - USB descriptor callbacks are centralized because TinyUSB permits one link-time definition.
 - Protocol personality state must be reset when switching personalities.
+- Native side channels must carry source ownership and be rejected when the active output slot no
+  longer belongs to that source; a retained disconnect sample is not permission to cross sessions.
 - A controller driver must not encode output-personality policy that belongs in the seam.
 
 ## Build configurations

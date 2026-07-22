@@ -276,6 +276,12 @@ void router_submit_input(const input_event_t *e) {
     in.headset_state = e->headset_state;
 #endif
 
+    // Publish identity before input so core0 can make source-specific policy decisions on the
+    // new state (notably native Pro2 motion ownership) without one report of stale identity.
+    const bthid_device_t *dev = bthid_get_device(e->dev_addr);
+    if (dev)
+        set_global_device(slot, dev->name, dev->vendor_id, dev->product_id);
+
     if (e->type == INPUT_TYPE_MOUSE) {
         in.has_mouse = 1;
         in.mouse_delta_x = e->delta_x;
@@ -301,10 +307,6 @@ void router_submit_input(const input_event_t *e) {
     } else {
         ns2_wake_note_controller_input(wake_source, b != 0, platform_time_ms());
     }
-    // Publish the connected controller's identity for config mode's "input type" panel.
-    const bthid_device_t *dev = bthid_get_device(e->dev_addr);
-    if (dev)
-        set_global_device(slot, dev->name, dev->vendor_id, dev->product_id);
 }
 
 // Controller dropped -> publish a neutral (centered, no buttons) state.

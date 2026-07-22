@@ -4,6 +4,28 @@ Reverse-chronological log of notable changes on the `ns2-testing` branch. The
 2026-07-18 entries below are included in
 [`v1.4.0`](https://github.com/notsosaelin/PicoSwitch2/releases/tag/v1.4.0).
 
+## 2026-07-21
+
+### Added
+
+- **Genuine Pro Controller 2 native motion passthrough is hardware-confirmed.** The UART console
+  tracer and live GATT discovery resolved the exact controller setup, report-rate descriptor, and
+  notification handles. The normal Pro2 path now automatically requests a 7.5 ms BLE interval,
+  preserves native `0x1E`/`0x28` motion PDUs byte-for-byte, and normalizes buttons/sticks from the
+  same `0x000E` report. Splatoon 3 confirms correct aim, no stationary drift, power-cycle and
+  bonded reconnect recovery. Powering off while rotating retains a stationary genuine frame with
+  advancing timing rather than leaving the console extrapolating motion.
+- **Native motion is source-owned.** Cross-core snapshots record their Bluetooth source slot and
+  are accepted only while console-facing slot 0 identifies as genuine `057E:2069`, preventing a
+  retained Pro2 frame from leaking into a later controller session. The UART experiment matrix is
+  retained separately from the named production profile.
+
+### Validation
+
+- The standard 300 MHz Pico 2 W completed an eight-hour Smash session without an observed thermal
+  or stability problem. Temperature was not instrumented, so this is a long-duration functional
+  soak rather than a measured thermal characterization.
+
 ## 2026-07-18
 
 ### Changed
