@@ -8,6 +8,15 @@
 > search and handle hypotheses are retained as experiment history, not current instructions. See
 > [`native-pro2-motion-passthrough-2026-07-21.md`](../experiments/native-pro2-motion-passthrough-2026-07-21.md).
 
+> **✅ Bonded HOME reconnect resolution, 2026-07-22:** the custom ATT `0x15` exchange stores the
+> controller's normalized LTK locally and in BTstack's LE device database with RAND/EDIV zero.
+> Subsequent HOME connections must call `sm_request_pairing()` and wait for
+> `SM_EVENT_REENCRYPTION_COMPLETE`; a raw HCI Start Encryption command produced encrypted ACL
+> traffic but did not restore BTstack/controller session security, leaving the controller in its
+> running-LED state with no active input. After SM success, the host restores ACK/input CCCs,
+> reasserts P1, and runs the existing native-motion feature setup. A genuine Pro Controller 2
+> passed 20 consecutive controller-off/HOME cycles without SYNC, with input, LED, and gyro intact.
+
 > **🔴 Semantic decoding of the `0x000E` 40-byte motion block is PAUSED (2026-07-10)** — three full
 > analysis passes (direction correlation, orientation-invariant vector interpretation, periodic
 > native-FIFO packet structure) failed to converge; see

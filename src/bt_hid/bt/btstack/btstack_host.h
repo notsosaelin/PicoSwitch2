@@ -123,6 +123,71 @@ bool btstack_host_is_initialized(void);
 bool btstack_host_is_powered_on(void);
 bool btstack_host_is_scanning(void);
 
+// Read-only bonded-reconnect state for the out-of-band UART diagnostics.
+// `state` is the host's internal BLE state-machine value and is intentionally
+// diagnostic-only; callers must not use it to drive behavior.
+typedef struct {
+    bool powered_on;
+    bool scan_active;
+    bool has_last_connected;
+    bool has_last_connected_ltk;
+    bool force_fresh_custom_pairing;
+    bool connect_attempt_active;
+    uint8_t state;
+    uint8_t reconnect_attempts;
+    uint8_t connected_ble_count;
+    uint8_t local_addr[6];
+    uint8_t last_connected_addr[6];
+    uint8_t last_connected_addr_type;
+    uint8_t last_connected_ble_strategy;
+    uint16_t last_connected_vid;
+    uint16_t last_connected_pid;
+    uint32_t advertising_reports;
+    uint32_t target_advertising_reports;
+    uint32_t switch2_advertising_reports;
+    uint32_t target_connect_attempts;
+    uint32_t target_connect_successes;
+    uint32_t target_connect_failures;
+    uint32_t reencryption_started;
+    uint32_t reencryption_successes;
+    uint32_t reencryption_failures;
+    uint32_t pairing_ltk_reads;
+    uint32_t direct_reencrypt_elapsed_ms;
+    uint32_t direct_cmd_status_events;
+    uint32_t direct_cmd_complete_events;
+    uint32_t direct_encrypt_events;
+    uint32_t switch2_disconnect_events;
+    uint16_t direct_reencrypt_handle;
+    uint16_t last_direct_cmd_status_opcode;
+    uint16_t last_direct_cmd_complete_opcode;
+    uint8_t last_target_advertising_event_type;
+    uint8_t last_target_connect_status;
+    uint8_t last_reencryption_status;
+    uint8_t pairing_ltk_phase;
+    bool pairing_ltk_valid;
+    bool pairing_ltk_matches_derived;
+    bool pairing_ltk_raw_matches_derived;
+    bool direct_reencrypt_active;
+    bool hci_command_ready;
+    uint8_t direct_link_key_size;
+    uint8_t direct_encrypt_phase;
+    uint8_t last_direct_cmd_status;
+    uint8_t last_direct_cmd_complete_status;
+    uint8_t last_direct_encrypt_status;
+    uint8_t last_direct_encrypt_enabled;
+    uint8_t last_switch2_disconnect_reason;
+    uint8_t pairing_ltk_raw[16];
+    uint8_t pairing_ltk_normalized[16];
+    char last_connected_name[48];
+} btstack_host_reconnect_diag_t;
+
+void btstack_host_get_reconnect_diag(btstack_host_reconnect_diag_t *out);
+
+// UART diagnostic control: discard only the saved target's BTstack LE bond,
+// disconnect its current link, and arm Nintendo custom ATT pairing. The durable
+// target identity is retained so the next SYNC advertisement is recognized.
+void btstack_host_force_switch2_fresh_pairing(void);
+
 // ============================================================================
 // CLASSIC BT CONNECTION INFO (for bthid driver matching)
 // ============================================================================

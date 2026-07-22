@@ -9,8 +9,8 @@
 > (`src/bt_hid/ns2_seam.c`), **not** bluepad32 (retired); **GL/GR/C are exposed** and confirmed
 > on-console; report-0x09 **motion is decoded** (int32 phase + Q16.16 — see
 > [report-0x09-motion.md](report-0x09-motion.md)); **IF0 HID `bInterval` ships `0x01` (1000 Hz)**,
-> not the genuine `0x04` (250 Hz) — a deliberate latency-over-fidelity deviation that works on
-> console hardware; its latency benefit has not been measured (see §13). The load-bearing,
+> not the genuine `0x04` (250 Hz). A 2026-07-21 isolated restoration killed the current native
+> motion bridge and was reverted (see §13). The load-bearing,
 > still-correct parts — §5 handshake, §7 packing,
 > §9 factory/calibration blob — are what to rely on.
 
@@ -58,9 +58,9 @@ Real device: `wTotalLength = 268 (0x010C)`, `bNumInterfaces = 5`, self-powered, 
 0x07,0x05,0x81,0x03,0x40,0x00,0x04,                 // EP 0x81 Interrupt IN  64B, bInterval 4
 0x07,0x05,0x01,0x03,0x40,0x00,0x04,                 // EP 0x01 Interrupt OUT 64B, bInterval 4
 ```
-⚠️ **This repo deliberately ships `bInterval = 0x01` (1000 Hz), not the genuine `0x04` (250 Hz)
-shown above** — see §13 "Poll-rate deviation" for rationale and hardware-test status. The bytes
-above remain the genuine reference value; do not "fix" the shipped code back to `0x04`.
+⚠️ The implementation currently requires `bInterval = 0x01` for the hardware-confirmed native
+motion bridge. The genuine bytes above remain the fidelity target; see §13 for the failed isolated
+restoration.
 **IF1 (vendor bulk) — exact bytes:**
 ```
 0x08,0x0B,0x01,0x01,0xFF,0x00,0x00,0x00,            // IAD: IF1, class 0xFF (vendor)
@@ -323,35 +323,26 @@ rumble, and PC/Steam gyro on top. Historical path: an Option-B (no-audio) descri
 dispatcher + a static report `0x09` first reached "connected"; the shipped build uses the full
 Option-A descriptor and maps live input via the joypad-os seam (§10).
 
-## 13. Poll-rate deviation (2026-07-12) — console-compatible, latency benefit unmeasured
+## 13. Poll-rate deviation — 4 ms restoration refuted for the current bridge
 
-**Change:** IF0's HID interrupt IN/OUT endpoints ship `bInterval = 0x01` (1 ms = 1000 Hz, the
-fastest a Full-Speed interrupt endpoint can be polled), not the genuine `0x04` (250 Hz, §2). This
-is a deliberate **latency-over-fidelity** deviation — the first one in this doc's "deviations of
-record" that isn't forced by a Windows/console compatibility constraint (unlike bcdDevice). `bInterval`
-has never been observed to be part of any console compatibility gate in this project's history
-(the actual gate was the EP0 identity handshake and several post-pairing response mismatches, both
-long since fixed — see §11/§5) — but nothing about a USB descriptor field has been safe to assume
-without an actual hardware pass in this project, so this is recorded as **untested**, not fact,
-until confirmed on real Switch 2 hardware.
+The 2026-07-12 build deliberately changed IF0 HID IN/OUT from the genuine `bInterval = 0x04`
+(250 Hz) to `0x01` (1000 Hz) as a latency experiment. It remained console-compatible, but no
+latency benefit was ever measured and the deviation complicated timing-sensitive motion work.
 
-**Side effect, handled:** `ns2_task()`'s streaming loop has no rate limiter of its own — it streams
-a report every time the endpoint goes ready, so raising `bInterval` directly raises how often
-`ns2_build_report()` runs. The report-0x09 motion tracker's bias/low-pass/jitter EMAs
-(`switch_pro2.c`, `ns2_motion_tick()`) use fixed per-call weights, not per-elapsed-time scaling, so
-their real-time time-constants are inversely proportional to call rate — running them at 1000 Hz
-instead of 250 Hz would have silently compressed the (already first-cut, unvalidated — see
-`STATUS.md` "Technical Debt") bias adaptation time from ~1s to ~250ms with nobody deciding that.
-Fixed by gating both callers of `ns2_motion_tick()` (the streaming path and the config-mode debug
-hook) through a shared `ns2_motion_tick_gated()` that caps the tracker's own call rate to ~250 Hz
-regardless of USB poll rate — button/stick freshness gets the full benefit, the paused gyro
-tracker's tuning is unaffected. Phase integration itself is already `dt_us`-scaled (real-time-based)
-and needed no change.
+On 2026-07-21 both Option A and Option B descriptors were restored in isolation to the captured
+genuine `0x04`. Pico 2 W/Pico W builds and all host tests passed, but the real-console test lost
+gyro completely. The change was reverted immediately; the pushed native-motion checkpoint was
+never modified.
 
-**Not yet done:** the parallel Switch-1 `src/usb_descriptors.c` path (`main` branch, not
-`ns2-testing`) has the identical `bInterval = 4` pattern and could get the same treatment later —
-out of scope for this pass, which targets the active branch's actual target (the NS2/Switch 2
-path) only.
+This proves the current BLE-PDU-to-USB bridge has an unmodeled dependency on the 1 ms USB report
+cadence. A likely boundary is that a genuine wired controller generates a distinct 250 Hz USB
+representation, whereas this implementation repeats a 133 Hz native BLE PDU directly. Do not retry
+`0x04` as a descriptor-only cleanup. First capture and compare the exact report sequence emitted at
+both cadences, including length-30/length-40 ordering, source counter reuse, and timing-word
+progression. Until then, `0x01` is a required compatibility deviation, not an optional latency tune.
+
+`ns2_motion_tick_gated()` remains as an elapsed-time guard for the generic encoder and config-mode
+debug path.
 
 ## 14. Command-framing audit against the raw capture (2026-07-12) — ✅ done
 

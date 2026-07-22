@@ -76,11 +76,21 @@ static void test_disconnect_holds_last_motion30(void)
     assert(!ns2_native_motion_snapshot(&out, 1000000, 50));
 }
 
+static void test_transport_index_to_output_slot(void)
+{
+    assert(ns2_native_motion_output_slot(0) == 0);
+    assert(ns2_native_motion_output_slot(2) == 2);
+    assert(ns2_native_motion_output_slot(3) == 3);
+    assert(ns2_native_motion_output_slot(4) == 0);   // first BLE transport index
+    assert(ns2_native_motion_output_slot(0xFF) == 0);
+}
+
 int main(void)
 {
     test_valid_lengths_and_freshness();
     test_rejection_and_clear();
     test_disconnect_holds_last_motion30();
+    test_transport_index_to_output_slot();
     puts("ns2_native_motion: all tests passed");
     return 0;
 }

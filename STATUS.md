@@ -32,7 +32,7 @@ baseline remains intact.
 | Switch 2 controller firmware identity/update status | ✅ Confirmed | Genuine `0x10/01` replies plus Switch 2 Update Controllers; Pro2, NSO GC, and both Joy-Con 2 personalities report up to date |
 | Out-of-band UART protocol tracer | ✅ Confirmed | Real Switch 2 + genuine Pro Controller 2 source; complete 63-record Pro2 re-enumeration capture, zero overwrites, pull-transport framing validated |
 | UART trace decoder and semantic differ | ✅ Host + live-capture confirmed | Known EP0/bulk/HID fields, sensitive-field redaction, strict comparison, timestamp wrap, corruption rejection, and two-capture Pro2 A/B workflow |
-| Genuine Pro Controller 2 native motion passthrough | ✅ Confirmed | Splatoon 3 axes/aim, stationary behavior, power-off hold, controller power-cycle, and bonded reconnect; native `0x1E`/`0x28` PDUs at 133 Hz |
+| Genuine Pro Controller 2 native motion passthrough | ✅ Confirmed | Splatoon 3 axes/aim, stationary behavior, power-off hold, and 20 consecutive controller-off/HOME reconnect cycles without SYNC; input, P1 LED, and native `0x1E`/`0x28` motion restore at 133 Hz |
 | DualSense and DualSense Edge input | ✅ Confirmed | Real Switch 2 and Steam |
 | Edge paddles, Fn buttons, and mute mapping | ✅ Confirmed | Real hardware |
 | DualSense/Edge LEDs and rumble | ✅ Confirmed | Real hardware after report-boundary scheduler fix |
@@ -86,6 +86,11 @@ The selection is not persisted across power cycles.
   radio contention noted in [`AUDIO-INVESTIGATION.md`](AUDIO-INVESTIGATION.md).
 - Switch 2 controllers use a custom ATT pairing handshake, so the wipe policy cannot depend only on
   BTstack's LE bond database.
+- Successful custom pairing persists the normalized LTK in both the reconnect record and BTstack's
+  LE database with RAND/EDIV zero. HOME reconnect must run through `sm_request_pairing()` so
+  BTstack restores its bonded security state; issuing raw HCI encryption alone encrypts the ACL but
+  leaves the controller in its running-LED/pre-active state. After SM success the dongle restores
+  ACK/input CCCs, reasserts P1, and reruns the validated native-motion feature sequence.
 - Core 0 samples BOOTSEL using a cooperative cross-core SRAM handshake at a 30 ms cadence.
 - Incoming HID report boundaries service raw BOOTSEL sampling, gesture recognition, and
   `bthid_task()`. This prevents sustained DualSense Classic traffic from starving controller output
@@ -181,8 +186,8 @@ player-dot reordering, and the prior wake/input/rumble baseline are hardware-con
 ## Next recommended work
 
 1. Add DualSense microphone Opus decode and USB return.
-2. Reconcile remaining deliberate USB deviations from genuine hardware, beginning with the Pro2
-   HID endpoint interval, one independently hardware-tested change at a time.
+2. Investigate why the current BLE-native motion bridge requires the 1 ms Pro2 USB interval before
+   attempting any future 4 ms fidelity restoration; the isolated 4 ms hardware test killed gyro.
 3. Add a reproducible release checklist with board, firmware revision, controller firmware,
    console firmware, and result data.
 4. Use the validated UART/BLE bridge to capture NFC or other unknown console behavior before
