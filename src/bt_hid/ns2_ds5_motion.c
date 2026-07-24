@@ -10,7 +10,7 @@
 #define NS2_DS5_GYRO_FP_SHIFT          6
 #define NS2_DS5_GYRO_JITTER_LIMIT      (6 << NS2_DS5_GYRO_FP_SHIFT)
 #define NS2_DS5_GYRO_STILL_LIMIT       40
-#define NS2_DS5_GYRO_WARMUP_LIMIT      200
+#define NS2_DS5_GYRO_WARMUP_LIMIT      40
 #define NS2_DS5_GYRO_WARMUP_SAMPLES    32u
 #define NS2_DS5_GYRO_COUNTS_PER_DPS    16.384f
 #define NS2_DS5_DEG_TO_RAD             0.01745329251994329577f
@@ -107,6 +107,26 @@ static uint32_t encode_switch2_g2(float value)
     return (uint32_t)(scaled + 0.5f);
 }
 
+static void quaternion_normalize_near_unit(float q[4])
+{
+    const float norm_sq =
+        q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+    if (norm_sq <= 0.0f) return;
+
+    // Every Euler step starts from a unit quaternion and is capped at 16 ms,
+    // so norm_sq remains close to 1. Two Newton-Raphson refinements from
+    // y0=1 compute 1/sqrt(norm_sq) to much better precision than the Switch 2
+    // wire quantization, without calling the SDK sqrtf routine. That routine
+    // contends with the RAM-resident Opus encoder on the other core.
+    float inverse_norm = 1.5f - 0.5f * norm_sq;
+    inverse_norm *=
+        1.5f - 0.5f * norm_sq * inverse_norm * inverse_norm;
+    q[0] *= inverse_norm;
+    q[1] *= inverse_norm;
+    q[2] *= inverse_norm;
+    q[3] *= inverse_norm;
+}
+
 static void quaternion_left_integrate(float q[4], const float omega[3],
                                       float dt_seconds)
 {
@@ -127,16 +147,7 @@ static void quaternion_left_integrate(float q[4], const float omega[3],
     q[2] += half_dt * (ox * y - oy * x + oz * w);
     q[3] += half_dt * (-ox * x - oy * y - oz * z);
 
-    const float norm_sq =
-        q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
-    if (norm_sq > 0.0f) {
-        const float inverse_norm = 1.0f / sqrtf(norm_sq);
-        q[0] *= inverse_norm;
-        q[1] *= inverse_norm;
-        q[2] *= inverse_norm;
-        q[3] *= inverse_norm;
-    }
-
+    quaternion_normalize_near_unit(q);
 }
 
 static void quaternion_right_integrate(float q[4], const float omega[3],
@@ -160,15 +171,7 @@ static void quaternion_right_integrate(float q[4], const float omega[3],
     q[2] += half_dt * (w * oz + x * oy - y * ox);
     q[3] += half_dt * (-x * ox - y * oy - z * oz);
 
-    const float norm_sq =
-        q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
-    if (norm_sq > 0.0f) {
-        const float inverse_norm = 1.0f / sqrtf(norm_sq);
-        q[0] *= inverse_norm;
-        q[1] *= inverse_norm;
-        q[2] *= inverse_norm;
-        q[3] *= inverse_norm;
-    }
+    quaternion_normalize_near_unit(q);
 }
 
 void ns2_ds5_motion_reset(ns2_ds5_motion_state_t *state)

@@ -373,7 +373,11 @@ static uint8_t  ns2_dbg_still;       // stillness gate state from the most recen
 static bool     ns2_native_hold_active;
 static uint16_t ns2_native_hold_previous_tick;
 static ns2_ds5_motion_state_t ns2_ds5_motion;
+static bool ns2_ds5_motion_enabled = true;
 static bool ns2_ds5_motion_source_active;
+static uint32_t ns2_ds5_motion_last_sequence;
+static uint8_t ns2_ds5_motion_report[30];
+static bool ns2_ds5_motion_report_valid;
 static bool ns2_ds5_motion_probe_active;
 static int16_t ns2_ds5_motion_probe_gyro[3];
 
@@ -400,6 +404,7 @@ void ns2_dbg_motion_phase(int32_t phase_out[3]) {
 
 void ns2_dbg_ds5_motion(ns2_ds5_motion_diag_t *out) {
     if (!out) return;
+    out->enabled = ns2_ds5_motion_enabled ? 1u : 0u;
     out->source_active = ns2_ds5_motion_source_active ? 1u : 0u;
     out->initialized = ns2_ds5_motion.initialized ? 1u : 0u;
     out->has_sample = ns2_ds5_motion.has_sample ? 1u : 0u;
@@ -425,6 +430,22 @@ void ns2_dbg_ds5_motion(ns2_ds5_motion_diag_t *out) {
     out->updates = ns2_ds5_motion.updates;
     out->representation_rejects =
         ns2_ds5_motion.representation_rejects;
+}
+
+bool ns2_dbg_ds5_motion_enabled(void) {
+    return ns2_ds5_motion_enabled;
+}
+
+void ns2_dbg_ds5_motion_set_enabled(bool enabled) {
+    if (ns2_ds5_motion_enabled == enabled) return;
+    ns2_ds5_motion_enabled = enabled;
+    // Do not resume from orientation or learned bias state that aged while
+    // the diagnostic gate was closed.
+    ns2_ds5_motion_reset(&ns2_ds5_motion);
+    ns2_ds5_motion_source_active = false;
+    ns2_ds5_motion_last_sequence = 0;
+    ns2_ds5_motion_report_valid = false;
+    ns2_dbg_ds5_motion_probe_off();
 }
 
 bool ns2_dbg_ds5_motion_probe_rate(uint8_t axis, int16_t rate) {
@@ -956,21 +977,43 @@ static void ns2_build_report(uint8_t *p) {
     const bool ds5_motion_owned =
         in.motion_source == SWITCH_MOTION_SOURCE_DUALSENSE &&
         in.has_motion;
-    if (ds5_motion_owned) {
-        if (!ns2_ds5_motion_source_active)
+    if (ds5_motion_owned && ns2_ds5_motion_enabled) {
+        if (!ns2_ds5_motion_source_active) {
             ns2_ds5_motion_reset(&ns2_ds5_motion);
+            ns2_ds5_motion_last_sequence = 0;
+            ns2_ds5_motion_report_valid = false;
+        }
         ns2_ds5_motion_source_active = true;
-        switch_pro_input_t ds5_motion_input = in;
-        if (ns2_ds5_motion_probe_active)
-            memcpy(ds5_motion_input.gyro, ns2_ds5_motion_probe_gyro,
-                   sizeof(ds5_motion_input.gyro));
-        (void)ns2_ds5_motion_update(&ns2_ds5_motion, &ds5_motion_input,
-                                    time_us_32());
+        // USB report generation runs near 1 kHz while a DualSense Bluetooth
+        // IMU report normally arrives near 250 Hz. Re-integrating the held
+        // sample four times is mathematically redundant and contends with the
+        // RAM-resident Opus encoder on core1. Consume each physical sample
+        // exactly once; the latest quaternion is still emitted every USB poll.
+        if (in.motion_sequence == 0 ||
+            in.motion_sequence != ns2_ds5_motion_last_sequence) {
+            switch_pro_input_t ds5_motion_input = in;
+            if (ns2_ds5_motion_probe_active)
+                memcpy(ds5_motion_input.gyro, ns2_ds5_motion_probe_gyro,
+                       sizeof(ds5_motion_input.gyro));
+            if (ns2_ds5_motion_update(&ns2_ds5_motion,
+                                      &ds5_motion_input, time_us_32())) {
+                // Encoding the unequal-width Switch 2 quaternion slots uses
+                // floating-point scaling. Do it once per physical ~250 Hz IMU
+                // sample, not again on every ~1 kHz USB poll. The console can
+                // receive the latest complete PDU repeatedly between samples.
+                ns2_ds5_motion_report_valid =
+                    ns2_ds5_motion_build(&ns2_ds5_motion,
+                                         ns2_ds5_motion_report);
+            }
+            ns2_ds5_motion_last_sequence = in.motion_sequence;
+        }
     } else if (ns2_ds5_motion_source_active) {
         // A source change must not carry the former controller's integrated
         // orientation or learned zero-rate bias into a later DS5 session.
         ns2_ds5_motion_reset(&ns2_ds5_motion);
         ns2_ds5_motion_source_active = false;
+        ns2_ds5_motion_last_sequence = 0;
+        ns2_ds5_motion_report_valid = false;
     }
     uint8_t probe_motion[30];
     bool motion_probe_active = ns2_imu_enabled &&
@@ -1010,11 +1053,11 @@ static void ns2_build_report(uint8_t *p) {
         // Switch 2 chart and withholds motion at an unimplemented coordinate-
         // rebase boundary rather than falling through to the obsolete phase
         // carrier or guessing state semantics.
-        uint8_t ds5_motion[30];
-        if (ns2_imu_enabled &&
-            ns2_ds5_motion_build(&ns2_ds5_motion, ds5_motion)) {
-            p[0x0E] = sizeof(ds5_motion);
-            memcpy(&p[0x0F], ds5_motion, sizeof(ds5_motion));
+        if (ns2_ds5_motion_enabled && ns2_imu_enabled &&
+            ns2_ds5_motion_report_valid) {
+            p[0x0E] = sizeof(ns2_ds5_motion_report);
+            memcpy(&p[0x0F], ns2_ds5_motion_report,
+                   sizeof(ns2_ds5_motion_report));
         }
         ns2_native_hold_active = false;
     } else if (in.has_motion) {
@@ -1116,6 +1159,8 @@ void ns2_mount(void) {
     ns2_imu_enabled = false;  // new host session: IMU off until the host re-enables it (0x0C/0x04)
     ns2_ds5_motion_reset(&ns2_ds5_motion);
     ns2_ds5_motion_source_active = false;
+    ns2_ds5_motion_last_sequence = 0;
+    ns2_ds5_motion_report_valid = false;
     ns2_dbg_ds5_motion_probe_off();
 }
 
@@ -1128,6 +1173,8 @@ void ns2_init(void) {
     ns2_imu_enabled = false;
     ns2_ds5_motion_reset(&ns2_ds5_motion);
     ns2_ds5_motion_source_active = false;
+    ns2_ds5_motion_last_sequence = 0;
+    ns2_ds5_motion_report_valid = false;
     ns2_dbg_ds5_motion_probe_off();
 }
 

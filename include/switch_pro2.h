@@ -65,6 +65,7 @@ void ns2_dbg_motion_bias(int32_t bias_out[3], uint8_t *still_out);
 void ns2_dbg_motion_phase(int32_t phase_out[3]);
 
 typedef struct {
+    uint8_t enabled;
     uint8_t source_active;
     uint8_t initialized;
     uint8_t has_sample;
@@ -85,6 +86,8 @@ typedef struct {
 // Native-quaternion translator state for UART diagnosis. Quaternion values are
 // fixed-point x1,000,000 so diagnostics do not depend on float printf support.
 void ns2_dbg_ds5_motion(ns2_ds5_motion_diag_t *out);
+bool ns2_dbg_ds5_motion_enabled(void);
+void ns2_dbg_ds5_motion_set_enabled(bool enabled);
 bool ns2_dbg_ds5_motion_probe_rate(uint8_t axis, int16_t rate);
 void ns2_dbg_ds5_motion_probe_off(void);
 void ns2_dbg_ds5_motion_set_body_frame(bool body_frame);

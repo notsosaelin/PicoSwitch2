@@ -578,7 +578,7 @@ static void handle_command(void) {
         ns2_dbg_ds5_motion(&d);
         ns2_dbg_report_state(&report_id, &streaming, &motion_len);
         snprintf(trace_format_response, sizeof(trace_format_response),
-                 "{\"ds5motion\":true,\"active\":%s,\"initialized\":%s,"
+                 "{\"ds5motion\":true,\"enabled\":%s,\"active\":%s,\"initialized\":%s,"
                  "\"has_sample\":%s,\"probe_active\":%s,"
                  "\"probe_gyro\":[%d,%d,%d],"
                  "\"input_gyro\":[%d,%d,%d],"
@@ -589,6 +589,7 @@ static void handle_command(void) {
                  "\"q_million\":[%ld,%ld,%ld,%ld],"
                  "\"updates\":%lu,\"representation_rejects\":%lu,"
                  "\"report_id\":%u,\"streaming\":%s,\"emitted_len\":%u}",
+                 d.enabled ? "true" : "false",
                  d.source_active ? "true" : "false",
                  d.initialized ? "true" : "false",
                  d.has_sample ? "true" : "false",
@@ -614,6 +615,12 @@ static void handle_command(void) {
                  (unsigned long)d.representation_rejects,
                  report_id, streaming ? "true" : "false", motion_len);
         queue_text(trace_format_response);
+    } else if (strcmp(rx_line, "ds5motion on") == 0) {
+        ns2_dbg_ds5_motion_set_enabled(true);
+        queue_text("{\"ds5motion\":\"enabled\",\"enabled\":true}");
+    } else if (strcmp(rx_line, "ds5motion off") == 0) {
+        ns2_dbg_ds5_motion_set_enabled(false);
+        queue_text("{\"ds5motion\":\"disabled\",\"enabled\":false}");
     } else if (strcmp(rx_line, "ds5motion probe off") == 0) {
         ns2_dbg_ds5_motion_probe_off();
         queue_text("{\"ds5motion\":\"probe\",\"active\":false}");
@@ -759,6 +766,22 @@ static void handle_command(void) {
     } else if (strcmp(rx_line, "audio clear") == 0) {
         ds5_audio_diag_reset();
         queue_text("{\"audio\":\"cleared\"}");
+    } else if (strcmp(rx_line, "ds5codec") == 0 ||
+               strcmp(rx_line, "ds5codec status") == 0) {
+        snprintf(trace_format_response, sizeof(trace_format_response),
+                 "{\"ds5codec\":true,\"bitrate\":160000,"
+                 "\"format\":\"fullband_stereo\","
+                 "\"exclusive_encode\":%s,"
+                 "\"transport_bytes\":200}",
+                 ds5_audio_bridge_ds5_exclusive_encode()
+                     ? "true" : "false");
+        queue_text(trace_format_response);
+    } else if (strcmp(rx_line, "ds5codec lock on") == 0) {
+        ds5_audio_bridge_set_ds5_exclusive_encode(true);
+        queue_text("{\"ds5codec\":\"exclusive_encode\",\"enabled\":true}");
+    } else if (strcmp(rx_line, "ds5codec lock off") == 0) {
+        ds5_audio_bridge_set_ds5_exclusive_encode(false);
+        queue_text("{\"ds5codec\":\"exclusive_encode\",\"enabled\":false}");
     } else if (strcmp(rx_line, "pro2audio on") == 0) {
         btstack_host_set_switch2_pro2_audio_capture(true);
         queue_text("{\"pro2audio\":\"requested\",\"enabled\":true}");
@@ -966,7 +989,7 @@ static void handle_command(void) {
                    "\"motionpair status|start|stop|dump|read\","
                    "\"motionprobe status|latch|seed STATE|on|off|reset|set G0 G1 G2|rate AXIS VALUE|accel X Y Z\","
                    "\"button y\","
-                   "\"motionauto\",\"motionusb\",\"ds5motion status|frame body|world|carrier switch2|dscale|legacy|map SX SY SZ|probe rate AXIS VALUE|probe off\",\"input status\",\"audio status|clear\","
+                   "\"motionauto\",\"motionusb\",\"ds5motion status|on|off|frame body|world|carrier switch2|dscale|legacy|map SX SY SZ|probe rate AXIS VALUE|probe off\",\"input status\",\"audio status|clear\",\"ds5codec status|lock on|lock off\","
                    "\"pro2audio on|off|status|live on|live off|complexity 0-10|analysis on|analysis off|replay|replay stop\","
                    "\"btreconnect\",\"btfresh\","
                    "\"reenumerate\",\"help\"]}");

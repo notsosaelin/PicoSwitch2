@@ -79,6 +79,7 @@ typedef struct {
     uint8_t right_stick[3];  // packed 12-bit rx/ry
     int16_t accel[3];        // x, y, z (raw Pro Controller accelerometer units)
     int16_t gyro[3];         // x, y, z (raw Pro Controller gyroscope units)
+    uint32_t motion_sequence;// source IMU report generation; avoids re-integrating held samples
     uint8_t has_motion;      // 1 if this controller reports IMU (gate report-0x09 motion)
     uint8_t motion_source;   // SWITCH_MOTION_SOURCE_* decoder provenance
     uint8_t battery_level;   // normalized 0..100 percentage
