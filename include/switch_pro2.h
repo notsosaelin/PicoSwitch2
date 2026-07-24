@@ -81,6 +81,13 @@ typedef struct {
     int32_t quaternion_million[4];
     uint32_t updates;
     uint32_t representation_rejects;
+    uint32_t host_dt_us;
+    uint32_t sensor_dt_us;
+    uint32_t sensor_dt_max_us;
+    uint32_t timestamp_fallbacks;
+    uint32_t timestamp_invalid;
+    uint32_t sequence_gaps;
+    uint32_t integration_substeps;
 } ns2_ds5_motion_diag_t;
 
 // Native-quaternion translator state for UART diagnosis. Quaternion values are

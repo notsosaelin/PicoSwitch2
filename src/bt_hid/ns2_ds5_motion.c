@@ -7,6 +7,9 @@
 #include "ns2_motion_pdu.h"
 
 #define NS2_DS5_MOTION_PERIOD_US       3800u
+#define NS2_DS5_SENSOR_DT_MIN_US        250u
+#define NS2_DS5_SENSOR_DT_MAX_US     100000u
+#define NS2_DS5_INTEGRATION_STEP_US    4000u
 #define NS2_DS5_GYRO_FP_SHIFT          6
 #define NS2_DS5_GYRO_JITTER_LIMIT      (6 << NS2_DS5_GYRO_FP_SHIFT)
 #define NS2_DS5_GYRO_STILL_LIMIT       40
@@ -16,7 +19,7 @@
 #define NS2_DS5_DEG_TO_RAD             0.01745329251994329577f
 #define NS2_DS5_INV_SQRT2              0.70710678118654752440f
 #define NS2_DS5_SQRT2                  1.41421356237309504880f
-#define NS2_DS5_SWITCH2_COMPONENT_MAX  0.5f
+#define NS2_DS5_COMPONENT_EPSILON      0.00001f
 #define NS2_DS5_ACCEL_PDU_PER_COUNT    68963
 
 // The original fixed-state experiment started from one genuine state-0 PDU.
@@ -37,6 +40,7 @@ static void reset_orientation(ns2_ds5_motion_state_t *state)
         state->quaternion[2] = 0.0f;
         state->quaternion[3] = 1.0f;
     }
+    state->switch2_omitted = 0;
     state->representation_rejects = 0;
 }
 
@@ -45,6 +49,31 @@ static int32_t clamp_i32(int64_t value)
     if (value > INT32_MAX) return INT32_MAX;
     if (value < INT32_MIN) return INT32_MIN;
     return (int32_t)value;
+}
+
+static int32_t gyro_fixed_to_counts(int32_t value)
+{
+    // C division truncates toward zero. An arithmetic right shift rounds
+    // negative sub-count residuals toward -infinity, turning any tiny
+    // negative fixed-point error into a persistent -1-count rotation.
+    return value / (1 << NS2_DS5_GYRO_FP_SHIFT);
+}
+
+static int32_t gyro_bias_step(int32_t delta)
+{
+    // Apply the 1/256 bias correction symmetrically instead of letting its
+    // fixed-point tail truncate forever.
+    // The former shift stopped adapting once |delta| fell below four raw gyro
+    // counts (256 fixed-point units), leaving enough residual to visibly drift
+    // an integrated quaternion. Continue one fixed-point LSB at a time while
+    // the residual still maps to a nonzero raw count; smaller errors already
+    // map to zero in gyro_fixed_to_counts() and should not chase sensor noise.
+    int32_t step = delta / 256;
+    if (step == 0 && delta >= (1 << NS2_DS5_GYRO_FP_SHIFT))
+        step = 1;
+    else if (step == 0 && delta <= -(1 << NS2_DS5_GYRO_FP_SHIFT))
+        step = -1;
+    return step;
 }
 
 static void write_le32(uint8_t *out, int32_t value)
@@ -105,6 +134,75 @@ static uint32_t encode_switch2_g2(float value)
     if (scaled <= 0.0f) return 0;
     if (scaled >= 16777215.0f) return 0x00FFFFFFu;
     return (uint32_t)(scaled + 0.5f);
+}
+
+static bool pack_switch2_smallest_three(
+    ns2_ds5_motion_state_t *state, uint32_t orientation[3])
+{
+    // The Switch 2 state uses w/x/y/z numbering, unlike this module's
+    // canonical in-memory x/y/z/w order. This is the same smallest-three
+    // construction used by Nintendo's Switch-1 DScale mode:
+    //
+    //   state 0 omits W and carries X,Y,Z
+    //   state 1 omits X and carries Y,Z,W
+    //   state 2 omits Y and carries Z,W,X
+    //   state 3 omits Z and carries W,X,Y
+    //
+    // Genuine adjacent Pro Controller 2 state 3<->0 packets satisfy this
+    // model: the outgoing hidden Z and incoming hidden W cross at
+    // approximately 1/sqrt(2). The formerly inferred state-3 "basis rebase"
+    // merely swapped those two near-equal boundary components.
+    const float wire[4] = {
+        state->quaternion[3],
+        state->quaternion[0],
+        state->quaternion[1],
+        state->quaternion[2],
+    };
+    unsigned omitted = state->switch2_omitted & 3u;
+    bool boundary_reached = false;
+    for (unsigned i = 0; i < 4; ++i) {
+        if (i != omitted && fabsf(wire[i]) > NS2_DS5_INV_SQRT2) {
+            boundary_reached = true;
+            break;
+        }
+    }
+    if (boundary_reached) {
+        omitted = 0;
+        for (unsigned i = 1; i < 4; ++i) {
+            if (fabsf(wire[i]) > fabsf(wire[omitted]))
+                omitted = i;
+        }
+        state->switch2_omitted = (uint8_t)omitted;
+    }
+
+    // q and -q encode the same rotation. Canonicalizing the omitted component
+    // positive lets the decoder recover it with the positive square root.
+    const float sign = wire[omitted] < 0.0f ? -1.0f : 1.0f;
+    const float c0 = wire[(omitted + 1u) & 3u] * sign;
+    const float c1 = wire[(omitted + 2u) & 3u] * sign;
+    const float c2 = wire[(omitted + 3u) & 3u] * sign;
+
+    // A retained chart is valid while all three transmitted components remain
+    // within +/-1/sqrt(2). When one crosses that boundary, selecting the
+    // largest component restores the smallest-three invariant. Allow only
+    // float-rounding slop at an exact tie; the slot encoders clamp that slop
+    // to their representable endpoint.
+    if (!isfinite(c0) || !isfinite(c1) || !isfinite(c2) ||
+        c0 < -NS2_DS5_INV_SQRT2 - NS2_DS5_COMPONENT_EPSILON ||
+        c0 >  NS2_DS5_INV_SQRT2 + NS2_DS5_COMPONENT_EPSILON ||
+        c1 < -NS2_DS5_INV_SQRT2 - NS2_DS5_COMPONENT_EPSILON ||
+        c1 >  NS2_DS5_INV_SQRT2 + NS2_DS5_COMPONENT_EPSILON ||
+        c2 < -NS2_DS5_INV_SQRT2 - NS2_DS5_COMPONENT_EPSILON ||
+        c2 >  NS2_DS5_INV_SQRT2 + NS2_DS5_COMPONENT_EPSILON) {
+        state->representation_rejects++;
+        return false;
+    }
+
+    orientation[0] = encode_switch2_g0(c0);
+    orientation[1] = encode_switch2_g1(c1);
+    orientation[2] =
+        ((uint32_t)omitted << 24) | encode_switch2_g2(c2);
+    return true;
 }
 
 static void quaternion_normalize_near_unit(float q[4])
@@ -231,6 +329,11 @@ bool ns2_ds5_motion_update(ns2_ds5_motion_state_t *state,
         state->initialized = true;
         state->has_sample = true;
         state->last_update_us = now_us;
+        state->last_motion_sequence = input->motion_sequence;
+        if (input->motion_timestamp_valid) {
+            state->last_sensor_timestamp = input->motion_timestamp;
+            state->sensor_timestamp_initialized = true;
+        }
         memcpy(state->accel, input->accel, sizeof(state->accel));
         for (unsigned axis = 0; axis < 3; ++axis) {
             state->gyro_lp[axis] =
@@ -246,11 +349,57 @@ bool ns2_ds5_motion_update(ns2_ds5_motion_state_t *state,
         return true;
     }
 
-    uint32_t elapsed_us = now_us - state->last_update_us;
-    if (elapsed_us < NS2_DS5_MOTION_PERIOD_US) return false;
+    const uint32_t host_elapsed_us = now_us - state->last_update_us;
+    state->last_host_elapsed_us = host_elapsed_us;
+
+    if (input->motion_sequence != 0u &&
+        state->last_motion_sequence != 0u) {
+        const uint32_t sequence_delta =
+            input->motion_sequence - state->last_motion_sequence;
+        if (sequence_delta > 1u)
+            state->sequence_gaps += sequence_delta - 1u;
+    }
+    state->last_motion_sequence = input->motion_sequence;
+
+    uint32_t elapsed_us = host_elapsed_us;
+    bool used_sensor_timestamp = false;
+    if (input->motion_timestamp_valid) {
+        if (state->sensor_timestamp_initialized) {
+            // Linux hid-playstation uses the same wrap-safe delta and rounded
+            // divide-by-three conversion for the DualSense's 0.33 us clock.
+            const uint32_t sensor_ticks =
+                input->motion_timestamp - state->last_sensor_timestamp;
+            const uint32_t sensor_elapsed_us =
+                sensor_ticks / 3u +
+                ((sensor_ticks % 3u) >= 2u ? 1u : 0u);
+            state->last_sensor_elapsed_us = sensor_elapsed_us;
+            if (sensor_elapsed_us >= NS2_DS5_SENSOR_DT_MIN_US &&
+                sensor_elapsed_us <= NS2_DS5_SENSOR_DT_MAX_US) {
+                elapsed_us = sensor_elapsed_us;
+                used_sensor_timestamp = true;
+                if (sensor_elapsed_us > state->max_sensor_elapsed_us)
+                    state->max_sensor_elapsed_us = sensor_elapsed_us;
+            } else {
+                state->sensor_timestamp_invalid++;
+                state->sensor_timestamp_fallbacks++;
+            }
+        } else {
+            state->sensor_timestamp_initialized = true;
+            state->sensor_timestamp_fallbacks++;
+        }
+        // Advance the baseline even after a reset/implausible jump. Otherwise
+        // every later timestamp would be measured against the stale epoch.
+        state->last_sensor_timestamp = input->motion_timestamp;
+    }
+
+    if (!used_sensor_timestamp) {
+        if (elapsed_us < NS2_DS5_MOTION_PERIOD_US) return false;
+        // Host time is only a compatibility fallback for sources without an
+        // authored IMU clock. Retain its old anti-lurch ceiling.
+        if (elapsed_us > 16000u) elapsed_us = 16000u;
+        if (elapsed_us < 500u) elapsed_us = 500u;
+    }
     state->last_update_us = now_us;
-    if (elapsed_us > 16000u) elapsed_us = 16000u;
-    if (elapsed_us < 500u) elapsed_us = 500u;
 
     bool steady = true;
     for (unsigned axis = 0; axis < 3; ++axis) {
@@ -271,19 +420,27 @@ bool ns2_ds5_motion_update(ns2_ds5_motion_state_t *state,
             (((int32_t)input->gyro[axis] << NS2_DS5_GYRO_FP_SHIFT) -
              state->gyro_lp[axis]) >> 2;
         const int32_t before_bias =
-            (state->gyro_lp[axis] - state->gyro_bias[axis]) >>
-            NS2_DS5_GYRO_FP_SHIFT;
+            gyro_fixed_to_counts(
+                state->gyro_lp[axis] - state->gyro_bias[axis]);
         if (before_bias > NS2_DS5_GYRO_STILL_LIMIT ||
             before_bias < -NS2_DS5_GYRO_STILL_LIMIT)
             steady = false;
     }
     for (unsigned axis = 0; axis < 3; ++axis) {
-        if (steady)
-            state->gyro_bias[axis] +=
-                (state->gyro_lp[axis] - state->gyro_bias[axis]) >> 8;
-        corrected[axis] =
-            (state->gyro_lp[axis] - state->gyro_bias[axis]) >>
-            NS2_DS5_GYRO_FP_SHIFT;
+        if (steady) {
+            state->gyro_bias[axis] += gyro_bias_step(
+                state->gyro_lp[axis] - state->gyro_bias[axis]);
+        }
+        // Integrate the current calibrated sample, not the 1/4 EMA used by
+        // stillness/bias estimation. The EMA delayed and attenuated brief
+        // high-rate motion, which looked like clipping even with a correct
+        // quaternion carrier.
+        corrected[axis] = gyro_fixed_to_counts(
+            (steady
+                 ? state->gyro_lp[axis]
+                 : ((int32_t)input->gyro[axis] <<
+                    NS2_DS5_GYRO_FP_SHIFT)) -
+            state->gyro_bias[axis]);
     }
 
     if (!state->bias_ready) {
@@ -317,6 +474,8 @@ bool ns2_ds5_motion_update(ns2_ds5_motion_state_t *state,
             memset(corrected, 0, sizeof(corrected));
         }
     }
+    memcpy(state->gyro_corrected, corrected,
+           sizeof(state->gyro_corrected));
 
     // ns2_seam has already transformed DualSense axes to the normalized
     // Pro2 carrier frame: [-DS5-X, +DS5-Z, +DS5-Y]. The signed map is runtime
@@ -332,12 +491,24 @@ bool ns2_ds5_motion_update(ns2_ds5_motion_state_t *state,
         omega[axis] = sign * (float)corrected[source] * scale;
     }
     if (state->bias_ready) {
-        if (state->body_frame)
-            quaternion_right_integrate(state->quaternion, omega,
-                                       (float)elapsed_us / 1000000.0f);
-        else
-            quaternion_left_integrate(state->quaternion, omega,
-                                      (float)elapsed_us / 1000000.0f);
+        // Preserve all angular area from a delayed report. Small Euler
+        // substeps retain the existing audio-safe no-trig implementation
+        // while avoiding both the former 16 ms truncation and the numerical
+        // error of one large step.
+        uint32_t remaining_us = elapsed_us;
+        while (remaining_us != 0u) {
+            const uint32_t step_us =
+                remaining_us > NS2_DS5_INTEGRATION_STEP_US
+                    ? NS2_DS5_INTEGRATION_STEP_US
+                    : remaining_us;
+            const float dt = (float)step_us / 1000000.0f;
+            if (state->body_frame)
+                quaternion_right_integrate(state->quaternion, omega, dt);
+            else
+                quaternion_left_integrate(state->quaternion, omega, dt);
+            state->integration_substeps++;
+            remaining_us -= step_us;
+        }
     }
 
     uint8_t count = (uint8_t)((elapsed_us + 625u) / 1250u);
@@ -412,29 +583,8 @@ bool ns2_ds5_motion_build(ns2_ds5_motion_state_t *state, uint8_t out[30])
         orientation[2] =
             ((uint32_t)max_index << 24) | encode_u24(c2);
     } else {
-        // State 0 is fully established: it hides W and serializes X/Y/Z.
-        // Keep q/-q canonicalized to positive W. Genuine adjacent captures
-        // prove state 3 is a coordinate-basis rebase ([z,-x,-y]), not the
-        // former cyclic "hide Z" hypothesis. States 1/2 and the controller's
-        // exact transition policy remain incomplete, so production stays in
-        // the proven state-0 chart and fails closed at its 90-degree boundary.
-        const float sign =
-            state->quaternion[3] < 0.0f ? -1.0f : 1.0f;
-        const float c0 = state->quaternion[0] * sign;
-        const float c1 = state->quaternion[1] * sign;
-        const float c2 = state->quaternion[2] * sign;
-        if (c0 < -NS2_DS5_INV_SQRT2 ||
-            c0 > NS2_DS5_INV_SQRT2 ||
-            c1 < -NS2_DS5_INV_SQRT2 ||
-            c1 > NS2_DS5_INV_SQRT2 ||
-            c2 < -NS2_DS5_INV_SQRT2 ||
-            c2 > NS2_DS5_INV_SQRT2) {
-            state->representation_rejects++;
+        if (!pack_switch2_smallest_three(state, orientation))
             return false;
-        }
-        orientation[0] = encode_switch2_g0(c0);
-        orientation[1] = encode_switch2_g1(c1);
-        orientation[2] = encode_switch2_g2(c2);
     }
     if (!ns2_motion_pdu30_set_orientation(out, orientation))
         return false;

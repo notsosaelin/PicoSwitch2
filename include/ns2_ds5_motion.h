@@ -7,10 +7,11 @@
 #include "switch_pro.h"
 
 typedef enum {
-    // Switch 2's observed wire convention. The state is numbered in
-    // w/x/y/z order, so identity is state 0 and the proven state-0 chart
-    // carries x/y/z divided by sqrt(2). Its unequal-width slots and
-    // state-specific coordinate-basis rebase differ from Switch 1 DScale.
+    // Switch 2's observed smallest-three convention. Quaternion components
+    // are numbered w/x/y/z, so identity is state 0. The state names the
+    // omitted component and G0/G1/G2 cyclically carry the remaining three,
+    // each over the physical +/-1/sqrt(2) range. A new largest component is
+    // omitted when the retained representation reaches that boundary.
     NS2_DS5_CARRIER_SWITCH2_WXYZ = 0,
 
     // Nintendo's Switch-1 DScale model retained as an explicit diagnostic
@@ -33,8 +34,18 @@ typedef struct {
     int32_t gyro_bias[3]; // runtime zero-rate estimate, << 6
     int32_t gyro_prev[3];
     int32_t gyro_jitter[3];
+    int32_t gyro_corrected[3]; // raw de-biased sample used for integration
     int16_t accel[3];
     uint32_t last_update_us;
+    uint32_t last_sensor_timestamp;
+    uint32_t last_host_elapsed_us;
+    uint32_t last_sensor_elapsed_us;
+    uint32_t max_sensor_elapsed_us;
+    uint32_t sensor_timestamp_fallbacks;
+    uint32_t sensor_timestamp_invalid;
+    uint32_t last_motion_sequence;
+    uint32_t sequence_gaps;
+    uint32_t integration_substeps;
     uint16_t imu_tick;
     uint16_t timing;
     uint32_t updates;
@@ -44,8 +55,13 @@ typedef struct {
     // Example {-2,+1,+3}: X=-inputY, Y=+inputX, Z=+inputZ.
     int8_t gyro_map[3];
     ns2_ds5_motion_carrier_t carrier;
+    // Current Switch 2 omitted component in wire w/x/y/z order. Genuine
+    // hardware retains this state until a transmitted component reaches the
+    // smallest-three boundary instead of reselecting the maximum every report.
+    uint8_t switch2_omitted;
     bool body_frame; // true: q' = q*w (body-local); false: q' = w*q
     bool bias_ready;
+    bool sensor_timestamp_initialized;
     bool initialized;
     bool has_sample;
 } ns2_ds5_motion_state_t;
@@ -67,9 +83,8 @@ bool ns2_ds5_motion_update(ns2_ds5_motion_state_t *state,
                            uint32_t now_us);
 
 // Build one native length-30 motion PDU. Returns false until a sample has been
-// accepted, or when the quaternion has left the currently proven state-0
-// chart. A false return is deliberately fail-closed: callers retain their
-// previously validated fallback instead of guessing a state rebase.
+// accepted or if the integrated quaternion violates the smallest-three unit
+// quaternion invariant. All four w/x/y/z omission states are supported.
 bool ns2_ds5_motion_build(ns2_ds5_motion_state_t *state, uint8_t out[30]);
 
 #endif  // NS2_DS5_MOTION_H
