@@ -250,6 +250,7 @@ typedef struct {
     int16_t gyro[3];            // Gyroscope X, Y, Z
     uint16_t gyro_range;        // Gyro full-scale range in dps (e.g., 100 for DS3, 2000 for DS4/DS5)
     uint16_t accel_range;       // Accel full-scale range in milli-g (e.g., 2000 for DS3, 4000 for DS4/DS5)
+    uint32_t motion_sequence;   // Increments once per physical IMU report; 0 when unavailable
     bool has_motion;            // Motion data is valid
 
     // Pressure-sensitive button data (DS3)

@@ -207,9 +207,8 @@ if(NS2_PRO AND NS2_AUDIO AND NS2_DS5_AUDIO AND
     set(OPUS_ENABLE_FLOAT_API ON CACHE BOOL "" FORCE)
     add_subdirectory(third_party/opus EXCLUDE_FROM_ALL)
     target_compile_definitions(PicoSwitchWGA PRIVATE NS2_DS5_AUDIO_LIVE_OPUS=1)
-    # Pro Controller 2 uses Opus's lower-stack CELT encoder directly. Keep
-    # these internal headers local to the firmware target; DualSense continues
-    # to use the public Opus API.
+    # Both controller audio formats use Opus's lower-stack CELT encoder
+    # directly. Keep these internal headers local to the firmware target.
     target_include_directories(PicoSwitchWGA PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/opus/celt
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/opus/src)

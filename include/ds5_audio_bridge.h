@@ -55,9 +55,13 @@ bool ds5_audio_bridge_mic_active(void);
 void ds5_audio_bridge_get_speaker_control(bool *muted, uint8_t *volume);
 
 // The Pico 2 W has one shared USB PCM producer and one codec worker. Only one
-// Bluetooth controller is admitted at a time, so the worker can switch between
-// DualSense's validated public-Opus path and Pro Controller 2's lower-stack
-// direct-CELT path without keeping both encoder states allocated.
+// Bluetooth controller is admitted at a time, so the worker switches between
+// independent direct-CELT configurations without retaining both states.
+// DualSense encoding can be made interruptible again over UART for diagnostic
+// A/B tests. Production keeps the CELT call exclusive so the CYW43 background
+// worker cannot repeatedly preempt it; pending radio work runs on lock release.
+void ds5_audio_bridge_set_ds5_exclusive_encode(bool enabled);
+bool ds5_audio_bridge_ds5_exclusive_encode(void);
 void ds5_audio_bridge_set_switch2_pro2_active(bool active);
 bool ds5_audio_bridge_switch2_pro2_active(void);
 void ds5_audio_bridge_set_switch2_pro2_complexity(uint8_t complexity);

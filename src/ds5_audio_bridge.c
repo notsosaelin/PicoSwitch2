@@ -10,6 +10,7 @@
 
 static volatile bool speaker_control_muted;
 static volatile uint8_t speaker_control_volume = 100;
+static volatile bool ds5_encoder_exclusive_encode = true;
 static volatile uint8_t switch2_pro2_encoder_complexity;
 static volatile bool switch2_pro2_encoder_analysis;
 
@@ -44,6 +45,16 @@ void ds5_audio_bridge_set_switch2_pro2_analysis(bool enabled) {
 
 bool ds5_audio_bridge_switch2_pro2_analysis(void) {
     return __atomic_load_n(&switch2_pro2_encoder_analysis,
+                           __ATOMIC_ACQUIRE);
+}
+
+void ds5_audio_bridge_set_ds5_exclusive_encode(bool enabled) {
+    __atomic_store_n(&ds5_encoder_exclusive_encode, enabled,
+                     __ATOMIC_RELEASE);
+}
+
+bool ds5_audio_bridge_ds5_exclusive_encode(void) {
+    return __atomic_load_n(&ds5_encoder_exclusive_encode,
                            __ATOMIC_ACQUIRE);
 }
 
@@ -575,6 +586,24 @@ void ds5_audio_bridge_note_switch2_pro2_idle_frame(void) {}
 #include "analysis.h"
 #include "pico/time.h"
 #include "pico/util/queue.h"
+#include "pico/async_context.h"
+#include "pico/cyw43_arch.h"
+
+// Opus's tonality analyzer references this otherwise tiny helper from
+// opus_encoder.c. Providing the float-build equivalent locally prevents that
+// single reference from retaining the public Opus wrapper and the unused SILK
+// encoder graph. All inputs here are finite CELT analysis samples.
+int is_digital_silence(const opus_res *pcm, int frame_size, int channels,
+                       int lsb_depth) {
+    opus_val32 sample_max = 0;
+    int const sample_count = frame_size * channels;
+    for (int i = 0; i < sample_count; ++i) {
+        opus_val32 magnitude = pcm[i];
+        if (magnitude < 0) magnitude = -magnitude;
+        if (magnitude > sample_max) sample_max = magnitude;
+    }
+    return sample_max <= (opus_val16)1 / (1 << lsb_depth);
+}
 
 #define PCM_USB_PACKET_BYTES 192u
 #define PCM_BLOCK_QUEUE_DEPTH 2u
@@ -585,6 +614,7 @@ void ds5_audio_bridge_note_switch2_pro2_idle_frame(void) {}
 #define PCM_BLOCK_SAMPLES (PCM_INPUT_FRAMES * PCM_CHANNELS)
 #define PRO2_PCM_FRAMES 960u
 #define PRO2_PCM_SAMPLES (PRO2_PCM_FRAMES * PCM_CHANNELS)
+#define DS5_OPUS_TOC 0xF4u
 
 typedef struct {
     int16_t samples[PCM_BLOCK_SAMPLES];
@@ -625,7 +655,9 @@ static pcm_block_t producer_pcm_block;
 static pcm_block_t producer_discard_block;
 static uint16_t producer_samples;
 
-static OpusEncoder *speaker_encoder;
+static void *ds5_encoder_allocation;
+static CELTEncoder *ds5_encoder;
+static float *ds5_encoder_pcm;
 static void *pro2_encoder_allocation;
 static CELTEncoder *pro2_encoder;
 static float *pro2_encoder_pcm;
@@ -651,19 +683,54 @@ static uint32_t codec_reset_generation;
 static uint8_t silent_frames[2][DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN];
 static volatile bool silent_frames_ready;
 
+// Keep Pro Controller 2's validated tonality-analysis input identical to
+// libopus's downmix_float(), but define it locally. Referencing the public
+// helper pulls the entire general Opus encoder object into SRAM even though
+// both controller transports use the lower-level CELT encoder directly.
+static void pro2_analysis_downmix_float(const void *input,
+                                        opus_val32 *output,
+                                        int subframe, int offset,
+                                        int channel1, int channel2,
+                                        int channels) {
+    const float *samples = input;
+    for (int frame = 0; frame < subframe; ++frame) {
+        output[frame] =
+            FLOAT2SIG(samples[(frame + offset) * channels + channel1]);
+    }
+    if (channel2 >= 0) {
+        for (int frame = 0; frame < subframe; ++frame) {
+            output[frame] +=
+                FLOAT2SIG(samples[(frame + offset) * channels + channel2]);
+        }
+    } else if (channel2 == -2) {
+        for (int channel = 1; channel < channels; ++channel) {
+            for (int frame = 0; frame < subframe; ++frame) {
+                output[frame] += FLOAT2SIG(
+                    samples[(frame + offset) * channels + channel]);
+            }
+        }
+    }
+    for (int frame = 0; frame < subframe; ++frame) {
+        if (output[frame] < -65536.0f) output[frame] = -65536.0f;
+        if (output[frame] > 65536.0f) output[frame] = 65536.0f;
+        if (celt_isnan(output[frame])) output[frame] = 0;
+    }
+}
+
 static bool bridge_encoder_available(bridge_encoder_mode_t mode) {
     if (speaker_encoder_mode != mode) return false;
-    if (mode == BRIDGE_ENCODER_DS5) return speaker_encoder != NULL;
+    if (mode == BRIDGE_ENCODER_DS5)
+        return ds5_encoder != NULL && ds5_encoder_pcm != NULL;
     if (mode == BRIDGE_ENCODER_PRO2)
         return pro2_encoder != NULL && pro2_encoder_pcm != NULL;
     return false;
 }
 
 static void bridge_destroy_encoder(void) {
-    if (speaker_encoder) {
-        opus_encoder_destroy(speaker_encoder);
-        speaker_encoder = NULL;
-    }
+    free(ds5_encoder_allocation);
+    ds5_encoder_allocation = NULL;
+    ds5_encoder = NULL;
+    ds5_encoder_pcm = NULL;
     free(pro2_encoder_allocation);
     pro2_encoder_allocation = NULL;
     pro2_encoder = NULL;
@@ -679,10 +746,10 @@ static bool __not_in_flash_func(bridge_configure_encoder)(
     bridge_encoder_mode_t mode) {
     if (bridge_encoder_available(mode)) return true;
 
-    // Keep the byte-for-byte validated general Opus encoder for DualSense.
-    // Pro Controller 2 uses the hardware-safe direct CELT path: the public
-    // 20 ms wrapper exceeds the BT/codec core's memory budget and prevents
-    // that core from reaching its run loop.
+    // Both controller transports carry fixed-size, CELT-only Opus packets.
+    // Use dedicated direct-CELT states for each format so DualSense does not
+    // pay for the general public Opus encoder's larger state and wrapper path.
+    // Keep the already validated Pro Controller 2 configuration independent.
     bridge_destroy_encoder();
     if (mode == BRIDGE_ENCODER_PRO2) {
         int const encoder_size = celt_encoder_get_size(PCM_CHANNELS);
@@ -712,11 +779,22 @@ static bool __not_in_flash_func(bridge_configure_encoder)(
             return false;
         }
     } else if (mode == BRIDGE_ENCODER_DS5) {
-        int error = OPUS_OK;
-        speaker_encoder = opus_encoder_create(48000, PCM_CHANNELS,
-            OPUS_APPLICATION_RESTRICTED_LOWDELAY, &error);
-        if (!speaker_encoder || error != OPUS_OK) {
-            speaker_encoder = NULL;
+        int const encoder_size = celt_encoder_get_size(PCM_CHANNELS);
+        if (encoder_size <= 0) return false;
+        size_t const encoder_alignment = _Alignof(float);
+        size_t const encoder_bytes =
+            ((size_t)encoder_size + encoder_alignment - 1u) &
+            ~(encoder_alignment - 1u);
+        size_t const pcm_bytes =
+            PCM_OUTPUT_FRAMES * PCM_CHANNELS * sizeof(*ds5_encoder_pcm);
+        ds5_encoder_allocation = malloc(encoder_bytes + pcm_bytes);
+        if (!ds5_encoder_allocation) return false;
+        uint8_t *const allocation = ds5_encoder_allocation;
+        ds5_encoder = (CELTEncoder *)allocation;
+        ds5_encoder_pcm = (float *)(allocation + encoder_bytes);
+        if (celt_encoder_init(ds5_encoder, 48000, PCM_CHANNELS,
+                              opus_select_arch()) != OPUS_OK) {
+            bridge_destroy_encoder();
             return false;
         }
     } else {
@@ -740,21 +818,13 @@ static bool __not_in_flash_func(bridge_configure_encoder)(
         pro2_encoder_applied_analysis =
             ds5_audio_bridge_switch2_pro2_analysis();
     } else if (mode == BRIDGE_ENCODER_DS5) {
-        status |= opus_encoder_ctl(
-            speaker_encoder,
-            OPUS_SET_EXPERT_FRAME_DURATION(OPUS_FRAMESIZE_10_MS));
-        status |= opus_encoder_ctl(
-            speaker_encoder,
+        status |= celt_encoder_ctl(ds5_encoder, CELT_SET_SIGNALLING(0));
+        status |= celt_encoder_ctl(ds5_encoder, OPUS_SET_COMPLEXITY(0));
+        status |= celt_encoder_ctl(ds5_encoder, OPUS_SET_VBR(0));
+        status |= celt_encoder_ctl(
+            ds5_encoder,
             OPUS_SET_BITRATE(DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN * 8 * 100));
-        status |= opus_encoder_ctl(speaker_encoder,
-                                   OPUS_SET_FORCE_CHANNELS(OPUS_AUTO));
-        status |= opus_encoder_ctl(speaker_encoder,
-                                   OPUS_SET_BANDWIDTH(OPUS_AUTO));
-        status |= opus_encoder_ctl(speaker_encoder,
-                                   OPUS_SET_SIGNAL(OPUS_AUTO));
-        status |= opus_encoder_ctl(speaker_encoder, OPUS_SET_COMPLEXITY(0));
-        status |= opus_encoder_ctl(speaker_encoder, OPUS_SET_VBR(0));
-        status |= opus_encoder_ctl(speaker_encoder, OPUS_RESET_STATE);
+        status |= celt_encoder_ctl(ds5_encoder, OPUS_RESET_STATE);
     }
     if (status != OPUS_OK ||
         (mode == BRIDGE_ENCODER_PRO2 && !pro2_celt_mode)) {
@@ -765,16 +835,27 @@ static bool __not_in_flash_func(bridge_configure_encoder)(
     return true;
 }
 
+static bool __not_in_flash_func(bridge_encode_ds5_packet)(
+    const float *pcm, uint8_t packet[DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN]) {
+    packet[0] = DS5_OPUS_TOC;
+    int const payload_bytes = celt_encode_with_ec(
+        ds5_encoder, pcm, PCM_OUTPUT_FRAMES, packet + 1,
+        DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN - 1u, NULL);
+    return payload_bytes ==
+           (int)DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN - 1;
+}
+
 static void __not_in_flash_func(bridge_encode_input_frame)(
     const pcm_block_t *block, uint32_t generation) {
     if (!bridge_configure_encoder(BRIDGE_ENCODER_DS5)) return;
     ds5_audio_resample_512_to_480_stereo(block->samples, resampled_pcm);
+    for (unsigned i = 0; i < PCM_OUTPUT_FRAMES * PCM_CHANNELS; ++i)
+        ds5_encoder_pcm[i] =
+            (float)resampled_pcm[i] * (1.0f / 32768.0f);
     uint32_t const encode_start_us = time_us_32();
-    int const encoded = opus_encode(
-        speaker_encoder, resampled_pcm, PCM_OUTPUT_FRAMES,
-        codec_encoded_frame.data, DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN);
+    bool const success = bridge_encode_ds5_packet(
+        ds5_encoder_pcm, codec_encoded_frame.data);
     uint32_t const encode_end_us = time_us_32();
-    bool const success = encoded == DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN;
     ds5_audio_diag_note_opus_frame(encode_end_us,
                                    encode_end_us - encode_start_us, success);
     if (!success || generation != pipeline_reset_generation) return;
@@ -822,7 +903,8 @@ static void __not_in_flash_func(bridge_encode_pro2_pcm)(
                 run_analysis(pro2_analysis, pro2_celt_mode,
                              pro2_encoder_pcm, PRO2_PCM_FRAMES,
                              PRO2_PCM_FRAMES, 0, -2, PCM_CHANNELS, 48000,
-                             16, downmix_float, &idle_analysis);
+                             16, pro2_analysis_downmix_float,
+                             &idle_analysis);
                 idle_analysis_ptr = &idle_analysis;
             }
             if (celt_encoder_ctl(pro2_encoder,
@@ -847,7 +929,8 @@ static void __not_in_flash_func(bridge_encode_pro2_pcm)(
         memset(&analysis_info, 0, sizeof(analysis_info));
         run_analysis(pro2_analysis, pro2_celt_mode, pro2_encoder_pcm,
                      PRO2_PCM_FRAMES, PRO2_PCM_FRAMES, 0, -2,
-                     PCM_CHANNELS, 48000, 16, downmix_float,
+                     PCM_CHANNELS, 48000, 16,
+                     pro2_analysis_downmix_float,
                      &analysis_info);
         analysis_ptr = &analysis_info;
     }
@@ -940,20 +1023,20 @@ static bool __not_in_flash_func(bridge_prepare_encoder)(void) {
         // cannot influence real console audio. Repeating these valid frames is
         // preferable to zero-filled bytes, which are not an Opus packet.
         memset(resampled_pcm, 0, sizeof(resampled_pcm));
+        memset(ds5_encoder_pcm, 0,
+               PCM_OUTPUT_FRAMES * PCM_CHANNELS *
+                   sizeof(*ds5_encoder_pcm));
         bool silence_ok = true;
         for (unsigned frame = 0; frame < 12u; ++frame) {
             uint8_t discard[DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN];
             uint8_t *destination =
                 frame >= 10u ? silent_frames[frame - 10u] : discard;
-            int const encoded =
-                opus_encode(speaker_encoder, resampled_pcm, PCM_OUTPUT_FRAMES,
-                            destination, DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN);
-            if (encoded != DS5_AUDIO_BRIDGE_OPUS_FRAME_LEN) {
+            if (!bridge_encode_ds5_packet(ds5_encoder_pcm, destination)) {
                 silence_ok = false;
                 break;
             }
         }
-        opus_encoder_ctl(speaker_encoder, OPUS_RESET_STATE);
+        celt_encoder_ctl(ds5_encoder, OPUS_RESET_STATE);
         silent_frames_ready = silence_ok;
     }
     return bridge_encoder_available(requested_mode);
@@ -962,8 +1045,8 @@ static bool __not_in_flash_func(bridge_prepare_encoder)(void) {
 static uint32_t __not_in_flash_func(bridge_sync_encoder_generation)(void) {
     uint32_t const requested_generation = pipeline_reset_generation;
     if (codec_reset_generation != requested_generation) {
-        if (speaker_encoder_mode == BRIDGE_ENCODER_DS5 && speaker_encoder)
-            opus_encoder_ctl(speaker_encoder, OPUS_RESET_STATE);
+        if (speaker_encoder_mode == BRIDGE_ENCODER_DS5 && ds5_encoder)
+            celt_encoder_ctl(ds5_encoder, OPUS_RESET_STATE);
         else if (speaker_encoder_mode == BRIDGE_ENCODER_PRO2 && pro2_encoder) {
             celt_encoder_ctl(pro2_encoder, OPUS_RESET_STATE);
             if (pro2_analysis) tonality_analysis_reset(pro2_analysis);
@@ -997,7 +1080,9 @@ void ds5_audio_bridge_init(void) {
     pro2_transport_valid = false;
     pipeline_reset_generation = 0;
     codec_reset_generation = 0;
-    speaker_encoder = NULL;
+    ds5_encoder_allocation = NULL;
+    ds5_encoder = NULL;
+    ds5_encoder_pcm = NULL;
     pro2_encoder_allocation = NULL;
     pro2_encoder = NULL;
     pro2_encoder_pcm = NULL;
@@ -1151,9 +1236,22 @@ void __not_in_flash_func(ds5_audio_bridge_codec_worker)(void) {
         if (pro2_active)
             bridge_consume_pro2_block(&codec_pcm_block,
                                       requested_generation);
-        else
+        else if (ds5_audio_bridge_ds5_exclusive_encode()) {
+            // The CYW43 threadsafe-background worker normally preempts this
+            // foreground CELT encode repeatedly. Its SDK lock makes the IRQ
+            // defer work, then processes everything pending on release. Keep
+            // this experiment strictly DualSense-only: the independently
+            // validated Pro Controller 2 codec/transport path is untouched.
+            async_context_t *const radio_context =
+                cyw43_arch_async_context();
+            async_context_acquire_lock_blocking(radio_context);
             bridge_encode_input_frame(&codec_pcm_block,
                                       requested_generation);
+            async_context_release_lock(radio_context);
+        } else {
+            bridge_encode_input_frame(&codec_pcm_block,
+                                      requested_generation);
+        }
     }
 }
 

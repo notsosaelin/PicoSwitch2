@@ -276,6 +276,7 @@ void router_submit_input(const input_event_t *e) {
             dev && dev->driver == &ds5_bt_driver
                 ? SWITCH_MOTION_SOURCE_DUALSENSE
                 : SWITCH_MOTION_SOURCE_GENERIC;
+        in.motion_sequence = e->motion_sequence;
         in.accel[0] = ns2_clamp16( e->accel[0] / 2);
         in.accel[1] = ns2_clamp16(-e->accel[2] / 2);
         in.accel[2] = ns2_clamp16( e->accel[1] / 2);

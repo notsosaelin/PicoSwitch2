@@ -151,6 +151,7 @@ typedef struct {
     uint8_t activation_state;
     uint32_t activation_time;
     uint8_t output_seq;
+    uint32_t motion_sequence;
     ds5_motion_calibration_t motion_calibration;
     uint8_t calibration_request_state;  // 0=waiting, 1=in flight, 2=ready, 3=exhausted
     uint8_t calibration_request_attempts;
@@ -482,6 +483,7 @@ static bool ds5_init(bthid_device_t* device)
             ds5_data[i].activation_state = 0;
             ds5_data[i].activation_time = 0;
             ds5_data[i].output_seq = 0;
+            ds5_data[i].motion_sequence = 0;
             ds5_motion_calibration_reset(&ds5_data[i].motion_calibration);
             ds5_data[i].calibration_request_state = 0;
             ds5_data[i].calibration_request_attempts = 0;
@@ -642,6 +644,7 @@ static void ds5_process_report(bthid_device_t* device, const uint8_t* data, uint
     // Check if we have enough data for motion
     if (report_len >= sizeof(ds5_input_report_t)) {
         ds5->event.has_motion = true;
+        ds5->event.motion_sequence = ++ds5->motion_sequence;
         const int16_t raw_gyro[3] = {
             rpt->gyro[0], rpt->gyro[1], rpt->gyro[2]
         };

@@ -496,6 +496,18 @@ static void wiimote_l2cap_packet_handler(uint8_t packet_type, uint16_t channel, 
 // SDP query state
 static uint8_t sdp_attribute_value[32];
 static const uint16_t sdp_attribute_value_buffer_size = sizeof(sdp_attribute_value);
+static struct {
+    bool pending;
+    bool active;
+    bd_addr_t addr;
+    uint16_t vendor_id;
+    uint16_t product_id;
+    uint8_t attempts;
+    uint32_t next_attempt_ms;
+} classic_identity_query;
+
+static void classic_identity_query_schedule(const bd_addr_t addr);
+static void classic_identity_query_service(void);
 
 // Classic HID descriptor storage
 static uint8_t classic_hid_descriptor_storage[512];
@@ -1826,6 +1838,12 @@ void btstack_host_process(void)
     // Advance deferred post-HID setup (REPORT protocol mode -> DIS/BAS/NUS)
     mp_hid_setup_task();
 
+    // BTstack's HID host owns the SDP client until descriptor discovery has
+    // fully unwound. Starting our PnP query directly from
+    // HID_SUBEVENT_DESCRIPTOR_AVAILABLE can therefore return SDP_QUERY_BUSY.
+    // Service the bounded identity request later from the normal run loop.
+    classic_identity_query_service();
+
     // Kick off / advance MouthPad NUS discovery once HID has settled
     mp_nus_periodic();
 
@@ -1986,10 +2004,10 @@ static void sdp_query_vid_pid_callback(uint8_t packet_type, uint16_t channel, ui
                     uint16_t value;
                     if (de_element_get_uint16(sdp_attribute_value, &value)) {
                         if (attr_id == BLUETOOTH_ATTRIBUTE_VENDOR_ID) {
-                            classic_state.pending_vid = value;
+                            classic_identity_query.vendor_id = value;
                             printf("[BTSTACK_HOST] SDP VID: 0x%04X\n", value);
                         } else if (attr_id == BLUETOOTH_ATTRIBUTE_PRODUCT_ID) {
-                            classic_state.pending_pid = value;
+                            classic_identity_query.product_id = value;
                             printf("[BTSTACK_HOST] SDP PID: 0x%04X\n", value);
                         }
                     }
@@ -1999,22 +2017,25 @@ static void sdp_query_vid_pid_callback(uint8_t packet_type, uint16_t channel, ui
         }
         case SDP_EVENT_QUERY_COMPLETE:
             printf("[BTSTACK_HOST] SDP query complete: VID=0x%04X PID=0x%04X\n",
-                   classic_state.pending_vid, classic_state.pending_pid);
+                   classic_identity_query.vendor_id,
+                   classic_identity_query.product_id);
 
             // Update the connection struct with VID/PID
-            if (classic_state.pending_vid || classic_state.pending_pid) {
+            if (classic_identity_query.vendor_id ||
+                classic_identity_query.product_id) {
                 for (int i = 0; i < MAX_CLASSIC_CONNECTIONS; i++) {
                     classic_connection_t* conn = &classic_state.connections[i];
-                    if (conn->active && memcmp(conn->addr, classic_state.pending_addr, 6) == 0) {
-                        conn->vendor_id = classic_state.pending_vid;
-                        conn->product_id = classic_state.pending_pid;
+                    if (conn->active &&
+                        memcmp(conn->addr, classic_identity_query.addr, 6) == 0) {
+                        conn->vendor_id = classic_identity_query.vendor_id;
+                        conn->product_id = classic_identity_query.product_id;
                         printf("[BTSTACK_HOST] Updated conn[%d] VID/PID: 0x%04X/0x%04X\n",
                                i, conn->vendor_id, conn->product_id);
 
                         // Notify bthid to re-evaluate driver selection with new VID/PID
                         bthid_update_device_info(i, conn->name,
-                                                  classic_state.pending_vid,
-                                                  classic_state.pending_pid);
+                                                  classic_identity_query.vendor_id,
+                                                  classic_identity_query.product_id);
 
                         // Re-send HID descriptor in case driver was re-evaluated to generic
                         // (descriptor was delivered earlier but ignored by the previous driver)
@@ -2028,14 +2049,70 @@ static void sdp_query_vid_pid_callback(uint8_t packet_type, uint16_t channel, ui
                 }
 
                 // Also update wiimote_conn if active and address matches
-                if (wiimote_conn.active && memcmp(wiimote_conn.addr, classic_state.pending_addr, 6) == 0) {
-                    wiimote_conn.vendor_id = classic_state.pending_vid;
-                    wiimote_conn.product_id = classic_state.pending_pid;
+                if (wiimote_conn.active &&
+                    memcmp(wiimote_conn.addr, classic_identity_query.addr, 6) == 0) {
+                    wiimote_conn.vendor_id = classic_identity_query.vendor_id;
+                    wiimote_conn.product_id = classic_identity_query.product_id;
                     printf("[BTSTACK_HOST] Updated wiimote VID/PID: 0x%04X/0x%04X\n",
                            wiimote_conn.vendor_id, wiimote_conn.product_id);
                 }
+            } else if (classic_identity_query.attempts < 3u) {
+                classic_identity_query.pending = true;
+                classic_identity_query.next_attempt_ms =
+                    btstack_run_loop_get_time_ms() + 250u;
             }
+            classic_identity_query.active = false;
             break;
+    }
+}
+
+static void classic_identity_query_schedule(const bd_addr_t addr)
+{
+    if (!addr) return;
+    if ((classic_identity_query.pending || classic_identity_query.active) &&
+        memcmp(classic_identity_query.addr, addr, sizeof(bd_addr_t)) == 0) {
+        return;
+    }
+    memcpy(classic_identity_query.addr, addr, sizeof(bd_addr_t));
+    classic_identity_query.vendor_id = 0;
+    classic_identity_query.product_id = 0;
+    classic_identity_query.attempts = 0;
+    classic_identity_query.next_attempt_ms = btstack_run_loop_get_time_ms();
+    classic_identity_query.pending = true;
+    classic_identity_query.active = false;
+}
+
+static void classic_identity_query_service(void)
+{
+    if (!classic_identity_query.pending ||
+        classic_identity_query.active ||
+        classic_identity_query.attempts >= 3u ||
+        (int32_t)(btstack_run_loop_get_time_ms() -
+                  classic_identity_query.next_attempt_ms) < 0 ||
+        !sdp_client_ready()) {
+        return;
+    }
+
+    classic_identity_query.pending = false;
+    classic_identity_query.active = true;
+    classic_identity_query.vendor_id = 0;
+    classic_identity_query.product_id = 0;
+    classic_identity_query.attempts++;
+    uint8_t const status = sdp_client_query_uuid16(
+        &sdp_query_vid_pid_callback, classic_identity_query.addr,
+        BLUETOOTH_SERVICE_CLASS_PNP_INFORMATION);
+    if (status != ERROR_CODE_SUCCESS) {
+        classic_identity_query.active = false;
+        if (classic_identity_query.attempts < 3u) {
+            classic_identity_query.pending = true;
+            classic_identity_query.next_attempt_ms =
+                btstack_run_loop_get_time_ms() + 100u;
+        }
+        printf("[BTSTACK_HOST] Deferred VID/PID SDP start failed: 0x%02X\n",
+               status);
+    } else {
+        printf("[BTSTACK_HOST] Deferred VID/PID SDP query started (attempt %u)\n",
+               classic_identity_query.attempts);
     }
 }
 
@@ -2613,9 +2690,8 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                                 gap_remote_name_request(addr, 0, 0);
                             }
 
-                            // Query VID/PID via SDP
-                            sdp_client_query_uuid16(&sdp_query_vid_pid_callback, addr,
-                                                    BLUETOOTH_SERVICE_CLASS_PNP_INFORMATION);
+                            // Query VID/PID once the shared SDP client is idle.
+                            classic_identity_query_schedule(addr);
                         }
 
                         // Request early authentication for direct L2CAP connections
@@ -7440,13 +7516,11 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
                 // Query VID/PID via SDP if not yet known (deferred from CONNECTION_OPENED
                 // to avoid conflicting with BTstack's internal HID descriptor SDP query)
                 classic_connection_t* desc_conn = find_classic_connection_by_cid(hid_cid);
-                if (desc_conn && desc_conn->vendor_id == 0 && desc_conn->product_id == 0) {
-                    memcpy(classic_state.pending_addr, desc_conn->addr, 6);
-                    classic_state.pending_vid = 0;
-                    classic_state.pending_pid = 0;
-                    printf("[BTSTACK_HOST] Querying VID/PID via SDP (deferred)\n");
-                    sdp_client_query_uuid16(&sdp_query_vid_pid_callback, desc_conn->addr,
-                                            BLUETOOTH_SERVICE_CLASS_PNP_INFORMATION);
+                if (desc_conn &&
+                    (desc_conn->vendor_id == 0 ||
+                     desc_conn->product_id == 0)) {
+                    printf("[BTSTACK_HOST] Queueing VID/PID SDP query after HID descriptor\n");
+                    classic_identity_query_schedule(desc_conn->addr);
                 }
             }
             break;
