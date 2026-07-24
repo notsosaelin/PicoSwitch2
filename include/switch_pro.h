@@ -65,6 +65,9 @@
 #define SWITCH_SOURCE_JOYCON_LEFT  1
 #define SWITCH_SOURCE_JOYCON_RIGHT 2
 
+#define SWITCH_MOTION_SOURCE_GENERIC   0
+#define SWITCH_MOTION_SOURCE_DUALSENSE 1
+
 // Per-controller input state produced by the Bluetooth core (core1) and
 // consumed by the USB core (core0). Sticks are pre-packed into the Pro
 // Controller's 12-bit-in-3-bytes wire format. IMU values are pre-scaled to the
@@ -77,6 +80,7 @@ typedef struct {
     int16_t accel[3];        // x, y, z (raw Pro Controller accelerometer units)
     int16_t gyro[3];         // x, y, z (raw Pro Controller gyroscope units)
     uint8_t has_motion;      // 1 if this controller reports IMU (gate report-0x09 motion)
+    uint8_t motion_source;   // SWITCH_MOTION_SOURCE_* decoder provenance
     uint8_t battery_level;   // normalized 0..100 percentage
     uint8_t battery_valid;   // 1 when the source controller reported a level
     uint8_t battery_charging;// 1 when the source controller reports charging

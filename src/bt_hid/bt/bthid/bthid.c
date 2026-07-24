@@ -762,3 +762,22 @@ bool bthid_send_feature_report(uint8_t conn_index, uint8_t report_id,
 
     return bt_send_control(conn_index, buf, len + 2);
 }
+
+bool bthid_request_feature_report(uint8_t conn_index, uint8_t report_id)
+{
+    bthid_device_t *device = bthid_get_device(conn_index);
+    if (!device || !device->active) return false;
+    return bt_request_feature_report(conn_index, report_id);
+}
+
+void bthid_on_feature_report(uint8_t conn_index, const uint8_t *data,
+                             uint16_t len)
+{
+    bthid_device_t *device = bthid_get_device(conn_index);
+    if (!device || !device->active || !device->driver || !data || len < 1)
+        return;
+
+    const bthid_driver_t *driver = (const bthid_driver_t *)device->driver;
+    if (driver->process_feature_report)
+        driver->process_feature_report(device, data, len);
+}

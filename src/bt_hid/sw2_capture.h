@@ -77,6 +77,7 @@ typedef enum {
                                 // experimental update, 2=update request submitted,
                                 // 3=HCI LE Connection Update Complete. Interval is in 1.25ms
                                 // units and supervision timeout in 10ms units.
+    SW2_CAP_MOTION_PAIR  = 13, // Internal time-aligned Pro2-PDU + DS5-IMU diagnostic record.
 } sw2_capture_kind_t;
 
 #define SW2_CAP_MAX_DATA 128 // Includes the 112-byte Pro2 headset/audio input report (0x002E).
@@ -107,6 +108,14 @@ void sw2_capture_set_enabled(bool on);
 bool sw2_capture_get_enabled(void);
 uint32_t sw2_capture_dropped_count(void);  // oldest entries overwritten since last enable
 uint16_t sw2_capture_buffered_count(void); // entries currently waiting to be drained
+
+// Mutually-exclusive reuse of the same retained ring for paired motion data.
+// This avoids allocating a second large diagnostic buffer in the firmware's
+// tight CYW43 runtime-heap margin. Ordinary BLE capture is forced off when
+// paired mode starts, and vice versa.
+void sw2_capture_pair_set_enabled(bool on);
+bool sw2_capture_pair_get_enabled(void);
+void sw2_capture_pair_record(const uint8_t *data, uint16_t len);
 
 // ---- One-shot GATT discovery: ground truth for raw ATT handle numbering (2026-07-10) ----
 // OFF by default. The v1 motion-enable experiment (superseded by the v2 matrix below) worked --

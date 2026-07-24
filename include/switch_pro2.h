@@ -64,6 +64,33 @@ void ns2_dbg_motion_bias(int32_t bias_out[3], uint8_t *still_out);
 // The live report-0x09 phase[] accumulator (raw int32, binary-angle units, 2^32 == 360 deg).
 void ns2_dbg_motion_phase(int32_t phase_out[3]);
 
+typedef struct {
+    uint8_t source_active;
+    uint8_t initialized;
+    uint8_t has_sample;
+    uint8_t probe_active;
+    int16_t probe_gyro[3];
+    int16_t input_gyro[3];
+    int32_t bias_gyro[3];
+    int32_t corrected_gyro[3];
+    int32_t jitter[3];
+    int8_t gyro_map[3];
+    uint8_t carrier;
+    uint8_t body_frame;
+    int32_t quaternion_million[4];
+    uint32_t updates;
+    uint32_t representation_rejects;
+} ns2_ds5_motion_diag_t;
+
+// Native-quaternion translator state for UART diagnosis. Quaternion values are
+// fixed-point x1,000,000 so diagnostics do not depend on float printf support.
+void ns2_dbg_ds5_motion(ns2_ds5_motion_diag_t *out);
+bool ns2_dbg_ds5_motion_probe_rate(uint8_t axis, int16_t rate);
+void ns2_dbg_ds5_motion_probe_off(void);
+void ns2_dbg_ds5_motion_set_body_frame(bool body_frame);
+bool ns2_dbg_ds5_motion_set_map(const int8_t map[3]);
+void ns2_dbg_ds5_motion_set_carrier(uint8_t carrier);
+
 // Anomaly-instrumentation types (2026-07-10). See ns2_motion_tick()'s NS2_MAX_PHASE_DELTA
 // derivation in switch_pro2.c for the (mathematically bounded, not heuristic) detection
 // criterion: a phase increment that exceeds what the code's own clamps allow is proof of a

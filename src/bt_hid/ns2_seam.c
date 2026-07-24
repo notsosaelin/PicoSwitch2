@@ -20,6 +20,7 @@
 #include "report.h"                              // set_global_gamepad_input(), report_get_rumble()
 #include "switch_pro.h"                           // switch_pro_input_t, SWITCH_MASK_*, pack_stick
 #include "bt/bthid/bthid.h"                       // bthid_get_device() — connected controller identity
+#include "bt/bthid/devices/vendors/sony/ds5_bt.h" // exact decoder provenance (not late SDP PID)
 #include "config.h"                               // config_get_body_color() / config_get_ns2_map()
 #include "ns2_remap.h"                            // NS2_SRC_COUNT / NS2_DST_* (per-device remap)
 #include "ns2_player_led.h"                       // Switch wire bitfield -> player number
@@ -225,6 +226,7 @@ void router_submit_input(const input_event_t *e) {
     // The default map (NS2_DEFAULT_MAP) reproduces the built-in mapping exactly, so an
     // unconfigured device behaves as before; the config UI overrides per family.
     uint8_t slot = ns2_slot(e->dev_addr);
+    const bthid_device_t *dev = bthid_get_device(e->dev_addr);
     uint8_t map[NS2_SRC_COUNT];
     config_get_ns2_map(ns2_family(e->dev_addr), map);
     for (int src = 0; src < NS2_SRC_COUNT; src++) {
@@ -244,7 +246,7 @@ void router_submit_input(const input_event_t *e) {
     // (Experiment A: genuine gyro peaked 7401 LSB, ours only 122) -> imperceptible in Steam.
     // (Report 0x05 consumes these directly; report 0x09's int32 phase/Q16.16 rewrite is separate.)
     //
-    // Axis permutation — CORRECTED 2026-07-10 from a genuine-controller report-0x05 capture
+    // Axis permutation — corrected from a genuine-controller report-0x05 capture
     // (usbpcaptures/genuine_procon_2.pcapng, Experiment A's golden trace). That capture's
     // "still, then rotate pitch/yaw/roll in turn" protocol lets the raw gyro channels be
     // identified: the genuine device's raw gyro **X** is the long, clean, first-rotated axis
@@ -258,18 +260,27 @@ void router_submit_input(const input_event_t *e) {
     // incorrect" symptom. Fix: route DS5 pitch (gyro[0]/accel[0]) to output X and DS5 roll
     // (gyro[2]/accel[2]) to output Y, keep DS5 yaw (gyro[1]/accel[1]) on output Z unchanged.
     // The old X/Y formulas are reused (not re-derived) so this is a **row swap**, which on its
-    // own would flip the transform's handedness (determinant -1, a mirror — physically
-    // impossible for a rigid IMU remount); the sign on the new Y row is flipped to restore a
-    // proper rotation (determinant +1). Roll's sign is therefore inferred from that constraint,
-    // not independently measured — the capture's third segment (roll) was not clean enough to
-    // read a sign off directly. 🔵 Unverified on hardware; see docs/switch2/report-0x09-motion.md.
+    // Paired native-Pro2/DualSense capture on 2026-07-22 resolves the remaining
+    // signs: during the same physical pitch, DS5 gyro-X and native state-0 G0
+    // increase together. Gravity simultaneously maps DS5 [X,Y,Z] to Pro2
+    // [X,-Z,Y]. Apply that same proper rotation (determinant +1) to gyro and
+    // accel; the former [-X,+Z,+Y] mapping inverted pitch and roll and made
+    // the console's gravity correction bleed one axis into another.
     if (e->has_motion) {
         in.has_motion = 1;
-        in.accel[0] = ns2_clamp16(-e->accel[0] / 2);
-        in.accel[1] = ns2_clamp16( e->accel[2] / 2);
+        // Driver identity is already authoritative when a report is decoded,
+        // unlike Bluetooth SDP product_id which may still be zero. Comparing
+        // the bound decoder keeps DS4 and other Sony layouts out without
+        // expanding or changing input_event_t.
+        in.motion_source =
+            dev && dev->driver == &ds5_bt_driver
+                ? SWITCH_MOTION_SOURCE_DUALSENSE
+                : SWITCH_MOTION_SOURCE_GENERIC;
+        in.accel[0] = ns2_clamp16( e->accel[0] / 2);
+        in.accel[1] = ns2_clamp16(-e->accel[2] / 2);
         in.accel[2] = ns2_clamp16( e->accel[1] / 2);
-        in.gyro[0]  = ns2_clamp16(-e->gyro[0]);
-        in.gyro[1]  = ns2_clamp16( e->gyro[2]);
+        in.gyro[0]  = ns2_clamp16( e->gyro[0]);
+        in.gyro[1]  = ns2_clamp16(-e->gyro[2]);
         in.gyro[2]  = ns2_clamp16( e->gyro[1]);
     }
 #ifdef NS2_DS5_AUDIO
@@ -278,7 +289,6 @@ void router_submit_input(const input_event_t *e) {
 
     // Publish identity before input so core0 can make source-specific policy decisions on the
     // new state (notably native Pro2 motion ownership) without one report of stale identity.
-    const bthid_device_t *dev = bthid_get_device(e->dev_addr);
     if (dev)
         set_global_device(slot, dev->name, dev->vendor_id, dev->product_id);
 

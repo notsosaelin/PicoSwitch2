@@ -23,6 +23,9 @@
 #include "ns2_firmware_profile.h"
 #include "ns2_protocol_trace.h"
 #include "ns2_native_motion.h"
+#include "ns2_motion_probe.h"
+#include "ns2_diag_input.h"
+#include "ns2_ds5_motion.h"
 #include "usb.h"         // g_usb_config_mode
 
 // This whole module is only built into the NS2 firmware. The vendor-class calls
@@ -369,6 +372,10 @@ static int32_t  ns2_gyro_jitter[3];  // EMA of |raw - prev_raw|, <<6 fixed point
 static uint8_t  ns2_dbg_still;       // stillness gate state from the most recent report
 static bool     ns2_native_hold_active;
 static uint16_t ns2_native_hold_previous_tick;
+static ns2_ds5_motion_state_t ns2_ds5_motion;
+static bool ns2_ds5_motion_source_active;
+static bool ns2_ds5_motion_probe_active;
+static int16_t ns2_ds5_motion_probe_gyro[3];
 
 // Debug: bias estimate (converted to raw LSB units) + whether the stillness gate is
 // currently open. If `still` never reads 1 while the controller sits motionless on real
@@ -389,6 +396,67 @@ void ns2_dbg_motion_bias(int32_t bias_out[3], uint8_t *still_out) {
 // still answers the first question directly, with no console needed.
 void ns2_dbg_motion_phase(int32_t phase_out[3]) {
     if (phase_out) for (int i = 0; i < 3; i++) phase_out[i] = (int32_t)ns2_phase[i];
+}
+
+void ns2_dbg_ds5_motion(ns2_ds5_motion_diag_t *out) {
+    if (!out) return;
+    out->source_active = ns2_ds5_motion_source_active ? 1u : 0u;
+    out->initialized = ns2_ds5_motion.initialized ? 1u : 0u;
+    out->has_sample = ns2_ds5_motion.has_sample ? 1u : 0u;
+    out->probe_active = ns2_ds5_motion_probe_active ? 1u : 0u;
+    memcpy(out->probe_gyro, ns2_ds5_motion_probe_gyro,
+           sizeof(out->probe_gyro));
+    for (unsigned i = 0; i < 3; ++i) {
+        out->input_gyro[i] = (int16_t)ns2_ds5_motion.gyro_prev[i];
+        out->bias_gyro[i] =
+            ns2_ds5_motion.gyro_bias[i] >> 6;
+        out->corrected_gyro[i] =
+            (ns2_ds5_motion.gyro_lp[i] -
+             ns2_ds5_motion.gyro_bias[i]) >> 6;
+        out->jitter[i] =
+            ns2_ds5_motion.gyro_jitter[i] >> 6;
+        out->gyro_map[i] = ns2_ds5_motion.gyro_map[i];
+    }
+    out->carrier = (uint8_t)ns2_ds5_motion.carrier;
+    out->body_frame = ns2_ds5_motion.body_frame ? 1u : 0u;
+    for (unsigned i = 0; i < 4; ++i)
+        out->quaternion_million[i] =
+            (int32_t)(ns2_ds5_motion.quaternion[i] * 1000000.0f);
+    out->updates = ns2_ds5_motion.updates;
+    out->representation_rejects =
+        ns2_ds5_motion.representation_rejects;
+}
+
+bool ns2_dbg_ds5_motion_probe_rate(uint8_t axis, int16_t rate) {
+    if (axis >= 3u) return false;
+    memset(ns2_ds5_motion_probe_gyro, 0,
+           sizeof(ns2_ds5_motion_probe_gyro));
+    ns2_ds5_motion_probe_gyro[axis] = rate;
+    ns2_ds5_motion_probe_active = true;
+    return true;
+}
+
+void ns2_dbg_ds5_motion_probe_off(void) {
+    ns2_ds5_motion_probe_active = false;
+    memset(ns2_ds5_motion_probe_gyro, 0,
+           sizeof(ns2_ds5_motion_probe_gyro));
+}
+
+void ns2_dbg_ds5_motion_set_body_frame(bool body_frame) {
+    ns2_ds5_motion_set_body_frame(&ns2_ds5_motion, body_frame);
+}
+
+bool ns2_dbg_ds5_motion_set_map(const int8_t map[3]) {
+    return ns2_ds5_motion_set_gyro_map(&ns2_ds5_motion, map);
+}
+
+void ns2_dbg_ds5_motion_set_carrier(uint8_t carrier) {
+    ns2_ds5_motion_carrier_t selected = NS2_DS5_CARRIER_SWITCH2_WXYZ;
+    if (carrier == (uint8_t)NS2_DS5_CARRIER_SWITCH1_DSCALE)
+        selected = NS2_DS5_CARRIER_SWITCH1_DSCALE;
+    else if (carrier == (uint8_t)NS2_DS5_CARRIER_LEGACY_STATE0)
+        selected = NS2_DS5_CARRIER_LEGACY_STATE0;
+    ns2_ds5_motion_set_carrier(&ns2_ds5_motion, selected);
 }
 
 // The tracked timing word for the CURRENT phase[] values (set inside ns2_motion_tick(),
@@ -793,6 +861,8 @@ static void ns2_build_report(uint8_t *p) {
     static uint8_t counter = 0;
     switch_pro_input_t in;
     get_global_gamepad_input(0, &in);  // NS2 milestone: single controller (slot 0)
+    if (ns2_diag_input_y_pressed(time_us_32()))
+        in.buttons[0] |= SWITCH_MASK_Y;
 
     memset(p, 0, 63);
 #ifdef NS2_DS5_AUDIO
@@ -877,7 +947,39 @@ static void ns2_build_report(uint8_t *p) {
     bool native_motion_owned = native_motion_fresh &&
         ns2_native_motion_output_slot(native_motion.source_conn_index) == 0 &&
         source_vid == 0x057E && source_pid == 0x2069;
-    if (ns2_imu_enabled && native_motion_owned) {
+    // Use the decoder's explicit provenance, not Bluetooth SDP identity, for
+    // translator ownership. Hardware proved that a genuine DualSense can be
+    // fully streaming with VID 0x054C while PID remains 0x0000. The former
+    // VID/PID gate therefore skipped this path and fell into the known-bad
+    // generic phase encoder, producing violent motion spam. DS4 and other Sony
+    // devices remain excluded because only ds5_bt stamps this source value.
+    const bool ds5_motion_owned =
+        in.motion_source == SWITCH_MOTION_SOURCE_DUALSENSE &&
+        in.has_motion;
+    if (ds5_motion_owned) {
+        if (!ns2_ds5_motion_source_active)
+            ns2_ds5_motion_reset(&ns2_ds5_motion);
+        ns2_ds5_motion_source_active = true;
+        switch_pro_input_t ds5_motion_input = in;
+        if (ns2_ds5_motion_probe_active)
+            memcpy(ds5_motion_input.gyro, ns2_ds5_motion_probe_gyro,
+                   sizeof(ds5_motion_input.gyro));
+        (void)ns2_ds5_motion_update(&ns2_ds5_motion, &ds5_motion_input,
+                                    time_us_32());
+    } else if (ns2_ds5_motion_source_active) {
+        // A source change must not carry the former controller's integrated
+        // orientation or learned zero-rate bias into a later DS5 session.
+        ns2_ds5_motion_reset(&ns2_ds5_motion);
+        ns2_ds5_motion_source_active = false;
+    }
+    uint8_t probe_motion[30];
+    bool motion_probe_active = ns2_imu_enabled &&
+        ns2_motion_probe_build(probe_motion);
+    if (motion_probe_active) {
+        p[0x0E] = sizeof(probe_motion);
+        memcpy(&p[0x0F], probe_motion, sizeof(probe_motion));
+        ns2_native_hold_active = false;
+    } else if (ns2_imu_enabled && native_motion_owned) {
         p[0x0E] = native_motion.length;
         memcpy(&p[0x0F], native_motion.data, native_motion.length);
         if (native_motion.held_after_disconnect && native_motion.length == 0x1E) {
@@ -902,6 +1004,19 @@ static void ns2_build_report(uint8_t *p) {
         } else {
             ns2_native_hold_active = false;
         }
+    } else if (ds5_motion_owned) {
+        // Reports decoded by the DualSense driver use the native quaternion
+        // translator. Its production carrier uses the fully proven state-0
+        // Switch 2 chart and withholds motion at an unimplemented coordinate-
+        // rebase boundary rather than falling through to the obsolete phase
+        // carrier or guessing state semantics.
+        uint8_t ds5_motion[30];
+        if (ns2_imu_enabled &&
+            ns2_ds5_motion_build(&ns2_ds5_motion, ds5_motion)) {
+            p[0x0E] = sizeof(ds5_motion);
+            memcpy(&p[0x0F], ds5_motion, sizeof(ds5_motion));
+        }
+        ns2_native_hold_active = false;
     } else if (in.has_motion) {
         ns2_motion_tick_gated(&in);
         if (ns2_imu_enabled) {
@@ -919,6 +1034,8 @@ static void ns2_build_report_05(uint8_t *p) {
     static uint32_t counter = 0;
     switch_pro_input_t in;
     get_global_gamepad_input(0, &in);
+    if (ns2_diag_input_y_pressed(time_us_32()))
+        in.buttons[0] |= SWITCH_MASK_Y;
 
     memset(p, 0, 63);
     p[0] = (uint8_t)counter;
@@ -997,6 +1114,9 @@ static void ns2_build_report_05(uint8_t *p) {
 void ns2_mount(void) {
     if (g_ns2_stage < 3) g_ns2_stage = 3;
     ns2_imu_enabled = false;  // new host session: IMU off until the host re-enables it (0x0C/0x04)
+    ns2_ds5_motion_reset(&ns2_ds5_motion);
+    ns2_ds5_motion_source_active = false;
+    ns2_dbg_ds5_motion_probe_off();
 }
 
 void ns2_init(void) {
@@ -1006,6 +1126,9 @@ void ns2_init(void) {
     ns2_report_id = 0x09;
     ns2_streaming = false;
     ns2_imu_enabled = false;
+    ns2_ds5_motion_reset(&ns2_ds5_motion);
+    ns2_ds5_motion_source_active = false;
+    ns2_dbg_ds5_motion_probe_off();
 }
 
 // Decode one HD-rumble motor's peak amplitude (0..1023) from its 5-byte packed LRA field.

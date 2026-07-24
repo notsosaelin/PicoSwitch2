@@ -6,6 +6,8 @@ param(
     [string]$Port,
     [string]$Command = 'fwreads',
     [string]$OutputPath,
+    [ValidateRange(100, 850)]
+    [int]$CaptureMs = 600,
     [ValidateRange(250, 30000)]
     [int]$TimeoutMs = 5000,
     [switch]$List
@@ -260,6 +262,65 @@ try {
             records = $lines.Count
             dropped = [uint64]$manifest.dropped
             variant = [int]$manifest.variant
+        } | ConvertTo-Json -Compress
+        $lines.Add($end)
+        Write-DiagnosticLines -Lines $lines.ToArray()
+    } elseif ($Command -in @('motionpair dump', 'motionpair capture')) {
+        # Stop and drain one time-aligned genuine-Pro2/DualSense motion corpus.
+        # Each native PDU is paired on-device with the latest DS5 sample using
+        # the Pico's clock, avoiding UART timing as part of the measurement.
+        # `motionpair capture` starts and stops through this already-open port,
+        # avoiding process/open latency that can fill the 127-record ring before
+        # a second script invocation gets a chance to stop it.
+        if ($Command -eq 'motionpair capture') {
+            $serial.Write("motionpair start`n")
+            $startLine = $serial.ReadLine().Trim()
+            $start = $startLine | ConvertFrom-Json
+            if ($start.motionpair -ne 'started' -or -not $start.enabled) {
+                throw "Could not start paired-motion capture: $startLine"
+            }
+            Start-Sleep -Milliseconds $CaptureMs
+        }
+        $serial.Write("motionpair dump`n")
+        $manifestLine = $serial.ReadLine().Trim()
+        $manifest = $manifestLine | ConvertFrom-Json
+        if ($manifest.motionpair -ne 'dump' -or
+            $manifest.PSObject.Properties.Name -notcontains 'count' -or
+            $manifest.PSObject.Properties.Name -notcontains 'dropped') {
+            throw "Invalid paired-motion manifest: $manifestLine"
+        }
+
+        $lines = [System.Collections.Generic.List[string]]::new()
+        for ($index = 0; $index -lt [int]$manifest.count; $index++) {
+            $serial.Write("motionpair read`n")
+            $line = $serial.ReadLine().Trim()
+            $parsed = $line | ConvertFrom-Json
+            if ($parsed.motionpair -ne 'record') {
+                throw "Expected paired-motion record $index, received: $line"
+            }
+            foreach ($name in @('t_us', 'native_len', 'native', 'ds5_valid',
+                                'ds5_seq', 'ds5_t_us', 'ds5_age_us', 'ds5_sensor',
+                                'cal_state', 'raw_g', 'raw_a', 'cal_g', 'cal_a')) {
+                if ($parsed.PSObject.Properties.Name -notcontains $name) {
+                    throw "Paired-motion record is incomplete (missing '$name'): $line"
+                }
+            }
+            if ([int]$parsed.native_len -notin @(30, 40) -or
+                $parsed.native -notmatch '^[0-9A-F]+$' -or
+                $parsed.native.Length -ne ([int]$parsed.native_len * 2)) {
+                throw "Paired-motion payload framing mismatch at record ${index}: $line"
+            }
+            foreach ($field in @('raw_g', 'raw_a', 'cal_g', 'cal_a')) {
+                if (@($parsed.$field).Count -ne 3) {
+                    throw "Paired-motion $field axis count mismatch at record ${index}: $line"
+                }
+            }
+            $lines.Add($line)
+        }
+        $end = [ordered]@{
+            motionpair = 'end'
+            records = $lines.Count
+            dropped = [uint64]$manifest.dropped
         } | ConvertTo-Json -Compress
         $lines.Add($end)
         Write-DiagnosticLines -Lines $lines.ToArray()
