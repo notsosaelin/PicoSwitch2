@@ -74,6 +74,11 @@ typedef struct {
     // Check if in pairing mode
     bool (*is_pairing_mode)(void);
 
+    // Request one HID feature report over the control channel. Optional: BLE
+    // HID and transports without a control-channel GET_REPORT primitive leave
+    // this NULL and callers receive false without changing connection state.
+    bool (*request_feature_report)(uint8_t conn_index, uint8_t report_id);
+
 } bt_transport_t;
 
 // ============================================================================
@@ -115,6 +120,12 @@ static inline bool bt_send_control(uint8_t conn_index, const uint8_t* data, uint
 static inline bool bt_send_interrupt(uint8_t conn_index, const uint8_t* data, uint16_t len) {
     return bt_transport && bt_transport->send_interrupt
            ? bt_transport->send_interrupt(conn_index, data, len) : false;
+}
+
+static inline bool bt_request_feature_report(uint8_t conn_index,
+                                             uint8_t report_id) {
+    return bt_transport && bt_transport->request_feature_report
+           ? bt_transport->request_feature_report(conn_index, report_id) : false;
 }
 
 static inline void bt_disconnect(uint8_t conn_index) {

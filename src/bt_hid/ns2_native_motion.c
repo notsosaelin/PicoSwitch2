@@ -1,5 +1,6 @@
 #include "ns2_native_motion.h"
 #include "switch_pro.h"
+#include "ds5_motion_pair_capture.h"
 
 #include <string.h>
 
@@ -36,6 +37,11 @@ bool ns2_native_motion_publish(uint8_t source_conn_index,
     if ((uint16_t)(15u + length) > report_length || length > NS2_NATIVE_MOTION_MAX_DATA) {
         return false;
     }
+
+    // Diagnostic-only paired oracle capture. Disabled by default; when armed,
+    // this snapshots the latest DS5 IMU sample beside the exact genuine PDU on
+    // the same Pico clock. It never alters the validated passthrough snapshot.
+    ds5_motion_pair_record_native(captured_us, &report[0x0F], length);
 
     begin_write();
     s_state.valid = 1;
@@ -78,6 +84,30 @@ bool ns2_native_motion_snapshot(ns2_native_motion_snapshot_t *out, uint32_t now_
         return false;
     }
     *out = local.snapshot;
+    return true;
+}
+
+bool ns2_native_motion_snapshot_30(ns2_native_motion_snapshot_t *out, uint32_t now_us,
+                                   uint32_t max_age_us)
+{
+    if (!out) return false;
+
+    ns2_native_motion_state_t local;
+    uint32_t before;
+    uint32_t after;
+    for (;;) {
+        before = __atomic_load_n(&s_sequence, __ATOMIC_ACQUIRE);
+        if (before & 1u) continue;
+        local = s_state;
+        after = __atomic_load_n(&s_sequence, __ATOMIC_ACQUIRE);
+        if (before == after && !(after & 1u)) break;
+    }
+
+    if (!local.last_motion30_valid ||
+        (uint32_t)(now_us - local.last_motion30.captured_us) > max_age_us) {
+        return false;
+    }
+    *out = local.last_motion30;
     return true;
 }
 

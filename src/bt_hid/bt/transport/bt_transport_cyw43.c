@@ -53,6 +53,7 @@ __attribute__((weak)) uint8_t btstack_classic_get_connection_count(void) { retur
 __attribute__((weak)) bool btstack_classic_get_connection(uint8_t idx, btstack_classic_conn_info_t *info) { (void)idx; (void)info; return false; }
 __attribute__((weak)) bool btstack_classic_send_set_report_type(uint8_t idx, uint8_t type, uint8_t id, const uint8_t *data, uint16_t len) { (void)idx; (void)type; (void)id; (void)data; (void)len; return false; }
 __attribute__((weak)) bool btstack_classic_send_report(uint8_t idx, uint8_t id, const uint8_t *data, uint16_t len) { (void)idx; (void)id; (void)data; (void)len; return false; }
+__attribute__((weak)) bool btstack_classic_get_feature_report(uint8_t idx, uint8_t id) { (void)idx; (void)id; return false; }
 __attribute__((weak)) void btstack_host_transport_process(void) {}
 
 // BTstack includes (must come before CYW43 includes)
@@ -203,6 +204,12 @@ static bool cyw43_transport_send_interrupt(uint8_t conn_index, const uint8_t* da
     return false;
 }
 
+static bool cyw43_transport_request_feature_report(uint8_t conn_index,
+                                                    uint8_t report_id)
+{
+    return btstack_classic_get_feature_report(conn_index, report_id);
+}
+
 static void cyw43_transport_disconnect(uint8_t conn_index)
 {
     // TODO: Implement disconnect
@@ -244,4 +251,5 @@ const bt_transport_t bt_transport_cyw43 = {
     .disconnect = cyw43_transport_disconnect,
     .set_pairing_mode = cyw43_transport_set_pairing_mode,
     .is_pairing_mode = cyw43_transport_is_pairing_mode,
+    .request_feature_report = cyw43_transport_request_feature_report,
 };

@@ -7,7 +7,11 @@
 #include "ns2_protocol_trace.h"
 #include "sw2_capture.h"
 #include "ns2_native_motion.h"
+#include "ns2_motion_probe.h"
+#include "ns2_motion_pdu.h"
+#include "ns2_diag_input.h"
 #include "ds5_audio_bridge.h"
+#include "ds5_motion_pair_capture.h"
 #include "report.h"
 #include "switch_pro2.h"
 #include "bt/btstack/btstack_host.h"
@@ -31,6 +35,7 @@ extern uint32_t ns2_audio_core1_stack_free_bytes(void);
 #define NS2_UART_TX_BUFFER_SIZE 2304u
 #define NS2_UART_TASK_RX_BUDGET 16u
 #define NS2_UART_TASK_TX_BUDGET 8u
+#define NS2_UART_Y_PULSE_US 120000u
 
 static char rx_line[NS2_UART_RX_LINE_SIZE];
 static size_t rx_length;
@@ -49,6 +54,9 @@ static char ble_format_response[512];
 static uint8_t pcm_format_data[DS5_AUDIO_PCM_CAPTURE_READ_MAX];
 static char pcm_format_payload[DS5_AUDIO_PCM_CAPTURE_READ_MAX * 2u + 1u];
 static char pcm_format_response[896];
+static ds5_motion_pair_record_t motion_pair_format_record;
+static char motion_pair_format_payload[DS5_MOTION_PAIR_NATIVE_MAX * 2u + 1u];
+static char motion_pair_format_response[768];
 
 static bool tx_pending(void) {
     return tx_position < tx_length;
@@ -202,6 +210,77 @@ static void queue_ble_record(void) {
     queue_text(ble_format_response);
 }
 
+static void queue_motion_pair_status(const char *event) {
+    char response[256];
+    snprintf(response, sizeof(response),
+             "{\"motionpair\":\"%s\",\"enabled\":%s,\"count\":%u,"
+             "\"capacity\":%u,\"dropped\":%lu}",
+             event, ds5_motion_pair_get_enabled() ? "true" : "false",
+             ds5_motion_pair_buffered_count(), DS5_MOTION_PAIR_CAPACITY,
+             (unsigned long)ds5_motion_pair_dropped_count());
+    queue_text(response);
+}
+
+static void queue_motion_pair_record(void) {
+    if (!ds5_motion_pair_drain_one(&motion_pair_format_record)) {
+        queue_text("{\"motionpair\":\"empty\"}");
+        return;
+    }
+    for (size_t i = 0; i < motion_pair_format_record.native_length; ++i)
+        snprintf(&motion_pair_format_payload[i * 2u], 3, "%02X",
+                 motion_pair_format_record.native[i]);
+    motion_pair_format_payload[motion_pair_format_record.native_length * 2u] = '\0';
+
+    uint32_t age_us = motion_pair_format_record.ds5_valid
+        ? motion_pair_format_record.native_us - motion_pair_format_record.ds5_us
+        : UINT32_MAX;
+    snprintf(motion_pair_format_response, sizeof(motion_pair_format_response),
+             "{\"motionpair\":\"record\",\"t_us\":%lu,"
+             "\"native_len\":%u,\"native\":\"%s\","
+             "\"ds5_valid\":%s,\"ds5_seq\":%lu,\"ds5_t_us\":%lu,"
+             "\"ds5_age_us\":%lu,\"ds5_sensor\":%lu,\"cal_state\":%u,"
+             "\"raw_g\":[%d,%d,%d],\"raw_a\":[%d,%d,%d],"
+             "\"cal_g\":[%d,%d,%d],\"cal_a\":[%d,%d,%d]}",
+             (unsigned long)motion_pair_format_record.native_us,
+             motion_pair_format_record.native_length,
+             motion_pair_format_payload,
+             motion_pair_format_record.ds5_valid ? "true" : "false",
+             (unsigned long)motion_pair_format_record.ds5_sequence,
+             (unsigned long)motion_pair_format_record.ds5_us,
+             (unsigned long)age_us,
+             (unsigned long)motion_pair_format_record.ds5_sensor_timestamp,
+             motion_pair_format_record.calibration_state,
+             motion_pair_format_record.raw_gyro[0],
+             motion_pair_format_record.raw_gyro[1],
+             motion_pair_format_record.raw_gyro[2],
+             motion_pair_format_record.raw_accel[0],
+             motion_pair_format_record.raw_accel[1],
+             motion_pair_format_record.raw_accel[2],
+             motion_pair_format_record.calibrated_gyro[0],
+             motion_pair_format_record.calibrated_gyro[1],
+             motion_pair_format_record.calibrated_gyro[2],
+             motion_pair_format_record.calibrated_accel[0],
+             motion_pair_format_record.calibrated_accel[1],
+             motion_pair_format_record.calibrated_accel[2]);
+    queue_text(motion_pair_format_response);
+}
+
+static void queue_motion_probe_status(const char *event) {
+    ns2_motion_probe_status_t d;
+    ns2_motion_probe_get_status(&d);
+    snprintf(trace_format_response, sizeof(trace_format_response),
+             "{\"motionprobe\":\"%s\",\"latched\":%s,\"enabled\":%s,"
+             "\"g\":[%lu,%lu,%lu],\"baseline\":[%lu,%lu,%lu],"
+             "\"rate\":[%ld,%ld,%ld],\"updates\":%lu}",
+             event, d.latched ? "true" : "false", d.enabled ? "true" : "false",
+             (unsigned long)d.orientation[0], (unsigned long)d.orientation[1],
+             (unsigned long)d.orientation[2], (unsigned long)d.baseline[0],
+             (unsigned long)d.baseline[1], (unsigned long)d.baseline[2],
+             (long)d.rate[0], (long)d.rate[1], (long)d.rate[2],
+             (unsigned long)d.updates);
+    queue_text(trace_format_response);
+}
+
 static void queue_pcm_status(const char *event) {
     ds5_audio_pcm_capture_status_t status;
     ds5_audio_pcm_capture_get_status(&status);
@@ -337,6 +416,98 @@ static void handle_command(void) {
         queue_ble_status("dump");
     } else if (strcmp(rx_line, "blecap read") == 0) {
         queue_ble_record();
+    } else if (strcmp(rx_line, "motionpair") == 0 ||
+               strcmp(rx_line, "motionpair status") == 0) {
+        queue_motion_pair_status("status");
+    } else if (strcmp(rx_line, "motionpair start") == 0) {
+        ds5_motion_pair_set_enabled(true);
+        queue_motion_pair_status("started");
+    } else if (strcmp(rx_line, "motionpair stop") == 0) {
+        ds5_motion_pair_set_enabled(false);
+        queue_motion_pair_status("stopped");
+    } else if (strcmp(rx_line, "motionpair dump") == 0) {
+        ds5_motion_pair_set_enabled(false);
+        queue_motion_pair_status("dump");
+    } else if (strcmp(rx_line, "motionpair read") == 0) {
+        queue_motion_pair_record();
+    } else if (strcmp(rx_line, "motionprobe") == 0 ||
+               strcmp(rx_line, "motionprobe status") == 0) {
+        queue_motion_probe_status("status");
+    } else if (strcmp(rx_line, "motionprobe latch") == 0) {
+        if (ns2_motion_probe_latch())
+            queue_motion_probe_status("latched");
+        else
+            queue_text("{\"motionprobe\":\"error\",\"reason\":\"no_fresh_0x1e\"}");
+    } else if (strncmp(rx_line, "motionprobe seed ", 17) == 0) {
+        unsigned int state = 0;
+        char trailing;
+        if (sscanf(rx_line + 17, "%u%c", &state, &trailing) == 1 &&
+            state < 4u && ns2_motion_probe_seed((uint8_t)state)) {
+            queue_motion_probe_status("seeded");
+        } else {
+            queue_text("{\"motionprobe\":\"error\",\"reason\":\"seed_requires_state_0_3\"}");
+        }
+    } else if (strcmp(rx_line, "motionprobe on") == 0) {
+        if (ns2_motion_probe_set_enabled(true))
+            queue_motion_probe_status("enabled");
+        else
+            queue_text("{\"motionprobe\":\"error\",\"reason\":\"not_latched\"}");
+    } else if (strcmp(rx_line, "motionprobe off") == 0) {
+        ns2_motion_probe_set_enabled(false);
+        queue_motion_probe_status("disabled");
+    } else if (strcmp(rx_line, "motionprobe reset") == 0) {
+        ns2_motion_probe_reset();
+        queue_motion_probe_status("reset");
+    } else if (strcmp(rx_line, "button y") == 0) {
+        ns2_diag_input_press_y(time_us_32(), NS2_UART_Y_PULSE_US);
+        queue_text("{\"button\":\"y\",\"pressed_ms\":120}");
+    } else if (strncmp(rx_line, "motionprobe set ", 16) == 0) {
+        unsigned long values[3] = {0};
+        int consumed = 0;
+        if (sscanf(rx_line + 16, "%lu %lu %lu %n",
+                   &values[0], &values[1], &values[2], &consumed) == 3 &&
+            rx_line[16 + consumed] == '\0' &&
+            values[0] <= NS2_MOTION_ORIENTATION_MASK &&
+            values[1] <= NS2_MOTION_ORIENTATION_MASK &&
+            values[2] <= NS2_MOTION_ORIENTATION_MASK) {
+            const uint32_t orientation[3] = {
+                (uint32_t)values[0], (uint32_t)values[1], (uint32_t)values[2]
+            };
+            if (ns2_motion_probe_set_orientation(orientation))
+                queue_motion_probe_status("set");
+            else
+                queue_text("{\"motionprobe\":\"error\",\"reason\":\"set_requires_latched_disabled_probe\"}");
+        } else {
+            queue_text("{\"motionprobe\":\"error\",\"reason\":\"set_requires_three_u26_values\"}");
+        }
+    } else if (strncmp(rx_line, "motionprobe rate ", 17) == 0) {
+        unsigned int axis = 0;
+        long rate = 0;
+        int consumed = 0;
+        if (sscanf(rx_line + 17, "%u %ld %n", &axis, &rate, &consumed) == 2 &&
+            rx_line[17 + consumed] == '\0' &&
+            axis < 3u && rate >= -262144 && rate <= 262144 &&
+            ns2_motion_probe_set_rate((uint8_t)axis, (int32_t)rate)) {
+            queue_motion_probe_status("rate");
+        } else {
+            queue_text("{\"motionprobe\":\"error\",\"reason\":\"rate_requires_axis_0_2_and_value_-262144_262144\"}");
+        }
+    } else if (strncmp(rx_line, "motionprobe accel ", 18) == 0) {
+        long values[3] = {0};
+        int consumed = 0;
+        if (sscanf(rx_line + 18, "%ld %ld %ld %n",
+                   &values[0], &values[1], &values[2], &consumed) == 3 &&
+            rx_line[18 + consumed] == '\0') {
+            const int32_t accel[3] = {
+                (int32_t)values[0], (int32_t)values[1], (int32_t)values[2]
+            };
+            if (ns2_motion_probe_set_accel(accel))
+                queue_motion_probe_status("accel");
+            else
+                queue_text("{\"motionprobe\":\"error\",\"reason\":\"accel_requires_latched_disabled_probe\"}");
+        } else {
+            queue_text("{\"motionprobe\":\"error\",\"reason\":\"accel_requires_three_i32_values\"}");
+        }
     } else if (strcmp(rx_line, "blecap gattdisc on") == 0) {
         sw2_set_gatt_discovery_enabled(true);
         queue_text("{\"blecap\":\"gattdisc\",\"enabled\":true}");
@@ -398,35 +569,191 @@ static void handle_command(void) {
                  fresh ? motion.source_conn_index : 0xFFu,
                  (fresh && motion.held_after_disconnect) ? "true" : "false");
         queue_text(trace_format_response);
+    } else if (strcmp(rx_line, "ds5motion") == 0 ||
+               strcmp(rx_line, "ds5motion status") == 0) {
+        ns2_ds5_motion_diag_t d;
+        uint8_t report_id = 0;
+        uint8_t streaming = 0;
+        uint8_t motion_len = 0;
+        ns2_dbg_ds5_motion(&d);
+        ns2_dbg_report_state(&report_id, &streaming, &motion_len);
+        snprintf(trace_format_response, sizeof(trace_format_response),
+                 "{\"ds5motion\":true,\"active\":%s,\"initialized\":%s,"
+                 "\"has_sample\":%s,\"probe_active\":%s,"
+                 "\"probe_gyro\":[%d,%d,%d],"
+                 "\"input_gyro\":[%d,%d,%d],"
+                 "\"bias_gyro\":[%ld,%ld,%ld],"
+                 "\"corrected_gyro\":[%ld,%ld,%ld],"
+                 "\"jitter\":[%ld,%ld,%ld],"
+                 "\"frame\":\"%s\",\"carrier\":\"%s\",\"map\":[%d,%d,%d],"
+                 "\"q_million\":[%ld,%ld,%ld,%ld],"
+                 "\"updates\":%lu,\"representation_rejects\":%lu,"
+                 "\"report_id\":%u,\"streaming\":%s,\"emitted_len\":%u}",
+                 d.source_active ? "true" : "false",
+                 d.initialized ? "true" : "false",
+                 d.has_sample ? "true" : "false",
+                 d.probe_active ? "true" : "false",
+                 d.probe_gyro[0], d.probe_gyro[1], d.probe_gyro[2],
+                 d.input_gyro[0], d.input_gyro[1], d.input_gyro[2],
+                 (long)d.bias_gyro[0], (long)d.bias_gyro[1],
+                 (long)d.bias_gyro[2],
+                 (long)d.corrected_gyro[0],
+                 (long)d.corrected_gyro[1],
+                 (long)d.corrected_gyro[2],
+                 (long)d.jitter[0], (long)d.jitter[1],
+                 (long)d.jitter[2],
+                 d.body_frame ? "body" : "world",
+                 d.carrier == 0u ? "switch2" :
+                 (d.carrier == 1u ? "dscale" : "legacy"),
+                 d.gyro_map[0], d.gyro_map[1], d.gyro_map[2],
+                 (long)d.quaternion_million[0],
+                 (long)d.quaternion_million[1],
+                 (long)d.quaternion_million[2],
+                 (long)d.quaternion_million[3],
+                 (unsigned long)d.updates,
+                 (unsigned long)d.representation_rejects,
+                 report_id, streaming ? "true" : "false", motion_len);
+        queue_text(trace_format_response);
+    } else if (strcmp(rx_line, "ds5motion probe off") == 0) {
+        ns2_dbg_ds5_motion_probe_off();
+        queue_text("{\"ds5motion\":\"probe\",\"active\":false}");
+    } else if (strcmp(rx_line, "ds5motion frame body") == 0) {
+        ns2_dbg_ds5_motion_set_body_frame(true);
+        queue_text("{\"ds5motion\":\"frame\",\"value\":\"body\"}");
+    } else if (strcmp(rx_line, "ds5motion frame world") == 0) {
+        ns2_dbg_ds5_motion_set_body_frame(false);
+        queue_text("{\"ds5motion\":\"frame\",\"value\":\"world\"}");
+    } else if (strcmp(rx_line, "ds5motion carrier switch2") == 0) {
+        ns2_dbg_ds5_motion_set_carrier(0u);
+        queue_text("{\"ds5motion\":\"carrier\",\"value\":\"switch2\",\"orientation_reset\":true}");
+    } else if (strcmp(rx_line, "ds5motion carrier dscale") == 0) {
+        ns2_dbg_ds5_motion_set_carrier(1u);
+        queue_text("{\"ds5motion\":\"carrier\",\"value\":\"dscale\",\"orientation_reset\":true}");
+    } else if (strcmp(rx_line, "ds5motion carrier legacy") == 0) {
+        ns2_dbg_ds5_motion_set_carrier(2u);
+        queue_text("{\"ds5motion\":\"carrier\",\"value\":\"legacy\",\"orientation_reset\":true}");
+    } else if (strncmp(rx_line, "ds5motion map ", 14) == 0) {
+        int values[3] = {0, 0, 0};
+        int consumed = 0;
+        int8_t map[3];
+        if (sscanf(rx_line + 14, "%d %d %d %n",
+                   &values[0], &values[1], &values[2], &consumed) == 3 &&
+            rx_line[14 + consumed] == '\0' &&
+            values[0] >= -3 && values[0] <= 3 && values[0] != 0 &&
+            values[1] >= -3 && values[1] <= 3 && values[1] != 0 &&
+            values[2] >= -3 && values[2] <= 3 && values[2] != 0) {
+            for (unsigned i = 0; i < 3; ++i)
+                map[i] = (int8_t)values[i];
+            if (ns2_dbg_ds5_motion_set_map(map)) {
+                queue_text("{\"ds5motion\":\"map\",\"updated\":true}");
+            } else {
+                queue_text("{\"ds5motion\":\"error\",\"reason\":\"map_axes_must_be_unique\"}");
+            }
+        } else {
+            queue_text("{\"ds5motion\":\"error\",\"reason\":\"map_requires_three_signed_axes_1_2_3\"}");
+        }
+    } else if (strncmp(rx_line, "ds5motion probe rate ", 21) == 0) {
+        unsigned int axis = 0;
+        long rate = 0;
+        int consumed = 0;
+        if (sscanf(rx_line + 21, "%u %ld %n",
+                   &axis, &rate, &consumed) == 2 &&
+            rx_line[21 + consumed] == '\0' &&
+            axis < 3u && rate >= -4096 && rate <= 4096 &&
+            ns2_dbg_ds5_motion_probe_rate((uint8_t)axis,
+                                          (int16_t)rate)) {
+            queue_text("{\"ds5motion\":\"probe\",\"active\":true}");
+        } else {
+            queue_text("{\"ds5motion\":\"error\",\"reason\":\"probe_rate_requires_axis_0_2_and_value_-4096_4096\"}");
+        }
+    } else if (strcmp(rx_line, "input") == 0 ||
+               strcmp(rx_line, "input status") == 0) {
+        switch_pro_input_t in;
+        uint16_t vid = 0;
+        uint16_t pid = 0;
+        get_global_gamepad_input(0, &in);
+        get_global_device(0, NULL, 0, &vid, &pid);
+        snprintf(trace_format_response, sizeof(trace_format_response),
+                 "{\"input\":true,\"raw\":\"0x%08lX\","
+                 "\"mapped\":[%u,%u,%u],\"extra\":%u,"
+                 "\"sticks\":[%u,%u,%u,%u,%u,%u],"
+                 "\"has_motion\":%s,\"motion_source\":%u,"
+                 "\"gyro\":[%d,%d,%d],\"vid\":\"0x%04X\","
+                 "\"pid\":\"0x%04X\"}",
+                 (unsigned long)get_global_raw_buttons(0),
+                 in.buttons[0], in.buttons[1], in.buttons[2], in.extra,
+                 in.left_stick[0], in.left_stick[1], in.left_stick[2],
+                 in.right_stick[0], in.right_stick[1],
+                 in.right_stick[2],
+                 in.has_motion ? "true" : "false", in.motion_source,
+                 in.gyro[0], in.gyro[1], in.gyro[2], vid, pid);
+        queue_text(trace_format_response);
     } else if (strcmp(rx_line, "audio") == 0 ||
                strcmp(rx_line, "audio status") == 0) {
         ds5_audio_diag_t d;
         ds5_audio_diag_get(&d);
         snprintf(trace_format_response, sizeof(trace_format_response),
                  "{\"audio\":true,\"usb_active\":%s,"
+                 "\"send_max_us\":%lu,\"send_over_40ms\":%lu,"
+                 "\"sends\":%lu,\"hci_max_us\":%lu,"
+                 "\"hci_over_40ms\":%lu,\"hci_events\":%lu,"
+                 "\"hci_packets\":%lu,\"hci_max_batch\":%lu,"
                  "\"pcm_packets\":%lu,\"pcm_nonzero\":%lu,"
-                 "\"pcm_dropped\":%lu,\"pcm_queue_max\":%lu,"
+                 "\"pcm_short\":%lu,\"pcm_dropped\":%lu,"
+                 "\"pcm_max_gap_us\":%lu,\"pcm_over_2ms\":%lu,"
+                 "\"pcm_queue_max\":%lu,"
                  "\"opus_frames\":%lu,\"opus_errors\":%lu,"
                  "\"opus_encode_max_us\":%lu,\"opus_gap_max_us\":%lu,"
+                 "\"opus_over_20ms\":%lu,\"pipeline_resets\":%lu,"
                  "\"codec_calls\":%lu,\"codec_blocks\":%lu,"
-                 "\"codec_no_pcm\":%lu,\"codec_disconnected\":%lu,"
-                 "\"codec_usb_inactive\":%lu,\"core1_gap_max_us\":%lu,"
+                 "\"codec_no_encoder\":%lu,\"codec_no_pcm\":%lu,"
+                 "\"codec_disconnected\":%lu,\"codec_usb_inactive\":%lu,"
+                 "\"codec_gap_max_us\":%lu,\"codec_over_10ms\":%lu,"
+                 "\"codec_hist_3_7_12_25_over\":[%lu,%lu,%lu,%lu,%lu],"
+                 "\"core1_gap_max_us\":%lu,\"core1_over_10ms\":%lu,"
+                 "\"usb_edges_on_off\":[%lu,%lu],"
+                 "\"usb_active_us\":%lu,"
                  "\"core1_stack_free\":%lu}",
                  d.usb_speaker_active ? "true" : "false",
+                 (unsigned long)d.send_max_gap_us,
+                 (unsigned long)d.send_gaps_over_40ms,
+                 (unsigned long)d.sends_total,
+                 (unsigned long)d.hci_complete_max_gap_us,
+                 (unsigned long)d.hci_complete_gaps_over_40ms,
+                 (unsigned long)d.hci_complete_events,
+                 (unsigned long)d.hci_completed_packets,
+                 (unsigned long)d.hci_complete_max_batch,
                  (unsigned long)d.pcm_packets_total,
                  (unsigned long)d.pcm_nonzero_packets,
+                 (unsigned long)d.pcm_short_packets,
                  (unsigned long)d.pcm_dropped_packets,
+                 (unsigned long)d.pcm_max_gap_us,
+                 (unsigned long)d.pcm_gaps_over_2ms,
                  (unsigned long)d.pcm_queue_max_depth,
                  (unsigned long)d.opus_frames_total,
                  (unsigned long)d.opus_encode_errors,
                  (unsigned long)d.opus_encode_max_us,
                  (unsigned long)d.opus_max_gap_us,
+                 (unsigned long)d.opus_gaps_over_20ms,
+                 (unsigned long)d.pipeline_resets,
                  (unsigned long)d.codec_calls_total,
                  (unsigned long)d.codec_blocks_dequeued,
+                 (unsigned long)d.codec_no_encoder,
                  (unsigned long)d.codec_no_pcm,
                  (unsigned long)d.codec_disconnected,
                  (unsigned long)d.codec_usb_inactive,
+                 (unsigned long)d.codec_call_max_gap_us,
+                 (unsigned long)d.codec_call_gaps_over_10ms,
+                 (unsigned long)d.codec_gap_le_3ms,
+                 (unsigned long)d.codec_gap_le_7ms,
+                 (unsigned long)d.codec_gap_le_12ms,
+                 (unsigned long)d.codec_gap_le_25ms,
+                 (unsigned long)d.codec_gap_over_25ms,
                  (unsigned long)d.core1_max_gap_us,
+                 (unsigned long)d.core1_gaps_over_10ms,
+                 (unsigned long)d.usb_speaker_on_edges,
+                 (unsigned long)d.usb_speaker_off_edges,
+                 (unsigned long)d.usb_speaker_active_us,
                  (unsigned long)ns2_audio_core1_stack_free_bytes());
         queue_text(trace_format_response);
     } else if (strcmp(rx_line, "audio clear") == 0) {
@@ -636,7 +963,10 @@ static void handle_command(void) {
                    "\"blecap dump\",\"blecap read\",\"blecap variant 0-9\","
                    "\"blecap gattdisc on|off|status\","
                    "\"blecap mark TEXT\","
-                   "\"motionauto\",\"motionusb\",\"audio status|clear\","
+                   "\"motionpair status|start|stop|dump|read\","
+                   "\"motionprobe status|latch|seed STATE|on|off|reset|set G0 G1 G2|rate AXIS VALUE|accel X Y Z\","
+                   "\"button y\","
+                   "\"motionauto\",\"motionusb\",\"ds5motion status|frame body|world|carrier switch2|dscale|legacy|map SX SY SZ|probe rate AXIS VALUE|probe off\",\"input status\",\"audio status|clear\","
                    "\"pro2audio on|off|status|live on|live off|complexity 0-10|analysis on|analysis off|replay|replay stop\","
                    "\"btreconnect\",\"btfresh\","
                    "\"reenumerate\",\"help\"]}");
@@ -661,6 +991,7 @@ void ns2_uart_diag_init(void) {
     tx_position = 0;
     tx_wait_idle = false;
     reenumerate_requested = false;
+    ns2_diag_input_reset();
     ns2_protocol_trace_set_enabled(false);
     ns2_protocol_trace_clear();
     while (uart_is_readable(NS2_UART_ID)) (void)uart_getc(NS2_UART_ID);

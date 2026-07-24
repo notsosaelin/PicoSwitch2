@@ -132,6 +132,12 @@ typedef struct {
     // Device disconnected
     void (*disconnect)(bthid_device_t* device);
 
+    // Optional HID feature-report response. `data` begins with report_id and
+    // contains exactly the bytes returned by GET_REPORT (no HID transaction
+    // header). Ordinary input routing is deliberately separate.
+    void (*process_feature_report)(bthid_device_t* device,
+                                   const uint8_t* data, uint16_t len);
+
 } bthid_driver_t;
 
 // ============================================================================
@@ -177,6 +183,11 @@ bool bthid_send_output_report(uint8_t conn_index, uint8_t report_id,
 // Send feature report
 bool bthid_send_feature_report(uint8_t conn_index, uint8_t report_id,
                                 const uint8_t* data, uint16_t len);
+
+// Request and route one feature report from a Classic Bluetooth HID device.
+bool bthid_request_feature_report(uint8_t conn_index, uint8_t report_id);
+void bthid_on_feature_report(uint8_t conn_index, const uint8_t* data,
+                             uint16_t len);
 
 // ============================================================================
 // BATTERY

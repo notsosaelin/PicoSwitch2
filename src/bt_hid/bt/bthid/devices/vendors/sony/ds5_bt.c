@@ -8,6 +8,7 @@
 #include "ds5_bt.h"
 #include "ds5_audio_packet.h"
 #include "ds5_output.h"
+#include "ds5_motion_calibration.h"
 #include "ds5_audio_bridge.h"
 #include "bt/bthid/bthid.h"
 #include "bt/transport/bt_transport.h"
@@ -17,6 +18,7 @@
 #include "core/services/players/manager.h"
 #include "core/services/players/feedback.h"
 #include "controller_battery.h"
+#include "ds5_motion_pair_capture.h"
 #ifdef NS2_DS5_AUDIO_LIVE_OPUS
 #include "ds5_native_haptics.h"
 #endif
@@ -149,6 +151,10 @@ typedef struct {
     uint8_t activation_state;
     uint32_t activation_time;
     uint8_t output_seq;
+    ds5_motion_calibration_t motion_calibration;
+    uint8_t calibration_request_state;  // 0=waiting, 1=in flight, 2=ready, 3=exhausted
+    uint8_t calibration_request_attempts;
+    uint32_t calibration_request_time;
 #ifdef NS2_DS5_AUDIO
     uint8_t audio_packet_counter;
     uint8_t audio_control_state;
@@ -476,6 +482,10 @@ static bool ds5_init(bthid_device_t* device)
             ds5_data[i].activation_state = 0;
             ds5_data[i].activation_time = 0;
             ds5_data[i].output_seq = 0;
+            ds5_motion_calibration_reset(&ds5_data[i].motion_calibration);
+            ds5_data[i].calibration_request_state = 0;
+            ds5_data[i].calibration_request_attempts = 0;
+            ds5_data[i].calibration_request_time = 0;
 #ifdef NS2_DS5_AUDIO
             ds5_data[i].audio_packet_counter = 0;
             ds5_data[i].audio_control_state = 0;
@@ -632,12 +642,30 @@ static void ds5_process_report(bthid_device_t* device, const uint8_t* data, uint
     // Check if we have enough data for motion
     if (report_len >= sizeof(ds5_input_report_t)) {
         ds5->event.has_motion = true;
-        ds5->event.accel[0] = rpt->accel[0];
-        ds5->event.accel[1] = rpt->accel[1];
-        ds5->event.accel[2] = rpt->accel[2];
-        ds5->event.gyro[0] = rpt->gyro[0];
-        ds5->event.gyro[1] = rpt->gyro[1];
-        ds5->event.gyro[2] = rpt->gyro[2];
+        const int16_t raw_gyro[3] = {
+            rpt->gyro[0], rpt->gyro[1], rpt->gyro[2]
+        };
+        const int16_t raw_accel[3] = {
+            rpt->accel[0], rpt->accel[1], rpt->accel[2]
+        };
+        // The bound decoder is authoritative even when Classic SDP leaves the
+        // PID at zero after reconnect. Only a CRC-valid DualSense report 0x05
+        // advances this state, so name-matched clones retain the raw fallback
+        // unless they prove they implement the exact Sony calibration format.
+        if (ds5->calibration_request_state == 2) {
+            ds5_motion_calibration_apply(&ds5->motion_calibration,
+                                         raw_gyro, raw_accel,
+                                         ds5->event.gyro,
+                                         ds5->event.accel);
+        } else {
+            memcpy(ds5->event.gyro, raw_gyro, sizeof(raw_gyro));
+            memcpy(ds5->event.accel, raw_accel, sizeof(raw_accel));
+        }
+        ds5_motion_pair_update_ds5(platform_time_us(),
+                                    rpt->sensor_timestamp,
+                                    raw_gyro, raw_accel,
+                                    ds5->event.gyro, ds5->event.accel,
+                                    ds5->calibration_request_state);
     } else {
         ds5->event.has_motion = false;
     }
@@ -790,6 +818,33 @@ static void ds5_task(bthid_device_t* device)
 
         case 3:  // Activated - monitor feedback system for rumble/LED updates
             {
+                // Read factory IMU calibration once the ordinary controller
+                // activation has completed. GET_REPORT owns BTstack's HID
+                // control transaction briefly, so retries are bounded and
+                // spaced instead of competing with connection setup.
+                if (ds5->calibration_request_state != 2 &&
+                    ds5->calibration_request_state != 3) {
+                    bool retry_due = ds5->calibration_request_state == 0
+                        ? (ds5->calibration_request_attempts == 0 ||
+                           now - ds5->calibration_request_time >= 200)
+                        : (now - ds5->calibration_request_time >= 750);
+                    if (retry_due) {
+                        if (ds5->calibration_request_attempts >= 3) {
+                            ds5->calibration_request_state = 3;
+                            printf("[DS5_BT] Calibration unavailable; preserving native motion scale\n");
+                        } else if (bthid_request_feature_report(
+                                       device->conn_index,
+                                       DS5_MOTION_CALIBRATION_REPORT_ID)) {
+                            ds5->calibration_request_state = 1;
+                            ds5->calibration_request_attempts++;
+                            ds5->calibration_request_time = now;
+                        } else {
+                            ds5->calibration_request_state = 0;
+                            ds5->calibration_request_time = now;
+                        }
+                    }
+                }
+
                 int player_idx = find_player_index(ds5->event.dev_addr, ds5->event.instance);
                 if (player_idx >= 0) {
                     feedback_state_t* fb = feedback_get_state(player_idx);
@@ -945,6 +1000,33 @@ static void ds5_task(bthid_device_t* device)
     }
 }
 
+static void ds5_process_feature_report(bthid_device_t *device,
+                                       const uint8_t *data, uint16_t len)
+{
+    ds5_bt_data_t *ds5 = device ? (ds5_bt_data_t *)device->driver_data : NULL;
+    if (!ds5 || !data || len < 1 ||
+        data[0] != DS5_MOTION_CALIBRATION_REPORT_ID)
+        return;
+
+    if (ds5_motion_calibration_parse(&ds5->motion_calibration, data, len)) {
+        ds5->calibration_request_state = 2;
+        printf("[DS5_BT] Factory motion calibration loaded (axes G:%d%d%d A:%d%d%d)\n",
+               ds5->motion_calibration.gyro[0].valid,
+               ds5->motion_calibration.gyro[1].valid,
+               ds5->motion_calibration.gyro[2].valid,
+               ds5->motion_calibration.accel[0].valid,
+               ds5->motion_calibration.accel[1].valid,
+               ds5->motion_calibration.accel[2].valid);
+    } else {
+        // A malformed or CRC-failed response is never allowed to replace the
+        // existing fallback. Space the next bounded retry via ds5_task().
+        ds5->calibration_request_state = 0;
+        ds5->calibration_request_time = platform_time_ms();
+        printf("[DS5_BT] Rejected invalid calibration feature report (len=%u)\n",
+               len);
+    }
+}
+
 static void ds5_disconnect(bthid_device_t* device)
 {
     printf("[DS5_BT] Disconnect: %s\n", device->name);
@@ -976,6 +1058,7 @@ const bthid_driver_t ds5_bt_driver = {
     .process_report = ds5_process_report,
     .task = ds5_task,
     .disconnect = ds5_disconnect,
+    .process_feature_report = ds5_process_feature_report,
 };
 
 void ds5_bt_register(void)

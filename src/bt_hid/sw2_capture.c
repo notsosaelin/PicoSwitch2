@@ -19,6 +19,7 @@ static uint32_t s_head;  // next write index
 static uint32_t s_tail;  // next read index
 static uint32_t s_dropped;
 static volatile bool s_enabled;
+static volatile bool s_pair_enabled;
 static critical_section_t s_lock;
 static bool s_lock_init_done;
 
@@ -34,6 +35,7 @@ void sw2_capture_set_enabled(bool on) {
     critical_section_enter_blocking(&s_lock);
     s_enabled = on;
     if (on) {
+        s_pair_enabled = false;
         // Fresh session: start from an empty ring and a clean drop counter, so a capture
         // session's stats describe only that session, not whatever accumulated before it.
         s_head = 0;
@@ -41,6 +43,39 @@ void sw2_capture_set_enabled(bool on) {
         s_dropped = 0;
     }
     critical_section_exit(&s_lock);
+}
+
+void sw2_capture_pair_set_enabled(bool on) {
+    ensure_lock();
+    critical_section_enter_blocking(&s_lock);
+    s_pair_enabled = on;
+    if (on) {
+        s_enabled = false;
+        s_head = 0;
+        s_tail = 0;
+        s_dropped = 0;
+    }
+    critical_section_exit(&s_lock);
+}
+
+bool sw2_capture_pair_get_enabled(void) { return s_pair_enabled; }
+
+static void record_locked(sw2_capture_kind_t kind, uint16_t handle,
+                          const uint8_t *data, uint16_t len) {
+    uint32_t next = (s_head + 1) % SW2_CAP_RING;
+    if (next == s_tail) {
+        s_tail = (s_tail + 1) % SW2_CAP_RING;
+        s_dropped++;
+    }
+    sw2_cap_entry_t *e = &s_ring[s_head];
+    e->us = time_us_64();
+    e->handle = handle;
+    e->kind = (uint8_t)kind;
+    e->orig_len = len;
+    uint16_t n = len > SW2_CAP_MAX_DATA ? SW2_CAP_MAX_DATA : len;
+    e->len = (uint8_t)n;
+    if (data && n) memcpy(e->data, data, n);
+    s_head = next;
 }
 
 bool sw2_capture_get_enabled(void) { return s_enabled; }
@@ -60,25 +95,22 @@ void sw2_capture_record(sw2_capture_kind_t kind, uint16_t handle, const uint8_t 
     ensure_lock();
 
     critical_section_enter_blocking(&s_lock);
-    uint32_t next = (s_head + 1) % SW2_CAP_RING;
-    if (next == s_tail) {
-        // Keep the newest traffic. Human-directed captures commonly run longer than the
-        // ~1.9 seconds represented by this buffer at the native 133 Hz fast link. Retaining the
-        // oldest entries loses the motion/event that happened after the instruction reached the
-        // tester. Advancing
-        // the tail makes this a true ring while still never waiting for the consumer.
-        s_tail = (s_tail + 1) % SW2_CAP_RING;
-        s_dropped++;
+    // Recheck under the lock: core0 can switch capture modes after the fast
+    // path above but before core1 acquires the lock.
+    if (s_enabled) {
+        // Keep the newest traffic. Human-directed captures commonly run longer
+        // than the ring; overwriting the oldest preserves the event of interest.
+        record_locked(kind, handle, data, len);
     }
-    sw2_cap_entry_t *e = &s_ring[s_head];
-    e->us = time_us_64();
-    e->handle = handle;
-    e->kind = (uint8_t)kind;
-    e->orig_len = len;
-    uint16_t n = len > SW2_CAP_MAX_DATA ? SW2_CAP_MAX_DATA : len;
-    e->len = (uint8_t)n;
-    if (data && n) memcpy(e->data, data, n);
-    s_head = next;
+    critical_section_exit(&s_lock);
+}
+
+void sw2_capture_pair_record(const uint8_t *data, uint16_t len) {
+    if (!s_pair_enabled || !data || len > SW2_CAP_MAX_DATA) return;
+    ensure_lock();
+    critical_section_enter_blocking(&s_lock);
+    if (s_pair_enabled)
+        record_locked(SW2_CAP_MOTION_PAIR, 0, data, len);
     critical_section_exit(&s_lock);
 }
 
@@ -109,6 +141,7 @@ const char *sw2_capture_kind_name(uint8_t k) {
         case SW2_CAP_WRITE_STATUS: return "write_status";
         case SW2_CAP_MARKER:       return "marker";
         case SW2_CAP_LINK_PARAMS:  return "link_params";
+        case SW2_CAP_MOTION_PAIR:  return "motion_pair";
         default:                   return "?";
     }
 }

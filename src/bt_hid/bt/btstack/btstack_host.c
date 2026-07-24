@@ -75,6 +75,8 @@ extern void btstack_memory_init(void);
 extern void bt_on_hid_ready(uint8_t conn_index);
 extern void bt_on_disconnect(uint8_t conn_index);
 extern void bt_on_hid_report(uint8_t conn_index, const uint8_t* data, uint16_t len);
+extern void bthid_on_feature_report(uint8_t conn_index, const uint8_t* data,
+                                    uint16_t len);
 extern void bthid_update_device_info(uint8_t conn_index, const char* name,
                                       uint16_t vendor_id, uint16_t product_id);
 extern void bthid_set_battery_level(uint8_t conn_index, uint8_t level);
@@ -7450,6 +7452,27 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
             break;
         }
 
+        case HID_SUBEVENT_GET_REPORT_RESPONSE: {
+            uint16_t hid_cid =
+                hid_subevent_get_report_response_get_hid_cid(packet);
+            uint8_t status =
+                hid_subevent_get_report_response_get_handshake_status(packet);
+            uint16_t report_len =
+                hid_subevent_get_report_response_get_report_len(packet);
+            const uint8_t *report =
+                hid_subevent_get_report_response_get_report(packet);
+            int conn_index = get_classic_conn_index(hid_cid);
+            if (status == HID_HANDSHAKE_PARAM_TYPE_SUCCESSFUL &&
+                conn_index >= 0 && report_len > 0) {
+                bthid_on_feature_report((uint8_t)conn_index, report,
+                                        report_len);
+            } else {
+                printf("[BTSTACK_HOST] GET_REPORT failed: cid=0x%04X status=%u len=%u\n",
+                       hid_cid, status, report_len);
+            }
+            break;
+        }
+
         case HID_SUBEVENT_REPORT: {
             uint16_t hid_cid = hid_subevent_report_get_hid_cid(packet);
             const uint8_t* report = hid_subevent_report_get_report(packet);
@@ -7728,6 +7751,23 @@ bool btstack_classic_send_set_report_type(uint8_t conn_index, uint8_t report_typ
     if (status != ERROR_CODE_SUCCESS) {
         printf("[BTSTACK_HOST] send_set_report failed: type=%d id=0x%02X status=%d\n",
                report_type, report_id, status);
+    }
+    return status == ERROR_CODE_SUCCESS;
+}
+
+bool btstack_classic_get_feature_report(uint8_t conn_index, uint8_t report_id)
+{
+    if (conn_index >= MAX_CLASSIC_CONNECTIONS) return false;
+
+    classic_connection_t *conn = &classic_state.connections[conn_index];
+    if (!conn->active || !conn->hid_ready || conn->hid_cid == 0xFFFF)
+        return false;
+
+    uint8_t status = hid_host_send_get_report(
+        conn->hid_cid, HID_REPORT_TYPE_FEATURE, report_id);
+    if (status != ERROR_CODE_SUCCESS) {
+        printf("[BTSTACK_HOST] send_get_report failed: id=0x%02X status=%u\n",
+               report_id, status);
     }
     return status == ERROR_CODE_SUCCESS;
 }

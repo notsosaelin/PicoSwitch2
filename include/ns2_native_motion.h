@@ -29,6 +29,12 @@ bool ns2_native_motion_publish(uint8_t source_conn_index,
 bool ns2_native_motion_snapshot(ns2_native_motion_snapshot_t *out, uint32_t now_us,
                                 uint32_t max_age_us);
 
+// Acquire the most recent genuine 0x1E sample even when a newer interleaved
+// 0x28 PDU is the current general snapshot. Used by the opt-in UART mutation
+// probe so latching is deterministic rather than timing-dependent.
+bool ns2_native_motion_snapshot_30(ns2_native_motion_snapshot_t *out, uint32_t now_us,
+                                   uint32_t max_age_us);
+
 // Invalidate the side channel on source disconnect or before a new experiment starts.
 void ns2_native_motion_clear(void);
 
