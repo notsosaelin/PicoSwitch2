@@ -414,12 +414,11 @@ void ns2_dbg_ds5_motion(ns2_ds5_motion_diag_t *out) {
     for (unsigned i = 0; i < 3; ++i) {
         out->input_gyro[i] = (int16_t)ns2_ds5_motion.gyro_prev[i];
         out->bias_gyro[i] =
-            ns2_ds5_motion.gyro_bias[i] >> 6;
+            ns2_ds5_motion.gyro_bias[i] / 64;
         out->corrected_gyro[i] =
-            (ns2_ds5_motion.gyro_lp[i] -
-             ns2_ds5_motion.gyro_bias[i]) >> 6;
+            ns2_ds5_motion.gyro_corrected[i];
         out->jitter[i] =
-            ns2_ds5_motion.gyro_jitter[i] >> 6;
+            ns2_ds5_motion.gyro_jitter[i] / 64;
         out->gyro_map[i] = ns2_ds5_motion.gyro_map[i];
     }
     out->carrier = (uint8_t)ns2_ds5_motion.carrier;
@@ -430,6 +429,16 @@ void ns2_dbg_ds5_motion(ns2_ds5_motion_diag_t *out) {
     out->updates = ns2_ds5_motion.updates;
     out->representation_rejects =
         ns2_ds5_motion.representation_rejects;
+    out->host_dt_us = ns2_ds5_motion.last_host_elapsed_us;
+    out->sensor_dt_us = ns2_ds5_motion.last_sensor_elapsed_us;
+    out->sensor_dt_max_us = ns2_ds5_motion.max_sensor_elapsed_us;
+    out->timestamp_fallbacks =
+        ns2_ds5_motion.sensor_timestamp_fallbacks;
+    out->timestamp_invalid =
+        ns2_ds5_motion.sensor_timestamp_invalid;
+    out->sequence_gaps = ns2_ds5_motion.sequence_gaps;
+    out->integration_substeps =
+        ns2_ds5_motion.integration_substeps;
 }
 
 bool ns2_dbg_ds5_motion_enabled(void) {
@@ -1049,10 +1058,19 @@ static void ns2_build_report(uint8_t *p) {
         }
     } else if (ds5_motion_owned) {
         // Reports decoded by the DualSense driver use the native quaternion
-        // translator. Its production carrier uses the fully proven state-0
-        // Switch 2 chart and withholds motion at an unimplemented coordinate-
-        // rebase boundary rather than falling through to the obsolete phase
-        // carrier or guessing state semantics.
+        // translator. Its production carrier uses the Switch 2 w/x/y/z
+        // smallest-three representation and changes the omitted component
+        // when a transmitted component reaches the chart boundary.
+        //
+        // Keep this on the proven 0x1E carrier for now. Paired genuine
+        // captures show that normal 0x28 G6/G7/G8 values are a constant-
+        // magnitude body magnetic vector satisfying
+        //     m_body = conjugate(q) * m_world * q
+        // (escalation PDUs must be excluded). A virtual field is therefore
+        // mathematically possible for six-axis controllers, but the leading
+        // 0x28 lanes change meaning too and are not decoded well enough to
+        // serialize safely. Emitting only the three understood magnetic lanes
+        // would make a structurally invalid PDU, not improve fusion.
         if (ns2_ds5_motion_enabled && ns2_imu_enabled &&
             ns2_ds5_motion_report_valid) {
             p[0x0E] = sizeof(ns2_ds5_motion_report);

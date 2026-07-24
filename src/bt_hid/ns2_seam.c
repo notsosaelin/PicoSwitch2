@@ -277,6 +277,11 @@ void router_submit_input(const input_event_t *e) {
                 ? SWITCH_MOTION_SOURCE_DUALSENSE
                 : SWITCH_MOTION_SOURCE_GENERIC;
         in.motion_sequence = e->motion_sequence;
+        if (in.motion_source == SWITCH_MOTION_SOURCE_DUALSENSE &&
+            e->motion_timestamp_valid) {
+            in.motion_timestamp = e->motion_timestamp;
+            in.motion_timestamp_valid = 1;
+        }
         in.accel[0] = ns2_clamp16( e->accel[0] / 2);
         in.accel[1] = ns2_clamp16(-e->accel[2] / 2);
         in.accel[2] = ns2_clamp16( e->accel[1] / 2);

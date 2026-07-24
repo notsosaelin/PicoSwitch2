@@ -645,6 +645,11 @@ static void ds5_process_report(bthid_device_t* device, const uint8_t* data, uint
     if (report_len >= sizeof(ds5_input_report_t)) {
         ds5->event.has_motion = true;
         ds5->event.motion_sequence = ++ds5->motion_sequence;
+        // This is the controller's free-running 0.33 us sensor clock. Keep it
+        // with the physical sample: Bluetooth delivery time is not a valid IMU
+        // integration clock when ACL/audio scheduling delays a notification.
+        ds5->event.motion_timestamp = rpt->sensor_timestamp;
+        ds5->event.motion_timestamp_valid = true;
         const int16_t raw_gyro[3] = {
             rpt->gyro[0], rpt->gyro[1], rpt->gyro[2]
         };
@@ -671,6 +676,7 @@ static void ds5_process_report(bthid_device_t* device, const uint8_t* data, uint
                                     ds5->calibration_request_state);
     } else {
         ds5->event.has_motion = false;
+        ds5->event.motion_timestamp_valid = false;
     }
 
     // Battery: status byte at report_data[52].

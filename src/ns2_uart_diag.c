@@ -588,6 +588,10 @@ static void handle_command(void) {
                  "\"frame\":\"%s\",\"carrier\":\"%s\",\"map\":[%d,%d,%d],"
                  "\"q_million\":[%ld,%ld,%ld,%ld],"
                  "\"updates\":%lu,\"representation_rejects\":%lu,"
+                 "\"host_dt_us\":%lu,\"sensor_dt_us\":%lu,"
+                 "\"sensor_dt_max_us\":%lu,"
+                 "\"timestamp_fallbacks\":%lu,\"timestamp_invalid\":%lu,"
+                 "\"sequence_gaps\":%lu,\"integration_substeps\":%lu,"
                  "\"report_id\":%u,\"streaming\":%s,\"emitted_len\":%u}",
                  d.enabled ? "true" : "false",
                  d.source_active ? "true" : "false",
@@ -613,6 +617,13 @@ static void handle_command(void) {
                  (long)d.quaternion_million[3],
                  (unsigned long)d.updates,
                  (unsigned long)d.representation_rejects,
+                 (unsigned long)d.host_dt_us,
+                 (unsigned long)d.sensor_dt_us,
+                 (unsigned long)d.sensor_dt_max_us,
+                 (unsigned long)d.timestamp_fallbacks,
+                 (unsigned long)d.timestamp_invalid,
+                 (unsigned long)d.sequence_gaps,
+                 (unsigned long)d.integration_substeps,
                  report_id, streaming ? "true" : "false", motion_len);
         queue_text(trace_format_response);
     } else if (strcmp(rx_line, "ds5motion on") == 0) {
