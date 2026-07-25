@@ -5,6 +5,29 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ## Unreleased
 
+### Added
+
+- Hardware-confirmed DualSense and DualSense Edge IMU translation to the Switch 2 Pro Controller 2
+  motion carrier. Splatoon 3 validates direction, scale, rapid movement, stationary behavior,
+  reconnect recovery, and coexistence with controller input, audio, and native haptics.
+- Passive UART analysis for genuine length-`0x28` motion PDUs, including exact G6/G7/G8
+  signed-field decoding, capture summaries, and regression tests.
+
+### Changed
+
+- Active technical references now live under `docs/`; superseded plans and development narratives
+  use the explicit `.archived.md` suffix.
+- The failed synthetic length-`0x28` generator was removed from runtime firmware. Its first
+  hardware test caused random motion because the unresolved leading/middle lanes are semantically
+  active; the exact field codec, captures, and negative result remain documented.
+
+### Validation
+
+- DualSense gyro immediately returned to normal when the experimental length-`0x28` gate was
+  disabled, confirming the validated production path remains the length-`0x1E` carrier.
+- All 40 host-test executables pass, the motion and PDU tests compile cleanly with warnings treated
+  as errors against the reorganized source tree, and Pico W/Pico 2 W release builds succeed.
+
 ## 1.5.0 — 2026-07-22
 
 ### Added

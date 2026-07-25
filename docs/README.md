@@ -16,16 +16,23 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | What we discovered vs. inherited | [`provenance.md`](provenance.md) |
 | Bluetooth implementation | [`bluetooth/btstack-implementation.md`](bluetooth/btstack-implementation.md) |
 | Battery passthrough and validation matrix | [`bluetooth/battery-passthrough.md`](bluetooth/battery-passthrough.md) |
-| DualSense live-audio implementation/result | [`../DS5-NS2_AUDIO.md`](../DS5-NS2_AUDIO.md) |
-| DualSense audio investigation history | [`../AUDIO-INVESTIGATION.md`](../AUDIO-INVESTIGATION.md) |
+| DualSense audio implementation and research | [`switch2/audio-passthrough-research.md`](switch2/audio-passthrough-research.md) |
+| DualSense motion translation | [`bluetooth/dualsense-motion.md`](bluetooth/dualsense-motion.md) |
+| Switch 1 motion reference | [`bluetooth/switch1-motion.md`](bluetooth/switch1-motion.md) |
+| Wii motion reference | [`bluetooth/wii-motion.md`](bluetooth/wii-motion.md) |
 | Controller sleep research | [`bluetooth/controller-sleep-research.md`](bluetooth/controller-sleep-research.md) |
 | Generic Bluetooth gamepad quirks | [`bluetooth/generic-gamepad-quirks.md`](bluetooth/generic-gamepad-quirks.md) |
 | Retro Fighters BattlerGC Pro | [`bluetooth/retrofighters-battlergc-pro.md`](bluetooth/retrofighters-battlergc-pro.md) |
 | 8BitDo Ultimate Bluetooth paddles | [`../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md`](../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md) |
 | Pro Controller 2 USB protocol | [`switch2/usb-spec.md`](switch2/usb-spec.md) |
+| Console command surface | [`switch2/command-surface.md`](switch2/command-surface.md) |
+| Controller firmware identity | [`switch2/firmware-versioning.md`](switch2/firmware-versioning.md) |
+| NFC implementation design | [`switch2/nfc-implementation.md`](switch2/nfc-implementation.md) |
+| Serial-number structure | [`switch2/serial-generation.md`](switch2/serial-generation.md) |
 | Genuine Pro Controller 2 headset audio | [`switch2/pro2-headset-audio.md`](switch2/pro2-headset-audio.md) |
 | Native Pro Controller 2 motion result | [`experiments/native-pro2-motion-passthrough-2026-07-21.md`](experiments/native-pro2-motion-passthrough-2026-07-21.md) |
 | UART trace capture, decoding, and comparison | [`switch2/uart-trace-tooling.md`](switch2/uart-trace-tooling.md) |
+| UART native-motion `0x28`/magnetic analysis | [`switch2/uart-magprobe.md`](switch2/uart-magprobe.md) |
 | NSO GameCube protocol | [`switch2-gc/protocol.md`](switch2-gc/protocol.md) |
 | Joy-Con 2 protocol | [`switch2-joycon2/protocol.md`](switch2-joycon2/protocol.md) |
 
@@ -84,7 +91,8 @@ Evidence classification, capture discipline, source-comment policy, and reproduc
 ### `archive/`
 
 Superseded roadmaps, implementation narratives, and migration plans. These are historical context,
-not current instructions.
+not current instructions. Archived Markdown filenames end in `.archived.md`, keeping them readable
+and searchable while making their lifecycle status explicit in links and file listings.
 
 ## External reference repositories
 

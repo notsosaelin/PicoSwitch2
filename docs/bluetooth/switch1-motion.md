@@ -1,4 +1,4 @@
-# SWITCH1_MOTION — Nintendo Switch 1 Joy-Con / Pro Controller Motion / IMU: Definitive Technical Reference
+# Nintendo Switch 1 Joy-Con / Pro Controller Motion / IMU — Definitive Technical Reference
 
 > A complete, implementation-ready breakdown of **how the original Nintendo Switch (Switch 1)
 > Joy-Con and Pro Controller report gyroscope and accelerometer data** — the enable handshake, the
@@ -10,7 +10,7 @@
 >
 > **Documentation only — no code changed.** Confidence: **Confirmed** (matches dekuNukem's
 > reverse-engineering notes and the Linux `hid-nintendo` driver) · **Strong Evidence** ·
-> **Hypothesis** · **Unknown**. Companion to [`DS_MOTION.md`](DS_MOTION.md) (the DualSense
+> **Hypothesis** · **Unknown**. Companion to [`dualsense-motion.md`](dualsense-motion.md) (the DualSense
 > equivalent); the two share this repo's `input_event_t` motion carrier.
 
 ## 0. Summary up front
@@ -47,7 +47,7 @@ Motion rides inside the **standard full input report `0x30`** — but the contro
 2. The host must **set the input report mode to full (`0x30`)** and **enable the 6-axis sensor**.
 3. Only then do `0x30` reports arrive with the 36-byte IMU block populated.
 
-This is the fundamental difference from the DualSense (`DS_MOTION.md` §9): Switch-1 motion is an
+This is the fundamental difference from the DualSense (`dualsense-motion.md` §9): Switch-1 motion is an
 **opt-in, subcommand-driven** feature, and accurate values additionally require **reading
 calibration out of the controller's SPI flash**.
 
@@ -153,7 +153,7 @@ gyro_coeff = 936.0 / (gyro_sensitivity - gyro_origin);
 gyro_dps   = (raw_gyro - gyro_origin) * gyro_coeff;
 ```
 
-**Note the asymmetry** (same shape as the DualSense, `DS_MOTION.md` §7): the **gyro subtracts its
+**Note the asymmetry** (same shape as the DualSense, `dualsense-motion.md` §7): the **gyro subtracts its
 origin** (zero-rate offset) then scales, while the **accel** scales about its origin/sensitivity
 span with the fixed `4.0`/`936.0` reference constants coming from the factory-cal reference
 conditions. The Linux `hid-nintendo` driver implements the equivalent normalization; cross-check
@@ -215,7 +215,7 @@ signs/scale there if a value looks off.
 6. **Verify per-device axis signs empirically** (§8) for JC-L, JC-R, and Pro before any downstream
    remap.
 7. **(Optional)** feed all three frames per report for smooth ~200 Hz integration; add rest-based
-   drift correction (see `DS_MOTION.md` §11).
+   drift correction (see `dualsense-motion.md` §11).
 
 Every step is Switch-1-local and testable in isolation (log calibrated g/deg-s while moving the
 controller); none depends on any output personality.
@@ -232,5 +232,5 @@ controller); none depends on any output personality.
 - This repo: `src/bt_hid/bt/bthid/devices/vendors/nintendo/switch_pro_bt.c` (Switch-1 driver: `0x30`
   parse, init state machine, `SWITCH_SUBCMD_ENABLE_IMU` define),
   `src/bt_hid/core/input_event.h:249-253` (motion carrier fields).
-- Sibling: [`DS_MOTION.md`](DS_MOTION.md) (DualSense equivalent — same `input_event_t` carrier,
+- Sibling: [`dualsense-motion.md`](dualsense-motion.md) (DualSense equivalent — same `input_event_t` carrier,
   same calibrate-then-scale pattern, and the drift-correction note).

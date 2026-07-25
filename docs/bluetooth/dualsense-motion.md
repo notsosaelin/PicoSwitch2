@@ -1,4 +1,4 @@
-# DS_MOTION — DualSense (DS5) Motion / IMU: Definitive Technical Reference
+# DualSense (DS5) Motion / IMU — Definitive Technical Reference
 
 > A complete, implementation-ready breakdown of **how the Sony DualSense reports gyroscope and
 > accelerometer data** — the on-wire format, byte offsets, data types, units, the factory

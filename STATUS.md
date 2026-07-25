@@ -1,11 +1,11 @@
 # PicoSwitch2 Status
 
 > Current-state snapshot. Historical implementation narratives are archived in
-> [`docs/archive/status-through-2026-07-15.md`](docs/archive/status-through-2026-07-15.md).
+> [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 > Planned work belongs in [`PLAN.md`](PLAN.md); evidence and protocol details belong under
 > [`docs/`](docs/README.md).
 
-Last verified: 2026-07-22
+Last verified: 2026-07-24
 Branch: `ns2-testing`
 
 ## Current release
@@ -20,6 +20,12 @@ controller-off/HOME cycles restored input, P1 LED, and gyro without SYNC. Pico 2
 The post-release `ns2-testing` branch also has hardware-confirmed genuine Pro Controller 2 headphone
 output. Its 240-byte Opus/CELT framing now produces clean console audio while preserving input,
 native gyro, rumble, headset insertion/removal, LED behavior, and BOOTSEL handling.
+
+DualSense and DualSense Edge motion translation is also hardware-confirmed in Splatoon 3. The
+production path emits the decoded length-`0x1E` Switch 2 quaternion carrier and preserves input,
+audio, haptics, reconnect, LED, and BOOTSEL behavior. A deliberately gated synthetic length-`0x28`
+experiment caused random motion and was removed; it established that the still-unknown
+leading/middle fields cannot be held at a static genuine template.
 
 ## Hardware-confirmed behavior
 
@@ -37,6 +43,7 @@ native gyro, rumble, headset insertion/removal, LED behavior, and BOOTSEL handli
 | Out-of-band UART protocol tracer | ✅ Confirmed | Real Switch 2 + genuine Pro Controller 2 source; complete 63-record Pro2 re-enumeration capture, zero overwrites, pull-transport framing validated |
 | UART trace decoder and semantic differ | ✅ Host + live-capture confirmed | Known EP0/bulk/HID fields, sensitive-field redaction, strict comparison, timestamp wrap, corruption rejection, and two-capture Pro2 A/B workflow |
 | Genuine Pro Controller 2 native motion passthrough | ✅ Confirmed | Splatoon 3 axes/aim, stationary behavior, power-off hold, and 20 consecutive controller-off/HOME reconnect cycles without SYNC; input, P1 LED, and native `0x1E`/`0x28` motion restore at 133 Hz |
+| DualSense/Edge → Switch 2 motion translation | ✅ Confirmed | Splatoon 3 direction, scale, rapid movement, stationary behavior, reconnect recovery, and coexistence with input/audio/haptics using the length-`0x1E` carrier |
 | DualSense and DualSense Edge input | ✅ Confirmed | Real Switch 2 and Steam |
 | Edge paddles, Fn buttons, and mute mapping | ✅ Confirmed | Real hardware |
 | DualSense/Edge LEDs and rumble | ✅ Confirmed | Real hardware after report-boundary scheduler fix |
@@ -88,7 +95,8 @@ The selection is not persisted across power cycles.
   so a bonded Classic controller reconnects by paging in and a bonded BLE controller reconnects once
   discovery resumes at zero connections. Hardware-confirmed (Classic + BLE reconnect, wake, wipe/
   re-pair). Retiring the always-on multi-controller discovery is the general fix for the scanning
-  radio contention noted in [`AUDIO-INVESTIGATION.md`](AUDIO-INVESTIGATION.md).
+  radio contention noted in
+  [`docs/switch2/audio-passthrough-research.md`](docs/switch2/audio-passthrough-research.md).
 - Switch 2 controllers use a custom ATT pairing handshake, so the wipe policy cannot depend only on
   BTstack's LE bond database.
 - Successful custom pairing persists the normalized LTK in both the reconnect record and BTstack's
@@ -115,7 +123,7 @@ See [`docs/architecture/overview.md`](docs/architecture/overview.md) and
 |---|---|---|
 | P2 | DualSense microphone return | 🟡 Headset presence is implemented; microphone Opus decode and USB return remain |
 | P2 | Let reconnecting BLE controllers sleep with the console without touching bonds or admission | 🔵 Research concluded: no safe generic host-only path; controller-specific evidence required |
-| P3 | Generic controller IMU → console-native report `0x09` translation | 🔵 Native Pro2 passthrough is confirmed; synthesized Nintendo motion for DualSense/other IMUs still needs primary evidence |
+| P3 | Additional controller IMUs → console-native report `0x09` translation | 🔵 Native Pro2 passthrough and DualSense/Edge synthesis are confirmed; each remaining family needs verified calibration, axis, scale, and timestamp handling |
 | P3 | NFC/amiibo transactions | 🔴 Blocked on a genuine console-side capture |
 
 ## Validation
@@ -133,6 +141,8 @@ Current automated coverage includes:
   overwrite accounting
 - Native Pro2 motion snapshot validation for length-30/length-40 packets, source-slot ownership,
   freshness and timer wrap, malformed input, disconnect hold, and clear semantics
+- DualSense calibrated motion translation, smallest-three quaternion encoding, carrier boundaries,
+  timing/bias handling, and exact length-`0x28` G6/G7/G8 field packing
 - UART trace JSONL validation, known-field decoding, default sensitive-data redaction, timestamp
   rollover, address-aware semantic alignment, and strict raw-prefix comparison
 - Switch 2 pairing cryptography
@@ -163,7 +173,7 @@ The firmware builds under the Pico SDK 2.2.0 toolchain. The standard `pico_w`
 artifact retains its validated non-audio clock, memory layout, and Bluetooth
 scheduling. The standard `pico2_w` artifact uses the hardware-confirmed
 floating-point/SRAM audio path at 300 MHz/1.20 V. Both legacy `NS2_PRO=OFF`
-Pico W build directories also pass their compile gates. The current release has 28
+Pico W build directories also pass their compile gates. The current workspace has 40
 passing host-test executables, including battery decoder/source/encoder, DualSense
 audio packet/control/tone/resampler, native-haptic lifecycle, peak preservation, and
 bonded-reconnect transport suites.
@@ -196,6 +206,7 @@ player-dot reordering, and the prior wake/input/rumble baseline are hardware-con
 3. Add a reproducible release checklist with board, firmware revision, controller firmware,
    console firmware, and result data.
 4. Use the validated UART/BLE bridge to capture NFC or other unknown console behavior before
-   implementing it; keep generic IMU translation separate from native Pro2 passthrough.
+   implementing it; extend motion translation only after each controller family has a verified
+   sensor model.
 5. Revisit controller sleep only after capturing a verified per-family sleep command or a stable
    distinction between automatic-reconnect and user-wake advertisements.

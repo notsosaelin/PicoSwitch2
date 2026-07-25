@@ -367,7 +367,7 @@ Current known information:
 See `docs/switch2-gc/protocol.md`, `docs/switch2-gc/usb-personality.md`, and
 `docs/switch2-gc/mapping.md` for the durable evidence base. Deleted session handoffs such as
 `NSO-GC.md` and `DATA.md` are catalogued only for historical traceability in
-`docs/archive/ephemeral-handoff-index.md`.
+`docs/archive/ephemeral-handoff-index.archived.md`.
 
 ---
 

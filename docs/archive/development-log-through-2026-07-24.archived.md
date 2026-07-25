@@ -1,4 +1,4 @@
-# Changes
+# Development Log Through 2026-07-24 (Archived)
 
 Reverse-chronological log of notable changes on the `ns2-testing` branch. The
 2026-07-21 and 2026-07-22 entries below are included in

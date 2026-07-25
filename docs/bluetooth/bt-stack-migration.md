@@ -9,6 +9,6 @@ This was the *planning* document for that migration. It is preserved verbatim (P
 architecture rationale, the `-DBT_STACK_JOYPAD` flag that no longer exists) in the archive — read it
 only for history, not as current intent:
 
-- Archived plan: [../archive/bt-stack-migration-2026-07.md](../archive/bt-stack-migration-2026-07.md)
+- Archived plan: [../archive/bt-stack-migration-2026-07.archived.md](../archive/bt-stack-migration-2026-07.archived.md)
 - Current architecture: [PLAN.md](../../PLAN.md) "Architecture" + [src/bt_hid/README.md](../../src/bt_hid/README.md)
 - Vendored driver research: [controller-research.md](controller-research.md)

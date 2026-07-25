@@ -5001,6 +5001,17 @@ static volatile uint8_t s_sw2_native_auto_block_mask;
 static sw2_v2_state_t s_sw2_v2_state = SW2_V2_IDLE;
 static const sw2_v2_variant_t *s_sw2_v2_active = NULL;
 static uint8_t s_sw2_v2_cal_index = 0;
+static volatile bool s_sw2_magraw_requested;
+static volatile bool s_sw2_magraw_active;
+static volatile bool s_sw2_magraw_transition_pending;
+static bool s_sw2_magraw_transition_target;
+static bool s_sw2_magraw_reference_running;
+static bool s_sw2_magraw_awaiting_input_ccc;
+static uint8_t s_sw2_magraw_reference_step;
+static uint8_t s_sw2_magraw_reference_result;
+static uint8_t s_sw2_magraw_last_response_status;
+static uint8_t s_sw2_magraw_input_ccc_status;
+static uint32_t s_sw2_magraw_command_sent_ms;
 static gatt_client_notification_t sw2_motion_notification_listener;
 static gatt_client_characteristic_t sw2_motion_characteristic;
 static void sw2_motion_notification_handler(uint8_t packet_type, uint16_t channel,
@@ -5182,6 +5193,29 @@ void sw2_set_v2_variant(uint8_t variant) {
 
 uint8_t sw2_get_v2_variant(void) {
     return s_sw2_v2_armed_variant;
+}
+
+void btstack_host_request_switch2_magraw(bool enabled)
+{
+    __atomic_store_n(&s_sw2_magraw_requested, enabled, __ATOMIC_RELEASE);
+}
+
+void btstack_host_get_switch2_magraw_diag(btstack_host_magraw_diag_t *out)
+{
+    if (!out) return;
+    ble_connection_t *conn = find_connection_by_handle(sw2_init_handle);
+    out->requested = __atomic_load_n(&s_sw2_magraw_requested, __ATOMIC_ACQUIRE);
+    out->active = __atomic_load_n(&s_sw2_magraw_active, __ATOMIC_ACQUIRE);
+    out->transition_pending = __atomic_load_n(
+        &s_sw2_magraw_transition_pending, __ATOMIC_ACQUIRE);
+    out->v2_state = (uint8_t)s_sw2_v2_state;
+    out->reference_step = s_sw2_magraw_reference_step;
+    out->reference_steps = 12u;
+    out->reference_result = s_sw2_magraw_reference_result;
+    out->last_response_status = s_sw2_magraw_last_response_status;
+    out->input_ccc_status = s_sw2_magraw_input_ccc_status;
+    out->source_pid = conn ? conn->pid : 0u;
+    out->connection_handle = sw2_init_handle;
 }
 
 void sw2_native_auto_diag_snapshot(sw2_native_auto_diag_t *out)
@@ -5975,11 +6009,229 @@ static void switch2_start_v2_variant(hci_con_handle_t con_handle,
     }
 }
 
+typedef struct {
+    uint8_t command;
+    uint8_t subcommand;
+    uint8_t length;
+    const uint8_t *data;
+} sw2_magraw_reference_command_t;
+
+static const uint8_t SW2_MAGRAW_INIT_USB[] =
+    { 0x01, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+static const uint8_t SW2_MAGRAW_PAIR_COMPLETE[] = { 0x00 };
+static const uint8_t SW2_MAGRAW_FLAGS[] = { 0x94, 0x00, 0x00, 0x00 };
+static const uint8_t SW2_MAGRAW_CONFIG[] = {
+    0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x35,
+    0x00, 0x46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+static const uint8_t SW2_MAGRAW_REPORT_09[] = { 0x09, 0x00, 0x00, 0x00 };
+static const uint8_t SW2_MAGRAW_LED[] =
+    { 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+
+// Byte-for-byte command list used by the current public Windows implementation
+// for a Pro Controller 2, excluding 0x01/0x01: that same implementation
+// explicitly skips 0x01/0x01 for PID 0x2069 because the controller returns
+// status 4 while all required functions work without it.
+static const sw2_magraw_reference_command_t SW2_MAGRAW_REFERENCE[] = {
+    { 0x03, 0x0D, sizeof(SW2_MAGRAW_INIT_USB), SW2_MAGRAW_INIT_USB },
+    { 0x07, 0x01, 0, NULL },
+    { 0x16, 0x01, 0, NULL },
+    { 0x15, 0x03, sizeof(SW2_MAGRAW_PAIR_COMPLETE), SW2_MAGRAW_PAIR_COMPLETE },
+    { 0x0C, 0x02, sizeof(SW2_MAGRAW_FLAGS), SW2_MAGRAW_FLAGS },
+    { 0x11, 0x03, 0, NULL },
+    { 0x0A, 0x08, sizeof(SW2_MAGRAW_CONFIG), SW2_MAGRAW_CONFIG },
+    { 0x0C, 0x04, sizeof(SW2_MAGRAW_FLAGS), SW2_MAGRAW_FLAGS },
+    { 0x03, 0x0A, sizeof(SW2_MAGRAW_REPORT_09), SW2_MAGRAW_REPORT_09 },
+    { 0x10, 0x01, 0, NULL },
+    { 0x01, 0x0C, 0, NULL },
+    { 0x09, 0x07, sizeof(SW2_MAGRAW_LED), SW2_MAGRAW_LED },
+};
+#define SW2_MAGRAW_REFERENCE_COUNT \
+    (sizeof(SW2_MAGRAW_REFERENCE) / sizeof(SW2_MAGRAW_REFERENCE[0]))
+
+static void switch2_magraw_input_ccc_callback(
+    uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size);
+
+static void switch2_magraw_send_reference_command(hci_con_handle_t con_handle)
+{
+    if (s_sw2_magraw_reference_step >= SW2_MAGRAW_REFERENCE_COUNT) return;
+    const sw2_magraw_reference_command_t *entry =
+        &SW2_MAGRAW_REFERENCE[s_sw2_magraw_reference_step];
+    uint8_t command[8u + sizeof(SW2_MAGRAW_CONFIG)];
+    command[0] = entry->command;
+    command[1] = SW2_REQ_TYPE_REQ;
+    command[2] = SW2_REQ_INT_BLE;
+    command[3] = entry->subcommand;
+    command[4] = 0;
+    command[5] = entry->length;
+    command[6] = 0;
+    command[7] = 0;
+    if (entry->length) memcpy(&command[8], entry->data, entry->length);
+
+    sw2_capture_record(
+        SW2_CAP_CMD_OUT, SW2_CMD_HANDLE, command, 8u + entry->length);
+    gatt_client_write_value_of_characteristic_without_response(
+        con_handle, SW2_CMD_HANDLE, 8u + entry->length, command);
+    s_sw2_magraw_command_sent_ms = btstack_run_loop_get_time_ms();
+}
+
+static void switch2_magraw_start_reference(hci_con_handle_t con_handle)
+{
+    printf("[SW2_MAGRAW] Starting exact reference initialization\n");
+    ns2_native_motion_clear();
+    s_sw2_magraw_reference_running = true;
+    s_sw2_magraw_awaiting_input_ccc = false;
+    s_sw2_magraw_reference_step = 0;
+    s_sw2_magraw_reference_result = 1; // running
+    s_sw2_magraw_last_response_status = 0;
+    s_sw2_magraw_input_ccc_status = 0xFF;
+    __atomic_store_n(&s_sw2_magraw_transition_pending, true, __ATOMIC_RELEASE);
+    switch2_magraw_send_reference_command(con_handle);
+}
+
+static void switch2_magraw_begin_restore(hci_con_handle_t con_handle)
+{
+    printf("[SW2_MAGRAW] Restoring full validated native profile\n");
+    s_sw2_magraw_reference_running = false;
+    s_sw2_magraw_awaiting_input_ccc = false;
+    s_sw2_magraw_transition_target = false;
+    __atomic_store_n(&s_sw2_magraw_transition_pending, true, __ATOMIC_RELEASE);
+    switch2_start_v2_variant(con_handle, &SW2_NATIVE_PRO2_PROFILE, false);
+}
+
+static void switch2_magraw_handle_ack(
+    hci_con_handle_t con_handle, const uint8_t *value, uint16_t value_length)
+{
+    if (!s_sw2_magraw_reference_running || value_length < 4u) return;
+    if (s_sw2_magraw_reference_step >= SW2_MAGRAW_REFERENCE_COUNT) return;
+    const sw2_magraw_reference_command_t *expected =
+        &SW2_MAGRAW_REFERENCE[s_sw2_magraw_reference_step];
+    if (value[0] != expected->command || value[3] != expected->subcommand) return;
+
+    s_sw2_magraw_last_response_status = value_length > 1u ? value[1] : 0u;
+    if (s_sw2_magraw_last_response_status != 0x01u) {
+        printf("[SW2_MAGRAW] Reference step %u rejected, response=0x%02X\n",
+               s_sw2_magraw_reference_step,
+               s_sw2_magraw_last_response_status);
+        s_sw2_magraw_reference_running = false;
+        s_sw2_magraw_awaiting_input_ccc = false;
+        s_sw2_magraw_reference_result = 3; // rejected
+        __atomic_store_n(&s_sw2_magraw_requested, false, __ATOMIC_RELEASE);
+        __atomic_store_n(&s_sw2_magraw_active, true, __ATOMIC_RELEASE);
+        __atomic_store_n(&s_sw2_magraw_transition_pending, false, __ATOMIC_RELEASE);
+        return;
+    }
+
+    s_sw2_magraw_reference_step++;
+    if (s_sw2_magraw_reference_step < SW2_MAGRAW_REFERENCE_COUNT) {
+        switch2_magraw_send_reference_command(con_handle);
+        return;
+    }
+
+    // Bleak's start_notify(INPUT_REPORT_UUID) runs after the command loop and
+    // writes the 0x000A characteristic's CCC at 0x000B. Native profile setup
+    // can leave that stream quiescent even if the CCC was written earlier, so
+    // reproduce the source order rather than assuming CCC state survives the
+    // feature transition.
+    printf("[SW2_MAGRAW] Reference commands complete; subscribing input CCC\n");
+    s_sw2_magraw_awaiting_input_ccc = true;
+    static uint8_t ccc_enable[] = { 0x01, 0x00 };
+    sw2_capture_record(
+        SW2_CAP_CCC_WRITE, SW2_CCC_HANDLE, ccc_enable, sizeof(ccc_enable));
+    gatt_client_write_value_of_characteristic(
+        switch2_magraw_input_ccc_callback, con_handle, SW2_CCC_HANDLE,
+        sizeof(ccc_enable), ccc_enable);
+    s_sw2_magraw_command_sent_ms = btstack_run_loop_get_time_ms();
+}
+
+static void switch2_magraw_input_ccc_callback(
+    uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size)
+{
+    UNUSED(channel);
+    UNUSED(size);
+    if (packet_type != HCI_EVENT_PACKET ||
+        hci_event_packet_get_type(packet) != GATT_EVENT_QUERY_COMPLETE) return;
+    if (!s_sw2_magraw_reference_running ||
+        !s_sw2_magraw_awaiting_input_ccc) return;
+
+    s_sw2_magraw_input_ccc_status =
+        gatt_event_query_complete_get_att_status(packet);
+    sw2_capture_record(
+        SW2_CAP_WRITE_STATUS, SW2_CCC_HANDLE,
+        &s_sw2_magraw_input_ccc_status, 1);
+    s_sw2_magraw_reference_running = false;
+    s_sw2_magraw_awaiting_input_ccc = false;
+    if (s_sw2_magraw_input_ccc_status == ERROR_CODE_SUCCESS) {
+        printf("[SW2_MAGRAW] Exact reference initialization complete\n");
+        s_sw2_magraw_reference_result = 2; // success
+        __atomic_store_n(&s_sw2_magraw_active, true, __ATOMIC_RELEASE);
+        __atomic_store_n(
+            &s_sw2_magraw_transition_pending, false, __ATOMIC_RELEASE);
+    } else {
+        printf("[SW2_MAGRAW] Input CCC rejected, ATT status=0x%02X\n",
+               s_sw2_magraw_input_ccc_status);
+        s_sw2_magraw_reference_result = 5; // input CCC failure
+        __atomic_store_n(&s_sw2_magraw_requested, false, __ATOMIC_RELEASE);
+        __atomic_store_n(&s_sw2_magraw_active, true, __ATOMIC_RELEASE);
+        __atomic_store_n(
+            &s_sw2_magraw_transition_pending, false, __ATOMIC_RELEASE);
+    }
+}
+
 static void switch2_run_v2_experiment(hci_con_handle_t con_handle)
 {
     uint8_t n = s_sw2_v2_armed_variant;
     if (n < 1 || n > SW2_V2_VARIANT_COUNT) return;
     switch2_start_v2_variant(con_handle, &SW2_V2_VARIANTS[n - 1], false);
+}
+
+static void switch2_service_magraw_probe(void)
+{
+    if (sw2_init_state != SW2_INIT_DONE || sw2_init_handle == 0) return;
+    ble_connection_t *conn = find_connection_by_handle(sw2_init_handle);
+    if (!conn || conn->pid != 0x2069) return;
+
+    if (s_sw2_magraw_reference_running) {
+        const uint32_t now_ms = btstack_run_loop_get_time_ms();
+        if ((uint32_t)(now_ms - s_sw2_magraw_command_sent_ms) > 2000u) {
+            printf("[SW2_MAGRAW] Reference step %u timed out\n",
+                   s_sw2_magraw_reference_step);
+            s_sw2_magraw_reference_running = false;
+            s_sw2_magraw_awaiting_input_ccc = false;
+            s_sw2_magraw_reference_result = 4; // timeout
+            __atomic_store_n(&s_sw2_magraw_requested, false, __ATOMIC_RELEASE);
+            __atomic_store_n(&s_sw2_magraw_active, true, __ATOMIC_RELEASE);
+            __atomic_store_n(
+                &s_sw2_magraw_transition_pending, false, __ATOMIC_RELEASE);
+        }
+        return;
+    }
+
+    if (__atomic_load_n(&s_sw2_magraw_transition_pending, __ATOMIC_ACQUIRE)) {
+        if (s_sw2_v2_active == NULL && s_sw2_v2_state == SW2_V2_DONE) {
+            __atomic_store_n(
+                &s_sw2_magraw_active, s_sw2_magraw_transition_target,
+                __ATOMIC_RELEASE);
+            __atomic_store_n(
+                &s_sw2_magraw_transition_pending, false, __ATOMIC_RELEASE);
+        }
+        return;
+    }
+
+    const bool requested = __atomic_load_n(
+        &s_sw2_magraw_requested, __ATOMIC_ACQUIRE);
+    const bool active = __atomic_load_n(
+        &s_sw2_magraw_active, __ATOMIC_ACQUIRE);
+    if (requested == active) return;
+    if (s_sw2_v2_active != NULL ||
+        (s_sw2_v2_state != SW2_V2_IDLE && s_sw2_v2_state != SW2_V2_DONE)) return;
+
+    s_sw2_magraw_transition_target = requested;
+    if (requested) {
+        switch2_magraw_start_reference(sw2_init_handle);
+    } else {
+        switch2_magraw_begin_restore(sw2_init_handle);
+    }
 }
 
 // Cleanup Switch 2 state on BLE disconnect (called from disconnect handler)
@@ -6004,6 +6256,16 @@ static void switch2_cleanup_on_disconnect(void) {
     switch2_direct_encrypt_phase = SW2_ENCRYPT_NONE;
     s_sw2_v2_fired = false;
     s_sw2_native_auto_fired = false;
+    __atomic_store_n(&s_sw2_magraw_requested, false, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_sw2_magraw_active, false, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_sw2_magraw_transition_pending, false, __ATOMIC_RELEASE);
+    s_sw2_magraw_reference_running = false;
+    s_sw2_magraw_awaiting_input_ccc = false;
+    s_sw2_magraw_reference_step = 0;
+    s_sw2_magraw_reference_result = 0;
+    s_sw2_magraw_last_response_status = 0;
+    s_sw2_magraw_input_ccc_status = 0;
+    s_sw2_magraw_command_sent_ms = 0;
     s_sw2_init_done_ms = 0;
     __atomic_store_n(&s_sw2_native_auto_checks, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&s_sw2_native_auto_starts, 0, __ATOMIC_RELEASE);
@@ -6107,6 +6369,7 @@ static void switch2_ack_notification_handler(uint8_t packet_type, uint16_t chann
     // runs after SW2_INIT_DONE, so it can never observe an ACK the primary switch() below is
     // still using to drive pairing.
     switch2_v2_handle_ack(con_handle, cmd, subcmd);
+    switch2_magraw_handle_ack(con_handle, value, value_length);
 
     // Handle ACK based on current init state
     switch (cmd) {
@@ -6646,6 +6909,11 @@ static void switch2_handle_feedback(void)
         }
     }
 #endif
+
+    // Off-by-default UART experiment. It runs only after the ordinary init/
+    // production native-motion state machine is idle and always has an
+    // explicit restore path back to the validated 0x27 profile.
+    switch2_service_magraw_probe();
 
     switch2_service_pro2_audio_capture();
 

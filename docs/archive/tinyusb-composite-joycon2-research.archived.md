@@ -1,4 +1,4 @@
-# TINYUSB_COMPOSITE — Composite Devices, Multi-HID, and the Two-Joy-Con Question
+# TinyUSB Composite Devices, Multi-HID, and the Two-Joy-Con Question (Archived)
 
 > Research into what TinyUSB's composite-device support actually enables, whether it can present
 > **two Joy-Con 2 identities from one Pico**, and where the real boundary lies. Prompted by a fair

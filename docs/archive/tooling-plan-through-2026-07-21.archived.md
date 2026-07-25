@@ -1,4 +1,4 @@
-# Tooling — Wishlist & Plan
+# Tooling — Wishlist & Plan (Archived)
 
 > The canonical home for **all** tooling and infrastructure planning in this project. Part wishlist,
 > part roadmap: every tool worth building, why it matters, what it unblocks, what already exists to
@@ -127,7 +127,7 @@ protocol-trace increment:
 - **Decoder/differ:** `tools/ns2_trace.py decode` renders a timestamped semantic timeline;
   `tools/ns2_trace.py diff` aligns two traces and distinguishes known fields, unknown bytes, and
   redacted session-specific pairing material. `--strict` restores byte-for-byte prefix comparison.
-  See [`docs/switch2/uart-trace-tooling.md`](docs/switch2/uart-trace-tooling.md).
+  See [`../switch2/uart-trace-tooling.md`](../switch2/uart-trace-tooling.md).
 - **Hardware validation (2026-07-21):** the pull reader recovered all 63 chronological records from
   a Pro2 same-personality re-enumeration on a real Switch 2 with zero ring overwrites or transport
   corruption. The paired genuine Pro Controller 2 returned raw version tuple
@@ -375,4 +375,4 @@ between guessing from captures and *watching the console think*.
 - `src/bt_hid/bt/bthid/devices/vendors/nintendo/switch2_ble.c:231-242` — the printf-flood-starves-
   core1 lesson (why 1.1 must be binary/rate-limited).
 - `JOYCON2-AUDIT.md` §5/§9 — the rotation question that 1.1 + 2.1 would settle;
-  `COMMAND-IMPLEMENTATION.md` — the command surface 1.1 would trace.
+  `../switch2/command-surface.md` — the command surface 1.1 would trace.

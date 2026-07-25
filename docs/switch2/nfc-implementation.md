@@ -2,7 +2,7 @@
 
 > Design and feasibility document for NFC (amiibo) support, toward full feature parity with genuine
 > Switch Pro Controllers and Joy-Cons. **Documentation only — no code changed.** Builds on the RE
-> evidence in [`docs/switch2/nfc-protocol-inventory.md`](docs/switch2/nfc-protocol-inventory.md)
+> evidence in [`nfc-protocol-inventory.md`](nfc-protocol-inventory.md)
 > (protocol facts) rather than re-deriving it; this file is the *how-to-build-it* view.
 >
 > Status: ⬜ not implemented (beyond an init-handshake stub). **Cannot function on a real Switch

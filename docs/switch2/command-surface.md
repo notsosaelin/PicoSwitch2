@@ -7,9 +7,9 @@
 > every dump and capture in the repo.
 >
 > **Documentation only — no code changed.** Companion to
-> [`FIRMWARE-IMPLEMENTATION.md`](FIRMWARE-IMPLEMENTATION.md) (command `0x0D`),
-> [`NFC-IMPLEMENTATION.md`](NFC-IMPLEMENTATION.md) (command `0x01`), and
-> [`BATTERY-OPTIMIZATION.md`](BATTERY-OPTIMIZATION.md) (command `0x0B`).
+> [`firmware-versioning.md`](firmware-versioning.md) (command `0x0D`),
+> [`nfc-implementation.md`](nfc-implementation.md) (command `0x01`), and
+> [`../bluetooth/battery-passthrough.md`](../bluetooth/battery-passthrough.md) (command `0x0B`).
 >
 > Evidence base: `src/switch_pro2/switch_pro2.c` (`ns2_dispatch`, the authoritative dispatcher),
 > `src/switch_gc/switch_gc.c` + `src/switch_joycon2/switch_joycon2.c` (family mirrors),
@@ -53,7 +53,7 @@ the **USB** capture (`usb-spec.md` table) shows `00 f8`. So **`00 f8` is correct
 `10 78` — currently moot.) — **Strong Evidence.**
 
 **Direction byte (`header[1]`) has *two* bare-ACK forms.** The A/B diff
-([`docs/experiments/2026-07-19-usb-command-ab-diff.md`](docs/experiments/2026-07-19-usb-command-ab-diff.md))
+([`../experiments/2026-07-19-usb-command-ab-diff.md`](../experiments/2026-07-19-usb-command-ab-diff.md))
 confirmed the genuine controller answers some bare ACKs with **dir `0x04`** (NFC `0x01`, **and grip
 `0x08/02`**) rather than the usual `0x01`. We handle this for NFC but **not** for `0x08` (it hits the
 `default:` dir `0x01`) — a confirmed, still-live shape divergence. The set of commands that use
@@ -125,7 +125,7 @@ Three distinct behaviors get conflated as "not implemented" — they are differe
    the 0x160-byte factory window at `0x13000` (+ `0x1FA000`→`00`) and returns **`0xFF` for every
    other address**. This is *deliberate* — genuine uninitialised flash reads `0xFF` — and is correct
    for most of the 2 MB map. It is **only a problem for the firmware/DSP regions** the console reads
-   to make its update decision (see `FIRMWARE-IMPLEMENTATION.md` §3). Not a "stub"; a faithful blank.
+   to make its update decision (see `firmware-versioning.md` §3). Not a "stub"; a faithful blank.
 2. **Bare-ACK stub (`default:` and unhandled subcommands).** An 8-byte envelope with **no data**.
    Correct for commands the console tolerates an empty answer to (it kept the handshake alive in
    testing). **Divergent** only where genuine returns a specific payload (`0x08` grip, `0x0D`
@@ -233,7 +233,7 @@ genuine console session.
 
 **BLE captures** (`nso-gc-refs/switch2_controller_research/captures/`):
 - `nrf52840/btle_joycon2_ota_update_{decrypted,encrypted}.pcapng` — **OTA firmware update** over BLE.
-  Directly informs command `0x0D` semantics (the `FIRMWARE-IMPLEMENTATION.md` §7 capture design) —
+  Directly informs command `0x0D` semantics (the `firmware-versioning.md` §7 capture design) —
   the only genuine update exchange we hold.
 - `nrf52840/btle_joycon2_mouse_mode_{decrypted,encrypted}.pcapng` — resolves the **`0x13`** theory.
 - `nrf52840/btle_procon2_pairing_{decrypted,encrypted}.pcapng`, `btle_joycon2_pairing_*` — validate
@@ -251,7 +251,7 @@ genuine console session.
 ## 8. Recommended experiments (ranked, all documentation/analysis — no firmware change)
 
 1. ✅ **DONE — A/B-diff `picoswitch_2_dongle.pcapng` vs `genuine_procon_2.pcapng`**
-   ([`docs/experiments/2026-07-19-usb-command-ab-diff.md`](docs/experiments/2026-07-19-usb-command-ab-diff.md)).
+   ([`../experiments/2026-07-19-usb-command-ab-diff.md`](../experiments/2026-07-19-usb-command-ab-diff.md)).
    Result: 8/12 exercised replies byte-identical; found the live `0x08/02` dir-byte divergence and the
    factory `0x00`-vs-`0xFF` padding bug; confirmed the capture is a PC-tool init session that does
    **not** exercise `0x10/0x15/0x0D/0x16/0x17/0x18` or EP0 vendor requests.
@@ -285,5 +285,5 @@ genuine console session.
 - `nso-gc-refs/switch2_controller_research/commands.md` — the full command reference.
 - `nso-gc-refs/switch2_controller_research/memory_layout.md` — `0x02` address map.
 - Dumps/captures per §7.
-- Companions: `FIRMWARE-IMPLEMENTATION.md` (`0x0D`/`0x10`), `NFC-IMPLEMENTATION.md` (`0x01`),
-  `BATTERY-OPTIMIZATION.md` (`0x0B`), `docs/switch2/usb-spec.md` (init command sequence).
+- Companions: `firmware-versioning.md` (`0x0D`/`0x10`), `nfc-implementation.md` (`0x01`),
+  `../bluetooth/battery-passthrough.md` (`0x0B`), `usb-spec.md` (init command sequence).

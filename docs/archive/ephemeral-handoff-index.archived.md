@@ -1,4 +1,4 @@
-# Ephemeral Handoff File Index
+# Ephemeral Handoff File Index (Archived)
 
 Several historical documents mention temporary task files that were intentionally not retained as
 project authorities. Their durable results were integrated as follows:

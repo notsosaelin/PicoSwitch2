@@ -1,4 +1,4 @@
-# WII_MOTION — Nintendo Wii Remote / Wii MotionPlus Motion & IMU: Definitive Technical Reference
+# Nintendo Wii Remote / Wii MotionPlus Motion / IMU — Definitive Technical Reference
 
 **Scope.** Everything required to obtain calibrated angular velocity and linear acceleration from a
 Nintendo Wii Remote (RVL-CNT-01), a Wii Remote Plus (RVL-CNT-01-TR), an external Wii MotionPlus
@@ -19,7 +19,7 @@ contributor who has no access to this conversation.
 
 ### Confidence legend
 
-Per [`docs/re-methodology/evidence-standards.md`](docs/re-methodology/evidence-standards.md):
+Per [`../re-methodology/evidence-standards.md`](../re-methodology/evidence-standards.md):
 
 - **Confirmed** — corroborated by at least two independent implementations that talk to real
   hardware, or directly verified in this repository.
@@ -29,7 +29,7 @@ Per [`docs/re-methodology/evidence-standards.md`](docs/re-methodology/evidence-s
 
 Nothing in this document has yet been validated against hardware *by this project*. Every claim's
 tier reflects the strength of the external evidence base. Tier promotion to "verified here" requires
-a capture under [`docs/experiments/`](docs/experiments/).
+a capture under [`../experiments/`](../experiments/).
 
 ---
 
@@ -1070,8 +1070,8 @@ identity that games cache, so that a previously-challenged MotionPlus is not re-
 | Timestamp in report | **None** | Confirmed |
 
 **There is no timestamp field anywhere in the Wii protocol.** Unlike the DualSense (which carries a
-32-bit sensor timestamp — see [`DS_MOTION.md`](DS_MOTION.md)) or the Switch 1 Joy-Con (which packs
-three time-separated IMU frames per report — see [`SWITCH1_MOTION.md`](SWITCH1_MOTION.md)), the Wii
+32-bit sensor timestamp — see [`dualsense-motion.md`](dualsense-motion.md)) or the Switch 1 Joy-Con (which packs
+three time-separated IMU frames per report — see [`switch1-motion.md`](switch1-motion.md)), the Wii
 Remote gives you one sample with no time reference at all.
 
 Consequences for integration:
@@ -1114,7 +1114,7 @@ own motion reports carry rates, not quaternions, so passing rates through avoids
 filter whose drift characteristics would then have to be matched against genuine hardware. Confidence
 that rates are the correct interchange: **Strong Evidence**, pending the outcome of the native
 motion work tracked in
-[`docs/experiments/native-pro2-motion-passthrough-2026-07-21.md`](docs/experiments/native-pro2-motion-passthrough-2026-07-21.md).
+[`../experiments/native-pro2-motion-passthrough-2026-07-21.md`](../experiments/native-pro2-motion-passthrough-2026-07-21.md).
 
 ---
 
@@ -1206,7 +1206,7 @@ When a proper accelerometer decode lands, this should be **re-expressed on top o
 calibrated gravity vector against the device's axes — rather than left as a parallel implementation.
 That removes three magic numbers, makes the behaviour explainable, and would let the same code serve
 the sideways/upright orientation problem documented in
-[`docs/switch2-joycon2/mapping.md`](docs/switch2-joycon2/mapping.md). This is a concrete instance of
+[`../switch2-joycon2/mapping.md`](../switch2-joycon2/mapping.md). This is a concrete instance of
 the consolidation that `CLAUDE.md` asks for.
 
 ---
@@ -1248,7 +1248,7 @@ Ordered so that each step is independently testable.
 **Phase 4 — Plumbing**
 
 16. Extend `input_event_t` with gyro and accel fields, or reuse whatever the DualSense motion work
-    establishes — **do not invent a second motion representation.** Coordinate with `DS_MOTION.md`
+    establishes — **do not invent a second motion representation.** Coordinate with `dualsense-motion.md`
     §13 and the native Pro Controller 2 motion experiment.
 17. Re-express `wiimote_detect_orientation()` on the calibrated vector (§12.4).
 18. Fix the rumble-latch bug (§12.3) — it will become far more visible once motion features
@@ -1312,14 +1312,14 @@ Ordered so that each step is independently testable.
 
 **Related documents in this repository**
 
-- [`DS_MOTION.md`](DS_MOTION.md) — DualSense IMU reference. Contrast: dedicated 16-bit gyro,
+- [`dualsense-motion.md`](dualsense-motion.md) — DualSense IMU reference. Contrast: dedicated 16-bit gyro,
   hardware timestamp, single fixed range.
-- [`SWITCH1_MOTION.md`](SWITCH1_MOTION.md) — Switch 1 Joy-Con / Pro IMU reference. Contrast: three
+- [`switch1-motion.md`](switch1-motion.md) — Switch 1 Joy-Con / Pro IMU reference. Contrast: three
   time-separated frames per report, SPI-flash calibration.
-- [`docs/switch2-joycon2/mapping.md`](docs/switch2-joycon2/mapping.md) — sideways/upright orientation
+- [`../switch2-joycon2/mapping.md`](../switch2-joycon2/mapping.md) — sideways/upright orientation
   policy; §12.4 above proposes consolidating the Wiimote's orientation detection with that work.
-- [`TOOLING.md`](TOOLING.md) — the UART diagnostic channel used by the Phase 1 and Phase 5 steps.
-- [`docs/re-methodology/evidence-standards.md`](docs/re-methodology/evidence-standards.md) —
+- [`../switch2/uart-trace-tooling.md`](../switch2/uart-trace-tooling.md) — the UART diagnostic channel used by the Phase 1 and Phase 5 steps.
+- [`../re-methodology/evidence-standards.md`](../re-methodology/evidence-standards.md) —
   confidence tier definitions.
 
 ---

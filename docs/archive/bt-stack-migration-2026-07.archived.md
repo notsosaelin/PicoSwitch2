@@ -1,4 +1,4 @@
-# Bluetooth Stack Migration — bluepad32 → BTstack/joypad-os HID layer
+# Bluetooth Stack Migration — bluepad32 → BTstack/joypad-os HID layer (Archived)
 
 **Status:** design / planning (no code yet). **Goal:** replace bluepad32's flattened
 virtual-gamepad input with a native BTstack HID host (ported from

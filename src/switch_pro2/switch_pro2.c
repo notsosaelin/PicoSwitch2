@@ -1062,15 +1062,10 @@ static void ns2_build_report(uint8_t *p) {
         // smallest-three representation and changes the omitted component
         // when a transmitted component reaches the chart boundary.
         //
-        // Keep this on the proven 0x1E carrier for now. Paired genuine
-        // captures show that normal 0x28 G6/G7/G8 values are a constant-
-        // magnitude body magnetic vector satisfying
-        //     m_body = conjugate(q) * m_world * q
-        // (escalation PDUs must be excluded). A virtual field is therefore
-        // mathematically possible for six-axis controllers, but the leading
-        // 0x28 lanes change meaning too and are not decoded well enough to
-        // serialize safely. Emitting only the three understood magnetic lanes
-        // would make a structurally invalid PDU, not improve fusion.
+        // Keep this on the proven 0x1E carrier. The 2026-07-24 UART experiment
+        // proved that a genuine 0x28 template with only timing and G6/G7/G8
+        // replaced produces random motion: the unresolved leading/middle
+        // lanes are semantically active. See docs/switch2/uart-magprobe.md.
         if (ns2_ds5_motion_enabled && ns2_imu_enabled &&
             ns2_ds5_motion_report_valid) {
             p[0x0E] = sizeof(ns2_ds5_motion_report);

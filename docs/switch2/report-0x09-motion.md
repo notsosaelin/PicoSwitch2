@@ -1,9 +1,15 @@
 # Switch 2 Pro Controller — Report 0x09 Motion (IMU) Format
 
-**Current status (2026-07-21):** ✅ a genuine Pro Controller 2's native BLE motion is passed
+**Current status (2026-07-24):** ✅ a genuine Pro Controller 2's native BLE motion is passed
 byte-for-byte into console-facing report `0x09` and is hardware-confirmed in Splatoon 3. Correct
 aim axes, stationary behavior, controller power-cycle, bonded reconnect, and source-off hold all
-pass. 🔵 Synthesizing equivalent data from DualSense or another generic IMU remains unresolved.
+pass. DualSense gyro translation is also hardware-confirmed, including rapid motion and reconnect.
+The genuine stream's length-`0x28` G6/G7/G8 lanes are partially decoded as a controller-processed
+vector. A body-frame magnetic/reference vector and the vector part of a second “magneto
+quaternion” remain competing interpretations; direct raw signed-16-bit magnetometer samples are
+ruled out by the observed 22/22/20-bit wire values. Remaining leading/middle lanes and escalation
+semantics are still under investigation with
+[`uart-magprobe.md`](uart-magprobe.md).
 
 The legacy length-30 USB field analysis below remains useful for the generic encoder and historical
 captures. It is no longer the production path for a genuine PID `057E:2069` source; that controller
@@ -138,9 +144,10 @@ exact field mapping):
 - `gyro_bias` = **(-0.0205, -0.00058, 0.00328)** — tiny, consistent with (and roughly matching the
   order of magnitude of) this repo's already-documented "genuine gyro ~0.03 dps bias" figure. Units
   not independently confirmed but plausibly dps.
-- `magnetometer_bias` = **(0, 0, 0)** — zero, consistent with this unit's magnetometer never having
-  been calibrated/used (matches the unprogrammed user-cal region and the negotiated, never-enabled
-  `0x80` feature bit on our captures).
+- `magnetometer_bias` = **(0, 0, 0)** — zero on this unit. Earlier work interpreted this as an
+  unused magnetometer, but live 2026-07-24 `0x28` captures expose a stable G6/G7/G8 fused/reference
+  lane even under mask `0x27`; zero bias therefore cannot establish that a physical sensor or
+  internal fusion path is unused.
 - `accelerometer_bias` = **(0.160, -0.0687, 10.38)** — the Z axis sits close to **standard gravity
   (9.8 m/s²)**, strongly confirming these are **physical SI-unit floats (m/s²), not raw ADC/LSB
   counts** — the controller was evidently lying flat (Z-up) during factory calibration capture.
@@ -157,9 +164,13 @@ fused-orientation question below.
 matches and *names* the bits behind this repo's already-observed enable mask: bit0=buttons,
 bit1=analog sticks, **bit2=IMU**, bit3=unknown, bit4=mouse, bit5=battery current, bit6=unknown,
 **bit7=magnetometer**. Our captured enable mask `0x27` = `0b00100111` = bits 0,1,2,5 — buttons +
-sticks + IMU + battery-current, **not** bit 7 — independently confirming (a third time now, after
-this repo's own capture and `TommyWabg/Switch2Connect`'s `FEATURE_MAGNOMETER = 0x80`) that
-magnetometer was simply never requested, not hidden inside the existing fields.
+sticks + IMU + battery-current, **not** bit 7. That naming remains useful protocol evidence, but
+its scope is no longer assumed: the genuine controller's current `0x27` stream interleaves
+length-`0x28` PDUs whose G6/G7/G8 values form a bounded, near-constant-norm fused/reference
+representation. A direct PID-`0x2069` positive control later replayed the public `0x94` sequence
+and re-subscribed handle `0x000A`; every command and ATT operation succeeded, but `0x000A`
+emitted no reports. Bit 7 therefore does not expose that public signed-int16 raw channel on the
+tested Pro Controller 2.
 
 **Command-protocol cross-check:** `switch2_input_viewer.py`'s BLE `read_spi_memory()` sends
 `[0x02, 0x91, 0x01, 0x04, 0x00, 0x08, 0x00, 0x00, size, 0x7E, 0x00, 0x00, addr(4, LE)]` — the same
@@ -172,7 +183,7 @@ capture-derived `sub=0x05` for writes — 🔵 unverified whether that's a real 
 detail or a bug in that tool; not adopted without a citation, since it conflicts with an existing
 capture-derived fact.)
 
-## Refuted: magnetometer / 9-axis IMU within report 0x09
+## Length-30 byte-budget result; length-40 magnetic lane supersedes the broader refutation
 
 A research lead surfaced 2026-07-10 (after the second hardware test) asked whether the console's
 "angular phase" depends on more than 3-axis gyro + 3-axis accel — magnetometer data, sensor fusion,
@@ -180,20 +191,45 @@ or a 9-axis IMU. **This does not fit the confirmed byte budget.** The motion blo
 30 bytes for length-30 (the only length seen on hardware other than 0): timing(2) + temp(2) +
 phase×3(12) + accel×3(12) + tail(2) = 30, with **zero spare bytes** — every byte is already
 accounted for by the half-variance/Q16.16 proof above, independent of the magnetometer question.
-There is no room in this wire format for a magnetometer lane. (A genuine controller's IMU chip
-*could* still be 9-axis internally and simply not expose the extra axes over this report — that's
-a different, unfalsifiable-from-here question, and not relevant to fixing report 0x09.) The
+There is no room in the **length-30 form** for a magnetometer lane. The
 "second lane group at 0x15/0x19/0x1D" observation that originally motivated this lead was from the
 **refuted int16 model** (see "Why the int16 model looked partially right" above) — those offsets
 are inside the Q16.16 accel fields' fractional bytes, already explained, not a separate sensor.
 
-**Corroborated externally (2026-07-10):** `TommyWabg/Switch2Connect` (a PC-side BLE host for a
-genuine Pro Controller 2) confirms magnetometer is a real but **separately-negotiated** feature
-bit (`FEATURE_MAGNOMETER = 0x80` in its enable-mask protocol) with its own distinct report offset
-range — not packed inside the accel/gyro block. Our capture's enable mask was `0x27` (bits
-0,1,2,5 — does not include `0x80`), so magnetometer was simply never requested, consistent with
-(not contradicting) the 30-byte block having zero spare room. If we ever need magnetometer data,
-the model is "negotiate an additional feature bit," not "find hidden bytes in the existing block."
+**Updated by direct live evidence (2026-07-24):** the normal length-`0x28`, status-`0x0D` form has
+additional G6/G7/G8 lanes with a nearly constant norm. Direct signed-int16 sensor samples are
+excluded by their 22/22/20-bit ranges; a normalized reference vector or vector part of a second
+quaternion remains numerically possible. The form is emitted by the real controller in the
+current `0x27` production profile and was unchanged by a fully acknowledged `0x94` positive
+control. That same positive control produced no handle-`0x000A` reports despite a successful
+post-init CCC subscription. Thus `0x28` is a separate controller-processed/fused representation,
+not the public raw-magnetometer channel. The narrower length-30 byte-budget proof remains valid.
+See [`uart-magprobe.md`](uart-magprobe.md) for the decoder and evidence boundary.
+
+A four-epoch stationary capture strengthens the quaternion interpretation: the live G0/G1/G2
+orientation advanced `16.740°` while G6/G7/G8 direction changed only `0.099°`. Reconstructing
+`w = sqrt(1 - G6² - G7² - G8²)` yielded a unit-quaternion candidate that changed only `0.077°`,
+a `216.7x` stability split. The working model is therefore “drifting live quaternion plus stable
+corrected/reference quaternion,” with correction source and exact component semantics still open.
+
+**Diagnostic encoder boundary (2026-07-24):** `ns2_motion_pdu40_get_reference()` and
+`ns2_motion_pdu40_set_reference()` now provide a host-tested, byte-exact codec for the understood
+signed 22/22/20-bit G6/G7/G8 lanes. Golden testing uses a genuine UART-captured `0x28` PDU and
+also covers all signed endpoints while proving that the shared unassigned bits and every byte
+outside the three lanes remain untouched. The DualSense translator also maintains an optional
+second quaternion: it integrates the same calibrated body rate and applies conservative
+accelerometer feedback to observable pitch/roll, while correctly leaving yaw relative because a
+DualSense has no magnetometer.
+
+This is **not production `0x28` generation**. The 2026-07-24 live test conclusively rejected the
+complete template-derived packet: enabling `ds5motion ref28 on` caused immediate random motion
+despite valid length-40 selection, changing G6/G7/G8 values, and zero encoder rejects. Turning the
+gate off immediately restored the validated length-`0x1E` path without reflashing. The exact
+G6/G7/G8 packer remains supported independently, but the experiment proves that the unresolved
+leading/middle lanes cannot remain static; the console consumes or cross-validates them. The
+generator, secondary quaternion, and UART gate were removed after the test so the rejected packet
+model cannot be enabled accidentally. See
+[`../experiments/refuted-hypotheses.md`](../experiments/refuted-hypotheses.md).
 
 ## Remaining unknowns / suggested experiments
 
@@ -260,14 +296,20 @@ the model is "negotiate an additional feature bit," not "find hidden bytes in th
 3. **Tail `motion[0x1C]`** — zero in all captures; purpose unknown.
 4. **Timing epoch/phase** — does the console require a specific starting tick, or only a consistent
    ~800 Hz progression with correct high-nibble deltas? (High-nibble delta is validated 299/299.)
-5. **Length-40 variant** — seen elsewhere, absent here; likely 3 samples at a higher rate. 🔵
-   **Located, still not decoded, 2026-07-10:** `tools/switch2_input_viewer.py` confirms a genuine
+5. **Length-40 variant** — seen elsewhere, absent from the original static USB capture. 🔵
+   **Located 2026-07-10; partially decoded 2026-07-24:** `tools/switch2_input_viewer.py` confirms a genuine
    Pro Controller 2 emits exactly this 40-byte block over its BLE GATT notification at handle
    `0x000E` (report offset `0xF:0x37`) — a *different transport* from USB report 0x09, so this is
-   not proof the USB `40` some other research mentioned is the same format, but it is now a known,
-   reachable, real occurrence of a 40-byte motion block worth decoding on its own if BLE motion work
-   is ever prioritized. That tool's own author left it undecoded (falls back to raw `int16` plotting,
-   no named fields) — still an open problem, not unique to this repo.
+   not proof the USB `40` some other research mentioned is the same format. Direct UART captures
+   now establish an interleaved 133 Hz `0x1E`/`0x28` stream. Normal status-`0x0D` G6/G7/G8 decode
+   as a nearly constant-magnitude controller-processed vector that rotates back to a more stable
+   world vector in both existing moving captures under the nearest/interpolated `0x1E`
+   quaternion. The vector also fits numerically as three components of a second quaternion,
+   matching the source bitmap's “Magneto Quaternion” name; its exact semantics remain unresolved.
+   The leading/middle
+   `0x28` lanes and
+   status-`0x0F` escalation form remain unresolved; see
+   [`uart-magprobe.md`](uart-magprobe.md).
 6. **Whether the console strictly validates** beyond timing + physically plausible values.
 
 ## Implementation status
@@ -277,6 +319,10 @@ blocks are transported opaquely and hardware-confirmed in Splatoon 3. This avoid
 generated value semantics discussed below. On disconnect, the last genuine length-30 state is held
 stationary while its timing word advances; source-slot and VID/PID ownership prevent reuse by a
 different controller.
+
+🟢 **Current DualSense production path:** only the host-tested length-`0x1E` smallest-three
+quaternion carrier is emitted. The hardware-refuted length-`0x28` generator and its UART gate have
+been removed; passive decoding and the exact field codec remain available for continued research.
 
 🔵 **Historical/generic encoder path:** the Switch 2 reads the generated gyro pipeline (both Zeldas
 and Splatoon respond), but its exact fidelity remains unresolved. `src/switch_pro2/switch_pro2.c`

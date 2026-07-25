@@ -5,7 +5,7 @@ The native BTstack HID host that drives all Bluetooth controllers — the **sole
 Edge paddles/Fn, Xbox Elite paddles) plus motion and per-vendor rumble. Controller catalog:
 [`docs/bluetooth/controller-research.md`](../../docs/bluetooth/controller-research.md). The
 migration that produced this (shipped 2026-07-04) is archived at
-[`docs/archive/bt-stack-migration-2026-07.md`](../../docs/archive/bt-stack-migration-2026-07.md).
+[`docs/archive/bt-stack-migration-2026-07.archived.md`](../../docs/archive/bt-stack-migration-2026-07.archived.md).
 
 ## Provenance & license
 Vendored from **[joypad-ai/joypad-os](https://github.com/joypad-ai/joypad-os)** v2.2.0 @ `970656e`,
@@ -22,6 +22,8 @@ Upstream layout is preserved (`core/`, `bt/bthid/`, `bt/transport/`, `usb/usbh/h
 - **`bt/transport/bt_transport_cyw43.{c,h}`** — the Pico W CYW43 radio path, on the SDK's BTstack.
 - **`bt/btstack/`** — joypad-os's BTstack HID-host glue, adapted onto the SDK BTstack we already link.
 - **`core/{buttons,input_event}.h`** — the unified `JP_BUTTON_*` input model drivers emit.
+- **`motion/`** — PicoSwitch2-owned genuine Pro2 passthrough, DualSense translation, PDU codecs,
+  capture, and diagnostic probe modules. See [`motion/README.md`](motion/README.md).
 
 ## The seam — `ns2_seam.c`
 `ns2_seam.c` implements the framework hooks the joypad-os drivers call (`router_submit_input`,
