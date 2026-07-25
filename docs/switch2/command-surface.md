@@ -160,7 +160,8 @@ Request example `17 91 01 02 00 07 00 00` + `80 bb 00 00 02 f0 00`. **`80 bb 00 
 `FORMAT_TYPE.tSamFreq` is **the exact same bytes `80 bb 00` = 48000**, for both the headphones and mic
 streams. So `0x17/02` almost certainly configures the audio path sample rate. **Still not directly
 captured** — a PC host issues no vendor commands; obtaining the command itself needs the console-init
-tool run *with* a headset, or a console interposer. Ties into `DS5-NS2_AUDIO.md`.
+tool run *with* a headset, or a console interposer. Ties into
+[audio-passthrough-research.md](audio-passthrough-research.md).
 
 ### `0x18` — **audio/DSP or analog config (hypothesis)**
 `0x18/01` → `00 00 40 f0 00 00 60 00`; `0x18/03` echoes a byte (`07`). The `40 f0` / `60 00` groups
@@ -257,7 +258,7 @@ genuine console session.
    **not** exercise `0x10/0x15/0x0D/0x16/0x17/0x18` or EP0 vendor requests.
 2. **Resolve `0x17`/`0x18` from a headset-present capture.** If `genuine_procon_2.pcapng` lacks a
    headset session, this needs one new genuine capture; the payoff is unblocking realistic headset
-   audio config (ties into `DS5-NS2_AUDIO.md`).
+   audio config (ties into [audio-passthrough-research.md](audio-passthrough-research.md)).
 3. ✅ **DONE — tested `0x13` against the mouse-mode (and 7 other) BLE captures** (Exp 2, same doc).
    Result: `0x13` absent everywhere; mouse mode is the `0x0C` mask `0x37` (`0x10` bit), not `0x13`.
    Also confirmed command `0x0F` is genuinely issued. `0x13` remains Unknown pending a new capture.

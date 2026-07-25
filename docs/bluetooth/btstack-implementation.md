@@ -1,11 +1,14 @@
 # BTStack Implementation (`joypad-os`)
 
-> Current-status note (2026-07-15): this document contains the detailed, dated implementation
+> Current-status note (2026-07-24): this document contains the detailed, dated implementation
 > history. The authoritative runtime architecture is `docs/architecture/overview.md`; current
 > controller and BOOTSEL results are in `STATUS.md` and
 > `docs/status/compatibility-matrix.md`. DualSense/Edge input, LEDs, rumble, and BOOTSEL gestures
-> are now hardware-confirmed. Treat older "pending hardware" statements below as dated snapshots
-> unless the compatibility matrix still lists the item as open.
+> are now hardware-confirmed. Xbox BLE output, Switch 2 pairing/reconnect, and normal GATT
+> initialization are also hardware-confirmed. Treat older validation checklists below as snapshots
+> from the date of each change; only items still open in the compatibility matrix remain current.
+> References to `DATA.md` in those snapshots mean the deleted session brief catalogued in
+> `docs/archive/ephemeral-handoff-index.archived.md`, not a current authority.
 
 This project implements a native Bluetooth HID host stack based on [joypad-os](https://github.com/joypad-ai/joypad-os) to handle controller connections and inputs. **Bluepad32 has been completely removed** from this project in favor of this implementation, which provides much finer-grained control and parses extra controller features (e.g., paddles, capture buttons).
 
@@ -347,7 +350,11 @@ comparison against the prior working version (above) — no behavior differs the
 would be validating already-unchanged code. Revisit if a future rumble regression *is* traced to
 the decode layer specifically.
 
-### Validation performed vs. still required
+### Historical validation state at implementation time
+
+The checklist below records what was still open on 2026-07-12. Subsequent hardware passes confirmed
+Xbox BLE ON/STOP/reconnect, DualSense/Edge stereo/native haptics and STOP behavior, and the shared
+Switch output seam. Use the current compatibility matrix for release decisions.
 
 **Performed:** all three configurations (`NS2_AUDIO=on`, `NS2_AUDIO=off`, `NS2_PRO=off`) rebuilt
 clean after each change, including the `loop_count` fix in `xbox_ble.c`/`xbox_bt.c`.
@@ -774,11 +781,12 @@ DATA.md's instruction not to treat another implementation's policy as proof of t
 behavior. If BTstack is ever found to expose a genuine fast-reconnect/page-scan-tuning equivalent,
 NS-PC-Control's values are a reasonable starting point to test against, not to copy blind.
 
-### Hardware validation still required
+### Current validation status
 
-This fix is **build-verified only** (`NS2_AUDIO=on/off`, `NS2_PRO=off` — see below). It has not
-been tested against a real controller. Suggested procedure, ranked by how directly each isolates
-the fix:
+The user-facing bonded reconnect path is now hardware-confirmed across genuine Pro Controller 2,
+Joy-Con 2, DualSense, Xbox, and other tested families. The exact intentional-disconnect reason log
+and an induced supervision-timeout branch were not separately captured. The original targeted
+procedure is retained below for future fault-injection work:
 
 1. **Direct fix validation:** pair a genuine Switch 2 Pro Controller (or Joy-Con 2). Deliberately
    power it off via its own controls (not BOOTSEL triple-tap — that's this project's own wipe
@@ -807,7 +815,7 @@ the fix:
   correctly (no blind cascade, resumes scanning on empty connection count); no defect found, so
   nothing to fix.
 
-## Switch 2 GATT init retry timing (🟢 fixed 2026-07-12 — hardware validation pending)
+## Switch 2 GATT init retry timing (🟢 fixed; normal path hardware-confirmed)
 
 > A *different* mechanism from "Reconnect reliability" above: this section is about the
 > **post-link vendor/GATT command sequence** that pairs and configures a Switch 2 Pro Controller /
@@ -920,9 +928,11 @@ BTstack-dependent code) — validated by code-path reasoning (above) and the bui
 constructing a fake-BTstack framework solely for this change was judged disproportionate per
 DATA.md's own guidance.
 
-### Hardware validation still required
+### Current validation status
 
-Not yet tested. Suggested procedure:
+Normal genuine Pro Controller 2 and Joy-Con 2 pairing, initialization, input, motion, and reconnect
+are hardware-confirmed. The deliberately stalled-ACK/retry-exhaustion backstop has not been forced
+on hardware. The original fault-injection procedure remains:
 1. Pair a genuine Switch 2 Pro Controller / Joy-Con 2 and watch the debug log during the init
    handshake — confirm each state's command is sent once promptly, and (if a step is ever slow)
    that a retry fires close to 500ms later, not ~1.8s.
@@ -944,7 +954,7 @@ Not yet tested. Suggested procedure:
   the existing per-connection `sw2_init_state`/`sw2_init_handle` scope, which DATA.md's own scope
   boundary said not to expand without evidence this task specifically required it (it didn't).
 
-## Pairing window vs in-flight connect (🟢 fixed 2026-07-13 — hardware validation pending)
+## Pairing window vs in-flight connect (🟢 fixed; normal path hardware-confirmed)
 
 **Reported symptom**: a genuine Switch 2 Pro Controller paired reliably when the dongle was left in
 its default auto-reconnect/scan state, but was "weird" — frequently failed to finish — specifically
@@ -1056,11 +1066,11 @@ being the load-bearing part of this change.
    comparison in the failure handler, and Classic BT (used by no bonded-reconnect logic touched here)
    was confirmed unaffected by tracing, not by adding unneeded code to it. ✅
 
-### Hardware validation still required
+### Current validation status
 
-Exact procedure (Pico 2 W, `pico2_w`, this session's build — all four build-matrix combinations
-verified compiling clean: both boards' default `NS2_PRO=ON NS2_AUDIO=ON`, plus scratch
-`NS2_AUDIO=OFF` and `NS2_PRO=OFF` on `pico2_w`):
+Explicit pairing windows, new pairing, bonded reconnect, and the 30-second UX are hardware-confirmed
+with genuine Switch 2 controllers and the broader controller matrix. The exact old-boundary and
+forced-failure cases below were not isolated as dedicated fault-injection tests:
 
 1. If the Switch 2 Pro Controller is already bonded from a prior session, wipe only that bond
    (BOOTSEL triple-tap wipes *all* bonds — there's no per-device wipe command yet, so either accept

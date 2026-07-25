@@ -3,15 +3,13 @@
 > A complete, implementation-ready breakdown of **how the Sony DualSense reports gyroscope and
 > accelerometer data** — the on-wire format, byte offsets, data types, units, the factory
 > calibration mechanism and its exact math, the coordinate system, how motion is enabled over
-> Bluetooth, and where PicoSwitch2 stands today. Scope is the **DualSense side only**: what the
-> controller sends and how to turn it into physical units. Consuming that motion for a specific
-> output personality (e.g. the Switch 2's own `0x09` motion) is a *separate* problem and is
-> explicitly **out of scope** here.
+> Bluetooth, and PicoSwitch2's hardware-confirmed translation into the Switch 2 report-`0x09`
+> length-`0x1E` carrier.
 >
-> **Documentation only — no code changed.** Confidence: **Confirmed** (byte-verified against the
-> Linux `hid-playstation.c` driver and this repo's own working parser) · **Strong Evidence** ·
-> **Hypothesis** · **Unknown**. Every constant and formula below is quoted from the upstream kernel
-> driver (see §13) and cross-checked against `src/bt_hid/bt/bthid/devices/vendors/sony/ds5_bt.c`.
+> Current implementation status (2026-07-24): **hardware confirmed** in Splatoon 3 for direction,
+> scale, rapid motion, stationary behavior, and reconnect. Confidence: **Confirmed** (byte-verified
+> against Linux `hid-playstation.c`, this repo's parser/tests, UART evidence, and real-console
+> behavior) · **Strong Evidence** · **Hypothesis** · **Unknown**.
 
 ## 0. Summary up front
 
@@ -27,8 +25,9 @@
 - **Accuracy needs the calibration report.** Raw counts are close to nominal scale but carry a
   per-unit **sensitivity error** (gyro) and **zero-offset** (accel). The controller exposes factory
   calibration via **HID feature report `0x05` (41 bytes)**; §7 gives the exact parse and formula.
-- **PicoSwitch2 today passes RAW, uncalibrated motion** (`ds5_bt.c` copies `rpt->gyro[i]` straight
-  through, never reads `0x05`, assumes ±2000 dps / ±4 g). That's the main implementation gap — §12.
+- **PicoSwitch2 reads and CRC-validates factory calibration report `0x05`, normalizes gyro/accel,
+  preserves the controller timestamp, estimates remaining still bias, integrates a quaternion, and
+  emits the validated Switch 2 length-`0x1E` carrier.** See §12.
 
 ## 1. The sensor
 
@@ -179,14 +178,13 @@ Output units: `gyro_out / 1024 = deg/s`, `accel_out / 8192 = g`.
   first gyro axis is inverted and its accelerometer axes are ordered/signed differently** than a
   naive read expects — so a straight copy will have one or more axes flipped or swapped relative to
   any given target frame. (Strong Evidence — see the JoyShock/SDL/evdevhook references, §13.)
-- **Practical guidance:** treat the six values as a right-handed set to be *remapped* to whatever
-  frame you consume them in. Determine the exact per-axis sign by rotating the physical controller
-  about one axis at a time and observing which `gyro[i]`/`accel[i]` moves and in which direction —
-  this is a 10-minute empirical calibration once §12's plumbing exists. **Do not** hard-code signs
-  from memory; verify them.
-- The Switch-2-output axis remap already in `ns2_seam.c` (negating/swapping DS5 axes into the
-  Switch's frame) is downstream of this and **out of scope** here — but it is concrete proof the
-  two frames differ, and is a useful reference once you reach that stage.
+- PicoSwitch2's hardware-validated seam remounts the DualSense axes into the normalized Pro2 frame
+  as `[-DS5-X, +DS5-Z, +DS5-Y]`. The translator then uses an identity signed-map because that
+  physical remount has already occurred. Do not add a second remap inside the quaternion
+  integrator.
+- Alternative maps and left/right integration order remain available only as UART diagnostics;
+  production uses the mapping and body-frame integration validated against both genuine Pro2
+  behavior and Splatoon 3.
 
 ## 9. Enabling full motion over Bluetooth
 
@@ -206,10 +204,10 @@ behavior; the exact minimal trigger is Strong Evidence — output-report interac
 - **`sensor_timestamp` (u32 LE):** a free-running counter used to compute the true **Δt between
   samples** for integration (angle = Σ gyro·Δt). Do **not** assume a fixed Δt from the nominal rate —
   BT interval jitter makes per-sample Δt vary, and using the timestamp delta is how you keep gyro
-  integration stable. The tick is small (sub-µs; this repo's driver comment notes **~0.33 µs/tick**,
-  `ds5_bt.c:94`) so the counter wraps at 2³² — handle wrap with unsigned subtraction. **Exact tick
-  duration is Hypothesis** (community values vary); confirm empirically by comparing timestamp deltas
-  to wall-clock over a known interval before relying on absolute timing.
+  integration stable. The translator follows Linux `hid-playstation`: wrap-safe unsigned
+  subtraction followed by rounded divide-by-three, i.e. approximately **0.33 µs/tick**. Implausible
+  timestamp deltas are counted and fall back to bounded host time rather than corrupting the
+  orientation.
 
 ## 11. Runtime drift / auto-calibration (separate from factory calibration)
 
@@ -221,44 +219,53 @@ JoyShockLibrary / GamepadMotionHelpers do. It is **not** part of reading the Dua
 consumer-side filter — but budget for it, or gyro aiming will feel like it slowly slides. (Strong
 Evidence — standard practice.)
 
-## 12. Current PicoSwitch2 state (audited)
+## 12. Current PicoSwitch2 state (audited 2026-07-24)
 
-**Present:**
-- Correct report parsing and offsets. `ds5_bt.c` reads `rpt->gyro[3]` / `rpt->accel[3]` /
-  `sensor_timestamp` from the right place for both USB and BT (`ds5_bt.c:88-102,556-561,631-642`).
-- A motion carrier in the normalized event: `input_event.h:249-253` — `int16_t accel[3]`,
-  `int16_t gyro[3]`, `uint16_t gyro_range` (dps), `uint16_t accel_range` (milli-g), `bool
-  has_motion`. DS3 and DS4 drivers populate `gyro_range`/`accel_range` (DS3 = 100 dps / 2000 mg;
-  DS4/DS5 default 2000 dps / 4000 mg).
+**DualSense input and calibration:**
 
-**Missing (the DualSense-side work to implement accurate motion):**
-1. **No calibration read.** `ds5_bt.c` never issues the `0x05` GET_REPORT and never parses it — there
-   is no `calib`/`0x05` code in the file. **Motion is uncalibrated.**
-2. **Raw pass-through.** `event.gyro[i] = rpt->gyro[i]` (and accel) copies **raw counts** — no
-   sensitivity scaling, no accel zero-offset removal (§7.3).
-3. **Range not set for DS5.** `ds5_bt.c` never sets `gyro_range`/`accel_range`, relying on the
-   `init_input_event` defaults (2000 dps / 4000 mg, `input_event.h:342-343`). Correct *by luck* for
-   the range constants, but the values themselves are still raw counts, not normalized to that range.
-4. **Timestamp dropped.** `sensor_timestamp` is parsed into the struct but **not propagated** into
-   `input_event_t` (no timestamp field), so Δt-based integration isn't possible downstream yet.
-5. **No runtime drift correction** (§11).
+- `ds5_bt.c` parses gyro, accel, and the 32-bit sensor timestamp from full report `0x31`.
+- After ordinary activation it requests feature report `0x05`, with three bounded retries.
+- `ds5_motion_calibration.c` requires the exact report ID/length and a valid Sony feature CRC before
+  accepting calibration. Name-matched clones cannot silently inject a different layout.
+- Gyro sensitivity and accel bias/scale are converted directly into PicoSwitch2's signed 16-bit
+  carrier. If calibration is unavailable, the native raw scale is retained as an explicit fallback.
+- `input_event_t` carries a physical-sample sequence, timestamp, timestamp-valid flag, calibrated
+  gyro/accel, and `has_motion`.
 
-## 13. Implementation checklist (so there are no blockers)
+**Switch 2 translation:**
 
-1. **On DS5 connect, GET_REPORT feature `0x05`** (41 B). Fold it into the existing `ds5_bt`
-   activation handshake (§9) — it also helps promote BT to full `0x31`.
-2. **Parse `0x05`** per the §7.1 table into 17 int16s.
-3. **Derive** `gyro_calib[3]` and `accel_calib[3]` (`bias`, `sens_numer`, `sens_denom`) per §7.2.
-4. **Per report, apply** the §7.3 `mult_frac` formula (64-bit intermediate) to `rpt->gyro[i]` /
-   `rpt->accel[i]`; store the calibrated int16 in `event.gyro`/`event.accel`.
-5. **Set ranges** explicitly: `event.gyro_range = 2000`, `event.accel_range = 4000` for DS5 (units:
-   calibrated `/1024` = deg/s, `/8192` = g).
-6. **(Optional, recommended)** add a `sensor_timestamp` field to `input_event_t` and propagate it for
-   Δt integration; add rest-detection drift correction (§11).
-7. **Verify axis signs empirically** (§8) before trusting any downstream remap.
+- `src/bt_hid/motion/ns2_ds5_motion.c` uses the physical sensor timestamp when plausible and a
+  bounded host-time fallback otherwise.
+- Startup requires 32 consecutive still samples before orientation integration begins, preventing
+  the first full-report transient from becoming a permanent false bias.
+- Runtime stillness uses gyro magnitude and jitter to update zero-rate bias conservatively.
+- Every calibrated gyro sample is integrated using bounded substeps so delayed Bluetooth/audio
+  delivery preserves angular area instead of clipping rapid movement.
+- The canonical quaternion is serialized through the hardware-tested Switch 2 smallest-three
+  length-`0x1E` representation; omission state changes as required at chart boundaries.
+- Acceleration is emitted in the genuine Q16.16-equivalent carrier scale.
 
-Each step is DualSense-local and testable in isolation (log calibrated deg/s and g while moving the
-pad); none depends on any output personality.
+**Validation:**
+
+- Host tests cover calibration parsing/CRC/rejection, timestamp and bias behavior, axis maps,
+  quaternion packing, omission boundaries, and genuine PDU field codecs.
+- Splatoon 3 confirms correct left/right and up/down direction, close genuine-Pro2 scale, smooth
+  rapid motion, stationary behavior, and restoration after controller reconnect.
+- Input, audio, native haptics, LED behavior, BOOTSEL, and saved-bond reconnect remain functional.
+
+## 13. Remaining work and safety boundary
+
+1. The genuine length-`0x28` PDU is only partially decoded. G6/G7/G8 packing is exact, but the
+   changing leading/middle lanes are not understood.
+2. A genuine static `0x28` template with dynamic timing/G6/G7/G8 caused immediate random motion.
+   That generator was removed; do not recreate it from this document.
+3. DualSense has no magnetometer, so absolute yaw cannot be recovered from the controller itself.
+   Runtime zero-rate correction can control stationary drift but cannot create absolute heading.
+4. Additional IMU families should reuse this translator only after their own calibration, axes,
+   ranges, timestamps, and reconnect behavior are independently verified.
+
+See [`../switch2/report-0x09-motion.md`](../switch2/report-0x09-motion.md) and
+[`../switch2/uart-magprobe.md`](../switch2/uart-magprobe.md) for the Nintendo carrier boundary.
 
 ## 14. References
 

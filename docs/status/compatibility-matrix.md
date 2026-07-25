@@ -1,6 +1,6 @@
 # Compatibility Matrix
 
-Last updated: 2026-07-21
+Last updated: 2026-07-24
 
 This matrix records observed behavior, not inferred support. "Source-tested" means host tests or
 code inspection only; it is weaker than physical hardware confirmation.
@@ -9,18 +9,18 @@ code inspection only; it is weaker than physical hardware confirmation.
 
 | Personality | Switch 2 enumeration | Input streaming | Rumble | Notes |
 |---|---|---|---|---|
-| Pro Controller 2 | ✅ Confirmed | ✅ Confirmed, including native motion from a genuine Pro2 source | ✅ Confirmed | Primary/default mode; 1000 Hz USB interval remains a required deviation for current native-motion passthrough |
+| Pro Controller 2 | ✅ Confirmed | ✅ Confirmed, including native motion from a genuine Pro2 and translated motion from DualSense/Edge | ✅ Confirmed | Primary/default mode; 1000 Hz USB interval remains a required deviation for current motion behavior |
 | NSO GameCube | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Genuine `1.1.2 / 12.0.0` firmware identity and up-to-date status confirmed; native Z and trigger detents supported |
-| Joy-Con 2 Left | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Sideways buttons, stick mapping, rumble, STOP, reconnect, and current firmware identity confirmed; console reports up to date |
-| Joy-Con 2 Right | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Sideways buttons, stick mapping, rumble, STOP, reconnect, and current firmware identity confirmed; console reports up to date |
+| Joy-Con 2 Left | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Sideways controls, mouse pointer/buttons/wheel, rumble, STOP, reconnect, and current firmware identity confirmed |
+| Joy-Con 2 Right | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Sideways controls, mouse pointer/buttons/wheel, rumble, STOP, reconnect, and current firmware identity confirmed |
 | CDC/config | ✅ Confirmed | N/A | N/A | Web Serial configuration and read-only MSC page |
 
 ## Bluetooth controllers
 
 | Controller | Pair/input | Extra controls | LED/output | Rumble | Open validation |
 |---|---|---|---|---|---|
-| DualSense | ✅ Confirmed | N/A | ✅ Confirmed | ✅ Confirmed | Current regression pass complete |
-| DualSense Edge | ✅ Confirmed | ✅ Paddles/Fn/mute | ✅ Confirmed | ✅ Confirmed | Current regression pass complete |
+| DualSense | ✅ Confirmed | ✅ Calibrated Switch 2 motion | ✅ Confirmed | ✅ Confirmed | Splatoon 3 direction, scale, rapid motion, stationary behavior, reconnect, and audio coexistence confirmed |
+| DualSense Edge | ✅ Confirmed | ✅ Paddles/Fn/mute and calibrated Switch 2 motion | ✅ Confirmed | ✅ Confirmed | Motion and ordinary input/output regression pass complete |
 | Xbox family | ✅ Confirmed | Elite paddles supported | N/A | ✅ Confirmed | Late BLE DIS identity plus ON/STOP/reconnect confirmed |
 | Switch 2 Pro Controller | ✅ Confirmed | C/GL/GR plus native motion passthrough | ✅ P1 restores after HOME reconnect | ✅ Confirmed | Splatoon 3 axes/stationary hold plus 20 controller-off/HOME reconnect cycles confirmed without SYNC; input, LED, and gyro restore |
 | Joy-Con 2 input | ✅ Confirmed | Side-specific controls | Player LED path present | 🔵 Source-tested | Mapping and rumble fidelity |
@@ -30,6 +30,16 @@ code inspection only; it is weaker than physical hardware confirmation.
 | 8BitDo Ultimate 2 MG | ✅ Confirmed | ✅ Paddles confirmed | N/A | 🔵 Source-tested | Quirk-refactor hardware regression pass complete |
 | 8BitDo Ultimate Bluetooth (first model) | ✅ Confirmed | ✅ P1/P2 custom transport to GL/GR | Player LED path present | 🔵 Existing Switch output | Custom firmware paddles and console wake confirmed; reconnect remains slower than other Classic controllers |
 | Wiimote family | ✅ Confirmed | ✅ Standalone and attachment input | ✅ Player LEDs | ✅ Confirmed | Current regression pass complete |
+| Generic Bluetooth HID mouse | ✅ Confirmed in Joy-Con 2 modes | Buttons and relative X/Y/wheel | N/A | N/A | Pointer activation, mouse-only gating, disconnect cleanup, and wheel navigation confirmed |
+
+## Switch 2 motion
+
+| Source | Console carrier | Status |
+|---|---|---|
+| Genuine Pro Controller 2 | Native length-`0x1E` and length-`0x28` PDUs | ✅ Opaque passthrough, reconnect, P1 LED, and gyro confirmed |
+| DualSense / DualSense Edge | Synthesized length-`0x1E` quaternion PDU | ✅ Calibration, direction, scale, rapid movement, stationary behavior, and reconnect confirmed |
+| Other IMU controllers | None | 🔵 Requires a verified sensor layout, calibration, axes, scale, timestamp, and bias model per family |
+| Synthetic length-`0x28` | Disabled and removed | ❌ Static-template experiment caused random motion; unresolved lanes are semantically active |
 
 ## BOOTSEL and pairing
 
@@ -60,6 +70,16 @@ code inspection only; it is weaker than physical hardware confirmation.
 | Real-console rumble during audio | ✅ Confirmed with peak-preserving 3.25× native PCM; judged close to HD Rumble |
 | Extended playback/thermal soak | ✅ Eight-hour Smash session; no observed thermal or stability issue (temperature not instrumented) |
 
+## Genuine Pro Controller 2 audio
+
+| Scenario | Status |
+|---|---|
+| Physical headset insertion/removal | ✅ Confirmed; Switch 2 routes and withdraws audio automatically |
+| Live console audio | ✅ Clean output through genuine controller headphone jack |
+| Input, native gyro, and rumble during audio | ✅ Confirmed |
+| LED and BOOTSEL during audio | ✅ Confirmed |
+| Microphone return | 🔵 Not implemented/tested |
+
 ## PC-specific behavior
 
 - Pro Controller 2 and NSO GameCube enumerate on Windows/Steam.
@@ -80,6 +100,8 @@ Output personality:
 Enumeration: pass/fail
 Buttons/axes: pass/fail + exceptions
 Rumble ON/STOP: pass/fail
+Motion: pass/fail/not applicable
+Audio/headset lifecycle: pass/fail/not applicable
 Reconnect: pass/fail
 Double/triple/hold: pass/fail
 Notes:
