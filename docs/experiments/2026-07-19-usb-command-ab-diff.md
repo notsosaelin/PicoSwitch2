@@ -2,8 +2,8 @@
 
 - **Date:** 2026-07-19
 - **Author:** repository maintenance pass (analysis of existing captures; **no code modified**)
-- **Related:** [`COMMAND-IMPLEMENTATION.md`](../../COMMAND-IMPLEMENTATION.md),
-  [`FIRMWARE-IMPLEMENTATION.md`](../../FIRMWARE-IMPLEMENTATION.md),
+- **Related:** [`command-surface.md`](../switch2/command-surface.md),
+  [`firmware-versioning.md`](../switch2/firmware-versioning.md),
   [`docs/switch2/nfc-protocol-inventory.md`](../switch2/nfc-protocol-inventory.md) §2.3,
   [`docs/switch2/usb-spec.md`](../switch2/usb-spec.md)
 
@@ -128,7 +128,7 @@ dongle : …40000000003001000100 48454a373130303131323132343700 007e056920010601
   genuine flash is `FF`. (Note `ns2_mem_read` already returns `0xFF` *outside* the window, so this is
   an internal inconsistency — the fill byte should be `0xFF` for faithful blank-flash behavior.)
   Low impact, but a real fidelity divergence, and it rhymes with the firmware-region `0xFF` finding in
-  `FIRMWARE-IMPLEMENTATION.md` §3.
+  `firmware-versioning.md` §3.
 
 ### `0x11/01` — inconclusive
 
@@ -161,7 +161,7 @@ and were excluded from the diff.
   capture** remains the only way to A/B those, and would also settle the `0x08` question in a real
   grip context. (Same standing gap as NFC/motion — `STATUS.md` next-steps #5.)
 - **`0x17`/`0x18` were not exercised here** — the audio-config hypotheses in
-  `COMMAND-IMPLEMENTATION.md` §6 still need a headset-present capture.
+  `command-surface.md` §6 still need a headset-present capture.
 - **Recommended (separate, deliberate) fixes when code changes resume:** give `0x08` (and any other
   genuinely-observed bare-ack command) `dir=0x04`; change the factory fill byte to `0xFF`. Both are
   small, evidence-backed, and improve indistinguishability. Not applied in this pass (documentation
@@ -174,7 +174,7 @@ and were excluded from the diff.
 ## Question
 
 `commands.md` marks command `0x13` "Unknown. Seems to only be used on JoyCon controllers," and
-[`COMMAND-IMPLEMENTATION.md`](../../COMMAND-IMPLEMENTATION.md) §6 hypothesised it toggles a Joy-Con-only
+[`command-surface.md`](../switch2/command-surface.md) §6 hypothesised it toggles a Joy-Con-only
 feature such as **mouse mode**. Does the genuine Joy-Con 2 use command `0x13` to enter mouse mode?
 
 ## Hypothesis
@@ -248,7 +248,7 @@ mouse-data fields then appear in the streamed input report. Command `0x13` is no
 `0x0F/00` (no data) is genuinely issued ~3.8 s after init settles (`t+4.835`), the first hard evidence
 of the otherwise-"Unknown" command `0x0F` in this repo. Purpose still unknown; it is bare-ACKed by our
 `default:` today, which appears sufficient (this Joy-Con session proceeds normally). Logged for the
-`COMMAND-IMPLEMENTATION.md` §6 unknown-command backlog.
+`command-surface.md` §6 unknown-command backlog.
 
 ## Conclusion
 
@@ -324,7 +324,7 @@ interfaces declare **`FORMAT_TYPE`: 2 ch, 16-bit, `tSamFreq` = `80 bb 00` = 4800
 ### `0x17` = 48 kHz — corroborated (not directly captured)
 
 The descriptor's `tSamFreq` bytes **`80 bb 00`** are the *exact* value in command `0x17`'s request
-(`80 bb 00 00 02 f0 00`, `COMMAND-IMPLEMENTATION.md` §6). This independently supports **`0x17` =
+(`80 bb 00 00 02 f0 00`, `command-surface.md` §6). This independently supports **`0x17` =
 audio sample-rate config**. The command itself did **not** appear (see negative results).
 
 ### Genuine headphones iso OUT stream (audio capture)

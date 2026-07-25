@@ -1,7 +1,7 @@
 # PicoSwitch2 Roadmap
 
 > Forward-looking work only. See [`STATUS.md`](STATUS.md) for current behavior and
-> [`docs/archive/roadmap-through-2026-07-15.md`](docs/archive/roadmap-through-2026-07-15.md) for
+> [`docs/archive/roadmap-through-2026-07-15.archived.md`](docs/archive/roadmap-through-2026-07-15.archived.md) for
 > the completed milestone narrative.
 
 ## Current objective: post-v1.5 protocol work
@@ -72,8 +72,7 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
   foreground worker at 300 MHz/1.20 V. Hardware playback is continuous with zero
   PCM drops/errors; LED/BOOTSEL, config persistence, cold boot, and wake regressions
   pass. The 150/200 MHz controls remain below the real-time threshold. See
-  [`DS5-NS2_AUDIO.md`](DS5-NS2_AUDIO.md) and
-  [`AUDIO-INVESTIGATION.md`](AUDIO-INVESTIGATION.md).
+  [`docs/switch2/audio-passthrough-research.md`](docs/switch2/audio-passthrough-research.md).
 - [x] Merge the validated 300 MHz/live-audio configuration into the normal
   `PicoSwitchWGA-pico2_w.uf2` artifact.
 - [x] Evaluate a Pico W port at 300 MHz. The fixed-point/XIP image passed build
@@ -155,7 +154,8 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
 
 ### Console-native motion (`0x09`)
 
-Status: ✅ genuine Pro Controller 2 passthrough confirmed; 🔵 generic translation remains open.
+Status: ✅ genuine Pro Controller 2 passthrough and DualSense translation confirmed; 🔵 additional
+controller families remain open.
 
 The UART↔console bridge and live GATT discovery established the real controller sequence and
 attribute handles. A genuine PID `0x2069` source now supplies its native length-30/length-40 motion
@@ -163,8 +163,18 @@ PDUs directly to Pro2 USB report `0x09` at a verified 7.5 ms BLE interval. Splat
 correct axes/aim, no stationary drift, reconnect recovery, and a stable power-off hold. See
 [`docs/experiments/native-pro2-motion-passthrough-2026-07-21.md`](docs/experiments/native-pro2-motion-passthrough-2026-07-21.md).
 
-Do not generalize this result to DualSense or other IMUs: producing Nintendo-native motion from
-generic accel/gyro remains an independent synthesis problem and should not be tuned from symptoms.
+DualSense and DualSense Edge now translate their calibrated accel/gyro stream into the
+hardware-validated length-`0x1E` Switch 2 quaternion carrier. Splatoon 3 confirms correct
+direction, scale, rapid movement, stationary behavior, and reconnect recovery. The genuine
+length-`0x28` form remains only partially decoded: a controlled template-derived generator caused
+random motion and was removed, proving its unresolved lanes are semantically active. See
+[`docs/bluetooth/dualsense-motion.md`](docs/bluetooth/dualsense-motion.md),
+[`docs/switch2/report-0x09-motion.md`](docs/switch2/report-0x09-motion.md), and
+[`docs/switch2/uart-magprobe.md`](docs/switch2/uart-magprobe.md).
+
+Do not generalize the DualSense result blindly to other IMUs. Reuse the calibrated quaternion
+translator only after each controller family has a verified sensor layout, axis map, timestamps,
+scale, and stationary-bias behavior.
 
 ### NFC / amiibo
 
@@ -190,7 +200,10 @@ high-rate trace support remain future increments.
 
 The full tooling wishlist and build order — the on-device tracer, the out-of-band trace channel
 (the dongle's single USB-C port is occupied by the console), the fault-injection harness, and the
-capture/analysis tools — live in [TOOLING.md](TOOLING.md), the canonical home for all tooling
+capture/analysis tools — live in
+[`docs/switch2/uart-trace-tooling.md`](docs/switch2/uart-trace-tooling.md); the superseded wishlist
+is archived at
+[`docs/archive/tooling-plan-through-2026-07-21.archived.md`](docs/archive/tooling-plan-through-2026-07-21.archived.md)
 planning.
 
 ### Wake from sleep

@@ -49,6 +49,98 @@ int main(void)
     check((pdu[8] & 0xFCu) == (original[8] & 0xFCu), "G0 shared-byte flags preserved");
     check((pdu[12] & 0xFCu) == (original[12] & 0xFCu), "G1 shared-byte flags preserved");
 
+    {
+        // Genuine normal/status-0x0D Pro Controller 2 PDU captured over the
+        // UART bridge on 2026-07-24. Python's independent magprobe decoder
+        // yields [45724, -180222, 272234].
+        uint8_t pdu40[NS2_MOTION_PDU40_LENGTH] = {
+            0x40, 0x7C, 0x00, 0x0D, 0x63, 0xDA, 0x2E, 0x27,
+            0xD5, 0x18, 0x93, 0xB4, 0x6E, 0xF6, 0xB3, 0x00,
+            0x83, 0x41, 0x3D, 0x00, 0x28, 0x14, 0xEA, 0xFF,
+            0x9B, 0xF6, 0xFF, 0x3F, 0x01, 0xC0, 0x29, 0x0B,
+            0x20, 0x00, 0xD4, 0xAB, 0x76, 0x42, 0xC0, 0x01,
+        };
+        const uint8_t preserved29 = pdu40[29] & 0x0Fu;
+        const uint8_t preserved32 = pdu40[32] & 0x0Cu;
+        const uint8_t preserved35 = pdu40[35] & 0x0Cu;
+        const uint8_t preserved38 = pdu40[38];
+        const uint8_t preserved39 = pdu40[39];
+        int32_t reference[3] = {0};
+        check(ns2_motion_pdu40_get_reference(pdu40, reference),
+              "decode genuine 0x28 reference succeeds");
+        check(reference[0] == 45724 && reference[1] == -180222 &&
+                  reference[2] == 272234,
+              "decode genuine 0x28 reference matches independent decoder");
+
+        const int32_t reference_replacement[3] = {
+            NS2_MOTION_REFERENCE_G6_MIN,
+            NS2_MOTION_REFERENCE_G7_MAX,
+            NS2_MOTION_REFERENCE_G8_MIN,
+        };
+        check(ns2_motion_pdu40_set_reference(pdu40, reference_replacement),
+              "encode signed reference limits succeeds");
+        memset(reference, 0, sizeof(reference));
+        check(ns2_motion_pdu40_get_reference(pdu40, reference),
+              "decode replaced 0x28 reference succeeds");
+        check(memcmp(reference, reference_replacement, sizeof(reference)) == 0,
+              "0x28 reference round-trip is exact");
+        check((pdu40[29] & 0x0Fu) == preserved29 &&
+                  (pdu40[32] & 0x0Cu) == preserved32 &&
+                  (pdu40[35] & 0x0Cu) == preserved35 &&
+                  pdu40[38] == preserved38 && pdu40[39] == preserved39,
+              "0x28 replacement preserves every unassigned bit");
+
+        const int32_t too_large[3] = {
+            NS2_MOTION_REFERENCE_G6_MAX + 1, 0, 0,
+        };
+        check(!ns2_motion_pdu40_set_reference(pdu40, too_large),
+              "0x28 encoder rejects out-of-range values");
+
+        const int32_t edge22[] = {
+            NS2_MOTION_REFERENCE_G6_MIN, -1, 0, 1,
+            NS2_MOTION_REFERENCE_G6_MAX,
+        };
+        const int32_t edge20[] = {
+            NS2_MOTION_REFERENCE_G8_MIN, -1, 0, 1,
+            NS2_MOTION_REFERENCE_G8_MAX,
+        };
+        for (unsigned a = 0; a < sizeof(edge22) / sizeof(edge22[0]); ++a) {
+            for (unsigned b = 0; b < sizeof(edge22) / sizeof(edge22[0]); ++b) {
+                for (unsigned c = 0;
+                     c < sizeof(edge20) / sizeof(edge20[0]); ++c) {
+                    uint8_t patterned[NS2_MOTION_PDU40_LENGTH];
+                    for (unsigned i = 0; i < sizeof(patterned); ++i)
+                        patterned[i] = (uint8_t)(i * 37u + a * 11u +
+                                                b * 7u + c * 3u);
+                    uint8_t untouched[NS2_MOTION_PDU40_LENGTH];
+                    memcpy(untouched, patterned, sizeof(untouched));
+                    const int32_t edges[3] = {
+                        edge22[a], edge22[b], edge20[c],
+                    };
+                    int32_t decoded[3] = {0};
+                    check(ns2_motion_pdu40_set_reference(patterned, edges),
+                          "0x28 edge combination encodes");
+                    check(ns2_motion_pdu40_get_reference(patterned, decoded),
+                          "0x28 edge combination decodes");
+                    check(memcmp(edges, decoded, sizeof(edges)) == 0,
+                          "0x28 edge combination round-trips");
+                    for (unsigned i = 0; i < sizeof(patterned); ++i) {
+                        if (i < 29u || i > 37u)
+                            check(patterned[i] == untouched[i],
+                                  "0x28 codec touches no outside byte");
+                    }
+                    check((patterned[29] & 0x0Fu) ==
+                              (untouched[29] & 0x0Fu) &&
+                              (patterned[32] & 0x0Cu) ==
+                              (untouched[32] & 0x0Cu) &&
+                              (patterned[35] & 0x0Cu) ==
+                              (untouched[35] & 0x0Cu),
+                          "0x28 codec preserves shared packing gaps");
+                }
+            }
+        }
+    }
+
     if (failures) return 1;
     puts("ns2_motion_pdu: all tests passed");
     return 0;

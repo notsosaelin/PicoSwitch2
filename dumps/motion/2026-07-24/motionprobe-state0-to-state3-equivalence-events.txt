@@ -1,0 +1,11 @@
+6.868 ms SEND button y
+21.642 ms RECV {"button":"y","pressed_ms":120}
+500.106 ms SEND motionprobe latch
+517.515 ms RECV {"motionprobe":"latched","latched":true,"enabled":false,"g":[32893294,15799539,8817894],"baseline":[32893294,15799539,8817894],"rate":[0,0,0],"updates":0}
+535.384 ms CANDIDATE 35271578 15799539 58554971 from 32893294 15799539 8817894
+535.965 ms SEND motionprobe set 35271578 15799539 58554971
+555.705 ms RECV {"motionprobe":"set","latched":true,"enabled":false,"g":[35271578,15799539,58554971],"baseline":[32893294,15799539,8817894],"rate":[0,0,0],"updates":0}
+556.732 ms SEND motionprobe on
+573.804 ms RECV {"motionprobe":"enabled","latched":true,"enabled":true,"g":[35271578,15799539,58554971],"baseline":[32893294,15799539,8817894],"rate":[0,0,0],"updates":0}
+1174.65 ms SEND motionprobe off
+1192.621 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[35271578,15799539,58554971],"baseline":[32893294,15799539,8817894],"rate":[0,0,0],"updates":82}

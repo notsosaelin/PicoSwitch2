@@ -533,6 +533,30 @@ static void handle_command(void) {
         if (length > SW2_CAP_MAX_DATA) length = SW2_CAP_MAX_DATA;
         sw2_capture_mark((const uint8_t *)label, (uint16_t)length);
         queue_ble_status("marked");
+    } else if (strcmp(rx_line, "magraw on") == 0) {
+        btstack_host_request_switch2_magraw(true);
+        queue_text("{\"magraw\":\"requested\",\"enabled\":true}");
+    } else if (strcmp(rx_line, "magraw off") == 0) {
+        btstack_host_request_switch2_magraw(false);
+        queue_text("{\"magraw\":\"requested\",\"enabled\":false}");
+    } else if (strcmp(rx_line, "magraw") == 0 ||
+               strcmp(rx_line, "magraw status") == 0) {
+        btstack_host_magraw_diag_t d;
+        btstack_host_get_switch2_magraw_diag(&d);
+        snprintf(trace_format_response, sizeof(trace_format_response),
+                 "{\"magraw\":true,\"requested\":%s,\"active\":%s,"
+                 "\"transition\":%s,\"v2_state\":%u,\"pid\":\"0x%04X\","
+                 "\"handle\":\"0x%04X\",\"step\":%u,\"steps\":%u,"
+                 "\"result\":%u,\"response\":\"0x%02X\","
+                 "\"input_ccc\":\"0x%02X\"}",
+                 d.requested ? "true" : "false",
+                 d.active ? "true" : "false",
+                 d.transition_pending ? "true" : "false",
+                 d.v2_state, d.source_pid, d.connection_handle,
+                 d.reference_step, d.reference_steps,
+                 d.reference_result, d.last_response_status,
+                 d.input_ccc_status);
+        queue_text(trace_format_response);
     } else if (strcmp(rx_line, "motionauto") == 0) {
         sw2_native_auto_diag_t d;
         sw2_native_auto_diag_snapshot(&d);
@@ -997,7 +1021,7 @@ static void handle_command(void) {
                    "\"blecap dump\",\"blecap read\",\"blecap variant 0-9\","
                    "\"blecap gattdisc on|off|status\","
                    "\"blecap mark TEXT\","
-                   "\"motionpair status|start|stop|dump|read\","
+                   "\"motionpair status|start|stop|dump|read\",\"magraw on|off|status\","
                    "\"motionprobe status|latch|seed STATE|on|off|reset|set G0 G1 G2|rate AXIS VALUE|accel X Y Z\","
                    "\"button y\","
                    "\"motionauto\",\"motionusb\",\"ds5motion status|on|off|frame body|world|carrier switch2|dscale|legacy|map SX SY SZ|probe rate AXIS VALUE|probe off\",\"input status\",\"audio status|clear\",\"ds5codec status|lock on|lock off\","

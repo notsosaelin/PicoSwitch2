@@ -36,7 +36,7 @@ one).
 | A3 | **The console actively *reads* factory address `0x13100` (motion cal, `0x02/04` len `0x18`) during init and expects non-zero data.** | "The console reads this address at init" is an acceptance fact, not a controller fact — caught by decoding a genuine console-side session while our firmware returned zero-fill. | `src/switch_pro2/switch_pro2.c:283-289` | **Confirmed** (independent console-side capture) |
 | A4 | **Joy-Con 2's report ID `7` is the console-facing *extended* report** (the role Pro2/GC fill with `0x0A`). | Pinned from the project's *own* live HID-Report-descriptor replug capture; the repo flags it "new, previously-unknown information," not cross-validation. | `docs/switch2-joycon2/protocol.md:40,162-164` | **Confirmed** (own capture) |
 | A5 | **A body of *refuted* protocol hypotheses** (GC rumble `data[0]` is not a linear amplitude; "any nonzero rumble byte = on" is false; several motion models rejected). | Negative results are original contributions; neither upstream published these, and some were cross-checked against the real Linux `HID: nintendo` driver source. | `docs/experiments/refuted-hypotheses.md` | **Confirmed** (refutations) |
-| A6 | **Serial-number *structure* decode** — `0x13002` model code = chars 1–2 (`HB/HC/HE/HH`), per-unit tail; `0x13E00` classified as a lot/batch code. | ndeadly's `memory_layout.md` labels `0x13002` "Serial number" with raw bytes only; the structural analysis (from six genuine units) is ours. | `SERIAL-GENERATION.md` | **Strong** (chars 1–2 Confirmed; field split Strong) |
+| A6 | **Serial-number *structure* decode** — `0x13002` model code = chars 1–2 (`HB/HC/HE/HH`), per-unit tail; `0x13E00` classified as a lot/batch code. | ndeadly's `memory_layout.md` labels `0x13002` "Serial number" with raw bytes only; the structural analysis (from six genuine units) is ours. | `docs/switch2/serial-generation.md` | **Strong** (chars 1–2 Confirmed; field split Strong) |
 | A7 | **Wake-a-sleeping-console behavior** — identity learned from the `0x15` pairing exchange, persisted, first non-neutral report arms wake. | An *emulator* behavior (make the console wake), not protocol documentation either upstream produces. | `docs/bluetooth/wake-from-sleep-design.md` | **Confirmed** (hardware, Pro2) |
 | A8 | **Mouse-mode enable is feature bit 4 (`0x0C` mask `0x37`), refuting an earlier "command `0x13` = mouse" idea; relative report `0x07/08` deltas byte-verified.** | Resolved a wrong hypothesis and byte-verified against a decrypted BLE capture decoded in-repo. | `MOUSE-MODE.md`; `docs/experiments/2026-07-19-usb-command-ab-diff.md` (Exp 2) | **Confirmed** (capture) |
 
@@ -47,7 +47,7 @@ multi-unit / cross-project **Confirmed**.
 
 - **Second-physical-unit confirmations.** Factory/identity bytes and the `bRequest=3` identity block
   cross-validated byte-for-byte against the owner's *own* genuine units — a second independent unit
-  behind claims ndeadly recorded from one. (Archive: `docs/archive/status-through-2026-07-15.md`
+  behind claims ndeadly recorded from one. (Archive: `docs/archive/status-through-2026-07-15.archived.md`
   ~1602,1610.)
 - **Dycool cross-validation.** `Usb-relay-for-NS`'s `0x0C` feature-enable bytes (configure/enable,
   mask `0x27`) match this project's own documented bytes exactly — genuine cross-validation, not a
@@ -83,7 +83,7 @@ Honesty check: the biggest open problem is **not** something we (or anyone) crac
 
 Nearly every hard blocker (motion, NFC, opaque identity bytes) is gated on the same missing
 capability — **seeing/probing what the console does** — which is exactly the acceptance layer Tier A
-lives in and the reason [`TOOLING.md`](../TOOLING.md) prioritizes an on-device tracer + fault
+lives in and the reason [`uart-trace-tooling.md`](switch2/uart-trace-tooling.md) prioritizes an on-device tracer + fault
 injection. Fault injection in particular is *structurally impossible* on the sealed genuine hardware
 ndeadly and Dycool observe, and is the project's clearest unique future advantage.
 
@@ -95,5 +95,6 @@ ndeadly and Dycool observe, and is the project's clearest unique future advantag
   `src/switch_pro2/switch_pro2.c:283-289` (`0x13100` read at init),
   `docs/switch2-joycon2/protocol.md:40,162-164` (report ID 7).
 - Refutations: `docs/experiments/refuted-hypotheses.md`.
-- This-session analyses: `SERIAL-GENERATION.md`, `MOUSE-MODE.md`, `JOYCON2-AUDIT.md`.
+- Project analyses: `switch2/serial-generation.md`, `switch2-joycon2/mapping.md`, and the
+  Bluetooth mouse implementation documented in the compatibility matrix.
 - Evidence rules: [`re-methodology/evidence-standards.md`](re-methodology/evidence-standards.md).

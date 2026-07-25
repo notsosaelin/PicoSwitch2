@@ -24,6 +24,7 @@ remains console-attached:
 ./tools/read_uart_diag.ps1 -Port COM11 -Command 'blecap status'
 ./tools/read_uart_diag.ps1 -Port COM11 -Command 'blecap dump' -OutputPath 'dumps/BLE CAPTURE/run.jsonl'
 ./tools/read_uart_diag.ps1 -Port COM11 -Command motionauto
+./tools/read_uart_diag.ps1 -Port COM11 -Command 'magraw status'
 ```
 
 GATT discovery and a numbered variant are mutually exclusive per connection. The normal production
@@ -32,6 +33,18 @@ initialization. `motionauto` is read-only and reports why that automatic gate ha
 The 2026-07-21 workflow used these commands to establish descriptor `0x0010`, compare the 30 ms and
 7.5 ms link rates, and validate no-UART automatic startup. See the linked native-motion experiment
 in [`report-0x09-motion.md`](report-0x09-motion.md).
+
+High-rate native `0x1E`/`0x28` motion uses the separate `motionpair capture` ring and the
+host-side [`ns2_magprobe.py`](uart-magprobe.md) decoder. That path aligns genuine quaternions and
+normal G6/G7/G8 PDUs, filters escalation forms, preserves unexplained bits, and supports
+pose-gated A/B comparisons without adding formatting work to the Bluetooth callback. The analyzer
+also accepts historical full `blecap dump` JSONL directly and provides a cross-capture `corpus`
+command; this recovered moving evidence without requiring another physical controller trial.
+The UART-only `magraw on|off|status` experiment replays the reference initialization for the
+independent raw-magnetometer feature profile, validates each ACK, and runs the complete native
+profile to restore motion afterward; `ns2_magprobe.py rawmag` summarizes the resulting
+handle-`0x000A` signed-int16 lanes. See
+[`uart-magprobe.md`](uart-magprobe.md) for the guarded workflow.
 
 ## Capture workflow
 

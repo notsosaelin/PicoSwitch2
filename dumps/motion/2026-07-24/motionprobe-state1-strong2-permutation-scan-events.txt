@@ -1,0 +1,108 @@
+428.732 ms SEND motionprobe off
+461.691 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[38299745,50163028,18641018],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":95}
+464.701 ms SEND motionprobe set 54908341 28809118 2456966
+484.442 ms RECV {"motionprobe":"set","latched":true,"enabled":false,"g":[54908341,28809118,2456966],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+485.257 ms SEND motionprobe on
+502.732 ms RECV {"motionprobe":"enabled","latched":true,"enabled":true,"g":[54908341,28809118,2456966],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+753.885 ms SEND button y
+759.738 ms RECV {"button":"y","pressed_ms":120}
+1262.212 ms STRONG2 state1 perm=012 REF source=54908341,28809118,2456966 candidate=54908341,28809118,19234182
+1268.665 ms SEND motionprobe off
+1286.992 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[54908341,28809118,2456966],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":104}
+1287.951 ms SEND motionprobe set 54908341 28809118 19234182
+1307.56 ms RECV {"motionprobe":"set","latched":true,"enabled":false,"g":[54908341,28809118,19234182],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+1308.026 ms SEND motionprobe on
+1325.306 ms RECV {"motionprobe":"enabled","latched":true,"enabled":true,"g":[54908341,28809118,19234182],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+2025.918 ms STRONG2 state1 perm=012 FINAL
+2027.285 ms SEND motionprobe off
+2045.881 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[54908341,28809118,19234182],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":95}
+2246.679 ms SEND motionprobe off
+2264.416 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[54908341,28809118,19234182],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":95}
+2264.778 ms SEND motionprobe set 54908341 28809118 2456966
+2284.002 ms RECV {"motionprobe":"set","latched":true,"enabled":false,"g":[54908341,28809118,2456966],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+2284.994 ms SEND motionprobe on
+2302.206 ms RECV {"motionprobe":"enabled","latched":true,"enabled":true,"g":[54908341,28809118,2456966],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+2553.624 ms SEND button y
+2559.279 ms RECV {"button":"y","pressed_ms":120}
+3060.477 ms STRONG2 state1 perm=021 REF source=54908341,28809118,2456966 candidate=54908341,9827865,23979495
+3062.003 ms SEND motionprobe off
+3079.489 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[54908341,28809118,2456966],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":103}
+3079.864 ms SEND motionprobe set 54908341 9827865 23979495
+3099.112 ms RECV {"motionprobe":"set","latched":true,"enabled":false,"g":[54908341,9827865,23979495],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+3099.486 ms SEND motionprobe on
+3116.251 ms RECV {"motionprobe":"enabled","latched":true,"enabled":true,"g":[54908341,9827865,23979495],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+3816.964 ms STRONG2 state1 perm=021 FINAL
+3817.26 ms SEND motionprobe off
+3834.418 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[54908341,9827865,23979495],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":95}
+4036.058 ms SEND motionprobe off
+4053.493 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[54908341,9827865,23979495],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":95}
+4054.314 ms SEND motionprobe set 54908341 28809118 2456966
+4073.451 ms RECV {"motionprobe":"set","latched":true,"enabled":false,"g":[54908341,28809118,2456966],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+4074.03 ms SEND motionprobe on
+4090.826 ms RECV {"motionprobe":"enabled","latched":true,"enabled":true,"g":[54908341,28809118,2456966],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+4341.688 ms SEND button y
+4346.765 ms RECV {"button":"y","pressed_ms":120}
+4847.54 ms STRONG2 state1 perm=102 REF source=54908341,28809118,2456966 candidate=28809118,54908341,19234182
+4848.421 ms SEND motionprobe off
+4865.327 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[54908341,28809118,2456966],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":103}
+4865.657 ms SEND motionprobe set 28809118 54908341 19234182
+4885.287 ms RECV {"motionprobe":"set","latched":true,"enabled":false,"g":[28809118,54908341,19234182],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+4885.681 ms SEND motionprobe on
+4902.742 ms RECV {"motionprobe":"enabled","latched":true,"enabled":true,"g":[28809118,54908341,19234182],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+5602.21 ms STRONG2 state1 perm=102 FINAL
+5602.932 ms SEND motionprobe off
+5620.111 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[28809118,54908341,19234182],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":95}
+5821.554 ms SEND motionprobe off
+5839.374 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[28809118,54908341,19234182],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":95}
+5839.837 ms SEND motionprobe set 54908341 28809118 2456966
+5859.064 ms RECV {"motionprobe":"set","latched":true,"enabled":false,"g":[54908341,28809118,2456966],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+5859.731 ms SEND motionprobe on
+5877.072 ms RECV {"motionprobe":"enabled","latched":true,"enabled":true,"g":[54908341,28809118,2456966],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+6127.245 ms SEND button y
+6132.631 ms RECV {"button":"y","pressed_ms":120}
+6633.564 ms STRONG2 state1 perm=120 REF source=54908341,28809118,2456966 candidate=28809118,9827865,30504301
+6633.985 ms SEND motionprobe off
+6651.276 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[54908341,28809118,2456966],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":103}
+6651.604 ms SEND motionprobe set 28809118 9827865 30504301
+6670.71 ms RECV {"motionprobe":"set","latched":true,"enabled":false,"g":[28809118,9827865,30504301],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+6670.883 ms SEND motionprobe on
+6687.56 ms RECV {"motionprobe":"enabled","latched":true,"enabled":true,"g":[28809118,9827865,30504301],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+7387.258 ms STRONG2 state1 perm=120 FINAL
+7387.671 ms SEND motionprobe off
+7405.475 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[28809118,9827865,30504301],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":95}
+7606.995 ms SEND motionprobe off
+7625.703 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[28809118,9827865,30504301],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":95}
+7626.42 ms SEND motionprobe set 54908341 28809118 2456966
+7645.589 ms RECV {"motionprobe":"set","latched":true,"enabled":false,"g":[54908341,28809118,2456966],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+7645.861 ms SEND motionprobe on
+7662.614 ms RECV {"motionprobe":"enabled","latched":true,"enabled":true,"g":[54908341,28809118,2456966],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+7913.75 ms SEND button y
+7918.869 ms RECV {"button":"y","pressed_ms":120}
+8420.13 ms STRONG2 state1 perm=201 REF source=54908341,28809118,2456966 candidate=9827865,54908341,23979495
+8421.048 ms SEND motionprobe off
+8438.865 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[54908341,28809118,2456966],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":103}
+8439.247 ms SEND motionprobe set 9827865 54908341 23979495
+8458.341 ms RECV {"motionprobe":"set","latched":true,"enabled":false,"g":[9827865,54908341,23979495],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+8458.696 ms SEND motionprobe on
+8475.75 ms RECV {"motionprobe":"enabled","latched":true,"enabled":true,"g":[9827865,54908341,23979495],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+9189.802 ms STRONG2 state1 perm=201 FINAL
+9190.199 ms SEND motionprobe off
+9207.502 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[9827865,54908341,23979495],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":97}
+9422.153 ms SEND motionprobe off
+9439.716 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[9827865,54908341,23979495],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":97}
+9440.131 ms SEND motionprobe set 54908341 28809118 2456966
+9459.308 ms RECV {"motionprobe":"set","latched":true,"enabled":false,"g":[54908341,28809118,2456966],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+9459.483 ms SEND motionprobe on
+9476.577 ms RECV {"motionprobe":"enabled","latched":true,"enabled":true,"g":[54908341,28809118,2456966],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+9726.631 ms SEND button y
+9731.498 ms RECV {"button":"y","pressed_ms":120}
+10231.754 ms STRONG2 state1 perm=210 REF source=54908341,28809118,2456966 candidate=9827865,28809118,30504301
+10232.18 ms SEND motionprobe off
+10249.744 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[54908341,28809118,2456966],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":102}
+10249.953 ms SEND motionprobe set 9827865 28809118 30504301
+10268.829 ms RECV {"motionprobe":"set","latched":true,"enabled":false,"g":[9827865,28809118,30504301],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+10269.194 ms SEND motionprobe on
+10286.117 ms RECV {"motionprobe":"enabled","latched":true,"enabled":true,"g":[9827865,28809118,30504301],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":0}
+10999.256 ms STRONG2 state1 perm=210 FINAL
+10999.436 ms SEND motionprobe off
+11017.348 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[9827865,28809118,30504301],"baseline":[31806030,14272744,9139487],"rate":[0,0,0],"updates":97}

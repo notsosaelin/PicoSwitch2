@@ -1,0 +1,12 @@
+800.952 ms SEND motionprobe on
+831.563 ms RECV {"motionprobe":"enabled","latched":true,"enabled":true,"g":[652474,24493448,57789634],"baseline":[652474,24493448,57789634],"rate":[0,0,0],"updates":202}
+838.166 ms SEND motionprobe reset
+855.839 ms RECV {"motionprobe":"reset","latched":true,"enabled":true,"g":[652474,24493448,57789634],"baseline":[652474,24493448,57789634],"rate":[0,0,0],"updates":0}
+2361.637 ms SEND motionprobe rate 0 -32768
+2380.106 ms RECV {"motionprobe":"rate","latched":true,"enabled":true,"g":[652474,24493448,57789634],"baseline":[652474,24493448,57789634],"rate":[-32768,0,0],"updates":203}
+2982.379 ms SEND motionprobe rate 0 0
+3000.014 ms RECV {"motionprobe":"rate","latched":true,"enabled":true,"g":[65074362,24493448,57789634],"baseline":[652474,24493448,57789634],"rate":[0,0,0],"updates":285}
+3501.728 ms SEND motionprobe reset
+3518.249 ms RECV {"motionprobe":"reset","latched":true,"enabled":true,"g":[652474,24493448,57789634],"baseline":[652474,24493448,57789634],"rate":[0,0,0],"updates":0}
+4020.088 ms SEND motionprobe off
+4037.291 ms RECV {"motionprobe":"disabled","latched":true,"enabled":false,"g":[652474,24493448,57789634],"baseline":[652474,24493448,57789634],"rate":[0,0,0],"updates":69}

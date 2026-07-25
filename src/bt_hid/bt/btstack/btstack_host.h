@@ -232,6 +232,27 @@ void btstack_host_request_switch2_pro2_audio_live(bool enabled);
 void btstack_host_service_switch2_pro2_audio_replay(void);
 void btstack_host_service_switch2_pro2_audio_live(void);
 
+// UART-only, off-by-default Pro Controller 2 raw-magnetometer probe. Requests
+// the separate feature-0x80/handle-0x000A layout used by PC-side tools, then
+// restores the validated 0x27 native-motion profile. Requests are marshaled
+// onto the BTstack thread; production startup behavior is unchanged.
+typedef struct {
+    bool requested;
+    bool active;
+    bool transition_pending;
+    uint8_t v2_state;
+    uint8_t reference_step;
+    uint8_t reference_steps;
+    uint8_t reference_result;
+    uint8_t last_response_status;
+    uint8_t input_ccc_status;
+    uint16_t source_pid;
+    uint16_t connection_handle;
+} btstack_host_magraw_diag_t;
+
+void btstack_host_request_switch2_magraw(bool enabled);
+void btstack_host_get_switch2_magraw_diag(btstack_host_magraw_diag_t *out);
+
 // ============================================================================
 // CLASSIC BT CONNECTION INFO (for bthid driver matching)
 // ============================================================================

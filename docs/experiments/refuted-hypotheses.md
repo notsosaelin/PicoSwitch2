@@ -119,6 +119,41 @@ previous one could decay. Fixed by shortening to `0x05` (~50ms) for a genuine tr
 
 ---
 
+## Switch 2 motion: a genuine static `0x28` template plus dynamic G6/G7/G8 is sufficient
+
+**Held**: 2026-07-24 as a deliberately gated Hypothesis, then refuted by its first live
+Switch 2/Splatoon 3 test the same day.
+
+**The claim**: the unresolved leading and middle lanes of a normal status-`0x0D`,
+length-`0x28` motion PDU could remain fixed at values from one genuine Pro Controller 2 packet,
+while firmware updated timing and the independently decoded G6/G7/G8 lanes from a second
+DualSense quaternion. Interleaving that packet one in four samples with the already validated
+length-`0x1E` carrier might be enough for the console to consume the corrected/reference
+orientation.
+
+**Why it seemed reasonable**: the packet began as a byte-for-byte genuine normal PDU; the
+G6/G7/G8 signed 22/22/20-bit codec had genuine golden-vector and signed-boundary tests; the
+experiment preserved all shared unknown bits; and its one-in-four schedule matched the observed
+native interleave. It was default-off and reachable only through UART.
+
+**What refuted it**: enabling `ds5motion ref28 on` immediately made live gyro motion random and
+unusable. UART diagnostics simultaneously showed valid generated packets, a selected
+length of 40, changing G6/G7/G8 values, and zero representation rejects. Disabling the gate
+immediately restored emitted length 30 and the validated DualSense motion path without a reflash.
+The failure therefore reached the console; it was not a packer rejection or stale diagnostic
+display.
+
+**Why this matters going forward**: the changing leading/middle `0x28` lanes are semantically
+consumed, cross-validated, or both. They must be decoded and generated coherently before another
+synthetic `0x28` packet is sent. This result does **not** refute the byte-exact G6/G7/G8 codec or
+the candidate “second quaternion/reference vector” interpretation in isolation; it refutes only
+the complete template-derived packet. The unsafe UART generator and runtime gate were removed
+after this result; only passive analysis and the exact field codec remain. Current evidence and
+safe next work:
+[`../switch2/uart-magprobe.md`](../switch2/uart-magprobe.md).
+
+---
+
 ## Format notes for future entries
 
 Each entry should have: the claim, the confidence level it held, why it was reasonable given the
