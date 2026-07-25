@@ -1,6 +1,6 @@
 # PicoSwitch2 Architecture
 
-Status: ✅ current as of 2026-07-21
+Status: ✅ current as of 2026-07-24
 
 ## Purpose
 
@@ -41,7 +41,13 @@ publishes its length-30/length-40 PDU through a cross-core seqlock snapshot. The
 that snapshot only when output slot 0 still identifies as `057E:2069`, then copies it into report
 `0x09` without quaternion decoding or regeneration. Buttons and sticks from `0x000E` are normalized
 back through the ordinary input path because the controller stops sending `0x000A` after native
-motion is enabled. Other controllers remain on the generic normalized IMU path.
+motion is enabled.
+
+DualSense and DualSense Edge motion follows a separate translated path in `src/bt_hid/motion/`:
+the Sony driver loads and CRC-validates factory calibration, propagates calibrated IMU samples and
+sensor timestamps, and the translator emits the hardware-confirmed length-`0x1E` quaternion
+carrier. It never fabricates the unresolved length-`0x28` form. Other controllers remain on the
+generic normalized IMU path and do not claim Switch 2 motion support without per-family validation.
 
 Controller-specific drivers own wire parsing. The seam owns policy: which normalized button becomes
 which Switch 2 destination for the active output personality. In Pico 2 W audio

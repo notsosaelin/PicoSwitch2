@@ -41,7 +41,7 @@ referenced elsewhere in this codebase's `is_8bitdo` checks); trust `0x2DC8`.
 cleanly, which is good news but not yet proof of consistency across sessions), and the second
 pairing mode noted above.
 
-## Rumble output — Implemented, hardware validation pending
+## Rumble output — Implemented and hardware-confirmed
 
 BlueRetro commit `e1a9831a875f5313a923160a1379a7ebbfaa2b11` contains an explicit
 `BT_QUIRK_8BITDO_GC` output path for this advertised model. It sends Classic HID output report
@@ -57,7 +57,8 @@ PID `0x286A` is already required to select the quirk. This does not widen output
 8BitDo or generic controllers, and the separate Microsoft-VID gate for Xbox-family quirks remains
 intact. The host contract test pins ON intensity bytes, report ID, payload length, wrong/unresolved
 VID rejection, and transport-send result propagation. Pico W, Pico 2 W, and legacy Switch 1 builds
-pass. Physical ON/OFF, intensity, and reconnect validation remain pending.
+pass. Physical ON/OFF behavior and real-console rumble were subsequently hardware-confirmed
+without mapping regressions. Keep intensity and reconnect in the normal release regression matrix.
 
 ## Final confirmed mapping — Switch 2 Pro Controller 2 mode
 
@@ -132,7 +133,7 @@ for quick reference:
 - Everything else (A/B/X/Y direct, Start→Plus, L3→Capture, R3→Home, D-pad/sticks standard) carried
   over unchanged, exactly as this section originally expected.
 
-**Not yet verified**: real hardware validation (the Modkit connected while the Pico streams
+**Hardware-confirmed**: real hardware validation (the Modkit connected while the Pico streams
 GameCube-mode reports to an actual host) — see `docs/switch2-gc/protocol.md`'s Stage D section for
 the streaming-gate status this depends on.
 

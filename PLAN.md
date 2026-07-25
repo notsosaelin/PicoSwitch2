@@ -11,6 +11,10 @@ current Switch 2 controller firmware identities, and hardware-confirmed bonded H
 input, P1 LED, and gyro restoration. Pico 2 W retains live DualSense audio/native haptics; Pico W
 retains its validated non-audio behavior.
 
+Post-release work on `ns2-testing` adds hardware-confirmed genuine Pro Controller 2 headphone audio
+and calibrated DualSense/DualSense Edge translation to the Switch 2 length-`0x1E` motion carrier.
+Those changes are checkpoints, not part of the published `v1.5.0` artifacts.
+
 ### Release gate
 
 - [x] Pico W release build
@@ -149,6 +153,9 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
 - [x] Reuse Pro2 Capture, Home, and C/GameChat sources.
 - [x] Lock both report formats with host-side golden tests.
 - [x] Complete a physical button, D-pad-to-stick, and analog-direction pass on Switch 2.
+- [x] Pair generic Bluetooth HID mice, gate native mouse output to structurally identified mouse
+  sources, activate the Joy-Con pointer, map buttons, and translate wheel notches into local-stick
+  menu navigation.
 
 ## Protocol research
 

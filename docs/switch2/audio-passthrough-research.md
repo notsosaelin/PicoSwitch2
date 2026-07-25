@@ -9,8 +9,8 @@
 > Pico W is intentionally non-audio after its fixed-point/XIP experiment failed
 > hardware playback. Bonded HID Host reconnect transport and conditional
 > DualSense physical-jack advertisement are now implemented. Real Switch 2
-> insertion/output are confirmed; bonded reconnect and revised unplug recovery
-> remain pending.
+> insertion/output, repeated unplug/replug recovery, bonded reconnect, and native-haptic
+> coexistence are hardware-confirmed. Microphone decoding/USB return remains open.
 
 ## 1. Goal
 
@@ -140,8 +140,8 @@ items from the 2026-07-12 pass. Rough shape of the work, for whenever it's picke
    output path before the first `0x39`, creating a self-sustaining startup deadlock.
    Native ownership now begins at physical-headset/USB-speaker request time, before the
    first stream packet, and removal restores the legacy path.
-   The disabled microphone path remains intentional; audio/haptic coexistence and
-   bonded-reconnect audio await focused hardware retest.
+   The disabled microphone path remains intentional. Audio/haptic coexistence, repeated
+   unplug/replug, and bonded-reconnect audio were subsequently hardware-confirmed.
 3. ✅ **Replace the descriptor-only stub with operational UAC1 USB plumbing.** Implemented
    2026-07-17 without changing the byte-verified descriptor. The first Windows hardware pass is
    confirmed that Device Manager Code 10 is gone with no known controller regressions.

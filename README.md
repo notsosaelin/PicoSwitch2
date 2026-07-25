@@ -23,6 +23,8 @@ project's hardware captures and
 - Native NSO GameCube output with buttons, sticks, analog triggers, digital trigger
   detents, and hardware-validated rumble.
 - Experimental Joy-Con 2 Left and Right output personalities.
+- Native Joy-Con 2 mouse mode from a paired Bluetooth HID mouse, including pointer movement,
+  buttons, and wheel-to-stick menu navigation.
 - DualSense and DualSense Edge input, including Edge paddles, Fn and mute buttons,
   LEDs, and rumble.
 - Live Windows-audio output through a paired DualSense internal speaker on
@@ -40,7 +42,8 @@ The Pro Controller 2 personality deliberately uses a 1 ms USB interrupt interval
 personalities retain their genuine descriptor timing.
 
 See [STATUS.md](STATUS.md) for hardware-confirmed behavior and known limitations, and
-[docs/README.md](docs/README.md) for the documentation map.
+[docs/README.md](docs/README.md) for the documentation map. A fresh coding-agent session should
+start with [AGENTS.md](AGENTS.md).
 
 ## Hardware
 
@@ -131,8 +134,9 @@ retain only wire layouts, invariants, and implementation constraints.
 ## Known limitations
 
 - One Bluetooth controller is routed at a time.
-- Native Switch 2 console motion output remains under reverse engineering; common PC motion
-  input is supported.
+- Genuine Pro Controller 2 native motion passthrough and calibrated DualSense/DualSense Edge
+  translation to the Switch 2 length-`0x1E` carrier are hardware-confirmed. The genuine
+  length-`0x28` form remains only partially decoded and is never synthesized for Sony controllers.
 - Joy-Con 2 Left and Right are separate sideways controller personalities; they are not combined
   into one paired-controller USB identity.
 - The first-generation 8BitDo Ultimate Bluetooth controller requires the guarded custom controller
@@ -150,8 +154,8 @@ retain only wire layouts, invariants, and implementation constraints.
   was removed from its standard build. On Pico 2 W, the physical DualSense jack
   conditionally drives Switch 2 headset presence so a bare controller does not
   capture console audio. Real-console insertion, headphone output, repeated
-  unplug/replug recovery, and native haptic rumble are confirmed. Extended
-  thermal-soak testing and the DualSense microphone return remain open.
+  unplug/replug recovery, native haptic rumble, and an eight-hour stability soak are confirmed.
+  The DualSense microphone return remains open.
 
 See [PLAN.md](PLAN.md) for the prioritized roadmap and
 [docs/status/compatibility-matrix.md](docs/status/compatibility-matrix.md) for the test matrix.

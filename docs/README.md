@@ -8,6 +8,8 @@ were tested. Conversation transcripts and temporary handoff files are not author
 
 | Need | Document |
 |---|---|
+| Fresh coding-agent session | [`../AGENTS.md`](../AGENTS.md) |
+| Concise current handoff | [`LLM/current-context.md`](LLM/current-context.md) |
 | Current project state | [`../STATUS.md`](../STATUS.md) |
 | Forward roadmap | [`../PLAN.md`](../PLAN.md) |
 | Runtime architecture | [`architecture/overview.md`](architecture/overview.md) |
@@ -35,6 +37,7 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | UART native-motion `0x28`/magnetic analysis | [`switch2/uart-magprobe.md`](switch2/uart-magprobe.md) |
 | NSO GameCube protocol | [`switch2-gc/protocol.md`](switch2-gc/protocol.md) |
 | Joy-Con 2 protocol | [`switch2-joycon2/protocol.md`](switch2-joycon2/protocol.md) |
+| Joy-Con 2 Bluetooth mouse bridge | [`switch2-joycon2/mouse-mode.md`](switch2-joycon2/mouse-mode.md) |
 
 ## Authority order
 
@@ -87,6 +90,11 @@ Current compatibility matrices and release verification records.
 ### `re-methodology/`
 
 Evidence classification, capture discipline, source-comment policy, and reproducibility rules.
+
+### `LLM/`
+
+Concise, current continuation notes for fresh agent sessions. These are navigation aids, not a
+replacement for source, captures, `STATUS.md`, or protocol evidence.
 
 ### `archive/`
 

@@ -140,9 +140,8 @@ Three distinct issues:
    lost mappings (`switch_gc.c:59-76`). A unique serial is a second, cheaper axis of
    disambiguation.
 2. **Pro2 reuses a real person's serial.** `HEJ71001121247` is a specific genuine unit's number.
-   `COLOR-INVESTIGATION.md:85` even notes ours differs from the owner's own unit
-   (`HEW70001504982`) "by design" — but "ours" is still *someone's* real serial, hardcoded and
-   shared.
+   The project's own genuine USB capture contains the owner's different unit
+   (`HEW70001504982`) — but "ours" is still *someone's* real serial, hardcoded and shared.
 3. **Obviously synthetic where faked.** `…9999999` never occurs on genuine production hardware;
    it reads as fake to anyone inspecting the identity block.
 
@@ -281,7 +280,8 @@ inject at 0x13002 of each identity block:
   (declared, unimplemented, unused — the intended seam).
 - `src/switch_gc/switch_gc.c:59-76` — `bcdDevice` WinUSB-cache collision precedent (why identity
   uniqueness matters host-side).
-- `COLOR-INVESTIGATION.md:85` — firmware Pro2 serial vs owner's genuine unit.
+- `docs/experiments/2026-07-19-usb-command-ab-diff.md:46,121` — firmware Pro2 serial vs owner's
+  genuine unit.
 
 ## 12. Documentation corrections noted while writing
 

@@ -1,7 +1,7 @@
 # Bluetooth Controller Battery Passthrough
 
-Status: 🟡 software-validated; controller/console hardware matrix pending
-Last updated: 2026-07-17
+Status: ✅ hardware-confirmed for the tested controller/personality matrix
+Last updated: 2026-07-24
 
 ## Behavior
 
@@ -57,6 +57,12 @@ actual percentage.
 
 ## Hardware validation matrix
 
+The available native-HID/BLE sources and all console-native USB power fields passed the physical
+matrix without input, rumble, reconnect, or wake regressions. Unsupported Classic HID sources
+retained the prior full/wired compatibility fallback. Use the procedure below for new controller
+families and release regressions; software decoder coverage alone still does not justify marking a
+new device confirmed.
+
 For each available controller:
 
 1. Note its own displayed/known battery state before pairing.
@@ -68,4 +74,4 @@ For each available controller:
    without input, rumble, reconnect, or wake regressions.
 6. For an unsupported Classic controller, confirm the old full/wired fallback remains stable.
 
-No hardware row should be promoted to confirmed from the decoder tests alone.
+No new hardware row should be promoted to confirmed from decoder tests alone.

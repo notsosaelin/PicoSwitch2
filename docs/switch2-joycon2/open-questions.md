@@ -1,6 +1,6 @@
 # Joy-Con 2 Open Questions
 
-Last updated: 2026-07-16
+Last updated: 2026-07-24
 
 Both side personalities enumerate and stream on real Switch 2 hardware. Their descriptor and
 wire-layout facts remain in [protocol.md](protocol.md); this file owns unresolved interpretations.
@@ -40,8 +40,11 @@ wire-layout facts remain in [protocol.md](protocol.md); this file owns unresolve
   opaque report `0x01` byte semantics still require a side-specific capture before fidelity claims.
 - Several EP0 and vendor-command responses reuse confirmed family framing with Joy-Con-specific
   identity bytes. Capture the exact Joy-Con exchange before assigning meaning to opaque fields.
-- Motion, mouse, magnetometer, NFC, and side-specific accessory fields remain outside the first
-  implementation and must not be inferred from Pro Controller 2 or GameCube behavior.
+- Bluetooth-mouse-to-native-relative-mouse output is implemented and hardware-confirmed; see
+  [mouse-mode.md](mouse-mode.md). Report-`0x05` absolute mouse output remains unimplemented.
+- Controller-originated Joy-Con motion, magnetometer, NFC, and side-specific accessory fields
+  remain outside the first implementation and must not be inferred from Pro Controller 2 or
+  GameCube behavior.
 
 ## Physical USB constraint
 

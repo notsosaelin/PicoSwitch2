@@ -1,8 +1,9 @@
 # Switch 2 Pro Controller — Protocol Research (ns2-testing)
 
-**Goal of this branch:** make the PicoSwitch2 dongle enumerate to a Nintendo Switch 2 as a
-**native Switch 2 Pro Controller** (rather than the Switch 1 Pro Controller the `main`
-firmware currently emulates).
+**Historical branch goal — achieved:** make the PicoSwitch2 dongle enumerate to a Nintendo
+Switch 2 as a **native Switch 2 Pro Controller** rather than the Switch 1 Pro Controller inherited
+from `main`. The native personality is now the default; this page preserves the original
+feasibility and implementation narrative.
 
 > **Source.** Distilled from
 > [ndeadly/switch2_controller_research](https://github.com/ndeadly/switch2_controller_research)
@@ -10,9 +11,10 @@ firmware currently emulates).
 > [alexvnesta/switch2controller](https://github.com/alexvnesta/switch2controller). The
 > hex values here have since been **cross-checked byte-for-byte against the raw docs**
 > (repo cloned and read directly); the exact, implementation-ready bytes now live in
-> **[usb-spec.md](usb-spec.md)** — use that for coding. The one item still unverified is the
-> USB command-endpoint transport (needs the USB pcap; see usb-spec §4). This page is the
-> overview / feasibility; usb-spec.md is the reference.
+> **[usb-spec.md](usb-spec.md)** — use that for coding. USB command transport, firmware identity,
+> input, rumble, audio, genuine native-motion passthrough, and DualSense motion translation have
+> since been verified. This page is the overview/history; `usb-spec.md` and the dedicated current
+> protocol documents are the implementation references.
 
 ---
 
@@ -162,7 +164,8 @@ defeating cryptography.** Reasons:
 ## 6. Roadmap — ✅ all shipped (v1.0 / v1.1)
 
 _Kept for historical context. Input maps via the joypad-os seam (`src/bt_hid/ns2_seam.c`), not
-bluepad32; report-0x05 gyro shipped; report-0x09 int32 motion pending._
+bluepad32. The original report-`0x09` int32 hypothesis below was superseded by genuine native-PDU
+capture: Pro2 passthrough and DualSense length-`0x1E` translation now ship on `ns2-testing`._
 
 1. **Ground-truth capture** — pull ndeadly's raw `descriptors.md` hex + any USB pcap in
    `/captures`; produce an exact descriptor + handshake byte spec. *(no console needed)*
@@ -172,8 +175,8 @@ bluepad32; report-0x05 gyro shipped; report-0x09 int32 motion pending._
    `0x10`/`0x02`. Goal: console completes init and shows a connected PC2. *(needs Switch 2)*
 4. **Input reports** — map controller input → report `0x09` (12-bit sticks, 3-byte buttons).
    Goal: buttons/sticks work in-game. *(needs Switch 2)*
-5. **IMU + rumble** — motion passthrough (report 0x05 shipped; report-0x09 int32 packing pending);
-   HD-rumble output (shipped).
+5. **IMU + rumble** — original milestone text: report `0x05` gyro and HD-rumble output shipped;
+   native report-`0x09` motion was decoded later through UART/BLE capture.
 6. **Scope decision** — start with a **single** PC2 (a real PC2 is one device; 4× composite
    would be a huge descriptor). Multi-controller is a later question.
 

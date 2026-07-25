@@ -276,7 +276,9 @@ Input arrives from the joypad-os bthid stack as `input_event_t` and is mapped in
 - **C, GL, GR are exposed** by the per-vendor drivers (DualSense Edge paddles/Fn, Xbox Elite
   paddles → GL/GR/Capture/C via the config remap) and confirmed on-console.
 - Sticks: driver axes (0–255) → 12-bit (0–4095), center 2048, Y inverted.
-- IMU: report 0x05 shipped; report-0x09 int32 rewrite pending ([report-0x09-motion.md](report-0x09-motion.md)). Rumble: shipped (§8).
+- IMU: genuine Pro2 native-PDU passthrough and DualSense/Edge length-`0x1E` translation are
+  hardware-confirmed ([report-0x09-motion.md](report-0x09-motion.md)); synthetic length-`0x28`
+  output remains disabled. Rumble: shipped (§8).
 
 ## 11. Open questions
 
@@ -287,19 +289,15 @@ Input arrives from the joypad-os bthid stack as `input_event_t` and is mapped in
   the real console-detection gate (see §5).
 - ✅ **RESOLVED — `0x15` AES pairing is not required for wired input.** Implemented anyway; a
   well-formed but cryptographically-wrong `B2` is accepted (the wired session stores, not verifies).
-- 🟡 **Audio interfaces:** the full Option-A descriptor (HID + vendor + 3 audio) ships and the
+- ✅ **Audio interfaces:** the full Option-A descriptor (HID + vendor + 3 audio) ships and the
   console accepts it. On 2026-07-17 the descriptor-only stub was replaced by a PC2-specific UAC1
   driver with real isochronous endpoint lifecycle, speaker PCM consumption, silent microphone PCM,
   and writable Feature Unit controls. Windows hardware validation confirms that the audio function
-  starts without Code 10 and existing controller behavior remains intact. The first Pico 2 W
-  live-Opus bridge failed hardware validation with no audio, an unstable Windows endpoint,
-  DualSense input corruption, and BOOTSEL starvation. Live encoding is therefore disabled by
-  default. Incoming DualSense microphone-bearing reports are now excluded from gamepad parsing,
-  and a fixed 1 kHz Opus build tests report transport without running an encoder on the Bluetooth
-  core. Its first passes were stable but silent. Adding DS5Dongle's extended `0x32` AudioControl
-  activation was insufficient; a subsequent audit found the earlier compatibility report was
-  explicitly applying zero speaker/headphone/microphone volume. Those fields now use nonzero safe
-  defaults. Pico W and normal Pico 2 W builds retain the operational USB sink/silence layer.
+  starts without Code 10 and existing controller behavior remains intact. The failed early
+  live-Opus designs are retained in the audio investigation log. The standard Pico 2 W build now
+  runs the hardware-confirmed 300 MHz DualSense audio/native-haptic path and genuine Pro Controller
+  2 headphone output; Pico W intentionally retains its validated non-audio profile. Microphone
+  return remains unimplemented.
 - ✅ **RESOLVED — report `0x09` motion packing:** decoded — int32 phase + Q16.16 accel, len 30, gated
   behind the `0x0C` enable. See [report-0x09-motion.md](report-0x09-motion.md).
 - ✅ **RESOLVED — bcdDevice:** ship **0x0210**. `00 02`/`0x0200` and `0x0201` collide with a retail

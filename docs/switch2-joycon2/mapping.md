@@ -1,6 +1,6 @@
 # Joy-Con 2 Left/Right Output Personalities — Sideways Mapping Policy
 
-> Current policy (2026-07-16): each individual Joy-Con personality is intended for the
+> Current policy (2026-07-24): each individual Joy-Con personality is intended for the
 > Switch's horizontal single-controller mode. The translation is host-tested in both report
 > formats (`0x07`/`0x08` and `0x05`) and hardware-confirmed on Switch 2.
 
@@ -78,6 +78,6 @@ Pro2 GL/GR paddle destinations no longer become Joy-Con SL/SR. SL/SR now have th
 L1/R1 sources requested for a standard paired controller, and spare paddles remain unused in
 individual Joy-Con mode.
 
-Mouse mode, NFC, and motion data remain outside this mapping pass because the project does not
-currently supply those data streams. The physical capability and byte layouts remain documented
-in `protocol.md`.
+Mouse input is now supplied through the separate, hardware-confirmed
+[Bluetooth mouse bridge](mouse-mode.md). NFC and controller-originated Joy-Con motion remain outside
+this mapping pass. Their physical capability and byte layouts remain documented in `protocol.md`.

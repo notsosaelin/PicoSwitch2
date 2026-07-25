@@ -40,10 +40,11 @@ normal G6/G7/G8 PDUs, filters escalation forms, preserves unexplained bits, and 
 pose-gated A/B comparisons without adding formatting work to the Bluetooth callback. The analyzer
 also accepts historical full `blecap dump` JSONL directly and provides a cross-capture `corpus`
 command; this recovered moving evidence without requiring another physical controller trial.
-The UART-only `magraw on|off|status` experiment replays the reference initialization for the
-independent raw-magnetometer feature profile, validates each ACK, and runs the complete native
-profile to restore motion afterward; `ns2_magprobe.py rawmag` summarizes the resulting
-handle-`0x000A` signed-int16 lanes. See
+The UART-only command name `magraw on|off|status` is historical. The guarded experiment replays the
+candidate initialization, validates each ACK, and runs the complete native profile to restore
+motion afterward; `ns2_magprobe.py rawmag` summarizes handle-`0x000A` signed-int16 lanes. Corpus
+analysis disproved the original interpretation: the public GATT path did not expose an independent
+raw-magnetometer stream. Keep the command only as a reproducible negative experiment. See
 [`uart-magprobe.md`](uart-magprobe.md) for the guarded workflow.
 
 ## Capture workflow

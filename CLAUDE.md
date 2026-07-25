@@ -92,7 +92,7 @@ Fully build and maintain:
 
 ```text
 /docs
-/docs/bt
+/docs/bluetooth
 /docs/switch2
 /docs/switch2-gc
 /docs/LLM
@@ -143,7 +143,18 @@ Documentation should become the authoritative technical reference for the projec
 
 # Repository Documentation
 
-This repository uses three primary project documents.
+This repository uses four primary project documents.
+
+## AGENTS.md
+
+Purpose:
+
+- Gives Codex and other coding agents the concise repository entry point.
+- Lists current invariants, source layout, validation commands, and hardware/UART rules.
+- Directs a fresh session to the live status and continuation documents.
+
+This is the automatically loaded operational guide. Keep it concise; protocol details belong in
+`docs/`.
 
 ## CLAUDE.md
 
@@ -390,22 +401,20 @@ identify the true architectural cause.
 
 ## Gyroscope
 
-Investigate similarities between:
+**Current status (2026-07-24):** genuine Pro Controller 2 native `0x1E`/`0x28` motion passthrough
+and calibrated DualSense/DualSense Edge translation through the length-`0x1E` carrier are
+hardware-confirmed. The earlier Switch-1 comparison helped establish units and integration
+behavior, but the Switch 2 carrier was resolved through direct UART/BLE evidence and real-console
+tests.
 
-* Switch Pro Controller
-* Switch 2 Pro Controller
+Remaining motion research:
 
-Determine whether Switch 1 implementation knowledge can accelerate Switch 2 support.
-
-Compare:
-
-* initialization
-* calibration
-* polling
-* packet layouts
-* motion reports
-
-Identify reusable implementation logic.
+* decode all changing lanes and semantics in genuine length-`0x28` PDUs;
+* never restore the refuted static-template `0x28` generator;
+* validate each additional controller family's calibration, axes, scale, timestamp, and bias model
+  before routing it through the shared translator;
+* preserve the confirmed 1 ms Pro2 USB interval until a 4 ms replacement is demonstrated on
+  hardware.
 
 ---
 
