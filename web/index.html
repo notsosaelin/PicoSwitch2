@@ -335,16 +335,16 @@
               <button id="amiiboSelectSave1Btn">Amiibo Slot 1</button>
               <button id="amiiboSelectSave2Btn">Amiibo Slot 2</button>
             </div>
-            <button id="amiiboSlotClearBtn" disabled>Clear Slot 1</button>
             <button id="amiiboSyncControllerBtn" disabled>Activate Amiibo</button>
             <button id="amiiboSaveBtn" disabled>Sync Amiibo</button>
-            <button id="amiiboEjectBtn" disabled>Eject Virtual Amiibo</button>
+            <button id="amiiboEjectBtn" disabled>Eject Amiibo</button>
             <p class="amiibo-action-help">
-              Load Amiibo places the highlighted amiibo into the selected quick slot; Clear
-              empties that slot without deleting its library dump. Activate sends the slot's
-              amiibo to the adapter. Sync Amiibo pulls console-written changes back and
-              overwrites its saved library copy. Eject removes the virtual amiibo from the
-              adapter entirely.
+              Load Amiibo places the highlighted amiibo into the selected quick slot. Activate
+              sends the slot's amiibo to the adapter. Sync Amiibo pulls console-written changes
+              back and overwrites its saved library copy. The last button matches its label:
+              Eject Amiibo removes the slot's amiibo from the adapter and empties the slot;
+              Clear Slot only empties the slot; Eject Virtual Amiibo removes an adapter image
+              that is not in any slot. Library dumps are never deleted.
             </p>
           </div>
 
@@ -1597,18 +1597,24 @@ async function loadSelectedLibraryAmiibo() {
       : "Connect PicoSwitch2 in Config mode when you want to activate it on the adapter.");
 }
 
-function clearSelectedAmiiboQuickSlot() {
-  const key = amiiboSlotLibraryKeys[amiiboSelectedSlot];
-  if (!key) return;
-  const entry = amiiboLibrary.find(item => item.key === key) || null;
-  amiiboSlotLibraryKeys[amiiboSelectedSlot] = "";
-  persistAmiiboSlotState();
-  renderAmiiboLibrary();
-  renderAmiiboLoadedSlot();
-  $("#amiiboMessage").textContent =
-    `${entry ? catalogMetadataForEntry(entry)?.name || entry.label
-             : "The assigned amiibo"} was removed from Amiibo Slot ` +
-    `${amiiboSelectedSlot + 1}. Its library dump and the adapter's active tag were not changed.`;
+// One button ejects/clears. Its scope is decided here and rendered as an
+// always-truthful label, because the merged action is destructive on the
+// adapter in some modes and a harmless pointer clear in others:
+//   both    — the selected slot's amiibo is on the adapter: wipe adapter,
+//             then empty the slot (confirm required)
+//   slot    — the slot references an amiibo the adapter does not hold:
+//             empty the pointer only (no confirm, dump untouched)
+//   adapter — the slot is empty but the adapter holds an image (possibly
+//             foreign): wipe the adapter only (confirm required)
+function amiiboEjectActionState() {
+  const entry = loadedAmiiboLibraryEntry();
+  const adapterAvailable = !!transportKind && !!amiiboStatus?.loaded;
+  if (entry && adapterAvailable &&
+      amiiboEntryContainsUid(entry, amiiboStatus.uid))
+    return {mode: "both", entry};
+  if (entry) return {mode: "slot", entry};
+  if (adapterAvailable) return {mode: "adapter", entry: null};
+  return {mode: "none", entry: null};
 }
 
 // ---- Virtual Amiibo: one active, losslessly mutable raw image ----
@@ -1701,9 +1707,6 @@ function renderAmiiboLoadedSlot() {
     "selected", amiiboSelectedSlot === 1);
   $("#amiiboLibraryLoadBtn").title =
     `Load the highlighted amiibo into Slot ${slotNumber}`;
-  $("#amiiboSlotClearBtn").textContent = `Clear Slot ${slotNumber}`;
-  $("#amiiboSlotClearBtn").disabled =
-    amiiboLibraryBusy || !amiiboSlotLibraryKeys[amiiboSelectedSlot];
   const slotActivated = adapterMatches && adapterPresented;
   $("#amiiboSyncControllerBtn").textContent =
     slotActivated ? "Amiibo activated" : "Activate Amiibo";
@@ -1711,10 +1714,24 @@ function renderAmiiboLoadedSlot() {
     amiiboLibraryBusy || !transportKind || !entry || slotActivated;
   $("#amiiboSaveBtn").disabled =
     amiiboLibraryBusy || !transportKind || !amiiboStatus?.loaded;
-  // Eject now removes the stored image, so it stays available for a
+  // Merged eject/clear button: the label always states the exact current
+  // scope (see amiiboEjectActionState). It stays available for a
   // loaded-but-unpresented retained image (console Stop lifecycle state).
+  const ejectState = amiiboEjectActionState();
+  $("#amiiboEjectBtn").textContent =
+    ejectState.mode === "both" ? "Eject Amiibo" :
+    ejectState.mode === "adapter" ? "Eject Virtual Amiibo" :
+    `Clear Slot ${slotNumber}`;
+  $("#amiiboEjectBtn").title =
+    ejectState.mode === "both"
+      ? `Remove this amiibo from the adapter and empty Slot ${slotNumber}`
+      : ejectState.mode === "adapter"
+        ? "Remove the stored virtual amiibo from the adapter"
+        : ejectState.mode === "slot"
+          ? `Empty Slot ${slotNumber}; the library dump and adapter are not changed`
+          : "";
   $("#amiiboEjectBtn").disabled =
-    amiiboLibraryBusy || !transportKind || !amiiboStatus?.loaded;
+    amiiboLibraryBusy || ejectState.mode === "none";
 }
 
 function renderAmiiboStatus(status) {
@@ -1853,22 +1870,47 @@ async function syncLoadedAmiiboToController() {
   await uploadAmiiboEntry(entry);
 }
 
-async function ejectLoadedAmiibo() {
-  if (!transportKind || !amiiboStatus?.loaded) return;
-  // Eject removes the stored image from the adapter entirely, so unsynced
-  // console writes are unrecoverable afterwards. Always confirm.
+async function ejectOrClearAmiibo() {
+  const {mode, entry} = amiiboEjectActionState();
+  if (mode === "none" || amiiboLibraryBusy) return;
+  const slotNumber = amiiboSelectedSlot + 1;
+  const entryName = entry
+    ? catalogMetadataForEntry(entry)?.name || entry.label : "";
+
+  if (mode === "slot") {
+    amiiboSlotLibraryKeys[amiiboSelectedSlot] = "";
+    persistAmiiboSlotState();
+    renderAmiiboLibrary();
+    renderAmiiboLoadedSlot();
+    $("#amiiboMessage").textContent =
+      `${entryName} was removed from Amiibo Slot ${slotNumber}. ` +
+      "Its library dump and the adapter's active tag were not changed.";
+    return;
+  }
+
+  // Adapter-destructive modes: unsynced console writes are unrecoverable
+  // afterwards. Always confirm; cancel aborts everything, including the
+  // slot clear in "both" mode.
   const warning = amiiboStatus.dirty
     ? "A game changed this amiibo and the change has NOT been synced to the browser library. Eject and remove it from the adapter anyway? The unsynced change will be lost."
-    : "Eject and remove the virtual amiibo from the adapter? Make sure you have synced or imported it first; only the browser library copy will remain.";
+    : mode === "both"
+      ? `Eject ${entryName}? This removes it from the adapter and empties Amiibo Slot ${slotNumber}. Its dump remains in the browser library.`
+      : "Eject and remove the virtual amiibo from the adapter? Make sure you have synced or imported it first; only the browser library copy will remain.";
   if (!confirm(warning)) return;
   amiiboSetBusy(true);
   try {
     const ejected = await sendCmd("amiibo eject", true);
     const cleared = ejected?.ok
       ? await sendCmd("amiibo clear", true) : null;
+    if (cleared?.ok && mode === "both") {
+      amiiboSlotLibraryKeys[amiiboSelectedSlot] = "";
+      persistAmiiboSlotState();
+    }
     await refreshAmiiboStatus();
     $("#amiiboMessage").textContent = cleared?.ok
-      ? "Virtual amiibo ejected and removed from the adapter. Its dump remains in the browser library."
+      ? (mode === "both"
+          ? `Ejected ${entryName}: removed from the adapter and Amiibo Slot ${slotNumber}. Its dump remains in the browser library.`
+          : "Virtual amiibo ejected and removed from the adapter. Its dump remains in the browser library.")
       : ejected?.ok
         ? (cleared?.error ||
            "Ejected, but the adapter could not remove the stored image.")
@@ -2548,9 +2590,8 @@ window.addEventListener("resize", () => {
   if (entries.length) updateAmiiboCarouselSelection(entries, false);
 });
 $("#amiiboLibraryLoadBtn").onclick = loadSelectedLibraryAmiibo;
-$("#amiiboSlotClearBtn").onclick = clearSelectedAmiiboQuickSlot;
 $("#amiiboSyncControllerBtn").onclick = syncLoadedAmiiboToController;
-$("#amiiboEjectBtn").onclick = ejectLoadedAmiibo;
+$("#amiiboEjectBtn").onclick = ejectOrClearAmiibo;
 $("#amiiboLibraryClearBtn").onclick = clearAmiiboLibrary;
 $("#amiiboLibraryExportBtn").onclick = exportAmiiboLibraryBackup;
 $("#amiiboLibraryImportBtn").onclick =
