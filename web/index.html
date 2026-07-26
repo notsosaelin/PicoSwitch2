@@ -1976,15 +1976,20 @@ function amiiboSetBusy(busy, percent = 0) {
 function renderAmiiboLoadedSlot() {
   const entry = loadedAmiiboLibraryEntry();
   const metadata = entry ? catalogMetadataForEntry(entry) : null;
-  const adapterMatches = !!(entry && amiiboStatus?.loaded &&
+  // The 540 store reports `loaded`; a v3 (NTAG I2C 2K) tag is in a separate slot
+  // reported by `v3loaded`. Treat a loaded v3 entry as active on the adapter.
+  const v3Active = entry?.tagType === "v3" && amiiboStatus?.v3loaded === true;
+  const adapterMatches = v3Active || !!(entry && amiiboStatus?.loaded &&
     amiiboEntryContainsUid(entry, amiiboStatus.uid));
-  const adapterPresented = amiiboStatus?.presented !== false;
+  const adapterPresented = v3Active || amiiboStatus?.presented !== false;
   if (entry) {
     $("#amiiboName").textContent = amiiboDisplayName(entry);
-    $("#amiiboLoadedState").textContent = adapterMatches
-      ? `Loaded · ${adapterPresented
-          ? "presented by adapter" : "ejected on adapter"}`
-      : "Loaded · saved in this browser";
+    $("#amiiboLoadedState").textContent = v3Active
+      ? "On adapter · NTAG I2C 2K (experimental console serving)"
+      : adapterMatches
+        ? `Loaded · ${adapterPresented
+            ? "presented by adapter" : "ejected on adapter"}`
+        : "Loaded · saved in this browser";
   } else if (amiiboStatus?.loaded) {
     $("#amiiboName").textContent = "No amiibo loaded";
     $("#amiiboLoadedState").textContent =
