@@ -35,12 +35,16 @@ Release notes describe user-visible behavior. Detailed implementation history re
   `docs/experiments/generated-amiibo-console-rejection-2026-07-26.md`): a 2026-07-26 hardware test
   established that the Switch 2 validates amiibo cryptography, so key-free generated images are
   rejected. A briefly implemented random-UID presentation mode was removed for the same reason.
-- Optional in-browser amiibo generation gated on the user's own genuine `key_retail.bin` (never
-  shipped): a full amiitool implementation over Web Crypto generates any AmiiboAPI identity, keys
-  self-verify against a genuine dump on load, and generated tags save to the same library and
-  upload through the existing path. Node round-trip test `tools/test_amiibo_crypto.mjs`.
+- The Virtual Amiibo library is import-only (single file or recursive directory of the user's own
+  genuine dumps). A key-based generator using a user-supplied `key_retail.bin` was prototyped and
+  removed in favor of import-only simplicity; the identity/crypto research is retained under
+  `docs/switch2/`.
 - Library export/import is now a flat `.zip` (`library.json` manifest + one `.bin` per amiibo) via
   a self-contained store-only ZIP writer/reader; legacy `.json` backups still import.
+- The AmiiboAPI catalog is enhancement-only: entries always display (on-tag identity when the
+  catalog is unavailable), the catalog loads cache-first from two mirrors, and it never gates
+  display or import. Carousel arrows navigate cleanly (non-wrapping, disabled at the ends) and the
+  centered amiibo's release date is shown above it.
 - Stable localhost launcher for the production USB Serial/Bluetooth portal.
 - Config-personality-only BLE management service and Web Bluetooth client. It pauses controller
   discovery before low-duty advertising, classifies its incoming Peripheral-role link before HID,
