@@ -66,6 +66,66 @@ static bool uid_matches_raw(const uint8_t *request, size_t request_size,
     return memcmp(request + 2, uid, sizeof(uid)) == 0;
 }
 
+// NTAG215 PWD/PACK live in the last two pages of the 540-byte image. Real
+// tags never return them on read, so the overlay recomputes them only when
+// the stored dump carries nonzero values there.
+#define NS2_NFC_RAW_PWD_OFFSET 0x214u
+#define NS2_NFC_RAW_PACK_OFFSET 0x218u
+
+static uint32_t uid_rng_next(ns2_virtual_nfc_runtime_t *runtime)
+{
+    uint32_t x = runtime->uid_rng_state;
+    if (x == 0) x = 0x243F6A88u; /* xorshift32 state must never be zero */
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    runtime->uid_rng_state = x;
+    return x;
+}
+
+void ns2_virtual_nfc_runtime_set_randomize_uid(
+    ns2_virtual_nfc_runtime_t *runtime, bool enabled, uint32_t entropy)
+{
+    if (!runtime) return;
+    runtime->uid_rng_state ^= entropy;
+    if (runtime->randomize_uid != enabled) {
+        runtime->randomize_uid = enabled;
+        runtime->session_uid_valid = false;
+    }
+}
+
+static void apply_session_uid(ns2_virtual_nfc_runtime_t *runtime,
+                              uint8_t raw[VIRTUAL_AMIIBO_RAW_SIZE])
+{
+    if (!runtime->session_uid_valid) {
+        runtime->session_uid[0] = 0x04; /* NXP manufacturer byte */
+        for (unsigned i = 1; i < 7u; ++i)
+            runtime->session_uid[i] =
+                (uint8_t)(uid_rng_next(runtime) >> 13);
+        runtime->session_uid_valid = true;
+    }
+    const uint8_t *uid = runtime->session_uid;
+    raw[0] = uid[0];
+    raw[1] = uid[1];
+    raw[2] = uid[2];
+    raw[3] = (uint8_t)(0x88u ^ uid[0] ^ uid[1] ^ uid[2]); /* BCC0 with CT */
+    raw[4] = uid[3];
+    raw[5] = uid[4];
+    raw[6] = uid[5];
+    raw[7] = uid[6];
+    raw[8] = (uint8_t)(uid[3] ^ uid[4] ^ uid[5] ^ uid[6]); /* BCC1 */
+    uint8_t *pwd = raw + NS2_NFC_RAW_PWD_OFFSET;
+    if (pwd[0] || pwd[1] || pwd[2] || pwd[3]) {
+        /* Standard NTAG215 UID-derived password transform. */
+        pwd[0] = (uint8_t)(uid[1] ^ uid[3] ^ 0xAAu);
+        pwd[1] = (uint8_t)(uid[2] ^ uid[4] ^ 0x55u);
+        pwd[2] = (uint8_t)(uid[3] ^ uid[5] ^ 0xAAu);
+        pwd[3] = (uint8_t)(uid[4] ^ uid[6] ^ 0x55u);
+        raw[NS2_NFC_RAW_PACK_OFFSET] = 0x80u;
+        raw[NS2_NFC_RAW_PACK_OFFSET + 1u] = 0x80u;
+    }
+}
+
 static void set_ready_status(ns2_virtual_nfc_runtime_t *runtime)
 {
     runtime->nfc_status = 0x09;
@@ -170,6 +230,16 @@ bool ns2_virtual_nfc_runtime_dispatch(
     memset(response, 0, sizeof(*response));
     response->response_direction = 0x04;
     ns2_virtual_nfc_runtime_tick(runtime, now_ms);
+    if (runtime->randomize_uid && tag_present && raw) {
+        // A 0x03 that starts a fresh encounter (no active scan; post-write
+        // re-presentation also arrives with scan_active false after Stop)
+        // draws a new session UID. Every other command keeps the current one
+        // so status, exact-UID selection, and chunked reads stay consistent
+        // within the encounter.
+        if (subcommand == 0x03u && !runtime->scan_active)
+            runtime->session_uid_valid = false;
+        apply_session_uid(runtime, raw);
+    }
     bool presented =
         tag_present && raw && !runtime->tag_ejected;
     observe_tag_presence(runtime, presented);

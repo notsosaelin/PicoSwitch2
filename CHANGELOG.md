@@ -25,12 +25,19 @@ Release notes describe user-visible behavior. Detailed implementation history re
   exact-AmiiboAPI-matched owned files, fills progressively during directory scans, keeps the
   selection centered at 100%, and renders four non-overlapping neighbors on each side at exact
   80/60/40/20% sizes. Carousel names are omitted; navigation remains animated.
-- Definitive Virtual Amiibo Manager layout with two independent browser quick slots, a carousel
-  Load Amiibo action, Activate Amiibo with a disabled already-activated state, validated
-  adapter-to-browser writeback, and one merged eject/clear button that labels its exact scope:
-  slot-plus-adapter eject, slot-only clear, or adapter-only eject of an unreferenced image.
+- Single-slot Virtual Amiibo Manager matching the board's one-amiibo storage: a carousel Load
+  Amiibo action, Activate Amiibo with a disabled already-activated state, validated
+  adapter-to-browser writeback, and one merged eject/clear button that labels its exact scope
+  (loaded-plus-adapter eject, unload-only, or adapter-only eject of an image not loaded here).
   Adapter-destructive modes confirm first and remove the stored image (`amiibo clear`) while
   leaving the console Stop/write-back lifecycle unchanged.
+- Save/Random amiibo presentation mode (`amiibo mode save|random`, volatile, Save default). Random
+  Mode presents a freshly randomized NTAG UID on every console scan and discards console writes,
+  defeating per-amiibo game cooldowns (e.g. the Zelda daily-spawn limit); Save Mode keeps the
+  stored identity and saves writes. Console acceptance of randomized identities is hardware-pending.
+- Amiibo identity/generation research (`docs/switch2/amiibo-identity-and-generation.md`) and a
+  key-free raw-layout identity-only generator (`tools/generate_test_amiibo.py`) as an experiment
+  artifact toward serving amiibo without user-supplied dumps.
 - Stable localhost launcher for the production USB Serial/Bluetooth portal.
 - Config-personality-only BLE management service and Web Bluetooth client. It pauses controller
   discovery before low-duty advertising, classifies its incoming Peripheral-role link before HID,

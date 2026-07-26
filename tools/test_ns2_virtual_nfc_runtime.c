@@ -332,12 +332,106 @@ static void test_absent_tag(void)
     assert(response.payload[0] == 0x07 && response.payload[1] == 0x41);
 }
 
+static void test_random_uid_mode(void)
+{
+    uint8_t source[VIRTUAL_AMIIBO_RAW_SIZE];
+    uint8_t raw[VIRTUAL_AMIIBO_RAW_SIZE];
+    uint8_t signature[VIRTUAL_AMIIBO_SIGNATURE_SIZE] = {0};
+    make_valid_dump(source);
+    // Pin the PWD/PACK recompute branch with a nonzero stored password.
+    source[0x214] = 0x11;
+    source[0x215] = 0x22;
+    source[0x216] = 0x33;
+    source[0x217] = 0x44;
+    uint8_t source_uid[7];
+    fill_uid(source_uid, source);
+
+    ns2_virtual_nfc_runtime_t runtime;
+    ns2_virtual_nfc_runtime_init(&runtime);
+    ns2_virtual_nfc_runtime_set_randomize_uid(&runtime, true, 0xC0FFEE01u);
+    ns2_virtual_nfc_response_t response;
+
+    // The integration layer copies the stored image fresh for every command;
+    // each dispatch below models that with a new memcpy from source.
+    memcpy(raw, source, sizeof(raw));
+    assert(ns2_virtual_nfc_runtime_dispatch(
+        &runtime, 0, 0x03, NULL, 0, true, raw, signature, &response));
+    uint8_t uid_a[7];
+    fill_uid(uid_a, raw);
+    assert(uid_a[0] == 0x04); /* NXP manufacturer byte */
+    assert(memcmp(uid_a, source_uid, sizeof(uid_a)) != 0);
+    assert(raw[3] == (uint8_t)(0x88 ^ raw[0] ^ raw[1] ^ raw[2]));
+    assert(raw[8] == (uint8_t)(raw[4] ^ raw[5] ^ raw[6] ^ raw[7]));
+    assert(raw[0x214] == (uint8_t)(uid_a[1] ^ uid_a[3] ^ 0xAA));
+    assert(raw[0x215] == (uint8_t)(uid_a[2] ^ uid_a[4] ^ 0x55));
+    assert(raw[0x216] == (uint8_t)(uid_a[3] ^ uid_a[5] ^ 0xAA));
+    assert(raw[0x217] == (uint8_t)(uid_a[4] ^ uid_a[6] ^ 0x55));
+    assert(raw[0x218] == 0x80 && raw[0x219] == 0x80);
+
+    // Later commands in the same encounter keep the session UID.
+    memcpy(raw, source, sizeof(raw));
+    assert(ns2_virtual_nfc_runtime_dispatch(
+        &runtime, 1, 0x05, NULL, 0, true, raw, signature, &response));
+    uint8_t uid_same[7];
+    fill_uid(uid_same, raw);
+    assert(memcmp(uid_same, uid_a, sizeof(uid_a)) == 0);
+
+    // Exact-UID write selection accepts the session UID, not the stored one.
+    memcpy(raw, source, sizeof(raw));
+    uint8_t begin[19];
+    make_begin(begin, raw, false);
+    memcpy(begin + 2, uid_a, sizeof(uid_a));
+    assert(ns2_virtual_nfc_runtime_dispatch(
+        &runtime, 2, 0x06, begin, sizeof(begin), true, raw, signature,
+        &response));
+    assert(runtime.operation_active && runtime.write_mode);
+
+    // Leaving scan mode and scanning again draws a different session UID.
+    memcpy(raw, source, sizeof(raw));
+    assert(ns2_virtual_nfc_runtime_dispatch(
+        &runtime, 3, 0x04, NULL, 0, true, raw, signature, &response));
+    memcpy(raw, source, sizeof(raw));
+    assert(ns2_virtual_nfc_runtime_dispatch(
+        &runtime, 4, 0x03, NULL, 0, true, raw, signature, &response));
+    uint8_t uid_b[7];
+    fill_uid(uid_b, raw);
+    assert(uid_b[0] == 0x04);
+    assert(memcmp(uid_b, uid_a, sizeof(uid_a)) != 0);
+    assert(memcmp(uid_b, source_uid, sizeof(uid_b)) != 0);
+
+    // Disabling the mode restores the stored identity untouched.
+    ns2_virtual_nfc_runtime_set_randomize_uid(&runtime, false, 0);
+    memcpy(raw, source, sizeof(raw));
+    assert(ns2_virtual_nfc_runtime_dispatch(
+        &runtime, 5, 0x05, NULL, 0, true, raw, signature, &response));
+    uint8_t uid_off[7];
+    fill_uid(uid_off, raw);
+    assert(memcmp(uid_off, source_uid, sizeof(uid_off)) == 0);
+    assert(raw[0x214] == 0x11 && raw[0x217] == 0x44);
+
+    // A source dump without a stored password keeps PWD/PACK zero: real
+    // NTAG reads never return them, and the overlay must mirror the source.
+    uint8_t plain[VIRTUAL_AMIIBO_RAW_SIZE];
+    make_valid_dump(plain);
+    memset(plain + 0x214, 0, 6);
+    ns2_virtual_nfc_runtime_t runtime2;
+    ns2_virtual_nfc_runtime_init(&runtime2);
+    ns2_virtual_nfc_runtime_set_randomize_uid(&runtime2, true, 0xB16B00B5u);
+    memcpy(raw, plain, sizeof(raw));
+    assert(ns2_virtual_nfc_runtime_dispatch(
+        &runtime2, 0, 0x03, NULL, 0, true, raw, signature, &response));
+    assert(raw[0] == 0x04);
+    assert(raw[0x214] == 0 && raw[0x215] == 0 && raw[0x216] == 0 &&
+           raw[0x217] == 0 && raw[0x218] == 0 && raw[0x219] == 0);
+}
+
 int main(void)
 {
     test_read_and_write();
     test_fail_closed();
     test_format_promotion();
     test_absent_tag();
+    test_random_uid_mode();
     puts("ns2_virtual_nfc_runtime: all tests passed");
     return 0;
 }
