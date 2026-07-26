@@ -257,7 +257,7 @@ static void queue_amiibo_status(const char *event) {
              "\"persisted\":%s,\"persist_pending\":%s,"
              "\"has_signature\":%s,\"has_used\":%s,\"using_used\":%s,"
              "\"size\":%u,"
-             "\"generation\":%lu,"
+             "\"generation\":%lu,\"v3loaded\":%s,"
              "\"uid\":\"%02X%02X%02X%02X%02X%02X%02X\"}",
              event, status.loaded ? "true" : "false",
              status.dirty ? "true" : "false",
@@ -267,6 +267,7 @@ static void queue_amiibo_status(const char *event) {
              status.has_used_copy ? "true" : "false",
              status.using_used_copy ? "true" : "false",
              status.size, (unsigned long)status.generation,
+             virtual_amiibo_store_v3_loaded() ? "true" : "false",
              status.uid[0], status.uid[1], status.uid[2], status.uid[3],
              status.uid[4], status.uid[5], status.uid[6]);
     queue_text(response);
