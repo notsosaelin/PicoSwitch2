@@ -108,13 +108,6 @@
                                letter-spacing: .05em; }
   .amiibo-loaded-card strong { display: block; font-size: 18px; margin: 3px 0; }
   .amiibo-loaded-card .state { color: #8e9cac; font-size: 12px; }
-  .amiibo-slot-heading { color: #8e9cac; font-size: 10px; text-transform: uppercase;
-                         letter-spacing: .08em; text-align: center; }
-  .amiibo-save-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .amiibo-save-tabs button { min-height: 42px; font-size: 15px; font-weight: 650;
-                             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .amiibo-save-tabs button.selected { border-color: #60a5fa; background: #17243a;
-                                      box-shadow: inset 3px 0 #60a5fa; }
   .amiibo-carousel-stage { margin-top: 14px; padding: 10px 12px 6px;
                            border: 1px solid #2f3744; border-radius: 10px;
                            background: #11151b; }
@@ -328,11 +321,6 @@
 
         <div class="amiibo-manager-bottom">
           <div class="amiibo-action-stack">
-            <div class="amiibo-slot-heading">Amiibo mode</div>
-            <div class="amiibo-save-tabs" aria-label="Amiibo presentation mode">
-              <button id="amiiboModeSaveBtn" disabled>Save Mode</button>
-              <button id="amiiboModeRandomBtn" disabled>Random Mode</button>
-            </div>
             <button id="amiiboSyncControllerBtn" disabled>Activate Amiibo</button>
             <button id="amiiboSaveBtn" disabled>Sync Amiibo</button>
             <button id="amiiboEjectBtn" disabled>Eject Amiibo</button>
@@ -341,10 +329,7 @@
               Sync Amiibo pulls console-written changes back and overwrites its saved library
               copy. The last button matches its label: Eject Amiibo removes the loaded amiibo
               from the adapter and unloads it; Clear Loaded Amiibo only unloads; Eject Virtual
-              Amiibo removes an adapter image that is not loaded here. Save Mode keeps a stable
-              tag identity and saves console writes; Random Mode presents a new random identity
-              on every scan and discards console writes (for per-amiibo game cooldowns).
-              Library dumps are never deleted.
+              Amiibo removes an adapter image that is not loaded here. Library dumps are never deleted.
             </p>
           </div>
 
@@ -1678,15 +1663,6 @@ function renderAmiiboLoadedSlot() {
       "Highlight an imported amiibo and press Load Amiibo";
   }
 
-  // The presentation-mode pair reflects the adapter's volatile state; both
-  // stay disabled until a transport is connected.
-  const randomMode = amiiboStatus?.random === true;
-  $("#amiiboModeSaveBtn").classList.toggle("selected",
-    !!transportKind && !randomMode);
-  $("#amiiboModeRandomBtn").classList.toggle("selected",
-    !!transportKind && randomMode);
-  $("#amiiboModeSaveBtn").disabled = amiiboLibraryBusy || !transportKind;
-  $("#amiiboModeRandomBtn").disabled = amiiboLibraryBusy || !transportKind;
   $("#amiiboLibraryLoadBtn").title =
     "Load the highlighted amiibo for the adapter";
   const slotActivated = adapterMatches && adapterPresented;
@@ -1752,18 +1728,6 @@ async function refreshAmiiboStatus() {
   const status = await sendCmd("amiibo status", true);
   if (status && status.loaded !== undefined) renderAmiiboStatus(status);
   return status;
-}
-
-async function setAmiiboPresentationMode(random) {
-  if (!transportKind || amiiboLibraryBusy) return;
-  const result = await sendCmd(
-    `amiibo mode ${random ? "random" : "save"}`, true);
-  await refreshAmiiboStatus();
-  $("#amiiboMessage").textContent = result?.ok
-    ? (random
-        ? "Random Amiibo Mode: every scan presents a new random tag identity and console writes are not saved. Useful for per-amiibo game cooldowns."
-        : "Save Amiibo Mode: the amiibo keeps its stored identity and console writes are saved on the adapter.")
-    : result?.error || "The adapter did not accept the mode change.";
 }
 
 async function transferAmiiboCopy(bytes, commitCommand, progressStart,
@@ -2574,10 +2538,6 @@ $("#amiiboLibraryBackupFile").onchange = async e => {
   if (file) await importAmiiboLibraryBackup(file);
 };
 $("#amiiboSaveBtn").onclick = saveCurrentAmiibo;
-$("#amiiboModeSaveBtn").onclick =
-  () => setAmiiboPresentationMode(false);
-$("#amiiboModeRandomBtn").onclick =
-  () => setAmiiboPresentationMode(true);
 $("#amiiboPersistBtn").onclick = persistCurrentAmiibo;
 $("#capStartBtn").onclick = capStart;
 $("#capStopBtn").onclick = capStop;

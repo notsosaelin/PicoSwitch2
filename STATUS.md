@@ -58,13 +58,16 @@ button always labels its exact scope: "Eject Amiibo" removes the loaded adapter-
 unloads it after a save-confirmation prompt, "Clear Loaded Amiibo" only unloads, and "Eject Virtual
 Amiibo" removes an adapter image that is not loaded here. Adapter-destructive modes discard the
 stored image and both flash journal banks through `amiibo clear`; cancelling aborts everything, and
-library dumps are never deleted. A Save/Random mode toggle (`amiibo mode save|random`, volatile,
-Save default) selects presentation: Save Mode keeps the stored identity and saves console writes;
-Random Mode presents a fresh random NTAG UID per scan and discards console writes, defeating
-per-UID game cooldowns. Random Mode's console acceptance and any Save-Mode HMAC/UID revalidation
-are hardware-pending; see
-[`docs/switch2/amiibo-identity-and-generation.md`](docs/switch2/amiibo-identity-and-generation.md).
-The console-driven Stop/write-back lifecycle is unchanged. Directory imports fill the visible library progressively. The centered
+library dumps are never deleted. The console-driven Stop/write-back lifecycle is unchanged.
+
+A 2026-07-26 hardware test settled two related questions (see
+[`docs/switch2/amiibo-identity-and-generation.md`](docs/switch2/amiibo-identity-and-generation.md)
+and [`docs/experiments/generated-amiibo-console-rejection-2026-07-26.md`](docs/experiments/generated-amiibo-console-rejection-2026-07-26.md)):
+the Switch 2 validates amiibo cryptography, so key-free generated images are rejected
+("This isn't an amiibo") even though the portal identifies them; and a briefly implemented
+random-UID "Random Mode" was removed because a runtime UID swap invalidates the UID-bound tag HMAC,
+which cannot be recomputed without retail keys. Only genuine dumps served with their original
+identity are console-valid. Directory imports fill the visible library progressively. The centered
 artwork is fixed in the middle at 100% size; four non-overlapping neighbors on each side use exact
 80/60/40/20% scaling. Movement is animated, names are omitted from the carousel, and
 game-series, amiibo-series, and product-type arrows cycle `All` followed by the imported library's

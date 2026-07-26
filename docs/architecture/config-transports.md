@@ -88,8 +88,8 @@ Bluetooth exposes the production configuration surface:
 - `info`, `ping`, `get`, `save`;
 - `device` for the connected-controller summary;
 - `body`, `jcl`, `jcr`, and the legacy slot-0 `lb` alias;
-- every `amiibo` upload, status, read, select, present/eject, clear, `mode save`/`mode random`,
-  persist, and save-back command.
+- every `amiibo` upload, status, read, select, present/eject, clear, persist, and save-back
+  command.
 
 Research commands remain USB/UART-only: audio diagnostics, motion/anomaly diagnostics, firmware
 read tracing, raw BLE capture, GATT experiments, and Bluetooth identity-log inspection. The portal

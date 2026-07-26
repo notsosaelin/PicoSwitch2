@@ -374,7 +374,7 @@ static void cmd_amiibo(char *arg) {
         virtual_amiibo_store_status(&status);
         snprintf(out, sizeof(out),
                  "{\"loaded\":%s,\"dirty\":%s,"
-                 "\"presented\":%s,\"random\":%s,"
+                 "\"presented\":%s,"
                  "\"persisted\":%s,\"persistPending\":%s,\"size\":%u,"
                  "\"signature\":%s,\"hasSave2\":%s,\"usingSave2\":%s,"
                  "\"generation\":%lu,"
@@ -383,7 +383,6 @@ static void cmd_amiibo(char *arg) {
                  status.loaded ? "true" : "false",
                  status.dirty ? "true" : "false",
                  status.presented ? "true" : "false",
-                 virtual_amiibo_store_random_mode() ? "true" : "false",
                  status.persisted ? "true" : "false",
                  virtual_amiibo_store_persist_pending() ? "true" : "false",
                  status.size,
@@ -526,17 +525,6 @@ static void cmd_amiibo(char *arg) {
         return;
     }
 
-    if (strcmp(arg, "mode save") == 0) {
-        virtual_amiibo_store_set_random_mode(false);
-        reply("{\"ok\":true,\"random\":false}");
-        return;
-    }
-    if (strcmp(arg, "mode random") == 0) {
-        virtual_amiibo_store_set_random_mode(true);
-        reply("{\"ok\":true,\"random\":true}");
-        return;
-    }
-
     if (strcmp(arg, "clear") == 0) {
         virtual_amiibo_store_request_clear();
         absolute_time_t deadline = make_timeout_time_ms(2000);
@@ -564,7 +552,7 @@ static void cmd_amiibo(char *arg) {
     reply("{\"error\":\"usage: amiibo status|begin|chunk|commit|"
            "commit save2|cancel|read [save1|save2]|downloaded|"
            "select save1|select save2|"
-           "present|eject|clear|mode save|mode random|persist\"}");
+           "present|eject|clear|persist\"}");
 }
 
 // Live input snapshot for the config-mode 2-column view: the connected controller's
