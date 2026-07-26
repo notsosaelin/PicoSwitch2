@@ -713,9 +713,13 @@ function bytesToHex(bytes) {
 
 function parseAmiiboIdentity(bytes) {
   const id = bytesToHex(bytes.subarray(0x54, 0x5C));
-  const uid = bytesToHex(new Uint8Array([
-    bytes[0], bytes[1], bytes[2], bytes[4], bytes[5], bytes[6], bytes[7]
-  ]));
+  // NTAG I2C 2K (v3) stores the UID as 7 contiguous bytes; NTAG215 interleaves
+  // BCC0 at index 3, so its UID skips that byte.
+  const v3 = bytes.length === 2048;
+  const uid = bytesToHex(v3
+    ? bytes.subarray(0, 7)
+    : new Uint8Array([bytes[0], bytes[1], bytes[2],
+        bytes[4], bytes[5], bytes[6], bytes[7]]));
   const typeCode = bytes[0x57];
   const typeNames = {
     0x00: "Figure",
@@ -727,6 +731,7 @@ function parseAmiiboIdentity(bytes) {
   return {
     id,
     uid,
+    tagType: v3 ? "v3" : "ntag215",
     characterGameCode: bytesToHex(bytes.subarray(0x54, 0x56)),
     characterVariant: bytes[0x56],
     typeCode,
@@ -776,10 +781,17 @@ function normalizeAmiiboLibraryEntry(entry) {
     bytes, cleanBytes, usedBytes, usingUsed,
     save1Bytes, save2Bytes, activeSave, ...metadata
   } = entry;
+  // Figure-v3 (NTAG I2C 2K) tags share one identity across machine variants
+  // (Kirby + Warp/Tank/Winged/Shadow Star), so key them by content to keep each
+  // rider+machine combination as a distinct library entry instead of deduping.
+  let key = identity.id ? `amiibo:${identity.id}` : metadata.key;
+  if (identity.tagType === "v3" && canonicalBytes)
+    key += ":" + (amiiboCrc32(new Uint8Array(canonicalBytes)) >>> 0)
+      .toString(16).padStart(8, "0");
   return {
     ...metadata,
     ...identity,
-    key: identity.id ? `amiibo:${identity.id}` : metadata.key,
+    key,
     bytes: canonicalBytes
   };
 }
@@ -857,6 +869,9 @@ function mergeAmiiboEntries(entries) {
 }
 
 function amiiboDisplayName(entry) {
+  // v3 machine variants share one catalog name, so show the file label (which
+  // carries the rider+machine, e.g. "Kirby & Warp Star") to keep them distinct.
+  if (entry.tagType === "v3" && entry.label) return entry.label.toString();
   return (catalogMetadataForEntry(entry)?.name || entry.label || entry.id || "")
     .toString();
 }
@@ -917,10 +932,10 @@ function compareAmiiboEntriesAsc(a, b) {
 // with rider data ending ~0x248) marks an extended format such as the Kirby Air
 // Riders "Figure Player" tags, whose rider+machine layout PicoSwitch2 cannot yet
 // serve. See docs/switch2/kirby-air-riders-extended-amiibo.md.
+// NTAG I2C 2K "figure v3" tag (e.g. Kirby Air Riders): the full 2048-byte tag
+// is imported and stored, but adapter/console serving is not implemented yet.
 function amiiboIsExtendedDump(rawBytes) {
-  if (rawBytes.length <= 572) return false;
-  for (let i = 0x248; i < rawBytes.length; i++) if (rawBytes[i]) return true;
-  return false;
+  return rawBytes.length === 2048;
 }
 
 async function libraryEntryFromFile(file, path, keyPrefix) {
@@ -1126,9 +1141,8 @@ async function chooseAmiiboDirectory() {
       `${uniqueCatalogEntries} amiibo from ${entries.length} valid owned files in ${directory.name}` +
       (invalid ? `; ignored ${invalid} invalid .bin file${invalid === 1 ? "" : "s"}.` : ".") +
       (extended
-        ? ` Note: ${extended} file${extended === 1 ? " is" : "s are"} an extended ` +
-          "Kirby Air Riders-style tag — the rider imported, but its machine/Figure-Player " +
-          "data is not supported yet."
+        ? ` Note: ${extended} NTAG I2C 2K (Kirby Air Riders) tag${extended === 1 ? "" : "s"} ` +
+          "imported in full (rider + machine); serving them to the console is still in progress."
         : "");
   } catch (error) {
     if (entries.length) {
@@ -1360,7 +1374,7 @@ function createAmiiboCarouselItem(entry) {
   if (amiiboStatus?.presented !== false &&
       amiiboEntryContainsUid(entry, amiiboStatus?.uid))
     item.classList.add("active-tag");
-  item.title = `${metadata?.name || entry.label}\n${entry.path}`;
+  item.title = `${amiiboDisplayName(entry)}\n${entry.path}`;
   item.onclick = () => selectAmiiboLibraryEntry(entry.key, true);
 
   const imageUrl = metadata?.imgwebp || metadata?.image || "";
@@ -1750,7 +1764,7 @@ async function lookupAmiiboMetadata(entry) {
 function renderAmiiboLibraryDetail(entry, metadata = null) {
   if (!entry || entry.key !== amiiboLibrarySelectedKey) return;
   $("#amiiboLibraryDetail").classList.remove("hidden");
-  $("#amiiboLibraryTitle").textContent = metadata?.name || entry.label;
+  $("#amiiboLibraryTitle").textContent = amiiboDisplayName(entry);
   $("#amiiboLibraryCharacter").textContent =
     metadata?.character || "Catalog lookup unavailable";
   $("#amiiboLibraryGameSeries").textContent = metadata?.gameSeries || "Catalog lookup unavailable";
@@ -1851,9 +1865,22 @@ function amiiboCrc32(bytes) {
   return (~crc) >>> 0;
 }
 
+// 2048-byte NTAG I2C Plus 2K amiibo ("figure v3", e.g. Kirby Air Riders). These
+// present the UID as 7 contiguous bytes with internal bytes 0x00/0x44 at [7]/[8]
+// and DO NOT use the NTAG215 BCC0/BCC1 interleave. Confirmed from xSke/pixl.js
+// figure-v3 support; see docs/switch2/kirby-air-riders-extended-amiibo.md.
+function amiiboIsV3(bytes) {
+  return bytes.length === 2048 && bytes[0] === 0x04 &&
+    bytes[7] === 0x00 && bytes[8] === 0x44;
+}
+
 function validateAmiiboFile(bytes) {
+  if (bytes.length === 2048) {
+    return amiiboIsV3(bytes) ? ""
+      : "Not a recognized NTAG I2C 2K amiibo (expected UID 0x04… with internal 00/44).";
+  }
   if (bytes.length !== 540 && bytes.length !== 572)
-    return `Expected a 540-byte amiibo dump or 572-byte extended dump; got ${bytes.length} bytes.`;
+    return `Expected a 540/572-byte NTAG215 dump or a 2048-byte NTAG I2C 2K dump; got ${bytes.length} bytes.`;
   const bcc0 = (0x88 ^ bytes[0] ^ bytes[1] ^ bytes[2]) & 0xFF;
   const bcc1 = (bytes[4] ^ bytes[5] ^ bytes[6] ^ bytes[7]) & 0xFF;
   if (bytes[3] !== bcc0 || bytes[8] !== bcc1)
@@ -1861,14 +1888,14 @@ function validateAmiiboFile(bytes) {
   return "";
 }
 
-// Coerce an imported file into a standard NTAG215 amiibo image. Accepts the
-// standard 540/572-byte dumps and also larger emulator-container exports (e.g.
-// the 2048-byte Pixl.js/allmiibo/flashiibo files for newer amiibo) by taking
-// the leading NTAG215 image. BCC0/BCC1 are pure functions of the UID, so they
-// are recomputed to repair placeholder/zeroed check bytes some exporters write;
-// this never alters the UID or the UID-bound crypto. Returns a Uint8Array or
-// null if the file is too small to contain an amiibo image.
+// Coerce an imported file into a serveable amiibo image.
+// - 2048-byte NTAG I2C 2K (v3): kept whole; the full tag (including the machine/
+//   Figure-Player block) is the image, and its UID must NOT be BCC-normalized.
+// - 540/572-byte NTAG215: taken as-is; BCC0/BCC1 (pure UID checksums) are
+//   recomputed to repair placeholder check bytes some exporters write.
+// Returns a Uint8Array or null if the file is too small.
 function coerceAmiiboImport(rawBytes) {
+  if (rawBytes.length === 2048) return rawBytes.slice(0);
   if (rawBytes.length < 540) return null;
   const out = rawBytes.slice(0, rawBytes.length === 572 ? 572 : 540);
   out[3] = (0x88 ^ out[0] ^ out[1] ^ out[2]) & 0xFF;
@@ -1907,7 +1934,7 @@ function renderAmiiboLoadedSlot() {
     amiiboEntryContainsUid(entry, amiiboStatus.uid));
   const adapterPresented = amiiboStatus?.presented !== false;
   if (entry) {
-    $("#amiiboName").textContent = metadata?.name || entry.label;
+    $("#amiiboName").textContent = amiiboDisplayName(entry);
     $("#amiiboLoadedState").textContent = adapterMatches
       ? `Loaded · ${adapterPresented
           ? "presented by adapter" : "ejected on adapter"}`
@@ -2018,6 +2045,13 @@ async function transferAmiiboCopy(bytes, commitCommand, progressStart,
 async function uploadAmiiboEntry(sourceEntry) {
   if (!transportKind) return;
   const entry = normalizeAmiiboLibraryEntry(sourceEntry);
+  if (entry.tagType === "v3") {
+    $("#amiiboMessage").textContent =
+      "This is an NTAG I2C 2K (Kirby Air Riders) tag. The full tag is saved in " +
+      "your library, but serving it to the console is still in progress — the " +
+      "adapter can't present it yet.";
+    return;
+  }
   const bytes = amiiboEntryBytes(entry);
   await refreshAmiiboStatus();
   if (amiiboStatus && amiiboStatus.dirty) {
@@ -2207,8 +2241,8 @@ async function importSingleAmiiboFile(file) {
     .then(() => renderAmiiboLibrary())
     .catch(error => console.warn("Amiibo catalog unavailable", error));
   const extendedNote = result.extended
-    ? " This is an extended Kirby Air Riders-style tag: the rider imported, but its " +
-      "machine/Figure-Player data is not supported yet."
+    ? " This is an NTAG I2C 2K (Kirby Air Riders) tag — imported in full (rider + " +
+      "machine); serving it to the console is still in progress."
     : "";
   if (!persisted) {
     $("#amiiboMessage").textContent =
