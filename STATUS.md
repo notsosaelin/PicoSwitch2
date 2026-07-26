@@ -50,7 +50,8 @@ different library amiibo. A newly flashed UF2
 performs a one-shot erase of all five PicoSwitch2 persistence sectors, clearing settings, both
 virtual-tag banks, wake identity, and Bluetooth bonds. Ordinary power cycles retain state.
 The production manager now follows the definitive staged-slot layout: its explicit Slot 1/Slot 2
-switch chooses a quick slot, Assign updates that slot, Load sends it to the adapter, Sync Amiibo
+switch chooses a quick slot, Assign updates that slot, Clear empties the slot pointer without
+deleting the dump or touching the adapter, Load sends the slot to the adapter, Sync Amiibo
 pulls console-written data back into the validated browser copy, and Eject stops presentation
 without deleting the dump. Directory imports fill the visible library progressively. The centered
 artwork is fixed in the middle at 100% size; four non-overlapping neighbors on each side use exact

@@ -335,13 +335,14 @@
               <button id="amiiboSelectSave2Btn">Amiibo Slot 2</button>
             </div>
             <button id="amiiboLibraryLoadBtn" class="primary" disabled>Assign Highlighted to Slot 1</button>
+            <button id="amiiboSlotClearBtn" disabled>Clear Slot 1</button>
             <button id="amiiboSyncControllerBtn" disabled>Load Slot 1 to Adapter</button>
             <button id="amiiboSaveBtn" disabled>Sync Amiibo from Adapter</button>
             <button id="amiiboEjectBtn" disabled>Eject Adapter Amiibo</button>
             <p class="amiibo-action-help">
-              Assign keeps a library amiibo in one of two quick slots. Load sends that slot to the
-              adapter. Sync Amiibo pulls console-written changes back and overwrites its saved
-              library copy.
+              Assign keeps a library amiibo in one of two quick slots; Clear empties the selected
+              slot without deleting its library dump. Load sends that slot to the adapter. Sync
+              Amiibo pulls console-written changes back and overwrites its saved library copy.
             </p>
           </div>
 
@@ -1576,6 +1577,20 @@ async function loadSelectedLibraryAmiibo() {
       : "Connect PicoSwitch2 in Config mode when you want to load that slot onto the adapter.");
 }
 
+function clearSelectedAmiiboQuickSlot() {
+  const key = amiiboSlotLibraryKeys[amiiboSelectedSlot];
+  if (!key) return;
+  const entry = amiiboLibrary.find(item => item.key === key) || null;
+  amiiboSlotLibraryKeys[amiiboSelectedSlot] = "";
+  persistAmiiboSlotState();
+  renderAmiiboLibrary();
+  renderAmiiboLoadedSlot();
+  $("#amiiboMessage").textContent =
+    `${entry ? catalogMetadataForEntry(entry)?.name || entry.label
+             : "The assigned amiibo"} was removed from Amiibo Slot ` +
+    `${amiiboSelectedSlot + 1}. Its library dump and the adapter's active tag were not changed.`;
+}
+
 // ---- Virtual Amiibo: one active, losslessly mutable raw image ----
 function amiiboCrc32(bytes) {
   let crc = 0xFFFFFFFF;
@@ -1666,6 +1681,9 @@ function renderAmiiboLoadedSlot() {
     "selected", amiiboSelectedSlot === 1);
   $("#amiiboLibraryLoadBtn").textContent =
     `Assign Highlighted to Slot ${slotNumber}`;
+  $("#amiiboSlotClearBtn").textContent = `Clear Slot ${slotNumber}`;
+  $("#amiiboSlotClearBtn").disabled =
+    amiiboLibraryBusy || !amiiboSlotLibraryKeys[amiiboSelectedSlot];
   $("#amiiboSyncControllerBtn").textContent =
     `Load Slot ${slotNumber} to Adapter`;
   $("#amiiboSyncControllerBtn").disabled =
@@ -2494,6 +2512,7 @@ window.addEventListener("resize", () => {
   if (entries.length) updateAmiiboCarouselSelection(entries, false);
 });
 $("#amiiboLibraryLoadBtn").onclick = loadSelectedLibraryAmiibo;
+$("#amiiboSlotClearBtn").onclick = clearSelectedAmiiboQuickSlot;
 $("#amiiboSyncControllerBtn").onclick = syncLoadedAmiiboToController;
 $("#amiiboEjectBtn").onclick = ejectLoadedAmiibo;
 $("#amiiboLibraryClearBtn").onclick = clearAmiiboLibrary;

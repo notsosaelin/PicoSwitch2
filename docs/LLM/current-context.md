@@ -68,9 +68,10 @@ required Git submodule for Pico 2 W audio builds.
   friendly Name, Character, Game series, Amiibo series, and Product type fields.
   `tools/run_config_portal.ps1` serves the real portal from the same localhost origin.
 - The production manager's authoritative flow is carousel selection → **Assign Highlighted to
-  Slot N** → **Load Slot N to Adapter**. **Sync Amiibo from Adapter** pulls the latest
-  console-written image back into IndexedDB. **Eject Adapter Amiibo** clears only presentation;
-  loading the same slot uses the lightweight `amiibo present` path.
+  Slot N** → **Load Slot N to Adapter**. **Clear Slot N** empties the selected quick-slot pointer
+  without deleting the library dump or touching the adapter. **Sync Amiibo from Adapter** pulls the
+  latest console-written image back into IndexedDB. **Eject Adapter Amiibo** clears only
+  presentation; loading the same slot uses the lightweight `amiibo present` path.
 - Sync clears dirty-write protection only after IndexedDB persistence; it does not unload the tag.
   Console formatting/reset remains the authority.
 - The USB side of Config mode is now CDC-only. The MSC descriptor/callbacks, generated
