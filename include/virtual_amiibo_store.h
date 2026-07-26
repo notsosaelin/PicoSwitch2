@@ -9,6 +9,7 @@
 
 typedef struct {
     bool loaded;
+    bool presented;
     bool dirty;
     bool persisted;
     bool has_originality_signature;
@@ -27,6 +28,11 @@ typedef struct {
 void virtual_amiibo_store_init(void);
 
 void virtual_amiibo_store_status(virtual_amiibo_status_t *out);
+// Lock-free read for the 1 kHz USB report path. True means a stored image is
+// currently presented to the console. Ejecting only changes presentation; it
+// never deletes Save 1 or Save 2 from RAM/flash.
+bool virtual_amiibo_store_loaded(void);
+virtual_amiibo_result_t virtual_amiibo_store_set_presented(bool presented);
 virtual_amiibo_result_t virtual_amiibo_store_upload_begin(
     size_t size, uint32_t expected_crc);
 virtual_amiibo_result_t virtual_amiibo_store_upload_chunk(

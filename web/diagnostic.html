@@ -76,7 +76,7 @@
                     overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2;
                     -webkit-box-orient: vertical; }
   .carousel-position { text-align: center; min-height: 19px; margin: 2px 0 8px; }
-  .toolbar { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin: 10px 0; }
+  .toolbar { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; margin: 10px 0; }
   .detail { display: grid; grid-template-columns: 110px 1fr; gap: 14px; margin-top: 12px;
             padding-top: 12px; border-top: 1px solid #293344; }
   .detail img { width: 110px; height: 110px; object-fit: contain; }
@@ -121,10 +121,7 @@
     <section class="card">
       <div class="actions" style="justify-content:space-between">
         <h2 style="margin:0">Active simulated adapter slot</h2>
-        <label class="actions">
-          <input id="enabled" type="checkbox" style="width:auto">
-          <span style="margin:0">Virtual Amiibo enabled</span>
-        </label>
+        <span class="pill">ALWAYS AVAILABLE</span>
       </div>
       <div class="meta">
         <div>Selected tag<b id="activeName">None</b></div>
@@ -163,7 +160,8 @@
       </div>
       <p class="muted">
         Choose one file or recursively scan a directory. Valid tag images are copied into this
-        browser profile; originals are opened read-only.
+        browser profile; originals are opened read-only. One AmiiboAPI identity produces one
+        catalog entry with Save 1 and optional Save 2 data.
       </p>
       <div class="actions">
         <input id="fileInput" type="file" accept=".bin,application/octet-stream" hidden>
@@ -173,6 +171,13 @@
       </div>
       <div class="toolbar">
         <input id="search" type="search" placeholder="Search name, folder, ID, UID, or type">
+        <select id="sort" aria-label="Sort amiibo library">
+          <option value="api">AmiiboAPI order</option>
+          <option value="gameSeries">Game series</option>
+          <option value="amiiboSeries">Amiibo series</option>
+          <option value="type">Product type</option>
+          <option value="name">Name</option>
+        </select>
         <button id="loadBtn" class="primary" disabled>Load selected into simulator</button>
       </div>
       <div class="carousel-shell">
@@ -198,6 +203,7 @@
             <div>Amiibo ID<b id="detailId">—</b></div>
             <div>Model / variant<b id="detailModel">—</b></div>
             <div>UID<b id="detailUid">—</b></div>
+            <div>Selected data<b id="detailSave">—</b></div>
             <div>Release (NA)<b id="detailRelease">—</b></div>
           </div>
         </div>
@@ -231,10 +237,9 @@
 "use strict";
 const $ = selector => document.querySelector(selector);
 const LIBRARY_DB = "PicoSwitch2AmiiboLibrary";
-const LIBRARY_DB_VERSION = 1;
+const LIBRARY_DB_VERSION = 2;
 const SIM_DB = "PicoSwitch2AmiiboDiagnostic";
 const SIM_DB_VERSION = 1;
-const metadataMemory = new Map();
 const CATALOG_KEY = "__amiiboapi_catalog__";
 const CATALOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 let libraryDb = null;
@@ -243,10 +248,11 @@ let library = [];
 let selectedKey = "";
 let carouselIndex = 0;
 let busy = false;
+let librarySort = "api";
 let catalog = null;
 let catalogById = new Map();
+let catalogOrderById = new Map();
 let active = {
-  enabled: false,
   loaded: false,
   name: "",
   libraryKey: "",
@@ -286,12 +292,22 @@ async function openLibraryDb() {
   if (!("indexedDB" in window)) return null;
   try {
     const request = indexedDB.open(LIBRARY_DB, LIBRARY_DB_VERSION);
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = event => {
       const db = request.result;
       if (!db.objectStoreNames.contains("library"))
         db.createObjectStore("library", {keyPath: "key"});
       if (!db.objectStoreNames.contains("metadata"))
         db.createObjectStore("metadata", {keyPath: "id"});
+      if (event.oldVersion < 2 && db.objectStoreNames.contains("metadata")) {
+        const store = request.transaction.objectStore("metadata");
+        const cursor = store.openCursor();
+        cursor.onsuccess = () => {
+          const item = cursor.result;
+          if (!item) return;
+          if (item.key !== CATALOG_KEY) item.delete();
+          item.continue();
+        };
+      }
     };
     libraryDb = await idbRequest(request);
     return libraryDb;
@@ -378,26 +394,114 @@ function normalizeBytes(value) {
   return new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
 }
 
+function bufferCopy(value) {
+  if (!value) return null;
+  return normalizeBytes(value).buffer;
+}
+
+function normalizeEntry(entry) {
+  const save1 = bufferCopy(entry.save1Bytes) ||
+    bufferCopy(entry.cleanBytes) || bufferCopy(entry.bytes);
+  const save2 = bufferCopy(entry.save2Bytes) || bufferCopy(entry.usedBytes);
+  if (!save1) return null;
+  const activeSave =
+    (Number(entry.activeSave) === 2 || entry.usingUsed) && save2 ? 2 : 1;
+  const current = activeSave === 2 ? save2 : save1;
+  const identity = parseIdentity(new Uint8Array(current));
+  const {
+    bytes, cleanBytes, usedBytes, usingUsed, save1Bytes, save2Bytes,
+    ...metadata
+  } = entry;
+  return {
+    ...metadata,
+    ...identity,
+    key: `amiibo:${identity.id}`,
+    save1Bytes: save1,
+    save2Bytes: save2,
+    activeSave
+  };
+}
+
+function entryBytes(entry, save = entry?.activeSave || 1) {
+  const normalized = normalizeEntry(entry);
+  if (!normalized) return null;
+  return normalizeBytes(
+    save === 2 && normalized.save2Bytes
+      ? normalized.save2Bytes : normalized.save1Bytes);
+}
+
+function entryHasUid(entry, uid) {
+  if (!uid) return false;
+  return [1, 2].some(save => {
+    const bytes = entryBytes(entry, save);
+    return bytes && parseIdentity(bytes).uid === uid;
+  });
+}
+
+function mergeEntries(entries) {
+  const merged = new Map();
+  for (const source of entries) {
+    const incoming = normalizeEntry(source);
+    if (!incoming) continue;
+    const current = merged.get(incoming.key);
+    if (!current) {
+      merged.set(incoming.key, incoming);
+      continue;
+    }
+    merged.set(incoming.key, normalizeEntry({
+      ...current,
+      save2Bytes: current.save2Bytes || incoming.save2Bytes,
+      activeSave: current.activeSave
+    }));
+  }
+  return [...merged.values()];
+}
+
+function compareEntries(a, b) {
+  const ma = catalogMetadata(a);
+  const mb = catalogMetadata(b);
+  const field = key => (ma?.[key] || "").localeCompare(
+    mb?.[key] || "", undefined, {numeric: true, sensitivity: "base"});
+  if (librarySort !== "api") {
+    const selected = field(librarySort);
+    if (selected) return selected;
+    const byName = field("name");
+    if (byName) return byName;
+  }
+  const ar = catalogOrderById.get(a.id);
+  const br = catalogOrderById.get(b.id);
+  if (ar !== undefined || br !== undefined) {
+    if (ar === undefined) return 1;
+    if (br === undefined) return -1;
+    if (ar !== br) return ar - br;
+  }
+  return field("amiiboSeries") || field("character") ||
+    field("name") || field("type") || a.id.localeCompare(b.id);
+}
+
 async function entryFromFile(file, path, source) {
   const bytes = new Uint8Array(await file.arrayBuffer());
   const error = validateAmiibo(bytes);
   if (error) return {error};
   const identity = parseIdentity(bytes);
   return {
-    entry: {
-      key: `${source}:${path}:${identity.uid}`,
+    entry: normalizeEntry({
+      key: `amiibo:${identity.id}`,
       name: file.name,
       label: file.name.replace(/\.bin$/i, ""),
       path,
       size: bytes.length,
       modified: file.lastModified || 0,
-      bytes: bytes.buffer.slice(0),
+      save1Bytes: bytes.buffer.slice(0),
+      save2Bytes: null,
+      activeSave: 1,
       ...identity
-    }
+    })
   };
 }
 
 async function cacheEntry(entry) {
+  entry = normalizeEntry(entry);
   let persisted = false;
   const db = await openLibraryDb();
   if (db) {
@@ -410,15 +514,16 @@ async function cacheEntry(entry) {
       log(`Library cache write failed: ${error.message}`);
     }
   }
-  const index = library.findIndex(item => item.key === entry.key);
+  const index = library.findIndex(item => item.id === entry.id);
   if (index >= 0) library[index] = entry;
   else library.push(entry);
-  library.sort((a, b) => a.path.localeCompare(b.path, undefined, {numeric: true}));
+  library.sort(compareEntries);
   renderLibrary();
   return persisted;
 }
 
 async function replaceLibrary(entries) {
+  entries = mergeEntries(entries);
   let persisted = false;
   const db = await openLibraryDb();
   if (db) {
@@ -437,7 +542,7 @@ async function replaceLibrary(entries) {
   library = entries;
   if (active.loaded && active.bytes) {
     const activeUid = parseIdentity(normalizeBytes(active.bytes)).uid;
-    const activeEntry = entries.find(entry => entry.uid === activeUid);
+    const activeEntry = entries.find(entry => entryHasUid(entry, activeUid));
     if (activeEntry) selectedKey = activeEntry.key;
   }
   renderLibrary();
@@ -449,10 +554,20 @@ async function loadLibrary() {
   if (!db) return renderLibrary();
   try {
     const tx = db.transaction("library", "readonly");
-    library = await idbRequest(tx.objectStore("library").getAll());
+    const stored = await idbRequest(tx.objectStore("library").getAll());
+    library = mergeEntries(stored);
+    if (stored.length !== library.length ||
+        stored.some(item => item.key !== normalizeEntry(item)?.key ||
+          item.bytes || item.cleanBytes || item.usedBytes)) {
+      const rewrite = db.transaction("library", "readwrite");
+      const store = rewrite.objectStore("library");
+      store.clear();
+      for (const entry of library) store.put(entry);
+      await idbDone(rewrite);
+    }
     if (active.loaded && active.bytes) {
       const activeUid = parseIdentity(normalizeBytes(active.bytes)).uid;
-      const activeEntry = library.find(entry => entry.uid === activeUid);
+      const activeEntry = library.find(entry => entryHasUid(entry, activeUid));
       if (activeEntry) selectedKey = activeEntry.key;
     }
   } catch (error) {
@@ -472,15 +587,15 @@ async function loadLibrary() {
 
 function filteredLibrary() {
   const query = $("#search").value.trim().toLowerCase();
-  if (!query) return library;
-  return library.filter(entry => {
+  const entries = query ? library.filter(entry => {
     const metadata = catalogMetadata(entry);
     return (`${entry.label} ${entry.path} ${entry.id} ${entry.uid} ${entry.typeName} ` +
       `${entry.modelNumber} ${entry.characterGameCode} ${metadata?.name || ""} ` +
       `${metadata?.character || ""} ${metadata?.gameSeries || ""} ` +
       `${metadata?.amiiboSeries || ""} ${metadata?.type || ""}`)
         .toLowerCase().includes(query);
-  });
+  }) : library.slice();
+  return entries.sort(compareEntries);
 }
 
 function selectedEntry() {
@@ -573,44 +688,21 @@ function moveCarousel(delta) {
   selectEntry(entries[carouselIndex].key);
 }
 
-async function cachedMetadata(id) {
-  if (metadataMemory.has(id)) return metadataMemory.get(id);
-  const db = await openLibraryDb();
-  if (!db) return null;
-  try {
-    const tx = db.transaction("metadata", "readonly");
-    const record = await idbRequest(tx.objectStore("metadata").get(id));
-    if (record) metadataMemory.set(id, record.data);
-    return record?.data || null;
-  } catch {
-    return null;
-  }
-}
-
-async function cacheMetadata(id, data) {
-  metadataMemory.set(id, data);
-  const db = await openLibraryDb();
-  if (!db) return;
-  try {
-    const tx = db.transaction("metadata", "readwrite");
-    tx.objectStore("metadata").put({id, data, cachedAt: Date.now()});
-    await idbDone(tx);
-  } catch (error) {
-    log(`Metadata cache write failed: ${error.message}`);
-  }
-}
-
 function installCatalog(items) {
   catalog = items;
   catalogById = new Map();
-  for (const item of items) {
+  catalogOrderById = new Map();
+  items.forEach((item, index) => {
     const id = `${item.head || ""}${item.tail || ""}`.toUpperCase();
-    if (id.length === 16) catalogById.set(id, item);
-  }
+    if (id.length === 16) {
+      catalogById.set(id, item);
+      catalogOrderById.set(id, index);
+    }
+  });
 }
 
 function catalogMetadata(entry) {
-  return metadataMemory.get(entry.id) || catalogById.get(entry.id) || null;
+  return catalogById.get(entry.id) || null;
 }
 
 async function readCachedCatalog() {
@@ -663,12 +755,9 @@ async function loadCatalog(forceRefresh = false) {
 }
 
 async function lookupMetadata(entry) {
-  const cached = await cachedMetadata(entry.id);
-  if (cached) return cached;
   await loadCatalog();
   const match = catalogById.get(entry.id) || null;
   if (!match) throw new Error(`No AmiiboAPI entry for ${entry.id}`);
-  await cacheMetadata(entry.id, match);
   return match;
 }
 
@@ -686,7 +775,10 @@ function renderDetail(entry, metadata = null) {
   $("#detailId").textContent = entry.id;
   $("#detailModel").textContent =
     `${entry.modelNumber} / ${entry.extendedVariant} · format ${entry.formatVersion}`;
-  $("#detailUid").textContent = entry.uid;
+  $("#detailUid").textContent = parseIdentity(entryBytes(entry)).uid;
+  $("#detailSave").textContent = entry.save2Bytes
+    ? `Save ${entry.activeSave} · Save 1 and Save 2 retained`
+    : "Save 1 · no second save state yet";
   $("#detailRelease").textContent = metadata?.release?.na || "—";
   const image = $("#detailImage");
   const imageUrl = metadata?.imgwebp || metadata?.image || "";
@@ -773,17 +865,17 @@ async function chooseDirectory() {
         await new Promise(resolve => requestAnimationFrame(resolve));
       }
     }
-    entries.sort((a, b) => a.path.localeCompare(b.path, undefined, {numeric: true}));
     const persisted = await replaceLibrary(entries);
     let catalogMatches = null;
     try {
       await loadCatalog();
-      catalogMatches = entries.filter(entry => catalogById.has(entry.id)).length;
+      catalogMatches = library.filter(entry => catalogById.has(entry.id)).length;
       renderLibrary();
     } catch (error) {
       log(`AmiiboAPI catalog unavailable: ${error.message}`);
     }
-    setMessage(`${persisted ? "Cached" : "Loaded for this session"} ${entries.length} valid amiibo` +
+    setMessage(`${persisted ? "Cached" : "Loaded for this session"} ` +
+      `${library.length} catalog entries from ${entries.length} valid owned files` +
       (invalid ? `; ignored ${invalid} invalid files.` : ".") +
       (catalogMatches === null ? "" : ` AmiiboAPI matched ${catalogMatches}.`));
   } catch (error) {
@@ -796,6 +888,14 @@ async function chooseDirectory() {
 async function importFile(file) {
   const result = await entryFromFile(file, file.name, "file");
   if (!result.entry) return setMessage(result.error);
+  const existing = library.find(entry => entry.id === result.entry.id);
+  if (existing) {
+    selectedKey = existing.key;
+    renderLibrary();
+    await selectEntry(selectedKey);
+    return setMessage(
+      `${file.name} matches an existing AmiiboAPI catalog entry; the cached owned copy was kept.`);
+  }
   const persisted = await cacheEntry(result.entry);
   selectedKey = result.entry.key;
   renderLibrary();
@@ -825,14 +925,13 @@ async function loadSelectedIntoSimulator() {
   if (!entry) return;
   setBusy(true);
   try {
-    const source = normalizeBytes(entry.bytes);
+    const source = entryBytes(entry);
     const staged = transactionalUpload(source);
     for (let done = 0; done < staged.length; done += 32) {
       $("#progress").value = Math.round(Math.min(staged.length, done + 32) * 100 / staged.length);
       await new Promise(resolve => setTimeout(resolve, 3));
     }
     active = {
-      enabled: $("#enabled").checked,
       loaded: true,
       name: entry.name,
       libraryKey: entry.key,
@@ -854,7 +953,6 @@ async function loadSelectedIntoSimulator() {
 function serializableActive() {
   return {
     key: "active",
-    enabled: active.enabled,
     loaded: active.loaded,
     name: active.name,
     libraryKey: active.libraryKey,
@@ -899,7 +997,6 @@ async function restoreSimulator() {
     if (saved?.loaded) {
       active = {...saved, bytes: normalizeBytes(saved.bytes).buffer, persisted: true};
       if (active.libraryKey) selectedKey = active.libraryKey;
-      $("#enabled").checked = !!active.enabled;
       log(`Restored simulated adapter slot: ${active.name}`);
     }
   } catch (error) {
@@ -918,7 +1015,6 @@ async function clearSimulator() {
     await idbDone(tx);
   }
   active = {
-    enabled: $("#enabled").checked,
     loaded: false,
     name: "",
     libraryKey: "",
@@ -933,7 +1029,6 @@ async function clearSimulator() {
 function renderActive() {
   const bytes = active.loaded ? normalizeBytes(active.bytes) : null;
   const identity = bytes ? parseIdentity(bytes) : null;
-  $("#enabled").checked = !!active.enabled;
   $("#activeName").textContent = active.loaded ? active.name : "None";
   $("#activeUid").textContent = identity?.uid || "—";
   $("#activeId").textContent = identity?.id || "—";
@@ -982,26 +1077,30 @@ async function saveActiveToCache() {
     return setMessage(`Save failed validation: ${validationError}`);
   const identity = parseIdentity(bytes);
   const cached = library.find(entry => entry.key === active.libraryKey) ||
-    library.find(entry => entry.uid === identity.uid);
+    library.find(entry => entry.id === identity.id) ||
+    library.find(entry => entryHasUid(entry, identity.uid));
   const name = cached?.name || active.name || `amiibo-${identity.uid}.bin`;
-  const updated = cached
-    ? {
+  const updated = normalizeEntry(cached
+    ? active.dirty ? {
       ...cached,
       size: bytes.length,
       modified: Date.now(),
-      bytes: bytes.buffer.slice(0),
+      save2Bytes: bytes.buffer.slice(0),
+      activeSave: 2,
       ...identity
-    }
+    } : cached
     : {
-      key: `saved:${identity.uid}`,
+      key: `amiibo:${identity.id}`,
       name,
       label: name.replace(/\.bin$/i, ""),
       path: `Saved from simulator/${name}`,
       size: bytes.length,
       modified: Date.now(),
-      bytes: bytes.buffer.slice(0),
+      save1Bytes: bytes.buffer.slice(0),
+      save2Bytes: null,
+      activeSave: 1,
       ...identity
-    };
+    });
   const persisted = await cacheEntry(updated);
   if (!persisted) {
     setMessage("Browser cache storage is unavailable; simulated dirty state was retained.");
@@ -1011,7 +1110,8 @@ async function saveActiveToCache() {
   active.name = updated.name;
   active.dirty = false;
   renderActive();
-  setMessage(`Saved ${updated.name} to the browser library with current simulated writes.`);
+  setMessage(
+    `Saved ${updated.name} to the browser library as ${updated.activeSave === 2 ? "Save 2" : "Save 1"}.`);
 }
 
 async function clearLibrary() {
@@ -1112,6 +1212,11 @@ $("#fileInput").onchange = async event => {
 $("#chooseDirectoryBtn").onclick = chooseDirectory;
 $("#clearLibraryBtn").onclick = clearLibrary;
 $("#search").oninput = renderLibrary;
+$("#sort").onchange = event => {
+  librarySort = event.target.value;
+  carouselIndex = 0;
+  renderLibrary();
+};
 $("#carouselPrev").onclick = () => moveCarousel(-1);
 $("#carouselNext").onclick = () => moveCarousel(1);
 $("#carouselViewport").onkeydown = event => {
@@ -1128,12 +1233,6 @@ $("#saveBtn").onclick = saveActiveToCache;
 $("#persistBtn").onclick = persistSimulator;
 $("#resetBtn").onclick = clearSimulator;
 $("#writeBtn").onclick = applyConsoleWrite;
-$("#enabled").onchange = event => {
-  active.enabled = event.target.checked;
-  active.persisted = false;
-  renderActive();
-  log(`Virtual Amiibo feature gate ${active.enabled ? "enabled" : "disabled"} in simulator.`);
-};
 $("#selfTestBtn").onclick = runSelfTest;
 $("#clearResultsBtn").onclick = () => $("#results").textContent = "";
 $("#clearLogBtn").onclick = () => $("#log").textContent = "Log cleared.";

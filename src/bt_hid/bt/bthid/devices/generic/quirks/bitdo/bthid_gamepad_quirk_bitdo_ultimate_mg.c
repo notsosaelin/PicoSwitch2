@@ -19,7 +19,7 @@ extern void bitdo_select_button_map(uint8_t button_count, bool has_sim_triggers,
 // via the project owner's own raw-report capture -- byte 8, bit 0x20 = left paddle, bit 0x04
 // = right paddle (both bytes 0-7 and 9-10 identical between the two captures, only byte 8
 // differs). Mapped to JP_BUTTON_L4/R4, the same generic "extra paddle" destinations the Xbox
-// Elite Series 2 quirk already uses -- NS2_DEFAULT_MAP routes them to GL/GR in Pro2 mode.
+// Elite Series 2 quirk already uses -- the locked NS2 base map routes them to GL/GR.
 static void extract_extra(const ble_report_map_t *map, const uint8_t *data, uint16_t len,
                           input_event_t *event)
 {

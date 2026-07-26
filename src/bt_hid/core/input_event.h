@@ -230,7 +230,7 @@ typedef struct {
     // 8BitDo NGC Modkit and Retro Fighters BattlerGC Pro).
     // False/0 for every other device. Consumed by ns2_seam.c's router_submit_input(), which
     // forwards them unconditionally into switch_pro_input_t's own dedicated fields -- these are
-    // NOT part of the JP_BUTTON_* bitmap/NS2_DST_* remap table, because they are fixed,
+    // NOT part of the JP_BUTTON_* bitmap/locked NS2 base map, because they are fixed,
     // evidence-backed physical mappings for specific devices' GameCube identity, not
     // user-remappable destinations.
     bool gc_has_native_layout;  // true if native Z / independent L,R trigger detents are real,

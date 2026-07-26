@@ -22,7 +22,7 @@ try {
     }
     Start-Process $portalUrl
     Write-Host "PicoSwitch2 configuration portal: $portalUrl"
-    Write-Host "Connect to the Pico's configuration serial port in Chrome or Edge."
+    Write-Host "Enter Config mode, then connect over USB Serial or Bluetooth in Chrome/Edge."
     Write-Host "Press Enter here to stop the local server."
     Read-Host | Out-Null
 }

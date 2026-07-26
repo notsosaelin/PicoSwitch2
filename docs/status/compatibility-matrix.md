@@ -66,7 +66,7 @@ code inspection only; it is weaker than physical hardware confirmation.
 | Physical headset insertion and console output | ✅ Confirmed: Switch 2 recognizes the jack and plays through DualSense-connected headphones |
 | Physical headset removal/reinsert | ✅ Input, audio, and native haptics restore through repeated cycles |
 | LED and BOOTSEL during 300 MHz regression pass | ✅ Confirmed |
-| Config save/readback after reconnect | ✅ Confirmed (mappings and colors) |
+| Config save/readback after reconnect | ✅ Confirmed for the former schema (colors); v10/reset-on-flash regression pending |
 | Cold boot | ✅ Confirmed |
 | Console wake | ✅ Ten attempts with every known controller |
 | Real-console input/wake during audio | ✅ Confirmed |
@@ -94,8 +94,10 @@ code inspection only; it is weaker than physical hardware confirmation.
 | Next-scan re-presentation and updated read | ✅ Same selected UID and complete 600-byte-buffer read confirmed |
 | Live UART export while USB remains console-attached | ✅ 540-byte generation-stable, UID/BCC-valid mutated image saved |
 | Automatic write-before-eject flash snapshot | ✅ Live-console completion and power-cycle recovery confirmed |
-| Used/Unused copy selection and reboot recovery | ✅ Both copies remain selectable and survive dongle power loss |
-| Offline browser library and full-library backup | ✅ Library works without serial; export/clear/import restores both copies and selection |
+| Save 1/Save 2 selection and reboot recovery | ✅ Underlying two-bank behavior confirmed; renamed v10 portal regression pending |
+| Offline browser library and full-library backup | 🟡 Former two-copy flow confirmed; catalog-ID dedupe and v2 backup schema await browser regression |
+| Config-only Bluetooth library transfer | 🟡 Host/build/static confirmed; hardware pending |
+| New-UF2 blank state and one-shot persistence/bond erase | 🟡 Build marker verified on all targets; hardware pending |
 | Native Pro2/Joy-Con 2 physical-tag write | 🔵 Pending capture and implementation |
 
 ## PC-specific behavior

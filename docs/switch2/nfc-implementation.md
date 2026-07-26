@@ -9,7 +9,7 @@
 > non-NFC-controller Virtual Amiibo read are recognized by a real Switch 2. A Virtual Amiibo write
 > reaches complete staging, commit, and accepted completion status on hardware without crashing.
 > Logical removal, next-scan re-presentation, same-session updated readback, and validated UART
-> export, automatic dual-bank persistence, power-cycle recovery, reversible Unused/Used selection,
+> export, automatic dual-bank persistence, power-cycle recovery, internal write recovery,
 > offline library use, and full-library backup restore are hardware/browser-confirmed. Native
 > physical writes remain open.**
 
@@ -94,15 +94,17 @@ forging tag data is outside this feature.
 
 ### Save-data and library model
 
-Keep the browser/PC as the amiibo library and the adapter as one active tag identity. The adapter
-retains two lossless images for that identity:
+Keep each browser/phone as its own user-supplied amiibo library and the adapter as one active tag
+identity. The browser stores one mutable 540/572-byte dump per exact AmiiboAPI identity and exposes
+two independent quick-slot pointers. Slot 1 and Slot 2 can therefore hold different amiibo; they
+are not original/modified versions of the same tag.
 
-- **Unused:** the immutable 540-byte image imported by the user.
-- **Used:** the mutable image created by a console write.
-
-Selecting either copy only changes what the reader presents; it never destroys the other copy.
-The console's own erase/reset operation is treated as an ordinary write and therefore becomes the
-new Used image. Selecting Unused in the browser is a reversible reset to the imported baseline.
+The adapter's validated journal still retains an internal imported baseline and latest
+console-written image so an interrupted browser sync cannot destroy data. That implementation
+detail is not exposed as a reset feature. **Sync Amiibo from Adapter** reads the latest active
+image, validates its raw format and exact AmiiboAPI identity, commits it to IndexedDB, and only
+then acknowledges the adapter's dirty protection. The browser's one stored dump is overwritten.
+Users remain responsible for formatting or erasing amiibo data through the console.
 
 Nintendo documents that a physical amiibo can hold read/write data for one compatible game at a
 time.
@@ -113,10 +115,17 @@ the active game's save area, write counter, dates, and ownership data—returns 
 file without retail keys.
 
 The relevant `emuiibo` user-interface lesson is separate selected-tag and present/removed state.
-Its current README explains that automatic removal previously broke some games. PicoSwitch2's
-offline portal selects one tag and one Unused/Used copy and globally enables/disables the optional
-feature; a live present/remove control remains separate work because the Web Serial portal is not
-reachable while the dongle's USB port belongs to the console.
+PicoSwitch2's offline portal selects one of two browser quick slots and one library tag for each.
+Virtual Amiibo itself is always available; an empty store simply presents no virtual tag. The
+Config-only BLE transport makes the portal reachable while the dongle remains physically attached
+to the console, although entering Config temporarily replaces the controller USB personality.
+
+The production manager makes those layers explicit. Carousel selection does not immediately mutate
+the adapter: **Assign Highlighted to Slot N** updates the selected browser quick slot, **Load Slot N
+to Adapter** uploads/presents that slot, and **Sync Amiibo from Adapter** retrieves the latest
+console-written image and overwrites its validated browser-library record. **Eject Adapter
+Amiibo** changes only the runtime presentation bit. Loading the same ejected identity uses
+`amiibo present` and does not reprogram flash.
 
 References:
 
@@ -165,9 +174,11 @@ command. A repeated write hardware-confirmed that transport fix and reached acce
 The completion trace then showed Stop followed by one-second scan/status/Stop cycles because a
 browser-loaded image and a physically presented tag were represented by one flag. They are now
 separate. After a committed Stop, the runtime waits for the automatic flash snapshot to verify,
-then emits a removal edge and stops presenting the tag. The Used image remains selected and dirty
-for browser save-back. The next `0x03` scan presents that same updated image again as a fresh tag
-encounter; explicit portal Eject/Present controls remain planned. See
+then emits a removal edge and stops presenting the tag. The latest written image remains selected
+internally and dirty for browser save-back. The next `0x03` scan presents that same updated image as a fresh tag
+encounter. The portal additionally exposes manual Eject; its store-level presentation edge resets
+the core-0 NFC transaction runtime before the next Present, preventing stale scan/write state from
+leaking across the action. Manual Eject is intentionally a presentation action, not deletion. See
 [`virtual-amiibo-write-crash-and-rx-fix-2026-07-25.md`](../experiments/virtual-amiibo-write-crash-and-rx-fix-2026-07-25.md).
 
 Because console testing occupies the Pico USB port, `read_uart_diag.ps1 -Command 'amiibo dump'
@@ -218,24 +229,30 @@ the Switch 2 command codec never depends on Switch 1 report framing.
 
 ## 7. Config-mode web portal
 
-Configuration mode provides a Web Serial page with:
+Configuration mode provides one local page over USB Web Serial or the Config-only Web Bluetooth
+transport, with:
 
 - a `.bin` file picker using `File.arrayBuffer()`;
 - a read-only `showDirectoryPicker()` path that scans subdirectories recursively;
-- browser-local IndexedDB Unused/Used copies of every valid imported image, with search and
-  explicit clear;
-- a nine-position artwork carousel that centers the selected or active image, shows four neighbors
-  on each side, and supports click, button, and arrow-key navigation;
-- offline parsed ID/UID/type/model/series/variant display and optional cached AmiiboAPI name,
-  character, series, artwork, and release details;
+- one mutable browser-local IndexedDB dump per exact AmiiboAPI catalog ID, with two independent
+  quick-slot pointers, search, and explicit clear; the visible catalog starts empty and fills only
+  from validated imported files, progressively during a directory scan;
+- an artwork carousel that centers and enlarges the selected or active image, shows four
+  progressively smaller neighbors on each side, animates selection changes, and supports click,
+  button, and arrow-key navigation;
+- AmiiboAPI source order by default, with game-series, amiibo-series, and product-type arrows that
+  cycle `All` followed by the imported library's available field values alphabetically and never
+  upload private tag identity;
+- a compact friendly detail card containing Name, Character, Game series, Amiibo series, and
+  Product type, enriched from the optional browser-cached AmiiboAPI catalog;
 - size/BCC validation in both the browser and firmware;
 - offset-addressed 32-byte hex chunks with declared total and whole-image CRC32;
-- an explicit disabled-by-default feature toggle (a separate live present/remove control remains a
-  runtime-design question because config mode is unavailable while attached to the console);
-- current UID, format, Used/Unused selection, dirty/persisted state, and error display;
-- **Save current Amiibo**, which retrieves both copies and refreshes the selected cached entry so
-  application-area writes survive library switching;
-- versioned JSON export/import of the complete cached library, including both copies and selection;
+- an always-available virtual source whose blank state presents no tag;
+- a definitive staged layout with explicit Slot 1/Slot 2 switching, assignment, adapter load,
+  Eject, and adapter-to-browser synchronization;
+- **Sync Amiibo from Adapter**, which retrieves the latest active image and overwrites the matching
+  validated cached entry so application-area writes survive library switching;
+- versioned JSON export/import of the complete mutable library and both quick-slot assignments;
 - explicit save/persist operation.
 
 The library manager remains enabled without a serial connection. The directory handle is used only
@@ -250,7 +267,7 @@ tag intact.
 
 ## 8. RAM, flash, and CPU budget
 
-Measured after the clean/used persistence integration in the standard release build directories on
+Measured after the two-save persistence integration in the standard release build directories on
 2026-07-25:
 
 | Measurement | Pico 2 W | Pico W |
@@ -269,8 +286,8 @@ A compact single-tag implementation needs approximately:
 
 | Item | Bytes |
 |---|---:|
-| immutable Unused raw tag + signature | 572 |
-| mutable Used raw tag | 540 |
+| internal imported baseline + signature | 572 |
+| optional latest console-written image | 540 |
 | command snapshot raw tag + signature | 572 |
 | write staging | 454 |
 | write coverage bitmap | 57 |
@@ -292,15 +309,15 @@ to one 256-byte flash page. Flash allocation is currently:
 - sector `-3`: virtual amiibo bank 0 and read-only version-1 migration source.
 
 Each version-2 bank uses one 1,280-byte snapshot with magic, version, length, generation,
-header/payload CRC, flags, Unused and Used images, and optional signature. Saves alternate banks.
+header/payload CRC, flags, baseline/latest-written images, and optional signature. Snapshots
+alternate banks.
 The previous valid snapshot remains untouched until the destination sector is erased, programmed,
-and verified. Existing version-1 append records in sector `-3` remain readable and migrate as an
-Unused baseline on the first version-2 save.
+and verified. A newly flashed UF2 erases both banks before the first normal startup.
 
 The current flash writer parks core 0, which would interrupt USB, audio, and input. Therefore:
 
 - apply console writes immediately to RAM;
-- create/select the Used copy and mark it dirty;
+- update/select the internal latest-written image and mark it dirty;
 - expose/download the changed image immediately;
 - queue flash erase/program on the existing core1 service point;
 - defer the post-write TagRemoved edge until the new snapshot verifies;
@@ -319,7 +336,7 @@ clock increase beyond the validated 300 MHz. No continuous NFC timer or polling 
      interruption, and transfer pumping.
 2. **Virtual read** — hardware-confirmed
    - config upload/activate/eject/download;
-   - disabled-by-default command `0x01` state machine;
+   - loaded-tag command `0x01` state machine; blank state falls through to native/no-tag behavior;
    - exact 600-byte reader buffer and 70-byte offset chunks, recognized by a real Switch 2;
    - no flash mutation during reads.
 3. **Virtual write** — complete lifecycle hardware-confirmed
@@ -334,7 +351,7 @@ clock increase beyond the validated 300 MHz. No continuous NFC timer or polling 
 4. **Safe persistence** — hardware-confirmed
    - alternating dedicated sectors `-3`/`-5`;
    - verified write-before-eject snapshot;
-   - immutable Unused and mutable Used images plus reversible selection;
+   - internal baseline/latest-written images plus recovery selection;
    - version-1 migration;
    - power-loss, live-console timing, and selection recovery validated.
 5. **Native Pro2/Joy-Con 2 Right**

@@ -42,30 +42,57 @@ required Git submodule for Pico 2 W audio builds.
 ## NFC boundary
 
 - Config mode accepts strictly validated 540/572-byte images through transactional 32-byte chunks.
-  The adapter keeps one imported immutable **Unused** copy and one optional console-written
-  **Used** copy; either can be selected without deleting the other.
-- The production portal library remains available without Web Serial. It accepts one file or
-  recursively scans a selected directory, caches separate Unused/Used bytes and optional
-  AmiiboAPI details in browser-local IndexedDB, and can export/import the complete library in a
-  versioned JSON backup. One public catalog is downloaded and matched locally, so original tag
-  bytes/IDs/UIDs/save data never leave the browser.
-- **Save current Amiibo** retrieves both adapter copies, writes them directly into the selected or
-  UID-matching cached entry, and acknowledges firmware dirty state only after IndexedDB confirms
-  the write. Browser security does not permit silently overwriting the original OS file.
+  Virtual Amiibo is always available: a blank store presents no virtual tag, while a loaded image
+  automatically owns the virtual source. The adapter's internal baseline/latest-written recovery
+  pair remains implementation-only; the portal does not expose reset-to-original behavior.
+- The production portal library remains available without an adapter connection. It accepts one
+  file or recursively scans a selected directory and caches one record per AmiiboAPI catalog ID
+  with one mutable dump in browser-local IndexedDB. Imports require an exact local AmiiboAPI match;
+  duplicate owned files do not create extra records. Two independent quick-slot pointers can
+  reference different entries. The shared catalog is downloaded and stored once, then matched
+  locally, so original tag bytes/IDs/UIDs/save data never leave the browser.
+- The production carousel starts empty and displays only user-imported records. Directory scans
+  add those records to the visible library progressively. AmiiboAPI order remains authoritative;
+  each filter row cycles `All`, then only the imported library's available values alphabetically.
+  Centered artwork stays fixed in the middle at 100%; four non-overlapping neighbors on each side
+  are exactly 80/60/40/20%. Selection changes animate without rebuilding the track, and carousel
+  names are omitted.
+- **Sync Amiibo from Adapter** retrieves the latest active image, validates its raw format and
+  exact AmiiboAPI identity, overwrites the selected or UID-matching cached entry, and acknowledges
+  firmware dirty state only after IndexedDB confirms the write. Browser security does not permit
+  silently overwriting the original OS file.
 - `web/diagnostic.html` and `tools/run_amiibo_portal_test.ps1` provide the same library/metadata
   workflow plus a browser-only simulated adapter, transactional upload, controlled write,
   persistence, cache-first save-back, and self-test without Web Serial or hardware.
-- Both portals use an artwork carousel: the selected/active tag is centered with four neighbors on
-  either side. `tools/run_config_portal.ps1` serves the real portal from the same localhost origin.
-- Portal follow-up after the persistence pass: add distinct **Eject** (retain the selected image
-  but present no tag) and **Remove active amiibo** (clear the adapter slot after protecting dirty
-  data) controls. Saving clears dirty-write protection after IndexedDB persistence; it does not
-  unload the tag. Selecting Unused acts as a reversible browser-side reset without deleting Used.
-- Config mode is now CDC-only. The MSC descriptor/callbacks, generated `src/web_disk.h`, embedded
-  FAT image, `CONFIG.HTM`, and generator were removed. The config VID/PID and CDC command protocol
-  remain unchanged; `tools/run_config_portal.ps1` is the production entry point. Config
-  enumeration, Virtual Amiibo transfer, save/readback, and direct BOOTSEL exit are
-  hardware-confirmed with the CDC-only descriptor.
+- Both portals use an artwork carousel. The production detail card intentionally exposes only
+  friendly Name, Character, Game series, Amiibo series, and Product type fields.
+  `tools/run_config_portal.ps1` serves the real portal from the same localhost origin.
+- The production manager's authoritative flow is carousel selection → **Assign Highlighted to
+  Slot N** → **Load Slot N to Adapter**. **Sync Amiibo from Adapter** pulls the latest
+  console-written image back into IndexedDB. **Eject Adapter Amiibo** clears only presentation;
+  loading the same slot uses the lightweight `amiibo present` path.
+- Sync clears dirty-write protection only after IndexedDB persistence; it does not unload the tag.
+  Console formatting/reset remains the authority.
+- The USB side of Config mode is now CDC-only. The MSC descriptor/callbacks, generated
+  `src/web_disk.h`, embedded FAT image, `CONFIG.HTM`, and generator were removed. The config
+  VID/PID and CDC command protocol remain unchanged; `tools/run_config_portal.ps1` is the
+  production entry point. Config enumeration, Virtual Amiibo transfer, save/readback, and direct
+  BOOTSEL exit are hardware-confirmed with the CDC-only USB descriptor.
+- That same portal now supports a Config-personality-only BLE GATT transport. Controller discovery
+  stops before low-duty management advertising; the incoming Peripheral-role link is classified
+  before HID/GATT-client setup; and a bounded cross-core bridge executes only production
+  settings/Amiibo commands through the existing core-0 parser. Leaving Config disconnects the
+  browser before discovery resumes. Normal controller personalities perform no management radio
+  work. All 49 host tests, three firmware build axes, and portal static checks pass; Config BLE
+  hardware validation is pending.
+- Config schema v10 removes the Virtual Amiibo flag and controller-family mapping tables. A locked
+  base button map feeds the emulated Nintendo identity, leaving persistent button remapping to the
+  Switch. The shared Pro2 body/Sony lightbar color and independent Joy-Con accent controls remain
+  together in one compact production-portal panel and in config storage. The obsolete visible
+  current-input/current-output cards are removed. Each
+  flashed UF2 contains a one-shot marker that erases the five persistence sectors (settings, both
+  amiibo banks, wake identity, and BTstack bonds) before normal startup; an ordinary reboot sees
+  the consumed marker and retains state. Both BLE-visible names are `PicoSwitch2`.
 - BOOTSEL now has a host-tested action matrix: single-tap cycles only controller personalities
   when a controller is HID-ready; double-tap opens pairing; triple-tap wipes/disconnects; and a
   two-second hold enters Config directly. Config ignores single/double, permits triple-tap wipe,
@@ -73,20 +100,21 @@ required Git submodule for Pico 2 W audio builds.
   deleting the bond. Both board builds pass; this revised physical gesture matrix awaits hardware
   validation.
 - Sectors `-3` and `-5` hold alternating version-2 snapshots with generation, header/payload CRC,
-  Unused/Used images, selection, dirty state, and optional signature. The previous bank stays valid
-  until the new bank is programmed and verified; version-1 sector-`-3` records migrate as an
-  Unused baseline. Flash work runs only through the existing core1 config-save service.
+  internal baseline/latest-written images, selection, dirty state, and optional signature. The previous bank stays
+  valid until the new bank is programmed and verified. Flash work runs only through the existing
+  core1 config-save service after the install-reset first boot.
 - A genuine Pro2 physical-tag read through the UART-gated bridge was recognized by the Switch.
   Primary capture proves USB uses a 600-byte reader buffer fetched as eight 70-byte chunks plus one
   40-byte final chunk; it does not request one 622-byte payload.
-- The disabled-by-default virtual runtime handles the confirmed read flow. A real Switch 2
+- The always-available virtual runtime handles the confirmed read flow after a tag is loaded. A real Switch 2
   recognized an uploaded Virtual Amiibo using a non-NFC source controller.
 - With a stable native write capture unavailable, a conservative transactional virtual write path
   was reconstructed from the local command examples, existing primary read/state captures, and the
   pinned capture-derived Dycool codec: exact-UID `0x06`, 64-byte write preparation, bounded
   454-byte `0x14` staging, atomic `0x08` commit, generation-safe store update, dirty state, and a
   modulo-eight report event counter. A real-console write completes through `0x08` and accepted
-  `05 00` without a crash. Each commit now creates/selects the Used image and queues persistence.
+  `05 00` without a crash. Each commit updates/selects the internal latest-written image and queues
+  persistence.
 - The first write test crashed the Switch with `2168-0002`. Root cause was exact and local:
   `0x14` totals 88 bytes, while `ns2_task` dispatched each 64-byte `tud_vendor_read` result
   immediately. `ns2_vendor_rx` now reassembles the envelope-declared command across the observed
@@ -95,15 +123,18 @@ required Git submodule for Pico 2 W audio builds.
 - The successful retest trace shows the console received `05 00`, sent Stop, then rescanned once
   per second because the retained RAM image still appeared physically present. The runtime now
   separates retained image state from presentation. A committed Stop waits for the pending flash
-  snapshot, emits logical removal only after verification, and keeps the Used image selected for
+  snapshot, emits logical removal only after verification, and keeps the latest-written image selected for
   saving. The next `0x03` scan re-presents that same updated image as a fresh tag. The removal and
   re-presentation lifecycle, persistence gate, and power-cycle recovery are hardware-confirmed.
-- The production portal retains its cached library without Web Serial. Hardware/browser validation
-  confirms reversible Unused/Used selection, Save current Amiibo cache-first writeback, and
-  export/clear/import restoration of the complete versioned library backup.
-- The portal cannot reach USB CDC while the Pico remains attached to the console. The rebuilt
-  firmware and PC helper add `amiibo status/read/acknowledge` plus `amiibo dump -OutputPath` over
-  UART, with generation, exact-size, and UID/BCC validation before dirty acknowledgement.
+- The production portal retains its cached library without an adapter connection. Prior
+  hardware/browser validation confirms cache-first writeback and export/clear/import restoration
+  of the complete versioned library backup. The new one-dump/two-quick-slot presentation awaits
+  browser and hardware regression validation.
+- USB CDC remains unavailable while the Pico is attached to the console. A two-second BOOTSEL
+  hold can now enter Config there and expose the local portal over BLE for settings and Virtual
+  Amiibo management. UART remains the independent live-console research/export path during a
+  normal controller personality; `amiibo status/read/acknowledge` and `amiibo dump -OutputPath`
+  retain generation, exact-size, and UID/BCC validation before dirty acknowledgement.
 - Hardware validation captured committed write → `05 00` → Stop → absent `07 41`, followed by a
   later scan, the same UID, and a complete updated read. UART status changed from clean generation
   4 to dirty generation 7; export produced a valid 540-byte image with 426 changed bytes confined
@@ -124,7 +155,7 @@ required Git submodule for Pico 2 W audio builds.
 
 ## Highest-value open work
 
-1. Add explicit portal Eject/Present controls and validate manual removal/replacement and reconnect.
+1. Hardware-validate the implemented manual Eject/Present path, including replacement and reconnect.
 2. Capture a genuine Pro2 physical-tag write/readback before enabling native writes.
 3. Decode/model the unresolved genuine `0x28` lanes for the accepted software-reference path.
 4. Add DualSense microphone return only after preserving the confirmed speaker/haptic path.

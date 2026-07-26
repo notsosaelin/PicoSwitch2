@@ -619,8 +619,7 @@ static void ds5_process_report(bthid_device_t* device, const uint8_t* data, uint
     // per SDL's HIDAPI_DriverPS5 (0x10 FnL, 0x20 FnR, 0x40 left paddle, 0x80 right).
     // Back paddles and the two front Fn buttons all default to the Switch grips
     // GL/GR. The Fn buttons keep distinct source bits (A4/A5, not touchpad A2 /
-    // mute A3) so they still show as their own inputs and can be reassigned
-    // separately in the config view. Seam defaults (NS2_DEFAULT_MAP, config.c):
+    // mute A3) so the locked seam map can preserve their individual semantics:
     // paddles->GL/GR, FnL->GL, FnR->GR.
     if (rpt->paddle_left)  buttons |= JP_BUTTON_L4;   // -> GL
     if (rpt->paddle_right) buttons |= JP_BUTTON_R4;   // -> GR

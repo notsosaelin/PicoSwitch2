@@ -47,6 +47,8 @@ _Static_assert(VIRTUAL_AMIIBO_FLASH_BANK1_OFFSET + FLASH_SECTOR_SIZE <=
 static virtual_amiibo_t tag;
 static critical_section_t tag_lock;
 static volatile bool persist_requested;
+static volatile bool loaded_snapshot;
+static volatile bool presented_snapshot;
 static int active_bank = -1;
 static uint8_t record_buffer[VIRTUAL_AMIIBO_RECORD_SIZE];
 
@@ -170,6 +172,8 @@ void virtual_amiibo_store_init(void)
     critical_section_init(&tag_lock);
     virtual_amiibo_init(&tag);
     persist_requested = false;
+    __atomic_store_n(&loaded_snapshot, false, __ATOMIC_RELEASE);
+    __atomic_store_n(&presented_snapshot, false, __ATOMIC_RELEASE);
     active_bank = -1;
 
     const uint8_t *best = NULL;
@@ -213,6 +217,8 @@ void virtual_amiibo_store_init(void)
         tag.dirty = (best_flags & VIRTUAL_AMIIBO_FLAG_DIRTY) != 0u;
         tag.persisted = true;
         tag.generation = best_generation;
+        __atomic_store_n(&loaded_snapshot, true, __ATOMIC_RELEASE);
+        __atomic_store_n(&presented_snapshot, true, __ATOMIC_RELEASE);
         return;
     }
 
@@ -232,7 +238,24 @@ void virtual_amiibo_store_init(void)
         (void)virtual_amiibo_load(
             &tag, best + VIRTUAL_AMIIBO_HEADER_SIZE, best_size, true);
         tag.generation = best_generation;
+        __atomic_store_n(&loaded_snapshot, true, __ATOMIC_RELEASE);
+        __atomic_store_n(&presented_snapshot, true, __ATOMIC_RELEASE);
     }
+}
+
+bool virtual_amiibo_store_loaded(void)
+{
+    return __atomic_load_n(&loaded_snapshot, __ATOMIC_ACQUIRE) &&
+           __atomic_load_n(&presented_snapshot, __ATOMIC_ACQUIRE);
+}
+
+virtual_amiibo_result_t virtual_amiibo_store_set_presented(bool presented)
+{
+    if (presented &&
+        !__atomic_load_n(&loaded_snapshot, __ATOMIC_ACQUIRE))
+        return VIRTUAL_AMIIBO_ERROR_NOT_LOADED;
+    __atomic_store_n(&presented_snapshot, presented, __ATOMIC_RELEASE);
+    return VIRTUAL_AMIIBO_OK;
 }
 
 void virtual_amiibo_store_status(virtual_amiibo_status_t *out)
@@ -241,6 +264,8 @@ void virtual_amiibo_store_status(virtual_amiibo_status_t *out)
     critical_section_enter_blocking(&tag_lock);
     memset(out, 0, sizeof(*out));
     out->loaded = tag.loaded;
+    out->presented =
+        __atomic_load_n(&presented_snapshot, __ATOMIC_ACQUIRE);
     out->dirty = tag.dirty;
     out->persisted = tag.persisted;
     out->has_originality_signature = tag.has_originality_signature;
@@ -279,6 +304,10 @@ virtual_amiibo_result_t virtual_amiibo_store_upload_commit(void)
 {
     critical_section_enter_blocking(&tag_lock);
     virtual_amiibo_result_t result = virtual_amiibo_upload_commit(&tag);
+    if (result == VIRTUAL_AMIIBO_OK)
+        __atomic_store_n(&loaded_snapshot, true, __ATOMIC_RELEASE);
+    if (result == VIRTUAL_AMIIBO_OK)
+        __atomic_store_n(&presented_snapshot, true, __ATOMIC_RELEASE);
     critical_section_exit(&tag_lock);
     if (result == VIRTUAL_AMIIBO_OK) persist_requested = true;
     return result;

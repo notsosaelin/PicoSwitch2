@@ -262,19 +262,19 @@ Serve on memory-read requests (real captured example values — safe to hardcode
 Memory outside these can return `0xFF` fill. Only `≥ 0x1F5000` is writable (`0x02/05`); reject
 writes below with status `0x81`. Back this with a small static table, not real flash.
 
-Config v8 stores one Pro2 `body_color`, applies it here before the identity block is built, and uses
+Config v10 stores one Pro2 `body_color`, applies it here before the identity block is built, and uses
 it for supported DualShock 4 / DualSense RGB lightbars while Pro2 is active. Button, highlight, and
 grip retain genuine retail defaults. The console reads the identity during enumeration, so a saved
 body change appears after returning from CDC configuration mode to Pro Controller 2 (or after a
-power cycle); the physical Sony lightbar can update live. Config v8 also adds independent Joy-Con 2
+power cycle); the physical Sony lightbar can update live. It also stores independent Joy-Con 2
 Left/Right accent colors; those belong to the separate Joy-Con identity blocks and lightbar modes.
 
 ## 10. Mapping controller input → report `0x09`
 Input arrives from the joypad-os bthid stack as `input_event_t` and is mapped in
-`src/bt_hid/ns2_seam.c` (per-family remap) → `switch_pro_input_t` → §7 packing.
+`src/bt_hid/ns2_seam.c` (locked base map) → `switch_pro_input_t` → §7 packing.
 - Buttons: A/B/X/Y, L/R/ZL/ZR, Plus/Minus/Home/Capture, L3/R3, dpad → §7 bitmap.
-- **C, GL, GR are exposed** by the per-vendor drivers (DualSense Edge paddles/Fn, Xbox Elite
-  paddles → GL/GR/Capture/C via the config remap) and confirmed on-console.
+- **C, GL, GR are exposed** by the per-vendor drivers (DualSense Edge paddles/Fn and Xbox Elite
+  paddles → GL/GR/Capture/C through the locked base map) and confirmed on-console.
 - Sticks: driver axes (0–255) → 12-bit (0–4095), center 2048, Y inverted.
 - IMU: genuine Pro2 native-PDU passthrough and DualSense/Edge length-`0x1E` translation are
   hardware-confirmed ([report-0x09-motion.md](report-0x09-motion.md)); synthetic length-`0x28`

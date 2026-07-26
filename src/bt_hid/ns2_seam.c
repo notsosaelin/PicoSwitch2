@@ -21,8 +21,8 @@
 #include "switch_pro.h"                           // switch_pro_input_t, SWITCH_MASK_*, pack_stick
 #include "bt/bthid/bthid.h"                       // bthid_get_device() — connected controller identity
 #include "bt/bthid/devices/vendors/sony/ds5_bt.h" // exact decoder provenance (not late SDP PID)
-#include "config.h"                               // config_get_body_color() / config_get_ns2_map()
-#include "ns2_remap.h"                            // NS2_SRC_COUNT / NS2_DST_* (per-device remap)
+#include "config.h"                               // config_get_body_color()
+#include "ns2_remap.h"                            // locked base button mapping
 #include "ns2_player_led.h"                       // Switch wire bitfield -> player number
 #include "ns2_wake.h"                             // post-sleep real-input wake intent
 #include "platform/platform.h"                    // platform_time_ms()
@@ -63,8 +63,8 @@ static inline int16_t ns2_clamp16(int32_t v) {
     return (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
 }
 
-// Remap source order: index -> JP button. MUST match NS2_DEFAULT_MAP in config.c and
-// the web UI's source indices. (analog L2/R2 are folded into JP_BUTTON_L2/R2 below.)
+// Source order: index -> JP button. MUST match NS2_BASE_BUTTON_MAP.
+// (analog L2/R2 are folded into JP_BUTTON_L2/R2 below.)
 static const uint32_t SRC_TO_JP[NS2_SRC_COUNT] = {
     JP_BUTTON_B1, JP_BUTTON_B2, JP_BUTTON_B3, JP_BUTTON_B4,
     JP_BUTTON_L1, JP_BUTTON_R1, JP_BUTTON_L2, JP_BUTTON_R2,
@@ -74,8 +74,9 @@ static const uint32_t SRC_TO_JP[NS2_SRC_COUNT] = {
     JP_BUTTON_L4, JP_BUTTON_R4, JP_BUTTON_A5, JP_BUTTON_L5, JP_BUTTON_R5,
 };
 
-// Apply one remap destination to the shared Pro Controller semantic input. Output personalities
-// may translate those semantics further (for example, the single-Joy-Con sideways profile).
+// Apply one locked base-map destination to the shared Pro Controller semantic
+// input. Output personalities may translate those semantics further (for
+// example, the single-Joy-Con sideways profile).
 static void ns2_apply_dst(uint8_t dst, switch_pro_input_t *in) {
     switch (dst) {
         case NS2_DST_B:       in->buttons[0] |= SWITCH_MASK_B; break;
@@ -103,19 +104,6 @@ static void ns2_apply_dst(uint8_t dst, switch_pro_input_t *in) {
     }
 }
 
-// Controller family for remap selection (matches the web UI + config family order).
-static uint8_t ns2_family(uint8_t dev_addr) {
-    const bthid_device_t *dev = bthid_get_device(dev_addr);
-    if (!dev) return 3;  // Generic
-    uint16_t vid = dev->vendor_id;
-    const char *n = dev->name;
-    bool has = n && n[0];
-    if (vid == 0x054C || (has && (strstr(n, "DualSense") || strstr(n, "DualShock")))) return 0;  // Sony
-    if (vid == 0x045E || (has && (strstr(n, "Xbox") || strstr(n, "Elite"))))          return 1;  // Xbox
-    if (vid == 0x057E || (has && (strstr(n, "Pro Controller") || strstr(n, "Joy-Con")))) return 2;  // Nintendo
-    return 3;  // Generic
-}
-
 static bool ns2_is_switch2_pro(uint8_t dev_addr) {
     const bthid_device_t *dev = bthid_get_device(dev_addr);
     return dev && dev->vendor_id == 0x057E && dev->product_id == 0x2069;
@@ -123,7 +111,7 @@ static bool ns2_is_switch2_pro(uint8_t dev_addr) {
 
 // -------------------------------------------------------------------------
 // Router: the ONE call every input driver makes. Translate the unified event
-// into the Pro Controller wire format (via the per-family remap) and publish it.
+// into the Pro Controller wire format (via the locked base map) and publish it.
 // -------------------------------------------------------------------------
 void router_submit_input(const input_event_t *e) {
     if (!e) return;
@@ -212,26 +200,23 @@ void router_submit_input(const input_event_t *e) {
         // 8BitDo tables -- not Xbox, whose own button map has no L2/R2 destination at all) have
         // a genuine native digital click bit for the trigger, separate from its analog axis and
         // from the seam's analog fold above (which is already suppressed for gc_active). That
-        // native click bit still flowed through the per-family remap loop below into its
+        // native click bit still flowed through the base-map loop below into its
         // Pro2-appropriate legacy destination (NS2_DST_ZL/NS2_DST_ZR), stacking a second path on
         // top of this block's own shoulder->ZL/Z mapping. Only the left side was visible --
         // SWITCH_MASK_ZL has a live bit in the GC encoder, SWITCH_MASK_ZR does not -- which
         // produced exactly the reported asymmetry (an early spurious "ZL" partway through the
         // left trigger's travel, right trigger unaffected). Clear all four physical sources this
-        // block already owns before the family loop runs, so nothing routes them a second time.
+        // block already owns before the base-map loop runs, so nothing routes them a second time.
         b &= ~(JP_BUTTON_L1 | JP_BUTTON_R1 | JP_BUTTON_L2 | JP_BUTTON_R2);
     }
 
-    // Apply this controller family's remap: each pressed source -> its assigned output.
-    // The default map (NS2_DEFAULT_MAP) reproduces the built-in mapping exactly, so an
-    // unconfigured device behaves as before; the config UI overrides per family.
+    // Apply the stable base mapping. Users can remap the emulated Nintendo
+    // identity on the console, which then persists across physical controllers.
     uint8_t slot = ns2_slot(e->dev_addr);
     const bthid_device_t *dev = bthid_get_device(e->dev_addr);
-    uint8_t map[NS2_SRC_COUNT];
-    config_get_ns2_map(ns2_family(e->dev_addr), map);
     for (int src = 0; src < NS2_SRC_COUNT; src++) {
         if (b & SRC_TO_JP[src])
-            ns2_apply_dst(map[src], &in);
+            ns2_apply_dst(NS2_BASE_BUTTON_MAP[src], &in);
     }
 
     // Sticks: 0-255 -> 12-bit; Y inverted (Switch is up-positive, HID is up=0).

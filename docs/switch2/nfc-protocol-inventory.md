@@ -8,7 +8,7 @@
 > A conservative transactional Virtual Amiibo write also reaches complete `0x14`, `0x08`, and accepted
 > `05 00` on a real Switch 2 without crashing. Logical removal, next-scan re-presentation,
 > same-session updated readback, validated UART export, automatic dual-bank persistence,
-> power-cycle recovery, reversible Unused/Used selection, offline library use, and backup restore
+> power-cycle recovery, reversible Save 1/Save 2 selection, offline library use, and backup restore
 > are hardware/browser-confirmed. Native physical writes remain open.**
 
 ## Evidence rules

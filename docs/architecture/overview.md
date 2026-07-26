@@ -15,7 +15,7 @@ not block each other.
 | TinyUSB device loop | 0 | USB enumeration, descriptors, input streaming, output reception |
 | USB personalities | 0 | Pro2, NSO GameCube, Joy-Con 2 L/R, CDC/config |
 | BOOTSEL raw sampler | 0 | Safe flash-CS sample after cooperative core-1 park |
-| BTstack/CYW43 | 1 | Discovery, pairing, reconnection, HID/GATT transport |
+| BTstack/CYW43 | 1 | Discovery, pairing, reconnection, HID/GATT transport, Config-only BLE management |
 | joypad-os bthid | 1 | Controller identity, input parsing, output tasks |
 | Live DualSense Opus worker (Pico 2 W) | 1 foreground | Blocks on complete PCM windows; CYW43/BTstack background IRQ may preempt |
 | Seam/router | 1 | Unified input → Switch button/capability model |
@@ -170,10 +170,14 @@ without deleting its bond so the one-controller host can admit a replacement. Tr
 the existing disconnect/bond wipe in both normal and Config modes. Single/double taps are ignored
 in Config.
 
-The fifth personality is CDC-only configuration transport at `CAFE:4012`. Its web client is served
-from the user's computer with `tools/run_config_portal.ps1`; the firmware deliberately contains no
-MSC interface, FAT image, or web assets. This keeps the serial protocol and BOOTSEL lifecycle
-independent from portal presentation and browser-local amiibo storage.
+The fifth personality keeps a CDC-only USB descriptor at `CAFE:4012`. Its web client is served from
+the user's computer with `tools/run_config_portal.ps1`; the firmware deliberately contains no MSC
+interface, FAT image, or web assets. While—and only while—this Config personality is active, the
+same local portal may connect to a custom BLE GATT management service. Controller discovery is
+paused before management advertising starts, BLE writes still execute through the existing parser
+on core 0, and leaving Config disconnects the browser before discovery resumes. Normal controller
+personalities neither advertise nor accept configuration traffic. See
+[`config-transports.md`](config-transports.md).
 
 See [`../../STATUS.md`](../../STATUS.md) for the current cycle and
 [`../switch2-gc/usb-personality.md`](../switch2-gc/usb-personality.md) for detailed callback

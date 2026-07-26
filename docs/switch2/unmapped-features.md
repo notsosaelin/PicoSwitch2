@@ -30,12 +30,12 @@ While the core functionality of the PicoSwitch2 (connecting Bluetooth controller
   caused error `2168-0002`; bounded stream reassembly eliminated the crash.
 - **Current Behavior:** A real Switch 2 recognizes both a physical amiibo through the UART-gated
   genuine Pro2 relay and a browser-loaded Virtual Amiibo through a non-NFC controller. The
-  disabled-by-default virtual path supports transactional upload, separate immutable Unused and
-  mutable Used images, automatic alternating-bank persistence, and exact retrieval. A game-owned
-  write reached full staging, `0x08`, and accepted `05 00`. The runtime keeps the Used image loaded,
+  always-available virtual path presents no tag while blank and supports transactional upload,
+  separate Save 1 and Save 2 images, automatic alternating-bank persistence, and exact retrieval.
+  A game-owned write reached full staging, `0x08`, and accepted `05 00`. The runtime keeps Save 2 loaded,
   waits for its snapshot before logical eject, and re-presents it on the next scan. Hardware
   confirms the write/eject/re-present lifecycle, valid mutated UART export, automatic persistence,
-  power-cycle recovery, reversible Unused/Used selection, offline library operation, and backup
+  power-cycle recovery, reversible Save 1/Save 2 selection, offline library operation, and backup
   restoration.
 - **Remaining native work:** production relay gating/reconnect, a physical Pro2 write capture,
   Joy-Con 2 Right comparison, and Switch 1 MCU reader/writer translation. External projects remain
