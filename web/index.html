@@ -1040,7 +1040,7 @@ async function chooseAmiiboDirectory() {
       const result = await libraryEntryFromFile(
         item.file, `${directory.name}/${item.path}`, `directory:${directory.name}`);
       if (!result.entry) invalid++;
-      else if (!amiiboCatalogById.has(result.entry.id)) unmatched++;
+      else if (amiiboCatalog && !amiiboCatalogById.has(result.entry.id)) unmatched++;
       else entries.push(result.entry);
 
       const shouldRender =
@@ -1085,9 +1085,11 @@ async function chooseAmiiboDirectory() {
 
 function filteredAmiiboLibrary() {
   const query = $("#amiiboLibrarySearch").value.trim().toLowerCase();
+  // The AmiiboAPI catalog is an enhancement, never a gate: entries always
+  // display (using on-tag identity when catalog metadata is absent) so a slow
+  // or unreachable catalog can never make the library appear frozen/empty.
   const entries = amiiboLibrary.filter(entry => {
     const metadata = catalogMetadataForEntry(entry);
-    if (!metadata) return false;
     const matchesQuery = !query || (`${entry.label} ${entry.path} ${entry.id} ${entry.uid} ${entry.typeName} ` +
       `${entry.modelNumber} ${entry.characterGameCode} ${metadata?.name || ""} ` +
       `${metadata?.character || ""} ${metadata?.gameSeries || ""} ` +
@@ -1223,23 +1225,20 @@ function renderAmiiboLibrary() {
   if (!track) return;
   renderAmiiboFilterControls();
   const entries = filteredAmiiboLibrary();
-  const matchedCount = amiiboLibrary.filter(entry =>
-    amiiboCatalogById.has(entry.id)).length;
+  const total = amiiboLibrary.length;
+  const catalogNote = total && !amiiboCatalog
+    ? " · catalog offline (names/art limited)" : "";
   track.textContent = "";
-  $("#amiiboLibraryCount").textContent = matchedCount
-    ? `${matchedCount} imported · ${entries.length} shown`
-    : amiiboLibrary.length && !amiiboCatalog
-      ? "Validating imported library…"
-      : "No imported amiibo";
+  $("#amiiboLibraryCount").textContent = total
+    ? `${total} imported · ${entries.length} shown${catalogNote}`
+    : "No imported amiibo";
   if (!entries.length) {
     amiiboLibrarySelectedKey = "";
     amiiboCarouselIndex = 0;
     $("#amiiboLibraryDetail").classList.add("hidden");
-    $("#amiiboCarouselPosition").textContent = amiiboLibrary.length
-      ? !amiiboCatalog
-        ? "Validating imported files against AmiiboAPI"
-        : "No imported amiibo match these filters"
-      : "Import a file or directory to build your library";
+    $("#amiiboCarouselPosition").textContent = total
+      ? "No imported amiibo match these filters"
+      : "Import, generate, or choose a directory to build your library";
     $("#amiiboCarouselPrev").disabled = true;
     $("#amiiboCarouselNext").disabled = true;
   } else {
@@ -1254,7 +1253,7 @@ function renderAmiiboLibrary() {
   $("#amiiboLibraryLoadBtn").disabled =
     amiiboLibraryBusy || !amiiboLibrarySelectedKey;
   $("#amiiboLibraryExportBtn").disabled =
-    amiiboLibraryBusy || matchedCount === 0;
+    amiiboLibraryBusy || total === 0;
   renderAmiiboLoadedSlot();
 }
 
@@ -1744,8 +1743,11 @@ async function generateSelectedAmiibo() {
   }
   amiiboSetBusy(true);
   try {
-    await loadAmiiboCatalog();
-    if (!amiiboCatalogById.has(id)) {
+    // Best-effort: the catalog validates the id and names the file when
+    // available, but generation works offline from the raw 16-hex id.
+    try { await loadAmiiboCatalog(); }
+    catch (e) { console.warn("Catalog unavailable during generate", e); }
+    if (amiiboCatalog && !amiiboCatalogById.has(id)) {
       $("#amiiboMessage").textContent =
         "That id has no exact AmiiboAPI catalog match; not generated.";
       return;
@@ -1780,8 +1782,7 @@ async function generateSelectedAmiibo() {
 }
 
 async function exportAmiiboLibraryBackup() {
-  const exportEntries = amiiboLibrary.filter(entry =>
-    amiiboCatalogById.has(entry.id));
+  const exportEntries = amiiboLibrary.slice();
   if (!exportEntries.length) return;
   // A flat folder of .bin files plus a small metadata manifest, packed into a
   // single ZIP. The manifest is informational; import reconstructs the library
@@ -1853,7 +1854,7 @@ async function importAmiiboLibraryBackup(file) {
         const bytes = new Uint8Array(zipItem.bytes);
         if (validateAmiiboFile(bytes)) { skipped++; continue; }
         const identity = parseAmiiboIdentity(bytes);
-        if (!amiiboCatalogById.has(identity.id)) { skipped++; continue; }
+        if (amiiboCatalog && !amiiboCatalogById.has(identity.id)) { skipped++; continue; }
         entries.push(normalizeAmiiboLibraryEntry({
           key: `amiibo:${identity.id}`,
           name: zipItem.name,
@@ -1882,7 +1883,7 @@ async function importAmiiboLibraryBackup(file) {
         const bytesError = validateAmiiboFile(bytes);
         if (bytesError) throw new Error(`${saved.name || "entry"}: ${bytesError}`);
         const identity = parseAmiiboIdentity(bytes);
-        if (!amiiboCatalogById.has(identity.id))
+        if (amiiboCatalog && !amiiboCatalogById.has(identity.id))
           throw new Error(`${saved.name || "entry"}: no AmiiboAPI match`);
         entries.push(normalizeAmiiboLibraryEntry({
           key: `amiibo:${identity.id}`,
@@ -1954,41 +1955,64 @@ async function writeCachedAmiiboCatalog(items) {
   }
 }
 
-async function loadAmiiboCatalog(forceRefresh = false) {
-  if (amiiboCatalog && !forceRefresh) return amiiboCatalog;
-  const cached = await readCachedAmiiboCatalog();
-  if (!forceRefresh && cached && Array.isArray(cached.data) &&
-      Date.now() - (cached.cachedAt || 0) < AMIIBO_CATALOG_MAX_AGE_MS) {
-    installAmiiboCatalog(cached.data);
-    return amiiboCatalog;
-  }
-  try {
-    // A cold catalog fetch can run inside a busy/locked UI state (for
-    // example Sync Amiibo from Adapter with an empty library). Bound it so
-    // a stalled connection can never freeze the caller indefinitely.
+const AMIIBO_CATALOG_URLS = [
+  "https://amiiboapi.org/api/amiibo/",
+  "https://www.amiiboapi.com/api/amiibo/"
+];
+
+async function fetchAmiiboCatalogNetwork() {
+  // Try each mirror in turn; each attempt is bounded so a stalled or blocked
+  // connection can never freeze a caller.
+  let lastError = null;
+  for (const url of AMIIBO_CATALOG_URLS) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20000);
-    let response;
+    const timer = setTimeout(() => controller.abort(), 12000);
     try {
-      response = await fetch("https://amiiboapi.org/api/amiibo/",
-        {cache: "no-cache", signal: controller.signal});
+      const response = await fetch(url, {cache: "no-cache", signal: controller.signal});
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const body = await response.json();
+      const items = Array.isArray(body.amiibo) ? body.amiibo : [];
+      if (!items.length) throw new Error("empty catalog");
+      installAmiiboCatalog(items);
+      await writeCachedAmiiboCatalog(items);
+      return amiiboCatalog;
+    } catch (error) {
+      lastError = error;
+      console.warn(`AmiiboAPI fetch failed (${url})`, error);
     } finally {
       clearTimeout(timer);
     }
-    if (!response.ok) throw new Error(`AmiiboAPI returned HTTP ${response.status}`);
-    const body = await response.json();
-    const items = Array.isArray(body.amiibo) ? body.amiibo : [];
-    if (!items.length) throw new Error("AmiiboAPI returned an empty catalog");
-    installAmiiboCatalog(items);
-    await writeCachedAmiiboCatalog(items);
+  }
+  throw new Error(
+    lastError?.name === "AbortError"
+      ? "AmiiboAPI did not respond within 12 seconds"
+      : `AmiiboAPI unavailable: ${lastError?.message || "unknown error"}`);
+}
+
+// Cache-first: once the catalog has loaded once it lives in IndexedDB, and the
+// network is never on the critical path again. A stale cache is used
+// immediately and refreshed in the background; only a completely cold start
+// waits on the network.
+async function loadAmiiboCatalog(forceRefresh = false) {
+  if (amiiboCatalog && !forceRefresh) return amiiboCatalog;
+  const cached = await readCachedAmiiboCatalog();
+  if (!forceRefresh && cached && Array.isArray(cached.data) && cached.data.length) {
+    installAmiiboCatalog(cached.data);
+    if (Date.now() - (cached.cachedAt || 0) >= AMIIBO_CATALOG_MAX_AGE_MS)
+      fetchAmiiboCatalogNetwork()
+        .then(() => renderAmiiboLibrary())
+        .catch(err => console.warn("Background catalog refresh failed", err));
     return amiiboCatalog;
+  }
+  try {
+    return await fetchAmiiboCatalogNetwork();
   } catch (error) {
     if (cached && Array.isArray(cached.data) && cached.data.length) {
       installAmiiboCatalog(cached.data);
       return amiiboCatalog;
     }
     if (error?.name === "AbortError")
-      throw new Error("AmiiboAPI did not respond within 20 seconds");
+      throw new Error("AmiiboAPI did not respond within 12 seconds");
     throw error;
   }
 }
@@ -2123,8 +2147,7 @@ function amiiboSetBusy(busy, percent = 0) {
       ".amiibo-filter-cycle"))
     button.disabled = busy;
   $("#amiiboLibraryClearBtn").disabled = busy;
-  $("#amiiboLibraryExportBtn").disabled =
-    busy || !amiiboLibrary.some(entry => amiiboCatalogById.has(entry.id));
+  $("#amiiboLibraryExportBtn").disabled = busy || !amiiboLibrary.length;
   $("#amiiboLibraryImportBtn").disabled = busy;
   $("#amiiboLoadKeysBtn").disabled = busy;
   $("#amiiboForgetKeysBtn").disabled = busy;
@@ -2365,11 +2388,11 @@ async function importSingleAmiiboFile(file) {
   try {
     await loadAmiiboCatalog();
   } catch (error) {
-    $("#amiiboMessage").textContent =
-      `Could not validate ${file.name} against AmiiboAPI: ${error.message}`;
-    return;
+    // Catalog is an enhancement; a structurally valid dump is still importable
+    // offline. Names/artwork fill in once the catalog becomes available.
+    console.warn("Amiibo catalog unavailable during import", error);
   }
-  if (!amiiboCatalogById.has(result.entry.id)) {
+  if (amiiboCatalog && !amiiboCatalogById.has(result.entry.id)) {
     $("#amiiboMessage").textContent =
       `${file.name} is structurally valid but has no exact AmiiboAPI catalog match, so it was not stored.`;
     return;
@@ -2437,7 +2460,7 @@ async function saveCurrentAmiibo() {
     await loadAmiiboCatalog();
 
     const identity = parseAmiiboIdentity(bytes);
-    if (!amiiboCatalogById.has(identity.id)) {
+    if (amiiboCatalog && !amiiboCatalogById.has(identity.id)) {
       $("#amiiboMessage").textContent =
         "Sync Amiibo stopped because the adapter image has no exact AmiiboAPI catalog match. Nothing was overwritten.";
       return;
