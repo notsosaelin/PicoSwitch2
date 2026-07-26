@@ -123,6 +123,14 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
   HID/name binding and notification-first GATT setup, then re-evaluate Xbox BLE, Stadia, and
   MouthPad provisional matches when authoritative VID/PID arrives. Host coverage pins input before
   and after corrective rebinds; the resulting build is hardware-confirmed with Xbox Series BLE.
+- [x] Convert config mode from CDC+MSC to CDC-only: remove the `PICOSWITCH` read-only drive,
+  embedded FAT image, MSC descriptors/callbacks, and web-disk generator while retaining the
+  existing config VID/PID, CDC command protocol, and BOOTSEL personality lifecycle.
+- [x] Implement and host-test the revised BOOTSEL policy: paired single-tap cycles only controller
+  personalities, double-tap opens pairing, triple-tap wipes/disconnects, and a two-second hold
+  enters Config directly; Config keeps only triple-tap wipe and two-second direct exit.
+- [ ] Hardware-validate the revised BOOTSEL matrix both with no controller and with a paired
+  controller, including bond-preserving disconnect before paired double-tap pairing.
 - Add a release checklist that records board, firmware revision, controller firmware, console
   firmware, and test result.
 
@@ -174,7 +182,9 @@ DualSense and DualSense Edge now translate their calibrated accel/gyro stream in
 hardware-validated length-`0x1E` Switch 2 quaternion carrier. Splatoon 3 confirms correct
 direction, scale, rapid movement, stationary behavior, and reconnect recovery. The genuine
 length-`0x28` form remains only partially decoded: a controlled template-derived generator caused
-random motion and was removed, proving its unresolved lanes are semantically active. See
+random motion and was removed, proving its unresolved lanes are semantically active. A
+software-generated reference/magnetometer solution is the accepted direction for controllers that
+lack the hardware; the rejected static-template construction is not that solution. See
 [`docs/bluetooth/dualsense-motion.md`](docs/bluetooth/dualsense-motion.md),
 [`docs/switch2/report-0x09-motion.md`](docs/switch2/report-0x09-motion.md), and
 [`docs/switch2/uart-magprobe.md`](docs/switch2/uart-magprobe.md).
@@ -183,12 +193,76 @@ Do not generalize the DualSense result blindly to other IMUs. Reuse the calibrat
 translator only after each controller family has a verified sensor layout, axis map, timestamps,
 scale, and stationary-bias behavior.
 
+- [x] Choose software generation—not a required physical magnetometer—as the direction for missing
+  length-`0x28` reference data.
+- [ ] Decode/model every dynamic console-relevant `0x28` lane before enabling a production
+  generator.
+
 ### NFC / amiibo
 
-Status: 🔴 blocked on a genuine transaction capture.
+Status: 🟡 genuine Pro2 physical passthrough and feature-gated Virtual Amiibo reads are recognized
+by a real Switch 2. Transactional write staging/commit, logical eject, next-scan re-presentation,
+same-session updated readback, and validated UART export are hardware-confirmed. The exported
+540-byte image differs from the unique matching original only within permitted writable ranges.
+Automatic write-before-eject persistence, clean/used selection, power-cycle recovery, offline
+library use, and full-library backup restore are hardware/browser-confirmed. Manual
+present/remove controls and all native write paths remain open.
 
-The command inventory is documented. Do not promote third-party implementations to Confirmed until
-this project captures and validates a real read/write exchange.
+The offline implementation validates and transactionally uploads 540/572-byte images and retains
+two lossless copies: immutable **Unused** imported data and mutable console-written **Used** data.
+The selected copy, both images, dirty state, and optional signature are stored in alternating
+CRC-verified flash banks at sectors `-3` and `-5`. A successful console commit requests this
+snapshot automatically, and logical TagRemoved waits until it verifies. The browser-local library
+works without Web Serial, accepts a single file or recursively scans a directory, caches both
+copies and catalog details in IndexedDB, and can export/import the complete library as versioned
+JSON. **Save current Amiibo** retrieves both adapter copies before clearing dirty protection.
+Primary capture corrected the read model to a 600-byte reader buffer served in 70-byte offset
+chunks. The command-driven runtime handles the confirmed read flow plus an evidence-reconstructed
+write flow: exact-UID `0x06` selection, a 64-byte preparation buffer, bounded `0x14` staging, and
+atomic `0x08` commit. It performs no NFC idle polling.
+
+The UART-gated native Pro2 bridge has completed one genuine physical-tag read that the Switch
+recognized. It writes the extended `0x0016` command path, keeps `0x001E` subscribed, and receives
+the matching ordinary NFC replies on `0x001A`. Production gating, reconnect/removal, Joy-Con 2
+Right, and physical writes remain unvalidated.
+Switch 1 Pro/Joy-Con Right requires protocol translation through report `0x31` and the NFC MCU; it
+is not raw passthrough. See
+[`docs/switch2/nfc-implementation.md`](docs/switch2/nfc-implementation.md).
+
+- [x] Audit protocol sources, current transport limits, RAM, flash, CPU, and config-mode upload
+  feasibility.
+- [x] Add the host-tested non-blocking USB vendor-IN response pump and transport-neutral NFC codec.
+- [x] Add virtual upload/read/write/download and validate it on a real Switch 2.
+  - [x] Config-mode transactional upload and full-image download.
+  - [x] RAM image and atomic console-write codec.
+  - [x] Command `0x01` read state-machine integration using the primary 600-byte/chunk capture.
+  - [x] Real-console virtual read validation with a non-NFC source controller.
+  - [x] Fail-closed virtual write dispatch reconstructed from existing command/capture evidence.
+  - [x] Reassemble vendor OUT commands across USB packets; host-test the exact 64+24-byte `0x14`
+    split which caused the first hardware attempt's `2168-0002` crash.
+  - [x] Real-console game-owned write reaches complete `0x14`, `0x08`, and `05 00` without a crash.
+  - [x] Add live UART image export so console-written RAM state can be downloaded without moving
+    the console-facing USB cable.
+  - [x] Validate dirty state and generation-safe UART download of a mutated 540-byte image.
+  - [x] Validate post-write logical auto-eject, next-scan re-presentation of the updated image, and
+    ordinary-read continued presentation.
+  - [x] Automatically queue a power-loss-safe snapshot before the post-write removal edge.
+  - [x] Power-cycle after a console write and validate that the Used image and dirty state recover.
+- [x] Add alternating-bank persistence outside `pico_config_t`, including version-1 migration.
+- [x] Add recursive directory import, browser-local library caching, parsed identity, and optional
+  cached friendly catalog metadata.
+- [x] Replace the long library selector with a nine-position artwork carousel and automatically
+  center/mark the adapter's active tag.
+- [x] Keep the production library available without Web Serial, retain separate Unused/Used
+  copies, and add versioned full-library export/import.
+- [ ] Add separate portal controls for **Eject** (present=false while retaining the active image)
+  and **Remove active amiibo** (clear the adapter slot only after dirty-write protection).
+- [x] Hardware-test automatic snapshot recovery and Used/Unused selection.
+- [ ] Hardware-test interrupted-upload preservation.
+- [ ] Complete native Switch 2 reader relay.
+  - [x] Capture and relay one genuine Pro2 physical read recognized by the console.
+  - [ ] Validate production selection, reconnect/removal, Joy-Con 2 Right, and physical writes.
+- [ ] Capture and implement Switch 1 reader translation.
 
 ### Console-side capture infrastructure
 

@@ -154,6 +154,49 @@ safe next work:
 
 ---
 
+## A rotating multi-amiibo device can capture a Smash write after a successful read
+
+**Held**: briefly as the intended 2026-07-25 native-write capture setup.
+
+**The claim**: after Smash successfully read one emulated amiibo, continuing through the game's
+interaction with the same multi-amiibo device would produce the native write command sequence.
+
+**What refuted it**: the device changed from UID `04 A4 47 F2 6F 40 80` to
+`04 D5 E7 48 CC F9 71`. The retained USB and BLE traces contain a complete read of the first UID,
+then only scan/status/stop traffic for the second. There are zero `0x14` write-buffer chunks, zero
+`0x08` commit commands, and no UID-bearing `0x06` write descriptor. The bridge itself was healthy:
+41/41 commands received matching responses, with zero timeouts or rejections.
+
+**Why this matters going forward**: a write capture needs one stable, writable tag identity across
+the prerequisite read, write prompt, and readback. Repeating this setup cannot reveal write framing
+unless the device can be locked to one tag. See
+[`smash-native-nfc-write-attempt-2026-07-25.md`](smash-native-nfc-write-attempt-2026-07-25.md).
+
+---
+
+## A 64-byte `tud_vendor_read` buffer is sufficient for Switch 2 command dispatch
+
+**Held**: throughout the previously validated initialization, input, audio, motion, and NFC-read
+work because every exercised console request fit in one 64-byte read.
+
+**The claim**: TinyUSB vendor OUT traffic could be read into `cmd[64]` and immediately passed to
+`ns2_dispatch`; larger protocol responses mattered, but console commands did not need stream
+reassembly.
+
+**What refuted it**: the first stable Virtual Amiibo game-owned write crashed the Switch 2 with
+error `2168-0002`. Code-level framing analysis found that a normal `0x14` request is 88 bytes:
+eight envelope bytes plus an 80-byte payload. The old loop dispatched the first 64 bytes, so the
+NFC runtime received only 52 of the declared 76 staging-data bytes after the four-byte chunk
+prefix. The remaining 24 USB bytes were then treated as a second command. This failure was
+impossible on the validated read path because its requests are short.
+
+**Correction**: `ns2_vendor_rx` now buffers the command stream until the big-endian length in
+header bytes 4–5 is complete. Host tests reproduce the exact 64+24 boundary, arbitrary splits,
+coalesced commands, and oversized-command recovery. See
+[`virtual-amiibo-write-crash-and-rx-fix-2026-07-25.md`](virtual-amiibo-write-crash-and-rx-fix-2026-07-25.md).
+
+---
+
 ## Format notes for future entries
 
 Each entry should have: the claim, the confidence level it held, why it was reasonable given the

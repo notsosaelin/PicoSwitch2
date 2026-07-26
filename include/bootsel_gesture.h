@@ -7,10 +7,11 @@
 // Pure, host-testable BOOTSEL gesture recognizer. The Pico-specific code owns raw sampling and
 // cross-core flash safety; this module only turns timestamped sampled button states into gestures.
 #define BOOTSEL_TAP_WINDOW_MS 500u
-#define BOOTSEL_HOLD_MS       5000u
+#define BOOTSEL_HOLD_MS       2000u
 
 typedef enum {
     BOOTSEL_NONE = 0,
+    BOOTSEL_SINGLE_TAP,
     BOOTSEL_DOUBLE_TAP,
     BOOTSEL_TRIPLE_TAP,
     BOOTSEL_HOLD,

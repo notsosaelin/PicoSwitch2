@@ -34,4 +34,21 @@ usb_personality_t usb_next_personality(usb_personality_t current) {
     return current;  // degenerate: no personality available at all (never happens in practice)
 }
 
+usb_personality_t usb_next_controller_personality(
+    usb_personality_t current)
+{
+    for (int next = (int)current + 1;
+         next < (int)USB_PERSONALITY_CDC_CONFIG; ++next) {
+        if (usb_personality_available((usb_personality_t)next))
+            return (usb_personality_t)next;
+    }
+    for (int next = 0;
+         next < (int)USB_PERSONALITY_CDC_CONFIG &&
+         next <= (int)current; ++next) {
+        if (usb_personality_available((usb_personality_t)next))
+            return (usb_personality_t)next;
+    }
+    return current;
+}
+
 #endif  // NS2_PRO

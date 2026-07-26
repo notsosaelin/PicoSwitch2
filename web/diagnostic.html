@@ -1,0 +1,1146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PicoSwitch2 Virtual Amiibo Diagnostic</title>
+<style>
+  :root {
+    color-scheme: dark;
+    font-family: Inter,Segoe UI,system-ui,sans-serif;
+    background: #0c1016;
+    color: #edf1f7;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background:
+    radial-gradient(circle at 80% 0, #162842 0, transparent 34rem), #0c1016; }
+  main { width: min(1120px, calc(100% - 32px)); margin: 0 auto; padding: 30px 0 60px; }
+  header { display: flex; justify-content: space-between; gap: 20px; align-items: flex-start;
+           margin-bottom: 20px; }
+  h1 { font-size: clamp(25px,4vw,40px); margin: 0 0 5px; letter-spacing: -.04em; }
+  h2 { font-size: 17px; margin: 0 0 12px; }
+  p { line-height: 1.5; }
+  button, input, select { font: inherit; }
+  button { border: 1px solid #3b4657; border-radius: 8px; padding: 8px 12px;
+           color: #edf1f7; background: #202836; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: #6fa8ff; }
+  button.primary { background: #1f64c8; border-color: #4388eb; }
+  button.danger { color: #ffb8b8; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  input, select { width: 100%; color: #edf1f7; background: #0f151e;
+                  border: 1px solid #384354; border-radius: 8px; padding: 8px 10px; }
+  code, pre, .mono { font-family: ui-monospace,SFMono-Regular,Consolas,monospace; }
+  .muted { color: #9ba9bc; font-size: 13px; }
+  .pill { display: inline-flex; align-items: center; padding: 5px 9px; border-radius: 999px;
+          font-size: 12px; background: #152a21; color: #8ce5b1; border: 1px solid #28573b; }
+  .grid { display: grid; grid-template-columns: 1.05fr .95fr; gap: 16px; }
+  .card { border: 1px solid #293344; border-radius: 12px; padding: 16px;
+          background: rgba(18,24,33,.94); box-shadow: 0 16px 40px rgba(0,0,0,.17); }
+  .wide { grid-column: 1 / -1; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .meta { display: grid; grid-template-columns: repeat(auto-fit,minmax(145px,1fr));
+          gap: 8px; margin: 12px 0; }
+  .meta > div { padding: 9px 10px; border-radius: 8px; border: 1px solid #293344;
+                background: #0f151e; color: #9ba9bc; font-size: 12px; }
+  .meta b { display: block; color: #edf1f7; margin-top: 3px; overflow-wrap: anywhere; }
+  .carousel-shell { display: grid; grid-template-columns: auto minmax(0,1fr) auto;
+                    align-items: center; gap: 10px; margin-top: 12px; }
+  .carousel-nav { width: 42px; height: 62px; padding: 0; font-size: 26px; }
+  .carousel-viewport { min-width: 0; overflow: hidden; padding: 14px 4px;
+                       border-radius: 11px; outline: none; }
+  .carousel-viewport[aria-disabled="true"] { pointer-events: none; opacity: .7; }
+  .carousel-viewport:focus-visible { box-shadow: 0 0 0 2px #4388eb; }
+  .carousel-track { display: grid; grid-template-columns: repeat(9,minmax(0,1fr));
+                    gap: 6px; align-items: center; min-height: 144px; }
+  .carousel-item { min-width: 0; height: 124px; padding: 7px 5px; border-radius: 10px;
+                   border: 1px solid #354154; background: #0f151e; color: #dce4ef;
+                   display: grid; grid-template-rows: 82px auto; place-items: center;
+                   overflow: hidden; opacity: .45; transform: scale(.75); position: relative;
+                   transition: transform .16s ease,opacity .16s ease,border-color .16s ease,
+                               background .16s ease; }
+  .carousel-item[data-distance="3"] { opacity: .57; transform: scale(.82); }
+  .carousel-item[data-distance="2"] { opacity: .7; transform: scale(.88); }
+  .carousel-item[data-distance="1"] { opacity: .85; transform: scale(.96); }
+  .carousel-item[data-distance="0"] { opacity: 1; transform: translateY(-4px) scale(1.09);
+                                       border-color: #6fa8ff; background: #172844;
+                                       box-shadow: 0 10px 26px rgba(0,0,0,.38); }
+  .carousel-item.active-tag::after { content: "ACTIVE"; position: absolute; top: 4px; right: 4px;
+                                     font-size: 7px; color: #8ce5b1; background: #152a21;
+                                     border-radius: 3px; padding: 2px 3px; }
+  .carousel-item img { width: 70px; height: 80px; object-fit: contain; }
+  .carousel-item[data-distance="0"] img { width: 82px; height: 86px; }
+  .carousel-fallback { display: grid; place-items: center; width: 64px; height: 70px;
+                       border-radius: 50%; background: #273244; color: #adbbcd;
+                       font-size: 10px; text-align: center; padding: 6px; }
+  .carousel-label { width: 100%; font-size: 9px; line-height: 1.16; text-align: center;
+                    overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2;
+                    -webkit-box-orient: vertical; }
+  .carousel-position { text-align: center; min-height: 19px; margin: 2px 0 8px; }
+  .toolbar { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin: 10px 0; }
+  .detail { display: grid; grid-template-columns: 110px 1fr; gap: 14px; margin-top: 12px;
+            padding-top: 12px; border-top: 1px solid #293344; }
+  .detail img { width: 110px; height: 110px; object-fit: contain; }
+  .detail-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(140px,1fr));
+                 gap: 7px 12px; margin-top: 8px; color: #9ba9bc; font-size: 12px; }
+  .detail-grid b { display: block; color: #edf1f7; overflow-wrap: anywhere; }
+  .write-grid { display: grid; grid-template-columns: 140px 1fr auto; gap: 8px; align-items: end; }
+  label span { display: block; color: #9ba9bc; font-size: 12px; margin-bottom: 5px; }
+  progress { width: 100%; margin-top: 10px; accent-color: #4388eb; }
+  #results { list-style: none; padding: 0; margin: 10px 0 0; }
+  #results li { padding: 6px 8px; border-left: 3px solid #4b5565; margin: 5px 0;
+                background: #0f151e; font-size: 13px; }
+  #results li.pass { border-color: #35c66f; }
+  #results li.fail { border-color: #ef6262; }
+  #results li.skip { border-color: #e6b94f; }
+  #log { max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+         font-size: 12px; line-height: 1.5; background: #090d12; padding: 12px;
+         border-radius: 8px; border: 1px solid #293344; }
+  .hidden { display: none !important; }
+  @media (max-width: 800px) {
+    .grid { grid-template-columns: 1fr; }
+    .wide { grid-column: auto; }
+    header { display: block; }
+    .write-grid, .toolbar { grid-template-columns: 1fr; }
+    .carousel-track { grid-template-columns: repeat(5,minmax(0,1fr)); }
+    .carousel-item[data-distance="3"],
+    .carousel-item[data-distance="4"] { display: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Virtual Amiibo Diagnostic</h1>
+      <div class="muted">Browser-only PicoSwitch2 adapter simulation. No Web Serial device required.</div>
+    </div>
+    <span class="pill">SIMULATED ADAPTER</span>
+  </header>
+
+  <div class="grid">
+    <section class="card">
+      <div class="actions" style="justify-content:space-between">
+        <h2 style="margin:0">Active simulated adapter slot</h2>
+        <label class="actions">
+          <input id="enabled" type="checkbox" style="width:auto">
+          <span style="margin:0">Virtual Amiibo enabled</span>
+        </label>
+      </div>
+      <div class="meta">
+        <div>Selected tag<b id="activeName">None</b></div>
+        <div>UID<b id="activeUid">—</b></div>
+        <div>Amiibo ID<b id="activeId">—</b></div>
+        <div>Format<b id="activeFormat">—</b></div>
+        <div>CRC32<b id="activeCrc">—</b></div>
+        <div>State<b id="activeState">Empty</b></div>
+      </div>
+      <div class="actions">
+        <button id="saveBtn" disabled>Save current Amiibo</button>
+        <button id="persistBtn" disabled>Persist simulated adapter</button>
+        <button id="resetBtn" class="danger">Clear simulated adapter</button>
+      </div>
+      <progress id="progress" max="100" value="0" class="hidden"></progress>
+      <p id="message" class="muted">Import an amiibo and load it from the library.</p>
+    </section>
+
+    <section class="card">
+      <h2>Automated checks</h2>
+      <p class="muted">
+        Exercises length/BCC validation, ID parsing, transactional 32-byte reconstruction, CRC32,
+        write isolation, IndexedDB, and a live AmiiboAPI request.
+      </p>
+      <div class="actions">
+        <button id="selfTestBtn" class="primary">Run complete self-test</button>
+        <button id="clearResultsBtn">Clear results</button>
+      </div>
+      <ul id="results"></ul>
+    </section>
+
+    <section class="card wide">
+      <div class="actions" style="justify-content:space-between">
+        <h2 style="margin:0">Browser-local amiibo library</h2>
+        <span id="libraryCount" class="muted">No cached amiibo</span>
+      </div>
+      <p class="muted">
+        Choose one file or recursively scan a directory. Valid tag images are copied into this
+        browser profile; originals are opened read-only.
+      </p>
+      <div class="actions">
+        <input id="fileInput" type="file" accept=".bin,application/octet-stream" hidden>
+        <button id="chooseFileBtn" class="primary">Choose amiibo file</button>
+        <button id="chooseDirectoryBtn">Choose directory</button>
+        <button id="clearLibraryBtn" class="danger">Clear cached library</button>
+      </div>
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="Search name, folder, ID, UID, or type">
+        <button id="loadBtn" class="primary" disabled>Load selected into simulator</button>
+      </div>
+      <div class="carousel-shell">
+        <button id="carouselPrev" class="carousel-nav" aria-label="Previous amiibo">&lsaquo;</button>
+        <div id="carouselViewport" class="carousel-viewport" tabindex="0" role="group"
+             aria-label="Amiibo carousel; use left and right arrow keys">
+          <div id="carouselTrack" class="carousel-track"></div>
+        </div>
+        <button id="carouselNext" class="carousel-nav" aria-label="Next amiibo">&rsaquo;</button>
+      </div>
+      <div id="carouselPosition" class="carousel-position muted"></div>
+
+      <div id="detail" class="detail hidden">
+        <img id="detailImage" class="hidden" alt="">
+        <div>
+          <strong id="detailName">Unknown amiibo</strong>
+          <div id="detailPath" class="muted"></div>
+          <div class="detail-grid">
+            <div>Character<b id="detailCharacter">—</b></div>
+            <div>Game series<b id="detailGameSeries">—</b></div>
+            <div>Amiibo series<b id="detailAmiiboSeries">—</b></div>
+            <div>Product type<b id="detailType">—</b></div>
+            <div>Amiibo ID<b id="detailId">—</b></div>
+            <div>Model / variant<b id="detailModel">—</b></div>
+            <div>UID<b id="detailUid">—</b></div>
+            <div>Release (NA)<b id="detailRelease">—</b></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card wide">
+      <h2>Simulated console write</h2>
+      <p class="muted">
+        Applies exact bytes to the active in-memory image, marks it dirty, and leaves the persisted
+        snapshot unchanged. This deliberately edits encrypted tag bytes; use a disposable copy.
+      </p>
+      <div class="write-grid">
+        <label><span>Byte offset</span><input id="writeOffset" value="0xDC"></label>
+        <label><span>Hex bytes</span><input id="writeHex" value="A5" class="mono"></label>
+        <button id="writeBtn" disabled>Apply write</button>
+      </div>
+    </section>
+
+    <section class="card wide">
+      <div class="actions" style="justify-content:space-between">
+        <h2 style="margin:0">Diagnostic log</h2>
+        <button id="clearLogBtn">Clear log</button>
+      </div>
+      <pre id="log">Diagnostic ready.</pre>
+    </section>
+  </div>
+</main>
+
+<script>
+"use strict";
+const $ = selector => document.querySelector(selector);
+const LIBRARY_DB = "PicoSwitch2AmiiboLibrary";
+const LIBRARY_DB_VERSION = 1;
+const SIM_DB = "PicoSwitch2AmiiboDiagnostic";
+const SIM_DB_VERSION = 1;
+const metadataMemory = new Map();
+const CATALOG_KEY = "__amiiboapi_catalog__";
+const CATALOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+let libraryDb = null;
+let simulatorDb = null;
+let library = [];
+let selectedKey = "";
+let carouselIndex = 0;
+let busy = false;
+let catalog = null;
+let catalogById = new Map();
+let active = {
+  enabled: false,
+  loaded: false,
+  name: "",
+  libraryKey: "",
+  bytes: null,
+  dirty: false,
+  persisted: false
+};
+
+function log(message) {
+  const stamp = new Date().toLocaleTimeString();
+  $("#log").textContent += `\n[${stamp}] ${message}`;
+  $("#log").scrollTop = $("#log").scrollHeight;
+}
+
+function setMessage(message) {
+  $("#message").textContent = message;
+  log(message);
+}
+
+function idbRequest(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function idbDone(transaction) {
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error || new Error("IndexedDB transaction aborted"));
+  });
+}
+
+async function openLibraryDb() {
+  if (libraryDb) return libraryDb;
+  if (!("indexedDB" in window)) return null;
+  try {
+    const request = indexedDB.open(LIBRARY_DB, LIBRARY_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains("library"))
+        db.createObjectStore("library", {keyPath: "key"});
+      if (!db.objectStoreNames.contains("metadata"))
+        db.createObjectStore("metadata", {keyPath: "id"});
+    };
+    libraryDb = await idbRequest(request);
+    return libraryDb;
+  } catch (error) {
+    log(`Library IndexedDB unavailable: ${error.message}`);
+    return null;
+  }
+}
+
+async function openSimulatorDb() {
+  if (simulatorDb) return simulatorDb;
+  if (!("indexedDB" in window)) return null;
+  try {
+    const request = indexedDB.open(SIM_DB, SIM_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains("state"))
+        db.createObjectStore("state", {keyPath: "key"});
+    };
+    simulatorDb = await idbRequest(request);
+    return simulatorDb;
+  } catch (error) {
+    log(`Simulator IndexedDB unavailable: ${error.message}`);
+    return null;
+  }
+}
+
+function bytesToHex(bytes) {
+  return Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+
+function hexToBytes(hex) {
+  const compact = hex.replace(/[^0-9a-f]/gi, "");
+  if (!compact.length || compact.length % 2) throw new Error("Hex data must contain complete bytes.");
+  const bytes = new Uint8Array(compact.length / 2);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(compact.slice(i * 2, i * 2 + 2), 16);
+  return bytes;
+}
+
+function crc32(bytes) {
+  let crc = 0xFFFFFFFF;
+  for (const value of bytes) {
+    crc = (crc ^ value) >>> 0;
+    for (let bit = 0; bit < 8; bit++)
+      crc = ((crc >>> 1) ^ ((crc & 1) ? 0xEDB88320 : 0)) >>> 0;
+  }
+  return (~crc) >>> 0;
+}
+
+function validateAmiibo(bytes) {
+  if (bytes.length !== 540 && bytes.length !== 572)
+    return `Expected 540 or 572 bytes; got ${bytes.length}.`;
+  const bcc0 = (0x88 ^ bytes[0] ^ bytes[1] ^ bytes[2]) & 0xFF;
+  const bcc1 = (bytes[4] ^ bytes[5] ^ bytes[6] ^ bytes[7]) & 0xFF;
+  if (bytes[3] !== bcc0 || bytes[8] !== bcc1) return "Invalid NTAG215 UID/BCC fields.";
+  return "";
+}
+
+function parseIdentity(bytes) {
+  const typeCode = bytes[0x57];
+  const typeNames = {
+    0x00: "Figure", 0x01: "Card", 0x02: "Yarn",
+    0x03: "Power-Up Band", 0x04: "Wood Block"
+  };
+  return {
+    id: bytesToHex(bytes.subarray(0x54, 0x5C)),
+    uid: bytesToHex(new Uint8Array([
+      bytes[0], bytes[1], bytes[2], bytes[4], bytes[5], bytes[6], bytes[7]
+    ])),
+    characterGameCode: bytesToHex(bytes.subarray(0x54, 0x56)),
+    characterVariant: bytes[0x56],
+    typeCode,
+    typeName: typeNames[typeCode] || `Type 0x${typeCode.toString(16).padStart(2, "0").toUpperCase()}`,
+    modelNumber: bytesToHex(bytes.subarray(0x58, 0x5A)),
+    seriesCode: bytes[0x5A],
+    formatVersion: bytes[0x5B],
+    extendedVariant: bytesToHex(bytes.subarray(0x5C, 0x60))
+  };
+}
+
+function normalizeBytes(value) {
+  if (value instanceof Uint8Array) return new Uint8Array(value);
+  if (value instanceof ArrayBuffer) return new Uint8Array(value.slice(0));
+  return new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+}
+
+async function entryFromFile(file, path, source) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const error = validateAmiibo(bytes);
+  if (error) return {error};
+  const identity = parseIdentity(bytes);
+  return {
+    entry: {
+      key: `${source}:${path}:${identity.uid}`,
+      name: file.name,
+      label: file.name.replace(/\.bin$/i, ""),
+      path,
+      size: bytes.length,
+      modified: file.lastModified || 0,
+      bytes: bytes.buffer.slice(0),
+      ...identity
+    }
+  };
+}
+
+async function cacheEntry(entry) {
+  let persisted = false;
+  const db = await openLibraryDb();
+  if (db) {
+    try {
+      const tx = db.transaction("library", "readwrite");
+      tx.objectStore("library").put(entry);
+      await idbDone(tx);
+      persisted = true;
+    } catch (error) {
+      log(`Library cache write failed: ${error.message}`);
+    }
+  }
+  const index = library.findIndex(item => item.key === entry.key);
+  if (index >= 0) library[index] = entry;
+  else library.push(entry);
+  library.sort((a, b) => a.path.localeCompare(b.path, undefined, {numeric: true}));
+  renderLibrary();
+  return persisted;
+}
+
+async function replaceLibrary(entries) {
+  let persisted = false;
+  const db = await openLibraryDb();
+  if (db) {
+    try {
+      const tx = db.transaction("library", "readwrite");
+      const store = tx.objectStore("library");
+      store.clear();
+      for (const entry of entries) store.put(entry);
+      await idbDone(tx);
+      persisted = true;
+      if (navigator.storage?.persist) navigator.storage.persist().catch(() => false);
+    } catch (error) {
+      log(`Directory cache write failed: ${error.message}`);
+    }
+  }
+  library = entries;
+  if (active.loaded && active.bytes) {
+    const activeUid = parseIdentity(normalizeBytes(active.bytes)).uid;
+    const activeEntry = entries.find(entry => entry.uid === activeUid);
+    if (activeEntry) selectedKey = activeEntry.key;
+  }
+  renderLibrary();
+  return persisted;
+}
+
+async function loadLibrary() {
+  const db = await openLibraryDb();
+  if (!db) return renderLibrary();
+  try {
+    const tx = db.transaction("library", "readonly");
+    library = await idbRequest(tx.objectStore("library").getAll());
+    if (active.loaded && active.bytes) {
+      const activeUid = parseIdentity(normalizeBytes(active.bytes)).uid;
+      const activeEntry = library.find(entry => entry.uid === activeUid);
+      if (activeEntry) selectedKey = activeEntry.key;
+    }
+  } catch (error) {
+    log(`Could not read cached library: ${error.message}`);
+  }
+  renderLibrary();
+  if (library.length) {
+    loadCatalog()
+      .then(() => {
+        renderLibrary();
+        log(`AmiiboAPI catalog loaded: ${catalog.length} entries, ` +
+          `${library.filter(entry => catalogById.has(entry.id)).length} library matches.`);
+      })
+      .catch(error => log(`AmiiboAPI catalog unavailable: ${error.message}`));
+  }
+}
+
+function filteredLibrary() {
+  const query = $("#search").value.trim().toLowerCase();
+  if (!query) return library;
+  return library.filter(entry => {
+    const metadata = catalogMetadata(entry);
+    return (`${entry.label} ${entry.path} ${entry.id} ${entry.uid} ${entry.typeName} ` +
+      `${entry.modelNumber} ${entry.characterGameCode} ${metadata?.name || ""} ` +
+      `${metadata?.character || ""} ${metadata?.gameSeries || ""} ` +
+      `${metadata?.amiiboSeries || ""} ${metadata?.type || ""}`)
+        .toLowerCase().includes(query);
+  });
+}
+
+function selectedEntry() {
+  return library.find(entry => entry.key === selectedKey) || null;
+}
+
+function renderLibrary() {
+  const entries = filteredLibrary();
+  const track = $("#carouselTrack");
+  track.textContent = "";
+  $("#libraryCount").textContent = library.length
+    ? `${library.length} cached · ${entries.length} shown` +
+      (catalog
+        ? ` · ${library.filter(entry => catalogById.has(entry.id)).length} catalog matches`
+        : "")
+    : "No cached amiibo";
+  if (!entries.length) {
+    selectedKey = "";
+    carouselIndex = 0;
+    $("#detail").classList.add("hidden");
+    $("#carouselPosition").textContent = "No matching amiibo";
+    $("#carouselPrev").disabled = true;
+    $("#carouselNext").disabled = true;
+  } else {
+    const selectedIndex = entries.findIndex(entry => entry.key === selectedKey);
+    if (selectedIndex >= 0) carouselIndex = selectedIndex;
+    else {
+      carouselIndex = Math.min(carouselIndex, entries.length - 1);
+      selectedKey = entries[carouselIndex].key;
+    }
+    const seen = new Set();
+    for (let offset = -4; offset <= 4; offset++) {
+      const index = (carouselIndex + offset + entries.length) % entries.length;
+      if (seen.has(index)) {
+        const spacer = document.createElement("div");
+        spacer.setAttribute("aria-hidden", "true");
+        track.appendChild(spacer);
+        continue;
+      }
+      seen.add(index);
+      const entry = entries[index];
+      const metadata = catalogMetadata(entry);
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "carousel-item";
+      item.dataset.distance = String(Math.abs(offset));
+      if (active.libraryKey === entry.key) item.classList.add("active-tag");
+      item.title = `${metadata?.name || entry.label}\n${entry.path}\n${entry.id}`;
+      item.setAttribute("aria-label",
+        `${metadata?.name || entry.label}${offset === 0 ? ", selected" : ""}`);
+      item.onclick = () => selectEntry(entry.key);
+
+      const imageUrl = metadata?.imgwebp || metadata?.image || "";
+      const fallback = document.createElement("span");
+      fallback.className = "carousel-fallback";
+      fallback.textContent = entry.typeName;
+      if (imageUrl) {
+        const image = document.createElement("img");
+        image.src = imageUrl;
+        image.alt = "";
+        fallback.classList.add("hidden");
+        image.onerror = () => {
+          image.classList.add("hidden");
+          fallback.classList.remove("hidden");
+        };
+        item.appendChild(image);
+      }
+      item.appendChild(fallback);
+      const label = document.createElement("span");
+      label.className = "carousel-label";
+      label.textContent = metadata?.name || entry.label;
+      item.appendChild(label);
+      track.appendChild(item);
+    }
+    $("#carouselPosition").textContent =
+      `${carouselIndex + 1} of ${entries.length} · ` +
+      `${catalogMetadata(entries[carouselIndex])?.name || entries[carouselIndex].label}`;
+    $("#carouselPrev").disabled = busy || entries.length < 2;
+    $("#carouselNext").disabled = busy || entries.length < 2;
+    renderDetail(entries[carouselIndex], catalogMetadata(entries[carouselIndex]));
+  }
+  $("#loadBtn").disabled = busy || !selectedKey;
+}
+
+function moveCarousel(delta) {
+  if ($("#carouselViewport").getAttribute("aria-disabled") === "true") return;
+  const entries = filteredLibrary();
+  if (entries.length < 2) return;
+  carouselIndex = (carouselIndex + delta + entries.length) % entries.length;
+  selectEntry(entries[carouselIndex].key);
+}
+
+async function cachedMetadata(id) {
+  if (metadataMemory.has(id)) return metadataMemory.get(id);
+  const db = await openLibraryDb();
+  if (!db) return null;
+  try {
+    const tx = db.transaction("metadata", "readonly");
+    const record = await idbRequest(tx.objectStore("metadata").get(id));
+    if (record) metadataMemory.set(id, record.data);
+    return record?.data || null;
+  } catch {
+    return null;
+  }
+}
+
+async function cacheMetadata(id, data) {
+  metadataMemory.set(id, data);
+  const db = await openLibraryDb();
+  if (!db) return;
+  try {
+    const tx = db.transaction("metadata", "readwrite");
+    tx.objectStore("metadata").put({id, data, cachedAt: Date.now()});
+    await idbDone(tx);
+  } catch (error) {
+    log(`Metadata cache write failed: ${error.message}`);
+  }
+}
+
+function installCatalog(items) {
+  catalog = items;
+  catalogById = new Map();
+  for (const item of items) {
+    const id = `${item.head || ""}${item.tail || ""}`.toUpperCase();
+    if (id.length === 16) catalogById.set(id, item);
+  }
+}
+
+function catalogMetadata(entry) {
+  return metadataMemory.get(entry.id) || catalogById.get(entry.id) || null;
+}
+
+async function readCachedCatalog() {
+  const db = await openLibraryDb();
+  if (!db) return null;
+  try {
+    const tx = db.transaction("metadata", "readonly");
+    return await idbRequest(tx.objectStore("metadata").get(CATALOG_KEY));
+  } catch {
+    return null;
+  }
+}
+
+async function cacheCatalog(items) {
+  const db = await openLibraryDb();
+  if (!db) return;
+  try {
+    const tx = db.transaction("metadata", "readwrite");
+    tx.objectStore("metadata").put({id: CATALOG_KEY, data: items, cachedAt: Date.now()});
+    await idbDone(tx);
+  } catch (error) {
+    log(`Catalog cache write failed: ${error.message}`);
+  }
+}
+
+async function loadCatalog(forceRefresh = false) {
+  if (catalog && !forceRefresh) return catalog;
+  const cached = await readCachedCatalog();
+  if (!forceRefresh && cached && Array.isArray(cached.data) &&
+      Date.now() - (cached.cachedAt || 0) < CATALOG_MAX_AGE_MS) {
+    installCatalog(cached.data);
+    return catalog;
+  }
+  try {
+    const response = await fetch("https://amiiboapi.org/api/amiibo/", {cache: "no-cache"});
+    if (!response.ok) throw new Error(`AmiiboAPI returned HTTP ${response.status}`);
+    const body = await response.json();
+    const items = Array.isArray(body.amiibo) ? body.amiibo : [];
+    if (!items.length) throw new Error("AmiiboAPI returned an empty catalog");
+    installCatalog(items);
+    await cacheCatalog(items);
+    return catalog;
+  } catch (error) {
+    if (cached && Array.isArray(cached.data) && cached.data.length) {
+      installCatalog(cached.data);
+      return catalog;
+    }
+    throw error;
+  }
+}
+
+async function lookupMetadata(entry) {
+  const cached = await cachedMetadata(entry.id);
+  if (cached) return cached;
+  await loadCatalog();
+  const match = catalogById.get(entry.id) || null;
+  if (!match) throw new Error(`No AmiiboAPI entry for ${entry.id}`);
+  await cacheMetadata(entry.id, match);
+  return match;
+}
+
+function renderDetail(entry, metadata = null) {
+  if (!entry || entry.key !== selectedKey) return;
+  $("#detail").classList.remove("hidden");
+  $("#detailName").textContent = metadata?.name || entry.label;
+  $("#detailPath").textContent = entry.path;
+  $("#detailCharacter").textContent = metadata?.character ||
+    `Code ${entry.characterGameCode}, variant 0x${entry.characterVariant.toString(16).padStart(2, "0").toUpperCase()}`;
+  $("#detailGameSeries").textContent = metadata?.gameSeries || "Catalog unavailable";
+  $("#detailAmiiboSeries").textContent = metadata?.amiiboSeries ||
+    `Code 0x${entry.seriesCode.toString(16).padStart(2, "0").toUpperCase()}`;
+  $("#detailType").textContent = metadata?.type || entry.typeName;
+  $("#detailId").textContent = entry.id;
+  $("#detailModel").textContent =
+    `${entry.modelNumber} / ${entry.extendedVariant} · format ${entry.formatVersion}`;
+  $("#detailUid").textContent = entry.uid;
+  $("#detailRelease").textContent = metadata?.release?.na || "—";
+  const image = $("#detailImage");
+  const imageUrl = metadata?.imgwebp || metadata?.image || "";
+  image.classList.toggle("hidden", !imageUrl);
+  image.src = imageUrl;
+  image.alt = imageUrl ? `${metadata?.name || entry.label} artwork` : "";
+  image.onerror = () => image.classList.add("hidden");
+}
+
+async function selectEntry(key) {
+  selectedKey = key;
+  renderLibrary();
+  const entry = selectedEntry();
+  if (!entry) return;
+  renderDetail(entry);
+  try {
+    const metadata = await lookupMetadata(entry);
+    renderLibrary();
+    renderDetail(entry, metadata);
+    log(`AmiiboAPI resolved ${entry.id} as ${metadata.name}.`);
+  } catch (error) {
+    log(`Catalog lookup unavailable for ${entry.id}: ${error.message}`);
+  }
+}
+
+async function *walkDirectory(directory, prefix = "") {
+  for await (const [name, handle] of directory.entries()) {
+    const path = prefix ? `${prefix}/${name}` : name;
+    if (handle.kind === "directory") yield *walkDirectory(handle, path);
+    else if (handle.kind === "file" && name.toLowerCase().endsWith(".bin"))
+      yield {file: await handle.getFile(), path};
+  }
+}
+
+function setBusy(value, progress = 0) {
+  busy = value;
+  for (const id of [
+    "chooseFileBtn", "chooseDirectoryBtn", "clearLibraryBtn", "loadBtn",
+    "saveBtn", "persistBtn", "resetBtn", "writeBtn", "selfTestBtn"
+  ]) $("#" + id).disabled = value;
+  $("#progress").classList.toggle("hidden", !value);
+  $("#progress").value = progress;
+  $("#carouselViewport").setAttribute("aria-disabled", value ? "true" : "false");
+  $("#carouselPrev").disabled = value;
+  $("#carouselNext").disabled = value;
+  if (!value) {
+    $("#loadBtn").disabled = !selectedKey;
+    $("#saveBtn").disabled = !active.loaded;
+    $("#persistBtn").disabled = !active.loaded;
+    $("#writeBtn").disabled = !active.loaded;
+    renderLibrary();
+  }
+}
+
+async function chooseDirectory() {
+  if (!window.showDirectoryPicker) {
+    setMessage("Directory selection is unavailable. Use current Chrome/Edge or choose one file.");
+    return;
+  }
+  let directory;
+  try {
+    directory = await window.showDirectoryPicker({
+      id: "picoswitch-amiibo-diagnostic",
+      mode: "read"
+    });
+  } catch (error) {
+    if (error.name !== "AbortError") setMessage(`Directory selection failed: ${error.message}`);
+    return;
+  }
+  setBusy(true);
+  const entries = [];
+  let invalid = 0;
+  let examined = 0;
+  setMessage(`Scanning ${directory.name} recursively…`);
+  try {
+    for await (const item of walkDirectory(directory)) {
+      examined++;
+      const result = await entryFromFile(
+        item.file, `${directory.name}/${item.path}`, `directory:${directory.name}`);
+      if (result.entry) entries.push(result.entry);
+      else invalid++;
+      if (examined % 40 === 0) {
+        $("#progress").value = (examined % 100);
+        await new Promise(resolve => requestAnimationFrame(resolve));
+      }
+    }
+    entries.sort((a, b) => a.path.localeCompare(b.path, undefined, {numeric: true}));
+    const persisted = await replaceLibrary(entries);
+    let catalogMatches = null;
+    try {
+      await loadCatalog();
+      catalogMatches = entries.filter(entry => catalogById.has(entry.id)).length;
+      renderLibrary();
+    } catch (error) {
+      log(`AmiiboAPI catalog unavailable: ${error.message}`);
+    }
+    setMessage(`${persisted ? "Cached" : "Loaded for this session"} ${entries.length} valid amiibo` +
+      (invalid ? `; ignored ${invalid} invalid files.` : ".") +
+      (catalogMatches === null ? "" : ` AmiiboAPI matched ${catalogMatches}.`));
+  } catch (error) {
+    setMessage(`Directory scan failed after ${examined} files: ${error.message}`);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function importFile(file) {
+  const result = await entryFromFile(file, file.name, "file");
+  if (!result.entry) return setMessage(result.error);
+  const persisted = await cacheEntry(result.entry);
+  selectedKey = result.entry.key;
+  renderLibrary();
+  await selectEntry(selectedKey);
+  setMessage(`${file.name} ${persisted ? "cached" : "loaded for this session"} and selected.`);
+}
+
+function transactionalUpload(source) {
+  const expectedCrc = crc32(source);
+  const staging = new Uint8Array(source.length);
+  const covered = new Uint8Array(source.length);
+  const chunks = [];
+  for (let offset = 0; offset < source.length; offset += 32)
+    chunks.push({offset, bytes: source.subarray(offset, Math.min(source.length, offset + 32))});
+  for (const chunk of chunks) {
+    if (chunk.offset + chunk.bytes.length > staging.length) throw new Error("Chunk exceeds image.");
+    staging.set(chunk.bytes, chunk.offset);
+    covered.fill(1, chunk.offset, chunk.offset + chunk.bytes.length);
+  }
+  if (covered.some(value => value !== 1)) throw new Error("Transactional upload has gaps.");
+  if (crc32(staging) !== expectedCrc) throw new Error("Transactional upload CRC mismatch.");
+  return staging;
+}
+
+async function loadSelectedIntoSimulator() {
+  const entry = selectedEntry();
+  if (!entry) return;
+  setBusy(true);
+  try {
+    const source = normalizeBytes(entry.bytes);
+    const staged = transactionalUpload(source);
+    for (let done = 0; done < staged.length; done += 32) {
+      $("#progress").value = Math.round(Math.min(staged.length, done + 32) * 100 / staged.length);
+      await new Promise(resolve => setTimeout(resolve, 3));
+    }
+    active = {
+      enabled: $("#enabled").checked,
+      loaded: true,
+      name: entry.name,
+      libraryKey: entry.key,
+      bytes: staged.buffer.slice(0),
+      dirty: false,
+      persisted: false
+    };
+    const persisted = await persistSimulator();
+    setMessage(`${entry.name} reconstructed in 32-byte chunks and CRC verified` +
+      (persisted ? ", then persisted." : "; browser persistence is unavailable."));
+  } catch (error) {
+    setMessage(`Simulated upload failed: ${error.message}`);
+  } finally {
+    setBusy(false);
+    renderActive();
+  }
+}
+
+function serializableActive() {
+  return {
+    key: "active",
+    enabled: active.enabled,
+    loaded: active.loaded,
+    name: active.name,
+    libraryKey: active.libraryKey,
+    bytes: active.bytes ? normalizeBytes(active.bytes).buffer : null,
+    dirty: active.dirty,
+    persisted: true
+  };
+}
+
+async function persistSimulator() {
+  if (!active.loaded) return false;
+  const db = await openSimulatorDb();
+  if (!db) {
+    active.persisted = false;
+    renderActive();
+    log("Simulator persistence unavailable; active image remains in memory.");
+    return false;
+  }
+  try {
+    const tx = db.transaction("state", "readwrite");
+    tx.objectStore("state").put(serializableActive());
+    await idbDone(tx);
+    active.persisted = true;
+    active.dirty = false;
+    renderActive();
+    log("Simulated adapter snapshot persisted.");
+    return true;
+  } catch (error) {
+    active.persisted = false;
+    renderActive();
+    setMessage(`Simulator persistence failed: ${error.message}`);
+    return false;
+  }
+}
+
+async function restoreSimulator() {
+  const db = await openSimulatorDb();
+  if (!db) return renderActive();
+  try {
+    const tx = db.transaction("state", "readonly");
+    const saved = await idbRequest(tx.objectStore("state").get("active"));
+    if (saved?.loaded) {
+      active = {...saved, bytes: normalizeBytes(saved.bytes).buffer, persisted: true};
+      if (active.libraryKey) selectedKey = active.libraryKey;
+      $("#enabled").checked = !!active.enabled;
+      log(`Restored simulated adapter slot: ${active.name}`);
+    }
+  } catch (error) {
+    log(`Could not restore simulated adapter: ${error.message}`);
+  }
+  renderActive();
+}
+
+async function clearSimulator() {
+  if (active.loaded && !confirm("Clear the simulated adapter slot? The cached library is unaffected."))
+    return;
+  const db = await openSimulatorDb();
+  if (db) {
+    const tx = db.transaction("state", "readwrite");
+    tx.objectStore("state").delete("active");
+    await idbDone(tx);
+  }
+  active = {
+    enabled: $("#enabled").checked,
+    loaded: false,
+    name: "",
+    libraryKey: "",
+    bytes: null,
+    dirty: false,
+    persisted: false
+  };
+  renderActive();
+  setMessage("Simulated adapter slot cleared.");
+}
+
+function renderActive() {
+  const bytes = active.loaded ? normalizeBytes(active.bytes) : null;
+  const identity = bytes ? parseIdentity(bytes) : null;
+  $("#enabled").checked = !!active.enabled;
+  $("#activeName").textContent = active.loaded ? active.name : "None";
+  $("#activeUid").textContent = identity?.uid || "—";
+  $("#activeId").textContent = identity?.id || "—";
+  $("#activeFormat").textContent = bytes
+    ? `${bytes.length}-byte ${bytes.length === 572 ? "extended" : "raw"} dump`
+    : "—";
+  $("#activeCrc").textContent = bytes
+    ? crc32(bytes).toString(16).toUpperCase().padStart(8, "0")
+    : "—";
+  $("#activeState").textContent = !active.loaded ? "Empty"
+    : active.dirty ? "Modified in RAM — save to library required"
+    : active.persisted ? "Persisted in simulator"
+    : "RAM only";
+  $("#saveBtn").disabled = busy || !active.loaded;
+  $("#persistBtn").disabled = busy || !active.loaded;
+  $("#writeBtn").disabled = busy || !active.loaded;
+  if ($("#carouselTrack")) renderLibrary();
+}
+
+async function applyConsoleWrite() {
+  if (!active.loaded) return;
+  try {
+    const offsetText = $("#writeOffset").value.trim();
+    const offset = Number(offsetText);
+    if (!Number.isInteger(offset) || offset < 0) throw new Error("Offset must be a non-negative number.");
+    const patch = hexToBytes($("#writeHex").value);
+    const bytes = normalizeBytes(active.bytes);
+    if (offset + patch.length > bytes.length)
+      throw new Error(`Write ends at ${offset + patch.length}, beyond ${bytes.length} bytes.`);
+    bytes.set(patch, offset);
+    active.bytes = bytes.buffer;
+    active.dirty = true;
+    active.persisted = false;
+    renderActive();
+    setMessage(`Simulated console wrote ${patch.length} byte(s) at 0x${offset.toString(16).toUpperCase()}.`);
+  } catch (error) {
+    setMessage(`Write rejected: ${error.message}`);
+  }
+}
+
+async function saveActiveToCache() {
+  if (!active.loaded) return;
+  const bytes = normalizeBytes(active.bytes);
+  const validationError = validateAmiibo(bytes);
+  if (validationError)
+    return setMessage(`Save failed validation: ${validationError}`);
+  const identity = parseIdentity(bytes);
+  const cached = library.find(entry => entry.key === active.libraryKey) ||
+    library.find(entry => entry.uid === identity.uid);
+  const name = cached?.name || active.name || `amiibo-${identity.uid}.bin`;
+  const updated = cached
+    ? {
+      ...cached,
+      size: bytes.length,
+      modified: Date.now(),
+      bytes: bytes.buffer.slice(0),
+      ...identity
+    }
+    : {
+      key: `saved:${identity.uid}`,
+      name,
+      label: name.replace(/\.bin$/i, ""),
+      path: `Saved from simulator/${name}`,
+      size: bytes.length,
+      modified: Date.now(),
+      bytes: bytes.buffer.slice(0),
+      ...identity
+    };
+  const persisted = await cacheEntry(updated);
+  if (!persisted) {
+    setMessage("Browser cache storage is unavailable; simulated dirty state was retained.");
+    return;
+  }
+  active.libraryKey = updated.key;
+  active.name = updated.name;
+  active.dirty = false;
+  renderActive();
+  setMessage(`Saved ${updated.name} to the browser library with current simulated writes.`);
+}
+
+async function clearLibrary() {
+  if (library.length && !confirm("Clear the cached diagnostic amiibo library?")) return;
+  const db = await openLibraryDb();
+  if (db) {
+    const tx = db.transaction("library", "readwrite");
+    tx.objectStore("library").clear();
+    await idbDone(tx);
+  }
+  library = [];
+  selectedKey = "";
+  renderLibrary();
+  $("#detail").classList.add("hidden");
+  setMessage("Cached library cleared; simulated adapter state was not changed.");
+}
+
+function makeSelfTestTag() {
+  const bytes = new Uint8Array(540);
+  bytes.set([0x04, 0x25, 0x7A], 0);
+  bytes[3] = 0x88 ^ bytes[0] ^ bytes[1] ^ bytes[2];
+  bytes.set([0x91, 0x22, 0x33, 0x44], 4);
+  bytes[8] = bytes[4] ^ bytes[5] ^ bytes[6] ^ bytes[7];
+  bytes.set([0xE1, 0x10, 0x3E, 0x00], 12);
+  bytes.set([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02], 0x54);
+  return bytes;
+}
+
+function addResult(kind, message) {
+  const item = document.createElement("li");
+  item.className = kind;
+  item.textContent = `${kind.toUpperCase()}: ${message}`;
+  $("#results").appendChild(item);
+}
+
+async function runSelfTest() {
+  $("#results").textContent = "";
+  setBusy(true);
+  let failed = false;
+  const check = (condition, message) => {
+    addResult(condition ? "pass" : "fail", message);
+    if (!condition) failed = true;
+  };
+  try {
+    const tag = makeSelfTestTag();
+    check(validateAmiibo(tag) === "", "540-byte UID/BCC validation");
+    const identity = parseIdentity(tag);
+    check(identity.uid === "04257A91223344", "seven-byte UID extraction");
+    check(identity.id === "0000000000000002", "eight-byte model ID extraction");
+    const rebuilt = transactionalUpload(tag);
+    check(rebuilt.every((value, index) => value === tag[index]), "32-byte transactional reconstruction");
+    check(crc32(rebuilt) === crc32(tag), "whole-image CRC32");
+    const changed = new Uint8Array(rebuilt);
+    changed[0xDC] ^= 0x5A;
+    check(changed[0xDC] !== rebuilt[0xDC], "console-write copy isolation");
+
+    const db = await openSimulatorDb();
+    if (db) {
+      const tx = db.transaction("state", "readwrite");
+      tx.objectStore("state").put({key: "selftest", value: "roundtrip"});
+      await idbDone(tx);
+      const readTx = db.transaction("state", "readonly");
+      const record = await idbRequest(readTx.objectStore("state").get("selftest"));
+      check(record?.value === "roundtrip", "IndexedDB write/read round trip");
+      const deleteTx = db.transaction("state", "readwrite");
+      deleteTx.objectStore("state").delete("selftest");
+      await idbDone(deleteTx);
+    } else {
+      addResult("skip", "IndexedDB unavailable in this browser context");
+    }
+
+    try {
+      const items = await loadCatalog(true);
+      const entry = items.find(item =>
+        `${item.head || ""}${item.tail || ""}`.toUpperCase() === "0000000000000002");
+      check(!!entry?.name && !!entry?.character && !!entry?.type,
+        `AmiiboAPI full catalog (${items.length} entries) and local exact-ID match`);
+    } catch (error) {
+      addResult("skip", `AmiiboAPI unavailable: ${error.message}`);
+    }
+  } catch (error) {
+    failed = true;
+    addResult("fail", error.message);
+  } finally {
+    addResult(failed ? "fail" : "pass",
+      failed ? "Self-test completed with failures" : "All available diagnostic checks completed");
+    setBusy(false);
+    log(`Self-test ${failed ? "failed" : "passed"}.`);
+  }
+}
+
+$("#chooseFileBtn").onclick = () => $("#fileInput").click();
+$("#fileInput").onchange = async event => {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (file) await importFile(file);
+};
+$("#chooseDirectoryBtn").onclick = chooseDirectory;
+$("#clearLibraryBtn").onclick = clearLibrary;
+$("#search").oninput = renderLibrary;
+$("#carouselPrev").onclick = () => moveCarousel(-1);
+$("#carouselNext").onclick = () => moveCarousel(1);
+$("#carouselViewport").onkeydown = event => {
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    moveCarousel(-1);
+  } else if (event.key === "ArrowRight") {
+    event.preventDefault();
+    moveCarousel(1);
+  }
+};
+$("#loadBtn").onclick = loadSelectedIntoSimulator;
+$("#saveBtn").onclick = saveActiveToCache;
+$("#persistBtn").onclick = persistSimulator;
+$("#resetBtn").onclick = clearSimulator;
+$("#writeBtn").onclick = applyConsoleWrite;
+$("#enabled").onchange = event => {
+  active.enabled = event.target.checked;
+  active.persisted = false;
+  renderActive();
+  log(`Virtual Amiibo feature gate ${active.enabled ? "enabled" : "disabled"} in simulator.`);
+};
+$("#selfTestBtn").onclick = runSelfTest;
+$("#clearResultsBtn").onclick = () => $("#results").textContent = "";
+$("#clearLogBtn").onclick = () => $("#log").textContent = "Log cleared.";
+
+loadLibrary();
+restoreSimulator();
+renderActive();
+</script>
+</body>
+</html>

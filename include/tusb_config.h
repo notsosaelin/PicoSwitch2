@@ -107,11 +107,10 @@ extern "C"
 #endif
 #define CFG_TUD_HID SWITCH_PRO_MAX_CONTROLLERS
 // CDC is used only in configuration mode (the device re-enumerates as a serial
-// port for the Web Serial config page). Both classes are compiled in; only one
-// is active at a time depending on which configuration descriptor is returned.
+// port for the locally served Web Serial config page). HID/vendor/audio classes
+// are present only in the other runtime personalities.
 #define CFG_TUD_CDC 1
-// MSC serves the read-only config-page disk in configuration mode.
-#define CFG_TUD_MSC 1
+#define CFG_TUD_MSC 0
 #define CFG_TUD_MIDI 0
 // The Switch 2 Pro Controller (NS2_PRO build) carries its command protocol on a
 // vendor-specific bulk interface (EP 0x02 OUT / 0x82 IN). Switch 1 does not.
@@ -132,9 +131,6 @@ extern "C"
 #define CFG_TUD_CDC_RX_BUFSIZE 256
 #define CFG_TUD_CDC_TX_BUFSIZE 4096
 #define CFG_TUD_CDC_EP_BUFSIZE 64
-
-// MSC block buffer (one 512-byte sector).
-#define CFG_TUD_MSC_EP_BUFSIZE 512
 
 #ifdef __cplusplus
 }

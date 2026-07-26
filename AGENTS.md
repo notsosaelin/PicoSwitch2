@@ -22,11 +22,15 @@ captures, tests, and the documents above outrank old plans or conversation histo
   `docs/experiments/refuted-hypotheses.md`.
 - Preserve historical experiment reports and `.archived.md` files. Correct active summaries and
   links instead of rewriting what an old experiment observed.
-- Do not emit a synthetic length-`0x28` DualSense motion PDU. Hardware proved that replacing only
-  timing and G6/G7/G8 while holding the other lanes static causes random motion.
+- Treat a software-generated length-`0x28` DualSense reference/magnetometer solution as a valid
+  long-term target. Do not repeat the refuted static-template experiment: hardware proved that
+  replacing only timing and G6/G7/G8 while holding the other changing lanes static causes random
+  motion. A future generator must model every console-relevant changing lane coherently.
 - Production DualSense/Edge motion uses the validated length-`0x1E` carrier.
 - Pico 2 W uses the validated 300 MHz audio build. Pico W intentionally retains its non-audio
   profile.
+- Configuration mode is CDC-only. Serve `web/index.html` locally with
+  `tools/run_config_portal.ps1`; do not reintroduce an MSC drive or embedded web disk.
 
 ## Repository layout
 

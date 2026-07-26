@@ -863,7 +863,7 @@ new code was written this pass — analysis, a new analysis tool, and documentat
 ## 8. Capture procedure used for the §3.6 experiment run (completed 2026-07-10)
 
 Recorded as-run, for reproducibility. Requires a genuine Pro Controller 2 and the config web UI
-(`web/index.html`, regenerated into `src/web_disk.h`).
+(`web/index.html`, served locally by `tools/run_config_portal.ps1`).
 
 1. Open the config page, connect to the Pico over serial, open the **Switch 2 BLE Capture** panel.
 2. Check the **Experimental: attempt motion-enable (handle 0x000E)** checkbox (pill goes

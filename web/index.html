@@ -28,6 +28,84 @@
   .muted { color: #7c8694; font-size: 13px; }
   .hidden { display: none !important; }
   .actions-bar { display: flex; gap: 10px; flex-wrap: wrap; }
+  .toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
+  .toggle input { width: 18px; height: 18px; accent-color: #2563eb; }
+  .amiibo-card { border: 1px solid #2b313b; background: #151a21; border-radius: 10px;
+                 padding: 14px 16px; margin-top: 12px; }
+  .amiibo-meta { display: grid; grid-template-columns: repeat(auto-fit,minmax(145px,1fr));
+                 gap: 8px; margin: 12px 0; }
+  .amiibo-meta div { background: #11151b; border: 1px solid #2b313b; border-radius: 7px;
+                     padding: 8px 10px; font-size: 12px; color: #9aa6b2; }
+  .amiibo-meta b { display: block; color: #e6e8ea; margin-top: 2px;
+                   font-family: ui-monospace,Consolas,monospace; }
+  .amiibo-library { margin: 14px 0; padding-top: 14px; border-top: 1px solid #2b313b; }
+  .amiibo-library-toolbar { display: grid; grid-template-columns: minmax(180px,1fr) auto;
+                            gap: 8px; margin: 8px 0; }
+  .amiibo-library input {
+    width: 100%; font: inherit; background: #11151b; color: #e6e8ea;
+    border: 1px solid #3a4150; border-radius: 7px; padding: 7px 9px;
+  }
+  .amiibo-carousel-shell { display: grid; grid-template-columns: auto minmax(0,1fr) auto;
+                           align-items: center; gap: 8px; margin-top: 10px; }
+  .amiibo-carousel-nav { width: 38px; height: 56px; padding: 0; font-size: 24px;
+                         border-radius: 9px; }
+  .amiibo-carousel-viewport { min-width: 0; overflow: hidden; padding: 12px 3px;
+                              border-radius: 10px; outline: none; }
+  .amiibo-carousel-viewport[aria-disabled="true"] { pointer-events: none; opacity: .7; }
+  .amiibo-carousel-viewport:focus-visible { box-shadow: 0 0 0 2px #3b82f6; }
+  .amiibo-carousel-track { display: grid; grid-template-columns: repeat(9,minmax(0,1fr));
+                           gap: 5px; align-items: center; min-height: 128px; }
+  .amiibo-carousel-item { min-width: 0; height: 112px; padding: 6px 4px; border-radius: 9px;
+                          border: 1px solid #313a48; background: #11151b; color: #d8dee8;
+                          display: grid; grid-template-rows: 72px auto; place-items: center;
+                          overflow: hidden; opacity: .46; transform: scale(.76);
+                          transition: transform .16s ease,opacity .16s ease,border-color .16s ease,
+                                      background .16s ease; }
+  .amiibo-carousel-item[data-distance="3"] { opacity: .58; transform: scale(.82); }
+  .amiibo-carousel-item[data-distance="2"] { opacity: .7; transform: scale(.88); }
+  .amiibo-carousel-item[data-distance="1"] { opacity: .84; transform: scale(.95); }
+  .amiibo-carousel-item[data-distance="0"] { opacity: 1; transform: translateY(-3px) scale(1.08);
+                                              border-color: #60a5fa; background: #17243a;
+                                              box-shadow: 0 8px 22px rgba(0,0,0,.35); }
+  .amiibo-carousel-item.active-tag::after { content: "ACTIVE"; position: absolute; top: 4px;
+                                            right: 4px; font-size: 7px; color: #bbf7d0;
+                                            background: #14532d; padding: 2px 3px;
+                                            border-radius: 3px; }
+  .amiibo-carousel-item { position: relative; }
+  .amiibo-carousel-item img { width: 62px; height: 70px; object-fit: contain; }
+  .amiibo-carousel-item[data-distance="0"] img { width: 72px; height: 76px; }
+  .amiibo-carousel-fallback { display: grid; place-items: center; width: 58px; height: 64px;
+                              border-radius: 50%; background: #273244; color: #a9b7ca;
+                              font-size: 10px; text-align: center; padding: 5px; }
+  .amiibo-carousel-label { width: 100%; font-size: 9px; line-height: 1.15; text-align: center;
+                           overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2;
+                           -webkit-box-orient: vertical; }
+  .amiibo-copy-badge { position: absolute; right: 4px; bottom: 4px; padding: 2px 5px;
+                       border-radius: 999px; font-size: 8px; font-weight: 700;
+                       background: #263242; color: #b8c6d9; }
+  .amiibo-copy-badge.used { background: #173d2b; color: #85efae; }
+  #ui.offline > .quad, #ui.offline > .devtools,
+  #ui.offline > section:not(#amiiboPanel) { display: none; }
+  .amiibo-carousel-position { text-align: center; min-height: 18px; margin-top: 2px; }
+  .amiibo-detail { display: grid; grid-template-columns: 100px 1fr; gap: 12px;
+                   padding: 12px; margin-top: 9px; background: #11151b;
+                   border: 1px solid #2b313b; border-radius: 8px; }
+  .amiibo-detail img { width: 100px; height: 100px; object-fit: contain; }
+  .amiibo-detail-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(150px,1fr));
+                        gap: 6px 12px; font-size: 12px; color: #9aa6b2; }
+  .amiibo-detail-grid b { display: block; color: #e6e8ea; overflow-wrap: anywhere; }
+  @media (max-width: 580px) {
+    .amiibo-library-toolbar { grid-template-columns: 1fr; }
+    .amiibo-carousel-track { grid-template-columns: repeat(5,minmax(0,1fr)); }
+    .amiibo-carousel-item[data-distance="3"],
+    .amiibo-carousel-item[data-distance="4"] { display: none; }
+    .amiibo-detail { grid-template-columns: 1fr; }
+    .amiibo-detail img { margin: 0 auto; }
+  }
+  progress { width: 100%; height: 8px; margin-top: 10px; accent-color: #2563eb; }
+  details.devtools { margin-top: 18px; }
+  details.devtools > summary { cursor: pointer; color: #9aa6b2; font-size: 13px;
+                               padding: 10px 2px; }
 
   .quad { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 18px; }
   @media (max-width: 780px) { .quad { grid-template-columns: 1fr; } }
@@ -105,16 +183,17 @@
 <main>
   <section id="intro">
     <p class="muted">
-      Chrome or Edge required (Web Serial). On the adapter, <b>hold BOOTSEL ~5s</b> to enter config
+      Chrome or Edge required (Web Serial). On the adapter, <b>hold BOOTSEL for 2 seconds</b> to enter config
       mode, then click <b>Connect</b> and choose the <b>PicoSwitch Config</b> port. Pair a controller
       <i>before</i> entering config mode &mdash; it stays connected and its input streams live below.
+      The local amiibo library remains available without connecting an adapter.
     </p>
     <p id="unsupported" class="pill bad hidden">
       This browser doesn't support Web Serial &mdash; use Chrome or Edge on desktop.
     </p>
   </section>
 
-  <div id="ui" class="hidden">
+  <div id="ui" class="offline">
     <div class="quad">
       <section class="q">
         <h2>Current Input Type</h2>
@@ -123,14 +202,14 @@
         <div class="devimg">device image TBD</div>
       </section>
 
-      <section class="q" id="audioDiag">
+      <section class="q hidden" id="audioDiag">
         <h2>DualSense Audio Diagnostics</h2>
         <div id="audioVerdict" class="bigname">&mdash;</div>
         <div id="audioMeta" class="muted">Connect a DualSense in a tone/audio build to measure.</div>
         <button id="audioResetBtn" type="button">Reset counters</button>
       </section>
 
-      <section class="q" id="firmwareDiag">
+      <section class="q hidden" id="firmwareDiag">
         <h2>Controller Update Diagnostics</h2>
         <div id="firmwareDiagSummary" class="bigname">Waiting for trace</div>
         <pre id="firmwareDiagReads" class="muted"
@@ -160,9 +239,9 @@
           <thead><tr><th>Detected Button</th><th>Will Output As</th></tr></thead>
           <tbody id="mapBody"></tbody>
         </table>
-        <div id="rawReport" class="muted" title="Raw HID report from the controller — watch which byte changes when you press an unmapped button"
+        <div id="rawReport" class="muted hidden" title="Raw HID report from the controller — watch which byte changes when you press an unmapped button"
              style="font-family:ui-monospace,Consolas,monospace;font-size:11px;margin-top:14px;word-break:break-all">raw: &mdash;</div>
-        <div id="imuLine" class="muted" title="Live IMU state the report builder consumes — move the controller: accel/gyro should change"
+        <div id="imuLine" class="muted hidden" title="Live IMU state the report builder consumes — move the controller: accel/gyro should change"
              style="font-family:ui-monospace,Consolas,monospace;font-size:11px;margin-top:6px;word-break:break-all">imu: &mdash;</div>
         <pre id="imuAnomBox" class="muted" title="Most recent report-0x09 phase-discontinuity anomaly (mathematically-derived bound, see docs) — appears once anom &gt; 0 above"
              style="font-family:ui-monospace,Consolas,monospace;font-size:11px;margin-top:6px;white-space:pre-wrap;word-break:break-all;display:none"></pre>
@@ -205,6 +284,108 @@
       </section>
     </div>
 
+    <section id="amiiboPanel">
+      <div style="display:flex;justify-content:space-between;gap:16px;align-items:center;flex-wrap:wrap">
+        <div>
+          <h2 style="margin-bottom:4px">Virtual Amiibo</h2>
+          <div class="muted">Optional software NFC for controllers without a reader.</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="amiiboEnabled">
+          Enable Virtual Amiibo
+        </label>
+      </div>
+      <div class="amiibo-card">
+        <p class="muted" style="margin-top:0">
+          The adapter keeps an immutable Unused image and, after the console writes, a separate
+          Used image. Choose which copy is presented without destroying either one. Console writes
+          are saved to adapter flash before the tag is logically ejected.
+        </p>
+        <p class="notice">
+          Hardware validated: console reads and writes update the selected image, eject it after a
+          completed write, and present the updated image again on the next scan.
+        </p>
+        <div class="amiibo-meta">
+          <div>Selected tag<b id="amiiboName">None</b></div>
+          <div>UID<b id="amiiboUid">&mdash;</b></div>
+          <div>Format<b id="amiiboFormat">&mdash;</b></div>
+          <div>Save state<b id="amiiboSaveState">&mdash;</b></div>
+        </div>
+        <div class="actions-bar">
+          <input type="file" id="amiiboFile" accept=".bin,application/octet-stream" hidden>
+          <button id="amiiboChooseBtn" class="primary">Choose amiibo file</button>
+          <button id="amiiboDirectoryBtn">Choose directory</button>
+          <button id="amiiboSaveBtn" disabled>Save current Amiibo</button>
+          <button id="amiiboSelectCleanBtn" disabled>Present Unused copy</button>
+          <button id="amiiboSelectUsedBtn" disabled>Present Used copy</button>
+          <button id="amiiboPersistBtn" disabled>Force adapter save</button>
+        </div>
+        <progress id="amiiboProgress" max="100" value="0" class="hidden"></progress>
+        <div id="amiiboMessage" class="muted" style="margin-top:9px">
+          No amiibo selected.
+        </div>
+        <div class="amiibo-library">
+          <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
+            <b>Local amiibo library</b>
+            <span id="amiiboLibraryCount" class="muted">No cached amiibo</span>
+          </div>
+          <div class="muted">
+            Directory import scans subfolders recursively. Valid dumps are cached only in this
+            browser profile. Tag files, IDs, UIDs, and save data never leave the browser; when
+            online, the public AmiiboAPI catalog is downloaded and matched locally. Export the
+            saved library periodically so clearing browser data cannot remove your Used copies.
+          </div>
+          <div class="amiibo-library-toolbar">
+            <input id="amiiboLibrarySearch" type="search"
+                   placeholder="Search name, folder, ID, UID, or type">
+            <button id="amiiboLibraryClearBtn">Clear cached library</button>
+            <button id="amiiboLibraryExportBtn">Export saved library</button>
+            <input type="file" id="amiiboLibraryBackupFile"
+                   accept=".json,application/json" hidden>
+            <button id="amiiboLibraryImportBtn">Import library backup</button>
+          </div>
+          <div class="amiibo-carousel-shell">
+            <button id="amiiboCarouselPrev" class="amiibo-carousel-nav"
+                    aria-label="Previous amiibo">&lsaquo;</button>
+            <div id="amiiboCarouselViewport" class="amiibo-carousel-viewport" tabindex="0"
+                 role="group" aria-label="Amiibo carousel; use left and right arrow keys">
+              <div id="amiiboCarouselTrack" class="amiibo-carousel-track"></div>
+            </div>
+            <button id="amiiboCarouselNext" class="amiibo-carousel-nav"
+                    aria-label="Next amiibo">&rsaquo;</button>
+          </div>
+          <div id="amiiboCarouselPosition" class="amiibo-carousel-position muted"></div>
+          <div class="actions-bar" style="margin-top:9px">
+            <button id="amiiboLibraryLoadBtn" class="primary" disabled>
+              Send selected amiibo to adapter
+            </button>
+            <button id="amiiboLibraryUseCleanBtn" disabled>Use Unused copy</button>
+            <button id="amiiboLibraryUseSavedBtn" disabled>Use Used copy</button>
+          </div>
+          <div id="amiiboLibraryDetail" class="amiibo-detail hidden">
+            <img id="amiiboLibraryImage" alt="" class="hidden">
+            <div>
+              <div id="amiiboLibraryTitle" class="bigname">Unknown amiibo</div>
+              <div id="amiiboLibraryPath" class="muted"></div>
+              <div class="amiibo-detail-grid" style="margin-top:8px">
+                <div>Character<b id="amiiboLibraryCharacter">&mdash;</b></div>
+                <div>Game series<b id="amiiboLibraryGameSeries">&mdash;</b></div>
+                <div>Amiibo series<b id="amiiboLibrarySeries">&mdash;</b></div>
+                <div>Product type<b id="amiiboLibraryType">&mdash;</b></div>
+                <div>Amiibo ID<b id="amiiboLibraryId">&mdash;</b></div>
+                <div>Model / variant<b id="amiiboLibraryModel">&mdash;</b></div>
+                <div>UID<b id="amiiboLibraryUid">&mdash;</b></div>
+                <div>Selected data<b id="amiiboLibraryCopyState">&mdash;</b></div>
+                <div>Release (NA)<b id="amiiboLibraryRelease">&mdash;</b></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <details class="devtools" id="devTools">
+      <summary>Developer diagnostics and protocol capture</summary>
     <section>
       <h2>Switch 2 BLE Capture <span id="capStatus" class="pill">idle</span></h2>
       <p class="muted" style="margin-top:-4px">
@@ -315,6 +496,7 @@
       </div>
       <div id="capLive"></div>
     </section>
+    </details>
 
     <section>
       <h2>Log</h2>
@@ -325,7 +507,7 @@
   <section id="logStandalone">
     <h2>Status</h2>
     <div class="muted" style="font-family:ui-monospace,Consolas,monospace;font-size:12px">
-      Not connected. Click <b>Connect</b> above to begin.
+      Adapter not connected. The amiibo library above remains available offline.
     </div>
   </section>
 </main>
@@ -335,7 +517,7 @@
 const $ = s => document.querySelector(s);
 const log = m => {
   const el = $("#log");
-  if (el && !$("#ui").classList.contains("hidden")) { el.textContent += m + "\n"; el.scrollTop = el.scrollHeight; }
+  if (el && !$("#ui").classList.contains("offline")) { el.textContent += m + "\n"; el.scrollTop = el.scrollHeight; }
 };
 
 // Row = [JP_BUTTON bit, input label, Switch output label, out-byte index, out mask].
@@ -431,13 +613,31 @@ let polling = false;
 let currentRows = COMMON_ROWS.slice();
 let currentKey = "";        // vid:pid of the built menu (rebuild only on change)
 let currentIsElite = false;
+let amiiboStatus = null;
+let amiiboFileName = "";
+let amiiboLibrary = [];
+let amiiboLibrarySelectedKey = "";
+let amiiboCarouselIndex = 0;
+let amiiboLibraryBusy = false;
+let amiiboLibraryDb = null;
+const amiiboMetadataCache = new Map();
+let amiiboCatalog = null;
+let amiiboCatalogById = new Map();
+const AMIIBO_LIBRARY_DB = "PicoSwitch2AmiiboLibrary";
+const AMIIBO_LIBRARY_DB_VERSION = 1;
+const AMIIBO_LIBRARY_BACKUP_VERSION = 1;
+const AMIIBO_CATALOG_KEY = "__amiiboapi_catalog__";
+const AMIIBO_CATALOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 function setConnected(on) {
   $("#status").textContent = on ? "Connected" : "Disconnected";
   $("#status").className = "pill " + (on ? "ok" : "bad");
   $("#connectBtn").disabled = on;
-  $("#ui").classList.toggle("hidden", !on);
+  $("#ui").classList.toggle("offline", !on);
   $("#logStandalone").classList.toggle("hidden", on);
+  $("#amiiboEnabled").disabled = !on;
+  renderAmiiboLibrary();
+  amiiboSetBusy(false);
 }
 
 // ---- live 2-column view (dynamic per controller) ----
@@ -516,6 +716,1088 @@ function renderAudioStat(d) {
     `${d.codecGapLe12ms | 0}/${d.codecGapLe25ms | 0}/${d.codecGapOver25ms | 0} | ` +
     `USB speaker edges on/off ${d.usbSpeakerOnEdges | 0}/${d.usbSpeakerOffEdges | 0}, ` +
     `active ${speakerSeconds.toFixed(1)} s, current ${d.usbSpeakerActive ? "on" : "off"}`;
+}
+
+// ---- Browser-local amiibo library ----
+// The directory and single-file importers copy valid 540/572-byte images into
+// IndexedDB. Tag bytes, UID, and save data never leave the browser; only a
+// selected public model ID may be queried for catalog metadata. The original
+// directory never needs write permission. Console-mutated data is saved back
+// into the matching cached library record explicitly.
+function idbRequest(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function idbTransactionDone(transaction) {
+  return new Promise((resolve, reject) => {
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error || new Error("IndexedDB transaction aborted"));
+  });
+}
+
+async function openAmiiboLibraryDb() {
+  if (amiiboLibraryDb) return amiiboLibraryDb;
+  if (!("indexedDB" in window)) return null;
+  try {
+    const request = indexedDB.open(AMIIBO_LIBRARY_DB, AMIIBO_LIBRARY_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains("library"))
+        db.createObjectStore("library", {keyPath: "key"});
+      if (!db.objectStoreNames.contains("metadata"))
+        db.createObjectStore("metadata", {keyPath: "id"});
+    };
+    amiiboLibraryDb = await idbRequest(request);
+    return amiiboLibraryDb;
+  } catch (error) {
+    console.warn("Amiibo library cache unavailable", error);
+    return null;
+  }
+}
+
+function bytesToHex(bytes) {
+  return Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+
+function parseAmiiboIdentity(bytes) {
+  const id = bytesToHex(bytes.subarray(0x54, 0x5C));
+  const uid = bytesToHex(new Uint8Array([
+    bytes[0], bytes[1], bytes[2], bytes[4], bytes[5], bytes[6], bytes[7]
+  ]));
+  const typeCode = bytes[0x57];
+  const typeNames = {
+    0x00: "Figure",
+    0x01: "Card",
+    0x02: "Yarn",
+    0x03: "Power-Up Band",
+    0x04: "Wood Block"
+  };
+  return {
+    id,
+    uid,
+    characterGameCode: bytesToHex(bytes.subarray(0x54, 0x56)),
+    characterVariant: bytes[0x56],
+    typeCode,
+    typeName: typeNames[typeCode] || `Type 0x${typeCode.toString(16).padStart(2, "0").toUpperCase()}`,
+    modelNumber: bytesToHex(bytes.subarray(0x58, 0x5A)),
+    seriesCode: bytes[0x5A],
+    formatVersion: bytes[0x5B],
+    extendedVariant: bytesToHex(bytes.subarray(0x5C, 0x60))
+  };
+}
+
+function friendlyAmiiboFileName(name) {
+  return name.replace(/\.bin$/i, "");
+}
+
+function amiiboBuffer(value) {
+  if (value instanceof ArrayBuffer) return value.slice(0);
+  if (ArrayBuffer.isView(value))
+    return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+  return null;
+}
+
+function normalizeAmiiboLibraryEntry(entry) {
+  const legacy = amiiboBuffer(entry.bytes);
+  const clean = amiiboBuffer(entry.cleanBytes) || legacy;
+  const used = amiiboBuffer(entry.usedBytes);
+  const usingUsed = !!entry.usingUsed && !!used;
+  return {
+    ...entry,
+    cleanBytes: clean,
+    usedBytes: used,
+    usingUsed,
+    // Keep `bytes` as a compatibility view for older cached records and
+    // previous portal builds. New logic always uses cleanBytes/usedBytes.
+    bytes: (usingUsed ? used : clean)?.slice(0) || null
+  };
+}
+
+function amiiboEntryBytes(entry, used = entry?.usingUsed) {
+  if (!entry) return null;
+  const normalized = normalizeAmiiboLibraryEntry(entry);
+  const buffer = used && normalized.usedBytes
+    ? normalized.usedBytes : normalized.cleanBytes;
+  return buffer ? new Uint8Array(buffer) : null;
+}
+
+function amiiboEntryState(entry) {
+  const normalized = normalizeAmiiboLibraryEntry(entry);
+  return normalized.usingUsed && normalized.usedBytes ? "Used" : "Unused";
+}
+
+async function libraryEntryFromFile(file, path, keyPrefix) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const error = validateAmiiboFile(bytes);
+  if (error) return {error};
+  const identity = parseAmiiboIdentity(bytes);
+  return {
+    entry: normalizeAmiiboLibraryEntry({
+      key: `${keyPrefix}:${path}:${identity.uid}`,
+      name: file.name,
+      label: friendlyAmiiboFileName(file.name),
+      path,
+      size: bytes.length,
+      modified: file.lastModified || 0,
+      bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+      cleanBytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+      usedBytes: null,
+      usingUsed: false,
+      ...identity
+    })
+  };
+}
+
+async function replaceCachedAmiiboLibrary(entries, preserveExisting = true) {
+  entries = entries.map(entry => {
+    const normalized = normalizeAmiiboLibraryEntry(entry);
+    if (!preserveExisting) return normalized;
+    const prior = amiiboLibrary.find(item =>
+      item.key === normalized.key || item.uid === normalized.uid);
+    if (!prior) return normalized;
+    const old = normalizeAmiiboLibraryEntry(prior);
+    return normalizeAmiiboLibraryEntry({
+      ...normalized,
+      usedBytes: old.usedBytes,
+      usingUsed: old.usingUsed && !!old.usedBytes
+    });
+  });
+  const db = await openAmiiboLibraryDb();
+  let persisted = false;
+  if (db) {
+    try {
+      const tx = db.transaction("library", "readwrite");
+      const store = tx.objectStore("library");
+      store.clear();
+      for (const entry of entries) store.put(entry);
+      await idbTransactionDone(tx);
+      persisted = true;
+      if (navigator.storage && navigator.storage.persist)
+        navigator.storage.persist().catch(() => false);
+    } catch (error) {
+      console.warn("Could not persist amiibo directory cache", error);
+    }
+  }
+  amiiboLibrary = entries;
+  if (amiiboStatus?.loaded) {
+    const activeEntry = entries.find(entry => entry.uid === amiiboStatus.uid);
+    if (activeEntry) amiiboLibrarySelectedKey = activeEntry.key;
+  }
+  renderAmiiboLibrary();
+  return persisted;
+}
+
+async function cacheSingleAmiiboEntry(entry) {
+  entry = normalizeAmiiboLibraryEntry(entry);
+  const db = await openAmiiboLibraryDb();
+  let persisted = false;
+  if (db) {
+    try {
+      const tx = db.transaction("library", "readwrite");
+      tx.objectStore("library").put(entry);
+      await idbTransactionDone(tx);
+      persisted = true;
+      if (navigator.storage && navigator.storage.persist)
+        navigator.storage.persist().catch(() => false);
+    } catch (error) {
+      console.warn("Could not persist amiibo cache entry", error);
+    }
+  }
+  const index = amiiboLibrary.findIndex(item => item.key === entry.key);
+  if (index >= 0) amiiboLibrary[index] = entry;
+  else amiiboLibrary.push(entry);
+  renderAmiiboLibrary();
+  return persisted;
+}
+
+async function loadCachedAmiiboLibrary() {
+  const db = await openAmiiboLibraryDb();
+  if (!db) {
+    renderAmiiboLibrary();
+    return;
+  }
+  try {
+    const tx = db.transaction("library", "readonly");
+    amiiboLibrary = (await idbRequest(tx.objectStore("library").getAll()))
+      .map(normalizeAmiiboLibraryEntry);
+    if (amiiboStatus?.loaded) {
+      const activeEntry = amiiboLibrary.find(entry => entry.uid === amiiboStatus.uid);
+      if (activeEntry) amiiboLibrarySelectedKey = activeEntry.key;
+    }
+  } catch (error) {
+    console.warn("Could not load cached amiibo library", error);
+    amiiboLibrary = [];
+  }
+  renderAmiiboLibrary();
+  if (amiiboLibrary.length) {
+    loadAmiiboCatalog()
+      .then(() => renderAmiiboLibrary())
+      .catch(error => console.warn("Amiibo catalog unavailable", error));
+  }
+}
+
+async function *walkAmiiboDirectory(directory, prefix = "") {
+  for await (const [name, handle] of directory.entries()) {
+    const path = prefix ? `${prefix}/${name}` : name;
+    if (handle.kind === "directory") {
+      yield *walkAmiiboDirectory(handle, path);
+    } else if (handle.kind === "file" && name.toLowerCase().endsWith(".bin")) {
+      yield {file: await handle.getFile(), path};
+    }
+  }
+}
+
+async function chooseAmiiboDirectory() {
+  if (!window.showDirectoryPicker) {
+    $("#amiiboMessage").textContent =
+      "Directory import is unavailable in this browser. Use current Chrome or Edge, or choose files individually.";
+    return;
+  }
+  let directory;
+  try {
+    directory = await window.showDirectoryPicker({
+      id: "picoswitch-amiibo-library",
+      mode: "read"
+    });
+  } catch (error) {
+    if (error && error.name !== "AbortError")
+      $("#amiiboMessage").textContent = `Could not open directory: ${error.message}`;
+    return;
+  }
+
+  amiiboLibraryBusy = true;
+  amiiboSetBusy(true, 0);
+  const entries = [];
+  let invalid = 0;
+  let examined = 0;
+  $("#amiiboMessage").textContent = `Scanning ${directory.name} and its subfolders…`;
+  try {
+    for await (const item of walkAmiiboDirectory(directory)) {
+      examined++;
+      const result = await libraryEntryFromFile(
+        item.file, `${directory.name}/${item.path}`, `directory:${directory.name}`);
+      if (result.entry) entries.push(result.entry);
+      else invalid++;
+      if ((examined % 40) === 0) {
+        $("#amiiboMessage").textContent =
+          `Scanning ${directory.name}… ${examined} .bin files checked`;
+        await new Promise(resolve => requestAnimationFrame(resolve));
+      }
+    }
+    entries.sort((a, b) => a.path.localeCompare(b.path, undefined, {numeric: true}));
+    const persisted = await replaceCachedAmiiboLibrary(entries);
+    let catalogMatches = null;
+    try {
+      await loadAmiiboCatalog();
+      catalogMatches = entries.filter(entry => amiiboCatalogById.has(entry.id)).length;
+      renderAmiiboLibrary();
+    } catch (error) {
+      console.warn("Amiibo catalog unavailable", error);
+    }
+    $("#amiiboMessage").textContent =
+      `${persisted ? "Cached" : "Loaded for this browser session"} ` +
+      `${entries.length} valid amiibo from ${directory.name}` +
+      (invalid ? `; ignored ${invalid} invalid .bin file${invalid === 1 ? "" : "s"}.` : ".") +
+      (catalogMatches === null ? "" : ` AmiiboAPI matched ${catalogMatches}.`);
+  } catch (error) {
+    $("#amiiboMessage").textContent =
+      `Directory scan failed after ${examined} files: ${error.message}`;
+  } finally {
+    amiiboLibraryBusy = false;
+    amiiboSetBusy(false);
+  }
+}
+
+function filteredAmiiboLibrary() {
+  const query = $("#amiiboLibrarySearch").value.trim().toLowerCase();
+  if (!query) return amiiboLibrary;
+  return amiiboLibrary.filter(entry => {
+    const metadata = catalogMetadataForEntry(entry);
+    return (`${entry.label} ${entry.path} ${entry.id} ${entry.uid} ${entry.typeName} ` +
+      `${entry.modelNumber} ${entry.characterGameCode} ${metadata?.name || ""} ` +
+      `${metadata?.character || ""} ${metadata?.gameSeries || ""} ` +
+      `${metadata?.amiiboSeries || ""} ${metadata?.type || ""} ` +
+      `${amiiboEntryState(entry)}`)
+        .toLowerCase().includes(query);
+  });
+}
+
+function renderAmiiboLibrary() {
+  const track = $("#amiiboCarouselTrack");
+  if (!track) return;
+  const entries = filteredAmiiboLibrary();
+  track.textContent = "";
+  $("#amiiboLibraryCount").textContent = amiiboLibrary.length
+    ? `${amiiboLibrary.length} cached · ${entries.length} shown` +
+      (amiiboCatalog
+        ? ` · ${amiiboLibrary.filter(entry => amiiboCatalogById.has(entry.id)).length} catalog matches`
+        : "")
+    : "No cached amiibo";
+  if (!entries.length) {
+    amiiboLibrarySelectedKey = "";
+    amiiboCarouselIndex = 0;
+    $("#amiiboLibraryDetail").classList.add("hidden");
+    $("#amiiboCarouselPosition").textContent = "No matching amiibo";
+    $("#amiiboCarouselPrev").disabled = true;
+    $("#amiiboCarouselNext").disabled = true;
+  } else {
+    const selectedIndex = entries.findIndex(entry => entry.key === amiiboLibrarySelectedKey);
+    if (selectedIndex >= 0) amiiboCarouselIndex = selectedIndex;
+    else {
+      amiiboCarouselIndex = Math.min(amiiboCarouselIndex, entries.length - 1);
+      amiiboLibrarySelectedKey = entries[amiiboCarouselIndex].key;
+    }
+    const seen = new Set();
+    for (let offset = -4; offset <= 4; offset++) {
+      const index = (amiiboCarouselIndex + offset + entries.length) % entries.length;
+      if (seen.has(index)) {
+        const spacer = document.createElement("div");
+        spacer.setAttribute("aria-hidden", "true");
+        track.appendChild(spacer);
+        continue;
+      }
+      seen.add(index);
+      const entry = entries[index];
+      const metadata = catalogMetadataForEntry(entry);
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "amiibo-carousel-item";
+      item.dataset.distance = String(Math.abs(offset));
+      if (amiiboStatus?.uid === entry.uid) item.classList.add("active-tag");
+      item.title = `${metadata?.name || entry.label}\n${entry.path}\n${entry.id}`;
+      item.setAttribute("aria-label",
+        `${metadata?.name || entry.label}${offset === 0 ? ", selected" : ""}`);
+      item.onclick = () => selectAmiiboLibraryEntry(entry.key);
+
+      const imageUrl = metadata?.imgwebp || metadata?.image || "";
+      const fallback = document.createElement("span");
+      fallback.className = "amiibo-carousel-fallback";
+      fallback.textContent = entry.typeName;
+      if (imageUrl) {
+        const image = document.createElement("img");
+        image.src = imageUrl;
+        image.alt = "";
+        fallback.classList.add("hidden");
+        image.onerror = () => {
+          image.classList.add("hidden");
+          fallback.classList.remove("hidden");
+        };
+        item.appendChild(image);
+      }
+      item.appendChild(fallback);
+      const label = document.createElement("span");
+      label.className = "amiibo-carousel-label";
+      label.textContent = metadata?.name || entry.label;
+      item.appendChild(label);
+      const copyBadge = document.createElement("span");
+      copyBadge.className = "amiibo-copy-badge" +
+        (amiiboEntryState(entry) === "Used" ? " used" : "");
+      copyBadge.textContent = amiiboEntryState(entry);
+      item.appendChild(copyBadge);
+      track.appendChild(item);
+    }
+    $("#amiiboCarouselPosition").textContent =
+      `${amiiboCarouselIndex + 1} of ${entries.length} · ` +
+      `${catalogMetadataForEntry(entries[amiiboCarouselIndex])?.name ||
+        entries[amiiboCarouselIndex].label}`;
+    $("#amiiboCarouselPrev").disabled = amiiboLibraryBusy || entries.length < 2;
+    $("#amiiboCarouselNext").disabled = amiiboLibraryBusy || entries.length < 2;
+    renderAmiiboLibraryDetail(
+      entries[amiiboCarouselIndex], catalogMetadataForEntry(entries[amiiboCarouselIndex]));
+  }
+  $("#amiiboLibraryLoadBtn").disabled =
+    amiiboLibraryBusy || !amiiboLibrarySelectedKey || !port;
+  $("#amiiboLibraryExportBtn").disabled =
+    amiiboLibraryBusy || amiiboLibrary.length === 0;
+}
+
+function moveAmiiboCarousel(delta) {
+  if ($("#amiiboCarouselViewport").getAttribute("aria-disabled") === "true") return;
+  const entries = filteredAmiiboLibrary();
+  if (entries.length < 2) return;
+  amiiboCarouselIndex =
+    (amiiboCarouselIndex + delta + entries.length) % entries.length;
+  selectAmiiboLibraryEntry(entries[amiiboCarouselIndex].key);
+}
+
+function selectedAmiiboLibraryEntry() {
+  return amiiboLibrary.find(entry => entry.key === amiiboLibrarySelectedKey) || null;
+}
+
+async function selectCachedAmiiboCopy(useUsed) {
+  const current = selectedAmiiboLibraryEntry();
+  if (!current) return;
+  const entry = normalizeAmiiboLibraryEntry(current);
+  if (useUsed && !entry.usedBytes) {
+    $("#amiiboMessage").textContent =
+      "This amiibo has no Used copy yet.";
+    return;
+  }
+  entry.usingUsed = !!useUsed;
+  entry.bytes = (useUsed ? entry.usedBytes : entry.cleanBytes).slice(0);
+  entry.modified = Date.now();
+  const persisted = await cacheSingleAmiiboEntry(entry);
+  if (port && amiiboStatus?.loaded && amiiboStatus.uid === entry.uid) {
+    const result = await sendCmd(
+      `amiibo select ${useUsed ? "used" : "clean"}`, true);
+    if (!result?.ok) {
+      $("#amiiboMessage").textContent =
+        result?.error || "The adapter could not change amiibo copies.";
+      return;
+    }
+    await sendCmd("amiibo persist", true);
+    await refreshAmiiboStatus();
+  }
+  amiiboLibrarySelectedKey = entry.key;
+  renderAmiiboLibrary();
+  $("#amiiboMessage").textContent =
+    `${useUsed ? "Used" : "Unused"} copy selected` +
+    (port && amiiboStatus?.uid === entry.uid ? " in the library and adapter." :
+      " in the offline library.") +
+    (persisted ? "" : " Browser persistence is unavailable.");
+}
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x4000)
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x4000));
+  return btoa(binary);
+}
+
+function base64ToArrayBuffer(value) {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; ++i)
+    bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+async function exportAmiiboLibraryBackup() {
+  if (!amiiboLibrary.length) return;
+  const backup = {
+    format: "PicoSwitch2 Amiibo Library",
+    version: AMIIBO_LIBRARY_BACKUP_VERSION,
+    exportedAt: new Date().toISOString(),
+    entries: amiiboLibrary.map(item => {
+      const entry = normalizeAmiiboLibraryEntry(item);
+      const {
+        bytes, cleanBytes, usedBytes, ...metadata
+      } = entry;
+      return {
+        ...metadata,
+        cleanBase64: arrayBufferToBase64(cleanBytes),
+        usedBase64: usedBytes ? arrayBufferToBase64(usedBytes) : null
+      };
+    })
+  };
+  const blob = new Blob(
+    [JSON.stringify(backup)], {type: "application/json"});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download =
+    `PicoSwitch2-Amiibo-Library-${new Date().toISOString().slice(0, 10)}.json`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  $("#amiiboMessage").textContent =
+    `Exported ${amiiboLibrary.length} cached amiibo with both Unused and Used copies.`;
+}
+
+async function importAmiiboLibraryBackup(file) {
+  let documentValue;
+  try {
+    documentValue = JSON.parse(await file.text());
+  } catch (error) {
+    $("#amiiboMessage").textContent =
+      `Library backup is not valid JSON: ${error.message}`;
+    return;
+  }
+  if (documentValue?.format !== "PicoSwitch2 Amiibo Library" ||
+      documentValue?.version !== AMIIBO_LIBRARY_BACKUP_VERSION ||
+      !Array.isArray(documentValue.entries)) {
+    $("#amiiboMessage").textContent =
+      "This is not a supported PicoSwitch2 amiibo library backup.";
+    return;
+  }
+
+  const entries = [];
+  try {
+    for (const saved of documentValue.entries) {
+      const clean = new Uint8Array(base64ToArrayBuffer(saved.cleanBase64));
+      const cleanError = validateAmiiboFile(clean);
+      if (cleanError) throw new Error(`${saved.name || "entry"}: ${cleanError}`);
+      let used = null;
+      if (saved.usedBase64) {
+        used = new Uint8Array(base64ToArrayBuffer(saved.usedBase64));
+        const usedError = validateAmiiboFile(used);
+        if (usedError) throw new Error(`${saved.name || "entry"} Used copy: ${usedError}`);
+        if (used.length !== clean.length)
+          throw new Error(`${saved.name || "entry"}: clean/used format mismatch`);
+        if (bytesToHex(clean.subarray(0, 16)) !==
+            bytesToHex(used.subarray(0, 16)))
+          throw new Error(`${saved.name || "entry"}: clean/used identity mismatch`);
+        if (parseAmiiboIdentity(clean).id !== parseAmiiboIdentity(used).id)
+          throw new Error(`${saved.name || "entry"}: clean/used amiibo ID mismatch`);
+      }
+      const identity = parseAmiiboIdentity(clean);
+      const {
+        cleanBase64, usedBase64, ...metadata
+      } = saved;
+      entries.push(normalizeAmiiboLibraryEntry({
+        ...metadata,
+        ...identity,
+        key: metadata.key || `backup:${identity.uid}:${entries.length}`,
+        name: metadata.name || `amiibo-${identity.uid}.bin`,
+        label: metadata.label ||
+          friendlyAmiiboFileName(metadata.name || `amiibo-${identity.uid}.bin`),
+        path: metadata.path || `Imported backup/${metadata.name || `amiibo-${identity.uid}.bin`}`,
+        cleanBytes: clean.buffer,
+        usedBytes: used?.buffer || null,
+        usingUsed: !!saved.usingUsed && !!used,
+        bytes: (saved.usingUsed && used ? used : clean).buffer.slice(0)
+      }));
+    }
+  } catch (error) {
+    $("#amiiboMessage").textContent =
+      `Library backup validation failed: ${error.message}`;
+    return;
+  }
+
+  const persisted = await replaceCachedAmiiboLibrary(entries, false);
+  $("#amiiboMessage").textContent =
+    `${persisted ? "Restored" : "Loaded for this session"} ` +
+    `${entries.length} amiibo from ${file.name}.`;
+}
+
+async function readCachedAmiiboMetadata(id) {
+  if (amiiboMetadataCache.has(id)) return amiiboMetadataCache.get(id);
+  const db = await openAmiiboLibraryDb();
+  if (!db) return null;
+  try {
+    const tx = db.transaction("metadata", "readonly");
+    const cached = await idbRequest(tx.objectStore("metadata").get(id));
+    if (cached) amiiboMetadataCache.set(id, cached.data);
+    return cached ? cached.data : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeCachedAmiiboMetadata(id, data) {
+  amiiboMetadataCache.set(id, data);
+  const db = await openAmiiboLibraryDb();
+  if (!db) return;
+  try {
+    const tx = db.transaction("metadata", "readwrite");
+    tx.objectStore("metadata").put({id, data, cachedAt: Date.now()});
+    await idbTransactionDone(tx);
+  } catch (error) {
+    console.warn("Could not persist amiibo catalog metadata", error);
+  }
+}
+
+function installAmiiboCatalog(items) {
+  amiiboCatalog = items;
+  amiiboCatalogById = new Map();
+  for (const item of items) {
+    const id = `${item.head || ""}${item.tail || ""}`.toUpperCase();
+    if (id.length === 16) amiiboCatalogById.set(id, item);
+  }
+}
+
+function catalogMetadataForEntry(entry) {
+  return amiiboMetadataCache.get(entry.id) || amiiboCatalogById.get(entry.id) || null;
+}
+
+async function readCachedAmiiboCatalog() {
+  const db = await openAmiiboLibraryDb();
+  if (!db) return null;
+  try {
+    const tx = db.transaction("metadata", "readonly");
+    return await idbRequest(tx.objectStore("metadata").get(AMIIBO_CATALOG_KEY));
+  } catch {
+    return null;
+  }
+}
+
+async function writeCachedAmiiboCatalog(items) {
+  const db = await openAmiiboLibraryDb();
+  if (!db) return;
+  try {
+    const tx = db.transaction("metadata", "readwrite");
+    tx.objectStore("metadata").put({
+      id: AMIIBO_CATALOG_KEY,
+      data: items,
+      cachedAt: Date.now()
+    });
+    await idbTransactionDone(tx);
+  } catch (error) {
+    console.warn("Could not persist AmiiboAPI catalog", error);
+  }
+}
+
+async function loadAmiiboCatalog(forceRefresh = false) {
+  if (amiiboCatalog && !forceRefresh) return amiiboCatalog;
+  const cached = await readCachedAmiiboCatalog();
+  if (!forceRefresh && cached && Array.isArray(cached.data) &&
+      Date.now() - (cached.cachedAt || 0) < AMIIBO_CATALOG_MAX_AGE_MS) {
+    installAmiiboCatalog(cached.data);
+    return amiiboCatalog;
+  }
+  try {
+    const response = await fetch("https://amiiboapi.org/api/amiibo/", {cache: "no-cache"});
+    if (!response.ok) throw new Error(`AmiiboAPI returned HTTP ${response.status}`);
+    const body = await response.json();
+    const items = Array.isArray(body.amiibo) ? body.amiibo : [];
+    if (!items.length) throw new Error("AmiiboAPI returned an empty catalog");
+    installAmiiboCatalog(items);
+    await writeCachedAmiiboCatalog(items);
+    return amiiboCatalog;
+  } catch (error) {
+    if (cached && Array.isArray(cached.data) && cached.data.length) {
+      installAmiiboCatalog(cached.data);
+      return amiiboCatalog;
+    }
+    throw error;
+  }
+}
+
+async function lookupAmiiboMetadata(entry) {
+  const cached = await readCachedAmiiboMetadata(entry.id);
+  if (cached) return cached;
+  await loadAmiiboCatalog();
+  const match = amiiboCatalogById.get(entry.id) || null;
+  if (match) await writeCachedAmiiboMetadata(entry.id, match);
+  return match;
+}
+
+function renderAmiiboLibraryDetail(entry, metadata = null) {
+  if (!entry || entry.key !== amiiboLibrarySelectedKey) return;
+  $("#amiiboLibraryDetail").classList.remove("hidden");
+  $("#amiiboLibraryTitle").textContent = metadata?.name || entry.label;
+  $("#amiiboLibraryPath").textContent = entry.path;
+  $("#amiiboLibraryCharacter").textContent =
+    metadata?.character || `Code ${entry.characterGameCode}, variant 0x${entry.characterVariant.toString(16).padStart(2, "0").toUpperCase()}`;
+  $("#amiiboLibraryGameSeries").textContent = metadata?.gameSeries || "Catalog lookup unavailable";
+  $("#amiiboLibrarySeries").textContent =
+    metadata?.amiiboSeries || `Code 0x${entry.seriesCode.toString(16).padStart(2, "0").toUpperCase()}`;
+  $("#amiiboLibraryType").textContent = metadata?.type || entry.typeName;
+  $("#amiiboLibraryId").textContent = entry.id;
+  $("#amiiboLibraryModel").textContent =
+    `${entry.modelNumber} / ${entry.extendedVariant} · format ${entry.formatVersion}`;
+  $("#amiiboLibraryUid").textContent = entry.uid;
+  $("#amiiboLibraryCopyState").textContent =
+    entry.usedBytes
+      ? `${amiiboEntryState(entry)} selected · Unused and Used copies retained`
+      : "Unused · no console-written copy saved";
+  $("#amiiboLibraryRelease").textContent = metadata?.release?.na || "—";
+  const normalizedEntry = normalizeAmiiboLibraryEntry(entry);
+  $("#amiiboLibraryUseCleanBtn").disabled =
+    amiiboLibraryBusy || !normalizedEntry.usingUsed;
+  $("#amiiboLibraryUseSavedBtn").disabled =
+    amiiboLibraryBusy || !normalizedEntry.usedBytes ||
+    normalizedEntry.usingUsed;
+  const image = $("#amiiboLibraryImage");
+  const imageUrl = metadata?.imgwebp || metadata?.image || "";
+  image.classList.toggle("hidden", !imageUrl);
+  image.src = imageUrl;
+  image.alt = imageUrl ? `${metadata?.name || entry.label} artwork` : "";
+  image.onerror = () => image.classList.add("hidden");
+}
+
+async function selectAmiiboLibraryEntry(key) {
+  amiiboLibrarySelectedKey = key;
+  renderAmiiboLibrary();
+  const entry = selectedAmiiboLibraryEntry();
+  if (!entry) return;
+  renderAmiiboLibraryDetail(entry);
+  const metadata = await lookupAmiiboMetadata(entry);
+  renderAmiiboLibrary();
+  renderAmiiboLibraryDetail(entry, metadata);
+}
+
+async function clearAmiiboLibrary() {
+  if (amiiboLibrary.length &&
+      !confirm("Clear the browser's cached amiibo library? Original files and the adapter's active tag are not affected."))
+    return;
+  const db = await openAmiiboLibraryDb();
+  let persistentCleared = true;
+  if (db) {
+    try {
+      const tx = db.transaction("library", "readwrite");
+      tx.objectStore("library").clear();
+      await idbTransactionDone(tx);
+    } catch (error) {
+      persistentCleared = false;
+      console.warn("Could not clear persistent amiibo cache", error);
+    }
+  }
+  amiiboLibrary = [];
+  amiiboLibrarySelectedKey = "";
+  renderAmiiboLibrary();
+  $("#amiiboLibraryDetail").classList.add("hidden");
+  $("#amiiboMessage").textContent = persistentCleared
+    ? "Browser cache cleared. Original amiibo files and the adapter's active tag were not changed."
+    : "The in-memory library was cleared, but persistent browser storage could not be changed.";
+}
+
+async function loadSelectedLibraryAmiibo() {
+  const entry = selectedAmiiboLibraryEntry();
+  if (!entry || !port) return;
+  await uploadAmiiboEntry(entry);
+}
+
+// ---- Virtual Amiibo: one active, losslessly mutable raw image ----
+function amiiboCrc32(bytes) {
+  let crc = 0xFFFFFFFF;
+  for (const value of bytes) {
+    crc = (crc ^ value) >>> 0;
+    for (let bit = 0; bit < 8; bit++)
+      crc = ((crc >>> 1) ^ ((crc & 1) ? 0xEDB88320 : 0)) >>> 0;
+  }
+  return (~crc) >>> 0;
+}
+
+function validateAmiiboFile(bytes) {
+  if (bytes.length !== 540 && bytes.length !== 572)
+    return `Expected a 540-byte amiibo dump or 572-byte extended dump; got ${bytes.length} bytes.`;
+  const bcc0 = (0x88 ^ bytes[0] ^ bytes[1] ^ bytes[2]) & 0xFF;
+  const bcc1 = (bytes[4] ^ bytes[5] ^ bytes[6] ^ bytes[7]) & 0xFF;
+  if (bytes[3] !== bcc0 || bytes[8] !== bcc1)
+    return "The NTAG215 UID/BCC bytes are invalid. The existing tag was not changed.";
+  return "";
+}
+
+function amiiboSetBusy(busy, percent = 0) {
+  $("#amiiboChooseBtn").disabled = busy;
+  $("#amiiboDirectoryBtn").disabled = busy;
+  $("#amiiboEnabled").disabled = busy || !port;
+  $("#amiiboSaveBtn").disabled =
+    busy || !port || !(amiiboStatus && amiiboStatus.loaded);
+  $("#amiiboPersistBtn").disabled =
+    busy || !port || !(amiiboStatus && amiiboStatus.loaded);
+  $("#amiiboSelectCleanBtn").disabled =
+    busy || !port || !(amiiboStatus && amiiboStatus.loaded) ||
+    !amiiboStatus.usingUsed;
+  $("#amiiboSelectUsedBtn").disabled =
+    busy || !port || !(amiiboStatus && amiiboStatus.hasUsed) ||
+    !!amiiboStatus.usingUsed;
+  $("#amiiboLibrarySearch").disabled = busy;
+  $("#amiiboLibraryClearBtn").disabled = busy;
+  $("#amiiboLibraryExportBtn").disabled =
+    busy || amiiboLibrary.length === 0;
+  $("#amiiboLibraryImportBtn").disabled = busy;
+  $("#amiiboCarouselViewport").setAttribute("aria-disabled", busy ? "true" : "false");
+  $("#amiiboCarouselPrev").disabled = busy;
+  $("#amiiboCarouselNext").disabled = busy;
+  $("#amiiboLibraryLoadBtn").disabled =
+    busy || !amiiboLibrarySelectedKey || !port;
+  const entry = selectedAmiiboLibraryEntry();
+  $("#amiiboLibraryUseCleanBtn").disabled = busy || !entry ||
+    !normalizeAmiiboLibraryEntry(entry).usingUsed;
+  $("#amiiboLibraryUseSavedBtn").disabled = busy || !entry ||
+    !normalizeAmiiboLibraryEntry(entry).usedBytes ||
+    normalizeAmiiboLibraryEntry(entry).usingUsed;
+  $("#amiiboProgress").classList.toggle("hidden", !busy);
+  $("#amiiboProgress").value = percent;
+  if (!busy) renderAmiiboLibrary();
+}
+
+function renderAmiiboStatus(status) {
+  if (!status) return;
+  const priorUid = amiiboStatus?.loaded ? amiiboStatus.uid : "";
+  amiiboStatus = status;
+  $("#amiiboEnabled").checked = !!status.enabled;
+  $("#amiiboName").textContent = status.loaded
+    ? (amiiboFileName || `amiibo-${status.uid || "unknown"}.bin`)
+    : "None";
+  $("#amiiboUid").textContent = status.loaded ? status.uid : "—";
+  $("#amiiboFormat").textContent = status.loaded
+    ? `${status.size}-byte ${status.signature ? "extended" : "raw"} dump`
+    : "—";
+  $("#amiiboSaveState").textContent = !status.loaded ? "—"
+    : status.dirty
+      ? status.persistPending
+        ? "Used — saving to adapter…"
+        : status.persisted
+          ? "Used — persisted on adapter; save to browser library"
+          : "Used — RAM only; do not power off"
+    : status.hasUsed
+      ? `${status.usingUsed ? "Used" : "Unused"} copy selected`
+    : status.persisted ? "Unused copy stored on adapter"
+    : status.persistPending ? "Saving to adapter…"
+    : "RAM only";
+  $("#amiiboSaveBtn").disabled = !port || !status.loaded;
+  $("#amiiboPersistBtn").disabled = !port || !status.loaded;
+  $("#amiiboSelectCleanBtn").disabled =
+    !port || !status.loaded || !status.usingUsed;
+  $("#amiiboSelectUsedBtn").disabled =
+    !port || !status.loaded || !status.hasUsed || status.usingUsed;
+  $("#amiiboMessage").textContent = !status.loaded
+    ? "No amiibo selected."
+    : status.dirty
+      ? status.persistPending
+        ? "A game changed this amiibo. Its Used copy is being saved to the adapter; wait before removing power."
+        : status.persisted
+          ? "A game changed this amiibo. Its Used copy is safe on the adapter; save it to the browser library before choosing another file."
+          : "A game changed this amiibo, but its Used copy is not yet durable. Keep the adapter powered and force a save."
+      : !status.signature
+        ? "Stored safely. This 540-byte dump has no NTAG originality signature; console compatibility remains hardware-gated."
+      : status.enabled
+        ? "Ready. The complete encrypted image will be preserved if the console writes to it."
+        : "Tag stored safely; enable Virtual Amiibo when you want the console to use it.";
+  const nextUid = status.loaded ? status.uid : "";
+  if (nextUid !== priorUid) {
+    const matching = amiiboLibrary.find(entry => entry.uid === nextUid);
+    if (matching) amiiboLibrarySelectedKey = matching.key;
+    renderAmiiboLibrary();
+  }
+}
+
+async function refreshAmiiboStatus() {
+  const status = await sendCmd("amiibo status", true);
+  if (status && status.enabled !== undefined) renderAmiiboStatus(status);
+  return status;
+}
+
+async function setAmiiboEnabled(enabled) {
+  if (!port) return;
+  amiiboSetBusy(true);
+  const changed = await sendCmd("amiibo enable " + (enabled ? "1" : "0"), true);
+  const saved = changed && changed.ok ? await sendCmd("save", true) : null;
+  if (!saved || !saved.ok)
+    $("#amiiboMessage").textContent = "Could not save the Virtual Amiibo setting.";
+  await refreshAmiiboStatus();
+  amiiboSetBusy(false);
+}
+
+async function selectAdapterAmiiboCopy(useUsed) {
+  if (!port || !amiiboStatus?.loaded) return;
+  amiiboSetBusy(true);
+  const result = await sendCmd(
+    `amiibo select ${useUsed ? "used" : "clean"}`, true);
+  if (result?.ok)
+    await sendCmd("amiibo persist", true);
+  await refreshAmiiboStatus();
+  $("#amiiboMessage").textContent = result?.ok
+    ? `${useUsed ? "Used" : "Unused"} copy selected on the adapter.`
+    : result?.error || "Could not select the adapter copy.";
+  amiiboSetBusy(false);
+}
+
+async function transferAmiiboCopy(bytes, commitCommand, progressStart,
+                                  progressSpan) {
+  const error = validateAmiiboFile(bytes);
+  if (error) return {error};
+  const crc = amiiboCrc32(bytes).toString(16).padStart(8, "0");
+  let result = await sendCmd(`amiibo begin ${bytes.length} ${crc}`, true);
+  if (!result?.ok)
+    return result || {error: "Upload did not start."};
+
+  for (let offset = 0; offset < bytes.length; offset += 32) {
+    const chunk = bytes.subarray(offset, Math.min(bytes.length, offset + 32));
+    const hex = Array.from(
+      chunk, value => value.toString(16).padStart(2, "0")).join("");
+    result = await sendCmd(`amiibo chunk ${offset} ${hex}`, true);
+    if (!result?.ok) {
+      await sendCmd("amiibo cancel", true);
+      return result || {error: `Upload failed at byte ${offset}.`};
+    }
+    $("#amiiboProgress").value = Math.round(
+      progressStart + (offset + chunk.length) / bytes.length * progressSpan);
+  }
+  return await sendCmd(`amiibo ${commitCommand}`, true) ||
+    {error: "The image could not be committed."};
+}
+
+async function uploadAmiiboEntry(sourceEntry) {
+  if (!port) return;
+  const entry = normalizeAmiiboLibraryEntry(sourceEntry);
+  const clean = amiiboEntryBytes(entry, false);
+  const used = entry.usedBytes ? amiiboEntryBytes(entry, true) : null;
+  await refreshAmiiboStatus();
+  if (amiiboStatus && amiiboStatus.dirty) {
+    $("#amiiboMessage").textContent =
+      "Save the modified current amiibo to the browser library first. Replacement is blocked to prevent losing its save.";
+    return;
+  }
+
+  amiiboSetBusy(true, 0);
+  $("#amiiboMessage").textContent = `Uploading ${entry.name}…`;
+  const copyCount = used ? 2 : 1;
+  let result = await transferAmiiboCopy(
+    clean, "commit", 0, 100 / copyCount);
+  if (!result?.ok) {
+    $("#amiiboMessage").textContent = result?.error || "Upload did not start.";
+    amiiboSetBusy(false);
+    return;
+  }
+
+  if (used) {
+    result = await transferAmiiboCopy(
+      used, "commit used", 50, 50);
+    if (!result?.ok) {
+      $("#amiiboMessage").textContent =
+        result?.error || "The Used copy could not be uploaded.";
+      amiiboSetBusy(false);
+      return;
+    }
+  }
+
+  result = await sendCmd(
+    `amiibo select ${entry.usingUsed && used ? "used" : "clean"}`, true);
+  if (result?.ok) result = await sendCmd("amiibo persist", true);
+  if (!result?.ok) {
+    $("#amiiboMessage").textContent =
+      result?.error || "The tag could not be stored on the adapter.";
+    amiiboSetBusy(false);
+    return;
+  }
+  amiiboFileName = entry.name;
+  await refreshAmiiboStatus();
+  $("#amiiboMessage").textContent =
+    `${entry.name} is stored on the adapter with ` +
+    `${used ? "both Unused and Used copies" : "its Unused copy"}.`;
+  amiiboSetBusy(false);
+}
+
+async function importSingleAmiiboFile(file) {
+  const result = await libraryEntryFromFile(file, file.name, "file");
+  if (!result.entry) {
+    $("#amiiboMessage").textContent = result.error;
+    return;
+  }
+  const persisted = await cacheSingleAmiiboEntry(result.entry);
+  amiiboLibrarySelectedKey = result.entry.key;
+  renderAmiiboLibrary();
+  renderAmiiboLibraryDetail(result.entry);
+  lookupAmiiboMetadata(result.entry)
+    .then(metadata => renderAmiiboLibraryDetail(result.entry, metadata))
+    .catch(error => console.warn("Amiibo catalog unavailable", error));
+  if (!persisted) {
+    $("#amiiboMessage").textContent =
+      `${file.name} loaded for this session; browser caching is unavailable.`;
+  } else if (!port) {
+    $("#amiiboMessage").textContent =
+      `${file.name} was added to the offline amiibo library.`;
+  }
+  if (port) await uploadAmiiboEntry(result.entry);
+}
+
+function bytesFromHex(hex) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++)
+    bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return bytes;
+}
+
+async function saveCurrentAmiibo() {
+  const status = await refreshAmiiboStatus();
+  if (!status || !status.loaded) return;
+  amiiboSetBusy(true, 0);
+  async function readCopy(copy, progressStart, progressSpan) {
+    const bytes = new Uint8Array(status.size);
+    for (let offset = 0; offset < bytes.length; offset += 32) {
+      const length = Math.min(32, bytes.length - offset);
+      const result = await sendCmd(
+        `amiibo read ${copy} ${offset} ${length}`, true);
+      if (!result || typeof result.data !== "string")
+        throw new Error(result?.error || `Could not read ${copy} copy`);
+      bytes.set(bytesFromHex(result.data), offset);
+      $("#amiiboProgress").value = Math.round(
+        progressStart + (offset + length) / bytes.length * progressSpan);
+    }
+    const validationError = validateAmiiboFile(bytes);
+    if (validationError) throw new Error(validationError);
+    return bytes;
+  }
+
+  let clean;
+  let used = null;
+  try {
+    clean = await readCopy("clean", 0, status.hasUsed ? 50 : 100);
+    if (status.hasUsed)
+      used = await readCopy("used", 50, 50);
+  } catch (error) {
+    $("#amiiboMessage").textContent =
+      `Save failed: ${error.message}. The adapter remains protected.`;
+    amiiboSetBusy(false);
+    return;
+  }
+
+  const bytes = used || clean;
+
+  const cached = amiiboLibrary.find(entry => entry.uid === status.uid);
+  const identity = parseAmiiboIdentity(bytes);
+  const name = cached?.name || amiiboFileName ||
+    `amiibo-${identity.uid || "updated"}.bin`;
+  const updated = normalizeAmiiboLibraryEntry(cached
+    ? {
+      ...cached,
+      size: bytes.length,
+      modified: Date.now(),
+      cleanBytes: clean.buffer.slice(
+        clean.byteOffset, clean.byteOffset + clean.byteLength),
+      usedBytes: used ? used.buffer.slice(
+        used.byteOffset, used.byteOffset + used.byteLength) : null,
+      usingUsed: !!status.usingUsed && !!used,
+      ...identity
+    }
+    : {
+      key: `saved:${identity.uid}`,
+      name,
+      label: friendlyAmiiboFileName(name),
+      path: `Saved from adapter/${name}`,
+      size: bytes.length,
+      modified: Date.now(),
+      cleanBytes: clean.buffer.slice(
+        clean.byteOffset, clean.byteOffset + clean.byteLength),
+      usedBytes: used ? used.buffer.slice(
+        used.byteOffset, used.byteOffset + used.byteLength) : null,
+      usingUsed: !!status.usingUsed && !!used,
+      ...identity
+    });
+  const persisted = await cacheSingleAmiiboEntry(updated);
+  if (!persisted) {
+    $("#amiiboMessage").textContent =
+      "Browser cache storage is unavailable; the adapter remains dirty and protected.";
+    amiiboSetBusy(false);
+    return;
+  }
+
+  amiiboLibrarySelectedKey = updated.key;
+  amiiboFileName = updated.name;
+  renderAmiiboLibrary();
+  renderAmiiboLibraryDetail(updated);
+  const acknowledged = await sendCmd("amiibo downloaded", true);
+  if (acknowledged?.ok)
+    await sendCmd("amiibo persist", true);
+  await refreshAmiiboStatus();
+  if (!acknowledged || !acknowledged.ok) {
+    $("#amiiboMessage").textContent =
+      "Saved to the browser library, but the adapter did not clear dirty protection.";
+    amiiboSetBusy(false);
+    return;
+  }
+  $("#amiiboMessage").textContent =
+    `Saved ${updated.name} to the browser library with separate Unused` +
+    `${used ? " and Used" : ""} data.`;
+  amiiboSetBusy(false);
+}
+
+async function persistCurrentAmiibo() {
+  amiiboSetBusy(true);
+  const result = await sendCmd("amiibo persist", true);
+  await refreshAmiiboStatus();
+  $("#amiiboMessage").textContent = result && result.ok
+    ? "Current tag stored on the adapter."
+    : "Could not store the current tag.";
+  amiiboSetBusy(false);
 }
 
 function renderDevice(d) {
@@ -891,11 +2173,16 @@ async function pollLoop() {
   while (port && polling) {
     renderLive(await sendCmd("state", true));
     renderRaw(await sendCmd("raw", true));
-    renderImu(await sendCmd("imu", true));
     if (tick % 14 === 0) renderDevice(await sendCmd("device", true));  // name changes rarely
-    if (tick % 14 === 0) renderFirmwareDiagnostics(await sendCmd("fwreads", true));
-    if (tick % 3 === 0) renderAudioStat(await sendCmd("audiostat", true));
-    await capPoll();  // always, not just while capturing — keeps capturing/dropped live either way
+    if (tick % 14 === 0) await refreshAmiiboStatus();
+    // Expensive research diagnostics remain available, but production users
+    // no longer see or continuously poll them.
+    if ($("#devTools").open) {
+      renderImu(await sendCmd("imu", true));
+      if (tick % 14 === 0) renderFirmwareDiagnostics(await sendCmd("fwreads", true));
+      if (tick % 3 === 0) renderAudioStat(await sendCmd("audiostat", true));
+    }
+    if ($("#devTools").open || capActive) await capPoll();
     tick++;
     await new Promise(r => setTimeout(r, 70));
   }
@@ -912,6 +2199,7 @@ async function reload() {
     $("#jclR").value = jl[0]; $("#jclG").value = jl[1]; $("#jclB").value = jl[2]; accentRender("l");
     $("#jcrR").value = jr[0]; $("#jcrG").value = jr[1]; $("#jcrB").value = jr[2]; accentRender("r");
   } else log("! could not read colours");
+  await refreshAmiiboStatus();
 }
 
 async function save() {
@@ -987,6 +2275,46 @@ $("#connectBtn").onclick = connect;
 $("#saveBtn").onclick = save;
 $("#resetBtn").onclick = resetMap;
 $("#reloadBtn").onclick = reload;
+$("#amiiboEnabled").onchange = e => setAmiiboEnabled(e.target.checked);
+$("#amiiboChooseBtn").onclick = () => $("#amiiboFile").click();
+$("#amiiboFile").onchange = async e => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = "";
+  if (file) await importSingleAmiiboFile(file);
+};
+$("#amiiboDirectoryBtn").onclick = chooseAmiiboDirectory;
+$("#amiiboLibrarySearch").oninput = renderAmiiboLibrary;
+$("#amiiboCarouselPrev").onclick = () => moveAmiiboCarousel(-1);
+$("#amiiboCarouselNext").onclick = () => moveAmiiboCarousel(1);
+$("#amiiboCarouselViewport").onkeydown = e => {
+  if (e.key === "ArrowLeft") {
+    e.preventDefault();
+    moveAmiiboCarousel(-1);
+  } else if (e.key === "ArrowRight") {
+    e.preventDefault();
+    moveAmiiboCarousel(1);
+  }
+};
+$("#amiiboLibraryLoadBtn").onclick = loadSelectedLibraryAmiibo;
+$("#amiiboLibraryClearBtn").onclick = clearAmiiboLibrary;
+$("#amiiboLibraryExportBtn").onclick = exportAmiiboLibraryBackup;
+$("#amiiboLibraryImportBtn").onclick =
+  () => $("#amiiboLibraryBackupFile").click();
+$("#amiiboLibraryBackupFile").onchange = async e => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = "";
+  if (file) await importAmiiboLibraryBackup(file);
+};
+$("#amiiboLibraryUseCleanBtn").onclick =
+  () => selectCachedAmiiboCopy(false);
+$("#amiiboLibraryUseSavedBtn").onclick =
+  () => selectCachedAmiiboCopy(true);
+$("#amiiboSaveBtn").onclick = saveCurrentAmiibo;
+$("#amiiboSelectCleanBtn").onclick =
+  () => selectAdapterAmiiboCopy(false);
+$("#amiiboSelectUsedBtn").onclick =
+  () => selectAdapterAmiiboCopy(true);
+$("#amiiboPersistBtn").onclick = persistCurrentAmiibo;
 $("#capStartBtn").onclick = capStart;
 $("#capStopBtn").onclick = capStop;
 $("#capClearBtn").onclick = capClear;
@@ -1006,6 +2334,8 @@ capRenderStatus();
 capRenderStats();
 capRenderVariant();
 capRenderGattDisc();
+setConnected(false);
+loadCachedAmiiboLibrary();
 if (!("serial" in navigator)) { $("#unsupported").classList.remove("hidden"); $("#connectBtn").disabled = true; }
 </script>
 </body>

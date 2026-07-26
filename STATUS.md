@@ -5,8 +5,10 @@
 > Planned work belongs in [`PLAN.md`](PLAN.md); evidence and protocol details belong under
 > [`docs/`](docs/README.md).
 
-Last verified: 2026-07-24
+Last verified: 2026-07-25 (complete Virtual Amiibo persistence/library lifecycle hardware-validated)
 Branch: `ns2-testing`
+
+Documentation/resource audit: 2026-07-25
 
 ## Current release
 
@@ -26,6 +28,12 @@ production path emits the decoded length-`0x1E` Switch 2 quaternion carrier and 
 audio, haptics, reconnect, LED, and BOOTSEL behavior. A deliberately gated synthetic length-`0x28`
 experiment caused random motion and was removed; it established that the still-unknown
 leading/middle fields cannot be held at a static genuine template.
+
+Config mode is now CDC-only in source and automated builds. The read-only MSC drive, embedded FAT
+image/web page, callbacks, and generator were removed; `tools/run_config_portal.ps1` serves the
+production portal locally. This removes 100,104 bytes from the Pico 2 W binary and 100,160 bytes
+from the Pico W binary. Config enumeration, Virtual Amiibo transfer, save/readback, and direct
+BOOTSEL exit are hardware-confirmed with the CDC-only descriptor.
 
 ## Hardware-confirmed behavior
 
@@ -49,7 +57,9 @@ leading/middle fields cannot be held at a static genuine template.
 | Edge paddles, Fn buttons, and mute mapping | ✅ Confirmed | Real hardware |
 | DualSense/Edge LEDs and rumble | ✅ Confirmed | Real hardware after report-boundary scheduler fix |
 | Pro2 body/Joy-Con accents, Sony lightbar matching, and DualSense player-slot dots | ✅ Confirmed | Real Switch 2 and DualSense; config v8 hardware pass |
-| BOOTSEL double-tap, triple-tap, and five-second hold with DualSense paired | ✅ Confirmed | Real hardware after report-boundary gesture service |
+| BOOTSEL report-boundary scheduling and former double/triple/hold policy | ✅ Confirmed | Real hardware after report-boundary gesture service |
+| Revised single/double/triple/two-second BOOTSEL action matrix | 🟡 Host/build confirmed; hardware pending | Pure gesture/action policy coverage; both board builds |
+| Virtual Amiibo automatic persistence and Unused/Used library | ✅ Confirmed | Write-before-eject dual-bank snapshot, power-cycle recovery, reversible selection, offline library, and export/import backup |
 | Late BLE DIS VID/PID handoff and input continuity | ✅ Confirmed | Xbox Series BLE hardware regression after notification-first identity fix |
 | Triple-tap post-wipe admission lock | ✅ Confirmed for the reported workflow | Wipe disconnects and requires an explicit new pairing window |
 | Explicit re-pair after triple-tap wipe | ✅ Confirmed | Real hardware |
@@ -74,16 +84,18 @@ leading/middle fields cannot be held at a static genuine template.
 
 ## Current USB personalities
 
-Every boot starts in Pro Controller 2 mode. A five-second BOOTSEL hold advances the volatile cycle:
+Every boot starts in Pro Controller 2 mode. With a controller HID-ready, a single BOOTSEL tap
+advances the volatile controller-only cycle:
 
 1. Switch 2 Pro Controller 2 (`057E:2069`)
 2. NSO GameCube Controller (`057E:2073`)
 3. Joy-Con 2 Left (`057E:2067`, experimental)
 4. Joy-Con 2 Right (`057E:2066`, experimental)
-5. CDC/configuration mode (`CAFE:4012`)
-6. Back to Pro Controller 2
+5. Back to Pro Controller 2
 
-The selection is not persisted across power cycles.
+A two-second hold enters CDC/configuration mode (`CAFE:4012`) directly from any controller
+personality; a two-second hold in Config returns directly to Pro2. Config is never part of the
+single-tap cycle. The selection is not persisted across power cycles.
 
 ## Bluetooth and BOOTSEL architecture
 
@@ -125,7 +137,7 @@ See [`docs/architecture/overview.md`](docs/architecture/overview.md) and
 | P2 | DualSense microphone return | 🟡 Headset presence is implemented; microphone Opus decode and USB return remain |
 | P2 | Let reconnecting BLE controllers sleep with the console without touching bonds or admission | 🔵 Research concluded: no safe generic host-only path; controller-specific evidence required |
 | P3 | Additional controller IMUs → console-native report `0x09` translation | 🔵 Native Pro2 passthrough and DualSense/Edge synthesis are confirmed; each remaining family needs verified calibration, axis, scale, and timestamp handling |
-| P3 | NFC/amiibo transactions | 🔴 Blocked on a genuine console-side capture |
+| P3 | NFC/amiibo transactions | 🟡 Genuine Pro2 physical-tag reads and the complete Virtual Amiibo read/write/persist/eject/re-present/library workflow are hardware-confirmed. Native physical writes, production native-reader gating, and Switch 1 translation remain open |
 
 ## Validation
 
@@ -152,6 +164,8 @@ Current automated coverage includes:
   held reports, BOOTSEL triple-tap maintenance suppression, and Switch 1 Pro initialization
   quarantine
 - USB personality cycling
+- BOOTSEL paired/unpaired/Config action policy, including the controller-only single-tap cycle,
+  bond-preserving paired double-tap handoff, triple-tap wipe, and two-second Config toggle
 - BOOTSEL gesture timing under timer-only, report-only starvation, and mixed scheduling
 - Late BLE identity correction, including provisional and generic binding, transport filtering,
   idempotent confirmation, and input notifications immediately before and after a driver rebind
@@ -169,23 +183,58 @@ Current automated coverage includes:
   Nintendo headset-state encoding, exact reconnect transport selection, native-haptic
   start/STOP lifecycle, interval peak preservation, plus the fixed 512-to-480 stereo
   resampler's constant-signal, channel-isolation, and ramp behavior
+- Virtual amiibo 540/572-byte validation and transactional upload, exact export, dirty-state
+  protection, a 61-byte status codec, the primary-capture-confirmed 600-byte reader buffer and
+  70-byte offset chunks, a 64-byte write-preparation buffer, exact-UID write selection, atomic
+  454-byte staged-write validation, generation-safe RAM commit, and modulo-eight NFC events
+- Virtual Amiibo immutable Unused plus mutable Used copy selection, used-copy import, automatic
+  console-write persistence request, deferred removal until persistence, version-1 migration, and
+  alternating version-2 flash-bank CRC verification
+- UART-gated genuine Pro Controller 2 NFC relay: extended `0x0016` command framing, asynchronous
+  response translation, report-state passthrough, bounded timeout handling, and one
+  hardware-confirmed physical amiibo read recognized by the Switch 2
+- Feature-gated Virtual Amiibo runtime using the same 600-byte/chunk model, hardware-confirmed with
+  an uploaded tag and a non-NFC source controller; the guarded transactional write completes on a
+  real console without crashing, including complete 88-byte chunks, commit, and `05 00`. Logical
+  post-write removal, next-scan re-presentation, same-session updated readback, and generation-safe
+  UART export of a genuinely mutated 540-byte image are hardware-confirmed.
+- Console vendor-OUT stream reassembly for the 88-byte `0x14` write command, including exact
+  64+24-byte split reproduction, arbitrary fragmentation, coalesced commands, oversized-command
+  discard/recovery, and USB-mount reset
+- Live UART Virtual Amiibo export with generation-stable 64-byte pulls, PC-side exact-length and
+  UID/BCC validation, and dirty acknowledgement only after the binary is safely written
+- Config-portal recursive directory scanning and browser-local IndexedDB caching for all 1,035
+  validated maintainer collection files; selected-tag identity/catalog display and cache-first
+  replacement of console-written save data
+- Offline production-library access, Unused/Used carousel state, and versioned full-library
+  export/import backup preserving both copies
+- Standalone no-serial Virtual Amiibo diagnostic page with a separate simulated adapter slot,
+  transactional chunk/CRC checks, controlled write injection, cache-first save-back, persistence,
+  known-ID AmiiboAPI verification, and browser self-test
+- Production and diagnostic amiibo libraries now use a nine-position carousel with the selected or
+  active tag centered, four neighbors on each side, artwork/fallback tiles, keyboard navigation,
+  search, and selected-tag details
+- Config mode links as CDC-only with a compile-time-checked descriptor and no MSC/web-disk symbols;
+  both local portals pass JavaScript, DOM-reference, and localhost delivery checks
 
 The firmware builds under the Pico SDK 2.2.0 toolchain. The standard `pico_w`
 artifact retains its validated non-audio clock, memory layout, and Bluetooth
 scheduling. The standard `pico2_w` artifact uses the hardware-confirmed
 floating-point/SRAM audio path at 300 MHz/1.20 V. Both legacy `NS2_PRO=OFF`
-Pico W build directories also pass their compile gates. The current workspace has 40
+Pico W build directories also pass their compile gates. The current workspace has 47
 passing host-test executables, including battery decoder/source/encoder, DualSense
 audio packet/control/tone/resampler, native-haptic lifecycle, peak preservation, and
-bonded-reconnect transport suites.
+bonded-reconnect transport suites, plus the virtual-tag store/codec and vendor transfer pump.
 
-Config v8 stores a Pro Controller 2 body color plus independent Joy-Con 2 Left/Right accent colors.
+Config v9 adds the disabled-by-default Virtual Amiibo feature gate to the v8 Pro Controller 2 body
+color and independent Joy-Con 2 Left/Right accent settings.
 Existing v5/v6 users retain their effective slot-0 color and remap/wake data; v7 body, remap, and
-wake fields migrate intact. Joy-Con accents default to genuine retail values (`9B E1 E6` Left,
-`FF 8C 5F` Right). Each personality advertises its configured appearance during enumeration, and
-the active Pro2/Joy-Con color drives supported DualShock 4/DualSense lightbars independently of
-player-indicator LEDs. Pro2 body rendering, Joy-Con accents, DualSense lightbar matching, live
-player-dot reordering, and the prior wake/input/rumble baseline are hardware-confirmed.
+wake fields migrate intact, and v8 appearance/remap/wake data migrates without enabling NFC.
+Joy-Con accents default to genuine retail values (`9B E1 E6` Left, `FF 8C 5F` Right). Each
+personality advertises its configured appearance during enumeration, and the active Pro2/Joy-Con
+color drives supported DualShock 4/DualSense lightbars independently of player-indicator LEDs.
+Pro2 body rendering, Joy-Con accents, DualSense lightbar matching, live player-dot reordering, and
+the prior wake/input/rumble baseline are hardware-confirmed.
 
 ## Documentation map
 
@@ -206,8 +255,6 @@ player-dot reordering, and the prior wake/input/rumble baseline are hardware-con
    attempting any future 4 ms fidelity restoration; the isolated 4 ms hardware test killed gyro.
 3. Add a reproducible release checklist with board, firmware revision, controller firmware,
    console firmware, and result data.
-4. Use the validated UART/BLE bridge to capture NFC or other unknown console behavior before
-   implementing it; extend motion translation only after each controller family has a verified
-   sensor model.
+4. Capture a genuine Pro2 physical-tag write/readback before enabling native writes.
 5. Revisit controller sleep only after capturing a verified per-family sleep command or a stable
    distinction between automatic-reconnect and user-wake advertisements.

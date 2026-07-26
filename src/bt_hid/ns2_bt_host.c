@@ -20,6 +20,7 @@
 #include "bt/btstack/btstack_host.h"
 
 #include "bootsel.h"
+#include "bootsel_action.h"
 #include "config.h"
 #include "ds5_audio_bridge.h"
 #include "ns2_wake.h"
@@ -74,6 +75,7 @@ static btstack_timer_source_t audio_timer;
 #endif
 static uint32_t control_tick;
 static uint32_t pairing_until_ms;  // 0 = locked; else scan window open until this time
+static bool pairing_wait_for_disconnect;
 static uint32_t wipe_until_ms;     // 0 = idle; else show the fast wipe flash until this time
 
 #if defined(NS2_PRO) && defined(NS2_DIAG)
@@ -97,6 +99,14 @@ static void open_pairing_window(uint32_t now_ms) {
     if (btstack_host_pairing_close_deferred()) {
         return;
     }
+    pairing_wait_for_disconnect = btstack_host_controller_connected();
+    if (pairing_wait_for_disconnect) {
+        // One dongle serves one controller. Entering pairing mode while a
+        // controller is active therefore means "replace the active source":
+        // preserve its bond, disconnect it, and wait for zero HID-ready
+        // controllers before allowing the normal auto-close rule below.
+        btstack_host_disconnect_all_devices();
+    }
     bt_set_pairing_mode(true);  // start scanning for new controllers
     pairing_until_ms = now_ms + PAIRING_WINDOW_MS;
 }
@@ -115,34 +125,37 @@ static void wipe_all_devices(void) {
 // at report boundaries. Polling here as well lets the corresponding edges and
 // deadlines be observed in the same traffic-driven path.
 static void service_bootsel_gestures(uint32_t now) {
-    // Pairing/wipe remain suppressed in config mode, while NS2_PRO's hold is
-    // allowed there so the personality cycle can wrap from Config to Pro2.
     bool in_config = g_usb_config_mode;
     bootsel_gesture_t gesture = bootsel_poll(now);
-    switch (gesture) {
-        case BOOTSEL_DOUBLE_TAP:
-            if (!in_config) open_pairing_window(now);
-            break;
-        case BOOTSEL_TRIPLE_TAP:
-            if (!in_config) {
-                pairing_until_ms = 0;
-                // Consume any input edge before the asynchronous disconnect
-                // frees the radio. A wipe gesture is maintenance, never wake
-                // intent, even while the console is already asleep.
-                ns2_wake_set_input_suppressed(true);
-                wipe_all_devices();
-                wipe_until_ms = now + WIPE_FLASH_MS;
-            }
-            break;
-        case BOOTSEL_HOLD:
+    bootsel_action_t action = bootsel_action_resolve(
+        gesture, in_config, btstack_host_controller_connected());
+    switch (action) {
+        case BOOTSEL_ACTION_CYCLE_CONTROLLER:
 #ifdef NS2_PRO
-            // Core0 owns the actual USB transition; core1 only requests it.
+            // Core0 owns the USB detach/reset/re-enumeration sequence.
             g_usb_mode_cycle_requested = true;
+#endif
+            break;
+        case BOOTSEL_ACTION_OPEN_PAIRING:
+            open_pairing_window(now);
+            break;
+        case BOOTSEL_ACTION_WIPE_DEVICES:
+            pairing_until_ms = 0;
+            pairing_wait_for_disconnect = false;
+            // Consume any input edge before the asynchronous disconnect frees
+            // the radio. A wipe gesture is maintenance, never wake intent.
+            ns2_wake_set_input_suppressed(true);
+            wipe_all_devices();
+            wipe_until_ms = now + WIPE_FLASH_MS;
+            break;
+        case BOOTSEL_ACTION_TOGGLE_CONFIG:
+#ifdef NS2_PRO
+            g_usb_config_mode_requested = true;
 #else
             if (!in_config) g_usb_enter_config = true;
 #endif
             break;
-        case BOOTSEL_NONE:
+        case BOOTSEL_ACTION_NONE:
         default:
             break;
     }
@@ -234,6 +247,7 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
     if (pairing_until_ms && now >= pairing_until_ms) {
         bt_set_pairing_mode(false);
         pairing_until_ms = 0;
+        pairing_wait_for_disconnect = false;
     }
 
     // One dongle serves one controller: a controller finishing connection
@@ -243,7 +257,12 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
     // never closes on a mid-handshake connection. bt_set_pairing_mode(false)
     // routes through close_pairing_window(), which defers if a BLE candidate is
     // still in flight -- see btstack_host.c.
-    if (pairing_until_ms && btstack_host_controller_connected()) {
+    if (pairing_until_ms && pairing_wait_for_disconnect &&
+        !btstack_host_controller_connected()) {
+        pairing_wait_for_disconnect = false;
+    }
+    if (pairing_until_ms && !pairing_wait_for_disconnect &&
+        btstack_host_controller_connected()) {
         bt_set_pairing_mode(false);
         pairing_until_ms = 0;
     }

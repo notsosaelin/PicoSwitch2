@@ -61,7 +61,7 @@ static bool __no_inline_not_in_flash_func(read_bootsel_raw)(void) {
 // Published by core0, consumed by core1. Single-writer/single-reader of a naturally atomic type,
 // so no lock is needed: core1 only ever reads the most recent sample, and a bool cannot tear.
 // Worst case core1 sees a sample one interval old, which the gesture timings (500 ms tap window,
-// 5 s hold) are wildly tolerant of.
+// 2 s hold) are tolerant of.
 static volatile bool g_bootsel_pressed;
 static volatile bool g_bootsel_sampled;    // false until core0 lands its first successful sample
 static volatile bool g_core1_coop_ready;
@@ -69,7 +69,7 @@ static volatile bool g_sample_requested;
 static volatile bool g_core1_parked;
 
 // Sample cadence. MUST stay coarse -- 30 ms, matching the CONTROL_TICK_MS rate the old core1-side
-// sampler used and which the gesture machine was always tuned around (500 ms tap window, 5 s
+// sampler used and which the gesture machine was always tuned around (500 ms tap window, 2 s
 // hold), so nothing is lost by it.
 //
 // Do NOT shorten this "for responsiveness". A first cut used 5 ms and broke NSO GameCube rumble

@@ -89,6 +89,23 @@ Per-unit serial/address fields and pairing material are redacted. `--show-payloa
 The parser fails closed on malformed JSON, missing fields, invalid enum values, sequence gaps,
 payload-length disagreement, invalid hex, and a mismatched final record count.
 
+## Live Virtual Amiibo export
+
+The portal's USB CDC transport cannot be used while the Pico USB port remains attached to the
+Switch. UART therefore exposes a bounded read surface for the active mutable tag:
+
+```powershell
+./tools/read_uart_diag.ps1 -Port COM11 -Command 'amiibo status'
+./tools/read_uart_diag.ps1 -Port COM11 -Command 'amiibo dump' `
+  -OutputPath 'dumps/amiibo-after-console-write.bin'
+```
+
+The helper snapshots the image size/generation, pulls at most 64 bytes per request, rejects a
+generation change, validates exact 540/572-byte length and NTAG215 UID/BCC, writes the binary, and
+only then acknowledges the download to clear dirty protection. No polling, flash write, or USB
+personality change occurs. The firmware-side primitives are `amiibo status`,
+`amiibo read OFFSET`, and `amiibo acknowledge`.
+
 ## Semantic comparison
 
 ```powershell

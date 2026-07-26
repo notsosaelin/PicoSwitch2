@@ -12,21 +12,112 @@ Release notes describe user-visible behavior. Detailed implementation history re
   reconnect recovery, and coexistence with controller input, audio, and native haptics.
 - Passive UART analysis for genuine length-`0x28` motion PDUs, including exact G6/G7/G8
   signed-field decoding, capture summaries, and regression tests.
+- Disabled-by-default Virtual Amiibo configuration infrastructure: strict 540/572-byte validation,
+  transactional upload, full-image retrieval, dirty-write protection, and alternating power-safe
+  flash snapshots.
+- Browser-local amiibo library with recursive directory import, single-file import, IndexedDB
+  caching, search, parsed tag identity, optional cached AmiiboAPI catalog details, and preservation
+  of downloaded game-written state in the cached copy.
+- Standalone browser-only Virtual Amiibo diagnostic portal with no serial dependency, including
+  transactional upload/CRC checks, a separately persisted simulated adapter slot, controlled write
+  injection, download/cache verification, AmiiboAPI testing, and an automated self-test.
+- Artwork-first amiibo carousel in both portals: the selected or active tag is centered and
+  highlighted with four neighbors on each side, previous/next and arrow-key navigation, responsive
+  narrowing, catalog-aware search, and the full selected-tag detail panel.
+- Stable localhost launcher for the production Web Serial portal.
+- Host-tested Switch 2 NFC foundations: a partial-write-safe 630-byte vendor response pump,
+  61-byte tag status, primary-capture-corrected 600-byte reader buffer/70-byte offset chunks, and
+  atomic 454-byte staged-write validation.
+- UART-gated genuine Pro Controller 2 NFC relay. A physical amiibo read completed through the
+  dongle and was recognized by a real Switch 2; the trace confirms the native command sequence,
+  `0 → 1 → 2 → 3` report-state progression, and nine offset reads.
+- Disabled-by-default virtual NFC read dispatch for the confirmed
+  `0x03/0x04/0x05/0x06/0x15` flow, with no idle polling. A real Switch 2 recognizes an uploaded
+  Virtual Amiibo through this path with a non-NFC source controller.
+- Guarded transactional Virtual Amiibo write dispatch reconstructed from existing Switch 2 evidence:
+  exact-UID `0x06` selection, a 64-byte write-preparation buffer, bounded 454-byte `0x14` staging,
+  atomic `0x08` page updates, stale-generation rejection, dirty/download handoff, and
+  modulo-eight NFC event handling. A real-console write reaches commit and `05 00` without a
+  crash; logical removal, next-scan updated readback, and UART export are hardware-confirmed.
+- Bounded console vendor-OUT command reassembly. An NFC `0x14` request is 88 bytes and spans the
+  64-byte USB packet boundary; firmware now waits for the envelope's complete declared length
+  before dispatch and safely handles arbitrary splits, coalesced commands, and oversize recovery.
+- Post-write logical tag removal keeps the mutated RAM image selected for download and future use
+  while reporting the physical-style removal edge needed to end the console's remove-the-tag wait;
+  the next NFC scan presents that same updated image as a fresh tag encounter.
+- Live UART Virtual Amiibo export reads one generation in bounded chunks, validates the exact
+  540/572-byte image and NTAG UID/BCC on the PC, and acknowledges dirty state only after the binary
+  has been written, so console-side tests no longer require moving the Pico USB connection.
+- Incremental UART trace-dump persistence when `-OutputPath` is used, preserving every validated
+  record already pulled if a crash/reboot resets the Pico before the dump finishes.
+- A pure BOOTSEL action-policy module and host regression suite covering paired, unpaired, and
+  Config-mode behavior independently of the gesture recognizer.
 
 ### Changed
 
 - Active technical references now live under `docs/`; superseded plans and development narratives
   use the explicit `.archived.md` suffix.
+- AmiiboAPI resolution now downloads one cacheable catalog and matches IDs locally instead of
+  issuing one request per selected tag. This eliminates intermittent/throttled false “no entry”
+  results and enriches library labels/search without disclosing selected IDs.
+- Config mode is now CDC-only. The firmware no longer exposes the read-only `PICOSWITCH` mass
+  storage drive or embeds a FAT image/web page; the production portal is served locally from
+  `web/index.html`. This removes 100,104 bytes from Pico 2 W and 100,160 bytes from Pico W while
+  preserving the config VID/PID and serial protocol.
 - The failed synthetic length-`0x28` generator was removed from runtime firmware. Its first
   hardware test caused random motion because the unresolved leading/middle lanes are semantically
   active; the exact field codec, captures, and negative result remain documented.
+- The active NFC model no longer treats USB as one 622-byte/630-byte read response. Direct
+  Switch/UART/BLE evidence shows the console requests the same 600-byte reader buffer in bounded
+  offset chunks.
+- The first Virtual Amiibo write attempt crashed the console with error `2168-0002`. The cause was
+  not the tag codec: the old 64-byte vendor read loop dispatched the first fragment of an 88-byte
+  `0x14` request and misframed its remaining 24 bytes. The stream reassembler fixes that transport
+  boundary. The repeated hardware write no longer crashes and confirms complete 88-byte commands,
+  `0x08` commit, and accepted `05 00` status.
+- The complete Virtual Amiibo lifecycle is now hardware-confirmed: write, `05 00`, logical removal
+  as `07 41`, later fresh scan, same-session updated read, and generation-safe UART export. The
+  exported 540-byte image is UID/BCC-valid and differs from its unique collection original across
+  426 bytes confined to three permitted writable ranges.
+- BOOTSEL now uses a faster, explicit action matrix. A single tap cycles only the four controller
+  personalities when a controller is active; double-tap opens pairing; triple-tap wipes/disconnects;
+  and a two-second hold enters Config directly. In Config, single/double taps do nothing,
+  triple-tap remains an emergency wipe, and a two-second hold returns directly to Pro2.
+- The portal action formerly labelled **Download current file** is now **Save current Amiibo**.
+  It overwrites the matching browser-local IndexedDB library entry (or creates a stable saved entry)
+  and acknowledges adapter dirty state only after that cache write succeeds; it no longer starts a
+  browser download.
+- Console-written Virtual Amiibo data now queues a flash snapshot automatically. The runtime
+  defers logical TagRemoved until the snapshot verifies, so a successful write is no longer only a
+  RAM update.
+- Virtual Amiibo storage and the browser library now retain separate immutable **Unused** and
+  mutable **Used** copies. Either can be selected without destroying the other, and the selection,
+  dirty state, and both images survive reboot through an alternating two-bank CRC journal.
+- The production amiibo library remains visible and usable without Web Serial. A versioned
+  **Export saved library** JSON backup preserves every cached Unused/Used pair and can be imported
+  after browser storage is cleared.
 
 ### Validation
 
 - DualSense gyro immediately returned to normal when the experimental length-`0x28` gate was
   disabled, confirming the validated production path remains the length-`0x1E` carrier.
-- All 40 host-test executables pass, the motion and PDU tests compile cleanly with warnings treated
+- All 47 host-test executables pass, the motion and PDU tests compile cleanly with warnings treated
   as errors against the reorganized source tree, and Pico W/Pico 2 W release builds succeed.
+- The local Web Serial portal passes JavaScript syntax, DOM-reference, and localhost delivery
+  checks. Both firmware binaries link without MSC callbacks or embedded-web symbols. Virtual NFC
+  console read/write dispatch is feature-gated and hardware-validated through same-session
+  lifecycle and UART export. Automatic write-before-eject persistence, dongle power-cycle recovery,
+  reversible Used/Unused selection, offline library access, and full-library backup restore are
+  hardware/browser-confirmed.
+- The standalone diagnostic portal passes JavaScript/DOM reference checks and local HTTP delivery.
+  AmiiboAPI's 946-entry catalog locally matches 944 of the 1,035 maintainer files; the remaining 91
+  are Happy Home Designer item files that all share the same out-of-catalog ID.
+- All 47 host-test executables pass after the Virtual Amiibo write and BOOTSEL-policy integration,
+  including complete
+  six-chunk commit, retry/conflict, incomplete/UID mismatch, format-promotion, 700 ms completion,
+  atomic failure coverage, and retained-image/logical-removal separation. Pico W and Pico 2 W
+  release builds both succeed; the complete write/eject/re-present/export lifecycle is also
+  hardware-confirmed.
 
 ## 1.5.0 — 2026-07-22
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env pwsh
 # Read PicoSwitch2's out-of-band UART0 diagnostic channel through a USB-to-TTL
 # adapter while the Pico's USB-C port remains attached to the Switch.
-# Use -OutputPath with trace dump to save validated JSONL for ns2_trace.py.
+# Use -OutputPath with trace dump to save validated JSONL for ns2_trace.py,
+# or with amiibo dump to save the live mutable image without moving USB.
 param(
     [string]$Port,
     [string]$Command = 'fwreads',
@@ -103,7 +104,74 @@ try {
     Start-Sleep -Milliseconds 100
     $serial.DiscardInBuffer()
     Write-Host "UART $Port @ 115200: $Command" -ForegroundColor Cyan
-    if ($Command -eq 'pro2audio pcm dump') {
+    if ($Command -eq 'amiibo dump') {
+        if (-not $OutputPath) {
+            throw 'amiibo dump requires -OutputPath ending in .bin'
+        }
+        $resolved = if ([System.IO.Path]::IsPathRooted($OutputPath)) {
+            [System.IO.Path]::GetFullPath($OutputPath)
+        } else {
+            [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $OutputPath))
+        }
+        $parent = [System.IO.Path]::GetDirectoryName($resolved)
+        if (-not [System.IO.Directory]::Exists($parent)) {
+            throw "Output directory does not exist: $parent"
+        }
+
+        $serial.Write("amiibo status`n")
+        $statusLine = $serial.ReadLine().Trim()
+        $status = $statusLine | ConvertFrom-Json
+        if ($status.amiibo -ne 'status' -or -not $status.loaded -or
+            [int]$status.size -notin @(540, 572)) {
+            throw "No supported Virtual Amiibo is loaded: $statusLine"
+        }
+
+        $total = [int]$status.size
+        $generation = [uint64]$status.generation
+        $image = [System.Collections.Generic.List[byte]]::new($total)
+        $offset = 0
+        while ($offset -lt $total) {
+            $serial.Write("amiibo read $offset`n")
+            $line = $serial.ReadLine().Trim()
+            $record = $line | ConvertFrom-Json
+            if ($record.amiibo -ne 'data' -or
+                [int]$record.offset -ne $offset -or
+                [int]$record.total -ne $total -or
+                [uint64]$record.generation -ne $generation -or
+                [int]$record.length -le 0 -or
+                $record.payload -notmatch '^[0-9A-F]+$' -or
+                $record.payload.Length -ne ([int]$record.length * 2)) {
+                throw "Invalid Virtual Amiibo record at offset ${offset}: $line"
+            }
+            for ($i = 0; $i -lt $record.payload.Length; $i += 2) {
+                $image.Add([Convert]::ToByte($record.payload.Substring($i, 2), 16))
+            }
+            $offset += [int]$record.length
+        }
+        if ($image.Count -ne $total) {
+            throw "Virtual Amiibo length mismatch: received $($image.Count), expected $total"
+        }
+
+        $bytes = $image.ToArray()
+        $bcc0 = [byte](0x88 -bxor $bytes[0] -bxor $bytes[1] -bxor $bytes[2])
+        $bcc1 = [byte]($bytes[4] -bxor $bytes[5] -bxor $bytes[6] -bxor $bytes[7])
+        if ($bytes[3] -ne $bcc0 -or $bytes[8] -ne $bcc1) {
+            throw 'Downloaded Virtual Amiibo failed NTAG215 UID/BCC validation.'
+        }
+        [System.IO.File]::WriteAllBytes($resolved, $bytes)
+
+        # Match the production portal's Save current Amiibo semantics: only
+        # clear dirty protection after every byte has been validated and saved.
+        $serial.Write("amiibo acknowledge`n")
+        $ackLine = $serial.ReadLine().Trim()
+        $ack = $ackLine | ConvertFrom-Json
+        if ($ack.amiibo -ne 'acknowledged' -or $ack.dirty) {
+            throw "Virtual Amiibo was saved but not acknowledged: $ackLine"
+        }
+        Write-Host "Saved $total Virtual Amiibo bytes to $resolved" -ForegroundColor Green
+        Write-Output $statusLine
+        Write-Output $ackLine
+    } elseif ($Command -eq 'pro2audio pcm dump') {
         if (-not $OutputPath) {
             throw 'pro2audio pcm dump requires -OutputPath ending in .wav'
         }
@@ -176,6 +244,24 @@ try {
         # Pull one retained record per request. This keeps the Pico, USB-UART
         # bridge, SerialPort receive buffer, JSON parser, and console output in
         # lockstep instead of relying on sustained unsolicited transmission.
+        # If an output path is supplied, persist each validated record
+        # immediately. A console reboot can power-cycle the Pico while pulling
+        # a crash trace; incremental output preserves everything read before
+        # that reset instead of losing the entire in-memory list.
+        $traceOutput = $null
+        $traceEncoding = [System.Text.UTF8Encoding]::new($false)
+        if ($OutputPath) {
+            $traceOutput = if ([System.IO.Path]::IsPathRooted($OutputPath)) {
+                [System.IO.Path]::GetFullPath($OutputPath)
+            } else {
+                [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $OutputPath))
+            }
+            $parent = [System.IO.Path]::GetDirectoryName($traceOutput)
+            if (-not [System.IO.Directory]::Exists($parent)) {
+                throw "Output directory does not exist: $parent"
+            }
+            [System.IO.File]::WriteAllText($traceOutput, '', $traceEncoding)
+        }
         $serial.Write("trace dump`n")
         $manifestLine = $serial.ReadLine().Trim()
         $manifest = $manifestLine | ConvertFrom-Json
@@ -217,6 +303,10 @@ try {
             }
             $previousSequence = [uint64]$parsed.seq
             $lines.Add($line)
+            if ($traceOutput) {
+                [System.IO.File]::AppendAllText(
+                    $traceOutput, "$line`n", $traceEncoding)
+            }
         }
         $end = [ordered]@{
             trace = 'end'
@@ -224,6 +314,10 @@ try {
             overwritten = [uint64]$manifest.overwritten
         } | ConvertTo-Json -Compress
         $lines.Add($end)
+        if ($traceOutput) {
+            [System.IO.File]::AppendAllText(
+                $traceOutput, "$end`n", $traceEncoding)
+        }
         Write-DiagnosticLines -Lines $lines.ToArray()
     } elseif ($Command -eq 'blecap dump') {
         # Stop capture, snapshot its retained count, then pull exactly that many

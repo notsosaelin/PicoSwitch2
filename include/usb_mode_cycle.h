@@ -31,6 +31,11 @@ bool usb_personality_available(usb_personality_t p);
 // available (impossible in practice, since Pro2 is always available).
 usb_personality_t usb_next_personality(usb_personality_t current);
 
+// Controller-only cycle used by a paired-controller single tap. Config is
+// deliberately excluded and the final Joy-Con Right stop wraps to Pro2.
+usb_personality_t usb_next_controller_personality(
+    usb_personality_t current);
+
 #endif  // NS2_PRO
 
 #endif  // USB_MODE_CYCLE_H

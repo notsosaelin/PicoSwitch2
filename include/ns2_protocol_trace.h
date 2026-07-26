@@ -27,6 +27,17 @@ typedef enum {
     NS2_TRACE_DEVICE_TO_CONSOLE = 1,
 } ns2_protocol_trace_direction_t;
 
+typedef enum {
+    NS2_TRACE_FILTER_ALL = 0,
+    // Retain all vendor-bulk commands/responses while excluding HID OUT and
+    // EP0 traffic. Useful for discovering the negotiation which precedes a
+    // protocol family whose first command is not yet known.
+    NS2_TRACE_FILTER_BULK = 1,
+    // Retain only console vendor command 0x01 requests/responses. This keeps
+    // the 1 kHz HID OUT stream from overwriting a human-paced NFC session.
+    NS2_TRACE_FILTER_NFC = 2,
+} ns2_protocol_trace_filter_t;
+
 typedef struct {
     uint32_t sequence;
     uint32_t timestamp_us;
@@ -42,6 +53,7 @@ typedef struct {
 
 typedef struct {
     bool enabled;
+    ns2_protocol_trace_filter_t filter;
     uint16_t count;
     uint16_t capacity;
     uint32_t overwritten;
@@ -52,6 +64,7 @@ typedef struct {
 
 void ns2_protocol_trace_clear(void);
 void ns2_protocol_trace_set_enabled(bool enabled);
+void ns2_protocol_trace_set_filter(ns2_protocol_trace_filter_t filter);
 void ns2_protocol_trace_get_status(ns2_protocol_trace_status_t *status);
 
 // `id` and `subcommand` are kind-specific summary fields. The complete packet
@@ -72,9 +85,13 @@ bool ns2_protocol_trace_get(uint16_t oldest_first_index,
 
 static inline void ns2_protocol_trace_clear(void) {}
 static inline void ns2_protocol_trace_set_enabled(bool enabled) { (void)enabled; }
+static inline void ns2_protocol_trace_set_filter(ns2_protocol_trace_filter_t filter) {
+    (void)filter;
+}
 static inline void ns2_protocol_trace_get_status(ns2_protocol_trace_status_t *status) {
     if (!status) return;
     status->enabled = false;
+    status->filter = NS2_TRACE_FILTER_ALL;
     status->count = 0;
     status->capacity = NS2_PROTOCOL_TRACE_CAPACITY;
     status->overwritten = 0;

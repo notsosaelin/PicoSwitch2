@@ -141,7 +141,7 @@ the other core to execute only from SRAM while flash CS is tri-stated.
 - Core 0 requests a sample asynchronously and continues servicing USB.
 - Core 1 observes the request at a safe point, disables interrupts, and parks in SRAM.
 - Core 0 samples, publishes the result, and releases core 1.
-- Core 1's gesture state machine recognizes double-tap, triple-tap, and five-second hold.
+- Core 1's gesture state machine recognizes single-, double-, and triple-tap plus a two-second hold.
 
 The sample cadence remains 30 ms. Shortening it to 5 ms previously disrupted real-console
 GameCube rumble timing.
@@ -158,9 +158,22 @@ do not rely on BTstack LE Security Manager bonds.
 
 ## USB personality lifecycle
 
-Every boot starts in Pro Controller 2 mode. A five-second hold asks core 0 to disconnect TinyUSB,
-reset personality-owned state, select the next personality, reconnect, and publish an LED
-acknowledgment. The selection is volatile.
+Every boot starts in Pro Controller 2 mode. With a HID-ready controller, a single tap asks core 0
+to disconnect TinyUSB, reset personality-owned state, select the next controller personality,
+reconnect, and publish an LED acknowledgment. The cycle is Pro2 → NSO GameCube → Joy-Con 2 Left →
+Joy-Con 2 Right → Pro2; it never enters Config. A two-second hold enters Config directly from any
+controller personality and returns directly to Pro2 when already in Config. The selection is
+volatile.
+
+Double-tap opens pairing in normal mode. If a controller is active, it is first disconnected
+without deleting its bond so the one-controller host can admit a replacement. Triple-tap performs
+the existing disconnect/bond wipe in both normal and Config modes. Single/double taps are ignored
+in Config.
+
+The fifth personality is CDC-only configuration transport at `CAFE:4012`. Its web client is served
+from the user's computer with `tools/run_config_portal.ps1`; the firmware deliberately contains no
+MSC interface, FAT image, or web assets. This keeps the serial protocol and BOOTSEL lifecycle
+independent from portal presentation and browser-local amiibo storage.
 
 See [`../../STATUS.md`](../../STATUS.md) for the current cycle and
 [`../switch2-gc/usb-personality.md`](../switch2-gc/usb-personality.md) for detailed callback

@@ -15,9 +15,12 @@
  * landing (it still asserted the old "reserved, unavailable" placeholder
  * behavior) and was only caught while making this exact change.
  *
- * Updated again 2026-07-14: Config now has a live BOOTSEL-hold exit back to
- * Pro2 (usb_next_personality(CDC_CONFIG) wraps instead of staying terminal) --
- * this file's own "Config is terminal" assertion was rewritten accordingly.
+ * Updated again 2026-07-14: the historical all-personality helper wraps Config
+ * to Pro2 instead of staying terminal.
+ *
+ * Updated 2026-07-25: production single-tap selection uses the separate
+ * controller-only helper. It excludes Config; the two-second Config toggle is
+ * direct policy in usb.c and bootsel_action.c.
  *
  * Covers the
  * "mode-cycle next-available logic" / "Config is terminal until reset" /
@@ -86,7 +89,23 @@ int main(void) {
     // "Config has a live exit back to Pro2" (2026-07-14, supersedes the original "terminal until
     // reset" design): calling next() from Config must wrap back to Pro2, not stay put.
     CHECK(usb_next_personality(USB_PERSONALITY_CDC_CONFIG) == USB_PERSONALITY_SWITCH2_PRO2,
-          "next(CDCConfig) == Pro2 (wraps, live exit via BOOTSEL hold)");
+          "next(CDCConfig) == Pro2 (historical all-personality helper wraps)");
+
+    CHECK(usb_next_controller_personality(USB_PERSONALITY_SWITCH2_PRO2) ==
+              USB_PERSONALITY_NSO_GAMECUBE,
+          "controller cycle: Pro2 -> NSOGameCube");
+    CHECK(usb_next_controller_personality(USB_PERSONALITY_NSO_GAMECUBE) ==
+              USB_PERSONALITY_JOYCON2_L,
+          "controller cycle: NSOGameCube -> JoyCon2 Left");
+    CHECK(usb_next_controller_personality(USB_PERSONALITY_JOYCON2_L) ==
+              USB_PERSONALITY_JOYCON2_R,
+          "controller cycle: JoyCon2 Left -> JoyCon2 Right");
+    CHECK(usb_next_controller_personality(USB_PERSONALITY_JOYCON2_R) ==
+              USB_PERSONALITY_SWITCH2_PRO2,
+          "controller cycle skips Config and wraps to Pro2");
+    CHECK(usb_next_controller_personality(USB_PERSONALITY_CDC_CONFIG) ==
+              USB_PERSONALITY_SWITCH2_PRO2,
+          "controller cycle from Config safely selects Pro2");
 
     printf("\n%s\n", failures == 0 ? "All checks passed." : "One or more checks FAILED.");
     return failures == 0 ? 0 : 1;
