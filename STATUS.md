@@ -284,11 +284,21 @@ The firmware builds under the Pico SDK 2.2.0 toolchain. The standard `pico_w`
 artifact retains its validated non-audio clock, memory layout, and Bluetooth
 scheduling. The standard `pico2_w` artifact uses the hardware-confirmed
 floating-point/SRAM audio path at 300 MHz/1.20 V. Both legacy `NS2_PRO=OFF`
-Pico W build directories also pass their compile gates. The current workspace has 49
+Pico W build directories also pass their compile gates. The current workspace has 50
 passing host-test executables, including battery decoder/source/encoder, DualSense
 audio packet/control/tone/resampler, native-haptic lifecycle, peak preservation, and
 bonded-reconnect transport suites, plus the virtual-tag store/codec, vendor transfer pump,
-Config-only BLE cross-core bridge, and locked base mapping.
+Config-only BLE cross-core bridge, locked base mapping, and the isolated NTAG I2C 2K
+(figure v3) amiibo data model.
+
+NTAG I2C 2K (Kirby Air Riders "figure v3") support is staged. The portal identifies and
+imports these 2048-byte tags in full (see the amiibo section above). On the firmware side,
+Phase 1 adds an isolated, host-tested v3 data model (`src/nfc/ns2_amiibo_v3.c`) — validation,
+identity/UID, GET_VERSION, bounded reads — with no changes to the validated 540/572 NTAG215
+store, flash journal, or NFC serve path. Serving a 2 KB tag to the console (Phases 2–3) is
+hardware-gated on a UART trace of the console's read framing; the staged plan and flash
+constraints are in
+[`docs/switch2/kirby-air-riders-extended-amiibo.md`](docs/switch2/kirby-air-riders-extended-amiibo.md).
 
 Config v10 stores only the Pro Controller 2 body color, independent Joy-Con 2 Left/Right accents,
 and learned wake identity. Every newly flashed UF2 starts from defaults, a blank virtual-tag
