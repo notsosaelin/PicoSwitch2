@@ -86,9 +86,19 @@ required Git submodule for Pico 2 W audio builds.
 - Library export/import is a flat **.zip** (`library.json` manifest + one `.bin` per amiibo) via a
   self-contained store-only ZIP writer/reader (`amiiboZipStore`/`amiiboZipEntries`, deflate fallback
   via DecompressionStream); import reconstructs from the `.bin` files and legacy `.json` still
-  imports. The AmiiboAPI catalog is enhancement-only (cache-first, two mirrors, never a display/
-  import gate). Carousel arrows are non-wrapping/clamped (disabled at ends) and the centered amiibo's
-  release date shows above it.
+  imports. Import is structural-only: `coerceAmiiboImport()` accepts 540/572 and larger
+  emulator-container dumps (e.g. 2048-byte Pixl.js/allmiibo/flashiibo files) by taking the leading
+  540-byte NTAG215 image and recomputing BCC0/BCC1 (pure UID checksums); the AmiiboAPI catalog is
+  enhancement-only and never gates import, so brand-new amiibo not yet in AmiiboAPI import fine.
+- Carousel loops at both ends (`moveAmiiboCarousel` wraps) while the neighbor window uses real
+  non-wrapping indices for clean slides; the centered amiibo's release date shows above it. Sort is
+  two filter-panel cycle rows: **Sort by** (Default/Alphabetically/Numerically/Release date) and
+  **Order** (Ascending/Descending). Action stack has Activate/Sync/Eject (always labeled "Eject
+  Amiibo"; "Amiibo Active" when presented) plus Download .bin / Delete from Library / Refresh.
+- Star-variant caveat (e.g. Kirby Air Riders): the 4 files per rider are byte-identical in the whole
+  540-byte NTAG215 image; the difference lives only in the emulator container (offset 0x3C2+),
+  outside the NFC data. They dedup to one console amiibo; separating them into functionally distinct
+  tags would need amiibo keys to merge the save into the encrypted app-data (out of scope).
 - Sync clears dirty-write protection only after IndexedDB persistence; it does not unload the tag.
   Console formatting/reset remains the authority.
 - The USB side of Config mode is now CDC-only. The MSC descriptor/callbacks, generated
