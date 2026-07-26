@@ -43,8 +43,15 @@ Release notes describe user-visible behavior. Detailed implementation history re
   a self-contained store-only ZIP writer/reader; legacy `.json` backups still import.
 - The AmiiboAPI catalog is enhancement-only: entries always display (on-tag identity when the
   catalog is unavailable), the catalog loads cache-first from two mirrors, and it never gates
-  display or import. Carousel arrows navigate cleanly (non-wrapping, disabled at the ends) and the
-  centered amiibo's release date is shown above it.
+  display or import.
+- Import accepts larger emulator-container dumps (e.g. 2048-byte Pixl.js/allmiibo/flashiibo files
+  for newer amiibo such as Kirby Air Riders) by taking the leading 540-byte NTAG215 image and
+  recomputing the UID check bytes; newer amiibo not yet in AmiiboAPI import fine.
+- Carousel loops at both ends with clean non-wrapping slides, shows the centered amiibo's release
+  date above it, and has a Sort control (Default/Alphabetically/Numerically/Release date, plus
+  Ascending/Descending) in the filter column. Added Download .bin, Delete from Library, and Refresh
+  actions; the eject button is uniformly labeled "Eject Amiibo" and the active state reads "Amiibo
+  Active".
 - Stable localhost launcher for the production USB Serial/Bluetooth portal.
 - Config-personality-only BLE management service and Web Bluetooth client. It pauses controller
   discovery before low-duty advertising, classifies its incoming Peripheral-role link before HID,

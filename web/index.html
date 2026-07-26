@@ -327,13 +327,9 @@
             <button id="amiiboSyncControllerBtn" disabled>Activate Amiibo</button>
             <button id="amiiboSaveBtn" disabled>Sync Amiibo</button>
             <button id="amiiboEjectBtn" disabled>Eject Amiibo</button>
-            <p class="amiibo-action-help">
-              Load Amiibo stages the highlighted amiibo; Activate sends it to the adapter.
-              Sync Amiibo pulls console-written changes back and overwrites its saved library
-              copy. The last button matches its label: Eject Amiibo removes the loaded amiibo
-              from the adapter and unloads it; Clear Loaded Amiibo only unloads; Eject Virtual
-              Amiibo removes an adapter image that is not loaded here. Library dumps are never deleted.
-            </p>
+            <button id="amiiboDownloadBtn" disabled>Download .bin</button>
+            <button id="amiiboDeleteBtn" disabled>Delete from Library</button>
+            <button id="amiiboRefreshBtn">Refresh</button>
           </div>
 
           <div class="amiibo-filter-panel">
@@ -368,6 +364,26 @@
               </div>
               <button class="amiibo-filter-cycle" data-field="type" data-delta="1"
                       aria-label="Next product type">&rarr;</button>
+            </div>
+            <div class="amiibo-filter-row">
+              <button class="amiibo-sort-cycle" data-target="mode" data-delta="-1"
+                      aria-label="Previous sort field">&larr;</button>
+              <div class="amiibo-filter-value">
+                <span>Sort by</span>
+                <b id="amiiboSortField">Default</b>
+              </div>
+              <button class="amiibo-sort-cycle" data-target="mode" data-delta="1"
+                      aria-label="Next sort field">&rarr;</button>
+            </div>
+            <div class="amiibo-filter-row">
+              <button class="amiibo-sort-cycle" data-target="dir" data-delta="-1"
+                      aria-label="Toggle sort order">&larr;</button>
+              <div class="amiibo-filter-value">
+                <span>Order</span>
+                <b id="amiiboSortDir">Ascending</b>
+              </div>
+              <button class="amiibo-sort-cycle" data-target="dir" data-delta="1"
+                      aria-label="Toggle sort order">&rarr;</button>
             </div>
             <span id="amiiboLibraryCount" class="muted">No imported amiibo</span>
           </div>
@@ -544,6 +560,13 @@ let amiiboLibrarySelectedKey = "";
 let amiiboLoadedSlotKey = "";
 let amiiboCarouselIndex = 0;
 let amiiboLibraryBusy = false;
+let amiiboSortMode = "default"; // default | name | number | release
+let amiiboSortDir = "asc";      // asc | desc
+const AMIIBO_SORT_MODES = ["default", "name", "number", "release"];
+const AMIIBO_SORT_LABELS = {
+  default: "Default", name: "Alphabetically",
+  number: "Numerically", release: "Release date"
+};
 const amiiboLibraryFilters = {
   gameSeries: "All",
   amiiboSeries: "All",
@@ -833,9 +856,50 @@ function mergeAmiiboEntries(entries) {
   return [...merged.values()];
 }
 
+function amiiboDisplayName(entry) {
+  return (catalogMetadataForEntry(entry)?.name || entry.label || entry.id || "")
+    .toString();
+}
+
+// Earliest ISO release date (YYYY-MM-DD) across regions, or "" if unknown.
+function amiiboEarliestReleaseIso(metadata) {
+  const release = metadata?.release;
+  if (!release) return "";
+  const dates = ["na", "eu", "jp", "au"].map(r => release[r]).filter(Boolean).sort();
+  return dates[0] || "";
+}
+
+function amiiboIdNumber(entry) {
+  try { return BigInt("0x" + (entry.id || "0")); }
+  catch { return 0n; }
+}
+
 function compareAmiiboEntries(a, b) {
+  const dir = amiiboSortDir === "desc" ? -1 : 1;
+  return dir * compareAmiiboEntriesAsc(a, b);
+}
+
+function compareAmiiboEntriesAsc(a, b) {
   const ma = catalogMetadataForEntry(a);
   const mb = catalogMetadataForEntry(b);
+  const byName = amiiboDisplayName(a).localeCompare(
+    amiiboDisplayName(b), undefined, {numeric: true, sensitivity: "base"});
+
+  if (amiiboSortMode === "name")
+    return byName || a.id.localeCompare(b.id);
+  if (amiiboSortMode === "number") {
+    const na = amiiboIdNumber(a), nb = amiiboIdNumber(b);
+    return na < nb ? -1 : na > nb ? 1 : 0;
+  }
+  if (amiiboSortMode === "release") {
+    const ra = amiiboEarliestReleaseIso(ma), rb = amiiboEarliestReleaseIso(mb);
+    if (ra && rb && ra !== rb) return ra < rb ? -1 : 1;
+    if (ra && !rb) return -1;
+    if (!ra && rb) return 1;
+    return byName || a.id.localeCompare(b.id);
+  }
+
+  // Default: AmiiboAPI catalog order, then series/character/name.
   const field = key => (ma?.[key] || "").localeCompare(
     mb?.[key] || "", undefined, {numeric: true, sensitivity: "base"});
   const ar = amiiboCatalogOrderById.get(a.id);
@@ -845,12 +909,14 @@ function compareAmiiboEntries(a, b) {
     if (br === undefined) return -1;
     if (ar !== br) return ar - br;
   }
-  return field("amiiboSeries") || field("character") || field("name") ||
+  return field("amiiboSeries") || field("character") || byName ||
     field("type") || a.id.localeCompare(b.id);
 }
 
 async function libraryEntryFromFile(file, path, keyPrefix) {
-  const bytes = new Uint8Array(await file.arrayBuffer());
+  const bytes = coerceAmiiboImport(new Uint8Array(await file.arrayBuffer()));
+  if (!bytes)
+    return {error: `${file.name}: too small to be an amiibo dump (need at least 540 bytes).`};
   const error = validateAmiiboFile(bytes);
   if (error) return {error};
   const identity = parseAmiiboIdentity(bytes);
@@ -1009,7 +1075,6 @@ async function chooseAmiiboDirectory() {
   const existingLibrary = amiiboLibrary.slice();
   const entries = [];
   let invalid = 0;
-  let unmatched = 0;
   let examined = 0;
   let lastRenderedValid = 0;
   $("#amiiboMessage").textContent =
@@ -1024,7 +1089,6 @@ async function chooseAmiiboDirectory() {
       const result = await libraryEntryFromFile(
         item.file, `${directory.name}/${item.path}`, `directory:${directory.name}`);
       if (!result.entry) invalid++;
-      else if (amiiboCatalog && !amiiboCatalogById.has(result.entry.id)) unmatched++;
       else entries.push(result.entry);
 
       const shouldRender =
@@ -1046,11 +1110,8 @@ async function chooseAmiiboDirectory() {
     renderAmiiboLibrary();
     $("#amiiboMessage").textContent =
       `${persisted ? "Cached" : "Loaded for this browser session"} ` +
-      `${uniqueCatalogEntries} catalog entries from ${entries.length} valid owned files in ${directory.name}` +
-      (invalid ? `; ignored ${invalid} invalid .bin file${invalid === 1 ? "" : "s"}.` : ".") +
-      (unmatched
-        ? ` Ignored ${unmatched} dump${unmatched === 1 ? "" : "s"} without an exact AmiiboAPI match.`
-        : "");
+      `${uniqueCatalogEntries} amiibo from ${entries.length} valid owned files in ${directory.name}` +
+      (invalid ? `; ignored ${invalid} invalid .bin file${invalid === 1 ? "" : "s"}.` : ".");
   } catch (error) {
     if (entries.length) {
       amiiboLibrary = mergeAmiiboEntries([...existingLibrary, ...entries]);
@@ -1111,6 +1172,9 @@ function renderAmiiboFilterControls() {
       amiiboLibraryFilters[field] = "All";
     $("#" + elementId).textContent = amiiboLibraryFilters[field];
   }
+  $("#amiiboSortField").textContent = AMIIBO_SORT_LABELS[amiiboSortMode];
+  $("#amiiboSortDir").textContent =
+    amiiboSortDir === "desc" ? "Descending" : "Ascending";
 }
 
 function cycleAmiiboFilter(field, delta) {
@@ -1120,6 +1184,18 @@ function cycleAmiiboFilter(field, delta) {
   amiiboLibraryFilters[field] = options[next];
   amiiboCarouselIndex = 0;
   amiiboLibrarySelectedKey = "";
+  renderAmiiboLibrary();
+}
+
+function cycleAmiiboSort(target, delta) {
+  if (target === "dir") {
+    amiiboSortDir = amiiboSortDir === "asc" ? "desc" : "asc";
+  } else {
+    const i = Math.max(0, AMIIBO_SORT_MODES.indexOf(amiiboSortMode));
+    amiiboSortMode = AMIIBO_SORT_MODES[
+      (i + delta + AMIIBO_SORT_MODES.length) % AMIIBO_SORT_MODES.length];
+  }
+  amiiboCarouselIndex = 0;
   renderAmiiboLibrary();
 }
 
@@ -1195,11 +1271,9 @@ function updateAmiiboCarouselSelection(entries, animate = false) {
 
   $("#amiiboCarouselPosition").textContent =
     `${amiiboCarouselIndex + 1} of ${entries.length}`;
-  // Non-wrapping navigation: disable each arrow at its end of the list.
-  $("#amiiboCarouselPrev").disabled =
-    amiiboLibraryBusy || amiiboCarouselIndex <= 0;
-  $("#amiiboCarouselNext").disabled =
-    amiiboLibraryBusy || amiiboCarouselIndex >= entries.length - 1;
+  // Looping navigation: arrows stay enabled whenever there is more than one.
+  $("#amiiboCarouselPrev").disabled = amiiboLibraryBusy || entries.length < 2;
+  $("#amiiboCarouselNext").disabled = amiiboLibraryBusy || entries.length < 2;
   // Release date is shown once, above the centered amiibo only.
   const centerMeta = catalogMetadataForEntry(entries[amiiboCarouselIndex]);
   $("#amiiboCarouselCaption").textContent =
@@ -1209,15 +1283,10 @@ function updateAmiiboCarouselSelection(entries, animate = false) {
 
 // Earliest available regional release date from an AmiiboAPI catalog record.
 function amiiboReleaseDate(metadata) {
-  const release = metadata?.release;
-  if (!release) return "";
-  const dates = ["na", "eu", "jp", "au"]
-    .map(region => release[region])
-    .filter(Boolean)
-    .sort();
-  if (!dates.length) return "";
-  const date = new Date(dates[0] + "T00:00:00");
-  return isNaN(date) ? `Released ${dates[0]}`
+  const iso = amiiboEarliestReleaseIso(metadata);
+  if (!iso) return "";
+  const date = new Date(iso + "T00:00:00");
+  return isNaN(date) ? `Released ${iso}`
     : `Released ${date.toLocaleDateString(undefined,
         {year: "numeric", month: "long", day: "numeric"})}`;
 }
@@ -1306,11 +1375,11 @@ function moveAmiiboCarousel(delta) {
   if ($("#amiiboCarouselViewport").getAttribute("aria-disabled") === "true") return;
   const entries = filteredAmiiboLibrary();
   if (entries.length < 2) return;
-  // Clamp (no wrap) so navigation slides cleanly and never teleports an item
-  // across the center; arrows disable at the ends.
-  const next = Math.max(0,
-    Math.min(amiiboCarouselIndex + delta, entries.length - 1));
-  if (next === amiiboCarouselIndex) return;
+  // Loop at the ends. The neighbor window itself uses real (non-wrapping)
+  // indices, so mid-list steps slide cleanly and only the deliberate first<->last
+  // wrap jumps.
+  const next =
+    (amiiboCarouselIndex + delta + entries.length) % entries.length;
   selectAmiiboLibraryEntry(entries[next].key, true);
 }
 
@@ -1491,10 +1560,9 @@ async function importAmiiboLibraryBackup(file) {
       let skipped = 0;
       for (const zipItem of zipEntries) {
         if (!/\.bin$/i.test(zipItem.name)) continue;
-        const bytes = new Uint8Array(zipItem.bytes);
-        if (validateAmiiboFile(bytes)) { skipped++; continue; }
+        const bytes = coerceAmiiboImport(new Uint8Array(zipItem.bytes));
+        if (!bytes || validateAmiiboFile(bytes)) { skipped++; continue; }
         const identity = parseAmiiboIdentity(bytes);
-        if (amiiboCatalog && !amiiboCatalogById.has(identity.id)) { skipped++; continue; }
         entries.push(normalizeAmiiboLibraryEntry({
           key: `amiibo:${identity.id}`,
           name: zipItem.name,
@@ -1519,12 +1587,11 @@ async function importAmiiboLibraryBackup(file) {
         const bytesValue = saved.bytesBase64 || saved.save2Base64 ||
           saved.usedBase64 || saved.save1Base64 || saved.cleanBase64;
         if (!bytesValue) throw new Error(`${saved.name || "entry"}: no image`);
-        const bytes = new Uint8Array(base64ToArrayBuffer(bytesValue));
-        const bytesError = validateAmiiboFile(bytes);
+        const bytes = coerceAmiiboImport(
+          new Uint8Array(base64ToArrayBuffer(bytesValue)));
+        const bytesError = bytes ? validateAmiiboFile(bytes) : "too small";
         if (bytesError) throw new Error(`${saved.name || "entry"}: ${bytesError}`);
         const identity = parseAmiiboIdentity(bytes);
-        if (amiiboCatalog && !amiiboCatalogById.has(identity.id))
-          throw new Error(`${saved.name || "entry"}: no AmiiboAPI match`);
         entries.push(normalizeAmiiboLibraryEntry({
           key: `amiibo:${identity.id}`,
           name: saved.name || `amiibo-${identity.uid}.bin`,
@@ -1776,6 +1843,21 @@ function validateAmiiboFile(bytes) {
   return "";
 }
 
+// Coerce an imported file into a standard NTAG215 amiibo image. Accepts the
+// standard 540/572-byte dumps and also larger emulator-container exports (e.g.
+// the 2048-byte Pixl.js/allmiibo/flashiibo files for newer amiibo) by taking
+// the leading NTAG215 image. BCC0/BCC1 are pure functions of the UID, so they
+// are recomputed to repair placeholder/zeroed check bytes some exporters write;
+// this never alters the UID or the UID-bound crypto. Returns a Uint8Array or
+// null if the file is too small to contain an amiibo image.
+function coerceAmiiboImport(rawBytes) {
+  if (rawBytes.length < 540) return null;
+  const out = rawBytes.slice(0, rawBytes.length === 572 ? 572 : 540);
+  out[3] = (0x88 ^ out[0] ^ out[1] ^ out[2]) & 0xFF;
+  out[8] = (out[4] ^ out[5] ^ out[6] ^ out[7]) & 0xFF;
+  return out;
+}
+
 function amiiboSetBusy(busy, percent = 0) {
   amiiboLibraryBusy = busy;
   $("#amiiboChooseBtn").disabled = busy;
@@ -1827,19 +1909,15 @@ function renderAmiiboLoadedSlot() {
     "Load the highlighted amiibo for the adapter";
   const slotActivated = adapterMatches && adapterPresented;
   $("#amiiboSyncControllerBtn").textContent =
-    slotActivated ? "Amiibo activated" : "Activate Amiibo";
+    slotActivated ? "Amiibo Active" : "Activate Amiibo";
   $("#amiiboSyncControllerBtn").disabled =
     amiiboLibraryBusy || !transportKind || !entry || slotActivated;
   $("#amiiboSaveBtn").disabled =
     amiiboLibraryBusy || !transportKind || !amiiboStatus?.loaded;
-  // Merged eject/clear button: the label always states the exact current
-  // scope (see amiiboEjectActionState). It stays available for a
-  // loaded-but-unpresented retained image (console Stop lifecycle state).
+  // Merged eject/clear button: labeled uniformly "Eject Amiibo". The action
+  // scope still adapts (see amiiboEjectActionState); the tooltip explains it.
   const ejectState = amiiboEjectActionState();
-  $("#amiiboEjectBtn").textContent =
-    ejectState.mode === "both" ? "Eject Amiibo" :
-    ejectState.mode === "adapter" ? "Eject Virtual Amiibo" :
-    "Clear Loaded Amiibo";
+  $("#amiiboEjectBtn").textContent = "Eject Amiibo";
   $("#amiiboEjectBtn").title =
     ejectState.mode === "both"
       ? "Remove this amiibo from the adapter and unload it"
@@ -1850,6 +1928,10 @@ function renderAmiiboLoadedSlot() {
           : "";
   $("#amiiboEjectBtn").disabled =
     amiiboLibraryBusy || ejectState.mode === "none";
+  const selected = selectedAmiiboLibraryEntry();
+  $("#amiiboDownloadBtn").disabled = amiiboLibraryBusy || !selected;
+  $("#amiiboDeleteBtn").disabled = amiiboLibraryBusy || !selected;
+  $("#amiiboRefreshBtn").disabled = amiiboLibraryBusy;
 }
 
 function renderAmiiboStatus(status) {
@@ -1967,6 +2049,65 @@ async function syncLoadedAmiiboToController() {
   await uploadAmiiboEntry(entry);
 }
 
+// Download the highlighted amiibo's raw .bin (single-tag backup / export of a
+// console-modified image). Avoids "how do I get one amiibo back out".
+function downloadSelectedAmiibo() {
+  const entry = selectedAmiiboLibraryEntry();
+  const bytes = entry && amiiboEntryBytes(entry);
+  if (!bytes) return;
+  const name = `${(catalogMetadataForEntry(entry)?.name || entry.label || entry.id)
+    .replace(/[^\w .\-]+/g, "_")}.bin`;
+  const url = URL.createObjectURL(new Blob([bytes], {type: "application/octet-stream"}));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  $("#amiiboMessage").textContent = `Downloaded ${name}.`;
+}
+
+// Remove the highlighted amiibo from the browser library only (single-entry
+// delete; the adapter's active tag and other entries are untouched).
+async function deleteSelectedAmiibo() {
+  const entry = selectedAmiiboLibraryEntry();
+  if (!entry || amiiboLibraryBusy) return;
+  const name = catalogMetadataForEntry(entry)?.name || entry.label || entry.id;
+  if (!confirm(`Remove ${name} from your browser library? The adapter's active tag is not changed.`))
+    return;
+  const db = await openAmiiboLibraryDb();
+  if (db) {
+    try {
+      const tx = db.transaction("library", "readwrite");
+      tx.objectStore("library").delete(entry.key);
+      await idbTransactionDone(tx);
+    } catch (error) {
+      console.warn("Could not delete amiibo from cache", error);
+    }
+  }
+  amiiboLibrary = amiiboLibrary.filter(item => item.key !== entry.key);
+  if (amiiboLibrarySelectedKey === entry.key) amiiboLibrarySelectedKey = "";
+  sanitizeAmiiboSlotState();
+  renderAmiiboLibrary();
+  $("#amiiboMessage").textContent =
+    `Removed ${name} from the library. Its original file was not touched.`;
+}
+
+// Re-read adapter status and refresh the AmiiboAPI catalog. Recovers the UI
+// from a desync or a catalog that was offline at load.
+async function refreshAmiiboManager() {
+  amiiboSetBusy(true);
+  try {
+    if (transportKind) await refreshAmiiboStatus();
+    try { await loadAmiiboCatalog(true); } catch (e) {
+      console.warn("Catalog refresh failed", e);
+    }
+    renderAmiiboLibrary();
+    $("#amiiboMessage").textContent = "Refreshed adapter status and amiibo catalog.";
+  } finally {
+    amiiboSetBusy(false);
+  }
+}
+
 async function ejectOrClearAmiibo() {
   const {mode, entry} = amiiboEjectActionState();
   if (mode === "none" || amiiboLibraryBusy) return;
@@ -2025,14 +2166,9 @@ async function importSingleAmiiboFile(file) {
   try {
     await loadAmiiboCatalog();
   } catch (error) {
-    // Catalog is an enhancement; a structurally valid dump is still importable
-    // offline. Names/artwork fill in once the catalog becomes available.
+    // Catalog is an enhancement; a structurally valid dump imports regardless.
+    // Newer amiibo not yet in AmiiboAPI still work; names/artwork fill in later.
     console.warn("Amiibo catalog unavailable during import", error);
-  }
-  if (amiiboCatalog && !amiiboCatalogById.has(result.entry.id)) {
-    $("#amiiboMessage").textContent =
-      `${file.name} is structurally valid but has no exact AmiiboAPI catalog match, so it was not stored.`;
-    return;
   }
   const existing = amiiboLibrary.find(entry => entry.id === result.entry.id);
   if (existing && !amiiboBuffersEqual(
@@ -2040,8 +2176,8 @@ async function importSingleAmiiboFile(file) {
     amiiboLibrarySelectedKey = existing.key;
     renderAmiiboLibrary();
     $("#amiiboMessage").textContent =
-      `${file.name} matches an existing AmiiboAPI catalog entry. ` +
-      "The cached owned copy was kept so duplicates do not create extra entries.";
+      `${file.name} matches an amiibo already in your library; ` +
+      "the cached copy was kept so duplicates do not create extra entries.";
     return;
   }
   const selected = existing || result.entry;
@@ -2097,11 +2233,6 @@ async function saveCurrentAmiibo() {
     await loadAmiiboCatalog();
 
     const identity = parseAmiiboIdentity(bytes);
-    if (amiiboCatalog && !amiiboCatalogById.has(identity.id)) {
-      $("#amiiboMessage").textContent =
-        "Sync Amiibo stopped because the adapter image has no exact AmiiboAPI catalog match. Nothing was overwritten.";
-      return;
-    }
     const cached = amiiboLibrary.find(entry =>
       entry.id === identity.id || amiiboEntryContainsUid(entry, status.uid));
     const name = cached?.name || amiiboFileName ||
@@ -2666,10 +2797,16 @@ $("#amiiboFile").onchange = async e => {
   $("#amiiboImportMenu").open = false;
 };
 $("#amiiboDirectoryBtn").onclick = chooseAmiiboDirectory;
+$("#amiiboDownloadBtn").onclick = downloadSelectedAmiibo;
+$("#amiiboDeleteBtn").onclick = deleteSelectedAmiibo;
+$("#amiiboRefreshBtn").onclick = refreshAmiiboManager;
 $("#amiiboLibrarySearch").oninput = renderAmiiboLibrary;
 for (const button of document.querySelectorAll(".amiibo-filter-cycle"))
   button.onclick = () => cycleAmiiboFilter(
     button.dataset.field, Number(button.dataset.delta));
+for (const button of document.querySelectorAll(".amiibo-sort-cycle"))
+  button.onclick = () => cycleAmiiboSort(
+    button.dataset.target, Number(button.dataset.delta));
 $("#amiiboCarouselPrev").onclick = () => moveAmiiboCarousel(-1);
 $("#amiiboCarouselNext").onclick = () => moveAmiiboCarousel(1);
 $("#amiiboCarouselViewport").onkeydown = e => {
