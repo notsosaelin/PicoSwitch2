@@ -260,6 +260,27 @@ dump (not emulator-normalized) to separate crypto-invalid input from a serve gap
 (3) decode the 60-byte prefix fields against a genuine 540 read to find the tag
 size/type field, then describe a true 2 KB tag so the console reads the full 2048.
 
+**Experiment 1 result (2026-07-26) — System Settings reads identically**
+(`dumps/kirby-v3-serve-trace-sysmenu-2026-07-26.jsonl`, two scans). The System
+Settings amiibo reader issues the **same** sequence and the **same** read length
+as Kirby Air Riders: per read operation, `0x03/0x05/0x06` then exactly **15 ×
+0x15** chunks at offsets `0,70,…,980` (identical to the Kirby read), then reject.
+So the ~1024-byte read length is intrinsic to the console's amiibo reader, not
+app-specific, and both independent readers reject the same served bytes. This
+rules out a Kirby-specific quirk and points the remaining failure at **amiibo
+validation of the tag content itself**. Combined with the known crypto-validation
+wall and the capture audit's finding that these community files are
+emulator-normalized (not faithful raw dumps), the leading hypothesis is that the
+**dumps are not valid to the console's amiibo verifier** — the same wall that
+rejects generated 540 tags — and a faithful raw dump of a genuine Kirby Air
+Riders amiibo is the gating dependency to confirm the serve path end-to-end.
+
+Still not fully excluded: the console read image ~0x3DE (34 bytes short of the
+machine-block end 0x3FF) because our 60-byte prefix consumes part of its fixed
+~1050-byte read window. If a faithful dump also reads short and rejects, revisit
+whether v3 needs a different prefix size so the fixed read window covers the whole
+1024-byte tag region.
+
 ### Phase 2 — serve the confirmed protocol (hardware loop)
 - Implement the console-facing read/response for the traced framing so a real Switch 2 builds the
   Figure Player. Iterate against captures until rider+machine are correct in Kirby Air Riders.
