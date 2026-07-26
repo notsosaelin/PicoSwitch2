@@ -12,7 +12,7 @@ Release notes describe user-visible behavior. Detailed implementation history re
   reconnect recovery, and coexistence with controller input, audio, and native haptics.
 - Passive UART analysis for genuine length-`0x28` motion PDUs, including exact G6/G7/G8
   signed-field decoding, capture summaries, and regression tests.
-- Disabled-by-default Virtual Amiibo configuration infrastructure: strict 540/572-byte validation,
+- Virtual Amiibo configuration infrastructure: strict 540/572-byte validation,
   transactional upload, full-image retrieval, dirty-write protection, and alternating power-safe
   flash snapshots.
 - Browser-local amiibo library with recursive directory import, single-file import, IndexedDB
@@ -21,17 +21,25 @@ Release notes describe user-visible behavior. Detailed implementation history re
 - Standalone browser-only Virtual Amiibo diagnostic portal with no serial dependency, including
   transactional upload/CRC checks, a separately persisted simulated adapter slot, controlled write
   injection, download/cache verification, AmiiboAPI testing, and an automated self-test.
-- Artwork-first amiibo carousel in both portals: the selected or active tag is centered and
-  highlighted with four neighbors on each side, previous/next and arrow-key navigation, responsive
-  narrowing, catalog-aware search, and the full selected-tag detail panel.
-- Stable localhost launcher for the production Web Serial portal.
+- Artwork-first amiibo carousel in both portals. The production view starts empty, adds only
+  exact-AmiiboAPI-matched owned files, fills progressively during directory scans, keeps the
+  selection centered at 100%, and renders four non-overlapping neighbors on each side at exact
+  80/60/40/20% sizes. Carousel names are omitted; navigation remains animated.
+- Definitive Virtual Amiibo Manager layout with two independent browser quick slots, explicit
+  assignment and adapter loading, validated adapter-to-browser writeback, and presentation-only
+  Eject/re-present.
+- Stable localhost launcher for the production USB Serial/Bluetooth portal.
+- Config-personality-only BLE management service and Web Bluetooth client. It pauses controller
+  discovery before low-duty advertising, classifies its incoming Peripheral-role link before HID,
+  sends production settings/Amiibo commands through a bounded cross-core bridge to the existing
+  parser, and disconnects before normal discovery resumes.
 - Host-tested Switch 2 NFC foundations: a partial-write-safe 630-byte vendor response pump,
   61-byte tag status, primary-capture-corrected 600-byte reader buffer/70-byte offset chunks, and
   atomic 454-byte staged-write validation.
 - UART-gated genuine Pro Controller 2 NFC relay. A physical amiibo read completed through the
   dongle and was recognized by a real Switch 2; the trace confirms the native command sequence,
   `0 → 1 → 2 → 3` report-state progression, and nine offset reads.
-- Disabled-by-default virtual NFC read dispatch for the confirmed
+- Virtual NFC read dispatch for the confirmed
   `0x03/0x04/0x05/0x06/0x15` flow, with no idle polling. A real Switch 2 recognizes an uploaded
   Virtual Amiibo through this path with a non-NFC source controller.
 - Guarded transactional Virtual Amiibo write dispatch reconstructed from existing Switch 2 evidence:
@@ -55,15 +63,35 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Changed
 
+- Virtual Amiibo is always available. Blank firmware presents no virtual tag, and the virtual
+  runtime owns NFC only after the user loads one of their own images.
+- Browser libraries use one AmiiboAPI-ordered mutable dump per exact catalog identity, expose two
+  independent quick slots, ignore duplicate owned files, and cache the shared public catalog only
+  once instead of duplicating matched metadata. The production carousel preserves
+  that native order while its arrows cycle `All` and the imported library's available game-series,
+  amiibo-series, and product-type values alphabetically.
+- Every newly flashed UF2 performs a one-time reset of settings, both Virtual Amiibo journal banks,
+  wake identity, and BTstack bonds. Ordinary reboots continue to preserve state.
+- Per-controller-family button remapping and its portal controls were removed. The shared Pro2
+  body/Sony lightbar color and independent Joy-Con accent controls remain. A locked,
+  host-tested base map now feeds the stable emulated Nintendo identity so users can remap on the
+  console and keep that mapping across source-controller changes.
+- The production portal no longer displays the obsolete current-input/current-output identity
+  cards. Its retained body/lightbar and Joy-Con accent controls share one compact full-width panel.
+- The large setup card was removed. Live Amiibo status now appears in the header, the quick-slot
+  switch is colocated with its actions, the three lower panels use equal widths and centered
+  typography, the detail panel has separated formatting, and the log lives under Developer
+  diagnostics.
+- Bluetooth GAP and Config advertisement identity now use the single name `PicoSwitch2`.
 - Active technical references now live under `docs/`; superseded plans and development narratives
   use the explicit `.archived.md` suffix.
 - AmiiboAPI resolution now downloads one cacheable catalog and matches IDs locally instead of
   issuing one request per selected tag. This eliminates intermittent/throttled false “no entry”
   results and enriches library labels/search without disclosing selected IDs.
-- Config mode is now CDC-only. The firmware no longer exposes the read-only `PICOSWITCH` mass
-  storage drive or embeds a FAT image/web page; the production portal is served locally from
-  `web/index.html`. This removes 100,104 bytes from Pico 2 W and 100,160 bytes from Pico W while
-  preserving the config VID/PID and serial protocol.
+- The USB side of Config mode is now CDC-only. The firmware no longer exposes the read-only
+  `PICOSWITCH` mass-storage drive or embeds a FAT image/web page; the production portal is served
+  locally from `web/index.html`. This removes 100,104 bytes from Pico 2 W and 100,160 bytes from
+  Pico W while preserving the config VID/PID and serial protocol.
 - The failed synthetic length-`0x28` generator was removed from runtime firmware. Its first
   hardware test caused random motion because the unresolved leading/middle lanes are semantically
   active; the exact field codec, captures, and negative result remain documented.
@@ -83,36 +111,38 @@ Release notes describe user-visible behavior. Detailed implementation history re
   personalities when a controller is active; double-tap opens pairing; triple-tap wipes/disconnects;
   and a two-second hold enters Config directly. In Config, single/double taps do nothing,
   triple-tap remains an emergency wipe, and a two-second hold returns directly to Pro2.
-- The portal action formerly labelled **Download current file** is now **Save current Amiibo**.
-  It overwrites the matching browser-local IndexedDB library entry (or creates a stable saved entry)
-  and acknowledges adapter dirty state only after that cache write succeeds; it no longer starts a
-  browser download.
+- The portal action formerly labelled **Download current file**, **Save current Amiibo**, and
+  **Sync to app** is now the unambiguous **Sync Amiibo from Adapter** action. It validates and
+  overwrites the matching browser-local IndexedDB entry (or creates one) and acknowledges adapter
+  dirty state only after that cache write succeeds.
 - Console-written Virtual Amiibo data now queues a flash snapshot automatically. The runtime
   defers logical TagRemoved until the snapshot verifies, so a successful write is no longer only a
   RAM update.
-- Virtual Amiibo storage and the browser library now retain separate immutable **Unused** and
-  mutable **Used** copies. Either can be selected without destroying the other, and the selection,
-  dirty state, and both images survive reboot through an alternating two-bank CRC journal.
+- Virtual Amiibo's adapter journal still retains an internal baseline/latest-write recovery pair,
+  but the browser exposes one mutable dump per identity. Users format/erase through the console;
+  the portal does not expose reset-to-original behavior.
 - The production amiibo library remains visible and usable without Web Serial. A versioned
-  **Export saved library** JSON backup preserves every cached Unused/Used pair and can be imported
-  after browser storage is cleared.
+  **Export saved library** JSON backup preserves every mutable dump and both quick-slot assignments
+  and can be imported after browser storage is cleared.
 
 ### Validation
 
 - DualSense gyro immediately returned to normal when the experimental length-`0x28` gate was
   disabled, confirming the validated production path remains the length-`0x1E` carrier.
-- All 47 host-test executables pass, the motion and PDU tests compile cleanly with warnings treated
-  as errors against the reorganized source tree, and Pico W/Pico 2 W release builds succeed.
-- The local Web Serial portal passes JavaScript syntax, DOM-reference, and localhost delivery
+- All 49 host-test executables pass, including the Config BLE bridge and locked base-map test, and the motion/PDU tests
+  compile cleanly with warnings treated as errors against the reorganized source tree. Pico W,
+  Pico 2 W, and legacy Switch 1 Pico W builds succeed.
+- The local USB Serial/Bluetooth portal passes JavaScript syntax, DOM-reference, and localhost delivery
   checks. Both firmware binaries link without MSC callbacks or embedded-web symbols. Virtual NFC
   console read/write dispatch is feature-gated and hardware-validated through same-session
   lifecycle and UART export. Automatic write-before-eject persistence, dongle power-cycle recovery,
-  reversible Used/Unused selection, offline library access, and full-library backup restore are
+  adapter write recovery, offline library access, and full-library backup restore are
   hardware/browser-confirmed.
 - The standalone diagnostic portal passes JavaScript/DOM reference checks and local HTTP delivery.
   AmiiboAPI's 946-entry catalog locally matches 944 of the 1,035 maintainer files; the remaining 91
   are Happy Home Designer item files that all share the same out-of-catalog ID.
-- All 47 host-test executables pass after the Virtual Amiibo write and BOOTSEL-policy integration,
+- All 49 host-test executables pass after the Virtual Amiibo write, BOOTSEL-policy, and Config BLE
+  bridge integration,
   including complete
   six-chunk commit, retry/conflict, incomplete/UID mismatch, format-promotion, 700 ms completion,
   atomic failure coverage, and retained-image/logical-removal separation. Pico W and Pico 2 W

@@ -126,6 +126,24 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
 - [x] Convert config mode from CDC+MSC to CDC-only: remove the `PICOSWITCH` read-only drive,
   embedded FAT image, MSC descriptors/callbacks, and web-disk generator while retaining the
   existing config VID/PID, CDC command protocol, and BOOTSEL personality lifecycle.
+- [x] Implement and host/build-test a Config-personality-only BLE management transport: pause
+  controller discovery before advertising, classify the incoming Peripheral-role link before HID,
+  reuse the existing core-0 parser through a bounded cross-core bridge, and expose only production
+  settings/Amiibo commands in the local Web Bluetooth portal.
+- [ ] Hardware-validate Config BLE from desktop Chromium and Android if available, including a
+  pre-connected Classic controller and BLE controller, settings/Amiibo persistence, clean Config
+  exit, normal reconnect, and non-discoverability/no audio stutter in controller personalities.
+- [x] Make Virtual Amiibo always available with a blank/no-tag initial state; replace the
+  original/modified portal model with one mutable exact-catalog record and two independent browser
+  quick slots.
+- [x] Add a one-shot install marker so every UF2 flash erases settings, virtual-tag journals, wake
+  identity, and Bluetooth bonds while ordinary reboot persistence remains unchanged.
+- [x] Retire per-controller-family **button** mapping storage and UI in favor of one locked base
+  button map plus Switch-side remapping on the stable emulated controller identity; retain all
+  body/accent/Sony-lightbar color controls.
+- [ ] Hardware-validate the v10 first-boot erase exactly once, blank NFC behavior, browser quick
+  slots and mutable-dump transfer over Config BLE, settings save/readback, and re-pair after the
+  bond wipe.
 - [x] Implement and host-test the revised BOOTSEL policy: paired single-tap cycles only controller
   personalities, double-tap opens pairing, triple-tap wipes/disconnects, and a two-second hold
   enters Config directly; Config keeps only triple-tap wipe and two-second direct exit.
@@ -204,18 +222,19 @@ Status: 🟡 genuine Pro2 physical passthrough and feature-gated Virtual Amiibo 
 by a real Switch 2. Transactional write staging/commit, logical eject, next-scan re-presentation,
 same-session updated readback, and validated UART export are hardware-confirmed. The exported
 540-byte image differs from the unique matching original only within permitted writable ranges.
-Automatic write-before-eject persistence, clean/used selection, power-cycle recovery, offline
-library use, and full-library backup restore are hardware/browser-confirmed. Manual
-present/remove controls and all native write paths remain open.
+Automatic write-before-eject persistence, power-cycle recovery, offline library use, and
+full-library backup restore are hardware/browser-confirmed. Manual Eject/Present
+is implemented and awaiting real-console validation; destructive slot removal and all native write
+paths remain open.
 
-The offline implementation validates and transactionally uploads 540/572-byte images and retains
-two lossless copies: immutable **Unused** imported data and mutable console-written **Used** data.
-The selected copy, both images, dirty state, and optional signature are stored in alternating
+The adapter validates and transactionally uploads 540/572-byte images and internally retains an
+imported baseline plus the optional latest console-written image for recovery. Both images, dirty
+state, and optional signature are stored in alternating
 CRC-verified flash banks at sectors `-3` and `-5`. A successful console commit requests this
 snapshot automatically, and logical TagRemoved waits until it verifies. The browser-local library
-works without Web Serial, accepts a single file or recursively scans a directory, caches both
-copies and catalog details in IndexedDB, and can export/import the complete library as versioned
-JSON. **Save current Amiibo** retrieves both adapter copies before clearing dirty protection.
+works without an adapter, accepts a single file or recursively scans a directory, caches one
+mutable exact-AmiiboAPI-matched dump per identity, and provides two independent quick slots.
+**Sync Amiibo from Adapter** overwrites the matching browser copy before clearing dirty protection.
 Primary capture corrected the read model to a 600-byte reader buffer served in 70-byte offset
 chunks. The command-driven runtime handles the confirmed read flow plus an evidence-reconstructed
 write flow: exact-UID `0x06` selection, a 64-byte preparation buffer, bounded `0x14` staging, and
@@ -251,13 +270,21 @@ is not raw passthrough. See
 - [x] Add alternating-bank persistence outside `pico_config_t`, including version-1 migration.
 - [x] Add recursive directory import, browser-local library caching, parsed identity, and optional
   cached friendly catalog metadata.
-- [x] Replace the long library selector with a nine-position artwork carousel and automatically
-  center/mark the adapter's active tag.
-- [x] Keep the production library available without Web Serial, retain separate Unused/Used
-  copies, and add versioned full-library export/import.
-- [ ] Add separate portal controls for **Eject** (present=false while retaining the active image)
-  and **Remove active amiibo** (clear the adapter slot only after dirty-write protection).
-- [x] Hardware-test automatic snapshot recovery and Used/Unused selection.
+- [x] Replace the long library selector with an imported-files-only artwork carousel that
+  progressively fills during directory scanning, enlarges/centers the selected tag with four
+  progressively smaller neighbors per side, animates navigation, and filters imported entries
+  without disturbing AmiiboAPI source order.
+- [x] Keep the production library available without an adapter connection, store one mutable dump
+  per exact AmiiboAPI identity, provide two independent quick slots, and add versioned full-library
+  export/import.
+- [x] Add a presentation-only **Eject Adapter Amiibo** control; loading the unchanged slot presents
+  it again without rewriting flash.
+- [ ] Add **Remove active amiibo** (clear the adapter slot only after dirty-write protection).
+- [ ] Hardware-validate manual Eject, Slot 1/Slot 2 assignment, adapter loading, validated
+  adapter-to-browser sync, and re-presentation on a real Switch 2.
+- [x] Hardware-test automatic snapshot recovery and the former Unused/Used selection mechanics.
+- [ ] Regression-test the unchanged internal two-image/two-bank recovery mechanics through the
+  simplified one-dump browser UI.
 - [ ] Hardware-test interrupted-upload preservation.
 - [ ] Complete native Switch 2 reader relay.
   - [x] Capture and relay one genuine Pro2 physical read recognized by the console.

@@ -44,6 +44,7 @@ extern void btstack_memory_init(void);
 #include "l2cap.h"
 #include "ble/sm.h"
 #include "ble/gatt_client.h"
+#include "ble/att_db.h"
 #include "ble/att_db_util.h"
 #include "ble/att_server.h"
 #include "ble/le_device_db.h"
@@ -103,9 +104,8 @@ extern int find_player_index(int dev_addr, int instance);
 #include "ns2_nfc_mirror.h"
 #include "ns2_native_motion.h"
 #include "bt_identity_log.h"
-#ifdef NS2_PRO
+#include "config_wireless_bridge.h"
 #include "usb.h" // read-only personality gate for automatic native Pro2 motion setup
-#endif
 
 // ============================================================================
 // FLASH HELPERS (for TLV storage)
@@ -640,18 +640,144 @@ static void dis_client_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
 // the device terminates the link (reason 0x13) without ever streaming HID.
 // Exposing GAP (device name/appearance) + GATT (Service Changed) services makes
 // us look like a normal host so the device proceeds to stream.
-static uint8_t host_att_device_name[] = "Joypad OS";
+static uint8_t host_att_device_name[] = "PicoSwitch2";
 static const uint8_t host_att_appearance[] = { 0xC0, 0x03 }; // 0x03C0 Generic HID, LE
+
+// Config-only BLE management service. UUIDs are project-owned random UUIDs,
+// deliberately distinct from Nordic UART so the browser cannot accidentally
+// select an unrelated serial-like peripheral.
+static const uint8_t config_ble_service_uuid[] = {
+    0x7C, 0x5A, 0xD4, 0xED, 0x27, 0x31, 0x41, 0x7C,
+    0xB3, 0x16, 0x05, 0x85, 0x05, 0xC7, 0xC0, 0x83,
+};
+static const uint8_t config_ble_rx_uuid[] = {
+    0x52, 0x52, 0x18, 0x6A, 0x81, 0x7F, 0x48, 0x9F,
+    0xAD, 0x75, 0x94, 0xC3, 0xBD, 0x44, 0x47, 0x69,
+};
+static const uint8_t config_ble_tx_uuid[] = {
+    0x81, 0x46, 0x27, 0x06, 0x8E, 0x64, 0x40, 0x7A,
+    0xBC, 0x3D, 0xD3, 0x03, 0x52, 0x9F, 0xBE, 0x1C,
+};
+
+// Advertisement UUID bytes use Bluetooth little-endian wire order. The full
+// friendly name lives in scan response data so the primary advertisement stays
+// below the 31-byte legacy limit while remaining service-filterable.
+static uint8_t config_ble_adv_data[] = {
+    2, BLUETOOTH_DATA_TYPE_FLAGS, 0x02,
+    17, BLUETOOTH_DATA_TYPE_COMPLETE_LIST_OF_128_BIT_SERVICE_CLASS_UUIDS,
+    0x83, 0xC0, 0xC7, 0x05, 0x85, 0x05, 0x16, 0xB3,
+    0x7C, 0x41, 0x31, 0x27, 0xED, 0xD4, 0x5A, 0x7C,
+};
+static uint8_t config_ble_scan_response[] = {
+    12, BLUETOOTH_DATA_TYPE_COMPLETE_LOCAL_NAME,
+    'P', 'i', 'c', 'o', 'S', 'w', 'i', 't', 'c', 'h', '2',
+};
+
+static struct {
+    bool service_available;
+    bool mode_active;
+    bool advertising;
+    bool closing;
+    bool notifications_enabled;
+    bool tx_requested;
+    hci_con_handle_t handle;
+    uint16_t rx_value_handle;
+    uint16_t tx_value_handle;
+    uint16_t tx_ccc_handle;
+    btstack_context_callback_registration_t tx_request;
+    uint8_t tx_chunk[512];
+} config_ble = {
+    .handle = HCI_CON_HANDLE_INVALID,
+};
+
+static void config_ble_start_advertising(void);
+
+static void config_ble_can_send(void *context)
+{
+    (void)context;
+    config_ble.tx_requested = false;
+
+    if (!config_ble.mode_active || !g_usb_config_mode ||
+        config_ble.closing || !config_ble.notifications_enabled ||
+        config_ble.handle == HCI_CON_HANDLE_INVALID) {
+        return;
+    }
+
+    uint16_t mtu = att_server_get_mtu(config_ble.handle);
+    if (mtu <= 3u) {
+        return;
+    }
+    size_t capacity = mtu - 3u;
+    if (capacity > sizeof(config_ble.tx_chunk)) {
+        capacity = sizeof(config_ble.tx_chunk);
+    }
+    size_t length = config_wireless_bridge_peek_response(
+        config_ble.tx_chunk, capacity);
+    if (length == 0) {
+        return;
+    }
+
+    uint8_t status = att_server_notify(
+        config_ble.handle, config_ble.tx_value_handle,
+        config_ble.tx_chunk, (uint16_t)length);
+    if (status == ERROR_CODE_SUCCESS) {
+        config_wireless_bridge_consume_response(length);
+    }
+}
 
 static uint16_t host_att_read_callback(hci_con_handle_t con_handle, uint16_t att_handle,
                                        uint16_t offset, uint8_t *buffer, uint16_t buffer_size) {
-    (void)con_handle; (void)att_handle; (void)offset; (void)buffer; (void)buffer_size;
+    (void)con_handle;
+    if (att_handle == config_ble.tx_ccc_handle) {
+        uint16_t value = config_ble.notifications_enabled ? 1u : 0u;
+        return att_read_callback_handle_little_endian_16(
+            value, offset, buffer, buffer_size);
+    }
+    (void)att_handle; (void)offset; (void)buffer; (void)buffer_size;
     return 0; // static values are served from the DB directly
 }
 
 static int host_att_write_callback(hci_con_handle_t con_handle, uint16_t att_handle,
                                    uint16_t transaction_mode, uint16_t offset,
                                    uint8_t *buffer, uint16_t buffer_size) {
+    if (att_handle == config_ble.rx_value_handle) {
+        if (transaction_mode != ATT_TRANSACTION_MODE_NONE) {
+            return ATT_ERROR_WRITE_REQUEST_REJECTED;
+        }
+        if (!config_ble.mode_active || !g_usb_config_mode ||
+            config_ble.closing || con_handle != config_ble.handle) {
+            return ATT_ERROR_WRITE_NOT_PERMITTED;
+        }
+        if (offset != 0) {
+            return ATT_ERROR_INVALID_OFFSET;
+        }
+        config_wireless_rx_result_t result =
+            config_wireless_bridge_receive(buffer, buffer_size);
+        if (result == CONFIG_WIRELESS_RX_BUSY) {
+            return ATT_ERROR_INSUFFICIENT_RESOURCES;
+        }
+        if (result == CONFIG_WIRELESS_RX_TOO_LONG) {
+            return ATT_ERROR_INVALID_ATTRIBUTE_VALUE_LENGTH;
+        }
+        return ATT_ERROR_SUCCESS;
+    }
+
+    if (att_handle == config_ble.tx_ccc_handle) {
+        if (transaction_mode != ATT_TRANSACTION_MODE_NONE) {
+            return ATT_ERROR_WRITE_REQUEST_REJECTED;
+        }
+        if (!config_ble.mode_active || !g_usb_config_mode ||
+            config_ble.closing || con_handle != config_ble.handle) {
+            return ATT_ERROR_WRITE_NOT_PERMITTED;
+        }
+        if (offset != 0 || buffer_size != 2) {
+            return ATT_ERROR_INVALID_ATTRIBUTE_VALUE_LENGTH;
+        }
+        config_ble.notifications_enabled =
+            (little_endian_read_16(buffer, 0) & 1u) != 0;
+        return ATT_ERROR_SUCCESS;
+    }
+
     (void)con_handle; (void)att_handle; (void)transaction_mode;
     (void)offset; (void)buffer; (void)buffer_size;
     return 0; // accept (e.g. CCCD writes) so the peer's setup completes
@@ -683,6 +809,24 @@ static void setup_att_server(void) {
     att_db_util_add_service_uuid16(0x1801);
     att_db_util_add_characteristic_uuid16(0x2A05, ATT_PROPERTY_INDICATE,
         ATT_SECURITY_NONE, ATT_SECURITY_NONE, NULL, 0);
+
+    // Project configuration service: browser -> Pico writes to RX; Pico ->
+    // browser JSON-line replies are TX notifications. It is intentionally
+    // present in the static ATT database but is never advertised or writable
+    // outside the explicit USB Config personality.
+    att_db_util_add_service_uuid128(config_ble_service_uuid);
+    config_ble.rx_value_handle = att_db_util_add_characteristic_uuid128(
+        config_ble_rx_uuid,
+        ATT_PROPERTY_WRITE | ATT_PROPERTY_WRITE_WITHOUT_RESPONSE |
+            ATT_PROPERTY_DYNAMIC,
+        ATT_SECURITY_NONE, ATT_SECURITY_NONE, NULL, 0);
+    config_ble.tx_value_handle = att_db_util_add_characteristic_uuid128(
+        config_ble_tx_uuid,
+        ATT_PROPERTY_NOTIFY | ATT_PROPERTY_DYNAMIC,
+        ATT_SECURITY_NONE, ATT_SECURITY_NONE, NULL, 0);
+    config_ble.tx_ccc_handle = (uint16_t)(config_ble.tx_value_handle + 1u);
+    config_ble.service_available = true;
+
     att_server_init(att_db_util_get_address(), host_att_read_callback, host_att_write_callback);
     printf("[BTSTACK_HOST] ATT server initialized (db size=%u)\n", att_db_util_get_size());
 }
@@ -1478,6 +1622,9 @@ bool btstack_host_start_wake_advertisement(
         advertisement_count > BTSTACK_HOST_WAKE_MAX_PAYLOADS) {
         return false;
     }
+    if (g_usb_config_mode || config_ble.mode_active) {
+        return false; // Config BLE owns advertising until controller mode returns.
+    }
 
     // Do not perturb a controller admission attempt. Existing HID links remain
     // active: this operation pauses discovery only, never HCI power or ACL.
@@ -1521,6 +1668,146 @@ bool btstack_host_wake_advertisement_active(void) {
     return wake_adv.active;
 }
 
+static void config_ble_stop_advertising(void)
+{
+    if (!config_ble.advertising) {
+        return;
+    }
+    gap_advertisements_enable(0);
+    config_ble.advertising = false;
+}
+
+static void config_ble_start_advertising(void)
+{
+    if (!config_ble.service_available || !hid_state.powered_on ||
+        !config_ble.mode_active ||
+        !g_usb_config_mode || wake_adv.active || config_ble.advertising ||
+        config_ble.handle != HCI_CON_HANDLE_INVALID) {
+        return;
+    }
+
+    bd_addr_t null_addr = {0};
+    hci_le_set_own_address_type(BD_ADDR_TYPE_LE_PUBLIC);
+    gap_advertisements_set_params(
+        0x00A0, 0x00F0, 0x00, 0, null_addr, 0x07, 0x00);
+    gap_advertisements_set_data(
+        sizeof(config_ble_adv_data), config_ble_adv_data);
+    gap_scan_response_set_data(
+        sizeof(config_ble_scan_response), config_ble_scan_response);
+    gap_advertisements_enable(1);
+    config_ble.advertising = true;
+    printf("[BTSTACK_HOST] Config BLE advertising enabled (Config personality only)\n");
+}
+
+static bool config_ble_accept_connection(hci_con_handle_t handle)
+{
+    if (!config_ble.service_available || !config_ble.mode_active ||
+        !g_usb_config_mode || config_ble.closing ||
+        config_ble.handle != HCI_CON_HANDLE_INVALID) {
+        return false;
+    }
+
+    config_ble.handle = handle;
+    config_ble.advertising = false; // controller stops connectable advertising on connect
+    config_ble.notifications_enabled = false;
+    config_ble.tx_requested = false;
+    config_wireless_bridge_reset_session();
+    printf("[BTSTACK_HOST] Config BLE client connected: handle=0x%04X\n", handle);
+    return true;
+}
+
+static bool config_ble_handle_disconnect(
+    hci_con_handle_t handle, uint8_t reason)
+{
+    if (handle != config_ble.handle) {
+        return false;
+    }
+
+    printf("[BTSTACK_HOST] Config BLE client disconnected: handle=0x%04X reason=0x%02X\n",
+           handle, reason);
+    config_ble.handle = HCI_CON_HANDLE_INVALID;
+    config_ble.closing = false;
+    config_ble.notifications_enabled = false;
+    config_ble.tx_requested = false;
+    config_wireless_bridge_reset_session();
+
+    if (!config_ble.mode_active && !g_usb_config_mode &&
+        !btstack_host_controller_connected()) {
+        btstack_host_start_scan();
+    }
+    return true;
+}
+
+static void config_ble_service_task(bool in_config)
+{
+    if (!config_ble.service_available) {
+        return;
+    }
+
+    if (!in_config) {
+        if (!config_ble.mode_active) {
+            return; // zero radio work in every normal controller personality
+        }
+
+        config_ble.mode_active = false;
+        config_ble_stop_advertising();
+        config_ble.notifications_enabled = false;
+        config_ble.tx_requested = false;
+        config_wireless_bridge_reset_session();
+        printf("[BTSTACK_HOST] Config BLE service disabled outside Config personality\n");
+
+        if (config_ble.handle != HCI_CON_HANDLE_INVALID) {
+            config_ble.closing = true;
+            gap_disconnect(config_ble.handle);
+        } else if (!btstack_host_controller_connected()) {
+            btstack_host_start_scan();
+        }
+        return;
+    }
+
+    if (!config_ble.mode_active) {
+        config_ble.mode_active = true;
+        config_ble.closing = false;
+        config_wireless_bridge_reset_session();
+        printf("[BTSTACK_HOST] Config BLE service armed\n");
+    }
+
+    // Do not corrupt the existing outgoing-controller connection watchdog.
+    // Once that attempt resolves, its completion path is entirely per-link and
+    // this task can safely stop discovery before advertising management.
+    if (hid_state.state == BLE_STATE_CONNECTING) {
+        return;
+    }
+
+    if (hid_state.scan_active || classic_state.inquiry_active) {
+        btstack_host_stop_scan();
+        return; // one 30 ms tick lets scan/inquiry stop before advertising
+    }
+
+    // Wake replay temporarily owns the same LE advertiser. Config waits rather
+    // than mutating its address/data; normal Config entry suppresses new wake
+    // requests below, so this only covers an already-running replay.
+    if (wake_adv.active) {
+        return;
+    }
+
+    config_ble_start_advertising();
+
+    if (config_ble.handle != HCI_CON_HANDLE_INVALID &&
+        config_ble.notifications_enabled &&
+        !config_ble.tx_requested &&
+        config_wireless_bridge_response_pending()) {
+        config_ble.tx_request.callback = &config_ble_can_send;
+        config_ble.tx_request.context = NULL;
+        config_ble.tx_requested = true;
+        uint8_t status = att_server_request_to_send_notification(
+            &config_ble.tx_request, config_ble.handle);
+        if (status != ERROR_CODE_SUCCESS) {
+            config_ble.tx_requested = false;
+        }
+    }
+}
+
 // Pending BLE gamepad: when we see a gamepad appearance or HID UUID but no name in the
 // ADV packet, stash the address and wait for the scan response (which typically contains
 // the name). This prevents connecting to Xbox controllers as "Generic BLE Gamepad".
@@ -1543,6 +1830,9 @@ void btstack_host_start_scan(void)
 #ifdef BTSTACK_DEFER_SCAN
     if (!btstack_host_scan_enabled) return;
 #endif
+    if (g_usb_config_mode || config_ble.mode_active) {
+        return;  // Config owns LE advertising; controller discovery resumes on exit.
+    }
     if (wake_adv.active) {
         wake_adv.scan_requested = true;
         return;  // wake replay owns the LE advertiser until its restore phase
@@ -1766,6 +2056,13 @@ void btstack_host_idle_scan_if_connected(void)
 
 void btstack_host_connect_ble(bd_addr_t addr, bd_addr_type_t addr_type)
 {
+    if (g_usb_config_mode || config_ble.mode_active) {
+        printf("[BTSTACK_HOST] Deferring BLE controller connection while Config owns advertising\n");
+        hid_state.state = BLE_STATE_IDLE;
+        hid_state.reconnect_attempt_time = 0;
+        return;
+    }
+
     printf("[BTSTACK_HOST] Connecting to %02X:%02X:%02X:%02X:%02X:%02X\n",
            addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
 
@@ -1815,6 +2112,11 @@ __attribute__((weak)) void btstack_host_transport_process(void) {
 void btstack_host_process(void)
 {
     if (!hid_state.initialized) return;
+
+    // Configuration management is a BLE peripheral only while USB is in the
+    // explicit CDC Config personality. The false path is intentionally a
+    // state comparison only and performs no advertising or ACL work.
+    config_ble_service_task(g_usb_config_mode);
 
     // Process transport-specific tasks (e.g., USB polling, CYW43 async context)
     btstack_host_transport_process();
@@ -2890,6 +3192,22 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 case HCI_SUBEVENT_LE_CONNECTION_COMPLETE: {
                     hci_con_handle_t handle = hci_subevent_le_connection_complete_get_connection_handle(packet);
                     uint8_t status = hci_subevent_le_connection_complete_get_status(packet);
+                    uint8_t role = hci_subevent_le_connection_complete_get_role(packet);
+
+                    // Controller links are initiated by this host, so the Pico
+                    // is LE Central/Master. A browser connects in the opposite
+                    // direction while Config advertising is active. Classify
+                    // that peripheral-role ACL before it can consume a HID
+                    // controller slot or enter SM/GATT-client setup.
+                    if (status == ERROR_CODE_SUCCESS && role == HCI_ROLE_SLAVE) {
+                        if (!config_ble_accept_connection(handle)) {
+                            printf("[BTSTACK_HOST] Rejecting unexpected LE peripheral-role connection "
+                                   "outside Config service\n");
+                            gap_disconnect(handle);
+                        }
+                        break;
+                    }
+
                     bool target_attempt = hid_state.has_last_connected &&
                         memcmp(hid_state.pending_addr, hid_state.last_connected_addr,
                                sizeof(bd_addr_t)) == 0;
@@ -3363,6 +3681,10 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
         case HCI_EVENT_DISCONNECTION_COMPLETE: {
             hci_con_handle_t handle = hci_event_disconnection_complete_get_connection_handle(packet);
             uint8_t reason = hci_event_disconnection_complete_get_reason(packet);
+
+            if (config_ble_handle_disconnect(handle, reason)) {
+                break;
+            }
 
             printf("[BTSTACK_HOST] Disconnected: handle=0x%04X reason=0x%02X\n", handle, reason);
 

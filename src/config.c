@@ -1,13 +1,14 @@
-// Persistent settings + configuration-mode command protocol over USB CDC serial.
+// Persistent settings + configuration-mode command protocol.
 //
 // Settings live in one flash sector placed safely below btstack's own flash
 // region (it uses the last 2-3 sectors depending on the chip). The flash write
 // is performed on core1 (which already owns the multicore-lockout requester role
 // used for BOOTSEL), so it can park core0 during the erase/program without any
-// risk of a bidirectional lockout.
+// risk of a bidirectional lockout. Commands execute on core0 whether they arrive
+// over USB CDC or the Config-only BLE bridge; this preserves that ownership and
+// keeps parsing/flash waits out of BTstack callbacks.
 
 #include "config.h"
-#include "ns2_remap.h"   // NS2_FAM_COUNT / NS2_SRC_COUNT / NS2_DST_*
 #include "report.h"      // get_global_raw_buttons / get_global_gamepad_input (live view)
 #include "switch_pro.h"  // switch_pro_input_t
 #include "switch_pro2.h" // ns2_dbg_* getters (report-0x09 motion/gyro debug instrumentation)
@@ -18,6 +19,7 @@
 #include "ds5_audio_bridge.h" // DualSense audio stall diagnostics
 #include "bt/bthid/devices/generic/bthid_gamepad.h" // bthid_gamepad_dump_map (btid desc command)
 #include "virtual_amiibo_store.h"
+#include "config_wireless_bridge.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -33,10 +35,14 @@
 #include "hardware/sync.h"
 
 #define CONFIG_MAGIC 0x50535731u  // 'PSW1'
-#define CONFIG_VERSION 9
+#define CONFIG_VERSION 10
 #define CONFIG_FLASH_OFFSET (PICO_FLASH_SIZE_BYTES - 4 * FLASH_SECTOR_SIZE)
+#define PERSISTENT_FLASH_START \
+    (PICO_FLASH_SIZE_BYTES - 5u * FLASH_SECTOR_SIZE)
+#define PERSISTENT_FLASH_SIZE (5u * FLASH_SECTOR_SIZE)
 #define CONFIG_WAKE_VALID 0xA5
 #define CONFIG_WAKE_SAVE_DELAY_MS 5000
+#define INSTALL_MARKER_LENGTH 19u
 
 typedef struct {
     uint32_t magic;
@@ -44,74 +50,81 @@ typedef struct {
     uint8_t body_color[3];                          // Pro2 body/lightbar R,G,B
     uint8_t joycon2_left_accent[3];                 // Joy-Con 2 L highlight/lightbar
     uint8_t joycon2_right_accent[3];                // Joy-Con 2 R highlight/lightbar
-    uint8_t virtual_amiibo_enabled;                  // optional software NFC source
-    uint8_t ns2_map[NS2_FAM_COUNT][NS2_SRC_COUNT];  // per-family button remap
     uint8_t wake_valid;
     config_wake_identity_t wake_identity;
 } pico_config_t;
 
-// Exact legacy layouts used to migrate the former per-player lightbar setting.
-// Slot 0 was the only value consumed by the single-controller NS2 seam, so it
-// becomes v7's canonical body colour. Do not cast an old flash page to v7: the
-// remap table moved when lightbar[4][3] was replaced by body_color[3].
-typedef struct {
-    uint32_t magic;
-    uint8_t version;
-    uint8_t lightbar[4][3];
-    uint8_t ns2_map[NS2_FAM_COUNT][NS2_SRC_COUNT];
-} pico_config_v5_t;
-
-typedef struct {
-    uint32_t magic;
-    uint8_t version;
-    uint8_t lightbar[4][3];
-    uint8_t ns2_map[NS2_FAM_COUNT][NS2_SRC_COUNT];
-    uint8_t wake_valid;
-    config_wake_identity_t wake_identity;
-} pico_config_v6_t;
-
-typedef struct {
-    uint32_t magic;
-    uint8_t version;
-    uint8_t body_color[3];
-    uint8_t ns2_map[NS2_FAM_COUNT][NS2_SRC_COUNT];
-    uint8_t wake_valid;
-    config_wake_identity_t wake_identity;
-} pico_config_v7_t;
-
-typedef struct {
-    uint32_t magic;
-    uint8_t version;
-    uint8_t body_color[3];
-    uint8_t joycon2_left_accent[3];
-    uint8_t joycon2_right_accent[3];
-    uint8_t ns2_map[NS2_FAM_COUNT][NS2_SRC_COUNT];
-    uint8_t wake_valid;
-    config_wake_identity_t wake_identity;
-} pico_config_v8_t;
-
-// Built-in joypad remap (source index -> NS2_DST_*). Reproduces the seam's hardcoded
-// mapping exactly, so an all-defaults config behaves identically to no remapping.
-// Order matches SRC_TO_JP[] in ns2_seam.c: B1 B2 B3 B4 L1 R1 L2 R2 S1 S2 L3 R3
-// DU DD DL DR A1 A2 A3 A4 L4 R4 A5 L5 R5.
-static const uint8_t NS2_DEFAULT_MAP[NS2_SRC_COUNT] = {
-    NS2_DST_B, NS2_DST_A, NS2_DST_Y, NS2_DST_X,
-    NS2_DST_L, NS2_DST_R, NS2_DST_ZL, NS2_DST_ZR,
-    NS2_DST_MINUS, NS2_DST_PLUS, NS2_DST_L3, NS2_DST_R3,
-    NS2_DST_DUP, NS2_DST_DDOWN, NS2_DST_DLEFT, NS2_DST_DRIGHT,
-    NS2_DST_HOME, NS2_DST_CAPTURE, NS2_DST_C, NS2_DST_GL,   // A1 A2 A3 A4; A4 = Edge Fn L -> GL
-    NS2_DST_GL, NS2_DST_GR, NS2_DST_GR, NS2_DST_GL, NS2_DST_GR, // L4 R4 A5 L5 R5; A5 = Edge Fn R -> GR
-};
-// DualSense Edge Fn L/R default to GL/GR (community-requested 2026-07-18), joining
-// the back paddles which also default to GL/GR. Both remain independently
-// reassignable per family in config mode (the Fn buttons keep distinct source bits).
+// Every UF2 contains this pending marker in its own dedicated flash page.
+// First boot consumes it with a 1->0 page program after erasing all five
+// PicoSwitch2 persistence sectors. Reflashing even the same UF2 rewrites the
+// application sector and restores the pending marker, while an ordinary reboot
+// leaves the consumed page untouched.
+static const volatile uint8_t firmware_install_marker[FLASH_PAGE_SIZE]
+    __attribute__((aligned(FLASH_PAGE_SIZE),
+                   section(".rodata.install_marker"), used)) =
+    {'P', 'S', '2', '-', 'I', 'N', 'S', 'T', 'A', 'L',
+     'L', '-', 'R', 'E', 'S', 'E', 'T', '-', '1'};
 
 _Static_assert(sizeof(pico_config_t) <= FLASH_PAGE_SIZE, "config must fit in one flash page");
+_Static_assert(sizeof(firmware_install_marker) == FLASH_PAGE_SIZE,
+               "install marker must occupy one flash page");
+_Static_assert(INSTALL_MARKER_LENGTH < FLASH_PAGE_SIZE,
+               "install marker magic must fit in its page");
 
 static pico_config_t cfg;
 static critical_section_t cfg_lock;
 static volatile bool save_requested;
 static volatile uint32_t save_not_before_ms;
+
+static bool firmware_install_reset_pending(void)
+{
+    // Volatile byte reads are intentional: this page is programmed to zero
+    // after first boot, so the compiler must not constant-fold the initializer.
+    return firmware_install_marker[0] == 'P' &&
+           firmware_install_marker[1] == 'S' &&
+           firmware_install_marker[2] == '2' &&
+           firmware_install_marker[3] == '-' &&
+           firmware_install_marker[4] == 'I' &&
+           firmware_install_marker[5] == 'N' &&
+           firmware_install_marker[6] == 'S' &&
+           firmware_install_marker[7] == 'T' &&
+           firmware_install_marker[8] == 'A' &&
+           firmware_install_marker[9] == 'L' &&
+           firmware_install_marker[10] == 'L' &&
+           firmware_install_marker[11] == '-' &&
+           firmware_install_marker[12] == 'R' &&
+           firmware_install_marker[13] == 'E' &&
+           firmware_install_marker[14] == 'S' &&
+           firmware_install_marker[15] == 'E' &&
+           firmware_install_marker[16] == 'T' &&
+           firmware_install_marker[17] == '-' &&
+           firmware_install_marker[18] == '1';
+}
+
+static bool consume_install_marker_and_erase_persistence(void)
+{
+    const uintptr_t marker_address = (uintptr_t)firmware_install_marker;
+    if (marker_address < XIP_BASE ||
+        marker_address + FLASH_PAGE_SIZE > XIP_BASE + PERSISTENT_FLASH_START ||
+        ((marker_address - XIP_BASE) & (FLASH_PAGE_SIZE - 1u)) != 0u) {
+        printf("[CONFIG] Refusing install reset: marker placement is invalid\n");
+        return false;
+    }
+
+    uint8_t consumed[FLASH_PAGE_SIZE] = {0};
+    const uint32_t marker_offset = (uint32_t)(marker_address - XIP_BASE);
+
+    // This runs on core0 before core1 is launched and before USB/CYW43 start.
+    // Erase durable state first; a power loss before consuming the marker
+    // simply repeats the safe erase on the next boot.
+    uint32_t interrupts = save_and_disable_interrupts();
+    flash_range_erase(PERSISTENT_FLASH_START, PERSISTENT_FLASH_SIZE);
+    flash_range_program(marker_offset, consumed, sizeof(consumed));
+    restore_interrupts(interrupts);
+    printf("[CONFIG] New firmware image: settings, amiibo slots, wake identity, "
+           "and Bluetooth bonds reset\n");
+    return true;
+}
 
 static void load_defaults(void) {
     memset(&cfg, 0, sizeof(cfg));
@@ -129,48 +142,18 @@ static void load_defaults(void) {
     cfg.joycon2_right_accent[0] = 0xFF;
     cfg.joycon2_right_accent[1] = 0x8C;
     cfg.joycon2_right_accent[2] = 0x5F;
-    for (int fam = 0; fam < NS2_FAM_COUNT; fam++)
-        memcpy(cfg.ns2_map[fam], NS2_DEFAULT_MAP, NS2_SRC_COUNT);
 }
 
 void config_load(void) {
     critical_section_init(&cfg_lock);
+    config_wireless_bridge_init();
+    if (firmware_install_reset_pending())
+        (void)consume_install_marker_and_erase_persistence();
+
     const uint8_t *flash = (const uint8_t *)(XIP_BASE + CONFIG_FLASH_OFFSET);
     const pico_config_t *f = (const pico_config_t *)flash;
     if (f->magic == CONFIG_MAGIC && f->version == CONFIG_VERSION) {
         memcpy(&cfg, f, sizeof(cfg));
-    } else if (f->magic == CONFIG_MAGIC) {
-        // Start with current defaults so older configs gain genuine Joy-Con
-        // accents and keep the optional virtual-amiibo feature disabled, then
-        // copy every field that existed in their exact historical layout.
-        load_defaults();
-        if (f->version == 5) {
-            const pico_config_v5_t *v5 = (const pico_config_v5_t *)flash;
-            memcpy(cfg.body_color, v5->lightbar[0], sizeof(cfg.body_color));
-            memcpy(cfg.ns2_map, v5->ns2_map, sizeof(cfg.ns2_map));
-        } else if (f->version == 6) {
-            const pico_config_v6_t *v6 = (const pico_config_v6_t *)flash;
-            memcpy(cfg.body_color, v6->lightbar[0], sizeof(cfg.body_color));
-            memcpy(cfg.ns2_map, v6->ns2_map, sizeof(cfg.ns2_map));
-            cfg.wake_valid = v6->wake_valid;
-            cfg.wake_identity = v6->wake_identity;
-        } else if (f->version == 7) {
-            const pico_config_v7_t *v7 = (const pico_config_v7_t *)flash;
-            memcpy(cfg.body_color, v7->body_color, sizeof(cfg.body_color));
-            memcpy(cfg.ns2_map, v7->ns2_map, sizeof(cfg.ns2_map));
-            cfg.wake_valid = v7->wake_valid;
-            cfg.wake_identity = v7->wake_identity;
-        } else if (f->version == 8) {
-            const pico_config_v8_t *v8 = (const pico_config_v8_t *)flash;
-            memcpy(cfg.body_color, v8->body_color, sizeof(cfg.body_color));
-            memcpy(cfg.joycon2_left_accent, v8->joycon2_left_accent,
-                   sizeof(cfg.joycon2_left_accent));
-            memcpy(cfg.joycon2_right_accent, v8->joycon2_right_accent,
-                   sizeof(cfg.joycon2_right_accent));
-            memcpy(cfg.ns2_map, v8->ns2_map, sizeof(cfg.ns2_map));
-            cfg.wake_valid = v8->wake_valid;
-            cfg.wake_identity = v8->wake_identity;
-        }
     } else {
         load_defaults();
     }
@@ -190,20 +173,6 @@ void config_get_joycon2_accent(bool right, uint8_t rgb[3]) {
     critical_section_exit(&cfg_lock);
 }
 
-bool config_virtual_amiibo_enabled(void) {
-    bool enabled;
-    critical_section_enter_blocking(&cfg_lock);
-    enabled = cfg.virtual_amiibo_enabled != 0;
-    critical_section_exit(&cfg_lock);
-    return enabled;
-}
-
-static void set_virtual_amiibo_enabled(bool enabled) {
-    critical_section_enter_blocking(&cfg_lock);
-    cfg.virtual_amiibo_enabled = enabled ? 1 : 0;
-    critical_section_exit(&cfg_lock);
-}
-
 static void set_body_color(uint8_t r, uint8_t g, uint8_t b) {
     critical_section_enter_blocking(&cfg_lock);
     cfg.body_color[0] = r;
@@ -218,14 +187,6 @@ static void set_joycon2_accent(bool right, uint8_t r, uint8_t g, uint8_t b) {
     accent[0] = r;
     accent[1] = g;
     accent[2] = b;
-    critical_section_exit(&cfg_lock);
-}
-
-void config_get_ns2_map(uint8_t family, uint8_t map_out[]) {
-    if (family >= NS2_FAM_COUNT)
-        family = NS2_FAM_COUNT - 1;  // generic
-    critical_section_enter_blocking(&cfg_lock);
-    memcpy(map_out, cfg.ns2_map[family], NS2_SRC_COUNT);
     critical_section_exit(&cfg_lock);
 }
 
@@ -286,14 +247,6 @@ void config_store_wake_identity(const config_wake_identity_t *identity) {
     save_requested = true;
 }
 
-static void set_ns2_map(uint8_t family, const uint8_t map_in[]) {
-    if (family >= NS2_FAM_COUNT)
-        return;
-    critical_section_enter_blocking(&cfg_lock);
-    memcpy(cfg.ns2_map[family], map_in, NS2_SRC_COUNT);
-    critical_section_exit(&cfg_lock);
-}
-
 void config_service_save(void) {
     // The virtual-tag journal has its own sector and request flag, but shares
     // this core1-only flash/lockout execution point.
@@ -330,7 +283,7 @@ void config_service_save(void) {
 }
 
 //--------------------------------------------------------------------+
-// CDC command protocol
+// Configuration command protocol
 //--------------------------------------------------------------------+
 
 #define LINE_MAX 128
@@ -342,7 +295,20 @@ static uint16_t line_len;
 // context), which no longer fits in the 256 B every simpler reply uses.
 static char out[4096];
 
+typedef enum {
+    CONFIG_REPLY_CDC = 0,
+    CONFIG_REPLY_WIRELESS,
+} config_reply_transport_t;
+
+static config_reply_transport_t reply_transport = CONFIG_REPLY_CDC;
+static uint32_t wireless_reply_session;
+
 static void reply(const char *s) {
+    if (reply_transport == CONFIG_REPLY_WIRELESS) {
+        (void)config_wireless_bridge_publish_response(
+            wireless_reply_session, s);
+        return;
+    }
     tud_cdc_write_str(s);
     tud_cdc_write_str("\r\n");
     tud_cdc_write_flush();
@@ -362,12 +328,11 @@ static void cmd_get(void) {
     snprintf(out, sizeof(out),
              "{\"body_color\":[%u,%u,%u],\"joycon2_left_accent\":[%u,%u,%u],"
              "\"joycon2_right_accent\":[%u,%u,%u],\"lightbar\":[[%u,%u,%u],[%u,%u,%u],"
-             "[%u,%u,%u],[%u,%u,%u]],\"virtual_amiibo_enabled\":%s}",
+             "[%u,%u,%u],[%u,%u,%u]]}",
              body[0], body[1], body[2],
              joy_l[0], joy_l[1], joy_l[2], joy_r[0], joy_r[1], joy_r[2],
              body[0], body[1], body[2], body[0], body[1], body[2],
-             body[0], body[1], body[2], body[0], body[1], body[2],
-             config_virtual_amiibo_enabled() ? "true" : "false");
+             body[0], body[1], body[2], body[0], body[1], body[2]);
     reply(out);
 }
 
@@ -408,15 +373,16 @@ static void cmd_amiibo(char *arg) {
         virtual_amiibo_status_t status;
         virtual_amiibo_store_status(&status);
         snprintf(out, sizeof(out),
-                 "{\"enabled\":%s,\"loaded\":%s,\"dirty\":%s,"
+                 "{\"loaded\":%s,\"dirty\":%s,"
+                 "\"presented\":%s,"
                  "\"persisted\":%s,\"persistPending\":%s,\"size\":%u,"
-                 "\"signature\":%s,\"hasUsed\":%s,\"usingUsed\":%s,"
+                 "\"signature\":%s,\"hasSave2\":%s,\"usingSave2\":%s,"
                  "\"generation\":%lu,"
                  "\"uid\":\"%02X%02X%02X%02X%02X%02X%02X\","
                  "\"upload\":{\"active\":%s,\"received\":%u,\"size\":%u}}",
-                 config_virtual_amiibo_enabled() ? "true" : "false",
                  status.loaded ? "true" : "false",
                  status.dirty ? "true" : "false",
+                 status.presented ? "true" : "false",
                  status.persisted ? "true" : "false",
                  virtual_amiibo_store_persist_pending() ? "true" : "false",
                  status.size,
@@ -429,16 +395,6 @@ static void cmd_amiibo(char *arg) {
                  status.upload_active ? "true" : "false",
                  status.upload_received, status.upload_size);
         reply(out);
-        return;
-    }
-
-    if (strncmp(arg, "enable ", 7) == 0) {
-        if (strcmp(arg + 7, "0") != 0 && strcmp(arg + 7, "1") != 0) {
-            reply("{\"error\":\"usage: amiibo enable 0|1\"}");
-            return;
-        }
-        set_virtual_amiibo_enabled(arg[7] == '1');
-        reply("{\"ok\":true}");
         return;
     }
 
@@ -484,7 +440,8 @@ static void cmd_amiibo(char *arg) {
         reply_amiibo_result(virtual_amiibo_store_upload_commit());
         return;
     }
-    if (strcmp(arg, "commit used") == 0) {
+    if (strcmp(arg, "commit save2") == 0 ||
+        strcmp(arg, "commit used") == 0) {
         reply_amiibo_result(virtual_amiibo_store_upload_commit_used());
         return;
     }
@@ -496,9 +453,13 @@ static void cmd_amiibo(char *arg) {
 
     const char *read_args = NULL;
     int read_copy = -1;
-    if (strncmp(arg, "read clean ", 11) == 0) {
+    if (strncmp(arg, "read save1 ", 11) == 0 ||
+        strncmp(arg, "read clean ", 11) == 0) {
         read_args = arg + 11;
         read_copy = 0;
+    } else if (strncmp(arg, "read save2 ", 11) == 0) {
+        read_args = arg + 11;
+        read_copy = 1;
     } else if (strncmp(arg, "read used ", 10) == 0) {
         read_args = arg + 10;
         read_copy = 1;
@@ -512,7 +473,7 @@ static void cmd_amiibo(char *arg) {
         if (sscanf(read_args, "%lu %lu %c",
                    &offset, &length, &trailing) != 2 ||
             length == 0 || length > AMIIBO_CDC_CHUNK_MAX) {
-            reply("{\"error\":\"usage: amiibo read [clean|used] "
+            reply("{\"error\":\"usage: amiibo read [save1|save2] "
                   "<offset> <1-32>\"}");
             return;
         }
@@ -544,12 +505,23 @@ static void cmd_amiibo(char *arg) {
         return;
     }
 
-    if (strcmp(arg, "select clean") == 0) {
+    if (strcmp(arg, "select save1") == 0 ||
+        strcmp(arg, "select clean") == 0) {
         reply_amiibo_result(virtual_amiibo_store_select_used(false));
         return;
     }
-    if (strcmp(arg, "select used") == 0) {
+    if (strcmp(arg, "select save2") == 0 ||
+        strcmp(arg, "select used") == 0) {
         reply_amiibo_result(virtual_amiibo_store_select_used(true));
+        return;
+    }
+
+    if (strcmp(arg, "present") == 0) {
+        reply_amiibo_result(virtual_amiibo_store_set_presented(true));
+        return;
+    }
+    if (strcmp(arg, "eject") == 0) {
+        reply_amiibo_result(virtual_amiibo_store_set_presented(false));
         return;
     }
 
@@ -565,48 +537,10 @@ static void cmd_amiibo(char *arg) {
         return;
     }
 
-    reply("{\"error\":\"usage: amiibo status|enable 0|1|begin|chunk|commit|"
-          "commit used|cancel|read [clean|used]|downloaded|"
-          "select clean|select used|"
-          "persist\"}");
-}
-
-// Per-family remap (NS2_SRC_COUNT entries).
-static void cmd_getns2map(int family) {
-    if (family < 0 || family >= NS2_FAM_COUNT) {
-        reply("{\"error\":\"bad family\"}");
-        return;
-    }
-    uint8_t m[NS2_SRC_COUNT];
-    config_get_ns2_map((uint8_t)family, m);
-    int n = snprintf(out, sizeof(out), "{\"map\":[");
-    for (int i = 0; i < NS2_SRC_COUNT; i++)
-        n += snprintf(out + n, sizeof(out) - n, "%s%u", i ? "," : "", m[i]);
-    snprintf(out + n, sizeof(out) - n, "]}");
-    reply(out);
-}
-
-// Parse "setns2map <family> d0 d1 ... d24" and store the family's joypad map.
-static void cmd_setns2map(char *args) {
-    char *p = args, *end;
-    long family = strtol(p, &end, 10);
-    if (end == p || family < 0 || family >= NS2_FAM_COUNT) {
-        reply("{\"error\":\"bad family\"}");
-        return;
-    }
-    p = end;
-    uint8_t m[NS2_SRC_COUNT];
-    for (int i = 0; i < NS2_SRC_COUNT; i++) {
-        long v = strtol(p, &end, 10);
-        if (end == p || v < 0 || v >= NS2_DST_COUNT) {
-            reply("{\"error\":\"bad map\"}");
-            return;
-        }
-        m[i] = (uint8_t)v;
-        p = end;
-    }
-    set_ns2_map((uint8_t)family, m);
-    reply("{\"ok\":true}");
+    reply("{\"error\":\"usage: amiibo status|begin|chunk|commit|"
+           "commit save2|cancel|read [save1|save2]|downloaded|"
+           "select save1|select save2|"
+           "present|eject|persist\"}");
 }
 
 // Live input snapshot for the config-mode 2-column view: the connected controller's
@@ -974,6 +908,12 @@ static void cmd_btid(const char *arg) {
 }
 
 static void handle_line(char *cmd) {
+    if (reply_transport == CONFIG_REPLY_WIRELESS &&
+        !config_wireless_command_allowed(cmd)) {
+        reply("{\"error\":\"command unavailable over Bluetooth\"}");
+        return;
+    }
+
     if (strcmp(cmd, "info") == 0) {
         reply("{\"id\":\"picoswitch\",\"product\":\"PicoSwitch Config\",\"version\":\"2.0\"}");
     } else if (strcmp(cmd, "ping") == 0) {
@@ -1002,10 +942,6 @@ static void handle_line(char *cmd) {
         cmd_sw2cap(cmd + 7);
     } else if (strncmp(cmd, "btid ", 5) == 0) {
         cmd_btid(cmd + 5);
-    } else if (strncmp(cmd, "getns2map ", 10) == 0) {
-        cmd_getns2map(atoi(cmd + 10));
-    } else if (strncmp(cmd, "setns2map ", 10) == 0) {
-        cmd_setns2map(cmd + 10);
     } else if (strncmp(cmd, "amiibo ", 7) == 0) {
         cmd_amiibo(cmd + 7);
     } else if (strncmp(cmd, "body ", 5) == 0) {
@@ -1053,6 +989,7 @@ static void handle_line(char *cmd) {
 }
 
 void config_cdc_task(void) {
+    reply_transport = CONFIG_REPLY_CDC;
     while (tud_cdc_available()) {
         int32_t c = tud_cdc_read_char();
         if (c < 0)
@@ -1067,6 +1004,21 @@ void config_cdc_task(void) {
             line[line_len++] = (char)c;
         }
     }
+
+    // BLE writes arrive on core1. Execute at most one complete command here on
+    // core0, using the same parser and persistence behavior as CDC. The browser
+    // waits for each JSON-line response before sending another command, so a
+    // bounded one-command bridge is intentional.
+    char wireless_command[CONFIG_WIRELESS_COMMAND_CAPACITY];
+    uint32_t session;
+    if (config_wireless_bridge_take_command(
+            wireless_command, sizeof(wireless_command), &session)) {
+        reply_transport = CONFIG_REPLY_WIRELESS;
+        wireless_reply_session = session;
+        handle_line(wireless_command);
+        reply_transport = CONFIG_REPLY_CDC;
+    }
+
     // BLE capture entries (see sw2_capture.h) are pulled explicitly via `sw2cap drain`, not
     // auto-streamed here — a client (the web UI) polls it like any other command.
 }

@@ -536,11 +536,11 @@ logic proves too fragile to keep extending case-by-case.
 
 ### Stable per-device profile key (design, not implemented — no consumer exists yet)
 
-DATA.md asks for a stable identity key design to support future per-device mapping profiles and
-controller-specific quirks. **Important baseline fact**: this project currently has no per-device
-mapping *storage* to migrate — `pico_config_t` (`config.c`'s flash-backed settings) holds only
-global settings (the output-personality appearance/Sony-lightbar colors and the NS2 button remap table), not anything keyed per controller
-model or per physical unit. Today's controller-specific behavior is resolved into a compiled-in
+DATA.md asks for a stable identity key design to support future per-device profiles and
+controller-specific quirks. **Important baseline fact**: this project has no per-device mapping
+storage. Config v10 stores output-personality appearance colors and the learned wake identity;
+button routing uses one compiled-in locked base map, with user remapping left to the Switch.
+Today's controller-specific behavior is resolved into a compiled-in
 `gamepad_quirk_t` profile every connection from live VID/PID/name/report-shape evidence — it is not stored
 configuration, so there's nothing to migrate yet. This design is infrastructure for *when* a
 per-device mapping feature is actually built, not a retrofit of an existing one.

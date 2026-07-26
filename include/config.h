@@ -27,14 +27,6 @@ void config_get_body_color(uint8_t rgb[3]);
 // uses that value for supported physical-controller lightbars.
 void config_get_joycon2_accent(bool right, uint8_t rgb[3]);
 
-// Virtual amiibo is an explicit optional feature. The active tag can remain
-// stored while this is false; console-facing NFC code must honor this gate.
-bool config_virtual_amiibo_enabled(void);
-
-// Copy a controller family's button remap (NS2_SRC_COUNT entries, each an NS2_DST_*
-// value) for the input mapping (core1, per controller report).
-void config_get_ns2_map(uint8_t family, uint8_t map_out[]);
-
 // Switch 2 wake identity learned from the console's ordinary USB Bluetooth-
 // pairing command (0x15/01). Addresses are kept in Nintendo's wire order:
 // least-significant byte first, exactly as they appear in the pairing command

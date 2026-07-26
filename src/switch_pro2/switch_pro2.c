@@ -710,6 +710,22 @@ static ns2_virtual_nfc_runtime_t ns2_virtual_nfc_runtime;
 static uint8_t ns2_virtual_nfc_raw[VIRTUAL_AMIIBO_RAW_SIZE];
 static uint8_t ns2_virtual_nfc_signature[VIRTUAL_AMIIBO_SIGNATURE_SIZE];
 static uint32_t ns2_virtual_nfc_operation_generation;
+static bool ns2_virtual_nfc_presented_last;
+
+static bool ns2_virtual_nfc_sync_presentation(void)
+{
+    const bool presented = virtual_amiibo_store_loaded();
+    if (presented != ns2_virtual_nfc_presented_last) {
+        // Manual Eject/Present is controlled from config context. Reset the
+        // core0-owned transaction state on the observed edge so re-presenting
+        // starts like a fresh physical tag instead of resuming a stale scan or
+        // completed-write removal state.
+        ns2_virtual_nfc_runtime_init(&ns2_virtual_nfc_runtime);
+        ns2_virtual_nfc_operation_generation = 0;
+        ns2_virtual_nfc_presented_last = presented;
+    }
+    return presented;
+}
 
 static size_t vend_write_some(void *context, const uint8_t *data, size_t size) {
     (void)context;
@@ -738,7 +754,7 @@ static void vend_send(const uint8_t *r, uint16_t len) {
 static bool ns2_virtual_nfc_dispatch_usb(const uint8_t *command,
                                          uint32_t length)
 {
-    if (!config_virtual_amiibo_enabled() || !command || length < 8u ||
+    if (!ns2_virtual_nfc_sync_presentation() || !command || length < 8u ||
         command[0] != 0x01u)
         return false;
 
@@ -1004,7 +1020,7 @@ static void ns2_build_report(uint8_t *p) {
 #endif
     p[0x01] = controller_battery_switch2_power_info(
         in.battery_valid != 0, in.battery_level, in.battery_charging != 0);
-    p[0x0C] = config_virtual_amiibo_enabled()
+    p[0x0C] = ns2_virtual_nfc_sync_presentation()
         ? ns2_virtual_nfc_runtime_report_state(&ns2_virtual_nfc_runtime)
         : ns2_nfc_mirror_report_state();
 
@@ -1276,6 +1292,7 @@ void ns2_mount(void) {
     ns2_vendor_rx_init(&ns2_vendor_rx);
     ns2_virtual_nfc_runtime_init(&ns2_virtual_nfc_runtime);
     ns2_virtual_nfc_operation_generation = 0;
+    ns2_virtual_nfc_presented_last = virtual_amiibo_store_loaded();
     ns2_imu_enabled = false;  // new host session: IMU off until the host re-enables it (0x0C/0x04)
     ns2_ds5_motion_reset(&ns2_ds5_motion);
     ns2_ds5_motion_source_active = false;
@@ -1296,6 +1313,7 @@ void ns2_init(void) {
     ns2_vendor_rx_init(&ns2_vendor_rx);
     ns2_virtual_nfc_runtime_init(&ns2_virtual_nfc_runtime);
     ns2_virtual_nfc_operation_generation = 0;
+    ns2_virtual_nfc_presented_last = virtual_amiibo_store_loaded();
     ns2_firmware_diagnostics_reset();
     ns2_factory_init();
     ns2_wake_pairing_reset();
@@ -1352,7 +1370,7 @@ void ns2_hid_out_report(uint8_t report_id, const uint8_t *data, uint16_t len) {
 
 void ns2_task(void) {
     vend_pump();
-    if (config_virtual_amiibo_enabled()) {
+    if (ns2_virtual_nfc_sync_presentation()) {
         ns2_virtual_nfc_runtime_set_write_persisted(
             &ns2_virtual_nfc_runtime,
             !virtual_amiibo_store_persist_pending());

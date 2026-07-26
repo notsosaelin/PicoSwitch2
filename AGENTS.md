@@ -29,6 +29,10 @@ captures, tests, and the documents above outrank old plans or conversation histo
 - Production DualSense/Edge motion uses the validated length-`0x1E` carrier.
 - Pico 2 W uses the validated 300 MHz audio build. Pico W intentionally retains its non-audio
   profile.
+- Controller-family remapping is intentionally absent. Keep the compiled base map stable and leave
+  user remapping to the Switch's persistent emulated-controller settings.
+- Every flashed UF2 must retain the page-aligned install-reset marker. First boot clears settings,
+  Virtual Amiibo banks, wake identity, and Bluetooth bonds; ordinary reboots must not.
 - Configuration mode is CDC-only. Serve `web/index.html` locally with
   `tools/run_config_portal.ps1`; do not reintroduce an MSC drive or embedded web disk.
 
@@ -84,6 +88,13 @@ Motion-specific checks:
 .\build\host-tests\build-host-test-ns2-motion-pdu.exe
 .\build\host-tests\build-host-test-ns2-ds5-motion.exe
 python tools\test_ns2_magprobe.py
+```
+
+Install-reset image checks:
+
+```powershell
+python tools\verify_install_reset_marker.py build\pico2_w\PicoSwitchWGA-pico2_w.bin --flash-size 0x400000
+python tools\verify_install_reset_marker.py build\pico_w\PicoSwitchWGA-pico_w.bin --flash-size 0x200000
 ```
 
 Build success is not hardware validation. State exactly which level was checked.

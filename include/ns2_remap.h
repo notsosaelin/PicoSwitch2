@@ -3,16 +3,14 @@
 
 #include <stdint.h>
 
-// Per-device button remapping. Covers the Switch 2 extended outputs (GL/GR/C) and the
-// extended sources (DualSense Edge Fn buttons, Xbox Elite lower paddles), so any physical
-// button on a supported pad can be reassigned per controller family.
+// Locked physical-controller -> Switch 2 semantic mapping.
 //
-// A map is uint8_t[NS2_SRC_COUNT] of NS2_DST_* values, stored per family. The source
-// index order is defined by SRC_TO_JP[] in ns2_seam.c and mirrored in the web UI;
-// do not renumber without updating both.
+// Console-side remapping belongs to the emulated Nintendo controller identity, so
+// it persists when the user changes which physical controller is paired to the
+// dongle. PicoSwitch2 therefore exposes one stable base map rather than storing
+// per-controller-family overrides.
 
-#define NS2_FAM_COUNT 4     // 0 = Sony, 1 = Xbox, 2 = Nintendo, 3 = Generic
-#define NS2_SRC_COUNT 25    // remappable source buttons (see SRC_TO_JP[])
+#define NS2_SRC_COUNT 25    // source buttons (see SRC_TO_JP[] in ns2_seam.c)
 
 // Remap destinations = Switch 2 Pro Controller outputs. 0 = unmapped (button does nothing).
 enum {
@@ -25,5 +23,7 @@ enum {
     NS2_DST_GL, NS2_DST_GR, NS2_DST_C,
     NS2_DST_COUNT
 };
+
+extern const uint8_t NS2_BASE_BUTTON_MAP[NS2_SRC_COUNT];
 
 #endif  // _NS2_REMAP_H_

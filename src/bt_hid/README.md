@@ -28,7 +28,7 @@ Upstream layout is preserved (`core/`, `bt/bthid/`, `bt/transport/`, `usb/usbh/h
 ## The seam — `ns2_seam.c`
 `ns2_seam.c` implements the framework hooks the joypad-os drivers call (`router_submit_input`,
 `feedback_get_state`, `router_device_disconnected`, …) as thin adapters onto **our** side:
-`input_event_t` → `switch_pro_input_t` (per-family remap + DualSense→Switch IMU transform), single
+`input_event_t` → `switch_pro_input_t` (locked base map + DualSense→Switch IMU transform), single
 player 0, rumble/LED bridged to `report_get_rumble()` / config lightbar. This replaced bluepad32's
 `fill_input()` / `forward_rumble()`. Everything above the seam (the core0 USB/report path) is
 unchanged by the BT stack.
