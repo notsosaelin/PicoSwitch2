@@ -39,12 +39,12 @@ Amiibo**. **Sync Amiibo** validates the latest console-written image and overwri
 browser copy before acknowledging adapter dirty protection. The merged eject/clear button labels
 its exact scope (eject-from-adapter, clear-loaded, or eject an unreferenced adapter image).
 
-Optional amiibo generation is unlocked when the user imports their own genuine `key_retail.bin`
-(never shipped by this project — the same posture as TagMo/amiitool). The portal then implements
-the amiitool crypto in Web Crypto to generate any AmiiboAPI identity; loaded keys self-verify by
-decrypting a genuine dump in the library, and generated tags save to the same cached library and
-upload through the normal path. See
+The library is import-only: users supply their own genuine dumps. A key-based generator was
+prototyped and removed in favor of import-only simplicity; the amiibo identity/crypto research is
+retained in
 [`../docs/switch2/amiibo-identity-and-generation.md`](../docs/switch2/amiibo-identity-and-generation.md).
+The AmiiboAPI catalog is enhancement-only (entries display even when it is offline), and the
+carousel navigates with clean non-wrapping arrows showing the centered amiibo's release date.
 
 The selected carousel artwork stays centered at 100%. Four non-overlapping neighbors on each side
 render at exactly 80/60/40/20%, and navigation is smoothly animated. Names are omitted from the

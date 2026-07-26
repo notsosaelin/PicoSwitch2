@@ -60,18 +60,19 @@ Amiibo" removes an adapter image that is not loaded here. Adapter-destructive mo
 stored image and both flash journal banks through `amiibo clear`; cancelling aborts everything, and
 library dumps are never deleted. The console-driven Stop/write-back lifecycle is unchanged.
 
-A 2026-07-26 hardware test showed the Switch 2 validates amiibo cryptography, so key-free generated
-images are rejected ("This isn't an amiibo") even though the portal identifies them; a briefly
-implemented random-UID "Random Mode" was removed because a runtime UID swap invalidates the
-UID-bound tag HMAC. In response, the portal now implements **key-based generation**: users who
-import their own genuine `key_retail.bin` (never shipped) unlock generation of any AmiiboAPI
-identity via the amiitool algorithm in Web Crypto. Loaded keys self-verify by decrypting a genuine
-dump and checking both HMACs; a Node round-trip test (`tools/test_amiibo_crypto.mjs`) proves the
-crypto. Generated tags save to the same IndexedDB library as imports. Real-console acceptance of a
-generated tag is the remaining hardware confirmation. The library now exports as a **.zip**
-(`library.json` manifest + one `.bin` per amiibo) and imports either that .zip or a legacy .json.
-See [`docs/switch2/amiibo-identity-and-generation.md`](docs/switch2/amiibo-identity-and-generation.md)
-and [`docs/experiments/generated-amiibo-console-rejection-2026-07-26.md`](docs/experiments/generated-amiibo-console-rejection-2026-07-26.md). Directory imports fill the visible library progressively. The centered
+The Virtual Amiibo library is **import-only**: users supply their own genuine dumps (single file or
+recursive directory). A 2026-07-26 hardware test showed the Switch 2 validates amiibo cryptography,
+so key-free generated images are rejected ("This isn't an amiibo") even though the portal identifies
+them, and a random-UID "Random Mode" was removed because a runtime UID swap invalidates the
+UID-bound tag HMAC. A key-based generator (amiitool over Web Crypto, user-supplied `key_retail.bin`)
+was prototyped and then **removed** in favor of import-only simplicity; the identity/crypto research
+is retained in
+[`docs/switch2/amiibo-identity-and-generation.md`](docs/switch2/amiibo-identity-and-generation.md)
+and [`docs/experiments/generated-amiibo-console-rejection-2026-07-26.md`](docs/experiments/generated-amiibo-console-rejection-2026-07-26.md).
+The library exports/imports as a flat **.zip** (`library.json` manifest + one `.bin` per amiibo;
+legacy `.json` backups still import). Directory imports fill the visible library progressively. The
+carousel navigates with clean, non-wrapping arrows (disabled at the ends) and shows the centered
+amiibo's release date above it. The centered
 artwork is fixed in the middle at 100% size; four non-overlapping neighbors on each side use exact
 80/60/40/20% scaling. Movement is animated, names are omitted from the carousel, and
 game-series, amiibo-series, and product-type arrows cycle `All` followed by the imported library's
