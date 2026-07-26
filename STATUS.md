@@ -51,13 +51,15 @@ performs a one-shot erase of all five PicoSwitch2 persistence sectors, clearing 
 virtual-tag banks, wake identity, and Bluetooth bonds. Ordinary power cycles retain state.
 The production manager now follows the definitive staged-slot layout: its explicit Slot 1/Slot 2
 switch chooses a quick slot, Load Amiibo (centered between the carousel arrows) places the
-highlighted amiibo into that slot, Clear empties the slot pointer without deleting the dump or
-touching the adapter, Activate Amiibo sends the slot to the adapter (showing a disabled "Amiibo
-activated" while that image is already presented), Sync Amiibo pulls console-written data back
-into the validated browser copy, and Eject Virtual Amiibo — after a save-confirmation prompt —
-clears presentation and then discards the adapter's stored image and both flash journal banks
-through the new `amiibo clear` command. The console-driven Stop/write-back lifecycle is
-unchanged. Directory imports fill the visible library progressively. The centered
+highlighted amiibo into that slot, Activate Amiibo sends the slot to the adapter (showing a
+disabled "Amiibo activated" while that image is already presented), and Sync Amiibo pulls
+console-written data back into the validated browser copy. One merged eject/clear button always
+labels its exact current scope: "Eject Amiibo" removes the slot's adapter-held image and empties
+the slot after a save-confirmation prompt, "Clear Slot N" only empties the slot pointer, and
+"Eject Virtual Amiibo" removes an adapter image no slot references. Adapter-destructive modes
+discard the stored image and both flash journal banks through the `amiibo clear` command;
+cancelling the prompt aborts everything, and library dumps are never deleted. The console-driven
+Stop/write-back lifecycle is unchanged. Directory imports fill the visible library progressively. The centered
 artwork is fixed in the middle at 100% size; four non-overlapping neighbors on each side use exact
 80/60/40/20% scaling. Movement is animated, names are omitted from the carousel, and
 game-series, amiibo-series, and product-type arrows cycle `All` followed by the imported library's

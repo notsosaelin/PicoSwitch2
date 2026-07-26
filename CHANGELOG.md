@@ -26,10 +26,11 @@ Release notes describe user-visible behavior. Detailed implementation history re
   selection centered at 100%, and renders four non-overlapping neighbors on each side at exact
   80/60/40/20% sizes. Carousel names are omitted; navigation remains animated.
 - Definitive Virtual Amiibo Manager layout with two independent browser quick slots, a carousel
-  Load Amiibo action, per-slot Clear, Activate Amiibo with a disabled already-activated state,
-  validated adapter-to-browser writeback, and a confirmed destructive Eject that removes the
-  adapter's stored image (`amiibo clear`) while leaving the console Stop/write-back lifecycle
-  unchanged.
+  Load Amiibo action, Activate Amiibo with a disabled already-activated state, validated
+  adapter-to-browser writeback, and one merged eject/clear button that labels its exact scope:
+  slot-plus-adapter eject, slot-only clear, or adapter-only eject of an unreferenced image.
+  Adapter-destructive modes confirm first and remove the stored image (`amiibo clear`) while
+  leaving the console Stop/write-back lifecycle unchanged.
 - Stable localhost launcher for the production USB Serial/Bluetooth portal.
 - Config-personality-only BLE management service and Web Bluetooth client. It pauses controller
   discovery before low-duty advertising, classifies its incoming Peripheral-role link before HID,

@@ -69,11 +69,13 @@ required Git submodule for Pico 2 W audio builds.
   `tools/run_config_portal.ps1` serves the real portal from the same localhost origin.
 - The production manager's authoritative flow is carousel selection → **Load Amiibo** (into the
   selected quick slot) → **Activate Amiibo** (disabled "Amiibo activated" while that image is
-  already presented). **Clear Slot N** empties the selected quick-slot pointer without deleting
-  the library dump or touching the adapter. **Sync Amiibo** pulls the latest console-written image
-  back into IndexedDB. **Eject Virtual Amiibo** confirms first, then clears presentation and
-  discards the adapter's stored image and both flash banks via the new `amiibo clear` command; the
-  console-driven Stop/write-back lifecycle and `amiibo present` re-activation are unchanged.
+  already presented). **Sync Amiibo** pulls the latest console-written image back into IndexedDB.
+  One merged eject/clear button labels its exact scope from `amiiboEjectActionState()`:
+  **Eject Amiibo** (slot amiibo is on the adapter → confirm, wipe adapter via `amiibo eject` +
+  `amiibo clear`, empty the slot), **Clear Slot N** (slot-only pointer clear, no confirm), or
+  **Eject Virtual Amiibo** (slot empty, adapter holds an image → confirm, wipe adapter only).
+  Cancel aborts everything; library dumps are never deleted; the console-driven Stop/write-back
+  lifecycle and `amiibo present` re-activation are unchanged.
 - Sync clears dirty-write protection only after IndexedDB persistence; it does not unload the tag.
   Console formatting/reset remains the authority.
 - The USB side of Config mode is now CDC-only. The MSC descriptor/callbacks, generated

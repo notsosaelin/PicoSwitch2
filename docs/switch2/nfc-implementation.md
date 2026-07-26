@@ -122,15 +122,18 @@ to the console, although entering Config temporarily replaces the controller USB
 
 The production manager makes those layers explicit. Carousel selection does not immediately mutate
 the adapter: **Load Amiibo** (between the carousel arrows) places the highlighted amiibo into the
-selected browser quick slot, **Clear Slot N** empties that pointer without deleting the dump,
-**Activate Amiibo** uploads/presents the slot (label becomes a disabled **Amiibo activated** while
-that image is already presented), and **Sync Amiibo** retrieves the latest console-written image
-and overwrites its validated browser-library record. **Eject Virtual Amiibo** is a destructive
-adapter action: after an explicit save-confirmation prompt it clears presentation (`amiibo eject`)
-and then discards the stored image and both flash journal banks (`amiibo clear`), returning the
-store to its blank post-install state. The console-driven Stop/write-back lifecycle is unchanged;
-re-activating a console-ejected retained identity still uses the lightweight `amiibo present` path
-without reprogramming flash.
+selected browser quick slot, **Activate Amiibo** uploads/presents the slot (label becomes a
+disabled **Amiibo activated** while that image is already presented), and **Sync Amiibo**
+retrieves the latest console-written image and overwrites its validated browser-library record.
+Removal is one merged button whose label always states its exact current scope: **Eject Amiibo**
+(the slot's amiibo is on the adapter) confirms, clears presentation (`amiibo eject`), discards the
+stored image and both flash journal banks (`amiibo clear`), and empties the slot; **Clear Slot N**
+(the adapter does not hold the slot's amiibo) empties only the browser pointer with no confirm;
+**Eject Virtual Amiibo** (slot empty, adapter loaded — including a foreign image in no library)
+performs only the adapter wipe. Cancelling a confirm aborts everything, and library dumps are
+never deleted. The console-driven Stop/write-back lifecycle is unchanged; re-activating a
+console-ejected retained identity still uses the lightweight `amiibo present` path without
+reprogramming flash.
 
 References:
 
