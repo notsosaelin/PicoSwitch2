@@ -374,7 +374,7 @@ static void cmd_amiibo(char *arg) {
         virtual_amiibo_store_status(&status);
         snprintf(out, sizeof(out),
                  "{\"loaded\":%s,\"dirty\":%s,"
-                 "\"presented\":%s,"
+                 "\"presented\":%s,\"v3loaded\":%s,"
                  "\"persisted\":%s,\"persistPending\":%s,\"size\":%u,"
                  "\"signature\":%s,\"hasSave2\":%s,\"usingSave2\":%s,"
                  "\"generation\":%lu,"
@@ -383,6 +383,7 @@ static void cmd_amiibo(char *arg) {
                  status.loaded ? "true" : "false",
                  status.dirty ? "true" : "false",
                  status.presented ? "true" : "false",
+                 virtual_amiibo_store_v3_loaded() ? "true" : "false",
                  status.persisted ? "true" : "false",
                  virtual_amiibo_store_persist_pending() ? "true" : "false",
                  status.size,
