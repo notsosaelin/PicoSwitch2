@@ -39,3 +39,7 @@ build
 # Local reference clones and USB captures (large or independently versioned)
 /nso-gc-refs/
 /usbpcaptures/
+
+# Generated amiibo test artifacts (tools/generate_test_amiibo.py)
+amiibo-*-test.bin
+tools/amiibo-*-test.bin
