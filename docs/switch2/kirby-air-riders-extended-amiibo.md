@@ -169,9 +169,11 @@ The library detects the 2048-byte NTAG I2C 2K format and stores the **whole** ta
 no BCC recompute; UID parsed as 7 contiguous bytes). Each combo is content-keyed, so a rider's four
 machine files are four distinct stored entries. In the carousel they **collapse to one item per
 rider** (the four machines share one catalog identity and one static AmiiboAPI image, so showing
-four look-alikes was noise); a **Swap Combo** button under the carousel cycles the active machine
-for the centered rider and the combo name (from the filename, e.g. "Kirby & Warp Star") appears in
-the detail box. Activate shows a "serving in progress" message rather than attempting a 540/572
+four look-alikes was noise). The carousel control row is centered as `← Load Amiibo · Swap Combo →`;
+**Swap Combo** (shown only for a multi-combo rider) cycles the active machine and the combo name
+(from the filename, e.g. "Kirby & Warp Star") appears in the detail box. Each rider defaults to its
+first combo on arrival. Workflow: navigate to the rider → Swap Combo to the machine you want → Load
+Amiibo → Activate Amiibo. Activate shows a "serving in progress" message rather than attempting a 540/572
 upload the firmware would reject. Import/library are correct and ready; only the firmware serve path
 remains.
 

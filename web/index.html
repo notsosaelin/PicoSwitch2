@@ -68,7 +68,6 @@
   .amiibo-carousel-position { text-align: center; min-height: 18px; margin-top: 2px; }
   .amiibo-carousel-caption { text-align: center; min-height: 18px; margin-bottom: 2px;
                              font-size: 12px; }
-  .amiibo-combo-row { display: flex; justify-content: center; margin-top: 4px; }
   .amiibo-detail { display: block; padding: 16px; margin-top: 0; background: #11151b;
                    border: 1px solid #2b313b; border-radius: 8px; text-align: center; }
   .amiibo-detail-grid { display: grid; grid-template-columns: 1fr;
@@ -114,8 +113,9 @@
   .amiibo-carousel-stage { margin-top: 14px; padding: 10px 12px 6px;
                            border: 1px solid #2f3744; border-radius: 10px;
                            background: #11151b; }
-  .amiibo-carousel-controls { display: flex; justify-content: center; gap: 70px; margin-top: 1px; }
-  .amiibo-carousel-controls .amiibo-carousel-nav { width: 72px; height: 34px; }
+  .amiibo-carousel-controls { display: flex; justify-content: center; align-items: center;
+                              flex-wrap: wrap; gap: 12px; margin-top: 1px; }
+  .amiibo-carousel-controls .amiibo-carousel-nav { width: 60px; height: 34px; }
   .amiibo-manager-bottom { display: grid; grid-template-columns: repeat(3,minmax(0,1fr));
                            align-items: stretch; gap: 12px; margin-top: 14px; }
   .amiibo-action-stack, .amiibo-filter-panel, .amiibo-detail {
@@ -156,7 +156,7 @@
   @media (max-width: 580px) {
     .amiibo-manager-top, .amiibo-manager-bottom { grid-template-columns: 1fr; }
     .amiibo-detail { grid-column: auto; }
-    .amiibo-carousel-controls { gap: 28px; }
+    .amiibo-carousel-controls { gap: 10px; }
   }
   progress { width: 100%; height: 8px; margin-top: 10px; accent-color: #2563eb; }
   details.devtools { margin-top: 18px; }
@@ -317,13 +317,11 @@
             <button id="amiiboCarouselPrev" class="amiibo-carousel-nav"
                     aria-label="Previous amiibo">&larr;</button>
             <button id="amiiboLibraryLoadBtn" class="primary" disabled>Load Amiibo</button>
+            <button id="amiiboSwapComboBtn" class="hidden">Swap Combo</button>
             <button id="amiiboCarouselNext" class="amiibo-carousel-nav"
                     aria-label="Next amiibo">&rarr;</button>
           </div>
           <div id="amiiboCarouselPosition" class="amiibo-carousel-position muted"></div>
-          <div id="amiiboComboRow" class="amiibo-combo-row hidden">
-            <button id="amiiboSwapComboBtn">Swap Combo</button>
-          </div>
         </div>
 
         <div class="amiibo-manager-bottom">
@@ -2028,13 +2026,8 @@ function renderAmiiboLoadedSlot() {
   // Swap Combo: only for a centered v3 rider with more than one machine variant.
   const combos = selected && selected.tagType === "v3"
     ? amiiboV3CombosFor(selected.id) : [];
-  $("#amiiboComboRow").classList.toggle("hidden", combos.length < 2);
-  if (combos.length >= 2) {
-    const idx = Math.max(0, combos.findIndex(e => e.key === selected.key));
-    $("#amiiboSwapComboBtn").textContent =
-      `Swap Combo (${idx + 1}/${combos.length})`;
-    $("#amiiboSwapComboBtn").disabled = amiiboLibraryBusy;
-  }
+  $("#amiiboSwapComboBtn").classList.toggle("hidden", combos.length < 2);
+  $("#amiiboSwapComboBtn").disabled = amiiboLibraryBusy;
 }
 
 function renderAmiiboStatus(status) {
