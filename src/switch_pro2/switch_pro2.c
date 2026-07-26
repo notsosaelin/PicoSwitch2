@@ -752,14 +752,52 @@ static void vend_send(const uint8_t *r, uint16_t len) {
         vend_pump();
 }
 
-// NTAG I2C 2K ("figure v3", e.g. Kirby Air Riders) present-and-trace serve.
-// Deliberately minimal and isolated from the 540 runtime: it reports the v3 tag
-// as present and serves the 2048-byte image via the existing status/chunk
-// helpers so the UART tracer captures exactly how the console reads a 2 KB tag.
-// Every command is already traced by ns2_dispatch(); this only shapes replies.
-// Not wired to writes or flash. See docs/switch2/kirby-air-riders-extended-amiibo.md.
+// NTAG I2C 2K ("figure v3", e.g. Kirby Air Riders) serve. Isolated from the 540
+// runtime (per the v3 invariant) but drives the SAME console-facing read state
+// machine that the proven 540 path uses (see ns2_virtual_nfc_runtime.c):
+//
+//   0x03 scan   -> status READY (0x09) + bump the HID NFC event counter
+//   0x05 status -> current status byte + the 7-byte v3 UID
+//   0x06 begin  -> validate the D0 07 read descriptor, build the read buffer,
+//                  go ACTIVE (0x04), and bump the event counter so the console
+//                  advances to reading (the 2026-07-26 UART trace proved the
+//                  console stalls and retries when 0x06 only returns a bare ACK)
+//   0x15 chunk  -> serve the (60-byte prefix + 2048-byte image) read buffer in
+//                  <=70-byte chunks at the requested little-endian offset
+//   0x04 stop   -> back to READY
+//
+// The read buffer mirrors the 540 layout: a 60-byte identity/signature/operation
+// prefix followed by the tag image. The 32-byte originality signature (prefix
+// +0x13) is unknown for v3 and left zero for now; whether the console validates
+// it is the next thing the trace will reveal. Writes are not handled (trace-only).
 static uint8_t ns2_v3_report_state = 0;
 static bool ns2_v3_operation_active = false;
+static uint8_t ns2_v3_nfc_status = 0x09;   // 0x09 ready, 0x04 active, 0x07 error
+static uint8_t ns2_v3_op_buffer[60u + NS2_AMIIBO_V3_SIZE];
+static size_t ns2_v3_op_buffer_size = 0;
+
+// Build the console read buffer: 60-byte prefix (matching build_operation_prefix)
+// carrying the 7-byte contiguous v3 UID and the console-supplied operation
+// metadata, then the full 2048-byte tag image.
+static void ns2_v3_build_read_buffer(const uint8_t image[NS2_AMIIBO_V3_SIZE],
+                                     const uint8_t *operation_metadata)
+{
+    uint8_t *out = ns2_v3_op_buffer;
+    memset(out, 0, 60);
+    out[0] = 0x04;
+    out[4] = 0x01;
+    out[5] = 0x02;
+    out[6] = 0x00;
+    uint8_t uid[7];
+    ns2_amiibo_v3_uid(image, uid);
+    out[7] = 0x07;
+    memcpy(out + 8, uid, sizeof(uid));
+    // out+19: 32-byte originality signature (unknown for v3, left zero).
+    if (operation_metadata)
+        memcpy(out + 51, operation_metadata, NS2_NFC_OPERATION_METADATA_SIZE);
+    memcpy(out + 60, image, NS2_AMIIBO_V3_SIZE);
+    ns2_v3_op_buffer_size = 60u + NS2_AMIIBO_V3_SIZE;
+}
 
 static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
 {
@@ -777,31 +815,49 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
     ns2_amiibo_v3_uid(image, uid);
 
     switch (sub) {
-        case 0x03: // scan
+        case 0x03: // scan: (re)present the tag, ready state, signal the console
             ns2_v3_operation_active = false;
+            ns2_v3_nfc_status = 0x09;
             ns2_v3_report_state = (uint8_t)((ns2_v3_report_state + 1u) & 0x07u);
             break;
-        case 0x04: // stop
+        case 0x04: // stop: close any operation, back to ready
             ns2_v3_operation_active = false;
+            ns2_v3_nfc_status = 0x09;
             break;
-        case 0x05: { // status
+        case 0x05: { // status: report the current NFC state + UID
             ns2_virtual_nfc_build_status(true, uid, payload);
-            payload[0] = 0x09; // ready
+            payload[0] = ns2_v3_nfc_status;
             payload[1] = 0x00;
             payload_size = NS2_NFC_STATUS_PAYLOAD_SIZE;
             direction = 0x01;
             break;
         }
-        case 0x06: // begin read operation
-            ns2_v3_operation_active = true;
+        case 0x06: { // begin read: require the D0 07 / zero-UID read descriptor
+            bool uid_zero = request_size >= 9u;
+            for (size_t i = 2; uid_zero && i < 9u; ++i)
+                if (request[i] != 0) uid_zero = false;
+            const bool read_descriptor = request_size >= 19u &&
+                request[0] == 0xD0 && request[1] == 0x07 && uid_zero;
+            if (read_descriptor) {
+                ns2_v3_build_read_buffer(image, request + 10);
+                ns2_v3_operation_active = true;
+                ns2_v3_nfc_status = 0x04; // active -> console proceeds to 0x15
+                ns2_v3_report_state =
+                    (uint8_t)((ns2_v3_report_state + 1u) & 0x07u);
+            } else {
+                ns2_v3_operation_active = false;
+                ns2_v3_nfc_status = 0x07; // error (e.g. an unexpected write)
+            }
             break;
-        case 0x15: { // fetch a chunk of the tag image at a little-endian offset
-            if (ns2_v3_operation_active && request_size >= 2u) {
+        }
+        case 0x15: { // fetch a chunk of the read buffer at a little-endian offset
+            if (ns2_v3_operation_active && ns2_v3_op_buffer_size &&
+                request_size >= 2u) {
                 const uint16_t offset =
                     (uint16_t)request[0] | ((uint16_t)request[1] << 8);
                 size_t out_size = 0;
                 if (ns2_virtual_nfc_build_buffer_chunk(
-                        image, NS2_AMIIBO_V3_SIZE, offset, payload,
+                        ns2_v3_op_buffer, ns2_v3_op_buffer_size, offset, payload,
                         &out_size) == NS2_VIRTUAL_NFC_OK) {
                     payload_size = out_size;
                     direction = 0x01;
