@@ -186,10 +186,17 @@ pass at each step.
 - Implement the console-facing read/response for the traced framing so a real Switch 2 builds the
   Figure Player. Iterate against captures until rider+machine are correct in Kirby Air Riders.
 
-### Phase 3 — persistence (only if wanted, after Phase 2 works)
-- Rework the flash journal to store a 2 KB image (larger multi-sector record or a separate region),
-  preserving the install-reset invariant. Highest-risk step; deferred until the serve path is proven
-  and only if session-scoped v3 is judged insufficient.
+### Phase 3 — persistence — IMPLEMENTED
+- The v3 slot now persists in the **existing amiibo journal banks**, not a new region: the record
+  header gains version 3 with a single 2048-byte payload, and `VIRTUAL_AMIIBO_RECORD_SIZE` grew to 9
+  pages (2304 B) to hold it — still within one 4 KB bank sector, so no flash-layout change and the
+  install-reset region is unchanged (a fresh UF2 still wipes it).
+- **Mutual exclusion:** only one amiibo (540/572 v2 OR 2048 v3) is ever stored. Committing a v3 tag
+  clears the 540 store and vice-versa; the journal erases both banks on the type switch so the old
+  format can never out-rank the new one at boot. `init` loads a v3 record if present, else the 540
+  record. Eject (`amiibo clear`) wipes both banks and both slots.
+- This is why a v3 tag survives moving the dongle between the PC (config upload) and the Switch — it
+  is written to flash on commit, exactly like a 540 tag.
 
 Each phase is a separate commit with host tests; Phases 1–3 each need a flash-and-test round with
 real hardware because the console behavior cannot be validated any other way.
