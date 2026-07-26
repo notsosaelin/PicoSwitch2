@@ -2121,13 +2121,22 @@ async function clearAmiiboLibrary() {
 async function loadSelectedLibraryAmiibo() {
   const entry = selectedAmiiboLibraryEntry();
   if (!entry) return;
+  if (transportKind) {
+    // Record the loaded slot only if the write actually committed, so a failed
+    // upload leaves Load enabled to retry instead of pointing at a tag the
+    // adapter never accepted.
+    const ok = await uploadAmiiboEntry(entry);
+    if (ok) {
+      amiiboLoadedSlotKey = entry.key;
+      amiiboFileName = entry.name;
+      persistAmiiboSlotState();
+      renderAmiiboLibrary();
+    }
+    return;
+  }
   amiiboLoadedSlotKey = entry.key;
   persistAmiiboSlotState();
   amiiboFileName = entry.name;
-  if (transportKind) {
-    await uploadAmiiboEntry(entry);
-    return;
-  }
   renderAmiiboLibrary();
   renderAmiiboLoadedSlot();
   $("#amiiboMessage").textContent =
@@ -2144,11 +2153,28 @@ async function loadSelectedLibraryAmiibo() {
 //             empty the pointer only (no confirm, dump untouched)
 //   adapter — the slot is empty but the adapter holds an image (possibly
 //             foreign): wipe the adapter only (confirm required)
+// The adapter holds a tag when either the 540/572 store or the isolated v3
+// (NTAG I2C 2K) slot is loaded. `amiibo status` reports .loaded and .uid for the
+// 540 store only, so v3 must be considered separately everywhere tag presence,
+// eject scope, and Load gating are decided.
+function amiiboAdapterHasTag() {
+  return !!(amiiboStatus && (amiiboStatus.loaded || amiiboStatus.v3loaded));
+}
+// True when `entry` is the exact tag currently on the adapter. A 540 tag is
+// matched by UID; a v3 tag is matched by the locally-tracked loaded-slot key
+// because the status UID field describes only the 540 store.
+function amiiboEntryOnAdapter(entry) {
+  if (!entry || !amiiboStatus) return false;
+  if (entry.tagType === "v3")
+    return amiiboStatus.v3loaded === true && entry.key === amiiboLoadedSlotKey;
+  return !!(amiiboStatus.loaded &&
+    amiiboEntryContainsUid(entry, amiiboStatus.uid));
+}
+
 function amiiboEjectActionState() {
   const entry = loadedAmiiboLibraryEntry();
-  const adapterAvailable = !!transportKind && !!amiiboStatus?.loaded;
-  if (entry && adapterAvailable &&
-      amiiboEntryContainsUid(entry, amiiboStatus.uid))
+  const adapterAvailable = !!transportKind && amiiboAdapterHasTag();
+  if (entry && adapterAvailable && amiiboEntryOnAdapter(entry))
     return {mode: "both", entry};
   if (entry) return {mode: "slot", entry};
   if (adapterAvailable) return {mode: "adapter", entry: null};
@@ -2239,13 +2265,13 @@ function renderAmiiboLoadedSlot() {
   const adapterPresented = v3Active || amiiboStatus?.presented !== false;
   const adapterConnected = !!transportKind;
   const selected = selectedAmiiboLibraryEntry();
-  // Is the *highlighted* entry the one already presented on the dongle? If so,
-  // "Load amiibo" would be a no-op, so it is disabled.
-  const selectedV3Active = selected?.tagType === "v3" && amiiboStatus?.v3loaded === true;
-  const selectedOnAdapter = selectedV3Active || !!(selected && amiiboStatus?.loaded &&
-    amiiboEntryContainsUid(selected, amiiboStatus.uid));
-  const selectedActive = selectedOnAdapter &&
-    (selectedV3Active || amiiboStatus?.presented !== false);
+  // Is the *highlighted* entry the exact tag already on the dongle? If so, "Load
+  // amiibo" would be a no-op, so it is disabled. This must match the SPECIFIC tag
+  // (v3 by loaded-slot key, 540 by UID) — not merely "a v3 is loaded" — otherwise
+  // every machine combo of a rider looks active and Swap Combo can never load a
+  // different one.
+  const selectedActive = amiiboEntryOnAdapter(selected) &&
+    (selected?.tagType === "v3" || amiiboStatus?.presented !== false);
   // One button does both jobs now: connected → "Load amiibo" uploads to the
   // dongle; disconnected → "Select amiibo" just records the choice so the library
   // stays browsable offline.
@@ -2258,11 +2284,16 @@ function renderAmiiboLoadedSlot() {
     : "Select the highlighted amiibo (connect an adapter to load it)";
   loadBtn.disabled =
     amiiboLibraryBusy || !selected || (adapterConnected && selectedActive);
-  // Sync amiibo pulls console-written changes back to the browser; it only makes
-  // sense with an adapter connected, so it stays hidden until one is.
+  // Sync amiibo pulls console-written changes from the 540/572 store back to the
+  // browser; it stays hidden until an adapter is connected. It does not apply to
+  // a 2 KB (v3) tag, which has no console write-back path yet — the tooltip says
+  // so rather than leaving it mysteriously greyed.
   $("#amiiboSaveBtn").classList.toggle("hidden", !adapterConnected);
   $("#amiiboSaveBtn").disabled =
     amiiboLibraryBusy || !adapterConnected || !amiiboStatus?.loaded;
+  $("#amiiboSaveBtn").title = amiiboStatus?.v3loaded && !amiiboStatus?.loaded
+    ? "Sync applies to standard (NTAG215) amiibo; a 2 KB tag has no write-back yet"
+    : "Pull console-written changes back into this browser's copy";
   // Merged eject/clear button: labeled uniformly "Eject Amiibo". The action
   // scope still adapts (see amiiboEjectActionState); the tooltip explains it.
   const ejectState = amiiboEjectActionState();
@@ -2303,6 +2334,12 @@ function renderAmiiboStatus(status) {
   } else if (status.loaded && status.presented === false) {
     $("#amiiboMessage").textContent =
       "The amiibo is ejected. Its stored image remains on the adapter.";
+  } else if (status.v3loaded) {
+    // A 2 KB (NTAG I2C 2K) tag lives in the isolated v3 slot; status.loaded is
+    // false for it by design (mutual exclusion with the 540 store), so this must
+    // come before the !loaded case or a stored v3 reads as "no amiibo".
+    $("#amiiboMessage").textContent =
+      "A 2 KB (NTAG I2C) amiibo is stored on the adapter. Console serving is experimental.";
   } else if (!status.loaded) {
     $("#amiiboMessage").textContent = "No amiibo is stored on the adapter.";
   }
@@ -2351,8 +2388,11 @@ async function transferAmiiboCopy(bytes, commitCommand, progressStart,
     {error: "The image could not be committed."};
 }
 
+// Upload one library entry to the adapter. Returns true only when the tag is
+// committed on the adapter, so the caller can record the loaded slot exactly when
+// the write actually succeeded (a failed write must not leave a stale pointer).
 async function uploadAmiiboEntry(sourceEntry) {
-  if (!transportKind) return;
+  if (!transportKind) return false;
   const entry = normalizeAmiiboLibraryEntry(sourceEntry);
   if (entry.tagType === "v3") {
     // Experimental present-and-trace: upload the full 2048-byte NTAG I2C 2K tag
@@ -2362,21 +2402,25 @@ async function uploadAmiiboEntry(sourceEntry) {
     $("#amiiboMessage").textContent =
       `Uploading ${amiiboDisplayName(entry)} (2 KB NTAG I2C) to the adapter…`;
     const result = await transferAmiiboCopy(v3bytes, "commit", 0, 100);
+    // Refresh first so the v3-loaded slot state (and button gating) reflect the
+    // commit; then set the detailed message so the status poll's generic line
+    // does not immediately replace it.
+    if (result?.ok) await refreshAmiiboStatus();
     amiiboSetBusy(false);
     $("#amiiboMessage").textContent = result?.ok
-      ? `${amiiboDisplayName(entry)} is presented as an NTAG I2C 2K tag (experimental). ` +
-        "Trigger an in-game amiibo scan on the Switch 2, then capture the UART trace " +
-        "of what the console reads — recognized, rejected, or a crash are all useful."
+      ? `${amiiboDisplayName(entry)} is stored on the adapter as a 2 KB (NTAG I2C) tag. ` +
+        "Console serving is experimental — scan it on the Switch 2 and capture the UART " +
+        "trace of what the console reads (recognized, rejected, or a crash are all useful)."
       : (result?.error ||
          "The 2 KB tag could not be uploaded to the adapter.");
-    return;
+    return !!result?.ok;
   }
   const bytes = amiiboEntryBytes(entry);
   await refreshAmiiboStatus();
   if (amiiboStatus && amiiboStatus.dirty) {
     $("#amiiboMessage").textContent =
       "Sync the modified adapter amiibo back to the browser first. Replacement is blocked to prevent losing its write data.";
-    return;
+    return false;
   }
 
   amiiboSetBusy(true, 0);
@@ -2386,7 +2430,7 @@ async function uploadAmiiboEntry(sourceEntry) {
   if (!result?.ok) {
     $("#amiiboMessage").textContent = result?.error || "Upload did not start.";
     amiiboSetBusy(false);
-    return;
+    return false;
   }
 
   result = await sendCmd("amiibo persist", true);
@@ -2394,13 +2438,14 @@ async function uploadAmiiboEntry(sourceEntry) {
     $("#amiiboMessage").textContent =
       result?.error || "The tag could not be stored on the adapter.";
     amiiboSetBusy(false);
-    return;
+    return false;
   }
   amiiboFileName = entry.name;
   await refreshAmiiboStatus();
   $("#amiiboMessage").textContent =
     `${entry.name} is stored and presented on the adapter.`;
   amiiboSetBusy(false);
+  return true;
 }
 
 // Download the highlighted amiibo's raw .bin (single-tag backup / export of a
