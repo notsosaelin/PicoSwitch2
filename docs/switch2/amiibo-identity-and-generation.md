@@ -1,9 +1,10 @@
 # Amiibo identity, differentiation, and generation feasibility
 
-Status: 🔵 Partial — format documented from primary references. Console acceptance of
-signature-less generated images is **Refuted** (2026-07-26 hardware test): the Switch 2 validates
-amiibo cryptography, so key-free generated images are rejected. Runtime UID randomization (Random
-Mode) is expected to fail on genuine dumps for the same reason; one confirming test remains.
+Status: 🔵 Partial. Format documented from primary references. **Key-free** generation is
+**Refuted** (2026-07-26 hardware test): the Switch 2 validates amiibo cryptography, so zero-HMAC
+images are rejected. **Key-based** generation using the user's own `key_retail.bin` is now
+**implemented** in the portal (amiitool algorithm via Web Crypto) and self-verifies against a
+genuine dump; real-console acceptance of a generated tag is the remaining hardware confirmation.
 Last updated: 2026-07-26
 
 ## Purpose
@@ -101,16 +102,40 @@ signature), so correct plaintext identity is necessary but not sufficient.
 
 Consequences:
 
-- **Key-free generation cannot produce console-usable amiibo.** A genuine user dump remains the
-  only **Confirmed** input. `generate_test_amiibo.py` is a portal/identity-plumbing test artifact
-  only.
-- **Random Mode's runtime UID overlay is expected to fail on genuine dumps too**, because the tag
-  HMAC is UID-bound and we cannot recompute it without the retail keys. One confirming test with a
-  genuine dump remains (see the experiment report). If confirmed, viable "different tag each tap"
-  options reduce to a pool of distinct genuine dumps or on-device HMAC recomputation (keys
-  required, out of scope).
-- Full key-based generation would require shipping/holding the retail `unfixed-info` and
-  `locked-secret` keys, which this project will not do.
+- **Key-free generation cannot produce console-usable amiibo.** `generate_test_amiibo.py` is a
+  portal/identity-plumbing test artifact only.
+- **Random Mode was removed** for the same reason (a runtime UID swap breaks the UID-bound tag
+  HMAC).
+
+## 5. Key-based generation (implemented, user supplies keys)
+
+The portal implements the full amiitool algorithm in JavaScript over Web Crypto — key derivation
+(HMAC-SHA256 DRBG with a big-endian 16-bit counter), AES-128-CTR over internal `0x02C`..`0x1B4`,
+and the tag/data HMAC-SHA256 signatures — inside the marked `amiibo-crypto` block in
+[`../../web/index.html`](../../web/index.html). It is exercised by
+[`../../tools/test_amiibo_crypto.mjs`](../../tools/test_amiibo_crypto.mjs), which extracts that exact
+block and proves pack↔unpack idempotence, HMAC verification, and wrong-key rejection under Node.
+
+**Keys are never shipped.** Generation is gated on the user importing their own genuine 160-byte
+`key_retail.bin` (data/unfixed-info master + tag/locked-secret master; halves accepted in either
+order, validated by their `typeString`s). This is the same posture as TagMo/amiitool/emuiibo: the
+user's own keys, dumped from hardware they own, used for interoperability. Keys are held in
+browser-local IndexedDB and removable with **Forget keys**.
+
+Correctness without a console: when keys load, the portal **verifies** them by decrypting a genuine
+dump already in the library and checking both HMACs match. A pass proves both the keys and this
+crypto implementation are byte-correct before any generated tag is trusted. If no genuine dump is
+present, generation is still enabled but flagged unverified.
+
+Generation flow: pick a 16-hex AmiiboAPI id → the portal builds a factory-fresh plaintext (random
+UID, random keygen salt, zeroed/unregistered settings, correct identity), signs and encrypts it
+with the user's keys, and saves the result to the same IndexedDB library as an imported dump. It
+then uploads to the adapter through the ordinary `amiibo begin/chunk/commit` path — no firmware
+change was needed.
+
+Remaining hardware confirmation: scan a generated tag on a real Switch 2 with correct keys and
+confirm acceptance. The offsets match the amiitool reference and the round-trip self-test passes,
+so this is expected to work; record the result when tested.
 
 ## References
 

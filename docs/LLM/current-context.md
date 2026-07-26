@@ -78,11 +78,20 @@ required Git submodule for Pico 2 W audio builds.
   console-driven Stop/write-back lifecycle and `amiibo present` re-activation are unchanged.
 - Amiibo crypto is enforced (2026-07-26 hardware test, [[amiibo-identity-and-generation]] /
   `docs/experiments/generated-amiibo-console-rejection-2026-07-26.md`): the Switch 2 rejects
-  key-free generated images ("This isn't an amiibo") though the portal identifies them from the
-  plaintext identity block. A short-lived random-UID "Random Mode" was **removed** — a runtime UID
-  swap invalidates the UID-bound tag HMAC, which we cannot recompute without retail keys. Only
-  genuine dumps served with their original identity are console-valid. `tools/generate_test_amiibo.py`
-  remains only as a portal/identity-plumbing test artifact (not console-usable).
+  key-free generated images ("This isn't an amiibo"). Random Mode was removed (UID-bound HMAC).
+- **Key-based generation is implemented** (portal): the marked `amiibo-crypto` block in
+  `web/index.html` is a full amiitool port over Web Crypto (DRBG w/ BE-16 counter, AES-128-CTR over
+  internal `0x02C`..`0x1B4`, tag+data HMAC-SHA256). Gated on the user importing their own genuine
+  160-byte `key_retail.bin` (NEVER shipped; data/unfixed-info + tag/locked-secret masters, either
+  order). On load it self-verifies by decrypting a genuine library dump and checking both HMACs.
+  Generate = pick 16-hex AmiiboAPI id → random UID/salt, zeroed settings → pack → save to IndexedDB
+  → upload via existing `amiibo begin/chunk/commit` (no firmware change). Node proof:
+  `tools/test_amiibo_crypto.mjs` (extracts the real block; pack↔unpack idempotence, HMAC verify,
+  wrong-key reject). Remaining: real-console acceptance of a generated tag.
+- Library export is now a **.zip** (`library.json` manifest + one `.bin` per amiibo, flat, via a
+  self-contained store-only ZIP writer `amiiboZipStore`); import accepts that .zip (reconstructs
+  from the `.bin` files, `amiiboZipEntries`, deflate fallback via DecompressionStream) or a legacy
+  .json. `tools/generate_test_amiibo.py` stays only as a keyless portal-test artifact.
 - Sync clears dirty-write protection only after IndexedDB persistence; it does not unload the tag.
   Console formatting/reset remains the authority.
 - The USB side of Config mode is now CDC-only. The MSC descriptor/callbacks, generated

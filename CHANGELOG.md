@@ -34,10 +34,13 @@ Release notes describe user-visible behavior. Detailed implementation history re
 - Amiibo identity/generation research (`docs/switch2/amiibo-identity-and-generation.md`,
   `docs/experiments/generated-amiibo-console-rejection-2026-07-26.md`): a 2026-07-26 hardware test
   established that the Switch 2 validates amiibo cryptography, so key-free generated images are
-  rejected and only genuine dumps served with their original identity are console-valid. A briefly
-  implemented random-UID presentation mode was removed for the same reason (a runtime UID swap
-  breaks the UID-bound HMAC). `tools/generate_test_amiibo.py` is retained only as a portal-test
-  artifact.
+  rejected. A briefly implemented random-UID presentation mode was removed for the same reason.
+- Optional in-browser amiibo generation gated on the user's own genuine `key_retail.bin` (never
+  shipped): a full amiitool implementation over Web Crypto generates any AmiiboAPI identity, keys
+  self-verify against a genuine dump on load, and generated tags save to the same library and
+  upload through the existing path. Node round-trip test `tools/test_amiibo_crypto.mjs`.
+- Library export/import is now a flat `.zip` (`library.json` manifest + one `.bin` per amiibo) via
+  a self-contained store-only ZIP writer/reader; legacy `.json` backups still import.
 - Stable localhost launcher for the production USB Serial/Bluetooth portal.
 - Config-personality-only BLE management service and Web Bluetooth client. It pauses controller
   discovery before low-duty advertising, classifies its incoming Peripheral-role link before HID,

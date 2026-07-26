@@ -31,12 +31,20 @@ product-type arrows cycle `All` and the imported library's available values alph
 diagnostic harness retains its additional sorting controls.
 
 The production page keeps its library manager available without an adapter connection. Cached
-entries hold one mutable dump per exact catalog identity, and two independent quick-slot pointers
-can reference different amiibo. The versioned JSON backup exports/imports the full library and slot
-assignments so browser-cache loss does not become tag-save loss. Its staged workflow is **Assign
-Highlighted to Slot N** → **Load Slot N to Adapter**. **Sync Amiibo from Adapter** validates the
-latest console-written image and overwrites that identity's browser copy before acknowledging
-adapter dirty protection. **Eject Adapter Amiibo** changes only presentation.
+entries hold one mutable dump per exact catalog identity; the board stores exactly one amiibo, so
+the manager is single-slot. The library exports/imports as a flat `.zip` (`library.json` manifest
+plus one `.bin` per amiibo; legacy `.json` backups still import) so browser-cache loss does not
+become tag-save loss. Its staged workflow is **Load Amiibo** (into the loaded slot) → **Activate
+Amiibo**. **Sync Amiibo** validates the latest console-written image and overwrites that identity's
+browser copy before acknowledging adapter dirty protection. The merged eject/clear button labels
+its exact scope (eject-from-adapter, clear-loaded, or eject an unreferenced adapter image).
+
+Optional amiibo generation is unlocked when the user imports their own genuine `key_retail.bin`
+(never shipped by this project — the same posture as TagMo/amiitool). The portal then implements
+the amiitool crypto in Web Crypto to generate any AmiiboAPI identity; loaded keys self-verify by
+decrypting a genuine dump in the library, and generated tags save to the same cached library and
+upload through the normal path. See
+[`../docs/switch2/amiibo-identity-and-generation.md`](../docs/switch2/amiibo-identity-and-generation.md).
 
 The selected carousel artwork stays centered at 100%. Four non-overlapping neighbors on each side
 render at exactly 80/60/40/20%, and navigation is smoothly animated. Names are omitted from the

@@ -287,11 +287,31 @@
 
         <div class="amiibo-manager-top">
           <details id="amiiboImportMenu" class="amiibo-import-menu">
-            <summary>Import new amiibo</summary>
+            <summary>Import or generate amiibo</summary>
             <div class="amiibo-import-choices">
               <input type="file" id="amiiboFile" accept=".bin,application/octet-stream" hidden>
               <button id="amiiboChooseBtn" class="primary">Choose one file</button>
               <button id="amiiboDirectoryBtn">Choose directory</button>
+              <hr style="width:100%;border:0;border-top:1px solid #2b313b;margin:2px 0">
+              <div id="amiiboKeyStatus" class="pill" style="width:100%;text-align:center">
+                No keys loaded</div>
+              <input type="file" id="amiiboKeyFile"
+                     accept=".bin,application/octet-stream" hidden>
+              <button id="amiiboLoadKeysBtn">Load key_retail.bin</button>
+              <button id="amiiboForgetKeysBtn" class="hidden">Forget keys</button>
+              <div id="amiiboGenerateRow" class="hidden" style="width:100%;
+                   display:flex;gap:6px;flex-wrap:wrap">
+                <input id="amiiboGenerateId" type="text" maxlength="16"
+                       placeholder="amiibo id (16 hex)"
+                       style="flex:1;min-width:150px;font:inherit;background:#11151b;
+                              color:#e6e8ea;border:1px solid #3a4150;border-radius:7px;
+                              padding:7px 9px">
+                <button id="amiiboGenerateBtn" class="primary">Generate</button>
+              </div>
+              <p class="muted" style="width:100%;margin:2px 0 0">
+                Generation needs your own genuine <code>key_retail.bin</code> (never
+                shipped). Import one genuine dump first to verify the keys. The 16-hex
+                id is an AmiiboAPI head+tail.</p>
             </div>
           </details>
 
@@ -384,10 +404,10 @@
         <details class="amiibo-library-tools">
           <summary>Library backup and maintenance</summary>
           <div class="actions-bar">
-            <button id="amiiboLibraryExportBtn">Export saved library</button>
+            <button id="amiiboLibraryExportBtn">Export library (.zip)</button>
             <input type="file" id="amiiboLibraryBackupFile"
-                   accept=".json,application/json" hidden>
-            <button id="amiiboLibraryImportBtn">Import library backup</button>
+                   accept=".zip,.json,application/zip,application/json" hidden>
+            <button id="amiiboLibraryImportBtn">Import library (.zip/.json)</button>
             <button id="amiiboLibraryClearBtn">Clear cached library</button>
             <button id="amiiboPersistBtn" class="hidden" disabled>Force adapter save</button>
           </div>
@@ -1310,104 +1330,581 @@ function base64ToArrayBuffer(value) {
   return bytes.buffer;
 }
 
+// === amiibo-crypto BEGIN (amiitool algorithm; standalone, tools/test_amiibo_crypto.mjs) ===
+// Reimplements socram8888/amiitool key derivation, AES-128-CTR cipher, and the
+// two HMAC-SHA256 signatures using only Web Crypto. Nintendo's retail keys are
+// NEVER shipped: the user supplies their own key_retail.bin. Offsets are into
+// the 540-byte raw tag dump / 520-byte internal layout and are quoted from the
+// reference. See docs/switch2/amiibo-identity-and-generation.md.
+function amiiboBytesEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
+function amiiboConcatBytes(parts) {
+  let total = 0;
+  for (const p of parts) total += p.length;
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+
+async function amiiboHmacSha256(keyBytes, dataBytes) {
+  const key = await crypto.subtle.importKey(
+    "raw", keyBytes, {name: "HMAC", hash: "SHA-256"}, false, ["sign"]);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, dataBytes));
+}
+
+// AES-128-CTR with the full 16-byte IV as the initial 128-bit counter block;
+// encrypt and decrypt are identical for CTR.
+async function amiiboAesCtr(aesKey, aesIV, dataBytes) {
+  const key = await crypto.subtle.importKey(
+    "raw", aesKey, {name: "AES-CTR"}, false, ["encrypt"]);
+  return new Uint8Array(await crypto.subtle.encrypt(
+    {name: "AES-CTR", counter: aesIV, length: 128}, key, dataBytes));
+}
+
+// HMAC-SHA256 DRBG: 16-bit big-endian iteration counter prepended to the seed,
+// outputs concatenated until outLen bytes are produced.
+async function amiiboDrbg(hmacKey, seed, outLen) {
+  const out = new Uint8Array(outLen);
+  const buf = new Uint8Array(2 + seed.length);
+  buf.set(seed, 2);
+  let written = 0, iteration = 0;
+  while (written < outLen) {
+    buf[0] = (iteration >> 8) & 0xFF;
+    buf[1] = iteration & 0xFF;
+    iteration++;
+    const block = await amiiboHmacSha256(hmacKey, buf);
+    const take = Math.min(32, outLen - written);
+    out.set(block.subarray(0, take), written);
+    written += take;
+  }
+  return out;
+}
+
+// Parse one 80-byte master key (hmacKey[16], typeString[14], rfu, magicSize,
+// magicBytes[16], xorPad[32]).
+function amiiboParseMasterKey(b) {
+  if (b.length !== 80) throw new Error("master key must be 80 bytes");
+  if (b[31] > 16) throw new Error("master key magicBytesSize > 16");
+  return {
+    hmacKey: b.subarray(0, 16),
+    typeString: b.subarray(16, 30),
+    magicSize: b[31],
+    magicBytes: b.subarray(32, 48),
+    xorPad: b.subarray(48, 80)
+  };
+}
+
+// key_retail.bin: data (unfixed-info) master then tag (locked-secret) master.
+function amiiboParseRetailKeys(bytes) {
+  if (bytes.length !== 160)
+    throw new Error(`key_retail.bin must be 160 bytes, got ${bytes.length}`);
+  let data = amiiboParseMasterKey(bytes.subarray(0, 80));
+  let tag = amiiboParseMasterKey(bytes.subarray(80, 160));
+  const label = mk => new TextDecoder().decode(mk.typeString).split("\0")[0];
+  // Accept the two 80-byte halves in either order by checking typeStrings.
+  if (label(data).startsWith("locked") && label(tag).startsWith("unfixed"))
+    [data, tag] = [tag, data];
+  if (!label(data).toLowerCase().startsWith("unfixed") ||
+      !label(tag).toLowerCase().startsWith("locked"))
+    throw new Error(
+      "Unrecognized key file: expected unfixed-info and locked-secret masters");
+  return {data, tag, raw: bytes};
+}
+
+function amiiboTagToInternal(tag) {
+  const i = new Uint8Array(0x208);
+  i.set(tag.subarray(0x008, 0x010), 0x000);
+  i.set(tag.subarray(0x080, 0x0A0), 0x008);
+  i.set(tag.subarray(0x010, 0x034), 0x028);
+  i.set(tag.subarray(0x0A0, 0x208), 0x04C);
+  i.set(tag.subarray(0x034, 0x054), 0x1B4);
+  i.set(tag.subarray(0x000, 0x008), 0x1D4);
+  i.set(tag.subarray(0x054, 0x080), 0x1DC);
+  return i;
+}
+
+function amiiboInternalToTag(i, template) {
+  const tag = template ? template.slice() : new Uint8Array(540);
+  tag.set(i.subarray(0x000, 0x008), 0x008);
+  tag.set(i.subarray(0x008, 0x028), 0x080);
+  tag.set(i.subarray(0x028, 0x04C), 0x010);
+  tag.set(i.subarray(0x04C, 0x1B4), 0x0A0);
+  tag.set(i.subarray(0x1B4, 0x1D4), 0x034);
+  tag.set(i.subarray(0x1D4, 0x1DC), 0x000);
+  tag.set(i.subarray(0x1DC, 0x208), 0x054);
+  return tag;
+}
+
+// baseSeed (64 bytes) from the internal dump for key derivation.
+function amiiboCalcSeed(internal) {
+  const seed = new Uint8Array(64);
+  seed.set(internal.subarray(0x029, 0x02B), 0x00);
+  seed.set(internal.subarray(0x1D4, 0x1DC), 0x10);
+  seed.set(internal.subarray(0x1D4, 0x1DC), 0x18);
+  seed.set(internal.subarray(0x1E8, 0x208), 0x20);
+  return seed;
+}
+
+function amiiboPrepareSeed(mk, baseSeed) {
+  let nul = -1;
+  for (let n = 0; n < 14; n++) if (mk.typeString[n] === 0) { nul = n; break; }
+  if (nul < 0) throw new Error("master key typeString not NUL-terminated");
+  const leading = 16 - mk.magicSize;
+  return amiiboConcatBytes([
+    mk.typeString.subarray(0, nul + 1),
+    baseSeed.subarray(0, leading),
+    mk.magicBytes.subarray(0, mk.magicSize),
+    baseSeed.subarray(0x10, 0x20),
+    baseSeed.subarray(0x20, 0x40).map((v, idx) => v ^ mk.xorPad[idx])
+  ]);
+}
+
+async function amiiboDeriveKeys(mk, internal) {
+  const derived = await amiiboDrbg(
+    mk.hmacKey, amiiboPrepareSeed(mk, amiiboCalcSeed(internal)), 48);
+  return {
+    aesKey: derived.subarray(0, 16),
+    aesIV: derived.subarray(16, 32),
+    hmacKey: derived.subarray(32, 48)
+  };
+}
+
+// Encrypt + sign a plaintext raw dump. Returns a new 540-byte encrypted dump.
+async function amiiboPack(keys, plainTag) {
+  const internal = amiiboTagToInternal(plainTag);
+  const tagKeys = await amiiboDeriveKeys(keys.tag, internal);
+  const dataKeys = await amiiboDeriveKeys(keys.data, internal);
+  internal.set(
+    await amiiboHmacSha256(tagKeys.hmacKey, internal.subarray(0x1D4, 0x208)),
+    0x1B4);
+  internal.set(
+    await amiiboHmacSha256(dataKeys.hmacKey, internal.subarray(0x029, 0x208)),
+    0x008);
+  internal.set(
+    await amiiboAesCtr(
+      dataKeys.aesKey, dataKeys.aesIV, internal.subarray(0x02C, 0x1B4)),
+    0x02C);
+  return amiiboInternalToTag(internal, plainTag);
+}
+
+// Decrypt + verify. Returns {plain, tagHmacOk, dataHmacOk}.
+async function amiiboUnpack(keys, encTag) {
+  const internal = amiiboTagToInternal(encTag);
+  const tagKeys = await amiiboDeriveKeys(keys.tag, internal);
+  const dataKeys = await amiiboDeriveKeys(keys.data, internal);
+  internal.set(
+    await amiiboAesCtr(
+      dataKeys.aesKey, dataKeys.aesIV, internal.subarray(0x02C, 0x1B4)),
+    0x02C);
+  const tagOk = amiiboBytesEqual(
+    await amiiboHmacSha256(tagKeys.hmacKey, internal.subarray(0x1D4, 0x208)),
+    internal.subarray(0x1B4, 0x1D4));
+  const dataOk = amiiboBytesEqual(
+    await amiiboHmacSha256(dataKeys.hmacKey, internal.subarray(0x029, 0x208)),
+    internal.subarray(0x008, 0x028));
+  return {
+    plain: amiiboInternalToTag(internal, encTag),
+    tagHmacOk: tagOk,
+    dataHmacOk: dataOk
+  };
+}
+
+// Build a factory-fresh (unregistered, zeroed settings) plaintext dump for an
+// identity, with a random UID and random keygen salt.
+function amiiboBuildPlaintext(idHex16, uid) {
+  const id = amiiboHexToBytes(idHex16);
+  if (id.length !== 8) throw new Error("amiibo id must be 16 hex digits");
+  const tag = new Uint8Array(540);
+  const u = uid && uid.length === 7
+    ? uid : amiiboConcatBytes([new Uint8Array([0x04]),
+        crypto.getRandomValues(new Uint8Array(6))]);
+  tag[0] = u[0]; tag[1] = u[1]; tag[2] = u[2];
+  tag[3] = 0x88 ^ u[0] ^ u[1] ^ u[2];      // BCC0 (with cascade tag)
+  tag[4] = u[3]; tag[5] = u[4]; tag[6] = u[5]; tag[7] = u[6];
+  tag[8] = u[3] ^ u[4] ^ u[5] ^ u[6];       // BCC1
+  tag[9] = 0x48;                             // internal
+  tag[0x0A] = 0x0F; tag[0x0B] = 0xE0;        // static lock
+  tag.set([0xF1, 0x10, 0xFF, 0xEE], 0x0C);   // capability container
+  tag[0x10] = 0xA5;                          // amiibo magic
+  crypto.getRandomValues(tag.subarray(0x60, 0x80)); // keygen salt
+  tag.set(id, 0x54);                         // identity block
+  tag.set([0x01, 0x00, 0x0F, 0xBD], 0x208);  // dynamic lock
+  tag.set([0x00, 0x00, 0x00, 0x04], 0x20C);  // CFG0 (AUTH0)
+  tag.set([0x5F, 0x00, 0x00, 0x00], 0x210);  // CFG1
+  return tag;
+}
+
+async function amiiboGenerate(keys, idHex16) {
+  return amiiboPack(keys, amiiboBuildPlaintext(idHex16));
+}
+
+function amiiboHexToBytes(hex) {
+  const clean = hex.replace(/[^0-9a-fA-F]/g, "");
+  const out = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < out.length; i++)
+    out[i] = parseInt(clean.substr(i * 2, 2), 16);
+  return out;
+}
+// === amiibo-crypto END ===
+
+// === amiibo-zip BEGIN (store-only writer + minimal reader; no external libs) ===
+function amiiboZipU16(v) {
+  return new Uint8Array([v & 0xFF, (v >> 8) & 0xFF]);
+}
+function amiiboZipU32(v) {
+  return new Uint8Array([v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >>> 24) & 0xFF]);
+}
+
+// files: [{name, bytes:Uint8Array}] -> stored (uncompressed) ZIP bytes.
+function amiiboZipStore(files) {
+  const enc = new TextEncoder();
+  const locals = [];
+  const central = [];
+  let offset = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name);
+    const crc = amiiboCrc32(f.bytes) >>> 0;
+    const size = f.bytes.length;
+    const local = amiiboConcatBytes([
+      amiiboZipU32(0x04034b50), amiiboZipU16(20), amiiboZipU16(0),
+      amiiboZipU16(0), amiiboZipU16(0), amiiboZipU16(0),
+      amiiboZipU32(crc), amiiboZipU32(size), amiiboZipU32(size),
+      amiiboZipU16(name.length), amiiboZipU16(0), name
+    ]);
+    locals.push(local, f.bytes);
+    central.push(amiiboConcatBytes([
+      amiiboZipU32(0x02014b50), amiiboZipU16(20), amiiboZipU16(20),
+      amiiboZipU16(0), amiiboZipU16(0), amiiboZipU16(0), amiiboZipU16(0),
+      amiiboZipU32(crc), amiiboZipU32(size), amiiboZipU32(size),
+      amiiboZipU16(name.length), amiiboZipU16(0), amiiboZipU16(0),
+      amiiboZipU16(0), amiiboZipU16(0), amiiboZipU32(0),
+      amiiboZipU32(offset), name
+    ]));
+    offset += local.length + f.bytes.length;
+  }
+  const centralBytes = amiiboConcatBytes(central);
+  const eocd = amiiboConcatBytes([
+    amiiboZipU32(0x06054b50), amiiboZipU16(0), amiiboZipU16(0),
+    amiiboZipU16(files.length), amiiboZipU16(files.length),
+    amiiboZipU32(centralBytes.length), amiiboZipU32(offset), amiiboZipU16(0)
+  ]);
+  return amiiboConcatBytes([...locals, centralBytes, eocd]);
+}
+
+async function amiiboZipEntries(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const dec = new TextDecoder();
+  const entries = [];
+  let p = 0;
+  while (p + 4 <= bytes.length && dv.getUint32(p, true) === 0x04034b50) {
+    const method = dv.getUint16(p + 8, true);
+    const csize = dv.getUint32(p + 18, true);
+    const namelen = dv.getUint16(p + 26, true);
+    const extralen = dv.getUint16(p + 28, true);
+    const name = dec.decode(bytes.subarray(p + 30, p + 30 + namelen));
+    const start = p + 30 + namelen + extralen;
+    let data = bytes.subarray(start, start + csize);
+    if (method === 8) {
+      const stream = new Blob([data]).stream()
+        .pipeThrough(new DecompressionStream("deflate-raw"));
+      data = new Uint8Array(await new Response(stream).arrayBuffer());
+    } else if (method !== 0) {
+      throw new Error(`unsupported zip compression method ${method}`);
+    }
+    entries.push({name, bytes: data});
+    p = start + csize;
+  }
+  return entries;
+}
+// === amiibo-zip END ===
+
+// ---- User-supplied amiibo key management ----
+const AMIIBO_KEYS_STORE_KEY = "__amiibo_retail_keys__";
+let amiiboRetailKeys = null; // parsed {data, tag, raw} once loaded/validated
+
+async function storeAmiiboRetailKeys(rawBytes) {
+  const db = await openAmiiboLibraryDb();
+  if (!db) return false;
+  try {
+    const tx = db.transaction("metadata", "readwrite");
+    tx.objectStore("metadata").put(
+      {id: AMIIBO_KEYS_STORE_KEY, data: Array.from(rawBytes)});
+    await idbTransactionDone(tx);
+    return true;
+  } catch (error) {
+    console.warn("Could not persist amiibo keys", error);
+    return false;
+  }
+}
+
+async function loadStoredAmiiboRetailKeys() {
+  const db = await openAmiiboLibraryDb();
+  if (!db) return;
+  try {
+    const tx = db.transaction("metadata", "readonly");
+    const rec = await idbRequest(
+      tx.objectStore("metadata").get(AMIIBO_KEYS_STORE_KEY));
+    if (rec && Array.isArray(rec.data))
+      amiiboRetailKeys = amiiboParseRetailKeys(new Uint8Array(rec.data));
+  } catch (error) {
+    console.warn("Could not load stored amiibo keys", error);
+  }
+}
+
+async function forgetAmiiboRetailKeys() {
+  amiiboRetailKeys = null;
+  const db = await openAmiiboLibraryDb();
+  if (db) {
+    try {
+      const tx = db.transaction("metadata", "readwrite");
+      tx.objectStore("metadata").delete(AMIIBO_KEYS_STORE_KEY);
+      await idbTransactionDone(tx);
+    } catch (error) {
+      console.warn("Could not remove stored amiibo keys", error);
+    }
+  }
+  renderAmiiboKeyState();
+  $("#amiiboMessage").textContent =
+    "Amiibo keys removed from this browser. Generation is disabled.";
+}
+
+// Prove the loaded keys and this crypto are correct by decrypting a genuine
+// dump in the library and checking both HMACs verify. Returns null if no
+// candidate dump is present.
+async function verifyAmiiboKeysAgainstLibrary() {
+  if (!amiiboRetailKeys) return null;
+  for (const entry of amiiboLibrary) {
+    const bytes = amiiboEntryBytes(entry);
+    if (!bytes || bytes.length < 540) continue;
+    try {
+      const result = await amiiboUnpack(amiiboRetailKeys, bytes.subarray(0, 540));
+      if (result.tagHmacOk && result.dataHmacOk)
+        return {ok: true, entry};
+    } catch (error) {
+      console.warn("verify attempt failed", error);
+    }
+  }
+  return {ok: false};
+}
+
+async function loadAmiiboKeyFile(file) {
+  amiiboSetBusy(true);
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    amiiboRetailKeys = amiiboParseRetailKeys(bytes);
+    const stored = await storeAmiiboRetailKeys(bytes);
+    const verify = await verifyAmiiboKeysAgainstLibrary();
+    renderAmiiboKeyState();
+    if (verify && verify.ok) {
+      $("#amiiboMessage").textContent =
+        `Keys loaded and verified against ${verify.entry.name}. ` +
+        "Amiibo generation is unlocked." +
+        (stored ? "" : " (Keys are held for this session only.)");
+    } else if (verify && !verify.ok) {
+      $("#amiiboMessage").textContent =
+        "Keys loaded, but no genuine dump in your library verified against " +
+        "them. Generation is enabled; import one genuine dump to confirm the " +
+        "keys are correct before trusting generated tags.";
+    } else {
+      $("#amiiboMessage").textContent =
+        "Keys loaded. Import one genuine dump to verify them, then generate.";
+    }
+  } catch (error) {
+    amiiboRetailKeys = null;
+    renderAmiiboKeyState();
+    $("#amiiboMessage").textContent = `Key file rejected: ${error.message}`;
+  } finally {
+    amiiboSetBusy(false);
+  }
+}
+
+function renderAmiiboKeyState() {
+  const unlocked = !!amiiboRetailKeys;
+  $("#amiiboKeyStatus").textContent = unlocked
+    ? "Keys loaded — generation unlocked"
+    : "No keys loaded — import a genuine dump or your key_retail.bin";
+  $("#amiiboKeyStatus").classList.toggle("ok", unlocked);
+  $("#amiiboForgetKeysBtn").classList.toggle("hidden", !unlocked);
+  $("#amiiboGenerateRow").classList.toggle("hidden", !unlocked);
+}
+
+async function generateSelectedAmiibo() {
+  if (!amiiboRetailKeys || amiiboLibraryBusy) return;
+  const id = $("#amiiboGenerateId").value.trim().toUpperCase();
+  if (!/^[0-9A-F]{16}$/.test(id)) {
+    $("#amiiboMessage").textContent =
+      "Enter a 16-hex-digit amiibo id (head+tail from AmiiboAPI).";
+    return;
+  }
+  amiiboSetBusy(true);
+  try {
+    await loadAmiiboCatalog();
+    if (!amiiboCatalogById.has(id)) {
+      $("#amiiboMessage").textContent =
+        "That id has no exact AmiiboAPI catalog match; not generated.";
+      return;
+    }
+    const bytes = await amiiboGenerate(amiiboRetailKeys, id);
+    const identity = parseAmiiboIdentity(bytes);
+    const meta = amiiboCatalogById.get(id);
+    const name = `${(meta?.name || id).replace(/[^\w .\-]+/g, "_")}.bin`;
+    const entry = normalizeAmiiboLibraryEntry({
+      key: `amiibo:${identity.id}`,
+      name,
+      label: friendlyAmiiboFileName(name),
+      path: `Generated/${name}`,
+      size: bytes.length,
+      modified: Date.now(),
+      generated: true,
+      bytes: bytes.buffer.slice(0),
+      ...identity
+    });
+    const existing = amiiboLibrary.find(e => e.id === identity.id);
+    await cacheSingleAmiiboEntry(entry);
+    amiiboLibrarySelectedKey = entry.key;
+    renderAmiiboLibrary();
+    $("#amiiboMessage").textContent =
+      `Generated ${meta?.name || id}${existing ? " (replaced existing copy)" : ""}. ` +
+      "Load it, then Activate, and test on your console.";
+  } catch (error) {
+    $("#amiiboMessage").textContent = `Generation failed: ${error.message}`;
+  } finally {
+    amiiboSetBusy(false);
+  }
+}
+
 async function exportAmiiboLibraryBackup() {
   const exportEntries = amiiboLibrary.filter(entry =>
     amiiboCatalogById.has(entry.id));
   if (!exportEntries.length) return;
-  const backup = {
+  // A flat folder of .bin files plus a small metadata manifest, packed into a
+  // single ZIP. The manifest is informational; import reconstructs the library
+  // from the .bin files themselves, so a user can add or remove bins freely.
+  const usedNames = new Set(["library.json"]);
+  const files = [];
+  const manifestEntries = [];
+  for (const item of exportEntries) {
+    const entry = normalizeAmiiboLibraryEntry(item);
+    const meta = amiiboCatalogById.get(entry.id);
+    let base = `${(meta?.name || entry.label || entry.id)
+      .replace(/[^\w .\-]+/g, "_")} [${entry.id}]`;
+    let name = `${base}.bin`;
+    let n = 2;
+    while (usedNames.has(name)) name = `${base} (${n++}).bin`;
+    usedNames.add(name);
+    files.push({name, bytes: new Uint8Array(entry.bytes)});
+    manifestEntries.push({
+      file: name, id: entry.id, uid: entry.uid,
+      name: meta?.name || entry.label, generated: !!entry.generated,
+      loaded: entry.key === amiiboLoadedSlotKey
+    });
+  }
+  const manifest = {
     format: "PicoSwitch2 Amiibo Library",
     version: AMIIBO_LIBRARY_BACKUP_VERSION,
     exportedAt: new Date().toISOString(),
-    slots: {
-      selected: 0,
-      keys: [amiiboLoadedSlotKey]
-    },
-    entries: exportEntries.map(item => {
-      const entry = normalizeAmiiboLibraryEntry(item);
-      const {bytes, ...metadata} = entry;
-      return {
-        ...metadata,
-        bytesBase64: arrayBufferToBase64(bytes)
-      };
-    })
+    loadedKey: amiiboLoadedSlotKey,
+    entries: manifestEntries
   };
-  const blob = new Blob(
-    [JSON.stringify(backup)], {type: "application/json"});
+  files.unshift({
+    name: "library.json",
+    bytes: new TextEncoder().encode(JSON.stringify(manifest, null, 2))
+  });
+  const blob = new Blob([amiiboZipStore(files)], {type: "application/zip"});
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
   link.download =
-    `PicoSwitch2-Amiibo-Library-${new Date().toISOString().slice(0, 10)}.json`;
+    `PicoSwitch2-Amiibo-Library-${new Date().toISOString().slice(0, 10)}.zip`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
   $("#amiiboMessage").textContent =
-    `Exported ${exportEntries.length} mutable amiibo dumps and both quick-slot assignments.`;
+    `Exported ${exportEntries.length} amiibo dump${exportEntries.length === 1 ? "" : "s"} as a .zip (library.json + one .bin each).`;
 }
 
 async function importAmiiboLibraryBackup(file) {
-  let documentValue;
-  try {
-    documentValue = JSON.parse(await file.text());
-  } catch (error) {
-    $("#amiiboMessage").textContent =
-      `Library backup is not valid JSON: ${error.message}`;
-    return;
-  }
-  if (documentValue?.format !== "PicoSwitch2 Amiibo Library" ||
-      ![1, 2, AMIIBO_LIBRARY_BACKUP_VERSION].includes(documentValue?.version) ||
-      !Array.isArray(documentValue.entries)) {
-    $("#amiiboMessage").textContent =
-      "This is not a supported PicoSwitch2 amiibo library backup.";
-    return;
-  }
-
+  const raw = new Uint8Array(await file.arrayBuffer());
+  const isZip = raw.length >= 4 && raw[0] === 0x50 && raw[1] === 0x4B &&
+    raw[2] === 0x03 && raw[3] === 0x04;
   const entries = [];
+  let loadedKey = "";
   try {
     await loadAmiiboCatalog();
-    for (const saved of documentValue.entries) {
-      // Older backups may contain an original and a later console-written
-      // copy. Preserve the written image as the single mutable v3 record.
-      const bytesValue = saved.bytesBase64 ||
-        saved.save2Base64 || saved.usedBase64 ||
-        saved.save1Base64 || saved.cleanBase64;
-      if (!bytesValue)
-        throw new Error(`${saved.name || "entry"}: no amiibo image`);
-      const bytes = new Uint8Array(base64ToArrayBuffer(bytesValue));
-      const bytesError = validateAmiiboFile(bytes);
-      if (bytesError)
-        throw new Error(`${saved.name || "entry"}: ${bytesError}`);
-      const identity = parseAmiiboIdentity(bytes);
-      if (!amiiboCatalogById.has(identity.id))
+    if (isZip) {
+      // Reconstruct the library from every .bin in the ZIP; library.json is
+      // consulted only for which entry was the loaded one.
+      const zipEntries = await amiiboZipEntries(raw);
+      const manifest = zipEntries.find(e => e.name === "library.json");
+      if (manifest) {
+        try {
+          loadedKey = JSON.parse(
+            new TextDecoder().decode(manifest.bytes)).loadedKey || "";
+        } catch { /* manifest is advisory */ }
+      }
+      let skipped = 0;
+      for (const zipItem of zipEntries) {
+        if (!/\.bin$/i.test(zipItem.name)) continue;
+        const bytes = new Uint8Array(zipItem.bytes);
+        if (validateAmiiboFile(bytes)) { skipped++; continue; }
+        const identity = parseAmiiboIdentity(bytes);
+        if (!amiiboCatalogById.has(identity.id)) { skipped++; continue; }
+        entries.push(normalizeAmiiboLibraryEntry({
+          key: `amiibo:${identity.id}`,
+          name: zipItem.name,
+          label: friendlyAmiiboFileName(zipItem.name),
+          path: `Imported backup/${zipItem.name}`,
+          size: bytes.length,
+          modified: Date.now(),
+          bytes: bytes.buffer.slice(0),
+          ...identity
+        }));
+      }
+      if (!entries.length)
         throw new Error(
-          `${saved.name || "entry"}: no exact AmiiboAPI catalog match`);
-      const {
-        bytesBase64, cleanBase64, usedBase64,
-        save1Base64, save2Base64, ...metadata
-      } = saved;
-      entries.push(normalizeAmiiboLibraryEntry({
-        ...metadata,
-        ...identity,
-        key: `amiibo:${identity.id}`,
-        name: metadata.name || `amiibo-${identity.uid}.bin`,
-        label: metadata.label ||
-          friendlyAmiiboFileName(metadata.name || `amiibo-${identity.uid}.bin`),
-        path: metadata.path || `Imported backup/${metadata.name || `amiibo-${identity.uid}.bin`}`,
-        bytes: bytes.buffer
-      }));
+          `no valid amiibo .bin files found${skipped ? ` (${skipped} skipped)` : ""}`);
+    } else {
+      // Legacy JSON backup (base64-embedded entries).
+      const documentValue = JSON.parse(new TextDecoder().decode(raw));
+      if (documentValue?.format !== "PicoSwitch2 Amiibo Library" ||
+          !Array.isArray(documentValue.entries))
+        throw new Error("not a supported PicoSwitch2 amiibo library backup");
+      for (const saved of documentValue.entries) {
+        const bytesValue = saved.bytesBase64 || saved.save2Base64 ||
+          saved.usedBase64 || saved.save1Base64 || saved.cleanBase64;
+        if (!bytesValue) throw new Error(`${saved.name || "entry"}: no image`);
+        const bytes = new Uint8Array(base64ToArrayBuffer(bytesValue));
+        const bytesError = validateAmiiboFile(bytes);
+        if (bytesError) throw new Error(`${saved.name || "entry"}: ${bytesError}`);
+        const identity = parseAmiiboIdentity(bytes);
+        if (!amiiboCatalogById.has(identity.id))
+          throw new Error(`${saved.name || "entry"}: no AmiiboAPI match`);
+        entries.push(normalizeAmiiboLibraryEntry({
+          key: `amiibo:${identity.id}`,
+          name: saved.name || `amiibo-${identity.uid}.bin`,
+          label: saved.label ||
+            friendlyAmiiboFileName(saved.name || `amiibo-${identity.uid}.bin`),
+          path: saved.path || `Imported backup/${saved.name || identity.uid}`,
+          bytes: bytes.buffer, ...identity
+        }));
+      }
+      const sel = documentValue.slots?.selected === 1 ? 1 : 0;
+      loadedKey = documentValue.slots?.keys?.[sel] ||
+        documentValue.slots?.keys?.[0] || "";
     }
   } catch (error) {
     $("#amiiboMessage").textContent =
-      `Library backup validation failed: ${error.message}`;
+      `Library import failed: ${error.message}`;
     return;
   }
 
   const persisted = await replaceCachedAmiiboLibrary(entries, false);
-  if (Array.isArray(documentValue.slots?.keys)) {
-    const selected = documentValue.slots.selected === 1 ? 1 : 0;
-    amiiboLoadedSlotKey = documentValue.slots.keys[selected] ||
-      documentValue.slots.keys[0] || "";
-    sanitizeAmiiboSlotState();
-  }
+  if (loadedKey) { amiiboLoadedSlotKey = loadedKey; sanitizeAmiiboSlotState(); }
   $("#amiiboMessage").textContent =
     `${persisted ? "Restored" : "Loaded for this session"} ` +
     `${entries.length} amiibo from ${file.name}.`;
@@ -1629,6 +2126,9 @@ function amiiboSetBusy(busy, percent = 0) {
   $("#amiiboLibraryExportBtn").disabled =
     busy || !amiiboLibrary.some(entry => amiiboCatalogById.has(entry.id));
   $("#amiiboLibraryImportBtn").disabled = busy;
+  $("#amiiboLoadKeysBtn").disabled = busy;
+  $("#amiiboForgetKeysBtn").disabled = busy;
+  $("#amiiboGenerateBtn").disabled = busy;
   $("#amiiboCarouselViewport").setAttribute("aria-disabled", busy ? "true" : "false");
   $("#amiiboCarouselPrev").disabled = busy;
   $("#amiiboCarouselNext").disabled = busy;
@@ -2498,6 +2998,14 @@ $("#connectUsbBtn").onclick = connectSerial;
 $("#connectBleBtn").onclick = connectBluetooth;
 $("#saveBtn").onclick = save;
 $("#reloadBtn").onclick = reload;
+$("#amiiboLoadKeysBtn").onclick = () => $("#amiiboKeyFile").click();
+$("#amiiboKeyFile").onchange = async e => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = "";
+  if (file) await loadAmiiboKeyFile(file);
+};
+$("#amiiboForgetKeysBtn").onclick = forgetAmiiboRetailKeys;
+$("#amiiboGenerateBtn").onclick = generateSelectedAmiibo;
 $("#amiiboChooseBtn").onclick = () => $("#amiiboFile").click();
 $("#amiiboFile").onchange = async e => {
   const file = e.target.files && e.target.files[0];
@@ -2561,6 +3069,8 @@ capRenderGattDisc();
 setConnected(false);
 loadAmiiboSlotState();
 loadCachedAmiiboLibrary();
+loadStoredAmiiboRetailKeys().then(renderAmiiboKeyState);
+renderAmiiboKeyState();
 if (!("serial" in navigator) && !("bluetooth" in navigator))
   $("#unsupported").classList.remove("hidden");
 </script>
