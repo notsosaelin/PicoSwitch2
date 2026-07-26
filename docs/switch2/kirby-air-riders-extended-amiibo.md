@@ -218,6 +218,48 @@ the event counter, and serves the buffer over `0x15` in ≤70-byte chunks. The
 question** is whether the console reads all ~2108 buffer bytes and then accepts,
 or validates the signature/crypto and rejects (error 2115-0088).
 
+### Phase 2 trace result (2026-07-26) — console reads the tag, then rejects it
+
+Second live trace after the state-machine fix
+(`dumps/kirby-v3-serve-trace-2b-2026-07-26.jsonl`, 54 records, **0 overwritten** —
+a clean, complete read, no more retry storm). The console advanced all the way:
+
+```
+0x03 scan -> 0x05 status (tag present, UID 04 B4 43 8A DB 1F 90)
+0x06 begin (D0 07 read descriptor) -> ACTIVE
+15x 0x15 chunk reads at offsets 0, 70, 140 … 980 (step 70) = 1050 buffer bytes
+   = our 60-byte prefix + ~990 image bytes (through image ~0x3DE)
+0x05 status -> 0x04 stop -> rescan
+```
+
+Console result: **error 2115-0176 "This is not an amiibo"** (changed from the
+earlier 2115-0088). Confirmed facts:
+
+- **The serve path works.** The console recognizes a tag, begins a read, and pulls
+  chunks — the fix cleared the stall. It read ~1024 bytes (15×70), i.e. more than a
+  540 amiibo's ~9 chunks, so it is doing an *extended* read, not a 540 read.
+- The chunk data was served correctly (prefix + tag bytes verified against the
+  known layout: `0F E0` lock at 0x0A, `F1 10 FF EE` CC at 0x0C, identity at 0x54).
+- The console **never received a `last=1` flag** yet stopped at 15 chunks on its
+  own, so its read length is intrinsic (it decided ~1024 bytes was the tag), not
+  driven by our buffer size.
+- Rejection is a **validation** failure, not a transport failure.
+
+Open question — is the reject (a) the community dumps' **crypto/structure** (they
+are emulator-normalized, not faithful raw dumps — see the capture audit above; the
+Switch 2 is known to validate amiibo crypto, see
+[amiibo-identity-and-generation.md](amiibo-identity-and-generation.md)), or (b) a
+**read-length/format** gap (the console stopped at image ~0x3DE, 33 bytes short of
+the machine block end 0x3FF, and we do not yet know the field that sets its read
+length)? The originality signature (prefix +0x13) is ruled out as the sole cause:
+plain 540-byte dumps with a zero signature already validate on this console.
+
+Next experiments: (1) trace the **System Settings → amiibo** read for comparison
+(different reader, may read a different length); (2) obtain a **faithful raw** v3
+dump (not emulator-normalized) to separate crypto-invalid input from a serve gap;
+(3) decode the 60-byte prefix fields against a genuine 540 read to find the tag
+size/type field, then describe a true 2 KB tag so the console reads the full 2048.
+
 ### Phase 2 — serve the confirmed protocol (hardware loop)
 - Implement the console-facing read/response for the traced framing so a real Switch 2 builds the
   Figure Player. Iterate against captures until rider+machine are correct in Kirby Air Riders.
