@@ -30,6 +30,7 @@
 #include "ns2_virtual_nfc_runtime.h"
 #include "ns2_vendor_rx.h"
 #include "virtual_amiibo_store.h"
+#include "ns2_amiibo_v3.h"
 #include "ns2_ds5_motion.h"
 #include "usb.h"         // g_usb_config_mode
 
@@ -751,11 +752,95 @@ static void vend_send(const uint8_t *r, uint16_t len) {
         vend_pump();
 }
 
+// NTAG I2C 2K ("figure v3", e.g. Kirby Air Riders) present-and-trace serve.
+// Deliberately minimal and isolated from the 540 runtime: it reports the v3 tag
+// as present and serves the 2048-byte image via the existing status/chunk
+// helpers so the UART tracer captures exactly how the console reads a 2 KB tag.
+// Every command is already traced by ns2_dispatch(); this only shapes replies.
+// Not wired to writes or flash. See docs/switch2/kirby-air-riders-extended-amiibo.md.
+static uint8_t ns2_v3_report_state = 0;
+static bool ns2_v3_operation_active = false;
+
+static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
+{
+    static uint8_t image[NS2_AMIIBO_V3_SIZE];
+    if (!virtual_amiibo_store_v3_copy(image)) return false;
+
+    const uint8_t sub = command[3];
+    const uint8_t *request = command + 8;
+    const size_t request_size = length - 8u;
+    uint8_t payload[NS2_NFC_READ_CHUNK_PAYLOAD_SIZE];
+    size_t payload_size = 0;
+    uint8_t direction = 0x04; // bare ACK unless a data reply is produced
+
+    uint8_t uid[7];
+    ns2_amiibo_v3_uid(image, uid);
+
+    switch (sub) {
+        case 0x03: // scan
+            ns2_v3_operation_active = false;
+            ns2_v3_report_state = (uint8_t)((ns2_v3_report_state + 1u) & 0x07u);
+            break;
+        case 0x04: // stop
+            ns2_v3_operation_active = false;
+            break;
+        case 0x05: { // status
+            ns2_virtual_nfc_build_status(true, uid, payload);
+            payload[0] = 0x09; // ready
+            payload[1] = 0x00;
+            payload_size = NS2_NFC_STATUS_PAYLOAD_SIZE;
+            direction = 0x01;
+            break;
+        }
+        case 0x06: // begin read operation
+            ns2_v3_operation_active = true;
+            break;
+        case 0x15: { // fetch a chunk of the tag image at a little-endian offset
+            if (ns2_v3_operation_active && request_size >= 2u) {
+                const uint16_t offset =
+                    (uint16_t)request[0] | ((uint16_t)request[1] << 8);
+                size_t out_size = 0;
+                if (ns2_virtual_nfc_build_buffer_chunk(
+                        image, NS2_AMIIBO_V3_SIZE, offset, payload,
+                        &out_size) == NS2_VIRTUAL_NFC_OK) {
+                    payload_size = out_size;
+                    direction = 0x01;
+                }
+            }
+            break;
+        }
+        default:
+            break; // ACK-and-trace anything else so the log shows it
+    }
+
+    uint8_t packet[8u + NS2_NFC_READ_CHUNK_PAYLOAD_SIZE];
+    memset(packet, 0, sizeof(packet));
+    packet[0] = 0x01;
+    packet[1] = direction;
+    packet[2] = command[2];
+    packet[3] = sub;
+    packet[5] = 0xF8;
+    if (payload_size) memcpy(packet + 8, payload, payload_size);
+    const uint16_t packet_length = (uint16_t)(8u + payload_size);
+    ns2_protocol_trace_record(
+        time_us_32(), (uint8_t)g_usb_personality, NS2_TRACE_BULK_RESPONSE,
+        NS2_TRACE_DEVICE_TO_CONSOLE, packet[0], sub, packet, packet_length);
+    vend_send(packet, packet_length);
+    return true;
+}
+
 static bool ns2_virtual_nfc_dispatch_usb(const uint8_t *command,
                                          uint32_t length)
 {
-    if (!ns2_virtual_nfc_sync_presentation() || !command || length < 8u ||
-        command[0] != 0x01u)
+    if (!command || length < 8u || command[0] != 0x01u)
+        return false;
+
+    // Experimental v3 path takes precedence when a 2 KB tag is loaded; the 540
+    // NTAG215 store is never loaded at the same time, so this cannot disturb it.
+    if (virtual_amiibo_store_v3_loaded())
+        return ns2_v3_serve(command, length);
+
+    if (!ns2_virtual_nfc_sync_presentation())
         return false;
 
     virtual_amiibo_status_t status;
@@ -1020,9 +1105,11 @@ static void ns2_build_report(uint8_t *p) {
 #endif
     p[0x01] = controller_battery_switch2_power_info(
         in.battery_valid != 0, in.battery_level, in.battery_charging != 0);
-    p[0x0C] = ns2_virtual_nfc_sync_presentation()
-        ? ns2_virtual_nfc_runtime_report_state(&ns2_virtual_nfc_runtime)
-        : ns2_nfc_mirror_report_state();
+    p[0x0C] = virtual_amiibo_store_v3_loaded()
+        ? ns2_v3_report_state
+        : ns2_virtual_nfc_sync_presentation()
+            ? ns2_virtual_nfc_runtime_report_state(&ns2_virtual_nfc_runtime)
+            : ns2_nfc_mirror_report_state();
 
     // Remap the 3-byte button field: report.c uses the Switch 1 Pro bit layout,
     // report 0x09 uses a different assignment (see docs/switch2/usb-spec.md §7).

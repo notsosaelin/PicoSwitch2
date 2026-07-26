@@ -2097,10 +2097,20 @@ async function uploadAmiiboEntry(sourceEntry) {
   if (!transportKind) return;
   const entry = normalizeAmiiboLibraryEntry(sourceEntry);
   if (entry.tagType === "v3") {
+    // Experimental present-and-trace: upload the full 2048-byte NTAG I2C 2K tag
+    // to the adapter's isolated v3 slot so the console can attempt to read it.
+    const v3bytes = amiiboEntryBytes(entry);
+    amiiboSetBusy(true, 0);
     $("#amiiboMessage").textContent =
-      "This is an NTAG I2C 2K (Kirby Air Riders) tag. The full tag is saved in " +
-      "your library, but serving it to the console is still in progress — the " +
-      "adapter can't present it yet.";
+      `Uploading ${amiiboDisplayName(entry)} (2 KB NTAG I2C) to the adapter…`;
+    const result = await transferAmiiboCopy(v3bytes, "commit", 0, 100);
+    amiiboSetBusy(false);
+    $("#amiiboMessage").textContent = result?.ok
+      ? `${amiiboDisplayName(entry)} is presented as an NTAG I2C 2K tag (experimental). ` +
+        "Trigger an in-game amiibo scan on the Switch 2, then capture the UART trace " +
+        "of what the console reads — recognized, rejected, or a crash are all useful."
+      : (result?.error ||
+         "The 2 KB tag could not be uploaded to the adapter.");
     return;
   }
   const bytes = amiiboEntryBytes(entry);
