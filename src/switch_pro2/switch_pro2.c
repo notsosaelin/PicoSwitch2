@@ -758,46 +758,26 @@ static void vend_send(const uint8_t *r, uint16_t len) {
 //
 //   0x03 scan   -> status READY (0x09) + bump the HID NFC event counter
 //   0x05 status -> current status byte + the 7-byte v3 UID
-//   0x06 begin  -> validate the D0 07 read descriptor, build the read buffer,
-//                  go ACTIVE (0x04), and bump the event counter so the console
-//                  advances to reading (the 2026-07-26 UART trace proved the
-//                  console stalls and retries when 0x06 only returns a bare ACK)
-//   0x15 chunk  -> serve the (60-byte prefix + 2048-byte image) read buffer in
-//                  <=70-byte chunks at the requested little-endian offset
+//   0x06 begin  -> validate the D0 07 read descriptor, go ACTIVE (0x04), and bump
+//                  the event counter so the console advances to reading (the
+//                  2026-07-26 trace proved it stalls when 0x06 only bare-ACKs)
+//   0x15 chunk  -> serve sector 0 of the tag image in <=70-byte chunks
 //   0x04 stop   -> back to READY
 //
-// The read buffer mirrors the 540 layout: a 60-byte identity/signature/operation
-// prefix followed by the tag image. The 32-byte originality signature (prefix
-// +0x13) is unknown for v3 and left zero for now; whether the console validates
-// it is the next thing the trace will reveal. Writes are not handled (trace-only).
+// Read length (2026-07-26 traces): a working 540 read terminates on the read
+// buffer's `last=1` chunk (60-byte prefix + 540 = 600 B, 9 chunks). For a 2 KB
+// tag the console reads exactly SECTOR 0 = 1024 bytes (15 chunks) and expects
+// `last=1` within that window; per xSke/pixl.js the Switch 2 treats sector 0 as
+// the amiibo and uses SRAM pass-through for the rest, and the whole meaningful
+// image (identity, crypto, machine block, 0x3FE trailer) lives in 0x000-0x3FF.
+// So v3 serves the RAW sector 0 with NO 540-style prefix: chunk 15 (offset 980,
+// 44 bytes) carries `last=1`, delivering a complete, correctly-aligned tag. A
+// prefix here would shift the tag and push its tail past the console's window
+// (which produced the earlier 2115-0176 "not an amiibo"). Writes are not handled.
+#define NS2_AMIIBO_V3_SECTOR0_SIZE 1024u
 static uint8_t ns2_v3_report_state = 0;
 static bool ns2_v3_operation_active = false;
 static uint8_t ns2_v3_nfc_status = 0x09;   // 0x09 ready, 0x04 active, 0x07 error
-static uint8_t ns2_v3_op_buffer[60u + NS2_AMIIBO_V3_SIZE];
-static size_t ns2_v3_op_buffer_size = 0;
-
-// Build the console read buffer: 60-byte prefix (matching build_operation_prefix)
-// carrying the 7-byte contiguous v3 UID and the console-supplied operation
-// metadata, then the full 2048-byte tag image.
-static void ns2_v3_build_read_buffer(const uint8_t image[NS2_AMIIBO_V3_SIZE],
-                                     const uint8_t *operation_metadata)
-{
-    uint8_t *out = ns2_v3_op_buffer;
-    memset(out, 0, 60);
-    out[0] = 0x04;
-    out[4] = 0x01;
-    out[5] = 0x02;
-    out[6] = 0x00;
-    uint8_t uid[7];
-    ns2_amiibo_v3_uid(image, uid);
-    out[7] = 0x07;
-    memcpy(out + 8, uid, sizeof(uid));
-    // out+19: 32-byte originality signature (unknown for v3, left zero).
-    if (operation_metadata)
-        memcpy(out + 51, operation_metadata, NS2_NFC_OPERATION_METADATA_SIZE);
-    memcpy(out + 60, image, NS2_AMIIBO_V3_SIZE);
-    ns2_v3_op_buffer_size = 60u + NS2_AMIIBO_V3_SIZE;
-}
 
 static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
 {
@@ -839,7 +819,6 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
             const bool read_descriptor = request_size >= 19u &&
                 request[0] == 0xD0 && request[1] == 0x07 && uid_zero;
             if (read_descriptor) {
-                ns2_v3_build_read_buffer(image, request + 10);
                 ns2_v3_operation_active = true;
                 ns2_v3_nfc_status = 0x04; // active -> console proceeds to 0x15
                 ns2_v3_report_state =
@@ -850,14 +829,13 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
             }
             break;
         }
-        case 0x15: { // fetch a chunk of the read buffer at a little-endian offset
-            if (ns2_v3_operation_active && ns2_v3_op_buffer_size &&
-                request_size >= 2u) {
+        case 0x15: { // fetch a chunk of sector 0 at a little-endian offset
+            if (ns2_v3_operation_active && request_size >= 2u) {
                 const uint16_t offset =
                     (uint16_t)request[0] | ((uint16_t)request[1] << 8);
                 size_t out_size = 0;
                 if (ns2_virtual_nfc_build_buffer_chunk(
-                        ns2_v3_op_buffer, ns2_v3_op_buffer_size, offset, payload,
+                        image, NS2_AMIIBO_V3_SECTOR0_SIZE, offset, payload,
                         &out_size) == NS2_VIRTUAL_NFC_OK) {
                     payload_size = out_size;
                     direction = 0x01;
