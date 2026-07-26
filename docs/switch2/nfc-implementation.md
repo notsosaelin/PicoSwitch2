@@ -121,11 +121,16 @@ Config-only BLE transport makes the portal reachable while the dongle remains ph
 to the console, although entering Config temporarily replaces the controller USB personality.
 
 The production manager makes those layers explicit. Carousel selection does not immediately mutate
-the adapter: **Assign Highlighted to Slot N** updates the selected browser quick slot, **Load Slot N
-to Adapter** uploads/presents that slot, and **Sync Amiibo from Adapter** retrieves the latest
-console-written image and overwrites its validated browser-library record. **Eject Adapter
-Amiibo** changes only the runtime presentation bit. Loading the same ejected identity uses
-`amiibo present` and does not reprogram flash.
+the adapter: **Load Amiibo** (between the carousel arrows) places the highlighted amiibo into the
+selected browser quick slot, **Clear Slot N** empties that pointer without deleting the dump,
+**Activate Amiibo** uploads/presents the slot (label becomes a disabled **Amiibo activated** while
+that image is already presented), and **Sync Amiibo** retrieves the latest console-written image
+and overwrites its validated browser-library record. **Eject Virtual Amiibo** is a destructive
+adapter action: after an explicit save-confirmation prompt it clears presentation (`amiibo eject`)
+and then discards the stored image and both flash journal banks (`amiibo clear`), returning the
+store to its blank post-install state. The console-driven Stop/write-back lifecycle is unchanged;
+re-activating a console-ejected retained identity still uses the lightweight `amiibo present` path
+without reprogramming flash.
 
 References:
 

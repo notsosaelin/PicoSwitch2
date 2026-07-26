@@ -30,9 +30,17 @@ void virtual_amiibo_store_init(void);
 void virtual_amiibo_store_status(virtual_amiibo_status_t *out);
 // Lock-free read for the 1 kHz USB report path. True means a stored image is
 // currently presented to the console. Ejecting only changes presentation; it
-// never deletes Save 1 or Save 2 from RAM/flash.
+// never deletes Save 1 or Save 2 from RAM/flash. Discarding the stored image
+// entirely is the separate explicit clear request below.
 bool virtual_amiibo_store_loaded(void);
 virtual_amiibo_result_t virtual_amiibo_store_set_presented(bool presented);
+// Discard the stored virtual amiibo entirely: RAM images, presentation, and
+// both flash journal banks, returning the store to its blank post-install
+// state. The erase runs on core1 through the same config-save service as
+// ordinary snapshots; poll virtual_amiibo_store_clear_pending() for
+// completion.
+void virtual_amiibo_store_request_clear(void);
+bool virtual_amiibo_store_clear_pending(void);
 virtual_amiibo_result_t virtual_amiibo_store_upload_begin(
     size_t size, uint32_t expected_crc);
 virtual_amiibo_result_t virtual_amiibo_store_upload_chunk(

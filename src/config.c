@@ -525,6 +525,18 @@ static void cmd_amiibo(char *arg) {
         return;
     }
 
+    if (strcmp(arg, "clear") == 0) {
+        virtual_amiibo_store_request_clear();
+        absolute_time_t deadline = make_timeout_time_ms(2000);
+        while (virtual_amiibo_store_clear_pending() &&
+               !time_reached(deadline))
+            tud_task();
+        reply(virtual_amiibo_store_clear_pending()
+                  ? "{\"error\":\"clear timeout\"}"
+                  : "{\"ok\":true}");
+        return;
+    }
+
     if (strcmp(arg, "persist") == 0) {
         virtual_amiibo_store_request_persist();
         absolute_time_t deadline = make_timeout_time_ms(2000);
@@ -540,7 +552,7 @@ static void cmd_amiibo(char *arg) {
     reply("{\"error\":\"usage: amiibo status|begin|chunk|commit|"
            "commit save2|cancel|read [save1|save2]|downloaded|"
            "select save1|select save2|"
-           "present|eject|persist\"}");
+           "present|eject|clear|persist\"}");
 }
 
 // Live input snapshot for the config-mode 2-column view: the connected controller's

@@ -321,6 +321,7 @@
           <div class="amiibo-carousel-controls">
             <button id="amiiboCarouselPrev" class="amiibo-carousel-nav"
                     aria-label="Previous amiibo">&larr;</button>
+            <button id="amiiboLibraryLoadBtn" class="primary" disabled>Load Amiibo</button>
             <button id="amiiboCarouselNext" class="amiibo-carousel-nav"
                     aria-label="Next amiibo">&rarr;</button>
           </div>
@@ -334,15 +335,16 @@
               <button id="amiiboSelectSave1Btn">Amiibo Slot 1</button>
               <button id="amiiboSelectSave2Btn">Amiibo Slot 2</button>
             </div>
-            <button id="amiiboLibraryLoadBtn" class="primary" disabled>Assign Highlighted to Slot 1</button>
             <button id="amiiboSlotClearBtn" disabled>Clear Slot 1</button>
-            <button id="amiiboSyncControllerBtn" disabled>Load Slot 1 to Adapter</button>
-            <button id="amiiboSaveBtn" disabled>Sync Amiibo from Adapter</button>
-            <button id="amiiboEjectBtn" disabled>Eject Adapter Amiibo</button>
+            <button id="amiiboSyncControllerBtn" disabled>Activate Amiibo</button>
+            <button id="amiiboSaveBtn" disabled>Sync Amiibo</button>
+            <button id="amiiboEjectBtn" disabled>Eject Virtual Amiibo</button>
             <p class="amiibo-action-help">
-              Assign keeps a library amiibo in one of two quick slots; Clear empties the selected
-              slot without deleting its library dump. Load sends that slot to the adapter. Sync
-              Amiibo pulls console-written changes back and overwrites its saved library copy.
+              Load Amiibo places the highlighted amiibo into the selected quick slot; Clear
+              empties that slot without deleting its library dump. Activate sends the slot's
+              amiibo to the adapter. Sync Amiibo pulls console-written changes back and
+              overwrites its saved library copy. Eject removes the virtual amiibo from the
+              adapter entirely.
             </p>
           </div>
 
@@ -647,6 +649,11 @@ function idbRequest(request) {
   return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
+    // Only IDBOpenDBRequest has onblocked. Without this an open request
+    // blocked by another tab never settles and freezes any awaiting caller.
+    if ("onblocked" in request)
+      request.onblocked = () =>
+        reject(new Error("IndexedDB is blocked by another PicoSwitch2 tab"));
   });
 }
 
@@ -1481,7 +1488,18 @@ async function loadAmiiboCatalog(forceRefresh = false) {
     return amiiboCatalog;
   }
   try {
-    const response = await fetch("https://amiiboapi.org/api/amiibo/", {cache: "no-cache"});
+    // A cold catalog fetch can run inside a busy/locked UI state (for
+    // example Sync Amiibo from Adapter with an empty library). Bound it so
+    // a stalled connection can never freeze the caller indefinitely.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20000);
+    let response;
+    try {
+      response = await fetch("https://amiiboapi.org/api/amiibo/",
+        {cache: "no-cache", signal: controller.signal});
+    } finally {
+      clearTimeout(timer);
+    }
     if (!response.ok) throw new Error(`AmiiboAPI returned HTTP ${response.status}`);
     const body = await response.json();
     const items = Array.isArray(body.amiibo) ? body.amiibo : [];
@@ -1494,6 +1512,8 @@ async function loadAmiiboCatalog(forceRefresh = false) {
       installAmiiboCatalog(cached.data);
       return amiiboCatalog;
     }
+    if (error?.name === "AbortError")
+      throw new Error("AmiiboAPI did not respond within 20 seconds");
     throw error;
   }
 }
@@ -1573,8 +1593,8 @@ async function loadSelectedLibraryAmiibo() {
     `${catalogMetadataForEntry(entry)?.name || entry.label} is assigned to Amiibo Slot ` +
     `${amiiboSelectedSlot + 1}. ` +
     (transportKind
-      ? `Choose Load Slot ${amiiboSelectedSlot + 1} to Adapter when ready.`
-      : "Connect PicoSwitch2 in Config mode when you want to load that slot onto the adapter.");
+      ? "Choose Activate Amiibo to send it to the adapter."
+      : "Connect PicoSwitch2 in Config mode when you want to activate it on the adapter.");
 }
 
 function clearSelectedAmiiboQuickSlot() {
@@ -1679,20 +1699,22 @@ function renderAmiiboLoadedSlot() {
     "selected", amiiboSelectedSlot === 0);
   $("#amiiboSelectSave2Btn").classList.toggle(
     "selected", amiiboSelectedSlot === 1);
-  $("#amiiboLibraryLoadBtn").textContent =
-    `Assign Highlighted to Slot ${slotNumber}`;
+  $("#amiiboLibraryLoadBtn").title =
+    `Load the highlighted amiibo into Slot ${slotNumber}`;
   $("#amiiboSlotClearBtn").textContent = `Clear Slot ${slotNumber}`;
   $("#amiiboSlotClearBtn").disabled =
     amiiboLibraryBusy || !amiiboSlotLibraryKeys[amiiboSelectedSlot];
+  const slotActivated = adapterMatches && adapterPresented;
   $("#amiiboSyncControllerBtn").textContent =
-    `Load Slot ${slotNumber} to Adapter`;
+    slotActivated ? "Amiibo activated" : "Activate Amiibo";
   $("#amiiboSyncControllerBtn").disabled =
-    amiiboLibraryBusy || !transportKind || !entry;
+    amiiboLibraryBusy || !transportKind || !entry || slotActivated;
   $("#amiiboSaveBtn").disabled =
     amiiboLibraryBusy || !transportKind || !amiiboStatus?.loaded;
+  // Eject now removes the stored image, so it stays available for a
+  // loaded-but-unpresented retained image (console Stop lifecycle state).
   $("#amiiboEjectBtn").disabled =
-    amiiboLibraryBusy || !transportKind || !amiiboStatus?.loaded ||
-    !adapterPresented;
+    amiiboLibraryBusy || !transportKind || !amiiboStatus?.loaded;
 }
 
 function renderAmiiboStatus(status) {
@@ -1705,7 +1727,7 @@ function renderAmiiboStatus(status) {
       status.persistPending
         ? "A game changed this amiibo. The update is being stored on the adapter; wait before removing power."
         : status.persisted
-          ? "A game changed this amiibo. Use Sync Amiibo from Adapter to update its browser copy."
+          ? "A game changed this amiibo. Use Sync Amiibo to update its browser copy."
           : "A game changed this amiibo, but the update is not yet durable. Keep the adapter powered.";
   } else if (status.loaded && status.presented === false) {
     $("#amiiboMessage").textContent =
@@ -1833,13 +1855,27 @@ async function syncLoadedAmiiboToController() {
 
 async function ejectLoadedAmiibo() {
   if (!transportKind || !amiiboStatus?.loaded) return;
+  // Eject removes the stored image from the adapter entirely, so unsynced
+  // console writes are unrecoverable afterwards. Always confirm.
+  const warning = amiiboStatus.dirty
+    ? "A game changed this amiibo and the change has NOT been synced to the browser library. Eject and remove it from the adapter anyway? The unsynced change will be lost."
+    : "Eject and remove the virtual amiibo from the adapter? Make sure you have synced or imported it first; only the browser library copy will remain.";
+  if (!confirm(warning)) return;
   amiiboSetBusy(true);
-  const result = await sendCmd("amiibo eject", true);
-  await refreshAmiiboStatus();
-  $("#amiiboMessage").textContent = result?.ok
-    ? "Amiibo ejected. Its dump remains in the browser library and on the adapter."
-    : result?.error || "The adapter could not eject the amiibo.";
-  amiiboSetBusy(false);
+  try {
+    const ejected = await sendCmd("amiibo eject", true);
+    const cleared = ejected?.ok
+      ? await sendCmd("amiibo clear", true) : null;
+    await refreshAmiiboStatus();
+    $("#amiiboMessage").textContent = cleared?.ok
+      ? "Virtual amiibo ejected and removed from the adapter. Its dump remains in the browser library."
+      : ejected?.ok
+        ? (cleared?.error ||
+           "Ejected, but the adapter could not remove the stored image.")
+        : ejected?.error || "The adapter could not eject the amiibo.";
+  } finally {
+    amiiboSetBusy(false);
+  }
 }
 
 async function importSingleAmiiboFile(file) {
@@ -1902,8 +1938,12 @@ async function saveCurrentAmiibo() {
   const status = await refreshAmiiboStatus();
   if (!status || !status.loaded) return;
   amiiboSetBusy(true, 0);
-  const bytes = new Uint8Array(status.size);
+  // Every path below runs inside try/finally. The busy state disables the
+  // whole Amiibo panel, so an escaped exception or hung await would appear
+  // as a permanently frozen portal — first observed syncing an adapter
+  // image that had no entry in this browser's library.
   try {
+    const bytes = new Uint8Array(status.size);
     for (let offset = 0; offset < bytes.length; offset += 32) {
       const length = Math.min(32, bytes.length - offset);
       const result = await sendCmd(
@@ -1917,72 +1957,68 @@ async function saveCurrentAmiibo() {
     const validationError = validateAmiiboFile(bytes);
     if (validationError) throw new Error(validationError);
     await loadAmiiboCatalog();
+
+    const identity = parseAmiiboIdentity(bytes);
+    if (!amiiboCatalogById.has(identity.id)) {
+      $("#amiiboMessage").textContent =
+        "Sync Amiibo stopped because the adapter image has no exact AmiiboAPI catalog match. Nothing was overwritten.";
+      return;
+    }
+    const cached = amiiboLibrary.find(entry =>
+      entry.id === identity.id || amiiboEntryContainsUid(entry, status.uid));
+    const name = cached?.name || amiiboFileName ||
+      `amiibo-${identity.uid || "updated"}.bin`;
+    const updated = normalizeAmiiboLibraryEntry(cached
+      ? {
+        ...cached,
+        size: bytes.length,
+        modified: Date.now(),
+        bytes: bytes.buffer.slice(
+          bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+        ...identity
+      }
+      : {
+        key: `amiibo:${identity.id}`,
+        name,
+        label: friendlyAmiiboFileName(name),
+        path: `Saved from adapter/${name}`,
+        size: bytes.length,
+        modified: Date.now(),
+        bytes: bytes.buffer.slice(
+          bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+        ...identity
+      });
+    $("#amiiboProgress").value = 90;
+    const persisted = await cacheSingleAmiiboEntry(updated);
+    if (!persisted) {
+      $("#amiiboMessage").textContent =
+        "Browser cache storage is unavailable; the adapter remains dirty and protected.";
+      return;
+    }
+
+    amiiboLibrarySelectedKey = updated.key;
+    amiiboSlotLibraryKeys[amiiboSelectedSlot] = updated.key;
+    persistAmiiboSlotState();
+    amiiboFileName = updated.name;
+    renderAmiiboLibrary();
+    renderAmiiboLibraryDetail(updated);
+    const acknowledged = await sendCmd("amiibo downloaded", true);
+    if (acknowledged?.ok)
+      await sendCmd("amiibo persist", true);
+    await refreshAmiiboStatus();
+    if (!acknowledged || !acknowledged.ok) {
+      $("#amiiboMessage").textContent =
+        "Saved to the browser library, but the adapter did not clear dirty protection.";
+      return;
+    }
+    $("#amiiboMessage").textContent =
+      `Synced ${updated.name}: the console-written dump now replaces its browser library copy in Amiibo Slot ${amiiboSelectedSlot + 1}.`;
   } catch (error) {
     $("#amiiboMessage").textContent =
       `Sync Amiibo failed: ${error.message}. The adapter remains protected.`;
+  } finally {
     amiiboSetBusy(false);
-    return;
   }
-
-  const identity = parseAmiiboIdentity(bytes);
-  if (!amiiboCatalogById.has(identity.id)) {
-    $("#amiiboMessage").textContent =
-      "Sync Amiibo stopped because the adapter image has no exact AmiiboAPI catalog match. Nothing was overwritten.";
-    amiiboSetBusy(false);
-    return;
-  }
-  const cached = amiiboLibrary.find(entry =>
-    entry.id === identity.id || amiiboEntryContainsUid(entry, status.uid));
-  const name = cached?.name || amiiboFileName ||
-    `amiibo-${identity.uid || "updated"}.bin`;
-  const updated = normalizeAmiiboLibraryEntry(cached
-    ? {
-      ...cached,
-      size: bytes.length,
-      modified: Date.now(),
-      bytes: bytes.buffer.slice(
-        bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
-      ...identity
-    }
-    : {
-      key: `amiibo:${identity.id}`,
-      name,
-      label: friendlyAmiiboFileName(name),
-      path: `Saved from adapter/${name}`,
-      size: bytes.length,
-      modified: Date.now(),
-      bytes: bytes.buffer.slice(
-        bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
-      ...identity
-    });
-  $("#amiiboProgress").value = 90;
-  const persisted = await cacheSingleAmiiboEntry(updated);
-  if (!persisted) {
-    $("#amiiboMessage").textContent =
-      "Browser cache storage is unavailable; the adapter remains dirty and protected.";
-    amiiboSetBusy(false);
-    return;
-  }
-
-  amiiboLibrarySelectedKey = updated.key;
-  amiiboSlotLibraryKeys[amiiboSelectedSlot] = updated.key;
-  persistAmiiboSlotState();
-  amiiboFileName = updated.name;
-  renderAmiiboLibrary();
-  renderAmiiboLibraryDetail(updated);
-  const acknowledged = await sendCmd("amiibo downloaded", true);
-  if (acknowledged?.ok)
-    await sendCmd("amiibo persist", true);
-  await refreshAmiiboStatus();
-  if (!acknowledged || !acknowledged.ok) {
-    $("#amiiboMessage").textContent =
-      "Saved to the browser library, but the adapter did not clear dirty protection.";
-    amiiboSetBusy(false);
-    return;
-  }
-  $("#amiiboMessage").textContent =
-    `Synced ${updated.name}: the console-written dump now replaces its browser library copy in Amiibo Slot ${amiiboSelectedSlot + 1}.`;
-  amiiboSetBusy(false);
 }
 
 async function persistCurrentAmiibo() {

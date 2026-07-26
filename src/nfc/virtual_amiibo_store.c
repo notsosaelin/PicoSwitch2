@@ -47,6 +47,7 @@ _Static_assert(VIRTUAL_AMIIBO_FLASH_BANK1_OFFSET + FLASH_SECTOR_SIZE <=
 static virtual_amiibo_t tag;
 static critical_section_t tag_lock;
 static volatile bool persist_requested;
+static volatile bool clear_requested;
 static volatile bool loaded_snapshot;
 static volatile bool presented_snapshot;
 static int active_bank = -1;
@@ -172,6 +173,7 @@ void virtual_amiibo_store_init(void)
     critical_section_init(&tag_lock);
     virtual_amiibo_init(&tag);
     persist_requested = false;
+    clear_requested = false;
     __atomic_store_n(&loaded_snapshot, false, __ATOMIC_RELEASE);
     __atomic_store_n(&presented_snapshot, false, __ATOMIC_RELEASE);
     active_bank = -1;
@@ -435,6 +437,24 @@ void virtual_amiibo_store_request_persist(void)
     if (status.loaded) persist_requested = true;
 }
 
+void virtual_amiibo_store_request_clear(void)
+{
+    critical_section_enter_blocking(&tag_lock);
+    virtual_amiibo_init(&tag);
+    // A pending image snapshot is superseded: the user asked for the image
+    // to be gone, and programming it after the erase would resurrect it.
+    persist_requested = false;
+    critical_section_exit(&tag_lock);
+    __atomic_store_n(&presented_snapshot, false, __ATOMIC_RELEASE);
+    __atomic_store_n(&loaded_snapshot, false, __ATOMIC_RELEASE);
+    clear_requested = true;
+}
+
+bool virtual_amiibo_store_clear_pending(void)
+{
+    return clear_requested;
+}
+
 bool virtual_amiibo_store_persist_pending(void)
 {
     return persist_requested;
@@ -442,6 +462,23 @@ bool virtual_amiibo_store_persist_pending(void)
 
 void virtual_amiibo_store_service_save(void)
 {
+    if (clear_requested) {
+        // Erase both journal banks so a power cycle cannot resurrect the
+        // discarded tag. The prior-snapshot alternation guarantee is
+        // intentionally void here; v1 migration records live in bank 0 and
+        // are removed by the same erase.
+        for (unsigned bank = 0; bank < 2u; ++bank) {
+            const uint32_t destination_offset = bank_offset(bank);
+            multicore_lockout_start_blocking();
+            uint32_t interrupts = save_and_disable_interrupts();
+            flash_range_erase(destination_offset, FLASH_SECTOR_SIZE);
+            restore_interrupts(interrupts);
+            multicore_lockout_end_blocking();
+        }
+        active_bank = -1;
+        clear_requested = false;
+    }
+
     if (!persist_requested) return;
 
     uint16_t size;
