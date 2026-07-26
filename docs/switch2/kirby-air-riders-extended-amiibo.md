@@ -182,6 +182,42 @@ pass at each step.
   larger read length), or issues a new type/sector handshake. Any of recognize / reject / crash is
   useful. Feed the result into Phase 2.
 
+### Phase 1 trace result (2026-07-26) — console stalls before reading
+
+First live UART NFC trace of the v3 present-and-trace stub on a real Switch 2
+(`dumps/kirby-v3-serve-trace-2026-07-26.jsonl`, filter `nfc`, 128-record ring, 22
+overwritten — i.e. the console kept retrying). The console loops:
+
+```
+0x03 scan  -> ACK
+0x05 status-> tag present + UID 04 98 8B 22 AB 1F 90   (status byte 0x09 ready)
+0x06 begin -> request data D0 07 00 00 00 00 00 00 00 01 03 00 …  (read descriptor:
+              D0 07 header + zero UID = READ, same descriptor the 540 path expects)
+             ...our stub returned a BARE ACK...
+[~3000 ms timeout] 0x04 stop -> 0x03 scan -> repeat, forever
+```
+
+**Root cause:** the console never sent `0x15` (chunk read). Comparing to the proven
+540 runtime (`ns2_virtual_nfc_runtime.c`), a read is `0x06 begin → status goes
+ACTIVE (0x04) + the HID NFC event counter (input report byte `0x0C`) bumps → the
+console then pulls the read buffer with `0x15``. The stub answered `0x06` with a
+bare ACK and left status at `0x09`/the event counter unchanged, so the console
+saw no operation progress, timed out after 3 s, and rescanned.
+
+**Confirmed:** the console reads a v3 tag with the **same** vendor-bulk command set
+as a 540 tag (`0x03/0x04/0x05/0x06/0x15`) and the **same** `D0 07`/zero-UID read
+descriptor — there is no separate 2 KB handshake at this layer. The size
+difference is expected to surface only in how many `0x15` chunks it pulls.
+
+**Fix (build-verified 2026-07-26, hardware test pending):** `ns2_v3_serve` now
+drives that state machine — validates the `D0 07`/zero-UID descriptor on `0x06`,
+builds a `60-byte prefix + 2048-byte image` read buffer (mirroring the 540
+layout, UID at prefix +8, console operation metadata at +51), goes ACTIVE, bumps
+the event counter, and serves the buffer over `0x15` in ≤70-byte chunks. The
+32-byte originality signature (prefix +0x13) is still zero — **the next trace
+question** is whether the console reads all ~2108 buffer bytes and then accepts,
+or validates the signature/crypto and rejects (error 2115-0088).
+
 ### Phase 2 — serve the confirmed protocol (hardware loop)
 - Implement the console-facing read/response for the traced framing so a real Switch 2 builds the
   Figure Player. Iterate against captures until rider+machine are correct in Kirby Air Riders.
