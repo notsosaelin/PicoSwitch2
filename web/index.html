@@ -2158,8 +2158,9 @@ function downloadSelectedAmiibo() {
   const entry = selectedAmiiboLibraryEntry();
   const bytes = entry && amiiboEntryBytes(entry);
   if (!bytes) return;
-  const name = `${(catalogMetadataForEntry(entry)?.name || entry.label || entry.id)
-    .replace(/[^\w .\-]+/g, "_")}.bin`;
+  // Use the specific combo name (filename for v3) so each machine variant
+  // downloads distinctly rather than all as the shared rider name.
+  const name = `${amiiboDisplayName(entry).replace(/[^\w .\-]+/g, "_")}.bin`;
   const url = URL.createObjectURL(new Blob([bytes], {type: "application/octet-stream"}));
   const link = document.createElement("a");
   link.href = url;
@@ -2174,7 +2175,9 @@ function downloadSelectedAmiibo() {
 async function deleteSelectedAmiibo() {
   const entry = selectedAmiiboLibraryEntry();
   if (!entry || amiiboLibraryBusy) return;
-  const name = catalogMetadataForEntry(entry)?.name || entry.label || entry.id;
+  // The centered/swapped combo is the delete target (its content-key is unique
+  // per machine variant), so this removes just that combo, not the whole rider.
+  const name = amiiboDisplayName(entry);
   if (!confirm(`Remove ${name} from your browser library? The adapter's active tag is not changed.`))
     return;
   const db = await openAmiiboLibraryDb();
@@ -2189,6 +2192,9 @@ async function deleteSelectedAmiibo() {
   }
   amiiboLibrary = amiiboLibrary.filter(item => item.key !== entry.key);
   if (amiiboLibrarySelectedKey === entry.key) amiiboLibrarySelectedKey = "";
+  // Drop a stale active-combo pointer so the rider falls back to a surviving combo.
+  if (amiiboV3ComboByIdentity[entry.id] === entry.key)
+    delete amiiboV3ComboByIdentity[entry.id];
   sanitizeAmiiboSlotState();
   renderAmiiboLibrary();
   $("#amiiboMessage").textContent =
