@@ -64,6 +64,39 @@ fetched as 70-byte chunks — see [`nfc-implementation.md`](nfc-implementation.m
 Neither can be implemented safely from the files alone — the read protocol must be observed on real
 hardware first.
 
+## Capture audit (2026-07-26): no genuine amiibo read exists to RE from
+
+A full sweep of every capture in the repo and the owner's Downloads was done to check whether the
+extended read protocol could be reverse-engineered from existing data. Method: search each capture
+for the amiibo capability container `F1 10 FF EE` (present in the leading pages of *every* amiibo
+image) and for the four Kirby rider identity signatures. The search was validated against
+`dumps/virtual-amiibo-lifecycle-validation-2026-07-25.jsonl`, which correctly shows `f110ffee` and
+the NFC descriptor markers.
+
+Result — **no capture contains a genuine amiibo read of any kind**:
+
+| Capture | Content | Amiibo read? |
+|---|---|---|
+| `usbpcaptures/genuine_procon_2.pcapng` (11 MB) | Pro2 enumeration/input/motion | `F110FFEE` = 0 |
+| `usbpcaptures/picoswitch_2_dongle.pcapng` (10 MB) | dongle traffic | `F110FFEE` = 0 |
+| `usbpcaptures/genuine_procon2_headset_*.pcap` | audio | `F110FFEE` = 0 |
+| `dumps/BLE CAPTURE/*.jsonl,*.ndjson` | motion/gyro/wake | no amiibo |
+| `btle_*_wake_console*.pcapng` (Downloads) | BLE wake | `F110FFEE` = 0 |
+| `dumps/virtual-amiibo-*.jsonl` | **PicoSwitch2's own virtual (standard 540) tests** | yes, but standard format only |
+
+The only amiibo-bearing captures are PicoSwitch2 serving the standard 540-byte format we already
+support. The owner's two large amiibo collections (932 and 1035 files) are all exactly 540 bytes;
+the Kirby Air Riders set is the only extended one, and it is dump **files**, not a read capture.
+
+The `.bin` files reveal the tag *data* layout (mapped above) but not the console *read protocol*
+for a larger tag, and they carry a standard NTAG215 capability container (`F1 10 FF EE`, which
+signals 540-byte memory) despite holding ~1024 bytes — internally inconsistent, which indicates an
+emulator-normalized container rather than a faithful raw dump. So the files alone are not a reliable
+RE basis either.
+
+**Conclusion: the extended read protocol cannot be reverse-engineered from existing material.** A
+new capture of a genuine read is required.
+
 ## Smallest useful next experiment (blocking)
 
 With a **physical Kirby Air Riders amiibo** and the dongle, capture a genuine read on a real
