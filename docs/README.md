@@ -32,6 +32,7 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Controller firmware identity | [`switch2/firmware-versioning.md`](switch2/firmware-versioning.md) |
 | NFC implementation design | [`switch2/nfc-implementation.md`](switch2/nfc-implementation.md) |
 | Amiibo identity, differentiation, and generation | [`switch2/amiibo-identity-and-generation.md`](switch2/amiibo-identity-and-generation.md) |
+| Kirby Air Riders extended amiibo format | [`switch2/kirby-air-riders-extended-amiibo.md`](switch2/kirby-air-riders-extended-amiibo.md) |
 | NFC protocol evidence | [`switch2/nfc-protocol-inventory.md`](switch2/nfc-protocol-inventory.md) |
 | NFC feasibility/resource audit | [`experiments/nfc-feasibility-audit-2026-07-25.md`](experiments/nfc-feasibility-audit-2026-07-25.md) |
 | Virtual amiibo offline foundation | [`experiments/virtual-amiibo-foundation-2026-07-25.md`](experiments/virtual-amiibo-foundation-2026-07-25.md) |

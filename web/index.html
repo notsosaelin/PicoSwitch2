@@ -913,14 +913,26 @@ function compareAmiiboEntriesAsc(a, b) {
     field("type") || a.id.localeCompare(b.id);
 }
 
+// Meaningful data past the classic amiibo image (540 + 32-byte signature = 572,
+// with rider data ending ~0x248) marks an extended format such as the Kirby Air
+// Riders "Figure Player" tags, whose rider+machine layout PicoSwitch2 cannot yet
+// serve. See docs/switch2/kirby-air-riders-extended-amiibo.md.
+function amiiboIsExtendedDump(rawBytes) {
+  if (rawBytes.length <= 572) return false;
+  for (let i = 0x248; i < rawBytes.length; i++) if (rawBytes[i]) return true;
+  return false;
+}
+
 async function libraryEntryFromFile(file, path, keyPrefix) {
-  const bytes = coerceAmiiboImport(new Uint8Array(await file.arrayBuffer()));
+  const raw = new Uint8Array(await file.arrayBuffer());
+  const bytes = coerceAmiiboImport(raw);
   if (!bytes)
     return {error: `${file.name}: too small to be an amiibo dump (need at least 540 bytes).`};
   const error = validateAmiiboFile(bytes);
   if (error) return {error};
   const identity = parseAmiiboIdentity(bytes);
   return {
+    extended: amiiboIsExtendedDump(raw),
     entry: normalizeAmiiboLibraryEntry({
       key: `amiibo:${identity.id}`,
       name: file.name,
@@ -1075,6 +1087,7 @@ async function chooseAmiiboDirectory() {
   const existingLibrary = amiiboLibrary.slice();
   const entries = [];
   let invalid = 0;
+  let extended = 0;
   let examined = 0;
   let lastRenderedValid = 0;
   $("#amiiboMessage").textContent =
@@ -1089,7 +1102,7 @@ async function chooseAmiiboDirectory() {
       const result = await libraryEntryFromFile(
         item.file, `${directory.name}/${item.path}`, `directory:${directory.name}`);
       if (!result.entry) invalid++;
-      else entries.push(result.entry);
+      else { entries.push(result.entry); if (result.extended) extended++; }
 
       const shouldRender =
         entries.length === 1 ||
@@ -1111,7 +1124,12 @@ async function chooseAmiiboDirectory() {
     $("#amiiboMessage").textContent =
       `${persisted ? "Cached" : "Loaded for this browser session"} ` +
       `${uniqueCatalogEntries} amiibo from ${entries.length} valid owned files in ${directory.name}` +
-      (invalid ? `; ignored ${invalid} invalid .bin file${invalid === 1 ? "" : "s"}.` : ".");
+      (invalid ? `; ignored ${invalid} invalid .bin file${invalid === 1 ? "" : "s"}.` : ".") +
+      (extended
+        ? ` Note: ${extended} file${extended === 1 ? " is" : "s are"} an extended ` +
+          "Kirby Air Riders-style tag — the rider imported, but its machine/Figure-Player " +
+          "data is not supported yet."
+        : "");
   } catch (error) {
     if (entries.length) {
       amiiboLibrary = mergeAmiiboEntries([...existingLibrary, ...entries]);
@@ -2188,15 +2206,19 @@ async function importSingleAmiiboFile(file) {
   lookupAmiiboMetadata(selected)
     .then(() => renderAmiiboLibrary())
     .catch(error => console.warn("Amiibo catalog unavailable", error));
+  const extendedNote = result.extended
+    ? " This is an extended Kirby Air Riders-style tag: the rider imported, but its " +
+      "machine/Figure-Player data is not supported yet."
+    : "";
   if (!persisted) {
     $("#amiiboMessage").textContent =
-      `${file.name} loaded for this session; browser caching is unavailable.`;
+      `${file.name} loaded for this session; browser caching is unavailable.${extendedNote}`;
   } else if (!transportKind) {
     $("#amiiboMessage").textContent =
-      `${file.name} was added to the offline amiibo library.`;
+      `${file.name} was added to the offline amiibo library.${extendedNote}`;
   } else {
     $("#amiiboMessage").textContent =
-      `${file.name} was added to the library. Load it into the slot when ready.`;
+      `${file.name} was added to the library.${extendedNote || " Load it when ready."}`;
   }
   $("#amiiboImportMenu").open = false;
 }

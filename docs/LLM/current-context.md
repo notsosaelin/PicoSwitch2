@@ -95,10 +95,16 @@ required Git submodule for Pico 2 W audio builds.
   two filter-panel cycle rows: **Sort by** (Default/Alphabetically/Numerically/Release date) and
   **Order** (Ascending/Descending). Action stack has Activate/Sync/Eject (always labeled "Eject
   Amiibo"; "Amiibo Active" when presented) plus Download .bin / Delete from Library / Refresh.
-- Star-variant caveat (e.g. Kirby Air Riders): the 4 files per rider are byte-identical in the whole
-  540-byte NTAG215 image; the difference lives only in the emulator container (offset 0x3C2+),
-  outside the NFC data. They dedup to one console amiibo; separating them into functionally distinct
-  tags would need amiibo keys to merge the save into the encrypted app-data (out of scope).
+- Kirby Air Riders "Figure Player" amiibo are an **extended format**, not standard NTAG215
+  ([[kirby-air-riders-extended-amiibo]] / `docs/switch2/kirby-air-riders-extended-amiibo.md`). Byte
+  map from diffing 16 files: rider data spans 0x00–0x247 (past the classic 540/0x21C boundary) and
+  machine ("Figure Player") data is a signed block at 0x3C2–0x3FF; total image ~1024 bytes. The
+  standard app-data (0xA0–0x1B4) is identical across a rider's machines, so the machine lives only
+  in the 0x3C2+ block. PicoSwitch2's 540/572 store + 600-byte console read model can't serve these.
+  Portal imports only the leading rider image (coerce to 540) and flags the machine data
+  unsupported. Real support needs a UART capture of a genuine one on a Switch 2 (true size + read
+  protocol) then firmware work — NOT just importing files. Do not claim rider+machine support until
+  captured.
 - Sync clears dirty-write protection only after IndexedDB persistence; it does not unload the tag.
   Console formatting/reset remains the authority.
 - The USB side of Config mode is now CDC-only. The MSC descriptor/callbacks, generated
