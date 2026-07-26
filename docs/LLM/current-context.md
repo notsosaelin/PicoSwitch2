@@ -67,15 +67,25 @@ required Git submodule for Pico 2 W audio builds.
 - Both portals use an artwork carousel. The production detail card intentionally exposes only
   friendly Name, Character, Game series, Amiibo series, and Product type fields.
   `tools/run_config_portal.ps1` serves the real portal from the same localhost origin.
-- The production manager's authoritative flow is carousel selection → **Load Amiibo** (into the
-  selected quick slot) → **Activate Amiibo** (disabled "Amiibo activated" while that image is
-  already presented). **Sync Amiibo** pulls the latest console-written image back into IndexedDB.
-  One merged eject/clear button labels its exact scope from `amiiboEjectActionState()`:
-  **Eject Amiibo** (slot amiibo is on the adapter → confirm, wipe adapter via `amiibo eject` +
-  `amiibo clear`, empty the slot), **Clear Slot N** (slot-only pointer clear, no confirm), or
-  **Eject Virtual Amiibo** (slot empty, adapter holds an image → confirm, wipe adapter only).
-  Cancel aborts everything; library dumps are never deleted; the console-driven Stop/write-back
-  lifecycle and `amiibo present` re-activation are unchanged.
+- The board stores exactly one amiibo (flash Save 1/Save 2 = one identity's baseline/latest-written
+  recovery pair, not two amiibo). The manager is single-slot: **Load Amiibo** stages the highlighted
+  carousel entry → **Activate Amiibo** (disabled "Amiibo activated" while already presented).
+  **Sync Amiibo** pulls the latest console-written image into IndexedDB. One merged eject/clear
+  button labels its exact scope from `amiiboEjectActionState()`: **Eject Amiibo** (loaded amiibo is
+  on the adapter → confirm, `amiibo eject` + `amiibo clear`, unload), **Clear Loaded Amiibo**
+  (unload only, no confirm), or **Eject Virtual Amiibo** (adapter holds an image not loaded here →
+  confirm, adapter wipe only). Cancel aborts everything; library dumps are never deleted; the
+  console-driven Stop/write-back lifecycle and `amiibo present` re-activation are unchanged.
+- Save/Random presentation toggle: `amiibo mode save|random` (volatile, Save default, exposed in
+  `amiibo status` as `random`). Random Mode overlays a fresh NTAG UID/BCC per fresh scan encounter
+  (`ns2_virtual_nfc_runtime_set_randomize_uid`/`apply_session_uid`) and the integration layer
+  discards console writes made under a random UID (flash untouched). Save Mode is the confirmed
+  stable-identity path. Random-Mode console acceptance is hardware-pending; see
+  [[amiibo-identity-and-generation]] (`docs/switch2/amiibo-identity-and-generation.md`).
+- Amiibo generation research: identity block at raw `0x54` is key-free; community generators emit
+  amiitool *decrypted* layout (identity at `0x1DC`), not our raw layout. `tools/generate_test_amiibo.py`
+  builds a raw-layout identity-only image (HMACs/crypto zeroed) as an experiment artifact — whether a
+  real Switch 2 accepts a zero-HMAC image through the virtual reader is the blocking Unknown.
 - Sync clears dirty-write protection only after IndexedDB persistence; it does not unload the tag.
   Console formatting/reset remains the authority.
 - The USB side of Config mode is now CDC-only. The MSC descriptor/callbacks, generated

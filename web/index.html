@@ -63,8 +63,6 @@
   .amiibo-copy-badge { position: absolute; right: 4px; bottom: 4px; padding: 2px 5px;
                        border-radius: 999px; font-size: 8px; font-weight: 700;
                        background: #263242; color: #b8c6d9; }
-  .amiibo-copy-badge.slot-two { background: #173d2b; color: #85efae; }
-  .amiibo-copy-badge.both-slots { background: #3b2d16; color: #fde68a; }
   #ui.offline > #appearancePanel, #ui.offline > .devtools,
   #ui.offline > section:not(#amiiboPanel) { display: none; }
   .amiibo-carousel-position { text-align: center; min-height: 18px; margin-top: 2px; }
@@ -306,7 +304,7 @@
 
           <div class="amiibo-loaded-card">
             <div>
-              <span class="label">Selected quick slot</span>
+              <span class="label">Loaded amiibo</span>
               <strong id="amiiboName">No amiibo loaded</strong>
               <span id="amiiboLoadedState" class="state">Select an amiibo from the carousel</span>
             </div>
@@ -330,21 +328,23 @@
 
         <div class="amiibo-manager-bottom">
           <div class="amiibo-action-stack">
-            <div class="amiibo-slot-heading">Active amiibo slot</div>
-            <div class="amiibo-save-tabs" aria-label="Amiibo quick slots">
-              <button id="amiiboSelectSave1Btn">Amiibo Slot 1</button>
-              <button id="amiiboSelectSave2Btn">Amiibo Slot 2</button>
+            <div class="amiibo-slot-heading">Amiibo mode</div>
+            <div class="amiibo-save-tabs" aria-label="Amiibo presentation mode">
+              <button id="amiiboModeSaveBtn" disabled>Save Mode</button>
+              <button id="amiiboModeRandomBtn" disabled>Random Mode</button>
             </div>
             <button id="amiiboSyncControllerBtn" disabled>Activate Amiibo</button>
             <button id="amiiboSaveBtn" disabled>Sync Amiibo</button>
             <button id="amiiboEjectBtn" disabled>Eject Amiibo</button>
             <p class="amiibo-action-help">
-              Load Amiibo places the highlighted amiibo into the selected quick slot. Activate
-              sends the slot's amiibo to the adapter. Sync Amiibo pulls console-written changes
-              back and overwrites its saved library copy. The last button matches its label:
-              Eject Amiibo removes the slot's amiibo from the adapter and empties the slot;
-              Clear Slot only empties the slot; Eject Virtual Amiibo removes an adapter image
-              that is not in any slot. Library dumps are never deleted.
+              Load Amiibo stages the highlighted amiibo; Activate sends it to the adapter.
+              Sync Amiibo pulls console-written changes back and overwrites its saved library
+              copy. The last button matches its label: Eject Amiibo removes the loaded amiibo
+              from the adapter and unloads it; Clear Loaded Amiibo only unloads; Eject Virtual
+              Amiibo removes an adapter image that is not loaded here. Save Mode keeps a stable
+              tag identity and saves console writes; Random Mode presents a new random identity
+              on every scan and discards console writes (for per-amiibo game cooldowns).
+              Library dumps are never deleted.
             </p>
           </div>
 
@@ -553,8 +553,7 @@ let amiiboStatus = null;
 let amiiboFileName = "";
 let amiiboLibrary = [];
 let amiiboLibrarySelectedKey = "";
-let amiiboSlotLibraryKeys = ["", ""];
-let amiiboSelectedSlot = 0;
+let amiiboLoadedSlotKey = "";
 let amiiboCarouselIndex = 0;
 let amiiboLibraryBusy = false;
 const amiiboLibraryFilters = {
@@ -783,39 +782,37 @@ function amiiboEntryBytes(entry) {
 function loadAmiiboSlotState() {
   try {
     const saved = JSON.parse(localStorage.getItem(AMIIBO_SLOT_STATE_KEY));
-    if (Array.isArray(saved?.keys))
-      amiiboSlotLibraryKeys = [saved.keys[0] || "", saved.keys[1] || ""];
-    if (saved?.selected === 1) amiiboSelectedSlot = 1;
+    // Earlier layouts kept two quick-slot keys plus a selection. The single
+    // staging slot adopts the previously selected key.
+    if (Array.isArray(saved?.keys)) {
+      const selected = saved.selected === 1 ? 1 : 0;
+      amiiboLoadedSlotKey =
+        saved.keys[selected] || saved.keys[0] || saved.keys[1] || "";
+    }
   } catch (error) {
-    console.warn("Could not restore amiibo quick slots", error);
+    console.warn("Could not restore the loaded amiibo", error);
   }
 }
 
 function persistAmiiboSlotState() {
   try {
     localStorage.setItem(AMIIBO_SLOT_STATE_KEY, JSON.stringify({
-      keys: amiiboSlotLibraryKeys,
-      selected: amiiboSelectedSlot
+      keys: [amiiboLoadedSlotKey],
+      selected: 0
     }));
   } catch (error) {
-    console.warn("Could not persist amiibo quick slots", error);
+    console.warn("Could not persist the loaded amiibo", error);
   }
 }
 
 function sanitizeAmiiboSlotState() {
   const keys = new Set(amiiboLibrary.map(entry => entry.key));
-  amiiboSlotLibraryKeys = amiiboSlotLibraryKeys.map(key =>
-    keys.has(key) ? key : "");
+  if (!keys.has(amiiboLoadedSlotKey)) amiiboLoadedSlotKey = "";
   persistAmiiboSlotState();
 }
 
 function amiiboEntrySlotLabel(entry) {
-  const inOne = amiiboSlotLibraryKeys[0] === entry.key;
-  const inTwo = amiiboSlotLibraryKeys[1] === entry.key;
-  if (inOne && inTwo) return "Slots 1 + 2";
-  if (inOne) return "Slot 1";
-  if (inTwo) return "Slot 2";
-  return "";
+  return amiiboLoadedSlotKey === entry.key ? "Loaded" : "";
 }
 
 function amiiboEntryContainsUid(entry, uid) {
@@ -909,8 +906,8 @@ async function replaceCachedAmiiboLibrary(entries, preserveExisting = true) {
       amiiboEntryContainsUid(entry, amiiboStatus.uid));
     if (activeEntry) {
       amiiboLibrarySelectedKey = activeEntry.key;
-      if (!amiiboSlotLibraryKeys[amiiboSelectedSlot]) {
-        amiiboSlotLibraryKeys[amiiboSelectedSlot] = activeEntry.key;
+      if (!amiiboLoadedSlotKey) {
+        amiiboLoadedSlotKey = activeEntry.key;
         persistAmiiboSlotState();
       }
     }
@@ -970,8 +967,8 @@ async function loadCachedAmiiboLibrary() {
         amiiboEntryContainsUid(entry, amiiboStatus.uid));
       if (activeEntry) {
         amiiboLibrarySelectedKey = activeEntry.key;
-        if (!amiiboSlotLibraryKeys[amiiboSelectedSlot]) {
-          amiiboSlotLibraryKeys[amiiboSelectedSlot] = activeEntry.key;
+        if (!amiiboLoadedSlotKey) {
+          amiiboLoadedSlotKey = activeEntry.key;
           persistAmiiboSlotState();
         }
       }
@@ -1287,9 +1284,7 @@ function createAmiiboCarouselItem(entry) {
   const slotLabel = amiiboEntrySlotLabel(entry);
   if (slotLabel) {
     const badge = document.createElement("span");
-    badge.className = "amiibo-copy-badge" +
-      (slotLabel === "Slot 2" ? " slot-two" :
-       slotLabel.includes("+") ? " both-slots" : "");
+    badge.className = "amiibo-copy-badge";
     badge.textContent = slotLabel;
     item.appendChild(badge);
   }
@@ -1310,8 +1305,8 @@ function selectedAmiiboLibraryEntry() {
 }
 
 function loadedAmiiboLibraryEntry() {
-  const key = amiiboSlotLibraryKeys[amiiboSelectedSlot];
-  return amiiboLibrary.find(entry => entry.key === key) || null;
+  return amiiboLibrary.find(
+    entry => entry.key === amiiboLoadedSlotKey) || null;
 }
 
 function arrayBufferToBase64(buffer) {
@@ -1339,8 +1334,8 @@ async function exportAmiiboLibraryBackup() {
     version: AMIIBO_LIBRARY_BACKUP_VERSION,
     exportedAt: new Date().toISOString(),
     slots: {
-      selected: amiiboSelectedSlot,
-      keys: amiiboSlotLibraryKeys
+      selected: 0,
+      keys: [amiiboLoadedSlotKey]
     },
     entries: exportEntries.map(item => {
       const entry = normalizeAmiiboLibraryEntry(item);
@@ -1423,11 +1418,9 @@ async function importAmiiboLibraryBackup(file) {
 
   const persisted = await replaceCachedAmiiboLibrary(entries, false);
   if (Array.isArray(documentValue.slots?.keys)) {
-    amiiboSlotLibraryKeys = [
-      documentValue.slots.keys[0] || "",
-      documentValue.slots.keys[1] || ""
-    ];
-    amiiboSelectedSlot = documentValue.slots.selected === 1 ? 1 : 0;
+    const selected = documentValue.slots.selected === 1 ? 1 : 0;
+    amiiboLoadedSlotKey = documentValue.slots.keys[selected] ||
+      documentValue.slots.keys[0] || "";
     sanitizeAmiiboSlotState();
   }
   $("#amiiboMessage").textContent =
@@ -1572,7 +1565,7 @@ async function clearAmiiboLibrary() {
   }
   amiiboLibrary = [];
   amiiboLibrarySelectedKey = "";
-  amiiboSlotLibraryKeys = ["", ""];
+  amiiboLoadedSlotKey = "";
   persistAmiiboSlotState();
   renderAmiiboLibrary();
   $("#amiiboLibraryDetail").classList.add("hidden");
@@ -1584,14 +1577,13 @@ async function clearAmiiboLibrary() {
 async function loadSelectedLibraryAmiibo() {
   const entry = selectedAmiiboLibraryEntry();
   if (!entry) return;
-  amiiboSlotLibraryKeys[amiiboSelectedSlot] = entry.key;
+  amiiboLoadedSlotKey = entry.key;
   persistAmiiboSlotState();
   amiiboFileName = entry.name;
   renderAmiiboLibrary();
   renderAmiiboLoadedSlot();
   $("#amiiboMessage").textContent =
-    `${catalogMetadataForEntry(entry)?.name || entry.label} is assigned to Amiibo Slot ` +
-    `${amiiboSelectedSlot + 1}. ` +
+    `${catalogMetadataForEntry(entry)?.name || entry.label} is loaded. ` +
     (transportKind
       ? "Choose Activate Amiibo to send it to the adapter."
       : "Connect PicoSwitch2 in Config mode when you want to activate it on the adapter.");
@@ -1669,44 +1661,34 @@ function renderAmiiboLoadedSlot() {
   const adapterMatches = !!(entry && amiiboStatus?.loaded &&
     amiiboEntryContainsUid(entry, amiiboStatus.uid));
   const adapterPresented = amiiboStatus?.presented !== false;
-  const slotNumber = amiiboSelectedSlot + 1;
-  [0, 1].forEach(slot => {
-    const slotEntry = amiiboLibrary.find(
-      item => item.key === amiiboSlotLibraryKeys[slot]);
-    const slotName = slotEntry
-      ? catalogMetadataForEntry(slotEntry)?.name || slotEntry.label
-      : "Empty";
-    const button = slot === 0
-      ? $("#amiiboSelectSave1Btn") : $("#amiiboSelectSave2Btn");
-    button.textContent = `Slot ${slot + 1} · ${slotName}`;
-    button.title = `Select Amiibo Slot ${slot + 1}: ${slotName}`;
-  });
-
   if (entry) {
     $("#amiiboName").textContent = metadata?.name || entry.label;
     $("#amiiboLoadedState").textContent = adapterMatches
-      ? `Amiibo Slot ${slotNumber} · ` +
-        `${adapterPresented ? "presented by adapter" : "ejected on adapter"}`
-      : `Amiibo Slot ${slotNumber} · saved in this browser`;
+      ? `Loaded · ${adapterPresented
+          ? "presented by adapter" : "ejected on adapter"}`
+      : "Loaded · saved in this browser";
   } else if (amiiboStatus?.loaded) {
-    $("#amiiboName").textContent = `Amiibo Slot ${slotNumber} is empty`;
+    $("#amiiboName").textContent = "No amiibo loaded";
     $("#amiiboLoadedState").textContent =
       `The adapter currently holds ${amiiboFileName ||
         `amiibo-${amiiboStatus.uid || "unknown"}.bin`}`;
   } else {
-    $("#amiiboName").textContent = `Amiibo Slot ${slotNumber} is empty`;
+    $("#amiiboName").textContent = "No amiibo loaded";
     $("#amiiboLoadedState").textContent =
-      "Highlight an imported amiibo and assign it to this slot";
+      "Highlight an imported amiibo and press Load Amiibo";
   }
 
-  $("#amiiboSelectSave1Btn").disabled = amiiboLibraryBusy;
-  $("#amiiboSelectSave2Btn").disabled = amiiboLibraryBusy;
-  $("#amiiboSelectSave1Btn").classList.toggle(
-    "selected", amiiboSelectedSlot === 0);
-  $("#amiiboSelectSave2Btn").classList.toggle(
-    "selected", amiiboSelectedSlot === 1);
+  // The presentation-mode pair reflects the adapter's volatile state; both
+  // stay disabled until a transport is connected.
+  const randomMode = amiiboStatus?.random === true;
+  $("#amiiboModeSaveBtn").classList.toggle("selected",
+    !!transportKind && !randomMode);
+  $("#amiiboModeRandomBtn").classList.toggle("selected",
+    !!transportKind && randomMode);
+  $("#amiiboModeSaveBtn").disabled = amiiboLibraryBusy || !transportKind;
+  $("#amiiboModeRandomBtn").disabled = amiiboLibraryBusy || !transportKind;
   $("#amiiboLibraryLoadBtn").title =
-    `Load the highlighted amiibo into Slot ${slotNumber}`;
+    "Load the highlighted amiibo for the adapter";
   const slotActivated = adapterMatches && adapterPresented;
   $("#amiiboSyncControllerBtn").textContent =
     slotActivated ? "Amiibo activated" : "Activate Amiibo";
@@ -1721,14 +1703,14 @@ function renderAmiiboLoadedSlot() {
   $("#amiiboEjectBtn").textContent =
     ejectState.mode === "both" ? "Eject Amiibo" :
     ejectState.mode === "adapter" ? "Eject Virtual Amiibo" :
-    `Clear Slot ${slotNumber}`;
+    "Clear Loaded Amiibo";
   $("#amiiboEjectBtn").title =
     ejectState.mode === "both"
-      ? `Remove this amiibo from the adapter and empty Slot ${slotNumber}`
+      ? "Remove this amiibo from the adapter and unload it"
       : ejectState.mode === "adapter"
         ? "Remove the stored virtual amiibo from the adapter"
         : ejectState.mode === "slot"
-          ? `Empty Slot ${slotNumber}; the library dump and adapter are not changed`
+          ? "Unload this amiibo; the library dump and adapter are not changed"
           : "";
   $("#amiiboEjectBtn").disabled =
     amiiboLibraryBusy || ejectState.mode === "none";
@@ -1758,10 +1740,7 @@ function renderAmiiboStatus(status) {
       amiiboEntryContainsUid(entry, nextUid));
     if (matching) {
       amiiboLibrarySelectedKey = matching.key;
-      const assignedSlot = amiiboSlotLibraryKeys.indexOf(matching.key);
-      if (assignedSlot >= 0) amiiboSelectedSlot = assignedSlot;
-      else if (!amiiboSlotLibraryKeys[amiiboSelectedSlot])
-        amiiboSlotLibraryKeys[amiiboSelectedSlot] = matching.key;
+      if (!amiiboLoadedSlotKey) amiiboLoadedSlotKey = matching.key;
       persistAmiiboSlotState();
     }
     renderAmiiboLibrary();
@@ -1775,22 +1754,16 @@ async function refreshAmiiboStatus() {
   return status;
 }
 
-function selectAmiiboQuickSlot(slot) {
-  amiiboSelectedSlot = slot === 1 ? 1 : 0;
-  persistAmiiboSlotState();
-  const entry = loadedAmiiboLibraryEntry();
-  if (entry) {
-    amiiboLibrarySelectedKey = entry.key;
-    const entries = filteredAmiiboLibrary();
-    const index = entries.findIndex(item => item.key === entry.key);
-    if (index >= 0) {
-      amiiboCarouselIndex = index;
-      updateAmiiboCarouselSelection(entries, true);
-    } else {
-      renderAmiiboLibrary();
-    }
-  }
-  renderAmiiboLoadedSlot();
+async function setAmiiboPresentationMode(random) {
+  if (!transportKind || amiiboLibraryBusy) return;
+  const result = await sendCmd(
+    `amiibo mode ${random ? "random" : "save"}`, true);
+  await refreshAmiiboStatus();
+  $("#amiiboMessage").textContent = result?.ok
+    ? (random
+        ? "Random Amiibo Mode: every scan presents a new random tag identity and console writes are not saved. Useful for per-amiibo game cooldowns."
+        : "Save Amiibo Mode: the amiibo keeps its stored identity and console writes are saved on the adapter.")
+    : result?.error || "The adapter did not accept the mode change.";
 }
 
 async function transferAmiiboCopy(bytes, commitCommand, progressStart,
@@ -1849,7 +1822,7 @@ async function uploadAmiiboEntry(sourceEntry) {
   amiiboFileName = entry.name;
   await refreshAmiiboStatus();
   $("#amiiboMessage").textContent =
-    `${entry.name} from Amiibo Slot ${amiiboSelectedSlot + 1} is stored and presented on the adapter.`;
+    `${entry.name} is stored and presented on the adapter.`;
   amiiboSetBusy(false);
 }
 
@@ -1873,17 +1846,16 @@ async function syncLoadedAmiiboToController() {
 async function ejectOrClearAmiibo() {
   const {mode, entry} = amiiboEjectActionState();
   if (mode === "none" || amiiboLibraryBusy) return;
-  const slotNumber = amiiboSelectedSlot + 1;
   const entryName = entry
     ? catalogMetadataForEntry(entry)?.name || entry.label : "";
 
   if (mode === "slot") {
-    amiiboSlotLibraryKeys[amiiboSelectedSlot] = "";
+    amiiboLoadedSlotKey = "";
     persistAmiiboSlotState();
     renderAmiiboLibrary();
     renderAmiiboLoadedSlot();
     $("#amiiboMessage").textContent =
-      `${entryName} was removed from Amiibo Slot ${slotNumber}. ` +
+      `${entryName} is no longer loaded. ` +
       "Its library dump and the adapter's active tag were not changed.";
     return;
   }
@@ -1894,7 +1866,7 @@ async function ejectOrClearAmiibo() {
   const warning = amiiboStatus.dirty
     ? "A game changed this amiibo and the change has NOT been synced to the browser library. Eject and remove it from the adapter anyway? The unsynced change will be lost."
     : mode === "both"
-      ? `Eject ${entryName}? This removes it from the adapter and empties Amiibo Slot ${slotNumber}. Its dump remains in the browser library.`
+      ? `Eject ${entryName}? This removes it from the adapter and unloads it. Its dump remains in the browser library.`
       : "Eject and remove the virtual amiibo from the adapter? Make sure you have synced or imported it first; only the browser library copy will remain.";
   if (!confirm(warning)) return;
   amiiboSetBusy(true);
@@ -1903,13 +1875,13 @@ async function ejectOrClearAmiibo() {
     const cleared = ejected?.ok
       ? await sendCmd("amiibo clear", true) : null;
     if (cleared?.ok && mode === "both") {
-      amiiboSlotLibraryKeys[amiiboSelectedSlot] = "";
+      amiiboLoadedSlotKey = "";
       persistAmiiboSlotState();
     }
     await refreshAmiiboStatus();
     $("#amiiboMessage").textContent = cleared?.ok
       ? (mode === "both"
-          ? `Ejected ${entryName}: removed from the adapter and Amiibo Slot ${slotNumber}. Its dump remains in the browser library.`
+          ? `Ejected ${entryName}: removed from the adapter and unloaded. Its dump remains in the browser library.`
           : "Virtual amiibo ejected and removed from the adapter. Its dump remains in the browser library.")
       : ejected?.ok
         ? (cleared?.error ||
@@ -2039,7 +2011,7 @@ async function saveCurrentAmiibo() {
     }
 
     amiiboLibrarySelectedKey = updated.key;
-    amiiboSlotLibraryKeys[amiiboSelectedSlot] = updated.key;
+    amiiboLoadedSlotKey = updated.key;
     persistAmiiboSlotState();
     amiiboFileName = updated.name;
     renderAmiiboLibrary();
@@ -2054,7 +2026,7 @@ async function saveCurrentAmiibo() {
       return;
     }
     $("#amiiboMessage").textContent =
-      `Synced ${updated.name}: the console-written dump now replaces its browser library copy in Amiibo Slot ${amiiboSelectedSlot + 1}.`;
+      `Synced ${updated.name}: the console-written dump now replaces its browser library copy.`;
   } catch (error) {
     $("#amiiboMessage").textContent =
       `Sync Amiibo failed: ${error.message}. The adapter remains protected.`;
@@ -2602,10 +2574,10 @@ $("#amiiboLibraryBackupFile").onchange = async e => {
   if (file) await importAmiiboLibraryBackup(file);
 };
 $("#amiiboSaveBtn").onclick = saveCurrentAmiibo;
-$("#amiiboSelectSave1Btn").onclick =
-  () => selectAmiiboQuickSlot(0);
-$("#amiiboSelectSave2Btn").onclick =
-  () => selectAmiiboQuickSlot(1);
+$("#amiiboModeSaveBtn").onclick =
+  () => setAmiiboPresentationMode(false);
+$("#amiiboModeRandomBtn").onclick =
+  () => setAmiiboPresentationMode(true);
 $("#amiiboPersistBtn").onclick = persistCurrentAmiibo;
 $("#capStartBtn").onclick = capStart;
 $("#capStopBtn").onclick = capStop;

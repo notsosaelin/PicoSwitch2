@@ -120,20 +120,29 @@ Virtual Amiibo itself is always available; an empty store simply presents no vir
 Config-only BLE transport makes the portal reachable while the dongle remains physically attached
 to the console, although entering Config temporarily replaces the controller USB personality.
 
-The production manager makes those layers explicit. Carousel selection does not immediately mutate
-the adapter: **Load Amiibo** (between the carousel arrows) places the highlighted amiibo into the
-selected browser quick slot, **Activate Amiibo** uploads/presents the slot (label becomes a
-disabled **Amiibo activated** while that image is already presented), and **Sync Amiibo**
-retrieves the latest console-written image and overwrites its validated browser-library record.
-Removal is one merged button whose label always states its exact current scope: **Eject Amiibo**
-(the slot's amiibo is on the adapter) confirms, clears presentation (`amiibo eject`), discards the
-stored image and both flash journal banks (`amiibo clear`), and empties the slot; **Clear Slot N**
-(the adapter does not hold the slot's amiibo) empties only the browser pointer with no confirm;
-**Eject Virtual Amiibo** (slot empty, adapter loaded — including a foreign image in no library)
-performs only the adapter wipe. Cancelling a confirm aborts everything, and library dumps are
-never deleted. The console-driven Stop/write-back lifecycle is unchanged; re-activating a
-console-ejected retained identity still uses the lightweight `amiibo present` path without
-reprogramming flash.
+The board stores exactly one amiibo; the browser exposes a single loaded-amiibo slot (the former
+two-quick-slot pointers were retired). Carousel selection does not immediately mutate the adapter:
+**Load Amiibo** (between the carousel arrows) stages the highlighted amiibo, **Activate Amiibo**
+uploads/presents it (label becomes a disabled **Amiibo activated** while already presented), and
+**Sync Amiibo** retrieves the latest console-written image and overwrites its validated
+browser-library record. Removal is one merged button whose label always states its exact current
+scope: **Eject Amiibo** (the loaded amiibo is on the adapter) confirms, clears presentation
+(`amiibo eject`), discards the stored image and both flash journal banks (`amiibo clear`), and
+unloads it; **Clear Loaded Amiibo** (the adapter does not hold the loaded amiibo) unloads with no
+confirm; **Eject Virtual Amiibo** (nothing loaded here, adapter holds an image — including a
+foreign image in no library) performs only the adapter wipe. Cancelling a confirm aborts
+everything, and library dumps are never deleted. The console-driven Stop/write-back lifecycle is
+unchanged; re-activating a console-ejected retained identity still uses the lightweight
+`amiibo present` path without reprogramming flash.
+
+**Save/Random presentation mode** (`amiibo mode save|random`, volatile, Save default). Save Mode is
+the hardware-confirmed stable-identity path: the loaded image keeps its UID and console writes are
+saved. Random Mode overlays a freshly drawn NTAG UID/BCC (and a UID-derived PWD/PACK only when the
+source dump carries a nonzero password) on each fresh scan encounter, and console writes made under
+a random UID are discarded with the encounter — flash is never touched — so per-UID game cooldowns
+treat each tap as a different physical amiibo. Random-Mode console acceptance and identity/write
+differentiation are documented with confidence tiers and the pending hardware experiment in
+[`amiibo-identity-and-generation.md`](amiibo-identity-and-generation.md).
 
 References:
 

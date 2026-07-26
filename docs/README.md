@@ -31,6 +31,7 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Console command surface | [`switch2/command-surface.md`](switch2/command-surface.md) |
 | Controller firmware identity | [`switch2/firmware-versioning.md`](switch2/firmware-versioning.md) |
 | NFC implementation design | [`switch2/nfc-implementation.md`](switch2/nfc-implementation.md) |
+| Amiibo identity, differentiation, and generation | [`switch2/amiibo-identity-and-generation.md`](switch2/amiibo-identity-and-generation.md) |
 | NFC protocol evidence | [`switch2/nfc-protocol-inventory.md`](switch2/nfc-protocol-inventory.md) |
 | NFC feasibility/resource audit | [`experiments/nfc-feasibility-audit-2026-07-25.md`](experiments/nfc-feasibility-audit-2026-07-25.md) |
 | Virtual amiibo offline foundation | [`experiments/virtual-amiibo-foundation-2026-07-25.md`](experiments/virtual-amiibo-foundation-2026-07-25.md) |

@@ -44,6 +44,16 @@ typedef struct {
     // logically removes the tag; the next scan presents the selected image
     // again without discarding its console-written state.
     bool tag_ejected;
+    // Random-UID presentation ("random amiibo mode"): each fresh scan
+    // encounter overlays a new NTAG UID/BCC (and, when the source dump
+    // carries one, a UID-derived PWD/PACK) onto the presented image so
+    // per-tag game cooldowns treat it as a different physical amiibo. The
+    // overlay stays stable within one encounter; the integration layer
+    // discards console writes made under a random UID.
+    bool randomize_uid;
+    bool session_uid_valid;
+    uint8_t session_uid[7];
+    uint32_t uid_rng_state;
 } ns2_virtual_nfc_runtime_t;
 
 typedef struct {
@@ -56,6 +66,11 @@ typedef struct {
 } ns2_virtual_nfc_response_t;
 
 void ns2_virtual_nfc_runtime_init(ns2_virtual_nfc_runtime_t *runtime);
+// Enable/disable random-UID presentation and mix caller entropy into the
+// session RNG. Safe to call before every dispatch; toggling the mode
+// invalidates the current session UID so the next application draws fresh.
+void ns2_virtual_nfc_runtime_set_randomize_uid(
+    ns2_virtual_nfc_runtime_t *runtime, bool enabled, uint32_t entropy);
 void ns2_virtual_nfc_runtime_tick(ns2_virtual_nfc_runtime_t *runtime,
                                   uint32_t now_ms);
 // The integration layer clears this immediately after an atomic console

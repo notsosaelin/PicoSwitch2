@@ -49,17 +49,22 @@ neither firmware nor the site ships tag images. Two independent browser quick sl
 different library amiibo. A newly flashed UF2
 performs a one-shot erase of all five PicoSwitch2 persistence sectors, clearing settings, both
 virtual-tag banks, wake identity, and Bluetooth bonds. Ordinary power cycles retain state.
-The production manager now follows the definitive staged-slot layout: its explicit Slot 1/Slot 2
-switch chooses a quick slot, Load Amiibo (centered between the carousel arrows) places the
-highlighted amiibo into that slot, Activate Amiibo sends the slot to the adapter (showing a
-disabled "Amiibo activated" while that image is already presented), and Sync Amiibo pulls
-console-written data back into the validated browser copy. One merged eject/clear button always
-labels its exact current scope: "Eject Amiibo" removes the slot's adapter-held image and empties
-the slot after a save-confirmation prompt, "Clear Slot N" only empties the slot pointer, and
-"Eject Virtual Amiibo" removes an adapter image no slot references. Adapter-destructive modes
-discard the stored image and both flash journal banks through the `amiibo clear` command;
-cancelling the prompt aborts everything, and library dumps are never deleted. The console-driven
-Stop/write-back lifecycle is unchanged. Directory imports fill the visible library progressively. The centered
+The board stores exactly one amiibo; the flash "Save 1/Save 2" pair is that one identity's
+baseline/latest-written recovery copies, not two amiibo. The production manager is a single-slot
+layout: Load Amiibo (centered between the carousel arrows) stages the highlighted amiibo, Activate
+Amiibo sends it to the adapter (showing a disabled "Amiibo activated" while already presented), and
+Sync Amiibo pulls console-written data back into the validated browser copy. One merged eject/clear
+button always labels its exact scope: "Eject Amiibo" removes the loaded adapter-held image and
+unloads it after a save-confirmation prompt, "Clear Loaded Amiibo" only unloads, and "Eject Virtual
+Amiibo" removes an adapter image that is not loaded here. Adapter-destructive modes discard the
+stored image and both flash journal banks through `amiibo clear`; cancelling aborts everything, and
+library dumps are never deleted. A Save/Random mode toggle (`amiibo mode save|random`, volatile,
+Save default) selects presentation: Save Mode keeps the stored identity and saves console writes;
+Random Mode presents a fresh random NTAG UID per scan and discards console writes, defeating
+per-UID game cooldowns. Random Mode's console acceptance and any Save-Mode HMAC/UID revalidation
+are hardware-pending; see
+[`docs/switch2/amiibo-identity-and-generation.md`](docs/switch2/amiibo-identity-and-generation.md).
+The console-driven Stop/write-back lifecycle is unchanged. Directory imports fill the visible library progressively. The centered
 artwork is fixed in the middle at 100% size; four non-overlapping neighbors on each side use exact
 80/60/40/20% scaling. Movement is animated, names are omitted from the carousel, and
 game-series, amiibo-series, and product-type arrows cycle `All` followed by the imported library's

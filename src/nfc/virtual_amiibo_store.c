@@ -48,6 +48,7 @@ static virtual_amiibo_t tag;
 static critical_section_t tag_lock;
 static volatile bool persist_requested;
 static volatile bool clear_requested;
+static volatile bool random_mode_enabled;
 static volatile bool loaded_snapshot;
 static volatile bool presented_snapshot;
 static int active_bank = -1;
@@ -453,6 +454,16 @@ void virtual_amiibo_store_request_clear(void)
 bool virtual_amiibo_store_clear_pending(void)
 {
     return clear_requested;
+}
+
+void virtual_amiibo_store_set_random_mode(bool enabled)
+{
+    __atomic_store_n(&random_mode_enabled, enabled, __ATOMIC_RELEASE);
+}
+
+bool virtual_amiibo_store_random_mode(void)
+{
+    return __atomic_load_n(&random_mode_enabled, __ATOMIC_ACQUIRE);
 }
 
 bool virtual_amiibo_store_persist_pending(void)
