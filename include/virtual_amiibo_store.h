@@ -41,6 +41,25 @@ virtual_amiibo_result_t virtual_amiibo_store_set_presented(bool presented);
 // completion.
 void virtual_amiibo_store_request_clear(void);
 bool virtual_amiibo_store_clear_pending(void);
+
+// --- NTAG I2C 2K ("figure v3", e.g. Kirby Air Riders) present-and-trace slot ---
+// A RAM-only 2048-byte slot kept entirely separate from the 540/572 NTAG215
+// store and its flash journal, so this experimental path cannot affect the
+// validated NFC/persistence behavior. It exists to serve a v3 image to the
+// console so the UART tracer can capture how the console reads a 2 KB tag.
+// Not persisted; cleared on power cycle. See
+// docs/switch2/kirby-air-riders-extended-amiibo.md.
+virtual_amiibo_result_t virtual_amiibo_store_v3_upload_begin(
+    size_t size, uint32_t expected_crc);
+virtual_amiibo_result_t virtual_amiibo_store_v3_upload_chunk(
+    size_t offset, const uint8_t *data, size_t size);
+virtual_amiibo_result_t virtual_amiibo_store_v3_upload_commit(void);
+bool virtual_amiibo_store_v3_upload_active(void);
+// True once a valid v3 image has been uploaded and is presented.
+bool virtual_amiibo_store_v3_loaded(void);
+void virtual_amiibo_store_v3_clear(void);
+// Copies the 2048-byte v3 image; returns false if none is loaded.
+bool virtual_amiibo_store_v3_copy(uint8_t out[2048]);
 virtual_amiibo_result_t virtual_amiibo_store_upload_begin(
     size_t size, uint32_t expected_crc);
 virtual_amiibo_result_t virtual_amiibo_store_upload_chunk(

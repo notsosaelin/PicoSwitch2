@@ -7,6 +7,8 @@
 #include "pico/critical_section.h"
 #include "pico/multicore.h"
 
+#include "ns2_amiibo_v3.h"
+
 #define VIRTUAL_AMIIBO_FLASH_BANK0_OFFSET \
     (PICO_FLASH_SIZE_BYTES - 3u * FLASH_SECTOR_SIZE)
 #define VIRTUAL_AMIIBO_FLASH_BANK1_OFFSET \
@@ -258,6 +260,80 @@ virtual_amiibo_result_t virtual_amiibo_store_set_presented(bool presented)
         return VIRTUAL_AMIIBO_ERROR_NOT_LOADED;
     __atomic_store_n(&presented_snapshot, presented, __ATOMIC_RELEASE);
     return VIRTUAL_AMIIBO_OK;
+}
+
+// --- NTAG I2C 2K (v3) RAM-only present-and-trace slot ---
+// Deliberately independent of `tag`/`tag_lock` and the flash journal so this
+// experimental path can never disturb the validated 540/572 store.
+static uint8_t v3_image[NS2_AMIIBO_V3_SIZE];
+static uint8_t v3_upload_buf[NS2_AMIIBO_V3_SIZE];
+static uint16_t v3_upload_size;
+static uint16_t v3_upload_received;
+static uint32_t v3_upload_crc;
+static volatile bool v3_upload_in_progress;
+static volatile bool v3_slot_loaded;
+
+virtual_amiibo_result_t virtual_amiibo_store_v3_upload_begin(
+    size_t size, uint32_t expected_crc)
+{
+    if (size != NS2_AMIIBO_V3_SIZE) return VIRTUAL_AMIIBO_ERROR_SIZE;
+    v3_upload_size = (uint16_t)size;
+    v3_upload_received = 0;
+    v3_upload_crc = expected_crc;
+    memset(v3_upload_buf, 0, sizeof(v3_upload_buf));
+    v3_upload_in_progress = true;
+    return VIRTUAL_AMIIBO_OK;
+}
+
+virtual_amiibo_result_t virtual_amiibo_store_v3_upload_chunk(
+    size_t offset, const uint8_t *data, size_t size)
+{
+    if (!v3_upload_in_progress) return VIRTUAL_AMIIBO_ERROR_UPLOAD_STATE;
+    if (!data || size == 0) return VIRTUAL_AMIIBO_ERROR_ARGUMENT;
+    if (offset > v3_upload_size || size > (size_t)v3_upload_size - offset)
+        return VIRTUAL_AMIIBO_ERROR_RANGE;
+    memcpy(v3_upload_buf + offset, data, size);
+    if (offset + size > v3_upload_received)
+        v3_upload_received = (uint16_t)(offset + size);
+    return VIRTUAL_AMIIBO_OK;
+}
+
+virtual_amiibo_result_t virtual_amiibo_store_v3_upload_commit(void)
+{
+    if (!v3_upload_in_progress) return VIRTUAL_AMIIBO_ERROR_UPLOAD_STATE;
+    if (v3_upload_received != v3_upload_size)
+        return VIRTUAL_AMIIBO_ERROR_INCOMPLETE;
+    if (virtual_amiibo_crc32(v3_upload_buf, v3_upload_size) != v3_upload_crc)
+        return VIRTUAL_AMIIBO_ERROR_CRC;
+    if (!ns2_amiibo_v3_valid(v3_upload_buf, v3_upload_size))
+        return VIRTUAL_AMIIBO_ERROR_BCC;
+    memcpy(v3_image, v3_upload_buf, NS2_AMIIBO_V3_SIZE);
+    v3_upload_in_progress = false;
+    __atomic_store_n(&v3_slot_loaded, true, __ATOMIC_RELEASE);
+    return VIRTUAL_AMIIBO_OK;
+}
+
+bool virtual_amiibo_store_v3_upload_active(void)
+{
+    return v3_upload_in_progress;
+}
+
+bool virtual_amiibo_store_v3_loaded(void)
+{
+    return __atomic_load_n(&v3_slot_loaded, __ATOMIC_ACQUIRE);
+}
+
+void virtual_amiibo_store_v3_clear(void)
+{
+    v3_upload_in_progress = false;
+    __atomic_store_n(&v3_slot_loaded, false, __ATOMIC_RELEASE);
+}
+
+bool virtual_amiibo_store_v3_copy(uint8_t out[2048])
+{
+    if (!out || !virtual_amiibo_store_v3_loaded()) return false;
+    memcpy(out, v3_image, NS2_AMIIBO_V3_SIZE);
+    return true;
 }
 
 void virtual_amiibo_store_status(virtual_amiibo_status_t *out)

@@ -164,14 +164,23 @@ Two hard realities shape the plan:
 store, flash journal, and read path stay byte-identical; all host tests and the `NS2_PRO=OFF` gate
 pass at each step.
 
-### Phase 1 — RAM-only v3 slot + present-and-trace (no flash change)
-- Add a separate RAM-resident 2048-byte v3 image slot, independent of `virtual_amiibo_t`, so the
-  540 store and its flash journal are untouched (zero persistence risk). v3 tags are session-scoped
-  until Phase 3.
-- Accept a 2048-byte image over the existing config upload path (size-gated to the v3 slot).
-- Attempt to present it and **log the console's exact request sequence** over UART. This is the
-  implement-and-trace step that reveals the controller→console framing for a 2 KB tag (does the
-  status report a new type? does the read buffer/length grow? new subcommands?).
+### Phase 1 — RAM-only v3 slot + present-and-trace (no flash change) — IMPLEMENTED
+- Isolated RAM slot in `virtual_amiibo_store.c` (`virtual_amiibo_store_v3_*`), separate from
+  `virtual_amiibo_t` and the flash journal, so the 540 store and persistence are untouched. Session-
+  scoped; cleared on power cycle.
+- Config upload accepts a 2048-byte image: `amiibo begin 2048 <crc>` routes to the v3 slot;
+  `chunk`/`commit` follow the active v3 upload. Validated by `ns2_amiibo_v3_valid` + CRC.
+- Serve: when a v3 image is loaded, `ns2_v3_serve()` in `switch_pro2.c` handles the console NFC
+  commands ahead of the 540 runtime — reports the tag present with the 7-byte UID (`0x05`), begins a
+  read (`0x06`), and serves the full 2048-byte image in chunks (`0x15` + little-endian offset) via
+  `ns2_virtual_nfc_build_buffer_chunk`; the HID report's NFC event byte (`0x0C`) carries a v3 event
+  counter so the console notices the tag. Writes are not handled (trace-only).
+- Every console command is already logged by `ns2_dispatch()`'s tracer, and `ns2_v3_serve` traces
+  its replies, so a live present captures the exact controller→console read sequence for a 2 KB tag.
+- **What the trace will show** (the remaining unknown): whether the console reads only ~600 bytes
+  (treating it as NTAG215 and likely rejecting), reads further via `0x15` offsets (revealing a
+  larger read length), or issues a new type/sector handshake. Any of recognize / reject / crash is
+  useful. Feed the result into Phase 2.
 
 ### Phase 2 — serve the confirmed protocol (hardware loop)
 - Implement the console-facing read/response for the traced framing so a real Switch 2 builds the

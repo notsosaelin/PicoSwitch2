@@ -403,11 +403,14 @@ static void cmd_amiibo(char *arg) {
         unsigned long crc;
         char trailing;
         if (sscanf(arg + 6, "%lu %lx %c", &size, &crc, &trailing) != 2) {
-            reply("{\"error\":\"usage: amiibo begin <540|572> <crc32>\"}");
+            reply("{\"error\":\"usage: amiibo begin <540|572|2048> <crc32>\"}");
             return;
         }
-        reply_amiibo_result(virtual_amiibo_store_upload_begin(
-            (size_t)size, (uint32_t)crc));
+        // A 2048-byte image routes to the isolated NTAG I2C 2K (v3) slot; all
+        // other sizes use the validated NTAG215 store unchanged.
+        reply_amiibo_result(size == 2048u
+            ? virtual_amiibo_store_v3_upload_begin((size_t)size, (uint32_t)crc)
+            : virtual_amiibo_store_upload_begin((size_t)size, (uint32_t)crc));
         return;
     }
 
@@ -431,13 +434,16 @@ static void cmd_amiibo(char *arg) {
             reply("{\"error\":\"chunk must contain 1-32 hex bytes\"}");
             return;
         }
-        reply_amiibo_result(virtual_amiibo_store_upload_chunk(
-            (size_t)offset, bytes, length));
+        reply_amiibo_result(virtual_amiibo_store_v3_upload_active()
+            ? virtual_amiibo_store_v3_upload_chunk((size_t)offset, bytes, length)
+            : virtual_amiibo_store_upload_chunk((size_t)offset, bytes, length));
         return;
     }
 
     if (strcmp(arg, "commit") == 0) {
-        reply_amiibo_result(virtual_amiibo_store_upload_commit());
+        reply_amiibo_result(virtual_amiibo_store_v3_upload_active()
+            ? virtual_amiibo_store_v3_upload_commit()
+            : virtual_amiibo_store_upload_commit());
         return;
     }
     if (strcmp(arg, "commit save2") == 0 ||
