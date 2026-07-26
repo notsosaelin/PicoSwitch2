@@ -31,13 +31,13 @@ Release notes describe user-visible behavior. Detailed implementation history re
   (loaded-plus-adapter eject, unload-only, or adapter-only eject of an image not loaded here).
   Adapter-destructive modes confirm first and remove the stored image (`amiibo clear`) while
   leaving the console Stop/write-back lifecycle unchanged.
-- Save/Random amiibo presentation mode (`amiibo mode save|random`, volatile, Save default). Random
-  Mode presents a freshly randomized NTAG UID on every console scan and discards console writes,
-  defeating per-amiibo game cooldowns (e.g. the Zelda daily-spawn limit); Save Mode keeps the
-  stored identity and saves writes. Console acceptance of randomized identities is hardware-pending.
-- Amiibo identity/generation research (`docs/switch2/amiibo-identity-and-generation.md`) and a
-  key-free raw-layout identity-only generator (`tools/generate_test_amiibo.py`) as an experiment
-  artifact toward serving amiibo without user-supplied dumps.
+- Amiibo identity/generation research (`docs/switch2/amiibo-identity-and-generation.md`,
+  `docs/experiments/generated-amiibo-console-rejection-2026-07-26.md`): a 2026-07-26 hardware test
+  established that the Switch 2 validates amiibo cryptography, so key-free generated images are
+  rejected and only genuine dumps served with their original identity are console-valid. A briefly
+  implemented random-UID presentation mode was removed for the same reason (a runtime UID swap
+  breaks the UID-bound HMAC). `tools/generate_test_amiibo.py` is retained only as a portal-test
+  artifact.
 - Stable localhost launcher for the production USB Serial/Bluetooth portal.
 - Config-personality-only BLE management service and Web Bluetooth client. It pauses controller
   discovery before low-duty advertising, classifies its incoming Peripheral-role link before HID,

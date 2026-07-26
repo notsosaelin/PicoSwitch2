@@ -135,14 +135,13 @@ everything, and library dumps are never deleted. The console-driven Stop/write-b
 unchanged; re-activating a console-ejected retained identity still uses the lightweight
 `amiibo present` path without reprogramming flash.
 
-**Save/Random presentation mode** (`amiibo mode save|random`, volatile, Save default). Save Mode is
-the hardware-confirmed stable-identity path: the loaded image keeps its UID and console writes are
-saved. Random Mode overlays a freshly drawn NTAG UID/BCC (and a UID-derived PWD/PACK only when the
-source dump carries a nonzero password) on each fresh scan encounter, and console writes made under
-a random UID are discarded with the encounter — flash is never touched — so per-UID game cooldowns
-treat each tap as a different physical amiibo. Random-Mode console acceptance and identity/write
-differentiation are documented with confidence tiers and the pending hardware experiment in
-[`amiibo-identity-and-generation.md`](amiibo-identity-and-generation.md).
+The amiibo keeps its stored identity and UID; console writes are saved to the used copy. A
+short-lived "Random Mode" that swapped in a random UID per scan was removed after a 2026-07-26
+hardware test showed the Switch 2 validates the UID-bound cryptography — a runtime UID change
+invalidates the tag HMAC, which cannot be recomputed without retail keys. That test also refuted
+key-free image generation. See
+[`amiibo-identity-and-generation.md`](amiibo-identity-and-generation.md) and
+[`../experiments/generated-amiibo-console-rejection-2026-07-26.md`](../experiments/generated-amiibo-console-rejection-2026-07-26.md).
 
 References:
 

@@ -758,13 +758,6 @@ static bool ns2_virtual_nfc_dispatch_usb(const uint8_t *command,
         command[0] != 0x01u)
         return false;
 
-    // Presentation policy is read fresh per command; sync_presentation may
-    // have just reset the runtime, and this restores the volatile mode flag
-    // while mixing timer entropy into the session-UID RNG.
-    const bool random_mode = virtual_amiibo_store_random_mode();
-    ns2_virtual_nfc_runtime_set_randomize_uid(
-        &ns2_virtual_nfc_runtime, random_mode, time_us_32());
-
     virtual_amiibo_status_t status;
     virtual_amiibo_store_status(&status);
     bool tag_present = false;
@@ -788,12 +781,7 @@ static bool ns2_virtual_nfc_dispatch_usb(const uint8_t *command,
         ns2_virtual_nfc_runtime.operation_active)
         ns2_virtual_nfc_operation_generation = generation;
 
-    if (response.write_committed && random_mode) {
-        // Random-UID encounters are ephemeral by design: the console's write
-        // succeeded into this encounter's RAM copy only. The stored image and
-        // flash stay untouched, so nothing enters the persist queue and the
-        // committed Stop's removal edge needs no persistence wait.
-    } else if (response.write_committed &&
+    if (response.write_committed &&
         virtual_amiibo_store_apply_console_write(
             ns2_virtual_nfc_raw,
             ns2_virtual_nfc_operation_generation) != VIRTUAL_AMIIBO_OK) {

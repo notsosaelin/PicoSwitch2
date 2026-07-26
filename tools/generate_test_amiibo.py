@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Generate a raw-format, identity-only 540-byte amiibo image for the
-signature-less acceptance experiment.
+"""Generate a raw-format, identity-only 540-byte amiibo image.
 
-Motivation (see docs/switch2/amiibo-identity-and-generation.md): community
+RESULT (2026-07-26, docs/experiments/generated-amiibo-console-rejection-2026-07-26.md):
+a real Switch 2 REJECTS these images ("This isn't an amiibo") because the
+console validates amiibo cryptography, which this tool cannot produce without
+Nintendo's retail keys. **The output is not console-usable.** This tool is now
+a portal/identity-plumbing test artifact only: it exercises upload, catalog
+matching, and the manager UI (which read only the plaintext identity block).
+A genuine user dump remains the only console-valid input.
+
+Background (see docs/switch2/amiibo-identity-and-generation.md): community
 generators such as hax0kartik/amiibo-generator emit amiitool DECRYPTED-layout
 templates (identity at 0x1DC) that are not directly serveable by the
 PicoSwitch2 virtual reader, which speaks the raw NTAG215 layout. This tool
 builds the raw-layout equivalent: correct NTAG215 structure plus the 8-byte
 amiibo identity block, with all cryptographic regions (tag/data HMACs,
 encrypted settings, originality signature) intentionally zeroed.
-
-The output is deliberately an experiment artifact. Whether a real Switch 2
-accepts it through the virtual reader path is an open question this file
-exists to answer; a genuine dump remains the only Confirmed-tier input.
 
 Usage:
     python tools/generate_test_amiibo.py <amiibo-id> [-o OUT.bin] [--uid HEX14]

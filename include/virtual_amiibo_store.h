@@ -41,12 +41,6 @@ virtual_amiibo_result_t virtual_amiibo_store_set_presented(bool presented);
 // completion.
 void virtual_amiibo_store_request_clear(void);
 bool virtual_amiibo_store_clear_pending(void);
-// Volatile presentation policy, never persisted: while random mode is on,
-// the Pro2 virtual reader presents each fresh console scan encounter under a
-// new random NTAG UID and discards console writes with the encounter. Save
-// mode (default) is the hardware-confirmed stable-identity behavior.
-void virtual_amiibo_store_set_random_mode(bool enabled);
-bool virtual_amiibo_store_random_mode(void);
 virtual_amiibo_result_t virtual_amiibo_store_upload_begin(
     size_t size, uint32_t expected_crc);
 virtual_amiibo_result_t virtual_amiibo_store_upload_chunk(

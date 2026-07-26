@@ -1,7 +1,9 @@
 # Amiibo identity, differentiation, and generation feasibility
 
-Status: 🔵 Partial — format documented from primary references; console acceptance of
-signature-less generated images is **Unknown** and gated on a hardware experiment.
+Status: 🔵 Partial — format documented from primary references. Console acceptance of
+signature-less generated images is **Refuted** (2026-07-26 hardware test): the Switch 2 validates
+amiibo cryptography, so key-free generated images are rejected. Runtime UID randomization (Random
+Mode) is expected to fail on genuine dumps for the same reason; one confirming test remains.
 Last updated: 2026-07-26
 
 ## Purpose
@@ -57,34 +59,24 @@ The two HMACs and the encrypted block are bound to the UID through Nintendo's ke
 (`unfixed-info` + `locked-secret`). Changing the UID on a genuine dump invalidates both HMACs unless
 they are recomputed with the retail keys — which we deliberately do not ship (see §4).
 
-## 3. Random Amiibo Mode vs Save Amiibo Mode
+## 3. Presentation behavior (why "Random Mode" was removed)
 
-Two volatile presentation modes, selectable in the portal (`amiibo mode save|random`; never
-persisted, defaults to Save on every boot):
+The virtual reader presents the loaded image with its **stored identity and UID**; console writes
+are applied to the used copy and persisted to flash. This is the hardware-validated behavior and
+the only presentation mode.
 
-- **Save Mode** (default, **Confirmed** lifecycle): the loaded image keeps its stored identity and
-  UID; console writes are applied to the used copy and persisted to flash. This is the existing
-  hardware-validated behavior.
-- **Random Mode** (**Hypothesis**, hardware pending): on each fresh console scan encounter the
-  virtual reader overlays a newly drawn NTAG UID (and, only when the source dump carries a nonzero
-  PWD, a UID-derived PWD/PACK) onto the presented image. The overlay is stable within one encounter
-  so status/select/read stay consistent, and console writes made under a random UID are **discarded**
-  with the encounter — flash is never touched. Purpose: defeat per-UID game cooldowns by making each
-  tap look like a different physical copy.
+A "Random Mode" was briefly implemented (2026-07-26) to defeat per-UID game cooldowns (e.g. the
+Zelda daily-spawn limit) by overlaying a freshly drawn NTAG UID on each scan encounter. It was
+**removed the same day** once the crypto-validation result below made clear the approach cannot
+work: because the tag HMAC at page `0x34` is computed over the UID, swapping the UID at runtime
+invalidates the HMAC, and recomputing it requires Nintendo's retail keys this project will not
+ship. The console would reject the randomized tag exactly as it rejected the key-free generated
+file. See §4 and
+[`../experiments/generated-amiibo-console-rejection-2026-07-26.md`](../experiments/generated-amiibo-console-rejection-2026-07-26.md).
 
-Implementation: `ns2_virtual_nfc_runtime_set_randomize_uid()` +
-`apply_session_uid()` in
-[`../../src/nfc/ns2_virtual_nfc_runtime.c`](../../src/nfc/ns2_virtual_nfc_runtime.c); mode flag in
-[`../../src/nfc/virtual_amiibo_store.c`](../../src/nfc/virtual_amiibo_store.c); host coverage in
-[`../../tools/test_ns2_virtual_nfc_runtime.c`](../../tools/test_ns2_virtual_nfc_runtime.c)
-(`test_random_uid_mode`).
-
-**Open question (Hypothesis → needs hardware):** whether a real Switch 2 in Save Mode revalidates
-HMACs against the overlaid UID. Because Save Mode does **not** overlay a UID, only Random Mode is
-exposed to this risk, and Random Mode already discards writes and never persists. The BCC bytes are
-recomputed correctly; what is unverified is whether the console rejects a scan whose UID no longer
-matches the (unchanged, UID-bound) HMACs. If it does, Random Mode requires either genuine per-UID
-dumps or on-device HMAC recomputation (keys required) — document the result before promoting.
+The only key-free ways to make "a different tag each tap" are therefore a **pool of distinct
+genuine dumps** of the same character, or on-device HMAC recomputation (keys required, out of
+scope). Neither is implemented.
 
 ## 4. Can we generate amiibo without user uploads?
 
@@ -100,30 +92,25 @@ equivalent: correct NTAG215 structure + the 8-byte identity block at `0x54`, wit
 regions (both HMACs, encrypted settings, originality signature) zeroed. It requires no Nintendo keys
 and ships no copyrighted data.
 
-**The blocking unknown:** whether a real Switch 2 accepts a signature-less, HMAC-zero raw image
-through the virtual reader path. Evidence pointing both ways:
+**Resolved 2026-07-26 (Refuted):** a real Switch 2 rejected a generated zero-HMAC image with
+"This isn't an amiibo" in both Save and Random mode, while the portal identified it correctly
+(the portal reads only the plaintext identity block). See
+[`../experiments/generated-amiibo-console-rejection-2026-07-26.md`](../experiments/generated-amiibo-console-rejection-2026-07-26.md).
+The console validates amiibo cryptography (at least one of the tag HMAC, data HMAC, or originality
+signature), so correct plaintext identity is necessary but not sufficient.
 
-- For: STATUS records that normal 540-byte dumps do not contain `READ_SIG`, the successful native
-  read buffer had a zeroed signature field, and a real console accepted the virtual reader path.
-- Against: those tests used genuine dumps whose **HMACs were valid**. A zero-HMAC image has never
-  been presented to a console from this project.
+Consequences:
 
-Until that experiment runs (see below), generated images remain an **experiment artifact**, and a
-genuine user dump is the only **Confirmed**-tier input. If the console validates HMACs, key-free
-generation is limited to Random-Mode-style throwaway taps at best, and full generation would require
-the retail keys we will not ship.
-
-### Smallest useful next experiment
-
-1. `python tools/generate_test_amiibo.py <id>` for a low-risk game (not a save-bearing title).
-2. Upload via the portal, Activate, scan on a real Switch 2, capture the UART trace.
-3. Record whether the console reports a valid tag, an "unsupported/damaged amiibo," or silence.
-4. Repeat once with a genuine dump of the same title as the control.
-5. File the result in `docs/experiments/` and update this file's confidence tiers.
-
-Define acceptance in advance: **accepted** = the game reads the amiibo and responds as it would to a
-genuine tag; **rejected** = any error dialog or no-read. Preserve a negative result — it settles the
-generation question either way.
+- **Key-free generation cannot produce console-usable amiibo.** A genuine user dump remains the
+  only **Confirmed** input. `generate_test_amiibo.py` is a portal/identity-plumbing test artifact
+  only.
+- **Random Mode's runtime UID overlay is expected to fail on genuine dumps too**, because the tag
+  HMAC is UID-bound and we cannot recompute it without the retail keys. One confirming test with a
+  genuine dump remains (see the experiment report). If confirmed, viable "different tag each tap"
+  options reduce to a pool of distinct genuine dumps or on-device HMAC recomputation (keys
+  required, out of scope).
+- Full key-based generation would require shipping/holding the retail `unfixed-info` and
+  `locked-secret` keys, which this project will not do.
 
 ## References
 
