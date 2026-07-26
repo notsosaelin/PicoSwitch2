@@ -100,6 +100,7 @@ extern int find_player_index(int dev_addr, int instance);
 #include "switch2_pro2_audio_transport.h"
 #include "switch2_pro2_audio_replay_fixture.h"
 #include "ns2_bt_version_probe.h"
+#include "ns2_nfc_mirror.h"
 #include "ns2_native_motion.h"
 #include "bt_identity_log.h"
 #ifdef NS2_PRO
@@ -4426,6 +4427,9 @@ static void register_ble_hid_listener(hci_con_handle_t con_handle)
 #define SW2_OUTPUT_REPORT_HANDLE    0x0012  // Rumble output
 #define SW2_CMD_HANDLE              0x0014  // Command output
 #define SW2_ACK_CCC_HANDLE          0x001B  // ACK notification CCC
+#define SW2_NFC_COMMAND_HANDLE      0x0016  // Extended NFC command write
+#define SW2_NFC_RESPONSE_HANDLE     0x001E  // Extended NFC response notification
+#define SW2_NFC_CCC_HANDLE          0x001F  // Extended NFC response CCC
 
 // Opt-in motion-enable experiment (see sw2_capture.h) — UNVERIFIED for this device. Handle
 // numbering guessed from switch2_input_viewer.py's second input-report path plus this repo's own
@@ -5039,6 +5043,38 @@ static volatile uint32_t s_sw2_motion_last_notification_us;
 static gatt_client_notification_t sw2_pro2_audio_notification_listener;
 static gatt_client_characteristic_t sw2_pro2_audio_characteristic;
 
+// UART-gated genuine NFC mirror. The handles above come from this
+// repository's own live GATT discovery. This path only captures the genuine
+// response; it does not replace the console-facing response yet.
+static volatile bool s_sw2_nfc_mirror_requested;
+static volatile ns2_nfc_mirror_state_t s_sw2_nfc_mirror_state =
+    NS2_NFC_MIRROR_OFF;
+static volatile uint8_t s_sw2_nfc_mirror_last_att_status;
+static volatile uint8_t s_sw2_nfc_mirror_last_send_status;
+static volatile uint8_t s_sw2_nfc_mirror_last_command;
+static volatile uint8_t s_sw2_nfc_mirror_last_subcommand;
+static volatile uint8_t s_sw2_nfc_mirror_report_state;
+static volatile uint16_t s_sw2_nfc_mirror_last_response_length;
+static volatile uint32_t s_sw2_nfc_mirror_commands_submitted;
+static volatile uint32_t s_sw2_nfc_mirror_commands_sent;
+static volatile uint32_t s_sw2_nfc_mirror_notifications;
+static volatile uint32_t s_sw2_nfc_mirror_report_state_transitions;
+static volatile uint32_t s_sw2_nfc_mirror_rejected;
+static volatile bool s_sw2_nfc_mirror_slot_claimed;
+static volatile bool s_sw2_nfc_mirror_command_pending;
+static volatile bool s_sw2_nfc_mirror_awaiting_response;
+static volatile bool s_sw2_nfc_mirror_response_ready;
+static uint8_t s_sw2_nfc_mirror_command[NS2_NFC_MIRROR_COMMAND_MAX];
+static size_t s_sw2_nfc_mirror_command_length;
+static uint8_t s_sw2_nfc_mirror_response[NS2_NFC_MIRROR_RESPONSE_MAX];
+static size_t s_sw2_nfc_mirror_response_length;
+static uint8_t s_sw2_nfc_mirror_send_failures;
+static uint32_t s_sw2_nfc_mirror_next_send_ms;
+static uint32_t s_sw2_nfc_mirror_awaiting_since_ms;
+static volatile uint32_t s_sw2_nfc_mirror_response_timeouts;
+static gatt_client_notification_t sw2_nfc_mirror_notification_listener;
+static gatt_client_characteristic_t sw2_nfc_mirror_characteristic;
+
 typedef enum {
     SW2_PRO2_REPLAY_IDLE = 0,
     SW2_PRO2_REPLAY_SETUP_ONE,
@@ -5154,6 +5190,160 @@ void btstack_host_get_switch2_pro2_audio_diag(btstack_host_pro2_audio_diag_t *ou
     out->live_frames_sent = s_sw2_pro2_live_frames_sent;
     out->live_underruns = s_sw2_pro2_live_underruns;
     out->live_prime_count = s_sw2_pro2_live_prime_count;
+}
+
+void ns2_nfc_mirror_request(bool enabled)
+{
+    if (enabled) {
+        __atomic_store_n(
+            &s_sw2_nfc_mirror_report_state, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(
+            &s_sw2_nfc_mirror_command_pending, false, __ATOMIC_RELEASE);
+        __atomic_store_n(
+            &s_sw2_nfc_mirror_awaiting_response, false, __ATOMIC_RELEASE);
+        __atomic_store_n(
+            &s_sw2_nfc_mirror_response_ready, false, __ATOMIC_RELEASE);
+        __atomic_store_n(
+            &s_sw2_nfc_mirror_slot_claimed, false, __ATOMIC_RELEASE);
+    }
+    __atomic_store_n(&s_sw2_nfc_mirror_requested, enabled, __ATOMIC_RELEASE);
+}
+
+void ns2_nfc_mirror_snapshot(ns2_nfc_mirror_diag_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    ble_connection_t *conn = find_connection_by_handle(sw2_init_handle);
+    out->requested = __atomic_load_n(
+        &s_sw2_nfc_mirror_requested, __ATOMIC_ACQUIRE);
+    out->state = (uint8_t)__atomic_load_n(
+        &s_sw2_nfc_mirror_state, __ATOMIC_ACQUIRE);
+    out->active = out->state == NS2_NFC_MIRROR_ACTIVE;
+    out->command_pending = __atomic_load_n(
+        &s_sw2_nfc_mirror_slot_claimed, __ATOMIC_ACQUIRE);
+    out->awaiting_response = __atomic_load_n(
+        &s_sw2_nfc_mirror_awaiting_response, __ATOMIC_ACQUIRE);
+    out->last_att_status = s_sw2_nfc_mirror_last_att_status;
+    out->last_send_status = s_sw2_nfc_mirror_last_send_status;
+    out->last_command = s_sw2_nfc_mirror_last_command;
+    out->last_subcommand = s_sw2_nfc_mirror_last_subcommand;
+    out->report_state = __atomic_load_n(
+        &s_sw2_nfc_mirror_report_state, __ATOMIC_ACQUIRE);
+    out->source_pid = conn ? conn->pid : 0;
+    out->connection_handle = sw2_init_handle;
+    out->last_response_length = s_sw2_nfc_mirror_last_response_length;
+    out->commands_submitted = __atomic_load_n(
+        &s_sw2_nfc_mirror_commands_submitted, __ATOMIC_ACQUIRE);
+    out->commands_sent = __atomic_load_n(
+        &s_sw2_nfc_mirror_commands_sent, __ATOMIC_ACQUIRE);
+    out->notifications = __atomic_load_n(
+        &s_sw2_nfc_mirror_notifications, __ATOMIC_ACQUIRE);
+    out->report_state_transitions = __atomic_load_n(
+        &s_sw2_nfc_mirror_report_state_transitions, __ATOMIC_ACQUIRE);
+    out->response_timeouts = __atomic_load_n(
+        &s_sw2_nfc_mirror_response_timeouts, __ATOMIC_ACQUIRE);
+    out->rejected = __atomic_load_n(
+        &s_sw2_nfc_mirror_rejected, __ATOMIC_ACQUIRE);
+}
+
+bool ns2_nfc_mirror_submit(const uint8_t *command, size_t length)
+{
+    if (!__atomic_load_n(
+            &s_sw2_nfc_mirror_requested, __ATOMIC_ACQUIRE)) {
+        return false;
+    }
+    if (!command || length < 8u || length > NS2_NFC_MIRROR_COMMAND_MAX ||
+        command[0] != 0x01u ||
+        __atomic_load_n(
+            &s_sw2_nfc_mirror_response_ready, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&s_sw2_nfc_mirror_state, __ATOMIC_ACQUIRE) !=
+            NS2_NFC_MIRROR_ACTIVE) {
+        __atomic_add_fetch(&s_sw2_nfc_mirror_rejected, 1u, __ATOMIC_RELAXED);
+        return false;
+    }
+
+    bool expected = false;
+    if (!__atomic_compare_exchange_n(
+            &s_sw2_nfc_mirror_slot_claimed, &expected, true, false,
+            __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        __atomic_add_fetch(&s_sw2_nfc_mirror_rejected, 1u, __ATOMIC_RELAXED);
+        return false;
+    }
+
+    memcpy(s_sw2_nfc_mirror_command, command, length);
+    s_sw2_nfc_mirror_command_length = length;
+    s_sw2_nfc_mirror_last_command = command[0];
+    s_sw2_nfc_mirror_last_subcommand = command[3];
+    s_sw2_nfc_mirror_send_failures = 0;
+    s_sw2_nfc_mirror_next_send_ms = 0;
+    __atomic_add_fetch(
+        &s_sw2_nfc_mirror_commands_submitted, 1u, __ATOMIC_RELAXED);
+    __atomic_store_n(
+        &s_sw2_nfc_mirror_command_pending, true, __ATOMIC_RELEASE);
+    return true;
+}
+
+bool ns2_nfc_mirror_accept_ble_response(
+    const uint8_t *response, size_t length)
+{
+    if (!response || length < 8u ||
+        !__atomic_load_n(
+            &s_sw2_nfc_mirror_awaiting_response, __ATOMIC_ACQUIRE) ||
+        response[0] != 0x01u ||
+        response[3] != s_sw2_nfc_mirror_last_subcommand ||
+        __atomic_load_n(
+            &s_sw2_nfc_mirror_response_ready, __ATOMIC_ACQUIRE)) {
+        return false;
+    }
+
+    const size_t usb_length = ns2_nfc_mirror_translate_ble_response(
+        s_sw2_nfc_mirror_response, sizeof(s_sw2_nfc_mirror_response),
+        response, length);
+    if (usb_length == 0) {
+        __atomic_add_fetch(
+            &s_sw2_nfc_mirror_rejected, 1u, __ATOMIC_RELAXED);
+        return false;
+    }
+
+    s_sw2_nfc_mirror_last_response_length = (uint16_t)length;
+    s_sw2_nfc_mirror_response_length = usb_length;
+    __atomic_add_fetch(
+        &s_sw2_nfc_mirror_notifications, 1u, __ATOMIC_RELAXED);
+    __atomic_store_n(
+        &s_sw2_nfc_mirror_response_ready, true, __ATOMIC_RELEASE);
+    __atomic_store_n(
+        &s_sw2_nfc_mirror_awaiting_response, false, __ATOMIC_RELEASE);
+    __atomic_store_n(
+        &s_sw2_nfc_mirror_slot_claimed, false, __ATOMIC_RELEASE);
+    return true;
+}
+
+bool ns2_nfc_mirror_take_usb_response(
+    uint8_t *response, size_t capacity, size_t *length)
+{
+    if (!response || !length ||
+        !__atomic_load_n(
+            &s_sw2_nfc_mirror_response_ready, __ATOMIC_ACQUIRE) ||
+        capacity < s_sw2_nfc_mirror_response_length) {
+        return false;
+    }
+
+    *length = s_sw2_nfc_mirror_response_length;
+    memcpy(response, s_sw2_nfc_mirror_response, *length);
+    __atomic_store_n(
+        &s_sw2_nfc_mirror_response_ready, false, __ATOMIC_RELEASE);
+    return true;
+}
+
+uint8_t ns2_nfc_mirror_report_state(void)
+{
+    if (__atomic_load_n(
+            &s_sw2_nfc_mirror_state, __ATOMIC_ACQUIRE) !=
+        NS2_NFC_MIRROR_ACTIVE) {
+        return 0;
+    }
+    return __atomic_load_n(
+        &s_sw2_nfc_mirror_report_state, __ATOMIC_ACQUIRE);
 }
 
 static void switch2_capture_link_params(uint8_t phase, uint8_t status,
@@ -5305,6 +5495,21 @@ static void sw2_motion_notification_handler(uint8_t packet_type, uint16_t channe
     ble_connection_t *conn = find_connection_by_handle(con_handle);
     if (!conn || conn->pid != 0x2069) return; // Nintendo Switch 2 Pro Controller
 
+    if (value_length > 0x0C &&
+        __atomic_load_n(
+            &s_sw2_nfc_mirror_requested, __ATOMIC_ACQUIRE)) {
+        const uint8_t state = value[0x0C];
+        const uint8_t previous = __atomic_exchange_n(
+            &s_sw2_nfc_mirror_report_state, state, __ATOMIC_ACQ_REL);
+        if (state != previous) {
+            __atomic_add_fetch(
+                &s_sw2_nfc_mirror_report_state_transitions, 1u,
+                __ATOMIC_RELAXED);
+            sw2_capture_record(
+                SW2_CAP_NFC_STATE, SW2_MOTION_HANDLE, &state, 1);
+        }
+    }
+
     int conn_index = get_ble_conn_index_by_handle(con_handle);
     if (conn_index < 0) return;
 
@@ -5370,6 +5575,220 @@ static void sw2_pro2_audio_notification_handler(uint8_t packet_type, uint16_t ch
     pending_ble_report_len = sizeof(normalized);
     pending_ble_conn_index = (uint8_t)conn_index;
     ble_report_pending = true;
+}
+
+static void sw2_nfc_mirror_notification_handler(
+    uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size)
+{
+    UNUSED(channel);
+    UNUSED(size);
+    if (packet_type != HCI_EVENT_PACKET ||
+        hci_event_packet_get_type(packet) != GATT_EVENT_NOTIFICATION) return;
+
+    const uint16_t value_handle =
+        gatt_event_notification_get_value_handle(packet);
+    if (value_handle != SW2_NFC_RESPONSE_HANDLE) return;
+
+    const uint16_t value_length =
+        gatt_event_notification_get_value_length(packet);
+    const uint8_t *value = gatt_event_notification_get_value(packet);
+    s_sw2_nfc_mirror_last_response_length = value_length;
+    sw2_capture_record(
+        SW2_CAP_NFC_NOTIFY, value_handle, value, value_length);
+    if (value_length > 14u) {
+        (void)ns2_nfc_mirror_accept_ble_response(
+            &value[14], value_length - 14u);
+    }
+}
+
+static void sw2_nfc_mirror_ccc_callback(
+    uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size)
+{
+    UNUSED(channel);
+    UNUSED(size);
+    if (packet_type != HCI_EVENT_PACKET ||
+        hci_event_packet_get_type(packet) != GATT_EVENT_QUERY_COMPLETE) return;
+
+    const uint8_t status = gatt_event_query_complete_get_att_status(packet);
+    s_sw2_nfc_mirror_last_att_status = status;
+    sw2_capture_record(
+        SW2_CAP_WRITE_STATUS, SW2_NFC_CCC_HANDLE, &status, 1);
+
+    if (status != ATT_ERROR_SUCCESS) {
+        s_sw2_nfc_mirror_state = NS2_NFC_MIRROR_ERROR;
+        printf("[SW2_NFC] Extended-response CCC operation failed: 0x%02X\n",
+               status);
+        return;
+    }
+
+    if (s_sw2_nfc_mirror_state == NS2_NFC_MIRROR_SUBSCRIBE_PENDING) {
+        s_sw2_nfc_mirror_state = NS2_NFC_MIRROR_ACTIVE;
+        printf("[SW2_NFC] Genuine-reader diagnostic mirror active\n");
+    } else if (
+        s_sw2_nfc_mirror_state == NS2_NFC_MIRROR_UNSUBSCRIBE_PENDING) {
+        gatt_client_stop_listening_for_characteristic_value_updates(
+            &sw2_nfc_mirror_notification_listener);
+        s_sw2_nfc_mirror_state = NS2_NFC_MIRROR_OFF;
+        printf("[SW2_NFC] Genuine-reader diagnostic mirror disabled\n");
+    }
+}
+
+static void switch2_service_nfc_mirror(void)
+{
+    const bool requested = __atomic_load_n(
+        &s_sw2_nfc_mirror_requested, __ATOMIC_ACQUIRE);
+    ble_connection_t *conn = find_connection_by_handle(sw2_init_handle);
+
+    if (!requested && s_sw2_nfc_mirror_state == NS2_NFC_MIRROR_ERROR) {
+        gatt_client_stop_listening_for_characteristic_value_updates(
+            &sw2_nfc_mirror_notification_listener);
+        s_sw2_nfc_mirror_state = NS2_NFC_MIRROR_OFF;
+    }
+
+    if (sw2_init_state != SW2_INIT_DONE || sw2_init_handle == 0 ||
+        !conn || conn->pid != 0x2069) {
+        return;
+    }
+
+    if (requested && s_sw2_nfc_mirror_state == NS2_NFC_MIRROR_OFF) {
+        // Preserve the validated initialization and audio paths: claim the
+        // one outstanding GATT procedure only after their setup operations
+        // have finished.
+        if (s_sw2_v2_active != NULL ||
+            (s_sw2_v2_state != SW2_V2_IDLE &&
+             s_sw2_v2_state != SW2_V2_DONE) ||
+            (s_gatt_disc_state != SW2_GATT_DISC_IDLE &&
+             s_gatt_disc_state != SW2_GATT_DISC_DONE) ||
+            (s_sw2_pro2_audio_state != SW2_PRO2_AUDIO_OFF &&
+             s_sw2_pro2_audio_state != SW2_PRO2_AUDIO_ACTIVE)) {
+            return;
+        }
+
+        memset(&sw2_nfc_mirror_characteristic, 0,
+               sizeof(sw2_nfc_mirror_characteristic));
+        sw2_nfc_mirror_characteristic.value_handle =
+            SW2_NFC_RESPONSE_HANDLE;
+        sw2_nfc_mirror_characteristic.end_handle = 0x0020;
+        gatt_client_listen_for_characteristic_value_updates(
+            &sw2_nfc_mirror_notification_listener,
+            sw2_nfc_mirror_notification_handler, sw2_init_handle,
+            &sw2_nfc_mirror_characteristic);
+
+        static uint8_t ccc_enable[] = {0x01, 0x00};
+        s_sw2_nfc_mirror_state = NS2_NFC_MIRROR_SUBSCRIBE_PENDING;
+        sw2_capture_record(
+            SW2_CAP_CCC_WRITE, SW2_NFC_CCC_HANDLE,
+            ccc_enable, sizeof(ccc_enable));
+        const uint8_t status = gatt_client_write_value_of_characteristic(
+            sw2_nfc_mirror_ccc_callback, sw2_init_handle,
+            SW2_NFC_CCC_HANDLE, sizeof(ccc_enable), ccc_enable);
+        if (status != ERROR_CODE_SUCCESS) {
+            s_sw2_nfc_mirror_last_att_status = status;
+            s_sw2_nfc_mirror_state = NS2_NFC_MIRROR_ERROR;
+        }
+        return;
+    }
+
+    if (!requested &&
+        s_sw2_nfc_mirror_state == NS2_NFC_MIRROR_ACTIVE) {
+        static uint8_t ccc_disable[] = {0x00, 0x00};
+        s_sw2_nfc_mirror_state = NS2_NFC_MIRROR_UNSUBSCRIBE_PENDING;
+        sw2_capture_record(
+            SW2_CAP_CCC_WRITE, SW2_NFC_CCC_HANDLE,
+            ccc_disable, sizeof(ccc_disable));
+        const uint8_t status = gatt_client_write_value_of_characteristic(
+            sw2_nfc_mirror_ccc_callback, sw2_init_handle,
+            SW2_NFC_CCC_HANDLE, sizeof(ccc_disable), ccc_disable);
+        if (status != ERROR_CODE_SUCCESS) {
+            s_sw2_nfc_mirror_last_att_status = status;
+            s_sw2_nfc_mirror_state = NS2_NFC_MIRROR_ERROR;
+        }
+        return;
+    }
+
+    if (s_sw2_nfc_mirror_state != NS2_NFC_MIRROR_ACTIVE) return;
+    const uint32_t now_ms = btstack_run_loop_get_time_ms();
+
+    if (__atomic_load_n(
+            &s_sw2_nfc_mirror_awaiting_response, __ATOMIC_ACQUIRE)) {
+        if ((uint32_t)(now_ms - s_sw2_nfc_mirror_awaiting_since_ms) >
+            1000u) {
+            const uint8_t fallback_ble[] = {
+                0x01, 0x01, 0x01, s_sw2_nfc_mirror_last_subcommand,
+                0x10, 0x78, 0x00, 0x00,
+            };
+            s_sw2_nfc_mirror_response_length =
+                ns2_nfc_mirror_translate_ble_response(
+                    s_sw2_nfc_mirror_response,
+                    sizeof(s_sw2_nfc_mirror_response),
+                    fallback_ble, sizeof(fallback_ble));
+            s_sw2_nfc_mirror_last_response_length =
+                sizeof(fallback_ble);
+            __atomic_add_fetch(
+                &s_sw2_nfc_mirror_response_timeouts, 1u,
+                __ATOMIC_RELAXED);
+            __atomic_store_n(
+                &s_sw2_nfc_mirror_response_ready, true,
+                __ATOMIC_RELEASE);
+            __atomic_store_n(
+                &s_sw2_nfc_mirror_awaiting_response, false,
+                __ATOMIC_RELEASE);
+            __atomic_store_n(
+                &s_sw2_nfc_mirror_slot_claimed, false,
+                __ATOMIC_RELEASE);
+        }
+        return;
+    }
+
+    if (!__atomic_load_n(
+            &s_sw2_nfc_mirror_command_pending, __ATOMIC_ACQUIRE)) {
+        return;
+    }
+
+    if ((int32_t)(now_ms - s_sw2_nfc_mirror_next_send_ms) < 0) return;
+
+    uint8_t command[NS2_NFC_MIRROR_FRAME_MAX];
+    const size_t source_length = s_sw2_nfc_mirror_command_length;
+    const size_t length = ns2_nfc_mirror_prepare_extended_ble_command(
+        command, sizeof(command), s_sw2_nfc_mirror_command, source_length);
+    if (length == 0) {
+        __atomic_add_fetch(
+            &s_sw2_nfc_mirror_rejected, 1u, __ATOMIC_RELAXED);
+        __atomic_store_n(
+            &s_sw2_nfc_mirror_command_pending, false, __ATOMIC_RELEASE);
+        __atomic_store_n(
+            &s_sw2_nfc_mirror_slot_claimed, false, __ATOMIC_RELEASE);
+        return;
+    }
+
+    const uint8_t status =
+        gatt_client_write_value_of_characteristic_without_response(
+            sw2_init_handle, SW2_NFC_COMMAND_HANDLE,
+            (uint16_t)length, command);
+    s_sw2_nfc_mirror_last_send_status = status;
+    if (status != ERROR_CODE_SUCCESS) {
+        if (++s_sw2_nfc_mirror_send_failures < 8u) {
+            s_sw2_nfc_mirror_next_send_ms = now_ms + 2u;
+            return;
+        }
+        __atomic_add_fetch(
+            &s_sw2_nfc_mirror_rejected, 1u, __ATOMIC_RELAXED);
+        __atomic_store_n(
+            &s_sw2_nfc_mirror_slot_claimed, false, __ATOMIC_RELEASE);
+    } else {
+        sw2_capture_record(
+            SW2_CAP_CMD_OUT, SW2_NFC_COMMAND_HANDLE, command,
+            (uint16_t)length);
+        __atomic_add_fetch(
+            &s_sw2_nfc_mirror_commands_sent, 1u, __ATOMIC_RELAXED);
+        s_sw2_nfc_mirror_awaiting_since_ms = now_ms;
+        __atomic_store_n(
+            &s_sw2_nfc_mirror_awaiting_response, true,
+            __ATOMIC_RELEASE);
+    }
+
+    __atomic_store_n(
+        &s_sw2_nfc_mirror_command_pending, false, __ATOMIC_RELEASE);
 }
 
 static void sw2_pro2_audio_ccc_callback(uint8_t packet_type, uint16_t channel,
@@ -6239,6 +6658,8 @@ static void switch2_cleanup_on_disconnect(void) {
     gatt_client_stop_listening_for_characteristic_value_updates(&switch2_ack_notification_listener);
     gatt_client_stop_listening_for_characteristic_value_updates(&sw2_motion_notification_listener);
     gatt_client_stop_listening_for_characteristic_value_updates(&sw2_pro2_audio_notification_listener);
+    gatt_client_stop_listening_for_characteristic_value_updates(
+        &sw2_nfc_mirror_notification_listener);
     sw2_init_state = SW2_INIT_IDLE;
     sw2_init_handle = 0;
     // Explicit reset (belt-and-suspenders with the state-change check in switch2_send_init_cmd()):
@@ -6285,6 +6706,34 @@ static void switch2_cleanup_on_disconnect(void) {
     s_sw2_pro2_audio_max_report_len = 0;
     s_sw2_pro2_audio_notifications = 0;
     s_sw2_pro2_audio_compact_failures = 0;
+    __atomic_store_n(&s_sw2_nfc_mirror_requested, false, __ATOMIC_RELEASE);
+    __atomic_store_n(
+        &s_sw2_nfc_mirror_state, NS2_NFC_MIRROR_OFF, __ATOMIC_RELEASE);
+    s_sw2_nfc_mirror_last_att_status = 0;
+    s_sw2_nfc_mirror_last_send_status = 0;
+    s_sw2_nfc_mirror_last_command = 0;
+    s_sw2_nfc_mirror_last_subcommand = 0;
+    s_sw2_nfc_mirror_report_state = 0;
+    s_sw2_nfc_mirror_last_response_length = 0;
+    s_sw2_nfc_mirror_commands_submitted = 0;
+    s_sw2_nfc_mirror_commands_sent = 0;
+    s_sw2_nfc_mirror_notifications = 0;
+    s_sw2_nfc_mirror_report_state_transitions = 0;
+    s_sw2_nfc_mirror_response_timeouts = 0;
+    s_sw2_nfc_mirror_rejected = 0;
+    s_sw2_nfc_mirror_command_length = 0;
+    s_sw2_nfc_mirror_response_length = 0;
+    s_sw2_nfc_mirror_send_failures = 0;
+    s_sw2_nfc_mirror_next_send_ms = 0;
+    s_sw2_nfc_mirror_awaiting_since_ms = 0;
+    __atomic_store_n(
+        &s_sw2_nfc_mirror_command_pending, false, __ATOMIC_RELEASE);
+    __atomic_store_n(
+        &s_sw2_nfc_mirror_awaiting_response, false, __ATOMIC_RELEASE);
+    __atomic_store_n(
+        &s_sw2_nfc_mirror_response_ready, false, __ATOMIC_RELEASE);
+    __atomic_store_n(
+        &s_sw2_nfc_mirror_slot_claimed, false, __ATOMIC_RELEASE);
     s_sw2_motion_last_notification_us = 0;
     __atomic_store_n(&s_sw2_pro2_replay_requested, false, __ATOMIC_RELEASE);
     s_sw2_pro2_replay_state = SW2_PRO2_REPLAY_IDLE;
@@ -6341,6 +6790,9 @@ static void switch2_ack_notification_handler(uint8_t packet_type, uint16_t chann
     if (value_length < 4) return;
     uint8_t cmd = value[0];
     uint8_t subcmd = value[3];
+    if (cmd == 0x01) {
+        (void)ns2_nfc_mirror_accept_ble_response(value, value_length);
+    }
 
     if (cmd == 0x10 && subcmd == 0x01 &&
         __atomic_load_n(&s_sw2_version_state, __ATOMIC_ACQUIRE) == NS2_BT_VERSION_SENT) {
@@ -6916,6 +7368,7 @@ static void switch2_handle_feedback(void)
     switch2_service_magraw_probe();
 
     switch2_service_pro2_audio_capture();
+    switch2_service_nfc_mirror();
 
     sw2_rumble_send_counter++;
 

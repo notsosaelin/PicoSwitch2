@@ -10,6 +10,7 @@ static uint16_t s_count;
 static uint32_t s_overwritten;
 static uint32_t s_next_sequence;
 static bool s_enabled;
+static ns2_protocol_trace_filter_t s_filter = NS2_TRACE_FILTER_ALL;
 
 void ns2_protocol_trace_clear(void) {
     s_head = 0;
@@ -22,9 +23,19 @@ void ns2_protocol_trace_set_enabled(bool enabled) {
     s_enabled = enabled;
 }
 
+void ns2_protocol_trace_set_filter(ns2_protocol_trace_filter_t filter) {
+    if (filter == NS2_TRACE_FILTER_BULK ||
+        filter == NS2_TRACE_FILTER_NFC) {
+        s_filter = filter;
+    } else {
+        s_filter = NS2_TRACE_FILTER_ALL;
+    }
+}
+
 void ns2_protocol_trace_get_status(ns2_protocol_trace_status_t *status) {
     if (!status) return;
     status->enabled = s_enabled;
+    status->filter = s_filter;
     status->count = s_count;
     status->capacity = NS2_PROTOCOL_TRACE_CAPACITY;
     status->overwritten = s_overwritten;
@@ -37,6 +48,17 @@ void ns2_protocol_trace_record(uint32_t timestamp_us, uint8_t personality,
                                uint8_t id, uint8_t subcommand,
                                const uint8_t *payload, size_t length) {
     if (!s_enabled) return;
+    if (s_filter == NS2_TRACE_FILTER_BULK &&
+        kind != NS2_TRACE_BULK_COMMAND &&
+        kind != NS2_TRACE_BULK_RESPONSE) {
+        return;
+    }
+    if (s_filter == NS2_TRACE_FILTER_NFC &&
+        (id != 0x01 ||
+         (kind != NS2_TRACE_BULK_COMMAND &&
+          kind != NS2_TRACE_BULK_RESPONSE))) {
+        return;
+    }
 
     ns2_protocol_trace_record_t *record = &s_records[s_head];
     memset(record, 0, sizeof(*record));

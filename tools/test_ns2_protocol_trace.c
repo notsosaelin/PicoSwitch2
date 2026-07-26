@@ -16,6 +16,7 @@ int main(void) {
     for (size_t i = 0; i < sizeof(payload); i++) payload[i] = (uint8_t)i;
 
     ns2_protocol_trace_clear();
+    ns2_protocol_trace_set_filter(NS2_TRACE_FILTER_ALL);
     ns2_protocol_trace_set_enabled(false);
     ns2_protocol_trace_record(10, 0, NS2_TRACE_BULK_COMMAND,
                               NS2_TRACE_CONSOLE_TO_DEVICE, 0x10, 0x01,
@@ -59,11 +60,56 @@ int main(void) {
     assert(ns2_protocol_trace_get(NS2_PROTOCOL_TRACE_CAPACITY - 1u, &record));
     assert(record.sequence == NS2_PROTOCOL_TRACE_CAPACITY + 2u);
 
+    ns2_protocol_trace_clear();
+    ns2_protocol_trace_set_filter(NS2_TRACE_FILTER_BULK);
+    ns2_protocol_trace_record(400, 0, NS2_TRACE_HID_OUTPUT,
+                              NS2_TRACE_CONSOLE_TO_DEVICE, 0x00, 0x00,
+                              payload, 8);
+    ns2_protocol_trace_record(401, 0, NS2_TRACE_EP0_SETUP,
+                              NS2_TRACE_CONSOLE_TO_DEVICE, 0x03, 0x00,
+                              payload, 8);
+    ns2_protocol_trace_record(402, 0, NS2_TRACE_BULK_COMMAND,
+                              NS2_TRACE_CONSOLE_TO_DEVICE, 0x0C, 0x04,
+                              payload, 8);
+    ns2_protocol_trace_record(403, 0, NS2_TRACE_BULK_RESPONSE,
+                              NS2_TRACE_DEVICE_TO_CONSOLE, 0x0C, 0x04,
+                              payload, 8);
+    ns2_protocol_trace_status_t bulk = status();
+    assert(bulk.filter == NS2_TRACE_FILTER_BULK);
+    assert(bulk.count == 2 && bulk.next_sequence == 2);
+
+    ns2_protocol_trace_clear();
+    ns2_protocol_trace_set_filter(NS2_TRACE_FILTER_NFC);
+    ns2_protocol_trace_record(500, 0, NS2_TRACE_HID_OUTPUT,
+                              NS2_TRACE_CONSOLE_TO_DEVICE, 0x01, 0x00,
+                              payload, 8);
+    ns2_protocol_trace_record(501, 0, NS2_TRACE_BULK_COMMAND,
+                              NS2_TRACE_CONSOLE_TO_DEVICE, 0x10, 0x01,
+                              payload, 8);
+    ns2_protocol_trace_record(502, 0, NS2_TRACE_BULK_COMMAND,
+                              NS2_TRACE_CONSOLE_TO_DEVICE, 0x01, 0x03,
+                              payload, 8);
+    ns2_protocol_trace_record(503, 0, NS2_TRACE_BULK_RESPONSE,
+                              NS2_TRACE_DEVICE_TO_CONSOLE, 0x01, 0x03,
+                              payload, 8);
+    ns2_protocol_trace_status_t filtered = status();
+    assert(filtered.filter == NS2_TRACE_FILTER_NFC);
+    assert(filtered.count == 2);
+    assert(filtered.next_sequence == 2);
+    assert(ns2_protocol_trace_get(0, &record));
+    assert(record.sequence == 0 && record.id == 0x01 &&
+           record.subcommand == 0x03 &&
+           record.kind == NS2_TRACE_BULK_COMMAND);
+    assert(ns2_protocol_trace_get(1, &record));
+    assert(record.sequence == 1 && record.kind == NS2_TRACE_BULK_RESPONSE);
+
     ns2_protocol_trace_set_enabled(false);
     ns2_protocol_trace_clear();
+    ns2_protocol_trace_set_filter(NS2_TRACE_FILTER_ALL);
     ns2_protocol_trace_status_t cleared = status();
     assert(!cleared.enabled && cleared.count == 0 && cleared.overwritten == 0);
     assert(cleared.next_sequence == 0);
+    assert(cleared.filter == NS2_TRACE_FILTER_ALL);
 
     puts("ns2_protocol_trace: all tests passed");
     return 0;

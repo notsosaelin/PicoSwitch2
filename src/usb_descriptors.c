@@ -228,21 +228,23 @@ static const uint8_t cdc_device_descriptor[] = {
     0x01,        // bNumConfigurations
 };
 
-// Config mode is a composite device: CDC serial (the command link) + a
-// read-only Mass Storage disk (carries CONFIG.HTM so the dongle is self-contained).
-enum { CDC_ITF_NOTIF = 0, CDC_ITF_DATA, MSC_ITF, CONFIG_ITF_COUNT };
+// Config mode is intentionally CDC-only. The configuration portal is served
+// from the user's computer, so firmware carries neither an MSC interface nor
+// an embedded FAT/web image. Keep the existing VID/PID and CDC endpoints
+// stable so this transport remains compatible with the local Web Serial page.
+enum { CDC_ITF_NOTIF = 0, CDC_ITF_DATA, CONFIG_ITF_COUNT };
 #define CDC_EP_NOTIF 0x81
 #define CDC_EP_OUT 0x02
 #define CDC_EP_IN 0x82
-#define MSC_EP_OUT 0x03
-#define MSC_EP_IN 0x83
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN + TUD_MSC_DESC_LEN)
+#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN)
 
 static const uint8_t cdc_config_descriptor[] = {
     TUD_CONFIG_DESCRIPTOR(1, CONFIG_ITF_COUNT, 0, CONFIG_TOTAL_LEN, 0x00, 100),
     TUD_CDC_DESCRIPTOR(CDC_ITF_NOTIF, 0, CDC_EP_NOTIF, 8, CDC_EP_OUT, CDC_EP_IN, 64),
-    TUD_MSC_DESCRIPTOR(MSC_ITF, 0, MSC_EP_OUT, MSC_EP_IN, 64),
 };
+
+_Static_assert(sizeof(cdc_config_descriptor) == CONFIG_TOTAL_LEN,
+               "CDC configuration descriptor size must match wTotalLength");
 
 static const char *config_strings[] = {
     (const char[]){0x09, 0x04},  // 0: language id (en-US)

@@ -17,6 +17,7 @@
 #include "bt/bthid/bthid.h" // bthid_get_cached_descriptor (btid desc command)
 #include "ds5_audio_bridge.h" // DualSense audio stall diagnostics
 #include "bt/bthid/devices/generic/bthid_gamepad.h" // bthid_gamepad_dump_map (btid desc command)
+#include "virtual_amiibo_store.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -32,7 +33,7 @@
 #include "hardware/sync.h"
 
 #define CONFIG_MAGIC 0x50535731u  // 'PSW1'
-#define CONFIG_VERSION 8
+#define CONFIG_VERSION 9
 #define CONFIG_FLASH_OFFSET (PICO_FLASH_SIZE_BYTES - 4 * FLASH_SECTOR_SIZE)
 #define CONFIG_WAKE_VALID 0xA5
 #define CONFIG_WAKE_SAVE_DELAY_MS 5000
@@ -43,6 +44,7 @@ typedef struct {
     uint8_t body_color[3];                          // Pro2 body/lightbar R,G,B
     uint8_t joycon2_left_accent[3];                 // Joy-Con 2 L highlight/lightbar
     uint8_t joycon2_right_accent[3];                // Joy-Con 2 R highlight/lightbar
+    uint8_t virtual_amiibo_enabled;                  // optional software NFC source
     uint8_t ns2_map[NS2_FAM_COUNT][NS2_SRC_COUNT];  // per-family button remap
     uint8_t wake_valid;
     config_wake_identity_t wake_identity;
@@ -76,6 +78,17 @@ typedef struct {
     uint8_t wake_valid;
     config_wake_identity_t wake_identity;
 } pico_config_v7_t;
+
+typedef struct {
+    uint32_t magic;
+    uint8_t version;
+    uint8_t body_color[3];
+    uint8_t joycon2_left_accent[3];
+    uint8_t joycon2_right_accent[3];
+    uint8_t ns2_map[NS2_FAM_COUNT][NS2_SRC_COUNT];
+    uint8_t wake_valid;
+    config_wake_identity_t wake_identity;
+} pico_config_v8_t;
 
 // Built-in joypad remap (source index -> NS2_DST_*). Reproduces the seam's hardcoded
 // mapping exactly, so an all-defaults config behaves identically to no remapping.
@@ -127,8 +140,9 @@ void config_load(void) {
     if (f->magic == CONFIG_MAGIC && f->version == CONFIG_VERSION) {
         memcpy(&cfg, f, sizeof(cfg));
     } else if (f->magic == CONFIG_MAGIC) {
-        // Start with v8 defaults so older configs gain genuine Joy-Con accents,
-        // then copy every field that existed in their exact historical layout.
+        // Start with current defaults so older configs gain genuine Joy-Con
+        // accents and keep the optional virtual-amiibo feature disabled, then
+        // copy every field that existed in their exact historical layout.
         load_defaults();
         if (f->version == 5) {
             const pico_config_v5_t *v5 = (const pico_config_v5_t *)flash;
@@ -146,10 +160,21 @@ void config_load(void) {
             memcpy(cfg.ns2_map, v7->ns2_map, sizeof(cfg.ns2_map));
             cfg.wake_valid = v7->wake_valid;
             cfg.wake_identity = v7->wake_identity;
+        } else if (f->version == 8) {
+            const pico_config_v8_t *v8 = (const pico_config_v8_t *)flash;
+            memcpy(cfg.body_color, v8->body_color, sizeof(cfg.body_color));
+            memcpy(cfg.joycon2_left_accent, v8->joycon2_left_accent,
+                   sizeof(cfg.joycon2_left_accent));
+            memcpy(cfg.joycon2_right_accent, v8->joycon2_right_accent,
+                   sizeof(cfg.joycon2_right_accent));
+            memcpy(cfg.ns2_map, v8->ns2_map, sizeof(cfg.ns2_map));
+            cfg.wake_valid = v8->wake_valid;
+            cfg.wake_identity = v8->wake_identity;
         }
     } else {
         load_defaults();
     }
+    virtual_amiibo_store_init();
 }
 
 void config_get_body_color(uint8_t rgb[3]) {
@@ -162,6 +187,20 @@ void config_get_joycon2_accent(bool right, uint8_t rgb[3]) {
     critical_section_enter_blocking(&cfg_lock);
     const uint8_t *accent = right ? cfg.joycon2_right_accent : cfg.joycon2_left_accent;
     memcpy(rgb, accent, 3);
+    critical_section_exit(&cfg_lock);
+}
+
+bool config_virtual_amiibo_enabled(void) {
+    bool enabled;
+    critical_section_enter_blocking(&cfg_lock);
+    enabled = cfg.virtual_amiibo_enabled != 0;
+    critical_section_exit(&cfg_lock);
+    return enabled;
+}
+
+static void set_virtual_amiibo_enabled(bool enabled) {
+    critical_section_enter_blocking(&cfg_lock);
+    cfg.virtual_amiibo_enabled = enabled ? 1 : 0;
     critical_section_exit(&cfg_lock);
 }
 
@@ -256,6 +295,10 @@ static void set_ns2_map(uint8_t family, const uint8_t map_in[]) {
 }
 
 void config_service_save(void) {
+    // The virtual-tag journal has its own sector and request flag, but shares
+    // this core1-only flash/lockout execution point.
+    virtual_amiibo_store_service_save();
+
     if (!save_requested)
         return;
 
@@ -314,17 +357,218 @@ static void cmd_get(void) {
     memcpy(joy_l, cfg.joycon2_left_accent, sizeof(joy_l));
     memcpy(joy_r, cfg.joycon2_right_accent, sizeof(joy_r));
     critical_section_exit(&cfg_lock);
-    // Keep the old lightbar shape as a read-only compatibility alias for a
-    // cached pre-v7 CONFIG.HTM. All four entries intentionally name one value.
+    // Keep the old lightbar shape as a read-only compatibility alias for
+    // pre-v7 portal clients. All four entries intentionally name one value.
     snprintf(out, sizeof(out),
              "{\"body_color\":[%u,%u,%u],\"joycon2_left_accent\":[%u,%u,%u],"
              "\"joycon2_right_accent\":[%u,%u,%u],\"lightbar\":[[%u,%u,%u],[%u,%u,%u],"
-             "[%u,%u,%u],[%u,%u,%u]]}",
+             "[%u,%u,%u],[%u,%u,%u]],\"virtual_amiibo_enabled\":%s}",
              body[0], body[1], body[2],
              joy_l[0], joy_l[1], joy_l[2], joy_r[0], joy_r[1], joy_r[2],
              body[0], body[1], body[2], body[0], body[1], body[2],
-             body[0], body[1], body[2], body[0], body[1], body[2]);
+             body[0], body[1], body[2], body[0], body[1], body[2],
+             config_virtual_amiibo_enabled() ? "true" : "false");
     reply(out);
+}
+
+static void reply_amiibo_result(virtual_amiibo_result_t result) {
+    if (result == VIRTUAL_AMIIBO_OK) {
+        reply("{\"ok\":true}");
+        return;
+    }
+    snprintf(out, sizeof(out), "{\"error\":\"%s\",\"code\":%u}",
+             virtual_amiibo_result_string(result), (unsigned)result);
+    reply(out);
+}
+
+static int hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool parse_hex_bytes(const char *hex, uint8_t *bytes,
+                            size_t capacity, size_t *length) {
+    size_t chars = strlen(hex);
+    if ((chars & 1u) != 0 || chars / 2u > capacity) return false;
+    for (size_t i = 0; i < chars / 2u; ++i) {
+        int high = hex_nibble(hex[i * 2u]);
+        int low = hex_nibble(hex[i * 2u + 1u]);
+        if (high < 0 || low < 0) return false;
+        bytes[i] = (uint8_t)((high << 4) | low);
+    }
+    *length = chars / 2u;
+    return true;
+}
+
+#define AMIIBO_CDC_CHUNK_MAX 32u
+static void cmd_amiibo(char *arg) {
+    if (strcmp(arg, "status") == 0) {
+        virtual_amiibo_status_t status;
+        virtual_amiibo_store_status(&status);
+        snprintf(out, sizeof(out),
+                 "{\"enabled\":%s,\"loaded\":%s,\"dirty\":%s,"
+                 "\"persisted\":%s,\"persistPending\":%s,\"size\":%u,"
+                 "\"signature\":%s,\"hasUsed\":%s,\"usingUsed\":%s,"
+                 "\"generation\":%lu,"
+                 "\"uid\":\"%02X%02X%02X%02X%02X%02X%02X\","
+                 "\"upload\":{\"active\":%s,\"received\":%u,\"size\":%u}}",
+                 config_virtual_amiibo_enabled() ? "true" : "false",
+                 status.loaded ? "true" : "false",
+                 status.dirty ? "true" : "false",
+                 status.persisted ? "true" : "false",
+                 virtual_amiibo_store_persist_pending() ? "true" : "false",
+                 status.size,
+                 status.has_originality_signature ? "true" : "false",
+                 status.has_used_copy ? "true" : "false",
+                 status.using_used_copy ? "true" : "false",
+                 (unsigned long)status.generation,
+                 status.uid[0], status.uid[1], status.uid[2], status.uid[3],
+                 status.uid[4], status.uid[5], status.uid[6],
+                 status.upload_active ? "true" : "false",
+                 status.upload_received, status.upload_size);
+        reply(out);
+        return;
+    }
+
+    if (strncmp(arg, "enable ", 7) == 0) {
+        if (strcmp(arg + 7, "0") != 0 && strcmp(arg + 7, "1") != 0) {
+            reply("{\"error\":\"usage: amiibo enable 0|1\"}");
+            return;
+        }
+        set_virtual_amiibo_enabled(arg[7] == '1');
+        reply("{\"ok\":true}");
+        return;
+    }
+
+    if (strncmp(arg, "begin ", 6) == 0) {
+        unsigned long size;
+        unsigned long crc;
+        char trailing;
+        if (sscanf(arg + 6, "%lu %lx %c", &size, &crc, &trailing) != 2) {
+            reply("{\"error\":\"usage: amiibo begin <540|572> <crc32>\"}");
+            return;
+        }
+        reply_amiibo_result(virtual_amiibo_store_upload_begin(
+            (size_t)size, (uint32_t)crc));
+        return;
+    }
+
+    if (strncmp(arg, "chunk ", 6) == 0) {
+        char *hex = strchr(arg + 6, ' ');
+        if (!hex) {
+            reply("{\"error\":\"usage: amiibo chunk <offset> <hex>\"}");
+            return;
+        }
+        *hex++ = '\0';
+        char *end;
+        unsigned long offset = strtoul(arg + 6, &end, 10);
+        if (*end != '\0') {
+            reply("{\"error\":\"bad chunk offset\"}");
+            return;
+        }
+        uint8_t bytes[AMIIBO_CDC_CHUNK_MAX];
+        size_t length;
+        if (!parse_hex_bytes(hex, bytes, sizeof(bytes), &length) ||
+            length == 0) {
+            reply("{\"error\":\"chunk must contain 1-32 hex bytes\"}");
+            return;
+        }
+        reply_amiibo_result(virtual_amiibo_store_upload_chunk(
+            (size_t)offset, bytes, length));
+        return;
+    }
+
+    if (strcmp(arg, "commit") == 0) {
+        reply_amiibo_result(virtual_amiibo_store_upload_commit());
+        return;
+    }
+    if (strcmp(arg, "commit used") == 0) {
+        reply_amiibo_result(virtual_amiibo_store_upload_commit_used());
+        return;
+    }
+    if (strcmp(arg, "cancel") == 0) {
+        virtual_amiibo_store_upload_cancel();
+        reply("{\"ok\":true}");
+        return;
+    }
+
+    const char *read_args = NULL;
+    int read_copy = -1;
+    if (strncmp(arg, "read clean ", 11) == 0) {
+        read_args = arg + 11;
+        read_copy = 0;
+    } else if (strncmp(arg, "read used ", 10) == 0) {
+        read_args = arg + 10;
+        read_copy = 1;
+    } else if (strncmp(arg, "read ", 5) == 0) {
+        read_args = arg + 5;
+    }
+    if (read_args) {
+        unsigned long offset;
+        unsigned long length;
+        char trailing;
+        if (sscanf(read_args, "%lu %lu %c",
+                   &offset, &length, &trailing) != 2 ||
+            length == 0 || length > AMIIBO_CDC_CHUNK_MAX) {
+            reply("{\"error\":\"usage: amiibo read [clean|used] "
+                  "<offset> <1-32>\"}");
+            return;
+        }
+        uint8_t bytes[AMIIBO_CDC_CHUNK_MAX];
+        virtual_amiibo_result_t result =
+            read_copy < 0
+                ? virtual_amiibo_store_read(
+                      (size_t)offset, bytes, (size_t)length)
+                : virtual_amiibo_store_read_copy(
+                      read_copy != 0, (size_t)offset,
+                      bytes, (size_t)length);
+        if (result != VIRTUAL_AMIIBO_OK) {
+            reply_amiibo_result(result);
+            return;
+        }
+        int used = snprintf(out, sizeof(out),
+                            "{\"offset\":%lu,\"data\":\"", offset);
+        for (unsigned long i = 0; i < length; ++i)
+            used += snprintf(out + used, sizeof(out) - used,
+                             "%02X", bytes[i]);
+        snprintf(out + used, sizeof(out) - used, "\"}");
+        reply(out);
+        return;
+    }
+
+    if (strcmp(arg, "downloaded") == 0) {
+        virtual_amiibo_store_acknowledge_download();
+        reply("{\"ok\":true}");
+        return;
+    }
+
+    if (strcmp(arg, "select clean") == 0) {
+        reply_amiibo_result(virtual_amiibo_store_select_used(false));
+        return;
+    }
+    if (strcmp(arg, "select used") == 0) {
+        reply_amiibo_result(virtual_amiibo_store_select_used(true));
+        return;
+    }
+
+    if (strcmp(arg, "persist") == 0) {
+        virtual_amiibo_store_request_persist();
+        absolute_time_t deadline = make_timeout_time_ms(2000);
+        while (virtual_amiibo_store_persist_pending() &&
+               !time_reached(deadline))
+            tud_task();
+        reply(virtual_amiibo_store_persist_pending()
+                  ? "{\"error\":\"persist timeout\"}"
+                  : "{\"ok\":true}");
+        return;
+    }
+
+    reply("{\"error\":\"usage: amiibo status|enable 0|1|begin|chunk|commit|"
+          "commit used|cancel|read [clean|used]|downloaded|"
+          "select clean|select used|"
+          "persist\"}");
 }
 
 // Per-family remap (NS2_SRC_COUNT entries).
@@ -586,6 +830,7 @@ static void cmd_fwreads(void) {
 #define SW2CAP_DRAIN_MAX 16
 static void cmd_sw2cap(const char *arg) {
     if (strcmp(arg, "on") == 0) {
+        sw2_capture_set_filter(SW2_CAPTURE_FILTER_ALL);
         sw2_capture_set_enabled(true);
         reply("{\"ok\":true,\"capturing\":true}");
     } else if (strcmp(arg, "off") == 0) {
@@ -761,6 +1006,8 @@ static void handle_line(char *cmd) {
         cmd_getns2map(atoi(cmd + 10));
     } else if (strncmp(cmd, "setns2map ", 10) == 0) {
         cmd_setns2map(cmd + 10);
+    } else if (strncmp(cmd, "amiibo ", 7) == 0) {
+        cmd_amiibo(cmd + 7);
     } else if (strncmp(cmd, "body ", 5) == 0) {
         int r, g, b;
         if (sscanf(cmd + 5, "%d %d %d", &r, &g, &b) == 3 &&

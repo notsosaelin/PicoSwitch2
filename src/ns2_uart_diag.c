@@ -5,6 +5,7 @@
 #include "ns2_firmware_profile.h"
 #include "ns2_bt_version_probe.h"
 #include "ns2_protocol_trace.h"
+#include "ns2_nfc_mirror.h"
 #include "sw2_capture.h"
 #include "ns2_native_motion.h"
 #include "ns2_motion_probe.h"
@@ -12,6 +13,7 @@
 #include "ns2_diag_input.h"
 #include "ds5_audio_bridge.h"
 #include "ds5_motion_pair_capture.h"
+#include "virtual_amiibo_store.h"
 #include "report.h"
 #include "switch_pro2.h"
 #include "bt/btstack/btstack_host.h"
@@ -36,6 +38,7 @@ extern uint32_t ns2_audio_core1_stack_free_bytes(void);
 #define NS2_UART_TASK_RX_BUDGET 16u
 #define NS2_UART_TASK_TX_BUDGET 8u
 #define NS2_UART_Y_PULSE_US 120000u
+#define NS2_UART_AMIIBO_READ_MAX 64u
 
 static char rx_line[NS2_UART_RX_LINE_SIZE];
 static size_t rx_length;
@@ -145,10 +148,13 @@ static void queue_trace_status(const char *event) {
     ns2_protocol_trace_get_status(&status);
     snprintf(response, sizeof(response),
              "{\"trace\":\"%s\",\"enabled\":%s,\"count\":%u,"
-             "\"capacity\":%u,\"overwritten\":%lu,\"next_sequence\":%lu}",
+             "\"capacity\":%u,\"overwritten\":%lu,\"next_sequence\":%lu,"
+             "\"filter\":\"%s\"}",
              event, status.enabled ? "true" : "false", status.count,
              status.capacity, (unsigned long)status.overwritten,
-             (unsigned long)status.next_sequence);
+             (unsigned long)status.next_sequence,
+             status.filter == NS2_TRACE_FILTER_NFC ? "nfc" :
+             status.filter == NS2_TRACE_FILTER_BULK ? "bulk" : "all");
     queue_text(response);
 }
 
@@ -186,10 +192,12 @@ static void queue_trace_record(uint16_t index) {
 static void queue_ble_status(const char *event) {
     char response[256];
     snprintf(response, sizeof(response),
-             "{\"blecap\":\"%s\",\"enabled\":%s,\"count\":%u,\"dropped\":%lu,\"variant\":%u}",
+             "{\"blecap\":\"%s\",\"enabled\":%s,\"count\":%u,\"dropped\":%lu,"
+             "\"variant\":%u,\"filter\":\"%s\"}",
              event, sw2_capture_get_enabled() ? "true" : "false",
              sw2_capture_buffered_count(), (unsigned long)sw2_capture_dropped_count(),
-             sw2_get_v2_variant());
+             sw2_get_v2_variant(),
+             sw2_capture_get_filter() == SW2_CAPTURE_FILTER_NFC ? "nfc" : "all");
     queue_text(response);
 }
 
@@ -208,6 +216,105 @@ static void queue_ble_record(void) {
              sw2_capture_kind_name(ble_format_record.kind), ble_format_record.handle,
              ble_format_record.orig_len, ble_format_record.len, ble_format_payload);
     queue_text(ble_format_response);
+}
+
+static void queue_nfc_mirror_status(const char *event) {
+    ns2_nfc_mirror_diag_t status;
+    char response[512];
+    ns2_nfc_mirror_snapshot(&status);
+    snprintf(response, sizeof(response),
+             "{\"nfcmirror\":\"%s\",\"requested\":%s,\"active\":%s,"
+             "\"pending\":%s,\"awaiting_response\":%s,\"state\":%u,"
+             "\"att_status\":%u,"
+             "\"send_status\":%u,\"source_pid\":\"0x%04X\","
+             "\"handle\":\"0x%04X\",\"last_command\":%u,\"last_sub\":%u,"
+             "\"report_state\":%u,\"last_response_length\":%u,"
+             "\"submitted\":%lu,\"sent\":%lu,\"notifications\":%lu,"
+             "\"state_transitions\":%lu,\"timeouts\":%lu,\"rejected\":%lu}",
+             event, status.requested ? "true" : "false",
+             status.active ? "true" : "false",
+             status.command_pending ? "true" : "false",
+             status.awaiting_response ? "true" : "false", status.state,
+             status.last_att_status, status.last_send_status,
+             status.source_pid, status.connection_handle,
+             status.last_command, status.last_subcommand,
+             status.report_state, status.last_response_length,
+             (unsigned long)status.commands_submitted,
+             (unsigned long)status.commands_sent,
+             (unsigned long)status.notifications,
+             (unsigned long)status.report_state_transitions,
+             (unsigned long)status.response_timeouts,
+             (unsigned long)status.rejected);
+    queue_text(response);
+}
+
+static void queue_amiibo_status(const char *event) {
+    virtual_amiibo_status_t status;
+    char response[384];
+    virtual_amiibo_store_status(&status);
+    snprintf(response, sizeof(response),
+             "{\"amiibo\":\"%s\",\"loaded\":%s,\"dirty\":%s,"
+             "\"persisted\":%s,\"persist_pending\":%s,"
+             "\"has_signature\":%s,\"has_used\":%s,\"using_used\":%s,"
+             "\"size\":%u,"
+             "\"generation\":%lu,"
+             "\"uid\":\"%02X%02X%02X%02X%02X%02X%02X\"}",
+             event, status.loaded ? "true" : "false",
+             status.dirty ? "true" : "false",
+             status.persisted ? "true" : "false",
+             virtual_amiibo_store_persist_pending() ? "true" : "false",
+             status.has_originality_signature ? "true" : "false",
+             status.has_used_copy ? "true" : "false",
+             status.using_used_copy ? "true" : "false",
+             status.size, (unsigned long)status.generation,
+             status.uid[0], status.uid[1], status.uid[2], status.uid[3],
+             status.uid[4], status.uid[5], status.uid[6]);
+    queue_text(response);
+}
+
+static void queue_amiibo_read(uint16_t offset) {
+    virtual_amiibo_status_t before;
+    virtual_amiibo_status_t after;
+    uint8_t data[NS2_UART_AMIIBO_READ_MAX];
+    char payload[NS2_UART_AMIIBO_READ_MAX * 2u + 1u];
+    char response[384];
+    virtual_amiibo_store_status(&before);
+    if (!before.loaded || offset >= before.size) {
+        snprintf(response, sizeof(response),
+                 "{\"amiibo\":\"error\",\"error\":\"read out of range\","
+                 "\"offset\":%u,\"total\":%u}",
+                 offset, before.size);
+        queue_text(response);
+        return;
+    }
+
+    size_t length = before.size - offset;
+    if (length > sizeof(data)) length = sizeof(data);
+    const virtual_amiibo_result_t result =
+        virtual_amiibo_store_read(offset, data, length);
+    virtual_amiibo_store_status(&after);
+    if (result != VIRTUAL_AMIIBO_OK ||
+        !after.loaded || after.size != before.size ||
+        after.generation != before.generation) {
+        snprintf(response, sizeof(response),
+                 "{\"amiibo\":\"error\",\"error\":\"%s\","
+                 "\"offset\":%u,\"generation\":%lu}",
+                 result == VIRTUAL_AMIIBO_OK ? "image changed during read" :
+                     virtual_amiibo_result_string(result),
+                 offset, (unsigned long)after.generation);
+        queue_text(response);
+        return;
+    }
+
+    for (size_t i = 0; i < length; ++i)
+        snprintf(&payload[i * 2u], 3, "%02X", data[i]);
+    payload[length * 2u] = '\0';
+    snprintf(response, sizeof(response),
+             "{\"amiibo\":\"data\",\"offset\":%u,\"length\":%u,"
+             "\"total\":%u,\"generation\":%lu,\"payload\":\"%s\"}",
+             offset, (unsigned)length, before.size,
+             (unsigned long)before.generation, payload);
+    queue_text(response);
 }
 
 static void queue_motion_pair_status(const char *event) {
@@ -380,7 +487,16 @@ static void handle_command(void) {
     } else if (strcmp(rx_line, "trace clear") == 0) {
         ns2_protocol_trace_clear();
         queue_trace_status("cleared");
+    } else if (strcmp(rx_line, "trace start nfc") == 0) {
+        ns2_protocol_trace_set_filter(NS2_TRACE_FILTER_NFC);
+        ns2_protocol_trace_set_enabled(true);
+        queue_trace_status("started");
+    } else if (strcmp(rx_line, "trace start bulk") == 0) {
+        ns2_protocol_trace_set_filter(NS2_TRACE_FILTER_BULK);
+        ns2_protocol_trace_set_enabled(true);
+        queue_trace_status("started");
     } else if (strcmp(rx_line, "trace start") == 0) {
+        ns2_protocol_trace_set_filter(NS2_TRACE_FILTER_ALL);
         ns2_protocol_trace_set_enabled(true);
         queue_trace_status("started");
     } else if (strcmp(rx_line, "trace stop") == 0) {
@@ -405,7 +521,12 @@ static void handle_command(void) {
         }
     } else if (strcmp(rx_line, "blecap") == 0 || strcmp(rx_line, "blecap status") == 0) {
         queue_ble_status("status");
+    } else if (strcmp(rx_line, "blecap nfc start") == 0) {
+        sw2_capture_set_filter(SW2_CAPTURE_FILTER_NFC);
+        sw2_capture_set_enabled(true);
+        queue_ble_status("started");
     } else if (strcmp(rx_line, "blecap start") == 0) {
+        sw2_capture_set_filter(SW2_CAPTURE_FILTER_ALL);
         sw2_capture_set_enabled(true);
         queue_ble_status("started");
     } else if (strcmp(rx_line, "blecap stop") == 0) {
@@ -416,6 +537,37 @@ static void handle_command(void) {
         queue_ble_status("dump");
     } else if (strcmp(rx_line, "blecap read") == 0) {
         queue_ble_record();
+    } else if (strcmp(rx_line, "nfcmirror on") == 0) {
+        ns2_nfc_mirror_request(true);
+        queue_nfc_mirror_status("requested");
+    } else if (strcmp(rx_line, "nfcmirror off") == 0) {
+        ns2_nfc_mirror_request(false);
+        queue_nfc_mirror_status("requested");
+    } else if (strcmp(rx_line, "nfcmirror") == 0 ||
+               strcmp(rx_line, "nfcmirror status") == 0) {
+        queue_nfc_mirror_status("status");
+    } else if (strcmp(rx_line, "amiibo") == 0 ||
+               strcmp(rx_line, "amiibo status") == 0) {
+        queue_amiibo_status("status");
+    } else if (strncmp(rx_line, "amiibo read ", 12) == 0) {
+        unsigned int offset;
+        char trailing;
+        if (sscanf(rx_line + 12, "%u%c", &offset, &trailing) != 1 ||
+            offset > UINT16_MAX) {
+            queue_text("{\"amiibo\":\"error\","
+                       "\"error\":\"usage: amiibo read OFFSET\"}");
+        } else {
+            queue_amiibo_read((uint16_t)offset);
+        }
+    } else if (strcmp(rx_line, "amiibo acknowledge") == 0) {
+        virtual_amiibo_status_t status;
+        virtual_amiibo_store_status(&status);
+        if (!status.loaded) {
+            queue_text("{\"amiibo\":\"error\",\"error\":\"no image loaded\"}");
+        } else {
+            virtual_amiibo_store_acknowledge_download();
+            queue_amiibo_status("acknowledged");
+        }
     } else if (strcmp(rx_line, "motionpair") == 0 ||
                strcmp(rx_line, "motionpair status") == 0) {
         queue_motion_pair_status("status");
@@ -1015,12 +1167,14 @@ static void handle_command(void) {
                    "\"profile\",\"profile default\","
                    "\"profile C.M.m B.M.m D.M.m\",\"btversion request\","
                    "\"btversion\",\"trace status\",\"trace clear\","
-                   "\"trace start\",\"trace stop\",\"trace dump\","
+                   "\"trace start\",\"trace start bulk\",\"trace start nfc\",\"trace stop\",\"trace dump\","
                    "\"trace read N\","
-                   "\"blecap status\",\"blecap start\",\"blecap stop\","
+                   "\"blecap status\",\"blecap start\",\"blecap nfc start\",\"blecap stop\","
                    "\"blecap dump\",\"blecap read\",\"blecap variant 0-9\","
                    "\"blecap gattdisc on|off|status\","
                    "\"blecap mark TEXT\","
+                   "\"nfcmirror on|off|status\","
+                   "\"amiibo status|read OFFSET|acknowledge|dump (PC helper)\","
                    "\"motionpair status|start|stop|dump|read\",\"magraw on|off|status\","
                    "\"motionprobe status|latch|seed STATE|on|off|reset|set G0 G1 G2|rate AXIS VALUE|accel X Y Z\","
                    "\"button y\","

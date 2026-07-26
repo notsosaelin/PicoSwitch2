@@ -1,6 +1,6 @@
 # Compatibility Matrix
 
-Last updated: 2026-07-24
+Last updated: 2026-07-25
 
 This matrix records observed behavior, not inferred support. "Source-tested" means host tests or
 code inspection only; it is weaker than physical hardware confirmation.
@@ -13,7 +13,7 @@ code inspection only; it is weaker than physical hardware confirmation.
 | NSO GameCube | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Genuine `1.1.2 / 12.0.0` firmware identity and up-to-date status confirmed; native Z and trigger detents supported |
 | Joy-Con 2 Left | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Sideways controls, mouse pointer/buttons/wheel, rumble, STOP, reconnect, and current firmware identity confirmed |
 | Joy-Con 2 Right | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Sideways controls, mouse pointer/buttons/wheel, rumble, STOP, reconnect, and current firmware identity confirmed |
-| CDC/config | ✅ Confirmed | N/A | N/A | Web Serial configuration and read-only MSC page |
+| CDC/config | ✅ Confirmed with CDC-only descriptor and local portal | N/A | N/A | No mass-storage interface or embedded page |
 
 ## Bluetooth controllers
 
@@ -45,9 +45,12 @@ code inspection only; it is weaker than physical hardware confirmation.
 
 | Scenario | Status |
 |---|---|
-| Double-tap with DualSense/Edge connected | ✅ Confirmed |
-| Triple-tap with DualSense/Edge connected | ✅ Confirmed |
-| Five-second mode hold with DualSense/Edge connected | ✅ Confirmed |
+| Former double/triple/hold scheduling with DualSense/Edge connected | ✅ Hardware-confirmed baseline |
+| Revised paired/unpaired/Config action matrix | 🟡 Host/build confirmed; hardware pending |
+| Single-tap controller-only personality cycle | 🟡 Host/build confirmed; hardware pending |
+| Two-second direct Config entry and Config→Pro2 exit | ✅ Confirmed during CDC-only Virtual Amiibo validation |
+| Paired double-tap disconnect-without-bond-delete then pairing | 🟡 Build confirmed; hardware pending |
+| Triple-tap wipe from normal and Config modes | 🟡 Host/build confirmed; hardware pending |
 | DualSense/Edge rumble while gestures remain responsive | ✅ Confirmed |
 | Post-wipe automatic readmission remains blocked | ✅ Confirmed for reported workflow; include in release matrix |
 | Re-pair after explicit new pairing window | ✅ Confirmed |
@@ -79,6 +82,21 @@ code inspection only; it is weaker than physical hardware confirmation.
 | Input, native gyro, and rumble during audio | ✅ Confirmed |
 | LED and BOOTSEL during audio | ✅ Confirmed |
 | Microphone return | 🔵 Not implemented/tested |
+
+## NFC / Virtual Amiibo
+
+| Scenario | Status |
+|---|---|
+| Genuine Pro2 physical amiibo read relay | ✅ Confirmed through the UART-gated diagnostic bridge |
+| Virtual Amiibo read with a non-NFC source controller | ✅ Confirmed on a real Switch 2 |
+| Virtual Amiibo game-owned write and completion | ✅ Complete 88-byte staging, `0x08`, and `05 00` confirmed without a crash |
+| Post-write logical eject | ✅ Confirmed as absent `07 41`; former rescan loop eliminated |
+| Next-scan re-presentation and updated read | ✅ Same selected UID and complete 600-byte-buffer read confirmed |
+| Live UART export while USB remains console-attached | ✅ 540-byte generation-stable, UID/BCC-valid mutated image saved |
+| Automatic write-before-eject flash snapshot | ✅ Live-console completion and power-cycle recovery confirmed |
+| Used/Unused copy selection and reboot recovery | ✅ Both copies remain selectable and survive dongle power loss |
+| Offline browser library and full-library backup | ✅ Library works without serial; export/clear/import restores both copies and selection |
+| Native Pro2/Joy-Con 2 physical-tag write | 🔵 Pending capture and implementation |
 
 ## PC-specific behavior
 

@@ -9,8 +9,9 @@
 extern volatile bool usb_lockout_ready;
 
 #ifdef NS2_PRO
-// Runtime USB output personality (NS2_PRO builds only). Cycled by a ~5s BOOTSEL
-// hold; volatile for the current power-on session only -- never persisted to
+// Runtime USB output personality (NS2_PRO builds only). A paired-controller
+// single tap cycles controller personalities; a two-second hold enters Config.
+// Selection is volatile for the current power-on session only -- never persisted to
 // flash (see docs/switch2-gc/usb-personality.md "Runtime mode cycle").
 //
 // USB_PERSONALITY_SWITCH2_PRO2 = 0 so the correct boot default falls out of
@@ -40,11 +41,13 @@ typedef enum {
 // set g_usb_mode_cycle_requested below and wait for core0 to act on it.
 extern volatile usb_personality_t g_usb_personality;
 
-// core1 (bootsel hold gesture) sets this to request "advance to the next
-// available personality"; core0's main loop polls it, performs the full
-// transition, and clears it. Mirrors the existing g_usb_enter_config
-// cross-core contract exactly -- no new synchronization pattern introduced.
+// core1 (paired-controller single tap) sets this to request the next
+// controller-only personality. Config is excluded from this cycle.
 extern volatile bool g_usb_mode_cycle_requested;
+
+// core1 (two-second hold) requests a direct Config transition. If already in
+// Config, core0 returns directly to Pro2.
+extern volatile bool g_usb_config_mode_requested;
 
 // Derived, read-only compatibility view -- NOT an independent source of truth.
 // True exactly when g_usb_personality == USB_PERSONALITY_CDC_CONFIG. Kept as a

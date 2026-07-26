@@ -11,6 +11,15 @@
 > *product* conclusions (persist to flash, reboot to switch) are superseded — see "Runtime mode
 > cycle" further down for the current design.
 
+> **Current BOOTSEL policy (2026-07-25), superseding the hold-cycle product behavior below**:
+> a single tap with a HID-ready controller cycles only Pro2 → NSO GameCube → Joy-Con 2 Left →
+> Joy-Con 2 Right → Pro2. Config is excluded. A two-second hold enters Config directly from any
+> controller personality and returns directly to Pro2 from Config. Double-tap opens pairing in
+> normal mode; with an active controller it disconnects that controller without deleting its bond
+> before admitting a replacement. Triple-tap performs the existing disconnect/wipe in normal or
+> Config mode. Single/double taps are ignored in Config. The older sections remain as dated design
+> history and transition-mechanism rationale.
+
 ## Implementation status (2026-07-13)
 
 **Stage B is implemented, build-verified, and hardware-validated for its actual scope (USB
@@ -272,7 +281,13 @@ independent recovery path that requires no gesture at all. Verify both in the St
 (a) cycle to GameCube, hold again to reach Config, confirm Config works normally; (b) from GameCube
 mode, power-cycle (not hold), confirm the board returns to Pro2 on the next boot.
 
-## Runtime mode cycle (2026-07-13 product decision — current design, supersedes the sections above)
+## Runtime mode cycle (2026-07-13 product decision — superseded 2026-07-25)
+
+The hold-driven all-personality cycle below is historical. Current production behavior is the
+single-tap controller-only cycle plus the two-second direct Config toggle stated at the top of this
+document. `usb_next_personality()` remains as a tested historical/helper API;
+`usb_next_controller_personality()` is the production single-tap selector, and core 0 owns both
+transition request flags.
 
 ### Cycle definition
 

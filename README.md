@@ -61,14 +61,15 @@ start with [AGENTS.md](AGENTS.md).
 
 ## Pairing and BOOTSEL
 
-| Gesture | Action |
-|---|---|
-| Double-tap | Open a 30-second pairing window. |
-| Triple-tap | Disconnect the active controller, erase stored bonds, and block previously known addresses until a new pairing window is opened. |
-| Hold for about 5 seconds | Disconnect USB and advance to the next output personality. The selection is not persisted across power cycles. |
+| Gesture | No controller paired | Controller paired | Config mode |
+|---|---|---|---|
+| Single-tap | No action | Cycle Pro2 → GameCube → Joy-Con 2 Left → Joy-Con 2 Right → Pro2 | No action |
+| Double-tap | Open a 30-second pairing window | Disconnect the active controller without deleting its bond, then open a 30-second pairing window | No action |
+| Triple-tap | Erase stored pairings and lock admission | Disconnect, erase stored pairings, and lock admission | Same wipe/disconnect action |
+| Hold for 2 seconds | Enter Config directly | Enter Config directly | Exit directly to Pro Controller 2 |
 
-The hold cycle is Pro Controller 2 → GameCube → Joy-Con 2 Left → Joy-Con 2 Right →
-Config → Pro Controller 2. Every cold boot begins in Pro Controller 2 mode.
+Personality selection is volatile and every cold boot begins in Pro Controller 2 mode. Config is
+deliberately excluded from the single-tap controller cycle.
 
 | LED pattern | Meaning |
 |---|---|
@@ -84,19 +85,36 @@ gestures or output scheduling.
 
 ## Configuration
 
-Advance to the fifth personality with BOOTSEL holds. The device re-enumerates as a serial
-and read-only storage device named **PICOSWITCH**.
+Hold BOOTSEL for two seconds from any controller personality. The device re-enumerates directly as
+the **PicoSwitch Config** serial device; firmware no longer exposes a storage drive or embeds the
+web portal.
 
-1. Open `CONFIG.HTM` from the mounted drive in desktop Chrome or Edge.
-2. Select the PicoSwitch serial port.
-3. Inspect live input, change mappings or Pro2/Joy-Con appearance colors, and save.
-4. Power-cycle to return directly to Pro Controller 2 mode.
-
-The embedded page is generated from `web/index.html`. After editing it, run:
+1. Start the local portal from the repository root:
 
 ```powershell
-python tools/make_web_disk.py web/index.html src/web_disk.h
+.\tools\run_config_portal.ps1
 ```
+
+2. In desktop Chrome or Edge, select the PicoSwitch Config serial port.
+3. Inspect live input, change mappings or Pro2/Joy-Con appearance colors, and save.
+4. Hold BOOTSEL for two seconds to return directly to Pro Controller 2, or power-cycle to boot
+   directly into Pro Controller 2 mode.
+
+The launcher serves `web/index.html` from localhost, giving browser storage a stable origin for the
+amiibo library while keeping the changing portal entirely off the microcontroller.
+
+The amiibo library remains available when no serial device is connected. It retains separate
+Unused and console-written Used copies, can select either copy, and can export/import a versioned
+library backup in case browser storage is cleared. Adapter-only controls remain disabled offline.
+
+The separate Virtual Amiibo browser diagnostic does not require a Pico or serial port:
+
+```powershell
+.\tools\run_amiibo_portal_test.ps1
+```
+
+It serves `web/diagnostic.html` locally and simulates upload, persistence, console writes,
+cache-first save-back, the recursive browser library, and AmiiboAPI metadata.
 
 ## Building
 

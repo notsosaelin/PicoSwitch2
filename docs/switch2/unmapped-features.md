@@ -21,27 +21,27 @@ While the core functionality of the PicoSwitch2 (connecting Bluetooth controller
 - **Current Behavior:** `ns2_hid_out_report` extracts each motor's own peak amplitude (across its 2 internal frequency bands) **independently** and forwards both via `report_set_rumble(idx, left, right)` — a real, previously-unused capability in joypad-os's `feedback_rumble_t` (`left`/`right` fields) that our cross-core seam was collapsing to one shared scalar before this fix (both Switch 1's `switch_pro.c` and Switch 2's `switch_pro2.c` had the same collapse; both fixed together, plus `ns2_seam.c`'s `feedback_get_state()` bridge). Drivers with true independent-motor output (DualSense, Xbox, per joypad-os) now get distinct left/right intensity instead of both motors buzzing identically. DualSense's native `0x39` haptic renderer is separately hardware-confirmed with interval peak preservation and a 3.25× waveform-preserving curve. **Still lost for generic rumble targets:** the original frequency component; full waveform/frequency translation requires a capability-aware renderer per controller family.
 
 ### 3. NFC / Amiibo
-- **Status:** **🔵 Partially reverse-engineered, still unmapped (implementation unchanged).**
-- **Details:** The console requests NFC operations via command `0x01`, whose subcommand family
-  and one full request/response pair (subcommand `0x0C`) are now traced to exact packets in this
-  repo's own genuine-controller capture, plus a second, previously-undocumented exchange
-  (subcommand `0x01`, bare acknowledgment). Full confidence-qualified inventory, six-claim
-  evidence separation (official confirmation vs. hardware ID vs. protocol behavior, per
-  controller type), and the next recommended capture/analysis task:
-  [`docs/switch2/nfc-protocol-inventory.md`](nfc-protocol-inventory.md). No NFC IC has been
-  identified in either controller; no real amiibo tag transaction (detect/read/write/mount/
-  unmount) has been observed in any capture this project holds.
-- **Current Behavior:** We hardcode an idle state / empty acknowledgment (subcommand `0x0C`
-  returns the real captured bytes `61 12 50 10`; the response `dir` byte for other bare-ack
-  subcommands is `0x04`, fixed 2026-07-12 — see the inventory doc §2.3) to satisfy the console. We
-  do not read Amiibo data or forward NFC commands to connected controllers.
-- **Reference implementation exists, not ported (2026-07-12):** `Dycool/NS-PC-Control` has a
-  complete, working amiibo read/write emulation for the native Switch 2 vendor channel (scan mode,
-  status, begin-operation, a 622-byte read-buffer format, a 454-byte write-staging format). Not
-  adopted — their source captures aren't independently verifiable by this project, per this
-  project's own evidence discipline. Recorded as a structured hypothesis (not fact) in
-  `nfc-protocol-inventory.md` §4 and `docs/experiments/ns-pc-control-audit-2026-07-12.md` §2, ready
-  to validate against if this project ever captures its own real amiibo transaction.
+- **Status:** **🟡 Genuine Pro2 and Virtual Amiibo reads are hardware-confirmed; Virtual Amiibo
+  write, logical eject, re-presentation, updated readback, and UART export are also confirmed,
+  while native writes remain open.**
+- **Details:** Direct Switch 2/UART/BLE captures now establish the command `0x01` subcommand
+  sequence, 600-byte reader buffer, 70-byte offset chunks, genuine Pro2 relay framing, modulo-eight
+  NFC events, and the 88-byte multi-packet `0x14` write request. The old per-USB-packet dispatch
+  caused error `2168-0002`; bounded stream reassembly eliminated the crash.
+- **Current Behavior:** A real Switch 2 recognizes both a physical amiibo through the UART-gated
+  genuine Pro2 relay and a browser-loaded Virtual Amiibo through a non-NFC controller. The
+  disabled-by-default virtual path supports transactional upload, separate immutable Unused and
+  mutable Used images, automatic alternating-bank persistence, and exact retrieval. A game-owned
+  write reached full staging, `0x08`, and accepted `05 00`. The runtime keeps the Used image loaded,
+  waits for its snapshot before logical eject, and re-presents it on the next scan. Hardware
+  confirms the write/eject/re-present lifecycle, valid mutated UART export, automatic persistence,
+  power-cycle recovery, reversible Unused/Used selection, offline library operation, and backup
+  restoration.
+- **Remaining native work:** production relay gating/reconnect, a physical Pro2 write capture,
+  Joy-Con 2 Right comparison, and Switch 1 MCU reader/writer translation. External projects remain
+  supporting evidence rather than Switch 2 protocol truth. See
+  [`docs/switch2/nfc-implementation.md`](nfc-implementation.md) and
+  [`docs/switch2/nfc-protocol-inventory.md`](nfc-protocol-inventory.md).
 
 ### 4. USB Audio
 - **Status:** **✅ Pico 2 W DualSense and genuine Pro Controller 2 headphone output operational; microphone return open**

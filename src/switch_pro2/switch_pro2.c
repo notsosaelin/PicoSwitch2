@@ -25,6 +25,11 @@
 #include "ns2_native_motion.h"
 #include "ns2_motion_probe.h"
 #include "ns2_diag_input.h"
+#include "ns2_vendor_tx.h"
+#include "ns2_nfc_mirror.h"
+#include "ns2_virtual_nfc_runtime.h"
+#include "ns2_vendor_rx.h"
+#include "virtual_amiibo_store.h"
 #include "ns2_ds5_motion.h"
 #include "usb.h"         // g_usb_config_mode
 
@@ -699,9 +704,97 @@ void ns2_motion_debug_tick(void) {
 // (0x15/02) · 6 pairing finalised (0x15/03) · 7 report selected (0x03/0A).
 volatile uint8_t g_ns2_stage = 0;
 
+static ns2_vendor_tx_t ns2_vendor_tx;
+static ns2_vendor_rx_t ns2_vendor_rx;
+static ns2_virtual_nfc_runtime_t ns2_virtual_nfc_runtime;
+static uint8_t ns2_virtual_nfc_raw[VIRTUAL_AMIIBO_RAW_SIZE];
+static uint8_t ns2_virtual_nfc_signature[VIRTUAL_AMIIBO_SIGNATURE_SIZE];
+static uint32_t ns2_virtual_nfc_operation_generation;
+
+static size_t vend_write_some(void *context, const uint8_t *data, size_t size) {
+    (void)context;
+    return tud_vendor_write(data, (uint32_t)size);
+}
+
+static void vend_pump(void) {
+    if (ns2_vendor_tx_pump(&ns2_vendor_tx, vend_write_some, NULL) != 0)
+        tud_vendor_write_flush();
+}
+
 static void vend_send(const uint8_t *r, uint16_t len) {
-    tud_vendor_write(r, len);
-    tud_vendor_write_flush();
+    // Preserve the validated one-shot path for all existing small replies.
+    // NFC's 630-byte response uses the queued path and is resumed by ns2_task
+    // without blocking HID/audio/BOOTSEL work while the 128-byte FIFO is full.
+    if (len <= CFG_TUD_VENDOR_TX_BUFSIZE &&
+        !ns2_vendor_tx_active(&ns2_vendor_tx)) {
+        tud_vendor_write(r, len);
+        tud_vendor_write_flush();
+        return;
+    }
+    if (ns2_vendor_tx_queue(&ns2_vendor_tx, r, len))
+        vend_pump();
+}
+
+static bool ns2_virtual_nfc_dispatch_usb(const uint8_t *command,
+                                         uint32_t length)
+{
+    if (!config_virtual_amiibo_enabled() || !command || length < 8u ||
+        command[0] != 0x01u)
+        return false;
+
+    virtual_amiibo_status_t status;
+    virtual_amiibo_store_status(&status);
+    bool tag_present = false;
+    uint32_t generation = 0;
+    if (status.loaded &&
+        virtual_amiibo_store_copy_image(
+            ns2_virtual_nfc_raw, ns2_virtual_nfc_signature, NULL,
+            &generation) ==
+            VIRTUAL_AMIIBO_OK)
+        tag_present = true;
+
+    ns2_virtual_nfc_response_t response;
+    if (!ns2_virtual_nfc_runtime_dispatch(
+            &ns2_virtual_nfc_runtime, to_ms_since_boot(get_absolute_time()),
+            command[3], command + 8, length - 8u, tag_present,
+            tag_present ? ns2_virtual_nfc_raw : NULL,
+            tag_present ? ns2_virtual_nfc_signature : NULL, &response))
+        return false;
+
+    if (command[3] == 0x06u &&
+        ns2_virtual_nfc_runtime.operation_active)
+        ns2_virtual_nfc_operation_generation = generation;
+
+    if (response.write_committed &&
+        virtual_amiibo_store_apply_console_write(
+            ns2_virtual_nfc_raw,
+            ns2_virtual_nfc_operation_generation) != VIRTUAL_AMIIBO_OK) {
+        // A browser upload or other selection change won the race. Never
+        // overwrite that newer image with a transaction begun against an
+        // older generation.
+        ns2_virtual_nfc_runtime_write_apply_failed(
+            &ns2_virtual_nfc_runtime,
+            to_ms_since_boot(get_absolute_time()));
+        response.write_committed = false;
+    }
+
+    uint8_t packet[8u + NS2_NFC_READ_CHUNK_PAYLOAD_SIZE];
+    memset(packet, 0, sizeof(packet));
+    packet[0] = 0x01;
+    packet[1] = response.response_direction;
+    packet[2] = command[2];
+    packet[3] = command[3];
+    packet[5] = 0xF8;
+    if (response.payload_size != 0)
+        memcpy(packet + 8, response.payload, response.payload_size);
+    const uint16_t packet_length =
+        (uint16_t)(8u + response.payload_size);
+    ns2_protocol_trace_record(
+        time_us_32(), (uint8_t)g_usb_personality, NS2_TRACE_BULK_RESPONSE,
+        NS2_TRACE_DEVICE_TO_CONSOLE, packet[0], packet[3], packet,
+        packet_length);
+    vend_send(packet, packet_length);
+    return true;
 }
 
 // Response header: echo cmd, dir=0x01, echo transport, echo subcmd, ACK 00 f8.
@@ -711,6 +804,14 @@ static void ns2_dispatch(const uint8_t *c, uint32_t n) {
     ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
                               NS2_TRACE_BULK_COMMAND,
                               NS2_TRACE_CONSOLE_TO_DEVICE, id, sub, c, n);
+    if (id == 0x01 && ns2_virtual_nfc_dispatch_usb(c, n))
+        return;
+    if (id == 0x01 && ns2_nfc_mirror_submit(c, n)) {
+        // The UART-gated native-reader path is asynchronous: BTstack sends
+        // this to the genuine controller and publishes its matching reply for
+        // ns2_task() to return from core0. Do not emit the placeholder ACK.
+        return;
+    }
 
     // Fine-grained handshake milestones for the LED tracer, to pinpoint where the console
     // stalls in the long post-pairing sequence (these are strictly ordered in the capture).
@@ -903,6 +1004,9 @@ static void ns2_build_report(uint8_t *p) {
 #endif
     p[0x01] = controller_battery_switch2_power_info(
         in.battery_valid != 0, in.battery_level, in.battery_charging != 0);
+    p[0x0C] = config_virtual_amiibo_enabled()
+        ? ns2_virtual_nfc_runtime_report_state(&ns2_virtual_nfc_runtime)
+        : ns2_nfc_mirror_report_state();
 
     // Remap the 3-byte button field: report.c uses the Switch 1 Pro bit layout,
     // report 0x09 uses a different assignment (see docs/switch2/usb-spec.md §7).
@@ -1169,6 +1273,9 @@ static void ns2_build_report_05(uint8_t *p) {
 // tud_mount_cb dispatcher. See docs/switch2-gc/usb-personality.md "TinyUSB dispatch...".
 void ns2_mount(void) {
     if (g_ns2_stage < 3) g_ns2_stage = 3;
+    ns2_vendor_rx_init(&ns2_vendor_rx);
+    ns2_virtual_nfc_runtime_init(&ns2_virtual_nfc_runtime);
+    ns2_virtual_nfc_operation_generation = 0;
     ns2_imu_enabled = false;  // new host session: IMU off until the host re-enables it (0x0C/0x04)
     ns2_ds5_motion_reset(&ns2_ds5_motion);
     ns2_ds5_motion_source_active = false;
@@ -1177,7 +1284,18 @@ void ns2_mount(void) {
     ns2_dbg_ds5_motion_probe_off();
 }
 
+static void ns2_dispatch_complete_vendor_command(
+    void *context, const uint8_t *command, size_t length)
+{
+    (void)context;
+    ns2_dispatch(command, (uint32_t)length);
+}
+
 void ns2_init(void) {
+    ns2_vendor_tx_init(&ns2_vendor_tx);
+    ns2_vendor_rx_init(&ns2_vendor_rx);
+    ns2_virtual_nfc_runtime_init(&ns2_virtual_nfc_runtime);
+    ns2_virtual_nfc_operation_generation = 0;
     ns2_firmware_diagnostics_reset();
     ns2_factory_init();
     ns2_wake_pairing_reset();
@@ -1233,10 +1351,34 @@ void ns2_hid_out_report(uint8_t report_id, const uint8_t *data, uint16_t len) {
 }
 
 void ns2_task(void) {
-    if (tud_vendor_available()) {
-        uint8_t cmd[64];
-        uint32_t n = tud_vendor_read(cmd, sizeof(cmd));
-        ns2_dispatch(cmd, n);
+    vend_pump();
+    if (config_virtual_amiibo_enabled()) {
+        ns2_virtual_nfc_runtime_set_write_persisted(
+            &ns2_virtual_nfc_runtime,
+            !virtual_amiibo_store_persist_pending());
+        ns2_virtual_nfc_runtime_tick(
+            &ns2_virtual_nfc_runtime,
+            to_ms_since_boot(get_absolute_time()));
+    }
+    if (!ns2_vendor_tx_active(&ns2_vendor_tx)) {
+        uint8_t nfc_response[NS2_NFC_MIRROR_RESPONSE_MAX];
+        size_t nfc_response_length = 0;
+        if (ns2_nfc_mirror_take_usb_response(
+                nfc_response, sizeof(nfc_response),
+                &nfc_response_length)) {
+            ns2_protocol_trace_record(
+                time_us_32(), (uint8_t)g_usb_personality,
+                NS2_TRACE_BULK_RESPONSE, NS2_TRACE_DEVICE_TO_CONSOLE,
+                nfc_response[0], nfc_response[3], nfc_response,
+                nfc_response_length);
+            vend_send(nfc_response, (uint16_t)nfc_response_length);
+        } else if (tud_vendor_available()) {
+            uint8_t fragment[CFG_TUD_VENDOR_RX_BUFSIZE];
+            uint32_t n = tud_vendor_read(fragment, sizeof(fragment));
+            ns2_vendor_rx_feed(
+                &ns2_vendor_rx, fragment, n,
+                ns2_dispatch_complete_vendor_command, NULL);
+        }
     }
     // Stream input only after the host has selected a report (0x03/0A) — a real PC2
     // stays silent on the HID endpoint until then. (See ns2_streaming.)

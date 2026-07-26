@@ -20,6 +20,7 @@ static uint32_t s_tail;  // next read index
 static uint32_t s_dropped;
 static volatile bool s_enabled;
 static volatile bool s_pair_enabled;
+static volatile sw2_capture_filter_t s_filter = SW2_CAPTURE_FILTER_ALL;
 static critical_section_t s_lock;
 static bool s_lock_init_done;
 
@@ -43,6 +44,19 @@ void sw2_capture_set_enabled(bool on) {
         s_dropped = 0;
     }
     critical_section_exit(&s_lock);
+}
+
+void sw2_capture_set_filter(sw2_capture_filter_t filter) {
+    ensure_lock();
+    critical_section_enter_blocking(&s_lock);
+    s_filter = filter == SW2_CAPTURE_FILTER_NFC
+        ? SW2_CAPTURE_FILTER_NFC
+        : SW2_CAPTURE_FILTER_ALL;
+    critical_section_exit(&s_lock);
+}
+
+sw2_capture_filter_t sw2_capture_get_filter(void) {
+    return s_filter;
 }
 
 void sw2_capture_pair_set_enabled(bool on) {
@@ -92,6 +106,12 @@ uint16_t sw2_capture_buffered_count(void) {
 
 void sw2_capture_record(sw2_capture_kind_t kind, uint16_t handle, const uint8_t *data, uint16_t len) {
     if (!s_enabled) return;
+    if (s_filter == SW2_CAPTURE_FILTER_NFC &&
+        handle != 0x0014 && handle != 0x001A && handle != 0x001B &&
+        handle != 0x0016 && handle != 0x001E && handle != 0x001F &&
+        kind != SW2_CAP_NFC_STATE && kind != SW2_CAP_MARKER) {
+        return;
+    }
     ensure_lock();
 
     critical_section_enter_blocking(&s_lock);
@@ -142,6 +162,8 @@ const char *sw2_capture_kind_name(uint8_t k) {
         case SW2_CAP_MARKER:       return "marker";
         case SW2_CAP_LINK_PARAMS:  return "link_params";
         case SW2_CAP_MOTION_PAIR:  return "motion_pair";
+        case SW2_CAP_NFC_NOTIFY:   return "nfc_notify";
+        case SW2_CAP_NFC_STATE:    return "nfc_state";
         default:                   return "?";
     }
 }

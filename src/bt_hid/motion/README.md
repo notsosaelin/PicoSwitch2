@@ -15,8 +15,9 @@ Production invariants:
 
 - Genuine Pro Controller 2 PDUs remain opaque passthrough data.
 - DualSense production output uses only the hardware-validated length-`0x1E` carrier.
-- A synthetic length-`0x28` packet must not be emitted until every changing lane required by the
-  console is decoded and can be generated coherently.
+- A software-generated length-`0x28` reference/magnetometer carrier is an accepted target for
+  controllers without that hardware. It must not be emitted until every changing lane required by
+  the console is decoded and can be generated coherently; the static-template method is refuted.
 - Diagnostic capture and probe paths must remain opt-in and must not alter production output while
   disabled.
 

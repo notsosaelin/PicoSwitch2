@@ -62,8 +62,8 @@ static void test_unknown_sample_and_single_tap(void) {
     CHECK(service(&fixture, SERVICE_TIMER, true, false, 230) == BOOTSEL_NONE,
           "single tap release waits for the tap window");
     CHECK(service(&fixture, SERVICE_TIMER, true, false,
-                  230 + BOOTSEL_TAP_WINDOW_MS) == BOOTSEL_NONE,
-          "single tap remains intentionally unused after the window");
+                  230 + BOOTSEL_TAP_WINDOW_MS) == BOOTSEL_SINGLE_TAP,
+          "single tap is classified after the tap window");
 }
 
 static void test_timer_fallback_double_tap(void) {
@@ -126,17 +126,17 @@ static void test_report_driven_hold_fires_once(void) {
 
     service(&fixture, SERVICE_REPORT, true, false, 900);
     service(&fixture, SERVICE_REPORT, true, true, 1000);
-    for (uint32_t now = 1004; now <= 6200; now += 4) {
+    for (uint32_t now = 1004; now <= 3200; now += 4) {
         if (service(&fixture, SERVICE_REPORT, true, true, now) == BOOTSEL_HOLD)
             hold_count++;
     }
 
     CHECK(hold_count == 1,
-          "report-driven five-second hold fires exactly once under a report flood");
-    CHECK(service(&fixture, SERVICE_REPORT, true, false, 6300) == BOOTSEL_NONE,
+          "report-driven two-second hold fires exactly once under a report flood");
+    CHECK(service(&fixture, SERVICE_REPORT, true, false, 3300) == BOOTSEL_NONE,
           "release after a fired hold does not become a tap");
     CHECK(service(&fixture, SERVICE_REPORT, true, false,
-                  6300 + BOOTSEL_TAP_WINDOW_MS) == BOOTSEL_NONE,
+                  3300 + BOOTSEL_TAP_WINDOW_MS) == BOOTSEL_NONE,
           "completed hold cannot later become a delayed tap gesture");
     CHECK(fixture.timer_calls == 0,
           "report-driven hold remains independent of the timer fallback");

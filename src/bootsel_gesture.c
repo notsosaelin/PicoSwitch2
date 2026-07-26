@@ -32,6 +32,8 @@ bootsel_gesture_t bootsel_gesture_update(bootsel_gesture_state_t *state,
         (now_ms - state->last_tap_ms) >= BOOTSEL_TAP_WINDOW_MS) {
         uint8_t count = state->tap_count;
         state->tap_count = 0;
+        if (count == 1)
+            return BOOTSEL_SINGLE_TAP;
         if (count == 2)
             return BOOTSEL_DOUBLE_TAP;
         if (count >= 3)

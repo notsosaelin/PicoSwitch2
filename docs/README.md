@@ -30,6 +30,17 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Console command surface | [`switch2/command-surface.md`](switch2/command-surface.md) |
 | Controller firmware identity | [`switch2/firmware-versioning.md`](switch2/firmware-versioning.md) |
 | NFC implementation design | [`switch2/nfc-implementation.md`](switch2/nfc-implementation.md) |
+| NFC protocol evidence | [`switch2/nfc-protocol-inventory.md`](switch2/nfc-protocol-inventory.md) |
+| NFC feasibility/resource audit | [`experiments/nfc-feasibility-audit-2026-07-25.md`](experiments/nfc-feasibility-audit-2026-07-25.md) |
+| Virtual amiibo offline foundation | [`experiments/virtual-amiibo-foundation-2026-07-25.md`](experiments/virtual-amiibo-foundation-2026-07-25.md) |
+| Genuine Pro2 native NFC read | [`experiments/pro2-native-nfc-read-2026-07-25.md`](experiments/pro2-native-nfc-read-2026-07-25.md) |
+| Virtual Amiibo real-console read | [`experiments/virtual-amiibo-read-validation-2026-07-25.md`](experiments/virtual-amiibo-read-validation-2026-07-25.md) |
+| Smash native NFC write attempt | [`experiments/smash-native-nfc-write-attempt-2026-07-25.md`](experiments/smash-native-nfc-write-attempt-2026-07-25.md) |
+| Virtual Amiibo write reconstruction | [`experiments/virtual-amiibo-write-evidence-2026-07-25.md`](experiments/virtual-amiibo-write-evidence-2026-07-25.md) |
+| Virtual write crash / USB RX correction | [`experiments/virtual-amiibo-write-crash-and-rx-fix-2026-07-25.md`](experiments/virtual-amiibo-write-crash-and-rx-fix-2026-07-25.md) |
+| Virtual write/eject/re-present/export validation | [`experiments/virtual-amiibo-lifecycle-validation-2026-07-25.md`](experiments/virtual-amiibo-lifecycle-validation-2026-07-25.md) |
+| Virtual Amiibo power-loss persistence and clean/used model | [`experiments/virtual-amiibo-persistence-and-library-model-2026-07-25.md`](experiments/virtual-amiibo-persistence-and-library-model-2026-07-25.md) |
+| Config-mode CDC-only migration | [`experiments/config-cdc-only-migration-2026-07-25.md`](experiments/config-cdc-only-migration-2026-07-25.md) |
 | Serial-number structure | [`switch2/serial-generation.md`](switch2/serial-generation.md) |
 | Genuine Pro Controller 2 headset audio | [`switch2/pro2-headset-audio.md`](switch2/pro2-headset-audio.md) |
 | Native Pro Controller 2 motion result | [`experiments/native-pro2-motion-passthrough-2026-07-21.md`](experiments/native-pro2-motion-passthrough-2026-07-21.md) |

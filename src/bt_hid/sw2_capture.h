@@ -78,7 +78,17 @@ typedef enum {
                                 // 3=HCI LE Connection Update Complete. Interval is in 1.25ms
                                 // units and supervision timeout in 10ms units.
     SW2_CAP_MOTION_PAIR  = 13, // Internal time-aligned Pro2-PDU + DS5-IMU diagnostic record.
+    SW2_CAP_NFC_NOTIFY   = 14, // Extended NFC response notification from value handle 0x001E.
+    SW2_CAP_NFC_STATE    = 15, // Genuine report-0x000E NFC-state transition; data[0]=state.
 } sw2_capture_kind_t;
+
+typedef enum {
+    SW2_CAPTURE_FILTER_ALL = 0,
+    // Retain both command paths used during NFC diagnosis:
+    // primary 0x0014/0x001A/0x001B, extended
+    // 0x0016/0x001E/0x001F, state transitions, and explicit markers.
+    SW2_CAPTURE_FILTER_NFC = 1,
+} sw2_capture_filter_t;
 
 #define SW2_CAP_MAX_DATA 128 // Includes the 112-byte Pro2 headset/audio input report (0x002E).
 
@@ -105,6 +115,8 @@ bool sw2_capture_drain_one(sw2_cap_entry_t *out);
 const char *sw2_capture_kind_name(uint8_t kind);
 
 void sw2_capture_set_enabled(bool on);
+void sw2_capture_set_filter(sw2_capture_filter_t filter);
+sw2_capture_filter_t sw2_capture_get_filter(void);
 bool sw2_capture_get_enabled(void);
 uint32_t sw2_capture_dropped_count(void);  // oldest entries overwritten since last enable
 uint16_t sw2_capture_buffered_count(void); // entries currently waiting to be drained

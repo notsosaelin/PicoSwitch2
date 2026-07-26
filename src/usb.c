@@ -27,6 +27,7 @@ volatile bool usb_lockout_ready = false;
 
 volatile usb_personality_t g_usb_personality = USB_PERSONALITY_SWITCH2_PRO2;
 volatile bool g_usb_mode_cycle_requested = false;
+volatile bool g_usb_config_mode_requested = false;
 volatile uint32_t g_usb_mode_ack_until_ms = 0;
 volatile usb_personality_t g_usb_mode_ack_personality = USB_PERSONALITY_SWITCH2_PRO2;
 
@@ -58,14 +59,12 @@ static const char *usb_personality_name(usb_personality_t p) {
     }
 }
 
-// usb_personality_available()/usb_next_personality(): see usb_mode_cycle.c --
-// extracted there so this pure enum-walking logic (no pico-sdk/TinyUSB
-// dependency) can be compiled and tested on the host. CDC_CONFIG has a live
-// BOOTSEL-hold exit back to Pro2 (2026-07-14 -- see usb-personality.md
-// "Runtime mode cycle"): usb_next_personality(CDC_CONFIG) wraps to Pro2, and
-// ns2_bt_host.c's control_timer_handler() no longer suppresses BOOTSEL_HOLD
-// detection while g_usb_config_mode is true (pairing/wipe gestures remain
-// suppressed there, since those still make no sense in config mode).
+// usb_personality_available()/usb_next_personality() and the production
+// controller-only cycle live in usb_mode_cycle.c so this enum-walking logic
+// remains host-testable without Pico SDK/TinyUSB. The legacy all-personality
+// helper is retained for compatibility; production single-tap uses
+// usb_next_controller_personality(), while a two-second hold toggles directly
+// between a controller personality and Config.
 
 // Bring up the personality we're about to switch TO with a guaranteed-clean
 // slate. This is sufficient to satisfy "old-personality state must not leak
@@ -105,16 +104,16 @@ static void usb_reset_personality_state(usb_personality_t p) {
 // iterations -- never while TinyUSB is mid-enumeration, so the descriptor
 // callbacks always observe one coherent g_usb_personality value throughout
 // any single enumeration (NSO-GC.md's explicit requirement).
-static void usb_apply_mode_cycle(void) {
+static void usb_apply_personality(usb_personality_t next,
+                                  const char *reason) {
     usb_personality_t old = g_usb_personality;
-    usb_personality_t next = usb_next_personality(old);
     if (next == old) {
-        printf("[USB] Mode cycle requested but already terminal (%s); ignoring\n",
-               usb_personality_name(old));
+        printf("[USB] %s requested but already %s; ignoring\n",
+               reason, usb_personality_name(old));
         return;
     }
 
-    printf("[USB] Mode cycle: %s -> %s (BOOTSEL hold)\n",
+    printf("[USB] %s: %s -> %s\n", reason,
            usb_personality_name(old), usb_personality_name(next));
 
     tud_disconnect();
@@ -127,6 +126,20 @@ static void usb_apply_mode_cycle(void) {
     g_usb_mode_ack_until_ms = to_ms_since_boot(get_absolute_time()) + USB_MODE_ACK_MS;
 
     printf("[USB] Mode cycle complete: now %s\n", usb_personality_name(next));
+}
+
+static void usb_apply_controller_cycle(void) {
+    usb_apply_personality(
+        usb_next_controller_personality(g_usb_personality),
+        "BOOTSEL controller cycle");
+}
+
+static void usb_apply_config_toggle(void) {
+    usb_apply_personality(
+        g_usb_personality == USB_PERSONALITY_CDC_CONFIG
+            ? USB_PERSONALITY_SWITCH2_PRO2
+            : USB_PERSONALITY_CDC_CONFIG,
+        "BOOTSEL Config toggle");
 }
 
 // Apply a UART-requested same-personality re-enumeration without resetting the
@@ -148,9 +161,9 @@ volatile bool g_usb_config_mode = false;
 #endif  // NS2_PRO
 
 // Runs on core0. Owns the TinyUSB device stack. In normal mode it emulates the
-// active USB personality (Switch 2 Pro Controller 2 or, since 2026-07-13, the
-// NSO GameCube Controller -- see usb_personality_t); on a BOOTSEL hold it
-// cycles to the next available personality, terminating at CDC config mode.
+// active USB personality (see usb_personality_t). A single BOOTSEL tap requests
+// the controller-only cycle; a two-second hold requests direct Config entry or
+// a Config-to-Pro2 exit.
 void usb_core_task() {
     tusb_init();
 #ifdef NS2_PRO
@@ -181,9 +194,13 @@ void usb_core_task() {
         // never re-set while still true, but clearing it first here keeps
         // this function itself idempotent against any future caller that
         // isn't as careful.
+        if (g_usb_config_mode_requested) {
+            g_usb_config_mode_requested = false;
+            usb_apply_config_toggle();
+        }
         if (g_usb_mode_cycle_requested) {
             g_usb_mode_cycle_requested = false;
-            usb_apply_mode_cycle();
+            usb_apply_controller_cycle();
         }
         if (ns2_uart_diag_take_reenumerate_request()) {
             usb_apply_diag_reenumeration();

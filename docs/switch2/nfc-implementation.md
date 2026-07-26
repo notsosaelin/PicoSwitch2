@@ -1,184 +1,352 @@
-# NFC / amiibo — Implementation Design
+# NFC / amiibo implementation design
 
-> Design and feasibility document for NFC (amiibo) support, toward full feature parity with genuine
-> Switch Pro Controllers and Joy-Cons. **Documentation only — no code changed.** Builds on the RE
-> evidence in [`nfc-protocol-inventory.md`](nfc-protocol-inventory.md)
-> (protocol facts) rather than re-deriving it; this file is the *how-to-build-it* view.
+> Current design and feasibility decision. Protocol evidence is inventoried in
+> [`nfc-protocol-inventory.md`](nfc-protocol-inventory.md); the reproducible resource and source
+> audit is in
+> [`nfc-feasibility-audit-2026-07-25.md`](../experiments/nfc-feasibility-audit-2026-07-25.md).
 >
-> Status: ⬜ not implemented (beyond an init-handshake stub). **Cannot function on a real Switch
-> over USB** (§2) — this is a completeness/realism feature and a foundation for a future wireless
-> path (§8).
+> Status: **both a genuine Pro Controller 2 physical-tag read through the UART-gated relay and a
+> non-NFC-controller Virtual Amiibo read are recognized by a real Switch 2. A Virtual Amiibo write
+> reaches complete staging, commit, and accepted completion status on hardware without crashing.
+> Logical removal, next-scan re-presentation, same-session updated readback, and validated UART
+> export, automatic dual-bank persistence, power-cycle recovery, reversible Unused/Used selection,
+> offline library use, and full-library backup restore are hardware/browser-confirmed. Native
+> physical writes remain open.**
 
-## 0. The honest reality up front
+## 1. Decision
 
-1. **The Switch does not process NFC from a USB-attached controller.** This is confirmed here, not
-   assumed: the only genuine USB capture in the repo (`usbpcaptures/genuine_procon_2.pcapng`) is a
-   **PC/Windows** session, and report `0x09` (which carries the NFC-state byte) **never appears** in
-   a console context in any capture we have (`nfc-protocol-inventory.md` §2.5). Nintendo gates
-   amiibo to the controller's own NFC radio, which the console reaches only wirelessly.
-2. **The paired Bluetooth controller has no NFC reader.** A DualSense/Xbox/etc. cannot scan a
-   physical amiibo. So NFC support here can only ever be **virtual amiibo** — the dongle *stores*
-   NTAG215 dumps and *presents* them on command, exactly like a software amiibo emulator.
-3. **Therefore this is not console-testable over USB today.** It is worth building anyway for (a)
-   parity/realism of the emulated controller, (b) use with PC tools/games that read controller-NFC,
-   and (c) a ready foundation if/when wireless pairing lands (§8).
+NFC is no longer blocked by an inability to observe the console. The headered Pico 2 W can remain
+attached to the Switch while UART reaches the PC, and the Bluetooth host can exchange native
+commands with a paired Nintendo controller. The old design that assumed NFC could not work through
+the dongle is archived at
+[`nfc-implementation-through-2026-07-12.archived.md`](../archive/nfc-implementation-through-2026-07-12.archived.md).
 
-## 1. Background — amiibo and NFC on Switch controllers
+Treat the requested feature as three related implementations:
 
-- An **amiibo** is an **NTAG215** NFC tag: **540 bytes**, 135 pages × 4 B. Layout (widely
-  documented, e.g. amiitool): UID + lock bytes (pages 0–2), Capability Container (page 3), an
-  **AES-128-CTR-encrypted** data section, the unencrypted **figure/model ID** (~bytes `0x54–0x5B`),
-  two **HMAC-SHA256 signatures**, and the tag's factory **ECC originality signature**.
-- Genuine Pro Controllers / right Joy-Cons carry a **PN7160/PN7161 NFC controller** (datasheet in
-  `nso-gc-refs/switch2_controller_research/datasheets/PN7160_PN7161.pdf`). The Left Joy-Con has **no
-  NFC** (report `0x07` NFC-state is "Always 0").
-- Flow: game requests a scan → controller polls its field → tag detected → controller reads the
-  NTAG215 pages → returns them to the console → console decrypts/validates with **its own** keys.
+| Source controller | Intended behavior | Feasibility now | Remaining gate |
+|---|---|---|---|
+| DualSense, Xbox, generic, or any source without NFC | Serve one user-supplied 540- or 572-byte virtual amiibo; accept console writes and persist/download the modified image | **Complete read/write/persist/eject/re-present/library lifecycle hardware-confirmed** | Explicit manual present/remove controls |
+| Pro Controller 2 | Relay the controller's real NFC reader and physical tag | **Read hardware-confirmed through the diagnostic bridge** | Validate production gating/reconnect and capture a physical write |
+| Joy-Con 2 Right | Relay the controller's real NFC reader and physical tag | **Likely, not assumed byte-identical** | Repeat the read/write capture with this controller |
+| Switch 1 Pro Controller / Joy-Con Right | Use the real Switch 1 NFC reader through a Switch 2-facing personality | **Possible through translation, not byte passthrough** | Implement and capture the Switch 1 MCU reader/writer state machine, then map it to the Switch 2 command family |
+| Joy-Con Left / Joy-Con 2 Left | No reader exists on that half | Use virtual-tag mode only | None beyond the virtual implementation |
+| Unknown third-party controller claiming NFC | Do not assume capability from name alone | Per-profile only | Verified identity, report path, and a successful read/write capture |
 
-## 2. Genuine protocol surface (summary; full evidence in the inventory doc)
+The virtual path should be implemented first. It is the smallest, best-supported increment and also
+provides the tag store and Switch 2 command codec that both native-reader paths will reuse.
 
-- **Command `0x01` = NFC**, with subcommands (ndeadly + Dycool/NS-PC-Control, confidence-tagged in
-  `nfc-protocol-inventory.md` §4):
+## 2. Protocol surface to implement
 
-  | Sub | Meaning (best current understanding) |
-  |---|---|
-  | `0x03` | Enter NFC scan mode |
-  | `0x04` | Leave scan mode (eject virtual tag) |
-  | `0x05` | Get status — 61-byte payload: status byte, detail byte, 7-byte UID when a tag is present |
-  | `0x06` | Begin read/write — `D0 07 …` request; **zero UID ⇒ read**, matching UID ⇒ write |
-  | `0x14` | Write buffer — ~454-byte staging image (`D0 07` hdr + UID + lock + page records, pages 5–129), chunked |
-  | `0x08` | Commit staged write; status → `0x05` afterward |
-  | `0x15` | Read buffer — ~622-byte payload: 63-B metadata (UID + NTAG originality signature + 9 B echoed from `0x06`) + **540-B raw NTAG215 dump** + trailer |
-  | `0x0C` | ✅ capture-confirmed on genuine hardware; response `61 12 50 10` (opaque 4 B, likely NFC-IC id/rev) |
+Switch 2 uses top-level command `0x01`. The current firmware only implements the genuine init-time
+`0x0C` response (`61 12 50 10`) and capture-confirmed bare-ack shape for other subcommands.
 
-- **NFC-state byte** in the console-native input report (Pro2 report `0x09` offset `0xC`; right
-  JoyCon `0x08` offset `0xE`): `0x00`–`0x07`, `0x00 = Idle`. Drives the console's "tag present / read
-  in progress" state.
+The current structured model is:
 
-> **Report `0x09` is a shared multi-field container, not an NFC-specific report.** The same Pro
-> Controller 2 console-native report carries Counter (0x0), Power Info/battery (0x1), Buttons (0x2),
-> sticks (0x5/0x8), **NFC state (0xC)**, Headset Audio State (0xD), and **Motion/gyro data (0xF,
-> 0x28 bytes)**. So the NFC-state byte here and the console-side **motion/gyro** field the project's
-> `0x09` motion RE targets live in the *same* report — different offsets. This matters for RE
-> economy: one genuine console-side `0x09` capture would unblock **both** the NFC-state and the
-> motion questions at once (both are gated on the same missing capture — `inventory` §2.5).
-- **Timing:** in the (PC) capture, NFC status is queried **once at connection setup**, not polled;
-  polling during an actual amiibo interaction is likely but uncaptured (`inventory` §2.4).
+| Subcommand | Working interpretation | Evidence level |
+|---|---|---|
+| `0x01` | Init/reset-like operation; bare ack on the genuine Pro2 USB capture | This repository's capture |
+| `0x03` | Enter scan mode | Primary Pro2 relay capture |
+| `0x04` | Leave scan mode/eject | Primary Pro2 relay capture |
+| `0x05` | Return 61-byte status including present/operation state and 7-byte UID | Primary Pro2 relay capture |
+| `0x06` | Begin read/write; captured zero UID selects read, exact selected UID selects write | Read is primary; write selection is strong external evidence |
+| `0x08` | Atomically commit a complete staged write | External capture-derived implementation; host-tested here |
+| `0x0C` | Return four opaque controller/NFC bytes | Genuine Pro2 capture; already implemented |
+| `0x14` | Receive offset-addressed chunks of a 454-byte write image | External capture-derived implementation plus ndeadly example; host-tested here |
+| `0x15` | Return read-buffer data | Primary capture: two-byte offset and `[last][length:u16le][data]` on USB and BLE |
 
-> Confidence: `0x0C` and the bare-ack `dir=0x04` shape are **capture-confirmed**; the read/write/
-> status/buffer semantics are a **structured hypothesis** from Dycool/NS-PC-Control's private
-> captures — solid to build against, but **unvalidated by this project** and impossible to validate
-> on-console over USB. A genuine console-side capture of an amiibo tap remains the open RE gap.
+Do not equate the report NFC-state byte with the status payload. The report field is a small
+event counter that advances modulo eight; command `0x05` returns a separate status/detail pair
+such as present `09 00`, active `04 00`, committed `05 00`, or absent/error `07 41`.
 
-## 3. Current PicoSwitch2 state
+## 3. Virtual-tag format and state
 
-`switch_pro2.c` (`case 0x01`, ~L762) is an **init-handshake stub**: it replies to sub `0x0C` with
-the capture-sourced `61 12 50 10`, and returns a **bare ack** (`dir=0x04`, no data) to other NFC
-subcommands so the enumeration/init sequence doesn't stall. The report NFC-state byte is left `0x00`
-(Idle). **Nothing else is implemented** — no tag storage, no scan/read/write state machine, no
-`0x05/0x06/0x14/0x15` payloads, no state-byte transitions.
+Accept two input formats:
 
-## 4. Virtual-amiibo architecture (proposed)
+- **540 bytes:** raw NTAG215 image.
+- **572 bytes:** the 540-byte raw image followed by the 32-byte NTAG originality signature.
 
-Since there is no physical reader, NFC = a **virtual-tag server**. Components:
+For a 540-byte upload, do not silently claim the missing signature is genuine. The first
+implementation may either:
 
-1. **Amiibo store.** One or more **540-byte NTAG215 dumps** held in flash and/or uploaded via the
-   config-mode web UI. A minimal design is a single "active tag" slot; a fuller design is a small
-   library with a selected slot. Reuse the existing config/flash + web CDC plumbing.
-2. **Virtual "tap" control.** The web UI (or a BOOTSEL gesture) marks a tag **present/removed** — the
-   software equivalent of placing an amiibo on the reader.
-3. **NFC command state machine** (drives the report NFC-state byte and the `0x01` responses):
-   ```
-   Idle(0x00) ──0x03 enter scan──▶ Polling ──virtual tag present──▶ TagPresent
-     status 0x05 → UID + present   ──0x06 (zero UID)──▶ Reading
-     ──0x15──▶ return 540-B dump + NTAG signature ──▶ Done
-     write path: 0x06 (UID) → 0x14 staged image → 0x08 commit → persist dump
-     ──0x04 leave / tag removed──▶ Idle
-   ```
-4. **Report NFC-state byte** transitions (offset `0xC`/`0xE`) mirrored to the state machine so the
-   console/host UI reflects "scanning / tag found / reading".
-5. **Persistence of writes.** A game writing amiibo save-data (`0x14`→`0x08`) updates the stored
-   dump so it survives reconnect/power-cycle.
+1. require the 572-byte extended form for console use; or
+2. allow a documented compatibility signature only behind an explicit UI warning.
 
-## 5. Cryptography — what keys are (and are not) needed
+The safer default is option 1 until hardware proves the console accepts the fallback used by the
+external reference.
 
-**Key point: serving/storing a virtual amiibo needs NO Nintendo keys.**
+Validate before accepting an image:
 
-- **Read:** the console reads the **raw, still-encrypted** NTAG215 pages and performs decryption/
-  HMAC validation with **its own** keys. The dongle only has to hand back the exact stored bytes
-  (plus the NTAG **originality (ECC) signature**, which dumps include and the console may check via
-  a read-signature step). No `key_retail.bin` on the Pico.
-- **Write (save-back):** the console **encrypts** the new data and writes it to the tag pages; the
-  dongle stores the raw bytes verbatim. Again no keys.
-- **Out of scope (needs keys):** *generating*, *editing*, or *forging* amiibo, or regenerating
-  signatures. That requires Nintendo's master keys and is explicitly not part of this
-  (present-a-dump / store-a-write) design.
+- exact length;
+- UID extraction from raw bytes `0,1,2,4,5,6,7`;
+- BCC0 at byte 3: `0x88 ^ uid[0] ^ uid[1] ^ uid[2]`;
+- BCC1 at byte 8: `raw[4] ^ raw[5] ^ raw[6] ^ raw[7]`.
 
-This makes a legally-cleaner, key-free virtual-amiibo server viable: the user supplies their own
-NTAG215 dumps; the dongle only stores and presents them.
+The raw image does include machine-readable identity but not friendly product names. Bytes
+`0x54`–`0x5B` form the eight-byte amiibo ID; bytes `0x5C`–`0x5F` optionally distinguish variants.
+The portal can display those values, the seven-byte UID, raw product type, model, series, and format
+codes offline. Human-readable character, game series, amiibo series, product name, artwork, and
+release date require a catalog. The portal downloads AmiiboAPI's public catalog once, caches it,
+and performs exact ID matching locally; it never sends the dump, model ID, UID, or save data.
 
-## 6. Input side — where does the tag come from?
+No Nintendo retail keys are needed. The dongle serves and stores the raw encrypted bytes; the
+console owns interpretation, authentication, and re-encryption. Generating, editing, decrypting, or
+forging tag data is outside this feature.
 
-No supported *input* controller can source amiibo data live: only genuine Switch Pro/Joy-Cons have
-NFC readers, and this project consumes their **button/motion input**, not their NFC subsystem.
-Relaying NFC from a paired genuine Switch pad would be exotic and pointless. So the amiibo data
-comes **entirely from stored user dumps**, never a live read. (A stretch idea — a real NFC reader IC
-wired to the Pico — is possible but far outside scope and defeats the wireless-bridge design.)
+### Save-data and library model
 
-## 7. Feature-parity value even without console function
+Keep the browser/PC as the amiibo library and the adapter as one active tag identity. The adapter
+retains two lossless images for that identity:
 
-Even un-testable on-console over USB, completing the NFC **command surface** (all `0x01`
-subcommands answered with correctly-shaped responses, capability advertised, state byte wired) makes
-the emulated controller *claim and behave like* a genuine NFC-capable Pro Controller 2 during
-enumeration and status queries. That is real parity/realism, and PC tools/games that read
-controller-NFC (the domain Dycool/NS-PC-Control targets) could actually use it.
+- **Unused:** the immutable 540-byte image imported by the user.
+- **Used:** the mutable image created by a console write.
 
-## 8. The wireless future (the only path to on-console amiibo)
+Selecting either copy only changes what the reader presents; it never destroys the other copy.
+The console's own erase/reset operation is treated as an ordinary write and therefore becomes the
+new Used image. Selecting Unused in the browser is a reversible reset to the imported baseline.
 
-Because the console reaches amiibo only via the controller's **wireless** NFC path, real on-console
-amiibo requires the dongle to **pair to the console over BLE as a genuine Switch 2 controller** —
-the transport ndeadly documents (headset/NFC data flow over the controller-specific GATT
-characteristics; `bluetooth_interface.md`). That wireless-pairing capability **does not exist in
-this project today** and is a large piece of work in its own right. The virtual-amiibo core (§4–§5)
-is transport-agnostic, so building it now means only the *transport shim* remains when/if wireless
-lands.
+Nintendo documents that a physical amiibo can hold read/write data for one compatible game at a
+time.
+`emuiibo` can exceed that physical limit because it stores application areas as separate per-game
+files, but doing so requires parsing/decrypting the tag model and is unnecessary here. PicoSwitch2
+instead preserves the entire encrypted 540-byte image losslessly, so any console write—including
+the active game's save area, write counter, dates, and ownership data—returns in the downloaded
+file without retail keys.
 
-## 9. Phased plan (design order; only Phase 0 exists)
+The relevant `emuiibo` user-interface lesson is separate selected-tag and present/removed state.
+Its current README explains that automatic removal previously broke some games. PicoSwitch2's
+offline portal selects one tag and one Unused/Used copy and globally enables/disables the optional
+feature; a live present/remove control remains separate work because the Web Serial portal is not
+reachable while the dongle's USB port belongs to the console.
 
-- **Phase 0 — done:** init-handshake stub (`0x0C` reply + bare acks); state byte Idle.
-- **Phase 1 — command surface / realism:** implement all `0x01` subcommand responses with correct
-  shapes (per §2 / NS-PC-Control), advertise NFC capability, wire the report NFC-state byte. No real
-  tag yet. Testable for *shape/enumeration*, not amiibo behavior.
-- **Phase 2 — virtual-tag read:** amiibo store + web upload + present/remove control + the read state
-  machine (`0x03/0x05/0x06/0x15`) returning a stored 540-B dump. Validate against a **PC** tool that
-  reads controller-NFC, not the console.
-- **Phase 3 — write-back:** `0x14/0x08` staging + commit + persistence for game amiibo saves.
-- **Phase 4 — wireless (blocked):** BLE controller-pairing transport so the real console actually
-  drives the NFC state machine. Gated on the wireless-pairing feature (§8).
+References:
 
-## 10. Risks & open questions
+- [Nintendo: one read/write game's data per physical amiibo](https://www.nintendo.com/au/support/articles/how-much-game-data-can-i-store-on-an-amiibo-at-any-one-time/)
+- [`emuiibo` selected-tag, application-area, and connected/removed model](https://github.com/xortroll/emuiibo/blob/28b357d5ce4aa373891c5294127f79137e0917ff/README.md)
+- [TagMo raw amiibo ID extraction at offset `0x54`](https://github.com/HiddenRamblings/TagMo/blob/9a09bfde9fa4689868ba31f90c7dba098b20d952/app/src/main/java/com/hiddenramblings/tagmo/amiibo/tagdata/AmiiboData.kt)
+- [AmiiboAPI ID, variant, and catalog fields](https://amiiboapi.org/docs/)
+- [MDN `showDirectoryPicker()`](https://developer.mozilla.org/en-US/docs/Web/API/Window/showDirectoryPicker)
 
-- **No on-console validation over USB** — the whole feature is unfalsifiable on real hardware until
-  wireless (§8); every read/write detail is a hypothesis until a genuine console-side amiibo capture
-  exists (the standing RE gap, `inventory` §2.5/§4).
-- **Subcommand semantics** (`0x01/0x02/0x03/0x04/0x05/0x06/0x08/0x14/0x15`) are mostly
-  hypothesis-grade (Dycool/NS-PC-Control, private captures). Multi-chunk framing, checksums, and
-  operation timing are unconfirmed.
-- **NTAG originality signature / read-signature check** — whether the console verifies it and how it
-  must be presented is untested here.
-- **Write-back re-encryption** is owned by the console; storing raw bytes should suffice but is
-  unvalidated.
-- **Effort vs. payoff** — a bonus feature with no on-console function until a separate, large
-  wireless project exists; worth staging the transport-agnostic core, not rushing the whole chain.
+The runtime state machine must be event-driven:
 
-## 11. References
+```text
+inactive
+  └─ 0x03 scan ─> scanning
+       ├─ no active tag ─> absent status
+       └─ active tag ─> present status + UID
+            ├─ 0x06 read ─> build 600-byte buffer ─> serve 70-byte offset chunks
+            └─ 0x06 write ─> receive 0x14 chunks ─> 0x08 commit ─> dirty
+  └─ 0x04 leave ─> inactive
+```
 
-- `docs/switch2/nfc-protocol-inventory.md` — this project's capture-derived NFC RE (evidence base).
-- `nso-gc-refs/switch2_controller_research/{commands,hid_reports,bluetooth_interface}.md` @ `d1c5a7f`
-  — Command `0x01` table, NFC-state byte, wireless GATT NFC characteristics.
-- `datasheets/PN7160_PN7161.pdf` — the controllers' NFC controller IC.
-- Dycool/NS-PC-Control — external virtual-amiibo reference for the `0x01` subcommand semantics
-  (private captures; treat as structured hypothesis — `inventory` §4).
-- amiitool / NTAG215 amiibo layout — the 540-byte tag format and encryption model (general
-  amiibo documentation; keys **not** needed for serve/store per §5).
-- `src/switch_pro2/switch_pro2.c` (`case 0x01`, ~L762) — the current stub.
+It must do no tag polling, hashing, flash work, or formatting while NFC is idle.
+
+## 4. USB transport requirement
+
+The generic partial-write-safe vendor-IN pump remains implemented and host-tested, but the
+successful read did not require a 630-byte transfer. A full `0x15` chunk response is 81 bytes
+(eight-byte envelope, three-byte chunk header, 70 data bytes), which fits the existing 128-byte
+TinyUSB FIFO. The final response is 51 bytes.
+
+The confirmed reader buffer is exactly 600 bytes:
+
+- 60 bytes of fixed/UID/signature/operation metadata;
+- 540 raw NTAG215 bytes.
+
+The console requests offsets `0x0000, 0x0046, ... 0x0230`. Responses contain
+`[last:u8][length:u16le][data]`; the first eight carry 70 bytes and the final response carries 40.
+
+Console writes add an independent OUT-direction framing requirement. A normal `0x14` request is
+88 bytes (eight-byte envelope plus an 80-byte payload) and crosses the 64-byte USB packet
+boundary. The first hardware write attempt proved that dispatching each `tud_vendor_read` result
+as one command is unsafe: the Switch crashed with `2168-0002`. `ns2_vendor_rx` now reads the
+big-endian payload length at header bytes 4–5 and dispatches only the complete reassembled
+command. A repeated write hardware-confirmed that transport fix and reached accepted `05 00`.
+
+The completion trace then showed Stop followed by one-second scan/status/Stop cycles because a
+browser-loaded image and a physically presented tag were represented by one flag. They are now
+separate. After a committed Stop, the runtime waits for the automatic flash snapshot to verify,
+then emits a removal edge and stops presenting the tag. The Used image remains selected and dirty
+for browser save-back. The next `0x03` scan presents that same updated image again as a fresh tag
+encounter; explicit portal Eject/Present controls remain planned. See
+[`virtual-amiibo-write-crash-and-rx-fix-2026-07-25.md`](../experiments/virtual-amiibo-write-crash-and-rx-fix-2026-07-25.md).
+
+Because console testing occupies the Pico USB port, `read_uart_diag.ps1 -Command 'amiibo dump'
+-OutputPath FILE.bin` can export the live dirty image over the independent UART link. It reads
+bounded 64-byte chunks against one generation, validates size and UID/BCC on the PC, writes the
+file, and only then acknowledges dirty state. Console writes are now persisted automatically, so
+this export is a portable copy rather than the only protection against power loss.
+
+## 5. Native Switch 2 reader relay
+
+The UART-gated bridge now proves the read architecture:
+
+- command writes use extended characteristic `0x0016` with the genuine 33-byte zero prefix;
+- `0x001E`/CCC `0x001F` is subscribed without disturbing existing traffic;
+- matching ordinary NFC replies were observed on primary response handle `0x001A`;
+- USB/BLE envelopes are translated asynchronously without blocking the USB task;
+- the genuine report-state byte is reflected to the console.
+
+The relay therefore needs an asynchronous adapter:
+
+The bridge has a bounded cross-core response slot and timeout. It is still diagnostic/UART-gated:
+production auto-selection, disconnect/removal behavior, physical writes, and Joy-Con 2 Right must
+be validated separately.
+
+## 6. Native Switch 1 reader translation
+
+Switch 1 NFC uses a different controller-MCU protocol:
+
+- select input report `0x31`;
+- enable/configure the NFC/IR MCU with subcommands `0x22` and `0x21`;
+- send MCU requests in output report `0x11`;
+- receive extended input report `0x31`, including CRC8, sequence, status, UID, and chunked tag data.
+
+The current Switch 1 Bluetooth driver selects report `0x30`, parses only `0x30`/`0x3F`, and has no
+MCU ownership layer. Directly forwarding Switch 2 command `0x01` bytes cannot work.
+
+Existing public sources are enough to bootstrap physical NTAG detection and reading, but not enough
+to call full read/write translation validated:
+
+- `jc_toolkit` has an MIT-licensed physical reader sequence and NTAG213/215/216 chunk assembly.
+- historical JoyControl/Poohl work documents virtual Switch 1 read/write behavior, but its
+  implementation is GPL and some earlier NFC code was removed over source-provenance concerns.
+- this repository has no primary capture of a physical Switch 1 reader write.
+
+Implement this only after the Switch 2 virtual path is confirmed. The adapter should expose a
+transport-neutral tag source (`present`, UID, 540 raw bytes, 32-byte signature, `write_pages`) so
+the Switch 2 command codec never depends on Switch 1 report framing.
+
+## 7. Config-mode web portal
+
+Configuration mode provides a Web Serial page with:
+
+- a `.bin` file picker using `File.arrayBuffer()`;
+- a read-only `showDirectoryPicker()` path that scans subdirectories recursively;
+- browser-local IndexedDB Unused/Used copies of every valid imported image, with search and
+  explicit clear;
+- a nine-position artwork carousel that centers the selected or active image, shows four neighbors
+  on each side, and supports click, button, and arrow-key navigation;
+- offline parsed ID/UID/type/model/series/variant display and optional cached AmiiboAPI name,
+  character, series, artwork, and release details;
+- size/BCC validation in both the browser and firmware;
+- offset-addressed 32-byte hex chunks with declared total and whole-image CRC32;
+- an explicit disabled-by-default feature toggle (a separate live present/remove control remains a
+  runtime-design question because config mode is unavailable while attached to the console);
+- current UID, format, Used/Unused selection, dirty/persisted state, and error display;
+- **Save current Amiibo**, which retrieves both copies and refreshes the selected cached entry so
+  application-area writes survive library switching;
+- versioned JSON export/import of the complete cached library, including both copies and selection;
+- explicit save/persist operation.
+
+The library manager remains enabled without a serial connection. The directory handle is used only
+for the user-initiated scan. The browser caches copied bytes, not write access to the original
+folder, so no source file can be changed silently. Chromium browsers provide the native directory
+picker used here; single-file import remains the fallback.
+
+The CDC parser currently accepts 127 payload characters per line. Do not expand it to hold a whole
+base64 dump. Use small binary-as-hex chunks that fit the existing line buffer, or add a bounded
+binary framing mode with exact length and CRC. A failed/interrupted upload must leave the previous
+tag intact.
+
+## 8. RAM, flash, and CPU budget
+
+Measured after the clean/used persistence integration in the standard release build directories on
+2026-07-25:
+
+| Measurement | Pico 2 W | Pico W |
+|---|---:|---:|
+| firmware `.bin` | 903,544 bytes | 773,588 bytes |
+| `.data` | 128,292 bytes | 7,332 bytes |
+| `.bss` | 179,848 bytes | 112,612 bytes |
+| fixed-section gap before scratch X | 216,144 bytes | 144,244 bytes |
+
+Removing the embedded 96,768-byte FAT image, MSC callbacks, and TinyUSB MSC allocation reduced the
+Pico 2 W binary by **100,104 bytes**, the Pico W binary by **100,160 bytes**, and `.bss` on each
+board by **576 bytes**. The portal is now entirely local; its future growth does not consume device
+flash or RAM.
+
+A compact single-tag implementation needs approximately:
+
+| Item | Bytes |
+|---|---:|
+| immutable Unused raw tag + signature | 572 |
+| mutable Used raw tag | 540 |
+| command snapshot raw tag + signature | 572 |
+| write staging | 454 |
+| write coverage bitmap | 57 |
+| operation metadata/state | less than 64 |
+| virtual read buffer | 600 |
+| one maximum chunk response (stack) | 73 |
+| static flash-program buffer | 1,280 |
+| **Conservative resident total** | **about 4.1 KiB** |
+
+This is well within both measured boards. NFC must not accidentally pull the Pico 2 W audio/Opus
+profile into the Pico W build.
+
+Persistent tag storage must not be added to `pico_config_t`; that structure is deliberately limited
+to one 256-byte flash page. Flash allocation is currently:
+
+- sector `-5`: virtual amiibo bank 1;
+- sector `-4`: settings;
+- sector `-2` and `-1`: BTstack TLV/bonds;
+- sector `-3`: virtual amiibo bank 0 and read-only version-1 migration source.
+
+Each version-2 bank uses one 1,280-byte snapshot with magic, version, length, generation,
+header/payload CRC, flags, Unused and Used images, and optional signature. Saves alternate banks.
+The previous valid snapshot remains untouched until the destination sector is erased, programmed,
+and verified. Existing version-1 append records in sector `-3` remain readable and migrate as an
+Unused baseline on the first version-2 save.
+
+The current flash writer parks core 0, which would interrupt USB, audio, and input. Therefore:
+
+- apply console writes immediately to RAM;
+- create/select the Used copy and mark it dirty;
+- expose/download the changed image immediately;
+- queue flash erase/program on the existing core1 service point;
+- defer the post-write TagRemoved edge until the new snapshot verifies;
+- show the user whether the latest write is persisted or still pending.
+
+CPU cost can be effectively zero when idle. An active transaction requires bounded copies,
+validation, CRC/BCC checks, and USB/BLE state transitions only; it needs no cryptography and no
+clock increase beyond the validated 300 MHz. No continuous NFC timer or polling loop is allowed.
+
+## 9. Implementation order and gates
+
+1. **Transport/test foundation** — complete
+   - generic partial-write-safe vendor-IN pump;
+   - transport-neutral tag codec and strict 540/572 validation;
+   - host tests for read payload, write staging, malformed offsets, duplicate/conflicting chunks,
+     interruption, and transfer pumping.
+2. **Virtual read** — hardware-confirmed
+   - config upload/activate/eject/download;
+   - disabled-by-default command `0x01` state machine;
+   - exact 600-byte reader buffer and 70-byte offset chunks, recognized by a real Switch 2;
+   - no flash mutation during reads.
+3. **Virtual write** — complete lifecycle hardware-confirmed
+   - exact-UID write selection and 64-byte preparation buffer;
+   - bounded 454-byte staging with duplicate/conflict coverage;
+   - atomic page-record validation and generation-safe RAM update;
+   - automatic snapshot request after the RAM commit;
+   - dirty/download workflow;
+   - real Switch 2 staging/commit/completion validated without a crash;
+   - post-write logical removal, next-scan updated readback, and UART export validated;
+   - automatic post-write persistence and power-cycle recovery hardware-confirmed.
+4. **Safe persistence** — hardware-confirmed
+   - alternating dedicated sectors `-3`/`-5`;
+   - verified write-before-eject snapshot;
+   - immutable Unused and mutable Used images plus reversible selection;
+   - version-1 migration;
+   - power-loss, live-console timing, and selection recovery validated.
+5. **Native Pro2/Joy-Con 2 Right**
+   - Pro2 physical read captured and recognized;
+   - asynchronous USB↔BLE command adapter implemented behind UART;
+   - production gating, Joy-Con 2 Right, reconnect/removal, and physical write validation pending.
+6. **Switch 1 Pro/Joy-Con Right**
+   - physical-reader MCU layer;
+   - transport-neutral translation;
+   - read and write validation.
+
+Do not ship “full NFC” until virtual read, virtual write-back, power-cycle persistence, malformed
+upload recovery, controller reconnect, audio, motion, input, rumble, LED, BOOTSEL, and wake
+regressions all pass. Native reader support should be advertised per verified controller profile,
+not as a generic Nintendo capability.
