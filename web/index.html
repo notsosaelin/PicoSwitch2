@@ -68,6 +68,7 @@
   .amiibo-carousel-position { text-align: center; min-height: 18px; margin-top: 2px; }
   .amiibo-carousel-caption { text-align: center; min-height: 18px; margin-bottom: 2px;
                              font-size: 12px; }
+  .amiibo-combo-row { display: flex; justify-content: center; margin-top: 4px; }
   .amiibo-detail { display: block; padding: 16px; margin-top: 0; background: #11151b;
                    border: 1px solid #2b313b; border-radius: 8px; text-align: center; }
   .amiibo-detail-grid { display: grid; grid-template-columns: 1fr;
@@ -320,6 +321,9 @@
                     aria-label="Next amiibo">&rarr;</button>
           </div>
           <div id="amiiboCarouselPosition" class="amiibo-carousel-position muted"></div>
+          <div id="amiiboComboRow" class="amiibo-combo-row hidden">
+            <button id="amiiboSwapComboBtn">Swap Combo</button>
+          </div>
         </div>
 
         <div class="amiibo-manager-bottom">
@@ -562,6 +566,9 @@ let amiiboCarouselIndex = 0;
 let amiiboLibraryBusy = false;
 let amiiboSortMode = "default"; // default | name | number | release
 let amiiboSortDir = "asc";      // asc | desc
+// v3 (NTAG I2C 2K) tags share one identity across machine variants. The carousel
+// shows one entry per rider; this maps rider identity -> the active combo's key.
+let amiiboV3ComboByIdentity = {};
 const AMIIBO_SORT_MODES = ["default", "name", "number", "release"];
 const AMIIBO_SORT_LABELS = {
   default: "Default", name: "Alphabetically",
@@ -1180,6 +1187,31 @@ function filteredAmiiboLibrary() {
   return entries.sort(compareAmiiboEntries);
 }
 
+// All machine combos of a v3 rider, in display order, from the filtered set.
+function amiiboV3CombosFor(id, filtered) {
+  return (filtered || filteredAmiiboLibrary())
+    .filter(e => e.tagType === "v3" && e.id === id);
+}
+
+// Carousel view: collapse v3 rider identities to one entry each (the active
+// combo), so a rider's four machine variants show as a single carousel item
+// with identical artwork rather than four look-alikes. Non-v3 entries pass
+// through unchanged.
+function carouselAmiiboEntries() {
+  const filtered = filteredAmiiboLibrary();
+  const seen = new Set();
+  const out = [];
+  for (const entry of filtered) {
+    if (entry.tagType !== "v3") { out.push(entry); continue; }
+    if (seen.has(entry.id)) continue;
+    seen.add(entry.id);
+    const combos = amiiboV3CombosFor(entry.id, filtered);
+    const activeKey = amiiboV3ComboByIdentity[entry.id];
+    out.push(combos.find(e => e.key === activeKey) || entry);
+  }
+  return out;
+}
+
 function amiiboMetadataField(entry, field) {
   const metadata = catalogMetadataForEntry(entry);
   if (metadata?.[field]) return metadata[field];
@@ -1331,7 +1363,7 @@ function renderAmiiboLibrary() {
   if (amiiboLibrary.some(entry => !entry))
     amiiboLibrary = amiiboLibrary.filter(Boolean);
   renderAmiiboFilterControls();
-  const entries = filteredAmiiboLibrary();
+  const entries = carouselAmiiboEntries();
   const total = amiiboLibrary.length;
   const catalogNote = total && !amiiboCatalog
     ? " · catalog offline (names/art limited)" : "";
@@ -1405,7 +1437,7 @@ function createAmiiboCarouselItem(entry) {
 
 function moveAmiiboCarousel(delta) {
   if ($("#amiiboCarouselViewport").getAttribute("aria-disabled") === "true") return;
-  const entries = filteredAmiiboLibrary();
+  const entries = carouselAmiiboEntries();
   if (entries.length < 2) return;
   // Loop at the ends. The neighbor window itself uses real (non-wrapping)
   // indices, so mid-list steps slide cleanly and only the deliberate first<->last
@@ -1413,6 +1445,22 @@ function moveAmiiboCarousel(delta) {
   const next =
     (amiiboCarouselIndex + delta + entries.length) % entries.length;
   selectAmiiboLibraryEntry(entries[next].key, true);
+}
+
+// Cycle the active machine combo of the centered v3 rider. The carousel item and
+// artwork stay put (one image per rider); only the active combo — and the name in
+// the detail box — changes.
+function swapAmiiboCombo() {
+  if (amiiboLibraryBusy) return;
+  const current = selectedAmiiboLibraryEntry();
+  if (!current || current.tagType !== "v3") return;
+  const combos = amiiboV3CombosFor(current.id);
+  if (combos.length < 2) return;
+  const i = Math.max(0, combos.findIndex(e => e.key === current.key));
+  const next = combos[(i + 1) % combos.length];
+  amiiboV3ComboByIdentity[current.id] = next.key;
+  amiiboLibrarySelectedKey = next.key;
+  renderAmiiboLibrary();
 }
 
 function selectedAmiiboLibraryEntry() {
@@ -1774,7 +1822,7 @@ function renderAmiiboLibraryDetail(entry, metadata = null) {
 }
 
 async function selectAmiiboLibraryEntry(key, animate = false) {
-  const entries = filteredAmiiboLibrary();
+  const entries = carouselAmiiboEntries();
   const index = entries.findIndex(entry => entry.key === key);
   if (index < 0) return;
   amiiboCarouselIndex = index;
@@ -1977,6 +2025,16 @@ function renderAmiiboLoadedSlot() {
   $("#amiiboDownloadBtn").disabled = amiiboLibraryBusy || !selected;
   $("#amiiboDeleteBtn").disabled = amiiboLibraryBusy || !selected;
   $("#amiiboRefreshBtn").disabled = amiiboLibraryBusy;
+  // Swap Combo: only for a centered v3 rider with more than one machine variant.
+  const combos = selected && selected.tagType === "v3"
+    ? amiiboV3CombosFor(selected.id) : [];
+  $("#amiiboComboRow").classList.toggle("hidden", combos.length < 2);
+  if (combos.length >= 2) {
+    const idx = Math.max(0, combos.findIndex(e => e.key === selected.key));
+    $("#amiiboSwapComboBtn").textContent =
+      `Swap Combo (${idx + 1}/${combos.length})`;
+    $("#amiiboSwapComboBtn").disabled = amiiboLibraryBusy;
+  }
 }
 
 function renderAmiiboStatus(status) {
@@ -2865,6 +2923,7 @@ for (const button of document.querySelectorAll(".amiibo-sort-cycle"))
     button.dataset.target, Number(button.dataset.delta));
 $("#amiiboCarouselPrev").onclick = () => moveAmiiboCarousel(-1);
 $("#amiiboCarouselNext").onclick = () => moveAmiiboCarousel(1);
+$("#amiiboSwapComboBtn").onclick = swapAmiiboCombo;
 $("#amiiboCarouselViewport").onkeydown = e => {
   if (e.key === "ArrowLeft") {
     e.preventDefault();
@@ -2875,7 +2934,7 @@ $("#amiiboCarouselViewport").onkeydown = e => {
   }
 };
 window.addEventListener("resize", () => {
-  const entries = filteredAmiiboLibrary();
+  const entries = carouselAmiiboEntries();
   if (entries.length) updateAmiiboCarouselSelection(entries, false);
 });
 $("#amiiboLibraryLoadBtn").onclick = loadSelectedLibraryAmiibo;
