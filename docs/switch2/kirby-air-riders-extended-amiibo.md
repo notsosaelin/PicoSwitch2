@@ -146,6 +146,45 @@ RE basis either.
 **Conclusion: the extended read protocol cannot be reverse-engineered from existing material.** A
 new capture of a genuine read is required.
 
+## Firmware implementation plan (staged; existing NFC must stay byte-identical)
+
+Two hard realities shape the plan:
+
+- **Layer.** PicoSwitch2 is the *controller/reader* to the console, not the RF *tag*. pixl.js
+  implements the tag-RF protocol (READ `0x30`, `SECTOR_SELECT 0xC2`, SRAM). PicoSwitch2 serves the
+  console over the controller vendor-bulk NFC protocol (`0x03/0x05/0x06/0x15`, a 600-byte reader
+  buffer in 70-byte chunks). The console-facing framing for a 2 KB tag is **not** in pixl.js and is
+  the one genuine unknown — it must be observed on hardware.
+- **Flash.** Each amiibo journal bank is one 4 KB sector (offsets −3/−5, config at −4, all within
+  the 5-sector install-reset region). A 2 KB tag record (~4128 B) needs two sectors per bank, which
+  does not fit without relocating the whole persistence map — the validated, install-reset-critical
+  area. So v3 must **not** touch that layout in early phases.
+
+**Safety invariant for every phase:** all changes gate on a v3 tag-type flag; the 540/572 NTAG215
+store, flash journal, and read path stay byte-identical; all host tests and the `NS2_PRO=OFF` gate
+pass at each step.
+
+### Phase 1 — RAM-only v3 slot + present-and-trace (no flash change)
+- Add a separate RAM-resident 2048-byte v3 image slot, independent of `virtual_amiibo_t`, so the
+  540 store and its flash journal are untouched (zero persistence risk). v3 tags are session-scoped
+  until Phase 3.
+- Accept a 2048-byte image over the existing config upload path (size-gated to the v3 slot).
+- Attempt to present it and **log the console's exact request sequence** over UART. This is the
+  implement-and-trace step that reveals the controller→console framing for a 2 KB tag (does the
+  status report a new type? does the read buffer/length grow? new subcommands?).
+
+### Phase 2 — serve the confirmed protocol (hardware loop)
+- Implement the console-facing read/response for the traced framing so a real Switch 2 builds the
+  Figure Player. Iterate against captures until rider+machine are correct in Kirby Air Riders.
+
+### Phase 3 — persistence (only if wanted, after Phase 2 works)
+- Rework the flash journal to store a 2 KB image (larger multi-sector record or a separate region),
+  preserving the install-reset invariant. Highest-risk step; deferred until the serve path is proven
+  and only if session-scoped v3 is judged insufficient.
+
+Each phase is a separate commit with host tests; Phases 1–3 each need a flash-and-test round with
+real hardware because the console behavior cannot be validated any other way.
+
 ## Next step: implement-and-trace the firmware serve path
 
 The format is known, so the remaining work is firmware, and PicoSwitch2 can RE the last piece
