@@ -10,6 +10,33 @@ Branch: `ns2-testing`
 
 Documentation/resource audit: 2026-07-25
 
+## Virtual amiibo — v3 (NTAG I2C Plus 2K / Kirby Air Riders) — 🔴 PARKED 2026-07-27
+
+Full record: [`docs/Amiibo-v3.md`](docs/Amiibo-v3.md).
+
+Working and kept in place: the 2048-byte v3 store with flash persistence, the
+complete console read state machine with descriptor-driven page ranges, byte-exact
+chunk framing (0 mismatches vs the source dump), and all 16 Kirby dumps verified
+HMAC-valid against the owner's retail keys.
+
+Blocked on one unknown: the console always requests the NTAG215 page set (540
+bytes) and a v3 tag's encrypted region ends at 0x248 (584 bytes), so it can never
+validate one. Every field a controller can influence has been eliminated with
+evidence (status payload, read-buffer prefix, subcommand replies, capability
+container, firmware version). Resume by capturing a genuine controller reading a
+genuine v3 amiibo through `nfcmirror`.
+
+Two real bugs were found and fixed along the way, both of which affected normal
+use and not just v3:
+
+- **Flash region collision (serious).** The amiibo journal bank 0 sat on BTstack's
+  TLV region on RP2350 (pico-sdk 2.2.0 moves it one sector lower there), so writing
+  a tag destroyed the Bluetooth bonds and BTstack destroyed the stored tag. Banks
+  relocated; asserts now check `PICO_FLASH_BANK_STORAGE_OFFSET`.
+- **v3 uploads were never durable.** `amiibo persist` gated on the 540 store's
+  `loaded` flag, making it a silent no-op for v3, and the portal never called it.
+
+
 ## Current release
 
 [`v1.5.0`](https://github.com/notsosaelin/PicoSwitch2/releases/tag/v1.5.0) was published on
