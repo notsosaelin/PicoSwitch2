@@ -2402,11 +2402,23 @@ async function uploadAmiiboEntry(sourceEntry) {
     $("#amiiboMessage").textContent =
       `Uploading ${amiiboDisplayName(entry)} (2 KB NTAG I2C) to the adapter…`;
     const result = await transferAmiiboCopy(v3bytes, "commit", 0, 100);
-    // Refresh first so the v3-loaded slot state (and button gating) reflect the
-    // commit; then set the detailed message so the status poll's generic line
-    // does not immediately replace it.
-    if (result?.ok) await refreshAmiiboStatus();
+    // Commit only stages the image and *requests* a flash write. Wait for that
+    // write exactly like the 540 path does, otherwise the record survives only
+    // if service_save happens to run before power is lost — which is why a v3
+    // tag uploaded over USB could vanish after a power blip.
+    let persisted = null;
+    if (result?.ok) {
+      $("#amiiboMessage").textContent = "Storing the tag on the adapter…";
+      persisted = await sendCmd("amiibo persist", true);
+      await refreshAmiiboStatus();
+    }
     amiiboSetBusy(false);
+    if (result?.ok && !persisted?.ok) {
+      $("#amiiboMessage").textContent = persisted?.error ||
+        "Uploaded, but the adapter could not store the tag durably. " +
+        "Keep it powered and try again.";
+      return false;
+    }
     $("#amiiboMessage").textContent = result?.ok
       ? `${amiiboDisplayName(entry)} is stored on the adapter as a 2 KB (NTAG I2C) tag. ` +
         "Console serving is experimental — scan it on the Switch 2 and capture the UART " +
