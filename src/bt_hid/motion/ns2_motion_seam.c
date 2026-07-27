@@ -35,8 +35,14 @@ static const ns2_motion_seam_t NS2_MOTION_SEAMS[] = {
     // Pro2 accel[2] at +4245 (4096 counts/g), matching the genuine Pro
     // Controller 2 capture's +4279/+4309. Slots 0 and 1 then follow from the
     // frame plus the determinant rule below.
+    //
+    // Slots 0/1 resolved on hardware 2026-07-27. Only two rows keep slot 2 and
+    // stay proper: {-1,1,1} = (+R,+F,+U) and {1,-1,1} = (-R,-F,+U). They differ
+    // by a 180 degree yaw, so they share yaw and invert pitch and roll relative
+    // to each other. {1,-1,1} restored horizontal aim but left pitch inverted,
+    // which selects the other one.
     [SWITCH_MOTION_SOURCE_SWITCH1] = {
-        {1, 0, 2}, {1, -1, 1}, {1, 0, 2}, {1, -1, 1} },
+        {1, 0, 2}, {-1, 1, 1}, {1, 0, 2}, {-1, 1, 1} },
 };
 
 #define NS2_MOTION_SEAM_COUNT \

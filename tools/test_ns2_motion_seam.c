@@ -129,13 +129,14 @@ static void rows_are_independent(void)
     ns2_motion_seam_apply(SWITCH_MOTION_SOURCE_SWITCH1, a, g, sa, sg);
     ns2_motion_seam_apply(SWITCH_MOTION_SOURCE_DUALSENSE, a, g, da, dg);
 
-    // Switch 1: accel {1,0,2} signs {1,-1,1}; gyro likewise. Slot 2 is the
-    // gravity-measured lane (a resting Pro Controller reads +1 g there).
-    CHECK(sa[0] == 1000,  "sw1 accel[0] (got %d, want 1000)",  sa[0]);
-    CHECK(sa[1] == -500,  "sw1 accel[1] (got %d, want -500)",  sa[1]);
+    // Switch 1: accel {1,0,2} signs {-1,1,1}; gyro likewise. Slot 2 is the
+    // gravity-measured lane (a resting Pro Controller reads +1 g there); slots
+    // 0/1 were resolved on hardware.
+    CHECK(sa[0] == -1000, "sw1 accel[0] (got %d, want -1000)", sa[0]);
+    CHECK(sa[1] == 500,   "sw1 accel[1] (got %d, want 500)",   sa[1]);
     CHECK(sa[2] == 1500,  "sw1 accel[2] (got %d, want 1500)",  sa[2]);
-    CHECK(sg[0] == 222,   "sw1 gyro[0] (got %d, want 222)",    sg[0]);
-    CHECK(sg[1] == -111,  "sw1 gyro[1] (got %d, want -111)",   sg[1]);
+    CHECK(sg[0] == -222,  "sw1 gyro[0] (got %d, want -222)",   sg[0]);
+    CHECK(sg[1] == 111,   "sw1 gyro[1] (got %d, want 111)",    sg[1]);
     CHECK(sg[2] == 333,   "sw1 gyro[2] (got %d, want 333)",    sg[2]);
 
     // And the DualSense row is untouched by the presence of the Switch 1 row.

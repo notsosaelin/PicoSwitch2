@@ -491,20 +491,33 @@ static void switch_parse_spi_reply(switch_bt_data_t* sw, const uint8_t* data,
 }
 
 // Mean of the three frames, per axis, in raw counts.
+// Gyro takes the NEWEST frame; accel takes the mean of all three.
+//
+// The three frames span 15 ms (5 ms apart) while a Pro Controller reports every
+// 8.3 ms, so consecutive reports overlap and averaging yields a 15 ms moving
+// average -- about 7.5 ms of group delay on top of report age. The downstream
+// encoder integrates rate over real elapsed host time, so the newest frame is a
+// zero-order hold that preserves angular area exactly while dropping that delay;
+// it does not under-integrate. The cost is ~sqrt(3) more noise, which the
+// encoder's stillness-gated bias tracker and low-pass already absorb at rest and
+// which is dwarfed by real signal during motion.
+//
+// Accel keeps the mean deliberately: it is the console's gravity reference, so
+// steadiness matters more than latency there, and gravity does not change fast.
 static void sw1_average_imu(const uint8_t* data, int32_t accel[3], int32_t gyro[3])
 {
-    for (int i = 0; i < 3; i++) { accel[i] = 0; gyro[i] = 0; }
+    for (int i = 0; i < 3; i++) accel[i] = 0;
     for (int f = 0; f < SW1_IMU_FRAMES; f++) {
         const uint8_t* fr = data + SW1_IMU_OFFSET + f * SW1_IMU_FRAME_SIZE;
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 3; i++)
             accel[i] += sw1_rd16(fr + i * 2);
-            gyro[i]  += sw1_rd16(fr + 6 + i * 2);
-        }
     }
-    for (int i = 0; i < 3; i++) {
-        accel[i] /= SW1_IMU_FRAMES;
-        gyro[i]  /= SW1_IMU_FRAMES;
-    }
+    for (int i = 0; i < 3; i++) accel[i] /= SW1_IMU_FRAMES;
+
+    const uint8_t* newest =
+        data + SW1_IMU_OFFSET + (SW1_IMU_FRAMES - 1) * SW1_IMU_FRAME_SIZE;
+    for (int i = 0; i < 3; i++)
+        gyro[i] = sw1_rd16(newest + 6 + i * 2);
 }
 
 static void switch_process_report(bthid_device_t* device, const uint8_t* data, uint16_t len)
