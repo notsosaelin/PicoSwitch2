@@ -479,34 +479,60 @@ static void switch_spi_read(bthid_device_t* device, uint32_t addr, uint8_t len)
 // Pro differs again, so a single table cannot serve all three and the values
 // must come from observation rather than memory.
 //
-// STATUS: 🔴 UNMEASURED — deliberately the identity. Do not "fix" an axis here.
+// Derived from documented axis frames plus the three hardware results, NOT from
+// guesswork. Full derivation: docs/bluetooth/switch1-to-switch2-motion-spec.md
+// §6–§9. Summary:
 //
-// Three hardware attempts to correct Switch 1 motion by adjusting these signs
-// failed, each differently (docs/bluetooth/switch1-to-switch2-motion-spec.md §9).
-// The last one negated pitch and roll, which mirrored the published gravity
-// vector and killed horizontal aim outright — the console uses the accelerometer
-// we publish as its "world up" reference (spec §4, Stage 6). Combined with the
-// earlier attempt that was already frame-consistent with an unsigned accel and
-// STILL showed an inverted Y, that history proves no sign pattern on the current
-// index permutation can be correct: the PERMUTATION is wrong, not just its signs.
+// Switch 1 sensor frame (✅ Confirmed — Linux hid-nintendo, which states its
+// frame outright and applies NO transform to the Pro Controller, so raw == this):
+//     X+ toward the triggers (longitudinal)   Y+ to the left (lateral)
+//     Z+ up, out of the buttons/sticks (face normal)
+// DualSense event frame (✅ axis TYPES confirmed — SDL passes DualSense axes
+// through unmodified, and the repo's own paired Pro2/DS5 gravity capture pins
+// DS5 Y to the face normal):
+//     X lateral (pitch axis)   Y face normal (yaw axis)   Z longitudinal (roll)
 //
-// §8 of switch1-motion.md never promised otherwise. It says the axes map only
-// "roughly" to roll(X)/pitch(Y)/yaw(Z), gives no directions, and states plainly:
-// verify empirically, "Do not hard-code signs from memory." Each failed attempt
-// above ignored that sentence.
+// Matching axis TYPE to axis TYPE fixes the index permutation as {1,2,0} — that
+// part is now confirmed from two independent documented sources rather than from
+// §8's "roughly". Only the three signs were ever really unknown.
 //
-// This therefore stays the identity until the gravity protocol in spec §8 is
-// run. That protocol yields the entire matrix — permutation AND signs — from
-// three static poses on a DualSense and the same three on a Switch 1 Pro, with
-// no rotation measurements at all, because accel and gyro share the sensor die.
-// Record the measured result here, adding the per-device cases §8 requires for
-// the mirrored Joy-Con halves, instead of guessing another sign.
-#define SW1_PRO_SIGN_PITCH (+1)
+// The signs come from the three hardware results (spec §9):
+//   yaw   +1 : attempts 0 and A both had +sw[2] here and both gave sharp, correct
+//              horizontal aim.
+//   pitch -1 : attempt 0 was fully frame-consistent with +1 and pitch was
+//              inverted.
+//   roll  +1 : attempt B flipped roll to -1 and horizontal aim died completely.
+//              (Console gyro aiming blends yaw and roll to keep turning correct
+//              as the controller tilts; an inverted roll cancels the yaw term at
+//              normal hold angles. It is the only lane whose flip can kill
+//              horizontal aim while leaving the yaw lane itself untouched.)
+//
+// DETERMINANT: this multiplies to -1, i.e. an improper transform, which a pure
+// physical remount can never be. That is not a mistake here — it is the fix
+// pointing at its own root cause. docs/experiments/gyro-hardware-validation-
+// 2026-07-10.md line 96 records that the seam's Pro2 roll sign was
+// "chosen to keep det = +1, not independently measured", and §2.2 rates the roll
+// lane 🔵 medium confidence, identified only by elimination. If that unmeasured
+// seam sign is wrong, every source feeding through it needs a compensating flip
+// on exactly one lane, which is precisely the -1 seen here.
+//
+// The correct long-term fix is to measure the Pro2 roll sign and repair the seam.
+// That is deliberately NOT done here: the seam is shared with the
+// hardware-validated DualSense path, so changing it would re-open a working
+// configuration to fix a cosmetically nicer determinant. Compensate locally,
+// document loudly.
+#define SW1_PRO_SIGN_PITCH (-1)
 #define SW1_PRO_SIGN_YAW   (+1)
 #define SW1_PRO_SIGN_ROLL  (+1)
-_Static_assert(SW1_PRO_SIGN_PITCH * SW1_PRO_SIGN_YAW * SW1_PRO_SIGN_ROLL == 1,
-               "Switch 1 axis signs must form a proper rotation (determinant "
-               "+1): accel and gyro share one frame, so signs flip in pairs");
+
+// Pinned deliberately, so any future change to the table is a conscious decision
+// about the seam's unmeasured roll sign rather than an accident.
+#define SW1_PRO_DET (SW1_PRO_SIGN_PITCH * SW1_PRO_SIGN_YAW * SW1_PRO_SIGN_ROLL)
+_Static_assert(SW1_PRO_DET == -1,
+               "Switch 1 signs currently compensate the seam's unmeasured Pro2 "
+               "roll sign, so this transform is deliberately improper (det -1). "
+               "If the seam roll sign is ever measured and fixed, this must "
+               "become +1 and the roll lane here must flip with it.");
 
 typedef struct { int8_t pitch, yaw, roll; } sw1_axis_signs_t;
 
@@ -728,17 +754,14 @@ static void switch_process_report(bthid_device_t* device, const uint8_t* data, u
                 }
             }
 
-            // Slot -> source-axis remount. 🔴 UNVERIFIED, like the signs above.
-            // Taken from §8's "gyro axes map ROUGHLY to roll(X)/pitch(Y)/yaw(Z)"
-            // -- i.e. Switch 1 0=roll, 1=pitch, 2=yaw -- against the DualSense
-            // slots 0=lateral/pitch, 1=up/yaw, 2=forward/roll. It is cyclic, so
-            // the permutation sign is +1 and the determinant invariant above
-            // reduces to the product of the three signs.
-            //
-            // The hardware history in spec §9 indicates this permutation is the
-            // thing that is actually wrong; the gravity protocol (spec §8)
-            // measures it and the signs together. Change both from that
-            // measurement, never one from a symptom.
+            // Slot -> source-axis remount, by matching axis TYPE to axis TYPE:
+            //   slot 0 (lateral/pitch)   <- sw1 Y, the lateral axis   = index 1
+            //   slot 1 (face normal/yaw) <- sw1 Z, the face normal    = index 2
+            //   slot 2 (longitudinal)    <- sw1 X, the longitudinal   = index 0
+            // ✅ Both frames are documented (see sw1_axis_signs_for above), so
+            // unlike the signs this permutation is not in doubt. It is cyclic,
+            // so its own permutation sign is +1 and the determinant of the whole
+            // transform reduces to the product of the three signs.
             static const uint8_t remount[3] = { 1, 2, 0 };
             const int32_t sign[3] = { s.pitch, s.yaw, s.roll };
 
