@@ -783,11 +783,37 @@ static uint8_t ns2_v3_report_state = 0;
 static bool ns2_v3_operation_active = false;
 static uint8_t ns2_v3_nfc_status = 0x09;   // 0x09 ready, 0x04 active, 0x07 error
 
-// Advertised McuTagType (see switch_pro2.h). 1 = NTAG 215 (confirmed by
-// ndeadly's descriptor decode); a 2 KB NTAG I2C tag must report a different
-// value, so this is sweepable at runtime over UART. Default 2.
-#define NS2_V3_SERVE_MODE_MAX 15u
-static volatile uint8_t ns2_v3_serve_mode = 2;
+// Source view selector (see switch_pro2.h):
+//   0 = raw v3 image (pages map straight into the 2048-byte tag)
+//   1 = NTAG215-compatibility view (the 64-byte v3 block removed)  [default]
+#define NS2_V3_SERVE_MODE_MAX 1u
+static volatile uint8_t ns2_v3_serve_mode = 1;
+
+// Rebuild a standard 540-byte NTAG215 amiibo from a v3 (NTAG I2C 2K) image.
+//
+// A v3 tag is a standard amiibo with 64 bytes of extra data inserted at 0x80
+// (xSke, N3evin/AmiiboAPI#243: "if you cut out the new 64-byte random data
+// buffer from the middle, it'll encrypt and decrypt fine"; the same +0x40 shift
+// bettse/amiitool threads through tag_to_internal as `tag_v3`). Removing that
+// block restores the classic layout, so the standard tag_to_internal produces a
+// byte-identical internal buffer and the HMACs verify unchanged:
+//   HMAC   v3 0x0C0 -> standard 0x080
+//   data   v3 0x0E0 -> standard 0x0A0
+// This is the same backwards-compatibility path the Switch's own NFC sysmodule
+// takes ("skipping the extra data chunks and reading standard Amiibo data from
+// the right offsets"), and it is what lets a console that believes it is talking
+// to an NTAG215 validate a Kirby Air Riders tag. The Kirby-specific extended
+// pages and the SRAM machine block are necessarily not represented.
+#define NS2_V3_COMPAT_SPLIT 0x80u
+#define NS2_V3_COMPAT_SHIFT 0x40u
+static void ns2_v3_build_compat540(const uint8_t image[NS2_AMIIBO_V3_SIZE],
+                                   uint8_t out[VIRTUAL_AMIIBO_RAW_SIZE])
+{
+    memcpy(out, image, NS2_V3_COMPAT_SPLIT);
+    memcpy(out + NS2_V3_COMPAT_SPLIT,
+           image + NS2_V3_COMPAT_SPLIT + NS2_V3_COMPAT_SHIFT,
+           VIRTUAL_AMIIBO_RAW_SIZE - NS2_V3_COMPAT_SPLIT);
+}
 static uint8_t ns2_v3_op_buffer[60u + NS2_AMIIBO_V3_SIZE];
 static size_t ns2_v3_op_buffer_size = 0;
 
@@ -815,10 +841,24 @@ uint8_t ns2_v3_get_serve_mode(void) { return ns2_v3_serve_mode; }
 static void ns2_v3_build_buffer(const uint8_t image[NS2_AMIIBO_V3_SIZE],
                                 const uint8_t *request, size_t request_size)
 {
+    // Source the requested pages either from the raw v3 image or from the
+    // NTAG215-compatibility view, which is what a console asking for the
+    // NTAG215 page set (0x00-0x86 = 540 bytes) actually expects.
+    static uint8_t compat[VIRTUAL_AMIIBO_RAW_SIZE];
+    const uint8_t *source = image;
+    size_t source_size = NS2_AMIIBO_V3_SIZE;
+    if (ns2_v3_serve_mode == 1u) {
+        ns2_v3_build_compat540(image, compat);
+        source = compat;
+        source_size = VIRTUAL_AMIIBO_RAW_SIZE;
+    }
+
     uint8_t *out = ns2_v3_op_buffer;
     memset(out, 0, 60);
+    // Byte-for-byte the genuine prefix confirmed by primary capture; the console
+    // believes this is an NTAG215 and nothing here may claim otherwise.
     out[0] = 0x04;
-    out[4] = ns2_v3_serve_mode;             // advertised McuTagType
+    out[4] = 0x01;
     out[5] = 0x02;
     out[6] = 0x00;
     out[7] = 0x07;                          // UID length
@@ -844,10 +884,10 @@ static void ns2_v3_build_buffer(const uint8_t image[NS2_AMIIBO_V3_SIZE],
                     if (end < start) continue;
                     const size_t from = (size_t)start * 4u;
                     const size_t len = ((size_t)(end - start) + 1u) * 4u;
-                    if (from + len > NS2_AMIIBO_V3_SIZE ||
+                    if (from + len > source_size ||
                         used + len > sizeof(ns2_v3_op_buffer))
                         continue;
-                    memcpy(out + used, image + from, len);
+                    memcpy(out + used, source + from, len);
                     used += len;
                     copied = true;
                 }
@@ -855,8 +895,10 @@ static void ns2_v3_build_buffer(const uint8_t image[NS2_AMIIBO_V3_SIZE],
         }
     }
     if (!copied) {
-        memcpy(out + 60, image, NS2_AMIIBO_V3_SECTOR0_SIZE);
-        used = 60u + NS2_AMIIBO_V3_SECTOR0_SIZE;
+        const size_t fallback = (source_size < NS2_AMIIBO_V3_SECTOR0_SIZE)
+            ? source_size : NS2_AMIIBO_V3_SECTOR0_SIZE;
+        memcpy(out + 60, source, fallback);
+        used = 60u + fallback;
     }
     ns2_v3_op_buffer_size = used;
 }
@@ -900,11 +942,6 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
             ns2_virtual_nfc_build_status(true, uid, payload);
             payload[0] = ns2_v3_nfc_status;
             payload[1] = 0x00;
-            // The console picks the page ranges it will request in 0x06 from the
-            // tag type reported here. build_status writes the NTAG215 triplet
-            // (`01 02 00 07` at [5..8], mirroring the read prefix's [4..7]), so
-            // override the type byte to advertise this as an NTAG I2C 2K tag.
-            payload[5] = ns2_v3_serve_mode;
             payload_size = NS2_NFC_STATUS_PAYLOAD_SIZE;
             direction = 0x01;
             break;
