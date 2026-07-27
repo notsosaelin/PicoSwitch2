@@ -87,6 +87,21 @@ bool ns2_v3_set_reply(uint8_t sub, const uint8_t *data, uint8_t len);
 void ns2_v3_clear_reply(void);
 uint8_t ns2_v3_get_reply_sub(void);
 
+// Read-buffer prefix probe (RE tooling, UART `v3hdr`).
+//
+// Byte 18 of the 60-byte read-buffer prefix is the NTAG model. The console reads
+// it from the buffer WE generate and uses it to choose the page ranges it then
+// requests: 0 = NTAG215 (135 pages -> 00-3b,3c-77,78-86 = 540 B), 3 = NTAG213
+// (45), 4 = NTAG216 (231). Verified against CTCaer/jc_toolkit and the yuzu
+// Joy-Con driver, which independently agree the model is at buf2[74] with the MCU
+// payload starting at buf2[56], i.e. header offset 18. We emit 0x00, which is why
+// the console has only ever asked us for the 540-byte NTAG215 page set.
+//
+// NTAG I2C Plus 2K must be a different (newer) enum value; this sweeps it live.
+bool ns2_v3_hdr_probe_set(uint8_t index, const uint8_t *bytes, uint8_t len);
+void ns2_v3_hdr_probe_clear(void);
+uint8_t ns2_v3_hdr_probe_count(void);
+
 //--------------------------------------------------------------------+
 // Report-0x09 motion debug/instrumentation (config.c's "imu" CDC command).
 //--------------------------------------------------------------------+

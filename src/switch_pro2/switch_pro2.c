@@ -875,6 +875,39 @@ bool ns2_v3_set_reply(uint8_t sub, const uint8_t *data, uint8_t len)
 void ns2_v3_clear_reply(void) { ns2_v3_reply_sub = 0; ns2_v3_reply_len = 0; }
 uint8_t ns2_v3_get_reply_sub(void) { return ns2_v3_reply_sub; }
 
+// --- Read-buffer prefix probe (see switch_pro2.h) ---
+// Byte 18 of the 60-byte prefix is the NTAG model the console uses to choose its
+// page ranges (0 = NTAG215/135 pages, 3 = NTAG213/45, 4 = NTAG216/231; verified
+// against CTCaer/jc_toolkit and the yuzu Joy-Con driver, which agree that the
+// model lives at buf2[74] with MCU payload at buf2[56] => header offset 18).
+#define NS2_V3_PREFIX_SIZE 60u
+static uint8_t ns2_v3_hdr_value[NS2_V3_PREFIX_SIZE];
+static uint8_t ns2_v3_hdr_mask[NS2_V3_PREFIX_SIZE];
+
+bool ns2_v3_hdr_probe_set(uint8_t index, const uint8_t *bytes, uint8_t len)
+{
+    if (!bytes || len == 0 || (size_t)index + len > NS2_V3_PREFIX_SIZE)
+        return false;
+    for (uint8_t i = 0; i < len; ++i) {
+        ns2_v3_hdr_value[index + i] = bytes[i];
+        ns2_v3_hdr_mask[index + i] = 1u;
+    }
+    return true;
+}
+
+void ns2_v3_hdr_probe_clear(void)
+{
+    memset(ns2_v3_hdr_value, 0, sizeof(ns2_v3_hdr_value));
+    memset(ns2_v3_hdr_mask, 0, sizeof(ns2_v3_hdr_mask));
+}
+
+uint8_t ns2_v3_hdr_probe_count(void)
+{
+    uint8_t n = 0;
+    for (size_t i = 0; i < NS2_V3_PREFIX_SIZE; ++i) if (ns2_v3_hdr_mask[i]) n++;
+    return n;
+}
+
 // Assemble the buffer the console will pull with 0x15.
 //
 // The 0x06 read descriptor is not opaque — ndeadly's research decodes it as:
@@ -917,6 +950,10 @@ static void ns2_v3_build_buffer(const uint8_t image[NS2_AMIIBO_V3_SIZE],
     // out[19..50]: originality signature — unknown for v3, left zero.
     if (request_size >= 19u)
         memcpy(out + 51, request + 10, NS2_NFC_OPERATION_METADATA_SIZE);
+    // RE probe: overlay prefix bytes (notably [18], the NTAG model the console
+    // reads to pick its page ranges) so the chip identity can be swept live.
+    for (size_t i = 0; i < NS2_V3_PREFIX_SIZE; ++i)
+        if (ns2_v3_hdr_mask[i]) out[i] = ns2_v3_hdr_value[i];
 
     // Copy exactly the page ranges the console asked for. Falls back to sector 0
     // if the descriptor cannot be parsed.
