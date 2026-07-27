@@ -10,6 +10,30 @@ Branch: `ns2-testing`
 
 Documentation/resource audit: 2026-07-25
 
+## Wii Remote motion — 🟢 hardware-confirmed working 2026-07-27
+
+Accelerometer + Wii MotionPlus gyro now stream through the existing motion
+carrier and are confirmed working on hardware by the project owner.
+
+Implemented: split 10-bit accelerometer assembly, MotionPlus detection
+(`0xA600FA`), 32-byte calibration read at `0xA60020` **before** activation with
+CRC32 verification, the MotionPlus init pair, activation via `0xA600FE` with the
+passthrough mode chosen from the downstream extension, verification at
+`0xA400FA` with retries, and per-frame decode honouring `is_mp_data`, the
+cross-byte slow bits and per-axis slow/fast calibration blocks. The documented
+rumble-latch bug is also fixed (every output report rewrites the motor latch).
+
+No new motion representation was invented: the Wii publishes the same SInput
+convention the Sony parsers use (`±32767 = ±2000 dps` / `±4 g`) in the DualSense
+slot frame, which `ns2_seam.c` already remounts into the Pro2 frame. It carries
+its own `SWITCH_MOTION_SOURCE_WII` provenance so future IMU-bearing controllers
+have a place for per-family policy.
+
+Still open: EEPROM accelerometer calibration (fallback constants in use),
+passthrough bit-reversal for an extension behind an active MotionPlus, and
+re-expressing orientation detection on the calibrated vector. See
+[docs/bluetooth/wii-motion.md](docs/bluetooth/wii-motion.md) §12.5.
+
 ## Virtual amiibo — v3 (NTAG I2C Plus 2K / Kirby Air Riders) — 🔴 PARKED 2026-07-27
 
 Full record: [`docs/Amiibo-v3.md`](docs/Amiibo-v3.md).
