@@ -109,6 +109,22 @@ typedef enum {
 #define WII_ACCEL_THRESH_ON  20  // Threshold to switch TO horizontal (lower = more sensitive)
 #define WII_ACCEL_THRESH_OFF 12  // Threshold to switch FROM horizontal (hysteresis)
 
+// --- Motion (see docs/bluetooth/wii-motion.md) ---------------------------------
+// The accelerometer is 10-bit but split: eight bits sit in a dedicated byte and
+// the low bits are smuggled into unused bits of the *button* bytes (§4.1). X gets
+// both low bits; Y and Z get only bit 1 and are genuinely 9-bit presented as 10.
+#define WII_ACCEL_ZERO_10BIT   512   // ~0x200 at 0 g in 10-bit space (§4.1)
+// Counts per g is unit-dependent; the EEPROM two-point block at 0x0016 is the only
+// authoritative source (§4.4). Until that read lands this is the documented
+// fallback, and it is deliberately a named constant rather than a magic number.
+#define WII_ACCEL_COUNTS_PER_G 102
+
+// Interchange convention shared with the Sony parsers (ds3_bt.c: "Normalize to
+// SInput convention"): +-32767 == +-2000 dps for gyro, +-32767 == +-4g for accel.
+// Publishing in these units is what lets the Wii reuse the existing seam and
+// translator unchanged -- do not invent a second motion representation.
+#define WII_MOTION_ACCEL_FULLSCALE_G 4
+
 // Output report IDs
 #define WII_CMD_LED             0x11
 #define WII_CMD_REPORT_MODE     0x12
@@ -161,6 +177,15 @@ typedef struct {
     bool rumble_on;
     wiimote_orient_t orientation;
     bool orient_hotkey_active;  // Prevent repeated hotkey triggers
+
+    // Motion. Two-point accelerometer calibration in the 10-bit space: the raw
+    // reading at 0 g and at +1 g per axis (docs/bluetooth/wii-motion.md §4.3).
+    // Populated from EEPROM when that read lands; until then the documented
+    // fallback constants are used and `accel_cal_valid` stays false.
+    uint16_t accel_zero[3];
+    uint16_t accel_1g[3];
+    bool     accel_cal_valid;
+    uint32_t motion_sequence;   // Wii reports carry no sequence counter (§10)
 } wiimote_data_t;
 
 static wiimote_data_t wiimote_data[BTHID_MAX_DEVICES];
@@ -241,6 +266,42 @@ static void wiimote_set_rumble(bthid_device_t* device, bool on)
 // Detect orientation from accelerometer data with hysteresis
 // Returns WII_ORIENT_HORIZONTAL if held sideways (X-axis has gravity)
 // Returns WII_ORIENT_VERTICAL otherwise
+// Assemble the split 10-bit accelerometer from an accel-bearing report.
+//
+// The eight high bits sit in a dedicated byte; the low bits are smuggled into
+// unused bits of the two *button* bytes, so `b0`/`b1` must be the RAW button
+// bytes -- before any button masking, which would discard bits 5 and 6
+// (docs/bluetooth/wii-motion.md §4.1/§4.2). X receives both low bits; Y and Z
+// receive only bit 1 and are genuinely 9-bit values presented in 10-bit space,
+// which is why their masks are 0x02 rather than 0x03.
+static void wiimote_decode_accel(uint8_t b0, uint8_t b1,
+                                 uint8_t ax, uint8_t ay, uint8_t az,
+                                 uint16_t out[3])
+{
+    out[0] = (uint16_t)(((uint16_t)ax << 2) | ((b0 >> 5) & 0x03));
+    out[1] = (uint16_t)(((uint16_t)ay << 2) | ((b1 >> 4) & 0x02));
+    out[2] = (uint16_t)(((uint16_t)az << 2) | ((b1 >> 5) & 0x02));
+}
+
+// Convert one raw 10-bit axis into the shared interchange convention.
+//
+// ds3_bt.c states that convention: "Normalize accel to SInput convention:
+// +-32767 = +-4g". docs/switch2/report-0x09-motion.md confirms the whole chain --
+// the seam halves this value and switch_pro2.c then emits Q16.16 where 4096 == 1 g,
+// so this scale (8192 counts per g) is what makes the existing pipeline correct
+// without touching the DualSense or native Pro2 paths.
+static int16_t wiimote_accel_to_sinput(uint16_t raw, uint16_t zero, uint16_t one_g)
+{
+    int32_t span = (int32_t)one_g - (int32_t)zero;
+    if (span == 0) span = WII_ACCEL_COUNTS_PER_G;   // never divide by zero
+    // (raw - zero)/span == acceleration in g; 32767/4 counts per g.
+    int32_t v = ((int32_t)raw - (int32_t)zero) * (32767 / WII_MOTION_ACCEL_FULLSCALE_G);
+    v /= span;
+    if (v >  32767) v =  32767;
+    if (v < -32767) v = -32767;
+    return (int16_t)v;
+}
+
 static wiimote_orient_t wiimote_detect_orientation(uint8_t accel_x, wiimote_orient_t current)
 {
     // Calculate X-axis deviation from center (zero-G)
@@ -336,6 +397,16 @@ static bool wiimote_init(bthid_device_t* device)
             wiimote_data[i].ext_type = WII_EXT_NONE;
             wiimote_data[i].extension_connected = false;
 
+            // Documented fallback accelerometer calibration until the EEPROM
+            // two-point block at 0x0016 is read (wii-motion.md §4.3/§4.4).
+            for (int a = 0; a < 3; a++) {
+                wiimote_data[i].accel_zero[a] = WII_ACCEL_ZERO_10BIT;
+                wiimote_data[i].accel_1g[a] =
+                    WII_ACCEL_ZERO_10BIT + WII_ACCEL_COUNTS_PER_G;
+            }
+            wiimote_data[i].accel_cal_valid = false;
+            wiimote_data[i].motion_sequence = 0;
+
             device->driver_data = &wiimote_data[i];
 
             wiimote_data[i].state = WII_STATE_WAIT_INIT;
@@ -362,6 +433,15 @@ static void wiimote_process_report(bthid_device_t* device, const uint8_t* data, 
             // Core buttons in bytes 1-2 (after HID header byte 0)
             // Byte 1: bits 0-4 used (LEFT, RIGHT, DOWN, UP, PLUS)
             // Byte 2: bits 0,1,2,3,4,7 used (TWO, ONE, B, A, MINUS, HOME)
+            // Which report layouts carry the accelerometer (and therefore the
+            // split low bits inside the button bytes). Hoisted so both the
+            // orientation detector and the motion decode below can use it.
+            const bool report_has_accel =
+                (report_id == WII_REPORT_BUTTONS_ACC ||
+                 report_id == WII_REPORT_BUTTONS_ACC_EXT16 ||
+                 report_id == WII_REPORT_BUTTONS_ACC_IR ||
+                 report_id == WII_REPORT_BUTTONS_ACC_IR_EXT6);
+
             uint16_t raw_buttons = ((data[1] & 0x1F) | ((data[2] & 0x9F) << 8));
 
             uint32_t buttons = 0;
@@ -425,11 +505,7 @@ static void wiimote_process_report(bthid_device_t* device, const uint8_t* data, 
                 // Auto mode: detect from accelerometer if available
                 // Report 0x31: [0]=id, [1-2]=buttons, [3-5]=accel
                 // Report 0x35: [0]=id, [1-2]=buttons, [3-5]=accel, [6-21]=extension
-                bool has_accel = (report_id == WII_REPORT_BUTTONS_ACC ||
-                                  report_id == WII_REPORT_BUTTONS_ACC_EXT16 ||
-                                  report_id == WII_REPORT_BUTTONS_ACC_IR ||
-                                  report_id == WII_REPORT_BUTTONS_ACC_IR_EXT6);
-                if (has_accel && len >= 6) {
+                if (report_has_accel && len >= 6) {
                     uint8_t accel_x = data[3];
                     new_orient = wiimote_detect_orientation(accel_x, wii->orientation);
                 }
@@ -597,6 +673,40 @@ static void wiimote_process_report(bthid_device_t* device, const uint8_t* data, 
             }
 
             wii->event.buttons = buttons;
+
+            // --- Motion ---------------------------------------------------
+            // Publish in the DualSense slot convention, because ns2_seam.c
+            // remounts that frame into the Pro2 frame for every source. The Wii
+            // frame is X=lateral, Y=longitudinal/pointing, Z=normal to the button
+            // face (§4.5); the DualSense frame is Y-up with accel[X,Y,Z] (see
+            // docs/bluetooth/dualsense-motion.md §5/§8). Wii Z is "up" and Wii Y
+            // is "forward", so the remount is accel = [wiiX, wiiZ, wiiY].
+            // Gyro is left zero here: angular rate comes from MotionPlus, which
+            // is a separate extension-port device (§1.2) and is not yet wired.
+            if (report_has_accel && len >= 6) {
+                uint16_t raw[3];
+                wiimote_decode_accel(data[1], data[2], data[3], data[4], data[5], raw);
+
+                const uint16_t *zero = wii->accel_zero;
+                const uint16_t *one_g = wii->accel_1g;
+                int16_t a[3];
+                for (int i = 0; i < 3; i++)
+                    a[i] = wiimote_accel_to_sinput(raw[i], zero[i], one_g[i]);
+
+                wii->event.accel[0] = a[0];   // DS5 X  <- Wii X (lateral)
+                wii->event.accel[1] = a[2];   // DS5 Y  <- Wii Z (up)
+                wii->event.accel[2] = a[1];   // DS5 Z  <- Wii Y (forward)
+                wii->event.gyro[0] = 0;
+                wii->event.gyro[1] = 0;
+                wii->event.gyro[2] = 0;
+                wii->event.gyro_range = 2000;    // interchange full scale
+                wii->event.accel_range = 1000 * WII_MOTION_ACCEL_FULLSCALE_G;
+                // The Wii protocol has no timestamp and no sequence counter
+                // (§10), so timestamps stay invalid and the sequence is ours.
+                wii->event.motion_sequence = ++wii->motion_sequence;
+                wii->event.motion_timestamp_valid = false;
+                wii->event.has_motion = true;
+            }
 
             if (wii->state == WII_STATE_READY) {
                 router_submit_input(&wii->event);
