@@ -43,3 +43,6 @@ build
 # Generated amiibo test artifacts (tools/generate_test_amiibo.py)
 amiibo-*-test.bin
 tools/amiibo-*-test.bin
+
+# Optional live AmiiboAPI fixture for tools/test_amiibo_games.mjs (1.2 MB, fetch on demand)
+tools/fixtures/amiibo-showgames.json
