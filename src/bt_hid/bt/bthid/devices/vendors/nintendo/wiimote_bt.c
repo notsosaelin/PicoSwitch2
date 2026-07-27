@@ -17,6 +17,7 @@
 #include "core/services/players/feedback.h"
 #include "core/services/storage/flash.h"
 #include "controller_battery.h"
+#include "wii_motionplus.h"
 #include <string.h>
 #include <stdio.h>
 #include "platform/platform.h"
@@ -74,7 +75,20 @@ typedef enum {
     WII_EXT_CLASSIC,       // Classic Controller / Classic Controller Pro (has analog sticks)
     WII_EXT_CLASSIC_MINI,  // NES/SNES Classic Controller (digital only, no sticks)
     WII_EXT_GUITAR,        // Guitar Hero guitar
+    // An ACTIVATED MotionPlus takes over the extension port and reports its own
+    // identifier (04/05/07 05 -- wii-motion.md §5.4). Passthrough variants carry
+    // a downstream extension in alternating frames (§7).
+    WII_EXT_MOTIONPLUS,             // 04 05: MotionPlus only
+    WII_EXT_MOTIONPLUS_NUNCHUK,     // 05 05: Nunchuk passthrough
+    WII_EXT_MOTIONPLUS_CLASSIC,     // 07 05: Classic passthrough
 } wiimote_ext_type_t;
+
+static inline bool wiimote_ext_is_motionplus(wiimote_ext_type_t t)
+{
+    return t == WII_EXT_MOTIONPLUS ||
+           t == WII_EXT_MOTIONPLUS_NUNCHUK ||
+           t == WII_EXT_MOTIONPLUS_CLASSIC;
+}
 
 // Guitar Hero button bits (bytes 4-5, active low)
 // Byte 4: BD=bit6, B-=bit4, B+=bit2
@@ -186,6 +200,14 @@ typedef struct {
     uint16_t accel_1g[3];
     bool     accel_cal_valid;
     uint32_t motion_sequence;   // Wii reports carry no sequence counter (§10)
+
+    // MotionPlus. The calibration block is read from the INACTIVE register space
+    // at 0xA60020 before activation, because activation moves the device to the
+    // active extension address (wii-motion.md §6.2/§6.7).
+    wii_mp_cal_t mp_cal;
+    bool mp_present;            // an inactive MotionPlus answered at 0xA600FA
+    int32_t mp_centi_dps[3];    // last decoded [yaw, roll, pitch]
+    bool mp_have_sample;
 } wiimote_data_t;
 
 static wiimote_data_t wiimote_data[BTHID_MAX_DEVICES];
@@ -297,6 +319,15 @@ static int16_t wiimote_accel_to_sinput(uint16_t raw, uint16_t zero, uint16_t one
     // (raw - zero)/span == acceleration in g; 32767/4 counts per g.
     int32_t v = ((int32_t)raw - (int32_t)zero) * (32767 / WII_MOTION_ACCEL_FULLSCALE_G);
     v /= span;
+    if (v >  32767) v =  32767;
+    if (v < -32767) v = -32767;
+    return (int16_t)v;
+}
+
+// centi-dps -> the shared interchange scale (+-32767 == +-2000 dps).
+static int16_t wii_dps_to_sinput(int32_t centi_dps)
+{
+    int32_t v = (centi_dps * 32767) / (2000 * 100);
     if (v >  32767) v =  32767;
     if (v < -32767) v = -32767;
     return (int16_t)v;
@@ -536,6 +567,22 @@ static void wiimote_process_report(bthid_device_t* device, const uint8_t* data, 
             // Parse extension data
             if (ext != NULL && ext_len >= 6) {
 
+                // MotionPlus shares the 6-byte window with any passed-through
+                // extension by alternating frames, so the discriminator must be
+                // checked on EVERY frame -- a failed extension read makes the
+                // MotionPlus emit its own data instead of alternating strictly
+                // (wii-motion.md §7.1). Frames that are not MotionPlus data fall
+                // through to the ordinary extension decoders below.
+                if (wiimote_ext_is_motionplus(wii->ext_type) &&
+                    wii_mp_is_motionplus_frame(ext)) {
+                    wii_mp_sample_t mp;
+                    if (wii_mp_decode(ext, &mp)) {
+                        wii_mp_sample_centi_dps(&mp, &wii->mp_cal,
+                                                wii->mp_centi_dps);
+                        wii->mp_have_sample = true;
+                    }
+                }
+
                 if (wii->ext_type == WII_EXT_NUNCHUK) {
                     // Nunchuk format (6 bytes):
                     // Byte 0: joystick X (0-255, center ~128)
@@ -696,9 +743,28 @@ static void wiimote_process_report(bthid_device_t* device, const uint8_t* data, 
                 wii->event.accel[0] = a[0];   // DS5 X  <- Wii X (lateral)
                 wii->event.accel[1] = a[2];   // DS5 Y  <- Wii Z (up)
                 wii->event.accel[2] = a[1];   // DS5 Z  <- Wii Y (forward)
-                wii->event.gyro[0] = 0;
-                wii->event.gyro[1] = 0;
-                wii->event.gyro[2] = 0;
+                // Gyro comes from MotionPlus when one is active. Convert
+                // centi-dps into the same interchange convention as accel --
+                // ds3_bt.c: "+-32767 = +-2000 dps" -- i.e. 16.384 LSB/dps, which
+                // docs/switch2/report-0x09-motion.md confirms is what the encoder
+                // consumes. Axis order matches the DualSense slot the seam
+                // remounts from: gyro[pitch, yaw, roll].
+                //
+                // The MotionPlus does not follow the right-hand rule; Dolphin
+                // applies sign_fix (-1, +1, -1) to (pitch, roll, yaw) to obtain
+                // right-handed angular velocity (§6.8), which is applied here.
+                if (wii->mp_have_sample) {
+                    const int32_t yaw   = wii->mp_centi_dps[0];
+                    const int32_t roll  = wii->mp_centi_dps[1];
+                    const int32_t pitch = wii->mp_centi_dps[2];
+                    wii->event.gyro[0] = wii_dps_to_sinput(-pitch);
+                    wii->event.gyro[1] = wii_dps_to_sinput(-yaw);
+                    wii->event.gyro[2] = wii_dps_to_sinput( roll);
+                } else {
+                    wii->event.gyro[0] = 0;
+                    wii->event.gyro[1] = 0;
+                    wii->event.gyro[2] = 0;
+                }
                 wii->event.gyro_range = 2000;    // interchange full scale
                 wii->event.accel_range = 1000 * WII_MOTION_ACCEL_FULLSCALE_G;
                 // The Wii protocol has no timestamp and no sequence counter
@@ -828,6 +894,22 @@ static void wiimote_process_report(bthid_device_t* device, const uint8_t* data, 
                     else if (data[10] == 0x01 && data[11] == 0x03) {
                         printf("[WIIMOTE] Guitar Hero Guitar detected!\n");
                         wii->ext_type = WII_EXT_GUITAR;
+                    }
+                    else if (data[11] == 0x05) {
+                        // An ACTIVATED MotionPlus reports 04/05/07 05, where the
+                        // first byte is the passthrough mode it was activated
+                        // with (wii-motion.md §5.4). Without this it fell through
+                        // to "Unknown extension" and the gyro stayed invisible.
+                        if (data[10] == 0x05) {
+                            printf("[WIIMOTE] MotionPlus active (Nunchuk passthrough)\n");
+                            wii->ext_type = WII_EXT_MOTIONPLUS_NUNCHUK;
+                        } else if (data[10] == 0x07) {
+                            printf("[WIIMOTE] MotionPlus active (Classic passthrough)\n");
+                            wii->ext_type = WII_EXT_MOTIONPLUS_CLASSIC;
+                        } else {
+                            printf("[WIIMOTE] MotionPlus active (no passthrough)\n");
+                            wii->ext_type = WII_EXT_MOTIONPLUS;
+                        }
                     }
                     else if (data[10] == 0x01 && data[11] == 0x20) {
                         printf("[WIIMOTE] Wii U Pro extension detected\n");
