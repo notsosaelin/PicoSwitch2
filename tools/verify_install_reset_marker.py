@@ -9,7 +9,7 @@ from pathlib import Path
 
 MARKER = b"PS2-INSTALL-RESET-1"
 FLASH_PAGE_SIZE = 256
-PERSISTENT_SIZE = 5 * 4096
+PERSISTENT_SIZE = 6 * 4096
 
 
 def main() -> int:
