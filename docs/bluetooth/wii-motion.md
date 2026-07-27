@@ -15,7 +15,7 @@ contributor who has no access to this conversation.
 |---|---|
 | **Document status** | ✅ Complete for accelerometer and MotionPlus acquisition; 🔵 Partial on absolute nominal scale constants (see §6.10) |
 | **Date** | 2026-07-23 |
-| **Repo implementation status** | 🔵 Partial — driver exists and already streams accelerometer bytes, but discards them; no MotionPlus support (see §12) |
+| **Repo implementation status** | 🔵 Phases 1–3 implemented 2026-07-27 (accelerometer decode, MotionPlus detection/activation/decode, calibration, rumble-latch fix). Build-clean and host-tested; **not yet hardware-validated** — see §12.5 |
 
 ### Confidence legend
 
@@ -1194,6 +1194,49 @@ length reaches the remote. It evidently works, but it is worth tightening to `bu
 the derivation, because the current value looks like a deliberate size and is not.
 
 Confidence: **Confirmed** (arithmetic against the Confirmed report size in §2.1). **Impact: cosmetic.**
+
+### 12.5 Implemented 2026-07-27 (build-clean + host-tested, hardware pending)
+
+| Checklist item | State |
+|---|---|
+| §13.1 raw button bytes, 10-bit X/Y/Z assembly | ✅ `wiimote_decode_accel()` |
+| §13.3 accelerometer emitted | ✅ published through `input_event_t`, not a debug channel |
+| §13.6 `WII_EXT_MOTIONPLUS*` types | ✅ incl. the `04 05` / `05 05` / `07 05` identifiers that previously fell through to "Unknown extension" |
+| §13.7 probe `0xA600FA` | ✅ `WII_STATE_MP_DETECT` |
+| §13.8 calibration before activation + CRC | ✅ two 16-byte reads of `0xA60020`, CRC32-verified |
+| §13.9 MotionPlus init pair | ✅ `0xA600F0`/`0xA600FB` |
+| §13.10 activation `0xA600FE` | ✅ mode chosen from the downstream extension |
+| §13.11 verify `0xA400FA` with retries | ✅ 5 × 50 ms |
+| §13.12 deactivation hazard audit | ✅ probe ordered strictly after ext-init; nothing re-runs `0xA400F0` afterwards |
+| §13.13 frame decode honouring `is_mp_data` | ✅ checked per frame |
+| §13.14 per-axis slow/fast + calibrated conversion | ✅ `wii_mp_sample_centi_dps()` |
+| §13.16 no second motion representation | ✅ reuses `input_event_t`; publishes the SInput convention (`±32767 = ±2000 dps` / `±4 g`) that `report-0x09-motion.md` shows the encoder consumes |
+| §13.18 rumble-latch bug | ✅ fixed; all senders OR in the cached state |
+
+**Units and axes were taken from documentation, not measurement.**
+`docs/switch2/report-0x09-motion.md` fixes the chain end-to-end (`in.gyro` at
+16.384 LSB/dps; `in.accel` × 65536 into Q16.16 where 4096 = 1 g, after the seam
+halves it), and `ds3_bt.c` states the same convention. Motion is published in the
+DualSense slot frame because `ns2_seam.c` remounts that frame into the Pro2 frame
+for every source: `accel = [wiiX, wiiZ, wiiY]` (Wii is Z-up, DualSense Y-up) and
+`gyro = [pitch, yaw, roll]` with Dolphin's `sign_fix (-1,+1,-1)`.
+
+The Wii now has its own `SWITCH_MOTION_SOURCE_WII` provenance rather than
+borrowing `GENERIC`. Verified safe first: the only consumer is a positive test for
+`DUALSENSE`, and nothing tests `== GENERIC`, so the new id lands on the generic
+encoder exactly as before while giving future IMU-bearing controllers a place for
+per-family policy.
+
+**Not implemented:** §13.4/§13.5 EEPROM accelerometer calibration (needs the
+address-space byte parameterised; the two-point struct and fallback constants are
+already in place), §13.15 passthrough bit-reversal for extension frames decoded
+*behind* an active MotionPlus, and §13.17 re-expressing
+`wiimote_detect_orientation()` on the calibrated vector.
+
+**Still unvalidated on hardware**, so §14 Q1–Q7 all remain open — in particular Q2
+(true axis signs). The decode is proven against the documented bit layout by
+`tools/test_wii_motionplus.c`, which is a correctness proof of the parser, not of
+the sign conventions.
 
 ### 12.4 Architectural observation
 
