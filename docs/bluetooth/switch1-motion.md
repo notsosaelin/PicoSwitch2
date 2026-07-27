@@ -280,11 +280,10 @@ three slots writing accel and gyro together, so a sign cannot reach one without 
 
 ## 11. Remaining work
 
-0. 🔴 **Measure the seam's Pro2 roll sign.** This is now the real open item.
-   `gyro-hardware-validation-2026-07-10.md` records that it was *"chosen to keep det = +1, not
-   independently measured"*, and the Switch 1 remount currently carries a compensating flip because
-   of it (spec §6.5). The recapture that would settle it is already specified in §4 of that
-   document. Until then, do not "tidy" the Switch 1 determinant back to +1.
+0. 🟡 **Confirm the current Switch 1 axis map on hardware** (spec §7). It is derived from the
+   documented Linux/SDL frames plus the three previous test results. Note that its determinant is
+   −1 and that this is expected, not a defect: the DualSense convention it targets is itself not
+   self-consistent (spec §6.5). Do not "tidy" it back to +1, and do not change `ns2_seam.c`.
 1. 🟡 **Verify Joy-Con axis signs on hardware** (§8). JC-L (`0x2006`) and JC-R (`0x2007`)
    currently inherit the Pro's signs in `sw1_axis_signs_for()`. §8 is explicit that the two halves
    mount the IMU mirrored, so at least one axis is likely inverted on at least one half. Test:

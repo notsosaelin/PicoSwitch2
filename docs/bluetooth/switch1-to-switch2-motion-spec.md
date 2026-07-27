@@ -117,8 +117,8 @@ in.accel[2] =  e->accel[1] / 2;    in.gyro[2] =  e->gyro[1];
 - `/2` converts 8192 counts/g → 4096 counts/g, matching the genuine PC2's ±8 g range.
 - Gyro passes 1:1; the 16.384 counts/dps scale is preserved end to end.
 - Resulting **Pro2 carrier frame**: `index 0 = pitch, 1 = roll, 2 = yaw`.
-  ⚠️ **The roll lane's sign here was never measured** — see §6.5. This is the likely root cause of
-  the whole Switch 1 saga.
+  (One sign here was chosen rather than measured; that is harmless and must not be "corrected" —
+  see §6.5.1.)
 
 ### Stage 3 — `switch_pro2.c` (SHARED)
 
@@ -239,29 +239,45 @@ cancels the yaw term at normal hold angles. That is why flipping **roll** kills 
 while the yaw lane itself is untouched — it is the only lane whose flip produces that specific
 symptom, so attempt B identifies it uniquely.
 
-### 6.5 Why the result is improper — and why that is the finding, not the bug
+### 6.5 Why the result is improper — and why nothing is broken
 
-`(−1) × (+1) × (+1) = −1`. A physical remount is a rotation and can never be improper, so something
-downstream already carries a sign error.
+`(−1) × (+1) × (+1) = −1`, an improper transform. A physical sensor remount is a rotation and can
+never be improper, so this looks alarming. It isn't, and an earlier revision of this document drew
+the wrong conclusion from it — that a downstream stage must carry a sign error needing repair.
+**That was wrong. Nothing downstream is broken, and nothing downstream should be changed.**
 
-It is recorded in this repo's own experiment log,
-`docs/experiments/gyro-hardware-validation-2026-07-10.md`:
+The determinant rule assumes both endpoints are self-consistent frames. The target endpoint is not.
+`dualsense-motion.md` §8 records, from JoyShock/SDL/evdevhook, that **"the DualSense's first gyro
+axis is inverted and its accelerometer axes are ordered/signed differently than a naive read
+expects"**. A device whose gyro polarity does not follow the right-hand rule about its own
+accelerometer axes simply cannot be reached from a clean 6-axis IMU by a proper rotation.
 
-```
-out_Y (roll)  = +src_roll   (was: -src_pitch)   <- sign chosen to keep det = +1, not independently measured
-```
+So `det = −1` is not a fingerprint of a defect. It is what matching this particular convention
+costs — the price of the contract being *"match the DualSense"* rather than *"be independently
+correct"*. That is the right contract precisely because it is the one that is validated.
 
-and §2.2 of that document rates the roll lane 🔵 **medium confidence**, its axis identity
-established *"only by elimination"*, with the planned confirming recapture *"still outstanding"*.
+**Why the properness rule cost three sessions.** Attempts 0 and B are the only two *proper* sign
+patterns with yaw held at `+1`. Treating properness as a hard physical constraint therefore put the
+correct answer outside the search space entirely, and a `_Static_assert` was added enforcing that
+mistake. The rule was the bug.
 
-**The seam's roll sign is therefore an assumption that was never verified.** If it is wrong, every
-source routed through the seam needs a compensating flip on exactly one lane — precisely the `−1`
-that falls out here. The improper determinant is the fingerprint of a known, recorded, unmeasured
-assumption.
+### 6.5.1 On the seam: only the composite was validated, and that is fine
 
-This also explains why three attempts failed: attempts 0 and B were the only two *proper* sign
-patterns with yaw held at `+1`, so once properness was treated as a hard constraint the correct
-answer was outside the search space entirely.
+For the record, since an earlier revision implied otherwise:
+
+The hardware validation covered the **composite** transform — DS5 driver → seam → console — end to
+end. How that total transform is *split* between the driver stage and the seam was never
+independently pinned. (`gyro-hardware-validation-2026-07-10.md` line 96 notes one seam sign was
+*"chosen to keep det = +1, not independently measured"*.)
+
+This costs nothing and implies no defect. Any arbitrariness in the split is applied **identically to
+every source**, so a driver that matches the DualSense at the event boundary is correct regardless
+of it. The composite is what the console sees, and the composite is validated.
+
+**Do not modify `ns2_seam.c` to make a determinant nicer.** Doing so would re-open a working,
+hardware-validated configuration to satisfy an aesthetic constraint, and would break the DualSense
+in the process. Adding a motion source is a local change to one driver — that is the architecture
+working as designed, not a limitation to route around.
 
 ### 6.6 The resulting map
 
@@ -286,16 +302,21 @@ If correct: pitch correct, horizontal aim correct, no drift-then-snap, no dead a
 
 Each outcome identifies a different lane, so one test is decisive either way.
 
-## 8. The real fix, deferred deliberately
+## 8. Adding a motion source — the contract, restated
 
-The root cause is the seam's unmeasured Pro2 roll sign. Fixing it there would let every source use
-a proper transform and remove this compensation.
+There is no pending shared-code work. Adding a motion source is, and should remain, a change to one
+driver file:
 
-It is **not** done now because the seam is shared with the hardware-validated DualSense path, and
-changing it would re-open a working configuration to improve a determinant. Correct sequencing:
-confirm Switch 1 works with the local compensation → measure the Pro2 roll sign via the recapture
-`gyro-hardware-validation-2026-07-10.md` §4 already specifies → fix the seam and flip both sources'
-roll lanes together.
+1. Decode the sensor and calibrate it into the interchange units of §3.1
+   (gyro 16.384 counts/dps, accel 8192 counts/g).
+2. Remount into the DualSense event convention (§3.2) so the values match what a DualSense would
+   publish for the same physical motion — **including the DualSense's own quirks** (§6.5). Matching
+   the convention is the contract; being independently "correct" is not.
+3. Tag provenance with a new `SWITCH_MOTION_SOURCE_*` so the quaternion translator is selected and
+   per-family policy has somewhere to live.
+
+Nothing downstream of the driver needs to know the source exists. Anything that seems to require a
+shared-stage change is almost certainly a step-1 or step-2 error in the new driver.
 
 ## 9. Attempt history
 
@@ -328,7 +349,8 @@ the improper C and points at the seam.
 | Event-frame permutation `{1,2,0}` | ✅ Confirmed (axis-type matching) |
 | Event-frame signs `(−1,+1,+1)` | 🟢 Strong Evidence — derived from three hardware results |
 | Console blends yaw+roll for horizontal aim | 🟢 Strong Evidence (attempt B) |
-| **Seam's Pro2 roll sign** | 🔴 **Never measured** — chosen for properness; likely root cause |
+| Seam split between driver and shared stage | 🔵 Only the COMPOSITE was validated — harmless, applies to all sources identically (§6.5.1). **Not** a defect and **not** to be "fixed" |
+| DualSense's own convention is not self-consistent | 🟢 Strong Evidence (`dualsense-motion.md` §8) — why det −1 is expected |
 | Joy-Con L/R frames | 🔵 Derivable — Linux negates Y/Z on both sensors for the right half (§6.1) |
 | `NS2_DS5_ACCEL_PDU_PER_COUNT` 5.2 % excess | 🔵 Open, pre-existing, affects all sources |
 
