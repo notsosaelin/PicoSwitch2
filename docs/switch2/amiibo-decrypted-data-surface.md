@@ -220,3 +220,58 @@ already within reach: AmiiboAPI — which the portal fetches for its catalog —
 metadata about the character, not anything read from the tag, so it needs no keys and works for
 every amiibo in the library rather than only written ones. Not implemented; noted as the natural
 follow-up if a list is what is actually wanted.
+
+## 8. AmiiboAPI `?showgames` — the AppID problem solved better (2026-07-27)
+
+The five-entry 3dbrew AppID table in §7 was never going to be enough: it is 3DS/Wii U era and has no
+Switch titles. **AmiiboAPI's `?showgames` replaces it**, and the portal already talks to that API.
+
+The key observation is in the response shape:
+
+```json
+"games3DS":     [{"gameID":["0004000000188B00", ...], "gameName":"Mario Sports Superstars"}],
+"gamesSwitch":  [{"gameID":["010015100B514000"],      "gameName":"Super Mario Bros. Wonder"}],
+"gamesSwitch2": []
+```
+
+Those `gameID` values are **title IDs in exactly the format an amiibo stores at internal `0xAC`** —
+8 bytes big-endian, 16 hex digits. So folding every `gameID` in the catalog into one map gives a
+direct title-ID → game-name lookup for the game that wrote an amiibo's save data, covering Switch
+and Switch 2 as well as the older platforms.
+
+**Resolution order** (`amiiboAppDataLabel`): catalog title ID → 3dbrew AppID table → raw
+identifiers. The catalog goes first because it is broader and maintained; the AppID table stays as
+the fallback for a title ID the catalog does not list (a regional build, say). Nothing is guessed —
+an unmatched amiibo shows its raw title ID or AppID so it can be looked up by hand.
+
+**Cost, measured rather than assumed:**
+
+| | Size |
+|---|---|
+| Catalog without `showgames` | 425 KB |
+| Catalog with `showgames` | 1.25 MB |
+| Derived title-ID map (222 entries) | **10 KB** |
+| Derived per-amiibo game-name lists | 257 KB |
+
+Only the derivations are persisted. `amiiboAbsorbGames()` folds each item's `gameID` arrays into the
+shared map, reduces its games arrays to per-platform **name** lists, and `delete`s the bulky
+originals before the catalog reaches IndexedDB. The map is stored alongside the catalog so a cached
+start does not have to re-derive it. A cache written before this change has no map, which would
+leave game names unresolved until it aged out a week later, so a missing map now counts as stale
+and triggers a refresh.
+
+**Compatibility list.** The same fetch also powers a "Works with" row listing the games each amiibo
+can be used in, grouped by platform. That is catalog metadata about the character, not tag contents,
+so it needs no keys and works for every library entry — written or not. The row is height-capped
+with its own scroll, since some amiibo work with dozens of games.
+
+**Game icons: not done.** The Switch shows the writing game's own icon next to amiibo save data.
+AmiiboAPI supplies amiibo images but no game artwork, so this would need a separate title-ID → icon
+source (a 3DS/Switch title database) and a second remote image fetch. Parked; the title ID needed to
+key such a lookup is already decoded and displayed, so nothing blocks it later.
+
+Tests: `tools/test_amiibo_games.mjs` extracts `amiiboAbsorbGames` from the page and runs the real
+catalog through it when `tools/fixtures/amiibo-showgames.json` is present (git-ignored, ~1.2 MB;
+fetch on demand), else a small inline fixture so it works offline. It asserts the raw arrays are
+stripped, every derived key is a 16-hex-digit title ID, name lists are deduplicated and use known
+platform labels, known lookups resolve, an unknown title ID does not, and the map stays small.

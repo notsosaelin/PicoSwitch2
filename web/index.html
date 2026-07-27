@@ -73,6 +73,10 @@
   .amiibo-detail-grid > div:last-child { border-bottom: 0; }
   .amiibo-detail-grid b { display: block; margin-top: 2px; color: #e6e8ea;
                           font-size: 14px; overflow-wrap: anywhere; }
+  /* Some amiibo work with dozens of games; cap the row so one entry cannot
+     push the rest of the detail box off screen. */
+  .amiibo-detail-wide b { font-size: 12px; line-height: 1.45; max-height: 96px;
+                          overflow-y: auto; text-align: left; }
   .amiibo-detail .bigname { display: grid; grid-template-columns: 1fr auto 1fr;
                             align-items: center; gap: 12px; margin: 0; font-size: 20px; }
   .amiibo-detail .bigname::before, .amiibo-detail .bigname::after {
@@ -387,6 +391,7 @@
               <div>Registered<b id="amiiboInfoSetup">&mdash;</b></div>
               <div>Write count<b id="amiiboInfoWrites">&mdash;</b></div>
               <div>Game data<b id="amiiboInfoAppData">&mdash;</b></div>
+              <div class="amiibo-detail-wide">Works with<b id="amiiboInfoGames">&mdash;</b></div>
             </div>
           </div>
         </div>
@@ -1902,11 +1907,18 @@ function renderAmiiboInfoBox(entry) {
   if (!entry) {
     ownerEl.textContent = "No owner set.";
     nickEl.textContent = "No nickname set.";
+    amiiboSetDetailExtras(null);
+    const emptyGames = $("#amiiboInfoGames");
+    if (emptyGames) emptyGames.textContent = "—";
     return;
   }
   ownerEl.textContent = amiiboKeys ? "…" : "No owner set.";
   nickEl.textContent = amiiboKeys ? "…" : "No nickname set.";
   amiiboSetDetailExtras(null);
+  // Compatibility is catalog metadata, not tag contents, so it does not wait on
+  // (or require) keys.
+  const gamesEl = $("#amiiboInfoGames");
+  if (gamesEl) gamesEl.textContent = amiiboCompatibleGamesText(entry);
   if (!amiiboKeys) return;
   const key = entry.key;
   amiiboInfoFor(entry).then(info => {
@@ -1931,14 +1943,33 @@ function amiiboSetDetailExtras(info) {
   set("#amiiboInfoAppData", amiiboAppDataLabel(info));
 }
 
-// "None", the owning game's name, or the raw AppID when it is not in the table.
+// Name the single game whose save data the amiibo carries.
+//
+// Resolution order matters. AmiiboAPI's title IDs are tried FIRST because they
+// cover every platform including Switch and Switch 2, and are maintained; the
+// 3dbrew AppID table is a five-entry 3DS/Wii U-era fallback for when the exact
+// title ID (a regional build, say) is not in the catalog. Neither is guessed at
+// -- an unmatched amiibo shows its raw identifiers so it can be looked up.
 function amiiboAppDataLabel(info) {
   if (!info || !info.hasAppData) return "None";
-  const named = AMIIBO_APP_IDS.get(info.appId);
-  if (named) return named;
+  const byTitle = info.hasTitleId && amiiboTitleIdToGame.get(info.titleId);
+  if (byTitle) return byTitle;
+  const byApp = AMIIBO_APP_IDS.get(info.appId);
+  if (byApp) return byApp;
+  if (info.hasTitleId) return `Unrecognised game (title ${info.titleId})`;
   if (info.appId && info.appId !== "00000000")
     return `Unrecognised game (AppID ${info.appId})`;
   return "Present";
+}
+// Which games this amiibo can be used in — catalog metadata about the character,
+// so it needs no keys and works for every library entry, written or not.
+function amiiboCompatibleGamesText(entry) {
+  const games = catalogMetadataForEntry(entry)?.games;
+  if (!games) return "—";
+  const parts = [];
+  for (const [, label] of AMIIBO_GAME_PLATFORMS)
+    if (games[label]?.length) parts.push(`${label}: ${games[label].join(", ")}`);
+  return parts.length ? parts.join(" · ") : "None listed";
 }
 
 async function exportAmiiboLibraryBackup() {
@@ -2069,10 +2100,13 @@ async function importAmiiboLibraryBackup(file) {
     `${entries.length} amiibo from ${file.name}.`;
 }
 
-function installAmiiboCatalog(items) {
+function installAmiiboCatalog(items, titleIdMap = null) {
   amiiboCatalog = items;
   amiiboCatalogById = new Map();
   amiiboCatalogOrderById = new Map();
+  // A cached catalog carries its map alongside it; a fresh one is reduced here.
+  amiiboTitleIdToGame = new Map(titleIdMap ? Object.entries(titleIdMap) : []);
+  if (!titleIdMap) for (const item of items) amiiboAbsorbGames(item);
   items.forEach((item, index) => {
     const id = `${item.head || ""}${item.tail || ""}`.toUpperCase();
     if (id.length === 16) {
@@ -2105,6 +2139,7 @@ async function writeCachedAmiiboCatalog(items) {
     tx.objectStore("metadata").put({
       id: AMIIBO_CATALOG_KEY,
       data: items,
+      titleIds: Object.fromEntries(amiiboTitleIdToGame),
       cachedAt: Date.now()
     });
     await idbTransactionDone(tx);
@@ -2113,10 +2148,47 @@ async function writeCachedAmiiboCatalog(items) {
   }
 }
 
+// ?showgames adds, per amiibo, the games it can be used in AND each game's
+// title IDs. Those title IDs are in exactly the format an amiibo stores at
+// internal 0xAC, which is what lets us name the game that wrote an amiibo's save
+// data -- including Switch titles, which 3dbrew's AppID table does not cover.
+// Costs ~1.2 MB on the wire vs ~425 KB; only the compact derivations below are
+// persisted, not the raw gameID arrays.
 const AMIIBO_CATALOG_URLS = [
-  "https://amiiboapi.org/api/amiibo/",
-  "https://www.amiiboapi.com/api/amiibo/"
+  "https://amiiboapi.org/api/amiibo/?showgames",
+  "https://www.amiiboapi.com/api/amiibo/?showgames"
 ];
+// title ID (16 hex, upper) -> game name. ~222 entries / ~10 KB across the whole
+// catalog, so it is cheap to hold and to persist.
+let amiiboTitleIdToGame = new Map();
+const AMIIBO_GAME_PLATFORMS = [
+  ["gamesSwitch2", "Switch 2"],
+  ["gamesSwitch", "Switch"],
+  ["gamesWiiU", "Wii U"],
+  ["games3DS", "3DS"],
+];
+// Reduce each catalog item's verbose games arrays to per-platform NAME lists,
+// and fold every gameID into the shared title-ID map. Mutates the item so the
+// cached copy stays small.
+function amiiboAbsorbGames(item) {
+  const compact = {};
+  for (const [field, label] of AMIIBO_GAME_PLATFORMS) {
+    const list = Array.isArray(item[field]) ? item[field] : null;
+    if (list) {
+      const names = [];
+      for (const game of list) {
+        if (game?.gameName && !names.includes(game.gameName))
+          names.push(game.gameName);
+        for (const id of (game?.gameID || []))
+          if (typeof id === "string")
+            amiiboTitleIdToGame.set(id.toUpperCase(), game.gameName);
+      }
+      if (names.length) compact[label] = names;
+      delete item[field];          // drop the bulky raw arrays before caching
+    }
+  }
+  if (Object.keys(compact).length) item.games = compact;
+}
 
 async function fetchAmiiboCatalogNetwork() {
   // Try each mirror in turn; each attempt is bounded so a stalled or blocked
@@ -2155,8 +2227,12 @@ async function loadAmiiboCatalog(forceRefresh = false) {
   if (amiiboCatalog && !forceRefresh) return amiiboCatalog;
   const cached = await readCachedAmiiboCatalog();
   if (!forceRefresh && cached && Array.isArray(cached.data) && cached.data.length) {
-    installAmiiboCatalog(cached.data);
-    if (Date.now() - (cached.cachedAt || 0) >= AMIIBO_CATALOG_MAX_AGE_MS)
+    installAmiiboCatalog(cached.data, cached.titleIds || null);
+    // A cache written before ?showgames existed has no title-ID map, so game
+    // names would stay unresolved until it aged out a week later. Treat that as
+    // stale and refresh now.
+    if (!cached.titleIds ||
+        Date.now() - (cached.cachedAt || 0) >= AMIIBO_CATALOG_MAX_AGE_MS)
       fetchAmiiboCatalogNetwork()
         .then(() => renderAmiiboLibrary())
         .catch(err => console.warn("Background catalog refresh failed", err));
