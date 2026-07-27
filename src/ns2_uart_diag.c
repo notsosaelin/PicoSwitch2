@@ -577,6 +577,37 @@ static void handle_command(void) {
     } else if (strcmp(rx_line, "amiibo") == 0 ||
                strcmp(rx_line, "amiibo status") == 0) {
         queue_amiibo_status("status");
+    } else if (strcmp(rx_line, "amiibo journal") == 0) {
+        // What is actually in the two flash journal banks, independent of the
+        // in-RAM slots -- distinguishes "the write never happened" from "the
+        // write happened but boot did not load it".
+        virtual_amiibo_journal_debug_t dbg;
+        virtual_amiibo_store_journal_debug(&dbg);
+        char hdr[2][49];
+        for (unsigned b = 0; b < 2u; ++b) {
+            for (unsigned i = 0; i < 24u; ++i)
+                snprintf(&hdr[b][i * 2u], 3, "%02X", dbg.bank[b].header[i]);
+            hdr[b][48] = 0;
+        }
+        snprintf(trace_format_response, sizeof(trace_format_response),
+                 "{\"amiibo\":\"journal\",\"active_bank\":%d,"
+                 "\"persist_pending\":%s,\"v3_slot\":%s,"
+                 "\"bank0\":{\"v3\":%s,\"v3gen\":%lu,\"v2\":%s,\"v2gen\":%lu,"
+                 "\"hdr\":\"%s\"},"
+                 "\"bank1\":{\"v3\":%s,\"v3gen\":%lu,\"v2\":%s,\"v2gen\":%lu,"
+                 "\"hdr\":\"%s\"}}",
+                 dbg.active_bank,
+                 dbg.persist_pending ? "true" : "false",
+                 dbg.v3_slot_loaded ? "true" : "false",
+                 dbg.bank[0].v3_valid ? "true" : "false",
+                 (unsigned long)dbg.bank[0].v3_generation,
+                 dbg.bank[0].v2_valid ? "true" : "false",
+                 (unsigned long)dbg.bank[0].v2_generation, hdr[0],
+                 dbg.bank[1].v3_valid ? "true" : "false",
+                 (unsigned long)dbg.bank[1].v3_generation,
+                 dbg.bank[1].v2_valid ? "true" : "false",
+                 (unsigned long)dbg.bank[1].v2_generation, hdr[1]);
+        queue_text(trace_format_response);
     } else if (strncmp(rx_line, "v3hdr", 5) == 0) {
         // Sweep the read-buffer prefix; byte 18 is the NTAG model the console
         // uses to pick its page ranges.  e.g.  v3hdr 18 05

@@ -624,6 +624,27 @@ bool virtual_amiibo_store_persist_pending(void)
     return persist_requested;
 }
 
+void virtual_amiibo_store_journal_debug(virtual_amiibo_journal_debug_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->active_bank = active_bank;
+    out->persist_pending = persist_requested;
+    out->v3_slot_loaded = __atomic_load_n(&v3_slot_loaded, __ATOMIC_ACQUIRE);
+    for (unsigned bank = 0; bank < 2u; ++bank) {
+        const uint8_t *record = bank_record(bank);
+        memcpy(out->bank[bank].header, record, sizeof(out->bank[bank].header));
+        uint32_t generation = 0;
+        out->bank[bank].v3_valid = record_v3_valid(record, &generation);
+        if (out->bank[bank].v3_valid) out->bank[bank].v3_generation = generation;
+        uint16_t size = 0, flags = 0;
+        generation = 0;
+        out->bank[bank].v2_valid =
+            record_v2_valid(record, &generation, &size, &flags);
+        if (out->bank[bank].v2_valid) out->bank[bank].v2_generation = generation;
+    }
+}
+
 void virtual_amiibo_store_service_save(void)
 {
     if (clear_requested) {
