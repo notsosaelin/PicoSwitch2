@@ -7,7 +7,7 @@ and can we read *and display* the Mii assigned to an amiibo?
 fields of it. The Mii is a verbatim 3DS structure, so **reading** it fully is easy. **Rendering** it
 accurately requires a copyrighted Nintendo asset we cannot ship.
 
-Status: ⬜ research only — no code changed.
+Status: 🔵 research, with §1 and §6 implemented (2026-07-27).
 
 ---
 
@@ -124,3 +124,60 @@ to a third party. The offline-render path in option 2 is strictly better.
 3. Only then decide whether a real render (option 2) earns its weight.
 
 Steps 1 and 2 are self-contained and carry no licensing or bundle-size risk.
+
+---
+
+## 6. Implemented (2026-07-27)
+
+**Detail fields.** The amiibo detail box now shows last-written date, registered date, write count,
+and whether game data is present (with the writing title ID when there is one). All are pure
+decodes of bytes the portal already had; §1's table is the reference.
+
+**Import vs Sync.** One button, chosen by what the adapter is holding:
+
+| Adapter state | Button |
+|---|---|
+| Holds an amiibo the library has never seen | **Import amiibo** — adds it to the library |
+| Library has it, console has written since | **Sync amiibo** — pulls those writes back |
+| Library has it, no console writes | hidden |
+
+"Newer than the library copy" is the firmware's own `dirty` flag, not a decrypted date comparison.
+`virtual_amiibo_apply_console_write()` sets it and `virtual_amiibo_acknowledge_download()` clears
+it, so it already means exactly "has console writes not yet pulled back" — and it costs nothing,
+whereas comparing write dates would mean downloading and decrypting the whole image on every status
+refresh just to render a button. (The date lives inside the encrypted region, so the firmware
+cannot read it; only the portal can, and only after a full download.)
+
+**Initialization.** Wipes an amiibo back to factory state and re-signs it. Requires imported keys,
+so the button is hidden without them.
+
+Only `internal[0x02C..0x1B4)` is cleared — precisely the AES-encrypted settings and AppData region.
+Everything the key derivation seeds from (`0x029-0x02B`, `0x1D4-0x1DB`, `0x1E8-0x208`), the UID, and
+the amiibo identity block sit outside it and stay byte-identical, so the tag remains the same amiibo
+with the same derived keys. Dates land on `0x0000`, which decodes as month 0 / day 0 and therefore
+reads as "not set" — that is what makes zero a safe NULL rather than a bogus year-2000 date.
+
+This needed a **pack** path (`amiiboPackInternal`), the inverse of the existing decrypt: recompute
+the tag HMAC, then the data HMAC (which covers the tag HMAC, so the order is load-bearing), then
+AES-CTR encrypt, then map back to tag layout. It writes into a copy of the original tag so bytes
+outside the mapped regions survive.
+
+Two safety properties, both tested:
+
+- The result is verified before it can reach the library: it is decrypted again, both HMACs must
+  pass, and every user field must read back blank. A re-signed image the console would reject is
+  worse than no feature, so a failure aborts with the library unchanged.
+- A dump that fails its own HMAC is refused rather than re-signed, so a corrupt or tampered image
+  cannot be laundered into a valid one.
+
+**Difference from a console reset:** the Switch's own amiibo reset clears registration and game data
+but leaves the write counter incrementing. Initialization zeroes it, because the request was
+factory-new state. Worth knowing if a game uses the counter to recognise a previously-seen amiibo.
+
+Tests: `tools/test_amiibo_decrypt.mjs` builds a fully populated amiibo (owner, nickname, both dates,
+write counter 300, title ID, random AppData), initializes it, and asserts both HMACs still pass,
+every field reads blank, the UID / identity block / tail are byte-identical, initializing twice is
+idempotent, and a tampered dump is refused. Plus date-decode edges (`0x0000`, `0xFFFF`, a known
+value).
+
+Not hardware validated — an initialized amiibo has not yet been presented to a console.
