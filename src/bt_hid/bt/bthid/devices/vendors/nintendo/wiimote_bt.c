@@ -139,6 +139,10 @@ static inline bool wiimote_ext_is_motionplus(wiimote_ext_type_t t)
 // translator unchanged -- do not invent a second motion representation.
 #define WII_MOTION_ACCEL_FULLSCALE_G 4
 
+// Longest gap tolerated between MotionPlus frames before the held gyro sample is
+// discarded. Generous next to the ~50 Hz per-source passthrough rate (§7.3).
+#define WII_MP_SAMPLE_TIMEOUT_US 250000u
+
 // Output report IDs
 #define WII_CMD_LED             0x11
 #define WII_CMD_REPORT_MODE     0x12
@@ -230,6 +234,7 @@ typedef struct {
     uint8_t mp_verify_retries;
     int32_t mp_centi_dps[3];    // last decoded [yaw, roll, pitch]
     bool mp_have_sample;
+    uint32_t mp_last_sample_us; // for the staleness gate below
     // In a passthrough mode the extension only appears on alternating frames
     // (§7.1/§7.3), so its buttons must be held across MotionPlus frames or they
     // would read as released half the time. Analog axes live in event.analog[]
@@ -477,6 +482,13 @@ static bool wiimote_init(bthid_device_t* device)
             wiimote_data[i].event.button_count = 11;  // Wiimote has fewer buttons
             wiimote_data[i].ext_type = WII_EXT_NONE;
             wiimote_data[i].extension_connected = false;
+            // Per-connection motion state: a stale sample or a held extension
+            // button must not survive a reconnect.
+            wiimote_data[i].mp_have_sample = false;
+            wiimote_data[i].mp_last_sample_us = 0;
+            wiimote_data[i].mp_present = false;
+            wiimote_data[i].ext_buttons_held = 0;
+            for (int m = 0; m < 3; m++) wiimote_data[i].mp_centi_dps[m] = 0;
 
             // Documented fallback accelerometer calibration until the EEPROM
             // two-point block at 0x0016 is read (wii-motion.md §4.3/§4.4).
@@ -636,6 +648,7 @@ static void wiimote_process_report(bthid_device_t* device, const uint8_t* data, 
                             wii_mp_sample_centi_dps(&mp, &wii->mp_cal,
                                                     wii->mp_centi_dps);
                             wii->mp_have_sample = true;
+                            wii->mp_last_sample_us = platform_time_us();
                         }
                         // No extension payload this frame; hold its buttons.
                         decode_type = WII_EXT_NONE;
@@ -836,6 +849,19 @@ static void wiimote_process_report(bthid_device_t* device, const uint8_t* data, 
                 // The MotionPlus does not follow the right-hand rule; Dolphin
                 // applies sign_fix (-1, +1, -1) to (pitch, roll, yaw) to obtain
                 // right-handed angular velocity (§6.8), which is applied here.
+                // A MotionPlus that stops answering (unplugged, activation
+                // lost, extension re-seated) must not leave its last rate
+                // republished forever -- the console integrates rate, so a stuck
+                // non-zero sample spins the camera without end. In a passthrough
+                // mode frames alternate at ~50 Hz per source (§7.3), so the
+                // timeout has to clear that comfortably.
+                if (wii->mp_have_sample &&
+                    (uint32_t)(platform_time_us() - wii->mp_last_sample_us) >
+                        WII_MP_SAMPLE_TIMEOUT_US) {
+                    wii->mp_have_sample = false;
+                    printf("[WIIMOTE] MotionPlus samples stopped; gyro cleared\n");
+                }
+
                 if (wii->mp_have_sample) {
                     const int32_t yaw   = wii->mp_centi_dps[0];
                     const int32_t roll  = wii->mp_centi_dps[1];
