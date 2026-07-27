@@ -451,25 +451,59 @@ static void switch_spi_read(bthid_device_t* device, uint32_t addr, uint8_t len)
 #define SW1_ACCEL_CAL_NUM 32768   // 4.0 g-span * 8192 counts/g
 #define SW1_GYRO_CAL_NUM  15335   // 936 dps * 16.384 counts/dps
 
-// Per-device axis signs, applied AFTER the fixed index remount below.
+// Per-device axis signs. These describe a physical SENSOR REMOUNT, so they apply
+// to the accelerometer and the gyroscope IDENTICALLY -- see the publish loop,
+// which is written so a sign cannot reach one without reaching the other.
+//
+// Why that matters, and why it is not merely tidiness: the console fuses gyro
+// with gravity to correct attitude. Gravity constrains PITCH and ROLL but
+// carries no YAW information at all (rotating about the gravity vector does not
+// change the measured vector). If accel and gyro are handed over in mutually
+// mirrored frames, yaw still looks perfect while pitch/roll drift for a second
+// or two and then snap as the correction loses its argument with the gyro, and
+// their steady state follows gravity rather than the (negated) gyro. That exact
+// failure was observed on hardware on 2026-07-27, and ns2_seam.c records the
+// same class of bug from the DualSense work: an earlier mapping there "made the
+// console's gravity correction bleed one axis into another".
+//
+// DETERMINANT INVARIANT: a remount is a rotation, never a reflection, so the
+// signed permutation must have determinant +1. The index permutation used below
+// is cyclic (permutation sign +1), so the determinant reduces to
+// pitch * yaw * roll -- signs therefore flip in PAIRS, never singly. A lone flip
+// is not a physically realizable orientation and reintroduces exactly the
+// mirrored-frame bug above. The _Static_assert below machine-checks this so the
+// next person to "just invert the axis that looks wrong" gets a build error
+// instead of a subtle drift-and-snap on hardware.
+//
 // §8 is explicit that the two Joy-Con halves mount the IMU mirrored and that the
 // Pro differs again, so a single table cannot serve all three and the values
 // must come from observation rather than memory.
 //
-// Pro Controller (0x2009): pitch inverted — confirmed on hardware, vertical aim
-// was reversed. The remaining axes matched.
+// Pro Controller (0x2009): pitch inverted — confirmed on hardware (vertical aim
+// reversed), yaw confirmed correct. Roll is then forced to -1 by the determinant
+// invariant rather than measured independently; it was wrong before this and had
+// simply not been exercised, roll being the least-used aiming axis.
 // Joy-Con L (0x2006) / R (0x2007): NOT yet observed. They inherit the Pro's
 // signs as a starting point; correct them here once each half is tested.
-typedef struct { int8_t pitch, yaw, roll; } sw1_gyro_signs_t;
+#define SW1_PRO_SIGN_PITCH (-1)
+#define SW1_PRO_SIGN_YAW   (+1)
+#define SW1_PRO_SIGN_ROLL  (-1)
+_Static_assert(SW1_PRO_SIGN_PITCH * SW1_PRO_SIGN_YAW * SW1_PRO_SIGN_ROLL == 1,
+               "Switch 1 axis signs must form a proper rotation (determinant "
+               "+1): accel and gyro share one frame, so signs flip in pairs");
 
-static sw1_gyro_signs_t sw1_gyro_signs_for(uint16_t product_id)
+typedef struct { int8_t pitch, yaw, roll; } sw1_axis_signs_t;
+
+static sw1_axis_signs_t sw1_axis_signs_for(uint16_t product_id)
 {
     switch (product_id) {
         case 0x2006:  // Joy-Con (L)   — unverified, see above
         case 0x2007:  // Joy-Con (R)   — unverified, see above
-        case 0x2009:  // Pro Controller — pitch verified inverted on hardware
+        case 0x2009:  // Pro Controller — pitch/yaw verified on hardware
         default:
-            return (sw1_gyro_signs_t){ .pitch = -1, .yaw = +1, .roll = +1 };
+            return (sw1_axis_signs_t){ .pitch = SW1_PRO_SIGN_PITCH,
+                                       .yaw   = SW1_PRO_SIGN_YAW,
+                                       .roll  = SW1_PRO_SIGN_ROLL };
     }
 }
 
@@ -647,16 +681,16 @@ static void switch_process_report(bthid_device_t* device, const uint8_t* data, u
         // gyro[pitch, yaw, roll] and accel[X=lateral, Y=up, Z=forward]
         // (dualsense-motion.md §5), which gives the index remount below.
         //
-        // NOTE: the axis ASSIGNMENT is documented, but the per-device SIGNS are
-        // not. §8 states the two Joy-Con halves mount the IMU mirrored, that the
-        // Pro has its own orientation again, and that signs must be measured per
-        // device rather than hard-coded from memory. They are deliberately left
-        // unnegated here; correct them in this one place once measured.
+        // Slot i of BOTH arrays refers to the same body axis: gyro[i] is the
+        // rotation about the axis accel[i] measures. The remount and the signs
+        // must therefore be applied to accel and gyro identically -- see the
+        // long note on sw1_axis_signs_for() for what breaks otherwise, and why
+        // the signs must multiply to +1.
         if (len >= SW1_IMU_OFFSET + SW1_IMU_FRAMES * SW1_IMU_FRAME_SIZE) {
             int32_t a[3], g[3];
             sw1_average_imu(data, a, g);
 
-            const sw1_gyro_signs_t s = sw1_gyro_signs_for(device->product_id);
+            const sw1_axis_signs_t s = sw1_axis_signs_for(device->product_id);
 
             // Per-unit calibration when SPI flash gave us one, else the nominal
             // fallback. Calibrated form (§7.4) folded into the interchange
@@ -678,12 +712,20 @@ static void switch_process_report(bthid_device_t* device, const uint8_t* data, u
                 }
             }
 
-            sw->event.accel[0] = sw1_clamp16(ax[1]);          // lateral
-            sw->event.accel[1] = sw1_clamp16(ax[2]);          // up
-            sw->event.accel[2] = sw1_clamp16(ax[0]);          // forward
-            sw->event.gyro[0]  = sw1_clamp16(gx[1] * s.pitch);  // pitch
-            sw->event.gyro[1]  = sw1_clamp16(gx[2] * s.yaw);    // yaw
-            sw->event.gyro[2]  = sw1_clamp16(gx[0] * s.roll);   // roll
+            // Slot -> source-axis remount. Switch 1 body axes are 0=roll,
+            // 1=pitch, 2=yaw (§8); the DualSense slots this publishes into are
+            // 0=lateral/pitch, 1=up/yaw, 2=forward/roll. Cyclic, so permutation
+            // sign is +1 (see the determinant invariant above).
+            static const uint8_t remount[3] = { 1, 2, 0 };
+            const int32_t sign[3] = { s.pitch, s.yaw, s.roll };
+
+            // One loop for both sensors: this is the structural guarantee that
+            // accel and gyro can never again drift into different frames.
+            for (int slot = 0; slot < 3; slot++) {
+                const uint8_t src = remount[slot];
+                sw->event.accel[slot] = sw1_clamp16(ax[src] * sign[slot]);
+                sw->event.gyro[slot]  = sw1_clamp16(gx[src] * sign[slot]);
+            }
 
             sw->event.gyro_range  = 2000;   // interchange full scale
             sw->event.accel_range = 8000;   // Switch-1 is ±8 g natively
