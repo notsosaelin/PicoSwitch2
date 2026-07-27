@@ -479,15 +479,31 @@ static void switch_spi_read(bthid_device_t* device, uint32_t addr, uint8_t len)
 // Pro differs again, so a single table cannot serve all three and the values
 // must come from observation rather than memory.
 //
-// Pro Controller (0x2009): pitch inverted — confirmed on hardware (vertical aim
-// reversed), yaw confirmed correct. Roll is then forced to -1 by the determinant
-// invariant rather than measured independently; it was wrong before this and had
-// simply not been exercised, roll being the least-used aiming axis.
-// Joy-Con L (0x2006) / R (0x2007): NOT yet observed. They inherit the Pro's
-// signs as a starting point; correct them here once each half is tested.
-#define SW1_PRO_SIGN_PITCH (-1)
+// STATUS: 🔴 UNMEASURED — deliberately the identity. Do not "fix" an axis here.
+//
+// Three hardware attempts to correct Switch 1 motion by adjusting these signs
+// failed, each differently (docs/bluetooth/switch1-to-switch2-motion-spec.md §9).
+// The last one negated pitch and roll, which mirrored the published gravity
+// vector and killed horizontal aim outright — the console uses the accelerometer
+// we publish as its "world up" reference (spec §4, Stage 6). Combined with the
+// earlier attempt that was already frame-consistent with an unsigned accel and
+// STILL showed an inverted Y, that history proves no sign pattern on the current
+// index permutation can be correct: the PERMUTATION is wrong, not just its signs.
+//
+// §8 of switch1-motion.md never promised otherwise. It says the axes map only
+// "roughly" to roll(X)/pitch(Y)/yaw(Z), gives no directions, and states plainly:
+// verify empirically, "Do not hard-code signs from memory." Each failed attempt
+// above ignored that sentence.
+//
+// This therefore stays the identity until the gravity protocol in spec §8 is
+// run. That protocol yields the entire matrix — permutation AND signs — from
+// three static poses on a DualSense and the same three on a Switch 1 Pro, with
+// no rotation measurements at all, because accel and gyro share the sensor die.
+// Record the measured result here, adding the per-device cases §8 requires for
+// the mirrored Joy-Con halves, instead of guessing another sign.
+#define SW1_PRO_SIGN_PITCH (+1)
 #define SW1_PRO_SIGN_YAW   (+1)
-#define SW1_PRO_SIGN_ROLL  (-1)
+#define SW1_PRO_SIGN_ROLL  (+1)
 _Static_assert(SW1_PRO_SIGN_PITCH * SW1_PRO_SIGN_YAW * SW1_PRO_SIGN_ROLL == 1,
                "Switch 1 axis signs must form a proper rotation (determinant "
                "+1): accel and gyro share one frame, so signs flip in pairs");
@@ -497,9 +513,9 @@ typedef struct { int8_t pitch, yaw, roll; } sw1_axis_signs_t;
 static sw1_axis_signs_t sw1_axis_signs_for(uint16_t product_id)
 {
     switch (product_id) {
-        case 0x2006:  // Joy-Con (L)   — unverified, see above
-        case 0x2007:  // Joy-Con (R)   — unverified, see above
-        case 0x2009:  // Pro Controller — pitch/yaw verified on hardware
+        case 0x2006:  // Joy-Con (L)   — unmeasured, see above
+        case 0x2007:  // Joy-Con (R)   — unmeasured, see above
+        case 0x2009:  // Pro Controller — unmeasured, see above
         default:
             return (sw1_axis_signs_t){ .pitch = SW1_PRO_SIGN_PITCH,
                                        .yaw   = SW1_PRO_SIGN_YAW,
@@ -712,10 +728,17 @@ static void switch_process_report(bthid_device_t* device, const uint8_t* data, u
                 }
             }
 
-            // Slot -> source-axis remount. Switch 1 body axes are 0=roll,
-            // 1=pitch, 2=yaw (§8); the DualSense slots this publishes into are
-            // 0=lateral/pitch, 1=up/yaw, 2=forward/roll. Cyclic, so permutation
-            // sign is +1 (see the determinant invariant above).
+            // Slot -> source-axis remount. 🔴 UNVERIFIED, like the signs above.
+            // Taken from §8's "gyro axes map ROUGHLY to roll(X)/pitch(Y)/yaw(Z)"
+            // -- i.e. Switch 1 0=roll, 1=pitch, 2=yaw -- against the DualSense
+            // slots 0=lateral/pitch, 1=up/yaw, 2=forward/roll. It is cyclic, so
+            // the permutation sign is +1 and the determinant invariant above
+            // reduces to the product of the three signs.
+            //
+            // The hardware history in spec §9 indicates this permutation is the
+            // thing that is actually wrong; the gravity protocol (spec §8)
+            // measures it and the signs together. Change both from that
+            // measurement, never one from a symptom.
             static const uint8_t remount[3] = { 1, 2, 0 };
             const int32_t sign[3] = { s.pitch, s.yaw, s.roll };
 
