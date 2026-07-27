@@ -129,11 +129,12 @@ static void rows_are_independent(void)
     ns2_motion_seam_apply(SWITCH_MOTION_SOURCE_SWITCH1, a, g, sa, sg);
     ns2_motion_seam_apply(SWITCH_MOTION_SOURCE_DUALSENSE, a, g, da, dg);
 
-    // Switch 1: accel {1,0,2} signs {-1,-1,1}; gyro likewise.
-    CHECK(sa[0] == -1000, "sw1 accel[0] (got %d, want -1000)", sa[0]);
+    // Switch 1: accel {1,0,2} signs {1,-1,1}; gyro likewise. Slot 2 is the
+    // gravity-measured lane (a resting Pro Controller reads +1 g there).
+    CHECK(sa[0] == 1000,  "sw1 accel[0] (got %d, want 1000)",  sa[0]);
     CHECK(sa[1] == -500,  "sw1 accel[1] (got %d, want -500)",  sa[1]);
     CHECK(sa[2] == 1500,  "sw1 accel[2] (got %d, want 1500)",  sa[2]);
-    CHECK(sg[0] == -222,  "sw1 gyro[0] (got %d, want -222)",   sg[0]);
+    CHECK(sg[0] == 222,   "sw1 gyro[0] (got %d, want 222)",    sg[0]);
     CHECK(sg[1] == -111,  "sw1 gyro[1] (got %d, want -111)",   sg[1]);
     CHECK(sg[2] == 333,   "sw1 gyro[2] (got %d, want 333)",    sg[2]);
 
@@ -184,6 +185,55 @@ static void rows_are_permutations(void)
     }
 }
 
+// A row describes a physical sensor remount, which is a ROTATION. Determinant
+// must be +1; -1 is a reflection and cannot describe any real mounting.
+//
+// This is not pedantry. Gravity cannot detect a reflected frame -- a single
+// vector looks perfectly correct -- so an improper row passes every static
+// check and misbehaves only under rotation. The SWITCH1 row shipped at det -1:
+// its accelerometer matched a genuine Pro Controller 2 to within 1% while its
+// gyro produced no horizontal aim whatsoever.
+static int permutation_parity(const int8_t src[3])
+{
+    int8_t p[3] = {src[0], src[1], src[2]};
+    int parity = 1;
+    for (int i = 0; i < 3; i++) {
+        while (p[i] != i) {
+            const int8_t j = p[i];
+            const int8_t t = p[i]; p[i] = p[j]; p[j] = t;
+            parity = -parity;
+        }
+    }
+    return parity;
+}
+
+static int seam_determinant(const int8_t src[3], const int8_t sign[3])
+{
+    int det = permutation_parity(src);
+    for (int i = 0; i < 3; i++) det *= sign[i];
+    return det;
+}
+
+static void rows_are_proper_rotations(void)
+{
+    const uint8_t sources[] = {
+        SWITCH_MOTION_SOURCE_GENERIC, SWITCH_MOTION_SOURCE_DUALSENSE,
+        SWITCH_MOTION_SOURCE_WII, SWITCH_MOTION_SOURCE_SWITCH1,
+    };
+    for (size_t s = 0; s < sizeof(sources) / sizeof(sources[0]); s++) {
+        const ns2_motion_seam_t *row = ns2_motion_seam_for(sources[s]);
+        const int da = seam_determinant(row->accel_src, row->accel_sign);
+        const int dg = seam_determinant(row->gyro_src, row->gyro_sign);
+        CHECK(da == 1,
+              "source %u accel row has determinant %d; a remount is a rotation, "
+              "so it must be +1 (a reflection cannot be a real mounting)",
+              sources[s], da);
+        CHECK(dg == 1,
+              "source %u gyro row has determinant %d; must be +1",
+              sources[s], dg);
+    }
+}
+
 // An unknown//out-of-range source must fall back rather than read past the table.
 static void unknown_source_falls_back(void)
 {
@@ -199,6 +249,7 @@ int main(void)
     wii_matches_dualsense();
     rows_are_independent();
     rows_are_permutations();
+    rows_are_proper_rotations();
     unknown_source_falls_back();
 
     if (failures) {

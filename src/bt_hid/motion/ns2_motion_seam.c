@@ -5,6 +5,16 @@
 // The DualSense row is the hardware-validated reference (paired native-Pro2/DS5
 // capture, 2026-07-22); its derivation is documented at the call site in
 // ns2_seam.c. Every other row is stated relative to its own sensor frame.
+//
+// EVERY ROW MUST HAVE DETERMINANT +1 (parity of the src permutation times the
+// product of the signs). A row describes a physical sensor remount, which is a
+// rotation; a determinant of -1 is a reflection and cannot describe any real
+// mounting. Gravity cannot reveal the error -- a single vector looks correct
+// reflected -- so an improper row passes every static check and then behaves
+// wrongly only under rotation. That is exactly what happened to the SWITCH1 row
+// (det -1 until 2026-07-27): its accelerometer matched a genuine Pro Controller
+// 2 to within 1% while its gyro produced no horizontal aim at all.
+// tools/test_ns2_motion_seam.c enforces this.
 static const ns2_motion_seam_t NS2_MOTION_SEAMS[] = {
     // GENERIC: frame unknown; pass through in the DualSense arrangement.
     [SWITCH_MOTION_SOURCE_GENERIC] = {
@@ -20,8 +30,13 @@ static const ns2_motion_seam_t NS2_MOTION_SEAMS[] = {
 
     // SWITCH1: raw LSM6DS3 axes (X longitudinal, Y +left, Z +face normal), per
     // Linux hid-nintendo, which applies no transform to the Pro Controller.
+    //
+    // Slot 2 is measured, not assumed: a resting Pro Controller puts gravity on
+    // Pro2 accel[2] at +4245 (4096 counts/g), matching the genuine Pro
+    // Controller 2 capture's +4279/+4309. Slots 0 and 1 then follow from the
+    // frame plus the determinant rule below.
     [SWITCH_MOTION_SOURCE_SWITCH1] = {
-        {1, 0, 2}, {-1, -1, 1}, {1, 0, 2}, {-1, -1, 1} },
+        {1, 0, 2}, {1, -1, 1}, {1, 0, 2}, {1, -1, 1} },
 };
 
 #define NS2_MOTION_SEAM_COUNT \
