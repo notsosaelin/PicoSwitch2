@@ -103,4 +103,25 @@ int32_t wii_mp_axis_centi_dps(int32_t raw_centred, bool is_slow,
 void wii_mp_sample_centi_dps(const wii_mp_sample_t *s, const wii_mp_cal_t *cal,
                              int32_t out_yaw_roll_pitch[3]);
 
+/*
+ * Passthrough modes (§7). In 0x05/0x07 the MotionPlus and the downstream
+ * extension share one 6-byte window on alternating frames, and the MotionPlus
+ * relocates some of the extension's bits to make room for its own flags.
+ */
+typedef enum {
+    WII_MP_PASSTHROUGH_NONE = 0,
+    WII_MP_PASSTHROUGH_NUNCHUK,   // activation mode 0x05
+    WII_MP_PASSTHROUGH_CLASSIC,   // activation mode 0x07
+} wii_mp_passthrough_t;
+
+/*
+ * Undo that relocation in place, so an ordinary extension decoder sees a normal
+ * frame (§7.2). Call only on frames where wii_mp_is_motionplus_frame() is false.
+ *
+ * The three accelerometer LSBs (Nunchuk) or the left-stick axis LSBs (Classic)
+ * are destroyed by the MotionPlus and cannot be recovered; they are refilled
+ * from the next-most-significant bit, which is what Dolphin does.
+ */
+void wii_mp_passthrough_restore(uint8_t data[6], wii_mp_passthrough_t mode);
+
 #endif  // WII_MOTIONPLUS_H

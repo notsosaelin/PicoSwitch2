@@ -977,6 +977,32 @@ feasible"* for that device, which is why the kernel routes the turntable through
 passthrough (`0x05`) instead (`hid-wiimote-core.c:501-503`). If you ever support the turntable, copy
 that choice.
 
+### 7.2.1 Implementation status (2026-07-27)
+
+✅ Implemented. `wii_mp_passthrough_restore()` in `src/bt_hid/motion/wii_motionplus.c` applies the
+inverse sequence above; `wiimote_bt.c` calls it on every frame where
+`wii_mp_is_motionplus_frame()` is false, then routes the frame to the ordinary Nunchuk or Classic
+decoder.
+
+Three things this fixed, all of which only appear once a MotionPlus is active:
+
+1. **The passthrough extension was entirely dead.** The decoders were selected by the port's
+   `ext_type`, which in passthrough is `WII_EXT_MOTIONPLUS_NUNCHUK`, not `WII_EXT_NUNCHUK` — so no
+   branch matched and a Nunchuk's stick and C/Z buttons did nothing. Frame type and port type are
+   now distinguished (`decode_type` vs `ext_type`).
+2. **The bit relocation was never undone**, so even once routed, byte 5 was wrong.
+3. **Extension buttons dropped out on every MotionPlus frame.** Because the two sources alternate
+   (§7.3), a naive decoder reports C/Z as released half the time. Extension buttons are now latched
+   in `ext_buttons_held` and re-asserted on MotionPlus frames. Analog axes needed no latch — they
+   live in `event.analog[]`, which already persists between reports.
+
+Host tests in `tools/test_wii_motionplus.c` check the restore against a forward-transform fixture:
+Nunchuk stick X/Y and C/Z survive a round trip, the Classic left-stick LSBs land back in byte 5,
+and `WII_MP_PASSTHROUGH_NONE` is a no-op. Accelerometer LSBs are deliberately not checked for
+equality — the MotionPlus destroys them and they are refilled from the next bit up, as Dolphin does.
+
+Not hardware validated.
+
 ### 7.3 Effective rates
 
 In a passthrough mode, MotionPlus and extension frames alternate, so each source arrives at **half**

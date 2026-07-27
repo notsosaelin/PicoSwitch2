@@ -211,6 +211,98 @@ static void test_per_axis_block_selection(void)
     CHECK(out[2] < out[0], "the slow block must yield the smaller rate");
 }
 
+
+// ---- Passthrough bit relocation (§7.2) ------------------------------------
+// The forward direction is what the MotionPlus hardware does to the extension's
+// payload. Kept here as a fixture so restore() can be checked as its inverse.
+static void mp_forward_nunchuk(uint8_t d[6])
+{
+    // SetBit<6>(d[5], bit7 d[5]); SetBit<7>(d[5], bit0 d[4]);
+    // SetBit<4>(d[5], bit3 d[5]); SetBit<3>(d[5], bit1 d[5]);
+    // SetBit<2>(d[5], bit0 d[5]);   -- order-dependent, per wii-motion.md §7.2
+    uint8_t b5 = d[5];
+    b5 = (uint8_t)((b5 & ~(1u << 6)) | (((d[5] >> 7) & 1u) << 6));
+    b5 = (uint8_t)((b5 & ~(1u << 7)) | (((d[4] >> 0) & 1u) << 7));
+    b5 = (uint8_t)((b5 & ~(1u << 4)) | (((b5   >> 3) & 1u) << 4));
+    b5 = (uint8_t)((b5 & ~(1u << 3)) | (((b5   >> 1) & 1u) << 3));
+    b5 = (uint8_t)((b5 & ~(1u << 2)) | (((b5   >> 0) & 1u) << 2));
+    d[5] = b5;
+}
+
+static void test_passthrough_nunchuk(void)
+{
+    // Nunchuk fields that must survive intact: stick X/Y and the C/Z buttons.
+    // Accel LSBs are destroyed by design and are NOT checked for equality.
+    for (int trial = 0; trial < 256; trial++) {
+        uint8_t orig[6];
+        orig[0] = (uint8_t)(trial * 7 + 3);      // stick X
+        orig[1] = (uint8_t)(trial * 13 + 11);    // stick Y
+        orig[2] = (uint8_t)(trial * 5);          // accel X high
+        orig[3] = (uint8_t)(trial * 3 + 1);      // accel Y high
+        orig[4] = (uint8_t)(trial * 11 + 2);
+        // byte 5: accel LSBs + BC/BZ in bits 1/0 (active low on the wire)
+        orig[5] = (uint8_t)(trial * 17 + 5);
+
+        uint8_t wire[6];
+        memcpy(wire, orig, sizeof(wire));
+        mp_forward_nunchuk(wire);
+        // The MotionPlus owns [5]:1 (is_mp_data=0 for a passthrough frame) and
+        // [5]:0 (extension connected).
+        wire[5] &= (uint8_t)~0x02;
+        wire[5] |= 0x01;
+
+        CHECK(!wii_mp_is_motionplus_frame(wire),
+              "a passthrough frame must not be taken for MotionPlus data");
+
+        uint8_t got[6];
+        memcpy(got, wire, sizeof(got));
+        wii_mp_passthrough_restore(got, WII_MP_PASSTHROUGH_NUNCHUK);
+
+        CHECK(got[0] == orig[0], "stick X must survive passthrough (trial %d)", trial);
+        CHECK(got[1] == orig[1], "stick Y must survive passthrough (trial %d)", trial);
+        CHECK(got[2] == orig[2], "accel X high bits must survive (trial %d)", trial);
+        CHECK(got[3] == orig[3], "accel Y high bits must survive (trial %d)", trial);
+        // C and Z are byte 5 bits 1 and 0 after restore.
+        CHECK((got[5] & 0x03) == (orig[5] & 0x03),
+              "C/Z buttons must survive passthrough (trial %d: got %02X want %02X)",
+              trial, got[5] & 0x03, orig[5] & 0x03);
+    }
+}
+
+static void test_passthrough_classic(void)
+{
+    for (int trial = 0; trial < 256; trial++) {
+        uint8_t wire[6];
+        for (int i = 0; i < 6; i++) wire[i] = (uint8_t)(trial * (i + 3) + i);
+        wire[5] &= (uint8_t)~0x02;   // passthrough frame
+
+        uint8_t got[6];
+        memcpy(got, wire, sizeof(got));
+        wii_mp_passthrough_restore(got, WII_MP_PASSTHROUGH_CLASSIC);
+
+        // The stolen left-stick LSBs are restored into byte 5 bits 0/1.
+        CHECK(((got[5] >> 0) & 1u) == ((wire[0] >> 0) & 1u),
+              "classic: byte5 bit0 <- byte0 bit0 (trial %d)", trial);
+        CHECK(((got[5] >> 1) & 1u) == ((wire[1] >> 0) & 1u),
+              "classic: byte5 bit1 <- byte1 bit0 (trial %d)", trial);
+        // Byte 4 bit 0 is forced to the unused-button idle state.
+        CHECK((got[4] & 1u) == 1u, "classic: byte4 bit0 must be set (trial %d)", trial);
+        // Bytes 2 and 3 are untouched by Classic passthrough.
+        CHECK(got[2] == wire[2] && got[3] == wire[3],
+              "classic: bytes 2/3 must be untouched (trial %d)", trial);
+    }
+}
+
+// NONE must be a no-op: a MotionPlus with no passthrough carries no extension.
+static void test_passthrough_none_is_noop(void)
+{
+    uint8_t d[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34};
+    uint8_t copy[6];
+    memcpy(copy, d, sizeof(copy));
+    wii_mp_passthrough_restore(d, WII_MP_PASSTHROUGH_NONE);
+    CHECK(memcmp(d, copy, sizeof(d)) == 0, "NONE must not modify the frame");
+}
+
 int main(void)
 {
     test_frame_discrimination();
@@ -221,6 +313,9 @@ int main(void)
     test_calibration_parse_and_crc();
     test_calibrated_polarity();
     test_per_axis_block_selection();
+    test_passthrough_nunchuk();
+    test_passthrough_classic();
+    test_passthrough_none_is_noop();
 
     if (failures) {
         printf("wii_motionplus: %d FAILURE(S)\n", failures);

@@ -230,6 +230,11 @@ typedef struct {
     uint8_t mp_verify_retries;
     int32_t mp_centi_dps[3];    // last decoded [yaw, roll, pitch]
     bool mp_have_sample;
+    // In a passthrough mode the extension only appears on alternating frames
+    // (§7.1/§7.3), so its buttons must be held across MotionPlus frames or they
+    // would read as released half the time. Analog axes live in event.analog[]
+    // and already persist.
+    uint32_t ext_buttons_held;
 } wiimote_data_t;
 
 static wiimote_data_t wiimote_data[BTHID_MAX_DEVICES];
@@ -395,6 +400,14 @@ static wiimote_orient_t wiimote_detect_orientation(uint8_t accel_x, wiimote_orie
 // Rotate controls based on orientation
 // Vertical (pointing at screen): no rotation needed
 // Horizontal (sideways NES-style): rotate D-pad and swap face buttons
+// Which decoder a passthrough frame belongs to.
+static wiimote_ext_type_t wiimote_passthrough_ext(wiimote_ext_type_t t)
+{
+    if (t == WII_EXT_MOTIONPLUS_NUNCHUK) return WII_EXT_NUNCHUK;
+    if (t == WII_EXT_MOTIONPLUS_CLASSIC) return WII_EXT_CLASSIC;
+    return WII_EXT_NONE;  // MotionPlus with no passthrough carries no extension
+}
+
 static uint32_t wiimote_rotate_controls(uint32_t buttons, wiimote_orient_t orient)
 {
     if (orient == WII_ORIENT_VERTICAL) {
@@ -610,17 +623,41 @@ static void wiimote_process_report(bthid_device_t* device, const uint8_t* data, 
                 // MotionPlus emit its own data instead of alternating strictly
                 // (wii-motion.md §7.1). Frames that are not MotionPlus data fall
                 // through to the ordinary extension decoders below.
-                if (wiimote_ext_is_motionplus(wii->ext_type) &&
-                    wii_mp_is_motionplus_frame(ext)) {
-                    wii_mp_sample_t mp;
-                    if (wii_mp_decode(ext, &mp)) {
-                        wii_mp_sample_centi_dps(&mp, &wii->mp_cal,
-                                                wii->mp_centi_dps);
-                        wii->mp_have_sample = true;
+                // decode_type is what THIS frame carries, which in a
+                // passthrough mode is not the same as the port's ext_type: the
+                // MotionPlus and the extension alternate in one 6-byte window.
+                wiimote_ext_type_t decode_type = wii->ext_type;
+                uint8_t passthrough[6];
+
+                if (wiimote_ext_is_motionplus(wii->ext_type)) {
+                    if (wii_mp_is_motionplus_frame(ext)) {
+                        wii_mp_sample_t mp;
+                        if (wii_mp_decode(ext, &mp)) {
+                            wii_mp_sample_centi_dps(&mp, &wii->mp_cal,
+                                                    wii->mp_centi_dps);
+                            wii->mp_have_sample = true;
+                        }
+                        // No extension payload this frame; hold its buttons.
+                        decode_type = WII_EXT_NONE;
+                        buttons |= wii->ext_buttons_held;
+                    } else {
+                        memcpy(passthrough, ext, sizeof(passthrough));
+                        wii_mp_passthrough_restore(
+                            passthrough,
+                            wii->ext_type == WII_EXT_MOTIONPLUS_NUNCHUK
+                                ? WII_MP_PASSTHROUGH_NUNCHUK
+                                : (wii->ext_type == WII_EXT_MOTIONPLUS_CLASSIC
+                                       ? WII_MP_PASSTHROUGH_CLASSIC
+                                       : WII_MP_PASSTHROUGH_NONE));
+                        ext = passthrough;
+                        decode_type = wiimote_passthrough_ext(wii->ext_type);
+                        wii->ext_buttons_held = 0;  // rebuilt by the decoder below
                     }
                 }
 
-                if (wii->ext_type == WII_EXT_NUNCHUK) {
+                const uint32_t buttons_before_ext = buttons;
+
+                if (decode_type == WII_EXT_NUNCHUK) {
                     // Nunchuk format (6 bytes):
                     // Byte 0: joystick X (0-255, center ~128)
                     // Byte 1: joystick Y (0-255, center ~128)
@@ -634,7 +671,7 @@ static void wiimote_process_report(bthid_device_t* device, const uint8_t* data, 
                     wii->event.analog[ANALOG_LX] = ext[0];
                     wii->event.analog[ANALOG_LY] = 255 - ext[1];  // Invert Y
 
-                } else if (wii->ext_type == WII_EXT_CLASSIC) {
+                } else if (decode_type == WII_EXT_CLASSIC) {
                     // Classic Controller format (6 bytes):
                     // Byte 0: RX<4:3>, LX<5:0>
                     // Byte 1: RX<2:1>, LY<5:0>
@@ -683,7 +720,7 @@ static void wiimote_process_report(bthid_device_t* device, const uint8_t* data, 
                     if (cc_buttons & WII_CC_BTN_LEFT)  buttons |= JP_BUTTON_DL;
                     if (cc_buttons & WII_CC_BTN_RIGHT) buttons |= JP_BUTTON_DR;
 
-                } else if (wii->ext_type == WII_EXT_CLASSIC_MINI) {
+                } else if (decode_type == WII_EXT_CLASSIC_MINI) {
                     // NES/SNES Classic Controller - same button format, no analog sticks
                     // Byte 4-5: Buttons (inverted)
                     uint16_t cc_buttons = ~((ext[4] << 0) | (ext[5] << 8));
@@ -705,7 +742,7 @@ static void wiimote_process_report(bthid_device_t* device, const uint8_t* data, 
                     if (cc_buttons & WII_CC_BTN_LEFT)  buttons |= JP_BUTTON_DL;
                     if (cc_buttons & WII_CC_BTN_RIGHT) buttons |= JP_BUTTON_DR;
 
-                } else if (wii->ext_type == WII_EXT_GUITAR) {
+                } else if (decode_type == WII_EXT_GUITAR) {
                     // Guitar Hero Guitar format (6 bytes):
                     // Byte 0: bits 5:0 = Stick X (6-bit)
                     // Byte 1: bits 5:0 = Stick Y (6-bit)
@@ -738,7 +775,8 @@ static void wiimote_process_report(bthid_device_t* device, const uint8_t* data, 
                     if (gh_buttons & GH_BTN_PLUS)       buttons |= JP_BUTTON_S2;  // + = Start
                     if (gh_buttons & GH_BTN_MINUS)      buttons |= JP_BUTTON_S1;  // - = Select
 
-                } else if (wii->extension_connected) {
+                } else if (decode_type != WII_EXT_NONE &&
+                           wii->extension_connected) {
                     // Debug: unknown extension type
                     static uint32_t last_ext_debug = 0;
                     if (platform_time_us() - last_ext_debug > 2000000) {
@@ -746,6 +784,14 @@ static void wiimote_process_report(bthid_device_t* device, const uint8_t* data, 
                                ext[0], ext[1], ext[2], ext[3], ext[4], ext[5]);
                         last_ext_debug = platform_time_us();
                     }
+                }
+
+                // Latch what the extension contributed, so the next MotionPlus
+                // frame can re-assert it instead of reporting the buttons as
+                // released (§7.3: each source arrives at half the report rate).
+                if (wiimote_ext_is_motionplus(wii->ext_type) &&
+                    decode_type != WII_EXT_NONE) {
+                    wii->ext_buttons_held = buttons & ~buttons_before_ext;
                 }
             }
 

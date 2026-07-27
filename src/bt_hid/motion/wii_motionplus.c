@@ -147,3 +147,40 @@ void wii_mp_sample_centi_dps(const wii_mp_sample_t *s, const wii_mp_cal_t *cal,
         pb ? pb->pitch_zero : 0, pb ? pb->pitch_scale : 0,
         pb ? pb->degrees_div_6 : 0, valid);
 }
+
+// ---------------------------------------------------------------------------
+// Passthrough bit relocation (§7.2)
+// ---------------------------------------------------------------------------
+// Transcribed from the inverse sequence in wii-motion.md §7.2, itself taken
+// from Dolphin's MotionPlus.cpp with a note that every bit was verified on real
+// hardware. Applied in place and ORDER-DEPENDENT: later lines read bits that
+// earlier lines wrote. Do not reorder or "simplify".
+
+static inline bool mp_bit(uint8_t v, unsigned n) { return (v >> n) & 1u; }
+
+static inline void mp_set_bit(uint8_t *v, unsigned n, bool b)
+{
+    *v = (uint8_t)(b ? (*v | (1u << n)) : (*v & ~(1u << n)));
+}
+
+void wii_mp_passthrough_restore(uint8_t d[6], wii_mp_passthrough_t mode)
+{
+    if (!d) return;
+    if (mode == WII_MP_PASSTHROUGH_NUNCHUK) {
+        mp_set_bit(&d[5], 0, mp_bit(d[5], 2));
+        mp_set_bit(&d[5], 1, mp_bit(d[5], 3));
+        mp_set_bit(&d[5], 3, mp_bit(d[5], 4));
+        mp_set_bit(&d[4], 0, mp_bit(d[5], 7));
+        mp_set_bit(&d[5], 7, mp_bit(d[5], 6));
+        // LSBs the MotionPlus destroyed; refill from the next bit up.
+        mp_set_bit(&d[5], 2, mp_bit(d[5], 3));
+        mp_set_bit(&d[5], 4, mp_bit(d[5], 5));
+        mp_set_bit(&d[5], 6, mp_bit(d[5], 7));
+    } else if (mode == WII_MP_PASSTHROUGH_CLASSIC) {
+        mp_set_bit(&d[5], 0, mp_bit(d[0], 0));
+        mp_set_bit(&d[5], 1, mp_bit(d[1], 0));
+        mp_set_bit(&d[0], 0, mp_bit(d[0], 1));
+        mp_set_bit(&d[1], 0, mp_bit(d[1], 1));
+        mp_set_bit(&d[4], 0, true);  // unused Classic button bit
+    }
+}
