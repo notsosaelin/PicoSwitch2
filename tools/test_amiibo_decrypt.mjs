@@ -18,7 +18,8 @@ block = "function amiiboConcatBytes(parts){let t=0;for(const p of parts)t+=p.len
 
 const exported = ["amiiboParseRetailKeys", "amiiboDecryptInternal",
   "amiiboReadRegisterInfo", "amiiboTagToInternal", "amiiboDeriveKeys",
-  "amiiboHmacSha256", "amiiboAesCtr"];
+  "amiiboHmacSha256", "amiiboAesCtr", "amiiboPackInternal",
+  "amiiboInternalToTag", "amiiboInitializeImage", "amiiboDecodeDate"];
 const mod = new Function(`${block}\nreturn {${exported.join(",")}};`)();
 
 function assert(c, m) { if (!c) { console.error("FAIL:", m); process.exit(1); } }
@@ -107,6 +108,77 @@ const run = async () => {
   assert(unsetInfo.setUp === false, "unset amiibo reports setUp false");
   assert(unsetInfo.nickname === "", "unset amiibo yields no nickname");
   assert(unsetInfo.owner === "", "unset amiibo yields no owner");
+
+  // ---- initialization (wipe + re-sign) ----------------------------------
+  // Build a fully populated amiibo: owner, nickname, dates, write counter,
+  // title id and game data, so the wipe has something to actually remove.
+  const full = new Uint8Array(0x208);
+  crypto.getRandomValues(full.subarray(0x1E8, 0x208));
+  full[0x2C] = 0x10;
+  full[0x2D] = 0x31;                                  // country
+  full[0x30] = 0x20; full[0x31] = 0x43;               // setup date
+  full[0x32] = 0x2E; full[0x33] = 0x8C;               // last write date
+  putUtf16(full, 0x38, nickname, false);
+  putUtf16(full, 0x4C + 0x1A, owner, true);
+  full.set([0x00,0x01,0x00,0x00,0x03,0x4E,0x0B,0x00], 0xAC);  // title id
+  full[0xB4] = 0x01; full[0xB5] = 0x2C;               // write counter 300
+  full.set([0x10, 0x20, 0x30, 0x40], 0xB6);           // app id
+  crypto.getRandomValues(full.subarray(0xDC, 0x1B4)); // AppData
+  const fullTag = await mod.amiiboPackInternal(keys, full, new Uint8Array(540), false);
+
+  // Sanity: the packed image must decrypt and read back what we put in.
+  const before = await mod.amiiboDecryptInternal(keys, fullTag, false);
+  assert(before.ok, "packed full amiibo verifies");
+  const beforeInfo = mod.amiiboReadRegisterInfo(before.internal);
+  assert(beforeInfo.owner === owner, "pack round-trips the owner");
+  assert(beforeInfo.writeCounter === 300, `write counter ${beforeInfo.writeCounter} !== 300`);
+  assert(beforeInfo.lastWriteDate !== null, "a written amiibo has a last-write date");
+  assert(beforeInfo.hasAppData, "AppData present before initialization");
+  assert(beforeInfo.hasTitleId, "title id present before initialization");
+
+  // Initialize, then verify it still passes its own HMACs and is truly blank.
+  const wiped = await mod.amiiboInitializeImage(keys, fullTag, false);
+  const after = await mod.amiiboDecryptInternal(keys, wiped, false);
+  assert(after.ok, "initialized amiibo still passes both HMACs");
+  const afterInfo = mod.amiiboReadRegisterInfo(after.internal);
+  assert(afterInfo.setUp === false, "initialized amiibo is not registered");
+  assert(afterInfo.owner === "", "initialized amiibo has no owner");
+  assert(afterInfo.nickname === "", "initialized amiibo has no nickname");
+  assert(afterInfo.lastWriteDate === null, "last-write date reset to NULL");
+  assert(afterInfo.setupDate === null, "setup date reset to NULL");
+  assert(afterInfo.writeCounter === 0, "write counter reset");
+  assert(!afterInfo.hasAppData, "game data wiped");
+  assert(!afterInfo.hasTitleId, "title id wiped");
+
+  // The identity must survive: UID, the amiibo identity block, and every byte
+  // outside the encrypted settings region are what make it the same amiibo.
+  // TAG offsets (not internal): the UID + plaintext head, the amiibo identity
+  // block, and the tail past the mapped regions. tag[0x014..0x054] and
+  // tag[0x080..0x208] legitimately change -- they are the encrypted settings
+  // region and the two re-computed HMACs.
+  const sameRegions = [[0x000, 0x014], [0x054, 0x080], [0x208, 0x21C]];
+  for (const [from, to] of sameRegions)
+    for (let k = from; k < Math.min(to, 540); k++)
+      assert(wiped[k] === fullTag[k],
+        `byte 0x${k.toString(16)} outside the settings region changed`);
+
+  // Initializing twice must be idempotent.
+  const again = await mod.amiiboInitializeImage(keys, wiped, false);
+  assert(again.every((b, k) => b === wiped[k]), "initialization is idempotent");
+
+  // A tampered image must be refused rather than re-signed into something valid.
+  const tampered = fullTag.slice();
+  tampered[0x0A5] ^= 0xFF;                            // inside encrypted data
+  let refused = false;
+  try { await mod.amiiboInitializeImage(keys, tampered, false); }
+  catch { refused = true; }
+  assert(refused, "a dump failing its HMAC must not be re-signed");
+
+  // Date decode edges.
+  assert(mod.amiiboDecodeDate(0x00, 0x00) === null, "0x0000 is the NULL date");
+  assert(mod.amiiboDecodeDate(0xFF, 0xFF) === null, "0xFFFF is not a date");
+  assert(mod.amiiboDecodeDate(0x20, 0x43) === "2016-02-03",
+    `date decode got ${mod.amiiboDecodeDate(0x20, 0x43)}`);
 
   console.log("amiibo_decrypt: all tests passed");
 };

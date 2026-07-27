@@ -313,6 +313,7 @@
             <button id="amiiboSaveBtn" class="hidden" disabled>Sync amiibo</button>
             <button id="amiiboEjectBtn" disabled>Eject amiibo</button>
             <button id="amiiboDownloadBtn" disabled>Download .bin</button>
+            <button id="amiiboInitBtn" class="hidden" disabled>Initialize amiibo</button>
             <button id="amiiboDeleteBtn" disabled>Delete from Library</button>
             <button id="amiiboRefreshBtn">Refresh</button>
           </div>
@@ -382,6 +383,10 @@
               <div>Product type<b id="amiiboLibraryType">&mdash;</b></div>
               <div>Owner<b id="amiiboInfoOwner">No owner set.</b></div>
               <div>amiibo Nickname<b id="amiiboInfoNickname">No nickname set.</b></div>
+              <div>Last written<b id="amiiboInfoWritten">&mdash;</b></div>
+              <div>Registered<b id="amiiboInfoSetup">&mdash;</b></div>
+              <div>Write count<b id="amiiboInfoWrites">&mdash;</b></div>
+              <div>Game data<b id="amiiboInfoAppData">&mdash;</b></div>
             </div>
           </div>
         </div>
@@ -1679,11 +1684,27 @@ function amiiboNameIsPlausible(s) {
   }
   return true;
 }
-// Register info from a decrypted internal buffer: settings flags at 0x2C,
-// nickname (UTF-16BE, 20 B) at 0x38, owner Mii (0x60 B) at 0x4C with the
-// 3DS-format Mii name (UTF-16LE, 20 B) at Mii+0x1A. Fields are only returned
-// when the amiibo has been set up (settings flag bit 4) and the decoded text is
-// plausible; otherwise the caller shows the "not set" fallbacks.
+// amiibo dates are BE u16: year = 2000 + (v >> 9), month = (v >> 5) & 0xF,
+// day = v & 0x1F. 0x0000 and 0xFFFF are "not set"; so is any out-of-range
+// month/day, which is what makes 0x0000 a safe NULL (month 0 / day 0).
+function amiiboDecodeDate(hi, lo) {
+  const v = (hi << 8) | lo;
+  if (v === 0 || v === 0xFFFF) return null;
+  const year = 2000 + (v >> 9), month = (v >> 5) & 0x0F, day = v & 0x1F;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+function amiiboHex(bytes) {
+  let out = "";
+  for (const b of bytes) out += b.toString(16).padStart(2, "0").toUpperCase();
+  return out;
+}
+function amiiboAllZero(bytes) {
+  for (const b of bytes) if (b !== 0) return false;
+  return true;
+}
+// Register info from a decrypted internal buffer. Settings block starts at 0x2C;
+// offsets follow 3dbrew's table (docs/switch2/amiibo-decrypted-data-surface.md).
 function amiiboReadRegisterInfo(internal) {
   const flags = internal[0x2C];
   const setUp = (flags & 0x10) !== 0;
@@ -1691,7 +1712,69 @@ function amiiboReadRegisterInfo(internal) {
   let owner = amiiboDecodeUtf16(internal.subarray(0x4C + 0x1A, 0x4C + 0x2E), true);
   if (!setUp || !amiiboNameIsPlausible(nickname)) nickname = "";
   if (!setUp || !amiiboNameIsPlausible(owner)) owner = "";
-  return {flags, nickname, owner, setUp};
+  return {
+    flags, nickname, owner, setUp,
+    setupDate: amiiboDecodeDate(internal[0x30], internal[0x31]),
+    lastWriteDate: amiiboDecodeDate(internal[0x32], internal[0x33]),
+    writeCounter: (internal[0xB4] << 8) | internal[0xB5],
+    titleId: amiiboHex(internal.subarray(0xAC, 0xB4)),
+    hasTitleId: !amiiboAllZero(internal.subarray(0xAC, 0xB4)),
+    hasAppData: !amiiboAllZero(internal.subarray(0xDC, 0x1B4)),
+  };
+}
+
+// ---- pack (re-sign + re-encrypt), the inverse of amiiboDecryptInternal ------
+// Needed only by initialization. Writes into a COPY of the original tag rather
+// than a fresh buffer, so bytes outside the mapped regions (config pages, the
+// v3 tail) survive untouched.
+function amiiboInternalToTag(internal, originalTag, v3) {
+  const t = originalTag.slice();
+  const encBase = v3 ? 0x0C0 : 0x080;
+  t.set(internal.subarray(0x000, 0x008), 0x008);
+  t.set(internal.subarray(0x008, 0x028), encBase);
+  t.set(internal.subarray(0x028, 0x04C), 0x010);
+  t.set(internal.subarray(0x04C, 0x1B4), encBase + 0x20);
+  t.set(internal.subarray(0x1B4, 0x1D4), 0x034);
+  t.set(internal.subarray(0x1D4, 0x1DC), 0x000);
+  t.set(internal.subarray(0x1DC, 0x208), 0x054);
+  return t;
+}
+// Recompute both HMACs, encrypt, and convert back to tag layout. Order matters:
+// the data HMAC covers the tag HMAC, so the tag HMAC must be written first.
+async function amiiboPackInternal(keys, internal, originalTag, v3) {
+  const plain = internal.slice();
+  const tagKeys = await amiiboDeriveKeys(keys.tag, plain);
+  const dataKeys = await amiiboDeriveKeys(keys.data, plain);
+  plain.set(await amiiboHmacSha256(tagKeys.hmacKey,
+    plain.subarray(0x1D4, 0x208)), 0x1B4);
+  plain.set(await amiiboHmacSha256(dataKeys.hmacKey,
+    plain.subarray(0x029, 0x208)), 0x008);
+  plain.set(await amiiboAesCtr(dataKeys.aesKey, dataKeys.aesIV,
+    plain.subarray(0x02C, 0x1B4)), 0x02C);
+  return amiiboInternalToTag(plain, originalTag, v3);
+}
+// Wipe every user-writable field back to factory state and re-sign.
+//
+// Only internal[0x02C..0x1B4) is cleared -- exactly the AES-encrypted settings
+// and AppData region. Everything the key derivation seeds from (0x029-0x02B,
+// 0x1D4-0x1DB, 0x1E8-0x208), the UID, and the amiibo identity block are outside
+// it and stay byte-identical, so the tag remains the same amiibo and the same
+// derived keys still apply. Dates land on 0x0000, which decodes as month 0 /
+// day 0 and therefore reads as "not set" (amiiboDecodeDate).
+async function amiiboInitializeImage(keys, tagBytes, v3) {
+  const {internal, ok} = await amiiboDecryptInternal(keys, tagBytes, v3);
+  if (!ok) throw new Error("This dump failed its HMAC check; refusing to re-sign it.");
+  internal.fill(0, 0x02C, 0x1B4);
+  const out = await amiiboPackInternal(keys, internal, tagBytes, v3);
+  // Self-check: a re-signed image the console would reject is worse than no
+  // feature at all, so verify the round trip before it can reach the library.
+  const verify = await amiiboDecryptInternal(keys, out, v3);
+  if (!verify.ok) throw new Error("Re-signed image failed verification; nothing was changed.");
+  const info = amiiboReadRegisterInfo(verify.internal);
+  if (info.setUp || info.owner || info.nickname || info.lastWriteDate ||
+      info.writeCounter !== 0 || info.hasAppData)
+    throw new Error("Initialized image still has user data; nothing was changed.");
+  return out;
 }
 // === amiibo-decrypt END ===
 
@@ -1804,13 +1887,31 @@ function renderAmiiboInfoBox(entry) {
   }
   ownerEl.textContent = amiiboKeys ? "…" : "No owner set.";
   nickEl.textContent = amiiboKeys ? "…" : "No nickname set.";
+  amiiboSetDetailExtras(null);
   if (!amiiboKeys) return;
   const key = entry.key;
   amiiboInfoFor(entry).then(info => {
     if (amiiboLibrarySelectedKey !== key) return; // selection moved on
     ownerEl.textContent = info && info.owner ? info.owner : "No owner set.";
     nickEl.textContent = info && info.nickname ? info.nickname : "No nickname set.";
+    amiiboSetDetailExtras(info);
   });
+}
+// The date/counter/AppData rows. Blank (em dash) whenever there is nothing to
+// decrypt with, so an uninitialized amiibo and a missing key look different.
+function amiiboSetDetailExtras(info) {
+  const set = (id, text) => { const el = $(id); if (el) el.textContent = text; };
+  if (!info) {
+    set("#amiiboInfoWritten", "—"); set("#amiiboInfoSetup", "—");
+    set("#amiiboInfoWrites", "—");  set("#amiiboInfoAppData", "—");
+    return;
+  }
+  set("#amiiboInfoWritten", info.lastWriteDate || "Never written");
+  set("#amiiboInfoSetup", info.setupDate || "Not registered");
+  set("#amiiboInfoWrites", String(info.writeCounter));
+  set("#amiiboInfoAppData", info.hasAppData
+    ? (info.hasTitleId ? `Present (title ${info.titleId})` : "Present")
+    : "None");
 }
 
 async function exportAmiiboLibraryBackup() {
@@ -2288,12 +2389,35 @@ function renderAmiiboLoadedSlot() {
   // browser; it stays hidden until an adapter is connected. It does not apply to
   // a 2 KB (v3) tag, which has no console write-back path yet — the tooltip says
   // so rather than leaving it mysteriously greyed.
-  $("#amiiboSaveBtn").classList.toggle("hidden", !adapterConnected);
-  $("#amiiboSaveBtn").disabled =
-    amiiboLibraryBusy || !adapterConnected || !amiiboStatus?.loaded;
-  $("#amiiboSaveBtn").title = amiiboStatus?.v3loaded && !amiiboStatus?.loaded
-    ? "Sync applies to standard (NTAG215) amiibo; a 2 KB tag has no write-back yet"
-    : "Pull console-written changes back into this browser's copy";
+  // One button, two jobs, both about pulling the adapter's copy into the library:
+  //   - the adapter holds an amiibo the library has never seen -> "Import amiibo"
+  //   - the library has it AND the console has written to it since -> "Sync amiibo"
+  // Otherwise there is nothing to pull, so the button is hidden rather than shown
+  // greyed. "Newer than the library copy" is the firmware's own `dirty` flag: set
+  // by virtual_amiibo_apply_console_write() and cleared once a download is
+  // acknowledged, so it means exactly "has console writes not yet pulled back"
+  // without downloading and decrypting the image just to compare dates.
+  const saveBtn = $("#amiiboSaveBtn");
+  const adapterTagKnown = amiiboStatus?.loaded &&
+    amiiboLibrary.some(item => amiiboEntryContainsUid(item, amiiboStatus.uid));
+  const canImport = adapterConnected && amiiboStatus?.loaded && !adapterTagKnown;
+  const canSync = adapterConnected && amiiboStatus?.loaded && adapterTagKnown &&
+    amiiboStatus?.dirty === true;
+  saveBtn.textContent = canImport ? "Import amiibo" : "Sync amiibo";
+  saveBtn.classList.toggle("hidden", !(canImport || canSync));
+  saveBtn.disabled = amiiboLibraryBusy;
+  saveBtn.title = canImport
+    ? "Add the amiibo currently on the adapter to this browser's library"
+    : "The console has written to this amiibo; pull those changes into the library";
+
+  // Initialization needs the crypto path, so it only appears once keys exist.
+  const initBtn = $("#amiiboInitBtn");
+  if (initBtn) {
+    initBtn.classList.toggle("hidden", !amiiboKeys);
+    initBtn.disabled = amiiboLibraryBusy || !selected || !amiiboKeys;
+    initBtn.title = "Wipe the owner, nickname, game data and dates back to " +
+      "factory state, then re-sign. The amiibo identity and UID are unchanged.";
+  }
   // Merged eject/clear button: labeled uniformly "Eject Amiibo". The action
   // scope still adapts (see amiiboEjectActionState); the tooltip explains it.
   const ejectState = amiiboEjectActionState();
@@ -2480,6 +2604,46 @@ function downloadSelectedAmiibo() {
 
 // Remove the highlighted amiibo from the browser library only (single-entry
 // delete; the adapter's active tag and other entries are untouched).
+// Wipe the selected library entry back to factory state and re-sign it.
+// Operates on the browser's copy only; the adapter is untouched, so an
+// initialized amiibo has to be loaded like any other.
+async function initializeSelectedAmiibo() {
+  const entry = selectedAmiiboLibraryEntry();
+  if (!entry || amiiboLibraryBusy || !amiiboKeys) return;
+  const name = amiiboDisplayName(entry);
+  if (!confirm(
+      `Initialize ${name}?\n\n` +
+      "This wipes the owner Mii, nickname, registration and last-write dates, " +
+      "write count and all game data, returning it to a factory-new state, then " +
+      "re-signs it with your keys.\n\n" +
+      "The amiibo identity and UID are unchanged, so it is still the same amiibo " +
+      "to a game. This rewrites your library copy and cannot be undone - use " +
+      "Download .bin first if you want a backup. The adapter is not changed."))
+    return;
+  amiiboSetBusy(true, 0);
+  try {
+    const bytes = amiiboEntryBytes(entry);
+    if (!bytes) throw new Error("Could not read this amiibo from the library");
+    const wiped = await amiiboInitializeImage(
+      amiiboKeys, bytes, entry.tagType === "v3");
+    const updated = normalizeAmiiboLibraryEntry({
+      ...entry, bytes: wiped, data: undefined,
+    });
+    if (!(await cacheSingleAmiiboEntry(updated)))
+      throw new Error("Could not save the initialized amiibo to the library");
+    const index = amiiboLibrary.findIndex(item => item.key === entry.key);
+    if (index >= 0) amiiboLibrary[index] = updated; else amiiboLibrary.push(updated);
+    amiiboInfoCache.delete(entry.key);
+    amiiboInfoCache.delete(updated.key);
+    renderAmiiboLibrary();
+    setStatus(`${name} initialized.`);
+  } catch (error) {
+    alert(`Could not initialize this amiibo.\n\n${error.message}`);
+  } finally {
+    amiiboSetBusy(false);
+  }
+}
+
 async function deleteSelectedAmiibo() {
   const entry = selectedAmiiboLibraryEntry();
   if (!entry || amiiboLibraryBusy) return;
@@ -3219,6 +3383,7 @@ $("#amiiboFile").onchange = async e => {
 };
 $("#amiiboDirectoryBtn").onclick = chooseAmiiboDirectory;
 $("#amiiboDownloadBtn").onclick = downloadSelectedAmiibo;
+$("#amiiboInitBtn").onclick = initializeSelectedAmiibo;
 $("#amiiboDeleteBtn").onclick = deleteSelectedAmiibo;
 $("#amiiboRefreshBtn").onclick = refreshAmiiboManager;
 $("#amiiboImportKeysBtn").onclick = amiiboKeysWarnAndPick;
