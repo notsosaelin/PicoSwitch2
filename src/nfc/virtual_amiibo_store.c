@@ -6,11 +6,29 @@
 #include "hardware/sync.h"
 #include "pico/critical_section.h"
 #include "pico/multicore.h"
+#include "pico/btstack_flash_bank.h"  // PICO_FLASH_BANK_STORAGE_OFFSET
 
 #include "ns2_amiibo_v3.h"
 
+// Flash map (highest address first). The journal banks MUST stay below BTstack's
+// TLV region, whose base moved on RP2350: pico-sdk 2.2.0 defines
+//   PICO_FLASH_BANK_STORAGE_OFFSET =
+//       RP2350/A2 : PICO_FLASH_SIZE_BYTES - FLASH_SECTOR_SIZE - TOTAL_SIZE
+//       otherwise : PICO_FLASH_SIZE_BYTES - TOTAL_SIZE
+// so on a pico2_w BTstack occupies SIZE-3S and SIZE-2S -- which is where amiibo
+// bank 0 used to live. The two erased each other: writing a tag destroyed the
+// Bluetooth bonds (pairing/BLE config stopped working) and BTstack writing a bond
+// destroyed the stored tag (v3loaded went false after a replug). Observed
+// directly: `amiibo journal` read back the ASCII "BTstack" magic from bank 0.
+//
+//   SIZE-1S   reserved by the SDK on RP2350
+//   SIZE-2S   BTstack TLV bank B
+//   SIZE-3S   BTstack TLV bank A   (RP2040: unused)
+//   SIZE-4S   PicoSwitch2 config
+//   SIZE-5S   amiibo journal bank 1
+//   SIZE-6S   amiibo journal bank 0
 #define VIRTUAL_AMIIBO_FLASH_BANK0_OFFSET \
-    (PICO_FLASH_SIZE_BYTES - 3u * FLASH_SECTOR_SIZE)
+    (PICO_FLASH_SIZE_BYTES - 6u * FLASH_SECTOR_SIZE)
 #define VIRTUAL_AMIIBO_FLASH_BANK1_OFFSET \
     (PICO_FLASH_SIZE_BYTES - 5u * FLASH_SECTOR_SIZE)
 #define VIRTUAL_AMIIBO_RECORD_MAGIC 0x4F424D41u /* "AMBO" little-endian */
@@ -52,12 +70,22 @@ _Static_assert(VIRTUAL_AMIIBO_HEADER_SIZE +
                "v3 amiibo journal record is too small");
 _Static_assert(VIRTUAL_AMIIBO_RECORD_SIZE <= FLASH_SECTOR_SIZE,
                "journal record exceeds one flash bank sector");
+// Check against BTstack's REAL base, not a hard-coded assumption. The previous
+// assert compared against PICO_FLASH_SIZE_BYTES - 2*FLASH_SECTOR_SIZE, which is
+// only correct on RP2040; on RP2350 the base is one sector lower and the old
+// bank 0 silently collided with it.
 _Static_assert(VIRTUAL_AMIIBO_FLASH_BANK0_OFFSET + FLASH_SECTOR_SIZE <=
-                   PICO_FLASH_SIZE_BYTES - 2u * FLASH_SECTOR_SIZE,
+                   PICO_FLASH_BANK_STORAGE_OFFSET,
                "virtual amiibo bank 0 overlaps BTstack TLV banks");
+_Static_assert(VIRTUAL_AMIIBO_FLASH_BANK1_OFFSET + FLASH_SECTOR_SIZE <=
+                   PICO_FLASH_BANK_STORAGE_OFFSET,
+               "virtual amiibo bank 1 overlaps BTstack TLV banks");
 _Static_assert(VIRTUAL_AMIIBO_FLASH_BANK1_OFFSET + FLASH_SECTOR_SIZE <=
                    PICO_FLASH_SIZE_BYTES - 4u * FLASH_SECTOR_SIZE,
                "virtual amiibo bank 1 overlaps config storage");
+_Static_assert(VIRTUAL_AMIIBO_FLASH_BANK0_OFFSET + FLASH_SECTOR_SIZE <=
+                   VIRTUAL_AMIIBO_FLASH_BANK1_OFFSET,
+               "virtual amiibo journal banks overlap each other");
 
 static virtual_amiibo_t tag;
 static critical_section_t tag_lock;
