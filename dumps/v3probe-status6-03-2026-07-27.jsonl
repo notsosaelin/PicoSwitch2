@@ -1,0 +1,17 @@
+{"trace":"record","seq":0,"t_us":708508699,"personality":"pro2","kind":"bulk_command","dir":"console_to_device","id":1,"sub":3,"length":13,"captured":13,"payload":"01910003000500000000002C01"}
+{"trace":"record","seq":1,"t_us":708508726,"personality":"pro2","kind":"bulk_response","dir":"device_to_console","id":1,"sub":3,"length":8,"captured":8,"payload":"0104000300F80000"}
+{"trace":"record","seq":2,"t_us":708552847,"personality":"pro2","kind":"bulk_command","dir":"console_to_device","id":1,"sub":5,"length":8,"captured":8,"payload":"0191000500000000"}
+{"trace":"record","seq":3,"t_us":708552875,"personality":"pro2","kind":"bulk_response","dir":"device_to_console","id":1,"sub":5,"length":69,"captured":69,"payload":"0101000500F8000009000000010103000704988B22AB1F90000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"}
+{"trace":"record","seq":4,"t_us":708553443,"personality":"pro2","kind":"bulk_command","dir":"console_to_device","id":1,"sub":4,"length":8,"captured":8,"payload":"0191000400000000"}
+{"trace":"record","seq":5,"t_us":708553456,"personality":"pro2","kind":"bulk_response","dir":"device_to_console","id":1,"sub":4,"length":8,"captured":8,"payload":"0104000400F80000"}
+{"trace":"record","seq":6,"t_us":708617764,"personality":"pro2","kind":"bulk_command","dir":"console_to_device","id":1,"sub":3,"length":13,"captured":13,"payload":"019100030005000000E8032C01"}
+{"trace":"record","seq":7,"t_us":708617789,"personality":"pro2","kind":"bulk_response","dir":"device_to_console","id":1,"sub":3,"length":8,"captured":8,"payload":"0104000300F80000"}
+{"trace":"record","seq":8,"t_us":708672939,"personality":"pro2","kind":"bulk_command","dir":"console_to_device","id":1,"sub":5,"length":8,"captured":8,"payload":"0191000500000000"}
+{"trace":"record","seq":9,"t_us":708672970,"personality":"pro2","kind":"bulk_response","dir":"device_to_console","id":1,"sub":5,"length":69,"captured":69,"payload":"0101000500F8000009000000010103000704988B22AB1F90000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"}
+{"trace":"record","seq":10,"t_us":708673423,"personality":"pro2","kind":"bulk_command","dir":"console_to_device","id":1,"sub":4,"length":8,"captured":8,"payload":"0191000400000000"}
+{"trace":"record","seq":11,"t_us":708673449,"personality":"pro2","kind":"bulk_response","dir":"device_to_console","id":1,"sub":4,"length":8,"captured":8,"payload":"0104000400F80000"}
+{"trace":"record","seq":12,"t_us":710771203,"personality":"pro2","kind":"bulk_command","dir":"console_to_device","id":1,"sub":3,"length":13,"captured":13,"payload":"01910003000500000000002C01"}
+{"trace":"record","seq":13,"t_us":710771231,"personality":"pro2","kind":"bulk_response","dir":"device_to_console","id":1,"sub":3,"length":8,"captured":8,"payload":"0104000300F80000"}
+{"trace":"record","seq":14,"t_us":710830995,"personality":"pro2","kind":"bulk_command","dir":"console_to_device","id":1,"sub":4,"length":8,"captured":8,"payload":"0191000400000000"}
+{"trace":"record","seq":15,"t_us":710831021,"personality":"pro2","kind":"bulk_response","dir":"device_to_console","id":1,"sub":4,"length":8,"captured":8,"payload":"0104000400F80000"}
+{"trace":"end","records":16,"overwritten":0}

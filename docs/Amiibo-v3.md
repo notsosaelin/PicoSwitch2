@@ -1,8 +1,8 @@
 # amiibo v3 (NTAG I2C Plus 2K) — complete working file
 
-Status: 🔴 **Blocked on one unknown** — the console-facing tag-type signal.
-Everything else (storage, persistence, framing, crypto, page serving) is 🔵 built and
-verified. Last updated: 2026-07-27.
+Status: 🔴 **PARKED 2026-07-27** — blocked on one unknown: the console-facing
+tag-type signal. Everything else (storage, persistence, framing, crypto, page
+serving) is ✅ built, verified and left in place. Resume from §13.
 
 This is the consolidated working document for Kirby Air Riders "Figure Player" amiibo
 support in PicoSwitch2. It supersedes scattered notes; see also
@@ -430,3 +430,83 @@ Confirmed independently: ndeadly's `commands.md` shows a genuine Pro Controller 
 
 This is a real path to **parity**, not a compatibility shim: the console would be
 reading the tag as the 2 KB part it is, including the machine block.
+
+
+---
+
+## 13. PARKED — final state, and where to resume
+
+### What is finished and working ✅
+
+- **2048-byte v3 store** with flash persistence, mutually exclusive with the
+  540/572 store, surviving power cycles and mode changes.
+- **Flash layout fixed** (this was a real, serious bug): amiibo journal bank 0 sat
+  on top of BTstack's TLV region on RP2350, so writing a tag destroyed the
+  Bluetooth bonds and BTstack destroyed the stored tag. Banks moved to `SIZE-6S` /
+  `SIZE-5S`, asserts now check `PICO_FLASH_BANK_STORAGE_OFFSET`.
+- **Durable v3 uploads**: `amiibo persist` used to be a silent no-op for v3
+  (it gated on the 540 store's `loaded` flag) and the portal never called it.
+- **Serve path**: full read state machine, descriptor-driven page ranges,
+  `SRAM_RF_READY` injection, byte-exact chunk framing (verified 0 mismatches
+  against the source dump).
+- **Crypto**: all 16 Kirby dumps verified **HMAC-valid** with the owner's
+  `key_retail.bin`, using the v3 (+0x40) offsets.
+- **RE tooling**, all runtime-switchable over UART with the dongle attached:
+  `v3mode`, `v3probe`, `v3hdr`, `v3reply`, `amiibo journal`, and 72-byte trace
+  capture.
+
+### The single blocker
+
+The console decides which tag pages to request **before** any read, and always
+asks for the NTAG215 set (`00-3b, 3c-77, 78-86` = 540 bytes). A v3 tag's encrypted
+region ends at `0x248` (584 bytes), so that read can never validate one, and the
+console never issues the SRAM sequence that carries the machine block.
+
+### Exhaustively eliminated (every field a controller can influence)
+
+| Field | Result |
+|---|---|
+| `status[16..60]` | **Ignored** — all 45 bytes set to `0xFF`, descriptor and read byte-identical |
+| `status[4]` | NCI RF Discovery ID — `02` hard-crashes the console |
+| `status[5]` | NCI RF Interface — no effect on the descriptor |
+| `status[6]` | Tag IC family (jc_toolkit `buf[62]`) — **must be `0x02`**; `03` makes the console abort before `0x06` |
+| `status[7]` | NCI RF Tech/Mode — `01`/`03` crash, `02` aborts the read |
+| `prefix[18]` | jc_toolkit's NTAG model byte — **no effect on Switch 2** |
+| `0x0C` reply | Matched a genuine PC2 byte-for-byte (`61 12 50 0d`) — no effect |
+| Capability container | `F1 10 FF EE` on **both** 540 and v3 tags — cannot discriminate |
+| Controller firmware version | Ruled out: amiibo work on un-updated controllers |
+
+The `0x05` status is a condensed **NCI `RF_INTF_ACTIVATED_NTF`** passthrough from
+the controller's **PN7160** front-end. An NTAG I2C 2K is also T2T / NFC_A-passive,
+so that structure is **identical for both chips and can never distinguish them**.
+
+### Approaches rejected (do not retry)
+
+- **Serving a v3 tag as a 540-byte amiibo** (compat view, or re-signed with the
+  owner's keys via `tools/amiibo_v3_to_540_resign.mjs`). Both produce
+  cryptographically valid tags, and both are wrong in principle: the rider
+  figurine does not scan at all without its machine — the machine is the antenna
+  *and* holds the I2C device that answers the SRAM pass-through. A rider-only
+  540 tag is not a degraded Kirby amiibo, it is not one.
+- **Restoring the 60-byte prefix in front of a 1024-byte payload** — exceeds the
+  console's ~1050-byte read window, `last=1` never arrives.
+- **Sweeping enum values by crash-oracle** — unbounded, and each wrong value hard
+  crashes the console (`2011-0301`).
+
+### Useful context
+
+`2115-0176` is the console's **generic "this tag failed validation"**, not a
+tag-type rejection: r/Switch `1pvfm1v` documents a **genuine retail** Kirby amiibo
+producing the identical symptoms (`2115-0176` in-game, "Not an amiibo" in System
+Settings) across multiple Switch 2s — it was simply a defective tag.
+
+### To resume
+
+The one thing that would unblock this is **observing a genuine controller read a
+genuine v3 amiibo once** — the repo already has the instrument for it
+(`nfcmirror`, `src/bt_hid/bt/btstack/btstack_host.c`), which forwards the console's
+NFC commands to a paired genuine Pro Controller 2 and returns its real replies to
+the tracer. Requirements: a genuine Switch 2 controller over BT, `nfcmirror on`,
+and the virtual slot **ejected** so the local serve path does not intercept.
+That capture would show the real tag-type signal directly, and everything else is
+already built to act on it.
