@@ -1003,6 +1003,33 @@ equality — the MotionPlus destroys them and they are refilled from the next bi
 
 Not hardware validated.
 
+### 7.2.2 Diagnosing "tilt works, turning does not" (2026-07-27)
+
+Reported on hardware: slow up/down response, **no left/right turning at all**.
+
+That symptom is diagnostic, and it is not an axis-mapping bug. **Gravity carries no yaw
+information** — rotating about the gravity vector does not change the measured vector — so an
+accelerometer alone can produce pitch and roll but never yaw. Slow tilt with dead horizontal
+turning is precisely what the console produces from accel with the gyro at zero.
+
+The axis mapping was checked against §4.5 and §6.8 and is structurally correct: Wii X/Y/Z are
+lateral / longitudinal / face-normal, the DualSense frame is lateral / face-normal / longitudinal,
+the remount `accel = [wiiX, wiiZ, wiiY]` matches type for type, and Dolphin's `sign_fix (-1, +1,
+-1)` on (pitch, roll, yaw) is applied. So look at whether the gyro is live before touching signs.
+
+**Check the UART log first.** `[WIIMOTE] MotionPlus present (integrated=N)` then `[WIIMOTE]
+MotionPlus active (mode XX)` must both appear. If the second is missing, activation never
+completed and the driver is publishing `has_motion = true` with `gyro = {0,0,0}` — accel-only
+motion, exactly the reported symptom. Mode `0x04` = MotionPlus only, `0x05` = Nunchuk passthrough,
+`0x07` = Classic passthrough.
+
+**Fixed alongside this:** `mp_have_sample` was set once and never cleared, so a MotionPlus that
+stopped answering (unplugged, activation lost, reconnect) left its final rate republished forever.
+Because the console integrates rate, a stuck non-zero sample spins the camera without end. There
+is now a 250 ms staleness gate (generous against the ~50 Hz per-source passthrough rate of §7.3)
+that clears the gyro and logs `MotionPlus samples stopped`, plus a full reset of the motion state
+on connect so nothing survives a reconnect.
+
 ### 7.3 Effective rates
 
 In a passthrough mode, MotionPlus and extension frames alternate, so each source arrives at **half**
