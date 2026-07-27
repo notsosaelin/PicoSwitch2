@@ -255,10 +255,24 @@ there "made the console's gravity correction bleed one axis into another".
 **Determinant.** A sensor remount is a rotation, never a reflection, so the signed permutation must
 have determinant +1. The Switch 1 permutation is cyclic (sign +1), so the determinant reduces to
 `pitch × yaw × roll`, which must equal +1 — **signs flip in pairs, never singly.** A lone flip is
-not a physically realizable orientation and reintroduces the mirrored-frame bug. This is why the
-Pro's roll is `-1`: yaw was confirmed correct and pitch had to invert, so roll follows by the
-invariant rather than by independent measurement. It was wrong before and had simply never been
-exercised, roll being the least-used aiming axis.
+not a physically realizable orientation and reintroduces the mirrored-frame bug.
+
+> ⚠️ **Correction, 2026-07-27 (same day).** The paragraph that previously followed concluded from
+> this invariant that the Pro's roll "must" be `-1`. **Hardware refuted it:** that build killed
+> horizontal aim completely. The invariant itself stands, but it constrains the answer without
+> determining it — and the deeper error was assuming the *index permutation* was known and only the
+> signs were in doubt. §8 above only ever claimed the axes map "roughly", and told us to measure.
+> The full trace, the corrected symptom table, and a gravity-based measurement protocol that
+> determines permutation and signs together now live in
+> [`switch1-to-switch2-motion-spec.md`](switch1-to-switch2-motion-spec.md). The sign table in
+> `switch_pro_bt.c` has been returned to the identity pending that measurement.
+>
+> One correction to the mechanism described just above, from reading the translator: the quaternion
+> translator does **not** fuse accelerometer data at all — it `memcpy`s accel straight into the PDU.
+> The gravity correction that produces the drift-then-snap symptom happens on the **console**, which
+> also uses our accel to decide which way "up" is. That is why a wrong accel frame can kill
+> *horizontal* aim, which a purely local gravity-correction model does not predict. See spec §4
+> Stage 4/6 and §5.
 
 Both rules are enforced in code rather than by comment: the publish path is a single loop over the
 three slots writing accel and gyro together, so a sign cannot reach one without the other, and a
@@ -266,8 +280,14 @@ three slots writing accel and gyro together, so a sign cannot reach one without 
 
 ## 11. Remaining work
 
+0. 🔴 **Measure `R_sw1` — the sensor-frame remount — for the Pro.** This is the blocker for correct
+   motion and the only genuinely unknown quantity left in the path. Run the three-pose gravity
+   protocol in [`switch1-to-switch2-motion-spec.md`](switch1-to-switch2-motion-spec.md) §8, which
+   determines the index permutation and the signs together from static readings on a DualSense and
+   a Switch 1 Pro. The sign table is the identity until then; do not adjust an individual axis in
+   response to a symptom.
 1. 🟡 **Verify Joy-Con axis signs on hardware** (§8). JC-L (`0x2006`) and JC-R (`0x2007`)
-   currently inherit the Pro's signs in `sw1_gyro_signs_for()`. §8 is explicit that the two halves
+   currently inherit the Pro's signs in `sw1_axis_signs_for()`. §8 is explicit that the two halves
    mount the IMU mirrored, so at least one axis is likely inverted on at least one half. Test:
    pitch/yaw/roll each half in isolation and compare on-screen direction against the Pro.
 2. ⬜ **Horizontal offset `0x6080`** (§7.3) is not read. It affects the resting orientation
