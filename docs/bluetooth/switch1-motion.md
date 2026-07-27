@@ -181,44 +181,66 @@ signs/scale there if a value looks off.
   frames' own cadence is the fixed 5 ms; prefer the 5 ms spacing for per-frame integration and the
   timer only as a drop/gap check.
 
-## 10. PicoSwitch2 current state (audited)
+## 10. PicoSwitch2 current state (implemented 2026-07-26/27)
 
-**Present:**
-- Full-report negotiation: `switch_pro_bt.c` sets input mode `0x30` and parses the `0x30` report's
-  buttons/sticks (`switch_pro_bt.c:378-399`), and defines `SWITCH_SUBCMD_ENABLE_IMU 0x40`
-  (`:34`).
-- A motion carrier in the normalized event (`input_event.h:249-253`): `int16_t accel[3]`,
-  `int16_t gyro[3]`, `uint16_t gyro_range` (dps), `uint16_t accel_range` (milli-g), `bool
-  has_motion` — shared with the DS3/DS4/DS5 paths.
+Status: ✅ **Implemented and hardware-validated** for the Switch 1 Pro Controller in Pro
+Controller 2 personality. Joy-Con halves stream motion but their axis signs are 🟡 unverified
+(§8).
 
-**Missing (the entire Switch-1 motion path):**
-1. **IMU never enabled.** The init state machine is `WAIT_READY → SET_INPUT_MODE → ENABLE_VIBRATION
-   → SET_PLAYER_LED → ACTIVE` (`switch_pro_bt.c:128-136`) — there is **no ENABLE_IMU step**, so
-   `0x40` is defined but never sent.
-2. **Motion never parsed.** The `0x30` handler reads no bytes in the 13–48 range; no
-   `gyro`/`accel`/`has_motion` assignment exists in the file.
-3. **No SPI calibration read.** There is no subcommand-`0x10` path, so factory/user calibration
-   (`0x6020`/`0x8026`) is never fetched — motion would be uncalibrated even once parsed.
-4. **Ranges not set** for Switch-1 (would fall to the DS4/DS5 defaults, wrong units without §7).
+All of it lives in `src/bt_hid/bt/bthid/devices/vendors/nintendo/switch_pro_bt.c`:
 
-## 11. Implementation checklist (so there are no blockers)
+| Piece | Where | Status |
+|---|---|---|
+| `ENABLE_IMU` init step (subcommand `0x40` arg `0x01`) | `SWITCH_STATE_ENABLE_IMU` | ✅ |
+| SPI read of factory cal `0x6020` (24 B) | `SWITCH_STATE_READ_FACTORY_CAL` → `switch_spi_read()` | ✅ |
+| SPI read of user cal `0x8026` (26 B, magic `B2 A1`) | `SWITCH_STATE_READ_USER_CAL` | ✅ |
+| Report `0x21` reply parse into `sw1_imu_cal_t` | `switch_parse_spi_reply()` / `sw1_parse_imu_cal()` | ✅ |
+| Three-frame IMU decode + per-axis mean | `sw1_average_imu()` | ✅ |
+| §7.4 conversion folded into the interchange scale | motion publish in `switch_process_report()` | ✅ |
+| Per-device axis signs | `sw1_gyro_signs_for()` | 🟡 Pro verified, Joy-Con inherited |
+| Provenance tag so the quaternion translator is selected | `SWITCH_MOTION_SOURCE_SWITCH1` | ✅ |
 
-1. **Add an `ENABLE_IMU` state** to the init machine: send subcommand `0x40` arg `0x01` (after
-   set-mode `0x03`/`0x30`). Optionally `0x41` for explicit range/rate.
-2. **Add a subcommand-`0x10` SPI read** step: fetch `0x6020` (24 B factory) and check `0x8026`
-   magic `B2 A1` → if present read `0x8028` (24 B user); optionally `0x6080` (6 B horizontal).
-3. **Parse the calibration** into per-axis `origin`/`sensitivity` (accel + gyro).
-4. **Parse the `0x30` IMU block**: three frames at bytes 13–24 / 25–36 / 37–48, each `accel[XYZ]`
-   + `gyro[XYZ]` int16 LE.
-5. **Apply §7.4** per axis/frame → calibrated g and deg/s; set `gyro_range = 2000`,
-   `accel_range = 8000` (Switch-1 is ±8 g, unlike the DualSense's ±4 g).
-6. **Verify per-device axis signs empirically** (§8) for JC-L, JC-R, and Pro before any downstream
-   remap.
-7. **(Optional)** feed all three frames per report for smooth ~200 Hz integration; add rest-based
-   drift correction (see `dualsense-motion.md` §11).
+Two design points worth keeping in mind before changing any of it:
 
-Every step is Switch-1-local and testable in isolation (log calibrated g/deg-s while moving the
-controller); none depends on any output personality.
+**Calibration is optional, not required.** `sw1_imu_cal_t.valid` gates the calibrated path. If the
+SPI reads never arrive, or the block is erased flash (`0xFF`), or any origin/sensitivity span is
+zero, `sw1_parse_imu_cal()` rejects it and the nominal constants of §6 are used instead. Motion
+therefore works on the first report, before the SPI round-trip completes, and degrades to
+"slightly wrong scale" rather than "divide by zero" or "no motion".
+
+**The §6 disagreement was settled by hardware, not by the datasheet.** The nominal reading (±2000
+dps over the full int16 → raw passes through unscaled) under-reported rate on real hardware: the
+controller needed noticeably more movement than a DualSense for the same on-screen result. The
+LSM6DS3 `0.070` dps/count figure is the one that matches, and it is also what a typical factory
+block implies (`936/(sens-origin) ≈ 936/13371 ≈ 0.070`). The fallback constants encode that as
+`raw × 1147/1000`. The calibrated path makes this moot per-unit, which is the whole reason it
+exists.
+
+**Why the mean of three frames.** Each `0x30` report carries three IMU frames 5 ms apart spanning
+the report interval. The downstream encoder integrates angular phase over real elapsed time, so
+the representative rate for that interval is the mean; using only the newest frame discards two
+thirds of the samples and under-integrates fast motion.
+
+**Motion is routed to the quaternion translator, not the generic phase encoder.** Provenance
+(`SWITCH_MOTION_SOURCE_SWITCH1`) is set in `ns2_seam.c` from the bound decoder and consumed in
+`switch_pro2.c`. The generic encoder produced the violent output first seen on hardware; this is
+the same known-bad path the DualSense work already diagnosed. Do not route a new IMU family
+through it without checking that first.
+
+## 11. Remaining work
+
+1. 🟡 **Verify Joy-Con axis signs on hardware** (§8). JC-L (`0x2006`) and JC-R (`0x2007`)
+   currently inherit the Pro's signs in `sw1_gyro_signs_for()`. §8 is explicit that the two halves
+   mount the IMU mirrored, so at least one axis is likely inverted on at least one half. Test:
+   pitch/yaw/roll each half in isolation and compare on-screen direction against the Pro.
+2. ⬜ **Horizontal offset `0x6080`** (§7.3) is not read. It affects the resting orientation
+   reference rather than rate, so it matters for pointer-style use, not for the current
+   phase-integrating encoder. Low priority until something needs absolute attitude.
+3. ⬜ **Subcommand `0x41`** (explicit IMU range/rate) is never sent; the controller's defaults are
+   accepted. Worth revisiting only if a unit is found that does not default to ±2000 dps / 208 Hz.
+4. ⬜ **No log of which calibration source won.** `switch_parse_spi_reply()` prints on success, but
+   there is no runtime command to dump the parsed origins/sensitivities. A `input cal` UART verb
+   would make the next axis-sign investigation much cheaper.
 
 ## 12. References
 

@@ -24,11 +24,13 @@
 // Report IDs
 #define SWITCH_REPORT_INPUT_STANDARD    0x30    // Standard full input report
 #define SWITCH_REPORT_INPUT_SIMPLE      0x3F    // Simple HID mode
+#define SWITCH_REPORT_SUBCMD_REPLY      0x21    // Input report + subcommand reply
 #define SWITCH_REPORT_OUTPUT            0x01    // Output report with subcommand
 #define SWITCH_REPORT_RUMBLE_ONLY       0x10    // Rumble only (no subcommand)
 
 // Subcommands
 #define SWITCH_SUBCMD_SET_INPUT_MODE    0x03
+#define SWITCH_SUBCMD_SPI_READ          0x10    // read internal flash (IMU cal)
 #define SWITCH_SUBCMD_SET_PLAYER_LED    0x30
 #define SWITCH_SUBCMD_SET_HOME_LED      0x38
 #define SWITCH_SUBCMD_ENABLE_IMU        0x40
@@ -130,6 +132,8 @@ typedef enum {
     SWITCH_STATE_WAIT_READY,        // Wait before sending first subcommand
     SWITCH_STATE_SET_INPUT_MODE,    // Send set input mode (0x03 → 0x30)
     SWITCH_STATE_ENABLE_IMU,        // Send enable 6-axis IMU (0x40 → 0x01)
+    SWITCH_STATE_READ_FACTORY_CAL,  // Send SPI read of the factory IMU cal
+    SWITCH_STATE_READ_USER_CAL,     // Send SPI read of the user IMU cal
     SWITCH_STATE_ENABLE_VIBRATION,  // Send enable vibration (0x48 → 0x01)
     SWITCH_STATE_SET_PLAYER_LED,    // Send player LED (0x30)
     SWITCH_STATE_ACTIVE,            // Init complete, monitor feedback
@@ -138,6 +142,15 @@ typedef enum {
 // ============================================================================
 // DRIVER DATA
 // ============================================================================
+
+// Factory/user IMU calibration read out of SPI flash (see 7 below).
+typedef struct {
+    int16_t accel_origin[3];
+    int16_t accel_sens[3];
+    int16_t gyro_origin[3];
+    int16_t gyro_sens[3];
+    bool valid;
+} sw1_imu_cal_t;
 
 typedef struct {
     input_event_t event;
@@ -148,6 +161,7 @@ typedef struct {
     uint32_t init_time;     // Timestamp for init delays
     uint8_t rumble_left;    // Cached rumble state
     uint8_t rumble_right;
+    sw1_imu_cal_t imu_cal;  // from SPI flash; falls back to nominal when absent
 } switch_bt_data_t;
 
 static switch_bt_data_t switch_data[BTHID_MAX_DEVICES];
@@ -368,6 +382,18 @@ static bool switch_init(bthid_device_t* device)
     return false;
 }
 
+// Request `len` bytes from SPI flash at `addr` (subcommand 0x10). The reply
+// comes back in report 0x21 and is parsed by switch_parse_spi_reply().
+static void switch_spi_read(bthid_device_t* device, uint32_t addr, uint8_t len)
+{
+    uint8_t args[5] = {
+        (uint8_t)(addr & 0xFF), (uint8_t)((addr >> 8) & 0xFF),
+        (uint8_t)((addr >> 16) & 0xFF), (uint8_t)((addr >> 24) & 0xFF),
+        len
+    };
+    switch_send_subcommand(device, SWITCH_SUBCMD_SPI_READ, args, sizeof(args));
+}
+
 // ============================================================================
 // MOTION (docs/bluetooth/switch1-motion.md)
 // ============================================================================
@@ -403,6 +429,28 @@ static bool switch_init(bthid_device_t* device)
 #define SW1_GYRO_SCALE_NUM 1147
 #define SW1_GYRO_SCALE_DEN 1000
 
+// ---- SPI-flash factory/user calibration (§7) --------------------------------
+// Subcommand 0x10 reads the controller's internal flash. The reply arrives in
+// report 0x21 as: [13]=ACK, [14]=echoed subcommand, [15..18]=address (u32 LE),
+// [19]=length, [20..]=data. (SWITCH_SUBCMD_SPI_READ is declared with the other
+// subcommand ids at the top of the file.)
+#define SW1_SPI_FACTORY_IMU_ADDR    0x6020u   // 24 B: accel origin/sens, gyro origin/sens
+#define SW1_SPI_USER_IMU_ADDR       0x8026u   // 2 B magic (B2 A1) + the same 24 B
+#define SW1_SPI_IMU_CAL_LEN         24u
+#define SW1_SPI_USER_IMU_LEN        26u
+
+// Reference constants from the factory-cal conditions (§7.4). Note the
+// asymmetry: gyro subtracts its origin (a zero-rate offset) then scales, while
+// accel scales about its origin/sensitivity span.
+//   acc_g    = raw * 4.0 / (acc_sens - acc_origin)
+//   gyro_dps = (raw - gyro_origin) * 936.0 / (gyro_sens - gyro_origin)
+// Folded into the interchange scale (accel 8192/g, gyro 16.384 counts/dps) so
+// the hot path stays integer-only:
+//   accel_interchange = raw * 32768 / (acc_sens - acc_origin)
+//   gyro_interchange  = (raw - gyro_origin) * 15335 / (gyro_sens - gyro_origin)
+#define SW1_ACCEL_CAL_NUM 32768   // 4.0 g-span * 8192 counts/g
+#define SW1_GYRO_CAL_NUM  15335   // 936 dps * 16.384 counts/dps
+
 // Per-device axis signs, applied AFTER the fixed index remount below.
 // §8 is explicit that the two Joy-Con halves mount the IMU mirrored and that the
 // Pro differs again, so a single table cannot serve all three and the values
@@ -437,6 +485,55 @@ static int16_t sw1_rd16(const uint8_t* p)
     return (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
 }
 
+// Decode a 24-byte IMU calibration payload: four groups of three int16 LE, in
+// the order accel origin, accel sensitivity, gyro origin, gyro sensitivity
+// (§7.1). The same layout serves the factory and user blocks.
+static bool sw1_parse_imu_cal(const uint8_t* p, sw1_imu_cal_t* cal)
+{
+    for (int i = 0; i < 3; i++) {
+        cal->accel_origin[i] = sw1_rd16(p +  0 + i * 2);
+        cal->accel_sens[i]   = sw1_rd16(p +  6 + i * 2);
+        cal->gyro_origin[i]  = sw1_rd16(p + 12 + i * 2);
+        cal->gyro_sens[i]    = sw1_rd16(p + 18 + i * 2);
+    }
+    // A span of zero would divide by zero and an all-0xFF block is erased
+    // flash, not calibration; reject both so the nominal fallback is used.
+    for (int i = 0; i < 3; i++) {
+        if (cal->accel_sens[i] - cal->accel_origin[i] == 0) return false;
+        if (cal->gyro_sens[i]  - cal->gyro_origin[i]  == 0) return false;
+    }
+    cal->valid = true;
+    return true;
+}
+
+// Handle a subcommand reply (report 0x21). Layout: [13]=ACK, [14]=echoed
+// subcommand, [15..18]=address u32 LE, [19]=length, [20..]=data.
+static void switch_parse_spi_reply(switch_bt_data_t* sw, const uint8_t* data,
+                                   uint16_t len)
+{
+    if (len < 21 || data[14] != SWITCH_SUBCMD_SPI_READ) return;
+    const uint32_t addr = (uint32_t)data[15] | ((uint32_t)data[16] << 8) |
+                          ((uint32_t)data[17] << 16) | ((uint32_t)data[18] << 24);
+    const uint8_t  n    = data[19];
+    const uint8_t* body = &data[20];
+    if (len < 20u + n) return;
+
+    if (addr == SW1_SPI_FACTORY_IMU_ADDR && n >= SW1_SPI_IMU_CAL_LEN) {
+        if (sw1_parse_imu_cal(body, &sw->imu_cal))
+            printf("[SWITCH_BT] IMU factory calibration loaded\n");
+    } else if (addr == SW1_SPI_USER_IMU_ADDR && n >= SW1_SPI_USER_IMU_LEN) {
+        // Magic B2 A1 means a user calibration is present and takes precedence
+        // over the factory block (§7.2); otherwise keep what we already have.
+        if (body[0] == 0xB2 && body[1] == 0xA1) {
+            sw1_imu_cal_t user;
+            if (sw1_parse_imu_cal(body + 2, &user)) {
+                sw->imu_cal = user;
+                printf("[SWITCH_BT] IMU user calibration loaded (overrides factory)\n");
+            }
+        }
+    }
+}
+
 // Mean of the three frames, per axis, in raw counts.
 static void sw1_average_imu(const uint8_t* data, int32_t accel[3], int32_t gyro[3])
 {
@@ -460,6 +557,15 @@ static void switch_process_report(bthid_device_t* device, const uint8_t* data, u
     if (!sw || len < 1) return;
 
     uint8_t report_id = data[0];
+
+    // Subcommand replies (0x21) carry the SPI-flash calibration we requested
+    // during init. The report also repeats buttons/sticks, but those are already
+    // served by 0x30 once full report mode is active, so only the reply payload
+    // is consumed here.
+    if (report_id == SWITCH_REPORT_SUBCMD_REPLY) {
+        switch_parse_spi_reply(sw, data, len);
+        return;
+    }
 
     if (report_id == SWITCH_REPORT_INPUT_STANDARD && len >= 13) {
         // Full input report (0x30)
@@ -551,17 +657,33 @@ static void switch_process_report(bthid_device_t* device, const uint8_t* data, u
             sw1_average_imu(data, a, g);
 
             const sw1_gyro_signs_t s = sw1_gyro_signs_for(device->product_id);
-            // Raw counts -> interchange scale, then the per-device sign.
-            const int32_t gp = (g[1] * SW1_GYRO_SCALE_NUM) / SW1_GYRO_SCALE_DEN;
-            const int32_t gy = (g[2] * SW1_GYRO_SCALE_NUM) / SW1_GYRO_SCALE_DEN;
-            const int32_t gr = (g[0] * SW1_GYRO_SCALE_NUM) / SW1_GYRO_SCALE_DEN;
 
-            sw->event.accel[0] = sw1_clamp16(a[1] * SW1_ACCEL_TO_SINPUT); // lateral
-            sw->event.accel[1] = sw1_clamp16(a[2] * SW1_ACCEL_TO_SINPUT); // up
-            sw->event.accel[2] = sw1_clamp16(a[0] * SW1_ACCEL_TO_SINPUT); // forward
-            sw->event.gyro[0]  = sw1_clamp16(gp * s.pitch);   // pitch
-            sw->event.gyro[1]  = sw1_clamp16(gy * s.yaw);     // yaw
-            sw->event.gyro[2]  = sw1_clamp16(gr * s.roll);    // roll
+            // Per-unit calibration when SPI flash gave us one, else the nominal
+            // fallback. Calibrated form (§7.4) folded into the interchange
+            // scale, integer-only:
+            //   accel = raw * 32768 / (acc_sens - acc_origin)
+            //   gyro  = (raw - gyro_origin) * 15335 / (gyro_sens - gyro_origin)
+            int32_t ax[3], gx[3];
+            if (sw->imu_cal.valid) {
+                for (int i = 0; i < 3; i++) {
+                    ax[i] = (a[i] * SW1_ACCEL_CAL_NUM) /
+                            (sw->imu_cal.accel_sens[i] - sw->imu_cal.accel_origin[i]);
+                    gx[i] = ((g[i] - sw->imu_cal.gyro_origin[i]) * SW1_GYRO_CAL_NUM) /
+                            (sw->imu_cal.gyro_sens[i] - sw->imu_cal.gyro_origin[i]);
+                }
+            } else {
+                for (int i = 0; i < 3; i++) {
+                    ax[i] = a[i] * SW1_ACCEL_TO_SINPUT;
+                    gx[i] = (g[i] * SW1_GYRO_SCALE_NUM) / SW1_GYRO_SCALE_DEN;
+                }
+            }
+
+            sw->event.accel[0] = sw1_clamp16(ax[1]);          // lateral
+            sw->event.accel[1] = sw1_clamp16(ax[2]);          // up
+            sw->event.accel[2] = sw1_clamp16(ax[0]);          // forward
+            sw->event.gyro[0]  = sw1_clamp16(gx[1] * s.pitch);  // pitch
+            sw->event.gyro[1]  = sw1_clamp16(gx[2] * s.yaw);    // yaw
+            sw->event.gyro[2]  = sw1_clamp16(gx[0] * s.roll);   // roll
 
             sw->event.gyro_range  = 2000;   // interchange full scale
             sw->event.accel_range = 8000;   // Switch-1 is ±8 g natively
@@ -653,6 +775,29 @@ static void switch_task(bthid_device_t* device)
             break;
 
         case SWITCH_STATE_ENABLE_IMU:
+            if (now - sw->init_time >= SWITCH_INIT_DELAY_MS) {
+                // Factory IMU calibration. Accurate motion needs the per-unit
+                // origin/sensitivity pairs; the nominal scales are only a
+                // fallback (§7). The reply arrives in report 0x21.
+                switch_spi_read(device, SW1_SPI_FACTORY_IMU_ADDR,
+                                SW1_SPI_IMU_CAL_LEN);
+                sw->init_state = SWITCH_STATE_READ_FACTORY_CAL;
+                sw->init_time = now;
+            }
+            break;
+
+        case SWITCH_STATE_READ_FACTORY_CAL:
+            if (now - sw->init_time >= SWITCH_INIT_DELAY_MS) {
+                // User calibration overrides factory when its magic is present.
+                // Read magic + payload in one go (§7.2).
+                switch_spi_read(device, SW1_SPI_USER_IMU_ADDR,
+                                SW1_SPI_USER_IMU_LEN);
+                sw->init_state = SWITCH_STATE_READ_USER_CAL;
+                sw->init_time = now;
+            }
+            break;
+
+        case SWITCH_STATE_READ_USER_CAL:
             if (now - sw->init_time >= SWITCH_INIT_DELAY_MS) {
                 printf("[SWITCH_BT] Sending enable vibration\n");
                 uint8_t enable = 0x01;
