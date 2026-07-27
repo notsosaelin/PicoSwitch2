@@ -247,3 +247,92 @@ read would likely present the amiibo without its machine.
   "not an amiibo".
 - The amiibo identity/format bytes are inside the signed region — they cannot be
   rewritten to masquerade as v2.
+
+---
+
+## 11. BREAKTHROUGH (2026-07-27): `status[7]` is the NTAG **model** byte
+
+Found by cross-referencing **CTCaer/jc_toolkit** (`jctool.cpp`), which implements the
+Switch 1 MCU NFC read. Its tag-detected parser:
+
+```
+buf[56]: MCU/NFC state   (0x09 = Tag detected)
+buf[62]: nfc tag IC      (0x02 = NTAG, else MIFARE)
+buf[63]: nfc tag Type
+buf[64]: UID size
+buf[65..]: UID
+```
+
+Our Switch 2 `0x05` status payload aligns on **four independent anchors**:
+
+| ours | value | Switch 1 |
+|---|---|---|
+| `[0]` | `09` | `buf[56]` state = Tag detected |
+| `[6]` | `02` | `buf[62]` tag IC = **NTAG** |
+| `[7]` | `00` | `buf[63]` tag Type / **model** |
+| `[8]` | `07` | `buf[64]` UID size |
+| `[9..]` | UID | `buf[65..]` |
+
+And jc_toolkit derives the page count — and therefore the **block ranges** — from the
+model byte:
+
+```c
+if (tag_type == 2) {                    // NTAG
+    switch (model) {
+        case 0: ntag_pages = 135; break;   // NTAG215
+        case 3: ntag_pages = 45;  break;   // NTAG213
+        case 4: ntag_pages = 231; break;   // NTAG216
+    }
+}
+```
+
+| pages | block ranges built |
+|---|---|
+| 45 | `00-2c` |
+| **135** | **`00-3b, 3c-77, 78-86`** ← byte-identical to what our console requests |
+| 231 | `00-3b, 3c-77, 78-b3, b4-e6` |
+
+**This closes the loop.** We report model `0x00`, so the console builds the NTAG215
+135-page (540-byte) read — the exact ranges we have seen in every single trace. It
+explains the whole `status[7]` matrix:
+
+| `[7]` | model | observed |
+|---|---|---|
+| `00` | NTAG215, 135 pages | reads 540 B ✓ |
+| `01` | invalid | hard crash |
+| `02` | invalid | refuses to read |
+| `03` | NTAG213, 45 pages | crash — 180 B is too little to parse as an amiibo |
+| **`04`** | **NTAG216, 231 pages = 924 B** | **NEVER TESTED** |
+
+### Why `[7] = 0x04` is the experiment to run
+
+- 231 pages = **924 bytes**, and the v3 amiibo crypto region ends at `0x248` (584 B) —
+  fully covered, unlike the 540-byte NTAG215 read which falls 40 bytes short.
+- 60-byte prefix + 924 = **984 bytes**, comfortably under the console's measured
+  ~1050-byte read window, so `last=1` will land properly.
+- Serve **raw v3 pages** (`v3mode 0`) and the console's own documented
+  backwards-compatibility path — xSke: *"the NFC sysmodule does have handling for
+  skipping the extra data chunks and reading standard Amiibo data from the right
+  offsets"* — can do the `0x40` unshift itself.
+- Config pages `0xE2`–`0xE6` (which v3 moved) sit at bytes `0x388`–`0x39B`, **inside**
+  the 924-byte window.
+
+**Commands:** `v3mode 0` then `v3probe 7 04`, scan, dump. Expect the `0x06` descriptor
+to change to **4 blocks** ending `b4-e6` — that alone confirms the mechanism even if
+validation still fails.
+
+**Caveat:** the NTAG216 range stops at page `0xE6`; the SRAM buffer (`0xF0`-`0xFF`)
+is still not requested, so the machine/Figure Player remains out of reach. Rider
+recognition is the realistic win. If a dedicated NTAG I2C 2K model value exists it
+would be some value > 4, and the same probe sweeps it.
+
+### Crypto is fully ruled out (verified with the owner's `key_retail.bin`)
+
+| dump | v3 offsets | compat540 view |
+|---|---|---|
+| all four riders | **HMAC VALID** | **HMAC VALID** |
+| control 540 amiibo | VALID | — |
+
+The dumps are genuinely signed, and the compat view we served was a cryptographically
+perfect standard amiibo. The rejection was never about crypto — it was always about
+the console not being told to read enough of the tag.
