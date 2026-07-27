@@ -10,6 +10,35 @@ Branch: `ns2-testing`
 
 Documentation/resource audit: 2026-07-25
 
+## Switch 1 Joy-Con / Pro Controller motion — 🟢 hardware-confirmed working 2026-07-27
+
+Switch 1 controllers paired in Pro Controller 2 mode now stream 6-axis motion.
+Implemented in `switch_pro_bt.c`: the `ENABLE_IMU` init step (subcommand `0x40`),
+the three-frame IMU decode from report `0x30` bytes 13–48 with a per-axis mean
+across the three 5 ms-apart frames, per-device axis signs, and
+`SWITCH_MOTION_SOURCE_SWITCH1` provenance so `switch_pro2.c` routes it to the
+validated quaternion translator rather than the known-bad generic phase encoder
+(the generic encoder was the cause of the "spamming all over the place" first
+seen on hardware — the raw data was clean, confirmed by live `input status`).
+
+Per-unit SPI-flash calibration is now read too: subcommand `0x10` fetches the
+factory block at `0x6020` and the user block at `0x8026`, the report-`0x21`
+reply is parsed by `switch_parse_spi_reply()`, and the user block overrides the
+factory one when its `B2 A1` magic is present. The §7.4 conversion is folded
+into the interchange scale so the hot path stays integer-only. Calibration is
+strictly an improvement, never a dependency: an absent, erased, or zero-span
+block is rejected and the nominal §6 constants are used, so motion works from
+the first report onward regardless.
+
+The §6 nominal-vs-datasheet gyro-scale disagreement was settled by hardware in
+favour of the LSM6DS3 `0.070` dps/count value; the nominal assumption
+under-reported rate noticeably against a DualSense.
+
+Still open: 🟡 Joy-Con L (`0x2006`) / R (`0x2007`) gyro signs are inherited from
+the Pro and unverified — §8 says the halves mount the IMU mirrored, so at least
+one axis is probably wrong on at least one half. See
+[docs/bluetooth/switch1-motion.md](docs/bluetooth/switch1-motion.md) §10–§11.
+
 ## Wii Remote motion — 🟢 hardware-confirmed working 2026-07-27
 
 Accelerometer + Wii MotionPlus gyro now stream through the existing motion
