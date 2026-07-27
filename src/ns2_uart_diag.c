@@ -1063,7 +1063,8 @@ static void handle_command(void) {
                  "\"mapped\":[%u,%u,%u],\"extra\":%u,"
                  "\"sticks\":[%u,%u,%u,%u,%u,%u],"
                  "\"has_motion\":%s,\"motion_source\":%u,"
-                 "\"gyro\":[%d,%d,%d],\"vid\":\"0x%04X\","
+                 "\"gyro\":[%d,%d,%d],\"accel\":[%d,%d,%d],"
+                 "\"vid\":\"0x%04X\","
                  "\"pid\":\"0x%04X\"}",
                  (unsigned long)get_global_raw_buttons(0),
                  in.buttons[0], in.buttons[1], in.buttons[2], in.extra,
@@ -1071,7 +1072,11 @@ static void handle_command(void) {
                  in.right_stick[0], in.right_stick[1],
                  in.right_stick[2],
                  in.has_motion ? "true" : "false", in.motion_source,
-                 in.gyro[0], in.gyro[1], in.gyro[2], vid, pid);
+                 // Accel is the axis-mapping evidence that needs no movement:
+                 // a resting controller reads gravity, which identifies the
+                 // face-normal (yaw) axis and its sign directly.
+                 in.gyro[0], in.gyro[1], in.gyro[2],
+                 in.accel[0], in.accel[1], in.accel[2], vid, pid);
         queue_text(trace_format_response);
     } else if (strcmp(rx_line, "audio") == 0 ||
                strcmp(rx_line, "audio status") == 0) {
