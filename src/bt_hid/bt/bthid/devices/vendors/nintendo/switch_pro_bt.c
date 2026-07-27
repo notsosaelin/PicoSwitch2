@@ -129,6 +129,7 @@ typedef struct __attribute__((packed)) {
 typedef enum {
     SWITCH_STATE_WAIT_READY,        // Wait before sending first subcommand
     SWITCH_STATE_SET_INPUT_MODE,    // Send set input mode (0x03 → 0x30)
+    SWITCH_STATE_ENABLE_IMU,        // Send enable 6-axis IMU (0x40 → 0x01)
     SWITCH_STATE_ENABLE_VIBRATION,  // Send enable vibration (0x48 → 0x01)
     SWITCH_STATE_SET_PLAYER_LED,    // Send player LED (0x30)
     SWITCH_STATE_ACTIVE,            // Init complete, monitor feedback
@@ -367,6 +368,58 @@ static bool switch_init(bthid_device_t* device)
     return false;
 }
 
+// ============================================================================
+// MOTION (docs/bluetooth/switch1-motion.md)
+// ============================================================================
+//
+// Report 0x30 carries THREE 12-byte IMU frames at bytes 13-48, sampled 5 ms
+// apart, each accel[XYZ] then gyro[XYZ] as int16 LE (§4/§5). The three frames
+// together span the report interval, so their mean is the correct
+// representative rate for integrating angular phase across that interval --
+// the encoder downstream integrates over real elapsed time. Taking only the
+// newest frame would throw away two thirds of the samples.
+#define SW1_IMU_OFFSET      13
+#define SW1_IMU_FRAME_SIZE  12
+#define SW1_IMU_FRAMES      3
+
+// Nominal scales (§6). Switch-1 gyro is ±2000 dps over int16, which is
+// numerically IDENTICAL to the shared interchange convention that ds3_bt.c
+// states ("±32767 = ±2000 dps"), so gyro passes through unscaled. Accel is
+// ±8 g (~4096 counts/g) while the convention is ±4 g (8192 counts/g), so accel
+// is doubled and clamped. SPI calibration (§7) supersedes both; until that read
+// lands these are the documented fallback, and the encoder's stillness-gated
+// bias tracker absorbs the gyro zero-rate offset.
+#define SW1_ACCEL_TO_SINPUT 2
+
+static int16_t sw1_clamp16(int32_t v)
+{
+    if (v >  32767) return  32767;
+    if (v < -32767) return -32767;
+    return (int16_t)v;
+}
+
+static int16_t sw1_rd16(const uint8_t* p)
+{
+    return (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+
+// Mean of the three frames, per axis, in raw counts.
+static void sw1_average_imu(const uint8_t* data, int32_t accel[3], int32_t gyro[3])
+{
+    for (int i = 0; i < 3; i++) { accel[i] = 0; gyro[i] = 0; }
+    for (int f = 0; f < SW1_IMU_FRAMES; f++) {
+        const uint8_t* fr = data + SW1_IMU_OFFSET + f * SW1_IMU_FRAME_SIZE;
+        for (int i = 0; i < 3; i++) {
+            accel[i] += sw1_rd16(fr + i * 2);
+            gyro[i]  += sw1_rd16(fr + 6 + i * 2);
+        }
+    }
+    for (int i = 0; i < 3; i++) {
+        accel[i] /= SW1_IMU_FRAMES;
+        gyro[i]  /= SW1_IMU_FRAMES;
+    }
+}
+
 static void switch_process_report(bthid_device_t* device, const uint8_t* data, uint16_t len)
 {
     switch_bt_data_t* sw = (switch_bt_data_t*)device->driver_data;
@@ -445,6 +498,40 @@ static void switch_process_report(bthid_device_t* device, const uint8_t* data, u
                                            battery.charging);
         }
 
+        // --- Motion -------------------------------------------------------
+        // Published in the DualSense slot convention, because ns2_seam.c
+        // remounts that frame into the Pro2 frame for every source.
+        //
+        // Switch-1 gyro axes are X=roll, Y=pitch, Z=yaw (§8) and the
+        // accelerometer shares those body axes. The DualSense slots are
+        // gyro[pitch, yaw, roll] and accel[X=lateral, Y=up, Z=forward]
+        // (dualsense-motion.md §5), which gives the index remount below.
+        //
+        // NOTE: the axis ASSIGNMENT is documented, but the per-device SIGNS are
+        // not. §8 states the two Joy-Con halves mount the IMU mirrored, that the
+        // Pro has its own orientation again, and that signs must be measured per
+        // device rather than hard-coded from memory. They are deliberately left
+        // unnegated here; correct them in this one place once measured.
+        if (len >= SW1_IMU_OFFSET + SW1_IMU_FRAMES * SW1_IMU_FRAME_SIZE) {
+            int32_t a[3], g[3];
+            sw1_average_imu(data, a, g);
+
+            sw->event.accel[0] = sw1_clamp16(a[1] * SW1_ACCEL_TO_SINPUT); // lateral
+            sw->event.accel[1] = sw1_clamp16(a[2] * SW1_ACCEL_TO_SINPUT); // up
+            sw->event.accel[2] = sw1_clamp16(a[0] * SW1_ACCEL_TO_SINPUT); // forward
+            sw->event.gyro[0]  = sw1_clamp16(g[1]);   // pitch
+            sw->event.gyro[1]  = sw1_clamp16(g[2]);   // yaw
+            sw->event.gyro[2]  = sw1_clamp16(g[0]);   // roll
+
+            sw->event.gyro_range  = 2000;   // interchange full scale
+            sw->event.accel_range = 8000;   // Switch-1 is ±8 g natively
+            // Byte 1 of the report is a report counter, not a sensor clock, so
+            // it is not published as a motion timestamp (§9).
+            sw->event.motion_sequence++;
+            sw->event.motion_timestamp_valid = false;
+            sw->event.has_motion = true;
+        }
+
         sw->event.suppress_wake_input =
             switch_quarantine_pro_wake_input(device, sw);
         router_submit_input(&sw->event);
@@ -512,6 +599,20 @@ static void switch_task(bthid_device_t* device)
             break;
 
         case SWITCH_STATE_SET_INPUT_MODE:
+            if (now - sw->init_time >= SWITCH_INIT_DELAY_MS) {
+                // The 6-axis IMU ships DISABLED; until this is sent the 0x30
+                // report's motion block stays zero (switch1-motion.md §3).
+                // SWITCH_SUBCMD_ENABLE_IMU was already defined in this file but
+                // never sent, which is precisely why Switch-1 motion was absent.
+                printf("[SWITCH_BT] Sending enable IMU\n");
+                uint8_t imu_on = 0x01;
+                switch_send_subcommand(device, SWITCH_SUBCMD_ENABLE_IMU, &imu_on, 1);
+                sw->init_state = SWITCH_STATE_ENABLE_IMU;
+                sw->init_time = now;
+            }
+            break;
+
+        case SWITCH_STATE_ENABLE_IMU:
             if (now - sw->init_time >= SWITCH_INIT_DELAY_MS) {
                 printf("[SWITCH_BT] Sending enable vibration\n");
                 uint8_t enable = 0x01;
