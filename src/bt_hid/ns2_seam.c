@@ -22,6 +22,7 @@
 #include "bt/bthid/bthid.h"                       // bthid_get_device() — connected controller identity
 #include "bt/bthid/devices/vendors/sony/ds5_bt.h" // exact decoder provenance (not late SDP PID)
 #include "bt/bthid/devices/vendors/nintendo/wiimote_bt.h" // Wii motion provenance
+#include "bt/bthid/devices/vendors/nintendo/switch_pro_bt.h" // Switch 1 motion provenance
 #include "config.h"                               // config_get_body_color()
 #include "ns2_remap.h"                            // locked base button mapping
 #include "ns2_player_led.h"                       // Switch wire bitfield -> player number
@@ -263,6 +264,8 @@ void router_submit_input(const input_event_t *e) {
             in.motion_source = SWITCH_MOTION_SOURCE_DUALSENSE;
         else if (dev && dev->driver == &wiimote_bt_driver)
             in.motion_source = SWITCH_MOTION_SOURCE_WII;
+        else if (dev && dev->driver == &switch_pro_bt_driver)
+            in.motion_source = SWITCH_MOTION_SOURCE_SWITCH1;
         else
             in.motion_source = SWITCH_MOTION_SOURCE_GENERIC;
         in.motion_sequence = e->motion_sequence;
