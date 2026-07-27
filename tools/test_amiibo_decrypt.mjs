@@ -19,7 +19,8 @@ block = "function amiiboConcatBytes(parts){let t=0;for(const p of parts)t+=p.len
 const exported = ["amiiboParseRetailKeys", "amiiboDecryptInternal",
   "amiiboReadRegisterInfo", "amiiboTagToInternal", "amiiboDeriveKeys",
   "amiiboHmacSha256", "amiiboAesCtr", "amiiboPackInternal",
-  "amiiboInternalToTag", "amiiboInitializeImage", "amiiboDecodeDate"];
+  "amiiboInternalToTag", "amiiboInitializeImage", "amiiboDecodeDate",
+  "AMIIBO_APP_IDS"];
 const mod = new Function(`${block}\nreturn {${exported.join(",")}};`)();
 
 function assert(c, m) { if (!c) { console.error("FAIL:", m); process.exit(1); } }
@@ -173,6 +174,13 @@ const run = async () => {
   try { await mod.amiiboInitializeImage(keys, tampered, false); }
   catch { refused = true; }
   assert(refused, "a dump failing its HMAC must not be re-signed");
+
+  // AppID identifies the single owning game. An amiibo holds one application's
+  // data at a time, so this is a lookup, not a list.
+  assert(beforeInfo.appId === "10203040", `appId ${beforeInfo.appId}`);
+  assert(afterInfo.appId === "00000000", "initialization clears the AppID");
+  assert(mod.AMIIBO_APP_IDS.get("10110E00") === "Super Smash Bros.",
+    "known AppID resolves to its game");
 
   // Date decode edges.
   assert(mod.amiiboDecodeDate(0x00, 0x00) === null, "0x0000 is the NULL date");
