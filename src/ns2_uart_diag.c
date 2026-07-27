@@ -577,6 +577,43 @@ static void handle_command(void) {
     } else if (strcmp(rx_line, "amiibo") == 0 ||
                strcmp(rx_line, "amiibo status") == 0) {
         queue_amiibo_status("status");
+    } else if (strncmp(rx_line, "v3hdr", 5) == 0) {
+        // Sweep the read-buffer prefix; byte 18 is the NTAG model the console
+        // uses to pick its page ranges.  e.g.  v3hdr 18 05
+        const char *arg = rx_line + 5;
+        while (*arg == ' ') arg++;
+        if (*arg == 0) {
+            snprintf(trace_format_response, sizeof(trace_format_response),
+                     "{\"v3hdr\":\"status\",\"bytes\":%u}",
+                     ns2_v3_hdr_probe_count());
+            queue_text(trace_format_response);
+        } else if (strcmp(arg, "clear") == 0) {
+            ns2_v3_hdr_probe_clear();
+            queue_text("{\"v3hdr\":\"cleared\",\"bytes\":0}");
+        } else {
+            unsigned int index;
+            int consumed = 0;
+            if (sscanf(arg, "%u %n", &index, &consumed) != 1 || consumed == 0 ||
+                index > 59u) {
+                queue_text("{\"v3hdr\":\"error\","
+                           "\"error\":\"usage: v3hdr [clear|<0-59> <hex>]\"}");
+            } else {
+                uint8_t bytes[60];
+                size_t length = 0;
+                if (!diag_parse_hex(arg + consumed, bytes, sizeof(bytes),
+                                    &length) || length == 0 ||
+                    !ns2_v3_hdr_probe_set((uint8_t)index, bytes,
+                                          (uint8_t)length)) {
+                    queue_text("{\"v3hdr\":\"error\",\"error\":\"bad hex or range\"}");
+                } else {
+                    snprintf(trace_format_response, sizeof(trace_format_response),
+                             "{\"v3hdr\":\"set\",\"index\":%u,\"length\":%u,"
+                             "\"bytes\":%u}", index, (unsigned)length,
+                             ns2_v3_hdr_probe_count());
+                    queue_text(trace_format_response);
+                }
+            }
+        }
     } else if (strncmp(rx_line, "v3reply", 7) == 0) {
         // v3reply                -> current target subcommand
         // v3reply clear          -> bare-ACK everything again
