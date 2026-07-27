@@ -507,32 +507,41 @@ static void switch_spi_read(bthid_device_t* device, uint32_t addr, uint8_t len)
 //              normal hold angles. It is the only lane whose flip can kill
 //              horizontal aim while leaving the yaw lane itself untouched.)
 //
-// DETERMINANT: this multiplies to -1, i.e. an improper transform, which a pure
-// physical remount can never be. That is not a mistake here — it is the fix
-// pointing at its own root cause. docs/experiments/gyro-hardware-validation-
-// 2026-07-10.md line 96 records that the seam's Pro2 roll sign was
-// "chosen to keep det = +1, not independently measured", and §2.2 rates the roll
-// lane 🔵 medium confidence, identified only by elimination. If that unmeasured
-// seam sign is wrong, every source feeding through it needs a compensating flip
-// on exactly one lane, which is precisely the -1 seen here.
+// DETERMINANT: this multiplies to -1. An earlier version of this comment claimed
+// that meant something downstream was broken and needed repairing. That was
+// wrong, and the rule it rested on was wrong. Nothing downstream is broken.
 //
-// The correct long-term fix is to measure the Pro2 roll sign and repair the seam.
-// That is deliberately NOT done here: the seam is shared with the
-// hardware-validated DualSense path, so changing it would re-open a working
-// configuration to fix a cosmetically nicer determinant. Compensate locally,
-// document loudly.
+// The target convention is "whatever a DualSense publishes", and a DualSense is
+// NOT internally self-consistent: dualsense-motion.md §8 records, from
+// JoyShock/SDL/evdevhook, that "the DualSense's first gyro axis is inverted and
+// its accelerometer axes are ordered/signed differently than a naive read
+// expects". A device whose own gyro polarity does not follow the right-hand rule
+// about its own accelerometer axes cannot be reached from a clean 6-axis IMU by
+// a proper rotation. So det = -1 here is not evidence of a defect anywhere; it is
+// what matching this particular convention costs, and it is the price of the
+// contract being "match the DualSense" rather than "be independently correct",
+// which is the right contract because it is the one that is actually validated.
+//
+// Do NOT "fix" this by editing ns2_seam.c. The seam is shared with the
+// hardware-validated DualSense path. Only the COMPOSITE transform (driver ->
+// seam -> console) was ever validated; how that total is split between this
+// stage and the seam was never independently pinned, and does not need to be.
+// Any error in the split is applied identically to every source, so matching the
+// DualSense here is correct regardless of it. That is exactly what makes adding
+// a new motion source a local change.
 #define SW1_PRO_SIGN_PITCH (-1)
 #define SW1_PRO_SIGN_YAW   (+1)
 #define SW1_PRO_SIGN_ROLL  (+1)
 
-// Pinned deliberately, so any future change to the table is a conscious decision
-// about the seam's unmeasured roll sign rather than an accident.
+// Pinned so a future change to the table is deliberate rather than accidental.
+// This asserts the CURRENT measured-from-hardware choice; it is not a physical
+// law. An earlier version asserted det == +1 as if it were one, which put the
+// answer outside the search space and cost three hardware sessions.
 #define SW1_PRO_DET (SW1_PRO_SIGN_PITCH * SW1_PRO_SIGN_YAW * SW1_PRO_SIGN_ROLL)
 _Static_assert(SW1_PRO_DET == -1,
-               "Switch 1 signs currently compensate the seam's unmeasured Pro2 "
-               "roll sign, so this transform is deliberately improper (det -1). "
-               "If the seam roll sign is ever measured and fixed, this must "
-               "become +1 and the roll lane here must flip with it.");
+               "Switch 1 signs are pinned to the values derived from the three "
+               "hardware results. det -1 is expected here (see above) -- if you "
+               "are changing this, change it from evidence, not from a rule.");
 
 typedef struct { int8_t pitch, yaw, roll; } sw1_axis_signs_t;
 
