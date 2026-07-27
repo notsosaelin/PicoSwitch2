@@ -391,6 +391,40 @@ static bool switch_init(bthid_device_t* device)
 // bias tracker absorbs the gyro zero-rate offset.
 #define SW1_ACCEL_TO_SINPUT 2
 
+// Gyro sensitivity. §6 records a genuine disagreement: Nintendo's nominal maps
+// ±2000 dps onto the full int16 (0.06103 dps/count, i.e. exactly the 16.384
+// counts/dps interchange scale, so raw would pass through unscaled), while the
+// LSM6DS3 datasheet gives 0.070 dps/count. The datasheet value is the one that
+// matches hardware: a typical factory-calibration block yields
+// 936/(sensitivity-origin) ≈ 936/13371 ≈ 0.070, and on hardware the nominal
+// assumption under-reported rate — the controller needed noticeably more
+// movement than a DualSense for the same on-screen result. Convert to the
+// interchange scale with raw × 0.070 × 16.384 ≈ raw × 1.147.
+#define SW1_GYRO_SCALE_NUM 1147
+#define SW1_GYRO_SCALE_DEN 1000
+
+// Per-device axis signs, applied AFTER the fixed index remount below.
+// §8 is explicit that the two Joy-Con halves mount the IMU mirrored and that the
+// Pro differs again, so a single table cannot serve all three and the values
+// must come from observation rather than memory.
+//
+// Pro Controller (0x2009): pitch inverted — confirmed on hardware, vertical aim
+// was reversed. The remaining axes matched.
+// Joy-Con L (0x2006) / R (0x2007): NOT yet observed. They inherit the Pro's
+// signs as a starting point; correct them here once each half is tested.
+typedef struct { int8_t pitch, yaw, roll; } sw1_gyro_signs_t;
+
+static sw1_gyro_signs_t sw1_gyro_signs_for(uint16_t product_id)
+{
+    switch (product_id) {
+        case 0x2006:  // Joy-Con (L)   — unverified, see above
+        case 0x2007:  // Joy-Con (R)   — unverified, see above
+        case 0x2009:  // Pro Controller — pitch verified inverted on hardware
+        default:
+            return (sw1_gyro_signs_t){ .pitch = -1, .yaw = +1, .roll = +1 };
+    }
+}
+
 static int16_t sw1_clamp16(int32_t v)
 {
     if (v >  32767) return  32767;
@@ -516,12 +550,18 @@ static void switch_process_report(bthid_device_t* device, const uint8_t* data, u
             int32_t a[3], g[3];
             sw1_average_imu(data, a, g);
 
+            const sw1_gyro_signs_t s = sw1_gyro_signs_for(device->product_id);
+            // Raw counts -> interchange scale, then the per-device sign.
+            const int32_t gp = (g[1] * SW1_GYRO_SCALE_NUM) / SW1_GYRO_SCALE_DEN;
+            const int32_t gy = (g[2] * SW1_GYRO_SCALE_NUM) / SW1_GYRO_SCALE_DEN;
+            const int32_t gr = (g[0] * SW1_GYRO_SCALE_NUM) / SW1_GYRO_SCALE_DEN;
+
             sw->event.accel[0] = sw1_clamp16(a[1] * SW1_ACCEL_TO_SINPUT); // lateral
             sw->event.accel[1] = sw1_clamp16(a[2] * SW1_ACCEL_TO_SINPUT); // up
             sw->event.accel[2] = sw1_clamp16(a[0] * SW1_ACCEL_TO_SINPUT); // forward
-            sw->event.gyro[0]  = sw1_clamp16(g[1]);   // pitch
-            sw->event.gyro[1]  = sw1_clamp16(g[2]);   // yaw
-            sw->event.gyro[2]  = sw1_clamp16(g[0]);   // roll
+            sw->event.gyro[0]  = sw1_clamp16(gp * s.pitch);   // pitch
+            sw->event.gyro[1]  = sw1_clamp16(gy * s.yaw);     // yaw
+            sw->event.gyro[2]  = sw1_clamp16(gr * s.roll);    // roll
 
             sw->event.gyro_range  = 2000;   // interchange full scale
             sw->event.accel_range = 8000;   // Switch-1 is ±8 g natively
