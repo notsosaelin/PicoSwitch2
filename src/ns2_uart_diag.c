@@ -14,6 +14,7 @@
 #include "ds5_audio_bridge.h"
 #include "ds5_motion_pair_capture.h"
 #include "virtual_amiibo_store.h"
+#include "ns2_virtual_nfc.h"
 #include "report.h"
 #include "switch_pro2.h"
 #include "bt/btstack/btstack_host.h"
@@ -434,6 +435,32 @@ static void queue_pcm_record(uint16_t offset) {
     queue_text(pcm_format_response);
 }
 
+// Parse an even-length hex string into bytes. Local to the diagnostic channel so
+// it does not depend on config.c (which is only linked in config mode).
+static bool diag_parse_hex(const char *hex, uint8_t *out, size_t capacity,
+                           size_t *length)
+{
+    size_t n = 0;
+    while (*hex == ' ') hex++;
+    while (hex[0] != 0 && hex[0] != ' ') {
+        if (hex[1] == 0 || n >= capacity) return false;
+        int high = -1, low = -1;
+        for (int pass = 0; pass < 2; ++pass) {
+            const char c = hex[pass];
+            int v;
+            if (c >= '0' && c <= '9') v = c - '0';
+            else if (c >= 'a' && c <= 'f') v = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') v = c - 'A' + 10;
+            else return false;
+            if (pass == 0) high = v; else low = v;
+        }
+        out[n++] = (uint8_t)((high << 4) | low);
+        hex += 2;
+    }
+    *length = n;
+    return n != 0;
+}
+
 static void handle_command(void) {
     rx_line[rx_length] = '\0';
     if (rx_overflow) {
@@ -550,6 +577,47 @@ static void handle_command(void) {
     } else if (strcmp(rx_line, "amiibo") == 0 ||
                strcmp(rx_line, "amiibo status") == 0) {
         queue_amiibo_status("status");
+    } else if (strncmp(rx_line, "v3probe", 7) == 0) {
+        // Sweep the unknown region of the 0x05 NFC status payload on hardware:
+        //   v3probe                -> report how many bytes are overridden
+        //   v3probe clear          -> drop all overrides
+        //   v3probe <index> <hex>  -> overlay bytes at index (e.g. v3probe 16 0004040502021503)
+        const char *arg = rx_line + 7;
+        while (*arg == ' ') arg++;
+        if (*arg == '\0') {
+            snprintf(trace_format_response, sizeof(trace_format_response),
+                     "{\"v3probe\":\"status\",\"bytes\":%u}",
+                     ns2_v3_status_probe_count());
+            queue_text(trace_format_response);
+        } else if (strcmp(arg, "clear") == 0) {
+            ns2_v3_status_probe_clear();
+            queue_text("{\"v3probe\":\"cleared\",\"bytes\":0}");
+        } else {
+            unsigned int index;
+            int consumed = 0;
+            if (sscanf(arg, "%u %n", &index, &consumed) != 1 || consumed == 0 ||
+                index > 0xFFu) {
+                queue_text("{\"v3probe\":\"error\","
+                           "\"error\":\"usage: v3probe [clear|<index> <hex>]\"}");
+            } else {
+                uint8_t bytes[NS2_NFC_STATUS_PAYLOAD_SIZE];
+                size_t length = 0;
+                if (!diag_parse_hex(arg + consumed, bytes, sizeof(bytes),
+                                    &length) || length == 0 ||
+                    !ns2_v3_status_probe_set((uint8_t)index, bytes,
+                                             (uint8_t)length)) {
+                    queue_text("{\"v3probe\":\"error\","
+                               "\"error\":\"bad hex or range past 61-byte payload\"}");
+                } else {
+                    snprintf(trace_format_response,
+                             sizeof(trace_format_response),
+                             "{\"v3probe\":\"set\",\"index\":%u,\"length\":%u,"
+                             "\"bytes\":%u}", index, (unsigned)length,
+                             ns2_v3_status_probe_count());
+                    queue_text(trace_format_response);
+                }
+            }
+        }
     } else if (strncmp(rx_line, "v3mode", 6) == 0) {
         // Select the NTAG I2C 2K console read-buffer layout at runtime so the
         // hardware experiment matrix does not need a reflash per attempt.
