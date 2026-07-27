@@ -314,3 +314,38 @@ must report no dates at all.
 **Also fixed:** the Eject amiibo button was rendered permanently greyed out when there was nothing
 loaded and no adapter attached. It is now hidden in that state, and starts hidden so it cannot flash
 before the first state update.
+
+## 10. Initialization reported failure after succeeding (2026-07-27)
+
+`Could not initialize this amiibo. setStatus is not defined` — `setStatus()` does not exist in the
+portal; the idiom is `$("#amiiboMessage").textContent`.
+
+Two separate problems, and the second is the worse one.
+
+**The call was wrong.** Fixed to the real idiom.
+
+**The error message lied.** The bad call sat on the *last* line of the handler, after the wiped image
+had already been written to the library. So the amiibo *was* initialized, and the portal said it was
+not. "Could not initialize" reads as "nothing happened", which invites the user to retry a
+destructive operation that already completed.
+
+The handler now tracks `committed`, set the moment the library write lands. Everything that can
+genuinely fail happens before that point; a failure afterwards reports success plus "Refresh to
+update the view" and logs the detail to the console. **Report the outcome of the operation, not the
+outcome of the last statement.**
+
+### The check that would have caught it
+
+`tools/test_portal_symbols.mjs` flags calls to names that are defined nowhere in the page. The
+portal is a single file with no build step and no type checking, so an undefined call surfaces only
+at runtime, in whatever path reaches it — here, only once someone actually initialized an amiibo.
+
+It is a name-existence check, not scope analysis: "is this name defined somewhere in the file, or a
+known global?". Definitions are gathered from the raw source so the check can only miss a problem,
+never invent one. Comments and string contents are blanked by a small character scanner rather than
+a regex — a regex attempt both swallowed real code after an awkward template literal and read prose
+like `amiibo (v3)` and CSS like `rgb(0,0,0)` as call sites. `${...}` inside template literals is
+still scanned, since it holds real code.
+
+Verified against the actual bug: reintroducing `setStatus()` makes it fail with the offending name
+and line; removing it passes. 522 names currently in scope.
