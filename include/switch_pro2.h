@@ -79,6 +79,14 @@ bool ns2_v3_status_probe_set(uint8_t index, const uint8_t *bytes, uint8_t len);
 void ns2_v3_status_probe_clear(void);
 uint8_t ns2_v3_status_probe_count(void);
 
+// Reply override (RE tooling, UART `v3reply`). The console may take the tag's
+// identity from a reply we currently answer with a bare ACK and no payload --
+// notably 0x03 (start polling) and 0x0C (undocumented in every published
+// decoder). This answers a chosen subcommand with candidate bytes instead.
+bool ns2_v3_set_reply(uint8_t sub, const uint8_t *data, uint8_t len);
+void ns2_v3_clear_reply(void);
+uint8_t ns2_v3_get_reply_sub(void);
+
 //--------------------------------------------------------------------+
 // Report-0x09 motion debug/instrumentation (config.c's "imu" CDC command).
 //--------------------------------------------------------------------+

@@ -151,7 +151,7 @@ def _validate_record(record: dict[str, Any], source: str, line_number: int) -> N
     _integer(record["id"], "id", 0, 0xFF)
     _integer(record["sub"], "sub", 0, 0xFF)
     length = _integer(record["length"], "length", 0, 0xFFFF)
-    captured = _integer(record["captured"], "captured", 0, 24)
+    captured = _integer(record["captured"], "captured", 0, 72)
     if captured > length:
         raise TraceError(f"{source}:{line_number}: captured length exceeds total length")
     payload = record["payload"]
