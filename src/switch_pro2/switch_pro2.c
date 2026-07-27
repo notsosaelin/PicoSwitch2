@@ -783,6 +783,56 @@ static uint8_t ns2_v3_report_state = 0;
 static bool ns2_v3_operation_active = false;
 static uint8_t ns2_v3_nfc_status = 0x09;   // 0x09 ready, 0x04 active, 0x07 error
 
+// Runtime-selectable read-buffer layout (see switch_pro2.h). Defaults to the
+// no-prefix sector-0 form that produced the cleanest read so far.
+#define NS2_V3_SERVE_MODE_MAX 3u
+static volatile uint8_t ns2_v3_serve_mode = 0;
+static uint8_t ns2_v3_op_buffer[60u + NS2_AMIIBO_V3_SIZE];
+static size_t ns2_v3_op_buffer_size = 0;
+
+void ns2_v3_set_serve_mode(uint8_t mode)
+{
+    if (mode <= NS2_V3_SERVE_MODE_MAX) ns2_v3_serve_mode = mode;
+}
+
+uint8_t ns2_v3_get_serve_mode(void) { return ns2_v3_serve_mode; }
+
+// Assemble the buffer the console will pull with 0x15, per the selected mode.
+// The 60-byte prefix mirrors the genuine 540 layout confirmed by primary capture
+// (docs/experiments/pro2-native-nfc-read-2026-07-25.md): 04 00 00 00 | identity/
+// type | UID | reserved | 32-byte originality signature | 9 bytes echoed from the
+// 0x06 descriptor | tag image. The identity/type triplet is NTAG215's GET_VERSION
+// bytes [4],[3],[5] = 01 02 00; the NTAG I2C 2K equivalent is 02 05 02.
+static void ns2_v3_build_buffer(const uint8_t image[NS2_AMIIBO_V3_SIZE],
+                                const uint8_t *operation_metadata)
+{
+    const uint8_t mode = ns2_v3_serve_mode;
+    const size_t image_size =
+        (mode == 3u) ? NS2_AMIIBO_V3_SIZE : NS2_AMIIBO_V3_SECTOR0_SIZE;
+
+    if (mode == 0u) {                       // raw tag, no prefix
+        memcpy(ns2_v3_op_buffer, image, image_size);
+        ns2_v3_op_buffer_size = image_size;
+        return;
+    }
+
+    uint8_t *out = ns2_v3_op_buffer;
+    memset(out, 0, 60);
+    out[0] = 0x04;
+    if (mode == 1u) {                       // declare NTAG215
+        out[4] = 0x01; out[5] = 0x02; out[6] = 0x00;
+    } else {                                // declare NTAG I2C 2K
+        out[4] = 0x02; out[5] = 0x05; out[6] = 0x02;
+    }
+    out[7] = 0x07;                          // UID length
+    ns2_amiibo_v3_uid(image, out + 8);
+    // out[19..50]: originality signature — unknown for v3, left zero.
+    if (operation_metadata)
+        memcpy(out + 51, operation_metadata, NS2_NFC_OPERATION_METADATA_SIZE);
+    memcpy(out + 60, image, image_size);
+    ns2_v3_op_buffer_size = 60u + image_size;
+}
+
 static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
 {
     static uint8_t image[NS2_AMIIBO_V3_SIZE];
@@ -833,6 +883,7 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
             const bool read_descriptor = request_size >= 19u &&
                 request[0] == 0xD0 && request[1] == 0x07 && uid_zero;
             if (read_descriptor) {
+                ns2_v3_build_buffer(image, request + 10);
                 ns2_v3_operation_active = true;
                 ns2_v3_nfc_status = 0x04; // active -> console proceeds to 0x15
                 ns2_v3_report_state =
@@ -852,12 +903,13 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
             // crashes (2011-0301) in deeper processing — the remaining wall needs
             // the 2 KB vendor framing (SRAM pass-through / originality signature /
             // nfc_identity) that only a genuine Pro Controller 2 capture can give.
-            if (ns2_v3_operation_active && request_size >= 2u) {
+            if (ns2_v3_operation_active && ns2_v3_op_buffer_size &&
+                request_size >= 2u) {
                 const uint16_t offset =
                     (uint16_t)request[0] | ((uint16_t)request[1] << 8);
                 size_t out_size = 0;
                 if (ns2_virtual_nfc_build_buffer_chunk(
-                        image, NS2_AMIIBO_V3_SECTOR0_SIZE, offset, payload,
+                        ns2_v3_op_buffer, ns2_v3_op_buffer_size, offset, payload,
                         &out_size) == NS2_VIRTUAL_NFC_OK) {
                     payload_size = out_size;
                     direction = 0x01;
