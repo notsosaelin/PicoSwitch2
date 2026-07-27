@@ -275,3 +275,42 @@ catalog through it when `tools/fixtures/amiibo-showgames.json` is present (git-i
 fetch on demand), else a small inline fixture so it works offline. It asserts the raw arrays are
 stripped, every derived key is a 16-hex-digit title ID, name lists are deduplicated and use known
 platform labels, known lookups resolve, an unknown title ID does not, and the map stays small.
+
+## 9. Settings flags are the authority, not the regions (2026-07-27)
+
+Found on a real Charizard dump: the detail box reported
+`Unrecognised game (title 11D10F5819F48509)`. That value matches **no** Nintendo title-ID prefix —
+3DS are `00040000…`, Wii U `00050000…`, Switch `0100…` — which is what gave it away as leftover
+bytes rather than a real title ID.
+
+**Cause:** "has game data" was implemented as a non-zero scan of the AppData region. An amiibo that
+has never had game data written still carries uninitialized bytes there, so the scan said yes and
+the title ID / AppID fields beside it were rendered from junk.
+
+**Fix — use the flags byte, which exists precisely for this.** From 3dbrew:
+
+| Bit | Meaning |
+|---|---|
+| 4 (`0x10`) | amiibo was set up with amiibo Settings (owner registered) |
+| 5 (`0x20`) | **AppData was initialized** |
+
+> "Bit5=1 indicates that the AppData was initialized. `NFC:InitializeWriteAppData` will return an
+> error if this is value 1, when successful that command will then set this bit to value 1."
+
+So `hasAppData` is now `(flags & 0x20) !== 0`, and `titleId` / `appId` are only surfaced when it is
+set. This is the same class of bug as the earlier mojibake owner/nickname, fixed the same way: bit 4
+already gated those, and bit 5 was simply never wired up.
+
+3dbrew also notes: *"Bits 4 and 5 control whether the setup date is loaded — the date is only used
+when at least one of these bits is set to 1."* Both dates are now gated on `bit4 || bit5` for the
+same reason.
+
+Regression tests in `test_amiibo_decrypt.mjs` cover an amiibo that is registered but has **no** game
+data, with deliberately randomised bytes across the title ID / AppID / AppData region: it must still
+report its owner, must report `hasAppData === false`, must surface no title ID or AppID, must label
+game data `None`, and must still read its setup date via bit 4. A second case with neither bit set
+must report no dates at all.
+
+**Also fixed:** the Eject amiibo button was rendered permanently greyed out when there was nothing
+loaded and no adapter attached. It is now hidden in that state, and starts hidden so it cannot flash
+before the first state update.

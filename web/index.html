@@ -315,7 +315,7 @@
         <div class="amiibo-manager-bottom">
           <div class="amiibo-action-stack">
             <button id="amiiboSaveBtn" class="hidden" disabled>Sync amiibo</button>
-            <button id="amiiboEjectBtn" disabled>Eject amiibo</button>
+            <button id="amiiboEjectBtn" class="hidden" disabled>Eject amiibo</button>
             <button id="amiiboDownloadBtn" disabled>Download .bin</button>
             <button id="amiiboInitBtn" class="hidden" disabled>Initialize amiibo</button>
             <button id="amiiboDeleteBtn" disabled>Delete from Library</button>
@@ -1735,15 +1735,27 @@ function amiiboReadRegisterInfo(internal) {
   let owner = amiiboDecodeUtf16(internal.subarray(0x4C + 0x1A, 0x4C + 0x2E), true);
   if (!setUp || !amiiboNameIsPlausible(nickname)) nickname = "";
   if (!setUp || !amiiboNameIsPlausible(owner)) owner = "";
+  // 3dbrew, settings flags byte:
+  //   bit 4 (0x10) - amiibo was set up with amiibo Settings (owner registered)
+  //   bit 5 (0x20) - AppData was initialized
+  // Both are authoritative and must be trusted over inspecting the regions
+  // themselves: an amiibo that never had game data written still carries
+  // uninitialized bytes there, and reading those as a title ID produces
+  // convincing nonsense (observed: "11D10F5819F48509", which matches no
+  // Nintendo title-ID prefix -- 3DS 00040000, Wii U 00050000, Switch 0100).
+  const hasAppData = (flags & 0x20) !== 0;
+  // 3dbrew: "Bits 4 and 5 control whether the setup date is loaded - the date is
+  // only used when at least one of these bits is set to 1."
+  const datesValid = setUp || hasAppData;
   return {
-    flags, nickname, owner, setUp,
-    setupDate: amiiboDecodeDate(internal[0x30], internal[0x31]),
-    lastWriteDate: amiiboDecodeDate(internal[0x32], internal[0x33]),
+    flags, nickname, owner, setUp, hasAppData,
+    setupDate: datesValid ? amiiboDecodeDate(internal[0x30], internal[0x31]) : null,
+    lastWriteDate: datesValid ? amiiboDecodeDate(internal[0x32], internal[0x33]) : null,
     writeCounter: (internal[0xB4] << 8) | internal[0xB5],
-    titleId: amiiboHex(internal.subarray(0xAC, 0xB4)),
-    hasTitleId: !amiiboAllZero(internal.subarray(0xAC, 0xB4)),
-    appId: amiiboHex(internal.subarray(0xB6, 0xBA)),
-    hasAppData: !amiiboAllZero(internal.subarray(0xDC, 0x1B4)),
+    // Only meaningful once AppData exists; otherwise they are leftovers.
+    titleId: hasAppData ? amiiboHex(internal.subarray(0xAC, 0xB4)) : "",
+    hasTitleId: hasAppData && !amiiboAllZero(internal.subarray(0xAC, 0xB4)),
+    appId: hasAppData ? amiiboHex(internal.subarray(0xB6, 0xBA)) : "",
   };
 }
 
@@ -2533,6 +2545,10 @@ function renderAmiiboLoadedSlot() {
         : ejectState.mode === "slot"
           ? "Unload this amiibo; the library dump and adapter are not changed"
           : "";
+  // Nothing loaded in the browser and nothing on an adapter means there is
+  // nothing to eject, so the button is hidden rather than shown permanently
+  // greyed out.
+  $("#amiiboEjectBtn").classList.toggle("hidden", ejectState.mode === "none");
   $("#amiiboEjectBtn").disabled =
     amiiboLibraryBusy || ejectState.mode === "none";
   renderAmiiboInfoBox(selected);

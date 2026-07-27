@@ -16,11 +16,26 @@ let block = html.slice(html.indexOf(begin), html.indexOf(end) + end.length);
 block = "function amiiboConcatBytes(parts){let t=0;for(const p of parts)t+=p.length;" +
   "const o=new Uint8Array(t);let n=0;for(const p of parts){o.set(p,n);n+=p.length;}return o;}\n" + block;
 
+// amiiboAppDataLabel lives outside the marked block (it consults the catalog's
+// title-ID map). Pull it in with an empty map so the AppID and "None" paths are
+// exercised here; the catalog path is covered by test_amiibo_games.mjs.
+function extractFn(name) {
+  const start = html.indexOf(`function ${name}(`);
+  if (start < 0) throw new Error(`${name} not found in web/index.html`);
+  let depth = 0, i = html.indexOf("{", start);
+  for (; i < html.length; i++) {
+    if (html[i] === "{") depth++;
+    else if (html[i] === "}" && --depth === 0) break;
+  }
+  return html.slice(start, i + 1);
+}
+block += "\nconst amiiboTitleIdToGame = new Map();\n" + extractFn("amiiboAppDataLabel");
+
 const exported = ["amiiboParseRetailKeys", "amiiboDecryptInternal",
   "amiiboReadRegisterInfo", "amiiboTagToInternal", "amiiboDeriveKeys",
   "amiiboHmacSha256", "amiiboAesCtr", "amiiboPackInternal",
   "amiiboInternalToTag", "amiiboInitializeImage", "amiiboDecodeDate",
-  "AMIIBO_APP_IDS"];
+  "AMIIBO_APP_IDS", "amiiboAppDataLabel"];
 const mod = new Function(`${block}\nreturn {${exported.join(",")}};`)();
 
 function assert(c, m) { if (!c) { console.error("FAIL:", m); process.exit(1); } }
@@ -115,7 +130,7 @@ const run = async () => {
   // title id and game data, so the wipe has something to actually remove.
   const full = new Uint8Array(0x208);
   crypto.getRandomValues(full.subarray(0x1E8, 0x208));
-  full[0x2C] = 0x10;
+  full[0x2C] = 0x10 | 0x20;             // registered + AppData initialized
   full[0x2D] = 0x31;                                  // country
   full[0x30] = 0x20; full[0x31] = 0x43;               // setup date
   full[0x32] = 0x2E; full[0x33] = 0x8C;               // last write date
@@ -178,9 +193,49 @@ const run = async () => {
   // AppID identifies the single owning game. An amiibo holds one application's
   // data at a time, so this is a lookup, not a list.
   assert(beforeInfo.appId === "10203040", `appId ${beforeInfo.appId}`);
-  assert(afterInfo.appId === "00000000", "initialization clears the AppID");
+  // Flags are zeroed, so bit5 is clear and the AppID is not surfaced at all.
+  assert(afterInfo.appId === "", "initialization clears the AppID");
   assert(mod.AMIIBO_APP_IDS.get("10110E00") === "Super Smash Bros.",
     "known AppID resolves to its game");
+
+  // An amiibo registered but with NO game data must not surface a title ID.
+  // Regression: the AppData region of a never-written amiibo holds uninitialized
+  // bytes, and scanning it for non-zero reported "has data", then rendered the
+  // leftovers as a title ID ("11D10F5819F48509" on a real Charizard dump, which
+  // matches no Nintendo prefix). 3dbrew: bit5 of the settings flags is the
+  // authority, not the contents of the region.
+  const noApp = new Uint8Array(0x208);
+  crypto.getRandomValues(noApp.subarray(0x1E8, 0x208));
+  noApp[0x2C] = 0x10;                              // registered, bit5 clear
+  putUtf16(noApp, 0x38, nickname, false);
+  putUtf16(noApp, 0x4C + 0x1A, owner, true);
+  crypto.getRandomValues(noApp.subarray(0xAC, 0x1B4));  // leftover junk
+  noApp[0x30] = 0x20; noApp[0x31] = 0x43;
+  const noAppTag = await mod.amiiboPackInternal(keys, noApp, new Uint8Array(540), false);
+  const noAppDec = await mod.amiiboDecryptInternal(keys, noAppTag, false);
+  assert(noAppDec.ok, "registered-without-appdata amiibo verifies");
+  const noAppInfo = mod.amiiboReadRegisterInfo(noAppDec.internal);
+  assert(noAppInfo.setUp === true, "still reports registered");
+  assert(noAppInfo.owner === owner, "owner still readable without app data");
+  assert(noAppInfo.hasAppData === false,
+    "bit5 clear must mean no app data, whatever the region contains");
+  assert(noAppInfo.hasTitleId === false, "no title ID surfaced without app data");
+  assert(noAppInfo.titleId === "", "title ID must be blank without app data");
+  assert(noAppInfo.appId === "", "AppID must be blank without app data");
+  assert(mod.amiiboAppDataLabel(noAppInfo) === "None",
+    `label should be None (got '${mod.amiiboAppDataLabel(noAppInfo)}')`);
+  // Dates are only loaded when bit4 or bit5 is set (3dbrew); bit4 is set here.
+  assert(noAppInfo.setupDate === "2016-02-03", "setup date still read via bit4");
+
+  // Neither bit set: dates must not be reported at all.
+  const blank = new Uint8Array(0x208);
+  crypto.getRandomValues(blank.subarray(0x1E8, 0x208));
+  blank[0x30] = 0x20; blank[0x31] = 0x43;          // junk in the date field
+  const blankTag = await mod.amiiboPackInternal(keys, blank, new Uint8Array(540), false);
+  const blankInfo = mod.amiiboReadRegisterInfo(
+    (await mod.amiiboDecryptInternal(keys, blankTag, false)).internal);
+  assert(blankInfo.setupDate === null,
+    "no dates when neither bit4 nor bit5 is set");
 
   // Date decode edges.
   assert(mod.amiiboDecodeDate(0x00, 0x00) === null, "0x0000 is the NULL date");
