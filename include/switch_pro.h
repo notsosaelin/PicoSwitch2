@@ -65,8 +65,15 @@
 #define SWITCH_SOURCE_JOYCON_LEFT  1
 #define SWITCH_SOURCE_JOYCON_RIGHT 2
 
+// Decoder provenance for the motion carrier. Only DUALSENSE selects a dedicated
+// translator today; every other value falls through to the generic encoder, so a
+// new source can be added without changing any consumer. Give each IMU-bearing
+// controller family its own id rather than lumping them into GENERIC -- the value
+// is surfaced in diagnostics and is where per-family policy (calibration model,
+// drift handling, axis remounts) belongs as more controllers gain motion.
 #define SWITCH_MOTION_SOURCE_GENERIC   0
 #define SWITCH_MOTION_SOURCE_DUALSENSE 1
+#define SWITCH_MOTION_SOURCE_WII       2  // Wii Remote accel (+ MotionPlus gyro)
 
 // Per-controller input state produced by the Bluetooth core (core1) and
 // consumed by the USB core (core0). Sticks are pre-packed into the Pro
