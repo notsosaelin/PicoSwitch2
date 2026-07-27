@@ -197,7 +197,7 @@ All of it lives in `src/bt_hid/bt/bthid/devices/vendors/nintendo/switch_pro_bt.c
 | Report `0x21` reply parse into `sw1_imu_cal_t` | `switch_parse_spi_reply()` / `sw1_parse_imu_cal()` | ✅ |
 | Three-frame IMU decode + per-axis mean | `sw1_average_imu()` | ✅ |
 | §7.4 conversion folded into the interchange scale | motion publish in `switch_process_report()` | ✅ |
-| Per-device axis signs | `sw1_gyro_signs_for()` | 🟡 Pro verified, Joy-Con inherited |
+| Per-device axis signs (accel + gyro, det +1) | `sw1_axis_signs_for()` | 🟡 Pro verified, Joy-Con inherited |
 | Provenance tag so the quaternion translator is selected | `SWITCH_MOTION_SOURCE_SWITCH1` | ✅ |
 
 Two design points worth keeping in mind before changing any of it:
@@ -226,6 +226,43 @@ thirds of the samples and under-integrates fast motion.
 `switch_pro2.c`. The generic encoder produced the violent output first seen on hardware; this is
 the same known-bad path the DualSense work already diagnosed. Do not route a new IMU family
 through it without checking that first.
+
+### 10.1 The accel/gyro shared-frame invariant (learned the hard way, twice)
+
+**Signs and remounts apply to the accelerometer and the gyroscope identically, and the signed
+permutation must have determinant +1.** This is not style. Violating it produces a failure that
+looks like a scaling or smoothing problem and wastes a hardware session.
+
+Slot `i` of both arrays refers to the same body axis: `gyro[i]` is the rotation about the axis
+`accel[i]` measures. The console fuses the two to correct attitude against gravity. Gravity
+constrains **pitch and roll** but carries **no yaw information whatsoever** — rotating about the
+gravity vector does not change the measured vector.
+
+So when accel and gyro are delivered in mutually mirrored frames, the symptom is diagnostic:
+
+| Axis | Gravity-corrected? | Symptom |
+|---|---|---|
+| Yaw | No | **Perfect.** Sharp, smooth, indistinguishable from real hardware. |
+| Pitch / roll | Yes | Laggy by ~1–2 s (the correction's time constant), then a violent snap as the estimator gives up arguing with the gyro; steady state follows gravity, so an inverted-accel axis stays inverted no matter what sign the gyro carries. |
+
+If yaw is flawless and pitch is slow-then-snappy, do not reach for filtering or scale — look for a
+sign or remount applied to one sensor and not the other.
+
+Observed on hardware 2026-07-27, when the Switch 1 sign table was applied to gyro only. The
+DualSense work hit the same class of bug earlier; `ns2_seam.c` records that an earlier mapping
+there "made the console's gravity correction bleed one axis into another".
+
+**Determinant.** A sensor remount is a rotation, never a reflection, so the signed permutation must
+have determinant +1. The Switch 1 permutation is cyclic (sign +1), so the determinant reduces to
+`pitch × yaw × roll`, which must equal +1 — **signs flip in pairs, never singly.** A lone flip is
+not a physically realizable orientation and reintroduces the mirrored-frame bug. This is why the
+Pro's roll is `-1`: yaw was confirmed correct and pitch had to invert, so roll follows by the
+invariant rather than by independent measurement. It was wrong before and had simply never been
+exercised, roll being the least-used aiming axis.
+
+Both rules are enforced in code rather than by comment: the publish path is a single loop over the
+three slots writing accel and gyro together, so a sign cannot reach one without the other, and a
+`_Static_assert` on the sign table fails the build if the product is not +1.
 
 ## 11. Remaining work
 
