@@ -56,6 +56,18 @@ void ns2_mount(void);
 
 // Bisects the gyro pipeline: report-0x09 USB state (active report id, streaming, motion
 // length last emitted).
+// NTAG I2C 2K ("figure v3") console read-buffer layout selector. The genuine
+// controller→console framing for a 2 KB tag is not documented anywhere, so the
+// layout is switchable at runtime over UART (`v3mode N`) to allow a hardware
+// experiment matrix without reflashing between attempts. See
+// docs/switch2/kirby-air-riders-extended-amiibo.md.
+//   0 = raw sector 0 (1024 B), no prefix
+//   1 = 60-byte prefix declaring NTAG215 type (01 02 00) + sector 0
+//   2 = 60-byte prefix declaring NTAG I2C 2K type (02 05 02) + sector 0
+//   3 = 60-byte prefix declaring NTAG I2C 2K type + full 2048-byte image
+void ns2_v3_set_serve_mode(uint8_t mode);
+uint8_t ns2_v3_get_serve_mode(void);
+
 void ns2_dbg_report_state(uint8_t *report_id, uint8_t *streaming, uint8_t *motion_len);
 
 // Bias-tracker state (raw LSB units) + whether the stillness gate is open right now.

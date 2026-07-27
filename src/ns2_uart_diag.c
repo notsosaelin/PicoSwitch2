@@ -550,6 +550,24 @@ static void handle_command(void) {
     } else if (strcmp(rx_line, "amiibo") == 0 ||
                strcmp(rx_line, "amiibo status") == 0) {
         queue_amiibo_status("status");
+    } else if (strncmp(rx_line, "v3mode", 6) == 0) {
+        // Select the NTAG I2C 2K console read-buffer layout at runtime so the
+        // hardware experiment matrix does not need a reflash per attempt.
+        unsigned int mode;
+        char trailing;
+        if (rx_line[6] == '\0') {
+            snprintf(trace_format_response, sizeof(trace_format_response),
+                     "{\"v3mode\":%u}", ns2_v3_get_serve_mode());
+            queue_text(trace_format_response);
+        } else if (sscanf(rx_line + 6, " %u%c", &mode, &trailing) != 1 ||
+                   mode > 3u) {
+            queue_text("{\"v3mode\":\"error\",\"error\":\"usage: v3mode [0-3]\"}");
+        } else {
+            ns2_v3_set_serve_mode((uint8_t)mode);
+            snprintf(trace_format_response, sizeof(trace_format_response),
+                     "{\"v3mode\":%u}", ns2_v3_get_serve_mode());
+            queue_text(trace_format_response);
+        }
     } else if (strncmp(rx_line, "amiibo read ", 12) == 0) {
         unsigned int offset;
         char trailing;
