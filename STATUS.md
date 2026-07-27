@@ -10,7 +10,31 @@ Branch: `ns2-testing`
 
 Documentation/resource audit: 2026-07-25
 
-## Switch 1 Joy-Con / Pro Controller motion — 🟢 hardware-confirmed working 2026-07-27
+## Switch 1 Joy-Con / Pro Controller motion — 🟢 at parity with genuine hardware 2026-07-27
+
+**A/B against a natively-connected Switch 1 Pro Controller: 98–100 % identical.** The small
+residual lag is present on the native connection too, so it belongs to the controller (120 Hz
+reports, no sensor timestamp), not to this firmware. Full write-up:
+[docs/bluetooth/switch1-motion.md](docs/bluetooth/switch1-motion.md) §10.2–§10.3.
+
+The axis map is `src {1,0,2}`, `sign {-1,1,1}` in `ns2_motion_seam.c`. It was resolved by
+measurement, not iteration: reading a *resting* controller's accelerometer over UART put gravity on
+slot 2 at +4245 against a genuine Pro Controller 2's 4279/4309 — a 1 % match — which pinned that
+lane with nobody touching the controller.
+
+The bug four sign guesses had missed was that the row had **determinant −1**: a reflection, which
+cannot describe a physical sensor remount. Gravity cannot detect a reflected frame — a single
+vector looks correct reflected — so the accelerometer matched genuine hardware while the gyro
+produced no horizontal aim at all. `tools/test_ns2_motion_seam.c` now enforces determinant +1 on
+every row and is verified against the shipped bug.
+
+Gyro also switched from the three-frame mean to the newest frame, removing ~7.5 ms of group delay
+(the frames span 15 ms while the Pro reports every 8.3 ms). Accel keeps the mean — it is the
+console's gravity reference, where steadiness beats latency.
+
+---
+
+
 
 Switch 1 controllers paired in Pro Controller 2 mode now stream 6-axis motion.
 Implemented in `switch_pro_bt.c`: the `ENABLE_IMU` init step (subcommand `0x40`),

@@ -278,6 +278,79 @@ Both rules are enforced in code rather than by comment: the publish path is a si
 three slots writing accel and gyro together, so a sign cannot reach one without the other, and a
 `_Static_assert` on the sign table fails the build if the product is not +1.
 
+### 10.2 Resolved on hardware (2026-07-27) — 🟢 at parity with genuine hardware
+
+Final seam row (`ns2_motion_seam.c`, `SWITCH_MOTION_SOURCE_SWITCH1`):
+`src {1,0,2}`, `sign {-1,1,1}`, applied identically to accel and gyro.
+
+Validated by A/B against a Switch 1 Pro Controller connected **natively** to the console:
+**98–100 % identical**. The small residual lag is present on the native connection too, so it
+belongs to the controller, not to this firmware.
+
+**How it was finally resolved — measurement, not iteration.** Four sign guesses had failed. What
+ended it was reading the accelerometer of a *resting* controller over UART (`input status` now
+reports accel for exactly this purpose):
+
+```
+accel [-9, 724, 4245]      |a| = 4306 at 4096 counts/g = 1.05 g
+```
+
+Gravity sat almost entirely on slot 2, and the genuine Pro Controller 2 capture reads *"gravity ≈
+all on accel-Z (4279/4309, controller flat)"* — a match to within 1 %. That pinned slot 2 without
+anyone touching the controller.
+
+**The bug that had survived every previous attempt: the row was a reflection.** `src {1,0,2}` swaps
+indices 0 and 1, so its permutation parity is −1; the signs multiplied to +1; determinant **−1**. A
+row describes a physical sensor remount, which is a *rotation* — −1 is a reflection and cannot
+describe any real mounting. Every other row in the table was +1.
+
+That also explains why it hid for so long. **Gravity cannot detect a reflected frame** — a single
+vector looks perfectly correct reflected — so the accelerometer matched genuine hardware to within
+1 % while the gyro produced no horizontal aim at all. Every static check passed; only rotation
+exposed it.
+
+With slot 2 measured and the determinant rule applied, exactly **two** candidate rows remained:
+`{-1,1,1}` = (+R,+F,+U) and `{1,-1,1}` = (−R,−F,+U). They differ by a 180° yaw, so they share yaw
+and invert pitch/roll relative to each other. One hardware test between them was decisive — the
+search space was two, not twenty-four.
+
+**Latency work.** Gyro now takes the **newest** of the three IMU frames instead of their mean. The
+frames span 15 ms (5 ms apart) while a Pro reports every 8.3 ms, so consecutive reports overlap and
+averaging produced a 15 ms moving average — roughly 7.5 ms of group delay. Because the encoder
+integrates rate over real elapsed host time, the newest frame is a zero-order hold that preserves
+angular area exactly; it does **not** under-integrate, contrary to an earlier note here. Accel keeps
+the three-frame mean deliberately: it is the console's gravity reference, where steadiness matters
+more than latency.
+
+**Tooling note: `motionprobe` is the wrong instrument for body axes.** It drives the packed carrier
+lanes of the smallest-three quaternion, so driving one lane is not a rotation about one body axis —
+observed directly, with carrier axes 0 and 1 both producing camera pitch. It remains correct for
+what it was built for: validating the PDU encoding.
+
+### 10.3 Why the last of the lag cannot be removed safely
+
+The ceiling is the source hardware, not this pipeline:
+
+| Source | Report rate | Sensor timestamp |
+|---|---|---|
+| Switch 1 Pro | **120 Hz** | ✗ none |
+| DualSense | 250 Hz | ✅ 0.33 µs clock |
+| Pro Controller 2 (native) | its own high-rate PDU, passed through | ✅ |
+
+That is the whole difference in feel, and it is not something the translation layer can close.
+
+One genuine lever remains, deliberately **not** taken: each `0x30` report carries **three** samples
+at 5 ms spacing — 200 Hz of *real* sensor data, of which we integrate one. Feeding all three would
+raise effective integration from 120 Hz to 200 Hz with no fabricated data. It is not done because
+the shared translator takes one sample per update and gates on a 3800 µs minimum period, so two of
+every three would be dropped; making it work means changing the hardware-validated DualSense path
+to buy a refinement on a source that already matches genuine hardware. Not worth the risk at
+present.
+
+Explicitly rejected: disabling sniff mode (the A/B shows the link is not the bottleneck, and it
+would cost idle power and compatibility), and any prediction or extrapolation between samples
+(fabricates motion the sensor never reported).
+
 ## 11. Remaining work
 
 0. 🟡 **Confirm the current Switch 1 axis map on hardware** (spec §7). It is derived from the
