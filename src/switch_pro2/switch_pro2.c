@@ -854,6 +854,27 @@ uint8_t ns2_v3_status_probe_count(void)
     return n;
 }
 
+// --- Arbitrary subcommand reply override (see switch_pro2.h) ---
+// The console may learn the tag's identity from a reply we currently bare-ACK
+// with an empty payload -- notably 0x03 (start polling) and 0x0C (undocumented).
+// This lets either be answered with candidate data at runtime.
+#define NS2_V3_REPLY_MAX 64u
+static volatile uint8_t ns2_v3_reply_sub;      // 0 = disabled
+static uint8_t ns2_v3_reply_len;
+static uint8_t ns2_v3_reply_data[NS2_V3_REPLY_MAX];
+
+bool ns2_v3_set_reply(uint8_t sub, const uint8_t *data, uint8_t len)
+{
+    if (sub == 0 || !data || len == 0 || len > NS2_V3_REPLY_MAX) return false;
+    memcpy(ns2_v3_reply_data, data, len);
+    ns2_v3_reply_len = len;
+    ns2_v3_reply_sub = sub;
+    return true;
+}
+
+void ns2_v3_clear_reply(void) { ns2_v3_reply_sub = 0; ns2_v3_reply_len = 0; }
+uint8_t ns2_v3_get_reply_sub(void) { return ns2_v3_reply_sub; }
+
 // Assemble the buffer the console will pull with 0x15.
 //
 // The 0x06 read descriptor is not opaque — ndeadly's research decodes it as:
@@ -1023,6 +1044,15 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
         }
         default:
             break; // ACK-and-trace anything else so the log shows it
+    }
+
+    // RE probe: answer a chosen subcommand with candidate data instead of a bare
+    // ACK, to test whether the console takes tag identity from that reply.
+    if (ns2_v3_reply_sub != 0 && sub == ns2_v3_reply_sub &&
+        ns2_v3_reply_len != 0 && ns2_v3_reply_len <= sizeof(payload)) {
+        memcpy(payload, ns2_v3_reply_data, ns2_v3_reply_len);
+        payload_size = ns2_v3_reply_len;
+        direction = 0x01;
     }
 
     uint8_t packet[8u + NS2_NFC_READ_CHUNK_PAYLOAD_SIZE];

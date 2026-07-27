@@ -12,7 +12,7 @@
 #include <stdint.h>
 
 #define NS2_PROTOCOL_TRACE_CAPACITY 128u
-#define NS2_PROTOCOL_TRACE_PAYLOAD_MAX 24u
+#define NS2_PROTOCOL_TRACE_PAYLOAD_MAX 72u
 
 typedef enum {
     NS2_TRACE_EP0_SETUP = 1,

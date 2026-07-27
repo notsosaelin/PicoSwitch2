@@ -1,0 +1,5 @@
+{"trace":"record","seq":0,"t_us":293665823,"personality":"pro2","kind":"bulk_command","dir":"console_to_device","id":1,"sub":3,"length":13,"captured":13,"payload":"01910003000500000000002C01"}
+{"trace":"record","seq":1,"t_us":293665851,"personality":"pro2","kind":"bulk_response","dir":"device_to_console","id":1,"sub":3,"length":8,"captured":8,"payload":"0104000300F80000"}
+{"trace":"record","seq":2,"t_us":293703604,"personality":"pro2","kind":"bulk_command","dir":"console_to_device","id":1,"sub":5,"length":8,"captured":8,"payload":"0191000500000000"}
+{"trace":"record","seq":3,"t_us":293703634,"personality":"pro2","kind":"bulk_response","dir":"device_to_console","id":1,"sub":5,"length":69,"captured":24,"payload":"0101000500F80000090000000101020307042A352AAB1F90"}
+{"trace":"end","records":4,"overwritten":0}

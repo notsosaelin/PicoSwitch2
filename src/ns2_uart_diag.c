@@ -577,6 +577,42 @@ static void handle_command(void) {
     } else if (strcmp(rx_line, "amiibo") == 0 ||
                strcmp(rx_line, "amiibo status") == 0) {
         queue_amiibo_status("status");
+    } else if (strncmp(rx_line, "v3reply", 7) == 0) {
+        // v3reply                -> current target subcommand
+        // v3reply clear          -> bare-ACK everything again
+        // v3reply <sub> <hex>    -> answer <sub> with these bytes (e.g. v3reply 0C 0102)
+        const char *arg = rx_line + 7;
+        while (*arg == ' ') arg++;
+        if (*arg == 0) {
+            snprintf(trace_format_response, sizeof(trace_format_response),
+                     "{\"v3reply\":\"status\",\"sub\":%u}",
+                     ns2_v3_get_reply_sub());
+            queue_text(trace_format_response);
+        } else if (strcmp(arg, "clear") == 0) {
+            ns2_v3_clear_reply();
+            queue_text("{\"v3reply\":\"cleared\",\"sub\":0}");
+        } else {
+            unsigned int sub;
+            int consumed = 0;
+            if (sscanf(arg, "%x %n", &sub, &consumed) != 1 || consumed == 0 ||
+                sub == 0 || sub > 0xFFu) {
+                queue_text("{\"v3reply\":\"error\","
+                           "\"error\":\"usage: v3reply [clear|<sub hex> <hex>]\"}");
+            } else {
+                uint8_t bytes[64];
+                size_t length = 0;
+                if (!diag_parse_hex(arg + consumed, bytes, sizeof(bytes),
+                                    &length) || length == 0 ||
+                    !ns2_v3_set_reply((uint8_t)sub, bytes, (uint8_t)length)) {
+                    queue_text("{\"v3reply\":\"error\",\"error\":\"bad hex or length\"}");
+                } else {
+                    snprintf(trace_format_response, sizeof(trace_format_response),
+                             "{\"v3reply\":\"set\",\"sub\":%u,\"length\":%u}",
+                             sub, (unsigned)length);
+                    queue_text(trace_format_response);
+                }
+            }
+        }
     } else if (strncmp(rx_line, "v3probe", 7) == 0) {
         // Sweep the unknown region of the 0x05 NFC status payload on hardware:
         //   v3probe                -> report how many bytes are overridden
