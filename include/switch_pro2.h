@@ -62,6 +62,23 @@ void ns2_mount(void);
 void ns2_v3_set_serve_mode(uint8_t mode);
 uint8_t ns2_v3_get_serve_mode(void);
 
+// NFC status-payload probe (RE tooling, UART `v3probe`).
+//
+// The 0x05 status reply carries 61 payload bytes; only ~16 are understood
+// (state, UID length, UID and the `01 02 00 07` protocol/type quad). A genuine
+// controller reports the detected tag's identity somewhere in the remainder,
+// which is how the console decides the page ranges it requests in the 0x06 read
+// descriptor -- it always asks us for the NTAG215 set (0x00-0x86 = 540 bytes)
+// because nothing we send says otherwise.
+//
+// This overlays arbitrary bytes onto that payload at runtime so the field can be
+// swept on hardware without reflashing: set candidate bytes, scan, and watch
+// whether the console's next 0x06 descriptor changes its McuTagType or ranges.
+// Returns false if the range does not fit the payload.
+bool ns2_v3_status_probe_set(uint8_t index, const uint8_t *bytes, uint8_t len);
+void ns2_v3_status_probe_clear(void);
+uint8_t ns2_v3_status_probe_count(void);
+
 //--------------------------------------------------------------------+
 // Report-0x09 motion debug/instrumentation (config.c's "imu" CDC command).
 //--------------------------------------------------------------------+

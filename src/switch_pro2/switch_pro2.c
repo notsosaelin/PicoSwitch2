@@ -824,6 +824,36 @@ void ns2_v3_set_serve_mode(uint8_t mode)
 
 uint8_t ns2_v3_get_serve_mode(void) { return ns2_v3_serve_mode; }
 
+// --- NFC status-payload probe (see switch_pro2.h) ---
+static uint8_t ns2_v3_probe_value[NS2_NFC_STATUS_PAYLOAD_SIZE];
+static uint8_t ns2_v3_probe_mask[NS2_NFC_STATUS_PAYLOAD_SIZE];
+
+bool ns2_v3_status_probe_set(uint8_t index, const uint8_t *bytes, uint8_t len)
+{
+    if (!bytes || len == 0 ||
+        (size_t)index + len > NS2_NFC_STATUS_PAYLOAD_SIZE)
+        return false;
+    for (uint8_t i = 0; i < len; ++i) {
+        ns2_v3_probe_value[index + i] = bytes[i];
+        ns2_v3_probe_mask[index + i] = 1u;
+    }
+    return true;
+}
+
+void ns2_v3_status_probe_clear(void)
+{
+    memset(ns2_v3_probe_value, 0, sizeof(ns2_v3_probe_value));
+    memset(ns2_v3_probe_mask, 0, sizeof(ns2_v3_probe_mask));
+}
+
+uint8_t ns2_v3_status_probe_count(void)
+{
+    uint8_t n = 0;
+    for (size_t i = 0; i < NS2_NFC_STATUS_PAYLOAD_SIZE; ++i)
+        if (ns2_v3_probe_mask[i]) n++;
+    return n;
+}
+
 // Assemble the buffer the console will pull with 0x15.
 //
 // The 0x06 read descriptor is not opaque — ndeadly's research decodes it as:
@@ -942,6 +972,10 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
             ns2_virtual_nfc_build_status(true, uid, payload);
             payload[0] = ns2_v3_nfc_status;
             payload[1] = 0x00;
+            // RE probe: overlay candidate tag-identity bytes so the field that
+            // makes the console request a 2 KB page set can be swept live.
+            for (size_t i = 0; i < NS2_NFC_STATUS_PAYLOAD_SIZE; ++i)
+                if (ns2_v3_probe_mask[i]) payload[i] = ns2_v3_probe_value[i];
             payload_size = NS2_NFC_STATUS_PAYLOAD_SIZE;
             direction = 0x01;
             break;
