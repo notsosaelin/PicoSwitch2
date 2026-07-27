@@ -783,10 +783,11 @@ static uint8_t ns2_v3_report_state = 0;
 static bool ns2_v3_operation_active = false;
 static uint8_t ns2_v3_nfc_status = 0x09;   // 0x09 ready, 0x04 active, 0x07 error
 
-// Runtime-selectable read-buffer layout (see switch_pro2.h). Defaults to the
-// no-prefix sector-0 form that produced the cleanest read so far.
-#define NS2_V3_SERVE_MODE_MAX 3u
-static volatile uint8_t ns2_v3_serve_mode = 0;
+// Advertised McuTagType (see switch_pro2.h). 1 = NTAG 215 (confirmed by
+// ndeadly's descriptor decode); a 2 KB NTAG I2C tag must report a different
+// value, so this is sweepable at runtime over UART. Default 2.
+#define NS2_V3_SERVE_MODE_MAX 15u
+static volatile uint8_t ns2_v3_serve_mode = 2;
 static uint8_t ns2_v3_op_buffer[60u + NS2_AMIIBO_V3_SIZE];
 static size_t ns2_v3_op_buffer_size = 0;
 
@@ -797,40 +798,67 @@ void ns2_v3_set_serve_mode(uint8_t mode)
 
 uint8_t ns2_v3_get_serve_mode(void) { return ns2_v3_serve_mode; }
 
-// Assemble the buffer the console will pull with 0x15, per the selected mode.
-// The 60-byte prefix mirrors the genuine 540 layout confirmed by primary capture
-// (docs/experiments/pro2-native-nfc-read-2026-07-25.md): 04 00 00 00 | identity/
-// type | UID | reserved | 32-byte originality signature | 9 bytes echoed from the
-// 0x06 descriptor | tag image. The identity/type triplet is NTAG215's GET_VERSION
-// bytes [4],[3],[5] = 01 02 00; the NTAG I2C 2K equivalent is 02 05 02.
+// Assemble the buffer the console will pull with 0x15.
+//
+// The 0x06 read descriptor is not opaque — ndeadly's research decodes it as:
+//   D0 | uid_len | uid[uid_len] | McuTagType | block_count | (start,end) x N
+// e.g. `d0 07 <uid> 01 03 00 3b 3c 77 78 86` = McuTagType 1 (NTAG 215) and page
+// ranges 0x00-0x3B, 0x3C-0x77, 0x78-0x86 => 135 pages = exactly 540 bytes, which
+// is why a genuine 540 read buffer is 60 + 540 = 600. The console therefore asks
+// for a specific page set chosen from the tag type it was told, so the correct
+// reply is the requested pages — not a fixed-size image.
+//
+// The 60-byte prefix mirrors the genuine layout confirmed by primary capture
+// (docs/experiments/pro2-native-nfc-read-2026-07-25.md): 04 00 00 00 | tag type,
+// reserved, uid_len | UID | reserved | 32-byte originality signature | 9 bytes
+// echoed from the 0x06 descriptor | tag data.
 static void ns2_v3_build_buffer(const uint8_t image[NS2_AMIIBO_V3_SIZE],
-                                const uint8_t *operation_metadata)
+                                const uint8_t *request, size_t request_size)
 {
-    const uint8_t mode = ns2_v3_serve_mode;
-    const size_t image_size =
-        (mode == 3u) ? NS2_AMIIBO_V3_SIZE : NS2_AMIIBO_V3_SECTOR0_SIZE;
-
-    if (mode == 0u) {                       // raw tag, no prefix
-        memcpy(ns2_v3_op_buffer, image, image_size);
-        ns2_v3_op_buffer_size = image_size;
-        return;
-    }
-
     uint8_t *out = ns2_v3_op_buffer;
     memset(out, 0, 60);
     out[0] = 0x04;
-    if (mode == 1u) {                       // declare NTAG215
-        out[4] = 0x01; out[5] = 0x02; out[6] = 0x00;
-    } else {                                // declare NTAG I2C 2K
-        out[4] = 0x02; out[5] = 0x05; out[6] = 0x02;
-    }
+    out[4] = ns2_v3_serve_mode;             // advertised McuTagType
+    out[5] = 0x02;
+    out[6] = 0x00;
     out[7] = 0x07;                          // UID length
     ns2_amiibo_v3_uid(image, out + 8);
     // out[19..50]: originality signature — unknown for v3, left zero.
-    if (operation_metadata)
-        memcpy(out + 51, operation_metadata, NS2_NFC_OPERATION_METADATA_SIZE);
-    memcpy(out + 60, image, image_size);
-    ns2_v3_op_buffer_size = 60u + image_size;
+    if (request_size >= 19u)
+        memcpy(out + 51, request + 10, NS2_NFC_OPERATION_METADATA_SIZE);
+
+    // Copy exactly the page ranges the console asked for. Falls back to sector 0
+    // if the descriptor cannot be parsed.
+    size_t used = 60u;
+    bool copied = false;
+    if (request_size >= 11u && request[0] == 0xD0u) {
+        const uint8_t uid_len = request[1];
+        const size_t count_index = 2u + (size_t)uid_len + 1u;  // uid + tag type
+        if (count_index < request_size) {
+            const uint8_t blocks = request[count_index];
+            const size_t first = count_index + 1u;
+            if (blocks && first + (size_t)blocks * 2u <= request_size) {
+                for (uint8_t b = 0; b < blocks; ++b) {
+                    const uint8_t start = request[first + (size_t)b * 2u];
+                    const uint8_t end = request[first + (size_t)b * 2u + 1u];
+                    if (end < start) continue;
+                    const size_t from = (size_t)start * 4u;
+                    const size_t len = ((size_t)(end - start) + 1u) * 4u;
+                    if (from + len > NS2_AMIIBO_V3_SIZE ||
+                        used + len > sizeof(ns2_v3_op_buffer))
+                        continue;
+                    memcpy(out + used, image + from, len);
+                    used += len;
+                    copied = true;
+                }
+            }
+        }
+    }
+    if (!copied) {
+        memcpy(out + 60, image, NS2_AMIIBO_V3_SECTOR0_SIZE);
+        used = 60u + NS2_AMIIBO_V3_SECTOR0_SIZE;
+    }
+    ns2_v3_op_buffer_size = used;
 }
 
 static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
@@ -872,6 +900,11 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
             ns2_virtual_nfc_build_status(true, uid, payload);
             payload[0] = ns2_v3_nfc_status;
             payload[1] = 0x00;
+            // The console picks the page ranges it will request in 0x06 from the
+            // tag type reported here. build_status writes the NTAG215 triplet
+            // (`01 02 00 07` at [5..8], mirroring the read prefix's [4..7]), so
+            // override the type byte to advertise this as an NTAG I2C 2K tag.
+            payload[5] = ns2_v3_serve_mode;
             payload_size = NS2_NFC_STATUS_PAYLOAD_SIZE;
             direction = 0x01;
             break;
@@ -883,7 +916,7 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
             const bool read_descriptor = request_size >= 19u &&
                 request[0] == 0xD0 && request[1] == 0x07 && uid_zero;
             if (read_descriptor) {
-                ns2_v3_build_buffer(image, request + 10);
+                ns2_v3_build_buffer(image, request, request_size);
                 ns2_v3_operation_active = true;
                 ns2_v3_nfc_status = 0x04; // active -> console proceeds to 0x15
                 ns2_v3_report_state =

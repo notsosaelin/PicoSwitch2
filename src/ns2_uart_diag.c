@@ -560,8 +560,8 @@ static void handle_command(void) {
                      "{\"v3mode\":%u}", ns2_v3_get_serve_mode());
             queue_text(trace_format_response);
         } else if (sscanf(rx_line + 6, " %u%c", &mode, &trailing) != 1 ||
-                   mode > 3u) {
-            queue_text("{\"v3mode\":\"error\",\"error\":\"usage: v3mode [0-3]\"}");
+                   mode > 15u) {
+            queue_text("{\"v3mode\":\"error\",\"error\":\"usage: v3mode [0-15] (advertised McuTagType)\"}");
         } else {
             ns2_v3_set_serve_mode((uint8_t)mode);
             snprintf(trace_format_response, sizeof(trace_format_response),

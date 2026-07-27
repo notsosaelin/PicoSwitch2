@@ -50,24 +50,24 @@ void ns2_hid_out_report(uint8_t report_id, const uint8_t *data, uint16_t len);
 bool ns2_vendor_control_xfer(uint8_t rhport, uint8_t stage, const void *request);
 void ns2_mount(void);
 
+// NTAG I2C 2K ("figure v3", e.g. Kirby Air Riders) advertised McuTagType.
+//
+// The console chooses which tag pages to request (0x06 descriptor: D0 | uid_len |
+// uid | McuTagType | block_count | page ranges) from the tag type the controller
+// reports in the 0x05 status. `McuTagType 1` = NTAG 215, which yields page ranges
+// 0x00-0x86 = exactly 540 bytes. The value for a 2 KB NTAG I2C tag is not
+// documented anywhere, so it is sweepable at runtime over UART (`v3mode N`) to
+// allow a hardware experiment matrix without reflashing. Default 2.
+// See docs/switch2/kirby-air-riders-extended-amiibo.md.
+void ns2_v3_set_serve_mode(uint8_t mode);
+uint8_t ns2_v3_get_serve_mode(void);
+
 //--------------------------------------------------------------------+
 // Report-0x09 motion debug/instrumentation (config.c's "imu" CDC command).
 //--------------------------------------------------------------------+
 
 // Bisects the gyro pipeline: report-0x09 USB state (active report id, streaming, motion
 // length last emitted).
-// NTAG I2C 2K ("figure v3") console read-buffer layout selector. The genuine
-// controller→console framing for a 2 KB tag is not documented anywhere, so the
-// layout is switchable at runtime over UART (`v3mode N`) to allow a hardware
-// experiment matrix without reflashing between attempts. See
-// docs/switch2/kirby-air-riders-extended-amiibo.md.
-//   0 = raw sector 0 (1024 B), no prefix
-//   1 = 60-byte prefix declaring NTAG215 type (01 02 00) + sector 0
-//   2 = 60-byte prefix declaring NTAG I2C 2K type (02 05 02) + sector 0
-//   3 = 60-byte prefix declaring NTAG I2C 2K type + full 2048-byte image
-void ns2_v3_set_serve_mode(uint8_t mode);
-uint8_t ns2_v3_get_serve_mode(void);
-
 void ns2_dbg_report_state(uint8_t *report_id, uint8_t *streaming, uint8_t *motion_len);
 
 // Bias-tracker state (raw LSB units) + whether the stillness gate is open right now.
