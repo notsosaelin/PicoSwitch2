@@ -336,3 +336,97 @@ would be some value > 4, and the same probe sweeps it.
 The dumps are genuinely signed, and the compat view we served was a cryptographically
 perfect standard amiibo. The rejection was never about crypto — it was always about
 the console not being told to read enough of the tag.
+
+
+---
+
+## 12. SOLVED MECHANISM (2026-07-27): the model byte is **read-buffer prefix offset 18**
+
+### The evidence
+
+`CTCaer/jc_toolkit` (`jctool.cpp`, Switch 1 MCU NFC read) parses the NFC read response:
+
+```c
+else if (buf2[49] == 0x3a && buf2[51] == 0x07) {      // NFCReadData
+    if (ntag_init_done) {
+        if (buf2[52] == 0x01)                          // first package
+            memcpy(dst, buf2 + 116, payload_size - 60); //   skips a 60-byte header
+        else
+            memcpy(dst, buf2 + 56,  payload_size);
+    }
+    else if (buf2[52] == 0x01) {                       // FIRST (discovery) read
+        if (tag_type == 2) {                           // tag IC == NTAG
+            switch (buf2[74]) {                        // <-- MODEL BYTE
+                case 0: ntag_pages = 135; break;       // NTAG215
+                case 3: ntag_pages = 45;  break;       // NTAG213
+                case 4: ntag_pages = 231; break;       // NTAG216
+                default: goto step9;                   // abort
+            }
+        }
+    }
+}
+```
+
+MCU data begins at `buf2 + 56`; the first package skips a **60-byte header** to reach
+tag data at `buf2 + 116`. Therefore `buf2[74]` = **header offset 18**.
+
+Our own primary capture (`experiments/pro2-native-nfc-read-2026-07-25.md`) documents
+the 60-byte read-buffer prefix as:
+
+| Off | Size | Meaning |
+|---:|---:|---|
+| 0 | 4 | `04 00 00 00` |
+| 4 | 4 | `01 02 00 07` |
+| 8 | 7 | UID |
+| **15** | **4** | **"zero/reserved"** ← **offset 18 lives here** |
+| 19 | 32 | originality signature |
+| 51 | 9 | echo of the `0x06` descriptor |
+| 60 | … | tag image |
+
+**Conclusion: prefix byte 18 is the NTAG model, we emit `0x00` (= NTAG215 = 135
+pages), and that is exactly why the console has requested `00-3b, 3c-77, 78-86`
+(540 bytes) in every trace we have ever taken.** The page ranges are downstream of a
+byte in a buffer *we generate*.
+
+### Correction: the `0x05` status cannot carry a model
+
+`status[4..8]` = `01 01 02 00 07` is a straight passthrough of the NCI
+`RF_INTF_ACTIVATED_NTF` from the controller's **PN7160** NFC front-end
+(`ndeadly/switch2_controller_research/datasheets/PN7160_PN7161.pdf`):
+
+| ours | NCI field | value |
+|---|---|---|
+| `[4]` | RF Discovery ID | `01` |
+| `[5]` | RF Interface | `01` = Frame |
+| `[6]` | RF Protocol | `02` = **T2T** |
+| `[7]` | RF Technology & Mode | `00` = NFC_A passive poll |
+| `[8]` | NFCID1 length | `07` |
+| `[9..]` | NFCID1 | UID |
+
+This explains the entire `status[7]` matrix — `01`/`02`/`03` are NFC_B / NFC_F /
+NFC_A-active, i.e. bogus RF technologies, hence the faults and the refusal to read.
+An NTAG I2C 2K is *also* T2T / NFC_A passive, so **the status is identical for both
+chips and can never distinguish them.** Every probe of that structure was doomed;
+this closes that avenue permanently.
+
+Confirmed independently: ndeadly's `commands.md` shows a genuine Pro Controller 2
+`0x05` reply for a real amiibo as
+`09 00 00 00 01 01 02 00 07 <uid> 00…` — byte-identical to ours.
+
+### What to do with it
+
+1. Sweep **prefix[18]** (not the status). Known: `0`=NTAG215, `3`=NTAG213,
+   `4`=NTAG216. Nintendo added NTAG I2C Plus 2K support for Kirby Air Riders, so its
+   value is a **new** enum member — sweep `5, 6, 7, 8, …` (and `1`, `2`).
+2. **Success signal**: the console issues a *second* `0x06` whose `block_count` and
+   ranges differ from `03 | 00-3b 3c-77 78-86`. Ranges reaching pages `0xE1`+ mean it
+   is reading sector 0 as a 2 KB part; ranges touching `0xF0`–`0xFF` mean it has
+   entered the **SRAM** path.
+3. Once it asks for `0xF0`–`0xFF`, parity is reachable: we already serve arbitrary
+   requested page ranges from the full 2048-byte image and already inject
+   `SRAM_RF_READY` at `0x3B6`. The remaining work is accepting the SRAM request
+   write (`0x08` write device + `0x14` write buffer) and ACKing it, exactly as
+   pixl.js does at RF level ("for now we ignore the writes and just ack").
+
+This is a real path to **parity**, not a compatibility shim: the console would be
+reading the tag as the 2 KB part it is, including the machine block.
