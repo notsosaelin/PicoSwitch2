@@ -94,4 +94,25 @@ bool virtual_amiibo_store_persist_pending(void);
 // which owns the multicore-lockout requester role.
 void virtual_amiibo_store_service_save(void);
 
+
+// Flash-journal inspector (diagnostics). Reports what is actually stored in each
+// bank, independent of the in-RAM slots, so "the write never happened" can be
+// told apart from "the write happened but boot did not load it".
+typedef struct {
+    uint8_t  header[24];      // raw record header as found in flash
+    bool     v3_valid;
+    bool     v2_valid;
+    uint32_t v3_generation;
+    uint32_t v2_generation;
+} virtual_amiibo_bank_debug_t;
+
+typedef struct {
+    int active_bank;                       // -1 when none
+    bool persist_pending;
+    bool v3_slot_loaded;
+    virtual_amiibo_bank_debug_t bank[2];
+} virtual_amiibo_journal_debug_t;
+
+void virtual_amiibo_store_journal_debug(virtual_amiibo_journal_debug_t *out);
+
 #endif
