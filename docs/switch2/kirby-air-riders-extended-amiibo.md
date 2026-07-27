@@ -281,6 +281,29 @@ machine-block end 0x3FF) because our 60-byte prefix consumes part of its fixed
 whether v3 needs a different prefix size so the fixed read window covers the whole
 1024-byte tag region.
 
+**Experiment 2 result (2026-07-26) — clean accepted read after dropping the prefix**
+(`dumps/kirby-v3-serve-trace-3-noprefix-2026-07-26.jsonl`). After serving the raw
+1024-byte sector 0 with **no 60-byte prefix**, the console read:
+
+```
+0x03 scan -> 0x05 status -> 0x06 begin -> 15x 0x15 at offsets 0..980
+15th chunk (offset 980): last=1, len=44  -> 980+44 = 1024 = full sector 0
+0x05 status -> (stop; no rescan loop, no error)
+```
+
+**No error** (previously 2115-0176), and the scan→stop→rescan retry storm is gone —
+the console accepted the completed read. This confirms the read protocol for a
+2 KB tag over the controller vendor channel:
+
+- The console reads the vendor read buffer **until the `last=1` chunk flag**.
+- For a 2 KB tag it reads **sector 0 = 1024 bytes** (15 chunks) and the tag must be
+  served **raw at offset 0 with no 540-style prefix**, so `last=1` lands on chunk
+  15 with the whole aligned image (identity, crypto, machine block, 0x3FE trailer).
+
+Remaining: confirm in-game that Kirby Air Riders builds the correct Figure Player
+(rider + machine), and that System Settings reads owner/nickname. Then wire v3
+writes if the game writes back.
+
 ### Phase 2 — serve the confirmed protocol (hardware loop)
 - Implement the console-facing read/response for the traced framing so a real Switch 2 builds the
   Figure Player. Iterate against captures until rider+machine are correct in Kirby Air Riders.
