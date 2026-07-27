@@ -587,7 +587,14 @@ void virtual_amiibo_store_request_persist(void)
 {
     virtual_amiibo_status_t status;
     virtual_amiibo_store_status(&status);
-    if (status.loaded) persist_requested = true;
+    // `status.loaded` describes only the 540/572 store. A 2 KB (v3) tag lives in
+    // its own slot and leaves `loaded` false by design (the two are mutually
+    // exclusive), so gating solely on it made `amiibo persist` a silent no-op for
+    // v3 -- the record was only ever written if service_save happened to run
+    // before power was lost, which is why a USB-mode upload did not survive a
+    // power blip while a BLE upload (dongle stays powered) usually did.
+    if (status.loaded || virtual_amiibo_store_v3_loaded())
+        persist_requested = true;
 }
 
 void virtual_amiibo_store_request_clear(void)
