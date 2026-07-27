@@ -362,6 +362,38 @@ pending.
 Also keep in mind: do not restore the 60-byte prefix (it truncates sector 0 within
 the 15-chunk cap and regresses to "not an amiibo").
 
+### Served-data integrity verified byte-exact (2026-07-26)
+
+Cross-checking `dumps/kirby-v3-serve-trace-5-sramready-2026-07-26.jsonl` against the
+source dump (`BWD & Winged Star.bin`, matched by comparing all chunks — the four
+BWD variants share a UID, so the machine block at `0x3D4` is what distinguishes
+them): **0 mismatches across all 15 chunks**, accounting for the injected
+`SRAM_RF_READY` bit. Every byte the console received is identical to the dump that
+works on pixl.js/flashiibo. The crash is therefore **not** corrupted, misaligned,
+or truncated data — the console receives a faithful sector 0 and still crashes.
+
+### Next experiment: mirror a GENUINE controller (no genuine amiibo needed)
+
+The repo already has the instrument for this: the **UART-gated NFC mirror**
+(`ns2_nfc_mirror_*`, `src/bt_hid/bt/btstack/btstack_host.c`), which forwards the
+console's command-`0x01` NFC packets to a **connected genuine Pro Controller 2**
+over Bluetooth and returns that controller's **genuine replies**, all visible to
+the protocol tracer.
+
+Presenting an existing flashiibo/pixl.js-emulated Kirby tag to the genuine
+controller therefore captures the **real controller→console framing for a 2 KB
+tag** without owning a genuine Kirby amiibo. Requirements: a genuine Switch 2
+controller connected over BT (PID `0x2066/0x2067/0x2069/0x2073`), `nfcmirror on`,
+mirror state `ACTIVE`, and **the virtual amiibo slot ejected** — otherwise
+`ns2_virtual_nfc_dispatch_usb()` serves the tag itself and the mirror never sees
+the commands.
+
+Decisive question the capture answers immediately, from chunk offset 0's first
+bytes: does a genuine controller send the **60-byte prefix** for a 2 KB tag
+(`04 00 00 00 01 02 00 07 <uid>`) or the **raw tag** (`04 2a 35 …`)? Plus the
+chunk count, `last` flags, and the `0x05` status bytes (where a tag-type/version
+field we currently zero would live).
+
 ### Phase 2 — serve the confirmed protocol (hardware loop)
 - Implement the console-facing read/response for the traced framing so a real Switch 2 builds the
   Figure Player. Iterate against captures until rider+machine are correct in Kirby Air Riders.
