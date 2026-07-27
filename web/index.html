@@ -2740,6 +2740,11 @@ async function initializeSelectedAmiibo() {
       "Download .bin first if you want a backup. The adapter is not changed."))
     return;
   amiiboSetBusy(true, 0);
+  // Everything that can fail happens BEFORE the library is written. Once that
+  // write lands the operation has succeeded, so a later error (a re-render, a
+  // status line) must not be reported as "could not initialize" — that reads as
+  // "nothing happened" when the amiibo has in fact already been replaced.
+  let committed = false;
   try {
     const bytes = amiiboEntryBytes(entry);
     if (!bytes) throw new Error("Could not read this amiibo from the library");
@@ -2750,14 +2755,22 @@ async function initializeSelectedAmiibo() {
     });
     if (!(await cacheSingleAmiiboEntry(updated)))
       throw new Error("Could not save the initialized amiibo to the library");
+    committed = true;
     const index = amiiboLibrary.findIndex(item => item.key === entry.key);
     if (index >= 0) amiiboLibrary[index] = updated; else amiiboLibrary.push(updated);
     amiiboInfoCache.delete(entry.key);
     amiiboInfoCache.delete(updated.key);
     renderAmiiboLibrary();
-    setStatus(`${name} initialized.`);
+    $("#amiiboMessage").textContent =
+      `${name} initialized — owner, nickname, game data and dates cleared.`;
   } catch (error) {
-    alert(`Could not initialize this amiibo.\n\n${error.message}`);
+    if (committed) {
+      console.warn("Initialization saved, but refreshing the view failed", error);
+      $("#amiiboMessage").textContent =
+        `${name} initialized. Refresh to update the view.`;
+    } else {
+      alert(`Could not initialize this amiibo.\n\n${error.message}`);
+    }
   } finally {
     amiiboSetBusy(false);
   }
