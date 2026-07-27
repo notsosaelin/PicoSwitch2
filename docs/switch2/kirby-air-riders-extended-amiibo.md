@@ -444,6 +444,76 @@ Amiibo → Activate Amiibo. Activate shows a "serving in progress" message rathe
 upload the firmware would reject. Import/library are correct and ready; only the firmware serve path
 remains.
 
+
+## Source review (2026-07-27) — full sweep of the published research
+
+Compiled from every published source rather than inference. **Primary source:
+xSke, [N3evin/AmiiboAPI#243 comment 3591686037](https://github.com/N3evin/AmiiboAPI/issues/243#issuecomment-3591686037).**
+
+- Tags are **NTAG I2C Plus 2K**. The data format is standard amiibo **plus 64 bytes
+  of random data inserted between pages 0x20-0x30 (bytes `0x80`-`0xA0`)**. The
+  encrypted sections shift by `0x40` accordingly (HMAC -> `0xC0`, data -> `0xE0`),
+  and the data still spans to page `0x92`. xSke: *"This seems unused for now? If I
+  change it to all-zeros and emulate a bin, it loads fine."*
+- **The standard amiibo keys are unchanged.** xSke: *"If you cut out the new
+  64-byte random data buffer from the middle, it'll encrypt and decrypt fine with
+  eg. pyamiibo."* Corroborated by
+  [bettse/amiitool b066e85](https://github.com/bettse/amiitool/commit/b066e85d344355224cd0390064f9b5a995b47b2d),
+  which threads a `tag_v3` flag applying exactly that `0x40` shift.
+- **Backwards compatibility is built into the console.** xSke: *"I've already
+  looked through the Switch 1 NFC sysmodule, and it does have handling for
+  skipping the extra data chunks and reading standard Amiibo data from the right
+  offsets, which is how they're backwards compatible - but I haven't found any
+  code for handling the SRAM data or any extra chunks."*
+- Config pages are `0xE2`-`0xE6`; the **SRAM buffer is pages `0xF0`-`0xFF`**. The
+  console FAST_WRITEs a request block there, polls page `0xED` until
+  `SRAM_RF_READY` (byte 2, bit 3) is set, then FAST_READs the response. xSke
+  advises a static dump *"hardcode page 0xED ... with `0x29` in the third byte ...
+  otherwise it's going to be polling forever"* — matching our earlier fix.
+- **The machine identity lives only in the SRAM block**; the amiibo **ID is
+  rider-only** (Kirby & Warp Star and Kirby & Winged Star share
+  `1F00000004C41E03`). The SRAM block is authenticated by an unknown checksum over
+  its first 26 bytes.
+- Kirby Air Riders writes its own data to pages `0x9A`-`0xA1` and `0x11A`-`0x131`,
+  encrypted with keys that would require a Switch 2 softmod. **Not recoverable.**
+- [solosky/pixl.js#381](https://github.com/solosky/pixl.js/pull/381) is merged and
+  xSke tested emulation on a real Switch 2 with the game. Crucially it emulates the
+  **tag over RF**, where the reader learns the type from `GET_VERSION`
+  (`00 04 04 05 02 02 15 03`) and uses `SECTOR_SELECT`. PicoSwitch2 is the
+  **controller**, so none of that RF signalling is available to us: the console
+  tells *us* which pages to read.
+
+### Why every attempt so far failed
+
+The `0x06` descriptor (decoded in `dumps/research/ndeadly-switch2-research.json`)
+is `D0 | uid_len | uid | McuTagType | block_count | (start,end) x N`. The console
+sends `McuTagType 1 (NTAG 215)` and asks for pages `0x00-0x86` — **exactly 540
+bytes, in NTAG215 layout**. We were answering with **raw v3 bytes** at those
+offsets, whose encrypted regions sit `0x40` higher, so the console's standard
+crypto could never validate them. Sweeping the advertised type byte changed
+nothing because no field we control alters the console's chosen page set.
+
+### Fix: serve the NTAG215-compatibility view
+
+Reconstruct the classic layout by removing the inserted block:
+
+```
+standard[0x000..0x07F] = v3[0x000..0x07F]   (128 B)
+standard[0x080..0x21B] = v3[0x0C0..0x25B]   (412 B)   -> 540 bytes
+```
+
+`tools/test_ns2_v3_compat_view.mjs` proves over **all 16 dumps** that
+`tag_to_internal(compat, v3=false)` is **byte-identical** to
+`tag_to_internal(full_v3, v3=true)` — so a console validating this view as a plain
+NTAG215 computes exactly the HMACs the real tag was signed with. This is the same
+path the console's own sysmodule uses for backwards compatibility.
+
+**Expected scope:** the rider amiibo should be recognised and registrable (owner /
+nickname) as a standard amiibo. The **machine/Figure Player cannot** be conveyed —
+it lives in the SRAM block, which the console only requests after learning the tag
+is 2 KB, and we have no confirmed way to signal that over the controller protocol.
+That remains the one genuinely open question.
+
 ## References
 
 - Community dump set: "Kirby Air Riders amiibo for Pixl.js/allmiibo/flashiibo" (2026-02-07),
