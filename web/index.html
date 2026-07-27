@@ -1694,6 +1694,24 @@ function amiiboDecodeDate(hi, lo) {
   if (month < 1 || month > 12 || day < 1 || day > 31) return null;
   return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
+// An amiibo holds ONE application's data at a time (3dbrew: AppData is a fixed
+// 0xD8 region, and a different application overwrites it), so this resolves the
+// single owning game rather than listing several.
+//
+// Keyed on AppID, not title ID: 3dbrew notes the system writes the title ID but
+// never compares it, precisely so a game keeps working across platforms — the
+// same game has different title IDs on 3DS and Wii U, while its AppID is stable.
+//
+// Confirmed values from 3dbrew. The table is partial (Switch-era titles are not
+// documented there); an unrecognised AppID is shown as raw hex rather than
+// guessed at. Add entries as they are confirmed — never from memory.
+const AMIIBO_APP_IDS = new Map([
+  ["10110E00", "Super Smash Bros."],
+  ["0014F000", "Animal Crossing: Happy Home Designer"],
+  ["00152600", "Chibi-Robo!: Zip Lash"],
+  ["00132600", "Mario & Luigi: Paper Jam"],
+  ["1019C800", "The Legend of Zelda: Twilight Princess HD"],
+]);
 function amiiboHex(bytes) {
   let out = "";
   for (const b of bytes) out += b.toString(16).padStart(2, "0").toUpperCase();
@@ -1719,6 +1737,7 @@ function amiiboReadRegisterInfo(internal) {
     writeCounter: (internal[0xB4] << 8) | internal[0xB5],
     titleId: amiiboHex(internal.subarray(0xAC, 0xB4)),
     hasTitleId: !amiiboAllZero(internal.subarray(0xAC, 0xB4)),
+    appId: amiiboHex(internal.subarray(0xB6, 0xBA)),
     hasAppData: !amiiboAllZero(internal.subarray(0xDC, 0x1B4)),
   };
 }
@@ -1909,9 +1928,17 @@ function amiiboSetDetailExtras(info) {
   set("#amiiboInfoWritten", info.lastWriteDate || "Never written");
   set("#amiiboInfoSetup", info.setupDate || "Not registered");
   set("#amiiboInfoWrites", String(info.writeCounter));
-  set("#amiiboInfoAppData", info.hasAppData
-    ? (info.hasTitleId ? `Present (title ${info.titleId})` : "Present")
-    : "None");
+  set("#amiiboInfoAppData", amiiboAppDataLabel(info));
+}
+
+// "None", the owning game's name, or the raw AppID when it is not in the table.
+function amiiboAppDataLabel(info) {
+  if (!info || !info.hasAppData) return "None";
+  const named = AMIIBO_APP_IDS.get(info.appId);
+  if (named) return named;
+  if (info.appId && info.appId !== "00000000")
+    return `Unrecognised game (AppID ${info.appId})`;
+  return "Present";
 }
 
 async function exportAmiiboLibraryBackup() {

@@ -181,3 +181,42 @@ idempotent, and a tampered dump is refused. Plus date-decode edges (`0x0000`, `0
 value).
 
 Not hardware validated — an initialized amiibo has not yet been presented to a console.
+
+## 7. "Which games have data on this amiibo?" — there can only ever be one
+
+An amiibo holds **one application's data at a time**. AppData is a fixed `0xD8` region, and a
+different application **overwrites** it — which is the console prompt you see when a second game
+wants to save to an amiibo that already carries data. So the answer to "which games" is always
+exactly zero or one, and there is no list to render.
+
+**Use the AppID, not the title ID.** 3dbrew is explicit that the system *writes* the application
+title ID but **never compares** it, "doing the latter would break games' cross-platform
+compatibility with 3DS<>Wii U". The same game therefore has different title IDs per platform while
+its **AppID is stable**, which makes AppID the correct key for naming the owning game. Title ID
+remains worth keeping as raw evidence of which build wrote it.
+
+Implemented: `AMIIBO_APP_IDS` maps AppID (internal `0xB6`, 4 bytes BE) to a game name, and the
+detail box shows that name instead of a hex blob.
+
+| AppID | Game |
+|---|---|
+| `10110E00` | Super Smash Bros. |
+| `0014F000` | Animal Crossing: Happy Home Designer |
+| `00152600` | Chibi-Robo!: Zip Lash |
+| `00132600` | Mario & Luigi: Paper Jam |
+| `1019C800` | The Legend of Zelda: Twilight Princess HD |
+
+🔵 The table is **partial** — these are the values 3dbrew documents, and they are all 3DS/Wii U era.
+Switch titles (Smash Ultimate, Breath of the Wild, Splatoon 2) are not documented there. An
+unrecognised AppID renders as `Unrecognised game (AppID XXXXXXXX)` rather than being guessed at.
+Extend the table only from confirmed dumps: read a known amiibo written by the game in question and
+record the AppID it carries.
+
+### The other question this could mean
+
+"Which games *can use* this amiibo" is a different, genuinely list-shaped question, and it is
+already within reach: AmiiboAPI — which the portal fetches for its catalog — returns
+`gamesSwitch` / `games3DS` / `gamesWiiU` arrays when queried with `?showgames`. That is compatibility
+metadata about the character, not anything read from the tag, so it needs no keys and works for
+every amiibo in the library rather than only written ones. Not implemented; noted as the natural
+follow-up if a list is what is actually wanted.
