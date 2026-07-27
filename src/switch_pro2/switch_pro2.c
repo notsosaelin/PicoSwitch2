@@ -1469,8 +1469,18 @@ static void ns2_build_report(uint8_t *p) {
     // VID/PID gate therefore skipped this path and fell into the known-bad
     // generic phase encoder, producing violent motion spam. DS4 and other Sony
     // devices remain excluded because only ds5_bt stamps this source value.
+    //
+    // The translator is not DualSense-specific: it consumes the shared
+    // interchange scale (NS2_DS5_GYRO_COUNTS_PER_DPS == 16.384, i.e. the same
+    // "+-32767 = +-2000 dps" every driver publishes) and already carries an
+    // explicit host-clock fallback for "sources without an authored IMU clock".
+    // Switch-1 controllers publish exactly that scale and have no sensor
+    // timestamp, so they qualify. Routing them here instead of the generic phase
+    // encoder is the same fix that resolved the DualSense's violent motion spam;
+    // nothing in the translator or the DualSense driver changes.
     const bool ds5_motion_owned =
-        in.motion_source == SWITCH_MOTION_SOURCE_DUALSENSE &&
+        (in.motion_source == SWITCH_MOTION_SOURCE_DUALSENSE ||
+         in.motion_source == SWITCH_MOTION_SOURCE_SWITCH1) &&
         in.has_motion;
     if (ds5_motion_owned && ns2_ds5_motion_enabled) {
         if (!ns2_ds5_motion_source_active) {
