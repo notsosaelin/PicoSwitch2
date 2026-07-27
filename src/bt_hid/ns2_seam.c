@@ -24,6 +24,7 @@
 #include "bt/bthid/devices/vendors/nintendo/wiimote_bt.h" // Wii motion provenance
 #include "bt/bthid/devices/vendors/nintendo/switch_pro_bt.h" // Switch 1 motion provenance
 #include "config.h"                               // config_get_body_color()
+#include "ns2_motion_seam.h"                  // per-source IMU axis rows
 #include "ns2_remap.h"                            // locked base button mapping
 #include "ns2_player_led.h"                       // Switch wire bitfield -> player number
 #include "ns2_wake.h"                             // post-sleep real-input wake intent
@@ -63,42 +64,6 @@ static inline uint16_t ns2_to12(uint8_t v) {
 
 static inline int16_t ns2_clamp16(int32_t v) {
     return (int16_t)(v > 32767 ? 32767 : (v < -32768 ? -32768 : v));
-}
-
-// Per-source IMU axis transform into the Pro2 carrier frame.
-//
-// Each motion source owns its own entry, so changing one controller family's
-// axes cannot affect another. Add a row when adding a motion source; do not
-// edit an existing row to fix a different controller.
-//
-// src[i] = which source axis feeds output slot i; sign[i] = its polarity.
-// Accel and gyro are separate because a source's gyro polarity need not follow
-// the right-hand rule about its own accel axes (the DualSense's does not).
-// Accel is additionally halved by the caller: 8192 counts/g -> the PC2's 4096.
-typedef struct {
-    int8_t accel_src[3], accel_sign[3];
-    int8_t gyro_src[3],  gyro_sign[3];
-} ns2_motion_seam_t;
-
-static const ns2_motion_seam_t NS2_MOTION_SEAMS[] = {
-    // GENERIC: unknown frame; pass through in the DualSense arrangement.
-    [SWITCH_MOTION_SOURCE_GENERIC] = {
-        {0, 2, 1}, {1, -1, 1}, {0, 2, 1}, {1, -1, 1} },
-    // DUALSENSE: hardware-validated (paired native-Pro2/DS5 capture 2026-07-22).
-    [SWITCH_MOTION_SOURCE_DUALSENSE] = {
-        {0, 2, 1}, {1, -1, 1}, {0, 2, 1}, {1, -1, 1} },
-    // WII: publishes in the DualSense arrangement already.
-    [SWITCH_MOTION_SOURCE_WII] = {
-        {0, 2, 1}, {1, -1, 1}, {0, 2, 1}, {1, -1, 1} },
-    // SWITCH1: raw LSM6DS3 axes (X longitudinal, Y +left, Z +face normal).
-    [SWITCH_MOTION_SOURCE_SWITCH1] = {
-        {1, 0, 2}, {-1, -1, 1}, {1, 0, 2}, {-1, -1, 1} },
-};
-
-static const ns2_motion_seam_t *ns2_motion_seam_for(uint8_t source) {
-    if (source >= (sizeof(NS2_MOTION_SEAMS) / sizeof(NS2_MOTION_SEAMS[0])))
-        source = SWITCH_MOTION_SOURCE_GENERIC;
-    return &NS2_MOTION_SEAMS[source];
 }
 
 // Source order: index -> JP button. MUST match NS2_BASE_BUTTON_MAP.
@@ -311,13 +276,8 @@ void router_submit_input(const input_event_t *e) {
             in.motion_timestamp = e->motion_timestamp;
             in.motion_timestamp_valid = 1;
         }
-        const ns2_motion_seam_t *seam = ns2_motion_seam_for(in.motion_source);
-        for (unsigned i = 0; i < 3; i++) {
-            in.accel[i] = ns2_clamp16(
-                e->accel[seam->accel_src[i]] * seam->accel_sign[i] / 2);
-            in.gyro[i] = ns2_clamp16(
-                e->gyro[seam->gyro_src[i]] * seam->gyro_sign[i]);
-        }
+        ns2_motion_seam_apply(in.motion_source, e->accel, e->gyro,
+                              in.accel, in.gyro);
     }
 #ifdef NS2_DS5_AUDIO
     in.headset_state = e->headset_state;
