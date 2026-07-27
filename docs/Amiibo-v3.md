@@ -502,6 +502,14 @@ Settings) across multiple Switch 2s — it was simply a defective tag.
 
 ### To resume
 
+> **Prepared 2026-07-27:** the capture procedure is now written up step by step in
+> [`experiments/v3-amiibo-genuine-capture-runbook.md`](experiments/v3-amiibo-genuine-capture-runbook.md),
+> dry-run against live hardware. Two blockers were found and fixed while preparing it: the trace
+> buffer would have truncated read-buffer replies (72-byte payload vs 128-byte mirrored responses)
+> and could wrap mid-session, and the local serve path was consulted *before* the mirror, so it
+> could answer the console even with an empty slot and return an empty capture. Ejecting the
+> virtual slot is consequently no longer a precondition.
+
 The one thing that would unblock this is **observing a genuine controller read a
 genuine v3 amiibo once** — the repo already has the instrument for it
 (`nfcmirror`, `src/bt_hid/bt/btstack/btstack_host.c`), which forwards the console's
