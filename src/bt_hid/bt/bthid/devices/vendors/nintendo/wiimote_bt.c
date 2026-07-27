@@ -161,6 +161,26 @@ typedef enum {
     WII_STATE_WAIT_EXT_INIT2_ACK,
     WII_STATE_READ_EXT_TYPE,
     WII_STATE_WAIT_EXT_TYPE,
+    // MotionPlus probe/activation. Ordered strictly AFTER the ordinary extension
+    // init, because writing 0xA400F0 = 0x55 is itself the MotionPlus
+    // DEACTIVATION signal (wii-motion.md 6.3) -- running ext-init after
+    // activating would immediately turn the gyro back off. If no MotionPlus
+    // answers, these states fall straight through to SEND_REPORT_MODE so a plain
+    // Wii Remote follows exactly the previous path.
+    WII_STATE_MP_DETECT,
+    WII_STATE_WAIT_MP_DETECT,
+    WII_STATE_MP_READ_CAL1,
+    WII_STATE_WAIT_MP_CAL1,
+    WII_STATE_MP_READ_CAL2,
+    WII_STATE_WAIT_MP_CAL2,
+    WII_STATE_MP_INIT1,
+    WII_STATE_WAIT_MP_INIT1,
+    WII_STATE_MP_INIT2,
+    WII_STATE_WAIT_MP_INIT2,
+    WII_STATE_MP_ACTIVATE,
+    WII_STATE_WAIT_MP_ACTIVATE,
+    WII_STATE_MP_VERIFY,
+    WII_STATE_WAIT_MP_VERIFY,
     WII_STATE_SEND_REPORT_MODE,
     WII_STATE_WAIT_REPORT_ACK,
     WII_STATE_SEND_LED,
@@ -206,6 +226,8 @@ typedef struct {
     // active extension address (wii-motion.md §6.2/§6.7).
     wii_mp_cal_t mp_cal;
     bool mp_present;            // an inactive MotionPlus answered at 0xA600FA
+    uint8_t mp_cal_raw[WII_MP_CAL_SIZE];  // assembled from two 16-byte reads
+    uint8_t mp_verify_retries;
     int32_t mp_centi_dps[3];    // last decoded [yaw, roll, pitch]
     bool mp_have_sample;
 } wiimote_data_t;
@@ -217,9 +239,23 @@ static wiimote_data_t wiimote_data[BTHID_MAX_DEVICES];
 // ============================================================================
 
 // Set LEDs using raw pattern (bits 4-7 = LEDs 1-4)
+// Bit 0 of the first parameter byte of EVERY output report is the rumble motor
+// latch -- not a per-report flag, but a latch that every report rewrites
+// (docs/bluetooth/wii-motion.md 2.2). Sending an LED, report-mode, status or
+// memory command with a literal 0 in that byte therefore stops rumble as a side
+// effect. The Linux kernel works around this by routing every transmit
+// through wiiproto_keep_rumble(); this mirrors that. The 30 s keep-alive status
+// request made the bug reachable in ordinary use.
+static uint8_t wiimote_rumble_bit(bthid_device_t* device)
+{
+    const wiimote_data_t *wii = (const wiimote_data_t *)device->driver_data;
+    return (wii && wii->rumble_on) ? 0x01u : 0x00u;
+}
+
 static void wiimote_set_leds_raw(bthid_device_t* device, uint8_t led_pattern)
 {
-    uint8_t buf[3] = { 0xA2, WII_CMD_LED, led_pattern };
+    uint8_t buf[3] = { 0xA2, WII_CMD_LED,
+                       (uint8_t)(led_pattern | wiimote_rumble_bit(device)) };
     btstack_wiimote_send_raw(device->conn_index, buf, sizeof(buf));
 }
 
@@ -234,7 +270,7 @@ static void wiimote_set_leds(bthid_device_t* device, uint8_t player)
 
 static bool wiimote_request_status(bthid_device_t* device)
 {
-    uint8_t buf[3] = { 0xA2, WII_CMD_STATUS_REQ, 0x00 };
+    uint8_t buf[3] = { 0xA2, WII_CMD_STATUS_REQ, wiimote_rumble_bit(device) };
     return btstack_wiimote_send_control(device->conn_index, buf, sizeof(buf));
 }
 
@@ -244,7 +280,7 @@ static bool wiimote_write_data(bthid_device_t* device, uint32_t address, uint8_t
     memset(buf, 0, sizeof(buf));
     buf[0] = 0xA2;
     buf[1] = WII_CMD_WRITE_DATA;
-    buf[2] = 0x04;  // Extension register space
+    buf[2] = 0x04 | wiimote_rumble_bit(device);  // register space + rumble latch
     buf[3] = (uint8_t)((address >> 16) & 0xFF);
     buf[4] = (uint8_t)((address >> 8) & 0xFF);
     buf[5] = (uint8_t)(address & 0xFF);
@@ -258,7 +294,7 @@ static bool wiimote_read_data(bthid_device_t* device, uint32_t address, uint16_t
     uint8_t buf[8];
     buf[0] = 0xA2;
     buf[1] = WII_CMD_READ_DATA;
-    buf[2] = 0x04;  // Extension register space
+    buf[2] = 0x04 | wiimote_rumble_bit(device);  // register space + rumble latch
     buf[3] = (uint8_t)((address >> 16) & 0xFF);
     buf[4] = (uint8_t)((address >> 8) & 0xFF);
     buf[5] = (uint8_t)(address & 0xFF);
@@ -272,7 +308,8 @@ static void wiimote_set_report_mode(bthid_device_t* device, bool has_extension)
     // 0x35 = buttons + accel + 16 ext bytes (for orientation detection + extension)
     // 0x31 = buttons + accel only (for orientation detection, no extension)
     uint8_t mode = has_extension ? 0x35 : 0x31;
-    uint8_t buf[4] = { 0xA2, WII_CMD_REPORT_MODE, 0x00, mode };
+    uint8_t buf[4] = { 0xA2, WII_CMD_REPORT_MODE,
+                       wiimote_rumble_bit(device), mode };
     printf("[WIIMOTE] Setting report mode 0x%02X\n", mode);
     btstack_wiimote_send_raw(device->conn_index, buf, sizeof(buf));
 }
@@ -861,6 +898,64 @@ static void wiimote_process_report(bthid_device_t* device, const uint8_t* data, 
 
         printf("[WIIMOTE] Read response: SE=0x%02X size=%d error=%d len=%d\n", se, size, error, len);
 
+        // --- MotionPlus probe / calibration / verify responses --------------
+        if (wii->state == WII_STATE_WAIT_MP_DETECT) {
+            // Expect <II> 00 A6 20 00 05. The kernel's acceptance test is
+            // deliberately loose -- it checks only the final byte (6.1).
+            if (error == 0 && len >= 12 && data[11] == 0x05) {
+                wii->mp_present = true;
+                printf("[WIIMOTE] MotionPlus present (integrated=%d)\n",
+                       data[6] == 0x01);
+                wii->state = WII_STATE_MP_READ_CAL1;
+                wii->init_time = platform_time_us() + 1000000;
+            } else {
+                // Error 7 ("no extension") is the normal answer on a remote
+                // without MotionPlus; proceed exactly as before.
+                wii->state = WII_STATE_SEND_REPORT_MODE;
+            }
+            return;
+        }
+
+        if (wii->state == WII_STATE_WAIT_MP_CAL1 ||
+            wii->state == WII_STATE_WAIT_MP_CAL2) {
+            const bool first = (wii->state == WII_STATE_WAIT_MP_CAL1);
+            if (error == 0 && len >= 22) {
+                memcpy(&wii->mp_cal_raw[first ? 0 : 16], &data[6], 16);
+            }
+            if (first) {
+                wii->state = WII_STATE_MP_READ_CAL2;
+            } else {
+                // Verify the CRC32 rather than silently calibrating from a
+                // corrupt read; on failure the decoder falls back to the
+                // nominal scales (6.7/6.9).
+                if (wii_mp_parse_calibration(wii->mp_cal_raw, &wii->mp_cal))
+                    printf("[WIIMOTE] MotionPlus calibration OK\n");
+                else
+                    printf("[WIIMOTE] MotionPlus calibration invalid; using fallback scales\n");
+                wii->state = WII_STATE_MP_INIT1;
+            }
+            wii->init_time = platform_time_us() + 1000000;
+            return;
+        }
+
+        if (wii->state == WII_STATE_WAIT_MP_VERIFY) {
+            if (error == 0 && len >= 12 &&
+                data[8] == 0xA4 && data[9] == 0x20 && data[11] == 0x05) {
+                if (data[10] == 0x05)      wii->ext_type = WII_EXT_MOTIONPLUS_NUNCHUK;
+                else if (data[10] == 0x07) wii->ext_type = WII_EXT_MOTIONPLUS_CLASSIC;
+                else                       wii->ext_type = WII_EXT_MOTIONPLUS;
+                // Report mode 0x35 (accel + 16 extension bytes) is selected from
+                // this flag, and the MotionPlus frame lives in those bytes.
+                wii->extension_connected = true;
+                printf("[WIIMOTE] MotionPlus active (mode %02X)\n", data[10]);
+                wii->state = WII_STATE_SEND_REPORT_MODE;
+                wii->init_time = platform_time_us() + 1000000;
+            }
+            // Otherwise leave the state alone: the task retries the read, since
+            // the extension port is unresponsive during the settling period.
+            return;
+        }
+
         if (wii->state == WII_STATE_WAIT_EXT_TYPE) {
             // Extension type data starts at offset 6
             if (error == 0 && len >= 12) {
@@ -1001,7 +1096,128 @@ static void wiimote_task(bthid_device_t* device)
 
         case WII_STATE_WAIT_EXT_TYPE:
             if ((int32_t)(now - wii->init_time) >= 0) {
+                wii->state = WII_STATE_MP_DETECT;
+            }
+            break;
+
+        // An INACTIVE MotionPlus lives at 0xA60000 and is probed even when an
+        // ordinary extension was already found, because a Nunchuk may sit behind
+        // it (6.1). Its identifier ends 00 05.
+        case WII_STATE_MP_DETECT:
+            if (btstack_wiimote_can_send(device->conn_index)) {
+                wiimote_read_data(device, 0xA600FA, 6);
+                wii->state = WII_STATE_WAIT_MP_DETECT;
+                wii->init_time = now + 1000000;
+            }
+            break;
+
+        case WII_STATE_WAIT_MP_DETECT:
+            // No answer -> no MotionPlus; continue exactly as before.
+            if ((int32_t)(now - wii->init_time) >= 0)
                 wii->state = WII_STATE_SEND_REPORT_MODE;
+            break;
+
+        // Read the 32-byte calibration block BEFORE activating, while the device
+        // still answers in the inactive 0xA6xxxx space (6.7). One report 0x21
+        // carries at most 16 bytes, so this takes two reads.
+        case WII_STATE_MP_READ_CAL1:
+            if (btstack_wiimote_can_send(device->conn_index)) {
+                wiimote_read_data(device, 0xA60020, 16);
+                wii->state = WII_STATE_WAIT_MP_CAL1;
+                wii->init_time = now + 1000000;
+            }
+            break;
+
+        case WII_STATE_WAIT_MP_CAL1:
+            if ((int32_t)(now - wii->init_time) >= 0)
+                wii->state = WII_STATE_MP_READ_CAL2;   // proceed uncalibrated
+            break;
+
+        case WII_STATE_MP_READ_CAL2:
+            if (btstack_wiimote_can_send(device->conn_index)) {
+                wiimote_read_data(device, 0xA60030, 16);
+                wii->state = WII_STATE_WAIT_MP_CAL2;
+                wii->init_time = now + 1000000;
+            }
+            break;
+
+        case WII_STATE_WAIT_MP_CAL2:
+            if ((int32_t)(now - wii->init_time) >= 0)
+                wii->state = WII_STATE_MP_INIT1;
+            break;
+
+        // MotionPlus has its own unencrypted-init pair in ITS register space; it
+        // does not use 0xA400F0/0xA400FB (6.1).
+        case WII_STATE_MP_INIT1:
+            if (btstack_wiimote_can_send(device->conn_index)) {
+                wiimote_write_data(device, 0xA600F0, 0x55);
+                wii->state = WII_STATE_WAIT_MP_INIT1;
+                wii->init_time = now + 200000;
+            }
+            break;
+
+        case WII_STATE_WAIT_MP_INIT1:
+            if ((int32_t)(now - wii->init_time) >= 0)
+                wii->state = WII_STATE_MP_INIT2;
+            break;
+
+        case WII_STATE_MP_INIT2:
+            if (btstack_wiimote_can_send(device->conn_index)) {
+                wiimote_write_data(device, 0xA600FB, 0x00);
+                wii->state = WII_STATE_WAIT_MP_INIT2;
+                wii->init_time = now + 200000;
+            }
+            break;
+
+        case WII_STATE_WAIT_MP_INIT2:
+            if ((int32_t)(now - wii->init_time) >= 0)
+                wii->state = WII_STATE_MP_ACTIVATE;
+            break;
+
+        // The value written to 0xA600FE selects the passthrough mode AND performs
+        // the activation (6.2). Pick it from whatever was found downstream.
+        case WII_STATE_MP_ACTIVATE:
+            if (btstack_wiimote_can_send(device->conn_index)) {
+                uint8_t mode = 0x04;                       // MotionPlus only
+                if (wii->ext_type == WII_EXT_NUNCHUK)
+                    mode = 0x05;                           // Nunchuk passthrough
+                else if (wii->ext_type == WII_EXT_CLASSIC ||
+                         wii->ext_type == WII_EXT_CLASSIC_MINI ||
+                         wii->ext_type == WII_EXT_GUITAR)
+                    mode = 0x07;                           // Classic passthrough
+                printf("[WIIMOTE] MotionPlus activating (mode 0x%02X)\n", mode);
+                wiimote_write_data(device, 0xA600FE, mode);
+                wii->mp_verify_retries = 0;
+                wii->state = WII_STATE_WAIT_MP_ACTIVATE;
+                // The port is unresponsive while the device moves from 0x53 to
+                // 0x52; poll rather than assume the write took effect (6.2).
+                wii->init_time = now + 50000;
+            }
+            break;
+
+        case WII_STATE_WAIT_MP_ACTIVATE:
+            if ((int32_t)(now - wii->init_time) >= 0)
+                wii->state = WII_STATE_MP_VERIFY;
+            break;
+
+        // After activation the MotionPlus BECOMES the extension at 0xA40000 and
+        // should identify as ?? ?? A4 20 <mode> 05.
+        case WII_STATE_MP_VERIFY:
+            if (btstack_wiimote_can_send(device->conn_index)) {
+                wiimote_read_data(device, 0xA400FA, 6);
+                wii->state = WII_STATE_WAIT_MP_VERIFY;
+                wii->init_time = now + 50000;
+            }
+            break;
+
+        case WII_STATE_WAIT_MP_VERIFY:
+            if ((int32_t)(now - wii->init_time) >= 0) {
+                if (++wii->mp_verify_retries < 5) {
+                    wii->state = WII_STATE_MP_VERIFY;      // 5 tries @ 50 ms
+                } else {
+                    printf("[WIIMOTE] MotionPlus did not activate; no gyro\n");
+                    wii->state = WII_STATE_SEND_REPORT_MODE;
+                }
             }
             break;
 
