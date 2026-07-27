@@ -335,12 +335,32 @@ that pixl.js (RF-only) does not contain**:
 - the **`nfc_identity` (0x0C)** query the console issues for a 2 KB tag, which we
   currently only bare-ACK.
 
-**Conclusion:** the read side is solved and the console recognizes the tag, but the
-crash needs vendor-level 2 KB protocol (SRAM / signature / identity) that is **not
-derivable from pixl.js or the dump files** — it requires a UART capture of a
-**genuine Pro Controller 2 reading a genuine Kirby amiibo**. Firmware left at the
-clean sector-0 `last=1` serve; do not restore the 60-byte prefix (it truncates
-sector 0 within the 15-chunk cap and regresses to "not an amiibo").
+### Crash root cause found (2026-07-26): SRAM_RF_READY was never signalled
+
+Resolved from the dumps + pixl.js alone — **no genuine-amiibo capture required.**
+
+NTAG I2C 2K keeps its session register **NS_REG in page `0xED`** (byte offset
+`0xED*4 = 0x3B4`); **byte 2 bit `0x08` is `SRAM_RF_READY`**. The SRAM window is
+pages `0xF0–0xFF` = **offsets `0x3C0–0x3FF`** — i.e. **exactly the Figure Player
+machine block**. The Switch 2 **polls `SRAM_RF_READY` and only reads the SRAM
+window once the bit is set** (pixl.js `ntag_emu_v2.c`, both the `READ` path for
+page `0xEC` and the `FAST_READ` path for page `0xED`: `ed_page[2] |= 0b1000`,
+commented "switch 2 will poll until this is set, and *then* read sram pages").
+
+Genuine dumps store the bit **clear** — verified in the Kirby files: page `0xED`
+at `0x3B4` = `08 01 21 00`, byte 2 = `0x21`, bit `0x08` **not** set. Emulators
+therefore raise it **dynamically on every read** rather than storing it set. We
+were serving the raw stored bytes, so the console saw SRAM never become ready
+after recognizing the tag → **2011-0301**.
+
+**Fix:** `ns2_v3_serve` now sets `image[0x3B6] |= 0x08` on the **served copy**
+(stored flash image untouched), matching pixl.js exactly. Audit of the emulator
+confirms this is the *only* dynamic read-side transformation for a 2 KB tag — all
+other special-casing there is on the write path. Build-verified; hardware test
+pending.
+
+Also keep in mind: do not restore the 60-byte prefix (it truncates sector 0 within
+the 15-chunk cap and regresses to "not an amiibo").
 
 ### Phase 2 — serve the confirmed protocol (hardware loop)
 - Implement the console-facing read/response for the traced framing so a real Switch 2 builds the

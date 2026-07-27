@@ -775,6 +775,10 @@ static void vend_send(const uint8_t *r, uint16_t len) {
 // prefix here would shift the tag and push its tail past the console's window
 // (which produced the earlier 2115-0176 "not an amiibo"). Writes are not handled.
 #define NS2_AMIIBO_V3_SECTOR0_SIZE 1024u
+// NTAG I2C 2K session register NS_REG lives in page 0xED (byte offset 0xED*4 =
+// 0x3B4); its byte 2 carries SRAM_RF_READY (bit 0x08).
+#define NS2_AMIIBO_V3_NS_REG_OFFSET 0x3B6u
+#define NS2_AMIIBO_V3_SRAM_RF_READY 0x08u
 static uint8_t ns2_v3_report_state = 0;
 static bool ns2_v3_operation_active = false;
 static uint8_t ns2_v3_nfc_status = 0x09;   // 0x09 ready, 0x04 active, 0x07 error
@@ -783,6 +787,16 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
 {
     static uint8_t image[NS2_AMIIBO_V3_SIZE];
     if (!virtual_amiibo_store_v3_copy(image)) return false;
+
+    // Genuine dumps store NS_REG with SRAM_RF_READY CLEAR (observed 0x21 in the
+    // Kirby dumps). The Switch 2 polls that bit and only reads the SRAM window
+    // (pages 0xF0-0xFF = offsets 0x3C0-0x3FF, where the Figure Player machine
+    // block lives) once it is SET. xSke/pixl.js therefore raises the bit
+    // dynamically on every read of page 0xEC/0xED rather than storing it set
+    // (ntag_emu_v2.c: `ed_page[2] |= 0b1000`). Do the same on this served copy;
+    // the stored flash image is never mutated. Serving it clear left the console
+    // waiting on SRAM that never signalled ready, which is the 2011-0301 crash.
+    image[NS2_AMIIBO_V3_NS_REG_OFFSET] |= NS2_AMIIBO_V3_SRAM_RF_READY;
 
     const uint8_t sub = command[3];
     const uint8_t *request = command + 8;
