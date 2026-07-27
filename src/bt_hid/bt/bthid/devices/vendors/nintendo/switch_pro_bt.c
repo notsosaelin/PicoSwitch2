@@ -398,34 +398,18 @@ static void switch_spi_read(bthid_device_t* device, uint32_t addr, uint8_t len)
 // MOTION (docs/bluetooth/switch1-motion.md)
 // ============================================================================
 //
-// Report 0x30 carries THREE 12-byte IMU frames at bytes 13-48, sampled 5 ms
-// apart, each accel[XYZ] then gyro[XYZ] as int16 LE (§4/§5). The three frames
-// together span the report interval, so their mean is the correct
-// representative rate for integrating angular phase across that interval --
-// the encoder downstream integrates over real elapsed time. Taking only the
-// newest frame would throw away two thirds of the samples.
+// Report 0x30 carries three 12-byte IMU frames at bytes 13-48, 5 ms apart, each
+// accel[XYZ] then gyro[XYZ] as int16 LE (§4/§5). Their mean is published: the
+// encoder integrates over real elapsed time, so the mean preserves angular area.
 #define SW1_IMU_OFFSET      13
 #define SW1_IMU_FRAME_SIZE  12
 #define SW1_IMU_FRAMES      3
 
-// Nominal scales (§6). Switch-1 gyro is ±2000 dps over int16, which is
-// numerically IDENTICAL to the shared interchange convention that ds3_bt.c
-// states ("±32767 = ±2000 dps"), so gyro passes through unscaled. Accel is
-// ±8 g (~4096 counts/g) while the convention is ±4 g (8192 counts/g), so accel
-// is doubled and clamped. SPI calibration (§7) supersedes both; until that read
-// lands these are the documented fallback, and the encoder's stillness-gated
-// bias tracker absorbs the gyro zero-rate offset.
+// Nominal fallback scales (§6), used until SPI calibration arrives.
+// Accel: ±8 g (4096 counts/g) -> the interchange ±4 g (8192 counts/g).
 #define SW1_ACCEL_TO_SINPUT 2
-
-// Gyro sensitivity. §6 records a genuine disagreement: Nintendo's nominal maps
-// ±2000 dps onto the full int16 (0.06103 dps/count, i.e. exactly the 16.384
-// counts/dps interchange scale, so raw would pass through unscaled), while the
-// LSM6DS3 datasheet gives 0.070 dps/count. The datasheet value is the one that
-// matches hardware: a typical factory-calibration block yields
-// 936/(sensitivity-origin) ≈ 936/13371 ≈ 0.070, and on hardware the nominal
-// assumption under-reported rate — the controller needed noticeably more
-// movement than a DualSense for the same on-screen result. Convert to the
-// interchange scale with raw × 0.070 × 16.384 ≈ raw × 1.147.
+// Gyro: LSM6DS3 0.070 dps/count (not Nintendo's nominal 0.06103, which
+// under-reported rate on hardware) x 16.384 counts/dps = 1.147.
 #define SW1_GYRO_SCALE_NUM 1147
 #define SW1_GYRO_SCALE_DEN 1000
 
@@ -439,124 +423,14 @@ static void switch_spi_read(bthid_device_t* device, uint32_t addr, uint8_t len)
 #define SW1_SPI_IMU_CAL_LEN         24u
 #define SW1_SPI_USER_IMU_LEN        26u
 
-// Reference constants from the factory-cal conditions (§7.4). Note the
-// asymmetry: gyro subtracts its origin (a zero-rate offset) then scales, while
-// accel scales about its origin/sensitivity span.
-//   acc_g    = raw * 4.0 / (acc_sens - acc_origin)
-//   gyro_dps = (raw - gyro_origin) * 936.0 / (gyro_sens - gyro_origin)
-// Folded into the interchange scale (accel 8192/g, gyro 16.384 counts/dps) so
-// the hot path stays integer-only:
-//   accel_interchange = raw * 32768 / (acc_sens - acc_origin)
-//   gyro_interchange  = (raw - gyro_origin) * 15335 / (gyro_sens - gyro_origin)
+// §7.4 constants folded into the interchange scale to keep the hot path integer:
+//   accel = raw * 32768 / (acc_sens - acc_origin)
+//   gyro  = (raw - gyro_origin) * 15335 / (gyro_sens - gyro_origin)
 #define SW1_ACCEL_CAL_NUM 32768   // 4.0 g-span * 8192 counts/g
 #define SW1_GYRO_CAL_NUM  15335   // 936 dps * 16.384 counts/dps
 
-// Per-device axis signs. These describe a physical SENSOR REMOUNT, so they apply
-// to the accelerometer and the gyroscope IDENTICALLY -- see the publish loop,
-// which is written so a sign cannot reach one without reaching the other.
-//
-// Why that matters, and why it is not merely tidiness: the console fuses gyro
-// with gravity to correct attitude. Gravity constrains PITCH and ROLL but
-// carries no YAW information at all (rotating about the gravity vector does not
-// change the measured vector). If accel and gyro are handed over in mutually
-// mirrored frames, yaw still looks perfect while pitch/roll drift for a second
-// or two and then snap as the correction loses its argument with the gyro, and
-// their steady state follows gravity rather than the (negated) gyro. That exact
-// failure was observed on hardware on 2026-07-27, and ns2_seam.c records the
-// same class of bug from the DualSense work: an earlier mapping there "made the
-// console's gravity correction bleed one axis into another".
-//
-// DETERMINANT INVARIANT: a remount is a rotation, never a reflection, so the
-// signed permutation must have determinant +1. The index permutation used below
-// is cyclic (permutation sign +1), so the determinant reduces to
-// pitch * yaw * roll -- signs therefore flip in PAIRS, never singly. A lone flip
-// is not a physically realizable orientation and reintroduces exactly the
-// mirrored-frame bug above. The _Static_assert below machine-checks this so the
-// next person to "just invert the axis that looks wrong" gets a build error
-// instead of a subtle drift-and-snap on hardware.
-//
-// §8 is explicit that the two Joy-Con halves mount the IMU mirrored and that the
-// Pro differs again, so a single table cannot serve all three and the values
-// must come from observation rather than memory.
-//
-// Derived from documented axis frames plus the three hardware results, NOT from
-// guesswork. Full derivation: docs/bluetooth/switch1-to-switch2-motion-spec.md
-// §6–§9. Summary:
-//
-// Switch 1 sensor frame (✅ Confirmed — Linux hid-nintendo, which states its
-// frame outright and applies NO transform to the Pro Controller, so raw == this):
-//     X+ toward the triggers (longitudinal)   Y+ to the left (lateral)
-//     Z+ up, out of the buttons/sticks (face normal)
-// DualSense event frame (✅ axis TYPES confirmed — SDL passes DualSense axes
-// through unmodified, and the repo's own paired Pro2/DS5 gravity capture pins
-// DS5 Y to the face normal):
-//     X lateral (pitch axis)   Y face normal (yaw axis)   Z longitudinal (roll)
-//
-// Matching axis TYPE to axis TYPE fixes the index permutation as {1,2,0} — that
-// part is now confirmed from two independent documented sources rather than from
-// §8's "roughly". Only the three signs were ever really unknown.
-//
-// The signs come from the three hardware results (spec §9):
-//   yaw   +1 : attempts 0 and A both had +sw[2] here and both gave sharp, correct
-//              horizontal aim.
-//   pitch -1 : attempt 0 was fully frame-consistent with +1 and pitch was
-//              inverted.
-//   roll  +1 : attempt B flipped roll to -1 and horizontal aim died completely.
-//              (Console gyro aiming blends yaw and roll to keep turning correct
-//              as the controller tilts; an inverted roll cancels the yaw term at
-//              normal hold angles. It is the only lane whose flip can kill
-//              horizontal aim while leaving the yaw lane itself untouched.)
-//
-// DETERMINANT: this multiplies to -1. An earlier version of this comment claimed
-// that meant something downstream was broken and needed repairing. That was
-// wrong, and the rule it rested on was wrong. Nothing downstream is broken.
-//
-// The target convention is "whatever a DualSense publishes", and a DualSense is
-// NOT internally self-consistent: dualsense-motion.md §8 records, from
-// JoyShock/SDL/evdevhook, that "the DualSense's first gyro axis is inverted and
-// its accelerometer axes are ordered/signed differently than a naive read
-// expects". A device whose own gyro polarity does not follow the right-hand rule
-// about its own accelerometer axes cannot be reached from a clean 6-axis IMU by
-// a proper rotation. So det = -1 here is not evidence of a defect anywhere; it is
-// what matching this particular convention costs, and it is the price of the
-// contract being "match the DualSense" rather than "be independently correct",
-// which is the right contract because it is the one that is actually validated.
-//
-// Do NOT "fix" this by editing ns2_seam.c. The seam is shared with the
-// hardware-validated DualSense path. Only the COMPOSITE transform (driver ->
-// seam -> console) was ever validated; how that total is split between this
-// stage and the seam was never independently pinned, and does not need to be.
-// Any error in the split is applied identically to every source, so matching the
-// DualSense here is correct regardless of it. That is exactly what makes adding
-// a new motion source a local change.
-#define SW1_PRO_SIGN_PITCH (-1)
-#define SW1_PRO_SIGN_YAW   (+1)
-#define SW1_PRO_SIGN_ROLL  (+1)
-
-// Pinned so a future change to the table is deliberate rather than accidental.
-// This asserts the CURRENT measured-from-hardware choice; it is not a physical
-// law. An earlier version asserted det == +1 as if it were one, which put the
-// answer outside the search space and cost three hardware sessions.
-#define SW1_PRO_DET (SW1_PRO_SIGN_PITCH * SW1_PRO_SIGN_YAW * SW1_PRO_SIGN_ROLL)
-_Static_assert(SW1_PRO_DET == -1,
-               "Switch 1 signs are pinned to the values derived from the three "
-               "hardware results. det -1 is expected here (see above) -- if you "
-               "are changing this, change it from evidence, not from a rule.");
-
-typedef struct { int8_t pitch, yaw, roll; } sw1_axis_signs_t;
-
-static sw1_axis_signs_t sw1_axis_signs_for(uint16_t product_id)
-{
-    switch (product_id) {
-        case 0x2006:  // Joy-Con (L)   — unmeasured, see above
-        case 0x2007:  // Joy-Con (R)   — unmeasured, see above
-        case 0x2009:  // Pro Controller — unmeasured, see above
-        default:
-            return (sw1_axis_signs_t){ .pitch = SW1_PRO_SIGN_PITCH,
-                                       .yaw   = SW1_PRO_SIGN_YAW,
-                                       .roll  = SW1_PRO_SIGN_ROLL };
-    }
-}
+// Axis remount lives in ns2_seam.c's per-source table, not here: this driver
+// publishes the sensor's raw axes (X longitudinal, Y +left, Z +face normal).
 
 static int16_t sw1_clamp16(int32_t v)
 {
@@ -570,9 +444,8 @@ static int16_t sw1_rd16(const uint8_t* p)
     return (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
 }
 
-// Decode a 24-byte IMU calibration payload: four groups of three int16 LE, in
-// the order accel origin, accel sensitivity, gyro origin, gyro sensitivity
-// (§7.1). The same layout serves the factory and user blocks.
+// 24-byte cal payload (§7.1): four groups of three int16 LE -- accel origin,
+// accel sensitivity, gyro origin, gyro sensitivity. Factory and user share it.
 static bool sw1_parse_imu_cal(const uint8_t* p, sw1_imu_cal_t* cal)
 {
     for (int i = 0; i < 3; i++) {
@@ -581,8 +454,7 @@ static bool sw1_parse_imu_cal(const uint8_t* p, sw1_imu_cal_t* cal)
         cal->gyro_origin[i]  = sw1_rd16(p + 12 + i * 2);
         cal->gyro_sens[i]    = sw1_rd16(p + 18 + i * 2);
     }
-    // A span of zero would divide by zero and an all-0xFF block is erased
-    // flash, not calibration; reject both so the nominal fallback is used.
+    // Reject a zero span (divide-by-zero) and erased 0xFF flash.
     for (int i = 0; i < 3; i++) {
         if (cal->accel_sens[i] - cal->accel_origin[i] == 0) return false;
         if (cal->gyro_sens[i]  - cal->gyro_origin[i]  == 0) return false;
@@ -607,8 +479,7 @@ static void switch_parse_spi_reply(switch_bt_data_t* sw, const uint8_t* data,
         if (sw1_parse_imu_cal(body, &sw->imu_cal))
             printf("[SWITCH_BT] IMU factory calibration loaded\n");
     } else if (addr == SW1_SPI_USER_IMU_ADDR && n >= SW1_SPI_USER_IMU_LEN) {
-        // Magic B2 A1 means a user calibration is present and takes precedence
-        // over the factory block (§7.2); otherwise keep what we already have.
+        // Magic B2 A1 = user cal present, takes precedence over factory (§7.2).
         if (body[0] == 0xB2 && body[1] == 0xA1) {
             sw1_imu_cal_t user;
             if (sw1_parse_imu_cal(body + 2, &user)) {
@@ -643,10 +514,8 @@ static void switch_process_report(bthid_device_t* device, const uint8_t* data, u
 
     uint8_t report_id = data[0];
 
-    // Subcommand replies (0x21) carry the SPI-flash calibration we requested
-    // during init. The report also repeats buttons/sticks, but those are already
-    // served by 0x30 once full report mode is active, so only the reply payload
-    // is consumed here.
+    // 0x21 carries the SPI cal reply. Buttons/sticks in it are redundant with
+    // 0x30 once full report mode is active, so only the reply payload is used.
     if (report_id == SWITCH_REPORT_SUBCMD_REPLY) {
         switch_parse_spi_reply(sw, data, len);
         return;
@@ -724,62 +593,26 @@ static void switch_process_report(bthid_device_t* device, const uint8_t* data, u
         }
 
         // --- Motion -------------------------------------------------------
-        // Published in the DualSense slot convention, because ns2_seam.c
-        // remounts that frame into the Pro2 frame for every source.
-        //
-        // Switch-1 gyro axes are X=roll, Y=pitch, Z=yaw (§8) and the
-        // accelerometer shares those body axes. The DualSense slots are
-        // gyro[pitch, yaw, roll] and accel[X=lateral, Y=up, Z=forward]
-        // (dualsense-motion.md §5), which gives the index remount below.
-        //
-        // Slot i of BOTH arrays refers to the same body axis: gyro[i] is the
-        // rotation about the axis accel[i] measures. The remount and the signs
-        // must therefore be applied to accel and gyro identically -- see the
-        // long note on sw1_axis_signs_for() for what breaks otherwise, and why
-        // the signs must multiply to +1.
+        // Raw sensor axes, scaled to the shared interchange units (accel 8192
+        // counts/g, gyro 16.384 counts/dps). Axis remount is ns2_seam.c's job.
         if (len >= SW1_IMU_OFFSET + SW1_IMU_FRAMES * SW1_IMU_FRAME_SIZE) {
             int32_t a[3], g[3];
             sw1_average_imu(data, a, g);
 
-            const sw1_axis_signs_t s = sw1_axis_signs_for(device->product_id);
-
-            // Per-unit calibration when SPI flash gave us one, else the nominal
-            // fallback. Calibrated form (§7.4) folded into the interchange
-            // scale, integer-only:
-            //   accel = raw * 32768 / (acc_sens - acc_origin)
-            //   gyro  = (raw - gyro_origin) * 15335 / (gyro_sens - gyro_origin)
-            int32_t ax[3], gx[3];
-            if (sw->imu_cal.valid) {
-                for (int i = 0; i < 3; i++) {
-                    ax[i] = (a[i] * SW1_ACCEL_CAL_NUM) /
-                            (sw->imu_cal.accel_sens[i] - sw->imu_cal.accel_origin[i]);
-                    gx[i] = ((g[i] - sw->imu_cal.gyro_origin[i]) * SW1_GYRO_CAL_NUM) /
-                            (sw->imu_cal.gyro_sens[i] - sw->imu_cal.gyro_origin[i]);
+            // SPI-flash calibration when present, else the nominal fallback (§7.4).
+            for (int i = 0; i < 3; i++) {
+                if (sw->imu_cal.valid) {
+                    sw->event.accel[i] = sw1_clamp16(
+                        (a[i] * SW1_ACCEL_CAL_NUM) /
+                        (sw->imu_cal.accel_sens[i] - sw->imu_cal.accel_origin[i]));
+                    sw->event.gyro[i] = sw1_clamp16(
+                        ((g[i] - sw->imu_cal.gyro_origin[i]) * SW1_GYRO_CAL_NUM) /
+                        (sw->imu_cal.gyro_sens[i] - sw->imu_cal.gyro_origin[i]));
+                } else {
+                    sw->event.accel[i] = sw1_clamp16(a[i] * SW1_ACCEL_TO_SINPUT);
+                    sw->event.gyro[i]  = sw1_clamp16(
+                        (g[i] * SW1_GYRO_SCALE_NUM) / SW1_GYRO_SCALE_DEN);
                 }
-            } else {
-                for (int i = 0; i < 3; i++) {
-                    ax[i] = a[i] * SW1_ACCEL_TO_SINPUT;
-                    gx[i] = (g[i] * SW1_GYRO_SCALE_NUM) / SW1_GYRO_SCALE_DEN;
-                }
-            }
-
-            // Slot -> source-axis remount, by matching axis TYPE to axis TYPE:
-            //   slot 0 (lateral/pitch)   <- sw1 Y, the lateral axis   = index 1
-            //   slot 1 (face normal/yaw) <- sw1 Z, the face normal    = index 2
-            //   slot 2 (longitudinal)    <- sw1 X, the longitudinal   = index 0
-            // ✅ Both frames are documented (see sw1_axis_signs_for above), so
-            // unlike the signs this permutation is not in doubt. It is cyclic,
-            // so its own permutation sign is +1 and the determinant of the whole
-            // transform reduces to the product of the three signs.
-            static const uint8_t remount[3] = { 1, 2, 0 };
-            const int32_t sign[3] = { s.pitch, s.yaw, s.roll };
-
-            // One loop for both sensors: this is the structural guarantee that
-            // accel and gyro can never again drift into different frames.
-            for (int slot = 0; slot < 3; slot++) {
-                const uint8_t src = remount[slot];
-                sw->event.accel[slot] = sw1_clamp16(ax[src] * sign[slot]);
-                sw->event.gyro[slot]  = sw1_clamp16(gx[src] * sign[slot]);
             }
 
             sw->event.gyro_range  = 2000;   // interchange full scale
