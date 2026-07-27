@@ -300,9 +300,47 @@ the console accepted the completed read. This confirms the read protocol for a
   served **raw at offset 0 with no 540-style prefix**, so `last=1` lands on chunk
   15 with the whole aligned image (identity, crypto, machine block, 0x3FE trailer).
 
-Remaining: confirm in-game that Kirby Air Riders builds the correct Figure Player
-(rider + machine), and that System Settings reads owner/nickname. Then wire v3
-writes if the game writes back.
+**Experiment 3 result (2026-07-26) — console recognizes the tag, then crashes**
+(`dumps/kirby-v3-serve-trace-sysmenu-crash-2026-07-26.jsonl`,
+`dumps/kirby-v3-serve-trace-4-full2048-2026-07-26.jsonl`). After the clean
+sector-0 read the console does **not** reject — instead:
+
+- **Kirby Air Riders:** scanning kicks back to the menu (the game processes the
+  amiibo), then closing the game **crashes with 2011-0301**.
+- **System Settings:** scanning **crashes immediately with 2011-0301**.
+
+The trace shows only `0x03/0x05/0x06` + 15× `0x15` + a status poll — **no writes,
+no re-reads** — before the crash, so it is a crash in the console's *processing*
+of the tag, not a write path.
+
+Two hard facts nailed down:
+
+1. **The console caps the vendor read at 15 chunks (~1024 B = sector 0).** Serving
+   the full 2048-byte image did not help: the console still stopped at chunk 15
+   (offset 980) and never requested chunk 16, even with no `last=1`. It cannot
+   pull sector 1 / SRAM through `0x15`.
+2. **It recognizes the v3 amiibo from sector 0** (Kirby reaches a menu; the earlier
+   "not an amiibo" reject is gone), then crashes needing something sector 0 alone
+   plus our current status does not provide.
+
+Leading suspects for the crash, in order — all require the **2 KB vendor framing
+that pixl.js (RF-only) does not contain**:
+- the **SRAM pass-through** handshake a real Pro Controller 2 performs for a 2 KB
+  tag (Switch 2 polls NS_REG page 0xED for `SRAM_RF_READY`, then reads SRAM pages
+  0xF0–0xFF — pixl.js `ntag_emu_v2.c`), relayed to the console over vendor
+  subcommands we have not identified;
+- the **originality signature** (RF `READ_SIG`), which a 540 tag does not require
+  but a 2 KB tag may; we removed the 60-byte prefix that carried it and have no
+  other channel for it;
+- the **`nfc_identity` (0x0C)** query the console issues for a 2 KB tag, which we
+  currently only bare-ACK.
+
+**Conclusion:** the read side is solved and the console recognizes the tag, but the
+crash needs vendor-level 2 KB protocol (SRAM / signature / identity) that is **not
+derivable from pixl.js or the dump files** — it requires a UART capture of a
+**genuine Pro Controller 2 reading a genuine Kirby amiibo**. Firmware left at the
+clean sector-0 `last=1` serve; do not restore the 60-byte prefix (it truncates
+sector 0 within the 15-chunk cap and regresses to "not an amiibo").
 
 ### Phase 2 — serve the confirmed protocol (hardware loop)
 - Implement the console-facing read/response for the traced framing so a real Switch 2 builds the

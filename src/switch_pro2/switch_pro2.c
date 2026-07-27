@@ -830,6 +830,14 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
             break;
         }
         case 0x15: { // fetch a chunk of sector 0 at a little-endian offset
+            // The console caps this read at 15 chunks (~1024 B = sector 0) — the
+            // 2026-07-26 full-2048 trace proved it stops at chunk 15 and never
+            // requests chunk 16 even without a last=1 flag. So serve exactly
+            // sector 0, terminated by last=1 on chunk 15 (offset 980, 44 bytes).
+            // This reads cleanly and the console recognizes the tag, but then
+            // crashes (2011-0301) in deeper processing — the remaining wall needs
+            // the 2 KB vendor framing (SRAM pass-through / originality signature /
+            // nfc_identity) that only a genuine Pro Controller 2 capture can give.
             if (ns2_v3_operation_active && request_size >= 2u) {
                 const uint16_t offset =
                     (uint16_t)request[0] | ((uint16_t)request[1] << 8);
