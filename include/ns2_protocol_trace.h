@@ -11,8 +11,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define NS2_PROTOCOL_TRACE_CAPACITY 128u
-#define NS2_PROTOCOL_TRACE_PAYLOAD_MAX 72u
+// Capacity and payload are sized for a COMPLETE amiibo read session captured
+// through the nfcmirror bridge, so a genuine-controller trace needs no second
+// attempt. Payload matches NS2_NFC_MIRROR_RESPONSE_MAX (128) so no mirrored
+// transaction is ever truncated -- the read-buffer replies that carry tag data
+// exceed the former 72-byte limit. Cost is ~36 KB of bss, against ~322 KB free
+// on RP2350 and ~134 KB on RP2040.
+#define NS2_PROTOCOL_TRACE_CAPACITY 256u
+#define NS2_PROTOCOL_TRACE_PAYLOAD_MAX 128u
 
 typedef enum {
     NS2_TRACE_EP0_SETUP = 1,

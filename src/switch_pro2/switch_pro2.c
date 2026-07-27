@@ -1184,14 +1184,21 @@ static void ns2_dispatch(const uint8_t *c, uint32_t n) {
     ns2_protocol_trace_record(time_us_32(), (uint8_t)g_usb_personality,
                               NS2_TRACE_BULK_COMMAND,
                               NS2_TRACE_CONSOLE_TO_DEVICE, id, sub, c, n);
-    if (id == 0x01 && ns2_virtual_nfc_dispatch_usb(c, n))
-        return;
+    // The UART-gated mirror is tried FIRST so that when it is armed the genuine
+    // controller owns NFC outright. Ordered the other way, the local serve path
+    // answers first even with an empty slot -- ns2_virtual_nfc_runtime_dispatch()
+    // is still consulted with tag_present=false and can reply "no tag" -- and a
+    // genuine-controller capture would come back empty. ns2_nfc_mirror_submit()
+    // returns false immediately unless UART explicitly armed it, so ordinary
+    // operation is byte-for-byte unchanged.
     if (id == 0x01 && ns2_nfc_mirror_submit(c, n)) {
         // The UART-gated native-reader path is asynchronous: BTstack sends
         // this to the genuine controller and publishes its matching reply for
         // ns2_task() to return from core0. Do not emit the placeholder ACK.
         return;
     }
+    if (id == 0x01 && ns2_virtual_nfc_dispatch_usb(c, n))
+        return;
 
     // Fine-grained handshake milestones for the LED tracer, to pinpoint where the console
     // stalls in the long post-pairing sequence (these are strictly ordered in the capture).
