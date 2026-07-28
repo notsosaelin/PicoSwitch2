@@ -928,10 +928,42 @@ static void ns2_v3_build_buffer(const uint8_t image[NS2_AMIIBO_V3_SIZE],
     // Source the requested pages either from the raw v3 image or from the
     // NTAG215-compatibility view, which is what a console asking for the
     // NTAG215 page set (0x00-0x86 = 540 bytes) actually expects.
+    // Which source can satisfy the request decides this, not the mode alone.
+    //
+    // Once the read prefix advertises a v3 tag, the console escalates to a
+    // 4-block descriptor (00-3B, 3C-77, 78-91, E2-E6 = 604 B; hardware-confirmed
+    // 2026-07-27, docs/Amiibo-v3.md 14.5). Those last two blocks reach bytes 584
+    // and 924, both past the 540-byte compatibility view, so serving from compat
+    // made every extended block fail its bounds check and get skipped. The
+    // console then received a short buffer, aborted, fell back to the 540-byte
+    // descriptor and retried forever -- no error, no recognition.
+    //
+    // So: scan the descriptor first, and if anything reaches past the compat
+    // view, serve the raw 2 KB image. A plain 540-byte request still uses compat
+    // exactly as before.
+    size_t highest = 0;
+    if (request_size >= 11u && request[0] == 0xD0u) {
+        const uint8_t uid_len = request[1];
+        const size_t count_index = 2u + (size_t)uid_len + 1u;
+        if (count_index < request_size) {
+            const uint8_t blocks = request[count_index];
+            const size_t first = count_index + 1u;
+            if (blocks && first + (size_t)blocks * 2u <= request_size) {
+                for (uint8_t b = 0; b < blocks; ++b) {
+                    const uint8_t s = request[first + (size_t)b * 2u];
+                    const uint8_t e = request[first + (size_t)b * 2u + 1u];
+                    if (e < s) continue;
+                    const size_t end_byte = ((size_t)e + 1u) * 4u;
+                    if (end_byte > highest) highest = end_byte;
+                }
+            }
+        }
+    }
+
     static uint8_t compat[VIRTUAL_AMIIBO_RAW_SIZE];
     const uint8_t *source = image;
     size_t source_size = NS2_AMIIBO_V3_SIZE;
-    if (ns2_v3_serve_mode == 1u) {
+    if (ns2_v3_serve_mode == 1u && highest <= VIRTUAL_AMIIBO_RAW_SIZE) {
         ns2_v3_build_compat540(image, compat);
         source = compat;
         source_size = VIRTUAL_AMIIBO_RAW_SIZE;
