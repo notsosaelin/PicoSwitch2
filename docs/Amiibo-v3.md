@@ -628,6 +628,59 @@ Side observation from the same capture: `0x14` appears 4x and `0x21` 4x across t
 write-side traffic does occur during a failed read. Worth decoding before assuming the write path is
 untouched.
 
+### 14.7.2 🔴 ROOT CAUSE: the console validates the NTAG21x originality signature for v3
+
+Deep comparison of the extended-read prefixes (genuine vs ours) leaves exactly **one** structural
+difference — bytes **[19..50], 32 bytes**:
+
+```
+[0..8]   identical
+[9..14]  UID          differs (different physical tag, expected)
+[15..18] identical, including our byte 18 = 0x06
+[19..50] GENUINE: 32 bytes of data      OURS: zeros      <-- the only real difference
+[51..59] identical: 04 00 3B 3C 77 78 91 E2 E6 (block count + the 4 ranges)
+```
+
+Our descriptor echo is byte-exact. `E2-E6` is byte-exact (verified: byte 904 of the Kirby image is
+`0100FF00 00000004 07000000 ...`, identical to what the genuine controller returned, and identical
+across two different physical tags — it is a constant config region). Both earlier suspects are
+therefore eliminated.
+
+32 bytes is exactly an **NTAG21x ECC originality signature**, and this repo's own code already
+labels that slot: *"out[19..50]: originality signature — unknown for v3, left zero."*
+
+The four observations settle it:
+
+| Tag | Bytes 19-50 sent | Console |
+|---|---|---|
+| NTAG215 (genuine controller) | **zeros** | ✅ accepts |
+| v3 (genuine controller) | 32 real bytes | ✅ accepts |
+| v3 (ours) | zeros | ❌ rejects |
+| v3 (ours) | another tag's signature | ❌ rejects |
+
+**The console requires a valid originality signature for v3 tags, and does not for NTAG215.** It is
+validated against the UID — a foreign tag's signature fails just as zeros do. The signature is
+generated with NXP's private key over the tag UID, so it **cannot be computed, forged, or
+transplanted**.
+
+### 14.7.3 What this means for virtual v3 amiibo
+
+- A v3 image alone is **not sufficient**. The 2048-byte dumps (pixl.js/flashiibo) contain the memory
+  map only; the signature is returned by the `READ_SIG` command and lives outside it.
+- Serving a v3 amiibo therefore requires **both** the image **and** that physical tag's 32-byte
+  signature, captured together.
+- Freely generated or UID-randomised v3 amiibo are **impossible** by this route — the same
+  conclusion the project already reached for amiibo crypto generally, now for a second, independent
+  reason.
+
+**The one untested configuration** that would confirm this constructively: serve a tag's own image
+*and* its own signature together. We have never had a matched pair — the captured signature belongs
+to UID `049011CADB1F90`, and no local dump matches it. Obtaining a matched pair means capturing the
+signature from a tag we also have a dump of.
+
+If that works, the feature is real but scoped: v3 amiibo you have physically captured. If it still
+fails, something beyond the signature is also checked.
+
 ### 14.8 Earlier next-step notes
 
 Populate prefix bytes 18–50 in `ns2_v3_serve()`'s read replies and re-test. If the console escalates
