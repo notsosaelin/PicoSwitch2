@@ -102,6 +102,14 @@ bool ns2_v3_hdr_probe_set(uint8_t index, const uint8_t *bytes, uint8_t len);
 void ns2_v3_hdr_probe_clear(void);
 uint8_t ns2_v3_hdr_probe_count(void);
 
+// The v3 tag's 32-byte originality signature, served in read-buffer prefix
+// [19..50]. A 2048-byte dump does not carry it; capture it from a physical tag
+// with tools/nfc_probe.ps1. RAM-only, so it can be set between console tests
+// without a reflash.
+bool ns2_v3_set_signature(const uint8_t *bytes, size_t len);
+void ns2_v3_clear_signature(void);
+bool ns2_v3_has_signature(void);
+
 //--------------------------------------------------------------------+
 // Report-0x09 motion debug/instrumentation (config.c's "imu" CDC command).
 //--------------------------------------------------------------------+

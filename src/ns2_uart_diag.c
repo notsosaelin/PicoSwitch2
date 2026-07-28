@@ -831,6 +831,20 @@ static void handle_command(void) {
                 : virtual_amiibo_store_upload_begin((size_t)size,
                                                     (uint32_t)crc));
         }
+    } else if (strncmp(rx_line, "amiibo v3sig ", 13) == 0) {
+        uint8_t sig[32];
+        size_t length = 0;
+        if (!diag_parse_hex(rx_line + 13, sig, sizeof(sig), &length) ||
+            length != sizeof(sig) ||
+            !ns2_v3_set_signature(sig, length)) {
+            queue_text("{\"amiibo\":\"v3sig\",\"ok\":false,"
+                       "\"error\":\"expected 32 bytes of hex\"}");
+        } else {
+            queue_text("{\"amiibo\":\"v3sig\",\"ok\":true}");
+        }
+    } else if (strcmp(rx_line, "amiibo v3sig clear") == 0) {
+        ns2_v3_clear_signature();
+        queue_text("{\"amiibo\":\"v3sig\",\"ok\":true,\"cleared\":true}");
     } else if (strncmp(rx_line, "amiibo chunk ", 13) == 0) {
         char *hex = strchr(rx_line + 13, ' ');
         if (!hex) {
@@ -1491,6 +1505,7 @@ static void handle_command(void) {
                    "\"nfcmirror initiator on|off\",\"nfcmirror send HEX\","
                    "\"nfcmirror reply\","
                    "\"amiibo status|read OFFSET|acknowledge|dump (PC helper)\","
+                   "\"amiibo v3sig HEX32|v3sig clear\","
                    "\"motionpair status|start|stop|dump|read\",\"magraw on|off|status\","
                    "\"motionprobe status|latch|seed STATE|on|off|reset|set G0 G1 G2|rate AXIS VALUE|accel X Y Z\","
                    "\"button y\","
