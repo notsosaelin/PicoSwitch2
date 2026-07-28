@@ -1125,3 +1125,79 @@ transport:
 ```
 
 `-Dump` writes the tag content and, alongside it, `<name>.prefix` with the 60-byte operation prefix.
+
+---
+
+## 17. Hardware iteration 2026-07-27 — structure solved, content outstanding
+
+**Status: 🟡 the exchange is byte-exact; the console still declines to proceed.**
+
+Five hardware runs in sequence. Each removed one difference from a genuine controller.
+
+| # | Change | Result |
+|---|---|---|
+| 1 | `0x21` device command implemented | Inconclusive — `prefix[18]` regressed (see below) |
+| 2 | `prefix[18]=0x06` moved into the serve path | Escalation restored, `0x21` fired, bare ACK only |
+| 3 | Originality signature served in read `prefix[19..50]` | Read prefix matches genuine except the UID |
+| 4 | `0x21` bumps the report NFC state | Console reads the result buffer; 138 → 1040 records |
+| 5 | State `0x18` reports an empty status payload | `0x18` status byte-identical to genuine |
+
+### 17.1 What is now byte-exact
+
+- **Extended read (664 B).** Identical length, identical structure, `E2-E6` block identical. The
+  60-byte prefix differs from genuine only at bytes 9-11, which are the UID of a different physical
+  tag.
+- **`0x21` result buffer (83 B).** Both `0x15` chunks, 70 + 13; the 13-byte tail is identical.
+- **`0x05` status in state `0x18`.** Empty payload, matching genuine exactly.
+- **All ACKs.** `0x14` and `0x21` replies are byte-identical.
+
+`amiibo v3diag` confirms the path executes: `dev_cmd_staged:3, dev_results:3`.
+
+### 17.2 Two lessons about instrumentation
+
+**A UART override is not a fix.** `prefix[18]=0x06` lived only in the `v3hdr` probe overlay, which
+does not survive a reflash. Run 1 therefore tested nothing: the console never escalated, read a
+540-byte view of a 2 KB tag, and correctly answered "This is not an amiibo". Anything a test depends
+on belongs in the serve path.
+
+**A bare ACK hides everything.** `0x21` replies identically whether or not the staging gate passed,
+so the wire could not distinguish "gate rejected the `0x14`" from "gate passed, console ignored the
+result". The `amiibo v3diag` counters were added to settle that, and did.
+
+### 17.3 The console loops on genuine hardware too
+
+Genuine issues the device command **three times** (capture 1, seq 64/138/156) before breaking out.
+Looping is therefore not itself the failure signal, and a session that loops is not evidence of a
+broken device command.
+
+The breakout is identifiable: at seq 166 the console issues a **targeted descriptor** — UID
+populated, `blocks=1`, range `03-03` — and then the write phase (`0x14` × 6, `0x08` commit). Ours
+never issues that descriptor; every one of ours carries a zero UID and `blocks` 3 or 4.
+
+The ordering also differs. Genuine runs read/read/devcmd, read/read/devcmd, then **devcmd again with
+no intervening read**, then breaks out. Ours returns to a full read cycle after every device
+command.
+
+### 17.4 What remains — content, not structure
+
+Every structural difference is eliminated, so the remaining candidates are values we have never
+validated against the physical figure:
+
+1. **The originality signature.** We serve `80925007…C086`, which belongs to tag
+   `049011CADB1F90`, while the loaded image is `04B4438ADB1F90`. The console does not reject on it
+   up front — it escalated, read everything, and ran the device command — but it may well be
+   required for the console to *proceed*.
+2. **The device response** at result `[19..50]`, served from `image[0x3C0]` of the uploaded dump.
+   Never confirmed against hardware.
+
+Both are readable from a physical tag with `tools/nfc_probe.ps1` (§16): bytes 19-50 of the
+`.prefix` file it writes are the signature.
+
+### 17.5 Next
+
+1. Dump the physical Kirby figure with `nfc_probe.ps1`; take its real signature and device response.
+2. Load the signature with `amiibo v3sig <hex32>` (RAM-only — no reflash between attempts) and
+   retest.
+3. If it still declines, capture a genuine controller reading **the same physical tag** through
+   `nfcmirror`, and diff that against our serve for the same UID. Every prior capture used a
+   different tag, which is what forced the byte 9-11 caveat above.
