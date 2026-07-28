@@ -1010,11 +1010,17 @@ static void ns2_v3_build_buffer(const uint8_t image[NS2_AMIIBO_V3_SIZE],
     out[6] = 0x00;
     out[7] = 0x07;                          // UID length
     ns2_amiibo_v3_uid(image, out + 8);
-    // out[19..50] is the tag's 32-byte SRAM window, not an originality
-    // signature as previously assumed.
+    // The chip-identity byte. 0x06 is what a genuine controller reports for a
+    // v3 tag, and it alone drives the console's escalation from the NTAG215
+    // page set to the 4-block v3 descriptor.
     //
-    // Two genuine captures show this field taking two values in one session,
-    // and one of them is structurally the SRAM buffer: it ends with the same
+    // This lived only in the `v3hdr 18 06` UART overlay, which does not survive
+    // a reflash: the first test of the 0x21 path silently regressed to a plain
+    // 540-byte read (prefix[18]=0x00, no escalation, "This is not an amiibo")
+    // and never exercised the code under test. It belongs here.
+    out[18] = 0x06;
+    // out[19..50] is the tag's 32-byte SRAM window, not an originality
+    // signature as previously assumed. It ends with the same
     // 50 42 34 57 31 37 20 01 01 02 00 00 00 that sits at 0x3D0 of every v3
     // dump. xSke's pixl.js PR #381 states the format is "a 2048-byte file ...
     // with the expected response already placed in the SRAM buffer", which is
