@@ -128,9 +128,11 @@ try {
         $cycle = (Get-Date).AddMilliseconds(900)
         while ((Get-Date) -lt $cycle) {
             $s = Invoke-Nfc '0191000500000000'
-            # Byte 8 is the reader state; 0x04 is "tag selected". The UID
-            # follows the 0x07 length marker at byte 16.
-            if ($s.Length -ge 24 -and $s[8] -eq 0x04 -and $s[16] -eq 0x07) {
+            # Byte 8 is the reader state. 0x09 is "tag present" -- 0x04 only
+            # appears once a 0x06 descriptor has started an operation, so
+            # waiting for 0x04 here could never succeed. The UID follows the
+            # 0x07 length marker at byte 16.
+            if ($s.Length -ge 24 -and $s[8] -eq 0x09 -and $s[16] -eq 0x07) {
                 $uid = $s[17..23]
                 break
             }
