@@ -839,11 +839,16 @@ static void ns2_v3_build_device_result(
     memcpy(out + 8, uid, 7u);
     out[18] = 0x06;
     memcpy(out + 19, image + NS2_AMIIBO_V3_SRAM_OFFSET, 32u);
-    // The genuine 23-byte body was zeros ending in 00 7A C4. It matched no CRC
-    // over any contiguous prefix, so it is served as the remainder of the SRAM
-    // window rather than synthesised. Unconfirmed -- see docs/Amiibo-v3.md.
-    memcpy(out + 60, image + NS2_AMIIBO_V3_SRAM_OFFSET + 32u,
-           NS2_V3_DEVICE_RESULT_BODY);
+    // The 23-byte body is invariant: byte-identical across all six genuine
+    // results in both captures, including a session after the tag had been
+    // written, so it carries no per-session or user-written state. 20 of 23
+    // bytes are zero and it matched no CRC-16 variant over any contiguous
+    // prefix. Reproduce the observation rather than sourcing it from the image,
+    // where a non-zero region would emit garbage the genuine reader never sends.
+    // Whether 7A C4 is tag-specific is unknown -- only one physical tag has been
+    // observed. tools/nfc_probe.ps1 can settle it against a second tag.
+    out[81] = 0x7Au;
+    out[82] = 0xC4u;
     ns2_v3_op_buffer_size = NS2_V3_DEVICE_RESULT_SIZE;
 }
 
