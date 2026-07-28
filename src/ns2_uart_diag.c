@@ -26,6 +26,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 extern uint32_t ns2_audio_core1_stack_free_bytes(void);
@@ -437,6 +438,17 @@ static void queue_pcm_record(uint16_t offset) {
 
 // Parse an even-length hex string into bytes. Local to the diagnostic channel so
 // it does not depend on config.c (which is only linked in config mode).
+static void queue_amiibo_result(virtual_amiibo_result_t result)
+{
+    if (result == VIRTUAL_AMIIBO_OK) {
+        queue_text("{\"amiibo\":\"ok\"}");
+    } else {
+        snprintf(trace_format_response, sizeof(trace_format_response),
+                 "{\"amiibo\":\"error\",\"code\":%d}", (int)result);
+        queue_text(trace_format_response);
+    }
+}
+
 static bool diag_parse_hex(const char *hex, uint8_t *out, size_t capacity,
                            size_t *length)
 {
@@ -750,6 +762,60 @@ static void handle_command(void) {
         } else {
             queue_amiibo_read((uint16_t)offset);
         }
+    } else if (strncmp(rx_line, "amiibo begin ", 13) == 0) {
+        // Portal-independent upload path. The BLE config bridge carries the
+        // same three commands, but when it is unavailable this lets a v3 image
+        // be loaded over UART with the dongle still attached to the console --
+        // which is the only way to exercise ns2_v3_serve() during a trace.
+        unsigned long size = 0, crc = 0;
+        char trailing;
+        if (sscanf(rx_line + 13, "%lu %lx %c", &size, &crc, &trailing) != 2) {
+            queue_text("{\"amiibo\":\"error\",\"error\":"
+                       "\"usage: amiibo begin <540|572|2048> <crc32hex>\"}");
+        } else {
+            queue_amiibo_result(size == 2048u
+                ? virtual_amiibo_store_v3_upload_begin((size_t)size,
+                                                       (uint32_t)crc)
+                : virtual_amiibo_store_upload_begin((size_t)size,
+                                                    (uint32_t)crc));
+        }
+    } else if (strncmp(rx_line, "amiibo chunk ", 13) == 0) {
+        char *hex = strchr(rx_line + 13, ' ');
+        if (!hex) {
+            queue_text("{\"amiibo\":\"error\",\"error\":"
+                       "\"usage: amiibo chunk <offset> <hex>\"}");
+        } else {
+            *hex++ = '\0';
+            char *end = NULL;
+            unsigned long offset = strtoul(rx_line + 13, &end, 10);
+            uint8_t bytes[64];
+            size_t length = 0;
+            if (!end || *end != '\0') {
+                queue_text("{\"amiibo\":\"error\","
+                           "\"error\":\"bad chunk offset\"}");
+            } else if (!diag_parse_hex(hex, bytes, sizeof(bytes), &length) ||
+                       length == 0) {
+                queue_text("{\"amiibo\":\"error\","
+                           "\"error\":\"chunk must be 1-64 hex bytes\"}");
+            } else {
+                queue_amiibo_result(
+                    virtual_amiibo_store_v3_upload_active()
+                        ? virtual_amiibo_store_v3_upload_chunk(
+                              (size_t)offset, bytes, length)
+                        : virtual_amiibo_store_upload_chunk(
+                              (size_t)offset, bytes, length));
+            }
+        }
+    } else if (strcmp(rx_line, "amiibo commit") == 0) {
+        queue_amiibo_result(virtual_amiibo_store_v3_upload_active()
+            ? virtual_amiibo_store_v3_upload_commit()
+            : virtual_amiibo_store_upload_commit());
+    } else if (strcmp(rx_line, "amiibo cancel") == 0) {
+        virtual_amiibo_store_upload_cancel();
+        queue_text("{\"amiibo\":\"cancelled\"}");
+    } else if (strcmp(rx_line, "amiibo persist") == 0) {
+        virtual_amiibo_store_request_persist();
+        queue_text("{\"amiibo\":\"persist_requested\"}");
     } else if (strcmp(rx_line, "amiibo acknowledge") == 0) {
         virtual_amiibo_status_t status;
         virtual_amiibo_store_status(&status);
