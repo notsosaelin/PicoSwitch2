@@ -434,7 +434,99 @@ reading the tag as the 2 KB part it is, including the machine block.
 
 ---
 
+## 14. 🟢 UNBLOCKED 2026-07-27 — genuine capture obtained
+
+The capture described in §13 was taken. **The console recognized the v3 amiibo through the
+genuine controller, read it, and wrote to it.** Captures:
+`dumps/v3-genuine-capture-2026-07-27.jsonl` (206 records) and
+`dumps/ntag215-genuine-capture-2026-07-27.jsonl` (36 records, the control). Both
+`overwritten: 0`; bridge health `rejected: 0`, `timeouts: 0`.
+
+### 14.1 The §13 premise was wrong — the console DOES request the v3 page set
+
+It asks twice. Descriptors are **console → device** (`sub 0x06`), i.e. the console tells the
+controller which pages to read:
+
+| # | Timeout | Blocks | Ranges | Size |
+|---|---|---|---|---|
+| 1 (seq 12) | 2000 ms | 3 | `00-3B, 3C-77, 78-86` | 540 B — the NTAG215 set |
+| **2 (seq 36)** | 3000 ms | **4** | `00-3B, 3C-77, **78-91**, **E2-E6**` | **604 B** |
+| 3 (seq 166) | 2000 ms | 1 | `03-03` | 4 B — the write-back |
+
+The NTAG215 control issues **only** descriptor #1 and stops. So the escalation is v3-specific and
+happens *after* the first read: the console probes with the 540 set, learns what the tag is from
+what comes back, then re-reads with an extended 4-block descriptor reaching page `0x91` plus a
+separate `E2-E6` block.
+
+§13's "the console always asks for the NTAG215 set" was true only because our serve path never gave
+it a reason to escalate.
+
+### 14.2 The discriminator: read-buffer prefix bytes 18–50
+
+The `0x15` read reply is `[8-byte header][flags,len16][60-byte prefix][tag image]`. Confirmed by the
+control: 8×70 + 1×40 = 600 = 60 + 540, last chunk flagged `01`.
+
+First chunk, prefix bytes, v3 vs NTAG215:
+
+```
+        [ 0] 04 00 00 00 01 02 00 07   <- identical; [7] = uid_len
+        [ 8] .. UID (7 bytes) ..       <- differs per tag, as expected
+        [15] 00 00 00                  <- identical
+v3      [18] 06 80 92 50 07 B8 2D 0E 23 F0 FD E4 3D 9D D2 F1
+        [34] 2A 4F 6B 75 0D AC FC A3 B5 D6 84 75 47 E8 95 C0 86
+ntag215 [18] 00 00 00 00 ... all zero through [50] ...
+        [51] 03 00 3B 3C 77 78 86 00 00   <- identical: block count + echoed ranges
+        [60] tag image begins
+```
+
+**Bytes 18–50 (33 bytes) are populated for v3 and all-zero for NTAG215.** Everything else in the
+prefix is identical or trivially tag-specific. This is the signal, and it is the only candidate in
+the entire exchange.
+
+Note `[20] = 0x92` — the v3 tag's ending page. `[18] = 0x06`, `[19] = 0x80`. The remaining 30 bytes
+are high-entropy; a 32-byte field starting at `[19]` is the right shape for an NTAG21x ECC
+originality signature (`READ_SIG`), but that is 🔵 **hypothesis, not established** — do not build on
+it without checking.
+
+**Why §13's elimination table missed this.** It records `prefix[18]` as *"jc_toolkit's NTAG model
+byte — no effect on Switch 2"*. That test set byte 18 **alone**. The genuine controller populates
+18 **through 50** as a block, and a lone byte 18 is evidently not sufficient.
+
+### 14.3 The tag image confirms the v3 UID layout
+
+The v3 image begins `04 90 11 CA DB 1F 90 | 00 44` — 7 contiguous UID bytes then `00`/`44`, exactly
+the figure-v3 layout the portal already implements. The control begins
+`04 1A 96 | 00 | 72 55 49 80 | EE | 48` — the NTAG215 BCC0/BCC1 interleave (BCC0 = `88^04^1A^96` =
+`00` ✓, BCC1 = `72^55^49^80` = `EE` ✓). Both decode correctly, which independently validates the
+existing v3 tag-format handling.
+
+### 14.4 Confirmed by the capture: status can never discriminate
+
+The `0x05` status is **byte-identical** between the two tags except for the UID. §13 reached this
+conclusion by elimination; the genuine capture proves it directly. No further status probing is
+warranted.
+
+### 14.5 Next step
+
+Populate prefix bytes 18–50 in `ns2_v3_serve()`'s read replies and re-test. If the console escalates
+to the 4-block descriptor, the serve path already has the machinery to answer it (descriptor-driven
+page ranges are implemented and byte-exact). Open questions to settle in that order:
+
+1. Does *any* non-zero content at 18–50 trigger escalation, or is the field validated? Replaying the
+   captured 33 bytes verbatim answers this in one test — and since they came from this exact
+   physical amiibo, a match is expected to work.
+2. What are bytes 21–50 actually? If they are an originality signature they are per-tag and cannot
+   be synthesised for an arbitrary dump, which would bound what virtual v3 amiibo can ever do.
+3. What does the console expect at `E2-E6`? That block is outside the 2048-byte image and is
+   presumably the machine/SRAM window.
+
+---
+
 ## 13. PARKED — final state, and where to resume
+
+> ⚠️ **Superseded 2026-07-27 by §14.** The blocker described below was resolved by the genuine
+> capture. The elimination work here remains valid and is what made the capture cheap to interpret —
+> with one correction: `prefix[18]` was tested alone, and the real signal is `prefix[18..50]`.
 
 ### What is finished and working ✅
 
