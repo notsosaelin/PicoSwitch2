@@ -820,6 +820,23 @@ static uint8_t ns2_v3_op_buffer[60u + NS2_AMIIBO_V3_SIZE];
 static size_t ns2_v3_op_buffer_size = 0;
 static bool ns2_v3_device_cmd_staged = false;
 
+// The tag's 32-byte originality signature. RAM-only and deliberately not
+// persisted: it is captured from a physical tag with tools/nfc_probe.ps1 and set
+// over UART, so the read path can be tested without a reflash between attempts.
+static uint8_t ns2_v3_signature[32];
+static bool ns2_v3_signature_set = false;
+
+bool ns2_v3_set_signature(const uint8_t *bytes, size_t len)
+{
+    if (!bytes || len != sizeof(ns2_v3_signature)) return false;
+    memcpy(ns2_v3_signature, bytes, sizeof(ns2_v3_signature));
+    ns2_v3_signature_set = true;
+    return true;
+}
+
+void ns2_v3_clear_signature(void) { ns2_v3_signature_set = false; }
+bool ns2_v3_has_signature(void) { return ns2_v3_signature_set; }
+
 // Result buffer for the 0x14/0x21 device command, byte-for-byte from the
 // genuine capture of 2026-07-27 (dumps/v3-genuine-capture-2026-07-27.jsonl,
 // seq 68-71). Length and the fixed fields are confirmed; the two body regions
@@ -1019,14 +1036,19 @@ static void ns2_v3_build_buffer(const uint8_t image[NS2_AMIIBO_V3_SIZE],
     // 540-byte read (prefix[18]=0x00, no escalation, "This is not an amiibo")
     // and never exercised the code under test. It belongs here.
     out[18] = 0x06;
-    // out[19..50] is the tag's 32-byte SRAM window, not an originality
-    // signature as previously assumed. It ends with the same
-    // 50 42 34 57 31 37 20 01 01 02 00 00 00 that sits at 0x3D0 of every v3
-    // dump. xSke's pixl.js PR #381 states the format is "a 2048-byte file ...
-    // with the expected response already placed in the SRAM buffer", which is
-    // exactly this region. It is therefore derivable from the dump -- no keys
-    // and no per-tag secret, contrary to the retracted §14.7.2 conclusion.
-    memcpy(out + 19, image + NS2_AMIIBO_V3_SRAM_OFFSET, 32u);
+    // out[19..50] is the tag's 32-byte originality signature (READ_SIG), which
+    // the controller obtains from the chip -- NOT the SRAM window. The two were
+    // conflated: the SRAM block belongs in the 0x21 device result (type 0x18),
+    // and putting it here made the only field that differs from a genuine
+    // extended read. Everything else in that 664-byte read matches byte for
+    // byte, including the E2-E6 block.
+    //
+    // A 2048-byte dump does not carry the signature, the same way a 540-byte
+    // NTAG215 dump does not and the 572-byte variant does. Until one is supplied
+    // for this tag, the served value is whatever ns2_v3_set_signature() was
+    // given; tools/nfc_probe.ps1 reads it off the physical tag.
+    if (ns2_v3_signature_set)
+        memcpy(out + 19, ns2_v3_signature, sizeof(ns2_v3_signature));
     if (request_size >= 19u)
         memcpy(out + 51, request + 10, NS2_NFC_OPERATION_METADATA_SIZE);
     // RE probe: overlay prefix bytes (notably [18], the NTAG model the console
