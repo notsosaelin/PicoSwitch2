@@ -106,6 +106,10 @@ uint8_t ns2_v3_hdr_probe_count(void);
 // [19..50]. A 2048-byte dump does not carry it; capture it from a physical tag
 // with tools/nfc_probe.ps1. RAM-only, so it can be set between console tests
 // without a reflash.
+// How many times the 0x14 staging gate passed, and how many 0x21 device results
+// were built. A 0x21 reply is a bare ACK either way, so the wire cannot show it.
+void ns2_v3_device_cmd_counts(uint32_t *staged, uint32_t *results);
+
 bool ns2_v3_set_signature(const uint8_t *bytes, size_t len);
 void ns2_v3_clear_signature(void);
 bool ns2_v3_has_signature(void);

@@ -110,23 +110,32 @@ try {
         return
     }
 
-    # Restart discovery so the tag is freshly selected rather than inheriting
-    # whatever state a previous session left behind.
-    Invoke-Nfc '0191000400000000' | Out-Null
-    Invoke-Nfc '019100030005000000E8032C01' | Out-Null
-
     Write-Host "waiting for a tag (up to ${PollSeconds}s)..."
     $uid = $null
     $deadline = (Get-Date).AddSeconds($PollSeconds)
-    while ((Get-Date) -lt $deadline) {
-        $s = Invoke-Nfc '0191000500000000'
-        # Byte 8 is the reader state; 0x04 is "tag selected". The UID follows
-        # the 0x07 length marker at byte 16.
-        if ($s.Length -ge 24 -and $s[8] -eq 0x04 -and $s[16] -eq 0x07) {
-            $uid = $s[17..23]
-            break
+    while ((Get-Date) -lt $deadline -and -not $uid) {
+        # Discovery is bounded: the timeout field of 0x03 is 0x03E8 = 1000 ms,
+        # after which the reader goes idle and every status reply says "no tag"
+        # forever. A console re-issues stop/start continuously for exactly this
+        # reason, so do the same rather than polling a dead reader.
+        Invoke-Nfc '0191000400000000' | Out-Null
+        # Payload is [0]=00, [1..2] timeout u16 LE, [3..4]=0x012C. A console's
+        # FIRST poll of a session uses timeout 0 and only later ones use 1000 ms
+        # (genuine capture seq 2 vs seq 8), so 0 is the open-ended discovery that
+        # actually waits for a tag. Polling with 1000 ms alone found nothing.
+        Invoke-Nfc '01910003000500000000002C01' | Out-Null
+
+        $cycle = (Get-Date).AddMilliseconds(900)
+        while ((Get-Date) -lt $cycle) {
+            $s = Invoke-Nfc '0191000500000000'
+            # Byte 8 is the reader state; 0x04 is "tag selected". The UID
+            # follows the 0x07 length marker at byte 16.
+            if ($s.Length -ge 24 -and $s[8] -eq 0x04 -and $s[16] -eq 0x07) {
+                $uid = $s[17..23]
+                break
+            }
+            Start-Sleep -Milliseconds 100
         }
-        Start-Sleep -Milliseconds 200
     }
     if (-not $uid) { throw "no tag detected" }
     Write-Host "tag UID: $(Format-Hex $uid)"
