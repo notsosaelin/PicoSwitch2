@@ -1237,16 +1237,64 @@ requests, backfilling only never-read bytes from the downloaded dump, plus the `
 response carried into `0x3C0` separately because the page read does not reach it. Result:
 `dumps/kirby-warpstar-rebuilt-from-genuine.bin`, crc32 `de7dafc0`.
 
-**Implication for the general case:** a v3 image needs its own machine's SRAM block and its own
-signature. A dump taken from a different physical machine will not be accepted, even for the same
-character and machine model. This is the single most important practical consequence of this
-session.
+**Implication for the general case — ⚠️ RETRACTED, see §18.1a.** The original claim here was that a
+v3 image needs its own machine's SRAM block and its own signature, and that a dump from a different
+physical machine can never be accepted. That conclusion is not supported by the evidence: the
+experiment that produced it changed three variables at once.
+
+### 18.1a The provenance conclusion is confounded (2026-07-27)
+
+Between the last failing test with a downloaded dump and the successful test, **three firmware bugs
+were fixed**:
+
+1. `prefix[18] = 0x06` moved from the `v3hdr` UART overlay into `ns2_v3_build_buffer()` — before
+   this, a reflash silently dropped it and the console never escalated to the 4-block descriptor;
+2. the `0x21` device-command result was implemented and made to bump the report NFC state;
+3. `0x05` in state `0x18` was changed to return an empty payload.
+
+The downloaded dump was **never retried on the fixed firmware**. Provenance and firmware are
+therefore confounded, and (1) alone is sufficient to explain every earlier rejection.
+
+A second confound sits on top: `amiibo v3sig` serves the genuine tag's originality signature, which
+is bound to UID `049011CADB1F90`. Serving a downloaded dump pairs that signature with a *different*
+UID. If the console checks signature-against-UID at all, downloaded dumps fail for that reason
+alone — unrelated to SRAM, provenance, or crypto.
+
+**Crypto is definitively not the discriminator.** All 16 downloaded dumps and the accepted rebuilt
+image verify as HMAC-VALID against the owner's `key_retail.bin` (both amiibo HMACs, v3 offsets).
+The firmware serves each image's own UID via `ns2_amiibo_v3_uid(image, uid)`, so the UID/key binding
+is never broken. Retail keys are **not** the missing piece for the read path: a cryptographically
+perfect dump was rejected, and no key material participated in the one that was accepted.
+
+**Machine identity lives entirely in the SRAM block, and it is outside amiibo crypto.** The four
+machine variants of a rider are byte-identical across the whole encrypted body and differ *only* in
+`0x3C0..0x3FF` — 21-22 bytes, all within the SRAM window:
+
+```
+Kirby & Shadow Star   0200 D5403A7B9CE69F88983EF9B0 6200 2D 00 05 "PB5T432" 01 01 04 000000
+Kirby & Tank Star     0200 8BFBA2A22B0D0ABA21162C9E 2D00 61 00 09 "PC6V628" 01 01 04 000000
+Kirby & Warp Star     0200 4C980F696FCF5128F89ED4B5 AB00 9C 00 01 "PB4W717" 01 01 02 000000
+Kirby & Winged Star   0200 93ADD81D37051AA353841E0B 4400 9F 00 07 "PB4W717" 01 01 04 000000
+genuine Warp Star     0200 732AB41C4AC291B9A5983C03 9400 C9 00 0A "PB4W717" 01 01 02 000000
+```
+
+All four downloaded variants share one UID (`04B4438ADB1F90`) — they are the *same physical figure*
+re-configured four times, not four figures. So: **rider identity is in the encrypted body, machine
+identity is in SRAM.** The 12-byte blob at `0x3C2` is per-unit (it differs even between the genuine
+and downloaded Warp Star); the ASCII code plus the `01 01 0X` byte is per-machine and is shared
+between the genuine figure and the downloaded Warp Star dump.
 
 ### 18.2 The signature is not in the dump
 
 Searching all 16 confirmed-working dumps for the known 32-byte signature finds nothing, yet those
-files work on pixl.js — so the console does not validate the originality signature against the tag.
-It is still required *structurally* in read `prefix[19..50]`, which is why `amiibo v3sig` exists.
+files work on pixl.js. The earlier reading — "so the console does not validate the signature" — is
+weaker than stated: pixl.js may synthesise or supply a signature of its own, so its success does not
+establish that the console ignores one. What *is* established is that the signature is required
+structurally in read `prefix[19..50]`, which is why `amiibo v3sig` exists. Whether it is checked
+against the UID is **⬜ untested**, and is exactly what Test A in §18.4 resolves.
+
+Flashiibo Pro firmware `Pro_Firmware_OTA_26.7.2` contains `pixljs.bin`: Flashiibo Pro **is** pixl.js,
+making xSke's PR #381 the direct reference implementation rather than an analogue.
 
 Flashiibo Pro firmware `Pro_Firmware_OTA_26.7.2` contains `pixljs.bin`: Flashiibo Pro **is** pixl.js,
 making xSke's PR #381 the direct reference implementation rather than an analogue.
@@ -1265,7 +1313,40 @@ status transition and flash persistence). The v3 path needs the equivalent, with
 
 ### 18.4 Next
 
-1. Implement the v3 write path, reusing the validated 540 write machinery.
+**Test A — de-confound provenance (highest value, costs one upload, no reflash).** Serve the
+downloaded `Kirby/Kirby & Warp Star.bin` (UID `04B4438ADB1F90`) on the *current* firmware with the
+genuine signature still set.
+
+| Outcome | Conclusion |
+| --- | --- |
+| Recognised | Provenance was never the blocker; the three firmware fixes were. §18.1 fully retracted, and the signature is not UID-checked. Every downloaded dump is usable as-is — no per-figure capture, no keys. |
+| Rejected | Either the signature *is* UID-bound, or something per-unit really is required. Proceed to Test B, which separates those two. |
+
+**Test B — the carrier hypothesis (only if A fails; this is where retail keys earn their keep).**
+Using `key_retail.bin`, decrypt a downloaded dump, rewrite its UID block to `049011CADB1F90` — the
+one UID for which we hold a genuine originality signature *and* a genuine SRAM block — then re-HMAC
+and re-encrypt against the new seed. Splice in the genuine SRAM block at `0x3C0`. The result is a
+crypto-valid tag whose UID, signature, and SRAM all belong to the owner's real figure.
+
+`tools/amiibo_v3_to_540_resign.mjs` already performs exactly this transform (its target is the
+540-byte container instead of a new v3 UID), so the re-sign step is a variation on working code, not
+new crypto work.
+
+If B succeeds, **one genuine captured figure becomes a carrier for every rider**: swap the encrypted
+body for a different character, keep the carrier's UID/signature/SRAM, and the console accepts it.
+Combined with the §18.1a finding that the machine lives in SRAM's ASCII + `01 01 0X` fields, that
+would make all 4 riders × 4 machines reachable from a single physical figure.
+
+Note the standing constraint in `[[amiibo-crypto-constraint]]`: key-based *generation* was removed
+from the portal at the owner's direction and the portal remains import-only. Test B is an offline
+research tool under `tools/`, run against the user's own keys and their own figure — it is not a
+portal feature and must not become one without an explicit request.
+
+**Then, independent of A/B:**
+
+1. Implement the v3 write path, reusing the validated 540 write machinery (this is what froze when
+   setting an owner, §18.3).
 2. Have `nfc_probe.ps1` capture signature and SRAM block directly, so a user can enrol their own
-   figure without needing a console capture first.
+   figure without needing a console capture first. The detection fix `8ec4f3d` is still
+   hardware-untested.
 3. Persist the signature alongside the v3 image rather than requiring `amiibo v3sig` after a reflash.
