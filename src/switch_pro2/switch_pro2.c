@@ -778,6 +778,8 @@ static void vend_send(const uint8_t *r, uint16_t len) {
 // NTAG I2C 2K session register NS_REG lives in page 0xED (byte offset 0xED*4 =
 // 0x3B4); its byte 2 carries SRAM_RF_READY (bit 0x08).
 #define NS2_AMIIBO_V3_NS_REG_OFFSET 0x3B6u
+// 32-byte SRAM window; carries the machine's expected response in a v3 dump.
+#define NS2_AMIIBO_V3_SRAM_OFFSET   0x3C0u
 #define NS2_AMIIBO_V3_SRAM_RF_READY 0x08u
 static uint8_t ns2_v3_report_state = 0;
 static bool ns2_v3_operation_active = false;
@@ -975,7 +977,17 @@ static void ns2_v3_build_buffer(const uint8_t image[NS2_AMIIBO_V3_SIZE],
     out[6] = 0x00;
     out[7] = 0x07;                          // UID length
     ns2_amiibo_v3_uid(image, out + 8);
-    // out[19..50]: originality signature — unknown for v3, left zero.
+    // out[19..50] is the tag's 32-byte SRAM window, not an originality
+    // signature as previously assumed.
+    //
+    // Two genuine captures show this field taking two values in one session,
+    // and one of them is structurally the SRAM buffer: it ends with the same
+    // 50 42 34 57 31 37 20 01 01 02 00 00 00 that sits at 0x3D0 of every v3
+    // dump. xSke's pixl.js PR #381 states the format is "a 2048-byte file ...
+    // with the expected response already placed in the SRAM buffer", which is
+    // exactly this region. It is therefore derivable from the dump -- no keys
+    // and no per-tag secret, contrary to the retracted §14.7.2 conclusion.
+    memcpy(out + 19, image + NS2_AMIIBO_V3_SRAM_OFFSET, 32u);
     if (request_size >= 19u)
         memcpy(out + 51, request + 10, NS2_NFC_OPERATION_METADATA_SIZE);
     // RE probe: overlay prefix bytes (notably [18], the NTAG model the console
