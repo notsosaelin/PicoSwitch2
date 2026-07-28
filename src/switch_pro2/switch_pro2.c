@@ -819,6 +819,17 @@ static void ns2_v3_build_compat540(const uint8_t image[NS2_AMIIBO_V3_SIZE],
 static uint8_t ns2_v3_op_buffer[60u + NS2_AMIIBO_V3_SIZE];
 static size_t ns2_v3_op_buffer_size = 0;
 static bool ns2_v3_device_cmd_staged = false;
+// A 0x21 reply is a bare ACK whether or not the staging gate passed, so the wire
+// alone cannot distinguish "gate rejected the 0x14" from "gate passed but the
+// console ignored the result". These make that visible over UART.
+static uint32_t ns2_v3_device_cmd_staged_count = 0;
+static uint32_t ns2_v3_device_result_count = 0;
+
+void ns2_v3_device_cmd_counts(uint32_t *staged, uint32_t *results)
+{
+    if (staged) *staged = ns2_v3_device_cmd_staged_count;
+    if (results) *results = ns2_v3_device_result_count;
+}
 
 // The tag's 32-byte originality signature. RAM-only and deliberately not
 // persisted: it is captured from a physical tag with tools/nfc_probe.ps1 and set
@@ -1200,6 +1211,7 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
                     offset == 0u && declared >= 9u &&
                     request_size >= 4u + 9u &&
                     memcmp(request + 6, uid, sizeof(uid)) == 0;
+                if (ns2_v3_device_cmd_staged) ns2_v3_device_cmd_staged_count++;
             }
             break;
         }
@@ -1219,6 +1231,14 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
                 ns2_v3_operation_active = true;
                 ns2_v3_nfc_status = 0x18;
                 ns2_v3_device_cmd_staged = false;
+                // The console does not poll 0x05 on a timer -- it waits for the
+                // report's NFC state field to change and only then asks what
+                // happened. 0x03 and 0x06 both bump it; omitting it here left
+                // the console with no signal that the result was ready, so it
+                // stopped without ever querying status.
+                ns2_v3_report_state =
+                    (uint8_t)((ns2_v3_report_state + 1u) & 0x07u);
+                ns2_v3_device_result_count++;
             }
             break;
         }

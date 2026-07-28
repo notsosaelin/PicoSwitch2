@@ -842,6 +842,16 @@ static void handle_command(void) {
         } else {
             queue_text("{\"amiibo\":\"v3sig\",\"ok\":true}");
         }
+    } else if (strcmp(rx_line, "amiibo v3diag") == 0) {
+        uint32_t staged = 0, results = 0;
+        char response[160];
+        ns2_v3_device_cmd_counts(&staged, &results);
+        snprintf(response, sizeof(response),
+                 "{\"amiibo\":\"v3diag\",\"signature_set\":%s,"
+                 "\"dev_cmd_staged\":%lu,\"dev_results\":%lu}",
+                 ns2_v3_has_signature() ? "true" : "false",
+                 (unsigned long)staged, (unsigned long)results);
+        queue_text(response);
     } else if (strcmp(rx_line, "amiibo v3sig clear") == 0) {
         ns2_v3_clear_signature();
         queue_text("{\"amiibo\":\"v3sig\",\"ok\":true,\"cleared\":true}");
