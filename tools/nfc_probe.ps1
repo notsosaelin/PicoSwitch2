@@ -1,0 +1,183 @@
+#!/usr/bin/env pwsh
+<#
+.SYNOPSIS
+Drive a genuine Pro Controller 2's NFC reader directly over UART, with no
+console attached.
+
+.DESCRIPTION
+The dongle's NFC mirror normally forwards whatever the console asks. Armed as an
+initiator it instead accepts commands from UART, so the genuine controller
+becomes an interrogatable oracle: arbitrary page ranges, at our own pace,
+repeatable, and observable without a Switch 2 in the loop.
+
+That makes it both an amiibo dumper and the fastest way to answer protocol
+questions that previously needed a full console capture per attempt.
+
+Requires: dongle powered with UART0 reachable, a genuine Pro Controller 2 paired
+over BT. A console may be attached but is not used.
+
+.EXAMPLE
+  # Dump whatever tag is on the reader (auto-detects v3 vs NTAG215)
+  .\tools\nfc_probe.ps1 -Port COM11 -Dump out.bin
+
+.EXAMPLE
+  # Read one explicit page range
+  .\tools\nfc_probe.ps1 -Port COM11 -Ranges '00-3B,3C-77,78-91,E2-E6'
+
+.EXAMPLE
+  # Send a single raw command and print the reply
+  .\tools\nfc_probe.ps1 -Port COM11 -Raw '0191000500000000'
+#>
+param(
+    [Parameter(Mandatory = $true)][string]$Port,
+    [string]$Dump,
+    [string]$Ranges,
+    [string]$Raw,
+    [int]$Baud = 115200,
+    [int]$PollSeconds = 15,
+    [switch]$KeepArmed
+)
+
+$ErrorActionPreference = 'Stop'
+
+$sp = New-Object System.IO.Ports.SerialPort $Port, $Baud, 'None', 8, 'One'
+$sp.ReadTimeout = 3000
+$sp.WriteTimeout = 3000
+$sp.NewLine = "`n"
+$sp.Open()
+
+function Send-Line([string]$line) {
+    $sp.WriteLine($line)
+    try { return $sp.ReadLine().Trim() } catch { return '<timeout>' }
+}
+
+# One NFC command to the genuine controller. The firmware is deliberately
+# nonblocking -- it hands the command to BTstack and returns -- so the reply is
+# collected by polling rather than by holding core0 through a BLE round trip.
+function Invoke-Nfc([string]$hex, [int]$timeoutMs = 3000) {
+    $r = Send-Line "nfcmirror send $hex"
+    if ($r -notmatch '"ok":true') { throw "send rejected: $r" }
+    $deadline = (Get-Date).AddMilliseconds($timeoutMs)
+    while ((Get-Date) -lt $deadline) {
+        $r = Send-Line 'nfcmirror reply'
+        if ($r -match '"ready":true') {
+            if ($r -match '"payload":"([0-9A-Fa-f]+)"') {
+                return [byte[]]( -split ($Matches[1] -replace '..', '$& ') |
+                    ForEach-Object { [Convert]::ToByte($_, 16) } )
+            }
+        }
+        Start-Sleep -Milliseconds 15
+    }
+    throw "no reply within ${timeoutMs}ms for $hex"
+}
+
+function Format-Hex([byte[]]$b) { ($b | ForEach-Object { '{0:X2}' -f $_ }) -join '' }
+
+# Read the operation buffer the controller staged for the last 0x06/0x21.
+# Chunks are 70 bytes; byte 8 of each reply is a flags field whose bit 0 marks
+# the final chunk, and bytes 9..10 are that chunk's length.
+function Read-Buffer {
+    $out = New-Object System.Collections.Generic.List[byte]
+    $offset = 0
+    for ($i = 0; $i -lt 64; $i++) {
+        $lo = '{0:X2}' -f ($offset -band 0xFF)
+        $hi = '{0:X2}' -f (($offset -shr 8) -band 0xFF)
+        $reply = Invoke-Nfc "0191001500020000$lo$hi"
+        if ($reply.Length -lt 11) { throw "short read-buffer reply" }
+        $flags = $reply[8]
+        $len = [int]$reply[9] -bor ([int]$reply[10] -shl 8)
+        if ($len -le 0 -or (11 + $len) -gt $reply.Length) { throw "bad chunk length $len" }
+        $out.AddRange($reply[11..(10 + $len)])
+        $offset += $len
+        if (($flags -band 0x01) -ne 0) { break }
+    }
+    return , $out.ToArray()
+}
+
+try {
+    Start-Sleep -Milliseconds 150
+    $sp.DiscardInBuffer()
+
+    $status = Send-Line 'nfcmirror initiator on'
+    if ($status -notmatch '"state":2') {
+        throw "bridge not subscribed to a genuine Pro Controller 2: $status"
+    }
+    Write-Host "initiator armed: $status"
+
+    if ($Raw) {
+        $reply = Invoke-Nfc $Raw
+        Write-Host "reply ($($reply.Length) bytes): $(Format-Hex $reply)"
+        return
+    }
+
+    # Restart discovery so the tag is freshly selected rather than inheriting
+    # whatever state a previous session left behind.
+    Invoke-Nfc '0191000400000000' | Out-Null
+    Invoke-Nfc '019100030005000000E8032C01' | Out-Null
+
+    Write-Host "waiting for a tag (up to ${PollSeconds}s)..."
+    $uid = $null
+    $deadline = (Get-Date).AddSeconds($PollSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $s = Invoke-Nfc '0191000500000000'
+        # Byte 8 is the reader state; 0x04 is "tag selected". The UID follows
+        # the 0x07 length marker at byte 16.
+        if ($s.Length -ge 24 -and $s[8] -eq 0x04 -and $s[16] -eq 0x07) {
+            $uid = $s[17..23]
+            break
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    if (-not $uid) { throw "no tag detected" }
+    Write-Host "tag UID: $(Format-Hex $uid)"
+
+    # NTAG215 exposes pages 00-86; a v3 (NTAG I2C Plus 2K) also answers the
+    # 78-91 and E2-E6 sets. Try the wider one first and fall back, so the caller
+    # does not have to know which kind of tag is on the reader.
+    $rangeSets = if ($Ranges) { @($Ranges) } else { @('00-3B,3C-77,78-91,E2-E6', '00-3B,3C-77,78-86') }
+
+    $buffer = $null
+    foreach ($set in $rangeSets) {
+        $pairs = $set -split ',' | ForEach-Object {
+            $a, $b = $_.Trim() -split '-'
+            '{0:X2}{1:X2}' -f [Convert]::ToInt32($a, 16), [Convert]::ToInt32($b, 16)
+        }
+        $blocks = $pairs.Count
+        $ranges = ($pairs -join '').PadRight(16, '0')
+        $desc = '0191000600130000' + 'D007' + (Format-Hex $uid) + '01' +
+                ('{0:X2}' -f $blocks) + $ranges
+        try {
+            Invoke-Nfc $desc | Out-Null
+            Invoke-Nfc '0191000500000000' | Out-Null
+            $buffer = Read-Buffer
+            Write-Host "read $set -> $($buffer.Length) bytes"
+            break
+        } catch {
+            Write-Host "range set '$set' failed: $($_.Exception.Message)"
+        }
+    }
+    if (-not $buffer) { throw "no range set produced a buffer" }
+
+    # The first 60 bytes describe the operation; tag content starts after it.
+    $prefix = $buffer[0..59]
+    $tag = $buffer[60..($buffer.Length - 1)]
+    Write-Host "prefix[18]    = $('{0:X2}' -f $prefix[18])"
+    Write-Host "prefix[19:51] = $(Format-Hex $prefix[19..50])"
+    Write-Host "tag data      = $($tag.Length) bytes"
+
+    if ($Dump) {
+        [System.IO.File]::WriteAllBytes($Dump, $tag)
+        Write-Host "wrote $Dump"
+        [System.IO.File]::WriteAllBytes("$Dump.prefix", $prefix)
+        Write-Host "wrote $Dump.prefix"
+    }
+
+    Invoke-Nfc '0191000400000000' | Out-Null
+}
+finally {
+    if ($sp.IsOpen) {
+        if (-not $KeepArmed) { Send-Line 'nfcmirror initiator off' | Out-Null }
+        $sp.Close()
+    }
+    $sp.Dispose()
+}

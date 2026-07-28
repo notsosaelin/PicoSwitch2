@@ -80,21 +80,31 @@ passthrough bit-reversal for an extension behind an active MotionPlus, and
 re-expressing orientation detection on the calibrated vector. See
 [docs/bluetooth/wii-motion.md](docs/bluetooth/wii-motion.md) §12.5.
 
-## Virtual amiibo — v3 (NTAG I2C Plus 2K / Kirby Air Riders) — 🔴 PARKED 2026-07-27
+## Virtual amiibo — v3 (NTAG I2C Plus 2K / Kirby Air Riders) — 🟡 IN PROGRESS 2026-07-27
 
-Full record: [`docs/Amiibo-v3.md`](docs/Amiibo-v3.md).
+Full record: [`docs/Amiibo-v3.md`](docs/Amiibo-v3.md) §15-16.
 
 Working and kept in place: the 2048-byte v3 store with flash persistence, the
 complete console read state machine with descriptor-driven page ranges, byte-exact
 chunk framing (0 mismatches vs the source dump), and all 16 Kirby dumps verified
 HMAC-valid against the owner's retail keys.
 
-Blocked on one unknown: the console always requests the NTAG215 page set (540
-bytes) and a v3 tag's encrypted region ends at 0x248 (584 bytes), so it can never
-validate one. Every field a controller can influence has been eliminated with
-evidence (status payload, read-buffer prefix, subcommand replies, capability
-container, firmware version). Resume by capturing a genuine controller reading a
-genuine v3 amiibo through `nfcmirror`.
+The console now escalates to the 4-block v3 descriptor and reads all 664 bytes
+byte-correctly. The remaining gap is identified: v3 adds a **`0x14`/`0x21` device
+command** that no NTAG215 flow uses. A genuine controller answers it with an
+83-byte result buffer whose type byte is `0x18`, carrying the tag's SRAM window
+(the "PB4W17" Figure Player machine block). We answered `0x21` with a bare ACK, so
+status stayed `0x04`, the console found nothing to read and restarted discovery —
+the observed "waits forever" loop. Implemented; hardware test pending.
+
+Retracted: the earlier claim that the read prefix carried a *dynamic* SRAM window
+alternating between two values. It is constant across all 11 genuine reads; the
+second value belonged to the `0x21` result buffer and was misattributed.
+
+New instrument: `nfcmirror` gained an **initiator** mode, so UART can originate NFC
+commands at a genuine controller with no console attached
+(`tools/nfc_probe.ps1`). This dumps real tags — including v3, which nothing else
+here can read — and turns per-question console captures into bench measurements.
 
 Two real bugs were found and fixed along the way, both of which affected normal
 use and not just v3:

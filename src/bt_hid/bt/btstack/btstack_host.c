@@ -5369,6 +5369,7 @@ static gatt_client_characteristic_t sw2_pro2_audio_characteristic;
 // repository's own live GATT discovery. This path only captures the genuine
 // response; it does not replace the console-facing response yet.
 static volatile bool s_sw2_nfc_mirror_requested;
+static volatile bool s_sw2_nfc_mirror_initiator;
 static volatile ns2_nfc_mirror_state_t s_sw2_nfc_mirror_state =
     NS2_NFC_MIRROR_OFF;
 static volatile uint8_t s_sw2_nfc_mirror_last_att_status;
@@ -5527,6 +5528,9 @@ void ns2_nfc_mirror_request(bool enabled)
             &s_sw2_nfc_mirror_response_ready, false, __ATOMIC_RELEASE);
         __atomic_store_n(
             &s_sw2_nfc_mirror_slot_claimed, false, __ATOMIC_RELEASE);
+    } else {
+        __atomic_store_n(
+            &s_sw2_nfc_mirror_initiator, false, __ATOMIC_RELEASE);
     }
     __atomic_store_n(&s_sw2_nfc_mirror_requested, enabled, __ATOMIC_RELEASE);
 }
@@ -5541,6 +5545,10 @@ void ns2_nfc_mirror_snapshot(ns2_nfc_mirror_diag_t *out)
     out->state = (uint8_t)__atomic_load_n(
         &s_sw2_nfc_mirror_state, __ATOMIC_ACQUIRE);
     out->active = out->state == NS2_NFC_MIRROR_ACTIVE;
+    out->initiator = __atomic_load_n(
+        &s_sw2_nfc_mirror_initiator, __ATOMIC_ACQUIRE);
+    out->response_ready = __atomic_load_n(
+        &s_sw2_nfc_mirror_response_ready, __ATOMIC_ACQUIRE);
     out->command_pending = __atomic_load_n(
         &s_sw2_nfc_mirror_slot_claimed, __ATOMIC_ACQUIRE);
     out->awaiting_response = __atomic_load_n(
@@ -5568,7 +5576,15 @@ void ns2_nfc_mirror_snapshot(ns2_nfc_mirror_diag_t *out)
         &s_sw2_nfc_mirror_rejected, __ATOMIC_ACQUIRE);
 }
 
-bool ns2_nfc_mirror_submit(const uint8_t *command, size_t length)
+void ns2_nfc_mirror_set_initiator(bool enabled)
+{
+    __atomic_store_n(&s_sw2_nfc_mirror_initiator, enabled, __ATOMIC_RELEASE);
+    // Same BLE subscription either way; arming the initiator must not require
+    // remembering to arm the bridge first.
+    if (enabled) ns2_nfc_mirror_request(true);
+}
+
+static bool sw2_nfc_mirror_submit_slot(const uint8_t *command, size_t length)
 {
     if (!__atomic_load_n(
             &s_sw2_nfc_mirror_requested, __ATOMIC_ACQUIRE)) {
@@ -5603,6 +5619,20 @@ bool ns2_nfc_mirror_submit(const uint8_t *command, size_t length)
     __atomic_store_n(
         &s_sw2_nfc_mirror_command_pending, true, __ATOMIC_RELEASE);
     return true;
+}
+
+bool ns2_nfc_mirror_submit(const uint8_t *command, size_t length)
+{
+    if (__atomic_load_n(&s_sw2_nfc_mirror_initiator, __ATOMIC_ACQUIRE))
+        return false;
+    return sw2_nfc_mirror_submit_slot(command, length);
+}
+
+bool ns2_nfc_mirror_initiator_submit(const uint8_t *command, size_t length)
+{
+    if (!__atomic_load_n(&s_sw2_nfc_mirror_initiator, __ATOMIC_ACQUIRE))
+        return false;
+    return sw2_nfc_mirror_submit_slot(command, length);
 }
 
 bool ns2_nfc_mirror_accept_ble_response(
@@ -5640,7 +5670,7 @@ bool ns2_nfc_mirror_accept_ble_response(
     return true;
 }
 
-bool ns2_nfc_mirror_take_usb_response(
+static bool sw2_nfc_mirror_take_slot(
     uint8_t *response, size_t capacity, size_t *length)
 {
     if (!response || !length ||
@@ -5657,9 +5687,26 @@ bool ns2_nfc_mirror_take_usb_response(
     return true;
 }
 
+bool ns2_nfc_mirror_take_usb_response(
+    uint8_t *response, size_t capacity, size_t *length)
+{
+    if (__atomic_load_n(&s_sw2_nfc_mirror_initiator, __ATOMIC_ACQUIRE))
+        return false;
+    return sw2_nfc_mirror_take_slot(response, capacity, length);
+}
+
+bool ns2_nfc_mirror_initiator_take(
+    uint8_t *response, size_t capacity, size_t *length)
+{
+    if (!__atomic_load_n(&s_sw2_nfc_mirror_initiator, __ATOMIC_ACQUIRE))
+        return false;
+    return sw2_nfc_mirror_take_slot(response, capacity, length);
+}
+
 bool ns2_nfc_mirror_active(void)
 {
     return __atomic_load_n(&s_sw2_nfc_mirror_requested, __ATOMIC_ACQUIRE) &&
+           !__atomic_load_n(&s_sw2_nfc_mirror_initiator, __ATOMIC_ACQUIRE) &&
            __atomic_load_n(&s_sw2_nfc_mirror_state, __ATOMIC_ACQUIRE) ==
                NS2_NFC_MIRROR_ACTIVE;
 }

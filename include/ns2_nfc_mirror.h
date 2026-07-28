@@ -30,6 +30,8 @@ typedef enum {
 typedef struct {
     bool requested;
     bool active;
+    bool initiator;
+    bool response_ready;
     bool command_pending;
     bool awaiting_response;
     uint8_t state;
@@ -72,6 +74,20 @@ size_t ns2_nfc_mirror_translate_ble_response(
 // Runtime control/snapshot. The request is serviced by the BTstack thread.
 void ns2_nfc_mirror_request(bool enabled);
 void ns2_nfc_mirror_snapshot(ns2_nfc_mirror_diag_t *out);
+
+// Initiator mode. The bridge normally forwards console commands; here UART
+// originates them instead, so a genuine controller can be interrogated with no
+// console attached. Enabling it implies ns2_nfc_mirror_request(true) because
+// the BLE subscription is the same one.
+//
+// The two directions are mutually exclusive by construction: while the
+// initiator owns the slot the console-facing submit/take pair both refuse, and
+// ns2_nfc_mirror_active() reports false so the console sees ordinary local
+// behavior rather than a half-mirrored session.
+void ns2_nfc_mirror_set_initiator(bool enabled);
+bool ns2_nfc_mirror_initiator_submit(const uint8_t *command, size_t length);
+bool ns2_nfc_mirror_initiator_take(
+    uint8_t *response, size_t capacity, size_t *length);
 
 // Core0 console command submission. Returns false when the diagnostic is off,
 // not yet subscribed, has no genuine Pro2 source, or its one command slot is
