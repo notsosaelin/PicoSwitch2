@@ -1025,15 +1025,32 @@ key-less tools can support these tags.
   existing `0x15` chunker serves it.
 - `[19..50]` comes from `image[0x3C0..0x3DF]`, the SRAM window.
 
-### 15.6 Remaining unknown
+### 15.6 The 23-byte body is invariant
 
-The 23-byte body at `[60..82]` — zeros ending in `00 7A C4`. It matched **no** CRC-16 variant
-(CRC-A, CRC-B, CCITT-FALSE, XMODEM, MODBUS, KERMIT) over any contiguous prefix of the buffer, so it
-is not a simple checksum. It is currently served as the continuation of the SRAM window
-(`image[0x3E0..0x3F6]`), which is a guess consistent with the layout but **untested**.
+The body at `[60..82]` is zeros ending in `00 7A C4`, and it is **byte-identical across all six
+genuine result buffers** in both captures:
 
-If the console rejects the result, dump the physical tag with `tools/nfc_probe.ps1` (§16) and
-compare `0x3E0` against the observed `00 7A C4` directly. That is a bench measurement now, not a
+| Capture | `0x21` at seq | body |
+|---|---|---|
+| 1 | 64, 138, 156 | `00…00 7A C4` |
+| 2 | 132, 206, 224 | `00…00 7A C4` |
+
+**It does not carry written user data.** 23 bytes is close to an amiibo nickname (20 bytes, 10
+UTF-16 characters), which makes that a reasonable hypothesis, but the data rules it out: capture 1
+commits a write at seq 186, and capture 2 is a *later session* — the tag already carried its owner
+and nickname — yet capture 2's buffers equal capture 1's pre-write ones exactly. Owner and nickname
+live in the tag's encrypted region and are delivered through the `0x06` read path instead.
+
+It also matched **no** CRC-16 variant (CRC-A, CRC-B, CCITT-FALSE, XMODEM, MODBUS, KERMIT) over any
+contiguous prefix of the buffer, so it is not a simple checksum.
+
+Because it is constant and 20 of 23 bytes are confirmed zero, the serve path **reproduces the
+observation** rather than sourcing it from `image[0x3E0]`: a non-zero region there would emit bytes
+the genuine reader never sends. Sourcing it from the image was the first implementation and was
+wrong for that reason.
+
+**Remaining unknown:** whether `7A C4` is tag-specific. Only one physical tag has been observed.
+Reading a second tag with `tools/nfc_probe.ps1` (§16) settles it — a bench measurement now, not a
 console capture.
 
 ---
