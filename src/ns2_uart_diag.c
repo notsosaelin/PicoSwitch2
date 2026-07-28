@@ -41,6 +41,11 @@ extern uint32_t ns2_audio_core1_stack_free_bytes(void);
 #define NS2_UART_TASK_TX_BUDGET 8u
 #define NS2_UART_Y_PULSE_US 120000u
 #define NS2_UART_AMIIBO_READ_MAX 64u
+// Bounded by the 96-byte RX line, not by the bridge: "nfcmirror send " plus two
+// hex characters per byte. Ample for every read-path command (the longest, the
+// 0x06 read descriptor, is 27 bytes); tag writes are longer and stay on the
+// console path.
+#define NS2_UART_NFC_COMMAND_MAX 40u
 
 static char rx_line[NS2_UART_RX_LINE_SIZE];
 static size_t rx_length;
@@ -226,6 +231,7 @@ static void queue_nfc_mirror_status(const char *event) {
     ns2_nfc_mirror_snapshot(&status);
     snprintf(response, sizeof(response),
              "{\"nfcmirror\":\"%s\",\"requested\":%s,\"active\":%s,"
+             "\"initiator\":%s,\"reply_ready\":%s,"
              "\"pending\":%s,\"awaiting_response\":%s,\"state\":%u,"
              "\"att_status\":%u,"
              "\"send_status\":%u,\"source_pid\":\"0x%04X\","
@@ -235,6 +241,8 @@ static void queue_nfc_mirror_status(const char *event) {
              "\"state_transitions\":%lu,\"timeouts\":%lu,\"rejected\":%lu}",
              event, status.requested ? "true" : "false",
              status.active ? "true" : "false",
+             status.initiator ? "true" : "false",
+             status.response_ready ? "true" : "false",
              status.command_pending ? "true" : "false",
              status.awaiting_response ? "true" : "false", status.state,
              status.last_att_status, status.last_send_status,
@@ -583,6 +591,50 @@ static void handle_command(void) {
     } else if (strcmp(rx_line, "nfcmirror off") == 0) {
         ns2_nfc_mirror_request(false);
         queue_nfc_mirror_status("requested");
+    } else if (strcmp(rx_line, "nfcmirror initiator on") == 0) {
+        ns2_nfc_mirror_set_initiator(true);
+        queue_nfc_mirror_status("initiator");
+    } else if (strcmp(rx_line, "nfcmirror initiator off") == 0) {
+        ns2_nfc_mirror_set_initiator(false);
+        queue_nfc_mirror_status("initiator");
+    } else if (strncmp(rx_line, "nfcmirror send ", 15) == 0) {
+        // Originate an NFC command at the genuine controller. Nonblocking by
+        // design: the BLE round trip is tens of milliseconds and core0 also
+        // drives 1 kHz USB, so the reply is collected separately.
+        uint8_t command[NS2_UART_NFC_COMMAND_MAX];
+        size_t length = 0;
+        if (!diag_parse_hex(rx_line + 15, command, sizeof(command), &length) ||
+            length < 8u) {
+            queue_text("{\"nfcmirror\":\"send\",\"ok\":false,"
+                       "\"error\":\"expected >=8 bytes of hex\"}");
+        } else if (!ns2_nfc_mirror_initiator_submit(command, length)) {
+            queue_text("{\"nfcmirror\":\"send\",\"ok\":false,"
+                       "\"error\":\"not armed, no genuine pro2, or busy\"}");
+        } else {
+            char response[96];
+            snprintf(response, sizeof(response),
+                     "{\"nfcmirror\":\"send\",\"ok\":true,\"length\":%u,"
+                     "\"sub\":%u}",
+                     (unsigned)length, command[3]);
+            queue_text(response);
+        }
+    } else if (strcmp(rx_line, "nfcmirror reply") == 0) {
+        uint8_t response_bytes[NS2_NFC_MIRROR_RESPONSE_MAX];
+        size_t length = 0;
+        if (!ns2_nfc_mirror_initiator_take(
+                response_bytes, sizeof(response_bytes), &length)) {
+            queue_text("{\"nfcmirror\":\"reply\",\"ready\":false}");
+        } else {
+            char hex[NS2_NFC_MIRROR_RESPONSE_MAX * 2u + 1u];
+            for (size_t i = 0; i < length; i++)
+                snprintf(&hex[i * 2u], 3u, "%02X", response_bytes[i]);
+            char response[NS2_NFC_MIRROR_RESPONSE_MAX * 2u + 96u];
+            snprintf(response, sizeof(response),
+                     "{\"nfcmirror\":\"reply\",\"ready\":true,\"length\":%u,"
+                     "\"sub\":%u,\"payload\":\"%s\"}",
+                     (unsigned)length, response_bytes[3], hex);
+            queue_text(response);
+        }
     } else if (strcmp(rx_line, "nfcmirror") == 0 ||
                strcmp(rx_line, "nfcmirror status") == 0) {
         queue_nfc_mirror_status("status");
@@ -1436,6 +1488,8 @@ static void handle_command(void) {
                    "\"blecap gattdisc on|off|status\","
                    "\"blecap mark TEXT\","
                    "\"nfcmirror on|off|status\","
+                   "\"nfcmirror initiator on|off\",\"nfcmirror send HEX\","
+                   "\"nfcmirror reply\","
                    "\"amiibo status|read OFFSET|acknowledge|dump (PC helper)\","
                    "\"motionpair status|start|stop|dump|read\",\"magraw on|off|status\","
                    "\"motionprobe status|latch|seed STATE|on|off|reset|set G0 G1 G2|rate AXIS VALUE|accel X Y Z\","

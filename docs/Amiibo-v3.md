@@ -900,3 +900,211 @@ the tracer. Requirements: a genuine Switch 2 controller over BT, `nfcmirror on`,
 and the virtual slot **ejected** so the local serve path does not intercept.
 That capture would show the real tag-type signal directly, and everything else is
 already built to act on it.
+
+---
+
+## 15. The `0x21` device command (2026-07-27)
+
+**Status: 🟡 identified from genuine captures, implemented, hardware test pending.**
+
+### 15.1 Retraction — there is no dynamic SRAM window
+
+§14.7.5 claimed the genuine read prefix field `prefix[19..50]` was an SRAM window that took two
+distinct values ("A" and "B") for the same physical tag within one session, and that the serve path
+should reproduce the "B" value. **That is wrong and is withdrawn.**
+
+Re-reading both genuine captures record by record:
+
+| Capture | Reads | `prefix[19..50]` |
+|---|---|---|
+| `v3-genuine-capture-2026-07-27.jsonl` | 5 | `80925007…E895C086` on every one |
+| `v3-genuine-capture2-2026-07-27.jsonl` | 6 | `80925007…E895C086` on every one |
+
+The value is **constant** across 11 reads, two sessions, and every descriptor variant
+(3-block, 4-block, and the single-page `03-03` read). There is no A→B transition to explain.
+
+The "B" value came from a **different operation** and was misattributed. It appears only in
+records `seq 69/143/161` (capture 1) and `seq 137/211/229` (capture 2), where the buffer's first
+byte is `0x18` rather than the `0x04` of a tag read. Those are replies to the `0x14`/`0x21`
+sequence described below — never to a `0x06` read.
+
+The cost of the error was one hardware test that served the right bytes in the wrong place.
+
+### 15.2 `0x21` is v3-specific
+
+Subcommand `0x21` appears in **no** NTAG215 flow. Counting console→device subcommands across every
+capture in `dumps/`:
+
+| Capture | Has `0x21` |
+|---|---|
+| `ntag215-genuine-capture-2026-07-27.jsonl` | no |
+| `amiibo-540-working-read-2026-07-26.jsonl` (successful 540 read **and** write) | no |
+| `virtual-amiibo-*` (validated write lifecycle) | no |
+| `v3-genuine-capture*.jsonl` | **yes** (3 and 4 occurrences) |
+
+So `0x21` is not part of the ordinary amiibo protocol at all. It is the step a v3 tag adds.
+
+### 15.3 The sequence
+
+Genuine, `v3-genuine-capture-2026-07-27.jsonl` seq 62-71:
+
+```
+62  C->D  0x14  offset=0 len=0x4A   D0 07 | 049011CADB1F90 | 01 01 | 00…    stage device command
+63  D->C  0x14  ACK
+64  C->D  0x21  (no payload)                                                execute
+65  D->C  0x21  ACK
+66  C->D  0x05  status
+67  D->C  0x05  state = 0x18            <-- not 0x04
+68  C->D  0x15  offset 0
+69  D->C  0x15  70 bytes, flags 0x00
+70  C->D  0x15  offset 0x46
+71  D->C  0x15  13 bytes, flags 0x01    <-- 83-byte result buffer
+```
+
+Ours, `v3-serve-sram-2026-07-27.jsonl` seq 60-72 — identical up to the execute, then:
+
+```
+62  C->D  0x21
+63  D->C  0x21  ACK
+66  C->D  0x05  status
+67  D->C  0x05  state = 0x04            <-- unchanged; nothing was produced
+64  C->D  0x04  stop
+66  C->D  0x03  restart discovery       <-- the "waits forever" loop
+```
+
+`0x21` fell through to `default:` and was answered with a bare ACK. The console has no result to
+read, so it abandons the tag and restarts polling. This is exactly the reported symptom: *"just
+waited for an amiibo to be scanned."*
+
+### 15.4 The result buffer
+
+83 bytes, reassembled from seq 68-71:
+
+```
+000  18 00 00 00 01 02 00 07  04 90 11 CA DB 1F 90 00
+010  00 00 06 02 00 73 2A B4  1C 4A C2 91 B9 A5 98 3C
+020  03 94 00 C9 00 0A 50 42  34 57 31 37 20 01 01 02
+030  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00
+040  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00
+050  00 7A C4
+```
+
+| Offset | Meaning | Confidence |
+|---|---|---|
+| `[0]` | result type `0x18` (a tag read uses `0x04`) | ✅ Confirmed |
+| `[4..7]` | `01 02 00 07` — as in a read prefix; `[7]` is the UID length | ✅ Confirmed |
+| `[8..14]` | tag UID | ✅ Confirmed |
+| `[18]` | `0x06` — same escalation byte as the read prefix | ✅ Confirmed |
+| `[19..50]` | 32-byte device response | ✅ Confirmed present, 🔵 contents |
+| `[51..79]` | zero | ✅ Confirmed |
+| `[80..82]` | `00 7A C4` | 🔴 Unidentified |
+
+The device response at `[19..50]` decomposes against the stored image at `0x3C0`:
+
+```
+genuine  02 00 | 732AB41C4AC291B9A5983C0394 00 | C9 00 0A | "PB4W17 " | 01 01 02 00 00 00
+image    02 00 | 4C980F696FCF5128F89ED4B5AB 00 | 9C 00 01 | "PB4W17 " | 01 01 02 00 00 00
+```
+
+Same header, same ASCII product code `50 42 34 57 31 37 20` = `"PB4W17 "`, same 6-byte tail. The
+14-byte middle and the 3 bytes before the product code are per-tag — and the two samples *are*
+different physical tags (`049011CADB1F90` captured vs `04B4438ADB1F90` uploaded), which accounts
+for the difference without requiring a live challenge/response.
+
+This is what xSke's pixl.js PR #381 means by *"a 2048-byte file with the expected response already
+placed in the SRAM buffer"*: the response is **stored in the image**, not computed. That is why
+key-less tools can support these tags.
+
+### 15.5 What was implemented
+
+`ns2_v3_serve()` (`src/switch_pro2/switch_pro2.c`):
+
+- `0x14` records that a device command was staged, gated on offset 0 and a UID match, so it cannot
+  be confused with the NTAG215 write path.
+- `0x21` builds the 83-byte result buffer, sets status `0x18`, and marks the operation active so the
+  existing `0x15` chunker serves it.
+- `[19..50]` comes from `image[0x3C0..0x3DF]`, the SRAM window.
+
+### 15.6 Remaining unknown
+
+The 23-byte body at `[60..82]` — zeros ending in `00 7A C4`. It matched **no** CRC-16 variant
+(CRC-A, CRC-B, CCITT-FALSE, XMODEM, MODBUS, KERMIT) over any contiguous prefix of the buffer, so it
+is not a simple checksum. It is currently served as the continuation of the SRAM window
+(`image[0x3E0..0x3F6]`), which is a guess consistent with the layout but **untested**.
+
+If the console rejects the result, dump the physical tag with `tools/nfc_probe.ps1` (§16) and
+compare `0x3E0` against the observed `00 7A C4` directly. That is a bench measurement now, not a
+console capture.
+
+---
+
+## 16. Interrogating a genuine controller directly (2026-07-27)
+
+**Status: ✅ implemented, host-tested, hardware test pending.**
+
+The `nfcmirror` bridge was purely reactive: it forwarded whatever the console asked and returned the
+genuine reply. Every question therefore cost a full console capture, and questions the console never
+happens to ask could not be asked at all.
+
+It now has an **initiator** mode. UART originates NFC commands and reads the genuine controller's
+replies, with **no console in the loop** — the bridge is BLE-only, gated on `sw2_init_state` and a
+connected `0x2069`, so it needs nothing but a powered dongle and a paired Pro Controller 2.
+
+This makes a genuine controller an interrogatable oracle: arbitrary page ranges, arbitrary
+commands, repeatable, at bench pace. It is also an amiibo dumper — including for v3 tags, which
+nothing else in the repo can read.
+
+### 16.1 Firmware
+
+| Symbol | Role |
+|---|---|
+| `ns2_nfc_mirror_set_initiator(bool)` | arms initiator mode; implies `ns2_nfc_mirror_request(true)` |
+| `ns2_nfc_mirror_initiator_submit()` | originate a command |
+| `ns2_nfc_mirror_initiator_take()` | collect the reply |
+
+The two directions are mutually exclusive by construction. While the initiator owns the slot,
+`ns2_nfc_mirror_submit()` and `ns2_nfc_mirror_take_usb_response()` both refuse, and
+`ns2_nfc_mirror_active()` reports false so an attached console sees ordinary local behavior rather
+than a half-mirrored session. `nfcmirror off` clears both flags.
+
+Submission is nonblocking: the BLE round trip is tens of milliseconds and core0 also drives 1 kHz
+USB, so the reply is collected by a separate poll rather than by stalling core0.
+
+### 16.2 UART commands
+
+```
+nfcmirror initiator on|off
+nfcmirror send HEX          # >=8 bytes, <=40 (bounded by the 96-byte RX line)
+nfcmirror reply             # {"ready":false} until the genuine reply lands
+```
+
+40 bytes covers every read-path command; the longest, the `0x06` read descriptor, is 27. Tag writes
+are longer and stay on the console path.
+
+### 16.3 Command vocabulary
+
+Decoded from `v3-genuine-capture-2026-07-27.jsonl`:
+
+| Command | Bytes |
+|---|---|
+| stop | `01 91 00 04 00 00 00 00` |
+| start discovery | `01 91 00 03 00 05 00 00 00 E8 03 2C 01` |
+| status | `01 91 00 05 00 00 00 00` |
+| read descriptor | `01 91 00 06 00 13 00 00` + `timeout16` + `uid[7]` + `type` + `blocks` + `(start,end)x4` |
+| read buffer | `01 91 00 15 00 02 00 00` + `offset16 LE` |
+
+Replies: 8-byte header, then `[8]` flags (bit 0 = final chunk), `[9..10]` chunk length LE, then data.
+Chunks are 70 bytes. The reassembled buffer is a 60-byte prefix followed by tag content.
+
+### 16.4 Driver
+
+`tools/nfc_probe.ps1` does the sequencing on the PC, keeping the firmware a dumb auditable
+transport:
+
+```powershell
+.\tools\nfc_probe.ps1 -Port COM11 -Dump kirby.bin              # auto-detect v3 vs NTAG215
+.\tools\nfc_probe.ps1 -Port COM11 -Ranges '00-3B,3C-77,78-91,E2-E6'
+.\tools\nfc_probe.ps1 -Port COM11 -Raw '0191000500000000'      # one command, print the reply
+```
+
+`-Dump` writes the tag content and, alongside it, `<name>.prefix` with the 60-byte operation prefix.

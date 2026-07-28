@@ -818,6 +818,34 @@ static void ns2_v3_build_compat540(const uint8_t image[NS2_AMIIBO_V3_SIZE],
 }
 static uint8_t ns2_v3_op_buffer[60u + NS2_AMIIBO_V3_SIZE];
 static size_t ns2_v3_op_buffer_size = 0;
+static bool ns2_v3_device_cmd_staged = false;
+
+// Result buffer for the 0x14/0x21 device command, byte-for-byte from the
+// genuine capture of 2026-07-27 (dumps/v3-genuine-capture-2026-07-27.jsonl,
+// seq 68-71). Length and the fixed fields are confirmed; the two body regions
+// are served from the image's SRAM window.
+#define NS2_V3_DEVICE_RESULT_SIZE 83u
+#define NS2_V3_DEVICE_RESULT_BODY 23u
+
+static void ns2_v3_build_device_result(
+    const uint8_t image[NS2_AMIIBO_V3_SIZE], const uint8_t uid[7])
+{
+    uint8_t *out = ns2_v3_op_buffer;
+    memset(out, 0, NS2_V3_DEVICE_RESULT_SIZE);
+    out[0] = 0x18;
+    out[4] = 0x01;
+    out[5] = 0x02;
+    out[7] = 0x07;
+    memcpy(out + 8, uid, 7u);
+    out[18] = 0x06;
+    memcpy(out + 19, image + NS2_AMIIBO_V3_SRAM_OFFSET, 32u);
+    // The genuine 23-byte body was zeros ending in 00 7A C4. It matched no CRC
+    // over any contiguous prefix, so it is served as the remainder of the SRAM
+    // window rather than synthesised. Unconfirmed -- see docs/Amiibo-v3.md.
+    memcpy(out + 60, image + NS2_AMIIBO_V3_SRAM_OFFSET + 32u,
+           NS2_V3_DEVICE_RESULT_BODY);
+    ns2_v3_op_buffer_size = NS2_V3_DEVICE_RESULT_SIZE;
+}
 
 void ns2_v3_set_serve_mode(uint8_t mode)
 {
@@ -1123,6 +1151,41 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
                     payload_size = out_size;
                     direction = 0x01;
                 }
+            }
+            break;
+        }
+        case 0x14: { // stage a device command in the operation buffer
+            // Distinct from the NTAG215 write path: for a v3 tag the console
+            // first stages a 74-byte "D0 07 <uid> 01 01" descriptor here and
+            // executes it with 0x21 (below) before it will accept the figure.
+            if (request_size >= 4u) {
+                const uint16_t offset =
+                    (uint16_t)request[0] | ((uint16_t)request[1] << 8);
+                const uint16_t declared =
+                    (uint16_t)request[2] | ((uint16_t)request[3] << 8);
+                ns2_v3_device_cmd_staged =
+                    offset == 0u && declared >= 9u &&
+                    request_size >= 4u + 9u &&
+                    memcmp(request + 6, uid, sizeof(uid)) == 0;
+            }
+            break;
+        }
+        case 0x21: { // execute the staged device command
+            // Genuine controllers answer this by publishing an 83-byte result
+            // buffer whose type byte is 0x18 (not the 0x04 of a tag read) and
+            // whose body is the tag's SRAM window -- the Figure Player machine
+            // block, product code "PB4W17" in the Kirby dumps. The console reads
+            // it back with 0x15 and only then accepts the amiibo.
+            //
+            // Confirmed 0x21 appears in v3 flows only: it is absent from the
+            // genuine NTAG215 capture and from every 540-byte write. Previously
+            // it fell through to a bare ACK, status stayed 0x04, and the console
+            // restarted discovery -- the observed "waits forever" loop.
+            if (ns2_v3_device_cmd_staged) {
+                ns2_v3_build_device_result(image, uid);
+                ns2_v3_operation_active = true;
+                ns2_v3_nfc_status = 0x18;
+                ns2_v3_device_cmd_staged = false;
             }
             break;
         }
