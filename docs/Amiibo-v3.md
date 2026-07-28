@@ -506,7 +506,38 @@ The `0x05` status is **byte-identical** between the two tags except for the UID.
 conclusion by elimination; the genuine capture proves it directly. No further status probing is
 warranted.
 
-### 14.5 Next step
+### 14.5 ✅ CONFIRMED — the prefix triggers escalation, and it is NOT tag-bound
+
+Test 2026-07-27, `dumps/v3-serve-prefixtest-2026-07-27.jsonl`. Our own serve path, mirror **off**,
+a v3 tag loaded, and `v3hdr 18 <the 33 captured bytes>` overlaid onto the read prefix.
+
+**The console escalated.** seq 34 is the 4-block descriptor
+`00-3B, 3C-77, 78-91, E2-E6` = 604 B — the same one the genuine controller produced. Our served
+prefix reads back exactly as intended (`[18] 06 80 92 50 07 B8 … 95 C0 86`, `[51] 03`).
+
+**And the field is not bound to the tag.** The loaded image is a *different physical amiibo* from
+the one captured (captured UID `049011CADB1F90`; no local dump matches it). The console still
+escalated. So bytes 18–50 are **not** validated against the tag's UID at this stage — which answers
+§14.5 questions 1 and 2 in the most useful direction available: whatever they are, they can be
+replayed. A per-tag ECC signature that the console checks *here* is ruled out.
+
+**What now blocks it: the console aborts the extended read.** The cycle repeats ~7 times:
+
+```
+0x05 status -> 0x06 (4-block, 604 B) -> 0x04 STOP -> 0x03 poll -> 0x05 ->
+0x04 -> 0x03 -> 0x05 -> 0x06 (3-block, 540 B) -> 0x05 -> read off=0 -> abort -> retry
+```
+
+It asks for 604 bytes, our serve path does not satisfy it, the console stops, falls back to the
+540-byte descriptor, reads that, fails, and retries the whole sequence. Consistent with the reported
+symptom: no error, no recognition.
+
+So the remaining work is entirely on our side: **make `ns2_v3_serve()` answer the 4-block
+descriptor** — including the `E2-E6` block, which lies outside the ordinary page space and is
+presumably the machine/SRAM window. The descriptor-driven page-range machinery already exists; it
+has simply never been exercised with 4 blocks.
+
+### 14.6 Next step
 
 Populate prefix bytes 18–50 in `ns2_v3_serve()`'s read replies and re-test. If the console escalates
 to the 4-block descriptor, the serve path already has the machinery to answer it (descriptor-driven
