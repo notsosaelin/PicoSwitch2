@@ -941,21 +941,17 @@ static void ns2_v3_build_buffer(const uint8_t image[NS2_AMIIBO_V3_SIZE],
     // So: scan the descriptor first, and if anything reaches past the compat
     // view, serve the raw 2 KB image. A plain 540-byte request still uses compat
     // exactly as before.
+    // Block count is at [10], ranges at [11..]; see the note in ns2_v3_serve().
     size_t highest = 0;
-    if (request_size >= 11u && request[0] == 0xD0u) {
-        const uint8_t uid_len = request[1];
-        const size_t count_index = 2u + (size_t)uid_len + 1u;
-        if (count_index < request_size) {
-            const uint8_t blocks = request[count_index];
-            const size_t first = count_index + 1u;
-            if (blocks && first + (size_t)blocks * 2u <= request_size) {
-                for (uint8_t b = 0; b < blocks; ++b) {
-                    const uint8_t s = request[first + (size_t)b * 2u];
-                    const uint8_t e = request[first + (size_t)b * 2u + 1u];
-                    if (e < s) continue;
-                    const size_t end_byte = ((size_t)e + 1u) * 4u;
-                    if (end_byte > highest) highest = end_byte;
-                }
+    if (request_size >= 13u) {
+        const uint8_t blocks = request[10];
+        if (blocks && 11u + (size_t)blocks * 2u <= request_size) {
+            for (uint8_t b = 0; b < blocks; ++b) {
+                const uint8_t st = request[11u + (size_t)b * 2u];
+                const uint8_t en = request[12u + (size_t)b * 2u];
+                if (en < st) continue;
+                const size_t end_byte = ((size_t)en + 1u) * 4u;
+                if (end_byte > highest) highest = end_byte;
             }
         }
     }
@@ -991,12 +987,10 @@ static void ns2_v3_build_buffer(const uint8_t image[NS2_AMIIBO_V3_SIZE],
     // if the descriptor cannot be parsed.
     size_t used = 60u;
     bool copied = false;
-    if (request_size >= 11u && request[0] == 0xD0u) {
-        const uint8_t uid_len = request[1];
-        const size_t count_index = 2u + (size_t)uid_len + 1u;  // uid + tag type
-        if (count_index < request_size) {
-            const uint8_t blocks = request[count_index];
-            const size_t first = count_index + 1u;
+    if (request_size >= 13u) {
+        {
+            const uint8_t blocks = request[10];
+            const size_t first = 11u;
             if (blocks && first + (size_t)blocks * 2u <= request_size) {
                 for (uint8_t b = 0; b < blocks; ++b) {
                     const uint8_t start = request[first + (size_t)b * 2u];
@@ -1071,11 +1065,20 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
             break;
         }
         case 0x06: { // begin read: require the D0 07 / zero-UID read descriptor
-            bool uid_zero = request_size >= 9u;
-            for (size_t i = 2; uid_zero && i < 9u; ++i)
-                if (request[i] != 0) uid_zero = false;
-            const bool read_descriptor = request_size >= 19u &&
-                request[0] == 0xD0 && request[1] == 0x07 && uid_zero;
+            // Descriptor layout, decoded from a genuine capture 2026-07-27:
+            //   [0..1] timeout, u16 LE   [2..8] UID   [9] tag type
+            //   [10] block count         [11..] (start,end) x N
+            //
+            // The old gate tested request[0]==0xD0 && request[1]==0x07 as a
+            // "D0 07 marker". Those bytes are the TIMEOUT: D0 07 = 2000 ms. The
+            // extended 4-block descriptor uses 3000 ms (B8 0B), so it was
+            // silently rejected -- the operation never started, status never
+            // reached 0x04, and the console stopped without reading. Gate on
+            // structure instead, and accept any timeout.
+            const uint8_t desc_blocks = request_size >= 11u ? request[10] : 0u;
+            const bool read_descriptor =
+                request_size >= 13u && desc_blocks >= 1u &&
+                (size_t)11u + (size_t)desc_blocks * 2u <= request_size;
             if (read_descriptor) {
                 ns2_v3_build_buffer(image, request, request_size);
                 ns2_v3_operation_active = true;

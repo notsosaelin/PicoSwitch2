@@ -537,7 +537,42 @@ descriptor** — including the `E2-E6` block, which lies outside the ordinary pa
 presumably the machine/SRAM window. The descriptor-driven page-range machinery already exists; it
 has simply never been exercised with 4 blocks.
 
-### 14.6 Next step
+### 14.6 ✅ Extended read working — the descriptor gate was misparsing a timeout
+
+`dumps/v3-serve-desc-fixed-2026-07-27.jsonl`. The console now completes the whole read:
+
+```
+0x06 (3-block, 540 B) -> status 0x04 -> reads 0..560 last=1
+0x06 (4-block, 604 B) -> status 0x04 -> reads 0..630 last=1 (34 B) = 664 B total
+0x14 WRITE BUFFER
+```
+
+**Root cause of the previous stall.** The `0x06` gate required
+`request[0] == 0xD0 && request[1] == 0x07`, described in the code as "the D0 07 marker". Those bytes
+are the **timeout, u16 LE**: `D0 07` = 2000 ms. The extended descriptor uses 3000 ms (`B8 0B`), so it
+failed the gate, the operation never started, status never reached `0x04`, and the console issued
+`0x04` STOP without a single read. The real layout is:
+
+```
+[0..1] timeout u16 LE   [2..8] UID   [9] tag type   [10] block count   [11..] (start,end) x N
+```
+
+The same misreading appeared in three places — the gate plus two parsers in `ns2_v3_build_buffer`
+that derived a UID length from the timeout's high byte. All three now gate on structure and accept
+any timeout. A 540-byte request still routes to the compatibility view; anything reaching past it
+serves from the raw 2 KB image.
+
+### 14.7 Next: the write path
+
+The console reaches `0x14` (write buffer) and then stops after a **single** command, falling back and
+retrying. The genuine capture shows **nine** `0x14` chunks followed by `0x08` (write device) and
+three `0x21`. So the serve path's `0x14`/`0x08` handling is the remaining gap — the read side is
+done.
+
+Note this is the console *writing to the amiibo*, which the genuine session also did ("a read and a
+write occurred"), so it is part of normal recognition rather than an optional extra.
+
+### 14.8 Earlier next-step notes
 
 Populate prefix bytes 18–50 in `ns2_v3_serve()`'s read replies and re-test. If the console escalates
 to the 4-block descriptor, the serve path already has the machinery to answer it (descriptor-driven

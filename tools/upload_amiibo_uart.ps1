@@ -24,21 +24,27 @@ if ($bytes.Length -notin @(540, 572, 2048)) {
 }
 
 # CRC-32 (same polynomial the firmware and portal use).
+# PowerShell's -bxor promotes operands in ways that overflow a uint32, so this
+# works in int64 throughout and masks explicitly at every step.
 function Get-Crc32([byte[]]$data) {
-    $table = New-Object uint32[] 256
+    $table = New-Object 'System.Int64[]' 256
     for ($i = 0; $i -lt 256; $i++) {
-        $c = [uint32]$i
+        [int64]$c = $i
         for ($k = 0; $k -lt 8; $k++) {
-            if ($c -band 1) { $c = [uint32](0xEDB88320 -bxor ($c -shr 1)) }
-            else { $c = [uint32]($c -shr 1) }
+            if (($c -band 1L) -ne 0L) {
+                $c = (0xEDB88320L -bxor ($c -shr 1)) -band 0xFFFFFFFFL
+            } else {
+                $c = ($c -shr 1) -band 0xFFFFFFFFL
+            }
         }
         $table[$i] = $c
     }
-    $crc = [uint32]0xFFFFFFFF
+    [int64]$crc = 0xFFFFFFFFL
     foreach ($b in $data) {
-        $crc = [uint32]($table[($crc -bxor $b) -band 0xFF] -bxor ($crc -shr 8))
+        $idx = [int](($crc -bxor [int64]$b) -band 0xFFL)
+        $crc = ((($crc -shr 8) -band 0xFFFFFFL) -bxor $table[$idx]) -band 0xFFFFFFFFL
     }
-    return [uint32]($crc -bxor 0xFFFFFFFF)
+    return ($crc -bxor 0xFFFFFFFFL) -band 0xFFFFFFFFL
 }
 
 $crc = '{0:x8}' -f (Get-Crc32 $bytes)
