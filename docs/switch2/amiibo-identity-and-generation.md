@@ -2,11 +2,10 @@
 
 Status: 🔵 Partial (research record). Format documented from primary references. **Key-free**
 generation is **Refuted** (2026-07-26 hardware test): the Switch 2 validates amiibo cryptography, so
-zero-HMAC images are rejected. **Key-based** generation using the user's own `key_retail.bin` was
-prototyped in the portal (amiitool algorithm via Web Crypto, self-verifying against a genuine dump)
-and then **removed** — the Virtual Amiibo library is now **import-only** by product decision. This
-document is retained as the durable identity/crypto research; the portal ships no generator.
-Last updated: 2026-07-26
+zero-HMAC images are rejected. The Virtual Amiibo library remains **import-only** and ships no
+identity generator. Its amiitool-compatible Web Crypto path is retained only for explicit local
+initialization/re-signing of a dump the user imported, gated on their own `key_retail.bin`.
+Last updated: 2026-07-28
 
 ## Purpose
 
@@ -76,9 +75,19 @@ ship. The console would reject the randomized tag exactly as it rejected the key
 file. See §4 and
 [`../experiments/generated-amiibo-console-rejection-2026-07-26.md`](../experiments/generated-amiibo-console-rejection-2026-07-26.md).
 
-The only key-free ways to make "a different tag each tap" are therefore a **pool of distinct
-genuine dumps** of the same character, or on-device HMAC recomputation (keys required, out of
-scope). Neither is implemented.
+The only key-free way to make "a different tag each tap" is therefore a **pool of distinct genuine
+dumps** of the same character. A browser could instead create an alternate-UID copy when the user
+supplies retail keys: it would have to update the complete UID/BCC representation, derive new
+keys, re-encrypt, recompute both HMACs, and self-verify. That is technically compatible with the
+current crypto primitives but is **not implemented**; changing bytes only at presentation time
+remains invalid.
+
+A 2026-07-28 in-memory feasibility probe used the current browser crypto against one user-owned
+540-byte dump and one user-owned 2048-byte v3 dump. It replaced the seven-byte UID, recomputed the
+NTAG215 BCC bytes where applicable, re-encrypted/re-signed, preserved the amiibo identity block,
+and passed both HMAC checks without writing a file. This proves the browser primitives can create
+a cryptographically coherent alternate-UID copy; real-console acceptance and the non-destructive
+library workflow remain unvalidated.
 
 ## 4. Can we generate amiibo without user uploads?
 
@@ -106,24 +115,30 @@ Consequences:
 - **Random Mode was removed** for the same reason (a runtime UID swap breaks the UID-bound tag
   HMAC).
 
-## 5. Key-based generation (prototyped, then removed — import-only by decision)
+## 5. Key-based local rewriting (generator removed; initialization retained)
 
-A key-based generator was implemented and validated, then removed at the project owner's direction
-in favor of an import-only library: the crypto edge cases and freeze bugs it introduced were judged
-not worth the convenience. The portal now ships **no generator** and stores no keys. This section
-records what was learned so the work is reproducible if it is ever revived.
+A key-based identity generator was implemented and validated, then removed at the project owner's
+direction in favor of an import-only library. The portal still ships **no generated amiibo
+identities**. It now retains the narrower, explicit **Initialize amiibo** operation for an imported
+dump: the user's own 160-byte `key_retail.bin` is stored only in that browser profile, the mutable
+save/settings state is cleared, the image is re-signed, and a decrypt/HMAC self-check must pass
+before IndexedDB is changed. The adapter is not required.
 
 The implementation was a full amiitool port in JavaScript over Web Crypto — key derivation
 (HMAC-SHA256 DRBG with a big-endian 16-bit counter), AES-128-CTR over internal `0x02C`..`0x1B4`, and
 the tag/data HMAC-SHA256 signatures. It was gated on the user importing their own genuine 160-byte
 `key_retail.bin` (data/unfixed-info + tag/locked-secret masters; **never shipped** — the same
-posture as TagMo/amiitool/emuiibo, the user's own keys used for interoperability). Correctness was
-provable without a console by decrypting a genuine dump and checking both HMACs verify. A Node
-round-trip test confirmed pack↔unpack idempotence, HMAC verification, and wrong-key rejection.
+posture as TagMo/amiitool/emuiibo, the user's own keys used for interoperability). Correctness is
+provable without a console by decrypting a genuine dump and checking both HMACs verify. The Node
+round-trip test covers pack↔unpack idempotence, HMAC verification, wrong-key rejection, ordinary
+initialization, and the additional Air Riders v3 state ranges. For v3, initialization returns
+page 4 and the captured sector-0 writable state to their untouched values, clears the complete
+second user-memory sector so allocation-relative figures are covered, and preserves sector-0
+chip configuration plus the machine/SRAM identity response.
 
-If revived, the smallest useful step is that same self-verify-against-a-genuine-dump gate, followed
-by one real-console scan of a generated tag; the offsets in §2 and the socram8888/amiitool reference
-are the authority.
+If alternate-UID copies are added, the smallest safe step is the same self-verify gate plus
+540-byte and 2048-byte format-specific tests before one real-console scan. The offsets in §2 and
+the socram8888/amiitool reference remain the authority.
 
 ## References
 

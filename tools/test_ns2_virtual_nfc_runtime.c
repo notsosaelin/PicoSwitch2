@@ -214,30 +214,43 @@ static void test_read_and_write(void)
         &runtime, 1004, 0x05, NULL, 0, true, raw, signature, &response));
     assert(response.payload[0] == 0x05 && response.payload[1] == 0);
 
-    ns2_virtual_nfc_runtime_set_write_persisted(&runtime, true);
+    ns2_virtual_nfc_runtime_set_write_persisted(&runtime, true, 1005);
     assert(ns2_virtual_nfc_runtime_report_state(&runtime) == 7);
     assert(ns2_virtual_nfc_runtime_dispatch(
-        &runtime, 1005, 0x05, NULL, 0, true, raw, signature, &response));
+        &runtime, 1006, 0x05, NULL, 0, true, raw, signature, &response));
     assert(response.payload[0] == 0x07 && response.payload[1] == 0x41);
 
-    // A new scan re-presents the same selected, mutated image. Presentation
-    // and ScanReady each advance the modulo-eight event counter.
+    // Scans during the three-second removal window must remain absent. This
+    // gives the console time to leave its "remove the amiibo" state instead of
+    // immediately detecting the same selected image again.
     assert(ns2_virtual_nfc_runtime_dispatch(
-        &runtime, 1006, 0x03, NULL, 0, true, raw, signature, &response));
+        &runtime, 1007, 0x03, NULL, 0, true, raw, signature, &response));
+    assert(ns2_virtual_nfc_runtime_report_state(&runtime) == 7);
+    assert(ns2_virtual_nfc_runtime_dispatch(
+        &runtime, 1008, 0x05, NULL, 0, true, raw, signature, &response));
+    assert(response.payload[0] == 0x07 && response.payload[1] == 0x41);
+    assert(ns2_virtual_nfc_runtime_dispatch(
+        &runtime, 4004, 0x03, NULL, 0, true, raw, signature, &response));
+    assert(ns2_virtual_nfc_runtime_report_state(&runtime) == 7);
+
+    // The first scan at the deadline re-presents the same selected, mutated
+    // image. Presentation and ScanReady each advance the modulo-eight counter.
+    assert(ns2_virtual_nfc_runtime_dispatch(
+        &runtime, 4005, 0x03, NULL, 0, true, raw, signature, &response));
     assert(ns2_virtual_nfc_runtime_report_state(&runtime) == 0);
-    ns2_virtual_nfc_runtime_tick(&runtime, 1046);
+    ns2_virtual_nfc_runtime_tick(&runtime, 4045);
     assert(ns2_virtual_nfc_runtime_report_state(&runtime) == 1);
     assert(ns2_virtual_nfc_runtime_dispatch(
-        &runtime, 1047, 0x05, NULL, 0, true, raw, signature, &response));
+        &runtime, 4046, 0x05, NULL, 0, true, raw, signature, &response));
     assert(response.payload[0] == 0x09 && response.payload[1] == 0);
 
     make_begin(begin, raw, false);
     assert(ns2_virtual_nfc_runtime_dispatch(
-        &runtime, 1048, 0x06, begin, sizeof(begin), true, raw, signature,
+        &runtime, 4047, 0x06, begin, sizeof(begin), true, raw, signature,
         &response));
     const uint8_t offset60[2] = {60, 0};
     assert(ns2_virtual_nfc_runtime_dispatch(
-        &runtime, 1049, 0x15, offset60, sizeof(offset60), true, raw,
+        &runtime, 4048, 0x15, offset60, sizeof(offset60), true, raw,
         signature, &response));
     assert(response.payload_size == 73);
     assert(memcmp(response.payload + 3, raw, 70) == 0);

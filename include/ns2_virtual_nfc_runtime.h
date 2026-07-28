@@ -15,16 +15,20 @@ typedef enum {
     NS2_VIRTUAL_NFC_EVENT_ERROR,
 } ns2_virtual_nfc_event_t;
 
+#define NS2_VIRTUAL_NFC_REPRESENT_COOLDOWN_MS 3000u
+
 // Command-driven virtual reader state. There is no idle polling: delayed work
 // is limited to one report-state transition after scan, begin, commit, or a
 // rejected operation. A committed Stop emits removal immediately only when
 // the write is already durable; otherwise removal waits for flash
-// verification. The report field is an event counter modulo eight, not a
-// fixed semantic state.
+// verification. Automatic re-presentation is then suppressed for three
+// seconds so the console can observe the removal edge and leave its amiibo UI.
+// The report field is an event counter modulo eight, not a fixed semantic state.
 typedef struct {
     uint8_t operation_buffer[NS2_NFC_READ_BUFFER_SIZE];
     ns2_virtual_nfc_write_t write;
     uint32_t transition_due_ms;
+    uint32_t represent_after_ms;
     uint16_t operation_buffer_size;
     uint8_t report_state;
     uint8_t pending_report_state;
@@ -41,8 +45,8 @@ typedef struct {
     bool tag_was_present;
     // The browser-loaded image and its presentation to the console are
     // separate states. A completed write keeps the mutable image resident but
-    // logically removes the tag; the next scan presents the selected image
-    // again without discarding its console-written state.
+    // logically removes the tag; a scan after the cooldown presents the
+    // selected image again without discarding its console-written state.
     bool tag_ejected;
 } ns2_virtual_nfc_runtime_t;
 
@@ -62,7 +66,7 @@ void ns2_virtual_nfc_runtime_tick(ns2_virtual_nfc_runtime_t *runtime,
 // commit and sets it only after the dual-bank flash snapshot verifies. A Stop
 // received in between is acknowledged but its TagRemoved edge is deferred.
 void ns2_virtual_nfc_runtime_set_write_persisted(
-    ns2_virtual_nfc_runtime_t *runtime, bool persisted);
+    ns2_virtual_nfc_runtime_t *runtime, bool persisted, uint32_t now_ms);
 uint8_t ns2_virtual_nfc_runtime_report_state(
     const ns2_virtual_nfc_runtime_t *runtime);
 

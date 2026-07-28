@@ -31,6 +31,7 @@
 #include "ns2_vendor_rx.h"
 #include "virtual_amiibo_store.h"
 #include "ns2_amiibo_v3.h"
+#include "ns2_amiibo_v3_write.h"
 #include "ns2_ds5_motion.h"
 #include "usb.h"         // g_usb_config_mode
 
@@ -762,28 +763,41 @@ static void vend_send(const uint8_t *r, uint16_t len) {
 //                  the event counter so the console advances to reading (the
 //                  2026-07-26 trace proved it stalls when 0x06 only bare-ACKs)
 //   0x15 chunk  -> serve sector 0 of the tag image in <=70-byte chunks
-//   0x04 stop   -> back to READY
+//   0x14 stage  -> classify device-command (01 01) vs tag-write (01 06) bodies
+//   0x21 exec   -> publish the v3 SRAM/device result
+//   0x08 commit -> validate/apply one complete 454-byte mutable-data write
+//   0x04 stop   -> READY, or logical removal after a durable committed write
 //
-// Read length (2026-07-26 traces): a working 540 read terminates on the read
-// buffer's `last=1` chunk (60-byte prefix + 540 = 600 B, 9 chunks). For a 2 KB
-// tag the console reads exactly SECTOR 0 = 1024 bytes (15 chunks) and expects
-// `last=1` within that window; per xSke/pixl.js the Switch 2 treats sector 0 as
-// the amiibo and uses SRAM pass-through for the rest, and the whole meaningful
-// image (identity, crypto, machine block, 0x3FE trailer) lives in 0x000-0x3FF.
-// So v3 serves the RAW sector 0 with NO 540-style prefix: chunk 15 (offset 980,
-// 44 bytes) carries `last=1`, delivering a complete, correctly-aligned tag. A
-// prefix here would shift the tag and push its tail past the console's window
-// (which produced the earlier 2115-0176 "not an amiibo"). Writes are not handled.
+// The recognized 2026-07-27 path is descriptor-driven: the console requests the
+// exact raw v3 page ranges it needs behind the genuine 60-byte operation prefix.
+// See docs/Amiibo-v3.md §18 and dumps/v3-RECOGNIZED-2026-07-27.jsonl.
 #define NS2_AMIIBO_V3_SECTOR0_SIZE 1024u
 // NTAG I2C 2K session register NS_REG lives in page 0xED (byte offset 0xED*4 =
 // 0x3B4); its byte 2 carries SRAM_RF_READY (bit 0x08).
 #define NS2_AMIIBO_V3_NS_REG_OFFSET 0x3B6u
-// 32-byte SRAM window; carries the machine's expected response in a v3 dump.
-#define NS2_AMIIBO_V3_SRAM_OFFSET   0x3C0u
+// 64-byte SRAM window; carries the machine's complete expected response and
+// its per-response CRC-16/MCRF4XX in a v3 dump.
 #define NS2_AMIIBO_V3_SRAM_RF_READY 0x08u
 static uint8_t ns2_v3_report_state = 0;
 static bool ns2_v3_operation_active = false;
 static uint8_t ns2_v3_nfc_status = 0x09;   // 0x09 ready, 0x04 active, 0x07 error
+static uint8_t ns2_v3_nfc_detail = 0x00;
+static ns2_virtual_nfc_write_t ns2_v3_write;
+static bool ns2_v3_write_mode = false;
+static bool ns2_v3_extended_mode = false;
+static size_t ns2_v3_extended_expected_size = 0;
+static ns2_amiibo_v3_extended_sequence_t ns2_v3_extended_sequence;
+static bool ns2_v3_write_committed = false;
+static bool ns2_v3_write_persisted = true;
+static bool ns2_v3_eject_waiting_for_persist = false;
+static bool ns2_v3_tag_ejected = false;
+static uint32_t ns2_v3_represent_after_ms = 0;
+static bool ns2_v3_write_event_pending = false;
+static uint32_t ns2_v3_write_event_due_ms = 0;
+static uint32_t ns2_v3_operation_generation = 0;
+static uint32_t ns2_v3_observed_generation = 0;
+static bool ns2_v3_observed_generation_valid = false;
+#define NS2_V3_WRITE_COMPLETE_MS 700u
 
 // Source view selector (see switch_pro2.h):
 //   0 = raw v3 image (pages map straight into the 2048-byte tag)
@@ -816,7 +830,7 @@ static void ns2_v3_build_compat540(const uint8_t image[NS2_AMIIBO_V3_SIZE],
            image + NS2_V3_COMPAT_SPLIT + NS2_V3_COMPAT_SHIFT,
            VIRTUAL_AMIIBO_RAW_SIZE - NS2_V3_COMPAT_SPLIT);
 }
-static uint8_t ns2_v3_op_buffer[60u + NS2_AMIIBO_V3_SIZE];
+static uint8_t ns2_v3_op_buffer[NS2_AMIIBO_V3_SECTOR_READ_MAX_SIZE];
 static size_t ns2_v3_op_buffer_size = 0;
 static bool ns2_v3_device_cmd_staged = false;
 // A 0x21 reply is a bare ACK whether or not the staging gate passed, so the wire
@@ -824,11 +838,109 @@ static bool ns2_v3_device_cmd_staged = false;
 // console ignored the result". These make that visible over UART.
 static uint32_t ns2_v3_device_cmd_staged_count = 0;
 static uint32_t ns2_v3_device_result_count = 0;
+static uint32_t ns2_v3_write_chunk_count = 0;
+static uint32_t ns2_v3_write_commit_count = 0;
+static uint32_t ns2_v3_write_error_count = 0;
+static uint32_t ns2_v3_extended_chunk_count = 0;
+static uint32_t ns2_v3_extended_completion_count = 0;
 
 void ns2_v3_device_cmd_counts(uint32_t *staged, uint32_t *results)
 {
     if (staged) *staged = ns2_v3_device_cmd_staged_count;
     if (results) *results = ns2_v3_device_result_count;
+}
+
+void ns2_v3_write_counts(uint32_t *chunks, uint32_t *commits,
+                         uint32_t *errors)
+{
+    if (chunks) *chunks = ns2_v3_write_chunk_count;
+    if (commits) *commits = ns2_v3_write_commit_count;
+    if (errors) *errors = ns2_v3_write_error_count;
+}
+
+void ns2_v3_extended_counts(uint32_t *chunks, uint32_t *completions)
+{
+    if (chunks) *chunks = ns2_v3_extended_chunk_count;
+    if (completions) *completions = ns2_v3_extended_completion_count;
+}
+
+static void ns2_v3_reset_transaction(void)
+{
+    ns2_v3_operation_active = false;
+    ns2_v3_nfc_status = 0x09u;
+    ns2_v3_nfc_detail = 0x00u;
+    ns2_v3_device_cmd_staged = false;
+    ns2_v3_write_mode = false;
+    ns2_v3_extended_mode = false;
+    ns2_v3_extended_expected_size = 0;
+    ns2_amiibo_v3_extended_sequence_reset(&ns2_v3_extended_sequence);
+    ns2_v3_write_committed = false;
+    ns2_v3_write_persisted = true;
+    ns2_v3_eject_waiting_for_persist = false;
+    ns2_v3_tag_ejected = false;
+    ns2_v3_represent_after_ms = 0;
+    ns2_v3_write_event_pending = false;
+    ns2_v3_op_buffer_size = 0;
+    ns2_virtual_nfc_write_init(&ns2_v3_write);
+}
+
+static void ns2_v3_runtime_init(void)
+{
+    ns2_v3_report_state = 0;
+    ns2_v3_observed_generation = 0;
+    ns2_v3_observed_generation_valid = false;
+    ns2_v3_reset_transaction();
+}
+
+static void ns2_v3_set_error(bool write_error)
+{
+    ns2_v3_operation_active = false;
+    ns2_v3_nfc_status = 0x07u;
+    ns2_v3_nfc_detail = 0x41u;
+    ns2_v3_device_cmd_staged = false;
+    ns2_v3_write_mode = false;
+    ns2_v3_extended_mode = false;
+    ns2_v3_extended_expected_size = 0;
+    ns2_amiibo_v3_extended_sequence_reset(&ns2_v3_extended_sequence);
+    ns2_v3_write_committed = false;
+    ns2_v3_write_event_pending = false;
+    ns2_virtual_nfc_write_cancel(&ns2_v3_write);
+    ns2_v3_report_state = (uint8_t)((ns2_v3_report_state + 1u) & 0x07u);
+    if (write_error) ns2_v3_write_error_count++;
+}
+
+static void ns2_v3_finish_committed_eject(uint32_t now_ms)
+{
+    ns2_v3_eject_waiting_for_persist = false;
+    ns2_v3_write_committed = false;
+    ns2_v3_write_event_pending = false;
+    ns2_v3_tag_ejected = true;
+    ns2_amiibo_v3_extended_sequence_reset(&ns2_v3_extended_sequence);
+    ns2_v3_represent_after_ms =
+        now_ms + NS2_VIRTUAL_NFC_REPRESENT_COOLDOWN_MS;
+    ns2_v3_operation_active = false;
+    ns2_v3_nfc_status = 0x07u;
+    ns2_v3_nfc_detail = 0x41u;
+    (void)virtual_amiibo_store_v3_set_presented(false);
+    ns2_v3_report_state = (uint8_t)((ns2_v3_report_state + 1u) & 0x07u);
+}
+
+static void ns2_v3_tick(uint32_t now_ms)
+{
+    ns2_amiibo_v3_extended_sequence_expire(
+        &ns2_v3_extended_sequence, now_ms);
+    if (ns2_v3_write_event_pending &&
+        (int32_t)(now_ms - ns2_v3_write_event_due_ms) >= 0) {
+        ns2_v3_write_event_pending = false;
+        ns2_v3_report_state =
+            (uint8_t)((ns2_v3_report_state + 1u) & 0x07u);
+    }
+    if (ns2_v3_write_committed && !ns2_v3_write_persisted &&
+        !virtual_amiibo_store_persist_pending()) {
+        ns2_v3_write_persisted = true;
+        if (ns2_v3_eject_waiting_for_persist)
+            ns2_v3_finish_committed_eject(now_ms);
+    }
 }
 
 // The tag's 32-byte originality signature. RAM-only and deliberately not
@@ -850,10 +962,8 @@ bool ns2_v3_has_signature(void) { return ns2_v3_signature_set; }
 
 // Result buffer for the 0x14/0x21 device command, byte-for-byte from the
 // genuine capture of 2026-07-27 (dumps/v3-genuine-capture-2026-07-27.jsonl,
-// seq 68-71). Length and the fixed fields are confirmed; the two body regions
-// are served from the image's SRAM window.
-#define NS2_V3_DEVICE_RESULT_SIZE 83u
-#define NS2_V3_DEVICE_RESULT_BODY 23u
+// seq 68-71): a 19-byte controller header followed by all 64 SRAM bytes.
+#define NS2_V3_DEVICE_RESULT_SIZE (19u + NS2_AMIIBO_V3_SRAM_SIZE)
 
 static void ns2_v3_build_device_result(
     const uint8_t image[NS2_AMIIBO_V3_SIZE], const uint8_t uid[7])
@@ -866,17 +976,13 @@ static void ns2_v3_build_device_result(
     out[7] = 0x07;
     memcpy(out + 8, uid, 7u);
     out[18] = 0x06;
-    memcpy(out + 19, image + NS2_AMIIBO_V3_SRAM_OFFSET, 32u);
-    // The 23-byte body is invariant: byte-identical across all six genuine
-    // results in both captures, including a session after the tag had been
-    // written, so it carries no per-session or user-written state. 20 of 23
-    // bytes are zero and it matched no CRC-16 variant over any contiguous
-    // prefix. Reproduce the observation rather than sourcing it from the image,
-    // where a non-zero region would emit garbage the genuine reader never sends.
-    // Whether 7A C4 is tag-specific is unknown -- only one physical tag has been
-    // observed. tools/nfc_probe.ps1 can settle it against a second tag.
-    out[81] = 0x7Au;
-    out[82] = 0xC4u;
+    // The response is not "32 bytes plus a fixed zero/7A-C4 tail". The supplied
+    // 2048-byte format stores the complete 64-byte response at 0x3C0, including
+    // its tag-specific CRC in bytes 62..63. The genuine reference happened to
+    // calculate to 7A C4; downloaded Warp Star and Shadow Star images calculate
+    // to E5 11 and 30 61 respectively. Substituting the captured CRC makes those
+    // otherwise-valid images fail the console's device-response validation.
+    ns2_amiibo_v3_sram_response(image, out + 19);
     ns2_v3_op_buffer_size = NS2_V3_DEVICE_RESULT_SIZE;
 }
 
@@ -1104,7 +1210,23 @@ static void ns2_v3_build_buffer(const uint8_t image[NS2_AMIIBO_V3_SIZE],
 static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
 {
     static uint8_t image[NS2_AMIIBO_V3_SIZE];
-    if (!virtual_amiibo_store_v3_copy(image)) return false;
+    uint32_t generation = 0;
+    if (!virtual_amiibo_store_v3_copy_image(image, &generation)) return false;
+
+    // A portal upload/sync can replace the selected image while no NFC
+    // transaction is active. Treat its generation edge as fresh media rather
+    // than allowing an older console operation to commit over it.
+    if (!ns2_v3_observed_generation_valid) {
+        ns2_v3_observed_generation = generation;
+        ns2_v3_observed_generation_valid = true;
+    } else if (generation != ns2_v3_observed_generation) {
+        ns2_v3_reset_transaction();
+        ns2_v3_observed_generation = generation;
+        (void)virtual_amiibo_store_v3_set_presented(true);
+    }
+
+    const uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+    ns2_v3_tick(now_ms);
 
     // Genuine dumps store NS_REG with SRAM_RF_READY CLEAR (observed 0x21 in the
     // Kirby dumps). The Switch 2 polls that bit and only reads the SRAM window
@@ -1114,6 +1236,7 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
     // (ntag_emu_v2.c: `ed_page[2] |= 0b1000`). Do the same on this served copy;
     // the stored flash image is never mutated. Serving it clear left the console
     // waiting on SRAM that never signalled ready, which is the 2011-0301 crash.
+    const uint8_t stored_ns_reg = image[NS2_AMIIBO_V3_NS_REG_OFFSET];
     image[NS2_AMIIBO_V3_NS_REG_OFFSET] |= NS2_AMIIBO_V3_SRAM_RF_READY;
 
     const uint8_t sub = command[3];
@@ -1128,26 +1251,77 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
 
     switch (sub) {
         case 0x03: // scan: (re)present the tag, ready state, signal the console
+            if (ns2_v3_tag_ejected &&
+                (int32_t)(now_ms - ns2_v3_represent_after_ms) >= 0) {
+                ns2_v3_tag_ejected = false;
+                (void)virtual_amiibo_store_v3_set_presented(true);
+            }
             ns2_v3_operation_active = false;
-            ns2_v3_nfc_status = 0x09;
+            if (ns2_v3_write_mode || ns2_v3_extended_mode) {
+                ns2_virtual_nfc_write_cancel(&ns2_v3_write);
+                ns2_v3_write_mode = false;
+                ns2_v3_extended_mode = false;
+                ns2_v3_extended_expected_size = 0;
+            }
+            if (!ns2_v3_write_committed) {
+                ns2_v3_nfc_status = 0x09;
+                ns2_v3_nfc_detail = 0x00;
+            }
             ns2_v3_report_state = (uint8_t)((ns2_v3_report_state + 1u) & 0x07u);
             break;
-        case 0x04: // stop: close any operation, back to ready
+        case 0x04: { // stop: close the operation; eject a committed write
+            const bool completed_write = ns2_v3_write_committed;
+            const bool continue_extended_sequence =
+                completed_write &&
+                ns2_amiibo_v3_extended_sequence_continue_after_write(
+                    &ns2_v3_extended_sequence, now_ms);
             ns2_v3_operation_active = false;
-            ns2_v3_nfc_status = 0x09;
+            ns2_v3_device_cmd_staged = false;
+            if (ns2_v3_write_mode || ns2_v3_extended_mode)
+                ns2_virtual_nfc_write_cancel(&ns2_v3_write);
+            ns2_v3_write_mode = false;
+            ns2_v3_extended_mode = false;
+            ns2_v3_extended_expected_size = 0;
+            if (continue_extended_sequence) {
+                // Genuine hardware keeps the tag available here. In the
+                // positive capture, the console starts the second transaction
+                // about 130 ms after this Stop. Ejecting after the clear-stage
+                // ordinary write returns 07 41 instead and produces
+                // 2115-0096 before the 167-byte update is ever sent.
+                ns2_v3_write_committed = false;
+                ns2_v3_eject_waiting_for_persist = false;
+                ns2_v3_write_event_pending = false;
+                ns2_v3_nfc_status = 0x09u;
+                ns2_v3_nfc_detail = 0x00u;
+                (void)virtual_amiibo_store_v3_set_presented(true);
+            } else if (completed_write) {
+                if (ns2_v3_write_persisted)
+                    ns2_v3_finish_committed_eject(now_ms);
+                else
+                    ns2_v3_eject_waiting_for_persist = true;
+            } else if (!ns2_v3_tag_ejected) {
+                ns2_v3_nfc_status = 0x09;
+                ns2_v3_nfc_detail = 0x00;
+            }
             break;
+        }
         case 0x05: { // status: report the current NFC state + UID
-            ns2_virtual_nfc_build_status(true, uid, payload);
-            payload[0] = ns2_v3_nfc_status;
-            payload[1] = 0x00;
-            // A genuine controller reports the device-command state with an
-            // otherwise empty payload -- no UID and no 01 01 02 00 07 identity
-            // (capture seq 141/147/159/165). It still fills them for 0x09 and
-            // 0x04, so this is specific to 0x18. We filled them unconditionally,
-            // which is the last byte-level divergence in the whole exchange.
-            if (ns2_v3_nfc_status == 0x18u) {
+            const bool presented = !ns2_v3_tag_ejected;
+            ns2_virtual_nfc_build_status(
+                presented, presented ? uid : NULL, payload);
+            if (presented) {
+                payload[0] = ns2_v3_nfc_status;
+                payload[1] = ns2_v3_nfc_detail;
+            }
+            // A genuine controller reports both device-command state 0x18 and
+            // completed extended-operation state 0x16 with an otherwise empty
+            // payload -- no UID or tag identity. Captured at seq 105/165 and
+            // 141/147 respectively.
+            if (ns2_v3_nfc_status == 0x15u ||
+                ns2_v3_nfc_status == 0x18u ||
+                ns2_v3_nfc_status == 0x16u) {
                 memset(payload, 0, NS2_NFC_STATUS_PAYLOAD_SIZE);
-                payload[0] = 0x18u;
+                payload[0] = ns2_v3_nfc_status;
             }
             // RE probe: overlay candidate tag-identity bytes so the field that
             // makes the console request a 2 KB page set can be swept live.
@@ -1169,30 +1343,43 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
             // reached 0x04, and the console stopped without reading. Gate on
             // structure instead, and accept any timeout.
             const uint8_t desc_blocks = request_size >= 11u ? request[10] : 0u;
+            bool zero_uid = request_size >= 9u;
+            if (zero_uid) {
+                for (size_t i = 2u; i < 9u; ++i) {
+                    if (request[i] != 0u) {
+                        zero_uid = false;
+                        break;
+                    }
+                }
+            }
+            const bool selected_uid =
+                request_size >= 9u &&
+                memcmp(request + 2u, uid, sizeof(uid)) == 0;
             const bool read_descriptor =
                 request_size >= 13u && desc_blocks >= 1u &&
-                (size_t)11u + (size_t)desc_blocks * 2u <= request_size;
+                (size_t)11u + (size_t)desc_blocks * 2u <= request_size &&
+                (zero_uid || selected_uid) && !ns2_v3_tag_ejected;
             if (read_descriptor) {
                 ns2_v3_build_buffer(image, request, request_size);
                 ns2_v3_operation_active = true;
                 ns2_v3_nfc_status = 0x04; // active -> console proceeds to 0x15
+                ns2_v3_nfc_detail = 0x00;
+                ns2_v3_write_committed = false;
+                ns2_v3_eject_waiting_for_persist = false;
+                ns2_v3_operation_generation = generation;
+                if (ns2_v3_write_mode || ns2_v3_extended_mode)
+                    ns2_virtual_nfc_write_cancel(&ns2_v3_write);
+                ns2_v3_write_mode = false;
+                ns2_v3_extended_mode = false;
+                ns2_v3_extended_expected_size = 0;
                 ns2_v3_report_state =
                     (uint8_t)((ns2_v3_report_state + 1u) & 0x07u);
             } else {
-                ns2_v3_operation_active = false;
-                ns2_v3_nfc_status = 0x07; // error (e.g. an unexpected write)
+                ns2_v3_set_error(false);
             }
             break;
         }
-        case 0x15: { // fetch a chunk of sector 0 at a little-endian offset
-            // The console caps this read at 15 chunks (~1024 B = sector 0) — the
-            // 2026-07-26 full-2048 trace proved it stops at chunk 15 and never
-            // requests chunk 16 even without a last=1 flag. So serve exactly
-            // sector 0, terminated by last=1 on chunk 15 (offset 980, 44 bytes).
-            // This reads cleanly and the console recognizes the tag, but then
-            // crashes (2011-0301) in deeper processing — the remaining wall needs
-            // the 2 KB vendor framing (SRAM pass-through / originality signature /
-            // nfc_identity) that only a genuine Pro Controller 2 capture can give.
+        case 0x15: { // fetch a chunk of the descriptor-built operation buffer
             if (ns2_v3_operation_active && ns2_v3_op_buffer_size &&
                 request_size >= 2u) {
                 const uint16_t offset =
@@ -1207,21 +1394,95 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
             }
             break;
         }
-        case 0x14: { // stage a device command in the operation buffer
-            // Distinct from the NTAG215 write path: for a v3 tag the console
-            // first stages a 74-byte "D0 07 <uid> 01 01" descriptor here and
-            // executes it with 0x21 (below) before it will accept the figure.
-            if (request_size >= 4u) {
-                const uint16_t offset =
-                    (uint16_t)request[0] | ((uint16_t)request[1] << 8);
-                const uint16_t declared =
-                    (uint16_t)request[2] | ((uint16_t)request[3] << 8);
-                ns2_v3_device_cmd_staged =
-                    offset == 0u && declared >= 9u &&
-                    request_size >= 4u + 9u &&
-                    memcmp(request + 6, uid, sizeof(uid)) == 0;
-                if (ns2_v3_device_cmd_staged) ns2_v3_device_cmd_staged_count++;
+        case 0x1E: { // sector-aware read used to reopen written v3 amiibo
+            // Primary capture (2026-07-28) proves the immediate wire response
+            // remains a bare ACK. The controller internally stages a type-0x15
+            // result, bumps the report event field, reports empty status 0x15,
+            // and serves the result through the existing 0x15 chunk command.
+            // Omitting that transition left status at 0x18 and made the console
+            // wait three seconds, Stop, and retry indefinitely after a write.
+            if (ns2_v3_tag_ejected ||
+                !ns2_amiibo_v3_build_sector_read_result(
+                    image,
+                    ns2_v3_signature_set ? ns2_v3_signature : NULL,
+                    request, request_size,
+                    ns2_v3_op_buffer, sizeof(ns2_v3_op_buffer),
+                    &ns2_v3_op_buffer_size)) {
+                ns2_v3_set_error(false);
+                break;
             }
+            ns2_v3_operation_active = true;
+            ns2_v3_nfc_status = 0x15u;
+            ns2_v3_nfc_detail = 0x00u;
+            ns2_v3_operation_generation = generation;
+            if (ns2_v3_write_mode || ns2_v3_extended_mode)
+                ns2_virtual_nfc_write_cancel(&ns2_v3_write);
+            ns2_v3_write_mode = false;
+            ns2_v3_extended_mode = false;
+            ns2_v3_extended_expected_size = 0u;
+            ns2_v3_report_state =
+                (uint8_t)((ns2_v3_report_state + 1u) & 0x07u);
+            break;
+        }
+        case 0x14: {
+            if (request_size < 4u || ns2_v3_tag_ejected) {
+                ns2_v3_set_error(true);
+                break;
+            }
+            const uint16_t offset =
+                (uint16_t)request[0] | ((uint16_t)request[1] << 8);
+            const uint16_t declared =
+                (uint16_t)request[2] | ((uint16_t)request[3] << 8);
+            const size_t available = request_size - 4u;
+            const uint8_t *data = request + 4u;
+            if (declared == 0u || declared > available) {
+                ns2_v3_set_error(true);
+                break;
+            }
+
+            // The timeout in bytes 0..1 varies by operation. Identity begins
+            // with the selected UID at byte 2. Three capture-derived families
+            // are kept distinct: device command -> 0x21, mutable records ->
+            // 0x08, and sector-aware 355/167-byte operations -> 0x20.
+            if (offset == 0u &&
+                ns2_amiibo_v3_is_device_command(data, declared, image)) {
+                ns2_v3_device_cmd_staged = true;
+                ns2_v3_device_cmd_staged_count++;
+                break;
+            }
+
+            if (!ns2_v3_write_mode && !ns2_v3_extended_mode &&
+                offset == 0u &&
+                ns2_v3_operation_active && ns2_v3_nfc_status == 0x04u &&
+                ns2_amiibo_v3_is_write_start(data, declared, image)) {
+                ns2_virtual_nfc_write_begin(&ns2_v3_write);
+                ns2_v3_write_mode = true;
+                ns2_v3_write_committed = false;
+                ns2_v3_operation_generation = generation;
+            } else if (!ns2_v3_write_mode && !ns2_v3_extended_mode &&
+                       offset == 0u &&
+                       ns2_v3_operation_active &&
+                       ns2_v3_nfc_status == 0x04u &&
+                       (ns2_v3_extended_expected_size =
+                            ns2_amiibo_v3_extended_expected_size(
+                                data, declared, image)) != 0u) {
+                ns2_virtual_nfc_write_begin(&ns2_v3_write);
+                ns2_v3_extended_mode = true;
+                ns2_v3_operation_generation = generation;
+            }
+            if (!ns2_v3_operation_active ||
+                (!ns2_v3_write_mode && !ns2_v3_extended_mode) ||
+                ns2_v3_nfc_status != 0x04u ||
+                ns2_virtual_nfc_write_chunk(
+                    &ns2_v3_write, offset, data, declared) !=
+                    NS2_VIRTUAL_NFC_OK) {
+                ns2_v3_set_error(true);
+                break;
+            }
+            if (ns2_v3_extended_mode)
+                ns2_v3_extended_chunk_count++;
+            else
+                ns2_v3_write_chunk_count++;
             break;
         }
         case 0x21: { // execute the staged device command
@@ -1249,6 +1510,92 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
                     (uint8_t)((ns2_v3_report_state + 1u) & 0x07u);
                 ns2_v3_device_result_count++;
             }
+            break;
+        }
+        case 0x08: { // commit one complete v3 mutable-data transaction
+            if (request_size != 0u || ns2_v3_tag_ejected ||
+                !ns2_v3_operation_active || !ns2_v3_write_mode ||
+                ns2_v3_nfc_status != 0x04u) {
+                ns2_v3_set_error(true);
+                break;
+            }
+
+            // SRAM_RF_READY is a reader-side presentation bit. Never write the
+            // synthetic served value back into the browser-owned tag image.
+            image[NS2_AMIIBO_V3_NS_REG_OFFSET] = stored_ns_reg;
+            uint8_t record_count = 0;
+            uint16_t data_bytes = 0;
+            if (ns2_amiibo_v3_write_commit(
+                    &ns2_v3_write, image, &record_count, &data_bytes) !=
+                    NS2_VIRTUAL_NFC_OK ||
+                virtual_amiibo_store_v3_apply_console_write(
+                    image, ns2_v3_operation_generation) !=
+                    VIRTUAL_AMIIBO_OK) {
+                ns2_v3_set_error(true);
+                break;
+            }
+            (void)record_count;
+            (void)data_bytes;
+
+            ns2_v3_observed_generation = ns2_v3_operation_generation + 1u;
+            ns2_v3_observed_generation_valid = true;
+            ns2_v3_nfc_status = 0x05u;
+            ns2_v3_nfc_detail = 0x00u;
+            ns2_v3_operation_active = false;
+            ns2_v3_write_mode = false;
+            ns2_v3_extended_expected_size = 0;
+            ns2_v3_write_committed = true;
+            ns2_v3_write_persisted = false;
+            ns2_v3_eject_waiting_for_persist = false;
+            ns2_v3_write_event_due_ms = now_ms + NS2_V3_WRITE_COMPLETE_MS;
+            ns2_v3_write_event_pending = true;
+            ns2_v3_write_commit_count++;
+            break;
+        }
+        case 0x20: { // complete the separately framed extended operation
+            if (request_size != 0u || ns2_v3_tag_ejected ||
+                !ns2_v3_operation_active || !ns2_v3_extended_mode ||
+                ns2_v3_nfc_status != 0x04u) {
+                ns2_v3_set_error(true);
+                break;
+            }
+
+            // Genuine hardware applies sector-aware records here, reports 0x16
+            // with an empty status body, then accepts a targeted page-3 read
+            // and a normal 454-byte/0x08 write. Preserve that sequence exactly:
+            // persist this stage without ejecting, and let the later 0x08 own
+            // the ordinary committed-write/Stop lifecycle.
+            image[NS2_AMIIBO_V3_NS_REG_OFFSET] = stored_ns_reg;
+            uint8_t record_count = 0;
+            uint16_t data_bytes = 0;
+            const size_t committed_size = ns2_v3_extended_expected_size;
+            if (ns2_amiibo_v3_extended_commit(
+                    &ns2_v3_write, image,
+                    committed_size,
+                    &record_count, &data_bytes) != NS2_VIRTUAL_NFC_OK ||
+                virtual_amiibo_store_v3_apply_console_write(
+                    image, ns2_v3_operation_generation) !=
+                    VIRTUAL_AMIIBO_OK) {
+                ns2_v3_set_error(true);
+                break;
+            }
+            (void)record_count;
+            (void)data_bytes;
+
+            ns2_v3_observed_generation = ns2_v3_operation_generation + 1u;
+            ns2_v3_observed_generation_valid = true;
+            ns2_v3_nfc_status = 0x16u;
+            ns2_v3_nfc_detail = 0x00u;
+            ns2_v3_operation_active = false;
+            ns2_v3_extended_mode = false;
+            ns2_v3_extended_expected_size = 0;
+            ns2_amiibo_v3_extended_sequence_note_commit(
+                &ns2_v3_extended_sequence, committed_size, now_ms);
+            ns2_v3_write_committed = false;
+            ns2_v3_eject_waiting_for_persist = false;
+            ns2_v3_report_state =
+                (uint8_t)((ns2_v3_report_state + 1u) & 0x07u);
+            ns2_v3_extended_completion_count++;
             break;
         }
         default:
@@ -1854,6 +2201,7 @@ void ns2_mount(void) {
     if (g_ns2_stage < 3) g_ns2_stage = 3;
     ns2_vendor_rx_init(&ns2_vendor_rx);
     ns2_virtual_nfc_runtime_init(&ns2_virtual_nfc_runtime);
+    ns2_v3_runtime_init();
     ns2_virtual_nfc_operation_generation = 0;
     ns2_virtual_nfc_presented_last = virtual_amiibo_store_loaded();
     ns2_imu_enabled = false;  // new host session: IMU off until the host re-enables it (0x0C/0x04)
@@ -1875,6 +2223,7 @@ void ns2_init(void) {
     ns2_vendor_tx_init(&ns2_vendor_tx);
     ns2_vendor_rx_init(&ns2_vendor_rx);
     ns2_virtual_nfc_runtime_init(&ns2_virtual_nfc_runtime);
+    ns2_v3_runtime_init();
     ns2_virtual_nfc_operation_generation = 0;
     ns2_virtual_nfc_presented_last = virtual_amiibo_store_loaded();
     ns2_firmware_diagnostics_reset();
@@ -1933,13 +2282,15 @@ void ns2_hid_out_report(uint8_t report_id, const uint8_t *data, uint16_t len) {
 
 void ns2_task(void) {
     vend_pump();
+    const uint32_t now_ms = to_ms_since_boot(get_absolute_time());
+    if (virtual_amiibo_store_v3_loaded())
+        ns2_v3_tick(now_ms);
     if (ns2_virtual_nfc_sync_presentation()) {
         ns2_virtual_nfc_runtime_set_write_persisted(
             &ns2_virtual_nfc_runtime,
-            !virtual_amiibo_store_persist_pending());
+            !virtual_amiibo_store_persist_pending(), now_ms);
         ns2_virtual_nfc_runtime_tick(
-            &ns2_virtual_nfc_runtime,
-            to_ms_since_boot(get_absolute_time()));
+            &ns2_virtual_nfc_runtime, now_ms);
     }
     if (!ns2_vendor_tx_active(&ns2_vendor_tx)) {
         uint8_t nfc_response[NS2_NFC_MIRROR_RESPONSE_MAX];

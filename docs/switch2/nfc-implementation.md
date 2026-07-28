@@ -11,7 +11,9 @@
 > Logical removal, next-scan re-presentation, same-session updated readback, and validated UART
 > export, automatic dual-bank persistence, power-cycle recovery, internal write recovery,
 > offline library use, and full-library backup restore are hardware/browser-confirmed. Native
-> physical writes remain open.**
+> physical writes remain open. The 2048-byte figure-v3 read/write/persist path is also
+> hardware-confirmed with an untouched downloaded dump; only its production-portal Sync check
+> remains.**
 
 ## 1. Decision
 
@@ -26,6 +28,7 @@ Treat the requested feature as three related implementations:
 | Source controller | Intended behavior | Feasibility now | Remaining gate |
 |---|---|---|---|
 | DualSense, Xbox, generic, or any source without NFC | Serve one user-supplied 540- or 572-byte virtual amiibo; accept console writes and persist/download the modified image | **Complete read/write/persist/eject/re-present/library lifecycle hardware-confirmed** | Explicit manual present/remove controls |
+| Any source, 2048-byte figure-v3 image loaded | Serve one NTAG I2C Plus 2K virtual amiibo and preserve console writes | **Read/write/persist hardware-confirmed with an untouched downloaded dump** | Production-portal Sync of the retained dirty generation |
 | Pro Controller 2 | Relay the controller's real NFC reader and physical tag | **Read hardware-confirmed through the diagnostic bridge** | Validate production gating/reconnect and capture a physical write |
 | Joy-Con 2 Right | Relay the controller's real NFC reader and physical tag | **Likely, not assumed byte-identical** | Repeat the read/write capture with this controller |
 | Switch 1 Pro Controller / Joy-Con Right | Use the real Switch 1 NFC reader through a Switch 2-facing personality | **Possible through translation, not byte passthrough** | Implement and capture the Switch 1 MCU reader/writer state machine, then map it to the Switch 2 command family |
@@ -60,10 +63,11 @@ such as present `09 00`, active `04 00`, committed `05 00`, or absent/error `07 
 
 ## 3. Virtual-tag format and state
 
-Accept two input formats:
+Accept three input formats:
 
 - **540 bytes:** raw NTAG215 image.
 - **572 bytes:** the 540-byte raw image followed by the 32-byte NTAG originality signature.
+- **2048 bytes:** one complete NTAG I2C Plus 2K figure-v3 image with a contiguous seven-byte UID.
 
 For a 540-byte upload, do not silently claim the missing signature is genuine. The first
 implementation may either:
@@ -74,12 +78,16 @@ implementation may either:
 The safer default is option 1 until hardware proves the console accepts the fallback used by the
 external reference.
 
-Validate before accepting an image:
+Validate an NTAG215 image before accepting it:
 
 - exact length;
 - UID extraction from raw bytes `0,1,2,4,5,6,7`;
 - BCC0 at byte 3: `0x88 ^ uid[0] ^ uid[1] ^ uid[2]`;
 - BCC1 at byte 8: `raw[4] ^ raw[5] ^ raw[6] ^ raw[7]`.
+
+For a 2048-byte v3 image, the UID is contiguous at bytes `0..6`; bytes `7..8` are `00 44`.
+The complete machine response is stored at `0x3C0..0x3FF`, and its final two bytes are the
+big-endian CRC-16/MCRF4XX over the preceding 62 bytes.
 
 The raw image does include machine-readable identity but not friendly product names. Bytes
 `0x54`–`0x5B` form the eight-byte amiibo ID; bytes `0x5C`–`0x5F` optionally distinguish variants.
@@ -95,16 +103,18 @@ forging tag data is outside this feature.
 ### Save-data and library model
 
 Keep each browser/phone as its own user-supplied amiibo library and the adapter as one active tag
-identity. The browser stores one mutable 540/572-byte dump per exact AmiiboAPI identity and exposes
-two independent quick-slot pointers. Slot 1 and Slot 2 can therefore hold different amiibo; they
-are not original/modified versions of the same tag.
+identity. The browser stores one mutable validated dump per tag identity and one loaded-amiibo
+pointer. Known NTAG215 tags normally use their catalog identity; unknown/new tags remain usable
+without an AmiiboAPI entry. Distinct 2048-byte v3 rider/machine combinations use content-derived
+keys because several combinations share one catalog identity.
 
 The adapter's validated journal still retains an internal imported baseline and latest
 console-written image so an interrupted browser sync cannot destroy data. That implementation
-detail is not exposed as a reset feature. **Sync Amiibo from Adapter** reads the latest active
-image, validates its raw format and exact AmiiboAPI identity, commits it to IndexedDB, and only
-then acknowledges the adapter's dirty protection. The browser's one stored dump is overwritten.
-Users remain responsible for formatting or erasing amiibo data through the console.
+detail is not exposed as a reset feature. **Sync amiibo** reads the latest active image, validates
+its raw identity, commits it to the loaded or UID-matching IndexedDB record, and only then
+acknowledges the adapter's dirty protection. AmiiboAPI metadata is optional enrichment, never a
+validation gate. The browser's one stored dump is overwritten. Users remain responsible for
+formatting or erasing amiibo data through the console.
 
 Nintendo documents that a physical amiibo can hold read/write data for one compatible game at a
 time.
@@ -115,25 +125,21 @@ the active game's save area, write counter, dates, and ownership data—returns 
 file without retail keys.
 
 The relevant `emuiibo` user-interface lesson is separate selected-tag and present/removed state.
-PicoSwitch2's offline portal selects one of two browser quick slots and one library tag for each.
+PicoSwitch2's offline portal remembers one loaded library tag without requiring an adapter.
 Virtual Amiibo itself is always available; an empty store simply presents no virtual tag. The
 Config-only BLE transport makes the portal reachable while the dongle remains physically attached
 to the console, although entering Config temporarily replaces the controller USB personality.
 
-The board stores exactly one amiibo; the browser exposes a single loaded-amiibo slot (the former
-two-quick-slot pointers were retired). Carousel selection does not immediately mutate the adapter:
-**Load Amiibo** (between the carousel arrows) stages the highlighted amiibo, **Activate Amiibo**
-uploads/presents it (label becomes a disabled **Amiibo activated** while already presented), and
-**Sync Amiibo** retrieves the latest console-written image and overwrites its validated
-browser-library record. Removal is one merged button whose label always states its exact current
-scope: **Eject Amiibo** (the loaded amiibo is on the adapter) confirms, clears presentation
-(`amiibo eject`), discards the stored image and both flash journal banks (`amiibo clear`), and
-unloads it; **Clear Loaded Amiibo** (the adapter does not hold the loaded amiibo) unloads with no
-confirm; **Eject Virtual Amiibo** (nothing loaded here, adapter holds an image — including a
-foreign image in no library) performs only the adapter wipe. Cancelling a confirm aborts
-everything, and library dumps are never deleted. The console-driven Stop/write-back lifecycle is
-unchanged; re-activating a console-ejected retained identity still uses the lightweight
-`amiibo present` path without reprogramming flash.
+The board stores exactly one amiibo; the browser exposes one loaded-amiibo pointer. Connected
+**Load amiibo** (between the carousel arrows) uploads/presents the highlighted image immediately;
+offline **Select amiibo** only remembers it. A conditional **Import amiibo** or **Sync amiibo**
+action retrieves an unknown or console-written adapter image and commits it to the validated
+browser record. Removal uses one button always labeled **Eject amiibo**. Its tooltip and
+confirmation reflect the scope selected by `amiiboEjectActionState()`: remove only the local
+pointer, wipe the adapter, or do both. Adapter wipes clear presentation and both flash journal
+banks; cancelling a confirmation aborts everything, and library dumps are never deleted. The
+console-driven Stop/write-back lifecycle is unchanged; re-presenting a retained identity still
+uses the lightweight `amiibo present` path without reprogramming flash.
 
 The amiibo keeps its stored identity and UID; console writes are saved to the used copy. A
 short-lived "Random Mode" that swapped in a random UID per scan was removed after a 2026-07-26
@@ -250,9 +256,9 @@ transport, with:
 
 - a `.bin` file picker using `File.arrayBuffer()`;
 - a read-only `showDirectoryPicker()` path that scans subdirectories recursively;
-- one mutable browser-local IndexedDB dump per exact AmiiboAPI catalog ID, with two independent
-  quick-slot pointers, search, and explicit clear; the visible catalog starts empty and fills only
-  from validated imported files, progressively during a directory scan;
+- mutable browser-local IndexedDB dumps keyed by validated tag identity (and content for distinct
+  v3 combinations), with one loaded pointer, search, and explicit clear; the visible library starts
+  empty and fills only from validated imported files, progressively during a directory scan;
 - an artwork carousel that centers and enlarges the selected or active image, shows four
   progressively smaller neighbors on each side, animates selection changes, and supports click,
   button, and arrow-key navigation;
@@ -264,11 +270,12 @@ transport, with:
 - size/BCC validation in both the browser and firmware;
 - offset-addressed 32-byte hex chunks with declared total and whole-image CRC32;
 - an always-available virtual source whose blank state presents no tag;
-- a definitive staged layout with explicit Slot 1/Slot 2 switching, assignment, adapter load,
-  Eject, and adapter-to-browser synchronization;
+- a single-loaded-pointer layout with connected Load/offline Select, Eject, and
+  adapter-to-browser Import/Sync;
 - **Sync Amiibo from Adapter**, which retrieves the latest active image and overwrites the matching
   validated cached entry so application-area writes survive library switching;
-- versioned JSON export/import of the complete mutable library and both quick-slot assignments;
+- versioned flat-ZIP export/import of the complete mutable library and loaded pointer (legacy JSON
+  backups remain importable);
 - explicit save/persist operation.
 
 The library manager remains enabled without a serial connection. The directory handle is used only
@@ -370,11 +377,24 @@ clock increase beyond the validated 300 MHz. No continuous NFC timer or polling 
    - internal baseline/latest-written images plus recovery selection;
    - version-1 migration;
    - power-loss, live-console timing, and selection recovery validated.
-5. **Native Pro2/Joy-Con 2 Right**
+5. **Figure-v3 virtual read/write** — hardware-confirmed; production-portal Sync pending
+   - separate captured `01 01` device-command and `01 06` mutable-data transactions;
+   - 83-byte device result = 19-byte controller header + all 64 stored SRAM bytes, including the
+     response-specific CRC-16/MCRF4XX;
+   - six offset-addressed chunks fill one 454-byte coverage-checked envelope;
+   - three records plus the captured four-byte header field update the mutable image while
+     preserving UID, extended data, and SRAM;
+   - atomic generation-checked update, dirty/readback status, alternating-bank snapshot,
+     700 ms completion edge, and persistence-gated logical removal;
+   - untouched downloaded Kirby/Warp completed read, six-chunk write, `0x08`, `05 00`, Stop, and
+     HMAC-valid persisted export with zero write errors;
+   - host coverage for the full-SRAM response, successful captured write layout, retry/conflict,
+     incomplete, UID mismatch, protected/out-of-range records, and trailing data.
+6. **Native Pro2/Joy-Con 2 Right**
    - Pro2 physical read captured and recognized;
    - asynchronous USB↔BLE command adapter implemented behind UART;
    - production gating, Joy-Con 2 Right, reconnect/removal, and physical write validation pending.
-6. **Switch 1 Pro/Joy-Con Right**
+7. **Switch 1 Pro/Joy-Con Right**
    - physical-reader MCU layer;
    - transport-neutral translation;
    - read and write validation.

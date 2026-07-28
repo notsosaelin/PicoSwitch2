@@ -197,6 +197,77 @@ coalesced commands, and oversized-command recovery. See
 
 ---
 
+## Figure-v3 `0x21` result has a fixed zero tail ending in `7A C4`
+
+**Held**: 2026-07-27 through the first downloaded-dump retests on 2026-07-28.
+
+**The claim**: only result bytes `[19..50]` come from the image's SRAM block; `[51..79]` are fixed
+zeros and `[80..82]` end in a controller- or protocol-level constant `00 7A C4`.
+
+**Why it seemed reasonable**: all six genuine results across two sessions were byte-identical, even
+after owner data had been written. Both sessions, however, used the same physical Warp Star. The
+test also searched several CRC-16 variants over the wrong candidate ranges and therefore failed to
+identify the trailer.
+
+**What refuted it**: the 83-byte framing is exactly a 19-byte controller header plus the full
+64-byte SRAM response. CRC-16/MCRF4XX over the genuine response's first 62 bytes is `7A C4`.
+Untouched downloaded dumps carry their own correct CRCs (`E5 11` for Kirby/Warp and `30 61` for
+Meta/Shadow). Firmware had copied only 32 bytes and substituted `7A C4`, making every other
+response invalid. Publishing all 64 stored bytes made an untouched downloaded dump complete a
+full real-console read and write with no signature override and zero write errors. See
+[`v3-full-sram-response-validation-2026-07-28.md`](v3-full-sram-response-validation-2026-07-28.md).
+
+**Why this matters going forward**: never synthesize or transplant the SRAM trailer. Preserve the
+complete `image[0x3C0..0x3FF]` response supplied by the dump, including its CRC.
+
+---
+
+## Figure-v3 downloaded dumps require a signature override or captured carrier
+
+**Held**: as competing hypotheses through 2026-07-28.
+
+**The claim**: a downloaded figure-v3 dump might need its own NXP originality signature, a
+signature/UID-matched captured figure, or a key-based re-sign onto the known-good figure's UID and
+SRAM.
+
+**What refuted it**: an untouched downloaded `Kirby & Warp Star.bin` was accepted and written by a
+real Switch 2 with `signature_set=false`; prefix bytes `[19..50]` were zero. The image's original
+UID, encrypted body, and SRAM response were served without transformation. Retail keys were used
+only for offline HMAC verification.
+
+**Why this matters going forward**: keep the portal import-only and do not require
+`key_retail.bin`, a physical enrollment capture, or a carrier conversion for valid 2048-byte dumps.
+The UART signature command is diagnostic infrastructure, not a production dependency.
+
+---
+
+## The first King Dedede failure was only a premature TagRemoved lifecycle
+
+**Held**: briefly after the first King Dedede/Tank Star hardware trace on 2026-07-28.
+
+**The claim**: the adapter had accepted the figure-v3 update, but an early virtual TagRemoved
+transition prevented the console from following through with the expected `0x16` completion.
+The update envelope's byte 13 was treated as opaque, so matching the already proven Kirby record
+pages appeared sufficient.
+
+**Why it seemed reasonable**: the visible console symptom was again `2115-0096`, and an earlier
+Kirby failure really had been caused by premature removal between the two Air Riders stages.
+
+**What refuted it**: the first header-only fix classified and staged all 11 King Dedede chunks and
+reached one completion, but diagnostics then recorded two write errors. The exact records locate
+the 32-byte sector-0 update at page `0xB2`, place the sector-1 capability at page `0x64`, and place
+the following 96 bytes at page `0x65`; Kirby instead uses pages `0x92`, `0x00`, and `0x01`.
+Envelope byte 13 therefore selects the allocation-relative sector-1 capability page. The firmware
+was returning fail-closed `07 41` because its commit validator still required Kirby's fixed pages,
+not because the tag had been removed.
+
+**Correction**: the write validator, generation check, commit, `0x1E` read path, and browser-local
+Initialize operation now use each image's self-described safe allocation. There is no UID,
+character, product, or dump whitelist. See
+[`v3-air-riders-dynamic-allocation-2026-07-28.md`](v3-air-riders-dynamic-allocation-2026-07-28.md).
+
+---
+
 ## Format notes for future entries
 
 Each entry should have: the claim, the confidence level it held, why it was reasonable given the

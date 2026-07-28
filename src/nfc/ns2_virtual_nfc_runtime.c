@@ -113,11 +113,14 @@ void ns2_virtual_nfc_runtime_init(ns2_virtual_nfc_runtime_t *runtime)
     ns2_virtual_nfc_write_init(&runtime->write);
 }
 
-static void finish_committed_eject(ns2_virtual_nfc_runtime_t *runtime)
+static void finish_committed_eject(ns2_virtual_nfc_runtime_t *runtime,
+                                   uint32_t now_ms)
 {
     runtime->eject_waiting_for_persist = false;
     runtime->write_committed = false;
     runtime->tag_ejected = true;
+    runtime->represent_after_ms =
+        now_ms + NS2_VIRTUAL_NFC_REPRESENT_COOLDOWN_MS;
     runtime->tag_was_present = false;
     runtime->nfc_status = 0x07;
     runtime->nfc_detail = 0x41;
@@ -125,12 +128,12 @@ static void finish_committed_eject(ns2_virtual_nfc_runtime_t *runtime)
 }
 
 void ns2_virtual_nfc_runtime_set_write_persisted(
-    ns2_virtual_nfc_runtime_t *runtime, bool persisted)
+    ns2_virtual_nfc_runtime_t *runtime, bool persisted, uint32_t now_ms)
 {
     if (!runtime) return;
     runtime->write_persisted = persisted;
     if (persisted && runtime->eject_waiting_for_persist)
-        finish_committed_eject(runtime);
+        finish_committed_eject(runtime, now_ms);
 }
 
 void ns2_virtual_nfc_runtime_tick(ns2_virtual_nfc_runtime_t *runtime,
@@ -178,10 +181,11 @@ bool ns2_virtual_nfc_runtime_dispatch(
         case 0x03:
             // A selected image is persistent reader media, not permanently
             // glued to the antenna. A completed write ejects its current
-            // presentation; the next console scan presents the same (now
-            // mutated) image as a fresh tag encounter.
+            // presentation; a scan after the removal cooldown presents the
+            // same (now mutated) image as a fresh tag encounter.
             if (!presented && runtime->tag_ejected &&
-                tag_present && raw) {
+                tag_present && raw &&
+                time_reached(now_ms, runtime->represent_after_ms)) {
                 runtime->tag_ejected = false;
                 presented = true;
                 observe_tag_presence(runtime, true);
@@ -211,7 +215,7 @@ bool ns2_virtual_nfc_runtime_dispatch(
             runtime->write_mode = false;
             if (completed_write) {
                 if (runtime->write_persisted)
-                    finish_committed_eject(runtime);
+                    finish_committed_eject(runtime, now_ms);
                 else
                     runtime->eject_waiting_for_persist = true;
             } else if (presented) {

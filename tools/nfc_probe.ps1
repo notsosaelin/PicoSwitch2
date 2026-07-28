@@ -1,8 +1,8 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-Drive a genuine Pro Controller 2's NFC reader directly over UART, with no
-console attached.
+Capture console-visible NFC page ranges from a genuine Pro Controller 2 over
+UART, with no console attached.
 
 .DESCRIPTION
 The dongle's NFC mirror normally forwards whatever the console asks. Armed as an
@@ -10,14 +10,18 @@ initiator it instead accepts commands from UART, so the genuine controller
 becomes an interrogatable oracle: arbitrary page ranges, at our own pace,
 repeatable, and observable without a Switch 2 in the loop.
 
-That makes it both an amiibo dumper and the fastest way to answer protocol
-questions that previously needed a full console capture per attempt.
+That makes it a useful page-range snapshot tool and the fastest way to answer
+protocol questions that previously needed a full console capture per attempt.
+For NTAG215, the default ranges contain the complete 540-byte image. For v3
+NTAG I2C Plus 2K, the controller's current 8-bit range descriptor cannot address
+sector 1, so the output is intentionally a partial packed snapshot rather than
+a complete 2048-byte image.
 
 Requires: dongle powered with UART0 reachable, a genuine Pro Controller 2 paired
 over BT. A console may be attached but is not used.
 
 .EXAMPLE
-  # Dump whatever tag is on the reader (auto-detects v3 vs NTAG215)
+  # Capture the useful default ranges (complete NTAG215; partial v3)
   .\tools\nfc_probe.ps1 -Port COM11 -Dump out.bin
 
 .EXAMPLE
@@ -87,7 +91,11 @@ function Read-Buffer {
         $flags = $reply[8]
         $len = [int]$reply[9] -bor ([int]$reply[10] -shl 8)
         if ($len -le 0 -or (11 + $len) -gt $reply.Length) { throw "bad chunk length $len" }
-        $out.AddRange($reply[11..(10 + $len)])
+        # PowerShell turns an indexed array slice into Object[] even when the
+        # source is Byte[]. Generic List[byte].AddRange() rejects that runtime
+        # type, so materialize a byte array explicitly before appending.
+        [byte[]]$chunk = $reply[11..(10 + $len)]
+        $out.AddRange($chunk)
         $offset += $len
         if (($flags -band 0x01) -ne 0) { break }
     }
@@ -99,6 +107,15 @@ try {
     $sp.DiscardInBuffer()
 
     $status = Send-Line 'nfcmirror initiator on'
+    # Enabling initiator mode requests the BLE notification subscription, but
+    # that transition is asynchronous when the mirror was previously off.
+    # Poll its bounded status instead of requiring state ACTIVE in the first
+    # command reply.
+    $armDeadline = (Get-Date).AddSeconds(3)
+    while ($status -notmatch '"state":2' -and (Get-Date) -lt $armDeadline) {
+        Start-Sleep -Milliseconds 50
+        $status = Send-Line 'nfcmirror status'
+    }
     if ($status -notmatch '"state":2') {
         throw "bridge not subscribed to a genuine Pro Controller 2: $status"
     }
@@ -142,10 +159,21 @@ try {
     if (-not $uid) { throw "no tag detected" }
     Write-Host "tag UID: $(Format-Hex $uid)"
 
-    # NTAG215 exposes pages 00-86; a v3 (NTAG I2C Plus 2K) also answers the
-    # 78-91 and E2-E6 sets. Try the wider one first and fall back, so the caller
-    # does not have to know which kind of tag is on the reader.
-    $rangeSets = if ($Ranges) { @($Ranges) } else { @('00-3B,3C-77,78-91,E2-E6', '00-3B,3C-77,78-86') }
+    # NTAG215 exposes pages 00-86. A v3 (NTAG I2C Plus 2K) also answers through
+    # A1 plus E2-E6; extending the third block to A1 includes Air Riders'
+    # directly observed sector-0 update at pages 92-99 and some surrounding
+    # context. Try that useful v3 snapshot first, then the narrower historical
+    # v3 range and finally NTAG215. This keeps the normal command short:
+    # -Dump file.bin needs no manual -Ranges.
+    $rangeSets = if ($Ranges) {
+        @($Ranges)
+    } else {
+        @(
+            '00-3B,3C-77,78-A1,E2-E6',
+            '00-3B,3C-77,78-91,E2-E6',
+            '00-3B,3C-77,78-86'
+        )
+    }
 
     $buffer = $null
     foreach ($set in $rangeSets) {
@@ -174,13 +202,24 @@ try {
     $tag = $buffer[60..($buffer.Length - 1)]
     Write-Host "prefix[18]    = $('{0:X2}' -f $prefix[18])"
     Write-Host "prefix[19:51] = $(Format-Hex $prefix[19..50])"
-    Write-Host "tag data      = $($tag.Length) bytes"
+    Write-Host "range data    = $($tag.Length) bytes"
+    if ($prefix[18] -eq 0x06 -and $tag.Length -ne 2048) {
+        Write-Warning (
+            "v3 range snapshot only ($($tag.Length) bytes), not a full 2048-byte image; " +
+            "sector 1 is not addressable by the current 8-bit range descriptor"
+        )
+    }
 
     if ($Dump) {
-        [System.IO.File]::WriteAllBytes($Dump, $tag)
-        Write-Host "wrote $Dump"
-        [System.IO.File]::WriteAllBytes("$Dump.prefix", $prefix)
-        Write-Host "wrote $Dump.prefix"
+        # System.IO resolves a relative path against the process working
+        # directory, which may be C:\Windows even when PowerShell's current
+        # location is the repository. Resolve through PowerShell's provider so
+        # "-Dump Kirby.bin" reliably writes beside the launched command.
+        $dumpPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Dump)
+        [System.IO.File]::WriteAllBytes($dumpPath, $tag)
+        Write-Host "wrote $dumpPath"
+        [System.IO.File]::WriteAllBytes("$dumpPath.prefix", $prefix)
+        Write-Host "wrote $dumpPath.prefix"
     }
 
     Invoke-Nfc '0191000400000000' | Out-Null

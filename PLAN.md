@@ -134,15 +134,15 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
   pre-connected Classic controller and BLE controller, settings/Amiibo persistence, clean Config
   exit, normal reconnect, and non-discoverability/no audio stutter in controller personalities.
 - [x] Make Virtual Amiibo always available with a blank/no-tag initial state; replace the
-  original/modified portal model with one mutable exact-catalog record and two independent browser
-  quick slots.
+  original/modified portal model with one mutable browser record per imported dump and one
+  loaded-slot pointer.
 - [x] Add a one-shot install marker so every UF2 flash erases settings, virtual-tag journals, wake
   identity, and Bluetooth bonds while ordinary reboot persistence remains unchanged.
 - [x] Retire per-controller-family **button** mapping storage and UI in favor of one locked base
   button map plus Switch-side remapping on the stable emulated controller identity; retain all
   body/accent/Sony-lightbar color controls.
-- [ ] Hardware-validate the v10 first-boot erase exactly once, blank NFC behavior, browser quick
-  slots and mutable-dump transfer over Config BLE, settings save/readback, and re-pair after the
+- [ ] Hardware-validate the v10 first-boot erase exactly once, blank NFC behavior, browser
+  loaded-slot state and mutable-dump transfer over Config BLE, settings save/readback, and re-pair after the
   bond wipe.
 - [x] Implement and host-test the revised BOOTSEL policy: paired single-tap cycles only controller
   personalities, double-tap opens pairing, triple-tap wipes/disconnects, and a two-second hold
@@ -232,8 +232,8 @@ imported baseline plus the optional latest console-written image for recovery. B
 state, and optional signature are stored in alternating
 CRC-verified flash banks at sectors `-3` and `-5`. A successful console commit requests this
 snapshot automatically, and logical TagRemoved waits until it verifies. The browser-local library
-works without an adapter, accepts a single file or recursively scans a directory, caches one
-mutable exact-AmiiboAPI-matched dump per identity, and provides two independent quick slots.
+works without an adapter, accepts a single file or recursively scans a directory, caches mutable
+dumps in IndexedDB (content-keyed for v3 combinations), and retains one loaded-slot pointer.
 **Sync Amiibo from Adapter** overwrites the matching browser copy before clearing dirty protection.
 Primary capture corrected the read model to a 600-byte reader buffer served in 70-byte offset
 chunks. The command-driven runtime handles the confirmed read flow plus an evidence-reconstructed
@@ -267,6 +267,58 @@ is not raw passthrough. See
     ordinary-read continued presentation.
   - [x] Automatically queue a power-loss-safe snapshot before the post-write removal edge.
   - [x] Power-cycle after a console write and validate that the Used image and dirty state recover.
+- [ ] Complete 2048-byte figure-v3 Virtual Amiibo write support.
+  - [x] Hardware-confirm the descriptor-driven read and v3-only `0x14`/`0x21` device-command path.
+  - [x] Implement and host-test exact device-command/data-write classification, six-chunk staging,
+    bounded three-record commit, generation-safe update, dirty state, persistence gating, and
+    Config/UART/portal readback.
+  - [x] Hardware-validate owner/format write, `05 00`, durable Stop/eject, next-scan updated
+    readback, and power-cycle recovery.
+  - [x] Replace the captured fixed `7A C4` trailer with the dump's complete 64-byte SRAM response;
+    hardware-confirm an untouched downloaded dump with no signature override.
+  - [x] Capture and structurally separate the Air Riders 355-byte/`0x20` game-data transaction from
+    the validated 454-byte/`0x08` owner/format write.
+  - [x] Hardware-test the non-mutating `0x20` completion gate: it reaches `05 00` with zero write
+    errors, but proved that leaving the tag presented causes three retries and `2115-0088`.
+  - [x] Hardware-test the corrected Stop-to-TagRemoved lifecycle and three-second re-presentation
+    cooldown: the immediate scan receives absent `07 41`; the unchanged image is later retried
+    three times and ends at `2115-0096`.
+  - [x] Mirror one successful Air Riders write through a genuine Pro Controller 2 and a physical
+    Kirby & Warp Star tag; capture both `0x20` shapes, genuine state `0x16`, the follow-up writes,
+    and a matching sector-0 before/after diff.
+  - [x] Implement and host-test the capture-derived 355-byte clear and 167-byte update records,
+    generation-safe persistence without intermediate ejection, and genuine `0x16` status.
+  - [x] Hardware-isolate the first prepared-build failure: the 355-byte stage and ordinary
+    checkpoint commit successfully, but intermediate auto-eject blocks the 167-byte stage and
+    causes `2115-0096`; retain presentation across only that bounded inter-stage window.
+  - [x] Hardware-validate the complete two-stage Air Riders write: both extended envelopes, both
+    `0x20` completions, all three ordinary checkpoints, persistence, and final Stop complete with
+    zero write errors.
+  - [x] Capture genuine written-tag reuse and implement the missing sector-aware `0x1E` result:
+    bare ACK, empty status `0x15`, one report-state edge, and a 196-byte result served through
+    `0x15`. Host-test all captured bytes including read-only sector-1 page 0.
+  - [x] Hardware-validate the prepared `0x1E` path: status `0x15`, all three data chunks, and Stop
+    match genuine hardware.
+  - [x] Hardware-validate the subsequent reused-tag 167-byte update transport and persistence.
+    It completed with zero errors; the next read isolated a separate implicit sector-1 page-0
+    state transition.
+  - [x] Hardware-validate retained dynamic sector-1 page 0 (`A5 00 01 00` →
+    `A5 00 02 00`) across the update and immediate second reuse. Air Riders accepted the second
+    read and loaded the previously saved custom color.
+  - [x] Power-cycle the adapter and repeat that read. The exact generation-4 image/CRC recovered
+    from flash, `0x1E` served `A5 00 02 00`, and Air Riders accepted the retained save.
+  - [x] Hardware-capture a non-cosmetic learned gameplay-state save after completing a level.
+    It reused the known 167-byte extended plus ordinary-write sequence, touched no new region,
+    and produced an HMAC-valid generation-9 image with zero write errors.
+  - [x] Capture one failing untouched King Dedede or Bandana Waddle Dee write on the current build.
+    King Dedede & Tank Star uses dynamic record pages: sector-0 `0xB2` and sector-1 capability/data
+    `0x64/0x65`, versus Kirby's `0x92` and `0x00/0x01`. The first header-only fix proved staging
+    succeeds but fixed-page commit validation still caused `2115-0096`.
+  - [x] Hardware-validate the allocation-relative codec across all 16 available Air Riders v3
+    dumps. Every image completed real-console read and write. The implementation remains
+    identity-agnostic and fails closed outside the captured three-record schema and safe memory
+    bounds.
+  - [ ] Complete the production-portal Sync test against the intentionally dirty v3 generation.
 - [x] Add alternating-bank persistence outside `pico_config_t`, including version-1 migration.
 - [x] Add recursive directory import, browser-local library caching, parsed identity, and optional
   cached friendly catalog metadata.
@@ -274,14 +326,22 @@ is not raw passthrough. See
   progressively fills during directory scanning, enlarges/centers the selected tag with four
   progressively smaller neighbors per side, animates navigation, and filters imported entries
   without disturbing AmiiboAPI source order.
-- [x] Keep the production library available without an adapter connection, store one mutable dump
-  per exact AmiiboAPI identity, provide two independent quick slots, and add versioned full-library
-  export/import.
-- [x] Add a presentation-only **Eject Adapter Amiibo** control; loading the unchanged slot presents
-  it again without rewriting flash.
-- [ ] Add **Remove active amiibo** (clear the adapter slot only after dirty-write protection).
-- [ ] Hardware-validate manual Eject, Slot 1/Slot 2 assignment, adapter loading, validated
-  adapter-to-browser sync, and re-presentation on a real Switch 2.
+- [x] Collapse the production manager into one carousel-centered surface: compact search and
+  tap-to-cycle filters, one Load/Select/Import/Sync action, active-tag selection on connection,
+  centered save metadata/write badge, and a non-modal details/action drawer.
+- [x] Replace the redundant carousel arrows/count with smooth hovered-wheel, touch-swipe, and
+  keyboard navigation; group the three responsive filter chips below the compact primary action.
+- [x] Make Initialize discoverable and usable offline. It requests user-owned keys only when
+  needed, self-verifies the re-signed copy, and clears both ordinary and Air Riders v3 save ranges.
+- [ ] Expose physical-tag scanning in the production portal only after firmware provides a
+  capability-reported Config-transport API; the UART-only initiator is not sufficient.
+- [x] Keep the production library available without an adapter connection, store mutable dumps in
+  browser-local IndexedDB (content-keyed for distinct v3 rider/machine combinations), retain one
+  loaded-slot pointer, and add versioned full-library export/import.
+- [x] Merge unload and adapter removal into one scope-aware **Eject amiibo** action with dirty-write
+  confirmation.
+- [ ] Hardware-validate manual Eject, adapter loading, validated 540/v3 adapter-to-browser sync,
+  and re-presentation on a real Switch 2.
 - [x] Hardware-test automatic snapshot recovery and the former Unused/Used selection mechanics.
 - [ ] Regression-test the unchanged internal two-image/two-bank recovery mechanics through the
   simplified one-dump browser UI.

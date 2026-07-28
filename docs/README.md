@@ -31,6 +31,7 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Console command surface | [`switch2/command-surface.md`](switch2/command-surface.md) |
 | Controller firmware identity | [`switch2/firmware-versioning.md`](switch2/firmware-versioning.md) |
 | NFC implementation design | [`switch2/nfc-implementation.md`](switch2/nfc-implementation.md) |
+| Figure-v3 read/write working record | [`Amiibo-v3.md`](Amiibo-v3.md) |
 | Amiibo identity, differentiation, and generation | [`switch2/amiibo-identity-and-generation.md`](switch2/amiibo-identity-and-generation.md) |
 | Kirby Air Riders extended amiibo format | [`switch2/kirby-air-riders-extended-amiibo.md`](switch2/kirby-air-riders-extended-amiibo.md) |
 | NFC protocol evidence | [`switch2/nfc-protocol-inventory.md`](switch2/nfc-protocol-inventory.md) |
@@ -43,6 +44,8 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Virtual write crash / USB RX correction | [`experiments/virtual-amiibo-write-crash-and-rx-fix-2026-07-25.md`](experiments/virtual-amiibo-write-crash-and-rx-fix-2026-07-25.md) |
 | Virtual write/eject/re-present/export validation | [`experiments/virtual-amiibo-lifecycle-validation-2026-07-25.md`](experiments/virtual-amiibo-lifecycle-validation-2026-07-25.md) |
 | Virtual Amiibo power-loss persistence and clean/used model | [`experiments/virtual-amiibo-persistence-and-library-model-2026-07-25.md`](experiments/virtual-amiibo-persistence-and-library-model-2026-07-25.md) |
+| Figure-v3 full SRAM response and downloaded-dump validation | [`experiments/v3-full-sram-response-validation-2026-07-28.md`](experiments/v3-full-sram-response-validation-2026-07-28.md) |
+| Figure-v3 dynamic Air Riders allocation | [`experiments/v3-air-riders-dynamic-allocation-2026-07-28.md`](experiments/v3-air-riders-dynamic-allocation-2026-07-28.md) |
 | Config-mode CDC-only migration | [`experiments/config-cdc-only-migration-2026-07-25.md`](experiments/config-cdc-only-migration-2026-07-25.md) |
 | Serial-number structure | [`switch2/serial-generation.md`](switch2/serial-generation.md) |
 | Genuine Pro Controller 2 headset audio | [`switch2/pro2-headset-audio.md`](switch2/pro2-headset-audio.md) |

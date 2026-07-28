@@ -377,13 +377,13 @@ static void cmd_amiibo(char *arg) {
                  "\"presented\":%s,\"v3loaded\":%s,"
                  "\"persisted\":%s,\"persistPending\":%s,\"size\":%u,"
                  "\"signature\":%s,\"hasSave2\":%s,\"usingSave2\":%s,"
-                 "\"generation\":%lu,"
+                 "\"generation\":%lu,\"payloadCrc\":\"%08lX\","
                  "\"uid\":\"%02X%02X%02X%02X%02X%02X%02X\","
                  "\"upload\":{\"active\":%s,\"received\":%u,\"size\":%u}}",
                  status.loaded ? "true" : "false",
                  status.dirty ? "true" : "false",
                  status.presented ? "true" : "false",
-                 virtual_amiibo_store_v3_loaded() ? "true" : "false",
+                 status.v3_loaded ? "true" : "false",
                  status.persisted ? "true" : "false",
                  virtual_amiibo_store_persist_pending() ? "true" : "false",
                  status.size,
@@ -391,6 +391,7 @@ static void cmd_amiibo(char *arg) {
                  status.has_used_copy ? "true" : "false",
                  status.using_used_copy ? "true" : "false",
                  (unsigned long)status.generation,
+                 (unsigned long)status.payload_crc,
                  status.uid[0], status.uid[1], status.uid[2], status.uid[3],
                  status.uid[4], status.uid[5], status.uid[6],
                  status.upload_active ? "true" : "false",
@@ -485,13 +486,22 @@ static void cmd_amiibo(char *arg) {
             return;
         }
         uint8_t bytes[AMIIBO_CDC_CHUNK_MAX];
-        virtual_amiibo_result_t result =
-            read_copy < 0
+        virtual_amiibo_status_t status;
+        virtual_amiibo_store_status(&status);
+        virtual_amiibo_result_t result;
+        if (status.v3_loaded) {
+            result = read_copy < 0
+                ? virtual_amiibo_store_v3_read(
+                      (size_t)offset, bytes, (size_t)length)
+                : VIRTUAL_AMIIBO_ERROR_NOT_LOADED;
+        } else {
+            result = read_copy < 0
                 ? virtual_amiibo_store_read(
                       (size_t)offset, bytes, (size_t)length)
                 : virtual_amiibo_store_read_copy(
                       read_copy != 0, (size_t)offset,
                       bytes, (size_t)length);
+        }
         if (result != VIRTUAL_AMIIBO_OK) {
             reply_amiibo_result(result);
             return;
@@ -524,11 +534,15 @@ static void cmd_amiibo(char *arg) {
     }
 
     if (strcmp(arg, "present") == 0) {
-        reply_amiibo_result(virtual_amiibo_store_set_presented(true));
+        reply_amiibo_result(virtual_amiibo_store_v3_loaded()
+            ? virtual_amiibo_store_v3_set_presented(true)
+            : virtual_amiibo_store_set_presented(true));
         return;
     }
     if (strcmp(arg, "eject") == 0) {
-        reply_amiibo_result(virtual_amiibo_store_set_presented(false));
+        reply_amiibo_result(virtual_amiibo_store_v3_loaded()
+            ? virtual_amiibo_store_v3_set_presented(false)
+            : virtual_amiibo_store_set_presented(false));
         return;
     }
 

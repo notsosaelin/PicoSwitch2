@@ -267,7 +267,7 @@ static void queue_amiibo_status(const char *event) {
              "\"persisted\":%s,\"persist_pending\":%s,"
              "\"has_signature\":%s,\"has_used\":%s,\"using_used\":%s,"
              "\"size\":%u,"
-             "\"generation\":%lu,\"v3loaded\":%s,"
+             "\"generation\":%lu,\"payload_crc\":\"%08lX\",\"v3loaded\":%s,"
              "\"uid\":\"%02X%02X%02X%02X%02X%02X%02X\"}",
              event, status.loaded ? "true" : "false",
              status.dirty ? "true" : "false",
@@ -277,7 +277,8 @@ static void queue_amiibo_status(const char *event) {
              status.has_used_copy ? "true" : "false",
              status.using_used_copy ? "true" : "false",
              status.size, (unsigned long)status.generation,
-             virtual_amiibo_store_v3_loaded() ? "true" : "false",
+             (unsigned long)status.payload_crc,
+             status.v3_loaded ? "true" : "false",
              status.uid[0], status.uid[1], status.uid[2], status.uid[3],
              status.uid[4], status.uid[5], status.uid[6]);
     queue_text(response);
@@ -290,7 +291,7 @@ static void queue_amiibo_read(uint16_t offset) {
     char payload[NS2_UART_AMIIBO_READ_MAX * 2u + 1u];
     char response[384];
     virtual_amiibo_store_status(&before);
-    if (!before.loaded || offset >= before.size) {
+    if ((!before.loaded && !before.v3_loaded) || offset >= before.size) {
         snprintf(response, sizeof(response),
                  "{\"amiibo\":\"error\",\"error\":\"read out of range\","
                  "\"offset\":%u,\"total\":%u}",
@@ -301,11 +302,14 @@ static void queue_amiibo_read(uint16_t offset) {
 
     size_t length = before.size - offset;
     if (length > sizeof(data)) length = sizeof(data);
-    const virtual_amiibo_result_t result =
-        virtual_amiibo_store_read(offset, data, length);
+    const virtual_amiibo_result_t result = before.v3_loaded
+        ? virtual_amiibo_store_v3_read(offset, data, length)
+        : virtual_amiibo_store_read(offset, data, length);
     virtual_amiibo_store_status(&after);
     if (result != VIRTUAL_AMIIBO_OK ||
-        !after.loaded || after.size != before.size ||
+        (!after.loaded && !after.v3_loaded) ||
+        after.v3_loaded != before.v3_loaded ||
+        after.size != before.size ||
         after.generation != before.generation) {
         snprintf(response, sizeof(response),
                  "{\"amiibo\":\"error\",\"error\":\"%s\","
@@ -831,6 +835,9 @@ static void handle_command(void) {
                 : virtual_amiibo_store_upload_begin((size_t)size,
                                                     (uint32_t)crc));
         }
+    } else if (strcmp(rx_line, "amiibo v3sig clear") == 0) {
+        ns2_v3_clear_signature();
+        queue_text("{\"amiibo\":\"v3sig\",\"ok\":true,\"cleared\":true}");
     } else if (strncmp(rx_line, "amiibo v3sig ", 13) == 0) {
         uint8_t sig[32];
         size_t length = 0;
@@ -844,17 +851,24 @@ static void handle_command(void) {
         }
     } else if (strcmp(rx_line, "amiibo v3diag") == 0) {
         uint32_t staged = 0, results = 0;
-        char response[160];
+        uint32_t chunks = 0, commits = 0, errors = 0;
+        uint32_t extended_chunks = 0, extended_completions = 0;
+        char response[320];
         ns2_v3_device_cmd_counts(&staged, &results);
+        ns2_v3_write_counts(&chunks, &commits, &errors);
+        ns2_v3_extended_counts(&extended_chunks, &extended_completions);
         snprintf(response, sizeof(response),
                  "{\"amiibo\":\"v3diag\",\"signature_set\":%s,"
-                 "\"dev_cmd_staged\":%lu,\"dev_results\":%lu}",
+                 "\"dev_cmd_staged\":%lu,\"dev_results\":%lu,"
+                 "\"write_chunks\":%lu,\"write_commits\":%lu,"
+                 "\"write_errors\":%lu,\"extended_chunks\":%lu,"
+                 "\"extended_completions\":%lu}",
                  ns2_v3_has_signature() ? "true" : "false",
-                 (unsigned long)staged, (unsigned long)results);
+                 (unsigned long)staged, (unsigned long)results,
+                 (unsigned long)chunks, (unsigned long)commits,
+                 (unsigned long)errors, (unsigned long)extended_chunks,
+                 (unsigned long)extended_completions);
         queue_text(response);
-    } else if (strcmp(rx_line, "amiibo v3sig clear") == 0) {
-        ns2_v3_clear_signature();
-        queue_text("{\"amiibo\":\"v3sig\",\"ok\":true,\"cleared\":true}");
     } else if (strncmp(rx_line, "amiibo chunk ", 13) == 0) {
         char *hex = strchr(rx_line + 13, ' ');
         if (!hex) {
@@ -895,7 +909,7 @@ static void handle_command(void) {
     } else if (strcmp(rx_line, "amiibo acknowledge") == 0) {
         virtual_amiibo_status_t status;
         virtual_amiibo_store_status(&status);
-        if (!status.loaded) {
+        if (!status.loaded && !status.v3_loaded) {
             queue_text("{\"amiibo\":\"error\",\"error\":\"no image loaded\"}");
         } else {
             virtual_amiibo_store_acknowledge_download();

@@ -9,6 +9,7 @@
 
 typedef struct {
     bool loaded;
+    bool v3_loaded;
     bool presented;
     bool dirty;
     bool persisted;
@@ -20,6 +21,7 @@ typedef struct {
     uint16_t upload_size;
     uint16_t upload_received;
     uint32_t generation;
+    uint32_t payload_crc;
     uint8_t uid[7];
 } virtual_amiibo_status_t;
 
@@ -42,24 +44,30 @@ virtual_amiibo_result_t virtual_amiibo_store_set_presented(bool presented);
 void virtual_amiibo_store_request_clear(void);
 bool virtual_amiibo_store_clear_pending(void);
 
-// --- NTAG I2C 2K ("figure v3", e.g. Kirby Air Riders) present-and-trace slot ---
-// A RAM-only 2048-byte slot kept entirely separate from the 540/572 NTAG215
-// store and its flash journal, so this experimental path cannot affect the
-// validated NFC/persistence behavior. It exists to serve a v3 image to the
-// console so the UART tracer can capture how the console reads a 2 KB tag.
-// Not persisted; cleared on power cycle. See
-// docs/switch2/kirby-air-riders-extended-amiibo.md.
+// --- NTAG I2C 2K ("figure v3", e.g. Kirby Air Riders) slot ---
+// The 2048-byte image remains isolated from the 540/572 NTAG215 data model but
+// shares the same mutually-exclusive two-bank flash journal. Console writes
+// use generation-checked copy/apply calls so a concurrent upload cannot be
+// overwritten by an older transaction.
 virtual_amiibo_result_t virtual_amiibo_store_v3_upload_begin(
     size_t size, uint32_t expected_crc);
 virtual_amiibo_result_t virtual_amiibo_store_v3_upload_chunk(
     size_t offset, const uint8_t *data, size_t size);
 virtual_amiibo_result_t virtual_amiibo_store_v3_upload_commit(void);
 bool virtual_amiibo_store_v3_upload_active(void);
-// True once a valid v3 image has been uploaded and is presented.
+// True once a valid v3 image has been uploaded. Presentation is reported
+// separately in virtual_amiibo_status_t.
 bool virtual_amiibo_store_v3_loaded(void);
+virtual_amiibo_result_t virtual_amiibo_store_v3_set_presented(bool presented);
 void virtual_amiibo_store_v3_clear(void);
 // Copies the 2048-byte v3 image; returns false if none is loaded.
 bool virtual_amiibo_store_v3_copy(uint8_t out[2048]);
+bool virtual_amiibo_store_v3_copy_image(
+    uint8_t out[2048], uint32_t *generation);
+virtual_amiibo_result_t virtual_amiibo_store_v3_read(
+    size_t offset, uint8_t *out, size_t size);
+virtual_amiibo_result_t virtual_amiibo_store_v3_apply_console_write(
+    const uint8_t image[2048], uint32_t expected_generation);
 virtual_amiibo_result_t virtual_amiibo_store_upload_begin(
     size_t size, uint32_t expected_crc);
 virtual_amiibo_result_t virtual_amiibo_store_upload_chunk(

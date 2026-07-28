@@ -31,15 +31,14 @@
   .muted { color: #7c8694; font-size: 13px; }
   .hidden { display: none !important; }
   .actions-bar { display: flex; gap: 10px; flex-wrap: wrap; }
-  .amiibo-carousel-nav { width: 38px; height: 56px; padding: 0; font-size: 24px;
-                         border-radius: 9px; }
-  .amiibo-carousel-viewport { min-width: 0; overflow: hidden; padding: 28px 0 20px;
-                              border-radius: 10px; outline: none; scroll-behavior: smooth; }
+  .amiibo-carousel-viewport { min-width: 0; overflow: hidden; padding: 18px 0 8px;
+                              border-radius: 10px; outline: none; scroll-behavior: smooth;
+                              touch-action: pan-y; user-select: none; }
   .amiibo-carousel-viewport[aria-disabled="true"] { pointer-events: none; opacity: .7; }
   .amiibo-carousel-viewport:focus-visible { box-shadow: 0 0 0 2px #3b82f6; }
-  .amiibo-carousel-track { position: relative; width: 100%; min-height: 220px; }
-  .amiibo-carousel-item { position: absolute; left: 50%; top: 18px; width: 160px; height: 176px;
-                           margin-left: -80px; padding: 4px; border-radius: 12px;
+  .amiibo-carousel-track { position: relative; width: 100%; min-height: 206px; }
+  .amiibo-carousel-item { position: absolute; left: 50%; top: 10px; width: 180px; height: 190px;
+                           margin-left: -90px; padding: 4px; border-radius: 12px;
                            border: 0; background: transparent; color: #d8dee8;
                            display: grid; place-items: center;
                            overflow: visible; opacity: var(--opacity,.18);
@@ -51,18 +50,25 @@
                                        background .32s ease,box-shadow .32s ease; }
   .amiibo-carousel-item:hover { background: transparent; }
   .amiibo-carousel-item[data-distance="0"] { background: transparent; box-shadow: none; }
-  .amiibo-carousel-item.active-tag::after { content: "ACTIVE"; position: absolute; top: 4px;
-                                            right: 4px; font-size: 7px; color: #bbf7d0;
+  .amiibo-carousel-item.active-tag::after { content: "ACTIVE"; position: absolute; top: 5px;
+                                            left: 5px; font-size: 7px; color: #bbf7d0;
                                             background: #14532d; padding: 2px 3px;
                                             border-radius: 3px; }
-  .amiibo-carousel-item img { width: 160px; height: 160px; object-fit: contain;
+  .amiibo-carousel-item img { width: 180px; height: 180px; object-fit: contain;
                               filter: drop-shadow(0 9px 9px rgba(0,0,0,.42)); }
+  .amiibo-write-badge { display: none; position: absolute; top: 4px; right: 4px;
+                        min-width: 27px; padding: 3px 6px; border-radius: 999px;
+                        background: #26364c; border: 1px solid #55708f; color: #eef6ff;
+                        font-size: 10px; font-weight: 700; line-height: 1.2;
+                        box-shadow: 0 4px 12px rgba(0,0,0,.4); }
+  .amiibo-carousel-item[aria-current="true"] .amiibo-write-badge:not(.hidden) {
+    display: block;
+  }
   .amiibo-carousel-fallback { display: grid; place-items: center; width: 94px; height: 110px;
                               border-radius: 50%; background: #273244; color: #a9b7ca;
                               font-size: 10px; text-align: center; padding: 5px; }
   #ui.offline > #appearancePanel, #ui.offline > .devtools,
   #ui.offline > section:not(#amiiboPanel) { display: none; }
-  .amiibo-carousel-position { text-align: center; min-height: 18px; margin-top: 2px; }
   .amiibo-carousel-caption { text-align: center; min-height: 18px; margin-bottom: 2px;
                              font-size: 12px; }
   .amiibo-detail { display: block; padding: 16px; margin-top: 0; background: #11151b;
@@ -86,17 +92,18 @@
     background: linear-gradient(90deg,#4b6077,transparent);
   }
   .amiibo-manager { margin-top: 12px; }
-  .amiibo-manager-title { font-size: clamp(24px,4vw,38px); line-height: 1.1;
+  .amiibo-manager-title { font-size: clamp(24px,3.5vw,34px); line-height: 1.1;
                           margin: 0; letter-spacing: -.025em; text-transform: none;
-                          color: #eef2f7; font-weight: 680; }
-  .amiibo-manager-header { display: flex; flex-wrap: wrap; align-items: center;
-                           justify-content: space-between; gap: 10px 14px; }
-  .amiibo-header-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+                          color: #eef2f7; font-weight: 680; white-space: nowrap; }
+  .amiibo-manager-header { display: grid; grid-template-columns: minmax(0,1fr) auto;
+                           align-items: center; gap: 10px 14px; }
+  .amiibo-header-actions { display: flex; flex-wrap: wrap; justify-content: end;
+                           align-items: center; gap: 7px; }
   .amiibo-import-menu { position: relative; }
   .amiibo-import-menu > summary { list-style: none; cursor: pointer;
-                                  padding: 8px 14px; border: 1px solid #3a4150;
+                                  padding: 6px 11px; border: 1px solid #3a4150;
                                   border-radius: 8px; background: #202734;
-                                  font-size: 14px; font-weight: 600; white-space: nowrap; }
+                                  font-size: 12px; font-weight: 600; white-space: nowrap; }
   .amiibo-import-menu > summary::-webkit-details-marker { display: none; }
   .amiibo-import-menu[open] > summary { border-color: #60a5fa; }
   .amiibo-import-choices { position: absolute; z-index: 5; right: 0; min-width: 200px;
@@ -104,52 +111,90 @@
                            display: grid; gap: 6px; padding: 8px; border: 1px solid #3a4150;
                            border-radius: 9px; background: #151a21;
                            box-shadow: 0 12px 28px rgba(0,0,0,.45); }
-  .amiibo-carousel-stage { margin-top: 14px; padding: 10px 12px 6px;
-                           border: 1px solid #2f3744; border-radius: 10px;
-                           background: #11151b; }
+  .amiibo-search { display: flex; align-items: center; gap: 8px; padding: 0 10px;
+                   min-width: min(240px,100%); border: 1px solid #3a4150;
+                   border-radius: 8px; background: #151a21; }
+  .amiibo-search span { color: #8190a2; font-size: 11px; }
+  .amiibo-search input { min-width: 0; width: 150px; padding: 6px 0; border: 0;
+                         outline: 0; background: transparent; color: #e6e8ea;
+                         font: inherit; }
+  .amiibo-notice { min-height: 22px; margin: 10px 0 0; padding: 7px 10px;
+                   border-left: 2px solid #40536a; border-radius: 0 6px 6px 0;
+                   background: rgba(17,21,27,.68); }
+  .amiibo-carousel-stage { margin-top: 12px; padding: 12px 14px 10px;
+                           border: 1px solid #2f3744; border-radius: 12px;
+                           background: #10141a; }
+  .amiibo-filter-chip { display: grid; gap: 1px; min-width: 0; width: 100%;
+                        padding: 6px 10px; background: #202734; text-align: center; }
+  .amiibo-filter-chip span { color: #8592a2; font-size: 9px; letter-spacing: .05em; }
+  .amiibo-filter-chip b { overflow: hidden; color: #eef2f7; font-size: 12px;
+                          text-overflow: ellipsis; white-space: nowrap; }
+  .amiibo-filter-chip:hover { border-color: #52647b; }
+  .amiibo-selected-title { min-height: 29px; margin: 0 0 8px; text-align: center;
+                           color: #f2f6fb; font-size: 21px; font-weight: 680; }
+  .amiibo-quick-stats { display: grid; grid-template-columns: repeat(5,minmax(0,1fr));
+                        max-width: 760px; margin: 0 auto 10px; border-top: 1px solid #29333f;
+                        border-bottom: 1px solid #29333f; }
+  .amiibo-quick-stats > div { min-width: 0; padding: 8px 7px; color: #8592a2;
+                              font-size: 10px; text-align: center; }
+  .amiibo-quick-stats > div + div { border-left: 1px solid #29333f; }
+  .amiibo-quick-stats b { display: block; margin-top: 2px; overflow: hidden;
+                          color: #eef2f7; font-size: 12px; text-overflow: ellipsis;
+                          white-space: nowrap; }
   .amiibo-carousel-controls { display: flex; justify-content: center; align-items: center;
-                              flex-wrap: wrap; gap: 12px; margin-top: 1px; }
-  .amiibo-carousel-controls .amiibo-carousel-nav { width: 60px; height: 34px; }
-  .amiibo-manager-bottom { display: grid; grid-template-columns: repeat(3,minmax(0,1fr));
-                           align-items: stretch; gap: 12px; margin-top: 14px; }
-  .amiibo-action-stack, .amiibo-filter-panel, .amiibo-detail {
-    margin: 0; padding: 12px; border: 1px solid #2f3744; border-radius: 10px;
-    background: #11151b;
-  }
-  .amiibo-action-stack { display: grid; gap: 9px; align-content: start; text-align: center; }
-  .amiibo-action-stack button { width: 100%; min-height: 42px; }
-  .amiibo-action-help { margin: 2px 0 0; font-size: 11px; line-height: 1.35;
-                        color: #8592a2; text-align: center; }
-  .amiibo-filter-panel { display: grid; gap: 10px; align-content: start; text-align: center; }
-  .amiibo-filter-panel input { width: 100%; font: inherit; background: #151a21;
-                               color: #e6e8ea; border: 1px solid #3a4150;
-                               border-radius: 7px; padding: 9px 11px; text-align: center; }
-  .amiibo-filter-row { display: grid; grid-template-columns: 38px minmax(0,1fr) 38px;
-                       align-items: stretch; gap: 7px; }
-  .amiibo-filter-row button { min-width: 0; padding: 7px; }
-  .amiibo-filter-value { display: grid; place-items: center; min-width: 0; padding: 5px 8px;
-                         border: 1px solid #3a4150; border-radius: 7px;
-                         background: #202734; text-align: center; }
-  .amiibo-filter-value span { color: #8592a2; font-size: 9px; text-transform: none;
-                              letter-spacing: .05em; }
-  .amiibo-filter-value b { max-width: 100%; overflow: hidden; text-overflow: ellipsis;
-                           white-space: nowrap; color: #e6e8ea; font-size: 12px; }
-  #amiiboLibraryCount { display: block; text-align: center; }
+                              margin-top: 2px; }
+  .amiibo-primary-action { display: flex; justify-content: center; align-items: center;
+                           flex-wrap: wrap; gap: 5px; }
+  .amiibo-primary-action button { width: auto; min-width: 0; min-height: 34px;
+                                  padding: 6px 16px; }
+  .amiibo-combo-action { min-height: 28px !important; padding: 4px 10px; font-size: 11px; }
+  .amiibo-filter-row { display: grid; grid-template-columns: repeat(3,minmax(0,180px));
+                       justify-content: center; gap: 8px; margin: 10px auto 0; }
+  .amiibo-context-drawer { margin-top: 12px; padding: 14px; border: 1px solid #344153;
+                           border-radius: 10px; background: #11161d;
+                           box-shadow: inset 3px 0 0 #3b82f6; }
+  .amiibo-context-heading { display: flex; justify-content: space-between; align-items: end;
+                            gap: 16px; padding-bottom: 10px; border-bottom: 1px solid #29333f; }
+  .amiibo-context-heading div { display: grid; gap: 2px; }
+  .amiibo-context-heading span { color: #8190a2; font-size: 10px; }
+  .amiibo-context-heading b { color: #f2f6fb; font-size: 18px; }
+  .amiibo-context-metadata { display: grid; grid-template-columns: repeat(3,minmax(0,1fr));
+                             gap: 1px; margin-top: 10px; background: #29333f; }
+  .amiibo-context-metadata > div { padding: 9px; background: #11161d;
+                                   color: #8190a2; font-size: 10px; text-align: center; }
+  .amiibo-context-metadata b { display: block; margin-top: 2px; color: #eef2f7;
+                               font-size: 12px; overflow-wrap: anywhere; }
+  .amiibo-compatible-games { margin-top: 10px; padding: 10px 12px;
+                             border: 1px solid #29333f; border-radius: 8px;
+                             background: #0d1218; }
+  .amiibo-compatible-games span { display: block; margin-bottom: 4px; color: #8190a2;
+                                  font-size: 10px; }
+  .amiibo-compatible-games b { display: block; max-height: 92px; overflow-y: auto;
+                               color: #dfe7f1; font-size: 11px; line-height: 1.45; }
+  .amiibo-context-actions { display: grid; grid-template-columns: repeat(4,minmax(0,1fr));
+                            gap: 8px; margin-top: 10px; }
+  .amiibo-context-actions button { min-width: 0; padding: 6px 9px; font-size: 12px; }
   .amiibo-library-tools { margin-top: 12px; border-top: 1px solid #2b313b; padding-top: 10px; }
   .amiibo-library-tools summary { cursor: pointer; color: #9aa6b2; font-size: 12px; }
   .amiibo-library-tools .actions-bar { margin-top: 8px; }
-  #amiiboLibraryDetail .amiibo-detail-grid { grid-template-columns: 1fr; }
-  @media (max-width: 580px) {
-    header .header-message { order: 5; flex-basis: 100%; }
-  }
   @media (max-width: 820px) {
-    .amiibo-manager-bottom { grid-template-columns: 1fr 1fr; }
-    .amiibo-detail { grid-column: 1 / -1; }
+    .amiibo-manager-header { grid-template-columns: 1fr; align-items: stretch; }
+    .amiibo-manager-title { white-space: normal; }
+    .amiibo-header-actions { width: 100%; justify-content: start; }
+    .amiibo-search { flex: 1 1 220px; }
+    .amiibo-quick-stats { grid-template-columns: repeat(3,minmax(0,1fr)); }
+    .amiibo-quick-stats > div:nth-child(4) { border-left: 0; }
+    .amiibo-quick-stats > div:nth-child(n+4) { border-top: 1px solid #29333f; }
   }
   @media (max-width: 580px) {
-    .amiibo-manager-bottom { grid-template-columns: 1fr; }
-    .amiibo-detail { grid-column: auto; }
-    .amiibo-carousel-controls { gap: 10px; }
+    .amiibo-quick-stats { grid-template-columns: 1fr 1fr; }
+    .amiibo-quick-stats > div:nth-child(odd) { border-left: 0; }
+    .amiibo-quick-stats > div:nth-child(n+3) { border-top: 1px solid #29333f; }
+    .amiibo-primary-action button { min-height: 38px; padding-inline: 14px; }
+    .amiibo-filter-row { grid-template-columns: 1fr; }
+    .amiibo-context-heading { display: grid; }
+    .amiibo-context-metadata { grid-template-columns: 1fr; }
+    .amiibo-context-actions { grid-template-columns: 1fr 1fr; }
   }
   progress { width: 100%; height: 8px; margin-top: 10px; accent-color: #2563eb; }
   details.devtools { margin-top: 18px; }
@@ -214,7 +259,6 @@
 <body>
 <header>
   <h1>PicoSwitch2</h1>
-  <span id="amiiboMessage" class="header-message">Offline amiibo library ready.</span>
   <span id="status" class="pill bad">Disconnected</span>
   <button id="connectUsbBtn" class="primary">Connect USB</button>
   <button id="connectBleBtn">Connect Bluetooth</button>
@@ -278,8 +322,13 @@
     <section id="amiiboPanel">
       <div class="amiibo-manager">
         <div class="amiibo-manager-header">
-          <h2 class="amiibo-manager-title">Virtual amiibo Manager</h2>
+          <h2 class="amiibo-manager-title">Virtual Amiibo Manager</h2>
           <div class="amiibo-header-actions">
+            <label class="amiibo-search">
+              <span>Search</span>
+              <input id="amiiboLibrarySearch" type="search"
+                     placeholder="Find an amiibo">
+            </label>
             <details id="amiiboImportMenu" class="amiibo-import-menu">
               <summary>Import new amiibo</summary>
               <div class="amiibo-import-choices">
@@ -288,111 +337,94 @@
                 <button id="amiiboDirectoryBtn">Choose directory</button>
               </div>
             </details>
+            <button id="amiiboScanBtn" class="hidden" disabled
+                    title="Shown only when adapter firmware exposes physical amiibo scanning">
+              Scan physical amiibo
+            </button>
             <input type="file" id="amiiboKeyFile" accept=".bin,application/octet-stream" hidden>
-            <button id="amiiboImportKeysBtn" title="Optional: read owner and nickname from your own console-written amiibo">Import keys</button>
           </div>
         </div>
         <p class="muted">Import compatible tag files you own. Each validated dump remains in this
           browser, and the adapter only receives the amiibo you load.</p>
+        <div id="amiiboMessage" class="amiibo-notice muted" role="status"
+             aria-live="polite">Offline amiibo library ready.</div>
 
         <div class="amiibo-carousel-stage">
           <div id="amiiboCarouselCaption" class="amiibo-carousel-caption muted"></div>
           <div id="amiiboCarouselViewport" class="amiibo-carousel-viewport" tabindex="0"
-               role="group" aria-label="amiibo carousel; use left and right arrow keys">
+               role="group"
+               aria-label="amiibo carousel; use the mouse wheel, swipe, or left and right arrow keys">
             <div id="amiiboCarouselTrack" class="amiibo-carousel-track"></div>
           </div>
-          <div class="amiibo-carousel-controls">
-            <button id="amiiboCarouselPrev" class="amiibo-carousel-nav"
-                    aria-label="Previous amiibo">&larr;</button>
-            <button id="amiiboLibraryLoadBtn" class="primary" disabled>Load amiibo</button>
-            <button id="amiiboSwapComboBtn" class="hidden">Swap Combo</button>
-            <button id="amiiboCarouselNext" class="amiibo-carousel-nav"
-                    aria-label="Next amiibo">&rarr;</button>
+          <div id="amiiboLibraryTitle" class="amiibo-selected-title">Select an amiibo</div>
+
+          <div class="amiibo-quick-stats" aria-label="Selected amiibo save information">
+            <div>Game data<b id="amiiboInfoAppData">&mdash;</b></div>
+            <div>Owner<b id="amiiboInfoOwner">No owner set.</b></div>
+            <div>Nickname<b id="amiiboInfoNickname">No nickname set.</b></div>
+            <div>Registered<b id="amiiboInfoSetup">&mdash;</b></div>
+            <div>Last written<b id="amiiboInfoWritten">&mdash;</b></div>
           </div>
-          <div id="amiiboCarouselPosition" class="amiibo-carousel-position muted"></div>
+
+          <div class="amiibo-carousel-controls">
+            <div class="amiibo-primary-action">
+              <button id="amiiboLibraryLoadBtn" class="primary" disabled>Load amiibo</button>
+              <button id="amiiboSaveBtn" class="primary hidden" disabled>Sync amiibo</button>
+              <button id="amiiboSwapComboBtn" class="amiibo-combo-action hidden">Swap Combo</button>
+            </div>
+          </div>
+          <div class="amiibo-filter-row" aria-label="amiibo library filters">
+            <button class="amiibo-filter-chip amiibo-filter-cycle"
+                    data-field="gameSeries" data-delta="1"
+                    aria-label="Cycle game series">
+              <span>Game series</span>
+              <b id="amiiboFilterGameSeries">All</b>
+            </button>
+            <button class="amiibo-filter-chip amiibo-filter-cycle"
+                    data-field="amiiboSeries" data-delta="1"
+                    aria-label="Cycle amiibo series">
+              <span>Amiibo series</span>
+              <b id="amiiboFilterAmiiboSeries">All</b>
+            </button>
+            <button class="amiibo-filter-chip amiibo-filter-cycle"
+                    data-field="type" data-delta="1"
+                    aria-label="Cycle product type">
+              <span>Product type</span>
+              <b id="amiiboFilterType">All</b>
+            </button>
+          </div>
+          <button id="amiiboCarouselPrev" class="hidden" tabindex="-1"
+                  aria-hidden="true" aria-label="Previous amiibo"></button>
+          <button id="amiiboCarouselNext" class="hidden" tabindex="-1"
+                  aria-hidden="true" aria-label="Next amiibo"></button>
+          <span id="amiiboCarouselPosition" class="hidden"></span>
+          <span id="amiiboLibraryCount" class="hidden">No imported amiibo</span>
+          <span id="amiiboSortField" class="hidden">Default</span>
+          <span id="amiiboSortDir" class="hidden">Ascending</span>
         </div>
 
-        <div class="amiibo-manager-bottom">
-          <div class="amiibo-action-stack">
-            <button id="amiiboSaveBtn" class="hidden" disabled>Sync amiibo</button>
-            <button id="amiiboEjectBtn" class="hidden" disabled>Eject amiibo</button>
+        <div id="amiiboLibraryDetail" class="amiibo-context-drawer hidden">
+          <div class="amiibo-context-heading">
+            <div>
+              <span>Selected amiibo details</span>
+              <b id="amiiboLibraryCharacter">&mdash;</b>
+            </div>
+            <span class="muted">Click the centered amiibo again to close</span>
+          </div>
+          <div class="amiibo-context-metadata">
+            <div>Game series<b id="amiiboLibraryGameSeries">&mdash;</b></div>
+            <div>Amiibo series<b id="amiiboLibrarySeries">&mdash;</b></div>
+            <div>Product type<b id="amiiboLibraryType">&mdash;</b></div>
+          </div>
+          <div class="amiibo-compatible-games">
+            <span>Works with</span>
+            <b id="amiiboInfoGames">&mdash;</b>
+          </div>
+          <div class="amiibo-context-actions">
             <button id="amiiboDownloadBtn" disabled>Download .bin</button>
-            <button id="amiiboInitBtn" class="hidden" disabled>Initialize amiibo</button>
+            <button id="amiiboInitBtn" disabled>Initialize amiibo</button>
+            <button id="amiiboEjectBtn" class="hidden" disabled>Eject amiibo</button>
             <button id="amiiboDeleteBtn" disabled>Delete from Library</button>
-            <button id="amiiboRefreshBtn">Refresh</button>
-          </div>
-
-          <div class="amiibo-filter-panel">
-            <input id="amiiboLibrarySearch" type="search"
-                   placeholder="Search for amiibo by name">
-            <div class="amiibo-filter-row">
-              <button class="amiibo-filter-cycle" data-field="gameSeries" data-delta="-1"
-                      aria-label="Previous game series">&larr;</button>
-              <div class="amiibo-filter-value">
-                <span>Game series</span>
-                <b id="amiiboFilterGameSeries">All</b>
-              </div>
-              <button class="amiibo-filter-cycle" data-field="gameSeries" data-delta="1"
-                      aria-label="Next game series">&rarr;</button>
-            </div>
-            <div class="amiibo-filter-row">
-              <button class="amiibo-filter-cycle" data-field="amiiboSeries" data-delta="-1"
-                      aria-label="Previous amiibo series">&larr;</button>
-              <div class="amiibo-filter-value">
-                <span>amiibo series</span>
-                <b id="amiiboFilterAmiiboSeries">All</b>
-              </div>
-              <button class="amiibo-filter-cycle" data-field="amiiboSeries" data-delta="1"
-                      aria-label="Next amiibo series">&rarr;</button>
-            </div>
-            <div class="amiibo-filter-row">
-              <button class="amiibo-filter-cycle" data-field="type" data-delta="-1"
-                      aria-label="Previous product type">&larr;</button>
-              <div class="amiibo-filter-value">
-                <span>Product type</span>
-                <b id="amiiboFilterType">All</b>
-              </div>
-              <button class="amiibo-filter-cycle" data-field="type" data-delta="1"
-                      aria-label="Next product type">&rarr;</button>
-            </div>
-            <div class="amiibo-filter-row">
-              <button class="amiibo-sort-cycle" data-target="mode" data-delta="-1"
-                      aria-label="Previous sort field">&larr;</button>
-              <div class="amiibo-filter-value">
-                <span>Sort by</span>
-                <b id="amiiboSortField">Default</b>
-              </div>
-              <button class="amiibo-sort-cycle" data-target="mode" data-delta="1"
-                      aria-label="Next sort field">&rarr;</button>
-            </div>
-            <div class="amiibo-filter-row">
-              <button class="amiibo-sort-cycle" data-target="dir" data-delta="-1"
-                      aria-label="Toggle sort order">&larr;</button>
-              <div class="amiibo-filter-value">
-                <span>Order</span>
-                <b id="amiiboSortDir">Ascending</b>
-              </div>
-              <button class="amiibo-sort-cycle" data-target="dir" data-delta="1"
-                      aria-label="Toggle sort order">&rarr;</button>
-            </div>
-            <span id="amiiboLibraryCount" class="muted">No imported amiibo</span>
-          </div>
-
-          <div id="amiiboLibraryDetail" class="amiibo-detail hidden">
-            <div id="amiiboLibraryTitle" class="bigname">Unknown amiibo</div>
-            <div class="amiibo-detail-grid" style="margin-top:12px">
-              <div>Character<b id="amiiboLibraryCharacter">&mdash;</b></div>
-              <div>Game series<b id="amiiboLibraryGameSeries">&mdash;</b></div>
-              <div>amiibo series<b id="amiiboLibrarySeries">&mdash;</b></div>
-              <div>Product type<b id="amiiboLibraryType">&mdash;</b></div>
-              <div>Owner<b id="amiiboInfoOwner">No owner set.</b></div>
-              <div>amiibo Nickname<b id="amiiboInfoNickname">No nickname set.</b></div>
-              <div>Last written<b id="amiiboInfoWritten">&mdash;</b></div>
-              <div>Registered<b id="amiiboInfoSetup">&mdash;</b></div>
-              <div>Write count<b id="amiiboInfoWrites">&mdash;</b></div>
-              <div>Game data<b id="amiiboInfoAppData">&mdash;</b></div>
-              <div class="amiibo-detail-wide">Works with<b id="amiiboInfoGames">&mdash;</b></div>
-            </div>
           </div>
         </div>
 
@@ -400,6 +432,11 @@
         <details class="amiibo-library-tools">
           <summary>Library backup and maintenance</summary>
           <div class="actions-bar">
+            <button id="amiiboImportKeysBtn"
+                    title="Optional: read owner, nickname, write count, and save metadata from your own console-written amiibo">
+              Import keys
+            </button>
+            <button id="amiiboRefreshBtn">Refresh library</button>
             <button id="amiiboLibraryExportBtn">Export library (.zip)</button>
             <input type="file" id="amiiboLibraryBackupFile"
                    accept=".zip,.json,application/zip,application/json" hidden>
@@ -557,6 +594,8 @@ let amiiboLibrarySelectedKey = "";
 let amiiboLoadedSlotKey = "";
 let amiiboCarouselIndex = 0;
 let amiiboLibraryBusy = false;
+let amiiboContextOpenKey = "";
+let amiiboSelectAdapterOnNextStatus = false;
 let amiiboSortMode = "default"; // default | name | number | release
 let amiiboSortDir = "asc";      // asc | desc
 // v3 (NTAG I2C 2K) tags share one identity across machine variants. The carousel
@@ -926,10 +965,9 @@ function compareAmiiboEntriesAsc(a, b) {
 
 // Meaningful data past the classic amiibo image (540 + 32-byte signature = 572,
 // with rider data ending ~0x248) marks an extended format such as the Kirby Air
-// Riders "Figure Player" tags, whose rider+machine layout PicoSwitch2 cannot yet
-// serve. See docs/switch2/kirby-air-riders-extended-amiibo.md.
+// Riders "Figure Player" tags. See docs/Amiibo-v3.md.
 // NTAG I2C 2K "figure v3" tag (e.g. Kirby Air Riders): the full 2048-byte tag
-// is imported and stored, but adapter/console serving is not implemented yet.
+// is imported, stored, served, and synchronized as one mutable image.
 function amiiboIsExtendedDump(rawBytes) {
   return rawBytes.length === 2048;
 }
@@ -979,7 +1017,7 @@ async function replaceCachedAmiiboLibrary(entries, preserveExisting = true) {
   }
   amiiboLibrary = entries;
   sanitizeAmiiboSlotState();
-  if (amiiboStatus?.loaded) {
+  if (amiiboAdapterHasTag()) {
     const activeEntry = entries.find(entry =>
       amiiboEntryContainsUid(entry, amiiboStatus.uid));
     if (activeEntry) {
@@ -994,14 +1032,16 @@ async function replaceCachedAmiiboLibrary(entries, preserveExisting = true) {
   return persisted;
 }
 
-async function cacheSingleAmiiboEntry(entry) {
+async function cacheSingleAmiiboEntry(entry, replaceKey = "") {
   entry = normalizeAmiiboLibraryEntry(entry);
   const db = await openAmiiboLibraryDb();
   let persisted = false;
   if (db) {
     try {
       const tx = db.transaction("library", "readwrite");
-      tx.objectStore("library").put(entry);
+      const store = tx.objectStore("library");
+      if (replaceKey && replaceKey !== entry.key) store.delete(replaceKey);
+      store.put(entry);
       await idbTransactionDone(tx);
       persisted = true;
       if (navigator.storage && navigator.storage.persist)
@@ -1010,9 +1050,14 @@ async function cacheSingleAmiiboEntry(entry) {
       console.warn("Could not persist amiibo cache entry", error);
     }
   }
-  const index = amiiboLibrary.findIndex(item => item.id === entry.id);
-  if (index >= 0) amiiboLibrary[index] = entry;
-  else amiiboLibrary.push(entry);
+  const oldKey = replaceKey || entry.key;
+  const index = amiiboLibrary.findIndex(item => item.key === oldKey);
+  amiiboLibrary = amiiboLibrary.filter(
+    item => item.key !== oldKey && item.key !== entry.key);
+  if (index >= 0 && index <= amiiboLibrary.length)
+    amiiboLibrary.splice(index, 0, entry);
+  else
+    amiiboLibrary.push(entry);
   renderAmiiboLibrary();
   return persisted;
 }
@@ -1040,7 +1085,7 @@ async function loadCachedAmiiboLibrary() {
       for (const entry of amiiboLibrary) store.put(entry);
       await idbTransactionDone(rewrite);
     }
-    if (amiiboStatus?.loaded) {
+    if (amiiboAdapterHasTag()) {
       const activeEntry = amiiboLibrary.find(entry =>
         amiiboEntryContainsUid(entry, amiiboStatus.uid));
       if (activeEntry) {
@@ -1138,7 +1183,7 @@ async function chooseAmiiboDirectory() {
       (invalid ? `; ignored ${invalid} invalid .bin file${invalid === 1 ? "" : "s"}.` : ".") +
       (extended
         ? ` Note: ${extended} NTAG I2C 2K (Kirby Air Riders) tag${extended === 1 ? "" : "s"} ` +
-          "imported in full (rider + machine); serving them to the console is still in progress."
+          "imported in full (rider + machine) with adapter read and sync support."
         : "");
   } catch (error) {
     if (entries.length) {
@@ -1224,8 +1269,10 @@ function renderAmiiboFilterControls() {
       amiiboLibraryFilters[field] = "All";
     $("#" + elementId).textContent = amiiboLibraryFilters[field];
   }
-  $("#amiiboSortField").textContent = AMIIBO_SORT_LABELS[amiiboSortMode];
-  $("#amiiboSortDir").textContent =
+  const sortField = $("#amiiboSortField");
+  const sortDir = $("#amiiboSortDir");
+  if (sortField) sortField.textContent = AMIIBO_SORT_LABELS[amiiboSortMode];
+  if (sortDir) sortDir.textContent =
     amiiboSortDir === "desc" ? "Descending" : "Ascending";
 }
 
@@ -1236,6 +1283,7 @@ function cycleAmiiboFilter(field, delta) {
   amiiboLibraryFilters[field] = options[next];
   amiiboCarouselIndex = 0;
   amiiboLibrarySelectedKey = "";
+  amiiboContextOpenKey = "";
   renderAmiiboLibrary();
 }
 
@@ -1283,8 +1331,8 @@ function updateAmiiboCarouselSelection(entries, animate = false) {
   // adjacent items plus a fixed gap, so scaling can never create overlap.
   const gap = viewport.clientWidth < 580 ? 6 : 12;
   const fittedBase = Math.min(
-    160, Math.max(36, (viewport.clientWidth / 2 - 4 * gap) / 2.5));
-  const globalScale = fittedBase / 160;
+    180, Math.max(36, (viewport.clientWidth / 2 - 4 * gap) / 2.5));
+  const globalScale = fittedBase / 180;
   const ratios = [1, .8, .6, .4, .2];
   const scales = ratios.map(ratio => ratio * globalScale);
   const opacities = [1, .86, .68, .5, .34];
@@ -1364,14 +1412,17 @@ function renderAmiiboLibrary() {
     : "amiibo available: 0";
   if (!entries.length) {
     amiiboLibrarySelectedKey = "";
+    amiiboContextOpenKey = "";
     amiiboCarouselIndex = 0;
     $("#amiiboLibraryDetail").classList.add("hidden");
+    $("#amiiboLibraryTitle").textContent = "Select an amiibo";
     $("#amiiboCarouselCaption").textContent = "";
     $("#amiiboCarouselPosition").textContent = total
       ? "No imported amiibo match these filters"
       : "Import or choose a directory to build your library";
     $("#amiiboCarouselPrev").disabled = true;
     $("#amiiboCarouselNext").disabled = true;
+    renderAmiiboInfoBox(null);
   } else {
     const selectedIndex = entries.findIndex(entry => entry.key === amiiboLibrarySelectedKey);
     if (selectedIndex >= 0) amiiboCarouselIndex = selectedIndex;
@@ -1398,7 +1449,19 @@ function createAmiiboCarouselItem(entry) {
       amiiboEntryContainsUid(entry, amiiboStatus?.uid))
     item.classList.add("active-tag");
   item.title = `${amiiboDisplayName(entry)}\n${entry.path}`;
-  item.onclick = () => selectAmiiboLibraryEntry(entry.key, true);
+  item.onclick = () => {
+    if (performance.now() < amiiboCarouselSuppressClickUntil) return;
+    const centered = item.getAttribute("aria-current") === "true" &&
+      amiiboLibrarySelectedKey === entry.key;
+    if (centered) {
+      amiiboContextOpenKey =
+        amiiboContextOpenKey === entry.key ? "" : entry.key;
+      renderAmiiboLibraryDetail(entry, catalogMetadataForEntry(entry));
+      return;
+    }
+    amiiboContextOpenKey = "";
+    selectAmiiboLibraryEntry(entry.key, true);
+  };
 
   const imageUrl = metadata?.imgwebp || metadata?.image || "";
   const fallback = document.createElement("span");
@@ -1416,6 +1479,10 @@ function createAmiiboCarouselItem(entry) {
     item.appendChild(image);
   }
   item.appendChild(fallback);
+  const writeBadge = document.createElement("span");
+  writeBadge.className = "amiibo-write-badge hidden";
+  writeBadge.setAttribute("aria-label", "Amiibo write count");
+  item.appendChild(writeBadge);
   return item;
 }
 
@@ -1428,6 +1495,7 @@ function moveAmiiboCarousel(delta) {
   // wrap jumps.
   const next =
     (amiiboCarouselIndex + delta + entries.length) % entries.length;
+  amiiboContextOpenKey = "";
   selectAmiiboLibraryEntry(entries[next].key, true);
 }
 
@@ -1554,12 +1622,11 @@ async function amiiboZipEntries(bytes) {
 }
 // === amiibo-zip END ===
 
-// === amiibo-decrypt BEGIN (amiitool decrypt-only; tools/test_amiibo_decrypt.mjs) ===
-// Read-only amiibo decryption to surface owner Mii, nickname, and setup state
-// from a console-written dump. Uses the socram8888/amiitool key derivation +
-// AES-128-CTR over Web Crypto. Nintendo's retail keys are NEVER shipped: the
-// user imports their own key_retail.bin (Import keys). Self-contained; no
-// generation/encryption. See docs/switch2/amiibo-identity-and-generation.md.
+// === amiibo-decrypt BEGIN (amiitool-compatible; tools/test_amiibo_decrypt.mjs) ===
+// Browser-local amiibo decrypt, re-sign, and re-encrypt primitives. They surface
+// save metadata and support explicit initialization of a user-owned dump.
+// Nintendo's retail keys are NEVER shipped: the user imports their own
+// key_retail.bin and the bytes never leave this browser.
 async function amiiboHmacSha256(keyBytes, dataBytes) {
   const key = await crypto.subtle.importKey(
     "raw", keyBytes, {name: "HMAC", hash: "SHA-256"}, false, ["sign"]);
@@ -1800,8 +1867,26 @@ async function amiiboPackInternal(keys, internal, originalTag, v3) {
 async function amiiboInitializeImage(keys, tagBytes, v3) {
   const {internal, ok} = await amiiboDecryptInternal(keys, tagBytes, v3);
   if (!ok) throw new Error("This dump failed its HMAC check; refusing to re-sign it.");
+  if (v3)
+    internal.fill(0, 0x02A, 0x02C); // page-4 generation is key-derivation input
   internal.fill(0, 0x02C, 0x1B4);
   const out = await amiiboPackInternal(keys, internal, tagBytes, v3);
+  if (v3) {
+    // Air Riders stores additional writable state outside the ordinary
+    // encrypted amiibo body. Match an untouched 2 KB figure without erasing
+    // its chip configuration or machine identity/SRAM response:
+    //   page 4 tail       -> initial A5 00 00 00
+    //   sector-0 game     -> pages 0x92..0xE1
+    //   sector-1 state    -> complete second user-memory sector
+    //
+    // Sector-1 allocation is figure-dependent: Kirby uses capability/data
+    // pages 00/01, while King Dedede uses 64/65. Clearing the complete 1 KB
+    // user sector avoids a per-rider table and covers future allocations.
+    // Chip configuration and SRAM live in sector 0 at 0x388..0x3FF and remain
+    // byte-identical.
+    out.fill(0, 0x248, 0x388);
+    out.fill(0, 0x400, 0x800);
+  }
   // Self-check: a re-signed image the console would reject is worse than no
   // feature at all, so verify the round trip before it can reach the library.
   const verify = await amiiboDecryptInternal(keys, out, v3);
@@ -1818,6 +1903,7 @@ async function amiiboInitializeImage(keys, tagBytes, v3) {
 const AMIIBO_KEYS_STORE_KEY = "__amiibo_retail_keys__";
 let amiiboKeys = null;                 // parsed {data, tag, raw} once imported
 const amiiboInfoCache = new Map();     // entry.key -> {owner, nickname, setUp} | {error}
+let amiiboPendingInitializeKey = "";
 
 async function storeAmiiboKeys(rawBytes) {
   const db = await openAmiiboLibraryDb();
@@ -1864,9 +1950,18 @@ async function importAmiiboKeysFile(file) {
     renderAmiiboKeyState();
     renderAmiiboLoadedSlot();
     $("#amiiboMessage").textContent = stored
-      ? "amiibo keys imported. Owner and nickname will show for console-written amiibo."
-      : "amiibo keys loaded for this session (browser storage unavailable).";
+      ? "amiibo keys imported. Save details and offline initialization are available."
+      : "amiibo keys loaded for this session. Save details and offline initialization are available.";
+    if (amiiboPendingInitializeKey) {
+      const pendingKey = amiiboPendingInitializeKey;
+      amiiboPendingInitializeKey = "";
+      if (amiiboLibrary.some(entry => entry.key === pendingKey)) {
+        amiiboLibrarySelectedKey = pendingKey;
+        await initializeSelectedAmiibo();
+      }
+    }
   } catch (error) {
+    amiiboPendingInitializeKey = "";
     amiiboKeys = null;
     renderAmiiboKeyState();
     $("#amiiboMessage").textContent = `Key file rejected: ${error.message}`;
@@ -1879,14 +1974,16 @@ function renderAmiiboKeyState() {
   // only returns after Clear cached library (app reset) forgets the keys.
   btn.classList.toggle("hidden", !!amiiboKeys);
 }
-function amiiboKeysWarnAndPick() {
+function amiiboKeysWarnAndPick(forInitialization = false) {
   if (confirm(
       "Import amiibo keys (key_retail.bin)?\n\n" +
       "Only supply keys you dumped yourself from hardware you own. This project " +
       "ships no keys. They are stored only in this browser and are used solely to " +
-      "read the owner Mii and nickname from your own console-written amiibo — " +
+      "read save details and to initialize and re-sign your own amiibo locally — " +
       "never uploaded anywhere."))
     $("#amiiboKeyFile").click();
+  else if (forInitialization)
+    amiiboPendingInitializeKey = "";
 }
 // Decrypt the entry (cached) and return {owner, nickname, setUp} or null.
 async function amiiboInfoFor(entry) {
@@ -1944,6 +2041,8 @@ function renderAmiiboInfoBox(entry) {
 // decrypt with, so an uninitialized amiibo and a missing key look different.
 function amiiboSetDetailExtras(info) {
   const set = (id, text) => { const el = $(id); if (el) el.textContent = text; };
+  const badges = [...document.querySelectorAll(".amiibo-write-badge")];
+  for (const badge of badges) badge.classList.add("hidden");
   if (!info) {
     set("#amiiboInfoWritten", "—"); set("#amiiboInfoSetup", "—");
     set("#amiiboInfoWrites", "—");  set("#amiiboInfoAppData", "—");
@@ -1953,6 +2052,12 @@ function amiiboSetDetailExtras(info) {
   set("#amiiboInfoSetup", info.setupDate || "Not registered");
   set("#amiiboInfoWrites", String(info.writeCounter));
   set("#amiiboInfoAppData", amiiboAppDataLabel(info));
+  const badge = $("#amiiboCarouselTrack .amiibo-carousel-item[aria-current='true'] .amiibo-write-badge");
+  if (badge) {
+    const count = Number(info.writeCounter) || 0;
+    badge.textContent = count === 1 ? "1 write" : `${count} writes`;
+    badge.classList.remove("hidden");
+  }
 }
 
 // Name the single game whose save data the amiibo carries.
@@ -2270,7 +2375,8 @@ async function lookupAmiiboMetadata(entry) {
 
 function renderAmiiboLibraryDetail(entry, metadata = null) {
   if (!entry || entry.key !== amiiboLibrarySelectedKey) return;
-  $("#amiiboLibraryDetail").classList.remove("hidden");
+  $("#amiiboLibraryDetail").classList.toggle(
+    "hidden", amiiboContextOpenKey !== entry.key);
   $("#amiiboLibraryTitle").textContent = amiiboDisplayName(entry);
   $("#amiiboLibraryCharacter").textContent =
     metadata?.character || "Catalog lookup unavailable";
@@ -2284,6 +2390,7 @@ async function selectAmiiboLibraryEntry(key, animate = false) {
   const entries = carouselAmiiboEntries();
   const index = entries.findIndex(entry => entry.key === key);
   if (index < 0) return;
+  if (amiiboLibrarySelectedKey !== key) amiiboContextOpenKey = "";
   amiiboCarouselIndex = index;
   amiiboLibrarySelectedKey = key;
   updateAmiiboCarouselSelection(entries, animate);
@@ -2370,27 +2477,47 @@ async function loadSelectedLibraryAmiibo() {
 //   adapter — the slot is empty but the adapter holds an image (possibly
 //             foreign): wipe the adapter only (confirm required)
 // The adapter holds a tag when either the 540/572 store or the isolated v3
-// (NTAG I2C 2K) slot is loaded. `amiibo status` reports .loaded and .uid for the
-// 540 store only, so v3 must be considered separately everywhere tag presence,
-// eject scope, and Load gating are decided.
+// (NTAG I2C 2K) slot is loaded. Both formats report their active UID, size,
+// generation and payload CRC through the same status object; .loaded remains
+// the 540/572 discriminator and .v3loaded identifies the 2 KB slot.
 function amiiboAdapterHasTag() {
   return !!(amiiboStatus && (amiiboStatus.loaded || amiiboStatus.v3loaded));
 }
-// True when `entry` is the exact tag currently on the adapter. A 540 tag is
-// matched by UID; a v3 tag is matched by the locally-tracked loaded-slot key
-// because the status UID field describes only the 540 store.
+// True when `entry` is the exact tag currently on the adapter. UID identifies
+// the tag; the v3 payload CRC also distinguishes machine variants and detects
+// a console write before this browser has synchronized it.
 function amiiboEntryOnAdapter(entry) {
   if (!entry || !amiiboStatus) return false;
-  if (entry.tagType === "v3")
-    return amiiboStatus.v3loaded === true && entry.key === amiiboLoadedSlotKey;
+  if (entry.tagType === "v3") {
+    if (!amiiboStatus.v3loaded ||
+        !amiiboEntryContainsUid(entry, amiiboStatus.uid))
+      return false;
+    if (!amiiboStatus.payloadCrc) return entry.key === amiiboLoadedSlotKey;
+    const bytes = amiiboEntryBytes(entry);
+    const crc = (amiiboCrc32(bytes) >>> 0)
+      .toString(16).padStart(8, "0").toUpperCase();
+    return crc === amiiboStatus.payloadCrc.toString().toUpperCase();
+  }
   return !!(amiiboStatus.loaded &&
     amiiboEntryContainsUid(entry, amiiboStatus.uid));
+}
+
+function amiiboLibraryEntryForAdapter() {
+  if (!amiiboAdapterHasTag()) return null;
+  const loaded = loadedAmiiboLibraryEntry();
+  if (loaded && amiiboEntryContainsUid(loaded, amiiboStatus.uid))
+    return loaded;
+  return amiiboLibrary.find(entry => amiiboEntryOnAdapter(entry)) ||
+    amiiboLibrary.find(entry =>
+      amiiboEntryContainsUid(entry, amiiboStatus.uid)) || null;
 }
 
 function amiiboEjectActionState() {
   const entry = loadedAmiiboLibraryEntry();
   const adapterAvailable = !!transportKind && amiiboAdapterHasTag();
-  if (entry && adapterAvailable && amiiboEntryOnAdapter(entry))
+  const adapterEntry = adapterAvailable
+    ? amiiboLibraryEntryForAdapter() : null;
+  if (entry && adapterEntry?.key === entry.key)
     return {mode: "both", entry};
   if (entry) return {mode: "slot", entry};
   if (adapterAvailable) return {mode: "adapter", entry: null};
@@ -2451,7 +2578,7 @@ function amiiboSetBusy(busy, percent = 0) {
   $("#amiiboChooseBtn").disabled = busy;
   $("#amiiboDirectoryBtn").disabled = busy;
   $("#amiiboPersistBtn").disabled =
-    busy || !transportKind || !(amiiboStatus && amiiboStatus.loaded);
+    busy || !transportKind || !amiiboAdapterHasTag();
   $("#amiiboLibrarySearch").disabled = busy;
   for (const button of document.querySelectorAll(
       ".amiibo-filter-cycle"))
@@ -2472,18 +2599,11 @@ function amiiboSetBusy(busy, percent = 0) {
 
 function renderAmiiboLoadedSlot() {
   const entry = loadedAmiiboLibraryEntry();
-  const metadata = entry ? catalogMetadataForEntry(entry) : null;
-  // The 540 store reports `loaded`; a v3 (NTAG I2C 2K) tag is in a separate slot
-  // reported by `v3loaded`. Treat a loaded v3 entry as active on the adapter.
-  const v3Active = entry?.tagType === "v3" && amiiboStatus?.v3loaded === true;
-  const adapterMatches = v3Active || !!(entry && amiiboStatus?.loaded &&
-    amiiboEntryContainsUid(entry, amiiboStatus.uid));
-  const adapterPresented = v3Active || amiiboStatus?.presented !== false;
   const adapterConnected = !!transportKind;
   const selected = selectedAmiiboLibraryEntry();
   // Is the *highlighted* entry the exact tag already on the dongle? If so, "Load
   // amiibo" would be a no-op, so it is disabled. This must match the SPECIFIC tag
-  // (v3 by loaded-slot key, 540 by UID) — not merely "a v3 is loaded" — otherwise
+  // (v3 by UID + payload CRC, 540 by UID) — not merely "a v3 is loaded" — otherwise
   // every machine combo of a rider looks active and Swap Combo can never load a
   // different one.
   const selectedActive = amiiboEntryOnAdapter(selected) &&
@@ -2492,18 +2612,21 @@ function renderAmiiboLoadedSlot() {
   // dongle; disconnected → "Select amiibo" just records the choice so the library
   // stays browsable offline.
   const loadBtn = $("#amiiboLibraryLoadBtn");
-  loadBtn.textContent = adapterConnected ? "Load amiibo" : "Select amiibo";
+  loadBtn.textContent = adapterConnected
+    ? (selectedActive ? "Loaded on adapter" : "Load amiibo")
+    : "Select amiibo";
   loadBtn.title = adapterConnected
-    ? (selectedActive
+    ? (amiiboStatus?.dirty
+        ? "Sync the console-written adapter amiibo before replacing it"
+        : selectedActive
         ? "This amiibo is already on the adapter"
         : "Upload the highlighted amiibo to the adapter")
     : "Select the highlighted amiibo (connect an adapter to load it)";
   loadBtn.disabled =
-    amiiboLibraryBusy || !selected || (adapterConnected && selectedActive);
-  // Sync amiibo pulls console-written changes from the 540/572 store back to the
-  // browser; it stays hidden until an adapter is connected. It does not apply to
-  // a 2 KB (v3) tag, which has no console write-back path yet — the tooltip says
-  // so rather than leaving it mysteriously greyed.
+    amiiboLibraryBusy || !selected ||
+    (adapterConnected && (selectedActive || amiiboStatus?.dirty));
+  // Sync amiibo pulls console-written changes from either mutable store back to
+  // the browser; it stays hidden until an adapter is connected.
   // One button, two jobs, both about pulling the adapter's copy into the library:
   //   - the adapter holds an amiibo the library has never seen -> "Import amiibo"
   //   - the library has it AND the console has written to it since -> "Sync amiibo"
@@ -2513,25 +2636,29 @@ function renderAmiiboLoadedSlot() {
   // acknowledged, so it means exactly "has console writes not yet pulled back"
   // without downloading and decrypting the image just to compare dates.
   const saveBtn = $("#amiiboSaveBtn");
-  const adapterTagKnown = amiiboStatus?.loaded &&
-    amiiboLibrary.some(item => amiiboEntryContainsUid(item, amiiboStatus.uid));
-  const canImport = adapterConnected && amiiboStatus?.loaded && !adapterTagKnown;
-  const canSync = adapterConnected && amiiboStatus?.loaded && adapterTagKnown &&
+  const adapterActive = amiiboAdapterHasTag();
+  const adapterTagKnown = !!amiiboLibraryEntryForAdapter();
+  const canImport = adapterConnected && adapterActive && !adapterTagKnown;
+  const canSync = adapterConnected && adapterActive && adapterTagKnown &&
     amiiboStatus?.dirty === true;
   saveBtn.textContent = canImport ? "Import amiibo" : "Sync amiibo";
   saveBtn.classList.toggle("hidden", !(canImport || canSync));
+  loadBtn.classList.toggle("hidden", canImport || canSync);
   saveBtn.disabled = amiiboLibraryBusy;
   saveBtn.title = canImport
     ? "Add the amiibo currently on the adapter to this browser's library"
     : "The console has written to this amiibo; pull those changes into the library";
 
-  // Initialization needs the crypto path, so it only appears once keys exist.
+  // Initialization is browser-local and available online or offline. If keys
+  // are not cached yet, the action itself explains and requests the user's own
+  // key_retail.bin instead of hiding the capability.
   const initBtn = $("#amiiboInitBtn");
   if (initBtn) {
-    initBtn.classList.toggle("hidden", !amiiboKeys);
-    initBtn.disabled = amiiboLibraryBusy || !selected || !amiiboKeys;
-    initBtn.title = "Wipe the owner, nickname, game data and dates back to " +
-      "factory state, then re-sign. The amiibo identity and UID are unchanged.";
+    initBtn.classList.remove("hidden");
+    initBtn.disabled = amiiboLibraryBusy || !selected;
+    initBtn.title = (amiiboKeys ? "" : "Your own key_retail.bin will be requested. ") +
+      "Wipe owner, nickname, game data and dates in this browser, then re-sign. " +
+      "The adapter is not required and the amiibo identity and UID are unchanged.";
   }
   // Merged eject/clear button: labeled uniformly "Eject Amiibo". The action
   // scope still adapts (see amiiboEjectActionState); the tooltip explains it.
@@ -2564,9 +2691,9 @@ function renderAmiiboLoadedSlot() {
 
 function renderAmiiboStatus(status) {
   if (!status) return;
-  const priorUid = amiiboStatus?.loaded ? amiiboStatus.uid : "";
+  const priorUid = amiiboAdapterHasTag() ? amiiboStatus.uid : "";
   amiiboStatus = status;
-  $("#amiiboPersistBtn").disabled = !transportKind || !status.loaded;
+  $("#amiiboPersistBtn").disabled = !transportKind || !amiiboAdapterHasTag();
   if (status.dirty) {
     $("#amiiboMessage").textContent =
       status.persistPending
@@ -2578,21 +2705,25 @@ function renderAmiiboStatus(status) {
     $("#amiiboMessage").textContent =
       "The amiibo is ejected. Its stored image remains on the adapter.";
   } else if (status.v3loaded) {
-    // A 2 KB (NTAG I2C 2K) tag lives in the isolated v3 slot; status.loaded is
-    // false for it by design (mutual exclusion with the 540 store), so this must
-    // come before the !loaded case or a stored v3 reads as "no amiibo".
     $("#amiiboMessage").textContent =
-      "A 2 KB (NTAG I2C) amiibo is stored on the adapter. Console serving is experimental.";
+      status.presented === false
+        ? "The 2 KB amiibo is ejected. Its stored image remains on the adapter."
+        : "A 2 KB (NTAG I2C) amiibo is stored and presented on the adapter.";
   } else if (!status.loaded) {
     $("#amiiboMessage").textContent = "No amiibo is stored on the adapter.";
   }
-  const nextUid = status.loaded ? status.uid : "";
-  if (nextUid !== priorUid) {
-    const matching = amiiboLibrary.find(entry =>
-      amiiboEntryContainsUid(entry, nextUid));
+  const nextUid = amiiboAdapterHasTag() ? status.uid : "";
+  const followAdapter = amiiboSelectAdapterOnNextStatus ||
+    nextUid !== priorUid;
+  amiiboSelectAdapterOnNextStatus = false;
+  if (nextUid && followAdapter) {
+    const matching = amiiboLibraryEntryForAdapter() ||
+      amiiboLibrary.find(entry =>
+        amiiboEntryContainsUid(entry, nextUid));
     if (matching) {
       amiiboLibrarySelectedKey = matching.key;
-      if (!amiiboLoadedSlotKey) amiiboLoadedSlotKey = matching.key;
+      amiiboLoadedSlotKey = matching.key;
+      amiiboContextOpenKey = "";
       persistAmiiboSlotState();
     }
     renderAmiiboLibrary();
@@ -2637,9 +2768,13 @@ async function transferAmiiboCopy(bytes, commitCommand, progressStart,
 async function uploadAmiiboEntry(sourceEntry) {
   if (!transportKind) return false;
   const entry = normalizeAmiiboLibraryEntry(sourceEntry);
+  await refreshAmiiboStatus();
+  if (amiiboStatus && amiiboStatus.dirty) {
+    $("#amiiboMessage").textContent =
+      "Sync the modified adapter amiibo back to the browser first. Replacement is blocked to prevent losing its write data.";
+    return false;
+  }
   if (entry.tagType === "v3") {
-    // Experimental present-and-trace: upload the full 2048-byte NTAG I2C 2K tag
-    // to the adapter's isolated v3 slot so the console can attempt to read it.
     const v3bytes = amiiboEntryBytes(entry);
     amiiboSetBusy(true, 0);
     $("#amiiboMessage").textContent =
@@ -2664,19 +2799,12 @@ async function uploadAmiiboEntry(sourceEntry) {
     }
     $("#amiiboMessage").textContent = result?.ok
       ? `${amiiboDisplayName(entry)} is stored on the adapter as a 2 KB (NTAG I2C) tag. ` +
-        "Console serving is experimental — scan it on the Switch 2 and capture the UART " +
-        "trace of what the console reads (recognized, rejected, or a crash are all useful)."
+        "Console reads are supported; console-written changes can be pulled back with Sync amiibo."
       : (result?.error ||
          "The 2 KB tag could not be uploaded to the adapter.");
     return !!result?.ok;
   }
   const bytes = amiiboEntryBytes(entry);
-  await refreshAmiiboStatus();
-  if (amiiboStatus && amiiboStatus.dirty) {
-    $("#amiiboMessage").textContent =
-      "Sync the modified adapter amiibo back to the browser first. Replacement is blocked to prevent losing its write data.";
-    return false;
-  }
 
   amiiboSetBusy(true, 0);
   $("#amiiboMessage").textContent = `Uploading ${entry.name}…`;
@@ -2728,7 +2856,14 @@ function downloadSelectedAmiibo() {
 // initialized amiibo has to be loaded like any other.
 async function initializeSelectedAmiibo() {
   const entry = selectedAmiiboLibraryEntry();
-  if (!entry || amiiboLibraryBusy || !amiiboKeys) return;
+  if (!entry || amiiboLibraryBusy) return;
+  if (!amiiboKeys) {
+    amiiboPendingInitializeKey = entry.key;
+    $("#amiiboMessage").textContent =
+      "Initialize works offline, but re-signing requires your own key_retail.bin.";
+    amiiboKeysWarnAndPick(true);
+    return;
+  }
   const name = amiiboDisplayName(entry);
   if (!confirm(
       `Initialize ${name}?\n\n` +
@@ -2753,11 +2888,15 @@ async function initializeSelectedAmiibo() {
     const updated = normalizeAmiiboLibraryEntry({
       ...entry, bytes: wiped, data: undefined,
     });
-    if (!(await cacheSingleAmiiboEntry(updated)))
+    if (!(await cacheSingleAmiiboEntry(updated, entry.key)))
       throw new Error("Could not save the initialized amiibo to the library");
     committed = true;
-    const index = amiiboLibrary.findIndex(item => item.key === entry.key);
-    if (index >= 0) amiiboLibrary[index] = updated; else amiiboLibrary.push(updated);
+    if (amiiboLibrarySelectedKey === entry.key)
+      amiiboLibrarySelectedKey = updated.key;
+    if (amiiboLoadedSlotKey === entry.key) {
+      amiiboLoadedSlotKey = updated.key;
+      persistAmiiboSlotState();
+    }
     amiiboInfoCache.delete(entry.key);
     amiiboInfoCache.delete(updated.key);
     renderAmiiboLibrary();
@@ -2883,7 +3022,9 @@ async function importSingleAmiiboFile(file) {
     // Newer amiibo not yet in AmiiboAPI still work; names/artwork fill in later.
     console.warn("Amiibo catalog unavailable during import", error);
   }
-  const existing = amiiboLibrary.find(entry => entry.id === result.entry.id);
+  const existing = result.entry.tagType === "v3"
+    ? amiiboLibrary.find(entry => entry.key === result.entry.key)
+    : amiiboLibrary.find(entry => entry.id === result.entry.id);
   if (existing && !amiiboBuffersEqual(
       amiiboEntryBytes(existing), amiiboEntryBytes(result.entry))) {
     amiiboLibrarySelectedKey = existing.key;
@@ -2903,7 +3044,7 @@ async function importSingleAmiiboFile(file) {
     .catch(error => console.warn("Amiibo catalog unavailable", error));
   const extendedNote = result.extended
     ? " This is an NTAG I2C 2K (Kirby Air Riders) tag — imported in full (rider + " +
-      "machine); serving it to the console is still in progress."
+      "machine) and can be loaded, scanned, and synchronized."
     : "";
   if (!persisted) {
     $("#amiiboMessage").textContent =
@@ -2927,7 +3068,7 @@ function bytesFromHex(hex) {
 
 async function saveCurrentAmiibo() {
   const status = await refreshAmiiboStatus();
-  if (!status || !status.loaded) return;
+  if (!status || !(status.loaded || status.v3loaded)) return;
   amiiboSetBusy(true, 0);
   // Every path below runs inside try/finally. The busy state disables the
   // whole Amiibo panel, so an escaped exception or hung await would appear
@@ -2950,8 +3091,13 @@ async function saveCurrentAmiibo() {
     await loadAmiiboCatalog();
 
     const identity = parseAmiiboIdentity(bytes);
-    const cached = amiiboLibrary.find(entry =>
-      entry.id === identity.id || amiiboEntryContainsUid(entry, status.uid));
+    const loaded = loadedAmiiboLibraryEntry();
+    const cached =
+      (loaded && amiiboEntryContainsUid(loaded, status.uid) ? loaded : null) ||
+      amiiboLibrary.find(entry => amiiboEntryOnAdapter(entry)) ||
+      amiiboLibrary.find(entry =>
+        amiiboEntryContainsUid(entry, status.uid)) ||
+      amiiboLibrary.find(entry => entry.id === identity.id);
     const name = cached?.name || amiiboFileName ||
       `amiibo-${identity.uid || "updated"}.bin`;
     const updated = normalizeAmiiboLibraryEntry(cached
@@ -2975,7 +3121,8 @@ async function saveCurrentAmiibo() {
         ...identity
       });
     $("#amiiboProgress").value = 90;
-    const persisted = await cacheSingleAmiiboEntry(updated);
+    const persisted = await cacheSingleAmiiboEntry(
+      updated, cached?.key || "");
     if (!persisted) {
       $("#amiiboMessage").textContent =
         "Browser cache storage is unavailable; the adapter remains dirty and protected.";
@@ -3345,6 +3492,7 @@ function finishTransportDisconnect(message) {
   if (message) log("! " + message);
   transportKind = "";
   polling = false;
+  amiiboStatus = null;
   port = null; reader = null; writer = null;
   bleRx = null; bleTx = null; bleDevice = null;
   readBuf = "";
@@ -3415,6 +3563,7 @@ async function save() {
 }
 
 async function initializeAdapter(label) {
+  amiiboSelectAdapterOnNextStatus = true;
   setConnected(true, label);
   if (transportKind === "bluetooth") $("#devTools").open = false;
   log(`-- connected over ${label} --`);
@@ -3523,8 +3672,12 @@ $("#amiiboKeyFile").onchange = async e => {
   const file = e.target.files && e.target.files[0];
   e.target.value = "";
   if (file) await importAmiiboKeysFile(file);
+  else amiiboPendingInitializeKey = "";
 };
-$("#amiiboLibrarySearch").oninput = renderAmiiboLibrary;
+$("#amiiboLibrarySearch").oninput = () => {
+  amiiboContextOpenKey = "";
+  renderAmiiboLibrary();
+};
 for (const button of document.querySelectorAll(".amiibo-filter-cycle"))
   button.onclick = () => cycleAmiiboFilter(
     button.dataset.field, Number(button.dataset.delta));
@@ -3534,7 +3687,8 @@ for (const button of document.querySelectorAll(".amiibo-sort-cycle"))
 $("#amiiboCarouselPrev").onclick = () => moveAmiiboCarousel(-1);
 $("#amiiboCarouselNext").onclick = () => moveAmiiboCarousel(1);
 $("#amiiboSwapComboBtn").onclick = swapAmiiboCombo;
-$("#amiiboCarouselViewport").onkeydown = e => {
+const amiiboCarouselViewport = $("#amiiboCarouselViewport");
+amiiboCarouselViewport.onkeydown = e => {
   if (e.key === "ArrowLeft") {
     e.preventDefault();
     moveAmiiboCarousel(-1);
@@ -3543,6 +3697,52 @@ $("#amiiboCarouselViewport").onkeydown = e => {
     moveAmiiboCarousel(1);
   }
 };
+let amiiboWheelDelta = 0;
+let amiiboWheelResetTimer = 0;
+let amiiboWheelLockedUntil = 0;
+amiiboCarouselViewport.addEventListener("wheel", e => {
+  if (amiiboCarouselViewport.getAttribute("aria-disabled") === "true" ||
+      carouselAmiiboEntries().length < 2)
+    return;
+  const raw = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+  if (!raw) return;
+  e.preventDefault();
+  const unit = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
+    : e.deltaMode === WheelEvent.DOM_DELTA_PAGE
+      ? amiiboCarouselViewport.clientWidth : 1;
+  const now = performance.now();
+  if (now < amiiboWheelLockedUntil) return;
+  amiiboWheelDelta += raw * unit;
+  clearTimeout(amiiboWheelResetTimer);
+  amiiboWheelResetTimer = setTimeout(() => { amiiboWheelDelta = 0; }, 140);
+  if (Math.abs(amiiboWheelDelta) >= 36) {
+    moveAmiiboCarousel(Math.sign(amiiboWheelDelta));
+    amiiboWheelDelta = 0;
+    amiiboWheelLockedUntil = now + 180;
+  }
+}, {passive: false});
+
+let amiiboSwipe = null;
+let amiiboCarouselSuppressClickUntil = 0;
+amiiboCarouselViewport.addEventListener("pointerdown", e => {
+  if (e.pointerType !== "touch" && e.pointerType !== "pen") return;
+  amiiboSwipe = {id: e.pointerId, x: e.clientX, y: e.clientY};
+  amiiboCarouselViewport.setPointerCapture?.(e.pointerId);
+});
+amiiboCarouselViewport.addEventListener("pointerup", e => {
+  if (!amiiboSwipe || amiiboSwipe.id !== e.pointerId) return;
+  const dx = e.clientX - amiiboSwipe.x;
+  const dy = e.clientY - amiiboSwipe.y;
+  amiiboSwipe = null;
+  const threshold = Math.max(38, amiiboCarouselViewport.clientWidth * .07);
+  if (Math.abs(dx) >= threshold && Math.abs(dx) > Math.abs(dy) * 1.2) {
+    amiiboCarouselSuppressClickUntil = performance.now() + 350;
+    moveAmiiboCarousel(dx < 0 ? 1 : -1);
+  }
+});
+amiiboCarouselViewport.addEventListener("pointercancel", () => {
+  amiiboSwipe = null;
+});
 window.addEventListener("resize", () => {
   const entries = carouselAmiiboEntries();
   if (entries.length) updateAmiiboCarouselSelection(entries, false);

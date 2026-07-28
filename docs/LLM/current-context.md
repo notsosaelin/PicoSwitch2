@@ -44,79 +44,173 @@ required Git submodule for Pico 2 W audio builds.
 
 ## NFC boundary
 
-- Config mode accepts strictly validated 540/572-byte images through transactional 32-byte chunks.
+- Config mode accepts strictly validated 540/572-byte NTAG215 and 2048-byte
+  NTAG I2C Plus 2K images through transactional 32-byte chunks.
   Virtual Amiibo is always available: a blank store presents no virtual tag, while a loaded image
   automatically owns the virtual source. The adapter's internal baseline/latest-written recovery
   pair remains implementation-only; the portal does not expose reset-to-original behavior.
 - The production portal library remains available without an adapter connection. It accepts one
   file or recursively scans a selected directory and caches one record per AmiiboAPI catalog ID
-  with one mutable dump in browser-local IndexedDB. Imports require an exact local AmiiboAPI match;
-  duplicate owned files do not create extra records. Two independent quick-slot pointers can
-  reference different entries. The shared catalog is downloaded and stored once, then matched
+  with one mutable dump in browser-local IndexedDB. v3 rider/machine variants use content-derived
+  keys so distinct combinations sharing one catalog identity remain available without duplicate
+  copies of the same dump. The shared catalog is downloaded and stored once, then matched
   locally, so original tag bytes/IDs/UIDs/save data never leave the browser.
 - The production carousel starts empty and displays only user-imported records. Directory scans
   add those records to the visible library progressively. AmiiboAPI order remains authoritative;
-  each filter row cycles `All`, then only the imported library's available values alphabetically.
+  each compact filter chip cycles `All`, then only the imported library's available values
+  alphabetically.
   Centered artwork stays fixed in the middle at 100%; four non-overlapping neighbors on each side
   are exactly 80/60/40/20%. Selection changes animate without rebuilding the track, and carousel
-  names are omitted.
-- **Sync Amiibo from Adapter** retrieves the latest active image, validates its raw format and
-  exact AmiiboAPI identity, overwrites the selected or UID-matching cached entry, and acknowledges
-  firmware dirty state only after IndexedDB confirms the write. Browser security does not permit
-  silently overwriting the original OS file.
+  names are omitted. Mouse wheel/trackpad while hovered, horizontal touch/pen swipe, and keyboard
+  arrows navigate; visible arrow buttons and the position counter are intentionally absent. The
+  three filter chips sit together below the compact primary action.
+- **Sync amiibo** retrieves the latest active image, validates its raw tag identity, overwrites the
+  loaded or UID-matching cached entry, and acknowledges firmware dirty state only after IndexedDB
+  confirms the write. The AmiiboAPI catalog enriches the record but never gates it. Browser
+  security does not permit silently overwriting the original OS file.
 - `web/diagnostic.html` and `tools/run_amiibo_portal_test.ps1` provide the same library/metadata
   workflow plus a browser-only simulated adapter, transactional upload, controlled write,
   persistence, cache-first save-back, and self-test without Web Serial or hardware.
-- Both portals use an artwork carousel. The production detail card intentionally exposes only
-  friendly Name, Character, Game series, Amiibo series, and Product type fields.
+- Both portals use an artwork carousel. The production manager shows centered save facts below the
+  artwork; clicking the centered amiibo toggles a non-modal context drawer with friendly catalog
+  metadata, compatible games, and secondary/destructive actions.
   `tools/run_config_portal.ps1` serves the real portal from the same localhost origin.
-- The board stores exactly one amiibo (flash Save 1/Save 2 = one identity's baseline/latest-written
-  recovery pair, not two amiibo). The manager is single-slot: **Load Amiibo** stages the highlighted
-  carousel entry → **Activate Amiibo** (disabled "Amiibo activated" while already presented).
-  **Sync Amiibo** pulls the latest console-written image into IndexedDB. One merged eject/clear
-  button labels its exact scope from `amiiboEjectActionState()`: **Eject Amiibo** (loaded amiibo is
-  on the adapter → confirm, `amiibo eject` + `amiibo clear`, unload), **Clear Loaded Amiibo**
-  (unload only, no confirm), or **Eject Virtual Amiibo** (adapter holds an image not loaded here →
-  confirm, adapter wipe only). Cancel aborts everything; library dumps are never deleted; the
-  console-driven Stop/write-back lifecycle and `amiibo present` re-activation are unchanged.
+- The board stores exactly one amiibo (the alternating flash banks are persistence generations,
+  not two active amiibo). The manager is single-slot: connected **Load amiibo** uploads the
+  highlighted entry; offline **Select amiibo** remembers it. A conditional **Import amiibo** or
+  **Sync amiibo** action pulls an unknown or console-written adapter image into IndexedDB. The
+  merged button is always labeled **Eject amiibo**; `amiiboEjectActionState()` and its tooltip
+  choose between loaded-pointer-only removal, confirmed adapter wipe, or both. Cancel aborts
+  everything; library dumps are never deleted; the console-driven Stop/write-back lifecycle and
+  `amiibo present` re-activation are unchanged.
 - Virtual Amiibo library is **import-only** (single file or recursive directory of the user's own
   genuine dumps). Amiibo crypto is enforced (2026-07-26 hardware test,
   [[amiibo-identity-and-generation]] / `docs/experiments/generated-amiibo-console-rejection-2026-07-26.md`):
   the Switch 2 rejects key-free generated images ("This isn't an amiibo"). Random Mode was removed
-  (UID-bound HMAC). A key-based generator (amiitool over Web Crypto, user `key_retail.bin`) was
-  prototyped then **removed** for import-only simplicity — do not re-add unless the user asks. The
-  identity/crypto research doc is retained.
+  (UID-bound HMAC). A key-based identity generator was removed for import-only simplicity. The
+  narrower browser-local Initialize operation remains: it requests the user's own
+  `key_retail.bin`, clears/re-signs an imported ordinary or v3 dump, self-verifies, and works
+  without an adapter. Alternate-UID copies are feasible only through a complete keyed
+  re-sign/re-encrypt path and are not implemented.
 - Library export/import is a flat **.zip** (`library.json` manifest + one `.bin` per amiibo) via a
   self-contained store-only ZIP writer/reader (`amiiboZipStore`/`amiiboZipEntries`, deflate fallback
   via DecompressionStream); import reconstructs from the `.bin` files and legacy `.json` still
   imports. Import is structural-only: `coerceAmiiboImport()` accepts 540/572 and larger
-  emulator-container dumps (e.g. 2048-byte Pixl.js/allmiibo/flashiibo files) by taking the leading
-  540-byte NTAG215 image and recomputing BCC0/BCC1 (pure UID checksums); the AmiiboAPI catalog is
-  enhancement-only and never gates import, so brand-new amiibo not yet in AmiiboAPI import fine.
-- Carousel loops at both ends (`moveAmiiboCarousel` wraps) while the neighbor window uses real
-  non-wrapping indices for clean slides; the centered amiibo's release date shows above it. Sort is
-  two filter-panel cycle rows: **Sort by** (Default/Alphabetically/Numerically/Release date) and
-  **Order** (Ascending/Descending). Action stack has Activate/Sync/Eject (always labeled "Eject
-  Amiibo"; "Amiibo Active" when presented) plus Download .bin / Delete from Library / Refresh.
+  emulator-container dumps. Exact 2048-byte figure-v3 images remain whole with their contiguous
+  UID layout; 540/572-byte NTAG215 inputs retain their native layout and BCC checks. The AmiiboAPI
+  catalog is enhancement-only and never gates import, so brand-new amiibo not yet in AmiiboAPI
+  import fine.
+- Carousel navigation wraps at both ends (`moveAmiiboCarousel`) while the visible neighbor window
+  uses real non-wrapping indices for clean slides; the centered amiibo's release date shows above
+  it. Compact search remains because the owned library exceeds 900 entries. Game series, Amiibo
+  series, and product type are tap-to-cycle chips. One center slot conditionally shows
+  Load/Select/Import/Sync; connection status follows the adapter's active cached entry once without
+  hijacking later browsing. Download/Initialize/Eject/Delete and compatible-game details live in
+  the centered item's inline drawer. The **Scan physical amiibo** control stays hidden until
+  firmware exposes a capability-reported Config-transport API; UART `nfc_probe` alone is not a
+  production contract.
 - Kirby Air Riders "Figure Player" amiibo (**v3** = NTAG I2C Plus 2K, 2048 bytes) are ✅
-  **RECOGNIZED on hardware as of 2026-07-27** — the read path is complete. Authoritative detail is
-  `docs/Amiibo-v3.md` §18; the earlier "can't serve these / ~1024 bytes / capture first" text here
-  is superseded. Evidence: `dumps/v3-RECOGNIZED-2026-07-27.jsonl`. The console ran the full genuine
-  sequence including the `0x06 blocks=1` targeted read, five encrypted `0x14` writes, and the `0x08`
-  commit.
+  **READ/WRITE CONFIRMED on hardware as of 2026-07-28**. Authoritative detail is
+  `docs/Amiibo-v3.md` §19 and
+  `docs/experiments/v3-full-sram-response-validation-2026-07-28.md`. An untouched downloaded
+  Kirby/Warp dump completed the full sequence with no signature override: three device results,
+  targeted read, six encrypted `0x14` write chunks, `0x08` commit, `05 00`, and zero write errors.
 - Layout, re-measured 2026-07-27 by diffing all 16 dumps: **rider identity is in the encrypted body;
   machine identity is entirely in the SRAM block `0x3C0..0x3FF`, outside amiibo crypto.** A rider's
   four machine variants are byte-identical except for 21–22 bytes there, and all four share one UID
   (they are one physical figure reconfigured four times). Machine fields = an ASCII code
   (`"PB4W717"` Warp/Winged, `"PB5T432"` Shadow, `"PC6V628"` Tank) plus an `01 01 0X` byte; the
   12-byte blob at `0x3C2` is per-unit.
-- 🔴 **v3 write path is NOT implemented** — setting an owner freezes. `ns2_v3_serve()` treats `0x14`
-  only as `0x21` device-command staging and does not handle `0x08` at all, so both fall through to a
-  bare ACK; the console commits, is acknowledged, then waits forever for a write-complete state.
-  Fix = reuse the validated 540 machinery (`ns2_virtual_nfc_write_begin/chunk/commit`,
-  `NS2_VIRTUAL_NFC_EVENT_WRITE_COMPLETE`, the `0x05` transition, flash persistence) with two
-  differences: `0x14` must distinguish a device descriptor from a data chunk, and offsets address
-  2048 bytes. **This is the highest-priority firmware task.**
+- The v3 write path is hardware-confirmed. Capture-derived classification keeps the 74-byte
+  `01 01` device command on the `0x21` path while `01 06` starts the six-chunk, 454-byte data
+  transaction completed by `0x08`. The full stored SRAM response is preserved across writes.
+  Owner/format write, Stop/eject, next-scan readback, HMAC-valid export, flash persistence, and
+  power-cycle recovery have passed; only production-portal Sync of the retained dirty generation
+  remains.
+- A genuine Pro Controller 2 plus physical Kirby & Warp Star positive control captured the missing
+  Air Riders protocol. `0x20` accepts two sector-aware record envelopes: 355 bytes clears
+  sector-0 pages `0x92..0xE1`; 167 bytes updates page 4, sector-0 pages `0x92..0x99`, and
+  sector-1 pages `0x01..0x18`. Record count is at byte 22 and records are
+  `(sector,page,length,data)`. Genuine completion is bare ACK followed by empty status `0x16`,
+  selected-UID page-3 read, then the ordinary 454-byte/`0x08` write. The post-write physical
+  snapshot exactly matches the 32-byte sector-0 record. Firmware now implements both shapes,
+  generation-safe journaling without intermediate ejection, and `0x16`; 53 host tests, both board
+  builds, magnetometer tests, and install markers pass. The prepared build's ordinary System
+  Settings read/write control passed with zero write errors and a valid exported image. Later
+  bullets record the completed Air Riders lifecycle and its follow-up corrections.
+- The apparent initial-read regression on that prepared build was an invalid test image, not code:
+  historical `v3-write-output-2026-07-28.bin` calculates SRAM CRC `7AC4` but stores `E511`.
+  Replacing it over UART with corrected capture-rebuilt CRC32 `8D337603` restored read/write
+  immediately without a reflash.
+- The first prepared-build Air Riders run reached the 355-byte clear, `0x16`, page-3 read, six
+  ordinary chunks, `0x08`, and `05 00` with zero errors, then failed `2115-0096`. Exact trace
+  comparison showed why: genuine hardware reports the same tag present about 130 ms after the
+  first Stop so the console can send the 167-byte stage; PicoSwitch2 returned cooldown `07 41`.
+  The next build suppresses auto-eject only for this clear-to-update checkpoint, expires abandoned
+  sequences after five seconds, and restores normal eject after the update checkpoint. Host tests
+  cover timing and wrap.
+- That lifecycle build completed the full Air Riders operation on hardware. Diagnostics ended at
+  18 ordinary chunks, three `0x08` commits, eight extended chunks, two `0x20` completions, and zero
+  write errors. The exported 2048-byte image is HMAC-valid, keeps SRAM CRC `7AC4/7AC4`, and
+  contains the captured sector-0 and sector-1 game data. Primary files:
+  `dumps/amiibo/v3-extended-two-stage-success-reuse-freeze-2026-07-28.jsonl` and
+  `dumps/amiibo/v3-extended-two-stage-success-output-2026-07-28.bin`.
+- Reusing that written image then froze because virtual NFC did not stage subcommand `0x1E`.
+  Genuine capture
+  `dumps/amiibo/genuine-kirby-warp-reuse-sub1e-usb-2026-07-28.jsonl` proves `0x1E` itself returns
+  a bare ACK, then changes to empty state `0x15` and exposes a 196-byte result through `0x15`
+  chunks. The result is a 64-byte prefix plus sector-0 pages `0x92..0x99` and sector-1 pages
+  `0x00..0x18`. Sector-1 page 0 read as chip metadata `A5 00 01 00` after the first Air Riders
+  update even though portable dumps leave that slot zero. The prepared build reproduced all 196
+  bytes in a host fixture and passed
+  53 host tests, both board builds, eight magnetometer tests, and both reset-marker checks.
+  Hardware then validated the entire `0x1E` path: state `0x15`, three chunks, and Stop.
+- After the validated reuse read, Air Riders immediately sent another 167-byte update. Trace
+  `dumps/amiibo/v3-reuse-sub1e-write-freeze-2026-07-28.jsonl` first exposed
+  `A5 00 02 00`; a temporary page-4 comparison let the update complete, but its persisted result
+  was called corrupted on the next `0x1E` read.
+- Decisive positive controls:
+  `dumps/amiibo/genuine-air-riders-existing-data-read-write-2026-07-28.jsonl` is a complete
+  genuine read/write cycle, and
+  `dumps/amiibo/genuine-air-riders-postwrite-read-only-2026-07-28.jsonl` reads that same physical
+  tag afterward without writing. A second pair,
+  `genuine-air-riders-second-existing-data-write-2026-07-28.jsonl` and
+  `genuine-air-riders-second-postwrite-read-only-2026-07-28.jsonl`, repeats the result.
+  Together they prove the header is the next chip-managed sector-1 page-0 value, not a page-4
+  echo: genuine `0x1E` advanced `A5 00 01 00 → A5 00 02 00 → A5 00 03 00`, while page 4
+  independently advanced `03 → 04 → 05` and the explicit sector-1 record still began at page 1.
+  The source
+  validates/retains that implicit state at image offset `0x400` and serves it dynamically;
+  zero-filled ecosystem images retain the generation-1 fallback. Both board builds, all 53 host
+  tests, all eight magnetometer tests, and both install-reset markers pass. Hardware then completed
+  a virtual update to sector-1 page 0 `A5 00 02 00`; the exported 2048-byte image was HMAC-valid
+  and retained the customized figure state. Its immediate second reuse was accepted by Air Riders,
+  which loaded the saved custom color. Captures:
+  `dumps/amiibo/v3-dynamic-sector1-page0-write-2026-07-28.jsonl` and
+  `dumps/amiibo/v3-dynamic-sector1-page0-second-read-success-2026-07-28.jsonl`. A physical
+  adapter power cycle restored the exact generation-4 image with CRC `91A6178B`; the clean
+  read-only trace
+  `dumps/amiibo/v3-dynamic-sector1-page0-powercycle-read-success-2026-07-28.jsonl` again served
+  `A5 00 02 00`, and Air Riders accepted it. The dynamic-state persistence lifecycle is fully
+  hardware-confirmed.
+- A non-cosmetic save after completing an Air Riders level is captured in
+  `dumps/amiibo/v3-air-riders-learned-state-save-2026-07-28.jsonl`, with exact before/after images.
+  It uses the same 167-byte extended update plus ordinary six-chunk commit, advances generation
+  7 → 9, page 4 `A5 00 05 00 → A5 00 06 00`, and sector-1 page 0
+  `A5 00 03 00 → A5 00 04 00`. The 552 changed bytes are confined to the modeled ranges:
+  423 in `0x000..0x247`, 32 in `0x248..0x267`, one generation byte at `0x402`, and all
+  96 bytes at `0x404..0x463`; nothing after `0x463` changed. The output is HMAC-valid, persisted,
+  dirty, and recorded zero write errors. No new command or storage shape is needed.
+- King Dedede & Tank Star proves Air Riders storage is allocation-relative. It uses sector-0 page
+  `0xB2` and sector-1 capability/data pages `0x64/0x65`; Kirby uses `0x92` and `0x00/0x01`.
+  The header-only fix accepted all three chunks, but its two `0x20` completions still failed
+  because commit validation retained Kirby's pages. The prepared codec derives pages from the
+  record envelope, bounds sector 0 to the proven clear window and sector 1 to the tag, tracks
+  capability generation at the selected page, and makes `0x1E` fallback descriptor-relative.
+  No UID/product table exists. All 16 available Air Riders v3 dumps completed both reads and
+  writes on a real Switch 2. Both board builds, all 53 host tests, portal suites,
+  motion/magprobe checks, and both install markers pass. Evidence:
+  `docs/experiments/v3-air-riders-dynamic-allocation-2026-07-28.md`.
 - ⚠️ The "provenance" conclusion (that a v3 image needs its own machine's SRAM block and signature)
   is **RETRACTED** — see `docs/Amiibo-v3.md` §18.1a. That experiment moved three variables at once;
   the downloaded dump was never retried after `prefix[18]=0x06` moved into `ns2_v3_build_buffer()`,
@@ -124,22 +218,17 @@ required Git submodule for Pico 2 W audio builds.
   all 16 downloaded dumps *and* the accepted rebuilt image verify HMAC-VALID
   (`node tools/verify_amiibo_crypto.mjs <path>`), and the firmware serves each image's own UID via
   `ns2_amiibo_v3_uid()`, so the UID/key binding is never broken.
-- ⬜ **Open experiment — does any signature load any v3 amiibo?** `amiibo v3sig` currently serves the
-  owner's genuine Kirby figure signature (bound to UID `049011CADB1F90`); it is RAM-only and must be
-  re-sent after every reboot/reflash. Serving a *downloaded* dump pairs that signature with a
-  different UID. The owner's chosen test — **Meta Knight & Shadow Star** — is the strongest form:
-  different rider, different machine, different UID, mismatched signature. If it is recognized, the
-  signature is not UID-bound and **any signature loads any v3 dump**, which retires per-figure
-  capture entirely. If it is rejected, fall back to `Kirby & Warp Star.bin` (shares the genuine
-  figure's machine SRAM fields) to narrow which variable mattered; only if that also fails is the
-  key-based "carrier" re-sign of §18.4 Test B worth building.
-- Known-good v3 baseline: `dumps/kirby-warpstar-rebuilt-from-genuine.bin` (crc32 `DE7DAFC0`, UID
-  `049011CADB1F90`) + the signature above.
-- ⚠️ **`amiibo status` cannot tell you which v3 image is loaded** — it reports only `v3loaded:true`,
-  and its `uid`/`size` fields describe the 540 store, so they read zero on a v3-only board. To
-  identify the loaded image today: `amiibo journal` → take `payload_crc` from header bytes 16..19
-  (LE) → CRC-match offline. This silently invalidated a test run on 2026-07-28. Adding the v3 UID
-  and payload CRC to `amiibo status` is a few lines and should ride along with the write path.
+- The signature/carrier hypothesis is refuted. The successful downloaded image used
+  `signature_set=false`; `key_retail.bin` was needed only for offline evidence verification. The
+  actual blocker was truncating the 64-byte SRAM response to 32 bytes and forcing the captured
+  figure's CRC `7A C4`. The firmware now carries all of `image[0x3C0..0x3FF]`; downloaded
+  Kirby/Warp ends `E5 11`, Meta/Shadow ends `30 61`. `amiibo v3sig` remains diagnostic only.
+- Corrected capture-rebuilt baseline: `dumps/kirby-warpstar-rebuilt-from-genuine.bin`
+  (CRC32 `8D337603`, UID `049011CADB1F90`, SRAM CRC `7A C4`).
+- `amiibo status` now reports the active v3 image's 2048-byte size, contiguous UID, generation,
+  dirty/persisted state, and payload CRC. Config and UART reads route to the v3 store, and the
+  portal uses UID plus CRC to identify the exact rider/machine variant. Sync replaces the old
+  content-keyed IndexedDB record only after the complete updated image validates.
 - Sync clears dirty-write protection only after IndexedDB persistence; it does not unload the tag.
   Console formatting/reset remains the authority.
 - The USB side of Config mode is now CDC-only. The MSC descriptor/callbacks, generated
@@ -152,7 +241,7 @@ required Git submodule for Pico 2 W audio builds.
   before HID/GATT-client setup; and a bounded cross-core bridge executes only production
   settings/Amiibo commands through the existing core-0 parser. Leaving Config disconnects the
   browser before discovery resumes. Normal controller personalities perform no management radio
-  work. All 49 host tests, three firmware build axes, and portal static checks pass; Config BLE
+  work. All 53 host tests, three firmware build axes, and portal static checks pass; Config BLE
   hardware validation is pending.
 - Config schema v10 removes the Virtual Amiibo flag and controller-family mapping tables. A locked
   base button map feeds the emulated Nintendo identity, leaving persistent button remapping to the
@@ -197,8 +286,8 @@ required Git submodule for Pico 2 W audio builds.
   re-presentation lifecycle, persistence gate, and power-cycle recovery are hardware-confirmed.
 - The production portal retains its cached library without an adapter connection. Prior
   hardware/browser validation confirms cache-first writeback and export/clear/import restoration
-  of the complete versioned library backup. The new one-dump/two-quick-slot presentation awaits
-  browser and hardware regression validation.
+  of the complete versioned library backup. The current one-dump/single-loaded-pointer manager is
+  host/static-regression clean; its manual Eject/Present path still awaits real-console validation.
 - USB CDC remains unavailable while the Pico is attached to the console. A two-second BOOTSEL
   hold can now enter Config there and expose the local portal over BLE for settings and Virtual
   Amiibo management. UART remains the independent live-console research/export path during a
@@ -224,11 +313,13 @@ required Git submodule for Pico 2 W audio builds.
 
 ## Highest-value open work
 
-1. Hardware-validate the implemented manual Eject/Present path, including replacement and reconnect.
-2. Capture a genuine Pro2 physical-tag write/readback before enabling native writes.
-3. Decode/model the unresolved genuine `0x28` lanes for the accepted software-reference path.
-4. Add DualSense microphone return only after preserving the confirmed speaker/haptic path.
-5. Extend motion translation to another controller family only after verifying its calibration,
+1. Run production-portal **Sync amiibo** against the currently retained dirty v3 generation and
+   confirm acknowledgement occurs only after IndexedDB persistence.
+2. Hardware-validate the implemented manual Eject/Present path, including replacement and reconnect.
+3. Capture a genuine Pro2 physical-tag write/readback before enabling native writes.
+4. Decode/model the unresolved genuine `0x28` lanes for the accepted software-reference path.
+5. Add DualSense microphone return only after preserving the confirmed speaker/haptic path.
+6. Extend motion translation to another controller family only after verifying its calibration,
    axes, units, timestamps, and stationary-bias behavior.
 
 ## Known traps

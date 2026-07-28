@@ -57,7 +57,8 @@ void ns2_mount(void);
 // reports in the 0x05 status. `McuTagType 1` = NTAG 215, which yields page ranges
 // 0x00-0x86 = exactly 540 bytes. The value for a 2 KB NTAG I2C tag is not
 // documented anywhere, so it is sweepable at runtime over UART (`v3mode N`) to
-// allow a hardware experiment matrix without reflashing. Default 2.
+// allow a hardware experiment matrix without reflashing. Production default 1
+// uses the compatibility view for ordinary reads and raw v3 for extended ones.
 // See docs/switch2/kirby-air-riders-extended-amiibo.md.
 void ns2_v3_set_serve_mode(uint8_t mode);
 uint8_t ns2_v3_get_serve_mode(void);
@@ -109,6 +110,15 @@ uint8_t ns2_v3_hdr_probe_count(void);
 // How many times the 0x14 staging gate passed, and how many 0x21 device results
 // were built. A 0x21 reply is a bare ACK either way, so the wire cannot show it.
 void ns2_v3_device_cmd_counts(uint32_t *staged, uint32_t *results);
+// Capture-derived v3 console-write counters. Chunks count accepted 0x14 data
+// fragments; commits count generation-checked 0x08 updates; errors count
+// rejected write transactions.
+void ns2_v3_write_counts(uint32_t *chunks, uint32_t *commits,
+                         uint32_t *errors);
+// Sector-aware 355-byte clear and 167-byte update operations use 0x14 staging
+// and 0x20 completion. These counters keep them distinct from the ordinary
+// 454-byte/0x08 encrypted-body write that follows each one.
+void ns2_v3_extended_counts(uint32_t *chunks, uint32_t *completions);
 
 bool ns2_v3_set_signature(const uint8_t *bytes, size_t len);
 void ns2_v3_clear_signature(void);
