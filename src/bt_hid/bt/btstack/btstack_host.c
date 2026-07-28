@@ -5657,6 +5657,13 @@ bool ns2_nfc_mirror_take_usb_response(
     return true;
 }
 
+bool ns2_nfc_mirror_active(void)
+{
+    return __atomic_load_n(&s_sw2_nfc_mirror_requested, __ATOMIC_ACQUIRE) &&
+           __atomic_load_n(&s_sw2_nfc_mirror_state, __ATOMIC_ACQUIRE) ==
+               NS2_NFC_MIRROR_ACTIVE;
+}
+
 uint8_t ns2_nfc_mirror_report_state(void)
 {
     if (__atomic_load_n(

@@ -1426,11 +1426,19 @@ static void ns2_build_report(uint8_t *p) {
 #endif
     p[0x01] = controller_battery_switch2_power_info(
         in.battery_valid != 0, in.battery_level, in.battery_charging != 0);
-    p[0x0C] = virtual_amiibo_store_v3_loaded()
-        ? ns2_v3_report_state
-        : ns2_virtual_nfc_sync_presentation()
-            ? ns2_virtual_nfc_runtime_report_state(&ns2_virtual_nfc_runtime)
-            : ns2_nfc_mirror_report_state();
+    // The UART-gated mirror wins outright while armed, matching the command
+    // dispatch order in ns2_dispatch(). Otherwise the report advertises the v3
+    // serve path's NFC state while the commands themselves are being forwarded
+    // to a genuine controller, the two never advance together, and the console
+    // gives up after its first 0x03 -- which is why passthrough worked with an
+    // empty slot and stalled as soon as a v3 tag was loaded.
+    p[0x0C] = ns2_nfc_mirror_active()
+        ? ns2_nfc_mirror_report_state()
+        : virtual_amiibo_store_v3_loaded()
+            ? ns2_v3_report_state
+            : ns2_virtual_nfc_sync_presentation()
+                ? ns2_virtual_nfc_runtime_report_state(&ns2_virtual_nfc_runtime)
+                : ns2_nfc_mirror_report_state();
 
     // Remap the 3-byte button field: report.c uses the Switch 1 Pro bit layout,
     // report 0x09 uses a different assignment (see docs/switch2/usb-spec.md §7).
