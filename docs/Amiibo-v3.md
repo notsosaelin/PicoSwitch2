@@ -598,6 +598,36 @@ there for a 540 tag and the console accepts it, so zeros are not inherently inva
 
 That one test separates the two candidates without any new firmware.
 
+### 14.7.1 Result: byte 18 alone drives escalation
+
+`dumps/v3-serve-byte18only-2026-07-27.jsonl`, with `v3hdr 18 06` and bytes 19-50 **zero**:
+
+- The console still issues the 4-block descriptor (blocks=4, timeout 3000) — **7 descriptors across
+  the session, alternating 4-block and 3-block** — and still reads the full 664 bytes (highest
+  requested offset 630).
+- It still rejects. Screen stayed on "hold an amiibo to the controller"; no crash.
+
+**Established:** bytes 19-50 have no bearing on the escalation decision. Byte 18 = `0x06` is
+sufficient on its own. That is a genuine narrowing and it means the 33-byte replay is unnecessary
+for this stage.
+
+**Not established:** whether a *correct* per-tag value at 19-50 is required for acceptance. Zeros
+fail and a foreign tag's bytes fail, which is equally consistent with "any wrong value is rejected".
+The NTAG215 control sends zeros and is accepted, but that is a different tag type and the console
+may only demand a signature for v3.
+
+Remaining suspects, now in this order:
+
+1. **`E2-E6` content.** Its byte offsets are still an unverified linear-addressing guess
+   (page `0xE2` -> byte 904). This is the more tractable one: the mapping can be varied and retested
+   without needing anything from a physical tag.
+2. **A correct per-tag signature at 19-50.** Only distinguishable once (1) is ruled out, and if true
+   it bounds virtual v3 amiibo to tags whose signature has been physically captured.
+
+Side observation from the same capture: `0x14` appears 4x and `0x21` 4x across the retries, so some
+write-side traffic does occur during a failed read. Worth decoding before assuming the write path is
+untouched.
+
 ### 14.8 Earlier next-step notes
 
 Populate prefix bytes 18–50 in `ns2_v3_serve()`'s read replies and re-test. If the console escalates
