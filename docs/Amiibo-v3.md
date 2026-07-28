@@ -716,6 +716,48 @@ fails, something beyond the signature is also checked.
 **Superseded — see §14.7.2. Pixl.js and Flashiibo support these tags from the 2048-byte dump alone,
 so none of the above scoping applies.**
 
+### 14.7.4 The layer distinction that reconciles everything (pixl.js PR #381)
+
+xSke's PR states the format plainly:
+
+> *"The expected .bin format is a 2048-byte file containing all of sector 0 and 1 as it would be
+> read by any NFC reader, and with the expected response already placed in the SRAM buffer."*
+
+So everything the console needs is in the 2048 bytes. No keys, no separate signature file. That is
+consistent with the shipped dumps and with the operator's objection.
+
+**But pixl.js and PicoSwitch2 sit on opposite sides of the link:**
+
+| | pixl.js / Flashiibo | PicoSwitch2 |
+|---|---|---|
+| Emulates | the **tag** (RF side) | the **controller** (USB side) |
+| Who builds the 60-byte read prefix | a **genuine Pro Controller 2**, by reading the tag | **we** must synthesize it |
+| Must answer `READ_SIG` etc. | yes, as a tag | n/a |
+| Must produce prefix `[19..50]` | never | yes |
+
+This is why "pixl.js needs no keys" does not settle what belongs at `[19..50]` — pixl.js never
+produces that field. It is also why their reference implementation cannot be copied directly: it
+solves the adjacent problem.
+
+**The genuinely odd observation, which is now the sharpest lead:** in the NTAG215 control capture the
+genuine controller emits **all zeros** at `[19..50]` — for a real retail NTAG215 amiibo, which
+certainly *has* an originality signature. So the controller does not populate that field for
+NTAG215, yet fills 32 bytes for v3. Whatever it is, the controller only sources it for v3 tags.
+
+Two readings, both testable:
+
+1. It is the originality signature, and the controller issues `READ_SIG` **only** for v3. Then a
+   served v3 needs one — but pixl.js supplies it from somewhere in the 2048 bytes, so it would be
+   *derivable from the dump*, not an unforgeable per-tag secret. Worth searching the image for the
+   32 bytes the genuine controller sent.
+2. It is not a signature at all but v3-specific tag metadata the controller reads out of the tag —
+   in which case it is also in the dump and simply needs locating.
+
+Either way the next concrete step is the same and needs no hardware: **take the 32 bytes the genuine
+controller emitted and search the corresponding physical tag's own dump for them.** We cannot do
+that yet — the captured bytes belong to UID `049011CADB1F90` and no local dump matches it. Getting a
+dump of *that* tag, or a capture from a tag we already have a dump of, resolves it immediately.
+
 ### 14.8 Earlier next-step notes
 
 Populate prefix bytes 18–50 in `ns2_v3_serve()`'s read replies and re-test. If the console escalates
