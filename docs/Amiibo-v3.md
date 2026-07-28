@@ -628,7 +628,37 @@ Side observation from the same capture: `0x14` appears 4x and `0x21` 4x across t
 write-side traffic does occur during a failed read. Worth decoding before assuming the write path is
 untouched.
 
-### 14.7.2 🔴 ROOT CAUSE: the console validates the NTAG21x originality signature for v3
+### 14.7.2 ❌ RETRACTED — the signature is NOT the root cause
+
+**This section's conclusion is wrong and is kept only so the reasoning error is visible.**
+
+Refuted by the dump set itself. `READ ME.txt` shipped with the Kirby Air Riders images states that
+**Flashiibo Pro** and **Allmiibo/Pixl.js** *"need an update before they work"* — i.e. those emulators
+do support v3 amiibo on a Switch 2. They are fed exactly these files: all 16 are **2048 bytes**,
+with no companion signature and no 2080-byte variant, and those projects have no amiibo keys. If a
+per-tag NXP signature were required, none of them could work either.
+
+**The reasoning error:** the comparison below only covers the 60-byte **prefix**. The 604 bytes of
+**tag data** in the same reply also differ, because the genuine capture is of a *different physical
+amiibo* than the image we serve. Finding that `[19..50]` was the only differing prefix field does
+not make it the cause — it was simply the most visible difference, and the tag-data difference was
+never controlled for. The four-row table below is consistent with the signature mattering, but it is
+equally consistent with any other per-tag content being wrong.
+
+What survives from this section is only the **eliminations**, which are sound:
+
+- `E2-E6` is served correctly (byte 904 of the image, byte-identical to genuine and constant across
+  two physical tags).
+- The descriptor echo at `[51..59]` is byte-exact.
+- Byte 18 = `0x06` alone drives escalation.
+
+The next step is therefore **not** to chase signatures but to study how pixl.js actually presents a
+v3 tag — its `ntag_emu_v2.c` is already cited elsewhere in this document for the `SRAM_RF_READY`
+behaviour, and it is the closest thing available to a known-good reference implementation.
+
+<details><summary>Original (incorrect) conclusion, retained for the record</summary>
+
+#### The console validates the NTAG21x originality signature for v3
 
 Deep comparison of the extended-read prefixes (genuine vs ours) leaves exactly **one** structural
 difference — bytes **[19..50], 32 bytes**:
@@ -663,7 +693,9 @@ validated against the UID — a foreign tag's signature fails just as zeros do. 
 generated with NXP's private key over the tag UID, so it **cannot be computed, forged, or
 transplanted**.
 
-### 14.7.3 What this means for virtual v3 amiibo
+</details>
+
+### 14.7.3 What this means for virtual v3 amiibo (also retracted)
 
 - A v3 image alone is **not sufficient**. The 2048-byte dumps (pixl.js/flashiibo) contain the memory
   map only; the signature is returned by the `READ_SIG` command and lives outside it.
@@ -680,6 +712,9 @@ signature from a tag we also have a dump of.
 
 If that works, the feature is real but scoped: v3 amiibo you have physically captured. If it still
 fails, something beyond the signature is also checked.
+
+**Superseded — see §14.7.2. Pixl.js and Flashiibo support these tags from the 2048-byte dump alone,
+so none of the above scoping applies.**
 
 ### 14.8 Earlier next-step notes
 
