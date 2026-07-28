@@ -1201,3 +1201,71 @@ Both are readable from a physical tag with `tools/nfc_probe.ps1` (§16): bytes 1
 3. If it still declines, capture a genuine controller reading **the same physical tag** through
    `nfcmirror`, and diff that against our serve for the same UID. Every prior capture used a
    different tag, which is what forced the byte 9-11 caveat above.
+
+---
+
+## 18. v3 amiibo RECOGNIZED (2026-07-27)
+
+**Status: ✅ read path complete and hardware-confirmed. 🔴 write path not implemented.**
+
+A Switch 2 recognised a virtual v3 (NTAG I2C Plus 2K) amiibo for the first time.
+Evidence: [`../dumps/v3-RECOGNIZED-2026-07-27.jsonl`](../dumps/v3-RECOGNIZED-2026-07-27.jsonl).
+
+The console performed the full genuine sequence, including the breakout that had never occurred
+before:
+
+```
+seq 164  0x06  blocks=1  uid=049011CADB1F90  range 03-03     targeted read
+seq 172  0x14  len 88    D0 07 <uid> 01 06 01 04 FFFFFFFF…   encrypted write
+seq 174-180  0x14 x4                                          remaining chunks
+seq 184  0x08                                                 commit
+```
+
+`amiibo v3diag`: `dev_cmd_staged:5, dev_results:4`.
+
+### 18.1 What actually unblocked it
+
+Not a protocol discovery — a **provenance** fix. Every earlier test served the downloaded
+`Kirby & Warp Star.bin` (UID `04B4438ADB1F90`) while the genuine reference capture was of a
+*different physical copy* of the same character and machine (UID `049011CADB1F90`). The four Warp
+Star dumps in that set share one SRAM block because they were produced from one physical machine
+with four riders, so the block is per-unit, not per-model.
+
+`tools/rebuild_v3_from_capture.py` reassembles the tested tag from its own capture: the 4-block read
+covers 604 bytes (pages `00-3B, 3C-77, 78-91, E2-E6`), which is everything the console ever
+requests, backfilling only never-read bytes from the downloaded dump, plus the `0x21` device
+response carried into `0x3C0` separately because the page read does not reach it. Result:
+`dumps/kirby-warpstar-rebuilt-from-genuine.bin`, crc32 `de7dafc0`.
+
+**Implication for the general case:** a v3 image needs its own machine's SRAM block and its own
+signature. A dump taken from a different physical machine will not be accepted, even for the same
+character and machine model. This is the single most important practical consequence of this
+session.
+
+### 18.2 The signature is not in the dump
+
+Searching all 16 confirmed-working dumps for the known 32-byte signature finds nothing, yet those
+files work on pixl.js — so the console does not validate the originality signature against the tag.
+It is still required *structurally* in read `prefix[19..50]`, which is why `amiibo v3sig` exists.
+
+Flashiibo Pro firmware `Pro_Firmware_OTA_26.7.2` contains `pixljs.bin`: Flashiibo Pro **is** pixl.js,
+making xSke's PR #381 the direct reference implementation rather than an analogue.
+
+### 18.3 What froze
+
+The console wrote and committed; nothing persisted. `ns2_v3_serve()` treats `0x14` only as device
+command staging and does not handle `0x08` at all, so both fall through to a bare ACK. The console
+commits, is acknowledged, and then waits for a write-complete state that never arrives.
+
+The 540-byte NTAG215 path already implements all of this
+(`ns2_virtual_nfc_write_begin/chunk/commit`, `NS2_VIRTUAL_NFC_EVENT_WRITE_COMPLETE`, the `0x05`
+status transition and flash persistence). The v3 path needs the equivalent, with two differences:
+`0x14` must now distinguish a device-command descriptor from a data chunk, and offsets address a
+2048-byte image.
+
+### 18.4 Next
+
+1. Implement the v3 write path, reusing the validated 540 write machinery.
+2. Have `nfc_probe.ps1` capture signature and SRAM block directly, so a user can enrol their own
+   figure without needing a console capture first.
+3. Persist the signature alongside the v3 image rather than requiring `amiibo v3sig` after a reflash.
