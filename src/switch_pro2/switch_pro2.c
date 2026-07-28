@@ -1140,6 +1140,15 @@ static bool ns2_v3_serve(const uint8_t *command, uint32_t length)
             ns2_virtual_nfc_build_status(true, uid, payload);
             payload[0] = ns2_v3_nfc_status;
             payload[1] = 0x00;
+            // A genuine controller reports the device-command state with an
+            // otherwise empty payload -- no UID and no 01 01 02 00 07 identity
+            // (capture seq 141/147/159/165). It still fills them for 0x09 and
+            // 0x04, so this is specific to 0x18. We filled them unconditionally,
+            // which is the last byte-level divergence in the whole exchange.
+            if (ns2_v3_nfc_status == 0x18u) {
+                memset(payload, 0, NS2_NFC_STATUS_PAYLOAD_SIZE);
+                payload[0] = 0x18u;
+            }
             // RE probe: overlay candidate tag-identity bytes so the field that
             // makes the console request a 2 KB page set can be swept live.
             for (size_t i = 0; i < NS2_NFC_STATUS_PAYLOAD_SIZE; ++i)
