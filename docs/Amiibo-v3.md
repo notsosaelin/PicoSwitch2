@@ -758,6 +758,44 @@ controller emitted and search the corresponding physical tag's own dump for them
 that yet — the captured bytes belong to UID `049011CADB1F90` and no local dump matches it. Getting a
 dump of *that* tag, or a capture from a tag we already have a dump of, resolves it immediately.
 
+### 14.7.5 prefix[19..50] is the SRAM window, and it is DYNAMIC — current wall
+
+Two genuine captures of the **same physical tag** (UID `049011CADB1F90`) show the field taking two
+distinct values inside one session. That alone refutes the signature reading — a signature would be
+constant.
+
+```
+A  80925007B82D0E23F0FDE43D9DD2F12A4F6B750DACFCA3B5D6847547E895C086   (most reads)
+B  0200732AB41C4AC291B9A5983C039400C9000A50423457313720010102000000   (one 4-block read)
+```
+
+**B is the SRAM window.** Against a local dump:
+
+```
+Kirby 0x3C0 : 0200 4C980F696FCF5128F89ED4B5AB00 9C0001 50423457313720010102000000
+genuine   B : 0200 732AB41C4AC291B9A5983C039400 C9000A 50423457313720010102000000
+```
+
+Same head, same 13-byte tail, tag-specific middle — exactly xSke's *"expected response already
+placed in the SRAM buffer"*. So it is derivable from the dump, no keys, no per-tag secret. That is
+consistent with pixl.js/Flashiibo working from the 2048-byte file alone.
+
+`ns2_v3_build_buffer()` now serves `image[0x3C0..0x3DF]` there, verified on the wire
+(`dumps/v3-serve-sram-2026-07-27.jsonl`, prefix reads back `06 02004C98…0102000000`).
+
+**Still rejected.** The console escalates, reads all 664 bytes, issues `0x14`/`0x21`, then loops —
+the same wall. The remaining difference is that we serve **B always**, while a genuine controller
+serves **A** on most reads and **B** on one.
+
+**Next, in order:**
+
+1. **Identify A.** 32 bytes, stable per tag across sessions. It is not in the tag data the console
+   reads (searched, absent). Candidates: a different register window (session registers around
+   `0x3B0`?), or the SRAM *before* the machine has written its response.
+2. **Identify the trigger** that makes the controller switch A -> B. Both captures are on disk with
+   full ordering, so this is a read of existing data, not new hardware work.
+3. Only then decide what the serve path should emit per read.
+
 ### 14.8 Earlier next-step notes
 
 Populate prefix bytes 18–50 in `ns2_v3_serve()`'s read replies and re-test. If the console escalates
