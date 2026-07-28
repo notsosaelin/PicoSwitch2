@@ -1313,16 +1313,35 @@ status transition and flash persistence). The v3 path needs the equivalent, with
 
 ### 18.4 Next
 
-**Test A — de-confound provenance (highest value, costs one upload, no reflash).** Serve the
-downloaded `Kirby/Kirby & Warp Star.bin` (UID `04B4438ADB1F90`) on the *current* firmware with the
-genuine signature still set.
+Run these in order. Each costs one UART upload and one scan — no reflash. `amiibo v3sig` is RAM-only,
+so re-send the signature after any reboot.
+
+**Test A — does *any* signature load *any* v3 amiibo? (owner's test, and the right one to run
+first).** Serve the downloaded `Meta Knight/Meta Knight & Shadow Star.bin` (UID `04988B22AB1F90`)
+with the Kirby figure's signature still set.
+
+This deliberately maximises the number of things that are wrong at once: different rider, different
+machine, different UID, and a signature bound to a UID the tag does not have. That is the point —
+a pass here is the single most informative result available, because it collapses several open
+questions simultaneously. A more conservative test that passes would leave most of them open.
 
 | Outcome | Conclusion |
 | --- | --- |
-| Recognised | Provenance was never the blocker; the three firmware fixes were. §18.1 fully retracted, and the signature is not UID-checked. Every downloaded dump is usable as-is — no per-figure capture, no keys. |
-| Rejected | Either the signature *is* UID-bound, or something per-unit really is required. Proceed to Test B, which separates those two. |
+| Recognised | The signature is **not** UID-bound and **any signature loads any v3 dump**. §18.1 fully retracted; per-figure capture is retired; retail keys stay irrelevant; the whole downloaded library becomes usable immediately. |
+| Rejected | Some variable matters, but not which one. Go to Test A2. |
 
-**Test B — the carrier hypothesis (only if A fails; this is where retail keys earn their keep).**
+**Test A2 — narrow it (only if A fails).** Serve the downloaded `Kirby/Kirby & Warp Star.bin` (UID
+`04B4438ADB1F90`). This shares the genuine figure's machine SRAM fields (`"PB4W717"` + `01 01 02`)
+and rider, so it differs from the known-good baseline in little more than UID, the per-unit `0x3C2`
+blob, and signature-binding.
+
+| Outcome | Conclusion |
+| --- | --- |
+| Recognised | Rider/machine identity was the blocker in A, not the signature. Downloaded dumps work when the machine block matches a figure the console will accept. |
+| Rejected | The signature is UID-bound, or something per-unit is genuinely required. Now Test B is worth building. |
+
+**Test B — the carrier hypothesis (only if BOTH A and A2 fail; this is where retail keys earn their
+keep).**
 Using `key_retail.bin`, decrypt a downloaded dump, rewrite its UID block to `049011CADB1F90` — the
 one UID for which we hold a genuine originality signature *and* a genuine SRAM block — then re-HMAC
 and re-encrypt against the new seed. Splice in the genuine SRAM block at `0x3C0`. The result is a

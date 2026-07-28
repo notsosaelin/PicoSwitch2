@@ -1,6 +1,9 @@
 # Current Continuation Context
 
-Last reconciled: 2026-07-25
+Last reconciled: 2026-07-28
+
+**Start here if you are resuming v3 amiibo work:** `docs/Amiibo-v3.md` §18 is authoritative; the
+NFC boundary section below carries the short form and the open experiment.
 
 Working branch: `ns2-testing`
 
@@ -95,16 +98,48 @@ required Git submodule for Pico 2 W audio builds.
   two filter-panel cycle rows: **Sort by** (Default/Alphabetically/Numerically/Release date) and
   **Order** (Ascending/Descending). Action stack has Activate/Sync/Eject (always labeled "Eject
   Amiibo"; "Amiibo Active" when presented) plus Download .bin / Delete from Library / Refresh.
-- Kirby Air Riders "Figure Player" amiibo are an **extended format**, not standard NTAG215
-  ([[kirby-air-riders-extended-amiibo]] / `docs/switch2/kirby-air-riders-extended-amiibo.md`). Byte
-  map from diffing 16 files: rider data spans 0x00–0x247 (past the classic 540/0x21C boundary) and
-  machine ("Figure Player") data is a signed block at 0x3C2–0x3FF; total image ~1024 bytes. The
-  standard app-data (0xA0–0x1B4) is identical across a rider's machines, so the machine lives only
-  in the 0x3C2+ block. PicoSwitch2's 540/572 store + 600-byte console read model can't serve these.
-  Portal imports only the leading rider image (coerce to 540) and flags the machine data
-  unsupported. Real support needs a UART capture of a genuine one on a Switch 2 (true size + read
-  protocol) then firmware work — NOT just importing files. Do not claim rider+machine support until
-  captured.
+- Kirby Air Riders "Figure Player" amiibo (**v3** = NTAG I2C Plus 2K, 2048 bytes) are ✅
+  **RECOGNIZED on hardware as of 2026-07-27** — the read path is complete. Authoritative detail is
+  `docs/Amiibo-v3.md` §18; the earlier "can't serve these / ~1024 bytes / capture first" text here
+  is superseded. Evidence: `dumps/v3-RECOGNIZED-2026-07-27.jsonl`. The console ran the full genuine
+  sequence including the `0x06 blocks=1` targeted read, five encrypted `0x14` writes, and the `0x08`
+  commit.
+- Layout, re-measured 2026-07-27 by diffing all 16 dumps: **rider identity is in the encrypted body;
+  machine identity is entirely in the SRAM block `0x3C0..0x3FF`, outside amiibo crypto.** A rider's
+  four machine variants are byte-identical except for 21–22 bytes there, and all four share one UID
+  (they are one physical figure reconfigured four times). Machine fields = an ASCII code
+  (`"PB4W717"` Warp/Winged, `"PB5T432"` Shadow, `"PC6V628"` Tank) plus an `01 01 0X` byte; the
+  12-byte blob at `0x3C2` is per-unit.
+- 🔴 **v3 write path is NOT implemented** — setting an owner freezes. `ns2_v3_serve()` treats `0x14`
+  only as `0x21` device-command staging and does not handle `0x08` at all, so both fall through to a
+  bare ACK; the console commits, is acknowledged, then waits forever for a write-complete state.
+  Fix = reuse the validated 540 machinery (`ns2_virtual_nfc_write_begin/chunk/commit`,
+  `NS2_VIRTUAL_NFC_EVENT_WRITE_COMPLETE`, the `0x05` transition, flash persistence) with two
+  differences: `0x14` must distinguish a device descriptor from a data chunk, and offsets address
+  2048 bytes. **This is the highest-priority firmware task.**
+- ⚠️ The "provenance" conclusion (that a v3 image needs its own machine's SRAM block and signature)
+  is **RETRACTED** — see `docs/Amiibo-v3.md` §18.1a. That experiment moved three variables at once;
+  the downloaded dump was never retried after `prefix[18]=0x06` moved into `ns2_v3_build_buffer()`,
+  which alone explains every earlier rejection. **Retail keys are ruled out as the discriminator:**
+  all 16 downloaded dumps *and* the accepted rebuilt image verify HMAC-VALID
+  (`node tools/verify_amiibo_crypto.mjs <path>`), and the firmware serves each image's own UID via
+  `ns2_amiibo_v3_uid()`, so the UID/key binding is never broken.
+- ⬜ **Open experiment — does any signature load any v3 amiibo?** `amiibo v3sig` currently serves the
+  owner's genuine Kirby figure signature (bound to UID `049011CADB1F90`); it is RAM-only and must be
+  re-sent after every reboot/reflash. Serving a *downloaded* dump pairs that signature with a
+  different UID. The owner's chosen test — **Meta Knight & Shadow Star** — is the strongest form:
+  different rider, different machine, different UID, mismatched signature. If it is recognized, the
+  signature is not UID-bound and **any signature loads any v3 dump**, which retires per-figure
+  capture entirely. If it is rejected, fall back to `Kirby & Warp Star.bin` (shares the genuine
+  figure's machine SRAM fields) to narrow which variable mattered; only if that also fails is the
+  key-based "carrier" re-sign of §18.4 Test B worth building.
+- Known-good v3 baseline: `dumps/kirby-warpstar-rebuilt-from-genuine.bin` (crc32 `DE7DAFC0`, UID
+  `049011CADB1F90`) + the signature above.
+- ⚠️ **`amiibo status` cannot tell you which v3 image is loaded** — it reports only `v3loaded:true`,
+  and its `uid`/`size` fields describe the 540 store, so they read zero on a v3-only board. To
+  identify the loaded image today: `amiibo journal` → take `payload_crc` from header bytes 16..19
+  (LE) → CRC-match offline. This silently invalidated a test run on 2026-07-28. Adding the v3 UID
+  and payload CRC to `amiibo status` is a few lines and should ride along with the write path.
 - Sync clears dirty-write protection only after IndexedDB persistence; it does not unload the tag.
   Console formatting/reset remains the authority.
 - The USB side of Config mode is now CDC-only. The MSC descriptor/callbacks, generated
