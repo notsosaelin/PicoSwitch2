@@ -88,4 +88,10 @@ bool ns2_nfc_mirror_take_usb_response(
 // by the console-facing report builder only while the UART mirror is active.
 uint8_t ns2_nfc_mirror_report_state(void);
 
+// True only while UART has armed the bridge AND it is subscribed to a genuine
+// controller. Consumers use this to hand the mirror precedence over the local
+// serve paths, so the console never sees one source answering commands while
+// another drives the report's NFC state field.
+bool ns2_nfc_mirror_active(void);
+
 #endif  // NS2_NFC_MIRROR_H
