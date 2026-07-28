@@ -4,7 +4,9 @@
 // buffer that the v3 (tag_v3, +0x40 shift) path produces from the full tag.
 // If that holds, a console validating our view as a plain NTAG215 computes the
 // same HMACs the real tag was signed with. Reuses the portal's amiitool port.
-// Run: node tools/test_ns2_v3_compat_view.mjs
+// Also validates the full 64-byte SRAM response trailer (CRC-16/MCRF4XX).
+// Run: node tools/test_ns2_v3_compat_view.mjs <dump-directory>
+// Or set PICOSWITCH2_V3_DUMP_DIR.
 import {readFileSync, readdirSync} from "node:fs";
 import {join} from "node:path";
 
@@ -24,7 +26,23 @@ function compat540(v3) {
   return out;
 }
 
-const dir = "C:/Users/notso/Downloads/02.07.26 Kirby Air Riders amiibo";
+function crc16Mcrf4xx(bytes) {
+  let crc = 0xFFFF;
+  for (const value of bytes) {
+    crc ^= value;
+    for (let bit = 0; bit < 8; bit++)
+      crc = (crc >>> 1) ^ ((crc & 1) ? 0x8408 : 0);
+  }
+  return crc & 0xFFFF;
+}
+
+const dir = process.argv[2] ?? process.env.PICOSWITCH2_V3_DUMP_DIR;
+if (!dir) {
+  console.error(
+    "usage: node tools/test_ns2_v3_compat_view.mjs <dump-directory>\n" +
+    "       or set PICOSWITCH2_V3_DUMP_DIR");
+  process.exit(2);
+}
 const files = [];
 for (const sub of readdirSync(dir))
   for (const f of readdirSync(join(dir, sub)))
@@ -40,6 +58,17 @@ for (const f of files) {
     console.error("FAIL: internal buffers differ for", f);
     process.exit(1);
   }
+  const sram = v3.subarray(0x3C0, 0x400);
+  const calculated = crc16Mcrf4xx(sram.subarray(0, 62));
+  const stored = (sram[62] << 8) | sram[63];
+  if (calculated !== stored) {
+    console.error(
+      `FAIL: SRAM CRC mismatch for ${f}: calculated ${calculated.toString(16)}, ` +
+      `stored ${stored.toString(16)}`);
+    process.exit(1);
+  }
   checked++;
 }
-console.log(`v3_compat_view: ${checked} dumps — standard view is crypto-identical to the v3 tag`);
+console.log(
+  `v3_compat_view: ${checked} dumps — standard view is crypto-identical and ` +
+  "all complete SRAM responses have valid CRC-16/MCRF4XX");

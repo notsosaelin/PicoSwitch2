@@ -15,6 +15,36 @@ Release notes describe user-visible behavior. Detailed implementation history re
 - Virtual Amiibo configuration infrastructure: strict 540/572-byte validation,
   transactional upload, full-image retrieval, dirty-write protection, and alternating power-safe
   flash snapshots.
+- Capture-derived 2048-byte figure-v3 Virtual Amiibo write infrastructure. It keeps the v3-only
+  74-byte `0x14`/`0x21` device command separate from the six-chunk data transaction, validates the
+  complete 454-byte envelope before updating the captured mutable ranges, rejects stale generations, persists
+  dirty state through the alternating journal, and exposes v3 UID/size/generation/CRC plus full
+  readback to Config, UART, and Sync amiibo. Real-console read, write, Stop/eject, next-read, and
+  power-cycle recovery are hardware-confirmed.
+- General 2048-byte figure-v3 dump support: the `0x21` result now carries all 64 stored SRAM bytes,
+  including each image's CRC-16/MCRF4XX, instead of substituting the first captured tag's `7A C4`.
+  An untouched downloaded Kirby/Warp dump completed a full read and write with no signature
+  override or retail-key transformation; its exported console-written image remains HMAC-valid.
+- Capture-derived Air Riders extended-data support handles both sector-aware `0x20` envelopes:
+  a 355-byte clear and a 167-byte update spanning page 4, sector-0 pages `0x92..0xE1`, and
+  sector-1 pages `0x01..0x18`. It reports genuine empty state `0x16`, journals each stage without
+  intermediate ejection, and preserves the following proven 454-byte/`0x08` commit lifecycle.
+- Genuine post-write capture proves the 167-byte header also advances chip-managed sector-1 page
+  0 independently of its explicit records. Virtual v3 images now retain that dynamic four-byte
+  state at `0x400`, persist/export it, and serve it through subsequent sector-aware reads. Air
+  Riders hardware validation accepted the resulting second reuse and loaded the previously saved
+  customized figure state; a cold adapter power cycle then restored and served the same state
+  successfully. A learned gameplay-state save after completing a level also uses the modeled
+  extended/ordinary transaction and storage ranges, with an HMAC-valid result.
+- Air Riders extended updates now use their self-described allocation instead of Kirby-specific
+  pages. King Dedede & Tank Star selects sector-0 page `0xB2` and sector-1 capability/data pages
+  `0x64/0x65`; UID, generation, record shape, cleared-window bounds, total length, and padding
+  remain strict. Reuse reads and portal initialization follow the selected/full user-memory
+  allocation without a figure whitelist. All 16 available Air Riders v3 dumps subsequently
+  completed both reads and writes on a real Switch 2.
+- Committed Virtual Amiibo removal now has a three-second re-presentation cooldown for both
+  540-byte and figure-v3 tags. This gives the console a stable TagRemoved window instead of
+  immediately detecting the retained image again and trapping the user in an amiibo prompt.
 - Browser-local amiibo library with recursive directory import, single-file import, IndexedDB
   caching, search, parsed tag identity, optional cached AmiiboAPI catalog details, and preservation
   of downloaded game-written state in the cached copy.
@@ -22,12 +52,15 @@ Release notes describe user-visible behavior. Detailed implementation history re
   transactional upload/CRC checks, a separately persisted simulated adapter slot, controlled write
   injection, download/cache verification, AmiiboAPI testing, and an automated self-test.
 - Artwork-first amiibo carousel in both portals. The production view starts empty, adds only
-  exact-AmiiboAPI-matched owned files, fills progressively during directory scans, keeps the
+  validated user-imported files, fills progressively during directory scans, keeps the
   selection centered at 100%, and renders four non-overlapping neighbors on each side at exact
-  80/60/40/20% sizes. Carousel names are omitted; navigation remains animated.
-- Single-slot Virtual Amiibo Manager matching the board's one-amiibo storage: a carousel Load
-  Amiibo action, Activate Amiibo with a disabled already-activated state, validated
-  adapter-to-browser writeback, and one merged eject/clear button that labels its exact scope
+  80/60/40/20% sizes. Carousel names are omitted; navigation remains animated. The production
+  carousel now uses hovered mouse-wheel/trackpad movement, touch/pen swipes, and keyboard arrows
+  instead of visible arrow buttons and a redundant position counter. Its three cycle filters sit
+  together below the compact context-aware action and collapse cleanly on mobile.
+- Single-slot Virtual Amiibo Manager matching the board's one-amiibo storage: connected Load
+  amiibo/offline Select amiibo, validated conditional Import/Sync writeback, and one uniformly
+  labeled Eject amiibo button whose tooltip and confirmation reflect its exact scope
   (loaded-plus-adapter eject, unload-only, or adapter-only eject of an image not loaded here).
   Adapter-destructive modes confirm first and remove the stored image (`amiibo clear`) while
   leaving the console Stop/write-back lifecycle unchanged.
@@ -37,21 +70,24 @@ Release notes describe user-visible behavior. Detailed implementation history re
   rejected. A briefly implemented random-UID presentation mode was removed for the same reason.
 - The Virtual Amiibo library is import-only (single file or recursive directory of the user's own
   genuine dumps). A key-based generator using a user-supplied `key_retail.bin` was prototyped and
-  removed in favor of import-only simplicity; the identity/crypto research is retained under
-  `docs/switch2/`.
+  removed in favor of import-only simplicity. A narrower explicit Initialize action is retained:
+  it works offline on an imported dump, requests user-owned keys when needed, clears ordinary and
+  Air Riders v3 save state, re-signs locally, and self-verifies before changing IndexedDB.
+  Identity/crypto research is retained under `docs/switch2/`.
 - Library export/import is now a flat `.zip` (`library.json` manifest + one `.bin` per amiibo) via
   a self-contained store-only ZIP writer/reader; legacy `.json` backups still import.
 - The AmiiboAPI catalog is enhancement-only: entries always display (on-tag identity when the
   catalog is unavailable), the catalog loads cache-first from two mirrors, and it never gates
   display or import.
-- Import accepts larger emulator-container dumps (e.g. 2048-byte Pixl.js/allmiibo/flashiibo files
-  for newer amiibo such as Kirby Air Riders) by taking the leading 540-byte NTAG215 image and
-  recomputing the UID check bytes; newer amiibo not yet in AmiiboAPI import fine.
-- Carousel loops at both ends with clean non-wrapping slides, shows the centered amiibo's release
-  date above it, and has a Sort control (Default/Alphabetically/Numerically/Release date, plus
-  Ascending/Descending) in the filter column. Added Download .bin, Delete from Library, and Refresh
-  actions; the eject button is uniformly labeled "Eject Amiibo" and the active state reads "Amiibo
-  Active".
+- Import preserves exact 2048-byte NTAG I2C Plus 2K figure-v3 images with their contiguous UID
+  layout. NTAG215 inputs remain 540/572 bytes with their native BCC validation; newer amiibo not
+  yet in AmiiboAPI still import.
+- Carousel loops at both ends with clean non-wrapping slides and shows the centered amiibo's
+  release date above it. The production manager now uses compact search, three tap-to-cycle filter
+  chips, one context-aware Load/Select/Import/Sync action, active-tag auto-selection on connection,
+  save metadata and write-count badge around the centered artwork, and an inline details drawer
+  for compatibility plus Download/Initialize/Eject/Delete. Physical scanning remains
+  capability-gated until a Config-transport firmware API exists.
 - Stable localhost launcher for the production USB Serial/Bluetooth portal.
 - Config-personality-only BLE management service and Web Bluetooth client. It pauses controller
   discovery before low-duty advertising, classifies its incoming Peripheral-role link before HID,
@@ -89,9 +125,9 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 - Virtual Amiibo is always available. Blank firmware presents no virtual tag, and the virtual
   runtime owns NFC only after the user loads one of their own images.
-- Browser libraries use one AmiiboAPI-ordered mutable dump per exact catalog identity, expose two
-  independent quick slots, ignore duplicate owned files, and cache the shared public catalog only
-  once instead of duplicating matched metadata. The production carousel preserves
+- Browser libraries use AmiiboAPI-ordered mutable dumps with content-derived keys for distinct v3
+  rider/machine combinations, expose one loaded-slot pointer, ignore duplicate owned files, and
+  cache the shared public catalog only once instead of duplicating matched metadata. The production carousel preserves
   that native order while its arrows cycle `All` and the imported library's available game-series,
   amiibo-series, and product-type values alphabetically.
 - Every newly flashed UF2 performs a one-time reset of settings, both Virtual Amiibo journal banks,
@@ -102,10 +138,9 @@ Release notes describe user-visible behavior. Detailed implementation history re
   console and keep that mapping across source-controller changes.
 - The production portal no longer displays the obsolete current-input/current-output identity
   cards. Its retained body/lightbar and Joy-Con accent controls share one compact full-width panel.
-- The large setup card was removed. Live Amiibo status now appears in the header, the quick-slot
-  switch is colocated with its actions, the three lower panels use equal widths and centered
-  typography, the detail panel has separated formatting, and the log lives under Developer
-  diagnostics.
+- The large setup card and three-column Amiibo action/filter/detail grid were replaced by one
+  carousel-centered manager. Amiibo operation messages now remain inside that manager instead of
+  consuming the global connection header, and the log remains under Developer diagnostics.
 - Bluetooth GAP and Config advertisement identity now use the single name `PicoSwitch2`.
 - Active technical references now live under `docs/`; superseded plans and development narratives
   use the explicit `.archived.md` suffix.
@@ -146,14 +181,15 @@ Release notes describe user-visible behavior. Detailed implementation history re
   but the browser exposes one mutable dump per identity. Users format/erase through the console;
   the portal does not expose reset-to-original behavior.
 - The production amiibo library remains visible and usable without Web Serial. A versioned
-  **Export saved library** JSON backup preserves every mutable dump and both quick-slot assignments
+  **Export saved library** JSON backup preserves every mutable dump and loaded-slot state
   and can be imported after browser storage is cleared.
 
 ### Validation
 
 - DualSense gyro immediately returned to normal when the experimental length-`0x28` gate was
   disabled, confirming the validated production path remains the length-`0x1E` carrier.
-- All 49 host-test executables pass, including the Config BLE bridge and locked base-map test, and the motion/PDU tests
+- All 53 host-test executables pass, including the v3 write codec, Config BLE bridge, locked
+  base-map test, and motion/PDU tests. They
   compile cleanly with warnings treated as errors against the reorganized source tree. Pico W,
   Pico 2 W, and legacy Switch 1 Pico W builds succeed.
 - The local USB Serial/Bluetooth portal passes JavaScript syntax, DOM-reference, and localhost delivery
@@ -165,13 +201,14 @@ Release notes describe user-visible behavior. Detailed implementation history re
 - The standalone diagnostic portal passes JavaScript/DOM reference checks and local HTTP delivery.
   AmiiboAPI's 946-entry catalog locally matches 944 of the 1,035 maintainer files; the remaining 91
   are Happy Home Designer item files that all share the same out-of-catalog ID.
-- All 49 host-test executables pass after the Virtual Amiibo write, BOOTSEL-policy, and Config BLE
-  bridge integration,
-  including complete
-  six-chunk commit, retry/conflict, incomplete/UID mismatch, format-promotion, 700 ms completion,
-  atomic failure coverage, and retained-image/logical-removal separation. Pico W and Pico 2 W
-  release builds both succeed; the complete write/eject/re-present/export lifecycle is also
-  hardware-confirmed.
+- All 53 host-test executables pass after the Virtual Amiibo write, full-SRAM figure-v3 response,
+  BOOTSEL-policy, Config BLE,
+  and v3 write-codec integration. Coverage includes the captured v3 six-chunk commit,
+  retry/conflict, incomplete/UID mismatch, protected/out-of-range records, trailing data, the
+  validated 540 format-promotion and 700 ms completion, atomic failure handling, and retained-image
+  logical removal. Pico W and Pico 2 W release builds both succeed. The 540-byte and 2048-byte
+  write/eject/re-present/persistence lifecycles are hardware-confirmed; production-portal v3 Sync
+  remains pending.
 
 ## 1.5.0 — 2026-07-22
 

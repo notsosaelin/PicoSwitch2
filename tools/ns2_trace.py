@@ -151,7 +151,10 @@ def _validate_record(record: dict[str, Any], source: str, line_number: int) -> N
     _integer(record["id"], "id", 0, 0xFF)
     _integer(record["sub"], "sub", 0, 0xFF)
     length = _integer(record["length"], "length", 0, 0xFFFF)
-    captured = _integer(record["captured"], "captured", 0, 72)
+    # Keep this in sync with NS2_PROTOCOL_TRACE_PAYLOAD_MAX. NFC tracing now
+    # retains complete 0x14 commands and 0x15 responses, which exceed the old
+    # 72-byte diagnostic limit.
+    captured = _integer(record["captured"], "captured", 0, 128)
     if captured > length:
         raise TraceError(f"{source}:{line_number}: captured length exceeds total length")
     payload = record["payload"]

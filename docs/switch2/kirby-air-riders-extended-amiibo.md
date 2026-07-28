@@ -1,10 +1,11 @@
 # Kirby Air Riders "Figure Player" extended amiibo format
 
-Status: 🔵 Format **identified** (NTAG I2C Plus 2K, "figure v3") from xSke/pixl.js; portal imports
-and stores the full tag. Adapter/console **serving is not implemented** (firmware work). Strong
-evidence tier — corroborated by a mature open-source amiibo emulator, not yet hardware-validated in
-PicoSwitch2.
-Last updated: 2026-07-26
+Status: ✅ PicoSwitch2 read/write, dynamic second reuse, and power-cycle recovery hardware-confirmed.
+Last updated: 2026-07-28
+
+> Historical investigation sections below preserve the failed approaches that led to the working
+> protocol. Current implementation authority is [`../Amiibo-v3.md`](../Amiibo-v3.md) §19 and
+> [`../experiments/v3-full-sram-response-validation-2026-07-28.md`](../experiments/v3-full-sram-response-validation-2026-07-28.md).
 
 ## TL;DR (resolved by pixl.js figure-v3 support)
 
@@ -20,15 +21,18 @@ reads the 2 KB across two sectors using NTAG I2C sector-select and the SRAM pass
 Kirby Air Riders amiibo encode a **rider + machine** ("Figure Player") combination, and a real
 Switch 2 detects both. Community dump sets (e.g. "Kirby Air Riders amiibo for
 Pixl.js/allmiibo/flashiibo") ship one file per rider per machine — four machines each for Kirby,
-Meta Knight, King Dedede, and Bandana Waddle Dee. These files do **not** load as normal amiibo in
-PicoSwitch2, and this document explains why and what would be required.
+Meta Knight, King Dedede, and Bandana Waddle Dee. These files now load and write through
+PicoSwitch2; this document preserves the format and controller-side protocol work that made that
+possible.
 
 ## What the files are
 
-- 2048-byte files; meaningful data through offset `0x3FF` (1024 bytes), zero-padded to 2048.
+- 2048-byte source files; initial community dumps have meaningful data through offset `0x3FF`
+  (1024 bytes) and are zero-padded afterward. Console writes add sector-1 game state through
+  `0x463`.
 - A standard NTAG215 amiibo structure is present at the start: static lock `0F E0` at `0x0A`,
   capability container `F1 10 FF EE` at `0x0C`, identity block at `0x54`, tag HMAC region at
-  `0x34`, data HMAC at `0x80`, encrypted app-data at `0xA0`–`0x1B4`.
+  `0x34`, data HMAC at `0xC0`, encrypted app-data starting at `0xE0`.
 - Identity format byte at `0x5B` is `0x03` (classic amiibo use `0x02`), a first signal of a new
   generation/format.
 - UID/BCC check bytes are placeholders (do not satisfy the NTAG cascade formula); see the import
@@ -87,31 +91,36 @@ at tag `0x0C0` (not `0x080`) and the encrypted section at tag `0x0E0` (not `0x0A
 (`0x34`), identity (`0x54`), and UID mirror (`0x000`) are unchanged. This `0x40` shift is why rider
 data in our diff ran to `~0x247` instead of ending at `0x208`.
 
-## Portal support (done) and firmware support (remaining)
+## Portal and firmware support (completed)
 
 **Portal (implemented):** the library detects the 2048-byte NTAG I2C 2K format, stores the **full**
 tag (no truncation, no BCC recompute — the UID is 7 contiguous bytes), parses the UID accordingly,
 and keys each entry by content so a rider's four machine variants are four distinct, filename-labeled
-entries (Kirby & Warp Star, Kirby & Tank Star, …). Activate is gated with a clear "serving in
-progress" message because the firmware cannot yet present a 2 KB tag.
+entries (Kirby & Warp Star, Kirby & Tank Star, …).
 
-**Firmware (remaining):** the virtual amiibo store and NFC virtual-reader are built for the 540/572
-NTAG215 format (`VIRTUAL_AMIIBO_RAW_SIZE = 540`; a 600-byte console read buffer in 70-byte chunks —
-see [`nfc-implementation.md`](nfc-implementation.md)). Serving a v3 tag needs:
+**Firmware (implemented and hardware-confirmed):** the store accepts the exact 2048-byte image.
+The console-facing reader serves descriptor-selected ranges, signals v3 with read-prefix byte
+`0x06`, handles the separate `0x14`/`0x21` device transaction, and publishes all 64 bytes of
+`image[0x3C0..0x3FF]` after the 19-byte result header. The same path accepts the six-chunk console
+write, persists it, and re-presents the updated image. Historical implementation notes below remain
+to document how the framing was discovered.
 
-1. A **2048-byte store image** with a tag-type field, and the config upload path extended to accept
-   it (currently validates 540/572).
-2. The **controller→console** NFC framing for a 2 KB tag. pixl.js gives the *tag-RF* side (what the
-   tag returns to a reader); PicoSwitch2 plays the *reader/controller* side (what the controller
-   reports to the console over vendor bulk). The console must learn the tag type (so it issues the
-   sector-select/SRAM sequence) and read all 2 KB. The exact vendor-bulk framing for the larger tag
-   is the one piece pixl.js does not directly give.
-
-Crucially, PicoSwitch2 can **self-capture** this: implement a preliminary v3 serve path (report the
-NTAG I2C 2K type and full 2 KB image), present it on a real Switch 2, and read the UART protocol
-trace of what the console actually requests. That closes the loop without needing a separate
-physical-amiibo capture — the earlier "capture audit" below documented that no such capture exists,
-but with the format now known, an implement-and-trace pass is the practical path.
+**Dynamic extended state (implemented and runtime hardware-confirmed for Kirby):** later genuine
+Kirby captures prove that its sector-1 capability page 0 advances independently from sector-0
+page 4. The 167-byte update envelope's four-byte header carries the next value. Two consecutive
+physical cycles prove
+`A5 00 01 00 → A5 00 02 00 → A5 00 03 00`, while page 4 independently advances
+`03 → 04 → 05`; Kirby's explicit sector-1 record starts at page 1. King Dedede later proves the
+same capability/data pair can live at pages `0x64/0x65`, with sector-0 game data at `0xB2`
+instead of `0x92`. PicoSwitch2 now retains that chip-managed value at the envelope-selected image
+offset and serves it during subsequent descriptor-selected `0x1E` sector reads. See
+[`../Amiibo-v3.md`](../Amiibo-v3.md) §20.5 for the direct capture evidence. Air Riders accepted
+the corrected virtual second reuse and loaded the previously saved custom color. After a physical
+adapter power cycle, UART recovered the same generation-4 image and CRC, `0x1E` again served
+`A5 00 02 00`, and Air Riders accepted the retained save. This lifecycle is fully
+hardware-confirmed. A later save after completing a level proves learned gameplay state uses the
+same 167-byte extended update and ordinary commit; no bytes beyond the modeled game-data end at
+`0x463` changed.
 
 ## Capture audit (2026-07-26): no genuine amiibo read exists to RE from
 
@@ -354,10 +363,10 @@ were serving the raw stored bytes, so the console saw SRAM never become ready
 after recognizing the tag → **2011-0301**.
 
 **Fix:** `ns2_v3_serve` now sets `image[0x3B6] |= 0x08` on the **served copy**
-(stored flash image untouched), matching pixl.js exactly. Audit of the emulator
-confirms this is the *only* dynamic read-side transformation for a 2 KB tag — all
-other special-casing there is on the write path. Build-verified; hardware test
-pending.
+(stored flash image untouched), matching pixl.js exactly. At that stage, the emulator source
+showed no other dynamic read transformation. Later direct genuine-controller captures supersede
+that conclusion for controller-side sector reads: chip-managed sector-1 page 0 also changes across
+Air Riders updates. Build-verified; hardware test pending.
 
 Also keep in mind: do not restore the 60-byte prefix (it truncates sector 0 within
 the 15-chunk cap and regresses to "not an amiibo").
@@ -439,10 +448,11 @@ rider** (the four machines share one catalog identity and one static AmiiboAPI i
 four look-alikes was noise). The carousel control row is centered as `← Load Amiibo · Swap Combo →`;
 **Swap Combo** (shown only for a multi-combo rider) cycles the active machine and the combo name
 (from the filename, e.g. "Kirby & Warp Star") appears in the detail box. Each rider defaults to its
-first combo on arrival. Workflow: navigate to the rider → Swap Combo to the machine you want → Load
-Amiibo → Activate Amiibo. Activate shows a "serving in progress" message rather than attempting a 540/572
-upload the firmware would reject. Import/library are correct and ready; only the firmware serve path
-remains.
+first combo on arrival. Workflow: navigate to the rider → Swap Combo to the machine you want →
+**Load amiibo**. Connected Load uploads the complete 2048-byte image immediately; offline
+**Select amiibo** only remembers it. Real-console read, write, Stop/eject, next-read, and
+power-cycle persistence are hardware-confirmed. Production-portal Sync remains the final manager
+check; see [`../Amiibo-v3.md`](../Amiibo-v3.md) §19.
 
 
 ## Source review (2026-07-27) — full sweep of the published research
@@ -472,10 +482,18 @@ xSke, [N3evin/AmiiboAPI#243 comment 3591686037](https://github.com/N3evin/Amiibo
   otherwise it's going to be polling forever"* — matching our earlier fix.
 - **The machine identity lives only in the SRAM block**; the amiibo **ID is
   rider-only** (Kirby & Warp Star and Kirby & Winged Star share
-  `1F00000004C41E03`). The SRAM block is authenticated by an unknown checksum over
-  its first 26 bytes.
-- Kirby Air Riders writes its own data to pages `0x9A`-`0xA1` and `0x11A`-`0x131`,
-  encrypted with keys that would require a Switch 2 softmod. **Not recoverable.**
+  `1F00000004C41E03`). Its 64-byte transport response ends in a known
+  CRC-16/MCRF4XX over the preceding 62 bytes. A separate check/authentication inside the first
+  26 machine bytes remains unidentified.
+- Published research previously placed Air Riders data at pages `0x9A`-`0xA1` and
+  `0x11A`-`0x131`. The complete 2026-07-28 genuine controller trace plus physical-tag diff
+  supersedes that transport mapping: the console's sector-aware records target sector 0 page
+  `0x92` for 32 bytes and sector 1 page `0x01` for 96 bytes. The payload remains opaque
+  ciphertext, but PicoSwitch2 can persist it without decrypting it.
+- The 167-byte update is allocation-relative. Kirby uses sector-0 page `0x92` and sector-1
+  capability/data pages `0x00/0x01`; King Dedede & Tank Star uses `0xB2` and `0x64/0x65`.
+  Envelope byte 13 selects the capability page, and the explicit sector-1 record begins on the
+  following page. Runtime validation must consume this self-description, not map rider identity.
 - [solosky/pixl.js#381](https://github.com/solosky/pixl.js/pull/381) is merged and
   xSke tested emulation on a real Switch 2 with the game. Crucially it emulates the
   **tag over RF**, where the reader learns the type from `GET_VERSION`
@@ -483,7 +501,7 @@ xSke, [N3evin/AmiiboAPI#243 comment 3591686037](https://github.com/N3evin/Amiibo
   **controller**, so none of that RF signalling is available to us: the console
   tells *us* which pages to read.
 
-### Why every attempt so far failed
+### Why the early attempts failed
 
 The `0x06` descriptor (decoded in `dumps/research/ndeadly-switch2-research.json`)
 is `D0 | uid_len | uid | McuTagType | block_count | (start,end) x N`. The console
@@ -508,11 +526,11 @@ standard[0x080..0x21B] = v3[0x0C0..0x25B]   (412 B)   -> 540 bytes
 NTAG215 computes exactly the HMACs the real tag was signed with. This is the same
 path the console's own sysmodule uses for backwards compatibility.
 
-**Expected scope:** the rider amiibo should be recognised and registrable (owner /
-nickname) as a standard amiibo. The **machine/Figure Player cannot** be conveyed —
-it lives in the SRAM block, which the console only requests after learning the tag
-is 2 KB, and we have no confirmed way to signal that over the controller protocol.
-That remains the one genuinely open question.
+**Superseded result:** byte `0x06` in the controller read prefix makes the console request the
+extended ranges and issue the separate `0x14`/`0x21` device transaction. The 83-byte result is a
+19-byte controller header plus the dump's full 64-byte SRAM response, so both rider and machine
+are conveyed. The former implementation copied only the first 32 SRAM bytes and forced one
+captured figure's `7A C4` CRC; carrying all 64 bytes made an untouched downloaded dump work.
 
 ## References
 

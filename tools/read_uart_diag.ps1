@@ -11,6 +11,7 @@ param(
     [int]$CaptureMs = 600,
     [ValidateRange(250, 30000)]
     [int]$TimeoutMs = 5000,
+    [switch]$NoAcknowledge,
     [switch]$List
 )
 
@@ -36,6 +37,30 @@ function Get-SerialDevices {
             [pscustomobject]@{ Port = $_; Name = $_; PnpId = '' }
         })
     }
+}
+
+function Get-Crc32([byte[]]$Data) {
+    # Keep the arithmetic in int64 because PowerShell treats 0xFFFFFFFF as -1
+    # and checked uint32 conversions reject intermediate high-bit values.
+    $table = New-Object 'System.Int64[]' 256
+    for ($i = 0; $i -lt 256; $i++) {
+        [int64]$entry = $i
+        for ($bit = 0; $bit -lt 8; $bit++) {
+            if (($entry -band 1L) -ne 0L) {
+                $entry = (0xEDB88320L -bxor ($entry -shr 1)) -band 0xFFFFFFFFL
+            } else {
+                $entry = ($entry -shr 1) -band 0xFFFFFFFFL
+            }
+        }
+        $table[$i] = $entry
+    }
+    [int64]$crc = 0xFFFFFFFFL
+    foreach ($value in $Data) {
+        $index = [int](($crc -bxor [int64]$value) -band 0xFFL)
+        $crc = ((($crc -shr 8) -band 0xFFFFFFL) -bxor $table[$index]) `
+            -band 0xFFFFFFFFL
+    }
+    return ($crc -bxor 0xFFFFFFFFL) -band 0xFFFFFFFFL
 }
 
 function Write-DiagnosticLines {
@@ -121,8 +146,9 @@ try {
         $serial.Write("amiibo status`n")
         $statusLine = $serial.ReadLine().Trim()
         $status = $statusLine | ConvertFrom-Json
-        if ($status.amiibo -ne 'status' -or -not $status.loaded -or
-            [int]$status.size -notin @(540, 572)) {
+        if ($status.amiibo -ne 'status' -or
+            (-not $status.loaded -and -not $status.v3loaded) -or
+            [int]$status.size -notin @(540, 572, 2048)) {
             throw "No supported Virtual Amiibo is loaded: $statusLine"
         }
 
@@ -153,24 +179,45 @@ try {
         }
 
         $bytes = $image.ToArray()
-        $bcc0 = [byte](0x88 -bxor $bytes[0] -bxor $bytes[1] -bxor $bytes[2])
-        $bcc1 = [byte]($bytes[4] -bxor $bytes[5] -bxor $bytes[6] -bxor $bytes[7])
-        if ($bytes[3] -ne $bcc0 -or $bytes[8] -ne $bcc1) {
-            throw 'Downloaded Virtual Amiibo failed NTAG215 UID/BCC validation.'
+        if ($total -eq 2048) {
+            if ($bytes[0] -ne 0x04 -or $bytes[7] -ne 0x00 -or
+                $bytes[8] -ne 0x44) {
+                throw 'Downloaded Virtual Amiibo failed NTAG I2C 2K identity validation.'
+            }
+            $uid = -join (0..6 | ForEach-Object { '{0:X2}' -f $bytes[$_] })
+            if ($status.uid -and $uid -ne ([string]$status.uid).ToUpperInvariant()) {
+                throw "Downloaded Virtual Amiibo UID mismatch: received $uid, expected $($status.uid)"
+            }
+        } else {
+            $bcc0 = [byte](0x88 -bxor $bytes[0] -bxor $bytes[1] -bxor $bytes[2])
+            $bcc1 = [byte]($bytes[4] -bxor $bytes[5] -bxor $bytes[6] -bxor $bytes[7])
+            if ($bytes[3] -ne $bcc0 -or $bytes[8] -ne $bcc1) {
+                throw 'Downloaded Virtual Amiibo failed NTAG215 UID/BCC validation.'
+            }
+        }
+        $actualCrc = '{0:X8}' -f (Get-Crc32 $bytes)
+        $expectedCrc = ([string]$status.payload_crc).ToUpperInvariant()
+        if ($expectedCrc -match '^[0-9A-F]{8}$' -and
+            $actualCrc -ne $expectedCrc) {
+            throw "Downloaded Virtual Amiibo CRC mismatch: received $actualCrc, expected $expectedCrc"
         }
         [System.IO.File]::WriteAllBytes($resolved, $bytes)
 
-        # Match the production portal's Save current Amiibo semantics: only
-        # clear dirty protection after every byte has been validated and saved.
-        $serial.Write("amiibo acknowledge`n")
-        $ackLine = $serial.ReadLine().Trim()
-        $ack = $ackLine | ConvertFrom-Json
-        if ($ack.amiibo -ne 'acknowledged' -or $ack.dirty) {
-            throw "Virtual Amiibo was saved but not acknowledged: $ackLine"
+        $ackLine = $null
+        if (-not $NoAcknowledge) {
+            # Match the production portal's Sync semantics: only clear dirty
+            # protection after every byte has been validated and saved.
+            $serial.Write("amiibo acknowledge`n")
+            $ackLine = $serial.ReadLine().Trim()
+            $ack = $ackLine | ConvertFrom-Json
+            if ($ack.amiibo -ne 'acknowledged' -or $ack.dirty) {
+                throw "Virtual Amiibo was saved but not acknowledged: $ackLine"
+            }
         }
-        Write-Host "Saved $total Virtual Amiibo bytes to $resolved" -ForegroundColor Green
+        $suffix = if ($NoAcknowledge) { ' (dirty state retained)' } else { '' }
+        Write-Host "Saved $total Virtual Amiibo bytes to $resolved$suffix" -ForegroundColor Green
         Write-Output $statusLine
-        Write-Output $ackLine
+        if ($ackLine) { Write-Output $ackLine }
     } elseif ($Command -eq 'pro2audio pcm dump') {
         if (-not $OutputPath) {
             throw 'pro2audio pcm dump requires -OutputPath ending in .wav'

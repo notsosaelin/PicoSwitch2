@@ -182,6 +182,43 @@ const run = async () => {
   const again = await mod.amiiboInitializeImage(keys, wiped, false);
   assert(again.every((b, k) => b === wiped[k]), "initialization is idempotent");
 
+  // v3 (2 KB Air Riders) carries additional writable game state beyond the
+  // ordinary encrypted amiibo body. Initialization clears those captured
+  // ranges and the independent sector-1 generation while preserving the chip
+  // configuration and 64-byte machine/SRAM identity block.
+  const v3Original = new Uint8Array(2048);
+  v3Original.set([0xA5, 0x00, 0x06, 0x00], 0x10);
+  v3Original.fill(0xA1, 0x248, 0x388);
+  v3Original.fill(0xB2, 0x388, 0x3C0);
+  v3Original.fill(0xC3, 0x3C0, 0x400);
+  v3Original.fill(0xD4, 0x400, 0x800);
+  v3Original.set([0xA5, 0x00, 0x04, 0x00], 0x400);
+  v3Original.set([0xA5, 0x00, 0x07, 0x00], 0x590);
+  const v3Internal = full.slice();
+  v3Internal.set([0xA5, 0x00, 0x06, 0x00], 0x028);
+  const v3Full = await mod.amiiboPackInternal(keys, v3Internal, v3Original, true);
+  const v3Wiped = await mod.amiiboInitializeImage(keys, v3Full, true);
+  const v3After = await mod.amiiboDecryptInternal(keys, v3Wiped, true);
+  assert(v3After.ok, "initialized v3 amiibo still passes both HMACs");
+  assert(v3Wiped[0x10] === 0xA5 && v3Wiped[0x11] === 0x00 &&
+         v3Wiped[0x12] === 0 && v3Wiped[0x13] === 0,
+    "v3 page 4 returns to its initial A5 00 00 00 state");
+  for (const [from, to, label] of [
+    [0x248, 0x388, "sector-0 extended game state"],
+    [0x400, 0x800, "complete allocation-independent sector-1 state"],
+  ])
+    assert(v3Wiped.subarray(from, to).every(value => value === 0),
+      `v3 ${label} cleared`);
+  for (const [from, to, value, label] of [
+    [0x388, 0x3C0, 0xB2, "chip configuration"],
+    [0x3C0, 0x400, 0xC3, "machine/SRAM identity"],
+  ])
+    assert(v3Wiped.subarray(from, to).every(byte => byte === value),
+      `v3 ${label} preserved`);
+  const v3Again = await mod.amiiboInitializeImage(keys, v3Wiped, true);
+  assert(v3Again.every((byte, index) => byte === v3Wiped[index]),
+    "v3 initialization is idempotent");
+
   // A tampered image must be refused rather than re-signed into something valid.
   const tampered = fullTag.slice();
   tampered[0x0A5] ^= 0xFF;                            // inside encrypted data

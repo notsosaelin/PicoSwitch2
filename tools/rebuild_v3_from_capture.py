@@ -1,17 +1,38 @@
-import json, glob, os
+import argparse
+import json
+from pathlib import Path
 
-f = 'E:/PicoSwitch2/dumps/v3-genuine-capture-2026-07-27.jsonl'
-recs = [json.loads(l) for l in open(f)
+REPO = Path(__file__).resolve().parents[1]
+parser = argparse.ArgumentParser(
+    description="Rebuild the genuine-capture v3 fixture with a complete donor image.")
+parser.add_argument(
+    "donor_directory", type=Path,
+    help="Directory recursively containing a Kirby & Warp Star 2048-byte dump")
+parser.add_argument(
+    "--capture", type=Path,
+    default=REPO / "dumps" / "v3-genuine-capture-2026-07-27.jsonl")
+parser.add_argument(
+    "--output", type=Path,
+    default=REPO / "dumps" / "kirby-warpstar-rebuilt-from-genuine.bin")
+args = parser.parse_args()
+
+recs = [json.loads(l) for l in args.capture.open(encoding="utf-8")
         if l.strip().startswith('{"trace":"record"')]
+
+
+def response_data(record):
+    payload = bytes.fromhex(record['payload'])
+    length = payload[9] | (payload[10] << 8)
+    return payload[8], payload[11:11 + length]
+
 
 # The 4-block descriptor read at seq 36 is the widest the console ever asks for.
 buf = bytearray()
 for r in recs:
     if r['seq'] >= 36 and r['dir'] == 'device_to_console' and r['sub'] == 0x15:
-        p = bytes.fromhex(r['payload'])
-        ln = p[9] | (p[10] << 8)
-        buf += p[11:11 + ln]
-        if p[8] & 1:
+        flags, data = response_data(r)
+        buf += data
+        if flags & 1:
             break
 buf = bytes(buf)
 prefix, tag = buf[:60], buf[60:]
@@ -38,17 +59,45 @@ print("SRAM 0x3C0 region covered:", bool(covered[0x3C0]))
 # Fill the uncovered remainder from the matching downloaded dump so the image is
 # structurally complete; every byte the console actually reads comes from the
 # genuine capture above.
-d = r"C:\Users\notso\Downloads\02.07.26 Kirby Air Riders amiibo"
-src = [p for p in glob.glob(os.path.join(d, "**", "*.bin"), recursive=True)
-       if "Kirby & Warp" in p][0]
-donor = open(src, 'rb').read()
+matches = [
+    path for path in args.donor_directory.rglob("*.bin")
+    if "Kirby & Warp" in path.name
+]
+if len(matches) != 1:
+    raise SystemExit(
+        "expected exactly one Kirby & Warp Star donor, found %d" % len(matches))
+src = matches[0]
+donor = src.read_bytes()
+if len(donor) != 2048:
+    raise SystemExit("donor must be exactly 2048 bytes: %s" % src)
 filled = 0
 for i in range(2048):
     if not covered[i]:
         image[i] = donor[i]
         filled += 1
-print("filled %d uncovered bytes from %s" % (filled, os.path.basename(src)))
+print("filled %d uncovered bytes from %s" % (filled, src.name))
 
-out = 'E:/PicoSwitch2/dumps/kirby-warpstar-rebuilt-from-genuine.bin'
-open(out, 'wb').write(bytes(image))
-print("wrote", out)
+# The 0x21 result is an independent 83-byte buffer: a 19-byte controller
+# header followed by the complete 64-byte SRAM response. It is not part of the
+# descriptor page ranges above. Copying only its first 32 bytes while retaining
+# the donor's CRC produced a malformed research image whose body calculated to
+# 0x7AC4 but stored 0xE511.
+result = bytearray()
+armed = False
+for r in recs:
+    if r['dir'] == 'console_to_device' and r['sub'] == 0x21:
+        armed = True
+        continue
+    if armed and r['dir'] == 'device_to_console' and r['sub'] == 0x15:
+        flags, data = response_data(r)
+        result += data
+        if flags & 1:
+            break
+assert len(result) == 83, "expected 83-byte 0x21 result, got %d" % len(result)
+assert result[0] == 0x18 and result[18] == 0x06
+image[0x3C0:0x400] = result[19:83]
+covered[0x3C0:0x400] = b'\x01' * 64
+print("SRAM response:", image[0x3C0:0x400].hex().upper())
+
+args.output.write_bytes(bytes(image))
+print("wrote", args.output)

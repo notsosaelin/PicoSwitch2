@@ -101,12 +101,15 @@ static uint8_t record_buffer[VIRTUAL_AMIIBO_RECORD_SIZE];
 // power cycles, cleared only by Eject. Declared here because init() loads it.
 static uint8_t v3_image[NS2_AMIIBO_V3_SIZE];
 static uint8_t v3_upload_buf[NS2_AMIIBO_V3_SIZE];
+static uint8_t v3_upload_coverage[NS2_AMIIBO_V3_SIZE / 8u];
 static uint16_t v3_upload_size;
 static uint16_t v3_upload_received;
 static uint32_t v3_upload_crc;
 static volatile bool v3_upload_in_progress;
 static volatile bool v3_slot_loaded;
 static uint32_t v3_generation;
+static bool v3_dirty;
+static bool v3_persisted;
 
 static uint16_t read_u16le(const uint8_t *p)
 {
@@ -198,7 +201,8 @@ static bool record_v2_valid(const uint8_t *record, uint32_t *generation,
 // v3 (NTAG I2C 2K) record: same 32-byte header (magic/version/header_size/
 // generation/size/flags/payload_crc/header_crc) followed by a single 2048-byte
 // image payload.
-static bool record_v3_valid(const uint8_t *record, uint32_t *generation)
+static bool record_v3_valid(const uint8_t *record, uint32_t *generation,
+                            uint16_t *flags)
 {
     if (read_u32le(record) != VIRTUAL_AMIIBO_RECORD_MAGIC ||
         read_u16le(record + 4) != VIRTUAL_AMIIBO_V3_RECORD_VERSION ||
@@ -208,6 +212,9 @@ static bool record_v3_valid(const uint8_t *record, uint32_t *generation)
         return false;
     if (read_u16le(record + 12) != VIRTUAL_AMIIBO_V3_PAYLOAD_SIZE)
         return false;
+    const uint16_t stored_flags = read_u16le(record + 14);
+    if ((stored_flags & ~VIRTUAL_AMIIBO_FLAG_DIRTY) != 0u)
+        return false;
     const uint8_t *payload = record + VIRTUAL_AMIIBO_HEADER_SIZE;
     if (virtual_amiibo_crc32(payload, VIRTUAL_AMIIBO_V3_PAYLOAD_SIZE) !=
         read_u32le(record + 16))
@@ -215,6 +222,7 @@ static bool record_v3_valid(const uint8_t *record, uint32_t *generation)
     if (!ns2_amiibo_v3_valid(payload, VIRTUAL_AMIIBO_V3_PAYLOAD_SIZE))
         return false;
     *generation = read_u32le(record + 8);
+    if (flags) *flags = stored_flags;
     return true;
 }
 
@@ -256,19 +264,24 @@ void virtual_amiibo_store_init(void)
     __atomic_store_n(&presented_snapshot, false, __ATOMIC_RELEASE);
     v3_slot_loaded = false;
     v3_generation = 0;
+    v3_dirty = false;
+    v3_persisted = false;
     active_bank = -1;
 
     // A v3 (NTAG I2C 2K) record takes precedence: the type switch that writes it
     // erases both banks first, so a valid v3 record means no v2 record survives.
     const uint8_t *best_v3 = NULL;
     uint32_t best_v3_generation = 0;
+    uint16_t best_v3_flags = 0;
     for (unsigned bank = 0; bank < 2u; ++bank) {
         uint32_t generation;
+        uint16_t flags;
         const uint8_t *record = bank_record(bank);
-        if (!record_v3_valid(record, &generation)) continue;
+        if (!record_v3_valid(record, &generation, &flags)) continue;
         if (!best_v3 || (int32_t)(generation - best_v3_generation) > 0) {
             best_v3 = record;
             best_v3_generation = generation;
+            best_v3_flags = flags;
             active_bank = (int)bank;
         }
     }
@@ -276,6 +289,8 @@ void virtual_amiibo_store_init(void)
         memcpy(v3_image, best_v3 + VIRTUAL_AMIIBO_HEADER_SIZE,
                VIRTUAL_AMIIBO_V3_PAYLOAD_SIZE);
         v3_generation = best_v3_generation;
+        v3_dirty = (best_v3_flags & VIRTUAL_AMIIBO_FLAG_DIRTY) != 0u;
+        v3_persisted = true;
         __atomic_store_n(&v3_slot_loaded, true, __ATOMIC_RELEASE);
         __atomic_store_n(&presented_snapshot, true, __ATOMIC_RELEASE);
         return;
@@ -368,10 +383,15 @@ virtual_amiibo_result_t virtual_amiibo_store_v3_upload_begin(
     size_t size, uint32_t expected_crc)
 {
     if (size != NS2_AMIIBO_V3_SIZE) return VIRTUAL_AMIIBO_ERROR_SIZE;
+    critical_section_enter_blocking(&tag_lock);
+    const bool dirty = v3_dirty || tag.dirty;
+    critical_section_exit(&tag_lock);
+    if (dirty) return VIRTUAL_AMIIBO_ERROR_DIRTY;
     v3_upload_size = (uint16_t)size;
     v3_upload_received = 0;
     v3_upload_crc = expected_crc;
     memset(v3_upload_buf, 0, sizeof(v3_upload_buf));
+    memset(v3_upload_coverage, 0, sizeof(v3_upload_coverage));
     v3_upload_in_progress = true;
     return VIRTUAL_AMIIBO_OK;
 }
@@ -383,9 +403,22 @@ virtual_amiibo_result_t virtual_amiibo_store_v3_upload_chunk(
     if (!data || size == 0) return VIRTUAL_AMIIBO_ERROR_ARGUMENT;
     if (offset > v3_upload_size || size > (size_t)v3_upload_size - offset)
         return VIRTUAL_AMIIBO_ERROR_RANGE;
-    memcpy(v3_upload_buf + offset, data, size);
-    if (offset + size > v3_upload_received)
-        v3_upload_received = (uint16_t)(offset + size);
+    for (size_t i = 0; i < size; ++i) {
+        const size_t index = offset + i;
+        const uint8_t mask = (uint8_t)(1u << (index & 7u));
+        if ((v3_upload_coverage[index >> 3u] & mask) != 0u &&
+            v3_upload_buf[index] != data[i])
+            return VIRTUAL_AMIIBO_ERROR_CONFLICT;
+    }
+    for (size_t i = 0; i < size; ++i) {
+        const size_t index = offset + i;
+        const uint8_t mask = (uint8_t)(1u << (index & 7u));
+        if ((v3_upload_coverage[index >> 3u] & mask) == 0u) {
+            v3_upload_coverage[index >> 3u] |= mask;
+            v3_upload_received++;
+        }
+        v3_upload_buf[index] = data[i];
+    }
     return VIRTUAL_AMIIBO_OK;
 }
 
@@ -398,15 +431,17 @@ virtual_amiibo_result_t virtual_amiibo_store_v3_upload_commit(void)
         return VIRTUAL_AMIIBO_ERROR_CRC;
     if (!ns2_amiibo_v3_valid(v3_upload_buf, v3_upload_size))
         return VIRTUAL_AMIIBO_ERROR_BCC;
+    critical_section_enter_blocking(&tag_lock);
     memcpy(v3_image, v3_upload_buf, NS2_AMIIBO_V3_SIZE);
     v3_upload_in_progress = false;
     // Mutual exclusion: a v3 tag replaces any loaded 540/572 tag. The journal
     // write in service_save erases both banks on the type switch.
-    critical_section_enter_blocking(&tag_lock);
     virtual_amiibo_init(&tag);
+    v3_generation++;
+    v3_dirty = false;
+    v3_persisted = false;
     critical_section_exit(&tag_lock);
     __atomic_store_n(&loaded_snapshot, false, __ATOMIC_RELEASE);
-    v3_generation++;
     __atomic_store_n(&v3_slot_loaded, true, __ATOMIC_RELEASE);
     __atomic_store_n(&presented_snapshot, true, __ATOMIC_RELEASE);
     persist_requested = true;
@@ -423,17 +458,86 @@ bool virtual_amiibo_store_v3_loaded(void)
     return __atomic_load_n(&v3_slot_loaded, __ATOMIC_ACQUIRE);
 }
 
+virtual_amiibo_result_t virtual_amiibo_store_v3_set_presented(bool presented)
+{
+    if (presented && !virtual_amiibo_store_v3_loaded())
+        return VIRTUAL_AMIIBO_ERROR_NOT_LOADED;
+    __atomic_store_n(&presented_snapshot, presented, __ATOMIC_RELEASE);
+    return VIRTUAL_AMIIBO_OK;
+}
+
 void virtual_amiibo_store_v3_clear(void)
 {
     v3_upload_in_progress = false;
     __atomic_store_n(&v3_slot_loaded, false, __ATOMIC_RELEASE);
+    __atomic_store_n(&presented_snapshot, false, __ATOMIC_RELEASE);
+    critical_section_enter_blocking(&tag_lock);
+    v3_dirty = false;
+    v3_persisted = false;
+    critical_section_exit(&tag_lock);
 }
 
 bool virtual_amiibo_store_v3_copy(uint8_t out[2048])
 {
-    if (!out || !virtual_amiibo_store_v3_loaded()) return false;
+    return virtual_amiibo_store_v3_copy_image(out, NULL);
+}
+
+bool virtual_amiibo_store_v3_copy_image(
+    uint8_t out[2048], uint32_t *generation)
+{
+    if (!out) return false;
+    critical_section_enter_blocking(&tag_lock);
+    if (!virtual_amiibo_store_v3_loaded()) {
+        critical_section_exit(&tag_lock);
+        return false;
+    }
     memcpy(out, v3_image, NS2_AMIIBO_V3_SIZE);
+    if (generation) *generation = v3_generation;
+    critical_section_exit(&tag_lock);
     return true;
+}
+
+virtual_amiibo_result_t virtual_amiibo_store_v3_read(
+    size_t offset, uint8_t *out, size_t size)
+{
+    if (!out || size == 0u) return VIRTUAL_AMIIBO_ERROR_ARGUMENT;
+    if (offset > NS2_AMIIBO_V3_SIZE ||
+        size > NS2_AMIIBO_V3_SIZE - offset)
+        return VIRTUAL_AMIIBO_ERROR_RANGE;
+    critical_section_enter_blocking(&tag_lock);
+    if (!virtual_amiibo_store_v3_loaded()) {
+        critical_section_exit(&tag_lock);
+        return VIRTUAL_AMIIBO_ERROR_NOT_LOADED;
+    }
+    memcpy(out, v3_image + offset, size);
+    critical_section_exit(&tag_lock);
+    return VIRTUAL_AMIIBO_OK;
+}
+
+virtual_amiibo_result_t virtual_amiibo_store_v3_apply_console_write(
+    const uint8_t image[2048], uint32_t expected_generation)
+{
+    if (!image) return VIRTUAL_AMIIBO_ERROR_ARGUMENT;
+    if (!ns2_amiibo_v3_valid(image, NS2_AMIIBO_V3_SIZE))
+        return VIRTUAL_AMIIBO_ERROR_BCC;
+
+    critical_section_enter_blocking(&tag_lock);
+    if (!virtual_amiibo_store_v3_loaded()) {
+        critical_section_exit(&tag_lock);
+        return VIRTUAL_AMIIBO_ERROR_NOT_LOADED;
+    }
+    if (v3_generation != expected_generation ||
+        memcmp(v3_image, image, 9u) != 0) {
+        critical_section_exit(&tag_lock);
+        return VIRTUAL_AMIIBO_ERROR_CONFLICT;
+    }
+    memcpy(v3_image, image, NS2_AMIIBO_V3_SIZE);
+    v3_generation++;
+    v3_dirty = true;
+    v3_persisted = false;
+    critical_section_exit(&tag_lock);
+    persist_requested = true;
+    return VIRTUAL_AMIIBO_OK;
 }
 
 void virtual_amiibo_store_status(virtual_amiibo_status_t *out)
@@ -441,6 +545,23 @@ void virtual_amiibo_store_status(virtual_amiibo_status_t *out)
     if (!out) return;
     critical_section_enter_blocking(&tag_lock);
     memset(out, 0, sizeof(*out));
+    if (virtual_amiibo_store_v3_loaded()) {
+        out->v3_loaded = true;
+        out->presented =
+            __atomic_load_n(&presented_snapshot, __ATOMIC_ACQUIRE);
+        out->dirty = v3_dirty;
+        out->persisted = v3_persisted;
+        out->upload_active = v3_upload_in_progress;
+        out->size = NS2_AMIIBO_V3_SIZE;
+        out->upload_size = v3_upload_size;
+        out->upload_received = v3_upload_received;
+        out->generation = v3_generation;
+        out->payload_crc =
+            virtual_amiibo_crc32(v3_image, NS2_AMIIBO_V3_SIZE);
+        ns2_amiibo_v3_uid(v3_image, out->uid);
+        critical_section_exit(&tag_lock);
+        return;
+    }
     out->loaded = tag.loaded;
     out->presented =
         __atomic_load_n(&presented_snapshot, __ATOMIC_ACQUIRE);
@@ -510,6 +631,7 @@ void virtual_amiibo_store_upload_cancel(void)
 {
     critical_section_enter_blocking(&tag_lock);
     virtual_amiibo_upload_cancel(&tag);
+    v3_upload_in_progress = false;
     critical_section_exit(&tag_lock);
 }
 
@@ -536,6 +658,17 @@ virtual_amiibo_result_t virtual_amiibo_store_read_copy(
 void virtual_amiibo_store_acknowledge_download(void)
 {
     critical_section_enter_blocking(&tag_lock);
+    if (virtual_amiibo_store_v3_loaded()) {
+        const bool changed = v3_dirty;
+        if (changed) {
+            v3_dirty = false;
+            v3_persisted = false;
+            v3_generation++;
+        }
+        critical_section_exit(&tag_lock);
+        if (changed) persist_requested = true;
+        return;
+    }
     const uint32_t generation = tag.generation;
     virtual_amiibo_acknowledge_download(&tag);
     const bool changed = tag.generation != generation;
@@ -629,6 +762,9 @@ void virtual_amiibo_store_request_clear(void)
 {
     critical_section_enter_blocking(&tag_lock);
     virtual_amiibo_init(&tag);
+    v3_dirty = false;
+    v3_persisted = false;
+    v3_generation = 0;
     // A pending image snapshot is superseded: the user asked for the image
     // to be gone, and programming it after the erase would resurrect it.
     persist_requested = false;
@@ -663,7 +799,8 @@ void virtual_amiibo_store_journal_debug(virtual_amiibo_journal_debug_t *out)
         const uint8_t *record = bank_record(bank);
         memcpy(out->bank[bank].header, record, sizeof(out->bank[bank].header));
         uint32_t generation = 0;
-        out->bank[bank].v3_valid = record_v3_valid(record, &generation);
+        out->bank[bank].v3_valid =
+            record_v3_valid(record, &generation, NULL);
         if (out->bank[bank].v3_valid) out->bank[bank].v3_generation = generation;
         uint16_t size = 0, flags = 0;
         generation = 0;
@@ -694,39 +831,81 @@ void virtual_amiibo_store_service_save(void)
 
     if (!persist_requested) return;
 
-    // v3 (NTAG I2C 2K) persist: a single 2048-byte image record. It replaces any
-    // 540 tag, so both banks are erased first (no stale v2 record can survive the
-    // type switch), then bank 0 is programmed. A power loss here leaves no tag —
-    // never a wrong one — and the user re-uploads.
+    // v3 (NTAG I2C 2K) persist: snapshot one 2048-byte image. A type switch from
+    // v2 erases both banks so no stale record of the other format can win at
+    // boot. Once v3 owns the journal, alternate banks exactly like the validated
+    // v2 path: the prior generation remains valid until the new one verifies.
     if (__atomic_load_n(&v3_slot_loaded, __ATOMIC_ACQUIRE)) {
         memset(record_buffer, 0xFF, sizeof(record_buffer));
         uint8_t *v3payload = record_buffer + VIRTUAL_AMIIBO_HEADER_SIZE;
+        uint32_t generation;
+        uint16_t flags;
+        critical_section_enter_blocking(&tag_lock);
         memcpy(v3payload, v3_image, VIRTUAL_AMIIBO_V3_PAYLOAD_SIZE);
+        generation = v3_generation;
+        flags = v3_dirty ? VIRTUAL_AMIIBO_FLAG_DIRTY : 0u;
+        critical_section_exit(&tag_lock);
         write_u32le(record_buffer, VIRTUAL_AMIIBO_RECORD_MAGIC);
         write_u16le(record_buffer + 4, VIRTUAL_AMIIBO_V3_RECORD_VERSION);
         write_u16le(record_buffer + 6, VIRTUAL_AMIIBO_HEADER_SIZE);
-        write_u32le(record_buffer + 8, v3_generation);
+        write_u32le(record_buffer + 8, generation);
         write_u16le(record_buffer + 12, VIRTUAL_AMIIBO_V3_PAYLOAD_SIZE);
-        write_u16le(record_buffer + 14, 0u);
+        write_u16le(record_buffer + 14, flags);
         write_u32le(record_buffer + 16,
                     virtual_amiibo_crc32(v3payload,
                                          VIRTUAL_AMIIBO_V3_PAYLOAD_SIZE));
         write_u32le(record_buffer + 20,
                     virtual_amiibo_crc32(record_buffer, 20));
+
+        bool had_v2 = false;
+        for (unsigned bank = 0; bank < 2u; ++bank) {
+            uint32_t old_generation;
+            uint16_t old_size;
+            uint16_t old_flags;
+            if (record_v2_valid(bank_record(bank), &old_generation,
+                                &old_size, &old_flags))
+                had_v2 = true;
+        }
+        if (had_v2) {
+            multicore_lockout_start_blocking();
+            uint32_t interrupts = save_and_disable_interrupts();
+            flash_range_erase(bank_offset(0), FLASH_SECTOR_SIZE);
+            flash_range_erase(bank_offset(1), FLASH_SECTOR_SIZE);
+            restore_interrupts(interrupts);
+            multicore_lockout_end_blocking();
+            active_bank = -1;
+        }
+
+        const unsigned destination =
+            active_bank < 0 ? 0u : (active_bank == 0 ? 1u : 0u);
         multicore_lockout_start_blocking();
         uint32_t interrupts = save_and_disable_interrupts();
-        flash_range_erase(bank_offset(0), FLASH_SECTOR_SIZE);
-        flash_range_erase(bank_offset(1), FLASH_SECTOR_SIZE);
-        flash_range_program(bank_offset(0), record_buffer,
+        flash_range_erase(bank_offset(destination), FLASH_SECTOR_SIZE);
+        flash_range_program(bank_offset(destination), record_buffer,
                             sizeof(record_buffer));
         restore_interrupts(interrupts);
         multicore_lockout_end_blocking();
         uint32_t verified_v3_generation;
-        if (record_v3_valid(bank_record(0), &verified_v3_generation) &&
-            verified_v3_generation == v3_generation) {
-            active_bank = 0;
+        uint16_t verified_v3_flags;
+        const bool verified = record_v3_valid(
+            bank_record(destination), &verified_v3_generation,
+            &verified_v3_flags) &&
+            verified_v3_generation == generation &&
+            verified_v3_flags == flags;
+        if (verified)
+            active_bank = (int)destination;
+
+        critical_section_enter_blocking(&tag_lock);
+        if (verified && virtual_amiibo_store_v3_loaded() &&
+            v3_generation == generation) {
+            v3_persisted = true;
             persist_requested = false;
+        } else {
+            // A newer console write or acknowledgement keeps the save request
+            // live; the just-written generation remains a valid fallback.
+            persist_requested = virtual_amiibo_store_v3_loaded();
         }
+        critical_section_exit(&tag_lock);
         return;
     }
 
@@ -763,7 +942,8 @@ void virtual_amiibo_store_service_save(void)
         uint32_t stale_v3_generation;
         bool had_v3 = false;
         for (unsigned bank = 0; bank < 2u; ++bank)
-            if (record_v3_valid(bank_record(bank), &stale_v3_generation))
+            if (record_v3_valid(
+                    bank_record(bank), &stale_v3_generation, NULL))
                 had_v3 = true;
         if (had_v3) {
             multicore_lockout_start_blocking();

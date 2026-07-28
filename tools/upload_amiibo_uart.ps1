@@ -11,7 +11,10 @@
 param(
     [Parameter(Mandatory = $true)][string]$Port,
     [Parameter(Mandatory = $true)][string]$Path,
-    [int]$ChunkSize = 64,
+    # The UART parser accepts 127 payload characters per line. A 64-byte
+    # hexadecimal chunk exceeds that once the command/offset are included;
+    # 32 bytes matches the production portal and remains safely bounded.
+    [int]$ChunkSize = 32,
     [int]$Baud = 115200
 )
 
