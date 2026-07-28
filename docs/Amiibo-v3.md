@@ -515,7 +515,13 @@ a v3 tag loaded, and `v3hdr 18 <the 33 captured bytes>` overlaid onto the read p
 `00-3B, 3C-77, 78-91, E2-E6` = 604 B — the same one the genuine controller produced. Our served
 prefix reads back exactly as intended (`[18] 06 80 92 50 07 B8 … 95 C0 86`, `[51] 03`).
 
-**And the field is not bound to the tag.** The loaded image is a *different physical amiibo* from
+**⚠️ CORRECTED 2026-07-27 (see §14.7): escalation is not acceptance.** The paragraph below
+concluded from escalation alone that bytes 18-50 are not tag-bound. That does not follow.
+Escalation is decided early, from the prefix; whether the console *validates* those bytes happens
+later, after the full read. The console has never accepted a served v3 tag, so the field may still
+be tag-bound.
+
+**The field does not affect the ESCALATION decision.** The loaded image is a *different physical amiibo* from
 the one captured (captured UID `049011CADB1F90`; no local dump matches it). The console still
 escalated. So bytes 18–50 are **not** validated against the tag's UID at this stage — which answers
 §14.5 questions 1 and 2 in the most useful direction available: whatever they are, they can be
@@ -562,15 +568,35 @@ that derived a UID length from the timeout's high byte. All three now gate on st
 any timeout. A 540-byte request still routes to the compatibility view; anything reaching past it
 serves from the raw 2 KB image.
 
-### 14.7 Next: the write path
+### 14.7 The console reads it all, then REJECTS it
 
-The console reaches `0x14` (write buffer) and then stops after a **single** command, falling back and
-retrying. The genuine capture shows **nine** `0x14` chunks followed by `0x08` (write device) and
-three `0x21`. So the serve path's `0x14`/`0x08` handling is the remaining gap — the read side is
-done.
+**Correction to an earlier reading.** The single `0x14` after the extended read was taken as the
+console "reaching the write stage". It is not. The nine `0x14` + `0x08` + `0x21` in the genuine
+capture are the **owner/nickname registration the operator performed by hand** in that session, not
+part of a plain read. In our test the console never advanced to the registration screen at all, so
+it did not accept the tag.
 
-Note this is the console *writing to the amiibo*, which the genuine session also did ("a read and a
-write occurred"), so it is part of normal recognition rather than an optional extra.
+So the read now completes **mechanically** — the console takes all 664 bytes — and then rejects the
+**content**. Two candidates, in order:
+
+1. **The replayed prefix bytes belong to a different tag.** The 33 bytes came from UID
+   `049011CADB1F90`; the loaded image is `04B4438ADB1F90`. If bytes 19-50 are a per-tag originality
+   signature, the console would read them, check them against the tag, and reject. Escalation would
+   still have happened, because that decision is made earlier and evidently keys on byte 18.
+2. **The `E2-E6` block content is wrong.** Its byte offsets are a linear-addressing *guess*
+   (page 0xE2 -> byte 904). If NTAG I2C 2K sector addressing differs, the console is being fed the
+   wrong 20 bytes.
+
+**Cheapest discriminating test, and the right one to run next:** set `v3hdr 18 06` alone — byte 18
+only, bytes 19-50 left zero. The NTAG215 control shows the genuine controller sends **all zeros**
+there for a 540 tag and the console accepts it, so zeros are not inherently invalid.
+
+- Still escalates, still rejects -> bytes 19-50 are not the problem; look at `E2-E6` (candidate 2).
+- Still escalates and now *accepts* -> the mismatched signature was the problem, and a correct
+  per-tag value is required.
+- No longer escalates -> escalation needs more than byte 18, which is itself worth knowing.
+
+That one test separates the two candidates without any new firmware.
 
 ### 14.8 Earlier next-step notes
 
