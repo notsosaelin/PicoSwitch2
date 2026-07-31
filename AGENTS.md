@@ -104,9 +104,25 @@ Motion-specific checks:
 
 ```powershell
 .\build\host-tests\build-host-test-ns2-motion-pdu.exe
+.\build\host-tests\build-host-test-ns2-motion-pdu40.exe
 .\build\host-tests\build-host-test-ns2-ds5-motion.exe
 python tools\test_ns2_magprobe.py
+python tools\test_ns2_motion_packet.py
+python tools\test_ns2_motion_carrier.py
 ```
+
+`build-host-test-ns2-motion-pdu40` holds the firmware length-`0x28` catch-up
+packer to byte-exactness against **981 genuine hardware packets**, plus edge
+cases the corpus never reaches. Build it with:
+
+```powershell
+gcc -Iinclude -Itools\fixtures -Wall -Wextra `
+    -o build\host-tests\build-host-test-ns2-motion-pdu40.exe `
+    tools\test_ns2_motion_pdu40.c src\bt_hid\motion\ns2_motion_pdu.c
+```
+
+Its fixture is generated, not hand-written — regenerate after any capture
+corpus change with `python tools\gen_motion40_fixture.py`.
 
 Install-reset image checks:
 

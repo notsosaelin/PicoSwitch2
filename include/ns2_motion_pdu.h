@@ -47,4 +47,52 @@ bool ns2_motion_pdu40_get_reference(
 bool ns2_motion_pdu40_set_reference(
     uint8_t pdu[NS2_MOTION_PDU40_LENGTH], const int32_t values[3]);
 
+// ---------------------------------------------------------------------------
+// Length-0x28 catch-up packer
+// ---------------------------------------------------------------------------
+//
+// Builds a complete genuine-shaped multi-sample IMU PDU. This is the real
+// layout-aware encoder; it supersedes the aliased reference window above and
+// is the only supported way to generate a 0x28.
+//
+// Catch-up is the layout the translation path targets. Its tail is a single
+// bit, zero in all 981 corpus packets, whereas the normal and high-rate
+// layouts carry a 16-bit tail holding two Q3 die-temperature samples that a
+// translated source cannot produce without fabricating a physical quantity.
+// Catch-up also carries 3 acceleration and 2 gyro samples per packet, so a
+// 20 ms cadence delivers ~250 IMU samples/s against the 133 Hz single-sample
+// 0x1E path.
+//
+// The layout is selected by the packet's own elapsed count, so elapsed_ticks
+// must be >= 15; the builder fails closed rather than silently emitting a
+// different layout. In the 0x28-only emission mode this path uses, elapsed is
+// simply the tick delta since the previous 0x28 -- exact in 1,196 of 1,196
+// genuine packets across 14 captures.
+//
+// Sample values are in ordinary ICM counts (4096/g, 16.4/dps) EXCEPT that
+// accel[1] is the half-resolution middle slot and both gyros sit at four times
+// the ordinary scale; callers must pre-scale, matching
+// ns2_motion_reference.WIRE_TO_COUNTS. Widths are 14/13/14 for acceleration,
+// 16/16 for gyro, and 22/21/23 for the carrier prefix.
+//
+// See docs/experiments/pro2-carrier-unknown-fields-2026-07-31.md.
+#define NS2_MOTION40_CATCHUP_MIN_ELAPSED 15u
+#define NS2_MOTION40_STATUS_CATCHUP 0x0Fu
+
+typedef struct {
+    uint16_t tick;           // 12-bit internal 800 Hz tick
+    uint16_t elapsed_ticks;  // 12-bit, must be >= 15 to select catch-up
+    int32_t carrier[3];      // orientation prefix, signed 22/21/23
+    int32_t accel[3][3];     // signed 14/13/14, wire scale
+    int32_t gyro[2][3];      // signed 16/16, wire scale
+    uint8_t tail_bit;        // payload bit 287; zero in every genuine packet
+    uint8_t packing_mode;    // 3 in every genuine packet
+    uint8_t status;          // 0 selects NS2_MOTION40_STATUS_CATCHUP
+} ns2_motion40_catchup_t;
+
+// Returns false and leaves `pdu` untouched if any field exceeds its slot or
+// the elapsed count would not select the catch-up layout.
+bool ns2_motion_pdu40_build_catchup(uint8_t pdu[NS2_MOTION_PDU40_LENGTH],
+                                    const ns2_motion40_catchup_t *fields);
+
 #endif  // NS2_MOTION_PDU_H
