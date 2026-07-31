@@ -5307,8 +5307,10 @@ static const sw2_v2_variant_t SW2_V2_VARIANTS[] = {
     { 5, "calibration_seq",      0x07, 0x07, true,  false, false, false, false, false },
     { 6, "full_sequence",        0xFF, 0x07, true,  true,  false, true,  false, false },
     // Establish a clean feature state before requesting buttons + sticks + IMU. The bitmap
-    // distinguishes the desired 0x1E live-orientation payload from the 0x28 magnetometer payload;
-    // earlier variants only added feature bits and could inherit magnetometer from a prior run.
+    // selects the length-0x1E live-orientation payload over the length-0x28 packed multi-sample
+    // IMU payload; earlier variants only added feature bits and could inherit the 0x28 form from
+    // a prior run. (0x28 was long believed to be magnetometer data. That is refuted -- it is a
+    // packed multi-sample IMU record. See docs/experiments/pro2-carrier-unknown-fields-2026-07-31.md.)
     { 7, "reset_then_imu",       0x07, 0x07, false, false, true,  false, false, false },
     // Grounded in the console-side UART trace, not a third-party viewer: configure and enable
     // exactly 0x27, perform the exact six calibration reads the console made, write 0x0085 to
