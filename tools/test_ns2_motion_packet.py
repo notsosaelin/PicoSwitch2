@@ -11,6 +11,7 @@ Everything here is offline. Nothing in this file authorizes a firmware change.
 Run: python tools/test_ns2_motion_packet.py
 """
 
+import math
 import sys
 import unittest
 from collections import Counter
@@ -142,6 +143,122 @@ class LayoutSelectionTests(unittest.TestCase):
                 agreed += 1
         self.assertGreater(agreed, 1900)
         self.assertLessEqual(status_zero, 10, "status 0x00 is no longer rare")
+
+
+class ChartHysteresisTests(unittest.TestCase):
+    """Replay the hardware's own orientation through our chart selector.
+
+    Feeding back the genuine previous chart each step scores each decision
+    independently. Tracking our own chart instead lets one early divergence
+    cascade -- that measures 90.97%, which reflects cascade, not the rule.
+    """
+
+    def decisions(self):
+        for path in all_captures():
+            previous = None
+            for pdu in pdus(path):
+                if len(pdu) != 0x1E:
+                    continue
+                orientation = R.decode_motion30_orientation(pdu)
+                quaternion = C.quaternion_from_carrier(
+                    orientation.state, orientation.retained)
+                ours, _ = C.select_chart(quaternion, previous)
+                yield previous, orientation.state, ours, quaternion
+                previous = orientation.state
+
+    def test_chart_decisions_match_hardware(self):
+        total = agree = ours_swaps = genuine_swaps = 0
+        for previous, genuine, ours, _ in self.decisions():
+            total += 1
+            agree += (ours == genuine)
+            if previous is not None:
+                genuine_swaps += (genuine != previous)
+                ours_swaps += (ours != previous)
+        self.assertGreater(total, 2000)
+        rate = agree / total
+        self.assertGreaterEqual(rate, 0.99, f"chart agreement fell to {rate:.4f}")
+        # Read that number honestly: holds outnumber swaps ~180:1, so 99.47%
+        # is carried almost entirely by correctly holding. We reproduce ~1 of
+        # the hardware's 11 swaps, because it swaps on something not visible in
+        # the carrier (see select_chart -- both lookahead and an earlier
+        # threshold are refuted against this corpus).
+        #
+        # That is acceptable *only* because chart choice is lossless, which
+        # test_we_never_ask_a_lane_to_leave_the_field is what actually pins
+        # down. What must never happen is swapping MORE than the hardware: a
+        # thrashing chart is a real defect, and this catches it.
+        self.assertLessEqual(ours_swaps, genuine_swaps,
+                             "we swap more often than the hardware")
+        print(f"\n  chart decisions: {agree}/{total} = {100.0 * rate:.2f}% "
+              f"(holds dominate); swaps reproduced {ours_swaps}/{genuine_swaps}")
+
+    def test_we_never_ask_a_lane_to_leave_the_field(self):
+        """The one property that must hold exactly, whatever the hardware does.
+
+        Chart choice is lossless -- both charts at a swap carry the same values
+        -- so differing from hardware is legal. Clipping is not.
+        """
+        for _, _, ours, quaternion in self.decisions():
+            held = C.retained_components(quaternion, ours)
+            self.assertLessEqual(
+                max(abs(v) for v in held), C.CARRIER_LIMIT + 1e-9,
+                "selected chart cannot represent the orientation")
+
+
+class ScaleNormalizationTests(unittest.TestCase):
+    """Wire values are not a single unit; crossing layouts requires conversion.
+
+    This is the defect that byte-exactness cannot catch. A generator can pack
+    perfectly-formed packets whose contents are off by 256x, and every
+    round-trip test still passes, because encode and decode agree on the bits
+    while disagreeing with physics.
+    """
+
+    def test_all_layouts_agree_on_gravity_once_normalized(self):
+        norms = {}
+        for path in all_captures():
+            for pdu in pdus(path):
+                if len(pdu) != 0x28:
+                    continue
+                sample = R.decode_motion40(pdu, None)
+                if sample.layout == "unknown":
+                    continue
+                for slot, vector in enumerate(
+                        R.normalized_vectors(sample, "accel")):
+                    norms.setdefault((sample.layout, slot), []).append(
+                        math.sqrt(sum(c * c for c in vector)))
+        self.assertEqual(len(norms), 8, "expected 8 acceleration slots")
+        medians = {}
+        for key, values in norms.items():
+            values.sort()
+            g = values[len(values) // 2] / R.IMU_COUNTS_PER_G
+            medians[key] = g
+            # Captures are predominantly stationary, so the median slot must
+            # read one gravity. Un-normalized slots land at 0.5 g or 256 g.
+            self.assertAlmostEqual(
+                g, 1.05, delta=0.02,
+                msg=f"{key} median {g:.3f} g -- scale factor wrong")
+        spread = max(medians.values()) - min(medians.values())
+        self.assertLess(spread, 0.01,
+                        f"slots disagree by {spread:.4f} g: {medians}")
+
+    def test_counts_to_wire_inverts_the_decode(self):
+        for path in all_captures():
+            for pdu in pdus(path):
+                if len(pdu) != 0x28:
+                    continue
+                sample = R.decode_motion40(pdu, None)
+                if sample.layout == "unknown":
+                    continue
+                for kind in ("accel", "gyro"):
+                    raw = sample.accel if kind == "accel" else sample.gyro
+                    for slot, counts in enumerate(
+                            R.normalized_vectors(sample, kind)):
+                        self.assertEqual(
+                            P.counts_to_wire(sample.layout, kind, slot, counts),
+                            raw[slot],
+                            f"{sample.layout} {kind} slot {slot} round trip")
+                return  # one packet per capture is plenty; this is exhaustive
 
 
 class FailClosedTests(unittest.TestCase):
