@@ -145,6 +145,61 @@ class LayoutSelectionTests(unittest.TestCase):
         self.assertLessEqual(status_zero, 10, "status 0x00 is no longer rare")
 
 
+class EmissionModeTests(unittest.TestCase):
+    """The elapsed count means different things in the two emission modes.
+
+    This is what licenses the 0x28-only translation policy: in that mode the
+    elapsed rule is exact, so a generator can set the field from its own emit
+    interval without modelling the unresolved interleaved semantics.
+    """
+
+    def mode_agreement(self):
+        """Per capture: (had interleaved 0x1E, matches, total)."""
+        for path in all_captures():
+            previous = None
+            carriers = matches = total = 0
+            for pdu in pdus(path):
+                if len(pdu) == 0x1E:
+                    carriers += 1
+                    continue
+                if len(pdu) != 0x28:
+                    continue
+                sample = R.decode_motion40(pdu, None)
+                if previous is not None:
+                    total += 1
+                    matches += (((sample.tick - previous) & 0xFFF)
+                                == sample.elapsed_ticks)
+                previous = sample.tick
+            if total >= 5:
+                yield bool(carriers), matches, total
+
+    def test_elapsed_is_exact_when_no_carrier_interleaves(self):
+        packets = matched = captures = 0
+        for interleaved, matches, total in self.mode_agreement():
+            if interleaved:
+                continue
+            captures += 1
+            packets += total
+            matched += matches
+        self.assertGreaterEqual(captures, 10)
+        self.assertGreater(packets, 1000)
+        self.assertEqual(
+            matched, packets,
+            f"0x28-only elapsed rule broke: {matched}/{packets}")
+        print(f"\n  0x28-only mode: elapsed == tick delta in "
+              f"{matched}/{packets} packets across {captures} captures")
+
+    def test_the_two_modes_do_not_overlap(self):
+        """No capture sits between the modes -- the split is categorical."""
+        for interleaved, matches, total in self.mode_agreement():
+            rate = matches / total
+            if interleaved:
+                self.assertLess(rate, 0.15,
+                                "interleaved capture behaves like 0x28-only")
+            else:
+                self.assertEqual(rate, 1.0)
+
+
 class ChartHysteresisTests(unittest.TestCase):
     """Replay the hardware's own orientation through our chart selector.
 
