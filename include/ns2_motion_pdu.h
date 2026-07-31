@@ -25,11 +25,23 @@ bool ns2_motion_pdu30_get_orientation(const uint8_t pdu[NS2_MOTION_PDU30_LENGTH]
 bool ns2_motion_pdu30_set_orientation(uint8_t pdu[NS2_MOTION_PDU30_LENGTH],
                                       const uint32_t values[3]);
 
-// Extract/replace the signed G6/G7/G8 lanes in a normal length-0x28 PDU.
-// The three values are 22/22/20-bit signed integers packed through shared
-// nibbles. Replacement deliberately preserves every unassigned bit:
-// p29[3:0], p32[3:2], p35[3:2], the escalation byte, and the final byte.
-// This codec does not claim semantics for the rest of the 0x28 PDU.
+// DEPRECATED -- DIAGNOSTIC READ ONLY. DO NOT GENERATE THROUGH THIS.
+//
+// These lanes were named "G6/G7/G8 reference vector" while the length-0x28 PDU
+// was believed to carry magnetometer data. That interpretation is REFUTED. The
+// 0x28 payload is a packed multi-sample IMU record whose layout is selected by
+// the packet's own elapsed count, and it is now fully decoded and byte-exact
+// (docs/experiments/pro2-carrier-unknown-fields-2026-07-31.md).
+//
+// The 22/22/20-bit window below is a real bit range, but it is an ALIAS that
+// crosses genuine packed acceleration and gyro fields. Writing through it
+// corrupts IMU samples while leaving a well-formed packet -- precisely the
+// static-template failure AGENTS.md records as causing random motion on
+// hardware.
+//
+// No production code calls these; only tools/test_ns2_motion_pdu.c, which
+// pins the historical codec for traceability. A generator must use the full
+// layout-aware packer, not this window.
 bool ns2_motion_pdu40_get_reference(
     const uint8_t pdu[NS2_MOTION_PDU40_LENGTH], int32_t out[3]);
 bool ns2_motion_pdu40_set_reference(
