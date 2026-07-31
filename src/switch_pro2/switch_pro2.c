@@ -34,6 +34,7 @@
 #include "ns2_amiibo_v3_runtime.h"
 #include "ns2_amiibo_v3_write.h"
 #include "ns2_ds5_motion.h"
+#include "ns2_ds5_motion40.h"
 #include "usb.h"         // g_usb_config_mode
 
 // This whole module is only built into the NS2 firmware. The vendor-class calls
@@ -388,6 +389,37 @@ static uint8_t ns2_ds5_motion_report[30];
 static bool ns2_ds5_motion_report_valid;
 static bool ns2_ds5_motion_probe_active;
 static int16_t ns2_ds5_motion_probe_gyro[3];
+
+// Length-0x28 catch-up translation. DEFAULT OFF: the 0x1E carrier is the
+// hardware-validated path, and this replaces the motion block entirely rather
+// than supplementing it, so it must be opted into for a gated A/B.
+static ns2_ds5_motion40_t ns2_ds5_motion40;
+static bool ns2_ds5_motion40_enabled;
+static uint8_t ns2_ds5_motion40_report[NS2_MOTION_PDU40_LENGTH];
+static bool ns2_ds5_motion40_report_valid;
+
+bool ns2_ds5_motion40_get_enabled(void) { return ns2_ds5_motion40_enabled; }
+
+void ns2_ds5_motion40_set_enabled(bool enabled)
+{
+    if (ns2_ds5_motion40_enabled == enabled) return;
+    ns2_ds5_motion40_enabled = enabled;
+    // Never carry buffered samples or a stale cadence epoch across a mode
+    // change: the first packet after enabling would claim an elapsed count
+    // covering time spent in the other mode.
+    ns2_ds5_motion40_reset(&ns2_ds5_motion40);
+    ns2_ds5_motion40_report_valid = false;
+}
+
+void ns2_ds5_motion40_get_counters(uint32_t *emitted, uint32_t *starved,
+                                   uint32_t *saturated_accel,
+                                   uint32_t *saturated_gyro)
+{
+    if (emitted) *emitted = ns2_ds5_motion40.emitted;
+    if (starved) *starved = ns2_ds5_motion40.skipped_no_samples;
+    if (saturated_accel) *saturated_accel = ns2_ds5_motion40.saturated_accel;
+    if (saturated_gyro) *saturated_gyro = ns2_ds5_motion40.saturated_gyro;
+}
 
 // Debug: bias estimate (converted to raw LSB units) + whether the stillness gate is
 // currently open. If `still` never reads 1 while the controller sits motionless on real
@@ -1369,6 +1401,14 @@ static void ns2_build_report(uint8_t *p) {
                 ns2_ds5_motion_report_valid =
                     ns2_ds5_motion_build(&ns2_ds5_motion,
                                          ns2_ds5_motion_report);
+                // Feed the same physical sample to the length-0x28 translator.
+                // It buffers rather than emitting, so this costs a copy even
+                // when the gate is off; keep it behind the gate anyway so a
+                // disabled feature does no work at all.
+                if (ns2_ds5_motion40_enabled)
+                    ns2_ds5_motion40_sample(&ns2_ds5_motion40,
+                                            ds5_motion_input.accel,
+                                            ds5_motion_input.gyro);
             }
             ns2_ds5_motion_last_sequence = in.motion_sequence;
         }
@@ -1418,15 +1458,48 @@ static void ns2_build_report(uint8_t *p) {
         // smallest-three representation and changes the omitted component
         // when a transmitted component reaches the chart boundary.
         //
-        // Keep this on the proven 0x1E carrier. The 2026-07-24 UART experiment
-        // proved that a genuine 0x28 template with only timing and G6/G7/G8
-        // replaced produces random motion: the unresolved leading/middle
-        // lanes are semantically active. See docs/switch2/uart-magprobe.md.
+        // The default remains the proven 0x1E carrier. The 2026-07-24 UART
+        // experiment proved that a genuine 0x28 template with only timing and
+        // G6/G7/G8 replaced produces random motion, because those lanes alias
+        // real packed IMU fields that the template held static. See
+        // docs/switch2/uart-magprobe.md.
+        //
+        // That failure was a wrong model, not an impossible task. The 0x28
+        // layout is now fully decoded and the packer rebuilds 981 genuine
+        // catch-up packets byte-for-byte, so ns2_ds5_motion40 generates every
+        // lane from the field map rather than holding any of them static. It
+        // stays behind a default-off gate until a hardware A/B says otherwise.
         if (ns2_ds5_motion_enabled && ns2_imu_enabled &&
             ns2_ds5_motion_report_valid) {
-            p[0x0E] = sizeof(ns2_ds5_motion_report);
-            memcpy(&p[0x0F], ns2_ds5_motion_report,
-                   sizeof(ns2_ds5_motion_report));
+            if (ns2_ds5_motion40_enabled) {
+                // USB polls near 1 kHz while a catch-up packet is due every
+                // ~20 ms, so build when due and repeat the latest in between,
+                // exactly as the 0x1E path repeats its carrier. Leaving the
+                // motion block empty on the ~19 polls between packets would
+                // starve the console instead of pacing it.
+                //
+                // 0x28-only emission: the elapsed count is the tick delta
+                // since the previous 0x28, which only holds when no 0x1E
+                // interleaves. Sending both would put us in the other mode,
+                // whose elapsed relation is unresolved.
+                uint32_t carrier_raw[3];
+                if (ns2_motion_pdu30_get_orientation(ns2_ds5_motion_report,
+                                                     carrier_raw) &&
+                    ns2_ds5_motion40_build(&ns2_ds5_motion40, carrier_raw,
+                                           time_us_32(),
+                                           ns2_ds5_motion40_report)) {
+                    ns2_ds5_motion40_report_valid = true;
+                }
+                if (ns2_ds5_motion40_report_valid) {
+                    p[0x0E] = sizeof(ns2_ds5_motion40_report);
+                    memcpy(&p[0x0F], ns2_ds5_motion40_report,
+                           sizeof(ns2_ds5_motion40_report));
+                }
+            } else {
+                p[0x0E] = sizeof(ns2_ds5_motion_report);
+                memcpy(&p[0x0F], ns2_ds5_motion_report,
+                       sizeof(ns2_ds5_motion_report));
+            }
         }
         ns2_native_hold_active = false;
     } else if (in.has_motion) {

@@ -106,6 +106,7 @@ Motion-specific checks:
 .\build\host-tests\build-host-test-ns2-motion-pdu.exe
 .\build\host-tests\build-host-test-ns2-motion-pdu40.exe
 .\build\host-tests\build-host-test-ns2-ds5-motion.exe
+.\build\host-tests\build-host-test-ns2-ds5-motion40.exe
 python tools\test_ns2_magprobe.py
 python tools\test_ns2_motion_packet.py
 python tools\test_ns2_motion_carrier.py
@@ -123,6 +124,33 @@ gcc -Iinclude -Itools\fixtures -Wall -Wextra `
 
 Its fixture is generated, not hand-written — regenerate after any capture
 corpus change with `python tools\gen_motion40_fixture.py`.
+
+`build-host-test-ns2-ds5-motion40` covers the layer above the packer — sample
+scaling, slot filling, cadence, saturation clamping, and the modular prefix
+slice against 30 reference vectors:
+
+```powershell
+gcc -Iinclude -Itools\fixtures -Wall -Wextra `
+    -o build\host-tests\build-host-test-ns2-ds5-motion40.exe `
+    tools\test_ns2_ds5_motion40.c src\bt_hid\motion\ns2_ds5_motion40.c `
+    src\bt_hid\motion\ns2_motion_pdu.c
+```
+
+### Length-`0x28` motion gate (DEFAULT OFF)
+
+```text
+ds5motion pdu40 on       # replace the motion block with 0x28 catch-up packets
+ds5motion pdu40 off      # return to the proven 0x1E carrier
+ds5motion pdu40 status   # emitted / starved / saturated counters
+```
+
+Enabling **replaces** the motion block; the `0x1E` carrier is not sent
+alongside, because only the `0x28`-only emission mode has a resolved elapsed
+relation. `starved > 0` means the emit interval outran the source sample rate;
+saturation means motion exceeded the wire range (~2 g, ~499 dps) or the scaling
+is wrong. Both distinguish "well-formed but wrong" from "working".
+
+**Not hardware-validated.** Use it only for a deliberate A/B against `0x1E`.
 
 Install-reset image checks:
 

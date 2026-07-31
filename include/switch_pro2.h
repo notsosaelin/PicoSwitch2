@@ -185,6 +185,23 @@ void ns2_dbg_ds5_motion_set_body_frame(bool body_frame);
 bool ns2_dbg_ds5_motion_set_map(const int8_t map[3]);
 void ns2_dbg_ds5_motion_set_carrier(uint8_t carrier);
 
+// Length-0x28 catch-up translation gate. DEFAULT OFF.
+//
+// Enabling REPLACES the motion block rather than supplementing it: genuine
+// controllers run 0x28-only or interleaved, and only the 0x28-only mode has a
+// resolved elapsed relation, so the 0x1E carrier is not sent alongside.
+// Toggling either way clears buffered samples and the cadence epoch.
+//
+// Intended for a UART-gated hardware A/B against the proven 0x1E path, not for
+// unattended use. See docs/experiments/pro2-carrier-unknown-fields-2026-07-31.md.
+bool ns2_ds5_motion40_get_enabled(void);
+void ns2_ds5_motion40_set_enabled(bool enabled);
+// Emitted packet count, starved intervals, and saturated axes -- the three
+// numbers that distinguish "working" from "well-formed but wrong".
+void ns2_ds5_motion40_get_counters(uint32_t *emitted, uint32_t *starved,
+                                   uint32_t *saturated_accel,
+                                   uint32_t *saturated_gyro);
+
 // Anomaly-instrumentation types (2026-07-10). See ns2_motion_tick()'s NS2_MAX_PHASE_DELTA
 // derivation in switch_pro2.c for the (mathematically bounded, not heuristic) detection
 // criterion: a phase increment that exceeds what the code's own clamps allow is proof of a
