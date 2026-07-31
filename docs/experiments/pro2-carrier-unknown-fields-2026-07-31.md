@@ -203,6 +203,47 @@ to leave the field, and swapping at the limit guarantees it by construction
 with zero spurious swaps. `test_we_never_ask_a_lane_to_leave_the_field` pins
 that down; the 99.47% figure is context, not the bar.
 
+## Two emission modes, and which one to translate into
+
+An adapter cannot emit `0x28` without knowing when to send it and what to put
+in the elapsed field. Both are measurable, and the corpus splits **perfectly** —
+no capture is mixed.
+
+| Mode | Captures | `0x28` packets | `elapsed` == tick delta since previous `0x28` |
+|---|---:|---:|---:|
+| `0x28`-only (no `0x1E` at all) | 14 | 1,196 | **100.0%** |
+| interleaved with `0x1E` | 24 | — | **~0%** |
+
+In `0x28`-only mode the elapsed count is simply the inter-packet tick gap. The
+`pro2-native-interval-*` captures sweep this mode from 8 to 24 ticks and agree
+exactly at every interval.
+
+In interleaved mode elapsed counts back only to the most recent PDU of **any**
+length. It sits near a constant 7 while the `0x28`→`0x28` delta ranges over
+11–30. `elapsed × (intervening carriers + 1)` predicts that delta but
+consistently overshoots by 3–5 ticks; **the exact interleaved relation is not
+resolved.**
+
+### Policy: translate into `0x28`-only mode
+
+It is a genuine hardware mode, its elapsed rule is exactly verified over 1,196
+packets, and choosing it removes the unresolved interleaved semantics from the
+problem entirely. The generator sets elapsed from its own emit interval.
+
+### Slot budget
+
+The layouts need real samples, and `ns2_motion_packet.py` refuses to invent
+them. At the 800 Hz tick, for a source reporting near 250 Hz:
+
+| Interval | Layout | Needs | Available |
+|---|---|---|---:|
+| 8 ticks (10.0 ms) | high-rate | 2 accel + 1 gyro | ~2.5 |
+| 12 ticks (15.0 ms) | normal | 3 accel + 2 gyro | ~3.8 |
+| 24 ticks (30.0 ms) | catch-up | 3 accel + 2 gyro | ~7.5 |
+
+The longer intervals carry comfortable margin. High-rate is marginal, and a
+source slower than 200 Hz cannot fill it without inventing samples.
+
 ## Consequence for a synthesizer
 
 The carrier, chart hysteresis, saturation trigger, prefix slice, epoch, all three

@@ -101,6 +101,38 @@ def counts_to_wire(layout: str, kind: str, slot: int,
     return tuple(int(round(component / factor)) for component in vector)
 
 
+# The controller runs in two observed emission modes, and the 12-bit elapsed
+# count means different things in each. A generator that picks the wrong one
+# mislabels every packet's layout.
+#
+# Measured across the corpus, the split is perfect -- no capture is mixed:
+#
+#   0x28-only mode   (14 captures, 1,210 packets, zero 0x1E)
+#       elapsed == tick delta since the previous 0x28, in 100.0% of packets.
+#       The pro2-native-interval-* sweeps run in this mode from 8 to 24 ticks.
+#
+#   interleaved mode (24 captures, zero 0x1E excluded)
+#       elapsed == tick delta since the previous 0x28 in ~0% of packets. It
+#       instead counts back only to the most recent PDU of ANY length, sitting
+#       near a constant 7 while the 0x28-to-0x28 delta varies over 11..30.
+#       elapsed * (intervening carriers + 1) predicts that delta but overshoots
+#       by 3..5 ticks; the exact relation is NOT resolved and is not needed.
+#
+# TRANSLATION POLICY: emit 0x28-only. It is a genuine hardware mode, its elapsed
+# rule is exactly verified, and it removes the unresolved interleaved semantics
+# from the problem entirely. ``elapsed_ticks`` then carries the emit interval
+# directly, which is what ``layout_for_elapsed`` expects.
+#
+# Slot budget at 800 Hz, for a source reporting near 250 Hz:
+#   elapsed  8 (10.0 ms) -> high_rate, needs 2 accel + 1 gyro  (~2.5 available)
+#   elapsed 12 (15.0 ms) -> normal,    needs 3 accel + 2 gyro  (~3.8 available)
+#   elapsed 24 (30.0 ms) -> catchup,   needs 3 accel + 2 gyro  (~7.5 available)
+# The longer intervals carry comfortable margin; high-rate is marginal and a
+# source slower than 200 Hz cannot fill it without inventing samples, which
+# this module refuses to do.
+TRANSLATION_MODE = "0x28-only"
+
+
 def layout_for_elapsed(elapsed_ticks: int) -> str:
     if elapsed_ticks < 0 or elapsed_ticks > 0xFFF:
         raise PacketError(f"elapsed ticks out of range: {elapsed_ticks}")
