@@ -244,6 +244,28 @@ them. At the 800 Hz tick, for a source reporting near 250 Hz:
 The longer intervals carry comfortable margin. High-rate is marginal, and a
 source slower than 200 Hz cannot fill it without inventing samples.
 
+### Target the catch-up layout
+
+Catch-up's tail is a **single bit, zero in all 981 corpus packets**. The other
+two layouts carry a 16-bit tail holding two Q3 temperature samples, which a
+translated source has no way to produce — a DualSense exposes no die
+temperature. Choosing catch-up removes that fabrication entirely.
+
+| Layout | Tail | Must synthesize temperature? |
+|---|---|---|
+| catch-up | 1 bit, always 0 | **no** |
+| normal | 16 bit, Q3 pair | yes |
+| high-rate | 16 bit, Q3 pair | yes |
+
+Catch-up also raises the sample rate rather than lowering it. The shipping
+`0x1E` path carries one orientation per packet at 133 Hz. A `0x28` catch-up
+packet every 20 ms carries 3 acceleration and 2 gyro samples, so **50 packets/s
+delivers ~250 IMU samples/s** — the point of the multi-sample layouts, and a
+fidelity gain over the current path rather than a trade.
+
+`pro2-native-interval-16` through `-24` are genuine hardware captures in exactly
+this configuration.
+
 ## Consequence for a synthesizer
 
 The carrier, chart hysteresis, saturation trigger, prefix slice, epoch, all three
