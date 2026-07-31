@@ -12,16 +12,23 @@
 // Verification only. This script never writes a tag and never generates one; see
 // the constraint recorded in docs/switch2/amiibo-identity-and-generation.md.
 //
-// Run: node tools/verify_amiibo_crypto.mjs <path> [key_retail.bin]
+// Run: node tools/verify_amiibo_crypto.mjs <path> <key_retail.bin> [--json]
+//
+// --json emits a machine-readable report on stdout instead of the text table,
+// with absolute paths so a caller can join it to its own corpus. It is what
+// tools/amiibo_corpus.py consumes; the text form stays the default for humans.
 import {readFileSync, readdirSync, statSync} from "node:fs";
-import {join} from "node:path";
+import {join, resolve} from "node:path";
 import {webcrypto} from "node:crypto";
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
-const target = process.argv[2];
-const keyPath = process.argv[3] ?? "C:/Users/notso/Downloads/key_retail.bin";
-if (!target) {
-  console.error("usage: node tools/verify_amiibo_crypto.mjs <file-or-dir> [key_retail.bin]");
+const argv = process.argv.slice(2);
+const asJson = argv.includes("--json");
+const positional = argv.filter((a) => a !== "--json");
+const target = positional[0];
+const keyPath = positional[1];
+if (!target || !keyPath) {
+  console.error("usage: node tools/verify_amiibo_crypto.mjs <file-or-dir> <key_retail.bin> [--json]");
   process.exit(2);
 }
 
@@ -42,34 +49,51 @@ function collect(p) {
   return readdirSync(p).flatMap((e) => collect(join(p, e)));
 }
 
+const say = (line) => { if (!asJson) console.log(line); };
+
 let pass = 0, fail = 0;
+const images = [];
 for (const file of collect(target).filter((f) => f.toLowerCase().endsWith(".bin"))) {
   const bytes = new Uint8Array(readFileSync(file));
   // 540 = NTAG215, 2048 = v3 / NTAG I2C Plus 2K. The v3 flag shifts the data
   // HMAC to 0x0C0 and the encrypted section to 0x0E0 (+0x40 vs NTAG215).
   if (bytes.length !== 540 && bytes.length !== 2048) {
-    console.log(`${file}  SKIP (${bytes.length} B: not 540 or 2048)`);
+    say(`${file}  SKIP (${bytes.length} B: not 540 or 2048)`);
+    images.push({path: resolve(file), size: bytes.length, skipped: true});
     continue;
   }
   const label = `${file.replace(/\\/g, "/").split("/").slice(-2).join("/")}`;
+  const entry = {
+    path: resolve(file), size: bytes.length, uid: hex(bytes.subarray(0, 7)),
+  };
   let r;
   try {
     r = await M.amiiboDecryptInternal(keys, bytes, bytes.length === 2048);
   } catch (err) {
-    console.log(`${label.padEnd(46)} ERROR ${err.message}`);
+    say(`${label.padEnd(46)} ERROR ${err.message}`);
+    images.push({...entry, ok: false, error: err.message});
     fail++;
     continue;
   }
+  entry.ok = Boolean(r.ok);
   let who = "";
   try {
     const info = M.amiiboReadRegisterInfo(r.internal);
     if (info && (info.nickname || info.owner)) {
-      who = `  nick="${info.nickname ?? ""}" owner="${info.owner ?? ""}"`;
+      entry.nickname = info.nickname ?? "";
+      entry.owner = info.owner ?? "";
+      who = `  nick="${entry.nickname}" owner="${entry.owner}"`;
     }
   } catch { /* an unwritten tag carries no register info */ }
-  console.log(`${label.padEnd(46)} ${bytes.length}B uid=${hex(bytes.subarray(0, 7))} ` +
+  say(`${label.padEnd(46)} ${bytes.length}B uid=${entry.uid} ` +
     `HMAC ${r.ok ? "VALID  " : "INVALID"}${who}`);
+  images.push(entry);
   r.ok ? pass++ : fail++;
 }
-console.log(`\n${pass} valid, ${fail} invalid`);
+if (asJson) {
+  // The key itself is never echoed -- only the verdict it produced.
+  console.log(JSON.stringify({tool: "verify_amiibo_crypto", valid: pass, invalid: fail, images}, null, 2));
+} else {
+  console.log(`\n${pass} valid, ${fail} invalid`);
+}
 process.exit(fail ? 1 : 0);
