@@ -140,18 +140,20 @@ static bool pack_switch2_smallest_three(
     ns2_ds5_motion_state_t *state, uint32_t orientation[3])
 {
     // The Switch 2 state uses w/x/y/z numbering, unlike this module's
-    // canonical in-memory x/y/z/w order. This is the same smallest-three
-    // construction used by Nintendo's Switch-1 DScale mode:
+    // canonical in-memory x/y/z/w order. This translated-source encoder uses
+    // the bounded quaternion construction from Nintendo's Switch-1 DScale
+    // mode:
     //
     //   state 0 omits W and carries X,Y,Z
     //   state 1 omits X and carries Y,Z,W
     //   state 2 omits Y and carries Z,W,X
     //   state 3 omits Z and carries W,X,Y
     //
-    // Genuine adjacent Pro Controller 2 state 3<->0 packets satisfy this
-    // model: the outgoing hidden Z and incoming hidden W cross at
-    // approximately 1/sqrt(2). The formerly inferred state-3 "basis rebase"
-    // merely swapped those two near-equal boundary components.
+    // Genuine Pro Controller 2 captures validate the cyclic chart topology
+    // and both omitted-sign branches across states 0/1/3. They also refute a
+    // literal strict-smallest-three genuine model. This remains the
+    // hardware-validated production approximation for translated sources,
+    // not an assertion that every genuine carrier lane is reconstructed.
     const float wire[4] = {
         state->quaternion[3],
         state->quaternion[0],

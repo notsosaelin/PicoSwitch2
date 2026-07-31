@@ -253,6 +253,33 @@ typedef struct {
 void btstack_host_request_switch2_magraw(bool enabled);
 void btstack_host_get_switch2_magraw_diag(btstack_host_magraw_diag_t *out);
 
+// UART-only, off-by-default raw-IMU reference selector. It replays the exact
+// feature-0x2F/calibration/report-rate/0x000A CCC shape recovered from the
+// decrypted genuine Pro2 PCAP, then restores the validated native profile.
+typedef struct {
+    bool requested;
+    bool active;
+    bool transition_pending;
+    bool dual_requested;
+    bool dual_active;
+    bool dual_transition_pending;
+    uint8_t v2_state;
+    uint8_t last_att_status;
+    uint8_t dual_att_status;
+    uint8_t interval_request_status;
+    uint16_t interval_target_units;
+    uint16_t interval_actual_units;
+    uint32_t common_notifications;
+    uint32_t native_notifications;
+    uint16_t source_pid;
+    uint16_t connection_handle;
+} btstack_host_imuref_diag_t;
+
+void btstack_host_request_switch2_imuref(bool enabled);
+void btstack_host_request_switch2_imuref_dual(bool enabled);
+void btstack_host_request_switch2_imuref_interval(uint16_t interval_units);
+void btstack_host_get_switch2_imuref_diag(btstack_host_imuref_diag_t *out);
+
 // ============================================================================
 // CLASSIC BT CONNECTION INFO (for bthid driver matching)
 // ============================================================================

@@ -120,6 +120,16 @@ void ns2_v3_write_counts(uint32_t *chunks, uint32_t *commits,
 // 454-byte/0x08 encrypted-body write that follows each one.
 void ns2_v3_extended_counts(uint32_t *chunks, uint32_t *completions);
 
+// Why the last v3 operation failed. Every failure reaches the console as the
+// same status 0x07 / detail 0x41, which it renders as 2115-0096; during the v3
+// investigation that one value was produced first by a tag-removal timing bug
+// and later by a fail-closed record-layout rejection, and the second was
+// misdiagnosed as the first. `result` is the ns2_virtual_nfc_result_t from a
+// staging or commit rejection, `offset` the 0x14 stage offset when relevant.
+// Any pointer may be NULL. See ns2_amiibo_v3_error_t.
+void ns2_v3_last_error(uint8_t *error, const char **name, uint8_t *sub,
+                       uint8_t *result, uint16_t *offset, uint32_t *count);
+
 bool ns2_v3_set_signature(const uint8_t *bytes, size_t len);
 void ns2_v3_clear_signature(void);
 bool ns2_v3_has_signature(void);

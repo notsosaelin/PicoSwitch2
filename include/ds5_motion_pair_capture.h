@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "ds5_motion_chart_trigger.h"
+
 #define DS5_MOTION_PAIR_NATIVE_MAX 40u
 #define DS5_MOTION_PAIR_CAPACITY 127u
 
@@ -42,9 +44,12 @@ void ds5_motion_pair_record_native(uint32_t captured_us,
 
 // Core0/UART control and drain API.
 void ds5_motion_pair_set_enabled(bool enabled);
+void ds5_motion_pair_arm_chart_trigger(void);
+void ds5_motion_pair_arm_chart_trigger_mask(uint8_t target_mask);
 bool ds5_motion_pair_get_enabled(void);
 uint16_t ds5_motion_pair_buffered_count(void);
 uint32_t ds5_motion_pair_dropped_count(void);
 bool ds5_motion_pair_drain_one(ds5_motion_pair_record_t *out);
+void ds5_motion_pair_chart_status(ds5_motion_chart_trigger_t *out);
 
 #endif  // DS5_MOTION_PAIR_CAPTURE_H
