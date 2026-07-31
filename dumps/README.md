@@ -141,6 +141,38 @@ write errors. The body reveals sector-0 page `0xB2` and sector-1 capability/data
 `amiibo/v3-dedede-fix1-after-2115-0096-2026-07-28.bin` is the retained 2048-byte dirty image after
 that diagnostic failure.
 
+`BLE CAPTURE/pro2-imuref-raw-native-raw-2026-07-29.jsonl` and
+`pro2-imuref-15ms-raw-native-raw-2026-07-29.jsonl` are zero-drop same-pose A/B/A controls between
+raw handle `0x000A` and native handle `0x000E`. The
+`pro2-native-interval-{8,10,11,14,15,16,18}-2026-07-29.jsonl` files, together with
+`pro2-native-same-pose-2026-07-29.jsonl` (production six units) and
+`pro2-native-15ms-2026-07-29.jsonl` (12 units), form the controlled 7.5–22.5 ms cadence matrix.
+They prove the high-rate/normal/catch-up boundaries and signed accel/gyro field maps documented in
+`docs/experiments/pro2-raw-native-motion-pcap-2026-07-29.md`.
+
+`BLE CAPTURE/pro2-chart-transition-lazy-susan-2026-07-29.jsonl` and
+`pro2-chart-transition-lazy-susan-return-2026-07-29.jsonl` are reciprocal, zero-drop,
+127-record genuine-Pro2 chart-transition controls. Their adjacent `.fixture.json` and `.fixture.h`
+files are deterministic derivatives. They establish the state-0/state-3 cyclic carrier mapping,
+refute strict smallest-three as an exact genuine model during rapid motion, and capture one
+length-`0x28` prefix seam in each direction. See
+`docs/experiments/pro2-carrier-chart-transition-2026-07-29.md`.
+
+`BLE CAPTURE/pro2-chart-transition-splatoon-0-to-1-2026-07-29.jsonl` is a zero-drop
+state-0/state-1 seam captured during ordinary play. The independent
+`pro2-chart-transition-splatoon-3-to-1-2026-07-29.jsonl` stress capture contains a zero-drop
+`3 → 1 → 0` sequence and refutes composing the state-0 seam projections into one global unsigned
+permutation per state. Both are primary UART captures; see the same experiment report for the
+evidence boundary.
+
+`BLE CAPTURE/pro2-chart-transition-3-to-2-2026-07-29.jsonl` is the zero-drop
+state-2 closure capture. Its 127 notifications contain 93 length-`0x1E` carriers,
+34 length-`0x28` packets, and `0 → 1 → 3 → 2 → 3`. The reciprocal state-2
+seams both select cyclic topology `(G2,G0,G1)` with opposite-branch signs
+`(+,−,−)`. Its interleaved prefix epoch selects chart 3 with residual
+`0.003833`, versus `0.196168` under chart 2. SHA-256:
+`FDDD5C028E59D149A424A3226382C7FDDDF98337699677AC870DBEB0F84B2270`.
+
 Large derived media is intentionally retained because the 2026-07-24 motion result depended on
 comparing genuine Pro2 and translated DualSense behavior without requiring repeated physical
 controller movement. New experiments should use dated subdirectories and document which files are

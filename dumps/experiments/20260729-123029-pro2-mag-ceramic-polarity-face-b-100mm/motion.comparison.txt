@@ -1,0 +1,36 @@
+MAGPROBE A/B
+baseline: E:\PicoSwitch2\dumps\experiments\20260729-122909-pro2-mag-ceramic-confirmation-immediate-recovery\motion.raw.jsonl
+stimulus: E:\PicoSwitch2\dumps\experiments\20260729-123029-pro2-mag-ceramic-polarity-face-b-100mm\motion.raw.jsonl
+orientation mean delta: 9.5564 degrees
+accel mean delta: 0.0451 degrees, norm +0.008%
+body magnetic delta: [+0.000422954, +0.000261027, +0.000044772], direction 0.0764 degrees
+world magnetic direction delta: 8.1521 degrees
+movement gate: WARNING - controller pose changed enough to confound a magnetic-only experiment
+
+Largest normalized changes in unexplained lanes:
+  p06&0xFF: mean delta=-36.0000, effect=-inf, unique 1->1
+  p12&0xFF: mean delta=+11.0000, effect=+inf, unique 1->1
+  p09&0xFF: mean delta=+142.8895, effect=+423.393 sigma, unique 2->2
+  p11&0xFF: mean delta=-59.7943, effect=-9.008 sigma, unique 19->16
+  p05&0xFF: mean delta=+113.9276, effect=+5.944 sigma, unique 19->17
+  p17&0xFF: mean delta=+3.1771, effect=+1.603 sigma, unique 10->5
+  p21&0xFF: mean delta=-44.2514, effect=-0.616 sigma, unique 13->13
+  p13&0xFF: mean delta=-15.8019, effect=-0.407 sigma, unique 6->8
+  p04&0xFF: mean delta=+28.7086, effect=+0.392 sigma, unique 8->7
+  p07&0xFF: mean delta=+22.9181, effect=+0.385 sigma, unique 13->13
+  p28&0xFF: mean delta=-28.5124, effect=-0.375 sigma, unique 6->5
+  p29&0x0F: mean delta=-1.6857, effect=-0.375 sigma, unique 2->2
+
+Largest unexplained individual-bit occupancy changes:
+  p05.b7: 0.000->1.000 (delta +1.000)
+  p06.b2: 1.000->0.000 (delta -1.000)
+  p06.b5: 0.000->1.000 (delta +1.000)
+  p06.b6: 1.000->0.000 (delta -1.000)
+  p09.b4: 1.000->0.000 (delta -1.000)
+  p09.b5: 0.000->1.000 (delta +1.000)
+  p09.b7: 0.000->1.000 (delta +1.000)
+  p10.b0: 1.000->0.000 (delta -1.000)
+  p11.b6: 1.000->0.000 (delta -1.000)
+  p12.b0: 0.000->1.000 (delta +1.000)
+  p12.b1: 0.000->1.000 (delta +1.000)
+  p12.b3: 0.000->1.000 (delta +1.000)

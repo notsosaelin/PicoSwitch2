@@ -1,0 +1,1827 @@
+{
+  "accel_angle_degrees": 0.008427433817545297,
+  "accel_norm_change_percent": 0.0003102509620012131,
+  "baseline": "E:\\PicoSwitch2\\dumps\\experiments\\20260729-123029-pro2-mag-ceramic-polarity-face-b-100mm\\motion.raw.jsonl",
+  "magnetic_body_angle_degrees": 0.014242446644880629,
+  "magnetic_body_delta": [
+    -7.390696199136709e-05,
+    -5.64767770045993e-05,
+    6.95952116713805e-06
+  ],
+  "magnetic_world_angle_degrees": 2.614863190564802,
+  "movement_warning": true,
+  "quaternion_angle_degrees": 3.0576701596124076,
+  "stimulus": "E:\\PicoSwitch2\\dumps\\experiments\\20260729-123057-pro2-mag-ceramic-polarity-face-b-100mm-replicate\\motion.raw.jsonl",
+  "unknown_bit_deltas": [
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 0,
+      "offset": 6,
+      "one_fraction_delta": -1.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 1,
+      "offset": 6,
+      "one_fraction_delta": 1.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 2,
+      "offset": 6,
+      "one_fraction_delta": 1.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 4,
+      "offset": 6,
+      "one_fraction_delta": 1.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 5,
+      "offset": 6,
+      "one_fraction_delta": -1.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 2,
+      "offset": 9,
+      "one_fraction_delta": 1.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 3,
+      "offset": 9,
+      "one_fraction_delta": 1.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 4,
+      "offset": 9,
+      "one_fraction_delta": 1.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 6,
+      "offset": 9,
+      "one_fraction_delta": -1.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 6,
+      "offset": 11,
+      "one_fraction_delta": 1.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 7,
+      "offset": 11,
+      "one_fraction_delta": 1.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 0,
+      "offset": 12,
+      "one_fraction_delta": -1.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 2,
+      "offset": 12,
+      "one_fraction_delta": -1.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 3,
+      "offset": 12,
+      "one_fraction_delta": -1.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 4,
+      "offset": 12,
+      "one_fraction_delta": 1.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.19047619047619047,
+      "bit": 0,
+      "offset": 9,
+      "one_fraction_delta": 0.6731601731601732,
+      "stimulus_one_fraction": 0.8636363636363636
+    },
+    {
+      "baseline_one_fraction": 0.8095238095238095,
+      "bit": 1,
+      "offset": 9,
+      "one_fraction_delta": -0.6731601731601732,
+      "stimulus_one_fraction": 0.13636363636363635
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 7,
+      "offset": 5,
+      "one_fraction_delta": -0.5454545454545454,
+      "stimulus_one_fraction": 0.45454545454545453
+    },
+    {
+      "baseline_one_fraction": 0.09523809523809523,
+      "bit": 6,
+      "offset": 5,
+      "one_fraction_delta": 0.4502164502164502,
+      "stimulus_one_fraction": 0.5454545454545454
+    },
+    {
+      "baseline_one_fraction": 0.7142857142857143,
+      "bit": 0,
+      "offset": 5,
+      "one_fraction_delta": -0.35064935064935066,
+      "stimulus_one_fraction": 0.36363636363636365
+    },
+    {
+      "baseline_one_fraction": 0.38095238095238093,
+      "bit": 4,
+      "offset": 7,
+      "one_fraction_delta": 0.34632034632034636,
+      "stimulus_one_fraction": 0.7272727272727273
+    },
+    {
+      "baseline_one_fraction": 0.3333333333333333,
+      "bit": 0,
+      "offset": 8,
+      "one_fraction_delta": 0.30303030303030304,
+      "stimulus_one_fraction": 0.6363636363636364
+    },
+    {
+      "baseline_one_fraction": 0.6666666666666666,
+      "bit": 6,
+      "offset": 10,
+      "one_fraction_delta": -0.303030303030303,
+      "stimulus_one_fraction": 0.36363636363636365
+    },
+    {
+      "baseline_one_fraction": 0.7619047619047619,
+      "bit": 4,
+      "offset": 38,
+      "one_fraction_delta": -0.26190476190476186,
+      "stimulus_one_fraction": 0.5
+    },
+    {
+      "baseline_one_fraction": 0.3333333333333333,
+      "bit": 6,
+      "offset": 24,
+      "one_fraction_delta": 0.2575757575757576,
+      "stimulus_one_fraction": 0.5909090909090909
+    },
+    {
+      "baseline_one_fraction": 0.5714285714285714,
+      "bit": 0,
+      "offset": 28,
+      "one_fraction_delta": -0.2532467532467532,
+      "stimulus_one_fraction": 0.3181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.5238095238095238,
+      "bit": 6,
+      "offset": 27,
+      "one_fraction_delta": -0.25108225108225113,
+      "stimulus_one_fraction": 0.2727272727272727
+    },
+    {
+      "baseline_one_fraction": 0.7619047619047619,
+      "bit": 4,
+      "offset": 24,
+      "one_fraction_delta": -0.21645021645021645,
+      "stimulus_one_fraction": 0.5454545454545454
+    },
+    {
+      "baseline_one_fraction": 0.7142857142857143,
+      "bit": 1,
+      "offset": 38,
+      "one_fraction_delta": -0.2142857142857143,
+      "stimulus_one_fraction": 0.5
+    },
+    {
+      "baseline_one_fraction": 0.38095238095238093,
+      "bit": 0,
+      "offset": 25,
+      "one_fraction_delta": 0.20995670995671,
+      "stimulus_one_fraction": 0.5909090909090909
+    },
+    {
+      "baseline_one_fraction": 0.6190476190476191,
+      "bit": 2,
+      "offset": 17,
+      "one_fraction_delta": -0.20995670995670995,
+      "stimulus_one_fraction": 0.4090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.42857142857142855,
+      "bit": 3,
+      "offset": 10,
+      "one_fraction_delta": 0.2077922077922078,
+      "stimulus_one_fraction": 0.6363636363636364
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 5,
+      "offset": 11,
+      "one_fraction_delta": -0.18181818181818177,
+      "stimulus_one_fraction": 0.8181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.19047619047619047,
+      "bit": 3,
+      "offset": 14,
+      "one_fraction_delta": 0.17316017316017318,
+      "stimulus_one_fraction": 0.36363636363636365
+    },
+    {
+      "baseline_one_fraction": 0.7619047619047619,
+      "bit": 4,
+      "offset": 13,
+      "one_fraction_delta": -0.17099567099567092,
+      "stimulus_one_fraction": 0.5909090909090909
+    },
+    {
+      "baseline_one_fraction": 0.6666666666666666,
+      "bit": 3,
+      "offset": 27,
+      "one_fraction_delta": -0.16666666666666663,
+      "stimulus_one_fraction": 0.5
+    },
+    {
+      "baseline_one_fraction": 0.6190476190476191,
+      "bit": 1,
+      "offset": 14,
+      "one_fraction_delta": -0.16450216450216454,
+      "stimulus_one_fraction": 0.45454545454545453
+    },
+    {
+      "baseline_one_fraction": 0.6190476190476191,
+      "bit": 1,
+      "offset": 16,
+      "one_fraction_delta": -0.16450216450216454,
+      "stimulus_one_fraction": 0.45454545454545453
+    },
+    {
+      "baseline_one_fraction": 0.6190476190476191,
+      "bit": 6,
+      "offset": 16,
+      "one_fraction_delta": -0.16450216450216454,
+      "stimulus_one_fraction": 0.45454545454545453
+    },
+    {
+      "baseline_one_fraction": 0.42857142857142855,
+      "bit": 6,
+      "offset": 8,
+      "one_fraction_delta": 0.1623376623376624,
+      "stimulus_one_fraction": 0.5909090909090909
+    },
+    {
+      "baseline_one_fraction": 0.42857142857142855,
+      "bit": 5,
+      "offset": 19,
+      "one_fraction_delta": 0.1623376623376624,
+      "stimulus_one_fraction": 0.5909090909090909
+    },
+    {
+      "baseline_one_fraction": 0.5714285714285714,
+      "bit": 4,
+      "offset": 27,
+      "one_fraction_delta": -0.16233766233766228,
+      "stimulus_one_fraction": 0.4090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.47619047619047616,
+      "bit": 7,
+      "offset": 21,
+      "one_fraction_delta": 0.1601731601731602,
+      "stimulus_one_fraction": 0.6363636363636364
+    },
+    {
+      "baseline_one_fraction": 0.47619047619047616,
+      "bit": 2,
+      "offset": 25,
+      "one_fraction_delta": -0.158008658008658,
+      "stimulus_one_fraction": 0.3181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.047619047619047616,
+      "bit": 2,
+      "offset": 16,
+      "one_fraction_delta": 0.1341991341991342,
+      "stimulus_one_fraction": 0.18181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.23809523809523808,
+      "bit": 1,
+      "offset": 28,
+      "one_fraction_delta": 0.12554112554112556,
+      "stimulus_one_fraction": 0.36363636363636365
+    },
+    {
+      "baseline_one_fraction": 0.2857142857142857,
+      "bit": 3,
+      "offset": 38,
+      "one_fraction_delta": 0.12337662337662342,
+      "stimulus_one_fraction": 0.4090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.7142857142857143,
+      "bit": 2,
+      "offset": 5,
+      "one_fraction_delta": -0.12337662337662336,
+      "stimulus_one_fraction": 0.5909090909090909
+    },
+    {
+      "baseline_one_fraction": 0.6666666666666666,
+      "bit": 7,
+      "offset": 4,
+      "one_fraction_delta": -0.12121212121212122,
+      "stimulus_one_fraction": 0.5454545454545454
+    },
+    {
+      "baseline_one_fraction": 0.3333333333333333,
+      "bit": 2,
+      "offset": 24,
+      "one_fraction_delta": 0.12121212121212122,
+      "stimulus_one_fraction": 0.45454545454545453
+    },
+    {
+      "baseline_one_fraction": 0.42857142857142855,
+      "bit": 0,
+      "offset": 14,
+      "one_fraction_delta": 0.11688311688311687,
+      "stimulus_one_fraction": 0.5454545454545454
+    },
+    {
+      "baseline_one_fraction": 0.5714285714285714,
+      "bit": 4,
+      "offset": 22,
+      "one_fraction_delta": -0.11688311688311687,
+      "stimulus_one_fraction": 0.45454545454545453
+    },
+    {
+      "baseline_one_fraction": 0.42857142857142855,
+      "bit": 7,
+      "offset": 27,
+      "one_fraction_delta": 0.11688311688311687,
+      "stimulus_one_fraction": 0.5454545454545454
+    },
+    {
+      "baseline_one_fraction": 0.47619047619047616,
+      "bit": 0,
+      "offset": 27,
+      "one_fraction_delta": 0.11471861471861478,
+      "stimulus_one_fraction": 0.5909090909090909
+    },
+    {
+      "baseline_one_fraction": 0.47619047619047616,
+      "bit": 1,
+      "offset": 8,
+      "one_fraction_delta": -0.11255411255411252,
+      "stimulus_one_fraction": 0.36363636363636365
+    },
+    {
+      "baseline_one_fraction": 0.5238095238095238,
+      "bit": 4,
+      "offset": 8,
+      "one_fraction_delta": 0.11255411255411252,
+      "stimulus_one_fraction": 0.6363636363636364
+    },
+    {
+      "baseline_one_fraction": 0.47619047619047616,
+      "bit": 5,
+      "offset": 10,
+      "one_fraction_delta": -0.11255411255411252,
+      "stimulus_one_fraction": 0.36363636363636365
+    },
+    {
+      "baseline_one_fraction": 0.47619047619047616,
+      "bit": 2,
+      "offset": 14,
+      "one_fraction_delta": -0.11255411255411252,
+      "stimulus_one_fraction": 0.36363636363636365
+    },
+    {
+      "baseline_one_fraction": 0.5238095238095238,
+      "bit": 0,
+      "offset": 17,
+      "one_fraction_delta": 0.11255411255411252,
+      "stimulus_one_fraction": 0.6363636363636364
+    },
+    {
+      "baseline_one_fraction": 0.5238095238095238,
+      "bit": 5,
+      "offset": 27,
+      "one_fraction_delta": 0.11255411255411252,
+      "stimulus_one_fraction": 0.6363636363636364
+    },
+    {
+      "baseline_one_fraction": 0.9523809523809523,
+      "bit": 7,
+      "offset": 13,
+      "one_fraction_delta": -0.08874458874458868,
+      "stimulus_one_fraction": 0.8636363636363636
+    },
+    {
+      "baseline_one_fraction": 0.9523809523809523,
+      "bit": 1,
+      "offset": 20,
+      "one_fraction_delta": -0.08874458874458868,
+      "stimulus_one_fraction": 0.8636363636363636
+    },
+    {
+      "baseline_one_fraction": 0.09523809523809523,
+      "bit": 4,
+      "offset": 11,
+      "one_fraction_delta": 0.08658008658008659,
+      "stimulus_one_fraction": 0.18181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.7619047619047619,
+      "bit": 4,
+      "offset": 14,
+      "one_fraction_delta": -0.0800865800865801,
+      "stimulus_one_fraction": 0.6818181818181818
+    },
+    {
+      "baseline_one_fraction": 0.2857142857142857,
+      "bit": 3,
+      "offset": 22,
+      "one_fraction_delta": 0.07792207792207795,
+      "stimulus_one_fraction": 0.36363636363636365
+    },
+    {
+      "baseline_one_fraction": 0.2857142857142857,
+      "bit": 0,
+      "offset": 38,
+      "one_fraction_delta": 0.07792207792207795,
+      "stimulus_one_fraction": 0.36363636363636365
+    },
+    {
+      "baseline_one_fraction": 0.3333333333333333,
+      "bit": 2,
+      "offset": 8,
+      "one_fraction_delta": 0.0757575757575758,
+      "stimulus_one_fraction": 0.4090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.3333333333333333,
+      "bit": 7,
+      "offset": 19,
+      "one_fraction_delta": 0.0757575757575758,
+      "stimulus_one_fraction": 0.4090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.6666666666666666,
+      "bit": 7,
+      "offset": 7,
+      "one_fraction_delta": -0.07575757575757569,
+      "stimulus_one_fraction": 0.5909090909090909
+    },
+    {
+      "baseline_one_fraction": 0.6190476190476191,
+      "bit": 5,
+      "offset": 8,
+      "one_fraction_delta": -0.07359307359307365,
+      "stimulus_one_fraction": 0.5454545454545454
+    },
+    {
+      "baseline_one_fraction": 0.6190476190476191,
+      "bit": 0,
+      "offset": 20,
+      "one_fraction_delta": -0.07359307359307365,
+      "stimulus_one_fraction": 0.5454545454545454
+    },
+    {
+      "baseline_one_fraction": 0.38095238095238093,
+      "bit": 2,
+      "offset": 27,
+      "one_fraction_delta": 0.0735930735930736,
+      "stimulus_one_fraction": 0.45454545454545453
+    },
+    {
+      "baseline_one_fraction": 0.42857142857142855,
+      "bit": 5,
+      "offset": 5,
+      "one_fraction_delta": 0.07142857142857145,
+      "stimulus_one_fraction": 0.5
+    },
+    {
+      "baseline_one_fraction": 0.42857142857142855,
+      "bit": 0,
+      "offset": 16,
+      "one_fraction_delta": 0.07142857142857145,
+      "stimulus_one_fraction": 0.5
+    },
+    {
+      "baseline_one_fraction": 0.42857142857142855,
+      "bit": 1,
+      "offset": 17,
+      "one_fraction_delta": 0.07142857142857145,
+      "stimulus_one_fraction": 0.5
+    },
+    {
+      "baseline_one_fraction": 0.42857142857142855,
+      "bit": 5,
+      "offset": 24,
+      "one_fraction_delta": 0.07142857142857145,
+      "stimulus_one_fraction": 0.5
+    },
+    {
+      "baseline_one_fraction": 0.5714285714285714,
+      "bit": 5,
+      "offset": 7,
+      "one_fraction_delta": -0.0714285714285714,
+      "stimulus_one_fraction": 0.5
+    },
+    {
+      "baseline_one_fraction": 0.5238095238095238,
+      "bit": 7,
+      "offset": 10,
+      "one_fraction_delta": -0.0692640692640693,
+      "stimulus_one_fraction": 0.45454545454545453
+    },
+    {
+      "baseline_one_fraction": 0.5238095238095238,
+      "bit": 3,
+      "offset": 13,
+      "one_fraction_delta": -0.0692640692640693,
+      "stimulus_one_fraction": 0.45454545454545453
+    },
+    {
+      "baseline_one_fraction": 0.47619047619047616,
+      "bit": 7,
+      "offset": 8,
+      "one_fraction_delta": 0.06926406926406925,
+      "stimulus_one_fraction": 0.5454545454545454
+    },
+    {
+      "baseline_one_fraction": 0.47619047619047616,
+      "bit": 0,
+      "offset": 11,
+      "one_fraction_delta": 0.06926406926406925,
+      "stimulus_one_fraction": 0.5454545454545454
+    },
+    {
+      "baseline_one_fraction": 0.47619047619047616,
+      "bit": 1,
+      "offset": 11,
+      "one_fraction_delta": 0.06926406926406925,
+      "stimulus_one_fraction": 0.5454545454545454
+    },
+    {
+      "baseline_one_fraction": 0.5238095238095238,
+      "bit": 3,
+      "offset": 24,
+      "one_fraction_delta": 0.0670995670995671,
+      "stimulus_one_fraction": 0.5909090909090909
+    },
+    {
+      "baseline_one_fraction": 0.5238095238095238,
+      "bit": 1,
+      "offset": 25,
+      "one_fraction_delta": 0.0670995670995671,
+      "stimulus_one_fraction": 0.5909090909090909
+    },
+    {
+      "baseline_one_fraction": 0.5238095238095238,
+      "bit": 3,
+      "offset": 35,
+      "one_fraction_delta": 0.0670995670995671,
+      "stimulus_one_fraction": 0.5909090909090909
+    },
+    {
+      "baseline_one_fraction": 0.47619047619047616,
+      "bit": 2,
+      "offset": 22,
+      "one_fraction_delta": -0.06709956709956705,
+      "stimulus_one_fraction": 0.4090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.42857142857142855,
+      "bit": 6,
+      "offset": 19,
+      "one_fraction_delta": -0.0649350649350649,
+      "stimulus_one_fraction": 0.36363636363636365
+    },
+    {
+      "baseline_one_fraction": 0.42857142857142855,
+      "bit": 6,
+      "offset": 21,
+      "one_fraction_delta": -0.0649350649350649,
+      "stimulus_one_fraction": 0.36363636363636365
+    },
+    {
+      "baseline_one_fraction": 0.42857142857142855,
+      "bit": 0,
+      "offset": 22,
+      "one_fraction_delta": -0.0649350649350649,
+      "stimulus_one_fraction": 0.36363636363636365
+    },
+    {
+      "baseline_one_fraction": 0.38095238095238093,
+      "bit": 1,
+      "offset": 22,
+      "one_fraction_delta": -0.06277056277056275,
+      "stimulus_one_fraction": 0.3181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.7619047619047619,
+      "bit": 5,
+      "offset": 22,
+      "one_fraction_delta": 0.05627705627705637,
+      "stimulus_one_fraction": 0.8181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.7619047619047619,
+      "bit": 6,
+      "offset": 22,
+      "one_fraction_delta": 0.05627705627705637,
+      "stimulus_one_fraction": 0.8181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.7619047619047619,
+      "bit": 7,
+      "offset": 22,
+      "one_fraction_delta": 0.05627705627705637,
+      "stimulus_one_fraction": 0.8181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.7619047619047619,
+      "bit": 0,
+      "offset": 23,
+      "one_fraction_delta": 0.05627705627705637,
+      "stimulus_one_fraction": 0.8181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.7619047619047619,
+      "bit": 1,
+      "offset": 23,
+      "one_fraction_delta": 0.05627705627705637,
+      "stimulus_one_fraction": 0.8181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.7619047619047619,
+      "bit": 2,
+      "offset": 23,
+      "one_fraction_delta": 0.05627705627705637,
+      "stimulus_one_fraction": 0.8181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.7619047619047619,
+      "bit": 3,
+      "offset": 23,
+      "one_fraction_delta": 0.05627705627705637,
+      "stimulus_one_fraction": 0.8181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.7619047619047619,
+      "bit": 4,
+      "offset": 23,
+      "one_fraction_delta": 0.05627705627705637,
+      "stimulus_one_fraction": 0.8181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.7619047619047619,
+      "bit": 5,
+      "offset": 23,
+      "one_fraction_delta": 0.05627705627705637,
+      "stimulus_one_fraction": 0.8181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.7619047619047619,
+      "bit": 6,
+      "offset": 23,
+      "one_fraction_delta": 0.05627705627705637,
+      "stimulus_one_fraction": 0.8181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.7619047619047619,
+      "bit": 7,
+      "offset": 23,
+      "one_fraction_delta": 0.05627705627705637,
+      "stimulus_one_fraction": 0.8181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.7619047619047619,
+      "bit": 0,
+      "offset": 24,
+      "one_fraction_delta": 0.05627705627705637,
+      "stimulus_one_fraction": 0.8181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.7619047619047619,
+      "bit": 1,
+      "offset": 24,
+      "one_fraction_delta": 0.05627705627705637,
+      "stimulus_one_fraction": 0.8181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.14285714285714285,
+      "bit": 7,
+      "offset": 18,
+      "one_fraction_delta": -0.05194805194805194,
+      "stimulus_one_fraction": 0.09090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.14285714285714285,
+      "bit": 0,
+      "offset": 19,
+      "one_fraction_delta": -0.05194805194805194,
+      "stimulus_one_fraction": 0.09090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.14285714285714285,
+      "bit": 1,
+      "offset": 19,
+      "one_fraction_delta": -0.05194805194805194,
+      "stimulus_one_fraction": 0.09090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.14285714285714285,
+      "bit": 3,
+      "offset": 19,
+      "one_fraction_delta": -0.05194805194805194,
+      "stimulus_one_fraction": 0.09090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 3,
+      "offset": 16,
+      "one_fraction_delta": 0.045454545454545456,
+      "stimulus_one_fraction": 0.045454545454545456
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 4,
+      "offset": 16,
+      "one_fraction_delta": 0.045454545454545456,
+      "stimulus_one_fraction": 0.045454545454545456
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 4,
+      "offset": 25,
+      "one_fraction_delta": -0.045454545454545414,
+      "stimulus_one_fraction": 0.9545454545454546
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 5,
+      "offset": 25,
+      "one_fraction_delta": -0.045454545454545414,
+      "stimulus_one_fraction": 0.9545454545454546
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 6,
+      "offset": 25,
+      "one_fraction_delta": -0.045454545454545414,
+      "stimulus_one_fraction": 0.9545454545454546
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 7,
+      "offset": 25,
+      "one_fraction_delta": -0.045454545454545414,
+      "stimulus_one_fraction": 0.9545454545454546
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 0,
+      "offset": 26,
+      "one_fraction_delta": -0.045454545454545414,
+      "stimulus_one_fraction": 0.9545454545454546
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 1,
+      "offset": 26,
+      "one_fraction_delta": -0.045454545454545414,
+      "stimulus_one_fraction": 0.9545454545454546
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 2,
+      "offset": 26,
+      "one_fraction_delta": -0.045454545454545414,
+      "stimulus_one_fraction": 0.9545454545454546
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 3,
+      "offset": 26,
+      "one_fraction_delta": -0.045454545454545414,
+      "stimulus_one_fraction": 0.9545454545454546
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 4,
+      "offset": 26,
+      "one_fraction_delta": -0.045454545454545414,
+      "stimulus_one_fraction": 0.9545454545454546
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 5,
+      "offset": 26,
+      "one_fraction_delta": -0.045454545454545414,
+      "stimulus_one_fraction": 0.9545454545454546
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 6,
+      "offset": 26,
+      "one_fraction_delta": -0.045454545454545414,
+      "stimulus_one_fraction": 0.9545454545454546
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 7,
+      "offset": 26,
+      "one_fraction_delta": -0.045454545454545414,
+      "stimulus_one_fraction": 0.9545454545454546
+    },
+    {
+      "baseline_one_fraction": 0.047619047619047616,
+      "bit": 3,
+      "offset": 20,
+      "one_fraction_delta": 0.043290043290043295,
+      "stimulus_one_fraction": 0.09090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.047619047619047616,
+      "bit": 2,
+      "offset": 28,
+      "one_fraction_delta": 0.043290043290043295,
+      "stimulus_one_fraction": 0.09090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.047619047619047616,
+      "bit": 3,
+      "offset": 28,
+      "one_fraction_delta": 0.043290043290043295,
+      "stimulus_one_fraction": 0.09090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.047619047619047616,
+      "bit": 4,
+      "offset": 28,
+      "one_fraction_delta": 0.043290043290043295,
+      "stimulus_one_fraction": 0.09090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.047619047619047616,
+      "bit": 5,
+      "offset": 28,
+      "one_fraction_delta": 0.043290043290043295,
+      "stimulus_one_fraction": 0.09090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.047619047619047616,
+      "bit": 6,
+      "offset": 28,
+      "one_fraction_delta": 0.043290043290043295,
+      "stimulus_one_fraction": 0.09090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.047619047619047616,
+      "bit": 7,
+      "offset": 28,
+      "one_fraction_delta": 0.043290043290043295,
+      "stimulus_one_fraction": 0.09090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.047619047619047616,
+      "bit": 0,
+      "offset": 29,
+      "one_fraction_delta": 0.043290043290043295,
+      "stimulus_one_fraction": 0.09090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.047619047619047616,
+      "bit": 1,
+      "offset": 29,
+      "one_fraction_delta": 0.043290043290043295,
+      "stimulus_one_fraction": 0.09090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.047619047619047616,
+      "bit": 2,
+      "offset": 29,
+      "one_fraction_delta": 0.043290043290043295,
+      "stimulus_one_fraction": 0.09090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.047619047619047616,
+      "bit": 3,
+      "offset": 29,
+      "one_fraction_delta": 0.043290043290043295,
+      "stimulus_one_fraction": 0.09090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.047619047619047616,
+      "bit": 2,
+      "offset": 38,
+      "one_fraction_delta": 0.043290043290043295,
+      "stimulus_one_fraction": 0.09090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.047619047619047616,
+      "bit": 5,
+      "offset": 38,
+      "one_fraction_delta": 0.043290043290043295,
+      "stimulus_one_fraction": 0.09090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.9523809523809523,
+      "bit": 2,
+      "offset": 20,
+      "one_fraction_delta": -0.04329004329004327,
+      "stimulus_one_fraction": 0.9090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.9047619047619048,
+      "bit": 5,
+      "offset": 13,
+      "one_fraction_delta": -0.04112554112554112,
+      "stimulus_one_fraction": 0.8636363636363636
+    },
+    {
+      "baseline_one_fraction": 0.9047619047619048,
+      "bit": 6,
+      "offset": 13,
+      "one_fraction_delta": -0.04112554112554112,
+      "stimulus_one_fraction": 0.8636363636363636
+    },
+    {
+      "baseline_one_fraction": 0.38095238095238093,
+      "bit": 5,
+      "offset": 21,
+      "one_fraction_delta": 0.028138528138528185,
+      "stimulus_one_fraction": 0.4090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.6190476190476191,
+      "bit": 4,
+      "offset": 5,
+      "one_fraction_delta": -0.02813852813852813,
+      "stimulus_one_fraction": 0.5909090909090909
+    },
+    {
+      "baseline_one_fraction": 0.42857142857142855,
+      "bit": 5,
+      "offset": 4,
+      "one_fraction_delta": 0.025974025974025983,
+      "stimulus_one_fraction": 0.45454545454545453
+    },
+    {
+      "baseline_one_fraction": 0.42857142857142855,
+      "bit": 4,
+      "offset": 10,
+      "one_fraction_delta": 0.025974025974025983,
+      "stimulus_one_fraction": 0.45454545454545453
+    },
+    {
+      "baseline_one_fraction": 0.5714285714285714,
+      "bit": 7,
+      "offset": 24,
+      "one_fraction_delta": -0.025974025974025983,
+      "stimulus_one_fraction": 0.5454545454545454
+    },
+    {
+      "baseline_one_fraction": 0.42857142857142855,
+      "bit": 1,
+      "offset": 27,
+      "one_fraction_delta": 0.025974025974025983,
+      "stimulus_one_fraction": 0.45454545454545453
+    },
+    {
+      "baseline_one_fraction": 0.47619047619047616,
+      "bit": 1,
+      "offset": 5,
+      "one_fraction_delta": 0.023809523809523836,
+      "stimulus_one_fraction": 0.5
+    },
+    {
+      "baseline_one_fraction": 0.47619047619047616,
+      "bit": 3,
+      "offset": 8,
+      "one_fraction_delta": 0.023809523809523836,
+      "stimulus_one_fraction": 0.5
+    },
+    {
+      "baseline_one_fraction": 0.47619047619047616,
+      "bit": 7,
+      "offset": 16,
+      "one_fraction_delta": 0.023809523809523836,
+      "stimulus_one_fraction": 0.5
+    },
+    {
+      "baseline_one_fraction": 0.47619047619047616,
+      "bit": 2,
+      "offset": 35,
+      "one_fraction_delta": 0.023809523809523836,
+      "stimulus_one_fraction": 0.5
+    },
+    {
+      "baseline_one_fraction": 0.47619047619047616,
+      "bit": 3,
+      "offset": 5,
+      "one_fraction_delta": -0.021645021645021634,
+      "stimulus_one_fraction": 0.45454545454545453
+    },
+    {
+      "baseline_one_fraction": 0.47619047619047616,
+      "bit": 2,
+      "offset": 11,
+      "one_fraction_delta": -0.021645021645021634,
+      "stimulus_one_fraction": 0.45454545454545453
+    },
+    {
+      "baseline_one_fraction": 0.5238095238095238,
+      "bit": 6,
+      "offset": 7,
+      "one_fraction_delta": 0.021645021645021578,
+      "stimulus_one_fraction": 0.5454545454545454
+    },
+    {
+      "baseline_one_fraction": 0.5238095238095238,
+      "bit": 2,
+      "offset": 13,
+      "one_fraction_delta": 0.021645021645021578,
+      "stimulus_one_fraction": 0.5454545454545454
+    },
+    {
+      "baseline_one_fraction": 0.42857142857142855,
+      "bit": 3,
+      "offset": 11,
+      "one_fraction_delta": -0.01948051948051943,
+      "stimulus_one_fraction": 0.4090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.42857142857142855,
+      "bit": 4,
+      "offset": 19,
+      "one_fraction_delta": -0.01948051948051943,
+      "stimulus_one_fraction": 0.4090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.42857142857142855,
+      "bit": 4,
+      "offset": 21,
+      "one_fraction_delta": -0.01948051948051943,
+      "stimulus_one_fraction": 0.4090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.38095238095238093,
+      "bit": 6,
+      "offset": 4,
+      "one_fraction_delta": -0.017316017316017285,
+      "stimulus_one_fraction": 0.36363636363636365
+    },
+    {
+      "baseline_one_fraction": 0.6666666666666666,
+      "bit": 3,
+      "offset": 25,
+      "one_fraction_delta": 0.015151515151515138,
+      "stimulus_one_fraction": 0.6818181818181818
+    },
+    {
+      "baseline_one_fraction": 0.8095238095238095,
+      "bit": 5,
+      "offset": 14,
+      "one_fraction_delta": 0.008658008658008698,
+      "stimulus_one_fraction": 0.8181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.8095238095238095,
+      "bit": 6,
+      "offset": 14,
+      "one_fraction_delta": 0.008658008658008698,
+      "stimulus_one_fraction": 0.8181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.19047619047619047,
+      "bit": 7,
+      "offset": 14,
+      "one_fraction_delta": -0.008658008658008642,
+      "stimulus_one_fraction": 0.18181818181818182
+    },
+    {
+      "baseline_one_fraction": 0.14285714285714285,
+      "bit": 6,
+      "offset": 18,
+      "one_fraction_delta": -0.006493506493506496,
+      "stimulus_one_fraction": 0.13636363636363635
+    },
+    {
+      "baseline_one_fraction": 0.09523809523809523,
+      "bit": 2,
+      "offset": 19,
+      "one_fraction_delta": -0.004329004329004321,
+      "stimulus_one_fraction": 0.09090909090909091
+    },
+    {
+      "baseline_one_fraction": 0.047619047619047616,
+      "bit": 5,
+      "offset": 16,
+      "one_fraction_delta": -0.0021645021645021606,
+      "stimulus_one_fraction": 0.045454545454545456
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 0,
+      "offset": 4,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 1,
+      "offset": 4,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 2,
+      "offset": 4,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 3,
+      "offset": 4,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 4,
+      "offset": 4,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 3,
+      "offset": 6,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 6,
+      "offset": 6,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 7,
+      "offset": 6,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 0,
+      "offset": 7,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 1,
+      "offset": 7,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 2,
+      "offset": 7,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 3,
+      "offset": 7,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 5,
+      "offset": 9,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 7,
+      "offset": 9,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 0,
+      "offset": 10,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 1,
+      "offset": 10,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 2,
+      "offset": 10,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 1,
+      "offset": 12,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 5,
+      "offset": 12,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 6,
+      "offset": 12,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 7,
+      "offset": 12,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 0,
+      "offset": 13,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 1,
+      "offset": 13,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 0,
+      "offset": 15,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 1,
+      "offset": 15,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 2,
+      "offset": 15,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 3,
+      "offset": 15,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 4,
+      "offset": 15,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 5,
+      "offset": 15,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 6,
+      "offset": 15,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 7,
+      "offset": 15,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 3,
+      "offset": 17,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 4,
+      "offset": 17,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 5,
+      "offset": 17,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 6,
+      "offset": 17,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 7,
+      "offset": 17,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 0,
+      "offset": 18,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 1,
+      "offset": 18,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 2,
+      "offset": 18,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 3,
+      "offset": 18,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 4,
+      "offset": 18,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 5,
+      "offset": 18,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 4,
+      "offset": 20,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 5,
+      "offset": 20,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 6,
+      "offset": 20,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 7,
+      "offset": 20,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 0,
+      "offset": 21,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 1,
+      "offset": 21,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 2,
+      "offset": 21,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 3,
+      "offset": 21,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 2,
+      "offset": 32,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 3,
+      "offset": 32,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 6,
+      "offset": 38,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 7,
+      "offset": 38,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 1.0,
+      "bit": 0,
+      "offset": 39,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 1.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 1,
+      "offset": 39,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 2,
+      "offset": 39,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 3,
+      "offset": 39,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 4,
+      "offset": 39,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 5,
+      "offset": 39,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 6,
+      "offset": 39,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    },
+    {
+      "baseline_one_fraction": 0.0,
+      "bit": 7,
+      "offset": 39,
+      "one_fraction_delta": 0.0,
+      "stimulus_one_fraction": 0.0
+    }
+  ],
+  "unknown_deltas": [
+    {
+      "baseline_unique": 1,
+      "effect": null,
+      "mask": 255,
+      "mean_delta": -11.0,
+      "offset": 6,
+      "stimulus_unique": 1
+    },
+    {
+      "baseline_unique": 1,
+      "effect": null,
+      "mask": 255,
+      "mean_delta": 3.0,
+      "offset": 12,
+      "stimulus_unique": 1
+    },
+    {
+      "baseline_unique": 2,
+      "effect": -99.45072130488276,
+      "mask": 255,
+      "mean_delta": -36.67316017316017,
+      "offset": 9,
+      "stimulus_unique": 2
+    },
+    {
+      "baseline_unique": 16,
+      "effect": 37.786419509112875,
+      "mask": 255,
+      "mean_delta": 187.53246753246754,
+      "offset": 11,
+      "stimulus_unique": 16
+    },
+    {
+      "baseline_unique": 17,
+      "effect": -1.7814947866089679,
+      "mask": 255,
+      "mean_delta": -40.13852813852813,
+      "offset": 5,
+      "stimulus_unique": 20
+    },
+    {
+      "baseline_unique": 5,
+      "effect": -0.40860436299172775,
+      "mask": 255,
+      "mean_delta": -0.5844155844155949,
+      "offset": 17,
+      "stimulus_unique": 7
+    },
+    {
+      "baseline_unique": 17,
+      "effect": -0.4073824579335274,
+      "mask": 255,
+      "mean_delta": -29.783549783549788,
+      "offset": 10,
+      "stimulus_unique": 16
+    },
+    {
+      "baseline_unique": 1,
+      "effect": -0.3086066999241839,
+      "mask": 255,
+      "mean_delta": -11.590909090909093,
+      "offset": 26,
+      "stimulus_unique": 2
+    },
+    {
+      "baseline_unique": 9,
+      "effect": -0.30141031281270664,
+      "mask": 255,
+      "mean_delta": -11.075757575757564,
+      "offset": 25,
+      "stimulus_unique": 9
+    },
+    {
+      "baseline_unique": 8,
+      "effect": -0.2643576732200552,
+      "mask": 255,
+      "mean_delta": -18.51082251082252,
+      "offset": 13,
+      "stimulus_unique": 8
+    },
+    {
+      "baseline_unique": 21,
+      "effect": 0.25767356213607245,
+      "mask": 255,
+      "mean_delta": 19.27272727272728,
+      "offset": 8,
+      "stimulus_unique": 22
+    },
+    {
+      "baseline_unique": 7,
+      "effect": -0.22596108755170394,
+      "mask": 255,
+      "mean_delta": -15.792207792207776,
+      "offset": 4,
+      "stimulus_unique": 8
+    },
+    {
+      "baseline_unique": 13,
+      "effect": 0.22406015126427478,
+      "mask": 255,
+      "mean_delta": 16.935064935064943,
+      "offset": 21,
+      "stimulus_unique": 12
+    },
+    {
+      "baseline_unique": 6,
+      "effect": -0.178742928599072,
+      "mask": 255,
+      "mean_delta": -1.9956709956709968,
+      "offset": 38,
+      "stimulus_unique": 6
+    },
+    {
+      "baseline_unique": 2,
+      "effect": 0.17112152660248292,
+      "mask": 15,
+      "mean_delta": 0.6493506493506492,
+      "offset": 29,
+      "stimulus_unique": 2
+    },
+    {
+      "baseline_unique": 5,
+      "effect": 0.16964891538790597,
+      "mask": 255,
+      "mean_delta": 10.906926406926406,
+      "offset": 28,
+      "stimulus_unique": 5
+    },
+    {
+      "baseline_unique": 19,
+      "effect": 0.16476151440785824,
+      "mask": 255,
+      "mean_delta": 13.17316017316017,
+      "offset": 24,
+      "stimulus_unique": 21
+    },
+    {
+      "baseline_unique": 2,
+      "effect": 0.1385096549307118,
+      "mask": 255,
+      "mean_delta": 14.350649350649348,
+      "offset": 23,
+      "stimulus_unique": 2
+    },
+    {
+      "baseline_unique": 17,
+      "effect": 0.13603309641780817,
+      "mask": 255,
+      "mean_delta": 9.835497835497833,
+      "offset": 19,
+      "stimulus_unique": 13
+    },
+    {
+      "baseline_unique": 4,
+      "effect": 0.13598863714273737,
+      "mask": 12,
+      "mean_delta": 0.6320346320346326,
+      "offset": 35,
+      "stimulus_unique": 4
+    },
+    {
+      "baseline_unique": 15,
+      "effect": -0.12441782470509165,
+      "mask": 255,
+      "mean_delta": -0.8354978354978329,
+      "offset": 14,
+      "stimulus_unique": 18
+    },
+    {
+      "baseline_unique": 3,
+      "effect": -0.1229406672715097,
+      "mask": 255,
+      "mean_delta": -0.07792207792208217,
+      "offset": 20,
+      "stimulus_unique": 4
+    },
+    {
+      "baseline_unique": 4,
+      "effect": -0.12066199152644747,
+      "mask": 255,
+      "mean_delta": -7.064935064935071,
+      "offset": 18,
+      "stimulus_unique": 3
+    },
+    {
+      "baseline_unique": 11,
+      "effect": 0.11143728539028132,
+      "mask": 255,
+      "mean_delta": 10.90043290043289,
+      "offset": 22,
+      "stimulus_unique": 12
+    },
+    {
+      "baseline_unique": 13,
+      "effect": -0.0878838594926792,
+      "mask": 255,
+      "mean_delta": -6.179653679653683,
+      "offset": 16,
+      "stimulus_unique": 12
+    },
+    {
+      "baseline_unique": 13,
+      "effect": -0.06325021791575086,
+      "mask": 255,
+      "mean_delta": -5.056277056277054,
+      "offset": 7,
+      "stimulus_unique": 11
+    },
+    {
+      "baseline_unique": 20,
+      "effect": -0.012147436731224275,
+      "mask": 255,
+      "mean_delta": -0.9761904761904816,
+      "offset": 27,
+      "stimulus_unique": 20
+    },
+    {
+      "baseline_unique": 1,
+      "effect": 0.0,
+      "mask": 255,
+      "mean_delta": 0.0,
+      "offset": 15,
+      "stimulus_unique": 1
+    },
+    {
+      "baseline_unique": 1,
+      "effect": 0.0,
+      "mask": 12,
+      "mean_delta": 0.0,
+      "offset": 32,
+      "stimulus_unique": 1
+    },
+    {
+      "baseline_unique": 1,
+      "effect": 0.0,
+      "mask": 255,
+      "mean_delta": 0.0,
+      "offset": 39,
+      "stimulus_unique": 1
+    }
+  ]
+}

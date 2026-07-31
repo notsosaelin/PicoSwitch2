@@ -1,0 +1,73 @@
+{
+    "tool":  "nfc_lab",
+    "version":  1,
+    "scenario":  "v3-reuse",
+    "timestamp":  "2026-07-29T10:29:18.0062458-04:00",
+    "hypothesis":  "",
+    "variable":  "",
+    "expectation":  "",
+    "action":  "Scan DDD Amiibo, save, remove",
+    "port":  "COM11",
+    "baseline":  "",
+    "git":  {
+                "branch":  "ns2-testing",
+                "commit":  "8e11e40917e421cdc0cefdf7071dd9e8b30c47e4",
+                "dirty":  true,
+                "dirty_files":  [
+                                    " M AGENTS.md",
+                                    " M CHANGELOG.md",
+                                    " M PLAN.md",
+                                    " M STATUS.md",
+                                    " M docs/LLM/README.md",
+                                    " M docs/README.md",
+                                    " M docs/switch2/report-0x09-motion.md",
+                                    " M docs/switch2/uart-trace-tooling.md",
+                                    " M include/switch_pro2.h",
+                                    " M src/ns2_uart_diag.c",
+                                    " M src/switch_pro2/switch_pro2.c",
+                                    " M tools/ns2_trace.py",
+                                    " M tools/read_uart_diag.ps1",
+                                    " D tools/validate_amiibo_collection.py",
+                                    " M tools/verify_amiibo_crypto.mjs",
+                                    "?? .claude/skills/",
+                                    "?? \"VAM - Layout change.png\"",
+                                    "?? docs/LLM/amiibo-v3-investigation-retrospective.md",
+                                    "?? docs/re-methodology/nfc-investigation-workflow.md",
+                                    "?? dumps/experiments/"
+                                ]
+            },
+    "verdict":  "82 NFC transaction steps; no errors, 2 expected removal edge(s)",
+    "firmware_errors":  0,
+    "artifacts":  [
+                      {
+                          "path":  "diagnostics.before.json",
+                          "bytes":  1174,
+                          "sha256":  "CC356A08C22E244852576F6B118FD388DF94D265616F8B420F218085FF9EA747"
+                      },
+                      {
+                          "path":  "diagnostics.after.json",
+                          "bytes":  1176,
+                          "sha256":  "16D0B8F18E113F1D05E4318AE181C317903698A87C8C093590F2E3F0F0429B4B"
+                      },
+                      {
+                          "path":  "trace.raw.jsonl",
+                          "bytes":  61531,
+                          "sha256":  "4C9E646BFD070DE4B926D81D449E86A99A3C804A24E2974099089426986FAFBC"
+                      },
+                      {
+                          "path":  "trace.decoded.txt",
+                          "bytes":  17441,
+                          "sha256":  "C8F5C050A8AD166FB6EBF06EB1EEF0B6C78BA48540A247639617CFA0BDE72A9D"
+                      },
+                      {
+                          "path":  "image.before.bin",
+                          "bytes":  2048,
+                          "sha256":  "41C7423BAA3A9ADAF78EA0461076A307819B6AB47ECB418FDE678175AC275C13"
+                      },
+                      {
+                          "path":  "image.after.bin",
+                          "bytes":  2048,
+                          "sha256":  "6C6B6754A4E667BE2C700E32CDD54F7BC39E9046B88F1D65D536B6E580210400"
+                      }
+                  ]
+}

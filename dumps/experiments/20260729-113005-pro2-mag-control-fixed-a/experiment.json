@@ -1,0 +1,471 @@
+{
+  "schema": "picoswitch2-lab/v1",
+  "tool": "motion_lab",
+  "scenario": "pro2-mag-control-fixed-a",
+  "timestamp": "2026-07-29T11:30:21.0287986-04:00",
+  "kind": "hypothesis-test",
+  "hypothesis": "Back-to-back untouched captures define native lane noise at one pose",
+  "variable": "elapsed time only",
+  "expectation": "No movement warning and near-zero G6/G7/G8 body-direction delta",
+  "action": "Do not touch controller; magnet remains at least 0.5 m away",
+  "port": "COM11",
+  "baseline": "",
+  "conditions": {
+    "controller": "Genuine Switch 2 Pro Controller PID 057E:2069",
+    "stimulus": "none",
+    "distance_mm": 0,
+    "capture_ms": 650,
+    "controller_stationary": true
+  },
+  "git": {
+    "branch": "ns2-testing",
+    "commit": "8e11e40917e421cdc0cefdf7071dd9e8b30c47e4",
+    "dirty": true,
+    "dirty_count": 52,
+    "dirty_files": [
+      " M AGENTS.md",
+      " M CHANGELOG.md",
+      " M PLAN.md",
+      " M STATUS.md",
+      " M docs/LLM/README.md",
+      " M docs/LLM/current-context.md",
+      " M docs/README.md",
+      " M docs/provenance.md",
+      " M docs/switch2/kirby-air-riders-extended-amiibo.md",
+      " M docs/switch2/report-0x09-motion.md",
+      " M docs/switch2/uart-trace-tooling.md",
+      " M include/switch_pro2.h",
+      " M src/ns2_uart_diag.c",
+      " M src/switch_pro2/switch_pro2.c",
+      " M tools/ns2_trace.py",
+      " M tools/read_uart_diag.ps1",
+      " D tools/validate_amiibo_collection.py",
+      " M tools/verify_amiibo_crypto.mjs",
+      "?? .agents/",
+      "?? .claude/skills/",
+      "?? \"VAM - Layout change.png\"",
+      "?? docs/LLM/amiibo-v3-investigation-retrospective.md",
+      "?? docs/re-methodology/controller-protocol-lab.md",
+      "?? docs/re-methodology/nfc-investigation-workflow.md",
+      "?? docs/switch2/controller-nvm-map.md",
+      "?? docs/switch2/controller-safe-mode.md",
+      "?? dumps/experiments/",
+      "?? include/ns2_amiibo_v3_runtime.h",
+      "?? prompt.md",
+      "?? src/nfc/ns2_amiibo_v3_runtime.c",
+      "?? tools/PicoSwitch2Lab.psm1",
+      "?? tools/amiibo_corpus.py",
+      "?? tools/audio_lab.ps1",
+      "?? tools/audio_lab_analyze.py",
+      "?? tools/audit_firmware_capture_space.py",
+      "?? tools/capture_to_fixture.py",
+      "?? tools/firmware_lab.ps1",
+      "?? tools/motion_lab.ps1",
+      "?? tools/nfc_lab.ps1",
+      "?? tools/ns2_command_atlas.py"
+    ]
+  },
+  "diagnostics": {
+    "before": {
+      "motionpair status": {
+        "motionpair": "status",
+        "enabled": false,
+        "count": 0,
+        "capacity": 127,
+        "dropped": 0
+      },
+      "magraw status": {
+        "magraw": true,
+        "requested": false,
+        "active": false,
+        "transition": false,
+        "v2_state": 8,
+        "pid": "0x2069",
+        "handle": "0x0040",
+        "step": 0,
+        "steps": 12,
+        "result": 0,
+        "response": "0x00",
+        "input_ccc": "0x00"
+      },
+      "motionauto": {
+        "motionauto": true,
+        "checks": 9,
+        "starts": 1,
+        "wait_ms": 279,
+        "pid": "0x2069",
+        "personality": 0,
+        "init_state": 9,
+        "v2_state": 8,
+        "fired": true,
+        "armed": 0,
+        "gattdisc": false,
+        "block_mask": "0x00"
+      },
+      "input status": {
+        "input": true,
+        "raw": "0x00000000",
+        "mapped": [
+          0,
+          0,
+          0
+        ],
+        "extra": 0,
+        "sticks": [
+          0,
+          248,
+          129,
+          16,
+          248,
+          128
+        ],
+        "has_motion": false,
+        "motion_source": 0,
+        "gyro": [
+          0,
+          0,
+          0
+        ],
+        "accel": [
+          0,
+          0,
+          0
+        ],
+        "vid": "0x057E",
+        "pid": "0x2069"
+      },
+      "ds5motion status": {
+        "ds5motion": true,
+        "enabled": true,
+        "active": false,
+        "initialized": false,
+        "has_sample": false,
+        "probe_active": false,
+        "probe_gyro": [
+          0,
+          0,
+          0
+        ],
+        "input_gyro": [
+          0,
+          0,
+          0
+        ],
+        "bias_gyro": [
+          0,
+          0,
+          0
+        ],
+        "corrected_gyro": [
+          0,
+          0,
+          0
+        ],
+        "jitter": [
+          0,
+          0,
+          0
+        ],
+        "frame": "body",
+        "carrier": "switch2",
+        "map": [
+          1,
+          2,
+          3
+        ],
+        "q_million": [
+          0,
+          0,
+          0,
+          1000000
+        ],
+        "updates": 0,
+        "representation_rejects": 0,
+        "host_dt_us": 0,
+        "sensor_dt_us": 0,
+        "sensor_dt_max_us": 0,
+        "timestamp_fallbacks": 0,
+        "timestamp_invalid": 0,
+        "sequence_gaps": 0,
+        "integration_substeps": 0,
+        "report_id": 9,
+        "streaming": true,
+        "emitted_len": 30
+      },
+      "audio status": {
+        "audio": true,
+        "usb_active": false,
+        "send_max_us": 0,
+        "send_over_40ms": 0,
+        "sends": 0,
+        "hci_max_us": 0,
+        "hci_over_40ms": 0,
+        "hci_events": 0,
+        "hci_packets": 0,
+        "hci_max_batch": 0,
+        "pcm_packets": 0,
+        "pcm_nonzero": 0,
+        "pcm_short": 0,
+        "pcm_dropped": 0,
+        "pcm_max_gap_us": 0,
+        "pcm_over_2ms": 0,
+        "pcm_queue_max": 0,
+        "opus_frames": 0,
+        "opus_errors": 0,
+        "opus_encode_max_us": 0,
+        "opus_gap_max_us": 0,
+        "opus_over_20ms": 0,
+        "pipeline_resets": 2,
+        "codec_calls": 0,
+        "codec_blocks": 0,
+        "codec_no_encoder": 0,
+        "codec_no_pcm": 0,
+        "codec_disconnected": 0,
+        "codec_usb_inactive": 0,
+        "codec_gap_max_us": 0,
+        "codec_over_10ms": 0,
+        "codec_hist_3_7_12_25_over": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "core1_gap_max_us": 0,
+        "core1_over_10ms": 0,
+        "usb_edges_on_off": [
+          0,
+          0
+        ],
+        "usb_active_us": 0,
+        "core1_stack_free": 29708
+      },
+      "btversion": {
+        "state": "idle",
+        "length": 0
+      }
+    },
+    "after": {
+      "motionpair status": {
+        "motionpair": "status",
+        "enabled": false,
+        "count": 0,
+        "capacity": 127,
+        "dropped": 0
+      },
+      "magraw status": {
+        "magraw": true,
+        "requested": false,
+        "active": false,
+        "transition": false,
+        "v2_state": 8,
+        "pid": "0x2069",
+        "handle": "0x0040",
+        "step": 0,
+        "steps": 12,
+        "result": 0,
+        "response": "0x00",
+        "input_ccc": "0x00"
+      },
+      "motionauto": {
+        "motionauto": true,
+        "checks": 9,
+        "starts": 1,
+        "wait_ms": 279,
+        "pid": "0x2069",
+        "personality": 0,
+        "init_state": 9,
+        "v2_state": 8,
+        "fired": true,
+        "armed": 0,
+        "gattdisc": false,
+        "block_mask": "0x00"
+      },
+      "input status": {
+        "input": true,
+        "raw": "0x00000000",
+        "mapped": [
+          0,
+          0,
+          0
+        ],
+        "extra": 0,
+        "sticks": [
+          0,
+          248,
+          129,
+          16,
+          248,
+          128
+        ],
+        "has_motion": false,
+        "motion_source": 0,
+        "gyro": [
+          0,
+          0,
+          0
+        ],
+        "accel": [
+          0,
+          0,
+          0
+        ],
+        "vid": "0x057E",
+        "pid": "0x2069"
+      },
+      "ds5motion status": {
+        "ds5motion": true,
+        "enabled": true,
+        "active": false,
+        "initialized": false,
+        "has_sample": false,
+        "probe_active": false,
+        "probe_gyro": [
+          0,
+          0,
+          0
+        ],
+        "input_gyro": [
+          0,
+          0,
+          0
+        ],
+        "bias_gyro": [
+          0,
+          0,
+          0
+        ],
+        "corrected_gyro": [
+          0,
+          0,
+          0
+        ],
+        "jitter": [
+          0,
+          0,
+          0
+        ],
+        "frame": "body",
+        "carrier": "switch2",
+        "map": [
+          1,
+          2,
+          3
+        ],
+        "q_million": [
+          0,
+          0,
+          0,
+          1000000
+        ],
+        "updates": 0,
+        "representation_rejects": 0,
+        "host_dt_us": 0,
+        "sensor_dt_us": 0,
+        "sensor_dt_max_us": 0,
+        "timestamp_fallbacks": 0,
+        "timestamp_invalid": 0,
+        "sequence_gaps": 0,
+        "integration_substeps": 0,
+        "report_id": 9,
+        "streaming": true,
+        "emitted_len": 40
+      },
+      "audio status": {
+        "audio": true,
+        "usb_active": false,
+        "send_max_us": 0,
+        "send_over_40ms": 0,
+        "sends": 0,
+        "hci_max_us": 0,
+        "hci_over_40ms": 0,
+        "hci_events": 0,
+        "hci_packets": 0,
+        "hci_max_batch": 0,
+        "pcm_packets": 0,
+        "pcm_nonzero": 0,
+        "pcm_short": 0,
+        "pcm_dropped": 0,
+        "pcm_max_gap_us": 0,
+        "pcm_over_2ms": 0,
+        "pcm_queue_max": 0,
+        "opus_frames": 0,
+        "opus_errors": 0,
+        "opus_encode_max_us": 0,
+        "opus_gap_max_us": 0,
+        "opus_over_20ms": 0,
+        "pipeline_resets": 2,
+        "codec_calls": 0,
+        "codec_blocks": 0,
+        "codec_no_encoder": 0,
+        "codec_no_pcm": 0,
+        "codec_disconnected": 0,
+        "codec_usb_inactive": 0,
+        "codec_gap_max_us": 0,
+        "codec_over_10ms": 0,
+        "codec_hist_3_7_12_25_over": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "core1_gap_max_us": 0,
+        "core1_over_10ms": 0,
+        "usb_edges_on_off": [
+          0,
+          0
+        ],
+        "usb_active_us": 0,
+        "core1_stack_free": 29708
+      },
+      "btversion": {
+        "state": "idle",
+        "length": 0
+      }
+    }
+  },
+  "verdict": "capture valid",
+  "artifacts": [
+    {
+      "path": "diagnostics.before.json",
+      "bytes": 3220,
+      "sha256": "1F6CA81E0B90572F764C667DAFB9C00B007A6875A7F998E11D123F88D0EFE91C"
+    },
+    {
+      "path": "diagnostics.after.json",
+      "bytes": 3220,
+      "sha256": "68127967E58EAA766A256353974F6AFF59D71A8305BBD0824D162BE579216C30"
+    },
+    {
+      "path": "motion.raw.jsonl",
+      "bytes": 26337,
+      "sha256": "69FF447897E5954A413A01DDA2EB81064B4AF41F44AA6439C7F588AB55100B4B"
+    },
+    {
+      "path": "motion.analysis.txt",
+      "bytes": 5395,
+      "sha256": "F1499DB5F823619324FC33182E31EFFD71C28AF15E9B7C77969B05CE6D406533"
+    },
+    {
+      "path": "motion.analysis.json",
+      "bytes": 379143,
+      "sha256": "B20B2A98011C2DB53C1FC1359715A5BC82E93C6976BCF658767062DAA45B6546"
+    },
+    {
+      "path": "motion.0x28.csv",
+      "bytes": 12302,
+      "sha256": "52264D9E0B6315D9B9E1ED67CE60AECE805C8E6ACE173F9DA6AB4E27421190F8"
+    },
+    {
+      "path": "motion.fixture.json",
+      "bytes": 46982,
+      "sha256": "408E007199F043E9FCAEE016A03C3C238A4CE9F7C55B306B05E2C270DCF63265"
+    },
+    {
+      "path": "motion.fixture.h",
+      "bytes": 30751,
+      "sha256": "BEB82892FEA5E27093FDDDA685CE8395B0469567311A4A4E496DD1C8B602E9DF"
+    }
+  ]
+}

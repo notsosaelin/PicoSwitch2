@@ -1,0 +1,72 @@
+{
+  "tool": "nfc_lab",
+  "version": 1,
+  "scenario": "v3-post-extraction",
+  "timestamp": "2026-07-29T10:19:55.1556269-04:00",
+  "hypothesis": "",
+  "variable": "",
+  "expectation": "",
+  "action": "Scan Air Riders Amiibo, in-game save, remove, then rescan",
+  "port": "COM11",
+  "baseline": "",
+  "git": {
+    "branch": "ns2-testing",
+    "commit": "8e11e40917e421cdc0cefdf7071dd9e8b30c47e4",
+    "dirty": true,
+    "dirty_files": [
+      " M AGENTS.md",
+      " M CHANGELOG.md",
+      " M PLAN.md",
+      " M STATUS.md",
+      " M docs/LLM/README.md",
+      " M docs/README.md",
+      " M docs/switch2/report-0x09-motion.md",
+      " M docs/switch2/uart-trace-tooling.md",
+      " M include/switch_pro2.h",
+      " M src/ns2_uart_diag.c",
+      " M src/switch_pro2/switch_pro2.c",
+      " M tools/ns2_trace.py",
+      " M tools/read_uart_diag.ps1",
+      " D tools/validate_amiibo_collection.py",
+      " M tools/verify_amiibo_crypto.mjs",
+      "?? .claude/skills/",
+      "?? \"VAM - Layout change.png\"",
+      "?? docs/LLM/amiibo-v3-investigation-retrospective.md",
+      "?? docs/re-methodology/nfc-investigation-workflow.md",
+      "?? include/ns2_amiibo_v3_runtime.h"
+    ]
+  },
+  "verdict": "1 error state(s); first: seq 233: error state (detail 0x41) after seq 230 stop",
+  "artifacts": [
+    {
+      "path": "diagnostics.before.json",
+      "bytes": 1155,
+      "sha256": "BB9646A5B86F37983C9D570BE9DFD2E794A7D8E2D08D102D00020AFBE4A753F5"
+    },
+    {
+      "path": "diagnostics.after.json",
+      "bytes": 1159,
+      "sha256": "1BFD5348C457010AA836E8881F11E253621A6B04DC54C142ECBFE471C8B40B66"
+    },
+    {
+      "path": "trace.raw.jsonl",
+      "bytes": 61674,
+      "sha256": "CB93DCE1284C96276345306BFE67402D0D989782140DE8D4939AAEB0D7842AEB"
+    },
+    {
+      "path": "trace.decoded.txt",
+      "bytes": 16685,
+      "sha256": "1501B14527AEBE382CA23DFE3F2DEBCBE7B178DE3BA1C4A7C25194115D756B76"
+    },
+    {
+      "path": "image.before.bin",
+      "bytes": 2048,
+      "sha256": "E1C6734B519539E824179240BE9FA77F3DB8D6CD8010217E1689B0A30DBE3F91"
+    },
+    {
+      "path": "image.after.bin",
+      "bytes": 2048,
+      "sha256": "41C7423BAA3A9ADAF78EA0461076A307819B6AB47ECB418FDE678175AC275C13"
+    }
+  ]
+}

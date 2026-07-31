@@ -1,0 +1,6 @@
+{
+  "amiibo status": "{\"amiibo\":\"status\",\"loaded\":false,\"dirty\":false,\"persisted\":true,\"persist_pending\":false,\"has_signature\":false,\"has_used\":false,\"using_used\":false,\"size\":2048,\"generation\":23,\"payload_crc\":\"43620E97\",\"v3loaded\":true,\"uid\":\"0465B0228F2190\"}",
+  "amiibo v3diag": "{\"amiibo\":\"v3diag\",\"signature_set\":false,\"dev_cmd_staged\":0,\"dev_results\":0,\"write_chunks\":0,\"write_commits\":0,\"write_errors\":0,\"extended_chunks\":0,\"extended_completions\":0,\"errors\":0,\"last_error\":\"none\",\"last_error_code\":0,\"last_error_sub\":0,\"last_error_result\":\"ok\",\"last_error_offset\":0}",
+  "amiibo journal": "{\"amiibo\":\"journal\",\"active_bank\":0,\"persist_pending\":false,\"v3_slot\":true,\"bank0\":{\"v3\":true,\"v3gen\":23,\"v2\":false,\"v2gen\":0,\"hdr\":\"414D424F030020001700000000080000970E62432E5A203C\"},\"bank1\":{\"v3\":true,\"v3gen\":22,\"v2\":false,\"v2gen\":0,\"hdr\":\"414D424F03002000160000000008000076A697E3D48A30A1\"}}",
+  "trace status": "{\"trace\":\"status\",\"enabled\":false,\"count\":0,\"capacity\":256,\"overwritten\":0,\"next_sequence\":0,\"filter\":\"all\"}"
+}

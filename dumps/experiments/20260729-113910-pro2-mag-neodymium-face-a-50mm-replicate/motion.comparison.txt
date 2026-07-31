@@ -1,0 +1,36 @@
+MAGPROBE A/B
+baseline: E:\PicoSwitch2\dumps\experiments\20260729-113829-pro2-mag-neodymium-face-a-50mm\motion.raw.jsonl
+stimulus: E:\PicoSwitch2\dumps\experiments\20260729-113910-pro2-mag-neodymium-face-a-50mm-replicate\motion.raw.jsonl
+orientation mean delta: 3.6704 degrees
+accel mean delta: 0.0161 degrees, norm +0.005%
+body magnetic delta: [+0.000398221, +0.000068860, -0.000006488], direction 0.0621 degrees
+world magnetic direction delta: 2.7026 degrees
+movement gate: WARNING - controller pose changed enough to confound a magnetic-only experiment
+
+Largest normalized changes in unexplained lanes:
+  p12&0xFF: mean delta=-7.0000, effect=-inf, unique 1->1
+  p06&0xFF: mean delta=-62.6250, effect=-182.939 sigma, unique 2->1
+  p09&0xFF: mean delta=+30.3371, effect=+85.809 sigma, unique 2->2
+  p11&0xFF: mean delta=-26.3409, effect=-3.520 sigma, unique 18->19
+  p08&0xFF: mean delta=+91.0417, effect=+1.237 sigma, unique 24->22
+  p29&0x0F: mean delta=+3.5227, effect=+0.613 sigma, unique 2->2
+  p28&0xFF: mean delta=+59.4356, effect=+0.610 sigma, unique 4->5
+  p21&0xFF: mean delta=-30.6667, effect=-0.474 sigma, unique 13->13
+  p14&0xFF: mean delta=+2.8258, effect=+0.467 sigma, unique 16->15
+  p10&0xFF: mean delta=+31.6364, effect=+0.424 sigma, unique 19->16
+  p27&0xFF: mean delta=+32.0227, effect=+0.408 sigma, unique 18->21
+  p18&0xFF: mean delta=-34.9091, effect=-0.376 sigma, unique 2->2
+
+Largest unexplained individual-bit occupancy changes:
+  p06.b1: 0.000->1.000 (delta +1.000)
+  p06.b6: 0.000->1.000 (delta +1.000)
+  p06.b7: 1.000->0.000 (delta -1.000)
+  p09.b5: 0.000->1.000 (delta +1.000)
+  p12.b0: 0.000->1.000 (delta +1.000)
+  p12.b3: 0.000->1.000 (delta +1.000)
+  p12.b4: 0.000->1.000 (delta +1.000)
+  p12.b5: 0.000->1.000 (delta +1.000)
+  p12.b6: 0.000->1.000 (delta +1.000)
+  p12.b7: 1.000->0.000 (delta -1.000)
+  p11.b5: 1.000->0.045 (delta -0.955)
+  p09.b1: 0.708->0.000 (delta -0.708)

@@ -1,0 +1,454 @@
+78 NFC transaction steps
+   69     0.000ms  read_buffer chip_identity_name=ntag215 total_bytes=83
+          result_type: 0x00
+          chip_identity: 0x00
+          chip_identity_name: ntag215
+          operation_metadata: 000000000000000000
+          tag_bytes: 23
+          total_bytes: 83
+   71    30.031ms  status state_name=device_result_ready
+          state: 0x18
+          state_name: device_result_ready
+          detail: 0x00
+          payload_bytes: 61
+   72    31.757ms  sector_read ranges=['s0:0x9A-0xA1(32B)', 's1:0x19-0x31(100B)']
+          timeout_ms: 2000
+          uid: 0465B0228F2190
+          tag_type: 0x01
+          range_count: 2
+          ranges: ['s0:0x9A-0xA1(32B)', 's1:0x19-0x31(100B)']
+          reserved_zero: True
+   75    90.039ms  status state_name=sector_result_ready
+          state: 0x15
+          state_name: sector_result_ready
+          detail: 0x00
+          payload_bytes: 61
+   81   180.051ms  read_buffer chip_identity_name=ntag_i2c_2k_v3 total_bytes=196
+          result_type: 0x15
+          uid: 0465B0228F2190
+          chip_identity: 0x06
+          chip_identity_name: ntag_i2c_2k_v3
+          operation_metadata: 02009AA10119310000
+          tag_bytes: 136
+          total_bytes: 196
+   83   210.105ms  status state_name=sector_result_ready
+          state: 0x15
+          state_name: sector_result_ready
+          detail: 0x00
+          payload_bytes: 61
+   84   217.474ms  stop
+   86 10076.198ms  poll
+   89 10122.421ms  status state_name=tag_present
+          state: 0x09
+          state_name: tag_present
+          detail: 0x00
+          identity_present: True
+          uid: 0465B0228F2190
+          payload_bytes: 61
+   90 10123.343ms  stop
+   92 10185.915ms  poll
+   95 10242.440ms  status state_name=tag_present
+          state: 0x09
+          state_name: tag_present
+          detail: 0x00
+          identity_present: True
+          uid: 0465B0228F2190
+          payload_bytes: 61
+   96 10243.246ms  begin_read blocks=['0x00-0x3B', '0x3C-0x77', '0x78-0x86']
+          timeout_ms: 2000
+          uid: 00000000000000
+          uid_selector: any
+          tag_type: 0x01
+          block_count: 3
+          blocks: ['0x00-0x3B', '0x3C-0x77', '0x78-0x86']
+          highest_byte: 540
+   99 10302.472ms  status state_name=operation_active
+          state: 0x04
+          state_name: operation_active
+          detail: 0x00
+          identity_present: True
+          uid: 0465B0228F2190
+          payload_bytes: 61
+  117 10572.572ms  read_buffer chip_identity_name=ntag_i2c_2k_v3 total_bytes=600
+          result_type: 0x04
+          uid: 0465B0228F2190
+          chip_identity: 0x06
+          chip_identity_name: ntag_i2c_2k_v3
+          operation_metadata: 03003B3C7778860000
+          tag_bytes: 540
+          total_bytes: 600
+          for_descriptor: ['0x00-0x3B', '0x3C-0x77', '0x78-0x86']
+  119 10602.569ms  status state_name=operation_active
+          state: 0x04
+          state_name: operation_active
+          detail: 0x00
+          identity_present: True
+          uid: 0465B0228F2190
+          payload_bytes: 61
+  120 10603.444ms  begin_read blocks=['0x00-0x3B', '0x3C-0x77', '0x78-0x91', '0xE2-0xE6']
+          timeout_ms: 3000
+          uid: 00000000000000
+          uid_selector: any
+          tag_type: 0x01
+          block_count: 4
+          blocks: ['0x00-0x3B', '0x3C-0x77', '0x78-0x91', '0xE2-0xE6']
+          highest_byte: 924
+          needs_v3_source: True
+  123 10662.547ms  status state_name=operation_active
+          state: 0x04
+          state_name: operation_active
+          detail: 0x00
+          identity_present: True
+          uid: 0465B0228F2190
+          payload_bytes: 61
+  143 10962.898ms  read_buffer chip_identity_name=ntag_i2c_2k_v3 total_bytes=664
+          result_type: 0x04
+          uid: 0465B0228F2190
+          chip_identity: 0x06
+          chip_identity_name: ntag_i2c_2k_v3
+          operation_metadata: 04003B3C777891E2E6
+          tag_bytes: 604
+          total_bytes: 664
+          for_descriptor: ['0x00-0x3B', '0x3C-0x77', '0x78-0x91', '0xE2-0xE6']
+  145 10992.888ms  status state_name=operation_active
+          state: 0x04
+          state_name: operation_active
+          detail: 0x00
+          identity_present: True
+          uid: 0465B0228F2190
+          payload_bytes: 61
+  146 10993.755ms  stage envelope=device_command
+          staged_bytes: 74
+          timeout_ms: 2000
+          uid: 0465B0228F2190
+          envelope: device_command
+          completed_by: 0x21
+          completed_by_observed: 0x21
+  148 11022.920ms  execute_device_command
+  151 11083.208ms  status state_name=device_result_ready
+          state: 0x18
+          state_name: device_result_ready
+          detail: 0x00
+          payload_bytes: 61
+  155 11143.206ms  read_buffer chip_identity_name=ntag_i2c_2k_v3 total_bytes=83
+          result_type: 0x18
+          uid: 0465B0228F2190
+          chip_identity: 0x06
+          chip_identity_name: ntag_i2c_2k_v3
+          signature_present: True
+          operation_metadata: 000000000000000000
+          tag_bytes: 23
+          total_bytes: 83
+          for_descriptor: ['0x00-0x3B', '0x3C-0x77', '0x78-0x91', '0xE2-0xE6']
+  157 11173.224ms  status state_name=device_result_ready
+          state: 0x18
+          state_name: device_result_ready
+          detail: 0x00
+          payload_bytes: 61
+  158 11174.423ms  sector_read ranges=['s0:0x9A-0xA1(32B)', 's1:0x19-0x31(100B)']
+          timeout_ms: 2000
+          uid: 0465B0228F2190
+          tag_type: 0x01
+          range_count: 2
+          ranges: ['s0:0x9A-0xA1(32B)', 's1:0x19-0x31(100B)']
+          reserved_zero: True
+  161 11233.232ms  status state_name=sector_result_ready
+          state: 0x15
+          state_name: sector_result_ready
+          detail: 0x00
+          payload_bytes: 61
+  167 11323.263ms  read_buffer chip_identity_name=ntag_i2c_2k_v3 total_bytes=196
+          result_type: 0x15
+          uid: 0465B0228F2190
+          chip_identity: 0x06
+          chip_identity_name: ntag_i2c_2k_v3
+          operation_metadata: 02009AA10119310000
+          tag_bytes: 136
+          total_bytes: 196
+  169 11353.288ms  status state_name=sector_result_ready
+          state: 0x15
+          state_name: sector_result_ready
+          detail: 0x00
+          payload_bytes: 61
+  170 11355.559ms  stop
+  172 11619.818ms  poll
+  175 11653.355ms  status state_name=tag_present
+          state: 0x09
+          state_name: tag_present
+          detail: 0x00
+          identity_present: True
+          uid: 0465B0228F2190
+          payload_bytes: 61
+  176 11663.050ms  stage envelope=device_command
+          staged_bytes: 74
+          timeout_ms: 2000
+          uid: 0465B0228F2190
+          envelope: device_command
+          completed_by: 0x21
+          completed_by_observed: 0x21
+  178 11683.296ms  execute_device_command
+  181 11743.365ms  status state_name=device_result_ready
+          state: 0x18
+          state_name: device_result_ready
+          detail: 0x00
+          payload_bytes: 61
+  185 11803.385ms  read_buffer chip_identity_name=ntag_i2c_2k_v3 total_bytes=83
+          result_type: 0x18
+          uid: 0465B0228F2190
+          chip_identity: 0x06
+          chip_identity_name: ntag_i2c_2k_v3
+          signature_present: True
+          operation_metadata: 000000000000000000
+          tag_bytes: 23
+          total_bytes: 83
+  187 11833.378ms  status state_name=device_result_ready
+          state: 0x18
+          state_name: device_result_ready
+          detail: 0x00
+          payload_bytes: 61
+  188 11833.825ms  begin_read blocks=['0x03-0x03']
+          timeout_ms: 2000
+          uid: 0465B0228F2190
+          uid_selector: selected
+          tag_type: 0x01
+          block_count: 1
+          blocks: ['0x03-0x03']
+          highest_byte: 16
+  191 11893.406ms  status state_name=operation_active
+          state: 0x04
+          state_name: operation_active
+          detail: 0x00
+          identity_present: True
+          uid: 0465B0228F2190
+          payload_bytes: 61
+  193 11923.408ms  read_buffer chip_identity_name=ntag_i2c_2k_v3 total_bytes=64
+          result_type: 0x04
+          uid: 0465B0228F2190
+          chip_identity: 0x06
+          chip_identity_name: ntag_i2c_2k_v3
+          operation_metadata: 010303000000000000
+          tag_bytes: 4
+          total_bytes: 64
+          for_descriptor: ['0x03-0x03']
+  195 11953.411ms  status state_name=operation_active
+          state: 0x04
+          state_name: operation_active
+          detail: 0x00
+          identity_present: True
+          uid: 0465B0228F2190
+          payload_bytes: 61
+  196 11954.005ms  stage envelope=extended_update records=['s0:0x04+4', 's0:0x9A+32', 's1:0x1A+96']
+          staged_bytes: 167
+          timeout_ms: 5000
+          uid: 0465B0228F2190
+          envelope: extended_update
+          completed_by: 0x20
+          expected_bytes: 167
+          sector0_page: 0x9A
+          sector1_capability_page: 0x19
+          sector1_data_page: 0x1A
+          next_capability: A5000300
+          records: ['s0:0x04+4', 's0:0x9A+32', 's1:0x1A+96']
+          completed_by_observed: 0x20
+  202 12043.374ms  commit_extended
+  205 12113.202ms  status state_name=extended_complete
+          state: 0x16
+          state_name: extended_complete
+          detail: 0x00
+          payload_bytes: 61
+  206 12113.823ms  begin_read blocks=['0x03-0x03']
+          timeout_ms: 2000
+          uid: 0465B0228F2190
+          uid_selector: selected
+          tag_type: 0x01
+          block_count: 1
+          blocks: ['0x03-0x03']
+          highest_byte: 16
+  209 12163.503ms  status state_name=operation_active
+          state: 0x04
+          state_name: operation_active
+          detail: 0x00
+          identity_present: True
+          uid: 0465B0228F2190
+          payload_bytes: 61
+  211 12193.473ms  read_buffer chip_identity_name=ntag_i2c_2k_v3 total_bytes=64
+          result_type: 0x04
+          uid: 0465B0228F2190
+          chip_identity: 0x06
+          chip_identity_name: ntag_i2c_2k_v3
+          operation_metadata: 010303000000000000
+          tag_bytes: 4
+          total_bytes: 64
+          for_descriptor: ['0x03-0x03']
+  213 12223.474ms  status state_name=operation_active
+          state: 0x04
+          state_name: operation_active
+          detail: 0x00
+          identity_present: True
+          uid: 0465B0228F2190
+          payload_bytes: 61
+  214 12224.054ms  stage envelope=write records=['s0:0x05+32', 's0:0x30+240', 's0:0x6C+152']
+          staged_bytes: 454
+          timeout_ms: 2000
+          uid: 0465B0228F2190
+          envelope: write
+          completed_by: 0x08
+          expected_bytes: 454
+          record_count: 3
+          records: ['s0:0x05+32', 's0:0x30+240', 's0:0x6C+152']
+          data_bytes: 424
+          static_lock: A5000400
+          completed_by_observed: 0x08
+  226 12403.480ms  commit_write
+  229 13153.768ms  status state_name=write_committed
+          state: 0x05
+          state_name: write_committed
+          detail: 0x00
+          identity_present: True
+          uid: 0465B0228F2190
+          payload_bytes: 61
+  230 13155.389ms  stop
+  233 13213.748ms  status state_name=error
+          state: 0x07
+          state_name: error
+          detail: 0x41
+          payload_bytes: 61
+  234 13214.163ms  stop
+  236 13253.229ms  stop
+  238 22681.113ms  poll
+  241 22728.555ms  status state_name=tag_present
+          state: 0x09
+          state_name: tag_present
+          detail: 0x00
+          identity_present: True
+          uid: 0465B0228F2190
+          payload_bytes: 61
+  242 22728.987ms  stop
+  244 22789.713ms  poll
+  247 22848.600ms  status state_name=tag_present
+          state: 0x09
+          state_name: tag_present
+          detail: 0x00
+          identity_present: True
+          uid: 0465B0228F2190
+          payload_bytes: 61
+  248 22849.314ms  begin_read blocks=['0x00-0x3B', '0x3C-0x77', '0x78-0x86']
+          timeout_ms: 2000
+          uid: 00000000000000
+          uid_selector: any
+          tag_type: 0x01
+          block_count: 3
+          blocks: ['0x00-0x3B', '0x3C-0x77', '0x78-0x86']
+          highest_byte: 540
+  251 22908.610ms  status state_name=operation_active
+          state: 0x04
+          state_name: operation_active
+          detail: 0x00
+          identity_present: True
+          uid: 0465B0228F2190
+          payload_bytes: 61
+  269 23178.899ms  read_buffer chip_identity_name=ntag_i2c_2k_v3 total_bytes=600
+          result_type: 0x04
+          uid: 0465B0228F2190
+          chip_identity: 0x06
+          chip_identity_name: ntag_i2c_2k_v3
+          operation_metadata: 03003B3C7778860000
+          tag_bytes: 540
+          total_bytes: 600
+          for_descriptor: ['0x00-0x3B', '0x3C-0x77', '0x78-0x86']
+  271 23208.917ms  status state_name=operation_active
+          state: 0x04
+          state_name: operation_active
+          detail: 0x00
+          identity_present: True
+          uid: 0465B0228F2190
+          payload_bytes: 61
+  272 23209.512ms  begin_read blocks=['0x00-0x3B', '0x3C-0x77', '0x78-0x91', '0xE2-0xE6']
+          timeout_ms: 3000
+          uid: 00000000000000
+          uid_selector: any
+          tag_type: 0x01
+          block_count: 4
+          blocks: ['0x00-0x3B', '0x3C-0x77', '0x78-0x91', '0xE2-0xE6']
+          highest_byte: 924
+          needs_v3_source: True
+  275 23268.956ms  status state_name=operation_active
+          state: 0x04
+          state_name: operation_active
+          detail: 0x00
+          identity_present: True
+          uid: 0465B0228F2190
+          payload_bytes: 61
+  295 23569.191ms  read_buffer chip_identity_name=ntag_i2c_2k_v3 total_bytes=664
+          result_type: 0x04
+          uid: 0465B0228F2190
+          chip_identity: 0x06
+          chip_identity_name: ntag_i2c_2k_v3
+          operation_metadata: 04003B3C777891E2E6
+          tag_bytes: 604
+          total_bytes: 664
+          for_descriptor: ['0x00-0x3B', '0x3C-0x77', '0x78-0x91', '0xE2-0xE6']
+  297 23599.162ms  status state_name=operation_active
+          state: 0x04
+          state_name: operation_active
+          detail: 0x00
+          identity_present: True
+          uid: 0465B0228F2190
+          payload_bytes: 61
+  298 23599.835ms  stage envelope=device_command
+          staged_bytes: 74
+          timeout_ms: 2000
+          uid: 0465B0228F2190
+          envelope: device_command
+          completed_by: 0x21
+          completed_by_observed: 0x21
+  300 23629.131ms  execute_device_command
+  303 23689.189ms  status state_name=device_result_ready
+          state: 0x18
+          state_name: device_result_ready
+          detail: 0x00
+          payload_bytes: 61
+  307 23749.191ms  read_buffer chip_identity_name=ntag_i2c_2k_v3 total_bytes=83
+          result_type: 0x18
+          uid: 0465B0228F2190
+          chip_identity: 0x06
+          chip_identity_name: ntag_i2c_2k_v3
+          signature_present: True
+          operation_metadata: 000000000000000000
+          tag_bytes: 23
+          total_bytes: 83
+          for_descriptor: ['0x00-0x3B', '0x3C-0x77', '0x78-0x91', '0xE2-0xE6']
+  309 23779.264ms  status state_name=device_result_ready
+          state: 0x18
+          state_name: device_result_ready
+          detail: 0x00
+          payload_bytes: 61
+  310 23780.353ms  sector_read ranges=['s0:0x9A-0xA1(32B)', 's1:0x19-0x31(100B)']
+          timeout_ms: 2000
+          uid: 0465B0228F2190
+          tag_type: 0x01
+          range_count: 2
+          ranges: ['s0:0x9A-0xA1(32B)', 's1:0x19-0x31(100B)']
+          reserved_zero: True
+  313 23839.219ms  status state_name=sector_result_ready
+          state: 0x15
+          state_name: sector_result_ready
+          detail: 0x00
+          payload_bytes: 61
+  319 23929.254ms  read_buffer chip_identity_name=ntag_i2c_2k_v3 total_bytes=196
+          result_type: 0x15
+          uid: 0465B0228F2190
+          chip_identity: 0x06
+          chip_identity_name: ntag_i2c_2k_v3
+          operation_metadata: 02009AA10119310000
+          tag_bytes: 136
+          total_bytes: 196
+  321 23959.305ms  status state_name=sector_result_ready
+          state: 0x15
+          state_name: sector_result_ready
+          detail: 0x00
+          payload_bytes: 61
+  322 23960.612ms  stop
+
+Expected removal edges (07/41 is also the TagRemoved signal):
+  seq 233: tag removed after a committed write (seq 230 stop)

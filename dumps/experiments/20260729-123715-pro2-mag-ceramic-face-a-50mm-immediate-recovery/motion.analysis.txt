@@ -1,0 +1,100 @@
+MAGPROBE: E:\PicoSwitch2\dumps\experiments\20260729-123715-pro2-mag-ceramic-face-a-50mm-immediate-recovery\motion.raw.jsonl (motionpair)
+records=90 dropped=0 duration=667.477 ms | 0x1E=67 0x28=23
+combined cadence: 7.500 ms mean (133.338 Hz), 1.190..14.933 ms
+0x28 cadence: 28.979 ms mean, 14.951..37.517 ms
+0x28 forms: normal=23 escalation=0 other=0 status={'0x0D/0x00': 23}
+body G6/G7/G8 mean:  [+0.032457633, -0.060046065, +0.366943041]
+world-rotated G6/G7/G8 mean: [-0.044848510, +0.269199673, -0.254610212]
+G6/G7/G8 norm: 0.373238091 +/- 0.000226577 (0.372828902..0.373804118)
+wire integers: signed 22/22/20-bit, ranges [93176, -179115, 271722]..[99324, -176894, 272469]; all fit signed-int16=False
+if interpreted as a quaternion vector part: scalar=0.927735559 +/- 0.000091176, angle=43.8309 +/- 0.0280 deg (43.7804..43.9008)
+direction spread: body mean/max=0.0908/0.1711 deg, world mean/max=0.0918/0.1749 deg
+nearest 0x1E alignment: 7117.7 us mean absolute, 7510.0 us maximum
+orientation alignment: slerp=22 nearest=1 unavailable=0
+reference 0x1E accel: [+6174532.545058879, -45613726.946541764, +278604921.219927728]
+
+Unknown 0x28 lanes (payload-relative offsets):
+  p04 mask=0xFF unique=  7 range=  7..231 changed=0xE0
+  p05 mask=0xFF unique= 22 range=  1..254 changed=0xFF
+  p06 mask=0xFF unique=  2 range=241..242 changed=0x03
+  p07 mask=0xFF unique= 11 range=  5..245 changed=0xF0
+  p08 mask=0xFF unique= 23 range= 16..233 changed=0xFF
+  p09 mask=0xFF unique=  1 range=208..208 changed=0x00
+  p10 mask=0xFF unique= 18 range=  2..250 changed=0xF8
+  p11 mask=0xFF unique= 13 range=114..130 changed=0xFF
+  p12 mask=0xFF unique=  1 range= 36..36  changed=0x00
+  p13 mask=0xFF unique=  8 range=  1..253 changed=0xFC
+  p14 mask=0xFF unique= 15 range=109..133 changed=0xFF
+  p15 mask=0xFF unique=  1 range=  1..1   changed=0x00
+  p16 mask=0xFF unique= 17 range=  0..255 changed=0xFF
+  p17 mask=0xFF unique=  8 range= 68..75  changed=0x0F
+  p18 mask=0xFF unique=  3 range= 61..253 changed=0xC0
+  p19 mask=0xFF unique= 17 range=  0..224 changed=0xFF
+  p20 mask=0xFF unique=  4 range= 37..40  changed=0x0F
+  p21 mask=0xFF unique= 13 range=  4..244 changed=0xF0
+  p22 mask=0xFF unique= 10 range=  0..255 changed=0xFF
+  p23 mask=0xFF unique=  2 range=  0..255 changed=0xFF
+  p24 mask=0xFF unique= 19 range= 15..247 changed=0xFF
+  p25 mask=0xFF unique=  8 range=245..252 changed=0x0F
+  p26 mask=0xFF unique=  1 range=255..255 changed=0x00
+  p27 mask=0xFF unique= 19 range=  1..189 changed=0xFF
+  p28 mask=0xFF unique=  5 range=  0..255 changed=0xFF
+  p29 mask=0x0F unique=  2 range=  0..15  changed=0x0F
+  p32 mask=0x0C unique=  1 range=  0..0   changed=0x00
+  p35 mask=0x0C unique=  4 range=  0..12  changed=0x0C
+  p38 mask=0xFF unique=  4 range=  0..45  changed=0x3F
+  p39 mask=0xFF unique=  1 range=  1..1   changed=0x00
+
+Exploratory strongest unknown-byte correlations (ranking only; not semantic proof):
+  p08&0xFF -> q_z          r=+0.9999 unique=23
+  p08&0xFF -> time         r=-0.9997 unique=23
+  p08&0xFF -> q_x          r=+0.9993 unique=23
+  p11&0xFF -> q_w          r=+0.9978 unique=13
+  p08&0xFF -> q_y          r=+0.9955 unique=23
+  p08&0xFF -> q_w          r=-0.9895 unique=23
+  p11&0xFF -> time         r=+0.9882 unique=13
+  p11&0xFF -> q_z          r=-0.9869 unique=13
+  p11&0xFF -> q_x          r=-0.9812 unique=13
+  p11&0xFF -> q_y          r=-0.9780 unique=13
+  p20&0xFF -> ref_accel_z  r=+0.8097 unique=4
+  p14&0xFF -> mag_x        r=+0.7912 unique=15
+  p17&0xFF -> ref_accel_y  r=+0.7846 unique=8
+  p20&0xFF -> mag_z        r=+0.7804 unique=4
+  p14&0xFF -> ref_accel_x  r=+0.7791 unique=15
+  p14&0xFF -> world_mag_x  r=+0.7694 unique=15
+  p17&0xFF -> mag_y        r=+0.7602 unique=8
+  p20&0xFF -> world_mag_y  r=+0.7192 unique=4
+  p06&0xFF -> q_y          r=+0.6455 unique=2
+  p06&0xFF -> q_x          r=+0.6318 unique=2
+  p14&0xFF -> world_mag_z  r=-0.6169 unique=15
+  p06&0xFF -> q_z          r=+0.6102 unique=2
+  p06&0xFF -> time         r=-0.6049 unique=2
+  p20&0xFF -> world_mag_x  r=-0.5360 unique=4
+
+Exploratory strongest individual-bit correlations (ranking only; not semantic proof):
+  p08.b7 -> q_w          r=-0.8768 ones=13/23
+  p08.b7 -> q_y          r=+0.8765 ones=13/23
+  p08.b7 -> q_z          r=+0.8735 ones=13/23
+  p08.b7 -> q_x          r=+0.8719 ones=13/23
+  p08.b7 -> time         r=-0.8699 ones=13/23
+  p14.b5 -> ref_accel_x  r=-0.7638 ones=19/23
+  p14.b6 -> ref_accel_x  r=-0.7638 ones=19/23
+  p14.b7 -> ref_accel_x  r=+0.7638 ones=4/23
+  p17.b2 -> ref_accel_y  r=-0.7409 ones=7/23
+  p17.b3 -> ref_accel_y  r=+0.7409 ones=16/23
+  p05.b7 -> q_y          r=-0.6455 ones=3/23
+  p06.b0 -> q_y          r=-0.6455 ones=3/23
+  p06.b1 -> q_y          r=+0.6455 ones=20/23
+  p05.b7 -> q_x          r=-0.6318 ones=3/23
+  p06.b0 -> q_x          r=-0.6318 ones=3/23
+  p06.b1 -> q_x          r=+0.6318 ones=20/23
+  p13.b4 -> mag_y        r=-0.6152 ones=16/23
+  p05.b7 -> q_z          r=-0.6102 ones=3/23
+  p06.b0 -> q_z          r=-0.6102 ones=3/23
+  p06.b1 -> q_z          r=+0.6102 ones=20/23
+  p07.b5 -> mag_z        r=+0.6094 ones=15/23
+  p13.b4 -> ref_accel_y  r=-0.6076 ones=16/23
+  p05.b7 -> time         r=+0.6049 ones=3/23
+  p06.b0 -> time         r=+0.6049 ones=3/23
+
+Decoded CSV written to E:\PicoSwitch2\dumps\experiments\20260729-123715-pro2-mag-ceramic-face-a-50mm-immediate-recovery\motion.0x28.csv
