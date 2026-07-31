@@ -19,6 +19,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, TextIO
 
+# NFC layout lives in one module so the timeline, the differ, and any future
+# dissector cannot drift apart on field names.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ns2_nfc_semantics as nfc  # noqa: E402
+
 
 TRACE_KINDS = {
     "ep0_setup",
@@ -58,8 +63,7 @@ COMMAND_NAMES = {
 }
 
 SUBCOMMAND_NAMES = {
-    (0x01, 0x01): "nfc_start",
-    (0x01, 0x0C): "nfc_identity",
+    **{(0x01, sub): name for sub, name in nfc.NFC_SUBCOMMANDS.items()},
     (0x02, 0x01): "read_0x40",
     (0x02, 0x03): "erase_sector",
     (0x02, 0x04): "read",
@@ -259,6 +263,26 @@ def _version(data: bytes) -> str:
     return ".".join(str(value) for value in data)
 
 
+def _nfc_record_fields(record: dict[str, Any], subcommand: int,
+                       data: bytes) -> dict[str, Any]:
+    is_command = record["kind"] == "bulk_command"
+    if subcommand == 0x05 and not is_command:
+        return nfc.decode_status(data)
+    if subcommand == 0x06 and is_command:
+        return nfc.decode_read_descriptor(data)
+    if subcommand == 0x1E and is_command:
+        return nfc.decode_sector_descriptor(data)
+    if subcommand == 0x15 and is_command and len(data) >= 2:
+        return {"read_offset": int.from_bytes(data[0:2], "little")}
+    if subcommand == 0x15 and not is_command and len(data) >= 3:
+        return {"chunk_last": bool(data[0]),
+                "chunk_length": int.from_bytes(data[1:3], "little")}
+    if subcommand == 0x14 and is_command and len(data) >= 4:
+        return {"stage_offset": int.from_bytes(data[0:2], "little"),
+                "stage_declared": int.from_bytes(data[2:4], "little")}
+    return {"data": data.hex().upper()} if data else {}
+
+
 def _bulk_fields(record: dict[str, Any], strict: bool = False) -> dict[str, Any]:
     raw = payload(record)
     fields: dict[str, Any] = {}
@@ -281,7 +305,11 @@ def _bulk_fields(record: dict[str, Any], strict: bool = False) -> dict[str, Any]
         fields["ack"] = raw[4:8].hex().upper()
     data = raw[8:]
 
-    if command == 0x02 and subcommand in (0x01, 0x04, 0x05) and len(data) >= 8:
+    if command == 0x01:
+        # Per-record NFC detail. Multi-chunk transactions are only meaningful
+        # once reassembled, which is what the `nfc` operation does.
+        fields.update(_nfc_record_fields(record, subcommand, data))
+    elif command == 0x02 and subcommand in (0x01, 0x04, 0x05) and len(data) >= 8:
         fields["memory_length"] = data[0]
         fields["memory_address"] = f"0x{int.from_bytes(data[4:8], 'little'):08X}"
         if record["kind"] == "bulk_response" and len(data) > 8:
@@ -382,6 +410,9 @@ def describe_record(record: dict[str, Any], show_payload: bool = False) -> str:
             "memory_address", "memory_length", "controller_version", "controller_type",
             "bluetooth_version", "dsp_version", "feature_mask", "features", "feature_id",
             "player_led_mask", "input_report", "sample",
+            "state_name", "detail", "uid", "blocks", "ranges", "timeout_ms",
+            "read_offset", "chunk_last", "chunk_length",
+            "stage_offset", "stage_declared",
         ):
             if name in fields:
                 summary += f" {name}={fields[name]}"
@@ -516,6 +547,20 @@ def build_parser() -> argparse.ArgumentParser:
     diff.add_argument("right")
     diff.add_argument("--strict", action="store_true", help="include every captured payload byte")
     diff.add_argument("--show-equal", action="store_true", help="also print matching records")
+
+    nfc_decode = subparsers.add_parser(
+        "nfc", help="reassemble command 0x01 into transaction-level steps")
+    nfc_decode.add_argument("trace")
+
+    nfc_diff = subparsers.add_parser(
+        "nfc-diff",
+        help="report the first semantic divergence between two NFC timelines")
+    nfc_diff.add_argument("genuine")
+    nfc_diff.add_argument("virtual")
+    nfc_diff.add_argument(
+        "--ignore-identity", action="store_true",
+        help="normalize UID, signature, and timeout so two different figures "
+             "can be compared for shape rather than identity")
     return parser
 
 
@@ -525,6 +570,22 @@ def main(argv: list[str] | None = None) -> int:
         if args.operation == "decode":
             print(render_decode(load_trace(args.trace), args.show_payload))
             return 0
+        if args.operation == "nfc":
+            steps, warnings = nfc.build_timeline(load_trace(args.trace).records)
+            print(nfc.render_timeline(steps, warnings))
+            return 1 if warnings else 0
+        if args.operation == "nfc-diff":
+            genuine, genuine_warnings = nfc.build_timeline(
+                load_trace(args.genuine).records)
+            virtual, virtual_warnings = nfc.build_timeline(
+                load_trace(args.virtual).records)
+            report, identical = nfc.compare_timelines(
+                genuine, virtual, args.genuine, args.virtual,
+                args.ignore_identity)
+            print(report)
+            for warning in genuine_warnings + virtual_warnings:
+                print(f"WARNING {warning}")
+            return 0 if identical else 1
         left = load_trace(args.left)
         right = load_trace(args.right)
         result, identical = render_diff(
