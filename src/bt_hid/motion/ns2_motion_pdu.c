@@ -108,3 +108,127 @@ bool ns2_motion_pdu40_set_reference(
     pdu[37] = (uint8_t)(g8 >> 12);
     return true;
 }
+
+// ---------------------------------------------------------------------------
+// Length-0x28 catch-up packer
+// ---------------------------------------------------------------------------
+
+// Catch-up field map, in payload bit offsets (payload = pdu[4..39], 288 bits).
+// Mirrors ns2_motion_reference.decode_motion40 exactly; the fixture test holds
+// both implementations to the same genuine packets.
+#define MOTION40_PAYLOAD_BYTES 36u
+#define MOTION40_PAYLOAD_BITS  288u
+
+static const uint16_t k_catchup_accel_offset[3] = {68u, 158u, 245u};
+static const uint8_t  k_catchup_accel_width[3]  = {14u, 13u, 14u};
+static const uint16_t k_catchup_gyro_offset[2]  = {110u, 197u};
+static const uint8_t  k_catchup_gyro_width[2]   = {16u, 16u};
+static const uint16_t k_catchup_carrier_offset[3] = {2u, 24u, 45u};
+static const uint8_t  k_catchup_carrier_width[3]  = {22u, 21u, 23u};
+#define MOTION40_CATCHUP_TAIL_OFFSET 287u
+
+// LSB-first within each byte, little-endian across the payload. A bit at a
+// time is plainly correct and costs nothing: ~200 bits per packet at 50 Hz.
+static void payload_put(uint8_t *payload, unsigned offset, unsigned width,
+                        uint32_t value)
+{
+    for (unsigned i = 0; i < width; ++i) {
+        if (value & (1u << i)) {
+            const unsigned bit = offset + i;
+            payload[bit >> 3] |= (uint8_t)(1u << (bit & 7u));
+        }
+    }
+}
+
+static bool fits_signed(int32_t value, unsigned width)
+{
+    const int32_t limit = (int32_t)1 << (width - 1u);
+    return value >= -limit && value < limit;
+}
+
+static bool payload_put_vector(uint8_t *payload, unsigned offset,
+                               unsigned width, const int32_t vector[3])
+{
+    for (unsigned axis = 0; axis < 3u; ++axis) {
+        if (!fits_signed(vector[axis], width)) return false;
+    }
+    for (unsigned axis = 0; axis < 3u; ++axis) {
+        const uint32_t mask = (width >= 32u) ? 0xFFFFFFFFu
+                                             : ((1u << width) - 1u);
+        payload_put(payload, offset + axis * width, width,
+                    (uint32_t)vector[axis] & mask);
+    }
+    return true;
+}
+
+bool ns2_motion_pdu40_build_catchup(uint8_t pdu[NS2_MOTION_PDU40_LENGTH],
+                                    const ns2_motion40_catchup_t *fields)
+{
+    if (!pdu || !fields) return false;
+    if (fields->tick > 0x0FFFu) return false;
+    if (fields->elapsed_ticks > 0x0FFFu) return false;
+    // Elapsed selects the layout. Emitting catch-up fields under an elapsed
+    // count the decoder would read as a different layout produces a packet
+    // that decodes cleanly into the wrong fields, so refuse instead.
+    if (fields->elapsed_ticks < NS2_MOTION40_CATCHUP_MIN_ELAPSED) return false;
+    if (fields->packing_mode > 3u) return false;
+    if (fields->tail_bit > 1u) return false;
+
+    for (unsigned lane = 0; lane < 3u; ++lane) {
+        if (!fits_signed(fields->carrier[lane], k_catchup_carrier_width[lane]))
+            return false;
+    }
+    for (unsigned slot = 0; slot < 3u; ++slot) {
+        for (unsigned axis = 0; axis < 3u; ++axis) {
+            if (!fits_signed(fields->accel[slot][axis],
+                             k_catchup_accel_width[slot]))
+                return false;
+        }
+    }
+    for (unsigned slot = 0; slot < 2u; ++slot) {
+        for (unsigned axis = 0; axis < 3u; ++axis) {
+            if (!fits_signed(fields->gyro[slot][axis],
+                             k_catchup_gyro_width[slot]))
+                return false;
+        }
+    }
+
+    // Every field validated: build into a scratch payload so a late failure
+    // cannot leave the caller's buffer half-written.
+    uint8_t payload[MOTION40_PAYLOAD_BYTES];
+    for (unsigned i = 0; i < MOTION40_PAYLOAD_BYTES; ++i) payload[i] = 0u;
+
+    payload_put(payload, 0u, 2u, fields->packing_mode);
+    for (unsigned lane = 0; lane < 3u; ++lane) {
+        const unsigned width = k_catchup_carrier_width[lane];
+        const uint32_t mask = (1u << width) - 1u;
+        payload_put(payload, k_catchup_carrier_offset[lane], width,
+                    (uint32_t)fields->carrier[lane] & mask);
+    }
+    for (unsigned slot = 0; slot < 3u; ++slot) {
+        if (!payload_put_vector(payload, k_catchup_accel_offset[slot],
+                                k_catchup_accel_width[slot],
+                                fields->accel[slot]))
+            return false;
+    }
+    for (unsigned slot = 0; slot < 2u; ++slot) {
+        if (!payload_put_vector(payload, k_catchup_gyro_offset[slot],
+                                k_catchup_gyro_width[slot],
+                                fields->gyro[slot]))
+            return false;
+    }
+    payload_put(payload, MOTION40_CATCHUP_TAIL_OFFSET, 1u, fields->tail_bit);
+
+    const uint8_t status = fields->status ? fields->status
+                                          : NS2_MOTION40_STATUS_CATCHUP;
+    // Preamble: 12-bit tick, then the 12-bit elapsed count split across the
+    // high nibble of byte 1 and all of byte 2, then the layout/status byte.
+    pdu[0] = (uint8_t)(fields->tick & 0xFFu);
+    pdu[1] = (uint8_t)(((fields->tick >> 8) & 0x0Fu) |
+                       ((fields->elapsed_ticks & 0x0Fu) << 4));
+    pdu[2] = (uint8_t)((fields->elapsed_ticks >> 4) & 0xFFu);
+    pdu[3] = status;
+    for (unsigned i = 0; i < MOTION40_PAYLOAD_BYTES; ++i)
+        pdu[4u + i] = payload[i];
+    return true;
+}
