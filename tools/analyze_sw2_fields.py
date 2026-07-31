@@ -3,9 +3,10 @@
 
 Motivated by analyze_sw2_capture.py's finding that only offsets
 {0,1,2,10,11,13,14,31} ever vary across four captures (STILL + 3 fixed
-orientations), and that offsets 16-59 -- where switch2_input_viewer.py's
-"Common" (handle 0x000A) format places a 14-byte motion block at 0x2E:0x3C --
-are constant zero throughout.
+orientations), and that offsets 16-59 -- including the now-confirmed 18-byte
+report-0x05 raw IMU field at 0x2A:0x3C -- are constant zero throughout in
+those sessions. The controller had not been initialized into that raw-IMU
+profile; see ns2_motion_reference.py for the later positive reference PCAP.
 
 This script tests concrete hypotheses about offsets 10-15 (where the
 reference tool's format-0 places stick1/stick2) instead of assuming its

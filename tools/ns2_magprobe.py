@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Decode and compare native Switch 2 Pro Controller motion captures.
+"""Reproduce historical Switch 2 Pro Controller magnet-probe analyses.
 
 Input is the JSON-lines format produced by:
 
     ./tools/read_uart_diag.ps1 -Port COM11 \
         -Command 'motionpair capture' -OutputPath capture.jsonl
 
-The tool deliberately separates established fields from unexplained bits.  A
-normal length-40/status-0x0D PDU exposes a stable G6/G7/G8 vector, but the
-remaining 0x28-only lanes and status-0x0F escalation form are not assigned
-semantics here.
+Semantic warning (2026-07-29): G6/G7/G8 are legacy aliases whose source ranges
+cross packed gyro and acceleration samples.  Their vector/quaternion statistics
+remain useful only for reproducing the completed A/B/A campaign; they are not
+independent motion or magnetometer fields.  Its ``sub_index`` and
+``secondary_status`` output names are also historical: together they encode one
+12-bit elapsed count, and status 0x0F means catch-up layout rather than
+escalation. Use ns2_motion_reference.py for the current multi-sample decode and
+reference-PCAP audit.
 
 Only Python's standard library is required.
 """
@@ -1260,6 +1264,204 @@ def compare_summaries(baseline: dict[str, Any],
     return "\n".join(lines), result
 
 
+def compare_aba_summaries(
+    baseline: dict[str, Any],
+    stimulus: dict[str, Any],
+    recovery: dict[str, Any],
+    fraction: float = 0.5,
+) -> tuple[str, dict[str, Any]]:
+    """Compare an A/B/A experiment after subtracting linear session drift."""
+    if not 0.0 <= fraction <= 1.0:
+        raise MagprobeError("A/B/A interpolation fraction must be between 0 and 1")
+
+    def interpolate(
+        left: Iterable[float], right: Iterable[float]
+    ) -> tuple[float, ...]:
+        return tuple(a + (b - a) * fraction for a, b in zip(left, right))
+
+    expected_q = _q_slerp(
+        baseline["mean_quaternion_wxyz"],
+        recovery["mean_quaternion_wxyz"],
+        fraction,
+    )
+    q_residual = _quaternion_angle_degrees(
+        expected_q, stimulus["mean_quaternion_wxyz"]
+    )
+
+    expected_accel = interpolate(
+        baseline["reference_accel_mean"], recovery["reference_accel_mean"]
+    )
+    accel_residual_angle = _vector_angle_degrees(
+        expected_accel, stimulus["reference_accel_mean"]
+    )
+    expected_accel_norm = _vector_norm(expected_accel)
+    stimulus_accel_norm = _vector_norm(stimulus["reference_accel_mean"])
+    accel_norm_residual = (
+        (stimulus_accel_norm - expected_accel_norm)
+        / expected_accel_norm * 100.0
+        if expected_accel_norm else math.nan
+    )
+
+    expected_body = interpolate(
+        baseline["magnetic_body_mean"], recovery["magnetic_body_mean"]
+    )
+    body_residual = tuple(
+        observed - expected for observed, expected in zip(
+            stimulus["magnetic_body_mean"], expected_body
+        )
+    )
+    body_residual_angle = _vector_angle_degrees(
+        expected_body, stimulus["magnetic_body_mean"]
+    )
+    expected_world = interpolate(
+        baseline["magnetic_world_mean"], recovery["magnetic_world_mean"]
+    )
+    world_residual_angle = _vector_angle_degrees(
+        expected_world, stimulus["magnetic_world_mean"]
+    )
+
+    summaries = (baseline, stimulus, recovery)
+    unknown_maps = [{
+        (item["offset"], item["mask"]): item for item in summary["unknown_fields"]
+    } for summary in summaries]
+    unknown_residuals = []
+    for key in sorted(unknown_maps[0]):
+        left, observed, right = (mapping[key] for mapping in unknown_maps)
+        expected = left["mean"] + (
+            right["mean"] - left["mean"]
+        ) * fraction
+        residual = observed["mean"] - expected
+        pooled = math.sqrt(
+            (left["stdev"] ** 2 + observed["stdev"] ** 2
+             + right["stdev"] ** 2) / 3.0
+        )
+        effect = residual / pooled if pooled > 0 else (
+            math.inf if residual else 0.0
+        )
+        unknown_residuals.append({
+            "offset": key[0],
+            "mask": key[1],
+            "baseline_mean": left["mean"],
+            "stimulus_mean": observed["mean"],
+            "recovery_mean": right["mean"],
+            "expected_midpoint": expected,
+            "residual": residual,
+            "effect": effect,
+        })
+    unknown_residuals.sort(
+        key=lambda item: abs(item["effect"]) if math.isfinite(item["effect"])
+        else math.inf,
+        reverse=True,
+    )
+
+    bit_maps = [{
+        (item["offset"], item["bit"]): item for item in summary["unknown_bits"]
+    } for summary in summaries]
+    bit_residuals = []
+    for key in sorted(bit_maps[0]):
+        left, observed, right = (mapping[key] for mapping in bit_maps)
+        expected = left["one_fraction"] + (
+            right["one_fraction"] - left["one_fraction"]
+        ) * fraction
+        residual = observed["one_fraction"] - expected
+        bit_residuals.append({
+            "offset": key[0],
+            "bit": key[1],
+            "baseline_fraction": left["one_fraction"],
+            "stimulus_fraction": observed["one_fraction"],
+            "recovery_fraction": right["one_fraction"],
+            "expected_midpoint": expected,
+            "residual": residual,
+        })
+    bit_residuals.sort(key=lambda item: abs(item["residual"]), reverse=True)
+
+    pose_warning = (
+        (math.isfinite(accel_residual_angle) and accel_residual_angle > 2.0)
+        or (math.isfinite(accel_norm_residual)
+            and abs(accel_norm_residual) > 3.0)
+    )
+    fusion_warning = math.isfinite(q_residual) and q_residual > 1.0
+    result = {
+        "baseline": baseline["source"],
+        "stimulus": stimulus["source"],
+        "recovery": recovery["source"],
+        "interpolation_fraction": fraction,
+        "quaternion_midpoint_residual_degrees": q_residual,
+        "accel_midpoint_residual_degrees": accel_residual_angle,
+        "accel_norm_midpoint_residual_percent": accel_norm_residual,
+        "magnetic_body_midpoint_residual_degrees": body_residual_angle,
+        "magnetic_body_midpoint_residual": body_residual,
+        "magnetic_world_midpoint_residual_degrees": world_residual_angle,
+        "pose_warning": pose_warning,
+        "fusion_warning": fusion_warning,
+        "unknown_midpoint_residuals": unknown_residuals,
+        "unknown_bit_midpoint_residuals": bit_residuals,
+    }
+    lines = [
+        "MAGPROBE A/B/A DRIFT-ADJUSTED",
+        f"baseline: {baseline['source']}",
+        f"stimulus: {stimulus['source']}",
+        f"recovery: {recovery['source']}",
+        f"stimulus time fraction between A and A': {fraction:.6f}",
+        (
+            "quaternion midpoint residual: "
+            f"{q_residual:.4f} degrees"
+        ),
+        (
+            "accel midpoint residual: "
+            f"{accel_residual_angle:.4f} degrees, "
+            f"norm {accel_norm_residual:+.3f}%"
+        ),
+        (
+            "body G6/G7/G8 midpoint residual: "
+            f"{_format_vector(body_residual)}, "
+            f"direction {body_residual_angle:.4f} degrees"
+        ),
+        (
+            "world G6/G7/G8 midpoint residual: "
+            f"{world_residual_angle:.4f} degrees"
+        ),
+        (
+            "pose gate: WARNING - acceleration indicates physical movement"
+            if pose_warning else
+            "pose gate: PASS - acceleration stayed within conservative limits"
+        ),
+        (
+            "fusion gate: WARNING - native quaternion is not linear across A/B/A"
+            if fusion_warning else
+            "fusion gate: PASS - native quaternion stayed near the A/A midpoint"
+        ),
+        "",
+        "Largest drift-adjusted unexplained-lane residuals:",
+    ]
+    for item in unknown_residuals[:12]:
+        effect_text = (
+            f"{item['effect']:+.3f} sigma"
+            if math.isfinite(item["effect"]) else
+            ("+inf" if item["residual"] > 0 else "-inf")
+        )
+        lines.append(
+            f"  p{item['offset']:02d}&0x{item['mask']:02X}: "
+            f"A={item['baseline_mean']:.3f}, "
+            f"B={item['stimulus_mean']:.3f}, "
+            f"A'={item['recovery_mean']:.3f}, "
+            f"residual={item['residual']:+.4f}, effect={effect_text}"
+        )
+    lines.extend([
+        "",
+        "Largest drift-adjusted unexplained-bit residuals:",
+    ])
+    for item in bit_residuals[:12]:
+        lines.append(
+            f"  p{item['offset']:02d}.b{item['bit']}: "
+            f"A={item['baseline_fraction']:.3f}, "
+            f"B={item['stimulus_fraction']:.3f}, "
+            f"A'={item['recovery_fraction']:.3f}, "
+            f"residual={item['residual']:+.3f}"
+        )
+    return "\n".join(lines), result
+
+
 def summarize_corpus(captures: list[MotionCapture]) -> dict[str, Any]:
     if not captures:
         raise MagprobeError("corpus requires at least one capture")
@@ -1352,10 +1554,9 @@ def summarize_corpus(captures: list[MotionCapture]) -> dict[str, Any]:
                 norm <= 1.0 for norm in norms
             ),
             "note": (
-                "This rejects direct signed-int16 sensor samples on the 0x28 wire. "
-                "It does not identify or exclude any physical sensor because controller "
-                "firmware may pre-process its output. G6/G7/G8 remain an encoded/fused "
-                "representation until a semantic relation is independently validated."
+                "Legacy metric only: the G6/G7/G8 source ranges cross packed catch-up "
+                "gyro and acceleration samples. Their large signed aliases and implied "
+                "quaternion do not represent independent wire fields."
             ),
         },
     }
@@ -1684,7 +1885,10 @@ def _json_safe(value: Any) -> Any:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Decode and compare native Pro Controller 2 0x28 motion PDUs."
+        description=(
+            "Reproduce legacy Pro Controller 2 magnet-probe statistics; "
+            "use ns2_motion_reference.py for current 0x28 field semantics."
+        )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -1703,6 +1907,21 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("baseline")
     compare.add_argument("stimulus")
     compare.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+
+    aba = subparsers.add_parser(
+        "aba",
+        help="compare baseline/stimulus/recovery after subtracting linear drift",
+    )
+    aba.add_argument("baseline")
+    aba.add_argument("stimulus")
+    aba.add_argument("recovery")
+    aba.add_argument(
+        "--fraction",
+        type=float,
+        default=0.5,
+        help="stimulus time fraction between baseline=0 and recovery=1",
+    )
+    aba.add_argument("--json", action="store_true", help="emit machine-readable JSON")
 
     corpus = subparsers.add_parser(
         "corpus",
@@ -1787,6 +2006,28 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(rendered)
             return 1 if comparison["movement_warning"] else 0
+
+        if args.command == "aba":
+            baseline = summarize(load_capture(args.baseline))
+            stimulus = summarize(load_capture(args.stimulus))
+            recovery = summarize(load_capture(args.recovery))
+            if not all(
+                summary["normal_28"]
+                for summary in (baseline, stimulus, recovery)
+            ):
+                raise MagprobeError(
+                    "baseline, stimulus, and recovery each need a normal 0x28 PDU"
+                )
+            rendered, comparison = compare_aba_summaries(
+                baseline, stimulus, recovery, args.fraction
+            )
+            if args.json:
+                print(json.dumps(_json_safe(comparison), indent=2, sort_keys=True))
+            else:
+                print(rendered)
+            return 1 if (
+                comparison["pose_warning"] or comparison["fusion_warning"]
+            ) else 0
 
         raise MagprobeError(f"unsupported command: {args.command}")
     except (MagprobeError, OSError) as exc:
