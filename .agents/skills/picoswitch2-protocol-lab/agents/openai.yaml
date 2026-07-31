@@ -1,0 +1,4 @@
+interface:
+  display_name: "PicoSwitch2 Protocol Lab"
+  short_description: "Run evidence-first controller protocol experiments"
+  default_prompt: "Use $picoswitch2-protocol-lab to design and capture one attributable PicoSwitch2 protocol experiment."

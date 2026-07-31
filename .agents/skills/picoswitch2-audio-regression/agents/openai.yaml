@@ -1,0 +1,4 @@
+interface:
+  display_name: "PicoSwitch2 Audio Regression"
+  short_description: "Protect validated audio during codec research"
+  default_prompt: "Use $picoswitch2-audio-regression to measure a PicoSwitch2 audio change without disturbing playback."

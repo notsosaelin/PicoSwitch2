@@ -1,0 +1,4 @@
+interface:
+  display_name: "PicoSwitch2 Firmware Tap"
+  short_description: "Validate capture-only controller update research"
+  default_prompt: "Use $picoswitch2-firmware-tap to analyze a Switch 2 controller firmware-update capture safely."

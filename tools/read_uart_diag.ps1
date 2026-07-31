@@ -12,7 +12,11 @@ param(
     [ValidateRange(250, 30000)]
     [int]$TimeoutMs = 5000,
     [switch]$NoAcknowledge,
-    [switch]$List
+    [switch]$List,
+    # Print the port this script would select, then exit. Lets nfc_lab.ps1 and
+    # any other orchestrator record the port without a second copy of the
+    # adapter-selection heuristic.
+    [switch]$ReportPort
 )
 
 $ErrorActionPreference = 'Stop'
@@ -98,10 +102,14 @@ if (-not $Port) {
         $_.PnpId -match 'VID_(0403|10C4|1A86|067B)' -or
         $_.Name -match 'FTDI|FT232|CP210|Silicon Labs|CH340|CH341|PL2303|Prolific|USB Serial'
     })
+    # A motherboard legacy port (ACPI\PNP0501) is never the USB-TTL bridge.
+    # Excluding it stops a single-legacy-port machine from "auto-discovering"
+    # a port that cannot answer, which reads as a dead board.
+    $candidates = @($devices | Where-Object { $_.PnpId -notmatch 'ACPI\\PNP050[01]' })
     if ($usbUart.Count -eq 1) {
         $Port = $usbUart[0].Port
-    } elseif ($devices.Count -eq 1) {
-        $Port = $devices[0].Port
+    } elseif ($candidates.Count -eq 1) {
+        $Port = $candidates[0].Port
     } else {
         $summary = if ($devices.Count) {
             ($devices | ForEach-Object { "$($_.Port) ($($_.Name))" }) -join ', '
@@ -113,6 +121,15 @@ if (-not $Port) {
 }
 
 $Port = $Port.ToUpperInvariant()
+if ($ReportPort) {
+    $selected = $devices | Where-Object { $_.Port -eq $Port } | Select-Object -First 1
+    Write-Output ([pscustomobject]@{
+        port = $Port
+        name = if ($selected) { $selected.Name } else { '' }
+        pnpId = if ($selected) { $selected.PnpId } else { '' }
+    } | ConvertTo-Json -Compress)
+    exit 0
+}
 $serial = [System.IO.Ports.SerialPort]::new(
     $Port, 115200, [System.IO.Ports.Parity]::None, 8,
     [System.IO.Ports.StopBits]::One)
@@ -406,7 +423,10 @@ try {
         } | ConvertTo-Json -Compress
         $lines.Add($end)
         Write-DiagnosticLines -Lines $lines.ToArray()
-    } elseif ($Command -in @('motionpair dump', 'motionpair capture')) {
+    } elseif ($Command -in @(
+            'motionpair dump',
+            'motionpair capture',
+            'motionpair trigger capture')) {
         # Stop and drain one time-aligned genuine-Pro2/DualSense motion corpus.
         # Each native PDU is paired on-device with the latest DS5 sample using
         # the Pico's clock, avoiding UART timing as part of the measurement.
@@ -421,6 +441,35 @@ try {
                 throw "Could not start paired-motion capture: $startLine"
             }
             Start-Sleep -Milliseconds $CaptureMs
+        } elseif ($Command -eq 'motionpair trigger capture') {
+            $serial.Write("motionpair trigger`n")
+            $startLine = $serial.ReadLine().Trim()
+            $start = $startLine | ConvertFrom-Json
+            if ($start.motionpair -ne 'trigger_armed' -or
+                -not $start.enabled -or -not $start.chart.armed) {
+                throw "Could not arm chart-transition capture: $startLine"
+            }
+
+            $deadline = [System.Diagnostics.Stopwatch]::StartNew()
+            do {
+                Start-Sleep -Milliseconds 50
+                $serial.Write("motionpair status`n")
+                $statusLine = $serial.ReadLine().Trim()
+                $status = $statusLine | ConvertFrom-Json
+                if ($status.motionpair -ne 'status' -or
+                    $status.PSObject.Properties.Name -notcontains 'chart') {
+                    throw "Invalid chart-transition status: $statusLine"
+                }
+                if ($status.chart.complete) { break }
+            } while ($deadline.ElapsedMilliseconds -lt $TimeoutMs)
+
+            if (-not $status.chart.complete) {
+                $serial.Write("motionpair stop`n")
+                $null = $serial.ReadLine()
+                throw (
+                    "Chart transition did not complete within ${TimeoutMs} ms; " +
+                    "last status: $statusLine")
+            }
         }
         $serial.Write("motionpair dump`n")
         $manifestLine = $serial.ReadLine().Trim()
@@ -462,6 +511,7 @@ try {
             motionpair = 'end'
             records = $lines.Count
             dropped = [uint64]$manifest.dropped
+            chart = $manifest.chart
         } | ConvertTo-Json -Compress
         $lines.Add($end)
         Write-DiagnosticLines -Lines $lines.ToArray()
