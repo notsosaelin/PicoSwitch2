@@ -4,6 +4,7 @@
 import io
 import json
 import math
+import copy
 import unittest
 
 import ns2_magprobe
@@ -187,6 +188,47 @@ class MagprobeTests(unittest.TestCase):
         _, result = ns2_magprobe.compare_summaries(baseline, stimulus)
         self.assertTrue(result["movement_warning"])
         self.assertGreater(result["quaternion_angle_degrees"], 1.0)
+
+    def test_aba_comparison_subtracts_linear_drift(self):
+        baseline = ns2_magprobe.summarize(ns2_magprobe.read_capture(
+            capture_stream([record(100, PDU30), record(7600, PDU40)]),
+            "baseline",
+        ))
+        stimulus = copy.deepcopy(baseline)
+        recovery = copy.deepcopy(baseline)
+        stimulus["source"] = "stimulus"
+        recovery["source"] = "recovery"
+
+        baseline["magnetic_body_mean"] = (0.0, 0.0, 1.0)
+        stimulus["magnetic_body_mean"] = (0.1, 0.0, 1.0)
+        recovery["magnetic_body_mean"] = (0.0, 0.0, 1.0)
+        target_key = (4, 0xFF)
+        for summary, mean in (
+            (baseline, 10.0),
+            (stimulus, 30.0),
+            (recovery, 14.0),
+        ):
+            item = next(
+                field for field in summary["unknown_fields"]
+                if (field["offset"], field["mask"]) == target_key
+            )
+            item["mean"] = mean
+            item["stdev"] = 2.0
+
+        _, result = ns2_magprobe.compare_aba_summaries(
+            baseline, stimulus, recovery
+        )
+        self.assertGreater(
+            result["magnetic_body_midpoint_residual_degrees"], 5.0
+        )
+        target = next(
+            item for item in result["unknown_midpoint_residuals"]
+            if (item["offset"], item["mask"]) == target_key
+        )
+        self.assertAlmostEqual(target["expected_midpoint"], 12.0)
+        self.assertAlmostEqual(target["residual"], 18.0)
+        self.assertAlmostEqual(target["effect"], 9.0)
+        self.assertFalse(result["pose_warning"])
 
     def test_reads_blecap_and_corpus_rejects_raw_int16_wire_format(self):
         capture = ns2_magprobe.read_ble_capture(
