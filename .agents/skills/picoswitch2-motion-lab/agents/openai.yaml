@@ -1,0 +1,4 @@
+interface:
+  display_name: "PicoSwitch2 Motion Lab"
+  short_description: "Capture and analyze Switch 2 motion evidence"
+  default_prompt: "Use $picoswitch2-motion-lab to run a controlled native-motion or magnet experiment."
