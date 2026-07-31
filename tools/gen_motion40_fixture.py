@@ -43,6 +43,26 @@ def captures():
     yield from sorted((DUMPS / "motion").rglob("*.jsonl"))
 
 
+def pdus_any(path, want_length):
+    """Every PDU of one length in a capture, in order."""
+    try:
+        notifications, _ = R.read_motionpair_jsonl(path)
+    except Exception:
+        try:
+            handles, _ = R.read_blecap_jsonl(path)
+            notifications = max(handles.values(), key=len) if handles else []
+        except Exception:
+            return
+    for notification in notifications:
+        report = notification.value
+        if len(report) <= 0x0E:
+            continue
+        length = report[0x0E]
+        end = 0x0F + length
+        if length == want_length and len(report) >= end:
+            yield report[0x0F:end]
+
+
 def pdus(path):
     try:
         notifications, _ = R.read_motionpair_jsonl(path)
@@ -191,6 +211,57 @@ def main() -> int:
             f"    {{{fields.tick}, {fields.elapsed_ticks}, 0x0F, 3, "
             f"{fields.tail_value}, {{{carrier}}}, {{{accel}}}, {{{gyro}}}, "
             f"{{{data}}}}},")
+
+    # The 0x28 prefix is a modular slice of the 0x1E carrier, not a copy: lane
+    # 2 is centred half a window away and carries an extra bit, and the shift
+    # is a floor rather than a truncation. Every one of those is somewhere a
+    # C reimplementation can silently diverge -- especially the floor, since C
+    # leaves right-shift of a negative value implementation-defined.
+    #
+    # Vectors are genuine carrier lanes taken from real 0x1E captures, plus
+    # deliberate extremes, with expected output from ns2_motion_carrier.
+    import ns2_motion_carrier as C
+
+    carriers = []
+    for path in captures():
+        for pdu in pdus_any(path, 0x1E):
+            orientation = R.decode_motion30_orientation(pdu)
+            carriers.append(tuple(orientation.carrier_raw))
+            if len(carriers) >= 24:
+                break
+        if len(carriers) >= 24:
+            break
+    carriers += [
+        (0, 0, 0),
+        ((1 << 26) - 1, (1 << 25) - 1, (1 << 24) - 1),
+        (1 << 25, 1 << 24, 1 << 23),
+        ((1 << 25) - 1, (1 << 24) - 1, (1 << 23) - 1),
+        (1, 1, 1),
+        ((1 << 25) + 1, (1 << 24) + 1, (1 << 23) + 1),
+    ]
+
+    lines += [
+        "};",
+        "",
+        "// Carrier -> catch-up prefix slice. Expected values from",
+        "// tools/ns2_motion_carrier.encode_prefix. Includes genuine carriers and",
+        "// the field extremes, where a truncating shift diverges from a floor.",
+        "",
+        "typedef struct {",
+        "    uint32_t carrier[3];",
+        "    int32_t  prefix[3];",
+        "} ns2_motion40_prefix_vector_t;",
+        "",
+        f"#define NS2_MOTION40_PREFIX_VECTOR_COUNT {len(carriers)}u",
+        "",
+        "static const ns2_motion40_prefix_vector_t",
+        "    ns2_motion40_prefix_vectors[NS2_MOTION40_PREFIX_VECTOR_COUNT] = {",
+    ]
+    for raw in carriers:
+        wire = C.encode_prefix(raw, False)
+        lines.append(
+            "    {{" + ", ".join(f"{v}u" for v in raw) + "}, {"
+            + ", ".join(str(v) for v in wire) + "}},")
 
     lines += ["};", "", "#endif  // NS2_MOTION40_CATCHUP_FIXTURE_H", ""]
 

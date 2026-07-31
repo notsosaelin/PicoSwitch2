@@ -1251,6 +1251,33 @@ static void handle_command(void) {
     } else if (strcmp(rx_line, "ds5motion off") == 0) {
         ns2_dbg_ds5_motion_set_enabled(false);
         queue_text("{\"ds5motion\":\"disabled\",\"enabled\":false}");
+    } else if (strcmp(rx_line, "ds5motion pdu40 on") == 0) {
+        // Replaces the motion block with length-0x28 catch-up packets. The
+        // 0x1E carrier is NOT sent alongside: only the 0x28-only emission mode
+        // has a resolved elapsed relation.
+        ns2_ds5_motion40_set_enabled(true);
+        queue_text("{\"ds5motion\":\"pdu40\",\"enabled\":true,"
+                   "\"mode\":\"0x28-only\",\"layout\":\"catchup\"}");
+    } else if (strcmp(rx_line, "ds5motion pdu40 off") == 0) {
+        ns2_ds5_motion40_set_enabled(false);
+        queue_text("{\"ds5motion\":\"pdu40\",\"enabled\":false,"
+                   "\"mode\":\"0x1E\"}");
+    } else if (strcmp(rx_line, "ds5motion pdu40") == 0 ||
+               strcmp(rx_line, "ds5motion pdu40 status") == 0) {
+        uint32_t emitted = 0, starved = 0, sat_a = 0, sat_g = 0;
+        ns2_ds5_motion40_get_counters(&emitted, &starved, &sat_a, &sat_g);
+        // starved > 0 means the emit interval outran the source sample rate;
+        // saturation means the scaling is wrong or the motion exceeded the
+        // wire range (~2 g, ~499 dps). Both distinguish "well-formed but
+        // wrong" from "working".
+        snprintf(trace_format_response, sizeof(trace_format_response),
+                 "{\"ds5motion\":\"pdu40\",\"enabled\":%s,\"emitted\":%lu,"
+                 "\"starved\":%lu,\"saturated_accel\":%lu,"
+                 "\"saturated_gyro\":%lu}",
+                 ns2_ds5_motion40_get_enabled() ? "true" : "false",
+                 (unsigned long)emitted, (unsigned long)starved,
+                 (unsigned long)sat_a, (unsigned long)sat_g);
+        queue_text(trace_format_response);
     } else if (strcmp(rx_line, "ds5motion probe off") == 0) {
         ns2_dbg_ds5_motion_probe_off();
         queue_text("{\"ds5motion\":\"probe\",\"active\":false}");
