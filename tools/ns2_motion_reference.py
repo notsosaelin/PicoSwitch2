@@ -216,6 +216,51 @@ def decode_report05_raw_imu(report: bytes) -> RawImuSample:
     )
 
 
+# Wire values are NOT in a single unit. Each layout packs its slots at a
+# different fixed-point scale, and a slot's width alone does not tell you which:
+# the 13-bit slots are half-resolution, the 22-bit high-rate slots carry eight
+# fractional bits, and the catch-up gyros sit at four times the ordinary scale.
+# Multiplying by these recovers ordinary ICM counts (4096/g, 16.4/dps).
+#
+# Verified across the full corpus: all eight acceleration slots in all three
+# layouts agree on 1.051-1.052 g once normalized, despite raw medians spanning
+# 2,153 to 1,102,983 -- a 512x range collapsing to 0.1% agreement. Gyro noise
+# floors likewise agree at 0.15-0.19 dps.
+#
+# Anything comparing samples across layouts, or generating them, must go through
+# here. Pooling raw slots produces magnitudes off by up to 256x that still look
+# superficially plausible.
+IMU_COUNTS_PER_G = 4096.0
+IMU_COUNTS_PER_DPS = 16.4
+
+WIRE_TO_COUNTS = {
+    "high_rate": {"accel": (1.0 / 256.0, 1.0 / 256.0), "gyro": (1.0 / 256.0,)},
+    "normal": {"accel": (1.0, 2.0, 1.0), "gyro": (2.0, 1.0)},
+    "catchup": {"accel": (1.0, 2.0, 1.0), "gyro": (0.25, 0.25)},
+}
+
+
+def wire_to_counts(layout: str, kind: str, slot: int) -> float:
+    """Factor converting one slot's wire value to ordinary ICM counts."""
+
+    try:
+        return WIRE_TO_COUNTS[layout][kind][slot]
+    except (KeyError, IndexError) as error:
+        raise MotionReferenceError(
+            f"no scale for {layout} {kind} slot {slot}") from error
+
+
+def normalized_vectors(sample: "Motion40Sample", kind: str) -> tuple:
+    """A sample's acceleration or gyro slots in ordinary ICM counts."""
+
+    vectors = sample.accel if kind == "accel" else sample.gyro
+    return tuple(
+        tuple(component * wire_to_counts(sample.layout, kind, slot)
+              for component in vector)
+        for slot, vector in enumerate(vectors)
+    )
+
+
 def decode_motion40(pdu: bytes, previous_tick: int | None) -> Motion40Sample:
     """Decode a 40-byte native PDU using the reference multi-sample map.
 

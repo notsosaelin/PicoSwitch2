@@ -131,6 +131,78 @@ capture also admits a transitional explanation.
 claim a condition it does not model. The test counts these rather than folding
 them into a layout, and fails if they stop being rare.
 
+## What byte-exactness did not catch
+
+Byte-exactness proves encode and decode agree on the bits. It cannot prove they
+agree with physics. Building a generator on top of the byte-exact map exposed
+two defects that every round-trip test passes straight through.
+
+### Defect: wire values are not a single unit
+
+Each layout packs its slots at a different fixed-point scale, and **slot width
+does not determine it**. A generator supplying ordinary ICM counts to the
+high-rate layout is wrong by 256x; the packet is well-formed, decodes cleanly,
+and reads back as 1/256 g.
+
+`ns2_motion_reference.WIRE_TO_COUNTS` is now the single authority:
+
+| Layout | accel slots | gyro slots |
+|---|---|---|
+| high-rate | ×1/256, ×1/256 | ×1/256 |
+| normal | ×1, ×2, ×1 | ×2, ×1 |
+| catch-up | ×1, ×2, ×1 | ×1/4, ×1/4 |
+
+Verified across the corpus: all **eight** acceleration slots in all three
+layouts agree on **1.051–1.052 g** once normalized, despite raw medians
+spanning 2,153 to 1,102,983 — a 512× range collapsing to 0.1% agreement. Gyro
+noise floors likewise agree at 0.15–0.19 dps.
+
+### Defect: comparing unnormalized magnitudes
+
+Pooling raw slots describes the layout mix, not the motion. The first synthetic
+comparison reported a genuine acceleration median of 1,101,581 counts; the real
+figure is 1.05 g.
+
+## Chart hysteresis, measured against hardware
+
+Replaying each genuine carrier's own orientation through `select_chart`, and
+deciding from the **genuine** previous chart so that one divergence cannot
+cascade: **2,059 / 2,070 decisions agree (99.47%)**.
+
+Read honestly, holds outnumber swaps ~180:1, so that figure is carried by
+correctly holding. We reproduce **1 of the hardware's 11 swaps**. All 11
+disagreements share one shape: the hardware swapped while the held chart was
+still representable, at margins 0.667–0.994 of the limit.
+
+### ❌ Refuted: one-sample lookahead
+
+Only **1 of 11** genuine swaps has a next-sample margin reaching the limit —
+and it is the one already over at the current sample. Lookahead predicts
+nothing the current sample does not.
+
+### ❌ Refuted: an earlier fixed threshold
+
+Genuine *holds* reach **0.9998** of the limit, so the classes are not
+separable by margin. A threshold sweep:
+
+| Threshold | Genuine swaps missed | Spurious swaps |
+|---|---:|---:|
+| 0.90 | 3 | 600 |
+| 0.95 | 6 | 151 |
+| 0.99 | 8 | 19 |
+| 1.00 | 10 | **0** |
+
+Swap timing is not a function of the carrier alone.
+
+### Why this does not block a synthesizer
+
+Both charts at a swap carry the same three values, so chart choice is a
+**lossless** representational choice — a decoder recovers the same orientation
+either way. The property that must hold exactly is that no lane is ever asked
+to leave the field, and swapping at the limit guarantees it by construction
+with zero spurious swaps. `test_we_never_ask_a_lane_to_leave_the_field` pins
+that down; the 99.47% figure is context, not the bar.
+
 ## Consequence for a synthesizer
 
 The carrier, chart hysteresis, saturation trigger, prefix slice, epoch, all three
@@ -145,6 +217,26 @@ changes what a decoder can recover.
 ## Reproduce
 
 ```powershell
-python tools\test_ns2_motion_packet.py    # 10 tests, byte-exact corpus replay
-python tools\test_ns2_motion_carrier.py   # 20 tests, codec + firmware parity
+python tools\test_ns2_motion_packet.py    # 14 tests: byte-exact replay, chart
+                                          # hysteresis, scale normalization
+python tools\test_ns2_motion_carrier.py   # 20 tests: codec + firmware parity
+
+# Structural comparison against an input-matched genuine stream.
+python tools\ns2_motion_synth.py dumps\motion\2026-07-24\ds5-pro2-paired-pitch-2026-07-22.jsonl
 ```
+
+The paired captures carry both sides at the same instant — the genuine `native`
+PDU and the DualSense `cal_g`/`cal_a` that produced motion at that moment — so
+the comparison is input-matched rather than two unrelated sessions.
+
+Current result on `ds5-pro2-paired-pitch`: acceleration 1.054 g genuine against
+1.009 g synthetic, gyro 9.99 dps against 5.83 dps. Both physical quantities are
+now the right size and the right unit.
+
+Note the report's three sections. Only **PHYSICAL** is a pass criterion.
+Absolute lane occupancy differs by design — our orientation is gyro-integrated
+from identity exactly as the shipping `0x1E` path is (`ns2_ds5_motion.c`),
+while the genuine controller carries gravity-referenced attitude, and the
+console demonstrably accepts the former. Layout mix in this harness follows the
+capture's record spacing, not the adapter's emit timing, so it is
+informational.

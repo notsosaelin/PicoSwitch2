@@ -79,6 +79,28 @@ class PacketError(ValueError):
     """A field does not fit its slot, or a required sample is missing."""
 
 
+def counts_to_wire(layout: str, kind: str, slot: int,
+                   vector: Sequence[float]) -> tuple[int, int, int]:
+    """Convert one IMU sample from ordinary ICM counts to this slot's wire form.
+
+    Each layout packs its slots at a different fixed-point scale, and slot width
+    does not determine it -- see ``ns2_motion_reference.WIRE_TO_COUNTS`` for the
+    measured factors and their corpus-wide verification.
+
+    A generator that skips this emits values off by up to 256x. They pack
+    without error, decode without error, and are wrong: high-rate acceleration
+    supplied in ordinary counts reads back as 1/256 g. Nothing downstream can
+    detect that, which is why the conversion lives here rather than in callers.
+    """
+
+    import ns2_motion_reference as _reference
+
+    if len(vector) != 3:
+        raise PacketError("IMU vectors have three axes")
+    factor = _reference.wire_to_counts(layout, kind, slot)
+    return tuple(int(round(component / factor)) for component in vector)
+
+
 def layout_for_elapsed(elapsed_ticks: int) -> str:
     if elapsed_ticks < 0 or elapsed_ticks > 0xFFF:
         raise PacketError(f"elapsed ticks out of range: {elapsed_ticks}")
