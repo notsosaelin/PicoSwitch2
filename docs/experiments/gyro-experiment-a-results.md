@@ -3,7 +3,7 @@
 **Status:** ✅ complete — **root cause found and fixed** (pending hardware re-validation).
 **Date:** 2026-07-10. **Parent:** [gyro-experiment-a-plan.md](gyro-experiment-a-plan.md).
 **Captures:** `E:\PicoSwitch2\usbpcaptures\{genuine_procon_2,picoswitch_2_dongle}.pcapng`
-(USBPcap, ~10–11 MB each). Harness: `scratchpad/usb_a_{analyze,r05diff,confirm}.py` (tshark).
+(USBPcap, ~10–11 MB each). Harness: session-local analysis scripts, not retained in the repository.
 
 ---
 

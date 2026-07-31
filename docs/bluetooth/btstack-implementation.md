@@ -423,7 +423,7 @@ is correctly, unavoidably `0` at the moment the driver is first selected** — t
 patch at the parsing layer, it's an inherent ordering constraint this project shares with upstream.
 
 **Reordering DIS earlier was considered and rejected.** It would directly reintroduce the
-notification-starvation regression the current ordering was built to avoid — DATA.md's own caution
+notification-starvation regression the current ordering was built to avoid — the caution recorded at the time
 against "another name exception" applies equally to "just move DIS earlier" as a shortcut; the fix
 has to be on the *consuming* side (re-evaluation), not by fighting the GATT contention constraint.
 
@@ -487,7 +487,7 @@ known concrete Classic cases.
 ### `vendor_source_id` is parsed correctly but currently discarded — flagged, not fixed
 
 The PnP ID characteristic's `vendor_source_id` byte (1 = Bluetooth SIG-assigned company ID, 2 = USB
-Implementer's Forum-assigned VID — genuinely different ID spaces, per DATA.md's explicit warning not
+Implementer's Forum-assigned VID — genuinely different ID spaces, noting these must not
 to confuse them) is correctly extracted and logged (`printf` in `dis_client_handler`) but never
 stored or checked anywhere downstream — every driver's `match()` treats `vendor_id` as if it were
 always a USB VID regardless of source. **No concrete failure observed for this** — every currently
@@ -501,7 +501,7 @@ that reports unusual identity data.
 
 ### Evidence-ranked provenance (documented, not yet enforced as a runtime priority order)
 
-Per DATA.md's requested ranking, strongest to weakest, as actually observed in this codebase today:
+Ranked strongest to weakest, as actually observed in this codebase today:
 
 1. **BLE manufacturer-specific advertisement data** (Switch 2 only) — available pre-connection, from
    the raw advertising report itself; company ID `0x0553` (Nintendo) checked in
@@ -536,7 +536,7 @@ logic proves too fragile to keep extending case-by-case.
 
 ### Stable per-device profile key (design, not implemented — no consumer exists yet)
 
-DATA.md asks for a stable identity key design to support future per-device profiles and
+A stable identity key design is required to support future per-device profiles and
 controller-specific quirks. **Important baseline fact**: this project has no per-device mapping
 storage. Config v10 stores output-personality appearance colors and the learned wake identity;
 button routing uses one compiled-in locked base map, with user remapping left to the Switch.
@@ -545,7 +545,7 @@ Today's controller-specific behavior is resolved into a compiled-in
 configuration, so there's nothing to migrate yet. This design is infrastructure for *when* a
 per-device mapping feature is actually built, not a retrofit of an existing one.
 
-**Two separate identities, composed, per DATA.md's explicit instruction not to conflate them:**
+**Two separate identities, composed, kept deliberately unconflated:**
 
 1. **Model identity** — "what quirks/mappings apply to this kind of controller," shared across
    every physical unit of that model. Derived from the strongest available evidence, same
@@ -564,7 +564,7 @@ per-device mapping feature is actually built, not a retrofit of an existing one.
    silently**: a resolved/public BLE address is usable the same way; a device only ever seen via a
    rotating resolvable-private-address with no IRK-based resolution available at this layer cannot
    be reliably distinguished from another unit of the same model across sessions — this is a real
-   hardware/protocol limitation (per DATA.md: "randomized BLE addresses" is explicitly one of the
+   hardware/protocol limitation ("randomized BLE addresses" is explicitly one of the
    cases this design must handle), not a bug to paper over with a false sense of precision. In that
    degraded case, physical identity falls back to `session:{conn_index}` — stable only for the
    current connection, explicitly not persisted as if it were a real per-unit key.
@@ -574,7 +574,7 @@ containing a `name:` model component or a `session:` physical component as **bes
 correctly shared/applied this session, but not guaranteed to re-match the same physical unit (or
 even the same model, for a `name:` match against an inconsistent advertised name) on a future
 reconnect. This is an explicit, documented property of the design, not an edge case to special-case
-away — DATA.md's own instruction is to document collision/degradation behavior, not eliminate it
+away — the original brief's own instruction is to document collision/degradation behavior, not eliminate it
 where the underlying Bluetooth identity data genuinely doesn't support better.
 
 **Not implemented this pass**: no code currently computes or stores this key — `bt_identity_log.c`'s
@@ -701,7 +701,7 @@ during a hardware test.
   one gets the owned reconnect cascade; others rely on passive scan discovery only. **Not changed
   this pass** — real, but a materially larger change (a per-device table) than the evidence
   currently justifies; this project's BLE-capable roster (Switch2 Pro/Joy-Con2, plus whichever
-  generic BLE HID devices match) is typically small, and DATA.md's explicit guidance is to prefer
+  generic BLE HID devices match) is typically small, and the original brief's explicit guidance is to prefer
   one well-supported fix over speculative expansion.
 - **Idempotent disconnect/failure callbacks; can a stale callback tear down a newer connection?**
   Reviewed, not exhaustively proven: `find_connection_by_handle(handle)` keys off BTstack's own
@@ -777,7 +777,7 @@ plus an application-level per-device proactive-reconnect cooldown of exactly 5 s
 BTstack equivalent, and this project's actual defect (unconditional retry regardless of disconnect
 reason, and the resulting scan-starvation) is a different shape of problem than "attempts too
 frequent," which is what a cooldown timer would address. Kept here as comparison context per
-DATA.md's instruction not to treat another implementation's policy as proof of this project's wire
+the original brief's instruction not to treat another implementation's policy as proof of this project's wire
 behavior. If BTstack is ever found to expose a genuine fast-reconnect/page-scan-tuning equivalent,
 NS-PC-Control's values are a reasonable starting point to test against, not to copy blind.
 
@@ -907,7 +907,7 @@ wasn't examined at this level of detail). **No source found.** Every "BlueRetro"
 codebase (the cited origin of the *state sequence* and the pairing "magic bytes" payloads) is about
 *what* to send, never *how often to retry if unacknowledged* — BlueRetro's own source was not
 available to check this pass (external project, not vendored, not re-cloned this session). Per
-DATA.md's explicit fallback: **treated as an existing, unverified project policy** — the interval
+the original brief's explicit fallback: **treated as an existing, unverified project policy** — the interval
 is preserved at its original ~500ms intent (`SW2_INIT_RETRY_INTERVAL_MS`), now actually delivered
 at that real-world value instead of ~1.8s, but the *value itself* remains 🔵 Hypothesis-tier, not
 Confirmed. If a real capture ever shows the genuine console/host's own retry timing for this
@@ -926,7 +926,7 @@ transition on exhaustion. `switch2_cleanup_on_disconnect()` explicitly resets th
 No unit-test seam exists for this timer/state logic in this project (no host-side test harness for
 BTstack-dependent code) — validated by code-path reasoning (above) and the build matrix below;
 constructing a fake-BTstack framework solely for this change was judged disproportionate per
-DATA.md's own guidance.
+the original brief's own guidance.
 
 ### Current validation status
 
@@ -949,9 +949,9 @@ on hardware. The original fault-injection procedure remains:
   promoted to fact (see Phase 2 above).
 - **A deterministic host-side unit test** — no proportional test seam exists for BTstack-coupled
   timer/state logic in this project; validated by reasoning + build + a planned hardware pass
-  instead, per DATA.md's own explicit allowance for this case.
+  instead,'s own explicit allowance for this case.
 - **The global-single-BLE-device architecture** — not touched; this fix operates entirely within
-  the existing per-connection `sw2_init_state`/`sw2_init_handle` scope, which DATA.md's own scope
+  the existing per-connection `sw2_init_state`/`sw2_init_handle` scope, which the original brief's own scope
   boundary said not to expand without evidence this task specifically required it (it didn't).
 
 ## Pairing window vs in-flight connect (🟢 fixed; normal path hardware-confirmed)

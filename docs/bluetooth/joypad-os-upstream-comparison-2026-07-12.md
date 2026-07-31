@@ -37,7 +37,7 @@ per user instruction after the dead-code discovery, with a documented, acknowled
 staying on the generic driver for Xbox is **new evidence that cuts the same direction as that
 risk** — worth weighing, but not grounds to silently revert a decision the user already made with
 the risk explained. Flagged prominently; recommend prioritizing the "Xbox transport used and
-whether buttons/sticks remained correct" hardware check already listed in DATA.md's pending items.
+whether buttons/sticks remained correct" hardware check already listed in the original brief's pending items.
 
 **New upstream driver not present locally:** `devices/generic/sinput_ble.c` — matches joypad-os's
 own native "SInput" BLE protocol (VID:PID `2E8A:10C6`), registered before the generic fallback.
@@ -118,7 +118,7 @@ DIY controller this project's Gate 3 target cares about, and neither was ported 
 different report shapes, would need independent verification). **The real value is the confirmed
 real-world lesson**: 8BitDo controllers are known, upstream-hardware-tested to be unreliable for
 VID/PID-based identification over BT — some units never resolve it at all, others report different
-PIDs across firmware/mode variants. This directly validates DATA.md's own name-plus-report-shape
+PIDs across firmware/mode variants. This directly validates the original brief's own name-plus-report-shape
 approach for the 8BitDo NGC DIY profiling work (Gate 2 §"Immediate profiling target") as the right
 strategy, not an assumption to second-guess.
 
@@ -129,7 +129,7 @@ addition only) — this project's existing `SW2_GC_PID`/axis-range constants are
 upstream's input-side NSO GameCube controller support. CHANGELOG entries reference GameCube
 *output*-side work (`gc2usb`, GC adapter emulation, GameCube profile system) that lives in
 `src/apps/` — out of scope for this project's vendored subset and Gate 3 (USB output personality)
-hasn't started per DATA.md's explicit sequencing.
+hasn't started's explicit sequencing.
 
 ## Identity architecture: PnP-ID / DIS handling is identical, confirming a shared design tradeoff
 
@@ -158,5 +158,5 @@ in `docs/bluetooth/btstack-implementation.md`.
 | Xbox `loop_count` fix | N/A — local is ahead | Not present upstream; keep, candidate to contribute upstream later |
 | `bthid_gamepad.c` Elite Series 2 + Xbox name-fallback | **Preserve — do not overwrite with upstream's simpler version** | Hardware-validated local improvements upstream lacks |
 | DS5 companion/voice features | Reject | Out of scope; core rumble path already matches upstream exactly |
-| 8BitDo M30/Ultimate drivers | Reject (not applicable hardware) | Different 8BitDo models; NGC DIY needs its own profiling per DATA.md |
+| 8BitDo M30/Ultimate drivers | Reject (not applicable hardware) | Different 8BitDo models; NGC DIY needs its own profiling |
 | DIS-after-notifications timing | Confirmed shared design, not a bug to "fix" by reordering | Reordering risks reintroducing the GATT-contention regression that timing was built to avoid; mitigate via re-evaluation robustness instead (see identity architecture doc) |

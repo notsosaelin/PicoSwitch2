@@ -1,1294 +1,67 @@
-# amiibo v3 (NTAG I2C Plus 2K) — complete working file
+# Figure-v3 amiibo (NTAG I2C Plus 2K) — protocol reference
 
-Status: 🟡 **ACTIVE 2026-07-28** — full figure read/write and power-cycle
-persistence are hardware-confirmed. The Air Riders sector-aware `0x20` path is
-decoded and implemented; its prepared build awaits real-console validation.
-Resume from §20.7.
+**Status: ✅ Read and write are hardware-confirmed on a real Switch 2**, for both ordinary v3
+figure data and the Kirby Air Riders extended (game-data) operations. All 16 available Air Riders
+v3 dumps completed real-console reads and writes. Power-cycle recovery, second reuse, and
+learned-gameplay-state saves are confirmed.
 
-This is the consolidated working document for Kirby Air Riders "Figure Player" amiibo
-support in PicoSwitch2. It supersedes scattered notes; see also
-[`switch2/kirby-air-riders-extended-amiibo.md`](switch2/kirby-air-riders-extended-amiibo.md)
-for the historical narrative.
+Last updated: 2026-07-29.
+
+This is the authoritative reference for 2048-byte "figure v3" amiibo support in PicoSwitch2 — the
+chip, the console-facing wire protocol, the storage geometry, and what remains unknown. Dated
+primary evidence lives in `docs/experiments/` and `dumps/`; §14 lists the claims that were made and
+refuted along the way so they are not re-derived.
+
+**One remaining lifecycle check:** production-portal **Sync amiibo** of the intentionally retained
+dirty generation, acknowledging dirty state only after IndexedDB persistence succeeds.
 
 ---
 
-## 1. What the tag is (Confirmed, from published research)
+## 1. The chip and the format (Confirmed)
 
 Primary source: **xSke**,
 [N3evin/AmiiboAPI#243 comment 3591686037](https://github.com/N3evin/AmiiboAPI/issues/243#issuecomment-3591686037).
 Corroborated by [bettse/amiitool b066e85](https://github.com/bettse/amiitool/commit/b066e85d344355224cd0390064f9b5a995b47b2d)
-and [solosky/pixl.js#381](https://github.com/solosky/pixl.js/pull/381) (merged; xSke
-verified emulation on a real Switch 2 with the game).
+and [solosky/pixl.js#381](https://github.com/solosky/pixl.js/pull/381) (merged; xSke verified
+emulation on a real Switch 2 with the game).
 
 | Property | Value |
 |---|---|
 | Chip | NTAG I2C Plus 2K — 2048 bytes = sector 0 (1024) + sector 1 (1024) |
-| `GET_VERSION` | `00 04 04 05 02 02 15 03` (vs NTAG215 `00 04 04 02 01 00 11 03`) |
+| `GET_VERSION` | `00 04 04 05 02 02 15 03` (vs NTAG215 `00 04 04 02 01 00 11 03`; byte [6] `0x15` is the 2 KB storage code) |
 | UID | 7 contiguous bytes, **no BCC interleave**; `data[7]=0x00`, `data[8]=0x44` |
 | v3 delta | **64 bytes inserted at `0x80`**; encrypted HMAC `0x80`→`0xC0`, data `0xA0`→`0xE0`, data ends page `0x92` (`0x248`) |
 | Keys | **Standard retail amiibo keys, unchanged** |
 | Identity | `0x54`; **format byte `0x5B` = `0x03`** (standard amiibo = `0x02`) |
 | Config pages | `0xE2`–`0xE6` (moved from the NTAG215 positions) |
 | SRAM buffer | pages `0xF0`–`0xFF` = bytes `0x3C0`–`0x3FF` |
-| Air Riders extended writes | allocation-relative records: Kirby uses sector-0 `0x92` and sector-1 `0x00/0x01`; King Dedede uses `0xB2` and `0x64/0x65`; payload remains opaque ciphertext |
 
-**The machine ("Warp Star" etc.) exists only in the SRAM block.** The amiibo ID is
-rider-only — Kirby & Warp Star and Kirby & Winged Star are both `1F00000004C41E03`.
-The SRAM block is authenticated by an unknown checksum over its first 26 bytes
-(flipping any bit there causes a read error; padding beyond it is free).
+The `0x40` crypto shift is why rider data runs to `~0x247` instead of ending at `0x208`. Tag HMAC
+(`0x34`), identity (`0x54`), and the UID mirror (`0x000`) are unchanged.
 
-**RF-level SRAM handshake** (what a real reader does — *not* available to us, see §3):
-`FAST_WRITE` a request block to `0xF0`–`0xFF` → poll page `0xED` until `NS_REG`
-byte 2 bit 3 (`SRAM_RF_READY`) is set → `FAST_READ` `0xF0`–`0xFF`. Genuine dumps store
-that bit **clear** (`0x21`); emulators raise it dynamically (`0x29`).
+The console's own NFC sysmodule has backwards-compatibility handling that skips the inserted chunk
+and reads standard amiibo data from the shifted offsets. `tools/test_ns2_v3_compat_view.mjs` proves
+over all 16 dumps that removing the inserted block yields a 540-byte image whose
+`tag_to_internal(compat, v3=false)` is **byte-identical** to `tag_to_internal(full_v3, v3=true)`.
 
----
+### 1.1 Rider versus machine
 
-## 2. What we have built and proven ✅
+**The amiibo ID is rider-only.** Kirby & Warp Star and Kirby & Winged Star are both
+`1F00000004C41E03`. The machine ("Warp Star" etc.) exists **only in the SRAM block**, outside amiibo
+crypto.
 
-- **Storage**: 2048-byte v3 slot, flash-persistent in the existing journal banks,
-  mutually exclusive with the 540/572 store. Survives power cycles.
-- **Portal**: import, content-keyed per rider+machine, carousel collapse, Swap Combo,
-  upload/eject, owner/nickname decryption via user-supplied keys.
-- **Framing**: our serve is byte-identical to a genuine 540 read — 9 chunks at offsets
-  `0,70,…,560`, final `last=1 len=40`, 600-byte buffer, **0 byte mismatches** verified
-  against the source dump.
-- **Descriptor-driven serving**: we now parse the console's `0x06` page ranges and
-  return exactly those pages.
-- **Crypto equivalence** (`tools/test_ns2_v3_compat_view.mjs`, all 16 dumps): removing
-  the inserted 64-byte block yields a 540-byte image for which
-  `tag_to_internal(compat, v3=false)` is **byte-identical** to
-  `tag_to_internal(full_v3, v3=true)`. So a console validating our compat view as a
-  plain NTAG215 computes exactly the HMACs the tag was signed with.
-- **RE tooling**: `v3mode` (source view) and `v3probe <index> <hex>` (live overlay of
-  the `0x05` status payload), both switchable over UART with the dongle attached to
-  the console — no reflash per experiment.
-- **Recognized read path**: the Switch 2 completes the four-block extended read,
-  `0x14`/`0x21` SRAM device command, and accepts the virtual tag.
-- **Write implementation awaiting hardware**: exact `01 01` vs `01 06`
-  classification, six-chunk 454-byte staging, bounded atomic update, dirty/readback
-  status, alternating-bank persistence, and logical eject/re-present.
+Byte map, derived by diffing all 16 files (4 riders × 4 machines) holding one axis constant:
 
----
-
-## 3. Why this is hard: we are the controller, not the tag
-
-pixl.js emulates the **tag over RF**. The reader (a genuine controller) issues
-`GET_VERSION`, learns the chip is a 2K part, and then does sector selects and the SRAM
-handshake itself.
-
-PicoSwitch2 emulates the **controller**. The console tells *us* which pages to fetch.
-It decides that page set from a tag type it believes it already knows — and it always
-believes NTAG215. Nothing in pixl.js applies to our layer; the RF commands
-(`SECTOR_SELECT`, `FAST_READ`, `FAST_WRITE`) never appear on our wire.
-
----
-
-## 4. Console-facing protocol map (Confirmed)
-
-Command `0x01` = MCU. Subcommands (Narr the Reg; confirmed on our own traces):
-
-| Sub | Meaning |
-|---|---|
-| `0x03` | start polling — data `00 <timeout u16le> <interval u16le>` |
-| `0x04` | stop polling |
-| `0x05` | MCU/NFC state — 61-byte payload |
-| `0x06` | read device (issue tag read) |
-| `0x08` | write device |
-| `0x14` | write buffer |
-| `0x15` | read buffer — `[last:u8][len:u16le][data ≤70]` |
-
-**`0x06` descriptor** (verified against german77/JoyconDriver's dissector):
-
-```
-D0 | uid_len(1) | uid(7) | McuTagType @[9] | block_count | (start_page,end_page) × N
-d0   07           <uid>    01                03            00-3b, 3c-77, 78-86
-```
-
-`parse_mcu_tag_type()` in that dissector knows **only** `0x01 = NTAG 215`. Pages
-`0x00`–`0x86` = 135 pages = **exactly 540 bytes**.
-
-**Read buffer** = 60-byte prefix + tag data (genuine capture,
-`experiments/pro2-native-nfc-read-2026-07-25.md`):
-
-| Off | Size | Meaning |
-|---:|---:|---|
-| 0 | 4 | `04 00 00 00` |
-| 4 | 4 | identity/type `01 02 00 07` |
-| 8 | 7 | UID |
-| 19 | 32 | originality signature |
-| 51 | 9 | echo of `0x06` bytes 10–18 |
-| 60 | 540 | tag image |
-
-**Read loop**: the console pulls 70-byte chunks until it receives `last=1`, with a hard
-cap of **15 chunks / offset < 1024** (~1050 bytes). Proven twice: given a 2108-byte
-buffer it stopped at chunk 15 without `last=1`.
-
----
-
-## 5. The `0x05` status payload — our field map 🔵
-
-Genuine bytes we send: `09 00 00 00 01 01 02 00 07 <uid×7>` then 45 zeros.
-
-| Byte | Genuine | Finding | Evidence |
-|---|---|---|---|
-| `[0]` | `09` | NFC status (`09` ready → `04` during read) | Narr; our traces |
-| `[1]` | `00` | detail | |
-| `[2..3]` | `00 00` | parsed — part of the crashing region | FF-fill crash |
-| `[4]` | `01` | parsed; `02` → **hard crash**. Plausibly *tag count* (2 makes it parse a second record from zeros) | probe |
-| `[5]` | `01` | changing to `02` had **no effect** on the descriptor | v3mode sweep |
-| `[6]` | `02` | untested individually | |
-| `[7]` | `00` | **gates read behaviour** — see matrix below | probe |
-| `[8]` | `07` | UID length | |
-| `[9..15]` | UID | | |
-| `[16..60]` | zeros | **IGNORED — proven** | all 45 set to `FF`: descriptor and read byte-identical |
-
-### `status[7]` behaviour matrix (new, this session)
-
-| Value | Console behaviour |
-|---|---|
-| `00` (genuine) | Issues `0x06` (`McuTagType 01`, 540-byte page set), reads 9 chunks |
-| `01` | **Hard crash 2011-0301**, immediately after the status reply, before any `0x06` |
-| `02` | **Never issues a read** — loops poll → status → stop, no crash |
-| `03` | **Hard crash 2011-0301**, same as `01` |
-
-Odd values crash, `02` is "understood but unreadable". This byte is real and load-bearing;
-its 2 KB value (if it exists) is not yet found. The tag-count reading of `[4]` explains
-why `[16..60]` is dead: with one record, the tag descriptor occupies exactly `[5..15]`
-(`protocol, type, ?, uid_len, uid×7` = 11 bytes).
-
----
-
-## 6. Full experiment log
-
-| # | Configuration | Console result |
+| Region | Varies by | Meaning |
 |---|---|---|
-| 1 | Stub: `0x06` bare-ACK | Infinite stall, retries every 3 s, never reads |
-| 2 | Drive state machine; prefix + 2048 (2108 B) | 15 chunks, never `last=1` → **2115-0176 "not an amiibo"** |
-| 3 | Raw sector 0 (1024), `last=1` @1024, no prefix | 15 chunks, complete read → **crash 2011-0301** |
-| 4 | Raw full 2048, no prefix | Still 15 chunks, never asks chunk 16 → crash. **Proves the 1050-byte cap** |
-| 5 | System Settings, same config | Identical read pattern, crash — not app-specific |
-| 6 | `SRAM_RF_READY` bit injected at `0x3B6` | No change (correct per xSke, but not the blocker) |
-| 7 | Descriptor-driven, raw v3 pages `00-86` | 9 chunks, `last=1`, **genuine framing** → "not an amiibo" |
-| 8 | Descriptor-driven, **compat540 view** | 9 chunks, `last=1`, byte-perfect → **"not an amiibo"** |
-| 9 | `status[16..60]` = all `FF` | **Zero change** — region ignored |
-| 10 | `status[2..7]` = all `FF` | Crash right after status reply |
-| 11 | `status[4]` = `02` | Hard crash |
-| 12 | `status[7]` = `01` / `02` / `03` | crash / no-read / crash |
-
-Traces preserved in `dumps/` (`v3probe-*`, `kirby-v3-serve-trace-*`,
-`amiibo-540-working-read-2026-07-26.jsonl`).
-
----
-
-## 7. Hypotheses (ranked)
-
-**H1 — The console refuses a v3-format amiibo delivered as a 540-byte NTAG215.** 🔵 Strong.
-Experiment 8 served a cryptographically perfect standard amiibo (proven byte-identical
-internal buffer) in genuine framing, and was still rejected. The most likely
-discriminator is the identity **format byte `0x5B = 0x03`**: the console reads it,
-concludes the tag must be a 2 KB part with extended data, sees it was read as an
-NTAG215, and rejects. This is *signed* data, so it cannot be rewritten.
-→ **Implication: there is no path to success without the tag-type signal.**
-
-**H2 — The tag type is not carried in the `0x05` status at all.** 🔵 Moderate–strong.
-`[16..60]` are provably ignored, and `[7]`/`[4]` deviations crash rather than
-re-target the read. A field the console *derives* a page set from would more likely
-produce a changed descriptor than a fatal. Candidate alternative channels: the
-**`0x03` polling response** and the **`0x0C` command** (Narr: "unknown") — we
-bare-ACK both with an empty payload; a genuine controller may return tag-identity data
-there. **Untested — highest-value next experiment.**
-
-**H3 — `status[7]` is a capability/type field whose 2 KB value we haven't hit.** 🔵 Weak–moderate.
-`02` = recognized-but-unreadable is suggestive. Sweeping is possible but each wrong
-value costs a console hard-crash + dongle reboot + amiibo reload, and the space is
-unbounded.
-
-**H4 — The Pro Controller 2 NFC path may not support 2 KB tags at all.** ⬜ Unknown.
-xSke's testing was explicitly "S2 with JC1" (Joy-Con 1). We have never confirmed a
-genuine PC2 reads a Kirby amiibo. If the console only drives the extended read for
-certain controller NFC firmware, PC2 emulation may be a dead end and a **Joy-Con 2
-personality** (we already have `JOYCON2_L/R`) could behave differently.
-
-**H5 — Machine/Figure Player is unreachable regardless.** ✅ Near-certain.
-It lives only in the SRAM block, which is delivered by an RF handshake that has no
-representation on the controller↔console wire we can see. Even a fully working rider
-read would likely present the amiibo without its machine.
-
----
-
-## 8. Next experiments (ordered by value/cost)
-
-1. **Probe the `0x03` and `0x0C` response payloads** (H2). Requires a firmware change:
-   generalize `v3probe` to attach arbitrary payloads to *any* subcommand response, then
-   sweep. Cheap once built, and covers the only untested channels. **Do this first.**
-2. **Increase trace capture depth** beyond 24 bytes so full 61-byte status replies and
-   longer descriptors are visible in one pass (currently truncated).
-3. **Joy-Con 2 personality NFC test** (H4). Switch personality and observe whether the
-   console's NFC negotiation differs at all. Cheap, purely observational.
-4. **`status[6]` and `[2..3]` single-byte sweeps** — the last unmapped bytes in the
-   parsed region.
-5. **`status[7]` extended sweep** (`04`…`0F`) — only if 1–4 are exhausted; expensive.
-
-## 9. Offline / portal ideas (independent of the console blocker)
-
-- **Decrypt with the user's retail keys** to confirm the format byte, dump register
-  info, and inspect the Kirby extended regions. Our portal already implements the full
-  amiitool port with the v3 `+0x40` shift, and `tools/test_amiibo_decrypt.mjs` proves
-  the round-trip. Worth dumping a decrypted v3 image to see exactly which fields the
-  console would read.
-- **Mii rendering** ([Stewared/MiiJS](https://github.com/Stewared/MiiJS)) — we already
-  extract the 96-byte owner Mii at internal `0x4C`; MiiJS could render it in the portal
-  instead of showing only the name.
-- **SRAM/machine catalogue**: collect SRAM blocks per machine (the community has a few)
-  and document the 26-byte authenticated prefix. Even without console support this
-  makes the dataset complete for future work.
-
-## 10. Hard constraints (do not re-litigate)
-
-- Air Riders' extended payload is opaque ciphertext. PicoSwitch2 does not need its keys: preserve
-  and replay the console-supplied bytes exactly. Do not synthesize or transform that payload.
-- Do **not** re-add a 60-byte prefix in front of a 1024-byte payload: the total exceeds
-  the console's ~1050-byte read window, `last=1` never arrives, and it regresses to
-  "not an amiibo".
-- The amiibo identity/format bytes are inside the signed region — they cannot be
-  rewritten to masquerade as v2.
-
----
-
-## 11. BREAKTHROUGH (2026-07-27): `status[7]` is the NTAG **model** byte
-
-Found by cross-referencing **CTCaer/jc_toolkit** (`jctool.cpp`), which implements the
-Switch 1 MCU NFC read. Its tag-detected parser:
-
-```
-buf[56]: MCU/NFC state   (0x09 = Tag detected)
-buf[62]: nfc tag IC      (0x02 = NTAG, else MIFARE)
-buf[63]: nfc tag Type
-buf[64]: UID size
-buf[65..]: UID
-```
-
-Our Switch 2 `0x05` status payload aligns on **four independent anchors**:
-
-| ours | value | Switch 1 |
-|---|---|---|
-| `[0]` | `09` | `buf[56]` state = Tag detected |
-| `[6]` | `02` | `buf[62]` tag IC = **NTAG** |
-| `[7]` | `00` | `buf[63]` tag Type / **model** |
-| `[8]` | `07` | `buf[64]` UID size |
-| `[9..]` | UID | `buf[65..]` |
-
-And jc_toolkit derives the page count — and therefore the **block ranges** — from the
-model byte:
-
-```c
-if (tag_type == 2) {                    // NTAG
-    switch (model) {
-        case 0: ntag_pages = 135; break;   // NTAG215
-        case 3: ntag_pages = 45;  break;   // NTAG213
-        case 4: ntag_pages = 231; break;   // NTAG216
-    }
-}
-```
-
-| pages | block ranges built |
-|---|---|
-| 45 | `00-2c` |
-| **135** | **`00-3b, 3c-77, 78-86`** ← byte-identical to what our console requests |
-| 231 | `00-3b, 3c-77, 78-b3, b4-e6` |
-
-**This closes the loop.** We report model `0x00`, so the console builds the NTAG215
-135-page (540-byte) read — the exact ranges we have seen in every single trace. It
-explains the whole `status[7]` matrix:
-
-| `[7]` | model | observed |
-|---|---|---|
-| `00` | NTAG215, 135 pages | reads 540 B ✓ |
-| `01` | invalid | hard crash |
-| `02` | invalid | refuses to read |
-| `03` | NTAG213, 45 pages | crash — 180 B is too little to parse as an amiibo |
-| **`04`** | **NTAG216, 231 pages = 924 B** | **NEVER TESTED** |
-
-### Why `[7] = 0x04` is the experiment to run
-
-- 231 pages = **924 bytes**, and the v3 amiibo crypto region ends at `0x248` (584 B) —
-  fully covered, unlike the 540-byte NTAG215 read which falls 40 bytes short.
-- 60-byte prefix + 924 = **984 bytes**, comfortably under the console's measured
-  ~1050-byte read window, so `last=1` will land properly.
-- Serve **raw v3 pages** (`v3mode 0`) and the console's own documented
-  backwards-compatibility path — xSke: *"the NFC sysmodule does have handling for
-  skipping the extra data chunks and reading standard Amiibo data from the right
-  offsets"* — can do the `0x40` unshift itself.
-- Config pages `0xE2`–`0xE6` (which v3 moved) sit at bytes `0x388`–`0x39B`, **inside**
-  the 924-byte window.
-
-**Commands:** `v3mode 0` then `v3probe 7 04`, scan, dump. Expect the `0x06` descriptor
-to change to **4 blocks** ending `b4-e6` — that alone confirms the mechanism even if
-validation still fails.
-
-**Caveat:** the NTAG216 range stops at page `0xE6`; the SRAM buffer (`0xF0`-`0xFF`)
-is still not requested, so the machine/Figure Player remains out of reach. Rider
-recognition is the realistic win. If a dedicated NTAG I2C 2K model value exists it
-would be some value > 4, and the same probe sweeps it.
-
-### Crypto is fully ruled out (verified with the owner's `key_retail.bin`)
-
-| dump | v3 offsets | compat540 view |
-|---|---|---|
-| all four riders | **HMAC VALID** | **HMAC VALID** |
-| control 540 amiibo | VALID | — |
-
-The dumps are genuinely signed, and the compat view we served was a cryptographically
-perfect standard amiibo. The rejection was never about crypto — it was always about
-the console not being told to read enough of the tag.
-
-
----
-
-## 12. SOLVED MECHANISM (2026-07-27): the model byte is **read-buffer prefix offset 18**
-
-### The evidence
-
-`CTCaer/jc_toolkit` (`jctool.cpp`, Switch 1 MCU NFC read) parses the NFC read response:
-
-```c
-else if (buf2[49] == 0x3a && buf2[51] == 0x07) {      // NFCReadData
-    if (ntag_init_done) {
-        if (buf2[52] == 0x01)                          // first package
-            memcpy(dst, buf2 + 116, payload_size - 60); //   skips a 60-byte header
-        else
-            memcpy(dst, buf2 + 56,  payload_size);
-    }
-    else if (buf2[52] == 0x01) {                       // FIRST (discovery) read
-        if (tag_type == 2) {                           // tag IC == NTAG
-            switch (buf2[74]) {                        // <-- MODEL BYTE
-                case 0: ntag_pages = 135; break;       // NTAG215
-                case 3: ntag_pages = 45;  break;       // NTAG213
-                case 4: ntag_pages = 231; break;       // NTAG216
-                default: goto step9;                   // abort
-            }
-        }
-    }
-}
-```
-
-MCU data begins at `buf2 + 56`; the first package skips a **60-byte header** to reach
-tag data at `buf2 + 116`. Therefore `buf2[74]` = **header offset 18**.
-
-Our own primary capture (`experiments/pro2-native-nfc-read-2026-07-25.md`) documents
-the 60-byte read-buffer prefix as:
-
-| Off | Size | Meaning |
-|---:|---:|---|
-| 0 | 4 | `04 00 00 00` |
-| 4 | 4 | `01 02 00 07` |
-| 8 | 7 | UID |
-| **15** | **4** | **"zero/reserved"** ← **offset 18 lives here** |
-| 19 | 32 | originality signature |
-| 51 | 9 | echo of the `0x06` descriptor |
-| 60 | … | tag image |
-
-**Conclusion: prefix byte 18 is the NTAG model, we emit `0x00` (= NTAG215 = 135
-pages), and that is exactly why the console has requested `00-3b, 3c-77, 78-86`
-(540 bytes) in every trace we have ever taken.** The page ranges are downstream of a
-byte in a buffer *we generate*.
-
-### Correction: the `0x05` status cannot carry a model
-
-`status[4..8]` = `01 01 02 00 07` is a straight passthrough of the NCI
-`RF_INTF_ACTIVATED_NTF` from the controller's **PN7160** NFC front-end
-(`ndeadly/switch2_controller_research/datasheets/PN7160_PN7161.pdf`):
-
-| ours | NCI field | value |
-|---|---|---|
-| `[4]` | RF Discovery ID | `01` |
-| `[5]` | RF Interface | `01` = Frame |
-| `[6]` | RF Protocol | `02` = **T2T** |
-| `[7]` | RF Technology & Mode | `00` = NFC_A passive poll |
-| `[8]` | NFCID1 length | `07` |
-| `[9..]` | NFCID1 | UID |
-
-This explains the entire `status[7]` matrix — `01`/`02`/`03` are NFC_B / NFC_F /
-NFC_A-active, i.e. bogus RF technologies, hence the faults and the refusal to read.
-An NTAG I2C 2K is *also* T2T / NFC_A passive, so **the status is identical for both
-chips and can never distinguish them.** Every probe of that structure was doomed;
-this closes that avenue permanently.
-
-Confirmed independently: ndeadly's `commands.md` shows a genuine Pro Controller 2
-`0x05` reply for a real amiibo as
-`09 00 00 00 01 01 02 00 07 <uid> 00…` — byte-identical to ours.
-
-### What to do with it
-
-1. Sweep **prefix[18]** (not the status). Known: `0`=NTAG215, `3`=NTAG213,
-   `4`=NTAG216. Nintendo added NTAG I2C Plus 2K support for Kirby Air Riders, so its
-   value is a **new** enum member — sweep `5, 6, 7, 8, …` (and `1`, `2`).
-2. **Success signal**: the console issues a *second* `0x06` whose `block_count` and
-   ranges differ from `03 | 00-3b 3c-77 78-86`. Ranges reaching pages `0xE1`+ mean it
-   is reading sector 0 as a 2 KB part; ranges touching `0xF0`–`0xFF` mean it has
-   entered the **SRAM** path.
-3. Once it asks for `0xF0`–`0xFF`, parity is reachable: we already serve arbitrary
-   requested page ranges from the full 2048-byte image and already inject
-   `SRAM_RF_READY` at `0x3B6`. The remaining work is accepting the SRAM request
-   write (`0x08` write device + `0x14` write buffer) and ACKing it, exactly as
-   pixl.js does at RF level ("for now we ignore the writes and just ack").
-
-This is a real path to **parity**, not a compatibility shim: the console would be
-reading the tag as the 2 KB part it is, including the machine block.
-
-
----
-
-## 14. 🟢 UNBLOCKED 2026-07-27 — genuine capture obtained
-
-The capture described in §13 was taken. **The console recognized the v3 amiibo through the
-genuine controller, read it, and wrote to it.** Captures:
-`dumps/v3-genuine-capture-2026-07-27.jsonl` (206 records) and
-`dumps/ntag215-genuine-capture-2026-07-27.jsonl` (36 records, the control). Both
-`overwritten: 0`; bridge health `rejected: 0`, `timeouts: 0`.
-
-### 14.1 The §13 premise was wrong — the console DOES request the v3 page set
-
-It asks twice. Descriptors are **console → device** (`sub 0x06`), i.e. the console tells the
-controller which pages to read:
-
-| # | Timeout | Blocks | Ranges | Size |
-|---|---|---|---|---|
-| 1 (seq 12) | 2000 ms | 3 | `00-3B, 3C-77, 78-86` | 540 B — the NTAG215 set |
-| **2 (seq 36)** | 3000 ms | **4** | `00-3B, 3C-77, **78-91**, **E2-E6**` | **604 B** |
-| 3 (seq 166) | 2000 ms | 1 | `03-03` | 4 B — the write-back |
-
-The NTAG215 control issues **only** descriptor #1 and stops. So the escalation is v3-specific and
-happens *after* the first read: the console probes with the 540 set, learns what the tag is from
-what comes back, then re-reads with an extended 4-block descriptor reaching page `0x91` plus a
-separate `E2-E6` block.
-
-§13's "the console always asks for the NTAG215 set" was true only because our serve path never gave
-it a reason to escalate.
-
-### 14.2 The discriminator: read-buffer prefix bytes 18–50
-
-The `0x15` read reply is `[8-byte header][flags,len16][60-byte prefix][tag image]`. Confirmed by the
-control: 8×70 + 1×40 = 600 = 60 + 540, last chunk flagged `01`.
-
-First chunk, prefix bytes, v3 vs NTAG215:
-
-```
-        [ 0] 04 00 00 00 01 02 00 07   <- identical; [7] = uid_len
-        [ 8] .. UID (7 bytes) ..       <- differs per tag, as expected
-        [15] 00 00 00                  <- identical
-v3      [18] 06 80 92 50 07 B8 2D 0E 23 F0 FD E4 3D 9D D2 F1
-        [34] 2A 4F 6B 75 0D AC FC A3 B5 D6 84 75 47 E8 95 C0 86
-ntag215 [18] 00 00 00 00 ... all zero through [50] ...
-        [51] 03 00 3B 3C 77 78 86 00 00   <- identical: block count + echoed ranges
-        [60] tag image begins
-```
-
-**Bytes 18–50 (33 bytes) are populated for v3 and all-zero for NTAG215.** Everything else in the
-prefix is identical or trivially tag-specific. This is the signal, and it is the only candidate in
-the entire exchange.
-
-Note `[20] = 0x92` — the v3 tag's ending page. `[18] = 0x06`, `[19] = 0x80`. The remaining 30 bytes
-are high-entropy; a 32-byte field starting at `[19]` is the right shape for an NTAG21x ECC
-originality signature (`READ_SIG`), but that is 🔵 **hypothesis, not established** — do not build on
-it without checking.
-
-**Why §13's elimination table missed this.** It records `prefix[18]` as *"jc_toolkit's NTAG model
-byte — no effect on Switch 2"*. That test set byte 18 **alone**. The genuine controller populates
-18 **through 50** as a block, and a lone byte 18 is evidently not sufficient.
-
-### 14.3 The tag image confirms the v3 UID layout
-
-The v3 image begins `04 90 11 CA DB 1F 90 | 00 44` — 7 contiguous UID bytes then `00`/`44`, exactly
-the figure-v3 layout the portal already implements. The control begins
-`04 1A 96 | 00 | 72 55 49 80 | EE | 48` — the NTAG215 BCC0/BCC1 interleave (BCC0 = `88^04^1A^96` =
-`00` ✓, BCC1 = `72^55^49^80` = `EE` ✓). Both decode correctly, which independently validates the
-existing v3 tag-format handling.
-
-### 14.4 Confirmed by the capture: status can never discriminate
-
-The `0x05` status is **byte-identical** between the two tags except for the UID. §13 reached this
-conclusion by elimination; the genuine capture proves it directly. No further status probing is
-warranted.
-
-### 14.5 ✅ CONFIRMED — the prefix triggers escalation, and it is NOT tag-bound
-
-Test 2026-07-27, `dumps/v3-serve-prefixtest-2026-07-27.jsonl`. Our own serve path, mirror **off**,
-a v3 tag loaded, and `v3hdr 18 <the 33 captured bytes>` overlaid onto the read prefix.
-
-**The console escalated.** seq 34 is the 4-block descriptor
-`00-3B, 3C-77, 78-91, E2-E6` = 604 B — the same one the genuine controller produced. Our served
-prefix reads back exactly as intended (`[18] 06 80 92 50 07 B8 … 95 C0 86`, `[51] 03`).
-
-**⚠️ CORRECTED 2026-07-27 (see §14.7): escalation is not acceptance.** The paragraph below
-concluded from escalation alone that bytes 18-50 are not tag-bound. That does not follow.
-Escalation is decided early, from the prefix; whether the console *validates* those bytes happens
-later, after the full read. The console has never accepted a served v3 tag, so the field may still
-be tag-bound.
-
-**The field does not affect the ESCALATION decision.** The loaded image is a *different physical amiibo* from
-the one captured (captured UID `049011CADB1F90`; no local dump matches it). The console still
-escalated. So bytes 18–50 are **not** validated against the tag's UID at this stage — which answers
-§14.5 questions 1 and 2 in the most useful direction available: whatever they are, they can be
-replayed. A per-tag ECC signature that the console checks *here* is ruled out.
-
-**What now blocks it: the console aborts the extended read.** The cycle repeats ~7 times:
-
-```
-0x05 status -> 0x06 (4-block, 604 B) -> 0x04 STOP -> 0x03 poll -> 0x05 ->
-0x04 -> 0x03 -> 0x05 -> 0x06 (3-block, 540 B) -> 0x05 -> read off=0 -> abort -> retry
-```
-
-It asks for 604 bytes, our serve path does not satisfy it, the console stops, falls back to the
-540-byte descriptor, reads that, fails, and retries the whole sequence. Consistent with the reported
-symptom: no error, no recognition.
-
-So the remaining work is entirely on our side: **make `ns2_v3_serve()` answer the 4-block
-descriptor** — including the `E2-E6` block, which lies outside the ordinary page space and is
-presumably the machine/SRAM window. The descriptor-driven page-range machinery already exists; it
-has simply never been exercised with 4 blocks.
-
-### 14.6 ✅ Extended read working — the descriptor gate was misparsing a timeout
-
-`dumps/v3-serve-desc-fixed-2026-07-27.jsonl`. The console now completes the whole read:
-
-```
-0x06 (3-block, 540 B) -> status 0x04 -> reads 0..560 last=1
-0x06 (4-block, 604 B) -> status 0x04 -> reads 0..630 last=1 (34 B) = 664 B total
-0x14 WRITE BUFFER
-```
-
-**Root cause of the previous stall.** The `0x06` gate required
-`request[0] == 0xD0 && request[1] == 0x07`, described in the code as "the D0 07 marker". Those bytes
-are the **timeout, u16 LE**: `D0 07` = 2000 ms. The extended descriptor uses 3000 ms (`B8 0B`), so it
-failed the gate, the operation never started, status never reached `0x04`, and the console issued
-`0x04` STOP without a single read. The real layout is:
-
-```
-[0..1] timeout u16 LE   [2..8] UID   [9] tag type   [10] block count   [11..] (start,end) x N
-```
-
-The same misreading appeared in three places — the gate plus two parsers in `ns2_v3_build_buffer`
-that derived a UID length from the timeout's high byte. All three now gate on structure and accept
-any timeout. A 540-byte request still routes to the compatibility view; anything reaching past it
-serves from the raw 2 KB image.
-
-### 14.7 The console reads it all, then REJECTS it
-
-**Correction to an earlier reading.** The single `0x14` after the extended read was taken as the
-console "reaching the write stage". It is not. The nine `0x14` + `0x08` + `0x21` in the genuine
-capture are the **owner/nickname registration the operator performed by hand** in that session, not
-part of a plain read. In our test the console never advanced to the registration screen at all, so
-it did not accept the tag.
-
-So the read now completes **mechanically** — the console takes all 664 bytes — and then rejects the
-**content**. Two candidates, in order:
-
-1. **The replayed prefix bytes belong to a different tag.** The 33 bytes came from UID
-   `049011CADB1F90`; the loaded image is `04B4438ADB1F90`. If bytes 19-50 are a per-tag originality
-   signature, the console would read them, check them against the tag, and reject. Escalation would
-   still have happened, because that decision is made earlier and evidently keys on byte 18.
-2. **The `E2-E6` block content is wrong.** Its byte offsets are a linear-addressing *guess*
-   (page 0xE2 -> byte 904). If NTAG I2C 2K sector addressing differs, the console is being fed the
-   wrong 20 bytes.
-
-**Cheapest discriminating test, and the right one to run next:** set `v3hdr 18 06` alone — byte 18
-only, bytes 19-50 left zero. The NTAG215 control shows the genuine controller sends **all zeros**
-there for a 540 tag and the console accepts it, so zeros are not inherently invalid.
-
-- Still escalates, still rejects -> bytes 19-50 are not the problem; look at `E2-E6` (candidate 2).
-- Still escalates and now *accepts* -> the mismatched signature was the problem, and a correct
-  per-tag value is required.
-- No longer escalates -> escalation needs more than byte 18, which is itself worth knowing.
-
-That one test separates the two candidates without any new firmware.
-
-### 14.7.1 Result: byte 18 alone drives escalation
-
-`dumps/v3-serve-byte18only-2026-07-27.jsonl`, with `v3hdr 18 06` and bytes 19-50 **zero**:
-
-- The console still issues the 4-block descriptor (blocks=4, timeout 3000) — **7 descriptors across
-  the session, alternating 4-block and 3-block** — and still reads the full 664 bytes (highest
-  requested offset 630).
-- It still rejects. Screen stayed on "hold an amiibo to the controller"; no crash.
-
-**Established:** bytes 19-50 have no bearing on the escalation decision. Byte 18 = `0x06` is
-sufficient on its own. That is a genuine narrowing and it means the 33-byte replay is unnecessary
-for this stage.
-
-**Not established:** whether a *correct* per-tag value at 19-50 is required for acceptance. Zeros
-fail and a foreign tag's bytes fail, which is equally consistent with "any wrong value is rejected".
-The NTAG215 control sends zeros and is accepted, but that is a different tag type and the console
-may only demand a signature for v3.
-
-Remaining suspects, now in this order:
-
-1. **`E2-E6` content.** Its byte offsets are still an unverified linear-addressing guess
-   (page `0xE2` -> byte 904). This is the more tractable one: the mapping can be varied and retested
-   without needing anything from a physical tag.
-2. **A correct per-tag signature at 19-50.** Only distinguishable once (1) is ruled out, and if true
-   it bounds virtual v3 amiibo to tags whose signature has been physically captured.
-
-Side observation from the same capture: `0x14` appears 4x and `0x21` 4x across the retries, so some
-write-side traffic does occur during a failed read. Worth decoding before assuming the write path is
-untouched.
-
-### 14.7.2 ❌ RETRACTED — the signature is NOT the root cause
-
-**This section's conclusion is wrong and is kept only so the reasoning error is visible.**
-
-Refuted by the dump set itself. `READ ME.txt` shipped with the Kirby Air Riders images states that
-**Flashiibo Pro** and **Allmiibo/Pixl.js** *"need an update before they work"* — i.e. those emulators
-do support v3 amiibo on a Switch 2. They are fed exactly these files: all 16 are **2048 bytes**,
-with no companion signature and no 2080-byte variant, and those projects have no amiibo keys. If a
-per-tag NXP signature were required, none of them could work either.
-
-**The reasoning error:** the comparison below only covers the 60-byte **prefix**. The 604 bytes of
-**tag data** in the same reply also differ, because the genuine capture is of a *different physical
-amiibo* than the image we serve. Finding that `[19..50]` was the only differing prefix field does
-not make it the cause — it was simply the most visible difference, and the tag-data difference was
-never controlled for. The four-row table below is consistent with the signature mattering, but it is
-equally consistent with any other per-tag content being wrong.
-
-What survives from this section is only the **eliminations**, which are sound:
-
-- `E2-E6` is served correctly (byte 904 of the image, byte-identical to genuine and constant across
-  two physical tags).
-- The descriptor echo at `[51..59]` is byte-exact.
-- Byte 18 = `0x06` alone drives escalation.
-
-The next step is therefore **not** to chase signatures but to study how pixl.js actually presents a
-v3 tag — its `ntag_emu_v2.c` is already cited elsewhere in this document for the `SRAM_RF_READY`
-behaviour, and it is the closest thing available to a known-good reference implementation.
-
-<details><summary>Original (incorrect) conclusion, retained for the record</summary>
-
-#### The console validates the NTAG21x originality signature for v3
-
-Deep comparison of the extended-read prefixes (genuine vs ours) leaves exactly **one** structural
-difference — bytes **[19..50], 32 bytes**:
-
-```
-[0..8]   identical
-[9..14]  UID          differs (different physical tag, expected)
-[15..18] identical, including our byte 18 = 0x06
-[19..50] GENUINE: 32 bytes of data      OURS: zeros      <-- the only real difference
-[51..59] identical: 04 00 3B 3C 77 78 91 E2 E6 (block count + the 4 ranges)
-```
-
-Our descriptor echo is byte-exact. `E2-E6` is byte-exact (verified: byte 904 of the Kirby image is
-`0100FF00 00000004 07000000 ...`, identical to what the genuine controller returned, and identical
-across two different physical tags — it is a constant config region). Both earlier suspects are
-therefore eliminated.
-
-32 bytes is exactly an **NTAG21x ECC originality signature**, and this repo's own code already
-labels that slot: *"out[19..50]: originality signature — unknown for v3, left zero."*
-
-The four observations settle it:
-
-| Tag | Bytes 19-50 sent | Console |
-|---|---|---|
-| NTAG215 (genuine controller) | **zeros** | ✅ accepts |
-| v3 (genuine controller) | 32 real bytes | ✅ accepts |
-| v3 (ours) | zeros | ❌ rejects |
-| v3 (ours) | another tag's signature | ❌ rejects |
-
-**The console requires a valid originality signature for v3 tags, and does not for NTAG215.** It is
-validated against the UID — a foreign tag's signature fails just as zeros do. The signature is
-generated with NXP's private key over the tag UID, so it **cannot be computed, forged, or
-transplanted**.
-
-</details>
-
-### 14.7.3 What this means for virtual v3 amiibo (also retracted)
-
-- A v3 image alone is **not sufficient**. The 2048-byte dumps (pixl.js/flashiibo) contain the memory
-  map only; the signature is returned by the `READ_SIG` command and lives outside it.
-- Serving a v3 amiibo therefore requires **both** the image **and** that physical tag's 32-byte
-  signature, captured together.
-- Freely generated or UID-randomised v3 amiibo are **impossible** by this route — the same
-  conclusion the project already reached for amiibo crypto generally, now for a second, independent
-  reason.
-
-**The one untested configuration** that would confirm this constructively: serve a tag's own image
-*and* its own signature together. We have never had a matched pair — the captured signature belongs
-to UID `049011CADB1F90`, and no local dump matches it. Obtaining a matched pair means capturing the
-signature from a tag we also have a dump of.
-
-If that works, the feature is real but scoped: v3 amiibo you have physically captured. If it still
-fails, something beyond the signature is also checked.
-
-**Superseded — see §14.7.2. Pixl.js and Flashiibo support these tags from the 2048-byte dump alone,
-so none of the above scoping applies.**
-
-### 14.7.4 The layer distinction that reconciles everything (pixl.js PR #381)
-
-xSke's PR states the format plainly:
-
-> *"The expected .bin format is a 2048-byte file containing all of sector 0 and 1 as it would be
-> read by any NFC reader, and with the expected response already placed in the SRAM buffer."*
-
-So everything the console needs is in the 2048 bytes. No keys, no separate signature file. That is
-consistent with the shipped dumps and with the operator's objection.
-
-**But pixl.js and PicoSwitch2 sit on opposite sides of the link:**
-
-| | pixl.js / Flashiibo | PicoSwitch2 |
-|---|---|---|
-| Emulates | the **tag** (RF side) | the **controller** (USB side) |
-| Who builds the 60-byte read prefix | a **genuine Pro Controller 2**, by reading the tag | **we** must synthesize it |
-| Must answer `READ_SIG` etc. | yes, as a tag | n/a |
-| Must produce prefix `[19..50]` | never | yes |
-
-This is why "pixl.js needs no keys" does not settle what belongs at `[19..50]` — pixl.js never
-produces that field. It is also why their reference implementation cannot be copied directly: it
-solves the adjacent problem.
-
-**The genuinely odd observation, which is now the sharpest lead:** in the NTAG215 control capture the
-genuine controller emits **all zeros** at `[19..50]` — for a real retail NTAG215 amiibo, which
-certainly *has* an originality signature. So the controller does not populate that field for
-NTAG215, yet fills 32 bytes for v3. Whatever it is, the controller only sources it for v3 tags.
-
-Two readings, both testable:
-
-1. It is the originality signature, and the controller issues `READ_SIG` **only** for v3. Then a
-   served v3 needs one — but pixl.js supplies it from somewhere in the 2048 bytes, so it would be
-   *derivable from the dump*, not an unforgeable per-tag secret. Worth searching the image for the
-   32 bytes the genuine controller sent.
-2. It is not a signature at all but v3-specific tag metadata the controller reads out of the tag —
-   in which case it is also in the dump and simply needs locating.
-
-Either way the next concrete step is the same and needs no hardware: **take the 32 bytes the genuine
-controller emitted and search the corresponding physical tag's own dump for them.** We cannot do
-that yet — the captured bytes belong to UID `049011CADB1F90` and no local dump matches it. Getting a
-dump of *that* tag, or a capture from a tag we already have a dump of, resolves it immediately.
-
-### 14.7.5 prefix[19..50] is the SRAM window, and it is DYNAMIC — current wall
-
-Two genuine captures of the **same physical tag** (UID `049011CADB1F90`) show the field taking two
-distinct values inside one session. That alone refutes the signature reading — a signature would be
-constant.
-
-```
-A  80925007B82D0E23F0FDE43D9DD2F12A4F6B750DACFCA3B5D6847547E895C086   (most reads)
-B  0200732AB41C4AC291B9A5983C039400C9000A50423457313720010102000000   (one 4-block read)
-```
-
-**B is the SRAM window.** Against a local dump:
-
-```
-Kirby 0x3C0 : 0200 4C980F696FCF5128F89ED4B5AB00 9C0001 50423457313720010102000000
-genuine   B : 0200 732AB41C4AC291B9A5983C039400 C9000A 50423457313720010102000000
-```
-
-Same head, same 13-byte tail, tag-specific middle — exactly xSke's *"expected response already
-placed in the SRAM buffer"*. So it is derivable from the dump, no keys, no per-tag secret. That is
-consistent with pixl.js/Flashiibo working from the 2048-byte file alone.
-
-`ns2_v3_build_buffer()` now serves `image[0x3C0..0x3DF]` there, verified on the wire
-(`dumps/v3-serve-sram-2026-07-27.jsonl`, prefix reads back `06 02004C98…0102000000`).
-
-**Still rejected.** The console escalates, reads all 664 bytes, issues `0x14`/`0x21`, then loops —
-the same wall. The remaining difference is that we serve **B always**, while a genuine controller
-serves **A** on most reads and **B** on one.
-
-**Next, in order:**
-
-1. **Identify A.** 32 bytes, stable per tag across sessions. It is not in the tag data the console
-   reads (searched, absent). Candidates: a different register window (session registers around
-   `0x3B0`?), or the SRAM *before* the machine has written its response.
-2. **Identify the trigger** that makes the controller switch A -> B. Both captures are on disk with
-   full ordering, so this is a read of existing data, not new hardware work.
-3. Only then decide what the serve path should emit per read.
-
-### 14.8 Earlier next-step notes
-
-Populate prefix bytes 18–50 in `ns2_v3_serve()`'s read replies and re-test. If the console escalates
-to the 4-block descriptor, the serve path already has the machinery to answer it (descriptor-driven
-page ranges are implemented and byte-exact). Open questions to settle in that order:
-
-1. Does *any* non-zero content at 18–50 trigger escalation, or is the field validated? Replaying the
-   captured 33 bytes verbatim answers this in one test — and since they came from this exact
-   physical amiibo, a match is expected to work.
-2. What are bytes 21–50 actually? If they are an originality signature they are per-tag and cannot
-   be synthesised for an arbitrary dump, which would bound what virtual v3 amiibo can ever do.
-3. What does the console expect at `E2-E6`? That block is outside the 2048-byte image and is
-   presumably the machine/SRAM window.
-
----
-
-## 13. PARKED — final state, and where to resume
-
-> ⚠️ **Superseded 2026-07-27 by §14.** The blocker described below was resolved by the genuine
-> capture. The elimination work here remains valid and is what made the capture cheap to interpret —
-> with one correction: `prefix[18]` was tested alone, and the real signal is `prefix[18..50]`.
-
-### What is finished and working ✅
-
-- **2048-byte v3 store** with flash persistence, mutually exclusive with the
-  540/572 store, surviving power cycles and mode changes.
-- **Flash layout fixed** (this was a real, serious bug): amiibo journal bank 0 sat
-  on top of BTstack's TLV region on RP2350, so writing a tag destroyed the
-  Bluetooth bonds and BTstack destroyed the stored tag. Banks moved to `SIZE-6S` /
-  `SIZE-5S`, asserts now check `PICO_FLASH_BANK_STORAGE_OFFSET`.
-- **Durable v3 uploads**: `amiibo persist` used to be a silent no-op for v3
-  (it gated on the 540 store's `loaded` flag) and the portal never called it.
-- **Serve path**: full read state machine, descriptor-driven page ranges,
-  `SRAM_RF_READY` injection, byte-exact chunk framing (verified 0 mismatches
-  against the source dump).
-- **Crypto**: all 16 Kirby dumps verified **HMAC-valid** with the owner's
-  `key_retail.bin`, using the v3 (+0x40) offsets.
-- **RE tooling**, all runtime-switchable over UART with the dongle attached:
-  `v3mode`, `v3probe`, `v3hdr`, `v3reply`, `amiibo journal`, and 72-byte trace
-  capture.
-
-### The single blocker
-
-The console decides which tag pages to request **before** any read, and always
-asks for the NTAG215 set (`00-3b, 3c-77, 78-86` = 540 bytes). A v3 tag's encrypted
-region ends at `0x248` (584 bytes), so that read can never validate one, and the
-console never issues the SRAM sequence that carries the machine block.
-
-### Exhaustively eliminated (every field a controller can influence)
-
-| Field | Result |
-|---|---|
-| `status[16..60]` | **Ignored** — all 45 bytes set to `0xFF`, descriptor and read byte-identical |
-| `status[4]` | NCI RF Discovery ID — `02` hard-crashes the console |
-| `status[5]` | NCI RF Interface — no effect on the descriptor |
-| `status[6]` | Tag IC family (jc_toolkit `buf[62]`) — **must be `0x02`**; `03` makes the console abort before `0x06` |
-| `status[7]` | NCI RF Tech/Mode — `01`/`03` crash, `02` aborts the read |
-| `prefix[18]` | jc_toolkit's NTAG model byte — **no effect on Switch 2** |
-| `0x0C` reply | Matched a genuine PC2 byte-for-byte (`61 12 50 0d`) — no effect |
-| Capability container | `F1 10 FF EE` on **both** 540 and v3 tags — cannot discriminate |
-| Controller firmware version | Ruled out: amiibo work on un-updated controllers |
-
-The `0x05` status is a condensed **NCI `RF_INTF_ACTIVATED_NTF`** passthrough from
-the controller's **PN7160** front-end. An NTAG I2C 2K is also T2T / NFC_A-passive,
-so that structure is **identical for both chips and can never distinguish them**.
-
-### Approaches rejected (do not retry)
-
-- **Serving a v3 tag as a 540-byte amiibo** (compat view, or re-signed with the
-  owner's keys via `tools/amiibo_v3_to_540_resign.mjs`). Both produce
-  cryptographically valid tags, and both are wrong in principle: the rider
-  figurine does not scan at all without its machine — the machine is the antenna
-  *and* holds the I2C device that answers the SRAM pass-through. A rider-only
-  540 tag is not a degraded Kirby amiibo, it is not one.
-- **Restoring the 60-byte prefix in front of a 1024-byte payload** — exceeds the
-  console's ~1050-byte read window, `last=1` never arrives.
-- **Sweeping enum values by crash-oracle** — unbounded, and each wrong value hard
-  crashes the console (`2011-0301`).
-
-### Useful context
-
-`2115-0176` is the console's **generic "this tag failed validation"**, not a
-tag-type rejection: r/Switch `1pvfm1v` documents a **genuine retail** Kirby amiibo
-producing the identical symptoms (`2115-0176` in-game, "Not an amiibo" in System
-Settings) across multiple Switch 2s — it was simply a defective tag.
-
-### To resume
-
-> **Prepared 2026-07-27:** the capture procedure is now written up step by step in
-> [`experiments/v3-amiibo-genuine-capture-runbook.md`](experiments/v3-amiibo-genuine-capture-runbook.md),
-> dry-run against live hardware. Two blockers were found and fixed while preparing it: the trace
-> buffer would have truncated read-buffer replies (72-byte payload vs 128-byte mirrored responses)
-> and could wrap mid-session, and the local serve path was consulted *before* the mirror, so it
-> could answer the console even with an empty slot and return an empty capture. Ejecting the
-> virtual slot is consequently no longer a precondition.
-
-The one thing that would unblock this is **observing a genuine controller read a
-genuine v3 amiibo once** — the repo already has the instrument for it
-(`nfcmirror`, `src/bt_hid/bt/btstack/btstack_host.c`), which forwards the console's
-NFC commands to a paired genuine Pro Controller 2 and returns its real replies to
-the tracer. Requirements: a genuine Switch 2 controller over BT, `nfcmirror on`,
-and the virtual slot **ejected** so the local serve path does not intercept.
-That capture would show the real tag-type signal directly, and everything else is
-already built to act on it.
-
----
-
-## 15. The `0x21` device command (2026-07-27)
-
-**Status: 🟡 identified from genuine captures, implemented, hardware test pending.**
-
-### 15.1 Retraction — there is no dynamic SRAM window
-
-§14.7.5 claimed the genuine read prefix field `prefix[19..50]` was an SRAM window that took two
-distinct values ("A" and "B") for the same physical tag within one session, and that the serve path
-should reproduce the "B" value. **That is wrong and is withdrawn.**
-
-Re-reading both genuine captures record by record:
-
-| Capture | Reads | `prefix[19..50]` |
-|---|---|---|
-| `v3-genuine-capture-2026-07-27.jsonl` | 5 | `80925007…E895C086` on every one |
-| `v3-genuine-capture2-2026-07-27.jsonl` | 6 | `80925007…E895C086` on every one |
-
-The value is **constant** across 11 reads, two sessions, and every descriptor variant
-(3-block, 4-block, and the single-page `03-03` read). There is no A→B transition to explain.
-
-The "B" value came from a **different operation** and was misattributed. It appears only in
-records `seq 69/143/161` (capture 1) and `seq 137/211/229` (capture 2), where the buffer's first
-byte is `0x18` rather than the `0x04` of a tag read. Those are replies to the `0x14`/`0x21`
-sequence described below — never to a `0x06` read.
-
-The cost of the error was one hardware test that served the right bytes in the wrong place.
-
-### 15.2 `0x21` is v3-specific
-
-Subcommand `0x21` appears in **no** NTAG215 flow. Counting console→device subcommands across every
-capture in `dumps/`:
-
-| Capture | Has `0x21` |
-|---|---|
-| `ntag215-genuine-capture-2026-07-27.jsonl` | no |
-| `amiibo-540-working-read-2026-07-26.jsonl` (successful 540 read **and** write) | no |
-| `virtual-amiibo-*` (validated write lifecycle) | no |
-| `v3-genuine-capture*.jsonl` | **yes** (3 and 4 occurrences) |
-
-So `0x21` is not part of the ordinary amiibo protocol at all. It is the step a v3 tag adds.
-
-### 15.3 The sequence
-
-Genuine, `v3-genuine-capture-2026-07-27.jsonl` seq 62-71:
-
-```
-62  C->D  0x14  offset=0 len=0x4A   D0 07 | 049011CADB1F90 | 01 01 | 00…    stage device command
-63  D->C  0x14  ACK
-64  C->D  0x21  (no payload)                                                execute
-65  D->C  0x21  ACK
-66  C->D  0x05  status
-67  D->C  0x05  state = 0x18            <-- not 0x04
-68  C->D  0x15  offset 0
-69  D->C  0x15  70 bytes, flags 0x00
-70  C->D  0x15  offset 0x46
-71  D->C  0x15  13 bytes, flags 0x01    <-- 83-byte result buffer
-```
-
-Ours, `v3-serve-sram-2026-07-27.jsonl` seq 60-72 — identical up to the execute, then:
-
-```
-62  C->D  0x21
-63  D->C  0x21  ACK
-66  C->D  0x05  status
-67  D->C  0x05  state = 0x04            <-- unchanged; nothing was produced
-64  C->D  0x04  stop
-66  C->D  0x03  restart discovery       <-- the "waits forever" loop
-```
-
-`0x21` fell through to `default:` and was answered with a bare ACK. The console has no result to
-read, so it abandons the tag and restarts polling. This is exactly the reported symptom: *"just
-waited for an amiibo to be scanned."*
-
-### 15.4 The result buffer
-
-83 bytes, reassembled from seq 68-71:
-
-```
-000  18 00 00 00 01 02 00 07  04 90 11 CA DB 1F 90 00
-010  00 00 06 02 00 73 2A B4  1C 4A C2 91 B9 A5 98 3C
-020  03 94 00 C9 00 0A 50 42  34 57 31 37 20 01 01 02
-030  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00
-040  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00
-050  00 7A C4
-```
-
-| Offset | Meaning | Confidence |
-|---|---|---|
-| `[0]` | result type `0x18` (a tag read uses `0x04`) | ✅ Confirmed |
-| `[4..7]` | `01 02 00 07` — as in a read prefix; `[7]` is the UID length | ✅ Confirmed |
-| `[8..14]` | tag UID | ✅ Confirmed |
-| `[18]` | `0x06` — same escalation byte as the read prefix | ✅ Confirmed |
-| `[19..50]` | 32-byte device response | ✅ Confirmed present, 🔵 contents |
-| `[51..79]` | zero | ✅ Confirmed |
-| `[80..82]` | `00 7A C4` | 🔴 Unidentified |
-
-The device response at `[19..50]` decomposes against the stored image at `0x3C0`:
-
-```
-genuine  02 00 | 732AB41C4AC291B9A5983C0394 00 | C9 00 0A | "PB4W17 " | 01 01 02 00 00 00
-image    02 00 | 4C980F696FCF5128F89ED4B5AB 00 | 9C 00 01 | "PB4W17 " | 01 01 02 00 00 00
-```
-
-Same header, same ASCII product code `50 42 34 57 31 37 20` = `"PB4W17 "`, same 6-byte tail. The
-14-byte middle and the 3 bytes before the product code are per-tag — and the two samples *are*
-different physical tags (`049011CADB1F90` captured vs `04B4438ADB1F90` uploaded), which accounts
-for the difference without requiring a live challenge/response.
-
-This is what xSke's pixl.js PR #381 means by *"a 2048-byte file with the expected response already
-placed in the SRAM buffer"*: the response is **stored in the image**, not computed. That is why
-key-less tools can support these tags.
-
-### 15.5 What was implemented
-
-`ns2_v3_serve()` (`src/switch_pro2/switch_pro2.c`):
-
-- `0x14` records that a device command was staged, gated on offset 0 and a UID match, so it cannot
-  be confused with the NTAG215 write path.
-- `0x21` builds the 83-byte result buffer, sets status `0x18`, and marks the operation active so the
-  existing `0x15` chunker serves it.
-- `[19..50]` comes from `image[0x3C0..0x3DF]`, the SRAM window.
-
-### 15.6 ❌ RETRACTED — the 23-byte body is invariant
-
-**Correction (2026-07-28):** the complete result is a 19-byte controller header plus all 64 bytes
-of `image[0x3C0..0x3FF]`. The final two bytes are CRC-16/MCRF4XX over the preceding 62 SRAM bytes.
-`7A C4` was constant only because both captures used the same physical figure. An untouched
-downloaded Kirby/Warp response carries `E5 11`; Meta/Shadow carries `30 61`. Serving the complete
-stored response made the downloaded dump read and write successfully with no signature override.
-See §19 and
-[`experiments/v3-full-sram-response-validation-2026-07-28.md`](experiments/v3-full-sram-response-validation-2026-07-28.md).
-
-The body at `[60..82]` is zeros ending in `00 7A C4`, and it is **byte-identical across all six
-genuine result buffers** in both captures:
-
-| Capture | `0x21` at seq | body |
-|---|---|---|
-| 1 | 64, 138, 156 | `00…00 7A C4` |
-| 2 | 132, 206, 224 | `00…00 7A C4` |
-
-**It does not carry written user data.** 23 bytes is close to an amiibo nickname (20 bytes, 10
-UTF-16 characters), which makes that a reasonable hypothesis, but the data rules it out: capture 1
-commits a write at seq 186, and capture 2 is a *later session* — the tag already carried its owner
-and nickname — yet capture 2's buffers equal capture 1's pre-write ones exactly. Owner and nickname
-live in the tag's encrypted region and are delivered through the `0x06` read path instead.
-
-It also matched **no** CRC-16 variant (CRC-A, CRC-B, CCITT-FALSE, XMODEM, MODBUS, KERMIT) over any
-contiguous prefix of the buffer, so it is not a simple checksum.
-
-Because it is constant and 20 of 23 bytes are confirmed zero, the serve path **reproduces the
-observation** rather than sourcing it from `image[0x3E0]`: a non-zero region there would emit bytes
-the genuine reader never sends. Sourcing it from the image was the first implementation and was
-wrong for that reason.
-
-**Remaining unknown:** whether `7A C4` is tag-specific. Only one physical tag has been observed.
-Reading a second tag with `tools/nfc_probe.ps1` (§16) settles it — a bench measurement now, not a
-console capture.
-
----
-
-## 16. Interrogating a genuine controller directly (2026-07-27)
-
-**Status: ✅ implemented, host-tested, hardware test pending.**
-
-The `nfcmirror` bridge was purely reactive: it forwarded whatever the console asked and returned the
-genuine reply. Every question therefore cost a full console capture, and questions the console never
-happens to ask could not be asked at all.
-
-It now has an **initiator** mode. UART originates NFC commands and reads the genuine controller's
-replies, with **no console in the loop** — the bridge is BLE-only, gated on `sw2_init_state` and a
-connected `0x2069`, so it needs nothing but a powered dongle and a paired Pro Controller 2.
-
-This makes a genuine controller an interrogatable oracle: arbitrary console-visible page ranges,
-arbitrary controller commands, repeatable, at bench pace. For NTAG215 those ranges cover the
-complete 540-byte image. For v3, the current `0x06` descriptor uses 8-bit page addresses and cannot
-directly address sector 1, so `nfc_probe.ps1` produces a packed partial snapshot rather than a full
-2048-byte dump.
-
-### 16.1 Firmware
-
-| Symbol | Role |
-|---|---|
-| `ns2_nfc_mirror_set_initiator(bool)` | arms initiator mode; implies `ns2_nfc_mirror_request(true)` |
-| `ns2_nfc_mirror_initiator_submit()` | originate a command |
-| `ns2_nfc_mirror_initiator_take()` | collect the reply |
-
-The two directions are mutually exclusive by construction. While the initiator owns the slot,
-`ns2_nfc_mirror_submit()` and `ns2_nfc_mirror_take_usb_response()` both refuse, and
-`ns2_nfc_mirror_active()` reports false so an attached console sees ordinary local behavior rather
-than a half-mirrored session. `nfcmirror off` clears both flags.
-
-Submission is nonblocking: the BLE round trip is tens of milliseconds and core0 also drives 1 kHz
-USB, so the reply is collected by a separate poll rather than by stalling core0.
-
-### 16.2 UART commands
-
-```
-nfcmirror initiator on|off
-nfcmirror send HEX          # >=8 bytes, <=40 (bounded by the 96-byte RX line)
-nfcmirror reply             # {"ready":false} until the genuine reply lands
-```
-
-40 bytes covers every read-path command; the longest, the `0x06` read descriptor, is 27. Tag writes
-are longer and stay on the console path.
-
-### 16.3 Command vocabulary
-
-Decoded from `v3-genuine-capture-2026-07-27.jsonl`:
-
-| Command | Bytes |
-|---|---|
-| stop | `01 91 00 04 00 00 00 00` |
-| start discovery | `01 91 00 03 00 05 00 00 00 E8 03 2C 01` |
-| status | `01 91 00 05 00 00 00 00` |
-| read descriptor | `01 91 00 06 00 13 00 00` + `timeout16` + `uid[7]` + `type` + `blocks` + `(start,end)x4` |
-| read buffer | `01 91 00 15 00 02 00 00` + `offset16 LE` |
-
-Replies: 8-byte header, then `[8]` flags (bit 0 = final chunk), `[9..10]` chunk length LE, then data.
-Chunks are 70 bytes. The reassembled buffer is a 60-byte prefix followed by tag content.
-
-### 16.4 Driver
-
-`tools/nfc_probe.ps1` does the sequencing on the PC, keeping the firmware a dumb auditable
-transport:
-
-```powershell
-.\tools\nfc_probe.ps1 -Port COM11 -Dump kirby.bin              # complete NTAG215 / partial v3
-.\tools\nfc_probe.ps1 -Port COM11 -Ranges '00-3B,3C-77,78-91,E2-E6'
-.\tools\nfc_probe.ps1 -Port COM11 -Raw '0191000500000000'      # one command, print the reply
-```
-
-`-Dump` writes the packed requested ranges and, alongside them, `<name>.prefix` with the 60-byte
-operation prefix. The default v3 snapshot is 668 bytes: linear pages `00-A1` (648 bytes) followed
-by pages `E2-E6` (20 bytes). It is not a loadable 2048-byte v3 image; sector 1 remains outside the
-current 8-bit range descriptor.
-
----
-
-## 17. Hardware iteration 2026-07-27 — structure solved, content outstanding
-
-**Status: 🟡 the exchange is byte-exact; the console still declines to proceed.**
-
-Five hardware runs in sequence. Each removed one difference from a genuine controller.
-
-| # | Change | Result |
-|---|---|---|
-| 1 | `0x21` device command implemented | Inconclusive — `prefix[18]` regressed (see below) |
-| 2 | `prefix[18]=0x06` moved into the serve path | Escalation restored, `0x21` fired, bare ACK only |
-| 3 | Originality signature served in read `prefix[19..50]` | Read prefix matches genuine except the UID |
-| 4 | `0x21` bumps the report NFC state | Console reads the result buffer; 138 → 1040 records |
-| 5 | State `0x18` reports an empty status payload | `0x18` status byte-identical to genuine |
-
-### 17.1 What is now byte-exact
-
-- **Extended read (664 B).** Identical length, identical structure, `E2-E6` block identical. The
-  60-byte prefix differs from genuine only at bytes 9-11, which are the UID of a different physical
-  tag.
-- **`0x21` result buffer (83 B).** Both `0x15` chunks, 70 + 13; the 13-byte tail is identical.
-- **`0x05` status in state `0x18`.** Empty payload, matching genuine exactly.
-- **All ACKs.** `0x14` and `0x21` replies are byte-identical.
-
-`amiibo v3diag` confirms the path executes: `dev_cmd_staged:3, dev_results:3`.
-
-### 17.2 Two lessons about instrumentation
-
-**A UART override is not a fix.** `prefix[18]=0x06` lived only in the `v3hdr` probe overlay, which
-does not survive a reflash. Run 1 therefore tested nothing: the console never escalated, read a
-540-byte view of a 2 KB tag, and correctly answered "This is not an amiibo". Anything a test depends
-on belongs in the serve path.
-
-**A bare ACK hides everything.** `0x21` replies identically whether or not the staging gate passed,
-so the wire could not distinguish "gate rejected the `0x14`" from "gate passed, console ignored the
-result". The `amiibo v3diag` counters were added to settle that, and did.
-
-### 17.3 The console loops on genuine hardware too
-
-Genuine issues the device command **three times** (capture 1, seq 64/138/156) before breaking out.
-Looping is therefore not itself the failure signal, and a session that loops is not evidence of a
-broken device command.
-
-The breakout is identifiable: at seq 166 the console issues a **targeted descriptor** — UID
-populated, `blocks=1`, range `03-03` — and then the write phase (`0x14` × 6, `0x08` commit). Ours
-never issues that descriptor; every one of ours carries a zero UID and `blocks` 3 or 4.
-
-The ordering also differs. Genuine runs read/read/devcmd, read/read/devcmd, then **devcmd again with
-no intervening read**, then breaks out. Ours returns to a full read cycle after every device
-command.
-
-### 17.4 What remains — content, not structure
-
-Every structural difference is eliminated, so the remaining candidates are values we have never
-validated against the physical figure:
-
-1. **The originality signature.** We serve `80925007…C086`, which belongs to tag
-   `049011CADB1F90`, while the loaded image is `04B4438ADB1F90`. The console does not reject on it
-   up front — it escalated, read everything, and ran the device command — but it may well be
-   required for the console to *proceed*.
-2. **The device response** at result `[19..50]`, served from `image[0x3C0]` of the uploaded dump.
-   Never confirmed against hardware.
-
-Both are readable from a physical tag with `tools/nfc_probe.ps1` (§16): bytes 19-50 of the
-`.prefix` file it writes are the signature.
-
-### 17.5 Next
-
-1. Dump the physical Kirby figure with `nfc_probe.ps1`; take its real signature and device response.
-2. Load the signature with `amiibo v3sig <hex32>` (RAM-only — no reflash between attempts) and
-   retest.
-3. If it still declines, capture a genuine controller reading **the same physical tag** through
-   `nfcmirror`, and diff that against our serve for the same UID. Every prior capture used a
-   different tag, which is what forced the byte 9-11 caveat above.
-
----
-
-## 18. v3 amiibo RECOGNIZED (2026-07-27)
-
-**Status: ✅ read path complete and hardware-confirmed. 🟡 write path implemented;
-hardware validation pending.**
-
-A Switch 2 recognised a virtual v3 (NTAG I2C Plus 2K) amiibo for the first time.
-Evidence: [`../dumps/v3-RECOGNIZED-2026-07-27.jsonl`](../dumps/v3-RECOGNIZED-2026-07-27.jsonl).
-
-The console performed the full genuine sequence, including the breakout that had never occurred
-before:
-
-```
-seq 164  0x06  blocks=1  uid=049011CADB1F90  range 03-03     targeted read
-seq 172  0x14  len 88    D0 07 <uid> 01 06 01 04 FFFFFFFF…   encrypted write
-seq 174-182  0x14 x5                                          remaining chunks
-seq 184  0x08                                                 commit
-```
-
-`amiibo v3diag`: `dev_cmd_staged:5, dev_results:4`.
-
-### 18.1 What actually unblocked it
-
-Not a protocol discovery — a **provenance** fix. Every earlier test served the downloaded
-`Kirby & Warp Star.bin` (UID `04B4438ADB1F90`) while the genuine reference capture was of a
-*different physical copy* of the same character and machine (UID `049011CADB1F90`). The four Warp
-Star dumps in that set share one SRAM block because they were produced from one physical machine
-with four riders, so the block is per-unit, not per-model.
-
-`tools/rebuild_v3_from_capture.py` reassembles the tested tag from its own capture: the 4-block read
-covers 604 bytes (pages `00-3B, 3C-77, 78-91, E2-E6`), which is everything the console ever
-requests, backfilling only never-read bytes from the downloaded dump, plus the `0x21` device
-response carried into `0x3C0` separately because the page read does not reach it. Result:
-`dumps/kirby-warpstar-rebuilt-from-genuine.bin`, crc32 `de7dafc0`.
-
-**Implication for the general case — ⚠️ RETRACTED, see §18.1a.** The original claim here was that a
-v3 image needs its own machine's SRAM block and its own signature, and that a dump from a different
-physical machine can never be accepted. That conclusion is not supported by the evidence: the
-experiment that produced it changed three variables at once.
-
-### 18.1a The provenance conclusion is confounded (2026-07-27)
-
-Between the last failing test with a downloaded dump and the successful test, **three firmware bugs
-were fixed**:
-
-1. `prefix[18] = 0x06` moved from the `v3hdr` UART overlay into `ns2_v3_build_buffer()` — before
-   this, a reflash silently dropped it and the console never escalated to the 4-block descriptor;
-2. the `0x21` device-command result was implemented and made to bump the report NFC state;
-3. `0x05` in state `0x18` was changed to return an empty payload.
-
-The downloaded dump was **never retried on the fixed firmware**. Provenance and firmware are
-therefore confounded, and (1) alone is sufficient to explain every earlier rejection.
-
-A second confound sits on top: `amiibo v3sig` serves the genuine tag's originality signature, which
-is bound to UID `049011CADB1F90`. Serving a downloaded dump pairs that signature with a *different*
-UID. If the console checks signature-against-UID at all, downloaded dumps fail for that reason
-alone — unrelated to SRAM, provenance, or crypto.
-
-**Crypto is definitively not the discriminator.** All 16 downloaded dumps and the accepted rebuilt
-image verify as HMAC-VALID against the owner's `key_retail.bin` (both amiibo HMACs, v3 offsets).
-The firmware serves each image's own UID via `ns2_amiibo_v3_uid(image, uid)`, so the UID/key binding
-is never broken. Retail keys are **not** the missing piece for the read path: a cryptographically
-perfect dump was rejected, and no key material participated in the one that was accepted.
-
-**Machine identity lives entirely in the SRAM block, and it is outside amiibo crypto.** The four
-machine variants of a rider are byte-identical across the whole encrypted body and differ *only* in
-`0x3C0..0x3FF` — 21-22 bytes, all within the SRAM window:
+| `0x01`–`0x05`, `0x54`–`0x59` | rider | UID + amiibo identity block |
+| `0x14`–`0x53` | rider | app-data + tag HMAC |
+| `0x60`–`0x247` | rider | keygen salt + encrypted data, extending past the classic 540-byte (`0x21C`) boundary |
+| `0x248`–`0x3C1` | constant | fixed template / zero |
+| `0x3C2`–`0x3FF` | **machine** | Figure-Player machine block (see below) |
+
+The four machine variants of a rider are byte-identical across the whole encrypted body and differ
+only inside `0x3C0..0x3FF`:
 
 ```
 Kirby & Shadow Star   0200 D5403A7B9CE69F88983EF9B0 6200 2D 00 05 "PB5T432" 01 01 04 000000
@@ -1299,41 +72,232 @@ genuine Warp Star     0200 732AB41C4AC291B9A5983C03 9400 C9 00 0A "PB4W717" 01 0
 ```
 
 All four downloaded variants share one UID (`04B4438ADB1F90`) — they are the *same physical figure*
-re-configured four times, not four figures. So: **rider identity is in the encrypted body, machine
-identity is in SRAM.** The 12-byte blob at `0x3C2` is per-unit (it differs even between the genuine
-and downloaded Warp Star); the ASCII code plus the `01 01 0X` byte is per-machine and is shared
-between the genuine figure and the downloaded Warp Star dump.
+re-configured four times, not four figures. The 12-byte blob at `0x3C2` is **per-unit** (it differs
+even between the genuine and downloaded Warp Star); the ASCII product code plus the `01 01 0X` byte
+is **per-machine**. Two machines can share the ASCII code (Warp Star and Winged Star are both
+`PB4W717`) but differ in the blob and the `01 01 0X` byte, so machine identity is the binary block,
+not the ASCII string.
 
-### 18.2 The signature is not in the dump
+The standard app-data region (`0xA0`–`0x1B4`) is identical across a rider's four machines, so the
+machine is **not** in the classic writable save area.
 
-Searching all 16 confirmed-working dumps for the known 32-byte signature finds nothing, yet those
-files work on pixl.js. The earlier reading — "so the console does not validate the signature" — is
-weaker than stated: pixl.js may synthesise or supply a signature of its own, so its success does not
-establish that the console ignores one. What *is* established is that the signature is required
-structurally in read `prefix[19..50]`, which is why `amiibo v3sig` exists. Whether it is checked
-against the UID is **⬜ untested**, and is exactly what Test A in §18.4 resolves.
+### 1.2 The RF layer (context only — not our wire)
 
-Flashiibo Pro firmware `Pro_Firmware_OTA_26.7.2` contains `pixljs.bin`: Flashiibo Pro **is** pixl.js,
-making xSke's PR #381 the direct reference implementation rather than an analogue.
+What a real reader does, for orientation: `SECTOR_SELECT` (`0xC2`) + sector byte, then
+`READ`/`FAST_READ` addressing `full_page = sector*256 + page`. For SRAM: `FAST_WRITE` a request
+block to `0xF0`–`0xFF`, poll page `0xED` until `NS_REG` byte 2 bit 3 (`SRAM_RF_READY`) is set, then
+`FAST_READ` `0xF0`–`0xFF`. Genuine dumps store that bit **clear** (`0x21`); emulators raise it
+dynamically (`0x29`), and PicoSwitch2 injects it while serving and restores it before commit.
 
-Flashiibo Pro firmware `Pro_Firmware_OTA_26.7.2` contains `pixljs.bin`: Flashiibo Pro **is** pixl.js,
-making xSke's PR #381 the direct reference implementation rather than an analogue.
+**None of these commands appear on the controller↔console wire.** See §2.
 
-### 18.3 What froze, and the implemented correction
+## 2. Why the layer matters
 
-The first owner attempt froze because `ns2_v3_serve()` treated every `0x14` as device-command
-staging and did not handle `0x08`. The console had sent a complete write but never received the
-write-complete lifecycle it expected.
+pixl.js and Flashiibo emulate the **tag** over RF. A genuine controller is their reader; it issues
+`GET_VERSION`, learns the chip is a 2K part, and performs the sector selects and SRAM handshake
+itself.
 
-The two `0x14` forms are now distinguished by capture, not guesswork:
+PicoSwitch2 emulates the **controller**. The console tells *us* which pages to fetch, and we
+synthesize the read-buffer prefix a genuine controller would have built.
+
+| | pixl.js / Flashiibo | PicoSwitch2 |
+|---|---|---|
+| Emulates | the **tag** (RF side) | the **controller** (USB/BLE side) |
+| Who builds the 60-byte read prefix | a genuine Pro Controller 2, by reading the tag | **we** must synthesize it |
+| Must answer `READ_SIG`, `SECTOR_SELECT` | yes, as a tag | n/a |
+
+This is why their reference implementation cannot be copied directly — it solves the adjacent
+problem — and why the v3 signal turned out to live in a field we generate rather than in the tag
+data.
+
+Flashiibo Pro firmware `Pro_Firmware_OTA_26.7.2` contains `pixljs.bin`: Flashiibo Pro **is**
+pixl.js, so PR #381 is the direct reference implementation rather than an analogue.
+
+## 3. Console-facing protocol map (Confirmed)
+
+Top-level command `0x01` = MCU/NFC.
+
+| Sub | Meaning | v3-only |
+|---|---|---|
+| `0x03` | start polling — `00 <timeout u16le> <interval u16le>` | |
+| `0x04` | stop polling | |
+| `0x05` | MCU/NFC state — 61-byte payload | |
+| `0x06` | read device (issue tag read) | |
+| `0x08` | commit staged ordinary write | |
+| `0x14` | write buffer (stages a device command **or** a tag write — see §3.3) | |
+| `0x15` | read buffer — `[last:u8][len:u16le][data ≤70]` | |
+| `0x16` | empty-state status reported after a genuine `0x20` completion | ✅ |
+| `0x18` | result-buffer state for a staged device command | ✅ |
+| `0x1E` | sector-aware extended read (written-tag reuse) | ✅ |
+| `0x20` | extended (Air Riders game-data) operation terminator | ✅ |
+| `0x21` | execute the staged SRAM device command | ✅ |
+
+`0x1E`, `0x20`, and `0x21` appear in **no** NTAG215 flow. Counted across every capture in `dumps/`:
+the NTAG215 control, the working 540 read/write, and the whole `virtual-amiibo-*` lifecycle set
+contain zero occurrences; the v3 captures contain several each.
+
+### 3.1 The `0x06` read descriptor
+
+```
+[0..1] timeout u16 LE   [2..8] UID   [9] tag type   [10] block count   [11..] (start,end) × N
+```
+
+> ⚠️ Bytes 0–1 are a **timeout**, not a fixed `D0 07` marker. `D0 07` = 2000 ms; the extended
+> descriptor uses 3000 ms (`B8 0B`). A gate that required literal `D0 07` silently rejected every
+> extended descriptor. Gate on structure, accept any timeout.
+
+Observed descriptors in one genuine v3 session:
+
+| # | Timeout | Blocks | Ranges | Size |
+|---|---|---|---|---|
+| 1 | 2000 ms | 3 | `00-3B, 3C-77, 78-86` | 540 B — the NTAG215 set |
+| 2 | 3000 ms | **4** | `00-3B, 3C-77, 78-91, E2-E6` | **604 B** |
+| 3 | 2000 ms | 1 | `03-03` | 4 B — the targeted pre-write read |
+
+The NTAG215 control issues **only** descriptor #1 and stops. The escalation is v3-specific and
+happens *after* the first read.
+
+### 3.2 The read buffer and its prefix
+
+Reply layout: `[8-byte header][flags, len16][60-byte prefix][tag image]`.
+
+| Off | Size | Meaning |
+|---:|---:|---|
+| 0 | 4 | `04 00 00 00` (result type `0x04` = tag read) |
+| 4 | 4 | identity/type `01 02 00 07` |
+| 8 | 7 | UID |
+| 15 | 3 | zero |
+| **18** | **1** | **v3 escalation byte — `0x06`** |
+| 19 | 32 | originality-signature slot (zero is accepted; see §14) |
+| 51 | 9 | echo of the `0x06` block count and ranges |
+| 60 | … | tag image |
+
+**Prefix byte 18 = `0x06` is the entire v3 signal, and it is sufficient on its own.** Verified
+directly: with bytes 19–50 left zero, the console still issued the 4-block descriptor and read all
+664 bytes. Bytes 19–50 have no bearing on the escalation decision.
+
+**Read loop:** the console pulls 70-byte chunks until it receives `last=1`, with a hard cap of
+**15 chunks / offset < 1024** (~1050 bytes). Proven twice: given a 2108-byte buffer it stopped at
+chunk 15 without `last=1`.
+
+The NTAG215 control read is `8×70 + 1×40 = 600 = 60 + 540`. The v3 extended read is 664 bytes.
+
+### 3.3 The two `0x14` forms
+
+Distinguished by capture, not guesswork:
 
 | Form | Offset-zero body | Length / completion |
 |---|---|---|
-| SRAM device command | `D0 07 <uid> 01 01 …` | exactly 74 bytes, execute with `0x21` |
-| Mutable tag write | `D0 07 <uid> 01 06 …` | 454 bytes across six chunks, commit with `0x08` |
+| SRAM device command | `<timeout> <uid> 01 01 …` | exactly 74 bytes, executed with `0x21` |
+| Mutable tag write | `<timeout> <uid> 01 06 …` | 454 bytes across six chunks, committed with `0x08` |
+| Extended Air Riders operation | `<timeout> <uid> 01 06 …` | 355 or 167 bytes, terminated with `0x20` (§6) |
 
-The six captured chunks are offsets `0,76,152,228,304,380` with declared lengths
-`76,76,76,76,76,74`. Their three records are:
+### 3.4 The `0x05` status can never discriminate tag type
+
+Genuine bytes: `09 00 00 00 01 01 02 00 07 <uid×7>` then 45 zeros — **byte-identical** between a
+v3 tag and an NTAG215 except for the UID, confirmed directly by the paired genuine captures.
+
+`status[4..8]` is a straight passthrough of the NCI `RF_INTF_ACTIVATED_NTF` from the controller's
+**PN7160** front-end:
+
+| Byte | NCI field | Value |
+|---|---|---|
+| `[4]` | RF Discovery ID | `01` |
+| `[5]` | RF Interface | `01` = Frame |
+| `[6]` | RF Protocol | `02` = T2T |
+| `[7]` | RF Technology & Mode | `00` = NFC_A passive poll |
+| `[8]` | NFCID1 length | `07` |
+| `[9..]` | NFCID1 | UID |
+
+An NTAG I2C 2K is **also** T2T / NFC_A passive, so the status is identical for both chips. This
+closes that avenue permanently. Bytes `[16..60]` are provably ignored (all 45 set to `0xFF`:
+descriptor and read byte-identical).
+
+Deviating from the genuine values is destructive, which is why the elimination sweep was expensive:
+
+| `status[7]` | Console behaviour |
+|---|---|
+| `00` (genuine, NFC_A passive) | Normal read |
+| `01` / `03` (NFC_B / NFC_F) | **Hard crash 2011-0301** |
+| `02` (NFC_A active) | Never issues a read; loops poll → status → stop |
+
+`status[4] = 02` also hard-crashes. `status[6]` must be `0x02`; `03` aborts before `0x06`.
+
+## 4. Read path
+
+1. Console polls (`0x03`), reads status (`0x05`), issues the 3-block 540-byte descriptor (`0x06`).
+2. We serve the descriptor-selected pages behind the 60-byte prefix with **byte 18 = `0x06`**.
+3. Console escalates: a 4-block, 604-byte descriptor reaching page `0x91` plus a separate `E2-E6`
+   config block. We serve those ranges from the raw 2048-byte image.
+4. Console stages the SRAM device command (`0x14`) and executes it (`0x21`) — §5.
+5. Console issues the targeted `03-03` read, then either accepts the figure or proceeds to a write.
+
+A 540-byte request still routes to the compatibility view; anything reaching past it serves from the
+raw 2 KB image.
+
+## 5. The `0x21` device command and the SRAM response
+
+Genuine sequence:
+
+```
+C->D  0x14  offset=0 len=0x4A   <timeout> <uid> 01 01 00…    stage device command
+D->C  0x14  ACK
+C->D  0x21  (no payload)                                     execute
+D->C  0x21  ACK
+C->D  0x05  status
+D->C  0x05  state = 0x18            <-- not 0x04
+C->D  0x15  offset 0   -> 70 bytes, flags 0x00
+C->D  0x15  offset 0x46 -> 13 bytes, flags 0x01              83-byte result buffer
+```
+
+Answering `0x21` with a bare ACK is **not** sufficient: the console has no result to read, abandons
+the tag, and restarts polling — the "just waits for an amiibo to be scanned" symptom. The `0x21`
+handler must also bump the report NFC state, and `0x05` in state `0x18` must return an **empty**
+payload (matching genuine).
+
+### 5.1 The 83-byte result buffer
+
+```
+[0..18]   19-byte controller header
+[19..82]  image[0x3C0..0x3FF] — the COMPLETE 64-byte SRAM response
+```
+
+Header fields: `[0]` result type `0x18`; `[4..7]` `01 02 00 07`; `[8..14]` UID; `[18]` `0x06`, the
+same escalation byte as the read prefix.
+
+**SRAM bytes 62–63 are the big-endian CRC-16/MCRF4XX over bytes 0–61.** They are per response, not
+a fixed controller constant:
+
+| Image | SRAM CRC |
+|---|---:|
+| Captured genuine Warp Star | `7A C4` |
+| Downloaded Warp Star (all four riders) | `E5 11` |
+| Downloaded Winged Star (all four riders) | `BB 21` |
+| Downloaded Tank Star (all four riders) | `25 63` |
+| Downloaded Shadow Star (all four riders) | `30 61` |
+
+All 16 supplied dumps pass both amiibo HMAC verification and the full-SRAM CRC check. The CRC
+groups by machine because a rider's four variants reuse the same machine response.
+
+Response structure, against a stored image:
+
+```
+02 00 | <12-byte per-unit blob> 00 | <3 bytes> | "PB4W17 " | 01 01 0X 00 00 00 | … | <CRC16>
+```
+
+This is what xSke's PR #381 means by *"a 2048-byte file with the expected response already placed in
+the SRAM buffer"*: the response is **stored in the image**, not computed. That is why key-less tools
+support these tags, and why no originality signature or `key_retail.bin` is required.
+
+Evidence:
+[`experiments/v3-full-sram-response-validation-2026-07-28.md`](experiments/v3-full-sram-response-validation-2026-07-28.md).
+
+## 6. Write paths
+
+### 6.1 Ordinary write (`0x14` × 6 → `0x08`)
+
+Six chunks at offsets `0, 76, 152, 228, 304, 380` with declared lengths `76,76,76,76,76,74` = 454
+bytes. Its three records:
 
 | Page | Address | Length |
 |---|---:|---:|
@@ -1341,431 +305,321 @@ The six captured chunks are offsets `0,76,152,228,304,380` with declared lengths
 | `0x30` | `0x0C0` | 240 |
 | `0x6C` | `0x1B0` | 152 |
 
-That is 424 mutable bytes ending exactly at `0x248`. `ns2_amiibo_v3_write_commit()` validates full
-coverage, UID, header, record count, every record/range, and trailing padding before changing the
-image. It protects bytes below `0x14` and at/above `0x248`; the synthetic SRAM-ready bit used while
-serving is restored before commit.
+424 mutable bytes ending exactly at `0x248`. `ns2_amiibo_v3_write_commit()` validates full coverage,
+UID, header, record count, every record/range, and trailing padding before changing the image. It
+protects bytes below `0x14` and at/above `0x248`, and restores the synthetic SRAM-ready bit before
+commit. Completion reports status `05 00`.
 
-The store then applies the candidate only if the selected image generation and first nine
-identity/internal bytes still match. Success increments generation, marks dirty/unpersisted,
-requests an alternating-bank flash snapshot, schedules the 700 ms report-state completion edge,
-and defers Stop's logical TagRemoved until the snapshot verifies. The next scan re-presents the
-same updated image.
+### 6.2 Kirby Air Riders extended operation (`0x14` × N → `0x20`)
 
-Config/UART status now reports v3 size, contiguous UID, generation, payload CRC, dirty and
-persisted state. Bounded reads expose all 2048 bytes, and the portal's Sync path replaces the old
-content-keyed IndexedDB record only after validation. `amiibo v3diag` adds accepted-chunk,
-commit, and write-error counters.
+Two envelope shapes, both sector-aware record lists. Byte 22 is the record count; each record is
+`(sector:u8, page:u8, length:u8, data[length])`.
 
-Automated evidence: `tools/test_ns2_amiibo_v3_write.c` covers the exact captured layout and
-retry/conflict, incomplete, UID mismatch, protected-page, out-of-range, and trailing-data failures.
-All host tests and both firmware builds pass. **No real-console v3 write success is claimed yet.**
+| Body | Records | Purpose |
+|---|---|---|
+| 355 bytes | `(0, 0x92, 0xF0)`, `(0, 0xCE, 0x50)` | all-zero clear of `0x248..0x387` |
+| 167 bytes | `(0, 0x04, 4)`, `(0, 0x92, 0x20)`, `(1, 0x01, 0x60)` | the update |
 
-### 18.4 ❌ SUPERSEDED — signature/carrier experiment plan
-
-Section §19 refutes this branch: the downloaded dump works with no signature override once the
-complete 64-byte SRAM response (including its own CRC) is carried into the `0x21` result. The plan
-is retained to show why the controlled tests were run; it is not current work.
-
-Run these in order. Each costs one UART upload and one scan — no reflash. `amiibo v3sig` is RAM-only,
-so re-send the signature after any reboot.
-
-**Test A — does *any* signature load *any* v3 amiibo? (owner's test, and the right one to run
-first).** Serve the downloaded `Meta Knight/Meta Knight & Shadow Star.bin` (UID `04988B22AB1F90`)
-with the Kirby figure's signature still set.
-
-This deliberately maximises the number of things that are wrong at once: different rider, different
-machine, different UID, and a signature bound to a UID the tag does not have. That is the point —
-a pass here is the single most informative result available, because it collapses several open
-questions simultaneously. A more conservative test that passes would leave most of them open.
-
-| Outcome | Conclusion |
-| --- | --- |
-| Recognised | The signature is **not** UID-bound and **any signature loads any v3 dump**. §18.1 fully retracted; per-figure capture is retired; retail keys stay irrelevant; the whole downloaded library becomes usable immediately. |
-| Rejected | Some variable matters, but not which one. Go to Test A2. |
-
-**Test A2 — narrow it (only if A fails).** Serve the downloaded `Kirby/Kirby & Warp Star.bin` (UID
-`04B4438ADB1F90`). This shares the genuine figure's machine SRAM fields (`"PB4W717"` + `01 01 02`)
-and rider, so it differs from the known-good baseline in little more than UID, the per-unit `0x3C2`
-blob, and signature-binding.
-
-| Outcome | Conclusion |
-| --- | --- |
-| Recognised | Rider/machine identity was the blocker in A, not the signature. Downloaded dumps work when the machine block matches a figure the console will accept. |
-| Rejected | The signature is UID-bound, or something per-unit is genuinely required. Now Test B is worth building. |
-
-**Test B — the carrier hypothesis (only if BOTH A and A2 fail; this is where retail keys earn their
-keep).**
-Using `key_retail.bin`, decrypt a downloaded dump, rewrite its UID block to `049011CADB1F90` — the
-one UID for which we hold a genuine originality signature *and* a genuine SRAM block — then re-HMAC
-and re-encrypt against the new seed. Splice in the genuine SRAM block at `0x3C0`. The result is a
-crypto-valid tag whose UID, signature, and SRAM all belong to the owner's real figure.
-
-`tools/amiibo_v3_to_540_resign.mjs` already performs exactly this transform (its target is the
-540-byte container instead of a new v3 UID), so the re-sign step is a variation on working code, not
-new crypto work.
-
-If B succeeds, **one genuine captured figure becomes a carrier for every rider**: swap the encrypted
-body for a different character, keep the carrier's UID/signature/SRAM, and the console accepts it.
-Combined with the §18.1a finding that the machine lives in SRAM's ASCII + `01 01 0X` fields, that
-would make all 4 riders × 4 machines reachable from a single physical figure.
-
-Note the standing constraint in `[[amiibo-crypto-constraint]]`: key-based *generation* was removed
-from the portal at the owner's direction and the portal remains import-only. Test B is an offline
-research tool under `tools/`, run against the user's own keys and their own figure — it is not a
-portal feature and must not become one without an explicit request.
-
-**Then, independent of A/B:**
-
-1. Hardware-validate the implemented v3 write lifecycle: owner/format write, `05 00`, durable
-   Stop/eject, next-scan updated readback, Config Sync, and power-cycle recovery.
-2. Have `nfc_probe.ps1` capture signature and SRAM block directly, so a user can enrol their own
-   figure without needing a console capture first. The detection fix `8ec4f3d` is still
-   hardware-untested.
-3. Persist the signature alongside the v3 image rather than requiring `amiibo v3sig` after a reflash.
-
----
-
-## 19. General 2048-byte dumps recognized and written (2026-07-28)
-
-**Status: ✅ hardware-confirmed.**
-
-An untouched community `Kirby & Warp Star.bin` (2048 bytes, UID `04B4438ADB1F90`, CRC32
-`40762971`) completed the full real-console read and write path. No signature was supplied
-(`signature_set=false`) and no key-based transformation was performed.
-
-Evidence:
-
-- [`../dumps/v3-downloaded-kirby-warp-read-write-2026-07-28.jsonl`](../dumps/v3-downloaded-kirby-warp-read-write-2026-07-28.jsonl)
-- [`../dumps/v3-downloaded-kirby-warp-written-2026-07-28.bin`](../dumps/v3-downloaded-kirby-warp-written-2026-07-28.bin)
-- [`experiments/v3-full-sram-response-validation-2026-07-28.md`](experiments/v3-full-sram-response-validation-2026-07-28.md)
-
-### 19.1 The exact missed framing
-
-The 83-byte `0x21` result is:
-
-```
-[0..18]   controller result header
-[19..82]  image[0x3C0..0x3FF] — complete 64-byte SRAM response
-```
-
-The final two SRAM bytes are the big-endian CRC-16/MCRF4XX over the preceding 62 bytes:
-
-| Image | SRAM CRC |
-|---|---:|
-| Captured genuine Warp Star | `7A C4` |
-| Downloaded Warp Star (all riders) | `E5 11` |
-| Downloaded Winged Star (all riders) | `BB 21` |
-| Downloaded Tank Star (all riders) | `25 63` |
-| Downloaded Shadow Star (all riders) | `30 61` |
-
-All 16 supplied images pass both amiibo HMAC verification and the complete SRAM-response CRC.
-
-The old implementation copied only SRAM bytes `0..31`, zeroed bytes `32..61`, and forced `7A C4`.
-That happened to reconstruct the captured figure's response and reject every differently keyed
-machine response. xSke's description that the expected response is already placed in the SRAM
-buffer was literal for all 64 bytes, not only the first 32.
-
-### 19.2 Captured success
-
-The trace contains three 83-byte device results. Every result has type `0x18`, the downloaded UID,
-and a byte-exact copy of its full SRAM ending `E5 11`. The console then sends six write chunks at
-offsets `0,76,152,228,304,380`, commits with `0x08`, observes state `0x05`, and stops normally.
-
-UART diagnostics after the scan:
-
-```
-dev_cmd_staged=3  dev_results=3
-write_chunks=6    write_commits=1    write_errors=0
-generation=2      dirty=true         persisted=true
-```
-
-The exported updated image is HMAC-valid, retains the original SRAM byte-for-byte, and contains
-nickname `Test` / owner `Miles`. Its dirty state remains deliberately unacknowledged for the
-separate Config portal Sync test.
-
-### 19.3 Consequences
-
-- Valid 2048-byte dumps need no separate originality signature.
-- `key_retail.bin` is not part of normal import or serving.
-- Carrier UID/SRAM re-signing is unnecessary.
-- `amiibo v3sig` remains a UART research override only.
-- The rebuild tool must copy the full captured 64-byte device response; the corrected baseline is
-  CRC32 `8D337603`.
-
----
-
-## 20. Kirby Air Riders game-data operation (2026-07-28)
-
-**Status: 🟡 exact wire framing captured; non-mutating completion and corrected
-TagRemoved/cooldown are hardware-confirmed; extended-data persistence remains unknown.**
-
-After Meta Knight & Shadow Star completed the recognized figure read, Kirby Air Riders issued a
-second transaction that is structurally different from the owner/format write in §19:
-
-| Field | Captured value |
-|---|---|
-| command | five `0x14` chunks, then `0x20` |
-| offsets / lengths | `0/76`, `76/76`, `152/76`, `228/76`, `304/51` |
-| assembled length | 355 bytes |
-| timeout `[0..1]` | `88 13` = 5000 ms, little-endian |
-| UID `[2..8]` | selected figure UID `04988B22AB1F90` |
-| tag IC / operation `[9..10]` | `01 06` |
-| normal record count `[21]` | `00` |
-| following descriptor `[22..25]` | `02 00 92 F0` |
-| terminator | `0x20`, empty payload |
-
-Primary evidence:
-[`../dumps/v3-kirby-air-riders-game-write-lock-2026-07-28.jsonl`](../dumps/v3-kirby-air-riders-game-write-lock-2026-07-28.jsonl).
-
-The old classifier treated `D0 07` as a fixed header and every `01 06` operation as the 454-byte
-record writer. Both assumptions are disproven here: bytes 0–1 are a timeout, and the game
-transaction has zero record count, a different length, and a different terminator. All five chunks
-were rejected, increasing `write_errors` from 10 to 15; `0x20` then received only a bare ACK, the
-next status was `07 41`, and the game locked. The exported image stayed byte-identical because no
-chunk reached the mutable-image commit.
-
-The public [Switchbrew Switch 2 NFC service map](https://www.switchbrew.org/wiki/NFC_services)
-adds `InitializeWithExtendedApplicationArea`, `GetExtendedApplicationArea`, and
-`SetExtendedApplicationArea` for the new tag generation. The Air Riders-only transaction is
-therefore a strong candidate for that extended-application path, but that mapping remains an
-inference: the public service API does not document this controller-wire body.
-
-The first experiment is deliberately conservative:
-
-- accept only the exact UID-bound, zero-record, `02 00 92 F0` shape;
-- require gap-free coverage of exactly 355 bytes;
-- complete only on an empty `0x20`;
-- report `05 00` and one event edge;
-- do **not** alter the 2048-byte image, generation, dirty flag, or flash journal.
-
-This separates protocol acknowledgement from persistence. If hardware proceeds without locking,
-the next trace can reveal whether the console requests a follow-up read/write and which bytes must
-be persisted. If it rejects, the observed status/next command will identify what a genuine `0x20`
-completion needs without risking encrypted game data.
-
-### 20.1 First completion test: acknowledgement accepted, removal missing
-
-Capture:
-[`../dumps/v3-air-riders-extended-noop-2115-0088-2026-07-28.jsonl`](../dumps/v3-air-riders-extended-noop-2115-0088-2026-07-28.jsonl).
-
-The gate worked exactly as designed:
+Envelope header (167-byte update form):
 
 ```text
-extended_chunks:       0 -> 15
-extended_completions:  0 -> 3
-write_errors:          0 -> 0
-generation:            2 -> 2
-payload CRC:           F0D17070 -> F0D17070
+88 13 <uid:7> 01 06 01 01 <cap_page> FF FF FF FF A5 00 <next_gen> 00 03 …
+        ^byte 2          ^byte 11    ^byte 13              ^bytes 18..21   ^byte 22 = record count
 ```
 
-Each of three attempts received all five chunks, completed `0x20`, and returned `05 00`. The
-console then sent Stop and immediately scanned again. The bug was visible in that first status:
-we returned `09 00` with the same UID, meaning the tag was still presented. The console retried the
-entire transaction three times and ended with `2115-0088`.
+- `88 13` = 5000 ms timeout, little-endian.
+- **Byte 13 selects the sector-1 capability page**; the explicit 96-byte data record begins on the
+  following page. Kirby sends `0x00`, King Dedede & Tank Star sends `0x64`.
+- **Bytes 18–21 are the *next* chip-managed sector-1 page-0 value**, not current sector-0 page 4.
 
-This disproves the early-release hypothesis: the tag was not released at all. The extended
-completion had intentionally avoided `write_committed`, but that flag also owns the proven
-Stop-to-TagRemoved lifecycle.
+**Genuine `0x20` completion semantics.** Genuine hardware returns a **bare ACK**, and its next
+status is `0x16` followed by 60 zero bytes — **not** `05 00`. The console then requests
+selected-UID page 3, reads the 60-byte operation prefix plus that page, stages the ordinary
+454-byte encrypted-body write, commits it with `0x08`, observes `05 00`, and sends Stop. Only that
+later ordinary commit ejects. The sequence occurs twice per save (clear stage, then update stage).
 
-The next build marks a successful non-mutating `0x20` operation as already-durable solely for
-lifecycle purposes. Stop now emits the same `07 41` absent state as the validated `0x08` writer.
-Automatic re-presentation for both 540-byte and v3 virtual tags is suppressed for 3000 ms after
-that removal edge; later scans can present the retained image normally.
+The physical positive control confirmed the mapping: page 4 advanced `A5 00 02 00 → A5 00 03 00`
+(the capability container's first two bytes are read-only), and sector-0 pages `0x92..0x99` changed
+from zero to exactly the 32 data bytes in the second record.
 
-### 20.2 Second completion test: removal fixed, unchanged image rejected
+### 6.3 The sector-1 capability generation is implicit dynamic state
 
-Capture:
-[`../dumps/v3-air-riders-tagremoved-2115-0096-2026-07-28.jsonl`](../dumps/v3-air-riders-tagremoved-2115-0096-2026-07-28.jsonl).
+Sector-1 page 0 advances **independently** from sector-0 page 4. Two consecutive genuine physical
+cycles:
 
-The corrected lifecycle produced the intended sequence: `05 00`, Stop, then absent `07 41` on the
-next scan inside the three-second cooldown. There was no Switch crash and `write_errors` stayed at
-zero. The console later re-presented the retained tag, read the still-unchanged image, and repeated
-the 355-byte operation three times before reporting `2115-0096`.
+| | sector-0 page 4 | sector-1 page 0 |
+|---|---|---|
+| before first save | `A5 00 02 00` | `A5 00 01 00` |
+| after first save | `A5 00 03 00` | `A5 00 02 00` |
+| after second save | `A5 00 04 00` | `A5 00 03 00` |
 
-This validates removal timing and makes another timing adjustment low-value. The new error and
-repeat/readback pattern are consistent with missing persistence of the extended application data,
-but do not identify its byte mapping.
+Every explicit sector-1 record still begins at page 1 (Kirby's allocation); the page-0 value is
+never written explicitly. Discarding it and continuing to serve `A5 00 01 00` is the **only**
+mismatched extended-read state, and it produces "This amiibo is corrupted" on reuse.
 
-The next experiment is a positive control rather than a guessed mutation: mirror the console
-transaction through a genuine Pro Controller 2 reading a physical pixl.js/Flashiibo loaded with
-the same Meta Knight & Shadow Star image. Capture both `trace start nfc` and `blecap nfc start`,
-then diff the emulator's before/after 2048-byte image. `nfcmirror` owns NFC before the local serve
-path while armed, so the adapter's stored virtual image need not be cleared.
+The runtime validates a one-step generation advance, stores the four bytes at the envelope-selected
+image offset (`0x400` for Kirby's allocation) in the otherwise-zero ecosystem-dump slot,
+persists/exports it with the 2048-byte image, and serves the retained value through `0x1E`.
+Zero-filled first-use and legacy images retain the hardware-confirmed generation-1 fallback,
+injected descriptor-relative at the first page of the selected sector-1 range.
 
-### 20.3 Genuine successful transaction decodes `0x20`
+### 6.4 Learned gameplay state uses the same format
 
-The positive control was completed with a genuine Pro Controller 2 and a physical Kirby & Warp
-Star amiibo. Primary capture:
-`dumps/amiibo/genuine-kirby-warp-air-riders-write-usb-2026-07-28.jsonl`.
-
-Genuine `0x20` returns a bare ACK. Its next status is `0x16` followed by 60 zero bytes, not
-`05 00`. The console then requests selected-UID page 3, reads the 60-byte operation prefix plus
-that page, stages the normal 454-byte encrypted-body write, commits it with `0x08`, observes
-`05 00`, and sends Stop. The sequence occurs twice.
-
-Both `0x20` bodies are sector-aware record envelopes. Byte 22 is the record count and each record
-is `(sector:u8, page:u8, length:u8, data[length])`:
-
-| Body | Records |
-|---|---|
-| 355 bytes | `(0, 0x92, 0xF0)`, `(0, 0xCE, 0x50)` — all-zero clear of `0x248..0x387` |
-| 167 bytes | `(0, 0x04, 4)`, `(0, 0x92, 0x20)`, `(1, 0x01, 0x60)` |
-
-The packed physical snapshot changed page 4 from `A5 00 02 00` to `A5 00 03 00`, proving the
-capability container's first two bytes remain read-only. Sector-0 pages `0x92..0x99` changed from
-zero to exactly the 32 data bytes in the second record. The probe cannot address sector 1, but the
-complete console body explicitly supplies sector 1, page `0x01`, length `0x60`.
-
-The implementation now validates and applies both layouts atomically, restores the synthetic
-SRAM-ready bit before storing, preserves `A5 00`, generation-checks/journals each extended stage,
-reports empty state `0x16`, and deliberately does not eject until the later ordinary `0x08` write
-completes. The bounded inter-stage lifecycle completed both stages on hardware with zero write
-errors and a valid persisted 2048-byte output.
-
-### 20.4 Written-tag reuse uses sector-aware command `0x1E`
-
-Reusing the successfully written virtual tag initially froze because the console sent `0x1E` and
-the implementation bare-ACKed without staging a result. A genuine Pro Controller 2 capture,
-`dumps/amiibo/genuine-kirby-warp-reuse-sub1e-usb-2026-07-28.jsonl`, proves the bare ACK is correct.
-The missing behavior is a report-state edge, empty status `0x15`, and a 196-byte buffer fetched
-through ordinary `0x15` chunks.
-
-The 23-byte request body contains the timeout, selected UID, tag type, two three-byte ranges
-`(sector,start,end)`, and six zero reserved bytes. The genuine buffer contains a 64-byte
-identity/signature/descriptor prefix followed by sector-0 pages `0x92..0x99` and sector-1 pages
-`0x00..0x18`. The latter began with chip-managed capability page `A5 00 01 00`; portable v3 dumps
-leave that chip-owned page zero and begin mutable sector-1 data at page 1.
-
-The first implementation validated that exact structure, synthesized the observed capability
-page, and otherwise copied the selected image's own bytes. Its host fixture matched all
-196 genuine bytes. Both board builds, all 53 host tests, all eight motion-probe tests, and both
-install-reset marker checks pass.
-
-Hardware validated the prepared `0x1E` path end to end. The console received empty state `0x15`,
-fetched 70 + 70 + 56 bytes, and sent Stop. Its next operation was another 167-byte update whose
-header carried `A5 00 02 00`, not the first-use `A5 00 01 00`. The original classifier wrongly
-treated it as a constant and rejected the update. A temporary page-4 comparison accepted the
-transaction: all three chunks, the `0x20` completion, the following ordinary write, persistence,
-and export succeeded. The next scan nevertheless reported “This amiibo is corrupted” during
-`0x1E`, before another write.
-
-### 20.5 Kirby's sector-1 page 0 is implicit dynamic state
-
-Two new zero-overwrite genuine traces resolve the apparent header:
-
-- `dumps/amiibo/genuine-air-riders-existing-data-read-write-2026-07-28.jsonl` captures a complete
-  physical-tag read/write cycle with existing Air Riders data;
-- `dumps/amiibo/genuine-air-riders-postwrite-read-only-2026-07-28.jsonl` reads that same tag after
-  the write, without performing another save.
-
-For Kirby's allocation, before the write genuine `0x1E` returned sector-1 page 0 as
-`A5 00 01 00`. The 167-byte update
-header carried `A5 00 02 00`, while its explicit sector-1 record still began at page 1. After the
-write, the physical tag's ordinary read showed page 4 `A5 00 04 00`, and `0x1E` returned
-sector-1 page 0 as `A5 00 02 00`. Its sector-0 and sector-1 game-record bytes exactly match the
-virtual image that failed, leaving this four-byte implicit state as the discriminator.
-
-The result is repeatable, not a one-off. A second genuine save/read pair,
-`genuine-air-riders-second-existing-data-write-2026-07-28.jsonl` and
-`genuine-air-riders-second-postwrite-read-only-2026-07-28.jsonl`, starts with page 4
-`A5 00 04 00` and sector-1 page 0 `A5 00 02 00`. Its update header carries
-`A5 00 03 00`, its page-4 record targets `A5 00 05 00`, and the following read returns exactly
-those two independent values. This directly validates monotonic one-step advancement of the
-chip-managed sector-1 generation.
-
-Therefore bytes 18–21 of the 167-byte envelope are the **next chip-managed sector-1 page-0
-value**, not current sector-0 page 4. The virtual implementation now validates a one-step
-generation advance, copies the field to image offset `0x400`, persists/exports it with the full
-2048-byte image, and serves the retained value through later `0x1E` reads. Source dumps whose
-slot is all zero retain the captured `A5 00 01 00` fallback; after their first extended update,
-the explicit state replaces that fallback.
-
-Hardware validates the corrected runtime path. Starting from the known-good first-use image,
-Air Riders completed another save with zero write errors. The exported result,
-`../dumps/amiibo/v3-dynamic-sector1-page0-write-output-2026-07-28.bin`, is 2048 bytes,
-HMAC-valid, and contains independent values page 4 `A5 00 03 00` and sector-1 page 0
-`A5 00 02 00`. An immediate second scan was accepted and loaded the custom color saved during the
-first operation. Its `0x1E` response returned the stored `A5 00 02 00`, captured in
-`../dumps/amiibo/v3-dynamic-sector1-page0-second-read-success-2026-07-28.jsonl`. This closes the
-corruption regression.
-
-The final persistence control power-cycled the adapter without reflashing it. UART recovered the
-same 2048-byte generation-4 image with payload CRC `91A6178B`, `persisted:true`, and no pending
-write. Air Riders accepted and loaded it. The zero-overwrite, read-only trace
-`../dumps/amiibo/v3-dynamic-sector1-page0-powercycle-read-success-2026-07-28.jsonl` contains the
-retained `A5 00 02 00` in the `0x1E` result and no write chunks or commits. The complete dynamic
-sector-1 page-0 update, second reuse, and flash-recovery lifecycle is hardware-confirmed.
-
-### 20.6 Learned gameplay-state save uses the same format
-
-A save after completing an Air Riders level provides the first explicitly non-cosmetic gameplay
-state control:
-
-- trace:
-  `../dumps/amiibo/v3-air-riders-learned-state-save-2026-07-28.jsonl`;
-- before image:
-  `../dumps/amiibo/v3-air-riders-trained-before-save-2026-07-28.bin`;
-- after image:
-  `../dumps/amiibo/v3-air-riders-learned-state-after-save-2026-07-28.bin`.
-
-The 152-record NFC trace has zero overwrite and zero write errors. The save uses the same reuse
-shape already implemented: one three-chunk 167-byte/`0x20` extended update followed by one
-six-chunk 454-byte/`0x08` ordinary commit. It advances store generation 7 → 9, page 4
-`A5 00 05 00 → A5 00 06 00`, and sector-1 page 0
-`A5 00 03 00 → A5 00 04 00`.
-
-The before/after image diff changes 552 bytes, all inside known modeled ranges:
+A save after completing an Air Riders level — the first explicitly non-cosmetic control — used the
+same one three-chunk 167-byte/`0x20` update plus one six-chunk 454-byte/`0x08` commit. The
+before/after diff changes 552 bytes, all inside modeled ranges:
 
 | Region | Changed bytes | Meaning |
 |---|---:|---|
 | `0x000..0x247` | 423 | ordinary encrypted/writable body and HMAC-dependent bytes |
 | `0x248..0x267` | 32 | sector-0 Air Riders record |
-| `0x402` | 1 | numeric byte of chip-managed sector-1 page-0 generation |
+| `0x402` | 1 | numeric byte of the sector-1 page-0 generation |
 | `0x404..0x463` | 96 | complete sector-1 Air Riders record |
 | `0x464..0x7FF` | 0 | no new or unknown storage touched |
 
-The after image has payload CRC `3DEE59FF` and validates both amiibo HMACs. Therefore learned
-gameplay data does not require another command, record layout, or persistence allocation; the
-existing Air Riders implementation already covers it.
+Learned gameplay data therefore needs no additional command, record layout, or allocation.
 
-### 20.7 King Dedede exposes allocation-relative storage
+## 7. Written-tag reuse: sector-aware read `0x1E`
 
-An untouched King Dedede & Tank Star cycle failed with `2115-0096`. The complete failing update is
-retained in
-[`../dumps/amiibo/v3-air-riders-king-dedede-tank-2115-0096-2026-07-28.jsonl`](../dumps/amiibo/v3-air-riders-king-dedede-tank-2115-0096-2026-07-28.jsonl).
-Its 167-byte envelope begins:
+Reusing a successfully written tag froze while `0x1E` was bare-ACKed and state left at `0x18`,
+causing repeated three-second Stop/restart loops. A genuine capture proves the **bare ACK itself is
+correct**; the missing behaviour is a report-state edge, empty status `0x15`, and a 196-byte result
+served through ordinary `0x15` chunks (70 + 70 + 56).
+
+Request body, 23 bytes: timeout, selected UID, tag type, **two three-byte ranges
+`(sector, start, end)`**, and six zero reserved bytes.
+
+Result buffer, 196 bytes: a 64-byte identity/signature/descriptor prefix, then sector-0 pages
+`0x92..0x99` and sector-1 pages `0x00..0x18`. Sector-1 page 0 carries the chip-managed capability
+value (§6.3); portable v3 dumps leave that chip-owned page zero and begin mutable sector-1 data at
+page 1.
+
+## 8. Slot geometry — the allocation is a slot index
+
+The Air Riders allocation is **not** fixed and **not** derived from identity. A third allocation
+observed on 2026-07-29 (`dumps/experiments/20260729-102744-v3-reuse/`) requested on the wire:
 
 ```text
-88 13 <uid:7> 01 06 01 01 64 FF FF FF FF A5 00 01 00 03 ...
+158  sector_read ranges=['s0:0x9A-0xA1(32B)', 's1:0x19-0x31(100B)']
+330  stage envelope=extended_update records=['s0:0x04+4', 's0:0x9A+32', 's1:0x1A+96']
 ```
 
-Every earlier successful Kirby update carried `0x00` instead of `0x64` at envelope byte 13.
-The former classifier required all seven bytes `01 01 00 FF FF FF FF`, so it rejected the first
-attempt before record parsing.
+All three observed allocations fit one formula exactly. For slot *n*:
 
-A hardware retest after removing only that fixed-byte comparison disproved the “opaque” model.
-The five-chunk clear completed, then both three-chunk updates staged but their completions failed:
-11 extended chunks, one completion, two write errors. The complete record lists differ:
+| | sector 0 | sector 1 |
+|---|---|---|
+| first page | `0x92 + 8n` | `25n` (capability) |
+| extent | 8 pages / 32 B | 25 pages / 100 B (4 B capability + 96 B data) |
 
-| Field | Kirby | King Dedede |
-|---|---:|---:|
-| sector-0 data page | `0x92` | `0xB2` |
-| sector-1 capability page (byte 13) | `0x00` | `0x64` |
-| sector-1 data page | `0x01` | `0x65` |
+| Observation | s0 page | s1 capability | slot |
+|---|---|---|---|
+| Kirby | `0x92` | `0x00` | 0 |
+| King Dedede & Winged Star | `0x9A` | `0x19` | 1 |
+| King Dedede & Tank Star | `0xB2` | `0x64` | 4 |
 
-The capability page is allocation-relative and the 96-byte data record begins at the following
-page. The commit codec still required Kirby's fixed record pages, so it returned fail-closed
-status `07 41`; this was an error state, not TagRemoved.
+Three independent checks agree the tag reserves exactly **ten** slots:
 
-The prepared implementation derives the pages from the self-describing record envelope. It
-retains exact UID, command, generation-step, count, length, gap-free staging, and padding checks;
-bounds the sector-0 record to the proven `0x92..0xE1` clear window; and bounds the capability/data
-pair to the second 1 KB sector. `0x1E` first-use fallback is descriptor-relative, and portal
-Initialize clears the complete second user-memory sector. No figure identity or known-dump table
-is used.
+1. The 355-byte clear wipes sector-0 pages `0x92`–`0xE1` in two records (`0x92`+240 B, `0xCE`+80 B)
+   = 320 B = 80 pages = **10 × 8 pages**.
+2. The sector-0 bound `page + 7 <= 0xE1` permits slots 0–9 and rejects slot 10.
+3. The independent sector-1 bound `data_page + 23 <= 0xFF` also permits slots 0–9 and rejects
+   slot 10 (`25×10 + 1 + 23 = 274`).
 
-Detailed evidence and verification:
+Bounds 1 and 2 were derived from the clear operation's extent alone, before the slot geometry was
+understood; that they land on the same cutoff as the independent sector-1 arithmetic is strong
+support for the model. **Confidence: Strong** — an exact fit to three observations plus two agreeing
+structural bounds, not a directly observed slot allocator.
+
+⬜ **Unknown: what selects the slot index.** It is *not* the rider — two images with the same UID
+`0465B0228F2190` used slots 1 and 4. It is not a simple machine-variant enumeration either (Winged
+Star → 1 but Tank Star → 4, where a Warp/Winged/Tank/Shadow order would give 1 and 2). Registration
+order in the game's own save is the leading hypothesis and is untested.
+
+**Until it is known, never derive a slot from identity — consume the self-describing envelope.** The
+runtime does exactly that, with no UID, character, product, or known-dump table:
+
+- selected-image UID and command/type must match;
+- update prefix `01 01` and suffix `FF FF FF FF` remain exact;
+- sector-0 application data is bounded to the proven cleared window `0x92..0xE1`;
+- the sector-1 capability page plus the following 96-byte record must fit inside the 2 KB image;
+- the data page must equal capability page + 1;
+- the capability generation must advance exactly one step at the selected page;
+- record count, lengths, gap-free staging, and trailing-zero validation remain strict.
+
+The portal's Initialize operation clears the complete second user-memory sector for the same reason,
+so it resets Kirby, Dedede, and unseen allocations without a rider list.
+
+Evidence:
 [`experiments/v3-air-riders-dynamic-allocation-2026-07-28.md`](experiments/v3-air-riders-dynamic-allocation-2026-07-28.md).
-Real-console validation is complete across all 16 available Air Riders v3 dumps: every image
-completed both read and write.
+
+## 9. Storage, persistence, and lifecycle
+
+- **2048-byte v3 store**, flash-persistent in the existing amiibo journal banks, mutually exclusive
+  with the 540/572 store. Survives power cycles and mode changes.
+- **The board holds exactly one amiibo.** The two flash banks are alternating persistence
+  *generations* of that single image, not two selectable saves.
+- On a successful commit the store increments generation, marks dirty/unpersisted, requests an
+  alternating-bank snapshot, schedules the 700 ms report-state completion edge, and defers Stop's
+  logical TagRemoved until the snapshot verifies. The next scan re-presents the updated image.
+- Automatic re-presentation for both 540-byte and v3 virtual tags is suppressed for 3000 ms after a
+  removal edge; later scans present the retained image normally.
+- Config/UART status reports v3 size, contiguous UID, generation, payload CRC, dirty and persisted
+  state. Bounded reads expose all 2048 bytes. The portal's Sync path replaces the content-keyed
+  IndexedDB record only after validation.
+
+Two real bugs found during this work, both affecting ordinary use and not just v3:
+
+- **Flash region collision (serious).** Amiibo journal bank 0 sat on BTstack's TLV region on RP2350
+  (pico-sdk 2.2.0 moves it one sector lower there), so writing a tag destroyed the Bluetooth bonds
+  and BTstack destroyed the stored tag. Banks moved to `SIZE-6S`/`SIZE-5S`; asserts now check
+  `PICO_FLASH_BANK_STORAGE_OFFSET`.
+- **v3 uploads were never durable.** `amiibo persist` gated on the 540 store's `loaded` flag, making
+  it a silent no-op for v3, and the portal never called it.
+
+## 10. Portal behaviour
+
+The library detects the 2048-byte NTAG I2C 2K format and stores the **whole** tag (no truncation, no
+BCC recompute; UID parsed as 7 contiguous bytes). Each combo is content-keyed, so a rider's four
+machine files are four distinct stored entries; in the carousel they collapse to one item per rider
+(the four machines share one catalog identity and one static AmiiboAPI image). **Swap Combo**
+(shown only for a multi-combo rider) cycles the active machine, and the combo name from the filename
+appears in the detail box.
+
+Workflow: navigate to the rider → Swap Combo to the machine → **Load amiibo**. Connected Load
+uploads the complete 2048-byte image immediately; offline **Select amiibo** only remembers it.
+
+## 11. Tooling
+
+| Tool | Purpose |
+|---|---|
+| `v3mode`, `v3probe`, `v3hdr`, `v3reply` (UART) | runtime research overlays, no reflash per experiment |
+| `amiibo v3diag` (UART) | staged/result/chunk/commit/write-error counters |
+| `amiibo v3sig` (UART) | RAM-only originality-signature override — **research only**, not needed in normal operation |
+| `amiibo journal` (UART) | inspect the alternating persistence banks |
+| `nfcmirror` + `tools/nfc_probe.ps1` | initiator mode: UART originates NFC commands at a paired genuine controller with **no console attached** (§11.1) |
+| `tools/rebuild_v3_from_capture.py` | reassemble a tested tag from its own capture; must copy the full 64-byte device response |
+| `tools/test_ns2_amiibo_v3_write.c`, `tools/test_ns2_amiibo_v3.c` | captured-layout and failure-mode coverage |
+| `tools/test_ns2_v3_compat_view.mjs` | crypto-equivalence and SRAM CRC across all 16 dumps |
+
+### 11.1 Initiator mode
+
+`nfcmirror` was purely reactive: every question cost a full console capture, and questions the
+console never happens to ask could not be asked at all. Initiator mode makes a genuine controller an
+interrogatable oracle at bench pace — BLE-only, gated on `sw2_init_state` and a connected `0x2069`,
+needing nothing but a powered dongle and a paired Pro Controller 2.
+
+```
+nfcmirror initiator on|off
+nfcmirror send HEX          # >=8 bytes, <=40 (bounded by the 96-byte RX line)
+nfcmirror reply             # {"ready":false} until the genuine reply lands
+```
+
+The two directions are mutually exclusive by construction. `tools/nfc_probe.ps1` does the sequencing
+on the PC, keeping the firmware a dumb auditable transport:
+
+```powershell
+.\tools\nfc_probe.ps1 -Port COM11 -Dump kirby.bin              # complete NTAG215 / partial v3
+.\tools\nfc_probe.ps1 -Port COM11 -Ranges '00-3B,3C-77,78-91,E2-E6'
+.\tools\nfc_probe.ps1 -Port COM11 -Raw '0191000500000000'      # one command, print the reply
+```
+
+🔵 **Limitation:** the `0x06` descriptor uses 8-bit page addresses and cannot directly address
+sector 1, so the default v3 snapshot is 668 bytes (pages `00-A1` plus `E2-E6`), not a loadable
+2048-byte image.
+
+## 12. Hard constraints (do not re-litigate)
+
+- Air Riders' extended payload is **opaque ciphertext**. PicoSwitch2 does not need its keys:
+  preserve and replay the console-supplied bytes exactly. Do not synthesize or transform it.
+- Do **not** put a 60-byte prefix in front of a 1024-byte payload — the total exceeds the console's
+  ~1050-byte read window, `last=1` never arrives, and it regresses to "not an amiibo".
+- The amiibo identity/format bytes are inside the signed region and cannot be rewritten to
+  masquerade as v2.
+- **Never key runtime behaviour on rider/figure identity.** Consume the self-describing envelope.
+- Do **not** sweep enum values by crash-oracle. Each wrong `status[7]` hard-crashes the console
+  (`2011-0301`), and the space is unbounded.
+- Do **not** serve a v3 tag as a 540-byte amiibo (compat view, or re-signed). Both produce
+  cryptographically valid tags and both are wrong in principle: the rider figurine does not scan at
+  all without its machine — the machine is the antenna *and* holds the I2C device that answers the
+  SRAM pass-through.
+- A protocol change introducing a new record count, length, memory region, or command must **fail
+  closed** and be added from a capture, never guessed.
+
+## 13. Remaining work
+
+| Item | Status |
+|---|---|
+| Production-portal Sync of the retained dirty generation | 🟡 The one remaining lifecycle check |
+| What selects the Air Riders slot index | ⬜ Unknown; registration order is the untested hypothesis |
+| The SRAM response's internal check over its first 26 bytes | ⬜ Unidentified (the outer CRC-16/MCRF4XX is solved) |
+| Native physical-tag **write** through a genuine controller | 🔵 Pending capture and implementation |
+| Full 2048-byte dump via `nfc_probe.ps1` | 🔵 Blocked on 8-bit descriptor page addressing |
+| Whether Pro Controller 2 and Joy-Con 2 Right use byte-identical NFC transactions | ⬜ Untested |
+
+## 14. Corrections and refuted claims
+
+Kept so they are not re-derived. Every row below was believed, tested, and abandoned.
+
+| Claim | Why it was wrong | How it was settled |
+|---|---|---|
+| The tag type is signalled in the `0x05` status (`status[7]` is a model byte) | `status[4..8]` is an NCI `RF_INTF_ACTIVATED_NTF` passthrough; an NTAG I2C 2K is also T2T/NFC_A passive, so the status is byte-identical for both chips | Paired genuine v3/NTAG215 captures; §3.4 |
+| The console always requests the NTAG215 page set, so v3 is unreachable | It escalates to a 4-block 604-byte descriptor — but only after our prefix gives it a reason to | Genuine capture, §3.1 |
+| `prefix[18]` has no effect on Switch 2 | That test set byte 18 **alone in a UART overlay that did not survive a reflash**, so it tested nothing. Byte 18 = `0x06` in the serve path is sufficient by itself | §3.2; the byte-18-only capture |
+| The console validates a per-tag NTAG21x originality signature at `prefix[19..50]` for v3 | The comparison controlled only the 60-byte prefix; the 604 bytes of tag data also differed because the capture was of a *different physical figure*. Untouched downloaded dumps were later accepted with the signature field left **zero** | §5; the full-SRAM validation run |
+| Serving a v3 amiibo requires a matched image **and** that tag's captured signature; generated or UID-randomised v3 amiibo are impossible by this route | Follows only from the refuted signature claim | Same |
+| `prefix[19..50]` is a dynamic SRAM window alternating between two values | Constant across all 11 genuine reads in two sessions. The second value belonged to the `0x21` result buffer (first byte `0x18`, not `0x04`) and was misattributed | Record-by-record re-read of both captures |
+| The `0x21` result body is invariant, and `7A C4` is a fixed controller trailer | `7A C4` was constant only because both captures used the same physical figure. It is that figure's SRAM CRC-16/MCRF4XX | §5.1; five distinct machine CRCs |
+| A v3 image needs its own machine's SRAM block and its own signature; a dump from a different physical machine can never be accepted | The experiment changed three variables at once — three firmware bugs were fixed between the last failing downloaded-dump test and the first success, and the downloaded dump was never retried on the fixed firmware | §5; the downloaded `Kirby & Warp Star.bin` read/write |
+| `key_retail.bin` is needed to import or serve known-good dumps | Keys were used only offline, to verify evidence before and after the write | Same |
+| Air Riders' `0x20` is one fixed 355-byte no-op | Two sector-aware envelopes: a 355-byte two-record clear and a 167-byte three-record update | Genuine positive control, §6.2 |
+| Genuine `0x20` completion reports `05 00` | It reports empty state `0x16`; only the later ordinary `0x08` commit reports `05 00` and ejects on Stop | Same |
+| Envelope bytes 18–21 are the current sector-0 page 4 value | They are the **next** chip-managed sector-1 page-0 value; the two counters advance independently | Two genuine save/read pairs, §6.3 |
+| The Air Riders record pages are fixed (Kirby's `0x92` / `0x00` / `0x01`) | Allocation is a slot index; King Dedede & Tank Star uses `0xB2` / `0x64` / `0x65` | §8 |
+| Published research placing Air Riders data at pages `0x9A`-`0xA1` and `0x11A`-`0x131` | Superseded by the genuine controller trace plus physical-tag diff | §6.2, §8 |
+| `2115-0176` is a tag-type rejection | It is the console's generic "this tag failed validation". A **genuine retail** Kirby amiibo produces identical symptoms across multiple Switch 2s when the tag is defective (r/Switch `1pvfm1v`) | External corroboration |
+
+Repo-wide refuted-hypothesis index:
+[`experiments/refuted-hypotheses.md`](experiments/refuted-hypotheses.md).
+
+## 15. Evidence and references
+
+**Dated experiment reports**
+
+- [`experiments/v3-full-sram-response-validation-2026-07-28.md`](experiments/v3-full-sram-response-validation-2026-07-28.md)
+  — full 64-byte SRAM response; no signature, no keys.
+- [`experiments/v3-air-riders-extended-operation-2026-07-28.md`](experiments/v3-air-riders-extended-operation-2026-07-28.md)
+  — the complete `0x20`/`0x1E` decode chronology.
+- [`experiments/v3-air-riders-dynamic-allocation-2026-07-28.md`](experiments/v3-air-riders-dynamic-allocation-2026-07-28.md)
+  — allocation-relative storage.
+- [`experiments/v3-amiibo-genuine-capture-runbook.md`](experiments/v3-amiibo-genuine-capture-runbook.md)
+  — the reusable genuine-controller capture procedure.
+- [`experiments/generated-amiibo-console-rejection-2026-07-26.md`](experiments/generated-amiibo-console-rejection-2026-07-26.md)
+  — the Switch 2 validates amiibo cryptography.
+
+**Related repository documents**
+
+- [`switch2/nfc-implementation.md`](switch2/nfc-implementation.md) — the firmware NFC runtime.
+- [`switch2/nfc-protocol-inventory.md`](switch2/nfc-protocol-inventory.md) — the ordinary
+  540/572-byte transport evidence map.
+- [`switch2/amiibo-identity-and-generation.md`](switch2/amiibo-identity-and-generation.md),
+  [`switch2/amiibo-decrypted-data-surface.md`](switch2/amiibo-decrypted-data-surface.md).
+- [`re-methodology/nfc-investigation-workflow.md`](re-methodology/nfc-investigation-workflow.md) —
+  the offline lab that makes these questions answerable without hardware.
+- [`LLM/amiibo-v3-investigation-retrospective.md`](LLM/amiibo-v3-investigation-retrospective.md) —
+  what the investigation cost and why.
+
+**External**
+
+- xSke, [N3evin/AmiiboAPI#243 comment 3591686037](https://github.com/N3evin/AmiiboAPI/issues/243#issuecomment-3591686037)
+  — the primary format description.
+- [solosky/pixl.js#381](https://github.com/solosky/pixl.js/pull/381) — figure-v3 tag emulation
+  (RF side).
+- [bettse/amiitool b066e85](https://github.com/bettse/amiitool/commit/b066e85d344355224cd0390064f9b5a995b47b2d)
+  — the `tag_v3` `0x40` shift.
+- [Switchbrew Switch 2 NFC services](https://www.switchbrew.org/wiki/NFC_services) —
+  `InitializeWithExtendedApplicationArea` / `GetExtendedApplicationArea` /
+  `SetExtendedApplicationArea`. 🔵 A strong candidate mapping for the `0x20` path, but the public
+  service API does not document this controller-wire body.
+- CTCaer/jc_toolkit `jctool.cpp` — the Switch **1** MCU NFC read, whose header layout first located
+  prefix offset 18.
+- Community dump set: "Kirby Air Riders amiibo for Pixl.js/allmiibo/flashiibo" (2026-02-07).

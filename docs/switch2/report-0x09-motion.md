@@ -1,15 +1,23 @@
 # Switch 2 Pro Controller — Report 0x09 Motion (IMU) Format
 
-**Current status (2026-07-24):** ✅ a genuine Pro Controller 2's native BLE motion is passed
+**Current status (2026-07-29):** ✅ a genuine Pro Controller 2's native BLE motion is passed
 byte-for-byte into console-facing report `0x09` and is hardware-confirmed in Splatoon 3. Correct
 aim axes, stationary behavior, controller power-cycle, bonded reconnect, and source-off hold all
 pass. DualSense gyro translation is also hardware-confirmed, including rapid motion and reconnect.
-The genuine stream's length-`0x28` G6/G7/G8 lanes are partially decoded as a controller-processed
-vector. A body-frame magnetic/reference vector and the vector part of a second “magneto
-quaternion” remain competing interpretations; direct raw signed-16-bit magnetometer samples are
-ruled out by the observed 22/22/20-bit wire values. Remaining leading/middle lanes and escalation
-semantics are still under investigation with
-[`uart-magprobe.md`](uart-magprobe.md).
+The genuine stream's length-`0x28` form is now established as a packed multi-sample IMU payload,
+not an independent magnetic/reference quaternion. A matching handle-`0x000A` PCAP also exposes a
+plain timestamp/temperature/accel/gyro sample that can serve as ground truth. A controlled live
+cadence matrix now decodes and hardware-validates all high-rate, normal, and catch-up accel/gyro
+lanes. The prefix field boundary, split third carrier, fixed carrier scales, and packet-derived
+`preceding carrier + 4 ticks` epoch are also established. A causal history decoder is validated
+against the dynamic corpus. The high-rate/normal tail is decoded as two Q3 IMU temperature
+samples, and catch-up bit 287 is observed reserved-zero padding. Remaining work is exact integer
+rounding and any future protocol
+escalation beyond the captured range;
+see
+[`../experiments/pro2-mode3-carrier-prefix-2026-07-29.md`](../experiments/pro2-mode3-carrier-prefix-2026-07-29.md)
+and
+[`../experiments/pro2-carrier-chart-transition-2026-07-29.md`](../experiments/pro2-carrier-chart-transition-2026-07-29.md).
 
 The legacy length-30 USB field analysis below remains useful for the generic encoder and historical
 captures. It is no longer the production path for a genuine PID `057E:2069` source; that controller
@@ -35,7 +43,7 @@ at `0x0F`). Earlier blind hypotheses (3 samples length 40; int16 interleaved len
    USB captures (`PC2_Gyro_Default.pcapng`, `PC2_Gyro_Calibrate.pcapng`) analysed by byte-level
    continuity, physical plausibility, and known ICM-42670-P scales.
 2. **Independent re-verification** (this repo's `usb.pcapng`, a Packetry/Cynthion raw USB-2.0 wire
-   capture, 50,650 motion reports) via `scratchpad/usb_c_verify_int32.py`. Results:
+   capture, 50,650 motion reports). Results:
 
    | Test | Result |
    |---|---|
@@ -57,14 +65,14 @@ forwards genuine length-40 blocks alongside length-30 blocks.
 
 | motion off | Size | Type | Field | Notes |
 |---|---|---|---|---|
-| `0x00` | 2 | `uint16_le` | **Timing** | low 12 bits = 800 Hz IMU tick (mod 4096); high 4 bits = ticks elapsed since previous report (usually 3–4). |
-| `0x02` | 2 | `int16_le` | **Temperature** | constant `0x0C00` (3072). ICM: °C = raw/128 + 25 ⇒ 49 °C. |
-| `0x04` | 4 | `int32_le` | **Angular phase X** | binary angle, `2^32 = 360°`. Integrated/filtered angular phase. |
-| `0x08` | 4 | `int32_le` | **Angular phase Y** | |
-| `0x0C` | 4 | `int32_le` | **Angular phase Z** | starts near `0x80000000` (≈ −180°). |
-| `0x10` | 4 | `int32_le` | **Accel X** | **Q16.16 fixed point**; `65536 × 4096 = 1 g`. |
-| `0x14` | 4 | `int32_le` | **Accel Y** | ICM-42670-P ±8 g ⇒ 4096 LSB/g. |
-| `0x18` | 4 | `int32_le` | **Accel Z** | |
+| `0x00` | 2 | `uint16_le`| **Timing**          | low 12 bits = 800 Hz IMU tick (mod 4096); high 4 bits = ticks elapsed since previous report (usually 3–4). |
+| `0x02` | 2 | `int16_le` | **Temperature**     | constant `0x0C00` (3072). ICM: °C = raw/128 + 25 ⇒ 49 °C. 												 |
+| `0x04` | 4 | `int32_le` | **Angular phase X** | binary angle, `2^32 = 360°`. Integrated/filtered angular phase. 											 |
+| `0x08` | 4 | `int32_le` | **Angular phase Y** | 																											 |
+| `0x0C` | 4 | `int32_le` | **Angular phase Z** | starts near `0x80000000` (≈ −180°). 																		 |
+| `0x10` | 4 | `int32_le` | **Accel X**         | **Q16.16 fixed point**; `65536 × 4096 = 1 g`. 															 |
+| `0x14` | 4 | `int32_le` | **Accel Y** 		| ICM-42670-P ±8 g ⇒ 4096 LSB/g. 																			 |
+| `0x18` | 4 | `int32_le` | **Accel Z** 		| 																											 |
 | `0x1C` | 2 | — | **Tail** | zero in all captures; unresolved. |
 
 ```c
@@ -144,10 +152,10 @@ exact field mapping):
 - `gyro_bias` = **(-0.0205, -0.00058, 0.00328)** — tiny, consistent with (and roughly matching the
   order of magnitude of) this repo's already-documented "genuine gyro ~0.03 dps bias" figure. Units
   not independently confirmed but plausibly dps.
-- `magnetometer_bias` = **(0, 0, 0)** — zero on this unit. Earlier work interpreted this as an
-  unused magnetometer, but live 2026-07-24 `0x28` captures expose a stable G6/G7/G8 fused/reference
-  lane even under mask `0x27`; zero bias therefore cannot establish that a physical sensor or
-  internal fusion path is unused.
+- `magnetometer_bias` = **(0, 0, 0)** — zero on this unit. The field name comes from the reference
+  client; zero bias alone cannot establish that a physical sensor exists or is used. The former
+  G6/G7/G8 “reference lane” interpretation has since been refuted: those aliases cut across packed
+  gyro and acceleration samples in the length-`0x28` PDU.
 - `accelerometer_bias` = **(0.160, -0.0687, 10.38)** — the Z axis sits close to **standard gravity
   (9.8 m/s²)**, strongly confirming these are **physical SI-unit floats (m/s²), not raw ADC/LSB
   counts** — the controller was evidently lying flat (Z-up) during factory calibration capture.
@@ -164,13 +172,13 @@ fused-orientation question below.
 matches and *names* the bits behind this repo's already-observed enable mask: bit0=buttons,
 bit1=analog sticks, **bit2=IMU**, bit3=unknown, bit4=mouse, bit5=battery current, bit6=unknown,
 **bit7=magnetometer**. Our captured enable mask `0x27` = `0b00100111` = bits 0,1,2,5 — buttons +
-sticks + IMU + battery-current, **not** bit 7. That naming remains useful protocol evidence, but
-its scope is no longer assumed: the genuine controller's current `0x27` stream interleaves
-length-`0x28` PDUs whose G6/G7/G8 values form a bounded, near-constant-norm fused/reference
-representation. A direct PID-`0x2069` positive control later replayed the public `0x94` sequence
-and re-subscribed handle `0x000A`; every command and ATT operation succeeded, but `0x000A`
-emitted no reports. Bit 7 therefore does not expose that public signed-int16 raw channel on the
-tested Pro Controller 2.
+sticks + IMU + battery-current, **not** bit 7. A direct PID-`0x2069` positive control later replayed
+the public `0x94`/bit-7 sequence and re-subscribed handle `0x000A`; every command and ATT operation
+succeeded, but that tested sequence emitted no `0x000A` reports. This remains a valid negative for
+the bit-7 route only. The reference
+`btle_procon2_motion_0x000A.pcapng` capture proves the same controller family can emit raw IMU
+samples on handle `0x000A` when bit 2, report selection, and the `0x000A` CCC are initialized
+differently. An exact live replay now confirms that selector and reversible CCC ownership.
 
 **Command-protocol cross-check:** `switch2_input_viewer.py`'s BLE `read_spi_memory()` sends
 `[0x02, 0x91, 0x01, 0x04, 0x00, 0x08, 0x00, 0x00, size, 0x7E, 0x00, 0x00, addr(4, LE)]` — the same
@@ -183,7 +191,7 @@ capture-derived `sub=0x05` for writes — 🔵 unverified whether that's a real 
 detail or a bug in that tool; not adopted without a citation, since it conflicts with an existing
 capture-derived fact.)
 
-## Length-30 byte-budget result; length-40 magnetic lane supersedes the broader refutation
+## Length-30 byte budget and corrected length-40 multi-sample layout
 
 A research lead surfaced 2026-07-10 (after the second hardware test) asked whether the console's
 "angular phase" depends on more than 3-axis gyro + 3-axis accel — magnetometer data, sensor fusion,
@@ -196,39 +204,160 @@ There is no room in the **length-30 form** for a magnetometer lane. The
 **refuted int16 model** (see "Why the int16 model looked partially right" above) — those offsets
 are inside the Q16.16 accel fields' fractional bytes, already explained, not a separate sensor.
 
-**Updated by direct live evidence (2026-07-24):** the normal length-`0x28`, status-`0x0D` form has
-additional G6/G7/G8 lanes with a nearly constant norm. Direct signed-int16 sensor samples are
-excluded by their 22/22/20-bit ranges; a normalized reference vector or vector part of a second
-quaternion remains numerically possible. The form is emitted by the real controller in the
-current `0x27` production profile and was unchanged by a fully acknowledged `0x94` positive
-control. That same positive control produced no handle-`0x000A` reports despite a successful
-post-init CCC subscription. Thus `0x28` is a separate controller-processed/fused representation,
-not the public raw-magnetometer channel. The narrower length-30 byte-budget proof remains valid.
-See [`uart-magprobe.md`](uart-magprobe.md) for the decoder and evidence boundary.
+**Corrected by exact component documentation, reference PCAPs, and a live cadence matrix
+(2026-07-29):** the
+length-`0x28` form is a 4-byte timer/elapsed/status prefix plus a 288-bit, LSB-first, multi-sample
+IMU payload. Its encoded 12-bit elapsed count selects one of three exact layouts:
 
-A four-epoch stationary capture strengthens the quaternion interpretation: the live G0/G1/G2
-orientation advanced `16.740°` while G6/G7/G8 direction changed only `0.099°`. Reconstructing
-`w = sqrt(1 - G6² - G7² - G8²)` yielded a unit-quaternion candidate that changed only `0.077°`,
-a `216.7x` stability split. The working model is therefore “drifting live quaternion plus stable
-corrected/reference quaternion,” with correction source and exact component semantics still open.
+| Tick delta | Layout after the 4-byte PDU prefix | Scale to ordinary ICM counts |
+|---:|---|---|
+| `0..10` | mode2, carrier s24+s23+s25, accel22, gyro22, accel22, tail16 | carrier ÷4 to common precision; IMU vectors ÷256 |
+| `11..14` | mode2, carrier s22+s21+s23, accel14, gyro13, accel13, gyro14, accel14, tail16 | 13-bit gyro/accel ×2 |
+| `15+` | mode2, carrier s22+s21+s23, accel14, gyro16, accel13, gyro16, accel14, reserved-zero pad1 | gyros ÷4; 13-bit accel ×2 |
 
-**Diagnostic encoder boundary (2026-07-24):** `ns2_motion_pdu40_get_reference()` and
-`ns2_motion_pdu40_set_reference()` now provide a host-tested, byte-exact codec for the understood
-signed 22/22/20-bit G6/G7/G8 lanes. Golden testing uses a genuine UART-captured `0x28` PDU and
-also covers all signed endpoints while proving that the shared unassigned bits and every byte
-outside the three lanes remain untouched. The DualSense translator also maintains an optional
-second quaternion: it integrates the same calibrated body rate and applies conservative
-accelerometer feedback to observable pitch/roll, while correctly leaving yaw relative because a
-DualSense has no magnetometer.
+The exact payload bit ranges and all capture counts are in
+[`../experiments/pro2-raw-native-motion-pcap-2026-07-29.md`](../experiments/pro2-raw-native-motion-pcap-2026-07-29.md).
+Every corrected acceleration lane measured approximately `1.052 g` in the live same-pose matrix,
+and the high-rate accel/gyro axes agree with the bracketed raw handle-`0x000A` stream. The prefix
+field boundaries are now exact. High-rate payload bits are
+`mode[0..1], carrier0[2..25], carrier1[26..48], carrier2[49..73]`; normal/catch-up uses
+`mode[0..1], carrier0[2..23], carrier1[24..44], carrier2[45..67]`. Carrier 2's low two bits
+precede its signed high bits. All 2,592 analyzed records use packing mode `3`; the former
+“state” values are simply those two low data bits. This corrects both the original equal-width
+map and the intermediate false state split.
+
+The elapsed count is self-contained:
+
+```text
+elapsed_ticks = (pdu[2] << 4) | (pdu[1] >> 4)
+```
+
+It matched the immediately preceding carrier's timer delta in `1274/1274` comparisons across 44
+zero-drop files. PDU byte 3 redundantly identifies the layout: `0x0D` high-rate (`865/865`),
+`0x0E` normal (`158/158`), and `0x0F` catch-up (`269/269`). This corrects the historical
+“secondary status” label for PDU byte 2 and makes layout decoding safe even when a capture omits
+the predecessor.
+
+The high-rate/normal tail carries two Q3 IMU-temperature samples. Bits `15..6` are their shared
+signed ten-bit integer part, bits `2..0` are sample A's fractional eighths, and bits `5..3` are
+sample B's fractional eighths. Thus:
+
+```text
+integer = sign_extend_10(tail >> 6)
+temperature_a_raw = (integer * 8 + tail[2:0]) / 8
+temperature_b_raw = (integer * 8 + tail[5:3]) / 8
+temperature_c = 25 + temperature_raw / 128
+```
+
+The low fractions matched in `993/1023` zero-drop records because the adjacent temperature samples
+usually shared the same sub-count value; the unequal cases are real sample variation, not padding.
+Two independent zero-drop raw/native/raw A/B/A captures provide the positive control. At 7.5 ms,
+handle-`0x000A` raw temperature averaged `4.357` before native and `4.167` after it, while the
+decoded native pair averaged `4.28125` (`4.0..4.625`). At 15 ms the raw values were exactly `4`
+before and after, while native averaged `3.951923` (`3.25..4.0`). This also explains why the field
+had essentially no correlation with tick or motion axes.
+
+A carrier-state- and epoch-aware comparison resolves the earlier capture-dependent prefix fit. After
+dividing the high-rate wire lanes by four, the carrier maps affinely to the retained
+length-`0x1E` carrier with fixed slopes `sqrt(2)/2^24`, `sqrt(2)/2^23`, and
+`sqrt(2)/2^23`. The packet-derived epoch is:
+
+```text
+current tick - encoded elapsed + 4 = preceding carrier tick + 4
+```
+
+This gives `0.999996` mean absolute correlation in both dynamic captures. The mixed-cadence pitch
+fixed-scale normalized RMSE falls from the best constant-offset result `0.008728` to `0.002718`;
+the retained moving window remains `0.002771`. Using only the latest preceding length-`0x1E` chart
+and retained components to choose modular windows reproduces the interpolated reference with
+median/max angular errors `0.000968°/0.010508°` and `0.004682°/0.060233°`, respectively, and zero
+observed chart mismatches.
+
+The old `0.268`/`0.370` mismatch came from equal-width decoding; the later apparent state law came
+from splitting carrier 2 at the wrong boundary; the differing constant offsets came from ignoring
+the encoded elapsed value. This establishes a history-decodable truncated orientation carrier,
+but the interpolated reference does not yet prove exact integer rounding.
+
+**Chart-transition correction (2026-07-29):** reciprocal zero-drop lazy-susan captures directly
+crossed `3 → 0` and `0 → 3`. Both transitions are smooth when state 0 retains wire
+`(G0,G1,G2)` and state 3 uses the state-0-boundary projection `(G1,G2,G0)`. The
+boundary deltas are only `0.002563` and `0.001132`. A later zero-drop Splatoon
+capture selected the state-0-boundary projection `(G2,G0,G1)` across a `0 → 1` boundary;
+its residual is `0.017025`, roughly 29 times smaller than the next permutation.
+In the rapid return, 16 of 93 genuine
+length-`0x1E` records have retained-vector energy above one (maximum `1.026738`), so the state is
+not an exact strict-smallest-three omitted-component selector.
+The one prefix epoch straddling each boundary selected chart 0 in both directions with canonical
+residuals `0.000144` and `0.000790`; this is direct seam evidence, not yet a universal chart-handoff
+law. See
+[`../experiments/pro2-mode3-carrier-prefix-2026-07-29.md`](../experiments/pro2-mode3-carrier-prefix-2026-07-29.md)
+and
+[`../experiments/pro2-carrier-chart-transition-2026-07-29.md`](../experiments/pro2-carrier-chart-transition-2026-07-29.md).
+
+A second zero-drop gameplay capture supplied a held-out `3 → 1 → 0` stress
+case. The immediate `1 → 0` edge cannot be made continuous by any unsigned
+lane permutation (minimum residual `1.185389`), and one global
+permutation-per-state model rises to RMS/max `0.818124/1.252822`. Allowing a
+paired sign flip on the two non-boundary lanes reduces that edge to `0.024716`.
+The same cyclic omitted-component topology fits all five observed boundaries:
+same-sign branches retain the topology permutation; the opposite-sign branch
+keeps the boundary lane and negates the other two. Its RMS/max is
+`0.025302/0.047878`, and every selected branch beats its alternative by at
+least `0.324174`. The earlier permutations are therefore the same-sign branch,
+not universal stateless maps. `tools/ns2_motion_chart_solver.py` reports each
+edge independently, rejects noncomposable unsigned candidates, and validates
+the structured sign branches. State 1 now has both branch types captured;
+the later zero-drop state-2 trigger crossed `3 → 2 → 3`. Both reciprocal
+state-2 boundaries select topology `(G2,G0,G1)` with opposite-branch signs
+`(+,−,−)`, at residuals `0.036162` and `0.011824`. Across all nine accepted
+boundaries, all four chart states are directly represented and the cyclic
+model has RMS/max `0.023541/0.047878`. Exact integer projection/rounding
+remains unresolved.
+The same local-frame audit resolves two direct nonzero/nonzero prefix seams:
+`3 → 1` selects chart 1 (`0.008416` versus `0.242898`), while `3 → 2`
+selects chart 3 (`0.003833` versus `0.196168`).
+
+The historical G6/G7/G8 codec selected payload bits `204..225`, `228..249`, and `252..271`.
+Those ranges cross gyro/acceleration fields in every cadence layout: for example, the catch-up
+form places gyro 2 at `197..244` and accel 3 at `245..286`, while high-rate places the end of its
+gyro at `204..205` and accel 2 at `206..271`. They are not independent 22/22/20-bit sensor lanes.
+Their bounded values, near-constant derived norm, and apparently stable reconstructed “second
+quaternion” were artifacts of slicing across packed gyro plus gravity-bearing acceleration
+samples.
+
+The exact ICM-42670-P FIFO Packet-3/Packet-4 structures were also tested against all 2,275
+length-`0x28` records. No header alignment persisted; Packet-4-looking headers at offsets 0/20
+occurred in only `10/2275` records by chance. Nintendo/controller firmware repacks the IMU data;
+the block is not two native sensor FIFO records. See
+[`../experiments/pro2-raw-native-motion-pcap-2026-07-29.md`](../experiments/pro2-raw-native-motion-pcap-2026-07-29.md)
+and [`tools/ns2_motion_reference.py`](../../tools/ns2_motion_reference.py).
+
+**Controlled magnetic-stimulus result (2026-07-29):** a zero-drop genuine-Pro2 campaign bracketed
+each stimulus with stationary baseline/recovery captures and removed time-weighted drift. It tested
+no-magnet controls, two faces/polarities, 100 mm and 50 mm ceramic-magnet distances, and a
+neodymium disc down to the closest stable sub-10 mm placement. No candidate lane showed repeatable
+polarity reversal or distance scaling. The matched no-magnet G6/G7/G8 residual (`0.0652°`) exceeded
+every 100 mm ceramic result (`0.0357°..0.0620°`), and the 50 mm ceramic results did not increase.
+This independently refuted G6/G7/G8 as a simple externally responsive magnetic-field vector under
+the tested conditions. The later packed-layout correction explains the negative result more
+directly: those aliases are mixed gyro/accel bit slices, so they should not respond coherently to a
+magnet. The campaign does **not** prove that the controller lacks a magnetometer or that internally
+consumed magnetic correction is impossible. See
+[`../experiments/pro2-magnetic-stimulus-matrix-2026-07-29.md`](../experiments/pro2-magnetic-stimulus-matrix-2026-07-29.md).
+
+**Historical diagnostic boundary (2026-07-24):** `ns2_motion_pdu40_get_reference()` and
+`ns2_motion_pdu40_set_reference()` are byte-exact for the three bit ranges they manipulate, but
+their semantic names are obsolete. They are retained only for reproducibility of the failed
+experiment; they must not be used to generate production motion or described as magnetic/reference
+lanes.
 
 This is **not production `0x28` generation**. The 2026-07-24 live test conclusively rejected the
 complete template-derived packet: enabling `ds5motion ref28 on` caused immediate random motion
-despite valid length-40 selection, changing G6/G7/G8 values, and zero encoder rejects. Turning the
-gate off immediately restored the validated length-`0x1E` path without reflashing. The exact
-G6/G7/G8 packer remains supported independently, but the experiment proves that the unresolved
-leading/middle lanes cannot remain static; the console consumes or cross-validates them. The
-generator, secondary quaternion, and UART gate were removed after the test so the rejected packet
-model cannot be enabled accidentally. See
+despite valid length-40 selection, changing the legacy aliases, and zero encoder rejects. Turning
+the gate off immediately restored the validated length-`0x1E` path without reflashing. We now know
+why: changing those aliases corrupted portions of the newest packed gyro and acceleration samples
+while other multi-sample fields remained static. The generator, secondary quaternion, and UART gate
+were removed after the test so the rejected packet model cannot be enabled accidentally. See
 [`../experiments/refuted-hypotheses.md`](../experiments/refuted-hypotheses.md).
 
 ## Remaining unknowns / suggested experiments
@@ -267,11 +396,11 @@ model cannot be enabled accidentally. See
    whether the phase value matches a static orientation reading (fusion) or drifts/resets (pure
    rate integration has no "current orientation" concept without integrating from a known start).
    🔵 **New reasoning, 2026-07-10** (from `tools/switch2_input_viewer.py`, a working third-party BLE
-   client added to this repo — see item 5 below): that tool shows the **same Pro Controller 2**
-   reports a **14-byte** motion block over one BLE path (GATT handle `0x000A`, all device types —
-   plausibly a single raw `temp+accelXYZ+gyroXYZ` int16 sample, per that tool's own commented-out
-   dtype) and a **40-byte** block over another (handle `0x000E`, Pro/GCN device types — undecoded
-   even by that tool). USB report 0x09 polls at 250 Hz; BLE typically negotiates a much lower
+   client added to this repo — see item 5 below): the later direct reference-PCAP decode corrects
+   that tool's 14-byte slice. The **same Pro Controller 2** reports an **18-byte** block at
+   `0x000A[0x2A..0x3B]`: uint32 microsecond timestamp plus
+   `temp+accelXYZ+gyroXYZ` int16. It reports a **40-byte** packed multi-sample block over
+   handle `0x000E`. USB report 0x09 polls at 250 Hz; BLE typically negotiates a much lower
    notification rate. A plausible, mundane explanation for *why* USB carries a single "integrated
    phase" value rather than discrete samples: **at USB's high poll rate, few IMU ticks elapse
    between reports, so one running/integrated value per report loses little** — whereas BLE's
@@ -296,20 +425,26 @@ model cannot be enabled accidentally. See
 3. **Tail `motion[0x1C]`** — zero in all captures; purpose unknown.
 4. **Timing epoch/phase** — does the console require a specific starting tick, or only a consistent
    ~800 Hz progression with correct high-nibble deltas? (High-nibble delta is validated 299/299.)
-5. **Length-40 variant** — seen elsewhere, absent from the original static USB capture. 🔵
-   **Located 2026-07-10; partially decoded 2026-07-24:** `tools/switch2_input_viewer.py` confirms a genuine
+5. **Length-40 variant** — seen elsewhere, absent from the original static USB capture. 🟢
+   **Located 2026-07-10; corrected 2026-07-29:** `tools/switch2_input_viewer.py` confirms a genuine
    Pro Controller 2 emits exactly this 40-byte block over its BLE GATT notification at handle
    `0x000E` (report offset `0xF:0x37`) — a *different transport* from USB report 0x09, so this is
    not proof the USB `40` some other research mentioned is the same format. Direct UART captures
-   now establish an interleaved 133 Hz `0x1E`/`0x28` stream. Normal status-`0x0D` G6/G7/G8 decode
-   as a nearly constant-magnitude controller-processed vector that rotates back to a more stable
-   world vector in both existing moving captures under the nearest/interpolated `0x1E`
-   quaternion. The vector also fits numerically as three components of a second quaternion,
-   matching the source bitmap's “Magneto Quaternion” name; its exact semantics remain unresolved.
-   The leading/middle
-   `0x28` lanes and
-   status-`0x0F` escalation form remain unresolved; see
-   [`uart-magprobe.md`](uart-magprobe.md).
+   establish an interleaved `0x1E`/`0x28` stream. A zero-drop UART cadence matrix from 7.5 through
+   30 ms proves exact packet boundaries at tick 11 and tick 15, while raw/native/raw bracketing
+   validates all signed field widths and scales. Production seven-tick high-rate packets contain
+   two signed22 acceleration vectors and one signed22 gyro vector, all with eight fractional bits.
+   Normal packets contain three acceleration and two gyro samples in mixed 13/14-bit fields.
+   Catch-up packets contain three acceleration and two gyro samples in mixed 13/14/16-bit fields.
+   The encoded 12-bit elapsed field and `0x0D`/`0x0E`/`0x0F` layout status are resolved.
+   The mode-3 prefix has asymmetric carrier lanes, with carrier 2 split around a two-bit low
+   fragment, and maps to the length-`0x1E` retained carrier at fixed power-of-two scales. Its epoch
+   is four ticks after the preceding carrier. The high-rate/normal tail is two Q3 temperature
+   samples, and bit 287 is observed reserved-zero padding. Reciprocal transitions directly resolve
+   the stateful cyclic chart topology across all four states and five prefix seam choices. A held-out
+   `3 → 1 → 0` capture refutes composition into one stateless unsigned map while validating the
+   cyclic paired-sign branch. A later reciprocal `3 → 2 → 3` crossing closes all four chart
+   states under the same model; exact integer rounding remains unresolved.
 6. **Whether the console strictly validates** beyond timing + physically plausible values.
 
 ## Implementation status
@@ -320,9 +455,11 @@ generated value semantics discussed below. On disconnect, the last genuine lengt
 stationary while its timing word advances; source-slot and VID/PID ownership prevent reuse by a
 different controller.
 
-🟢 **Current DualSense production path:** only the host-tested length-`0x1E` smallest-three
-quaternion carrier is emitted. The hardware-refuted length-`0x28` generator and its UART gate have
-been removed; passive decoding and the exact field codec remain available for continued research.
+🟢 **Current DualSense production path:** only the host-tested length-`0x1E`
+strict-smallest-three approximation is emitted. It remains hardware-validated, but reciprocal
+genuine captures prove it is not an exact model of every Pro2 carrier sample. The
+hardware-refuted length-`0x28` generator and its UART gate have been removed; passive decoding and
+the exact field codec remain available for continued research.
 
 🔵 **Historical/generic encoder path:** the Switch 2 reads the generated gyro pipeline (both Zeldas
 and Splatoon respond), but its exact fidelity remains unresolved. `src/switch_pro2/switch_pro2.c`

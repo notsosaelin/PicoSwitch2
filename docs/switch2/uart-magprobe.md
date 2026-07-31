@@ -5,57 +5,95 @@ length-`0x1E` and length-`0x28` motion PDUs captured through the PicoSwitch2 UAR
 separate from the production motion path: running it cannot alter controller configuration,
 console-facing reports, or firmware timing.
 
+> **Semantic correction, 2026-07-29:** this tool's G6/G7/G8 names and quaternion/vector
+> reconstructions are historical aliases, not independent fields. Exact reference-PCAP analysis
+> proves their bit ranges cross packed catch-up gyro and acceleration samples. Keep this analyzer
+> for reproducing the magnet campaign and its A/B/A statistics, but use
+> [`tools/ns2_motion_reference.py`](../../tools/ns2_motion_reference.py) and
+> [`pro2-raw-native-motion-pcap-2026-07-29.md`](../experiments/pro2-raw-native-motion-pcap-2026-07-29.md)
+> for current field semantics.
+>
+> The same corpus also corrects two labels in the preserved bitmap and this historical analyzer.
+> The former “sub-index” plus “secondary status” are one 12-bit elapsed count:
+> `(pdu[2] << 4) | (pdu[1] >> 4)`. Status `0x0D`/`0x0E`/`0x0F` identifies
+> high-rate/normal/catch-up layout, not normal-versus-escalation sensor state.
+>
+> A later carrier-aware pass also corrects the prefix boundary: it is not two flags followed by
+> three equal-width values. It is packing mode `3` plus three asymmetric carrier lanes. The third
+> lane is split, with its low two bits preceding its signed high bits; those bits are not a
+> separate state. The carrier/epoch fit and its limits are
+> documented in
+> [`pro2-mode3-carrier-prefix-2026-07-29.md`](../experiments/pro2-mode3-carrier-prefix-2026-07-29.md).
+
 ## Evidence boundary
 
-The decoder labels only fields established by current source, host round trips, and direct
-captures:
+The decoder historically labeled fields established only as byte-exact bit ranges:
 
-- 12-bit IMU timer and four-bit sub-index;
-- primary and secondary sensor status;
+- 12-bit IMU timer plus what is now known to be a separate 12-bit elapsed count;
+- one layout/status byte;
 - the length-`0x1E` smallest-three quaternion and its omitted-component state;
 - the three signed 32-bit acceleration lanes in length-`0x1E`;
-- normal length-`0x28`, status-`0x0D` G6/G7/G8 values;
+- normal length-`0x28`, status-`0x0D` legacy G6/G7/G8 aliases;
 - every remaining unexplained byte and bit, retained by payload-relative offset.
 
-Status-`0x0F` escalation PDUs are never decoded as normal G6/G7/G8 data. Their raw payloads and
-status values remain available as separate evidence. Status forms other than normal `0x0D` and
-escalation `0x0F` are also counted separately. The `0x28[p16..p27]` middle block is deliberately
+The historical tool separates status-`0x0F` packets from `0x0D`, but that output label means
+catch-up layout rather than escalation. Their raw payloads and status values remain available as
+separate evidence. The `0x28[p16..p27]` middle block is deliberately
 unknown: interpreting it as the length-`0x1E` `int32` acceleration layout produces physically
 impossible stationary values and signed-32-bit wraps. The analyzer instead interpolates the
 bracketing genuine `0x1E` acceleration for movement gating.
 
-The safe label is currently **G6/G7/G8 vector**. It is not raw magnetometer output. Earlier work
-called it a body-frame magnetic vector because:
+The former **G6/G7/G8 vector** label is superseded. Earlier work called it a body-frame magnetic
+vector because:
 
 1. a nearly constant vector magnitude while stationary;
 2. rotation with the controller in a physical pitch capture;
 3. recovery of a nearly constant **within-capture** world-frame vector after applying the
    nearest/interpolated genuine `0x1E` quaternion.
 
-That behavior also fits the vector part of a second, controller-fused quaternion—the source bitmap
-itself calls the group “Magneto Quaternion.” Reconstructing a positive scalar as
+That behavior also appeared to fit the vector part of a second quaternion—the source bitmap itself
+calls the group “Magneto Quaternion.” Reconstructing a positive scalar as
 `sqrt(1 - G6^2 - G7^2 - G8^2)` is numerically possible for every normal sample in the current
-corpus. This is a candidate representation, not yet a decode: there is no independently confirmed
-component order, scalar sign, multiplication order, or relationship to the live quaternion.
+corpus. It was not a decode: the selected ranges are now known to cross packed IMU fields.
 
-Direct raw-sensor interpretation is ruled out at the wire level. G6/G7/G8 are signed 22/22/20-bit
-fields and observed integer values exceed signed 16-bit range by a wide margin. An AK09919C, if
-physically present, exposes signed 16-bit axes; controller firmware could still consume and
-pre-process such a sensor, so this result rejects only **raw AK09919C samples in `0x28`**, not the
-chip itself.
+Interpreting each alias independently as signed 22/22/20-bit values created the misleading large
+ranges. In the catch-up layout, their source bits overlap gyro 2 (`197..244`) and accel 3
+(`245..286`). No conclusion about an AK09919C or any physical magnetometer follows from them.
 
 World-frame means from different sessions must not be compared as absolute north until the
 quaternion's connection/startup yaw epoch is characterized.
 
-The original field sketch is preserved as
+The original field sketch is preserved as a historical artifact; its “sub-index,” “secondary
+status,” and G6/G7/G8 semantic labels are superseded by the corrections above:
 [`assets/pdu-bitmap.png`](assets/pdu-bitmap.png). Third-party discussion exports used as research
 leads—not as primary protocol evidence—are stored under `dumps/research/`. Direct UART JSONL
 captures under `dumps/BLE CAPTURE/` and reproducible host analysis remain authoritative over those
 discussion transcripts.
 
+## Current raw-IMU reference path
+
+The decrypted genuine Pro2 PCAP provides a known-good report-`0x05` initialization that is distinct
+from the historical bit-7 `magraw` probe. The UART-only `imuref on|off|status` path reproduces its
+report selector, feature `0x2F`, calibration reads, report-rate write, and common-input CCC.
+Production startup is unchanged, and `imuref off` restores the validated native profile.
+
+Use `blecap` for the live capture and the current analyzer for both handles:
+
+```powershell
+./tools/read_uart_diag.ps1 -Port COM11 -Command 'imuref on'
+./tools/read_uart_diag.ps1 -Port COM11 -Command 'imuref status'
+./tools/read_uart_diag.ps1 -Port COM11 -Command 'blecap start'
+Start-Sleep -Milliseconds 850
+./tools/read_uart_diag.ps1 -Port COM11 -Command 'blecap dump' `
+  -OutputPath 'dumps/BLE CAPTURE/pro2-imuref-live.jsonl'
+python tools/ns2_motion_reference.py `
+  --blecap 'dumps/BLE CAPTURE/pro2-imuref-live.jsonl'
+./tools/read_uart_diag.ps1 -Port COM11 -Command 'imuref off'
+```
+
 ## Removed DualSense reference encoder — hardware-refuted packet model
 
-The firmware contains an offline-validated codec for the exact G6/G7/G8 packing. A short-lived
+The firmware contains an offline-validated codec for those exact historical bit ranges. A short-lived
 UART-gated generator used that codec to select one length-`0x28` packet in four DualSense samples.
 Its G6/G7/G8 lanes contained the vector part of a second, gravity-corrected quaternion while all
 undecoded leading/middle lanes came from one genuine normal template. The experiment separated two
@@ -64,15 +102,16 @@ claims:
 - the G6/G7/G8 bit packing is byte-exact and host-tested;
 - the complete synthesized `0x28` packet is valid enough for the console.
 
-The first claim remains supported. The second is refuted: enabling the gate in Splatoon 3 produced
+The first claim remains supported only as byte manipulation, not field semantics. The second is
+refuted: enabling the gate in Splatoon 3 produced
 immediate random motion even though UART reported selected length 40, valid changing G6/G7/G8
 values, and zero representation rejects. Disabling the gate immediately restored emitted
 length 30 and normal motion without reflashing.
 
-Therefore the leading/middle lanes cannot be held at a static genuine template. The console
-consumes or cross-validates changing information there, so those lanes must be decoded and made
-dynamically coherent before another synthetic `0x28` trial. See the permanent negative-result
-entry in [`../experiments/refuted-hypotheses.md`](../experiments/refuted-hypotheses.md).
+The corrected map explains the failure: changing the aliases modified fragments of the newest
+packed gyro/accel samples while every other sample remained static. A future `0x28` generator must
+create the complete coherent multi-sample payload. See the permanent negative-result entry in
+[`../experiments/refuted-hypotheses.md`](../experiments/refuted-hypotheses.md).
 
 The generator, secondary quaternion, UART commands, and runtime gate were then removed from source.
 This prevents accidental reactivation of a packet model already rejected by hardware. The passive
@@ -147,7 +186,7 @@ and the implied angle if the group is provisionally treated as a quaternion vect
 states the evidence boundary explicitly: failure to fit signed-int16 rejects a direct raw-sensor
 wire format but cannot identify the physical component.
 
-## Controlled A/B comparison
+## Controlled A/B and A/B/A comparison
 
 For a magnetic-stimulus test, do not move the controller between captures:
 
@@ -159,7 +198,16 @@ For a magnetic-stimulus test, do not move the controller between captures:
 ```powershell
 python tools/ns2_magprobe.py compare baseline.jsonl stimulus.jsonl
 python tools/ns2_magprobe.py compare baseline.jsonl recovery.jsonl
+python tools/ns2_magprobe.py aba baseline.jsonl stimulus.jsonl recovery.jsonl `
+  --fraction 0.5
 ```
+
+`aba` is preferred when baseline and recovery are both available. `--fraction` is the stimulus
+capture's elapsed-time position between baseline `0.0` and recovery `1.0`; use actual experiment
+timestamps rather than assuming `0.5` when setup time was asymmetric. The analyzer interpolates the
+expected no-stimulus quaternion, acceleration, G6/G7/G8 vector, unexplained byte means, and bit
+occupancy at that time, then reports the stimulus residual. This removed false positives caused by
+the genuine controller's nonlinear inter-capture drift.
 
 The comparison reports:
 
@@ -175,6 +223,28 @@ than three percent. A magnetic stimulus could itself change an onboard fused qua
 quaternion-only warning is a confound flag rather than proof that the fixture physically moved.
 Exit status is `0` for a valid comparison within those limits, `1` when the gate warns, and `2`
 for malformed input or an I/O error.
+
+## Controlled magnetic-stimulus result, 2026-07-29
+
+A zero-loss hardware matrix used a genuine Pro Controller 2, small neodymium disc, and larger
+ceramic block. It covered no-magnet controls, replication, recovery, opposite ceramic faces, and
+50/100 mm distance conditions. The decisive observations were:
+
+- matched no-magnet A/B/A G6/G7/G8 residual: `0.0652 degrees`;
+- ceramic Face A at 100 mm: `0.0620` and `0.0560 degrees`;
+- ceramic Face B at 100 mm: `0.0563` and `0.0357 degrees`;
+- Face-A/Face-B mean residual directions differed by only `3.18 degrees`, not a polarity reversal;
+- ceramic Face A at the stronger 50 mm condition: `0.0481` and `0.0544 degrees`;
+- all physical-pose gates passed, and there was no distance scaling;
+- candidate unexplained lane `p17` did not scale with distance and fell to ordinary sham variation.
+
+Therefore no tested external field produced a resolvable magnetic response. This rejected the
+simple external-field interpretation even before the packed-layout correction showed that the
+aliases cross gyro/accel samples. It does not prove that the controller lacks a physical
+magnetometer or that firmware never consumes one internally.
+
+Full methods, artifact paths, confounds, and numerical results:
+[`../experiments/pro2-magnetic-stimulus-matrix-2026-07-29.md`](../experiments/pro2-magnetic-stimulus-matrix-2026-07-29.md).
 
 ## Passive-corpus validation, 2026-07-24
 
@@ -197,9 +267,10 @@ records. Its reconstructed mean world magnetic vector was approximately
 
 The stationary capture's strongest unexplained-byte lead is `p11`, which correlates with the
 interpolated quaternion at `|r|` near 1.0. This is a lead, not a decode: quaternion components and
-time co-vary in that short capture. The passive raw-feature-channel comparison below is the next
-discriminator; a magnetic-stimulus or controlled static-pose matrix would add evidence later but
-is not required for this step.
+time co-vary in that short capture. The later controlled magnetic-stimulus matrix found no
+polarity- or distance-dependent response in this or any other retained unknown lane. The passive
+raw-feature-channel comparison below remains a separate discriminator because it tests a distinct
+handle-`0x000A` feature path rather than inferring sensor presence from the fused `0x28` PDU.
 
 The passive eight-capture corpus contains 1,327 PDUs, including 357 normal `0x28` forms and two
 historical moving sessions. Aggregate results:
@@ -213,8 +284,9 @@ historical moving sessions. Aggregate results:
 | Implied quaternion rotation | `44.154 +/- 1.255 degrees` |
 | World rotation reduced mean directional spread | 2 / 2 moving captures |
 
-This strengthens “controller-processed/fused representation” and weakens “raw magnetic field
-sample.” It does not yet distinguish a normalized reference vector from a second quaternion.
+At the time this appeared to strengthen a controller-processed/fused interpretation. The
+2026-07-29 correction supersedes that inference: the statistic is computed from mixed bit slices
+of packed gyro and acceleration samples.
 
 ### Stationary epoch result
 
@@ -242,10 +314,9 @@ components as the vector part of a unit quaternion and reconstructing the positi
 over the final epoch. Quaternion sign is physically equivalent, so the positive-scalar convention
 is sufficient for this stability test.
 
-This is strong evidence for the image's “Magneto Quaternion” label: G6/G7/G8 is the vector part of
-a stable corrected/reference quaternion, while G0/G1/G2 is the drifting live orientation. It still
-does not establish whether the correction comes from a physical magnetometer, another internal
-reference, or synthetic firmware fusion, and component-axis semantics remain unassigned.
+This was initially interpreted as strong evidence for the image's “Magneto Quaternion” label.
+That interpretation is refuted: the three aliases cross the catch-up gyro-2 and accel-3 fields.
+The numerical stability remains reproducible but has no independent quaternion meaning.
 
 ## Separate raw-magnetometer channel
 
@@ -305,9 +376,14 @@ software's signed-int16 raw channel on this genuine Pro Controller 2. That parse
 effective for Joy-Con 2 or another Switch 2 controller while yielding no raw input on PID
 `0x2069`.
 
-This result does not prove that the Pro Controller 2 lacks a physical magnetometer. It proves the
-documented public raw-report route does not expose one. The interleaved `0x28` G6/G7/G8 data is
-independent of that route and remains controller-processed/fused data, not direct sensor samples.
+This result does not prove that the Pro Controller 2 lacks a physical magnetometer. It proves only
+that the tested bit-7/`0x94` sequence did not expose one. The separate reference
+`btle_procon2_motion_0x000A.pcapng` capture proves that handle `0x000A` can carry raw
+timestamp/temperature/accel/gyro samples when initialized through the bit-2/report-selection path;
+an exact live replay now confirms that path on genuine hardware. The explicit native/common CCC
+handoff emits zero-drop, timestamp-coherent raw IMU data and restores production native motion
+cleanly. See
+[`pro2-raw-native-motion-pcap-2026-07-29.md`](../experiments/pro2-raw-native-motion-pcap-2026-07-29.md).
 
 No public board source currently identifies the Pro Controller 2 sensor. Nintendo's FCC internal
 photos expose the radio/NFC assembly but no readable IMU marking, public board inventories name the
@@ -329,8 +405,8 @@ before comparing different physical controller units.
 python tools/test_ns2_magprobe.py -v
 ```
 
-Coverage includes exact genuine `0x1E` carrier decoding, exact normal-`0x28` G6/G7/G8 and raw
+Coverage includes exact genuine `0x1E` carrier decoding, exact historical `0x28` bit-range and raw
 middle-block fixtures, `motionpair` and full-`blecap` ingestion, 32-bit Pico timestamp rollover,
 malformed-capture rejection, normal versus escalation separation, aggregate wire-format
-classification, the independent handle-`0x000A` raw-channel decoder, stationary-epoch
-live-versus-reference stability, and the A/B movement gate.
+classification, the historical handle-`0x000A` bit-7 lane decoder, stationary-epoch
+live-versus-reference stability, the A/B movement gate, and time-weighted A/B/A drift subtraction.

@@ -1,6 +1,6 @@
 # Current Continuation Context
 
-Last reconciled: 2026-07-28
+Last reconciled: 2026-07-29
 
 **Start here if you are resuming v3 amiibo work:** `docs/Amiibo-v3.md` §18 is authoritative; the
 NFC boundary section below carries the short form and the open experiment.
@@ -29,18 +29,89 @@ required Git submodule for Pico 2 W audio builds.
 - DualSense console/Windows audio, physical headset state, reconnect audio, and waveform-preserving
   native haptics are hardware-confirmed on Pico 2 W.
 
+## Protocol laboratory boundary
+
+- Shared workflow: `docs/re-methodology/controller-protocol-lab.md`.
+- `motion_lab.ps1` captures one short stationary condition and packages `ns2_magprobe` analysis,
+  baseline comparison, fixtures and hashes. Use separate no-magnet, sham, polarity, distance and
+  recovery runs. The 2026-07-29 genuine-Pro2 campaign is complete. For a stimulus bracketed by
+  baseline and recovery, use `ns2_magprobe.py aba ... --fraction F` to remove time-weighted drift.
+- `audio_lab.ps1` is observational by default and protects the validated speaker path. `audio
+  headset` reports normalized jack state without changing routing.
+- `ns2_firmware_update.py` is a host-only capture model. It rejects the generic tracer's truncated
+  long `0x0D/04` records; the dedicated on-device flash sink is still pending.
+- Repository-local Codex skills live under `.agents/skills/`. Existing NFC/Claude workflow remains
+  under `.claude/skills/`.
+
 ## Motion boundary
 
 - Production genuine Pro2 input transports its controller-generated `0x1E`/`0x28` PDUs opaquely.
 - Production DualSense/Edge output synthesizes only the decoded length-`0x1E` quaternion carrier.
-- G6/G7/G8 in normal `0x28` PDUs have an exact signed 22/22/20-bit codec, but their semantics and
-  the changing leading/middle lanes remain incomplete.
+- Exact ICM-42670-P FIFO tables plus decrypted genuine Pro2 PCAPs establish two ground-truth paths:
+  handle `0x000A` has an 18-byte raw timestamp/temperature/accel/gyro sample; length-`0x28` on
+  `0x000E` is a 4-byte timer/elapsed/status prefix plus a 288-bit packed multi-sample IMU payload.
+  The reference Pro2 session is almost entirely catch-up layout because it spans 17–19 internal
+  ticks per notification.
+- The former G6/G7/G8 signed aliases cross packed latest-gyro and accel bit ranges. They are not
+  independent magnetic/reference lanes or a second quaternion. The completed magnet matrix remains
+  valid negative evidence and helped expose the false semantic model.
 - The template experiment—genuine static `0x28` body plus dynamic timing/G6/G7/G8—caused immediate
-  random motion. The runtime generator was removed. Do not repeat it without decoding every
-  console-relevant changing lane.
-- A coherent software-generated `0x28` reference/magnetometer solution is the accepted direction
-  for controllers that lack the hardware. The prohibition is against the refuted static-template
-  method, not against a fully modelled future software solution.
+  random motion because it corrupted fragments of real packed gyro/accel samples. The runtime
+  generator was removed.
+- `tools/ns2_motion_reference.py` analyzes PCAPNG through TShark plus live UART `blecap` and
+  `motionpair` JSONL.
+  UART `imuref on|off|status` is default-off and replays the known-good `0x000A` control profile;
+  hardware now confirms clean raw sample delivery, exclusive CCC ownership, ATT success, and
+  reversible restoration of fresh native motion. The PDU now classifies itself:
+  `elapsed_ticks = (pdu[2] << 4) | (pdu[1] >> 4)`. This matched the preceding carrier delta in
+  `1274/1274` zero-drop comparisons and remains usable when capture records are missing. Byte 3
+  independently maps `0x0D` to high-rate, `0x0E` to normal, and `0x0F` to catch-up in
+  `1292/1292` zero-drop records.
+- A zero-drop 7.5–30 ms cadence matrix fully maps the accel/gyro fields. High-rate (`0..10`
+  ticks) is signed22 accel/gyro/accel with eight fractional bits; normal (`11..14`) is mixed
+  13/14-bit accel/gyro; catch-up (`15+`) is mixed 13/14/16-bit accel/gyro. Scaled axes agree with
+  raw handle `0x000A`, and all stationary accel lanes measure approximately `1.052 g`.
+- The prefix boundary is corrected. It is packing mode `3` plus `s24+s23+s25` in high-rate and
+  `s22+s21+s23` in normal/catch-up. Carrier 2 is split on the wire: its low two bits precede its
+  signed high bits. The former “separate state” was that low fragment. After dividing high-rate by
+  four and grouping only by the length-`0x1E` carrier state, fixed slopes
+  `sqrt(2)/2^24`, `sqrt(2)/2^23`, and `sqrt(2)/2^23` align it to the retained length-`0x1E`
+  carrier. The epoch is packet-derived: `current tick - encoded elapsed + 4`, equivalently four
+  ticks after the preceding carrier. It gives `0.999996` correlation in both dynamic captures and
+  improves the mixed-cadence pitch fixed NRMSE from `0.008728` to `0.002718`. A causal modular
+  history decoder has `0.000968°` and `0.004682°` median error against interpolated length-`0x1E`
+  truth, with zero observed chart mismatch.
+- Reciprocal zero-drop lazy-susan captures now cross `3 → 0` and `0 → 3`. State 0 wire
+  `(G0,G1,G2)` and state 3's local state-0-boundary projection `(G1,G2,G0)` are continuous at both
+  boundaries. Sixteen rapid genuine samples exceed retained energy 1.0, so the literal
+  strict-smallest-three interpretation is refuted as an exact genuine model. The prefix seam
+  selected chart 0 in both directions. A clean `0 → 1` seam selected local projection
+  `(G2,G0,G1)`, but a held-out zero-drop `3 → 1 → 0` capture refutes composition into one global
+  unsigned map: its `1 → 0` edge has minimum residual `1.185389`. The cyclic omitted-component
+  topology's paired-sign branch fits that edge at `0.024716`; all five captured boundaries give
+  RMS/max `0.025302/0.047878`, so state 1 now has both branch types covered. A later zero-drop
+  state-2 trigger captured reciprocal `3 → 2 → 3` seams. Both select topology `(G2,G0,G1)` and
+  opposite-branch signs `(+,−,−)`, at residuals `0.036162` and `0.011824`. Across all nine
+  accepted boundaries, all four chart states are represented and the cyclic model has RMS/max
+  `0.023541/0.047878`. The direct `3 → 2` length-`0x28` seam selects chart 3
+  (`0.003833` versus `0.196168`), and the formerly suppressed `3 → 1` seam selects chart 1
+  (`0.008416` versus `0.242898`). Exact integer projection/rounding remains open; do not promote
+  this to a production `0x28` generator.
+- The high-rate/normal tail carries two Q3 IMU-temperature samples sharing a signed ten-bit
+  integer part. Two zero-drop raw/native/raw captures independently bracket native means
+  `4.28125` and `3.951923` with handle-`0x000A` raw-temperature means near `4`. The low fractions
+  matched in `993/1023` records because the adjacent samples usually share a sub-count value.
+- The catch-up format remains unchanged through the maximum accepted 30 ms interval. Bit 287 is
+  the single byte-alignment remainder after 287 established data bits and stayed zero in all 1,066
+  catch-up packets across 14 repository captures. Treat it as observed reserved-zero padding.
+- Dual CCCs do not emit both paths simultaneously: native takes priority, and disabling only its
+  CCC resumes raw delivery. The raw/native clocks remain monotonic across A/B/A switching but have
+  a path-dependent 23--29 tick offset. `imuref interval 6-24` is now a validated cadence probe;
+  `imuref off` restores the production six-unit interval and clears the experiment target.
+- A coherent software-generated `0x28` solution remains valid only after exact carrier
+  projection/rounding is modeled with the already-decoded multi-sample IMU/temperature data.
+  All chart states, both cyclic sign branches, and five prefix seam choices now have direct
+  evidence.
 
 ## NFC boundary
 
@@ -317,7 +388,9 @@ required Git submodule for Pico 2 W audio builds.
    confirm acknowledgement occurs only after IndexedDB persistence.
 2. Hardware-validate the implemented manual Eject/Present path, including replacement and reconnect.
 3. Capture a genuine Pro2 physical-tag write/readback before enabling native writes.
-4. Decode/model the unresolved genuine `0x28` lanes for the accepted software-reference path.
+4. Resolve exact carrier projection/rounding before attempting the accepted
+   software-generated `0x28` path; all four chart states and both cyclic sign branches now have
+   adjacent hardware evidence.
 5. Add DualSense microphone return only after preserving the confirmed speaker/haptic path.
 6. Extend motion translation to another controller family only after verifying its calibration,
    axes, units, timestamps, and stationary-bias behavior.

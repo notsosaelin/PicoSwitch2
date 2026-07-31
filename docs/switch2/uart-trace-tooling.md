@@ -25,6 +25,7 @@ remains console-attached:
 ./tools/read_uart_diag.ps1 -Port COM11 -Command 'blecap dump' -OutputPath 'dumps/BLE CAPTURE/run.jsonl'
 ./tools/read_uart_diag.ps1 -Port COM11 -Command motionauto
 ./tools/read_uart_diag.ps1 -Port COM11 -Command 'magraw status'
+./tools/read_uart_diag.ps1 -Port COM11 -Command 'imuref status'
 ```
 
 GATT discovery and a numbered variant are mutually exclusive per connection. The normal production
@@ -35,17 +36,63 @@ The 2026-07-21 workflow used these commands to establish descriptor `0x0010`, co
 in [`report-0x09-motion.md`](report-0x09-motion.md).
 
 High-rate native `0x1E`/`0x28` motion uses the separate `motionpair capture` ring and the
-host-side [`ns2_magprobe.py`](uart-magprobe.md) decoder. That path aligns genuine quaternions and
-normal G6/G7/G8 PDUs, filters escalation forms, preserves unexplained bits, and supports
-pose-gated A/B comparisons without adding formatting work to the Bluetooth callback. The analyzer
-also accepts historical full `blecap dump` JSONL directly and provides a cross-capture `corpus`
-command; this recovered moving evidence without requiring another physical controller trial.
+host-side [`ns2_motion_reference.py`](../../tools/ns2_motion_reference.py) and historical
+[`ns2_magprobe.py`](uart-magprobe.md) decoders. The passive `motionpair trigger` path continuously
+retains 63 pre-trigger records, detects a length-`0x1E` chart change, retains 64 post-trigger
+records, and stops automatically. The production motion stream is not modified. One complete
+transition can be armed, awaited, validated, drained, and saved through the same UART session:
+
+```powershell
+./tools/read_uart_diag.ps1 -Port COM11 `
+  -Command 'motionpair trigger capture' -TimeoutMs 30000 `
+  -OutputPath 'dumps/BLE CAPTURE/pro2-chart-transition.jsonl'
+```
+
+The diagnostic-only unresolved trigger was used for opportunistic state-2
+coverage during ordinary play. It ignores states 0, 1, and 3 and freezes only
+when a transition involves state 2. It updates its baseline across every
+ignored transition, so it cannot manufacture a false boundary:
+
+```powershell
+./tools/read_uart_diag.ps1 -Port COM11 -Command 'motionpair trigger unresolved'
+# Play normally; no deliberate controller motion is required.
+./tools/read_uart_diag.ps1 -Port COM11 -Command 'motionpair status'
+# Only after chart.complete becomes true:
+./tools/read_uart_diag.ps1 -Port COM11 -Command 'motionpair dump' `
+  -OutputPath 'dumps/BLE CAPTURE/pro2-chart-unresolved.jsonl'
+```
+
+The status reports `target_mask: 4` for this mode. The capture ring is volatile;
+adapter power loss discards an armed or completed window. Do not call
+`motionpair dump` early because dumping intentionally stops the capture.
+The first successful run captured the zero-drop `3 → 2 → 3` fixture documented
+in
+[`../experiments/pro2-carrier-chart-transition-2026-07-29.md`](../experiments/pro2-carrier-chart-transition-2026-07-29.md);
+the command remains useful for repeatability controls rather than missing-state
+discovery.
+
+That path supports time-aligned A/B comparisons without adding formatting work to the Bluetooth
+callback. The analyzers also accept historical full `blecap dump` JSONL directly and provide
+cross-capture corpus operations; this recovered moving evidence without requiring another
+physical controller trial.
 The UART-only command name `magraw on|off|status` is historical. The guarded experiment replays the
 candidate initialization, validates each ACK, and runs the complete native profile to restore
 motion afterward; `ns2_magprobe.py rawmag` summarizes handle-`0x000A` signed-int16 lanes. Corpus
 analysis disproved the original interpretation: the public GATT path did not expose an independent
 raw-magnetometer stream. Keep the command only as a reproducible negative experiment. See
 [`uart-magprobe.md`](uart-magprobe.md) for the guarded workflow.
+
+`imuref on|off|status` is the current raw-IMU selector recovered from the genuine
+`btle_procon2_motion_0x000A.pcapng` control sequence. It uses feature `0x2F` and the common-report
+CCC, counts both common/native notifications, and restores the production native profile on
+`imuref off`. `imuref dual on|off` is a nested, UART-only discriminator that toggles the native
+CCC without changing the raw selector. Hardware confirms native priority rather than simultaneous
+delivery; disabling that CCC resumes raw reports. `imuref interval 6-24` requests a controlled BLE
+connection interval in 1.25 ms units while the raw experiment is active; production restore
+returns to the validated six-unit link and resets the diagnostic target accordingly. The completed
+cadence matrix establishes exact length-`0x28` format branches at tick 11 and tick 15; use this
+command for prefix/tail or escalation experiments, not to rediscover the sample maps.
+Analyze its `blecap dump` JSONL with `ns2_motion_reference.py --blecap`.
 
 ## Capture workflow
 
@@ -137,12 +184,33 @@ Therefore an initialization capture is not assumed to have one rigid total order
 must preserve genuinely inserted/removed commands while tolerating session-specific pairing bytes
 and timing.
 
+## NFC transaction view
+
+Command `0x01` traffic needs reassembly before it means anything: staging and retrieval are
+multi-chunk, and a per-record view cannot classify an envelope it has only seen a third of. Two
+extra operations provide that view, built on the shared layout module `tools/ns2_nfc_semantics.py`:
+
+```powershell
+python tools/ns2_trace.py nfc <capture.jsonl>
+python tools/ns2_trace.py nfc-diff <genuine.jsonl> <virtual.jsonl> [--ignore-identity]
+```
+
+`decode` also gained per-record NFC fields (status state names, descriptors, chunk offsets) from
+the same module, so the two views never disagree about what a byte is called. Full workflow and
+rationale: [`../re-methodology/nfc-investigation-workflow.md`](../re-methodology/nfc-investigation-workflow.md).
+
 ## Automated coverage
 
 ```powershell
 python tools/test_ns2_trace.py -v
+python tools/test_ns2_nfc_semantics.py -v
 ```
 
-Coverage includes known-field decoding, default redaction, 32-bit timestamp wrap, sequence and hex
-corruption rejection, pairing-aware semantic versus strict comparison, and memory-address-aware
-alignment.
+`test_ns2_trace.py` covers known-field decoding, default redaction, 32-bit timestamp wrap, sequence
+and hex corruption rejection, pairing-aware semantic versus strict comparison, and
+memory-address-aware alignment.
+
+`test_ns2_nfc_semantics.py` pins each capture-derived NFC layout and adds regression assertions
+against real committed captures: the escalated 4-block descriptor, the 83-byte device result, the
+allocation-relative King Dedede records, the tracer-truncation versus transport-fault distinction,
+and the pairing of each error state with the operation in flight.

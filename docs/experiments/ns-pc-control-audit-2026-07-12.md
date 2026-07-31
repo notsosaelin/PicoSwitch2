@@ -77,7 +77,7 @@ filename only: `PC2_Write_Amiibo.pcapng`, `PC2_Gyro_*.pcapng`):**
 - **Subcommand `0x08`** — commits the staged write image into the persistent tag; status becomes
   `0x05` afterward (per their comment).
 
-**Assessment against DATA.md's evidence discipline:** this is detailed, internally consistent,
+**Assessment against the original brief's evidence discipline:** this is detailed, internally consistent,
 and shaped like something built against real captures (specific byte offsets, specific timing
 deltas, specific validation rules that would be pointless to invent) — but it is **unverifiable
 by this project** without either (a) NS-PC-Control publishing the actual capture files, or
@@ -170,7 +170,7 @@ description.
 
 ## 7. Recommended next action
 
-Per DATA.md's decision tree: the NS-PC-Control audit **did** materially inform BT reconnect
+Per the original brief's decision tree: the NS-PC-Control audit **did** materially inform BT reconnect
 (refined evidence, §5) but did not itself implement anything portable to BTstack, and its highest-
 value new material (amiibo NFC, §2) is unverifiable without primary evidence this project doesn't
 have. **The single highest-value next action is the queued BT pairing reliability audit** — trace

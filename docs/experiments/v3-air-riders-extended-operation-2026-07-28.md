@@ -1,5 +1,17 @@
 # Figure-v3 Air Riders extended operation — 2026-07-28
 
+**Status: ✅ Resolved.** The chronology below is the primary evidence; the settled protocol is
+written up in [`../Amiibo-v3.md`](../Amiibo-v3.md) §6–§7.
+
+**Result in one paragraph.** Air Riders uses two sector-aware `0x20` record envelopes — a 355-byte
+two-record clear and a 167-byte three-record update — not one fixed 355-byte no-op. Genuine `0x20`
+completion returns a bare ACK and reports empty state `0x16`; only the following ordinary
+454-byte/`0x08` write reports `05 00` and ejects on Stop. Reusing a written tag adds sector-aware
+read `0x1E`, whose 196-byte result must carry the chip-managed sector-1 page-0 generation
+(`A5 00 0n 00`) — a counter that advances independently of sector-0 page 4. The complete two-stage
+write, the reuse read, power-cycle recovery, and a non-cosmetic learned-gameplay-state save are all
+hardware-confirmed with zero write errors.
+
 ## Question
 
 Why does a validated Meta Knight & Shadow Star virtual amiibo read successfully, but Kirby Air

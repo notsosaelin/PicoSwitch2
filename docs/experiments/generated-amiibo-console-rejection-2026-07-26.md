@@ -20,8 +20,10 @@ no originality signature) served through the PicoSwitch2 virtual reader?
 
 ## Method
 
-- Generated a raw-layout image with [`../../tools/generate_test_amiibo.py`](../../tools/generate_test_amiibo.py)
-  (identity block set; both HMACs, encrypted settings, and signature zeroed).
+- Generated a raw-layout image with `tools/generate_test_amiibo.py` (identity block set; both
+  HMACs, encrypted settings, and signature zeroed). That helper has since been removed — see
+  [`../switch2/amiibo-identity-and-generation.md`](../switch2/amiibo-identity-and-generation.md)
+  for why key-free generation is not console-usable.
 - Uploaded through the production portal; confirmed the portal identified it correctly (portal
   reads only the plaintext identity block, so this is expected and not evidence of validity).
 - Activated on the adapter and scanned on a real Switch 2 in **Save Mode**, then again in

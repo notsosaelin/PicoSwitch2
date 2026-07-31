@@ -22,10 +22,13 @@ captures, tests, and the documents above outrank old plans or conversation histo
   `docs/experiments/refuted-hypotheses.md`.
 - Preserve historical experiment reports and `.archived.md` files. Correct active summaries and
   links instead of rewriting what an old experiment observed.
-- Treat a software-generated length-`0x28` DualSense reference/magnetometer solution as a valid
-  long-term target. Do not repeat the refuted static-template experiment: hardware proved that
-  replacing only timing and G6/G7/G8 while holding the other changing lanes static causes random
-  motion. A future generator must model every console-relevant changing lane coherently.
+- The length-`0x28` PDU carries a packed multi-sample IMU payload plus a mode-3 orientation
+  carrier. There is no magnetometer lane: the former `G6/G7/G8` "reference vector" bit ranges cross
+  real packed gyro and acceleration samples, which is why a controlled magnet campaign found no
+  polarity or distance response. Do not reintroduce a magnetometer premise, and do not repeat the
+  refuted static-template generator — holding the other changing lanes static causes random motion.
+  A software `0x28` generator remains a valid long-term target only once every changing lane can be
+  synthesized coherently, including exact integer projection/rounding.
 - Production DualSense/Edge motion uses the validated length-`0x1E` carrier.
 - Pico 2 W uses the validated 300 MHz audio build. Pico W intentionally retains its non-audio
   profile.
@@ -82,6 +85,21 @@ foreach ($test in $tests) {
 }
 ```
 
+Python host tests:
+
+```powershell
+python tools\test_ns2_trace.py
+python tools\test_ns2_nfc_semantics.py
+python tools\test_amiibo_corpus.py
+```
+
+The figure-v3 NFC state machine is host-replayable. A deterministic v3 parsing,
+state, timing, or record-layout bug belongs in this test, not on hardware:
+
+```powershell
+.\build\host-tests\test_ns2_amiibo_v3_runtime.exe
+```
+
 Motion-specific checks:
 
 ```powershell
@@ -107,6 +125,17 @@ Build success is not hardware validation. State exactly which level was checked.
 - Only run live UART mutations after the maintainer says the expected controller/personality is
   connected and ready.
 - Prefer passive capture and exact A/B experiments over repeated blind firmware guesses.
+- For non-NFC protocol work, follow
+  [`docs/re-methodology/controller-protocol-lab.md`](docs/re-methodology/controller-protocol-lab.md).
+  Use the domain runner (`motion_lab.ps1`, `audio_lab.ps1`, or `firmware_lab.ps1`) so every hardware
+  action records Git/build provenance, diagnostics, complete captures, analysis, fixtures, and
+  hashes. A dropped/overwritten capture cannot become a golden fixture.
+- For NFC/amiibo work, follow
+  [`docs/re-methodology/nfc-investigation-workflow.md`](docs/re-methodology/nfc-investigation-workflow.md):
+  classify the failing layer, run `tools/amiibo_corpus.py` on any new dump, decode existing captures
+  with `python tools/ns2_trace.py nfc`, and only then run one instrumented
+  `tools/nfc_lab.ps1` experiment naming its single intended variable. Console status values are not
+  diagnoses — `2115-0096` / `07 41` has had two unrelated causes.
 
 ## Git and release workflow
 

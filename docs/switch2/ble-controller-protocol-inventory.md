@@ -17,15 +17,14 @@
 > reasserts P1, and runs the existing native-motion feature setup. A genuine Pro Controller 2
 > passed 20 consecutive controller-off/HOME cycles without SYNC, with input, LED, and gyro intact.
 
-> **🔴 Semantic decoding of the `0x000E` 40-byte motion block is PAUSED (2026-07-10)** — three full
-> analysis passes (direction correlation, orientation-invariant vector interpretation, periodic
-> native-FIFO packet structure) failed to converge; see
-> `docs/experiments/sw2-v2-motion-block-discovery-2026-07-10.md`'s pause banner for the durable
-> conclusion and what remains true. **The rest of this document (capture facility, field-level
-> inventory, GATT handle map, experiment tooling) remains active and accurate** — only the specific
-> "what does the 40-byte block encode" thread is paused. The project's active focus has re-centered
-> on genuine console-side USB report 0x09 — see
-> `docs/experiments/usb-relay-feasibility-audit-2026-07-10.md`.
+> **✅ Semantic correction, 2026-07-29:** exact ICM-42670-P FIFO tables plus the decrypted
+> `0x000A`/`0x000E` Pro2 PCAPs resolve the former pause. Handle `0x000A` carries one 18-byte raw
+> timestamp/temperature/accel/gyro sample. The 40-byte `0x000E` PDU is a Nintendo-packed
+> multi-sample IMU payload; on the reference Pro2 link its 17–19-tick cadence selects the wider
+> catch-up layout. The former G6/G7/G8 “magnet/reference” aliases cross packed gyro and accel bits
+> and have no independent semantics. See
+> [`pro2-raw-native-motion-pcap-2026-07-29.md`](../experiments/pro2-raw-native-motion-pcap-2026-07-29.md).
+> Sections below describing the 2026-07-10 search remain experiment history.
 
 **Status:** 🔵 In progress (updated 2026-07-10). The raw-capture facility (§2) is
 **hardware-validated**: four full sessions (~530 s total, one stationary + three distinct fixed
@@ -312,7 +311,7 @@ Notes on the design, not just the table:
   cmd/subcmd bytes and are distinguished only by send order).
 - **No variant was found protocol-invalid.** Every variant nests on top of the same minimum
   skeleton (subscribe + configure + enable, in some order) that v1 already proved works; none
-  requires an ordering DATA.md's task flagged as a possible dependency risk that this design
+  requires an ordering the original brief's task flagged as a possible dependency risk that this design
   doesn't already account for (the one real ordering dependency found — subscribe-timing — became
   variant 6's defining feature rather than an obstacle).
 - **Logging**, per variant, satisfies the task's list without new capture machinery: a
@@ -371,12 +370,12 @@ not yet checked. **Unknown** = no basis yet either way.
   - Handle `0x0016` (the secondary command handle) requires a **33-byte zero prefix** before the
     actual command bytes — different framing from `0x0014`'s direct framing. Not exercised or
     replicated by this repo's code.
-  - The **"Common" format (handle `0x000A`) carries a 14-byte motion block** per report (that
-    tool's own commented-out dtype: `temperature, accel_x/y/z, gyro_x/y/z`, all `int16` — one raw
-    sample, not an accumulator) — i.e. the exact handle this repo already subscribes to already
-    carries *some* motion data in the bytes this repo currently discards.
-  - The **"Pro/GCN" format (handle `0x000E`) carries a 40-byte motion block**, richer than the
-    14-byte one, structure undecoded even by that tool's own author.
+  - **Correction, 2026-07-29:** the direct reference PCAP shows the Common format carries an
+    **18-byte** motion block at `0x2A`: uint32 microsecond timestamp followed by
+    `temperature, accel_x/y/z, gyro_x/y/z` as int16. The viewer's `0x2E:0x3C` slice omitted the
+    timestamp and temperature prefix.
+  - The **"Pro/GCN" format (handle `0x000E`) carries a 40-byte motion block**, now decoded as a
+    timing/temperature prefix plus a 288-bit packed multi-sample IMU payload.
   - That tool's own init sequence **does** send feature-configure/enable commands
     (`configure_features(0xFF)` then `enable_features(flags)`, default `flags = 0x03` — buttons +
     sticks only, bit 2 = IMU not set unless the UI's IMU checkbox is checked) as part of getting
@@ -386,8 +385,8 @@ not yet checked. **Unknown** = no basis yet either way.
   internal bit-packed layout in detail (multi-sample accel/gyro, ±500°/s clamp, on-chip bias
   correction) — but its own confidence table explicitly marks **Pro Controller 2's report 0x09
   (USB) "TO BE VERIFIED... likely a variant,"** and by extension does not claim the BLE decode
-  transfers to what this repo's already-subscribed `0x000A` handle sends (which per the *other*
-  third-party source above is a *different*, 14-byte format, not the 40-byte one this document
+  transfers to what this repo's already-subscribed `0x000A` handle sends (which direct PCAP
+  evidence now establishes as a *different*, 18-byte format, not the 40-byte one this document
   decodes).
 - **`ndeadly/switch2_controller_research`** (referenced throughout this repo's existing docs,
   e.g. `usb-spec.md`, `report-0x09-motion-analysis.md`) is the source for report-0x09's USB byte

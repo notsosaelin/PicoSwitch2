@@ -7,6 +7,53 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Added
 
+- Shared controller protocol laboratory. A common PowerShell module records Git provenance,
+  discovers UART safely, writes BOM-free artifacts, hashes outputs, and emits a stable experiment
+  manifest. New motion, audio, command-atlas, capture-to-fixture, and host-only firmware-update
+  tools turn one controlled action into replayable evidence. Four repository-local Codex skills
+  enforce the protocol, motion, audio, and capture-only firmware workflows. The new
+  `audio headset` UART diagnostic is read-only and reports normalized jack state without changing
+  playback. A fail-closed flash-space auditor identifies candidate room for a future research-only
+  update sink without treating unreserved space as safe. No new controller behavior is enabled by
+  these tools. The motion runner also supports offline packaging recovery, active-native-motion
+  preflight checks, and time-fraction-aware A/B/A drift subtraction. Its first genuine-Pro2
+  magnetic-stimulus campaign found no resolved polarity- or distance-dependent response. A
+  passive chart-transition trigger plus reciprocal lazy-susan captures now establish the genuine
+  state-0/state-3 boundary projection, prefix seam selection, and the limits of a literal
+  strict-smallest-three interpretation. A held-out zero-drop `3 → 1 → 0` gameplay capture
+  subsequently refuted the broader one-unsigned-permutation-per-state model; the offline solver
+  now reports local edge fits and rejects noncomposable global candidates. The same capture
+  validates the cyclic omitted-component paired-sign branch across state 1; the structured model
+  fits all five observed boundaries with `0.047878` maximum residual. A later zero-drop
+  state-2-only capture crossed `3 → 2 → 3`; both reciprocal seams select the predicted cyclic
+  topology and opposite-sign branch. The resulting nine-boundary corpus covers all four chart
+  states at RMS/max `0.023541/0.047878`. The stateful local-frame analyzer also resolves the
+  interleaved `3 → 2` and formerly suppressed `3 → 1` prefix seam choices.
+
+- The figure-v3 NFC state machine is host-replayable. It moved out of the USB personality into
+  `src/nfc/ns2_amiibo_v3_runtime.c` behind a `step(state, host, now_ms, generation, command)`
+  interface matching the 540-byte path, with durable side effects behind a small host interface a
+  test can fake. `tools/test_ns2_amiibo_v3_runtime.c` replays the recognition read, the Air Riders
+  clear/update/write lifecycle, the `0x1E` reuse read, the persistence-gated eject, and the
+  mid-transaction generation edge with a fake clock. Console behavior is unchanged.
+- Internal v3 error reasons. Every v3 failure reaches the console as the same status `0x07` /
+  detail `0x41` (`2115-0096`), which during the investigation was produced by both a tag-removal
+  timing bug and a fail-closed record rejection. `amiibo v3diag` now reports which of eight
+  internal rules fired, plus the specific validation result and `0x14` stage offset. Its first
+  hardware run immediately paid for itself by contradicting the trace decoder (see Fixed).
+
+- NFC investigation laboratory. `tools/amiibo_corpus.py` classifies a directory of 540/572/2048-byte
+  dumps offline — structure, SRAM CRC, discovered allocation, and equivalence groups along the
+  identity, encrypted-body, and machine-SRAM axes — and emits a portable JSON manifest.
+  `tools/ns2_nfc_semantics.py` holds every NFC wire layout in one importable module, giving
+  `ns2_trace.py` two new operations: `nfc` reassembles multi-chunk `0x14`/`0x15` transactions into a
+  transaction timeline that names each write envelope and pairs error states with the operation in
+  flight, and `nfc-diff` reports the first semantic divergence between two captures.
+  `tools/nfc_lab.ps1` turns one hardware run into a hashed artifact bundle with its hypothesis,
+  intended variable, git revision, before/after diagnostics, decode, and comparison. The
+  `picoswitch2-nfc-lab` skill drives the workflow. Rationale and gaps:
+  [`docs/re-methodology/nfc-investigation-workflow.md`](docs/re-methodology/nfc-investigation-workflow.md).
+
 - Hardware-confirmed DualSense and DualSense Edge IMU translation to the Switch 2 Pro Controller 2
   motion carrier. Splatoon 3 validates direction, scale, rapid movement, stationary behavior,
   reconnect recovery, and coexistence with controller input, audio, and native haptics.
@@ -121,8 +168,27 @@ Release notes describe user-visible behavior. Detailed implementation history re
 - A pure BOOTSEL action-policy module and host regression suite covering paired, unpaired, and
   Config-mode behavior independently of the gesture recognizer.
 
+### Fixed
+
+- `nfc_lab.ps1` wrote its artifact bundle with `Set-Content -Encoding utf8`, which emits a UTF-8
+  BOM under Windows PowerShell 5.1 and none under pwsh 7. A bundle captured from a 5.1 session was
+  unreadable by any JSON parser. All artifact writes now go through an explicit BOM-free writer.
+- `nfc_lab.ps1` warned about a missing `-Variable` after the run was already set up instead of
+  asking for one. It now prompts, and accepts an empty answer to record an honest
+  `kind: observation` run; passing `-Variable` or `-DwellSeconds` skips prompting for scripted use.
+- The NFC trace decoder reported every status `0x07` / detail `0x41` as a failure. That pair is
+  also the deliberate TagRemoved signal after a committed write, so a healthy write/remove/rescan
+  cycle was flagged as broken. `ns2_trace.py nfc` now separates expected removal edges from
+  failures, and `nfc_lab.ps1` cross-checks its verdict against the firmware's own error counter and
+  reports a disagreement instead of trusting the trace.
+
 ### Changed
 
+- `tools/verify_amiibo_crypto.mjs` now requires the retail-key path instead of defaulting to a
+  maintainer-specific absolute path, and accepts `--json`. `tools/validate_amiibo_collection.py` is
+  removed; `tools/amiibo_corpus.py` supersedes it and additionally handles 2048-byte images.
+- UART port auto-discovery no longer selects a motherboard legacy serial port, so a machine with
+  one such port refuses rather than appearing to find a dead board.
 - Virtual Amiibo is always available. Blank firmware presents no virtual tag, and the virtual
   runtime owns NFC only after the user loads one of their own images.
 - Browser libraries use AmiiboAPI-ordered mutable dumps with content-derived keys for distinct v3

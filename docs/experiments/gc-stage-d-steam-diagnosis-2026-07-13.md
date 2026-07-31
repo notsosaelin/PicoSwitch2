@@ -90,4 +90,4 @@ streaming from a PC host.
   what a PC host uses.
 - `bRequest=2`/`bRequest=4`'s actual purpose remains Unknown (confirmed non-blocking, not confirmed
   meaningless).
-- Not yet re-tested on real hardware after this fix — see `DATA.md` for the exact next step.
+- Not yet re-tested on real hardware after this fix — see `STATUS.md` for the current next step.

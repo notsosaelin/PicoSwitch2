@@ -28,7 +28,7 @@ capturable** PC. The bug is their difference. Capture both, diff, done.
 
 - **USBPcap** — installed (`C:\Program Files\USBPcap\`, and Wireshark extcap `USBPcapCMD.exe`).
 - **Wireshark / tshark** — installed; dissects `LINKTYPE_USBPCAP` with full `usb.*` fields.
-- **Analysis harness** — `scratchpad/usb_a_analyze.py` (tshark-based; ready, validate on first file).
+- **Analysis harness** — a session-local analysis script (not retained) (tshark-based; ready, validate on first file).
 
 ---
 

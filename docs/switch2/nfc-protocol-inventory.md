@@ -3,13 +3,19 @@
 > Current evidence map. The detailed 2026-07-12 packet-mining report is preserved at
 > [`nfc-protocol-inventory-through-2026-07-12.archived.md`](../archive/nfc-protocol-inventory-through-2026-07-12.archived.md).
 >
-> Overall status: **a genuine Pro Controller 2 physical-tag read through the UART-gated relay and a
-> Virtual Amiibo read using the same 600-byte/70-byte-chunk model are both hardware-confirmed.
-> A conservative transactional Virtual Amiibo write also reaches complete `0x14`, `0x08`, and accepted
-> `05 00` on a real Switch 2 without crashing. Logical removal, next-scan re-presentation,
-> same-session updated readback, validated UART export, automatic dual-bank persistence,
-> power-cycle recovery, reversible Save 1/Save 2 selection, offline library use, and backup restore
-> are hardware/browser-confirmed. Native physical writes remain open.**
+> Overall status: **the complete Virtual Amiibo read and write lifecycle is hardware-confirmed on a
+> real Switch 2 for ordinary 540/572-byte tags and for 2048-byte figure-v3 (NTAG I2C Plus 2K) tags.
+> Logical removal, next-scan re-presentation, same-session updated readback, validated UART export,
+> alternating-bank persistence, power-cycle recovery, offline library use, and backup restore are
+> hardware/browser-confirmed. Native physical *writes* through a genuine controller remain open.**
+>
+> This document covers the **ordinary** amiibo transport. The figure-v3 / Kirby Air Riders 2048-byte
+> protocol — the `0x14`/`0x21` device command, the 83-byte `0x18` result, sector-aware `0x1E`
+> extended reads, and `0x20` extended-write envelopes — has its own reference at
+> [`../Amiibo-v3.md`](../Amiibo-v3.md).
+>
+> The board stores **exactly one** amiibo image. The two flash banks are alternating persistence
+> generations of that single image, not two selectable saves.
 
 ## Evidence rules
 
@@ -93,7 +99,9 @@ At commit `d1c5a7f7ba298f83017fae84952a4e6d2ef8fc92`,
 `ndeadly/switch2_controller_research` documents:
 
 - command `0x01` as NFC;
-- subcommands `0x03`, `0x04`, `0x05`, `0x06`, `0x08`, `0x0C`, `0x14`, and `0x15`;
+- subcommands `0x03`, `0x04`, `0x05`, `0x06`, `0x08`, `0x0C`, `0x14`, and `0x15`
+  (this repository has since confirmed `0x16`, `0x18`, `0x1E`, `0x20`, and `0x21` on the v3 path —
+  see [`../Amiibo-v3.md`](../Amiibo-v3.md));
 - USB and BLE transport bytes;
 - BLE `0x15` offset reads with bounded responses;
 - the extended command response value handle `0x001E` and CCC `0x001F`;
@@ -155,11 +163,11 @@ physical tag. Full Switch 1 native read/write translation therefore remains open
 
 ## Next capture
 
-The next available hardware test should exercise a game-owned write against the stable Virtual
-Amiibo slot and download/read back the mutated image. A future native capture should still write
-and read back the same physical tag while exporting console USB commands, BLE writes, both
-response handles, and native input NFC state on one time base. Native reader support remains
-read-only and diagnostic until that capture and the normal regression checklist pass.
+The game-owned virtual write and mutated-image readback are done (2026-07-25 for ordinary tags,
+2026-07-27/28 for v3). What remains is a **native** capture: a genuine controller writing and
+reading back the same physical tag while exporting console USB commands, BLE writes, both response
+handles, and native input NFC state on one time base. Native reader support remains read-only and
+diagnostic until that capture and the normal regression checklist pass.
 
 The 2026-07-25 Smash attempt did not reach a write because the presentation device changed UID
 between scans. See
