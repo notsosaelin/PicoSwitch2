@@ -134,6 +134,23 @@ void sw2_capture_pair_record(const uint8_t *data, uint16_t len) {
     critical_section_exit(&s_lock);
 }
 
+uint16_t sw2_capture_pair_prepare_post_trigger(uint16_t retain_newest) {
+    ensure_lock();
+    critical_section_enter_blocking(&s_lock);
+    uint32_t count = (s_head >= s_tail) ? (s_head - s_tail) :
+                                          (SW2_CAP_RING - s_tail + s_head);
+    if (count > retain_newest) {
+        s_tail = (s_tail + (count - retain_newest)) % SW2_CAP_RING;
+        count = retain_newest;
+    }
+    // Everything discarded before this point belonged to the intentionally
+    // sliding pre-trigger history. From here onward, any overwrite is a real
+    // loss and must fail the capture.
+    s_dropped = 0;
+    critical_section_exit(&s_lock);
+    return (uint16_t)count;
+}
+
 bool sw2_capture_drain_one(sw2_cap_entry_t *out) {
     ensure_lock();
     critical_section_enter_blocking(&s_lock);

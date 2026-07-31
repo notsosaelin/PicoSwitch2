@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "pico/critical_section.h"
+
 #include "sw2_capture.h"
 
 typedef struct {
@@ -20,6 +22,17 @@ typedef struct {
 // sample needs no inter-core lock. Only the ring shared with UART/core0 is
 // protected, and the critical section contains one fixed-size structure copy.
 static ds5_latest_motion_t s_latest;
+static ds5_motion_chart_trigger_t s_chart_trigger;
+static critical_section_t s_chart_lock;
+static bool s_chart_lock_initialized;
+
+static void ensure_chart_lock(void)
+{
+    if (!s_chart_lock_initialized) {
+        critical_section_init(&s_chart_lock);
+        s_chart_lock_initialized = true;
+    }
+}
 
 void ds5_motion_pair_update_ds5(uint32_t captured_us,
                                 uint32_t sensor_timestamp,
@@ -52,6 +65,21 @@ void ds5_motion_pair_record_native(uint32_t captured_us,
         (native_length != 0x1Eu && native_length != 0x28u))
         return;
 
+    ensure_chart_lock();
+    critical_section_enter_blocking(&s_chart_lock);
+    ds5_motion_chart_trigger_event_t const trigger_event =
+        ds5_motion_chart_trigger_observe(
+            &s_chart_trigger, native, native_length);
+    critical_section_exit(&s_chart_lock);
+    if (trigger_event.trim_pretrigger_window) {
+        uint16_t const retained = sw2_capture_pair_prepare_post_trigger(
+            DS5_MOTION_CHART_PRE_RECORDS);
+        critical_section_enter_blocking(&s_chart_lock);
+        ds5_motion_chart_trigger_set_pre_records(
+            &s_chart_trigger, retained);
+        critical_section_exit(&s_chart_lock);
+    }
+
     ds5_motion_pair_record_t record;
     memset(&record, 0, sizeof(record));
     record.native_us = captured_us;
@@ -72,11 +100,40 @@ void ds5_motion_pair_record_native(uint32_t captured_us,
     _Static_assert(sizeof(record) <= SW2_CAP_MAX_DATA,
                    "paired motion record exceeds shared capture entry");
     sw2_capture_pair_record((const uint8_t *)&record, sizeof(record));
+
+    if (trigger_event.stop_after_record) {
+        // Stop only the passive capture sink. Do not route through the public
+        // setter because the completed trigger metadata must remain available
+        // to UART until the host drains it.
+        sw2_capture_pair_set_enabled(false);
+    }
 }
 
 void ds5_motion_pair_set_enabled(bool enabled)
 {
+    if (enabled) {
+        ensure_chart_lock();
+        critical_section_enter_blocking(&s_chart_lock);
+        ds5_motion_chart_trigger_reset(&s_chart_trigger);
+        critical_section_exit(&s_chart_lock);
+    }
     sw2_capture_pair_set_enabled(enabled);
+}
+
+void ds5_motion_pair_arm_chart_trigger(void)
+{
+    ds5_motion_pair_arm_chart_trigger_mask(
+        DS5_MOTION_CHART_ALL_STATES_MASK);
+}
+
+void ds5_motion_pair_arm_chart_trigger_mask(uint8_t target_mask)
+{
+    sw2_capture_pair_set_enabled(false);
+    ensure_chart_lock();
+    critical_section_enter_blocking(&s_chart_lock);
+    ds5_motion_chart_trigger_arm_mask(&s_chart_trigger, target_mask);
+    critical_section_exit(&s_chart_lock);
+    sw2_capture_pair_set_enabled(true);
 }
 
 bool ds5_motion_pair_get_enabled(void)
@@ -104,4 +161,13 @@ bool ds5_motion_pair_drain_one(ds5_motion_pair_record_t *out)
         return false;
     memcpy(out, entry.data, sizeof(*out));
     return true;
+}
+
+void ds5_motion_pair_chart_status(ds5_motion_chart_trigger_t *out)
+{
+    if (!out) return;
+    ensure_chart_lock();
+    critical_section_enter_blocking(&s_chart_lock);
+    *out = s_chart_trigger;
+    critical_section_exit(&s_chart_lock);
 }

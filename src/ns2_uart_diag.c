@@ -13,6 +13,7 @@
 #include "ns2_diag_input.h"
 #include "ds5_audio_bridge.h"
 #include "ds5_motion_pair_capture.h"
+#include "controller_headset.h"
 #include "virtual_amiibo_store.h"
 #include "ns2_virtual_nfc.h"
 #include "report.h"
@@ -333,13 +334,25 @@ static void queue_amiibo_read(uint16_t offset) {
 }
 
 static void queue_motion_pair_status(const char *event) {
-    char response[256];
+    ds5_motion_chart_trigger_t chart;
+    ds5_motion_pair_chart_status(&chart);
+    char response[384];
     snprintf(response, sizeof(response),
              "{\"motionpair\":\"%s\",\"enabled\":%s,\"count\":%u,"
-             "\"capacity\":%u,\"dropped\":%lu}",
+             "\"capacity\":%u,\"dropped\":%lu,"
+             "\"chart\":{\"armed\":%s,\"baseline_valid\":%s,"
+             "\"triggered\":%s,\"complete\":%s,\"target_mask\":%u,"
+             "\"baseline\":%u,"
+             "\"transition\":%u,\"pre\":%u,\"post\":%u}}",
              event, ds5_motion_pair_get_enabled() ? "true" : "false",
              ds5_motion_pair_buffered_count(), DS5_MOTION_PAIR_CAPACITY,
-             (unsigned long)ds5_motion_pair_dropped_count());
+             (unsigned long)ds5_motion_pair_dropped_count(),
+             chart.armed ? "true" : "false",
+             chart.baseline_valid ? "true" : "false",
+             chart.triggered ? "true" : "false",
+             chart.complete ? "true" : "false",
+             chart.target_mask, chart.baseline_state, chart.trigger_state,
+             chart.pre_records, chart.post_records);
     queue_text(response);
 }
 
@@ -853,21 +866,39 @@ static void handle_command(void) {
         uint32_t staged = 0, results = 0;
         uint32_t chunks = 0, commits = 0, errors = 0;
         uint32_t extended_chunks = 0, extended_completions = 0;
-        char response[320];
+        // The console renders every v3 failure as the same 2115-0096, because
+        // the wire carries only status 0x07 / detail 0x41. These fields say
+        // which internal rule actually fired, which is the difference between
+        // a removal-timing bug and a fail-closed record rejection.
+        uint8_t last_error = 0, last_sub = 0, last_result = 0;
+        uint16_t last_offset = 0;
+        uint32_t error_count = 0;
+        const char *last_name = "none";
+        char response[448];
         ns2_v3_device_cmd_counts(&staged, &results);
         ns2_v3_write_counts(&chunks, &commits, &errors);
         ns2_v3_extended_counts(&extended_chunks, &extended_completions);
+        ns2_v3_last_error(&last_error, &last_name, &last_sub, &last_result,
+                          &last_offset, &error_count);
         snprintf(response, sizeof(response),
                  "{\"amiibo\":\"v3diag\",\"signature_set\":%s,"
                  "\"dev_cmd_staged\":%lu,\"dev_results\":%lu,"
                  "\"write_chunks\":%lu,\"write_commits\":%lu,"
                  "\"write_errors\":%lu,\"extended_chunks\":%lu,"
-                 "\"extended_completions\":%lu}",
+                 "\"extended_completions\":%lu,"
+                 "\"errors\":%lu,\"last_error\":\"%s\",\"last_error_code\":%u,"
+                 "\"last_error_sub\":%u,\"last_error_result\":\"%s\","
+                 "\"last_error_offset\":%u}",
                  ns2_v3_has_signature() ? "true" : "false",
                  (unsigned long)staged, (unsigned long)results,
                  (unsigned long)chunks, (unsigned long)commits,
                  (unsigned long)errors, (unsigned long)extended_chunks,
-                 (unsigned long)extended_completions);
+                 (unsigned long)extended_completions,
+                 (unsigned long)error_count, last_name, last_error,
+                 last_sub,
+                 ns2_virtual_nfc_result_string(
+                     (ns2_virtual_nfc_result_t)last_result),
+                 last_offset);
         queue_text(response);
     } else if (strncmp(rx_line, "amiibo chunk ", 13) == 0) {
         char *hex = strchr(rx_line + 13, ' ');
@@ -921,6 +952,13 @@ static void handle_command(void) {
     } else if (strcmp(rx_line, "motionpair start") == 0) {
         ds5_motion_pair_set_enabled(true);
         queue_motion_pair_status("started");
+    } else if (strcmp(rx_line, "motionpair trigger") == 0) {
+        ds5_motion_pair_arm_chart_trigger();
+        queue_motion_pair_status("trigger_armed");
+    } else if (strcmp(rx_line, "motionpair trigger unresolved") == 0) {
+        ds5_motion_pair_arm_chart_trigger_mask(
+            DS5_MOTION_CHART_UNRESOLVED_STATES_MASK);
+        queue_motion_pair_status("trigger_armed");
     } else if (strcmp(rx_line, "motionpair stop") == 0) {
         ds5_motion_pair_set_enabled(false);
         queue_motion_pair_status("stopped");
@@ -1055,6 +1093,64 @@ static void handle_command(void) {
                  d.reference_step, d.reference_steps,
                  d.reference_result, d.last_response_status,
                  d.input_ccc_status);
+        queue_text(trace_format_response);
+    } else if (strcmp(rx_line, "imuref on") == 0) {
+        btstack_host_request_switch2_imuref(true);
+        queue_text("{\"imuref\":\"requested\",\"enabled\":true}");
+    } else if (strcmp(rx_line, "imuref off") == 0) {
+        btstack_host_request_switch2_imuref(false);
+        queue_text("{\"imuref\":\"requested\",\"enabled\":false}");
+    } else if (strcmp(rx_line, "imuref dual on") == 0) {
+        btstack_host_request_switch2_imuref_dual(true);
+        queue_text("{\"imuref\":\"dual_requested\",\"enabled\":true}");
+    } else if (strcmp(rx_line, "imuref dual off") == 0) {
+        btstack_host_request_switch2_imuref_dual(false);
+        queue_text("{\"imuref\":\"dual_requested\",\"enabled\":false}");
+    } else if (strncmp(
+                   rx_line, "imuref interval ",
+                   sizeof("imuref interval ") - 1u) == 0) {
+        unsigned int interval_units = 0;
+        char trailing = '\0';
+        if (sscanf(
+                rx_line + sizeof("imuref interval ") - 1u,
+                "%u%c", &interval_units, &trailing) == 1 &&
+            interval_units >= 6u && interval_units <= 24u) {
+            btstack_host_request_switch2_imuref_interval(
+                (uint16_t)interval_units);
+            snprintf(
+                trace_format_response, sizeof(trace_format_response),
+                "{\"imuref\":\"interval_requested\",\"units\":%u,"
+                "\"microseconds\":%u}",
+                interval_units, interval_units * 1250u);
+            queue_text(trace_format_response);
+        } else {
+            queue_text(
+                "{\"error\":\"imuref interval requires 6..24 units\"}");
+        }
+    } else if (strcmp(rx_line, "imuref") == 0 ||
+               strcmp(rx_line, "imuref status") == 0) {
+        btstack_host_imuref_diag_t d;
+        btstack_host_get_switch2_imuref_diag(&d);
+        snprintf(trace_format_response, sizeof(trace_format_response),
+                 "{\"imuref\":true,\"requested\":%s,\"active\":%s,"
+                 "\"transition\":%s,\"dual_requested\":%s,\"dual_active\":%s,"
+                 "\"dual_transition\":%s,\"v2_state\":%u,\"pid\":\"0x%04X\","
+                 "\"handle\":\"0x%04X\",\"att\":\"0x%02X\","
+                 "\"dual_att\":\"0x%02X\",\"interval_target\":%u,"
+                 "\"interval_actual\":%u,\"interval_status\":\"0x%02X\","
+                 "\"common\":%lu,\"native\":%lu}",
+                 d.requested ? "true" : "false",
+                 d.active ? "true" : "false",
+                 d.transition_pending ? "true" : "false",
+                 d.dual_requested ? "true" : "false",
+                 d.dual_active ? "true" : "false",
+                 d.dual_transition_pending ? "true" : "false",
+                 d.v2_state, d.source_pid, d.connection_handle,
+                 d.last_att_status, d.dual_att_status,
+                 d.interval_target_units, d.interval_actual_units,
+                 d.interval_request_status,
+                 (unsigned long)d.common_notifications,
+                 (unsigned long)d.native_notifications);
         queue_text(trace_format_response);
     } else if (strcmp(rx_line, "motionauto") == 0) {
         sw2_native_auto_diag_t d;
@@ -1233,6 +1329,25 @@ static void handle_command(void) {
                  // face-normal (yaw) axis and its sign directly.
                  in.gyro[0], in.gyro[1], in.gyro[2],
                  in.accel[0], in.accel[1], in.accel[2], vid, pid);
+        queue_text(trace_format_response);
+    } else if (strcmp(rx_line, "audio headset") == 0) {
+        switch_pro_input_t in;
+        uint16_t vid = 0;
+        uint16_t pid = 0;
+        uint8_t headset_state = CONTROLLER_HEADSET_NONE;
+        get_global_gamepad_input(0, &in);
+        get_global_device(0, NULL, 0, &vid, &pid);
+#ifdef NS2_DS5_AUDIO
+        headset_state = in.headset_state;
+#endif
+        const char *kind =
+            headset_state == CONTROLLER_HEADSET_HEADSET ? "headset" :
+            headset_state == CONTROLLER_HEADSET_HEADPHONES ? "headphones" :
+            "none";
+        snprintf(trace_format_response, sizeof(trace_format_response),
+                 "{\"headset\":true,\"state\":%u,\"kind\":\"%s\","
+                 "\"vid\":\"0x%04X\",\"pid\":\"0x%04X\"}",
+                 headset_state, kind, vid, pid);
         queue_text(trace_format_response);
     } else if (strcmp(rx_line, "audio") == 0 ||
                strcmp(rx_line, "audio status") == 0) {
@@ -1529,11 +1644,13 @@ static void handle_command(void) {
                    "\"nfcmirror initiator on|off\",\"nfcmirror send HEX\","
                    "\"nfcmirror reply\","
                    "\"amiibo status|read OFFSET|acknowledge|dump (PC helper)\","
-                   "\"amiibo v3sig HEX32|v3sig clear\","
-                   "\"motionpair status|start|stop|dump|read\",\"magraw on|off|status\","
+                   "\"amiibo v3sig HEX32|v3sig clear\",\"amiibo v3diag|journal\","
+                   "\"motionpair status|start|trigger|stop|dump|read\",\"magraw on|off|status\","
+                   "\"imuref on|off|status\",\"imuref dual on|off\","
+                   "\"imuref interval 6-24\","
                    "\"motionprobe status|latch|seed STATE|on|off|reset|set G0 G1 G2|rate AXIS VALUE|accel X Y Z\","
                    "\"button y\","
-                   "\"motionauto\",\"motionusb\",\"ds5motion status|on|off|frame body|world|carrier switch2|dscale|legacy|map SX SY SZ|probe rate AXIS VALUE|probe off\",\"input status\",\"audio status|clear\",\"ds5codec status|lock on|lock off\","
+                   "\"motionauto\",\"motionusb\",\"ds5motion status|on|off|frame body|world|carrier switch2|dscale|legacy|map SX SY SZ|probe rate AXIS VALUE|probe off\",\"input status\",\"audio status|clear|headset\",\"ds5codec status|lock on|lock off\","
                    "\"pro2audio on|off|status|live on|live off|complexity 0-10|analysis on|analysis off|replay|replay stop\","
                    "\"btreconnect\",\"btfresh\","
                    "\"reenumerate\",\"help\"]}");

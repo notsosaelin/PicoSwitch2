@@ -129,6 +129,12 @@ void sw2_capture_pair_set_enabled(bool on);
 bool sw2_capture_pair_get_enabled(void);
 void sw2_capture_pair_record(const uint8_t *data, uint16_t len);
 
+// Diagnostic chart-transition capture support. Retain only the newest
+// pre-trigger records and make the remainder of the ring available for a
+// lossless post-trigger tail. Intentional pre-trigger sliding-window
+// overwrites are cleared from the session drop counter at this boundary.
+uint16_t sw2_capture_pair_prepare_post_trigger(uint16_t retain_newest);
+
 // ---- One-shot GATT discovery: ground truth for raw ATT handle numbering (2026-07-10) ----
 // OFF by default. The v1 motion-enable experiment (superseded by the v2 matrix below) worked --
 // 0x000E is real and responds to a 0x0C configure/enable pair -- but designing a v2 experiment

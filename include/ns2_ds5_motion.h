@@ -7,11 +7,11 @@
 #include "switch_pro.h"
 
 typedef enum {
-    // Switch 2's observed smallest-three convention. Quaternion components
-    // are numbered w/x/y/z, so identity is state 0. The state names the
-    // omitted component and G0/G1/G2 cyclically carry the remaining three,
-    // each over the physical +/-1/sqrt(2) range. A new largest component is
-    // omitted when the retained representation reaches that boundary.
+    // Hardware-compatible bounded quaternion carrier for translated sources.
+    // Components are numbered w/x/y/z, so identity is state 0. The genuine
+    // carrier shares the cyclic chart order and paired sign-branch transition
+    // law, but direct captures refute strict smallest-three as its exact
+    // internal model. Keep that evidence boundary when changing this encoder.
     NS2_DS5_CARRIER_SWITCH2_WXYZ = 0,
 
     // Nintendo's Switch-1 DScale model retained as an explicit diagnostic
@@ -55,9 +55,9 @@ typedef struct {
     // Example {-2,+1,+3}: X=-inputY, Y=+inputX, Z=+inputZ.
     int8_t gyro_map[3];
     ns2_ds5_motion_carrier_t carrier;
-    // Current Switch 2 omitted component in wire w/x/y/z order. Genuine
-    // hardware retains this state until a transmitted component reaches the
-    // smallest-three boundary instead of reselecting the maximum every report.
+    // Current translated-carrier chart in wire w/x/y/z order. Genuine
+    // hardware also retains its chart until a transmitted lane reaches the
+    // boundary, but its full carrier is not exact strict smallest-three.
     uint8_t switch2_omitted;
     bool body_frame; // true: q' = q*w (body-local); false: q' = w*q
     bool bias_ready;
@@ -83,8 +83,8 @@ bool ns2_ds5_motion_update(ns2_ds5_motion_state_t *state,
                            uint32_t now_us);
 
 // Build one native length-30 motion PDU. Returns false until a sample has been
-// accepted or if the integrated quaternion violates the smallest-three unit
-// quaternion invariant. All four w/x/y/z omission states are supported.
+// accepted or if the integrated quaternion cannot fit this bounded translated
+// carrier. All four w/x/y/z chart states are supported.
 bool ns2_ds5_motion_build(ns2_ds5_motion_state_t *state, uint8_t out[30]);
 
 #endif  // NS2_DS5_MOTION_H

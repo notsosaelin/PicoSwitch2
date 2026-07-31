@@ -4753,6 +4753,24 @@ static void register_ble_hid_listener(hci_con_handle_t con_handle)
 #define SW2_NFC_RESPONSE_HANDLE     0x001E  // Extended NFC response notification
 #define SW2_NFC_CCC_HANDLE          0x001F  // Extended NFC response CCC
 
+// Declared with the ATT-handle block because the primary 0x000A notification
+// callback appears before the later report-selection state machine.
+static volatile bool s_sw2_imuref_requested;
+static volatile bool s_sw2_imuref_active;
+static volatile bool s_sw2_imuref_transition_pending;
+static bool s_sw2_imuref_transition_target;
+static bool s_sw2_imuref_awaiting_unsubscribe;
+static volatile uint8_t s_sw2_imuref_last_att_status;
+static volatile bool s_sw2_imuref_dual_requested;
+static volatile bool s_sw2_imuref_dual_active;
+static volatile bool s_sw2_imuref_dual_transition_pending;
+static volatile uint8_t s_sw2_imuref_dual_att_status;
+static volatile uint16_t s_sw2_imuref_interval_pending_units;
+static volatile uint16_t s_sw2_imuref_interval_target_units;
+static volatile uint8_t s_sw2_imuref_interval_request_status;
+static volatile uint32_t s_sw2_imuref_common_notifications;
+static volatile uint32_t s_sw2_imuref_native_notifications;
+
 // Opt-in motion-enable experiment (see sw2_capture.h) — UNVERIFIED for this device. Handle
 // numbering guessed from switch2_input_viewer.py's second input-report path plus this repo's own
 // observed characteristic/CCC handle pairing pattern (0x000A/0x000B, 0x0019/0x001A); never
@@ -4828,6 +4846,11 @@ static void switch2_hid_notification_handler(uint8_t packet_type, uint16_t chann
                value_length > 3 ? value[3] : 0);
         sw2_notif_debug = true;
     }
+
+    if (__atomic_load_n(&s_sw2_imuref_requested, __ATOMIC_ACQUIRE) &&
+        value_handle == SW2_INPUT_REPORT_HANDLE)
+        __atomic_add_fetch(
+            &s_sw2_imuref_common_notifications, 1u, __ATOMIC_RELAXED);
 
     // Switch 2 input reports are 64 bytes on handle 0x000A
     if (value_handle != SW2_INPUT_REPORT_HANDLE) return;
@@ -5271,6 +5294,9 @@ typedef struct {
     bool        defer_ccc_subscribe;  // if true, the 0x000E CCC subscribe happens LAST, not first
     bool        use_console_cal_reads; // use the reads captured from console report-0x09 init
     bool        request_fast_link; // request a 7.5ms BLE interval after the final CCC write
+    bool        subscribe_common_input; // target report-0x05 CCC 0x000B instead of native 0x000F
+    uint8_t     cal_read_limit; // zero = complete selected list; raw reference uses first three
+    bool        send_common_report_select; // exact 0x0A/0x02 payload 0x00000003
 } sw2_v2_variant_t;
 
 static const sw2_v2_variant_t SW2_V2_VARIANTS[] = {
@@ -5303,10 +5329,20 @@ static const sw2_v2_variant_t SW2_NATIVE_PRO2_PROFILE = {
     9, "native_pro2", 0x27, 0x27, true, true, false, true, true, true
 };
 
+// Exact control shape from btle_procon2_motion_0x000A.pcapng: feature 0x2F,
+// the first three reference calibration reads, report-rate descriptor 0x0010,
+// and finally the common report-0x05 CCC at 0x000B. This remains UART-only;
+// production startup continues to select SW2_NATIVE_PRO2_PROFILE above.
+static const sw2_v2_variant_t SW2_RAW_IMU_REFERENCE_PROFILE = {
+    10, "raw_imu_reference", 0x2F, 0x2F, true, true, false, true, false, false,
+    true, 3, true
+};
+
 typedef enum {
     SW2_V2_IDLE = 0,
     SW2_V2_CCC_SUBSCRIBED,       // waiting for the (non-deferred) CCC write to complete
     SW2_V2_DISABLE_SENT,          // waiting for disable-all ACK (cmd=0x0C, subcmd=0x05)
+    SW2_V2_REPORT_SELECT_SENT,    // waiting for exact common-report selector ACK (0x0A/0x02)
     SW2_V2_CONFIGURE_SENT,       // waiting for the configure ACK (cmd=0x0C, subcmd=0x02)
     SW2_V2_CAL_READ,             // waiting for a SPI-read ACK (cmd=0x02, subcmd=0x04)
     SW2_V2_ENABLE_SENT,          // waiting for the enable ACK (cmd=0x0C, subcmd=0x04)
@@ -5784,6 +5820,61 @@ void btstack_host_get_switch2_magraw_diag(btstack_host_magraw_diag_t *out)
     out->connection_handle = sw2_init_handle;
 }
 
+void btstack_host_request_switch2_imuref(bool enabled)
+{
+    __atomic_store_n(&s_sw2_imuref_requested, enabled, __ATOMIC_RELEASE);
+    if (!enabled)
+        __atomic_store_n(
+            &s_sw2_imuref_dual_requested, false, __ATOMIC_RELEASE);
+}
+
+void btstack_host_request_switch2_imuref_dual(bool enabled)
+{
+    __atomic_store_n(
+        &s_sw2_imuref_dual_requested, enabled, __ATOMIC_RELEASE);
+}
+
+void btstack_host_request_switch2_imuref_interval(uint16_t interval_units)
+{
+    __atomic_store_n(
+        &s_sw2_imuref_interval_target_units, interval_units, __ATOMIC_RELEASE);
+    __atomic_store_n(
+        &s_sw2_imuref_interval_pending_units, interval_units, __ATOMIC_RELEASE);
+}
+
+void btstack_host_get_switch2_imuref_diag(btstack_host_imuref_diag_t *out)
+{
+    if (!out) return;
+    ble_connection_t *conn = find_connection_by_handle(sw2_init_handle);
+    out->requested = __atomic_load_n(&s_sw2_imuref_requested, __ATOMIC_ACQUIRE);
+    out->active = __atomic_load_n(&s_sw2_imuref_active, __ATOMIC_ACQUIRE);
+    out->transition_pending = __atomic_load_n(
+        &s_sw2_imuref_transition_pending, __ATOMIC_ACQUIRE);
+    out->dual_requested = __atomic_load_n(
+        &s_sw2_imuref_dual_requested, __ATOMIC_ACQUIRE);
+    out->dual_active = __atomic_load_n(
+        &s_sw2_imuref_dual_active, __ATOMIC_ACQUIRE);
+    out->dual_transition_pending = __atomic_load_n(
+        &s_sw2_imuref_dual_transition_pending, __ATOMIC_ACQUIRE);
+    out->v2_state = (uint8_t)s_sw2_v2_state;
+    out->last_att_status = __atomic_load_n(
+        &s_sw2_imuref_last_att_status, __ATOMIC_ACQUIRE);
+    out->dual_att_status = __atomic_load_n(
+        &s_sw2_imuref_dual_att_status, __ATOMIC_ACQUIRE);
+    out->interval_request_status = __atomic_load_n(
+        &s_sw2_imuref_interval_request_status, __ATOMIC_ACQUIRE);
+    out->interval_target_units = __atomic_load_n(
+        &s_sw2_imuref_interval_target_units, __ATOMIC_ACQUIRE);
+    out->interval_actual_units = sw2_init_handle
+        ? gap_le_connection_interval(sw2_init_handle) : 0u;
+    out->common_notifications = __atomic_load_n(
+        &s_sw2_imuref_common_notifications, __ATOMIC_ACQUIRE);
+    out->native_notifications = __atomic_load_n(
+        &s_sw2_imuref_native_notifications, __ATOMIC_ACQUIRE);
+    out->source_pid = conn ? conn->pid : 0u;
+    out->connection_handle = sw2_init_handle;
+}
+
 void sw2_native_auto_diag_snapshot(sw2_native_auto_diag_t *out)
 {
     if (!out) return;
@@ -5865,6 +5956,9 @@ static void sw2_motion_notification_handler(uint8_t packet_type, uint16_t channe
     const uint8_t *value = gatt_event_notification_get_value(packet);
 
     sw2_capture_record(SW2_CAP_INPUT_NOTIFY, value_handle, value, value_length);
+    if (__atomic_load_n(&s_sw2_imuref_requested, __ATOMIC_ACQUIRE))
+        __atomic_add_fetch(
+            &s_sw2_imuref_native_notifications, 1u, __ATOMIC_RELAXED);
     s_sw2_motion_last_notification_us = time_us_32();
 
     hci_con_handle_t con_handle = gatt_event_notification_get_handle(packet);
@@ -6595,6 +6689,18 @@ static void switch2_v2_send_configure(hci_con_handle_t con_handle)
     gatt_client_write_value_of_characteristic_without_response(con_handle, SW2_CMD_HANDLE, sizeof(cmd), cmd);
 }
 
+static void switch2_v2_send_common_report_select(hci_con_handle_t con_handle)
+{
+    // Exact frame 1998 from btle_procon2_motion_0x000A.pcapng.
+    uint8_t cmd[] = {
+        0x0A, SW2_REQ_TYPE_REQ, SW2_REQ_INT_BLE, 0x02,
+        0x00, 0x04, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00
+    };
+    sw2_capture_record(SW2_CAP_CMD_OUT, SW2_CMD_HANDLE, cmd, sizeof(cmd));
+    gatt_client_write_value_of_characteristic_without_response(
+        con_handle, SW2_CMD_HANDLE, sizeof(cmd), cmd);
+}
+
 static void switch2_v2_send_disable_all(hci_con_handle_t con_handle)
 {
     uint8_t cmd[] = { 0x0c, SW2_REQ_TYPE_REQ, SW2_REQ_INT_BLE, 0x05, 0x00, 0x04, 0x00, 0x00,
@@ -6639,6 +6745,23 @@ static void switch2_v2_send_handle_write(hci_con_handle_t con_handle)
 
 static void switch2_v2_send_ccc_subscribe(hci_con_handle_t con_handle)
 {
+    const bool common = s_sw2_v2_active &&
+        s_sw2_v2_active->subscribe_common_input;
+    const uint16_t ccc_handle = common
+        ? SW2_CCC_HANDLE : SW2_MOTION_CCC_HANDLE;
+
+    if (common) {
+        // The ordinary 0x000A listener is installed by the primary Switch 2
+        // connection path. Reassert only its CCC after the feature transition.
+        static uint8_t ccc_enable[] = { 0x01, 0x00 };
+        sw2_capture_record(
+            SW2_CAP_CCC_WRITE, ccc_handle, ccc_enable, sizeof(ccc_enable));
+        gatt_client_write_value_of_characteristic(
+            switch2_v2_ccc_write_callback, con_handle, ccc_handle,
+            sizeof(ccc_enable), ccc_enable);
+        return;
+    }
+
     memset(&sw2_motion_characteristic, 0, sizeof(sw2_motion_characteristic));
     sw2_motion_characteristic.value_handle = SW2_MOTION_HANDLE;
     // Live discovery confirms this characteristic spans declaration 0x000D through descriptor
@@ -6664,13 +6787,16 @@ static void switch2_v2_ccc_write_callback(uint8_t packet_type, uint16_t channel,
 
     uint8_t status = gatt_event_query_complete_get_att_status(packet);
     hci_con_handle_t con_handle = gatt_event_query_complete_get_handle(packet);
-    printf("[SW2_V2] CCC write (0x%04X) status=0x%02X state=%d\n", SW2_MOTION_CCC_HANDLE, status,
-           s_sw2_v2_state);
+    const uint16_t ccc_handle =
+        s_sw2_v2_active && s_sw2_v2_active->subscribe_common_input
+            ? SW2_CCC_HANDLE : SW2_MOTION_CCC_HANDLE;
+    printf("[SW2_V2] CCC write (0x%04X) status=0x%02X state=%d\n",
+           ccc_handle, status, s_sw2_v2_state);
     // Closes a gap found analyzing the first v2 hardware run: this completion status previously
     // only reached printf(), never the capture pipeline. Logged here, not before -- this is the
     // actual ATT-level result of the write BTstack already issued; nothing about when this
     // callback fires or what it does next is changed by adding this one line.
-    sw2_capture_record(SW2_CAP_WRITE_STATUS, SW2_MOTION_CCC_HANDLE, &status, 1);
+    sw2_capture_record(SW2_CAP_WRITE_STATUS, ccc_handle, &status, 1);
     if (!s_sw2_v2_active) return;
 
     if (s_sw2_v2_state == SW2_V2_CCC_SUBSCRIBED) {
@@ -6678,6 +6804,9 @@ static void switch2_v2_ccc_write_callback(uint8_t packet_type, uint16_t channel,
         if (s_sw2_v2_active->disable_all_first) {
             s_sw2_v2_state = SW2_V2_DISABLE_SENT;
             switch2_v2_send_disable_all(con_handle);
+        } else if (s_sw2_v2_active->send_common_report_select) {
+            s_sw2_v2_state = SW2_V2_REPORT_SELECT_SENT;
+            switch2_v2_send_common_report_select(con_handle);
         } else {
             s_sw2_v2_state = SW2_V2_CONFIGURE_SENT;
             switch2_v2_send_configure(con_handle);
@@ -6732,6 +6861,17 @@ static void switch2_v2_handle_ack(hci_con_handle_t con_handle, uint8_t cmd, uint
     switch (s_sw2_v2_state) {
         case SW2_V2_DISABLE_SENT:
             if (cmd == 0x0c && subcmd == 0x05) {
+                if (s_sw2_v2_active->send_common_report_select) {
+                    s_sw2_v2_state = SW2_V2_REPORT_SELECT_SENT;
+                    switch2_v2_send_common_report_select(con_handle);
+                } else {
+                    s_sw2_v2_state = SW2_V2_CONFIGURE_SENT;
+                    switch2_v2_send_configure(con_handle);
+                }
+            }
+            break;
+        case SW2_V2_REPORT_SELECT_SENT:
+            if (cmd == 0x0A && subcmd == 0x02) {
                 s_sw2_v2_state = SW2_V2_CONFIGURE_SENT;
                 switch2_v2_send_configure(con_handle);
             }
@@ -6751,8 +6891,11 @@ static void switch2_v2_handle_ack(hci_con_handle_t con_handle, uint8_t cmd, uint
         case SW2_V2_CAL_READ:
             if (cmd == SW2_CMD_READ_SPI && subcmd == SW2_SUBCMD_READ_SPI) {
                 s_sw2_v2_cal_index++;
-                const size_t cal_count = s_sw2_v2_active->use_console_cal_reads
+                size_t cal_count = s_sw2_v2_active->use_console_cal_reads
                     ? SW2_V2_CONSOLE_CAL_COUNT : SW2_V2_CAL_COUNT;
+                if (s_sw2_v2_active->cal_read_limit != 0u &&
+                    s_sw2_v2_active->cal_read_limit < cal_count)
+                    cal_count = s_sw2_v2_active->cal_read_limit;
                 if (s_sw2_v2_cal_index < cal_count) {
                     switch2_v2_send_next_cal_read(con_handle);
                 } else {
@@ -6796,8 +6939,13 @@ static void switch2_start_v2_variant(hci_con_handle_t con_handle,
 
     if (v->defer_ccc_subscribe) {
         // Variant 6: subscribe LAST, mirroring the reference tool's actual operation order.
-        s_sw2_v2_state = SW2_V2_CONFIGURE_SENT;
-        switch2_v2_send_configure(con_handle);
+        if (v->send_common_report_select) {
+            s_sw2_v2_state = SW2_V2_REPORT_SELECT_SENT;
+            switch2_v2_send_common_report_select(con_handle);
+        } else {
+            s_sw2_v2_state = SW2_V2_CONFIGURE_SENT;
+            switch2_v2_send_configure(con_handle);
+        }
     } else {
         s_sw2_v2_state = SW2_V2_CCC_SUBSCRIBED;
         switch2_v2_send_ccc_subscribe(con_handle);
@@ -6985,6 +7133,10 @@ static void switch2_service_magraw_probe(void)
     if (sw2_init_state != SW2_INIT_DONE || sw2_init_handle == 0) return;
     ble_connection_t *conn = find_connection_by_handle(sw2_init_handle);
     if (!conn || conn->pid != 0x2069) return;
+    if (__atomic_load_n(&s_sw2_imuref_requested, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&s_sw2_imuref_active, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&s_sw2_imuref_transition_pending, __ATOMIC_ACQUIRE))
+        return;
 
     if (s_sw2_magraw_reference_running) {
         const uint32_t now_ms = btstack_run_loop_get_time_ms();
@@ -7029,6 +7181,213 @@ static void switch2_service_magraw_probe(void)
     }
 }
 
+static void switch2_imuref_unsubscribe_callback(
+    uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size)
+{
+    UNUSED(channel);
+    UNUSED(size);
+    if (packet_type != HCI_EVENT_PACKET ||
+        hci_event_packet_get_type(packet) != GATT_EVENT_QUERY_COMPLETE)
+        return;
+    if (!s_sw2_imuref_awaiting_unsubscribe) return;
+
+    const uint8_t status = gatt_event_query_complete_get_att_status(packet);
+    const hci_con_handle_t con_handle =
+        gatt_event_query_complete_get_handle(packet);
+    const uint16_t ccc_handle = s_sw2_imuref_transition_target
+        ? SW2_MOTION_CCC_HANDLE : SW2_CCC_HANDLE;
+    __atomic_store_n(&s_sw2_imuref_last_att_status, status, __ATOMIC_RELEASE);
+    sw2_capture_record(SW2_CAP_WRITE_STATUS, ccc_handle, &status, 1);
+    s_sw2_imuref_awaiting_unsubscribe = false;
+
+    if (status != ERROR_CODE_SUCCESS && s_sw2_imuref_transition_target) {
+        // Fail closed: native reporting is still intact, so do not layer the
+        // raw profile on top of an input stream we failed to disable.
+        printf("[SW2_IMUREF] Native CCC unsubscribe failed status=0x%02X\n",
+               status);
+        __atomic_store_n(&s_sw2_imuref_requested, false, __ATOMIC_RELEASE);
+        __atomic_store_n(
+            &s_sw2_imuref_transition_pending, false, __ATOMIC_RELEASE);
+        return;
+    }
+
+    if (s_sw2_imuref_transition_target) {
+        printf("[SW2_IMUREF] Native CCC disabled; selecting raw-IMU profile\n");
+        switch2_start_v2_variant(
+            con_handle, &SW2_RAW_IMU_REFERENCE_PROFILE, false);
+    } else {
+        // Restore native even if the common unsubscribe returned an error.
+        // Selecting the production profile is the safest terminal state.
+        printf("[SW2_IMUREF] Common CCC disabled; restoring native profile\n");
+        switch2_start_v2_variant(
+            con_handle, &SW2_NATIVE_PRO2_PROFILE, false);
+    }
+}
+
+static void switch2_imuref_disable_current_ccc(
+    hci_con_handle_t con_handle, bool select_raw)
+{
+    static uint8_t ccc_disable[] = { 0x00, 0x00 };
+    const uint16_t ccc_handle = select_raw
+        ? SW2_MOTION_CCC_HANDLE : SW2_CCC_HANDLE;
+    s_sw2_imuref_awaiting_unsubscribe = true;
+    __atomic_store_n(&s_sw2_imuref_last_att_status, 0xFF, __ATOMIC_RELEASE);
+    sw2_capture_record(
+        SW2_CAP_CCC_WRITE, ccc_handle, ccc_disable, sizeof(ccc_disable));
+    gatt_client_write_value_of_characteristic(
+        switch2_imuref_unsubscribe_callback, con_handle, ccc_handle,
+        sizeof(ccc_disable), ccc_disable);
+}
+
+static void switch2_imuref_dual_ccc_callback(
+    uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size)
+{
+    UNUSED(channel);
+    UNUSED(size);
+    if (packet_type != HCI_EVENT_PACKET ||
+        hci_event_packet_get_type(packet) != GATT_EVENT_QUERY_COMPLETE)
+        return;
+    if (!__atomic_load_n(
+            &s_sw2_imuref_dual_transition_pending, __ATOMIC_ACQUIRE))
+        return;
+
+    const uint8_t status = gatt_event_query_complete_get_att_status(packet);
+    __atomic_store_n(
+        &s_sw2_imuref_dual_att_status, status, __ATOMIC_RELEASE);
+    sw2_capture_record(
+        SW2_CAP_WRITE_STATUS, SW2_MOTION_CCC_HANDLE, &status, 1);
+    if (status == ERROR_CODE_SUCCESS) {
+        const bool requested = __atomic_load_n(
+            &s_sw2_imuref_dual_requested, __ATOMIC_ACQUIRE);
+        __atomic_store_n(
+            &s_sw2_imuref_dual_active, requested, __ATOMIC_RELEASE);
+    }
+    __atomic_store_n(
+        &s_sw2_imuref_dual_transition_pending, false, __ATOMIC_RELEASE);
+}
+
+static void switch2_service_imuref_dual_probe(hci_con_handle_t con_handle)
+{
+    if (!__atomic_load_n(&s_sw2_imuref_active, __ATOMIC_ACQUIRE))
+        return;
+    if (__atomic_load_n(
+            &s_sw2_imuref_dual_transition_pending, __ATOMIC_ACQUIRE))
+        return;
+
+    const bool requested = __atomic_load_n(
+        &s_sw2_imuref_dual_requested, __ATOMIC_ACQUIRE);
+    const bool active = __atomic_load_n(
+        &s_sw2_imuref_dual_active, __ATOMIC_ACQUIRE);
+    if (requested == active) return;
+
+    static uint8_t ccc_enable[] = { 0x01, 0x00 };
+    static uint8_t ccc_disable[] = { 0x00, 0x00 };
+    uint8_t *value = requested ? ccc_enable : ccc_disable;
+    __atomic_store_n(
+        &s_sw2_imuref_dual_att_status, 0xFF, __ATOMIC_RELEASE);
+    __atomic_store_n(
+        &s_sw2_imuref_dual_transition_pending, true, __ATOMIC_RELEASE);
+    sw2_capture_record(
+        SW2_CAP_CCC_WRITE, SW2_MOTION_CCC_HANDLE, value, 2u);
+    gatt_client_write_value_of_characteristic(
+        switch2_imuref_dual_ccc_callback, con_handle,
+        SW2_MOTION_CCC_HANDLE, 2u, value);
+}
+
+static void switch2_service_imuref_interval_probe(
+    hci_con_handle_t con_handle)
+{
+    const uint16_t interval = __atomic_exchange_n(
+        &s_sw2_imuref_interval_pending_units, 0u, __ATOMIC_ACQ_REL);
+    if (interval == 0u) return;
+
+    // UART constrains this to 7.5--30 ms. Latency zero keeps every connection
+    // event observable; the production profile restores six units (7.5 ms).
+    const int status = gap_update_connection_parameters(
+        con_handle, interval, interval, 0u, 400u);
+    __atomic_store_n(
+        &s_sw2_imuref_interval_request_status, (uint8_t)status,
+        __ATOMIC_RELEASE);
+    switch2_capture_link_params(
+        SW2_LINK_PHASE_REQUEST, (uint8_t)status, con_handle,
+        interval, 0u, 400u);
+}
+
+static void switch2_service_imuref_probe(void)
+{
+    if (sw2_init_state != SW2_INIT_DONE || sw2_init_handle == 0) return;
+    ble_connection_t *conn = find_connection_by_handle(sw2_init_handle);
+    if (!conn || conn->pid != 0x2069) return;
+
+    // Never let two UART-only report-selection experiments contend for the
+    // shared controller command/CCC state machine.
+    if (__atomic_load_n(&s_sw2_magraw_requested, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&s_sw2_magraw_active, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&s_sw2_magraw_transition_pending, __ATOMIC_ACQUIRE))
+        return;
+
+    if (__atomic_load_n(&s_sw2_imuref_transition_pending, __ATOMIC_ACQUIRE)) {
+        if (s_sw2_imuref_awaiting_unsubscribe) return;
+        if (s_sw2_v2_active == NULL && s_sw2_v2_state == SW2_V2_DONE) {
+            __atomic_store_n(
+                &s_sw2_imuref_active, s_sw2_imuref_transition_target,
+                __ATOMIC_RELEASE);
+            if (!s_sw2_imuref_transition_target) {
+                __atomic_store_n(
+                    &s_sw2_imuref_dual_requested, false, __ATOMIC_RELEASE);
+                __atomic_store_n(
+                    &s_sw2_imuref_dual_active, false, __ATOMIC_RELEASE);
+                __atomic_store_n(
+                    &s_sw2_imuref_dual_transition_pending, false,
+                    __ATOMIC_RELEASE);
+                // The production restore profile has already requested the
+                // validated six-unit (7.5 ms) interval. Keep diagnostics
+                // aligned with that restored state instead of displaying the
+                // last UART-only experiment target.
+                __atomic_store_n(
+                    &s_sw2_imuref_interval_target_units, 6u,
+                    __ATOMIC_RELEASE);
+                __atomic_store_n(
+                    &s_sw2_imuref_interval_pending_units, 0u,
+                    __ATOMIC_RELEASE);
+            }
+            __atomic_store_n(
+                &s_sw2_imuref_transition_pending, false, __ATOMIC_RELEASE);
+        }
+        return;
+    }
+
+    const bool requested = __atomic_load_n(
+        &s_sw2_imuref_requested, __ATOMIC_ACQUIRE);
+    const bool active = __atomic_load_n(
+        &s_sw2_imuref_active, __ATOMIC_ACQUIRE);
+    if (requested == active) {
+        if (active)
+            switch2_service_imuref_interval_probe(sw2_init_handle);
+        switch2_service_imuref_dual_probe(sw2_init_handle);
+        return;
+    }
+    if (__atomic_load_n(
+            &s_sw2_imuref_dual_transition_pending, __ATOMIC_ACQUIRE))
+        return;
+    if (s_sw2_v2_active != NULL ||
+        (s_sw2_v2_state != SW2_V2_IDLE && s_sw2_v2_state != SW2_V2_DONE))
+        return;
+
+    s_sw2_imuref_transition_target = requested;
+    __atomic_store_n(
+        &s_sw2_imuref_transition_pending, true, __ATOMIC_RELEASE);
+    if (requested) {
+        __atomic_store_n(&s_sw2_imuref_common_notifications, 0, __ATOMIC_RELEASE);
+        __atomic_store_n(&s_sw2_imuref_native_notifications, 0, __ATOMIC_RELEASE);
+        printf("[SW2_IMUREF] Disabling native CCC before raw-IMU selection\n");
+        switch2_imuref_disable_current_ccc(sw2_init_handle, true);
+    } else {
+        printf("[SW2_IMUREF] Disabling common CCC before native restore\n");
+        switch2_imuref_disable_current_ccc(sw2_init_handle, false);
+    }
+}
+
 // Cleanup Switch 2 state on BLE disconnect (called from disconnect handler)
 static void switch2_cleanup_on_disconnect(void) {
     gatt_client_stop_listening_for_characteristic_value_updates(&switch2_ack_notification_listener);
@@ -7063,6 +7422,25 @@ static void switch2_cleanup_on_disconnect(void) {
     s_sw2_magraw_last_response_status = 0;
     s_sw2_magraw_input_ccc_status = 0;
     s_sw2_magraw_command_sent_ms = 0;
+    __atomic_store_n(&s_sw2_imuref_requested, false, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_sw2_imuref_active, false, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_sw2_imuref_transition_pending, false, __ATOMIC_RELEASE);
+    s_sw2_imuref_awaiting_unsubscribe = false;
+    __atomic_store_n(&s_sw2_imuref_last_att_status, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_sw2_imuref_dual_requested, false, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_sw2_imuref_dual_active, false, __ATOMIC_RELEASE);
+    __atomic_store_n(
+        &s_sw2_imuref_dual_transition_pending, false, __ATOMIC_RELEASE);
+    __atomic_store_n(
+        &s_sw2_imuref_dual_att_status, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(
+        &s_sw2_imuref_interval_pending_units, 0u, __ATOMIC_RELEASE);
+    __atomic_store_n(
+        &s_sw2_imuref_interval_target_units, 0u, __ATOMIC_RELEASE);
+    __atomic_store_n(
+        &s_sw2_imuref_interval_request_status, 0u, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_sw2_imuref_common_notifications, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&s_sw2_imuref_native_notifications, 0, __ATOMIC_RELEASE);
     s_sw2_init_done_ms = 0;
     __atomic_store_n(&s_sw2_native_auto_checks, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&s_sw2_native_auto_starts, 0, __ATOMIC_RELEASE);
@@ -7742,6 +8120,7 @@ static void switch2_handle_feedback(void)
     // production native-motion state machine is idle and always has an
     // explicit restore path back to the validated 0x27 profile.
     switch2_service_magraw_probe();
+    switch2_service_imuref_probe();
 
     switch2_service_pro2_audio_capture();
     switch2_service_nfc_mirror();
