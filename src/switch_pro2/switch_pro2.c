@@ -1402,13 +1402,28 @@ static void ns2_build_report(uint8_t *p) {
                     ns2_ds5_motion_build(&ns2_ds5_motion,
                                          ns2_ds5_motion_report);
                 // Feed the same physical sample to the length-0x28 translator.
-                // It buffers rather than emitting, so this costs a copy even
-                // when the gate is off; keep it behind the gate anyway so a
-                // disabled feature does no work at all.
-                if (ns2_ds5_motion40_enabled)
+                //
+                // Gyro must be the DE-BIASED sample the 0x1E path integrates,
+                // not the raw input. A DualSense at rest carries a zero-rate
+                // bias the console would read as slow continuous rotation:
+                // measured against the genuine stationary captures, raw input
+                // sits at 0.90 dps where real hardware reads 0.15 dps.
+                // ns2_ds5_motion_update() has already computed the corrected
+                // value, including its stillness gate and warmup, so reuse it
+                // rather than re-deriving a second bias estimate.
+                //
+                // Held behind the gate so a disabled feature does no work.
+                if (ns2_ds5_motion40_enabled) {
+                    int16_t debiased[3];
+                    for (unsigned axis = 0; axis < 3u; ++axis) {
+                        int32_t value = ns2_ds5_motion.gyro_corrected[axis];
+                        if (value > INT16_MAX) value = INT16_MAX;
+                        if (value < INT16_MIN) value = INT16_MIN;
+                        debiased[axis] = (int16_t)value;
+                    }
                     ns2_ds5_motion40_sample(&ns2_ds5_motion40,
-                                            ds5_motion_input.accel,
-                                            ds5_motion_input.gyro);
+                                            ds5_motion_input.accel, debiased);
+                }
             }
             ns2_ds5_motion_last_sequence = in.motion_sequence;
         }
