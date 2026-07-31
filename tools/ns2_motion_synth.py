@@ -190,8 +190,47 @@ def genuine_stats(records: Sequence[dict]) -> StreamStats:
     return stats
 
 
+def genuine_reference_stats(paths: Sequence[Path]) -> StreamStats:
+    """Statistics for genuine captures read directly, not via paired records.
+
+    Pointed at the 0x28-only interval sweeps, this compares our stream against
+    the exact emission mode and layout the firmware targets, rather than
+    against interleaved captures whose cadence we deliberately do not model.
+    """
+    stats = StreamStats()
+    previous_state = None
+    for path in paths:
+        try:
+            notifications, _ = R.read_motionpair_jsonl(path)
+        except Exception:
+            try:
+                handles, _ = R.read_blecap_jsonl(path)
+                notifications = max(handles.values(), key=len) if handles else []
+            except Exception:
+                continue
+        for notification in notifications:
+            report = notification.value
+            if len(report) <= 0x0E:
+                continue
+            length = report[0x0E]
+            end = 0x0F + length
+            if len(report) < end:
+                continue
+            pdu = report[0x0F:end]
+            if length == 0x1E:
+                orientation = R.decode_motion30_orientation(pdu)
+                stats.note_carrier(orientation.state, orientation.carrier_raw,
+                                   previous_state)
+                previous_state = orientation.state
+            elif length == 0x28:
+                sample = R.decode_motion40(pdu, None)
+                if sample.layout != "unknown":
+                    stats.note_packet(sample)
+    return stats
+
+
 def synth_stats(records: Sequence[dict], gyro_scale: float,
-                accel_scale: float) -> StreamStats:
+                accel_scale: float, interval_ticks: int | None = None) -> StreamStats:
     """Drive the generator from the DualSense side of the same records.
 
     Orientation is integrated from gyro alone, starting at identity. That is
@@ -204,6 +243,16 @@ def synth_stats(records: Sequence[dict], gyro_scale: float,
 
     What must match is structure: layout selection driven by real elapsed time,
     IMU magnitudes in physical units, and lanes that never leave the field.
+
+    KNOWN HARNESS LIMITATION -- gyro bias. This does not model the firmware's
+    zero-rate bias estimator, so its stationary gyro magnitude reads high: 0.90
+    dps against genuine hardware's 0.15 dps on a matched stationary capture.
+    The capture's ``cal_g`` is calibrated but not de-biased (it equals
+    ``raw_g``). That gap is a property of this harness, not of the firmware --
+    ``ns2_ds5_motion40`` is fed ``gyro_corrected``, the same de-biased sample
+    the hardware-validated 0x1E path integrates. Feeding raw gyro instead was a
+    real defect that this comparison caught, and the number is left visible
+    here rather than papered over so the limitation stays legible.
     """
     stats = StreamStats()
     quaternion = (1.0, 0.0, 0.0, 0.0)
@@ -242,10 +291,20 @@ def synth_stats(records: Sequence[dict], gyro_scale: float,
         pending_gyro.append(tuple(float(v) for v in gyro))
         pending_ticks += max(1, int(round(dt_s * TICK_HZ)))
 
-        layout = K.layout_for_elapsed(pending_ticks)
+        # Firmware policy: emit one catch-up packet every fixed interval. The
+        # module refuses to emit a partially filled packet rather than
+        # inventing samples, so a starved interval simply waits.
+        if interval_ticks is not None:
+            if pending_ticks < interval_ticks:
+                continue
+            emit_ticks = pending_ticks
+        else:
+            emit_ticks = pending_ticks
+        layout = K.layout_for_elapsed(emit_ticks)
         want_accel, want_gyro = K.LAYOUT_SAMPLE_COUNTS[layout]
         if len(pending_accel) < want_accel or len(pending_gyro) < want_gyro:
             continue
+        pending_ticks = emit_ticks
         tick = (tick + pending_ticks) & 0xFFF
         pdu = K.build_motion40(K.MotionPacketFields(
             tick=tick,
@@ -270,6 +329,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("paired", type=Path, nargs="+",
                         help="paired motion capture JSONL")
+    parser.add_argument("--genuine", type=Path, nargs="*", default=None,
+                        help="compare against these genuine captures instead "
+                             "of the native side of the paired ones. Point "
+                             "this at the 0x28-only interval sweeps to compare "
+                             "against the exact mode the firmware emits.")
+    parser.add_argument("--interval-ticks", type=int, default=None,
+                        help="emit one catch-up packet every N 800 Hz ticks, "
+                             "modelling the firmware policy (16 = 20 ms). "
+                             "Default follows the capture's own spacing.")
     parser.add_argument("--gyro-scale", type=float, default=1.0,
                         help="extra gain on DualSense gyro (1.0 = same unit)")
     parser.add_argument("--accel-scale", type=float, default=0.5,
@@ -285,8 +353,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("no paired records found", file=sys.stderr)
         return 2
 
-    genuine = genuine_stats(records).summary()
-    synthetic = synth_stats(records, args.gyro_scale, args.accel_scale).summary()
+    if args.genuine:
+        genuine = genuine_reference_stats(args.genuine).summary()
+    else:
+        genuine = genuine_stats(records).summary()
+    synthetic = synth_stats(records, args.gyro_scale, args.accel_scale,
+                            args.interval_ticks).summary()
     report = {"records": len(records), "genuine": genuine, "synthetic": synthetic}
     if args.json:
         print(json.dumps(report, indent=2))
