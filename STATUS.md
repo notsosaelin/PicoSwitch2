@@ -288,8 +288,28 @@ nine-boundary corpus covers all four chart states at RMS/max `0.023541/0.047878`
 Its interleaved `3 → 2` prefix seam selects chart 3 (`0.003833` versus `0.196168`);
 the same local-frame audit recovers the former `3 → 1` seam as chart 1 (`0.008416`
 versus `0.242898`).
-Exact integer projection/rounding remains unresolved, so this is not yet a production `0x28`
-generator.
+Exact integer projection and rounding are now **resolved**, and every genuine `0x28` in the corpus
+re-encodes byte-for-byte (858 high-rate, 149 normal, 981 catch-up, plus 2,070 `0x1E` carriers).
+
+Two generator defects that byte-exactness could not catch have since been fixed
+(`docs/experiments/pro2-carrier-unknown-fields-2026-07-31.md`):
+
+- **Wire values are not a single unit.** Each layout packs its slots at a different fixed-point
+  scale and slot width does not determine it; supplying ordinary ICM counts to the high-rate
+  layout is wrong by 256×, and the packet still decodes cleanly. `ns2_motion_reference.WIRE_TO_COUNTS`
+  is now the single authority, verified by all eight acceleration slots across all three layouts
+  agreeing on 1.051–1.052 g once normalized.
+- **Chart hysteresis is validated against hardware.** Replaying genuine orientation through
+  `select_chart` agrees on 2,059/2,070 decisions (99.47%) with zero spurious swaps, though holds
+  dominate and only 1 of 11 genuine swaps is reproduced. One-sample lookahead and an earlier fixed
+  threshold are both refuted; swap timing is not a function of the carrier alone. This does not
+  block generation, because chart choice is lossless — what must hold exactly is that no lane
+  leaves the field, which swapping at the limit guarantees by construction.
+
+`tools/ns2_motion_synth.py` compares a generated stream against an input-matched genuine one in
+physical units; acceleration and gyro magnitudes are now the right size and unit on both sides.
+This is still **not** a production `0x28` generator: it is offline-validated only, no firmware
+source is touched, and enabling it requires a UART-gated hardware A/B.
 An orthogonal upright lazy-susan rotation remained state 3 throughout. A corpus audit now records
 1,030 stable state-1 samples but initially no adjacent state-1 boundary. Passive gameplay
 triggers subsequently supplied the clean state-0/state-1 seam, the held-out opposite-sign branch,
