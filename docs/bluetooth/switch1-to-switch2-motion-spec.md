@@ -1,19 +1,19 @@
 # Switch 1 → Switch 2 Motion Translation — End-to-End Specification
 
-**Status:** 🟢 Pipeline fully traced; the sensor-frame remount `R_sw1` is now **derived from
-documented axis frames plus the three existing hardware results** (§6). One hardware confirmation
-outstanding (§7).
+**Status:** 🟢 Resolved and hardware-validated (2026-07-27). The sensor-frame remount `R_sw1` is
+`src {1,0,2}`, `sign {-1,1,1}` in `ns2_motion_seam.c`, applied identically to accelerometer and
+gyroscope, determinant **+1**. A/B against a natively-connected Switch 1 Pro Controller measured
+98–100 % identical.
 
-**Why this document exists.** Three successive hardware attempts to fix Switch 1 motion by
-adjusting axis signs failed, each in a different way (§9). Every one of them changed a sign because
-a symptom "looked like" an inversion, without tracing what the symptom actually implied. This
-document traces the complete path from the LSM6DS3 in a Switch 1 Pro Controller to the pixels the
-console moves, states which stage owns which transform, and derives the remount from published
-sources — no controller handling required.
+**Why this document exists.** This is the reference trace of the complete path from the LSM6DS3 in a
+Switch 1 Pro Controller to the pixels the console moves: which stage owns which transform, what the
+interchange units are, and how a new motion source is added. §9 keeps the attempt history because
+the failure modes it catalogues are diagnostic for any future IMU family.
 
-**Scope rule, non-negotiable.** Stages 2–6 below are shared with the hardware-validated DualSense
-path. **They must not be modified for Switch 1.** The entire Switch 1 problem is confined to
-Stage 1. If a proposed fix touches anything downstream of Stage 1, it is the wrong fix.
+**Architecture rule.** Stages 2–6 are shared with the hardware-validated DualSense path. A new
+motion source is added by decoding into the §3 interchange units and adding **one row** to the
+`ns2_motion_seam.c` table. No other shared stage should need to change; if a proposed fix touches
+one, it is almost certainly a decode or seam-row error in the new driver.
 
 ---
 
@@ -23,15 +23,16 @@ Stage 1. If a proposed fix touches anything downstream of Stage 1, it is the wro
  [0] LSM6DS3 in the controller
       | report 0x30, bytes 13..48: 3 frames x (accel XYZ, gyro XYZ) int16 LE, 5 ms apart
       v
- [1] switch_pro_bt.c            <-- THE ONLY STAGE WE OWN FOR SWITCH 1
-      | average 3 frames -> calibrate -> remount R_sw1 -> publish
-      | OUTPUT CONTRACT: input_event_t.accel/gyro in the *DualSense event convention*
+ [1] switch_pro_bt.c            <-- decode + calibrate ONLY
+      | accel: mean of 3 frames ; gyro: newest frame ; SPI calibration
+      | OUTPUT CONTRACT: the sensor's OWN axes, in the §3.1 interchange units
       v
- [2] ns2_seam.c                 (SHARED - do not modify)
-      | accel /2 ; fixed rotation [+e0, -e2, +e1] applied to BOTH accel and gyro
+ [2] ns2_seam.c -> ns2_motion_seam.c   (SHARED; per-source table)
+      | signed permutation for this motion_source, applied to BOTH accel and gyro
+      | accel additionally /2 (8192 counts/g -> the Pro2 carrier's 4096 counts/g)
       v
  [3] switch_pro2.c              (SHARED)
-      | motion_source in {DUALSENSE, SWITCH1} -> quaternion translator
+      | motion_source in {DUALSENSE, SWITCH1, WII} -> quaternion translator
       v
  [4] ns2_ds5_motion.c           (SHARED)
       | gyro: EMA -> stillness-gated bias -> integrate into a quaternion
@@ -59,18 +60,17 @@ Report `0x30`, bytes 13–48, three 12-byte IMU frames 5 ms apart; each frame is
 | Axis frame | X longitudinal, Y +left, Z +face normal | ✅ Confirmed — §6.1 |
 
 Accel and gyro come from the **same die in the same package**, so they share one sensor frame:
-`gyro[i]` is rotation about the axis `accel[i]` measures.
+`gyro[i]` is rotation about the axis `accel[i]` measures. Every transform must therefore be applied
+to both.
 
-## 3. Stage 1 — what the Switch 1 driver must produce (the contract)
+## 3. Stage 1 — what the Switch 1 driver produces (the contract)
 
-**The output contract is exact:** for identical physical motion, `switch_pro_bt.c` must publish the
-same `event.accel[]` and `event.gyro[]` values a **DualSense** would publish.
+`switch_pro_bt.c` decodes and calibrates. It does **not** remount axes — that is the seam table's
+job (`switch_pro_bt.c:432`, `:610`). The driver publishes the sensor's own axes so that the seam row
+is a statement about how the sensor is physically mounted, which is reviewable against a datasheet
+or a Linux driver rather than being an opaque product of two transforms.
 
-That is the whole specification, and it is also what makes any downstream error harmless to reason
-about: whatever the seam does, it does identically to both sources, so matching the DualSense at
-this boundary is correct even if a downstream sign is wrong.
-
-### 3.1 Units (✅ Confirmed, already correct in the firmware)
+### 3.1 Interchange units (✅ Confirmed)
 
 Verified directly against `ds5_motion_calibration.c:6-11`:
 
@@ -83,12 +83,7 @@ Verified directly against `ds5_motion_calibration.c:6-11`:
 > use that (it needs a 32-bit axis); `ds5_motion_calibration.c` rescales to the 16.384 carrier. Read
 > the code, not the Linux constant, when checking scale.
 
-### 3.2 Axis convention (the DualSense event frame)
-
-`gyro[0]=pitch, gyro[1]=yaw, gyro[2]=roll`; `accel[0]=X, accel[1]=Y, accel[2]=Z`. Confirmed
-identical to SDL's documented sensor ordering (§6.2).
-
-### 3.3 Calibration (✅ implemented, correct)
+### 3.2 Calibration (✅ implemented, correct)
 
 ```
 accel = raw * 32768 / (acc_sens - acc_origin)
@@ -97,32 +92,44 @@ gyro  = (raw - gyro_origin) * 15335 / (gyro_sens - gyro_origin)
 Rejected/absent calibration falls back to nominal constants, so motion never depends on the SPI read
 completing.
 
-### 3.4 Frame averaging (✅ correct)
+### 3.3 Frame selection (✅ resolved on hardware)
 
-The three IMU frames are averaged into one published sample. This is right *because* Stage 4
-integrates over **real elapsed host time**: mean rate × full interval preserves the exact angular
-area. Publishing only the newest frame would under-integrate fast motion.
+The three IMU frames are **not** treated alike (`switch_pro_bt.c:507-521`):
 
-## 4. Stages 2–6 — the shared path (traced, confirmed, off-limits)
+- **Accel: mean of all three.** It is the console's gravity reference, where steadiness beats
+  latency, and gravity does not change fast.
+- **Gyro: the newest frame only.** The three frames span 15 ms while the Pro reports every 8.3 ms,
+  so averaging added ~7.5 ms of group delay. The newest frame is a zero-order hold that preserves
+  angular area exactly (Stage 4 integrates over real elapsed host time), so it does not
+  under-integrate. It costs ~√3 more noise, which the encoder's stillness-gated bias tracker and
+  low-pass absorb at rest and which is dwarfed by real signal during motion.
 
-### Stage 2 — `ns2_seam.c:277-282` (SHARED)
+## 4. Stages 2–6 — the shared path
 
-```c
-in.accel[0] =  e->accel[0] / 2;    in.gyro[0] =  e->gyro[0];
-in.accel[1] = -e->accel[2] / 2;    in.gyro[1] = -e->gyro[2];
-in.accel[2] =  e->accel[1] / 2;    in.gyro[2] =  e->gyro[1];
-```
+### Stage 2 — `ns2_seam.c:279` → `ns2_motion_seam.c` (SHARED)
 
-- The same rotation is applied to accel and gyro — the seam honours the shared-frame invariant.
-- `/2` converts 8192 counts/g → 4096 counts/g, matching the genuine PC2's ±8 g range.
+`ns2_seam.c` selects `motion_source` from the **bound decoder**, never from SDP identity, then calls
+`ns2_motion_seam_apply()`. The table:
+
+| Source | accel/gyro `src` | accel/gyro `sign` | det |
+|---|---|---|---|
+| `GENERIC` | `{0,2,1}` | `{1,-1,1}` | +1 |
+| `DUALSENSE` | `{0,2,1}` | `{1,-1,1}` | +1 |
+| `WII` | `{0,2,1}` | `{1,-1,1}` | +1 |
+| `SWITCH1` | `{1,0,2}` | `{-1,1,1}` | +1 |
+
+- The same signed permutation is applied to accel and gyro — the shared-frame invariant is
+  structural, since one loop writes both.
+- Accel is additionally halved: 8192 counts/g → 4096 counts/g, matching the genuine PC2's ±8 g.
 - Gyro passes 1:1; the 16.384 counts/dps scale is preserved end to end.
 - Resulting **Pro2 carrier frame**: `index 0 = pitch, 1 = roll, 2 = yaw`.
-  (One sign here was chosen rather than measured; that is harmless and must not be "corrected" —
-  see §6.5.1.)
 
-### Stage 3 — `switch_pro2.c` (SHARED)
+**Every row must have determinant +1.** See §6.5 — this is enforced by
+`tools/test_ns2_motion_seam.c`, not by comment.
 
-`motion_source ∈ {DUALSENSE, SWITCH1}` **and** `has_motion` selects the quaternion translator.
+### Stage 3 — `switch_pro2.c:1343` (SHARED)
+
+`motion_source ∈ {DUALSENSE, SWITCH1, WII}` **and** `has_motion` selects the quaternion translator.
 Anything else falls through to the **known-bad generic phase encoder** — the original "violent
 motion spam". Do not route a new IMU family through it.
 
@@ -168,14 +175,12 @@ which is not obvious and is exactly what attempt B hit.
 | One axis inverted, everything else sharp | A sign error on that lane, applied consistently to accel+gyro |
 | Yaw fine, pitch/roll lag ~1–2 s then snap | accel and gyro are in **different frames** (a sign applied to one sensor only) |
 | Horizontal aim dead, vertical still moves | The **roll** lane is inverted — it cancels the yaw term at normal hold angles |
+| Accel matches genuine hardware but gyro gives no horizontal aim | The row is a **reflection** (det −1). Gravity cannot detect this; only rotation does. |
 | Needs far more movement than a DualSense | Scale (`counts/dps`) |
 | Violent spam in every direction | Routed to the generic phase encoder — check `motion_source` |
 | No motion for the first ~0.3 s | `bias_ready` warmup (32 still samples) — expected |
 
-## 6. `R_sw1` — resolved from documented frames + existing hardware results
-
-No controller handling was required. Both frames are published; the permutation follows from
-matching them by axis type, and the three signs follow from the three tests already run.
+## 6. `R_sw1` — how the row was resolved
 
 ### 6.1 The Switch 1 sensor frame (✅ Confirmed — Linux `hid-nintendo`)
 
@@ -199,162 +204,128 @@ proper rotation, as `switch1-motion.md` §8 says.)
 
 By axis type: **X = longitudinal, Y = lateral (+left), Z = face normal (+out of the face).**
 
-### 6.2 The DualSense event frame (✅ axis types confirmed)
+### 6.2 Slot 2 was measured, not assumed (✅ Confirmed)
 
-SDL reads DualSense accel/gyro with **no reordering and no negation** — raw indices 0/1/2 pass
-straight through — and SDL documents `values[0]=pitch, values[1]=yaw, values[2]=roll`, matching the
-repo's convention exactly.
-
-The face-normal axis is pinned locally and independently: the repo's paired Pro2/DualSense gravity
-capture produced the seam relation `Pro2[2] = +e[1]`, and the genuine Pro2 capture shows
-`gravity ≈ all on accel-Z (4279/4309, controller flat)` — so Pro2 index 2 is the face normal, and
-therefore **DualSense Y is the face normal**. Consistent with `gyro[1] = yaw`, since yaw is rotation
-about the face normal when flat.
-
-By axis type: **X = lateral (pitch axis), Y = face normal (yaw axis), Z = longitudinal (roll
-axis).**
-
-### 6.3 The permutation (✅ now confirmed, previously only "roughly")
-
-| Event slot | Axis type | Switch 1 source index |
-|---|---|---|
-| 0 — pitch / lateral | lateral | **1** (sw1 Y, +left) |
-| 1 — yaw / face normal | face normal | **2** (sw1 Z) |
-| 2 — roll / longitudinal | longitudinal | **0** (sw1 X) |
-
-`remount = {1, 2, 0}` — the same permutation used all along, but now supported by two independent
-documented sources instead of §8's word *"roughly"*. The earlier conclusion that the permutation
-*must* be wrong rested on the determinant assumption that §6.5 shows to be unsound.
-
-### 6.4 The signs (from the three hardware results)
-
-| Lane | Sign | Evidence |
-|---|---|---|
-| yaw (slot 1) | **+1** | Attempts 0 and A both used `+sw[2]` and both gave sharp, correct horizontal aim |
-| pitch (slot 0) | **−1** | Attempt 0 was fully frame-consistent with `+1`, and pitch was inverted |
-| roll (slot 2) | **+1** | Attempt B flipped roll to `−1` and horizontal aim died outright |
-
-On the last row: because the console blends yaw and roll (Stage 6), an inverted roll term partially
-cancels the yaw term at normal hold angles. That is why flipping **roll** kills **horizontal** aim
-while the yaw lane itself is untouched — it is the only lane whose flip produces that specific
-symptom, so attempt B identifies it uniquely.
-
-### 6.5 Why the result is improper — and why nothing is broken
-
-`(−1) × (+1) × (+1) = −1`, an improper transform. A physical sensor remount is a rotation and can
-never be improper, so this looks alarming. It isn't, and an earlier revision of this document drew
-the wrong conclusion from it — that a downstream stage must carry a sign error needing repair.
-**That was wrong. Nothing downstream is broken, and nothing downstream should be changed.**
-
-The determinant rule assumes both endpoints are self-consistent frames. The target endpoint is not.
-`dualsense-motion.md` §8 records, from JoyShock/SDL/evdevhook, that **"the DualSense's first gyro
-axis is inverted and its accelerometer axes are ordered/signed differently than a naive read
-expects"**. A device whose gyro polarity does not follow the right-hand rule about its own
-accelerometer axes simply cannot be reached from a clean 6-axis IMU by a proper rotation.
-
-So `det = −1` is not a fingerprint of a defect. It is what matching this particular convention
-costs — the price of the contract being *"match the DualSense"* rather than *"be independently
-correct"*. That is the right contract precisely because it is the one that is validated.
-
-**Why the properness rule cost three sessions.** Attempts 0 and B are the only two *proper* sign
-patterns with yaw held at `+1`. Treating properness as a hard physical constraint therefore put the
-correct answer outside the search space entirely, and a `_Static_assert` was added enforcing that
-mistake. The rule was the bug.
-
-### 6.5.1 On the seam: only the composite was validated, and that is fine
-
-For the record, since an earlier revision implied otherwise:
-
-The hardware validation covered the **composite** transform — DS5 driver → seam → console — end to
-end. How that total transform is *split* between the driver stage and the seam was never
-independently pinned. (`gyro-hardware-validation-2026-07-10.md` line 96 notes one seam sign was
-*"chosen to keep det = +1, not independently measured"*.)
-
-This costs nothing and implies no defect. Any arbitrariness in the split is applied **identically to
-every source**, so a driver that matches the DualSense at the event boundary is correct regardless
-of it. The composite is what the console sees, and the composite is validated.
-
-**Do not modify `ns2_seam.c` to make a determinant nicer.** Doing so would re-open a working,
-hardware-validated configuration to satisfy an aesthetic constraint, and would break the DualSense
-in the process. Adding a motion source is a local change to one driver — that is the architecture
-working as designed, not a limitation to route around.
-
-### 6.6 The resulting map
+Reading the accelerometer of a *resting* controller over UART (`input status` reports accel for
+exactly this purpose) ended four sessions of sign guessing:
 
 ```
-event.accel[0] = -sw_accel[1]    event.gyro[0] = -sw_gyro[1]     (pitch / lateral)
-event.accel[1] = +sw_accel[2]    event.gyro[1] = +sw_gyro[2]     (yaw / face normal)
-event.accel[2] = +sw_accel[0]    event.gyro[2] = +sw_gyro[0]     (roll / longitudinal)
+accel [-9, 724, 4245]      |a| = 4306 at 4096 counts/g = 1.05 g
 ```
 
-Applied to accel and gyro identically. This has **never been tested**: attempt A used these gyro
-signs but left accel unsigned, which is what produced its drift-and-snap.
+Gravity sat almost entirely on Pro2 slot 2, and the genuine Pro Controller 2 capture reads *"gravity
+≈ all on accel-Z (4279/4309, controller flat)"* — a match to within 1 %. That pinned slot 2 with
+nobody touching the controller.
 
-## 7. Prediction and falsification
+### 6.3 Slots 0 and 1 follow from the frame plus the determinant rule
 
-If correct: pitch correct, horizontal aim correct, no drift-then-snap, no dead axis.
+With slot 2 pinned and det = +1 required, only two rows remain:
 
-- **Pitch still inverted, everything else right** → the pitch sign is wrong and the true determinant
-  is `+1`, meaning the seam's roll sign is actually fine and the roll-cancellation reading of
-  attempt B was wrong.
-- **Horizontal aim dies again** → roll is the wrong lane to compensate on; move the compensation to
-  the pitch lane.
+| Row | Meaning | Hardware result |
+|---|---|---|
+| `{1,-1,1}` over `src {1,0,2}` | (−R, −F, +U) | Horizontal aim restored, **pitch inverted** |
+| `{-1,1,1}` over `src {1,0,2}` | (+R, +F, +U) | ✅ **Correct** — shipped |
 
-Each outcome identifies a different lane, so one test is decisive either way.
+The two differ by a 180° yaw, so they share yaw and invert pitch and roll relative to each other.
+One test therefore selected between them.
 
-## 8. Adding a motion source — the contract, restated
+### 6.4 The resulting map
 
-There is no pending shared-code work. Adding a motion source is, and should remain, a change to one
-driver file:
+```
+pro2.accel[0] = -sw_accel[1] / 2   pro2.gyro[0] = -sw_gyro[1]    (pitch / lateral, +right)
+pro2.accel[1] = +sw_accel[0] / 2   pro2.gyro[1] = +sw_gyro[0]    (roll / longitudinal, +forward)
+pro2.accel[2] = +sw_accel[2] / 2   pro2.gyro[2] = +sw_gyro[2]    (yaw / face normal, +up)
+```
 
-1. Decode the sensor and calibrate it into the interchange units of §3.1
+Validated by A/B against a Switch 1 Pro Controller connected **natively** to the console:
+**98–100 % identical**. The small residual lag is present on the native connection too, so it
+belongs to the controller (120 Hz reports, no sensor timestamp), not to this firmware.
+
+### 6.5 The determinant rule — enforced, not advisory
+
+A sensor remount is a physical rotation, so the signed permutation must have determinant +1
+(permutation parity × product of signs). A determinant of −1 is a reflection and cannot describe any
+real mounting.
+
+This is not pedantry, and it is the single most expensive lesson in this document. **Gravity cannot
+detect a reflected frame** — one vector looks correct reflected — so an improper row passes every
+static check and every resting measurement, then behaves wrongly only under rotation. The SWITCH1
+row shipped at det −1 and produced exactly that: an accelerometer matching genuine hardware to
+within 1 % while the gyro delivered no horizontal aim at all.
+
+`tools/test_ns2_motion_seam.c:211-235` computes the determinant of every accel and gyro row in the
+table and fails the build-time test suite on anything but +1. It is verified against the shipped bug.
+
+## 7. Adding a motion source — the contract
+
+Adding a motion source is a change to one driver file plus one table row:
+
+1. Decode the sensor and calibrate it into the §3.1 interchange units
    (gyro 16.384 counts/dps, accel 8192 counts/g).
-2. Remount into the DualSense event convention (§3.2) so the values match what a DualSense would
-   publish for the same physical motion — **including the DualSense's own quirks** (§6.5). Matching
-   the convention is the contract; being independently "correct" is not.
-3. Tag provenance with a new `SWITCH_MOTION_SOURCE_*` so the quaternion translator is selected and
-   per-family policy has somewhere to live.
+2. Publish the sensor's **own axes**. Do not remount in the driver.
+3. Tag provenance with a new `SWITCH_MOTION_SOURCE_*` so the quaternion translator is selected
+   (§ Stage 3) and per-family policy has somewhere to live.
+4. Add one `ns2_motion_seam.c` row describing how that sensor is mounted relative to the Pro2
+   carrier frame (`0 = pitch/+right, 1 = roll/+forward, 2 = yaw/+up`). It must have determinant +1.
 
-Nothing downstream of the driver needs to know the source exists. Anything that seems to require a
-shared-stage change is almost certainly a step-1 or step-2 error in the new driver.
+Nothing downstream of the seam needs to know the source exists.
 
-## 9. Attempt history
+## 8. Attempt history
 
-| # | accel signs | gyro signs | Frames agree? | det | Hardware result |
-|---|---|---|---|---|---|
-| 0 | `+,+,+` | `+,+,+` | ✅ | +1 | X fine; **Y inverted**; under-scaled (scale since fixed) |
-| A | `+,+,+` | `−,+,+` | ❌ | −1 (gyro only) | X sharp and correct; **Y inverted, ~1–2 s lag, then violent snap** |
-| B | `−,+,−` | `−,+,−` | ✅ | +1 | **Horizontal turning completely dead** |
-| **C (current)** | `−,+,+` | `−,+,+` | ✅ | −1 | *pending* |
+Kept because the symptom→lane mapping it establishes is reusable.
 
-Attempts 0 and B are the only proper patterns with yaw `+1`; both are refuted, which is what forces
-the improper C and points at the seam.
+Attempts 0–C predate the per-source seam table. In that architecture the driver remounted into the
+DualSense event frame and the seam applied one fixed rotation, so these signs are **driver-stage**
+signs and are recorded here in their original coordinates.
 
-> **Correction to an earlier reading.** Attempt B was first explained as "the gravity vector was
-> mirrored, so the console lost its up reference". That is wrong: attempts A and B differ by a 180°
-> rotation **about the face normal**, which leaves the gravity vector unchanged. B's dead axis is
-> therefore not a gravity problem, and the roll-lane explanation in §6.4 replaces it.
+| # | accel signs | gyro signs | Frames agree? | Hardware result |
+|---|---|---|---|---|
+| 0 | `+,+,+` | `+,+,+` | ✅ | X fine; **Y inverted**; under-scaled (scale since fixed) |
+| A | `+,+,+` | `−,+,+` | ❌ | X sharp; **Y inverted, ~1–2 s lag, then violent snap** — accel and gyro in different frames |
+| B | `−,+,−` | `−,+,−` | ✅ | **Horizontal turning completely dead** — read as an inverted roll lane cancelling the yaw term (Stage 6) |
+| C | `−,+,+` | `−,+,+` | ✅ | Accel matched genuine hardware to 1 %; gyro produced no horizontal aim |
 
-## 10. Confirmed / Hypothesis / Unknown
+Attempt C is the configuration that shipped. Composed with the fixed seam of the time it is
+`src {1,0,2}` with signs multiplying to +1 — permutation parity −1, so **determinant −1**: the
+reflection bug of §6.5.
+
+Post-refactor, with the row stated directly in the seam table:
+
+| # | src | sign | det | Hardware result |
+|---|---|---|---|---|
+| D | `{1,0,2}` | `{1,-1,1}` | +1 | Horizontal aim restored; **pitch inverted** |
+| **E (shipped)** | `{1,0,2}` | `{-1,1,1}` | +1 | ✅ 98–100 % A/B parity with a natively-connected Pro Controller |
+
+What made attempts 0–C expensive was searching signs while assuming the *permutation* was known. It
+was not — [`switch1-motion.md`](switch1-motion.md) §8 only ever claimed the axes map "roughly".
+Measuring gravity on a resting controller (§6.2) determined permutation and signs together and cut
+the remaining search space to two.
+
+> Note for anyone re-deriving this: attempt B's driver signs compose to the same seam row that
+> ultimately shipped (E), yet B was recorded as killing horizontal aim outright. The two records
+> cannot both be right. The most likely explanation is that the driver-stage permutation was not
+> constant across the early attempts — which is precisely the assumption §6.2 overturned — so the
+> pre-refactor sign columns should be treated as narrative, not as reproducible coordinates. Only
+> rows D and E are stated in coordinates that still exist in the code.
+
+## 9. Confirmed / Hypothesis / Unknown
 
 | Item | Status |
 |---|---|
 | Report `0x30` IMU layout, 3 frames, 5 ms | ✅ Confirmed |
 | Gyro 16.384 counts/dps, accel 8192 counts/g interchange | ✅ Confirmed (`ds5_motion_calibration.c`) |
 | SPI calibration formulas and precedence | ✅ Confirmed |
-| Seam applies one rotation to accel and gyro | ✅ Confirmed (code) |
+| Gyro newest-frame, accel three-frame mean | ✅ Confirmed on hardware |
+| Seam applies one signed permutation to accel and gyro | ✅ Confirmed (code; single loop) |
+| Every seam row has determinant +1 | ✅ Enforced (`tools/test_ns2_motion_seam.c`) |
 | Translator never fuses accel; accel is passthrough | ✅ Confirmed (code) |
 | Switch 1 sensor frame; Pro gets no transform in Linux | ✅ Confirmed (`hid-nintendo`) |
-| DualSense axis ordering/types | ✅ Confirmed (SDL + local paired capture) |
-| Event-frame permutation `{1,2,0}` | ✅ Confirmed (axis-type matching) |
-| Event-frame signs `(−1,+1,+1)` | 🟢 Strong Evidence — derived from three hardware results |
+| Pro seam row `src {1,0,2}`, `sign {-1,1,1}` | ✅ Confirmed on hardware (A/B, 2026-07-27) |
 | Console blends yaw+roll for horizontal aim | 🟢 Strong Evidence (attempt B) |
-| Seam split between driver and shared stage | 🔵 Only the COMPOSITE was validated — harmless, applies to all sources identically (§6.5.1). **Not** a defect and **not** to be "fixed" |
-| DualSense's own convention is not self-consistent | 🟢 Strong Evidence (`dualsense-motion.md` §8) — why det −1 is expected |
-| Joy-Con L/R frames | 🔵 Derivable — Linux negates Y/Z on both sensors for the right half (§6.1) |
+| Joy-Con L (`0x2006`) / R (`0x2007`) rows | 🟡 Unverified — they share the Pro's row today. §6.1 says the halves mount the IMU mirrored, so at least one axis is likely wrong on at least one half. The halves differ from the Pro by a *proper* rotation, so any correction must keep determinant +1. |
 | `NS2_DS5_ACCEL_PDU_PER_COUNT` 5.2 % excess | 🔵 Open, pre-existing, affects all sources |
 
-## 11. References
+## 10. References
 
 - Linux `hid-nintendo` — Switch 1 IMU frame and the right-Joy-Con negation:
   <https://github.com/torvalds/linux/blob/master/drivers/hid/hid-nintendo.c>
@@ -365,7 +336,11 @@ the improper C and points at the seam.
 - dekuNukem, `imu_sensor_notes.md` — conversion formulas; confirms the halves differ by a reversed
   axis: <https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering/blob/master/imu_sensor_notes.md>
 - [`switch1-motion.md`](switch1-motion.md), [`dualsense-motion.md`](dualsense-motion.md),
+  [`wii-motion.md`](wii-motion.md),
   [`../switch2/report-0x09-motion.md`](../switch2/report-0x09-motion.md),
   [`../experiments/gyro-hardware-validation-2026-07-10.md`](../experiments/gyro-hardware-validation-2026-07-10.md)
-- `src/bt_hid/ns2_seam.c:277-282`, `src/bt_hid/motion/ns2_ds5_motion.c:322-523`,
-  `src/bt_hid/bt/bthid/devices/vendors/sony/ds5_motion_calibration.c:6-11`
+- `src/bt_hid/motion/ns2_motion_seam.c`, `src/bt_hid/ns2_seam.c:255-280`,
+  `src/bt_hid/motion/ns2_ds5_motion.c:322-523`,
+  `src/bt_hid/bt/bthid/devices/vendors/nintendo/switch_pro_bt.c:395-626`,
+  `src/bt_hid/bt/bthid/devices/vendors/sony/ds5_motion_calibration.c:6-11`,
+  `tools/test_ns2_motion_seam.c`

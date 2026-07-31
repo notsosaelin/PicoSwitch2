@@ -4,7 +4,7 @@
 > path this project has already ruled out with direct evidence. Per `CLAUDE.md`'s instruction to
 > never let assumptions silently calcify into facts, and never silently discard evidence either —
 > a hypothesis that turned out wrong is still a real finding, just not a live one. Live docs
-> (`docs/switch2-gc/protocol.md`, `STATUS.md`, `DATA.md`) should only carry the *current*
+> (`docs/switch2-gc/protocol.md`, `STATUS.md`, `PLAN.md`) should only carry the *current*
 > best-evidence understanding; this file is where the superseded understanding goes, with enough
 > detail to explain why it was reasonable at the time and exactly what evidence overturned it.
 >
@@ -145,12 +145,128 @@ display.
 
 **Why this matters going forward**: the changing leading/middle `0x28` lanes are semantically
 consumed, cross-validated, or both. They must be decoded and generated coherently before another
-synthetic `0x28` packet is sent. This result does **not** refute the byte-exact G6/G7/G8 codec or
-the candidate “second quaternion/reference vector” interpretation in isolation; it refutes only
-the complete template-derived packet. The unsafe UART generator and runtime gate were removed
-after this result; only passive analysis and the exact field codec remain. Current evidence and
-safe next work:
+synthetic `0x28` packet is sent. The unsafe UART generator and runtime gate were removed after this
+result; only passive analysis and the exact historical bit-range codec remain.
+
+**Later correction, 2026-07-29**: exact reference-PCAP analysis transferred the 288-bit
+multi-sample IMU map to the genuine Pro2 catch-up stream. G6/G7/G8 cross payload bits belonging to
+the newest packed gyro and acceleration samples; they are not independent lanes or a second
+quaternion. The failed generator therefore corrupted parts of two real samples while leaving the
+rest of the packet static. The live rejection was an early symptom of this exact coherence error.
+Current evidence and safe next work:
 [`../switch2/uart-magprobe.md`](../switch2/uart-magprobe.md).
+
+---
+
+## Switch 2 motion: G6/G7/G8 is a simple externally responsive magnetic-field vector
+
+**Held**: as one candidate interpretation after the signed 22/22/20-bit lanes were decoded on
+2026-07-24; refuted as a simple external-field model by the controlled 2026-07-29 hardware matrix.
+
+**The claim**: if G6/G7/G8 directly or monotonically represented the external magnetic field, a
+stationary genuine Pro Controller 2 should show a repeatable direction or magnitude response when
+an external magnet is introduced. Reversing the presented magnet face should reverse or
+substantially redirect that response, and reducing distance should increase it.
+
+**What refuted it**: zero-drop captures bracketed each field condition with stationary baseline
+and recovery captures. Time-weighted A/B/A subtraction removed ordinary drift. Two ceramic-magnet
+faces at 100 mm produced nearly parallel residual directions rather than a polarity reversal; the
+50 mm condition did not scale upward; and the matched no-magnet G6/G7/G8 residual (`0.0652°`) was
+larger than every 100 mm field result (`0.0357°..0.0620°`). A neodymium disc down to the closest
+stable sub-10 mm placement likewise produced no repeatable response beyond the control envelope.
+Other changing bytes, including the initially interesting `p17`, also lacked polarity reversal and
+distance scaling.
+
+**Evidence boundary at the time**: this refuted only the simple externally responsive vector
+interpretation under the tested geometry, distances and field strengths. It did not establish that
+no magnetometer exists or that an internal sensor is unused.
+
+**Later correction, 2026-07-29**: the tested aliases are not a vector at all. Their bit ranges
+cross packed gyro and gravity-bearing acceleration samples in the length-`0x28` catch-up layout.
+That is the direct reason no coherent magnetic polarity/distance response existed. The hardware
+campaign remains valid negative evidence and does not establish whether a separate physical
+magnetometer exists.
+
+Full matrix, commands and limitations:
+[`pro2-magnetic-stimulus-matrix-2026-07-29.md`](pro2-magnetic-stimulus-matrix-2026-07-29.md).
+
+---
+
+## Length-0x28 catch-up begins only above 16 ticks and uses gyro15/accel14 middle fields
+
+**Held**: from the initial Joy-Con-derived packed-layout notes and the first genuine-Pro2
+reference PCAP, whose 17–19-tick records did not expose the boundary.
+
+**The claim**: tick deltas through 16 use the normal map; only deltas above 16 use a catch-up map
+with signed15 gyro 1 and signed14 middle acceleration at payload bits `110..154` and `155..196`.
+
+**What refuted it**: a zero-drop genuine-Pro2 cadence matrix produced mixed 14/15-tick packets in
+one 17.5 ms capture and mixed 14/15/16-tick packets in one 18.75 ms capture. Normal decoding was
+coherent for every delta through 14 and impossible for every delta 15 or 16. The exact alternative
+tiling—gyro 1 signed16 at `110..157`, middle accel signed13 at `158..196`, gyro 2 signed16 at
+`197..244`—made all three acceleration lanes approximately `1.052 g` and both gyro lanes agree
+with raw stationary bias after their scale corrections.
+
+**Correct model**: high-rate `0..10`, normal `11..14`, catch-up `15+`. See
+[`pro2-raw-native-motion-pcap-2026-07-29.md`](pro2-raw-native-motion-pcap-2026-07-29.md).
+
+---
+
+## Switch 2 motion: the 0x28 prefix is flags2 plus three equal-width smallest-three components
+
+**Held**: as an offline working interpretation on 2026-07-29 after the cadence matrix established
+a continuous leading state across the high-rate, normal, and catch-up layouts.
+
+**The claim**: payload bits after the first two flags formed three adjacent, equal-width signed
+components: three signed24 lanes in high-rate and three signed22 lanes otherwise. A single
+capture-fitted scale could then decode them as a standalone smallest-three quaternion.
+
+**Why it seemed reasonable**: the three extracted values were continuous at layout transitions
+after dividing the high-rate form by four. A clean pitch capture produced `0.991934` delta
+correlation against the established length-`0x1E` quaternion and only `0.048449 degrees` p90
+error after fitting a scale.
+
+**What refuted it**: direct bit alignment against the interleaved length-`0x1E` retained carrier
+showed asymmetric lanes. The first correction still stopped at a false boundary and called two
+bits before lane 2 a separate state. Testing that proposed transition law showed that the bits are
+lane 2's low fragment. High-rate is `mode2 + s24 + s23 + s25`; normal/catch-up is
+`mode2 + s22 + s21 + s23`. Grouping only by the length-`0x1E` carrier state and testing the sample
+epoch initially produced `0.999962` and `0.999996` mean absolute correlation in the two dynamic
+captures, with fixed power-of-two scales and no capture-specific scale multiplier. Applying the
+packet's encoded elapsed field then resolves the remaining constant-offset discrepancy:
+`current tick - elapsed + 4` gives `0.999996` in both captures.
+
+**Correct boundary**: this establishes a mode-3, cadence-dependent truncated
+orientation-carrier relationship, not a standalone quaternion decoder. The tail is now identified
+as two Q3 temperature samples, and a causal modular history decoder is validated against
+interpolated length-`0x1E` truth. Bit 287 is observed reserved-zero padding across 1,066 catch-up
+packets.
+
+Reciprocal chart-transition captures then refuted the stronger assumption that the genuine
+length-`0x1E` state itself is always a strict smallest-three omitted-component selector. State 0
+and state 3 are cyclic lane assignments of a continuous carrier, and 16 genuine rapid-motion
+records have retained-vector energy above one (maximum `1.026738`). A positive omitted component
+does not exist for those records. The production DualSense length-`0x1E` encoder remains a
+hardware-validated approximation; this correction limits the genuine decoder claim and does not
+invalidate that production behavior. Exact integer rounding and states 1/2 remain unresolved.
+
+**Follow-up, 2026-07-29:** the later zero-drop `3 → 1 → 0` capture resolves the observed state-1
+branch law. The cyclic omitted-component topology plus a paired flip of the two non-boundary lanes
+fits the negative `1 → 0` boundary at `0.024716`; all five captured boundaries have
+RMS/max `0.025302/0.047878`. Exact rounding and unseen state 2 remain unresolved.
+
+**State-2 closure, 2026-07-29:** the state-2-only passive trigger later captured
+`3 → 2 → 3` with zero drops. Both reciprocal boundaries select topology
+`(G2,G0,G1)` and the opposite omitted-sign branch `(+,−,−)`, with residuals
+`0.036162` and `0.011824`. The full nine-boundary corpus covers all four chart
+states at RMS/max `0.023541/0.047878`. The interleaved `3 → 2` prefix selects
+chart 3 (`0.003833` versus `0.196168`), while the same local-frame audit
+recovers the direct `3 → 1` prefix as chart 1 (`0.008416` versus `0.242898`).
+Exact integer rounding remains unresolved.
+
+Full method and results:
+[`pro2-mode3-carrier-prefix-2026-07-29.md`](pro2-mode3-carrier-prefix-2026-07-29.md) and
+[`pro2-carrier-chart-transition-2026-07-29.md`](pro2-carrier-chart-transition-2026-07-29.md).
 
 ---
 
@@ -268,6 +384,93 @@ character, product, or dump whitelist. See
 
 ---
 
+## A cold-capture raw-IMU profile can be layered over an active native-report session
+
+**Held**: for the first UART-gated `imuref` hardware discriminator on 2026-07-29.
+
+**The claim**: replaying the genuine handle-`0x000A` PCAP's report selector, feature `0x2F`,
+calibration reads, report-rate write, and common CCC would switch a controller that was already
+running the production handle-`0x000E` native profile.
+
+**Why it seemed reasonable**: every controller command and CCC operation in the source PCAP was
+accepted, and the new sequence reproduced all motion-relevant writes. Feature/report selection had
+previously caused the controller to stop one report format when another became active.
+
+**What refuted it**: the UART state machine completed, but after 750 ms `imuref status` reported
+`common=0` and `native=170`. The existing native stream never stopped. `imuref off` then restored
+the production profile cleanly, with fresh owned length-`0x28` motion immediately visible through
+`motionusb`.
+
+**Correction**: live profile switching must explicitly disable the currently selected CCC before
+replaying the target profile. The revised gate disables `0x000F` before raw selection and disables
+`0x000B` before native restoration. A failed native unsubscribe aborts the raw transition
+fail-closed. See
+[`pro2-raw-native-motion-pcap-2026-07-29.md`](pro2-raw-native-motion-pcap-2026-07-29.md).
+
+---
+
+## Switch 2 motion: common and native CCCs can deliver raw and packed IMU simultaneously
+
+**Held**: as a default-off hardware discriminator on 2026-07-29.
+
+**The claim**: after the verified raw profile owns handle `0x000A`, enabling the native
+handle-`0x000E` CCC without changing any report-selection command might leave both streams active.
+That would provide sample-simultaneous raw/native correlation.
+
+**Why it seemed reasonable**: the two characteristics have independent CCCs and notification
+listeners. The raw command profile remained selected, and the native CCC write returned ATT
+success.
+
+**What refuted it**: after the native CCC became active, the common counter stopped at `387` while
+the native counter advanced past `2,900`. A zero-drop capture contained 46 native records and zero
+common records. Disabling only the native CCC immediately resumed common notifications without
+replaying the raw command sequence.
+
+**Correction**: report generation is selector-exclusive and the enabled native CCC has priority.
+CCC-only switching is reversible, so tightly bracketed raw/native A/B captures remain possible,
+but they are not simultaneous and must not be paired sample-for-sample. See
+[`pro2-raw-native-motion-pcap-2026-07-29.md`](pro2-raw-native-motion-pcap-2026-07-29.md).
+
+---
+
+## Switch 2 motion chart states compose as one unsigned lane permutation per state
+
+**Held**: as a provisional offline model after the first three zero-drop chart boundaries on
+2026-07-29.
+
+**The claim**: state 0 wire `(G0,G1,G2)`, state 1 `(G2,G0,G1)`, and state 3 `(G1,G2,G0)` could be
+treated as fixed projections into one global three-lane frame. The reciprocal `0 ↔ 3` boundaries
+had residuals `0.002563` and `0.001132`, while the first `0 → 1` boundary selected its permutation
+with residual `0.017025`, about 29 times below the runner-up.
+
+**Why it seemed reasonable**: all three captured state-0 boundaries were locally continuous, the
+lane permutations composed algebraically, and the state-stable prefix decoder retained excellent
+accuracy. State 1 had not yet been observed in a second adjacent branch.
+
+**What refuted it**: a separate zero-drop Splatoon capture contained `3 → 1 → 0`, with state 1
+present for one carrier record. The `1 → 0` edge had minimum unsigned-permutation residual
+`1.185389`; adding the capture to the global solver forced RMS/max residual
+`0.818124/1.252822` and a `1.204945` excess over independently best edge fits. The direct
+`3 → 1` edge also cannot be evaluated by composing the two state-0 projections. An independently
+fitted signed lane transform reduces the `1 → 0` residual to `0.024716`, but one sample cannot
+establish a reusable signed or nonlinear chart law.
+
+**Correction**: describe the earlier permutations as the same-sign branch of a stateful cyclic
+omission model, not universal unsigned state maps. The held-out `1 → 0` edge exercises the
+opposite-sign branch: the topology permutation `(G2,G0,G1)` plus paired non-boundary signs
+`(+,−,−)` reduces its residual to `0.024716`. Across all five boundaries, this narrow two-branch
+model has RMS/max `0.025302/0.047878`, with every branch choice at least `0.324174` better than
+its alternative. Analyze each edge independently, reject stateless global composition, and keep
+state 2 prediction-only until captured. Production DualSense/Edge motion remains on the validated
+length-`0x1E` carrier. See
+[`pro2-carrier-chart-transition-2026-07-29.md`](pro2-carrier-chart-transition-2026-07-29.md).
+
+**Follow-up:** state 2 was subsequently captured in both directions against
+state 3. The same cyclic opposite-sign branch fits both seams, so state 2 is no
+longer prediction-only; exact integer projection/rounding remains open.
+
+---
+
 ## Format notes for future entries
 
 Each entry should have: the claim, the confidence level it held, why it was reasonable given the
@@ -275,3 +478,31 @@ evidence available *at the time*, and the specific evidence that overturned it. 
 whichever live doc now carries the corrected understanding. Don't delete an entry once a "correct"
 replacement is itself later refuted — append a note here instead, so the history of *why* stays
 intact.
+
+## Switch 2 motion: length-`0x1E` byte 12 bit 7 is the omitted-component sign
+
+**The claim**: the unexplained flag at byte 12 bit 7 records the whole-quaternion
+sign canonicalization — whether the omitted component was negated before packing,
+as Nintendo's Switch 1 DScale packer does without transmitting the result.
+
+**Why it was plausible**: the flag is 0% across stationary captures and 23–48%
+across moving ones, which is exactly what a sign that flips on zero-crossings
+would look like. If true it would make the omitted component recoverable.
+
+**The discriminator**: a whole-quaternion negation flips all three transmitted
+lanes together, so negating the later record must restore continuity precisely
+when the flag toggles. This needed no new capture — the existing corpus already
+contains a 94-record all-state-3 rotation (`pro2-chart-face-forward-no-transition`)
+plus five boundary captures.
+
+**Result**: across 160 adjacent same-chart toggles, negation restored continuity
+in **0**. Median `d_raw` was `0.002511` against `d_neg` `1.318595`; the trajectory
+is already smooth without negation in every case. Also refuted alongside it: any
+relation to the `0x1E`/`0x28` interleaving or connection interval, where the flag
+rate is a flat 12–14% across every slice.
+
+**What survives**: the flag tracks motion (100× separation in inter-record carrier
+change) and is per-sample rather than modal. It remains unexplained and is carried
+through synthesizers verbatim, never inferred.
+
+Evidence: [`pro2-carrier-unknown-fields-2026-07-31.md`](pro2-carrier-unknown-fields-2026-07-31.md).

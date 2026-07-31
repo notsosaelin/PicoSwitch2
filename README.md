@@ -32,9 +32,11 @@ project's hardware captures and
   floating-point/SRAM codec path at 300 MHz/1.20 V. Pico W remains on its
   validated non-audio configuration.
 - Xbox-family, Switch-family, 8BitDo, and other supported Bluetooth HID controllers.
-- A local configuration page for remapping buttons and independently setting the Pro Controller 2
-  body and Joy-Con 2 Left/Right accent colors. The active personality's appearance is shared with
-  supported DualShock/DualSense lightbars.
+- A local configuration page for independently setting the Pro Controller 2 body and Joy-Con 2
+  Left/Right accent colors. The active personality's appearance is shared with supported
+  DualShock/DualSense lightbars. Firmware uses one locked physical-to-Nintendo base map; button
+  remapping belongs to the emulated controller in the Switch UI, where it survives a change of
+  source controller.
 - Builds for both RP2040 Pico W and RP2350 Pico 2 W.
 
 The Pro Controller 2 personality deliberately uses a 1 ms USB interrupt interval
@@ -96,16 +98,17 @@ web portal.
 ```
 
 2. In desktop Chrome or Edge, select the PicoSwitch Config serial port.
-3. Inspect live input, change mappings or Pro2/Joy-Con appearance colors, and save.
+3. Inspect live input, set Pro2/Joy-Con appearance colors, and save.
 4. Hold BOOTSEL for two seconds to return directly to Pro Controller 2, or power-cycle to boot
    directly into Pro Controller 2 mode.
 
 The launcher serves `web/index.html` from localhost, giving browser storage a stable origin for the
 amiibo library while keeping the changing portal entirely off the microcontroller.
 
-The amiibo library remains available when no serial device is connected. It retains separate
-Unused and console-written Used copies, can select either copy, and can export/import a versioned
-library backup in case browser storage is cleared. Adapter-only controls remain disabled offline.
+The amiibo library remains available when no serial device is connected. The board holds exactly one
+amiibo at a time; Sync pulls console-written data back into the browser copy of that entry, and the
+library exports/imports as a flat `.zip` backup in case browser storage is cleared. Adapter-only
+controls remain disabled offline.
 
 The separate Virtual Amiibo browser diagnostic does not require a Pico or serial port:
 

@@ -27,7 +27,7 @@ Packetry 0.5.0 (Great Scott Gadgets / Cynthion)** — a **raw USB-2.0 wire captu
 token, DATA packet, and handshake individually. That is *richer* than a URB capture (we see
 SETUP packets and command-endpoint payloads directly), but tshark shows the metadata Custom
 Blocks as "data," so transactions were reassembled in Python
-(`scratchpad/usb_c_hostcmds.py`): classify each EPB payload by USB PID, pair each
+(a session-local analysis script (not retained)): classify each EPB payload by USB PID, pair each
 SETUP/IN/OUT token with the DATA packet that follows it, decode.
 
 Wire model confirmed by the PID histogram (1,339,738 packets):

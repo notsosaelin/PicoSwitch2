@@ -38,6 +38,9 @@ one).
 | A5 | **A body of *refuted* protocol hypotheses** (GC rumble `data[0]` is not a linear amplitude; "any nonzero rumble byte = on" is false; several motion models rejected). | Negative results are original contributions; neither upstream published these, and some were cross-checked against the real Linux `HID: nintendo` driver source. | `docs/experiments/refuted-hypotheses.md` | **Confirmed** (refutations) |
 | A6 | **Serial-number *structure* decode** — `0x13002` model code = chars 1–2 (`HB/HC/HE/HH`), per-unit tail; `0x13E00` classified as a lot/batch code. | ndeadly's `memory_layout.md` labels `0x13002` "Serial number" with raw bytes only; the structural analysis (from six genuine units) is ours. | `docs/switch2/serial-generation.md` | **Strong** (chars 1–2 Confirmed; field split Strong) |
 | A7 | **Wake-a-sleeping-console behavior** — identity learned from the `0x15` pairing exchange, persisted, first non-neutral report arms wake. | An *emulator* behavior (make the console wake), not protocol documentation either upstream produces. | `docs/bluetooth/wake-from-sleep-design.md` | **Confirmed** (hardware, Pro2) |
+| A9 | **The NFC command surface beyond `0x15`** — subcommands `0x1E` (sector-aware reuse read), `0x20` (complete extended operation), and `0x21` (execute staged device command) are absent from ndeadly's `commands.md` table entirely; `0x03`/`0x04` are listed there as Unknown and are decoded here as poll and stop. The `0x14` staging surface is further split into three capture-derived envelope families. | Only a device *serving* a tag to a live console sees the console drive these; a sealed-controller observer never elicits them. | [`../docs/Amiibo-v3.md`](Amiibo-v3.md); [`switch2/controller-safe-mode.md`](switch2/controller-safe-mode.md) has the side-by-side table | **Confirmed** (hardware read + write) |
+| A10 | **Figure-v3 (NTAG I2C Plus 2K) amiibo read *and* write**, including the allocation-relative Air Riders slot geometry — slot *n* at sector-0 page `0x92 + 8n` and sector-1 page `25n`, ten slots per tag. | No upstream covers 2048-byte v3 amiibo at all. | [`Amiibo-v3.md`](Amiibo-v3.md) §8 | **Confirmed** (read/write on hardware); slot formula **Strong** |
+| A11 | **`0x1FB000` identified as a per-unit battery discharge curve.** ndeadly's `memory_layout.md` lists this region as "Unknown". | Came from comparing multiple genuine units' dumps in-repo. | [`experiments/spi-dump-analysis-2026-07-10.md`](experiments/spi-dump-analysis-2026-07-10.md) §3.5 | **Confirmed** (multi-unit) |
 | A8 | **Mouse-mode enable is feature bit 4 (`0x0C` mask `0x37`), refuting an earlier "command `0x13` = mouse" idea; relative report `0x07/08` deltas byte-verified.** | Resolved a wrong hypothesis and byte-verified against a decrypted BLE capture decoded in-repo. | `docs/switch2-joycon2/mouse-mode.md`; `docs/experiments/2026-07-19-usb-command-ab-diff.md` (Exp 2) | **Confirmed** (capture + hardware) |
 
 ## Tier B — Independent confirmation (raised single-source → multi-source)
@@ -54,14 +57,24 @@ multi-unit / cross-project **Confirmed**.
   guess. (`docs/experiments/usb-relay-feasibility-audit-2026-07-10.md`.)
 - **Live descriptor re-capture.** Device/config/HID-Report descriptors re-captured from the owner's
   own hardware, byte-for-byte matching ndeadly's `descriptors.md` — good confidence, not new fact.
+- **NVM map verification (2026-07-29).** ndeadly's `memory_layout.md` checked against this project's
+  own 2 MB dumps: firmware header magic `0xAA640001` + `" SYS"` at all three firmware offsets, the
+  `0x60000` bank spacing, `DSPH` and the `MT3616A0 DSP` string, factory `VID 0x057E` /
+  `PID 0x2069`/`0x2073` at `0x13012`/`0x13014`, and the `0x1FD010` post-firmware-update flag. That
+  last one resolved why our two units differ — one had been firmware-updated and the other had not —
+  and corrected a wrong first inference that the GameCube controller lacked a DSP blob because it
+  lacks audio. Consolidated in [`switch2/controller-nvm-map.md`](switch2/controller-nvm-map.md).
 
 ## Tier C — Inherited foundation (credit where due)
 
 The load-bearing majority of the raw protocol came from upstream and should be cited as such:
 
 - **From ndeadly:** the command set `0x01–0x18` and subcommands, factory memory map (`0x13000`
-  region), input/output report field layouts, feature-flag table (`0x0C`), and the initial descriptor
-  reference. Mirrored at `nso-gc-refs/switch2_controller_research/`.
+  region), input/output report field layouts, feature-flag table (`0x0C`), the initial descriptor
+  reference, the firmware/failsafe-bank structure and its header magic, and **Safe Mode** — the
+  recovery interface documented in [`switch2/controller-safe-mode.md`](switch2/controller-safe-mode.md),
+  which this project has neither reproduced nor needs. Mirrored at
+  `nso-gc-refs/switch2_controller_research/`.
 - **From Dycool:** confirmation that from-a-gadget emulation/relay of a genuine Pro2 is viable, and a
   reference point for report cadence and feature negotiation.
 
@@ -70,14 +83,30 @@ second source — see [`re-methodology/evidence-standards.md`](re-methodology/ev
 
 ## The shared, still-unsolved frontier
 
-Honesty check: the biggest open problem is **not** something we (or anyone) cracked.
+Direct UART evidence has moved the motion boundary beyond the older static-capture state. A genuine
+Pro Controller 2 now provides repeatable interleaved length-`0x1E`/`0x28` native motion, native
+passthrough is hardware-validated, and DualSense translation uses the decoded length-`0x1E`
+carrier. Those are current repository results, not claims inherited from a third-party static
+capture.
 
-- **Console-native motion / gyro (`0x09`)** remains unresolved by *everyone*, Dycool included. Every
-  `0x09` semantic fact still traces to one static, unrepeatable third-party capture; multiple models
-  were tested and refuted without a positive replacement. See PLAN.md "Console-native motion" and
-  `docs/switch2/ble-controller-protocol-inventory.md`. This is the clearest evidence that the
-  *vocabulary* frontier is still closed for the whole field — our new ground is on the acceptance
-  layer, not here.
+The remaining frontier is narrower: exact carrier projection/rounding and coherent software
+generation for controllers without
+the source hardware. The length-`0x28` cadence-dependent accel/gyro/temperature layouts are decoded,
+and the former G6/G7/G8 aliases are known to cross packed gyro/accel fields rather than identify
+independent reference lanes. Reciprocal zero-drop chart captures directly establish the local
+state-0/state-3 boundary projection and refute strict smallest-three as an exact genuine model.
+A held-out zero-drop `3 → 1 → 0` gameplay capture further refutes composition into one global
+unsigned permutation per state while validating the cyclic omitted-component paired-sign branch
+across state 1. A reciprocal `3 → 2 → 3` capture then closes all four chart states under the same
+stateful topology, with no per-edge tuning; its interleaved prefix selects the
+pre-transition chart 3. A
+controlled 2026-07-29 no-magnet/polarity/distance matrix found no resolved external-field response;
+it rejects a simple raw magnetic-field interpretation without claiming that the genuine controller
+lacks or never consumes an internal magnetometer. See
+[`switch2/uart-magprobe.md`](switch2/uart-magprobe.md) and
+[`experiments/pro2-magnetic-stimulus-matrix-2026-07-29.md`](experiments/pro2-magnetic-stimulus-matrix-2026-07-29.md),
+and
+[`experiments/pro2-carrier-chart-transition-2026-07-29.md`](experiments/pro2-carrier-chart-transition-2026-07-29.md).
 
 ## Why this distinction matters
 

@@ -5,7 +5,7 @@
 > Planned work belongs in [`PLAN.md`](PLAN.md); evidence and protocol details belong under
 > [`docs/`](docs/README.md).
 
-Last verified: 2026-07-28 (all 16 available figure-v3 dumps read and wrote successfully)
+Last verified: 2026-07-29 (zero-drop genuine-Pro2 `3 → 2 → 3` chart closure capture)
 Branch: `ns2-testing`
 
 Documentation/resource audit: 2026-07-25
@@ -190,6 +190,187 @@ use and not just v3:
 - **v3 uploads were never durable.** `amiibo persist` gated on the 540 store's
   `loaded` flag, making it a silent no-op for v3, and the portal never called it.
 
+
+## NFC investigation tooling — ✅ offline lab in place 2026-07-28
+
+The v3 investigation cost hardware iterations on questions that were already answerable from data
+on disk. The core offline laboratory now exists; the workflow, worked examples, and remaining gaps
+are in
+[`docs/re-methodology/nfc-investigation-workflow.md`](docs/re-methodology/nfc-investigation-workflow.md).
+
+| Tool | What it settles before hardware |
+|---|---|
+| `tools/amiibo_corpus.py` | Structure, SRAM CRC, discovered allocation, and how many *distinct* images a corpus really holds |
+| `tools/ns2_nfc_semantics.py` | One authoritative NFC layout vocabulary, imported by every other tool |
+| `python tools/ns2_trace.py nfc` / `nfc-diff` | Reassembled transaction timelines, envelope classification, first semantic divergence |
+| `tools/nfc_lab.ps1` | One hardware action captured as a hashed artifact bundle with its hypothesis and single variable |
+| `.claude/skills/picoswitch2-nfc-lab` | Enforces the phase order for agent sessions |
+
+## Shared protocol laboratory — 🟢 active infrastructure, first motion campaign complete 2026-07-29
+
+The NFC evidence workflow is now generalized without changing its proven runner.
+`tools/PicoSwitch2Lab.psm1` provides one manifest/provenance contract;
+`capture_to_fixture.py` generates deterministic JSON/C fixtures from zero-loss captures;
+`ns2_command_atlas.py` aggregates observed request/response shapes; and domain runners package
+motion, audio, and firmware-update evidence. Repository-local Codex skills under `.agents/skills/`
+enforce the same gates on a fresh clone.
+
+The motion runner completed a zero-drop no-magnet/sham/polarity/distance/recovery campaign with a
+genuine Pro Controller 2. Time-weighted A/B/A analysis found no polarity reversal or distance
+scaling, and the matched no-magnet residual exceeded every 100 mm ceramic-magnet result. The
+external field therefore did not produce a resolved response in G6/G7/G8 or the other retained
+lanes; those lanes must not be described as a simple raw magnetic-field vector. See
+[`docs/experiments/pro2-magnetic-stimulus-matrix-2026-07-29.md`](docs/experiments/pro2-magnetic-stimulus-matrix-2026-07-29.md).
+
+Exact ICM-42670-P FIFO tables and the decrypted Pro2 `0x000A`/`0x000E` PCAPs then corrected the
+field model. Handle `0x000A` carries an 18-byte raw timestamp/temperature/accel/gyro sample.
+Length-`0x28` on handle `0x000E` is a Nintendo-packed multi-sample IMU payload; the reference
+Pro2's 17–19-tick cadence uses its catch-up layout. The former G6/G7/G8 aliases cross the newest
+packed gyro and accel fields and are not independent magnetic/reference lanes. The offline
+`ns2_motion_reference.py` analyzer and tests reproduce the result. The default-off UART `imuref`
+profile is hardware-validated: an explicit CCC handoff produces clean raw `0x000A` samples,
+exclusive notification ownership, ATT success, and a reversible return to fresh native motion.
+A same-pose production capture also establishes that the Joy-Con-derived normal-layout bit map
+does not transfer directly to the Pro2's seven-tick high-rate form. Enabling both CCCs does not
+yield simultaneous streams: native reporting takes priority, while disabling only the native CCC
+resumes raw reporting. A zero-drop A/B/A capture brackets both paths.
+
+A controlled 7.5–30 ms cadence matrix now resolves the full payload family. Tick deltas `0..10`
+use signed22 fixed-point accel/gyro/accel; `11..14` use the mixed 13/14-bit normal form; and `15+`
+use the corrected mixed 13/14/16-bit catch-up form. Every acceleration lane measures approximately
+`1.052 g` in the live stationary corpus, and the scaled axes/gyro bias agree with raw handle
+`0x000A`. The same catch-up form persists at the maximum accepted 30 ms interval. Bit 287 is the
+single byte-alignment remainder after the 287 established data bits and remained zero in all 1,066
+catch-up packets across 14 repository captures; it is treated as observed reserved-zero padding,
+not an ordinary backlog field.
+The next offline passes resolved the preamble and corrected the carrier boundary. Byte 2 plus byte
+1's high nibble is a self-contained
+12-bit elapsed count (`1274/1274` zero-drop predecessor comparisons), while byte 3 maps
+`0x0D`/`0x0E`/`0x0F` exactly to high-rate/normal/catch-up (`1292/1292`). The first packet and
+post-drop packets therefore no longer need a guessed layout. The high-rate/normal tail contains
+two Q3 IMU-temperature samples sharing a signed ten-bit integer part. Two independent zero-drop
+raw/native/raw captures bracket the native values with handle-`0x000A` temperature: the 7.5 ms run
+measured raw `4.357`, native `4.28125`, raw `4.167`; the 15 ms run measured raw `4`, native
+`3.951923`, raw `4`. The low fractions matched in `993/1023` records because the two samples are
+usually, but not always, at the same sub-count temperature.
+
+The prefix is not `flags2 + three equal-width values`. Its exact forms are
+`mode2 + s24 + s23 + s25` in high-rate and `mode2 + s22 + s21 + s23` otherwise. Carrier 2 is
+split on the wire: its low two bits precede its signed high bits. The former “separate state” was
+that low fragment, not a state machine. Packing mode was `3` in all 2,592 analyzed records. Once
+grouped only by the length-`0x1E` carrier state, the prefix fits the established retained
+components at exact power-of-two scales. Paired pitch gives `0.999962` mean absolute correlation
+under its former best constant offset; the packet-derived rule
+`current tick - encoded elapsed + 4` raises it to `0.999996` and reduces fixed NRMSE from
+`0.008728` to `0.002718`. The retained moving window remains `0.999996` / `0.002771`. The prefix is
+therefore the truncated carrier four sensor ticks after the preceding carrier. A causal modular
+history decoder reproduced interpolated length-`0x1E` truth with `0.000968°` and `0.004682°`
+median angular error in the two dynamic sets, with zero chart mismatches.
+
+Reciprocal zero-drop lazy-susan captures directly resolve the observed state-0/state-3 boundary.
+State 0 wire `(G0,G1,G2)` and the state-0-boundary projection of state 3
+`(G1,G2,G0)` are continuous across both
+directions, with boundary delta norms `0.002563` and `0.001132`. Sixteen genuine rapid-motion
+records exceed the strict retained-vector unit constraint (maximum `1.026738`), so strict
+smallest-three is not an exact genuine-carrier model. The one prefix epoch inside each transition
+selects chart 0 with residuals `0.000144` and `0.000790`. A later zero-drop Splatoon raid
+captured `0 → 1`, selecting the local state-0 projection `(G2,G0,G1)` with residual `0.017025`;
+the seam selects chart 1 over chart 0 (`0.010524` versus `0.091224`).
+A second zero-drop raid then captured `3 → 1 → 0`. Its `1 → 0` edge has minimum unsigned
+residual `1.185389`, refuting one globally composable unsigned permutation per state. The solver
+now reports local edges and rejects the stateless global candidate. The cyclic omitted-component
+topology plus a paired non-boundary sign flip fits that negative branch at `0.024716`; across all
+five captured boundaries the structured model has RMS/max `0.025302/0.047878` and minimum branch
+margin `0.324174`. State 1 has both sign branches captured. A later zero-drop state-2-only
+trigger captured `3 → 2 → 3`; both reciprocal seams select topology `(G2,G0,G1)` with
+opposite-branch signs `(+,−,−)`, at residuals `0.036162` and `0.011824`. The full
+nine-boundary corpus covers all four chart states at RMS/max `0.023541/0.047878`.
+Its interleaved `3 → 2` prefix seam selects chart 3 (`0.003833` versus `0.196168`);
+the same local-frame audit recovers the former `3 → 1` seam as chart 1 (`0.008416`
+versus `0.242898`).
+Exact integer projection/rounding remains unresolved, so this is not yet a production `0x28`
+generator.
+An orthogonal upright lazy-susan rotation remained state 3 throughout. A corpus audit now records
+1,030 stable state-1 samples but initially no adjacent state-1 boundary. Passive gameplay
+triggers subsequently supplied the clean state-0/state-1 seam, the held-out opposite-sign branch,
+and the missing reciprocal state-2 crossing.
+Production interval and fresh native
+ownership were restored after the campaign. See
+[`docs/experiments/pro2-mode3-carrier-prefix-2026-07-29.md`](docs/experiments/pro2-mode3-carrier-prefix-2026-07-29.md),
+[`docs/experiments/pro2-carrier-chart-transition-2026-07-29.md`](docs/experiments/pro2-carrier-chart-transition-2026-07-29.md)
+and
+[`docs/experiments/pro2-raw-native-motion-pcap-2026-07-29.md`](docs/experiments/pro2-raw-native-motion-pcap-2026-07-29.md).
+
+The audio runner is observational by default and the new `audio headset` UART command is read-only.
+The firmware host model validates and reassembles complete `0x0D` transfers, but the dedicated
+on-device flash sink remains unimplemented; generic 24-byte traces are rejected as insufficient.
+The current-image audit finds a 1 MiB candidate region at
+`0x2FA000..0x3FA000` on Pico 2 W and `0x0FA000..0x1FA000` on Pico W, but those
+addresses are **not yet linker-reserved** and must not be written. All new Python/PowerShell unit
+tests pass. The motion workflow is hardware-validated; audio and firmware-tap campaigns remain
+pending. See
+[`docs/re-methodology/controller-protocol-lab.md`](docs/re-methodology/controller-protocol-lab.md).
+
+First result from the corpus analyzer, byte-exact over all 16 local Air Riders dumps: they are
+4 riders × 4 machines, with 4 encrypted-body groups, 4 SRAM groups, 16 distinct (body, SRAM) pairs,
+and 4 UIDs each shared by 4 files. **Rider identity is entirely in the encrypted body and machine
+identity is entirely in the SRAM window; the axes are orthogonal.** Confidence: Confirmed. This is
+the evidence that four captures of one physical figure cannot establish a field as constant — the
+assumption that produced the false SRAM-CRC constant and the fixed Kirby record table.
+
+### v3 state machine is host-replayable — ✅ 2026-07-29
+
+`ns2_v3_serve()` and its twenty file-scope statics moved out of the USB personality into
+[`src/nfc/ns2_amiibo_v3_runtime.c`](src/nfc/ns2_amiibo_v3_runtime.c), behind the same shape the 540
+path has always had. `src/switch_pro2/switch_pro2.c` keeps only the transport (866 lines removed,
+128 added; exactly one line outside the extracted block changed, the report-state accessor).
+Durable side effects go through `ns2_amiibo_v3_host_t`, so a host test can inject an apply failure
+or a pending flash write.
+
+`tools/test_ns2_amiibo_v3_runtime.c` replays the real console sequences with a fake clock: the
+recognition read including descriptor escalation and the 83-byte device result, the Air Riders
+clear/update/write lifecycle including the Stop that must not eject, the `0x1E` reuse read, the
+persistence-gated eject with its 3-second cooldown, and the mid-transaction generation edge.
+
+Every v3 failure still reaches the console as status `0x07` / detail `0x41` → `2115-0096`, but
+`ns2_amiibo_v3_error_t` now records which of eight internal rules fired, with the specific
+`ns2_virtual_nfc_result_t` and `0x14` stage offset. `amiibo v3diag` reports it. This is the
+ambiguity that caused a fail-closed record rejection to be misdiagnosed as the earlier
+tag-removal timing bug.
+
+**Verification: static, build, and hardware.** Before: 53/53 host tests, both boards clean. After:
+54/54 host tests (the new replay suite), both boards clean, install-reset markers verified,
++608 B pico2_w / +1120 B pico_w.
+
+Hardware-confirmed on a real Switch 2, 2026-07-29 (King Dedede, UID `0465B0228F2190`):
+`dumps/experiments/20260729-101834-v3-post-extraction/`. Scan → in-game save → remove → rescan all
+succeeded. The firmware reported `write_commits:1`, `extended_completions:1`, `dev_results:4`,
+`write_errors:0`, and **`errors:0` / `last_error:"none"`** — the new internal counter confirming no
+rule fired. Store generation advanced 24 → 25 with both journal banks valid.
+
+A second run the same day (`dumps/experiments/20260729-102744-v3-reuse/`, King Dedede & Winged Star,
+scan → save → remove) independently confirmed it: cumulative `write_commits:3`,
+`extended_completions:2`, `dev_results:9`, `errors:0`.
+
+It also produced a **third** Air Riders allocation — sector-0 page `0x9A`, sector-1 pages
+`0x19/0x1A` — which resolved the allocation model. It is a **slot index**: slot *n* occupies
+sector-0 page `0x92 + 8n` (32 B) and sector-1 page `25n` (100 B), and the tag holds exactly ten
+slots. The 355-byte clear wipes 80 sector-0 pages = 10 × 8, and the runtime's two existing bounds
+checks independently permit slots 0–9 and reject slot 10. Observed: Kirby slot 0, Dedede & Winged
+slot 1, Dedede & Tank slot 4.
+
+⬜ What selects the slot is unknown; it is **not** identity — those last two images share UID
+`0465B0228F2190`, differing only in machine SRAM. Any UID- or rider-keyed table would have failed
+this run. Detail:
+[docs/Amiibo-v3.md](docs/Amiibo-v3.md) §8.
+
+That first run also corrected the trace decoder. It flagged one `07 41` as a failure; the firmware said
+zero errors. Status `0x07` / detail `0x41` is *also* the deliberate TagRemoved signal that
+`finish_committed_eject()` emits after a committed write, because the console needs that edge to
+leave its amiibo UI. `error_context()` now separates removal edges from failures, and `nfc_lab.ps1`
+cross-checks the decoded trace against `v3diag`'s own counter and says so when they disagree. This
+was the retrospective's own lesson — treating a wire value as a diagnosis — reproduced inside the
+analysis tooling.
 
 ## Current release
 
@@ -405,7 +586,8 @@ Current automated coverage includes:
 - Native Pro2 motion snapshot validation for length-30/length-40 packets, source-slot ownership,
   freshness and timer wrap, malformed input, disconnect hold, and clear semantics
 - DualSense calibrated motion translation, smallest-three quaternion encoding, carrier boundaries,
-  timing/bias handling, and exact length-`0x28` G6/G7/G8 field packing
+  and timing/bias handling; exact historical length-`0x28` alias packing plus the corrected
+  raw-report and packed multi-sample PCAP decoders
 - UART trace JSONL validation, known-field decoding, default sensitive-data redaction, timestamp
   rollover, address-aware semantic alignment, and strict raw-prefix comparison
 - Switch 2 pairing cryptography
@@ -505,6 +687,7 @@ button map replaces the retired per-family remap table.
 - [`docs/architecture/overview.md`](docs/architecture/overview.md) — runtime architecture and data flow
 - [`docs/architecture/config-transports.md`](docs/architecture/config-transports.md) — USB Serial and Config-only BLE management
 - [`docs/re-methodology/evidence-standards.md`](docs/re-methodology/evidence-standards.md) — evidence tiers and experiment rules
+- [`docs/re-methodology/nfc-investigation-workflow.md`](docs/re-methodology/nfc-investigation-workflow.md) — NFC/amiibo lab tooling and phase order
 - [`docs/switch2/`](docs/switch2/) — Pro Controller 2 protocol
 - [`docs/switch2-gc/`](docs/switch2-gc/) — NSO GameCube protocol and mapping
 - [`docs/switch2-joycon2/`](docs/switch2-joycon2/) — Joy-Con 2 protocol and mapping

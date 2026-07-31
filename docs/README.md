@@ -10,12 +10,15 @@ were tested. Conversation transcripts and temporary handoff files are not author
 |---|---|
 | Fresh coding-agent session | [`../AGENTS.md`](../AGENTS.md) |
 | Concise current handoff | [`LLM/current-context.md`](LLM/current-context.md) |
+| Amiibo v3 investigation/tooling retrospective | [`LLM/amiibo-v3-investigation-retrospective.md`](LLM/amiibo-v3-investigation-retrospective.md) |
 | Current project state | [`../STATUS.md`](../STATUS.md) |
 | Forward roadmap | [`../PLAN.md`](../PLAN.md) |
 | Runtime architecture | [`architecture/overview.md`](architecture/overview.md) |
 | USB Serial and Config-only BLE management | [`architecture/config-transports.md`](architecture/config-transports.md) |
 | Compatibility results | [`status/compatibility-matrix.md`](status/compatibility-matrix.md) |
 | Evidence and RE rules | [`re-methodology/evidence-standards.md`](re-methodology/evidence-standards.md) |
+| Shared controller protocol laboratory | [`re-methodology/controller-protocol-lab.md`](re-methodology/controller-protocol-lab.md) |
+| NFC investigation workflow and lab tooling | [`re-methodology/nfc-investigation-workflow.md`](re-methodology/nfc-investigation-workflow.md) |
 | What we discovered vs. inherited | [`provenance.md`](provenance.md) |
 | Bluetooth implementation | [`bluetooth/btstack-implementation.md`](bluetooth/btstack-implementation.md) |
 | Battery passthrough and validation matrix | [`bluetooth/battery-passthrough.md`](bluetooth/battery-passthrough.md) |
@@ -30,10 +33,12 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Pro Controller 2 USB protocol | [`switch2/usb-spec.md`](switch2/usb-spec.md) |
 | Console command surface | [`switch2/command-surface.md`](switch2/command-surface.md) |
 | Controller firmware identity | [`switch2/firmware-versioning.md`](switch2/firmware-versioning.md) |
+| Controller Safe Mode (recovery) | [`switch2/controller-safe-mode.md`](switch2/controller-safe-mode.md) |
+| Controller 2 MB NVM/SPI map | [`switch2/controller-nvm-map.md`](switch2/controller-nvm-map.md) |
+| Motion carrier remaining unknown fields | [`experiments/pro2-carrier-unknown-fields-2026-07-31.md`](experiments/pro2-carrier-unknown-fields-2026-07-31.md) |
 | NFC implementation design | [`switch2/nfc-implementation.md`](switch2/nfc-implementation.md) |
-| Figure-v3 read/write working record | [`Amiibo-v3.md`](Amiibo-v3.md) |
+| Figure-v3 (NTAG I2C Plus 2K / Kirby Air Riders) protocol | [`Amiibo-v3.md`](Amiibo-v3.md) |
 | Amiibo identity, differentiation, and generation | [`switch2/amiibo-identity-and-generation.md`](switch2/amiibo-identity-and-generation.md) |
-| Kirby Air Riders extended amiibo format | [`switch2/kirby-air-riders-extended-amiibo.md`](switch2/kirby-air-riders-extended-amiibo.md) |
 | NFC protocol evidence | [`switch2/nfc-protocol-inventory.md`](switch2/nfc-protocol-inventory.md) |
 | NFC feasibility/resource audit | [`experiments/nfc-feasibility-audit-2026-07-25.md`](experiments/nfc-feasibility-audit-2026-07-25.md) |
 | Virtual amiibo offline foundation | [`experiments/virtual-amiibo-foundation-2026-07-25.md`](experiments/virtual-amiibo-foundation-2026-07-25.md) |
@@ -51,7 +56,11 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Genuine Pro Controller 2 headset audio | [`switch2/pro2-headset-audio.md`](switch2/pro2-headset-audio.md) |
 | Native Pro Controller 2 motion result | [`experiments/native-pro2-motion-passthrough-2026-07-21.md`](experiments/native-pro2-motion-passthrough-2026-07-21.md) |
 | UART trace capture, decoding, and comparison | [`switch2/uart-trace-tooling.md`](switch2/uart-trace-tooling.md) |
-| UART native-motion `0x28`/magnetic analysis | [`switch2/uart-magprobe.md`](switch2/uart-magprobe.md) |
+| Current raw/packed Pro2 motion PCAP decode | [`experiments/pro2-raw-native-motion-pcap-2026-07-29.md`](experiments/pro2-raw-native-motion-pcap-2026-07-29.md) |
+| Pro2 mode-3 split-carrier/epoch correction | [`experiments/pro2-mode3-carrier-prefix-2026-07-29.md`](experiments/pro2-mode3-carrier-prefix-2026-07-29.md) |
+| Genuine Pro2 reciprocal carrier-chart transitions | [`experiments/pro2-carrier-chart-transition-2026-07-29.md`](experiments/pro2-carrier-chart-transition-2026-07-29.md) |
+| Historical UART `0x28` magnet-campaign analyzer | [`switch2/uart-magprobe.md`](switch2/uart-magprobe.md) |
+| Genuine Pro2 magnetic-stimulus matrix | [`experiments/pro2-magnetic-stimulus-matrix-2026-07-29.md`](experiments/pro2-magnetic-stimulus-matrix-2026-07-29.md) |
 | NSO GameCube protocol | [`switch2-gc/protocol.md`](switch2-gc/protocol.md) |
 | Joy-Con 2 protocol | [`switch2-joycon2/protocol.md`](switch2-joycon2/protocol.md) |
 | Joy-Con 2 Bluetooth mouse bridge | [`switch2-joycon2/mouse-mode.md`](switch2-joycon2/mouse-mode.md) |
@@ -106,7 +115,8 @@ Current compatibility matrices and release verification records.
 
 ### `re-methodology/`
 
-Evidence classification, capture discipline, source-comment policy, and reproducibility rules.
+Evidence classification, shared protocol-lab tooling, domain-specific capture discipline,
+source-comment policy, and reproducibility rules.
 
 ### `LLM/`
 

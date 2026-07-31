@@ -253,30 +253,27 @@ DualSense work hit the same class of bug earlier; `ns2_seam.c` records that an e
 there "made the console's gravity correction bleed one axis into another".
 
 **Determinant.** A sensor remount is a rotation, never a reflection, so the signed permutation must
-have determinant +1. The Switch 1 permutation is cyclic (sign +1), so the determinant reduces to
-`pitch × yaw × roll`, which must equal +1 — **signs flip in pairs, never singly.** A lone flip is
-not a physically realizable orientation and reintroduces the mirrored-frame bug.
+have determinant +1 — the **permutation parity times the product of the signs**. The resolved Switch
+1 permutation `{1,0,2}` swaps two indices, so its parity is −1 and the three signs must therefore
+multiply to −1. **Signs flip in pairs, never singly**, whatever the parity: a lone flip changes the
+determinant and is not a physically realizable orientation.
 
-> ⚠️ **Correction, 2026-07-27 (same day).** The paragraph that previously followed concluded from
-> this invariant that the Pro's roll "must" be `-1`. **Hardware refuted it:** that build killed
-> horizontal aim completely. The invariant itself stands, but it constrains the answer without
-> determining it — and the deeper error was assuming the *index permutation* was known and only the
-> signs were in doubt. §8 above only ever claimed the axes map "roughly", and told us to measure.
-> The full trace, the corrected symptom table, and a gravity-based measurement protocol that
-> determines permutation and signs together now live in
-> [`switch1-to-switch2-motion-spec.md`](switch1-to-switch2-motion-spec.md). The sign table in
-> `switch_pro_bt.c` has been returned to the identity pending that measurement.
->
-> One correction to the mechanism described just above, from reading the translator: the quaternion
-> translator does **not** fuse accelerometer data at all — it `memcpy`s accel straight into the PDU.
-> The gravity correction that produces the drift-then-snap symptom happens on the **console**, which
-> also uses our accel to decide which way "up" is. That is why a wrong accel frame can kill
-> *horizontal* aim, which a purely local gravity-correction model does not predict. See spec §4
-> Stage 4/6 and §5.
+The determinant rule constrains the answer without determining it. Signs alone were never the whole
+question: the *index permutation* was also unknown — §8 above only ever claimed the axes map
+"roughly" — and treating the permutation as settled is what made four sign guesses fail. §10.2
+below is how it was actually resolved.
 
-Both rules are enforced in code rather than by comment: the publish path is a single loop over the
-three slots writing accel and gyro together, so a sign cannot reach one without the other, and a
-`_Static_assert` on the sign table fails the build if the product is not +1.
+**Where the gravity correction happens.** The quaternion translator does **not** fuse accelerometer
+data at all — it `memcpy`s accel straight into the PDU. The correction that produces the
+drift-then-snap symptom runs on the **console**, which also uses our accel to decide which way "up"
+is. That is why a wrong accel frame can kill *horizontal* aim, which a purely local
+gravity-correction model does not predict. See
+[`switch1-to-switch2-motion-spec.md`](switch1-to-switch2-motion-spec.md) §4 Stage 4/6 and §5.
+
+Both rules are enforced by construction rather than by comment: `ns2_motion_seam_apply()` is a
+single loop over the three slots writing accel and gyro together, so a sign cannot reach one without
+the other, and `tools/test_ns2_motion_seam.c` fails the test suite if any row's determinant is not
++1.
 
 ### 10.2 Resolved on hardware (2026-07-27) — 🟢 at parity with genuine hardware
 
@@ -353,12 +350,8 @@ would cost idle power and compatibility), and any prediction or extrapolation be
 
 ## 11. Remaining work
 
-0. 🟡 **Confirm the current Switch 1 axis map on hardware** (spec §7). It is derived from the
-   documented Linux/SDL frames plus the three previous test results. Note that its determinant is
-   −1 and that this is expected, not a defect: the DualSense convention it targets is itself not
-   self-consistent (spec §6.5). Do not "tidy" it back to +1, and do not change `ns2_seam.c`.
 1. 🟡 **Verify Joy-Con axis signs on hardware** (§8). JC-L (`0x2006`) and JC-R (`0x2007`)
-   currently inherit the Pro's signs in `sw1_axis_signs_for()`. §8 is explicit that the two halves
+   currently inherit the Pro's seam row. §8 is explicit that the two halves
    mount the IMU mirrored, so at least one axis is likely inverted on at least one half. Test:
    pitch/yaw/roll each half in isolation and compare on-screen direction against the Pro.
 2. ⬜ **Horizontal offset `0x6080`** (§7.3) is not read. It affects the resting orientation

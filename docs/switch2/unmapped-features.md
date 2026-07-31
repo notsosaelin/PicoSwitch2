@@ -7,8 +7,14 @@ While the core functionality of the PicoSwitch2 (connecting Bluetooth controller
 ### 1. Motion Data (IMU) Packing
 - **Status:** **✅ Implemented for genuine Pro Controller 2 passthrough and DualSense/Edge translation; length-`0x28` synthesis remains unmapped**
 - **Details:** Report `0x09` carries both length-`0x1E` and length-`0x28` native motion PDUs. The
-  length-`0x1E` quaternion carrier is decoded and hardware-validated. Length-`0x28` G6/G7/G8
-  bit-packing is exact, but its other changing lanes and full semantics remain incomplete.
+  length-`0x1E` quaternion carrier is decoded and hardware-validated. The length-`0x28` PDU is a
+  **catch-up multi-sample IMU frame**: payload bits `68..286` carry accel 1 / gyro 1 / accel 2 /
+  gyro 2 / accel 3 at the scales tabulated in
+  [`../experiments/pro2-raw-native-motion-pcap-2026-07-29.md`](../experiments/pro2-raw-native-motion-pcap-2026-07-29.md).
+  There are no separate magnetic lanes: the historical "G6/G7/G8" labels were bit ranges that cut
+  across packed gyro-2 and accel-3 samples, which is why their derived norm looked stable and why
+  the external-magnet campaign found no response. Leading/middle fields outside `68..286` are still
+  undecoded, so `0x28` is **not synthesized** — only passed through.
 - **Current Behavior:** A genuine Pro Controller 2 supplies its native `0x1E`/`0x28` PDUs through
   an opaque passthrough path. DualSense and DualSense Edge use factory-calibrated IMU data,
   timestamp-aware quaternion integration, and the length-`0x1E` carrier. Both paths are
@@ -21,27 +27,26 @@ While the core functionality of the PicoSwitch2 (connecting Bluetooth controller
 - **Current Behavior:** `ns2_hid_out_report` extracts each motor's own peak amplitude (across its 2 internal frequency bands) **independently** and forwards both via `report_set_rumble(idx, left, right)` — a real, previously-unused capability in joypad-os's `feedback_rumble_t` (`left`/`right` fields) that our cross-core seam was collapsing to one shared scalar before this fix (both Switch 1's `switch_pro.c` and Switch 2's `switch_pro2.c` had the same collapse; both fixed together, plus `ns2_seam.c`'s `feedback_get_state()` bridge). Drivers with true independent-motor output (DualSense, Xbox, per joypad-os) now get distinct left/right intensity instead of both motors buzzing identically. DualSense's native `0x39` haptic renderer is separately hardware-confirmed with interval peak preservation and a 3.25× waveform-preserving curve. **Still lost for generic rumble targets:** the original frequency component; full waveform/frequency translation requires a capability-aware renderer per controller family.
 
 ### 3. NFC / Amiibo
-- **Status:** **🟡 Genuine Pro2 and Virtual Amiibo reads are hardware-confirmed; Virtual Amiibo
-  write, logical eject, re-presentation, updated readback, and UART export are also confirmed,
-  while native writes remain open.**
-- **Details:** Direct Switch 2/UART/BLE captures now establish the command `0x01` subcommand
+- **Status:** **✅ Virtual Amiibo read and write are hardware-confirmed for both ordinary 540/572-byte
+  tags and 2048-byte NTAG I2C Plus 2K (figure-v3) tags; native physical writes remain open.**
+- **Details:** Direct Switch 2/UART/BLE captures establish the command `0x01` subcommand
   sequence, 600-byte reader buffer, 70-byte offset chunks, genuine Pro2 relay framing, modulo-eight
   NFC events, and the 88-byte multi-packet `0x14` write request. The old per-USB-packet dispatch
-  caused error `2168-0002`; bounded stream reassembly eliminated the crash.
+  caused error `2168-0002`; bounded stream reassembly eliminated the crash. The v3 path adds the
+  `0x14`/`0x21` device command, an 83-byte `0x18` result, sector-aware `0x1E` extended reads, and
+  `0x20` extended-write envelopes.
 - **Current Behavior:** A real Switch 2 recognizes both a physical amiibo through the UART-gated
-  genuine Pro2 relay and a browser-loaded Virtual Amiibo through a non-NFC controller. The
-  always-available virtual path presents no tag while blank and supports transactional upload,
-  separate Save 1 and Save 2 images, automatic alternating-bank persistence, and exact retrieval.
-  A game-owned write reached full staging, `0x08`, and accepted `05 00`. The runtime keeps Save 2 loaded,
-  waits for its snapshot before logical eject, and re-presents it on the next scan. Hardware
-  confirms the write/eject/re-present lifecycle, valid mutated UART export, automatic persistence,
-  power-cycle recovery, reversible Save 1/Save 2 selection, offline library operation, and backup
-  restoration.
+  genuine Pro2 relay and a browser-loaded Virtual Amiibo through a non-NFC controller. **The board
+  holds exactly one amiibo image.** The two flash banks are alternating persistence *generations* of
+  that single image, not two selectable saves. Hardware confirms the write/eject/re-present
+  lifecycle, valid mutated UART export, automatic persistence, power-cycle recovery, offline library
+  operation, and backup restoration. All 16 available Kirby Air Riders v3 dumps completed real
+  console reads and writes.
 - **Remaining native work:** production relay gating/reconnect, a physical Pro2 write capture,
   Joy-Con 2 Right comparison, and Switch 1 MCU reader/writer translation. External projects remain
   supporting evidence rather than Switch 2 protocol truth. See
-  [`docs/switch2/nfc-implementation.md`](nfc-implementation.md) and
-  [`docs/switch2/nfc-protocol-inventory.md`](nfc-protocol-inventory.md).
+  [`docs/Amiibo-v3.md`](../Amiibo-v3.md) and
+  [`docs/switch2/nfc-implementation.md`](nfc-implementation.md).
 
 ### 4. USB Audio
 - **Status:** **✅ Pico 2 W DualSense and genuine Pro Controller 2 headphone output operational; microphone return open**

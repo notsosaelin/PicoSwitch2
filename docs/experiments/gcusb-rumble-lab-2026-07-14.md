@@ -203,7 +203,7 @@ override. This is the single most likely rough edge to hit on first real use.
 `PROMPT.md`'s Experiments 1-5 and the 10-step hardware acceptance test all require a paired
 Bluetooth controller, a real Pico in GameCube mode, and (for differential testing) the genuine
 controller connected via USB simultaneously — physical setup and real-time perception (does the
-motor actually buzz) that only the device owner can provide. See `DATA.md`'s current handoff for
+motor actually buzz) that only the device owner can provide. See `STATUS.md` for
 the exact runbook to follow with `gcusb` once hardware is available. No firmware fix has been
 implemented this pass, per `PROMPT.md`'s own explicit instruction: **do not produce another
 firmware build until the tool names the first bad transition.**

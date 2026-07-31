@@ -255,10 +255,12 @@ Evidence — standard practice.)
 
 ## 13. Remaining work and safety boundary
 
-1. The genuine length-`0x28` PDU is only partially decoded. G6/G7/G8 packing is exact, but the
-   changing leading/middle lanes are not understood.
-2. A genuine static `0x28` template with dynamic timing/G6/G7/G8 caused immediate random motion.
-   That generator was removed; do not recreate it from this document.
+1. The genuine length-`0x28` PDU is only partially decoded. Payload bits `68..286` are resolved as a
+   catch-up multi-sample IMU frame (accel 1 / gyro 1 / accel 2 / gyro 2 / accel 3), but the changing
+   leading/middle lanes are not understood. The historical "G6/G7/G8 lanes" were an artifact: those
+   bit ranges cut across the packed gyro-2 and accel-3 samples and are not a separate vector.
+2. A genuine static `0x28` template with dynamic timing caused immediate random motion. That
+   generator was removed; do not recreate it from this document.
 3. DualSense has no magnetometer, so absolute yaw cannot be recovered from the controller itself.
    Runtime zero-rate correction can control stationary drift but cannot create absolute heading.
 4. Additional IMU families should reuse this translator only after their own calibration, axes,

@@ -1,30 +1,30 @@
-# Runbook — capturing a genuine controller reading a v3 amiibo
+# Runbook — capturing a genuine controller reading a tag
 
-**Purpose.** Observe a genuine Pro Controller 2 read a genuine NTAG I2C Plus 2K ("figure v3")
-amiibo, once. That single capture is the one thing blocking v3 support — see
-[`../Amiibo-v3.md`](../Amiibo-v3.md) §13.
+**Status: ✅ Run 2026-07-27, and reused for every genuine capture since.** The procedure below is
+current and reusable; §5 records what the original v3 capture answered.
 
-**Status:** ⬜ prepared, not yet run. Everything below was dry-run against live hardware on
-2026-07-27 except the amiibo itself.
+**Purpose.** Observe a genuine Pro Controller 2 read a genuine tag through the `nfcmirror` bridge,
+so a question about the console↔controller wire can be answered from a real controller's replies
+instead of from our own serve path. Originally written to capture an NTAG I2C Plus 2K ("figure v3")
+amiibo; it applies unchanged to any tag.
 
 ---
 
-## 1. What this is trying to answer
+## 1. What the original capture answered
 
-The console decides which tag pages to request **before** any read, and always asks for the NTAG215
-set (`00-3b, 3c-77, 78-86` = 540 bytes). A v3 tag's encrypted region ends at `0x248` (584 bytes), so
-that read can never validate one.
+The question was: *when a genuine controller reads a genuine v3 amiibo, what does it report
+differently — and where — such that the console asks for the v3 page set instead of the NTAG215
+one?*
 
-Every field the *controller* can influence has already been eliminated with evidence (Amiibo-v3.md
-§13). So the question is narrow:
+**Answer: read-buffer prefix byte 18.** A genuine controller emits `0x06` there for a v3 tag and
+`0x00` for an NTAG215, and that byte alone makes the console escalate from the 3-block 540-byte
+descriptor to a 4-block 604-byte one. The `0x05` status is byte-identical between the two tag types
+except for the UID, so it can never carry the signal. Full protocol write-up:
+[`../Amiibo-v3.md`](../Amiibo-v3.md) §3.
 
-> When a **genuine** controller reads a **genuine** v3 amiibo, what does it report differently —
-> and where — such that the console asks for the v3 page set instead of the NTAG215 one?
-
-The two records that matter most are the `0x05` **status** (the NCI `RF_INTF_ACTIVATED_NTF`
-passthrough from the controller's PN7160) and the `0x06` **read-device descriptor**
-(`D0 | uid_len | uid | McuTagType | block_count | (start,end)×N`). The descriptor carries the page
-ranges directly. Everything else is corroboration.
+Captures: `dumps/v3-genuine-capture-2026-07-27.jsonl` (206 records) and
+`dumps/ntag215-genuine-capture-2026-07-27.jsonl` (36 records, the control). Both `overwritten: 0`;
+bridge health `rejected: 0`, `timeouts: 0`.
 
 ## 2. Preconditions
 
@@ -90,17 +90,20 @@ From `nfcmirror status`:
 
 ## 5. Reading the result
 
-Compare v3 against NTAG215, in this order:
+Always capture an **ordinary NTAG215 tag as a control** and diff the two. Either capture alone is
+much weaker evidence — that diff is what isolated prefix byte 18.
 
-1. **`0x06` descriptor `block_count` and the `(start,end)` page ranges.** If the genuine controller
-   reports a different set for v3, that is the answer outright and the serve path can reproduce it.
-2. **`0x06` `McuTagType`.** The local path currently emits the NTAG215 value; a different one here
-   is the tag-type signal that was hypothesised but never observed.
-3. **`0x05` status bytes 4–8.** Already probed exhaustively from our side (`status[6]` must be
-   `0x02`, others crash or abort), but this shows what a genuine PN7160 actually sends for a 2K tag
-   rather than what survives our guessing.
-4. **Anything after the read** — if the console issues an SRAM sequence for the machine block, it
-   will appear here and nowhere else.
+Compare, in this order:
+
+1. **The `0x06` descriptor `block_count` and `(start,end)` page ranges.** A different set for the
+   tag under test is a direct answer the serve path can reproduce.
+2. **The 60-byte read-buffer prefix**, byte by byte. This is the field *we* synthesize, so any
+   difference here is something we can emit.
+3. **The `0x05` status bytes 4–8.** These are an NCI `RF_INTF_ACTIVATED_NTF` passthrough from the
+   controller's PN7160 and carry no tag-type information, but capturing them rules the channel out
+   rather than assuming it.
+4. **Anything after the read** — device commands (`0x14`/`0x21`), extended operations (`0x20`),
+   or sector-aware reads (`0x1E`) appear here and nowhere else.
 
 ## 6. Notes and hazards
 
@@ -110,11 +113,11 @@ Compare v3 against NTAG215, in this order:
   reply. That is fine at human scan pace but will reject under a burst — hence checking `rejected`.
 - **Turn the mirror off afterwards** (`nfcmirror off`). It is inert when disarmed, but leaving it
   armed means the genuine controller keeps owning NFC.
-- **Do not re-run the refuted approaches** while the amiibo is in hand. Serving a v3 tag as a
-  540-byte amiibo (compat view or re-signed) is documented as rejected in Amiibo-v3.md §13 — both
-  produce cryptographically valid tags and both are wrong in principle.
+- **Do not re-run the refuted approaches** while the amiibo is in hand. The refuted-claims table in
+  [`../Amiibo-v3.md`](../Amiibo-v3.md) §14 lists them; serving a v3 tag as a 540-byte amiibo (compat
+  view or re-signed) is the most tempting one and is wrong in principle.
 
-## 7. Preparation done for this runbook (2026-07-27)
+## 7. Preparation done before the first run (2026-07-27)
 
 - **Trace buffer raised** from 128×72 to **256×128**. The former 72-byte payload would have
   truncated read-buffer replies, which can reach 128 bytes; the former 128-record capacity risked

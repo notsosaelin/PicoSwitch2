@@ -1,7 +1,7 @@
 # Report 0x09 Motion — Detailed Decode Analysis
 
 **Status:** ✅ conclusions **verified** against this repo's own USB capture
-(`scratchpad/usb_c_verify_int32.py`: accel Q16.16 |g| = 1.0005 CV 0.007; timing high-nibble ==
+(a session-local analysis script (not retained): accel Q16.16 |g| = 1.0005 CV 0.007; timing high-nibble ==
 800 Hz tick-delta 299/299). This is the long-form analysis; the **canonical summary + firmware
 mapping** live in [report-0x09-motion.md](report-0x09-motion.md). (Relocated from the repo root;
 was `other-findings.md`.)

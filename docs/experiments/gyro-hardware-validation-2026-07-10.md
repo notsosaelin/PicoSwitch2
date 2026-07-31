@@ -48,7 +48,7 @@ about each physical axis in turn — **pitch, then yaw, then roll** — ~3 s eac
 mined for Experiment A's *content* (timestamp/scale) but its *axis order* was never analyzed. It
 directly answers "what does raw gyro X/Y/Z mean physically" — the question §"Remaining unknowns"
 in `report-0x09-motion.md` flags as open. No existing tooling did this (the prior session's
-`scratchpad/usb_a_*.py` scripts were session-local and gone); a new parser was written this session
+a session-local analysis script (not retained) scripts were session-local and gone); a new parser was written this session
 (`pcapng_parse.py` — raw pcapng block reader + `USBPCAP_BUFFER_HEADER` decode, no tshark dependency)
 to re-mine it.
 

@@ -199,10 +199,12 @@ correct axes/aim, no stationary drift, reconnect recovery, and a stable power-of
 DualSense and DualSense Edge now translate their calibrated accel/gyro stream into the
 hardware-validated length-`0x1E` Switch 2 quaternion carrier. Splatoon 3 confirms correct
 direction, scale, rapid movement, stationary behavior, and reconnect recovery. The genuine
-length-`0x28` form remains only partially decoded: a controlled template-derived generator caused
-random motion and was removed, proving its unresolved lanes are semantically active. A
-software-generated reference/magnetometer solution is the accepted direction for controllers that
-lack the hardware; the rejected static-template construction is not that solution. See
+length-`0x28` form is now identified as a packed multi-sample IMU payload. Exact reference-PCAP
+analysis transfers the catch-up accel/gyro field map to the Pro2 and proves the former
+G6/G7/G8 “reference” aliases cross real packed samples. A controlled template-derived generator
+caused random motion because it corrupted those samples and was removed. A future software
+generator must synthesize the complete coherent multi-sample payload; no magnetometer-specific
+lane is currently established. See
 [`docs/bluetooth/dualsense-motion.md`](docs/bluetooth/dualsense-motion.md),
 [`docs/switch2/report-0x09-motion.md`](docs/switch2/report-0x09-motion.md), and
 [`docs/switch2/uart-magprobe.md`](docs/switch2/uart-magprobe.md).
@@ -211,10 +213,54 @@ Do not generalize the DualSense result blindly to other IMUs. Reuse the calibrat
 translator only after each controller family has a verified sensor layout, axis map, timestamps,
 scale, and stationary-bias behavior.
 
-- [x] Choose software generation—not a required physical magnetometer—as the direction for missing
-  length-`0x28` reference data.
-- [ ] Decode/model every dynamic console-relevant `0x28` lane before enabling a production
-  generator.
+- [x] Reject a required physical-magnetometer premise: no independent magnetic/reference lane has
+  been established, and the former aliases are packed IMU bit slices.
+- [x] Decode the main normal/catch-up multi-sample accel/gyro field map offline from reference
+  PCAPs and the exact ICM-42670-P datasheet.
+- [x] Hardware-validate UART `imuref`: raw handle-`0x000A` sample delivery, notification ownership,
+  and clean `imuref off` restoration of input and native gyro.
+- [x] Correlate live raw `0x000A` samples against every accel/gyro lane in `0x000E`. A zero-drop
+  7.5–30 ms cadence matrix proves exact layout boundaries at tick 11 and tick 15. The high-rate,
+  normal, and corrected catch-up maps all agree with raw stationary axes and scale.
+- [x] Bound ordinary catch-up behavior through the maximum accepted 30 ms interval. No fourth
+  layout appears. Bit 287 is the single byte-alignment remainder and is zero across 1,066 catch-up
+  packets in 14 captures; treat it as observed reserved-zero padding.
+- [x] Resolve the native preamble and layout discriminator. The encoded 12-bit elapsed count
+  selects the layout without a captured predecessor, and byte 3 maps exactly to high-rate
+  (`0x0D`), normal (`0x0E`), or catch-up (`0x0F`) in the zero-drop corpus.
+- [x] Decode the high-rate/normal tail as two Q3 IMU-temperature samples sharing a signed ten-bit
+  integer part. Two independent zero-drop raw/native/raw A/B/A captures bracket the native
+  temperature with handle-`0x000A`; retain the 3% unequal low fractions as two real samples.
+- [x] Correct the prefix field boundaries and discriminate sampling-epoch versus state-collapse
+  error. The prefix is mode `3` plus `s24+s23+s25` in high-rate and `s22+s21+s23` otherwise.
+  Carrier 2 is split around its low two bits; the former “separate state” was a false boundary.
+  Carrier-state-grouped fits use exact power-of-two scales.
+- [x] Resolve the carrier epoch and implement a diagnostic history decoder. The prefix is sampled
+  at `current tick - encoded elapsed + 4`, or four ticks after the preceding carrier. This improves
+  the mixed-cadence pitch fixed NRMSE from `0.008728` to `0.002718`; causal modular unwrapping has
+  sub-`0.005°` median error in both dynamic captures with zero observed chart mismatch.
+- [x] Capture reciprocal genuine chart transitions. State `0` wire `(G0,G1,G2)` and state `3`'s
+  local state-0-boundary projection `(G1,G2,G0)` form one continuous carrier across both
+  `3 → 0` and `0 → 3`.
+  Prefix epochs straddling both boundaries select chart 0. Sixteen genuine rapid-motion records
+  exceed the strict retained-vector unit constraint, so strict smallest-three is not an exact
+  genuine model.
+- [x] Capture a transition involving state 2 and verify the stateful chart-handoff
+  law across all four states. A zero-drop `0 → 1` boundary selected local state-0 projection
+  `(G2,G0,G1)`, but a
+  held-out zero-drop `3 → 1 → 0` capture refuted one globally composable unsigned permutation
+  per state. Its `1 → 0` edge has minimum unsigned residual `1.185389`; the cyclic topology's
+  opposite-sign branch reaches `0.024716`. Across all five boundaries, that structured model has
+  RMS/max `0.025302/0.047878` and minimum branch margin `0.324174`, covering both state-1 sign
+  branches without per-edge tuning.
+  A later zero-drop state-2 trigger captured reciprocal `3 → 2 → 3` seams. Both select topology
+  `(G2,G0,G1)` and opposite-branch signs `(+,−,−)`, at residuals `0.036162` and `0.011824`.
+  The nine-boundary corpus now covers every chart state at RMS/max `0.023541/0.047878`.
+  Its interleaved prefix selects chart 3 across `3 → 2`; the stateful local-frame audit also
+  resolves the direct `3 → 1` prefix as chart 1.
+- [ ] Prove exact integer projection/rounding.
+  Require one model to predict held-out captures without per-capture tuning. Do not attempt a
+  production generator until every changing field can be synthesized coherently.
 
 ### NFC / amiibo
 
@@ -373,6 +419,69 @@ capture/analysis tools — live in
 is archived at
 [`docs/archive/tooling-plan-through-2026-07-21.archived.md`](docs/archive/tooling-plan-through-2026-07-21.archived.md)
 planning.
+
+### NFC investigation laboratory
+
+Status: 🟡 core offline lab implemented; remaining hardware and capture gaps are listed below
+(2026-07-29).
+
+The build order and rationale come from
+[`docs/LLM/amiibo-v3-investigation-retrospective.md`](docs/LLM/amiibo-v3-investigation-retrospective.md);
+the current workflow is
+[`docs/re-methodology/nfc-investigation-workflow.md`](docs/re-methodology/nfc-investigation-workflow.md).
+
+- [x] v3 corpus analyzer (`tools/amiibo_corpus.py`)
+- [x] Shared NFC layout module (`tools/ns2_nfc_semantics.py`)
+- [x] Semantic transaction decoder and comparator (`ns2_trace.py nfc` / `nfc-diff`)
+- [x] Experiment runner with a hashed artifact bundle (`tools/nfc_lab.ps1`)
+- [x] `picoswitch2-nfc-lab` skill enforcing the phase order
+- [x] **Host-replayable v3 NFC core** (2026-07-29). `ns2_v3_serve()` and its twenty file-scope
+  statics moved to `src/nfc/ns2_amiibo_v3_runtime.c` behind
+  `ns2_amiibo_v3_runtime_step(state, host, now_ms, generation, sub, request, image, effects)`,
+  matching the 540 path's shape. Durable side effects go through `ns2_amiibo_v3_host_t` so a test
+  can inject an apply failure or a pending flash write. `tools/test_ns2_amiibo_v3_runtime.c`
+  replays the recognition read, the Air Riders write lifecycle, the `0x1E` reuse read, the
+  persistence-gated eject with its 3 s cooldown, and the generation edge — all with a fake clock.
+- [x] Structured internal error telemetry (2026-07-29). `ns2_amiibo_v3_error_t` distinguishes eight
+  causes behind the single console-facing `07 41`, with the specific
+  `ns2_virtual_nfc_result_t` and `0x14` stage offset, reported by `amiibo v3diag`.
+- [ ] Trace the report NFC-state field so state edges are observed rather than inferred from `0x05`.
+- [ ] Capture-to-fixture generator: turn a selected transaction into C/JSON fixtures plus expected
+  state transitions, replacing hand-transcribed arrays.
+- [ ] Persistence fault injector: interrupt erase/program at every journal step and verify recovery
+  without risky physical testing.
+- [ ] Portal browser integration harness with a mock adapter implementing the USB CDC / Config BLE
+  command contract, so portal and protocol work stop sharing a change surface.
+- [ ] Optional: an ISO14443A RF capture/emulation instrument for a second observation point at the
+  tag boundary. It complements, never replaces, console/controller captures — PicoSwitch2 emulates
+  the controller, so RF evidence must be translated across that boundary.
+
+### Shared controller protocol laboratory
+
+Status: 🟡 infrastructure active 2026-07-29; motion campaign complete, audio and firmware-tap
+hardware campaigns pending.
+
+- [x] Shared `picoswitch2-lab/v1` manifest, Git provenance, UART port discovery, UTF-8 artifact
+  writing and SHA-256 hashing (`tools/PicoSwitch2Lab.psm1`).
+- [x] Zero-loss capture-to-JSON/C fixture generator (`tools/capture_to_fixture.py`).
+- [x] Capture-derived command/subcommand atlas (`tools/ns2_command_atlas.py`).
+- [x] Magnet-ready stationary native-motion runner with `ns2_magprobe` analysis, baseline
+  comparison and fixtures (`tools/motion_lab.ps1`).
+- [x] Non-mutating audio continuity runner and delta analyzer (`tools/audio_lab.ps1`);
+  counter reset remains explicit.
+- [x] Read-only normalized `audio headset` UART diagnostic.
+- [x] Host-only command-`0x0D` state model/reassembler and offline packaging runner.
+- [x] Fail-closed current-image flash-space auditor for a candidate research capture bank; this
+  does not substitute for a linker reservation.
+- [x] Repository-local Codex protocol, motion, firmware and audio workflow skills.
+- [x] Run the controlled no-magnet/sham/polarity/distance/recovery matrix with a genuine Pro
+  Controller 2. No external-field response was resolved; see
+  [`docs/experiments/pro2-magnetic-stimulus-matrix-2026-07-29.md`](docs/experiments/pro2-magnetic-stimulus-matrix-2026-07-29.md).
+- [ ] Physically validate DualSense `none`/TRS-headphones/TRRS-headset classification.
+- [ ] Design and prove the non-overlapping on-device firmware-capture partition, then implement the
+  research-only progressive flash sink.
+
+Workflow: [`docs/re-methodology/controller-protocol-lab.md`](docs/re-methodology/controller-protocol-lab.md).
 
 ### Wake from sleep
 

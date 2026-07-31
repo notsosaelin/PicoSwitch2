@@ -1,6 +1,6 @@
 # Compatibility Matrix
 
-Last updated: 2026-07-25
+Last updated: 2026-07-29
 
 This matrix records observed behavior, not inferred support. "Source-tested" means host tests or
 code inspection only; it is weaker than physical hardware confirmation.
@@ -94,11 +94,30 @@ code inspection only; it is weaker than physical hardware confirmation.
 | Next-scan re-presentation and updated read | ✅ Same selected UID and complete 600-byte-buffer read confirmed |
 | Live UART export while USB remains console-attached | ✅ 540-byte generation-stable, UID/BCC-valid mutated image saved |
 | Automatic write-before-eject flash snapshot | ✅ Live-console completion and power-cycle recovery confirmed |
-| Save 1/Save 2 selection and reboot recovery | ✅ Underlying two-bank behavior confirmed; renamed v10 portal regression pending |
-| Offline browser library and full-library backup | 🟡 Former two-copy flow confirmed; catalog-ID dedupe and v2 backup schema await browser regression |
+| Single-slot image and alternating-bank persistence generations | ✅ Confirmed; the board holds exactly one amiibo, and the two flash banks are generations of it |
+| Offline browser library and full-library backup | 🟡 Single-slot flow confirmed; catalog-ID dedupe and `.zip` backup schema await browser regression |
 | Config-only Bluetooth library transfer | 🟡 Host/build/static confirmed; hardware pending |
 | New-UF2 blank state and one-shot persistence/bond erase | 🟡 Build marker verified on all targets; hardware pending |
 | Native Pro2/Joy-Con 2 physical-tag write | 🔵 Pending capture and implementation |
+
+### Figure-v3 (NTAG I2C Plus 2K / Kirby Air Riders, 2048-byte)
+
+Full protocol reference: [`../Amiibo-v3.md`](../Amiibo-v3.md).
+
+| Scenario | Status |
+|---|---|
+| 2048-byte v3 read path (`0x14`/`0x21` device command, 83-byte `0x18` result, descriptor-driven page ranges) | ✅ Confirmed on a real Switch 2 |
+| Per-response SRAM CRC-16/MCRF4XX trailer | ✅ Confirmed; per-dump, not a fixed controller constant |
+| Untouched downloaded dump accepted with no signature override | ✅ Confirmed (`Kirby & Warp Star.bin`) |
+| Ordinary v3 write, `0x08` commit, `05 00`, Stop/eject | ✅ Confirmed, zero write errors |
+| Air Riders two-stage extended write (`0x20`, 355-byte clear + 167-byte update) | ✅ Confirmed; 18 ordinary chunks, 3 × `0x08`, 8 extended chunks, 2 × `0x20` |
+| Sector-aware extended read (`0x1E`, 196-byte result in three `0x15` chunks) | ✅ Confirmed |
+| Dynamic sector-1 page-0 capability generation (`A5 00 0n 00`) | ✅ Confirmed; advances and survives a power cycle |
+| Allocation-relative storage derived from the envelope (no figure/UID whitelist) | ✅ Confirmed against Kirby (`0x92`, `0x00/0x01`) and King Dedede (`0xB2`, `0x64/0x65`) |
+| Full available dump set | ✅ All 16 Kirby Air Riders v3 dumps completed real-console read **and** write |
+| Persisted export integrity | ✅ HMAC-valid, SRAM-valid, retained nickname/owner, both sector-0 and sector-1 game records |
+| Non-cosmetic learned gameplay state round-trip | ✅ Confirmed; page 4 `05 → 06`, sector-1 page 0 `03 → 04` |
+| Production-portal Sync of a retained dirty generation | 🟡 Remaining lifecycle check |
 
 ## PC-specific behavior
 
