@@ -56,7 +56,8 @@ Status legend: ✅ Complete · 🟡 In Progress · 🔵 Partial · 🔴 Blocked 
 | prefix carrier lanes | modular slice of the **current** `0x1E` carrier | **wrong instant.** Genuine lags the packet tick by ≥3 ticks, up to `elapsed − 4` | 🔴 |
 | accel slot scaling | raw ÷2, per-slot wire factor | all 12 (width, scale) pairs converge on ±2 g — strong and independent | ✅ |
 | gyro slot scaling | raw ×4 | same convergence argument, ±499.5 dps | ✅ |
-| accel/gyro **axis order and sign** | inherited from the `0x1E` path | validated for `0x1E` by working gameplay; **never checked** that `0x28` slots use the same convention | 🔴 |
+| accel **axis order and sign** | inherited from the `0x1E` path | ✅ **closed 2026-07-31.** Handle `0x000A` raw IMU compared against `0x000E` `0x28` slot 0 in the same capture: mean 2 counts, stdev 1.8, max 6 — inside the ~2-count sensor noise. Same quantity, order, sign, scale | ✅ |
+| gyro **axis order and sign** | inherited from the `0x1E` path | the same comparison is possible but a stationary gyro sits at the noise floor; needs a moving raw+native capture | 🔵 |
 | accel/gyro **slot instants** | oldest→newest across the window | ordering confirmed on 973 packets; exact fractional positions unresolved | 🔵 |
 | gyro slot instants | quarter points | **not resolved** — a stationary gyro is pure noise | 🔴 |
 | layout choice (catch-up) | chosen for its 1-bit tail | 768 of 773 paired packets are **high-rate**; catch-up has 2 | 🔴 |
@@ -86,11 +87,22 @@ byte-level work can answer.
 
 In dependency order. Nothing below needs hardware.
 
-1. **Build the golden replay harness.** Drive the translator from the paired
-   captures' DualSense samples; compare the generated packet against the
-   genuine `0x28` from the same instant, field by field. This is the test that
-   would have caught the epoch error, the layout error, and any axis error, and
-   it is the only one that can. Ground truth: 768 paired high-rate packets.
+1. **Build the golden replay harness — drive it from the controller's OWN raw
+   IMU, not from a DualSense.** A DualSense replay can never be byte-exact: it
+   is a different physical sensor with its own bias, mounting and noise, so any
+   mismatch is unattributable. Handle `0x000A` carries the genuine controller's
+   own raw IMU (accel, gyro, temperature, microsecond timestamps) and handle
+   `0x000E` carries the `0x28` it produced from exactly those samples. Feeding
+   `0x000A` into the generator and comparing against `0x000E` is a closed loop
+   with identical input, so byte-exact agreement is achievable in principle and
+   every divergence is a real defect rather than a sensor difference.
+
+   Captures holding both streams: `pro2-imuref-raw-native-raw-2026-07-29`,
+   `pro2-imuref-15ms-raw-native-raw-2026-07-29`. `pro2-imuref-live-2026-07-29`
+   has 127 raw samples for input-side work.
+
+   This is the test that would have caught the epoch error, the layout error,
+   and any axis error. It is the only one that can.
 2. **Retarget to high-rate**, the layout with paired ground truth, at elapsed
    ≈ 7–8 — which also collapses the epoch ambiguity from 9 ticks to 1.
 3. **Resolve the axis convention** for `0x28` slots against paired data rather
