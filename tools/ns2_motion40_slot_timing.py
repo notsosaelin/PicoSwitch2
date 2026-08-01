@@ -107,7 +107,35 @@ def sign_test(samples) -> tuple[int, int, float]:
     return wins, n, z
 
 
+def layout_bands() -> None:
+    """Which elapsed counts select which cadence layout.
+
+    This is what ties the layouts to a report rate. A genuine WIRED controller
+    polls at 250 Hz against an 800 Hz IMU timeline, so it advances 800/250 =
+    3.2 ticks per report and lands in the high-rate band -- whereas this bridge
+    forwards BLE PDUs carrying 15-24 ticks. See docs/switch2/usb-spec.md 13.
+    """
+    bands: dict[str, list[int]] = {}
+    for path in captures():
+        for pdu in pdus(path):
+            sample = R.decode_motion40(pdu, None)
+            bands.setdefault(sample.layout, []).append(sample.elapsed_ticks)
+    if not bands:
+        return
+    print(f"{'layout':10s} {'n':>5s} {'elapsed ticks':>20s} {'window (ms)':>14s} "
+          f"{'implied Hz':>11s}")
+    for layout, values in sorted(bands.items(), key=lambda kv: min(kv[1])):
+        lo, hi = min(values), max(values)
+        median = statistics.median(values)
+        span = f"{lo}..{hi} (med {median:.0f})"
+        window = f"{lo * 1.25:.1f}..{hi * 1.25:.1f}"
+        print(f"{layout:10s} {len(values):5d} {span:>20s} {window:>14s} "
+              f"{800 / median:11.1f}")
+    print("  a wired 250 Hz controller advances 3.2 ticks/report -> high-rate\n")
+
+
 def main() -> int:
+    layout_bands()
     totals = {k: [0.0, 0] for k in ("seam", "a0->a1", "a1->a2", "a0->a2", "full")}
     accel_pairs: list[tuple[float, float]] = []
     gyro_pairs: list[tuple[float, float]] = []

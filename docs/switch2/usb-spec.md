@@ -339,6 +339,42 @@ representation, whereas this implementation repeats a 133 Hz native BLE PDU dire
 both cadences, including length-30/length-40 ordering, source counter reuse, and timing-word
 progression. Until then, `0x01` is a required compatibility deviation, not an optional latency tune.
 
+### Measured mechanism (2026-07-31) — 🔵 the "distinct representation" is the cadence layout
+
+The hypothesis above is now supported by a measurement rather than left open. A genuine **wired**
+controller reports at 250 Hz against an 800 Hz internal IMU timeline, so each USB report advances
+the tick counter by `800 / 250 = 3.2`
+([report-0x09-motion-analysis.md](report-0x09-motion-analysis.md) §"3.2 IMU ticks per USB report").
+An elapsed count near 3 selects the **high-rate** layout. Measured across the BLE corpus, the three
+layouts occupy disjoint elapsed bands:
+
+| layout | n | elapsed (ticks) | window | implied report rate |
+|---|---|---|---|---|
+| high-rate | 858 | 0–10 (median 7) | 0–12.5 ms | ~114 Hz |
+| normal | 149 | 11–14 (median 12) | 13.8–17.5 ms | ~67 Hz |
+| catch-up | 981 | 15–441 (median 24) | ≥ 18.8 ms | ~33 Hz |
+
+So a genuine wired controller at 250 Hz emits **high-rate** packets carrying ~3 ticks each, while
+this bridge forwards BLE PDUs carrying 15–24 ticks (catch-up). The dependency is therefore not on
+1 ms as such — it is that our USB representation *is* a BLE representation, and the faster poll
+rate is what hides the mismatch. At `bInterval 1` each PDU is repeated ~7.5×; at `bInterval 4` it
+is ~1.9×, and gyro died.
+
+Consequences:
+
+- Reproduce with `python tools/ns2_motion40_slot_timing.py` for the slot analysis and the layout
+  band table above; both read the same corpus.
+- Restoring `0x04` is not a descriptor change, it is a **representation** change: the bridge would
+  have to emit high-rate packets on a ~3-tick cadence instead of repeating catch-up PDUs. That is a
+  real project, not a cleanup, and it is the only route that would make the wired personality
+  structurally match genuine hardware.
+- The `bInterval 1` deviation is Pro2-only and deliberate. `switch_gc` and `switch_joycon2` both
+  ship the genuine `bInterval 4`; it never leaked into the other personalities.
+- The 1000 Hz poll rate cannot deliver 1 ms input latency in this architecture, because the
+  *source* is a ~250 Hz Bluetooth controller — polling faster than data arrives repeats it rather
+  than freshening it. This matches §13's note that no latency benefit was ever measured. It should
+  nonetheless stay, because it is now load-bearing for gyro.
+
 `ns2_motion_tick_gated()` remains as an elapsed-time guard for the generic encoder and config-mode
 debug path.
 
