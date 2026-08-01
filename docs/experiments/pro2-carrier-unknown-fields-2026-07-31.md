@@ -398,6 +398,83 @@ already repeats its latest carrier across polls and is console-validated, and
 the `0x28` path repeats identically. This is the main thing the hardware A/B
 is for.
 
+## ❌ First hardware A/B failed — and why the offline tests could not have caught it
+
+**Result (2026-07-31):** the console *accepted* the packets and acted on them.
+Counters were healthy — 50.6 packets/s, 19.75 ms cadence, `emitted_len` 40,
+zero saturation — and in-game motion was violent and erratic. Accepted but
+wrong, which is a different failure from the 250 Hz experiment's absent gyro.
+
+Two root causes, both invisible to every test that existed.
+
+### The prefix describes the wrong instant
+
+A 0x28 prefix is a modular slice of the same orientation carrier that 0x1E
+sends outright, so a generator must decide *which instant* the sliced
+orientation describes. Nothing in the byte layout asks that question, so
+byte-exactness, field-range checks and encoder round-trips all pass regardless
+of the answer. `ns2_ds5_motion40_build()` passed the CURRENT carrier — the
+orientation at the packet's own tick.
+
+Measured against 24 interleaved captures and 773 paired packets
+(`tools/ns2_motion40_prefix_epoch.py`), that is wrong:
+
+| model | best constant | pooled median error |
+|---|---|---|
+| A: `coordinate = tick − elapsed + c` | c = +3.9 ticks | 0.00023° |
+| B: `coordinate = tick + c` | c = −3.1 ticks | 0.00023° |
+
+At the correct epoch the prefix reproduces the genuine orientation almost
+exactly. At `coordinate = tick` — what the firmware did — the moving captures
+degrade by 20–80×: `chart-transition-splatoon-3-to-1` goes 0.039° → 0.901°,
+`lazy-susan-return` 0.005° → 0.390°. Stationary captures barely move, which is
+why every stationary comparison in this document passed.
+
+The prefix lags the packet tick by **at least ~3 ticks**, and under model A by
+`elapsed − 4` — 12.1 ticks (15 ms) at our catch-up cadence. If the console
+anchors on the prefix and integrates the packet's own IMU samples forward, an
+end-of-window prefix double-counts the whole window's rotation.
+
+🔵 **Which model is right is unresolved.** They differ only when the window
+length varies, and elapsed is 7 in almost every paired packet. Separating them
+needs interleaved traffic captured at a long notification interval — see
+"Suggested experiments" below.
+
+### Catch-up was the wrong layout to target
+
+Of the 773 paired packets — the only 0x28s with a genuine 0x1E alongside to
+validate against — the layouts are:
+
+| layout | paired packets |
+|---|---|
+| high-rate | **768** |
+| normal | 3 |
+| catch-up | **2** |
+
+Catch-up appears almost exclusively in 0x28-**only** captures, which by
+definition carry no 0x1E. So the layout this translator targets is the one
+layout with essentially no paired orientation ground truth, and the epoch above
+is measured on a layout we do not emit.
+
+Catch-up was chosen because its tail is a single always-zero bit while
+high-rate carries a 16-bit Q3 temperature pair a DualSense cannot supply. That
+optimised for *ease of filling* over *strength of evidence*, which is the wrong
+trade and the reason offline validation kept passing while hardware failed.
+
+The tail is a weak objection anyway: across 771 genuine high-rate packets the
+tail takes 35 distinct values dominated by `0x01C0` (155 packets), and the
+0x1E builder already ships a genuine nominal temperature constant.
+
+### Consequences
+
+- Prefer the layout with paired ground truth (**high-rate**) over the layout
+  that is convenient to fill.
+- Emitting at elapsed ≈ 7–8 also collapses the model-A/model-B ambiguity: the
+  two disagree by 1 tick there, against 9 ticks at elapsed 16.
+- An "offline-validated" claim must state *which relationship* was validated.
+  Byte-exactness validated the layout. It never validated the semantics of a
+  single field, and this document previously blurred that.
+
 ## Consequence for a synthesizer
 
 The carrier, chart hysteresis, saturation trigger, prefix slice, epoch, all three
