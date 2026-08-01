@@ -81,12 +81,14 @@ void ns2_ds5_motion40_reset(ns2_ds5_motion40_t *state)
 }
 
 void ns2_ds5_motion40_sample(ns2_ds5_motion40_t *state, const int16_t accel[3],
-                             const int16_t gyro[3], uint32_t now_us)
+                             const int16_t gyro[3],
+                             const uint32_t carrier_raw[3], uint32_t now_us)
 {
-    if (!state || !accel || !gyro) return;
+    if (!state || !accel || !gyro || !carrier_raw) return;
     ns2_ds5_motion40_entry_t *entry = &state->ring[state->head];
     memcpy(entry->accel, accel, sizeof(entry->accel));
     memcpy(entry->gyro, gyro, sizeof(entry->gyro));
+    memcpy(entry->carrier, carrier_raw, sizeof(entry->carrier));
     entry->us = now_us;
     state->head = (uint8_t)((state->head + 1u) % NS2_DS5_MOTION40_RING);
     if (state->filled < NS2_DS5_MOTION40_RING) state->filled++;
@@ -141,11 +143,30 @@ static unsigned nearest_at(const ns2_ds5_motion40_t *state,
     return best;
 }
 
-bool ns2_ds5_motion40_build(ns2_ds5_motion40_t *state,
-                            const uint32_t carrier_raw[3], uint32_t now_us,
+// The buffered entry whose timestamp is closest to `target_us`, searched over
+// the WHOLE ring rather than the emit window: the orientation the prefix needs
+// sits near the window start, which the previous packet's samples bracket.
+static const ns2_ds5_motion40_entry_t *
+entry_nearest(const ns2_ds5_motion40_t *state, uint32_t target_us)
+{
+    const ns2_ds5_motion40_entry_t *best = NULL;
+    uint32_t best_distance = 0xFFFFFFFFu;
+    for (unsigned i = 0; i < state->filled; ++i) {
+        const uint32_t us = state->ring[i].us;
+        const uint32_t distance =
+            (us > target_us) ? (us - target_us) : (target_us - us);
+        if (distance < best_distance) {
+            best_distance = distance;
+            best = &state->ring[i];
+        }
+    }
+    return best;
+}
+
+bool ns2_ds5_motion40_build(ns2_ds5_motion40_t *state, uint32_t now_us,
                             uint8_t out[NS2_MOTION_PDU40_LENGTH])
 {
-    if (!state || !carrier_raw || !out) return false;
+    if (!state || !out) return false;
 
     if (!state->primed) {
         // First call establishes the epoch; nothing is due yet.
@@ -260,7 +281,18 @@ bool ns2_ds5_motion40_build(ns2_ds5_motion40_t *state,
     fields.packing_mode = 3u;
     fields.tail_bit = 0u;  // zero in all 981 genuine catch-up packets
     fields.status = NS2_MOTION40_STATUS_CATCHUP;
-    ns2_ds5_motion40_prefix(carrier_raw, fields.carrier);
+
+    // The prefix describes a PAST instant -- a fixed lag after the window
+    // START, not the packet's own tick. Using the current orientation while
+    // also sending the window's IMU samples double-counts the window's
+    // rotation: the console anchors on the prefix and integrates forward from
+    // it. Measured at 13x the achievable error floor before this fix.
+    const uint32_t prefix_us =
+        state->last_sample_us +
+        NS2_DS5_MOTION40_PREFIX_LAG_TICKS * NS2_DS5_MOTION40_TICK_US;
+    const ns2_ds5_motion40_entry_t *anchor = entry_nearest(state, prefix_us);
+    if (!anchor) return false;
+    ns2_ds5_motion40_prefix(anchor->carrier, fields.carrier);
     memcpy(fields.accel, state->accel, sizeof(fields.accel));
     memcpy(fields.gyro, state->gyro, sizeof(fields.gyro));
 

@@ -89,9 +89,28 @@
 // state. Size this against the SOURCE rate, never against the slot count.
 #define NS2_DS5_MOTION40_RING 64u
 
+// How far after the window START the orientation prefix must be sampled.
+//
+// MEASURED across 24 interleaved captures and 773 paired packets
+// (tools/ns2_motion40_prefix_epoch.py): a genuine prefix describes
+// `tick - elapsed + 4` ticks, NOT the packet's own tick. Passing the current
+// carrier put the orientation ~15 ms late at a 16-tick cadence and scored 13x
+// the achievable error floor on the worst moving capture.
+//
+// 🔵 UNRESOLVED: whether the lag is window-relative (this) or a fixed ~3 ticks
+// behind the tick. The corpus cannot separate them -- elapsed is 7 in almost
+// every paired packet, where the two agree to within one tick. They diverge by
+// 9 ticks at a 16-tick cadence, which is one more reason to emit near elapsed
+// 7-8 where the question does not arise.
+#define NS2_DS5_MOTION40_PREFIX_LAG_TICKS 4u
+
 typedef struct {
     int16_t accel[3];  // raw DualSense counts, 8192/g
     int16_t gyro[3];   // de-biased DualSense counts, ~16.4/dps
+    // The 0x1E orientation carrier as it stood at this instant. Buffered per
+    // sample because the prefix describes a PAST moment: by the time a packet
+    // is built, the orientation it must carry is already history.
+    uint32_t carrier[3];
     uint32_t us;
 } ns2_ds5_motion40_entry_t;
 
@@ -130,20 +149,24 @@ typedef struct {
 
 void ns2_ds5_motion40_reset(ns2_ds5_motion40_t *state);
 
-// Record one physical IMU sample and the time it was taken, in raw DualSense
-// counts. Call this once per source sample, not once per USB poll: the
-// timestamps are what let the builder place samples across the window, so
-// repeating a stale sample at the poll rate would misreport the timeline.
+// Record one physical IMU sample, the orientation carrier as it stood at that
+// instant, and the time. Call this once per source sample, not once per USB
+// poll: the timestamps are what let the builder place samples across the
+// window and pick the orientation from the right past moment, so repeating a
+// stale sample at the poll rate would misreport the timeline.
+//
+// `carrier_raw` is the length-0x1E carrier (three unsigned lanes of 26/25/24
+// bits) built from this same sample.
 void ns2_ds5_motion40_sample(ns2_ds5_motion40_t *state, const int16_t accel[3],
-                             const int16_t gyro[3], uint32_t now_us);
+                             const int16_t gyro[3],
+                             const uint32_t carrier_raw[3], uint32_t now_us);
 
 // Build a PDU if at least NS2_DS5_MOTION40_MIN_TICKS have passed and the
 // window holds enough distinct samples to fill every slot without repeating
-// one. `carrier_raw` is the current length-0x1E orientation carrier (three
-// unsigned lanes of 26/25/24 bits); its modular slice becomes the packet's
-// prefix. Returns false when not yet due, which is the normal case.
-bool ns2_ds5_motion40_build(ns2_ds5_motion40_t *state,
-                            const uint32_t carrier_raw[3], uint32_t now_us,
+// one. The prefix comes from the buffered carrier nearest
+// NS2_DS5_MOTION40_PREFIX_LAG_TICKS after the window start -- NOT from the
+// current orientation. Returns false when not yet due, the normal case.
+bool ns2_ds5_motion40_build(ns2_ds5_motion40_t *state, uint32_t now_us,
                             uint8_t out[NS2_MOTION_PDU40_LENGTH]);
 
 // Slice a 0x1E carrier into the catch-up prefix's modular windows. Exposed for
