@@ -136,6 +136,33 @@ gcc -Iinclude -Itools\fixtures -Wall -Wextra `
     src\bt_hid\motion\ns2_motion_pdu.c
 ```
 
+### Length-`0x28` readiness gate — run before requesting a flash
+
+```powershell
+python tools
+s2_motion40_validate.py     # exits non-zero unless every
+                                          # capture-answerable question passes
+```
+
+Byte-exact validation of a *generated* `0x28` is impossible from BLE captures:
+the controller transmits derived products, never its inputs. The internal
+800 Hz IMU stream is not sent (handle `0x000A` runs at the notification rate),
+and the carrier at the prefix's epoch instant is not sent either — across 449
+genuine packets the epoch coordinate landed on a transmitted `0x1E` **zero**
+times. The bar is therefore physical accuracy against interpolated truth with a
+stated per-field tolerance, not byte equality.
+
+Supporting measurements, each re-runnable:
+
+```powershell
+python tools
+s2_motion40_prefix_epoch.py   # when the prefix describes
+python tools
+s2_motion40_slot_timing.py    # where slots sit in the window
+python tools
+s2_motion40_gyro_axes.py      # gyro axis order and sign
+```
+
 ### Length-`0x28` motion gate (DEFAULT OFF)
 
 ```text
@@ -144,11 +171,16 @@ ds5motion pdu40 off      # return to the proven 0x1E carrier
 ds5motion pdu40 status   # emitted / starved / saturated counters
 ```
 
-Enabling **replaces** the motion block; the `0x1E` carrier is not sent
-alongside, because only the `0x28`-only emission mode has a resolved elapsed
-relation. Across 32 captures with zero exceptions, the mode follows the BLE
-notification interval: 6.0 ticks always interleaves, ≥ 8.0 ticks is always
-`0x28`-only. `starved > 0` means the emit interval outran the source sample
+Emission is **interleaved high-rate**: the `0x1E` carrier fills the polls
+between `0x28` packets, which is what genuine hardware does at this cadence.
+That is not a preference — it supplies the chart state the modular prefix is
+unwrapped against, and it delivers each `0x28` exactly once instead of ~20
+times at a 1 kHz poll. High-rate is the layout with paired ground truth: 768 of
+773 genuine `0x28` packets that have a `0x1E` alongside them are high-rate.
+
+`packing_mode`, not elapsed, is the layout discriminator. Elapsed only selects
+among the mode-3 cadence layouts; five corpus packets carry mode 0 and are a
+different structure entirely. `starved > 0` means the emit interval outran the source sample
 rate; saturation means motion exceeded the wire range (±2 g, ±499.5 dps — which
 is the sensor's own full scale, not a codec artifact) or the scaling is wrong.
 Both distinguish "well-formed but wrong" from "working".
