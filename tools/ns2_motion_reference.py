@@ -161,7 +161,15 @@ def _vector(data: bytes, offset: int, width: int) -> tuple[int, int, int]:
 
 
 def decode_temperature_tail16_value(tail_value: int) -> Tail16Fields:
-    """Decode two Q3 ICM temperature samples sharing a signed integer part."""
+    """Decode the 16-bit tail as two Q3 samples sharing a signed integer part.
+
+    The LAYOUT is well evidenced -- it round-trips byte-exactly and the two
+    samples track each other. The ABSOLUTE SCALE is not: over 1002 genuine
+    packets the integer part spans 3..10, and a controller die at 3-10 C is
+    not plausible. ICM parts conventionally report temperature as an offset
+    from 25 C, which would place these at 28-35 C. Treat the returned numbers
+    as raw field values, not degrees Celsius.
+    """
 
     if tail_value < 0 or tail_value > 0xFFFF:
         raise MotionReferenceError(
@@ -231,6 +239,12 @@ def decode_report05_raw_imu(report: bytes) -> RawImuSample:
 # here. Pooling raw slots produces magnitudes off by up to 256x that still look
 # superficially plausible.
 IMU_COUNTS_PER_G = 4096.0
+# ASSUMED, and measured to be wrong by roughly a factor of two. Only the
+# PRODUCT of this and the WIRE_TO_COUNTS gyro factor is observable, and three
+# independent methods put it at 7-11.6 rather than 16.4 -- flat across rotation
+# speed, so not a sampling artefact. Left unchanged because the data cannot
+# pin the value; a known-angle rotation capture would.
+# See docs/experiments/pro2-imu-constants-audit-2026-08-01.md.
 IMU_COUNTS_PER_DPS = 16.4
 
 WIRE_TO_COUNTS = {
