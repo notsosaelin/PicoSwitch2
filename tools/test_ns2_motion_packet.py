@@ -56,12 +56,20 @@ class RoundTripTests(unittest.TestCase):
 
     def test_every_genuine_0x28_reencodes_byte_for_byte(self):
         layouts = Counter()
+        skipped_modes = Counter()
         mismatches = []
         for path in all_captures():
             for pdu in pdus(path):
                 if len(pdu) != 0x28:
                     continue
                 sample = R.decode_motion40(pdu, None)
+                # Packing mode 0 is a different structure, not a cadence
+                # layout: 5 corpus packets carry mode 0 with status 0x00,
+                # elapsed 0 and tick 127 across three captures. The mode-3
+                # field map cannot describe them and must not pretend to.
+                if sample.packing_mode != 3:
+                    skipped_modes[sample.packing_mode] += 1
+                    continue
                 if sample.layout == "unknown":
                     continue
                 rebuilt = P.build_motion40(P.MotionPacketFields(
@@ -131,6 +139,12 @@ class LayoutSelectionTests(unittest.TestCase):
                 if len(pdu) != 0x28:
                     continue
                 sample = R.decode_motion40(pdu, None)
+                # Packing mode 0 is a different structure, not a cadence
+                # layout: 5 corpus packets carry mode 0 with status 0x00,
+                # elapsed 0 and tick 127 across three captures. The mode-3
+                # field map cannot describe them and must not pretend to.
+                if sample.packing_mode != 3:
+                    continue
                 if sample.layout == "unknown":
                     continue
                 if sample.sensor_status == 0:
@@ -276,6 +290,12 @@ class ScaleNormalizationTests(unittest.TestCase):
                 if len(pdu) != 0x28:
                     continue
                 sample = R.decode_motion40(pdu, None)
+                # Packing mode 0 is a different structure, not a cadence
+                # layout: 5 corpus packets carry mode 0 with status 0x00,
+                # elapsed 0 and tick 127 across three captures. The mode-3
+                # field map cannot describe them and must not pretend to.
+                if sample.packing_mode != 3:
+                    continue
                 if sample.layout == "unknown":
                     continue
                 for slot, vector in enumerate(
@@ -303,6 +323,12 @@ class ScaleNormalizationTests(unittest.TestCase):
                 if len(pdu) != 0x28:
                     continue
                 sample = R.decode_motion40(pdu, None)
+                # Packing mode 0 is a different structure, not a cadence
+                # layout: 5 corpus packets carry mode 0 with status 0x00,
+                # elapsed 0 and tick 127 across three captures. The mode-3
+                # field map cannot describe them and must not pretend to.
+                if sample.packing_mode != 3:
+                    continue
                 if sample.layout == "unknown":
                     continue
                 for kind in ("accel", "gyro"):

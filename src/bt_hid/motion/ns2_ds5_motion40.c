@@ -20,10 +20,12 @@
 // ordinary counts, which at 4096 counts/g and 16.4 counts/dps is +/-2 g and
 // +/-499.5 dps -- stock ICM full-scale settings. The wire limit is therefore
 // the sensor's own limit, so clamping to it is what genuine hardware does.
-static const int32_t k_accel_limit[NS2_DS5_MOTION40_ACCEL_SLOTS] = {
-    8191, 4095, 8191
-};
-#define GYRO_WIRE_LIMIT 32767
+// High-rate: every vector is 22-bit with EIGHT FRACTIONAL BITS, so the wire
+// value is ordinary counts * 256 rather than a wider range. The signed 22-bit
+// limit is 2097151 = 8192 counts * 256 - 1, i.e. exactly the +/-2 g / +/-499.5
+// dps full scale every other layout reaches. Same sensor limit, finer steps.
+#define HIGH_RATE_FRACTIONAL_SCALE 256
+#define VECTOR_WIRE_MAX 2097151
 
 static int32_t clamp32(int32_t value, int32_t limit)
 {
@@ -43,14 +45,6 @@ static int32_t floor_shift(int32_t value, unsigned bits)
     return quotient;
 }
 
-// Halve, rounding to nearest rather than toward -inf. A plain floor would put
-// a -0.5 count DC offset on every axis; on x and y, which rest near zero, that
-// is a systematic bias rather than a rounding detail.
-static int32_t half_round(int32_t value)
-{
-    return floor_shift(value + 1, 1);
-}
-
 static int32_t sign_extend(int32_t value, unsigned bits)
 {
     const int32_t field = (int32_t)1 << bits;
@@ -58,7 +52,8 @@ static int32_t sign_extend(int32_t value, unsigned bits)
     return (value >= (field >> 1)) ? value - field : value;
 }
 
-void ns2_ds5_motion40_prefix(const uint32_t carrier_raw[3], int32_t out[3])
+void ns2_ds5_motion40_prefix(const uint32_t carrier_raw[3], int32_t out[3],
+                             bool high_rate)
 {
     if (!carrier_raw || !out) return;
     // Lane 2 is centred half a window away from lanes 0 and 1 and carries one
@@ -69,9 +64,15 @@ void ns2_ds5_motion40_prefix(const uint32_t carrier_raw[3], int32_t out[3])
         (int32_t)carrier_raw[1] - ((int32_t)1 << 24),
         2 * ((int32_t)carrier_raw[2] - ((int32_t)1 << 23)) + ((int32_t)1 << 24),
     };
-    static const unsigned widths[3] = {22u, 21u, 23u};
+    // High-rate lanes are two bits wider and take NO precision shift; the
+    // narrower catch-up and normal lanes shift by two. Getting this wrong
+    // produces a well-formed packet carrying a quartered orientation.
+    static const unsigned narrow[3] = {22u, 21u, 23u};
+    static const unsigned wide[3] = {24u, 23u, 25u};
+    const unsigned *widths = high_rate ? wide : narrow;
+    const unsigned shift = high_rate ? 0u : 2u;
     for (unsigned lane = 0; lane < 3u; ++lane)
-        out[lane] = sign_extend(floor_shift(centred[lane], 2u), widths[lane]);
+        out[lane] = sign_extend(floor_shift(centred[lane], shift), widths[lane]);
 }
 
 void ns2_ds5_motion40_reset(ns2_ds5_motion40_t *state)
@@ -213,11 +214,24 @@ bool ns2_ds5_motion40_build(ns2_ds5_motion40_t *state, uint32_t now_us,
         // jitter, not starvation -- the next poll will have a newer sample.
         return false;
     }
+    if (elapsed_ticks > NS2_DS5_MOTION40_MAX_TICKS) {
+        // Elapsed selects the layout, so a window this long cannot be sent as
+        // high-rate: the console would read the fields with the normal or
+        // catch-up map. Clamping the count would lie about the span. Genuine
+        // hardware switches layout here instead -- that is what the layouts
+        // are for -- so re-anchor and drop this window rather than emit a
+        // packet that decodes wrong. A rising count means the source stalled.
+        state->skipped_overlong++;
+        state->last_emit_us = newest_us;
+        state->last_sample_us = newest_us;
+        return false;
+    }
 
-    // Anchor the ends and space the interior evenly. Slot 0 takes the oldest
-    // sample in the window and the last slot the newest, which is the ordering
-    // the genuine corpus confirms; the interior slot takes whichever sample
-    // sits nearest the midpoint, constrained to stay strictly between them.
+    // Anchor the ends: slot 0 takes the oldest sample in the window and the
+    // last slot the newest. Confirmed on 973 catch-up packets, where the seam
+    // between packets is the shortest gap in the stream; high-rate's own
+    // ordering cannot be measured independently because the interleaved tick
+    // relation is unresolved, so it is inherited rather than proven.
     unsigned accel_pick[NS2_DS5_MOTION40_ACCEL_SLOTS];
     accel_pick[0] = 0;
     accel_pick[NS2_DS5_MOTION40_ACCEL_SLOTS - 1u] = available - 1u;
@@ -229,14 +243,9 @@ bool ns2_ds5_motion40_build(ns2_ds5_motion40_t *state, uint32_t now_us,
                        NS2_DS5_MOTION40_ACCEL_SLOTS - 1u);
     }
 
-    // The two gyro slots are placed at the quarter points instead. Their
-    // ordering is NOT resolved by the corpus -- a stationary gyro is pure
-    // noise, and the paired sign test came out weak and with the opposite sign
-    // to acceleration (z = -4.0), which is what quarter-point spacing would
-    // produce, since it makes the within-packet and seam gaps equal. Quarter
-    // points also give the unbiased trapezoidal estimate of the window's
-    // integral, and the console integrates gyro, so the mean matters more than
-    // the freshness of either endpoint.
+    // The single gyro slot sits at the window midpoint, which is the unbiased
+    // estimate of the window's mean angular rate. The console integrates gyro,
+    // so the mean matters more than the freshness of either endpoint.
     unsigned gyro_pick[NS2_DS5_MOTION40_GYRO_SLOTS];
     unsigned lo = 0;
     for (unsigned slot = 0; slot < NS2_DS5_MOTION40_GYRO_SLOTS; ++slot) {
@@ -247,13 +256,17 @@ bool ns2_ds5_motion40_build(ns2_ds5_motion40_t *state, uint32_t now_us,
         lo = gyro_pick[slot] + 1u;
     }
 
+    // DualSense acceleration is 8192 counts/g against the Pro 2's 4096, so
+    // ordinary counts are the raw value halved; the wire then carries eight
+    // fractional bits. Halving and scaling by 256 is a net *128, done in one
+    // step so the halving does not throw away the low bit the extra fractional
+    // bits exist to keep.
     for (unsigned slot = 0; slot < NS2_DS5_MOTION40_ACCEL_SLOTS; ++slot) {
         const int16_t *raw = state->ring[sorted[accel_pick[slot]]].accel;
         for (unsigned axis = 0; axis < 3u; ++axis) {
-            const int32_t counts = half_round((int32_t)raw[axis]);
-            // Slot 1 is half-resolution on the wire.
-            const int32_t wire = (slot == 1u) ? half_round(counts) : counts;
-            const int32_t limited = clamp32(wire, k_accel_limit[slot]);
+            const int32_t wire =
+                (int32_t)raw[axis] * (HIGH_RATE_FRACTIONAL_SCALE / 2);
+            const int32_t limited = clamp32(wire, VECTOR_WIRE_MAX);
             if (limited != wire) state->saturated_accel++;
             state->accel[slot][axis] = limited;
         }
@@ -261,26 +274,24 @@ bool ns2_ds5_motion40_build(ns2_ds5_motion40_t *state, uint32_t now_us,
     for (unsigned slot = 0; slot < NS2_DS5_MOTION40_GYRO_SLOTS; ++slot) {
         const int16_t *raw = state->ring[sorted[gyro_pick[slot]]].gyro;
         for (unsigned axis = 0; axis < 3u; ++axis) {
-            // Gyro sits at four times the ordinary scale on the wire. The
-            // 16-bit slot therefore caps near +/-499 dps, well inside a
-            // DualSense's range, so clamping is load-bearing rather than
-            // defensive.
-            const int32_t wire = (int32_t)raw[axis] * 4;
-            const int32_t limited = clamp32(wire, GYRO_WIRE_LIMIT);
+            // Gyro passes through at ordinary scale, then the same eight
+            // fractional bits. Caps at +/-499.5 dps -- the sensor's own limit.
+            const int32_t wire =
+                (int32_t)raw[axis] * HIGH_RATE_FRACTIONAL_SCALE;
+            const int32_t limited = clamp32(wire, VECTOR_WIRE_MAX);
             if (limited != wire) state->saturated_gyro++;
             state->gyro[slot][axis] = limited;
         }
     }
 
-    ns2_motion40_catchup_t fields;
+    ns2_motion40_high_rate_t fields;
     memset(&fields, 0, sizeof(fields));
-    fields.elapsed_ticks =
-        (uint16_t)((elapsed_ticks > 0x0FFFu) ? 0x0FFFu : elapsed_ticks);
+    fields.elapsed_ticks = (uint16_t)elapsed_ticks;
     state->tick = (uint16_t)((state->tick + fields.elapsed_ticks) & 0x0FFFu);
     fields.tick = state->tick;
     fields.packing_mode = 3u;
-    fields.tail_bit = 0u;  // zero in all 981 genuine catch-up packets
-    fields.status = NS2_MOTION40_STATUS_CATCHUP;
+    fields.tail_value = NS2_DS5_MOTION40_TEMPERATURE_TAIL;
+    fields.status = NS2_MOTION40_STATUS_HIGH_RATE;
 
     // The prefix describes a PAST instant -- a fixed lag after the window
     // START, not the packet's own tick. Using the current orientation while
@@ -292,11 +303,11 @@ bool ns2_ds5_motion40_build(ns2_ds5_motion40_t *state, uint32_t now_us,
         NS2_DS5_MOTION40_PREFIX_LAG_TICKS * NS2_DS5_MOTION40_TICK_US;
     const ns2_ds5_motion40_entry_t *anchor = entry_nearest(state, prefix_us);
     if (!anchor) return false;
-    ns2_ds5_motion40_prefix(anchor->carrier, fields.carrier);
+    ns2_ds5_motion40_prefix(anchor->carrier, fields.carrier, true);
     memcpy(fields.accel, state->accel, sizeof(fields.accel));
     memcpy(fields.gyro, state->gyro, sizeof(fields.gyro));
 
-    if (!ns2_motion_pdu40_build_catchup(out, &fields)) return false;
+    if (!ns2_motion_pdu40_build_high_rate(out, &fields)) return false;
 
     // Advance by exactly the elapsed we reported, so the tick the console
     // reconstructs and our own window boundary can never drift apart. This is

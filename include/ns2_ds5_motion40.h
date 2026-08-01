@@ -15,23 +15,38 @@
 // touched by this. The two share nothing but their input samples, so enabling
 // or disabling 0x28 cannot regress orientation carrier behaviour.
 //
-// WHY CATCH-UP
-// ------------
-// Its tail is a single always-zero bit; the normal and high-rate layouts carry
-// a 16-bit tail holding two Q3 die-temperature samples, which a DualSense
-// cannot supply without fabricating a physical quantity. Catch-up also carries
-// five IMU samples per packet, so a 20 ms cadence delivers ~250 samples/s
-// against the 133 Hz single-sample 0x1E path -- a fidelity gain, not a trade.
-// Against a ~763 Hz DualSense this is still a decimation, so slot placement
-// decides which samples survive; see SAMPLES SPAN THE EMIT WINDOW below.
+// WHY HIGH-RATE (this replaced catch-up on 2026-07-31)
+// ----------------------------------------------------
+// Ground truth. Of the 773 genuine 0x28 packets that have a length-0x1E
+// alongside them to validate against, 768 are high-rate and 2 are catch-up --
+// catch-up appears almost only in 0x28-ONLY captures, which carry no carrier
+// by definition. Catch-up was targeted first because its tail is one
+// always-zero bit while this layout carries a 16-bit Q3 temperature pair a
+// DualSense cannot measure. That optimised for ease of filling over strength
+// of evidence, and the hardware A/B failed.
+//
+// Retargeting also settles three questions structurally rather than by
+// experiment. Genuine high-rate runs INTERLEAVED, so a 0x1E rides alongside
+// and supplies the chart state the modular prefix must be unwrapped against;
+// each 0x28 reaches the console once between carriers instead of ~20 times at
+// a 1 kHz poll; and at elapsed 7..8 the two candidate prefix-epoch models
+// agree to within one tick instead of the 9 they differ by at a 16-tick
+// cadence.
+//
+// Two acceleration slots and one gyro slot, all 22-bit with EIGHT FRACTIONAL
+// BITS: wire = ordinary counts * 256. Same +/-2 g and +/-499.5 dps range as
+// every other layout, at finer resolution.
 //
 // EMISSION MODE
 // -------------
-// 0x28-only. Genuine controllers run in two modes and the 12-bit elapsed count
-// means different things in each; in 0x28-only mode it is simply the tick delta
-// since the previous 0x28, which holds in 1,196 of 1,196 genuine packets across
-// 14 captures. Interleaving 0x1E would put us in the other mode, whose elapsed
-// relation is NOT resolved. Callers must therefore not mix the two.
+// INTERLEAVED, which is what genuine hardware does at this cadence: the 0x1E
+// carrier fills the polls between 0x28 packets (NS2_PDU40_FILL_CARRIER).
+//
+// UNRESOLVED: the elapsed relation in interleaved mode. In 0x28-only mode
+// elapsed is the tick delta since the previous 0x28 (1196/1196 packets), and
+// interleaved traffic does not follow that. This module emits the span its own
+// samples cover, the only self-consistent choice available, and the ambiguity
+// is why the readiness gate still reports UNKNOWN.
 //
 // SAMPLES SPAN THE EMIT WINDOW
 // ----------------------------
@@ -70,9 +85,15 @@
 // Catch-up needs elapsed >= 15 ticks (18.75 ms). 16 ticks is 20 ms, which
 // leaves a ~250 Hz source about five samples to fill three acceleration and
 // two gyro slots.
-#define NS2_DS5_MOTION40_MIN_TICKS NS2_MOTION40_CATCHUP_MIN_ELAPSED
-#define NS2_DS5_MOTION40_ACCEL_SLOTS 3u
-#define NS2_DS5_MOTION40_GYRO_SLOTS 2u
+#define NS2_DS5_MOTION40_MIN_TICKS 7u
+#define NS2_DS5_MOTION40_MAX_TICKS NS2_MOTION40_HIGH_RATE_MAX_ELAPSED
+#define NS2_DS5_MOTION40_ACCEL_SLOTS 2u
+#define NS2_DS5_MOTION40_GYRO_SLOTS 1u
+
+// The modal genuine tail, 155 of 771 high-rate packets. A DualSense exposes no
+// IMU die temperature, so this replays the most common REAL value rather than
+// inventing a plausible-looking one. Not a measurement, and labelled as such.
+#define NS2_DS5_MOTION40_TEMPERATURE_TAIL 0x01C0u
 
 // The ring must outlast one emit window, or it evicts the oldest samples in
 // that window -- the ones anchoring slot 0 -- and the packet silently stops
@@ -143,6 +164,7 @@ typedef struct {
     // near +/-2 g and +/-499 dps -- but a high rate means the scaling is wrong.
     uint32_t emitted;
     uint32_t skipped_no_samples;
+    uint32_t skipped_overlong;  // window outran the high-rate elapsed band
     uint32_t saturated_accel;
     uint32_t saturated_gyro;
 } ns2_ds5_motion40_t;
@@ -171,6 +193,7 @@ bool ns2_ds5_motion40_build(ns2_ds5_motion40_t *state, uint32_t now_us,
 
 // Slice a 0x1E carrier into the catch-up prefix's modular windows. Exposed for
 // testing against the reference implementation.
-void ns2_ds5_motion40_prefix(const uint32_t carrier_raw[3], int32_t out[3]);
+void ns2_ds5_motion40_prefix(const uint32_t carrier_raw[3], int32_t out[3],
+                             bool high_rate);
 
 #endif  // NS2_DS5_MOTION40_H
