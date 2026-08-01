@@ -316,6 +316,21 @@ def check_unverifiable(gate: Gate) -> None:
                 "lazy susan puts the signal in gyroZ at 5.5x the next lane "
                 "with gravity on accelZ, and the return turn reverses the "
                 "sign; X/Y not individually disambiguated (see tool)")
+
+    # The one constant in this feature that was assumed rather than measured,
+    # and it scales every rotation the console sees. Genuine 0x28 gyro read at
+    # 16.4 counts/dps recovers only ~0.55-0.67 of the rotation its own 0x1E
+    # carrier reports, flat across every speed bin from 0-10 up to 150-400 dps.
+    # Flat rules out the benign explanation -- one gyro sample per packet at
+    # ~110 Hz losing integral area would fade as the motion slows. So the true
+    # sensitivity is nearer 9-11.6 counts/dps, and if it is 8.192 (a standard
+    # +/-1000 dps full scale) our translated gyro runs at DOUBLE rate, because
+    # we pass DualSense counts through 1:1 on the assumption both sit at ~16.4.
+    gate.record("gyro counts/dps", "UNKNOWN",
+                "16.4 was assumed, never measured. Genuine gyro recovers only "
+                "~0.55-0.67 of its own carrier's rotation, speed-independent, "
+                "implying ~9-11.6. If it is really 8.192 our gyro is 2x fast. "
+                "Run tools/ns2_motion40_gyro_axes.py")
     gate.record("chart bootstrap", "PASS",
                 "interleaved emission sends a 0x1E alongside, which supplies "
                 "the chart state; the 0x28-only mode that lacked one is no "
