@@ -199,6 +199,52 @@ static void test_ring_wrap_preserves_order(void)
           "slot 0 is still older than slot 2 after a wrap");
 }
 
+// Regression: the ring must outlast one emit window at the SOURCE rate, not
+// at the slot count. A DualSense supplying a valid sensor timestamp feeds this
+// at its own IMU rate -- measured at ~763 Hz on hardware, not the ~250 Hz a
+// report-rate assumption suggests. A 16-entry ring held only 20 ms at that
+// rate, so the oldest samples of a window were evicted before the build could
+// select them and slot 0 quietly stopped being the oldest sample.
+static void test_ring_outlasts_a_window_at_source_rate(void)
+{
+    // 800 Hz source against the corpus's MEDIAN catch-up window of 24 ticks
+    // (30 ms), not the 15-tick minimum. A ring sized for the minimum window
+    // still evicts on an ordinary one.
+    const uint32_t period_us = 1250u;
+    const uint32_t window_us = 30000u;
+    const unsigned per_window = window_us / period_us;  // 24
+    check(NS2_DS5_MOTION40_RING > per_window,
+          "ring holds more than one median window of samples at 800 Hz");
+
+    ns2_ds5_motion40_t state;
+    uint8_t pdu[NS2_MOTION_PDU40_LENGTH];
+    ns2_ds5_motion40_reset(&state);
+    check(!ns2_ds5_motion40_build(&state, k_carrier, 0u, pdu), "prime");
+
+    for (unsigned i = 1; i <= per_window; ++i)
+        tag(&state, (int16_t)i, i * period_us);
+    check(ns2_ds5_motion40_build(&state, k_carrier, window_us, pdu), "emits");
+    check(state.accel[0][0] == 1,
+          "slot 0 is the true oldest sample in the window, not a survivor");
+    check(state.accel[2][0] == (int16_t)per_window,
+          "slot 2 is the newest sample in the window");
+
+    // Several back-to-back windows at the source rate must all keep their
+    // oldest sample, which is where a marginal ring degrades gradually.
+    for (unsigned window = 2; window <= 4u; ++window) {
+        const unsigned first = (window - 1u) * per_window + 1u;
+        const unsigned last = window * per_window;
+        for (unsigned i = first; i <= last; ++i)
+            tag(&state, (int16_t)i, i * period_us);
+        check(ns2_ds5_motion40_build(&state, k_carrier, last * period_us, pdu),
+              "consecutive window emits");
+        check(state.accel[0][0] == (int16_t)first,
+              "each window keeps its own oldest sample");
+        check(state.accel[2][0] == (int16_t)last,
+              "each window keeps its own newest sample");
+    }
+}
+
 static void test_scaling(void)
 {
     ns2_ds5_motion40_t state;
@@ -298,6 +344,7 @@ int main(void)
     test_elapsed_tracks_samples_not_poll_time();
     test_slots_span_the_window();
     test_ring_wrap_preserves_order();
+    test_ring_outlasts_a_window_at_source_rate();
     test_scaling();
     test_saturation_is_clamped_not_wrapped();
     test_emitted_packet_decodes_to_what_we_fed();
