@@ -196,6 +196,32 @@ void ns2_dbg_ds5_motion_set_carrier(uint8_t carrier);
 // unattended use. See docs/experiments/pro2-carrier-unknown-fields-2026-07-31.md.
 bool ns2_ds5_motion40_get_enabled(void);
 void ns2_ds5_motion40_set_enabled(bool enabled);
+
+// What occupies the motion block on the ~19 USB polls between catch-up
+// packets. A 1 kHz poll rate against a ~50 Hz packet cadence means this choice
+// decides how many times the console sees each 0x28.
+//
+//   EMPTY   no motion block between packets, so each 0x28 is delivered exactly
+//           once -- the only fill matching genuine hardware, where a 0x28 is
+//           never sent twice. Default.
+//   REPEAT  resend the latest 0x28 every poll. Tested on hardware 2026-07-31:
+//           the console accepted the packets and produced violent, erratic
+//           motion. A 0x1E tolerates this because an absolute quaternion is
+//           idempotent; a 0x28 carries integrable samples and a modular
+//           orientation slice, so repeats can integrate as many times the real
+//           rotation.
+//   CARRIER send the proven 0x1E between 0x28 packets. This is the interleaved
+//           emission mode, which genuine hardware does use at 6-tick
+//           notification intervals; its elapsed relation is unresolved, but
+//           the absolute quaternion re-anchors the console every poll.
+//
+// Changing the fill clears buffered samples and the cadence epoch.
+#define NS2_PDU40_FILL_EMPTY   0u
+#define NS2_PDU40_FILL_REPEAT  1u
+#define NS2_PDU40_FILL_CARRIER 2u
+uint8_t ns2_ds5_motion40_get_fill(void);
+void ns2_ds5_motion40_set_fill(uint8_t fill);
+
 // Emitted packet count, starved intervals, and saturated axes -- the three
 // numbers that distinguish "working" from "well-formed but wrong".
 void ns2_ds5_motion40_get_counters(uint32_t *emitted, uint32_t *starved,

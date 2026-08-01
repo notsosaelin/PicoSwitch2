@@ -397,8 +397,26 @@ static ns2_ds5_motion40_t ns2_ds5_motion40;
 static bool ns2_ds5_motion40_enabled;
 static uint8_t ns2_ds5_motion40_report[NS2_MOTION_PDU40_LENGTH];
 static bool ns2_ds5_motion40_report_valid;
+// What fills the ~19 USB polls between catch-up packets. REPEAT was the first
+// build tested on hardware and produced violent erratic motion; EMPTY is the
+// default because it is the only fill under which the console sees each 0x28
+// exactly once, matching every genuine capture.
+static uint8_t ns2_ds5_motion40_fill = NS2_PDU40_FILL_EMPTY;
 
 bool ns2_ds5_motion40_get_enabled(void) { return ns2_ds5_motion40_enabled; }
+
+uint8_t ns2_ds5_motion40_get_fill(void) { return ns2_ds5_motion40_fill; }
+
+void ns2_ds5_motion40_set_fill(uint8_t fill)
+{
+    if (fill > NS2_PDU40_FILL_CARRIER) return;
+    if (ns2_ds5_motion40_fill == fill) return;
+    ns2_ds5_motion40_fill = fill;
+    // The cadence epoch is meaningless across a fill change for the same
+    // reason it is across an enable: the console's view of the stream changes.
+    ns2_ds5_motion40_reset(&ns2_ds5_motion40);
+    ns2_ds5_motion40_report_valid = false;
+}
 
 void ns2_ds5_motion40_set_enabled(bool enabled)
 {
@@ -1494,29 +1512,55 @@ static void ns2_build_report(uint8_t *p) {
         if (ns2_ds5_motion_enabled && ns2_imu_enabled &&
             ns2_ds5_motion_report_valid) {
             if (ns2_ds5_motion40_enabled) {
-                // USB polls near 1 kHz while a catch-up packet is due every
-                // ~20 ms, so build when due and repeat the latest in between,
-                // exactly as the 0x1E path repeats its carrier. Leaving the
-                // motion block empty on the ~19 polls between packets would
-                // starve the console instead of pacing it.
+                // WHAT GOES IN THE ~19 POLLS BETWEEN PACKETS
                 //
-                // 0x28-only emission: the elapsed count is the tick delta
-                // since the previous 0x28, which only holds when no 0x1E
-                // interleaves. Sending both would put us in the other mode,
-                // whose elapsed relation is unresolved.
+                // USB polls near 1 kHz while a catch-up packet is due every
+                // ~20 ms, so something must fill the gap. The first hardware
+                // A/B (2026-07-31) ran NS2_PDU40_FILL_REPEAT and the console
+                // accepted the packets but produced violent, erratic motion.
+                //
+                // Repeating is the one structural difference between this
+                // emission and every genuine capture: a genuine controller
+                // never sends the same 0x28 twice. A 0x1E survives repetition
+                // because it carries an absolute quaternion, so resending it
+                // is idempotent. A 0x28 carries integrable IMU samples plus a
+                // MODULAR orientation slice that the console must unwrap
+                // against state it advances by the elapsed count -- so ~20
+                // repeats each claiming 16 ticks can be integrated as ~20x the
+                // real rotation and run the unwrap window away.
+                //
+                // That is a hypothesis, not a conclusion, so the fill is
+                // runtime-selectable and one flash tests all three.
                 uint32_t carrier_raw[3];
-                if (ns2_motion_pdu30_get_orientation(ns2_ds5_motion_report,
+                const bool built =
+                    ns2_motion_pdu30_get_orientation(ns2_ds5_motion_report,
                                                      carrier_raw) &&
                     ns2_ds5_motion40_build(&ns2_ds5_motion40, carrier_raw,
                                            time_us_32(),
-                                           ns2_ds5_motion40_report)) {
-                    ns2_ds5_motion40_report_valid = true;
+                                           ns2_ds5_motion40_report);
+                if (built) ns2_ds5_motion40_report_valid = true;
+
+                if (built || ns2_ds5_motion40_fill == NS2_PDU40_FILL_REPEAT) {
+                    // A fresh packet always goes out. REPEAT additionally
+                    // resends the latest between builds.
+                    if (ns2_ds5_motion40_report_valid) {
+                        p[0x0E] = sizeof(ns2_ds5_motion40_report);
+                        memcpy(&p[0x0F], ns2_ds5_motion40_report,
+                               sizeof(ns2_ds5_motion40_report));
+                    }
+                } else if (ns2_ds5_motion40_fill == NS2_PDU40_FILL_CARRIER) {
+                    // Send the proven 0x1E between 0x28 packets. This is the
+                    // interleaved emission mode, which genuine hardware does
+                    // use at 6-tick notification intervals; its elapsed
+                    // relation is unresolved, but the absolute quaternion
+                    // re-anchors the console every poll.
+                    p[0x0E] = sizeof(ns2_ds5_motion_report);
+                    memcpy(&p[0x0F], ns2_ds5_motion_report,
+                           sizeof(ns2_ds5_motion_report));
                 }
-                if (ns2_ds5_motion40_report_valid) {
-                    p[0x0E] = sizeof(ns2_ds5_motion40_report);
-                    memcpy(&p[0x0F], ns2_ds5_motion40_report,
-                           sizeof(ns2_ds5_motion40_report));
-                }
+                // NS2_PDU40_FILL_EMPTY leaves p[0x0E] at 0: no motion block on
+                // the polls between packets, so each 0x28 is delivered exactly
+                // once, as on the wire of a genuine controller.
             } else {
                 p[0x0E] = sizeof(ns2_ds5_motion_report);
                 memcpy(&p[0x0F], ns2_ds5_motion_report,
