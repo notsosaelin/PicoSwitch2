@@ -327,10 +327,12 @@ def check_unverifiable(gate: Gate) -> None:
     # +/-1000 dps full scale) our translated gyro runs at DOUBLE rate, because
     # we pass DualSense counts through 1:1 on the assumption both sit at ~16.4.
     gate.record("gyro counts/dps", "UNKNOWN",
-                "16.4 was assumed, never measured. Genuine gyro recovers only "
-                "~0.55-0.67 of its own carrier's rotation, speed-independent, "
-                "implying ~9-11.6. If it is really 8.192 our gyro is 2x fast. "
-                "Run tools/ns2_motion40_gyro_axes.py")
+                "the wire-factor x counts/dps PRODUCT is ~2x wrong. Three "
+                "independent methods (carrier integration, carrier "
+                "regression, gravity-rate) all land at 7-11.6 against the "
+                "assumed 16.4, flat across speed so not undersampling. "
+                "Our gyro likely runs at DOUBLE rate. See "
+                "docs/experiments/pro2-imu-constants-audit-2026-08-01.md")
     gate.record("chart bootstrap", "PASS",
                 "interleaved emission sends a 0x1E alongside, which supplies "
                 "the chart state; the 0x28-only mode that lacked one is no "
