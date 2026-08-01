@@ -366,12 +366,35 @@ can be ordered but not measured. See
 Mode-matched result against the genuine `0x28`-only interval captures: acceleration **1.0517 g
 genuine vs 1.0116 g synthetic**, both stationary at one gravity, layout `catchup` on both sides.
 
-Status: 🔵 **Partial — complete and offline-validated, not hardware-validated.** With the gate off
-the emission path is byte-identical to before; both boards build clean. What remains is the gated
-hardware A/B against `0x1E`. The one risk offline analysis cannot retire: our ~1 ms USB poll rate
-corresponds to no genuine BLE notification interval, so the mode→interval rule is applied outside
-the range it was measured in. The mitigating precedent is that the console-validated `0x1E` path
-already repeats its latest carrier across polls, and `0x28` repeats identically.
+Status: 🔴 **Blocked — the first hardware A/B failed, and the approach needs redesign, not another
+patch.** The console *accepted* the packets (50.6 packets/s, 19.75 ms cadence, `emitted_len` 40,
+zero saturation) and produced violent erratic in-game motion. Accepted-but-wrong, not rejected.
+With the gate off the emission path is byte-identical to before; both boards build clean.
+
+Two root causes, both found offline afterwards and both invisible to every test that existed:
+
+- **The prefix described the wrong instant.** The 0x28 prefix is a modular slice of the orientation
+  carrier, so a generator must choose *which moment* it describes — a question the byte layout
+  never asks, which is why byte-exactness, range checks and round-trips all pass either way. The
+  firmware passed the *current* carrier. Measured across 24 interleaved captures and 773 paired
+  packets (`tools/ns2_motion40_prefix_epoch.py`), the genuine prefix lags the packet tick by
+  **at least ~3 ticks**, and under the window-relative model by `elapsed − 4` = 12.1 ticks (15 ms)
+  at our cadence. At the correct epoch the reconstruction error is 0.00023°; at `tick` the moving
+  captures degrade 20–80× (0.039° → 0.901°). Stationary captures barely move, which is exactly why
+  every stationary comparison passed.
+- **Catch-up was the wrong layout to target.** Of the 773 paired packets — the only 0x28s with a
+  genuine 0x1E alongside to check against — **768 are high-rate and 2 are catch-up**. Catch-up
+  appears almost only in 0x28-*only* captures, which carry no 0x1E by definition. Catch-up was
+  chosen because its tail is one always-zero bit rather than a temperature pair a DualSense cannot
+  supply; that optimised for ease of filling over strength of evidence.
+
+Unresolved: whether the prefix lag is fixed (~3 ticks) or window-relative (`elapsed − 4`). The two
+differ only when the window length varies, and elapsed is 7 in almost every paired packet.
+Emitting at elapsed ≈ 7–8 would collapse the ambiguity to 1 tick.
+
+Next work is offline: a replay harness that drives the translator from the paired captures'
+DualSense samples and compares the generated packet against the genuine one from the same instant.
+That ground truth exists for high-rate and was never used.
 An orthogonal upright lazy-susan rotation remained state 3 throughout. A corpus audit now records
 1,030 stable state-1 samples but initially no adjacent state-1 boundary. Passive gameplay
 triggers subsequently supplied the clean state-0/state-1 seam, the held-out opposite-sign branch,
