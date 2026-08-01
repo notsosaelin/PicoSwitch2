@@ -22,6 +22,8 @@
 // cannot supply without fabricating a physical quantity. Catch-up also carries
 // five IMU samples per packet, so a 20 ms cadence delivers ~250 samples/s
 // against the 133 Hz single-sample 0x1E path -- a fidelity gain, not a trade.
+// Against a ~763 Hz DualSense this is still a decimation, so slot placement
+// decides which samples survive; see SAMPLES SPAN THE EMIT WINDOW below.
 //
 // EMISSION MODE
 // -------------
@@ -72,10 +74,20 @@
 #define NS2_DS5_MOTION40_ACCEL_SLOTS 3u
 #define NS2_DS5_MOTION40_GYRO_SLOTS 2u
 
-// A ~250 Hz source puts about five samples in a 20 ms window. Sixteen leaves
-// room for a faster source or a stretched window without ever discarding a
-// sample the selector might still want.
-#define NS2_DS5_MOTION40_RING 16u
+// The ring must outlast one emit window, or it evicts the oldest samples in
+// that window -- the ones anchoring slot 0 -- and the packet silently stops
+// spanning the window.
+//
+// MEASURED, not assumed: a DualSense supplying a valid sensor timestamp takes
+// the ungated path in ns2_ds5_motion_update() (the 3800 us period gate only
+// applies to the host-time fallback), so samples arrive at the controller's
+// own IMU rate. On hardware, 2026-07-31: 9,721 samples in 12.7 s = ~763 Hz,
+// with sensor_dt_us reading 1247-1870. That is ~15.3 samples per 20 ms
+// window, not the ~5 a 250 Hz source would give.
+//
+// 64 entries is ~84 ms at that rate, or four windows of headroom, for 1 KB of
+// state. Size this against the SOURCE rate, never against the slot count.
+#define NS2_DS5_MOTION40_RING 64u
 
 typedef struct {
     int16_t accel[3];  // raw DualSense counts, 8192/g
