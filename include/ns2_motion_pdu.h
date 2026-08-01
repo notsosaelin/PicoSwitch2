@@ -95,4 +95,41 @@ typedef struct {
 bool ns2_motion_pdu40_build_catchup(uint8_t pdu[NS2_MOTION_PDU40_LENGTH],
                                     const ns2_motion40_catchup_t *fields);
 
+// High-rate layout: elapsed 0..10 ticks, status 0x0D.
+//
+// WHY THIS LAYOUT AND NOT CATCH-UP
+// --------------------------------
+// Ground truth. Of the 773 genuine 0x28 packets that have a length-0x1E
+// alongside them to validate against, 768 are high-rate and 2 are catch-up --
+// because catch-up appears almost exclusively in 0x28-ONLY captures, which
+// carry no 0x1E by definition. Catch-up was targeted first for the wrong
+// reason: its tail is a single always-zero bit while this layout carries a
+// 16-bit Q3 temperature pair. That optimised for ease of filling over strength
+// of evidence, and the hardware A/B failed.
+//
+// Emitting here at elapsed 7..8 also lands where the two candidate prefix-epoch
+// models agree to within one tick, instead of the 9 ticks they differ by at a
+// catch-up cadence.
+//
+// Two acceleration slots and one gyro slot, all 22-bit with EIGHT FRACTIONAL
+// BITS -- wire = ordinary counts * 256, not a different range. Carrier lanes
+// are two bits wider than their catch-up counterparts for the same reason.
+#define NS2_MOTION40_HIGH_RATE_MAX_ELAPSED 10u
+#define NS2_MOTION40_STATUS_HIGH_RATE 0x0Du
+#define NS2_MOTION40_HIGH_RATE_FRACTIONAL_BITS 8u
+
+typedef struct {
+    uint16_t tick;           // 12-bit internal 800 Hz tick
+    uint16_t elapsed_ticks;  // 12-bit, must be <= 10 to select high-rate
+    int32_t carrier[3];      // orientation prefix, signed 24/23/25
+    int32_t accel[2][3];     // signed 22, wire = counts * 256
+    int32_t gyro[1][3];      // signed 22, wire = counts * 256
+    uint16_t tail_value;     // 16-bit, two Q3 die-temperature samples
+    uint8_t packing_mode;
+    uint8_t status;
+} ns2_motion40_high_rate_t;
+
+bool ns2_motion_pdu40_build_high_rate(uint8_t pdu[NS2_MOTION_PDU40_LENGTH],
+                                      const ns2_motion40_high_rate_t *fields);
+
 #endif  // NS2_MOTION_PDU_H
