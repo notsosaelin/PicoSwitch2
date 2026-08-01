@@ -1392,8 +1392,9 @@ static void ns2_build_report(uint8_t *p) {
             if (ns2_ds5_motion_probe_active)
                 memcpy(ds5_motion_input.gyro, ns2_ds5_motion_probe_gyro,
                        sizeof(ds5_motion_input.gyro));
+            const uint32_t ds5_motion_now_us = time_us_32();
             if (ns2_ds5_motion_update(&ns2_ds5_motion,
-                                      &ds5_motion_input, time_us_32())) {
+                                      &ds5_motion_input, ds5_motion_now_us)) {
                 // Encoding the unequal-width Switch 2 quaternion slots uses
                 // floating-point scaling. Do it once per physical ~250 Hz IMU
                 // sample, not again on every ~1 kHz USB poll. The console can
@@ -1412,6 +1413,11 @@ static void ns2_build_report(uint8_t *p) {
                 // value, including its stillness gate and warmup, so reuse it
                 // rather than re-deriving a second bias estimate.
                 //
+                // This runs once per physical IMU sample, which is what the
+                // 0x28 translator needs: its slots are placed by timestamp
+                // across the emit window, so feeding it at the ~1 kHz USB poll
+                // rate would stamp stale repeats as if they were new samples.
+                //
                 // Held behind the gate so a disabled feature does no work.
                 if (ns2_ds5_motion40_enabled) {
                     int16_t debiased[3];
@@ -1422,7 +1428,8 @@ static void ns2_build_report(uint8_t *p) {
                         debiased[axis] = (int16_t)value;
                     }
                     ns2_ds5_motion40_sample(&ns2_ds5_motion40,
-                                            ds5_motion_input.accel, debiased);
+                                            ds5_motion_input.accel, debiased,
+                                            ds5_motion_now_us);
                 }
             }
             ns2_ds5_motion_last_sequence = in.motion_sequence;

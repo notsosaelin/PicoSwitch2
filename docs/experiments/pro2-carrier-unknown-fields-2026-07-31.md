@@ -266,6 +266,138 @@ fidelity gain over the current path rather than a trade.
 `pro2-native-interval-16` through `-24` are genuine hardware captures in exactly
 this configuration.
 
+## The three translation design decisions, audited
+
+Wiring the translator required three decisions that the byte-exact packer does
+not settle, because a packet can be perfectly well-formed and still describe
+the wrong physical timeline. Each was checked against the corpus before any
+hardware test.
+
+### ✅ Decision 1: saturation clamps, never wraps — the wire limit *is* the
+sensor limit
+
+Every layout and every slot converges on the same physical full-scale range.
+Twelve independent `(width, scale)` pairs:
+
+| layout | field | width | wire→counts | full scale |
+|---|---|---|---|---|
+| high-rate | accel ×2 | 22 | 1/256 | ±8192 counts = **±2.00 g** |
+| high-rate | gyro | 22 | 1/256 | ±8192 counts = **±499.51 dps** |
+| normal | accel | 14 / 13 / 14 | 1 / 2 / 1 | ±8192 counts = **±2.00 g** |
+| normal | gyro | 13 / 14 | 2 / 1 | ±8192 counts = **±499.51 dps** |
+| catch-up | accel | 14 / 13 / 14 | 1 / 2 / 1 | ±8192 counts = **±2.00 g** |
+| catch-up | gyro | 16 / 16 | 1/4 | ±8192 counts = **±499.51 dps** |
+
+±2 g and ±500 dps are stock ICM full-scale settings. Two consequences:
+
+1. The `WIRE_TO_COUNTS` factors were originally derived empirically, by
+   median-matching acceleration magnitude across layouts. They now fall out of
+   a hardware constraint independently — a genuine cross-check, not a
+   restatement of how they were found.
+2. Clamping at the wire limit **is** clamping at the sensor's own limit.
+   Genuine hardware cannot report beyond ±2 g / ±499.5 dps either, so
+   saturating there is what the real controller does. Wrapping would invert
+   the reported direction of motion, which is far worse than clipping it.
+
+The corpus does not independently exercise the limit — the largest genuine
+gyro wire value observed is 669, i.e. 10.2 dps of the 499 available — because
+every catch-up capture is low-motion. The convergence argument is what carries
+this, not the observed range.
+
+### ✅ Decision 2: slots span the emit window — this was a real defect
+
+**The first implementation was wrong.** It filled the three acceleration slots
+from the first three samples to arrive and dropped the rest, so a packet
+covered only the head of its window and discarded the freshest ~40% of the
+data outright.
+
+Genuine packets place the oldest sample in slot 0 and the **newest** in the
+last slot. Measured across 973 catch-up packets, mean-square difference
+between slots, computed *within capture* and corrected for slot 1's coarser
+quantization, as a fraction of the full-window value:
+
+| pair | mean \|Δ\|² | / asymptote |
+|---|---|---|
+| seam `a2[N]`→`a0[N+1]` | 13.80 | **0.572** ← smallest gap in the stream |
+| `a0`→`a1` | 14.64 | 0.607 |
+| `a1`→`a2` | 16.39 | 0.680 |
+| `a0`→`a2` | 20.87 | 0.866 |
+| one whole window | 24.10 | 1.000 ← saturated asymptote |
+
+The ordering is strictly monotone in slot index, and the decisive fact is the
+seam. **If a packet held three consecutive samples taken at the start of its
+window, the step from its last slot to the next packet's first slot would be
+the largest gap in the stream — not the smallest.** A paired sign test over
+894 tick-contiguous packet pairs puts the seam below the within-packet
+`a0`→`a2` gap in 67.1% of pairs (z = +10.2).
+
+What is **not** resolved is each slot's exact fractional position. The
+accelerometer structure function saturates before one window elapses, so the
+map from mean-square difference back to elapsed time is compressive; and the
+corpus is stationary (per-axis noise σ ≈ 2.0 counts, flat structure function
+at every lag from 20 ms to 150 ms). The gaps can be **ordered** but not
+**measured**.
+
+Two analysis errors are worth recording, because both produced confident wrong
+numbers:
+
+* An earlier reading — "intra-packet 3.7 counts vs inter-packet 3.0 counts
+  proves spanning" — was **not supported**. Raw difference magnitudes in a
+  stationary corpus are noise-dominated; that comparison had no power. The
+  conclusion happened to survive, on entirely different evidence.
+* Pooling the statistic **across** captures inflated `a0`→`a2` to 1.43 of the
+  asymptote — an impossible value for a saturating structure function, and the
+  signal that something was wrong. Different captures rest at different
+  orientations; pooling mixed populations. It appeared as a y-axis-only
+  anomaly and briefly looked like a slot-2 scale error. Within capture it
+  vanishes entirely. Note that byte-exact re-encoding proves the bit layout is
+  a correct bijection but **not** that each lane is assigned to the right
+  (slot, axis) — a permutation would round-trip perfectly too.
+
+Gyro placement is genuinely unresolved. Its paired sign test came out weak and
+with the *opposite* sign to acceleration (z = −4.0), which is what quarter-point
+spacing would produce, since that makes the within-packet and seam gaps equal.
+A stationary gyro is pure noise, so this is near the floor either way.
+
+Implementation: `ns2_ds5_motion40` buffers timestamped samples in a ring and
+selects at build time, when the window length is finally known. Acceleration
+anchors the ends — oldest sample first, newest last — and spaces the interior
+evenly. Gyro takes the quarter points, which also give the unbiased
+trapezoidal estimate of the window's integral; the console integrates gyro, so
+the mean matters more than the freshness of either endpoint.
+
+A second defect surfaced while fixing this: the emit window and the
+console-visible tick timeline are **two different clocks**. Reporting `elapsed`
+from the poll time rather than from the newest sample sent would claim a span
+wider than the samples cover, and the error would accumulate against the
+console's clock. `last_emit_us` now advances by exactly the elapsed reported
+(so truncation remainders carry forward instead of drifting), while
+`last_sample_us` separately bounds the next selection window so no sample can
+ever appear in two packets.
+
+### ✅ Decision 3: enabling replaces the motion block
+
+Confirmed by a corpus-wide correlation with **zero exceptions across 32
+captures**: the emission mode follows the BLE notification interval, not a host
+feature mask.
+
+| notification interval | captures | mode |
+|---|---|---|
+| 6.0 ticks (7.5 ms) | 15 | always interleaved `0x1E` + `0x28` |
+| ≥ 8.0 ticks (10 ms) | 17 | always `0x28`-only |
+
+The interval captures were checked to confirm they are not filtered — they
+genuinely contain only `0x28`. Since only the `0x28`-only mode has a resolved
+elapsed relation (tick delta since the previous `0x28`, 1196/1196), sending
+`0x1E` alongside would put us in the mode whose elapsed semantics are still
+unknown.
+
+**Residual unverified risk:** our USB poll rate is ~1 ms, which corresponds to
+no genuine BLE interval in the table. Mitigating precedent: the `0x1E` path
+already repeats its latest carrier across polls and is console-validated, and
+the `0x28` path repeats identically. This is the main thing the hardware A/B
+is for.
+
 ## Consequence for a synthesizer
 
 The carrier, chart hysteresis, saturation trigger, prefix slice, epoch, all three
@@ -283,6 +415,10 @@ changes what a decoder can recover.
 python tools\test_ns2_motion_packet.py    # 14 tests: byte-exact replay, chart
                                           # hysteresis, scale normalization
 python tools\test_ns2_motion_carrier.py   # 20 tests: codec + firmware parity
+
+# Where in the emit window each IMU slot sits -- the evidence behind the
+# slot-placement policy in ns2_ds5_motion40.c (Decision 2 above).
+python tools\ns2_motion40_slot_timing.py
 
 # Structural comparison against an input-matched genuine stream.
 python tools\ns2_motion_synth.py dumps\motion\2026-07-24\ds5-pro2-paired-pitch-2026-07-22.jsonl
