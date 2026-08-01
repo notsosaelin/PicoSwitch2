@@ -224,7 +224,11 @@ void ns2_ds5_motion40_set_fill(uint8_t fill);
 
 // Emitted packet count, starved intervals, and saturated axes -- the three
 // numbers that distinguish "working" from "well-formed but wrong".
+// `overlong` counts windows that outran the high-rate elapsed band and were
+// dropped rather than clamped: elapsed selects the layout, so a longer span
+// would be decoded with the wrong field map.
 void ns2_ds5_motion40_get_counters(uint32_t *emitted, uint32_t *starved,
+                                   uint32_t *overlong,
                                    uint32_t *saturated_accel,
                                    uint32_t *saturated_gyro);
 

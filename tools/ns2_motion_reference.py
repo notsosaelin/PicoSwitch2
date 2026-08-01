@@ -291,6 +291,34 @@ def decode_motion40(pdu: bytes, previous_tick: int | None) -> Motion40Sample:
     sensor_status = pdu[3]
     tick_delta = None if previous_tick is None else (tick - previous_tick) & 0x0FFF
     payload = pdu[4:40]
+
+    # PACKING MODE IS THE LAYOUT DISCRIMINATOR, not the elapsed count. Elapsed
+    # only chooses among the mode-3 cadence layouts. Five packets in the corpus
+    # carry mode 0 with status 0x00, elapsed 0, tick 127 identical across three
+    # captures, and 13-15 non-zero bytes of 40 -- a fixed marker, not motion.
+    # Decoding them with the high-rate map yields nonsense (gyro y exactly
+    # 16384 every time) and silently inflated the "high-rate" corpus by five.
+    # Their real structure is unknown; classify them rather than mislabel them.
+    packing_mode = _unsigned_bits(payload, 0, 2)
+    if packing_mode != 3:
+        return Motion40Sample(
+            tick=tick,
+            elapsed_nibble=elapsed_nibble,
+            elapsed_ticks=elapsed_ticks,
+            sensor_status=sensor_status,
+            tick_delta=tick_delta,
+            layout=f"mode{packing_mode}",
+            accel=(),
+            gyro=(),
+            packing_mode=packing_mode,
+            prefix_lane2_low2=0,
+            prefix_carrier=(0, 0, 0),
+            prefix_widths=(0, 0, 0),
+            prefix_precision_shift=0,
+            tail_value=0,
+            tail_width=0,
+        )
+
     if elapsed_ticks >= 15:
         # Catch-up layout: accel14, gyro16, accel13, gyro16, accel14.
         # The middle acceleration sample is half-resolution. Both gyros are

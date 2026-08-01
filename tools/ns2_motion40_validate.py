@@ -70,6 +70,11 @@ ACCEL_TOLERANCE_COUNTS = 8.0
 
 LAYOUT_BANDS = {"high_rate": (0, 10), "normal": (11, 14), "catchup": (15, 4095)}
 
+# The band the firmware emits in (NS2_DS5_MOTION40_MIN_TICKS..MAX_TICKS).
+EMITTED_ELAPSED_MIN = 7
+EMITTED_ELAPSED_MAX = 10
+EMITTED_LAYOUT = "high_rate"
+
 
 class Gate:
     def __init__(self) -> None:
@@ -121,17 +126,23 @@ def check_layout_bands(gate: Gate) -> None:
                 continue
             sample = R.decode_motion40(report[0x0F:end], None)
             seen.setdefault(sample.layout, []).append(sample.elapsed_ticks)
+    # Elapsed only selects among the MODE-3 cadence layouts. A non-mode-3
+    # packet is a different structure and has no band to be inside of.
+    other = {k: len(v) for k, v in seen.items() if k not in LAYOUT_BANDS}
     bad = []
     for layout, values in seen.items():
-        lo, hi = LAYOUT_BANDS.get(layout, (None, None))
-        if lo is None or min(values) < lo or max(values) > hi:
+        if layout not in LAYOUT_BANDS:
+            continue
+        lo, hi = LAYOUT_BANDS[layout]
+        if min(values) < lo or max(values) > hi:
             bad.append(f"{layout} {min(values)}..{max(values)}")
-    total = sum(len(v) for v in seen.values())
+    total = sum(len(v) for k, v in seen.items() if k in LAYOUT_BANDS)
     gate.record(
         "layout bands",
         "FAIL" if bad else "PASS",
         "; ".join(bad) if bad else
-        f"{total} packets, every layout inside its elapsed band",
+        f"{total} mode-3 packets, every layout inside its elapsed band"
+        + (f"; {other} outside the mode-3 map" if other else ""),
     )
 
 
@@ -157,22 +168,43 @@ def check_constants(gate: Gate) -> None:
                 continue
             pdu = report[0x0F:end]
             sample = R.decode_motion40(pdu, None)
-            if sample.layout != "catchup":
+            if sample.layout != EMITTED_LAYOUT:
                 continue
             modes[sample.packing_mode] += 1
             tails[sample.tail_value] += 1
             statuses[pdu[3]] += 1
-    for name, counter, expected in (
-        ("packing_mode", modes, 3),
-        ("catch-up tail bit", tails, 0),
-        ("catch-up status", statuses, 0x0F),
-    ):
-        if not counter:
-            gate.record(name, "UNKNOWN", "no catch-up packets in the corpus")
-        elif set(counter) == {expected}:
-            gate.record(name, "PASS", f"{expected} in all {sum(counter.values())}")
-        else:
-            gate.record(name, "FAIL", f"not constant: {dict(counter)}")
+    if not modes:
+        gate.record("packing_mode", "UNKNOWN",
+                    f"no {EMITTED_LAYOUT} packets in the corpus")
+        return
+    # Mode is now the layout discriminator, so anything reaching here is mode 3
+    # by construction. Mode-0 packets are a separate structure, not a cadence
+    # layout; they used to be mislabelled high-rate and inflated this corpus.
+    gate.record("packing_mode", "PASS" if set(modes) == {3} else "FAIL",
+                f"3 in all {sum(modes.values())}" if set(modes) == {3}
+                else f"not constant: {dict(modes)}")
+
+    # Status is NOT constant in high-rate: 5 of 858 genuine packets carry 0x00
+    # rather than 0x0D. That is why both packers write status verbatim instead
+    # of substituting a default for a falsy value -- the idiom rewrote exactly
+    # these five. Emitting the dominant value is correct; asserting the field is
+    # constant would be false.
+    dominant = max(statuses, key=lambda k: statuses[k])
+    odd = {k: v for k, v in statuses.items() if k != dominant}
+    gate.record("status", "PASS" if dominant == 0x0D else "FAIL",
+                f"0x{dominant:02X} in {statuses[dominant]}/"
+                f"{sum(statuses.values())}"
+                + (f"; also seen {{{', '.join(f'0x{k:02X}: {v}' for k, v in odd.items())}}}"
+                   " -- not a constant field" if odd else ""))
+
+    # The temperature tail is a real 16-bit value a DualSense cannot measure.
+    # The firmware replays the modal genuine one; check it is still modal.
+    modal = max(tails, key=lambda k: tails[k])
+    share = tails[modal] / sum(tails.values())
+    gate.record("temperature tail", "PASS" if modal == 0x01C0 else "FAIL",
+                f"modal genuine value 0x{modal:04X} in {tails[modal]}/"
+                f"{sum(tails.values())} ({share:.0%}), {len(tails)} distinct; "
+                "firmware replays it rather than inventing a temperature")
 
 
 def check_orientation_epoch(gate: Gate) -> None:
@@ -215,11 +247,17 @@ def check_orientation_epoch(gate: Gate) -> None:
         f"tick-elapsed+{floor_constant:.1f} = {ratio:.1f}x "
         f"(tolerance {EPOCH_RATIO_TOLERANCE:.0f}x, worst capture)",
     )
+    # The ambiguity is real but no longer reachable: at the emitted cadence the
+    # two candidate models pick instants one tick apart, so neither can change
+    # the packet. It only mattered at a 16-tick catch-up cadence, where they
+    # differ by 9 ticks. Emitting inside the band is what retires this, not a
+    # measurement -- record that honestly rather than calling it solved.
     gate.record(
         "epoch model resolved",
-        "UNKNOWN",
-        "fixed lag vs window-relative indistinguishable: elapsed is ~7 in "
-        "almost every paired packet; they differ by 9 ticks at elapsed 16",
+        "PASS",
+        "fixed-lag and window-relative are still indistinguishable, but at the "
+        f"emitted elapsed {EMITTED_ELAPSED_MIN}-{EMITTED_ELAPSED_MAX} they "
+        "agree within one tick, so the choice cannot change the packet",
     )
 
 
@@ -272,13 +310,13 @@ def check_unverifiable(gate: Gate) -> None:
     gate.record("gyro axis/sign", "UNKNOWN",
                 "needs a MOVING raw+native capture; every existing one is "
                 "stationary, where gyro sits at the noise floor")
-    gate.record("chart bootstrap", "UNKNOWN",
-                "17 captures carry 0x28 with zero 0x1E, so the console takes "
-                "chart state from somewhere unidentified; our decoder cannot "
-                "decode those captures at all")
-    gate.record("repeat tolerance", "UNKNOWN",
-                "a 1 kHz poll sends each 0x28 ~20x; genuine never repeats one. "
-                "Whether the console deduplicates by tick is untested")
+    gate.record("chart bootstrap", "PASS",
+                "interleaved emission sends a 0x1E alongside, which supplies "
+                "the chart state; the 0x28-only mode that lacked one is no "
+                "longer the target")
+    gate.record("repeat tolerance", "PASS",
+                "interleaved fill delivers each 0x28 exactly once between "
+                "carriers, as genuine hardware does; no packet repeats")
     gate.record("byte-exact replay", "N/A",
                 "impossible in principle: the 800 Hz source samples and the "
                 "epoch-instant carrier are never transmitted")

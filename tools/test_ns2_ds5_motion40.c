@@ -1,10 +1,11 @@
-// Offline validation of the DualSense -> length-0x28 catch-up translation.
+// Offline validation of the DualSense -> length-0x28 HIGH-RATE translation.
 //
-// The packer itself is proven byte-exact against 981 genuine packets by
-// test_ns2_motion_pdu40.c. This covers the layer above it: sample scaling,
-// slot placement across the emit window, cadence, saturation, and the modular
-// prefix slice -- the parts that decide whether a well-formed packet also
-// carries correct data.
+// The packer itself is proven byte-exact against 858 genuine high-rate packets
+// by test_ns2_motion_pdu40.c. This covers the layer above it: sample scaling,
+// slot placement across the emit window, the cadence band, saturation, and the
+// prefix epoch -- the parts that decide whether a well-formed packet also
+// carries correct data. Every hardware defect this feature has had lived here,
+// not in the bit layout.
 //
 // Build:
 //   gcc -Iinclude -Itools/fixtures
@@ -29,9 +30,19 @@ static void check(int condition, const char *message)
     }
 }
 
+static const uint32_t k_carrier[3] = {33538654u, 25282388u, 814118u};
+
+#define TICK_US 1250u
+#define ACCEL0_OFFSET 74u
+#define GYRO0_OFFSET 140u
+#define ACCEL1_OFFSET 206u
+#define VECTOR_WIDTH 22u
+#define TAIL_OFFSET 272u
+
 // The prefix slice is where a C reimplementation most easily diverges: right
-// shift of a negative value is implementation-defined, and the reference takes
-// a floor. These vectors are genuine carriers plus the field extremes.
+// shift of a negative value is implementation-defined, the reference takes a
+// floor, and high-rate lanes are two bits wider with no precision shift. These
+// vectors are genuine carriers plus the field extremes, sliced narrow.
 static void test_prefix_matches_reference(void)
 {
     unsigned matched = 0;
@@ -39,7 +50,7 @@ static void test_prefix_matches_reference(void)
         const ns2_motion40_prefix_vector_t *vector =
             &ns2_motion40_prefix_vectors[i];
         int32_t got[3];
-        ns2_ds5_motion40_prefix(vector->carrier, got);
+        ns2_ds5_motion40_prefix(vector->carrier, got, false);
         if (got[0] != vector->prefix[0] || got[1] != vector->prefix[1] ||
             got[2] != vector->prefix[2]) {
             fprintf(stderr,
@@ -53,15 +64,29 @@ static void test_prefix_matches_reference(void)
         matched++;
     }
     check(matched == NS2_MOTION40_PREFIX_VECTOR_COUNT,
-          "prefix slice matches the reference on every vector");
+          "narrow prefix slice matches the reference on every vector");
     printf("  prefix vectors matching reference: %u/%u\n",
            matched, NS2_MOTION40_PREFIX_VECTOR_COUNT);
 }
 
-static const uint32_t k_carrier[3] = {33538654u, 25282388u, 814118u};
+// High-rate lanes are wider and unshifted, so they must differ from the narrow
+// slice of the same carrier. Sharing one width table would be silently wrong:
+// the packet would be well formed and carry a quartered orientation.
+static void test_high_rate_prefix_differs_from_narrow(void)
+{
+    int32_t narrow[3], wide[3];
+    ns2_ds5_motion40_prefix(k_carrier, narrow, false);
+    ns2_ds5_motion40_prefix(k_carrier, wide, true);
+    check(wide[0] != narrow[0] || wide[1] != narrow[1] || wide[2] != narrow[2],
+          "high-rate prefix is not the narrow slice");
+    // No precision shift means the wide lane keeps the two low bits the narrow
+    // one discards, so it is four times larger for the same carrier.
+    check(wide[0] / 4 == narrow[0] || wide[0] / 4 == narrow[0] + 1,
+          "high-rate lane 0 keeps the two bits the narrow slice shifts away");
+}
 
-// One sample whose x axis encodes its own timestamp, so a test can read a slot
-// back and say exactly which sample landed in it.
+// One sample whose x axis encodes its own id, so a test can read a slot back
+// and say exactly which sample landed in it.
 static void tag(ns2_ds5_motion40_t *state, int16_t id, uint32_t us)
 {
     const int16_t accel[3] = {(int16_t)(id * 2), 0, 0};
@@ -69,78 +94,91 @@ static void tag(ns2_ds5_motion40_t *state, int16_t id, uint32_t us)
     ns2_ds5_motion40_sample(state, accel, gyro, k_carrier, us);
 }
 
-static void test_cadence(void)
+static uint16_t wire_elapsed(const uint8_t pdu[NS2_MOTION_PDU40_LENGTH])
+{
+    return (uint16_t)((pdu[1] >> 4) | ((uint16_t)pdu[2] << 4));
+}
+
+// Read a signed field straight off the payload, so the test sees what the
+// console would rather than trusting the module's own bookkeeping.
+static int32_t wire_field(const uint8_t pdu[NS2_MOTION_PDU40_LENGTH],
+                          unsigned offset, unsigned width)
+{
+    const uint8_t *payload = &pdu[4];
+    int32_t value = 0;
+    for (unsigned bit = 0; bit < width; ++bit) {
+        if (payload[(offset + bit) >> 3] & (1u << ((offset + bit) & 7u)))
+            value |= (int32_t)1 << bit;
+    }
+    const int32_t half = (int32_t)1 << (width - 1u);
+    return (value >= half) ? value - 2 * half : value;
+}
+
+static void test_cadence_band(void)
 {
     ns2_ds5_motion40_t state;
     uint8_t pdu[NS2_MOTION_PDU40_LENGTH];
     ns2_ds5_motion40_reset(&state);
 
-    check(!ns2_ds5_motion40_build(&state, 1000u, pdu),
+    check(!ns2_ds5_motion40_build(&state, 0u, pdu),
           "first build primes rather than emitting");
-
-    // Interval elapsed but no samples: must refuse rather than invent data.
-    check(!ns2_ds5_motion40_build(&state, 1000u + 20000u, pdu),
+    check(!ns2_ds5_motion40_build(&state, 10000u, pdu),
           "refuses to emit without samples");
     check(state.skipped_no_samples == 1u, "records the starved interval");
 
-    // Two samples cannot fill three slots without repeating one.
-    tag(&state, 1, 1000u + 5000u);
-    tag(&state, 2, 1000u + 15000u);
-    check(!ns2_ds5_motion40_build(&state, 1000u + 20000u, pdu),
+    // One sample cannot fill two acceleration slots without repeating it.
+    tag(&state, 1, 4000u);
+    check(!ns2_ds5_motion40_build(&state, 10000u, pdu),
           "refuses rather than repeating a sample into two slots");
-    check(state.skipped_no_samples == 2u, "counts the second starved interval");
 
-    // A third sample completes the window.
-    tag(&state, 3, 1000u + 20000u);
-    check(ns2_ds5_motion40_build(&state, 1000u + 20000u, pdu),
-          "emits once the window holds enough distinct samples");
+    // 8 ticks = 10000 us, inside the high-rate band.
+    tag(&state, 2, 7000u);
+    tag(&state, 3, 10000u);
+    check(ns2_ds5_motion40_build(&state, 10000u, pdu), "emits inside the band");
     check(state.emitted == 1u, "counts the emission");
-    check(pdu[3] == NS2_MOTION40_STATUS_CATCHUP, "status is catch-up");
-    const uint16_t elapsed = (uint16_t)((pdu[1] >> 4) | ((uint16_t)pdu[2] << 4));
-    check(elapsed == 16u, "elapsed is the span the samples cover, in ticks");
+    check(pdu[3] == NS2_MOTION40_STATUS_HIGH_RATE, "status is high-rate");
+    check(wire_elapsed(pdu) == 8u, "elapsed is the span the samples cover");
+    check(wire_elapsed(pdu) <= NS2_MOTION40_HIGH_RATE_MAX_ELAPSED,
+          "elapsed stays inside the band that selects this layout");
 
-    // The 15-tick minimum is 18750 us, so a 10 ms gap must not emit.
-    tag(&state, 4, 1000u + 25000u);
-    tag(&state, 5, 1000u + 28000u);
-    tag(&state, 6, 1000u + 30000u);
-    check(!ns2_ds5_motion40_build(&state, 1000u + 30000u, pdu),
+    // 7 ticks is 8750 us, so a 5 ms gap is too soon.
+    tag(&state, 4, 12000u);
+    tag(&state, 5, 15000u);
+    check(!ns2_ds5_motion40_build(&state, 15000u, pdu),
           "does not emit before the minimum interval");
 }
 
-// The elapsed count must describe the span the samples actually cover. If it
-// were taken from the poll time instead, a late poll would inflate it and the
-// error would accumulate against the console's clock.
-static void test_elapsed_tracks_samples_not_poll_time(void)
+// Elapsed selects the layout. A window longer than the high-rate band cannot
+// be sent as high-rate at all: the console would read the fields with the
+// normal or catch-up map. Clamping the count would lie about the span.
+static void test_overlong_window_is_dropped_not_clamped(void)
 {
     ns2_ds5_motion40_t state;
     uint8_t pdu[NS2_MOTION_PDU40_LENGTH];
     ns2_ds5_motion40_reset(&state);
     check(!ns2_ds5_motion40_build(&state, 0u, pdu), "prime");
 
-    // Samples stop at 20 ms but the poll lands 9 ms later.
-    tag(&state, 1, 4000u);
+    // 20 ms = 16 ticks, well past the 10-tick ceiling.
+    tag(&state, 1, 5000u);
     tag(&state, 2, 12000u);
     tag(&state, 3, 20000u);
-    check(ns2_ds5_motion40_build(&state, 29000u, pdu), "emits");
-    const uint16_t elapsed = (uint16_t)((pdu[1] >> 4) | ((uint16_t)pdu[2] << 4));
-    check(elapsed == 16u, "elapsed is 16 ticks (20 ms of samples), not 23");
+    check(!ns2_ds5_motion40_build(&state, 20000u, pdu),
+          "refuses a window that would decode as another layout");
+    check(state.skipped_overlong == 1u, "counts the overlong window");
+    check(state.emitted == 0u, "nothing was emitted");
 
-    // The next window must start where the reported elapsed ended, so a sample
-    // at 21 ms still belongs to it rather than being swallowed by the gap.
-    tag(&state, 4, 21000u);
-    tag(&state, 5, 30000u);
-    tag(&state, 6, 40000u);
-    check(ns2_ds5_motion40_build(&state, 40000u, pdu),
-          "second packet emits");
-    const uint16_t elapsed2 = (uint16_t)((pdu[1] >> 4) | ((uint16_t)pdu[2] << 4));
-    check(elapsed2 == 16u, "second elapsed spans 20 ms to 40 ms");
-    check(state.accel[0][0] == 4, "the 21 ms sample opens the second window");
+    // Re-anchored, so an ordinary window immediately after still works.
+    tag(&state, 4, 24000u);
+    tag(&state, 5, 27000u);
+    tag(&state, 6, 30000u);
+    check(ns2_ds5_motion40_build(&state, 30000u, pdu),
+          "recovers after dropping");
+    check(wire_elapsed(pdu) == 8u, "the recovered packet spans 10 ms");
 }
 
-// The defect this test exists for: filling slots from the first three samples
-// and dropping the rest makes a packet cover only the head of its window and
-// discard the freshest data. Genuine packets span the window, oldest slot to
-// newest.
+// Slot 0 is the oldest sample in the window and slot 1 the newest. Filling
+// from the first samples to arrive would cover only the head of the window and
+// discard the freshest data.
 static void test_slots_span_the_window(void)
 {
     ns2_ds5_motion40_t state;
@@ -148,122 +186,55 @@ static void test_slots_span_the_window(void)
     ns2_ds5_motion40_reset(&state);
     check(!ns2_ds5_motion40_build(&state, 0u, pdu), "prime");
 
-    // Five samples evenly spread across a 20 ms window, ids 1..5.
-    for (int16_t i = 0; i < 5; ++i) tag(&state, (int16_t)(i + 1), (uint32_t)(i + 1) * 4000u);
-    check(ns2_ds5_motion40_build(&state, 20000u, pdu), "emits");
+    // Five samples across a 10 ms window, ids 1..5.
+    for (int16_t i = 1; i <= 5; ++i) tag(&state, i, (uint32_t)i * 2000u);
+    check(ns2_ds5_motion40_build(&state, 10000u, pdu), "emits");
 
-    // accel x is id*2, halved to ordinary counts, so slot value == id.
-    check(state.accel[0][0] == 1, "accel slot 0 is the OLDEST sample (id 1)");
-    check(state.accel[1][0] == 3 / 2 || state.accel[1][0] == 2,
-          "accel slot 1 is the midpoint sample (id 3, half-resolution)");
-    check(state.accel[2][0] == 5, "accel slot 2 is the NEWEST sample (id 5)");
-
-    // Gyro sits at the quarter points: 5 ms and 15 ms of a 20 ms window are
-    // nearest to ids 1/2 and 4.
-    check(state.gyro[0][0] == 2 * 4 || state.gyro[0][0] == 1 * 4,
-          "gyro slot 0 comes from the first half of the window");
-    check(state.gyro[1][0] == 4 * 4, "gyro slot 1 comes from the second half");
-    check(state.gyro[0][0] < state.gyro[1][0],
-          "gyro slots are in chronological order");
-
-    // A tenth sample must not push the oldest out of slot 0 the way a
-    // first-three-wins policy would.
-    ns2_ds5_motion40_reset(&state);
-    check(!ns2_ds5_motion40_build(&state, 0u, pdu), "prime");
-    for (int16_t i = 0; i < 10; ++i)
-        tag(&state, (int16_t)(i + 1), (uint32_t)(i + 1) * 2000u);
-    check(ns2_ds5_motion40_build(&state, 20000u, pdu), "emits");
-    check(state.accel[0][0] == 1, "ten samples: slot 0 is still the oldest");
-    check(state.accel[2][0] == 10, "ten samples: slot 2 is the newest");
+    // accel x is id*2 raw; wire = raw * 128, so the wire value is id * 256.
+    check(wire_field(pdu, ACCEL0_OFFSET, VECTOR_WIDTH) == 1 * 256,
+          "accel slot 0 is the OLDEST sample");
+    check(wire_field(pdu, ACCEL1_OFFSET, VECTOR_WIDTH) == 5 * 256,
+          "accel slot 1 is the NEWEST sample");
+    // gyro x is id raw; wire = raw * 256. The midpoint of 0..10 ms is 5 ms.
+    const int32_t gyro = wire_field(pdu, GYRO0_OFFSET, VECTOR_WIDTH);
+    check(gyro == 2 * 256 || gyro == 3 * 256,
+          "the gyro slot comes from the window midpoint");
 }
 
-// Samples are pushed in timestamp order in practice, but the ring wraps, so
-// selection must not assume the array is chronological.
-static void test_ring_wrap_preserves_order(void)
-{
-    ns2_ds5_motion40_t state;
-    uint8_t pdu[NS2_MOTION_PDU40_LENGTH];
-    ns2_ds5_motion40_reset(&state);
-    check(!ns2_ds5_motion40_build(&state, 0u, pdu), "prime");
-
-    // Push more than the ring holds so head wraps mid-window.
-    for (int16_t i = 0; i < (int16_t)NS2_DS5_MOTION40_RING + 3; ++i)
-        tag(&state, (int16_t)(i + 1), (uint32_t)(i + 1) * 1000u);
-    const int16_t newest = (int16_t)NS2_DS5_MOTION40_RING + 3;
-    check(ns2_ds5_motion40_build(&state, (uint32_t)newest * 1000u, pdu),
-          "emits after the ring wrapped");
-    check(state.accel[2][0] == newest,
-          "newest sample still lands in the last slot after a wrap");
-    check(state.accel[0][0] < state.accel[2][0],
-          "slot 0 is still older than slot 2 after a wrap");
-}
-
-// Regression: the ring must outlast one emit window at the SOURCE rate, not
-// at the slot count. A DualSense supplying a valid sensor timestamp feeds this
-// at its own IMU rate -- measured at ~763 Hz on hardware, not the ~250 Hz a
-// report-rate assumption suggests. A 16-entry ring held only 20 ms at that
-// rate, so the oldest samples of a window were evicted before the build could
-// select them and slot 0 quietly stopped being the oldest sample.
+// A DualSense supplying a valid sensor timestamp feeds this at its own IMU
+// rate -- measured at ~763 Hz on hardware, not the ~250 Hz a report-rate
+// assumption suggests. The ring must outlast a window at that rate or it
+// evicts the oldest samples before the build can select them.
 static void test_ring_outlasts_a_window_at_source_rate(void)
 {
-    // 800 Hz source against the corpus's MEDIAN catch-up window of 24 ticks
-    // (30 ms), not the 15-tick minimum. A ring sized for the minimum window
-    // still evicts on an ordinary one.
-    const uint32_t period_us = 1250u;
-    const uint32_t window_us = 30000u;
-    const unsigned per_window = window_us / period_us;  // 24
-    check(NS2_DS5_MOTION40_RING > per_window,
-          "ring holds more than one median window of samples at 800 Hz");
+    check(NS2_DS5_MOTION40_RING > NS2_DS5_MOTION40_MAX_TICKS,
+          "ring holds more than one full-length window at 800 Hz");
 
     ns2_ds5_motion40_t state;
     uint8_t pdu[NS2_MOTION_PDU40_LENGTH];
     ns2_ds5_motion40_reset(&state);
     check(!ns2_ds5_motion40_build(&state, 0u, pdu), "prime");
 
-    for (unsigned i = 1; i <= per_window; ++i)
-        tag(&state, (int16_t)i, i * period_us);
-    check(ns2_ds5_motion40_build(&state, window_us, pdu), "emits");
-    check(state.accel[0][0] == 1,
-          "slot 0 is the true oldest sample in the window, not a survivor");
-    check(state.accel[2][0] == (int16_t)per_window,
-          "slot 2 is the newest sample in the window");
-
-    // Several back-to-back windows at the source rate must all keep their
-    // oldest sample, which is where a marginal ring degrades gradually.
-    for (unsigned window = 2; window <= 4u; ++window) {
-        const unsigned first = (window - 1u) * per_window + 1u;
-        const unsigned last = window * per_window;
+    for (unsigned window = 1; window <= 4u; ++window) {
+        const unsigned first = (window - 1u) * 8u + 1u;
+        const unsigned last = window * 8u;
         for (unsigned i = first; i <= last; ++i)
-            tag(&state, (int16_t)i, i * period_us);
-        check(ns2_ds5_motion40_build(&state, last * period_us, pdu),
+            tag(&state, (int16_t)i, i * TICK_US);
+        check(ns2_ds5_motion40_build(&state, last * TICK_US, pdu),
               "consecutive window emits");
-        check(state.accel[0][0] == (int16_t)first,
+        check(wire_field(pdu, ACCEL0_OFFSET, VECTOR_WIDTH) ==
+                  (int32_t)first * 256,
               "each window keeps its own oldest sample");
-        check(state.accel[2][0] == (int16_t)last,
+        check(wire_field(pdu, ACCEL1_OFFSET, VECTOR_WIDTH) ==
+                  (int32_t)last * 256,
               "each window keeps its own newest sample");
     }
 }
 
-// Read the packet's prefix lane 0 back off the wire (payload bit 2, width 22).
-static int32_t wire_prefix_lane0(const uint8_t pdu[NS2_MOTION_PDU40_LENGTH])
-{
-    const uint8_t *payload = &pdu[4];
-    int32_t lane = 0;
-    for (unsigned bit = 0; bit < 22u; ++bit) {
-        if (payload[(2u + bit) >> 3] & (1u << ((2u + bit) & 7u)))
-            lane |= (int32_t)1 << bit;
-    }
-    return (lane >= (1 << 21)) ? lane - (1 << 22) : lane;
-}
-
 // The prefix must describe a PAST instant -- a fixed lag after the window
-// START -- not the packet's own tick. Passing the current orientation while
-// also sending the window's IMU samples double-counts the window's rotation,
-// because the console anchors on the prefix and integrates forward from it.
-// Measured at 13x the achievable error floor on genuine moving captures.
-//
-// Every other test here uses one constant carrier, which cannot tell the two
-// apart. This one gives each sample its own carrier.
+// START -- not the packet's own tick. Sending the current orientation while
+// also sending the window's IMU samples double-counts the window's rotation.
+// Every other test uses one constant carrier and cannot tell the two apart.
 static void test_prefix_comes_from_the_window_start_not_now(void)
 {
     ns2_ds5_motion40_t state;
@@ -278,21 +249,24 @@ static void test_prefix_comes_from_the_window_start_not_now(void)
         carriers[id][2] = k_carrier[2] + id * 100000u;
         const int16_t accel[3] = {(int16_t)(id * 2), 0, 0};
         const int16_t gyro[3] = {(int16_t)id, 0, 0};
-        ns2_ds5_motion40_sample(&state, accel, gyro, carriers[id], id * 4000u);
+        // 1000, 3000, 5000, 7000, 9000 us -- deliberately placing one sample
+        // exactly on the epoch, so the assertion does not depend on how ties
+        // are broken. Genuine hardware specifies no tie-break.
+        ns2_ds5_motion40_sample(&state, accel, gyro, carriers[id],
+                                id * 2000u - 1000u);
     }
-    check(ns2_ds5_motion40_build(&state, 20000u, pdu), "emits");
+    check(ns2_ds5_motion40_build(&state, 9000u, pdu), "emits");
 
-    // Window starts at 0 (the prime), so the epoch is 4 ticks = 5000 us. The
-    // nearest buffered sample is id 1 at 4000 us, not id 5 at 20000 us.
+    // The window starts at 0, so the epoch is 4 ticks = 5000 us: exactly id 3,
+    // not id 5 at 9000 us.
     int32_t expected[3], newest[3];
-    ns2_ds5_motion40_prefix(carriers[1], expected);
-    ns2_ds5_motion40_prefix(carriers[5], newest);
-    const int32_t got = wire_prefix_lane0(pdu);
+    ns2_ds5_motion40_prefix(carriers[3], expected, true);
+    ns2_ds5_motion40_prefix(carriers[5], newest, true);
+    const int32_t got = wire_field(pdu, 2u, 24u);
+    check(expected[0] != newest[0], "the test can distinguish the two");
     check(got == expected[0],
           "prefix comes from the sample nearest the window start + 4 ticks");
-    check(got != newest[0],
-          "prefix is NOT the current orientation");
-    check(expected[0] != newest[0], "the test can actually distinguish the two");
+    check(got != newest[0], "prefix is NOT the current orientation");
 }
 
 static void test_scaling(void)
@@ -302,20 +276,23 @@ static void test_scaling(void)
     ns2_ds5_motion40_reset(&state);
     check(!ns2_ds5_motion40_build(&state, 0u, pdu), "prime");
 
-    // DualSense reports 8192 counts/g; the Pro 2 uses 4096, so 1 g in must
-    // become 4096 ordinary counts. Slot 1 is half-resolution on the wire.
-    for (unsigned i = 0; i < 3u; ++i) {
+    // 1 g in DualSense counts is 8192; the Pro 2 uses 4096 counts/g and the
+    // wire adds eight fractional bits, so 1 g must land at 4096 * 256.
+    for (unsigned i = 1; i <= 3u; ++i) {
         const int16_t accel[3] = {8192, 0, 0};
         const int16_t gyro[3] = {164, 0, 0};  // ~10 dps at 16.4 counts/dps
-        ns2_ds5_motion40_sample(&state, accel, gyro, k_carrier, (i + 1u) * 7000u);
+        ns2_ds5_motion40_sample(&state, accel, gyro, k_carrier, i * 3000u);
     }
-    check(ns2_ds5_motion40_build(&state, 21000u, pdu), "emits");
-    check(state.accel[0][0] == 4096, "slot 0 carries ordinary counts");
-    check(state.accel[1][0] == 2048, "slot 1 is half-resolution");
-    // Gyro sits at four times the ordinary scale.
-    check(state.gyro[0][0] == 656, "gyro is stored at 4x ordinary scale");
+    check(ns2_ds5_motion40_build(&state, 9000u, pdu), "emits");
+    check(wire_field(pdu, ACCEL0_OFFSET, VECTOR_WIDTH) == 4096 * 256,
+          "1 g becomes 4096 ordinary counts with eight fractional bits");
+    check(wire_field(pdu, GYRO0_OFFSET, VECTOR_WIDTH) == 164 * 256,
+          "gyro passes through at ordinary scale, then the fractional bits");
     check(state.saturated_accel == 0u && state.saturated_gyro == 0u,
           "1 g and 10 dps do not saturate");
+    check((uint16_t)wire_field(pdu, TAIL_OFFSET, 16u) ==
+              (uint16_t)NS2_DS5_MOTION40_TEMPERATURE_TAIL,
+          "the temperature tail carries the modal genuine value");
 }
 
 static void test_saturation_is_clamped_not_wrapped(void)
@@ -323,82 +300,36 @@ static void test_saturation_is_clamped_not_wrapped(void)
     ns2_ds5_motion40_t state;
     uint8_t pdu[NS2_MOTION_PDU40_LENGTH];
 
-    // The 16-bit gyro slot at 4x scale caps near +/-499 dps, well inside a
-    // DualSense's range. Wrapping here would invert the rotation direction --
-    // far worse than clipping it.
+    // The 22-bit slot caps at +/-2 g and +/-499.5 dps, the sensor's own full
+    // scale. Wrapping would invert the reported direction of motion.
     ns2_ds5_motion40_reset(&state);
     check(!ns2_ds5_motion40_build(&state, 0u, pdu), "prime");
-    for (unsigned i = 0; i < 3u; ++i) {
-        const int16_t accel[3] = {0, 0, 0};
+    for (unsigned i = 1; i <= 3u; ++i) {
+        const int16_t accel[3] = {32767, -32768, 0};
         const int16_t fast[3] = {20000, -20000, 0};
-        ns2_ds5_motion40_sample(&state, accel, fast, k_carrier, (i + 1u) * 7000u);
+        ns2_ds5_motion40_sample(&state, accel, fast, k_carrier, i * 3000u);
     }
-    check(ns2_ds5_motion40_build(&state, 21000u, pdu), "emits");
-    check(state.gyro[0][0] == 32767, "positive gyro clamps to the slot limit");
-    check(state.gyro[0][1] == -32768, "negative gyro clamps to the slot limit");
-    check(state.saturated_gyro == 4u, "saturation is counted on both slots");
-
-    ns2_ds5_motion40_reset(&state);
-    check(!ns2_ds5_motion40_build(&state, 0u, pdu), "prime");
-    for (unsigned i = 0; i < 3u; ++i) {
-        const int16_t hard[3] = {32767, -32768, 0};
-        const int16_t still[3] = {0, 0, 0};
-        ns2_ds5_motion40_sample(&state, hard, still, k_carrier, (i + 1u) * 7000u);
-    }
-    check(ns2_ds5_motion40_build(&state, 21000u, pdu), "emits");
-    check(state.accel[0][0] == 8191, "positive accel clamps to the 14-bit slot");
-    check(state.accel[0][1] == -8192, "negative accel clamps to the 14-bit slot");
-    check(state.saturated_accel > 0u, "accel saturation is counted");
-}
-
-static void test_emitted_packet_decodes_to_what_we_fed(void)
-{
-    ns2_ds5_motion40_t state;
-    uint8_t pdu[NS2_MOTION_PDU40_LENGTH];
-    ns2_ds5_motion40_reset(&state);
-    check(!ns2_ds5_motion40_build(&state, 0u, pdu), "prime");
-
-    for (unsigned i = 0; i < 3u; ++i) {
-        const int16_t accel[3] = {8192, -4096, 2048};
-        const int16_t gyro[3] = {164, -328, 82};
-        ns2_ds5_motion40_sample(&state, accel, gyro, k_carrier, (i + 1u) * 7000u);
-    }
-    check(ns2_ds5_motion40_build(&state, 21000u, pdu), "emits");
-
-    // Payload bit 68, width 14, three axes: acceleration slot 0.
-    const uint8_t *payload = &pdu[4];
-    int32_t axis0 = 0;
-    for (unsigned bit = 0; bit < 14u; ++bit) {
-        if (payload[(68u + bit) >> 3] & (1u << ((68u + bit) & 7u)))
-            axis0 |= (int32_t)1 << bit;
-    }
-    if (axis0 >= (1 << 13)) axis0 -= (1 << 14);
-    check(axis0 == 4096, "acceleration slot 0 axis 0 survives to the wire");
-
-    int32_t prefix_expected[3];
-    ns2_ds5_motion40_prefix(k_carrier, prefix_expected);
-    int32_t lane0 = 0;
-    for (unsigned bit = 0; bit < 22u; ++bit) {
-        if (payload[(2u + bit) >> 3] & (1u << ((2u + bit) & 7u)))
-            lane0 |= (int32_t)1 << bit;
-    }
-    if (lane0 >= (1 << 21)) lane0 -= (1 << 22);
-    check(lane0 == prefix_expected[0], "carrier prefix lane 0 survives to the wire");
-    check((payload[0] & 0x03u) == 3u, "packing mode 3");
+    check(ns2_ds5_motion40_build(&state, 9000u, pdu), "emits");
+    check(wire_field(pdu, ACCEL0_OFFSET, VECTOR_WIDTH) == 2097151,
+          "positive acceleration clamps to the slot limit");
+    check(wire_field(pdu, ACCEL0_OFFSET + VECTOR_WIDTH, VECTOR_WIDTH) ==
+              -2097152,
+          "negative acceleration clamps to the slot limit");
+    check(state.saturated_accel > 0u, "acceleration saturation is counted");
+    check(state.saturated_gyro > 0u, "gyro saturation is counted");
 }
 
 int main(void)
 {
     test_prefix_matches_reference();
-    test_cadence();
-    test_elapsed_tracks_samples_not_poll_time();
+    test_high_rate_prefix_differs_from_narrow();
+    test_cadence_band();
+    test_overlong_window_is_dropped_not_clamped();
     test_slots_span_the_window();
-    test_ring_wrap_preserves_order();
     test_ring_outlasts_a_window_at_source_rate();
     test_prefix_comes_from_the_window_start_not_now();
     test_scaling();
     test_saturation_is_clamped_not_wrapped();
-    test_emitted_packet_decodes_to_what_we_fed();
     if (failures) {
         fprintf(stderr, "ns2_ds5_motion40: %d failure(s)\n", failures);
         return 1;

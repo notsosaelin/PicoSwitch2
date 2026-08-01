@@ -1257,7 +1257,7 @@ static void handle_command(void) {
         // has a resolved elapsed relation.
         ns2_ds5_motion40_set_enabled(true);
         queue_text("{\"ds5motion\":\"pdu40\",\"enabled\":true,"
-                   "\"mode\":\"0x28-only\",\"layout\":\"catchup\"}");
+                   "\"mode\":\"interleaved\",\"layout\":\"high_rate\"}");
     } else if (strcmp(rx_line, "ds5motion pdu40 off") == 0) {
         ns2_ds5_motion40_set_enabled(false);
         queue_text("{\"ds5motion\":\"pdu40\",\"enabled\":false,"
@@ -1280,8 +1280,9 @@ static void handle_command(void) {
                    "\"mode\":\"interleaved\"}");
     } else if (strcmp(rx_line, "ds5motion pdu40") == 0 ||
                strcmp(rx_line, "ds5motion pdu40 status") == 0) {
-        uint32_t emitted = 0, starved = 0, sat_a = 0, sat_g = 0;
-        ns2_ds5_motion40_get_counters(&emitted, &starved, &sat_a, &sat_g);
+        uint32_t emitted = 0, starved = 0, overlong = 0, sat_a = 0, sat_g = 0;
+        ns2_ds5_motion40_get_counters(&emitted, &starved, &overlong,
+                                      &sat_a, &sat_g);
         static const char *const fills[] = {"empty", "repeat", "carrier"};
         const uint8_t fill = ns2_ds5_motion40_get_fill();
         // starved > 0 means the emit interval outran the source sample rate;
@@ -1291,11 +1292,12 @@ static void handle_command(void) {
         snprintf(trace_format_response, sizeof(trace_format_response),
                  "{\"ds5motion\":\"pdu40\",\"enabled\":%s,\"fill\":\"%s\","
                  "\"emitted\":%lu,"
-                 "\"starved\":%lu,\"saturated_accel\":%lu,"
+                 "\"starved\":%lu,\"overlong\":%lu,\"saturated_accel\":%lu,"
                  "\"saturated_gyro\":%lu}",
                  ns2_ds5_motion40_get_enabled() ? "true" : "false",
                  fills[fill < 3u ? fill : 0u],
                  (unsigned long)emitted, (unsigned long)starved,
+                 (unsigned long)overlong,
                  (unsigned long)sat_a, (unsigned long)sat_g);
         queue_text(trace_format_response);
     } else if (strcmp(rx_line, "ds5motion probe off") == 0) {

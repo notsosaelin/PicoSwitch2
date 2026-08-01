@@ -397,11 +397,12 @@ static ns2_ds5_motion40_t ns2_ds5_motion40;
 static bool ns2_ds5_motion40_enabled;
 static uint8_t ns2_ds5_motion40_report[NS2_MOTION_PDU40_LENGTH];
 static bool ns2_ds5_motion40_report_valid;
-// What fills the ~19 USB polls between catch-up packets. REPEAT was the first
-// build tested on hardware and produced violent erratic motion; EMPTY is the
-// default because it is the only fill under which the console sees each 0x28
-// exactly once, matching every genuine capture.
-static uint8_t ns2_ds5_motion40_fill = NS2_PDU40_FILL_EMPTY;
+// What fills the USB polls between 0x28 packets. CARRIER is the default
+// because genuine high-rate traffic is INTERLEAVED: a 0x1E rides alongside,
+// which both supplies the chart state the modular prefix is unwrapped against
+// and keeps each 0x28 delivered exactly once. REPEAT was the first build
+// tested on hardware and produced violent erratic motion.
+static uint8_t ns2_ds5_motion40_fill = NS2_PDU40_FILL_CARRIER;
 
 bool ns2_ds5_motion40_get_enabled(void) { return ns2_ds5_motion40_enabled; }
 
@@ -430,11 +431,13 @@ void ns2_ds5_motion40_set_enabled(bool enabled)
 }
 
 void ns2_ds5_motion40_get_counters(uint32_t *emitted, uint32_t *starved,
+                                   uint32_t *overlong,
                                    uint32_t *saturated_accel,
                                    uint32_t *saturated_gyro)
 {
     if (emitted) *emitted = ns2_ds5_motion40.emitted;
     if (starved) *starved = ns2_ds5_motion40.skipped_no_samples;
+    if (overlong) *overlong = ns2_ds5_motion40.skipped_overlong;
     if (saturated_accel) *saturated_accel = ns2_ds5_motion40.saturated_accel;
     if (saturated_gyro) *saturated_gyro = ns2_ds5_motion40.saturated_gyro;
 }
