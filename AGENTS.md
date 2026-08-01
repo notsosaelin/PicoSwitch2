@@ -126,8 +126,8 @@ Its fixture is generated, not hand-written — regenerate after any capture
 corpus change with `python tools\gen_motion40_fixture.py`.
 
 `build-host-test-ns2-ds5-motion40` covers the layer above the packer — sample
-scaling, slot filling, cadence, saturation clamping, and the modular prefix
-slice against 30 reference vectors:
+scaling, slot placement across the emit window, cadence, saturation clamping,
+and the modular prefix slice against 30 reference vectors:
 
 ```powershell
 gcc -Iinclude -Itools\fixtures -Wall -Wextra `
@@ -146,9 +146,24 @@ ds5motion pdu40 status   # emitted / starved / saturated counters
 
 Enabling **replaces** the motion block; the `0x1E` carrier is not sent
 alongside, because only the `0x28`-only emission mode has a resolved elapsed
-relation. `starved > 0` means the emit interval outran the source sample rate;
-saturation means motion exceeded the wire range (~2 g, ~499 dps) or the scaling
-is wrong. Both distinguish "well-formed but wrong" from "working".
+relation. Across 32 captures with zero exceptions, the mode follows the BLE
+notification interval: 6.0 ticks always interleaves, ≥ 8.0 ticks is always
+`0x28`-only. `starved > 0` means the emit interval outran the source sample
+rate; saturation means motion exceeded the wire range (±2 g, ±499.5 dps — which
+is the sensor's own full scale, not a codec artifact) or the scaling is wrong.
+Both distinguish "well-formed but wrong" from "working".
+
+A byte-exact packet can still describe the wrong timeline. Two invariants above
+the packer are load-bearing and easy to break:
+
+- **Slots span the emit window.** Slot 0 is the oldest sample in the window and
+  the last slot the newest; filling from the first samples to arrive discards
+  the freshest data. Evidence and reproduction:
+  `python tools\ns2_motion40_slot_timing.py`.
+- **`elapsed` describes the samples, not the poll.** `last_emit_us` advances by
+  exactly the elapsed reported so truncation remainders carry forward rather
+  than drifting; `last_sample_us` separately bounds the next selection window
+  so a sample can never appear in two packets.
 
 **Not hardware-validated.** Use it only for a deliberate A/B against `0x1E`.
 

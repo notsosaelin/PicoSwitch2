@@ -31,6 +31,35 @@
 // 14 captures. Interleaving 0x1E would put us in the other mode, whose elapsed
 // relation is NOT resolved. Callers must therefore not mix the two.
 //
+// SAMPLES SPAN THE EMIT WINDOW
+// ----------------------------
+// The slots are not consecutive sensor samples clustered at one end of the
+// window: slot 0 is the OLDEST sample in the window and the last slot is the
+// NEWEST. Measured on 973 genuine catch-up packets, the mean-square difference
+// between slots orders strictly by slot index, and every gap sits below the
+// full-window value that the accelerometer structure function saturates at:
+//
+//     seam a2->a0[N+1]   0.572   <-- smallest gap in the stream
+//     a0->a1             0.607
+//     a1->a2             0.680
+//     a0->a2             0.866
+//     one whole window   1.000   <-- saturated asymptote
+//
+// The decisive fact is the seam. If a packet held three consecutive samples
+// taken at the start of its window, the step from its last slot to the next
+// packet's first slot would be the LARGEST gap in the stream, not the
+// smallest. A paired sign test over 894 tick-contiguous packet pairs puts the
+// seam below the within-packet a0->a2 gap in 67.1% of pairs (z = +10.2).
+//
+// What is NOT resolved is the exact fractional position of each slot. The
+// structure function saturates before one window elapses, so the map from
+// mean-square difference back to elapsed time is compressive, and the corpus
+// is stationary (per-axis noise ~2.0 counts, no coherent motion at any lag
+// from 20 to 150 ms). The gaps can be ordered but not measured. This module
+// therefore anchors the ends -- oldest sample first, newest sample last -- and
+// spaces the interior evenly, which is the choice that both matches the
+// confirmed ordering and minimises latency.
+//
 // See docs/experiments/pro2-carrier-unknown-fields-2026-07-31.md.
 
 // 800 Hz internal tick.
@@ -43,14 +72,39 @@
 #define NS2_DS5_MOTION40_ACCEL_SLOTS 3u
 #define NS2_DS5_MOTION40_GYRO_SLOTS 2u
 
+// A ~250 Hz source puts about five samples in a 20 ms window. Sixteen leaves
+// room for a faster source or a stretched window without ever discarding a
+// sample the selector might still want.
+#define NS2_DS5_MOTION40_RING 16u
+
 typedef struct {
-    // Samples in ordinary ICM counts (4096/g, 16.4/dps), oldest first.
+    int16_t accel[3];  // raw DualSense counts, 8192/g
+    int16_t gyro[3];   // de-biased DualSense counts, ~16.4/dps
+    uint32_t us;
+} ns2_ds5_motion40_entry_t;
+
+typedef struct {
+    // Timestamped source samples. Slot selection happens at build time, when
+    // the window length is finally known; sampling time cannot know which
+    // position in the window a sample will turn out to occupy.
+    ns2_ds5_motion40_entry_t ring[NS2_DS5_MOTION40_RING];
+    uint8_t head;    // next write index
+    uint8_t filled;  // entries written, saturating at NS2_DS5_MOTION40_RING
+
+    // Wire values chosen for the most recent emission. Retained so a host test
+    // and the UART diagnostic can see what actually went out.
     int32_t accel[NS2_DS5_MOTION40_ACCEL_SLOTS][3];
     int32_t gyro[NS2_DS5_MOTION40_GYRO_SLOTS][3];
-    uint8_t accel_count;
-    uint8_t gyro_count;
 
+    // Two distinct clocks, and conflating them re-sends samples or drifts.
+    // `last_emit_us` is the console-visible timeline: it advances by exactly
+    // the elapsed count reported, so truncation remainders carry forward
+    // instead of accumulating as drift. `last_sample_us` is the timestamp of
+    // the newest sample already sent, which is what bounds the next selection
+    // window -- a sample must never appear in two packets, and the tick-
+    // aligned origin can fall either side of it.
     uint32_t last_emit_us;
+    uint32_t last_sample_us;
     uint16_t tick;
     bool primed;
 
@@ -64,18 +118,18 @@ typedef struct {
 
 void ns2_ds5_motion40_reset(ns2_ds5_motion40_t *state);
 
-// Push one physical IMU sample, in raw DualSense counts. Acceleration is
-// halved (DualSense 8192/g into the Pro 2's 4096/g); gyro passes through, the
-// two sensors agreeing on ~16.4 counts/dps. Samples beyond the layout's slots
-// are dropped rather than overwriting: a packet must carry consecutive
-// samples, and this module never invents or reorders data.
-void ns2_ds5_motion40_sample(ns2_ds5_motion40_t *state,
-                             const int16_t accel[3], const int16_t gyro[3]);
+// Record one physical IMU sample and the time it was taken, in raw DualSense
+// counts. Call this once per source sample, not once per USB poll: the
+// timestamps are what let the builder place samples across the window, so
+// repeating a stale sample at the poll rate would misreport the timeline.
+void ns2_ds5_motion40_sample(ns2_ds5_motion40_t *state, const int16_t accel[3],
+                             const int16_t gyro[3], uint32_t now_us);
 
-// Build a PDU if at least NS2_DS5_MOTION40_MIN_TICKS have passed and every
-// slot is filled. `carrier_raw` is the current length-0x1E orientation carrier
-// (three unsigned lanes of 26/25/24 bits); its modular slice becomes the
-// packet's prefix. Returns false when not yet due, which is the normal case.
+// Build a PDU if at least NS2_DS5_MOTION40_MIN_TICKS have passed and the
+// window holds enough distinct samples to fill every slot without repeating
+// one. `carrier_raw` is the current length-0x1E orientation carrier (three
+// unsigned lanes of 26/25/24 bits); its modular slice becomes the packet's
+// prefix. Returns false when not yet due, which is the normal case.
 bool ns2_ds5_motion40_build(ns2_ds5_motion40_t *state,
                             const uint32_t carrier_raw[3], uint32_t now_us,
                             uint8_t out[NS2_MOTION_PDU40_LENGTH]);
