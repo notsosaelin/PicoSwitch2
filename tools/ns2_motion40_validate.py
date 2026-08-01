@@ -307,9 +307,15 @@ def check_accel_against_raw(gate: Gate) -> None:
 
 def check_unverifiable(gate: Gate) -> None:
     """Questions no capture can answer. Listing them is the point."""
-    gate.record("gyro axis/sign", "UNKNOWN",
-                "needs a MOVING raw+native capture; every existing one is "
-                "stationary, where gyro sits at the noise floor")
+    # Closed without a new capture, by two readings that need no raw IMU:
+    # a lazy susan turns about whichever axis carries gravity (accelZ +1.04 g,
+    # so the controller's own Z), and gyroZ dominates at 5.5x the next lane;
+    # the paired return turn reverses gyroZ from -9.56 to +15.02 dps in the
+    # same pose. See tools/ns2_motion40_gyro_axes.py.
+    gate.record("gyro axis/sign", "PASS",
+                "lazy susan puts the signal in gyroZ at 5.5x the next lane "
+                "with gravity on accelZ, and the return turn reverses the "
+                "sign; X/Y not individually disambiguated (see tool)")
     gate.record("chart bootstrap", "PASS",
                 "interleaved emission sends a 0x1E alongside, which supplies "
                 "the chart state; the 0x28-only mode that lacked one is no "
