@@ -112,9 +112,11 @@ python tools\test_ns2_motion_packet.py
 python tools\test_ns2_motion_carrier.py
 ```
 
-`build-host-test-ns2-motion-pdu40` holds the firmware length-`0x28` catch-up
-packer to byte-exactness against **981 genuine hardware packets**, plus edge
-cases the corpus never reaches. Build it with:
+`build-host-test-ns2-motion-pdu40` holds both firmware length-`0x28` packers to
+byte-exactness against genuine hardware: **981 catch-up** and **853 high-rate**
+packets, plus edge cases the corpus never reaches. Status is written verbatim in
+both — 5 genuine packets carry status `0x00`, so a `status ? status : default`
+idiom silently rewrites real data. Build it with:
 
 ```powershell
 gcc -Iinclude -Itools\fixtures -Wall -Wextra `
@@ -127,7 +129,7 @@ corpus change with `python tools\gen_motion40_fixture.py`.
 
 `build-host-test-ns2-ds5-motion40` covers the layer above the packer — sample
 scaling, slot placement across the emit window, cadence, saturation clamping,
-and the modular prefix slice against 30 reference vectors:
+the prefix epoch, and the modular prefix slice against 30 reference vectors:
 
 ```powershell
 gcc -Iinclude -Itools\fixtures -Wall -Wextra `
@@ -139,8 +141,7 @@ gcc -Iinclude -Itools\fixtures -Wall -Wextra `
 ### Length-`0x28` readiness gate — run before requesting a flash
 
 ```powershell
-python tools
-s2_motion40_validate.py     # exits non-zero unless every
+python tools/ns2_motion40_validate.py     # exits non-zero unless every
                                           # capture-answerable question passes
 ```
 
@@ -155,20 +156,17 @@ stated per-field tolerance, not byte equality.
 Supporting measurements, each re-runnable:
 
 ```powershell
-python tools
-s2_motion40_prefix_epoch.py   # when the prefix describes
-python tools
-s2_motion40_slot_timing.py    # where slots sit in the window
-python tools
-s2_motion40_gyro_axes.py      # gyro axis order and sign
+python tools/ns2_motion40_prefix_epoch.py   # when the prefix describes
+python tools/ns2_motion40_slot_timing.py    # where slots sit in the window
+python tools/ns2_motion40_gyro_axes.py      # gyro axis order and sign
 ```
 
 ### Length-`0x28` motion gate (DEFAULT OFF)
 
 ```text
-ds5motion pdu40 on       # replace the motion block with 0x28 catch-up packets
+ds5motion pdu40 on       # emit interleaved high-rate 0x28 + 0x1E
 ds5motion pdu40 off      # return to the proven 0x1E carrier
-ds5motion pdu40 status   # emitted / starved / saturated counters
+ds5motion pdu40 status   # emitted / starved / overlong / saturated counters
 ```
 
 Emission is **interleaved high-rate**: the `0x1E` carrier fills the polls
