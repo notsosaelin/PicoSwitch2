@@ -54,10 +54,10 @@ from ns2_motion40_prefix_epoch import paired_timeline, prefix_errors
 # axis. This must track ns2_ds5_motion40_build(); the gate is measuring the
 # firmware, not the corpus.
 #
-#   current behaviour: passes the latest carrier, so the prefix describes the
-#   packet's own tick -- `lambda tick, elapsed: tick`.
-#   correct behaviour: `lambda tick, elapsed: tick - elapsed + 4.0`
-FIRMWARE_EPOCH = lambda tick, elapsed: tick  # noqa: E731
+#   before 2026-07-31: passed the latest carrier, so the prefix described the
+#   packet's own tick -- `lambda tick, elapsed: tick`. Scored 13.0x the floor.
+#   now: NS2_DS5_MOTION40_PREFIX_LAG_TICKS = 4 after the window start.
+FIRMWARE_EPOCH = lambda tick, elapsed: tick - elapsed + 4.0  # noqa: E731
 
 # How much worse than the achievable floor the firmware's epoch may be. A ratio
 # rather than an absolute angle, because the floor is set by interpolating a

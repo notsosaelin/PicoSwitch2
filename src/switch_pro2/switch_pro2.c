@@ -1445,9 +1445,19 @@ static void ns2_build_report(uint8_t *p) {
                         if (value < INT16_MIN) value = INT16_MIN;
                         debiased[axis] = (int16_t)value;
                     }
-                    ns2_ds5_motion40_sample(&ns2_ds5_motion40,
-                                            ds5_motion_input.accel, debiased,
-                                            ds5_motion_now_us);
+                    // Snapshot the carrier HERE, with the sample it belongs
+                    // to. The 0x28 prefix describes an instant ~15 ms in the
+                    // past, so reading the carrier at build time would supply
+                    // an orientation the packet is not allowed to claim.
+                    uint32_t carrier_now[3];
+                    if (ns2_ds5_motion_report_valid &&
+                        ns2_motion_pdu30_get_orientation(ns2_ds5_motion_report,
+                                                         carrier_now)) {
+                        ns2_ds5_motion40_sample(&ns2_ds5_motion40,
+                                                ds5_motion_input.accel,
+                                                debiased, carrier_now,
+                                                ds5_motion_now_us);
+                    }
                 }
             }
             ns2_ds5_motion_last_sequence = in.motion_sequence;
@@ -1531,12 +1541,11 @@ static void ns2_build_report(uint8_t *p) {
                 //
                 // That is a hypothesis, not a conclusion, so the fill is
                 // runtime-selectable and one flash tests all three.
-                uint32_t carrier_raw[3];
+                // The carrier is no longer read here: the prefix comes from
+                // the one buffered alongside the sample at the right past
+                // instant, so the builder needs no current orientation.
                 const bool built =
-                    ns2_motion_pdu30_get_orientation(ns2_ds5_motion_report,
-                                                     carrier_raw) &&
-                    ns2_ds5_motion40_build(&ns2_ds5_motion40, carrier_raw,
-                                           time_us_32(),
+                    ns2_ds5_motion40_build(&ns2_ds5_motion40, time_us_32(),
                                            ns2_ds5_motion40_report);
                 if (built) ns2_ds5_motion40_report_valid = true;
 
