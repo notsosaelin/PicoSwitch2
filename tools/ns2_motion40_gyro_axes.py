@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Do the 0x28 gyro lanes share the accelerometer's axis order and sign?
+"""0x28 gyro: axis order, sign, and counts-per-dps, measured against the carrier.
 
 Why this exists
 ---------------
@@ -41,6 +41,18 @@ What this does NOT establish
 Closing those needs one capture: the controller turned deliberately about each
 body axis in turn, both directions, with 0x1E and 0x28 subscribed. No console
 and no flash.
+
+3. SCALE and HANDEDNESS, from the carrier's own rotation. The 0x1E quaternion
+   is exactly unit in every capture (|q| = 1.0000), so 2*acos(w) is a real
+   angle. Summing it over a capture gives the total rotation, which the 0x28
+   gyro integrated over the same span must match. Integration is what makes
+   this trustworthy: a per-sample regression is biased low because the gyro is
+   an instantaneous sample while the carrier rate is a window average, and that
+   attenuation is indistinguishable from a scale error. The total is not.
+
+   A positive slope also settles handedness. Our path integrates the quaternion
+   from +gyro_corrected and puts +gyro_corrected in the lanes, so genuine
+   agreeing in sign means we share the convention.
 
 Run:
     python tools/ns2_motion40_gyro_axes.py
@@ -84,6 +96,157 @@ def lanes(path: Path):
             gyro[axis].append(sample.gyro[0][axis] * gyro_scale / R.IMU_COUNTS_PER_DPS)
             accel[axis].append(sample.accel[0][axis] * accel_scale / R.IMU_COUNTS_PER_G)
     return (gyro, accel) if gyro[0] else (None, None)
+
+
+def carrier_rotation_degrees(orientation30):
+    """Total angle swept by the carrier, over same-chart steps only.
+
+    A chart change reparameterises the same rotation, so a step across one is
+    not a rotation and must not be summed.
+    """
+    total = 0.0
+    lo = hi = None
+    for i in range(len(orientation30) - 1):
+        (t1, a), (t2, b) = orientation30[i], orientation30[i + 1]
+        if a.state != b.state or t2 <= t1:
+            continue
+        dq = _qmul(_qconj(a.quaternion_wxyz), b.quaternion_wxyz)
+        if dq[0] < 0:
+            dq = tuple(-v for v in dq)
+        total += 2 * math.acos(max(-1.0, min(1.0, dq[0]))) * 180 / math.pi
+        lo = t1 if lo is None else min(lo, t1)
+        hi = t2 if hi is None else max(hi, t2)
+    return total, lo, hi
+
+
+def _qmul(a, b):
+    w1, x1, y1, z1 = a
+    w2, x2, y2, z2 = b
+    return (w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2)
+
+
+def _qconj(q):
+    return (q[0], -q[1], -q[2], -q[3])
+
+
+TICK_S = 1250e-6
+MIN_ROTATION_DEG = 100.0  # below this the carrier sum is dominated by noise
+
+
+def gyro_rotation_degrees(pdu40, lo, hi):
+    """Integrate the 0x28 gyro magnitude over the same tick span."""
+    total = 0.0
+    previous = None
+    for tick, sample in sorted(pdu40):
+        if sample.packing_mode != 3 or not sample.gyro:
+            continue
+        if tick < lo or tick > hi:
+            continue
+        scale = R.WIRE_TO_COUNTS[sample.layout]["gyro"][0]
+        magnitude = math.sqrt(sum(
+            (v * scale / R.IMU_COUNTS_PER_DPS) ** 2 for v in sample.gyro[0]))
+        if previous is not None:
+            total += magnitude * (tick - previous[0]) * TICK_S
+        previous = (tick, magnitude)
+    return total
+
+
+def check_scale() -> float | None:
+    print()
+    print("--- counts per dps, from total rotation ---")
+    print(f"  {'capture':42s} {'carrier':>9s} {'gyro':>9s} {'ratio':>7s}")
+    ratios = []
+    for path in sorted(CAPTURES.glob("*.jsonl")):
+        orientation30, pdu40 = paired_timeline(path)
+        if not orientation30 or len(orientation30) < 10 or not pdu40:
+            continue
+        carrier_deg, lo, hi = carrier_rotation_degrees(orientation30)
+        if lo is None or carrier_deg < MIN_ROTATION_DEG:
+            continue  # too little rotation to measure a scale against
+        gyro_deg = gyro_rotation_degrees(pdu40, lo, hi)
+        if gyro_deg <= 0:
+            continue
+        ratios.append(gyro_deg / carrier_deg)
+        print(f"  {path.name[:42]:42s} {carrier_deg:9.1f} {gyro_deg:9.1f} "
+              f"{gyro_deg / carrier_deg:7.3f}")
+    if not ratios:
+        print("  no capture rotates far enough to measure a scale")
+        return None
+    ratio = statistics.median(ratios)
+    # slope = gyro_dps(assumed) / carrier_dps = S / assumed, so S = assumed x slope.
+    implied = R.IMU_COUNTS_PER_DPS * ratio
+    print(f"  median ratio {ratio:.3f} over {len(ratios)} captures")
+    print(f"  assumed {R.IMU_COUNTS_PER_DPS} counts/dps -> implied {implied:.2f} "
+          f"(full scale +/-{8192 / implied:.0f} dps)")
+    check_scale_is_speed_independent()
+    return implied
+
+
+def check_scale_is_speed_independent() -> None:
+    """Is the deficit a scale error, or just sparse sampling losing area?
+
+    High-rate carries ONE gyro sample per packet at ~110 Hz. If the motion
+    outruns that, integrating the samples loses area and understates rotation --
+    which looks exactly like a scale error. The two are separable: undersampling
+    vanishes as the motion slows, a wrong counts/dps does not.
+    """
+    pairs = []
+    for path in sorted(CAPTURES.glob("*.jsonl")):
+        orientation30, pdu40 = paired_timeline(path)
+        if not orientation30 or len(orientation30) < 12 or not pdu40:
+            continue
+        rate = []
+        for i in range(len(orientation30) - 1):
+            (t1, a), (t2, b) = orientation30[i], orientation30[i + 1]
+            if a.state != b.state or t2 <= t1:
+                continue
+            dt = (t2 - t1) * TICK_S
+            dq = _qmul(_qconj(a.quaternion_wxyz), b.quaternion_wxyz)
+            if dq[0] < 0:
+                dq = tuple(-v for v in dq)
+            rate.append(((t1 + t2) / 2,
+                         [2 * dq[k + 1] / dt * 180 / math.pi for k in range(3)]))
+        if len(rate) < 10:
+            continue
+        for tick, sample in pdu40:
+            if sample.packing_mode != 3 or not sample.gyro:
+                continue
+            near = min(rate, key=lambda q: abs(q[0] - tick))
+            if abs(near[0] - tick) > 4:
+                continue
+            scale = R.WIRE_TO_COUNTS[sample.layout]["gyro"][0]
+            axis = max(range(3), key=lambda i: abs(near[1][i]))
+            pairs.append((abs(near[1][axis]), near[1][axis],
+                          sample.gyro[0][axis] * scale / R.IMU_COUNTS_PER_DPS))
+    if len(pairs) < 100:
+        return
+    print(f"\n  speed independence ({len(pairs)} samples, dominant axis):")
+    print(f"    {'carrier rate (dps)':>19s} {'n':>5s} {'slope':>7s} {'implied':>8s}")
+    slopes = []
+    for lo, hi in ((0, 10), (10, 25), (25, 60), (60, 150), (150, 400)):
+        sel = [q for q in pairs if lo <= q[0] < hi]
+        if len(sel) < 15:
+            continue
+        xs = [q[1] for q in sel]
+        ys = [q[2] for q in sel]
+        den = sum(x * x for x in xs)
+        if den <= 0:
+            continue
+        slope = sum(x * y for x, y in zip(xs, ys)) / den
+        slopes.append(slope)
+        print(f"    {f'{lo}-{hi}':>19s} {len(sel):5d} {slope:7.3f} "
+              f"{R.IMU_COUNTS_PER_DPS * slope:8.2f}")
+    if len(slopes) >= 3:
+        spread = max(slopes) - min(slopes)
+        trend = slopes[0] - slopes[-1]   # slow bin minus fast bin
+        print(f"    spread {spread:.3f}; slow-minus-fast {trend:+.3f}")
+        print("    => " + ("undersampling: the deficit fades as motion slows"
+                           if trend < -0.2 else
+                           "speed-INDEPENDENT, so not undersampling -- a real "
+                           "scale factor"))
 
 
 def main() -> int:
@@ -131,13 +294,18 @@ def main() -> int:
           f"(accelZ {statistics.mean(accel_r[2]):+.2f} g, same pose)")
     print(f"  => sign reverses with direction: {'YES' if sign_ok else 'NO'}")
 
+    implied = check_scale()
+    scale_ok = (implied is not None and
+                abs(implied - R.IMU_COUNTS_PER_DPS) / R.IMU_COUNTS_PER_DPS < 0.15)
+    print(f"  => the assumed sensitivity holds: {'YES' if scale_ok else 'NO'}")
+
     print("\n--- residual ---")
     print("  X and Y are not individually disambiguated: no capture holds a")
     print("  pure rotation about each with a known direction. Absolute")
     print("  handedness rides on the 0x1E path's console validation -- this")
     print("  shows 0x28 agrees with 0x1E, not that both match Nintendo's")
     print("  convention.")
-    return 0 if (axis_ok and sign_ok) else 1
+    return 0 if (axis_ok and sign_ok and scale_ok) else 1
 
 
 if __name__ == "__main__":

@@ -62,6 +62,58 @@ Status legend: ✅ Complete · 🟡 In Progress · 🔵 Partial · 🔴 Blocked 
 | gyro slot instants | quarter points | **not resolved** — a stationary gyro is pure noise | 🔴 |
 | layout choice (catch-up) | chosen for its 1-bit tail | 768 of 773 paired packets are **high-rate**; catch-up has 2 | 🔴 |
 
+## 🔴 The gyro sensitivity is assumed, and it scales every rotation
+
+`IMU_COUNTS_PER_DPS = 16.4` entered the reference as an assumption and was
+never measured. It is load-bearing in a way the accelerometer constant is not:
+the `0x1E` path ships a *unit quaternion*, so no Pro2 gyro sensitivity enters
+it, which is why that path can be console-validated while this constant is
+wrong. The `0x28` path ships **raw gyro counts**, so the constant sets the rate
+the console sees.
+
+Measured against the carrier the same packets ship alongside
+(`tools/ns2_motion40_gyro_axes.py`): genuine `0x28` gyro read at 16.4
+counts/dps recovers only **0.55-0.67** of the rotation its own `0x1E`
+quaternion reports. The quaternion is exactly unit (|q| = 1.0000 in every
+capture), so the angle is real.
+
+The benign explanation is ruled out. High-rate carries one gyro sample per
+packet at ~110 Hz, and integrating too-sparse samples loses area -- but that
+fades as the motion slows, and the deficit does not:
+
+| carrier rate (dps) | n | slope | implied counts/dps |
+|---|---|---|---|
+| 0-10 | 410 | 0.706 | 11.57 |
+| 10-25 | 51 | 0.636 | 10.43 |
+| 25-60 | 42 | 0.546 | 8.96 |
+| 60-150 | 61 | 0.703 | 11.53 |
+| 150-400 | 59 | 0.673 | 11.04 |
+
+Slow-minus-fast is +0.032. Flat. So this is a scale factor, not a sampling
+artefact, and the true sensitivity is nearer **9-11.6 counts/dps**.
+
+Why it matters: the translator passes DualSense counts through 1:1, on the
+assumption that both sensors sit near 16.4 counts/dps (the DualSense is
+documented at 16.384). If the Pro2 is really 8.192 -- a standard +/-1000 dps
+full scale, and the value the two cleanest captures point at with ratios 0.500
+and 0.497 -- then **our translated gyro runs at double rate**, which is
+consistent with the erratic hardware behaviour alongside the epoch defect.
+
+What did NOT settle it, and why:
+
+* **Paired DualSense captures.** `ds5-pro2-paired-*` carry a co-timestamped
+  `cal_g`, which would give the sensitivity directly. But `-pitch` peaks at
+  11.3 dps with *negative* correlation, so the two devices were not co-moved,
+  and `-yaw` contains zero records.
+* **Raw IMU.** Handle `0x000A` gives gyro counts, but in the same units as the
+  `0x28` lanes, so it yields a ratio of 1 and no angle reference. Every capture
+  holding it is stationary regardless.
+
+What would settle it: a capture of a **known** rotation -- a turntable through
+an exact 360 degrees, or 90 degrees against a square edge -- with `0x1E` and
+`0x28` subscribed. Integrating the gyro over a known angle gives counts/dps
+directly, with no reliance on the carrier. No console and no flash.
+
 ## Structural unknowns that block generation
 
 These are not field values. They are questions about the stream that no
