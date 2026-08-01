@@ -19,9 +19,18 @@ assumption:
    nothing else, so `|a|` in counts *is* counts/g. Across many orientations a
    sphere fit separates a scale error from a per-axis bias, which look
    identical in a single pose.
-2. **The `0x1E` carrier is a unit quaternion.** Verified: `|q| = 1.0000` in
-   every capture, so `2·acos(w)` is a real angle and the carrier can serve as
-   an angular reference.
+2. **The `0x1E` carrier's retained energy.** ⚠️ An earlier draft of this document
+   claimed the carrier was validated because `|q| = 1.0000` in every capture.
+   **That is circular.** `decode_motion30_orientation` reconstructs the omitted
+   component as `sqrt(max(0, 1 - retained_energy))` and then normalises, so the
+   norm is 1 by construction no matter what the scale is. It tests nothing.
+
+   The non-circular check is `retained_energy` itself: a true smallest-three
+   encoding caps it at 0.75, because the omitted component is the largest and
+   so `|q_max| >= 1/2`. Measured over 1226 genuine carriers it never exceeds
+   **0.524** — no breach, so the `sqrt(2)` scale is not refuted. But the corpus
+   only reaches 70% of the ceiling, so a scale up to ~1.2x off would also show
+   no breach. Supporting, not confirming.
 3. **Host timestamps.** `motionpair` records carry `t_us` beside each PDU, so
    the controller's own tick can be measured against wall time.
 
@@ -149,11 +158,54 @@ layouts against each other, so a common factor error affects all layouts
 equally and is invisible to that check. This is the same blind spot as the
 acceleration bias, in a different constant.
 
+### Is it the gyro, or is the carrier over-stating rotation?
+
+Both produce the identical ratio, so the first two methods above cannot
+separate them. Gravity can, through an exact geometric identity that involves
+no gyro at all: **the angle gravity sweeps in the body frame equals the
+magnitude of the carrier's rotation component perpendicular to gravity.**
+
+| linear-acceleration filter | n | slope | median ratio |
+|---|---|---|---|
+| within 4% of 1 g | 3 | 1.127 | 1.178 |
+| within 10% | 15 | **1.100** | **1.069** |
+| within 20% | 97 | 2.137 | 3.572 |
+| within 35% | 113 | 2.159 | 3.572 |
+
+The loose rows collapse because they admit samples where linear acceleration
+dominates and the measured "gravity" direction is not gravity — the degradation
+confirms the filter is doing real work, so the tight rows are the trustworthy
+ones. They read **~1.07–1.18, not 0.55**.
+
+So the carrier's angular scale is right to within 10–20%, and the gyro
+conversion is the wrong constant. 🔵 Weak evidence — n = 15 with r = 0.39 — but
+it agrees with the gravity-rate method, which is also carrier-independent.
+
+### Routes that were tried and failed, with reasons
+
+* **DualSense as a transfer standard.** Its 16.384 counts/dps is externally
+  documented and implicitly validated by the working `0x1E` path, so a
+  co-moved capture would give the Pro2 constant directly. The paired captures
+  are not co-moved: `ds5_age_us` walks from 1,100 up to 61,365 µs, so the same
+  DualSense sample is repeated for up to 61 ms while the Pro2 updates
+  continuously, and the counts/dps ratio at fresh pairs scatters from 7.9 to
+  33. `-yaw` contains zero records.
+* **A known-angle capture we already have.** `sw2_uart_variant7_pitch90` is
+  named for a 90° pitch and holds 254 packets over 7.54 s — but it is at rest
+  at *both* ends with a 0.0° net change. The pitch happened outside the
+  retained ring, which the motion-lab skill warns is deliberately short. The
+  chart-transition captures do sweep 41–92° but start and end mid-motion, so
+  neither endpoint gives a clean gravity reference.
+* **Raw IMU.** Handle `0x000A` reports gyro in the same units as the `0x28`
+  lanes, so it yields a ratio of 1 and no angle reference — and every capture
+  holding it is stationary.
+
 **To close it:** integrate the gyro across a **known** rotation — a turntable
 through an exact 360°, or 90° against a square edge — with `0x1E` and `0x28`
-subscribed. Slow and deliberate beats fast. That yields counts/dps directly
-with no reliance on the carrier, the accelerometer, or any assumed constant.
-No console and no flash.
+subscribed, and with the capture *started before the motion begins*, since the
+retained ring is short. Slow and deliberate beats fast. That yields counts/dps
+directly with no reliance on the carrier, the accelerometer, or any assumed
+constant. No console and no flash.
 
 ## 🔵 The temperature tail decodes to an implausible absolute value
 
