@@ -219,10 +219,89 @@ bool ns2_motion_pdu40_build_catchup(uint8_t pdu[NS2_MOTION_PDU40_LENGTH],
     }
     payload_put(payload, MOTION40_CATCHUP_TAIL_OFFSET, 1u, fields->tail_bit);
 
-    const uint8_t status = fields->status ? fields->status
-                                          : NS2_MOTION40_STATUS_CATCHUP;
+    // Status is written VERBATIM. The `status ? status : default` idiom
+    // cannot distinguish a genuine zero from an unset field, and zero is real
+    // wire data -- 5 of 858 genuine high-rate packets carry status 0x00 (see
+    // "Unknown 2" in docs/experiments/pro2-carrier-unknown-fields-2026-07-31).
+    // A packer encodes what it is given; guessing corrupts real values.
+    const uint8_t status = fields->status;
     // Preamble: 12-bit tick, then the 12-bit elapsed count split across the
     // high nibble of byte 1 and all of byte 2, then the layout/status byte.
+    pdu[0] = (uint8_t)(fields->tick & 0xFFu);
+    pdu[1] = (uint8_t)(((fields->tick >> 8) & 0x0Fu) |
+                       ((fields->elapsed_ticks & 0x0Fu) << 4));
+    pdu[2] = (uint8_t)((fields->elapsed_ticks >> 4) & 0xFFu);
+    pdu[3] = status;
+    for (unsigned i = 0; i < MOTION40_PAYLOAD_BYTES; ++i)
+        pdu[4u + i] = payload[i];
+    return true;
+}
+
+// --- High-rate layout (elapsed 0..10, status 0x0D) --------------------------
+//
+// Same preamble and the same bit order as catch-up; only the field map differs.
+// Every payload bit is accounted for: 2 + 24 + 23 + 25 + 66 + 66 + 66 + 16 =
+// 288 bits = 36 bytes, plus the 4-byte preamble = 40.
+static const uint16_t k_high_rate_accel_offset[2] = {74u, 206u};
+static const uint16_t k_high_rate_gyro_offset[1]  = {140u};
+#define MOTION40_HIGH_RATE_VECTOR_WIDTH 22u
+static const uint16_t k_high_rate_carrier_offset[3] = {2u, 26u, 49u};
+static const uint8_t  k_high_rate_carrier_width[3]  = {24u, 23u, 25u};
+#define MOTION40_HIGH_RATE_TAIL_OFFSET 272u
+
+bool ns2_motion_pdu40_build_high_rate(uint8_t pdu[NS2_MOTION_PDU40_LENGTH],
+                                      const ns2_motion40_high_rate_t *fields)
+{
+    if (!pdu || !fields) return false;
+    if (fields->tick > 0x0FFFu) return false;
+    // Elapsed selects the layout. Emitting high-rate fields under an elapsed
+    // count the decoder reads as normal or catch-up yields a packet that
+    // decodes cleanly into the wrong fields, so refuse instead.
+    if (fields->elapsed_ticks > NS2_MOTION40_HIGH_RATE_MAX_ELAPSED) return false;
+    if (fields->packing_mode > 3u) return false;
+
+    for (unsigned lane = 0; lane < 3u; ++lane) {
+        if (!fits_signed(fields->carrier[lane], k_high_rate_carrier_width[lane]))
+            return false;
+    }
+    for (unsigned slot = 0; slot < 2u; ++slot) {
+        for (unsigned axis = 0; axis < 3u; ++axis) {
+            if (!fits_signed(fields->accel[slot][axis],
+                             MOTION40_HIGH_RATE_VECTOR_WIDTH))
+                return false;
+        }
+    }
+    for (unsigned axis = 0; axis < 3u; ++axis) {
+        if (!fits_signed(fields->gyro[0][axis], MOTION40_HIGH_RATE_VECTOR_WIDTH))
+            return false;
+    }
+
+    // Every field validated: build into a scratch payload so a late failure
+    // cannot leave the caller's buffer half-written.
+    uint8_t payload[MOTION40_PAYLOAD_BYTES];
+    for (unsigned i = 0; i < MOTION40_PAYLOAD_BYTES; ++i) payload[i] = 0u;
+
+    payload_put(payload, 0u, 2u, fields->packing_mode);
+    for (unsigned lane = 0; lane < 3u; ++lane) {
+        const unsigned width = k_high_rate_carrier_width[lane];
+        const uint32_t mask = (width >= 32u) ? 0xFFFFFFFFu
+                                             : ((1u << width) - 1u);
+        payload_put(payload, k_high_rate_carrier_offset[lane], width,
+                    (uint32_t)fields->carrier[lane] & mask);
+    }
+    for (unsigned slot = 0; slot < 2u; ++slot) {
+        if (!payload_put_vector(payload, k_high_rate_accel_offset[slot],
+                                MOTION40_HIGH_RATE_VECTOR_WIDTH,
+                                fields->accel[slot]))
+            return false;
+    }
+    if (!payload_put_vector(payload, k_high_rate_gyro_offset[0],
+                            MOTION40_HIGH_RATE_VECTOR_WIDTH, fields->gyro[0]))
+        return false;
+    payload_put(payload, MOTION40_HIGH_RATE_TAIL_OFFSET, 16u,
+                fields->tail_value);
+
+    const uint8_t status = fields->status;  // verbatim; see catch-up above
     pdu[0] = (uint8_t)(fields->tick & 0xFFu);
     pdu[1] = (uint8_t)(((fields->tick >> 8) & 0x0Fu) |
                        ((fields->elapsed_ticks & 0x0Fu) << 4));

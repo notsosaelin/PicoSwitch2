@@ -21,6 +21,7 @@
 
 #include "ns2_motion_pdu.h"
 #include "ns2_motion40_catchup.h"
+#include "ns2_motion40_high_rate.h"
 
 static int failures;
 
@@ -181,15 +182,102 @@ static void test_buffer_untouched_on_failure(void)
     }
 }
 
-static void test_status_defaults_to_catchup(void)
+// Status is written verbatim, including zero. A `status ? status : default`
+// idiom cannot tell a genuine zero from an unset field, and zero IS genuine
+// wire data: 5 of 858 high-rate packets carry status 0x00. That idiom silently
+// rewrote those five into 0x0D.
+static void test_status_is_written_verbatim(void)
 {
     ns2_motion40_catchup_t fields;
+    memset(&fields, 0, sizeof(fields));
+    fields.elapsed_ticks = NS2_MOTION40_CATCHUP_MIN_ELAPSED;
+    fields.packing_mode = 3u;
     uint8_t pdu[NS2_MOTION_PDU40_LENGTH];
-    load(&fields, &ns2_motion40_catchup_fixtures[0]);
+
     fields.status = 0u;
-    check(ns2_motion_pdu40_build_catchup(pdu, &fields), "builds without status");
-    check(pdu[3] == NS2_MOTION40_STATUS_CATCHUP,
-          "status defaults to 0x0F for catch-up");
+    check(ns2_motion_pdu40_build_catchup(pdu, &fields), "builds with status 0");
+    check(pdu[3] == 0u, "a zero status reaches the wire unchanged");
+
+    fields.status = NS2_MOTION40_STATUS_CATCHUP;
+    check(ns2_motion_pdu40_build_catchup(pdu, &fields), "builds with status");
+    check(pdu[3] == NS2_MOTION40_STATUS_CATCHUP, "status reaches the wire");
+}
+
+
+// --- High-rate layout -------------------------------------------------------
+//
+// The layout the translator targets, because it is the one with paired
+// length-0x1E ground truth: 768 of the 773 genuine 0x28 packets that have a
+// carrier alongside them are high-rate. Same bar as catch-up -- rebuild real
+// hardware bytes from the fields an independent decoder recovered.
+static void test_high_rate_rebuilds_genuine_packets(void)
+{
+    unsigned matched = 0;
+    for (unsigned i = 0; i < NS2_MOTION40_HIGH_RATE_FIXTURE_COUNT; ++i) {
+        const ns2_motion40_high_rate_fixture_t *f =
+            &ns2_motion40_high_rate_fixtures[i];
+        ns2_motion40_high_rate_t fields;
+        memset(&fields, 0, sizeof(fields));
+        fields.tick = f->tick;
+        fields.elapsed_ticks = f->elapsed_ticks;
+        fields.status = f->status;
+        fields.packing_mode = f->packing_mode;
+        fields.tail_value = f->tail_value;
+        memcpy(fields.carrier, f->carrier, sizeof(fields.carrier));
+        memcpy(fields.accel, f->accel, sizeof(fields.accel));
+        memcpy(fields.gyro, f->gyro, sizeof(fields.gyro));
+
+        uint8_t pdu[NS2_MOTION_PDU40_LENGTH];
+        if (!ns2_motion_pdu40_build_high_rate(pdu, &fields)) {
+            fprintf(stderr, "FAIL: high-rate packet %u refused\n", i);
+            failures++;
+            continue;
+        }
+        if (memcmp(pdu, f->bytes, NS2_MOTION_PDU40_LENGTH) != 0) {
+            fprintf(stderr, "FAIL: high-rate packet %u differs\n", i);
+            for (unsigned b = 0; b < NS2_MOTION_PDU40_LENGTH; ++b) {
+                if (pdu[b] != f->bytes[b])
+                    fprintf(stderr, "  byte %2u: built 0x%02X genuine 0x%02X\n",
+                            b, pdu[b], f->bytes[b]);
+            }
+            failures++;
+            continue;
+        }
+        matched++;
+    }
+    check(matched == NS2_MOTION40_HIGH_RATE_FIXTURE_COUNT,
+          "every genuine high-rate packet rebuilt byte-for-byte");
+    printf("  rebuilt byte-exactly: %u/%u genuine high-rate packets\n",
+           matched, NS2_MOTION40_HIGH_RATE_FIXTURE_COUNT);
+}
+
+// Elapsed selects the layout, so high-rate fields must never be emitted under
+// an elapsed count a decoder would read as normal or catch-up.
+static void test_high_rate_fails_closed(void)
+{
+    ns2_motion40_high_rate_t fields;
+    memset(&fields, 0, sizeof(fields));
+    fields.packing_mode = 3u;
+    uint8_t pdu[NS2_MOTION_PDU40_LENGTH];
+
+    fields.elapsed_ticks = NS2_MOTION40_HIGH_RATE_MAX_ELAPSED;
+    check(ns2_motion_pdu40_build_high_rate(pdu, &fields),
+          "accepts the largest high-rate elapsed count");
+    fields.elapsed_ticks = NS2_MOTION40_HIGH_RATE_MAX_ELAPSED + 1u;
+    check(!ns2_motion_pdu40_build_high_rate(pdu, &fields),
+          "refuses an elapsed count that would decode as another layout");
+
+    fields.elapsed_ticks = 7u;
+    fields.accel[0][0] = 1 << 21;  // one past the signed 22-bit maximum
+    check(!ns2_motion_pdu40_build_high_rate(pdu, &fields),
+          "refuses acceleration that overflows its 22-bit slot");
+    fields.accel[0][0] = 0;
+    fields.carrier[2] = 1 << 24;   // one past the signed 25-bit maximum
+    check(!ns2_motion_pdu40_build_high_rate(pdu, &fields),
+          "refuses a carrier lane that overflows its slot");
+
+    check(!ns2_motion_pdu40_build_high_rate(NULL, &fields), "null pdu");
+    check(!ns2_motion_pdu40_build_high_rate(pdu, NULL), "null fields");
 }
 
 int main(void)
@@ -198,7 +286,9 @@ int main(void)
     test_edge_values_agree_with_the_reference_encoder();
     test_fails_closed();
     test_buffer_untouched_on_failure();
-    test_status_defaults_to_catchup();
+    test_status_is_written_verbatim();
+    test_high_rate_rebuilds_genuine_packets();
+    test_high_rate_fails_closed();
     if (failures) {
         fprintf(stderr, "ns2_motion_pdu40: %d failure(s)\n", failures);
         return 1;
