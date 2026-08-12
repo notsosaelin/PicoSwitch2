@@ -74,10 +74,20 @@ production generic gamepad driver. Verified green: `test_bthid_android_controlle
   (compatibility-matrix "ordinary write / v3 write" rows).
 - **Back up the *virtual* (currently-stored) amiibo — ✅ wired.** `amiibo read <off> <len>` streams
   the stored image out for the app to save. Live UART export also exists.
-- **Back up a *real physical* amiibo — ❌ gap (G4).** The firmware *can* mirror/relay a genuine
-  controller's NFC (and even initiate reads via `ns2_nfc_mirror_set_initiator`), but only through the
-  **UART diagnostic bridge** — it is **not** on the app-facing command surface. So an end user with a
-  real amiibo cannot back it up from the app today.
+- **Back up a *real physical* amiibo — two paths (owner design, 2026-08-12):**
+  - **Path A — phone's own NFC (TagMo-style): needs NO firmware.** Modern Android phones have NFC;
+    the app reads the physical amiibo itself and uploads it through the existing **import** path
+    (`amiibo begin/chunk/commit`). Firmware already fully supports this — it's just an import. This is
+    the primary, simplest backup path and is *already exposed*.
+  - **Path B — a real controller as the reader (❌ gap G4, but portable):** connect a genuine
+    Pro / Pro2 / Joy-Con R / Joy-Con 2 R (the NFC-capable ones) to the adapter and use it to read the
+    amiibo. The mechanism **already exists** — `ns2_nfc_mirror` with an **initiator** mode
+    (`set_initiator` / `initiator_submit` / `initiator_take`) that drives NFC reads to the controller
+    — but it is wired **only over the UART diagnostic bridge** (`ns2_uart_diag.c`), not on the config/
+    BLE command surface. Porting = thin config-command wrappers over those existing functions
+    (allowlisted, bonded-only), returning read chunks the app saves. Per-controller NFC command shape
+    must be validated on hardware (Pro2 is implemented; Joy-Con 2 R's protocol is undocumented — see
+    switch2-joycon2/open-questions.md).
 - **State completeness — mostly, one gap.** `amiibo status` reports loaded/dirty/presented/v3loaded/
   persisted/size/signature/hasSave2/usingSave2/generation/payloadCrc/uid + upload progress. **Missing:
   the figure/character identity** (head/tail or character ID). For an *imported* amiibo the app has
@@ -87,6 +97,35 @@ production generic gamepad driver. Verified green: `test_bthid_android_controlle
 
 ---
 
+## 3b. Manage + wake while the console is asleep (feasible — revises plan C5)
+
+**Use case (owner):** Switch 2 asleep, adapter powered via the dock and already paired once while the
+console was on (so it holds the wake identity). Can a phone still connect and manage? And can the
+phone **wake the console**?
+
+**Feasibility — yes, and it's mostly built:**
+- The **BT core keeps running while the console is asleep** (USB suspended); only USB traffic stops.
+- **Wake advertising is on-demand, not continuous.** `wake_adv` only runs when a wake is requested,
+  so while the console is merely asleep the single LE advertiser is **free** — management can
+  advertise and a phone can connect. (This *corrects* the in-band plan's C5, which conservatively
+  suppressed management while asleep; see the plan revision.)
+- The **wake mechanism already exists**: `ns2_wake_request()` reads the learned wake identity
+  (`config_get_wake_identity` — the key captured during the one-time on-console pairing) and
+  BLE-advertises the wake, returning `false` gracefully if never paired. Automatic wake already fires
+  on a controller button press while suspended.
+
+**G8 — add a `wake` command.** The app (connected while the console sleeps) sends `wake`; the firmware
+triggers `ns2_wake_request()`. **Cross-core note:** wake state is **core1-owned**
+(`ns2_wake.c`: "all automatic-wake state are owned by core1"), so the core0 command must set a
+**request flag** that `ns2_wake_service()` consumes on core1 — never call `ns2_wake_request()`
+inline from the command context. Small, safe, mirrors the existing wake-on-button path.
+
+**Hardware gate:** whether the CYW43 can run a wake-advertising burst while an active management BLE
+connection is up (concurrent advertise + peripheral connection). Radio headroom is large while asleep
+(no USB, no audio), so this is the one thing to confirm on hardware. If concurrent advertise+connect
+is a problem, the fallback is: the phone's `wake` command briefly drops the management link, the wake
+burst fires, and the phone reconnects after the console wakes.
+
 ## 4. Prioritized recommendation
 
 | # | Item | Value | Risk | Recommendation |
@@ -94,9 +133,10 @@ production generic gamepad driver. Verified green: `test_bthid_android_controlle
 | G1 | `personality` query | High (app can't gate/display without it) | Low (read-only) | **Implement now** |
 | G2 | `personality <target>` switch | High | Medium | Implement after G1; mechanism de-risked |
 | G3 | `bonds list/remove` | High (pairing UX) | Medium | Implement with the in-band-management build |
-| G4 | Real-amiibo backup over config (+ `figureId` in status) | High (a headline feature) | Higher (NFC path) | Plan + HW-validate; bridge the existing mirror/initiator, don't rebuild |
+| G4 | Real-amiibo backup: Path A (phone NFC) needs **no firmware** (already imports); Path B (controller-as-reader) ports the existing UART initiator to config | High (a headline feature) | Path A none / Path B med (NFC path) | Path A: app-side now. Path B: port the UART mirror/initiator, HW-validate; don't rebuild |
 | G5 | Android-bridge motion (handheld gyro) | High (gyro aiming) | Medium | v2 feature; biggest bridge upgrade |
 | G6 | Rumble to phone | Medium | Low-med | v2 |
+| G8 | `wake` command + manage-while-asleep | High (wake console from phone) | Med (concurrent advertise+connect HW gate) | Add the flag+command; revise plan C5; HW-validate coexistence |
 
 **Only G1 is implemented in this pass** (read-only, zero-risk, unblocks the app's mode display and
 the Pro2-gating recommendation). Everything else is documented here so the app design accounts for it

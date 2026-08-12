@@ -84,16 +84,24 @@ Without the physical Config gesture, **bonding is the only access control** — 
 - Keep single-client acceptance and the LE-Peripheral-role classification before any slot/SM/GATT use
   (config-transports.md:33-34).
 
-### C5 — Wake-from-sleep is never broken (hard invariant)
-Wake advertising **strictly outranks** management. Concretely:
-- Management advertises **only while the console is awake** (`!tud_suspended()`), and **suppresses +
-  yields the advertiser** whenever `wake_adv` is active or pending (the `if (wake_adv.active) return;`
-  guard already exists; extend it so a running management advert is *stopped*, not just not-started,
-  when wake needs the radio).
-- When the console sleeps, management stops advertising and disconnects any client so wake owns the
-  single LE advertiser exactly as today. (A phone therefore cannot manage while the console sleeps —
-  acceptable; wake the console first.)
-- This makes "don't break wake" a checkable invariant, validated in HW check 6a below.
+### C5 — Wake-from-sleep is never broken (invariant) — REVISED 2026-08-12
+Wake advertising **strictly outranks** management for the *advertiser*, but management **may run while
+the console is asleep** (an earlier draft suppressed it entirely — too conservative, and it would kill
+the phone-wake feature, G8 of the interface audit). Corrected model:
+- **`wake_adv` is on-demand, not continuous** — it only runs when a wake is requested. So while the
+  console is merely asleep and no wake is in progress, the single LE advertiser is **free**, and
+  management may advertise and accept a phone connection (the BT core runs while suspended).
+- Management **yields the advertiser to a wake burst**: the existing `if (wake_adv.active) return;`
+  guard already prevents starting a management advert during a burst; extend it so a *running*
+  management advert is stopped for the (brief, ~1.2 s) burst, then resumed.
+- A management **connection** persists across sleep and across wake bursts (a connection is not the
+  advertiser). This is what lets a phone connect while asleep and send `wake` (G8), which triggers the
+  existing `ns2_wake_request()` (via a core1 request flag — wake state is core1-owned).
+- **Hardware gate:** confirm the CYW43 can run a wake burst while a management connection is active
+  (concurrent advertise + peripheral connection). If not, the `wake` command briefly drops the link,
+  fires the burst, and the phone reconnects on wake. Validated in HW check 6a.
+- "Don't break wake" therefore means *wake always gets the advertiser when it needs it*, **not**
+  *management is off while asleep*.
 
 ### C6 — Flash-op timing during gameplay
 `save`, `amiibo commit`, `amiibo persist` write flash, which parks core0 (brief input/audio hitch).
@@ -282,9 +290,12 @@ window. This gives an objective, on-device latency/jitter signal without externa
 5. Deferred flash `persist` during gameplay: `core1GapsOver10ms` delta = **only** the write window.
 6. **Audio gate (Pico 2 W):** audio playing + management client connected + actively swapping amiibo →
    **no stutter**. The one true empirical gate.
-   - **6a. Wake gate:** with the feature enabled, put the console to sleep → management advertising
-     **stops**, `wake_adv` owns the advertiser, and **wake-from-sleep still works**. Then wake → the
-     bonded phone can reconnect. (Directly proves "don't break wake.")
+   - **6a. Wake gate (revised):** (i) automatic wake — a controller button press while asleep still
+     wakes the console with the feature enabled; (ii) manage-while-asleep — a bonded phone can connect
+     while the console sleeps and issue `wake` (G8), which wakes the console; (iii) coexistence — a
+     wake burst fires correctly whether or not a management connection is active (concurrent
+     advertise + peripheral connection on the CYW43). Proves "wake always gets the advertiser," the
+     revised C5.
    - **6b. Gyro gate:** genuine-Pro2/DualSense motion is uninterrupted during an active session (idle
      is proven; this covers active).
 7. **Latency meter:** capture `core1MaxGapUs`/`core1GapsOver10ms` (a) disabled, (b) enabled+advertising
