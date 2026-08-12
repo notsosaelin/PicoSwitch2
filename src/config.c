@@ -373,13 +373,29 @@ static void cmd_amiibo(char *arg) {
     if (strcmp(arg, "status") == 0) {
         virtual_amiibo_status_t status;
         virtual_amiibo_store_status(&status);
+        // Amiibo model/figure ID: the 8 plaintext bytes at tag offset 0x54 (game/character/
+        // variant/type/model/series). It is NOT encrypted, so we can surface the amiibo's
+        // identity for the app (e.g. AmiiboAPI lookup) without any keys. The identity block sits
+        // at 0x54 for BOTH the 540/572 NTAG215 store AND the 2048-byte NTAG I2C 2K (v3) store —
+        // the only difference is the format byte 0x5B (0x02 standard, 0x03 v3). See
+        // docs/switch2/amiibo-crypto-research-2026-08.md and docs/Amiibo-v3.md.
+        char figure_id[17] = "";
+        if (status.loaded || status.v3_loaded) {
+            uint8_t fig[8];
+            virtual_amiibo_result_t fr = status.v3_loaded
+                ? virtual_amiibo_store_v3_read(0x54u, fig, sizeof(fig))
+                : virtual_amiibo_store_read(0x54u, fig, sizeof(fig));
+            if (fr == VIRTUAL_AMIIBO_OK)
+                for (int i = 0; i < 8; i++)
+                    snprintf(figure_id + i * 2, 3, "%02X", fig[i]);
+        }
         snprintf(out, sizeof(out),
                  "{\"loaded\":%s,\"dirty\":%s,"
                  "\"presented\":%s,\"v3loaded\":%s,"
                  "\"persisted\":%s,\"persistPending\":%s,\"size\":%u,"
                  "\"signature\":%s,\"hasSave2\":%s,\"usingSave2\":%s,"
                  "\"generation\":%lu,\"payloadCrc\":\"%08lX\","
-                 "\"uid\":\"%02X%02X%02X%02X%02X%02X%02X\","
+                 "\"uid\":\"%02X%02X%02X%02X%02X%02X%02X\",\"figureId\":\"%s\","
                  "\"upload\":{\"active\":%s,\"received\":%u,\"size\":%u}}",
                  status.loaded ? "true" : "false",
                  status.dirty ? "true" : "false",
@@ -394,7 +410,7 @@ static void cmd_amiibo(char *arg) {
                  (unsigned long)status.generation,
                  (unsigned long)status.payload_crc,
                  status.uid[0], status.uid[1], status.uid[2], status.uid[3],
-                 status.uid[4], status.uid[5], status.uid[6],
+                 status.uid[4], status.uid[5], status.uid[6], figure_id,
                  status.upload_active ? "true" : "false",
                  status.upload_received, status.upload_size);
         reply(out);
