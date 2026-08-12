@@ -202,6 +202,7 @@ bool config_wireless_command_allowed(const char *command)
            strcmp(command, "get") == 0 ||
            strcmp(command, "device") == 0 ||
            strcmp(command, "personality") == 0 ||
+           strncmp(command, "personality ", 12) == 0 ||
            strcmp(command, "wake") == 0 ||
            strcmp(command, "save") == 0 ||
            strncmp(command, "amiibo ", 7) == 0 ||

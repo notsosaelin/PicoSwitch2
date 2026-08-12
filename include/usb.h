@@ -49,6 +49,14 @@ extern volatile bool g_usb_mode_cycle_requested;
 // Config, core0 returns directly to Pro2.
 extern volatile bool g_usb_config_mode_requested;
 
+// App/management-requested switch to a SPECIFIC controller personality (config
+// `personality <target>`). Set g_usb_requested_personality then raise the flag;
+// core0 consumes it at the same safe loop point as the gesture cycle and applies
+// it through the identical usb_apply_personality() re-enumeration path (owner
+// hardware-confirmed via the BOOTSEL single-tap cycle). Ignored for CDC_CONFIG.
+extern volatile usb_personality_t g_usb_requested_personality;
+extern volatile bool g_usb_personality_request_pending;
+
 // Derived, read-only compatibility view -- NOT an independent source of truth.
 // True exactly when g_usb_personality == USB_PERSONALITY_CDC_CONFIG. Kept as a
 // macro (not a second variable) so it can never drift out of sync with the enum.
