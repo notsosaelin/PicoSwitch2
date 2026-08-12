@@ -1,5 +1,7 @@
 #include "ns2_motion_pdu.h"
 
+#include <math.h>
+
 static int32_t sign_extend(uint32_t value, unsigned bits)
 {
     const uint32_t sign = 1u << (bits - 1u);
@@ -51,6 +53,41 @@ bool ns2_motion_pdu30_set_orientation(uint8_t pdu[NS2_MOTION_PDU30_LENGTH],
     pdu[14] = (uint8_t)(g2 >> 8);
     pdu[15] = (uint8_t)(g2 >> 16);
     pdu[4] = (uint8_t)((pdu[4] & 0xFCu) | ((g2 >> 24) & 0x03u));
+    return true;
+}
+
+bool ns2_motion_pdu30_get_quaternion(
+    const uint8_t pdu[NS2_MOTION_PDU30_LENGTH], float out_xyzw[4],
+    uint8_t *omitted_state)
+{
+    if (!pdu || !out_xyzw) return false;
+    uint32_t orientation[3];
+    if (!ns2_motion_pdu30_get_orientation(pdu, orientation)) return false;
+
+    const uint8_t omitted = (uint8_t)(orientation[2] >> 24);
+    if (omitted > 3u) return false;
+    const float sqrt2 = 1.41421356237309504880f;
+    const float retained[3] = {
+        ((float)orientation[0] / 67108864.0f - 0.5f) * sqrt2,
+        ((float)orientation[1] / 33554432.0f - 0.5f) * sqrt2,
+        ((float)(orientation[2] & 0x00FFFFFFu) / 16777216.0f - 0.5f) * sqrt2,
+    };
+    const float retained_sq =
+        retained[0] * retained[0] + retained[1] * retained[1] +
+        retained[2] * retained[2];
+    // Permit only quantization slop. A substantially negative hidden square
+    // means this packet cannot seed the diagnostic chart safely.
+    if (!isfinite(retained_sq) || retained_sq > 1.00001f) return false;
+
+    float wire[4] = {0.0f, 0.0f, 0.0f, 0.0f};  // w,x,y,z
+    wire[omitted] = sqrtf(retained_sq < 1.0f ? 1.0f - retained_sq : 0.0f);
+    for (unsigned i = 0; i < 3u; ++i)
+        wire[(omitted + i + 1u) & 3u] = retained[i];
+    out_xyzw[0] = wire[1];
+    out_xyzw[1] = wire[2];
+    out_xyzw[2] = wire[3];
+    out_xyzw[3] = wire[0];
+    if (omitted_state) *omitted_state = omitted;
     return true;
 }
 
@@ -137,6 +174,19 @@ static void payload_put(uint8_t *payload, unsigned offset, unsigned width,
             const unsigned bit = offset + i;
             payload[bit >> 3] |= (uint8_t)(1u << (bit & 7u));
         }
+    }
+}
+
+static void payload_replace(uint8_t *payload, unsigned offset, unsigned width,
+                            uint32_t value)
+{
+    for (unsigned i = 0; i < width; ++i) {
+        const unsigned bit = offset + i;
+        const uint8_t mask = (uint8_t)(1u << (bit & 7u));
+        if (value & (1u << i))
+            payload[bit >> 3] |= mask;
+        else
+            payload[bit >> 3] &= (uint8_t)~mask;
     }
 }
 
@@ -248,6 +298,29 @@ static const uint16_t k_high_rate_gyro_offset[1]  = {140u};
 static const uint16_t k_high_rate_carrier_offset[3] = {2u, 26u, 49u};
 static const uint8_t  k_high_rate_carrier_width[3]  = {24u, 23u, 25u};
 #define MOTION40_HIGH_RATE_TAIL_OFFSET 272u
+
+bool ns2_motion_pdu40_set_carrier(
+    uint8_t pdu[NS2_MOTION_PDU40_LENGTH], const int32_t values[3])
+{
+    if (!pdu || !values || (pdu[4] & 0x03u) != 3u) return false;
+    const uint16_t elapsed =
+        (uint16_t)((pdu[1] >> 4) | ((uint16_t)pdu[2] << 4));
+    const bool high_rate = elapsed <= NS2_MOTION40_HIGH_RATE_MAX_ELAPSED;
+    const uint16_t *offsets = high_rate
+        ? k_high_rate_carrier_offset : k_catchup_carrier_offset;
+    const uint8_t *widths = high_rate
+        ? k_high_rate_carrier_width : k_catchup_carrier_width;
+
+    for (unsigned lane = 0; lane < 3u; ++lane) {
+        if (!fits_signed(values[lane], widths[lane])) return false;
+    }
+    for (unsigned lane = 0; lane < 3u; ++lane) {
+        const uint32_t mask = (1u << widths[lane]) - 1u;
+        payload_replace(&pdu[4], offsets[lane], widths[lane],
+                        (uint32_t)values[lane] & mask);
+    }
+    return true;
+}
 
 bool ns2_motion_pdu40_build_high_rate(uint8_t pdu[NS2_MOTION_PDU40_LENGTH],
                                       const ns2_motion40_high_rate_t *fields)

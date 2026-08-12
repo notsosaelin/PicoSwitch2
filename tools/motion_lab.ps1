@@ -4,15 +4,15 @@
 Capture one attributable Switch 2 native-motion experiment over UART.
 
 .DESCRIPTION
-Each run records one stationary condition in the retained paired-motion ring,
-then runs ns2_magprobe and optionally compares it with a baseline. This is the
-preferred workflow for controlled length-0x28 experiments: baseline, sham,
-magnet distance, and magnet polarity are separate bundles rather than phases in
-one overflowing trace.
+Ordinary runs record one stationary condition in the retained paired-motion
+ring, then run ns2_magprobe and optionally compare it with a baseline. With
+-HybridMode, the runner instead performs one bounded, default-off genuine-base
+/ DualSense-donor substitution and audits the exact base/output XOR before
+generating a fixture.
 
-This runner never enables a motion feature, changes a report format, or sends a
-probe. It only reads diagnostics and briefly enables the passive motionpair
-capture after the operator confirms the physical condition is ready.
+The ordinary path never changes motion output. The hybrid path is explicitly
+mutating, requires -Ready, records the selected mode in provenance, and always
+returns the firmware to hybrid mode off after its bounded capture.
 #>
 [CmdletBinding()]
 param(
@@ -34,6 +34,8 @@ param(
     [string]$Stimulus = 'none',
     [ValidateRange(0, 1000)][int]$DistanceMm = 0,
     [ValidateRange(100, 850)][int]$CaptureMs = 650,
+    [ValidateSet('off', 'genuine', 'accel', 'gyro', 'prefix', 'imu', 'all')]
+    [string]$HybridMode = 'off',
     [string]$Controller = 'Switch 2 Pro Controller',
     [string]$ExistingCapture,
     [string]$Port,
@@ -50,18 +52,27 @@ Import-Module $module -Force
 
 if (-not (Test-Path -LiteralPath $reader)) { throw "Missing $reader" }
 $kind = if ($Variable) { 'hypothesis-test' } else { 'observation' }
+$isHybrid = $HybridMode -ne 'off'
+if ($isHybrid -and -not $Ready -and -not $DryRun) {
+    throw 'Live motion hybrid experiments require -Ready explicit maintainer confirmation.'
+}
+if ($isHybrid -and $Baseline) {
+    throw 'Hybrid captures are self-auditing base/output pairs; -Baseline is not applicable.'
+}
 $conditions = [ordered]@{
     controller = $Controller
     stimulus = $Stimulus
     distance_mm = $DistanceMm
     capture_ms = $CaptureMs
     controller_stationary = $true
+    hybrid_mode = $HybridMode
 }
 
 Write-Host "Motion experiment: $Scenario" -ForegroundColor Cyan
 Write-Host "Kind             : $kind"
 Write-Host "Condition        : $Stimulus at $DistanceMm mm"
 Write-Host "Capture          : $CaptureMs ms, controller stationary"
+Write-Host "Hybrid mode      : $HybridMode"
 if ($Hypothesis) { Write-Host "Hypothesis       : $Hypothesis" }
 if ($Expect) { Write-Host "Expect           : $Expect" }
 Write-Host "Action           : $Action" -ForegroundColor Yellow
@@ -75,6 +86,7 @@ if (-not $python) { throw 'Python is required for motion analysis.' }
 
 $diagnosticCommands = @(
     'motionpair status',
+    'motionhybrid status',
     'magraw status',
     'motionauto',
     'input status',
@@ -129,9 +141,20 @@ if ($ExistingCapture) {
                'Wake or reconnect the genuine controller, confirm input, ' +
                'then rerun without changing the physical condition.')
     }
+    if ($isHybrid -and $HybridMode -ne 'genuine') {
+        $donor = $before['motionhybrid status']
+        if (-not $donor -or -not $donor.donor_seen -or
+            [uint64]$donor.donor_age_us -gt 20000 -or
+            [int]$donor.donor_cal_state -ne 2) {
+            throw ('No fresh calibrated DualSense donor before live capture. ' +
+                   'Connect it alongside the genuine controller, leave both ' +
+                   'stationary through calibration, and rerun. Status: ' +
+                   ($donor | ConvertTo-Json -Compress))
+        }
+    }
 
     Write-Host ''
-    Write-Host '>>> PREPARE THIS ONE STATIONARY CONDITION:' -ForegroundColor Yellow
+    Write-Host '>>> PREPARE THIS ONE CONTROLLED CONDITION:' -ForegroundColor Yellow
     Write-Host ">>> $Action" -ForegroundColor Yellow
     if (-not $Ready) {
         Read-Host '>>> press Enter when the controller and stimulus are stationary'
@@ -139,8 +162,17 @@ if ($ExistingCapture) {
         Write-Host '>>> maintainer explicitly confirmed ready; capturing now'
     }
 
-    $tracePath = Join-Path $outputDir 'motion.raw.jsonl'
-    Invoke-Ps2LabDiag -Reader $reader -Port $Port -Command 'motionpair capture' `
+    $tracePath = Join-Path $outputDir $(if ($isHybrid) {
+        'motion.hybrid.raw.jsonl'
+    } else {
+        'motion.raw.jsonl'
+    })
+    $captureCommand = if ($isHybrid) {
+        "motionhybrid capture $HybridMode"
+    } else {
+        'motionpair capture'
+    }
+    Invoke-Ps2LabDiag -Reader $reader -Port $Port -Command $captureCommand `
         -CaptureMs $CaptureMs -OutputPath $tracePath | Out-Null
 
     foreach ($command in $diagnosticCommands) {
@@ -151,25 +183,35 @@ if ($ExistingCapture) {
         -Value $after
 }
 
-$analysisText = Join-Path $outputDir 'motion.analysis.txt'
-$analysisJson = Join-Path $outputDir 'motion.analysis.json'
-$analysisCsv = Join-Path $outputDir 'motion.0x28.csv'
-$textOutput = @(
-    & $python (Join-Path $PSScriptRoot 'ns2_magprobe.py') analyze `
-        $tracePath --csv $analysisCsv --correlations 24)
-if ($LASTEXITCODE -ne 0) { throw 'ns2_magprobe text analysis failed.' }
-Set-Ps2LabText -Path $analysisText -Lines $textOutput
-$jsonOutput = @(
-    & $python (Join-Path $PSScriptRoot 'ns2_magprobe.py') analyze `
-        $tracePath --json)
-if ($LASTEXITCODE -ne 0) { throw 'ns2_magprobe JSON analysis failed.' }
-Set-Ps2LabText -Path $analysisJson -Lines $jsonOutput
+$analysisText = $null
+$analysisCsv = $null
+if ($isHybrid) {
+    $analysisJson = Join-Path $outputDir 'motion.hybrid.audit.json'
+    $auditOutput = @(
+        & $python (Join-Path $PSScriptRoot 'ns2_motion_hybrid.py') `
+            audit-capture $tracePath --output $analysisJson)
+    if ($LASTEXITCODE -ne 0) { throw 'live motion-hybrid audit failed.' }
+} else {
+    $analysisText = Join-Path $outputDir 'motion.analysis.txt'
+    $analysisJson = Join-Path $outputDir 'motion.analysis.json'
+    $analysisCsv = Join-Path $outputDir 'motion.0x28.csv'
+    $textOutput = @(
+        & $python (Join-Path $PSScriptRoot 'ns2_magprobe.py') analyze `
+            $tracePath --csv $analysisCsv --correlations 24)
+    if ($LASTEXITCODE -ne 0) { throw 'ns2_magprobe text analysis failed.' }
+    Set-Ps2LabText -Path $analysisText -Lines $textOutput
+    $jsonOutput = @(
+        & $python (Join-Path $PSScriptRoot 'ns2_magprobe.py') analyze `
+            $tracePath --json)
+    if ($LASTEXITCODE -ne 0) { throw 'ns2_magprobe JSON analysis failed.' }
+    Set-Ps2LabText -Path $analysisJson -Lines $jsonOutput
+}
 
 $analysis = Get-Content -Raw -LiteralPath $analysisJson | ConvertFrom-Json
 if ([int]$analysis.dropped -ne 0) {
     throw "motion capture lost $($analysis.dropped) record(s)"
 }
-if ([int]$analysis.length_40 -eq 0) {
+if (-not $isHybrid -and [int]$analysis.length_40 -eq 0) {
     throw 'motion capture contains no length-0x28 records'
 }
 
@@ -206,12 +248,23 @@ if ($Baseline) {
 
 $fixtureJson = Join-Path $outputDir 'motion.fixture.json'
 $fixtureC = Join-Path $outputDir 'motion.fixture.h'
+$fitmentJson = $null
 $fixtureName = 'motion_' + ($Scenario -replace '[^A-Za-z0-9_]', '_')
 & $python (Join-Path $PSScriptRoot 'capture_to_fixture.py') $tracePath `
     --name $fixtureName --output-json $fixtureJson --output-c $fixtureC
 if ($LASTEXITCODE -ne 0) { throw 'capture-to-fixture generation failed.' }
+if (-not $isHybrid) {
+    $fitmentJson = Join-Path $outputDir 'motion.fitment.json'
+    & $python (Join-Path $PSScriptRoot 'ns2_motion_hybrid.py') capture $tracePath `
+        --output $fitmentJson | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'motion fitment manifest generation failed.' }
+}
 
-$verdict = 'capture valid'
+$verdict = if ($isHybrid) {
+    "hybrid capture valid and fail-closed ($HybridMode)"
+} else {
+    'capture valid'
+}
 if ($Baseline) {
     $comparison = Get-Content -Raw -LiteralPath $comparisonJson |
         ConvertFrom-Json
@@ -224,12 +277,13 @@ $artifactPaths = @(
     (Join-Path $outputDir 'diagnostics.before.json'),
     (Join-Path $outputDir 'diagnostics.after.json'),
     $tracePath,
-    $analysisText,
     $analysisJson,
-    $analysisCsv,
     $fixtureJson,
     $fixtureC
 )
+if ($analysisText) { $artifactPaths += $analysisText }
+if ($analysisCsv) { $artifactPaths += $analysisCsv }
+if ($fitmentJson) { $artifactPaths += $fitmentJson }
 if ($comparisonText) { $artifactPaths += $comparisonText }
 if ($comparisonJson) { $artifactPaths += $comparisonJson }
 
@@ -243,7 +297,13 @@ Set-Ps2LabJson -Path (Join-Path $outputDir 'experiment.json') -Value $manifest
 
 Write-Host ''
 Write-Host "Result           : $verdict" -ForegroundColor Green
-Write-Host "0x1E / 0x28      : $($analysis.length_30) / $($analysis.length_40)"
-Write-Host "Duration         : $([math]::Round($analysis.duration_ms, 1)) ms"
+if ($isHybrid) {
+    Write-Host "Records          : $($analysis.records)"
+    Write-Host "Applied/fallback : $($analysis.applied) / $($analysis.fallbacks)"
+    Write-Host "Changed records  : $($analysis.changed_records)"
+} else {
+    Write-Host "0x1E / 0x28      : $($analysis.length_30) / $($analysis.length_40)"
+    Write-Host "Duration         : $([math]::Round($analysis.duration_ms, 1)) ms"
+}
 Write-Host "Dropped          : $($analysis.dropped)"
 Write-Host "Artifacts        : $outputDir"

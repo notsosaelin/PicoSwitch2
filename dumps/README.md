@@ -11,6 +11,7 @@ through the corresponding document under `docs/`.
 | `audio/dualsense/` | DualSense audio recordings used during transport/timing analysis |
 | `audio/pro2/` | Genuine Pro Controller 2 audio recordings, spectra, and UART traces |
 | `motion/2026-07-24/` | DualSense/Pro2 motion calibration videos, images, optical flow, and paired captures |
+| `experiments/20260801-*-ds5-hybrid-*/` | Zero-loss genuine-base hybrid controls and one-group substitution bundles |
 | `diagnostics/` | Desktop-capture/tool invocation checks rather than protocol evidence |
 | `research/` | Third-party discussion exports used as leads, not primary evidence |
 
@@ -172,6 +173,15 @@ seams both select cyclic topology `(G2,G0,G1)` with opposite-branch signs
 `(+,−,−)`. Its interleaved prefix epoch selects chart 3 with residual
 `0.003833`, versus `0.196168` under chart 2. SHA-256:
 `FDDD5C028E59D149A424A3226382C7FDDDF98337699677AC870DBEB0F84B2270`.
+
+The dated `20260801-*-ds5-hybrid-*` directories contain the final translated-`0x28` fitment
+campaign: byte-identical genuine control, acceleration-only, gyro-only, and the diagnostic
+prefix-only failure. Each complete directory carries raw records, an audit, generated fixtures,
+diagnostics, provenance, and hashes. `20260801-live-prefix-montage.png` is the compact visual
+derivative showing the prefix-window camera sweep. Large raw desktop recordings were moved out of
+the evidence tree into ignored `build/transient-motion-media/`, and the interrupted runner stub was
+removed during closure; the lossless protocol bundles and montage retain the evidence used by the
+report.
 
 Large derived media is intentionally retained because the 2026-07-24 motion result depended on
 comparing genuine Pro2 and translated DualSense behavior without requiring repeated physical

@@ -193,9 +193,9 @@ def genuine_stats(records: Sequence[dict]) -> StreamStats:
 def genuine_reference_stats(paths: Sequence[Path]) -> StreamStats:
     """Statistics for genuine captures read directly, not via paired records.
 
-    Pointed at the 0x28-only interval sweeps, this compares our stream against
-    the exact emission mode and layout the firmware targets, rather than
-    against interleaved captures whose cadence we deliberately do not model.
+    Pointed at the 0x28-only interval sweeps, this preserves the historical
+    layout/scale comparison. It does not model the current interleaved firmware
+    scheduler; `test_ns2_motion40_coherence.py` owns that sequence-level gate.
     """
     stats = StreamStats()
     previous_state = None
@@ -332,8 +332,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--genuine", type=Path, nargs="*", default=None,
                         help="compare against these genuine captures instead "
                              "of the native side of the paired ones. Point "
-                             "this at the 0x28-only interval sweeps to compare "
-                             "against the exact mode the firmware emits.")
+                             "this at the 0x28-only interval sweeps for the "
+                             "historical layout/scale comparison.")
     parser.add_argument("--interval-ticks", type=int, default=None,
                         help="emit one catch-up packet every N 800 Hz ticks, "
                              "modelling the firmware policy (16 = 20 ms). "

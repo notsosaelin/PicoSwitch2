@@ -8,8 +8,10 @@ for that feature compared one of our implementations against another -- encoder
 against decoder, C against Python -- and a consistency test cannot detect a
 wrong semantic choice, because both sides share the assumption being tested.
 
-This tool only asks questions whose answer comes from genuine captures, and it
-prints what it CANNOT answer as loudly as what it can.
+This tool asks questions backed by genuine captures or by an independent
+analytic physical trajectory, and it prints what it CANNOT answer as loudly
+as what it can. A hardware rejection is a hard gate even when every offline
+relationship passes.
 
 The ceiling, established 2026-07-31
 -----------------------------------
@@ -47,6 +49,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import ns2_motion_reference as R
+import test_ns2_motion40_coherence as COHERENCE
 from gen_motion40_fixture import captures
 from ns2_motion40_prefix_epoch import paired_timeline, prefix_errors
 
@@ -74,6 +77,11 @@ LAYOUT_BANDS = {"high_rate": (0, 10), "normal": (11, 14), "catchup": (15, 4095)}
 EMITTED_ELAPSED_MIN = 7
 EMITTED_ELAPSED_MAX = 10
 EMITTED_LAYOUT = "high_rate"
+
+# Hardware result for the exact closed-loop-coherent recipe currently in the
+# firmware. Do not clear this merely because another offline check passes: it
+# requires a materially different model and a deliberate real-console A/B.
+CURRENT_RECIPE_HARDWARE_REJECTED = True
 
 
 class Gate:
@@ -305,6 +313,42 @@ def check_accel_against_raw(gate: Gate) -> None:
     )
 
 
+def check_shared_pdu_timeline(gate: Gate) -> None:
+    """Both native lengths must advance one predecessor-relative clock."""
+    path = Path("dumps/BLE CAPTURE/sw2_native_passthrough_live_2026-07-21.jsonl")
+    handles, _ = R.read_blecap_jsonl(path)
+    previous_tick: int | None = None
+    comparisons = 0
+    matches = 0
+    lengths: Counter[int] = Counter()
+    for notification in handles.get(0x000E, []):
+        report = notification.value
+        if len(report) <= 0x10:
+            continue
+        length = report[0x0E]
+        end = 0x0F + length
+        if length not in (0x1E, 0x28) or len(report) < end:
+            continue
+        pdu = report[0x0F:end]
+        tick = pdu[0] | ((pdu[1] & 0x0F) << 8)
+        elapsed = pdu[1] >> 4
+        if length == 0x28:
+            elapsed |= pdu[2] << 4
+        lengths[length] += 1
+        if previous_tick is not None:
+            comparisons += 1
+            matches += ((tick - previous_tick) & 0x0FFF) == elapsed
+        previous_tick = tick
+
+    passed = comparisons > 0 and matches == comparisons and len(lengths) == 2
+    gate.record(
+        "shared PDU timeline",
+        "PASS" if passed else "FAIL",
+        f"{matches}/{comparisons} predecessor deltas across "
+        f"{dict(sorted(lengths.items()))}; both lengths use one tick/elapsed clock",
+    )
+
+
 def check_unverifiable(gate: Gate) -> None:
     """Questions no capture can answer. Listing them is the point."""
     # Closed without a new capture, by two readings that need no raw IMU:
@@ -317,32 +361,81 @@ def check_unverifiable(gate: Gate) -> None:
                 "with gravity on accelZ, and the return turn reverses the "
                 "sign; X/Y not individually disambiguated (see tool)")
 
-    # The one constant in this feature that was assumed rather than measured,
-    # and it scales every rotation the console sees. Genuine 0x28 gyro read at
-    # 16.4 counts/dps recovers only ~0.55-0.67 of the rotation its own 0x1E
-    # carrier reports, flat across every speed bin from 0-10 up to 150-400 dps.
-    # Flat rules out the benign explanation -- one gyro sample per packet at
-    # ~110 Hz losing integral area would fade as the motion slows. So the true
-    # sensitivity is nearer 9-11.6 counts/dps, and if it is 8.192 (a standard
-    # +/-1000 dps full scale) our translated gyro runs at DOUBLE rate, because
-    # we pass DualSense counts through 1:1 on the assumption both sit at ~16.4.
-    gate.record("gyro counts/dps", "UNKNOWN",
-                "the wire-factor x counts/dps PRODUCT is ~2x wrong. Three "
-                "independent methods (carrier integration, carrier "
-                "regression, gravity-rate) all land at 7-11.6 against the "
-                "assumed 16.4, flat across speed so not undersampling. "
-                "Our gyro likely runs at DOUBLE rate. See "
-                "docs/experiments/pro2-imu-constants-audit-2026-08-01.md")
+    # Existing evidence separates the two factors that the first audit treated
+    # as one product. The ICM-42670-P datasheet, genuine Pro2 common report, and
+    # guided sibling normal-layout motion establish 16.4 counts/dps. Applying
+    # /256 to the high-rate gyro then
+    # recovers only 0.55-0.67 of the carrier rotation, flat across speed; using
+    # its actual seven-bit fixed point (/128) doubles that to 1.00-1.33, with a
+    # 1.108 median total-rotation ratio. That is within the capture's endpoint,
+    # interpolation, and linear-acceleration uncertainty, and is the only
+    # adjacent binary-point candidate compatible with the established scale.
+    gate.record("gyro wire scale", "PASS",
+                "sensor/normal gyro is 16.4 counts/dps; high-rate gyro uses "
+                "7 fractional bits (/128), not accel's 8 (/256). Existing "
+                "carrier integration now recovers a 1.108 median rotation "
+                "ratio; see pro2-imu-constants-audit-2026-08-01.md")
     gate.record("chart bootstrap", "PASS",
-                "interleaved emission sends a 0x1E alongside, which supplies "
-                "the chart state; the 0x28-only mode that lacked one is no "
-                "longer the target")
-    gate.record("repeat tolerance", "PASS",
-                "interleaved fill delivers each 0x28 exactly once between "
-                "carriers, as genuine hardware does; no packet repeats")
+                "the mixed scheduler establishes three complete 0x1E carrier "
+                "frames before selecting a high-rate 0x28")
+    gate.record("held PDU ownership", "PASS",
+                "one selected native-rate PDU is held byte-identically across "
+                "intervening USB polls; poll rate creates no new inner timing boundary")
     gate.record("byte-exact replay", "N/A",
                 "impossible in principle: the 800 Hz source samples and the "
                 "epoch-instant carrier are never transmitted")
+
+
+def check_generated_sequence_coherence(gate: Gate) -> None:
+    """Exercise the actual C translators against an independent physical model."""
+
+    try:
+        text = COHERENCE.generate_fixture_text()
+        baseline, mutations, escaped = COHERENCE.evaluate_fixture_text(text)
+    except Exception as error:  # readiness gate must fail closed
+        gate.record("generated sequence coherence", "FAIL", str(error))
+        gate.record("coherence negative controls", "FAIL", "fixture unavailable")
+        return
+
+    metrics = baseline.metrics
+    gate.record(
+        "generated sequence coherence",
+        "PASS" if baseline.ok else "FAIL",
+        f"{metrics['closed_loops']}/{metrics['batches']} complete "
+        f"0x1E->0x28->0x1E loops; max prefix "
+        f"{float(metrics['max_prefix_deg']):.6f} deg, gyro "
+        f"{float(metrics['max_gyro_counts']):.3f} counts, accel "
+        f"{float(metrics['max_accel_counts']):.4f} counts; "
+        f"0x28 gain matches 0x1E at "
+        f"{float(metrics['carrier_accel_gain']):.9f}",
+    )
+    caught = sum(bool(item["caught"]) for item in mutations)
+    gate.record(
+        "coherence negative controls",
+        "PASS" if not escaped and caught == len(mutations) else "FAIL",
+        f"{caught}/{len(mutations)} intentional recipe corruptions rejected "
+        f"(epoch, accel scale, gyro scale, axes, elapsed, carrier)",
+    )
+
+
+def check_hardware_semantic_gate(gate: Gate) -> None:
+    """Fail closed after a real console rejects the current semantic recipe."""
+
+    if CURRENT_RECIPE_HARDWARE_REJECTED:
+        gate.record(
+            "real-console semantic gate",
+            "FAIL",
+            "2026-08-01 coherent LIVE hardware A/B produced continuous "
+            "uncommanded camera motion and no useful response to controller "
+            "rotation; disabling pdu40 immediately restored validated 0x1E. "
+            "Do not reflash this recipe or tune decoded fields blindly",
+        )
+    else:
+        gate.record(
+            "real-console semantic gate",
+            "PASS",
+            "current recipe has a recorded deliberate hardware validation",
+        )
 
 
 def main() -> int:
@@ -350,8 +443,11 @@ def main() -> int:
     check_layout_bands(gate)
     check_constants(gate)
     check_accel_against_raw(gate)
+    check_shared_pdu_timeline(gate)
     check_orientation_epoch(gate)
+    check_generated_sequence_coherence(gate)
     check_unverifiable(gate)
+    check_hardware_semantic_gate(gate)
     return gate.report()
 
 

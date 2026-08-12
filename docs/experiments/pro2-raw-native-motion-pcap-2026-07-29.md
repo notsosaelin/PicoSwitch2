@@ -1,5 +1,12 @@
 # Genuine Pro Controller 2 raw/native motion PCAP audit — 2026-07-29
 
+> **Correction, 2026-08-01:** The bit map and raw/native/raw observations stand, but stationary
+> gyro bias was not an absolute scale reference. High-rate gyro uses seven fractional bits
+> (`/128`), not acceleration's eight (`/256`). The original stationary median comparison remains
+> below as historical evidence; moving-carrier integration plus the independently established
+> `16.4 counts/dps` sensor/common scale resolve the corrected conversion. See
+> [`pro2-imu-constants-audit-2026-08-01.md`](pro2-imu-constants-audit-2026-08-01.md).
+
 ## Question
 
 Does the genuine Pro Controller 2's 40-byte handle-`0x000E` motion PDU contain raw
@@ -445,3 +452,11 @@ each was corrected within this campaign.
 The magnet campaign in
 [`pro2-magnetic-stimulus-matrix-2026-07-29.md`](pro2-magnetic-stimulus-matrix-2026-07-29.md)
 remains valid negative evidence for its tested conditions. Only its semantic label changed.
+# Correction — high-rate gyro normalization (2026-08-01)
+
+The bit map and raw/native/raw observations in this report stand, but the stationary gyro bias was
+not an absolute scale reference. The high-rate gyro lane uses seven fractional bits (`/128`), not
+the acceleration lane's eight (`/256`). The original `/256` median comparison is retained below as
+historical evidence; moving-carrier integration plus the independently established
+`16.4 counts/dps` sensor/common scale resolve the corrected conversion. See
+[`pro2-imu-constants-audit-2026-08-01.md`](pro2-imu-constants-audit-2026-08-01.md).

@@ -81,7 +81,7 @@ The load-bearing majority of the raw protocol came from upstream and should be c
 Where this repo re-states an upstream fact, it is expected to carry a confidence tag and, ideally, a
 second source — see [`re-methodology/evidence-standards.md`](re-methodology/evidence-standards.md).
 
-## The shared, still-unsolved frontier
+## The shared motion frontier and its current boundary
 
 Direct UART evidence has moved the motion boundary beyond the older static-capture state. A genuine
 Pro Controller 2 now provides repeatable interleaved length-`0x1E`/`0x28` native motion, native
@@ -89,9 +89,9 @@ passthrough is hardware-validated, and DualSense translation uses the decoded le
 carrier. Those are current repository results, not claims inherited from a third-party static
 capture.
 
-The remaining frontier is narrower: exact carrier projection/rounding and coherent software
-generation for controllers without
-the source hardware. The length-`0x28` cadence-dependent accel/gyro/temperature layouts are decoded,
+The remaining frontier is narrower: controller-private sequence/filter/FIFO state needed for
+coherent software `0x28` generation on controllers without the source hardware. Exact integer
+projection/rounding and the length-`0x28` cadence-dependent accel/gyro/temperature layouts are decoded,
 and the former G6/G7/G8 aliases are known to cross packed gyro/accel fields rather than identify
 independent reference lanes. Reciprocal zero-drop chart captures directly establish the local
 state-0/state-3 boundary projection and refute strict smallest-three as an exact genuine model.
@@ -102,7 +102,9 @@ stateful topology, with no per-edge tuning; its interleaved prefix selects the
 pre-transition chart 3. A
 controlled 2026-07-29 no-magnet/polarity/distance matrix found no resolved external-field response;
 it rejects a simple raw magnetic-field interpretation without claiming that the genuine controller
-lacks or never consumes an internal magnetometer. See
+lacks or never consumes an internal magnetometer. A fully coherent generated recipe still failed
+on hardware, while production DualSense `0x1E` remains validated; translated `0x28` work was
+deliberately deferred on 2026-08-01. See
 [`switch2/uart-magprobe.md`](switch2/uart-magprobe.md) and
 [`experiments/pro2-magnetic-stimulus-matrix-2026-07-29.md`](experiments/pro2-magnetic-stimulus-matrix-2026-07-29.md),
 and

@@ -30,7 +30,11 @@ def _load(path: Path) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
         if not isinstance(item, dict):
             raise FixtureError(f"{path}:{line_number}: expected a JSON object")
         current = next(
-            (name for name in ("trace", "motionpair", "blecap") if name in item),
+            (
+                name
+                for name in ("trace", "motionpair", "motionhybrid", "blecap")
+                if name in item
+            ),
             None,
         )
         if current is None:
@@ -66,6 +70,24 @@ def _load(path: Path) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
 
 
 def _payload(domain: str, record: dict[str, Any]) -> bytes:
+    if domain == "motionhybrid":
+        base_text = record.get("base")
+        xor_text = record.get("output_xor")
+        if (
+            not isinstance(base_text, str)
+            or not isinstance(xor_text, str)
+            or not re.fullmatch(r"[0-9A-Fa-f]*", base_text)
+            or not re.fullmatch(r"[0-9A-Fa-f]*", xor_text)
+        ):
+            raise FixtureError("hybrid record has invalid base/output_xor hex")
+        base = bytes.fromhex(base_text)
+        delta = bytes.fromhex(xor_text)
+        declared = int(record.get("native_len", len(base)))
+        if len(base) != declared or len(delta) != declared:
+            raise FixtureError(
+                "hybrid base/output_xor lengths do not match native_len"
+            )
+        return bytes(left ^ right for left, right in zip(base, delta))
     field = "native" if domain == "motionpair" else "payload"
     text = record.get(field)
     if not isinstance(text, str) or not re.fullmatch(r"[0-9A-Fa-f]*", text):
@@ -141,6 +163,24 @@ def _canonical_record(domain: str, record: dict[str, Any]) -> dict[str, Any]:
             "cal_a",
         )
         return {key: record[key] for key in keys}
+    if domain == "motionhybrid":
+        keys = (
+            "t_us",
+            "native_len",
+            "mode",
+            "reason",
+            "requested_groups",
+            "changed_bits",
+            "ds5_age_us",
+            "ds5_seq",
+            "cal_state",
+            "pose_aligned",
+            "base",
+            "output_xor",
+        )
+        return {key: record[key] for key in keys} | {
+            "output": data.hex().upper()
+        }
     return {
         key: record[key]
         for key in ("t_us", "kind", "handle", "length", "captured", "payload")
@@ -183,7 +223,7 @@ def _write_c(path: Path, name: str, domain: str, records: list[dict[str, Any]]) 
         # unused byte while the fixture's data_length remains authoritative.
         encoded = ", ".join(f"0x{byte:02X}" for byte in data) or "0x00"
         lines.append(f"static const uint8_t {array}[] = {{{encoded}}};")
-        if domain == "motionpair":
+        if domain in ("motionpair", "motionhybrid"):
             declared = int(record["native_len"])
             command = sub = 0
         else:

@@ -160,11 +160,11 @@ class LayoutSelectionTests(unittest.TestCase):
 
 
 class EmissionModeTests(unittest.TestCase):
-    """The elapsed count means different things in the two emission modes.
+    """Preserve the separate 0x28-only and mixed-stream positive controls.
 
-    This is what licenses the 0x28-only translation policy: in that mode the
-    elapsed rule is exact, so a generator can set the field from its own emit
-    interval without modelling the unresolved interleaved semantics.
+    In 0x28-only mode the previous PDU is necessarily another 0x28. In mixed
+    mode that comparison should fail because elapsed reaches the immediately
+    preceding PDU of either length; the shared-timeline test covers that rule.
     """
 
     def mode_agreement(self):

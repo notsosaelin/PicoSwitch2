@@ -19,6 +19,7 @@
 #include "core/services/players/feedback.h"
 #include "controller_battery.h"
 #include "ds5_motion_pair_capture.h"
+#include "ns2_motion_hybrid_live.h"
 #ifdef NS2_DS5_AUDIO_LIVE_OPUS
 #include "ds5_native_haptics.h"
 #endif
@@ -668,11 +669,16 @@ static void ds5_process_report(bthid_device_t* device, const uint8_t* data, uint
             memcpy(ds5->event.gyro, raw_gyro, sizeof(raw_gyro));
             memcpy(ds5->event.accel, raw_accel, sizeof(raw_accel));
         }
-        ds5_motion_pair_update_ds5(platform_time_us(),
+        const uint32_t motion_captured_us = platform_time_us();
+        ds5_motion_pair_update_ds5(motion_captured_us,
                                     rpt->sensor_timestamp,
                                     raw_gyro, raw_accel,
                                     ds5->event.gyro, ds5->event.accel,
                                     ds5->calibration_request_state);
+        ns2_motion_hybrid_live_update_ds5(
+            motion_captured_us, rpt->sensor_timestamp,
+            ds5->event.gyro, ds5->event.accel,
+            ds5->calibration_request_state);
     } else {
         ds5->event.has_motion = false;
         ds5->event.motion_timestamp_valid = false;

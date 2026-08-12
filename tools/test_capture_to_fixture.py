@@ -104,6 +104,59 @@ class CaptureToFixtureTests(unittest.TestCase):
             fixture = capture_to_fixture.convert(args)
             self.assertEqual([record["id"] for record in fixture["records"]], [0x0D])
 
+    def test_motionhybrid_fixture_reconstructs_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            base = bytes(range(30))
+            delta = bytes([0x80] + [0] * 29)
+            source = self._write(
+                root,
+                "hybrid.jsonl",
+                [
+                    {
+                        "motionhybrid": "record",
+                        "t_us": 12,
+                        "native_len": 30,
+                        "mode": "prefix",
+                        "reason": "applied",
+                        "requested_groups": 8,
+                        "changed_bits": 1,
+                        "ds5_age_us": 100,
+                        "ds5_seq": 4,
+                        "cal_state": 2,
+                        "pose_aligned": True,
+                        "base": base.hex().upper(),
+                        "output_xor": delta.hex().upper(),
+                    },
+                    {
+                        "motionhybrid": "end",
+                        "records": 1,
+                        "dropped": 0,
+                        "mode": "prefix",
+                    },
+                ],
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "input": str(source),
+                    "name": "hybrid golden",
+                    "output_json": str(root / "hybrid.json"),
+                    "output_c": str(root / "hybrid.h"),
+                    "command": None,
+                    "subcommand": None,
+                    "kind": None,
+                },
+            )()
+            fixture = capture_to_fixture.convert(args)
+            self.assertEqual(fixture["domain"], "motionhybrid")
+            self.assertEqual(
+                fixture["records"][0]["output"],
+                bytes([0x80] + list(range(1, 30))).hex().upper(),
+            )
+            self.assertIn("hybrid_golden_data_0", (root / "hybrid.h").read_text())
+
     def test_loss_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

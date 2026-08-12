@@ -1,0 +1,19 @@
+{
+  "applied": 19,
+  "changed_records": 19,
+  "dropped": 0,
+  "fail_closed": true,
+  "fallbacks": 74,
+  "modes": {
+    "prefix": 93
+  },
+  "reasons": {
+    "applied": 19,
+    "no_window": 1,
+    "passthrough_0x1e": 68,
+    "stale_donor": 5
+  },
+  "records": 93,
+  "schema": "picoswitch2-motion-hybrid-audit/v1",
+  "source": "E:\\PicoSwitch2\\dumps\\experiments\\20260801-110148-ds5-hybrid-prefix-visual-2026-08-01\\motion.hybrid.raw.jsonl"
+}

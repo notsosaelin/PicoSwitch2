@@ -10,6 +10,34 @@ Prompted by the gyro sensitivity turning out to be an assumption. The concern
 generalises: a constant that is wrong but self-consistent survives every test
 that compares our code against our own code.
 
+## Resolution — no new capture required
+
+The original audit correctly found a factor-of-two product error but stopped
+one step too early by treating the two factors as experimentally
+indistinguishable. Existing repository evidence separates them:
+
+- The ICM-42670-P datasheet permits `16.4 counts/dps` only at its `±2000 dps`
+  setting (`GYRO_CONFIG0.GYRO_UI_FS_SEL = 0`).
+- The retained controller-research discussion records the genuine Pro
+  Controller 2's common gyro as confirmed at `±2000 dps / 16.4 counts/dps`;
+  ndeadly identifies that as the known `0x05` report scale. The local evidence
+  is `dumps/research/ndeadly-switch2-research.json`, messages
+  `1485345261453709372` and `1485348036396978236` (2026-03-22).
+- The independently guided sibling native normal-layout analysis measures its
+  full-resolution gyro lane at `16.16` and `16.54 counts/dps`.
+- With that physical scale fixed, the existing high-rate corpus selects the
+  other factor: high-rate gyro uses **seven fractional bits** (`wire / 128`),
+  while its adjacent acceleration lanes use eight (`wire / 256`). Applying
+  `/128` makes two moving captures recover `1.000` and `0.994` of their own
+  carrier rotation; the four-capture median becomes `1.108` instead of
+  `0.554`. The residual captures begin/end mid-motion and are expected to be
+  less accurate integration references.
+
+The source, reference decoder, host tests, and readiness gate now encode that
+field-specific binary point. The historical analysis below is retained because
+its measurements are what exposed the defect; its conclusion that a new
+known-angle capture was required is superseded by this section.
+
 ## Method — what is measurable with no controller, console or UART
 
 Three references in the existing captures need no hardware and no protocol
@@ -114,7 +142,7 @@ values the exact ratio is 4070/8288 = 0.4911 against the 0.5 used, an error of
 The at-rest DualSense gyro magnitude is 15.3 counts, which is its zero-rate
 offset — already removed by `gyro_corrected`, and not a scale.
 
-## 🔴 Gyro: the conversion is wrong by roughly a factor of two, and unresolved
+## Original gyro audit: factor-of-two product error (now resolved above)
 
 **What is actually measured** is the *product* of two constants: the wire→counts
 factor in `WIRE_TO_COUNTS[layout]["gyro"]` and `IMU_COUNTS_PER_DPS`. Only the
@@ -200,12 +228,10 @@ it agrees with the gravity-rate method, which is also carrier-independent.
   lanes, so it yields a ratio of 1 and no angle reference — and every capture
   holding it is stationary.
 
-**To close it:** integrate the gyro across a **known** rotation — a turntable
-through an exact 360°, or 90° against a square edge — with `0x1E` and `0x28`
-subscribed, and with the capture *started before the motion begins*, since the
-retained ring is short. Slow and deliberate beats fast. That yields counts/dps
-directly with no reliance on the carrier, the accelerometer, or any assumed
-constant. No console and no flash.
+The original audit proposed a new known-angle capture to separate the two
+factors. The resolution section above explains why the existing datasheet,
+common-report scale, guided normal-layout result, and high-rate corpus already
+separate them; no additional physical capture is required.
 
 ## 🔵 The temperature tail decodes to an implausible absolute value
 
@@ -247,9 +273,9 @@ python tools/ns2_motion40_validate.py      # readiness gate
 
 Of five constants audited, one was confirmed (acceleration counts/g), two were
 confirmed to within a fraction of a percent (tick period, DualSense counts/g),
-one is wrong by roughly a factor of two and cannot be pinned from captures
-(gyro conversion), and one is structurally sound but semantically unsupported
-(temperature).
+one exposed a factor-of-two field-specific fixed-point error that is now
+resolved (high-rate gyro `/128`, not `/256`), and one is structurally sound but
+semantically unsupported (temperature).
 
 The pattern behind the wrong ones is consistent: each was validated by a check
 that could not have failed. Slots agreeing with each other cannot reveal a

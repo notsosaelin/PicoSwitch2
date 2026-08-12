@@ -239,6 +239,37 @@ static const uint8_t switch_gc_ms_compat_id[] = {
 };
 _Static_assert(sizeof(switch_gc_ms_compat_id) == 40, "MS compat ID descriptor must be 40 bytes");
 
+// Extended Properties OS feature descriptor: register the WinUSB device-interface GUID for IF1.
+// The Compatible ID descriptor above loads WinUSB, but does NOT create the discoverable device
+// interface that libusb (and therefore SDL/Steam) needs to open IF1. Without this, the NSO
+// GameCube personality only works on a PC that already has the GUID registered from a genuine
+// Nintendo controller; a fresh PC never drives the vendor channel. Windows requests this with the
+// same vendor code and wIndex=0x0005. GUID {6F13725E-EF0E-4FD3-AE5F-B2DE989EC825} is Nintendo's
+// real device-family value (shared with the Pro2 / Joy-Con 2 personalities).
+static const uint8_t switch_gc_ms_ext_props[] = {
+    // Header (10 bytes)
+    0x8E, 0x00, 0x00, 0x00,              // dwLength = 142
+    0x00, 0x01,                          // bcdVersion = 1.00
+    0x05, 0x00,                          // wIndex = 0x0005 (Extended Properties)
+    0x01, 0x00,                          // wCount = 1 custom property
+    // Custom property section (132 bytes)
+    0x84, 0x00, 0x00, 0x00,              // dwSize = 132
+    0x01, 0x00, 0x00, 0x00,              // dwPropertyDataType = REG_SZ
+    0x28, 0x00,                          // wPropertyNameLength = 40 bytes
+    'D', 0, 'e', 0, 'v', 0, 'i', 0, 'c', 0, 'e', 0,
+    'I', 0, 'n', 0, 't', 0, 'e', 0, 'r', 0, 'f', 0, 'a', 0, 'c', 0, 'e', 0,
+    'G', 0, 'U', 0, 'I', 0, 'D', 0, 0, 0,
+    0x4E, 0x00, 0x00, 0x00,              // dwPropertyDataLength = 78 bytes
+    '{', 0, '6', 0, 'F', 0, '1', 0, '3', 0, '7', 0, '2', 0, '5', 0, 'E', 0,
+    '-', 0, 'E', 0, 'F', 0, '0', 0, 'E', 0,
+    '-', 0, '4', 0, 'F', 0, 'D', 0, '3', 0,
+    '-', 0, 'A', 0, 'E', 0, '5', 0, 'F', 0,
+    '-', 0, 'B', 0, '2', 0, 'D', 0, 'E', 0, '9', 0, '8', 0, '9', 0, 'E', 0,
+    'C', 0, '8', 0, '2', 0, '5', 0, '}', 0, 0, 0,
+};
+_Static_assert(sizeof(switch_gc_ms_ext_props) == 142,
+               "MS extended properties descriptor must be 142 bytes");
+
 //--------------------------------------------------------------------+
 // Stage C -- Input report 0x0A construction. Layout Confirmed (field-by-field
 // live decode, docs/switch2-gc/protocol.md "Input Report 0x0A"); the button
@@ -742,6 +773,13 @@ bool switch_gc_vendor_control_xfer(uint8_t rhport, uint8_t stage, const void *re
     if (request->bRequest == GC_MS_OS_VENDOR_CODE && request->wIndex == 0x0004) {
         return tud_control_xfer(rhport, request, (void *)switch_gc_ms_compat_id,
                                 sizeof(switch_gc_ms_compat_id));
+    }
+    // Extended Properties -> register the WinUSB DeviceInterfaceGUID so SDL/Steam can open IF1 on a
+    // fresh PC (see switch_gc_ms_ext_props). Without this, GameCube mode is unrecognized on any PC
+    // that has not previously hosted a genuine Nintendo controller.
+    if (request->bRequest == GC_MS_OS_VENDOR_CODE && request->wIndex == 0x0005) {
+        return tud_control_xfer(rhport, request, (void *)switch_gc_ms_ext_props,
+                                sizeof(switch_gc_ms_ext_props));
     }
 
     // Nintendo Switch 2 console identity handshake over EP0 vendor control -- see this

@@ -11,9 +11,9 @@ cadence matrix now decodes and hardware-validates all high-rate, normal, and cat
 lanes. The prefix field boundary, split third carrier, fixed carrier scales, and packet-derived
 `preceding carrier + 4 ticks` epoch are also established. A causal history decoder is validated
 against the dynamic corpus. The high-rate/normal tail is decoded as two Q3 IMU temperature
-samples, and catch-up bit 287 is observed reserved-zero padding. Remaining work is exact integer
-rounding and any future protocol
-escalation beyond the captured range;
+samples, and catch-up bit 287 is observed reserved-zero padding. Exact integer projection and
+rounding now re-encode every captured mode-3 packet byte-for-byte. Future work is limited to new
+genuine packet modes or protocol behavior outside the captured range;
 see
 [`../experiments/pro2-mode3-carrier-prefix-2026-07-29.md`](../experiments/pro2-mode3-carrier-prefix-2026-07-29.md)
 and
@@ -211,7 +211,7 @@ IMU payload. Its encoded 12-bit elapsed count selects one of three exact layouts
 
 | Tick delta | Layout after the 4-byte PDU prefix | Scale to ordinary ICM counts |
 |---:|---|---|
-| `0..10` | mode2, carrier s24+s23+s25, accel22, gyro22, accel22, tail16 | carrier ÷4 to common precision; IMU vectors ÷256 |
+| `0..10` | mode3, carrier s24+s23+s25, accel22, gyro22, accel22, tail16 | carrier ÷4 to common precision; accel ÷256, gyro ÷128 |
 | `11..14` | mode2, carrier s22+s21+s23, accel14, gyro13, accel13, gyro14, accel14, tail16 | 13-bit gyro/accel ×2 |
 | `15+` | mode2, carrier s22+s21+s23, accel14, gyro16, accel13, gyro16, accel14, reserved-zero pad1 | gyros ÷4; 13-bit accel ×2 |
 
@@ -237,6 +237,14 @@ zero-drop files. PDU byte 3 redundantly identifies the layout: `0x0D` high-rate 
 `0x0E` normal (`158/158`), and `0x0F` catch-up (`269/269`). This corrects the historical
 “secondary status” label for PDU byte 2 and makes layout decoding safe even when a capture omits
 the predecessor.
+
+Both length-`0x1E` and length-`0x28` are native Pro Controller 2 forms on this
+one clock and carrier trajectory. Length-`0x1E` is not a Switch 1 compatibility
+fallback; Switch 1 motion uses the separate report-`0x30` protocol. Length-
+`0x28` adds cadence-dependent packed sample history, not an intrinsically newer
+or more accurate gyro mode. A 2026-08-01 hardware A/B exposed a generator that
+violated this shared-timeline rule; see
+[`ds5-pdu40-interleaved-hardware-2026-08-01.md`](../experiments/ds5-pdu40-interleaved-hardware-2026-08-01.md).
 
 The high-rate/normal tail carries two Q3 IMU-temperature samples. Bits `15..6` are their shared
 signed ten-bit integer part, bits `2..0` are sample A's fractional eighths, and bits `5..3` are
@@ -433,7 +441,8 @@ were removed after the test so the rejected packet model cannot be enabled accid
    establish an interleaved `0x1E`/`0x28` stream. A zero-drop UART cadence matrix from 7.5 through
    30 ms proves exact packet boundaries at tick 11 and tick 15, while raw/native/raw bracketing
    validates all signed field widths and scales. Production seven-tick high-rate packets contain
-   two signed22 acceleration vectors and one signed22 gyro vector, all with eight fractional bits.
+   two signed22 acceleration vectors with eight fractional bits and one signed22 gyro vector with
+   seven fractional bits.
    Normal packets contain three acceleration and two gyro samples in mixed 13/14-bit fields.
    Catch-up packets contain three acceleration and two gyro samples in mixed 13/14/16-bit fields.
    The encoded 12-bit elapsed field and `0x0D`/`0x0E`/`0x0F` layout status are resolved.
@@ -444,7 +453,8 @@ were removed after the test so the rejected packet model cannot be enabled accid
    the stateful cyclic chart topology across all four states and five prefix seam choices. A held-out
    `3 → 1 → 0` capture refutes composition into one stateless unsigned map while validating the
    cyclic paired-sign branch. A later reciprocal `3 → 2 → 3` crossing closes all four chart
-   states under the same model; exact integer rounding remains unresolved.
+   states under the same model; exact integer projection/rounding is now resolved against the
+   complete corpus fixtures.
 6. **Whether the console strictly validates** beyond timing + physically plausible values.
 
 ## Implementation status
@@ -455,11 +465,17 @@ generated value semantics discussed below. On disconnect, the last genuine lengt
 stationary while its timing word advances; source-slot and VID/PID ownership prevent reuse by a
 different controller.
 
-🟢 **Current DualSense production path:** only the host-tested length-`0x1E`
-strict-smallest-three approximation is emitted. It remains hardware-validated, but reciprocal
-genuine captures prove it is not an exact model of every Pro2 carrier sample. The
-hardware-refuted length-`0x28` generator and its UART gate have been removed; passive decoding and
-the exact field codec remain available for continued research.
+🟢 **Current DualSense production path:** the host-tested length-`0x1E` carrier remains the default
+and is hardware-validated. A complete length-`0x28` high-rate generator and genuine-base hybrid
+harness are retained behind default-off UART gates. Their layout, prefix epoch, sample cadence,
+field scales, shared clock, and internal physical coherence are host-tested, but the complete
+generated recipe was hardware-rejected despite healthy transport counters. Hardware separately
+validated byte-identical genuine, acceleration-only, and gyro-only hybrid substitutions; the first
+prefix run was invalidated by alternating genuine and donor orientation histories. Its corrected
+sequence-wide prefix ownership is host/build validated and intentionally unflashed. The campaign
+was deferred on 2026-08-01 because `0x28` adds cadence-dependent history rather than a distinct
+higher-fidelity gyro mode. Reopen it only for a concrete `0x1E` deficiency or a new observation
+point capable of resolving controller-private filter/FIFO/state behavior.
 
 🔵 **Historical/generic encoder path:** the Switch 2 reads the generated gyro pipeline (both Zeldas
 and Splatoon respond), but its exact fidelity remains unresolved. `src/switch_pro2/switch_pro2.c`

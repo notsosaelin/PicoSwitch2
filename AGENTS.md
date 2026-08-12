@@ -27,8 +27,11 @@ captures, tests, and the documents above outrank old plans or conversation histo
   real packed gyro and acceleration samples, which is why a controlled magnet campaign found no
   polarity or distance response. Do not reintroduce a magnetometer premise, and do not repeat the
   refuted static-template generator — holding the other changing lanes static causes random motion.
-  A software `0x28` generator remains a valid long-term target only once every changing lane can be
-  synthesized coherently, including exact integer projection/rounding.
+  A software `0x28` generator remains a valid long-term research target only once every changing
+  lane can be synthesized coherently, including exact integer projection/rounding. That target is
+  deliberately deferred as of 2026-08-01: do not request another flash or resume the live hybrid
+  campaign unless the maintainer explicitly reopens it because the validated `0x1E` production
+  path has a concrete deficiency or new evidence creates a materially better observation point.
 - Production DualSense/Edge motion uses the validated length-`0x1E` carrier.
 - Pico 2 W uses the validated 300 MHz audio build. Pico W intentionally retains its non-audio
   profile.
@@ -49,6 +52,26 @@ captures, tests, and the documents above outrank old plans or conversation histo
 - `docs/archive/` — historical files, always suffixed `.archived.md`
 - `dumps/` — captures and derived media; read `dumps/README.md`
 - `tools/` — UART, decoder, capture, and host-test utilities
+
+## Subagent delegation
+
+When a task can be split into several independent and substantial subtasks, spawn one
+`luna_worker` per subtask and run them in parallel. Keep anything that takes only a few minutes in
+the main thread.
+
+Each worker runs in its own thread. Do not assume it can see the main thread conversation. Make
+every task description self-contained: files in scope, boundaries, and expected output.
+
+Independent read-only tasks can run in parallel. Any worker that writes files needs its own
+isolated worktree. Otherwise, run those workers sequentially.
+
+After all workers finish, the main thread checks each result against the acceptance criteria in
+the dispatch prompt before combining them. Re-dispatch anything that fails.
+
+If you dispatched multiple workers but only one ever runs, first check whether
+`agents.max_concurrent_threads_per_session` is set to `1` in `config.toml`.
+
+The same approach works for any other custom subagents you've configured.
 
 ## Build and verification
 
@@ -107,9 +130,42 @@ Motion-specific checks:
 .\build\host-tests\build-host-test-ns2-motion-pdu40.exe
 .\build\host-tests\build-host-test-ns2-ds5-motion.exe
 .\build\host-tests\build-host-test-ns2-ds5-motion40.exe
+.\build\host-tests\test_ns2_motion_hybrid.exe
+.\build\host-tests\test_ns2_motion_hybrid_projector.exe
 python tools\test_ns2_magprobe.py
 python tools\test_ns2_motion_packet.py
 python tools\test_ns2_motion_carrier.py
+python tools\test_ns2_motion40_coherence.py
+python tools\test_ns2_motion_hybrid.py
+```
+
+`test_ns2_motion40_coherence.py` is the sequence-level gate above the byte-exact codecs. It compiles
+the real C translators against an analytic 800 Hz trajectory, checks complete
+`0x1E -> 0x28 -> 0x1E` loops in physical units, and must also catch every built-in mutation. Run it
+after any scheduler, axis, scale, prefix, or carrier change.
+
+The hybrid splicer test compiles with:
+
+```powershell
+gcc -Iinclude -Wall -Wextra -Werror `
+    -o build\host-tests\test_ns2_motion_hybrid.exe `
+    tools\test_ns2_motion_hybrid.c src\bt_hid\motion\ns2_motion_hybrid.c `
+    src\bt_hid\motion\ns2_motion_pdu.c -lm
+```
+
+The live projector test covers stationary-bias acquisition, strict-valid
+genuine-carrier alignment, genuine-clock donor windows, group-only changes,
+immutable status/tail, and byte-identical stale/repeated/layout fallbacks:
+
+```powershell
+gcc -Iinclude -Wall -Wextra -Werror `
+    -o build\host-tests\test_ns2_motion_hybrid_projector.exe `
+    tools\test_ns2_motion_hybrid_projector.c `
+    src\bt_hid\motion\ns2_motion_hybrid_projector.c `
+    src\bt_hid\motion\ns2_motion_hybrid.c `
+    src\bt_hid\motion\ns2_ds5_motion.c `
+    src\bt_hid\motion\ns2_ds5_motion40.c `
+    src\bt_hid\motion\ns2_motion_pdu.c -lm
 ```
 
 `build-host-test-ns2-motion-pdu40` holds both firmware length-`0x28` packers to

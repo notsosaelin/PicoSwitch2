@@ -1,0 +1,16 @@
+{
+  "applied": 0,
+  "changed_records": 0,
+  "dropped": 0,
+  "fail_closed": true,
+  "fallbacks": 0,
+  "modes": {
+    "genuine": 95
+  },
+  "reasons": {
+    "genuine_control": 95
+  },
+  "records": 95,
+  "schema": "picoswitch2-motion-hybrid-audit/v1",
+  "source": "E:\\PicoSwitch2\\dumps\\experiments\\20260801-105215-ds5-hybrid-genuine-control-2026-08-01\\motion.hybrid.raw.jsonl"
+}

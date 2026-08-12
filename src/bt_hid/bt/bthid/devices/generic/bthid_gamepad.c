@@ -92,6 +92,7 @@ void bthid_gamepad_set_descriptor(bthid_device_t* device, const uint8_t* desc, u
 
     uint8_t btns_count = 0;
     uint8_t idOffset = 0;
+    uint16_t input_report_len = 0;
 
     // Pass 1: Find the gamepad report ID (the one containing Generic Desktop X axis)
     // This reliably identifies the gamepad report in multi-report-ID descriptors
@@ -131,6 +132,11 @@ void bthid_gamepad_set_descriptor(bthid_device_t* device, const uint8_t* desc, u
 
         uint8_t report[1] = {0};
         if (USB_GetHIDReportItemInfo(item->ReportID, report, item)) {
+            if (item->ItemType == HID_REPORT_ITEM_In) {
+                uint16_t item_end = (uint16_t)bitOffset + bitSize;
+                uint16_t item_len = (item_end + 7u) / 8u;
+                if (item_len > input_report_len) input_report_len = item_len;
+            }
             switch (item->Attributes.Usage.Page) {
                 case 0x01:  // Generic Desktop
                     switch (item->Attributes.Usage.Usage) {
@@ -202,6 +208,7 @@ void bthid_gamepad_set_descriptor(bthid_device_t* device, const uint8_t* desc, u
     }
 
     gp->map.buttonCnt = btns_count;
+    gp->map.input_report_len = input_report_len;
 
     // Release parser memory
     USB_FreeReportInfo(info);
@@ -229,8 +236,9 @@ void bthid_gamepad_set_descriptor(bthid_device_t* device, const uint8_t* desc, u
     gp->map.quirk = gamepad_quirks_identify(device->vendor_id, device->product_id,
                                              device->name, gp->map.buttonCnt);
     gp->has_report_map = true;
-    printf("[BTHID_GAMEPAD] Parsed: %d btns, X@%d Y@%d Z@%d RZ@%d RX@%d RY@%d hat@%d(min=%d) sim=%d quirk=%s\n",
+    printf("[BTHID_GAMEPAD] Parsed: %d btns, report_len=%u, X@%d Y@%d Z@%d RZ@%d RX@%d RY@%d hat@%d(min=%d) sim=%d quirk=%s\n",
            btns_count,
+           gp->map.input_report_len,
            gp->map.xLoc.byteIndex, gp->map.yLoc.byteIndex,
            gp->map.zLoc.byteIndex, gp->map.rzLoc.byteIndex,
            gp->map.rxLoc.byteIndex, gp->map.ryLoc.byteIndex,
@@ -496,6 +504,12 @@ static void gamepad_process_report(bthid_device_t* device, const uint8_t* data, 
         // Filter by report ID — skip non-gamepad reports (battery, feature, etc.)
         // that would otherwise be parsed as gamepad data with wrong byte layout
         if (gp->map.report_id && len > 0 && data[0] != gp->map.report_id) {
+            return;
+        }
+        // A descriptor-backed input report is one complete state snapshot.
+        // Never interpret a truncated packet as implicit zeroes/releases for
+        // fields whose bytes did not arrive.
+        if (gp->map.input_report_len && len < gp->map.input_report_len) {
             return;
         }
         // One-time hex dump of first gamepad report for debugging

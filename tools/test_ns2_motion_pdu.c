@@ -14,6 +14,81 @@ static void check(int condition, const char *message)
     }
 }
 
+static int bit_in_ranges(unsigned bit, const unsigned offsets[3],
+                         const unsigned widths[3])
+{
+    for (unsigned lane = 0; lane < 3u; ++lane) {
+        if (bit >= offsets[lane] && bit < offsets[lane] + widths[lane])
+            return 1;
+    }
+    return 0;
+}
+
+static int32_t get_signed_bits(const uint8_t *data, unsigned offset,
+                               unsigned width)
+{
+    uint32_t value = 0u;
+    for (unsigned i = 0; i < width; ++i) {
+        const unsigned bit = offset + i;
+        if (data[bit >> 3] & (uint8_t)(1u << (bit & 7u)))
+            value |= 1u << i;
+    }
+    const uint32_t sign = 1u << (width - 1u);
+    return (value & sign)
+        ? (int32_t)((int64_t)value - ((int64_t)1 << width))
+        : (int32_t)value;
+}
+
+static void test_motion40_carrier_setter(void)
+{
+    static const uint16_t elapsed_cases[] = {8u, 12u, 20u};
+    const int32_t replacement[3] = {-12345, 23456, -34567};
+    for (unsigned which = 0;
+         which < sizeof(elapsed_cases) / sizeof(elapsed_cases[0]); ++which) {
+        uint8_t pdu[NS2_MOTION_PDU40_LENGTH];
+        for (unsigned i = 0; i < sizeof(pdu); ++i)
+            pdu[i] = (uint8_t)(i * 37u + which * 19u);
+        const uint16_t elapsed = elapsed_cases[which];
+        pdu[1] = (uint8_t)((pdu[1] & 0x0Fu) |
+                           ((elapsed & 0x0Fu) << 4));
+        pdu[2] = (uint8_t)(elapsed >> 4);
+        pdu[4] = (uint8_t)((pdu[4] & 0xFCu) | 3u);
+        uint8_t before[NS2_MOTION_PDU40_LENGTH];
+        memcpy(before, pdu, sizeof(before));
+
+        const unsigned high_offsets[3] = {34u, 58u, 81u};
+        const unsigned high_widths[3] = {24u, 23u, 25u};
+        const unsigned narrow_offsets[3] = {34u, 56u, 77u};
+        const unsigned narrow_widths[3] = {22u, 21u, 23u};
+        const unsigned *offsets = elapsed <= 10u
+            ? high_offsets : narrow_offsets;
+        const unsigned *widths = elapsed <= 10u
+            ? high_widths : narrow_widths;
+
+        check(ns2_motion_pdu40_set_carrier(pdu, replacement),
+              "mode-3 carrier setter accepts every cadence layout");
+        for (unsigned lane = 0; lane < 3u; ++lane) {
+            check(get_signed_bits(pdu, offsets[lane], widths[lane]) ==
+                      replacement[lane],
+                  "mode-3 carrier setter round-trips signed lane");
+        }
+        for (unsigned bit = 0; bit < sizeof(pdu) * 8u; ++bit) {
+            if (bit_in_ranges(bit, offsets, widths)) continue;
+            const uint8_t mask = (uint8_t)(1u << (bit & 7u));
+            check((pdu[bit >> 3] & mask) == (before[bit >> 3] & mask),
+                  "mode-3 carrier setter preserves every outside bit");
+        }
+
+        uint8_t rejected[NS2_MOTION_PDU40_LENGTH];
+        memcpy(rejected, pdu, sizeof(rejected));
+        int32_t too_large[3] = {1 << (widths[0] - 1u), 0, 0};
+        check(!ns2_motion_pdu40_set_carrier(rejected, too_large),
+              "mode-3 carrier setter rejects a lane overflow");
+        check(memcmp(rejected, pdu, sizeof(rejected)) == 0,
+              "rejected carrier leaves the packet byte-identical");
+    }
+}
+
 int main(void)
 {
     // Genuine 0x1E PDU from the 2026-07-22 stationary UART capture.
@@ -140,6 +215,8 @@ int main(void)
             }
         }
     }
+
+    test_motion40_carrier_setter();
 
     if (failures) return 1;
     puts("ns2_motion_pdu: all tests passed");

@@ -1,0 +1,21 @@
+{
+  "applied": 15,
+  "changed_records": 15,
+  "dropped": 0,
+  "fail_closed": true,
+  "fallbacks": 78,
+  "modes": {
+    "gyro": 93
+  },
+  "reasons": {
+    "applied": 15,
+    "no_window": 1,
+    "passthrough_0x1e": 63,
+    "source_not_advanced": 1,
+    "stale_donor": 8,
+    "wait_bias": 5
+  },
+  "records": 93,
+  "schema": "picoswitch2-motion-hybrid-audit/v1",
+  "source": "E:\\PicoSwitch2\\dumps\\experiments\\20260801-105934-ds5-hybrid-gyro-visual-2026-08-01b\\motion.hybrid.raw.jsonl"
+}

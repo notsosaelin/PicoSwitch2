@@ -471,6 +471,84 @@ longer prediction-only; exact integer projection/rounding remains open.
 
 ---
 
+## Switch 2 motion: high-rate gyro has acceleration's eight fractional bits
+
+**Held:** during the first complete length-`0x28` fixed-point normalization.
+
+**The claim:** all three signed22 high-rate IMU vectors use the same binary point, so acceleration
+and gyro both convert with `wire / 256`.
+
+**Why it seemed reasonable:** the fields have identical widths; `/256` made high-rate stationary
+gyro bias resemble the bracketed integer raw stream; and every acceleration lane across all layouts
+converged after the analogous conversion. Those were relative consistency checks, not an angular
+reference.
+
+**What refuted it:** four existing moving captures recover only `0.500`, `0.497`, `0.608`, and
+`0.663` of their own carrier rotation under `/256`, with no improvement at slow speeds. Independent
+existing evidence fixes the sensor/common gyro at `±2000 dps / 16.4 counts/dps`, ruling out the
+alternative sensor-full-scale explanation. The only adjacent power-of-two field conversion is
+seven fractional bits (`/128`); it produces `1.000`, `0.994`, `1.215`, and `1.325` with a `1.108`
+median. Two independent captures land within 1% without any tuning.
+
+**Correction:** high-rate acceleration remains `/256`; high-rate gyro is `/128`. Normal and
+catch-up gyro scales are unchanged. The generator multiplies calibrated DualSense gyro counts by
+128, and the readiness gate now tests the existing physical rotation relation. See
+[`pro2-imu-constants-audit-2026-08-01.md`](pro2-imu-constants-audit-2026-08-01.md).
+
+---
+
+## Switch 2 motion: length-`0x28` is the next-generation replacement for compatibility `0x1E`
+
+**Held:** informally while prioritizing a generated `0x28` path over the already
+hardware-validated DualSense `0x1E` translator.
+
+**The claim:** length-`0x28` is the native next-generation gyro format, while
+length-`0x1E` exists for Switch 1 compatibility and should eventually be
+replaced.
+
+**What refuted it:** genuine Pro Controller 2 captures interleave both lengths
+on the same handle, controller clock, and mode-3 orientation trajectory. The
+`0x28` prefix is a modular projection of the same fused carrier that `0x1E`
+transmits directly. In a 255-PDU moving stream, all 254 comparable elapsed
+fields equal the tick delta from the immediately preceding PDU across length
+changes. Switch 1 compatibility uses the separate report-`0x30` protocol.
+
+**Correction:** both lengths are native Switch 2 Pro Controller PDUs. `0x1E`
+carries fused orientation plus acceleration; `0x28` batches cadence-dependent
+IMU samples plus a truncated carrier projection. `0x28` may preserve additional
+sample history, but it is not intrinsically newer or more accurate. The proven
+`0x1E` translator remains a valid production solution. See
+[`ds5-pdu40-interleaved-hardware-2026-08-01.md`](ds5-pdu40-interleaved-hardware-2026-08-01.md).
+
+---
+
+## Switch 2 motion: physically coherent decoded lanes are sufficient for generated `0x28`
+
+**Held:** after a closed-loop fixture made every generated
+`0x1E -> 0x28 -> 0x1E` transition describe one analytic trajectory, aligned
+the acceleration calibration across representations, and rejected six
+deliberate composition faults.
+
+**The claim:** once timing, prefix epoch, gyro area, acceleration history,
+gravity, axes, and bracketing carriers agree physically, the console will
+consume the generated high-rate packet normally.
+
+**What refuted it:** the exact coherent LIVE recipe caused continuous chaotic
+camera motion and no useful response to controller rotation. UART showed 4,850
+generated batches, 14,671 carriers, no overlong windows, no gyro saturation,
+and only 56 safe-carrier starvation fallbacks. Disabling the gate immediately
+restored stable validated `0x1E` motion. Earlier exact-zero-gyro testing had
+already produced the same class of rotation.
+
+**Correction:** the decoded physical relationships are necessary but not
+sufficient. At least one Nintendo-private state, filter phase, projection
+semantic, or cross-PDU consumption rule remains absent from the model. Keep
+the closed-loop gate, but fail the flash-readiness tool until a materially new
+observation point isolates that missing semantic. Do not repeat full-packet
+field tuning.
+
+---
+
 ## Format notes for future entries
 
 Each entry should have: the claim, the confidence level it held, why it was reasonable given the
@@ -506,3 +584,36 @@ change) and is per-sample rather than modal. It remains unexplained and is carri
 through synthesizers verbatim, never inferred.
 
 Evidence: [`pro2-carrier-unknown-fields-2026-07-31.md`](pro2-carrier-unknown-fields-2026-07-31.md).
+
+---
+
+## Switch 2 motion: one noisy high-rate gyro sample caused the stationary jumps
+
+**Held:** after the shared-timeline scheduler remained unstable despite healthy
+timing, ownership, and saturation counters.
+
+**The claim:** the length-`0x1E` carrier integrated every ~800 Hz DualSense
+sample, while the generated length-`0x28` published one noisy midpoint rate for
+the full window. Replacing it with the tick-weighted window mean would remove
+the stationary disagreement.
+
+**What refuted it:** the weighted implementation still produced large
+stationary rotations. More decisively, a UART probe forced all three generated
+gyro axes to exactly zero and the interleaved stream still rotated. The same
+zero-gyro source was stable in the isolated `pdu40 fill empty` control.
+
+**Correction:** window averaging remains the more coherent representation and
+is retained, but it was not the primary failure. Live `input status` exposed
+a real cross-module mismatch: the motion seam had already converted DualSense
+acceleration to 4096 counts/g, and the `0x28` builder halved it again,
+publishing about 0.5 g beside the carrier. A later independent closed-loop
+fixture found that correcting this to bare physical 1 g still left a 5.23%
+seam: the validated `0x1E` path applies `68963 / 65536` output calibration.
+The default `0x28` path now applies the same gain. A later complete LIVE A/B
+still produced chaotic motion, proving those real scale fixes were not
+sufficient. The genuine-base hybrid then kept acceleration-only and gyro-only
+substitution stable and localized the first prefix failure to alternating
+genuine/donor orientation histories. Its corrected sequence-wide prefix owner
+is host/build validated but deliberately unflashed after the campaign was
+deferred. See
+[`ds5-pdu40-interleaved-hardware-2026-08-01.md`](ds5-pdu40-interleaved-hardware-2026-08-01.md).

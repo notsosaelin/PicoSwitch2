@@ -20,7 +20,6 @@
 #define NS2_DS5_INV_SQRT2              0.70710678118654752440f
 #define NS2_DS5_SQRT2                  1.41421356237309504880f
 #define NS2_DS5_COMPONENT_EPSILON      0.00001f
-#define NS2_DS5_ACCEL_PDU_PER_COUNT    68963
 
 // The original fixed-state experiment started from one genuine state-0 PDU.
 // Keep it only for UART A/B comparison. The production candidate starts at
@@ -593,7 +592,8 @@ bool ns2_ds5_motion_build(ns2_ds5_motion_state_t *state, uint8_t out[30])
 
     for (unsigned axis = 0; axis < 3; ++axis) {
         const int32_t accel = clamp_i32(
-            (int64_t)state->accel[axis] * NS2_DS5_ACCEL_PDU_PER_COUNT);
+            (int64_t)state->accel[axis] *
+            NS2_MOTION30_ACCEL_Q16_PER_COUNT);
         write_le32(&out[16 + axis * 4], accel);
     }
     // Retain the genuine stationary template's constant tail. Byte 28 carries

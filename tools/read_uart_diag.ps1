@@ -423,6 +423,102 @@ try {
         } | ConvertTo-Json -Compress
         $lines.Add($end)
         Write-DiagnosticLines -Lines $lines.ToArray()
+    } elseif ($Command -match '^motionhybrid capture(?: (genuine|accel|gyro|prefix|imu|all))?$') {
+        # Run a bounded genuine-base/DualSense-donor fitment experiment over
+        # this already-open UART. The firmware captures the exact genuine base
+        # plus output XOR on-device; UART timing is not part of the sample
+        # alignment. Always return to mode off before closing the port.
+        $requestedMode = $Matches[1]
+        $modeArmed = $false
+        try {
+            if ($requestedMode) {
+                $serial.Write("motionhybrid mode $requestedMode`n")
+                $modeLine = $serial.ReadLine().Trim()
+                $modeReply = $modeLine | ConvertFrom-Json
+                if ($modeReply.motionhybrid -ne 'mode_requested' -or
+                    $modeReply.requested -ne $requestedMode) {
+                    throw "Could not select hybrid mode ${requestedMode}: $modeLine"
+                }
+                $modeArmed = $true
+            } else {
+                $serial.Write("motionhybrid status`n")
+                $modeLine = $serial.ReadLine().Trim()
+                $modeReply = $modeLine | ConvertFrom-Json
+                $requestedMode = [string]$modeReply.requested
+                if ($modeReply.motionhybrid -ne 'status' -or
+                    $requestedMode -notin @('genuine', 'accel', 'gyro',
+                                            'prefix', 'imu', 'all')) {
+                    throw ('Select a non-off mode first, or use ' +
+                           'motionhybrid capture <mode>: ' + $modeLine)
+                }
+                $modeArmed = $true
+            }
+
+            $serial.Write("motionhybrid capture start`n")
+            $startLine = $serial.ReadLine().Trim()
+            $start = $startLine | ConvertFrom-Json
+            if ($start.motionhybrid -ne 'capture_started' -or
+                -not $start.capture) {
+                throw "Could not start hybrid capture: $startLine"
+            }
+            Start-Sleep -Milliseconds $CaptureMs
+
+            $serial.Write("motionhybrid capture dump`n")
+            $manifestLine = $serial.ReadLine().Trim()
+            $manifest = $manifestLine | ConvertFrom-Json
+            if ($manifest.motionhybrid -ne 'dump' -or $manifest.capture -or
+                $manifest.PSObject.Properties.Name -notcontains 'count' -or
+                $manifest.PSObject.Properties.Name -notcontains 'dropped') {
+                throw "Invalid hybrid capture manifest: $manifestLine"
+            }
+
+            $lines = [System.Collections.Generic.List[string]]::new()
+            for ($index = 0; $index -lt [int]$manifest.count; $index++) {
+                $serial.Write("motionhybrid capture read`n")
+                $line = $serial.ReadLine().Trim()
+                $parsed = $line | ConvertFrom-Json
+                if ($parsed.motionhybrid -ne 'record') {
+                    throw "Expected hybrid record $index, received: $line"
+                }
+                foreach ($name in @(
+                        't_us', 'native_len', 'mode', 'reason',
+                        'requested_groups', 'changed_bits', 'ds5_age_us',
+                        'ds5_seq', 'cal_state', 'pose_aligned', 'base',
+                        'output_xor')) {
+                    if ($parsed.PSObject.Properties.Name -notcontains $name) {
+                        throw "Hybrid record is incomplete (missing '$name'): $line"
+                    }
+                }
+                if ([int]$parsed.native_len -notin @(30, 40) -or
+                    $parsed.mode -notin @('genuine', 'accel', 'gyro',
+                                          'prefix', 'imu', 'all') -or
+                    $parsed.base -notmatch '^[0-9A-F]+$' -or
+                    $parsed.output_xor -notmatch '^[0-9A-F]+$' -or
+                    $parsed.base.Length -ne ([int]$parsed.native_len * 2) -or
+                    $parsed.output_xor.Length -ne ([int]$parsed.native_len * 2)) {
+                    throw "Hybrid payload framing mismatch at record ${index}: $line"
+                }
+                $lines.Add($line)
+            }
+            $end = [ordered]@{
+                motionhybrid = 'end'
+                records = $lines.Count
+                dropped = [uint64]$manifest.dropped
+                mode = $requestedMode
+                status = $manifest
+            } | ConvertTo-Json -Compress -Depth 5
+            $lines.Add($end)
+            Write-DiagnosticLines -Lines $lines.ToArray()
+        } finally {
+            if ($modeArmed -and $serial.IsOpen) {
+                try {
+                    $serial.Write("motionhybrid mode off`n")
+                    $null = $serial.ReadLine()
+                } catch {
+                    Write-Warning 'Could not confirm motionhybrid mode off; power-cycle before ordinary use.'
+                }
+            }
+        }
     } elseif ($Command -in @(
             'motionpair dump',
             'motionpair capture',

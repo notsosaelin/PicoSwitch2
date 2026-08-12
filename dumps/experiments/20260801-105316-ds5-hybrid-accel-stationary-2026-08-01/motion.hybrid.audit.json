@@ -1,0 +1,19 @@
+{
+  "applied": 14,
+  "changed_records": 14,
+  "dropped": 0,
+  "fail_closed": true,
+  "fallbacks": 79,
+  "modes": {
+    "accel": 93
+  },
+  "reasons": {
+    "applied": 14,
+    "no_window": 4,
+    "passthrough_0x1e": 68,
+    "stale_donor": 7
+  },
+  "records": 93,
+  "schema": "picoswitch2-motion-hybrid-audit/v1",
+  "source": "E:\\PicoSwitch2\\dumps\\experiments\\20260801-105316-ds5-hybrid-accel-stationary-2026-08-01\\motion.hybrid.raw.jsonl"
+}

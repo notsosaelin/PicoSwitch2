@@ -28,6 +28,8 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Wii motion reference | [`bluetooth/wii-motion.md`](bluetooth/wii-motion.md) |
 | Controller sleep research | [`bluetooth/controller-sleep-research.md`](bluetooth/controller-sleep-research.md) |
 | Generic Bluetooth gamepad quirks | [`bluetooth/generic-gamepad-quirks.md`](bluetooth/generic-gamepad-quirks.md) |
+| Android handheld controller bridge | [`bluetooth/android-controller-bridge.md`](bluetooth/android-controller-bridge.md) |
+| Retroid Pocket Classic Android bridge ADB audit | [`experiments/android-controller-retroid-pocket-classic-adb-audit-2026-08-11.md`](experiments/android-controller-retroid-pocket-classic-adb-audit-2026-08-11.md) |
 | Retro Fighters BattlerGC Pro | [`bluetooth/retrofighters-battlergc-pro.md`](bluetooth/retrofighters-battlergc-pro.md) |
 | 8BitDo Ultimate Bluetooth paddles | [`../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md`](../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md) |
 | Pro Controller 2 USB protocol | [`switch2/usb-spec.md`](switch2/usb-spec.md) |
@@ -36,6 +38,8 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Controller Safe Mode (recovery) | [`switch2/controller-safe-mode.md`](switch2/controller-safe-mode.md) |
 | Controller 2 MB NVM/SPI map | [`switch2/controller-nvm-map.md`](switch2/controller-nvm-map.md) |
 | Motion carrier remaining unknown fields | [`experiments/pro2-carrier-unknown-fields-2026-07-31.md`](experiments/pro2-carrier-unknown-fields-2026-07-31.md) |
+| DualSense `0x28` interleaving and closed-loop coherence | [`experiments/ds5-pdu40-interleaved-hardware-2026-08-01.md`](experiments/ds5-pdu40-interleaved-hardware-2026-08-01.md) |
+| Genuine/generated motion fitment and hybrid harness | [`experiments/ds5-motion-hybrid-harness-2026-08-01.md`](experiments/ds5-motion-hybrid-harness-2026-08-01.md) |
 | NFC implementation design | [`switch2/nfc-implementation.md`](switch2/nfc-implementation.md) |
 | Figure-v3 (NTAG I2C Plus 2K / Kirby Air Riders) protocol | [`Amiibo-v3.md`](Amiibo-v3.md) |
 | Amiibo identity, differentiation, and generation | [`switch2/amiibo-identity-and-generation.md`](switch2/amiibo-identity-and-generation.md) |

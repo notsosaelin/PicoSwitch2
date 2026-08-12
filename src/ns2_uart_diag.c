@@ -10,6 +10,8 @@
 #include "ns2_native_motion.h"
 #include "ns2_motion_probe.h"
 #include "ns2_motion_pdu.h"
+#include "ns2_motion_hybrid_live.h"
+#include "ns2_ds5_motion40.h"
 #include "ns2_diag_input.h"
 #include "ds5_audio_bridge.h"
 #include "ds5_motion_pair_capture.h"
@@ -68,6 +70,12 @@ static char pcm_format_response[896];
 static ds5_motion_pair_record_t motion_pair_format_record;
 static char motion_pair_format_payload[DS5_MOTION_PAIR_NATIVE_MAX * 2u + 1u];
 static char motion_pair_format_response[768];
+static ns2_motion_hybrid_capture_record_t motion_hybrid_format_record;
+static char motion_hybrid_base[NS2_MOTION_PDU40_LENGTH * 2u + 1u];
+static char motion_hybrid_xor[NS2_MOTION_PDU40_LENGTH * 2u + 1u];
+static char motion_hybrid_format_response[1024];
+_Static_assert(NS2_MOTION_HYBRID_REASON_COUNT == 13u,
+               "update motionhybrid UART reason counters");
 
 static bool tx_pending(void) {
     return tx_position < tx_length;
@@ -398,6 +406,112 @@ static void queue_motion_pair_record(void) {
              motion_pair_format_record.calibrated_accel[1],
              motion_pair_format_record.calibrated_accel[2]);
     queue_text(motion_pair_format_response);
+}
+
+static void queue_motion_hybrid_status(const char *event) {
+    ns2_motion_hybrid_live_diag_t d;
+    ns2_motion_hybrid_live_get_diag(&d);
+    const uint32_t donor_age_us = d.source_last_us
+        ? time_us_32() - d.source_last_us : UINT32_MAX;
+    const char *last_reason = d.native_packets
+        ? ns2_motion_hybrid_live_reason_name(
+              (ns2_motion_hybrid_live_reason_t)d.last_reason)
+        : "none";
+    snprintf(motion_hybrid_format_response,
+             sizeof(motion_hybrid_format_response),
+             "{\"motionhybrid\":\"%s\",\"requested\":\"%s\","
+             "\"active\":\"%s\",\"capture\":%s,\"count\":%u,"
+             "\"capacity\":%u,\"dropped\":%lu,\"pose_aligned\":%s,"
+             "\"cal_state\":%u,\"last_reason\":\"%s\","
+             "\"last_length\":%u,\"last_groups\":%lu,"
+             "\"last_changed_bits\":%u,\"last_ds5_age_us\":%lu,"
+             "\"last_ds5_seq\":%lu,"
+             "\"donor_seen\":%s,\"donor_age_us\":%lu,"
+             "\"donor_seq\":%lu,\"donor_cal_state\":%u,"
+             "\"packets\":{\"native\":%lu,\"hybrid\":%lu,"
+             "\"genuine\":%lu,\"fallback\":%lu},"
+             "\"saturation\":{\"accel\":%lu,\"gyro\":%lu},"
+             "\"reasons\":[%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu]}",
+             event, ns2_motion_hybrid_mode_name(d.requested_mode),
+             ns2_motion_hybrid_mode_name(d.active_mode),
+             ns2_motion_hybrid_live_capture_get_enabled() ? "true" : "false",
+             ns2_motion_hybrid_live_capture_count(),
+             DS5_MOTION_PAIR_CAPACITY,
+             (unsigned long)ns2_motion_hybrid_live_capture_dropped(),
+             d.pose_aligned ? "true" : "false", d.calibration_state,
+             last_reason,
+             d.last_length, (unsigned long)d.last_groups,
+             d.last_changed_bits, (unsigned long)d.last_ds5_age_us,
+             (unsigned long)d.last_ds5_sequence,
+             d.source_last_us ? "true" : "false",
+             (unsigned long)donor_age_us,
+             (unsigned long)d.source_sequence,
+             d.source_calibration_state,
+             (unsigned long)d.native_packets,
+             (unsigned long)d.hybrid_packets,
+             (unsigned long)d.genuine_controls,
+             (unsigned long)d.fallback_packets,
+             (unsigned long)d.saturated_accel,
+             (unsigned long)d.saturated_gyro,
+             (unsigned long)d.reasons[0], (unsigned long)d.reasons[1],
+             (unsigned long)d.reasons[2], (unsigned long)d.reasons[3],
+             (unsigned long)d.reasons[4], (unsigned long)d.reasons[5],
+             (unsigned long)d.reasons[6], (unsigned long)d.reasons[7],
+             (unsigned long)d.reasons[8], (unsigned long)d.reasons[9],
+             (unsigned long)d.reasons[10], (unsigned long)d.reasons[11],
+             (unsigned long)d.reasons[12]);
+    queue_text(motion_hybrid_format_response);
+}
+
+static void queue_motion_hybrid_record(void) {
+    if (!ns2_motion_hybrid_live_capture_drain(
+            &motion_hybrid_format_record)) {
+        queue_text("{\"motionhybrid\":\"empty\"}");
+        return;
+    }
+    for (size_t i = 0; i < motion_hybrid_format_record.length; ++i) {
+        snprintf(&motion_hybrid_base[i * 2u], 3, "%02X",
+                 motion_hybrid_format_record.base[i]);
+        snprintf(&motion_hybrid_xor[i * 2u], 3, "%02X",
+                 motion_hybrid_format_record.output_xor[i]);
+    }
+    motion_hybrid_base[motion_hybrid_format_record.length * 2u] = '\0';
+    motion_hybrid_xor[motion_hybrid_format_record.length * 2u] = '\0';
+    snprintf(motion_hybrid_format_response,
+             sizeof(motion_hybrid_format_response),
+             "{\"motionhybrid\":\"record\",\"t_us\":%lu,"
+             "\"native_len\":%u,\"mode\":\"%s\","
+             "\"reason\":\"%s\",\"requested_groups\":%lu,"
+             "\"changed_bits\":%u,\"ds5_age_us\":%lu,"
+             "\"ds5_seq\":%lu,\"cal_state\":%u,"
+             "\"pose_aligned\":%s,\"base\":\"%s\","
+             "\"output_xor\":\"%s\"}",
+             (unsigned long)motion_hybrid_format_record.native_us,
+             motion_hybrid_format_record.length,
+             ns2_motion_hybrid_mode_name(motion_hybrid_format_record.mode),
+             ns2_motion_hybrid_live_reason_name(
+                 (ns2_motion_hybrid_live_reason_t)
+                     motion_hybrid_format_record.reason),
+             (unsigned long)motion_hybrid_format_record.requested_groups,
+             motion_hybrid_format_record.changed_bits,
+             (unsigned long)motion_hybrid_format_record.ds5_age_us,
+             (unsigned long)motion_hybrid_format_record.ds5_sequence,
+             motion_hybrid_format_record.calibration_state,
+             motion_hybrid_format_record.pose_aligned ? "true" : "false",
+             motion_hybrid_base, motion_hybrid_xor);
+    queue_text(motion_hybrid_format_response);
+}
+
+static bool parse_motion_hybrid_mode(const char *name, uint8_t *mode) {
+    if (!name || !mode) return false;
+    for (uint8_t candidate = 0;
+         candidate < NS2_MOTION_HYBRID_MODE_COUNT; ++candidate) {
+        if (strcmp(name, ns2_motion_hybrid_mode_name(candidate)) == 0) {
+            *mode = candidate;
+            return true;
+        }
+    }
+    return false;
 }
 
 static void queue_motion_probe_status(const char *event) {
@@ -946,6 +1060,45 @@ static void handle_command(void) {
             virtual_amiibo_store_acknowledge_download();
             queue_amiibo_status("acknowledged");
         }
+    } else if (strcmp(rx_line, "motionhybrid") == 0 ||
+               strcmp(rx_line, "motionhybrid status") == 0) {
+        queue_motion_hybrid_status("status");
+    } else if (strncmp(rx_line, "motionhybrid mode ", 18) == 0) {
+        uint8_t mode = NS2_MOTION_HYBRID_MODE_OFF;
+        if (!parse_motion_hybrid_mode(rx_line + 18, &mode) ||
+            !ns2_motion_hybrid_live_set_mode(mode)) {
+            queue_text("{\"motionhybrid\":\"error\","
+                       "\"error\":\"usage: motionhybrid mode off|genuine|accel|gyro|prefix|imu|all\"}");
+        } else {
+            queue_motion_hybrid_status("mode_requested");
+        }
+    } else if (strncmp(rx_line, "motionhybrid ", 13) == 0 &&
+               strchr(rx_line + 13, ' ') == NULL) {
+        uint8_t mode = NS2_MOTION_HYBRID_MODE_OFF;
+        if (!parse_motion_hybrid_mode(rx_line + 13, &mode) ||
+            !ns2_motion_hybrid_live_set_mode(mode)) {
+            queue_text("{\"motionhybrid\":\"error\","
+                       "\"error\":\"usage: motionhybrid off|genuine|accel|gyro|prefix|imu|all\"}");
+        } else {
+            queue_motion_hybrid_status("mode_requested");
+        }
+    } else if (strcmp(rx_line, "motionhybrid capture start") == 0) {
+        if (ns2_motion_hybrid_live_get_mode() ==
+            NS2_MOTION_HYBRID_MODE_OFF) {
+            queue_text("{\"motionhybrid\":\"error\","
+                       "\"error\":\"select genuine or a donor mode before capture\"}");
+        } else {
+            ns2_motion_hybrid_live_capture_set_enabled(true);
+            queue_motion_hybrid_status("capture_started");
+        }
+    } else if (strcmp(rx_line, "motionhybrid capture stop") == 0) {
+        ns2_motion_hybrid_live_capture_set_enabled(false);
+        queue_motion_hybrid_status("capture_stopped");
+    } else if (strcmp(rx_line, "motionhybrid capture dump") == 0) {
+        ns2_motion_hybrid_live_capture_set_enabled(false);
+        queue_motion_hybrid_status("dump");
+    } else if (strcmp(rx_line, "motionhybrid capture read") == 0) {
+        queue_motion_hybrid_record();
     } else if (strcmp(rx_line, "motionpair") == 0 ||
                strcmp(rx_line, "motionpair status") == 0) {
         queue_motion_pair_status("status");
@@ -1252,9 +1405,8 @@ static void handle_command(void) {
         ns2_dbg_ds5_motion_set_enabled(false);
         queue_text("{\"ds5motion\":\"disabled\",\"enabled\":false}");
     } else if (strcmp(rx_line, "ds5motion pdu40 on") == 0) {
-        // Replaces the motion block with length-0x28 catch-up packets. The
-        // 0x1E carrier is NOT sent alongside: only the 0x28-only emission mode
-        // has a resolved elapsed relation.
+        // Enables the coherent mixed stream: one shared tick/elapsed timeline
+        // and one held native-rate PDU across intervening USB polls.
         ns2_ds5_motion40_set_enabled(true);
         queue_text("{\"ds5motion\":\"pdu40\",\"enabled\":true,"
                    "\"mode\":\"interleaved\",\"layout\":\"high_rate\"}");
@@ -1273,30 +1425,58 @@ static void handle_command(void) {
         queue_text("{\"ds5motion\":\"pdu40\",\"fill\":\"repeat\","
                    "\"delivered\":\"~20x\",\"known\":\"erratic-2026-07-31\"}");
     } else if (strcmp(rx_line, "ds5motion pdu40 fill carrier") == 0) {
-        // Interleaved: the proven 0x1E fills the gap and re-anchors absolute
-        // orientation every poll.
+        // Interleaved: select and hold complete 0x1E/0x28 frames at the native
+        // cadence. This is the only fill that models the genuine USB bridge.
         ns2_ds5_motion40_set_fill(NS2_PDU40_FILL_CARRIER);
         queue_text("{\"ds5motion\":\"pdu40\",\"fill\":\"carrier\","
                    "\"mode\":\"interleaved\"}");
+    } else if (strcmp(rx_line, "ds5motion pdu40 accel live") == 0) {
+        ns2_ds5_motion40_set_accel_mode(NS2_DS5_MOTION40_ACCEL_LIVE);
+        queue_text("{\"ds5motion\":\"pdu40\",\"accel\":\"live\","
+                   "\"source_counts_per_g\":4096,"
+                   "\"output_counts_per_g\":4310.1875,"
+                   "\"matches\":\"0x1E\"}");
+    } else if (strcmp(rx_line, "ds5motion pdu40 accel half") == 0) {
+        ns2_ds5_motion40_set_accel_mode(NS2_DS5_MOTION40_ACCEL_HALF);
+        queue_text("{\"ds5motion\":\"pdu40\",\"accel\":\"half\","
+                   "\"counts_per_g\":2048}");
+    } else if (strcmp(rx_line, "ds5motion pdu40 accel zero") == 0) {
+        ns2_ds5_motion40_set_accel_mode(NS2_DS5_MOTION40_ACCEL_ZERO);
+        queue_text("{\"ds5motion\":\"pdu40\",\"accel\":\"zero\","
+                   "\"diagnostic_only\":true}");
     } else if (strcmp(rx_line, "ds5motion pdu40") == 0 ||
                strcmp(rx_line, "ds5motion pdu40 status") == 0) {
         uint32_t emitted = 0, starved = 0, overlong = 0, sat_a = 0, sat_g = 0;
+        uint32_t carriers = 0, held = 0, fallbacks = 0;
+        uint8_t output_length = 0;
+        uint16_t last_tick = 0;
         ns2_ds5_motion40_get_counters(&emitted, &starved, &overlong,
                                       &sat_a, &sat_g);
+        ns2_ds5_motion40_get_schedule(&carriers, &held, &fallbacks,
+                                      &output_length, &last_tick);
         static const char *const fills[] = {"empty", "repeat", "carrier"};
+        static const char *const accel_modes[] = {"live", "half", "zero"};
         const uint8_t fill = ns2_ds5_motion40_get_fill();
+        const uint8_t accel_mode = ns2_ds5_motion40_get_accel_mode();
         // starved > 0 means the emit interval outran the source sample rate;
         // saturation means the scaling is wrong or the motion exceeded the
-        // wire range (~2 g, ~499 dps). Both distinguish "well-formed but
+        // high-rate wire range (~2 g, ~999 dps). Both distinguish "well-formed but
         // wrong" from "working".
         snprintf(trace_format_response, sizeof(trace_format_response),
                  "{\"ds5motion\":\"pdu40\",\"enabled\":%s,\"fill\":\"%s\","
-                 "\"emitted\":%lu,"
+                 "\"accel\":\"%s\","
+                 "\"emitted\":%lu,\"carriers\":%lu,\"held_polls\":%lu,"
+                 "\"fallback_carriers\":%lu,\"output_length\":%u,"
+                 "\"last_tick\":%u,"
                  "\"starved\":%lu,\"overlong\":%lu,\"saturated_accel\":%lu,"
                  "\"saturated_gyro\":%lu}",
                  ns2_ds5_motion40_get_enabled() ? "true" : "false",
                  fills[fill < 3u ? fill : 0u],
-                 (unsigned long)emitted, (unsigned long)starved,
+                 accel_modes[accel_mode <= NS2_DS5_MOTION40_ACCEL_ZERO
+                                 ? accel_mode : NS2_DS5_MOTION40_ACCEL_LIVE],
+                 (unsigned long)emitted, (unsigned long)carriers,
+                 (unsigned long)held, (unsigned long)fallbacks,
+                 output_length, last_tick, (unsigned long)starved,
                  (unsigned long)overlong,
                  (unsigned long)sat_a, (unsigned long)sat_g);
         queue_text(trace_format_response);
@@ -1694,12 +1874,13 @@ static void handle_command(void) {
                    "\"nfcmirror reply\","
                    "\"amiibo status|read OFFSET|acknowledge|dump (PC helper)\","
                    "\"amiibo v3sig HEX32|v3sig clear\",\"amiibo v3diag|journal\","
+                   "\"motionhybrid status|off|genuine|accel|gyro|prefix|imu|all|capture start|stop|dump|read\","
                    "\"motionpair status|start|trigger|stop|dump|read\",\"magraw on|off|status\","
                    "\"imuref on|off|status\",\"imuref dual on|off\","
                    "\"imuref interval 6-24\","
                    "\"motionprobe status|latch|seed STATE|on|off|reset|set G0 G1 G2|rate AXIS VALUE|accel X Y Z\","
                    "\"button y\","
-                   "\"motionauto\",\"motionusb\",\"ds5motion status|on|off|frame body|world|carrier switch2|dscale|legacy|map SX SY SZ|probe rate AXIS VALUE|probe off\",\"input status\",\"audio status|clear|headset\",\"ds5codec status|lock on|lock off\","
+                   "\"motionauto\",\"motionusb\",\"ds5motion status|on|off|frame body|world|carrier switch2|dscale|legacy|map SX SY SZ|probe rate AXIS VALUE|probe off|pdu40 on|off|status|accel live|half|zero\",\"input status\",\"audio status|clear|headset\",\"ds5codec status|lock on|lock off\","
                    "\"pro2audio on|off|status|live on|live off|complexity 0-10|analysis on|analysis off|replay|replay stop\","
                    "\"btreconnect\",\"btfresh\","
                    "\"reenumerate\",\"help\"]}");

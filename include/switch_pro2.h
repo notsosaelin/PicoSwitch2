@@ -210,10 +210,9 @@ void ns2_ds5_motion40_set_enabled(bool enabled);
 //           idempotent; a 0x28 carries integrable samples and a modular
 //           orientation slice, so repeats can integrate as many times the real
 //           rotation.
-//   CARRIER send the proven 0x1E between 0x28 packets. This is the interleaved
-//           emission mode, which genuine hardware does use at 6-tick
-//           notification intervals; its elapsed relation is unresolved, but
-//           the absolute quaternion re-anchors the console every poll.
+//   CARRIER coherent mixed scheduler: select one new 0x1E/0x28 PDU on the
+//           shared native-rate tick timeline and hold it across intervening
+//           USB polls, matching genuine bridge ownership.
 //
 // Changing the fill clears buffered samples and the cadence epoch.
 #define NS2_PDU40_FILL_EMPTY   0u
@@ -221,6 +220,14 @@ void ns2_ds5_motion40_set_enabled(bool enabled);
 #define NS2_PDU40_FILL_CARRIER 2u
 uint8_t ns2_ds5_motion40_get_fill(void);
 void ns2_ds5_motion40_set_fill(uint8_t fill);
+
+// UART-only acceleration-scale discriminator for the generated 0x28 path.
+// LIVE applies the validated 0x1E carrier's output calibration to the post-
+// seam 4096-count/g source. HALF recreates the rejected double-normalization;
+// ZERO is diagnostic-only. Changing it resets the buffered 0x28 timeline but
+// never touches the production 0x1E translator.
+uint8_t ns2_ds5_motion40_get_accel_mode(void);
+bool ns2_ds5_motion40_set_accel_mode(uint8_t mode);
 
 // Emitted packet count, starved intervals, and saturated axes -- the three
 // numbers that distinguish "working" from "well-formed but wrong".
@@ -231,6 +238,11 @@ void ns2_ds5_motion40_get_counters(uint32_t *emitted, uint32_t *starved,
                                    uint32_t *overlong,
                                    uint32_t *saturated_accel,
                                    uint32_t *saturated_gyro);
+void ns2_ds5_motion40_get_schedule(uint32_t *carrier_frames,
+                                   uint32_t *held_polls,
+                                   uint32_t *fallback_carriers,
+                                   uint8_t *output_length,
+                                   uint16_t *last_tick);
 
 // Anomaly-instrumentation types (2026-07-10). See ns2_motion_tick()'s NS2_MAX_PHASE_DELTA
 // derivation in switch_pro2.c for the (mathematically bounded, not heuristic) detection
