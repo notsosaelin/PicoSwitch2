@@ -726,6 +726,25 @@ static void cmd_personality(void) {
     reply(out);
 }
 
+// Request a switch to a specific controller output personality. Queues the same
+// re-enumeration the BOOTSEL single-tap cycle uses (owner hardware-confirmed on a
+// live Switch 2 — the console drops the old controller and detects the new one);
+// see docs/bluetooth/app-interface-audit.md G2. The USB re-enumeration briefly
+// disconnects the console (and, over USB CDC, this reply); over BLE the reply is
+// unaffected. CDC_CONFIG is intentionally not a valid target.
+static void cmd_personality_set(const char *target) {
+    usb_personality_t p;
+    if (strcmp(target, "pro2") == 0)      p = USB_PERSONALITY_SWITCH2_PRO2;
+    else if (strcmp(target, "gc") == 0)   p = USB_PERSONALITY_NSO_GAMECUBE;
+    else if (strcmp(target, "jcl") == 0)  p = USB_PERSONALITY_JOYCON2_L;
+    else if (strcmp(target, "jcr") == 0)  p = USB_PERSONALITY_JOYCON2_R;
+    else { reply("{\"error\":\"usage: personality <pro2|gc|jcl|jcr>\"}"); return; }
+    if (p == g_usb_personality) { reply("{\"ok\":true,\"unchanged\":true}"); return; }
+    g_usb_requested_personality = p;
+    g_usb_personality_request_pending = true;
+    reply("{\"ok\":true,\"switching\":true}");
+}
+
 // Raw HID report of the connected controller (hex) for the debug view. Lets us
 // reverse-engineer inputs a driver doesn't parse yet (e.g. Xbox Elite paddles).
 static void cmd_raw(void) {
@@ -999,6 +1018,8 @@ static void handle_line(char *cmd) {
         cmd_device();
     } else if (strcmp(cmd, "personality") == 0) {
         cmd_personality();
+    } else if (strncmp(cmd, "personality ", 12) == 0) {
+        cmd_personality_set(cmd + 12);
 #ifdef NS2_PRO
     } else if (strcmp(cmd, "wake") == 0) {
         // Queue an app-initiated console wake. core1's wake service performs it if

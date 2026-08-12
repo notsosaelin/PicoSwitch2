@@ -28,6 +28,8 @@ volatile bool usb_lockout_ready = false;
 volatile usb_personality_t g_usb_personality = USB_PERSONALITY_SWITCH2_PRO2;
 volatile bool g_usb_mode_cycle_requested = false;
 volatile bool g_usb_config_mode_requested = false;
+volatile usb_personality_t g_usb_requested_personality = USB_PERSONALITY_SWITCH2_PRO2;
+volatile bool g_usb_personality_request_pending = false;
 volatile uint32_t g_usb_mode_ack_until_ms = 0;
 volatile usb_personality_t g_usb_mode_ack_personality = USB_PERSONALITY_SWITCH2_PRO2;
 
@@ -201,6 +203,14 @@ void usb_core_task() {
         if (g_usb_mode_cycle_requested) {
             g_usb_mode_cycle_requested = false;
             usb_apply_controller_cycle();
+        }
+        if (g_usb_personality_request_pending) {
+            g_usb_personality_request_pending = false;
+            usb_personality_t target = g_usb_requested_personality;
+            // Never let an app request drop the device into the CDC Config
+            // personality; that is the physical-gesture flow only.
+            if (target != USB_PERSONALITY_CDC_CONFIG)
+                usb_apply_personality(target, "app personality request");
         }
         if (ns2_uart_diag_take_reenumerate_request()) {
             usb_apply_diag_reenumeration();
