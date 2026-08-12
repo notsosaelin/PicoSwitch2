@@ -224,29 +224,26 @@ Prefer the simple always-advertise path; adopt this suppression only if 7b shows
 
 ## 6. Test & tool strategy
 
-### Host tests (extend the existing pattern — all currently green)
-- `test_config_wireless_bridge.c` already covers fragmented commands, busy rejection, oversized-line
-  recovery, response chunking, disconnect session invalidation, stale-response rejection
-  (config-transports.md:136-137). **Add:**
-  - **Enable gate logic (C1/C3):** RX writes rejected when `!(g_usb_config_mode || g_mgmt_enabled)`;
-    accepted when enabled.
-  - **Allowlist in normal mode:** every diagnostic command rejected over wireless while enabled;
-    every user command accepted.
-  - **Deferred-flash routing (C6):** a wireless `save`/`amiibo commit` sets the deferred request
-    rather than busy-waiting; a mock core1 tick performs it; response is published after.
-  - **Wake priority (C5):** a mock "console asleep / wake active" input suppresses management
-    advertising and drops any client — pure state-logic, no radio.
-- **Written + green (2026-08-12): `tools/test_mgmt_access.c`** — the pure access-control spec
-  (`mgmt_should_advertise/_accept_connection/_accept_bonding/_allow_write/_should_drop_client`), tested
-  exhaustively and linking the **real** `config_wireless_command_allowed`. Pins: disabled = invisible;
-  advertise only when live+awake+!wake+!scan+!client; **wake outranks management** (client dropped on
-  sleep/wake); **new bond only inside the double-tap pairing window**; **writes require bond +
-  allowlist** (unbonded phone can never issue a command); single client. Production
-  `src/mgmt_access.{c,h}` will lift these verbatim, and this test will then link the real header.
-  Existing `tools/test_config_wireless_bridge.c` (bridge SPSC + allowlist) confirmed green as the
-  regression baseline.
-- **Security note:** the encryption-required-before-write property (C3) is an SM/ATT runtime
-  behavior; pin it in **hardware validation** (below) rather than a host mock.
+### Host tests — written & green (2026-08-12), build via each file's header command
+| Test | Proves |
+|---|---|
+| `test_config_wireless_bridge.c` (pre-existing) | happy-path SPSC, busy rejection, oversized recovery, response chunking, session invalidation, allowlist policy |
+| `test_config_wireless_bridge_edge.c` **(new)** | adversarial inputs: embedded-NUL truncates safely (no allowlist bypass), CR/blank-line noise, exact 127/128 capacity boundary, two-commands-in-one-frame drop, too-small-buffer drop (no overflow), 511/512 response boundary, pending-response back-pressure, NULL guard |
+| `test_config_wireless_bridge_concurrency.c` **(new, `-pthread`)** | the cross-core SPSC handshake under real producer/consumer threads: 20 000 commands, in order, no loss/dup/tear (logic-race proof; ARM ordering rests on the acquire/release atomics + HW) |
+| `test_mgmt_access.c` **(new)** | the pure access-control spec, **exhaustive over all 128 states / 9 invariants** — disabled=inert, wake outranks mgmt (drops client), asleep=silent, writes need enabled+connected+bonded+allowlisted, bond needs enabled+window, advertise⇒single-client+safe, a denied command is writable in **no** state, an unbonded client can **never** write |
+| `test_mgmt_session.c` **(new)** | end-to-end composition of real bridge + real allowlist + dispatch gate: bonded user command succeeds; diagnostic rejected; unbonded refused; back-pressure; disconnect drops in-flight reply; disabled overrides bond |
+| `test_bonds_command.c` **(new)** | grammar for the new `bonds list` / `bonds remove <n>` saved-pairing commands, with a wall of hostile inputs rejected |
+| `test_bthid_android_controller.c` (pre-existing) | the Android *controller* HID contract (separate feature, already green) |
+
+Production `src/mgmt_access.{c,h}` will lift the `mgmt_*` spec from `test_mgmt_access.c` verbatim; that
+test then links the real header instead of its local copy.
+
+**Still needs production code to exist (write when C1/C3/C6 land):** the `g_mgmt_enabled` wiring in
+`config_ble_service_task`, and the deferred-flash routing for wireless `save`/`amiibo commit`. Both are
+small and covered by extending the tests above once the symbols exist.
+
+**Runtime-only (hardware-validated, not host-mockable):** the encryption-required-before-write property
+(SM/ATT enforces `ATT_SECURITY_AUTHENTICATED`) — HW check 2.
 
 ### Built-in measurement tool (already present)
 The config `state`/telemetry surface already exposes **`core1MaxGapUs` / `core1GapsOver10ms`**
