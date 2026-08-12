@@ -291,14 +291,13 @@ window. This gives an objective, on-device latency/jitter signal without externa
      deliberate window; afterward it reconnects with no gesture.
 2. **CDC fallback — RESOLVED: keep it, default-off build flag.** Owner: "Keep it gated default off
    until we're sure it can be removed." Also serves as the one-time first-pairing path.
-3. **Personality switch — DEFERRED pending a dedicated re-enumeration-safety investigation.** Owner:
-   "check the plan and plan accordingly before implementing forced personality change, we don't want
-   to break anything." Ships **not** in the first cut. Before it is ever added, a separate
-   investigation must prove a *forced* runtime re-enumeration is safe: does `usb.c`'s existing
-   controller-cycle re-enumeration (`usb_apply_controller_cycle`, already used by the BOOTSEL
-   mode-cycle) drop and re-add cleanly on a live console without hanging a game; how it interacts with
-   an active BT controller link, audio streaming, wake state, and bonds; and whether the console
-   re-pairs the "new" controller gracefully. Amiibo + config ship first without it.
+3. **Personality switch — DEFERRED; investigation done 2026-08-12 (§9).** Owner: "check the plan and
+   plan accordingly before implementing forced personality change, we don't want to break anything."
+   The investigation (§9) found the mechanism is mature and safe *in firmware*, but its one hardware
+   assumption — the console accepting a mid-session re-enumeration to a different controller PID — is
+   **not yet validated** (`compatibility-matrix.md`: the single-tap cycle is "Host/build confirmed;
+   hardware pending"). **Hard prerequisite:** hardware-validate the existing single-tap cycle first
+   (ships already, needs no new code). Amiibo + config ship first regardless.
 4. **Diagnostics — RESOLVED: already on UART in all modes.** Owner: "I thought uart worked in all
    modes for diagnostics? I've had it in procon 2 mode…" Confirmed (`ns2_uart_diag_task` runs
    unconditionally). No re-homing needed; CDC removal loses no diagnostics.
@@ -324,4 +323,58 @@ behaviors with a concrete way to close each:
 
 No firmware change is proposed until (a) the host tests above are written and green, (b) the §7a
 first-bond mechanism is chosen, and (c) the audio/gyro/wake HW gates pass. This document is the
-go/no-go reference. Personality switch is out of the first cut pending its own investigation.
+go/no-go reference. Personality switch is out of the first cut pending its own investigation (§9).
+
+---
+
+## 9. Personality-switch re-enumeration safety investigation (read-only, 2026-08-12)
+
+**Question.** Is a *command-driven* forced output-personality switch (app → "become a GameCube
+controller now") safe to implement without breaking a live console session, audio, wake, or bonds?
+
+**The mechanism already exists.** `usb_apply_personality(next, reason)` (`usb.c:107`) does the full
+transition: `tud_disconnect()` → `sleep_ms(USB_DETACH_MS)` → `usb_reset_personality_state(next)` →
+set `g_usb_personality` → `tud_connect()`. It is what the **BOOTSEL single-tap cycle** already uses
+(`usb_apply_controller_cycle`). A command-driven switch is the *same operation* to a *chosen* target
+instead of the next-in-cycle.
+
+**What's safe in firmware (verified by reading the code):**
+- **Reset scope is minimal + private.** `usb_reset_personality_state` only re-inits the *incoming*
+  personality's own module state (`ns2_init` / `switch_gc_reset` / `switch_joycon2_reset`). It does
+  **not** touch the BT core, bonds, config/settings, or amiibo state (usb.c:69-99 comment: each
+  personality's state "is never read while a DIFFERENT personality is active").
+- **BT link + management link survive.** The switch re-enumerates only the console-facing USB; the
+  BT core (core1) is untouched, so the paired controller stays connected and a connected management
+  phone (which triggered the switch and wants to see the result) stays connected.
+- **Core0 coherency is a known constraint.** `usb_apply_personality` blocks (`sleep_ms`) and must run
+  "between `tud_task()` iterations, never mid-enumeration" (usb.c:102-106). Therefore a command must
+  **not** call it inline; it sets an **edge-triggered request flag** consumed at the safe loop point —
+  exactly the existing `g_usb_mode_cycle_requested` pattern (usb.c:29, consumed 197-203). A
+  `personality <pro2|gc|jcl|jcr>` command sets `g_usb_target_personality` + a request flag; the loop
+  applies it. This is a ~10-line mirror of proven code.
+
+**What is inherent / acceptable:**
+- **Audio interrupts when leaving Pro2.** GameCube/Joy-Con personalities have no UAC1 audio, so the
+  audio function tears down on switch and re-enumerates on return to Pro2. Unavoidable for a
+  deliberate switch; the app must warn "changing output type briefly interrupts audio."
+- **The console sees a brief controller disconnect/reconnect.** Expected for any re-enumeration.
+
+**The one blocking unknown (HARD gate):** whether the **console gracefully accepts a mid-session
+re-enumeration to a different controller PID** is **not yet hardware-validated** — the single-tap
+runtime cycle is "🟡 Host/build confirmed; hardware pending" (`compatibility-matrix.md`). If the
+console does *not* accept a live PID change cleanly (e.g. it requires a full physical re-plug, or
+hangs the game), a command-driven switch would be worse than useless. This gate exists *independently*
+of the in-band-management feature.
+
+**Prerequisite before any personality-switch code:** hardware-validate the **existing single-tap
+cycle** on a real Switch 2 — Pro2 → GameCube → Joy-Con L → Joy-Con R and back — confirming input
+keeps working after each switch with no game hang. This needs **no new code** (it already ships).
+Only once that passes does a command-driven switch become a small, safe addition.
+
+**Additional guards for the eventual command:** idempotent target (`next==old` already ignored);
+coalesce rapid requests via the single flag (last-wins); the app should debounce; and the switch must
+be refused while the console is asleep (wake first).
+
+**Conclusion:** the feature is low-risk *in firmware* and cleanly designed, but it is **gated on a
+hardware fact nobody has checked yet.** Correctly deferred; the unblocking step is a hardware test of
+the already-shipping single-tap cycle, not new code.
