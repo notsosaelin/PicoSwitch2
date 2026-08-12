@@ -23,6 +23,9 @@
 #include "usb.h"  // g_usb_personality (personality query command)
 #include "ns2_wake.h"  // ns2_wake_manual_request (wake command)
 #include "bt/btstack/btstack_host.h"  // bonds list/remove (management)
+#ifdef NS2_PRO
+#include "ns2_nfc_mirror.h"  // amiibo reader (controller-as-reader backup)
+#endif
 
 #include <string.h>
 #include <stdio.h>
@@ -589,10 +592,58 @@ static void cmd_amiibo(char *arg) {
         return;
     }
 
+#ifdef NS2_PRO
+    // Controller-as-reader backup (interface-audit G4 Path B): drive NFC commands
+    // at a connected genuine Pro Controller 2 to read a physical amiibo, so the app
+    // can back it up. Low-level, mirroring the UART `nfcmirror initiator` surface —
+    // the app (like tools/nfc_probe.ps1) sequences the reads. NTAG215 reads the full
+    // 540; v3 sector-aware reads (sector 1) are the app's responsibility. Requires a
+    // genuine Pro2 connected and the reader armed. See amiibo-crypto-research and
+    // docs/Amiibo-v3.md §11.1.
+    if (strcmp(arg, "reader on") == 0) {
+        ns2_nfc_mirror_set_initiator(true);
+        reply("{\"ok\":true,\"reader\":true}");
+        return;
+    }
+    if (strcmp(arg, "reader off") == 0) {
+        ns2_nfc_mirror_set_initiator(false);
+        reply("{\"ok\":true,\"reader\":false}");
+        return;
+    }
+    if (strncmp(arg, "reader send ", 12) == 0) {
+        uint8_t command[40];
+        size_t length = 0;
+        if (!parse_hex_bytes(arg + 12, command, sizeof(command), &length) || length < 8u) {
+            reply("{\"error\":\"reader send: expected >=8 bytes of hex\"}");
+        } else if (!ns2_nfc_mirror_initiator_submit(command, length)) {
+            reply("{\"error\":\"reader not armed, no genuine Pro2, or busy\"}");
+        } else {
+            snprintf(out, sizeof(out), "{\"ok\":true,\"length\":%u}", (unsigned)length);
+            reply(out);
+        }
+        return;
+    }
+    if (strcmp(arg, "reader reply") == 0) {
+        uint8_t resp[NS2_NFC_MIRROR_RESPONSE_MAX];
+        size_t length = 0;
+        if (!ns2_nfc_mirror_initiator_take(resp, sizeof(resp), &length)) {
+            reply("{\"ready\":false}");
+        } else {
+            int j = snprintf(out, sizeof(out),
+                             "{\"ready\":true,\"length\":%u,\"data\":\"", (unsigned)length);
+            for (size_t i = 0; i < length && j < (int)sizeof(out) - 4; i++)
+                j += snprintf(out + j, sizeof(out) - j, "%02X", resp[i]);
+            snprintf(out + j, sizeof(out) - j, "\"}");
+            reply(out);
+        }
+        return;
+    }
+#endif  // NS2_PRO
+
     reply("{\"error\":\"usage: amiibo status|begin|chunk|commit|"
            "commit save2|cancel|read [save1|save2]|downloaded|"
            "select save1|select save2|"
-           "present|eject|clear|persist\"}");
+           "present|eject|clear|persist|reader on|off|send <hex>|reply\"}");
 }
 
 // Live input snapshot for the config-mode 2-column view: the connected controller's
