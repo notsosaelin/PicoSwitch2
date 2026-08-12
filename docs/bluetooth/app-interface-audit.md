@@ -88,6 +88,15 @@ production generic gamepad driver. Verified green: `test_bthid_android_controlle
     (allowlisted, bonded-only), returning read chunks the app saves. Per-controller NFC command shape
     must be validated on hardware (Pro2 is implemented; Joy-Con 2 R's protocol is undocumented — see
     switch2-joycon2/open-questions.md).
+    - **NTAG215 (540/572):** the controller reads the **complete** image. ✅
+    - **v3 (2 KB):** the controller reads **sector 0** (0x000–0x3FF) — the **functional** amiibo:
+      rider identity + amiibo-crypto data + the SRAM "machine" block (0x3C0–0x3FF). It does **not**
+      currently read **sector 1** (0x400–0x7FF), the Kirby Air Riders **learned game-save** data
+      (empty on a fresh figure), because the current `0x06` range descriptor is 8-bit and cannot
+      address sector 1 (docs/Amiibo-v3.md §11.1/§13 — a **tooling gap, not a hard block**; the
+      initiator can issue sector-aware reads, and a phone reader captures the whole tag). So Path B
+      gives a functional v3 backup missing only the sector-1 save; **full 2 KB via controller** is a
+      sector-aware-read follow-up, while **phone-NFC (Path A) captures everything** with no firmware.
 - **State completeness — mostly, one gap.** `amiibo status` reports loaded/dirty/presented/v3loaded/
   persisted/size/signature/hasSave2/usingSave2/generation/payloadCrc/uid + upload progress. **Missing:
   the figure/character identity** (head/tail or character ID). For an *imported* amiibo the app has
