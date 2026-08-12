@@ -448,8 +448,15 @@ compatibility substantially harder.
 - [ ] Initial adapter selection, bond consent, and HID connection complete without opening Settings.
 - [x] Source/host fixture: PicoSwitch2 accepts an Android-initiated Classic HID connection with a
       phone Class of Device and selects `bthid_gamepad` (physical Android/Pico confirmation pending).
-- [x] The production parser fixture reports X/Y/Z/Rz/Rx/Ry, hat, report ID 1, and 14 buttons at the expected offsets.
+      Verified green in `tools/test_bthid_late_identity.c`; the phone binds generic via the
+      no-match fallback even though `gamepad_match()` (correctly) rejects a phone major class.
+- [x] Phone-CoD generic binding survives late Classic SDP VID/PID re-evaluation: no disconnect/
+      rebind churn, only a VID-flag refresh, and input keeps flowing (`test_bthid_late_identity.c`).
+- [x] The production parser fixture reports X/Y/Z/Rz/Rx/Ry, hat, report ID 1, and 14 buttons at the
+      expected offsets (`tools/test_bthid_android_controller.c`, verified green).
 - [x] Canonical reports round-trip through the production generic parser to the expected `input_event_t`.
+- [x] Two independent handhelds (Retroid Pocket Classic API 34, AYN Thor API 33) pass the HID Device
+      profile feasibility gate and map onto the fixed 14-button contract with no firmware change.
 - [ ] A/B/X/Y, shoulders, D-pad, both sticks, both triggers, Start/Select, and stick clicks pass on console.
 - [ ] App pause, screen lock, Bluetooth loss, and process death cannot leave a held input on console.
 - [ ] Saved-bond reconnect works after restarting the app, PicoSwitch2, and handheld.
