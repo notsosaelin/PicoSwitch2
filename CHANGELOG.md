@@ -7,11 +7,16 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Added
 
-- Configuration/management command `personality` (available over USB CDC and the wireless bridge)
-  reports the current output personality (`pro2`/`gc`/`jcl`/`jcr`/`config`) and the selectable
-  controller list. Read-only; lets a management client display the mode and gate mode-specific
-  controls (amiibo controls are only meaningful in Pro2). Part of the phone-app firmware interface
-  (`docs/bluetooth/app-interface-audit.md`).
+- Phone-app management command surface (USB CDC + the wireless/BLE allowlist), wiring the firmware
+  interface so a management app is a thin client — see `docs/bluetooth/app-interface-audit.md`:
+  - `personality` reports the current output personality and selectable list; `personality
+    <pro2|gc|jcl|jcr>` switches it via the (owner-hardware-confirmed) re-enumeration path.
+  - `wake` wakes a sleeping Switch 2 using the learned wake identity (paired once while on).
+  - `bonds list` / `bonds remove <index>` manage saved LE pairings (Classic bonds stay on triple-tap
+    wipe).
+  - `amiibo status` now includes the plaintext `figureId` (NTAG215 and 2 KB v3) for identity lookup.
+  - `amiibo reader on|off|send <hex>|reply` drives a connected genuine Pro Controller 2 as an amiibo
+    reader for backing up physical amiibo (NTAG215 full; v3 sector 0).
 - Pico-side contract coverage for a no-root Android handheld controller bridge. The canonical
   Classic HID descriptor and neutral report are versioned with the firmware, and a host test drives
   their exact report ID, axes, 14-button map, hat, full-state retention, and disconnect cleanup
