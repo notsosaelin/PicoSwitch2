@@ -105,6 +105,43 @@ so the hitch is a non-issue, but the deferred path makes it correct regardless.
 
 ---
 
+## 2b. Pairing & bond-management model (resolves §7a)
+
+Reuses the existing, hardware-proven controller pairing machinery — no new gesture. The gesture map
+(`bootsel_action.c`, a pure function already unit-tested) is unchanged:
+
+| Gesture | Existing action | Extension for management |
+|---|---|---|
+| Double-tap | `OPEN_PAIRING` (controller pairing window; adapter discoverable/connectable) | A management phone bonds **inside this same window** — the window is the first-bond gate |
+| Triple-tap | `WIPE_DEVICES` (`gap_delete_bonding` all bonds) | Also clears the management-phone bond = "unpair everything" |
+| Single-tap | cycle personality | (unchanged) |
+| 2 s hold | toggle Config | (becomes the kept default-off CDC fallback / first-pair path) |
+
+**First pairing.** Double-tap → the pairing window opens. A phone connects as an LE-peripheral
+management client and bonds *within the window*. `mgmt_accept_bonding()` is true **only while the
+window is open** → same trust model as adding a controller. Outside the window an unbonded phone may
+connect but **cannot bond**, therefore **cannot write** (`mgmt_allow_write` requires bonded). No
+drive-by hijack. This is the authenticated authorization the previous designer mandated.
+
+**Reconnect (connect/disconnect anytime).** After bonding, the phone reconnects whenever the console
+is awake — the service advertises at low duty and encryption uses the stored bond, no window needed.
+
+**Unpair.** Triple-tap wipes all bonds (emergency "forget everything"). For granular control the
+app/portal uses new **bonded-only** commands `bonds list` / `bonds remove <index>` (backed by
+`le_device_db` / `gap_delete_bonding`) so a single saved phone can be dropped without nuking
+controllers. `bonds` joins the wireless allowlist; `bonds remove` is a small flash op (deferred path).
+
+**Clients — web portal *and* native app.** Both speak the same GATT service + JSON-line protocol.
+`web/index.html`'s Web Bluetooth path already works; a native app is a future client needing **no
+protocol change**. Saved-pairing management (`bonds`) is the shared "Paired devices" surface.
+
+**Personality change (future, via app).** A `personality <pro2|gc|jcl|jcr>` command would trigger the
+**deferred** forced re-enumeration (§7.3) — behind its own safety investigation, not in the first cut.
+
+The access rules above are encoded as the pure spec in `tools/test_mgmt_access.c`
+(`mgmt_should_advertise` / `_accept_connection` / `_accept_bonding` / `_allow_write` /
+`_should_drop_client`) and tested exhaustively; production `src/mgmt_access.{c,h}` lifts them verbatim.
+
 ## 3. Per-command safe-live classification (full audit of `handle_line`)
 
 | Command | Effect | Wireless today | Live-safe during gameplay? |
@@ -115,8 +152,10 @@ so the hitch is a non-issue, but the deferred path makes it correct regardless.
 | `body`/`jcl`/`jcr`/`lb` | set colors in RAM | ✅ allow | ✅ RAM write under cfg_lock |
 | `amiibo status/read/select/present/eject/downloaded/cancel` | RAM/state only | ✅ allow | ✅ no flash; select swaps active tag |
 | `amiibo begin/chunk` | buffer upload in RAM | ✅ allow | ✅ RAM (bounded) |
-| `amiibo commit`, `amiibo persist`, `save` | **flash write** | ✅ allow | ⚠ via **deferred** path (C5) |
+| `amiibo commit`, `amiibo persist`, `save` | **flash write** | ✅ allow | ⚠ via **deferred** path (C6) |
 | `amiibo clear` | clears pending / flash? | ✅ allow | ⚠ verify flash vs RAM |
+| `bonds list` (new) | read saved bonds | add to allowlist | ✅ read (bonded-only) |
+| `bonds remove <i>` (new) | delete one bond | add to allowlist | ⚠ small flash op (deferred) |
 | `state`, `raw`, `audiostat`, `imu`, `imuanom`, `fwreads`, `sw2cap`, `btid` | developer/diagnostic reads | ❌ CDC/UART only | n/a (stay off wireless) |
 
 The allowlist boundary (user config vs developer diagnostics) is already correct for in-band use.
@@ -197,9 +236,15 @@ Prefer the simple always-advertise path; adopt this suppression only if 7b shows
     rather than busy-waiting; a mock core1 tick performs it; response is published after.
   - **Wake priority (C5):** a mock "console asleep / wake active" input suppresses management
     advertising and drops any client — pure state-logic, no radio.
-- **New:** a small state-machine test for the management enable/advertise lifecycle (enabled + awake +
-  no scan → advertise; client connect → stop advertising; console sleep or wake-active → suppress +
-  drop client), mirroring `test_bthid_late_identity.c`'s mock-transport style.
+- **Written + green (2026-08-12): `tools/test_mgmt_access.c`** — the pure access-control spec
+  (`mgmt_should_advertise/_accept_connection/_accept_bonding/_allow_write/_should_drop_client`), tested
+  exhaustively and linking the **real** `config_wireless_command_allowed`. Pins: disabled = invisible;
+  advertise only when live+awake+!wake+!scan+!client; **wake outranks management** (client dropped on
+  sleep/wake); **new bond only inside the double-tap pairing window**; **writes require bond +
+  allowlist** (unbonded phone can never issue a command); single client. Production
+  `src/mgmt_access.{c,h}` will lift these verbatim, and this test will then link the real header.
+  Existing `tools/test_config_wireless_bridge.c` (bridge SPSC + allowlist) confirmed green as the
+  regression baseline.
 - **Security note:** the encryption-required-before-write property (C3) is an SM/ATT runtime
   behavior; pin it in **hardware validation** (below) rather than a host mock.
 
@@ -243,10 +288,10 @@ window. This gives an objective, on-device latency/jitter signal without externa
    Hard constraints reaffirmed: **must not add input latency, must not disturb audio/gyro (BT-timing
    dependent), and must not break wake-from-sleep** — captured as C5 (wake invariant) + the coexistence
    proof (§5) + the audio/gyro/wake HW gates (§6).
-   - **Sub-decision still open (§7a): first-bond mechanism.** Just-Works pairing means "always
-     advertising + open first-bond" lets any nearby phone bond. Recommended: first pairing via the
-     kept CDC Config fallback (or a one-time pairing window); afterward the bonded phone connects with
-     no gesture. Needs an explicit pick before build.
+   - **§7a first-bond mechanism — RESOLVED (owner):** reuse the existing **double-tap pairing
+     window** as the first-bond gate, and **triple-tap** to unpair; the app/portal manages individual
+     saved pairings via `bonds list`/`bonds remove`. Full model in §2b. A phone bonds only inside the
+     deliberate window; afterward it reconnects with no gesture.
 2. **CDC fallback — RESOLVED: keep it, default-off build flag.** Owner: "Keep it gated default off
    until we're sure it can be removed." Also serves as the one-time first-pairing path.
 3. **Personality switch — DEFERRED pending a dedicated re-enumeration-safety investigation.** Owner:
