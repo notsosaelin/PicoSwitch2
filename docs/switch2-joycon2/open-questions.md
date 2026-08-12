@@ -65,6 +65,8 @@ sends NFC commands to a Right personality at all and (b) accepts Pro2-shaped res
 exchange first if possible. Do **not** ship this on inference alone — it is an experiment, not a
 known-good add. Left has no NFC and is out of scope.
 
+## Physical USB constraint
+
 One Pico USB peripheral has one address, so it cannot expose a genuine two-child wired Joy-Con
 pair. Left and Right are intentionally separate personalities, matching the real Charging Grip's
 two independently addressed children rather than inventing a merged device.
