@@ -309,6 +309,23 @@
       </div>
     </section>
 
+    <section id="mgmtPanel">
+      <h2>In-band management <span class="pill">beta</span></h2>
+      <p class="muted">Manage the adapter over Bluetooth <b>while a controller is driving the console</b>
+        &mdash; no Config-mode re-enumeration, so the console is never dropped. Default off. Enable it
+        here from any transport (USB or the current BLE link), then you can <b>Connect Bluetooth</b> in
+        normal Pro Controller 2 mode.</p>
+      <div class="actions-bar">
+        <span id="mgmtState" class="pill bad">unknown</span>
+        <button id="mgmtOnBtn" class="primary">Enable</button>
+        <button id="mgmtOffBtn">Disable</button>
+        <button id="mgmtStatusBtn">Refresh</button>
+      </div>
+      <p class="muted" style="font-size:11px">Security: authenticated bonding (the pairing-window gate)
+        is not yet enforced in this beta &mdash; enable only in a trusted environment. Reverts to
+        <b>off</b> on adapter reboot, so a power cycle is always a clean escape hatch.</p>
+    </section>
+
     <section class="q hidden" id="audioDiag">
       <div id="audioVerdict">&mdash;</div>
       <div id="audioMeta"></div>
@@ -3562,6 +3579,24 @@ async function save() {
   log(r && r.ok ? "== saved (personality and lightbar colours) ==" : "!! save failed");
 }
 
+// In-band management gate (mgmt on/off/status). Works over whichever transport
+// is connected; enabling it lets the adapter accept a BLE management link in a
+// normal controller personality (docs/bluetooth/in-band-management-plan.md).
+async function mgmtRefresh(quiet) {
+  const el = $("#mgmtState");
+  const r = await sendCmd("mgmt status", quiet);
+  if (r && typeof r.enabled === "boolean") {
+    el.textContent = r.enabled ? "enabled" : "disabled";
+    el.className = "pill " + (r.enabled ? "ok" : "bad");
+  } else {
+    el.textContent = "unknown";
+    el.className = "pill bad";
+  }
+}
+$("#mgmtOnBtn").onclick = async () => { await sendCmd("mgmt on"); await mgmtRefresh(); };
+$("#mgmtOffBtn").onclick = async () => { await sendCmd("mgmt off"); await mgmtRefresh(); };
+$("#mgmtStatusBtn").onclick = () => mgmtRefresh();
+
 async function initializeAdapter(label) {
   amiiboSelectAdapterOnNextStatus = true;
   setConnected(true, label);
@@ -3571,6 +3606,7 @@ async function initializeAdapter(label) {
   if (info && info.id === "picoswitch") log("== PicoSwitch 2 detected (v" + info.version + ") ==");
   else log("! warning: unexpected device (info=" + JSON.stringify(info) + ")");
   await reload();
+  await mgmtRefresh(true);
 
   // Research-state synchronization is useful on the wired development path
   // but unnecessary traffic for the normal wireless settings/Amiibo workflow.

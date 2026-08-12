@@ -1,8 +1,35 @@
-# In-Band Management — Implementation Plan (proposal, pending approval)
+# In-Band Management — Implementation Plan + Status
 
-**Status:** 🔵 PLAN ONLY — no code changes until explicitly approved. Investigation complete
-2026-08-12. Supersedes the config-mode-only model in
-[config-transports.md](../architecture/config-transports.md) *if approved*.
+**Status:** 🔵 PARTIALLY IMPLEMENTED (transport landed 2026-08-12, default-off). Owner approved a
+sliced build with a hardware flash-test after the transport. Supersedes the config-mode-only model
+in [config-transports.md](../architecture/config-transports.md) as the transport is now gated by
+`g_mgmt_enabled`, not `g_usb_config_mode`.
+
+## Implementation status (2026-08-12)
+
+| Slice | Scope | State |
+|---|---|---|
+| — | Host-test scaffold (bridge, edge, concurrency, access spec, session, bonds) | ✅ green, 6/6 |
+| S1 | Production `src/mgmt_access.{c,h}` lifted from the spec; test links the real header | ✅ landed |
+| S2 | `g_mgmt_enabled` flag (usb.h/usb.c, default off) + `mgmt status/on/off` command + allowlist | ✅ landed |
+| C1/C3 (S3) | `config_ble_authorized()` = `g_usb_config_mode \|\| g_mgmt_enabled`; re-gate can_send / RX+CCC write / advertising / accept-connection / service-task | ✅ landed |
+| C2 (S4) | Extract `config_wireless_task()`; pump it unconditionally from the core0 main loop | ✅ landed |
+| C6 (partial) | Wireless `save` / `amiibo clear` / `amiibo persist` no longer busy-wait core0 (deferred, ack "queued") | ✅ landed |
+| S5 | Web portal Management panel (`mgmt on/off/status`); Connect Bluetooth now works in normal mode once enabled | ✅ landed |
+| **C4** | **ATT `AUTHENTICATED` security + first-bond pairing-window gate; wire the `mgmt_access` predicates (bonded/window) into the ATT/SM layer** | 🔴 **NOT YET** — runtime/HW-validated; until it lands an enabled link is UNAUTHENTICATED (trusted-environment only) |
+| C6 (rest) | Audit any remaining flash paths; `bonds` still has a ≤1 s cross-core wait (menu-only action) | 🟡 partial |
+| C5 | Wake-outranks-management advertiser hand-off during a wake burst (stop/resume a running mgmt advert) | ⬜ verify on HW (idle path already yields via `wake_adv.active` guards) |
+
+**Built clean on both boards (pico_w + pico2_w), all host tests green.** The default-off gate means
+the firmware is byte-identical to before when management is disabled. **Do not leave `mgmt on` in an
+untrusted RF environment until C4 lands.** See the HW test procedure in §6 and the handoff notes at
+the end of this section.
+
+---
+
+### Original proposal (below) — retained as the design reference
+
+Investigation complete 2026-08-12.
 
 **Goal.** Let a phone (or any Web-Bluetooth browser) manage the adapter — swap Virtual Amiibo,
 change colors/config, and optionally switch output personality — **over BLE while a normal
