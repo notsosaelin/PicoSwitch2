@@ -1,24 +1,23 @@
 /*
- * Spec + host test for the in-band BLE management ACCESS-CONTROL state machine.
+ * Host test for the in-band BLE management ACCESS-CONTROL state machine.
  *
- * TEST-FIRST design for docs/bluetooth/in-band-management-plan.md. The decision
- * functions below (mgmt_*) are the canonical contract for the NEW in-band
+ * The decision functions (mgmt_*) are the canonical contract for the in-band
  * management path: when it may advertise, accept a connection, accept a NEW
- * bond, allow a command write, and when it must drop its client. No production
- * firmware calls them yet; when the feature is built, src/mgmt_access.{c,h}
- * lifts them verbatim and this test links the real header.
+ * bond, allow a command write, and when it must drop its client. They were
+ * developed test-first and now live in the PRODUCTION module src/mgmt_access.c;
+ * this test links the real header (mgmt_access.h) so the exhaustive invariant
+ * proof below guards the shipping code directly.
  *
- * Scope: this models the NEW `enabled` path only. The legacy USB-CDC Config
- * path (default-off, deprecated) keeps its existing, separately-tested behavior
- * and is deliberately NOT modeled here -- mixing the two made the invariants
- * fuzzy. Everything below is keyed on a single `enabled` gate.
+ * Scope: this models the `enabled` path only. The legacy USB-CDC Config path
+ * (default-off, deprecated) keeps its existing, separately-tested behavior and
+ * is deliberately NOT modeled here -- mixing the two made the invariants fuzzy.
+ * Everything below is keyed on a single `enabled` gate.
  *
- * The only production symbol linked today is config_wireless_command_allowed()
- * (the real wireless allowlist), so the write decision is tested against the
- * REAL security boundary.
+ * The write decision links config_wireless_command_allowed() (the real wireless
+ * allowlist), so it is tested against the REAL security boundary.
  *
  * gcc -std=c11 -Wall -Wextra -Werror -Isrc -Iinclude -Itools \
- *   tools/test_mgmt_access.c src/config_wireless_bridge.c \
+ *   tools/test_mgmt_access.c src/mgmt_access.c src/config_wireless_bridge.c \
  *   -o build/host-tests/test_mgmt_access.exe
  */
 #include <assert.h>
@@ -27,55 +26,7 @@
 #include <string.h>
 
 #include "config_wireless_bridge.h"  // config_wireless_command_allowed (real)
-
-// Each field maps to an existing firmware signal, so the production lift is
-// mechanical.
-typedef struct {
-    bool enabled;             // g_mgmt_enabled (feature flag, default off)
-    bool console_awake;       // !tud_suspended()
-    bool wake_active;         // wake_adv.active or a pending wake burst
-    bool scanning;            // controller scan/inquiry in progress
-    bool pairing_window_open; // BOOTSEL double-tap opened the pairing window
-    bool client_connected;    // a management LE-peripheral client is linked
-    bool client_bonded;       // that client has an established bond (encrypted)
-} mgmt_state_t;
-
-// (1) Advertise connectably only while enabled, the console is awake, wake does
-//     NOT need the radio, no controller scan/inquiry is in flight, and no client
-//     is already connected (single client; advertising stops on connect).
-static bool mgmt_should_advertise(const mgmt_state_t *s) {
-    return s->enabled && s->console_awake && !s->wake_active &&
-           !s->scanning && !s->client_connected;
-}
-
-// (2) Accept an incoming management connection only while enabled, awake, and
-//     with no existing client.
-static bool mgmt_accept_connection(const mgmt_state_t *s) {
-    return s->enabled && s->console_awake && !s->client_connected;
-}
-
-// (3) Accept a NEW bond only while the feature is enabled AND inside the
-//     deliberate double-tap pairing window. Requiring `enabled` (not just the
-//     window) prevents a phone from forming a management bond during a window
-//     opened only to add a CONTROLLER while management is off.
-static bool mgmt_accept_bonding(const mgmt_state_t *s) {
-    return s->enabled && s->pairing_window_open;
-}
-
-// (4) Allow a command write only from a connected, BONDED client while enabled
-//     and only for an allowlisted command.
-static bool mgmt_allow_write(const mgmt_state_t *s, const char *command) {
-    return s->enabled && s->client_connected && s->client_bonded &&
-           config_wireless_command_allowed(command);
-}
-
-// (5) Drop the management client when it must yield the radio: feature off,
-//     console asleep, or wake needs the advertiser. Guarantees wake-from-sleep
-//     is never blocked by a lingering management link.
-static bool mgmt_should_drop_client(const mgmt_state_t *s) {
-    return s->client_connected &&
-           (!s->enabled || !s->console_awake || s->wake_active);
-}
+#include "mgmt_access.h"             // the production access-control decisions
 
 // ---------------------------------------------------------------------------
 // Hand-picked scenario tests (readable intent)
