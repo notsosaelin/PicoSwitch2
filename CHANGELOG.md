@@ -212,6 +212,14 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Fixed
 
+- Pro Controller 2 and NSO GameCube personalities are now recognized on a **fresh** Windows PC
+  without a manual WinUSB reset. Both now serve the Microsoft OS 1.0 Extended Properties descriptor
+  (`wIndex=0x0005`) on their vendor interface, registering the Nintendo device-family
+  `DeviceInterfaceGUID {6F13725E-EF0E-4FD3-AE5F-B2DE989EC825}` that libusb/SDL/Steam need to open the
+  interface. Previously only Joy-Con 2 served it, so Pro2/GameCube worked only on a machine that had
+  already hosted a genuine Nintendo controller (which had registered the GUID); a truly fresh PC
+  showed Steam's "Begin Setup" / generic-device state. Windows-only enumeration metadata; Switch 2
+  descriptors and protocol behavior are unchanged.
 - Descriptor-backed generic Bluetooth gamepads now drop truncated input reports atomically instead
   of interpreting absent trailing fields as zero or released. Valid reports, longer vendor reports,
   and descriptorless Classic fallback behavior are unchanged.
