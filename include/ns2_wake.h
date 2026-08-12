@@ -17,6 +17,13 @@ void ns2_wake_pairing_commit(void);
 // USB pairing identity. Must be called from BTstack/core1 context.
 bool ns2_wake_request(void);
 
+// App/management-initiated wake: latch a one-shot request from ANY core (e.g. a
+// config `wake` command on core0). core1's ns2_wake_service consumes it and, if
+// the console is asleep and a wake identity exists, issues ns2_wake_request().
+// A no-op if the console is already awake. Safe cross-core: a single volatile
+// boolean, same publication model as the USB-state flags.
+void ns2_wake_manual_request(void);
+
 // Automatic wake coordination. Core0 publishes TinyUSB host state; core1
 // latches real controller input and services the wake decision. Each distinct
 // neutral-to-pressed edge can make one attempt; a held button cannot repeat it.

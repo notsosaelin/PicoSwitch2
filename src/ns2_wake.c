@@ -43,6 +43,13 @@ static bool auto_wake_sent;
 static uint32_t auto_wake_boot_ms;
 static uint32_t auto_wake_retry_ms;
 
+// One-shot app/management-initiated wake request (any core sets; core1 clears).
+static volatile bool manual_wake_pending;
+
+void ns2_wake_manual_request(void) {
+    manual_wake_pending = true;
+}
+
 void ns2_wake_pairing_reset(void) {
     memset(&pending_identity, 0, sizeof(pending_identity));
     pending_valid = false;
@@ -199,6 +206,21 @@ void ns2_wake_service(uint32_t now_ms) {
     ns2_wake_cancel_pending_input();
     return;
 #endif
+
+    // App/management-initiated wake (Pro2 only): fire immediately if the console
+    // is asleep, bypassing the automatic-wake debounce (this is explicit intent,
+    // not a latched button edge). Ignored while the console is awake or a wake
+    // advert already owns the radio.
+    if (manual_wake_pending) {
+        manual_wake_pending = false;
+        bool asleep = !(usb_host_mounted && !usb_host_suspended);
+        if (asleep && !btstack_host_wake_advertisement_active()) {
+            printf("[NS2_WAKE] App-requested wake\n");
+            (void)ns2_wake_request();
+        } else {
+            printf("[NS2_WAKE] App wake ignored (host awake or advert active)\n");
+        }
+    }
 
     if (controller_input_suppressed) {
         ns2_wake_cancel_pending_input();

@@ -21,6 +21,7 @@
 #include "virtual_amiibo_store.h"
 #include "config_wireless_bridge.h"
 #include "usb.h"  // g_usb_personality (personality query command)
+#include "ns2_wake.h"  // ns2_wake_manual_request (wake command)
 
 #include <string.h>
 #include <stdio.h>
@@ -998,6 +999,13 @@ static void handle_line(char *cmd) {
         cmd_device();
     } else if (strcmp(cmd, "personality") == 0) {
         cmd_personality();
+#ifdef NS2_PRO
+    } else if (strcmp(cmd, "wake") == 0) {
+        // Queue an app-initiated console wake. core1's wake service performs it if
+        // the console is asleep and a wake identity exists (paired once while on).
+        ns2_wake_manual_request();
+        reply("{\"ok\":true,\"queued\":true}");
+#endif
     } else if (strcmp(cmd, "audiostat") == 0) {
         cmd_audiostat(false);
     } else if (strcmp(cmd, "audiostat reset") == 0) {
