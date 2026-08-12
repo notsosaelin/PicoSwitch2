@@ -291,13 +291,14 @@ window. This gives an objective, on-device latency/jitter signal without externa
      deliberate window; afterward it reconnects with no gesture.
 2. **CDC fallback — RESOLVED: keep it, default-off build flag.** Owner: "Keep it gated default off
    until we're sure it can be removed." Also serves as the one-time first-pairing path.
-3. **Personality switch — DEFERRED; investigation done 2026-08-12 (§9).** Owner: "check the plan and
-   plan accordingly before implementing forced personality change, we don't want to break anything."
-   The investigation (§9) found the mechanism is mature and safe *in firmware*, but its one hardware
-   assumption — the console accepting a mid-session re-enumeration to a different controller PID — is
-   **not yet validated** (`compatibility-matrix.md`: the single-tap cycle is "Host/build confirmed;
-   hardware pending"). **Hard prerequisite:** hardware-validate the existing single-tap cycle first
-   (ships already, needs no new code). Amiibo + config ship first regardless.
+3. **Personality switch — DE-RISKED (investigation §9, owner-confirmed 2026-08-12).** Owner: "check
+   the plan… we don't want to break anything." The §9 investigation found it safe *in firmware*, and
+   the one hardware assumption — the console accepting a mid-session PID re-enumeration — is
+   **owner-confirmed to already work** (they cycle personality via BOOTSEL while plugged into the
+   Switch 2 and it swaps cleanly). So it is **not blocked**; it can be in the first cut or a
+   fast-follow. A command-driven switch just changes the trigger on that validated mechanism
+   (`personality <target>` → target-request flag → existing cycle path). Amiibo + config remain the
+   priority; personality switch is a small, safe add-on.
 4. **Diagnostics — RESOLVED: already on UART in all modes.** Owner: "I thought uart worked in all
    modes for diagnostics? I've had it in procon 2 mode…" Confirmed (`ns2_uart_diag_task` runs
    unconditionally). No re-homing needed; CDC removal loses no diagnostics.
@@ -319,7 +320,7 @@ behaviors with a concrete way to close each:
 | Gyro uninterrupted during an active session | HW check 6b |
 | Deferred-flash path lands writes safely under gameplay | Host test (C6) + HW check 5 |
 | Idle truly invisible/zero-cost when disabled | Already proven in code + HW check 1 |
-| Forced personality re-enumeration is safe on a live console | **Separate investigation (§7.3) before that op ships** |
+| Forced personality re-enumeration is safe on a live console | ✅ Owner-confirmed (§9) — the BOOTSEL single-tap cycle already swaps cleanly while plugged into the Switch 2 |
 
 No firmware change is proposed until (a) the host tests above are written and green, (b) the §7a
 first-bond mechanism is chosen, and (c) the audio/gyro/wake HW gates pass. This document is the
@@ -359,22 +360,28 @@ instead of the next-in-cycle.
   deliberate switch; the app must warn "changing output type briefly interrupts audio."
 - **The console sees a brief controller disconnect/reconnect.** Expected for any re-enumeration.
 
-**The one blocking unknown (HARD gate):** whether the **console gracefully accepts a mid-session
-re-enumeration to a different controller PID** is **not yet hardware-validated** — the single-tap
-runtime cycle is "🟡 Host/build confirmed; hardware pending" (`compatibility-matrix.md`). If the
-console does *not* accept a live PID change cleanly (e.g. it requires a full physical re-plug, or
-hangs the game), a command-driven switch would be worse than useless. This gate exists *independently*
-of the in-band-management feature.
+**The one blocking unknown — RESOLVED by owner confirmation (2026-08-12).** Whether the **console
+gracefully accepts a mid-session re-enumeration to a different controller PID** was the sole open
+gate. The owner confirmed this **already works in regular use**: the adapter powers on as Pro2, a
+BOOTSEL single-tap cycles the personality *while plugged into the Switch 2*, and the console detects
+the new controller and drops the old one. So the console-acceptance gate is **closed empirically**;
+`compatibility-matrix.md`'s "hardware pending" row for the single-tap cycle is **stale and should be
+updated to hardware-confirmed** (deferred here because that file has unrelated uncommitted edits — do
+not entangle).
 
-**Prerequisite before any personality-switch code:** hardware-validate the **existing single-tap
-cycle** on a real Switch 2 — Pro2 → GameCube → Joy-Con L → Joy-Con R and back — confirming input
-keeps working after each switch with no game hang. This needs **no new code** (it already ships).
-Only once that passes does a command-driven switch become a small, safe addition.
+**Consequence:** a command-driven switch is the *same* validated re-enumeration, differing only in
+the **trigger** (a BLE command vs a finger). The underlying `usb_apply_personality(next, …)` already
+accepts an arbitrary target (the cycle just computes next-in-sequence), so targeting a specific
+personality adds no new mechanism. The feature is therefore **de-risked**, not blocked — it can move
+into the first cut if desired, or stay a fast-follow.
 
-**Additional guards for the eventual command:** idempotent target (`next==old` already ignored);
-coalesce rapid requests via the single flag (last-wins); the app should debounce; and the switch must
-be refused while the console is asleep (wake first).
+**Guards for the eventual command:** idempotent target (`next==old` already ignored); set an
+edge-triggered target-request flag consumed at the safe loop point (mirror `g_usb_mode_cycle_requested`),
+never call the blocking switch inline; coalesce rapid requests via the single flag (last-wins) and let
+the app debounce; refuse while the console is asleep (wake first); and have the app warn that leaving
+Pro2 briefly interrupts audio.
 
-**Conclusion:** the feature is low-risk *in firmware* and cleanly designed, but it is **gated on a
-hardware fact nobody has checked yet.** Correctly deferred; the unblocking step is a hardware test of
-the already-shipping single-tap cycle, not new code.
+**Conclusion:** low-risk in firmware **and** hardware-proven for the load-bearing behavior (owner
+confirms the runtime PID switch works on a live console). A command-driven switch is a small, safe
+addition — `personality <pro2|gc|jcl|jcr>` sets the target-request flag; everything else is the
+existing, exercised cycle path.
