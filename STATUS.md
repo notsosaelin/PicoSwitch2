@@ -10,6 +10,25 @@ Branch: `ns2-testing`
 
 Documentation/resource audit: 2026-07-25
 
+## In-band BLE management transport — 🔵 built default-off, HW flash-test pending 2026-08-12
+
+The configuration BLE service (RX/TX GATT + wireless command bridge) is now armable in a **normal
+controller personality**, gated by a new runtime flag `g_mgmt_enabled` (default off, RAM-only). When
+enabled, a phone or the web portal manages the adapter — Amiibo, colors, `personality`, `bonds`,
+`wake` — **over Bluetooth while a controller drives the console**, with no CDC Config re-enumeration
+(the console is never dropped). When disabled, the path is byte-identical to before (proven
+zero-cost early return). Landed slices: `mgmt_access.{c,h}` (canonical access-control spec, exhaustive
+128-state host test), `mgmt status/on/off` command + allowlist, `config_ble_authorized()` gate
+decouple, unconditional `config_wireless_task()` pump, deferred wireless flash ops (`save`/`amiibo
+clear`/`amiibo persist` no longer stall core0), and a web-portal Management panel. Built clean on both
+boards; all host tests green (`tools/run_mgmt_tests.ps1`, 6/6).
+
+**Not yet done (own slices, HW-validated):** authenticated bonding — ATT `AUTHENTICATED` security +
+the double-tap first-bond pairing-window gate (plan C4). Until it lands, an *enabled* management link
+is **unauthenticated** → trusted-environment only. Wake-burst advertiser hand-off (C5) and the audio/
+gyro/latency coexistence gates need the hardware flash-test. See
+[`docs/bluetooth/in-band-management-plan.md`](docs/bluetooth/in-band-management-plan.md).
+
 ## Android handheld controller bridge — 🔵 Pico side host-tested 2026-08-11
 
 The no-root Android path uses the public API-28+ HID Device profile and keeps PicoSwitch2 as the
@@ -702,7 +721,7 @@ advertisement names are both `PicoSwitch2`.
 | Pro2 body/Joy-Con accents, Sony lightbar matching, and DualSense player-slot dots | ✅ Confirmed | Real Switch 2 and DualSense; config v8 hardware pass |
 | BOOTSEL report-boundary scheduling and former double/triple/hold policy | ✅ Confirmed | Real hardware after report-boundary gesture service |
 | Revised single/double/triple/two-second BOOTSEL action matrix | 🟡 Host/build confirmed; hardware pending | Pure gesture/action policy coverage; both board builds |
-| Config-only BLE management transport | 🟡 Host/build confirmed; hardware pending | Shared USB/BLE command parser, bounded cross-core bridge, production-command allowlist, and local Web Bluetooth portal |
+| BLE management transport (Config **and** in-band via `g_mgmt_enabled`) | 🟡 Host/build confirmed; hardware pending | Shared USB/BLE command parser, bounded cross-core bridge, production-command allowlist, `config_ble_authorized()` gate, unconditional wireless pump, and local Web Bluetooth portal. Authenticated bonding (plan C4) not yet built — enabled = trusted-environment only |
 | Virtual Amiibo persistence and mutable single-slot library | 🟡 540 and v3 read/write/persistence hardware-confirmed; portal refactor pending | All 16 available v3 dumps completed real-console reads/writes; v3 Config Sync, reset-on-UF2, and Config BLE still require regression validation |
 | Late BLE DIS VID/PID handoff and input continuity | ✅ Confirmed | Xbox Series BLE hardware regression after notification-first identity fix |
 | Triple-tap post-wipe admission lock | ✅ Confirmed for the reported workflow | Wipe disconnects and requires an explicit new pairing window |
@@ -754,10 +773,11 @@ single-tap cycle. The selection is not persisted across power cycles.
   re-pair). Retiring the always-on multi-controller discovery is the general fix for the scanning
   radio contention noted in
   [`docs/switch2/audio-passthrough-research.md`](docs/switch2/audio-passthrough-research.md).
-- Config management is a separate BLE Peripheral role and is armed only by the explicit Config USB
-  personality. Entering Config stops controller discovery before advertising; leaving Config
-  disconnects the browser before discovery resumes. The normal controller path performs only a
-  mode-state comparison and generates no management radio traffic.
+- Config/management is a separate BLE Peripheral role, armed by `config_ble_authorized()` — the
+  explicit Config USB personality **or** the in-band management flag `g_mgmt_enabled` (default off).
+  Arming stops controller discovery before advertising and disconnects the browser before discovery
+  resumes. When neither trigger is set, the normal controller path performs only a mode-state
+  comparison and generates no management radio traffic (byte-identical to before the feature).
 - Switch 2 controllers use a custom ATT pairing handshake, so the wipe policy cannot depend only on
   BTstack's LE bond database.
 - Successful custom pairing persists the normalized LTK in both the reconnect record and BTstack's
