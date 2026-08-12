@@ -81,6 +81,8 @@ static void test_oversized_line_recovers(void)
 static void test_wireless_command_policy(void)
 {
     assert(config_wireless_command_allowed("info"));
+    assert(config_wireless_command_allowed("device"));
+    assert(config_wireless_command_allowed("personality"));
     assert(config_wireless_command_allowed("save"));
     assert(config_wireless_command_allowed("amiibo status"));
     assert(config_wireless_command_allowed("amiibo chunk 0 0011"));
