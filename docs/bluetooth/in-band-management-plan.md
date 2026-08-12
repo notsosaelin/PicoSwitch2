@@ -162,6 +162,25 @@ The allowlist boundary (user config vs developer diagnostics) is already correct
 **Only the flash-writing subset needs the deferred path.** No handler assumes exclusivity beyond
 flash timing; all run on core0 under the same parser.
 
+### 3a. Amiibo commands in non-amiibo personalities (GC / Joy-Con 2) — SAFE (verified 2026-08-12)
+
+Concern: could an `amiibo present`/`select` sent over management while the adapter is in a **GameCube
+or Joy-Con 2** personality (neither has native amiibo/NFC) break something? **No — it is inert.**
+- The amiibo *serving* path (`ns2_virtual_nfc_runtime`, `ns2_nfc_mirror`) is wired **only** into
+  `switch_pro2.c`. GC (`switch_gc.c`) and Joy-Con 2 (`switch_joycon2.c`) include no amiibo/NFC serving
+  code at all.
+- Both GC's and Joy-Con 2's NFC command (`0x01`) handler is a **pure bare-ack** (`r[1]=0x04; dl=0;`)
+  that never reads `virtual_amiibo_store`. It matches the real controllers, which also just ack.
+- `virtual_amiibo_store` is a personality-agnostic data structure on core0. A management command
+  updates it, but in GC/Joy-Con nothing *reads* it — so there is no report corruption, no crash, and
+  the console (which knows those controllers lack NFC) does not query it anyway.
+- Flash-touching amiibo ops (`commit`/`persist`) are personality-independent and use the deferred
+  path (§C6), so no new timing risk either.
+
+Worst case is purely cosmetic: state set in GC/Joy-Con mode simply applies when you next switch to
+Pro2. **Recommendation (app-side, not firmware):** the portal/app should gray out amiibo controls in
+non-Pro2 personalities for clarity — but there is no breakage to guard against in firmware.
+
 ---
 
 ## 4. Deprecating the old Config mode
