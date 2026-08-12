@@ -1,6 +1,6 @@
 # NSO GameCube Open Questions
 
-Last updated: 2026-07-15
+Last updated: 2026-08-12
 
 The current GameCube personality enumerates, streams input, and rumbles on a real Switch 2.
 This file owns the remaining hypotheses; source comments should link here rather than preserve
@@ -36,3 +36,23 @@ GameCube controller uses a different motor and captured protocol.
 The output report supports native Z, analog L/R triggers, and independent trigger detents.
 Per-input-controller policy is documented in [mapping.md](mapping.md). Remaining work is a full
 physical matrix, especially for controllers whose controls do not map one-to-one to GameCube.
+
+## Motion (feasible to add — format already known)
+
+The GameCube controller **does** report motion. The confirmed report `0x0A` (protocol.md) carries the
+**same motion block as Pro Controller 2's report 0x09**: a motion-data-length byte at offset `0xE`
+(observed values {0, 30, 40}) followed by the motion data at `0xF`, "activated via feature bit 2."
+That is byte-for-byte the same structure — and therefore, on the same console with the same IMU
+family, almost certainly the same **int32 angular-phase + Q16.16 accelerometer** packing decoded for
+Pro2 (see `docs/switch2/report-0x09-motion.md`).
+
+**Current state:** `switch_gc.c`'s report builder emits motion-length `0` (no motion), exactly as the
+Pro2 builder did before its motion work.
+
+**To add it:** reuse the Pro2 report-0x09 int32 motion emission in the GC report builder, gated on the
+same feature-bit-2 IMU-enable, filling `0xE`/`0xF`. This is a small, mechanical extension **once the
+Pro2 report-0x09 int32 motion lands** (that work is the prerequisite; do not fork a second decoder).
+
+**Still to verify on hardware:** that the console actually enables + reads GC motion (feature-bit-2
+handshake in GC mode), the axis signs/scale match Pro2, and emitting motion does not regress GC
+recognition. Treat exactly like the Pro2 console-gyro validation, in GC mode.

@@ -10,7 +10,7 @@ code inspection only; it is weaker than physical hardware confirmation.
 | Personality | Switch 2 enumeration | Input streaming | Rumble | Notes |
 |---|---|---|---|---|
 | Pro Controller 2 | ✅ Confirmed | ✅ Confirmed, including native motion from a genuine Pro2 and translated motion from DualSense/Edge | ✅ Confirmed | Primary/default mode; 1000 Hz USB interval remains a required deviation for current motion behavior |
-| NSO GameCube | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Genuine `1.1.2 / 12.0.0` firmware identity and up-to-date status confirmed; native Z and trigger detents supported |
+| NSO GameCube | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Genuine `1.1.2 / 12.0.0` firmware identity and up-to-date status confirmed; native Z and trigger detents supported. **Motion capability present but not yet emitted** — the confirmed report `0x0A` carries the same motion block as Pro2's 0x09 (length @`0xE`, data @`0xF`, feature-bit-2 activated); implementable via the report-0x09 int32 path (see docs/switch2-gc/open-questions.md) |
 | Joy-Con 2 Left | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Sideways controls, mouse pointer/buttons/wheel, rumble, STOP, reconnect, and current firmware identity confirmed |
 | Joy-Con 2 Right | ✅ Confirmed | ✅ Confirmed | ✅ Confirmed | Sideways controls, mouse pointer/buttons/wheel, rumble, STOP, reconnect, and current firmware identity confirmed |
 | CDC/config | ✅ Confirmed with CDC-only descriptor and local portal | N/A | N/A | No mass-storage interface or embedded page |
@@ -31,12 +31,13 @@ code inspection only; it is weaker than physical hardware confirmation.
 | 8BitDo Ultimate Bluetooth (first model) | ✅ Confirmed | ✅ P1/P2 custom transport to GL/GR | Player LED path present | 🔵 Existing Switch output | Custom firmware paddles and console wake confirmed; reconnect remains slower than other Classic controllers |
 | Wiimote family | ✅ Confirmed | ✅ Standalone and attachment input | ✅ Player LEDs | ✅ Confirmed | Current regression pass complete |
 | Generic Bluetooth HID mouse | ✅ Confirmed in Joy-Con 2 modes | Buttons and relative X/Y/wheel | N/A | N/A | Pointer activation, mouse-only gating, disconnect cleanup, and wheel navigation confirmed |
-| Android Controller Bridge / Retroid Pocket Classic | 🔵 Pico host-tested + Android ADB-audited | 14-button contract, D-pad, two sticks, analog triggers | N/A | N/A | Retroid API-34 HID Device service and built-in controls present; ordinary APK registration, pairing, and end-to-end hardware validation pending |
+| Android Controller Bridge (Retroid Pocket Classic + AYN Thor) | 🔵 Pico host-tested + Android ADB-audited on two devices | 14-button contract, D-pad, two sticks, analog triggers | N/A | N/A | Retroid API-34 and AYN Thor API-33 both expose the HID Device service and map onto the fixed contract (Thor validates the BRAKE/GAS trigger fallback); ordinary APK registration, pairing, and end-to-end hardware validation pending |
 
 ## Switch 2 motion
 
 | Source | Console carrier | Status |
 |---|---|---|
+| NSO GameCube output (motion) | Report `0x0A`, length @`0xE` + data @`0xF` (same block as Pro2 0x09) | 🔵 Format confirmed in the report (feature-bit-2 activated, values {0,30,40}); **not yet emitted** — adds via the report-0x09 int32 path once that lands |
 | Genuine Pro Controller 2 | Native length-`0x1E` and length-`0x28` PDUs | ✅ Opaque passthrough, reconnect, P1 LED, and gyro confirmed |
 | DualSense / DualSense Edge | Synthesized length-`0x1E` quaternion PDU | ✅ Calibration, direction, scale, rapid movement, stationary behavior, and reconnect confirmed |
 | Other IMU controllers | None | 🔵 Requires a verified sensor layout, calibration, axes, scale, timestamp, and bias model per family |
@@ -47,11 +48,11 @@ code inspection only; it is weaker than physical hardware confirmation.
 | Scenario | Status |
 |---|---|
 | Former double/triple/hold scheduling with DualSense/Edge connected | ✅ Hardware-confirmed baseline |
-| Revised paired/unpaired/Config action matrix | 🟡 Host/build confirmed; hardware pending |
+| Revised paired/unpaired/Config action matrix | ✅ Confirmed (components validated on hardware — single-tap cycle, double-tap, triple-tap, and hold all confirmed; PLAN.md release gate) |
 | Single-tap controller-only personality cycle | ✅ Confirmed (owner, 2026-08-12): routine BOOTSEL personality cycle on a live Switch 2 — the console detects the new controller and drops the old one |
 | Two-second direct Config entry and Config→Pro2 exit | ✅ Confirmed during CDC-only Virtual Amiibo validation |
-| Paired double-tap disconnect-without-bond-delete then pairing | 🟡 Build confirmed; hardware pending |
-| Triple-tap wipe from normal and Config modes | 🟡 Host/build confirmed; hardware pending |
+| Paired double-tap disconnect-without-bond-delete then pairing | ✅ Confirmed (PLAN.md: double-tap validated on hardware with DualSense connected) |
+| Triple-tap wipe from normal and Config modes | ✅ Confirmed (PLAN.md: triple-tap validated on hardware; triple-tap admission blocking hardware-confirmed) |
 | DualSense/Edge rumble while gestures remain responsive | ✅ Confirmed |
 | Post-wipe automatic readmission remains blocked | ✅ Confirmed for reported workflow; include in release matrix |
 | Re-pair after explicit new pairing window | ✅ Confirmed |
@@ -100,6 +101,7 @@ code inspection only; it is weaker than physical hardware confirmation.
 | Config-only Bluetooth library transfer | 🟡 Host/build/static confirmed; hardware pending |
 | New-UF2 blank state and one-shot persistence/bond erase | 🟡 Build marker verified on all targets; hardware pending |
 | Native Pro2/Joy-Con 2 physical-tag write | 🔵 Pending capture and implementation |
+| Virtual Amiibo in the **Joy-Con 2 Right** output personality | 🔵 Feasibility only — Right's NFC hardware is confirmed (live NFC-state byte @`0xE`, PN7160/PN7161), but its NFC *command* protocol is undocumented. Candidate experiment: wire Pro2's NFC serving into JoyCon2 R's `0x01` handler and validate the console queries it. Left has no NFC. See docs/switch2-joycon2/open-questions.md |
 
 ### Figure-v3 (NTAG I2C Plus 2K / Kirby Air Riders, 2048-byte)
 

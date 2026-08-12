@@ -1,6 +1,6 @@
 # Joy-Con 2 Open Questions
 
-Last updated: 2026-07-24
+Last updated: 2026-08-12
 
 Both side personalities enumerate and stream on real Switch 2 hardware. Their descriptor and
 wire-layout facts remain in [protocol.md](protocol.md); this file owns unresolved interpretations.
@@ -46,7 +46,24 @@ wire-layout facts remain in [protocol.md](protocol.md); this file owns unresolve
   remain outside the first implementation and must not be inferred from Pro Controller 2 or
   GameCube behavior.
 
-## Physical USB constraint
+## NFC / Virtual Amiibo (Right only) — feasibility, not yet addable
+
+**Confirmed:** the **Right** Joy-Con 2 has NFC hardware. Report offset `0xE` ("NFC state") is a live
+`0x00`–`0x07` value on R and always `0` on L (protocol.md:231,240-241), matching the PN7160/PN7161
+NFC controller datasheet. So Virtual Amiibo *in the Right personality* is physically plausible.
+
+**Blocking gap:** the Right's NFC **command/read protocol is undocumented.** There is no byte-exact
+Joy-Con 2 Right amiibo capture in this repo — only presence evidence and general Switch-2 NFC-flow
+chatter in the research dump. Per the standing caution above, its protocol **must not be inferred**
+from the (implemented, hardware-validated) Pro Controller 2 NFC serving.
+
+**Candidate experiment (hardware, when prioritized):** the Pro2 amiibo serving path
+(`ns2_virtual_nfc_runtime` / `virtual_amiibo_store`) is personality-agnostic; only Pro2's `0x01` NFC
+command handler wires it up (GC and Joy-Con 2 currently bare-ack `0x01`). Wire the same serving into
+**Joy-Con 2 Right's `0x01` handler** behind a flag and test on a real Switch 2 whether the console (a)
+sends NFC commands to a Right personality at all and (b) accepts Pro2-shaped responses. Capture the
+exchange first if possible. Do **not** ship this on inference alone — it is an experiment, not a
+known-good add. Left has no NFC and is out of scope.
 
 One Pico USB peripheral has one address, so it cannot expose a genuine two-child wired Joy-Con
 pair. Left and Right are intentionally separate personalities, matching the real Charging Grip's
