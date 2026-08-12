@@ -570,6 +570,11 @@ static void cmd_amiibo(char *arg) {
 
     if (strcmp(arg, "clear") == 0) {
         virtual_amiibo_store_request_clear();
+        if (reply_transport == CONFIG_REPLY_WIRELESS) {
+            // Deferred: never stall core0 during gameplay (see `save` / C6).
+            reply("{\"ok\":true,\"queued\":true}");
+            return;
+        }
         absolute_time_t deadline = make_timeout_time_ms(2000);
         while (virtual_amiibo_store_clear_pending() &&
                !time_reached(deadline))
@@ -582,6 +587,11 @@ static void cmd_amiibo(char *arg) {
 
     if (strcmp(arg, "persist") == 0) {
         virtual_amiibo_store_request_persist();
+        if (reply_transport == CONFIG_REPLY_WIRELESS) {
+            // Deferred: never stall core0 during gameplay (see `save` / C6).
+            reply("{\"ok\":true,\"queued\":true}");
+            return;
+        }
         absolute_time_t deadline = make_timeout_time_ms(2000);
         while (virtual_amiibo_store_persist_pending() &&
                !time_reached(deadline))
@@ -795,6 +805,31 @@ static void cmd_personality_set(const char *target) {
     g_usb_requested_personality = p;
     g_usb_personality_request_pending = true;
     reply("{\"ok\":true,\"switching\":true}");
+}
+
+// In-band BLE management gate (docs/bluetooth/in-band-management-plan.md). When
+// enabled, the config BLE service arms and stays connectable in a normal
+// controller personality, so a phone/web portal can manage the adapter without
+// the CDC Config re-enumeration that drops the console. `mgmt on/off` flips the
+// runtime gate; `mgmt`/`mgmt status` reports it. RAM-only by design: it reverts
+// to OFF (the safe, zero-cost state) on reboot, so a power cycle is always a
+// clean escape hatch during rollout. NOTE: authenticated bonding enforcement
+// (ATT security + first-bond pairing window, plan C4) is a separate slice; until
+// it lands, treat an enabled management link as trusted-environment only.
+static void cmd_mgmt(const char *arg) {
+    if (arg == NULL || arg[0] == '\0' || strcmp(arg, "status") == 0) {
+        // report only
+    } else if (strcmp(arg, "on") == 0) {
+        g_mgmt_enabled = true;
+    } else if (strcmp(arg, "off") == 0) {
+        g_mgmt_enabled = false;
+    } else {
+        reply("{\"error\":\"usage: mgmt status|on|off\"}");
+        return;
+    }
+    snprintf(out, sizeof(out), "{\"ok\":true,\"enabled\":%s}",
+             g_mgmt_enabled ? "true" : "false");
+    reply(out);
 }
 
 // Saved-pairing management for the app: list the stored LE bonds and remove one
@@ -1116,6 +1151,10 @@ static void handle_line(char *cmd) {
         cmd_personality_set(cmd + 12);
     } else if (strncmp(cmd, "bonds ", 6) == 0) {
         cmd_bonds(cmd + 6);
+    } else if (strcmp(cmd, "mgmt") == 0) {
+        cmd_mgmt(NULL);
+    } else if (strncmp(cmd, "mgmt ", 5) == 0) {
+        cmd_mgmt(cmd + 5);
 #ifdef NS2_PRO
     } else if (strcmp(cmd, "wake") == 0) {
         // Queue an app-initiated console wake. core1's wake service performs it if
@@ -1174,17 +1213,50 @@ static void handle_line(char *cmd) {
             reply("{\"error\":\"bad args\"}");
         }
     } else if (strcmp(cmd, "save") == 0) {
-        // An explicit config-mode save overrides any deferred automatic save.
+        // An explicit save overrides any deferred automatic save.
         save_not_before_ms = 0;
         save_requested = true;
-        // Wait (pumping USB) for core1's control tick to perform the flash write.
-        absolute_time_t deadline = make_timeout_time_ms(2000);
-        while (save_requested && !time_reached(deadline))
-            tud_task();
-        reply(save_requested ? "{\"error\":\"save timeout\"}" : "{\"ok\":true}");
+        if (reply_transport == CONFIG_REPLY_WIRELESS) {
+            // In-band management runs WHILE a controller drives the console, so
+            // core0 must never busy-wait for the flash write here -- an up-to-2 s
+            // stall would hitch the controller report loop. core1's control tick
+            // performs the deferred write at a safe point; ack immediately.
+            // docs/bluetooth/in-band-management-plan.md C6.
+            reply("{\"ok\":true,\"queued\":true}");
+        } else {
+            // CDC Config drops the console for its session, so a synchronous
+            // confirmation (pumping USB) is fine and nicer for the wired UI.
+            absolute_time_t deadline = make_timeout_time_ms(2000);
+            while (save_requested && !time_reached(deadline))
+                tud_task();
+            reply(save_requested ? "{\"error\":\"save timeout\"}" : "{\"ok\":true}");
+        }
     } else {
         reply("{\"error\":\"unknown command\"}");
     }
+}
+
+void config_wireless_task(void) {
+    // BLE writes arrive on core1 and are handed across via the wireless bridge.
+    // Execute at most one complete command here on core0, using the same parser
+    // and persistence behavior as CDC. The browser waits for each JSON-line
+    // response before sending another command, so a bounded one-command bridge is
+    // intentional. Self-gating: take_command returns false unless the config/
+    // management BLE service is armed AND a client has written a full line, so in
+    // a normal personality with management off this is a single cheap check.
+    char wireless_command[CONFIG_WIRELESS_COMMAND_CAPACITY];
+    uint32_t session;
+    if (config_wireless_bridge_take_command(
+            wireless_command, sizeof(wireless_command), &session)) {
+        config_reply_transport_t previous = reply_transport;
+        reply_transport = CONFIG_REPLY_WIRELESS;
+        wireless_reply_session = session;
+        handle_line(wireless_command);
+        reply_transport = previous;
+    }
+
+    // BLE capture entries (see sw2_capture.h) are pulled explicitly via `sw2cap drain`, not
+    // auto-streamed here — a client (the web UI) polls it like any other command.
 }
 
 void config_cdc_task(void) {
@@ -1203,21 +1275,4 @@ void config_cdc_task(void) {
             line[line_len++] = (char)c;
         }
     }
-
-    // BLE writes arrive on core1. Execute at most one complete command here on
-    // core0, using the same parser and persistence behavior as CDC. The browser
-    // waits for each JSON-line response before sending another command, so a
-    // bounded one-command bridge is intentional.
-    char wireless_command[CONFIG_WIRELESS_COMMAND_CAPACITY];
-    uint32_t session;
-    if (config_wireless_bridge_take_command(
-            wireless_command, sizeof(wireless_command), &session)) {
-        reply_transport = CONFIG_REPLY_WIRELESS;
-        wireless_reply_session = session;
-        handle_line(wireless_command);
-        reply_transport = CONFIG_REPLY_CDC;
-    }
-
-    // BLE capture entries (see sw2_capture.h) are pulled explicitly via `sw2cap drain`, not
-    // auto-streamed here — a client (the web UI) polls it like any other command.
 }

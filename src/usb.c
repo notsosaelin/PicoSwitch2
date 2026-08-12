@@ -162,6 +162,11 @@ volatile bool g_usb_config_mode = false;
 
 #endif  // NS2_PRO
 
+// In-band BLE management feature gate (see usb.h). Default OFF -- when false the
+// management path is byte-identical to today. Defined in both build axes so the
+// shared btstack_host.c gate links; set by the `mgmt` config command.
+volatile bool g_mgmt_enabled = false;
+
 // Runs on core0. Owns the TinyUSB device stack. In normal mode it emulates the
 // active USB personality (see usb_personality_t). A single BOOTSEL tap requests
 // the controller-only cycle; a two-second hold requests direct Config entry or
@@ -246,6 +251,13 @@ void usb_core_task() {
         // Independent GP0/GP1 tooling link. Bounded, FIFO-only work: never waits
         // for the PC and remains available while USB is owned by the console.
         ns2_uart_diag_task();
+
+        // In-band BLE management: execute at most one queued wireless command per
+        // loop, using the same core0 parser as CDC. Self-gating (no-op unless the
+        // config/management BLE service is armed and a client wrote), so this is a
+        // single cheap check in a normal personality with management off. Placed
+        // before the config-mode branch so it also serves the CDC Config path.
+        config_wireless_task();
 
         if (g_usb_config_mode) {
 #ifdef NS2_PRO

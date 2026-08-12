@@ -14,6 +14,14 @@ void config_load(void);
 // JSON). Called from the USB core (core0) while in config mode.
 void config_cdc_task(void);
 
+// Execute at most one pending wireless (BLE) management command on core0, using
+// the same parser/persistence as the CDC path. Self-gating: a no-op unless a
+// complete command is queued (only happens when the config/management BLE
+// service is armed and a client wrote). Called UNCONDITIONALLY from the core0
+// main loop so in-band management works in a normal controller personality, not
+// just CDC Config. docs/bluetooth/in-band-management-plan.md C2.
+void config_wireless_task(void);
+
 // Perform a pending flash save, if requested. MUST be called from core1 (the
 // Bluetooth core), which holds the multicore-lockout requester role used to park
 // core0 during the flash write. Safe to call every control tick.

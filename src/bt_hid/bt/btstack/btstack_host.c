@@ -692,12 +692,24 @@ static struct {
 
 static void config_ble_start_advertising(void);
 
+// The config/management BLE service (RX/TX GATT + wireless bridge) is authorized
+// either in the explicit CDC Config personality (legacy, physically gated) OR
+// when in-band management is enabled (g_mgmt_enabled, default off). Both share
+// the same service, bridge, and coexistence rules; only the arming trigger
+// differs. When neither holds this returns false and the whole path is the
+// proven zero-cost early return -- byte-identical to today's normal mode.
+// docs/bluetooth/in-band-management-plan.md C1/C3.
+static inline bool config_ble_authorized(void)
+{
+    return g_usb_config_mode || g_mgmt_enabled;
+}
+
 static void config_ble_can_send(void *context)
 {
     (void)context;
     config_ble.tx_requested = false;
 
-    if (!config_ble.mode_active || !g_usb_config_mode ||
+    if (!config_ble.mode_active || !config_ble_authorized() ||
         config_ble.closing || !config_ble.notifications_enabled ||
         config_ble.handle == HCI_CON_HANDLE_INVALID) {
         return;
@@ -744,7 +756,7 @@ static int host_att_write_callback(hci_con_handle_t con_handle, uint16_t att_han
         if (transaction_mode != ATT_TRANSACTION_MODE_NONE) {
             return ATT_ERROR_WRITE_REQUEST_REJECTED;
         }
-        if (!config_ble.mode_active || !g_usb_config_mode ||
+        if (!config_ble.mode_active || !config_ble_authorized() ||
             config_ble.closing || con_handle != config_ble.handle) {
             return ATT_ERROR_WRITE_NOT_PERMITTED;
         }
@@ -766,7 +778,7 @@ static int host_att_write_callback(hci_con_handle_t con_handle, uint16_t att_han
         if (transaction_mode != ATT_TRANSACTION_MODE_NONE) {
             return ATT_ERROR_WRITE_REQUEST_REJECTED;
         }
-        if (!config_ble.mode_active || !g_usb_config_mode ||
+        if (!config_ble.mode_active || !config_ble_authorized() ||
             config_ble.closing || con_handle != config_ble.handle) {
             return ATT_ERROR_WRITE_NOT_PERMITTED;
         }
@@ -1681,7 +1693,7 @@ static void config_ble_start_advertising(void)
 {
     if (!config_ble.service_available || !hid_state.powered_on ||
         !config_ble.mode_active ||
-        !g_usb_config_mode || wake_adv.active || config_ble.advertising ||
+        !config_ble_authorized() || wake_adv.active || config_ble.advertising ||
         config_ble.handle != HCI_CON_HANDLE_INVALID) {
         return;
     }
@@ -1696,13 +1708,14 @@ static void config_ble_start_advertising(void)
         sizeof(config_ble_scan_response), config_ble_scan_response);
     gap_advertisements_enable(1);
     config_ble.advertising = true;
-    printf("[BTSTACK_HOST] Config BLE advertising enabled (Config personality only)\n");
+    printf("[BTSTACK_HOST] Config/management BLE advertising enabled (%s)\n",
+           g_usb_config_mode ? "CDC Config" : "in-band mgmt");
 }
 
 static bool config_ble_accept_connection(hci_con_handle_t handle)
 {
     if (!config_ble.service_available || !config_ble.mode_active ||
-        !g_usb_config_mode || config_ble.closing ||
+        !config_ble_authorized() || config_ble.closing ||
         config_ble.handle != HCI_CON_HANDLE_INVALID) {
         return false;
     }
@@ -1754,7 +1767,7 @@ static void config_ble_service_task(bool in_config)
         config_ble.notifications_enabled = false;
         config_ble.tx_requested = false;
         config_wireless_bridge_reset_session();
-        printf("[BTSTACK_HOST] Config BLE service disabled outside Config personality\n");
+        printf("[BTSTACK_HOST] Config/management BLE service disabled (not authorized)\n");
 
         if (config_ble.handle != HCI_CON_HANDLE_INVALID) {
             config_ble.closing = true;
@@ -2113,10 +2126,11 @@ void btstack_host_process(void)
 {
     if (!hid_state.initialized) return;
 
-    // Configuration management is a BLE peripheral only while USB is in the
-    // explicit CDC Config personality. The false path is intentionally a
-    // state comparison only and performs no advertising or ACL work.
-    config_ble_service_task(g_usb_config_mode);
+    // Configuration/management is a BLE peripheral while USB is in the explicit
+    // CDC Config personality OR when in-band management is enabled (default off).
+    // The false path is intentionally a state comparison only and performs no
+    // advertising or ACL work -- byte-identical to today's normal mode.
+    config_ble_service_task(config_ble_authorized());
 
     // Process transport-specific tasks (e.g., USB polling, CYW43 async context)
     btstack_host_transport_process();
