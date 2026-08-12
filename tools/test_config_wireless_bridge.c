@@ -85,6 +85,9 @@ static void test_wireless_command_policy(void)
     assert(config_wireless_command_allowed("personality"));
     assert(config_wireless_command_allowed("personality gc"));
     assert(config_wireless_command_allowed("wake"));
+    assert(config_wireless_command_allowed("mgmt"));
+    assert(config_wireless_command_allowed("mgmt status"));
+    assert(config_wireless_command_allowed("mgmt off"));
     assert(config_wireless_command_allowed("bonds list"));
     assert(config_wireless_command_allowed("bonds remove 0"));
     assert(config_wireless_command_allowed("save"));
@@ -105,6 +108,7 @@ static void test_wireless_command_policy(void)
     assert(!config_wireless_command_allowed("getns2map 0"));
     assert(!config_wireless_command_allowed("setns2map 0 1 2"));
     assert(!config_wireless_command_allowed("amiibo"));
+    assert(!config_wireless_command_allowed("mgmtx"));  // prefix must not leak
 }
 
 int main(void)
