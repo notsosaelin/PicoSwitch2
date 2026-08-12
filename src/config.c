@@ -22,6 +22,7 @@
 #include "config_wireless_bridge.h"
 #include "usb.h"  // g_usb_personality (personality query command)
 #include "ns2_wake.h"  // ns2_wake_manual_request (wake command)
+#include "bt/btstack/btstack_host.h"  // bonds list/remove (management)
 
 #include <string.h>
 #include <stdio.h>
@@ -745,6 +746,48 @@ static void cmd_personality_set(const char *target) {
     reply("{\"ok\":true,\"switching\":true}");
 }
 
+// Saved-pairing management for the app: list the stored LE bonds and remove one
+// by index. The LE device DB is owned by the BTstack thread, so the op is
+// marshaled to core1 and we pump USB while waiting (same pattern as `save`).
+// Classic-BT bonds are managed via the triple-tap full wipe, not per-entry.
+static void cmd_bonds(const char *arg) {
+    bool is_remove;
+    int idx = -1;
+    if (strcmp(arg, "list") == 0) {
+        is_remove = false;
+    } else if (strncmp(arg, "remove ", 7) == 0) {
+        char *end;
+        long v = strtol(arg + 7, &end, 10);
+        if (arg[7] == '\0' || *end != '\0' || v < 0 || v > 100000) {
+            reply("{\"error\":\"usage: bonds remove <index>\"}");
+            return;
+        }
+        is_remove = true;
+        idx = (int)v;
+    } else {
+        reply("{\"error\":\"usage: bonds list|remove <index>\"}");
+        return;
+    }
+    if (!btstack_host_bonds_request(is_remove, idx)) {
+        reply("{\"error\":\"busy\"}");
+        return;
+    }
+    absolute_time_t deadline = make_timeout_time_ms(1000);
+    while (!btstack_host_bonds_done() && !time_reached(deadline))
+        tud_task();
+    if (!btstack_host_bonds_done()) {
+        reply("{\"error\":\"timeout\"}");
+        return;
+    }
+    if (is_remove) {
+        reply(btstack_host_bonds_remove_ok() ? "{\"ok\":true}"
+                                             : "{\"error\":\"no such bond\"}");
+    } else {
+        snprintf(out, sizeof(out), "{\"bonds\":%s}", btstack_host_bonds_list_json());
+        reply(out);
+    }
+}
+
 // Raw HID report of the connected controller (hex) for the debug view. Lets us
 // reverse-engineer inputs a driver doesn't parse yet (e.g. Xbox Elite paddles).
 static void cmd_raw(void) {
@@ -1020,6 +1063,8 @@ static void handle_line(char *cmd) {
         cmd_personality();
     } else if (strncmp(cmd, "personality ", 12) == 0) {
         cmd_personality_set(cmd + 12);
+    } else if (strncmp(cmd, "bonds ", 6) == 0) {
+        cmd_bonds(cmd + 6);
 #ifdef NS2_PRO
     } else if (strcmp(cmd, "wake") == 0) {
         // Queue an app-initiated console wake. core1's wake service performs it if

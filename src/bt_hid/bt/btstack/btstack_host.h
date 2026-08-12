@@ -364,6 +364,16 @@ void btstack_host_delete_all_bonds(void);
 // Forget a specific device by address — disconnects if connected, removes bond
 void btstack_host_forget_device(const uint8_t bd_addr[6]);
 
+// Management-app LE bond list/remove. A core0 caller marshals a one-shot op onto
+// the BTstack thread (core1) and polls btstack_host_bonds_done(); the LE device
+// DB is not touched from core0. is_remove=false enumerates (result in
+// btstack_host_bonds_list_json()); is_remove=true removes the LE bond at index
+// (result in btstack_host_bonds_remove_ok()). Returns false if an op is pending.
+bool btstack_host_bonds_request(bool is_remove, int remove_index);
+bool btstack_host_bonds_done(void);
+const char *btstack_host_bonds_list_json(void);
+bool btstack_host_bonds_remove_ok(void);
+
 #ifdef __cplusplus
 }
 #endif
