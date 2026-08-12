@@ -30,6 +30,7 @@ static unsigned exact_init_count;
 static unsigned exact_disconnect_count;
 static unsigned exact_report_count;
 static unsigned generic_init_count;
+static unsigned generic_disconnect_count;
 static unsigned generic_report_count;
 static unsigned generic_vid_update_count;
 static unsigned report_boundary_count;
@@ -168,13 +169,37 @@ static void report_generic(bthid_device_t *device, const uint8_t *data,
     generic_report_count++;
 }
 
+static void disconnect_generic(bthid_device_t *device)
+{
+    (void)device;
+    generic_disconnect_count++;
+}
+
 const bthid_driver_t bthid_gamepad_driver = {
     .name = "Generic BT Gamepad",
     .transports = BTHID_TRANSPORT_BOTH,
     .match = match_generic,
     .init = init_generic,
     .process_report = report_generic,
+    .disconnect = disconnect_generic,
 };
+
+const bthid_driver_t bthid_mouse_driver = { .name = "Generic BT Mouse test stub" };
+
+bool bthid_mouse_descriptor_is_mouse(const uint8_t *desc, uint16_t desc_len)
+{
+    (void)desc;
+    (void)desc_len;
+    return false;
+}
+
+void bthid_mouse_set_descriptor(bthid_device_t *device, const uint8_t *desc,
+                                uint16_t desc_len)
+{
+    (void)device;
+    (void)desc;
+    (void)desc_len;
+}
 
 // bthid.c keeps report-ID-based Sony reclassification available. These inert
 // definitions satisfy that production path without participating in the tests.
@@ -241,6 +266,7 @@ static void reset_fixture(const char *name)
     exact_disconnect_count = 0;
     exact_report_count = 0;
     generic_init_count = 0;
+    generic_disconnect_count = 0;
     generic_report_count = 0;
     generic_vid_update_count = 0;
     report_boundary_count = 0;
@@ -350,12 +376,55 @@ static void test_contradicted_name_falls_back_to_generic(void)
           "generic fallback continues consuming input after correction");
 }
 
+static void test_android_initiated_classic_phone_falls_back_to_generic(void)
+{
+    reset_fixture("PicoSwitch2 Android Bridge");
+    connection.is_ble = false;
+    // Major Class 0x02 (Phone), deliberately not Peripheral/Gamepad. This
+    // models an OEM that keeps its phone CoD after registering HID Device.
+    connection.class_of_device[0] = 0x0C;
+    connection.class_of_device[1] = 0x02;
+    connection.class_of_device[2] = 0x00;
+
+    bt_on_hid_ready(0);
+    bthid_device_t *device = bthid_get_device(0);
+    CHECK(device && device->driver == &bthid_gamepad_driver,
+          "Android-initiated Classic HID binds generic despite phone Class of Device");
+    CHECK(device && !device->is_ble && device->type == BTHID_DEVICE_UNKNOWN,
+          "phone Class of Device is retained as unknown rather than rewritten as a gamepad");
+
+    send_input_report();
+    CHECK(generic_report_count == 1,
+          "bound Classic Android HID input reaches the generic driver");
+
+    // Late Classic SDP delivers the phone's own (non-gamepad) VID/PID. No vendor
+    // driver claims it, so the re-evaluation path must keep it on generic without
+    // a disconnect/rebind churn -- otherwise built-in controls would hiccup mid-session.
+    connection.vendor_id = 0x1234;
+    connection.product_id = 0x5678;
+    bthid_update_device_info(0, connection.name,
+                             connection.vendor_id, connection.product_id);
+    CHECK(device->driver == &bthid_gamepad_driver && generic_disconnect_count == 0,
+          "late phone VID/PID keeps the generic binding without a rebind churn");
+    CHECK(generic_vid_update_count == 1,
+          "generic stays bound and only refreshes VID-dependent flags on late identity");
+
+    send_input_report();
+    CHECK(generic_report_count == 2,
+          "input keeps flowing to generic after late phone identity resolves");
+
+    bt_on_disconnect(0);
+    CHECK(generic_disconnect_count == 1 && bthid_get_device(0) == NULL,
+          "Classic Android link teardown invokes generic cleanup and removes the device");
+}
+
 int main(void)
 {
     test_name_fallback_evidence();
     test_provisional_bind_reselects_and_keeps_input_flowing();
     test_generic_upgrade_and_transport_filter();
     test_contradicted_name_falls_back_to_generic();
+    test_android_initiated_classic_phone_falls_back_to_generic();
 
     if (failures) {
         printf("bthid_late_identity: %d failure(s)\n", failures);
