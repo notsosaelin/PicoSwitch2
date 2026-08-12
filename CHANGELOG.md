@@ -7,6 +7,48 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Added
 
+- Pico-side contract coverage for a no-root Android handheld controller bridge. The canonical
+  Classic HID descriptor and neutral report are versioned with the firmware, and a host test drives
+  their exact report ID, axes, 14-button map, hat, full-state retention, and disconnect cleanup
+  through the production generic gamepad parser. Android-initiated HID binding is also pinned for
+  OEMs that retain a phone Class of Device; Pico-initiated inquiry remains strict.
+
+- Default-off genuine/generated motion fitment harness. A verified Nintendo Pro Controller 2
+  remains the immutable timing/status/packing/tail source while an independently aligned
+  DualSense donor can replace only acceleration, gyro, or carrier-prefix fields. Accel/gyro
+  operate on genuine high-rate `0x28`; orientation ownership spans both interleaved `0x1E` and
+  every mode-3 `0x28` cadence layout so it cannot alternate between two controller histories.
+  Physical-group failures emit byte-identical genuine data; an acquired orientation is held across
+  short donor scheduling gaps. UART exposes
+  explicit positive-control and one-group modes; retained capture exports the exact base plus
+  output XOR, and `motion_lab.ps1` audits loss, mask ownership, fallback integrity, and fixture
+  provenance before automatically restoring `off`. Hardware validates the byte-identical,
+  acceleration-only, and gyro-only bisections. The first prefix run exposed and localized the
+  mixed-source carrier defect; its coherent cross-length correction is host/build validated but
+  intentionally unflashed. The translated-`0x28` campaign is now deferred: `0x28` is native
+  cadence/history packaging, not a higher-fidelity replacement for the validated production
+  `0x1E` path.
+
+- Experimental DualSense length-`0x28` high-rate generation remains behind its default-off UART
+  gate. Existing evidence resolves gyro at seven fractional wire bits (`/128`), but the first
+  corrected-scale hardware A/B still failed because `0x1E` and `0x28` were emitted on independent
+  clocks and incompatible USB ownership cadence. The replacement scheduler uses the proven shared
+  PDU tick/elapsed relationship, holds each native-rate PDU across intervening USB polls, and has
+  host coverage for `0x1E → 0x28` continuity. Hardware then rejected that scheduler despite healthy
+  counters. A tick-weighted gyro replacement was then hardware-refuted as the primary cause: the
+  stream still rotated with every gyro axis forced to zero. Live UART found a real cross-layer
+  mismatch: the motion seam already outputs Pro2-scaled acceleration at 4096 counts/g, while the
+  `0x28` builder divided it by two again. A new independent closed-loop physical-trajectory gate
+  then found that bare physical 1 g was still 5.23% below the validated `0x1E` output calibration.
+  The default high-rate path now uses the same acceleration gain as `0x1E`; its host test closes 17
+  complete representation loops, and six fault injections prove the gate rejects stale prefix,
+  scale, axes, time, and following-carrier defects. UART-selectable `live`, `half`, and `zero`
+  acceleration modes made the hardware run causal inside one image. The fully coherent LIVE recipe
+  was still hardware-rejected with continuous chaotic camera motion and no useful response to
+  controller rotation; disabling it immediately restored `0x1E`. The readiness gate now records
+  that hard failure and blocks another flash of the same semantic recipe. The validated production
+  `0x1E` path is unchanged.
+
 - Shared controller protocol laboratory. A common PowerShell module records Git provenance,
   discovers UART safely, writes BOM-free artifacts, hashes outputs, and emits a stable experiment
   manifest. New motion, audio, command-atlas, capture-to-fixture, and host-only firmware-update
@@ -170,6 +212,9 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Fixed
 
+- Descriptor-backed generic Bluetooth gamepads now drop truncated input reports atomically instead
+  of interpreting absent trailing fields as zero or released. Valid reports, longer vendor reports,
+  and descriptorless Classic fallback behavior are unchanged.
 - `nfc_lab.ps1` wrote its artifact bundle with `Set-Content -Encoding utf8`, which emits a UTF-8
   BOM under Windows PowerShell 5.1 and none under pwsh 7. A bundle captured from a 5.1 session was
   unreadable by any JSON parser. All artifact writes now go through an explicit BOM-free writer.

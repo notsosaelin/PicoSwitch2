@@ -90,6 +90,7 @@ struct ble_report_map_s {
     ble_usage_loc_t buttonLoc[BLE_MAX_BUTTONS];
     uint8_t buttonCnt;
     uint8_t report_id;          // Expected gamepad input report ID (0 = none)
+    uint16_t input_report_len;  // Minimum complete report length, including report ID when present
     bool has_sim_triggers;      // true if triggers use Simulation Controls (Xbox-style)
     const gamepad_quirk_t *quirk;  // resolved via gamepad_quirks_identify(); NULL only before
                                     // the first descriptor parse (bthid_gamepad_set_descriptor()

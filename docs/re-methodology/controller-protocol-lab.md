@@ -1,7 +1,8 @@
 # PicoSwitch2 controller protocol laboratory
 
-Status: 🟡 Infrastructure active 2026-07-29; first genuine-Pro2 magnetic-stimulus campaign
-complete, audio and firmware-tap hardware campaigns remain pending.
+Status: 🟢 Infrastructure active 2026-08-01; the genuine-Pro2 motion campaign is closed and the
+next phase is evidence-first genuine-controller command discovery. Audio and firmware-tap hardware
+campaigns remain pending.
 
 This is the shared workflow for protocol work that is not specific to NFC.
 The NFC laboratory remains authoritative for amiibo. The common rule is the
@@ -68,10 +69,13 @@ lengths, retained lengths, payload hashes, personalities and source hashes.
 Names come from the current command audit. A name such as `audio_candidate`
 remains a hypothesis until a controlled experiment resolves it.
 
-## Magnet/reference-vector campaign
+## Historical magnetic-stimulus campaign
 
-G6/G7/G8 in normal length-`0x28` PDUs are a processed reference vector, not
-proven raw magnetometer data. Use one stationary condition per retained capture:
+The former G6/G7/G8 aliases are not a reference vector. Their bit ranges cross
+packed gyro and acceleration samples in length-`0x28`, and the controlled
+magnet campaign found no polarity or distance response. The commands below are
+retained only as a worked example of a one-variable A/B/A experiment; do not
+repeat it as a motion hypothesis.
 
 ```powershell
 ./tools/motion_lab.ps1 -Scenario pro2-mag-baseline `
@@ -120,10 +124,37 @@ python tools/ns2_magprobe.py aba `
 ```
 
 It interpolates quaternion pose with SLERP and linearly interpolates
-acceleration, G6/G7/G8 and every retained unknown byte/bit before reporting the
-drift-adjusted stimulus residual. The completed matrix resolved no external
-magnetic response; methods, commands, results and limitations are in
+acceleration, the historical alias ranges, and every retained unknown byte/bit
+before reporting the drift-adjusted stimulus residual. The completed matrix
+resolved no external magnetic response; exact packed-IMU decoding later
+explained why the aliases were not independent lanes. Methods, commands,
+results and limitations are in
 [`../experiments/pro2-magnetic-stimulus-matrix-2026-07-29.md`](../experiments/pro2-magnetic-stimulus-matrix-2026-07-29.md).
+
+## Next genuine-controller discovery pass
+
+Start offline. Run `ns2_command_atlas.py` over existing complete, zero-loss
+genuine-controller traces and record capture provenance for every observed
+command/subcommand pair. Use the atlas to select one missing behavior, not to
+assign semantics from payload shape alone. Prefer passive or reversible
+boundaries already exposed by the adapter: initialization, reconnect/power,
+player LED, rumble, headset/audio control, and native NFC.
+
+The 2026-08-01 baseline exposed a schema boundary rather than a protocol
+answer. The current atlas accepts console-side `trace` JSONL and found 42
+zero-loss files with 30 command/subcommand pairs, but those files mix emulated
+and relayed responses. Separately, 29 `blecap` files are zero-loss; only two
+contain controller command/ACK traffic and both cover the same variant-8
+initialization sequence. Extend the atlas to decode controller-side `cmd_out`
+and `ack` records with explicit handle/transport provenance before calling the
+result a genuine-controller coverage map.
+
+Only request a new hardware action when the atlas identifies one exact missing
+wire/state discriminator. Use the existing tracer and
+`PicoSwitch2Lab.psm1`; add a generic runner only if repeated experiments expose
+a packaging gap. Firmware update remains opportunity-driven: prepare the
+research-only full-payload sink, then wait for a real console update rather
+than fabricating or replaying proprietary firmware traffic.
 
 ## Audio regression and microphone prerequisite
 

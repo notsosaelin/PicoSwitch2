@@ -226,9 +226,10 @@ def decode_report05_raw_imu(report: bytes) -> RawImuSample:
 
 # Wire values are NOT in a single unit. Each layout packs its slots at a
 # different fixed-point scale, and a slot's width alone does not tell you which:
-# the 13-bit slots are half-resolution, the 22-bit high-rate slots carry eight
-# fractional bits, and the catch-up gyros sit at four times the ordinary scale.
-# Multiplying by these recovers ordinary ICM counts (4096/g, 16.4/dps).
+# the 13-bit slots are half-resolution, the 22-bit high-rate acceleration slots
+# carry eight fractional bits, the 22-bit high-rate gyro carries seven, and the
+# catch-up gyros sit at four times the ordinary scale. Multiplying by these
+# recovers ordinary ICM counts (4096/g, 16.4/dps).
 #
 # Verified across the full corpus: all eight acceleration slots in all three
 # layouts agree on 1.051-1.052 g once normalized, despite raw medians spanning
@@ -239,16 +240,17 @@ def decode_report05_raw_imu(report: bytes) -> RawImuSample:
 # here. Pooling raw slots produces magnitudes off by up to 256x that still look
 # superficially plausible.
 IMU_COUNTS_PER_G = 4096.0
-# ASSUMED, and measured to be wrong by roughly a factor of two. Only the
-# PRODUCT of this and the WIRE_TO_COUNTS gyro factor is observable, and three
-# independent methods put it at 7-11.6 rather than 16.4 -- flat across rotation
-# speed, so not a sampling artefact. Left unchanged because the data cannot
-# pin the value; a known-angle rotation capture would.
+# The ICM-42670-P is configured at +/-2000 dps, whose documented sensitivity is
+# 16.4 counts/dps. Existing guided sibling native-motion analysis independently
+# measured the normal layout's full-resolution gyro at 16.16 and 16.54 counts/dps. The
+# factor-of-two discrepancy was in the HIGH-RATE wire conversion below, not in
+# the sensor sensitivity: its signed22 gyro lane has seven fractional bits,
+# while the adjacent acceleration lanes have eight.
 # See docs/experiments/pro2-imu-constants-audit-2026-08-01.md.
 IMU_COUNTS_PER_DPS = 16.4
 
 WIRE_TO_COUNTS = {
-    "high_rate": {"accel": (1.0 / 256.0, 1.0 / 256.0), "gyro": (1.0 / 256.0,)},
+    "high_rate": {"accel": (1.0 / 256.0, 1.0 / 256.0), "gyro": (1.0 / 128.0,)},
     "normal": {"accel": (1.0, 2.0, 1.0), "gyro": (2.0, 1.0)},
     "catchup": {"accel": (1.0, 2.0, 1.0), "gyro": (0.25, 0.25)},
 }
@@ -368,11 +370,10 @@ def decode_motion40(pdu: bytes, previous_tick: int | None) -> Motion40Sample:
         )
 
     if elapsed_ticks < 11:
-        # High-rate layout: accel22, gyro22, accel22. All vectors carry eight
-        # fractional bits, so divide wire values by 256 to recover ordinary
-        # ICM counts. Every high-rate carrier lane has two more fractional
-        # bits than its normal/catch-up counterpart. The 16-bit tail carries
-        # two Q3 temperature samples.
+        # High-rate layout: accel22, gyro22, accel22. Acceleration carries
+        # eight fractional bits; gyro carries seven. Every high-rate carrier
+        # lane has two more fractional bits than its normal/catch-up
+        # counterpart. The 16-bit tail carries two Q3 temperature samples.
         return Motion40Sample(
             tick=tick,
             elapsed_nibble=elapsed_nibble,

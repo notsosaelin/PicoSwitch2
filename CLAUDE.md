@@ -401,7 +401,7 @@ identify the true architectural cause.
 
 ## Gyroscope
 
-**Current status (2026-07-24):** genuine Pro Controller 2 native `0x1E`/`0x28` motion passthrough
+**Current status (2026-08-01):** genuine Pro Controller 2 native `0x1E`/`0x28` motion passthrough
 and calibrated DualSense/DualSense Edge translation through the length-`0x1E` carrier are
 hardware-confirmed. The earlier Switch-1 comparison helped establish units and integration
 behavior, but the Switch 2 carrier was resolved through direct UART/BLE evidence and real-console
@@ -409,7 +409,8 @@ tests.
 
 Remaining motion research:
 
-* decode all changing lanes and semantics in genuine length-`0x28` PDUs;
+* translated length-`0x28` generation is deferred; do not resume it without a concrete production
+  `0x1E` deficiency or a materially better observation point for private sequence/filter state;
 * never restore the refuted static-template `0x28` generator;
 * validate each additional controller family's calibration, axes, scale, timestamp, and bias model
   before routing it through the shared translator;

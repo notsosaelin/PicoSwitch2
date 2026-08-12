@@ -31,6 +31,7 @@ code inspection only; it is weaker than physical hardware confirmation.
 | 8BitDo Ultimate Bluetooth (first model) | ✅ Confirmed | ✅ P1/P2 custom transport to GL/GR | Player LED path present | 🔵 Existing Switch output | Custom firmware paddles and console wake confirmed; reconnect remains slower than other Classic controllers |
 | Wiimote family | ✅ Confirmed | ✅ Standalone and attachment input | ✅ Player LEDs | ✅ Confirmed | Current regression pass complete |
 | Generic Bluetooth HID mouse | ✅ Confirmed in Joy-Con 2 modes | Buttons and relative X/Y/wheel | N/A | N/A | Pointer activation, mouse-only gating, disconnect cleanup, and wheel navigation confirmed |
+| Android Controller Bridge / Retroid Pocket Classic | 🔵 Pico host-tested + Android ADB-audited | 14-button contract, D-pad, two sticks, analog triggers | N/A | N/A | Retroid API-34 HID Device service and built-in controls present; ordinary APK registration, pairing, and end-to-end hardware validation pending |
 
 ## Switch 2 motion
 

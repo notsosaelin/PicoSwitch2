@@ -144,6 +144,9 @@ def test_cadence_layout_boundaries() -> None:
         pdu[0] = 100
         pdu[1] = (elapsed & 0x0F) << 4
         pdu[2] = elapsed >> 4
+        # The cadence layouts are sub-layouts of packing mode 3. A zeroed
+        # payload is the observed mode-0 marker and must not be decoded as IMU.
+        pdu[4] = 0x03
         return decode_motion40(bytes(pdu), previous_tick=previous_tick)
 
     assert sample(10).layout == "high_rate"
@@ -176,6 +179,8 @@ def test_interleaved_native_layout_and_integrity_delta() -> None:
         pdu = bytearray(length)
         pdu[0] = tick & 0xFF
         pdu[1] = (elapsed << 4) | ((tick >> 8) & 0x0F)
+        if length == 0x28:
+            pdu[4] = 0x03
         return bytes(0x0E) + bytes([length]) + bytes(pdu)
 
     notifications = [
@@ -199,6 +204,7 @@ def test_normal_layout_keeps_joycon_cadence_boundary() -> None:
         pdu = bytearray(0x28)
         pdu[0] = tick & 0xFF
         pdu[1] = (12 << 4) | ((tick >> 8) & 0x0F)
+        pdu[4] = 0x03
         return bytes(0x0E) + bytes([0x28]) + bytes(pdu)
 
     summary = analyze_native(
@@ -215,6 +221,7 @@ def test_dropped_capture_keeps_self_contained_layout() -> None:
         pdu[1] = (7 << 4) | ((tick >> 8) & 0x0F)
         pdu[2] = 0
         pdu[3] = 0x0D
+        pdu[4] = 0x03
         return bytes(0x0E) + bytes([0x28]) + bytes(pdu)
 
     summary = analyze_native(

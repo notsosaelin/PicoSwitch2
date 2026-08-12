@@ -15,6 +15,41 @@ Post-release work on `ns2-testing` adds hardware-confirmed genuine Pro Controlle
 and calibrated DualSense/DualSense Edge translation to the Switch 2 length-`0x1E` motion carrier.
 Those changes are checkpoints, not part of the published `v1.5.0` artifacts.
 
+### Immediate priority: genuine-controller protocol discovery
+
+- [ ] Extend `ns2_command_atlas.py` across the controller-side `blecap` schema before requesting
+  new hardware activity. The current offline baseline finds 42 zero-loss console-side traces and
+  30 command/subcommand pairs, but that corpus mixes emulated and relayed transactions. There are
+  29 zero-loss genuine BLE captures; only two contain command traffic, both covering the same
+  initialization sequence. Keep transport/provenance explicit and separate observed wire shapes
+  from inferred names.
+- [ ] Rank the resulting gaps by user value and captureability. Start with passive or reversible
+  genuine-controller surfaces: initialization/state transitions, headset/audio control, rumble,
+  LED/player state, reconnect/power, and native NFC. Keep firmware-update capture prepared for the
+  next real update opportunity rather than trying to manufacture one.
+- [ ] Add one bounded generic protocol runner only if the atlas exposes a repeated manual gap that
+  the existing tracer and `PicoSwitch2Lab.psm1` cannot package. Do not create another UART selector
+  or a second artifact format.
+- [ ] Promote a discovery only after a zero-loss capture, semantic A/B discriminator, active
+  protocol-document update, and replay fixture where the transaction is deterministic.
+
+### Deferred: translated DualSense length-`0x28`
+
+The campaign is intentionally paused as of 2026-08-01. Production DualSense/Edge motion remains
+the hardware-validated `0x1E` carrier; genuine Pro Controller 2 `0x1E`/`0x28` remains opaque
+passthrough. The work still produced complete mode-3 field maps, byte-exact packers, shared-clock
+and sample-window rules, a physical-coherence test, and a fail-closed genuine/donor hybrid harness.
+Hardware validated the byte-identical, acceleration-only, and gyro-only hybrid modes. The first
+prefix run was invalidated by alternating genuine and donor orientation histories; its corrected
+sequence-wide ownership is host/build validated but deliberately untested.
+
+Do not spend another flash or physical motion test on this path unless the maintainer explicitly
+reopens it because `0x1E` shows a concrete gameplay defect or a new observation point can answer
+the missing controller-private filter/state semantic. The detailed record remains in
+[`docs/experiments/ds5-pdu40-interleaved-hardware-2026-08-01.md`](docs/experiments/ds5-pdu40-interleaved-hardware-2026-08-01.md)
+and
+[`docs/experiments/ds5-motion-hybrid-harness-2026-08-01.md`](docs/experiments/ds5-motion-hybrid-harness-2026-08-01.md).
+
 ### Release gate
 
 - [x] Pico W release build
@@ -235,6 +270,10 @@ scale, and stationary-bias behavior.
   error. The prefix is mode `3` plus `s24+s23+s25` in high-rate and `s22+s21+s23` otherwise.
   Carrier 2 is split around its low two bits; the former “separate state” was a false boundary.
   Carrier-state-grouped fits use exact power-of-two scales.
+- [x] Resolve the high-rate gyro fixed-point scale without another physical capture. The genuine
+  sensor/common stream is `±2000 dps / 16.4 counts/dps`; high-rate gyro uses seven fractional bits
+  (`/128`), not high-rate acceleration's eight (`/256`). Existing carrier integration improves from
+  a `0.554` median recovered rotation to `1.108`, with two captures at `1.000` and `0.994`.
 - [x] Resolve the carrier epoch and implement a diagnostic history decoder. The prefix is sampled
   at `current tick - encoded elapsed + 4`, or four ticks after the preceding carrier. This improves
   the mixed-cadence pitch fixed NRMSE from `0.008728` to `0.002718`; causal modular unwrapping has
@@ -258,9 +297,11 @@ scale, and stationary-bias behavior.
   The nine-boundary corpus now covers every chart state at RMS/max `0.023541/0.047878`.
   Its interleaved prefix selects chart 3 across `3 → 2`; the stateful local-frame audit also
   resolves the direct `3 → 1` prefix as chart 1.
-- [ ] Prove exact integer projection/rounding.
-  Require one model to predict held-out captures without per-capture tuning. Do not attempt a
-  production generator until every changing field can be synthesized coherently.
+- [x] Prove exact integer projection/rounding against the generated full corpus fixtures.
+- [x] Hardware-reject the sequence-coherent acceleration fix behind the default-off high-rate
+  gate. LIVE matched the established `0x1E` gain and passed every offline coherence check, but the
+  console still produced chaotic uncommanded motion. Disabling the gate returned immediately to
+  validated `0x1E`. The readiness tool now fails closed for this exact recipe.
 
 ### NFC / amiibo
 
@@ -501,6 +542,34 @@ link, and preventing the central from acting on advertisements necessarily delay
 therefore automatic wake. Keep current controller-managed idle sleep until a verified per-family
 sleep command or distinguishable wake advertisement is captured. See
 [`docs/bluetooth/controller-sleep-research.md`](docs/bluetooth/controller-sleep-research.md).
+
+## Android handheld controller bridge
+
+Status: Pico-side contract and regressions implemented; no Android or Pico hardware validation yet.
+Architecture and gates:
+[`docs/bluetooth/android-controller-bridge.md`](docs/bluetooth/android-controller-bridge.md).
+
+- [ ] Prove on one target handheld that an ordinary foreground API-28+ app can acquire
+  `BluetoothProfile.HID_DEVICE`, read the built-in controls, and register the fixed generic-gamepad
+  descriptor.
+- [x] Audit the connected Retroid Pocket Classic read-only over ADB. Its API-34 OEM stack has HID
+  Device enabled and its service running; the built-in `0x2022:0x3001` controller exposes the
+  required controls. The ordinary-app proxy/register callback and labeled live inputs remain part
+  of the unchecked feasibility item above.
+- [x] Check in the canonical descriptor/neutral fixture and compile it through the production
+  generic parser. Host coverage pins the exact 10-byte wire layout, complete-state mapping,
+  wrong-ID/truncation rejection, disconnect cleanup, and Android-initiated fallback even when the
+  OEM retains a phone Class of Device.
+- [ ] Complete the first pair from an app-launched system chooser/bond flow, with no manual visit to
+  Bluetooth Settings, then confirm PicoSwitch2 selects `bthid_gamepad` and receives neutral/button/
+  stick test vectors.
+- [ ] Implement the Android bridge as an independent Gradle project under
+  `android/controller-bridge/`, with golden report-encoder tests and no root, Shizuku,
+  accessibility service, hidden API, or controller-family impersonation.
+- [ ] Hardware-validate full controls, foreground/lifecycle neutralization, saved-bond reconnect,
+  latency, and return to a known physical controller before making any compatibility claim.
+- [ ] Add a custom BLE GATT source driver only if a captured target-OEM failure proves the public
+  Classic HID Device path unavailable; do not pre-emptively add a second protocol.
 
 ## Longer-term
 

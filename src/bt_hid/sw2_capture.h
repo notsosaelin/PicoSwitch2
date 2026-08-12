@@ -80,6 +80,7 @@ typedef enum {
     SW2_CAP_MOTION_PAIR  = 13, // Internal time-aligned Pro2-PDU + DS5-IMU diagnostic record.
     SW2_CAP_NFC_NOTIFY   = 14, // Extended NFC response notification from value handle 0x001E.
     SW2_CAP_NFC_STATE    = 15, // Genuine report-0x000E NFC-state transition; data[0]=state.
+    SW2_CAP_MOTION_HYBRID = 16, // Genuine base + emitted XOR + live donor diagnostics.
 } sw2_capture_kind_t;
 
 typedef enum {
@@ -128,6 +129,13 @@ uint16_t sw2_capture_buffered_count(void); // entries currently waiting to be dr
 void sw2_capture_pair_set_enabled(bool on);
 bool sw2_capture_pair_get_enabled(void);
 void sw2_capture_pair_record(const uint8_t *data, uint16_t len);
+
+// Mutually-exclusive live-hybrid use of the same retained ring. Keeping this
+// separate from `motionpair` makes the exported schema unambiguous while
+// retaining the existing diagnostic RAM ceiling.
+void sw2_capture_hybrid_set_enabled(bool on);
+bool sw2_capture_hybrid_get_enabled(void);
+void sw2_capture_hybrid_record(const uint8_t *data, uint16_t len);
 
 // Diagnostic chart-transition capture support. Retain only the newest
 // pre-trigger records and make the remainder of the ring available for a

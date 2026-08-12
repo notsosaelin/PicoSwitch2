@@ -38,21 +38,25 @@ What this does NOT establish
   rides on the 0x1E path being console-validated with this same mapping. This
   shows 0x28 agrees with 0x1E, not that both match Nintendo's convention.
 
-Closing those needs one capture: the controller turned deliberately about each
-body axis in turn, both directions, with 0x1E and 0x28 subscribed. No console
-and no flash.
+Those residual X/Y questions are not a release blocker for the translator: its
+axis map is inherited from the console-validated 0x1E path, and the existing
+lazy-susan/return pair proves that 0x28 uses that same frame for Z and sign.
 
-3. SCALE and HANDEDNESS, from the carrier's own rotation. The 0x1E quaternion
-   is exactly unit in every capture (|q| = 1.0000), so 2*acos(w) is a real
-   angle. Summing it over a capture gives the total rotation, which the 0x28
-   gyro integrated over the same span must match. Integration is what makes
-   this trustworthy: a per-sample regression is biased low because the gyro is
-   an instantaneous sample while the carrier rate is a window average, and that
-   attenuation is indistinguishable from a scale error. The total is not.
+3. SCALE and HANDEDNESS, from the carrier's own rotation. Unit norm alone is
+   NOT evidence here -- the decoder reconstructs and normalizes the omitted
+   component. The carrier's angular scale is instead supported independently by
+   retained-energy bounds, console validation, and the gravity-direction audit
+   (within 10-20%). Summing the decoded carrier's change over a capture gives a
+   rotation proxy that the 0x28 gyro integrated over the same span must match.
+   Integration avoids the per-sample attenuation caused by comparing an
+   instantaneous gyro sample with a window-averaged carrier rate.
 
    A positive slope also settles handedness. Our path integrates the quaternion
    from +gyro_corrected and puts +gyro_corrected in the lanes, so genuine
-   agreeing in sign means we share the convention.
+   agreeing in sign means we share the convention. The ICM-42670-P sensor and
+   common/normal gyro use 16.4 counts/dps; this check therefore arbitrates the
+   high-rate lane's fixed-point conversion. The existing corpus selects seven
+   fractional bits (/128), not the adjacent acceleration lane's eight (/256).
 
 Run:
     python tools/ns2_motion40_gyro_axes.py
@@ -156,7 +160,7 @@ def gyro_rotation_degrees(pdu40, lo, hi):
 
 def check_scale() -> float | None:
     print()
-    print("--- counts per dps, from total rotation ---")
+    print("--- high-rate gyro wire scale, from total rotation ---")
     print(f"  {'capture':42s} {'carrier':>9s} {'gyro':>9s} {'ratio':>7s}")
     ratios = []
     for path in sorted(CAPTURES.glob("*.jsonl")):
@@ -176,13 +180,13 @@ def check_scale() -> float | None:
         print("  no capture rotates far enough to measure a scale")
         return None
     ratio = statistics.median(ratios)
-    # slope = gyro_dps(assumed) / carrier_dps = S / assumed, so S = assumed x slope.
-    implied = R.IMU_COUNTS_PER_DPS * ratio
     print(f"  median ratio {ratio:.3f} over {len(ratios)} captures")
-    print(f"  assumed {R.IMU_COUNTS_PER_DPS} counts/dps -> implied {implied:.2f} "
-          f"(full scale +/-{8192 / implied:.0f} dps)")
+    print(f"  recovered/carrier should be 1.000; old /256 conversion would be "
+          f"{ratio / 2:.3f}")
+    print(f"  sensor/common scale remains {R.IMU_COUNTS_PER_DPS} counts/dps; "
+          "the corrected field conversion is /128")
     check_scale_is_speed_independent()
-    return implied
+    return ratio
 
 
 def check_scale_is_speed_independent() -> None:
@@ -224,7 +228,7 @@ def check_scale_is_speed_independent() -> None:
     if len(pairs) < 100:
         return
     print(f"\n  speed independence ({len(pairs)} samples, dominant axis):")
-    print(f"    {'carrier rate (dps)':>19s} {'n':>5s} {'slope':>7s} {'implied':>8s}")
+    print(f"    {'carrier rate (dps)':>19s} {'n':>5s} {'ratio':>7s}")
     slopes = []
     for lo, hi in ((0, 10), (10, 25), (25, 60), (60, 150), (150, 400)):
         sel = [q for q in pairs if lo <= q[0] < hi]
@@ -237,8 +241,7 @@ def check_scale_is_speed_independent() -> None:
             continue
         slope = sum(x * y for x, y in zip(xs, ys)) / den
         slopes.append(slope)
-        print(f"    {f'{lo}-{hi}':>19s} {len(sel):5d} {slope:7.3f} "
-              f"{R.IMU_COUNTS_PER_DPS * slope:8.2f}")
+        print(f"    {f'{lo}-{hi}':>19s} {len(sel):5d} {slope:7.3f}")
     if len(slopes) >= 3:
         spread = max(slopes) - min(slopes)
         trend = slopes[0] - slopes[-1]   # slow bin minus fast bin
@@ -294,10 +297,10 @@ def main() -> int:
           f"(accelZ {statistics.mean(accel_r[2]):+.2f} g, same pose)")
     print(f"  => sign reverses with direction: {'YES' if sign_ok else 'NO'}")
 
-    implied = check_scale()
-    scale_ok = (implied is not None and
-                abs(implied - R.IMU_COUNTS_PER_DPS) / R.IMU_COUNTS_PER_DPS < 0.15)
-    print(f"  => the assumed sensitivity holds: {'YES' if scale_ok else 'NO'}")
+    ratio = check_scale()
+    scale_ok = ratio is not None and abs(ratio - 1.0) < 0.15
+    print(f"  => seven-bit high-rate gyro scale holds: "
+          f"{'YES' if scale_ok else 'NO'}")
 
     print("\n--- residual ---")
     print("  X and Y are not individually disambiguated: no capture holds a")

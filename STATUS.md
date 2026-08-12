@@ -5,10 +5,35 @@
 > Planned work belongs in [`PLAN.md`](PLAN.md); evidence and protocol details belong under
 > [`docs/`](docs/README.md).
 
-Last verified: 2026-07-29 (zero-drop genuine-Pro2 `3 → 2 → 3` chart closure capture)
+Last verified: 2026-08-01 (live genuine/accel/gyro motion-hybrid bisection)
 Branch: `ns2-testing`
 
 Documentation/resource audit: 2026-07-25
+
+## Android handheld controller bridge — 🔵 Pico side host-tested 2026-08-11
+
+The no-root Android path uses the public API-28+ HID Device profile and keeps PicoSwitch2 as the
+console-facing protocol owner. Pico-side preparation now includes an exact 81-byte generic-gamepad
+descriptor fixture, its neutral report, and a host test that compiles both through the production
+Bluetooth gamepad driver and shared HID parser. The test pins the 10-byte wire report (ID 1, six
+axes, 14 buttons, and hat), complete-state retention, malformed/wrong-ID rejection, and disconnect
+cleanup.
+
+An Android-initiated Classic HID connection reaches the generic fallback even when an OEM retains
+a phone Class of Device; host coverage now pins that behavior. Pico-initiated inquiry deliberately
+continues to reject phone/computer classes, so the app must initiate the connection. Descriptor-
+backed generic reports shorter than the descriptor-derived minimum are now dropped atomically;
+valid reports, longer vendor reports, and descriptorless Classic fallback are unchanged.
+
+No Android/Pico hardware session has validated ordinary-app HID Device registration, app-led
+pairing, latency, or lifecycle teardown. See
+[`docs/bluetooth/android-controller-bridge.md`](docs/bluetooth/android-controller-bridge.md).
+
+Read-only ADB evidence from a Retroid Pocket Classic narrows the first risk: its API-34 OEM image
+has HID Device enabled and the service is actively bound, while its built-in controller exposes all
+required axes and standard buttons. It also proves source selection cannot filter on `isExternal`
+or virtual origin. An ordinary debug APK has not yet called the public profile/register APIs, so
+this remains source-device evidence rather than an end-to-end hardware pass.
 
 ## Switch 1 Joy-Con / Pro Controller motion — 🟢 at parity with genuine hardware 2026-07-27
 
@@ -206,7 +231,7 @@ are in
 | `tools/nfc_lab.ps1` | One hardware action captured as a hashed artifact bundle with its hypothesis and single variable |
 | `.claude/skills/picoswitch2-nfc-lab` | Enforces the phase order for agent sessions |
 
-## Shared protocol laboratory — 🟢 active infrastructure, first motion campaign complete 2026-07-29
+## Shared protocol laboratory — 🟢 active infrastructure, genuine-controller discovery next
 
 The NFC evidence workflow is now generalized without changing its proven runner.
 `tools/PicoSwitch2Lab.psm1` provides one manifest/provenance contract;
@@ -294,11 +319,11 @@ re-encodes byte-for-byte (858 high-rate, 149 normal, 981 catch-up, plus 2,070 `0
 Two generator defects that byte-exactness could not catch have since been fixed
 (`docs/experiments/pro2-carrier-unknown-fields-2026-07-31.md`):
 
-- **Wire values are not a single unit.** Each layout packs its slots at a different fixed-point
-  scale and slot width does not determine it; supplying ordinary ICM counts to the high-rate
-  layout is wrong by 256×, and the packet still decodes cleanly. `ns2_motion_reference.WIRE_TO_COUNTS`
-  is now the single authority, verified by all eight acceleration slots across all three layouts
-  agreeing on 1.051–1.052 g once normalized.
+- **Wire values are not a single unit.** Each layout and field packs at its own fixed-point scale;
+  slot width does not determine it. High-rate acceleration uses eight fractional bits (`/256`),
+  while high-rate gyro uses seven (`/128`). `ns2_motion_reference.WIRE_TO_COUNTS` is the single
+  authority. Acceleration is verified by all eight slots agreeing on 1.051–1.052 g once normalized;
+  gyro is verified against the sensor/common 16.4-count/dps scale and existing carrier integration.
 - **Chart hysteresis is validated against hardware.** Replaying genuine orientation through
   `select_chart` agrees on 2,059/2,070 decisions (99.47%) with zero spurious swaps, though holds
   dominate and only 1 of 11 genuine swaps is reproduced. One-sample lookahead and an earlier fixed
@@ -309,28 +334,23 @@ Two generator defects that byte-exactness could not catch have since been fixed
 `tools/ns2_motion_synth.py` compares a generated stream against an input-matched genuine one in
 physical units; acceleration and gyro magnitudes are now the right size and unit on both sides.
 
-**Emission mode and layout are resolved.** The corpus splits perfectly into two modes: in
-`0x28`-only mode `elapsed` is the inter-packet tick delta, exact in **1,196/1,196** packets across
-14 captures; in interleaved mode it matches ~0% and counts back only to the most recent PDU of any
-length (that relation is *not* resolved). The translation path adopts `0x28`-only, which removes
-the unresolved semantics entirely. It targets the **catch-up** layout, whose tail is a single
-always-zero bit rather than the Q3 die-temperature pair a translated source cannot produce — and
-which carries 5 IMU samples per packet, so a 20 ms cadence delivers ~250 samples/s against the
-133 Hz single-sample `0x1E` path.
+**Packet roles and the interleaved clock are resolved.** Length-`0x1E` and length-`0x28` are both
+native Pro Controller 2 forms, not “compatibility” and “next-generation” gyro respectively. In
+clean genuine interleaving, both advance one 12-bit PDU clock and every encoded elapsed value is
+the tick delta from the immediately preceding PDU of either length (`1274/1274`). Length-`0x28`
+adds cadence-dependent sample history; it is not intrinsically more accurate than `0x1E`.
 
-**The firmware packer exists and is hardware-byte-exact.** `ns2_motion_pdu40_build_catchup()`
-rebuilds **981/981 genuine catch-up packets byte-for-byte**, plus 7/7 edge cases at slot limits the
-corpus never reaches. It fails closed on an elapsed count that would select a different layout, on
-any field exceeding its slot, and on null arguments. Verified by
-`build-host-test-ns2-motion-pdu40`, whose fixture is generated by
-`tools/gen_motion40_fixture.py` rather than hand-written.
+**Both firmware packers are hardware-byte-exact.** The catch-up packer rebuilds **981/981** genuine
+packets and the high-rate packer rebuilds **853/853**, plus edge cases at field limits. They fail
+closed on the wrong elapsed band, field overflow, and null input. Fixtures are generated by
+`tools/gen_motion40_fixture.py`, not hand-written.
 
 **The translation path is wired behind a default-off gate.** `ns2_ds5_motion40` buffers timestamped
-DualSense samples in a ring and emits catch-up packets every ~20 ms, repeating the latest between
-USB polls exactly as the `0x1E` path repeats its carrier. Toggle with `ds5motion pdu40 on|off`;
-`ds5motion pdu40 status` reports emitted/starved/saturated counters. Enabling **replaces** the
-motion block — the `0x1E` carrier is not sent alongside, because only `0x28`-only has a resolved
-elapsed relation.
+DualSense samples, their contemporaneous `0x1E` carrier, and that carrier's proven tick in a
+64-entry ring. The corrected mixed scheduler selects one native-rate `0x1E`/`0x28` PDU on the
+shared timeline and holds it across intervening USB polls. Toggle with `ds5motion pdu40 on|off`;
+`ds5motion pdu40 status` reports packet, hold, fallback, starvation, overlong, and saturation
+counters. With the gate off, the validated production `0x1E` path is unchanged.
 
 Four defects the offline analysis caught before any flash:
 
@@ -347,28 +367,88 @@ Four defects the offline analysis caught before any flash:
   within-packet `a0`→`a2` the largest short gap (0.866), strictly monotone in slot index; a paired
   sign test over 894 tick-contiguous pairs gives z = +10.2. Reproduce with
   `python tools/ns2_motion40_slot_timing.py`.
-- **`elapsed` measured the poll, not the samples.** The emit window and the console-visible tick
-  timeline are two different clocks. `last_emit_us` now advances by exactly the elapsed reported,
-  so truncation remainders carry forward instead of accumulating as drift, while `last_sample_us`
-  separately bounds the next selection window so no sample can appear in two packets.
+- **`elapsed` used a second generator clock.** The old `0x28` tick began at zero independently of
+  the established `0x1E` tick, even though genuine interleaving is one PDU timeline. The corrected
+  scheduler derives tick and elapsed from the latest carrier sample and the immediately preceding
+  selected PDU; `last_sample_us` separately bounds the next sample-selection window.
+- **One gyro sample represented a complete window.** The generated `0x1E` carrier integrates every
+  accepted ~800 Hz source sample, but the first high-rate generator discarded all except one
+  midpoint gyro reading. Passive UART measured stationary corrected-gyro standard deviations near
+  80/50/35 counts, so that choice was not coherent with the packet's own carrier even though the
+  mean motion was near zero. The replacement uses the tick-weighted mean of every sample the
+  carrier integrated; the weights must sum exactly to encoded elapsed or the packet fails closed.
+- **Acceleration was normalized twice.** `ns2_motion_seam_apply()` already converts the native
+  DualSense 8192-count/g samples into the Pro2 frame at 4096 counts/g. The high-rate builder then
+  divided them by two again, so live generated packets carried about 0.5 g. This escaped the
+  offline synthesizer because its fixture supplied pre-seam samples directly. The module contract
+  and host test now use the real post-seam 4096-count/g input.
+- **Physical 1 g still disagreed with the interleaved carrier.** The validated translated `0x1E`
+  path applies an established output gain of `68963/65536 = 1.052291870`, while the first post-
+  seam `0x28` fix emitted bare Q8 physical counts. The same vector still jumped 5.23% on every
+  representation change. LIVE now maps `source * 68963 / 256` into the high-rate Q8 lane; HALF
+  retains the exact former `source * 128` diagnostic.
 
-The three design decisions above the packer are now audited against the corpus rather than assumed
-— saturation limits, slot placement, and mode exclusivity. The wire range is the **sensor's own**:
-twelve independent (width, scale) pairs across all three layouts converge on ±8192 ordinary counts
-= ±2.00 g and ±499.51 dps, stock ICM full-scale settings, which independently confirms the
-empirically-derived `WIRE_TO_COUNTS` factors. Emission mode follows the BLE notification interval
+The design decisions above the packer are audited against the corpus rather than assumed —
+saturation limits, slot placement, mode exclusivity, and field-specific binary points. Acceleration
+converges on ±8192 ordinary counts = ±2.00 g. Normal/catch-up gyro reaches about ±499.5 dps;
+high-rate gyro's signed22 `/128` field reaches about ±999 dps. Emission mode follows the BLE notification interval
 with zero exceptions across 32 captures (6.0 ticks always interleaves, ≥ 8.0 ticks is always
 `0x28`-only). Exact fractional slot positions remain **unresolved** — the corpus is stationary
 (σ ≈ 2.0 counts/axis) and the structure function saturates before one window elapses, so the gaps
 can be ordered but not measured. See
 [docs/experiments/pro2-carrier-unknown-fields-2026-07-31.md](docs/experiments/pro2-carrier-unknown-fields-2026-07-31.md).
 
-Mode-matched result against the genuine `0x28`-only interval captures: acceleration **1.0517 g
-genuine vs 1.0116 g synthetic**, both stationary at one gravity, layout `catchup` on both sides.
+The historical mode-matched offline result (**1.0517 g genuine vs 1.0116 g synthetic**) used
+pre-seam DualSense fixtures and did not represent the live firmware boundary. Live UART measured
+about 4059 counts at rest after the seam; the rejected builder divided that again and emitted
+about 0.5 g. The corrected builder preserves the post-seam vector and applies the exact same
+output calibration already used by the hardware-validated `0x1E` carrier.
 
-Status: 🟡 **In Progress — the readiness gate passes for the first time; awaiting one hardware
-A/B.** The first attempt (2026-07-31) failed: the console *accepted* the packets and produced
-violent erratic motion. Two root causes, both found offline afterwards, both since fixed.
+Status: 🔵 **Deferred by maintainer decision on 2026-08-01.** The production `0x1E` path remains
+hardware-validated, and genuine Pro Controller 2 `0x1E`/`0x28` remains opaque passthrough. The
+fully sequence-coherent generated high-rate recipe is hardware-rejected. The hybrid bisection
+cleared acceleration and gyro and localized the first prefix failure to mixed carrier ownership,
+but no further translated-`0x28` hardware work is planned without a concrete `0x1E` deficiency or
+a materially better observation point.
+The 2026-07-31 catch-up attempt failed violently. The 2026-08-01 high-rate interleaved attempts
+remained unstable after the `/128` gyro correction, the shared-timeline scheduler, and the
+tick-weighted gyro aggregation. Exact zero gyro still rotated, refuting rate selection as the
+primary stationary cause. Disabling the gate restored a stable `0x1E` control immediately. Live
+UART then exposed the 0.5 g double-normalization defect; that exact fix awaits hardware A/B.
+Because the observed failure is abrupt multidirectional jumping rather than a simple scale error,
+the mismatch is not yet claimed as the sole cause. A new closed-loop gate then caught the residual
+5.23% `0x1E`/`0x28` acceleration-gain jump and fixed it. The resulting coherent LIVE hardware A/B
+still produced continuous chaotic camera motion with no useful response to controller rotation.
+At disable, UART reported 4,850 batches, 14,671 carriers, 56 starvation fallbacks, zero overlong
+windows, two acceleration saturations, and zero gyro saturation; disabling the gate immediately
+restored validated `0x1E`. This refutes decoded-lane physical coherence as sufficient and blocks
+another flash of the same recipe.
+
+The retained research observation point is implemented, build/host-validated, and partially
+hardware-run.
+Existing `blecap` and `motionpair` retain the complete genuine report/PDU and time-paired
+raw/calibrated DualSense IMU. The new default-off live harness starts from a verified Nintendo
+`057E:2069` packet, aligns a separately owned DS5 translator at an untouched genuine `0x1E`,
+anchors its sample window to the genuine packet's Pico timestamp/elapsed boundary, and substitutes
+only named semantic groups. Accel/gyro operate on eligible high-rate mode-3 `0x28` bases. Prefix
+mode owns orientation across both interleaved `0x1E` and every mode-3 `0x28` cadence layout; every
+other lane — including timing, status, packing, and temperature tail — remains controller-authored.
+Physical-group stale/uncalibrated/unaligned/repeated/unsupported failures emit byte-identical
+genuine data. After prefix ownership is anchored, short donor gaps hold the donor orientation
+instead of alternating back to a second source history.
+Base and output XOR are captured with reason/age/calibration provenance; the PC auditor rejects
+drops, fallback edits, or out-of-mask changes before fixture generation. UART `off` immediately
+restores opaque passthrough. Both boards build and all 57 compiled host tests pass.
+
+Hardware results: the byte-identical control produced 95 unchanged records and stayed stable;
+acceleration-only applied 14 packets with zero saturation/drops and stayed stable; gyro-only
+applied cleanly and synchronized Display 3 video measured less than one pixel of displacement.
+The first prefix run moved the camera violently, but it alternated 19 donor `0x28` prefixes with
+68 genuine `0x1E` carriers and five stale-donor `0x28` fallbacks. Offline decode put donor and
+genuine prefixes only `0.001..0.072°` apart. Repeating that small source discontinuity was the
+harness defect. The corrected cross-length prefix ownership is host/build validated but was not
+flashed before the campaign was deferred; it is preserved solely as research infrastructure and
+is not a production promotion.
 
 - **The prefix described the wrong instant.** A genuine prefix carries the orientation at
   `tick − elapsed + 4` ticks, not the packet's own tick, so sending the current carrier alongside
@@ -380,6 +460,16 @@ violent erratic motion. Two root causes, both found offline afterwards, both sin
   is one always-zero bit rather than a temperature pair — ease of filling over strength of
   evidence. Emission is now interleaved high-rate, which also supplies the chart state the modular
   prefix needs, delivers each `0x28` exactly once, and lands where the two epoch models agree.
+- **One-poll insertion was not genuine interleaving.** The failed 2026-08-01 build emitted a
+  generated `0x28` for one ~1 ms USB poll, then returned to freshly advancing `0x1E`, while each
+  form owned a different tick epoch. A genuine BLE PDU is held as the current USB snapshot until
+  the next native notification. The replacement has one clock, one elapsed boundary, and one held
+  PDU at a time; its host test pins `0x1E → 0x28` continuity.
+- **The corrected scheduler also failed on hardware.** Its live counters matched the intended
+  shared design (358 batches, 1088 carriers, 10140 held polls, one fallback/starvation, zero
+  overlong or saturation), yet the stationary camera still swept through large rotations. This
+  isolates the next defect above scheduling: the sole gyro vector was one noisy instantaneous
+  sample rather than the tick-weighted rate area already integrated by the carrier.
 
 Two latent defects surfaced while fixing those, both of the same class — a convenience that
 quietly corrupts real data, invisible to any test that compares our code against our own code:
@@ -397,10 +487,25 @@ choice. Byte-exact validation of a *generated* `0x28` is impossible from BLE cap
 source samples and the epoch-instant carrier are never transmitted), so the gate scores physical
 accuracy against interpolated truth, worst-capture, with per-field tolerances.
 
-Residual risks a flash would test, stated before running it: `X`/`Y` gyro axes are not individually
-disambiguated (no capture holds a pure rotation about each with a known direction), absolute
-handedness rides on the `0x1E` path's console validation, and windows that overrun the 10-tick
-high-rate band are dropped rather than switched to another layout as genuine hardware does.
+The gate now also compiles the actual C translators and validates a deterministic physical stream
+with an independent Python model. All 17 complete `0x1E -> 0x28 -> 0x1E` loops pass; maximum prefix,
+gyro, and acceleration errors are 0.000011°, 0.429 count, and 0.0019 count. Six intentional recipe
+corruptions are rejected individually: wrong prefix epoch, half acceleration, half gyro, swapped
+gyro axes, detached elapsed, and stale following carrier. Its first pre-fix run is what exposed the
+5.23% acceleration-gain discontinuity.
+
+The last UNKNOWN was the gyro factor-of-two. It required no new capture: the ICM-42670-P datasheet
+and retained Pro2 common-report evidence fix the sensor at `±2000 dps / 16.4 counts/dps`, so the
+existing moving corpus identifies the high-rate gyro binary point as `/128`, not acceleration's
+`/256`. Carrier-rotation recovery improves from median `0.554` to `1.108`; two independent captures
+land at `1.000` and `0.994`. The generator now multiplies calibrated DualSense gyro counts by 128.
+
+The unresolved boundary is controller-private FIFO/filter/state behavior: offline data cannot show
+whether the console accepts a synthesized 3-carrier/1-batch history exactly like a genuine one, or
+whether the modal temperature tail participates in that validation. The shared tick/elapsed
+relation, gyro area, acceleration gain, and prefix/carrier trajectory are no longer independent
+guesses. `X`/`Y` handedness continues to inherit the console-validated `0x1E` axis map. These are
+recorded limits, not an active request for another A/B.
 
 An orthogonal upright lazy-susan rotation remained state 3 throughout. A corpus audit now records
 1,030 stable state-1 samples but initially no adjacent state-1 boundary. Passive gameplay
@@ -499,9 +604,9 @@ native gyro, rumble, headset insertion/removal, LED behavior, and BOOTSEL handli
 
 DualSense and DualSense Edge motion translation is also hardware-confirmed in Splatoon 3. The
 production path emits the decoded length-`0x1E` Switch 2 quaternion carrier and preserves input,
-audio, haptics, reconnect, LED, and BOOTSEL behavior. A deliberately gated synthetic length-`0x28`
-experiment caused random motion and was removed; it established that the still-unknown
-leading/middle fields cannot be held at a static genuine template.
+audio, haptics, reconnect, LED, and BOOTSEL behavior. The unsafe static-template `0x28` generator
+was removed. A later complete generator and genuine-base hybrid harness remain default-off
+diagnostic infrastructure; their hardware campaign is documented and intentionally deferred.
 
 The USB side of Config mode is now CDC-only in source and automated builds. The read-only MSC
 drive, embedded FAT image/web page, callbacks, and generator were removed;
@@ -808,11 +913,17 @@ button map replaces the retired per-family remap table.
 
 ## Next recommended work
 
-1. Add DualSense microphone Opus decode and USB return.
-2. Investigate why the current BLE-native motion bridge requires the 1 ms Pro2 USB interval before
-   attempting any future 4 ms fidelity restoration; the isolated 4 ms hardware test killed gyro.
-3. Add a reproducible release checklist with board, firmware revision, controller firmware,
+1. Extend the command atlas to the controller-side `blecap` schema, retaining transport and source
+   provenance. The existing offline scan found 42 zero-loss console-side traces/30 command pairs,
+   but only two of 29 zero-loss genuine BLE captures contain command traffic, both initialization.
+   Then choose one missing controller behavior whose semantics can be isolated by a passive or
+   reversible A/B.
+2. Capture a genuine Pro2 physical-tag write/readback before enabling native writes.
+3. Finish the dedicated, research-build-only firmware-update sink so the next genuine controller
+   update opportunity can be captured completely without using truncated generic traces.
+4. Add DualSense microphone Opus decode and USB return only after headset classification is
+   hardware-confirmed and the existing speaker/haptic baseline is protected.
+5. Add a reproducible release checklist with board, firmware revision, controller firmware,
    console firmware, and result data.
-4. Capture a genuine Pro2 physical-tag write/readback before enabling native writes.
-5. Revisit controller sleep only after capturing a verified per-family sleep command or a stable
+6. Revisit controller sleep only after capturing a verified per-family sleep command or a stable
    distinction between automatic-reconnect and user-wake advertisements.

@@ -1,5 +1,12 @@
 # Pro Controller 2 motion carrier — remaining unknown fields — 2026-07-31
 
+> **Correction, 2026-08-01:** This report correctly found the high-rate signed22 gyro field, but
+> its `/256` physical conversion copied the adjacent acceleration field's binary point. The Pro2
+> sensor/common stream remains `16.4 counts/dps`; high-rate gyro uses **seven fractional bits
+> (`/128`)**. High-rate acceleration remains `/256`, and normal/catch-up scaling is unchanged.
+> Historical tables below retain the original interpretation. See
+> [`pro2-imu-constants-audit-2026-08-01.md`](pro2-imu-constants-audit-2026-08-01.md).
+
 ## Question
 
 After the length-`0x1E`/`0x28` decode, is anything left undecoded? A byte-exact
@@ -516,3 +523,13 @@ while the genuine controller carries gravity-referenced attitude, and the
 console demonstrably accepts the former. Layout mix in this harness follows the
 capture's record spacing, not the adapter's emit timing, so it is
 informational.
+# Correction — high-rate gyro binary point (2026-08-01)
+
+This report correctly found the high-rate signed22 gyro field and exposed its raw values, but its
+`/256` physical conversion copied the adjacent acceleration field's binary point. Existing evidence
+now separates the factors: the Pro2 sensor/common stream remains `16.4 counts/dps`, while high-rate
+gyro uses **seven fractional bits (`/128`)**. High-rate acceleration remains `/256`; normal and
+catch-up scaling is unchanged. Historical tables below retain the original interpretation so the
+investigation remains auditable. The corrected authority is
+[`../switch2/report-0x09-motion.md`](../switch2/report-0x09-motion.md) and the resolution is in
+[`pro2-imu-constants-audit-2026-08-01.md`](pro2-imu-constants-audit-2026-08-01.md).

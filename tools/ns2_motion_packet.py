@@ -101,9 +101,10 @@ def counts_to_wire(layout: str, kind: str, slot: int,
     return tuple(int(round(component / factor)) for component in vector)
 
 
-# The controller runs in two observed emission modes, and the 12-bit elapsed
-# count means different things in each. A generator that picks the wrong one
-# mislabels every packet's layout.
+# The controller runs in two observed emission modes. In both, the 12-bit
+# elapsed count reaches the immediately preceding PDU on the active stream. A
+# generator that starts a second clock still makes valid packets, but an
+# invalid sequence.
 #
 # Measured across the corpus, the split is perfect -- no capture is mixed:
 #
@@ -112,16 +113,14 @@ def counts_to_wire(layout: str, kind: str, slot: int,
 #       The pro2-native-interval-* sweeps run in this mode from 8 to 24 ticks.
 #
 #   interleaved mode (24 captures, zero 0x1E excluded)
-#       elapsed == tick delta since the previous 0x28 in ~0% of packets. It
-#       instead counts back only to the most recent PDU of ANY length, sitting
-#       near a constant 7 while the 0x28-to-0x28 delta varies over 11..30.
-#       elapsed * (intervening carriers + 1) predicts that delta but overshoots
-#       by 3..5 ticks; the exact relation is NOT resolved and is not needed.
+#       elapsed == tick delta from the immediately preceding PDU of EITHER
+#       length. The retained moving stream confirms 254/254 predecessor
+#       transitions on one clock.
 #
-# TRANSLATION POLICY: emit 0x28-only. It is a genuine hardware mode, its elapsed
-# rule is exactly verified, and it removes the unresolved interleaved semantics
-# from the problem entirely. ``elapsed_ticks`` then carries the emit interval
-# directly, which is what ``layout_for_elapsed`` expects.
+# CURRENT DIAGNOSTIC TRANSLATION POLICY: interleaved high-rate. The firmware
+# selects and holds complete 0x1E/0x28 PDUs on one native-rate clock. This pure
+# packer remains policy-free; `test_ns2_motion40_coherence.py` validates the
+# sequence above it.
 #
 # Slot budget at 800 Hz, for a source reporting near 250 Hz:
 #   elapsed  8 (10.0 ms) -> high_rate, needs 2 accel + 1 gyro  (~2.5 available)
@@ -130,7 +129,7 @@ def counts_to_wire(layout: str, kind: str, slot: int,
 # The longer intervals carry comfortable margin; high-rate is marginal and a
 # source slower than 200 Hz cannot fill it without inventing samples, which
 # this module refuses to do.
-TRANSLATION_MODE = "0x28-only"
+TRANSLATION_MODE = "interleaved"
 
 
 def layout_for_elapsed(elapsed_ticks: int) -> str:

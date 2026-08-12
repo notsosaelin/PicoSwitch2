@@ -5988,7 +5988,8 @@ static void sw2_motion_notification_handler(uint8_t packet_type, uint16_t channe
     // Preserve the genuine controller's opaque native motion PDU for the console-facing USB
     // report builder. This is intentionally separate from button/stick normalization below:
     // no quaternion decoding, axis conversion, or generic gamepad structure can alter it.
-    ns2_native_motion_publish((uint8_t)conn_index, value, value_length, time_us_32());
+    ns2_native_motion_publish((uint8_t)conn_index, conn->vid, conn->pid,
+                              value, value_length, time_us_32());
 
     if (ble_report_pending) return;
 
@@ -6039,7 +6040,8 @@ static void sw2_pro2_audio_notification_handler(uint8_t packet_type, uint16_t ch
 
     // If ordinary 0x000E actually stops, feed 0x002E's relocated native-motion
     // block and controls into the exact same validated paths as a fallback.
-    ns2_native_motion_publish((uint8_t)conn_index, compact, sizeof(compact), now_us);
+    ns2_native_motion_publish((uint8_t)conn_index, conn->vid, conn->pid,
+                              compact, sizeof(compact), now_us);
     if (ble_report_pending) return;
     uint8_t normalized[63];
     if (!switch2_normalize_pro_000e(compact, sizeof(compact), normalized)) return;

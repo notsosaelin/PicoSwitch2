@@ -6,6 +6,12 @@
 
 #define NS2_MOTION_PDU30_LENGTH 30u
 #define NS2_MOTION_PDU40_LENGTH 40u
+// The hardware-validated translated 0x1E carrier applies this established
+// output calibration (`source counts * 68963`) rather than bare Q16.16
+// (`source counts * 65536`). A synthesized 0x28 sharing that carrier must
+// publish the same calibrated acceleration vector at representation changes.
+#define NS2_MOTION30_ACCEL_Q16_PER_COUNT 68963
+#define NS2_MOTION30_ACCEL_Q16_ONE       65536
 #define NS2_MOTION_ORIENTATION_MASK 0x03FFFFFFu
 
 #define NS2_MOTION_REFERENCE_G6_MIN (-2097152)
@@ -24,6 +30,23 @@ bool ns2_motion_pdu30_get_orientation(const uint8_t pdu[NS2_MOTION_PDU30_LENGTH]
                                       uint32_t out[3]);
 bool ns2_motion_pdu30_set_orientation(uint8_t pdu[NS2_MOTION_PDU30_LENGTH],
                                       const uint32_t values[3]);
+
+// Replace only the mode-3 length-0x28 orientation prefix. The packet's own
+// elapsed field selects high-rate (s24/s23/s25) or normal/catch-up
+// (s22/s21/s23) widths. Every timing, status, packing, IMU and tail bit is
+// preserved. Values must already be in the selected layout's signed wire form.
+bool ns2_motion_pdu40_set_carrier(
+    uint8_t pdu[NS2_MOTION_PDU40_LENGTH], const int32_t values[3]);
+
+// Decode the legacy strict-unit length-0x1E approximation into canonical
+// [x,y,z,w]. This is used only to seed a diagnostic donor at a stable genuine
+// boundary. Genuine transition captures refute this as the controller's exact
+// private chart model, and some packets have retained energy >1; those are
+// rejected rather than clamped or normalized. Never use this helper to claim
+// exact genuine orientation or chart-transition semantics.
+bool ns2_motion_pdu30_get_quaternion(
+    const uint8_t pdu[NS2_MOTION_PDU30_LENGTH], float out_xyzw[4],
+    uint8_t *omitted_state);
 
 // DEPRECATED -- DIAGNOSTIC READ ONLY. DO NOT GENERATE THROUGH THIS.
 //
@@ -111,19 +134,21 @@ bool ns2_motion_pdu40_build_catchup(uint8_t pdu[NS2_MOTION_PDU40_LENGTH],
 // models agree to within one tick, instead of the 9 ticks they differ by at a
 // catch-up cadence.
 //
-// Two acceleration slots and one gyro slot, all 22-bit with EIGHT FRACTIONAL
-// BITS -- wire = ordinary counts * 256, not a different range. Carrier lanes
-// are two bits wider than their catch-up counterparts for the same reason.
+// Two acceleration slots and one gyro slot are all 22-bit, but the binary
+// point is field-specific: acceleration uses eight fractional bits
+// (wire = counts * 256), gyro uses seven (wire = counts * 128). Carrier lanes
+// are two bits wider than their catch-up counterparts.
 #define NS2_MOTION40_HIGH_RATE_MAX_ELAPSED 10u
 #define NS2_MOTION40_STATUS_HIGH_RATE 0x0Du
-#define NS2_MOTION40_HIGH_RATE_FRACTIONAL_BITS 8u
+#define NS2_MOTION40_HIGH_RATE_ACCEL_FRACTIONAL_BITS 8u
+#define NS2_MOTION40_HIGH_RATE_GYRO_FRACTIONAL_BITS 7u
 
 typedef struct {
     uint16_t tick;           // 12-bit internal 800 Hz tick
     uint16_t elapsed_ticks;  // 12-bit, must be <= 10 to select high-rate
     int32_t carrier[3];      // orientation prefix, signed 24/23/25
     int32_t accel[2][3];     // signed 22, wire = counts * 256
-    int32_t gyro[1][3];      // signed 22, wire = counts * 256
+    int32_t gyro[1][3];      // signed 22, wire = counts * 128
     uint16_t tail_value;     // 16-bit, two Q3 die-temperature samples
     uint8_t packing_mode;
     uint8_t status;

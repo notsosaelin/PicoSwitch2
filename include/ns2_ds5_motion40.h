@@ -6,14 +6,14 @@
 
 #include "ns2_motion_pdu.h"
 
-// Translate a DualSense IMU stream into genuine-shaped length-0x28 catch-up
-// motion PDUs.
+// Translate a DualSense IMU stream into a coherent native-rate mixture of
+// genuine-shaped length-0x1E carriers and length-0x28 high-rate motion PDUs.
 //
 // WHY A SEPARATE MODULE
 // ---------------------
-// ns2_ds5_motion.c owns the hardware-validated length-0x1E path and is not
-// touched by this. The two share nothing but their input samples, so enabling
-// or disabling 0x28 cannot regress orientation carrier behaviour.
+// ns2_ds5_motion.c owns the hardware-validated length-0x1E path. This module
+// consumes that path's carrier AND tick as its authority; disabling the gate
+// returns directly to the unchanged production carrier.
 //
 // WHY HIGH-RATE (this replaced catch-up on 2026-07-31)
 // ----------------------------------------------------
@@ -25,28 +25,22 @@
 // DualSense cannot measure. That optimised for ease of filling over strength
 // of evidence, and the hardware A/B failed.
 //
-// Retargeting also settles three questions structurally rather than by
-// experiment. Genuine high-rate runs INTERLEAVED, so a 0x1E rides alongside
-// and supplies the chart state the modular prefix must be unwrapped against;
-// each 0x28 reaches the console once between carriers instead of ~20 times at
-// a 1 kHz poll; and at elapsed 7..8 the two candidate prefix-epoch models
-// agree to within one tick instead of the 9 they differ by at a 16-tick
-// cadence.
+// Genuine high-rate runs INTERLEAVED, so a 0x1E precedes each 0x28 and supplies
+// the chart state the modular prefix must be unwrapped against. Both lengths
+// share one tick timeline: encoded elapsed equals the tick delta from the
+// immediately preceding PDU (1274/1274 clean comparisons).
 //
-// Two acceleration slots and one gyro slot, all 22-bit with EIGHT FRACTIONAL
-// BITS: wire = ordinary counts * 256. Same +/-2 g and +/-499.5 dps range as
-// every other layout, at finer resolution.
+// Two acceleration slots and one gyro slot are all 22-bit, but their binary
+// points differ: acceleration has eight fractional bits (counts * 256), while
+// gyro has seven (counts * 128). This yields about +/-2 g and +/-999 dps.
 //
 // EMISSION MODE
 // -------------
-// INTERLEAVED, which is what genuine hardware does at this cadence: the 0x1E
-// carrier fills the polls between 0x28 packets (NS2_PDU40_FILL_CARRIER).
-//
-// UNRESOLVED: the elapsed relation in interleaved mode. In 0x28-only mode
-// elapsed is the tick delta since the previous 0x28 (1196/1196 packets), and
-// interleaved traffic does not follow that. This module emits the span its own
-// samples cover, the only self-consistent choice available, and the ambiguity
-// is why the readiness gate still reports UNKNOWN.
+// INTERLEAVED, which is what genuine hardware does at this cadence. One new
+// native PDU is selected near the controller notification cadence and held as
+// the USB snapshot until the next selection; USB's ~1 kHz poll must not create
+// extra PDU boundaries. The scheduler uses three 0x1E frames followed by one
+// high-rate frame, with the 0x28 selected at a seven-tick boundary.
 //
 // SAMPLES SPAN THE EMIT WINDOW
 // ----------------------------
@@ -76,6 +70,12 @@
 // therefore anchors the ends -- oldest sample first, newest sample last -- and
 // spaces the interior evenly, which is the choice that both matches the
 // confirmed ordering and minimises latency.
+//
+// High-rate carries only one gyro vector. It is the tick-weighted mean of all
+// source rates in the emit window, not one midpoint record: the accompanying
+// 0x1E carrier integrated that complete rate area, so publishing one noisy
+// sample would make the two representations contradict each other. The
+// builder fails closed unless the gyro weights sum exactly to encoded elapsed.
 //
 // See docs/experiments/pro2-carrier-unknown-fields-2026-07-31.md.
 
@@ -125,13 +125,26 @@
 // 7-8 where the question does not arise.
 #define NS2_DS5_MOTION40_PREFIX_LAG_TICKS 4u
 
+// UART-only acceleration A/B modes. Production/default is LIVE: post-seam
+// source acceleration transformed by the exact output gain already used by
+// the validated 0x1E carrier. HALF recreates the former double-normalized wire
+// scale without another flash; ZERO is diagnostic, not a physical IMU state.
+#define NS2_DS5_MOTION40_ACCEL_LIVE 0u
+#define NS2_DS5_MOTION40_ACCEL_HALF 1u
+#define NS2_DS5_MOTION40_ACCEL_ZERO 2u
+
 typedef struct {
-    int16_t accel[3];  // raw DualSense counts, 8192/g
+    int16_t accel[3];  // post-seam Pro 2-frame counts, 4096/g
     int16_t gyro[3];   // de-biased DualSense counts, ~16.4/dps
     // The 0x1E orientation carrier as it stood at this instant. Buffered per
     // sample because the prefix describes a PAST moment: by the time a packet
     // is built, the orientation it must carry is already history.
     uint32_t carrier[3];
+    // Low 12 bits of the proven length-0x1E timing word. Length-0x1E and
+    // length-0x28 share ONE controller IMU clock; a second generator-local
+    // tick is not merely approximate, it makes an interleaved stream
+    // discontinuous as soon as the diagnostic gate is enabled mid-session.
+    uint16_t tick;
     uint32_t us;
 } ns2_ds5_motion40_entry_t;
 
@@ -148,20 +161,33 @@ typedef struct {
     int32_t accel[NS2_DS5_MOTION40_ACCEL_SLOTS][3];
     int32_t gyro[NS2_DS5_MOTION40_GYRO_SLOTS][3];
 
-    // Two distinct clocks, and conflating them re-sends samples or drifts.
-    // `last_emit_us` is the console-visible timeline: it advances by exactly
-    // the elapsed count reported, so truncation remainders carry forward
-    // instead of accumulating as drift. `last_sample_us` is the timestamp of
-    // the newest sample already sent, which is what bounds the next selection
-    // window -- a sample must never appear in two packets, and the tick-
-    // aligned origin can fall either side of it.
-    uint32_t last_emit_us;
+    // The preceding PDU may be a 0x1E carrier or a 0x28 batch. Genuine
+    // interleaved captures prove that a 0x28's elapsed field is its shared
+    // 12-bit tick delta from that immediately preceding PDU (1274/1274 clean
+    // comparisons), so both forms must advance this one boundary together.
     uint32_t last_sample_us;
-    uint16_t tick;
-    bool primed;
+    uint16_t last_pdu_tick;
+    bool anchored;
+
+    // Console-facing held PDU. A genuine BLE notification becomes the current
+    // USB-side snapshot until the next notification; it does not alternate a
+    // one-poll 0x28 with ~1 kHz freshly advancing 0x1E carriers. The mixed
+    // scheduler reproduces that ownership and emits a new PDU at the native
+    // 6-7 tick cadence.
+    uint8_t output[NS2_MOTION_PDU40_LENGTH];
+    uint8_t output_length;
+    uint8_t carriers_since_40;
+    uint32_t carrier_frames;
+    uint32_t held_polls;
+    uint32_t fallback_carriers;
+
+    // Diagnostic-only acceleration transform applied at the final wire
+    // boundary. Keeping it here lets one flashed image A/B carrier-coherent
+    // LIVE against the former 0.5 g behavior while every other field is equal.
+    uint8_t accel_mode;
 
     // Diagnostics. Saturation is expected occasionally -- the wire fields cap
-    // near +/-2 g and +/-499 dps -- but a high rate means the scaling is wrong.
+    // near +/-2 g and +/-999 dps -- but a high rate means the scaling is wrong.
     uint32_t emitted;
     uint32_t skipped_no_samples;
     uint32_t skipped_overlong;  // window outran the high-rate elapsed band
@@ -181,7 +207,18 @@ void ns2_ds5_motion40_reset(ns2_ds5_motion40_t *state);
 // bits) built from this same sample.
 void ns2_ds5_motion40_sample(ns2_ds5_motion40_t *state, const int16_t accel[3],
                              const int16_t gyro[3],
-                             const uint32_t carrier_raw[3], uint32_t now_us);
+                             const uint32_t carrier_raw[3], uint16_t timing,
+                             uint32_t now_us);
+
+// Select the console-facing motion PDU for the coherent interleaved mode.
+// `carrier_pdu` is the latest proven length-0x1E translation built from the
+// same sample passed to ns2_ds5_motion40_sample(). The selected PDU is held
+// between native-rate frame boundaries. Returns true only when a new frame was
+// selected; callers still copy `out_length` bytes on every USB report.
+bool ns2_ds5_motion40_select(ns2_ds5_motion40_t *state,
+                             const uint8_t carrier_pdu[NS2_MOTION_PDU30_LENGTH],
+                             uint8_t out[NS2_MOTION_PDU40_LENGTH],
+                             uint8_t *out_length);
 
 // Build a PDU if at least NS2_DS5_MOTION40_MIN_TICKS have passed and the
 // window holds enough distinct samples to fill every slot without repeating

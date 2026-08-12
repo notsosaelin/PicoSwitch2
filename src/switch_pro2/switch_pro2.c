@@ -23,6 +23,7 @@
 #include "ns2_firmware_profile.h"
 #include "ns2_protocol_trace.h"
 #include "ns2_native_motion.h"
+#include "ns2_motion_hybrid_live.h"
 #include "ns2_motion_probe.h"
 #include "ns2_diag_input.h"
 #include "ns2_vendor_tx.h"
@@ -390,23 +391,36 @@ static bool ns2_ds5_motion_report_valid;
 static bool ns2_ds5_motion_probe_active;
 static int16_t ns2_ds5_motion_probe_gyro[3];
 
-// Length-0x28 catch-up translation. DEFAULT OFF: the 0x1E carrier is the
-// hardware-validated path, and this replaces the motion block entirely rather
-// than supplementing it, so it must be opted into for a gated A/B.
+// Length-0x28 high-rate translation. DEFAULT OFF: the 0x1E carrier is the
+// hardware-validated path, while this selects a coherent mixed native PDU
+// stream and therefore must be opted into for a gated A/B.
 static ns2_ds5_motion40_t ns2_ds5_motion40;
 static bool ns2_ds5_motion40_enabled;
 static uint8_t ns2_ds5_motion40_report[NS2_MOTION_PDU40_LENGTH];
 static bool ns2_ds5_motion40_report_valid;
-// What fills the USB polls between 0x28 packets. CARRIER is the default
-// because genuine high-rate traffic is INTERLEAVED: a 0x1E rides alongside,
-// which both supplies the chart state the modular prefix is unwrapped against
-// and keeps each 0x28 delivered exactly once. REPEAT was the first build
-// tested on hardware and produced violent erratic motion.
+// CARRIER is the coherent shared-timeline scheduler and the only fill that
+// models genuine bridge ownership. EMPTY and REPEAT preserve the historical
+// 0x28-only diagnostics; REPEAT produced violent erratic motion on hardware.
 static uint8_t ns2_ds5_motion40_fill = NS2_PDU40_FILL_CARRIER;
 
 bool ns2_ds5_motion40_get_enabled(void) { return ns2_ds5_motion40_enabled; }
 
 uint8_t ns2_ds5_motion40_get_fill(void) { return ns2_ds5_motion40_fill; }
+
+uint8_t ns2_ds5_motion40_get_accel_mode(void)
+{
+    return ns2_ds5_motion40.accel_mode;
+}
+
+bool ns2_ds5_motion40_set_accel_mode(uint8_t mode)
+{
+    if (mode > NS2_DS5_MOTION40_ACCEL_ZERO) return false;
+    if (ns2_ds5_motion40.accel_mode == mode) return true;
+    ns2_ds5_motion40_reset(&ns2_ds5_motion40);
+    ns2_ds5_motion40.accel_mode = mode;
+    ns2_ds5_motion40_report_valid = false;
+    return true;
+}
 
 void ns2_ds5_motion40_set_fill(uint8_t fill)
 {
@@ -440,6 +454,20 @@ void ns2_ds5_motion40_get_counters(uint32_t *emitted, uint32_t *starved,
     if (overlong) *overlong = ns2_ds5_motion40.skipped_overlong;
     if (saturated_accel) *saturated_accel = ns2_ds5_motion40.saturated_accel;
     if (saturated_gyro) *saturated_gyro = ns2_ds5_motion40.saturated_gyro;
+}
+
+void ns2_ds5_motion40_get_schedule(uint32_t *carrier_frames,
+                                   uint32_t *held_polls,
+                                   uint32_t *fallback_carriers,
+                                   uint8_t *output_length,
+                                   uint16_t *last_tick)
+{
+    if (carrier_frames) *carrier_frames = ns2_ds5_motion40.carrier_frames;
+    if (held_polls) *held_polls = ns2_ds5_motion40.held_polls;
+    if (fallback_carriers)
+        *fallback_carriers = ns2_ds5_motion40.fallback_carriers;
+    if (output_length) *output_length = ns2_ds5_motion40.output_length;
+    if (last_tick) *last_tick = ns2_ds5_motion40.last_pdu_tick;
 }
 
 // Debug: bias estimate (converted to raw LSB units) + whether the stillness gate is
@@ -1367,15 +1395,14 @@ static void ns2_build_report(uint8_t *p) {
     // still-partly-unknown representation only to synthesize the same bytes again would add failure
     // modes without adding information. The side channel publishes only PID 0x2069 report-0x000E
     // data and expires quickly, so every other controller keeps the existing generic IMU path.
-    uint16_t source_vid = 0;
-    uint16_t source_pid = 0;
-    get_global_device(0, NULL, 0, &source_vid, &source_pid);
     ns2_native_motion_snapshot_t native_motion;
     bool native_motion_fresh = ns2_native_motion_snapshot(
         &native_motion, time_us_32(), 50000u); // >6 packets at the verified 133Hz cadence
     bool native_motion_owned = native_motion_fresh &&
         ns2_native_motion_output_slot(native_motion.source_conn_index) == 0 &&
-        source_vid == 0x057E && source_pid == 0x2069;
+        native_motion.source_verified &&
+        native_motion.source_vid == 0x057E &&
+        native_motion.source_pid == 0x2069;
     // Use the decoder's explicit provenance, not Bluetooth SDP identity, for
     // translator ownership. Hardware proved that a genuine DualSense can be
     // fully streaming with VID 0x054C while PID remains 0x0000. The former
@@ -1459,6 +1486,7 @@ static void ns2_build_report(uint8_t *p) {
                         ns2_ds5_motion40_sample(&ns2_ds5_motion40,
                                                 ds5_motion_input.accel,
                                                 debiased, carrier_now,
+                                                ns2_ds5_motion.timing,
                                                 ds5_motion_now_us);
                     }
                 }
@@ -1481,8 +1509,21 @@ static void ns2_build_report(uint8_t *p) {
         memcpy(&p[0x0F], probe_motion, sizeof(probe_motion));
         ns2_native_hold_active = false;
     } else if (ns2_imu_enabled && native_motion_owned) {
+        // The live fitment harness never mutates the genuine snapshot. Core1
+        // publishes a separately retained candidate plus its exact mode. USB
+        // selects it only while that same UART mode remains requested; `off`
+        // therefore restores opaque passthrough immediately, without waiting
+        // for another Bluetooth notification.
+        const uint8_t hybrid_mode = ns2_motion_hybrid_live_get_mode();
+        const bool hybrid_selected =
+            hybrid_mode != NS2_MOTION_HYBRID_MODE_OFF &&
+            native_motion.hybrid_valid &&
+            native_motion.hybrid_mode == hybrid_mode &&
+            !native_motion.held_after_disconnect;
+        const uint8_t *native_data = hybrid_selected
+            ? native_motion.hybrid_data : native_motion.data;
         p[0x0E] = native_motion.length;
-        memcpy(&p[0x0F], native_motion.data, native_motion.length);
+        memcpy(&p[0x0F], native_data, native_motion.length);
         if (native_motion.held_after_disconnect && native_motion.length == 0x1E) {
             // Preserve the last genuine phase+accel values, but keep the 800Hz timing word
             // advancing so the console receives an explicit zero-angular-velocity sample instead
@@ -1525,6 +1566,26 @@ static void ns2_build_report(uint8_t *p) {
         if (ns2_ds5_motion_enabled && ns2_imu_enabled &&
             ns2_ds5_motion_report_valid) {
             if (ns2_ds5_motion40_enabled) {
+                if (ns2_ds5_motion40_fill == NS2_PDU40_FILL_CARRIER) {
+                    // A genuine controller publishes one new motion PDU near
+                    // its BLE notification cadence and the USB bridge holds
+                    // that PDU until the next notification. The previous
+                    // implementation instead inserted a 0x28 for one 1 ms
+                    // poll between freshly advancing 0x1E carriers, and gave
+                    // the 0x28 an independent tick epoch. That alternated two
+                    // incompatible timelines and produced stationary jumps.
+                    uint8_t mixed[NS2_MOTION_PDU40_LENGTH];
+                    uint8_t mixed_length = 0u;
+                    ns2_ds5_motion40_select(&ns2_ds5_motion40,
+                                            ns2_ds5_motion_report, mixed,
+                                            &mixed_length);
+                    if (mixed_length > 0u) {
+                        p[0x0E] = mixed_length;
+                        memcpy(&p[0x0F], mixed, mixed_length);
+                    }
+                    ns2_native_hold_active = false;
+                    goto motion_done;
+                }
                 // WHAT GOES IN THE ~19 POLLS BETWEEN PACKETS
                 //
                 // USB polls near 1 kHz while a catch-up packet is due every
@@ -1560,15 +1621,6 @@ static void ns2_build_report(uint8_t *p) {
                         memcpy(&p[0x0F], ns2_ds5_motion40_report,
                                sizeof(ns2_ds5_motion40_report));
                     }
-                } else if (ns2_ds5_motion40_fill == NS2_PDU40_FILL_CARRIER) {
-                    // Send the proven 0x1E between 0x28 packets. This is the
-                    // interleaved emission mode, which genuine hardware does
-                    // use at 6-tick notification intervals; its elapsed
-                    // relation is unresolved, but the absolute quaternion
-                    // re-anchors the console every poll.
-                    p[0x0E] = sizeof(ns2_ds5_motion_report);
-                    memcpy(&p[0x0F], ns2_ds5_motion_report,
-                           sizeof(ns2_ds5_motion_report));
                 }
                 // NS2_PDU40_FILL_EMPTY leaves p[0x0E] at 0: no motion block on
                 // the polls between packets, so each 0x28 is delivered exactly
@@ -1579,6 +1631,7 @@ static void ns2_build_report(uint8_t *p) {
                        sizeof(ns2_ds5_motion_report));
             }
         }
+motion_done:
         ns2_native_hold_active = false;
     } else if (in.has_motion) {
         ns2_motion_tick_gated(&in);
@@ -1588,7 +1641,7 @@ static void ns2_build_report(uint8_t *p) {
             ns2_encode_motion30(&p[0x0F], ns2_motion_timing, phase_now, in.accel);
         }
     }
-    ns2_dbg_motion_len = p[0x0E];  // debug: report-0x09 motion length just emitted (0 or 30)
+    ns2_dbg_motion_len = p[0x0E];  // report-0x09 motion length just emitted (0, 30, or 40)
 }
 
 // Report 0x05 (common format): 4-byte buttons + DOCUMENTED accel/gyro block.
@@ -1836,6 +1889,38 @@ static const uint8_t ns2_ms_compat_id[] = {
 };
 _Static_assert(sizeof(ns2_ms_compat_id) == 40, "MS compat ID descriptor must be 40 bytes");
 
+// Extended Properties OS feature descriptor: register the WinUSB device-interface GUID for IF1.
+// The Compatible ID descriptor above loads WinUSB, but it does NOT create the discoverable device
+// interface that libusb (and therefore SDL/Steam) needs to open IF1. Without this, our Pro2 only
+// works on a PC that already has the GUID registered from a genuine Nintendo controller; a fresh
+// PC shows Steam "Begin Setup" and never drives the vendor channel. Windows requests this with the
+// same vendor code and wIndex=0x0005. The GUID {6F13725E-EF0E-4FD3-AE5F-B2DE989EC825} is Nintendo's
+// real device-family value (verified: every genuine 2066/2067/2069/2073 MI_01 node registers under
+// it) and is intentionally shared with the Joy-Con 2 / GameCube personalities.
+static const uint8_t ns2_ms_ext_props[] = {
+    // Header (10 bytes)
+    0x8E, 0x00, 0x00, 0x00,              // dwLength = 142
+    0x00, 0x01,                          // bcdVersion = 1.00
+    0x05, 0x00,                          // wIndex = 0x0005 (Extended Properties)
+    0x01, 0x00,                          // wCount = 1 custom property
+    // Custom property section (132 bytes)
+    0x84, 0x00, 0x00, 0x00,              // dwSize = 132
+    0x01, 0x00, 0x00, 0x00,              // dwPropertyDataType = REG_SZ
+    0x28, 0x00,                          // wPropertyNameLength = 40 bytes
+    'D', 0, 'e', 0, 'v', 0, 'i', 0, 'c', 0, 'e', 0,
+    'I', 0, 'n', 0, 't', 0, 'e', 0, 'r', 0, 'f', 0, 'a', 0, 'c', 0, 'e', 0,
+    'G', 0, 'U', 0, 'I', 0, 'D', 0, 0, 0,
+    0x4E, 0x00, 0x00, 0x00,              // dwPropertyDataLength = 78 bytes
+    '{', 0, '6', 0, 'F', 0, '1', 0, '3', 0, '7', 0, '2', 0, '5', 0, 'E', 0,
+    '-', 0, 'E', 0, 'F', 0, '0', 0, 'E', 0,
+    '-', 0, '4', 0, 'F', 0, 'D', 0, '3', 0,
+    '-', 0, 'A', 0, 'E', 0, '5', 0, 'F', 0,
+    '-', 0, 'B', 0, '2', 0, 'D', 0, 'E', 0, '9', 0, '8', 0, '9', 0, 'E', 0,
+    'C', 0, '8', 0, '2', 0, '5', 0, '}', 0, 0, 0,
+};
+_Static_assert(sizeof(ns2_ms_ext_props) == 142,
+               "MS extended properties descriptor must be 142 bytes");
+
 // EP0 vendor control requests. Two independent users:
 //  1) Windows MS OS 1.0: bRequest = MS_OS_VENDOR_CODE (0x20), wIndex 0x0004 -> Extended
 //     Compat ID (binds WinUSB to IF1 -> our PC/Steam debug loop).
@@ -1860,6 +1945,13 @@ bool ns2_vendor_control_xfer(uint8_t rhport, uint8_t stage, const void *request_
     if (request->bRequest == MS_OS_VENDOR_CODE && request->wIndex == 0x0004) {
         return tud_control_xfer(rhport, request, (void *)ns2_ms_compat_id,
                                 sizeof(ns2_ms_compat_id));
+    }
+    // Extended Properties -> register the WinUSB DeviceInterfaceGUID so SDL/Steam can open IF1
+    // on a fresh PC (see ns2_ms_ext_props). Without this, Steam shows "Begin Setup" on any PC
+    // that has not previously hosted a genuine Nintendo controller.
+    if (request->bRequest == MS_OS_VENDOR_CODE && request->wIndex == 0x0005) {
+        return tud_control_xfer(rhport, request, (void *)ns2_ms_ext_props,
+                                sizeof(ns2_ms_ext_props));
     }
 
     // Nintendo Switch 2 identity handshake over EP0 vendor control.

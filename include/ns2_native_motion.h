@@ -15,13 +15,23 @@ typedef struct {
     uint8_t data[NS2_NATIVE_MOTION_MAX_DATA];
     uint8_t source_counter;
     uint8_t source_conn_index;
+    uint8_t source_verified;
     uint8_t held_after_disconnect;
+    uint16_t source_vid;
+    uint16_t source_pid;
     uint32_t captured_us;
+    uint8_t hybrid_valid;
+    uint8_t hybrid_mode;
+    uint8_t hybrid_reason;
+    uint8_t hybrid_reserved;
+    uint32_t hybrid_groups;
+    uint8_t hybrid_data[NS2_NATIVE_MOTION_MAX_DATA];
 } ns2_native_motion_snapshot_t;
 
 // Core1 producer: publish bytes beginning immediately after report byte 0x0E (the length byte).
 // Invalid/truncated lengths are rejected. `report` is the complete 63-byte native BLE payload.
 bool ns2_native_motion_publish(uint8_t source_conn_index,
+                               uint16_t source_vid, uint16_t source_pid,
                                const uint8_t *report, uint16_t report_length,
                                uint32_t captured_us);
 
