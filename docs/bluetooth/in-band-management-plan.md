@@ -61,25 +61,41 @@ ready command, which only appears when armed + a client has written). CDC readin
 `config_cdc_task()` for the (possibly deprecated) wired path. Command execution stays on core0 — no
 new concurrency.
 
-### C3 — Authenticated authorization (the mandated new design)
-- Raise the RX/TX characteristics to require encryption + bonding:
-  `ATT_SECURITY_NONE` → `ATT_SECURITY_AUTHENTICATED` (LE Secure Connections; SM is already
-  `SM_AUTHREQ_BONDING | SM_AUTHREQ_SECURE_CONNECTION`). A random nearby phone then cannot write
-  commands — only a bonded phone can.
-- First bond happens inside a deliberate **arming window** (C4). After that, the bonded phone may
-  reconnect and manage whenever the user re-arms (or, if we choose, silently — a decision in §7).
-- Keep the existing single-client acceptance and per-write state checks.
-- Keep management on the **LE Peripheral role**, classified before it can consume a controller/HID
-  slot or enter controller SM/GATT discovery (config-transports.md:33-34 already does this).
+### C3 — Connect/disconnect anytime (no per-session gesture) [owner: 2026-08-12]
+The service is **always connectable while the console is awake** — a paired phone opens the app and
+connects whenever, with no BOOTSEL gesture per session. Model = **pair once, then reconnect freely**
+(like any Bluetooth device):
+- **Steady state:** while the console is awake and no controller scan/inquiry/connect is in flight,
+  the management service advertises **connectably at the existing low duty (100–150 ms)**. On connect,
+  advertising stops; on disconnect, it resumes. A bonded phone reconnects at will.
+- `g_mgmt_enabled` (a build/user setting, default off during rollout) replaces the config-mode gate
+  in `config_ble_service_task` and the RX/advertising guards: `g_usb_config_mode` →
+  `(g_usb_config_mode || g_mgmt_enabled)`. When disabled, byte-identical to today (zero-cost return).
 
-### C4 — Arm gesture (on-demand, auto-disarm)
-Because we are deprecating Config, **repurpose the current 2 s BOOTSEL hold**: instead of
-re-enumerating to CDC, it **arms in-band management** (sets `g_mgmt_armed`, starts low-duty
-advertising) while staying in the Pro2/GameCube/Joy-Con personality. Auto-disarm on a timeout
-(e.g. 2–3 min) if no client connects, and on management-client disconnect (configurable). A short
-LED pattern indicates "armed/advertising," matching the existing config-mode LED convention.
+### C4 — Authenticated authorization (the mandated gate, now the *sole* gate)
+Without the physical Config gesture, **bonding is the only access control** — so it must be real:
+- Raise RX/TX from `ATT_SECURITY_NONE` → **`ATT_SECURITY_AUTHENTICATED`** (LESC; SM already
+  `SM_AUTHREQ_BONDING | SM_AUTHREQ_SECURE_CONNECTION`). Only a bonded phone can write commands.
+- **First-bond is the one remaining security decision (§7.1).** With `IO_CAPABILITY_NO_INPUT_NO_OUTPUT`
+  the SM does Just-Works pairing (no user confirmation), so "always advertising + open first-bond"
+  would let *any* nearby phone bond and manage. Recommended: **first pairing happens once through the
+  kept CDC Config fallback (C-dep) or a one-time pairing window; thereafter the bonded phone connects
+  anytime with no gesture.** A one-time setup step is *not* the per-session re-arm that was rejected.
+- Keep single-client acceptance and the LE-Peripheral-role classification before any slot/SM/GATT use
+  (config-transports.md:33-34).
 
-### C5 — Flash-op timing during gameplay
+### C5 — Wake-from-sleep is never broken (hard invariant)
+Wake advertising **strictly outranks** management. Concretely:
+- Management advertises **only while the console is awake** (`!tud_suspended()`), and **suppresses +
+  yields the advertiser** whenever `wake_adv` is active or pending (the `if (wake_adv.active) return;`
+  guard already exists; extend it so a running management advert is *stopped*, not just not-started,
+  when wake needs the radio).
+- When the console sleeps, management stops advertising and disconnects any client so wake owns the
+  single LE advertiser exactly as today. (A phone therefore cannot manage while the console sleeps —
+  acceptable; wake the console first.)
+- This makes "don't break wake" a checkable invariant, validated in HW check 6a below.
+
+### C6 — Flash-op timing during gameplay
 `save`, `amiibo commit`, `amiibo persist` write flash, which parks core0 (brief input/audio hitch).
 The deferred-save machinery already exists (`save_not_before_ms`, `save_requested`, core1 control
 tick is "the only flash writer" — config-transports.md:76-78). Route wireless-initiated flash ops
@@ -117,22 +133,24 @@ flash timing; all run on core0 under the same parser.
 **What in-band management replaces:** all *user-facing* config — settings, colors, and the entire
 Amiibo workflow — with no console disconnect. The Web Bluetooth client already exists.
 
-**What must be re-homed before the CDC personality can be removed:** the **developer/diagnostic
-commands** (`state/raw/audiostat/imu/imuanom/fwreads/sw2cap/btid`) are USB/UART-only today and live
-in config mode. They already have a natural home in the **UART diag link** (`ns2_uart_diag`, which
-runs during normal operation and is what this project uses for tracing). Move/confirm them there (or
-behind a debug build) so removing CDC loses no capability.
+**Diagnostics are NOT a blocker (corrected 2026-08-12).** The developer/diagnostic surface already
+runs in **every personality** over the **UART diag link** — `ns2_uart_diag_task()` is called
+unconditionally in the main loop (its own comment: "remains available while USB is owned by the
+console"), gated by `-DNS2_UART_DIAG`. It is a *richer* surface than the config.c diagnostic commands
+(motion/PDU/audio/NFC-mirror/BT-version/traces). The owner confirmed using UART diagnostics in Pro2
+mode. So removing the CDC Config personality loses **no** diagnostic capability; the config.c
+`state/raw/audiostat/imu/…` handlers are a convenience duplicate that can be dropped with CDC or kept
+UART/debug-only.
 
-**Deprecation stages:**
-1. Ship in-band management alongside the existing CDC config (both work). Gain hardware confidence.
-2. Repurpose the 2 s-hold gesture to arm in-band management (C4). CDC config becomes a build-flag
-   fallback (`-DCONFIG_CDC_FALLBACK`), default off.
-3. Once diagnostics are confirmed on UART, remove `USB_PERSONALITY_CDC_CONFIG`, its descriptors, the
-   CDC half of `config_cdc_task`, and the `Connect USB` path in `index.html`.
-
-**Decision point (needs owner):** Web Bluetooth requires Chrome/Edge + a BLE-capable host + secure
-context. Removing CDC removes the *wired, browserless* fallback. Recommendation: keep CDC behind a
-default-off build flag for one release rather than deleting outright. (See §7.)
+**Deprecation stages (owner decisions applied):**
+1. Ship in-band management alongside the existing CDC Config (both work). Gain hardware confidence.
+   CDC Config **stays behind a default-off build flag** (owner: "keep it gated default off until we're
+   sure it can be removed"), and doubles as the **one-time first-pairing path** (C4).
+2. Once in-band management is hardware-proven, the CDC flag stays off by default; the wired path is a
+   recovery-only fallback.
+3. Only after confidence: remove `USB_PERSONALITY_CDC_CONFIG`, its descriptors, the CDC half of
+   `config_cdc_task`, and the `Connect USB` path in `index.html`. Diagnostics remain on UART — nothing
+   to re-home.
 
 ---
 
@@ -154,6 +172,15 @@ default-off build flag for one release rather than deleting outright. (See §7.)
 **The one empirical gate:** audio on Pico 2 W during an *active* management session (idle is proven
 safe; active is menu/stationary but must be measured). See §6 tool.
 
+**New continuous cost to prove: low-duty advertising while enabled/awake/no-client.** Unlike today
+(advertising only in Config, i.e. no gameplay), the always-connectable model advertises continuously
+during awake gameplay. This must be shown not to disturb input/audio/gyro (HW check 7b).
+**Fallback if it does:** the DualSense audio bridge already knows when it is streaming
+(`ds5_audio_bridge`), so management advertising can be **suppressed while audio actively streams** and
+resumed otherwise — a phone then connects during any non-audio moment (menus, most gameplay). This
+keeps "connect anytime" in practice while removing advertising airtime from the audio-critical window.
+Prefer the simple always-advertise path; adopt this suppression only if 7b shows measurable impact.
+
 ---
 
 ## 6. Test & tool strategy
@@ -162,15 +189,17 @@ safe; active is menu/stationary but must be measured). See §6 tool.
 - `test_config_wireless_bridge.c` already covers fragmented commands, busy rejection, oversized-line
   recovery, response chunking, disconnect session invalidation, stale-response rejection
   (config-transports.md:136-137). **Add:**
-  - **Arming gate logic (C1):** RX writes rejected when `!(g_usb_config_mode || g_mgmt_armed)`;
-    accepted when armed; auto-disarm timeout transitions.
-  - **Allowlist in normal mode:** every diagnostic command rejected over wireless while armed;
+  - **Enable gate logic (C1/C3):** RX writes rejected when `!(g_usb_config_mode || g_mgmt_enabled)`;
+    accepted when enabled.
+  - **Allowlist in normal mode:** every diagnostic command rejected over wireless while enabled;
     every user command accepted.
-  - **Deferred-flash routing (C5):** a wireless `save`/`amiibo commit` sets the deferred request
+  - **Deferred-flash routing (C6):** a wireless `save`/`amiibo commit` sets the deferred request
     rather than busy-waiting; a mock core1 tick performs it; response is published after.
-- **New:** a small state-machine test for `g_mgmt_armed` (arm gesture edge → advertise → client
-  connect → disarm on disconnect/timeout), mirroring `test_bthid_late_identity.c`'s mock-transport
-  style.
+  - **Wake priority (C5):** a mock "console asleep / wake active" input suppresses management
+    advertising and drops any client — pure state-logic, no radio.
+- **New:** a small state-machine test for the management enable/advertise lifecycle (enabled + awake +
+  no scan → advertise; client connect → stop advertising; console sleep or wake-active → suppress +
+  drop client), mirroring `test_bthid_late_identity.c`'s mock-transport style.
 - **Security note:** the encryption-required-before-write property (C3) is an SM/ATT runtime
   behavior; pin it in **hardware validation** (below) rather than a host mock.
 
@@ -182,35 +211,55 @@ flash `persist`. A management session must not increase `core1GapsOver10ms` beyo
 window. This gives an objective, on-device latency/jitter signal without external gear.
 
 ### Hardware validation matrix (extends config-transports.md:144-153 to normal mode)
-1. Disarmed: phone scan shows **no** management service in Pro2/GC/Joy-Con (idle invisibility).
-2. Arm gesture → service advertises; only a **bonded** phone can write (unbonded write rejected).
-3. Swap amiibo from phone **while a game is running** (menu context): tag changes, no input drop.
+1. **Feature disabled** (`g_mgmt_enabled` off): phone scan shows **no** management service; behavior
+   byte-identical to today (zero-cost invisibility).
+2. **Enabled, console awake:** service advertises at low duty; a **bonded** phone connects; an
+   **unbonded** phone's write is rejected (encryption/bond gate).
+3. Swap amiibo from phone **while a game is running** (menu context): active tag changes, **no input
+   drop, no gyro glitch**.
 4. Change colors from phone live; persist; confirm after continuing gameplay (no re-enumeration).
-5. Deferred flash `persist` during gameplay: measure `core1GapsOver10ms` delta = only the write.
-6. Pico 2 W **audio** playing + management client active: confirm no stutter (the empirical gate).
-7. Motion (gyro) uninterrupted during an active management session.
-8. Personality switch from phone (if included): console shows the expected reconnect, comes back
-   correctly on the new personality.
-9. Auto-disarm after timeout / on client disconnect; service disappears; back to zero-cost idle.
-10. Regression: input, rumble, wake, LED, BOOTSEL, reconnect unchanged with the feature present but
-    idle.
+5. Deferred flash `persist` during gameplay: `core1GapsOver10ms` delta = **only** the write window.
+6. **Audio gate (Pico 2 W):** audio playing + management client connected + actively swapping amiibo →
+   **no stutter**. The one true empirical gate.
+   - **6a. Wake gate:** with the feature enabled, put the console to sleep → management advertising
+     **stops**, `wake_adv` owns the advertiser, and **wake-from-sleep still works**. Then wake → the
+     bonded phone can reconnect. (Directly proves "don't break wake.")
+   - **6b. Gyro gate:** genuine-Pro2/DualSense motion is uninterrupted during an active session (idle
+     is proven; this covers active).
+7. **Latency meter:** capture `core1MaxGapUs`/`core1GapsOver10ms` (a) disabled, (b) enabled+advertising
+   no client, (c) client connected active. Advertising-no-client must be indistinguishable from
+   disabled within noise; client-active must not exceed the flash-write window.
+8. Personality switch — **deferred** (see §7.3); not in this matrix until its own investigation lands.
+9. Console sleeps mid-session → advertising stops + client dropped cleanly; on wake, reconnect works.
+10. Regression: input, rumble, wake, LED, BOOTSEL, reconnect, motion, audio all unchanged with the
+    feature present but **disabled** (default), and unchanged when enabled but no client connected.
 
 ---
 
-## 7. Open decisions (need owner input before build)
+## 7. Decisions (owner input applied 2026-08-12)
 
-1. **Re-arm model:** must the user re-arm (BOOTSEL) every management session, or may a *bonded* phone
-   reconnect-and-manage silently? (Silent = convenient; armed-only = strictly safer + lower idle
-   airtime. Recommend: armed window for first bond; afterward allow bonded reconnect but only accept
-   *writes* while armed — a middle path.)
-2. **CDC fallback lifetime:** delete the CDC config personality outright, or keep it behind a
-   default-off build flag for one release for browserless/wired recovery? (Recommend: keep one
-   release.)
-3. **Personality switch scope:** include "change output personality from phone" in v1 (accepting the
-   console reconnect), or defer it and ship amiibo+config first? (Recommend: defer; it's the only
-   disruptive op and the least frequent.)
-4. **Diagnostics home:** confirm the developer commands move to UART diag (vs a debug build) before
-   CDC removal.
+1. **Session model — RESOLVED: connect/disconnect anytime, no per-session gesture.** Owner: "People
+   should be able to connect disconnect at any time." Model is pair-once-then-reconnect-freely (C3).
+   Hard constraints reaffirmed: **must not add input latency, must not disturb audio/gyro (BT-timing
+   dependent), and must not break wake-from-sleep** — captured as C5 (wake invariant) + the coexistence
+   proof (§5) + the audio/gyro/wake HW gates (§6).
+   - **Sub-decision still open (§7a): first-bond mechanism.** Just-Works pairing means "always
+     advertising + open first-bond" lets any nearby phone bond. Recommended: first pairing via the
+     kept CDC Config fallback (or a one-time pairing window); afterward the bonded phone connects with
+     no gesture. Needs an explicit pick before build.
+2. **CDC fallback — RESOLVED: keep it, default-off build flag.** Owner: "Keep it gated default off
+   until we're sure it can be removed." Also serves as the one-time first-pairing path.
+3. **Personality switch — DEFERRED pending a dedicated re-enumeration-safety investigation.** Owner:
+   "check the plan and plan accordingly before implementing forced personality change, we don't want
+   to break anything." Ships **not** in the first cut. Before it is ever added, a separate
+   investigation must prove a *forced* runtime re-enumeration is safe: does `usb.c`'s existing
+   controller-cycle re-enumeration (`usb_apply_controller_cycle`, already used by the BOOTSEL
+   mode-cycle) drop and re-add cleanly on a live console without hanging a game; how it interacts with
+   an active BT controller link, audio streaming, wake state, and bonds; and whether the console
+   re-pairs the "new" controller gracefully. Amiibo + config ship first without it.
+4. **Diagnostics — RESOLVED: already on UART in all modes.** Owner: "I thought uart worked in all
+   modes for diagnostics? I've had it in procon 2 mode…" Confirmed (`ns2_uart_diag_task` runs
+   unconditionally). No re-homing needed; CDC removal loses no diagnostics.
 
 ---
 
@@ -222,10 +271,15 @@ behaviors with a concrete way to close each:
 | Unknown | Closure |
 |---|---|
 | Encryption-required-before-write actually rejects unbonded writes | HW check 2 (SM/ATT is standard BTstack; high confidence) |
-| Active session doesn't disturb core1 cadence | `core1GapsOver10ms` meter, HW checks 5-7 |
-| Pico 2 W audio survives an active session | HW check 6 (the one true gate) |
-| Deferred-flash path lands writes safely under gameplay | Host test (C5) + HW check 5 |
-| Idle truly invisible/zero-cost | Already proven in code + HW check 1 |
+| **Low-duty advertising (no client) doesn't disturb input/audio/gyro** | `core1` meter HW check 7(b); the "always-connectable" cost |
+| Active session doesn't disturb core1 cadence | `core1GapsOver10ms` meter, HW checks 5, 7 |
+| **Pico 2 W audio survives an active session** | HW check 6 (the one true gate) |
+| **Wake-from-sleep still fires with the feature enabled** | HW check 6a (wake outranks management, C5) |
+| Gyro uninterrupted during an active session | HW check 6b |
+| Deferred-flash path lands writes safely under gameplay | Host test (C6) + HW check 5 |
+| Idle truly invisible/zero-cost when disabled | Already proven in code + HW check 1 |
+| Forced personality re-enumeration is safe on a live console | **Separate investigation (§7.3) before that op ships** |
 
-No firmware change is proposed until (a) these host tests are written and green and (b) the owner
-resolves §7. This document is the go/no-go reference.
+No firmware change is proposed until (a) the host tests above are written and green, (b) the §7a
+first-bond mechanism is chosen, and (c) the audio/gyro/wake HW gates pass. This document is the
+go/no-go reference. Personality switch is out of the first cut pending its own investigation.
