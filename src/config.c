@@ -20,6 +20,7 @@
 #include "bt/bthid/devices/generic/bthid_gamepad.h" // bthid_gamepad_dump_map (btid desc command)
 #include "virtual_amiibo_store.h"
 #include "config_wireless_bridge.h"
+#include "usb.h"  // g_usb_personality (personality query command)
 
 #include <string.h>
 #include <stdio.h>
@@ -686,6 +687,28 @@ static void cmd_device(void) {
     reply(out);
 }
 
+// Current output personality (read-only). Lets the management app display the mode and gate
+// mode-specific controls (e.g. amiibo controls are only meaningful in Pro2). The switch action
+// itself is a separate future command (see docs/bluetooth/app-interface-audit.md G2). "config" is
+// omitted from the controller list since it is the configuration personality, not a controller.
+static const char *personality_short_name(usb_personality_t p) {
+    switch (p) {
+        case USB_PERSONALITY_SWITCH2_PRO2: return "pro2";
+        case USB_PERSONALITY_NSO_GAMECUBE: return "gc";
+        case USB_PERSONALITY_JOYCON2_L:    return "jcl";
+        case USB_PERSONALITY_JOYCON2_R:    return "jcr";
+        case USB_PERSONALITY_CDC_CONFIG:   return "config";
+        default:                           return "unknown";
+    }
+}
+
+static void cmd_personality(void) {
+    snprintf(out, sizeof(out),
+             "{\"current\":\"%s\",\"available\":[\"pro2\",\"gc\",\"jcl\",\"jcr\"]}",
+             personality_short_name(g_usb_personality));
+    reply(out);
+}
+
 // Raw HID report of the connected controller (hex) for the debug view. Lets us
 // reverse-engineer inputs a driver doesn't parse yet (e.g. Xbox Elite paddles).
 static void cmd_raw(void) {
@@ -957,6 +980,8 @@ static void handle_line(char *cmd) {
         cmd_state();
     } else if (strcmp(cmd, "device") == 0) {
         cmd_device();
+    } else if (strcmp(cmd, "personality") == 0) {
+        cmd_personality();
     } else if (strcmp(cmd, "audiostat") == 0) {
         cmd_audiostat(false);
     } else if (strcmp(cmd, "audiostat reset") == 0) {

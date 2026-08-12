@@ -7,6 +7,11 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Added
 
+- Configuration/management command `personality` (available over USB CDC and the wireless bridge)
+  reports the current output personality (`pro2`/`gc`/`jcl`/`jcr`/`config`) and the selectable
+  controller list. Read-only; lets a management client display the mode and gate mode-specific
+  controls (amiibo controls are only meaningful in Pro2). Part of the phone-app firmware interface
+  (`docs/bluetooth/app-interface-audit.md`).
 - Pico-side contract coverage for a no-root Android handheld controller bridge. The canonical
   Classic HID descriptor and neutral report are versioned with the firmware, and a host test drives
   their exact report ID, axes, 14-button map, hat, full-state retention, and disconnect cleanup
