@@ -1,6 +1,6 @@
 # Compatibility Matrix
 
-Last updated: 2026-07-29
+Last updated: 2026-08-12
 
 This matrix records observed behavior, not inferred support. "Source-tested" means host tests or
 code inspection only; it is weaker than physical hardware confirmation.
@@ -48,7 +48,7 @@ code inspection only; it is weaker than physical hardware confirmation.
 |---|---|
 | Former double/triple/hold scheduling with DualSense/Edge connected | ✅ Hardware-confirmed baseline |
 | Revised paired/unpaired/Config action matrix | 🟡 Host/build confirmed; hardware pending |
-| Single-tap controller-only personality cycle | 🟡 Host/build confirmed; hardware pending |
+| Single-tap controller-only personality cycle | ✅ Confirmed (owner, 2026-08-12): routine BOOTSEL personality cycle on a live Switch 2 — the console detects the new controller and drops the old one |
 | Two-second direct Config entry and Config→Pro2 exit | ✅ Confirmed during CDC-only Virtual Amiibo validation |
 | Paired double-tap disconnect-without-bond-delete then pairing | 🟡 Build confirmed; hardware pending |
 | Triple-tap wipe from normal and Config modes | 🟡 Host/build confirmed; hardware pending |
