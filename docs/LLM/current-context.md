@@ -548,6 +548,13 @@ band table), `tools/ns2_motion40_gyro_axes.py` (gyro axis, sign and scale).
   controller-mode auto-resume, or corresponding firmware HID/input-source behavior unless the
   maintainer explicitly reopens that scope. Non-HID Android management, Amiibo, Settings, and
   packaging work remain available to Codex.
+- In-band management now boots on in standard builds. RX and TX-CCC writes require BTstack ATT
+  encryption with a 16-byte key, callbacks additionally require a durable LE bond, and new
+  management Just-Works bonds are confirmed only inside the existing double-tap pairing window.
+  A stored phone reconnects outside the window. No-display Android Just Works has no MITM, so this
+  is bonded/encrypted authorization rather than `ATT_SECURITY_AUTHENTICATED`. `mgmt off` is a
+  current-boot escape hatch; reboot restores management on. Host/build validation is complete;
+  the first-pair/reconnect/rejection/reboot matrix still needs hardware validation.
 - Sectors `-3` and `-5` hold alternating version-2 snapshots with generation, header/payload CRC,
   internal baseline/latest-written images, selection, dirty state, and optional signature. The previous bank stays
   valid until the new bank is programmed and verified. Flash work runs only through the existing

@@ -26,7 +26,7 @@ extern "C" {
 // A snapshot of the signals the access decisions depend on. Populated by the
 // caller (btstack_host.c) from live firmware state before each decision.
 typedef struct {
-    bool enabled;             // g_mgmt_enabled (feature flag, default off)
+    bool enabled;             // g_mgmt_enabled (production default on)
     bool console_awake;       // !tud_suspended()
     bool wake_active;         // wake_adv.active or a pending wake burst
     bool scanning;            // observation only; controller discovery coexists with advertising

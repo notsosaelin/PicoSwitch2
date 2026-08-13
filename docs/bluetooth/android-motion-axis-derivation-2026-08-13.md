@@ -74,18 +74,29 @@ Android reports sensors in the device's **natural** orientation, not the orienta
 is never touched). Eight unit tests cover each rotation, the four-rotation identity, negative angles,
 malformed angles falling back to identity rather than scrambling axes, and int16-extreme negation.
 
-## Confidence and what remains
+## Confidence and how this gets confirmed
 
 - **Strong evidence, not proof.** This is a derivation from another project's working code plus our
   own frame reasoning. It is not a measurement on our hardware, and NS-PC-Control's transport (Pi USB
   gadget, its own client) is not identical to ours.
-- **Still required:** the physical pitch/yaw/roll pass — hold the handheld still, then rotate each
-  axis in turn while capturing, and confirm each rotation appears on the expected carrier axis with
-  the expected sign. This is the same protocol that resolved the `SWITCH1` row.
+- **Confirmation is ordinary play, not a test ritual.** Do NOT ask the maintainer to perform
+  deliberate pitch/yaw/roll rotations — that request has been made and declined repeatedly and is not
+  to be raised again. An axis or sign error in this row is not subtle: aiming is rotated or inverted
+  within seconds of using motion in any game that has it. Normal use is a strictly better detector
+  than a staged pose sequence, and it costs nothing.
+- **If aim is wrong, the fix is one row.** The symptom identifies the error directly:
+
+  | Reported symptom | Likely cause | Fix |
+  |---|---|---|
+  | Aim moves left when tilting right (or up/down inverted) | one sign wrong | flip that slot's sign |
+  | Tilting produces the *other* axis's motion (pitch acts as yaw) | two `src` slots swapped | swap those `src` entries |
+  | Aim rotated 90° only on some devices | screen-orientation remap, not this row | `MotionOrientation` (app side) |
+
+  Any correction must keep the row a proper rotation (determinant +1), which
+  `tools/test_ns2_motion_seam.c` enforces.
 - The row lives in firmware precisely so a correction is a flash, not a new APK.
 
 ## Future work
 
-- Run the physical pass and promote this row from corroborated to hardware-confirmed.
 - If a handheld reports a non-standard sensor frame, prefer a per-device note over editing this row
   (the seam file's own rule: never edit one family's row to fix another).

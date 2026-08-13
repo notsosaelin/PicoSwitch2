@@ -7,6 +7,12 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Added
 
+- In-band BLE management is now bonded/encrypted and production-default-on. RX and notification-
+  subscription writes require ATT encryption with a 16-byte key, callbacks also require a durable
+  LE bond, and new management Just-Works bonds are admitted only during the existing double-tap
+  pairing window. Existing controller-central pairing is unchanged. Android no-display Just Works
+  does not provide MITM authentication, so the implementation does not claim
+  `ATT_SECURITY_AUTHENTICATED`. `mgmt off` remains a current-boot escape hatch; reboot restores on.
 - Saved controller-appearance changes can now be applied deliberately without changing output
   personality. The new bonded management command `reenumerate` queues the existing same-personality
   USB detach/reset/reconnect path on core 0; both the Android companion and web portal expose an
@@ -31,17 +37,17 @@ Release notes describe user-visible behavior. Detailed implementation history re
   GAP/EIR, BLE GAP/Config advertising, and the Android UI. Android retains an explicitly labeled
   legacy `Joypad Adapter` discovery matcher for pre-name-change firmware; names do not migrate
   bonds, whose saved address/link keys remain authoritative.
-- In-band BLE management transport (default-off, `mgmt on`). The configuration BLE service (RX/TX
+- In-band BLE management transport (production-default-on; `mgmt off` is temporary). The configuration BLE service (RX/TX
   GATT + wireless command bridge) can now be armed in a normal controller personality, so a phone or
   the web portal manages the adapter — Amiibo, colors, personality, bonds — over Bluetooth **while a
   controller drives the console**, without the CDC Config re-enumeration that drops the console.
-  Gated by a new runtime flag `g_mgmt_enabled` (RAM-only, reverts to off on reboot); when disabled
+  Gated by a runtime flag `g_mgmt_enabled` (RAM-only, standard builds restore on at reboot); when disabled
   the path is byte-identical to before (the proven zero-cost early return). Wireless flash ops
   (`save`, `amiibo clear`, `amiibo persist`) are deferred rather than busy-waited so they never stall
   the controller report loop. The web portal gains a Management panel (`mgmt on/off/status`) and its
   Connect Bluetooth now works in normal Pro Controller 2 mode once enabled.
-  **Not yet authenticated:** the pairing-window bond gate / ATT-encryption enforcement (plan C4) is a
-  separate slice — enable only in a trusted environment until it lands. See
+  The pairing-window first-bond gate and bonded 16-byte ATT-encryption enforcement are now landed;
+  physical rejection/reconnect testing remains. See
   `docs/bluetooth/in-band-management-plan.md`.
 - UART coexistence diagnostics for the in-band management path (GP0/GP1 diag link, all personalities):
   `btstate` (live BLE/management snapshot + scan-suppression cause counters) and `btlife read <N>`

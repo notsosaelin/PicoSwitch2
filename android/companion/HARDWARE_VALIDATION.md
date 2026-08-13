@@ -15,10 +15,14 @@ structural validation and strict figure-v3 CRC checks.
    only app accents; it must not send a firmware color command.
 3. Open **Settings -> Developer**. Confirm Bluetooth available/enabled, both permissions
    true, Companion manager true, and management initially offline.
-4. On a source-default image, arm PicoSwitch2 management using physical Config/`mgmt on`. A
-   diagnostic `-MgmtOn` image is already armed for that boot. On a clean app install, tap **Pair
-   Adapter** and select PicoSwitch2 in Android's chooser. Expect GATT
+4. On a source-default image, confirm PicoSwitch2 advertises management without entering Config.
+   First try **Pair Adapter** outside the pairing window and confirm a new bond cannot complete.
+   Double-tap BOOTSEL, tap **Pair Adapter**, and select PicoSwitch2 in Android's chooser. Expect GATT
    `Connected`, firmware `2.0`, and populated Adapter/Amiibo state.
+   Disconnect/reconnect outside the window and confirm the stored bond works. From Developer,
+   issue `mgmt off` and confirm the current session closes and advertising stops; reboot the adapter
+   and confirm production-default advertising returns. An unbonded/plaintext client must never
+   execute a command.
 5. Change to each output personality once. Expect a success message and **Identity refresh:
    Required**; confirm the console-facing USB controller returns after re-enumeration.
 6. Change the active personality's controller color and save. Confirm it is marked pending, choose

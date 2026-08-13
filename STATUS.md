@@ -12,13 +12,13 @@ Documentation/resource audit: 2026-07-25
 
 ## In-band BLE management transport — 🟡 recovery hardware-confirmed; active-use gate remains 2026-08-13
 
-The configuration BLE service (RX/TX GATT + wireless command bridge) is now armable in a **normal
-controller personality**, gated by a new runtime flag `g_mgmt_enabled` (default off, RAM-only). When
-enabled, a phone or the web portal manages the adapter — Amiibo, colors, `personality`, `bonds`,
+The configuration BLE service (RX/TX GATT + wireless command bridge) is now available in a **normal
+controller personality**, gated by the RAM-only runtime flag `g_mgmt_enabled` (production default
+on; `mgmt off` lasts until reboot). A phone or the web portal manages the adapter — Amiibo, colors, `personality`, `bonds`,
 `wake` — **over Bluetooth while a controller drives the console**, with no CDC Config re-enumeration
 (the console is never dropped). When disabled, the path is byte-identical to before (proven
 zero-cost early return). Landed slices: `mgmt_access.{c,h}` (canonical access-control spec, exhaustive
-128-state host test), `mgmt status/on/off` command + allowlist, `config_ble_authorized()` gate
+256-state host test), `mgmt status/on/off` command + allowlist, `config_ble_authorized()` gate
 decouple, unconditional `config_wireless_task()` pump, deferred wireless flash ops (`save`/`amiibo
 clear`/`amiibo persist` no longer stall core0), and a web-portal Management panel. Built clean on both
 boards; all management and Android-controller contract host tests green
@@ -33,9 +33,12 @@ the fix is inferred sufficient rather than a proof of that unseen management-hal
 console use with audio, gyro, wake, and latency observation remains the final coexistence gate. See
 [`docs/experiments/overnight-investigation-2026-08-13.md`](docs/experiments/overnight-investigation-2026-08-13.md).
 
-**Not yet done (own slices, HW-validated):** authenticated bonding — ATT `AUTHENTICATED` + the double-tap first-bond
-window (plan C4; until it lands an *enabled* link is unauthenticated → trusted-environment only);
-wake-burst advertiser hand-off (C5); and the audio/gyro/latency coexistence gates. See
+**Authorization now implemented, hardware pending:** RX and notification-subscription writes require
+ATT encryption with a 16-byte key; callbacks additionally require a durable LE bond; and a new
+Just-Works bond is accepted only inside the existing double-tap pairing window. No-display Just
+Works cannot provide MITM authentication, so this is accurately described as bonded and encrypted,
+not `ATT_SECURITY_AUTHENTICATED`. Remaining runtime gates are wake-burst advertiser hand-off (C5)
+and the audio/gyro/latency coexistence passes. See
 [`docs/bluetooth/in-band-management-plan.md`](docs/bluetooth/in-band-management-plan.md).
 
 ## Android handheld controller bridge — 🟡 AYN Thor in-game hardware pass 2026-08-13
@@ -799,7 +802,7 @@ addresses and link keys, not names, remain bond authority.
 | Pro2 body/Joy-Con accents, Sony lightbar matching, and DualSense player-slot dots | ✅ Confirmed | Real Switch 2 and DualSense; config v8 hardware pass |
 | BOOTSEL report-boundary scheduling and former double/triple/hold policy | ✅ Confirmed | Real hardware after report-boundary gesture service |
 | Revised single/double/triple/two-second BOOTSEL action matrix | 🟡 Host/build confirmed; hardware pending | Pure gesture/action policy coverage; both board builds |
-| BLE management transport (Config **and** in-band via `g_mgmt_enabled`) | 🟡 Host/build confirmed; hardware pending | Shared USB/BLE command parser, bounded cross-core bridge, production-command allowlist, `config_ble_authorized()` gate, unconditional wireless pump, and local Web Bluetooth portal. Authenticated bonding (plan C4) not yet built — enabled = trusted-environment only |
+| BLE management transport (Config **and** in-band via `g_mgmt_enabled`) | 🟡 Host/build confirmed; hardware pending | Production-default-on service; shared parser, bounded bridge, allowlist, 16-byte ATT encryption, durable-bond callback checks, pairing-window-only first bond, and local Web Bluetooth portal. Android Just Works has no MITM and is not mislabeled authenticated. |
 | Virtual Amiibo persistence and mutable single-slot library | 🟡 540 and v3 read/write/persistence hardware-confirmed; portal refactor pending | All 16 available v3 dumps completed real-console reads/writes; v3 Config Sync, reset-on-UF2, and Config BLE still require regression validation |
 | Late BLE DIS VID/PID handoff and input continuity | ✅ Confirmed | Xbox Series BLE hardware regression after notification-first identity fix |
 | Triple-tap post-wipe admission lock | ✅ Confirmed for the reported workflow | Wipe disconnects and requires an explicit new pairing window |
@@ -852,7 +855,8 @@ single-tap cycle. The selection is not persisted across power cycles.
   radio contention noted in
   [`docs/switch2/audio-passthrough-research.md`](docs/switch2/audio-passthrough-research.md).
 - Config/management is a separate BLE Peripheral role, armed by `config_ble_authorized()` — the
-  explicit Config USB personality **or** the in-band management flag `g_mgmt_enabled` (default off).
+  explicit Config USB personality **or** the in-band management flag `g_mgmt_enabled` (production
+  default on; a runtime `mgmt off` lasts until reboot).
   Management advertising no longer stops controller discovery; the two roles are independently
   scheduled, and the 5.4-hour recovery soak confirms discovery resumes after controller drops.
   When neither trigger is set, the normal controller path performs only a mode-state comparison and
@@ -884,7 +888,7 @@ See [`docs/architecture/overview.md`](docs/architecture/overview.md) and
 | **P1** | **In-band management ↔ controller disconnect/recovery failure** | 🟢 Recovery HW-confirmed. Decoupling fix (commit `68271a0`): a **5.4 h soak** held a Classic controller + management client stable through **10 re-enumerations**; across **3 controller disconnect/reconnect cycles** (all clean, controller-initiated `reason 0x13` — idle-sleep or low battery) the **controller reconnected on its own** (`ctrl False→True` at 05:48:48), management stayed connected throughout (`mgmt.disconnects=0`), and discovery resumed every time (`scan.starts=3`, `suppress.mgmt_armed=0`). **No power cycle ever needed** — the "controller fails to reconnect" symptom is gone. The original `disc=0` wedge was not reproduced (inferred-sufficient, not proven); the `pipe` diagnostic (built, unflashed) makes any recurrence decisive. Remaining: an active-use (console-awake, charged controller) coexistence pass. See [`docs/experiments/overnight-investigation-2026-08-13.md`](docs/experiments/overnight-investigation-2026-08-13.md) |
 | **P2** | **Controlled re-enumeration after host-visible changes** | 🟡 Implemented and host/build validation pending hardware: bonded command `reenumerate` queues the existing same-personality core-0 USB detach/reset/reconnect path, preserving output personality and Bluetooth state. Android and the portal expose an explicit apply action after saving colors. Owner must confirm the console refreshes color and controller input recovers cleanly; mapping remains intentionally absent per project policy. |
 | **P3** | **Web Portal state refresh after Amiibo Sync** | 🟡 Root cause found + fixed in `web/index.html` (2026-08-12): `amiiboInfoCache` (key→decrypted owner/nickname/dates/writeCount) was not invalidated on Sync, so the info box re-read stale metadata under the reused key (the sibling `initializeSelectedAmiibo` invalidates; `saveCurrentAmiibo` did not). Fix adds the same `amiiboInfoCache.delete(...)` before re-render. **Needs browser+adapter validation** (frontend, not host-testable) |
-| **P3** | **In-band management persistence across reboot** | ⬜ `g_mgmt_enabled` is RAM-only (reverts off on reboot). Decide production behavior (persist setting vs. always-off default) and provide a development-friendly path; `NS2_MGMT_DEFAULT_ON` build flag exists for diagnostics only |
+| **P3** | **In-band management production default** | 🟡 Resolved in code: standard builds boot with bonded/encrypted management on; `mgmt off` is a current-boot escape hatch and reboot restores on. No settings-schema migration or flash persistence was added. Physical first-pair, bonded reconnect, unbonded-write rejection, and reboot behavior remain to validate. |
 | P2 | DualSense microphone return | 🟡 Headset presence is implemented; microphone Opus decode and USB return remain |
 | P2 | Let reconnecting BLE controllers sleep with the console without touching bonds or admission | 🔵 Research concluded: no safe generic host-only path; controller-specific evidence required |
 | P3 | Additional controller IMUs → console-native report `0x09` translation | 🔵 Native Pro2 passthrough and DualSense/Edge synthesis are confirmed; each remaining family needs verified calibration, axis, scale, and timestamp handling |

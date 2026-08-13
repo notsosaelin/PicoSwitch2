@@ -7,8 +7,7 @@
 #   ./build.ps1 pico2_w        # build only pico2_w
 #   ./build.ps1 -Clean         # wipe build dirs first, then build
 #   ./build.ps1 pico2_w -NoUartDiag # omit the GP0/GP1 live diagnostic channel
-#   ./build.ps1 pico2_w -MgmtOn     # DIAGNOSTIC: boot with in-band BLE management
-#                                   # enabled (NS2_MGMT_DEFAULT_ON) — never ship
+#   ./build.ps1 pico2_w -MgmtOn     # compatibility alias; management now boots on
 #   ./build.ps1 pico2_w -NS2FirmwareVersion 2.1.4 `
 #       -NS2BluetoothVersion 12.0.0 -NS2DspVersion 0.2.3
 #                              # select one coherent firmware identity tuple
@@ -97,7 +96,9 @@ $extraArgs += @("-DNS2_PRO_FIRMWARE_VERSION=$NS2FirmwareVersion",
                 "-DNS2_PRO_BLUETOOTH_VERSION=$NS2BluetoothVersion",
                 "-DNS2_PRO_DSP_VERSION=$NS2DspVersion",
                 "-DNS2_UART_DIAG=$(if ($NoUartDiag) { 'OFF' } else { 'ON' })",
-                "-DNS2_MGMT_DEFAULT_ON=$(if ($MgmtOn) { 'ON' } else { 'OFF' })")
+                # Keep ordinary builds deterministic even if an older build
+                # directory cached the former diagnostic default.
+                "-DNS2_MGMT_DEFAULT_ON=ON")
 
 foreach ($b in $Boards) {
     $boardArgs = @($extraArgs)

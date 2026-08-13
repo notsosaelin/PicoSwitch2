@@ -163,12 +163,10 @@ volatile bool g_usb_config_mode = false;
 
 #endif  // NS2_PRO
 
-// In-band BLE management feature gate (see usb.h). Default OFF -- when false the
-// management path is byte-identical to today. Defined in both build axes so the
-// shared btstack_host.c gate links; set by the `mgmt` config command. A
-// diagnostic build may boot it ON via -DNS2_MGMT_DEFAULT_ON to reproduce the
-// coexistence failure immediately after a power cycle (never ship ON: management
-// is unauthenticated until plan C4).
+// In-band BLE management feature gate (see usb.h). Production builds boot it ON
+// now that management writes require a durable LE bond, active 16-byte link
+// encryption, and the existing wireless command allowlist. `mgmt off` remains a
+// RAM-only escape hatch; an ordinary reboot restores this production default.
 #ifdef NS2_MGMT_DEFAULT_ON
 volatile bool g_mgmt_enabled = true;
 #else
