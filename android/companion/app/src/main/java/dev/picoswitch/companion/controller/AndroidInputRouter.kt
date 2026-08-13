@@ -11,6 +11,12 @@ class AndroidInputRouter {
     private val _state = MutableStateFlow(ControllerState.Neutral)
     val state: StateFlow<ControllerState> = _state.asStateFlow()
     var selectedDescriptor: String? = null
+        private set
+    var requestedFaceLayout: ControllerFaceLayout = ControllerFaceLayout.Auto
+        private set
+    var resolvedFaceLayout: ResolvedControllerLayout = ControllerLayoutResolver.resolve(requestedFaceLayout, null)
+        private set
+    private var selectedIdentity: ControllerSourceIdentity? = null
     private var keyUp = false
     private var keyRight = false
     private var keyDown = false
@@ -26,9 +32,20 @@ class AndroidInputRouter {
 
     fun select(device: InputDevice?) {
         selectedDescriptor = device?.descriptor
+        selectedIdentity = device?.let {
+            ControllerSourceIdentity(it.descriptor, it.name, it.vendorId, it.productId)
+        }
+        resolvedFaceLayout = ControllerLayoutResolver.resolve(requestedFaceLayout, selectedIdentity)
         clearDpad()
         heldButtonKeys.clear()
         _state.value = ControllerState.Neutral
+    }
+
+    fun setFaceLayout(layout: ControllerFaceLayout) {
+        requestedFaceLayout = layout
+        resolvedFaceLayout = ControllerLayoutResolver.resolve(layout, selectedIdentity)
+        // A key held while the mapping changes must never survive under its old semantic.
+        neutralize()
     }
 
     fun onKey(event: KeyEvent): Boolean {
@@ -95,7 +112,8 @@ class AndroidInputRouter {
 
     fun neutralize() { clearDpad(); heldButtonKeys.clear(); _state.value = ControllerState.Neutral }
 
-    private fun buttonForKey(keyCode: Int): ControllerButton? = when (keyCode) {
+    private fun buttonForKey(keyCode: Int): ControllerButton? {
+        val positional = when (keyCode) {
         KeyEvent.KEYCODE_BUTTON_A -> ControllerButton.A
         KeyEvent.KEYCODE_BUTTON_B -> ControllerButton.B
         KeyEvent.KEYCODE_BUTTON_X -> ControllerButton.X
@@ -111,6 +129,8 @@ class AndroidInputRouter {
         KeyEvent.KEYCODE_BUTTON_MODE -> ControllerButton.Home
         KeyEvent.KEYCODE_BUTTON_C, KeyEvent.KEYCODE_BUTTON_Z -> ControllerButton.Capture
         else -> null
+        }
+        return positional?.let { ControllerLayoutResolver.mapFaceButton(it, resolvedFaceLayout.layout) }
     }
 
     private fun publishDpad() {

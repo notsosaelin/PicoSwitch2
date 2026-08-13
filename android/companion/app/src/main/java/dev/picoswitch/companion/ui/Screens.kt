@@ -32,6 +32,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import dev.picoswitch.companion.BuildConfig
 import dev.picoswitch.companion.controller.BridgePhase
+import dev.picoswitch.companion.controller.ControllerFaceLayout
 import dev.picoswitch.companion.data.ColorTarget
 import dev.picoswitch.companion.model.*
 
@@ -329,12 +330,55 @@ fun ControllerScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onPrep
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             val wide = maxWidth >= LayoutTokens.TwoPaneBreakpoint
             val source: @Composable () -> Unit = { InputSourceCard(ui, viewModel) }
+            val layout: @Composable () -> Unit = { ControllerLayoutCard(ui, viewModel) }
             val bridge: @Composable () -> Unit = { BridgeCard(ui, viewModel, onPrepare, onPairHost) }
             if (wide) Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space4)) {
-                Box(Modifier.weight(1f)) { source() }; Box(Modifier.weight(1f)) { bridge() }
-            } else Column(verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space4)) { source(); bridge() }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space4)) { source(); layout() }
+                Box(Modifier.weight(1f)) { bridge() }
+            } else Column(verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space4)) { source(); layout(); bridge() }
         }
         InputDiagnostics(ui.controllerState)
+    }
+}
+
+@Composable
+private fun ControllerLayoutCard(ui: CompanionUiState, viewModel: CompanionViewModel) {
+    HardwareCard {
+        SectionHeading(Icons.Default.SwapHoriz, "Controller layout")
+        Spacer(Modifier.height(LayoutTokens.Space2))
+        Text(
+            "Android reports face-button positions, which may not match the letters printed on Nintendo-style handhelds.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        ControllerFaceLayout.entries.forEach { layout ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = LayoutTokens.TouchHeight)
+                    .selectable(
+                        selected = ui.requestedFaceLayout == layout,
+                        enabled = ui.selectedSourceDescriptor != null,
+                        role = Role.RadioButton,
+                        onClick = { viewModel.setControllerFaceLayout(layout) },
+                    ),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(selected = ui.requestedFaceLayout == layout, onClick = null, enabled = ui.selectedSourceDescriptor != null)
+                Spacer(Modifier.width(LayoutTokens.Space2))
+                Column(Modifier.weight(1f)) {
+                    Text(layout.title)
+                    Text(layout.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        if (ui.requestedFaceLayout == ControllerFaceLayout.Auto) {
+            Text(
+                "Auto resolved to ${ui.resolvedFaceLayout.layout.title}: ${ui.resolvedFaceLayout.reason}.",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
     }
 }
 
