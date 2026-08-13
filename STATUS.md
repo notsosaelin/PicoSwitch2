@@ -20,7 +20,8 @@ on; `mgmt off` lasts until reboot). A phone or the web portal manages the adapte
 zero-cost early return). Landed slices: `mgmt_access.{c,h}` (canonical access-control spec, exhaustive
 256-state host test), `mgmt status/on/off` command + allowlist, `config_ble_authorized()` gate
 decouple, unconditional `config_wireless_task()` pump, deferred wireless flash ops (`save`/`amiibo
-clear`/`amiibo persist` no longer stall core0), and a web-portal Management panel. Built clean on both
+clear`/`amiibo persist` no longer stall core0), asynchronously completed session-bound bond list/
+remove replies, and a web-portal Management panel. Built clean on both
 boards; all management and Android-controller contract host tests green
 (`tools/run_mgmt_tests.ps1`, 11/11), including versioned bounded bond enumeration and
 response-too-large fail-closed coverage.
@@ -37,8 +38,8 @@ console use with audio, gyro, wake, and latency observation remains the final co
 ATT encryption with a 16-byte key; callbacks additionally require a durable LE bond; and a new
 Just-Works bond is accepted only inside the existing double-tap pairing window. No-display Just
 Works cannot provide MITM authentication, so this is accurately described as bonded and encrypted,
-not `ATT_SECURITY_AUTHENTICATED`. Remaining runtime gates are wake-burst advertiser hand-off (C5)
-and the audio/gyro/latency coexistence passes. See
+not `ATT_SECURITY_AUTHENTICATED`. Wake-burst advertiser handoff is implemented and awaits its
+runtime pass alongside the audio/gyro/latency coexistence checks. See
 [`docs/bluetooth/in-band-management-plan.md`](docs/bluetooth/in-band-management-plan.md).
 
 ## Android handheld controller bridge — 🟡 AYN Thor in-game hardware pass 2026-08-13

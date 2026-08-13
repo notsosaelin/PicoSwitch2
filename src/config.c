@@ -311,6 +311,14 @@ typedef enum {
 static config_reply_transport_t reply_transport = CONFIG_REPLY_CDC;
 static uint32_t wireless_reply_session;
 
+static struct {
+    bool active;
+    bool is_remove;
+    bool is_page;
+    uint32_t session;
+    absolute_time_t deadline;
+} wireless_bonds;
+
 static void reply(const char *s) {
     if (reply_transport == CONFIG_REPLY_WIRELESS) {
         if (!config_wireless_bridge_publish_response(
@@ -920,8 +928,24 @@ static void cmd_mgmt(const char *arg) {
 
 // Saved-pairing management for the app: list the stored LE bonds and remove one
 // by index. The LE device DB is owned by the BTstack thread, so the op is
-// marshaled to core1 and we pump USB while waiting (same pattern as `save`).
+// marshaled to core1. Wireless callers complete asynchronously so core0 keeps
+// servicing the console; CDC Config may synchronously pump USB while waiting.
 // Classic-BT bonds are managed via the triple-tap full wipe, not per-entry.
+static void reply_bonds_result(bool is_remove, bool is_page) {
+    if (is_remove) {
+        reply(btstack_host_bonds_remove_ok() ? "{\"ok\":true}"
+                                             : "{\"error\":\"no such bond\"}");
+    } else if (!is_page && !btstack_host_bonds_list_complete()) {
+        // The old spelling is intentionally all-or-error. New clients use the
+        // v2 cursor form after receiving this compact signal.
+        reply("{\"error\":\"response_too_large\",\"code\":413}");
+    } else {
+        // Both legacy and v2 operations return a bounded JSON envelope. The
+        // legacy envelope retains `bonds`, so older clients ignore metadata.
+        reply(btstack_host_bonds_list_json());
+    }
+}
+
 static void cmd_bonds(const char *arg) {
     mgmt_bonds_action_t action;
     int value;
@@ -938,6 +962,14 @@ static void cmd_bonds(const char *arg) {
         reply("{\"error\":\"busy\"}");
         return;
     }
+    if (reply_transport == CONFIG_REPLY_WIRELESS) {
+        wireless_bonds.active = true;
+        wireless_bonds.is_remove = is_remove;
+        wireless_bonds.is_page = is_page;
+        wireless_bonds.session = wireless_reply_session;
+        wireless_bonds.deadline = make_timeout_time_ms(1000);
+        return;
+    }
     absolute_time_t deadline = make_timeout_time_ms(1000);
     while (!btstack_host_bonds_done() && !time_reached(deadline))
         tud_task();
@@ -945,19 +977,7 @@ static void cmd_bonds(const char *arg) {
         reply("{\"error\":\"timeout\"}");
         return;
     }
-    if (is_remove) {
-        reply(btstack_host_bonds_remove_ok() ? "{\"ok\":true}"
-                                             : "{\"error\":\"no such bond\"}");
-    } else if (!is_page && !btstack_host_bonds_list_complete()) {
-        // The old spelling is intentionally all-or-error.  New clients use
-        // the v2 cursor form after receiving this compact signal.
-        reply("{\"error\":\"response_too_large\",\"code\":413}");
-    } else {
-        // Both legacy and v2 operations now return a bounded JSON envelope.
-        // The legacy envelope retains the original `bonds` array field, so
-        // older clients ignore its version/total/next metadata safely.
-        reply(btstack_host_bonds_list_json());
-    }
+    reply_bonds_result(is_remove, is_page);
 }
 
 // Raw HID report of the connected controller (hex) for the debug view. Lets us
@@ -1340,6 +1360,32 @@ void config_wireless_task(void) {
     // intentional. Self-gating: take_command returns false unless the config/
     // management BLE service is armed AND a client has written a full line, so in
     // a normal personality with management off this is a single cheap check.
+    if (wireless_bonds.active) {
+        if (!config_wireless_bridge_session_active(wireless_bonds.session)) {
+            // The client disconnected. The core1 database operation may finish
+            // harmlessly, but its result must never cross into a new session.
+            wireless_bonds.active = false;
+        } else if (!btstack_host_bonds_done() &&
+                   !time_reached(wireless_bonds.deadline)) {
+            return;
+        } else {
+            config_reply_transport_t previous = reply_transport;
+            reply_transport = CONFIG_REPLY_WIRELESS;
+            wireless_reply_session = wireless_bonds.session;
+            bool timed_out = !btstack_host_bonds_done();
+            bool is_remove = wireless_bonds.is_remove;
+            bool is_page = wireless_bonds.is_page;
+            wireless_bonds.active = false;
+            if (timed_out) {
+                reply("{\"error\":\"timeout\"}");
+            } else {
+                reply_bonds_result(is_remove, is_page);
+            }
+            reply_transport = previous;
+            return;
+        }
+    }
+
     char wireless_command[CONFIG_WIRELESS_COMMAND_CAPACITY];
     uint32_t session;
     if (config_wireless_bridge_take_command(

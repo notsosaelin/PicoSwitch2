@@ -17,8 +17,8 @@ in [config-transports.md](../architecture/config-transports.md) as the transport
 | C6 (partial) | Wireless `save` / `amiibo clear` / `amiibo persist` no longer busy-wait core0 (deferred, ack "queued") | ✅ landed |
 | S5 | Web portal Management panel (`mgmt on/off/status`); Connect Bluetooth now works in normal mode once enabled | ✅ landed |
 | **C4** | **Bonded 16-byte ATT encryption + first-bond pairing-window gate; wire the `mgmt_access` predicates into ATT/SM** | 🟡 **LANDED, HW PENDING** — no-display Just Works has no MITM and is deliberately not mislabeled `AUTHENTICATED` |
-| C6 (rest) | Audit any remaining flash paths; `bonds` still has a ≤1 s cross-core wait (menu-only action) | 🟡 partial |
-| C5 | Wake-outranks-management advertiser hand-off during a wake burst (stop/resume a running mgmt advert) | ⬜ verify on HW (idle path already yields via `wake_adv.active` guards) |
+| C6 (rest) | Remove the wireless `bonds` core-0 wait; defer its session-bound reply and retain bridge back-pressure | 🟡 landed; BTstack DB mutation/cadence HW check remains |
+| C5 | Wake outranks a running management advertiser: stop, 100 ms quiesce, replay, restore public address, resume service | 🟡 landed; verify on HW |
 
 **Built clean on both boards (pico_w + pico2_w), all host tests green.** Standard builds now boot
 with management on. Disabling it remains a RAM-only current-boot escape hatch; the disabled path is
@@ -318,7 +318,7 @@ Prefer the simple always-advertise path; adopt this suppression only if 7b shows
 ### Host tests — written & green (2026-08-12), build via each file's header command
 | Test | Proves |
 |---|---|
-| `test_config_wireless_bridge.c` (pre-existing) | happy-path SPSC, busy rejection, oversized recovery, response chunking, session invalidation, allowlist policy |
+| `test_config_wireless_bridge.c` (pre-existing) | happy-path SPSC, in-progress/deferred-reply back-pressure, busy rejection, oversized recovery, response chunking, session invalidation, allowlist policy |
 | `test_config_wireless_bridge_edge.c` **(new)** | adversarial inputs: embedded-NUL truncates safely (no allowlist bypass), CR/blank-line noise, exact 127/128 capacity boundary, two-commands-in-one-frame drop, too-small-buffer drop (no overflow), 511/512 response boundary, pending-response back-pressure, NULL guard |
 | `test_config_wireless_bridge_concurrency.c` **(new, `-pthread`)** | the cross-core SPSC handshake under real producer/consumer threads: 20 000 commands, in order, no loss/dup/tear (logic-race proof; ARM ordering rests on the acquire/release atomics + HW) |
 | `test_mgmt_access.c` **(new)** | the pure access-control spec, **exhaustive over all 256 states / 10 invariants** — disabled=inert, wake outranks mgmt, asleep=silent, controller discovery may coexist, writes need enabled+connected+bonded+encrypted+allowlisted, bond needs enabled+window, advertise implies single-client safety, denied commands are never writable, and unbonded or plaintext clients cannot write |

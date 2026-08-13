@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Cross-core, single-command bridge used by the Config-only BLE transport.
+// Cross-core, single-command bridge used by Config and in-band BLE management.
 //
 // Core 1 owns BLE RX and response notification draining. Core 0 owns the
 // existing configuration parser and publishes exactly one JSON-line response.
@@ -43,6 +43,10 @@ bool config_wireless_bridge_take_command(
 // JSON-lines framing used by USB CDC.
 bool config_wireless_bridge_publish_response(
     uint32_t session, const char *response);
+
+// Lets a deferred core-0 operation discard its late result after the BLE
+// client disconnects and reset_session invalidates the exchange.
+bool config_wireless_bridge_session_active(uint32_t session);
 
 // Core 1 drains the response in ATT-MTU-sized pieces. peek does not advance;
 // consume advances only after att_server_notify() succeeds.
