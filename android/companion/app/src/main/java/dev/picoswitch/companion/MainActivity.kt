@@ -253,6 +253,7 @@ class MainActivity : ComponentActivity() {
             this, "Companion Device Manager is unavailable on this Android build", Toast.LENGTH_LONG,
         ).show()
         val callback = object : CompanionDeviceManager.Callback() {
+            @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
             @Deprecated("Legacy association callback")
             override fun onDeviceFound(chooserLauncher: IntentSender) = launchAssociation(chooserLauncher)
             override fun onAssociationPending(intentSender: IntentSender) = launchAssociation(intentSender)

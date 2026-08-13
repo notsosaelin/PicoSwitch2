@@ -106,6 +106,7 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
             }
         }
 
+        @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
         @Deprecated("Deprecated in API 33")
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             if (gatt === g && characteristic.uuid == UUID.fromString(ManagementProtocol.TX_UUID)) notifications.trySend(characteristic.value.copyOf())
