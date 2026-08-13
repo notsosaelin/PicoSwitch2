@@ -148,6 +148,7 @@ fun AmiiboScreen(
     onImportArchive: () -> Unit,
     onExportArchive: () -> Unit,
     onImportKeys: () -> Unit,
+    onScan: () -> Unit,
 ) {
     val selected = ui.library.firstOrNull { it.id == ui.selectedAmiiboId }
     val adapter = ui.snapshot.amiibo
@@ -181,10 +182,11 @@ fun AmiiboScreen(
         Modifier.fillMaxSize().padding(horizontal = LayoutTokens.Space2, vertical = LayoutTokens.Space2),
         verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space2),
     ) {
-        AmiiboToolbar(
-            ui, onImport, { importArchiveOpen = true }, onExportArchive, query, { query = it },
+    AmiiboToolbar(
+            ui, onImport, { importArchiveOpen = true }, onExportArchive, onScan, query, { query = it },
             filtersOpen, { filtersOpen = !filtersOpen }, sortOrder, { sortOrder = it },
         )
+        NfcScanStatusCard(ui)
         if (importArchiveOpen) AlertDialog(
             onDismissRequest = { importArchiveOpen = false },
             title = { Text("Replace phone library?") },
@@ -254,6 +256,7 @@ private fun AmiiboToolbar(
     onImport: () -> Unit,
     onImportArchive: () -> Unit,
     onExportArchive: () -> Unit,
+    onScan: () -> Unit,
     query: String,
     onQueryChanged: (String) -> Unit,
     filtersOpen: Boolean,
@@ -270,8 +273,17 @@ private fun AmiiboToolbar(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        FilledTonalButton(onClick = onImport, enabled = !ui.busy, contentPadding = PaddingValues(horizontal = 12.dp)) {
-            Icon(Icons.Default.Add, null); Spacer(Modifier.width(LayoutTokens.Space1)); Text("Import")
+        Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space1)) {
+            FilledTonalButton(
+                onClick = onScan,
+                enabled = !ui.busy && ui.nfcScan.phase != NfcScanPhase.Unavailable,
+                contentPadding = PaddingValues(horizontal = 10.dp),
+            ) {
+                Icon(Icons.Default.Contactless, null); Spacer(Modifier.width(LayoutTokens.Space1)); Text("Scan")
+            }
+            FilledTonalButton(onClick = onImport, enabled = !ui.busy, contentPadding = PaddingValues(horizontal = 10.dp)) {
+                Icon(Icons.Default.Add, null); Spacer(Modifier.width(LayoutTokens.Space1)); Text("Import")
+            }
         }
         OutlinedButton(onClick = onImportArchive, enabled = !ui.busy, contentPadding = PaddingValues(horizontal = 10.dp)) {
             Icon(Icons.Default.FolderOpen, null); Spacer(Modifier.width(LayoutTokens.Space1)); Text("ZIP")
@@ -303,6 +315,40 @@ private fun AmiiboToolbar(
                         leadingIcon = if (order == sortOrder) ({ Icon(Icons.Default.Check, null) }) else null,
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NfcScanStatusCard(ui: CompanionUiState) {
+    val status = ui.nfcScan
+    val background = when (status.phase) {
+        NfcScanPhase.Rejected -> MaterialTheme.colorScheme.errorContainer
+        NfcScanPhase.Armed, NfcScanPhase.Reading, NfcScanPhase.Saving -> MaterialTheme.colorScheme.primaryContainer
+        NfcScanPhase.Saved -> MaterialTheme.colorScheme.secondaryContainer
+        else -> MaterialTheme.colorScheme.surfaceVariant
+    }
+    Surface(
+        Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        color = background,
+    ) {
+        Row(
+            Modifier.padding(horizontal = LayoutTokens.Space3, vertical = LayoutTokens.Space2),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Default.Contactless, null)
+            Spacer(Modifier.width(LayoutTokens.Space2))
+            Column {
+                Text("Phone NFC backup", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    status.message.ifBlank {
+                        "Reads ordinary NTAG215 tags only; figure-v3 is deliberately rejected."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

@@ -44,3 +44,27 @@ structural validation and strict figure-v3 CRC checks.
    with the exact failed step; no Android Studio or logcat is required.
 
 This checklist validates hardware behavior. JVM/emulator/build success does not replace it.
+
+## Phone NFC physical gate (pending)
+
+The phone-reader slice is host-tested but has not yet been run against a physical tag. On an
+NFC-capable Android phone with NFC enabled and no adapter connection required:
+
+1. Open **Amiibo**, tap **Scan**, and hold an ordinary NTAG215 Amiibo to the phone. Reader mode must
+   arm only after that action; status must say it is waiting for an ordinary NTAG215.
+2. A successful scan must issue the strict NTAG215 sequence and save exactly 540 bytes, or 572
+   bytes when the tag returns an exact 32-byte `READ_SIG`. A missing/unsupported signature must be
+   reported as an explicit 540-byte backup, never as zero padding.
+3. Confirm the new item appears in the private library and that scanning the same bytes again reports
+   a duplicate without creating another item. No adapter command or controller mode is involved.
+4. Leave the app while it is armed, then return. Reader mode must be disabled on pause, no partial
+   file may appear, and a new scan must require another explicit **Scan** tap.
+5. If an ordinary tag with a bad UID manufacturer/BCC is available, confirm the scan is rejected and
+   no library item is created. A figure-v3/NTAG I2C 2K tag must be explicitly rejected as unsupported;
+   the app must not attempt sector-select, authentication, NDEF, or write commands.
+6. Repeat with NFC disabled (or on a phone without NFC). The action must remain unavailable or report
+   a clear reader-mode error; it must not claim a backup was saved.
+
+This gate validates the phone's RF/tag boundary. JVM tests prove command order, strict parsing,
+assembly, and atomic-library ordering; they do not prove antenna coupling, Android OEM reader-mode
+behavior, or a physical tag's optional signature support.

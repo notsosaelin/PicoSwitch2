@@ -51,26 +51,43 @@ repository.
    is a first-class display item even when `library.json` is `{"version":1,"items":[]}`: its
    figure ID starts catalog lookup immediately, and the UI reports loading, offline, or unmatched
    instead of silently rendering an empty card. Adapter actions (download, present/eject, guarded
-   clear) remain visible without importing or syncing first.
+    clear) remain visible without importing or syncing first.
+
+## Follow-up ordinary phone-NFC backup slice
+
+The companion now includes a bounded, non-HID physical-tag path. Amiibo -> **Scan** arms Android
+foreground `NfcA` reader mode for one session; the Android-independent core requires the exact
+NTAG215 `GET_VERSION` reply, reads pages `00..83` with `READ 0x30`, reads `84..86` with
+`FAST_READ 3A 84 86`, and optionally appends an exact 32-byte `READ_SIG 3C 00`. It assembles only
+540 or 572 bytes, rejects wrong/short replies, non-04 manufacturer, bad raw BCC, NTAG213/216, and
+figure-v3/NTAG I2C 2K, and never emits writes, authentication, sector-select, NDEF, or adapter
+commands. The existing `AmiiboLibrary` is called only after this strict validation and persists the
+complete image atomically; exact-content duplicates are reported instead of creating another row.
+
+Host fake-transceiver tests pin command order and every abort/fallback path. The phone NFC physical
+gate remains pending; no antenna/tag hardware result is claimed here.
 
 ## Deliberate deferrals
 
 Initialization/re-signing is not exposed in this slice. A future implementation must port the
 portal pack/self-verify path and add a local crash-safe replacement transaction before offering a
-destructive button. ZIP exchange, phone NFC reads, and Mii rendering remain deferred. Catalog and
-artwork are enhancement-only: a cold/offline cache miss leaves the local identity/details and every
-adapter operation usable.
+destructive button. ZIP exchange and Mii rendering remain deferred. Catalog and artwork are
+enhancement-only: a cold/offline cache miss leaves the local identity/details and every adapter
+operation usable.
 
 ## Validation level
 
-- JVM tests cover key length/master-label validation, reversed-master normalization, richer identity
+- JVM tests (85 in the Android module) cover key length/master-label validation, reversed-master normalization, richer identity
   parsing for ordinary and figure-v3 images, packed-date edges, HMAC-invalid field suppression,
   private key-store import/replacement behavior, and a deterministic portal-generated golden vector that
-  extracts owner/nickname/dates/write count/title ID/AppID in Kotlin.
+  extracts owner/nickname/dates/write count/title ID/AppID in Kotlin. The NFC protocol tests use a
+  fake transceiver to pin the complete command sequence, 540/572-byte assembly, signature fallback,
+  malformed-response aborts, tag-family rejection, raw manufacturer/BCC rejection, and forbidden
+  command absence.
 - `tools/test_amiibo_decrypt.mjs` both generates/checks the same dummy-key golden vector (with
   `--write-golden`) and runs the independent portal crypto round-trip. The Android port was not
   flashed or exercised against a real adapter in this bounded change.
-- With a temporary official Temurin JDK 21, the Android module passed 52 JVM tests, lint, and debug
+- With a temporary official Temurin JDK 21, the Android module passed 85 JVM tests, lint, and debug
   APK assembly. The default Android Studio JBR 25 remains unsuitable for this Gradle wrapper; no
   permanent toolchain change was made.
 

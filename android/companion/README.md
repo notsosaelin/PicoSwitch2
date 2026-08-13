@@ -21,6 +21,9 @@ The debug build provides real implementations for:
 - queued console wake requests;
 - a private, versioned, recoverable on-device Amiibo library using app-internal files and atomic replacement;
 - import and validation of exact 540-byte, 572-byte, and 2048-byte user backups;
+- a foreground one-shot phone NFC backup action for ordinary NTAG215 tags: exact GET_VERSION,
+  page READ/FAST_READ assembly, optional 32-byte READ_SIG, strict manufacturer/BCC checks, and
+  atomic library persistence only after the complete image validates;
 - richer local Amiibo identity details (character code/variant, tag type, model/series, format,
   and extended variant) without a network or catalog dependency;
 - optional cache-first AmiiboAPI enrichment matched by the portal's uppercase head+tail figure ID:
@@ -164,8 +167,8 @@ empty, so its catalog lookup and actions do not depend on importing or syncing f
 
 ## Tests
 
-The Android JVM run passed **75 tests**, **1 API-35 instrumented navigation/scroll smoke
-test**, Android lint (**0 errors; 17 advisory warnings**), and debug APK assembly. A connected AYN
+The Android JVM run passed **85 tests**, **1 API-35 instrumented navigation/scroll smoke test**,
+Android lint, and debug APK assembly. A connected AYN
 Thor rerun of the UI test on 2026-08-13 did not expose a Compose hierarchy to the runner, so that
 device rerun is not treated as new UI evidence. JVM coverage includes:
 
@@ -185,6 +188,9 @@ device rerun is not treated as new UI evidence. JVM coverage includes:
 - versioned local-library restart/recovery/corruption/collision/rollback behavior;
 - generation-safe download acknowledgement, unsupported/malformed/false-success failures, and
   exact 511/512-byte reply-limit handling; and
+- strict Android-independent NTAG215 protocol tests with fake transceivers covering command order,
+  540/572-byte assembly, signature fallback, malformed-response aborts, NTAG213/216 and figure-v3
+  rejection, raw manufacturer/BCC rejection, and absence of write/auth/NDEF/sector commands; and
 - capacity-one HID report replacement plus descriptor/report golden vectors.
 
 The emulator run proves install, launch, navigation, rotation/configuration handling, and responsive
@@ -202,8 +208,10 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
   Nintendo face-label correction, and restart/power-cycle matrix still need focused hardware
   confirmation.
 - Motion and rumble are not in the v1 Android HID contract and are labeled as unavailable.
-- Phone-NFC physical-tag backup is not implemented yet. Controller-as-reader commands are low-level
-  and intentionally not exposed as a production user workflow.
+- Phone-NFC physical-tag backup is host-tested but still awaits the physical gate on an NFC-capable
+  Android device. It is deliberately ordinary NTAG215 only: figure-v3/NTAG I2C 2K is rejected,
+  the reader is armed only from Amiibo -> Scan, disabled on pause/one-shot completion, and no
+  controller-as-reader or adapter commands are involved.
 - Raw backup share/export and Mii rendering remain future client-side work. Initialization and ZIP
   exchange are local-only and still await focused physical Amiibo/adapter validation. User-supplied
   retail keys are accepted only in the exact 160-byte portal format, stored in an app-private file,
@@ -272,8 +280,9 @@ for an imported local copy; uninstall removes the app-private key file, while lo
 adapter remain unaffected during normal use. An
 HMAC failure is visibly reported and never renders owner/nickname junk.
 
-This slice implements local portal-compatible initialization/re-signing and ZIP exchange, but not
-physical phone-NFC reads, raw backup sharing, or Mii rendering. No network request is required for
-import, selection, initialization, ZIP exchange, upload, Sync, present/eject, or clean/used copy
-operations. See the dated evidence note
+This slice implements local portal-compatible initialization/re-signing and ZIP exchange plus a
+strict ordinary-NTAG215 phone NFC backup path; figure-v3 phone scanning remains deliberately
+rejected. Raw backup sharing and Mii rendering remain future work. No network request is required
+for import, selection, initialization, ZIP exchange, phone NFC backup, upload, Sync,
+present/eject, or clean/used copy operations. See the dated evidence note
 [`../../docs/experiments/android-amiibo-page-parity-2026-08-13.md`](../../docs/experiments/android-amiibo-page-parity-2026-08-13.md).

@@ -167,6 +167,13 @@ data class AmiiboDetails(
     val appDataLabel: String = "",
 )
 
+enum class NfcScanPhase { Unavailable, Idle, Armed, Reading, Saving, Saved, Rejected }
+
+data class NfcScanStatus(
+    val phase: NfcScanPhase = NfcScanPhase.Unavailable,
+    val message: String = "",
+)
+
 data class AmiiboCatalogEntry(
     val id: String,
     val character: String,

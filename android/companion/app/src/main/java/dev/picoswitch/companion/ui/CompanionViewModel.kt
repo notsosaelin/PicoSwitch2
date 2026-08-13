@@ -56,6 +56,7 @@ data class CompanionUiState(
     /** Catalog enrichment for the active adapter tag, even without a local backup. */
     val adapterAmiiboCatalog: AmiiboCatalogEntry? = null,
     val adapterAmiiboCatalogState: AmiiboCatalogState = AmiiboCatalogState.Idle,
+    val nfcScan: NfcScanStatus = NfcScanStatus(),
     val amiiboKeysLoaded: Boolean = false,
     val operation: OperationProgress? = null,
     val busy: Boolean = false,
@@ -301,6 +302,103 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         savedState[KEY_AMIIBO] = selected
         refreshSelectedAmiiboDetails()
         notice("Imported ${result.items.size} Amiibo backups from a private ZIP")
+    }
+
+    fun setNfcReaderAvailable(available: Boolean) {
+        _ui.update {
+            it.copy(
+                nfcScan = if (available) {
+                    NfcScanStatus(NfcScanPhase.Idle, "Tap Scan tag, then hold an ordinary Amiibo to the back of this phone.")
+                } else {
+                    NfcScanStatus(NfcScanPhase.Unavailable, "This phone does not expose an NFC-A reader.")
+                },
+            )
+        }
+    }
+
+    fun armNfcScan() {
+        if (_ui.value.nfcScan.phase == NfcScanPhase.Unavailable || _ui.value.busy) return
+        _ui.update {
+            it.copy(nfcScan = NfcScanStatus(NfcScanPhase.Armed, "Hold an ordinary NTAG215 Amiibo to the back of this phone."))
+        }
+    }
+
+    fun nfcScanReading() {
+        _ui.update { it.copy(nfcScan = NfcScanStatus(NfcScanPhase.Reading, "Reading the complete NTAG215 image…")) }
+    }
+
+    fun nfcScanDisarmed() {
+        _ui.update { state ->
+            if (state.nfcScan.phase == NfcScanPhase.Armed || state.nfcScan.phase == NfcScanPhase.Reading) {
+                state.copy(nfcScan = NfcScanStatus(NfcScanPhase.Idle, "NFC scan canceled when the app left the foreground."))
+            } else state
+        }
+    }
+
+    fun nfcReaderUnavailable(message: String) {
+        _ui.update { it.copy(nfcScan = NfcScanStatus(NfcScanPhase.Unavailable, message)) }
+        notice(message)
+    }
+
+    fun nfcReaderError(message: String) {
+        _ui.update { it.copy(nfcScan = NfcScanStatus(NfcScanPhase.Rejected, message)) }
+        notice(message)
+    }
+
+    fun nfcScanRejected(reason: Ntag215Rejection) {
+        val message = "NFC scan rejected: ${reason.description}"
+        _ui.update { it.copy(nfcScan = NfcScanStatus(NfcScanPhase.Rejected, message)) }
+        notice(message)
+    }
+
+    /** Persist only a complete, already strict-validated phone NFC result. */
+    fun importNfcAmiibo(result: Ntag215ReadResult.Success) {
+        if (_ui.value.busy) {
+            nfcScanRejected(Ntag215Rejection.TRANSPORT_ERROR)
+            return
+        }
+        viewModelScope.launch {
+            _ui.update {
+                it.copy(
+                    busy = true,
+                    operation = OperationProgress("Saving phone NFC backup", 0, result.bytes.size),
+                    nfcScan = NfcScanStatus(NfcScanPhase.Saving, "Saving the complete ${result.bytes.size}-byte backup…"),
+                    message = null,
+                )
+            }
+            try {
+                // Keep this guard immediately before the library call.  The
+                // library also serves file imports, and its compatibility
+                // normalizer must never get a chance to repair a phone read.
+                val rejection = Ntag215Protocol.validateImage(result.bytes)
+                require(rejection == null) { rejection?.description ?: "Invalid NTAG215 image" }
+                val imported = library.import("Phone NFC Amiibo", "phone NFC", result.bytes)
+                _ui.update {
+                    it.copy(
+                        selectedAmiiboId = imported.item.id,
+                        section = AppSection.Amiibo,
+                        operation = OperationProgress("Saving phone NFC backup", result.bytes.size, result.bytes.size),
+                        nfcScan = NfcScanStatus(
+                            NfcScanPhase.Saved,
+                            if (imported.duplicate) {
+                                "That exact ${result.bytes.size}-byte phone NFC backup is already in the library."
+                            } else {
+                                "Saved ${result.bytes.size}-byte phone NFC backup${if (result.signatureIncluded) " with READ_SIG" else " without READ_SIG"}."
+                            },
+                        ),
+                    )
+                }
+                savedState[KEY_AMIIBO] = imported.item.id
+                refreshSelectedAmiiboDetails()
+                notice(_ui.value.nfcScan.message)
+            } catch (error: Throwable) {
+                val message = error.message?.take(180) ?: "Could not save the NFC backup"
+                _ui.update { it.copy(nfcScan = NfcScanStatus(NfcScanPhase.Rejected, "NFC backup was not saved: $message")) }
+                notice("NFC backup was not saved: $message")
+            } finally {
+                _ui.update { it.copy(busy = false, operation = null) }
+            }
+    }
     }
 
     fun importAmiiboKeys(uri: Uri) = launch("Importing Amiibo keys") {
