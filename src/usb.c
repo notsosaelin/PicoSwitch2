@@ -164,8 +164,15 @@ volatile bool g_usb_config_mode = false;
 
 // In-band BLE management feature gate (see usb.h). Default OFF -- when false the
 // management path is byte-identical to today. Defined in both build axes so the
-// shared btstack_host.c gate links; set by the `mgmt` config command.
+// shared btstack_host.c gate links; set by the `mgmt` config command. A
+// diagnostic build may boot it ON via -DNS2_MGMT_DEFAULT_ON to reproduce the
+// coexistence failure immediately after a power cycle (never ship ON: management
+// is unauthenticated until plan C4).
+#ifdef NS2_MGMT_DEFAULT_ON
+volatile bool g_mgmt_enabled = true;
+#else
 volatile bool g_mgmt_enabled = false;
+#endif
 
 // Runs on core0. Owns the TinyUSB device stack. In normal mode it emulates the
 // active USB personality (see usb_personality_t). A single BOOTSEL tap requests

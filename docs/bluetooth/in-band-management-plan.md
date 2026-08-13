@@ -25,6 +25,29 @@ the firmware is byte-identical to before when management is disabled. **Do not l
 untrusted RF environment until C4 lands.** See the HW test procedure in §6 and the handoff notes at
 the end of this section.
 
+### Hardware test 1 (2026-08-12) — workflow works, coexistence failure found
+
+Owner hardware pass: the **entire management + Amiibo workflow succeeded** over BLE in normal Pro2
+mode (portal → adapter → Amiibo upload → Switch 2 read/write → Sync back to portal, with correct
+metadata). No noticeable input latency navigating the UI. **But** after a short period, the
+management link *and* the controller link both dropped and could not recover without a power cycle;
+gyro/audio were never reached and stay untested.
+
+**Root cause (controller half) — CONFIRMED from code:** `btstack_host_start_scan()` early-returns
+while `config_ble.mode_active` is set, which is latched true for the whole session when management is
+enabled. So once the controller drops, its reconnect scan is permanently suppressed until a power
+cycle (which clears the RAM-only flag). Same class as the CDC/personality-switch resemblance the
+owner noted. **The management half** (advertising also stops and stays stopped) is not yet isolated
+and needs a hardware trace. Full write-up:
+[`../experiments/in-band-mgmt-coexistence-failure-2026-08-12.md`](../experiments/in-band-mgmt-coexistence-failure-2026-08-12.md).
+
+**Added this pass (diagnostics, not a fix):** UART `btstate` (live BLE/management snapshot +
+scan-suppression cause counters) and `btlife read <N>` (48-entry lifecycle event ring with HCI
+disconnect reasons and ordering), plus a `-MgmtOn` (`NS2_MGMT_DEFAULT_ON`) diagnostic build so the
+failure can be reproduced right after a power cycle. The coexistence fix (do **not** suppress
+controller discovery under in-band management) is designed in the experiment doc but deliberately
+**not** applied until the trace confirms both halves — instrument-and-isolate first, per owner.
+
 ---
 
 ### Original proposal (below) — retained as the design reference

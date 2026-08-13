@@ -234,6 +234,65 @@ static void queue_ble_record(void) {
     queue_text(ble_format_response);
 }
 
+// In-band management / BLE coexistence snapshot: live radio + config_ble service
+// state plus scan-suppression cause counters. `suppress.mgmt_armed` climbing is
+// the fingerprint of the confirmed coexistence bug (management-armed permanently
+// blocks controller reconnect). See docs/bluetooth/in-band-management-plan.md.
+static void queue_btstate(void) {
+    btstack_host_mgmt_diag_t d;
+    btstack_host_get_mgmt_diag(&d);
+    snprintf(trace_format_response, sizeof(trace_format_response),
+        "{\"btstate\":\"status\",\"mgmt_enabled\":%s,\"config_mode\":%s,"
+        "\"personality\":\"%s\",\"powered_on\":%s,\"hid_state\":%u,"
+        "\"scan_active\":%s,\"inquiry_active\":%s,\"wake_adv\":%s,"
+        "\"controller_connected\":%s,\"ble_conns\":%u,"
+        "\"cble\":{\"available\":%s,\"armed\":%s,\"advertising\":%s,"
+        "\"client\":%s,\"closing\":%s,\"notify\":%s},"
+        "\"events\":{\"count\":%u,\"dropped\":%lu},"
+        "\"scan\":{\"starts\":%lu,\"stops\":%lu},"
+        "\"adv\":{\"starts\":%lu,\"stops\":%lu},"
+        "\"suppress\":{\"config_mode\":%lu,\"mgmt_armed\":%lu,\"wake\":%lu,"
+        "\"other\":%lu},"
+        "\"mgmt\":{\"connects\":%lu,\"disconnects\":%lu},"
+        "\"disc\":{\"ctrl\":%lu,\"hci\":%lu,\"last_handle\":\"0x%04X\","
+        "\"last_reason\":\"0x%02X\"}}",
+        d.mgmt_enabled ? "true" : "false", d.config_mode ? "true" : "false",
+        trace_personality_name(d.personality), d.powered_on ? "true" : "false",
+        d.hid_state, d.scan_active ? "true" : "false",
+        d.inquiry_active ? "true" : "false", d.wake_adv_active ? "true" : "false",
+        d.controller_connected ? "true" : "false", d.connected_ble_count,
+        d.cble_service_available ? "true" : "false",
+        d.cble_mode_active ? "true" : "false",
+        d.cble_advertising ? "true" : "false", d.cble_has_client ? "true" : "false",
+        d.cble_closing ? "true" : "false", d.cble_notifications ? "true" : "false",
+        d.event_count, (unsigned long)d.event_dropped,
+        (unsigned long)d.scan_starts, (unsigned long)d.scan_stops,
+        (unsigned long)d.adv_starts, (unsigned long)d.adv_stops,
+        (unsigned long)d.suppress_config_mode, (unsigned long)d.suppress_mgmt_armed,
+        (unsigned long)d.suppress_wake, (unsigned long)d.suppress_other,
+        (unsigned long)d.mgmt_connects, (unsigned long)d.mgmt_disconnects,
+        (unsigned long)d.ctrl_disconnects, (unsigned long)d.hci_disconnects,
+        d.last_disc_handle, d.last_disc_reason);
+    queue_text(trace_format_response);
+}
+
+// One lifecycle event (0 = oldest). `a` is the scan-suppress cause (see `cause`)
+// for scan_suppress, else the HCI disconnect reason / 0|1 config-vs-mgmt tag.
+static void queue_btlife(uint16_t index) {
+    btstack_host_life_record_t e;
+    if (!btstack_host_life_get(index, &e)) {
+        queue_text("{\"btlife\":\"empty\"}");
+        return;
+    }
+    char response[192];
+    snprintf(response, sizeof(response),
+        "{\"btlife\":\"record\",\"i\":%u,\"t_ms\":%lu,\"code\":\"%s\","
+        "\"cause\":\"%s\",\"a\":%u,\"handle\":\"0x%04X\"}",
+        index, (unsigned long)e.t_ms, btstack_host_life_code_name(e.code),
+        btstack_host_life_cause_name(e.a), e.a, e.b);
+    queue_text(response);
+}
+
 static void queue_nfc_mirror_status(const char *event) {
     ns2_nfc_mirror_diag_t status;
     char response[512];
@@ -716,6 +775,23 @@ static void handle_command(void) {
         queue_ble_status("dump");
     } else if (strcmp(rx_line, "blecap read") == 0) {
         queue_ble_record();
+    } else if (strcmp(rx_line, "btstate") == 0 ||
+               strcmp(rx_line, "btlife") == 0 ||
+               strcmp(rx_line, "btlife status") == 0) {
+        // Live BLE/management coexistence snapshot + suppression counters.
+        queue_btstate();
+    } else if (strcmp(rx_line, "btlife clear") == 0) {
+        btstack_host_life_clear();
+        queue_text("{\"btlife\":\"cleared\"}");
+    } else if (strncmp(rx_line, "btlife read ", 12) == 0) {
+        unsigned int index;
+        char trailing;
+        if (sscanf(rx_line + 12, "%u%c", &index, &trailing) != 1 ||
+            index > UINT16_MAX) {
+            queue_text("{\"btlife\":\"error\",\"error\":\"usage: btlife read N\"}");
+        } else {
+            queue_btlife((uint16_t)index);
+        }
     } else if (strcmp(rx_line, "nfcmirror on") == 0) {
         ns2_nfc_mirror_request(true);
         queue_nfc_mirror_status("requested");
