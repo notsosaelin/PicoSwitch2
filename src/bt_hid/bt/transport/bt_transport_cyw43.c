@@ -211,12 +211,6 @@ static bool cyw43_transport_request_feature_report(uint8_t conn_index,
     return btstack_classic_get_feature_report(conn_index, report_id);
 }
 
-static void cyw43_transport_disconnect(uint8_t conn_index)
-{
-    // TODO: Implement disconnect
-    (void)conn_index;
-}
-
 static void cyw43_transport_set_pairing_mode(bool enable)
 {
     btstack_host_set_pairing_window_open(enable);
@@ -250,7 +244,6 @@ const bt_transport_t bt_transport_cyw43 = {
     .get_connection = cyw43_transport_get_connection,
     .send_control = cyw43_transport_send_control,
     .send_interrupt = cyw43_transport_send_interrupt,
-    .disconnect = cyw43_transport_disconnect,
     .set_pairing_mode = cyw43_transport_set_pairing_mode,
     .is_pairing_mode = cyw43_transport_is_pairing_mode,
     .request_feature_report = cyw43_transport_request_feature_report,
