@@ -91,6 +91,44 @@ object ManagementProtocol {
 
     fun managementEnabled(value: JsonObject) = value["enabled"]?.jsonPrimitive?.booleanOrNull
 
+    fun inputSources(value: JsonObject): AdapterInputState {
+        fun requiredLong(key: String): Long = value[key]?.jsonPrimitive?.longOrNull
+            ?: throw ManagementException("Adapter returned an incomplete response for 'input sources'")
+        fun requiredBoolean(key: String): Boolean = value[key]?.jsonPrimitive?.booleanOrNull
+            ?: throw ManagementException("Adapter returned an incomplete response for 'input sources'")
+        val sources = value["sources"]?.jsonArray?.map { element ->
+            val source = element.jsonObject
+            val id = source["id"]?.jsonPrimitive?.longOrNull
+                ?: throw ManagementException("Adapter returned an incomplete response for 'input sources'")
+            val connection = source["conn"]?.jsonPrimitive?.intOrNull
+                ?: throw ManagementException("Adapter returned an incomplete response for 'input sources'")
+            val transport = source["transport"]?.jsonPrimitive?.intOrNull
+                ?: throw ManagementException("Adapter returned an incomplete response for 'input sources'")
+            val generation = source["generation"]?.jsonPrimitive?.longOrNull
+                ?: throw ManagementException("Adapter returned an incomplete response for 'input sources'")
+            val name = source["name"]?.jsonPrimitive?.contentOrNull
+                ?: throw ManagementException("Adapter returned an incomplete response for 'input sources'")
+            requireShape(id in 1..0xFFFF_FFFFL && connection in 0..255 &&
+                transport in 0..255 && generation in 0..0xFFFF_FFFFL, "input sources")
+            AdapterInputSource(id, connection, transport, generation, name.ifBlank { "Controller" })
+        } ?: throw ManagementException("Adapter returned an incomplete response for 'input sources'")
+        val active = requiredLong("active")
+        val pending = requiredLong("pending")
+        val transitions = requiredLong("transitions")
+        requireShape(active in 0..0xFFFF_FFFFL && pending in 0..0xFFFF_FFFFL &&
+            transitions in 0..0xFFFF_FFFFL && sources.map { it.id }.distinct().size == sources.size,
+            "input sources")
+        return AdapterInputState(
+            activeId = active,
+            pendingId = pending,
+            explicit = requiredBoolean("explicit"),
+            awaitingFresh = requiredBoolean("fresh"),
+            transitions = transitions,
+            sources = sources,
+            truncated = requiredBoolean("more"),
+        )
+    }
+
     /** Parse one complete or cursor-paginated v2 bond page. */
     fun bondsPage(value: JsonObject): BondPage {
         requireShape(value["v"]?.jsonPrimitive?.intOrNull == BONDS_PROTOCOL_VERSION, "bonds list v2")

@@ -90,6 +90,26 @@ data class BondEnumeration(
     val total: Int? = null,
 )
 
+data class AdapterInputSource(
+    val id: Long,
+    val connection: Int,
+    val transport: Int,
+    val generation: Long,
+    val name: String,
+)
+
+data class AdapterInputState(
+    val activeId: Long = 0,
+    val pendingId: Long = 0,
+    val explicit: Boolean = false,
+    val awaitingFresh: Boolean = false,
+    val transitions: Long = 0,
+    val sources: List<AdapterInputSource> = emptyList(),
+    val truncated: Boolean = false,
+) {
+    val activeSource: AdapterInputSource? get() = sources.firstOrNull { it.id == activeId }
+}
+
 enum class CapabilityState { Available, Unsupported, Unknown }
 
 data class AdapterCapabilities(
@@ -100,6 +120,7 @@ data class AdapterCapabilities(
     val managementGate: CapabilityState = CapabilityState.Unknown,
     val bonds: CapabilityState = CapabilityState.Unknown,
     val wake: CapabilityState = CapabilityState.Unknown,
+    val activeInput: CapabilityState = CapabilityState.Unknown,
 )
 
 data class AdapterSnapshot(
@@ -113,6 +134,7 @@ data class AdapterSnapshot(
     /** False means a legacy/unversioned list was received; null means unavailable. */
     val bondsComplete: Boolean? = null,
     val bondsTotal: Int? = null,
+    val input: AdapterInputState = AdapterInputState(),
     val capabilities: AdapterCapabilities = AdapterCapabilities(),
     val refreshedAtMillis: Long = 0,
 )

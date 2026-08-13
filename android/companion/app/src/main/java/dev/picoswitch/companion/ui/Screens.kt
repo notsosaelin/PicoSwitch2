@@ -819,6 +819,7 @@ fun ControllerScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onPrep
                 Text("Keep this screen open while playing", style = MaterialTheme.typography.bodyMedium)
             }
         }
+        ActiveInputCard(ui, viewModel)
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             val wide = maxWidth >= LayoutTokens.TwoPaneBreakpoint
             val source: @Composable () -> Unit = { InputSourceCard(ui, viewModel) }
@@ -830,6 +831,78 @@ fun ControllerScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onPrep
             } else Column(verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space4)) { source(); layout(); bridge() }
         }
         InputDiagnostics(ui.controllerState)
+    }
+}
+
+@Composable
+private fun ActiveInputCard(ui: CompanionUiState, viewModel: CompanionViewModel) {
+    val input = ui.snapshot.input
+    HardwareCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionHeading(Icons.Default.SwapHoriz, "Active controller", Modifier.weight(1f))
+            if (ui.connection.connected) {
+                IconButton(onClick = viewModel::refresh, enabled = !ui.busy) {
+                    Icon(Icons.Default.Refresh, "Refresh connected controllers")
+                }
+            }
+        }
+        when {
+            !ui.connection.connected -> Text(
+                "Connect to the adapter to choose which controller drives the console.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            ui.snapshot.capabilities.activeInput == CapabilityState.Unsupported -> Text(
+                "This firmware does not support controller switching.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            input.sources.isEmpty() -> Text(
+                "No controller is currently available to the adapter.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            else -> {
+                input.sources.forEach { source ->
+                    val selected = source.id == input.activeId || source.id == input.pendingId
+                    Surface(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(top = LayoutTokens.Space2)
+                            .clickable(enabled = !ui.busy) { viewModel.setActiveInput(source.id) },
+                        shape = MaterialTheme.shapes.medium,
+                        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Row(Modifier.padding(LayoutTokens.Space3), verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(
+                                selected = selected,
+                                onClick = { viewModel.setActiveInput(source.id) },
+                                enabled = !ui.busy,
+                            )
+                            Spacer(Modifier.width(LayoutTokens.Space2))
+                            Column(Modifier.weight(1f)) {
+                                Text(source.name, style = MaterialTheme.typography.titleSmall)
+                                Text(
+                                    if (source.id == input.pendingId || (source.id == input.activeId && input.awaitingFresh))
+                                        "Switching · waiting for fresh input"
+                                    else if (source.id == input.activeId) "Controlling the console"
+                                    else "Available",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+                if (input.truncated) Text(
+                    "More controllers are connected than this firmware can display.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                OutlinedButton(
+                    onClick = { viewModel.setActiveInput(0) },
+                    enabled = !ui.busy && (input.activeId != 0L || input.pendingId != 0L),
+                    modifier = Modifier.fillMaxWidth().padding(top = LayoutTokens.Space2),
+                ) { Text("Pause console input") }
+            }
+        }
     }
 }
 
@@ -948,7 +1021,6 @@ private fun InputDiagnostics(state: dev.picoswitch.companion.controller.Controll
         Spacer(Modifier.height(LayoutTokens.Space3))
         Text("L2 ${state.leftTrigger}  ·  R2 ${state.rightTrigger}  ·  Hat ${dev.picoswitch.companion.controller.ControllerReportEncoder.hat(state)}", style = MaterialTheme.typography.bodyMedium)
         Text(if (state.buttons.isEmpty()) "No buttons held" else state.buttons.joinToString(" · ") { it.name }, style = MaterialTheme.typography.bodySmall)
-        Text("Motion and rumble are not part of the v1 bridge protocol.", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -1103,7 +1175,7 @@ fun SettingsScreen(
                 Icon(Icons.Default.Share, null); Spacer(Modifier.width(LayoutTokens.Space2)); Text("Share diagnostics")
             }
             HorizontalDivider(Modifier.padding(vertical = LayoutTokens.Space2))
-            Text("Management writes are not authenticated by current firmware. Hardware validation is still required for controller coexistence and OEM HID behavior.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Management requires a bonded, encrypted link. Android Just Works does not provide MITM authentication. Controller coexistence still requires hardware validation.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

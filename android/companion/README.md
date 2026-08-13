@@ -168,7 +168,7 @@ empty, so its catalog lookup and actions do not depend on importing or syncing f
 
 ## Tests
 
-The Android JVM run passed **85 tests**, **1 API-35 instrumented navigation/scroll smoke test**,
+The Android JVM run passed **121 tests**, **1 API-35 instrumented navigation/scroll smoke test**,
 Android lint, and debug APK assembly. A connected AYN
 Thor rerun of the UI test on 2026-08-13 did not expose a Compose hierarchy to the runner, so that
 device rerun is not treated as new UI evidence. JVM coverage includes:
@@ -223,6 +223,9 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
   Auto recognizes the audited AYN and Retroid built-in identities as Nintendo-style and otherwise
   falls back to Android's positional/Xbox convention; explicit selection covers unknown devices.
   Capture remains an OEM-specific C/Z choice until a labeled Thor/Retroid input pass is recorded.
+- The Input page reads the firmware's bounded source registry and lets a bonded/encrypted management
+  client choose one Active controller. A handoff neutralizes the console output and waits for a fresh
+  complete report from the selected source; it never merges two controllers.
 - Color changes save first and remain pending until the user chooses **Apply identity changes**.
   Firmware then queues the existing same-personality USB re-enumeration path; the console-side
   controller pauses briefly. This path is host/build-tested but still needs the physical recovery

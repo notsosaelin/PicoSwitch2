@@ -125,6 +125,7 @@ static void test_invariants_exhaustive(void) {
     const char *allowed = "amiibo present";     // in the allowlist
     const char *denied  = "imu";                // not in the allowlist
     assert(config_wireless_command_allowed(allowed));
+    assert(config_wireless_command_allowed("input active 1"));
     assert(!config_wireless_command_allowed(denied));
 
     unsigned checked = 0;

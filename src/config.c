@@ -1254,11 +1254,11 @@ static void handle_line(char *cmd) {
     } else if (strcmp(cmd, "input sources") == 0) {
         cmd_input_sources();
     } else if (strncmp(cmd, "input active ", 13) == 0) {
-        if (reply_transport == CONFIG_REPLY_WIRELESS) {
-            reply("{\"error\":\"input selection requires authenticated management\"}");
-        } else {
-            cmd_input_active(cmd + 13);
-        }
+        // Wireless RX has already passed mgmt_allow_write(): bonded,
+        // encrypted, enabled, and allowlisted.  The command was intentionally
+        // blocked before management authorization landed; keep one shared
+        // mutation path now that the transport supplies that security gate.
+        cmd_input_active(cmd + 13);
     } else if (strcmp(cmd, "personality") == 0) {
         cmd_personality();
     } else if (strncmp(cmd, "personality ", 12) == 0) {

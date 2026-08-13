@@ -567,10 +567,9 @@ next APK; lifecycle/latency and the new unified relationship UX remain open hard
 Architecture and gates:
 [`docs/bluetooth/android-controller-bridge.md`](docs/bluetooth/android-controller-bridge.md).
 
-**Current ownership:** all Android v1 HID bridge work is assigned to Claude. Until the maintainer
-reopens that boundary, Codex will not modify the Android controller/HID packages, descriptor or
-encoder, input routing, HID lifecycle/auto-resume, or firmware HID/source-switching behavior. The
-unchecked HID hardware gates below remain planned but are not part of Codex's current execution.
+**Current ownership:** the maintainer returned the completed Android/HID work to the main repository
+workflow on 2026-08-13. Preserve the hardware-confirmed v1 input path and byte-compatible v2
+extension while closing the remaining gates.
 
 - [x] Prove on one target handheld that an ordinary foreground API-28+ app can acquire
   `BluetoothProfile.HID_DEVICE`, read the built-in controls, and register the fixed generic-gamepad
@@ -621,6 +620,9 @@ unchecked HID hardware gates below remain planned but are not part of Codex's cu
   on a fresh report, and stale lifecycle events cannot clear a recycled connection. Host coverage
   is complete; physical coexistence, latency, audio/motion, and repeated Android/physical switching
   remain hardware gates.
+- [x] Allow bonded/encrypted wireless management to select the active source and expose a clean
+  **Active controller** chooser in the Android Input page. Selection uses the existing neutral/fresh
+  arbiter boundary; it does not merge reports or automatically fall through on disconnect.
 - [ ] Add a custom BLE GATT source driver only if a captured target-OEM failure proves the public
   Classic HID Device path unavailable; do not pre-emptively add a second protocol.
 

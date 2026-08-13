@@ -95,9 +95,9 @@ the active Pro Controller 2, Joy-Con 2, NSO GameCube, or Switch 1 USB identity.
 The adapter may keep more than one HID source registered, but its console-facing personalities
 still have one authoritative input stream. The firmware source arbiter assigns each HID-ready
 source a boot-scoped opaque ID and a connection-generation token. `input sources` reports the
-bounded registry; the wired diagnostic path accepts `input active <id|none>`. Wireless enumeration
-is read-only for now, and wireless selection remains gated until the management link has an
-authenticated/bonded control path.
+bounded registry; both CDC and the bonded/encrypted wireless management path accept
+`input active <id|none>`. The Android Input page presents the returned sources as one **Active
+controller** choice and refreshes after every selection. No raw IDs are required from the user.
 
 Selecting a source is an ownership transaction, not an input merge: the firmware emits a complete
 neutral boundary, clears stale identity/raw/mouse/wake/motion/feedback state, and accepts the next
@@ -106,7 +106,8 @@ console neutral rather than silently selecting a different source. Inactive repo
 available for a later explicit selection but cannot affect console slot 0. The first source still
 auto-selects when no explicit choice has been made, preserving legacy one-controller behavior.
 
-Input ownership is complete for the normalized console path. Rumble/player-LED delivery remains a
+Input ownership and the management selection path are complete for normalized console input.
+Rumble/player-LED delivery remains a
 known firmware follow-up for a few legacy driver initialization fallbacks; Android must not present
 source switching as feedback-isolated until that follow-up is host-tested and hardware-validated.
 
