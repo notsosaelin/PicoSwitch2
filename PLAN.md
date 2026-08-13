@@ -599,6 +599,9 @@ unchecked HID hardware gates below remain planned but are not part of Codex's cu
   and deliberate figure-v3 rejection until direct phone-RF evidence exists.
 - [ ] Hardware-validate phone NFC against an independently dumped ordinary Amiibo, including
   signature stability, mid-read tag removal, duplicate handling, and byte-exact 540/572 output.
+- [ ] Add structured owner-Mii attributes only after a user-owned full-feature `Ver3StoreData`
+  fixture pins the field map offline. Defer graphical Mii rendering: the repository has no licensed
+  renderer or FFL resource, and Nintendo's proprietary `FFLResHigh.dat` must never be bundled.
 - [ ] Hardware-validate corrected face labels, full controls, foreground/lifecycle neutralization,
   the rebuilt saved-relationship reconnect, latency, and return to a known physical controller
   before making a broader compatibility claim.

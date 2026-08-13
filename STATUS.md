@@ -117,8 +117,10 @@ diagnostics, and Android backup is disabled. Local initialization/re-signing and
 portal-compatible ZIP library exchange are implemented transactionally. A strict foreground
 phone-`NfcA` reader backs up ordinary NTAG215 figures as exact 540-byte images plus an optional real
 32-byte signature; it rejects malformed tags, other NTAG sizes, and figure-v3 rather than truncating
-or guessing. These paths are source/JVM validated; physical NFC/Amiibo validation and Mii rendering
-remain open. A bounded
+or guessing. These paths are source/JVM validated; physical NFC/Amiibo validation remains open.
+Structured owner-Mii extraction is feasible after a full-feature fixture pins the field map, but
+graphical Mii rendering is deliberately deferred: the repository has neither a licensed renderer
+nor a redistributable FFL resource, and a fake approximation would not be portal parity. A bounded
 seven-day AmiiboAPI cache now supplies portal-matched friendly name/series/type/release, compatible
 games/title-ID labels, and best-effort artwork without gating local or adapter operations. See
 [`docs/experiments/android-amiibo-page-parity-2026-08-13.md`](docs/experiments/android-amiibo-page-parity-2026-08-13.md).
