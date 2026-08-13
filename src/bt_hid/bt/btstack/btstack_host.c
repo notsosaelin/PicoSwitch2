@@ -103,6 +103,7 @@ extern int find_player_index(int dev_addr, int instance);
 #include "ns2_bt_version_probe.h"
 #include "ns2_nfc_mirror.h"
 #include "ns2_native_motion.h"
+#include "ns2_active_input.h"
 #include "bt_identity_log.h"
 #include "config_wireless_bridge.h"
 #include "usb.h" // read-only personality gate for automatic native Pro2 motion setup
@@ -4876,6 +4877,11 @@ static void ble_hid_notification_handler(uint8_t packet_type, uint16_t channel, 
     int conn_index = get_ble_conn_index_by_handle(con_handle);
     if (conn_index < 0) return;
 
+    // Register the source before deferring its report so the arbiter can gate
+    // it even when a normalized event has not arrived yet.
+    ns2_active_input_note_connection((uint8_t)conn_index);
+    if (!ns2_active_input_connection_is_active((uint8_t)conn_index)) return;
+
     // Defer processing to main loop to avoid stack overflow
     memcpy(pending_ble_report, value, value_length);
     pending_ble_report_len = value_length;
@@ -5050,6 +5056,9 @@ static void switch2_hid_notification_handler(uint8_t packet_type, uint16_t chann
     // Get conn_index for this BLE connection
     int conn_index = get_ble_conn_index_by_handle(con_handle);
     if (conn_index < 0) return;
+
+    ns2_active_input_note_connection((uint8_t)conn_index);
+    if (!ns2_active_input_connection_is_active((uint8_t)conn_index)) return;
 
     // Defer processing to main loop to avoid stack overflow
     memcpy(pending_ble_report, value, value_length);
@@ -6179,6 +6188,8 @@ static void sw2_motion_notification_handler(uint8_t packet_type, uint16_t channe
     // Preserve the genuine controller's opaque native motion PDU for the console-facing USB
     // report builder. This is intentionally separate from button/stick normalization below:
     // no quaternion decoding, axis conversion, or generic gamepad structure can alter it.
+    ns2_active_input_note_connection((uint8_t)conn_index);
+    if (!ns2_active_input_connection_is_active((uint8_t)conn_index)) return;
     ns2_native_motion_publish((uint8_t)conn_index, conn->vid, conn->pid,
                               value, value_length, time_us_32());
 
@@ -6228,6 +6239,9 @@ static void sw2_pro2_audio_notification_handler(uint8_t packet_type, uint16_t ch
         s_sw2_pro2_audio_compact_failures++;
         return;
     }
+
+    ns2_active_input_note_connection((uint8_t)conn_index);
+    if (!ns2_active_input_connection_is_active((uint8_t)conn_index)) return;
 
     // If ordinary 0x000E actually stops, feed 0x002E's relocated native-motion
     // block and controls into the exact same validated paths as a fallback.

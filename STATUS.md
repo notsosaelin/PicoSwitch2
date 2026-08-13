@@ -75,6 +75,33 @@ Classic bond, BLE GATT, and foreground HID registration remain distinct Android 
 that UX. This combined flow is source/JVM-tested; the earlier separate workflow reached in-game,
 but first-run/returning behavior in the rebuilt APK still needs physical lifecycle validation.
 
+## Explicit active-input source arbiter — 🟡 host/build validated; hardware pending 2026-08-13
+
+The firmware now keeps a bounded registry of HID-ready sources using stable Bluetooth identity
+when available plus a monotonic connection-generation token, rather than treating a reusable
+BTstack connection index as identity. The registry exposes opaque source IDs through the bounded
+`input sources` management query and applies an explicit selection request at an input report
+boundary. Only the selected source may publish normalized state, raw buttons/identity, wake intent,
+mouse deltas, or native motion to console slot 0. A source change immediately neutralizes the
+complete slot (sticks, buttons, motion, mouse, identity, raw debug, rumble, and LEDs), then requires
+one fresh complete report before output resumes. Active disconnects neutralize and do not fall back
+to another source; stale disconnects cannot remove a source after connection-index reuse.
+
+The seam now returns no player slot to feedback pollers for inactive sources, but a few legacy vendor
+initialization paths still defensively fall back to slot 0. Source-aware rumble/LED delivery for
+every driver is therefore explicitly deferred until those paths can be converted and host-tested;
+the arbiter does not claim complete feedback isolation yet.
+
+The first connected source still auto-selects for legacy single-controller operation, so no explicit
+selection preserves the existing default behavior. Wired UART exposes `input sources` and
+`input active <id|none>` for deterministic bring-up. Wireless enumeration is bounded to fit the
+existing 512-byte response slot; wireless selection remains blocked until management authentication
+is implemented. Focused host coverage is in `tools/test_ns2_input_arbiter.c`, included by
+`tools/run_mgmt_tests.ps1`. Pico W and Pico 2 W tone builds plus both install-marker checks pass.
+The standard Pico 2 W audio configure remains blocked because the checked-out `third_party/opus`
+directory lacks its CMakeLists.txt. No flash, UART mutation, or physical multi-source/latency
+validation was performed.
+
 The native Android Amiibo page now has portal-parity raw identity/details: character code/variant,
 tag type, model/series, format, extended variant, and optional owner/nickname/date/write-count/game
 metadata. The latter uses a direct read-only port of the tested portal crypto path and the user’s

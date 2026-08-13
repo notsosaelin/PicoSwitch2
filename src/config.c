@@ -22,6 +22,7 @@
 #include "config_wireless_bridge.h"
 #include "usb.h"  // g_usb_personality (personality query command)
 #include "ns2_wake.h"  // ns2_wake_manual_request (wake command)
+#include "ns2_active_input.h" // source registry / explicit active input
 #include "bt/btstack/btstack_host.h"  // bonds list/remove (management)
 #ifdef NS2_PRO
 #include "ns2_nfc_mirror.h"  // amiibo reader (controller-as-reader backup)
@@ -766,6 +767,71 @@ static void cmd_device(void) {
     reply(out);
 }
 
+// Bounded source registry snapshot for the management app.  The wireless
+// bridge has a 512-byte response slot, so all four current BTHID sources use a
+// compact identity (opaque id, connection, transport, generation, short name).
+static void cmd_input_sources(void) {
+    ns2_input_arbiter_status_t status;
+    ns2_active_input_status(&status);
+    int j = snprintf(out, sizeof(out),
+                     "{\"active\":%lu,\"pending\":%lu,\"explicit\":%s,"
+                     "\"fresh\":%s,\"transitions\":%lu,\"sources\":[",
+                     (unsigned long)status.active_id,
+                     (unsigned long)status.pending_id,
+                     status.explicit_active ? "true" : "false",
+                     status.awaiting_fresh ? "true" : "false",
+                     (unsigned long)status.transition_count);
+    unsigned shown = status.source_count < 4u ? status.source_count : 4u;
+    for (unsigned i = 0; i < shown && j < (int)sizeof(out) - 96; ++i) {
+        const ns2_input_source_info_t *source = &status.sources[i];
+        char name[13];
+        unsigned n = 0;
+        for (; source->name[n] && n < sizeof(name) - 1u; ++n) {
+            unsigned char c = (unsigned char)source->name[n];
+            name[n] = (c < 0x20u || c == '"' || c == '\\') ? ' ' : (char)c;
+        }
+        name[n] = '\0';
+        j += snprintf(out + j, sizeof(out) - (size_t)j,
+                      "%s{\"id\":%lu,\"conn\":%u,\"transport\":%u,"
+                      "\"generation\":%lu,\"name\":\"%.12s\"}",
+                      i ? "," : "", (unsigned long)source->id,
+                      source->key.dev_addr, source->key.transport,
+                      (unsigned long)source->generation,
+                      name);
+        if (j < 0) j = 0;
+        if ((size_t)j >= sizeof(out)) {
+            j = (int)sizeof(out) - 1;
+            break;
+        }
+    }
+    snprintf(out + j, sizeof(out) - (size_t)j,
+             "],\"more\":%s}", status.source_count > shown ? "true" : "false");
+    reply(out);
+}
+
+static void cmd_input_active(const char *arg) {
+    if (!arg || !arg[0]) {
+        reply("{\"error\":\"usage: input active <source-id|none>\"}");
+        return;
+    }
+    uint32_t id = 0;
+    if (strcmp(arg, "none") != 0) {
+        char *end = NULL;
+        unsigned long parsed = strtoul(arg, &end, 10);
+        if (*arg == '\0' || !end || *end != '\0' || parsed > UINT32_MAX)
+            id = UINT32_MAX;
+        else
+            id = (uint32_t)parsed;
+    }
+    if (id == UINT32_MAX || !ns2_active_input_request(id)) {
+        reply("{\"error\":\"unknown or disconnected input source\"}");
+        return;
+    }
+    snprintf(out, sizeof(out), "{\"ok\":true,\"queued\":true,\"active\":%lu}",
+             (unsigned long)id);
+    reply(out);
+}
+
 // Current output personality (read-only). Lets the management app display the mode and gate
 // mode-specific controls (e.g. amiibo controls are only meaningful in Pro2). The switch action
 // itself is a separate future command (see docs/bluetooth/app-interface-audit.md G2). "config" is
@@ -1145,6 +1211,14 @@ static void handle_line(char *cmd) {
         cmd_state();
     } else if (strcmp(cmd, "device") == 0) {
         cmd_device();
+    } else if (strcmp(cmd, "input sources") == 0) {
+        cmd_input_sources();
+    } else if (strncmp(cmd, "input active ", 13) == 0) {
+        if (reply_transport == CONFIG_REPLY_WIRELESS) {
+            reply("{\"error\":\"input selection requires authenticated management\"}");
+        } else {
+            cmd_input_active(cmd + 13);
+        }
     } else if (strcmp(cmd, "personality") == 0) {
         cmd_personality();
     } else if (strncmp(cmd, "personality ", 12) == 0) {

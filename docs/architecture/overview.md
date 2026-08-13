@@ -28,6 +28,7 @@ Bluetooth report
   → BTstack transport
   → bthid device driver
   → input_event_t
+  → NS2 active-input arbiter (one explicit source; inactive reports cached only)
   → router_submit_input()
   → ns2_seam mapping
   → shared switch_pro_input_t

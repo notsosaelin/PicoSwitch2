@@ -72,6 +72,11 @@ typedef struct {
 
     bool is_ble;                        // True if BLE (not Classic BT)
 
+    // Monotonic HID lifecycle token.  BTstack reuses connection indices after
+    // disconnect; the NS2 input arbiter includes this token in its source key
+    // so a stale report/disconnect cannot target a newer occupant of the slot.
+    uint32_t connection_generation;
+
     // Device driver info
     const void* driver;                 // Pointer to device driver interface
     void* driver_data;                  // Driver-specific data

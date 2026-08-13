@@ -66,6 +66,37 @@ void set_global_gamepad_input(uint8_t idx, const switch_pro_input_t *in) {
     critical_section_exit(&s_lock);
 }
 
+void report_neutralize_slot(uint8_t idx) {
+    if (idx >= INPUT_SLOTS)
+        return;
+
+    switch_pro_input_t neutral;
+    memset(&neutral, 0, sizeof(neutral));
+    switch_pro_pack_stick(SWITCH_STICK_MID, SWITCH_STICK_MID, neutral.left_stick);
+    switch_pro_pack_stick(SWITCH_STICK_MID, SWITCH_STICK_MID, neutral.right_stick);
+
+    critical_section_enter_blocking(&s_lock);
+    s_inputs[idx] = neutral;
+    s_input_update_us[idx] = time_us_32();
+    s_raw_buttons[idx] = 0;
+    s_dev_name[idx][0] = '\0';
+    s_dev_vid[idx] = 0;
+    s_dev_pid[idx] = 0;
+    memset(s_raw_report[idx], 0, sizeof(s_raw_report[idx]));
+    s_raw_report_len[idx] = 0;
+
+    // Re-affirm zero output with a generation edge.  A physical driver may
+    // sustain a previous rumble value, so resetting the value without a new
+    // generation would leave that controller vibrating through a transition.
+    s_rumble_left[idx] = 0;
+    s_rumble_right[idx] = 0;
+    rumble_peak_reset(&s_rumble_audio_peak[idx], 0, 0);
+    s_rumble_generation[idx]++;
+    s_player_led_wire[idx] = 0;
+    s_player_led_generation[idx]++;
+    critical_section_exit(&s_lock);
+}
+
 // Diagnostic: ms since the last controller-input publish for this slot, or
 // UINT32_MAX if none yet. A large value while report output continues means the
 // BT side stopped feeding input (frozen input to the console) -- see the `pipe`
