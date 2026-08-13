@@ -3,8 +3,9 @@
     <style name="Theme.PicoSwitch.Companion" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowActionModeOverlay">true</item>
-        <item name="android:navigationBarColor">#10131A</item>
-        <item name="android:statusBarColor">#10131A</item>
+        <!-- Compose applies the selected theme immediately; black avoids an OLED flash during startup. -->
+        <item name="android:navigationBarColor">#000000</item>
+        <item name="android:statusBarColor">#000000</item>
         <item name="android:windowLightStatusBar">false</item>
     </style>
 </resources>

@@ -35,6 +35,17 @@ The debug build provides real implementations for:
 - five-second controller and Amiibo state refresh while connected and idle, including an adapter-only download,
   present/eject, and guarded-clear workflow when no local item matches.
 
+## Appearance
+
+More -> Appearance stores the app's theme choice locally and applies it immediately. The four
+choices are **System**, **Light**, **Dark**, and **OLED black** (true `#000000` background and
+surface). System follows Android's current setting; the other choices are explicit and do not
+depend on device orientation. A separate accent selector offers the default PicoSwitch palette,
+an **inspired** blue/red Joy-Con 1 palette, and an **inspired** Joy-Con 2 palette. The latter uses
+the repository's verified `#9BE1E6` left and `#FF8C5F` right accent references; inspired palettes
+change only app UI accents and never write controller identity colors. Theme controls are full-row
+radio choices with text labels, not color-only state, and keep Material error/status roles readable.
+
 There is deliberately no user remapping editor. PicoSwitch2's compiled controller map is stable and
 user remapping belongs in the Switch's persistent controller settings.
 
@@ -112,6 +123,10 @@ The app selects navigation and content structure from available width, not orien
 - a 1240 dp content maximum on unusually wide displays;
 - one shared spacing/radius/touch-target token set; scrolling rather than shrinking or clipping.
 
+Theme and palette controls live in the same scrollable Settings surface, so they remain reachable in
+short landscape windows and at larger font scales. Status and navigation bars follow the selected
+scheme, including light-system-bar treatment in light mode.
+
 The debug APK was emulator-launched and visually inspected at 16:9 portrait/landscape, 16:10
 landscape, 4:3 portrait/landscape, 1:1, 900x2100 narrow/tall, and 2400x1200 wide-handheld/tablet
 profiles. The 16:9 landscape pass exposed underused horizontal space; lowering the content
@@ -122,8 +137,11 @@ remains reachable at 150% text, and exercised an 80-item library with long names
 
 ## Tests
 
-The current clean run passes **42 JVM tests**, **1 API-35 instrumented navigation/scroll smoke
-test**, Android lint (**0 errors; 15 advisory warnings**), and debug APK assembly. JVM coverage includes:
+The current source/build run passes **45 JVM tests**, Android lint (**0 errors; 14 advisory
+warnings**), and debug APK assembly. The existing API-35 instrumented navigation/scroll smoke test
+has passed in the documented emulator pass; a connected AYN Thor rerun on 2026-08-13 did not expose
+a Compose hierarchy to the test runner, so that device rerun is not treated as new UI evidence.
+JVM coverage includes:
 
 - command framing/limits, config, personality, complete Amiibo status, malformed/error replies;
 - exact neutral report, all 14 button bits, every hat direction/opposites, Thor-style GAS/BRAKE
@@ -160,6 +178,8 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
 - Color changes save correctly but current firmware has no color-triggered USB re-enumeration
   request. The app warns that a reconnect/re-enumeration is needed before the console refreshes the
   host-visible identity color.
+- App appearance preferences are local to this Android install. Joy-Con-inspired palettes are UI
+  references only; they do not imply or alter the adapter's body/lightbar/Joy-Con identity values.
 - LE bond lists approach the wireless reply bridge's 511-byte practical response ceiling. Firmware
   can return valid but silently incomplete JSON because it provides no total/truncation marker; the
   app warns that reported results are not provably complete. Firmware still needs a versioned

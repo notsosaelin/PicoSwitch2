@@ -66,6 +66,9 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     val hidBridge = HidDeviceBridge(application, inputRouter, diagnostics)
     private val adapter = AdapterRepository(BleGattManagementTransport(application, diagnostics))
     private val library = AmiiboLibrary(application)
+    private val themeStore = ThemePreferenceStore(application)
+    private val _theme = MutableStateFlow(themeStore.load())
+    val theme: StateFlow<ThemeSelection> = _theme.asStateFlow()
     private val initialSection = savedState.get<String>(KEY_SECTION)?.let { runCatching { AppSection.valueOf(it) }.getOrNull() } ?: AppSection.Home
     private val _ui = MutableStateFlow(
         CompanionUiState(
@@ -119,6 +122,8 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         savedState[KEY_SECTION] = section.name
         _ui.update { it.copy(section = section, message = null) }
     }
+    fun setThemeMode(mode: ThemeMode) = updateTheme { it.copy(mode = mode) }
+    fun setAccentPalette(palette: AccentPalette) = updateTheme { it.copy(palette = palette) }
     fun consumeMessage() { _ui.update { it.copy(message = null) } }
     fun selectAmiibo(id: String) { savedState[KEY_AMIIBO] = id; _ui.update { it.copy(selectedAmiiboId = id) } }
 
@@ -304,6 +309,14 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     }
 
     private fun notice(message: String) { _ui.update { it.copy(message = message) } }
+
+    private fun updateTheme(update: (ThemeSelection) -> ThemeSelection) {
+        val next = update(_theme.value)
+        if (next == _theme.value) return
+        themeStore.save(next)
+        _theme.value = next
+        diagnostics.event("app", "appearance changed", "${next.mode.key}/${next.palette.key}")
+    }
 
     override fun onCleared() {
         hidBridge.close()
