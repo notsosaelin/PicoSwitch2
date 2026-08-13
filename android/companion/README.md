@@ -145,9 +145,10 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
   personality switching, Amiibo visibility, and the ordinary-image Sync transfer path. Wake and
   the complete mutation matrix still require their focused hardware checks.
 - The AYN Thor's `Odin Controller` is live-validated, including its input panel, and the ordinary
-  app reaches registered HID Ready without root or Shizuku. App-led bond, Pico receipt, and
-  end-to-end console input remain unvalidated. The installed legacy VCC root input daemon can
-  occupy Android's single HID Device application slot and must be stopped for that test.
+  app reaches registered HID Ready without root or Shizuku. Its OEM stack can report an immediate
+  registration rejection and then asynchronously succeed, so the callback—not that immediate
+  boolean—is authoritative. App-led bond, Pico receipt, and end-to-end console input remain
+  unvalidated.
 - Motion and rumble are not in the v1 Android HID contract and are labeled as unavailable.
 - Phone-NFC physical-tag backup is not implemented yet. Controller-as-reader commands are low-level
   and intentionally not exposed as a production user workflow.

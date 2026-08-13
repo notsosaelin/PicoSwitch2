@@ -34,6 +34,7 @@ class HidDeviceBridge(
     val state: StateFlow<BridgeState> = _state.asStateFlow()
     private var profile: BluetoothHidDevice? = null
     private var host: BluetoothDevice? = null
+    private var registrationTimeout: Job? = null
     private var sender: Job? = null
     private var inputCollector: Job? = null
     // One latest-state mailbox prevents old motion reports surviving behind newer input.
@@ -43,14 +44,22 @@ class HidDeviceBridge(
     private val callback = object : BluetoothHidDevice.Callback() {
         override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
             if (stopped) return
+            registrationTimeout?.cancel()
+            registrationTimeout = null
             diagnostics?.event("controller", "HID registration", if (registered) "registered" else "unregistered")
-            if (registered) _state.value = _state.value.copy(
-                phase = BridgePhase.Ready, hostName = pluggedDevice?.name,
-                message = "Select a paired PicoSwitch2 host", registered = true,
-            ) else if (_state.value.phase != BridgePhase.Idle) _state.value = _state.value.copy(
-                phase = BridgePhase.Failed, message = "Android removed HID Device registration; keep the app in front and prepare it again",
-                registered = false,
-            )
+            if (registered) {
+                _state.value = _state.value.copy(
+                    phase = BridgePhase.Ready, hostName = pluggedDevice?.name,
+                    message = "Select a paired PicoSwitch2 host", registered = true,
+                )
+            } else if (_state.value.phase != BridgePhase.Idle) {
+                val hid = profile
+                if (hid != null) closeFailedProfile(hid)
+                _state.value = _state.value.copy(
+                    phase = BridgePhase.Failed, message = "Android removed HID Device registration; keep the app in front and prepare it again",
+                    registered = false,
+                )
+            }
         }
 
         override fun onConnectionStateChanged(device: BluetoothDevice, state: Int) {
@@ -103,17 +112,39 @@ class HidDeviceBridge(
     }
 
     private fun register(hid: BluetoothHidDevice) {
-        _state.value = BridgeState(BridgePhase.Registering)
+        registrationTimeout?.cancel()
+        registrationTimeout = null
+        _state.value = BridgeState(BridgePhase.Registering, message = "Waiting for Android to confirm HID registration")
         try {
             val sdp = BluetoothHidDeviceAppSdpSettings(
                 "PicoSwitch Android Controller", "Built-in controls passthrough", "PicoSwitch2",
                 (BluetoothHidDevice.SUBCLASS1_COMBO.toInt() or BluetoothHidDevice.SUBCLASS2_GAMEPAD.toInt()).toByte(),
                 AndroidControllerDescriptor.bytes,
             )
-            if (!hid.registerApp(sdp, null, null, executor, callback)) {
+            // Some OEM stacks, including the AYN Thor's Android 13 build, return false here
+            // and then immediately deliver onAppStatusChanged(registered=true). The callback is
+            // authoritative; treating the synchronous boolean as final leaves our own accepted
+            // registration alive and makes the next attempt collide with it.
+            val immediateAccepted = hid.registerApp(sdp, null, null, executor, callback)
+            if (!immediateAccepted) diagnostics?.event(
+                "controller", "HID registration", "immediate result false; awaiting callback",
+            )
+            registrationTimeout = scope.launch {
+                delay(REGISTRATION_CALLBACK_TIMEOUT_MS)
+                if (stopped || profile !== hid || _state.value.phase != BridgePhase.Registering) return@launch
+                // Only an accepted synchronous request is ours to unregister. A false result may
+                // mean a genuinely different provider owns the one system slot.
+                if (immediateAccepted) runCatching { hid.unregisterApp() }
                 closeFailedProfile(hid)
-                _state.value = BridgeState(BridgePhase.Failed, message = "Another HID Device app may already be active")
-                diagnostics?.event("controller", "HID registration", "request rejected")
+                _state.value = BridgeState(
+                    BridgePhase.Failed,
+                    message = if (immediateAccepted) {
+                        "Android did not confirm HID Device registration; retry"
+                    } else {
+                        "Android did not confirm HID Device registration; another HID app may be active"
+                    },
+                )
+                diagnostics?.event("controller", "HID registration", "callback timeout")
             }
         } catch (error: Throwable) {
             closeFailedProfile(hid)
@@ -155,6 +186,7 @@ class HidDeviceBridge(
 
     fun stop() {
         stopped = true
+        registrationTimeout?.cancel(); registrationTimeout = null
         val hid = profile
         val device = host
         if (hid != null && device != null) {
@@ -221,5 +253,6 @@ class HidDeviceBridge(
 
     companion object {
         private const val REPORT_INTERVAL_MS = 8L
+        private const val REGISTRATION_CALLBACK_TIMEOUT_MS = 2_000L
     }
 }

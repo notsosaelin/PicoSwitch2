@@ -21,8 +21,9 @@ structural validation and strict figure-v3 CRC checks.
    pairing window, and pair/select PicoSwitch2 in the in-app Android chooser. Move every stick and
    trigger, D-pad diagonals, and all buttons. Expect the live panel and report counter to change and
    the console to receive the same inputs.
-   If registration says another HID Device app is active, stop VCC or any other HID Device app
-   first; Android permits only one registered provider. Do not add root/Shizuku to work around it.
+   Android permits only one registered provider. On AYN Thor, wait for the registration callback:
+   its immediate API result can be false even when registration succeeds milliseconds later. The
+   app handles that OEM behavior without root or Shizuku.
 7. Rotate once while connected and once while the bridge is ready. Expect the destination,
    selection, colors, and bridge state to remain, with no repeated mutation.
 8. If anything differs, open diagnostics and **Share privacy-safe diagnostics**. Send the text file
