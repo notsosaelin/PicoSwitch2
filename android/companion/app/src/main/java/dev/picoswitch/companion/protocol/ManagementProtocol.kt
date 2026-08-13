@@ -53,7 +53,7 @@ object ManagementProtocol {
     ).also { requireShape(it.id.isNotBlank() && it.version.isNotBlank(), "info") }
 
     fun controller(value: JsonObject) = ControllerInfo(
-        name = value.string("name", "No controller"),
+        name = value.string("name", "No controller").ifBlank { "No controller" },
         vid = value.int("vid"), pid = value.int("pid"),
         batteryValid = value.boolInt("batteryValid"),
         batteryPercent = value.int("battery"), charging = value.boolInt("charging"),

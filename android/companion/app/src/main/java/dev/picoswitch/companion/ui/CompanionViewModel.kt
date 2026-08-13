@@ -98,11 +98,15 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         viewModelScope.launch {
             adapter.connection.map { it.connected }.distinctUntilChanged().collectLatest { connected ->
                 while (connected) {
-                    delay(AMIIBO_POLL_MILLIS)
+                    delay(ADAPTER_POLL_MILLIS)
                     val state = _ui.value
-                    if (!state.busy && state.snapshot.capabilities.amiibo == CapabilityState.Available) {
-                        runCatching { adapter.refreshAmiibo() }
-                            .onFailure { diagnostics.error("management", "background Amiibo refresh", it) }
+                    if (!state.busy) {
+                        runCatching { adapter.refreshController() }
+                            .onFailure { diagnostics.error("management", "background controller refresh", it) }
+                        if (state.snapshot.capabilities.amiibo == CapabilityState.Available) {
+                            runCatching { adapter.refreshAmiibo() }
+                                .onFailure { diagnostics.error("management", "background Amiibo refresh", it) }
+                        }
                     }
                 }
             }
@@ -309,7 +313,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
 
     companion object {
         private const val MAX_IMPORT_BYTES = 2048
-        private const val AMIIBO_POLL_MILLIS = 5_000L
+        private const val ADAPTER_POLL_MILLIS = 5_000L
         private const val KEY_SECTION = "section"
         private const val KEY_AMIIBO = "selectedAmiibo"
         private const val KEY_SOURCE = "selectedSource"

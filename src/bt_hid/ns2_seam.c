@@ -324,6 +324,10 @@ void router_device_disconnected(uint8_t dev_addr, int8_t instance) {
     switch_pro_pack_stick(SWITCH_STICK_MID, SWITCH_STICK_MID, in.right_stick);
     uint8_t slot = ns2_slot(dev_addr);
     uint8_t wake_source = dev_addr < NS2_WAKE_SESSION_SOURCES ? dev_addr : 0;
+    // Identity is live state, not connection history. Leaving the previous name/VID/PID
+    // populated makes the portal and Android `device` command claim a powered-off
+    // controller is still attached after this neutral disconnect report.
+    set_global_device(slot, NULL, 0, 0);
     set_global_gamepad_input(slot, &in);
     set_global_raw_buttons(slot, 0);
     if (wake_session_active[wake_source]) {

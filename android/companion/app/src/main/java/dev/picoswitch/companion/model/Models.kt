@@ -35,7 +35,8 @@ data class ControllerInfo(
     val batteryPercent: Int = 0,
     val charging: Boolean = false,
 ) {
-    val attached: Boolean get() = vid != 0 || pid != 0 || name != "No controller"
+    val attached: Boolean get() = vid != 0 || pid != 0 ||
+        (name.isNotBlank() && name != "No controller")
 }
 
 data class RgbColor(val red: Int, val green: Int, val blue: Int) {

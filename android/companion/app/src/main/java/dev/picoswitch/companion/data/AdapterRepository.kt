@@ -32,7 +32,10 @@ class AdapterRepository(private val transport: ManagementTransport) {
         }
     }
 
-    suspend fun disconnect() = transport.disconnect()
+    suspend fun disconnect() {
+        transport.disconnect()
+        _snapshot.value = _snapshot.value.copy(controller = ControllerInfo())
+    }
 
     suspend fun refreshAll() {
         val firmware = parse("info", ManagementProtocol::firmware)
@@ -181,16 +184,25 @@ class AdapterRepository(private val transport: ManagementTransport) {
         }
         AmiiboFiles.validate(output)
         val crc = AmiiboFiles.crc32(output)
-        if (!status.payloadCrc.equals(crc, ignoreCase = true)) {
-            throw ManagementException("Synced Amiibo failed CRC verification (${status.payloadCrc} != $crc)")
+        // Current firmware exposes a whole-image CRC for v3 but leaves ordinary
+        // NTAG215 payloadCrc at its zero-initialized sentinel. The portal treats
+        // that field as unavailable too. Preserve validation and generation-race
+        // protection rather than rejecting every ordinary adapter backup.
+        val expectedCrc = status.payloadCrc.takeIf {
+            status.v3Loaded || !it.equals(UNAVAILABLE_PAYLOAD_CRC, ignoreCase = true)
         }
-        return AmiiboDownload(output, status.generation, status.payloadCrc)
+        if (expectedCrc != null && !expectedCrc.equals(crc, ignoreCase = true)) {
+            throw ManagementException("Synced Amiibo failed CRC verification ($expectedCrc != $crc)")
+        }
+        return AmiiboDownload(output, status.generation, expectedCrc)
     }
 
     /** Call only after [AmiiboDownload.bytes] is durably stored in the private local library. */
     suspend fun acknowledgeDownloadedAmiibo(download: AmiiboDownload) {
         val current = refreshAmiibo()
-        if (current.generation != download.generation || !current.payloadCrc.equals(download.payloadCrc, true)) {
+        val crcChanged = download.payloadCrc != null &&
+            !current.payloadCrc.equals(download.payloadCrc, true)
+        if (current.generation != download.generation || crcChanged) {
             throw ManagementException("Adapter Amiibo changed during Sync; the saved local copy was not acknowledged. Sync again.")
         }
         ack("amiibo downloaded")
@@ -262,9 +274,13 @@ class AdapterRepository(private val transport: ManagementTransport) {
     }
 
     private data class OptionalCapability<T>(val value: T?, val state: CapabilityState)
+
+    private companion object {
+        const val UNAVAILABLE_PAYLOAD_CRC = "00000000"
+    }
 }
 
-data class AmiiboDownload(val bytes: ByteArray, val generation: Long, val payloadCrc: String)
+data class AmiiboDownload(val bytes: ByteArray, val generation: Long, val payloadCrc: String?)
 
 enum class ColorTarget(val command: String) { Body("body"), LeftAccent("jcl"), RightAccent("jcr") }
 

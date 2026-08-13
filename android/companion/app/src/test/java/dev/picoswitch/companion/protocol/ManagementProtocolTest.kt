@@ -67,4 +67,15 @@ class ManagementProtocolTest {
             ManagementProtocol.readData(ManagementProtocol.objectOrThrow("amiibo read", """{"data":"GG"}"""))
         }
     }
+
+    @Test fun `empty firmware device identity is detached`() {
+        val value = ManagementProtocol.controller(
+            ManagementProtocol.objectOrThrow(
+                "device",
+                """{"name":"","vid":0,"pid":0,"batteryValid":0,"battery":0,"charging":0}""",
+            ),
+        )
+        assertEquals("No controller", value.name)
+        assertFalse(value.attached)
+    }
 }
