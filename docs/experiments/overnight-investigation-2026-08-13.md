@@ -82,6 +82,76 @@ proven flag pattern; lets a future session trigger *and* observe (`btstate` + th
 the exact CDC transition over UART without a BOOTSEL press. Prepared for review; see the implementation
 batch note.
 
+## Shared management architecture — Android + portal (task 11, review)
+
+The management command **surface** is correctly shared and generic — the firmware has **no**
+portal-specific coupling. `config.c handle_line` dispatches newline-JSON commands; the wireless
+allowlist (`config_wireless_command_allowed`) gates the same set for any BLE client; the cross-core
+bridge chunks responses MTU-safe. "browser/portal" appears only in descriptive comments. Both the Web
+Portal and the Android companion app consume this identical surface (as
+`docs/bluetooth/app-interface-audit.md` §1 already frames it).
+
+**Two contracts the Android app MUST honor (client-side, shared — document so they're not rediscovered):**
+1. **One-command-at-a-time serialization.** The bridge is a single-slot request/response channel: a
+   client must wait for each JSON-line reply before sending the next (config.c:1242, and
+   `config_wireless_bridge`'s `CONFIG_WIRELESS_RX_BUSY`). The portal already does this; the Android app
+   must **not pipeline** commands or it will get `BUSY`/dropped replies. This is a shared-protocol
+   contract, not portal-specific behavior.
+2. **Amiibo metadata decryption is client-side by design.** Owner/nickname/dates/write-count are
+   decrypted in the client (portal JS + `SubtleCrypto` + the user's retail keys), because keys are
+   deliberately **never** on the adapter (passthrough architecture; see
+   `docs/switch2/amiibo-crypto-research-2026-08.md`). The firmware correctly exposes **raw bytes**
+   (`amiibo read`) + **plaintext** `figureId`. The Android app must reimplement the same crypto —
+   recommend a **shared client-crypto spec** (JS + Kotlin from one definition), **not** moving crypto
+   into firmware. The Sync *orchestration* (read-loop + validate + dirty/`acknowledge`) likewise uses
+   shared firmware **primitives** with client-specific sequencing — correct boundary.
+
+**One shared gap (not portal-specific):** real physical-amiibo backup via a connected controller
+(G4, `ns2_nfc_mirror` initiator) is wired **only** to the UART diag, so **neither** client can do it.
+It should be lifted to the config/BLE surface (allowlisted, bonded) so both clients gain it — already
+tracked in the interface audit; re-affirmed here as shared work, not a portal feature.
+
+**Conclusion:** architecture is sound (shared surface, correct client/firmware boundary). Action items
+are documentation (the two contracts above) + the G4 lift — no portal-specific logic needs to move.
+
+## In-band management persistence (task 10, investigation + recommendation)
+
+**Where it lives / why it resets:** `g_mgmt_enabled` is a `volatile bool` in `usb.c` (RAM), default
+false (or true under the `NS2_MGMT_DEFAULT_ON` diagnostic build flag). It is not in the persistent
+config, so an ordinary reboot restores the RAM default.
+
+**Existing persistence mechanism:** `pico_config_t` (config.c:53, `CONFIG_VERSION=10`) in flash
+(`CONFIG_FLASH_OFFSET`) holds `body_color`, Joy-Con accents, and the wake identity; saved by
+`config_service_save` (core1, the only flash writer), loaded by `config_load`. Adding a `bool` field
+(bump to v11 + migration) is the straightforward way to persist a setting.
+
+**Interaction with BOOTSEL/personality:** `g_mgmt_enabled` is personality-independent (survives
+switches — good). BOOTSEL does not currently toggle it. Every **UF2 flash** erases all five
+persistence sectors via the install marker (config.c:63–72), so a reflash always resets a persisted
+setting to default.
+
+**Recommendation — do NOT persist `g_mgmt_enabled` yet. Keep it RAM-only, default-off.** Two decisive
+reasons grounded in the current architecture:
+1. **It is currently the guaranteed clean-boot escape hatch.** Because it is RAM-only, a **power cycle
+   always returns to a safe, management-off state** — which is exactly how the owner recovered from the
+   P1 wedge. Persisting *enabled* would remove that escape hatch: any management-path bug that wedges on
+   boot would **re-wedge every boot** → effectively bricked until a reflash. That is a real
+   permanent-inaccessibility risk the RAM default avoids.
+2. **Management is currently unauthenticated (plan C4 not implemented).** Persisting *enabled* means the
+   adapter boots advertising an **open** management service on every power-up with no user present to
+   deliberately enable it — a standing security exposure.
+
+**Path forward (recorded, not implemented):**
+- **Development:** the `NS2_MGMT_DEFAULT_ON` build flag already solves "reboot disrupts debugging"
+  without touching flash or the escape hatch (a normal `build.ps1` reverts to off). Recommend **also**
+  adding a dev-gated UART `mgmt on|off|status` diag command (see task 12) so a session can toggle
+  management over UART without entering Config mode — this also removes a real testing dependency.
+- **Production (only AFTER C4 authenticated bonding lands):** persist via a new `pico_config_t` field
+  (v11 + migration), loaded into `g_mgmt_enabled` at `config_load`, **plus** an escape hatch before it
+  ships: the triple-tap wipe must also clear persisted management-enabled, and/or a boot-health
+  watchdog that reverts to off if the prior boot did not reach a healthy steady state (prevents the
+  re-wedge brick). The install-marker reflash-erase remains the last-resort recovery.
+
 ## P1 — trace-vs-code divergence analysis
 
 ### What the two traces actually say
