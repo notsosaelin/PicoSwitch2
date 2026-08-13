@@ -308,7 +308,81 @@ does not request Android discoverability and does not depend on Pico inquiry fin
 If a target OEM only completes first pairing in the opposite direction, record that as a device-
 specific fallback experiment instead of silently adding `ACTION_REQUEST_DISCOVERABLE` to every run.
 
+## Feature parity (v2, 2026-08-13)
+
+v1 carried buttons, sticks, triggers and the D-pad. v2 extends the same HID link to everything else a
+real controller provides, so an Android handheld is not a second-class input source:
+
+| Capability | Real controller | Android bridge v2 | State |
+|---|---|---|---|
+| Buttons / sticks / triggers / D-pad | ✅ | ✅ input report 1 (v1 fields, unchanged) | ✅ hardware-validated (v1) |
+| **Motion (gyro + accel)** | ✅ | ✅ vendor block in report 1 → `input_event_t` motion → Pro2 carrier | 🟡 host-tested; axes need a physical pass |
+| **Rumble** | ✅ | ✅ output report 2 → handheld vibrator (amplitude-controlled) | 🟡 host-tested |
+| **Player LED** | ✅ | ✅ output report 2 → app indicator (handhelds have no player LEDs) | 🟡 host-tested |
+| **Battery level + charging** | ✅ | ✅ vendor block → console battery display | 🟡 host-tested |
+| Audio / microphone | DualSense only | ❌ not over HID — see below | ⬜ separate subsystem |
+
+### Why the extension is shaped this way
+
+- **Appended, never rearranged.** The vendor block goes *after* the v1 fields, so the byte offsets the
+  hardware-validated path parses are unchanged. The firmware derives the report length from the
+  descriptor, so a v1 app against v2 firmware still works, and a v2 app against v1 firmware still
+  delivers buttons (the extra bytes are ignored). No version negotiation exists or is needed.
+- **Identity is the descriptor, not the VID.** An Android handheld reports its *phone* VID/PID, which
+  varies per OEM and cannot authorize output. The firmware instead matches the canonical descriptor
+  exactly (`android_bridge_identify`). Motion, battery, rumble, and LED are enabled only for a device
+  that declares this exact contract.
+- **Not a gamepad quirk.** Quirks describe devices that *deviate* from their descriptor and are keyed
+  on identity. This is a device that honestly *declares* extra capability, so it lives in its own
+  module (`bthid_android_bridge.{c,h}`) rather than the quirk table.
+- **Motion is on demand.** The adapter sets a motion-wanted flag from the console's real negotiated IMU
+  state (`ns2_motion_negotiated()`); the app registers its sensors only while that flag is set, instead
+  of draining the phone streaming gyro into a game that ignores it.
+- **Motion units match the DualSense.** The app converts Android's SI sensor values to 8192 counts/g
+  and 16.384 counts/dps, so the handheld reuses the hardware-validated DualSense→Switch 2 carrier
+  translation rather than introducing a second scaling convention.
+- **Axis row is provisional.** `SWITCH_MOTION_SOURCE_ANDROID` has its own row in
+  `ns2_motion_seam.c`, reasoned from Android's sensor frame but **not yet measured**. The determinant
+  rule cannot catch a wrong-but-proper rotation (this is exactly how the SWITCH1 row was wrong for
+  weeks), so it needs the same physical pitch/yaw/roll pass. It is deliberately in firmware so a fix is
+  a flash, not a new APK.
+
+### Audio and microphone — investigated, not feasible over this link
+
+**HID cannot carry audio.** `BluetoothHidDevice` transports HID reports only; there is no audio
+channel in the profile, so no amount of descriptor work makes mic or game audio flow over the bridge.
+
+A separate transport would be required: the phone would have to stream as an **A2DP source** (or HFP)
+and PicoSwitch2 would have to implement the matching **A2DP sink** plus codec decode, then forward
+into the Pro2 personality's existing USB audio endpoints. That is a whole subsystem, not an extension:
+
+- it competes for the same radio and CPU budget as the already-validated DualSense audio path, which
+  needed 300 MHz and a dedicated core on Pico 2 W (Pico W could not sustain it at all);
+- A2DP latency (~100–200 ms) is poor for voice chat, which is the only reason to want the mic;
+- it needs the USB **microphone return** path, which PLAN.md already tracks as unfinished work
+  ("DualSense microphone report decoding and Opus-to-USB return"), and would ride on it rather than
+  duplicate it.
+
+**Recommendation:** treat handheld audio as a future investigation gated on the DualSense mic-return
+work landing first. Everything else in the parity table is delivered over the existing HID link.
+
 ## Fixed HID contract
+
+The canonical descriptor, wire layout, and sensor scale live in one file shared by the firmware, the
+host tests, and (mirrored) the Kotlin encoder: [`tools/fixtures/android_controller_hid.h`](../../tools/fixtures/android_controller_hid.h).
+`tools/check_android_descriptor_parity.py` fails loudly if the two languages ever drift — a one-sided
+edit would not break a build, it would silently stop the handheld being recognized.
+
+**Input report 1 (26 bytes on the wire):** report ID, six axes, two button bytes, hat (v1, bytes 0–9),
+then gyro X/Y/Z and accel X/Y/Z as `int16` LE (10–21), battery (22), flags (23), and a 16-bit
+millisecond motion timestamp (24–25). Flags: `0x01` charging, `0x02` motion valid, `0x04` battery
+valid. Motion and battery are published only when their validity bit is set, so idled sensors clear
+rather than latch a stale sample.
+
+**Output report 2 (5 bytes):** report ID, rumble left, rumble right, player number (0 = none), flags
+(`0x01` = motion wanted).
+
+### v1 contract (unchanged, still parsed)
 
 Start with one input report and no output or feature reports. A narrow descriptor makes both the
 Android encoder and PicoSwitch2 parser deterministic.

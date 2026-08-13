@@ -19,6 +19,14 @@ data class BridgeState(
     val registered: Boolean = false,
     val reportCount: Long = 0,
     val lastReportAtMillis: Long = 0,
+    /** Console player number assigned to this handheld (0 = none yet). */
+    val playerLed: Int = 0,
+    /** True while the console is actually consuming motion (sensors are live). */
+    val motionActive: Boolean = false,
+    /** False when the handheld has no gyro/accel to offer. */
+    val motionAvailable: Boolean = false,
+    val rumbleAmplitude: Int = 0,
+    val batteryPercent: Int = 0,
 )
 
 @SuppressLint("MissingPermission")
@@ -29,6 +37,11 @@ class HidDeviceBridge(
 ) : BluetoothProfile.ServiceListener {
     private val appContext = context.applicationContext
     private val manager = appContext.getSystemService(BluetoothManager::class.java)
+    private val motionSource = MotionSource(appContext)
+    private val batterySource = BatterySource(appContext)
+    private val haptics = HandheldHaptics(appContext)
+    @Volatile private var feedback = ControllerFeedback.None
+    @Volatile private var battery = ControllerBattery.Unknown
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val executor = Executors.newSingleThreadExecutor()
     private val _state = MutableStateFlow(BridgeState())
@@ -66,6 +79,33 @@ class HidDeviceBridge(
             }
         }
 
+        // The adapter's feedback (rumble, player LED, motion request) arrives on
+        // the interrupt channel on most stacks and as a control-channel SET_REPORT
+        // on others, so both are handled and the decoder tolerates either framing.
+        override fun onInterruptData(device: BluetoothDevice?, reportId: Byte, data: ByteArray?) {
+            applyFeedback(ControllerFeedback.decode(data, reportId.toInt() and 0xFF))
+        }
+
+        override fun onSetReport(device: BluetoothDevice?, type: Byte, id: Byte, data: ByteArray?) {
+            val decoded = ControllerFeedback.decode(data, id.toInt() and 0xFF)
+            applyFeedback(decoded)
+            runCatching {
+                profile?.reportError(
+                    device,
+                    if (decoded != null) BluetoothHidDevice.ERROR_RSP_SUCCESS
+                    else BluetoothHidDevice.ERROR_RSP_INVALID_PARAM,
+                )
+            }
+        }
+
+        override fun onGetReport(device: BluetoothDevice?, type: Byte, id: Byte, bufferSize: Int) {
+            // A host may poll the current state over the control channel; answer
+            // with a real snapshot rather than leaving the request to time out.
+            runCatching {
+                profile?.replyReport(device, type, id, buildReport(input.state.value))
+            }
+        }
+
         override fun onConnectionStateChanged(device: BluetoothDevice, state: Int) {
             if (stopped) return
             connectionTimeout?.cancel()
@@ -90,6 +130,9 @@ class HidDeviceBridge(
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     sender?.cancel(); sender = null; inputCollector?.cancel(); inputCollector = null
                     drainOutgoing(); host = null
+                    // Losing the link must not leave the handheld buzzing or its
+                    // sensors registered with nothing consuming them.
+                    releaseFeedbackResources()
                     input.neutralize()
                     _state.value = _state.value.copy(
                         phase = BridgePhase.Ready, hostName = null, message = "Controller link disconnected", registered = true,
@@ -190,7 +233,9 @@ class HidDeviceBridge(
     override fun onServiceDisconnected(profileId: Int) {
         registrationTimeout?.cancel(); registrationTimeout = null
         connectionTimeout?.cancel(); connectionTimeout = null
-        sender?.cancel(); sender = null; host = null; input.neutralize()
+        sender?.cancel(); sender = null; host = null
+        releaseFeedbackResources()
+        input.neutralize()
         inputCollector?.cancel(); inputCollector = null
         profile = null
         if (stopped) return
@@ -245,7 +290,9 @@ class HidDeviceBridge(
             hid.disconnect(device)
         }
         sender?.cancel(); sender = null; inputCollector?.cancel(); inputCollector = null
-        drainOutgoing(); host = null; requestedHost = null; input.neutralize()
+        drainOutgoing(); host = null; requestedHost = null
+        releaseFeedbackResources()
+        input.neutralize()
         if (hid != null) hid.unregisterApp()
         runCatching { manager?.adapter?.closeProfileProxy(BluetoothProfile.HID_DEVICE, hid) }
         profile = null
@@ -266,6 +313,41 @@ class HidDeviceBridge(
         recordReport(profile?.sendReport(device, ControllerReportEncoder.REPORT_ID, ControllerReportEncoder.encode(ControllerState.Neutral)) == true)
     }
 
+    /** Apply one decoded feedback report: rumble, player LED, motion on/off. */
+    private fun applyFeedback(decoded: ControllerFeedback?) {
+        if (decoded == null || stopped) return
+        val previous = feedback
+        feedback = decoded
+        haptics.apply(decoded.rumbleAmplitude)
+        if (decoded.motionWanted != previous.motionWanted) {
+            // On demand only: the console tells us when motion is actually being
+            // consumed, so an idle handheld is not draining its battery on sensors.
+            if (decoded.motionWanted) motionSource.start() else motionSource.stop()
+            diagnostics?.event(
+                "controller", "motion",
+                if (decoded.motionWanted) "console requested motion" else "console stopped motion",
+            )
+        }
+        if (decoded.playerLed != previous.playerLed) {
+            diagnostics?.event("controller", "player LED", decoded.playerLed.toString())
+        }
+        _state.value = _state.value.copy(
+            playerLed = decoded.playerLed,
+            rumbleAmplitude = decoded.rumbleAmplitude,
+            motionActive = decoded.motionWanted && motionSource.available,
+            motionAvailable = motionSource.available,
+        )
+    }
+
+    /** Compose the wire report: live input plus the current motion/battery. */
+    private fun buildReport(state: ControllerState): ByteArray {
+        val withExtras = state.copy(
+            motion = if (feedback.motionWanted) motionSource.sample() else ControllerMotion.None,
+            battery = battery,
+        )
+        return ControllerReportEncoder.encode(withExtras)
+    }
+
     private fun startSender() {
         sender?.cancel()
         inputCollector?.cancel()
@@ -274,12 +356,39 @@ class HidDeviceBridge(
         }
         sender = scope.launch {
             var previous: ControllerState? = null
+            var lastBatteryPoll = 0L
             while (isActive) {
-                val state = outgoing.receive()
-                if (state == previous) continue
+                // While motion is live the report carries a fresh IMU sample every
+                // interval, so the loop is time-driven; with motion off it stays
+                // change-driven exactly as the validated v1 path was.
+                //
+                // Both the fetch and the send decision use this ONE value: if the
+                // console asked for motion but the handheld has no IMU, a
+                // non-blocking fetch with a change-driven send would spin without
+                // ever suspending or delaying.
+                val timeDriven = feedback.motionWanted && motionSource.available
+                val state = if (timeDriven) {
+                    outgoing.poll() ?: input.state.value
+                } else {
+                    outgoing.receive()
+                }
+
+                val now = System.currentTimeMillis()
+                if (now - lastBatteryPoll >= BATTERY_POLL_MS) {
+                    lastBatteryPoll = now
+                    battery = batterySource.read()
+                    if (battery.valid && battery.levelPercent != _state.value.batteryPercent) {
+                        _state.value = _state.value.copy(batteryPercent = battery.levelPercent)
+                    }
+                }
+
+                if (!timeDriven && state == previous) continue
                 previous = state
                 val device = host ?: continue
-                recordReport(profile?.sendReport(device, ControllerReportEncoder.REPORT_ID, ControllerReportEncoder.encode(state)) == true)
+                recordReport(
+                    profile?.sendReport(device, ControllerReportEncoder.REPORT_ID,
+                                        buildReport(state)) == true
+                )
                 // Coalesce axis motion to the documented 125 Hz ceiling. Button edges can wait
                 // at most one interval and the conflated mailbox always retains the newest state.
                 delay(REPORT_INTERVAL_MS)
@@ -289,6 +398,21 @@ class HidDeviceBridge(
 
     private fun drainOutgoing() {
         outgoing.drain()
+    }
+
+    /**
+     * Stop the motor and unregister the sensors, and forget the adapter's last
+     * feedback. Called on every teardown path so a dropped link, a stop, or a
+     * profile loss can never leave the handheld vibrating or streaming an IMU
+     * nothing is reading.
+     */
+    private fun releaseFeedbackResources() {
+        feedback = ControllerFeedback.None
+        haptics.stop()
+        motionSource.stop()
+        _state.value = _state.value.copy(
+            playerLed = 0, rumbleAmplitude = 0, motionActive = false,
+        )
     }
 
     private fun recordReport(ok: Boolean) {
@@ -304,6 +428,7 @@ class HidDeviceBridge(
 
     companion object {
         private const val REPORT_INTERVAL_MS = 8L
+        private const val BATTERY_POLL_MS = 30_000L
         private const val REGISTRATION_CALLBACK_TIMEOUT_MS = 2_000L
         private const val CONNECTION_CALLBACK_TIMEOUT_MS = 8_000L
     }
