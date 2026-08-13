@@ -23,7 +23,7 @@ $tests = @(
     @{ n='test_config_wireless_bridge_edge';        src='tools/test_config_wireless_bridge_edge.c src/config_wireless_bridge.c';        flags='' }
     @{ n='test_config_wireless_bridge_concurrency'; src='tools/test_config_wireless_bridge_concurrency.c src/config_wireless_bridge.c'; flags='-pthread' }
     @{ n='test_mgmt_access';                        src='tools/test_mgmt_access.c src/mgmt_access.c src/config_wireless_bridge.c';     flags='' }
-    @{ n='test_mgmt_session';                       src='tools/test_mgmt_session.c src/config_wireless_bridge.c';                       flags='' }
+    @{ n='test_mgmt_session';                       src='tools/test_mgmt_session.c src/mgmt_access.c src/config_wireless_bridge.c';     flags='' }
     @{ n='test_bonds_command';                      src='tools/test_bonds_command.c src/mgmt_bonds.c';                                  flags='' }
     @{ n='test_mgmt_bonds';                         src='tools/test_mgmt_bonds.c src/mgmt_bonds.c';                                     flags='' }
     # Android companion bridge feature parity (motion/battery in, rumble/LED out)

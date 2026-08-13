@@ -432,6 +432,10 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Validation
 
+- The management session integration suite now links the production access-control module instead
+  of a weaker local imitation. It proves allowlisted commands are rejected for bonded-but-plaintext
+  and encrypted-but-disconnected states as well as unbonded, disabled, and diagnostic cases;
+  `tools/run_mgmt_tests.ps1` remains 11/11 green.
 - DualSense gyro immediately returned to normal when the experimental length-`0x28` gate was
   disabled, confirming the validated production path remains the length-`0x1E` carrier.
 - All 53 host-test executables pass, including the v3 write codec, Config BLE bridge, locked

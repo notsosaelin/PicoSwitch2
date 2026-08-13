@@ -24,7 +24,9 @@ clear`/`amiibo persist` no longer stall core0), asynchronously completed session
 remove replies, and a web-portal Management panel. Built clean on both
 boards; all management and Android-controller contract host tests green
 (`tools/run_mgmt_tests.ps1`, 11/11), including versioned bounded bond enumeration and
-response-too-large fail-closed coverage.
+response-too-large fail-closed coverage. The session-level integration test now calls the
+production authorization predicate directly and proves bonded plaintext and non-live sessions
+cannot dispatch even allowlisted commands.
 
 **Hardware state (2026-08-13):** the original workflow succeeded, and the controller-discovery
 decoupling fix then held a Classic controller plus management client for 5.4 hours through ten USB
