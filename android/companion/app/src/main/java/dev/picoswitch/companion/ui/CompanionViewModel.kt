@@ -62,6 +62,7 @@ data class CompanionUiState(
     val selectedSourceDescriptor: String? = null,
     val requestedFaceLayout: ControllerFaceLayout = ControllerFaceLayout.Auto,
     val resolvedFaceLayout: ResolvedControllerLayout = ControllerLayoutResolver.resolve(ControllerFaceLayout.Auto, null),
+    val adapterRelationship: AdapterRelationship? = null,
     val platform: PlatformDiagnostics = PlatformDiagnostics(),
     val diagnosticSummary: DiagnosticSummary = DiagnosticSummary(),
     val diagnosticEntries: List<DiagnosticEntry> = emptyList(),
@@ -78,6 +79,8 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     private val library = AmiiboLibrary(application)
     private val themeStore = ThemePreferenceStore(application)
     private val controllerLayoutStore = ControllerLayoutStore(application)
+    private val relationshipStore = AdapterRelationshipStore(application)
+    private var autoReconnectAttempted = false
     private val _theme = MutableStateFlow(themeStore.load())
     val theme: StateFlow<ThemeSelection> = _theme.asStateFlow()
     private val amiiboKeyStore = AmiiboKeyStore(File(application.filesDir, "amiibo-private"))
@@ -90,6 +93,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             selectedAmiiboId = savedState[KEY_AMIIBO],
             amiiboKeysLoaded = amiiboKeyStore.read() != null,
             selectedSourceDescriptor = savedState[KEY_SOURCE],
+            adapterRelationship = relationshipStore.load(),
             identityRefreshPending = savedState[KEY_IDENTITY_PENDING] ?: false,
         ),
     )
@@ -97,7 +101,22 @@ class CompanionViewModel(application: Application, private val savedState: Saved
 
     init {
         diagnostics.event("app", "created", "version ${BuildConfig.VERSION_NAME}")
-        viewModelScope.launch { adapter.connection.collect { value -> _ui.update { it.copy(connection = value) } } }
+        viewModelScope.launch {
+            adapter.connection.collect { value ->
+                if (value.connected && !value.address.isNullOrBlank()) {
+                    val existing = relationshipStore.load()
+                    val saved = AdapterRelationship(
+                        address = value.address,
+                        associationId = existing?.associationId,
+                        displayName = value.deviceName ?: existing?.displayName ?: "PicoSwitch2",
+                    )
+                    relationshipStore.save(saved)
+                    _ui.update { it.copy(connection = value, adapterRelationship = saved) }
+                } else {
+                    _ui.update { it.copy(connection = value) }
+                }
+            }
+        }
         viewModelScope.launch { adapter.snapshot.collect { value -> _ui.update { it.copy(snapshot = value) } } }
         viewModelScope.launch {
             library.items.collect { value ->
@@ -152,6 +171,31 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     }
 
     fun connect() = launch("Connecting to PicoSwitch2") { adapter.connect() }
+    fun reconnectKnownAdapter() {
+        val relationship = relationshipStore.load() ?: return
+        launch("Reconnecting to ${relationship.displayName}") { adapter.connectKnown(relationship.address) }
+    }
+
+    fun tryAutoReconnect() {
+        if (autoReconnectAttempted || _ui.value.connection.connected || _ui.value.busy) return
+        if (relationshipStore.load() == null) return
+        autoReconnectAttempted = true
+        reconnectKnownAdapter()
+    }
+
+    fun recordAdapterAssociation(address: String, associationId: Int?, displayName: String?) {
+        val relationship = AdapterRelationship(address, associationId, displayName.orEmpty().ifBlank { "PicoSwitch2" })
+        relationshipStore.save(relationship)
+        _ui.update { it.copy(adapterRelationship = relationship) }
+        diagnostics.event("adapter", "relationship saved", "association=${associationId ?: "legacy"}")
+    }
+
+    fun forgetAdapterRelationship() {
+        relationshipStore.clear()
+        autoReconnectAttempted = false
+        _ui.update { it.copy(adapterRelationship = null) }
+        diagnostics.event("adapter", "relationship forgotten")
+    }
     fun disconnect() = launch("Disconnecting") { adapter.disconnect() }
     fun refresh() = launch("Refreshing adapter") { adapter.refreshAll() }
     fun wake() = launch("Requesting console wake") { adapter.wakeConsole(); notice("Wake request queued") }
@@ -362,7 +406,15 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         notice("Controller layout set to ${layout.title}; held input was cleared")
     }
 
-    fun acquireControllerBridge() = hidBridge.acquire()
+    @SuppressLint("MissingPermission")
+    fun knownControllerHost(): BluetoothDevice? {
+        val relationship = relationshipStore.load() ?: return null
+        val adapter = getApplication<Application>().getSystemService(BluetoothManager::class.java)?.adapter ?: return null
+        return runCatching { adapter.getRemoteDevice(relationship.address) }
+            .getOrNull()?.takeIf { it.bondState == BluetoothDevice.BOND_BONDED }
+    }
+
+    fun acquireControllerBridge() = hidBridge.acquire(knownControllerHost())
     fun pairedControllerHosts(): List<BluetoothDevice> = hidBridge.pairedHosts()
     @SuppressLint("MissingPermission")
     fun controllerHostLabel(device: BluetoothDevice): String = runCatching { device.name }.getOrNull()?.take(80) ?: "saved adapter"
@@ -406,6 +458,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             "Permissions scan/connect" to "${ui.platform.scanPermission}/${ui.platform.connectPermission}",
             "CompanionDeviceManager" to ui.platform.companionDeviceManager.toString(),
             "Management state" to ui.connection.phase.name,
+            "Adapter relationship" to if (ui.adapterRelationship == null) "none" else "saved",
             "Firmware" to ui.snapshot.firmware.version.ifBlank { "unknown" },
             "Capabilities" to ui.snapshot.capabilities.toString(),
             "HID state/registered" to "${ui.bridge.phase}/${ui.bridge.registered}",

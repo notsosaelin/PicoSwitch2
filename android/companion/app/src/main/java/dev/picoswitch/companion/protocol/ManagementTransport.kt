@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.StateFlow
 interface ManagementTransport {
     val connection: StateFlow<ConnectionState>
     suspend fun scanAndConnect()
+    suspend fun connectKnown(address: String) = scanAndConnect()
     suspend fun disconnect()
     suspend fun transact(command: String, timeoutMillis: Long = 10_000): String
     fun close() = Unit

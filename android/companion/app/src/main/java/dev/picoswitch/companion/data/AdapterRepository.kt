@@ -23,6 +23,19 @@ class AdapterRepository(private val transport: ManagementTransport) {
 
     suspend fun connect() {
         transport.scanAndConnect()
+        validateConnectedAdapter()
+    }
+
+    suspend fun connectKnown(address: String) {
+        val direct = runCatching { transport.connectKnown(address) }
+        if (direct.isFailure) {
+            runCatching { transport.disconnect() }
+            transport.scanAndConnect()
+        }
+        validateConnectedAdapter()
+    }
+
+    private suspend fun validateConnectedAdapter() {
         try {
             refreshAll()
             if (_snapshot.value.firmware.id != "picoswitch") throw ManagementException("The discovered Bluetooth device is not a PicoSwitch2 adapter")

@@ -37,7 +37,8 @@ The debug build provides real implementations for:
 - Android built-in controller discovery and live input diagnostics;
 - the public Android `BluetoothHidDevice` controller bridge using the exact 81-byte descriptor and
   nine-byte payload pinned by `tools/fixtures/android_controller_hid.h`;
-- in-app Android companion-device chooser, bonding handoff, saved bonded-host reconnect,
+- one persisted adapter relationship with first-use **Pair Adapter**, returning direct GATT
+  reconnect plus bounded scan fallback, and controller-mode reuse of the saved Classic bond,
   capacity-one full-state reports at an 8 ms ceiling, input-device hot-plug recovery, and
   neutralization on pause/stop/disconnect;
 - a separate Developer/diagnostics screen and privacy-redacted share export; and
@@ -119,7 +120,9 @@ form only in a trusted environment.
 
 Before pairing Android as a controller, open the adapter's physical controller-pairing window. The
 Android system must obtain user consent and create the bond before `BluetoothHidDevice.connect()` can
-succeed.
+succeed. The app orchestrates that during **Pair Adapter** and does not expose a second controller-
+host chooser. Internally the Companion Device association, Classic bond, management GATT session,
+HID Device registration, and HID connection remain separate Android states.
 
 ## Responsive strategy and validation
 
@@ -175,11 +178,12 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
 - A real BLE management session on AYN Thor now validates discovery, adapter/controller display,
   personality switching, Amiibo visibility, and the ordinary-image Sync transfer path. Wake and
   the complete mutation matrix still require their focused hardware checks.
-- The AYN Thor's `Odin Controller` is live-validated, including its input panel, and the ordinary
-  app reaches registered HID Ready without root or Shizuku. Its OEM stack can report an immediate
-  registration rejection and then asynchronously succeed, so the callback—not that immediate
-  boolean—is authoritative. App-led bond, Pico receipt, and end-to-end console input remain
-  unvalidated.
+- The AYN Thor's built-in controller is live-validated from the app input panel through public HID
+  Device, PicoSwitch2, and a real game without root or Shizuku. Its OEM stack can return `false`
+  immediately from registration or connection and then succeed asynchronously, so callbacks—not
+  those immediate booleans—are authoritative. The revised one-relationship pairing/reconnect UI,
+  Nintendo face-label correction, and restart/power-cycle matrix still need focused hardware
+  confirmation.
 - Motion and rumble are not in the v1 Android HID contract and are labeled as unavailable.
 - Phone-NFC physical-tag backup is not implemented yet. Controller-as-reader commands are low-level
   and intentionally not exposed as a production user workflow.
@@ -187,8 +191,10 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
   rendering remain future client-side work. The current metadata reader is deliberately
   read-only. User-supplied retail keys are accepted only in the exact 160-byte portal format,
   stored in an app-private file, and never sent to firmware, diagnostics, or a library export.
-- Android controller source selection is persisted by descriptor. Capture remains an OEM-specific
-  C/Z choice until a labeled Thor/Retroid input pass is recorded.
+- Android controller source and Auto/Nintendo/Xbox face layout are persisted by input descriptor.
+  Auto recognizes the audited AYN and Retroid built-in identities as Nintendo-style and otherwise
+  falls back to Android's positional/Xbox convention; explicit selection covers unknown devices.
+  Capture remains an OEM-specific C/Z choice until a labeled Thor/Retroid input pass is recorded.
 - Color changes save correctly but current firmware has no color-triggered USB re-enumeration
   request. The app warns that a reconnect/re-enumeration is needed before the console refreshes the
   host-visible identity color.

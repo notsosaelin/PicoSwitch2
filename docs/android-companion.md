@@ -12,6 +12,14 @@ The application consumes two intentionally separate PicoSwitch2 interfaces:
 The Android client does not redefine either protocol. Firmware sources and host fixtures remain the
 authority for the wire contracts.
 
+The UI now models these transports as one saved adapter relationship: first use says **Pair
+Adapter**, returning launches direct management reconnect with discovery fallback, and controller
+mode reuses the saved Classic bond without a second chooser. Android still owns the required
+companion association, bond prompt, foreground HID registration, and HID connection underneath.
+The AYN Thor completed the original app-led HID path through PicoSwitch2 into a real game on
+2026-08-13; the simplified relationship flow and corrected Nintendo face-label mapping await a
+focused replay.
+
 The companion's appearance is intentionally client-local. It supports System, Light, Dark, and
 true OLED-black themes, with a small set of labeled Joy-Con-inspired accent palettes. The verified
 Joy-Con 2 references are the left `#9BE1E6` and right `#FF8C5F` accents documented in

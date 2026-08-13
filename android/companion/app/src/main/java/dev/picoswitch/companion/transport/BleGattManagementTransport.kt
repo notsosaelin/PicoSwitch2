@@ -156,6 +156,20 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
             throw ManagementException("No PicoSwitch2 management service was found within 15 seconds", error)
         }
 
+        connectDevice(device)
+    }
+
+    override suspend fun connectKnown(address: String) {
+        disconnect()
+        val bt = adapter ?: throw ManagementException("Bluetooth is not available on this device")
+        if (!bt.isEnabled) throw ManagementException("Turn on Bluetooth to connect to PicoSwitch2")
+        val device = runCatching { bt.getRemoteDevice(address) }
+            .getOrElse { throw ManagementException("The saved PicoSwitch2 address is invalid", it) }
+        diagnostics?.event("management", "known adapter", "direct GATT connect")
+        connectDevice(device)
+    }
+
+    private suspend fun connectDevice(device: BluetoothDevice) {
         _connection.value = ConnectionState(ConnectionPhase.Connecting, safeName(device), device.address, "Connecting")
         requestedDisconnect = false
         connectReady = CompletableDeferred()

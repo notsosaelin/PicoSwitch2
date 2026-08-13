@@ -36,7 +36,7 @@ window (plan C4; until it lands an *enabled* link is unauthenticated → trusted
 wake-burst advertiser hand-off (C5); and the audio/gyro/latency coexistence gates. See
 [`docs/bluetooth/in-band-management-plan.md`](docs/bluetooth/in-band-management-plan.md).
 
-## Android handheld controller bridge — 🟡 AYN Thor app-side hardware pass 2026-08-13
+## Android handheld controller bridge — 🟡 AYN Thor in-game hardware pass 2026-08-13
 
 The no-root Android path uses the public API-28+ HID Device profile and keeps PicoSwitch2 as the
 console-facing protocol owner. Pico-side preparation now includes an exact 81-byte generic-gamepad
@@ -58,9 +58,22 @@ registered/Ready. The first app-led pairing attempt exposed a missing
 fixed and guarded. A second Thor-specific failure came from treating `registerApp()`'s immediate
 `false` as final even though the OEM stack then delivered a successful registration callback. That
 made Retry collide with this app's own live record. The callback-authoritative fix is hardware-
-confirmed through registration and the start of the bonded host connection. Pico receipt, console
-input, latency, and lifecycle teardown remain unvalidated. See
+confirmed through registration, the bonded host connection, Pico receipt, and working in-game
+console input. The first real play pass exposed one semantic defect: Android face-key positions
+were forwarded as letters, so the Nintendo-labeled Thor appeared A/B and X/Y flipped. The app now
+normalizes a persisted `Auto` / `Nintendo` / `Xbox` layout before the unchanged HID encoder;
+`Auto` recognizes the two audited Thor/Retroid identities and otherwise uses Android's documented
+positional convention. Changing layout clears held state. That correction is statically tested but
+not yet replayed in-game. Latency and lifecycle teardown remain unvalidated. See
 [`docs/bluetooth/android-controller-bridge.md`](docs/bluetooth/android-controller-bridge.md).
+
+The app now presents one adapter relationship: first use is **Pair Adapter** through Android's
+required companion chooser and bond consent; the selected address/association is retained, known
+management GATT reconnect is attempted directly with service-scan fallback, and controller mode
+registers/connects HID to the same saved bond without a second chooser. Companion association,
+Classic bond, BLE GATT, and foreground HID registration remain distinct Android operations under
+that UX. This combined flow is source/JVM-tested; the earlier separate workflow reached in-game,
+but first-run/returning behavior in the rebuilt APK still needs physical lifecycle validation.
 
 The native Android Amiibo page now has portal-parity raw identity/details: character code/variant,
 tag type, model/series, format, extended variant, and optional owner/nickname/date/write-count/game
