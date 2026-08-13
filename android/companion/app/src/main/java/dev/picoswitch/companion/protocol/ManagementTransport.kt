@@ -8,9 +8,12 @@ interface ManagementTransport {
     suspend fun scanAndConnect()
     suspend fun disconnect()
     suspend fun transact(command: String, timeoutMillis: Long = 10_000): String
+    fun close() = Unit
 }
 
-class ManagementException(message: String, cause: Throwable? = null) : Exception(message, cause)
+open class ManagementException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
+class ManagementReplyTooLargeException(message: String) : ManagementException(message)
 
 class AdapterCommandException(
     val command: String,

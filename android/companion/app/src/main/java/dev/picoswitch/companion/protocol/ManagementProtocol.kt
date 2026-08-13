@@ -9,7 +9,8 @@ object ManagementProtocol {
     const val RX_UUID = "5252186a-817f-489f-ad75-94c3bd444769"
     const val TX_UUID = "81462706-8e64-407a-bc3d-d303529fbe1c"
     const val MAX_COMMAND_BYTES = 127
-    const val MAX_REPLY_BYTES = 512
+    /** Firmware bridge buffer is 512 bytes including its terminating newline. */
+    const val MAX_REPLY_PAYLOAD_BYTES = 511
     const val MIN_GATT_PAYLOAD = 20
     const val AMIIBO_CHUNK_BYTES = 32
 
@@ -18,14 +19,20 @@ object ManagementProtocol {
     fun frame(command: String): ByteArray {
         require(command.isNotBlank()) { "Command cannot be blank" }
         require(!command.contains('\n') && !command.contains('\r')) { "Command must be one line" }
-        val bytes = "$command\n".encodeToByteArray()
-        require(bytes.size <= MAX_COMMAND_BYTES) { "Command exceeds $MAX_COMMAND_BYTES bytes" }
-        return bytes
+        val commandBytes = command.encodeToByteArray()
+        require(commandBytes.size <= MAX_COMMAND_BYTES) { "Command exceeds $MAX_COMMAND_BYTES bytes" }
+        return commandBytes + '\n'.code.toByte()
     }
 
     fun chunks(command: String, payloadBytes: Int): List<ByteArray> {
         require(payloadBytes >= MIN_GATT_PAYLOAD)
         return frame(command).toList().chunked(payloadBytes).map { it.toByteArray() }
+    }
+
+    fun requireReplyWithinLimit(payloadBytes: Int) {
+        if (payloadBytes > MAX_REPLY_PAYLOAD_BYTES) throw ManagementReplyTooLargeException(
+            "Adapter reply exceeded the 511-byte wireless limit. A large bond list is the likely cause; no partial data was accepted.",
+        )
     }
 
     fun objectOrThrow(command: String, response: String): JsonObject {
@@ -43,7 +50,7 @@ object ManagementProtocol {
 
     fun firmware(value: JsonObject) = FirmwareInfo(
         id = value.string("id"), product = value.string("product"), version = value.string("version"),
-    )
+    ).also { requireShape(it.id.isNotBlank() && it.version.isNotBlank(), "info") }
 
     fun controller(value: JsonObject) = ControllerInfo(
         name = value.string("name", "No controller"),
@@ -56,9 +63,10 @@ object ManagementProtocol {
         current = Personality.fromWire(value.string("current")),
         available = value["available"]?.jsonArray?.map { Personality.fromWire(it.jsonPrimitive.content) }
             ?: emptyList(),
-    )
+    ).also { requireShape(it.current != Personality.Unknown && it.available.isNotEmpty(), "personality") }
 
     fun config(value: JsonObject): AdapterConfig {
+        requireShape(value.containsKey("body_color") && value.containsKey("joycon2_left_accent") && value.containsKey("joycon2_right_accent"), "get")
         fun color(key: String): RgbColor {
             val a = value[key]?.jsonArray ?: return RgbColor(0, 0, 0)
             return RgbColor(a.getOrNull(0)?.jsonPrimitive?.intOrNull ?: 0,
@@ -78,14 +86,25 @@ object ManagementProtocol {
         uid = value.string("uid"), figureId = value.string("figureId"),
         upload = value["upload"]?.jsonObject?.let { AmiiboUpload(it.bool("active"), it.int("received"), it.int("size")) }
             ?: AmiiboUpload(),
-    )
+    ).also { requireShape(value.containsKey("loaded") && value.containsKey("v3loaded") && value.containsKey("upload"), "amiibo status") }
 
     fun managementEnabled(value: JsonObject) = value["enabled"]?.jsonPrimitive?.booleanOrNull
 
     fun readData(value: JsonObject): ByteArray {
         val hex = value.string("data")
-        require(hex.length % 2 == 0) { "Adapter returned odd-length hex data" }
-        return ByteArray(hex.length / 2) { index -> hex.substring(index * 2, index * 2 + 2).toInt(16).toByte() }
+        if (hex.length % 2 != 0) throw ManagementException("Adapter returned odd-length Amiibo data")
+        return try {
+            ByteArray(hex.length / 2) { index -> hex.substring(index * 2, index * 2 + 2).toInt(16).toByte() }
+        } catch (error: NumberFormatException) {
+            throw ManagementException("Adapter returned non-hex Amiibo data", error)
+        }
+    }
+
+    fun requireOk(command: String, value: JsonObject): JsonObject {
+        if (value["ok"]?.jsonPrimitive?.booleanOrNull != true) {
+            throw ManagementException("Adapter returned an unexpected response for '$command'")
+        }
+        return value
     }
 
     fun hex(data: ByteArray) = data.joinToString("") { "%02X".format(it.toInt() and 0xFF) }
@@ -97,5 +116,9 @@ object ManagementProtocol {
     private fun JsonObject.boolInt(key: String): Boolean {
         val p = this[key]?.jsonPrimitive ?: return false
         return p.booleanOrNull ?: ((p.intOrNull ?: 0) != 0)
+    }
+
+    private fun requireShape(valid: Boolean, command: String) {
+        if (!valid) throw ManagementException("Adapter returned an incomplete response for '$command'")
     }
 }

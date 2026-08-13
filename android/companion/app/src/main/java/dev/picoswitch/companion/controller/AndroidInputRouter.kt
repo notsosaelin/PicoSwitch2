@@ -19,13 +19,15 @@ class AndroidInputRouter {
     private var hatRight = false
     private var hatDown = false
     private var hatLeft = false
+    private val heldButtonKeys = mutableSetOf<Int>()
 
     fun eligibleDevices(): List<InputDevice> = InputDevice.getDeviceIds().asList().mapNotNull(InputDevice::getDevice)
-        .filter { it.supportsSource(InputDevice.SOURCE_GAMEPAD) || it.supportsSource(InputDevice.SOURCE_JOYSTICK) }
+        .filter { it.supportsSource(InputDevice.SOURCE_GAMEPAD) || it.supportsSource(InputDevice.SOURCE_JOYSTICK) || it.supportsSource(InputDevice.SOURCE_DPAD) }
 
     fun select(device: InputDevice?) {
         selectedDescriptor = device?.descriptor
         clearDpad()
+        heldButtonKeys.clear()
         _state.value = ControllerState.Neutral
     }
 
@@ -33,25 +35,12 @@ class AndroidInputRouter {
         val device = event.device ?: return false
         if (device.descriptor != selectedDescriptor || event.repeatCount > 0) return false
         val pressed = event.action == KeyEvent.ACTION_DOWN
-        val button = when (event.keyCode) {
-            KeyEvent.KEYCODE_BUTTON_A -> ControllerButton.A
-            KeyEvent.KEYCODE_BUTTON_B -> ControllerButton.B
-            KeyEvent.KEYCODE_BUTTON_X -> ControllerButton.X
-            KeyEvent.KEYCODE_BUTTON_Y -> ControllerButton.Y
-            KeyEvent.KEYCODE_BUTTON_L1 -> ControllerButton.L1
-            KeyEvent.KEYCODE_BUTTON_R1 -> ControllerButton.R1
-            KeyEvent.KEYCODE_BUTTON_L2 -> ControllerButton.L2
-            KeyEvent.KEYCODE_BUTTON_R2 -> ControllerButton.R2
-            KeyEvent.KEYCODE_BUTTON_SELECT -> ControllerButton.Select
-            KeyEvent.KEYCODE_BUTTON_START -> ControllerButton.Start
-            KeyEvent.KEYCODE_BUTTON_THUMBL -> ControllerButton.LeftStick
-            KeyEvent.KEYCODE_BUTTON_THUMBR -> ControllerButton.RightStick
-            KeyEvent.KEYCODE_BUTTON_MODE -> ControllerButton.Home
-            KeyEvent.KEYCODE_BUTTON_C, KeyEvent.KEYCODE_BUTTON_Z -> ControllerButton.Capture
-            else -> null
-        }
+        val button = buttonForKey(event.keyCode)
         if (button != null) {
-            val buttons = _state.value.buttons.toMutableSet().apply { if (pressed) add(button) else remove(button) }
+            if (pressed) heldButtonKeys += event.keyCode else heldButtonKeys -= event.keyCode
+            val buttons = ControllerButton.entries.filterTo(mutableSetOf()) { candidate ->
+                heldButtonKeys.any { keyCode -> buttonForKey(keyCode) == candidate }
+            }
             _state.value = _state.value.copy(buttons = buttons)
             return true
         }
@@ -68,7 +57,9 @@ class AndroidInputRouter {
 
     fun onMotion(event: MotionEvent): Boolean {
         val device = event.device ?: return false
-        if (device.descriptor != selectedDescriptor || !event.isFromSource(InputDevice.SOURCE_JOYSTICK)) return false
+        val controllerMotion = event.isFromSource(InputDevice.SOURCE_JOYSTICK) ||
+            event.isFromSource(InputDevice.SOURCE_GAMEPAD) || event.isFromSource(InputDevice.SOURCE_DPAD)
+        if (device.descriptor != selectedDescriptor || !controllerMotion) return false
         fun range(axis: Int) = device.getMotionRange(axis, event.source)?.let { AxisRange(it.min, it.max, it.flat) }
         fun stick(axis: Int, invert: Boolean = false, fallback: Int? = null): Int {
             val actual = if (range(axis) != null) axis else fallback ?: axis
@@ -78,12 +69,16 @@ class AndroidInputRouter {
             val actual = if (range(primary) != null) primary else fallback
             return range(actual)?.trigger(event.getAxisValue(actual)) ?: 0
         }
-        val hatX = event.getAxisValue(MotionEvent.AXIS_HAT_X)
-        val hatY = event.getAxisValue(MotionEvent.AXIS_HAT_Y)
-        hatLeft = hatX < -0.5f
-        hatRight = hatX > 0.5f
-        hatUp = hatY < -0.5f
-        hatDown = hatY > 0.5f
+        if (range(MotionEvent.AXIS_HAT_X) != null) {
+            val hatX = event.getAxisValue(MotionEvent.AXIS_HAT_X)
+            hatLeft = hatX < -0.5f
+            hatRight = hatX > 0.5f
+        }
+        if (range(MotionEvent.AXIS_HAT_Y) != null) {
+            val hatY = event.getAxisValue(MotionEvent.AXIS_HAT_Y)
+            hatUp = hatY < -0.5f
+            hatDown = hatY > 0.5f
+        }
         _state.value = _state.value.copy(
             leftX = stick(MotionEvent.AXIS_X), leftY = stick(MotionEvent.AXIS_Y),
             rightX = stick(MotionEvent.AXIS_Z, fallback = MotionEvent.AXIS_RX),
@@ -98,7 +93,25 @@ class AndroidInputRouter {
         return true
     }
 
-    fun neutralize() { clearDpad(); _state.value = ControllerState.Neutral }
+    fun neutralize() { clearDpad(); heldButtonKeys.clear(); _state.value = ControllerState.Neutral }
+
+    private fun buttonForKey(keyCode: Int): ControllerButton? = when (keyCode) {
+        KeyEvent.KEYCODE_BUTTON_A -> ControllerButton.A
+        KeyEvent.KEYCODE_BUTTON_B -> ControllerButton.B
+        KeyEvent.KEYCODE_BUTTON_X -> ControllerButton.X
+        KeyEvent.KEYCODE_BUTTON_Y -> ControllerButton.Y
+        KeyEvent.KEYCODE_BUTTON_L1 -> ControllerButton.L1
+        KeyEvent.KEYCODE_BUTTON_R1 -> ControllerButton.R1
+        KeyEvent.KEYCODE_BUTTON_L2 -> ControllerButton.L2
+        KeyEvent.KEYCODE_BUTTON_R2 -> ControllerButton.R2
+        KeyEvent.KEYCODE_BUTTON_SELECT -> ControllerButton.Select
+        KeyEvent.KEYCODE_BUTTON_START -> ControllerButton.Start
+        KeyEvent.KEYCODE_BUTTON_THUMBL -> ControllerButton.LeftStick
+        KeyEvent.KEYCODE_BUTTON_THUMBR -> ControllerButton.RightStick
+        KeyEvent.KEYCODE_BUTTON_MODE -> ControllerButton.Home
+        KeyEvent.KEYCODE_BUTTON_C, KeyEvent.KEYCODE_BUTTON_Z -> ControllerButton.Capture
+        else -> null
+    }
 
     private fun publishDpad() {
         _state.value = _state.value.copy(

@@ -11,6 +11,7 @@ import android.companion.BluetoothDeviceFilter
 import android.companion.CompanionDeviceManager
 import android.content.Intent
 import android.content.IntentSender
+import android.hardware.input.InputManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -23,13 +24,18 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.core.content.FileProvider
 import dev.picoswitch.companion.ui.CompanionApp
 import dev.picoswitch.companion.ui.CompanionViewModel
-import java.util.concurrent.Executors
 import java.util.regex.Pattern
 
 class MainActivity : ComponentActivity() {
     private val viewModel: CompanionViewModel by viewModels()
+    private val inputDeviceListener = object : InputManager.InputDeviceListener {
+        override fun onInputDeviceAdded(deviceId: Int) = viewModel.refreshSources()
+        override fun onInputDeviceRemoved(deviceId: Int) = viewModel.refreshSources()
+        override fun onInputDeviceChanged(deviceId: Int) = viewModel.refreshSources()
+    }
 
     private val managementPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         if (result.values.all { it }) viewModel.connect()
@@ -42,10 +48,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private val importAmiibo = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let {
-            runCatching { contentResolver.takePersistableUriPermission(it, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-            viewModel.importAmiibo(it, "")
-        }
+        uri?.let { viewModel.importAmiibo(it, "") }
     }
 
     private val associationChooser = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
@@ -68,8 +71,10 @@ class MainActivity : ComponentActivity() {
                 onImportAmiibo = { importAmiibo.launch(arrayOf("*/*")) },
                 onPrepareController = ::requestControllerBridge,
                 onPairControllerHost = ::pairControllerHost,
+                onExportDiagnostics = ::shareDiagnostics,
             )
         }
+        viewModel.recordLifecycle("created")
     }
 
     fun requestAdapterConnection() {
@@ -90,7 +95,24 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         viewModel.neutralizeController()
+        viewModel.recordLifecycle("paused; controller neutralized")
         super.onPause()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        getSystemService(InputManager::class.java)?.registerInputDeviceListener(inputDeviceListener, null)
+    }
+
+    override fun onStop() {
+        getSystemService(InputManager::class.java)?.unregisterInputDeviceListener(inputDeviceListener)
+        super.onStop()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.recordLifecycle("resumed")
+        viewModel.refreshSources()
     }
 
     private fun requestControllerBridge() {
@@ -104,7 +126,9 @@ class MainActivity : ComponentActivity() {
             .addDeviceFilter(BluetoothDeviceFilter.Builder().setNamePattern(Pattern.compile("^(PicoSwitch2|Joypad Adapter).*$", Pattern.CASE_INSENSITIVE)).build())
             .setSingleDevice(false)
             .build()
-        val manager = getSystemService(CompanionDeviceManager::class.java)
+        val manager = getSystemService(CompanionDeviceManager::class.java) ?: return Toast.makeText(
+            this, "Companion Device Manager is unavailable on this Android build", Toast.LENGTH_LONG,
+        ).show()
         val callback = object : CompanionDeviceManager.Callback() {
             @Deprecated("Legacy association callback")
             override fun onDeviceFound(chooserLauncher: IntentSender) = launchAssociation(chooserLauncher)
@@ -121,7 +145,7 @@ class MainActivity : ComponentActivity() {
                 Toast.makeText(this@MainActivity, error ?: "Adapter pairing was cancelled", Toast.LENGTH_LONG).show()
             }
         }
-        if (Build.VERSION.SDK_INT >= 33) manager.associate(request, Executors.newSingleThreadExecutor(), callback)
+        if (Build.VERSION.SDK_INT >= 33) manager.associate(request, mainExecutor, callback)
         else @Suppress("DEPRECATION") manager.associate(request, callback, Handler(Looper.getMainLooper()))
     }
 
@@ -137,6 +161,21 @@ class MainActivity : ComponentActivity() {
                 if (device.createBond()) Toast.makeText(this, "Approve Android’s bond prompt, then select the adapter again", Toast.LENGTH_LONG).show()
                 else Toast.makeText(this, "Android could not start bonding", Toast.LENGTH_LONG).show()
             }
+        }
+    }
+
+    private fun shareDiagnostics() {
+        runCatching {
+            val file = viewModel.exportDiagnostics()
+            val uri = FileProvider.getUriForFile(this, "$packageName.files", file)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "Share PicoSwitch diagnostics"))
+        }.onFailure {
+            Toast.makeText(this, it.message ?: "Could not export diagnostics", Toast.LENGTH_LONG).show()
         }
     }
 }

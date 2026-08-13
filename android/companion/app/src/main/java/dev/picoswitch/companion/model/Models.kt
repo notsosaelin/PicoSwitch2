@@ -77,7 +77,19 @@ data class AmiiboStatus(
     val upload: AmiiboUpload = AmiiboUpload(),
 )
 
-data class BondInfo(val index: Int, val address: String, val name: String? = null)
+data class BondInfo(val index: Int, val address: String, val name: String? = null, val type: Int? = null)
+
+enum class CapabilityState { Available, Unsupported, Unknown }
+
+data class AdapterCapabilities(
+    val core: CapabilityState = CapabilityState.Unknown,
+    val personality: CapabilityState = CapabilityState.Unknown,
+    val colors: CapabilityState = CapabilityState.Unknown,
+    val amiibo: CapabilityState = CapabilityState.Unknown,
+    val managementGate: CapabilityState = CapabilityState.Unknown,
+    val bonds: CapabilityState = CapabilityState.Unknown,
+    val wake: CapabilityState = CapabilityState.Unknown,
+)
 
 data class AdapterSnapshot(
     val firmware: FirmwareInfo = FirmwareInfo(),
@@ -87,6 +99,7 @@ data class AdapterSnapshot(
     val amiibo: AmiiboStatus = AmiiboStatus(),
     val managementEnabled: Boolean? = null,
     val bonds: List<BondInfo> = emptyList(),
+    val capabilities: AdapterCapabilities = AdapterCapabilities(),
     val refreshedAtMillis: Long = 0,
 )
 
