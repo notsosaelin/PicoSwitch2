@@ -1,7 +1,7 @@
 # In-band management ↔ controller coexistence failure
 
-Status: 🟡 IN PROGRESS — root cause identified for the controller half; diagnostics added to
-confirm on hardware and to isolate the management-advertising half.
+Status: 🟡 FIX APPLIED (HW verification pending) — controller-half root cause confirmed live over
+UART and fixed; a secondary stale-Classic-link wedge is noted for post-fix watch.
 Date: 2026-08-12
 Related: [`../bluetooth/in-band-management-plan.md`](../bluetooth/in-band-management-plan.md),
 [`../architecture/config-transports.md`](../architecture/config-transports.md)
@@ -51,6 +51,24 @@ Because `g_mgmt_enabled` is RAM-only (reverts to off on reboot), the post-power-
 back in the safe default, so the exact time-to-failure could not be re-measured in that pass. The
 owner noted the failure mode resembles a previously seen CDC↔USB personality-switch state where the
 adapter also stopped advertising and the controller refused to reconnect.
+
+## Live confirmation (UART `btstate`, `-MgmtOn` build, 2026-08-12)
+
+Read directly off the adapter over COM11, with management enabled from boot and **no controller
+ever connected**:
+
+```json
+{"mgmt_enabled":true,"config_mode":false,"personality":"pro2","powered_on":true,"hid_state":0,
+ "scan_active":false,"controller_connected":false,"ble_conns":0,
+ "cble":{"available":true,"armed":true,"advertising":true,"client":false},
+ "scan":{"starts":0,"stops":0},"adv":{"starts":1,"stops":0},
+ "suppress":{"config_mode":0,"mgmt_armed":38,"wake":0,"other":0}}
+```
+
+`scan.starts = 0` with `suppress.mgmt_armed = 38` is the smoking gun: controller discovery has
+**never started** because every call was refused for `mgmt_armed`. The management service armed at
+boot (`adv.starts=1`), latching `config_ble.mode_active`, before any controller could connect. This
+proves the code analysis below on hardware — no gameplay required.
 
 ## Root cause — controller half: CONFIRMED from code
 
@@ -125,24 +143,51 @@ Never ship `-MgmtOn`: management is unauthenticated until plan C4.
 4. Read off: which `*_disconnect` came first; the HCI reason; whether `adv_start` fired again after
    the `mgmt_disconnect`; and whether `suppress.mgmt_armed` is climbing.
 
-## Proposed fix (design, not yet implemented — pending trace)
+## Live failure trace (2026-08-12)
 
-The coexistence requirement the plan under-specified: **management must not suppress controller
-discovery.** Candidate direction, to be validated against the trace and on hardware:
+Captured over UART **during the actual failure** (pre-fix `-MgmtOn` build), saved to
+`dumps/mgmt-fail-20260812-230735.jsonl`. Key state at failure:
 
-- Do **not** gate `btstack_host_start_scan()` on `config_ble.mode_active` when the arming reason is
-  in-band management (only when it is the exclusive CDC Config personality). Controller scanning and
-  low-duty management advertising then coexist (the CYW43 supports simultaneous scan + advertise;
-  connect attempts already `stop_scan` briefly and resume).
-- Ensure management advertising reliably resumes after a client disconnect even while a controller
-  central link is up (verify `config_ble.closing` clears and `config_ble_start_advertising()` is
-  reachable each tick).
-- Confirm dual-role stability (peripheral advert + central controller connection) on the CYW43; if
-  it is the wedge, fall back to the plan's audio-window-style suppression (advertise only when the
-  radio is otherwise idle) rather than permanent suppression.
+```
+scan.starts = 0, suppress.mgmt_armed = 684, events.dropped = 641
+controller_connected = true, ble_conns = 0, disc.ctrl = 0, disc.hci = 0
+cble: armed=true, advertising=false, client=true
+ring: 45× scan_suppress/mgmt_armed (t=22.6-24.0s) then
+      mgmt_disconnect reason 0x13 (t=254s) -> adv_start (+23ms) -> mgmt_connect (t=257s)
+```
 
-This is deliberately **not** applied yet: the owner asked to instrument and isolate first, and the
-management-half wedge must be understood before changing radio arbitration ("nothing breaks").
+Reading: ~700 blocked scan attempts in the first 24 s (controller never discoverable via scan);
+the controller is **Classic** (`ble_conns=0` yet `controller_connected=true`) and connected by paging
+us, then physically dropped **without an HCI disconnection event reaching us** (`disc.*=0`), leaving
+the stack wedged believing it is still connected — so it neither rediscovers nor recovers. The
+management advertiser itself behaved (it resumed after a client drop and reaccepted a client): the
+management-"undiscoverable" symptom is downstream of the wedged controller state, not a dead
+advertiser. Two instrumentation lessons: (1) the suppress flood evicted the disconnect ordering
+(641 dropped) — now rate-limited in the ring; (2) the counters survived the flood and carried the
+proof.
+
+## Fix applied (2026-08-12) — controllers are primary under management
+
+`btstack_host.c`, gated so the exclusive CDC Config path is byte-identical and only in-band
+management changes:
+
+- **`btstack_host_start_scan()`** now suppresses discovery only for `g_usb_config_mode`, not for
+  `config_ble.mode_active`. Under management, controller scanning runs.
+- **`btstack_host_connect_ble()`** no longer defers controller connects under `config_ble.mode_active`
+  (only under exclusive Config) — a found/bonded controller can connect/reconnect.
+- **`config_ble_service_task()`** no longer stops the scan to advertise. Under management it advertises
+  for NEW management clients **only while a controller is connected** (discovery idle) and wake is
+  idle; otherwise it keeps the advertiser free for controller discovery / wake. An already-connected
+  management client is a separate ACL and is not dropped.
+- **`btstack_host_start_wake_advertisement()`** yields under management instead of hard-blocking, so
+  enabling management no longer breaks wake-from-sleep (wake outranks management; the service task
+  drops the management advert while `wake_adv.active`).
+
+Trade-off: management advertising for *new* clients is available only while a controller is connected
+(the intended mid-session use). True concurrent scan+advertise for "connect a phone before any
+controller" can come later if wanted. **HW verification pending:** confirm `scan.starts` increments,
+a dropped controller reconnects, and the stale-Classic-link wedge does not recur (watch `disc.*` and
+`controller_connected` vs `ble_conns`).
 
 ## Remaining questions
 
