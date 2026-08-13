@@ -166,28 +166,42 @@ advertiser. Two instrumentation lessons: (1) the suppress flood evicted the disc
 (641 dropped) — now rate-limited in the ring; (2) the counters survived the flood and carried the
 proof.
 
-## Fix applied (2026-08-12) — controllers are primary under management
+## Correct architecture (2026-08-12, owner-directed)
 
-`btstack_host.c`, gated so the exclusive CDC Config path is byte-identical and only in-band
-management changes:
+The controller BT link lives on **core1**. Config mode, in-band management, and personality
+re-enumeration are **core0 / USB-face** concerns. The Switch re-enumeration the owner designed is
+core0-only and **never requires killing the BT link** — the two cores are deliberately independent.
+Config mode originally dropped/suppressed the controller only because it was a *standalone* mode with
+no controller in play; that coupling is obsolete and must not be inherited by management. **The
+controller link is therefore fully decoupled: nothing in config/management may gate, drop, or block
+controller discovery, connection, or reconnection.** Verified: no code actually disconnects a
+connected controller on config entry (only double-tap "replace source" and triple-tap wipe do); the
+sole defect was discovery/reconnection being *gated* on config/management state.
 
-- **`btstack_host_start_scan()`** now suppresses discovery only for `g_usb_config_mode`, not for
-  `config_ble.mode_active`. Under management, controller scanning runs.
-- **`btstack_host_connect_ble()`** no longer defers controller connects under `config_ble.mode_active`
-  (only under exclusive Config) — a found/bonded controller can connect/reconnect.
-- **`config_ble_service_task()`** no longer stops the scan to advertise. Under management it advertises
-  for NEW management clients **only while a controller is connected** (discovery idle) and wake is
-  idle; otherwise it keeps the advertiser free for controller discovery / wake. An already-connected
-  management client is a separate ACL and is not dropped.
-- **`btstack_host_start_wake_advertisement()`** yields under management instead of hard-blocking, so
-  enabling management no longer breaks wake-from-sleep (wake outranks management; the service task
-  drops the management advert while `wake_adv.active`).
+Controller discovery is a **central-role** LE scan / Classic inquiry. The config/management service
+owns only the **peripheral-role** LE advertiser — a different radio function — so they coexist. Wake
+replay (also the advertiser) is the only thing the service yields to.
 
-Trade-off: management advertising for *new* clients is available only while a controller is connected
-(the intended mid-session use). True concurrent scan+advertise for "connect a phone before any
-controller" can come later if wanted. **HW verification pending:** confirm `scan.starts` increments,
-a dropped controller reconnects, and the stale-Classic-link wedge does not recur (watch `disc.*` and
-`controller_connected` vs `ble_conns`).
+## Fix applied (2026-08-12) — full decoupling of the controller link
+
+All in `btstack_host.c`. The config gate is removed entirely (not merely swapped from management to
+config), so config mode and in-band management behave identically toward the controller:
+
+- **`btstack_host_start_scan()`** no longer checks `g_usb_config_mode` **or** `config_ble.mode_active`.
+  Controller discovery is driven purely by controller state (and the legitimate wake / lockout /
+  scan-suppress / powered gates). Config/management never blocks it.
+- **`btstack_host_connect_ble()`** no longer defers controller connects for config/management at all —
+  a found/bonded controller connects/reconnects regardless of the USB face.
+- **`config_ble_service_task()`** owns only the LE advertiser and **never stops controller discovery**.
+  It advertises whenever authorized and idle, coexisting with an active scan; it yields the advertiser
+  only to a wake burst (`wake_adv.active`). Config and management use the same path.
+- **`btstack_host_start_wake_advertisement()`** yields under management (and the service task drops the
+  advert while `wake_adv.active`), so enabling management does not break wake-from-sleep.
+
+Empirical unknown to validate on HW: the CYW43 running LE scan + LE advertise (+ Classic inquiry,
+dual-role connections) concurrently. **HW verification pending:** confirm `scan.starts` increments
+under management, a dropped controller reconnects, config_ble still advertises alongside a scan, and
+the stale-Classic-link wedge does not recur (watch `disc.*` and `controller_connected` vs `ble_conns`).
 
 ## Remaining questions
 
