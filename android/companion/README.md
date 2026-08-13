@@ -208,7 +208,9 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
   those immediate booleans—are authoritative. The revised one-relationship pairing/reconnect UI,
   Nintendo face-label correction, and restart/power-cycle matrix still need focused hardware
   confirmation.
-- Motion and rumble are not in the v1 Android HID contract and are labeled as unavailable.
+- The v2 Android HID contract adds motion, battery, console rumble, and player LED feedback while
+  preserving every v1 input offset. The manifest declares Android's normal `VIBRATE` permission
+  (no runtime prompt); physical Thor validation of those v2 extensions remains open.
 - Phone-NFC physical-tag backup is host-tested but still awaits the physical gate on an NFC-capable
   Android device. It is deliberately ordinary NTAG215 only: figure-v3/NTAG I2C 2K is rejected,
   the reader is armed only from Amiibo -> Scan, disabled on pause/one-shot completion, and no
