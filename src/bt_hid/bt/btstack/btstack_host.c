@@ -641,7 +641,16 @@ static void dis_client_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
 // the device terminates the link (reason 0x13) without ever streaming HID.
 // Exposing GAP (device name/appearance) + GATT (Service Changed) services makes
 // us look like a normal host so the device proceeds to stream.
-static uint8_t host_att_device_name[] = "PicoSwitch2";
+#define PICO_SWITCH2_BLUETOOTH_NAME "PicoSwitch2"
+#define PICO_SWITCH2_BLUETOOTH_NAME_LEN \
+    ((uint8_t)(sizeof(PICO_SWITCH2_BLUETOOTH_NAME) - 1u))
+
+// Keep the Classic GAP/EIR name, the ATT Device Name, and the management scan
+// response on one product identity. PicoSwitch2 is 11 ASCII bytes; the LE
+// complete-local-name AD below therefore has a 0x0C length byte (type + name).
+_Static_assert(sizeof(PICO_SWITCH2_BLUETOOTH_NAME) - 1u == 11u,
+               "PicoSwitch2 Bluetooth name length changed");
+static uint8_t host_att_device_name[] = PICO_SWITCH2_BLUETOOTH_NAME;
 static const uint8_t host_att_appearance[] = { 0xC0, 0x03 }; // 0x03C0 Generic HID, LE
 
 // Config-only BLE management service. UUIDs are project-owned random UUIDs,
@@ -670,7 +679,8 @@ static uint8_t config_ble_adv_data[] = {
     0x7C, 0x41, 0x31, 0x27, 0xED, 0xD4, 0x5A, 0x7C,
 };
 static uint8_t config_ble_scan_response[] = {
-    12, BLUETOOTH_DATA_TYPE_COMPLETE_LOCAL_NAME,
+    (uint8_t)(PICO_SWITCH2_BLUETOOTH_NAME_LEN + 1u),
+    BLUETOOTH_DATA_TYPE_COMPLETE_LOCAL_NAME,
     'P', 'i', 'c', 'o', 'S', 'w', 'i', 't', 'c', 'h', '2',
 };
 
@@ -2631,7 +2641,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 // Set local name (for devices that want to see us)
                 // Skip when acting as BLE peripheral — ble_output sets its own name
 #ifndef CONFIG_USB2BLE
-                gap_set_local_name("Joypad Adapter");
+                gap_set_local_name(PICO_SWITCH2_BLUETOOTH_NAME);
 #endif
 
                 // Enable bonding (needed for both Classic and BLE)

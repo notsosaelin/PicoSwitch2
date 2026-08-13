@@ -29,6 +29,7 @@ import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.FileProvider
+import dev.picoswitch.companion.bluetooth.AdapterBluetoothIdentity
 import dev.picoswitch.companion.ui.CompanionApp
 import dev.picoswitch.companion.ui.CompanionViewModel
 import java.util.regex.Pattern
@@ -203,7 +204,9 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("MissingPermission")
     private fun pairAdapter() {
         val request = AssociationRequest.Builder()
-            .addDeviceFilter(BluetoothDeviceFilter.Builder().setNamePattern(Pattern.compile("^(PicoSwitch2|Joypad Adapter).*$", Pattern.CASE_INSENSITIVE)).build())
+            .addDeviceFilter(BluetoothDeviceFilter.Builder().setNamePattern(
+                Pattern.compile(AdapterBluetoothIdentity.CHOOSER_NAME_PATTERN, Pattern.CASE_INSENSITIVE),
+            ).build())
             .setSingleDevice(false)
             .build()
         val manager = getSystemService(CompanionDeviceManager::class.java) ?: return Toast.makeText(
