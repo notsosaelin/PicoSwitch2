@@ -6,6 +6,7 @@ real PicoSwitch2/AYN Thor.
 
 | Capability | Android status | Complete workflow / rationale |
 |---|---|---|
+| App appearance themes | Fully implemented client-side | More -> Appearance persists System, Light, Dark, or true OLED black plus a default, Joy-Con 1-inspired, or Joy-Con 2-inspired accent palette. Choices are labeled radio options and affect only app UI, never firmware identity colors. |
 | BLE discovery and connection | Thor hardware-confirmed | AYN Thor connected in-app by service UUID and populated the management UI. A timeout or oversized reply closes the session. |
 | Adapter/firmware information | Awaiting hardware | `info`, `get`, `device` are required core probes. Incomplete shapes and a non-`picoswitch` identity fail closed. |
 | Controller information/battery | Thor hardware-confirmed | `device` populated the Home controller card. Firmware now clears identity on disconnect and Android polls it every five seconds; the fix needs a firmware flash to validate the powered-off transition. |

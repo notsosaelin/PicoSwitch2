@@ -12,6 +12,12 @@ The application consumes two intentionally separate PicoSwitch2 interfaces:
 The Android client does not redefine either protocol. Firmware sources and host fixtures remain the
 authority for the wire contracts.
 
+The companion's appearance is intentionally client-local. It supports System, Light, Dark, and
+true OLED-black themes, with a small set of labeled Joy-Con-inspired accent palettes. The verified
+Joy-Con 2 references are the left `#9BE1E6` and right `#FF8C5F` accents documented in
+[`switch2-joycon2/protocol.md`](switch2-joycon2/protocol.md); selecting an inspired palette does
+not issue `body`, `jcl`, or `jcr` firmware commands and is not a hardware identity claim.
+
 Current implementation status is tracked in
 [`android/companion/FEATURE_PARITY.md`](../android/companion/FEATURE_PARITY.md). The intentionally
 short eventual hardware session is

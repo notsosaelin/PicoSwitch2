@@ -4,6 +4,7 @@ package dev.picoswitch.companion.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -27,6 +28,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import dev.picoswitch.companion.BuildConfig
 import dev.picoswitch.companion.controller.BridgePhase
@@ -474,8 +476,14 @@ private fun ColorSlider(label: String, value: Float, onValue: (Float) -> Unit, c
 }
 
 @Composable
-fun MoreScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onExportDiagnostics: () -> Unit) {
+fun MoreScreen(
+    ui: CompanionUiState,
+    viewModel: CompanionViewModel,
+    onExportDiagnostics: () -> Unit,
+    theme: ThemeSelection,
+) {
     ScreenColumn("Settings & information", "User-safe controls and protocol details") {
+        ThemeSettingsCard(theme, viewModel)
         HardwareCard {
             SectionHeading(Icons.Default.Info, "About this connection")
             Spacer(Modifier.height(LayoutTokens.Space3))
@@ -545,6 +553,97 @@ fun MoreScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onExportDiag
             Text("Current firmware does not enforce authenticated management writes. Real adapter coexistence, wake while connected, OEM HID registration, and end-to-end controller input still require hardware validation.")
         }
     }
+}
+
+@Composable
+private fun ThemeSettingsCard(selection: ThemeSelection, viewModel: CompanionViewModel) {
+    HardwareCard {
+        SectionHeading(Icons.Default.Palette, "Appearance")
+        Spacer(Modifier.height(LayoutTokens.Space2))
+        Text(
+            "Choose how the companion looks on this device. This is local app styling and does not change the adapter's controller identity colors.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(LayoutTokens.Space3))
+        Text("Theme", style = MaterialTheme.typography.titleSmall)
+        ThemeMode.entries.forEach { mode ->
+            ThemeChoiceRow(
+                selected = selection.mode == mode,
+                title = mode.title,
+                description = mode.description,
+                onClick = { viewModel.setThemeMode(mode) },
+            )
+        }
+        HorizontalDivider(Modifier.padding(vertical = LayoutTokens.Space3))
+        Text("Accent palette", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "Optional Joy-Con-inspired UI colors; these are visual references, not hardware identity claims.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        AccentPalette.entries.forEach { palette ->
+            PaletteChoiceRow(
+                selected = selection.palette == palette,
+                palette = palette,
+                onClick = { viewModel.setAccentPalette(palette) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun ThemeChoiceRow(selected: Boolean, title: String, description: String, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = LayoutTokens.TouchHeight)
+            .selectable(selected = selected, onClick = onClick, role = Role.RadioButton)
+            .padding(horizontal = LayoutTokens.Space1),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = null)
+        Spacer(Modifier.width(LayoutTokens.Space2))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun PaletteChoiceRow(selected: Boolean, palette: AccentPalette, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = LayoutTokens.TouchHeight)
+            .selectable(selected = selected, onClick = onClick, role = Role.RadioButton)
+            .padding(horizontal = LayoutTokens.Space1),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = null)
+        Spacer(Modifier.width(LayoutTokens.Space2))
+        Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space1)) {
+            PaletteSwatch(palette.leftSwatch, "Left accent sample")
+            PaletteSwatch(palette.rightSwatch, "Right accent sample")
+        }
+        Spacer(Modifier.width(LayoutTokens.Space3))
+        Column(Modifier.weight(1f)) {
+            Text(palette.title, style = MaterialTheme.typography.bodyLarge)
+            Text(palette.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun PaletteSwatch(color: Color, description: String) {
+    Box(
+        Modifier
+            .size(20.dp)
+            .clip(CircleShape)
+            .background(color)
+            .semantics { contentDescription = description },
+    )
 }
 
 @Composable

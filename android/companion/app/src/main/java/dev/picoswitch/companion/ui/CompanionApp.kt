@@ -35,13 +35,14 @@ fun CompanionApp(
     onExportDiagnostics: () -> Unit,
 ) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
+    val theme by viewModel.theme.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val destinationState = rememberSaveableStateHolder()
     LaunchedEffect(ui.message) {
         ui.message?.let { snackbarHostState.showSnackbar(it); viewModel.consumeMessage() }
     }
 
-    CompanionTheme {
+    CompanionTheme(theme) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val useRail = maxWidth >= LayoutTokens.NavigationBreakpoint
             Scaffold(
@@ -90,7 +91,7 @@ fun CompanionApp(
                                         AppSection.Amiibo -> AmiiboScreen(ui, viewModel, onImportAmiibo)
                                         AppSection.Controller -> ControllerScreen(ui, viewModel, onPrepareController, onPairControllerHost)
                                         AppSection.Modes -> ModesScreen(ui, viewModel)
-                                        AppSection.More -> MoreScreen(ui, viewModel, onExportDiagnostics)
+                                        AppSection.More -> MoreScreen(ui, viewModel, onExportDiagnostics, theme)
                                     }
                                 }
                             }
