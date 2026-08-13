@@ -746,14 +746,13 @@ static struct {
     uint8_t last_disc_reason;
 } btlife;
 
+static uint32_t btlife_last_suppress_ms;
+static uint8_t btlife_last_suppress_cause = 0xFF;
+
 static void btlife_record(uint8_t code, uint8_t a, uint16_t b)
 {
-    btlife_event_t *e = &btlife_ring[btlife_head];
-    e->t_ms = to_ms_since_boot(get_absolute_time());
-    e->code = code; e->a = a; e->b = b;
-    btlife_head = (uint16_t)((btlife_head + 1u) % BTLIFE_RING_SIZE);
-    if (btlife_count < BTLIFE_RING_SIZE) btlife_count++;
-    else btlife_dropped++;  // ring full: we just overwrote the oldest unread event
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    // Counters are ALWAYS exact (they are the authoritative totals).
     switch (code) {
         case BTLIFE_SCAN_START:      btlife.scan_start++; break;
         case BTLIFE_SCAN_STOP:       btlife.scan_stop++; break;
@@ -769,6 +768,25 @@ static void btlife_record(uint8_t code, uint8_t a, uint16_t b)
             break;
         default: break;
     }
+
+    // A blocked scan can fire every ~32 ms tick; recording each one floods the
+    // small ring and evicts the meaningful connect/disconnect events (observed:
+    // 641 dropped, the disconnect ordering lost). Coalesce suppress entries in
+    // the RING to a cause-change or ~1 Hz -- the counter above is unaffected.
+    if (code == BTLIFE_SCAN_SUPPRESS) {
+        if (a == btlife_last_suppress_cause && (now - btlife_last_suppress_ms) < 1000u) {
+            return;
+        }
+        btlife_last_suppress_cause = a;
+        btlife_last_suppress_ms = now;
+    }
+
+    btlife_event_t *e = &btlife_ring[btlife_head];
+    e->t_ms = now;
+    e->code = code; e->a = a; e->b = b;
+    btlife_head = (uint16_t)((btlife_head + 1u) % BTLIFE_RING_SIZE);
+    if (btlife_count < BTLIFE_RING_SIZE) btlife_count++;
+    else btlife_dropped++;  // ring full: we just overwrote the oldest unread event
 }
 
 static void config_ble_can_send(void *context)
@@ -1701,9 +1719,14 @@ bool btstack_host_start_wake_advertisement(
         advertisement_count > BTSTACK_HOST_WAKE_MAX_PAYLOADS) {
         return false;
     }
-    if (g_usb_config_mode || config_ble.mode_active) {
-        return false; // Config BLE owns advertising until controller mode returns.
+    if (g_usb_config_mode) {
+        return false; // Exclusive CDC Config owns advertising; no wake there.
     }
+    // Under in-band management the config/management service also uses the single
+    // advertiser, but wake OUTRANKS management: proceed here and let
+    // config_ble_service_task drop the management advert once wake_adv is active
+    // (it already gates advertising on !wake_adv.active). wake_adv_arm quiesces
+    // before it actually advertises, so the handoff has a settling window.
 
     // Do not perturb a controller admission attempt. Existing HID links remain
     // active: this operation pauses discovery only, never HCI power or ACL.
@@ -1858,24 +1881,41 @@ static void config_ble_service_task(bool in_config)
 
     // Do not corrupt the existing outgoing-controller connection watchdog.
     // Once that attempt resolves, its completion path is entirely per-link and
-    // this task can safely stop discovery before advertising management.
+    // this task can safely arbitrate the advertiser.
     if (hid_state.state == BLE_STATE_CONNECTING) {
         return;
     }
 
-    if (hid_state.scan_active || classic_state.inquiry_active) {
-        btstack_host_stop_scan();
-        return; // one 30 ms tick lets scan/inquiry stop before advertising
+    if (g_usb_config_mode) {
+        // Legacy CDC Config personality: the console is dropped and no controller
+        // is wanted, so stop discovery and own the advertiser exclusively. This
+        // path is unchanged.
+        if (hid_state.scan_active || classic_state.inquiry_active) {
+            btstack_host_stop_scan();
+            return; // one 30 ms tick lets scan/inquiry stop before advertising
+        }
+        // Wake replay temporarily owns the same LE advertiser.
+        if (wake_adv.active) {
+            return;
+        }
+        config_ble_start_advertising();
+    } else {
+        // In-band management (g_mgmt_enabled): controllers are PRIMARY and must
+        // never be starved. Advertise for NEW management clients only while a
+        // controller is connected (so discovery is idle) and wake is not using
+        // the radio; otherwise keep the advertiser FREE so controller discovery
+        // (or a wake burst) owns it. An already-connected management client is a
+        // separate ACL and is deliberately NOT dropped here -- only advertising
+        // for additional clients is paused. This replaces the old "stop the scan
+        // to advertise" arbitration that permanently starved controller
+        // discovery (HW-confirmed: scan.starts stayed 0, suppress.mgmt_armed
+        // climbed). See docs/experiments/in-band-mgmt-coexistence-failure-2026-08-12.md.
+        if (btstack_host_controller_connected() && !wake_adv.active) {
+            config_ble_start_advertising();
+        } else {
+            config_ble_stop_advertising();
+        }
     }
-
-    // Wake replay temporarily owns the same LE advertiser. Config waits rather
-    // than mutating its address/data; normal Config entry suppresses new wake
-    // requests below, so this only covers an already-running replay.
-    if (wake_adv.active) {
-        return;
-    }
-
-    config_ble_start_advertising();
 
     if (config_ble.handle != HCI_CON_HANDLE_INVALID &&
         config_ble.notifications_enabled &&
@@ -1914,15 +1954,16 @@ void btstack_host_start_scan(void)
 #ifdef BTSTACK_DEFER_SCAN
     if (!btstack_host_scan_enabled) return;
 #endif
-    if (g_usb_config_mode || config_ble.mode_active) {
-        // Config/management owns LE advertising and suppresses discovery. In
-        // config mode this is fine (console dropped); WHILE IN-BAND MANAGEMENT IS
-        // ARMED this permanently blocks controller reconnect -- the confirmed
-        // cause of "controller won't reconnect until power-cycle". Recorded so
-        // the UART trace shows the starvation explicitly.
-        btlife_record(BTLIFE_SCAN_SUPPRESS,
-                      g_usb_config_mode ? BTLIFE_CAUSE_CONFIG_MODE
-                                        : BTLIFE_CAUSE_MGMT_ARMED, 0);
+    if (g_usb_config_mode) {
+        // The CDC Config personality owns the radio exclusively (the console is
+        // dropped), so controller discovery is genuinely unwanted. In-band
+        // management (g_mgmt_enabled) must NOT suppress discovery: it runs while
+        // controllers drive the console, so scanning has to keep working -- the
+        // service task instead YIELDS the advertiser to discovery (below).
+        // Confirmed on HW: gating this on config_ble.mode_active blocked EVERY
+        // scan under management (btlife suppress.mgmt_armed climbed, scan.starts
+        // stayed 0) -> controllers could never connect or reconnect.
+        btlife_record(BTLIFE_SCAN_SUPPRESS, BTLIFE_CAUSE_CONFIG_MODE, 0);
         return;
     }
     if (wake_adv.active) {
@@ -2155,7 +2196,11 @@ void btstack_host_idle_scan_if_connected(void)
 
 void btstack_host_connect_ble(bd_addr_t addr, bd_addr_type_t addr_type)
 {
-    if (g_usb_config_mode || config_ble.mode_active) {
+    if (g_usb_config_mode) {
+        // Only the exclusive CDC Config personality defers controller connects
+        // (console dropped). Under in-band management controllers are primary and
+        // must connect/reconnect normally; the management advertiser yields to
+        // them in config_ble_service_task.
         printf("[BTSTACK_HOST] Deferring BLE controller connection while Config owns advertising\n");
         hid_state.state = BLE_STATE_IDLE;
         hid_state.reconnect_attempt_time = 0;
