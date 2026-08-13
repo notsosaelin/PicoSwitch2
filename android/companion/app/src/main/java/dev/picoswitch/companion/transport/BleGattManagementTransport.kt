@@ -248,16 +248,7 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
             }
         } catch (error: TimeoutCancellationException) {
             // Replies have no request ID. A late reply must never become the next command's reply.
-            requestedDisconnect = true
-            activeGatt.disconnect()
-            activeGatt.close()
-            if (gatt === activeGatt) gatt = null
-            rx = null
-            tx = null
-            _connection.value = ConnectionState(
-                ConnectionPhase.Failed, _connection.value.deviceName, _connection.value.address,
-                "Adapter did not reply. Reconnect to start a clean management session.",
-            )
+            invalidateSession(activeGatt, "Adapter did not reply. Reconnect to start a clean management session.")
             diagnostics?.error("management", DiagnosticLog.commandType(command), error)
             throw ManagementException("${DiagnosticLog.commandType(command)} timed out after ${timeoutMillis / 1000} seconds", error)
         } catch (error: ManagementReplyTooLargeException) {
@@ -272,12 +263,14 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
 
     private fun invalidateSession(activeGatt: BluetoothGatt, message: String) {
         requestedDisconnect = true
-        activeGatt.disconnect()
-        activeGatt.close()
+        // Detach before requesting the Android disconnect so its asynchronous callback cannot
+        // replace this terminal failure with an ordinary Idle state.
         if (gatt === activeGatt) gatt = null
         rx = null
         tx = null
         _connection.value = ConnectionState(ConnectionPhase.Failed, _connection.value.deviceName, _connection.value.address, message)
+        activeGatt.disconnect()
+        activeGatt.close()
     }
 
     private fun completeWrite(status: Int) {

@@ -28,11 +28,16 @@ class AdapterRepository(private val transport: ManagementTransport) {
     }
 
     suspend fun connectKnown(address: String) {
-        val direct = runCatching { transport.connectKnown(address) }
-        if (direct.isFailure) {
-            runCatching { transport.disconnect() }
-            transport.scanAndConnect()
+        val direct = runCatching {
+            transport.connectKnown(address)
+            validateConnectedAdapter()
         }
+        if (direct.isSuccess) return
+
+        // A stale address can still complete GATT against an unrelated device. Treat identity
+        // validation as part of the direct attempt and fall back to service-filtered discovery.
+        runCatching { transport.disconnect() }
+        transport.scanAndConnect()
         validateConnectedAdapter()
     }
 
@@ -48,7 +53,11 @@ class AdapterRepository(private val transport: ManagementTransport) {
 
     suspend fun disconnect() {
         transport.disconnect()
-        _snapshot.value = _snapshot.value.copy(controller = ControllerInfo())
+        clearDisconnectedSnapshot()
+    }
+
+    fun clearDisconnectedSnapshot() {
+        _snapshot.value = AdapterSnapshot()
     }
 
     suspend fun refreshAll() {

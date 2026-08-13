@@ -46,7 +46,8 @@ The debug build provides real implementations for:
 - the public Android `BluetoothHidDevice` controller bridge using the exact 81-byte descriptor and
   nine-byte payload pinned by `tools/fixtures/android_controller_hid.h`;
 - one persisted adapter relationship with first-use **Pair Adapter**, returning direct GATT
-  reconnect plus bounded scan fallback, and controller-mode reuse of the saved Classic bond,
+  reconnect plus bounded service-scan fallback (including saved-address identity mismatch), one
+  fresh automatic attempt per foreground session, disconnected-state cleanup, and controller-mode reuse of the saved Classic bond,
   capacity-one full-state reports at an 8 ms ceiling, input-device hot-plug recovery, and
   neutralization on pause/stop/disconnect;
 - collapsed Settings categories, including Developer diagnostics and a privacy-redacted share export; and
@@ -168,7 +169,7 @@ empty, so its catalog lookup and actions do not depend on importing or syncing f
 
 ## Tests
 
-The Android JVM run passed **121 tests**, **1 API-35 instrumented navigation/scroll smoke test**,
+The Android JVM run passed **123 tests**, **1 API-35 instrumented navigation/scroll smoke test**,
 Android lint, and debug APK assembly. A connected AYN
 Thor rerun of the UI test on 2026-08-13 did not expose a Compose hierarchy to the runner, so that
 device rerun is not treated as new UI evidence. JVM coverage includes:

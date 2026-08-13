@@ -7,6 +7,11 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Added
 
+- Android reconnect now treats adapter identity validation as part of the saved-address attempt,
+  falls back to service-filtered discovery when that address resolves to the wrong device, retries
+  once per foreground session, and clears all adapter-derived UI state on disconnect. Terminal GATT
+  command failures remain visible instead of racing an asynchronous disconnect back to Idle, and
+  every Amiibo mutation is disabled while disconnected or another operation is active.
 - Android now presents the firmware source registry as a clean **Active controller** selector, so a
   user can hand console input between a physical controller and the paired handheld without
   re-pairing. The bonded/encrypted wireless management path now allowlists `input active

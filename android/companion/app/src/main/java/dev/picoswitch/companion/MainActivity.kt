@@ -199,7 +199,7 @@ class MainActivity : ComponentActivity() {
         getSystemService(InputManager::class.java)?.registerInputDeviceListener(inputDeviceListener, null)
         if (hasManagementPermissions()) {
             restoreSystemAssociation()
-            viewModel.tryAutoReconnect()
+            viewModel.beginForegroundSession()
         }
     }
 

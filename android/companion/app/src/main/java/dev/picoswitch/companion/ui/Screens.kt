@@ -410,7 +410,7 @@ private fun AmiiboAdapterHero(ui: CompanionUiState, viewModel: CompanionViewMode
     if (clearOpen) AlertDialog(
         onDismissRequest = { clearOpen = false }, title = { Text("Clear adapter Amiibo?") },
         text = { Text("This active Amiibo has no local backup in the app. Download it first if you may need it later.") },
-        confirmButton = { TextButton(onClick = { viewModel.clearAdapterAmiibo(); clearOpen = false }) { Text("Clear adapter") } },
+        confirmButton = { TextButton(onClick = { viewModel.clearAdapterAmiibo(); clearOpen = false }, enabled = enabled && !status.dirty) { Text("Clear adapter") } },
         dismissButton = { TextButton(onClick = { clearOpen = false }) { Text("Cancel") } },
     )
     Card(modifier) {
@@ -618,7 +618,7 @@ private fun AmiiboDetail(item: AmiiboLibraryItem?, ui: CompanionUiState, viewMod
     if (clearOpen) AlertDialog(
         onDismissRequest = { clearOpen = false }, title = { Text("Clear adapter Amiibo?") },
         text = { Text("This removes the stored virtual Amiibo from the adapter. Your private phone backup remains available.") },
-        confirmButton = { TextButton(onClick = { viewModel.clearAdapterAmiibo(); clearOpen = false }) { Text("Clear adapter") } },
+        confirmButton = { TextButton(onClick = { viewModel.clearAdapterAmiibo(); clearOpen = false }, enabled = ui.connection.connected && !ui.busy && !ui.snapshot.amiibo.dirty) { Text("Clear adapter") } },
         dismissButton = { TextButton(onClick = { clearOpen = false }) { Text("Cancel") } },
     )
     if (initializeOpen && item != null) AlertDialog(
@@ -680,14 +680,14 @@ private fun AmiiboDetail(item: AmiiboLibraryItem?, ui: CompanionUiState, viewMod
                 ) { Text(if (ui.amiiboKeysLoaded) "Initialize locally" else "Import key to initialize") }
                 Spacer(Modifier.height(LayoutTokens.Space2))
                 Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
-                    FilledTonalButton(onClick = { viewModel.setPresented(!ui.snapshot.amiibo.presented) }, enabled = ui.connection.connected && (ui.snapshot.amiibo.loaded || ui.snapshot.amiibo.v3Loaded), modifier = Modifier.weight(1f)) {
+                    FilledTonalButton(onClick = { viewModel.setPresented(!ui.snapshot.amiibo.presented) }, enabled = ui.connection.connected && !ui.busy && (ui.snapshot.amiibo.loaded || ui.snapshot.amiibo.v3Loaded), modifier = Modifier.weight(1f)) {
                         Text(if (ui.snapshot.amiibo.presented) "Eject" else "Present")
                     }
-                    OutlinedButton(onClick = viewModel::syncSelectedAmiibo, enabled = ui.connection.connected && (ui.snapshot.amiibo.loaded || ui.snapshot.amiibo.v3Loaded), modifier = Modifier.weight(1f)) { Text("Sync") }
+                    OutlinedButton(onClick = viewModel::syncSelectedAmiibo, enabled = ui.connection.connected && !ui.busy && (ui.snapshot.amiibo.loaded || ui.snapshot.amiibo.v3Loaded), modifier = Modifier.weight(1f)) { Text("Sync") }
                 }
                 if (ui.snapshot.amiibo.hasSave2) {
                     Spacer(Modifier.height(LayoutTokens.Space2))
-                    OutlinedButton(onClick = { viewModel.selectCopy(!ui.snapshot.amiibo.usingSave2) }, Modifier.fillMaxWidth()) {
+                    OutlinedButton(onClick = { viewModel.selectCopy(!ui.snapshot.amiibo.usingSave2) }, enabled = ui.connection.connected && !ui.busy, modifier = Modifier.fillMaxWidth()) {
                         Text(if (ui.snapshot.amiibo.usingSave2) "Use clean copy" else "Use console-written copy")
                     }
                 }
@@ -701,7 +701,7 @@ private fun AmiiboDetail(item: AmiiboLibraryItem?, ui: CompanionUiState, viewMod
                 }
                 if ((ui.snapshot.amiibo.loaded || ui.snapshot.amiibo.v3Loaded) && !ui.snapshot.amiibo.dirty) {
                     Spacer(Modifier.height(LayoutTokens.Space3))
-                    TextButton(onClick = { clearOpen = true }, Modifier.fillMaxWidth()) { Text("Clear adapter Amiibo") }
+                    TextButton(onClick = { clearOpen = true }, enabled = ui.connection.connected && !ui.busy, modifier = Modifier.fillMaxWidth()) { Text("Clear adapter Amiibo") }
                 }
             }
         }
