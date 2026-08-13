@@ -84,8 +84,12 @@ class HidDeviceBridge(
         profile?.let { register(it); return }
         _state.value = BridgeState(BridgePhase.AcquiringProfile, message = "Checking Android HID Device support")
         diagnostics?.event("controller", "HID profile", "acquiring")
-        val ok = manager?.adapter?.getProfileProxy(appContext, this, BluetoothProfile.HID_DEVICE) == true
-        if (!ok) _state.value = BridgeState(BridgePhase.Unsupported, message = "This Android build does not expose the HID Device profile")
+        try {
+            val ok = manager?.adapter?.getProfileProxy(appContext, this, BluetoothProfile.HID_DEVICE) == true
+            if (!ok) _state.value = BridgeState(BridgePhase.Unsupported, message = "This Android build does not expose the HID Device profile")
+        } catch (error: Throwable) {
+            fail("Android could not acquire its HID Device profile", error)
+        }
     }
 
     override fun onServiceConnected(profileId: Int, proxy: BluetoothProfile) {
@@ -100,15 +104,31 @@ class HidDeviceBridge(
 
     private fun register(hid: BluetoothHidDevice) {
         _state.value = BridgeState(BridgePhase.Registering)
-        val sdp = BluetoothHidDeviceAppSdpSettings(
-            "PicoSwitch Android Controller", "Built-in controls passthrough", "PicoSwitch2",
-            (BluetoothHidDevice.SUBCLASS1_COMBO.toInt() or BluetoothHidDevice.SUBCLASS2_GAMEPAD.toInt()).toByte(),
-            AndroidControllerDescriptor.bytes,
-        )
-        if (!hid.registerApp(sdp, null, null, executor, callback)) {
-            _state.value = BridgeState(BridgePhase.Failed, message = "Another HID Device app may already be active")
-            diagnostics?.event("controller", "HID registration", "request rejected")
+        try {
+            val sdp = BluetoothHidDeviceAppSdpSettings(
+                "PicoSwitch Android Controller", "Built-in controls passthrough", "PicoSwitch2",
+                (BluetoothHidDevice.SUBCLASS1_COMBO.toInt() or BluetoothHidDevice.SUBCLASS2_GAMEPAD.toInt()).toByte(),
+                AndroidControllerDescriptor.bytes,
+            )
+            if (!hid.registerApp(sdp, null, null, executor, callback)) {
+                closeFailedProfile(hid)
+                _state.value = BridgeState(BridgePhase.Failed, message = "Another HID Device app may already be active")
+                diagnostics?.event("controller", "HID registration", "request rejected")
+            }
+        } catch (error: Throwable) {
+            closeFailedProfile(hid)
+            fail("Android rejected HID Device registration", error)
         }
+    }
+
+    private fun closeFailedProfile(hid: BluetoothHidDevice) {
+        if (profile === hid) profile = null
+        runCatching { manager?.adapter?.closeProfileProxy(BluetoothProfile.HID_DEVICE, hid) }
+    }
+
+    private fun fail(message: String, error: Throwable) {
+        _state.value = BridgeState(BridgePhase.Failed, message = "$message: ${error.message ?: error.javaClass.simpleName}")
+        diagnostics?.error("controller", message, error)
     }
 
     override fun onServiceDisconnected(profileId: Int) {

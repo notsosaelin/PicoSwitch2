@@ -145,8 +145,19 @@ class MainActivity : ComponentActivity() {
                 Toast.makeText(this@MainActivity, error ?: "Adapter pairing was cancelled", Toast.LENGTH_LONG).show()
             }
         }
-        if (Build.VERSION.SDK_INT >= 33) manager.associate(request, mainExecutor, callback)
-        else @Suppress("DEPRECATION") manager.associate(request, callback, Handler(Looper.getMainLooper()))
+        try {
+            if (Build.VERSION.SDK_INT >= 33) manager.associate(request, mainExecutor, callback)
+            else @Suppress("DEPRECATION") manager.associate(request, callback, Handler(Looper.getMainLooper()))
+        } catch (error: Throwable) {
+            // Some OEM frameworks reject association synchronously. Controller setup must
+            // report that as a recoverable error, never take down the foreground app.
+            viewModel.diagnostics.error("controller", "companion association", error)
+            Toast.makeText(
+                this,
+                error.message?.take(180) ?: "Android could not open the controller pairing chooser",
+                Toast.LENGTH_LONG,
+            ).show()
+        }
     }
 
     private fun launchAssociation(sender: IntentSender) {

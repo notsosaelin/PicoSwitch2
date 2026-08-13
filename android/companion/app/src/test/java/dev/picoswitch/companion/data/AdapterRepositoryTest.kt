@@ -42,6 +42,41 @@ class AdapterRepositoryTest {
         assertTrue(transport.commands.contains("amiibo persist"))
     }
 
+    @Test fun `ordinary firmware zero CRC sentinel still syncs with generation protection`() = runTest {
+        val data = validImage()
+        val transport = ScriptedTransport(data, reportedPayloadCrc = "00000000")
+        val repository = AdapterRepository(transport)
+        val download = repository.downloadAmiibo()
+        assertArrayEquals(data, download.bytes)
+        assertNull(download.payloadCrc)
+        repository.acknowledgeDownloadedAmiibo(download)
+        assertTrue(transport.commands.contains("amiibo downloaded"))
+    }
+
+    @Test fun `nonzero whole image CRC mismatch remains a hard failure`() = runTest {
+        val transport = ScriptedTransport(validImage(), reportedPayloadCrc = "DEADBEEF")
+        val error = runCatching { AdapterRepository(transport).downloadAmiibo() }.exceptionOrNull()
+        assertTrue(error?.message?.contains("CRC verification") == true)
+        assertFalse(transport.commands.contains("amiibo downloaded"))
+    }
+
+    @Test fun `v3 whole image CRC is verified and retained through acknowledgement`() = runTest {
+        val data = validV3Image()
+        val transport = ScriptedTransport(data, v3Loaded = true)
+        val repository = AdapterRepository(transport)
+        val download = repository.downloadAmiibo()
+        assertEquals(AmiiboFiles.crc32(data), download.payloadCrc)
+        repository.acknowledgeDownloadedAmiibo(download)
+        assertTrue(transport.commands.contains("amiibo downloaded"))
+    }
+
+    @Test fun `v3 zero CRC is not accepted as the ordinary sentinel`() = runTest {
+        val transport = ScriptedTransport(validV3Image(), v3Loaded = true, reportedPayloadCrc = "00000000")
+        val error = runCatching { AdapterRepository(transport).downloadAmiibo() }.exceptionOrNull()
+        assertTrue(error?.message?.contains("CRC verification") == true)
+        assertFalse(transport.commands.contains("amiibo downloaded"))
+    }
+
     @Test fun `generation race is not acknowledged`() = runTest {
         val transport = ScriptedTransport(validImage(), generationChanges = true)
         val repository = AdapterRepository(transport)
@@ -82,6 +117,8 @@ class AdapterRepositoryTest {
         private val generationChanges: Boolean = false,
         private val unexpectedBegin: Boolean = false,
         private val reportedSize: Int = data.size,
+        private val v3Loaded: Boolean = false,
+        private val reportedPayloadCrc: String = AmiiboFiles.crc32(data),
     ) : ManagementTransport {
         override val connection = MutableStateFlow(ConnectionState())
         val commands = mutableListOf<String>()
@@ -93,7 +130,7 @@ class AdapterRepositoryTest {
                 command == "amiibo status" -> {
                     val statusCount = commands.count { it == "amiibo status" }
                     val generation = if (generationChanges && statusCount > 1) 2 else 1
-                    """{"loaded":true,"dirty":$dirty,"presented":false,"v3loaded":false,"persisted":true,"persistPending":false,"size":$reportedSize,"signature":false,"hasSave2":false,"usingSave2":false,"generation":$generation,"payloadCrc":"${AmiiboFiles.crc32(data)}","uid":"04000000000000","figureId":"0100000000000000","upload":{"active":false,"received":0,"size":0}}"""
+                    """{"loaded":true,"dirty":$dirty,"presented":false,"v3loaded":$v3Loaded,"persisted":true,"persistPending":false,"size":$reportedSize,"signature":false,"hasSave2":false,"usingSave2":false,"generation":$generation,"payloadCrc":"$reportedPayloadCrc","uid":"04000000000000","figureId":"0100000000000000","upload":{"active":false,"received":0,"size":0}}"""
                 }
                 command.startsWith("amiibo read ") -> {
                     val parts = command.split(' ')
@@ -121,5 +158,9 @@ class AdapterRepositoryTest {
 
     private fun validImage() = ByteArray(540).apply {
         this[0] = 4; this[3] = (0x88 xor 4).toByte(); this[8] = 0; this[0x54] = 1
+    }
+
+    private fun validV3Image() = ByteArray(2048).apply {
+        this[0] = 4; this[7] = 0; this[8] = 0x44; this[0x54] = 1
     }
 }
