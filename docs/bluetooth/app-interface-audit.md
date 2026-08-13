@@ -28,6 +28,7 @@ CDC/UART-only and stay off the wireless path.
 | Keepalive | `ping` | ✅ |
 | Read config (remap/colors) | `get` | ✅ |
 | Set colors | `body` / `jcl` / `jcr` / `lb` | ✅ |
+| Apply host-visible identity changes | `reenumerate` | ✅ (same personality; brief USB reconnect) |
 | Connected controller identity + battery | `device` (name, vid, pid, battery, charging) | ✅ |
 | Amiibo status | `amiibo status` | ✅ (see §3 for a missing field) |
 | **Amiibo import (upload a .bin)** | `amiibo begin` / `chunk` / `commit` | ✅ |

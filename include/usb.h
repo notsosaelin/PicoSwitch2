@@ -57,6 +57,12 @@ extern volatile bool g_usb_config_mode_requested;
 extern volatile usb_personality_t g_usb_requested_personality;
 extern volatile bool g_usb_personality_request_pending;
 
+// App/management-requested same-personality USB detach/reset/reconnect. This
+// applies host-visible identity changes (for example controller colors) without
+// changing the selected output personality or resetting the Bluetooth core.
+// Core0 consumes the edge at the same safe loop boundary as personality changes.
+extern volatile bool g_usb_reenumerate_request_pending;
+
 // Derived, read-only compatibility view -- NOT an independent source of truth.
 // True exactly when g_usb_personality == USB_PERSONALITY_CDC_CONFIG. Kept as a
 // macro (not a second variable) so it can never drift out of sync with the enum.

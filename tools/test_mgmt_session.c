@@ -70,6 +70,8 @@ static void test_bonded_user_command_succeeds(void) {
     assert(strstr(reply, "\"ok\":true"));
     assert(run_turn(&s, "body 10 20 30", reply, sizeof(reply)));
     assert(strstr(reply, "\"ok\":true"));
+    assert(run_turn(&s, "reenumerate", reply, sizeof(reply)));
+    assert(strstr(reply, "\"ok\":true"));
 }
 
 static void test_diagnostic_command_rejected_over_ble(void) {

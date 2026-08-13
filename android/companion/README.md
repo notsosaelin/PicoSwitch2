@@ -16,7 +16,8 @@ The debug build provides real implementations for:
   color, LE bond, and Amiibo state reads;
 - Pro Controller 2, GameCube, Joy-Con 2 L, and Joy-Con 2 R personality switching with an explicit
   USB re-enumeration warning;
-- body/lightbar and Joy-Con accent colors, followed by queued firmware persistence;
+- body/lightbar and Joy-Con accent colors, followed by queued firmware persistence and an explicit
+  same-personality USB identity refresh;
 - queued console wake requests;
 - a private, versioned, recoverable on-device Amiibo library using app-internal files and atomic replacement;
 - import and validation of exact 540-byte, 572-byte, and 2048-byte user backups;
@@ -205,9 +206,10 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
   Auto recognizes the audited AYN and Retroid built-in identities as Nintendo-style and otherwise
   falls back to Android's positional/Xbox convention; explicit selection covers unknown devices.
   Capture remains an OEM-specific C/Z choice until a labeled Thor/Retroid input pass is recorded.
-- Color changes save correctly but current firmware has no color-triggered USB re-enumeration
-  request. The app warns that a reconnect/re-enumeration is needed before the console refreshes the
-  host-visible identity color.
+- Color changes save first and remain pending until the user chooses **Apply identity changes**.
+  Firmware then queues the existing same-personality USB re-enumeration path; the console-side
+  controller pauses briefly. This path is host/build-tested but still needs the physical recovery
+  checklist in `HARDWARE_VALIDATION.md`.
 - App appearance preferences are local to this Android install. Joy-Con-inspired palettes are UI
   references only; they do not imply or alter the adapter's body/lightbar/Joy-Con identity values.
 - LE bond lists approach the wireless reply bridge's 511-byte practical response ceiling. Firmware

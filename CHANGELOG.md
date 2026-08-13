@@ -7,6 +7,10 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Added
 
+- Saved controller-appearance changes can now be applied deliberately without changing output
+  personality. The new bonded management command `reenumerate` queues the existing same-personality
+  USB detach/reset/reconnect path on core 0; both the Android companion and web portal expose an
+  explicit **Apply identity changes** action and warn about the brief console-side reconnect.
 - Android companion navigation now uses a compact handheld dashboard: the adapter connection row
   appears only on Home, Home keeps controller/Amiibo status in focused tiles, and Settings exposes
   Appearance, Amiibo metadata, connections, About, and Developer details as collapsed categories.
