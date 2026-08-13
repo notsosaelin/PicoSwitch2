@@ -35,6 +35,7 @@ static const mgmt_state_t IDLE_ENABLED = {
     .enabled = true, .console_awake = true, .wake_active = false,
     .scanning = false, .pairing_window_open = false,
     .client_connected = false, .client_bonded = false,
+    .client_encrypted = false,
 };
 
 static void test_disabled_is_invisible(void) {
@@ -82,11 +83,16 @@ static void test_bond_only_in_window_when_enabled(void) {
 
 static void test_writes_require_bond_and_allowlist(void) {
     mgmt_state_t s = IDLE_ENABLED;
-    s.client_connected = true; s.client_bonded = true;
+    s.client_connected = true;
+    s.client_bonded = true;
+    s.client_encrypted = true;
     assert(mgmt_allow_write(&s, "amiibo select save1"));
     assert(mgmt_allow_write(&s, "save"));
     assert(!mgmt_allow_write(&s, "imu"));             // diagnostic: allowlist rejects
     assert(!mgmt_allow_write(&s, "state"));
+    s.client_encrypted = false;                       // stale bond, plaintext link
+    assert(!mgmt_allow_write(&s, "save"));
+    s.client_encrypted = true;
     s.client_bonded = false;                          // connected but not bonded
     assert(!mgmt_allow_write(&s, "amiibo select save1"));  // anti-hijack
     s.client_bonded = true; s.enabled = false;
@@ -98,8 +104,19 @@ static void test_single_client(void) {
     assert(!mgmt_accept_connection(&s));
 }
 
+static void test_link_trust_requires_bond_and_active_ble_encryption(void) {
+    assert(!mgmt_link_is_trusted(false, 0));
+    assert(!mgmt_link_is_trusted(true, 0));
+    assert(!mgmt_link_is_trusted(false, 16));
+    assert(!mgmt_link_is_trusted(true, 6));
+    assert(!mgmt_link_is_trusted(true, 7));
+    assert(!mgmt_link_is_trusted(true, 15));
+    assert(mgmt_link_is_trusted(true, 16));
+    assert(!mgmt_link_is_trusted(true, 17));
+}
+
 // ---------------------------------------------------------------------------
-// EXHAUSTIVE invariant proof: enumerate all 2^7 states and assert the
+// EXHAUSTIVE invariant proof: enumerate all 2^8 states and assert the
 // cross-cutting safety properties hold in EVERY combination. This is the
 // "weirdest case a user can reach" guard -- no state, however odd, may violate
 // wake priority, the bond gate, or the write gate.
@@ -111,7 +128,7 @@ static void test_invariants_exhaustive(void) {
     assert(!config_wireless_command_allowed(denied));
 
     unsigned checked = 0;
-    for (unsigned bits = 0; bits < (1u << 7); ++bits) {
+    for (unsigned bits = 0; bits < (1u << 8); ++bits) {
         mgmt_state_t s = {
             .enabled             = (bits >> 0) & 1u,
             .console_awake       = (bits >> 1) & 1u,
@@ -120,6 +137,7 @@ static void test_invariants_exhaustive(void) {
             .pairing_window_open = (bits >> 4) & 1u,
             .client_connected    = (bits >> 5) & 1u,
             .client_bonded       = (bits >> 6) & 1u,
+            .client_encrypted    = (bits >> 7) & 1u,
         };
         bool adv  = mgmt_should_advertise(&s);
         bool acc  = mgmt_accept_connection(&s);
@@ -143,8 +161,9 @@ static void test_invariants_exhaustive(void) {
             assert(!adv && !acc);
             if (s.client_connected) assert(drop);
         }
-        // INV4 a write implies enabled + connected + bonded + allowlisted.
-        if (wA) assert(s.enabled && s.client_connected && s.client_bonded);
+        // INV4 a write implies enabled + connected + bonded + encrypted + allowlisted.
+        if (wA) assert(s.enabled && s.client_connected && s.client_bonded &&
+                       s.client_encrypted);
         assert(!wD);  // a denied command is NEVER writable in ANY state.
         // INV5 a bond implies enabled + window.
         if (bond) assert(s.enabled && s.pairing_window_open);
@@ -160,10 +179,12 @@ static void test_invariants_exhaustive(void) {
         // INV9 an unbonded connected client can never write (anti-hijack), even
         //      inside a pairing window.
         if (s.client_connected && !s.client_bonded) assert(!wA);
+        // INV10 a bonded but unencrypted current link is not authorized.
+        if (s.client_connected && !s.client_encrypted) assert(!wA);
         checked++;
     }
-    assert(checked == 128u);
-    printf("  exhaustive: %u/128 states satisfy all 9 invariants\n", checked);
+    assert(checked == 256u);
+    printf("  exhaustive: %u/256 states satisfy all 10 invariants\n", checked);
 }
 
 int main(void) {
@@ -173,6 +194,7 @@ int main(void) {
     test_bond_only_in_window_when_enabled();
     test_writes_require_bond_and_allowlist();
     test_single_client();
+    test_link_trust_requires_bond_and_active_ble_encryption();
     test_invariants_exhaustive();
     puts("mgmt access-control tests passed");
     return 0;

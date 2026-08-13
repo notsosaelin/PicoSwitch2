@@ -25,14 +25,24 @@ bool mgmt_accept_bonding(const mgmt_state_t *s)
     return s->enabled && s->pairing_window_open;
 }
 
-bool mgmt_allow_write(const mgmt_state_t *s, const char *command)
+bool mgmt_session_authorized(const mgmt_state_t *s)
 {
     return s->enabled && s->client_connected && s->client_bonded &&
-           config_wireless_command_allowed(command);
+           s->client_encrypted;
+}
+
+bool mgmt_allow_write(const mgmt_state_t *s, const char *command)
+{
+    return mgmt_session_authorized(s) && config_wireless_command_allowed(command);
 }
 
 bool mgmt_should_drop_client(const mgmt_state_t *s)
 {
     return s->client_connected &&
            (!s->enabled || !s->console_awake || s->wake_active);
+}
+
+bool mgmt_link_is_trusted(bool bonded, unsigned encryption_key_size)
+{
+    return bonded && encryption_key_size == 16u;
 }
