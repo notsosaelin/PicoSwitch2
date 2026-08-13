@@ -48,6 +48,7 @@ __attribute__((weak)) void btstack_host_clear_pairing_lockout(void) {}
 __attribute__((weak)) void btstack_host_stop_scan(void) {}
 __attribute__((weak)) void btstack_host_close_pairing_window(void) {}
 __attribute__((weak)) bool btstack_host_pairing_close_deferred(void) { return false; }
+__attribute__((weak)) void btstack_host_set_pairing_window_open(bool open) { (void)open; }
 __attribute__((weak)) bool btstack_host_is_scanning(void) { return false; }
 __attribute__((weak)) uint8_t btstack_classic_get_connection_count(void) { return 0; }
 __attribute__((weak)) bool btstack_classic_get_connection(uint8_t idx, btstack_classic_conn_info_t *info) { (void)idx; (void)info; return false; }
@@ -218,6 +219,7 @@ static void cyw43_transport_disconnect(uint8_t conn_index)
 
 static void cyw43_transport_set_pairing_mode(bool enable)
 {
+    btstack_host_set_pairing_window_open(enable);
     if (enable) {
         // A user gesture is the sole authority that re-opens admission after a wipe.
         btstack_host_clear_pairing_lockout();

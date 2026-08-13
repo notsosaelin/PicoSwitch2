@@ -67,6 +67,12 @@ void btstack_host_close_pairing_window(void);
 // through the grace period instead of going idle prematurely).
 bool btstack_host_pairing_close_deferred(void);
 
+// Management first-bond admission follows the same explicit BOOTSEL pairing
+// window as controller discovery. The transport sets this edge when pairing
+// mode opens/closes; bonded management reconnects do not require it.
+void btstack_host_set_pairing_window_open(bool open);
+bool btstack_host_pairing_window_open(void);
+
 // Start scanning with a timeout (auto-stops after timeout_ms)
 void btstack_host_start_timed_scan(uint32_t timeout_ms);
 

@@ -9,6 +9,7 @@
 #include "mgmt_bonds.h"
 #include "ds5_audio_bridge.h"
 #include "ns2_pairing_crypto.h"
+#include "mgmt_access.h"
 #include "pico/time.h"
 
 #ifdef BTSTACK_DEFER_SCAN
@@ -715,6 +716,41 @@ static struct {
     .handle = HCI_CON_HANDLE_INVALID,
 };
 
+static bool management_pairing_window_open;
+
+void btstack_host_set_pairing_window_open(bool open)
+{
+    management_pairing_window_open = open;
+}
+
+bool btstack_host_pairing_window_open(void)
+{
+    return management_pairing_window_open;
+}
+
+static bool config_ble_link_trusted(hci_con_handle_t handle)
+{
+    if (handle == HCI_CON_HANDLE_INVALID) return false;
+    return mgmt_link_is_trusted(gap_bonded(handle), gap_encryption_key_size(handle));
+}
+
+static bool config_ble_accept_new_bond(void)
+{
+    mgmt_state_t state = {
+        .enabled = g_mgmt_enabled,
+        .console_awake = true,
+        .wake_active = false,
+        .scanning = false,
+        .pairing_window_open = management_pairing_window_open,
+        .client_connected = config_ble.handle != HCI_CON_HANDLE_INVALID,
+        .client_bonded = config_ble.handle != HCI_CON_HANDLE_INVALID &&
+            gap_bonded(config_ble.handle),
+        .client_encrypted = config_ble.handle != HCI_CON_HANDLE_INVALID &&
+            gap_encryption_key_size(config_ble.handle) == 16u,
+    };
+    return mgmt_accept_bonding(&state);
+}
+
 static void config_ble_start_advertising(void);
 
 // The config/management BLE service (RX/TX GATT + wireless bridge) is authorized
@@ -821,7 +857,8 @@ static void config_ble_can_send(void *context)
 
     if (!config_ble.mode_active || !config_ble_authorized() ||
         config_ble.closing || !config_ble.notifications_enabled ||
-        config_ble.handle == HCI_CON_HANDLE_INVALID) {
+        config_ble.handle == HCI_CON_HANDLE_INVALID ||
+        !config_ble_link_trusted(config_ble.handle)) {
         return;
     }
 
@@ -870,6 +907,9 @@ static int host_att_write_callback(hci_con_handle_t con_handle, uint16_t att_han
             config_ble.closing || con_handle != config_ble.handle) {
             return ATT_ERROR_WRITE_NOT_PERMITTED;
         }
+        if (!config_ble_link_trusted(con_handle)) {
+            return ATT_ERROR_INSUFFICIENT_AUTHENTICATION;
+        }
         if (offset != 0) {
             return ATT_ERROR_INVALID_OFFSET;
         }
@@ -891,6 +931,9 @@ static int host_att_write_callback(hci_con_handle_t con_handle, uint16_t att_han
         if (!config_ble.mode_active || !config_ble_authorized() ||
             config_ble.closing || con_handle != config_ble.handle) {
             return ATT_ERROR_WRITE_NOT_PERMITTED;
+        }
+        if (!config_ble_link_trusted(con_handle)) {
+            return ATT_ERROR_INSUFFICIENT_AUTHENTICATION;
         }
         if (offset != 0 || buffer_size != 2) {
             return ATT_ERROR_INVALID_ATTRIBUTE_VALUE_LENGTH;
@@ -930,7 +973,7 @@ static void setup_att_server(void) {
     // GATT service (0x1801) with Service Changed (indicate)
     att_db_util_add_service_uuid16(0x1801);
     att_db_util_add_characteristic_uuid16(0x2A05, ATT_PROPERTY_INDICATE,
-        ATT_SECURITY_NONE, ATT_SECURITY_NONE, NULL, 0);
+        ATT_SECURITY_NONE, ATT_SECURITY_ENCRYPTED, NULL, 0);
 
     // Project configuration service: browser -> Pico writes to RX; Pico ->
     // browser JSON-line replies are TX notifications. It is intentionally
@@ -941,11 +984,11 @@ static void setup_att_server(void) {
         config_ble_rx_uuid,
         ATT_PROPERTY_WRITE | ATT_PROPERTY_WRITE_WITHOUT_RESPONSE |
             ATT_PROPERTY_DYNAMIC,
-        ATT_SECURITY_NONE, ATT_SECURITY_NONE, NULL, 0);
+        ATT_SECURITY_NONE, ATT_SECURITY_ENCRYPTED, NULL, 0);
     config_ble.tx_value_handle = att_db_util_add_characteristic_uuid128(
         config_ble_tx_uuid,
         ATT_PROPERTY_NOTIFY | ATT_PROPERTY_DYNAMIC,
-        ATT_SECURITY_NONE, ATT_SECURITY_NONE, NULL, 0);
+        ATT_SECURITY_NONE, ATT_SECURITY_ENCRYPTED, NULL, 0);
     config_ble.tx_ccc_handle = (uint16_t)(config_ble.tx_value_handle + 1u);
     config_ble.service_available = true;
 
@@ -4251,9 +4294,23 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *pa
 
     switch (event_type) {
         case SM_EVENT_JUST_WORKS_REQUEST:
-            printf("[BTSTACK_HOST] SM: Just Works request\n");
-            sm_just_works_confirm(sm_event_just_works_request_get_handle(packet));
+        {
+            hci_con_handle_t handle =
+                sm_event_just_works_request_get_handle(packet);
+            if (handle == config_ble.handle) {
+                if (config_ble_accept_new_bond()) {
+                    printf("[BTSTACK_HOST] SM: management Just Works accepted inside pairing window\n");
+                    sm_just_works_confirm(handle);
+                } else {
+                    printf("[BTSTACK_HOST] SM: management Just Works declined outside pairing window\n");
+                    sm_bonding_decline(handle);
+                }
+                break;
+            }
+            printf("[BTSTACK_HOST] SM: controller Just Works request\n");
+            sm_just_works_confirm(handle);
             break;
+        }
 
         case SM_EVENT_PAIRING_STARTED:
             printf("[BTSTACK_HOST] SM: Pairing started\n");

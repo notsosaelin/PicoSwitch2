@@ -32,7 +32,8 @@ typedef struct {
     bool scanning;            // observation only; controller discovery coexists with advertising
     bool pairing_window_open; // BOOTSEL double-tap opened the pairing window
     bool client_connected;    // a management LE-peripheral client is linked
-    bool client_bonded;       // that client has an established bond (encrypted)
+    bool client_bonded;       // that client has an established LE bond
+    bool client_encrypted;    // current ATT link has a valid encryption key
 } mgmt_state_t;
 
 // (1) Advertise connectably only while enabled, the console is awake, wake does
@@ -52,14 +53,26 @@ bool mgmt_accept_connection(const mgmt_state_t *s);
 //     opened only to add a CONTROLLER while management is off.
 bool mgmt_accept_bonding(const mgmt_state_t *s);
 
-// (4) Allow a command write only from a connected, BONDED client while enabled
-//     and only for an allowlisted command.
+// A management ATT session is usable only after the link is encrypted with a
+// stored bond. No-display Android Just Works cannot provide MITM
+// authentication, so the firmware must not claim ATT_SECURITY_AUTHENTICATED.
+bool mgmt_session_authorized(const mgmt_state_t *s);
+
+// (4) Allow a command write only from a connected, BONDED, encrypted client
+//     while enabled and only for an allowlisted command.
 bool mgmt_allow_write(const mgmt_state_t *s, const char *command);
 
 // (5) Drop the management client when it must yield the radio: feature off,
 //     console asleep, or wake needs the advertiser. Guarantees wake-from-sleep
 //     is never blocked by a lingering management link.
 bool mgmt_should_drop_client(const mgmt_state_t *s);
+
+// A management link is trusted only after BTstack resolves it to a durable LE
+// bond and encryption is active with the 16-byte key required by the ATT
+// database. Just Works provides
+// encryption/bonding but not MITM authentication; this predicate deliberately
+// does not mislabel it as authenticated.
+bool mgmt_link_is_trusted(bool bonded, unsigned encryption_key_size);
 
 #ifdef __cplusplus
 }
