@@ -6,10 +6,14 @@ import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.semantics
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 
 private data class NavItem(val section: AppSection, val icon: ImageVector)
@@ -28,9 +32,11 @@ fun CompanionApp(
     onImportAmiibo: () -> Unit,
     onPrepareController: () -> Unit,
     onPairControllerHost: () -> Unit,
+    onExportDiagnostics: () -> Unit,
 ) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
+    val destinationState = rememberSaveableStateHolder()
     LaunchedEffect(ui.message) {
         ui.message?.let { snackbarHostState.showSnackbar(it); viewModel.consumeMessage() }
     }
@@ -39,6 +45,7 @@ fun CompanionApp(
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val useRail = maxWidth >= LayoutTokens.NavigationBreakpoint
             Scaffold(
+                modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing),
                 snackbarHost = { SnackbarHost(snackbarHostState) },
                 bottomBar = {
                     if (!useRail) NavigationBar {
@@ -77,13 +84,13 @@ fun CompanionApp(
                         ) {
                             ConnectionStrip(ui, viewModel, onConnectAdapter)
                             Box(Modifier.weight(1f).fillMaxWidth()) {
-                                key(ui.section) {
+                                destinationState.SaveableStateProvider(ui.section.name) {
                                     when (ui.section) {
                                         AppSection.Home -> HomeScreen(ui, viewModel)
                                         AppSection.Amiibo -> AmiiboScreen(ui, viewModel, onImportAmiibo)
                                         AppSection.Controller -> ControllerScreen(ui, viewModel, onPrepareController, onPairControllerHost)
                                         AppSection.Modes -> ModesScreen(ui, viewModel)
-                                        AppSection.More -> MoreScreen(ui, viewModel)
+                                        AppSection.More -> MoreScreen(ui, viewModel, onExportDiagnostics)
                                     }
                                 }
                             }
@@ -133,7 +140,7 @@ private fun phaseLabel(ui: CompanionUiState) = when (ui.connection.phase) {
 
 @Composable
 private fun OperationOverlay(progress: dev.picoswitch.companion.model.OperationProgress) {
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.scrim.copy(alpha = .45f)) {
+    Surface(Modifier.fillMaxSize().semantics { liveRegion = LiveRegionMode.Assertive }, color = MaterialTheme.colorScheme.scrim.copy(alpha = .45f)) {
         Box(contentAlignment = Alignment.Center) {
             Card(Modifier.widthIn(min = 260.dp, max = 380.dp).padding(LayoutTokens.Space4)) {
                 Column(Modifier.padding(LayoutTokens.Space5), horizontalAlignment = Alignment.CenterHorizontally) {

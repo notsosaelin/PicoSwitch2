@@ -13,7 +13,15 @@ class ManagementProtocolTest {
 
     @Test fun `rejects multiline and overlong commands`() {
         assertThrows(IllegalArgumentException::class.java) { ManagementProtocol.frame("ping\nget") }
-        assertThrows(IllegalArgumentException::class.java) { ManagementProtocol.frame("x".repeat(127)) }
+        assertEquals(128, ManagementProtocol.frame("x".repeat(127)).size)
+        assertThrows(IllegalArgumentException::class.java) { ManagementProtocol.frame("x".repeat(128)) }
+    }
+
+    @Test fun `accepts exact wireless reply limit and rejects the next byte`() {
+        ManagementProtocol.requireReplyWithinLimit(511)
+        assertThrows(ManagementReplyTooLargeException::class.java) {
+            ManagementProtocol.requireReplyWithinLimit(512)
+        }
     }
 
     @Test fun `parses current config and compatibility aliases independently`() {
@@ -46,5 +54,17 @@ class ManagementProtocolTest {
         val value = ManagementProtocol.personality(ManagementProtocol.objectOrThrow("personality", """{"current":"pro2","available":["pro2","gc","jcl","jcr"]}"""))
         assertEquals(Personality.Pro2, value.current)
         assertEquals(4, value.available.size)
+    }
+
+    @Test fun `rejects incomplete success shapes and invalid read hex`() {
+        assertThrows(ManagementException::class.java) {
+            ManagementProtocol.firmware(ManagementProtocol.objectOrThrow("info", "{}"))
+        }
+        assertThrows(ManagementException::class.java) {
+            ManagementProtocol.requireOk("wake", ManagementProtocol.objectOrThrow("wake", "{}"))
+        }
+        assertThrows(ManagementException::class.java) {
+            ManagementProtocol.readData(ManagementProtocol.objectOrThrow("amiibo read", """{"data":"GG"}"""))
+        }
     }
 }

@@ -9,10 +9,12 @@ import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.Build
 import android.os.ParcelUuid
+import dev.picoswitch.companion.diagnostics.DiagnosticLog
 import dev.picoswitch.companion.model.ConnectionPhase
 import dev.picoswitch.companion.model.ConnectionState
 import dev.picoswitch.companion.protocol.ManagementException
 import dev.picoswitch.companion.protocol.ManagementProtocol
+import dev.picoswitch.companion.protocol.ManagementReplyTooLargeException
 import dev.picoswitch.companion.protocol.ManagementTransport
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -25,13 +27,12 @@ import java.util.UUID
 import kotlin.coroutines.resume
 
 @SuppressLint("MissingPermission")
-class BleGattManagementTransport(context: Context) : ManagementTransport {
+class BleGattManagementTransport(context: Context, private val diagnostics: DiagnosticLog? = null) : ManagementTransport {
     private val appContext = context.applicationContext
     private val manager = appContext.getSystemService(BluetoothManager::class.java)
     private val adapter get() = manager?.adapter
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val commandMutex = Mutex()
-    private val notifications = Channel<ByteArray>(Channel.UNLIMITED)
+    private val notifications = Channel<ByteArray>(capacity = 32)
     private val _connection = MutableStateFlow(ConnectionState())
     override val connection: StateFlow<ConnectionState> = _connection
 
@@ -45,6 +46,8 @@ class BleGattManagementTransport(context: Context) : ManagementTransport {
 
     private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
+            if (gatt !== g) return
+            diagnostics?.event("management", "gatt state", "status=$status state=$newState")
             if (status == BluetoothGatt.GATT_SUCCESS && newState == BluetoothProfile.STATE_CONNECTED) {
                 gatt = g
                 _connection.value = _connection.value.copy(phase = ConnectionPhase.Connecting, message = "Discovering adapter services")
@@ -56,6 +59,7 @@ class BleGattManagementTransport(context: Context) : ManagementTransport {
                 requestedDisconnect = false
                 connectReady?.completeExceptionally(ManagementException(if (expected) "Disconnected" else "Adapter disconnected"))
                 writeReady?.completeExceptionally(ManagementException("Adapter disconnected during command"))
+                notifications.trySend(ByteArray(0))
                 _connection.value = ConnectionState(
                     phase = if (expected) ConnectionPhase.Idle else ConnectionPhase.Reconnecting,
                     deviceName = safeName(g.device), address = g.device.address,
@@ -70,6 +74,8 @@ class BleGattManagementTransport(context: Context) : ManagementTransport {
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            if (gatt !== g) return
+            diagnostics?.event("management", "services discovered", "status=$status")
             if (status != BluetoothGatt.GATT_SUCCESS) return failConnection("Service discovery failed ($status)")
             val service = g.getService(UUID.fromString(ManagementProtocol.SERVICE_UUID))
                 ?: return failConnection("This device does not expose PicoSwitch management")
@@ -87,10 +93,12 @@ class BleGattManagementTransport(context: Context) : ManagementTransport {
         }
 
         override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            if (gatt !== g) return
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 descriptorReady?.complete(Unit)
                 val device = g.device
                 _connection.value = ConnectionState(ConnectionPhase.Connected, safeName(device) ?: "PicoSwitch2", device.address)
+                diagnostics?.event("management", "connected", "GATT notifications ready")
                 connectReady?.complete(Unit)
             } else {
                 descriptorReady?.completeExceptionally(ManagementException("Notification subscription failed ($status)"))
@@ -100,16 +108,16 @@ class BleGattManagementTransport(context: Context) : ManagementTransport {
 
         @Deprecated("Deprecated in API 33")
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-            if (characteristic.uuid == UUID.fromString(ManagementProtocol.TX_UUID)) notifications.trySend(characteristic.value.copyOf())
+            if (gatt === g && characteristic.uuid == UUID.fromString(ManagementProtocol.TX_UUID)) notifications.trySend(characteristic.value.copyOf())
         }
 
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
-            if (characteristic.uuid == UUID.fromString(ManagementProtocol.TX_UUID)) notifications.trySend(value.copyOf())
+            if (gatt === g && characteristic.uuid == UUID.fromString(ManagementProtocol.TX_UUID)) notifications.trySend(value.copyOf())
         }
 
         @Deprecated("Deprecated in API 33")
         override fun onCharacteristicWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
-            completeWrite(status)
+            if (gatt === g) completeWrite(status)
         }
 
     }
@@ -120,32 +128,46 @@ class BleGattManagementTransport(context: Context) : ManagementTransport {
         if (!bt.isEnabled) throw ManagementException("Turn on Bluetooth to find PicoSwitch2")
         val scanner = bt.bluetoothLeScanner ?: throw ManagementException("Bluetooth LE scanning is unavailable")
         _connection.value = ConnectionState(ConnectionPhase.Scanning, message = "Looking for PicoSwitch2")
+        diagnostics?.event("management", "discovery started")
 
-        val device = withTimeout(15_000) {
-            suspendCancellableCoroutine { continuation ->
-                val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid.fromString(ManagementProtocol.SERVICE_UUID)).build()
-                val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
-                val scanCallback = object : ScanCallback() {
-                    override fun onScanResult(callbackType: Int, result: ScanResult) {
-                        if (continuation.isActive) {
-                            scanner.stopScan(this)
-                            continuation.resume(result.device)
+        val device = try {
+            withTimeout(15_000) {
+                suspendCancellableCoroutine<BluetoothDevice> { continuation ->
+                    val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid.fromString(ManagementProtocol.SERVICE_UUID)).build()
+                    val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+                    val scanCallback = object : ScanCallback() {
+                        override fun onScanResult(callbackType: Int, result: ScanResult) {
+                            if (continuation.isActive) {
+                                scanner.stopScan(this)
+                                continuation.resume(result.device)
+                            }
+                        }
+                        override fun onScanFailed(errorCode: Int) {
+                            if (continuation.isActive) continuation.cancel(ManagementException("Bluetooth scan failed ($errorCode)"))
                         }
                     }
-                    override fun onScanFailed(errorCode: Int) {
-                        if (continuation.isActive) continuation.cancel(ManagementException("Bluetooth scan failed ($errorCode)"))
-                    }
+                    continuation.invokeOnCancellation { scanner.stopScan(scanCallback) }
+                    scanner.startScan(listOf(filter), settings, scanCallback)
                 }
-                continuation.invokeOnCancellation { scanner.stopScan(scanCallback) }
-                scanner.startScan(listOf(filter), settings, scanCallback)
             }
+        } catch (error: TimeoutCancellationException) {
+            _connection.value = ConnectionState(ConnectionPhase.Failed, message = "No management advertisement was found")
+            diagnostics?.error("management", "discovery", error)
+            throw ManagementException("No PicoSwitch2 management service was found within 15 seconds", error)
         }
 
         _connection.value = ConnectionState(ConnectionPhase.Connecting, safeName(device), device.address, "Connecting")
         requestedDisconnect = false
         connectReady = CompletableDeferred()
-        gatt = device.connectGatt(appContext, false, callback, BluetoothDevice.TRANSPORT_LE, BluetoothDevice.PHY_LE_1M_MASK)
-        withTimeout(15_000) { connectReady?.await() }
+        val pendingGatt = device.connectGatt(appContext, false, callback, BluetoothDevice.TRANSPORT_LE, BluetoothDevice.PHY_LE_1M_MASK)
+        gatt = pendingGatt
+        try {
+            withTimeout(15_000) { connectReady?.await() }
+        } catch (error: Throwable) {
+            invalidateSession(pendingGatt, "Management connection failed; retry when the adapter is available")
+            diagnostics?.error("management", "connect", error)
+            throw if (error is TimeoutCancellationException) ManagementException("PicoSwitch2 connection timed out", error) else error
+        }
     }
 
     override suspend fun disconnect() {
@@ -166,11 +188,26 @@ class BleGattManagementTransport(context: Context) : ManagementTransport {
         }
     }
 
+    override fun close() {
+        requestedDisconnect = true
+        val active = gatt
+        gatt = null
+        rx = null
+        tx = null
+        connectReady?.cancel()
+        writeReady?.cancel()
+        runCatching { active?.disconnect() }
+        runCatching { active?.close() }
+        while (notifications.tryReceive().isSuccess) Unit
+        _connection.value = ConnectionState()
+    }
+
     override suspend fun transact(command: String, timeoutMillis: Long): String = commandMutex.withLock {
         val activeGatt = gatt ?: throw ManagementException("Connect to the adapter first")
         val characteristic = rx ?: throw ManagementException("Management service is not ready")
         if (!_connection.value.connected) throw ManagementException("Adapter is not connected")
         while (notifications.tryReceive().isSuccess) Unit
+        diagnostics?.commandStarted(command)
         val mtuPayload = (characteristic.writeType.let { 20 }).coerceAtLeast(ManagementProtocol.MIN_GATT_PAYLOAD)
         try {
             withTimeout(timeoutMillis) {
@@ -182,10 +219,15 @@ class BleGattManagementTransport(context: Context) : ManagementTransport {
                 val buffer = ByteArrayOutputStream()
                 while (true) {
                     val part = notifications.receive()
+                    if (part.isEmpty() && !_connection.value.connected) throw ManagementException("Adapter disconnected during '$command'")
                     for (byte in part) {
-                        if (byte.toInt() == '\n'.code) return@withTimeout buffer.toString(Charsets.UTF_8.name()).trimEnd('\r')
+                        if (byte.toInt() == '\n'.code) {
+                            val response = buffer.toString(Charsets.UTF_8.name()).trimEnd('\r')
+                            diagnostics?.commandFinished(command, buffer.size())
+                            return@withTimeout response
+                        }
                         buffer.write(byte.toInt())
-                        if (buffer.size() > ManagementProtocol.MAX_REPLY_BYTES) throw ManagementException("Adapter reply exceeded ${ManagementProtocol.MAX_REPLY_BYTES} bytes")
+                        ManagementProtocol.requireReplyWithinLimit(buffer.size())
                     }
                 }
                 @Suppress("UNREACHABLE_CODE") ""
@@ -202,8 +244,26 @@ class BleGattManagementTransport(context: Context) : ManagementTransport {
                 ConnectionPhase.Failed, _connection.value.deviceName, _connection.value.address,
                 "Adapter did not reply. Reconnect to start a clean management session.",
             )
-            throw ManagementException("'$command' timed out after ${timeoutMillis / 1000} seconds", error)
+            diagnostics?.error("management", DiagnosticLog.commandType(command), error)
+            throw ManagementException("${DiagnosticLog.commandType(command)} timed out after ${timeoutMillis / 1000} seconds", error)
+        } catch (error: ManagementReplyTooLargeException) {
+            invalidateSession(activeGatt, "Reply was too large; reconnect to start a clean management session")
+            diagnostics?.error("management", DiagnosticLog.commandType(command), error)
+            throw error
+        } catch (error: ManagementException) {
+            diagnostics?.error("management", DiagnosticLog.commandType(command), error)
+            throw error
         }
+    }
+
+    private fun invalidateSession(activeGatt: BluetoothGatt, message: String) {
+        requestedDisconnect = true
+        activeGatt.disconnect()
+        activeGatt.close()
+        if (gatt === activeGatt) gatt = null
+        rx = null
+        tx = null
+        _connection.value = ConnectionState(ConnectionPhase.Failed, _connection.value.deviceName, _connection.value.address, message)
     }
 
     private fun completeWrite(status: Int) {
@@ -213,7 +273,15 @@ class BleGattManagementTransport(context: Context) : ManagementTransport {
 
     private fun failConnection(message: String) {
         _connection.value = _connection.value.copy(phase = ConnectionPhase.Failed, message = message)
+        diagnostics?.event("management", "connection failed", message)
         connectReady?.completeExceptionally(ManagementException(message))
+        val active = gatt
+        gatt = null
+        rx = null
+        tx = null
+        requestedDisconnect = true
+        runCatching { active?.disconnect() }
+        runCatching { active?.close() }
     }
 
     private fun safeName(device: BluetoothDevice): String? = runCatching { device.name }.getOrNull()
