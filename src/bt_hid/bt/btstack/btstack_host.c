@@ -2301,7 +2301,8 @@ void btstack_host_process(void)
     if (!hid_state.initialized) return;
 
     // Configuration/management is a BLE peripheral while USB is in the explicit
-    // CDC Config personality OR when in-band management is enabled (default off).
+    // CDC Config personality OR when in-band management is enabled (production
+    // default on; `mgmt off` is a current-boot escape hatch).
     // The false path is intentionally a state comparison only and performs no
     // advertising or ACL work -- byte-identical to today's normal mode.
     config_ble_service_task(config_ble_authorized());
