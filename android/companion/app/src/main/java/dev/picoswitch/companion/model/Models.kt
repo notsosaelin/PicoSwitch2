@@ -115,7 +115,73 @@ data class AmiiboLibraryItem(
     val importedAtMillis: Long,
     val updatedAtMillis: Long = importedAtMillis,
     val dirtyFromAdapter: Boolean = false,
+    val characterGameCode: String = "",
+    val characterVariant: Int = 0,
+    val tagType: AmiiboTagType = AmiiboTagType.Ntag215,
+    val typeName: String = "Figure",
+    val modelNumber: String = "",
+    val seriesCode: Int = 0,
+    val formatVersion: Int = 0,
+    val extendedVariant: String = "",
 )
+
+enum class AmiiboTagType { Ntag215, FigureV3 }
+
+data class AmiiboIdentity(
+    val uid: String,
+    val figureId: String,
+    val tagType: AmiiboTagType,
+    val characterGameCode: String,
+    val characterVariant: Int,
+    val typeName: String,
+    val modelNumber: String,
+    val seriesCode: Int,
+    val formatVersion: Int,
+    val extendedVariant: String,
+)
+
+/** Identity and decrypted register metadata for one local Amiibo copy. */
+data class AmiiboDetails(
+    val uid: String,
+    val figureId: String,
+    val tagType: AmiiboTagType,
+    val size: Int,
+    val crc32: String,
+    val characterGameCode: String,
+    val characterVariant: Int,
+    val typeName: String,
+    val modelNumber: String,
+    val seriesCode: Int,
+    val formatVersion: Int,
+    val extendedVariant: String,
+    val crypto: AmiiboCryptoState = AmiiboCryptoState.NotAttempted,
+    val owner: String = "",
+    val nickname: String = "",
+    val setUp: Boolean = false,
+    val setupDate: String? = null,
+    val lastWriteDate: String? = null,
+    val writeCounter: Int? = null,
+    val hasAppData: Boolean? = null,
+    val titleId: String = "",
+    val appId: String = "",
+    val appDataLabel: String = "",
+)
+
+data class AmiiboCatalogEntry(
+    val id: String,
+    val character: String,
+    val gameSeries: String,
+    val amiiboSeries: String,
+    val type: String,
+    val releaseDate: String,
+    val imageUrl: String,
+    val games: Map<String, List<String>> = emptyMap(),
+    val titleIds: Map<String, String> = emptyMap(),
+    /** AmiiboAPI's friendly display name (kept separate from character). */
+    val name: String = "",
+)
+
+enum class AmiiboCryptoState { NotAttempted, KeyUnavailable, Valid, Invalid }
 
 data class OperationProgress(
     val label: String,

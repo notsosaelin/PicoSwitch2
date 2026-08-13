@@ -568,6 +568,14 @@ Architecture and gates:
 - [x] Implement the Android bridge as an independent Gradle project under
   `android/companion/`, with golden report-encoder tests and no root, Shizuku,
   accessibility service, hidden API, or controller-family impersonation.
+- [x] Extend the native Android Amiibo page with portal-derived plaintext identity fields and
+  optional phone-local, HMAC-verified owner/nickname/date/write metadata. Keep import, adapter
+  operations, and diagnostics independent of the user’s 160-byte retail key.
+- [x] Add separately tested Android-local cache-first catalog/artwork enrichment without making it
+  a prerequisite for local import or adapter operations. The cache matches portal-style figure IDs,
+  exposes friendly metadata/title-ID game labels, bounds network/image work, and falls back offline.
+- [ ] Add separately tested Android-local Amiibo initialization/re-signing and ZIP exchange without
+  making either a prerequisite for local import or adapter operations.
 - [ ] Hardware-validate full controls, foreground/lifecycle neutralization, saved-bond reconnect,
   latency, and return to a known physical controller before making any compatibility claim.
 - [ ] Add a custom BLE GATT source driver only if a captured target-OEM failure proves the public

@@ -20,6 +20,15 @@ The debug build provides real implementations for:
 - queued console wake requests;
 - a private, versioned, recoverable on-device Amiibo library using app-internal files and atomic replacement;
 - import and validation of exact 540-byte, 572-byte, and 2048-byte user backups;
+- richer local Amiibo identity details (character code/variant, tag type, model/series, format,
+  and extended variant) without a network or catalog dependency;
+- optional cache-first AmiiboAPI enrichment matched by the portal's uppercase head+tail figure ID:
+  friendly name/character/game series/Amiibo series/type/release, compatible games/title-ID labels,
+  and best-effort artwork. The bounded network enhancement never gates local imports or adapter
+  operations and degrades to local identity when offline;
+- optional portal-compatible read-only Amiibo metadata decryption from the user’s own validated
+  160-byte `key_retail.bin` (owner, nickname, registration/write dates, write count, and game-data
+  identifiers), with keys stored only in app-private storage;
 - transactional `begin -> chunk -> commit -> persist` Amiibo uploads, 32 bytes per chunk;
 - adapter-to-library Sync, structural validation, strict figure-v3 whole-image CRC verification,
   ordinary-image unavailable-CRC compatibility, `downloaded`, persistence polling, and
@@ -137,13 +146,17 @@ remains reachable at 150% text, and exercised an 80-item library with long names
 
 ## Tests
 
-The current source/build run passes **45 JVM tests**, Android lint (**0 errors; 14 advisory
-warnings**), and debug APK assembly. The existing API-35 instrumented navigation/scroll smoke test
-has passed in the documented emulator pass; a connected AYN Thor rerun on 2026-08-13 did not expose
-a Compose hierarchy to the test runner, so that device rerun is not treated as new UI evidence.
-JVM coverage includes:
+The Amiibo worker run passed **52 JVM tests**, **1 API-35 instrumented navigation/scroll smoke
+test**, Android lint (**0 errors; 15 advisory warnings**), and debug APK assembly. A connected AYN
+Thor rerun of the UI test on 2026-08-13 did not expose a Compose hierarchy to the runner, so that
+device rerun is not treated as new UI evidence. JVM coverage includes:
 
 - command framing/limits, config, personality, complete Amiibo status, malformed/error replies;
+- accepted key_retail.bin length/master labels, reversed-master normalization, richer identity,
+  packed-date edges, HMAC-invalid metadata suppression, private key-store forget behavior, and the
+  portal-generated valid decrypt golden vector;
+- cache-first AmiiboAPI parsing, portal-style figure-ID matching, release/name/game/title-ID
+  enrichment, cache restart, and offline unmatched-ID behavior;
 - exact neutral report, all 14 button bits, every hat direction/opposites, Thor-style GAS/BRAKE
   trigger normalization, stick dead zones/endpoints/inversion, and descriptor size;
 - Amiibo accepted sizes, identity extraction, and standard CRC32;
@@ -170,9 +183,10 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
 - Motion and rumble are not in the v1 Android HID contract and are labeled as unavailable.
 - Phone-NFC physical-tag backup is not implemented yet. Controller-as-reader commands are low-level
   and intentionally not exposed as a production user workflow.
-- Owner, nickname, registration/write dates, write count, encrypted-data initialization, catalog
-  artwork, ZIP library exchange, and raw backup share/export remain future client-side work. Those
-  need user-supplied retail keys and/or catalog logic; firmware correctly does not receive the keys.
+- Encrypted-data initialization/re-signing, ZIP library exchange, raw backup share/export, and Mii
+  rendering remain future client-side work. The current metadata reader is deliberately
+  read-only. User-supplied retail keys are accepted only in the exact 160-byte portal format,
+  stored in an app-private file, and never sent to firmware, diagnostics, or a library export.
 - Android controller source selection is persisted by descriptor. Capture remains an OEM-specific
   C/Z choice until a labeled Thor/Retroid input pass is recorded.
 - Color changes save correctly but current firmware has no color-triggered USB re-enumeration
@@ -212,3 +226,25 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
 - Portal requests have no IDs, so a response arriving after timeout may be attributed to the next
   command if the link stays open. The Android transport closes the GATT session on timeout before
   allowing another command, preventing that stale-response attribution.
+
+## Amiibo page parity handoff
+
+The Android Amiibo page now follows the portal’s high-value identity/details surface while keeping
+adapter operations independent of optional crypto and network services. The raw image parser is
+shared by import, local-library recovery, and the details panel. A cache-first AmiiboAPI store
+matches IDs the same way as the portal (uppercase `head + tail`), persists compact metadata for
+seven days, and refreshes through bounded mirrors; artwork is best-effort and has an offline icon
+fallback. `AmiiboCrypto` is a direct port of
+the tested amiitool-compatible block in `web/index.html`: it validates the two 80-byte masters and
+160-byte total length, derives keys with HMAC-SHA256 + AES-CTR, verifies both HMACs, and only then
+reads the settings fields documented in `docs/switch2/amiibo-decrypted-data-surface.md`.
+
+The key file lives at app-private `filesDir/amiibo-private/.amiibo-retail-key.bin`; Android backup
+is disabled, and neither raw key bytes nor decrypted values enter diagnostics, management commands,
+the local library export, or firmware. Forgetting keys deletes that file and leaves local dumps and
+the adapter untouched. An HMAC failure is visibly reported and never renders owner/nickname junk.
+
+This slice is read-only and intentionally does not implement portal initialization/re-signing,
+physical phone-NFC reads, Mii rendering, or ZIP exchange. No network request is required for import,
+selection, upload, Sync, present/eject, or clean/used copy operations. See the dated evidence note
+[`../../docs/experiments/android-amiibo-page-parity-2026-08-13.md`](../../docs/experiments/android-amiibo-page-parity-2026-08-13.md).
