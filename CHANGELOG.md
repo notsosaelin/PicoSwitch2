@@ -13,6 +13,10 @@ Release notes describe user-visible behavior. Detailed implementation history re
   pairing window. Existing controller-central pairing is unchanged. Android no-display Just Works
   does not provide MITM authentication, so the implementation does not claim
   `ATT_SECURITY_AUTHENTICATED`. `mgmt off` remains a current-boot escape hatch; reboot restores on.
+- Wireless `bonds list` and `bonds remove` no longer busy-wait core 0 for the BTstack-thread result.
+  Their response is completed on later task ticks, remains bound to the originating BLE session,
+  and keeps the one-command/one-reply bridge busy until completion so overlapping writes cannot
+  reorder or inherit a bond result.
 - Saved controller-appearance changes can now be applied deliberately without changing output
   personality. The new bonded management command `reenumerate` queues the existing same-personality
   USB detach/reset/reconnect path on core 0; both the Android companion and web portal expose an

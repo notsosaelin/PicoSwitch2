@@ -555,6 +555,11 @@ band table), `tools/ns2_motion40_gyro_axes.py` (gyro axis, sign and scale).
   is bonded/encrypted authorization rather than `ATT_SECURITY_AUTHENTICATED`. `mgmt off` is a
   current-boot escape hatch; reboot restores management on. Host/build validation is complete;
   the first-pair/reconnect/rejection/reboot matrix still needs hardware validation.
+- Wireless `bonds list/remove` now completes asynchronously across core-0 task ticks. The bridge
+  keeps the command in progress until its response is published, rejects overlap, and checks the
+  originating session before delivering a late BTstack result. The wake path already stops a
+  running management advertiser, quiesces 100 ms, replays, restores the public address, and lets
+  the management service resume; both behaviors remain hardware validation items.
 - Sectors `-3` and `-5` hold alternating version-2 snapshots with generation, header/payload CRC,
   internal baseline/latest-written images, selection, dirty state, and optional signature. The previous bank stays
   valid until the new bank is programmed and verified. Flash work runs only through the existing

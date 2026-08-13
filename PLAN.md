@@ -188,6 +188,9 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
   accept a new management Just-Works bond only during the existing double-tap pairing window.
 - [x] Make bonded/encrypted management production-default-on without adding persistent config:
   `mgmt off` is a RAM-only escape hatch and an ordinary reboot restores management availability.
+- [x] Remove the remaining wireless core-0 bond-operation wait: defer list/remove replies across
+  task ticks, bind completion to the originating BLE session, and hold bridge back-pressure until
+  the reply is published. Keep CDC Config's USB-pumping synchronous behavior unchanged.
 - [ ] Hardware-validate the management security/default matrix: new bond rejected outside the
   window, accepted inside it, bonded reconnect outside it, unbonded/plaintext writes rejected,
   `mgmt off` disconnect/silence for the current boot, and reboot restoring advertising.

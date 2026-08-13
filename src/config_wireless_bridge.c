@@ -5,6 +5,7 @@
 enum {
     SLOT_EMPTY = 0,
     SLOT_READY = 1,
+    SLOT_IN_PROGRESS = 2,
 };
 
 static char rx_line[CONFIG_WIRELESS_COMMAND_CAPACITY];
@@ -126,7 +127,10 @@ bool config_wireless_bridge_take_command(
     }
     memcpy(command, command_slot, length + 1u);
     *session = command_session;
-    store_release(&command_state, SLOT_EMPTY);
+    // Keep the exchange occupied until its response is published. Most
+    // commands reply inline, but core-owned operations may complete on a later
+    // task tick; a second GATT write must not slip into that deferred window.
+    store_release(&command_state, SLOT_IN_PROGRESS);
     return true;
 }
 
@@ -148,7 +152,13 @@ bool config_wireless_bridge_publish_response(
     response_offset = 0;
     response_session = session;
     store_release(&response_state, SLOT_READY);
+    store_release(&command_state, SLOT_EMPTY);
     return true;
+}
+
+bool config_wireless_bridge_session_active(uint32_t session)
+{
+    return session == load_acquire(&active_session);
 }
 
 size_t config_wireless_bridge_peek_response(

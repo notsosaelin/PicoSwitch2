@@ -25,6 +25,9 @@ static void test_fragmented_command_and_response(void)
         CONFIG_WIRELESS_RX_COMMAND_READY);
 
     uint32_t session = take("amiibo chunk 0 AABB");
+    assert(config_wireless_bridge_session_active(session));
+    assert(config_wireless_bridge_receive(
+        (const uint8_t *)"get\n", 4) == CONFIG_WIRELESS_RX_BUSY);
     assert(config_wireless_bridge_publish_response(
         session, "{\"ok\":true}"));
 
@@ -53,6 +56,7 @@ static void test_busy_and_session_isolation(void)
 
     uint32_t old_session = take("ping");
     config_wireless_bridge_reset_session();
+    assert(!config_wireless_bridge_session_active(old_session));
     assert(!config_wireless_bridge_publish_response(
         old_session, "{\"ok\":true}"));
 
