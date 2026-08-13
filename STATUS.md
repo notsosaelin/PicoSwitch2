@@ -82,7 +82,9 @@ required companion chooser and bond consent; the selected address/association is
 management GATT reconnect is attempted directly with service-scan fallback, and controller mode
 registers/connects HID to the same saved bond without a second chooser. Companion association,
 Classic bond, BLE GATT, and foreground HID registration remain distinct Android operations under
-that UX. This combined flow is source/JVM-tested; the earlier separate workflow reached in-game,
+that UX. Saved-address identity mismatch now also enters the bounded service-scan fallback, each
+foreground session gets a fresh automatic attempt, and disconnect clears all stale adapter-derived
+details and gates Amiibo mutations. This combined flow is source/JVM-tested; the earlier separate workflow reached in-game,
 but first-run/returning behavior in the rebuilt APK still needs physical lifecycle validation.
 
 ## Explicit active-input source arbiter — 🟡 host/build validated; hardware pending 2026-08-13

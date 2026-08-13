@@ -121,6 +121,12 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                     relationshipStore.save(saved)
                     _ui.update { it.copy(connection = value, adapterRelationship = saved) }
                 } else {
+                    if (value.phase == ConnectionPhase.Idle ||
+                        value.phase == ConnectionPhase.Reconnecting ||
+                        value.phase == ConnectionPhase.Failed
+                    ) {
+                        adapter.clearDisconnectedSnapshot()
+                    }
                     _ui.update { it.copy(connection = value) }
                 }
             }
@@ -194,6 +200,11 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         if (relationshipStore.load() == null) return
         autoReconnectAttempted = true
         reconnectKnownAdapter()
+    }
+
+    fun beginForegroundSession() {
+        autoReconnectAttempted = false
+        tryAutoReconnect()
     }
 
     fun recordAdapterAssociation(address: String, associationId: Int?, displayName: String?) {

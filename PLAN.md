@@ -591,6 +591,9 @@ extension while closing the remaining gates.
 - [x] Collapse management and controller setup into one saved adapter relationship: first-use
   **Pair Adapter**, direct known-address GATT reconnect with scan fallback, and controller-mode HID
   connection to the same saved Classic bond without another chooser.
+- [x] Harden returning-app management lifecycle: validate identity before accepting a saved-address
+  reconnect, fall back to service discovery on mismatch, retry once on each foreground entry, clear
+  disconnected adapter state, preserve terminal GATT errors, and gate Amiibo mutations while busy.
 - [x] Implement the Android bridge as an independent Gradle project under
   `android/companion/`, with golden report-encoder tests and no root, Shizuku,
   accessibility service, hidden API, or controller-family impersonation.

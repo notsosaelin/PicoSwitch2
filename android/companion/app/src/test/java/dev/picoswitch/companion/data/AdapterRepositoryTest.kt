@@ -2,6 +2,7 @@ package dev.picoswitch.companion.data
 
 import dev.picoswitch.companion.model.ConnectionState
 import dev.picoswitch.companion.model.CapabilityState
+import dev.picoswitch.companion.model.AdapterSnapshot
 import dev.picoswitch.companion.protocol.ManagementException
 import dev.picoswitch.companion.protocol.ManagementProtocol
 import dev.picoswitch.companion.protocol.ManagementTransport
@@ -153,6 +154,24 @@ class AdapterRepositoryTest {
         assertEquals(1, transport.scans)
     }
 
+    @Test fun `wrong device at saved address falls back to service discovery`() = runTest {
+        val transport = CompatibilityTransport(validImage(), wrongKnownIdentity = true)
+        val repository = AdapterRepository(transport)
+        repository.connectKnown("88:A2:9E:D1:77:78")
+        assertEquals(1, transport.knownConnects)
+        assertEquals(1, transport.scans)
+        assertEquals("picoswitch", repository.snapshot.value.firmware.id)
+    }
+
+    @Test fun `disconnect clears all adapter derived state`() = runTest {
+        val transport = CompatibilityTransport(validImage())
+        val repository = AdapterRepository(transport)
+        repository.refreshAll()
+        assertEquals("2.0", repository.snapshot.value.firmware.version)
+        repository.disconnect()
+        assertEquals(AdapterSnapshot(), repository.snapshot.value)
+    }
+
     @Test fun `unexpected mutation reply cannot become false success`() = runTest {
         val transport = ScriptedTransport(validImage(), unexpectedBegin = true)
         val error = runCatching { AdapterRepository(transport).uploadAmiibo(validImage()) }.exceptionOrNull()
@@ -233,7 +252,11 @@ class AdapterRepositoryTest {
         }
     }
 
-    private class CompatibilityTransport(private val data: ByteArray, private val failKnown: Boolean = false) : ManagementTransport {
+    private class CompatibilityTransport(
+        private val data: ByteArray,
+        private val failKnown: Boolean = false,
+        private val wrongKnownIdentity: Boolean = false,
+    ) : ManagementTransport {
         override val connection = MutableStateFlow(ConnectionState())
         var knownConnects = 0
         var scans = 0
@@ -244,7 +267,11 @@ class AdapterRepositoryTest {
         }
         override suspend fun disconnect() = Unit
         override suspend fun transact(command: String, timeoutMillis: Long): String = when (command) {
-            "info" -> """{"id":"picoswitch","product":"PicoSwitch Config","version":"2.0"}"""
+            "info" -> if (wrongKnownIdentity && scans == 0) {
+                """{"id":"other-device","product":"Unrelated","version":"1.0"}"""
+            } else {
+                """{"id":"picoswitch","product":"PicoSwitch Config","version":"2.0"}"""
+            }
             "get" -> """{"body_color":[1,2,3],"joycon2_left_accent":[4,5,6],"joycon2_right_accent":[7,8,9]}"""
             "device" -> """{"name":"Controller","vid":1,"pid":2,"batteryValid":0,"battery":0,"charging":0}"""
             "amiibo status" -> """{"loaded":false,"dirty":false,"presented":false,"v3loaded":false,"persisted":false,"persistPending":false,"size":0,"signature":false,"hasSave2":false,"usingSave2":false,"generation":0,"payloadCrc":"00000000","uid":"","figureId":"","upload":{"active":false,"received":0,"size":0}}"""
