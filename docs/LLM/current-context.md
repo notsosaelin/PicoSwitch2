@@ -616,11 +616,12 @@ band table), `tools/ns2_motion40_gyro_axes.py` (gyro axis, sign and scale).
 
 ## Highest-value open work
 
-1. Extend `ns2_command_atlas.py` to the controller-side `blecap` schema while retaining transport
-   provenance. The current scan found 42 zero-loss console-side traces/30 command pairs, but only
-   two of 29 zero-loss genuine BLE captures contain command traffic, both the same initialization
-   path. Use the completed atlas to choose one missing behavior for a passive or reversible A/B;
-   do not begin by collecting another broad capture.
+1. Run one bounded genuine-controller reconnect/power A/B from the ranked atlas gaps. The atlas now
+   supports both `trace` and `blecap`, and the current scan admits 46 zero-loss console-side traces
+   plus 30 zero-loss BLE captures. Only two BLE files contain framed command traffic, both the same
+   three-pair initialization path. Preserve the exact controller-side state discriminator; do not
+   collect another broad initialization capture. See
+   [`../switch2/controller-command-atlas.md`](../switch2/controller-command-atlas.md).
 2. Run production-portal **Sync amiibo** against the currently retained dirty v3 generation and
    confirm acknowledgement occurs only after IndexedDB persistence.
 3. Hardware-validate the implemented manual Eject/Present path, including replacement and reconnect.

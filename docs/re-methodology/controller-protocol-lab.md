@@ -15,7 +15,7 @@ and permanent replay coverage.
 |---|---|
 | `tools/PicoSwitch2Lab.psm1` | Port discovery, UTF-8 output, Git provenance, hashes and `picoswitch2-lab/v1` manifests |
 | `tools/capture_to_fixture.py` | Convert a zero-loss UART trace, BLE capture or paired-motion capture to deterministic JSON and C fixtures |
-| `tools/ns2_command_atlas.py` | Aggregate observed command/subcommand request and response shapes across complete UART traces |
+| `tools/ns2_command_atlas.py` | Aggregate observed command/subcommand shapes across lossless console `trace` and controller `blecap` files with explicit provenance |
 | `tools/motion_lab.ps1` | Capture one short stationary native-motion condition, analyze it and compare it with a baseline |
 | `tools/audio_lab.ps1` | Sample audio diagnostics without changing codec, route or stream state |
 | `tools/ns2_firmware_update.py` | Fail-closed host model and reassembler for the command-`0x0D` update sequence |
@@ -57,17 +57,19 @@ Build a capture-derived inventory without assigning semantics to unknown
 payloads:
 
 ```powershell
-python tools/ns2_command_atlas.py <trace-a.jsonl> <trace-b.jsonl> `
+python tools/ns2_command_atlas.py <trace-a.jsonl> <blecap-a.jsonl> `
   --output build/command-atlas.md
 
-python tools/ns2_command_atlas.py <traces...> --json `
+python tools/ns2_command_atlas.py <captures...> --json `
   --output build/command-atlas.json
 ```
 
 The atlas records command/subcommand, request and response counts, declared
-lengths, retained lengths, payload hashes, personalities and source hashes.
-Names come from the current command audit. A name such as `audio_candidate`
-remains a hypothesis until a controlled experiment resolves it.
+lengths, retained lengths, payload hashes, personalities, source hashes,
+capture boundary, link/header transport, and GATT handles. It rejects missing
+loss metadata instead of assuming a legacy capture is complete. Names come
+from the current command audit. A name such as `audio_candidate` remains a
+hypothesis until a controlled experiment resolves it.
 
 ## Historical magnetic-stimulus campaign
 
@@ -140,14 +142,16 @@ assign semantics from payload shape alone. Prefer passive or reversible
 boundaries already exposed by the adapter: initialization, reconnect/power,
 player LED, rumble, headset/audio control, and native NFC.
 
-The 2026-08-01 baseline exposed a schema boundary rather than a protocol
-answer. The current atlas accepts console-side `trace` JSONL and found 42
-zero-loss files with 30 command/subcommand pairs, but those files mix emulated
-and relayed responses. Separately, 29 `blecap` files are zero-loss; only two
-contain controller command/ACK traffic and both cover the same variant-8
-initialization sequence. Extend the atlas to decode controller-side `cmd_out`
-and `ack` records with explicit handle/transport provenance before calling the
-result a genuine-controller coverage map.
+The 2026-08-13 offline audit closes the schema boundary without inventing a
+protocol answer. The atlas accepts console-side `trace` and controller-side
+`blecap` JSONL, rejects captures without explicit zero-loss terminal metadata,
+and retains capture boundary, link/header transport, handle, completeness, and
+source hashes. The current corpus contains 46 admissible `trace` files and 30
+admissible `blecap` files. It still finds only two BLE files with framed command
+traffic, both the same variant-8 initialization sequence. See
+[`../switch2/controller-command-atlas.md`](../switch2/controller-command-atlas.md)
+for exact coverage and the ranked gaps. Capture boundary does not by itself
+prove genuine-hardware authorship; use the associated experiment provenance.
 
 Only request a new hardware action when the atlas identifies one exact missing
 wire/state discriminator. Use the existing tracer and
