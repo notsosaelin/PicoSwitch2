@@ -66,6 +66,20 @@ function DumpRing([string]$why) {
 function Tag($s) { if (-not $s) { return '<no-state>' }
     "ctrl=$($s.controller_connected) ble=$($s.ble_conns) scan=$($s.scan_active) adv=$($s.cble.advertising) client=$($s.cble.client) supp.mgmt=$($s.suppress.mgmt_armed) scan.starts=$($s.scan.starts) disc(c/h)=$($s.disc.ctrl)/$($s.disc.hci)" }
 function Undiscoverable($s) { return ($s.mgmt_enabled -and -not $s.cble.client -and -not $s.cble.advertising) }
+# A controller leaving for reason 0x13 (remote-user-terminated), 0x15 (power-off)
+# or 0x16 (host-terminated) is an INTENTIONAL sleep/off, not the failure -- the
+# firmware correctly resumes discovery and waits. Only flag the REAL failure
+# signatures: the adapter is undiscoverable, or the controller is gone AND
+# discovery is not running (recovery stalled). Suppression climbing is flagged as
+# a transition in the main loop.
+function IntentionalDisc($s) { $r = "$($s.disc.last_reason)"; return ($r -eq '0x13' -or $r -eq '0x15' -or $r -eq '0x16') }
+function RealFailure($s) {
+    if (-not $s) { return $false }
+    if (Undiscoverable $s) { return $true }
+    if ((-not $s.controller_connected) -and ([int]$s.ble_conns -eq 0) -and
+        (-not $s.scan_active) -and (-not $s.inquiry_active)) { return $true }
+    return $false
+}
 
 $serial.Open(); Start-Sleep -Milliseconds 150; $serial.DiscardInBuffer()
 Summary "=== mgmt_soak start on $Port -> $OutputPath ==="
@@ -136,13 +150,23 @@ try {
             $nextReenum = (Get-Date).AddSeconds($ReenumEverySec)
         }
 
-        # Spontaneous failure watch (no re-enum): controller gone or undiscoverable, not recovering.
-        if (-not $failReported -and $s -and (((-not $s.controller_connected) -and ([int]$s.ble_conns -eq 0)) -or (Undiscoverable $s))) {
+        # A clean, intentional controller disconnect (sleep/off) is NOT a failure:
+        # log it once, for context, and keep soaking.
+        if ($s -and (-not $s.controller_connected) -and ([int]$s.ble_conns -eq 0) -and
+            (IntentionalDisc $s) -and ($s.scan_active -or $s.inquiry_active) -and (-not (Undiscoverable $s))) {
+            if (-not $script:sleepNoted) {
+                Summary "note: controller left (reason $($s.disc.last_reason)=intentional sleep/off); discovery resumed, adapter healthy. Not a failure."
+                $script:sleepNoted = $true
+            }
+        } else { $script:sleepNoted = $false }
+
+        # Real failure watch: undiscoverable, or controller gone with discovery stalled, not recovering.
+        if (-not $failReported -and (RealFailure $s)) {
             $confirmEnd = (Get-Date).AddSeconds($RecoverGraceSec); $stillBad = $true
             while ((Get-Date) -lt $confirmEnd) { Start-Sleep -Seconds 3; $c = State
-                if ($c -and (($c.controller_connected -or [int]$c.ble_conns -gt 0) -and -not (Undiscoverable $c))) { $stillBad=$false; break } }
+                if (-not (RealFailure $c)) { $stillBad = $false; break } }
             if ($stillBad) { $failReported = $true; $stressStopped = $true
-                Summary "!!! SPONTANEOUS FAILURE: controller-gone/undiscoverable persisted > ${RecoverGraceSec}s. $(Tag (State))"
+                Summary "!!! SPONTANEOUS FAILURE: undiscoverable / discovery-stalled persisted > ${RecoverGraceSec}s. $(Tag (State))"
                 DumpRing "SPONTANEOUS_FAILURE" }
         }
 
