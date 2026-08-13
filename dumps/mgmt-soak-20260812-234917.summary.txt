@@ -1,3 +1,46 @@
 [23:49:17] === mgmt_soak start on COM11 -> E:\PicoSwitch2\dumps\mgmt-soak-20260812-234917.jsonl ===
 [23:49:17] identity: {"profile":{"controller":"2.1.4","bluetooth":"12.0.0","dsp":"0.2.3","updated_state":true,"runtime_override":false},"ep0":1,"command10":1,"dropped":0,"reads":[{"sub":4,"address":"0x00013080","length":64,"count":1},{"sub":4,"address":"0x000130C0","length":64,"count":1},{"sub":4,"address":"0x001FC040","length":64,"count":1},{"sub":4,"address":"0x00013040","length":16,"count":1},{"sub":4,"address":"0x00013100","length":24,"count":1},{"sub":4,"address":"0x00013060","length":32,"count":1}]}
 [23:49:18] baseline: ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[23:54:18] --- reenum #1 : pre = ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[23:54:19] reenum #1 resp: {"ok":true,"profile":"default","reenumerate":true}
+[23:54:22]     reenum #1 settle: ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[23:54:23] reenum #1 OK (recovered): ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[00:09:25] --- reenum #2 : pre = ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[00:09:26] reenum #2 resp: {"ok":true,"profile":"default","reenumerate":true}
+[00:09:28]     reenum #2 settle: ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[00:09:29] reenum #2 OK (recovered): ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[00:24:31] --- reenum #3 : pre = ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[00:24:32] reenum #3 resp: {"ok":true,"profile":"default","reenumerate":true}
+[00:24:34]     reenum #3 settle: ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[00:24:35] reenum #3 OK (recovered): ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[00:39:38] --- reenum #4 : pre = ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[00:39:39] reenum #4 resp: {"ok":true,"profile":"default","reenumerate":true}
+[00:39:41]     reenum #4 settle: ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[00:39:43] reenum #4 OK (recovered): ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[00:54:46] --- reenum #5 : pre = ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[00:54:46] reenum #5 resp: {"ok":true,"profile":"default","reenumerate":true}
+[00:54:49]     reenum #5 settle: ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[00:54:50] reenum #5 OK (recovered): ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[01:09:52] --- reenum #6 : pre = ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[01:09:53] reenum #6 resp: {"ok":true,"profile":"default","reenumerate":true}
+[01:09:55]     reenum #6 settle: ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[01:09:57] reenum #6 OK (recovered): ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[01:24:59] --- reenum #7 : pre = ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[01:25:00] reenum #7 resp: {"ok":true,"profile":"default","reenumerate":true}
+[01:25:02]     reenum #7 settle: ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[01:25:02] reenum #7 OK (recovered): ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[01:40:05] --- reenum #8 : pre = ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[01:40:06] reenum #8 resp: {"ok":true,"profile":"default","reenumerate":true}
+[01:40:08]     reenum #8 settle: ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[01:40:09] reenum #8 OK (recovered): ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[01:55:11] --- reenum #9 : pre = ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[01:55:12] reenum #9 resp: {"ok":true,"profile":"default","reenumerate":true}
+[01:55:14]     reenum #9 settle: ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[01:55:15] reenum #9 OK (recovered): ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[02:10:17] --- reenum #10 : pre = ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[02:10:18] reenum #10 resp: {"ok":true,"profile":"default","reenumerate":true}
+[02:10:20]     reenum #10 settle: ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[02:10:22] reenum #10 OK (recovered): ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=1 disc(c/h)=0/0
+[05:11:49] *** ctrl:True->False, scan:False->True, disc.hci+=1(reason=0x13) | ctrl=False ble=0 scan=True adv=False client=True supp.mgmt=0 scan.starts=2 disc(c/h)=0/1
+[05:12:22] !!! SPONTANEOUS FAILURE: controller-gone/undiscoverable persisted > 30s. ctrl=False ble=0 scan=True adv=False client=True supp.mgmt=0 scan.starts=2 disc(c/h)=0/1
+[05:22:41] === mgmt_soak end. reenums=10 failure=True. final=ctrl=False ble=0 scan=True adv=False client=True supp.mgmt=0 scan.starts=2 disc(c/h)=0/1 ===

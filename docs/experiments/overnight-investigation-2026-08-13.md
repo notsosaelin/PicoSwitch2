@@ -10,6 +10,48 @@ Companion: [`in-band-mgmt-coexistence-failure-2026-08-12.md`](in-band-mgmt-coexi
 
 ---
 
+## Implementation batch — built, NOT flashed (ready for the morning)
+
+Additive diagnostics only (no behavior change to the shipping paths); built clean on both boards with
+`build.ps1 -MgmtOn`, so the morning uf2 = the decoupling fix **plus** these:
+- **`pipe`** (UART) → `{reportCount, reportAgeMs, inputAgeMs}`. `reportAgeMs` large = core0 report loop
+  stalled; `reportAgeMs` small + `inputAgeMs` large = BT stopped feeding input (frozen to console).
+  Makes the `disc=0` case decisive. (report.c input-freshness stamp + switch_pro2.c report counters.)
+- **`persona <pro2|gc|jcl|jcr|config>`** (UART, dev-gated) → triggers a personality transition (and the
+  CDC Config toggle) over UART via the existing edge-triggered flags, so the CDC/personality-transition
+  hypothesis can be tested remotely without a BOOTSEL press.
+- **`mgmt on|off|status`** (UART, dev-gated) → toggle management over UART without entering Config mode
+  (also unblocks dev soaks that need to flip the flag).
+- `mgmt_soak.ps1` detector fixed to treat intentional disconnects (reason 0x13/0x15/0x16) as normal.
+
+## Next-hardware-interaction plan (task 13) — what to flash, test, and expect
+
+**Priority A — confirm P1 recovery end-to-end (no reflash needed; current firmware):**
+1. Read the current state (`btstate`): expect `controller_connected=false, scan_active=true,
+   client=true` (healthy, waiting — captured overnight).
+2. **Press a button on the DualSense to wake it.** Expected: it re-pages and reconnects
+   (`controller_connected→true`, a `btlife mgmt`-side unchanged, `disc` unchanged). *Discriminates:*
+   reconnect works → the P1 recovery path is fully validated on hardware; reconnect fails while
+   `scan_active=true` and connectable → a **new** reconnect-admission issue to chase (would be the first
+   evidence of a residual bug beyond scan-starvation).
+
+**Priority B — flash the diagnostic build (`build/pico2_w/PicoSwitchWGA-pico2_w.uf2`, `-MgmtOn`) and:**
+3. `persona config` then `persona pro2` while a controller + management client are connected; watch
+   `btstate`/`btlife`. *Discriminates:* the CDC-transition hypothesis — if the controller/management
+   survive with discovery resuming, the CDC-transition failure was the same (now-fixed) scan-starvation
+   bug; if it wedges, capture the ring (first direct evidence of a distinct CDC-transition mechanism).
+4. If the `disc=0` unresponsive-controller symptom ever recurs, run `pipe`. *Discriminates:*
+   `reportAgeMs` large → core0 stalled; `inputAgeMs` large + `reportAgeMs` small → BT input stall
+   (seam not notified) → then the fix is in the seam/notify path, not the BT arbitration.
+5. Long soak again with `tools/mgmt_soak.ps1` (detector now reason-aware) for a multi-hour confirmation
+   including a real controller-sleep/wake cycle.
+
+**Still genuinely requires the owner (physical only):** the button press to wake the controller (A2);
+flashing the diagnostic build (Pico USB is on the Switch). Everything else (state capture, transition
+triggers via `persona`, `pipe` reads, soak) is now automatable over UART.
+
+---
+
 ## P3 — Amiibo stale-metadata: full cache-lifecycle audit (task 9)
 
 `amiiboInfoCache` maps `entry.key → decrypted {owner, nickname, setupDate, lastWriteDate,

@@ -18,6 +18,11 @@ void report_init(void);
 void set_global_gamepad_input(uint8_t idx, const switch_pro_input_t *in);
 void get_global_gamepad_input(uint8_t idx, switch_pro_input_t *out);
 
+// Diagnostic: ms since the last set_global_gamepad_input for this slot
+// (UINT32_MAX if never). Distinguishes "BT stopped feeding input" from a healthy
+// pipeline in the UART `pipe` command.
+uint32_t report_input_age_ms(uint8_t idx);
+
 // Mouse reports are relative events, not persistent axes. Accumulate producer
 // deltas under the cross-core lock and consume them exactly once from the USB
 // report loop.
