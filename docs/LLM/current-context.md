@@ -1,6 +1,6 @@
 # Current Continuation Context
 
-Last reconciled: 2026-08-01
+Last reconciled: 2026-08-13
 
 **Start here if you are resuming v3 amiibo work:** `docs/Amiibo-v3.md` §18 is authoritative; the
 NFC boundary section below carries the short form and the open experiment.
@@ -543,11 +543,10 @@ band table), `tools/ns2_motion40_gyro_axes.py` (gyro axis, sign and scale).
   and uses the same hold to return directly to Pro2. Paired double-tap first disconnects without
   deleting the bond. Both board builds pass; this revised physical gesture matrix awaits hardware
   validation.
-- Android v1 HID bridge ownership moved to Claude on 2026-08-13. Codex must not edit the Android
-  HID descriptor/encoder, controller transport/input router, HID registration/connection lifecycle,
-  controller-mode auto-resume, or corresponding firmware HID/input-source behavior unless the
-  maintainer explicitly reopens that scope. Non-HID Android management, Amiibo, Settings, and
-  packaging work remain available to Codex.
+- The maintainer returned the completed Android/HID work to the main repository workflow on
+  2026-08-13. Preserve the hardware-confirmed v1 input path and byte-compatible v2 extension.
+  Bonded/encrypted management now accepts `input active <id|none>`, and Android presents the
+  bounded firmware registry as an Active controller chooser with the existing neutral/fresh gate.
 - In-band management now boots on in standard builds. RX and TX-CCC writes require BTstack ATT
   encryption with a 16-byte key, callbacks additionally require a durable LE bond, and new
   management Just-Works bonds are confirmed only inside the existing double-tap pairing window.

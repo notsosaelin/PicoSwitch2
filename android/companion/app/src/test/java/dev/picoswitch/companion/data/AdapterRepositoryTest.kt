@@ -172,6 +172,24 @@ class AdapterRepositoryTest {
         assertTrue(error is ManagementException)
     }
 
+    @Test fun `active input selection is acknowledged then refreshed`() = runTest {
+        val transport = ScriptedTransport(validImage())
+        val repository = AdapterRepository(transport)
+        repository.setActiveInput(29)
+        assertEquals(listOf("input active 29", "input sources"), transport.commands)
+        assertEquals(29L, repository.snapshot.value.input.activeId)
+        assertEquals("PicoSwitch A", repository.snapshot.value.input.activeSource?.name)
+        assertEquals(CapabilityState.Available, repository.snapshot.value.capabilities.activeInput)
+    }
+
+    @Test fun `active input none uses explicit neutral command`() = runTest {
+        val transport = ScriptedTransport(validImage(), activeInput = 0)
+        val repository = AdapterRepository(transport)
+        repository.setActiveInput(0)
+        assertEquals("input active none", transport.commands.first())
+        assertEquals(0L, repository.snapshot.value.input.activeId)
+    }
+
     @Test fun `unsupported adapter size is rejected before download allocation`() = runTest {
         val transport = ScriptedTransport(validImage(), reportedSize = Int.MAX_VALUE)
         val error = runCatching { AdapterRepository(transport).downloadAmiibo() }.exceptionOrNull()
@@ -188,6 +206,7 @@ class AdapterRepositoryTest {
         private val reportedSize: Int = data.size,
         private val v3Loaded: Boolean = false,
         private val reportedPayloadCrc: String = AmiiboFiles.crc32(data),
+        private val activeInput: Long = 29,
     ) : ManagementTransport {
         override val connection = MutableStateFlow(ConnectionState())
         val commands = mutableListOf<String>()
@@ -208,6 +227,7 @@ class AdapterRepositoryTest {
                 }
                 command.startsWith("amiibo begin ") && unexpectedBegin -> "{}"
                 command == "reenumerate" && !unexpectedReenumerate -> """{"ok":true,"reenumerating":true}"""
+                command == "input sources" -> """{"active":$activeInput,"pending":0,"explicit":true,"fresh":false,"transitions":1,"sources":[{"id":29,"conn":1,"transport":2,"generation":9,"name":"PicoSwitch A"}],"more":false}"""
                 else -> """{"ok":true}"""
             }
         }

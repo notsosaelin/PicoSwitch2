@@ -7,6 +7,11 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Added
 
+- Android now presents the firmware source registry as a clean **Active controller** selector, so a
+  user can hand console input between a physical controller and the paired handheld without
+  re-pairing. The bonded/encrypted wireless management path now allowlists `input active
+  <id|none>`; every handoff reuses the existing neutral-then-fresh-report arbiter boundary and never
+  merges sources.
 - The offline Switch 2 command atlas now accepts both console-side `trace` and controller-side
   `blecap` captures, fails closed on absent/non-zero loss metadata, and retains capture-boundary,
   transport, GATT-handle, completeness, payload-hash, and source-hash provenance. A durable corpus

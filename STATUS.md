@@ -44,10 +44,9 @@ runtime pass alongside the audio/gyro/latency coexistence checks. See
 
 ## Android handheld controller bridge — 🟡 AYN Thor in-game hardware pass 2026-08-13
 
-**Ownership boundary (2026-08-13):** further Android v1 HID bridge work is reserved for Claude at
-the maintainer's request. Codex must not change the Android HID descriptor/encoder, controller
-transport or input router, HID registration/connection lifecycle, controller-mode auto-resume, or
-their firmware-side HID/input-source behavior until that ownership is explicitly returned.
+**Ownership update (2026-08-13):** the maintainer returned the completed Android/HID work to the
+main repository workflow. There is no remaining Claude-only code boundary; changes must preserve
+the hardware-confirmed v1 input path and its byte-compatible v2 extension.
 
 The no-root Android path uses the public API-28+ HID Device profile and keeps PicoSwitch2 as the
 console-facing protocol owner. Pico-side preparation now includes an exact 81-byte generic-gamepad
@@ -106,8 +105,9 @@ the arbiter does not claim complete feedback isolation yet.
 The first connected source still auto-selects for legacy single-controller operation, so no explicit
 selection preserves the existing default behavior. Wired UART exposes `input sources` and
 `input active <id|none>` for deterministic bring-up. Wireless enumeration is bounded to fit the
-existing 512-byte response slot; wireless selection remains blocked until management authentication
-is implemented. Focused policy coverage is in `tools/test_ns2_input_arbiter.c`; transport-integrated
+existing 512-byte response slot. Now that bonded/encrypted management is implemented, the same
+selection command is allowlisted over BLE and the Android Input page exposes the bounded registry
+as an **Active controller** selector. Focused policy coverage is in `tools/test_ns2_input_arbiter.c`; transport-integrated
 rebind, stale report, and stale disconnect coverage is in
 `tools/test_ns2_active_input_lifecycle.c`; both are included by `tools/run_mgmt_tests.ps1`. Standard
 Pico W and standard 300 MHz Pico 2 W builds plus both install-marker checks pass in the integrated

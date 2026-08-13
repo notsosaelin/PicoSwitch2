@@ -60,6 +60,7 @@ class AdapterRepository(private val transport: ManagementTransport) {
         val amiibo = optional("amiibo") { parse("amiibo status", ManagementProtocol::amiibo) }
         val management = optional("management gate") { parse("mgmt status", ManagementProtocol::managementEnabled) }
         val bonds = optional("bond management") { listBondsRaw() }
+        val input = optional("active input") { parse("input sources", ManagementProtocol::inputSources) }
         val bondCapability = when {
             bonds.value == null -> bonds.state
             bonds.value.complete -> CapabilityState.Available
@@ -75,6 +76,7 @@ class AdapterRepository(private val transport: ManagementTransport) {
             bonds = bonds.value?.entries ?: emptyList(),
             bondsComplete = bonds.value?.complete,
             bondsTotal = bonds.value?.total,
+            input = input.value ?: old.input,
             capabilities = AdapterCapabilities(
                 core = CapabilityState.Available,
                 personality = personality.state,
@@ -83,6 +85,7 @@ class AdapterRepository(private val transport: ManagementTransport) {
                 managementGate = management.state,
                 bonds = bondCapability,
                 wake = old.capabilities.wake,
+                activeInput = input.state,
             ),
             refreshedAtMillis = System.currentTimeMillis(),
         )
@@ -96,8 +99,26 @@ class AdapterRepository(private val transport: ManagementTransport) {
 
     suspend fun refreshController(): ControllerInfo {
         val controller = parse("device", ManagementProtocol::controller)
-        _snapshot.value = _snapshot.value.copy(controller = controller, refreshedAtMillis = System.currentTimeMillis())
+        val input = optional("active input") { parse("input sources", ManagementProtocol::inputSources) }
+        _snapshot.value = _snapshot.value.copy(
+            controller = controller,
+            input = input.value ?: _snapshot.value.input,
+            capabilities = _snapshot.value.capabilities.copy(activeInput = input.state),
+            refreshedAtMillis = System.currentTimeMillis(),
+        )
         return controller
+    }
+
+    suspend fun setActiveInput(sourceId: Long) {
+        require(sourceId in 0..0xFFFF_FFFFL)
+        val argument = if (sourceId == 0L) "none" else sourceId.toString()
+        ack("input active $argument")
+        val input = parse("input sources", ManagementProtocol::inputSources)
+        _snapshot.value = _snapshot.value.copy(
+            input = input,
+            capabilities = _snapshot.value.capabilities.copy(activeInput = CapabilityState.Available),
+            refreshedAtMillis = System.currentTimeMillis(),
+        )
     }
 
     suspend fun setPersonality(personality: Personality): Boolean {

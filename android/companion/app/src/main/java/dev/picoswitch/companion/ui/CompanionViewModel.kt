@@ -244,6 +244,12 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         notice(if (enabled) "Wireless management enabled for this boot" else "Wireless management disabled; this connection may close")
     }
 
+    fun setActiveInput(sourceId: Long) = launch("Switching active controller") {
+        adapter.setActiveInput(sourceId)
+        val source = _ui.value.snapshot.input.sources.firstOrNull { it.id == sourceId }
+        notice(if (sourceId == 0L) "Console input paused" else "Active controller switched to ${source?.name ?: "selected source"}")
+    }
+
     fun importAmiibo(uri: Uri, displayName: String) = launch("Importing Amiibo") {
         val resolver = getApplication<Application>().contentResolver
         resolver.openAssetFileDescriptor(uri, "r")?.use { descriptor ->
@@ -766,6 +772,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             "Reports" to "${ui.bridge.reportCount}; last=${ui.bridge.lastReportAtMillis}",
             "Controller state" to ControllerReportEncoder.encode(ui.controllerState).joinToString(" ") { "%02X".format(it) },
             "Controller face layout" to "${ui.requestedFaceLayout.key}/${ui.resolvedFaceLayout.layout.key}",
+            "Adapter active input" to ui.snapshot.input.toString(),
             "Identity refresh pending" to ui.identityRefreshPending.toString(),
         ))
         file.writeText(report)

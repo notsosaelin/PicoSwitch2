@@ -109,6 +109,36 @@ class ManagementProtocolTest {
         assertEquals(4, value.available.size)
     }
 
+    @Test fun `parses bounded active input registry`() {
+        val value = ManagementProtocol.inputSources(
+            ManagementProtocol.objectOrThrow(
+                "input sources",
+                """{"active":17,"pending":0,"explicit":true,"fresh":false,"transitions":3,"sources":[{"id":17,"conn":0,"transport":1,"generation":4,"name":"Xbox"},{"id":29,"conn":1,"transport":2,"generation":9,"name":"PicoSwitch A"}],"more":false}""",
+            ),
+        )
+        assertEquals(17L, value.activeId)
+        assertEquals("Xbox", value.activeSource?.name)
+        assertEquals(2, value.sources.size)
+        assertFalse(value.awaitingFresh)
+        assertFalse(value.truncated)
+    }
+
+    @Test fun `rejects malformed or duplicate active input registry`() {
+        assertThrows(ManagementException::class.java) {
+            ManagementProtocol.inputSources(
+                ManagementProtocol.objectOrThrow(
+                    "input sources",
+                    """{"active":1,"pending":0,"explicit":true,"fresh":false,"transitions":0,"sources":[{"id":1,"conn":0,"transport":1,"generation":1,"name":"A"},{"id":1,"conn":1,"transport":1,"generation":2,"name":"B"}],"more":false}""",
+                ),
+            )
+        }
+        assertThrows(ManagementException::class.java) {
+            ManagementProtocol.inputSources(
+                ManagementProtocol.objectOrThrow("input sources", """{"active":0,"sources":[]}"""),
+            )
+        }
+    }
+
     @Test fun `rejects incomplete success shapes and invalid read hex`() {
         assertThrows(ManagementException::class.java) {
             ManagementProtocol.firmware(ManagementProtocol.objectOrThrow("info", "{}"))

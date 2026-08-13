@@ -212,6 +212,7 @@ bool config_wireless_command_allowed(const char *command)
            strcmp(command, "get") == 0 ||
            strcmp(command, "device") == 0 ||
            strcmp(command, "input sources") == 0 ||
+           strncmp(command, "input active ", 13) == 0 ||
            strcmp(command, "personality") == 0 ||
            strncmp(command, "personality ", 12) == 0 ||
            strcmp(command, "reenumerate") == 0 ||
