@@ -12,6 +12,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.intOrNull
 import java.util.zip.CRC32
 
 class AdapterRepository(private val transport: ManagementTransport) {
@@ -59,6 +60,11 @@ class AdapterRepository(private val transport: ManagementTransport) {
         val amiibo = optional("amiibo") { parse("amiibo status", ManagementProtocol::amiibo) }
         val management = optional("management gate") { parse("mgmt status", ManagementProtocol::managementEnabled) }
         val bonds = optional("bond management") { listBondsRaw() }
+        val bondCapability = when {
+            bonds.value == null -> bonds.state
+            bonds.value.complete -> CapabilityState.Available
+            else -> CapabilityState.Unknown
+        }
         _snapshot.value = AdapterSnapshot(
             firmware = firmware,
             controller = controller,
@@ -66,14 +72,16 @@ class AdapterRepository(private val transport: ManagementTransport) {
             config = config,
             amiibo = amiibo.value ?: old.amiibo,
             managementEnabled = management.value ?: old.managementEnabled,
-            bonds = bonds.value ?: old.bonds,
+            bonds = bonds.value?.entries ?: emptyList(),
+            bondsComplete = bonds.value?.complete,
+            bondsTotal = bonds.value?.total,
             capabilities = AdapterCapabilities(
                 core = CapabilityState.Available,
                 personality = personality.state,
                 colors = CapabilityState.Available,
                 amiibo = amiibo.state,
                 managementGate = management.state,
-                bonds = bonds.state,
+                bonds = bondCapability,
                 wake = old.capabilities.wake,
             ),
             refreshedAtMillis = System.currentTimeMillis(),
@@ -137,15 +145,30 @@ class AdapterRepository(private val transport: ManagementTransport) {
     }
 
     suspend fun listBonds(): List<BondInfo> {
-        val bonds = listBondsRaw()
-        _snapshot.value = _snapshot.value.copy(bonds = bonds)
-        return bonds
+        markBondsUnknown()
+        val enumeration = listBondsRaw()
+        applyBondEnumeration(enumeration)
+        return enumeration.entries
     }
 
-    private suspend fun listBondsRaw(): List<BondInfo> {
-        val result = command("bonds list")
-        val array = result["bonds"]?.jsonArray ?: throw ManagementException("Adapter returned an incomplete bond list")
-        return array.mapIndexed { position, element ->
+    private suspend fun listBondsRaw(): BondEnumeration {
+        val first = try {
+            command("bonds list")
+        } catch (error: AdapterCommandException) {
+            if (error.code == 413 || error.message?.contains("response_too_large", true) == true) {
+                return listBondsV2()
+            }
+            throw error
+        }
+        if (first["v"]?.jsonPrimitive?.intOrNull == ManagementProtocol.BONDS_PROTOCOL_VERSION)
+            return collectBondPages(first)
+
+        // Older firmware returns only the historical `bonds` array. Preserve
+        // the entries for diagnostics, but mark them incomplete so the app
+        // never presents an unbounded legacy result as authoritative.
+        val array = first["bonds"]?.jsonArray
+            ?: throw ManagementException("Adapter returned an incomplete bond list")
+        return BondEnumeration(array.mapIndexed { position, element ->
             val item = element.jsonObject
             BondInfo(
                 index = item["i"]?.jsonPrimitive?.content?.toIntOrNull()
@@ -155,12 +178,55 @@ class AdapterRepository(private val transport: ManagementTransport) {
                 name = item["name"]?.jsonPrimitive?.content,
                 type = item["type"]?.jsonPrimitive?.content?.toIntOrNull(),
             )
+        }, complete = false, total = null)
+    }
+
+    private suspend fun listBondsV2(): BondEnumeration =
+        collectBondPages(command("bonds list v2"))
+
+    private suspend fun collectBondPages(first: JsonObject): BondEnumeration {
+        val entries = mutableListOf<BondInfo>()
+        val seen = mutableSetOf<Int>()
+        var page = first
+        var cursor = 0
+        var expectedTotal: Int? = null
+        var pageCount = 0
+        while (true) {
+            val parsed = ManagementProtocol.bondsPage(page)
+            if (expectedTotal == null) expectedTotal = parsed.total
+            if (expectedTotal != parsed.total) {
+                throw ManagementException("Adapter changed the bond-list total during pagination")
+            }
+            parsed.entries.forEach { entry ->
+                if (!seen.add(entry.index)) {
+                    throw ManagementException("Adapter repeated a bond during pagination")
+                }
+                entries += entry
+            }
+            val next = parsed.next ?: break
+            if (next <= cursor || ++pageCount > 128) {
+                throw ManagementException("Adapter returned a non-progressing bond-list cursor")
+            }
+            cursor = next
+            page = command("bonds list v2 $next")
         }
+        val total = expectedTotal ?: 0
+        if (entries.size != total) {
+            throw ManagementException("Adapter returned an incomplete paginated bond list")
+        }
+        return BondEnumeration(entries, complete = true, total = total)
     }
 
     suspend fun removeBond(index: Int) {
+        if (_snapshot.value.bondsComplete != true) {
+            throw ManagementException("Bond list completeness is unknown; refresh on a versioned firmware before removing a bond")
+        }
+        // A timeout after a flash mutation is ambiguous; hide the previous
+        // authoritative list until a fresh complete enumeration succeeds.
+        markBondsUnknown()
         ack("bonds remove $index")
-        _snapshot.value = _snapshot.value.copy(bonds = listBondsRaw())
+        val enumeration = listBondsRaw()
+        applyBondEnumeration(enumeration)
     }
 
     suspend fun uploadAmiibo(data: ByteArray, useSave2: Boolean = false, progress: (OperationProgress) -> Unit = {}) {
@@ -291,6 +357,26 @@ class AdapterRepository(private val transport: ManagementTransport) {
 
     private fun updateCapabilities(transform: (AdapterCapabilities) -> AdapterCapabilities) {
         _snapshot.value = _snapshot.value.copy(capabilities = transform(_snapshot.value.capabilities))
+    }
+
+    private fun markBondsUnknown() {
+        _snapshot.value = _snapshot.value.copy(
+            bonds = emptyList(),
+            bondsComplete = null,
+            bondsTotal = null,
+            capabilities = _snapshot.value.capabilities.copy(bonds = CapabilityState.Unknown),
+        )
+    }
+
+    private fun applyBondEnumeration(enumeration: BondEnumeration) {
+        _snapshot.value = _snapshot.value.copy(
+            bonds = enumeration.entries,
+            bondsComplete = enumeration.complete,
+            bondsTotal = enumeration.total,
+            capabilities = _snapshot.value.capabilities.copy(
+                bonds = if (enumeration.complete) CapabilityState.Available else CapabilityState.Unknown,
+            ),
+        )
     }
 
     private data class OptionalCapability<T>(val value: T?, val state: CapabilityState)

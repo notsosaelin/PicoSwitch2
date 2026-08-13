@@ -6,6 +6,7 @@
 // HID Host for Classic BT HID devices.
 
 #include "btstack_host.h"
+#include "mgmt_bonds.h"
 #include "ds5_audio_bridge.h"
 #include "ns2_pairing_crypto.h"
 #include "pico/time.h"
@@ -4716,9 +4717,29 @@ static btstack_context_callback_registration_t bonds_cb;
 static volatile bool bonds_op_pending;
 static volatile bool bonds_op_done;
 static volatile bool bonds_op_is_remove;
+static volatile bool bonds_op_is_page;
 static volatile int  bonds_remove_index;
+static volatile int  bonds_page_start;
 static volatile bool bonds_remove_ok;
-static char bonds_list_json[512];
+static volatile bool bonds_list_complete;
+static char bonds_list_json[MGMT_BONDS_RESPONSE_CAPACITY];
+
+static bool bonds_entry_at(void *context, int slot, mgmt_bond_entry_t *entry)
+{
+    (void)context;
+    if (!entry || slot < 0 || slot >= le_device_db_max_count())
+        return false;
+
+    int type = BD_ADDR_TYPE_UNKNOWN;
+    bd_addr_t address;
+    le_device_db_info(slot, &type, address, NULL);
+    if (type == BD_ADDR_TYPE_UNKNOWN)
+        return false;
+    entry->index = slot;
+    entry->type = type;
+    memcpy(entry->address, address, sizeof(entry->address));
+    return true;
+}
 
 static void bonds_op_run(void *ctx)  // BTstack thread (core1)
 {
@@ -4735,21 +4756,28 @@ static void bonds_op_run(void *ctx)  // BTstack thread (core1)
                 bonds_remove_ok = true;
             }
         }
-    } else {
-        int n = 0;
-        int j = snprintf(bonds_list_json, sizeof(bonds_list_json), "[");
-        for (int i = 0; i < le_device_db_max_count(); i++) {
-            int type = BD_ADDR_TYPE_UNKNOWN;
-            bd_addr_t a;
-            le_device_db_info(i, &type, a, NULL);
-            if (type == BD_ADDR_TYPE_UNKNOWN) continue;
-            if (j < (int)sizeof(bonds_list_json) - 64)
-                j += snprintf(bonds_list_json + j, sizeof(bonds_list_json) - j,
-                    "%s{\"i\":%d,\"type\":%d,\"addr\":\"%02X%02X%02X%02X%02X%02X\"}",
-                    n ? "," : "", i, type, a[0], a[1], a[2], a[3], a[4], a[5]);
-            n++;
+    } else if (bonds_op_is_page) {
+        mgmt_bonds_page_info_t info;
+        size_t length = mgmt_bonds_format_page(
+            bonds_entry_at, NULL, le_device_db_max_count(), bonds_page_start,
+            bonds_list_json, sizeof(bonds_list_json), &info);
+        if (length == 0) {
+            // A page that cannot fit even one entry must not become an empty
+            // successful reply: that would leave a client retrying the same
+            // cursor forever.  Keep the failure compact for the wireless cap.
+            strcpy(bonds_list_json,
+                   "{\"error\":\"response_too_large\",\"code\":413}");
+            bonds_list_complete = false;
+        } else {
+            bonds_list_complete = info.complete;
         }
-        snprintf(bonds_list_json + j, sizeof(bonds_list_json) - j, "]");
+    } else {
+        bool complete = false;
+        (void)mgmt_bonds_format_legacy(
+            bonds_entry_at, NULL, le_device_db_max_count(),
+            bonds_list_json, sizeof(bonds_list_json),
+            &complete);
+        bonds_list_complete = complete;
     }
     bonds_op_pending = false;
     bonds_op_done = true;
@@ -4759,7 +4787,23 @@ bool btstack_host_bonds_request(bool is_remove, int remove_index)
 {
     if (bonds_op_pending) return false;
     bonds_op_is_remove = is_remove;
+    bonds_op_is_page = false;
     bonds_remove_index = remove_index;
+    bonds_op_done = false;
+    bonds_op_pending = true;
+    bonds_cb.callback = &bonds_op_run;
+    bonds_cb.context = NULL;
+    btstack_run_loop_execute_on_main_thread(&bonds_cb);
+    return true;
+}
+
+bool btstack_host_bonds_request_list_page(int start_index)
+{
+    if (start_index < 0 || bonds_op_pending)
+        return false;
+    bonds_op_is_remove = false;
+    bonds_op_is_page = true;
+    bonds_page_start = start_index;
     bonds_op_done = false;
     bonds_op_pending = true;
     bonds_cb.callback = &bonds_op_run;
@@ -4770,6 +4814,7 @@ bool btstack_host_bonds_request(bool is_remove, int remove_index)
 
 bool btstack_host_bonds_done(void) { return bonds_op_done; }
 const char *btstack_host_bonds_list_json(void) { return bonds_list_json; }
+bool btstack_host_bonds_list_complete(void) { return bonds_list_complete; }
 bool btstack_host_bonds_remove_ok(void) { return bonds_remove_ok; }
 
 // ============================================================================

@@ -9,7 +9,7 @@ in [config-transports.md](../architecture/config-transports.md) as the transport
 
 | Slice | Scope | State |
 |---|---|---|
-| — | Host-test scaffold (bridge, edge, concurrency, access spec, session, bonds) | ✅ green, 6/6 |
+| — | Host-test scaffold (bridge, edge, concurrency, access spec, session, bonds, bounded-page serializer) | ✅ green, 9/9 |
 | S1 | Production `src/mgmt_access.{c,h}` lifted from the spec; test links the real header | ✅ landed |
 | S2 | `g_mgmt_enabled` flag (usb.h/usb.c, default off) + `mgmt status/on/off` command + allowlist | ✅ landed |
 | C1/C3 (S3) | `config_ble_authorized()` = `g_usb_config_mode \|\| g_mgmt_enabled`; re-gate can_send / RX+CCC write / advertising / accept-connection / service-task | ✅ landed |
@@ -213,7 +213,7 @@ The access rules above are encoded as the pure spec in `tools/test_mgmt_access.c
 | `amiibo begin/chunk` | buffer upload in RAM | ✅ allow | ✅ RAM (bounded) |
 | `amiibo commit`, `amiibo persist`, `save` | **flash write** | ✅ allow | ⚠ via **deferred** path (C6) |
 | `amiibo clear` | clears pending / flash? | ✅ allow | ⚠ verify flash vs RAM |
-| `bonds list` (new) | read saved bonds | add to allowlist | ✅ read (bonded-only) |
+| `bonds list` / `bonds list v2 [cursor]` (new) | read saved bonds | add to allowlist | ✅ bounded complete/page (bonded-only) |
 | `bonds remove <i>` (new) | delete one bond | add to allowlist | ⚠ small flash op (deferred) |
 | `state`, `raw`, `audiostat`, `imu`, `imuanom`, `fwreads`, `sw2cap`, `btid` | developer/diagnostic reads | ❌ CDC/UART only | n/a (stay off wireless) |
 
@@ -310,7 +310,8 @@ Prefer the simple always-advertise path; adopt this suppression only if 7b shows
 | `test_config_wireless_bridge_concurrency.c` **(new, `-pthread`)** | the cross-core SPSC handshake under real producer/consumer threads: 20 000 commands, in order, no loss/dup/tear (logic-race proof; ARM ordering rests on the acquire/release atomics + HW) |
 | `test_mgmt_access.c` **(new)** | the pure access-control spec, **exhaustive over all 128 states / 9 invariants** — disabled=inert, wake outranks mgmt (drops client), asleep=silent, controller discovery may coexist with the peripheral advertiser, writes need enabled+connected+bonded+allowlisted, bond needs enabled+window, advertise⇒single-client+safe, a denied command is writable in **no** state, an unbonded client can **never** write |
 | `test_mgmt_session.c` **(new)** | end-to-end composition of real bridge + real allowlist + dispatch gate: bonded user command succeeds; diagnostic rejected; unbonded refused; back-pressure; disconnect drops in-flight reply; disabled overrides bond |
-| `test_bonds_command.c` **(new)** | grammar for the new `bonds list` / `bonds remove <n>` saved-pairing commands, with a wall of hostile inputs rejected |
+| `test_bonds_command.c` **(new)** | strict grammar for legacy `bonds list`, versioned `bonds list v2 [cursor]`, and `bonds remove <n>`, with a wall of hostile inputs rejected |
+| `test_mgmt_bonds.c` **(new)** | version-2 envelope bounds, cursor progress across sparse device-DB slots, complete aggregation, and fail-closed overflow |
 | `test_bthid_android_controller.c` (pre-existing) | the Android *controller* HID contract (separate feature, already green) |
 
 Production `src/mgmt_access.{c,h}` will lift the `mgmt_*` spec from `test_mgmt_access.c` verbatim; that

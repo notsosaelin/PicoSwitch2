@@ -21,7 +21,9 @@ zero-cost early return). Landed slices: `mgmt_access.{c,h}` (canonical access-co
 128-state host test), `mgmt status/on/off` command + allowlist, `config_ble_authorized()` gate
 decouple, unconditional `config_wireless_task()` pump, deferred wireless flash ops (`save`/`amiibo
 clear`/`amiibo persist` no longer stall core0), and a web-portal Management panel. Built clean on both
-boards; all host tests green (`tools/run_mgmt_tests.ps1`, 8/8).
+boards; all management and Android-controller contract host tests green
+(`tools/run_mgmt_tests.ps1`, 11/11), including versioned bounded bond enumeration and
+response-too-large fail-closed coverage.
 
 **Hardware state (2026-08-13):** the original workflow succeeded, and the controller-discovery
 decoupling fix then held a Classic controller plus management client for 5.4 hours through ten USB

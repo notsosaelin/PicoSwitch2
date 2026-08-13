@@ -425,12 +425,19 @@ void btstack_host_forget_device(const uint8_t bd_addr[6]);
 
 // Management-app LE bond list/remove. A core0 caller marshals a one-shot op onto
 // the BTstack thread (core1) and polls btstack_host_bonds_done(); the LE device
-// DB is not touched from core0. is_remove=false enumerates (result in
-// btstack_host_bonds_list_json()); is_remove=true removes the LE bond at index
-// (result in btstack_host_bonds_remove_ok()). Returns false if an op is pending.
+// DB is not touched from core0. is_remove=false enumerates a complete,
+// backward-compatible v2 envelope (result in btstack_host_bonds_list_json());
+// is_remove=true removes the LE bond at index (result in
+// btstack_host_bonds_remove_ok()). Returns false if an op is pending. A legacy
+// list that cannot fit is reported incomplete and must be answered with the
+// compact response_too_large error rather than a partial array.
 bool btstack_host_bonds_request(bool is_remove, int remove_index);
+// Request one explicitly versioned page beginning at a le_device_db slot
+// cursor. The result has a "next" cursor, or null when complete.
+bool btstack_host_bonds_request_list_page(int start_index);
 bool btstack_host_bonds_done(void);
 const char *btstack_host_bonds_list_json(void);
+bool btstack_host_bonds_list_complete(void);
 bool btstack_host_bonds_remove_ok(void);
 
 #ifdef __cplusplus

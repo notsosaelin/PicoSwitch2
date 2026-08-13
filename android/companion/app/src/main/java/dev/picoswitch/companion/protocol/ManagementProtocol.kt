@@ -13,6 +13,7 @@ object ManagementProtocol {
     const val MAX_REPLY_PAYLOAD_BYTES = 511
     const val MIN_GATT_PAYLOAD = 20
     const val AMIIBO_CHUNK_BYTES = 32
+    const val BONDS_PROTOCOL_VERSION = 2
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -89,6 +90,46 @@ object ManagementProtocol {
     ).also { requireShape(value.containsKey("loaded") && value.containsKey("v3loaded") && value.containsKey("upload"), "amiibo status") }
 
     fun managementEnabled(value: JsonObject) = value["enabled"]?.jsonPrimitive?.booleanOrNull
+
+    /** Parse one complete or cursor-paginated v2 bond page. */
+    fun bondsPage(value: JsonObject): BondPage {
+        requireShape(value["v"]?.jsonPrimitive?.intOrNull == BONDS_PROTOCOL_VERSION, "bonds list v2")
+        val total = value["total"]?.jsonPrimitive?.intOrNull
+            ?: throw ManagementException("Adapter returned an incomplete response for 'bonds list v2'")
+        requireShape(total >= 0, "bonds list v2")
+        val array = value["bonds"]?.jsonArray
+            ?: throw ManagementException("Adapter returned an incomplete response for 'bonds list v2'")
+        val nextElement = value["next"]
+            ?: throw ManagementException("Adapter returned an incomplete response for 'bonds list v2'")
+        val next: Int? = when (nextElement) {
+            JsonNull -> null
+            is JsonPrimitive -> {
+                if (nextElement.isString) {
+                    throw ManagementException("Adapter returned an incomplete response for 'bonds list v2'")
+                }
+                nextElement.intOrNull
+                    ?: throw ManagementException("Adapter returned an incomplete response for 'bonds list v2'")
+            }
+            else -> throw ManagementException("Adapter returned an incomplete response for 'bonds list v2'")
+        }
+        requireShape(next == null || next >= 0, "bonds list v2")
+        val entries = array.mapIndexed { position, element ->
+            val item = element.jsonObject
+            BondInfo(
+                index = item["i"]?.jsonPrimitive?.intOrNull
+                    ?: item["index"]?.jsonPrimitive?.intOrNull ?: position,
+                address = item["addr"]?.jsonPrimitive?.content
+                    ?: item["address"]?.jsonPrimitive?.content.orEmpty(),
+                name = item["name"]?.jsonPrimitive?.contentOrNull,
+                type = item["type"]?.jsonPrimitive?.intOrNull,
+            )
+        }
+        requireShape(entries.size <= total, "bonds list v2")
+        // A cursor-bearing page must make progress.  The terminal page is
+        // only one segment of the aggregate, so it need not contain `total`.
+        requireShape(next == null || entries.isNotEmpty(), "bonds list v2")
+        return BondPage(entries, total, next)
+    }
 
     fun readData(value: JsonObject): ByteArray {
         val hex = value.string("data")

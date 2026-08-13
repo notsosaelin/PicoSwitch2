@@ -24,6 +24,59 @@ class ManagementProtocolTest {
         }
     }
 
+    @Test fun `parses versioned complete bond page`() {
+        val page = ManagementProtocol.bondsPage(
+            ManagementProtocol.objectOrThrow(
+                "bonds list",
+                """{"v":2,"total":2,"bonds":[{"i":0,"type":1,"addr":"010203040506"},{"i":4,"type":0,"addr":"AABBCCDDEEFF"}],"next":null}""",
+            ),
+        )
+        assertEquals(2, page.total)
+        assertEquals(2, page.entries.size)
+        assertNull(page.next)
+        assertEquals(4, page.entries[1].index)
+    }
+
+    @Test fun `rejects unversioned or inconsistent bond pages`() {
+        assertThrows(ManagementException::class.java) {
+            ManagementProtocol.bondsPage(
+                ManagementProtocol.objectOrThrow("bonds list", """{"bonds":[]}"""),
+            )
+        }
+        assertThrows(ManagementException::class.java) {
+            ManagementProtocol.bondsPage(
+                ManagementProtocol.objectOrThrow(
+                    "bonds list v2",
+                    """{"v":2,"total":0,"bonds":[{"i":1,"addr":"00"}],"next":null}""",
+                ),
+            )
+        }
+        assertThrows(ManagementException::class.java) {
+            ManagementProtocol.bondsPage(
+                ManagementProtocol.objectOrThrow(
+                    "bonds list v2",
+                    """{"v":1,"total":0,"bonds":[],"next":null}""",
+                ),
+            )
+        }
+        assertThrows(ManagementException::class.java) {
+            ManagementProtocol.bondsPage(
+                ManagementProtocol.objectOrThrow(
+                    "bonds list v2",
+                    """{"v":2,"total":0,"bonds":[],"next":"nope"}""",
+                ),
+            )
+        }
+        assertThrows(ManagementException::class.java) {
+            ManagementProtocol.bondsPage(
+                ManagementProtocol.objectOrThrow(
+                    "bonds list v2",
+                    """{"v":2,"total":1,"bonds":[],"next":4}""",
+                ),
+            )
+        }
+    }
+
     @Test fun `parses current config and compatibility aliases independently`() {
         val json = ManagementProtocol.objectOrThrow("get", """{"body_color":[1,2,3],"joycon2_left_accent":[4,5,6],"joycon2_right_accent":[7,8,9],"lightbar":[[99,99,99]]}""")
         val value = ManagementProtocol.config(json)
