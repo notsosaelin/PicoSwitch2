@@ -22,7 +22,7 @@ private val navItems = listOf(
     NavItem(AppSection.Amiibo, Icons.Default.Contactless),
     NavItem(AppSection.Controller, Icons.Default.SportsEsports),
     NavItem(AppSection.Modes, Icons.Default.SettingsInputComponent),
-    NavItem(AppSection.More, Icons.Default.Settings),
+    NavItem(AppSection.Settings, Icons.Default.Settings),
 )
 
 @Composable
@@ -84,7 +84,9 @@ fun CompanionApp(
                             Modifier.fillMaxSize().widthIn(max = LayoutTokens.ContentMaxWidth)
                                 .padding(horizontal = LayoutTokens.Space4),
                         ) {
-                            ConnectionStrip(ui, viewModel, onConnectAdapter, onPairAdapter)
+                            if (ui.section == AppSection.Home) {
+                                ConnectionStrip(ui, viewModel, onConnectAdapter, onPairAdapter)
+                            }
                             Box(Modifier.weight(1f).fillMaxWidth()) {
                                 destinationState.SaveableStateProvider(ui.section.name) {
                                     when (ui.section) {
@@ -92,7 +94,7 @@ fun CompanionApp(
                                         AppSection.Amiibo -> AmiiboScreen(ui, viewModel, onImportAmiibo)
                                         AppSection.Controller -> ControllerScreen(ui, viewModel, onPrepareController)
                                         AppSection.Modes -> ModesScreen(ui, viewModel)
-                                        AppSection.More -> MoreScreen(ui, viewModel, onExportDiagnostics, onImportAmiiboKeys, theme)
+                                        AppSection.Settings -> SettingsScreen(ui, viewModel, onExportDiagnostics, onImportAmiiboKeys, theme)
                                     }
                                 }
                             }
@@ -113,26 +115,32 @@ private fun ConnectionStrip(
     onPairAdapter: () -> Unit,
 ) {
     Surface(
-        modifier = Modifier.fillMaxWidth().padding(top = LayoutTokens.Space3),
+        modifier = Modifier.fillMaxWidth().padding(top = LayoutTokens.Space2),
         color = if (ui.connection.connected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
         shape = MaterialTheme.shapes.medium,
     ) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = LayoutTokens.Space4, vertical = LayoutTokens.Space2),
+            Modifier.fillMaxWidth().padding(horizontal = LayoutTokens.Space3, vertical = LayoutTokens.Space1),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(if (ui.connection.connected) Icons.Default.BluetoothConnected else Icons.AutoMirrored.Filled.BluetoothSearching, null)
-            Spacer(Modifier.width(LayoutTokens.Space3))
+            Spacer(Modifier.width(LayoutTokens.Space2))
             Column(Modifier.weight(1f)) {
                 Text(if (ui.connection.connected) ui.connection.deviceName ?: "PicoSwitch2" else phaseLabel(ui), style = MaterialTheme.typography.titleSmall)
-                ui.connection.message?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                ui.connection.message?.let {
+                    Text(it, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                }
             }
             if (ui.connection.connected) {
                 IconButton(onClick = viewModel::refresh, enabled = !ui.busy) { Icon(Icons.Default.Refresh, "Refresh") }
-                TextButton(onClick = viewModel::disconnect, enabled = !ui.busy) { Text("Disconnect") }
+                IconButton(onClick = viewModel::disconnect, enabled = !ui.busy) {
+                    Icon(Icons.Default.LinkOff, "Disconnect")
+                }
             } else {
                 if (ui.adapterRelationship != null) {
-                    TextButton(onClick = onPairAdapter, enabled = !ui.busy) { Text("Pair another") }
+                    IconButton(onClick = onPairAdapter, enabled = !ui.busy) {
+                        Icon(Icons.Default.AddLink, "Pair another adapter")
+                    }
                 }
                 Button(onClick = onConnect, enabled = !ui.busy) {
                     Text(if (ui.adapterRelationship == null) "Pair Adapter" else "Reconnect")

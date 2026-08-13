@@ -31,6 +31,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.Role
@@ -47,7 +48,7 @@ import java.net.URL
 
 @Composable
 fun HomeScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
-    ScreenColumn("Hardware at a glance", "Adapter, controller, and active virtual figure state") {
+    ScreenColumn("PicoSwitch2", "") {
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             val wide = maxWidth >= LayoutTokens.TwoPaneBreakpoint
             if (wide) {
@@ -58,12 +59,11 @@ fun HomeScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
                     }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space4)) {
                         AmiiboStatusCard(ui, viewModel)
-                        SafetyCard(ui)
                     }
                 }
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space4)) {
-                    AdapterHero(ui, viewModel); ControllerCard(ui); AmiiboStatusCard(ui, viewModel); SafetyCard(ui)
+                    AdapterHero(ui, viewModel); ControllerCard(ui); AmiiboStatusCard(ui, viewModel)
                 }
             }
         }
@@ -75,22 +75,20 @@ private fun AdapterHero(ui: CompanionUiState, viewModel: CompanionViewModel) {
     val snapshot = ui.snapshot
     HardwareCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(56.dp)) {
+            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(44.dp)) {
                 Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Gamepad, null) }
             }
-            Spacer(Modifier.width(LayoutTokens.Space4))
+            Spacer(Modifier.width(LayoutTokens.Space3))
             Column(Modifier.weight(1f)) {
-                Text(snapshot.personality.current.title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-                Text(snapshot.firmware.version.ifBlank { "Connect to read firmware" }, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(snapshot.personality.current.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+                Text(snapshot.firmware.version.ifBlank { "Firmware unavailable" }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            StatusPill(if (ui.connection.connected) "Online" else "Offline", ui.connection.connected)
-        }
-        HorizontalDivider(Modifier.padding(vertical = LayoutTokens.Space4))
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space3), verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
-            FilledTonalButton(onClick = viewModel::wake, enabled = ui.connection.connected && !ui.busy && ui.snapshot.capabilities.wake != CapabilityState.Unsupported) {
-                Icon(Icons.Default.PowerSettingsNew, null); Spacer(Modifier.width(LayoutTokens.Space2)); Text("Wake console")
+            IconButton(onClick = viewModel::wake, enabled = ui.connection.connected && !ui.busy && ui.snapshot.capabilities.wake != CapabilityState.Unsupported) {
+                Icon(Icons.Default.PowerSettingsNew, "Wake console")
             }
-            OutlinedButton(onClick = { viewModel.navigate(AppSection.Modes) }) { Text("Change mode") }
+            IconButton(onClick = { viewModel.navigate(AppSection.Modes) }) {
+                Icon(Icons.Default.Tune, "Change adapter mode")
+            }
         }
     }
 }
@@ -101,15 +99,14 @@ private fun ControllerCard(ui: CompanionUiState) {
     HardwareCard {
         SectionHeading(Icons.Default.SportsEsports, "Input controller")
         Spacer(Modifier.height(LayoutTokens.Space3))
-        Text(controller.name, style = MaterialTheme.typography.titleLarge)
         if (controller.attached) {
-            Text("VID %04X · PID %04X".format(controller.vid, controller.pid), style = MaterialTheme.typography.bodySmall)
+            Text(controller.name, style = MaterialTheme.typography.titleLarge)
             if (controller.batteryValid) {
                 Spacer(Modifier.height(LayoutTokens.Space2))
                 LinearProgressIndicator({ controller.batteryPercent / 100f }, Modifier.fillMaxWidth())
                 Text("${controller.batteryPercent}%${if (controller.charging) " · charging" else ""}", style = MaterialTheme.typography.labelMedium)
             }
-        } else Text("No Bluetooth input is currently reported by the adapter.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        } else Text("No controller connected", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -137,18 +134,9 @@ private fun AmiiboStatusCard(ui: CompanionUiState, viewModel: CompanionViewModel
         } else {
             Text("No Amiibo loaded", style = MaterialTheme.typography.titleLarge)
         }
-        Spacer(Modifier.height(LayoutTokens.Space4))
-        Button(onClick = { viewModel.navigate(AppSection.Amiibo) }, modifier = Modifier.fillMaxWidth()) { Text("Open Amiibo library") }
-    }
-}
-
-@Composable
-private fun SafetyCard(ui: CompanionUiState) {
-    if (ui.snapshot.managementEnabled != true && ui.connection.connected) return
-    HardwareCard(container = MaterialTheme.colorScheme.secondaryContainer) {
-        SectionHeading(Icons.Default.Security, "Connection note")
-        Spacer(Modifier.height(LayoutTokens.Space2))
-        Text("In-band management is RAM-only and currently unauthenticated in firmware. Use it only in a trusted space; it returns to off after reboot.")
+        TextButton(onClick = { viewModel.navigate(AppSection.Amiibo) }, modifier = Modifier.align(Alignment.End)) {
+            Text("Open library"); Icon(Icons.Default.ChevronRight, null)
+        }
     }
 }
 
@@ -722,10 +710,13 @@ private fun AmiiboRegisterDetails(ui: CompanionUiState) {
 
 @Composable
 fun ControllerScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onPrepare: () -> Unit) {
-    ScreenColumn("Android controller", "Pass this handheld’s built-in controls through PicoSwitch2") {
-        HardwareCard(container = MaterialTheme.colorScheme.secondaryContainer) {
-            Text("Foreground only", style = MaterialTheme.typography.titleMedium)
-            Text("Android’s public HID Device profile works without root or Shizuku, but input streams only while this app is visible. Bluetooth gamepads attached to Android may disconnect while bridge mode is active.")
+    ScreenColumn("Input", "Use this handheld as the active controller") {
+        Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = MaterialTheme.shapes.medium) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = LayoutTokens.Space3, vertical = LayoutTokens.Space2), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Visibility, null)
+                Spacer(Modifier.width(LayoutTokens.Space2))
+                Text("Keep this screen open while playing", style = MaterialTheme.typography.bodyMedium)
+            }
         }
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             val wide = maxWidth >= LayoutTokens.TwoPaneBreakpoint
@@ -870,11 +861,9 @@ private fun AxisMeter(label: String, value: Int, modifier: Modifier) {
 
 @Composable
 fun ModesScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
-    ScreenColumn("Adapter & modes", "Console-facing personality and controller identity colors") {
+    ScreenColumn("Adapter", "Personality and controller colors") {
         HardwareCard {
             SectionHeading(Icons.Default.Cable, "Output personality")
-            Spacer(Modifier.height(LayoutTokens.Space2))
-            Text("Switching uses the firmware’s existing USB disconnect/reconnect path. Controller input and audio may pause briefly.")
             FlowRow(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2), verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space2), modifier = Modifier.padding(top = LayoutTokens.Space3)) {
                 val choices = ui.snapshot.personality.available.ifEmpty { listOf(Personality.Pro2, Personality.GameCube, Personality.JoyConLeft, Personality.JoyConRight) }
                 choices.forEach { mode ->
@@ -896,7 +885,6 @@ fun ModesScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
                 ColorEditor("Joy-Con 2 right accent", ColorTarget.RightAccent, ui.snapshot.config.rightAccent, ui.connection.connected, viewModel)
             }
         }
-        Text("Firmware has no controller mapping command. Button remapping intentionally remains in the Switch’s persistent controller settings.", style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -927,29 +915,30 @@ private fun ColorSlider(label: String, value: Float, onValue: (Float) -> Unit, c
 }
 
 @Composable
-fun MoreScreen(
+fun SettingsScreen(
     ui: CompanionUiState,
     viewModel: CompanionViewModel,
     onExportDiagnostics: () -> Unit,
     onImportAmiiboKeys: () -> Unit,
     theme: ThemeSelection,
 ) {
-    ScreenColumn("Settings & information", "User-safe controls and protocol details") {
-        ThemeSettingsCard(theme, viewModel)
-        AmiiboKeySettingsCard(ui, onImportAmiiboKeys)
-        HardwareCard {
-            SectionHeading(Icons.Default.Info, "About this connection")
-            Spacer(Modifier.height(LayoutTokens.Space3))
-            MetadataLine("App", BuildConfig.VERSION_NAME)
-            MetadataLine("Firmware", ui.snapshot.firmware.version.ifBlank { "Not connected" })
-            MetadataLine("Protocol", "BLE GATT · newline JSON v1")
-            MetadataLine("Adapter", ui.connection.address ?: "Not connected")
+    var appearanceOpen by rememberSaveable { mutableStateOf(false) }
+    var keysOpen by rememberSaveable { mutableStateOf(false) }
+    var connectionOpen by rememberSaveable { mutableStateOf(false) }
+    var aboutOpen by rememberSaveable { mutableStateOf(false) }
+    var developerOpen by rememberSaveable { mutableStateOf(false) }
+    ScreenColumn("Settings", "") {
+        SettingsGroup(Icons.Default.Palette, "Appearance", "${theme.mode.title} · ${theme.palette.title}", appearanceOpen, { appearanceOpen = !appearanceOpen }) {
+            ThemeSettingsContent(theme, viewModel)
         }
-        HardwareCard {
+        SettingsGroup(Icons.Default.Key, "Amiibo metadata", if (ui.amiiboKeysLoaded) "Key file available" else "No key file imported", keysOpen, { keysOpen = !keysOpen }) {
+            AmiiboKeySettingsContent(ui, onImportAmiiboKeys)
+        }
+        SettingsGroup(Icons.Default.Link, "Connections", "Wireless management and phone bonds", connectionOpen, { connectionOpen = !connectionOpen }) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Wireless management", style = MaterialTheme.typography.titleMedium)
-                    Text("RAM-only firmware switch; defaults off after reboot", style = MaterialTheme.typography.bodySmall)
+                    Text("Wireless management", style = MaterialTheme.typography.titleSmall)
+                    Text("Available until the adapter reboots", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Switch(
                     checked = ui.snapshot.managementEnabled == true,
@@ -957,108 +946,109 @@ fun MoreScreen(
                     enabled = ui.connection.connected && ui.snapshot.capabilities.managementGate == CapabilityState.Available,
                 )
             }
-        }
-        HardwareCard {
-            SectionHeading(Icons.Default.Link, "Phone bonds")
-            Spacer(Modifier.height(LayoutTokens.Space2))
+            HorizontalDivider(Modifier.padding(vertical = LayoutTokens.Space2))
+            Text("Phone bonds", style = MaterialTheme.typography.titleSmall)
             when {
-                ui.snapshot.capabilities.bonds == CapabilityState.Unsupported -> Text("This firmware does not expose LE management bond controls.")
-                ui.snapshot.capabilities.bonds == CapabilityState.Available && ui.snapshot.bonds.isEmpty() -> Text("No LE management bonds reported. Classic controller bonds are intentionally managed by the adapter’s physical wipe gesture.")
+                ui.snapshot.capabilities.bonds == CapabilityState.Unsupported -> Text("Bond controls are unavailable on this firmware.", style = MaterialTheme.typography.bodySmall)
+                ui.snapshot.capabilities.bonds == CapabilityState.Available && ui.snapshot.bonds.isEmpty() -> Text("No management bonds", style = MaterialTheme.typography.bodySmall)
             }
             ui.snapshot.bonds.forEach { bond ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    MetadataLine("#${bond.index}", bond.name ?: bond.address)
+                    Text(bond.name ?: bond.address, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     IconButton(onClick = { viewModel.removeBond(bond.index) }, enabled = !ui.busy) {
                         Icon(Icons.Default.LinkOff, "Remove management bond ${bond.index}")
                     }
                 }
             }
             if (ui.snapshot.capabilities.bonds == CapabilityState.Unknown && ui.connection.connected) {
-                Text("Bond state is unknown. Reconnect and retry; a large list may exceed the firmware's 511-byte reply limit.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            } else if (ui.snapshot.capabilities.bonds == CapabilityState.Available && ui.snapshot.bonds.isNotEmpty()) {
-                Text("Firmware does not report a total count, so unusually large bond lists may be incomplete until pagination is added.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Bond state unavailable", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
         }
-        HardwareCard {
-            SectionHeading(Icons.Default.DeveloperMode, "Developer / diagnostics")
-            Spacer(Modifier.height(LayoutTokens.Space2))
+        SettingsGroup(Icons.Default.Info, "About", "App and adapter versions", aboutOpen, { aboutOpen = !aboutOpen }) {
+            MetadataLine("App", BuildConfig.VERSION_NAME)
+            MetadataLine("Firmware", ui.snapshot.firmware.version.ifBlank { "Not connected" })
+            MetadataLine("Protocol", "BLE GATT · JSON v1")
+        }
+        SettingsGroup(Icons.Default.DeveloperMode, "Developer", "Diagnostics, identity, and validation", developerOpen, { developerOpen = !developerOpen }) {
             MetadataLine("Bluetooth", "available ${ui.platform.bluetoothAvailable} · enabled ${ui.platform.bluetoothEnabled}")
             MetadataLine("Permissions", "scan ${ui.platform.scanPermission} · connect ${ui.platform.connectPermission}")
-            MetadataLine("Companion manager", ui.platform.companionDeviceManager.toString())
-            MetadataLine("Management GATT", ui.connection.phase.name)
-            MetadataLine("HID profile", "${ui.bridge.phase.name} · registered ${ui.bridge.registered}")
-            MetadataLine("Descriptor", "${dev.picoswitch.companion.controller.AndroidControllerDescriptor.bytes.size} bytes · report ID 1")
+            MetadataLine("Management", ui.connection.phase.name)
+            MetadataLine("HID", "${ui.bridge.phase.name} · registered ${ui.bridge.registered}")
             MetadataLine("Saved host", if (viewModel.pairedControllerHosts().isEmpty()) "No" else "Yes")
-            MetadataLine("Reports", "${ui.bridge.reportCount} · last ${if (ui.bridge.lastReportAtMillis == 0L) "never" else ui.bridge.lastReportAtMillis}")
+            MetadataLine("Reports", ui.bridge.reportCount.toString())
             MetadataLine("Last command", ui.diagnosticSummary.lastCommand)
             MetadataLine("Last result", ui.diagnosticSummary.lastResult)
             MetadataLine("Last error", ui.diagnosticSummary.lastError)
-            MetadataLine("Identity refresh", if (ui.identityRefreshPending) "Required" else "None pending")
             if (ui.identityRefreshPending) TextButton(onClick = viewModel::clearIdentityRefreshPending) { Text("Mark identity refresh complete") }
             Button(onClick = onExportDiagnostics, Modifier.fillMaxWidth()) {
-                Icon(Icons.Default.Share, null); Spacer(Modifier.width(LayoutTokens.Space2)); Text("Share privacy-safe diagnostics")
+                Icon(Icons.Default.Share, null); Spacer(Modifier.width(LayoutTokens.Space2)); Text("Share diagnostics")
             }
-            Text("Exports event types and app state only. Raw Amiibo bytes, JSON replies, keys, and Bluetooth addresses are excluded.", style = MaterialTheme.typography.bodySmall)
-        }
-        HardwareCard(container = MaterialTheme.colorScheme.errorContainer) {
-            SectionHeading(Icons.Default.GppMaybe, "Security & validation")
-            Spacer(Modifier.height(LayoutTokens.Space2))
-            Text("Current firmware does not enforce authenticated management writes. Real adapter coexistence, wake while connected, OEM HID registration, and end-to-end controller input still require hardware validation.")
+            HorizontalDivider(Modifier.padding(vertical = LayoutTokens.Space2))
+            Text("Management writes are not authenticated by current firmware. Hardware validation is still required for controller coexistence and OEM HID behavior.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
 
 @Composable
-private fun AmiiboKeySettingsCard(ui: CompanionUiState, onImportAmiiboKeys: () -> Unit) {
-    HardwareCard {
-        SectionHeading(Icons.Default.Key, "Amiibo metadata keys")
-        Spacer(Modifier.height(LayoutTokens.Space2))
-        Text(
-            if (ui.amiiboKeysLoaded) "A portal-compatible key_retail.bin is stored only on this phone. Replace it here when needed."
-            else "Optional: import your own portal-compatible 160-byte key_retail.bin to read private owner, nickname, date, and game-data fields.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(LayoutTokens.Space2))
-        OutlinedButton(onClick = onImportAmiiboKeys, enabled = !ui.busy, modifier = Modifier.fillMaxWidth()) {
-            Icon(Icons.Default.Key, null); Spacer(Modifier.width(LayoutTokens.Space2)); Text(if (ui.amiiboKeysLoaded) "Replace keys" else "Import keys")
-        }
+private fun AmiiboKeySettingsContent(ui: CompanionUiState, onImportAmiiboKeys: () -> Unit) {
+    Text(
+        "Choose your portal-compatible key_retail.bin to show private owner, nickname, date, and game-data fields.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(LayoutTokens.Space2))
+    OutlinedButton(onClick = onImportAmiiboKeys, enabled = !ui.busy, modifier = Modifier.fillMaxWidth()) {
+        Icon(Icons.Default.FolderOpen, null); Spacer(Modifier.width(LayoutTokens.Space2)); Text("Choose key file")
     }
 }
 
 @Composable
-private fun ThemeSettingsCard(selection: ThemeSelection, viewModel: CompanionViewModel) {
+private fun ThemeSettingsContent(selection: ThemeSelection, viewModel: CompanionViewModel) {
+    Text("Theme", style = MaterialTheme.typography.titleSmall)
+    ThemeMode.entries.forEach { mode ->
+        ThemeChoiceRow(
+            selected = selection.mode == mode,
+            title = mode.title,
+            description = mode.description,
+            onClick = { viewModel.setThemeMode(mode) },
+        )
+    }
+    HorizontalDivider(Modifier.padding(vertical = LayoutTokens.Space2))
+    Text("Accent palette", style = MaterialTheme.typography.titleSmall)
+    AccentPalette.entries.forEach { palette ->
+        PaletteChoiceRow(
+            selected = selection.palette == palette,
+            palette = palette,
+            onClick = { viewModel.setAccentPalette(palette) },
+        )
+    }
+}
+
+@Composable
+private fun SettingsGroup(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    summary: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     HardwareCard {
-        SectionHeading(Icons.Default.Palette, "Appearance")
-        Spacer(Modifier.height(LayoutTokens.Space2))
-        Text(
-            "Choose how the companion looks on this device. This is local app styling and does not change the adapter's controller identity colors.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(LayoutTokens.Space3))
-        Text("Theme", style = MaterialTheme.typography.titleSmall)
-        ThemeMode.entries.forEach { mode ->
-            ThemeChoiceRow(
-                selected = selection.mode == mode,
-                title = mode.title,
-                description = mode.description,
-                onClick = { viewModel.setThemeMode(mode) },
-            )
+        Row(
+            Modifier.fillMaxWidth().clickable(onClick = onToggle).heightIn(min = LayoutTokens.TouchHeight),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(icon, null)
+            Spacer(Modifier.width(LayoutTokens.Space3))
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ChevronRight, if (expanded) "Collapse $title" else "Open $title")
         }
-        HorizontalDivider(Modifier.padding(vertical = LayoutTokens.Space3))
-        Text("Accent palette", style = MaterialTheme.typography.titleSmall)
-        Text(
-            "Optional Joy-Con-inspired UI colors; these are visual references, not hardware identity claims.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        AccentPalette.entries.forEach { palette ->
-            PaletteChoiceRow(
-                selected = selection.palette == palette,
-                palette = palette,
-                onClick = { viewModel.setAccentPalette(palette) },
-            )
+        if (expanded) {
+            HorizontalDivider(Modifier.padding(vertical = LayoutTokens.Space2))
+            content()
         }
     }
 }
@@ -1119,19 +1109,30 @@ private fun PaletteSwatch(color: Color, description: String) {
 
 @Composable
 private fun ScreenColumn(title: String, subtitle: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = LayoutTokens.Space5), verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space4)) {
-        ScreenTitle(title, subtitle); content(); Spacer(Modifier.height(LayoutTokens.Space5))
+    val compact = LocalConfiguration.current.screenHeightDp < 600
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = if (compact) LayoutTokens.Space2 else LayoutTokens.Space5),
+        verticalArrangement = Arrangement.spacedBy(if (compact) LayoutTokens.Space2 else LayoutTokens.Space4),
+    ) {
+        ScreenTitle(title, if (compact) "" else subtitle)
+        content()
+        Spacer(Modifier.height(if (compact) LayoutTokens.Space2 else LayoutTokens.Space5))
     }
 }
 
 @Composable
 private fun ScreenFrame(title: String, subtitle: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(Modifier.fillMaxSize().padding(vertical = LayoutTokens.Space5)) { ScreenTitle(title, subtitle); Spacer(Modifier.height(LayoutTokens.Space4)); content() }
+    val compact = LocalConfiguration.current.screenHeightDp < 600
+    Column(Modifier.fillMaxSize().padding(vertical = if (compact) LayoutTokens.Space2 else LayoutTokens.Space5)) {
+        ScreenTitle(title, if (compact) "" else subtitle)
+        Spacer(Modifier.height(if (compact) LayoutTokens.Space2 else LayoutTokens.Space4))
+        content()
+    }
 }
 
 @Composable private fun ScreenTitle(title: String, subtitle: String) {
-    Text(title, Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
-    Text(subtitle, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Text(title, Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+    if (subtitle.isNotBlank()) Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
 }
 
 @Composable

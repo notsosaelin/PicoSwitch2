@@ -580,6 +580,9 @@ Architecture and gates:
 - [x] Add separately tested Android-local cache-first catalog/artwork enrichment without making it
   a prerequisite for local import or adapter operations. The cache matches portal-style figure IDs,
   exposes friendly metadata/title-ID game labels, bounds network/image work, and falls back offline.
+- [x] Complete the handheld UI hierarchy pass: Home-only connection status, focused Home tiles,
+  collapsed Settings categories, a full-height artwork-led Amiibo library, deterministic
+  Name/Series/Recently added sorting, and shared adapter-only catalog identity on Home/Amiibo.
 - [ ] Add separately tested Android-local Amiibo initialization/re-signing and ZIP exchange without
   making either a prerequisite for local import or adapter operations.
 - [ ] Hardware-validate corrected face labels, full controls, foreground/lifecycle neutralization,
