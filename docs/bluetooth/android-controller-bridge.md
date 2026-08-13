@@ -341,11 +341,20 @@ real controller provides, so an Android handheld is not a second-class input sou
 - **Motion units match the DualSense.** The app converts Android's SI sensor values to 8192 counts/g
   and 16.384 counts/dps, so the handheld reuses the hardware-validated DualSense→Switch 2 carrier
   translation rather than introducing a second scaling convention.
-- **Axis row is provisional.** `SWITCH_MOTION_SOURCE_ANDROID` has its own row in
-  `ns2_motion_seam.c`, reasoned from Android's sensor frame but **not yet measured**. The determinant
-  rule cannot catch a wrong-but-proper rotation (this is exactly how the SWITCH1 row was wrong for
-  weeks), so it needs the same physical pitch/yaw/roll pass. It is deliberately in firmware so a fix is
-  a flash, not a new APK.
+- **Axis row is corroborated, not yet measured.** `SWITCH_MOTION_SOURCE_ANDROID` has its own row in
+  `ns2_motion_seam.c`. It was reasoned from Android's sensor frame and independently matches the
+  composite transform in Dycool's NS-PC-Control, a separate shipped implementation of phone gyro into
+  this same motion report; its gyro scale (16.384 counts/dps) matches exactly and its accel scale is
+  equivalent at the carrier. Full derivation:
+  [`android-motion-axis-derivation-2026-08-13.md`](android-motion-axis-derivation-2026-08-13.md).
+  Two derivations agreeing is still not a measurement — the determinant rule cannot catch a
+  wrong-but-proper rotation (this is how the SWITCH1 row was wrong for weeks), so the physical
+  pitch/yaw/roll pass is still owed. The row is in firmware so a fix is a flash, not a new APK.
+- **Screen orientation is normalized in the app.** Android reports sensors in the device's *natural*
+  orientation, not the one being held, so raw axes would send pitch as roll on a phone held sideways —
+  and would work on a handheld whose natural orientation is landscape while failing on one that is
+  portrait. `MotionOrientation` applies the same screen remap NS-PC-Control uses before the wire
+  conversion. This must stay app-side: only the client knows the display rotation.
 
 ### Audio and microphone — investigated, not feasible over this link
 
