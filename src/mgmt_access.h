@@ -5,7 +5,7 @@
  * management path: when it may advertise, accept a connection, accept a NEW
  * bond, allow a command write, and when it must drop its client. They were
  * developed test-first in tools/test_mgmt_access.c and are lifted here verbatim;
- * that test now links this header so the exhaustive 128-state invariant proof
+ * that test now links this header so the exhaustive 256-state invariant proof
  * guards the real code.
  *
  * Every field of mgmt_state_t maps to an existing firmware signal, so the caller

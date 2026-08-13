@@ -1,7 +1,7 @@
 # Web portal sources
 
 - `index.html` is the production configuration portal. It supports USB Web Serial and the
-  Config-personality-only BLE GATT transport, is served locally, and is not embedded in firmware.
+  bonded/encrypted BLE GATT management transport, is served locally, and is not embedded in firmware.
 - `diagnostic.html` is a browser-only Virtual Amiibo test harness. It is not embedded in firmware
   and never opens Web Serial.
 
@@ -18,9 +18,11 @@ Run the diagnostic portal without hardware:
 ```
 
 Both launchers serve `web/` from localhost and stop their local server when Enter is pressed in the
-launcher window. The production launcher opens the real USB/Bluetooth portal. Bluetooth is
-advertised and accepted only after a two-second BOOTSEL hold has entered Config; it is not a
-normal-controller-mode service. The diagnostic launcher opens the hardware-free test page, which
+launcher window. The production launcher opens the real USB/Bluetooth portal. Standard firmware
+also advertises management in normal controller personalities while the console is awake; a new
+phone bond still requires the double-tap pairing window and writes require a bonded 16-byte
+encrypted ATT link. The two-second hold remains the route to the CDC Config USB personality. The
+diagnostic launcher opens the hardware-free test page, which
 can recursively import `.bin` directories, exercise the local library and AmiiboAPI lookup,
 simulate the adapter's transactional upload and persistence behavior, apply controlled
 console-write bytes, and save the resulting mutable image directly into the browser-local cached

@@ -95,8 +95,8 @@ extern volatile bool g_usb_config_mode;
 // When true, the config BLE service (RX/TX GATT + wireless bridge) is armed and
 // connectable in a normal controller personality, so a phone/web portal can
 // manage the adapter (amiibo, colors, personality, bonds) WITHOUT the CDC Config
-// re-enumeration that drops the console. Default OFF: when false the management
-// path is byte-identical to today (the proven zero-cost early return in
+// re-enumeration that drops the console. Standard production builds default ON;
+// `mgmt off` restores the proven zero-cost early return for the current boot in
 // config_ble_service_task). Shared across cores; only ever written on core0
 // (the `mgmt` config command) and read on both. Present in both build axes so
 // the shared btstack_host.c gate compiles without #ifdef.

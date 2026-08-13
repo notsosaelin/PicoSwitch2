@@ -668,7 +668,7 @@ _Static_assert(sizeof(PICO_SWITCH2_BLUETOOTH_NAME) - 1u == 11u,
 static uint8_t host_att_device_name[] = PICO_SWITCH2_BLUETOOTH_NAME;
 static const uint8_t host_att_appearance[] = { 0xC0, 0x03 }; // 0x03C0 Generic HID, LE
 
-// Config-only BLE management service. UUIDs are project-owned random UUIDs,
+// Config/in-band BLE management service. UUIDs are project-owned random UUIDs,
 // deliberately distinct from Nordic UART so the browser cannot accidentally
 // select an unrelated serial-like peripheral.
 static const uint8_t config_ble_service_uuid[] = {
@@ -977,8 +977,8 @@ static void setup_att_server(void) {
 
     // Project configuration service: browser -> Pico writes to RX; Pico ->
     // browser JSON-line replies are TX notifications. It is intentionally
-    // present in the static ATT database but is never advertised or writable
-    // outside the explicit USB Config personality.
+    // present in the static ATT database. Advertising is armed by Config or
+    // management mode; writes remain bonded/encrypted and allowlisted.
     att_db_util_add_service_uuid128(config_ble_service_uuid);
     config_ble.rx_value_handle = att_db_util_add_characteristic_uuid128(
         config_ble_rx_uuid,

@@ -1,6 +1,6 @@
 # PicoSwitch2 Architecture
 
-Status: ✅ current as of 2026-07-24
+Status: ✅ current as of 2026-08-13
 
 ## Purpose
 
@@ -15,7 +15,7 @@ not block each other.
 | TinyUSB device loop | 0 | USB enumeration, descriptors, input streaming, output reception |
 | USB personalities | 0 | Pro2, NSO GameCube, Joy-Con 2 L/R, CDC/config |
 | BOOTSEL raw sampler | 0 | Safe flash-CS sample after cooperative core-1 park |
-| BTstack/CYW43 | 1 | Discovery, pairing, reconnection, HID/GATT transport, Config-only BLE management |
+| BTstack/CYW43 | 1 | Discovery, pairing, reconnection, HID/GATT transport, and bonded/encrypted in-band BLE management |
 | joypad-os bthid | 1 | Controller identity, input parsing, output tasks |
 | Live DualSense Opus worker (Pico 2 W) | 1 foreground | Blocks on complete PCM windows; CYW43/BTstack background IRQ may preempt |
 | Seam/router | 1 | Unified input → Switch button/capability model |
@@ -173,11 +173,11 @@ in Config.
 
 The fifth personality keeps a CDC-only USB descriptor at `CAFE:4012`. Its web client is served from
 the user's computer with `tools/run_config_portal.ps1`; the firmware deliberately contains no MSC
-interface, FAT image, or web assets. While—and only while—this Config personality is active, the
-same local portal may connect to a custom BLE GATT management service. Controller discovery is
-paused before management advertising starts, BLE writes still execute through the existing parser
-on core 0, and leaving Config disconnects the browser before discovery resumes. Normal controller
-personalities neither advertise nor accept configuration traffic. See
+interface, FAT image, or web assets. The same local portal and Android app may connect to the custom
+BLE GATT management service in Config or a normal controller personality. Normal-mode management
+coexists with controller discovery and requires a durable LE bond plus active 16-byte encryption;
+new bonds require the physical pairing window. BLE writes still execute through the existing parser
+on core 0. See
 [`config-transports.md`](config-transports.md).
 
 See [`../../STATUS.md`](../../STATUS.md) for the current cycle and

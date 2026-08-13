@@ -183,8 +183,9 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
 - [x] Implement and host-test the revised BOOTSEL policy: paired single-tap cycles only controller
   personalities, double-tap opens pairing, triple-tap wipes/disconnects, and a two-second hold
   enters Config directly; Config keeps only triple-tap wipe and two-second direct exit.
-- [ ] Hardware-validate the revised BOOTSEL matrix both with no controller and with a paired
-  controller, including bond-preserving disconnect before paired double-tap pairing.
+- [x] Hardware-validate the revised BOOTSEL matrix: live-console single-tap controller cycle,
+  paired double-tap bond-preserving disconnect/pairing, triple-tap wipe/admission blocking, and
+  two-second Config entry/exit are all confirmed across the recorded hardware passes.
 - [x] Require a stored LE bond and active 16-byte encryption for management RX/CCC writes, and
   accept a new management Just-Works bond only during the existing double-tap pairing window.
 - [x] Make bonded/encrypted management production-default-on without adding persistent config:

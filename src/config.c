@@ -5,7 +5,7 @@
 // is performed on core1 (which already owns the multicore-lockout requester role
 // used for BOOTSEL), so it can park core0 during the erase/program without any
 // risk of a bidirectional lockout. Commands execute on core0 whether they arrive
-// over USB CDC or the Config-only BLE bridge; this preserves that ownership and
+// over USB CDC or the bonded/encrypted Config/in-band BLE bridge; this preserves that ownership and
 // keeps parsing/flash waits out of BTstack callbacks.
 
 #include "config.h"

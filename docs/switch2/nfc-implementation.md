@@ -127,8 +127,8 @@ file without retail keys.
 The relevant `emuiibo` user-interface lesson is separate selected-tag and present/removed state.
 PicoSwitch2's offline portal remembers one loaded library tag without requiring an adapter.
 Virtual Amiibo itself is always available; an empty store simply presents no virtual tag. The
-Config-only BLE transport makes the portal reachable while the dongle remains physically attached
-to the console, although entering Config temporarily replaces the controller USB personality.
+in-band BLE transport makes the portal reachable without replacing the controller USB personality.
+The explicit CDC Config personality remains available for wired setup and diagnostics.
 
 The board stores exactly one amiibo; the browser exposes one loaded-amiibo pointer. Connected
 **Load amiibo** (between the carousel arrows) uploads/presents the highlighted image immediately;
@@ -251,8 +251,8 @@ the Switch 2 command codec never depends on Switch 1 report framing.
 
 ## 7. Config-mode web portal
 
-Configuration mode provides one local page over USB Web Serial or the Config-only Web Bluetooth
-transport, with:
+The local page uses USB Web Serial in Config or bonded/encrypted in-band Web Bluetooth in normal
+controller mode, with:
 
 - a `.bin` file picker using `File.arrayBuffer()`;
 - a read-only `showDirectoryPicker()` path that scans subdirectories recursively;

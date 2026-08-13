@@ -14,7 +14,7 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Current project state | [`../STATUS.md`](../STATUS.md) |
 | Forward roadmap | [`../PLAN.md`](../PLAN.md) |
 | Runtime architecture | [`architecture/overview.md`](architecture/overview.md) |
-| USB Serial and Config-only BLE management | [`architecture/config-transports.md`](architecture/config-transports.md) |
+| USB Serial and bonded/encrypted in-band BLE management | [`architecture/config-transports.md`](architecture/config-transports.md) |
 | Compatibility results | [`status/compatibility-matrix.md`](status/compatibility-matrix.md) |
 | Evidence and RE rules | [`re-methodology/evidence-standards.md`](re-methodology/evidence-standards.md) |
 | Shared controller protocol laboratory | [`re-methodology/controller-protocol-lab.md`](re-methodology/controller-protocol-lab.md) |

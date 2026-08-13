@@ -60,15 +60,15 @@ wake, and latency observation remains open.
 
 ---
 
-### Original proposal (below) — retained as the design reference
+### Original proposal (below) — retained as design history
 
 Investigation complete 2026-08-12.
 
 **Goal.** Let a phone (or any Web-Bluetooth browser) manage the adapter — swap Virtual Amiibo,
 change colors/config, and optionally switch output personality — **over BLE while a normal
-controller drives gameplay**, instead of the current out-of-band Config mode that re-enumerates USB
-to CDC and drops the console. Then **deprecate the old Config personality**. On-demand only; **zero
-impact on input/audio/motion when not in active use.**
+controller drives gameplay**, instead of requiring the out-of-band Config mode that re-enumerates
+USB to CDC and drops the console. The implemented result keeps CDC Config, boots in-band management
+on in standard builds, and retains `mgmt off` as the current-boot zero-cost escape hatch.
 
 ---
 
@@ -147,24 +147,14 @@ Without the physical Config gesture, **bonding is the access-control identity**:
 - Keep single-client acceptance and the LE-Peripheral-role classification before any slot/SM/GATT use
   (config-transports.md:33-34).
 
-### C5 — Wake-from-sleep is never broken (invariant) — REVISED 2026-08-12
-Wake advertising **strictly outranks** management for the *advertiser*, but management **may run while
-the console is asleep** (an earlier draft suppressed it entirely — too conservative, and it would kill
-the phone-wake feature, G8 of the interface audit). Corrected model:
-- **`wake_adv` is on-demand, not continuous** — it only runs when a wake is requested. So while the
-  console is merely asleep and no wake is in progress, the single LE advertiser is **free**, and
-  management may advertise and accept a phone connection (the BT core runs while suspended).
-- Management **yields the advertiser to a wake burst**: the existing `if (wake_adv.active) return;`
-  guard already prevents starting a management advert during a burst; extend it so a *running*
-  management advert is stopped for the (brief, ~1.2 s) burst, then resumed.
-- A management **connection** persists across sleep and across wake bursts (a connection is not the
-  advertiser). This is what lets a phone connect while asleep and send `wake` (G8), which triggers the
-  existing `ns2_wake_request()` (via a core1 request flag — wake state is core1-owned).
-- **Hardware gate:** confirm the CYW43 can run a wake burst while a management connection is active
-  (concurrent advertise + peripheral connection). If not, the `wake` command briefly drops the link,
-  fires the burst, and the phone reconnects on wake. Validated in HW check 6a.
-- "Don't break wake" therefore means *wake always gets the advertiser when it needs it*, **not**
-  *management is off while asleep*.
+### C5 — Wake-from-sleep is never broken (implemented policy)
+Wake and console suspend outrank management. `mgmt_should_drop_client()` stops management
+advertising and drops a connected management client when TinyUSB reports the console asleep or a
+wake burst owns the advertiser. After the console resumes, normal management advertising restarts
+and the saved phone may reconnect. A phone cannot manage or wake the adapter while the console is
+already asleep in the current implementation; `wake` is available only during an authorized awake
+session. This conservative policy keeps controller-driven wake independent of a lingering phone
+link. Any future manage-while-asleep design requires a new owner decision and hardware evidence.
 
 ### C6 — Flash-op timing during gameplay
 `save`, `amiibo commit`, `amiibo persist` write flash, which parks core0 (brief input/audio hitch).
@@ -186,7 +176,7 @@ Reuses the existing, hardware-proven controller pairing machinery — no new ges
 | Double-tap | `OPEN_PAIRING` (controller pairing window; adapter discoverable/connectable) | A management phone bonds **inside this same window** — the window is the first-bond gate |
 | Triple-tap | `WIPE_DEVICES` (`gap_delete_bonding` all bonds) | Also clears the management-phone bond = "unpair everything" |
 | Single-tap | cycle personality | (unchanged) |
-| 2 s hold | toggle Config | (becomes the kept default-off CDC fallback / first-pair path) |
+| 2 s hold | toggle Config | Kept as the wired CDC setup/recovery path |
 
 **First pairing.** Double-tap → the pairing window opens. A phone connects as an LE-peripheral
 management client and bonds *within the window*. `mgmt_accept_bonding()` is true **only while the
@@ -273,14 +263,11 @@ mode. So removing the CDC Config personality loses **no** diagnostic capability;
 UART/debug-only.
 
 **Deprecation stages (owner decisions applied):**
-1. Ship in-band management alongside the existing CDC Config (both work). Gain hardware confidence.
-   CDC Config **stays behind a default-off build flag** (owner: "keep it gated default off until we're
-   sure it can be removed"), and doubles as the **one-time first-pairing path** (C4).
-2. Once in-band management is hardware-proven, the CDC flag stays off by default; the wired path is a
-   recovery-only fallback.
-3. Only after confidence: remove `USB_PERSONALITY_CDC_CONFIG`, its descriptors, the CDC half of
-   `config_cdc_task`, and the `Connect USB` path in `index.html`. Diagnostics remain on UART — nothing
-   to re-home.
+1. Ship in-band management alongside the existing CDC Config; both remain available.
+2. Standard builds boot in-band management on. `mgmt off` is a RAM-only current-boot escape hatch;
+   CDC remains the wired recovery and setup path.
+3. Do not remove `USB_PERSONALITY_CDC_CONFIG`, its descriptors, `config_cdc_task`, or the portal's
+   Connect USB path without a new explicit owner decision and release validation.
 
 ---
 
@@ -351,12 +338,10 @@ window. This gives an objective, on-device latency/jitter signal without externa
 5. Deferred flash `persist` during gameplay: `core1GapsOver10ms` delta = **only** the write window.
 6. **Audio gate (Pico 2 W):** audio playing + management client connected + actively swapping amiibo →
    **no stutter**. The one true empirical gate.
-   - **6a. Wake gate (revised):** (i) automatic wake — a controller button press while asleep still
-     wakes the console with the feature enabled; (ii) manage-while-asleep — a bonded phone can connect
-     while the console sleeps and issue `wake` (G8), which wakes the console; (iii) coexistence — a
-     wake burst fires correctly whether or not a management connection is active (concurrent
-     advertise + peripheral connection on the CYW43). Proves "wake always gets the advertiser," the
-     revised C5.
+   - **6a. Wake gate:** (i) a controller button press while asleep still wakes the console with
+     management enabled; (ii) console suspend drops a management client cleanly; (iii) management
+     advertising and saved-phone reconnect resume after wake. The app must not promise
+     manage-while-asleep or phone-originated wake.
    - **6b. Gyro gate:** genuine-Pro2/DualSense motion is uninterrupted during an active session (idle
      is proven; this covers active).
 7. **Latency meter:** capture `core1MaxGapUs`/`core1GapsOver10ms` (a) disabled, (b) enabled+advertising
@@ -365,7 +350,8 @@ window. This gives an objective, on-device latency/jitter signal without externa
 8. Personality switch — **deferred** (see §7.3); not in this matrix until its own investigation lands.
 9. Console sleeps mid-session → advertising stops + client dropped cleanly; on wake, reconnect works.
 10. Regression: input, rumble, wake, LED, BOOTSEL, reconnect, motion, audio all unchanged with the
-    feature present but **disabled** (default), and unchanged when enabled but no client connected.
+    feature disabled through `mgmt off`, and unchanged at the production default when no client is
+    connected.
 
 ---
 
@@ -380,8 +366,8 @@ window. This gives an objective, on-device latency/jitter signal without externa
      window** as the first-bond gate, and **triple-tap** to unpair; the app/portal manages individual
      saved pairings via `bonds list`/`bonds remove`. Full model in §2b. A phone bonds only inside the
      deliberate window; afterward it reconnects with no gesture.
-2. **CDC fallback — RESOLVED: keep it, default-off build flag.** Owner: "Keep it gated default off
-   until we're sure it can be removed." Also serves as the one-time first-pairing path.
+2. **CDC fallback — current implementation keeps it available.** Standard builds boot in-band
+   management on; CDC Config remains the wired recovery/setup route.
 3. **Personality switch — DE-RISKED (investigation §9, owner-confirmed 2026-08-12).** Owner: "check
    the plan… we don't want to break anything." The §9 investigation found it safe *in firmware*, and
    the one hardware assumption — the console accepting a mid-session PID re-enumeration — is
@@ -455,10 +441,8 @@ instead of the next-in-cycle.
 gracefully accepts a mid-session re-enumeration to a different controller PID** was the sole open
 gate. The owner confirmed this **already works in regular use**: the adapter powers on as Pro2, a
 BOOTSEL single-tap cycles the personality *while plugged into the Switch 2*, and the console detects
-the new controller and drops the old one. So the console-acceptance gate is **closed empirically**;
-`compatibility-matrix.md`'s "hardware pending" row for the single-tap cycle is **stale and should be
-updated to hardware-confirmed** (deferred here because that file has unrelated uncommitted edits — do
-not entangle).
+the new controller and drops the old one. The console-acceptance gate is **closed empirically**;
+the active compatibility matrix and roadmap now record that hardware confirmation.
 
 **Consequence:** a command-driven switch is the *same* validated re-enumeration, differing only in
 the **trigger** (a BLE command vs a finger). The underlying `usb_apply_personality(next, …)` already

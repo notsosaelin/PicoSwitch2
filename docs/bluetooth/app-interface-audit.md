@@ -1,6 +1,6 @@
 # Phone-App Firmware Interface Audit
 
-**Status:** 🔵 audit (2026-08-12). Purpose: define the complete firmware-side interface the phone
+**Status:** 🟢 reconciled with source (2026-08-13). Purpose: define the complete firmware-side interface the phone
 apps consume, so the apps are thin clients and nothing is discovered missing *after* the app is
 built. Two app clients share this firmware surface:
 
@@ -11,8 +11,9 @@ built. Two app clients share this firmware surface:
    (see [android-controller-bridge.md](android-controller-bridge.md)). Sends HID input reports the
    firmware's generic parser consumes.
 
-The two are independent transports; a phone could be both (management central + HID device), but
-that is out of first-version scope.
+The two are independent transports. The Android companion now uses both under one saved adapter
+relationship and may select the handheld or another connected controller through the firmware's
+single-owner source arbiter.
 
 ---
 
@@ -107,34 +108,18 @@ production generic gamepad driver. Verified green: `test_bthid_android_controlle
 
 ---
 
-## 3b. Manage + wake while the console is asleep (feasible — revises plan C5)
+## 3b. Console sleep and phone wake (requested use case; not current behavior)
 
 **Use case (owner):** Switch 2 asleep, adapter powered via the dock and already paired once while the
 console was on (so it holds the wake identity). Can a phone still connect and manage? And can the
 phone **wake the console**?
 
-**Feasibility — yes, and it's mostly built:**
-- The **BT core keeps running while the console is asleep** (USB suspended); only USB traffic stops.
-- **Wake advertising is on-demand, not continuous.** `wake_adv` only runs when a wake is requested,
-  so while the console is merely asleep the single LE advertiser is **free** — management can
-  advertise and a phone can connect. (This *corrects* the in-band plan's C5, which conservatively
-  suppressed management while asleep; see the plan revision.)
-- The **wake mechanism already exists**: `ns2_wake_request()` reads the learned wake identity
-  (`config_get_wake_identity` — the key captured during the one-time on-console pairing) and
-  BLE-advertises the wake, returning `false` gracefully if never paired. Automatic wake already fires
-  on a controller button press while suspended.
-
-**G8 — add a `wake` command.** The app (connected while the console sleeps) sends `wake`; the firmware
-triggers `ns2_wake_request()`. **Cross-core note:** wake state is **core1-owned**
-(`ns2_wake.c`: "all automatic-wake state are owned by core1"), so the core0 command must set a
-**request flag** that `ns2_wake_service()` consumes on core1 — never call `ns2_wake_request()`
-inline from the command context. Small, safe, mirrors the existing wake-on-button path.
-
-**Hardware gate:** whether the CYW43 can run a wake-advertising burst while an active management BLE
-connection is up (concurrent advertise + peripheral connection). Radio headroom is large while asleep
-(no USB, no audio), so this is the one thing to confirm on hardware. If concurrent advertise+connect
-is a problem, the fallback is: the phone's `wake` command briefly drops the management link, the wake
-burst fires, and the phone reconnects after the console wakes.
+The BT core continues running during USB suspend and controller-originated automatic wake remains
+implemented. However, the current access policy deliberately stops management advertising and
+drops a management client when the console sleeps; wake activity also outranks management. The
+implemented `wake` command therefore works only from an already authorized, console-awake session.
+It is not a phone-wake-while-asleep feature. Supporting that original G8 use case would require an
+explicit policy change plus concurrent advertiser/peripheral-link hardware validation.
 
 ## 4. Prioritized recommendation
 
@@ -144,11 +129,11 @@ burst fires, and the phone reconnects after the console wakes.
 | G2 | `personality <target>` switch | High | Medium | Implement after G1; mechanism de-risked |
 | G3 | `bonds list/remove` | High (pairing UX) | Medium | **Implemented with bounded v2 pagination; hardware validation remains** |
 | G4 | Real-amiibo backup: Path A (phone NFC) needs **no firmware** (already imports); Path B (controller-as-reader) ports the existing UART initiator to config | High (a headline feature) | Path A none / Path B med (NFC path) | Path A: app-side now. Path B: port the UART mirror/initiator, HW-validate; don't rebuild |
-| G5 | Android-bridge motion (handheld gyro) | High (gyro aiming) | Medium | v2 feature; biggest bridge upgrade |
-| G6 | Rumble to phone | Medium | Low-med | v2 |
-| G8 | `wake` command + manage-while-asleep | High (wake console from phone) | Med (concurrent advertise+connect HW gate) | Add the flag+command; revise plan C5; HW-validate coexistence |
+| G5 | Android-bridge motion (handheld gyro) | High (gyro aiming) | Medium | **Implemented in byte-compatible v2; physical axis/latency gate remains** |
+| G6 | Rumble to phone | Medium | Low-med | **Implemented in v2; physical feedback gate remains** |
+| G8 | `wake` command + manage-while-asleep | High (wake console from phone) | Med (policy plus concurrent advertise/connect gate) | `wake` exists for awake sessions; manage-while-asleep remains deliberately unsupported |
 
-**G1, G2, G3, and G8 are implemented in the current management build** (with G3's bounded v2
-pagination and G8's cross-core wake request); G3 still needs physical bond-database validation.
-G4 remains intentionally UART/phone-NFC scoped. Everything else is documented here so the app
-design accounts for it and nothing is discovered missing later.
+**G1, G2, G3, G5, and G6 are implemented** (with G3's bounded v2 pagination and G5/G6's
+byte-compatible Android HID extension). G3 and the Android v2 outputs still need physical
+validation. G4 remains intentionally UART/phone-NFC scoped. G8 is only partially implemented as an
+awake-session wake command; management while asleep is not supported.
