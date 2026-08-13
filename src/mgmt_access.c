@@ -12,7 +12,7 @@
 bool mgmt_should_advertise(const mgmt_state_t *s)
 {
     return s->enabled && s->console_awake && !s->wake_active &&
-           !s->scanning && !s->client_connected;
+           !s->client_connected;
 }
 
 bool mgmt_accept_connection(const mgmt_state_t *s)

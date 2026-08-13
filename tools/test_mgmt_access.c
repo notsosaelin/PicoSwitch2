@@ -54,7 +54,10 @@ static void test_advertises_only_when_safe(void) {
     mgmt_state_t s;
     s = IDLE_ENABLED; s.wake_active = true;       assert(!mgmt_should_advertise(&s));
     s = IDLE_ENABLED; s.console_awake = false;    assert(!mgmt_should_advertise(&s));
-    s = IDLE_ENABLED; s.scanning = true;          assert(!mgmt_should_advertise(&s));
+    // Controller discovery and the peripheral-role advertiser are deliberately
+    // concurrent. Gating one on the other caused the hardware-observed
+    // management/controller reconnect starvation fixed on 2026-08-13.
+    s = IDLE_ENABLED; s.scanning = true;          assert(mgmt_should_advertise(&s));
     s = IDLE_ENABLED; s.client_connected = true;  assert(!mgmt_should_advertise(&s));
 }
 
@@ -148,7 +151,7 @@ static void test_invariants_exhaustive(void) {
         // INV6 advertising implies single client + all safe conditions.
         if (adv) {
             assert(!s.client_connected);
-            assert(s.enabled && s.console_awake && !s.wake_active && !s.scanning);
+            assert(s.enabled && s.console_awake && !s.wake_active);
         }
         // INV7 accept-connection implies enabled + awake + no client.
         if (acc) assert(s.enabled && s.console_awake && !s.client_connected);
