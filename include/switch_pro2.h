@@ -25,6 +25,12 @@ extern volatile uint8_t g_ns2_stage;  // NS2_DIAG: enumeration + handshake progr
 void ns2_init(void);
 void ns2_task(void);
 
+// Diagnostic (UART `pipe`): number of Pro2 input reports built for the console,
+// and ms since the last one (UINT32_MAX if none). With report_input_age_ms(),
+// distinguishes a stalled core0 report loop from BT input that stopped feeding.
+uint32_t ns2_pro2_report_count(void);
+uint32_t ns2_pro2_last_report_age_ms(void);
+
 // Config-mode-only lifecycle: ns2_task() (and therefore the report-0x09 motion tracker inside
 // ns2_build_report()) never runs while the dongle is in config mode, so this runs an equivalent,
 // rate-limited tick directly off the live cross-core motion state — otherwise the config-mode
