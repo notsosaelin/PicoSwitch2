@@ -29,15 +29,17 @@ typedef struct {
     bool enabled;             // g_mgmt_enabled (feature flag, default off)
     bool console_awake;       // !tud_suspended()
     bool wake_active;         // wake_adv.active or a pending wake burst
-    bool scanning;            // controller scan/inquiry in progress
+    bool scanning;            // observation only; controller discovery coexists with advertising
     bool pairing_window_open; // BOOTSEL double-tap opened the pairing window
     bool client_connected;    // a management LE-peripheral client is linked
     bool client_bonded;       // that client has an established bond (encrypted)
 } mgmt_state_t;
 
 // (1) Advertise connectably only while enabled, the console is awake, wake does
-//     NOT need the radio, no controller scan/inquiry is in flight, and no client
-//     is already connected (single client; advertising stops on connect).
+//     NOT need the advertiser, and no client is already connected (single
+//     client; advertising stops on connect). Controller scan/inquiry may run
+//     concurrently: suppressing the advertiser during discovery caused the
+//     hardware-observed reconnect starvation fixed on 2026-08-13.
 bool mgmt_should_advertise(const mgmt_state_t *s);
 
 // (2) Accept an incoming management connection only while enabled, awake, and
