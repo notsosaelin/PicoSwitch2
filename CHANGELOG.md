@@ -315,6 +315,11 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Fixed
 
+- Android packaging now declares explicit no-backup rules for both legacy backup and Android 12+
+  cloud/device transfer, keeps the adaptive icon in the minimum-SDK resource bucket with an
+  Android 13 monochrome override, and uses window bounds for compact layouts. This removes the
+  actionable manifest/resource/layout lint findings without changing the tested target SDK or
+  opportunistically upgrading runtime dependencies.
 - Disconnecting a Bluetooth input controller now clears its published name, VID, and PID together
   with the neutral input report. Management clients no longer keep showing the last controller as
   attached after it powers off.

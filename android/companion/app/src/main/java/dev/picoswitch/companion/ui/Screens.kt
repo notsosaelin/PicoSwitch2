@@ -31,7 +31,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.Role
@@ -637,7 +638,11 @@ private fun AmiiboDetail(item: AmiiboLibraryItem?, ui: CompanionUiState, viewMod
             Column(Modifier.padding(LayoutTokens.Space4).verticalScroll(rememberScrollState())) {
                 val catalog = ui.selectedAmiiboCatalog
                 if (catalog != null) {
-                    AmiiboArtwork(catalog.imageUrl, catalog.name.ifBlank { catalog.character })
+                    AmiiboArtwork(
+                        catalog.imageUrl,
+                        catalog.name.ifBlank { catalog.character },
+                        Modifier.fillMaxWidth().heightIn(max = 180.dp),
+                    )
                     Spacer(Modifier.height(LayoutTokens.Space3))
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -737,7 +742,7 @@ private fun AmiiboCatalogDetails(catalog: AmiiboCatalogEntry?, loading: Boolean)
 private fun AmiiboArtwork(
     imageUrl: String,
     contentDescription: String,
-    modifier: Modifier = Modifier.fillMaxWidth().heightIn(max = 180.dp),
+    modifier: Modifier = Modifier,
 ) {
     val image = produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, imageUrl) {
         value = if (imageUrl.isBlank()) null else runCatching {
@@ -1300,7 +1305,8 @@ private fun PaletteSwatch(color: Color, description: String) {
 
 @Composable
 private fun ScreenColumn(title: String, subtitle: String, content: @Composable ColumnScope.() -> Unit) {
-    val compact = LocalConfiguration.current.screenHeightDp < 600
+    val windowHeight = LocalWindowInfo.current.containerSize.height
+    val compact = with(LocalDensity.current) { windowHeight.toDp() < 600.dp }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = if (compact) LayoutTokens.Space2 else LayoutTokens.Space5),
         verticalArrangement = Arrangement.spacedBy(if (compact) LayoutTokens.Space2 else LayoutTokens.Space4),
@@ -1313,7 +1319,8 @@ private fun ScreenColumn(title: String, subtitle: String, content: @Composable C
 
 @Composable
 private fun ScreenFrame(title: String, subtitle: String, content: @Composable ColumnScope.() -> Unit) {
-    val compact = LocalConfiguration.current.screenHeightDp < 600
+    val windowHeight = LocalWindowInfo.current.containerSize.height
+    val compact = with(LocalDensity.current) { windowHeight.toDp() < 600.dp }
     Column(Modifier.fillMaxSize().padding(vertical = if (compact) LayoutTokens.Space2 else LayoutTokens.Space5)) {
         ScreenTitle(title, if (compact) "" else subtitle)
         Spacer(Modifier.height(if (compact) LayoutTokens.Space2 else LayoutTokens.Space4))
