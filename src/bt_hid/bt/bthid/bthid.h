@@ -164,7 +164,24 @@ uint8_t bthid_get_device_count(void);
 // Optional hook: invoked with every raw input report before the driver parses it
 // (conn_index identifies the device). Default is a weak no-op; PicoSwitch overrides
 // it to expose the raw report to config mode's debug view for controller RE.
-void bthid_on_raw_report(uint8_t conn_index, const uint8_t *data, uint16_t len);
+void bthid_on_raw_report(uint8_t conn_index, uint32_t connection_generation,
+                         const uint8_t *data, uint16_t len);
+
+// Lifecycle notification after a same-connection driver rebind.  This is
+// distinct from HID-ready: the physical source remains the same owner and
+// must not be removed/re-added as a new source.
+void bthid_on_hid_rebind(uint8_t conn_index);
+
+// Return the immutable token assigned to the current HID occupant, or zero if
+// this transport index is not currently registered.
+uint32_t bthid_get_connection_generation(uint8_t conn_index);
+
+// Rebind guard used by the router seam while a driver is being replaced.  A
+// driver's ordinary disconnect callback is reused for cleanup, but it must not
+// be interpreted as physical source loss during this bounded interval.
+void bthid_rebind_begin(void);
+void bthid_rebind_end(void);
+bool bthid_rebind_in_progress(void);
 
 // Re-evaluate driver for a device (call when VID/PID or name becomes available)
 void bthid_update_device_info(uint8_t conn_index, const char* name,

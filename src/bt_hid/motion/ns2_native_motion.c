@@ -28,10 +28,13 @@ static void end_write(void)
     (void)__atomic_add_fetch(&s_sequence, 1u, __ATOMIC_RELEASE);
 }
 
-bool ns2_native_motion_publish(uint8_t source_conn_index,
-                               uint16_t source_vid, uint16_t source_pid,
-                               const uint8_t *report, uint16_t report_length,
-                               uint32_t captured_us)
+bool ns2_native_motion_publish_generation(uint8_t source_conn_index,
+                                          uint32_t source_generation,
+                                          uint16_t source_vid,
+                                          uint16_t source_pid,
+                                          const uint8_t *report,
+                                          uint16_t report_length,
+                                          uint32_t captured_us)
 {
     if (!report || report_length < 15u) return false;
     const uint8_t length = report[0x0E];
@@ -65,6 +68,7 @@ bool ns2_native_motion_publish(uint8_t source_conn_index,
     s_state.snapshot.length = length;
     s_state.snapshot.source_counter = report[0];
     s_state.snapshot.source_conn_index = source_conn_index;
+    s_state.snapshot.source_generation = source_generation;
     s_state.snapshot.source_verified = source_verified;
     s_state.snapshot.held_after_disconnect = 0;
     s_state.snapshot.source_vid = source_vid;
@@ -86,6 +90,16 @@ bool ns2_native_motion_publish(uint8_t source_conn_index,
     }
     end_write();
     return true;
+}
+
+bool ns2_native_motion_publish(uint8_t source_conn_index,
+                               uint16_t source_vid, uint16_t source_pid,
+                               const uint8_t *report, uint16_t report_length,
+                               uint32_t captured_us)
+{
+    return ns2_native_motion_publish_generation(
+        source_conn_index, 0u, source_vid, source_pid, report,
+        report_length, captured_us);
 }
 
 bool ns2_native_motion_snapshot(ns2_native_motion_snapshot_t *out, uint32_t now_us,
@@ -158,6 +172,33 @@ void ns2_native_motion_source_disconnected(uint32_t disconnected_us)
         s_state.valid = 0;
     }
     end_write();
+}
+
+bool ns2_native_motion_source_disconnected_generation(
+    uint8_t source_conn_index,
+    uint32_t source_generation,
+    uint32_t disconnected_us)
+{
+    bool matched = false;
+    begin_write();
+    if (s_state.valid &&
+        s_state.snapshot.source_conn_index == source_conn_index &&
+        (source_generation == 0u ||
+         s_state.snapshot.source_generation == source_generation)) {
+        if (s_state.last_motion30_valid) {
+            s_state.snapshot = s_state.last_motion30;
+            s_state.snapshot.captured_us = disconnected_us;
+            s_state.snapshot.held_after_disconnect = 1;
+            s_state.valid = 1;
+        } else {
+            s_state.valid = 0;
+        }
+        matched = true;
+    }
+    end_write();
+    if (matched)
+        ns2_motion_hybrid_live_source_disconnected();
+    return matched;
 }
 
 uint8_t ns2_native_motion_output_slot(uint8_t source_conn_index)

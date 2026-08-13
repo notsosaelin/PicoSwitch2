@@ -250,6 +250,12 @@ void router_reset_outputs(void);
 // Call this BEFORE removing the player from the player manager
 void router_device_disconnected(uint8_t dev_addr, int8_t instance);
 
+// Token-aware form for Bluetooth driver lifecycle callbacks.  The legacy form
+// remains available to non-Bluetooth callers that have no lifecycle token.
+void router_device_disconnected_with_generation(uint8_t dev_addr,
+                                                int8_t instance,
+                                                uint32_t connection_generation);
+
 // ============================================================================
 // OUTPUT TAP (Push-based notification)
 // ============================================================================

@@ -11,6 +11,7 @@ static ns2_input_arbiter_t s_arbiter;
 static void source_key_for_connection(uint8_t conn_index,
                                       int8_t instance,
                                       uint8_t transport_hint,
+                                      uint32_t generation_hint,
                                       ns2_input_source_key_t *key,
                                       const bthid_device_t **device_out)
 {
@@ -28,7 +29,8 @@ static void source_key_for_connection(uint8_t conn_index,
                 break;
             }
         }
-        key->connection_generation = device->connection_generation;
+        key->connection_generation = generation_hint != 0u
+            ? generation_hint : device->connection_generation;
         // The event's transport is authoritative when present.  Raw reports
         // and native motion do not have an event, so derive their transport
         // from the HID connection here.
@@ -52,7 +54,8 @@ bool ns2_active_input_submit(const input_event_t *event,
     ns2_input_source_key_t key;
     const bthid_device_t *device = NULL;
     source_key_for_connection(event->dev_addr, event->instance,
-                              (uint8_t)event->transport, &key, &device);
+                              (uint8_t)event->transport,
+                              event->connection_generation, &key, &device);
     const char *name = device ? device->name : NULL;
     uint16_t vendor_id = device ? device->vendor_id : 0u;
     uint16_t product_id = device ? device->product_id : 0u;
@@ -62,9 +65,16 @@ bool ns2_active_input_submit(const input_event_t *event,
 
 bool ns2_active_input_disconnected(uint8_t dev_addr, int8_t instance)
 {
+    return ns2_active_input_disconnected_generation(dev_addr, instance, 0u);
+}
+
+bool ns2_active_input_disconnected_generation(uint8_t dev_addr,
+                                              int8_t instance,
+                                              uint32_t connection_generation)
+{
     ns2_input_source_key_t key;
     source_key_for_connection(dev_addr, instance, INPUT_TRANSPORT_NONE,
-                              &key, NULL);
+                              connection_generation, &key, NULL);
     bool was_active = false;
     if (!ns2_input_arbiter_disconnect(&s_arbiter, &key, &was_active) || !was_active)
         return false;
@@ -79,14 +89,28 @@ bool ns2_active_input_disconnected(uint8_t dev_addr, int8_t instance)
 
 bool ns2_active_input_connection_is_active(uint8_t conn_index)
 {
-    return ns2_input_arbiter_is_active_connection(&s_arbiter, conn_index);
+    return ns2_active_input_connection_is_active_generation(conn_index, 0u);
+}
+
+bool ns2_active_input_connection_is_active_generation(
+    uint8_t conn_index, uint32_t connection_generation)
+{
+    return ns2_input_arbiter_is_active_connection_generation(
+        &s_arbiter, conn_index, connection_generation);
+}
+
+uint32_t ns2_active_input_connection_generation(uint8_t conn_index)
+{
+    const bthid_device_t *device = bthid_get_device(conn_index);
+    return device ? device->connection_generation : 0u;
 }
 
 void ns2_active_input_note_connection(uint8_t conn_index)
 {
     ns2_input_source_key_t key;
     const bthid_device_t *device = NULL;
-    source_key_for_connection(conn_index, 0, INPUT_TRANSPORT_NONE, &key, &device);
+    source_key_for_connection(conn_index, 0, INPUT_TRANSPORT_NONE, 0u,
+                              &key, &device);
     // A raw/native callback can race HID setup.  Do not create a provisional
     // source with an empty address/generation; the HID-ready lifecycle hook or
     // the first normalized event will register the fully identified source.
@@ -97,6 +121,11 @@ void ns2_active_input_note_connection(uint8_t conn_index)
                                    device ? device->vendor_id : 0u,
                                    device ? device->product_id : 0u,
                                    &decision);
+}
+
+void ns2_active_input_rebind(uint8_t conn_index)
+{
+    ns2_active_input_note_connection(conn_index);
 }
 
 // Strong bthid lifecycle hook used to enumerate an idle connected source.

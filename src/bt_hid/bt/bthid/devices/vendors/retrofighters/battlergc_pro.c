@@ -117,7 +117,9 @@ static void battlergc_disconnect(bthid_device_t *device)
     battlergc_pro_data_t *data = (battlergc_pro_data_t *)device->driver_data;
     if (!data) return;
 
-    router_device_disconnected(data->event.dev_addr, data->event.instance);
+    router_device_disconnected_with_generation(data->event.dev_addr,
+                                               data->event.instance,
+                                               data->event.connection_generation);
     remove_players_by_address(data->event.dev_addr, data->event.instance);
     memset(data, 0, sizeof(*data));
 }

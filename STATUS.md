@@ -96,11 +96,12 @@ The first connected source still auto-selects for legacy single-controller opera
 selection preserves the existing default behavior. Wired UART exposes `input sources` and
 `input active <id|none>` for deterministic bring-up. Wireless enumeration is bounded to fit the
 existing 512-byte response slot; wireless selection remains blocked until management authentication
-is implemented. Focused host coverage is in `tools/test_ns2_input_arbiter.c`, included by
-`tools/run_mgmt_tests.ps1`. Pico W and Pico 2 W tone builds plus both install-marker checks pass.
-The standard Pico 2 W audio configure remains blocked because the checked-out `third_party/opus`
-directory lacks its CMakeLists.txt. No flash, UART mutation, or physical multi-source/latency
-validation was performed.
+is implemented. Focused policy coverage is in `tools/test_ns2_input_arbiter.c`; transport-integrated
+rebind, stale report, and stale disconnect coverage is in
+`tools/test_ns2_active_input_lifecycle.c`; both are included by `tools/run_mgmt_tests.ps1`. Pico W
+and Pico 2 W tone builds plus both install-marker checks pass. The standard Pico 2 W audio configure
+remains blocked because the checked-out `third_party/opus` directory lacks its CMakeLists.txt. No
+flash, UART mutation, or physical multi-source/latency validation was performed.
 
 The native Android Amiibo page now has portal-parity raw identity/details: character code/variant,
 tag type, model/series, format, extended variant, and optional owner/nickname/date/write-count/game

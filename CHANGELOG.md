@@ -63,8 +63,11 @@ Release notes describe user-visible behavior. Detailed implementation history re
   source changes emit a complete neutral boundary and require a fresh report, and active disconnects
   remain neutral without silent fallback. `input sources` is a bounded status surface; wired UART
   also accepts `input active <id|none>`. The default first-source path remains unchanged when no
-  explicit selection is requested. This is source/build evidence only; multiple-controller radio,
-  latency, audio/motion, and Android end-to-end switching still require hardware validation.
+  explicit selection is requested. Same-link driver rebinds preserve the logical source, while
+  transport callbacks carry the generation token through report/disconnect boundaries; the
+  transport-integrated lifecycle fixture covers recycled-index stale events. This is source/build
+  evidence only; multiple-controller radio, latency, audio/motion, and Android end-to-end switching
+  still require hardware validation.
 
 - Default-off genuine/generated motion fitment harness. A verified Nintendo Pro Controller 2
   remains the immutable timing/status/packing/tail source while an independently aligned

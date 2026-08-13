@@ -61,6 +61,14 @@ void router_device_disconnected(uint8_t dev_addr, int8_t instance)
     disconnected++;
 }
 
+void router_device_disconnected_with_generation(uint8_t dev_addr,
+                                                int8_t instance,
+                                                uint32_t connection_generation)
+{
+    (void)connection_generation;
+    router_device_disconnected(dev_addr, instance);
+}
+
 void remove_players_by_address(int dev_addr, int instance)
 {
     CHECK(dev_addr == device.conn_index && instance == 0,

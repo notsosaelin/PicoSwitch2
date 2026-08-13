@@ -610,7 +610,9 @@ static void gamepad_disconnect(bthid_device_t* device)
     bthid_gamepad_data_t* gp = (bthid_gamepad_data_t*)device->driver_data;
     if (gp) {
         // Clear router state first (sends zeroed input report)
-        router_device_disconnected(gp->event.dev_addr, gp->event.instance);
+        router_device_disconnected_with_generation(gp->event.dev_addr,
+                                                   gp->event.instance,
+                                                   gp->event.connection_generation);
         // Remove player assignment
         remove_players_by_address(gp->event.dev_addr, gp->event.instance);
 

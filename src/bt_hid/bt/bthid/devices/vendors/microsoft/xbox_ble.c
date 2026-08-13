@@ -264,7 +264,9 @@ static void xbox_ble_disconnect(bthid_device_t* device)
     xbox_ble_data_t* xbox = (xbox_ble_data_t*)device->driver_data;
     if (xbox) {
         // Clear router state first (sends zeroed input report)
-        router_device_disconnected(xbox->event.dev_addr, xbox->event.instance);
+        router_device_disconnected_with_generation(xbox->event.dev_addr,
+                                                   xbox->event.instance,
+                                                   xbox->event.connection_generation);
         // Remove player assignment
         remove_players_by_address(xbox->event.dev_addr, xbox->event.instance);
 

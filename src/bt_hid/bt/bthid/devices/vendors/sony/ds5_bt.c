@@ -1051,7 +1051,9 @@ static void ds5_disconnect(bthid_device_t* device)
         ds5_audio_bridge_disconnect(device->conn_index);
 #endif
         // Clear router state first (sends zeroed input report)
-        router_device_disconnected(ds5->event.dev_addr, ds5->event.instance);
+        router_device_disconnected_with_generation(ds5->event.dev_addr,
+                                                   ds5->event.instance,
+                                                   ds5->event.connection_generation);
         // Remove player assignment
         remove_players_by_address(ds5->event.dev_addr, ds5->event.instance);
 

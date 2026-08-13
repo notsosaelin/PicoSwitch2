@@ -29,8 +29,10 @@
 #define BTHID_MAX_DRIVERS       16  // Max registered drivers
 
 // Raw-report debug hook: weak no-op default (PicoSwitch's seam provides the real one).
-__attribute__((weak)) void bthid_on_raw_report(uint8_t conn_index, const uint8_t *data, uint16_t len) {
-    (void)conn_index; (void)data; (void)len;
+__attribute__((weak)) void bthid_on_raw_report(uint8_t conn_index,
+                                               uint32_t connection_generation,
+                                               const uint8_t *data, uint16_t len) {
+    (void)conn_index; (void)connection_generation; (void)data; (void)len;
 }
 
 // Battery-publish hook. PicoSwitch's seam republishes the cached controller
@@ -52,6 +54,10 @@ __attribute__((weak)) void bthid_on_hid_ready(uint8_t conn_index) {
     (void)conn_index;
 }
 
+__attribute__((weak)) void bthid_on_hid_rebind(uint8_t conn_index) {
+    (void)conn_index;
+}
+
 // ============================================================================
 // STATIC DATA
 // ============================================================================
@@ -60,6 +66,7 @@ static bthid_device_t devices[BTHID_MAX_DEVICES];
 static const bthid_driver_t* drivers[BTHID_MAX_DRIVERS];
 static uint8_t driver_count = 0;
 static uint32_t next_connection_generation = 1u;
+static uint8_t rebind_depth;
 
 // HID descriptor cache — stored when a vendor driver is active so the generic
 // driver can use it if a fallback is triggered later
@@ -81,6 +88,15 @@ static bt_identity_provenance_t identity_provenance_guess(bool is_ble, uint16_t 
 static bthid_device_type_t classify_device(const uint8_t* class_of_device);
 static bool try_reclassify_sony_device(bthid_device_t* device, uint8_t report_id);
 
+static void bind_driver_event_generation(bthid_device_t *device)
+{
+    // Every production bthid driver keeps input_event_t as the first member of
+    // driver_data (the battery path relies on this existing contract).
+    if (device && device->driver_data)
+        ((input_event_t *)device->driver_data)->connection_generation =
+            device->connection_generation;
+}
+
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
@@ -90,6 +106,7 @@ void bthid_init(void)
     memset(devices, 0, sizeof(devices));
     driver_count = 0;
     next_connection_generation = 1u;
+    rebind_depth = 0u;
     printf("[BTHID] Initialized\n");
 }
 
@@ -201,6 +218,29 @@ uint8_t bthid_get_device_count(void)
     return count;
 }
 
+uint32_t bthid_get_connection_generation(uint8_t conn_index)
+{
+    bthid_device_t *device = bthid_get_device(conn_index);
+    return device ? device->connection_generation : 0u;
+}
+
+void bthid_rebind_begin(void)
+{
+    if (rebind_depth != UINT8_MAX)
+        rebind_depth++;
+}
+
+void bthid_rebind_end(void)
+{
+    if (rebind_depth > 0u)
+        rebind_depth--;
+}
+
+bool bthid_rebind_in_progress(void)
+{
+    return rebind_depth != 0u;
+}
+
 // ============================================================================
 // DEVICE INFO UPDATE (VID/PID available after SDP query)
 // ============================================================================
@@ -269,14 +309,17 @@ void bthid_update_device_info(uint8_t conn_index, const char* name,
                    current->name, new_driver->name, device->name,
                    device->vendor_id, device->product_id);
 
+            bthid_rebind_begin();
             if (current->disconnect) {
                 current->disconnect(device);
             }
+            bthid_rebind_end();
             device->driver_data = NULL;
             device->driver = new_driver;
             if (new_driver->init) {
                 new_driver->init(device);
             }
+            bind_driver_event_generation(device);
 
             bt_identity_log_record(conn_index, device->is_ble, device->name,
                                     device->vendor_id, device->product_id, 0,
@@ -291,6 +334,7 @@ void bthid_update_device_info(uint8_t conn_index, const char* name,
                 cached_hid_desc_len > 0 && cached_hid_desc_conn == conn_index) {
                 bthid_set_hid_descriptor(conn_index, cached_hid_desc, cached_hid_desc_len);
             }
+            bthid_on_hid_rebind(conn_index);
         } else if (current == &bthid_gamepad_driver) {
             // Still generic but VID/PID changed — update VID-dependent flags.
             //
@@ -412,10 +456,13 @@ static bool try_reclassify_sony_device(bthid_device_t* device, uint8_t report_id
     }
 
     if (new_driver) {
-        // Disconnect old driver
+        // Reclassification is a same-connection driver replacement, not a
+        // physical source loss.  The seam observes this explicit guard.
+        bthid_rebind_begin();
         if (current && current->disconnect) {
             current->disconnect(device);
         }
+        bthid_rebind_end();
 
         // Clear driver data
         device->driver_data = NULL;
@@ -425,6 +472,8 @@ static bool try_reclassify_sony_device(bthid_device_t* device, uint8_t report_id
         if (new_driver->init) {
             new_driver->init(device);
         }
+        bind_driver_event_generation(device);
+        bthid_on_hid_rebind(device->conn_index);
 
         printf("[BTHID] Reclassification complete: now using %s\n", new_driver->name);
         return true;
@@ -489,12 +538,14 @@ void bt_on_hid_ready(uint8_t conn_index)
         if (driver->init) {
             driver->init(device);
         }
+        bind_driver_event_generation(device);
     } else {
         printf("[BTHID] No specific driver found, using generic gamepad\n");
         device->driver = &bthid_gamepad_driver;
         if (bthid_gamepad_driver.init) {
             bthid_gamepad_driver.init(device);
         }
+        bind_driver_event_generation(device);
     }
     bt_identity_log_record(conn_index, device->is_ble, device->name,
                             conn->vendor_id, conn->product_id, 0, provenance,
@@ -519,7 +570,21 @@ void bt_on_hid_ready(uint8_t conn_index)
 
 void bt_on_disconnect(uint8_t conn_index)
 {
+    bt_on_disconnect_with_generation(
+        conn_index, bthid_get_connection_generation(conn_index));
+}
+
+void bt_on_disconnect_with_generation(uint8_t conn_index,
+                                      uint32_t connection_generation)
+{
     printf("[BTHID] Disconnect on connection %d\n", conn_index);
+    bthid_device_t *device = bthid_get_device(conn_index);
+    if (connection_generation != 0u &&
+        (!device || device->connection_generation != connection_generation)) {
+        // A delayed disconnect for an older occupant must not remove the new
+        // device that reused this transport index.
+        return;
+    }
     if (cached_hid_desc_conn == conn_index) {
         cached_hid_desc_len = 0;
         cached_hid_desc_conn = 0xFF;
@@ -536,6 +601,14 @@ void bt_on_disconnect(uint8_t conn_index)
 
 void bt_on_hid_report(uint8_t conn_index, const uint8_t* data, uint16_t len)
 {
+    bt_on_hid_report_with_generation(
+        conn_index, bthid_get_connection_generation(conn_index), data, len);
+}
+
+void bt_on_hid_report_with_generation(uint8_t conn_index,
+                                      uint32_t connection_generation,
+                                      const uint8_t* data, uint16_t len)
+{
     // Run before validation/routing: even an unbound or malformed high-rate
     // source must not be able to starve platform maintenance indefinitely.
     bthid_on_report_boundary();
@@ -545,6 +618,12 @@ void bt_on_hid_report(uint8_t conn_index, const uint8_t* data, uint16_t len)
     }
 
     bthid_device_t* device = bthid_get_device(conn_index);
+    if (connection_generation != 0u &&
+        (!device || device->connection_generation != connection_generation)) {
+        // Transport callbacks may be deferred past a disconnect/reconnect.
+        // Reject a captured old lifecycle before invoking any driver.
+        return;
+    }
     if (!device) {
         static uint8_t unknown_report_count = 0;
         if (unknown_report_count < 3) {
@@ -591,7 +670,9 @@ void bt_on_hid_report(uint8_t conn_index, const uint8_t* data, uint16_t len)
                 }
 
                 // Raw-report debug hook (config-mode view); weak no-op by default.
-                bthid_on_raw_report(device->conn_index, report_data, report_len);
+                bthid_on_raw_report(device->conn_index,
+                                    device->connection_generation,
+                                    report_data, report_len);
 
                 // Input report - route to driver
                 if (device->driver) {
@@ -654,12 +735,16 @@ void bthid_set_hid_descriptor(uint8_t conn_index, const uint8_t* desc, uint16_t 
         // names. The relative X+Y descriptor is the authoritative discriminator.
         printf("[BTHID] Descriptor reclassify: generic gamepad -> generic mouse (%s)\n",
                device->name);
+        bthid_rebind_begin();
         if (current->disconnect) current->disconnect(device);
+        bthid_rebind_end();
         device->driver_data = NULL;
         device->driver = &bthid_mouse_driver;
         device->type = BTHID_DEVICE_MOUSE;
         if (bthid_mouse_driver.init && bthid_mouse_driver.init(device))
             bthid_mouse_set_descriptor(device, desc, desc_len);
+        bind_driver_event_generation(device);
+        bthid_on_hid_rebind(conn_index);
     } else if (current == &bthid_mouse_driver) {
         bthid_mouse_set_descriptor(device, desc, desc_len);
     } else if (current == &bthid_gamepad_driver) {
@@ -687,10 +772,13 @@ void bthid_fallback_to_generic(uint8_t conn_index)
     printf("[BTHID] Fallback to generic: %s -> %s (name=%s)\n",
            current->name, bthid_gamepad_driver.name, device->name);
 
-    // Disconnect current vendor driver
+    // Same-connection fallback: preserve logical source ownership while
+    // resetting only the vendor parser state.
+    bthid_rebind_begin();
     if (current->disconnect) {
         current->disconnect(device);
     }
+    bthid_rebind_end();
     device->driver_data = NULL;
 
     // Switch to generic
@@ -698,11 +786,13 @@ void bthid_fallback_to_generic(uint8_t conn_index)
     if (bthid_gamepad_driver.init) {
         bthid_gamepad_driver.init(device);
     }
+    bind_driver_event_generation(device);
 
     // Pass cached HID descriptor if available for this device
     if (cached_hid_desc_len > 0 && cached_hid_desc_conn == conn_index) {
         bthid_set_hid_descriptor(conn_index, cached_hid_desc, cached_hid_desc_len);
     }
+    bthid_on_hid_rebind(conn_index);
 }
 
 // ============================================================================

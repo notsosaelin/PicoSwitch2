@@ -17,11 +17,24 @@ bool ns2_active_input_submit(const input_event_t *event,
                              ns2_input_route_decision_t *decision);
 // Returns true only when the disconnected source owned the active output.
 bool ns2_active_input_disconnected(uint8_t dev_addr, int8_t instance);
+// Token-aware disconnect used by HID driver lifecycle callbacks.  A stale
+// callback carrying an older generation cannot remove a replacement source
+// that reused the same transport index.
+bool ns2_active_input_disconnected_generation(uint8_t dev_addr,
+                                              int8_t instance,
+                                              uint32_t connection_generation);
 
 // Raw HID and native Pro2 motion arrive on paths that do not carry an
 // input_event_t.  They use the same source registry/active token.
 void ns2_active_input_note_connection(uint8_t conn_index);
 bool ns2_active_input_connection_is_active(uint8_t conn_index);
+bool ns2_active_input_connection_is_active_generation(
+    uint8_t conn_index, uint32_t connection_generation);
+uint32_t ns2_active_input_connection_generation(uint8_t conn_index);
+
+// Refresh source metadata after a driver rebind without creating a new source
+// or revoking the existing logical owner.
+void ns2_active_input_rebind(uint8_t conn_index);
 
 // Queue a source id from the management/UART surface.  The caller receives a
 // compact status snapshot separately; the neutral boundary is published now,

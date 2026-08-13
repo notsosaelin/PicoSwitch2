@@ -124,7 +124,9 @@ static void mouse_process_report(bthid_device_t *device,
 static void mouse_disconnect(bthid_device_t *device) {
     bthid_mouse_data_t *mouse = device ? device->driver_data : NULL;
     if (!mouse) return;
-    router_device_disconnected(mouse->event.dev_addr, mouse->event.instance);
+    router_device_disconnected_with_generation(mouse->event.dev_addr,
+                                               mouse->event.instance,
+                                               mouse->event.connection_generation);
     remove_players_by_address(mouse->event.dev_addr, mouse->event.instance);
     init_input_event(&mouse->event);
     memset(&mouse->map, 0, sizeof(mouse->map));

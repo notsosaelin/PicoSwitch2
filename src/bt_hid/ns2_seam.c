@@ -323,7 +323,21 @@ void router_submit_input(const input_event_t *e) {
 
 // Controller dropped -> publish a neutral (centered, no buttons) state.
 void router_device_disconnected(uint8_t dev_addr, int8_t instance) {
-    bool was_active = ns2_active_input_disconnected(dev_addr, instance);
+    router_device_disconnected_with_generation(dev_addr, instance, 0u);
+}
+
+void router_device_disconnected_with_generation(uint8_t dev_addr,
+                                                int8_t instance,
+                                                uint32_t connection_generation) {
+    // Driver disconnect callbacks are also reused while bthid swaps parser
+    // implementations on one physical link.  bthid brackets those callbacks
+    // with an explicit rebind lifecycle; only an actual transport teardown may
+    // revoke the active source here.
+    if (bthid_rebind_in_progress())
+        return;
+
+    bool was_active = ns2_active_input_disconnected_generation(
+        dev_addr, instance, connection_generation);
     // Inactive disconnects are intentionally invisible to the console seam.
     // In particular, do not clear a slot that a recycled connection index may
     // now represent.
@@ -338,10 +352,16 @@ void router_device_disconnected(uint8_t dev_addr, int8_t instance) {
 
 // Raw HID report passthrough for config mode's debug view (overrides bthid.c's weak
 // default). Lets us reverse-engineer inputs a driver doesn't parse yet (Elite paddles).
-void bthid_on_raw_report(uint8_t conn_index, const uint8_t *data, uint16_t len) {
+void bthid_on_raw_report(uint8_t conn_index, uint32_t connection_generation,
+                         const uint8_t *data, uint16_t len) {
     ns2_active_input_note_connection(conn_index);
-    if (ns2_active_input_connection_is_active(conn_index))
+    if (ns2_active_input_connection_is_active_generation(
+            conn_index, connection_generation))
         set_global_raw_report(0, data, len);
+}
+
+void bthid_on_hid_rebind(uint8_t conn_index) {
+    ns2_active_input_rebind(conn_index);
 }
 
 // Strong override of bthid.c's weak battery hook. BAS notifications can arrive

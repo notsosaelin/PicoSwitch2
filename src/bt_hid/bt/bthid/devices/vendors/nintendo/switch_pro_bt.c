@@ -817,7 +817,9 @@ static void switch_disconnect(bthid_device_t* device)
     switch_bt_data_t* sw = (switch_bt_data_t*)device->driver_data;
     if (sw) {
         // Clear router state first (sends zeroed input report)
-        router_device_disconnected(sw->event.dev_addr, sw->event.instance);
+        router_device_disconnected_with_generation(sw->event.dev_addr,
+                                                   sw->event.instance,
+                                                   sw->event.connection_generation);
         // Remove player assignment
         remove_players_by_address(sw->event.dev_addr, sw->event.instance);
 
