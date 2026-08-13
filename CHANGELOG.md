@@ -7,6 +7,8 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Added
 
+- Declared Android's normal `VIBRATE` permission for the companion's implemented console-rumble
+  feedback path, closing the four `MissingPermission` lint errors without adding a runtime prompt.
 - In-band BLE management is now bonded/encrypted and production-default-on. RX and notification-
   subscription writes require ATT encryption with a 16-byte key, callbacks also require a durable
   LE bond, and new management Just-Works bonds are admitted only during the existing double-tap
