@@ -58,11 +58,14 @@ static const ns2_motion_seam_t NS2_MOTION_SEAMS[] = {
     // (+x,-z,+y) = this row. Full derivation and scale cross-check:
     // docs/bluetooth/android-motion-axis-derivation-2026-08-13.md.
     //
-    // Two independent derivations agreeing is stronger than either alone, but it
-    // is still not a measurement: the determinant rule above cannot catch a
-    // wrong-but-proper rotation, so the physical pitch/yaw/roll pass that
-    // resolved the SWITCH1 row is still owed. Kept in firmware, not the app, so
-    // a correction is a flash rather than a new APK.
+    // Two independent derivations agreeing is stronger than either alone. It is
+    // confirmed by ORDINARY USE, not by a staged rotation sequence: an axis or
+    // sign error here shows up within seconds as rotated or inverted aim in any
+    // game with motion. Do not ask the maintainer to perform deliberate
+    // pitch/yaw/roll poses. If aim is reported wrong, the symptom names the fix
+    // (inverted axis = flip that sign; pitch acting as yaw = swap those src
+    // slots); keep determinant +1. Kept in firmware, not the app, so a correction
+    // is a flash rather than a new APK.
     [SWITCH_MOTION_SOURCE_ANDROID] = {
         {0, 2, 1}, {1, -1, 1}, {0, 2, 1}, {1, -1, 1} },
 };

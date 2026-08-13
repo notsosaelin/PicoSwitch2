@@ -72,12 +72,11 @@ if(NS2_PRO)
            "Expose the observed post-update flash state at 0x1FD010" ON)
     option(NS2_UART_DIAG
            "NS2: nonblocking UART0 diagnostics on GP0/GP1 at 115200 8N1" ON)
-    # Diagnostic/bring-up only: boot with in-band BLE management already enabled
-    # so the coexistence failure can be reproduced immediately after a power
-    # cycle (g_mgmt_enabled is otherwise RAM-only and reverts to OFF on reboot).
-    # Do NOT ship ON -- management is unauthenticated until plan C4 lands.
+    # Production builds boot with bonded/encrypted in-band BLE management
+    # available. The runtime `mgmt off` escape hatch remains RAM-only, so an
+    # ordinary reboot restores the production-on state.
     option(NS2_MGMT_DEFAULT_ON
-           "NS2: enable in-band BLE management at boot (diagnostic builds only)" OFF)
+           "NS2: enable bonded in-band BLE management at boot" ON)
 
     function(ns2_parse_version version prefix)
         string(REPLACE "." ";" parts "${version}")

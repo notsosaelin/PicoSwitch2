@@ -898,11 +898,10 @@ static void cmd_reenumerate(void) {
 // enabled, the config BLE service arms and stays connectable in a normal
 // controller personality, so a phone/web portal can manage the adapter without
 // the CDC Config re-enumeration that drops the console. `mgmt on/off` flips the
-// runtime gate; `mgmt`/`mgmt status` reports it. RAM-only by design: it reverts
-// to OFF (the safe, zero-cost state) on reboot, so a power cycle is always a
-// clean escape hatch during rollout. NOTE: authenticated bonding enforcement
-// (ATT security + first-bond pairing window, plan C4) is a separate slice; until
-// it lands, treat an enabled management link as trusted-environment only.
+// runtime gate; `mgmt`/`mgmt status` reports it. RAM-only by design: production
+// builds boot ON, `mgmt off` disables it for the current boot, and a reboot
+// restores ON. Writes require a stored LE bond plus active 16-byte encryption;
+// creating a new management bond requires the physical pairing window.
 static void cmd_mgmt(const char *arg) {
     if (arg == NULL || arg[0] == '\0' || strcmp(arg, "status") == 0) {
         // report only

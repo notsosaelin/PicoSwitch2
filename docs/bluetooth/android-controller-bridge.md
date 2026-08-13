@@ -347,9 +347,9 @@ real controller provides, so an Android handheld is not a second-class input sou
   this same motion report; its gyro scale (16.384 counts/dps) matches exactly and its accel scale is
   equivalent at the carrier. Full derivation:
   [`android-motion-axis-derivation-2026-08-13.md`](android-motion-axis-derivation-2026-08-13.md).
-  Two derivations agreeing is still not a measurement — the determinant rule cannot catch a
-  wrong-but-proper rotation (this is how the SWITCH1 row was wrong for weeks), so the physical
-  pitch/yaw/roll pass is still owed. The row is in firmware so a fix is a flash, not a new APK.
+  Confirmation is **ordinary play**, not a staged rotation sequence: an axis or sign error shows up
+  within seconds as rotated or inverted aim, and the symptom names the one-row fix. The row is in
+  firmware so a correction is a flash, not a new APK.
 - **Screen orientation is normalized in the app.** Android reports sensors in the device's *natural*
   orientation, not the one being held, so raw axes would send pitch as roll on a phone held sideways —
   and would work on a handheld whose natural orientation is landscape while failing on one that is
@@ -372,18 +372,11 @@ into the Pro2 personality's existing USB audio endpoints. That is a whole subsys
   ("DualSense microphone report decoding and Opus-to-USB return"), and would ride on it rather than
   duplicate it.
 
-**Recommendation:** treat handheld audio as a future investigation gated on the DualSense mic-return
-work landing first. Everything else in the parity table is delivered over the existing HID link.
-
-**Update (2026-08-13), after studying NS-PC-Control's audio:** the reference project does UAC1 on the
-console side — exactly what we already have — and carries the audio to its client over **UDP/WiFi**,
-not Bluetooth. Two things follow. (1) Our UAC1 **microphone endpoint already exists and is
-operational**, currently transmitting silence, so the console-facing half is largely built. (2) The
-only credible transport is WiFi/UDP, which is *not* compiled in today (`pico_cyw43_arch_none`) and
-whose blocking unknown is CYW43 WiFi/BT coexistence on one radio. Because it would only be offered
-when the handheld is the sole source, it would never run alongside the DualSense Opus path — which is
-the owner's scoping instinct and is the right constraint. Full assessment, including the recommended
-order (measure coexistence → land mic return locally → only then add WiFi):
+**Decision (2026-08-13): CLOSED — audio will not be implemented for this bridge.** The only transport
+with enough bandwidth for PCM is WiFi, and **WiFi is permanently prohibited on this firmware**
+(maintainer decision). With HID unable to carry audio and WiFi off the table, no viable no-root
+Android transport remains, so this is closed rather than deferred. NS-PC-Control does support S2
+audio, but only because its client link is UDP over WiFi — not applicable here. Full reasoning:
 [`android-audio-feasibility-2026-08-13.md`](android-audio-feasibility-2026-08-13.md).
 
 ## Fixed HID contract

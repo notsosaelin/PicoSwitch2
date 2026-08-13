@@ -184,6 +184,13 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
   enters Config directly; Config keeps only triple-tap wipe and two-second direct exit.
 - [ ] Hardware-validate the revised BOOTSEL matrix both with no controller and with a paired
   controller, including bond-preserving disconnect before paired double-tap pairing.
+- [x] Require a stored LE bond and active 16-byte encryption for management RX/CCC writes, and
+  accept a new management Just-Works bond only during the existing double-tap pairing window.
+- [x] Make bonded/encrypted management production-default-on without adding persistent config:
+  `mgmt off` is a RAM-only escape hatch and an ordinary reboot restores management availability.
+- [ ] Hardware-validate the management security/default matrix: new bond rejected outside the
+  window, accepted inside it, bonded reconnect outside it, unbonded/plaintext writes rejected,
+  `mgmt off` disconnect/silence for the current boot, and reboot restoring advertising.
 - Add a release checklist that records board, firmware revision, controller firmware, console
   firmware, and test result.
 

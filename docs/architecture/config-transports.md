@@ -1,15 +1,16 @@
 # Configuration transports
 
-Status: 🟡 implemented and host/build validated; Bluetooth hardware validation pending  
-Last updated: 2026-08-12
+Status: 🟡 implemented and host/build validated; bonded/encrypted Bluetooth hardware validation pending  
+Last updated: 2026-08-13
 
 > **Update 2026-08-12 — in-band management.** The BLE GATT management service is no longer
 > exclusive to the Config USB personality. It is now armed by `config_ble_authorized()` =
-> `g_usb_config_mode || g_mgmt_enabled`, so with the runtime flag `g_mgmt_enabled` on (default off)
+> `g_usb_config_mode || g_mgmt_enabled`, so with the runtime flag `g_mgmt_enabled` on (production
+> default; `mgmt off` lasts until reboot)
 > the same service, parser, and allowlist run **in a normal controller personality** — managing the
 > adapter over Bluetooth without dropping the console. This document describes the original
 > config-mode transport; the in-band model, its access-control state machine (`src/mgmt_access.c`),
-> and the remaining authenticated-bonding work are in
+> and the bonded/encrypted first-pair policy and remaining hardware gates are in
 > [`../bluetooth/in-band-management-plan.md`](../bluetooth/in-band-management-plan.md).
 
 ## Purpose

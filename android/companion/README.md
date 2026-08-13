@@ -120,11 +120,12 @@ no root, Shizuku, accessibility service, hidden API, or visit to Bluetooth Setti
 
 ## Firmware setup and safety
 
-Normal source builds keep normal-personality wireless management off and RAM-only. Initially enter
-the physical Config personality and issue `mgmt on`; a diagnostic image built with `-MgmtOn` skips
-that step for the current boot. Repository source does **not** yet ship production always-on
-management. Current firmware also does not enforce authenticated management writes, so use either
-form only in a trusted environment.
+Normal source builds boot with normal-personality wireless management available. New management
+bonds are admitted only while the adapter's physical double-tap pairing window is open; subsequent
+connections reuse the stored LE bond. RX and notification-subscription writes require an active
+16-byte encrypted link and a durable bond. Android no-display Just Works cannot provide MITM
+authentication, so the app describes this accurately as bonded/encrypted. `mgmt off` disables the
+service for the current boot; an ordinary reboot restores it.
 
 Before pairing Android as a controller, open the adapter's physical controller-pairing window. The
 Android system must obtain user consent and create the bond before `BluetoothHidDevice.connect()` can

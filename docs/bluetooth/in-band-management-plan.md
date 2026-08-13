@@ -9,20 +9,20 @@ in [config-transports.md](../architecture/config-transports.md) as the transport
 
 | Slice | Scope | State |
 |---|---|---|
-| — | Host-test scaffold (bridge, edge, concurrency, access spec, session, bonds, bounded-page serializer) | ✅ green, 9/9 |
+| — | Host-test scaffold (bridge, edge, concurrency, access spec, session, bonds, bounded-page serializer, Android HID contracts) | ✅ green, 11/11 |
 | S1 | Production `src/mgmt_access.{c,h}` lifted from the spec; test links the real header | ✅ landed |
-| S2 | `g_mgmt_enabled` flag (usb.h/usb.c, default off) + `mgmt status/on/off` command + allowlist | ✅ landed |
+| S2 | `g_mgmt_enabled` flag (usb.h/usb.c, production default on) + `mgmt status/on/off` command + allowlist | ✅ landed |
 | C1/C3 (S3) | `config_ble_authorized()` = `g_usb_config_mode \|\| g_mgmt_enabled`; re-gate can_send / RX+CCC write / advertising / accept-connection / service-task | ✅ landed |
 | C2 (S4) | Extract `config_wireless_task()`; pump it unconditionally from the core0 main loop | ✅ landed |
 | C6 (partial) | Wireless `save` / `amiibo clear` / `amiibo persist` no longer busy-wait core0 (deferred, ack "queued") | ✅ landed |
 | S5 | Web portal Management panel (`mgmt on/off/status`); Connect Bluetooth now works in normal mode once enabled | ✅ landed |
-| **C4** | **ATT `AUTHENTICATED` security + first-bond pairing-window gate; wire the `mgmt_access` predicates (bonded/window) into the ATT/SM layer** | 🔴 **NOT YET** — runtime/HW-validated; until it lands an enabled link is UNAUTHENTICATED (trusted-environment only) |
+| **C4** | **Bonded 16-byte ATT encryption + first-bond pairing-window gate; wire the `mgmt_access` predicates into ATT/SM** | 🟡 **LANDED, HW PENDING** — no-display Just Works has no MITM and is deliberately not mislabeled `AUTHENTICATED` |
 | C6 (rest) | Audit any remaining flash paths; `bonds` still has a ≤1 s cross-core wait (menu-only action) | 🟡 partial |
 | C5 | Wake-outranks-management advertiser hand-off during a wake burst (stop/resume a running mgmt advert) | ⬜ verify on HW (idle path already yields via `wake_adv.active` guards) |
 
-**Built clean on both boards (pico_w + pico2_w), all host tests green.** The default-off gate means
-the firmware is byte-identical to before when management is disabled. **Do not leave `mgmt on` in an
-untrusted RF environment until C4 lands.** See the HW test procedure in §6 and the handoff notes at
+**Built clean on both boards (pico_w + pico2_w), all host tests green.** Standard builds now boot
+with management on. Disabling it remains a RAM-only current-boot escape hatch; the disabled path is
+still the proven zero-cost early return. See the HW test procedure in §6 and the handoff notes at
 the end of this section.
 
 ### Hardware test 1 (2026-08-12) — workflow works, coexistence failure found
@@ -118,19 +118,22 @@ connects whenever, with no BOOTSEL gesture per session. Model = **pair once, the
 - **Steady state:** while the console is awake and no controller scan/inquiry/connect is in flight,
   the management service advertises **connectably at the existing low duty (100–150 ms)**. On connect,
   advertising stops; on disconnect, it resumes. A bonded phone reconnects at will.
-- `g_mgmt_enabled` (a build/user setting, default off during rollout) replaces the config-mode gate
+- `g_mgmt_enabled` (production default on; runtime-off until reboot) replaces the config-mode gate
   in `config_ble_service_task` and the RX/advertising guards: `g_usb_config_mode` →
   `(g_usb_config_mode || g_mgmt_enabled)`. When disabled, byte-identical to today (zero-cost return).
 
-### C4 — Authenticated authorization (the mandated gate, now the *sole* gate)
-Without the physical Config gesture, **bonding is the only access control** — so it must be real:
-- Raise RX/TX from `ATT_SECURITY_NONE` → **`ATT_SECURITY_AUTHENTICATED`** (LESC; SM already
-  `SM_AUTHREQ_BONDING | SM_AUTHREQ_SECURE_CONNECTION`). Only a bonded phone can write commands.
-- **First-bond is the one remaining security decision (§7.1).** With `IO_CAPABILITY_NO_INPUT_NO_OUTPUT`
-  the SM does Just-Works pairing (no user confirmation), so "always advertising + open first-bond"
-  would let *any* nearby phone bond and manage. Recommended: **first pairing happens once through the
-  kept CDC Config fallback (C-dep) or a one-time pairing window; thereafter the bonded phone connects
-  anytime with no gesture.** A one-time setup step is *not* the per-session re-arm that was rejected.
+### C4 — Bonded encrypted authorization (landed; runtime validation pending)
+Without the physical Config gesture, **bonding is the access-control identity**:
+- RX and TX-CCCD writes require `ATT_SECURITY_ENCRYPTED`; BTstack's generated ATT database encodes
+  a 16-byte minimum key for these attributes. The dynamic callbacks independently require
+  `gap_bonded(handle)` plus an active 16-byte encryption key before accepting a command or enabling
+  replies.
+- `IO_CAPABILITY_NO_INPUT_NO_OUTPUT` Just Works cannot provide MITM authentication. The shared SM
+  requests bonding plus LE Secure Connections, but controller compatibility permits legacy fallback;
+  therefore this path deliberately does not use or claim `ATT_SECURITY_AUTHENTICATED`.
+- **First bond is physically gated (§7.1).** A new management Just-Works request is confirmed only
+  while `g_mgmt_enabled` and the existing double-tap pairing window are both active. A stored phone
+  bond reconnects outside the window. This is a one-time setup step, not a per-session re-arm.
 - Keep single-client acceptance and the LE-Peripheral-role classification before any slot/SM/GATT use
   (config-transports.md:33-34).
 
@@ -179,7 +182,7 @@ Reuses the existing, hardware-proven controller pairing machinery — no new ges
 management client and bonds *within the window*. `mgmt_accept_bonding()` is true **only while the
 window is open** → same trust model as adding a controller. Outside the window an unbonded phone may
 connect but **cannot bond**, therefore **cannot write** (`mgmt_allow_write` requires bonded). No
-drive-by hijack. This is the authenticated authorization the previous designer mandated.
+drive-by hijack. This is bonded encrypted authorization; it is not MITM-authenticated.
 
 **Reconnect (connect/disconnect anytime).** After bonding, the phone reconnects whenever the console
 is awake — the service advertises at low duty and encryption uses the stored bond, no window needed.
@@ -308,21 +311,17 @@ Prefer the simple always-advertise path; adopt this suppression only if 7b shows
 | `test_config_wireless_bridge.c` (pre-existing) | happy-path SPSC, busy rejection, oversized recovery, response chunking, session invalidation, allowlist policy |
 | `test_config_wireless_bridge_edge.c` **(new)** | adversarial inputs: embedded-NUL truncates safely (no allowlist bypass), CR/blank-line noise, exact 127/128 capacity boundary, two-commands-in-one-frame drop, too-small-buffer drop (no overflow), 511/512 response boundary, pending-response back-pressure, NULL guard |
 | `test_config_wireless_bridge_concurrency.c` **(new, `-pthread`)** | the cross-core SPSC handshake under real producer/consumer threads: 20 000 commands, in order, no loss/dup/tear (logic-race proof; ARM ordering rests on the acquire/release atomics + HW) |
-| `test_mgmt_access.c` **(new)** | the pure access-control spec, **exhaustive over all 128 states / 9 invariants** — disabled=inert, wake outranks mgmt (drops client), asleep=silent, controller discovery may coexist with the peripheral advertiser, writes need enabled+connected+bonded+allowlisted, bond needs enabled+window, advertise⇒single-client+safe, a denied command is writable in **no** state, an unbonded client can **never** write |
+| `test_mgmt_access.c` **(new)** | the pure access-control spec, **exhaustive over all 256 states / 10 invariants** — disabled=inert, wake outranks mgmt, asleep=silent, controller discovery may coexist, writes need enabled+connected+bonded+encrypted+allowlisted, bond needs enabled+window, advertise implies single-client safety, denied commands are never writable, and unbonded or plaintext clients cannot write |
 | `test_mgmt_session.c` **(new)** | end-to-end composition of real bridge + real allowlist + dispatch gate: bonded user command succeeds; diagnostic rejected; unbonded refused; back-pressure; disconnect drops in-flight reply; disabled overrides bond |
 | `test_bonds_command.c` **(new)** | strict grammar for legacy `bonds list`, versioned `bonds list v2 [cursor]`, and `bonds remove <n>`, with a wall of hostile inputs rejected |
 | `test_mgmt_bonds.c` **(new)** | version-2 envelope bounds, cursor progress across sparse device-DB slots, complete aggregation, and fail-closed overflow |
 | `test_bthid_android_controller.c` (pre-existing) | the Android *controller* HID contract (separate feature, already green) |
 
-Production `src/mgmt_access.{c,h}` will lift the `mgmt_*` spec from `test_mgmt_access.c` verbatim; that
-test then links the real header instead of its local copy.
+Production `src/mgmt_access.{c,h}` is the canonical spec linked by `test_mgmt_access.c`; the host
+ATT/SM wiring composes it with the real wireless allowlist and bonded/encrypted link checks.
 
-**Still needs production code to exist (write when C1/C3/C6 land):** the `g_mgmt_enabled` wiring in
-`config_ble_service_task`, and the deferred-flash routing for wireless `save`/`amiibo commit`. Both are
-small and covered by extending the tests above once the symbols exist.
-
-**Runtime-only (hardware-validated, not host-mockable):** the encryption-required-before-write property
-(SM/ATT enforces `ATT_SECURITY_AUTHENTICATED`) — HW check 2.
+**Runtime-only (hardware-validated, not host-mockable):** prove the ATT encryption trigger, durable-
+bond callback rejection, first-bond window, and stored-bond reconnect on Android — HW check 2.
 
 ### Built-in measurement tool (already present)
 The config `state`/telemetry surface already exposes **`core1MaxGapUs` / `core1GapsOver10ms`**
@@ -404,9 +403,9 @@ behaviors with a concrete way to close each:
 | Idle truly invisible/zero-cost when disabled | Already proven in code + HW check 1 |
 | Forced personality re-enumeration is safe on a live console | ✅ Owner-confirmed (§9) — the BOOTSEL single-tap cycle already swaps cleanly while plugged into the Switch 2 |
 
-No firmware change is proposed until (a) the host tests above are written and green, (b) the §7a
-first-bond mechanism is chosen, and (c) the audio/gyro/wake HW gates pass. This document is the
-go/no-go reference. Personality switch is out of the first cut pending its own investigation (§9).
+The implementation is now host/build complete. Audio/gyro/wake coexistence, authorization behavior,
+and production-default reboot behavior remain hardware gates. This document is the go/no-go
+reference for those checks.
 
 ---
 

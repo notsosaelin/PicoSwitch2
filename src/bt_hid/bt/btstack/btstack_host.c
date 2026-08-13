@@ -755,7 +755,7 @@ static void config_ble_start_advertising(void);
 
 // The config/management BLE service (RX/TX GATT + wireless bridge) is authorized
 // either in the explicit CDC Config personality (legacy, physically gated) OR
-// when in-band management is enabled (g_mgmt_enabled, default off). Both share
+// when in-band management is enabled (g_mgmt_enabled, production default on). Both share
 // the same service, bridge, and coexistence rules; only the arming trigger
 // differs. When neither holds this returns false and the whole path is the
 // proven zero-cost early return -- byte-identical to today's normal mode.
