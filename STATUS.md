@@ -10,7 +10,7 @@ Branch: `ns2-testing`
 
 Documentation/resource audit: 2026-07-25
 
-## In-band BLE management transport — 🔵 built default-off, HW flash-test pending 2026-08-12
+## In-band BLE management transport — 🟡 workflow works; coexistence failure under investigation 2026-08-12
 
 The configuration BLE service (RX/TX GATT + wireless command bridge) is now armable in a **normal
 controller personality**, gated by a new runtime flag `g_mgmt_enabled` (default off, RAM-only). When
@@ -23,10 +23,21 @@ decouple, unconditional `config_wireless_task()` pump, deferred wireless flash o
 clear`/`amiibo persist` no longer stall core0), and a web-portal Management panel. Built clean on both
 boards; all host tests green (`tools/run_mgmt_tests.ps1`, 6/6).
 
-**Not yet done (own slices, HW-validated):** authenticated bonding — ATT `AUTHENTICATED` security +
-the double-tap first-bond pairing-window gate (plan C4). Until it lands, an *enabled* management link
-is **unauthenticated** → trusted-environment only. Wake-burst advertiser hand-off (C5) and the audio/
-gyro/latency coexistence gates need the hardware flash-test. See
+**Hardware test 1 (2026-08-12):** the full workflow succeeded over BLE in normal Pro2 mode (portal →
+adapter → Amiibo upload → Switch 2 read/write → Sync back, correct metadata; no noticeable input
+latency). **But** after a short period both the management and controller links dropped and could not
+recover without a power cycle. **Confirmed root cause (controller half):**
+`btstack_host_start_scan()` early-returns while `config_ble.mode_active` is latched (true for the
+whole session under management), so controller reconnect is permanently suppressed until reboot. The
+management half is not yet isolated. Diagnostics added this pass: UART `btstate` + `btlife read <N>`
+(BLE/management snapshot, scan-suppression cause counters, lifecycle event ring) and a `-MgmtOn`
+diagnostic build to reproduce after a power cycle. Fix designed but not applied pending the trace.
+See [`docs/experiments/in-band-mgmt-coexistence-failure-2026-08-12.md`](docs/experiments/in-band-mgmt-coexistence-failure-2026-08-12.md).
+
+**Not yet done (own slices, HW-validated):** the coexistence fix (do not suppress controller
+discovery under management); authenticated bonding — ATT `AUTHENTICATED` + the double-tap first-bond
+window (plan C4; until it lands an *enabled* link is unauthenticated → trusted-environment only);
+wake-burst advertiser hand-off (C5); and the audio/gyro/latency coexistence gates. See
 [`docs/bluetooth/in-band-management-plan.md`](docs/bluetooth/in-band-management-plan.md).
 
 ## Android handheld controller bridge — 🔵 Pico side host-tested 2026-08-11

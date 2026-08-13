@@ -19,6 +19,13 @@ Release notes describe user-visible behavior. Detailed implementation history re
   **Not yet authenticated:** the pairing-window bond gate / ATT-encryption enforcement (plan C4) is a
   separate slice — enable only in a trusted environment until it lands. See
   `docs/bluetooth/in-band-management-plan.md`.
+- UART coexistence diagnostics for the in-band management path (GP0/GP1 diag link, all personalities):
+  `btstate` (live BLE/management snapshot + scan-suppression cause counters) and `btlife read <N>`
+  (48-entry lifecycle event ring with HCI disconnect reasons and ordering), to isolate a hardware
+  failure where management + controller both drop and only a power cycle recovers. A diagnostic
+  `NS2_MGMT_DEFAULT_ON` build option (`build.ps1 -MgmtOn`) boots with management enabled so the
+  failure reproduces immediately after a power cycle. See
+  `docs/experiments/in-band-mgmt-coexistence-failure-2026-08-12.md`.
 - Phone-app management command surface (USB CDC + the wireless/BLE allowlist), wiring the firmware
   interface so a management app is a thin client — see `docs/bluetooth/app-interface-audit.md`:
   - `personality` reports the current output personality and selectable list; `personality

@@ -704,6 +704,73 @@ static inline bool config_ble_authorized(void)
     return g_usb_config_mode || g_mgmt_enabled;
 }
 
+// ---------------------------------------------------------------------------
+// In-band management / BLE coexistence diagnostics  (UART-only, always-on)
+//
+// The config/management BLE service reuses the single LE advertiser and, while
+// armed, suppresses controller discovery (a config-mode assumption: config drops
+// the console, so no controllers are needed). In-band management keeps the
+// service armed DURING gameplay, so this ring + counters exist to isolate the
+// observed "controller and management both drop and cannot recover without a
+// power cycle" failure over the GP0/GP1 UART link -- the last-good/first-fail
+// visibility the Web Portal cannot provide once it has dropped. Purely additive:
+// record() only appends to a ring and bumps counters; it never changes BT logic.
+// Events are written on core1 (BTstack thread) and read on core0 (UART task);
+// the ring is diagnostic, so a benign torn read at most mis-renders one line.
+// See docs/bluetooth/in-band-management-plan.md and STATUS.md.
+// ---------------------------------------------------------------------------
+enum {  // btlife_event_t.code
+    BTLIFE_NONE = 0,
+    BTLIFE_SCAN_START, BTLIFE_SCAN_STOP, BTLIFE_SCAN_SUPPRESS,
+    BTLIFE_ADV_START, BTLIFE_ADV_STOP,
+    BTLIFE_MGMT_CONNECT, BTLIFE_MGMT_DISCONNECT,
+    BTLIFE_CTRL_DISCONNECT, BTLIFE_HCI_DISCONNECT,
+};
+enum {  // SCAN_SUPPRESS cause (btlife_event_t.a) -- why a scan restart was refused
+    BTLIFE_CAUSE_NONE = 0, BTLIFE_CAUSE_CONFIG_MODE, BTLIFE_CAUSE_MGMT_ARMED,
+    BTLIFE_CAUSE_WAKE, BTLIFE_CAUSE_LOCKOUT, BTLIFE_CAUSE_APP_SUPPRESS,
+    BTLIFE_CAUSE_NOT_POWERED, BTLIFE_CAUSE_ALREADY, BTLIFE_CAUSE_COUNT
+};
+
+#define BTLIFE_RING_SIZE 48u
+typedef struct { uint32_t t_ms; uint8_t code; uint8_t a; uint16_t b; } btlife_event_t;
+static btlife_event_t btlife_ring[BTLIFE_RING_SIZE];
+static uint16_t btlife_head;    // next write slot
+static uint16_t btlife_count;   // valid entries (<= BTLIFE_RING_SIZE)
+static uint32_t btlife_dropped; // oldest events overwritten before being read
+static struct {
+    uint32_t scan_start, scan_stop, adv_start, adv_stop;
+    uint32_t suppress[BTLIFE_CAUSE_COUNT];  // indexed by cause
+    uint32_t mgmt_connect, mgmt_disconnect, ctrl_disconnect, hci_disconnect;
+    uint16_t last_disc_handle;
+    uint8_t last_disc_reason;
+} btlife;
+
+static void btlife_record(uint8_t code, uint8_t a, uint16_t b)
+{
+    btlife_event_t *e = &btlife_ring[btlife_head];
+    e->t_ms = to_ms_since_boot(get_absolute_time());
+    e->code = code; e->a = a; e->b = b;
+    btlife_head = (uint16_t)((btlife_head + 1u) % BTLIFE_RING_SIZE);
+    if (btlife_count < BTLIFE_RING_SIZE) btlife_count++;
+    else btlife_dropped++;  // ring full: we just overwrote the oldest unread event
+    switch (code) {
+        case BTLIFE_SCAN_START:      btlife.scan_start++; break;
+        case BTLIFE_SCAN_STOP:       btlife.scan_stop++; break;
+        case BTLIFE_SCAN_SUPPRESS:   if (a < BTLIFE_CAUSE_COUNT) btlife.suppress[a]++; break;
+        case BTLIFE_ADV_START:       btlife.adv_start++; break;
+        case BTLIFE_ADV_STOP:        btlife.adv_stop++; break;
+        case BTLIFE_MGMT_CONNECT:    btlife.mgmt_connect++; break;
+        case BTLIFE_MGMT_DISCONNECT: btlife.mgmt_disconnect++; break;
+        case BTLIFE_CTRL_DISCONNECT: btlife.ctrl_disconnect++; break;
+        case BTLIFE_HCI_DISCONNECT:
+            btlife.hci_disconnect++;
+            btlife.last_disc_handle = b; btlife.last_disc_reason = a;
+            break;
+        default: break;
+    }
+}
+
 static void config_ble_can_send(void *context)
 {
     (void)context;
@@ -1687,6 +1754,7 @@ static void config_ble_stop_advertising(void)
     }
     gap_advertisements_enable(0);
     config_ble.advertising = false;
+    btlife_record(BTLIFE_ADV_STOP, 0, 0);
 }
 
 static void config_ble_start_advertising(void)
@@ -1708,6 +1776,7 @@ static void config_ble_start_advertising(void)
         sizeof(config_ble_scan_response), config_ble_scan_response);
     gap_advertisements_enable(1);
     config_ble.advertising = true;
+    btlife_record(BTLIFE_ADV_START, g_usb_config_mode ? 0u : 1u, 0);
     printf("[BTSTACK_HOST] Config/management BLE advertising enabled (%s)\n",
            g_usb_config_mode ? "CDC Config" : "in-band mgmt");
 }
@@ -1725,6 +1794,7 @@ static bool config_ble_accept_connection(hci_con_handle_t handle)
     config_ble.notifications_enabled = false;
     config_ble.tx_requested = false;
     config_wireless_bridge_reset_session();
+    btlife_record(BTLIFE_MGMT_CONNECT, g_usb_config_mode ? 0u : 1u, handle);
     printf("[BTSTACK_HOST] Config BLE client connected: handle=0x%04X\n", handle);
     return true;
 }
@@ -1736,6 +1806,7 @@ static bool config_ble_handle_disconnect(
         return false;
     }
 
+    btlife_record(BTLIFE_MGMT_DISCONNECT, reason, handle);
     printf("[BTSTACK_HOST] Config BLE client disconnected: handle=0x%04X reason=0x%02X\n",
            handle, reason);
     config_ble.handle = HCI_CON_HANDLE_INVALID;
@@ -1844,29 +1915,43 @@ void btstack_host_start_scan(void)
     if (!btstack_host_scan_enabled) return;
 #endif
     if (g_usb_config_mode || config_ble.mode_active) {
-        return;  // Config owns LE advertising; controller discovery resumes on exit.
+        // Config/management owns LE advertising and suppresses discovery. In
+        // config mode this is fine (console dropped); WHILE IN-BAND MANAGEMENT IS
+        // ARMED this permanently blocks controller reconnect -- the confirmed
+        // cause of "controller won't reconnect until power-cycle". Recorded so
+        // the UART trace shows the starvation explicitly.
+        btlife_record(BTLIFE_SCAN_SUPPRESS,
+                      g_usb_config_mode ? BTLIFE_CAUSE_CONFIG_MODE
+                                        : BTLIFE_CAUSE_MGMT_ARMED, 0);
+        return;
     }
     if (wake_adv.active) {
+        btlife_record(BTLIFE_SCAN_SUPPRESS, BTLIFE_CAUSE_WAKE, 0);
         wake_adv.scan_requested = true;
         return;  // wake replay owns the LE advertiser until its restore phase
     }
     if (pairing_lockout) {
+        btlife_record(BTLIFE_SCAN_SUPPRESS, BTLIFE_CAUSE_LOCKOUT, 0);
         return;  // A triple-tap wipe requires a new explicit pairing window.
     }
     if (scan_suppressed) {
+        btlife_record(BTLIFE_SCAN_SUPPRESS, BTLIFE_CAUSE_APP_SUPPRESS, 0);
         return;  // App suppressed scanning (e.g. BT host disabled)
     }
 
     if (!hid_state.powered_on) {
+        btlife_record(BTLIFE_SCAN_SUPPRESS, BTLIFE_CAUSE_NOT_POWERED, 0);
         printf("[BTSTACK_HOST] Not powered on yet\n");
         return;
     }
 
     if (hid_state.scan_active || classic_state.inquiry_active) {
+        btlife_record(BTLIFE_SCAN_SUPPRESS, BTLIFE_CAUSE_ALREADY, 0);
         return;  // Already scanning
     }
 
     printf("[BTSTACK_HOST] Starting BLE scan...\n");
+    btlife_record(BTLIFE_SCAN_START, 0, 0);
     gap_set_scan_params(1, SCAN_INTERVAL, SCAN_WINDOW, 0);
     gap_start_scan();
     hid_state.scan_active = true;
@@ -1901,6 +1986,7 @@ void btstack_host_stop_scan(void)
 
     if (hid_state.scan_active) {
         printf("[BTSTACK_HOST] Stopping BLE scan\n");
+        btlife_record(BTLIFE_SCAN_STOP, 0, 0);
         gap_stop_scan();
         hid_state.scan_active = false;
     }
@@ -3700,6 +3786,9 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 break;
             }
 
+            // Non-management (controller/other) ACL drop. Recorded with its HCI
+            // reason so the UART trace shows which link died first and why.
+            btlife_record(BTLIFE_HCI_DISCONNECT, reason, handle);
             printf("[BTSTACK_HOST] Disconnected: handle=0x%04X reason=0x%02X\n", handle, reason);
 
             ble_connection_t *conn = find_connection_by_handle(handle);
@@ -3718,6 +3807,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 // was registered, but always tear down the BLE slot/state.
                 if (conn->conn_index > 0) {
                     // conn_index for BLE uses BLE_CONN_INDEX_OFFSET to distinguish from Classic
+                    btlife_record(BTLIFE_CTRL_DISCONNECT, reason, handle);
                     printf("[BTSTACK_HOST] BLE disconnect: notifying bthid (conn_index=%d)\n", conn->conn_index);
                     bt_on_disconnect(conn->conn_index);
                 } else {
@@ -8764,6 +8854,109 @@ void btstack_host_get_reconnect_diag(btstack_host_reconnect_diag_t *out)
             out->connected_ble_count++;
         }
     }
+}
+
+// --- In-band management / BLE coexistence diagnostics (UART) ----------------
+
+const char *btstack_host_life_code_name(uint8_t code)
+{
+    switch (code) {
+        case BTLIFE_SCAN_START:      return "scan_start";
+        case BTLIFE_SCAN_STOP:       return "scan_stop";
+        case BTLIFE_SCAN_SUPPRESS:   return "scan_suppress";
+        case BTLIFE_ADV_START:       return "adv_start";
+        case BTLIFE_ADV_STOP:        return "adv_stop";
+        case BTLIFE_MGMT_CONNECT:    return "mgmt_connect";
+        case BTLIFE_MGMT_DISCONNECT: return "mgmt_disconnect";
+        case BTLIFE_CTRL_DISCONNECT: return "ctrl_disconnect";
+        case BTLIFE_HCI_DISCONNECT:  return "hci_disconnect";
+        default:                     return "none";
+    }
+}
+
+const char *btstack_host_life_cause_name(uint8_t cause)
+{
+    switch (cause) {
+        case BTLIFE_CAUSE_CONFIG_MODE:  return "config_mode";
+        case BTLIFE_CAUSE_MGMT_ARMED:   return "mgmt_armed";
+        case BTLIFE_CAUSE_WAKE:         return "wake";
+        case BTLIFE_CAUSE_LOCKOUT:      return "lockout";
+        case BTLIFE_CAUSE_APP_SUPPRESS: return "app_suppress";
+        case BTLIFE_CAUSE_NOT_POWERED:  return "not_powered";
+        case BTLIFE_CAUSE_ALREADY:      return "already";
+        default:                        return "none";
+    }
+}
+
+bool btstack_host_life_get(uint16_t index, btstack_host_life_record_t *out)
+{
+    if (!out || index >= btlife_count) return false;
+    // Oldest-first logical order. Reads statics the BTstack thread may be
+    // writing; a benign torn read at most mis-renders a single diagnostic line.
+    uint16_t oldest = (uint16_t)((btlife_head + BTLIFE_RING_SIZE - btlife_count)
+                                 % BTLIFE_RING_SIZE);
+    const btlife_event_t *e = &btlife_ring[(oldest + index) % BTLIFE_RING_SIZE];
+    out->t_ms = e->t_ms;
+    out->code = e->code;
+    out->a = e->a;
+    out->b = e->b;
+    return true;
+}
+
+void btstack_host_life_clear(void)
+{
+    btlife_head = 0;
+    btlife_count = 0;
+    btlife_dropped = 0;
+    memset(&btlife, 0, sizeof(btlife));
+}
+
+void btstack_host_get_mgmt_diag(btstack_host_mgmt_diag_t *out)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    // Feature / personality
+    out->mgmt_enabled = g_mgmt_enabled;
+    out->config_mode = g_usb_config_mode;
+    out->personality = (uint8_t)g_usb_personality;
+    // Radio / host state
+    out->powered_on = hid_state.powered_on;
+    out->hid_state = (uint8_t)hid_state.state;
+    out->scan_active = hid_state.scan_active;
+    out->inquiry_active = classic_state.inquiry_active;
+    out->wake_adv_active = wake_adv.active;
+    out->controller_connected = btstack_host_controller_connected();
+    for (int i = 0; i < MAX_BLE_CONNECTIONS; i++) {
+        if (hid_state.connections[i].handle != HCI_CON_HANDLE_INVALID)
+            out->connected_ble_count++;
+    }
+    // config/management BLE service
+    out->cble_service_available = config_ble.service_available;
+    out->cble_mode_active = config_ble.mode_active;
+    out->cble_advertising = config_ble.advertising;
+    out->cble_has_client = config_ble.handle != HCI_CON_HANDLE_INVALID;
+    out->cble_closing = config_ble.closing;
+    out->cble_notifications = config_ble.notifications_enabled;
+    // Counters (ring-independent totals)
+    out->event_count = btlife_count;
+    out->event_dropped = btlife_dropped;
+    out->scan_starts = btlife.scan_start;
+    out->scan_stops = btlife.scan_stop;
+    out->adv_starts = btlife.adv_start;
+    out->adv_stops = btlife.adv_stop;
+    out->suppress_config_mode = btlife.suppress[BTLIFE_CAUSE_CONFIG_MODE];
+    out->suppress_mgmt_armed = btlife.suppress[BTLIFE_CAUSE_MGMT_ARMED];
+    out->suppress_wake = btlife.suppress[BTLIFE_CAUSE_WAKE];
+    out->suppress_other = btlife.suppress[BTLIFE_CAUSE_LOCKOUT] +
+                          btlife.suppress[BTLIFE_CAUSE_APP_SUPPRESS] +
+                          btlife.suppress[BTLIFE_CAUSE_NOT_POWERED] +
+                          btlife.suppress[BTLIFE_CAUSE_ALREADY];
+    out->mgmt_connects = btlife.mgmt_connect;
+    out->mgmt_disconnects = btlife.mgmt_disconnect;
+    out->ctrl_disconnects = btlife.ctrl_disconnect;
+    out->hci_disconnects = btlife.hci_disconnect;
+    out->last_disc_handle = btlife.last_disc_handle;
+    out->last_disc_reason = btlife.last_disc_reason;
 }
 
 // ============================================================================

@@ -183,6 +183,65 @@ typedef struct {
 
 void btstack_host_get_reconnect_diag(btstack_host_reconnect_diag_t *out);
 
+// In-band management / BLE coexistence diagnostics (UART-only). A lifecycle event
+// ring + live snapshot + scan-suppression cause counters, added to isolate the
+// "controller and management both drop and cannot recover without a power cycle"
+// failure over the GP0/GP1 UART link (last-good/first-fail visibility the Web
+// Portal cannot give once dropped). All read-only; recording never alters BT
+// behavior. See docs/bluetooth/in-band-management-plan.md.
+typedef struct {
+    uint32_t t_ms;   // ms since boot
+    uint8_t  code;   // btstack_host_life_code_name()
+    uint8_t  a;      // scan-suppress cause (btstack_host_life_cause_name()) or HCI reason
+    uint16_t b;      // connection handle (0 when not applicable)
+} btstack_host_life_record_t;
+
+typedef struct {
+    // Feature / personality
+    bool mgmt_enabled;
+    bool config_mode;
+    uint8_t personality;              // usb_personality_t
+    // Radio / host state
+    bool powered_on;
+    uint8_t hid_state;                // internal BLE state machine (diagnostic only)
+    bool scan_active;
+    bool inquiry_active;
+    bool wake_adv_active;
+    bool controller_connected;
+    uint8_t connected_ble_count;
+    // config/management BLE service
+    bool cble_service_available;
+    bool cble_mode_active;            // service armed (Config OR mgmt)
+    bool cble_advertising;
+    bool cble_has_client;
+    bool cble_closing;
+    bool cble_notifications;
+    // Ring + counters
+    uint16_t event_count;
+    uint32_t event_dropped;
+    uint32_t scan_starts;
+    uint32_t scan_stops;
+    uint32_t adv_starts;
+    uint32_t adv_stops;
+    uint32_t suppress_config_mode;    // scan restart refused: in CDC Config
+    uint32_t suppress_mgmt_armed;     // scan restart refused: in-band mgmt armed (the coexistence bug)
+    uint32_t suppress_wake;
+    uint32_t suppress_other;          // lockout + app-suppress + not-powered + already
+    uint32_t mgmt_connects;
+    uint32_t mgmt_disconnects;
+    uint32_t ctrl_disconnects;
+    uint32_t hci_disconnects;
+    uint16_t last_disc_handle;
+    uint8_t last_disc_reason;
+} btstack_host_mgmt_diag_t;
+
+void btstack_host_get_mgmt_diag(btstack_host_mgmt_diag_t *out);
+// Read lifecycle event at logical index (0 = oldest). False when index >= count.
+bool btstack_host_life_get(uint16_t index, btstack_host_life_record_t *out);
+void btstack_host_life_clear(void);
+const char *btstack_host_life_code_name(uint8_t code);
+const char *btstack_host_life_cause_name(uint8_t cause);
+
 // UART diagnostic control: discard only the saved target's BTstack LE bond,
 // disconnect its current link, and arm Nintendo custom ATT pairing. The durable
 // target identity is retained so the next SYNC advertisement is recognized.
