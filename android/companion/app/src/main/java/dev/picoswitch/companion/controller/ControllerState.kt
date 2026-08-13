@@ -83,6 +83,44 @@ data class AxisRange(val minimum: Float, val maximum: Float, val flat: Float = 0
  * second scaling convention: 8192 counts/g for acceleration and 16.384 counts/dps
  * for angular rate. These constants are the exact mirror of the C contract.
  */
+/**
+ * Device sensor frame -> current screen frame.
+ *
+ * Android reports sensor axes in the device's NATURAL orientation, which is not
+ * the orientation the user is holding. A phone held sideways to play, or a
+ * handheld whose natural orientation is already landscape, would otherwise send
+ * pitch as roll: aiming would be rotated 90 degrees. The remap below is the same
+ * transform Dycool's NS-PC-Control applies in its browser/mobile motion path
+ * before its own controller-frame permutation, which is a working shipped
+ * implementation of phone gyro into this console's motion report.
+ *
+ * Pure and integer-only so it is exhaustively unit-testable.
+ */
+object MotionOrientation {
+    /** [rotationDegrees] is Android's Display.getRotation() expressed in degrees. */
+    fun remapX(x: Int, y: Int, rotationDegrees: Int): Int = when (normalize(rotationDegrees)) {
+        90 -> -y
+        180 -> -x
+        270 -> y
+        else -> x
+    }
+
+    fun remapY(x: Int, y: Int, rotationDegrees: Int): Int = when (normalize(rotationDegrees)) {
+        90 -> x
+        180 -> -y
+        270 -> -x
+        else -> y
+    }
+
+    /** Z is the screen normal and is unchanged by any screen rotation. */
+    fun remapZ(z: Int): Int = z
+
+    private fun normalize(degrees: Int): Int {
+        val wrapped = ((degrees % 360) + 360) % 360
+        return when (wrapped) { 90, 180, 270 -> wrapped; else -> 0 }
+    }
+}
+
 object MotionScale {
     const val ACCEL_COUNTS_PER_G = 8192.0
     const val GYRO_COUNTS_PER_DPS = 16.384

@@ -46,16 +46,23 @@ static const ns2_motion_seam_t NS2_MOTION_SEAMS[] = {
 
     // ANDROID: the companion app publishes Android's standard sensor frame
     // (X right, Y up along the screen, Z out of the screen toward the user),
-    // already converted to this project's units (8192 counts/g, 16.384
-    // counts/dps) by the app. That frame matches the arrangement the DualSense
-    // row describes, so this row starts identical to it.
+    // already screen-orientation normalized and converted to this project's units
+    // (8192 counts/g, 16.384 counts/dps) by the app.
     //
-    // PROVISIONAL: the starting row is reasoned from the frame convention, not
-    // measured. Axis/sign errors here are exactly what the determinant rule
-    // above cannot catch, so this needs the same physical pitch/yaw/roll pass
-    // the SWITCH1 row required. Correcting it is a one-row firmware change --
-    // deliberately kept here rather than in the app so a fix needs a flash, not
-    // a new APK. See docs/bluetooth/android-controller-bridge.md.
+    // CORROBORATED, NOT YET MEASURED. This row was first reasoned from the frame
+    // convention, and independently matches the composite transform used by
+    // Dycool's NS-PC-Control -- a separate shipped implementation of phone gyro
+    // into this same console motion report. Its client maps phone -> Switch-1 Pro
+    // frame as [-z,-x,+y] and its carrier then applies this project's own
+    // Switch-1 -> Pro2 remount [-in1,+in0,+in2]; composing those gives exactly
+    // (+x,-z,+y) = this row. Full derivation and scale cross-check:
+    // docs/bluetooth/android-motion-axis-derivation-2026-08-13.md.
+    //
+    // Two independent derivations agreeing is stronger than either alone, but it
+    // is still not a measurement: the determinant rule above cannot catch a
+    // wrong-but-proper rotation, so the physical pitch/yaw/roll pass that
+    // resolved the SWITCH1 row is still owed. Kept in firmware, not the app, so
+    // a correction is a flash rather than a new APK.
     [SWITCH_MOTION_SOURCE_ANDROID] = {
         {0, 2, 1}, {1, -1, 1}, {0, 2, 1}, {1, -1, 1} },
 };

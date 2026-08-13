@@ -67,6 +67,74 @@ class ControllerFeedbackTest {
 }
 
 /**
+ * Sensor frame -> screen frame.
+ *
+ * Android reports sensor axes in the device's NATURAL orientation. Without this
+ * remap, a phone held sideways to play sends pitch as roll and aiming is rotated
+ * 90 degrees — the single most likely "gyro is wrong" report from a user. The
+ * transform matches the one Dycool's NS-PC-Control applies in its shipped
+ * browser/mobile motion path.
+ */
+class MotionOrientationTest {
+    @Test fun `natural orientation is identity`() {
+        assertEquals(3, MotionOrientation.remapX(3, 5, 0))
+        assertEquals(5, MotionOrientation.remapY(3, 5, 0))
+        assertEquals(7, MotionOrientation.remapZ(7))
+    }
+
+    @Test fun `landscape rotations swap the horizontal axes with the right signs`() {
+        // 90: [x, y] -> [-y, x]
+        assertEquals(-5, MotionOrientation.remapX(3, 5, 90))
+        assertEquals(3, MotionOrientation.remapY(3, 5, 90))
+        // 270: [x, y] -> [y, -x]
+        assertEquals(5, MotionOrientation.remapX(3, 5, 270))
+        assertEquals(-3, MotionOrientation.remapY(3, 5, 270))
+    }
+
+    @Test fun `upside down inverts both horizontal axes`() {
+        assertEquals(-3, MotionOrientation.remapX(3, 5, 180))
+        assertEquals(-5, MotionOrientation.remapY(3, 5, 180))
+    }
+
+    @Test fun `screen normal is never touched by rotation`() {
+        listOf(0, 90, 180, 270).forEach { assertEquals(9, MotionOrientation.remapZ(9)) }
+    }
+
+    @Test fun `four rotations compose back to identity`() {
+        // Rotating a vector through all four screen orientations must be a pure
+        // rotation group: applying 90 four times returns the original vector.
+        var x = 11; var y = -4
+        repeat(4) {
+            val nx = MotionOrientation.remapX(x, y, 90)
+            val ny = MotionOrientation.remapY(x, y, 90)
+            x = nx; y = ny
+        }
+        assertEquals(11, x)
+        assertEquals(-4, y)
+    }
+
+    @Test fun `unexpected rotation values fall back to identity instead of scrambling axes`() {
+        // A malformed or unusual value must not silently permute axes.
+        listOf(45, -1, 359, 1000).forEach { angle ->
+            assertEquals(3, MotionOrientation.remapX(3, 5, angle))
+            assertEquals(5, MotionOrientation.remapY(3, 5, angle))
+        }
+    }
+
+    @Test fun `negative rotation values normalize to their positive equivalents`() {
+        assertEquals(MotionOrientation.remapX(3, 5, 270), MotionOrientation.remapX(3, 5, -90))
+        assertEquals(MotionOrientation.remapY(3, 5, 270), MotionOrientation.remapY(3, 5, -90))
+    }
+
+    @Test fun `extreme values do not overflow into the wrong sign`() {
+        // Int32 headroom: the wire values are clamped to int16 before this point,
+        // so negation can never wrap.
+        assertEquals(-32767, MotionOrientation.remapX(0, 32767, 90))
+        assertEquals(32768, MotionOrientation.remapX(0, -32768, 90))
+    }
+}
+
+/**
  * Android SI sensor units -> the adapter's wire counts. These constants must
  * match tools/fixtures/android_controller_hid.h exactly, because the firmware
  * feeds them straight into the hardware-validated DualSense motion translation.

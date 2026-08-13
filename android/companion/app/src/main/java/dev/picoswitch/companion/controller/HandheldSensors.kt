@@ -13,6 +13,8 @@ import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.view.Surface
+import android.view.WindowManager
 
 /**
  * Handheld gyroscope + accelerometer, converted to the adapter's wire units.
@@ -23,7 +25,10 @@ import android.os.VibratorManager
  * pure battery cost on a phone.
  */
 class MotionSource(context: Context) : SensorEventListener {
-    private val sensorManager = context.applicationContext.getSystemService(SensorManager::class.java)
+    private val appContext = context.applicationContext
+    private val sensorManager = appContext.getSystemService(SensorManager::class.java)
+    @Volatile private var cachedRotationDegrees = 0
+    @Volatile private var rotationCheckedAtMs = 0L
     private val gyroscope = sensorManager?.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
     private val accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
 
@@ -59,18 +64,52 @@ class MotionSource(context: Context) : SensorEventListener {
     }
 
     /**
-     * Latest sample in wire units. [ControllerMotion.valid] is false until both
-     * sensors have reported at least once, so a half-populated first frame is
-     * never published as motion.
+     * Latest sample in wire units, rotated into the orientation the user is
+     * actually holding. [ControllerMotion.valid] is false until both sensors have
+     * reported at least once, so a half-populated first frame is never published
+     * as motion.
      */
     fun sample(): ControllerMotion {
         if (!running || !sawGyro || !sawAccel) return ControllerMotion.None
+        val rotation = currentRotationDegrees()
         return ControllerMotion(
-            gyroX = gyroX, gyroY = gyroY, gyroZ = gyroZ,
-            accelX = accelX, accelY = accelY, accelZ = accelZ,
+            gyroX = MotionOrientation.remapX(gyroX, gyroY, rotation),
+            gyroY = MotionOrientation.remapY(gyroX, gyroY, rotation),
+            gyroZ = MotionOrientation.remapZ(gyroZ),
+            accelX = MotionOrientation.remapX(accelX, accelY, rotation),
+            accelY = MotionOrientation.remapY(accelX, accelY, rotation),
+            accelZ = MotionOrientation.remapZ(accelZ),
             timestampMs = (SystemClock.elapsedRealtime() and 0xFFFF).toInt(),
             valid = true,
         )
+    }
+
+    /**
+     * Screen rotation, cached. sample() runs at the 125 Hz report cadence and the
+     * display query is a framework call, so it is refreshed on a slow cadence
+     * instead -- a rotation takes far longer than this to complete and the user
+     * cannot perceive the difference.
+     */
+    private fun currentRotationDegrees(): Int {
+        val now = SystemClock.elapsedRealtime()
+        if (now - rotationCheckedAtMs >= ROTATION_REFRESH_MS) {
+            rotationCheckedAtMs = now
+            cachedRotationDegrees = runCatching {
+                val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    appContext.display
+                } else {
+                    @Suppress("DEPRECATION")
+                    appContext.getSystemService(WindowManager::class.java)?.defaultDisplay
+                }
+                when (display?.rotation) {
+                    Surface.ROTATION_90 -> 90
+                    Surface.ROTATION_180 -> 180
+                    Surface.ROTATION_270 -> 270
+                    else -> 0
+                }
+            }.getOrDefault(cachedRotationDegrees)
+        }
+        return cachedRotationDegrees
     }
 
     override fun onSensorChanged(event: SensorEvent) {
@@ -96,6 +135,7 @@ class MotionSource(context: Context) : SensorEventListener {
         // ~200 Hz requested; Android may deliver slower. The report cadence is
         // 125 Hz, so this keeps a fresh sample available for every report.
         const val SAMPLING_PERIOD_US = 5_000
+        const val ROTATION_REFRESH_MS = 500L
     }
 }
 
