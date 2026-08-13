@@ -31,6 +31,8 @@ fun CompanionApp(
     onConnectAdapter: () -> Unit,
     onPairAdapter: () -> Unit,
     onImportAmiibo: () -> Unit,
+    onImportAmiiboArchive: () -> Unit,
+    onExportAmiiboArchive: () -> Unit,
     onImportAmiiboKeys: () -> Unit,
     onPrepareController: () -> Unit,
     onExportDiagnostics: () -> Unit,
@@ -91,7 +93,7 @@ fun CompanionApp(
                                 destinationState.SaveableStateProvider(ui.section.name) {
                                     when (ui.section) {
                                         AppSection.Home -> HomeScreen(ui, viewModel)
-                                        AppSection.Amiibo -> AmiiboScreen(ui, viewModel, onImportAmiibo)
+                                        AppSection.Amiibo -> AmiiboScreen(ui, viewModel, onImportAmiibo, onImportAmiiboArchive, onExportAmiiboArchive, onImportAmiiboKeys)
                                         AppSection.Controller -> ControllerScreen(ui, viewModel, onPrepareController)
                                         AppSection.Modes -> ModesScreen(ui, viewModel)
                                         AppSection.Settings -> SettingsScreen(ui, viewModel, onExportDiagnostics, onImportAmiiboKeys, theme)

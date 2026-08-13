@@ -17,6 +17,11 @@ import java.util.UUID
 
 data class AmiiboImportResult(val item: AmiiboLibraryItem, val duplicate: Boolean)
 
+data class AmiiboArchiveImportResult(
+    val items: List<AmiiboLibraryItem>,
+    val selectedId: String?,
+)
+
 /** Private, versioned, crash-resistant Amiibo storage. Raw dumps never leave app-private files. */
 class AmiiboLibrary(context: Context) {
     private val store = AmiiboLibraryStore(File(context.filesDir, "amiibo-library"))
@@ -28,6 +33,8 @@ class AmiiboLibrary(context: Context) {
     suspend fun rename(id: String, displayName: String) = store.rename(id, displayName)
     suspend fun delete(id: String) = store.delete(id)
     suspend fun bytes(id: String) = store.bytes(id)
+    suspend fun exportArchive(selectedId: String? = null) = store.exportArchive(selectedId)
+    suspend fun importArchive(raw: ByteArray) = store.importArchive(raw)
 }
 
 /** File-root implementation is Android-independent so recovery and transaction behavior are host-testable. */
@@ -165,6 +172,77 @@ class AmiiboLibraryStore(private val root: File) {
                 }
             }
         }
+    }
+
+    suspend fun exportArchive(selectedId: String? = null): ByteArray = withContext(Dispatchers.IO) {
+        lock.withLock {
+            val exported = _items.value.map { item ->
+                AmiiboLibraryArchive.ExportItem(
+                    item = item,
+                    bytes = fileFor(item.fileName).readBytes().also {
+                        AmiiboFiles.validate(it)
+                        check(it.size == item.size && AmiiboFiles.crc32(it).equals(item.crc32, true)) {
+                            "Local Amiibo copy failed integrity verification"
+                        }
+                    },
+                    loaded = item.id == selectedId,
+                )
+            }
+            AmiiboLibraryArchive.write(exported)
+        }
+    }
+
+    /**
+     * Replace the complete private library only after the whole archive has
+     * been parsed, normalized, and validated. New UUID names ensure a failed
+     * index write cannot overwrite an existing private dump.
+     */
+    suspend fun importArchive(raw: ByteArray): AmiiboArchiveImportResult = ioLocked {
+        val parsed = AmiiboLibraryArchive.read(raw)
+        val imported = parsed.map { entry ->
+            val bytes = entry.bytes
+            val identity = AmiiboCrypto.identity(bytes)
+            val id = UUID.randomUUID().toString()
+            AmiiboLibraryItem(
+                id = id,
+                displayName = entry.displayName,
+                fileName = "$id.bin",
+                size = bytes.size,
+                crc32 = AmiiboFiles.crc32(bytes),
+                uid = identity.uid,
+                figureId = identity.figureId,
+                importedAtMillis = System.currentTimeMillis(),
+                characterGameCode = identity.characterGameCode,
+                characterVariant = identity.characterVariant,
+                tagType = identity.tagType,
+                typeName = identity.typeName,
+                modelNumber = identity.modelNumber,
+                seriesCode = identity.seriesCode,
+                formatVersion = identity.formatVersion,
+                extendedVariant = identity.extendedVariant,
+            ) to bytes
+        }
+        val oldItems = _items.value
+        val written = mutableListOf<File>()
+        try {
+            imported.forEach { (item, bytes) ->
+                val destination = fileFor(item.fileName)
+                writeAtomic(destination, bytes)
+                written += destination
+            }
+            persistIndex(imported.map { it.first })
+        } catch (error: Throwable) {
+            written.forEach { it.delete() }
+            throw error
+        }
+        oldItems.asSequence()
+            .map { it.fileName }
+            .filterNot { oldName -> imported.any { it.first.fileName == oldName } }
+            .forEach { oldName -> runCatching { fileFor(oldName).delete() } }
+        val next = imported.map { it.first }
+        _items.value = next
+        val selected = parsed.zip(next).firstOrNull { it.first.loaded }?.second?.id
+        AmiiboArchiveImportResult(next, selected)
     }
 
     private suspend fun <T> ioLocked(block: suspend () -> T): T = withContext(Dispatchers.IO) { lock.withLock { block() } }
