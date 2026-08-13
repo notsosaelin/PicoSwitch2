@@ -52,6 +52,8 @@ data class CompanionUiState(
     val controllerState: ControllerState = ControllerState.Neutral,
     val sourceDevices: List<SourceDeviceUi> = emptyList(),
     val selectedSourceDescriptor: String? = null,
+    val requestedFaceLayout: ControllerFaceLayout = ControllerFaceLayout.Auto,
+    val resolvedFaceLayout: ResolvedControllerLayout = ControllerLayoutResolver.resolve(ControllerFaceLayout.Auto, null),
     val platform: PlatformDiagnostics = PlatformDiagnostics(),
     val diagnosticSummary: DiagnosticSummary = DiagnosticSummary(),
     val diagnosticEntries: List<DiagnosticEntry> = emptyList(),
@@ -67,6 +69,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     private val adapter = AdapterRepository(BleGattManagementTransport(application, diagnostics))
     private val library = AmiiboLibrary(application)
     private val themeStore = ThemePreferenceStore(application)
+    private val controllerLayoutStore = ControllerLayoutStore(application)
     private val _theme = MutableStateFlow(themeStore.load())
     val theme: StateFlow<ThemeSelection> = _theme.asStateFlow()
     private val initialSection = savedState.get<String>(KEY_SECTION)?.let { runCatching { AppSection.valueOf(it) }.getOrNull() } ?: AppSection.Home
@@ -219,11 +222,17 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         if (inputRouter.selectedDescriptor != null && devices.none { it.descriptor == inputRouter.selectedDescriptor }) {
             inputRouter.select(null)
         }
-        if (inputRouter.selectedDescriptor == null && desired != null) inputRouter.select(devices.firstOrNull { it.descriptor == desired })
+        if (inputRouter.selectedDescriptor == null && desired != null) {
+            val restored = devices.firstOrNull { it.descriptor == desired }
+            inputRouter.select(restored)
+            restored?.let { inputRouter.setFaceLayout(controllerLayoutStore.load(it.descriptor)) }
+        }
         _ui.update { state ->
             state.copy(
                 sourceDevices = devices.map { SourceDeviceUi(it.id, it.descriptor, it.name.take(120), it.vendorId, it.productId) },
                 selectedSourceDescriptor = inputRouter.selectedDescriptor,
+                requestedFaceLayout = inputRouter.requestedFaceLayout,
+                resolvedFaceLayout = inputRouter.resolvedFaceLayout,
             )
         }
     }
@@ -231,8 +240,31 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     fun selectSource(descriptor: String) {
         val device = inputRouter.eligibleDevices().firstOrNull { it.descriptor == descriptor }
         inputRouter.select(device)
+        device?.let { inputRouter.setFaceLayout(controllerLayoutStore.load(it.descriptor)) }
         savedState[KEY_SOURCE] = device?.descriptor
-        _ui.update { it.copy(selectedSourceDescriptor = device?.descriptor) }
+        _ui.update {
+            it.copy(
+                selectedSourceDescriptor = device?.descriptor,
+                requestedFaceLayout = inputRouter.requestedFaceLayout,
+                resolvedFaceLayout = inputRouter.resolvedFaceLayout,
+            )
+        }
+    }
+
+    fun setControllerFaceLayout(layout: ControllerFaceLayout) {
+        val descriptor = inputRouter.selectedDescriptor ?: return
+        controllerLayoutStore.save(descriptor, layout)
+        inputRouter.setFaceLayout(layout)
+        hidBridge.neutralize()
+        _ui.update {
+            it.copy(
+                controllerState = ControllerState.Neutral,
+                requestedFaceLayout = inputRouter.requestedFaceLayout,
+                resolvedFaceLayout = inputRouter.resolvedFaceLayout,
+            )
+        }
+        diagnostics.event("controller", "face layout", "${layout.key}/${inputRouter.resolvedFaceLayout.layout.key}")
+        notice("Controller layout set to ${layout.title}; held input was cleared")
     }
 
     fun acquireControllerBridge() = hidBridge.acquire()
@@ -286,6 +318,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             "Saved HID hosts" to pairedControllerHosts().size.toString(),
             "Reports" to "${ui.bridge.reportCount}; last=${ui.bridge.lastReportAtMillis}",
             "Controller state" to ControllerReportEncoder.encode(ui.controllerState).joinToString(" ") { "%02X".format(it) },
+            "Controller face layout" to "${ui.requestedFaceLayout.key}/${ui.resolvedFaceLayout.layout.key}",
             "Identity refresh pending" to ui.identityRefreshPending.toString(),
         ))
         file.writeText(report)
