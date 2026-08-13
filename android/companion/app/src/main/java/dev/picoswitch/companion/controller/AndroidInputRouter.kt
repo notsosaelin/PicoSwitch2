@@ -1,0 +1,116 @@
+package dev.picoswitch.companion.controller
+
+import android.view.InputDevice
+import android.view.KeyEvent
+import android.view.MotionEvent
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+
+class AndroidInputRouter {
+    private val _state = MutableStateFlow(ControllerState.Neutral)
+    val state: StateFlow<ControllerState> = _state.asStateFlow()
+    var selectedDescriptor: String? = null
+    private var keyUp = false
+    private var keyRight = false
+    private var keyDown = false
+    private var keyLeft = false
+    private var hatUp = false
+    private var hatRight = false
+    private var hatDown = false
+    private var hatLeft = false
+
+    fun eligibleDevices(): List<InputDevice> = InputDevice.getDeviceIds().asList().mapNotNull(InputDevice::getDevice)
+        .filter { it.supportsSource(InputDevice.SOURCE_GAMEPAD) || it.supportsSource(InputDevice.SOURCE_JOYSTICK) }
+
+    fun select(device: InputDevice?) {
+        selectedDescriptor = device?.descriptor
+        clearDpad()
+        _state.value = ControllerState.Neutral
+    }
+
+    fun onKey(event: KeyEvent): Boolean {
+        val device = event.device ?: return false
+        if (device.descriptor != selectedDescriptor || event.repeatCount > 0) return false
+        val pressed = event.action == KeyEvent.ACTION_DOWN
+        val button = when (event.keyCode) {
+            KeyEvent.KEYCODE_BUTTON_A -> ControllerButton.A
+            KeyEvent.KEYCODE_BUTTON_B -> ControllerButton.B
+            KeyEvent.KEYCODE_BUTTON_X -> ControllerButton.X
+            KeyEvent.KEYCODE_BUTTON_Y -> ControllerButton.Y
+            KeyEvent.KEYCODE_BUTTON_L1 -> ControllerButton.L1
+            KeyEvent.KEYCODE_BUTTON_R1 -> ControllerButton.R1
+            KeyEvent.KEYCODE_BUTTON_L2 -> ControllerButton.L2
+            KeyEvent.KEYCODE_BUTTON_R2 -> ControllerButton.R2
+            KeyEvent.KEYCODE_BUTTON_SELECT -> ControllerButton.Select
+            KeyEvent.KEYCODE_BUTTON_START -> ControllerButton.Start
+            KeyEvent.KEYCODE_BUTTON_THUMBL -> ControllerButton.LeftStick
+            KeyEvent.KEYCODE_BUTTON_THUMBR -> ControllerButton.RightStick
+            KeyEvent.KEYCODE_BUTTON_MODE -> ControllerButton.Home
+            KeyEvent.KEYCODE_BUTTON_C, KeyEvent.KEYCODE_BUTTON_Z -> ControllerButton.Capture
+            else -> null
+        }
+        if (button != null) {
+            val buttons = _state.value.buttons.toMutableSet().apply { if (pressed) add(button) else remove(button) }
+            _state.value = _state.value.copy(buttons = buttons)
+            return true
+        }
+        when (event.keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP -> keyUp = pressed
+            KeyEvent.KEYCODE_DPAD_RIGHT -> keyRight = pressed
+            KeyEvent.KEYCODE_DPAD_DOWN -> keyDown = pressed
+            KeyEvent.KEYCODE_DPAD_LEFT -> keyLeft = pressed
+            else -> return false
+        }
+        publishDpad()
+        return true
+    }
+
+    fun onMotion(event: MotionEvent): Boolean {
+        val device = event.device ?: return false
+        if (device.descriptor != selectedDescriptor || !event.isFromSource(InputDevice.SOURCE_JOYSTICK)) return false
+        fun range(axis: Int) = device.getMotionRange(axis, event.source)?.let { AxisRange(it.min, it.max, it.flat) }
+        fun stick(axis: Int, invert: Boolean = false, fallback: Int? = null): Int {
+            val actual = if (range(axis) != null) axis else fallback ?: axis
+            return range(actual)?.stick(event.getAxisValue(actual), invert) ?: 128
+        }
+        fun trigger(primary: Int, fallback: Int): Int {
+            val actual = if (range(primary) != null) primary else fallback
+            return range(actual)?.trigger(event.getAxisValue(actual)) ?: 0
+        }
+        val hatX = event.getAxisValue(MotionEvent.AXIS_HAT_X)
+        val hatY = event.getAxisValue(MotionEvent.AXIS_HAT_Y)
+        hatLeft = hatX < -0.5f
+        hatRight = hatX > 0.5f
+        hatUp = hatY < -0.5f
+        hatDown = hatY > 0.5f
+        _state.value = _state.value.copy(
+            leftX = stick(MotionEvent.AXIS_X), leftY = stick(MotionEvent.AXIS_Y),
+            rightX = stick(MotionEvent.AXIS_Z, fallback = MotionEvent.AXIS_RX),
+            rightY = stick(MotionEvent.AXIS_RZ, fallback = MotionEvent.AXIS_RY),
+            leftTrigger = trigger(MotionEvent.AXIS_LTRIGGER, MotionEvent.AXIS_BRAKE),
+            rightTrigger = trigger(MotionEvent.AXIS_RTRIGGER, MotionEvent.AXIS_GAS),
+            dpadLeft = keyLeft || hatLeft,
+            dpadRight = keyRight || hatRight,
+            dpadUp = keyUp || hatUp,
+            dpadDown = keyDown || hatDown,
+        )
+        return true
+    }
+
+    fun neutralize() { clearDpad(); _state.value = ControllerState.Neutral }
+
+    private fun publishDpad() {
+        _state.value = _state.value.copy(
+            dpadUp = keyUp || hatUp, dpadRight = keyRight || hatRight,
+            dpadDown = keyDown || hatDown, dpadLeft = keyLeft || hatLeft,
+        )
+    }
+
+    private fun clearDpad() {
+        keyUp = false; keyRight = false; keyDown = false; keyLeft = false
+        hatUp = false; hatRight = false; hatDown = false; hatLeft = false
+    }
+
+    private fun InputDevice.supportsSource(source: Int) = sources and source == source
+}
