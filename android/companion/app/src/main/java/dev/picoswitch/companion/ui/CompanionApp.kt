@@ -29,10 +29,10 @@ private val navItems = listOf(
 fun CompanionApp(
     viewModel: CompanionViewModel,
     onConnectAdapter: () -> Unit,
+    onPairAdapter: () -> Unit,
     onImportAmiibo: () -> Unit,
     onImportAmiiboKeys: () -> Unit,
     onPrepareController: () -> Unit,
-    onPairControllerHost: () -> Unit,
     onExportDiagnostics: () -> Unit,
 ) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
@@ -84,13 +84,13 @@ fun CompanionApp(
                             Modifier.fillMaxSize().widthIn(max = LayoutTokens.ContentMaxWidth)
                                 .padding(horizontal = LayoutTokens.Space4),
                         ) {
-                            ConnectionStrip(ui, viewModel, onConnectAdapter)
+                            ConnectionStrip(ui, viewModel, onConnectAdapter, onPairAdapter)
                             Box(Modifier.weight(1f).fillMaxWidth()) {
                                 destinationState.SaveableStateProvider(ui.section.name) {
                                     when (ui.section) {
                                         AppSection.Home -> HomeScreen(ui, viewModel)
                                         AppSection.Amiibo -> AmiiboScreen(ui, viewModel, onImportAmiibo, onImportAmiiboKeys)
-                                        AppSection.Controller -> ControllerScreen(ui, viewModel, onPrepareController, onPairControllerHost)
+                                        AppSection.Controller -> ControllerScreen(ui, viewModel, onPrepareController)
                                         AppSection.Modes -> ModesScreen(ui, viewModel)
                                         AppSection.More -> MoreScreen(ui, viewModel, onExportDiagnostics, theme)
                                     }
@@ -106,7 +106,12 @@ fun CompanionApp(
 }
 
 @Composable
-private fun ConnectionStrip(ui: CompanionUiState, viewModel: CompanionViewModel, onConnect: () -> Unit) {
+private fun ConnectionStrip(
+    ui: CompanionUiState,
+    viewModel: CompanionViewModel,
+    onConnect: () -> Unit,
+    onPairAdapter: () -> Unit,
+) {
     Surface(
         modifier = Modifier.fillMaxWidth().padding(top = LayoutTokens.Space3),
         color = if (ui.connection.connected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
@@ -126,7 +131,12 @@ private fun ConnectionStrip(ui: CompanionUiState, viewModel: CompanionViewModel,
                 IconButton(onClick = viewModel::refresh, enabled = !ui.busy) { Icon(Icons.Default.Refresh, "Refresh") }
                 TextButton(onClick = viewModel::disconnect, enabled = !ui.busy) { Text("Disconnect") }
             } else {
-                Button(onClick = onConnect, enabled = !ui.busy) { Text(if (ui.connection.phase.name == "Reconnecting") "Reconnect" else "Find adapter") }
+                if (ui.adapterRelationship != null) {
+                    TextButton(onClick = onPairAdapter, enabled = !ui.busy) { Text("Pair another") }
+                }
+                Button(onClick = onConnect, enabled = !ui.busy) {
+                    Text(if (ui.adapterRelationship == null) "Pair Adapter" else "Reconnect")
+                }
             }
         }
     }

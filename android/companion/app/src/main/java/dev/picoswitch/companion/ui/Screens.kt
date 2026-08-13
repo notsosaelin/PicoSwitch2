@@ -488,7 +488,7 @@ private fun AmiiboRegisterDetails(ui: CompanionUiState) {
 }
 
 @Composable
-fun ControllerScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onPrepare: () -> Unit, onPairHost: () -> Unit) {
+fun ControllerScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onPrepare: () -> Unit) {
     ScreenColumn("Android controller", "Pass this handheld’s built-in controls through PicoSwitch2") {
         HardwareCard(container = MaterialTheme.colorScheme.secondaryContainer) {
             Text("Foreground only", style = MaterialTheme.typography.titleMedium)
@@ -498,7 +498,7 @@ fun ControllerScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onPrep
             val wide = maxWidth >= LayoutTokens.TwoPaneBreakpoint
             val source: @Composable () -> Unit = { InputSourceCard(ui, viewModel) }
             val layout: @Composable () -> Unit = { ControllerLayoutCard(ui, viewModel) }
-            val bridge: @Composable () -> Unit = { BridgeCard(ui, viewModel, onPrepare, onPairHost) }
+            val bridge: @Composable () -> Unit = { BridgeCard(ui, viewModel, onPrepare) }
             if (wide) Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space4)) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space4)) { source(); layout() }
                 Box(Modifier.weight(1f)) { bridge() }
@@ -577,8 +577,7 @@ private fun InputSourceCard(ui: CompanionUiState, viewModel: CompanionViewModel)
 }
 
 @Composable
-private fun BridgeCard(ui: CompanionUiState, viewModel: CompanionViewModel, onPrepare: () -> Unit, onPairHost: () -> Unit) {
-    val hosts = remember(ui.bridge.phase, ui.connection.phase) { viewModel.pairedControllerHosts() }
+private fun BridgeCard(ui: CompanionUiState, viewModel: CompanionViewModel, onPrepare: () -> Unit) {
     HardwareCard {
         SectionHeading(Icons.Default.BluetoothAudio, "Controller link")
         Spacer(Modifier.height(LayoutTokens.Space2))
@@ -587,19 +586,27 @@ private fun BridgeCard(ui: CompanionUiState, viewModel: CompanionViewModel, onPr
         Spacer(Modifier.height(LayoutTokens.Space3))
         when (ui.bridge.phase) {
             BridgePhase.Idle, BridgePhase.Unsupported, BridgePhase.Failed ->
-                Button(onClick = onPrepare, enabled = ui.selectedSourceDescriptor != null, modifier = Modifier.fillMaxWidth()) { Text("Prepare controller bridge") }
+                Button(
+                    onClick = onPrepare,
+                    enabled = ui.selectedSourceDescriptor != null && ui.adapterRelationship != null,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(if (ui.adapterRelationship == null) "Pair Adapter first" else "Use this handheld") }
             BridgePhase.Playing ->
                 Button(onClick = viewModel::stopControllerBridge, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Stop playing") }
             else -> LinearProgressIndicator(Modifier.fillMaxWidth())
         }
         if (ui.bridge.phase == BridgePhase.Ready) {
-            hosts.forEach { host ->
-                FilledTonalButton(onClick = { viewModel.connectControllerHost(host) }, Modifier.fillMaxWidth().padding(top = LayoutTokens.Space2)) {
-                    Text("Connect ${viewModel.controllerHostLabel(host)}")
-                }
-            }
-            OutlinedButton(onClick = onPairHost, Modifier.fillMaxWidth().padding(top = LayoutTokens.Space2)) { Text("Pair a PicoSwitch2 host") }
-            Text("Open the adapter’s physical pairing window first. Android will show its own required chooser and bond prompt.", style = MaterialTheme.typography.bodySmall)
+            val host = viewModel.knownControllerHost()
+            FilledTonalButton(
+                onClick = { host?.let(viewModel::connectControllerHost) },
+                enabled = host != null,
+                modifier = Modifier.fillMaxWidth().padding(top = LayoutTokens.Space2),
+            ) { Text("Reconnect controller mode") }
+            Text(
+                if (host == null) "The saved adapter bond is unavailable. Reconnect or pair the adapter again."
+                else "Controller mode uses the adapter relationship already established by Pair Adapter; there is no second chooser.",
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }

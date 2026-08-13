@@ -97,6 +97,20 @@ class AdapterRepositoryTest {
         assertEquals(CapabilityState.Available, snapshot.capabilities.amiibo)
     }
 
+    @Test fun `known adapter reconnect uses direct address without scanning`() = runTest {
+        val transport = CompatibilityTransport(validImage())
+        AdapterRepository(transport).connectKnown("88:A2:9E:D1:77:78")
+        assertEquals(1, transport.knownConnects)
+        assertEquals(0, transport.scans)
+    }
+
+    @Test fun `failed known adapter reconnect falls back to bounded discovery`() = runTest {
+        val transport = CompatibilityTransport(validImage(), failKnown = true)
+        AdapterRepository(transport).connectKnown("88:A2:9E:D1:77:78")
+        assertEquals(1, transport.knownConnects)
+        assertEquals(1, transport.scans)
+    }
+
     @Test fun `unexpected mutation reply cannot become false success`() = runTest {
         val transport = ScriptedTransport(validImage(), unexpectedBegin = true)
         val error = runCatching { AdapterRepository(transport).uploadAmiibo(validImage()) }.exceptionOrNull()
@@ -143,9 +157,15 @@ class AdapterRepositoryTest {
         }
     }
 
-    private class CompatibilityTransport(private val data: ByteArray) : ManagementTransport {
+    private class CompatibilityTransport(private val data: ByteArray, private val failKnown: Boolean = false) : ManagementTransport {
         override val connection = MutableStateFlow(ConnectionState())
-        override suspend fun scanAndConnect() = Unit
+        var knownConnects = 0
+        var scans = 0
+        override suspend fun scanAndConnect() { scans++ }
+        override suspend fun connectKnown(address: String) {
+            knownConnects++
+            if (failKnown) throw ManagementException("saved adapter unavailable")
+        }
         override suspend fun disconnect() = Unit
         override suspend fun transact(command: String, timeoutMillis: Long): String = when (command) {
             "info" -> """{"id":"picoswitch","product":"PicoSwitch Config","version":"2.0"}"""

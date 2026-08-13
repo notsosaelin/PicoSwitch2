@@ -1,7 +1,9 @@
 # Android Handheld Controller Bridge
 
-Status: implemented under `android/companion/`; AYN Thor app-side input and public HID Device
-registration hardware-validated 2026-08-13. App-led bond and Pico/console receipt remain open.
+Status: implemented under `android/companion/`; AYN Thor app-side input, public HID Device
+registration, Pico receipt, and in-game console control were hardware-validated 2026-08-13. The
+new single-relationship pairing/reconnect UX and corrected face-label mapping are host/build
+validated and await one focused hardware pass.
 
 ## Goal
 
@@ -12,12 +14,12 @@ to PicoSwitch2 as a standard Bluetooth HID gamepad.
 The intended first-run experience stays inside the app except for Android-owned permission,
 device-selection, and bond-confirmation overlays:
 
-1. Open the app and tap **Connect adapter**.
+1. Open the app and tap **Pair Adapter**.
 2. Double-tap PicoSwitch2 BOOTSEL to open its explicit 30-second pairing window.
 3. Approve Android's Nearby devices permission and select `Joypad Adapter` / `PicoSwitch2` in the
    system chooser launched by the app.
 4. Approve the system bond prompt if Android shows one.
-5. Return directly to the app, select the built-in controls, and tap **Play**.
+5. Return directly to the app, select the built-in controls, and tap **Use this handheld**.
 
 No root, Shizuku, accessibility service, input injection, private Android API, or manual visit to
 Bluetooth Settings is part of the design.
@@ -30,8 +32,8 @@ API. It lets a foreground app register a HID report descriptor, connect to a pai
 interrupt reports, and receive HID host callbacks. PicoSwitch2 already implements the other half:
 a Classic Bluetooth HID host plus a descriptor-driven generic gamepad parser.
 
-The two material compatibility risks were bounded on the intended handheld before the remaining
-end-to-end pairing pass:
+The two material compatibility risks were bounded on the intended handheld and the complete HID
+path subsequently reached a real game through PicoSwitch2:
 
 - The OEM Bluetooth stack must expose the Android HID Device profile. API level alone does not
   prove that `BluetoothAdapter.getProfileProxy(..., BluetoothProfile.HID_DEVICE)` will succeed on
@@ -214,24 +216,34 @@ Use
 to launch a filtered system chooser from the app. Match the current Classic name `Joypad Adapter`
 and the migration-safe name `PicoSwitch2`. Companion association performs discovery on the app's
 behalf, but it does not create the HID connection; after selection the app owns the bond check and
-profile connection.
+profile connection. The app presents these layers as one saved **adapter relationship**, while its
+diagnostics retain the real distinction between companion association, Classic bond, BLE GATT
+management, HID Device registration, and HID host connection.
 
 ```text
 UNSUPPORTED
   HID_DEVICE profile proxy unavailable
 
-IDLE
+UNPAIRED
   -> request Nearby devices permission
+  -> Pair Adapter
+  -> launch CompanionDeviceManager chooser
+  -> persist association ID, Bluetooth address, and display name
+  -> if BOND_NONE: createBond() and await BOND_BONDED
+  -> connect management GATT and validate PicoSwitch2 identity
+
+RETURNING
+  -> restore CompanionDeviceManager association or migrate an existing matching bond
+  -> connect the saved GATT address directly
+  -> bounded service-UUID scan fallback if direct GATT fails
+
+CONTROLLER_STARTING
   -> acquire HID_DEVICE profile proxy
   -> registerApp(gamepad SDP + fixed descriptor)
-
-SELECTING_ADAPTER
-  -> launch CompanionDeviceManager chooser
-  -> receive selected BluetoothDevice
-  -> if BOND_NONE: createBond() and await BOND_BONDED
+  -> use the already bonded adapter; do not show a second chooser
 
 CONNECTING
-  -> BluetoothHidDevice.connect(selectedPico)
+  -> BluetoothHidDevice.connect(savedPico)
   -> await onConnectionStateChanged(CONNECTED)
 
 PLAYING
@@ -257,8 +269,12 @@ Important ordering and UX rules:
   boolean return from `registerApp()` or `connect()`.
 - Store the association/device address through Android's supported APIs. Never store or manage link
   keys in the app.
-- On later launches, register the HID app and call `connect()` for the saved bonded Pico. No chooser
-  or Settings visit should be needed while both sides retain the bond.
+- On later launches, reconnect management directly and register/connect the HID app only when the
+  user enters controller mode. No chooser or Settings visit should be needed while both sides
+  retain the relationship and Classic bond.
+- The synchronous booleans returned by both `registerApp()` and `connect()` are requests, not final
+  connection state on the Thor OEM stack. Bounded callback timeouts prevent both false failure and
+  an indefinite spinner.
 
 The primary flow has Android initiate the HID profile connection to the already selected Pico. It
 does not request Android discoverability and does not depend on Pico inquiry finding the phone.
@@ -355,6 +371,7 @@ Version one includes:
 
 - one Android handheld and one PicoSwitch2 adapter;
 - built-in buttons, two sticks, D-pad, and analog triggers;
+- Auto/Nintendo/Xbox face-layout normalization, persisted per Android input descriptor;
 - app-led initial selection/bonding and saved-bond reconnect;
 - a visible connection/input diagnostic screen;
 - neutralization on stop/disconnect; and
@@ -377,7 +394,7 @@ work without a guide/capture button if the OS withholds it.
 
 ## Implementation and validation path
 
-### Phase 0 — one-device feasibility spike (partially hardware-complete)
+### Phase 0 — one-device feasibility spike (hardware-complete for the AYN Thor)
 
 Build the smallest possible debug Activity before designing the final UI:
 
@@ -390,8 +407,11 @@ Build the smallest possible debug Activity before designing the final UI:
 6. On Pico UART, capture the observed address, Class of Device, name, descriptor parse summary,
    selected `bthid_gamepad` driver, and normalized event values.
 
-Final gate: do not claim completion until a real target handheld reaches the console with the correct face button,
-centered sticks, four directions, and no stuck state, without opening Android Bluetooth Settings.
+The Thor reached a real game without opening Android Bluetooth Settings. Its first pass also exposed
+that direct Android `KEYCODE_BUTTON_A/B/X/Y` forwarding preserves Android's positional/Xbox
+semantics while this handheld prints Nintendo-style labels. The new layout layer swaps A/B and X/Y
+for Nintendo-style sources before the unchanged HID encoder; that correction still needs its
+focused labeled-button confirmation.
 
 Pico-side preparation completed 2026-08-11: the canonical descriptor parses to a 10-byte wire
 report with report ID 1, six axes at bytes 1..6, 14 buttons at bytes 7..8, and hat at byte 9. Host
@@ -410,10 +430,10 @@ source/host validation only; it does not prove an OEM exposes Android's HID Devi
 - Add the lifecycle/pairing state machine with fake profile and bond adapters.
 - Make every stop/error path generate a neutral state before teardown when the link still exists.
 
-### Phase 2 — usable app (implemented; hardware pass in progress)
+### Phase 2 — usable app (implemented; revised relationship UX awaits hardware confirmation)
 
-- Add source selection, raw/normalized live diagnostics, permission rationale, adapter chooser,
-  connection state, and one large Play/Stop control.
+- Add source selection, raw/normalized live diagnostics, permission rationale, one adapter chooser,
+  connection state, and one large Use-this-handheld/Stop control.
 - Keep the display awake while playing and make foreground-only operation explicit.
 - Save only source identity/calibration and the Android companion association; do not create a
   second controller-remapping system.
@@ -463,9 +483,12 @@ compatibility substantially harder.
 - [x] Target handheld exposes `BluetoothProfile.HID_DEVICE` to an ordinary app (AYN Thor API 33).
 - [x] Built-in controls arrive through public `KeyEvent`/`MotionEvent` APIs while the app is focused
       (`Odin Controller` live panel hardware-confirmed).
-- [ ] Initial adapter selection, bond consent, and HID connection complete without opening Settings.
+- [x] AYN Thor completed app-led selection/bond/HID connection and controlled a real game without
+      opening Settings. The revised one-relationship first-pair screen still needs a clean-install
+      replay.
 - [x] Source/host fixture: PicoSwitch2 accepts an Android-initiated Classic HID connection with a
-      phone Class of Device and selects `bthid_gamepad` (physical Android/Pico confirmation pending).
+      phone Class of Device and selects `bthid_gamepad`; Android/Pico/console receipt is physical-
+      hardware confirmed.
       Verified green in `tools/test_bthid_late_identity.c`; the phone binds generic via the
       no-match fallback even though `gamepad_match()` (correctly) rejects a phone major class.
 - [x] Phone-CoD generic binding survives late Classic SDP VID/PID re-evaluation: no disconnect/
@@ -475,7 +498,9 @@ compatibility substantially harder.
 - [x] Canonical reports round-trip through the production generic parser to the expected `input_event_t`.
 - [x] Two independent handhelds (Retroid Pocket Classic API 34, AYN Thor API 33) pass the HID Device
       profile feasibility gate and map onto the fixed 14-button contract with no firmware change.
-- [ ] A/B/X/Y, shoulders, D-pad, both sticks, both triggers, Start/Select, and stick clicks pass on console.
+- [ ] Corrected physical-label A/B/X/Y plus shoulders, D-pad, both sticks, both triggers,
+      Start/Select, and stick clicks pass on console. The first in-game pass proved transport and
+      exposed the face-label inversion; the software correction is not yet physically replayed.
 - [ ] App pause, screen lock, Bluetooth loss, and process death cannot leave a held input on console.
 - [ ] Saved-bond reconnect works after restarting the app, PicoSwitch2, and handheld.
 - [ ] Returning to a validated physical controller does not regress existing adapter behavior.

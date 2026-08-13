@@ -17,6 +17,10 @@ pass. ADB targeted the explicitly connected Thor only.
 - After resetting a stale Android Bluetooth HID registration, the companion acquired the public
   `BluetoothProfile.HID_DEVICE`, registered its descriptor, and reached `Ready` / `Pair a
   PicoSwitch2 host` without root or Shizuku.
+- The subsequent app-led bond/HID connection reached `Playing`, PicoSwitch2 forwarded the Android
+  reports, and the handheld controlled a game on the Switch. The architecture is therefore proven
+  end to end on this Thor. Face buttons were reversed relative to the printed Nintendo-style
+  labels; that is recorded as a normalization defect, not a transport failure.
 
 ## Pair action crash
 
@@ -90,12 +94,31 @@ This correction requires a newly built/flashed firmware image before the powered
 can be hardware-validated. It does not change controller input, output personality, bonds, motion,
 audio, or the console-facing USB path.
 
+## Face-label finding and rebuilt client
+
+Android standardizes `KEYCODE_BUTTON_A/B/X/Y` primarily by face-button position; it exposes no
+portable printed-layout property. The old client forwarded those key names directly into the W3C
+ordered HID report, while PicoSwitch2 correctly mapped W3C face positions into Nintendo semantics.
+That made a Nintendo-labeled handheld appear A/B and X/Y swapped.
+
+The rebuilt client adds a persisted per-input `Auto` / `Nintendo` / `Xbox` selection before report
+encoding. Nintendo swaps A/B and X/Y; Xbox preserves Android positions. Auto recognizes the two
+audited AYN/Retroid controller identities and otherwise documents its positional fallback. A
+layout change publishes neutral state so an old held semantic cannot stick.
+
+It also replaces the two user-facing setup paths with one saved adapter relationship. Android
+still requires companion association, bond consent, BLE GATT, and foreground HID registration as
+separate platform operations, but only first use opens a chooser. Returning management tries the
+known address before a bounded service scan, and controller mode targets the same saved bond.
+
 ## Remaining physical gates
 
-1. Open PicoSwitch2's physical controller-pairing window.
-2. Complete the app-launched Android chooser and bond prompt without visiting Bluetooth Settings.
-3. Confirm Pico selects the generic gamepad parser and the Switch receives all Thor inputs.
-4. Validate pause, process death, Bluetooth loss, saved-bond reconnect, and return to a physical
+1. Install the rebuilt APK and confirm Auto resolves the Thor to Nintendo; verify printed A/B/X/Y
+   plus all remaining controls in-game.
+2. Validate first-use **Pair Adapter** and returning automatic management/controller reconnect.
+3. Validate pause, process death, Bluetooth loss, saved-bond reconnect, and return to a physical
    controller with no stuck input or regression.
+4. Measure controller-only and management-coexistence latency/jitter rather than inferring it from
+   the successful play pass.
 5. Flash a build containing the identity-clear fix and confirm the controller card becomes
    `No controller` within one five-second poll after power-off.

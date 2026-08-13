@@ -546,8 +546,9 @@ sleep command or distinguishable wake advertisement is captured. See
 ## Android handheld controller bridge
 
 Status: Pico-side contract and regressions implemented. A no-root Android 13 AYN Thor has
-hardware-validated built-in input capture and public HID Device registration; app-led bonding and
-Pico/console receipt remain.
+hardware-validated built-in input capture, public HID Device registration, app-led bonding, Pico
+receipt, and working in-game console input. The observed face-label mismatch is corrected in the
+next APK; lifecycle/latency and the new unified relationship UX remain open hardware gates.
 Architecture and gates:
 [`docs/bluetooth/android-controller-bridge.md`](docs/bluetooth/android-controller-bridge.md).
 
@@ -562,9 +563,14 @@ Architecture and gates:
   generic parser. Host coverage pins the exact 10-byte wire layout, complete-state mapping,
   wrong-ID/truncation rejection, disconnect cleanup, and Android-initiated fallback even when the
   OEM retains a phone Class of Device.
-- [ ] Complete the first pair from an app-launched system chooser/bond flow, with no manual visit to
-  Bluetooth Settings, then confirm PicoSwitch2 selects `bthid_gamepad` and receives neutral/button/
-  stick test vectors.
+- [x] Complete the first pair from an app-launched system chooser/bond flow and reach working
+  in-game console input through PicoSwitch2's generic gamepad parser.
+- [x] Add persisted `Auto` / `Nintendo` / `Xbox` face-label normalization without changing the
+  proven HID descriptor or firmware base map. `Auto` has bounded Thor/Retroid evidence and an
+  explicit positional fallback; changing it neutralizes held state.
+- [x] Collapse management and controller setup into one saved adapter relationship: first-use
+  **Pair Adapter**, direct known-address GATT reconnect with scan fallback, and controller-mode HID
+  connection to the same saved Classic bond without another chooser.
 - [x] Implement the Android bridge as an independent Gradle project under
   `android/companion/`, with golden report-encoder tests and no root, Shizuku,
   accessibility service, hidden API, or controller-family impersonation.
@@ -576,8 +582,9 @@ Architecture and gates:
   exposes friendly metadata/title-ID game labels, bounds network/image work, and falls back offline.
 - [ ] Add separately tested Android-local Amiibo initialization/re-signing and ZIP exchange without
   making either a prerequisite for local import or adapter operations.
-- [ ] Hardware-validate full controls, foreground/lifecycle neutralization, saved-bond reconnect,
-  latency, and return to a known physical controller before making any compatibility claim.
+- [ ] Hardware-validate corrected face labels, full controls, foreground/lifecycle neutralization,
+  the rebuilt saved-relationship reconnect, latency, and return to a known physical controller
+  before making a broader compatibility claim.
 - [ ] Add a custom BLE GATT source driver only if a captured target-OEM failure proves the public
   Classic HID Device path unavailable; do not pre-emptively add a second protocol.
 

@@ -35,6 +35,8 @@ class HidDeviceBridge(
     private var profile: BluetoothHidDevice? = null
     private var host: BluetoothDevice? = null
     private var registrationTimeout: Job? = null
+    private var connectionTimeout: Job? = null
+    private var requestedHost: BluetoothDevice? = null
     private var sender: Job? = null
     private var inputCollector: Job? = null
     // One latest-state mailbox prevents old motion reports surviving behind newer input.
@@ -48,9 +50,10 @@ class HidDeviceBridge(
             registrationTimeout = null
             diagnostics?.event("controller", "HID registration", if (registered) "registered" else "unregistered")
             if (registered) {
-                _state.value = _state.value.copy(
+                val target = requestedHost
+                if (target != null) beginConnect(target) else _state.value = _state.value.copy(
                     phase = BridgePhase.Ready, hostName = pluggedDevice?.name,
-                    message = "Select a paired PicoSwitch2 host", registered = true,
+                    message = "Controller mode is ready", registered = true,
                 )
             } else if (_state.value.phase != BridgePhase.Idle) {
                 val hid = profile
@@ -64,10 +67,18 @@ class HidDeviceBridge(
 
         override fun onConnectionStateChanged(device: BluetoothDevice, state: Int) {
             if (stopped) return
+            connectionTimeout?.cancel()
+            connectionTimeout = null
             when (state) {
-                BluetoothProfile.STATE_CONNECTING -> _state.value = BridgeState(BridgePhase.Connecting, device.name)
+                BluetoothProfile.STATE_CONNECTING -> _state.value = _state.value.copy(
+                    phase = BridgePhase.Connecting,
+                    hostName = device.name,
+                    message = "Connecting controller mode",
+                    registered = true,
+                )
                 BluetoothProfile.STATE_CONNECTED -> {
                     host = device
+                    requestedHost = device
                     _state.value = _state.value.copy(
                         phase = BridgePhase.Playing, hostName = device.name,
                         message = "Input is streaming while this app stays in front", registered = true,
@@ -88,9 +99,22 @@ class HidDeviceBridge(
         }
     }
 
-    fun acquire() {
+    fun acquire(preferredHost: BluetoothDevice? = null) {
         stopped = false
-        profile?.let { register(it); return }
+        requestedHost = preferredHost ?: requestedHost
+        profile?.let {
+            if (_state.value.registered) {
+                val target = requestedHost
+                if (target != null) beginConnect(target)
+                else _state.value = _state.value.copy(
+                    phase = BridgePhase.Ready,
+                    message = "Controller mode is ready",
+                )
+            } else {
+                register(it)
+            }
+            return
+        }
         _state.value = BridgeState(BridgePhase.AcquiringProfile, message = "Checking Android HID Device support")
         diagnostics?.event("controller", "HID profile", "acquiring")
         try {
@@ -163,6 +187,8 @@ class HidDeviceBridge(
     }
 
     override fun onServiceDisconnected(profileId: Int) {
+        registrationTimeout?.cancel(); registrationTimeout = null
+        connectionTimeout?.cancel(); connectionTimeout = null
         sender?.cancel(); sender = null; host = null; input.neutralize()
         inputCollector?.cancel(); inputCollector = null
         profile = null
@@ -179,14 +205,39 @@ class HidDeviceBridge(
     }.getOrDefault(emptyList())
 
     fun connect(device: BluetoothDevice) {
+        requestedHost = device
+        beginConnect(device)
+    }
+
+    private fun beginConnect(device: BluetoothDevice) {
         val hid = profile ?: return run { _state.value = BridgeState(BridgePhase.Failed, message = "HID profile is not ready") }
-        _state.value = BridgeState(BridgePhase.Connecting, device.name)
-        if (!hid.connect(device)) _state.value = BridgeState(BridgePhase.Failed, device.name, "Android could not start the HID connection")
+        connectionTimeout?.cancel()
+        _state.value = BridgeState(BridgePhase.Connecting, device.name, "Connecting controller mode", registered = true)
+        try {
+            val immediateAccepted = hid.connect(device)
+            if (!immediateAccepted) diagnostics?.event(
+                "controller", "HID connection", "immediate result false; awaiting callback",
+            )
+            connectionTimeout = scope.launch {
+                delay(CONNECTION_CALLBACK_TIMEOUT_MS)
+                if (stopped || profile !== hid || _state.value.phase != BridgePhase.Connecting) return@launch
+                _state.value = BridgeState(
+                    BridgePhase.Failed,
+                    device.name,
+                    "Android did not complete controller mode; reopen the adapter pairing window and retry",
+                    registered = true,
+                )
+                diagnostics?.event("controller", "HID connection", "callback timeout")
+            }
+        } catch (error: Throwable) {
+            fail("Android could not start controller mode", error)
+        }
     }
 
     fun stop() {
         stopped = true
         registrationTimeout?.cancel(); registrationTimeout = null
+        connectionTimeout?.cancel(); connectionTimeout = null
         val hid = profile
         val device = host
         if (hid != null && device != null) {
@@ -194,7 +245,7 @@ class HidDeviceBridge(
             hid.disconnect(device)
         }
         sender?.cancel(); sender = null; inputCollector?.cancel(); inputCollector = null
-        drainOutgoing(); host = null; input.neutralize()
+        drainOutgoing(); host = null; requestedHost = null; input.neutralize()
         if (hid != null) hid.unregisterApp()
         runCatching { manager?.adapter?.closeProfileProxy(BluetoothProfile.HID_DEVICE, hid) }
         profile = null
@@ -254,5 +305,6 @@ class HidDeviceBridge(
     companion object {
         private const val REPORT_INTERVAL_MS = 8L
         private const val REGISTRATION_CALLBACK_TIMEOUT_MS = 2_000L
+        private const val CONNECTION_CALLBACK_TIMEOUT_MS = 8_000L
     }
 }

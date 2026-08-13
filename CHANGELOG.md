@@ -41,6 +41,19 @@ Release notes describe user-visible behavior. Detailed implementation history re
   their exact report ID, axes, 14-button map, hat, full-state retention, and disconnect cleanup
   through the production generic gamepad parser. Android-initiated HID binding is also pinned for
   OEMs that retain a phone Class of Device; Pico-initiated inquiry remains strict.
+- Android companion pairing now presents one persisted PicoSwitch2 relationship. First use says
+  **Pair Adapter**; returning sessions try the known management GATT address before bounded service
+  discovery; controller mode reuses the saved Classic bond and no longer exposes a second host
+  chooser. The real Android association, bond, GATT, HID registration, and HID connection states
+  remain separate in diagnostics.
+- Android controller input now has persisted Auto/Nintendo/Xbox face-layout normalization. Auto
+  recognizes the audited AYN Thor and Retroid built-in-controller identities as Nintendo-style and
+  otherwise preserves Android's standard positional/Xbox interpretation.
+- Android Amiibo details now add cache-first portal-style AmiiboAPI identity, artwork, release and
+  compatible-game metadata plus optional read-only owner/save metadata using a validated, app-
+  private user `key_retail.bin`; keys and decrypted values never enter firmware or diagnostics.
+- Android appearance now includes persisted System, Light, Dark, and true OLED-black themes plus
+  labeled PicoSwitch and Joy-Con-inspired accent palettes that never change firmware identity.
 
 - Default-off genuine/generated motion fitment harness. A verified Nintendo Pro Controller 2
   remains the immutable timing/status/packing/tail source while an independently aligned
@@ -253,6 +266,8 @@ Release notes describe user-visible behavior. Detailed implementation history re
   later; the old client closed that accepted proxy and made its next attempt collide with its own
   live registration as "another HID Device app." Retry state now waits for the callback and times
   out cleanly without unregistering a genuinely different provider.
+- Android HID connection now likewise waits for `onConnectionStateChanged()` with a bounded timeout,
+  and re-entering controller mode reuses an existing app registration instead of colliding with it.
 - Pro Controller 2 and NSO GameCube personalities are now recognized on a **fresh** Windows PC
   without a manual WinUSB reset. Both now serve the Microsoft OS 1.0 Extended Properties descriptor
   (`wIndex=0x0005`) on their vendor interface, registering the Nintendo device-family
