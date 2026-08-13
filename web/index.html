@@ -305,6 +305,7 @@
       </div>
       <div class="actions-bar" style="margin-top:12px">
         <button id="saveBtn" class="primary">Save to device</button>
+        <button id="applyIdentityBtn" disabled>Apply to console</button>
         <button id="reloadBtn">Reload</button>
       </div>
     </section>
@@ -3590,7 +3591,20 @@ async function save() {
   await sendCmd(`jcr ${accentGet("r","R")} ${accentGet("r","G")} ${accentGet("r","B")}`);
   const r = await sendCmd("save");
   $("#saveBtn").disabled = false;
-  log(r && r.ok ? "== saved (personality and lightbar colours) ==" : "!! save failed");
+  const saved = !!(r && r.ok);
+  $("#applyIdentityBtn").disabled = !saved;
+  log(saved
+    ? "== saved; Apply to console to refresh USB identity colours =="
+    : "!! save failed");
+}
+
+async function applyIdentityChanges() {
+  const button = $("#applyIdentityBtn");
+  button.disabled = true;
+  const r = await sendCmd("reenumerate");
+  log(r && r.ok && r.reenumerating
+    ? "== USB identity refresh queued; controller may pause briefly =="
+    : "!! USB identity refresh was not accepted");
 }
 
 // In-band management gate (mgmt on/off/status). Works over whichever transport
@@ -3704,6 +3718,7 @@ for (const side of ["l", "r"])
 $("#connectUsbBtn").onclick = connectSerial;
 $("#connectBleBtn").onclick = connectBluetooth;
 $("#saveBtn").onclick = save;
+$("#applyIdentityBtn").onclick = applyIdentityChanges;
 $("#reloadBtn").onclick = reload;
 $("#amiiboChooseBtn").onclick = () => $("#amiiboFile").click();
 $("#amiiboFile").onchange = async e => {

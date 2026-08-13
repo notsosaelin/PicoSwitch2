@@ -118,6 +118,18 @@ class AdapterRepositoryTest {
         assertTrue(transport.commands.contains("amiibo cancel"))
     }
 
+    @Test fun `USB identity apply requires explicit reenumeration acknowledgement`() = runTest {
+        val transport = ScriptedTransport(validImage())
+        AdapterRepository(transport).reenumerateUsb()
+        assertEquals("reenumerate", transport.commands.last())
+    }
+
+    @Test fun `USB identity apply rejects a generic acknowledgement`() = runTest {
+        val transport = ScriptedTransport(validImage(), unexpectedReenumerate = true)
+        val error = runCatching { AdapterRepository(transport).reenumerateUsb() }.exceptionOrNull()
+        assertTrue(error is ManagementException)
+    }
+
     @Test fun `unsupported adapter size is rejected before download allocation`() = runTest {
         val transport = ScriptedTransport(validImage(), reportedSize = Int.MAX_VALUE)
         val error = runCatching { AdapterRepository(transport).downloadAmiibo() }.exceptionOrNull()
@@ -130,6 +142,7 @@ class AdapterRepositoryTest {
         private val dirty: Boolean = false,
         private val generationChanges: Boolean = false,
         private val unexpectedBegin: Boolean = false,
+        private val unexpectedReenumerate: Boolean = false,
         private val reportedSize: Int = data.size,
         private val v3Loaded: Boolean = false,
         private val reportedPayloadCrc: String = AmiiboFiles.crc32(data),
@@ -152,6 +165,7 @@ class AdapterRepositoryTest {
                     """{"offset":$offset,"data":"${ManagementProtocol.hex(data.copyOfRange(offset, offset + count))}"}"""
                 }
                 command.startsWith("amiibo begin ") && unexpectedBegin -> "{}"
+                command == "reenumerate" && !unexpectedReenumerate -> """{"ok":true,"reenumerating":true}"""
                 else -> """{"ok":true}"""
             }
         }

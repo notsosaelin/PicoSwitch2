@@ -230,6 +230,14 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         diagnostics.event("adapter", "identity refresh acknowledged")
     }
 
+    fun applyIdentityChanges() = launch("Applying identity changes") {
+        adapter.reenumerateUsb()
+        savedState[KEY_IDENTITY_PENDING] = false
+        _ui.update { it.copy(identityRefreshPending = false) }
+        diagnostics.event("adapter", "identity changes applied")
+        notice("USB identity refreshed. The console controller may pause briefly while it reconnects.")
+    }
+
     fun setManagement(enabled: Boolean) = launch("Updating management access") {
         adapter.setManagementEnabled(enabled)
         notice(if (enabled) "Wireless management enabled for this boot" else "Wireless management disabled; this connection may close")

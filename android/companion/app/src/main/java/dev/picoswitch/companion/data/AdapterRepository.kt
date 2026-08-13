@@ -114,6 +114,13 @@ class AdapterRepository(private val transport: ManagementTransport) {
         _snapshot.value = _snapshot.value.copy(config = next)
     }
 
+    suspend fun reenumerateUsb() {
+        val result = ack("reenumerate")
+        if (result["reenumerating"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() != true) {
+            throw ManagementException("Adapter did not confirm USB re-enumeration")
+        }
+    }
+
     suspend fun wakeConsole() {
         try {
             ack("wake")

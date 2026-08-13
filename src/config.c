@@ -873,6 +873,19 @@ static void cmd_personality_set(const char *target) {
     reply("{\"ok\":true,\"switching\":true}");
 }
 
+// Apply host-visible configuration that is sampled during USB enumeration
+// without changing personality. The acknowledgement is queued before core0's
+// USB task consumes the edge, so an in-band BLE client keeps its management
+// relationship while the console sees a clean detach/reconnect.
+static void cmd_reenumerate(void) {
+    if (g_usb_personality == USB_PERSONALITY_CDC_CONFIG) {
+        reply("{\"error\":\"unavailable in config personality\"}");
+        return;
+    }
+    g_usb_reenumerate_request_pending = true;
+    reply("{\"ok\":true,\"reenumerating\":true}");
+}
+
 // In-band BLE management gate (docs/bluetooth/in-band-management-plan.md). When
 // enabled, the config BLE service arms and stays connectable in a normal
 // controller personality, so a phone/web portal can manage the adapter without
@@ -1223,6 +1236,8 @@ static void handle_line(char *cmd) {
         cmd_personality();
     } else if (strncmp(cmd, "personality ", 12) == 0) {
         cmd_personality_set(cmd + 12);
+    } else if (strcmp(cmd, "reenumerate") == 0) {
+        cmd_reenumerate();
     } else if (strncmp(cmd, "bonds ", 6) == 0) {
         cmd_bonds(cmd + 6);
     } else if (strcmp(cmd, "mgmt") == 0) {

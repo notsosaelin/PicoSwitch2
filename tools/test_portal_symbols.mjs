@@ -42,6 +42,7 @@ const globals = new Set([
   "if", "for", "while", "switch", "catch", "return", "typeof", "function",
   "new", "delete", "void", "in", "of", "do", "else", "await", "yield", "throw",
   "case", "instanceof", "super", "this", "constructor", "get", "set", "static",
+  "async",
   "Array", "Object", "String", "Number", "Boolean", "Math", "JSON", "Date",
   "Map", "Set", "WeakMap", "WeakSet", "Promise", "Error", "TypeError",
   "RangeError", "RegExp", "Symbol", "BigInt", "Proxy", "Reflect", "Intl",

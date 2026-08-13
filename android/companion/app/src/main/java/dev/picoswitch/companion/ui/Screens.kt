@@ -885,6 +885,20 @@ fun ModesScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
                 ColorEditor("Joy-Con 2 right accent", ColorTarget.RightAccent, ui.snapshot.config.rightAccent, ui.connection.connected, viewModel)
             }
         }
+        if (ui.identityRefreshPending) {
+            HardwareCard(container = MaterialTheme.colorScheme.primaryContainer) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Apply identity changes", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        Text("Reconnects USB without changing the selected adapter mode.", style = MaterialTheme.typography.bodySmall)
+                    }
+                    Spacer(Modifier.width(LayoutTokens.Space3))
+                    Button(onClick = viewModel::applyIdentityChanges, enabled = ui.connection.connected && !ui.busy) {
+                        Text("Apply")
+                    }
+                }
+            }
+        }
     }
 }
 

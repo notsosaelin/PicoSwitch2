@@ -200,6 +200,10 @@ L/R/ZL/ZR translation in NSO GameCube output mode is also confirmed.
 - [x] Add independently configurable Joy-Con 2 Left/Right accents, defaulting to their genuine
   retail highlight colors and driving the Sony lightbar in the matching active personality.
 - [x] Hardware-validate both configurable Joy-Con accents in the Switch UI and Sony lightbar.
+- [x] Add an explicit bonded management/portal/app action that safely re-enumerates the current USB
+  personality after saving host-visible identity colors.
+- [ ] Hardware-validate that same-personality apply refreshes the Switch 2 color and restores input,
+  motion, rumble, audio, wake, and the management connection after the brief USB reconnect.
 - [x] Parse console command `0x09` and drive physical player-indicator LEDs from the real console
   slot while keeping this state independent from `body_color`.
 - [x] Hardware-validate that DualSense player dots follow Switch menu reordering.

@@ -208,6 +208,7 @@ The access rules above are encoded as the pure spec in `tools/test_mgmt_access.c
 | `get` | read config (cfg_lock) | ✅ allow | ✅ read |
 | `device` | read connected-controller summary | ✅ allow | ✅ read |
 | `body`/`jcl`/`jcr`/`lb` | set colors in RAM | ✅ allow | ✅ RAM write under cfg_lock |
+| `reenumerate` | apply host-visible identity changes | ✅ allow | ✅ queues existing core-0 same-personality USB reset; bonded-only |
 | `amiibo status/read/select/present/eject/downloaded/cancel` | RAM/state only | ✅ allow | ✅ no flash; select swaps active tag |
 | `amiibo begin/chunk` | buffer upload in RAM | ✅ allow | ✅ RAM (bounded) |
 | `amiibo commit`, `amiibo persist`, `save` | **flash write** | ✅ allow | ⚠ via **deferred** path (C6) |
