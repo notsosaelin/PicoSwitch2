@@ -25,6 +25,10 @@ $tests = @(
     @{ n='test_mgmt_access';                        src='tools/test_mgmt_access.c src/mgmt_access.c src/config_wireless_bridge.c';     flags='' }
     @{ n='test_mgmt_session';                       src='tools/test_mgmt_session.c src/config_wireless_bridge.c';                       flags='' }
     @{ n='test_bonds_command';                      src='tools/test_bonds_command.c';                                                   flags='' }
+    # Android companion bridge feature parity (motion/battery in, rumble/LED out)
+    # compiled against the production generic driver + HID parser.
+    @{ n='test_bthid_android_bridge';               src='tools/test_bthid_android_bridge.c src/bt_hid/bt/bthid/devices/generic/bthid_gamepad.c src/bt_hid/bt/bthid/devices/generic/bthid_gamepad_quirks.c src/bt_hid/bt/bthid/devices/generic/bthid_android_bridge.c src/bt_hid/usb/usbh/hid/devices/generic/hid_parser.c'; flags='-Itools/host_stubs -Isrc/bt_hid -Wno-unused-parameter -ffunction-sections -fdata-sections "-Wl,--gc-sections"' }
+    @{ n='test_bthid_android_controller';           src='tools/test_bthid_android_controller.c src/bt_hid/bt/bthid/devices/generic/bthid_gamepad.c src/bt_hid/bt/bthid/devices/generic/bthid_gamepad_quirks.c src/bt_hid/bt/bthid/devices/generic/bthid_android_bridge.c src/bt_hid/usb/usbh/hid/devices/generic/hid_parser.c'; flags='-Itools/host_stubs -Isrc/bt_hid -Wno-unused-parameter -ffunction-sections -fdata-sections "-Wl,--gc-sections"' }
 )
 
 $common = '-std=c11 -Wall -Wextra -Werror -Isrc -Iinclude -Itools'

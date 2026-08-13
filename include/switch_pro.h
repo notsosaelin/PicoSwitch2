@@ -75,6 +75,7 @@
 #define SWITCH_MOTION_SOURCE_DUALSENSE 1
 #define SWITCH_MOTION_SOURCE_WII       2  // Wii Remote accel (+ MotionPlus gyro)
 #define SWITCH_MOTION_SOURCE_SWITCH1   3  // Joy-Con / Switch 1 Pro 6-axis IMU
+#define SWITCH_MOTION_SOURCE_ANDROID   4  // Android handheld via the companion HID bridge
 
 // Per-controller input state produced by the Bluetooth core (core1) and
 // consumed by the USB core (core0). Sticks are pre-packed into the Pro

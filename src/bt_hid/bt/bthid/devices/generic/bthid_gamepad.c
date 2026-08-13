@@ -30,6 +30,12 @@ typedef struct {
     ble_report_map_t map;       // cached field locations from descriptor
     uint8_t rumble_left;        // Last sent rumble values (for change detection)
     uint8_t rumble_right;
+    // Android bridge extension: motion sequence continuity, plus the last
+    // feedback we sent so an unchanged state is not retransmitted every tick.
+    android_bridge_state_t bridge_state;
+    uint8_t bridge_player_led;
+    bool bridge_motion_wanted;
+    bool bridge_feedback_valid;  // false until the first successful send
 } bthid_gamepad_data_t;
 
 static bthid_gamepad_data_t gamepad_data[BTHID_MAX_DEVICES];
@@ -209,6 +215,16 @@ void bthid_gamepad_set_descriptor(bthid_device_t* device, const uint8_t* desc, u
 
     gp->map.buttonCnt = btns_count;
     gp->map.input_report_len = input_report_len;
+
+    // PicoSwitch2 Android companion bridge: motion/battery in, rumble/player-LED
+    // out. Identified from the raw descriptor rather than from parsed items --
+    // the shared parser deliberately admits only a small allowlist of usage
+    // pages, and widening that would affect every controller (see
+    // android_bridge_identify). Inert for every ordinary device.
+    if (android_bridge_identify(desc, desc_len, &gp->map.bridge)) {
+        printf("[BTHID_GAMEPAD] Android companion bridge detected: motion+battery in, "
+               "rumble+LED out (report 0x%02X)\n", gp->map.bridge.output_report_id);
+    }
 
     // Release parser memory
     USB_FreeReportInfo(info);
@@ -422,6 +438,15 @@ static void process_report_dynamic(bthid_gamepad_data_t* gp, const uint8_t* data
         map->quirk->extract_extra(map, data, len, &gp->event);
     }
 
+    // Descriptor-declared Android bridge extension: motion + battery. Reset the
+    // per-report motion validity first so a source that stops publishing motion
+    // (sensors idled) cannot leave the last sample latched as if it were live.
+    if (android_bridge_ext_present(&map->bridge)) {
+        gp->event.has_motion = false;
+        android_bridge_extract(&map->bridge, &gp->bridge_state, data, len,
+                               &gp->event);
+    }
+
     router_submit_input(&gp->event);
 }
 
@@ -512,6 +537,12 @@ static void gamepad_process_report(bthid_device_t* device, const uint8_t* data, 
         if (gp->map.input_report_len && len < gp->map.input_report_len) {
             return;
         }
+        // The shared parser only measures the fields it admits, so an extended
+        // Android bridge report needs its own completeness gate; otherwise a
+        // packet truncated inside the extension would look complete.
+        if (gp->map.bridge.min_report_len && len < gp->map.bridge.min_report_len) {
+            return;
+        }
         // One-time hex dump of first gamepad report for debugging
         static bool dumped = false;
         if (!dumped) {
@@ -569,6 +600,23 @@ static void gamepad_process_report(bthid_device_t* device, const uint8_t* data, 
     router_submit_input(&gp->event);
 }
 
+// True when the active console personality is actually consuming motion. The
+// Android bridge forwards this so a handheld can idle its sensors (a real power
+// saving on a phone) instead of streaming gyro into a game that ignores it.
+// Weak default keeps generic/host builds working; ns2_seam.c provides the real
+// answer for the NS2 personalities.
+__attribute__((weak)) bool bthid_host_wants_motion(void) { return true; }
+
+// feedback_led_t.pattern carries one bit per player (ns2_seam.c sets
+// 1 << (player - 1)). Recover the player number for the bridge's LED field.
+static uint8_t bridge_player_from_pattern(uint8_t pattern)
+{
+    for (uint8_t i = 0; i < 8; i++) {
+        if (pattern & (uint8_t)(1u << i)) return (uint8_t)(i + 1u);
+    }
+    return 0;
+}
+
 // The generic driver only forwards hardware-validated output through a resolved profile.
 static void gamepad_task(bthid_device_t* device)
 {
@@ -579,7 +627,45 @@ static void gamepad_task(bthid_device_t* device)
     if (player_idx < 0) return;
 
     feedback_state_t* fb = feedback_get_state(player_idx);
-    if (!fb || !fb->rumble_dirty) return;
+    if (!fb) return;
+
+    // Android bridge: ONE output report carries rumble, the player LED, and the
+    // motion request. Unlike the quirk path this is authorized by the device's
+    // own declared descriptor block (not a VID allowlist), and it must also react
+    // to player-LED changes, so it cannot use the rumble-only dirty gate below.
+    if (gp->map.bridge.has_output) {
+        const uint8_t left = fb->rumble.left;
+        const uint8_t right = fb->rumble.right;
+        const uint8_t player = bridge_player_from_pattern(fb->led.pattern);
+        const bool motion_wanted = bthid_host_wants_motion();
+        const bool changed = !gp->bridge_feedback_valid ||
+                             left != gp->rumble_left ||
+                             right != gp->rumble_right ||
+                             player != gp->bridge_player_led ||
+                             motion_wanted != gp->bridge_motion_wanted;
+        if (changed) {
+            uint8_t payload[ANDROID_BRIDGE_FEEDBACK_MAX_LEN];
+            uint8_t n = android_bridge_encode_feedback(
+                &gp->map.bridge, left, right, player, motion_wanted,
+                payload, (uint8_t)sizeof(payload));
+            if (n == 0 ||
+                !bthid_send_output_report(device->conn_index,
+                                          gp->map.bridge.output_report_id,
+                                          payload, n)) {
+                return;  // keep dirty + cache so a failed send retries next tick
+            }
+            gp->rumble_left = left;
+            gp->rumble_right = right;
+            gp->bridge_player_led = player;
+            gp->bridge_motion_wanted = motion_wanted;
+            gp->bridge_feedback_valid = true;
+        }
+        fb->led_dirty = false;
+        feedback_clear_dirty(player_idx);
+        return;
+    }
+
+    if (!fb->rumble_dirty) return;
 
     uint8_t left = fb->rumble.left;
     uint8_t right = fb->rumble.right;

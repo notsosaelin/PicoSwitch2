@@ -10,6 +10,7 @@
  *   tools/test_bthid_android_controller.c \
  *   src/bt_hid/bt/bthid/devices/generic/bthid_gamepad.c \
  *   src/bt_hid/bt/bthid/devices/generic/bthid_gamepad_quirks.c \
+ *   src/bt_hid/bt/bthid/devices/generic/bthid_android_bridge.c \
  *   src/bt_hid/usb/usbh/hid/devices/generic/hid_parser.c \
  *   -Wl,--gc-sections -o build/host-tests/test_bthid_android_controller.exe
  */
@@ -91,6 +92,17 @@ feedback_state_t *feedback_get_state(uint8_t player_index)
 
 void feedback_clear_dirty(uint8_t player_index) { (void)player_index; }
 void bthid_register_driver(const bthid_driver_t *driver) { (void)driver; }
+
+// A v1 device declares no output report, so the driver must never call this.
+// Stubbed (rather than omitted) because the generic driver now references the
+// sender directly for the Android bridge's rumble/LED path.
+bool bthid_send_output_report(uint8_t conn_index, uint8_t report_id,
+                              const uint8_t *data, uint16_t len)
+{
+    (void)conn_index; (void)report_id; (void)data; (void)len;
+    CHECK(false, "v1 Android controller must not receive an output report");
+    return false;
+}
 
 bthid_device_t *bthid_get_device(uint8_t conn_index)
 {
