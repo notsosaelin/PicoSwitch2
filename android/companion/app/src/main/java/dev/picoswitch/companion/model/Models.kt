@@ -181,6 +181,51 @@ data class AmiiboCatalogEntry(
     val name: String = "",
 )
 
+/**
+ * State of the optional friendly-name/catalog enrichment. Local Amiibo
+ * identity and adapter operations remain usable in every state except the
+ * transient lookup state.
+ */
+enum class AmiiboCatalogState { Idle, Loading, Available, Offline, Unmatched }
+
+enum class AmiiboSortOrder { Name, Series, RecentlyAdded }
+
+/** Deterministic library ordering used by both compact rows and the wide grid. */
+fun sortAmiiboLibrary(
+    items: List<AmiiboLibraryItem>,
+    catalogById: Map<String, AmiiboCatalogEntry>,
+    order: AmiiboSortOrder,
+): List<AmiiboLibraryItem> = when (order) {
+    AmiiboSortOrder.Name -> items.sortedWith(
+        compareBy<AmiiboLibraryItem> { friendlyAmiiboName(it, catalogById[it.id]).lowercase() }
+            .thenBy { it.id },
+    )
+    AmiiboSortOrder.Series -> items.sortedWith(
+        compareBy<AmiiboLibraryItem> { friendlyAmiiboSeries(catalogById[it.id]).lowercase() }
+            .thenBy { friendlyAmiiboName(it, catalogById[it.id]).lowercase() }
+            .thenBy { it.id },
+    )
+    AmiiboSortOrder.RecentlyAdded -> items.sortedWith(
+        compareByDescending<AmiiboLibraryItem> { it.importedAtMillis }
+            .thenBy { friendlyAmiiboName(it, catalogById[it.id]).lowercase() }
+            .thenBy { it.id },
+    )
+}
+
+private fun friendlyAmiiboName(item: AmiiboLibraryItem, catalog: AmiiboCatalogEntry?): String =
+    catalog?.name?.takeIf(String::isNotBlank) ?: catalog?.character?.takeIf(String::isNotBlank) ?: item.displayName
+
+private fun friendlyAmiiboSeries(catalog: AmiiboCatalogEntry?): String =
+    listOfNotNull(catalog?.gameSeries?.takeIf(String::isNotBlank), catalog?.amiiboSeries?.takeIf(String::isNotBlank))
+        .joinToString(" · ")
+
+/** Resolve the terminal state of an optional catalog lookup without hiding raw identity. */
+fun resolveAmiiboCatalogState(found: Boolean, catalogAvailable: Boolean): AmiiboCatalogState = when {
+    found -> AmiiboCatalogState.Available
+    catalogAvailable -> AmiiboCatalogState.Unmatched
+    else -> AmiiboCatalogState.Offline
+}
+
 enum class AmiiboCryptoState { NotAttempted, KeyUnavailable, Valid, Invalid }
 
 data class OperationProgress(
