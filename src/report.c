@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "pico/critical_section.h"
+#include "pico/time.h"
 
 #include "switch_pro.h"
 #include "rumble_peak.h"
@@ -12,6 +13,11 @@
 #define DEV_NAME_MAX 40
 
 static switch_pro_input_t s_inputs[INPUT_SLOTS];
+// Diagnostic-only: us-since-boot of the last set_global_gamepad_input per slot,
+// so the UART `pipe` command can tell "BT stopped feeding input" (input goes
+// stale while the report loop keeps running) apart from a healthy pipeline. See
+// docs/experiments/overnight-investigation-2026-08-13.md. 0 = never updated.
+static uint32_t s_input_update_us[INPUT_SLOTS];
 static uint32_t s_raw_buttons[INPUT_SLOTS];  // unified JP_BUTTON_* bitmap (config live-view)
 static uint8_t s_rumble_left[INPUT_SLOTS];
 static uint8_t s_rumble_right[INPUT_SLOTS];
@@ -56,7 +62,23 @@ void set_global_gamepad_input(uint8_t idx, const switch_pro_input_t *in) {
         return;
     critical_section_enter_blocking(&s_lock);
     s_inputs[idx] = *in;
+    s_input_update_us[idx] = time_us_32();  // diagnostic freshness stamp
     critical_section_exit(&s_lock);
+}
+
+// Diagnostic: ms since the last controller-input publish for this slot, or
+// UINT32_MAX if none yet. A large value while report output continues means the
+// BT side stopped feeding input (frozen input to the console) -- see the `pipe`
+// UART command and the overnight investigation doc.
+uint32_t report_input_age_ms(uint8_t idx) {
+    if (idx >= INPUT_SLOTS)
+        return UINT32_MAX;
+    critical_section_enter_blocking(&s_lock);
+    uint32_t stamp = s_input_update_us[idx];
+    critical_section_exit(&s_lock);
+    if (stamp == 0)
+        return UINT32_MAX;
+    return (time_us_32() - stamp) / 1000u;
 }
 
 void get_global_gamepad_input(uint8_t idx, switch_pro_input_t *out) {

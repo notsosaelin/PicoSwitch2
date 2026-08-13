@@ -20,6 +20,7 @@
 #include "ns2_virtual_nfc.h"
 #include "report.h"
 #include "switch_pro2.h"
+#include "usb.h"  // dev-only persona/mgmt transition triggers (g_usb_* flags, g_mgmt_enabled)
 #include "bt/btstack/btstack_host.h"
 
 #include <hardware/gpio.h>
@@ -791,6 +792,56 @@ static void handle_command(void) {
             queue_text("{\"btlife\":\"error\",\"error\":\"usage: btlife read N\"}");
         } else {
             queue_btlife((uint16_t)index);
+        }
+    } else if (strcmp(rx_line, "pipe") == 0) {
+        // core0 report pipeline vs. BT input freshness. reportAgeMs large =>
+        // report loop stalled; reportAgeMs small + inputAgeMs large => BT stopped
+        // feeding input (frozen/neutral to console). See the overnight investigation.
+        char response[192];
+        snprintf(response, sizeof(response),
+                 "{\"pipe\":\"status\",\"reportCount\":%lu,\"reportAgeMs\":%lu,"
+                 "\"inputAgeMs\":%lu}",
+                 (unsigned long)ns2_pro2_report_count(),
+                 (unsigned long)ns2_pro2_last_report_age_ms(),
+                 (unsigned long)report_input_age_ms(0));
+        queue_text(response);
+    } else if (strcmp(rx_line, "mgmt") == 0 || strcmp(rx_line, "mgmt status") == 0) {
+        char response[64];
+        snprintf(response, sizeof(response), "{\"mgmt\":\"status\",\"enabled\":%s}",
+                 g_mgmt_enabled ? "true" : "false");
+        queue_text(response);
+    } else if (strcmp(rx_line, "mgmt on") == 0) {
+        g_mgmt_enabled = true;   // dev-only toggle over UART (no config mode needed)
+        queue_text("{\"mgmt\":\"on\"}");
+    } else if (strcmp(rx_line, "mgmt off") == 0) {
+        g_mgmt_enabled = false;
+        queue_text("{\"mgmt\":\"off\"}");
+    } else if (strncmp(rx_line, "persona ", 8) == 0) {
+        // Dev-only: trigger a personality transition over UART (removes the
+        // physical-BOOTSEL / config-mode dependency for future investigations).
+        // Controller targets use the app-request flag; `config` toggles CDC Config
+        // via the 2s-hold flag (the app path forbids CDC, so a dedicated toggle is
+        // used). Consumed at the safe loop point in usb_core_task. See task 12.
+        const char *t = rx_line + 8;
+        if (strcmp(t, "config") == 0) {
+            g_usb_config_mode_requested = true;
+            queue_text("{\"persona\":\"ok\",\"target\":\"config-toggle\"}");
+        } else {
+            usb_personality_t p;
+            bool ok = true;
+            if (strcmp(t, "pro2") == 0)      p = USB_PERSONALITY_SWITCH2_PRO2;
+            else if (strcmp(t, "gc") == 0)   p = USB_PERSONALITY_NSO_GAMECUBE;
+            else if (strcmp(t, "jcl") == 0)  p = USB_PERSONALITY_JOYCON2_L;
+            else if (strcmp(t, "jcr") == 0)  p = USB_PERSONALITY_JOYCON2_R;
+            else { ok = false; p = USB_PERSONALITY_SWITCH2_PRO2; }
+            if (!ok) {
+                queue_text("{\"persona\":\"error\","
+                           "\"error\":\"usage: persona pro2|gc|jcl|jcr|config\"}");
+            } else {
+                g_usb_requested_personality = p;
+                g_usb_personality_request_pending = true;
+                queue_text("{\"persona\":\"ok\"}");
+            }
         }
     } else if (strcmp(rx_line, "nfcmirror on") == 0) {
         ns2_nfc_mirror_request(true);

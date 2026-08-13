@@ -1301,8 +1301,23 @@ static void ns2_dispatch(const uint8_t *c, uint32_t n) {
 
 // Translate the shared input (report.c, published by the joypad-os seam on core1)
 // into the Switch 2 Pro Controller report 0x09 layout.
+// Diagnostic-only pipeline counters (UART `pipe`): reports built for the console
+// and the timestamp of the last one. Paired with report_input_age_ms(), they tell
+// "core0 report loop stalled" (reportAge large) apart from "BT stopped feeding
+// input" (reportAge small, inputAge large) at the next failure. See
+// docs/experiments/overnight-investigation-2026-08-13.md.
+static uint32_t ns2_pipe_report_count;
+static uint32_t ns2_pipe_last_report_us;
+uint32_t ns2_pro2_report_count(void) { return ns2_pipe_report_count; }
+uint32_t ns2_pro2_last_report_age_ms(void) {
+    uint32_t u = ns2_pipe_last_report_us;
+    return u ? (time_us_32() - u) / 1000u : UINT32_MAX;
+}
+
 static void ns2_build_report(uint8_t *p) {
     static uint8_t counter = 0;
+    ns2_pipe_report_count++;
+    ns2_pipe_last_report_us = time_us_32();
     switch_pro_input_t in;
     get_global_gamepad_input(0, &in);  // NS2 milestone: single controller (slot 0)
     if (ns2_diag_input_y_pressed(time_us_32()))
