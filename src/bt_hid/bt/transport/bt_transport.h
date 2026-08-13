@@ -65,9 +65,6 @@ typedef struct {
     // Send data on HID Interrupt channel (output reports for rumble/LED)
     bool (*send_interrupt)(uint8_t conn_index, const uint8_t* data, uint16_t len);
 
-    // Disconnect a device
-    void (*disconnect)(uint8_t conn_index);
-
     // Enable/disable pairing mode
     void (*set_pairing_mode)(bool enable);
 
@@ -126,12 +123,6 @@ static inline bool bt_request_feature_report(uint8_t conn_index,
                                              uint8_t report_id) {
     return bt_transport && bt_transport->request_feature_report
            ? bt_transport->request_feature_report(conn_index, report_id) : false;
-}
-
-static inline void bt_disconnect(uint8_t conn_index) {
-    if (bt_transport && bt_transport->disconnect) {
-        bt_transport->disconnect(conn_index);
-    }
 }
 
 static inline void bt_set_pairing_mode(bool enable) {

@@ -397,8 +397,9 @@ static void switch2_ble_process_report(bthid_device_t* device, const uint8_t* da
 static void switch2_ble_task(bthid_device_t* device)
 {
     (void)device;
-    // TODO: Implement rumble output
-    // Switch 2 uses LRA haptics, sent to ATT handle 0x0012
+    // Native Switch 2 rumble and player LEDs are connection-level operations
+    // owned by btstack_host.c's switch2_rumble_task(). Sending them again from
+    // this report parser would duplicate writes to ATT handle 0x0012.
 }
 
 static void switch2_ble_disconnect(bthid_device_t* device)

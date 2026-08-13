@@ -315,6 +315,10 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Fixed
 
+- Removed the unused transport-level `bt_disconnect()` operation whose only CYW43 implementation
+  was a silent no-op. Real link teardown remains owned by BTstack's handle/HID-CID paths. The
+  Switch 2 BLE report driver's stale rumble TODO now points to the existing connection-level LRA
+  renderer instead of implying native rumble is unimplemented.
 - Android packaging now declares explicit no-backup rules for both legacy backup and Android 12+
   cloud/device transfer, keeps the adaptive icon in the minimum-SDK resource bucket with an
   Android 13 monochrome override, and uses window bounds for compact layouts. This removes the
