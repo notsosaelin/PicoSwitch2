@@ -375,6 +375,17 @@ into the Pro2 personality's existing USB audio endpoints. That is a whole subsys
 **Recommendation:** treat handheld audio as a future investigation gated on the DualSense mic-return
 work landing first. Everything else in the parity table is delivered over the existing HID link.
 
+**Update (2026-08-13), after studying NS-PC-Control's audio:** the reference project does UAC1 on the
+console side — exactly what we already have — and carries the audio to its client over **UDP/WiFi**,
+not Bluetooth. Two things follow. (1) Our UAC1 **microphone endpoint already exists and is
+operational**, currently transmitting silence, so the console-facing half is largely built. (2) The
+only credible transport is WiFi/UDP, which is *not* compiled in today (`pico_cyw43_arch_none`) and
+whose blocking unknown is CYW43 WiFi/BT coexistence on one radio. Because it would only be offered
+when the handheld is the sole source, it would never run alongside the DualSense Opus path — which is
+the owner's scoping instinct and is the right constraint. Full assessment, including the recommended
+order (measure coexistence → land mic return locally → only then add WiFi):
+[`android-audio-feasibility-2026-08-13.md`](android-audio-feasibility-2026-08-13.md).
+
 ## Fixed HID contract
 
 The canonical descriptor, wire layout, and sensor scale live in one file shared by the firmware, the
