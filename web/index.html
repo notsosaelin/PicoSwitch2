@@ -3150,6 +3150,14 @@ async function saveCurrentAmiibo() {
     amiiboLoadedSlotKey = updated.key;
     persistAmiiboSlotState();
     amiiboFileName = updated.name;
+    // The synced image reuses the same library key but now carries the new
+    // console-written bytes, so the decrypted owner/nickname/date/write-count
+    // cached for that key is stale. Invalidate it (same as
+    // initializeSelectedAmiibo) so the info box re-decrypts the fresh image
+    // instead of showing pre-sync metadata until a manual page refresh.
+    // Fixes STATUS.md P3 (Web Portal state refresh after Amiibo Sync).
+    amiiboInfoCache.delete(updated.key);
+    if (cached?.key) amiiboInfoCache.delete(cached.key);
     renderAmiiboLibrary();
     renderAmiiboLibraryDetail(updated);
     const acknowledged = await sendCmd("amiibo downloaded", true);

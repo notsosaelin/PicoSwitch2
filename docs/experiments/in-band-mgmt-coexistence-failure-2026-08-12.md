@@ -6,6 +6,37 @@ Date: 2026-08-12
 Related: [`../bluetooth/in-band-management-plan.md`](../bluetooth/in-band-management-plan.md),
 [`../architecture/config-transports.md`](../architecture/config-transports.md)
 
+## Autonomous overnight session (2026-08-12 ~23:30→, owner asleep, hardware left connected)
+
+Constraint: **cannot reflash** overnight (Pico USB-C is on the Switch; flashing needs BOOTSEL on the
+PC). So the work is: stress the *currently flashed* decoupling-fix firmware over UART to prove whether
+P1 is resolved, capture a clean trace if it breaks, and do hardware-independent fixes.
+
+**Finding 1 — the decoupling fix is live and correct at the radio level (UART-proven).** Immediately
+after boot, `btstate` shows `scan_active=true` AND `cble.advertising=true` together with
+`suppress.mgmt_armed=0` and `scan.starts` climbing — the CYW43 runs concurrent LE scan + advertise,
+and controller discovery is no longer starved. A Classic controller + a management client then both
+connect and hold (`ctrl=true, client=true, disc=0/0`).
+
+**Finding 2 — same-identity USB re-enumeration does NOT disturb the BT link (UART-proven, hypothesis
+disproven).** Driving `profile default` (`usb_apply_diag_reenumeration`: `tud_disconnect` →
+`tud_connect`, BT core untouched) left the BT state byte-identical before/after over 12 s —
+`controller_connected=true`, `client=true`, `disc=0/0`, `events.count` unchanged. So the "USB
+re-enumeration breaks the BT/management link" hypothesis is **false on the fixed firmware**; core
+independence holds. **Caveat/blocked:** this only exercises a *same-identity* re-enum. The more likely
+"CDC/personality-transition" culprit is a *different-identity* switch (Pro2→GC/→CDC), which **cannot
+be triggered over UART** on the current firmware — it needs a physical BOOTSEL tap or a new diag
+command (a flash). Recorded as a physical/flash dependency; every non-blocked avenue continued.
+
+**Finding 3 — P3 (portal stale metadata after Sync) root-caused and fixed** (hardware-independent):
+`amiiboInfoCache` was not invalidated on Sync. Fixed in `web/index.html`; needs browser validation.
+
+**In progress — overnight soak.** `tools/mgmt_soak.ps1` runs the passive soak (spontaneous time/RF
+failure) plus periodic proven-safe re-enum checks, auto-dumping the `btlife` ring on any regression
+and stopping the stress on first reproduction. Log: `dumps/mgmt-soak-*.jsonl` (+ `.summary.txt`).
+Results to be read in the morning; if it stays stable, that is strong evidence the decoupling fix
+resolved P1 (short-window stability already observed for >11 min continuous, plus a clean re-enum).
+
 ## Question
 
 With the in-band BLE management transport enabled (`g_mgmt_enabled`, default off), the full
