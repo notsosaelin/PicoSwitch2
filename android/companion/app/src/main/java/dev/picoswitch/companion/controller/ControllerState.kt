@@ -55,6 +55,26 @@ data class ControllerState(
     companion object { val Neutral = ControllerState() }
 }
 
+data class AxisRange(val minimum: Float, val maximum: Float, val flat: Float = 0f) {
+    fun stick(value: Float, invert: Boolean = false): Int {
+        val center = (minimum + maximum) / 2f
+        val radius = ((maximum - minimum) / 2f).takeIf { it > 0f } ?: 1f
+        var normalized = ((value - center) / radius).coerceIn(-1f, 1f)
+        val deadZone = maxOf(flat / radius, 0.04f)
+        normalized = if (kotlin.math.abs(normalized) <= deadZone) 0f else {
+            val magnitude = ((kotlin.math.abs(normalized) - deadZone) / (1f - deadZone)).coerceIn(0f, 1f)
+            kotlin.math.sign(normalized) * magnitude
+        }
+        if (invert) normalized = -normalized
+        return (128f + normalized * 127f).roundToInt().coerceIn(0, 255)
+    }
+
+    fun trigger(value: Float): Int {
+        val span = (maximum - minimum).takeIf { it > 0f } ?: 1f
+        return (((value - minimum) / span).coerceIn(0f, 1f) * 255f).roundToInt()
+    }
+}
+
 /**
  * Android SI sensor values -> adapter wire counts.
  *

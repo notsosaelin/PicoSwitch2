@@ -81,8 +81,13 @@ class ControllerReportEncoderTest {
         """.trimIndent().split(Regex("\\s+")).map { it.toInt(16).toByte() }.toByteArray()
         assertArrayEquals(golden, AndroidControllerDescriptor.bytes)
         assertEquals(161, golden.size)
-        // The first 81 bytes are the hardware-validated v1 descriptor verbatim.
-        assertEquals(0x06.toByte(), golden[81])
+        // v2 contains the hardware-validated v1 descriptor verbatim except for its
+        // trailing End Collection (0xC0), which is deferred until after the
+        // extension -- so the vendor block starts at 80, not 81, and the whole
+        // descriptor still closes with exactly one 0xC0.
+        assertEquals(0x06.toByte(), golden[80])
+        assertEquals(0xC0.toByte(), golden[golden.size - 1])
+        assertEquals(1, golden.count { it == 0xC0.toByte() })
     }
 
     @Test fun `extreme simultaneous report keeps every field bounded`() {
