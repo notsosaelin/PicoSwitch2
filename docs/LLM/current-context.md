@@ -543,6 +543,11 @@ band table), `tools/ns2_motion40_gyro_axes.py` (gyro axis, sign and scale).
   and uses the same hold to return directly to Pro2. Paired double-tap first disconnects without
   deleting the bond. Both board builds pass; this revised physical gesture matrix awaits hardware
   validation.
+- Android v1 HID bridge ownership moved to Claude on 2026-08-13. Codex must not edit the Android
+  HID descriptor/encoder, controller transport/input router, HID registration/connection lifecycle,
+  controller-mode auto-resume, or corresponding firmware HID/input-source behavior unless the
+  maintainer explicitly reopens that scope. Non-HID Android management, Amiibo, Settings, and
+  packaging work remain available to Codex.
 - Sectors `-3` and `-5` hold alternating version-2 snapshots with generation, header/payload CRC,
   internal baseline/latest-written images, selection, dirty state, and optional signature. The previous bank stays
   valid until the new bank is programmed and verified. Flash work runs only through the existing

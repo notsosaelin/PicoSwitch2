@@ -21,7 +21,7 @@ zero-cost early return). Landed slices: `mgmt_access.{c,h}` (canonical access-co
 128-state host test), `mgmt status/on/off` command + allowlist, `config_ble_authorized()` gate
 decouple, unconditional `config_wireless_task()` pump, deferred wireless flash ops (`save`/`amiibo
 clear`/`amiibo persist` no longer stall core0), and a web-portal Management panel. Built clean on both
-boards; all host tests green (`tools/run_mgmt_tests.ps1`, 6/6).
+boards; all host tests green (`tools/run_mgmt_tests.ps1`, 8/8).
 
 **Hardware state (2026-08-13):** the original workflow succeeded, and the controller-discovery
 decoupling fix then held a Classic controller plus management client for 5.4 hours through ten USB
@@ -37,6 +37,11 @@ wake-burst advertiser hand-off (C5); and the audio/gyro/latency coexistence gate
 [`docs/bluetooth/in-band-management-plan.md`](docs/bluetooth/in-band-management-plan.md).
 
 ## Android handheld controller bridge — 🟡 AYN Thor in-game hardware pass 2026-08-13
+
+**Ownership boundary (2026-08-13):** further Android v1 HID bridge work is reserved for Claude at
+the maintainer's request. Codex must not change the Android HID descriptor/encoder, controller
+transport or input router, HID registration/connection lifecycle, controller-mode auto-resume, or
+their firmware-side HID/input-source behavior until that ownership is explicitly returned.
 
 The no-root Android path uses the public API-28+ HID Device profile and keeps PicoSwitch2 as the
 console-facing protocol owner. Pico-side preparation now includes an exact 81-byte generic-gamepad
@@ -98,10 +103,9 @@ selection preserves the existing default behavior. Wired UART exposes `input sou
 existing 512-byte response slot; wireless selection remains blocked until management authentication
 is implemented. Focused policy coverage is in `tools/test_ns2_input_arbiter.c`; transport-integrated
 rebind, stale report, and stale disconnect coverage is in
-`tools/test_ns2_active_input_lifecycle.c`; both are included by `tools/run_mgmt_tests.ps1`. Pico W
-and Pico 2 W tone builds plus both install-marker checks pass. The standard Pico 2 W audio configure
-remains blocked because the checked-out `third_party/opus` directory lacks its CMakeLists.txt. No
-flash, UART mutation, or physical multi-source/latency validation was performed.
+`tools/test_ns2_active_input_lifecycle.c`; both are included by `tools/run_mgmt_tests.ps1`. Standard
+Pico W and standard 300 MHz Pico 2 W builds plus both install-marker checks pass in the integrated
+tree. No flash, UART mutation, or physical multi-source/latency validation was performed.
 
 The native Android Amiibo page now has portal-parity raw identity/details: character code/variant,
 tag type, model/series, format, extended variant, and optional owner/nickname/date/write-count/game
