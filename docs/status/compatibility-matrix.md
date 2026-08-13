@@ -98,7 +98,7 @@ code inspection only; it is weaker than physical hardware confirmation.
 | Automatic write-before-eject flash snapshot | ✅ Live-console completion and power-cycle recovery confirmed |
 | Single-slot image and alternating-bank persistence generations | ✅ Confirmed; the board holds exactly one amiibo, and the two flash banks are generations of it |
 | Offline browser library and full-library backup | 🟡 Single-slot flow confirmed; catalog-ID dedupe and `.zip` backup schema await browser regression |
-| Config-only Bluetooth library transfer | 🟡 Host/build/static confirmed; hardware pending |
+| In-band Bluetooth library transfer | 🟡 Host/build/static confirmed; focused mutation hardware matrix pending |
 | New-UF2 blank state and one-shot persistence/bond erase | 🟡 Build marker verified on all targets; hardware pending |
 | Native Pro2/Joy-Con 2 physical-tag write | 🔵 Pending capture and implementation |
 | Virtual Amiibo in the **Joy-Con 2 Right** output personality | 🔵 Feasibility only — Right's NFC hardware is confirmed (live NFC-state byte @`0xE`, PN7160/PN7161), but its NFC *command* protocol is undocumented. Candidate experiment: wire Pro2's NFC serving into JoyCon2 R's `0x01` handler and validate the console queries it. Left has no NFC. See docs/switch2-joycon2/open-questions.md |

@@ -8,52 +8,44 @@ Last updated: 2026-08-13
 > `g_usb_config_mode || g_mgmt_enabled`, so with the runtime flag `g_mgmt_enabled` on (production
 > default; `mgmt off` lasts until reboot)
 > the same service, parser, and allowlist run **in a normal controller personality** — managing the
-> adapter over Bluetooth without dropping the console. This document describes the original
-> config-mode transport; the in-band model, its access-control state machine (`src/mgmt_access.c`),
-> and the bonded/encrypted first-pair policy and remaining hardware gates are in
+> adapter over Bluetooth without dropping the console. The access-control state machine
+> (`src/mgmt_access.c`), first-pair policy, and remaining hardware gates are detailed in
 > [`../bluetooth/in-band-management-plan.md`](../bluetooth/in-band-management-plan.md).
 
 ## Purpose
 
-PicoSwitch2 configuration remains an explicit operating mode. A two-second BOOTSEL hold changes
-the USB personality to Config before any settings or Virtual Amiibo data may be changed.
-The browser can then reach the same command parser through either:
+PicoSwitch2 exposes one bounded newline-JSON command parser through two transports:
 
-- USB CDC/Web Serial when the Pico is connected to the browser host; or
-- a temporary BLE GATT management service while the Pico remains physically attached to the
-  console.
+- USB CDC/Web Serial in the explicit Config USB personality; and
+- bonded/encrypted BLE GATT management in Config or a normal controller personality.
 
-This is not live configuration during gameplay. Leaving Config disconnects the BLE management
-client before normal controller discovery resumes and re-enumerates USB directly as Pro Controller
-2.
+A two-second BOOTSEL hold still enters Config for wired setup and diagnostics. Standard builds also
+boot with in-band management enabled, so the app or portal can change production settings and
+Virtual Amiibo state without replacing the console-facing controller personality. `mgmt off`
+disables that wireless path for the current boot; reboot restores it.
 
 ## Safety and radio invariants
 
 - The USB Config identity remains CDC-only at `CAFE:4012`; MSC and embedded web storage remain
   removed.
-- The management service never advertises in Pro2, NSO GameCube, or either Joy-Con 2 personality.
-- Its RX characteristic rejects writes unless both the USB personality and Bluetooth service state
-  say Config.
-- Normal controller mode performs only a 30 ms state comparison. It creates no configuration
-  advertisements, notifications, connection attempts, or polling traffic.
-- Entering Config stops BLE scanning and Classic inquiry before starting management advertising.
-  An already HID-ready controller may remain linked so its identity and battery remain visible, but
-  USB audio is absent in the Config descriptor and therefore cannot be streamed.
-- Direct BLE-controller reconnect attempts are deferred while Config owns the advertiser.
-- Only one incoming management link is accepted. It is classified by the Pico's LE Peripheral role
-  before the connection can consume a controller/HID slot or enter controller SM/GATT discovery.
-- The management characteristics intentionally require no controller-style BLE bond: the physical
-  two-second Config gesture is the access gate, the service accepts only one client, and every
-  characteristic write is rejected immediately after Config exit. Do not extend this service into
-  normal mode without adding a separate authenticated authorization design.
+- In normal mode the service advertises only while management is enabled, the console is awake,
+  wake does not own the advertiser, and no management client is connected. Controller discovery
+  may coexist; suppressing management advertising during discovery caused reconnect starvation.
+- RX and TX-notification subscription require an active 16-byte encrypted ATT link and a durable LE
+  bond. A new Just-Works bond is admitted only during the physical double-tap pairing window.
+  Android's no-display Just Works flow does not provide MITM authentication, so this is accurately
+  described as bonded/encrypted, not authenticated pairing.
+- One incoming peripheral-role management link is accepted and kept separate from controller HID
+  slots and controller-central SM/GATT discovery.
+- Entering Config still supplies the CDC identity and removes USB audio/controller output. It does
+  not create a second parser or a less-protected Bluetooth write path.
 - Advertising uses a low-duty 100–150 ms interval. Browser writes are split into minimum-MTU-safe
   20-byte pieces and replies are notified in negotiated-MTU-sized pieces.
-- Wake advertising and Config advertising never own the advertiser simultaneously.
+- Wake advertising and management advertising never own the advertiser simultaneously.
 
-The custom service must remain in BTstack's static ATT database because rebuilding that database
-around active controller links is unsafe. A BLE controller that independently acts as a GATT client
-toward the host could therefore discover the service once during setup, but it receives no
-advertisement, accepted configuration write, subscription, or steady-state traffic outside Config.
+The custom service remains in BTstack's static ATT database because rebuilding that database around
+active controller links is unsafe. Discovery of the UUID is not authorization: writes and TX
+subscriptions still require the trusted management link described above.
 
 ## GATT surface
 
@@ -131,6 +123,8 @@ Bluetooth exposes the production configuration surface:
 
 - `info`, `ping`, `get`, `save`;
 - `device` for the connected-controller summary;
+- bounded `input sources` and `input active <id|none>` selection;
+- `personality`, `reenumerate`, `wake`, `mgmt`, and versioned `bonds` management;
 - `body`, `jcl`, `jcr`, and the legacy slot-0 `lb` alias;
 - every `amiibo` upload, status, read, select, present/eject, clear, persist, and save-back
   command.
@@ -162,13 +156,11 @@ computer/phone and is unaffected.
 
 ## Resource state
 
-Current linked builds after this implementation:
+Current linked builds after the 2026-08-13 active-input management slice:
 
 | Measurement | Pico 2 W | Pico W |
 |---|---:|---:|
-| Firmware `.bin` | 907,592 bytes | 777,668 bytes |
-| `.data` | 128,876 bytes | 7,924 bytes |
-| `.bss` | 180,276 bytes | 111,076 bytes |
+| Firmware `.bin` | 975,120 bytes | 850,956 bytes |
 
 The service adds no clock change, worker, idle NFC work, or Pico W audio dependency. Pico 2 W
 remains on the validated 300 MHz profile; Pico W remains on its non-audio profile.
@@ -179,20 +171,20 @@ Completed:
 
 - pure host coverage for fragmented commands, busy rejection, oversized-line recovery, response
   chunking, disconnect session invalidation, and stale-response rejection;
-- all 49 compiled host-test executables pass;
-- Pico 2 W, Pico W, and legacy Switch 1 Pico W builds link;
+- all 67 compiled host-test executables pass at the repository-wide baseline;
+- the 11-test management/source suite passes after the active-input allowlist change;
+- Pico 2 W and Pico W Release builds link and retain valid install-reset markers;
 - portal JavaScript parses and every referenced DOM ID exists.
 
 Hardware still required:
 
-1. Confirm the service appears only after entering Config and disappears on exit.
-2. Connect over desktop Chromium and, if available, Chrome for Android.
-3. Read/save colors over BLE; verify persistence after returning to Pro2.
-4. Upload both 540- and 572-byte Amiibo files, select Save 1/Save 2, persist, and read them back.
-5. Repeat with a Classic controller and a BLE controller already HID-ready in Config.
-6. Confirm Config exit restores enumeration, input, motion, rumble, reconnect, wake, LED, and
-   BOOTSEL behavior.
-7. Play DualSense and genuine Pro2 audio after Config exit and confirm no stutter. Also verify from
-   the phone that the configuration service is not discoverable during that normal audio session.
+1. Validate first management bond only inside the double-tap window, encrypted saved reconnect
+   outside it, plaintext/new-client rejection, `mgmt off`, and reboot restoring management on.
+2. Exercise normal-mode management during active console play with audio, gyro, wake, and latency
+   observation. The existing 5.4-hour controller-plus-management soak established reconnect
+   stability but was not this complete gameplay matrix.
+3. Exercise physical-to-Android-to-physical active-input switching repeatedly and confirm neutral
+   transitions, fresh-state gating, feedback routing limits, latency, and no radio starvation.
+4. Complete the focused phone/portal mutation and Virtual Amiibo hardware matrix.
 
 Build success is not evidence for those physical behaviors.

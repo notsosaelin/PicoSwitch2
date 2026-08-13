@@ -349,6 +349,11 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Changed
 
+- Active transport and handoff documents now consistently describe the production-default-on,
+  bonded/encrypted in-band management path, retained CDC Config fallback, current console-sleep
+  policy, completed command atlas, and restored main-repository Android ownership. Dated experiment
+  reports remain unchanged.
+
 - `tools/verify_amiibo_crypto.mjs` now requires the retail-key path instead of defaulting to a
   maintainer-specific absolute path, and accepts `--json`. `tools/validate_amiibo_collection.py` is
   removed; `tools/amiibo_corpus.py` supersedes it and additionally handles 2048-byte images.

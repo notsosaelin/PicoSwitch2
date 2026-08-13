@@ -251,13 +251,13 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
   re-enumeration state. Its Android share export is bounded and redacted: no raw Amiibo bytes, JSON
   replies, keys, or Bluetooth addresses.
 
-## Source/document discrepancies found
+## Source/document reconciliation
 
 - `docs/bluetooth/app-interface-audit.md` retains the original gap table as rationale; its current
   status section records personality, bounded bonds, and wake as implemented. The `figureId` gap
   is likewise implemented by the current `src/config.c`/Amiibo status surface.
-- `web/README.md` and parts of `docs/architecture/config-transports.md` retain Config-only BLE text;
-  current firmware also arms the service in normal personality when `mgmt on` is active.
+- Active transport documentation now reflects the bonded/encrypted normal-personality service and
+  keeps Config as the CDC route; dated experiment reports retain their original observations.
 - The broad wireless `amiibo ` allowlist technically admits low-level reader commands, but the Web
   Portal documentation correctly says the physical-reader scan flow is not production-safe. This
   app does not expose it.

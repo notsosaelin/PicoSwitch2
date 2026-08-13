@@ -719,11 +719,12 @@ from the Pico 2 W binary and 100,160 bytes from the Pico W binary. Config enumer
 Amiibo transfer, save/readback, and direct BOOTSEL exit are hardware-confirmed with the CDC-only
 USB descriptor.
 
-The same local portal now also has a Config-personality-only BLE management transport. It stops
-controller discovery before advertising, classifies the incoming peripheral-role link before the
-HID path, and executes an allowlisted production command set through the existing core-0 parser.
-Normal controller personalities do not advertise, accept writes, notify, poll, or open a
-management link. All build and host/static checks pass; Bluetooth hardware validation is pending.
+The same local portal and Android app now use one bonded/encrypted BLE management transport in
+Config or a normal controller personality. The peripheral-role link remains separate from HID
+controller slots, controller discovery may coexist with it, and an allowlisted production command
+set executes through the existing core-0 parser. Standard builds boot with management on;
+`mgmt off` disables it for the current boot. The recovery soak is hardware-confirmed, while the
+first-bond/encryption and active audio/gyro/wake/latency matrices remain pending.
 
 Virtual Amiibo is now always available rather than controlled by a stored toggle. A blank adapter
 presents no virtual tag and can still fall through to a real reader source. Each browser profile
@@ -807,7 +808,7 @@ addresses and link keys, not names, remain bond authority.
 | DualSense/Edge LEDs and rumble | ✅ Confirmed | Real hardware after report-boundary scheduler fix |
 | Pro2 body/Joy-Con accents, Sony lightbar matching, and DualSense player-slot dots | ✅ Confirmed | Real Switch 2 and DualSense; config v8 hardware pass |
 | BOOTSEL report-boundary scheduling and former double/triple/hold policy | ✅ Confirmed | Real hardware after report-boundary gesture service |
-| Revised single/double/triple/two-second BOOTSEL action matrix | 🟡 Host/build confirmed; hardware pending | Pure gesture/action policy coverage; both board builds |
+| Revised single/double/triple/two-second BOOTSEL action matrix | ✅ Confirmed | Live-console single-tap cycle, paired double-tap bond-preserving pairing, triple-tap wipe/admission blocking, and two-second Config entry/exit are hardware-confirmed |
 | BLE management transport (Config **and** in-band via `g_mgmt_enabled`) | 🟡 Host/build confirmed; hardware pending | Production-default-on service; shared parser, bounded bridge, allowlist, 16-byte ATT encryption, durable-bond callback checks, pairing-window-only first bond, and local Web Bluetooth portal. Android Just Works has no MITM and is not mislabeled authenticated. |
 | Virtual Amiibo persistence and mutable single-slot library | 🟡 540 and v3 read/write/persistence hardware-confirmed; portal refactor pending | All 16 available v3 dumps completed real-console reads/writes; v3 Config Sync, reset-on-UF2, and Config BLE still require regression validation |
 | Late BLE DIS VID/PID handoff and input continuity | ✅ Confirmed | Xbox Series BLE hardware regression after notification-first identity fix |
@@ -981,7 +982,7 @@ Current automated coverage includes:
   auto-selection on connection, save metadata below the artwork, and a non-modal details drawer
 - Config mode links as CDC-only with a compile-time-checked descriptor and no MSC/web-disk symbols;
   both local portals pass JavaScript, DOM-reference, and localhost delivery checks
-- Config-only BLE command transport with fragmented-write assembly, one-command backpressure,
+- Config/in-band BLE command transport with fragmented-write assembly, one-command backpressure,
   response chunking, session invalidation, stale-response rejection, and production-command
   allowlisting; the browser uses the same settings/Amiibo UI over Web Serial or Web Bluetooth
 
@@ -989,11 +990,11 @@ The firmware builds under the Pico SDK 2.2.0 toolchain. The standard `pico_w`
 artifact retains its validated non-audio clock, memory layout, and Bluetooth
 scheduling. The standard `pico2_w` artifact uses the hardware-confirmed
 floating-point/SRAM audio path at 300 MHz/1.20 V. Both legacy `NS2_PRO=OFF`
-Pico W build directories also pass their compile gates. The current workspace has 53
+Pico W build directories also pass their compile gates. The current workspace has 67
 passing host-test executables, including battery decoder/source/encoder, DualSense
 audio packet/control/tone/resampler, native-haptic lifecycle, peak preservation, and
 bonded-reconnect transport suites, plus the virtual-tag store/codec, vendor transfer pump,
-Config-only BLE cross-core bridge, locked base mapping, the NTAG I2C 2K data model, and its
+Config/in-band BLE cross-core bridge, locked base mapping, the NTAG I2C 2K data model, and its
 capture-derived staged-write codec.
 
 NTAG I2C 2K (Kirby Air Riders "figure v3") support is active. The portal imports, loads, and can
@@ -1015,7 +1016,7 @@ button map replaces the retired per-family remap table.
 - [`docs/README.md`](docs/README.md) — documentation index and authority rules
 - [`docs/status/compatibility-matrix.md`](docs/status/compatibility-matrix.md) — controller/personality validation
 - [`docs/architecture/overview.md`](docs/architecture/overview.md) — runtime architecture and data flow
-- [`docs/architecture/config-transports.md`](docs/architecture/config-transports.md) — USB Serial and Config-only BLE management
+- [`docs/architecture/config-transports.md`](docs/architecture/config-transports.md) — USB Serial and bonded/encrypted in-band BLE management
 - [`docs/re-methodology/evidence-standards.md`](docs/re-methodology/evidence-standards.md) — evidence tiers and experiment rules
 - [`docs/re-methodology/nfc-investigation-workflow.md`](docs/re-methodology/nfc-investigation-workflow.md) — NFC/amiibo lab tooling and phase order
 - [`docs/switch2/`](docs/switch2/) — Pro Controller 2 protocol
@@ -1026,11 +1027,9 @@ button map replaces the retired per-family remap table.
 
 ## Next recommended work
 
-1. Extend the command atlas to the controller-side `blecap` schema, retaining transport and source
-   provenance. The existing offline scan found 42 zero-loss console-side traces/30 command pairs,
-   but only two of 29 zero-loss genuine BLE captures contain command traffic, both initialization.
-   Then choose one missing controller behavior whose semantics can be isolated by a passive or
-   reversible A/B.
+1. Run one bounded genuine-controller reconnect/power A/B from the completed controller-side atlas.
+   The current corpus admits 46 zero-loss traces and 30 zero-loss BLE captures, but only two BLE
+   files contain framed command traffic and both cover the same initialization path.
 2. Capture a genuine Pro2 physical-tag write/readback before enabling native writes.
 3. Finish the dedicated, research-build-only firmware-update sink so the next genuine controller
    update opportunity can be captured completely without using truncated generic traces.
