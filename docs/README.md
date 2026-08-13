@@ -31,6 +31,7 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Android handheld controller bridge | [`bluetooth/android-controller-bridge.md`](bluetooth/android-controller-bridge.md) |
 | Native Android companion app | [`android-companion.md`](android-companion.md) |
 | Retroid Pocket Classic Android bridge ADB audit | [`experiments/android-controller-retroid-pocket-classic-adb-audit-2026-08-11.md`](experiments/android-controller-retroid-pocket-classic-adb-audit-2026-08-11.md) |
+| AYN Thor Android companion live APK pass | [`experiments/android-companion-ayn-thor-live-2026-08-13.md`](experiments/android-companion-ayn-thor-live-2026-08-13.md) |
 | Retro Fighters BattlerGC Pro | [`bluetooth/retrofighters-battlergc-pro.md`](bluetooth/retrofighters-battlergc-pro.md) |
 | 8BitDo Ultimate Bluetooth paddles | [`../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md`](../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md) |
 | Pro Controller 2 USB protocol | [`switch2/usb-spec.md`](switch2/usb-spec.md) |

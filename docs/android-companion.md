@@ -16,3 +16,5 @@ Current implementation status is tracked in
 [`android/companion/FEATURE_PARITY.md`](../android/companion/FEATURE_PARITY.md). The intentionally
 short eventual hardware session is
 [`android/companion/HARDWARE_VALIDATION.md`](../android/companion/HARDWARE_VALIDATION.md).
+The first AYN Thor live results and remaining end-to-end gates are preserved in
+[`experiments/android-companion-ayn-thor-live-2026-08-13.md`](experiments/android-companion-ayn-thor-live-2026-08-13.md).

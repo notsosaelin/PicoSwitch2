@@ -5,12 +5,12 @@
 > Planned work belongs in [`PLAN.md`](PLAN.md); evidence and protocol details belong under
 > [`docs/`](docs/README.md).
 
-Last verified: 2026-08-01 (live genuine/accel/gyro motion-hybrid bisection)
+Last verified: 2026-08-13 (AYN Thor Android companion app-side hardware pass)
 Branch: `ns2-testing`
 
 Documentation/resource audit: 2026-07-25
 
-## In-band BLE management transport — 🟡 workflow works; coexistence failure under investigation 2026-08-12
+## In-band BLE management transport — 🟡 recovery hardware-confirmed; active-use gate remains 2026-08-13
 
 The configuration BLE service (RX/TX GATT + wireless command bridge) is now armable in a **normal
 controller personality**, gated by a new runtime flag `g_mgmt_enabled` (default off, RAM-only). When
@@ -23,24 +23,20 @@ decouple, unconditional `config_wireless_task()` pump, deferred wireless flash o
 clear`/`amiibo persist` no longer stall core0), and a web-portal Management panel. Built clean on both
 boards; all host tests green (`tools/run_mgmt_tests.ps1`, 6/6).
 
-**Hardware test 1 (2026-08-12):** the full workflow succeeded over BLE in normal Pro2 mode (portal →
-adapter → Amiibo upload → Switch 2 read/write → Sync back, correct metadata; no noticeable input
-latency). **But** after a short period both the management and controller links dropped and could not
-recover without a power cycle. **Confirmed root cause (controller half):**
-`btstack_host_start_scan()` early-returns while `config_ble.mode_active` is latched (true for the
-whole session under management), so controller reconnect is permanently suppressed until reboot. The
-management half is not yet isolated. Diagnostics added this pass: UART `btstate` + `btlife read <N>`
-(BLE/management snapshot, scan-suppression cause counters, lifecycle event ring) and a `-MgmtOn`
-diagnostic build to reproduce after a power cycle. Fix designed but not applied pending the trace.
-See [`docs/experiments/in-band-mgmt-coexistence-failure-2026-08-12.md`](docs/experiments/in-band-mgmt-coexistence-failure-2026-08-12.md).
+**Hardware state (2026-08-13):** the original workflow succeeded, and the controller-discovery
+decoupling fix then held a Classic controller plus management client for 5.4 hours through ten USB
+re-enumerations and three controller disconnect/reconnect cycles. Management stayed connected and
+the controller recovered without a power cycle. The original `disc=0` wedge was not reproduced, so
+the fix is inferred sufficient rather than a proof of that unseen management-half cause. Active
+console use with audio, gyro, wake, and latency observation remains the final coexistence gate. See
+[`docs/experiments/overnight-investigation-2026-08-13.md`](docs/experiments/overnight-investigation-2026-08-13.md).
 
-**Not yet done (own slices, HW-validated):** the coexistence fix (do not suppress controller
-discovery under management); authenticated bonding — ATT `AUTHENTICATED` + the double-tap first-bond
+**Not yet done (own slices, HW-validated):** authenticated bonding — ATT `AUTHENTICATED` + the double-tap first-bond
 window (plan C4; until it lands an *enabled* link is unauthenticated → trusted-environment only);
 wake-burst advertiser hand-off (C5); and the audio/gyro/latency coexistence gates. See
 [`docs/bluetooth/in-band-management-plan.md`](docs/bluetooth/in-band-management-plan.md).
 
-## Android handheld controller bridge — 🔵 Pico side host-tested 2026-08-11
+## Android handheld controller bridge — 🟡 AYN Thor app-side hardware pass 2026-08-13
 
 The no-root Android path uses the public API-28+ HID Device profile and keeps PicoSwitch2 as the
 console-facing protocol owner. Pico-side preparation now includes an exact 81-byte generic-gamepad
@@ -55,8 +51,13 @@ continues to reject phone/computer classes, so the app must initiate the connect
 backed generic reports shorter than the descriptor-derived minimum are now dropped atomically;
 valid reports, longer vendor reports, and descriptorless Classic fallback are unchanged.
 
-No Android/Pico hardware session has validated ordinary-app HID Device registration, app-led
-pairing, latency, or lifecycle teardown. See
+An ordinary no-root debug APK on an Android 13 AYN Thor now sees the built-in `Odin Controller`,
+renders its live sticks/triggers/buttons, acquires Android's public HID Device profile, and reaches
+registered/Ready. The first app-led pairing attempt exposed a missing
+`android.software.companion_device_setup` manifest declaration and crashed synchronously; that is
+fixed and guarded. A concurrently running legacy VCC root input daemon can reclaim Android's
+single HID Device app slot, so it must be stopped for the remaining chooser/bond/end-to-end pass.
+Pico receipt, console input, latency, and lifecycle teardown remain unvalidated. See
 [`docs/bluetooth/android-controller-bridge.md`](docs/bluetooth/android-controller-bridge.md).
 
 Read-only ADB evidence from a Retroid Pocket Classic narrows the first risk: its API-34 OEM image
@@ -786,9 +787,10 @@ single-tap cycle. The selection is not persisted across power cycles.
   [`docs/switch2/audio-passthrough-research.md`](docs/switch2/audio-passthrough-research.md).
 - Config/management is a separate BLE Peripheral role, armed by `config_ble_authorized()` — the
   explicit Config USB personality **or** the in-band management flag `g_mgmt_enabled` (default off).
-  Arming stops controller discovery before advertising and disconnects the browser before discovery
-  resumes. When neither trigger is set, the normal controller path performs only a mode-state
-  comparison and generates no management radio traffic (byte-identical to before the feature).
+  Management advertising no longer stops controller discovery; the two roles are independently
+  scheduled, and the 5.4-hour recovery soak confirms discovery resumes after controller drops.
+  When neither trigger is set, the normal controller path performs only a mode-state comparison and
+  generates no management radio traffic (byte-identical to before the feature).
 - Switch 2 controllers use a custom ATT pairing handshake, so the wipe policy cannot depend only on
   BTstack's LE bond database.
 - Successful custom pairing persists the normalized LTK in both the reconnect record and BTstack's

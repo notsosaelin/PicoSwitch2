@@ -545,13 +545,15 @@ sleep command or distinguishable wake advertisement is captured. See
 
 ## Android handheld controller bridge
 
-Status: Pico-side contract and regressions implemented; no Android or Pico hardware validation yet.
+Status: Pico-side contract and regressions implemented. A no-root Android 13 AYN Thor has
+hardware-validated built-in input capture and public HID Device registration; app-led bonding and
+Pico/console receipt remain.
 Architecture and gates:
 [`docs/bluetooth/android-controller-bridge.md`](docs/bluetooth/android-controller-bridge.md).
 
-- [ ] Prove on one target handheld that an ordinary foreground API-28+ app can acquire
+- [x] Prove on one target handheld that an ordinary foreground API-28+ app can acquire
   `BluetoothProfile.HID_DEVICE`, read the built-in controls, and register the fixed generic-gamepad
-  descriptor.
+  descriptor. Confirmed on AYN Thor (Android 13) with `Odin Controller`; the app reaches Ready.
 - [x] Audit the connected Retroid Pocket Classic read-only over ADB. Its API-34 OEM stack has HID
   Device enabled and its service running; the built-in `0x2022:0x3001` controller exposes the
   required controls. The ordinary-app proxy/register callback and labeled live inputs remain part
@@ -563,8 +565,8 @@ Architecture and gates:
 - [ ] Complete the first pair from an app-launched system chooser/bond flow, with no manual visit to
   Bluetooth Settings, then confirm PicoSwitch2 selects `bthid_gamepad` and receives neutral/button/
   stick test vectors.
-- [ ] Implement the Android bridge as an independent Gradle project under
-  `android/controller-bridge/`, with golden report-encoder tests and no root, Shizuku,
+- [x] Implement the Android bridge as an independent Gradle project under
+  `android/companion/`, with golden report-encoder tests and no root, Shizuku,
   accessibility service, hidden API, or controller-family impersonation.
 - [ ] Hardware-validate full controls, foreground/lifecycle neutralization, saved-bond reconnect,
   latency, and return to a known physical controller before making any compatibility claim.

@@ -1,7 +1,7 @@
 # Android Handheld Controller Bridge
 
-Status: proposed architecture; Android API and PicoSwitch2 source paths reviewed 2026-08-11;
-no Android handheld or PicoSwitch2 hardware validation has been performed.
+Status: implemented under `android/companion/`; AYN Thor app-side input and public HID Device
+registration hardware-validated 2026-08-13. App-led bond and Pico/console receipt remain open.
 
 ## Goal
 
@@ -30,8 +30,8 @@ API. It lets a foreground app register a HID report descriptor, connect to a pai
 interrupt reports, and receive HID host callbacks. PicoSwitch2 already implements the other half:
 a Classic Bluetooth HID host plus a descriptor-driven generic gamepad parser.
 
-The two material compatibility risks must be proved on the intended handheld before building a
-polished app:
+The two material compatibility risks were bounded on the intended handheld before the remaining
+end-to-end pairing pass:
 
 - The OEM Bluetooth stack must expose the Android HID Device profile. API level alone does not
   prove that `BluetoothAdapter.getProfileProxy(..., BluetoothProfile.HID_DEVICE)` will succeed on
@@ -87,13 +87,13 @@ The app is a thin transport bridge. It does not emulate a Switch controller, dec
 protocols, or change PicoSwitch2's console-facing behavior. PicoSwitch2 remains responsible for
 the active Pro Controller 2, Joy-Con 2, NSO GameCube, or Switch 1 USB identity.
 
-### Proposed Android project shape
+### Android project shape
 
-When implementation is approved, keep an independent Gradle project under
-`android/controller-bridge/` so the descriptor and Pico parser contract stay versioned together:
+The independent Gradle project lives under `android/companion/` so the descriptor and Pico parser
+contract stay versioned together:
 
 ```text
-android/controller-bridge/
+android/companion/
   app/                         Compose UI and lifecycle
   bridge/input/                InputDevice discovery and event normalization
   bridge/hid/                  descriptor, report encoder, BluetoothHidDevice wrapper
@@ -189,6 +189,20 @@ independently confirms the design against a different OEM and API level. Full ev
 
 Two different handhelds now map cleanly onto the single fixed HID contract, which strengthens the
 case for keeping one narrow descriptor rather than per-device profiles.
+
+### AYN Thor live APK pass (2026-08-13)
+
+The ordinary debug APK was then installed on that Thor. It discovered `Odin Controller`, rendered
+live built-in input, acquired the public HID Device proxy, registered the canonical descriptor, and
+reached Ready without root or Shizuku. The initial Pair action crashed because Android 13 requires
+the manifest to declare `android.software.companion_device_setup` before
+`CompanionDeviceManager.associate()`. The declaration is now present and synchronous OEM/framework
+failures are caught and reported instead of terminating the Activity.
+
+The device also has VCC's root `:input` daemon still running. It can register as Android's sole HID
+Device application and displace/reject this app. That is an environmental conflict, not a need for
+privilege in PicoSwitch Companion: stop the competing HID-emulation service before the final
+chooser, bond, and console-input test.
 
 ## Pairing and connection state machine
 
@@ -360,7 +374,7 @@ work without a guide/capture button if the OS withholds it.
 
 ## Implementation and validation path
 
-### Phase 0 — one-device feasibility spike
+### Phase 0 — one-device feasibility spike (partially hardware-complete)
 
 Build the smallest possible debug Activity before designing the final UI:
 
@@ -373,7 +387,7 @@ Build the smallest possible debug Activity before designing the final UI:
 6. On Pico UART, capture the observed address, Class of Device, name, descriptor parse summary,
    selected `bthid_gamepad` driver, and normalized event values.
 
-Gate: do not proceed until a real target handheld reaches the console with the correct face button,
+Final gate: do not claim completion until a real target handheld reaches the console with the correct face button,
 centered sticks, four directions, and no stuck state, without opening Android Bluetooth Settings.
 
 Pico-side preparation completed 2026-08-11: the canonical descriptor parses to a 10-byte wire
@@ -382,7 +396,7 @@ coverage pins neutral/full-state parsing, diagonal hat, held-button preservation
 truncated-report rejection, Classic phone-Class-of-Device fallback, and disconnect cleanup. This is
 source/host validation only; it does not prove an OEM exposes Android's HID Device profile.
 
-### Phase 1 — deterministic core
+### Phase 1 — deterministic core (implemented)
 
 - Add immutable `ControllerState`, the nine-byte encoder, and JVM golden tests.
 - Pin neutral, every individual button, diagonal hats, stick centers/extremes, trigger endpoints,
@@ -393,7 +407,7 @@ source/host validation only; it does not prove an OEM exposes Android's HID Devi
 - Add the lifecycle/pairing state machine with fake profile and bond adapters.
 - Make every stop/error path generate a neutral state before teardown when the link still exists.
 
-### Phase 2 — usable app
+### Phase 2 — usable app (implemented; hardware pass in progress)
 
 - Add source selection, raw/normalized live diagnostics, permission rationale, adapter chooser,
   connection state, and one large Play/Stop control.
@@ -443,8 +457,9 @@ compatibility substantially harder.
 
 ## First acceptance checklist
 
-- [ ] Target handheld exposes `BluetoothProfile.HID_DEVICE` to an ordinary app.
-- [ ] Built-in controls arrive through public `KeyEvent`/`MotionEvent` APIs while the app is focused.
+- [x] Target handheld exposes `BluetoothProfile.HID_DEVICE` to an ordinary app (AYN Thor API 33).
+- [x] Built-in controls arrive through public `KeyEvent`/`MotionEvent` APIs while the app is focused
+      (`Odin Controller` live panel hardware-confirmed).
 - [ ] Initial adapter selection, bond consent, and HID connection complete without opening Settings.
 - [x] Source/host fixture: PicoSwitch2 accepts an Android-initiated Classic HID connection with a
       phone Class of Device and selects `bthid_gamepad` (physical Android/Pico confirmation pending).

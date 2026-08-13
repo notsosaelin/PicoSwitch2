@@ -21,7 +21,8 @@ The debug build provides real implementations for:
 - a private, versioned, recoverable on-device Amiibo library using app-internal files and atomic replacement;
 - import and validation of exact 540-byte, 572-byte, and 2048-byte user backups;
 - transactional `begin -> chunk -> commit -> persist` Amiibo uploads, 32 bytes per chunk;
-- adapter-to-library Sync, full-image CRC verification, `downloaded`, persistence polling, and
+- adapter-to-library Sync, structural validation, strict figure-v3 whole-image CRC verification,
+  ordinary-image unavailable-CRC compatibility, `downloaded`, persistence polling, and
   immediate state/cache replacement after console-modified data is retrieved;
 - present, eject, clean/used copy selection, and guarded adapter clear operations;
 - Android built-in controller discovery and live input diagnostics;
@@ -31,7 +32,7 @@ The debug build provides real implementations for:
   capacity-one full-state reports at an 8 ms ceiling, input-device hot-plug recovery, and
   neutralization on pause/stop/disconnect;
 - a separate Developer/diagnostics screen and privacy-redacted share export; and
-- five-second Amiibo state refresh while connected and idle, including an adapter-only download,
+- five-second controller and Amiibo state refresh while connected and idle, including an adapter-only download,
   present/eject, and guarded-clear workflow when no local item matches.
 
 There is deliberately no user remapping editor. PicoSwitch2's compiled controller map is stable and
@@ -90,10 +91,11 @@ no root, Shizuku, accessibility service, hidden API, or visit to Bluetooth Setti
 
 ## Firmware setup and safety
 
-Normal-personality wireless management defaults off and is RAM-only. Initially enter the physical
-Config personality and issue `mgmt on`; the app can then discover the management service during that
-boot. Current firmware does not yet enforce authenticated management writes, so use it only in a
-trusted environment.
+Normal source builds keep normal-personality wireless management off and RAM-only. Initially enter
+the physical Config personality and issue `mgmt on`; a diagnostic image built with `-MgmtOn` skips
+that step for the current boot. Repository source does **not** yet ship production always-on
+management. Current firmware also does not enforce authenticated management writes, so use either
+form only in a trusted environment.
 
 Before pairing Android as a controller, open the adapter's physical controller-pairing window. The
 Android system must obtain user consent and create the bond before `BluetoothHidDevice.connect()` can
@@ -120,7 +122,7 @@ remains reachable at 150% text, and exercised an 80-item library with long names
 
 ## Tests
 
-The second-pass clean run passes **37 JVM tests**, **1 API-35 instrumented navigation/scroll smoke
+The current clean run passes **42 JVM tests**, **1 API-35 instrumented navigation/scroll smoke
 test**, Android lint (**0 errors; 15 advisory warnings**), and debug APK assembly. JVM coverage includes:
 
 - command framing/limits, config, personality, complete Amiibo status, malformed/error replies;
@@ -139,11 +141,13 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
 
 ## Honest limitations
 
-- Real BLE management, coexistence/reconnect, wake while management is connected, and every command
-  workflow still require a safe adapter hardware pass after the active firmware investigation.
-- The AYN Thor was not attached during this build. Historical ADB evidence says its HID Device
-  service is enabled and its `Odin Controller` fits the fixed contract, including GAS/BRAKE-only
-  triggers; APK registration, bond, and end-to-end console input remain unvalidated.
+- A real BLE management session on AYN Thor now validates discovery, adapter/controller display,
+  personality switching, Amiibo visibility, and the ordinary-image Sync transfer path. Wake and
+  the complete mutation matrix still require their focused hardware checks.
+- The AYN Thor's `Odin Controller` is live-validated, including its input panel, and the ordinary
+  app reaches registered HID Ready without root or Shizuku. App-led bond, Pico receipt, and
+  end-to-end console input remain unvalidated. The installed legacy VCC root input daemon can
+  occupy Android's single HID Device application slot and must be stopped for that test.
 - Motion and rumble are not in the v1 Android HID contract and are labeled as unavailable.
 - Phone-NFC physical-tag backup is not implemented yet. Controller-as-reader commands are low-level
   and intentionally not exposed as a production user workflow.

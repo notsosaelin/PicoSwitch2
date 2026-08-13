@@ -241,6 +241,13 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Fixed
 
+- Disconnecting a Bluetooth input controller now clears its published name, VID, and PID together
+  with the neutral input report. Management clients no longer keep showing the last controller as
+  attached after it powers off.
+- Android companion setup no longer crashes when Android 13 enforces the Companion Device Manager
+  feature declaration. HID-profile acquisition/registration failures are reported as recoverable
+  bridge states, and ordinary 540/572-byte Amiibo Sync no longer mistakes firmware's `00000000`
+  unavailable-CRC sentinel for a whole-image checksum. Figure-v3 CRC enforcement remains strict.
 - Pro Controller 2 and NSO GameCube personalities are now recognized on a **fresh** Windows PC
   without a manual WinUSB reset. Both now serve the Microsoft OS 1.0 Extended Properties descriptor
   (`wIndex=0x0005`) on their vendor interface, registering the Nintendo device-family

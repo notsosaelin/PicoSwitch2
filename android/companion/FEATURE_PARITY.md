@@ -6,10 +6,10 @@ real PicoSwitch2/AYN Thor.
 
 | Capability | Android status | Complete workflow / rationale |
 |---|---|---|
-| BLE discovery and connection | Awaiting hardware | Permission -> service-UUID scan -> GATT service/characteristics -> notifications -> `info` identity check -> complete refresh -> connected UI. A timeout or oversized reply closes the session. |
+| BLE discovery and connection | Thor hardware-confirmed | AYN Thor connected in-app by service UUID and populated the management UI. A timeout or oversized reply closes the session. |
 | Adapter/firmware information | Awaiting hardware | `info`, `get`, `device` are required core probes. Incomplete shapes and a non-`picoswitch` identity fail closed. |
-| Controller information/battery | Awaiting hardware | `device` -> parsed snapshot -> Home controller card. |
-| Personality query/switch | Awaiting hardware | Optional `personality` probe gates controls. Set requires `{ok:true}`, marks USB identity refresh pending, and retains the last verified identity until reconnect confirms the post-enumeration personality. It never replays after rotation. Personality persistence is firmware-owned. |
+| Controller information/battery | Thor hardware-confirmed | `device` populated the Home controller card. Firmware now clears identity on disconnect and Android polls it every five seconds; the fix needs a firmware flash to validate the powered-off transition. |
+| Personality query/switch | Thor hardware-confirmed | AYN Thor successfully changed personality. Set requires `{ok:true}`, marks USB identity refresh pending, and never replays after rotation. Personality persistence is firmware-owned. |
 | Body/lightbar and Joy-Con accent colors | Awaiting hardware | `body`/`jcl`/`jcr` -> `{ok:true}` -> `save` -> local snapshot. UI records the current firmware requirement for a later USB re-enumeration. |
 | Controller mappings | Intentionally omitted | Current firmware intentionally exposes no remapping schema. Nintendo-side persistent remapping remains authoritative. |
 | Console wake | Awaiting hardware | `wake` -> `{ok:true}` -> queued notice. An explicit unsupported response disables the capability for the session. Wake success is asynchronous and is not falsely claimed. |
@@ -22,7 +22,7 @@ real PicoSwitch2/AYN Thor.
 | Amiibo selection | Fully implemented locally | Selected UUID/navigation/source survive rotation and process recreation. Selection alone does not mutate the adapter. |
 | Present/eject | Awaiting hardware | `present`/`eject` -> `{ok:true}` -> `amiibo status` refresh. Adapter-only state remains actionable even before a matching local backup exists. |
 | Clean/used copy selection | Awaiting hardware | Shown only for ordinary images with `hasSave2`; `select save1/save2` -> refresh. It is not shown for v3. |
-| Sync console-written data | Awaiting hardware | status -> exact-size bounded reads -> structural/CRC validation -> durable private file/index write -> generation/CRC recheck -> `downloaded` -> persist poll -> refresh. Dirty protection is never acknowledged before local durability. |
+| Sync console-written data | Thor hardware-confirmed | The fixed APK downloaded and completed the same 540-byte adapter Sync with no CRC/error state. Android treats only ordinary zero as unavailable, retains structure/generation checks, and keeps strict v3 CRC verification. Dirty protection is never acknowledged before local durability. |
 | Adapter Amiibo clear | Awaiting hardware | Dirty state blocks clear. Confirmed UI -> `clear` -> poll until no image/persist pending. Local backup is retained. |
 | Local delete/rename | Fully implemented | Confirmation/rename dialog -> transactional private index/file mutation. Adapter state is untouched. |
 | Amiibo metadata identity | Fully implemented | UID, figure ID, size, CRC and generation are shown from local/firmware evidence. |
@@ -30,7 +30,7 @@ real PicoSwitch2/AYN Thor.
 | Amiibo initialization | Intentionally deferred | Portal initialization is client-side decrypt/reset/re-sign behavior. It is not a firmware command and needs the same local crypto/key work above. |
 | Catalog artwork/games/ZIP exchange | Web-Portal-only candidate | Useful client-side features, but not needed for protocol-complete hardware validation and not generalized in this pass. No network/catalog dependency gates import or Sync. |
 | Phone NFC physical-tag backup | Intentionally deferred | Public Android NFC is feasible but is separate from management. Low-level controller-reader commands are deliberately not exposed. |
-| Android controller HID bridge | Awaiting hardware | Public API 28 `BluetoothHidDevice`, exact 81-byte fixture descriptor, report ID 1, nine-byte payload, 14 buttons, hats, six axes, GAS/BRAKE fallback, capacity-one 8 ms report pacing, hot-plug source refresh, neutralization and report counters. No root/Shizuku. |
+| Android controller HID bridge | Partial Thor hardware pass | Thor live input and public HID registration reach Ready. The missing Companion Device Manager manifest feature that crashed pairing is fixed and guarded. A legacy VCC root daemon currently competes for Android's one HID Device app slot; app-led bond, Pico receipt, and console input remain. No root/Shizuku is used by this app. |
 | Motion/rumble from Android | Unsupported by v1 contract | The fixed Android bridge descriptor is input-only and contains no motion or output reports. |
 | Developer diagnostics/export | Fully implemented client-side | Settings -> Developer/diagnostics reports platform permissions/profile/GATT/firmware/capabilities/descriptor/bond/report/identity state and exports a bounded redacted text report through a cache-only FileProvider. |
 | Research/raw commands | Deprecated for this client | Firmware diagnostics and low-level Amiibo reader commands remain UART/USB research surfaces and are not exposed. |
@@ -45,8 +45,8 @@ real PicoSwitch2/AYN Thor.
   reply cannot satisfy the next command.
 - Unlike the portal, Sync waits for adapter persistence and acknowledges dirty data only after the
   private local copy is durable and the generation/CRC still match.
-- While connected, Android polls `amiibo status` every five seconds outside active transactions so
-  a game-side present/dirty/generation change does not leave the screen indefinitely stale.
+- While connected, Android polls controller and `amiibo status` every five seconds outside active
+  transactions so disconnect/present/dirty/generation changes do not leave the screen indefinitely stale.
 - Offline local selection, rename, import, and delete never issue management requests.
 
 ## 511-byte firmware response constraint
