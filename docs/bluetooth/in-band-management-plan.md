@@ -1,11 +1,11 @@
 # In-Band Management — Implementation Plan + Status
 
-**Status:** 🔵 PARTIALLY IMPLEMENTED (transport landed 2026-08-12, default-off). Owner approved a
-sliced build with a hardware flash-test after the transport. Supersedes the config-mode-only model
+**Status:** 🟡 HOST/BUILD COMPLETE, HARDWARE GATES OPEN (production-default-on 2026-08-13).
+Supersedes the config-mode-only model
 in [config-transports.md](../architecture/config-transports.md) as the transport is now gated by
 `g_mgmt_enabled`, not `g_usb_config_mode`.
 
-## Implementation status (2026-08-12)
+## Implementation status (2026-08-13)
 
 | Slice | Scope | State |
 |---|---|---|
@@ -43,10 +43,20 @@ and needs a hardware trace. Full write-up:
 
 **Added this pass (diagnostics, not a fix):** UART `btstate` (live BLE/management snapshot +
 scan-suppression cause counters) and `btlife read <N>` (48-entry lifecycle event ring with HCI
-disconnect reasons and ordering), plus a `-MgmtOn` (`NS2_MGMT_DEFAULT_ON`) diagnostic build so the
-failure can be reproduced right after a power cycle. The coexistence fix (do **not** suppress
+disconnect reasons and ordering), plus the former `-MgmtOn` (`NS2_MGMT_DEFAULT_ON`) diagnostic
+build used to reproduce the failure right after a power cycle (this is now the production default).
+The coexistence fix (do **not** suppress
 controller discovery under in-band management) is designed in the experiment doc but deliberately
 **not** applied until the trace confirms both halves — instrument-and-isolate first, per owner.
+
+### Hardware follow-up (2026-08-13) — recovery fixed
+
+The subsequent decoupling change removed management as a controller-scan suppression cause. A
+Classic controller and management client then held for 5.4 hours across ten USB re-enumerations;
+three controller disconnects all recovered automatically while management stayed connected. The
+original zero-disconnect-event wedge did not recur, so the fix is strong recovery evidence but not
+a direct reproduction of that unseen management-half failure. Active console use with audio, gyro,
+wake, and latency observation remains open.
 
 ---
 
