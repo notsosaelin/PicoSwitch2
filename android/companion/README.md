@@ -1,5 +1,8 @@
 # PicoSwitch Companion for Android
 
+Second-pass status and the ordered physical handoff live in
+[`FEATURE_PARITY.md`](FEATURE_PARITY.md) and [`HARDWARE_VALIDATION.md`](HARDWARE_VALIDATION.md).
+
 Native Material companion app for PicoSwitch2. It is a second client of the firmware's shared
 management interface; it is not a WebView and does not make the portal part of the runtime.
 
@@ -15,7 +18,7 @@ The debug build provides real implementations for:
   USB re-enumeration warning;
 - body/lightbar and Joy-Con accent colors, followed by queued firmware persistence;
 - queued console wake requests;
-- a private on-device Amiibo library using app-internal files and an atomic JSON index;
+- a private, versioned, recoverable on-device Amiibo library using app-internal files and atomic replacement;
 - import and validation of exact 540-byte, 572-byte, and 2048-byte user backups;
 - transactional `begin -> chunk -> commit -> persist` Amiibo uploads, 32 bytes per chunk;
 - adapter-to-library Sync, full-image CRC verification, `downloaded`, persistence polling, and
@@ -25,7 +28,11 @@ The debug build provides real implementations for:
 - the public Android `BluetoothHidDevice` controller bridge using the exact 81-byte descriptor and
   nine-byte payload pinned by `tools/fixtures/android_controller_hid.h`;
 - in-app Android companion-device chooser, bonding handoff, saved bonded-host reconnect,
-  full-state reports, 8 ms motion coalescing, and neutralization on pause/stop/disconnect.
+  capacity-one full-state reports at an 8 ms ceiling, input-device hot-plug recovery, and
+  neutralization on pause/stop/disconnect;
+- a separate Developer/diagnostics screen and privacy-redacted share export; and
+- five-second Amiibo state refresh while connected and idle, including an adapter-only download,
+  present/eject, and guarded-clear workflow when no local item matches.
 
 There is deliberately no user remapping editor. PicoSwitch2's compiled controller map is stable and
 user remapping belongs in the Switch's persistent controller settings.
@@ -97,7 +104,8 @@ succeed.
 The app selects navigation and content structure from available width, not orientation names:
 
 - bottom navigation below 720 dp, navigation rail at 720 dp and above;
-- two-pane hardware, Amiibo, controller, and color layouts when usable content reaches 760 dp;
+- two-pane hardware, controller, and color layouts at 760 dp; Amiibo uses two panes from 600 dp so
+  short handheld landscapes retain a usable library and detail surface;
 - adaptive Amiibo grid cells with a 168 dp minimum;
 - a 1240 dp content maximum on unusually wide displays;
 - one shared spacing/radius/touch-target token set; scrolling rather than shrinking or clipping.
@@ -106,18 +114,25 @@ The debug APK was emulator-launched and visually inspected at 16:9 portrait/land
 landscape, 4:3 portrait/landscape, 1:1, 900x2100 narrow/tall, and 2400x1200 wide-handheld/tablet
 profiles. The 16:9 landscape pass exposed underused horizontal space; lowering the content
 two-pane threshold from 900 to 760 dp corrected it. A retained scroll-position issue across top-level
-destinations was also fixed by keying each destination's composition.
+destinations was also fixed by keying each destination's composition. The second pass additionally
+removed a duplicate/clipped empty-library card, bounded the compact Amiibo detail pane so its grid
+remains reachable at 150% text, and exercised an 80-item library with long names.
 
 ## Tests
 
-`testDebugUnitTest` covers:
+The second-pass clean run passes **37 JVM tests**, **1 API-35 instrumented navigation/scroll smoke
+test**, Android lint (**0 errors; 15 advisory warnings**), and debug APK assembly. JVM coverage includes:
 
 - command framing/limits, config, personality, complete Amiibo status, malformed/error replies;
 - exact neutral report, all 14 button bits, every hat direction/opposites, Thor-style GAS/BRAKE
   trigger normalization, stick dead zones/endpoints/inversion, and descriptor size;
 - Amiibo accepted sizes, identity extraction, and standard CRC32;
 - upload ordering, 32-byte chunk count, and dirty-store replacement protection through a scripted
-  fake management transport.
+  fake management transport;
+- versioned local-library restart/recovery/corruption/collision/rollback behavior;
+- generation-safe download acknowledgement, unsupported/malformed/false-success failures, and
+  exact 511/512-byte reply-limit handling; and
+- capacity-one HID report replacement plus descriptor/report golden vectors.
 
 The emulator run proves install, launch, navigation, rotation/configuration handling, and responsive
 rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
@@ -133,15 +148,30 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
 - Phone-NFC physical-tag backup is not implemented yet. Controller-as-reader commands are low-level
   and intentionally not exposed as a production user workflow.
 - Owner, nickname, registration/write dates, write count, encrypted-data initialization, catalog
-  artwork, ZIP library exchange, and direct OS share/export remain future client-side work. Those
+  artwork, ZIP library exchange, and raw backup share/export remain future client-side work. Those
   need user-supplied retail keys and/or catalog logic; firmware correctly does not receive the keys.
-- Android controller source selection is not yet persisted across app restarts. Capture remains an
-  OEM-specific C/Z choice until a labeled Thor/Retroid input pass is recorded.
+- Android controller source selection is persisted by descriptor. Capture remains an OEM-specific
+  C/Z choice until a labeled Thor/Retroid input pass is recorded.
 - Color changes save correctly but current firmware has no color-triggered USB re-enumeration
   request. The app warns that a reconnect/re-enumeration is needed before the console refreshes the
   host-visible identity color.
-- LE bond lists can exceed the wireless reply bridge's 511-byte practical response ceiling and then
-  appear as a timeout. Classic controller bonds are not individually removable through management.
+- LE bond lists approach the wireless reply bridge's 511-byte practical response ceiling. Firmware
+  can return valid but silently incomplete JSON because it provides no total/truncation marker; the
+  app warns that reported results are not provably complete. Firmware still needs a versioned
+  bounded/paginated list command. Classic controller bonds are not individually removable through
+  management.
+
+## Second-pass hardening
+
+- Sync stores adapter bytes durably before `amiibo downloaded`, rechecks generation/CRC, and polls
+  queued persistence. Failed local storage leaves firmware dirty protection intact.
+- Optional feature probes distinguish unavailable firmware commands from transient communication
+  failure without discarding valid core state.
+- Rotation/process restoration retains destination, Amiibo/source selection, color edits, and
+  pending identity-refresh state without replaying protocol mutations.
+- **More -> Developer / diagnostics** shows platform, HID, GATT, firmware, capability, report, and
+  re-enumeration state. Its Android share export is bounded and redacted: no raw Amiibo bytes, JSON
+  replies, keys, or Bluetooth addresses.
 
 ## Source/document discrepancies found
 
