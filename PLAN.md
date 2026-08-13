@@ -552,6 +552,11 @@ next APK; lifecycle/latency and the new unified relationship UX remain open hard
 Architecture and gates:
 [`docs/bluetooth/android-controller-bridge.md`](docs/bluetooth/android-controller-bridge.md).
 
+**Current ownership:** all Android v1 HID bridge work is assigned to Claude. Until the maintainer
+reopens that boundary, Codex will not modify the Android controller/HID packages, descriptor or
+encoder, input routing, HID lifecycle/auto-resume, or firmware HID/source-switching behavior. The
+unchecked HID hardware gates below remain planned but are not part of Codex's current execution.
+
 - [x] Prove on one target handheld that an ordinary foreground API-28+ app can acquire
   `BluetoothProfile.HID_DEVICE`, read the built-in controls, and register the fixed generic-gamepad
   descriptor. Confirmed on AYN Thor (Android 13) with `Odin Controller`; the app reaches Ready.
