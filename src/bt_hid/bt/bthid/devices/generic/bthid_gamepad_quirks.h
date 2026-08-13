@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "core/input_event.h"
+#include "bthid_android_bridge.h"
 
 // ============================================================================
 // REPORT MAP TYPES (mirrors USB hid_gamepad.c dinput_usage_t)
@@ -92,6 +93,11 @@ struct ble_report_map_s {
     uint8_t report_id;          // Expected gamepad input report ID (0 = none)
     uint16_t input_report_len;  // Minimum complete report length, including report ID when present
     bool has_sim_triggers;      // true if triggers use Simulation Controls (Xbox-style)
+    // Descriptor-declared PicoSwitch2 Android bridge extension (motion/battery in,
+    // rumble/player-LED out). Zeroed for every ordinary controller; populated only
+    // when the device's own descriptor declares the vendor block. See
+    // bthid_android_bridge.h for why this is a declared capability, not a quirk.
+    android_bridge_ext_t bridge;
     const gamepad_quirk_t *quirk;  // resolved via gamepad_quirks_identify(); NULL only before
                                     // the first descriptor parse (bthid_gamepad_set_descriptor()
                                     // sets it unconditionally as its last step, never leaving it

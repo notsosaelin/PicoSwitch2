@@ -1767,6 +1767,8 @@ static void ns2_dispatch_complete_vendor_command(
     ns2_dispatch(command, (uint32_t)length);
 }
 
+bool ns2_motion_negotiated(void) { return ns2_imu_enabled; }
+
 void ns2_init(void) {
     ns2_vendor_tx_init(&ns2_vendor_tx);
     ns2_vendor_rx_init(&ns2_vendor_rx);

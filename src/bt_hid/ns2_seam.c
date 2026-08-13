@@ -26,6 +26,9 @@
 #include "bt/bthid/devices/vendors/nintendo/switch_pro_bt.h" // Switch 1 motion provenance
 #include "config.h"                               // config_get_body_color()
 #include "ns2_motion_seam.h"                  // per-source IMU axis rows
+#ifdef NS2_PRO
+#include "switch_pro2.h"                          // ns2_motion_negotiated() (motion-demand hook)
+#endif
 #include "ns2_remap.h"                            // locked base button mapping
 #include "ns2_player_led.h"                       // Switch wire bitfield -> player number
 #include "ns2_wake.h"                             // post-sleep real-input wake intent
@@ -274,6 +277,12 @@ void router_submit_input(const input_event_t *e) {
             in.motion_source = SWITCH_MOTION_SOURCE_WII;
         else if (dev && dev->driver == &switch_pro_bt_driver)
             in.motion_source = SWITCH_MOTION_SOURCE_SWITCH1;
+        else if (e->motion_from_android_bridge)
+            // The Android bridge rides the ordinary generic gamepad driver, so
+            // the bound decoder cannot identify it. The generic driver sets this
+            // flag only when the source's own descriptor declared the bridge
+            // extension, which is what gives this family its own seam row.
+            in.motion_source = SWITCH_MOTION_SOURCE_ANDROID;
         else
             in.motion_source = SWITCH_MOTION_SOURCE_GENERIC;
         in.motion_sequence = e->motion_sequence;
@@ -362,6 +371,20 @@ void bthid_on_raw_report(uint8_t conn_index, uint32_t connection_generation,
 
 void bthid_on_hid_rebind(uint8_t conn_index) {
     ns2_active_input_rebind(conn_index);
+}
+
+// Strong override of the generic driver's weak motion-demand hook. A source that
+// can idle its sensors (the Android companion handheld) asks the adapter whether
+// the console is actually consuming motion; streaming gyro into a report that
+// carries none would drain a phone battery for nothing. On NS2_PRO this is the
+// console's real negotiated IMU state; other build axes keep the permissive
+// default because they have no equivalent negotiation to consult.
+bool bthid_host_wants_motion(void) {
+#ifdef NS2_PRO
+    return ns2_motion_negotiated();
+#else
+    return true;
+#endif
 }
 
 // Strong override of bthid.c's weak battery hook. BAS notifications can arrive

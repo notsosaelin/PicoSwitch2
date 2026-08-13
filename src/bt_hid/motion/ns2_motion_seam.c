@@ -43,6 +43,21 @@ static const ns2_motion_seam_t NS2_MOTION_SEAMS[] = {
     // which selects the other one.
     [SWITCH_MOTION_SOURCE_SWITCH1] = {
         {1, 0, 2}, {-1, 1, 1}, {1, 0, 2}, {-1, 1, 1} },
+
+    // ANDROID: the companion app publishes Android's standard sensor frame
+    // (X right, Y up along the screen, Z out of the screen toward the user),
+    // already converted to this project's units (8192 counts/g, 16.384
+    // counts/dps) by the app. That frame matches the arrangement the DualSense
+    // row describes, so this row starts identical to it.
+    //
+    // PROVISIONAL: the starting row is reasoned from the frame convention, not
+    // measured. Axis/sign errors here are exactly what the determinant rule
+    // above cannot catch, so this needs the same physical pitch/yaw/roll pass
+    // the SWITCH1 row required. Correcting it is a one-row firmware change --
+    // deliberately kept here rather than in the app so a fix needs a flash, not
+    // a new APK. See docs/bluetooth/android-controller-bridge.md.
+    [SWITCH_MOTION_SOURCE_ANDROID] = {
+        {0, 2, 1}, {1, -1, 1}, {0, 2, 1}, {1, -1, 1} },
 };
 
 #define NS2_MOTION_SEAM_COUNT \

@@ -259,6 +259,13 @@ typedef struct {
     uint32_t motion_timestamp;  // Source IMU clock; units are decoder-specific
     bool motion_timestamp_valid;// True only when motion_timestamp is populated
     bool has_motion;            // Motion data is valid
+    // Set ONLY by the generic Bluetooth driver when the source declared the
+    // PicoSwitch2 Android bridge extension in its HID descriptor. Motion
+    // provenance is otherwise taken from the bound decoder (ns2_seam.c), which
+    // cannot distinguish this source because the bridge deliberately uses the
+    // ordinary generic gamepad driver. One narrow flag keeps the Android sensor
+    // frame on its own motion-seam row instead of widening identity checks.
+    bool motion_from_android_bridge;
 
     // Pressure-sensitive button data (DS3)
     // Order: up, right, down, left, l2, r2, l1, r1, triangle, circle, cross, square

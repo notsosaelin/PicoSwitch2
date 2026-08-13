@@ -277,6 +277,12 @@ target_compile_definitions(PicoSwitchWGA PRIVATE BTSTACK_USE_CYW43=1 NS2_BT_ALL_
 target_include_directories(PicoSwitchWGA PRIVATE
     src
     include
+    # tools/fixtures/android_controller_hid.h is the canonical Android-bridge HID
+    # contract (descriptor + wire layout + sensor scale), shared verbatim by the
+    # firmware parser, the host tests, and the mirrored Kotlin encoder so the two
+    # ends cannot drift. Included as "fixtures/android_controller_hid.h", matching
+    # how tools/test_bthid_android_controller.c already consumes it.
+    tools
     8Bitdo/integration)
 
 # `include` holds tusb_config.h; `src` holds btstack_config.h. These must be on the

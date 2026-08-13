@@ -1,0 +1,309 @@
+/*
+ * Host contract test for the Android Controller Bridge v2 feature-parity
+ * extension: motion, battery, rumble, and player LED.
+ *
+ * Compiles the PRODUCTION generic gamepad driver, the production HID descriptor
+ * parser, and the production bridge module against the canonical v2 descriptor
+ * the Android app registers. Nothing here re-implements the wire format; the
+ * contract comes from tools/fixtures/android_controller_hid.h, which the Kotlin
+ * encoder mirrors.
+ *
+ * gcc -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter \
+ *   -ffunction-sections -fdata-sections \
+ *   -Itools/host_stubs -Isrc -Isrc/bt_hid -Iinclude -Itools \
+ *   tools/test_bthid_android_bridge.c \
+ *   src/bt_hid/bt/bthid/devices/generic/bthid_gamepad.c \
+ *   src/bt_hid/bt/bthid/devices/generic/bthid_gamepad_quirks.c \
+ *   src/bt_hid/bt/bthid/devices/generic/bthid_android_bridge.c \
+ *   src/bt_hid/usb/usbh/hid/devices/generic/hid_parser.c \
+ *   -Wl,--gc-sections -o build/host-tests/test_bthid_android_bridge.exe
+ */
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "bt/bthid/bthid.h"
+#include "bt/bthid/devices/generic/bthid_gamepad.h"
+#include "bt/bthid/devices/generic/bthid_gamepad_quirks.h"
+#include "core/buttons.h"
+#include "core/router/router.h"
+#include "core/services/players/feedback.h"
+#include "fixtures/android_controller_hid.h"
+
+static int failures;
+static bthid_device_t device;
+static input_event_t last_event;
+static unsigned submitted;
+
+// Captured output reports (rumble / player LED).
+static unsigned sent_reports;
+static uint8_t sent_report_id;
+static uint8_t sent_payload[8];
+static uint8_t sent_len;
+static bool send_should_fail;
+
+static feedback_state_t fb;
+static int player_index_result;
+
+#define CHECK(condition, message)                                              \
+    do {                                                                       \
+        if (condition) printf("OK:   %s\n", message);                          \
+        else { printf("FAIL: %s\n", message); failures++; }                     \
+    } while (0)
+
+const gamepad_quirk_t QUIRK_BITDO_NGC_MODKIT = {0};
+const gamepad_quirk_t QUIRK_BITDO_ULTIMATE_MG = {0};
+const gamepad_quirk_t QUIRK_BITDO_M30 = {0};
+const gamepad_quirk_t QUIRK_BITDO_PADDLE = {0};
+const gamepad_quirk_t QUIRK_XBOX_ELITE2 = {0};
+const gamepad_quirk_t QUIRK_XBOX = {0};
+
+void router_submit_input(const input_event_t *event) { last_event = *event; submitted++; }
+void router_device_disconnected(uint8_t a, int8_t i) { (void)a; (void)i; }
+void router_device_disconnected_with_generation(uint8_t a, int8_t i, uint32_t g)
+{ (void)a; (void)i; (void)g; }
+void remove_players_by_address(int a, int i) { (void)a; (void)i; }
+int find_player_index(int dev_addr, int instance) { (void)dev_addr; (void)instance; return player_index_result; }
+feedback_state_t *feedback_get_state(uint8_t player_index) { (void)player_index; return &fb; }
+void feedback_clear_dirty(uint8_t player_index) { (void)player_index; fb.rumble_dirty = false; }
+void bthid_register_driver(const bthid_driver_t *driver) { (void)driver; }
+bthid_device_t *bthid_get_device(uint8_t conn_index)
+{ return device.active && device.conn_index == conn_index ? &device : NULL; }
+
+bool bthid_send_output_report(uint8_t conn_index, uint8_t report_id,
+                              const uint8_t *data, uint16_t len)
+{
+    (void)conn_index;
+    if (send_should_fail) return false;
+    sent_reports++;
+    sent_report_id = report_id;
+    sent_len = (uint8_t)(len < sizeof(sent_payload) ? len : sizeof(sent_payload));
+    memcpy(sent_payload, data, sent_len);
+    return true;
+}
+
+static void put_le16(uint8_t *p, int16_t v) { p[0] = (uint8_t)(v & 0xFF); p[1] = (uint8_t)((v >> 8) & 0xFF); }
+
+static void attach(const uint8_t *descriptor, uint16_t descriptor_len)
+{
+    memset(&device, 0, sizeof(device));
+    device.active = true;
+    device.conn_index = 3;
+    device.is_ble = false;
+    device.driver = &bthid_gamepad_driver;
+    strcpy(device.name, "AYN Thor");
+    submitted = 0;
+    bthid_gamepad_driver.init(&device);
+    bthid_gamepad_set_descriptor(&device, descriptor, descriptor_len);
+}
+
+static void send_v2(const uint8_t *report)
+{
+    bthid_gamepad_driver.process_report(&device, report,
+                                        ANDROID_CONTROLLER_V2_WIRE_REPORT_LEN);
+}
+
+// ---------------------------------------------------------------------------
+// The v1 contract must survive verbatim inside the v2 descriptor. This is the
+// regression that matters most: v1 is already hardware-validated in a game.
+// ---------------------------------------------------------------------------
+static void test_v2_descriptor_preserves_v1_layout(void)
+{
+    attach(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR,
+           sizeof(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR));
+
+    char map[1024];
+    CHECK(bthid_gamepad_dump_map(device.conn_index, map, sizeof(map)),
+          "v2 descriptor parses through the production HID parser");
+    CHECK(strstr(map, "\"report_id\":1") && strstr(map, "\"button_cnt\":14") &&
+          strstr(map, "\"x\":{\"byte\":1") && strstr(map, "\"hat\":{\"byte\":9"),
+          "v2 keeps the v1 axis/button/hat offsets byte-identical");
+
+    send_v2(ANDROID_CONTROLLER_V2_NEUTRAL_REPORT);
+    CHECK(submitted == 1 && last_event.buttons == 0 &&
+          last_event.analog[ANALOG_LX] == 128 && last_event.analog[ANALOG_LY] == 128 &&
+          last_event.analog[ANALOG_RX] == 128 && last_event.analog[ANALOG_RY] == 128,
+          "v2 neutral report still yields a neutral gamepad snapshot");
+    CHECK(!last_event.has_motion,
+          "neutral report with the motion-valid flag clear publishes no motion");
+
+    uint8_t report[ANDROID_CONTROLLER_V2_WIRE_REPORT_LEN];
+    memcpy(report, ANDROID_CONTROLLER_V2_NEUTRAL_REPORT, sizeof(report));
+    report[1] = 0; report[2] = 255; report[5] = 64;
+    report[7] = 0x01;   // usage 1
+    report[9] = 2;      // hat east
+    send_v2(report);
+    CHECK(last_event.analog[ANALOG_LX] == 0 && last_event.analog[ANALOG_LY] == 255 &&
+          last_event.analog[ANALOG_L2] == 64 &&
+          last_event.buttons == (JP_BUTTON_B1 | JP_BUTTON_DR),
+          "v1 axes/buttons/hat still decode correctly alongside the extension");
+}
+
+static void test_motion_ingest(void)
+{
+    uint8_t report[ANDROID_CONTROLLER_V2_WIRE_REPORT_LEN];
+    memcpy(report, ANDROID_CONTROLLER_V2_NEUTRAL_REPORT, sizeof(report));
+    put_le16(&report[ANDROID_BRIDGE_OFF_GYRO + 0], 1000);
+    put_le16(&report[ANDROID_BRIDGE_OFF_GYRO + 2], -2000);
+    put_le16(&report[ANDROID_BRIDGE_OFF_GYRO + 4], 32767);
+    put_le16(&report[ANDROID_BRIDGE_OFF_ACCEL + 0], -8192);
+    put_le16(&report[ANDROID_BRIDGE_OFF_ACCEL + 2], 8192);
+    put_le16(&report[ANDROID_BRIDGE_OFF_ACCEL + 4], -32768);
+    report[ANDROID_BRIDGE_OFF_FLAGS] = ANDROID_BRIDGE_FLAG_MOTION_VALID;
+    put_le16(&report[ANDROID_BRIDGE_OFF_TIMESTAMP], 1234);
+    send_v2(report);
+
+    CHECK(last_event.has_motion, "motion-valid flag publishes motion");
+    CHECK(last_event.gyro[0] == 1000 && last_event.gyro[1] == -2000 &&
+          last_event.gyro[2] == 32767,
+          "signed 16-bit gyro axes survive the wire round trip");
+    CHECK(last_event.accel[0] == -8192 && last_event.accel[1] == 8192 &&
+          last_event.accel[2] == -32768,
+          "signed 16-bit accel axes survive the wire round trip, including INT16_MIN");
+    CHECK(last_event.gyro_range == ANDROID_BRIDGE_GYRO_RANGE_DPS &&
+          last_event.accel_range == ANDROID_BRIDGE_ACCEL_RANGE_MILLI_G,
+          "published ranges match the documented sensor scale");
+    CHECK(last_event.motion_from_android_bridge,
+          "bridge provenance is flagged so the seam can select the Android axis row");
+    CHECK(last_event.motion_timestamp == 1234 && last_event.motion_timestamp_valid,
+          "motion timestamp reaches the normalized event");
+
+    // A resend of the SAME sample (app republishing after a button edge) must not
+    // look like a new IMU sample to downstream motion consumers.
+    uint32_t seq = last_event.motion_sequence;
+    report[7] = 0x02;
+    send_v2(report);
+    CHECK(last_event.motion_sequence == seq,
+          "repeating an unchanged motion timestamp does not inflate the sequence");
+
+    put_le16(&report[ANDROID_BRIDGE_OFF_TIMESTAMP], 1250);
+    send_v2(report);
+    CHECK(last_event.motion_sequence == seq + 1,
+          "a new motion timestamp advances the sequence exactly once");
+
+    // Sensors idled: motion must go away, not latch the last sample forever.
+    report[ANDROID_BRIDGE_OFF_FLAGS] = 0;
+    send_v2(report);
+    CHECK(!last_event.has_motion,
+          "clearing the motion-valid flag stops publishing stale motion");
+}
+
+static void test_battery_ingest(void)
+{
+    uint8_t report[ANDROID_CONTROLLER_V2_WIRE_REPORT_LEN];
+    memcpy(report, ANDROID_CONTROLLER_V2_NEUTRAL_REPORT, sizeof(report));
+    report[ANDROID_BRIDGE_OFF_BATTERY] = 77;
+    report[ANDROID_BRIDGE_OFF_FLAGS] = ANDROID_BRIDGE_FLAG_BATTERY_VALID;
+    send_v2(report);
+    CHECK(last_event.battery_level == 77 && !last_event.battery_charging &&
+          last_event.battery_source == INPUT_BATTERY_NATIVE_HID,
+          "handheld battery level lands as authoritative native telemetry");
+
+    report[ANDROID_BRIDGE_OFF_FLAGS] =
+        ANDROID_BRIDGE_FLAG_BATTERY_VALID | ANDROID_BRIDGE_FLAG_CHARGING;
+    send_v2(report);
+    CHECK(last_event.battery_charging, "charging state reaches the normalized event");
+
+    report[ANDROID_BRIDGE_OFF_BATTERY] = 200;  // out of range
+    send_v2(report);
+    CHECK(last_event.battery_level == 100, "battery level is clamped to 100 percent");
+}
+
+static void test_truncated_v2_report_is_atomic(void)
+{
+    uint8_t report[ANDROID_CONTROLLER_V2_WIRE_REPORT_LEN];
+    memcpy(report, ANDROID_CONTROLLER_V2_NEUTRAL_REPORT, sizeof(report));
+    unsigned before = submitted;
+    bthid_gamepad_driver.process_report(&device, report, sizeof(report) - 1);
+    CHECK(submitted == before,
+          "a truncated v2 report is rejected atomically, never half-applied");
+}
+
+// ---------------------------------------------------------------------------
+// Feedback: one output report carries rumble + player LED + the motion request.
+// ---------------------------------------------------------------------------
+static void test_feedback_output(void)
+{
+    player_index_result = 0;
+    memset(&fb, 0, sizeof(fb));
+    sent_reports = 0;
+
+    fb.rumble.left = 200;
+    fb.rumble.right = 100;
+    fb.led.pattern = 0x04;      // ns2_seam encodes player 3 as 1 << 2
+    fb.rumble_dirty = true;
+    bthid_gamepad_driver.task(&device);
+
+    CHECK(sent_reports == 1 && sent_report_id == ANDROID_CONTROLLER_OUTPUT_REPORT_ID,
+          "feedback goes out on the declared output report ID");
+    CHECK(sent_len == ANDROID_CONTROLLER_OUTPUT_PAYLOAD_LEN &&
+          sent_payload[0] == 200 && sent_payload[1] == 100 && sent_payload[2] == 3,
+          "rumble amplitudes and the decoded player number are encoded");
+    CHECK((sent_payload[3] & ANDROID_BRIDGE_OUT_FLAG_MOTION_WANTED) != 0,
+          "motion-wanted flag defaults on through the weak host hook");
+
+    // Unchanged state must not retransmit every tick (the task runs continuously).
+    bthid_gamepad_driver.task(&device);
+    CHECK(sent_reports == 1, "unchanged feedback is not retransmitted");
+
+    // A player-LED change alone must still be delivered, which the rumble-only
+    // dirty gate used by ordinary quirks would have missed.
+    fb.led.pattern = 0x01;
+    bthid_gamepad_driver.task(&device);
+    CHECK(sent_reports == 2 && sent_payload[2] == 1,
+          "a player-LED change alone is delivered to the handheld");
+
+    // A failed send must not poison the cache: the next tick retries.
+    fb.rumble.left = 5;
+    send_should_fail = true;
+    bthid_gamepad_driver.task(&device);
+    CHECK(sent_reports == 2, "a failed send does not count as delivered");
+    send_should_fail = false;
+    bthid_gamepad_driver.task(&device);
+    CHECK(sent_reports == 3 && sent_payload[0] == 5,
+          "the next tick retries the feedback that failed to send");
+}
+
+// ---------------------------------------------------------------------------
+// A v1 app (no extension) must be completely unaffected: no motion, no battery,
+// and crucially no output report sent to a device that never declared one.
+// ---------------------------------------------------------------------------
+static void test_v1_device_is_unaffected(void)
+{
+    attach(ANDROID_CONTROLLER_HID_DESCRIPTOR,
+           sizeof(ANDROID_CONTROLLER_HID_DESCRIPTOR));
+    sent_reports = 0;
+    player_index_result = 0;
+    memset(&fb, 0, sizeof(fb));
+
+    bthid_gamepad_driver.process_report(&device, ANDROID_CONTROLLER_NEUTRAL_REPORT,
+                                        ANDROID_CONTROLLER_WIRE_REPORT_LEN);
+    CHECK(submitted == 1 && !last_event.has_motion &&
+          last_event.battery_source == INPUT_BATTERY_NONE &&
+          !last_event.motion_from_android_bridge,
+          "a v1 app publishes input only: no motion, no battery, no provenance flag");
+
+    fb.rumble.left = 255;
+    fb.rumble_dirty = true;
+    bthid_gamepad_driver.task(&device);
+    CHECK(sent_reports == 0,
+          "no output report is sent to a device that did not declare one");
+}
+
+int main(void)
+{
+    test_v2_descriptor_preserves_v1_layout();
+    test_motion_ingest();
+    test_battery_ingest();
+    test_truncated_v2_report_is_atomic();
+    test_feedback_output();
+    test_v1_device_is_unaffected();
+
+    if (failures) {
+        printf("bthid_android_bridge: %d failure(s)\n", failures);
+        return 1;
+    }
+    puts("bthid_android_bridge: all tests passed");
+    return 0;
+}

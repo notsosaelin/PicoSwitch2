@@ -184,6 +184,13 @@ typedef struct {
 // fixed-point x1,000,000 so diagnostics do not depend on float printf support.
 void ns2_dbg_ds5_motion(ns2_ds5_motion_diag_t *out);
 bool ns2_dbg_ds5_motion_enabled(void);
+
+// True while the console has actually negotiated the IMU feature, i.e. motion
+// bytes are really being transmitted. Read by the seam so a motion-capable
+// source (currently the Android companion bridge) can idle its sensors when no
+// game is consuming motion, instead of streaming gyro into a report that
+// carries none. Not a debug hook -- this is the console's real IMU state.
+bool ns2_motion_negotiated(void);
 void ns2_dbg_ds5_motion_set_enabled(bool enabled);
 bool ns2_dbg_ds5_motion_probe_rate(uint8_t axis, int16_t rate);
 void ns2_dbg_ds5_motion_probe_off(void);

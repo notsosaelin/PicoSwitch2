@@ -1,0 +1,7 @@
+[05:31:29] === mgmt_soak start on COM11 -> E:\PicoSwitch2\dumps\mgmt-watch-reconnect-20260813.jsonl ===
+[05:31:29] identity: {"profile":{"controller":"2.1.4","bluetooth":"12.0.0","dsp":"0.2.3","updated_state":true,"runtime_override":false},"ep0":1,"command10":1,"dropped":0,"reads":[{"sub":4,"address":"0x00013080","length":64,"count":1},{"sub":4,"address":"0x000130C0","length":64,"count":1},{"sub":4,"address":"0x001FC040","length":64,"count":1},{"sub":4,"address":"0x00013040","length":16,"count":1},{"sub":4,"address":"0x00013100","length":24,"count":1},{"sub":4,"address":"0x00013060","length":32,"count":1}]}
+[05:31:31] baseline: ctrl=False ble=0 scan=True adv=False client=True supp.mgmt=0 scan.starts=2 disc(c/h)=0/1
+[05:31:31] note: controller left (reason 0x13=intentional sleep/off); discovery resumed, adapter healthy. Not a failure.
+[05:48:48] *** ctrl:False->True, scan:True->False | ctrl=True ble=0 scan=False adv=False client=True supp.mgmt=0 scan.starts=2 disc(c/h)=0/1
+[05:49:47] *** ctrl:True->False, scan:False->True, disc.hci+=1(reason=0x13) | ctrl=False ble=0 scan=True adv=False client=True supp.mgmt=0 scan.starts=3 disc(c/h)=0/2
+[05:49:48] note: controller left (reason 0x13=intentional sleep/off); discovery resumed, adapter healthy. Not a failure.
