@@ -5,6 +5,7 @@ import android.bluetooth.*
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import dev.picoswitch.companion.bluetooth.AdapterBluetoothIdentity
 import dev.picoswitch.companion.diagnostics.DiagnosticLog
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -199,9 +200,8 @@ class HidDeviceBridge(
 
     fun pairedHosts(): List<BluetoothDevice> = runCatching {
         manager?.adapter?.bondedDevices.orEmpty().filter {
-            val name = it.name.orEmpty()
-            name.contains("PicoSwitch", true) || name.contains("Joypad Adapter", true)
-        }
+            AdapterBluetoothIdentity.isKnownAdapterName(it.name)
+        }.sortedBy { if (AdapterBluetoothIdentity.isCurrentName(it.name)) 0 else 1 }
     }.getOrDefault(emptyList())
 
     fun connect(device: BluetoothDevice) {

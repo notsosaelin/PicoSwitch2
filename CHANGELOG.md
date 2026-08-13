@@ -7,6 +7,10 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Added
 
+- Bluetooth adapter identity now consistently uses the canonical `PicoSwitch2` name for Classic
+  GAP/EIR, BLE GAP/Config advertising, and the Android UI. Android retains an explicitly labeled
+  legacy `Joypad Adapter` discovery matcher for pre-name-change firmware; names do not migrate
+  bonds, whose saved address/link keys remain authoritative.
 - In-band BLE management transport (default-off, `mgmt on`). The configuration BLE service (RX/TX
   GATT + wireless command bridge) can now be armed in a normal controller personality, so a phone or
   the web portal manages the adapter — Amiibo, colors, personality, bonds — over Bluetooth **while a

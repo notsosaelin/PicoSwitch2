@@ -758,8 +758,10 @@ emulated controller in the Switch UI and therefore survives a change of source c
 Controller appearance is intentionally retained: the portal exposes the shared Pro2 body/Sony
 lightbar color and independent Joy-Con 2 Left/Right accents. Config schema v10 stores appearance
 and wake identity only. The production page presents these three colors in one compact panel and
-no longer shows the obsolete current-input/current-output identity cards. BLE GAP and Config
-advertisement names are both `PicoSwitch2`.
+no longer shows the obsolete current-input/current-output identity cards. Bluetooth adapter identity
+now uses the single name `PicoSwitch2` across Classic GAP/EIR, BLE GAP/ATT, and Config advertising.
+Android retains a legacy `Joypad Adapter` discovery matcher for pre-name-change firmware; saved
+addresses and link keys, not names, remain bond authority.
 
 ## Hardware-confirmed behavior
 

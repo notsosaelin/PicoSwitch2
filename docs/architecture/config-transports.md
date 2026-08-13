@@ -69,6 +69,30 @@ devices.
 No generic Nordic UART UUID is used, preventing the portal from matching unrelated UART-like
 peripherals.
 
+## Bluetooth product identity and migration
+
+The canonical current adapter name is **`PicoSwitch2`**, encoded as 11 ASCII bytes. Firmware uses
+that same value for the Classic GAP local name (and BTstack's local-name/EIR path), the BLE GAP
+Device Name, and the Config scan-response complete-local-name field. The latter's AD length byte
+is `0x0C` — one type byte plus the 11-byte name — and its complete AD structure is 13 bytes.
+
+The adapter's USB identities are separate Nintendo personality descriptors (`Pro Controller 2`,
+`Nintendo GameCube Controller`, `Joy-Con 2 (L/R)`, or `PicoSwitch Config`); `Joypad Adapter` is
+not a USB descriptor, SDP product string, capture, or vendored joypad-os product identity. The
+repository audit found the old spelling only in the Android discovery compatibility path and the
+current comments/docs that explain that migration path; it is absent from historical captures and
+archived observations. It is retained there as the **legacy name used by pre-`PicoSwitch2` firmware**
+so an existing adapter can still be found during migration. Current-name matches are preferred
+when both a current and legacy bond are present.
+
+A name change does not migrate Bluetooth bonds: the remote address and stored link keys remain the
+relationship authority. Android keeps the saved-address reconnect path and accepts the legacy name
+only for discovery/fallback matching; it does not delete, recreate, or infer a bond from a name.
+
+The source/byte-length and USB-negative checks are reproducible with
+`python tools/test_bluetooth_identity.py`; Android's current/legacy chooser and host-match rules
+are covered by `AdapterBluetoothIdentityTest`.
+
 ## Framing and core ownership
 
 Both transports retain the existing newline-delimited command/JSON-response protocol:

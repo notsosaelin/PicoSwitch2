@@ -535,7 +535,8 @@ band table), `tools/ns2_motion40_gyro_axes.py` (gyro axis, sign and scale).
   current-input/current-output cards are removed. Each
   flashed UF2 contains a one-shot marker that erases the five persistence sectors (settings, both
   amiibo banks, wake identity, and BTstack bonds) before normal startup; an ordinary reboot sees
-  the consumed marker and retains state. Both BLE-visible names are `PicoSwitch2`.
+  the consumed marker and retains state. All adapter Bluetooth name surfaces use `PicoSwitch2`;
+  Android retains a legacy `Joypad Adapter` discovery matcher for pre-name-change firmware.
 - BOOTSEL now has a host-tested action matrix: single-tap cycles only controller personalities
   when a controller is HID-ready; double-tap opens pairing; triple-tap wipes/disconnects; and a
   two-second hold enters Config directly. Config ignores single/double, permits triple-tap wipe,

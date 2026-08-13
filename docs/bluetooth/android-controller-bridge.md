@@ -16,8 +16,9 @@ device-selection, and bond-confirmation overlays:
 
 1. Open the app and tap **Pair Adapter**.
 2. Double-tap PicoSwitch2 BOOTSEL to open its explicit 30-second pairing window.
-3. Approve Android's Nearby devices permission and select `Joypad Adapter` / `PicoSwitch2` in the
-   system chooser launched by the app.
+3. Approve Android's Nearby devices permission and select `PicoSwitch2` in the system chooser
+   launched by the app. An adapter running pre-`PicoSwitch2` firmware may still appear under the
+   legacy name `Joypad Adapter`.
 4. Approve the system bond prompt if Android shows one.
 5. Return directly to the app, select the built-in controls, and tap **Use this handheld**.
 
@@ -237,12 +238,14 @@ bounded timeout only when Android never supplies the authoritative callback.
 
 Use
 [`CompanionDeviceManager`](https://developer.android.com/reference/android/companion/CompanionDeviceManager.html)
-to launch a filtered system chooser from the app. Match the current Classic name `Joypad Adapter`
-and the migration-safe name `PicoSwitch2`. Companion association performs discovery on the app's
-behalf, but it does not create the HID connection; after selection the app owns the bond check and
-profile connection. The app presents these layers as one saved **adapter relationship**, while its
-diagnostics retain the real distinction between companion association, Classic bond, BLE GATT
-management, HID Device registration, and HID host connection.
+to launch a filtered system chooser from the app. Match the current Classic name `PicoSwitch2`.
+For migration only, also accept the legacy Classic name `Joypad Adapter` emitted by older firmware.
+Companion association performs discovery on the app's behalf, but it does not create the HID
+connection; after selection the app owns the bond check and profile connection. The app presents
+these layers as one saved **adapter relationship**, while its diagnostics retain the real distinction
+between companion association, Classic bond, BLE GATT management, HID Device registration, and HID
+host connection. A name change does not migrate a bond: the saved address and Bluetooth link keys
+remain authoritative.
 
 ```text
 UNSUPPORTED
