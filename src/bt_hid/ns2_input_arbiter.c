@@ -264,8 +264,10 @@ uint32_t ns2_input_arbiter_source_id(const ns2_input_arbiter_t *arbiter,
     return NS2_INPUT_SOURCE_ID_NONE;
 }
 
-bool ns2_input_arbiter_is_active_connection(const ns2_input_arbiter_t *arbiter,
-                                            uint8_t dev_addr)
+bool ns2_input_arbiter_is_active_connection_generation(
+    const ns2_input_arbiter_t *arbiter,
+    uint8_t dev_addr,
+    uint32_t connection_generation)
 {
     if (!arbiter) return false;
     for (;;) {
@@ -276,7 +278,10 @@ bool ns2_input_arbiter_is_active_connection(const ns2_input_arbiter_t *arbiter,
         for (unsigned i = 0; i < NS2_INPUT_ARBITER_MAX_SOURCES; ++i) {
             if (arbiter->sources[i].present &&
                 arbiter->sources[i].key.dev_addr == dev_addr &&
-                arbiter->sources[i].id == active_id) {
+                arbiter->sources[i].id == active_id &&
+                (connection_generation == 0u ||
+                 arbiter->sources[i].key.connection_generation ==
+                     connection_generation)) {
                 active = true;
                 break;
             }
@@ -285,6 +290,12 @@ bool ns2_input_arbiter_is_active_connection(const ns2_input_arbiter_t *arbiter,
         uint32_t after = atomic_load_u32(&arbiter->status_sequence);
         if (before == after) return active;
     }
+}
+
+bool ns2_input_arbiter_is_active_connection(const ns2_input_arbiter_t *arbiter,
+                                            uint8_t dev_addr)
+{
+    return ns2_input_arbiter_is_active_connection_generation(arbiter, dev_addr, 0u);
 }
 
 void ns2_input_arbiter_get_status(const ns2_input_arbiter_t *arbiter,

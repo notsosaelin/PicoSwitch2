@@ -106,12 +106,18 @@ bool ns2_input_arbiter_disconnect(ns2_input_arbiter_t *arbiter,
 uint32_t ns2_input_arbiter_source_id(const ns2_input_arbiter_t *arbiter,
                                      const ns2_input_source_key_t *key);
 
-// Fast read-only gate for report paths that only carry the transport's global
-// connection index (native motion and deferred BLE reports).  Connection index
-// reuse is still protected by the registry's generation-keyed source records;
-// this helper is only a hot-path active-owner check.
+// Legacy fast read-only gate for report paths that carry only the transport's
+// global connection index.  Token-aware callbacks must use the generation
+// form below; this index-only form remains for non-Bluetooth/legacy callers.
 bool ns2_input_arbiter_is_active_connection(const ns2_input_arbiter_t *arbiter,
                                             uint8_t dev_addr);
+
+// Token-aware form used by callbacks that captured the HID lifecycle.  A zero
+// generation retains the legacy index-only behavior for non-Bluetooth callers.
+bool ns2_input_arbiter_is_active_connection_generation(
+    const ns2_input_arbiter_t *arbiter,
+    uint8_t dev_addr,
+    uint32_t connection_generation);
 
 // Snapshot the source registry for bounded diagnostics/UI responses.
 void ns2_input_arbiter_get_status(const ns2_input_arbiter_t *arbiter,

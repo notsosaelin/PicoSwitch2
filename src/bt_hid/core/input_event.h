@@ -139,6 +139,11 @@ typedef struct {
     // Device identification
     uint8_t dev_addr;           // Device address (USB: 1-127, BT: conn_index, Native: port)
     int8_t instance;            // Instance number (for multi-controller devices)
+    // Immutable Bluetooth HID lifecycle token assigned when this connection is
+    // created.  Transport indices are reusable; carrying this token with the
+    // normalized event lets the active-input seam reject a stale event after
+    // index reuse.  Non-Bluetooth/legacy producers leave it zero.
+    uint32_t connection_generation;
     input_device_type_t type;   // Device type classification
     input_transport_t transport; // Connection type (USB, BT, native)
     controller_layout_t layout; // Physical button layout (for 6-button controllers)

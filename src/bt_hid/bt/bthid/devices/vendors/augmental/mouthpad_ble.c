@@ -360,7 +360,9 @@ static void mouthpad_disconnect(bthid_device_t* device)
     printf("[MOUTHPAD_BLE] Disconnect: %s\n", device->name);
     mouthpad_data_t* md = (mouthpad_data_t*)device->driver_data;
     if (md) {
-        router_device_disconnected(md->event.dev_addr, md->event.instance);
+        router_device_disconnected_with_generation(md->event.dev_addr,
+                                                   md->event.instance,
+                                                   md->event.connection_generation);
         remove_players_by_address(md->event.dev_addr, md->event.instance);
         init_input_event(&md->event);
         md->mouse_buttons = 0;

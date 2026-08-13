@@ -1415,7 +1415,8 @@ static void ns2_build_report(uint8_t *p) {
     bool native_motion_fresh = ns2_native_motion_snapshot(
         &native_motion, time_us_32(), 50000u); // >6 packets at the verified 133Hz cadence
     bool native_motion_owned = native_motion_fresh &&
-        ns2_active_input_connection_is_active(native_motion.source_conn_index) &&
+        ns2_active_input_connection_is_active_generation(
+            native_motion.source_conn_index, native_motion.source_generation) &&
         ns2_native_motion_output_slot(native_motion.source_conn_index) == 0 &&
         native_motion.source_verified &&
         native_motion.source_vid == 0x057E &&

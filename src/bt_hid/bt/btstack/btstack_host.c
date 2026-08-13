@@ -75,7 +75,12 @@ extern void btstack_memory_init(void);
 // BTHID callbacks - for classic BT HID devices
 extern void bt_on_hid_ready(uint8_t conn_index);
 extern void bt_on_disconnect(uint8_t conn_index);
+extern void bt_on_disconnect_with_generation(uint8_t conn_index,
+                                             uint32_t connection_generation);
 extern void bt_on_hid_report(uint8_t conn_index, const uint8_t* data, uint16_t len);
+extern void bt_on_hid_report_with_generation(uint8_t conn_index,
+                                             uint32_t connection_generation,
+                                             const uint8_t* data, uint16_t len);
 extern void bthid_on_feature_report(uint8_t conn_index, const uint8_t* data,
                                     uint16_t len);
 extern void bthid_update_device_info(uint8_t conn_index, const char* name,
@@ -104,6 +109,7 @@ extern int find_player_index(int dev_addr, int instance);
 #include "ns2_nfc_mirror.h"
 #include "ns2_native_motion.h"
 #include "ns2_active_input.h"
+#include "bt/bthid/bthid.h"
 #include "bt_identity_log.h"
 #include "config_wireless_bridge.h"
 #include "usb.h" // read-only personality gate for automatic native Pro2 motion setup
@@ -141,10 +147,13 @@ static void btstack_erase_flash_banks(void) {
 static uint8_t pending_ble_report[64];  // 64 bytes for Switch 2 reports
 static uint16_t pending_ble_report_len = 0;
 static uint8_t pending_ble_conn_index = 0;
+static uint32_t pending_ble_connection_generation = 0;
 static volatile bool ble_report_pending = false;
 
 // Forward declare the function to route BLE reports through bthid layer
-static void route_ble_hid_report(uint8_t conn_index, const uint8_t* data, uint16_t len);
+static void route_ble_hid_report(uint8_t conn_index,
+                                 uint32_t connection_generation,
+                                 const uint8_t* data, uint16_t len);
 
 // Forward declare Switch 2 functions (defined later with state machine)
 static void switch2_retry_init_if_needed(void);
@@ -305,7 +314,8 @@ static gatt_client_characteristic_t switch2_hid_characteristic;
 static void switch2_hid_notification_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size);
 
 // Forward declaration for BLE disconnect cleanup (defined in Switch 2 section)
-static void switch2_cleanup_on_disconnect(void);
+static void switch2_cleanup_on_disconnect(uint8_t source_conn_index,
+                                          uint32_t source_generation);
 
 // ============================================================================
 // CLASSIC BT HID HOST STATE
@@ -571,7 +581,9 @@ static int get_ble_conn_index_by_handle(hci_con_handle_t handle) {
 }
 
 // Route BLE HID report through bthid layer
-static void route_ble_hid_report(uint8_t conn_index, const uint8_t* data, uint16_t len)
+static void route_ble_hid_report(uint8_t conn_index,
+                                 uint32_t connection_generation,
+                                 const uint8_t* data, uint16_t len)
 {
     // Build BTHID-compatible packet: DATA|INPUT header + report
     // Buffer needs to hold 1 byte header + up to 64 bytes of report data
@@ -579,7 +591,8 @@ static void route_ble_hid_report(uint8_t conn_index, const uint8_t* data, uint16
     hid_packet[0] = 0xA1;  // DATA | INPUT header
     if (len <= sizeof(hid_packet) - 1) {
         memcpy(hid_packet + 1, data, len);
-        bt_on_hid_report(conn_index, hid_packet, len + 1);
+        bt_on_hid_report_with_generation(conn_index, connection_generation,
+                                         hid_packet, len + 1);
     }
 }
 
@@ -2263,7 +2276,9 @@ void btstack_host_process(void)
     // Process any pending BLE HID report (deferred from BTstack callback to avoid stack overflow)
     if (ble_report_pending) {
         ble_report_pending = false;
-        route_ble_hid_report(pending_ble_conn_index, pending_ble_report, pending_ble_report_len);
+        route_ble_hid_report(pending_ble_conn_index,
+                             pending_ble_connection_generation,
+                             pending_ble_report, pending_ble_report_len);
     }
 
     // Retry Switch 2 init if stuck (no ACK received)
@@ -3830,6 +3845,8 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 switch2_last_disconnect_reason = reason;
             }
             if (conn) {
+                uint8_t disconnected_conn_index = 0xFFu;
+                uint32_t disconnected_generation = 0u;
                 // An ACL is already a BLE connection as soon as it owns one of
                 // our BLE slots. During Switch 2 HOME authentication it can
                 // disconnect before bthid assigns conn_index; treating that as
@@ -3840,7 +3857,17 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                     // conn_index for BLE uses BLE_CONN_INDEX_OFFSET to distinguish from Classic
                     btlife_record(BTLIFE_CTRL_DISCONNECT, reason, handle);
                     printf("[BTSTACK_HOST] BLE disconnect: notifying bthid (conn_index=%d)\n", conn->conn_index);
-                    bt_on_disconnect(conn->conn_index);
+                    disconnected_conn_index = conn->conn_index;
+                    disconnected_generation =
+                        bthid_get_connection_generation(disconnected_conn_index);
+                    if (ble_report_pending &&
+                        pending_ble_conn_index == disconnected_conn_index &&
+                        (pending_ble_connection_generation == 0u ||
+                         pending_ble_connection_generation == disconnected_generation)) {
+                        ble_report_pending = false;
+                    }
+                    bt_on_disconnect_with_generation(
+                        disconnected_conn_index, disconnected_generation);
                 } else {
                     printf("[BTSTACK_HOST] BLE disconnect before bthid registration; cleaning handle 0x%04X\n",
                            handle);
@@ -3875,7 +3902,8 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 mp_nus_disconnected(handle);
 
                 // Clean up Switch 2 state (ACK listener, init state machine)
-                switch2_cleanup_on_disconnect();
+                switch2_cleanup_on_disconnect(
+                    disconnected_conn_index, disconnected_generation);
 
                 // BLE disconnect — manage BLE state and reconnection
                 hid_state.state = BLE_STATE_IDLE;
@@ -4840,7 +4868,10 @@ static void gatt_client_callback(uint8_t packet_type, uint16_t channel, uint8_t 
             if (value_handle == 0x001E && value_length >= 1) {
                 int conn_index = get_ble_conn_index_by_handle(con_handle);
                 if (conn_index >= 0) {
-                    route_ble_hid_report(conn_index, value, value_length);
+                    route_ble_hid_report(
+                        (uint8_t)conn_index,
+                        bthid_get_connection_generation((uint8_t)conn_index),
+                        value, value_length);
                 }
             }
             break;
@@ -4890,12 +4921,16 @@ static void ble_hid_notification_handler(uint8_t packet_type, uint16_t channel, 
     // Register the source before deferring its report so the arbiter can gate
     // it even when a normalized event has not arrived yet.
     ns2_active_input_note_connection((uint8_t)conn_index);
-    if (!ns2_active_input_connection_is_active((uint8_t)conn_index)) return;
+    const uint32_t connection_generation =
+        ns2_active_input_connection_generation((uint8_t)conn_index);
+    if (!ns2_active_input_connection_is_active_generation(
+            (uint8_t)conn_index, connection_generation)) return;
 
     // Defer processing to main loop to avoid stack overflow
     memcpy(pending_ble_report, value, value_length);
     pending_ble_report_len = value_length;
     pending_ble_conn_index = (uint8_t)conn_index;
+    pending_ble_connection_generation = connection_generation;
     ble_report_pending = true;
 }
 
@@ -5068,12 +5103,16 @@ static void switch2_hid_notification_handler(uint8_t packet_type, uint16_t chann
     if (conn_index < 0) return;
 
     ns2_active_input_note_connection((uint8_t)conn_index);
-    if (!ns2_active_input_connection_is_active((uint8_t)conn_index)) return;
+    const uint32_t connection_generation =
+        ns2_active_input_connection_generation((uint8_t)conn_index);
+    if (!ns2_active_input_connection_is_active_generation(
+            (uint8_t)conn_index, connection_generation)) return;
 
     // Defer processing to main loop to avoid stack overflow
     memcpy(pending_ble_report, value, value_length);
     pending_ble_report_len = value_length;
     pending_ble_conn_index = (uint8_t)conn_index;
+    pending_ble_connection_generation = connection_generation;
     ble_report_pending = true;
 }
 
@@ -6199,9 +6238,14 @@ static void sw2_motion_notification_handler(uint8_t packet_type, uint16_t channe
     // report builder. This is intentionally separate from button/stick normalization below:
     // no quaternion decoding, axis conversion, or generic gamepad structure can alter it.
     ns2_active_input_note_connection((uint8_t)conn_index);
-    if (!ns2_active_input_connection_is_active((uint8_t)conn_index)) return;
-    ns2_native_motion_publish((uint8_t)conn_index, conn->vid, conn->pid,
-                              value, value_length, time_us_32());
+    const uint32_t connection_generation =
+        ns2_active_input_connection_generation((uint8_t)conn_index);
+    if (!ns2_active_input_connection_is_active_generation(
+            (uint8_t)conn_index, connection_generation)) return;
+    ns2_native_motion_publish_generation((uint8_t)conn_index,
+                                         connection_generation,
+                                         conn->vid, conn->pid,
+                                         value, value_length, time_us_32());
 
     if (ble_report_pending) return;
 
@@ -6210,6 +6254,7 @@ static void sw2_motion_notification_handler(uint8_t packet_type, uint16_t channe
     memcpy(pending_ble_report, normalized, sizeof(normalized));
     pending_ble_report_len = sizeof(normalized);
     pending_ble_conn_index = (uint8_t)conn_index;
+    pending_ble_connection_generation = connection_generation;
     ble_report_pending = true;
 }
 
@@ -6251,18 +6296,24 @@ static void sw2_pro2_audio_notification_handler(uint8_t packet_type, uint16_t ch
     }
 
     ns2_active_input_note_connection((uint8_t)conn_index);
-    if (!ns2_active_input_connection_is_active((uint8_t)conn_index)) return;
+    const uint32_t connection_generation =
+        ns2_active_input_connection_generation((uint8_t)conn_index);
+    if (!ns2_active_input_connection_is_active_generation(
+            (uint8_t)conn_index, connection_generation)) return;
 
     // If ordinary 0x000E actually stops, feed 0x002E's relocated native-motion
     // block and controls into the exact same validated paths as a fallback.
-    ns2_native_motion_publish((uint8_t)conn_index, conn->vid, conn->pid,
-                              compact, sizeof(compact), now_us);
+    ns2_native_motion_publish_generation((uint8_t)conn_index,
+                                         connection_generation,
+                                         conn->vid, conn->pid,
+                                         compact, sizeof(compact), now_us);
     if (ble_report_pending) return;
     uint8_t normalized[63];
     if (!switch2_normalize_pro_000e(compact, sizeof(compact), normalized)) return;
     memcpy(pending_ble_report, normalized, sizeof(normalized));
     pending_ble_report_len = sizeof(normalized);
     pending_ble_conn_index = (uint8_t)conn_index;
+    pending_ble_connection_generation = connection_generation;
     ble_report_pending = true;
 }
 
@@ -7608,7 +7659,8 @@ static void switch2_service_imuref_probe(void)
 }
 
 // Cleanup Switch 2 state on BLE disconnect (called from disconnect handler)
-static void switch2_cleanup_on_disconnect(void) {
+static void switch2_cleanup_on_disconnect(uint8_t source_conn_index,
+                                          uint32_t source_generation) {
     gatt_client_stop_listening_for_characteristic_value_updates(&switch2_ack_notification_listener);
     gatt_client_stop_listening_for_characteristic_value_updates(&sw2_motion_notification_listener);
     gatt_client_stop_listening_for_characteristic_value_updates(&sw2_pro2_audio_notification_listener);
@@ -7720,7 +7772,10 @@ static void switch2_cleanup_on_disconnect(void) {
     s_sw2_pro2_live_frames_sent = 0;
     s_sw2_pro2_live_underruns = 0;
     s_sw2_pro2_live_prime_count = 0;
-    ns2_native_motion_source_disconnected(time_us_32());
+    if (source_conn_index != 0xFFu) {
+        (void)ns2_native_motion_source_disconnected_generation(
+            source_conn_index, source_generation, time_us_32());
+    }
     uint8_t version_state = __atomic_load_n(&s_sw2_version_state, __ATOMIC_ACQUIRE);
     if (version_state == NS2_BT_VERSION_REQUESTED || version_state == NS2_BT_VERSION_SENT) {
         __atomic_store_n(&s_sw2_version_state, NS2_BT_VERSION_NO_CONTROLLER,
@@ -8757,7 +8812,10 @@ static void hids_client_handler(uint8_t packet_type, uint16_t channel, uint8_t *
             ble_connection_t* rconn = find_connection_by_hids_cid(cid);
             int conn_index = rconn ? rconn->conn_index : get_ble_conn_index_by_handle(hid_state.gatt_handle);
             if (conn_index >= 0) {
-                route_ble_hid_report(conn_index, report, report_len);
+                route_ble_hid_report(
+                    (uint8_t)conn_index,
+                    bthid_get_connection_generation((uint8_t)conn_index),
+                    report, report_len);
             }
 
             // Forward to callback if set
@@ -9361,7 +9419,10 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
             // BTstack report already includes 0xA1 header (DATA|INPUT)
             int conn_index = get_classic_conn_index(hid_cid);
             if (conn_index >= 0 && report_len > 0) {
-                bt_on_hid_report(conn_index, report, report_len);
+                bt_on_hid_report_with_generation(
+                    (uint8_t)conn_index,
+                    bthid_get_connection_generation((uint8_t)conn_index),
+                    report, report_len);
             }
             break;
         }
@@ -9387,7 +9448,9 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
             // Notify bthid layer
             int conn_index = get_classic_conn_index(hid_cid);
             if (conn_index >= 0) {
-                bt_on_disconnect(conn_index);
+                bt_on_disconnect_with_generation(
+                    (uint8_t)conn_index,
+                    bthid_get_connection_generation((uint8_t)conn_index));
             }
 
             // Free connection slot
@@ -9537,7 +9600,10 @@ static void wiimote_l2cap_packet_handler(uint8_t packet_type, uint16_t channel, 
                     (local_cid == wiimote_conn.control_cid || local_cid == wiimote_conn.interrupt_cid)) {
                     // Notify disconnect
                     if (wiimote_conn.conn_index >= 0) {
-                        bt_on_disconnect(wiimote_conn.conn_index);
+                        bt_on_disconnect_with_generation(
+                            (uint8_t)wiimote_conn.conn_index,
+                            bthid_get_connection_generation(
+                                (uint8_t)wiimote_conn.conn_index));
                         // Clear connection slot
                         if (wiimote_conn.conn_index < MAX_CLASSIC_CONNECTIONS) {
                             memset(&classic_state.connections[wiimote_conn.conn_index], 0, sizeof(classic_connection_t));

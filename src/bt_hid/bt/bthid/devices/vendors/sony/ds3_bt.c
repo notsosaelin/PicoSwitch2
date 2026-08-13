@@ -375,7 +375,9 @@ static void ds3_disconnect(bthid_device_t* device)
     ds3_bt_data_t* ds3 = (ds3_bt_data_t*)device->driver_data;
     if (ds3) {
         // Clear router state first (sends zeroed input report)
-        router_device_disconnected(ds3->event.dev_addr, ds3->event.instance);
+        router_device_disconnected_with_generation(ds3->event.dev_addr,
+                                                   ds3->event.instance,
+                                                   ds3->event.connection_generation);
         // Remove player assignment
         remove_players_by_address(ds3->event.dev_addr, ds3->event.instance);
 

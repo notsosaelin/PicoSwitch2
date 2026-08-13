@@ -18,6 +18,7 @@ New-Item -ItemType Directory -Force -Path $out | Out-Null
 # name -> (source files, extra gcc flags). Include dirs are common to all.
 $tests = @(
     @{ n='test_ns2_input_arbiter';                   src='tools/test_ns2_input_arbiter.c src/bt_hid/ns2_input_arbiter.c';            flags='' }
+    @{ n='test_ns2_active_input_lifecycle';          src='tools/test_ns2_active_input_lifecycle.c src/bt_hid/bt/bthid/bthid.c src/bt_hid/bt/bthid/bthid_identity.c src/bt_hid/ns2_input_arbiter.c'; flags='-Isrc/bt_hid -Wno-unused-parameter -Wno-sign-compare -ffunction-sections -fdata-sections "-Wl,--gc-sections"' }
     @{ n='test_config_wireless_bridge';             src='tools/test_config_wireless_bridge.c src/config_wireless_bridge.c';             flags='' }
     @{ n='test_config_wireless_bridge_edge';        src='tools/test_config_wireless_bridge_edge.c src/config_wireless_bridge.c';        flags='' }
     @{ n='test_config_wireless_bridge_concurrency'; src='tools/test_config_wireless_bridge_concurrency.c src/config_wireless_bridge.c'; flags='-pthread' }

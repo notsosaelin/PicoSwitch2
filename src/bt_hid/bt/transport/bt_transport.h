@@ -154,8 +154,14 @@ extern void bt_on_hid_ready(uint8_t conn_index);
 
 // Called when a connection is lost
 extern void bt_on_disconnect(uint8_t conn_index);
+extern void bt_on_disconnect_with_generation(uint8_t conn_index,
+                                             uint32_t connection_generation);
 
 // Called when HID data is received on interrupt channel
 extern void bt_on_hid_report(uint8_t conn_index, const uint8_t* data, uint16_t len);
+extern void bt_on_hid_report_with_generation(uint8_t conn_index,
+                                             uint32_t connection_generation,
+                                             const uint8_t* data,
+                                             uint16_t len);
 
 #endif // BT_TRANSPORT_H

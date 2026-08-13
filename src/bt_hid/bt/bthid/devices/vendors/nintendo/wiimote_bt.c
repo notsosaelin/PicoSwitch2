@@ -1387,7 +1387,9 @@ static void wiimote_disconnect(bthid_device_t* device)
 
     wiimote_data_t* wii = (wiimote_data_t*)device->driver_data;
     if (wii) {
-        router_device_disconnected(wii->event.dev_addr, wii->event.instance);
+        router_device_disconnected_with_generation(wii->event.dev_addr,
+                                                   wii->event.instance,
+                                                   wii->event.connection_generation);
         remove_players_by_address(wii->event.dev_addr, wii->event.instance);
         init_input_event(&wii->event);
         wii->initialized = false;
