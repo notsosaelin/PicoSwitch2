@@ -309,12 +309,13 @@ Prefer the simple always-advertise path; adopt this suppression only if 7b shows
 | `test_config_wireless_bridge_edge.c` **(new)** | adversarial inputs: embedded-NUL truncates safely (no allowlist bypass), CR/blank-line noise, exact 127/128 capacity boundary, two-commands-in-one-frame drop, too-small-buffer drop (no overflow), 511/512 response boundary, pending-response back-pressure, NULL guard |
 | `test_config_wireless_bridge_concurrency.c` **(new, `-pthread`)** | the cross-core SPSC handshake under real producer/consumer threads: 20 000 commands, in order, no loss/dup/tear (logic-race proof; ARM ordering rests on the acquire/release atomics + HW) |
 | `test_mgmt_access.c` **(new)** | the pure access-control spec, **exhaustive over all 256 states / 10 invariants** — disabled=inert, wake outranks mgmt, asleep=silent, controller discovery may coexist, writes need enabled+connected+bonded+encrypted+allowlisted, bond needs enabled+window, advertise implies single-client safety, denied commands are never writable, and unbonded or plaintext clients cannot write |
-| `test_mgmt_session.c` **(new)** | end-to-end composition of real bridge + real allowlist + dispatch gate: bonded user command succeeds; diagnostic rejected; unbonded refused; back-pressure; disconnect drops in-flight reply; disabled overrides bond |
+| `test_mgmt_session.c` **(new)** | end-to-end composition of the real bridge + production `mgmt_allow_write()` + real allowlist: only a live bonded-and-encrypted session succeeds; diagnostics, unbonded clients, bonded plaintext links, and non-live links are refused; back-pressure and disconnect session invalidation remain covered |
 | `test_bonds_command.c` **(new)** | strict grammar for legacy `bonds list`, versioned `bonds list v2 [cursor]`, and `bonds remove <n>`, with a wall of hostile inputs rejected |
 | `test_mgmt_bonds.c` **(new)** | version-2 envelope bounds, cursor progress across sparse device-DB slots, complete aggregation, and fail-closed overflow |
 | `test_bthid_android_controller.c` (pre-existing) | the Android *controller* HID contract (separate feature, already green) |
 
-Production `src/mgmt_access.{c,h}` is the canonical spec linked by `test_mgmt_access.c`; the host
+Production `src/mgmt_access.{c,h}` is the canonical spec linked by both access and session tests;
+the latter no longer carries a weaker test-local gate that omitted active encryption. The host
 ATT/SM wiring composes it with the real wireless allowlist and bonded/encrypted link checks.
 
 **Runtime-only (hardware-validated, not host-mockable):** prove the ATT encryption trigger, durable-
