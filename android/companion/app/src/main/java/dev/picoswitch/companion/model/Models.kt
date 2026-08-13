@@ -80,6 +80,16 @@ data class AmiiboStatus(
 
 data class BondInfo(val index: Int, val address: String, val name: String? = null, val type: Int? = null)
 
+/** One bounded page from the versioned adapter bond enumeration. */
+data class BondPage(val entries: List<BondInfo>, val total: Int, val next: Int?)
+
+/** The aggregate result retained by the management repository. */
+data class BondEnumeration(
+    val entries: List<BondInfo>,
+    val complete: Boolean,
+    val total: Int? = null,
+)
+
 enum class CapabilityState { Available, Unsupported, Unknown }
 
 data class AdapterCapabilities(
@@ -100,6 +110,9 @@ data class AdapterSnapshot(
     val amiibo: AmiiboStatus = AmiiboStatus(),
     val managementEnabled: Boolean? = null,
     val bonds: List<BondInfo> = emptyList(),
+    /** False means a legacy/unversioned list was received; null means unavailable. */
+    val bondsComplete: Boolean? = null,
+    val bondsTotal: Int? = null,
     val capabilities: AdapterCapabilities = AdapterCapabilities(),
     val refreshedAtMillis: Long = 0,
 )

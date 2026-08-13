@@ -97,6 +97,48 @@ class AdapterRepositoryTest {
         assertEquals(CapabilityState.Available, snapshot.capabilities.amiibo)
     }
 
+    @Test fun `versioned bond pages are aggregated and marked complete`() = runTest {
+        val transport = BondTransport()
+        val repository = AdapterRepository(transport)
+        val bonds = repository.listBonds()
+        assertEquals(listOf(0, 4, 7), bonds.map { it.index })
+        assertTrue(repository.snapshot.value.bondsComplete == true)
+        assertEquals(3, repository.snapshot.value.bondsTotal)
+        assertEquals(CapabilityState.Available, repository.snapshot.value.capabilities.bonds)
+        assertEquals(listOf("bonds list", "bonds list v2 4"), transport.commands)
+    }
+
+    @Test fun `legacy unversioned bond list is retained but never claimed complete`() = runTest {
+        val transport = BondTransport(legacy = true)
+        val repository = AdapterRepository(transport)
+        assertEquals(listOf(0), repository.listBonds().map { it.index })
+        assertFalse(repository.snapshot.value.bondsComplete == true)
+        assertEquals(CapabilityState.Unknown, repository.snapshot.value.capabilities.bonds)
+        val error = runCatching { repository.removeBond(0) }.exceptionOrNull()
+        assertTrue(error?.message?.contains("completeness", true) == true)
+        assertFalse(transport.commands.contains("bonds remove 0"))
+    }
+
+    @Test fun `response-too-large legacy reply switches to versioned pagination`() = runTest {
+        val transport = BondTransport(oversizedLegacy = true)
+        val repository = AdapterRepository(transport)
+        assertEquals(3, repository.listBonds().size)
+        assertTrue(repository.snapshot.value.bondsComplete == true)
+        assertEquals("bonds list", transport.commands.first())
+        assertTrue(transport.commands.contains("bonds list v2"))
+    }
+
+    @Test fun `failed bond refresh clears prior authoritative state`() = runTest {
+        val transport = BondTransport()
+        val repository = AdapterRepository(transport)
+        repository.listBonds()
+        transport.failBonds = true
+        assertNotNull(runCatching { repository.listBonds() }.exceptionOrNull())
+        assertTrue(repository.snapshot.value.bonds.isEmpty())
+        assertNull(repository.snapshot.value.bondsComplete)
+        assertEquals(CapabilityState.Unknown, repository.snapshot.value.capabilities.bonds)
+    }
+
     @Test fun `known adapter reconnect uses direct address without scanning`() = runTest {
         val transport = CompatibilityTransport(validImage())
         AdapterRepository(transport).connectKnown("88:A2:9E:D1:77:78")
@@ -187,6 +229,35 @@ class AdapterRepositoryTest {
             "device" -> """{"name":"Controller","vid":1,"pid":2,"batteryValid":0,"battery":0,"charging":0}"""
             "amiibo status" -> """{"loaded":false,"dirty":false,"presented":false,"v3loaded":false,"persisted":false,"persistPending":false,"size":0,"signature":false,"hasSave2":false,"usingSave2":false,"generation":0,"payloadCrc":"00000000","uid":"","figureId":"","upload":{"active":false,"received":0,"size":0}}"""
             else -> """{"error":"unknown command"}"""
+        }
+    }
+
+    private class BondTransport(
+        private val legacy: Boolean = false,
+        private val oversizedLegacy: Boolean = false,
+    ) : ManagementTransport {
+        override val connection = MutableStateFlow(ConnectionState())
+        val commands = mutableListOf<String>()
+        var failBonds = false
+        override suspend fun scanAndConnect() = Unit
+        override suspend fun disconnect() = Unit
+        override suspend fun transact(command: String, timeoutMillis: Long): String {
+            commands += command
+            if (failBonds && command.startsWith("bonds list")) {
+                return """{"error":"transport unavailable","code":9}"""
+            }
+            if (command == "bonds list" && oversizedLegacy) {
+                return """{"error":"response_too_large","code":413}"""
+            }
+            if (command == "bonds list" && legacy) {
+                return """{"bonds":[{"i":0,"type":1,"addr":"010203040506"}]}"""
+            }
+            return when (command) {
+                "bonds list" -> """{"v":2,"total":3,"bonds":[{"i":0,"type":1,"addr":"010203040506"}],"next":4}"""
+                "bonds list v2" -> """{"v":2,"total":3,"bonds":[{"i":0,"type":1,"addr":"010203040506"}],"next":4}"""
+                "bonds list v2 4" -> """{"v":2,"total":3,"bonds":[{"i":4,"type":0,"addr":"AABBCCDDEEFF"},{"i":7,"type":1,"addr":"102030405060"}],"next":null}"""
+                else -> """{"error":"unknown command"}"""
+            }
         }
     }
 

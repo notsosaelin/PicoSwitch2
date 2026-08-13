@@ -1065,18 +1065,22 @@ fun SettingsScreen(
             Text("Phone bonds", style = MaterialTheme.typography.titleSmall)
             when {
                 ui.snapshot.capabilities.bonds == CapabilityState.Unsupported -> Text("Bond controls are unavailable on this firmware.", style = MaterialTheme.typography.bodySmall)
-                ui.snapshot.capabilities.bonds == CapabilityState.Available && ui.snapshot.bonds.isEmpty() -> Text("No management bonds", style = MaterialTheme.typography.bodySmall)
+                ui.snapshot.bondsComplete != true -> Text(
+                    "Bond list completeness is unknown; no partial entries are shown.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                ui.snapshot.bonds.isEmpty() -> Text("No management bonds", style = MaterialTheme.typography.bodySmall)
             }
-            ui.snapshot.bonds.forEach { bond ->
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(bond.name ?: bond.address, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    IconButton(onClick = { viewModel.removeBond(bond.index) }, enabled = !ui.busy) {
-                        Icon(Icons.Default.LinkOff, "Remove management bond ${bond.index}")
+            if (ui.snapshot.bondsComplete == true) {
+                ui.snapshot.bonds.forEach { bond ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(bond.name ?: bond.address, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        IconButton(onClick = { viewModel.removeBond(bond.index) }, enabled = !ui.busy) {
+                            Icon(Icons.Default.LinkOff, "Remove management bond ${bond.index}")
+                        }
                     }
                 }
-            }
-            if (ui.snapshot.capabilities.bonds == CapabilityState.Unknown && ui.connection.connected) {
-                Text("Bond state unavailable", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
         }
         SettingsGroup(Icons.Default.Info, "About", "App and adapter versions", aboutOpen, { aboutOpen = !aboutOpen }) {

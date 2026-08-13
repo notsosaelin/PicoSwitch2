@@ -4,7 +4,7 @@
 #
 # These are pure host tests (no hardware, no firmware): they exercise the
 # wireless command bridge, the access-control spec, the session composition, the
-# bonds grammar, and the Android controller HID contract. Keep this green while
+# bonds grammar/serializer, and the Android controller HID contract. Keep this green while
 # building the in-band management feature (docs/bluetooth/in-band-management-plan.md).
 #
 # Requires gcc on PATH (MSYS2/mingw). Exit code is non-zero if any test fails.
@@ -24,7 +24,8 @@ $tests = @(
     @{ n='test_config_wireless_bridge_concurrency'; src='tools/test_config_wireless_bridge_concurrency.c src/config_wireless_bridge.c'; flags='-pthread' }
     @{ n='test_mgmt_access';                        src='tools/test_mgmt_access.c src/mgmt_access.c src/config_wireless_bridge.c';     flags='' }
     @{ n='test_mgmt_session';                       src='tools/test_mgmt_session.c src/config_wireless_bridge.c';                       flags='' }
-    @{ n='test_bonds_command';                      src='tools/test_bonds_command.c';                                                   flags='' }
+    @{ n='test_bonds_command';                      src='tools/test_bonds_command.c src/mgmt_bonds.c';                                  flags='' }
+    @{ n='test_mgmt_bonds';                         src='tools/test_mgmt_bonds.c src/mgmt_bonds.c';                                     flags='' }
     # Android companion bridge feature parity (motion/battery in, rumble/LED out)
     # compiled against the production generic driver + HID parser.
     @{ n='test_bthid_android_bridge';               src='tools/test_bthid_android_bridge.c src/bt_hid/bt/bthid/devices/generic/bthid_gamepad.c src/bt_hid/bt/bthid/devices/generic/bthid_gamepad_quirks.c src/bt_hid/bt/bthid/devices/generic/bthid_android_bridge.c src/bt_hid/usb/usbh/hid/devices/generic/hid_parser.c'; flags='-Itools/host_stubs -Isrc/bt_hid -Wno-unused-parameter -ffunction-sections -fdata-sections "-Wl,--gc-sections"' }

@@ -114,6 +114,16 @@ late response if the browser disconnects while a command is executing.
 The bridge deliberately holds one 127-byte command and one 512-byte reply. The browser already
 waits for each response before issuing the next command, so an unbounded queue is unnecessary.
 
+Bond enumeration is bounded at the command boundary. `bonds list` retains the historical `bonds`
+array field but now returns a version-2 envelope (`v:2`, `total`, and `next:null`) when the complete
+list fits. If it cannot fit, the firmware returns the compact
+`{"error":"response_too_large","code":413}` response and never publishes a partial array.
+Clients that receive that error request `bonds list v2` and follow the integer `next` device-DB slot
+cursor until it is `null`; every page is independently bounded below 511 payload bytes. Older
+clients ignore the additional envelope fields on bounded lists, while newer clients can prove that
+the aggregate is complete. A legacy/unversioned response is not treated as authoritative by the
+Android companion.
+
 ## Wireless command policy
 
 Bluetooth exposes the production configuration surface:

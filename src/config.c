@@ -20,6 +20,7 @@
 #include "bt/bthid/devices/generic/bthid_gamepad.h" // bthid_gamepad_dump_map (btid desc command)
 #include "virtual_amiibo_store.h"
 #include "config_wireless_bridge.h"
+#include "mgmt_bonds.h"
 #include "usb.h"  // g_usb_personality (personality query command)
 #include "ns2_wake.h"  // ns2_wake_manual_request (wake command)
 #include "ns2_active_input.h" // source registry / explicit active input
@@ -312,8 +313,15 @@ static uint32_t wireless_reply_session;
 
 static void reply(const char *s) {
     if (reply_transport == CONFIG_REPLY_WIRELESS) {
-        (void)config_wireless_bridge_publish_response(
-            wireless_reply_session, s);
+        if (!config_wireless_bridge_publish_response(
+                wireless_reply_session, s)) {
+            // A response that exceeds the wireless slot must never become a
+            // silent timeout or a syntactically valid partial result.  The
+            // compact fallback fits even when the original command did not.
+            (void)config_wireless_bridge_publish_response(
+                wireless_reply_session,
+                "{\"error\":\"response_too_large\",\"code\":413}");
+        }
         return;
     }
     tud_cdc_write_str(s);
@@ -916,24 +924,18 @@ static void cmd_mgmt(const char *arg) {
 // marshaled to core1 and we pump USB while waiting (same pattern as `save`).
 // Classic-BT bonds are managed via the triple-tap full wipe, not per-entry.
 static void cmd_bonds(const char *arg) {
-    bool is_remove;
-    int idx = -1;
-    if (strcmp(arg, "list") == 0) {
-        is_remove = false;
-    } else if (strncmp(arg, "remove ", 7) == 0) {
-        char *end;
-        long v = strtol(arg + 7, &end, 10);
-        if (arg[7] == '\0' || *end != '\0' || v < 0 || v > 100000) {
-            reply("{\"error\":\"usage: bonds remove <index>\"}");
-            return;
-        }
-        is_remove = true;
-        idx = (int)v;
-    } else {
-        reply("{\"error\":\"usage: bonds list|remove <index>\"}");
+    mgmt_bonds_action_t action;
+    int value;
+    if (!mgmt_bonds_parse_command(arg, &action, &value)) {
+        reply("{\"error\":\"usage: bonds list|list v2 [cursor]|remove <index>\"}");
         return;
     }
-    if (!btstack_host_bonds_request(is_remove, idx)) {
+    bool is_remove = action == MGMT_BONDS_REMOVE;
+    bool is_page = action == MGMT_BONDS_LIST_PAGE;
+    bool requested = is_page
+        ? btstack_host_bonds_request_list_page(value)
+        : btstack_host_bonds_request(is_remove, is_remove ? value : -1);
+    if (!requested) {
         reply("{\"error\":\"busy\"}");
         return;
     }
@@ -947,9 +949,15 @@ static void cmd_bonds(const char *arg) {
     if (is_remove) {
         reply(btstack_host_bonds_remove_ok() ? "{\"ok\":true}"
                                              : "{\"error\":\"no such bond\"}");
+    } else if (!is_page && !btstack_host_bonds_list_complete()) {
+        // The old spelling is intentionally all-or-error.  New clients use
+        // the v2 cursor form after receiving this compact signal.
+        reply("{\"error\":\"response_too_large\",\"code\":413}");
     } else {
-        snprintf(out, sizeof(out), "{\"bonds\":%s}", btstack_host_bonds_list_json());
-        reply(out);
+        // Both legacy and v2 operations now return a bounded JSON envelope.
+        // The legacy envelope retains the original `bonds` array field, so
+        // older clients ignore its version/total/next metadata safely.
+        reply(btstack_host_bonds_list_json());
     }
 }
 

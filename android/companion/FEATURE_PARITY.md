@@ -15,8 +15,8 @@ real PicoSwitch2/AYN Thor.
 | Controller mappings | Intentionally omitted | Current firmware intentionally exposes no remapping schema. Nintendo-side persistent remapping remains authoritative. |
 | Console wake | Awaiting hardware | `wake` -> `{ok:true}` -> queued notice. An explicit unsupported response disables the capability for the session. Wake success is asynchronous and is not falsely claimed. |
 | In-band management gate | Awaiting hardware | Optional `mgmt status` probe gates the switch; `mgmt on/off` refreshes state. It is RAM-only and disabling it may close the current session. |
-| LE management bonds | Partial / firmware-limited | `bonds list/remove` is implemented. Malformed, timeout, or >511-byte replies leave capability unknown. Current firmware can also stop adding entries and return valid JSON without a total/truncated marker, so Android labels non-empty results as reported rather than provably complete. Classic HID bonds remain physical-wipe-only. |
-| Security state | Fully represented | UI and diagnostics state that firmware writes are unauthenticated. Android adds no raw command UI, key, or cloud surface; the bounded user-selected library ZIP excludes keys and adapter state. |
+| LE management bonds | Host-tested bounded pagination | `bonds list` returns a backward-compatible v2 envelope when complete, or compact `response_too_large` and `bonds list v2 [cursor]` pages when the list exceeds 511 payload bytes. Android follows `next`, verifies totals/no duplicates, and hides legacy/unversioned partial results rather than claiming completeness. Classic HID bonds remain physical-wipe-only. |
+| Security state | Fully represented | UI and diagnostics state that firmware writes are unauthenticated. Android adds no raw command UI or cloud surface; the bounded user-selected library ZIP excludes keys and adapter state. |
 | Amiibo import | Fully implemented | SAF one-shot read, maximum 2048 bytes, accepted sizes 540/572/2048, ordinary BCC normalization matching the portal, structural validation, private transactional copy, exact-content duplicate detection. |
 | Local Amiibo library | Fully implemented | Versioned private index, stable UUID filenames, atomic replacement, restart load, orphan recovery, corruption/mismatch warnings, rename, confirmed delete, collision-safe names, and no Android/cloud backup. |
 | Amiibo upload/load | Awaiting hardware | status/dirty guard -> begin -> 32-byte chunks -> commit -> queued persist -> poll until verified -> refresh. Failure attempts `cancel`; no optimistic success. |
@@ -56,11 +56,9 @@ real PicoSwitch2/AYN Thor.
 
 The command bridge permits at most 511 response bytes plus newline. Current fixed-shape responses
 (`info`, `get`, `device`, personality, management, Amiibo status/read, acknowledgements) are bounded
-below that ceiling. `bonds list` is the only current variable-cardinality response demonstrated to
-approach it. Firmware stops appending entries before its 512-byte JSON buffer is exhausted and does
-not include `total`, `truncated`, or `nextOffset`; the result can therefore be valid JSON yet silently
-incomplete. If a different response reaches bridge rejection, firmware currently drops it and the
-client sees a timeout. No compatible pagination command is defined. Firmware should add an explicitly
-versioned bounded page (or completeness metadata) and return a compact `response_too_large` error when
-publish fails. Until then Android rejects malformed/oversized replies and visibly warns that a valid
-non-empty bond list is only the set firmware reported.
+below that ceiling. Bond enumeration now uses the same explicit boundary: a complete v2 envelope for
+small lists, compact `response_too_large` for the historical unpaged spelling when necessary, and
+`bonds list v2 [cursor]` pages with `next:null` as the completion marker. Android follows every page,
+checks the reported total and duplicate indices, and closes the capability as unknown for a legacy
+unversioned response. If any unrelated response reaches bridge rejection, firmware also emits the
+same compact error where the session is still valid; no partial JSON is accepted.

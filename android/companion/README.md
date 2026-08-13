@@ -226,11 +226,12 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
   checklist in `HARDWARE_VALIDATION.md`.
 - App appearance preferences are local to this Android install. Joy-Con-inspired palettes are UI
   references only; they do not imply or alter the adapter's body/lightbar/Joy-Con identity values.
-- LE bond lists approach the wireless reply bridge's 511-byte practical response ceiling. Firmware
-  can return valid but silently incomplete JSON because it provides no total/truncation marker; the
-  app warns that reported results are not provably complete. Firmware still needs a versioned
-  bounded/paginated list command. Classic controller bonds are not individually removable through
-  management.
+- LE bond lists are bounded by the wireless reply bridge's 511-byte payload ceiling. Firmware now
+  returns a backward-compatible v2 envelope for a complete `bonds list`, a compact
+  `response_too_large` error instead of a partial array, and cursor pages through
+  `bonds list v2 [cursor]`. Android verifies totals and cursor progress, and hides legacy
+  unversioned results whose completeness cannot be proven. Classic controller bonds are not
+  individually removable through management.
 
 ## Second-pass hardening
 
@@ -246,8 +247,9 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
 
 ## Source/document discrepancies found
 
-- `docs/bluetooth/app-interface-audit.md` still calls personality switch, bonds, wake, and
-  `figureId` gaps; current `src/config.c` implements all four.
+- `docs/bluetooth/app-interface-audit.md` retains the original gap table as rationale; its current
+  status section records personality, bounded bonds, and wake as implemented. The `figureId` gap
+  is likewise implemented by the current `src/config.c`/Amiibo status surface.
 - `web/README.md` and parts of `docs/architecture/config-transports.md` retain Config-only BLE text;
   current firmware also arms the service in normal personality when `mgmt on` is active.
 - The broad wireless `amiibo ` allowlist technically admits low-level reader commands, but the Web

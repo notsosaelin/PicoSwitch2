@@ -41,7 +41,7 @@ CDC/UART-only and stay off the wireless path.
 |---|---|---|---|
 | **G1 — current output personality is not queryable** | App can't show the mode, gate amiibo controls to Pro2, or know the switch target | add `personality` query (read `g_usb_personality`) | **low — read-only** |
 | **G2 — output personality switch is not a command** | App can't change output type | `personality <pro2\|gc\|jcl\|jcr>` → target-request flag (mechanism de-risked & owner-hardware-confirmed; §9 of plan) | medium — re-enumeration |
-| **G3 — saved-pairing management not implemented** | App can't list/remove bonded phones (only triple-tap wipe-all) | `bonds list` / `bonds remove <n>` (grammar specced in `tools/test_bonds_command.c`) | medium — flash + le_device_db |
+| **G3 — saved-pairing enumeration must stay bounded** | A large LE bond database could otherwise look like a complete but silently truncated list | `bonds list` v2 envelope plus `bonds list v2 [cursor]`; legacy spelling fails closed with compact `response_too_large` (grammar/serializer covered by `tools/test_bonds_command.c` and `tools/test_mgmt_bonds.c`) | medium — flash + le_device_db |
 | **G4 — real physical amiibo backup is UART-only** | App **cannot back up a real amiibo** — the NFC mirror/initiator (`ns2_nfc_mirror`, incl. `set_initiator`/`initiator_submit`) is reachable only from `ns2_uart_diag.c`, not `config.c` | bridge the mirror to config commands (`amiibo mirror status`/`export`, allowlisted, bonded-only) | **higher — NFC path, real controller timing; validate on HW** |
 
 ---
@@ -142,12 +142,13 @@ burst fires, and the phone reconnects after the console wakes.
 |---|---|---|---|---|
 | G1 | `personality` query | High (app can't gate/display without it) | Low (read-only) | **Implement now** |
 | G2 | `personality <target>` switch | High | Medium | Implement after G1; mechanism de-risked |
-| G3 | `bonds list/remove` | High (pairing UX) | Medium | Implement with the in-band-management build |
+| G3 | `bonds list/remove` | High (pairing UX) | Medium | **Implemented with bounded v2 pagination; hardware validation remains** |
 | G4 | Real-amiibo backup: Path A (phone NFC) needs **no firmware** (already imports); Path B (controller-as-reader) ports the existing UART initiator to config | High (a headline feature) | Path A none / Path B med (NFC path) | Path A: app-side now. Path B: port the UART mirror/initiator, HW-validate; don't rebuild |
 | G5 | Android-bridge motion (handheld gyro) | High (gyro aiming) | Medium | v2 feature; biggest bridge upgrade |
 | G6 | Rumble to phone | Medium | Low-med | v2 |
 | G8 | `wake` command + manage-while-asleep | High (wake console from phone) | Med (concurrent advertise+connect HW gate) | Add the flag+command; revise plan C5; HW-validate coexistence |
 
-**Only G1 is implemented in this pass** (read-only, zero-risk, unblocks the app's mode display and
-the Pro2-gating recommendation). Everything else is documented here so the app design accounts for it
-and nothing is discovered missing later.
+**G1, G2, G3, and G8 are implemented in the current management build** (with G3's bounded v2
+pagination and G8's cross-core wake request); G3 still needs physical bond-database validation.
+G4 remains intentionally UART/phone-NFC scoped. Everything else is documented here so the app
+design accounts for it and nothing is discovered missing later.
