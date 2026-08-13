@@ -11,3 +11,8 @@ The application consumes two intentionally separate PicoSwitch2 interfaces:
 
 The Android client does not redefine either protocol. Firmware sources and host fixtures remain the
 authority for the wire contracts.
+
+Current implementation status is tracked in
+[`android/companion/FEATURE_PARITY.md`](../android/companion/FEATURE_PARITY.md). The intentionally
+short eventual hardware session is
+[`android/companion/HARDWARE_VALIDATION.md`](../android/companion/HARDWARE_VALIDATION.md).
