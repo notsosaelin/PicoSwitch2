@@ -10,6 +10,31 @@ Companion: [`in-band-mgmt-coexistence-failure-2026-08-12.md`](in-band-mgmt-coexi
 
 ---
 
+## P3 — Amiibo stale-metadata: full cache-lifecycle audit (task 9)
+
+`amiiboInfoCache` maps `entry.key → decrypted {owner, nickname, setupDate, lastWriteDate,
+writeCounter, appData}` (or `{error}`). `amiiboInfoFor` returns the cached value on a key hit **without
+checking whether the bytes changed** — so any path that rewrites an entry's bytes under a reused key
+leaves the displayed metadata stale.
+
+**Audited every mutation path (web/index.html):**
+| Path | Byte-write chokepoint | Was it invalidated before? |
+|---|---|---|
+| **Sync** (`saveCurrentAmiibo`) | `cacheSingleAmiiboEntry` | ❌ (the reported bug) |
+| **Initialize** (`initializeSelectedAmiibo`) | `cacheSingleAmiiboEntry` | ✅ (ad-hoc delete) |
+| **Single-file import** | `cacheSingleAmiiboEntry` | ❌ (latent; new key so usually benign, but a 540-byte identity-keyed re-import could collide) |
+| **Directory / library import** (bulk) | `replaceCachedAmiiboLibrary` | ❌ (latent) |
+| Select / change active tag | (no byte change) | n/a — keyed per entry, correct |
+| Key import / removal | — | ✅ clears whole cache |
+
+**Class fix (not an instance patch):** invalidate at the two byte-persistence chokepoints —
+`cacheSingleAmiiboEntry` deletes `entry.key` + `replaceKey`; `replaceCachedAmiiboLibrary` clears the
+cache. The ad-hoc deletes in Sync and Initialize were then **removed** so there is one invariant:
+*persisting amiibo bytes invalidates that entry's decrypted-info cache.* This covers Sync, Initialize,
+and both import paths uniformly. **NEEDS browser+adapter validation** (frontend; the decrypt path uses
+`SubtleCrypto`, so it is not host-testable without a portal JS harness — a harness is future work, and
+the fix being centralized makes it a single, testable surface if one is added).
+
 ## Personality-switch path (task 7, read-only)
 
 `usb_apply_personality(next, reason)` (usb.c:109): `tud_disconnect()` → `sleep_ms(USB_DETACH_MS)` →
