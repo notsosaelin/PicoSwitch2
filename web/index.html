@@ -1033,6 +1033,10 @@ async function replaceCachedAmiiboLibrary(entries, preserveExisting = true) {
     }
   }
   amiiboLibrary = entries;
+  // Bulk import/merge can change bytes under reused (identity-keyed) entries, so
+  // clear the decrypted-info cache and let each affected entry re-decrypt (P3
+  // class fix; bulk import is infrequent, so a full clear is cheap and safe).
+  amiiboInfoCache.clear();
   sanitizeAmiiboSlotState();
   if (amiiboAdapterHasTag()) {
     const activeEntry = entries.find(entry =>
@@ -1075,6 +1079,14 @@ async function cacheSingleAmiiboEntry(entry, replaceKey = "") {
     amiiboLibrary.splice(index, 0, entry);
   else
     amiiboLibrary.push(entry);
+  // Persisting an entry changes the bytes under its key, so the decrypted-info
+  // cache for that key (and any key it replaces) is now stale. This is the single
+  // choke point every single-entry mutation funnels through — Sync
+  // (saveCurrentAmiibo), Initialize (initializeSelectedAmiibo), and single-file
+  // import — so invalidating here fixes the whole class of stale-metadata-after-
+  // write bugs, not just the Sync button. See STATUS.md P3.
+  amiiboInfoCache.delete(entry.key);
+  if (replaceKey) amiiboInfoCache.delete(replaceKey);
   renderAmiiboLibrary();
   return persisted;
 }
@@ -2914,8 +2926,8 @@ async function initializeSelectedAmiibo() {
       amiiboLoadedSlotKey = updated.key;
       persistAmiiboSlotState();
     }
-    amiiboInfoCache.delete(entry.key);
-    amiiboInfoCache.delete(updated.key);
+    // Cache invalidation is centralized in cacheSingleAmiiboEntry (called above),
+    // which deletes both updated.key and the replaced entry.key — see P3.
     renderAmiiboLibrary();
     $("#amiiboMessage").textContent =
       `${name} initialized — owner, nickname, game data and dates cleared.`;
@@ -3150,14 +3162,8 @@ async function saveCurrentAmiibo() {
     amiiboLoadedSlotKey = updated.key;
     persistAmiiboSlotState();
     amiiboFileName = updated.name;
-    // The synced image reuses the same library key but now carries the new
-    // console-written bytes, so the decrypted owner/nickname/date/write-count
-    // cached for that key is stale. Invalidate it (same as
-    // initializeSelectedAmiibo) so the info box re-decrypts the fresh image
-    // instead of showing pre-sync metadata until a manual page refresh.
-    // Fixes STATUS.md P3 (Web Portal state refresh after Amiibo Sync).
-    amiiboInfoCache.delete(updated.key);
-    if (cached?.key) amiiboInfoCache.delete(cached.key);
+    // Cache invalidation now happens centrally in cacheSingleAmiiboEntry (called
+    // above), which covers Sync, Initialize, and import uniformly — see P3.
     renderAmiiboLibrary();
     renderAmiiboLibraryDetail(updated);
     const acknowledged = await sendCmd("amiibo downloaded", true);
