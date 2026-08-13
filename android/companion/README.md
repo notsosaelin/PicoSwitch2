@@ -41,7 +41,7 @@ The debug build provides real implementations for:
   reconnect plus bounded scan fallback, and controller-mode reuse of the saved Classic bond,
   capacity-one full-state reports at an 8 ms ceiling, input-device hot-plug recovery, and
   neutralization on pause/stop/disconnect;
-- a separate Developer/diagnostics screen and privacy-redacted share export; and
+- collapsed Settings categories, including Developer diagnostics and a privacy-redacted share export; and
 - five-second controller and Amiibo state refresh while connected and idle, including an adapter-only download,
   present/eject, and guarded-clear workflow when no local item matches.
 
@@ -140,6 +140,12 @@ The app selects navigation and content structure from available width, not orien
 Theme and palette controls live in the same scrollable Settings surface, so they remain reachable in
 short landscape windows and at larger font scales. Status and navigation bars follow the selected
 scheme, including light-system-bar treatment in light mode.
+
+The adapter connection row is deliberately Home-only. Home presents three focused tiles for the
+adapter personality, active input, and loaded Amiibo; protocol warnings and raw identifiers stay in
+Settings -> Developer. Settings starts as a compact category list and expands only the category the
+user asks for. Amiibo key selection lives under Settings -> Amiibo metadata and has no delete or
+library-page replacement control.
 
 The debug APK was emulator-launched and visually inspected at 16:9 portrait/landscape, 16:10
 landscape, 4:3 portrait/landscape, 1:1, 900x2100 narrow/tall, and 2400x1200 wide-handheld/tablet

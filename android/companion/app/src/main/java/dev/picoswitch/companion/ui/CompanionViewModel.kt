@@ -30,7 +30,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
 
-enum class AppSection(val label: String) { Home("Home"), Amiibo("Amiibo"), Controller("Input"), Modes("Adapter"), More("Settings") }
+enum class AppSection(val label: String) { Home("Home"), Amiibo("Amiibo"), Controller("Input"), Modes("Adapter"), Settings("Settings") }
 
 data class PlatformDiagnostics(
     val bluetoothAvailable: Boolean = false,

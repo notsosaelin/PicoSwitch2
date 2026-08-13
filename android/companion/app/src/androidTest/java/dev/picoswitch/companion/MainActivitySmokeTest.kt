@@ -12,15 +12,15 @@ class MainActivitySmokeTest {
     @get:Rule val rule = createAndroidComposeRule<MainActivity>()
 
     @Test fun allTopLevelDestinationsRenderOffline() {
-        rule.onNodeWithText("Hardware at a glance").assertIsDisplayed()
+        rule.onNodeWithText("PicoSwitch2").assertIsDisplayed()
         rule.onNodeWithText("Amiibo").performClick()
-        rule.onNodeWithText("Amiibo library").assertIsDisplayed()
+        rule.onNodeWithText("0 saved").assertIsDisplayed()
         rule.onNodeWithText("Input").performClick()
-        rule.onNodeWithText("Android controller").assertIsDisplayed()
+        rule.onNodeWithText("Keep this screen open while playing").assertIsDisplayed()
         rule.onNodeWithText("Adapter").performClick()
-        rule.onNodeWithText("Adapter & modes").assertIsDisplayed()
+        rule.onNodeWithText("Output personality").assertIsDisplayed()
         rule.onNodeWithText("Settings").performClick()
-        rule.onNodeWithText("Settings & information").assertIsDisplayed()
-        rule.onNodeWithText("Developer / diagnostics").performScrollTo().assertIsDisplayed()
+        rule.onNodeWithText("Appearance").assertIsDisplayed()
+        rule.onNodeWithText("Developer").performScrollTo().assertIsDisplayed()
     }
 }

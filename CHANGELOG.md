@@ -7,6 +7,12 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Added
 
+- Android companion navigation now uses a compact handheld dashboard: the adapter connection row
+  appears only on Home, Home keeps controller/Amiibo status in focused tiles, and Settings exposes
+  Appearance, Amiibo metadata, connections, About, and Developer details as collapsed categories.
+  The Amiibo page is an artwork-led library with working Name/Series/Recently added sorting;
+  adapter-only figures use the same catalog identity and artwork on Home and in the library.
+  Amiibo keys have no library-page controls or delete action and are chosen only from Settings.
 - Bluetooth adapter identity now consistently uses the canonical `PicoSwitch2` name for Classic
   GAP/EIR, BLE GAP/Config advertising, and the Android UI. Android retains an explicitly labeled
   legacy `Joypad Adapter` discovery matcher for pre-name-change firmware; names do not migrate
