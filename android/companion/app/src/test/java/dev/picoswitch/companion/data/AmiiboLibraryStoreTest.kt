@@ -85,6 +85,14 @@ class AmiiboLibraryStoreTest {
         assertArrayEquals(validImage(uidByte = 1), store.bytes(original.id))
     }
 
+    @Test fun `adapter sync with no selected local id creates a first class backup`() = runTest {
+        val store = AmiiboLibraryStore(temporary.newFolder("adapter-only"))
+        val synced = store.updateFromAdapter(null, validImage(uidByte = 7))
+        assertEquals(1, store.items.value.size)
+        assertEquals(synced.id, store.items.value.single().id)
+        assertArrayEquals(validImage(uidByte = 7), store.bytes(synced.id))
+    }
+
     private fun validImage(change: Int = 0, uidByte: Int = 0): ByteArray = ByteArray(540).apply {
         this[0] = 4
         this[1] = uidByte.toByte()

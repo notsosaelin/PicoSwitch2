@@ -34,7 +34,8 @@ repository.
    reversed master order is normalized, and invalid files are rejected before replacement.
 3. Stores the validated key only at app-private `filesDir/amiibo-private/.amiibo-retail-key.bin`.
    Android backup is disabled; key bytes are absent from diagnostics, management JSON, and library
-   files/exports. Forgetting keys removes only that local file.
+   files/exports. Import/replace lives under Settings rather than the library surface; uninstall
+   removes the app-private key file.
 4. Reads owner, nickname, registration date, last-write date, write count, AppID/title ID, and a
    conservative game-data label only after both HMACs verify. Invalid HMACs show no decrypted
    strings, preventing random encrypted bytes from appearing as names.
@@ -45,6 +46,12 @@ repository.
    is a bounded best-effort image fetch with an offline icon fallback.
 6. Leaves all import, local selection, upload, Sync, present/eject, clear, and clean/used copy
    controls key-free and network-free.
+7. Redesigns the page around portal-like artwork/library/detail hierarchy. On compact widths the
+   selected hero is bounded and the saved figures remain a scrollable list. An active adapter tag
+   is a first-class display item even when `library.json` is `{"version":1,"items":[]}`: its
+   figure ID starts catalog lookup immediately, and the UI reports loading, offline, or unmatched
+   instead of silently rendering an empty card. Adapter actions (download, present/eject, guarded
+   clear) remain visible without importing or syncing first.
 
 ## Deliberate deferrals
 
@@ -58,7 +65,7 @@ adapter operation usable.
 
 - JVM tests cover key length/master-label validation, reversed-master normalization, richer identity
   parsing for ordinary and figure-v3 images, packed-date edges, HMAC-invalid field suppression,
-  private key-store import/forget behavior, and a deterministic portal-generated golden vector that
+  private key-store import/replacement behavior, and a deterministic portal-generated golden vector that
   extracts owner/nickname/dates/write count/title ID/AppID in Kotlin.
 - `tools/test_amiibo_decrypt.mjs` both generates/checks the same dummy-key golden vector (with
   `--write-golden`) and runs the independent portal crypto round-trip. The Android port was not
@@ -66,3 +73,15 @@ adapter operation usable.
 - With a temporary official Temurin JDK 21, the Android module passed 52 JVM tests, lint, and debug
   APK assembly. The default Android Studio JBR 25 remains unsuitable for this Gradle wrapper; no
   permanent toolchain change was made.
+
+## Follow-up redesign evidence
+
+The Thor screenshot repro (1240x1080 physical, 538x444dp app surface) showed a thin bullet-like
+adapter row because the old screen spent the viewport on a permanent title, three large action
+buttons, privacy copy, and a fixed-height compact detail pane. The live app-private index was also
+empty, so the old `catalogEntriesFor()` never queried the adapter figure ID. The redesign removes
+the destructive-looking key action, keeps import/replace compact, uses a bounded hero plus scroll,
+and introduces `AmiiboCatalogState` (`Loading`, `Available`, `Offline`, `Unmatched`) for adapter-only
+identity. A compact sort menu now deterministically orders both local rows and the wide grid by
+friendly Name, Series, or Recently added. This is source/build evidence; a rebuilt APK still needs
+a physical Thor visual pass.

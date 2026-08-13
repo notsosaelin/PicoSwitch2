@@ -22,7 +22,7 @@ private val navItems = listOf(
     NavItem(AppSection.Amiibo, Icons.Default.Contactless),
     NavItem(AppSection.Controller, Icons.Default.SportsEsports),
     NavItem(AppSection.Modes, Icons.Default.SettingsInputComponent),
-    NavItem(AppSection.More, Icons.Default.MoreHoriz),
+    NavItem(AppSection.More, Icons.Default.Settings),
 )
 
 @Composable
@@ -89,10 +89,10 @@ fun CompanionApp(
                                 destinationState.SaveableStateProvider(ui.section.name) {
                                     when (ui.section) {
                                         AppSection.Home -> HomeScreen(ui, viewModel)
-                                        AppSection.Amiibo -> AmiiboScreen(ui, viewModel, onImportAmiibo, onImportAmiiboKeys)
+                                        AppSection.Amiibo -> AmiiboScreen(ui, viewModel, onImportAmiibo)
                                         AppSection.Controller -> ControllerScreen(ui, viewModel, onPrepareController)
                                         AppSection.Modes -> ModesScreen(ui, viewModel)
-                                        AppSection.More -> MoreScreen(ui, viewModel, onExportDiagnostics, theme)
+                                        AppSection.More -> MoreScreen(ui, viewModel, onExportDiagnostics, onImportAmiiboKeys, theme)
                                     }
                                 }
                             }

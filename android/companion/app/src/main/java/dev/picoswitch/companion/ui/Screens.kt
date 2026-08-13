@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -115,14 +116,27 @@ private fun ControllerCard(ui: CompanionUiState) {
 @Composable
 private fun AmiiboStatusCard(ui: CompanionUiState, viewModel: CompanionViewModel) {
     val a = ui.snapshot.amiibo
+    val catalog = ui.adapterAmiiboCatalog
+    val loaded = a.loaded || a.v3Loaded
     HardwareCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             SectionHeading(Icons.Default.Contactless, "Virtual Amiibo", Modifier.weight(1f))
-            if (a.dirty) StatusPill("Needs sync", false) else if (a.loaded || a.v3Loaded) StatusPill(if (a.presented) "Presented" else "Loaded", true)
+            if (a.dirty) StatusPill("Needs sync", false) else if (loaded) StatusPill(if (a.presented) "Presented" else "Loaded", true)
         }
         Spacer(Modifier.height(LayoutTokens.Space3))
-        Text(if (a.loaded || a.v3Loaded) a.figureId.ifBlank { "Unknown figure" } else "No Amiibo loaded", style = MaterialTheme.typography.titleLarge)
-        if (a.loaded || a.v3Loaded) Text("UID ${a.uid} · ${a.size} bytes · generation ${a.generation}", style = MaterialTheme.typography.bodySmall)
+        if (loaded) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                AmiiboArtwork(catalog?.imageUrl.orEmpty(), catalogTitle(catalog, "Amiibo on adapter"), Modifier.size(64.dp))
+                Spacer(Modifier.width(LayoutTokens.Space3))
+                Column(Modifier.weight(1f)) {
+                    Text(catalogTitle(catalog, "Amiibo on adapter"), style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(catalogSubtitle(catalog).ifBlank { "Figure ID ${a.figureId.ifBlank { "not reported" }}" }, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    AmiiboCatalogStatus(ui.adapterAmiiboCatalogState)
+                }
+            }
+        } else {
+            Text("No Amiibo loaded", style = MaterialTheme.typography.titleLarge)
+        }
         Spacer(Modifier.height(LayoutTokens.Space4))
         Button(onClick = { viewModel.navigate(AppSection.Amiibo) }, modifier = Modifier.fillMaxWidth()) { Text("Open Amiibo library") }
     }
@@ -143,63 +157,87 @@ fun AmiiboScreen(
     ui: CompanionUiState,
     viewModel: CompanionViewModel,
     onImport: () -> Unit,
-    onImportKeys: () -> Unit,
 ) {
     val selected = ui.library.firstOrNull { it.id == ui.selectedAmiiboId }
-    val adapterLoaded = ui.snapshot.amiibo.loaded || ui.snapshot.amiibo.v3Loaded
-    ScreenFrame("Amiibo library", "Private local backups with verified adapter transfers") {
-        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2), verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
-            Button(onClick = onImport) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(LayoutTokens.Space2)); Text("Import backup") }
-            FilledTonalButton(onClick = viewModel::syncSelectedAmiibo, enabled = ui.connection.connected && (ui.snapshot.amiibo.loaded || ui.snapshot.amiibo.v3Loaded) && !ui.busy) {
-                Icon(Icons.Default.Sync, null); Spacer(Modifier.width(LayoutTokens.Space2)); Text("Sync adapter")
-            }
-            if (ui.amiiboKeysLoaded) {
-                OutlinedButton(onClick = viewModel::forgetAmiiboKeys, enabled = !ui.busy) {
-                    Icon(Icons.Default.KeyOff, null); Spacer(Modifier.width(LayoutTokens.Space2)); Text("Forget local keys")
-                }
-            } else {
-                OutlinedButton(onClick = onImportKeys, enabled = !ui.busy) {
-                    Icon(Icons.Default.Key, null); Spacer(Modifier.width(LayoutTokens.Space2)); Text("Import keys")
-                }
-            }
+    val adapter = ui.snapshot.amiibo
+    val adapterLoaded = adapter.loaded || adapter.v3Loaded
+    val adapterMatchesSelected = selected != null && adapterLoaded &&
+        selected.uid.isNotBlank() && selected.uid.equals(adapter.uid, ignoreCase = true)
+    val adapterOnly = adapterLoaded && !adapterMatchesSelected
+    var query by rememberSaveable { mutableStateOf("") }
+    var filtersOpen by rememberSaveable { mutableStateOf(false) }
+    var gameSeriesFilter by rememberSaveable { mutableStateOf("") }
+    var amiiboSeriesFilter by rememberSaveable { mutableStateOf("") }
+    var typeFilter by rememberSaveable { mutableStateOf("") }
+    var sortOrder by rememberSaveable { mutableStateOf(AmiiboSortOrder.Name) }
+    val filtered = sortAmiiboLibrary(ui.library.filter { item ->
+        val catalog = ui.amiiboCatalogEntries[item.id]
+        val searchable = listOf(
+            item.displayName, item.figureId, item.uid, item.typeName, item.characterGameCode,
+            catalog?.name.orEmpty(), catalog?.character.orEmpty(), catalog?.gameSeries.orEmpty(), catalog?.amiiboSeries.orEmpty(),
+        ).joinToString(" ").contains(query.trim(), ignoreCase = true)
+        searchable &&
+            (gameSeriesFilter.isBlank() || catalog?.gameSeries.equals(gameSeriesFilter, ignoreCase = true)) &&
+            (amiiboSeriesFilter.isBlank() || catalog?.amiiboSeries.equals(amiiboSeriesFilter, ignoreCase = true)) &&
+            (typeFilter.isBlank() || catalog?.type.equals(typeFilter, ignoreCase = true))
+    }, ui.amiiboCatalogEntries, sortOrder)
+    val gameSeriesOptions = ui.amiiboCatalogEntries.values.mapNotNull { it.gameSeries.takeIf(String::isNotBlank) }.distinct().sorted()
+    val amiiboSeriesOptions = ui.amiiboCatalogEntries.values.mapNotNull { it.amiiboSeries.takeIf(String::isNotBlank) }.distinct().sorted()
+    val typeOptions = ui.amiiboCatalogEntries.values.mapNotNull { it.type.takeIf(String::isNotBlank) }.distinct().sorted()
+
+    Column(
+        Modifier.fillMaxSize().padding(horizontal = LayoutTokens.Space2, vertical = LayoutTokens.Space2),
+        verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space2),
+    ) {
+        AmiiboToolbar(ui, onImport, query, { query = it }, filtersOpen, { filtersOpen = !filtersOpen }, sortOrder, { sortOrder = it })
+        if (filtersOpen && (gameSeriesOptions.isNotEmpty() || amiiboSeriesOptions.isNotEmpty() || typeOptions.isNotEmpty())) {
+            AmiiboFilterRow(
+                gameSeriesFilter, amiiboSeriesFilter, typeFilter,
+                gameSeriesOptions, amiiboSeriesOptions, typeOptions,
+                { gameSeriesFilter = nextFilter(gameSeriesFilter, gameSeriesOptions) },
+                { amiiboSeriesFilter = nextFilter(amiiboSeriesFilter, amiiboSeriesOptions) },
+                { typeFilter = nextFilter(typeFilter, typeOptions) },
+            )
         }
-        Text(
-            if (ui.amiiboKeysLoaded) "Private metadata keys are available on this phone; they are never sent to the adapter or included in diagnostics."
-            else "Import your own portal-compatible 160-byte key_retail.bin to read owner, nickname, dates, write count, and game data. Local import and adapter transfers never require keys.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
         ui.libraryWarnings.firstOrNull()?.let {
-            Spacer(Modifier.height(LayoutTokens.Space2))
-            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        Spacer(Modifier.height(LayoutTokens.Space4))
-        BoxWithConstraints(Modifier.fillMaxSize()) {
-            if (ui.library.isEmpty()) {
-                Column(Modifier.fillMaxSize()) {
-                    if (adapterLoaded) {
-                        AdapterOnlyAmiiboCard(ui, viewModel)
-                        Spacer(Modifier.height(LayoutTokens.Space3))
+        BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
+            if (maxWidth >= LayoutTokens.TwoPaneBreakpoint) {
+                Row(Modifier.fillMaxSize(), horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space3)) {
+                    AmiiboGrid(ui, viewModel, Modifier.weight(1f).fillMaxHeight(), filtered)
+                    if (adapterOnly) {
+                        AmiiboAdapterHero(ui, viewModel, Modifier.width(LayoutTokens.DetailWidth))
+                    } else {
+                        AmiiboDetail(selected, ui, viewModel, Modifier.width(LayoutTokens.DetailWidth).fillMaxHeight())
                     }
-                    EmptyState(
-                        Icons.Default.Contactless,
-                        if (adapterLoaded) "No local backup yet" else "Your library is empty",
-                        if (adapterLoaded) "Download the adapter's active Amiibo before the console changes it again."
-                        else "Import your own 540, 572, or 2048-byte Amiibo backup.",
-                        Modifier.fillMaxWidth().weight(1f),
-                    )
-                }
-            } else if (maxWidth >= 600.dp) {
-                Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space4)) {
-                    AmiiboGrid(ui, viewModel, Modifier.weight(1f).fillMaxHeight())
-                    AmiiboDetail(selected, ui, viewModel, Modifier.width(LayoutTokens.DetailWidth).fillMaxHeight())
                 }
             } else {
-                val detailHeight = (maxHeight * 0.48f).coerceIn(120.dp, 280.dp)
-                Column {
-                    AmiiboDetail(selected, ui, viewModel, Modifier.fillMaxWidth().height(detailHeight))
-                    Spacer(Modifier.height(LayoutTokens.Space3))
-                    AmiiboGrid(ui, viewModel, Modifier.weight(1f).fillMaxWidth())
+                LazyColumn(
+                    Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space2),
+                    contentPadding = PaddingValues(bottom = LayoutTokens.Space4),
+                ) {
+                    if (adapterOnly) item { AmiiboAdapterHero(ui, viewModel, Modifier.fillMaxWidth()) }
+                    else if (selected != null) item { AmiiboSelectedHero(selected, ui, viewModel, Modifier.fillMaxWidth()) }
+                    if (ui.library.isNotEmpty()) {
+                        item {
+                            Text(
+                                if (query.isBlank()) "Your library · ${ui.library.size}" else "Matches · ${filtered.size}",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                        if (filtered.isEmpty()) item { AmiiboInlineEmpty("No Amiibo matches that search or filter.") }
+                        else items(filtered, key = { it.id }) { item -> AmiiboCompactListItem(item, ui, viewModel) }
+                    } else {
+                        item {
+                            AmiiboInlineEmpty(
+                                if (adapterLoaded) "No phone backup yet · Download to phone above to save this active tag."
+                                else "Import a 540, 572, or 2048-byte backup to start your private library.",
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -207,9 +245,107 @@ fun AmiiboScreen(
 }
 
 @Composable
-private fun AdapterOnlyAmiiboCard(ui: CompanionUiState, viewModel: CompanionViewModel) {
+private fun AmiiboToolbar(
+    ui: CompanionUiState,
+    onImport: () -> Unit,
+    query: String,
+    onQueryChanged: (String) -> Unit,
+    filtersOpen: Boolean,
+    onToggleFilters: () -> Unit,
+    sortOrder: AmiiboSortOrder,
+    onSortOrder: (AmiiboSortOrder) -> Unit,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
+        Column(Modifier.weight(1f)) {
+            Text("Amiibo", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text(
+                "${ui.library.size} saved",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        FilledTonalButton(onClick = onImport, enabled = !ui.busy, contentPadding = PaddingValues(horizontal = 12.dp)) {
+            Icon(Icons.Default.Add, null); Spacer(Modifier.width(LayoutTokens.Space1)); Text("Import")
+        }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
+        OutlinedTextField(
+            value = query,
+            onValueChange = onQueryChanged,
+            modifier = Modifier.weight(1f),
+            singleLine = true,
+            placeholder = { Text("Find an Amiibo") },
+            leadingIcon = { Icon(Icons.Default.Search, null) },
+        )
+        IconButton(onClick = onToggleFilters, enabled = filtersOpen || ui.amiiboCatalogEntries.isNotEmpty()) {
+            Icon(Icons.Default.FilterList, if (filtersOpen) "Hide filters" else "Filter library")
+        }
+        Box {
+            var sortOpen by rememberSaveable { mutableStateOf(false) }
+            IconButton(onClick = { sortOpen = true }) { Icon(Icons.Default.SortByAlpha, "Sort Amiibo") }
+            DropdownMenu(expanded = sortOpen, onDismissRequest = { sortOpen = false }) {
+                AmiiboSortOrder.entries.forEach { order ->
+                    DropdownMenuItem(
+                        text = { Text(order.label()) },
+                        onClick = { onSortOrder(order); sortOpen = false },
+                        leadingIcon = if (order == sortOrder) ({ Icon(Icons.Default.Check, null) }) else null,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun AmiiboSortOrder.label(): String = when (this) {
+    AmiiboSortOrder.Name -> "Name"
+    AmiiboSortOrder.Series -> "Series"
+    AmiiboSortOrder.RecentlyAdded -> "Recently added"
+}
+
+@Composable
+private fun AmiiboFilterRow(
+    gameSeries: String,
+    amiiboSeries: String,
+    type: String,
+    gameSeriesOptions: List<String>,
+    amiiboSeriesOptions: List<String>,
+    typeOptions: List<String>,
+    onGameSeries: () -> Unit,
+    onAmiiboSeries: () -> Unit,
+    onType: () -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2),
+    ) {
+        FilterChip(selected = gameSeries.isNotBlank(), onClick = onGameSeries, label = { Text(gameSeries.ifBlank { "Game series" }) }, enabled = gameSeriesOptions.isNotEmpty())
+        FilterChip(selected = amiiboSeries.isNotBlank(), onClick = onAmiiboSeries, label = { Text(amiiboSeries.ifBlank { "Amiibo series" }) }, enabled = amiiboSeriesOptions.isNotEmpty())
+        FilterChip(selected = type.isNotBlank(), onClick = onType, label = { Text(type.ifBlank { "Product type" }) }, enabled = typeOptions.isNotEmpty())
+    }
+}
+
+private fun nextFilter(current: String, options: List<String>): String {
+    if (options.isEmpty()) return ""
+    val index = options.indexOf(current)
+    return if (index < 0 || index == options.lastIndex) "" else options[index + 1]
+}
+
+@Composable
+private fun AmiiboInlineEmpty(message: String) {
+    Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceVariant) {
+        Row(Modifier.fillMaxWidth().padding(LayoutTokens.Space3), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Contactless, null, tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(LayoutTokens.Space2))
+            Text(message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun AmiiboAdapterHero(ui: CompanionUiState, viewModel: CompanionViewModel, modifier: Modifier) {
     var clearOpen by rememberSaveable { mutableStateOf(false) }
     val status = ui.snapshot.amiibo
+    val catalog = ui.adapterAmiiboCatalog
     val pro2 = ui.snapshot.personality.current == Personality.Pro2
     val enabled = ui.connection.connected && !ui.busy &&
         ui.snapshot.capabilities.amiibo != CapabilityState.Unsupported && pro2
@@ -219,33 +355,125 @@ private fun AdapterOnlyAmiiboCard(ui: CompanionUiState, viewModel: CompanionView
         confirmButton = { TextButton(onClick = { viewModel.clearAdapterAmiibo(); clearOpen = false }) { Text("Clear adapter") } },
         dismissButton = { TextButton(onClick = { clearOpen = false }) { Text("Cancel") } },
     )
-    HardwareCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            SectionHeading(Icons.Default.Contactless, "Adapter Amiibo", Modifier.weight(1f))
-            StatusPill(if (status.presented) "Presented" else "Loaded", true)
-        }
-        Spacer(Modifier.height(LayoutTokens.Space2))
-        Text(status.figureId.ifBlank { "Unknown figure" }, style = MaterialTheme.typography.titleMedium)
-        Text("UID ${status.uid.ifBlank { "unknown" }} · ${status.size} bytes · generation ${status.generation}", style = MaterialTheme.typography.bodySmall)
+    Card(modifier) {
+        Column(Modifier.padding(LayoutTokens.Space3), verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                AmiiboArtwork(catalog?.imageUrl.orEmpty(), catalogTitle(catalog, "Amiibo on adapter"), Modifier.size(80.dp))
+                Spacer(Modifier.width(LayoutTokens.Space3))
+                Column(Modifier.weight(1f)) {
+                    Text(catalogTitle(catalog, "Amiibo on adapter"), style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(catalogSubtitle(catalog).ifBlank { "Figure ID ${status.figureId.ifBlank { "not reported" }}" }, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(LayoutTokens.Space1))
+                    StatusPill(if (status.presented) "Presented" else "Loaded", true)
+                }
+            }
+            AmiiboCatalogStatus(ui.adapterAmiiboCatalogState)
+            Text("UID ${status.uid.ifBlank { "unknown" }} · ${status.size} bytes · generation ${status.generation}", style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (!pro2) {
-            Spacer(Modifier.height(LayoutTokens.Space2))
             Text("Switch to Pro Controller 2 mode to manage virtual Amiibo.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
-        Spacer(Modifier.height(LayoutTokens.Space3))
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2), verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
-            FilledTonalButton(onClick = viewModel::syncSelectedAmiibo, enabled = enabled) { Text("Download to phone") }
-            OutlinedButton(onClick = { viewModel.setPresented(!status.presented) }, enabled = enabled) {
-                Text(if (status.presented) "Eject" else "Present")
+            Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
+                FilledTonalButton(onClick = viewModel::syncSelectedAmiibo, enabled = enabled, modifier = Modifier.weight(1f)) { Text("Download to phone") }
+                OutlinedButton(onClick = { viewModel.setPresented(!status.presented) }, enabled = enabled, modifier = Modifier.weight(1f)) {
+                    Text(if (status.presented) "Eject" else "Present")
+                }
             }
-            TextButton(onClick = { clearOpen = true }, enabled = enabled && !status.dirty) { Text("Clear adapter") }
+            TextButton(onClick = { clearOpen = true }, enabled = enabled && !status.dirty, modifier = Modifier.align(Alignment.End)) { Text("Clear adapter") }
+            if (status.dirty) Text("Console-written data is unsynced. Download it before clearing.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
-        if (status.dirty) Text("Console-written data is unsynced. Download it before clearing.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     }
 }
 
 @Composable
-private fun AmiiboGrid(ui: CompanionUiState, viewModel: CompanionViewModel, modifier: Modifier) {
-    if (ui.library.isEmpty()) {
+private fun AmiiboSelectedHero(item: AmiiboLibraryItem, ui: CompanionUiState, viewModel: CompanionViewModel, modifier: Modifier) {
+    val catalog = ui.selectedAmiiboCatalog
+    val details = ui.selectedAmiiboDetails
+    Card(modifier) {
+        Column(Modifier.padding(LayoutTokens.Space3), verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                AmiiboArtwork(catalog?.imageUrl.orEmpty(), catalogTitle(catalog, item.displayName), Modifier.size(80.dp))
+                Spacer(Modifier.width(LayoutTokens.Space3))
+                Column(Modifier.weight(1f)) {
+                    Text(catalogTitle(catalog, item.displayName), style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(catalogSubtitle(catalog).ifBlank { "Figure ID ${item.figureId}" }, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text("${item.size} bytes · ${item.uid}", style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            AmiiboCatalogStatus(if (catalog != null) AmiiboCatalogState.Available else if (ui.amiiboCatalogLoading) AmiiboCatalogState.Loading else AmiiboCatalogState.Offline)
+            if (details?.crypto == AmiiboCryptoState.Valid) {
+                Text(
+                    "Owner ${details.owner.ifBlank { "not set" }} · Nickname ${details.nickname.ifBlank { "not set" }}",
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "Registered ${details.setupDate ?: "not registered"} · Last written ${details.lastWriteDate ?: "never"} · Writes ${details.writeCounter ?: 0}",
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
+                Button(onClick = viewModel::loadSelectedAmiibo, enabled = ui.connection.connected && !ui.busy, modifier = Modifier.weight(1f)) { Text("Load") }
+                OutlinedButton(onClick = viewModel::syncSelectedAmiibo, enabled = ui.connection.connected && (ui.snapshot.amiibo.loaded || ui.snapshot.amiibo.v3Loaded) && !ui.busy, modifier = Modifier.weight(1f)) { Text("Sync") }
+            }
+            if (ui.snapshot.amiibo.dirty) {
+                Text("Console changes are not synced; download before clearing.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AmiiboCompactListItem(item: AmiiboLibraryItem, ui: CompanionUiState, viewModel: CompanionViewModel) {
+    val selected = item.id == ui.selectedAmiiboId
+    val catalog = ui.amiiboCatalogEntries[item.id]
+    Card(
+        Modifier.fillMaxWidth().clickable { viewModel.selectAmiibo(item.id) },
+        colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant),
+        border = if (selected) CardDefaults.outlinedCardBorder() else null,
+    ) {
+        Row(Modifier.padding(LayoutTokens.Space2), verticalAlignment = Alignment.CenterVertically) {
+            AmiiboArtwork(catalog?.imageUrl.orEmpty(), catalogTitle(catalog, item.displayName), Modifier.size(60.dp))
+            Spacer(Modifier.width(LayoutTokens.Space2))
+            Column(Modifier.weight(1f)) {
+                Text(catalogTitle(catalog, item.displayName), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(catalogSubtitle(catalog).ifBlank { item.figureId }, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("${item.size} bytes · ${item.uid}", style = MaterialTheme.typography.labelSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            if (selected) Icon(Icons.Default.ChevronRight, "Selected", tint = MaterialTheme.colorScheme.primary)
+        }
+    }
+}
+
+private fun catalogTitle(catalog: AmiiboCatalogEntry?, fallback: String): String =
+    catalog?.name?.takeIf(String::isNotBlank) ?: catalog?.character?.takeIf(String::isNotBlank) ?: fallback
+
+private fun catalogSubtitle(catalog: AmiiboCatalogEntry?): String = listOfNotNull(
+    catalog?.gameSeries?.takeIf(String::isNotBlank),
+    catalog?.amiiboSeries?.takeIf(String::isNotBlank),
+    catalog?.type?.takeIf(String::isNotBlank),
+).joinToString(" · ")
+
+@Composable
+private fun AmiiboCatalogStatus(state: AmiiboCatalogState) {
+    when (state) {
+        AmiiboCatalogState.Loading -> Text("Catalog: loading", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        AmiiboCatalogState.Offline -> Text("Catalog: offline", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        AmiiboCatalogState.Unmatched -> Text("Catalog: unmatched", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        else -> Unit
+    }
+}
+
+@Composable
+private fun AmiiboGrid(
+    ui: CompanionUiState,
+    viewModel: CompanionViewModel,
+    modifier: Modifier,
+    items: List<AmiiboLibraryItem> = ui.library,
+) {
+    if (items.isEmpty()) {
         EmptyState(Icons.Default.Contactless, "Your library is empty", "Import your own 540, 572, or 2048-byte Amiibo backup.", modifier)
         return
     }
@@ -254,7 +482,7 @@ private fun AmiiboGrid(ui: CompanionUiState, viewModel: CompanionViewModel, modi
         horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space3), verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space3),
         contentPadding = PaddingValues(bottom = LayoutTokens.Space5),
     ) {
-        items(ui.library, key = { it.id }) { item ->
+        items(items, key = { it.id }) { item ->
             val selected = item.id == ui.selectedAmiiboId
             val catalog = ui.amiiboCatalogEntries[item.id]
             Card(
@@ -263,7 +491,11 @@ private fun AmiiboGrid(ui: CompanionUiState, viewModel: CompanionViewModel, modi
                 border = if (selected) CardDefaults.outlinedCardBorder() else null,
             ) {
                 Column(Modifier.padding(LayoutTokens.Space4)) {
-                    Icon(Icons.Default.Contactless, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(36.dp))
+                    if (catalog?.imageUrl?.isNotBlank() == true) {
+                        AmiiboArtwork(catalog.imageUrl, catalogTitle(catalog, item.displayName), Modifier.size(72.dp))
+                    } else {
+                        Icon(Icons.Default.Contactless, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(36.dp))
+                    }
                     Spacer(Modifier.height(LayoutTokens.Space3))
                     Text(
                         catalog?.name?.ifBlank { null } ?: catalog?.character?.ifBlank { null } ?: item.displayName,
@@ -413,7 +645,11 @@ private fun AmiiboCatalogDetails(catalog: AmiiboCatalogEntry?, loading: Boolean)
 }
 
 @Composable
-private fun AmiiboArtwork(imageUrl: String, contentDescription: String) {
+private fun AmiiboArtwork(
+    imageUrl: String,
+    contentDescription: String,
+    modifier: Modifier = Modifier.fillMaxWidth().heightIn(max = 180.dp),
+) {
     val image = produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, imageUrl) {
         value = if (imageUrl.isBlank()) null else runCatching {
             withContext(Dispatchers.IO) {
@@ -445,11 +681,11 @@ private fun AmiiboArtwork(imageUrl: String, contentDescription: String) {
         Image(
             bitmap = image,
             contentDescription = contentDescription.ifBlank { "Amiibo artwork" },
-            modifier = Modifier.fillMaxWidth().heightIn(max = 180.dp),
+            modifier = modifier,
             contentScale = ContentScale.Fit,
         )
     } else {
-        Box(Modifier.fillMaxWidth().height(76.dp), contentAlignment = Alignment.Center) {
+        Box(modifier.heightIn(min = 76.dp), contentAlignment = Alignment.Center) {
             Icon(Icons.Default.Contactless, contentDescription, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(48.dp))
         }
     }
@@ -458,13 +694,10 @@ private fun AmiiboArtwork(imageUrl: String, contentDescription: String) {
 @Composable
 private fun AmiiboRegisterDetails(ui: CompanionUiState) {
     val details = ui.selectedAmiiboDetails
+    if (!ui.amiiboKeysLoaded && details == null) return
     Spacer(Modifier.height(LayoutTokens.Space2))
     Text("Private register details", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
     when {
-        !ui.amiiboKeysLoaded -> {
-            Spacer(Modifier.height(LayoutTokens.Space1))
-            Text("Import your own 160-byte key_retail.bin to read encrypted owner, nickname, dates, write count, and game data. The key remains phone-local.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
         details == null -> {
             Spacer(Modifier.height(LayoutTokens.Space1))
             Text("Reading local encrypted metadata…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -698,10 +931,12 @@ fun MoreScreen(
     ui: CompanionUiState,
     viewModel: CompanionViewModel,
     onExportDiagnostics: () -> Unit,
+    onImportAmiiboKeys: () -> Unit,
     theme: ThemeSelection,
 ) {
     ScreenColumn("Settings & information", "User-safe controls and protocol details") {
         ThemeSettingsCard(theme, viewModel)
+        AmiiboKeySettingsCard(ui, onImportAmiiboKeys)
         HardwareCard {
             SectionHeading(Icons.Default.Info, "About this connection")
             Spacer(Modifier.height(LayoutTokens.Space3))
@@ -769,6 +1004,24 @@ fun MoreScreen(
             SectionHeading(Icons.Default.GppMaybe, "Security & validation")
             Spacer(Modifier.height(LayoutTokens.Space2))
             Text("Current firmware does not enforce authenticated management writes. Real adapter coexistence, wake while connected, OEM HID registration, and end-to-end controller input still require hardware validation.")
+        }
+    }
+}
+
+@Composable
+private fun AmiiboKeySettingsCard(ui: CompanionUiState, onImportAmiiboKeys: () -> Unit) {
+    HardwareCard {
+        SectionHeading(Icons.Default.Key, "Amiibo metadata keys")
+        Spacer(Modifier.height(LayoutTokens.Space2))
+        Text(
+            if (ui.amiiboKeysLoaded) "A portal-compatible key_retail.bin is stored only on this phone. Replace it here when needed."
+            else "Optional: import your own portal-compatible 160-byte key_retail.bin to read private owner, nickname, date, and game-data fields.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(LayoutTokens.Space2))
+        OutlinedButton(onClick = onImportAmiiboKeys, enabled = !ui.busy, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Default.Key, null); Spacer(Modifier.width(LayoutTokens.Space2)); Text(if (ui.amiiboKeysLoaded) "Replace keys" else "Import keys")
         }
     }
 }

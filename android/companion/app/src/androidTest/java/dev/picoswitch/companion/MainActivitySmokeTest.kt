@@ -19,7 +19,7 @@ class MainActivitySmokeTest {
         rule.onNodeWithText("Android controller").assertIsDisplayed()
         rule.onNodeWithText("Adapter").performClick()
         rule.onNodeWithText("Adapter & modes").assertIsDisplayed()
-        rule.onNodeWithText("More").performClick()
+        rule.onNodeWithText("Settings").performClick()
         rule.onNodeWithText("Settings & information").assertIsDisplayed()
         rule.onNodeWithText("Developer / diagnostics").performScrollTo().assertIsDisplayed()
     }

@@ -1,6 +1,11 @@
 package dev.picoswitch.companion.data
 
 import dev.picoswitch.companion.model.AmiiboCatalogEntry
+import dev.picoswitch.companion.model.AmiiboCatalogState
+import dev.picoswitch.companion.model.AmiiboLibraryItem
+import dev.picoswitch.companion.model.AmiiboSortOrder
+import dev.picoswitch.companion.model.resolveAmiiboCatalogState
+import dev.picoswitch.companion.model.sortAmiiboLibrary
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Rule
@@ -52,5 +57,23 @@ class AmiiboCatalogTest {
         assertEquals("Super Smash Bros. Ultimate", reopened.gameNameForTitleId("01006A800016E000"))
         assertNull(reopened.find("0000000000009999"))
         assertTrue(reopened.ensureLoaded())
+    }
+
+    @Test fun `adapter lookup exposes loading terminal states without hiding raw identity`() {
+        assertEquals(AmiiboCatalogState.Available, resolveAmiiboCatalogState(found = true, catalogAvailable = true))
+        assertEquals(AmiiboCatalogState.Unmatched, resolveAmiiboCatalogState(found = false, catalogAvailable = true))
+        assertEquals(AmiiboCatalogState.Offline, resolveAmiiboCatalogState(found = false, catalogAvailable = false))
+    }
+
+    @Test fun `library sort order is deterministic and changes the displayed order`() {
+        val older = AmiiboLibraryItem("a", "Local Z", "a.bin", 540, "1", "uid-a", "0000000000000001", 10)
+        val newer = AmiiboLibraryItem("b", "Local A", "b.bin", 540, "2", "uid-b", "0000000000000002", 20)
+        val catalog = mapOf(
+            older.id to AmiiboCatalogEntry(older.figureId, "Zelda", "The Legend of Zelda", "Smash", "Figure", "", ""),
+            newer.id to AmiiboCatalogEntry(newer.figureId, "Mario", "Super Mario", "Smash", "Figure", "", ""),
+        )
+        assertEquals(listOf(newer.id, older.id), sortAmiiboLibrary(listOf(older, newer), catalog, AmiiboSortOrder.Name).map { it.id })
+        assertEquals(listOf(newer.id, older.id), sortAmiiboLibrary(listOf(older, newer), catalog, AmiiboSortOrder.Series).map { it.id })
+        assertEquals(listOf(newer.id, older.id), sortAmiiboLibrary(listOf(older, newer), catalog, AmiiboSortOrder.RecentlyAdded).map { it.id })
     }
 }

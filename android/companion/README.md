@@ -47,7 +47,7 @@ The debug build provides real implementations for:
 
 ## Appearance
 
-More -> Appearance stores the app's theme choice locally and applies it immediately. The four
+Settings -> Appearance stores the app's theme choice locally and applies it immediately. The four
 choices are **System**, **Light**, **Dark**, and **OLED black** (true `#000000` background and
 surface). System follows Android's current setting; the other choices are explicit and do not
 depend on device orientation. A separate accent selector offers the default PicoSwitch palette,
@@ -131,7 +131,9 @@ The app selects navigation and content structure from available width, not orien
 - bottom navigation below 720 dp, navigation rail at 720 dp and above;
 - two-pane hardware, controller, and color layouts at 760 dp; Amiibo uses two panes from 600 dp so
   short handheld landscapes retain a usable library and detail surface;
-- adaptive Amiibo grid cells with a 168 dp minimum;
+- adaptive Amiibo grid cells with a 168 dp minimum; compact Amiibo uses a bounded artwork/name hero
+  and scrollable figure rows so 538 dp-wide landscape still exposes a usable primary action. A
+  compact sort menu deterministically orders both surfaces by Name, Series, or Recently added;
 - a 1240 dp content maximum on unusually wide displays;
 - one shared spacing/radius/touch-target token set; scrolling rather than shrinking or clipping.
 
@@ -145,7 +147,9 @@ profiles. The 16:9 landscape pass exposed underused horizontal space; lowering t
 two-pane threshold from 900 to 760 dp corrected it. A retained scroll-position issue across top-level
 destinations was also fixed by keying each destination's composition. The second pass additionally
 removed a duplicate/clipped empty-library card, bounded the compact Amiibo detail pane so its grid
-remains reachable at 150% text, and exercised an 80-item library with long names.
+remains reachable at 150% text, and exercised an 80-item library with long names. The current page
+also treats an active adapter tag as a first-class display item when the private library index is
+empty, so its catalog lookup and actions do not depend on importing or syncing first.
 
 ## Tests
 
@@ -156,7 +160,7 @@ device rerun is not treated as new UI evidence. JVM coverage includes:
 
 - command framing/limits, config, personality, complete Amiibo status, malformed/error replies;
 - accepted key_retail.bin length/master labels, reversed-master normalization, richer identity,
-  packed-date edges, HMAC-invalid metadata suppression, private key-store forget behavior, and the
+  packed-date edges, HMAC-invalid metadata suppression, private key-store replacement behavior, and the
   portal-generated valid decrypt golden vector;
 - cache-first AmiiboAPI parsing, portal-style figure-ID matching, release/name/game/title-ID
   enrichment, cache restart, and offline unmatched-ID behavior;
@@ -214,7 +218,7 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
   failure without discarding valid core state.
 - Rotation/process restoration retains destination, Amiibo/source selection, color edits, and
   pending identity-refresh state without replaying protocol mutations.
-- **More -> Developer / diagnostics** shows platform, HID, GATT, firmware, capability, report, and
+- **Settings -> Developer / diagnostics** shows platform, HID, GATT, firmware, capability, report, and
   re-enumeration state. Its Android share export is bounded and redacted: no raw Amiibo bytes, JSON
   replies, keys, or Bluetooth addresses.
 
@@ -245,10 +249,13 @@ the tested amiitool-compatible block in `web/index.html`: it validates the two 8
 160-byte total length, derives keys with HMAC-SHA256 + AES-CTR, verifies both HMACs, and only then
 reads the settings fields documented in `docs/switch2/amiibo-decrypted-data-surface.md`.
 
-The key file lives at app-private `filesDir/amiibo-private/.amiibo-retail-key.bin`; Android backup
+The key file lives at app-private `filesDir/amiibo-private/.amiibo-retail-key.bin`; the Amiibo
+overflow menu is the only import/replace entry point, so the default library surface stays focused
+on artwork and identity. Android backup
 is disabled, and neither raw key bytes nor decrypted values enter diagnostics, management commands,
-the local library export, or firmware. Forgetting keys deletes that file and leaves local dumps and
-the adapter untouched. An HMAC failure is visibly reported and never renders owner/nickname junk.
+the local library export, or firmware. The page exposes import/replace only; uninstall removes the
+app-private key file, while local dumps and the adapter remain unaffected during normal use. An
+HMAC failure is visibly reported and never renders owner/nickname junk.
 
 This slice is read-only and intentionally does not implement portal initialization/re-signing,
 physical phone-NFC reads, Mii rendering, or ZIP exchange. No network request is required for import,
