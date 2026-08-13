@@ -199,10 +199,13 @@ the manifest to declare `android.software.companion_device_setup` before
 `CompanionDeviceManager.associate()`. The declaration is now present and synchronous OEM/framework
 failures are caught and reported instead of terminating the Activity.
 
-The device also has VCC's root `:input` daemon still running. It can register as Android's sole HID
-Device application and displace/reject this app. That is an environmental conflict, not a need for
-privilege in PicoSwitch Companion: stop the competing HID-emulation service before the final
-chooser, bond, and console-input test.
+The first session also observed an orphaned root process named `app.vcc.companion:input` after the
+VCC package had already been uninstalled. A reboot removed it, but the same registration error
+remained, proving that process was not the demonstrated cause. Fresh logs instead showed the Thor
+returning a synchronous registration failure immediately before `HidDeviceService` logged `App
+registered`. PicoSwitch Companion closed the proxy on the first result, leaving its own accepted
+registration to collide with Retry. The bridge now waits for `onAppStatusChanged()` and uses a
+bounded timeout only when Android never supplies the authoritative callback.
 
 ## Pairing and connection state machine
 

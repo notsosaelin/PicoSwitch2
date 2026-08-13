@@ -55,9 +55,11 @@ An ordinary no-root debug APK on an Android 13 AYN Thor now sees the built-in `O
 renders its live sticks/triggers/buttons, acquires Android's public HID Device profile, and reaches
 registered/Ready. The first app-led pairing attempt exposed a missing
 `android.software.companion_device_setup` manifest declaration and crashed synchronously; that is
-fixed and guarded. A concurrently running legacy VCC root input daemon can reclaim Android's
-single HID Device app slot, so it must be stopped for the remaining chooser/bond/end-to-end pass.
-Pico receipt, console input, latency, and lifecycle teardown remain unvalidated. See
+fixed and guarded. A second Thor-specific failure came from treating `registerApp()`'s immediate
+`false` as final even though the OEM stack then delivered a successful registration callback. That
+made Retry collide with this app's own live record. The callback-authoritative fix is hardware-
+confirmed through registration and the start of the bonded host connection. Pico receipt, console
+input, latency, and lifecycle teardown remain unvalidated. See
 [`docs/bluetooth/android-controller-bridge.md`](docs/bluetooth/android-controller-bridge.md).
 
 Read-only ADB evidence from a Retroid Pocket Classic narrows the first risk: its API-34 OEM image

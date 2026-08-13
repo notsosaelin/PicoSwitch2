@@ -248,6 +248,11 @@ Release notes describe user-visible behavior. Detailed implementation history re
   feature declaration. HID-profile acquisition/registration failures are reported as recoverable
   bridge states, and ordinary 540/572-byte Amiibo Sync no longer mistakes firmware's `00000000`
   unavailable-CRC sentinel for a whole-image checksum. Figure-v3 CRC enforcement remains strict.
+- Android HID registration now treats `onAppStatusChanged()` as authoritative. The AYN Thor can
+  return `false` synchronously from `registerApp()` and then successfully register milliseconds
+  later; the old client closed that accepted proxy and made its next attempt collide with its own
+  live registration as "another HID Device app." Retry state now waits for the callback and times
+  out cleanly without unregistering a genuinely different provider.
 - Pro Controller 2 and NSO GameCube personalities are now recognized on a **fresh** Windows PC
   without a manual WinUSB reset. Both now serve the Microsoft OS 1.0 Extended Properties descriptor
   (`wIndex=0x0005`) on their vendor interface, registering the Nintendo device-family

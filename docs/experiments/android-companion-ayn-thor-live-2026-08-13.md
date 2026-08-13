@@ -34,16 +34,26 @@ software feature Android checks synchronously. The manifest now declares the opt
 the association call is guarded so an OEM framework rejection becomes a user-visible error rather
 than a process crash. HID proxy acquisition and descriptor registration are guarded similarly.
 
-## Competing HID Device provider
+## Misleading "another HID Device app" failure
 
-The Thor still runs the old VCC root input daemon as `app.vcc.companion:input`. Android's Bluetooth
-service reported `registerApp(): failed because another app is registered`, matching the public
-platform limit of one HID Device application at a time. Restarting Bluetooth briefly allowed this
-companion to reach Ready, after which the legacy daemon could reclaim the slot.
+An orphaned root process named `app.vcc.companion:input` was initially visible even though Package
+Manager confirmed VCC itself was uninstalled. Reboot removed that detached PID 1 child, but the same
+HID error remained. VCC was therefore not the demonstrated slot owner.
 
-This is a test-device conflict, not a PicoSwitch Companion privilege requirement. The final
-chooser/bond/Pico-input pass must run with VCC's HID provider stopped. Do not add root, Shizuku, a
-hidden API, or a custom protocol to compete for the slot.
+The decisive timeline was PicoSwitch Companion's own registration:
+
+```text
+BluetoothHidDeviceServiceJni: register_app() returned 0
+HidDeviceService: App registered, set device to: null
+BluetoothHidDevice: Unbinding service
+```
+
+The Thor's stack returned a negative immediate value but asynchronously completed registration.
+The client treated the first value as final, closed its accepted proxy, and then collided with its
+own still-live registration on Retry. The correction treats `onAppStatusChanged()` as authoritative,
+waits up to two seconds for it, and never unregisters a genuinely different provider after an
+immediate rejection. After reboot and installation of that build, the Thor logged `App registered`
+and advanced to a bonded `Connecting` attempt without the previous error.
 
 ## Amiibo Sync CRC failure
 
@@ -82,11 +92,10 @@ audio, or the console-facing USB path.
 
 ## Remaining physical gates
 
-1. Stop VCC's competing HID Device provider without clearing unrelated application data.
-2. Open PicoSwitch2's physical controller-pairing window.
-3. Complete the app-launched Android chooser and bond prompt without visiting Bluetooth Settings.
-4. Confirm Pico selects the generic gamepad parser and the Switch receives all Thor inputs.
-5. Validate pause, process death, Bluetooth loss, saved-bond reconnect, and return to a physical
+1. Open PicoSwitch2's physical controller-pairing window.
+2. Complete the app-launched Android chooser and bond prompt without visiting Bluetooth Settings.
+3. Confirm Pico selects the generic gamepad parser and the Switch receives all Thor inputs.
+4. Validate pause, process death, Bluetooth loss, saved-bond reconnect, and return to a physical
    controller with no stuck input or regression.
-6. Flash a build containing the identity-clear fix and confirm the controller card becomes
+5. Flash a build containing the identity-clear fix and confirm the controller card becomes
    `No controller` within one five-second poll after power-off.
