@@ -21,6 +21,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -153,8 +154,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        viewModel.cancelAutomaticControllerResume()
         viewModel.neutralizeController()
         viewModel.recordLifecycle("paused; controller neutralized")
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         super.onPause()
     }
 
@@ -184,8 +187,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Controller mode is intentionally foreground-only. Keep the handheld display awake
+        // while the app is active so Android cannot silently suspend the input surface.
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         viewModel.recordLifecycle("resumed")
         viewModel.refreshSources()
+        if (hasManagementPermissions()) viewModel.requestAutomaticControllerResume()
     }
 
     private fun requestControllerBridge() {

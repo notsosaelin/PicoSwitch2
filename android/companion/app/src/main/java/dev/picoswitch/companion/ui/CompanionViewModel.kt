@@ -25,6 +25,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
@@ -81,6 +82,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     private val controllerLayoutStore = ControllerLayoutStore(application)
     private val relationshipStore = AdapterRelationshipStore(application)
     private var autoReconnectAttempted = false
+    private var automaticControllerResumeJob: Job? = null
     private val _theme = MutableStateFlow(themeStore.load())
     val theme: StateFlow<ThemeSelection> = _theme.asStateFlow()
     private val amiiboKeyStore = AmiiboKeyStore(File(application.filesDir, "amiibo-private"))
@@ -415,6 +417,71 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     }
 
     fun acquireControllerBridge() = hidBridge.acquire(knownControllerHost())
+
+    /**
+     * Restore the handheld controller session after a foreground resume, but only after a fresh
+     * management read proves that no controller currently owns the adapter. This deliberately
+     * avoids stealing input from a physical controller and consumes at most one attempt per
+     * resume. Android still owns the foreground HID registration/connection callbacks.
+     */
+    fun requestAutomaticControllerResume() {
+        automaticControllerResumeJob?.cancel()
+        val hasRelationship = relationshipStore.load() != null
+        if (_ui.value.selectedSourceDescriptor == null || !hasRelationship) return
+        automaticControllerResumeJob = viewModelScope.launch {
+            withTimeoutOrNull(AUTOMATIC_CONTROLLER_RESUME_TIMEOUT_MS) {
+                while (true) {
+                    val state = _ui.value
+                    if (state.bridge.phase in setOf(
+                            BridgePhase.AcquiringProfile,
+                            BridgePhase.Registering,
+                            BridgePhase.Connecting,
+                            BridgePhase.Playing,
+                        )
+                    ) return@withTimeoutOrNull
+                    if (ControllerAutoResumePolicy.canQueryAdapter(
+                            hasSelectedSource = state.selectedSourceDescriptor != null,
+                            hasRelationship = relationshipStore.load() != null,
+                            managementConnected = state.connection.connected,
+                            busy = state.busy,
+                            bridgePhase = state.bridge.phase,
+                        )
+                    ) {
+                        val controller = runCatching { adapter.refreshController() }.getOrNull()
+                        if (controller == null) {
+                            delay(AUTOMATIC_CONTROLLER_RESUME_RETRY_MS)
+                            continue
+                        }
+                        val host = knownControllerHost()
+                        if (!ControllerAutoResumePolicy.shouldAcquire(controller.attached, host != null)) {
+                            if (!controller.attached) return@withTimeoutOrNull
+                            diagnostics.event(
+                                "controller",
+                                "automatic resume skipped",
+                                "adapter already has an input source",
+                            )
+                            return@withTimeoutOrNull
+                        }
+                        diagnostics.event(
+                            "controller",
+                            "automatic resume",
+                            "adapter idle; restoring saved handheld",
+                        )
+                        hidBridge.acquire(requireNotNull(host))
+                        return@withTimeoutOrNull
+                    }
+                    delay(AUTOMATIC_CONTROLLER_RESUME_RETRY_MS)
+                }
+            }
+            automaticControllerResumeJob = null
+        }
+    }
+
+    fun cancelAutomaticControllerResume() {
+        automaticControllerResumeJob?.cancel()
+        automaticControllerResumeJob = null
+    }
+
     fun pairedControllerHosts(): List<BluetoothDevice> = hidBridge.pairedHosts()
     @SuppressLint("MissingPermission")
     fun controllerHostLabel(device: BluetoothDevice): String = runCatching { device.name }.getOrNull()?.take(80) ?: "saved adapter"
@@ -509,6 +576,8 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         private const val MAX_IMPORT_BYTES = 2048
         private const val RETAIL_KEY_BYTES = 160
         private const val ADAPTER_POLL_MILLIS = 5_000L
+        private const val AUTOMATIC_CONTROLLER_RESUME_TIMEOUT_MS = 20_000L
+        private const val AUTOMATIC_CONTROLLER_RESUME_RETRY_MS = 250L
         private const val KEY_SECTION = "section"
         private const val KEY_AMIIBO = "selectedAmiibo"
         private const val KEY_SOURCE = "selectedSource"
