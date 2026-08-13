@@ -16,7 +16,7 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Read-only Amiibo crypto and register metadata reader.
+ * Amiibo crypto, register metadata reader, and local initialization primitive.
  *
  * The offsets and key schedule are a direct Kotlin port of the tested
  * amiitool-compatible block in web/index.html. This class intentionally has no
@@ -129,6 +129,40 @@ object AmiiboCrypto {
         )
     }
 
+    /**
+     * Wipe the user-owned settings/game regions and re-sign the same image.
+     * This is intentionally local-only: the caller must already have a
+     * validated user-supplied retail key and commits the returned bytes through
+     * the transactional library store.
+     */
+    fun initialize(bytes: ByteArray, keys: RetailKeys): ByteArray {
+        val identity = identity(bytes)
+        val v3 = identity.tagType == AmiiboTagType.FigureV3
+        val decoded = decryptInternal(keys, bytes, v3)
+        require(decoded.valid) { "This dump failed its HMAC check; refusing to re-sign it" }
+        val internal = decoded.internal.copyOf()
+        if (v3) internal.fill(0, 0x02A, 0x02C)
+        internal.fill(0, 0x02C, 0x1B4)
+        var output = packInternal(keys, internal, bytes, v3)
+        if (v3) {
+            // Air Riders stores writable game state outside the encrypted
+            // amiibo body. Clear only the captured allocation-independent
+            // ranges; chip configuration and machine/SRAM identity survive.
+            output = output.copyOf().also {
+                it.fill(0, 0x248, 0x388)
+                it.fill(0, 0x400, 0x800)
+            }
+        }
+        val verify = decryptInternal(keys, output, v3)
+        require(verify.valid) { "Re-signed image failed verification; nothing was changed" }
+        val info = readRegisterInfo(verify.internal)
+        require(!info.setUp && info.owner.isEmpty() && info.nickname.isEmpty() &&
+            info.lastWriteDate == null && info.writeCounter == 0 && !info.hasAppData) {
+            "Initialized image still has user data; nothing was changed"
+        }
+        return output
+    }
+
     private data class RegisterInfo(
         val owner: String,
         val nickname: String,
@@ -199,6 +233,20 @@ object AmiiboCrypto {
         )
     }
 
+    private fun packInternal(keys: RetailKeys, internal: ByteArray, originalTag: ByteArray, v3: Boolean): ByteArray {
+        val plain = internal.copyOf()
+        val tagKeys = deriveKeys(keys.tag, plain)
+        val dataKeys = deriveKeys(keys.data, plain)
+        // The data HMAC covers the tag HMAC, so retain this ordering.
+        hmacSha256(tagKeys.hmacKey, plain.copyOfRange(0x1D4, INTERNAL_BYTES))
+            .copyInto(plain, 0x1B4)
+        hmacSha256(dataKeys.hmacKey, plain.copyOfRange(0x029, INTERNAL_BYTES))
+            .copyInto(plain, 0x008)
+        aesCtr(dataKeys.aesKey, dataKeys.aesIv, plain.copyOfRange(0x02C, 0x1B4), Cipher.ENCRYPT_MODE)
+            .copyInto(plain, 0x02C)
+        return internalToTag(plain, originalTag, v3)
+    }
+
     private data class DerivedKeys(val aesKey: ByteArray, val aesIv: ByteArray, val hmacKey: ByteArray)
 
     private fun deriveKeys(master: MasterKey, internal: ByteArray): DerivedKeys {
@@ -262,10 +310,23 @@ object AmiiboCrypto {
         return internal
     }
 
-    private fun aesCtr(key: ByteArray, iv: ByteArray, data: ByteArray): ByteArray {
+    private fun aesCtr(key: ByteArray, iv: ByteArray, data: ByteArray, mode: Int = Cipher.DECRYPT_MODE): ByteArray {
         val cipher = Cipher.getInstance("AES/CTR/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
+        cipher.init(mode, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
         return cipher.doFinal(data)
+    }
+
+    private fun internalToTag(internal: ByteArray, originalTag: ByteArray, v3: Boolean): ByteArray {
+        val tag = originalTag.copyOf()
+        val encryptedBase = if (v3) 0x0C0 else 0x080
+        internal.copyOfRange(0x000, 0x008).copyInto(tag, 0x008)
+        internal.copyOfRange(0x008, 0x028).copyInto(tag, encryptedBase)
+        internal.copyOfRange(0x028, 0x04C).copyInto(tag, 0x010)
+        internal.copyOfRange(0x04C, 0x1B4).copyInto(tag, encryptedBase + 0x20)
+        internal.copyOfRange(0x1B4, 0x1D4).copyInto(tag, 0x034)
+        internal.copyOfRange(0x1D4, 0x1DC).copyInto(tag, 0x000)
+        internal.copyOfRange(0x1DC, 0x208).copyInto(tag, 0x054)
+        return tag
     }
 
     private fun hmacSha256(key: ByteArray, data: ByteArray): ByteArray {

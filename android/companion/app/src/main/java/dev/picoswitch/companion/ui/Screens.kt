@@ -145,6 +145,9 @@ fun AmiiboScreen(
     ui: CompanionUiState,
     viewModel: CompanionViewModel,
     onImport: () -> Unit,
+    onImportArchive: () -> Unit,
+    onExportArchive: () -> Unit,
+    onImportKeys: () -> Unit,
 ) {
     val selected = ui.library.firstOrNull { it.id == ui.selectedAmiiboId }
     val adapter = ui.snapshot.amiibo
@@ -158,6 +161,7 @@ fun AmiiboScreen(
     var amiiboSeriesFilter by rememberSaveable { mutableStateOf("") }
     var typeFilter by rememberSaveable { mutableStateOf("") }
     var sortOrder by rememberSaveable { mutableStateOf(AmiiboSortOrder.Name) }
+    var importArchiveOpen by rememberSaveable { mutableStateOf(false) }
     val filtered = sortAmiiboLibrary(ui.library.filter { item ->
         val catalog = ui.amiiboCatalogEntries[item.id]
         val searchable = listOf(
@@ -177,7 +181,19 @@ fun AmiiboScreen(
         Modifier.fillMaxSize().padding(horizontal = LayoutTokens.Space2, vertical = LayoutTokens.Space2),
         verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space2),
     ) {
-        AmiiboToolbar(ui, onImport, query, { query = it }, filtersOpen, { filtersOpen = !filtersOpen }, sortOrder, { sortOrder = it })
+        AmiiboToolbar(
+            ui, onImport, { importArchiveOpen = true }, onExportArchive, query, { query = it },
+            filtersOpen, { filtersOpen = !filtersOpen }, sortOrder, { sortOrder = it },
+        )
+        if (importArchiveOpen) AlertDialog(
+            onDismissRequest = { importArchiveOpen = false },
+            title = { Text("Replace phone library?") },
+            text = { Text("This imports every validated Amiibo in the ZIP and replaces the current private phone library. The adapter is not changed. A failed import leaves the current library untouched.") },
+            confirmButton = {
+                TextButton(onClick = { importArchiveOpen = false; onImportArchive() }) { Text("Choose ZIP") }
+            },
+            dismissButton = { TextButton(onClick = { importArchiveOpen = false }) { Text("Cancel") } },
+        )
         if (filtersOpen && (gameSeriesOptions.isNotEmpty() || amiiboSeriesOptions.isNotEmpty() || typeOptions.isNotEmpty())) {
             AmiiboFilterRow(
                 gameSeriesFilter, amiiboSeriesFilter, typeFilter,
@@ -197,7 +213,7 @@ fun AmiiboScreen(
                     if (adapterOnly) {
                         AmiiboAdapterHero(ui, viewModel, Modifier.width(LayoutTokens.DetailWidth))
                     } else {
-                        AmiiboDetail(selected, ui, viewModel, Modifier.width(LayoutTokens.DetailWidth).fillMaxHeight())
+                        AmiiboDetail(selected, ui, viewModel, onImportKeys, Modifier.width(LayoutTokens.DetailWidth).fillMaxHeight())
                     }
                 }
             } else {
@@ -207,7 +223,7 @@ fun AmiiboScreen(
                     contentPadding = PaddingValues(bottom = LayoutTokens.Space4),
                 ) {
                     if (adapterOnly) item { AmiiboAdapterHero(ui, viewModel, Modifier.fillMaxWidth()) }
-                    else if (selected != null) item { AmiiboSelectedHero(selected, ui, viewModel, Modifier.fillMaxWidth()) }
+                    else if (selected != null) item { AmiiboSelectedHero(selected, ui, viewModel, onImportKeys, Modifier.fillMaxWidth()) }
                     if (ui.library.isNotEmpty()) {
                         item {
                             Text(
@@ -236,6 +252,8 @@ fun AmiiboScreen(
 private fun AmiiboToolbar(
     ui: CompanionUiState,
     onImport: () -> Unit,
+    onImportArchive: () -> Unit,
+    onExportArchive: () -> Unit,
     query: String,
     onQueryChanged: (String) -> Unit,
     filtersOpen: Boolean,
@@ -254,6 +272,12 @@ private fun AmiiboToolbar(
         }
         FilledTonalButton(onClick = onImport, enabled = !ui.busy, contentPadding = PaddingValues(horizontal = 12.dp)) {
             Icon(Icons.Default.Add, null); Spacer(Modifier.width(LayoutTokens.Space1)); Text("Import")
+        }
+        OutlinedButton(onClick = onImportArchive, enabled = !ui.busy, contentPadding = PaddingValues(horizontal = 10.dp)) {
+            Icon(Icons.Default.FolderOpen, null); Spacer(Modifier.width(LayoutTokens.Space1)); Text("ZIP")
+        }
+        TextButton(onClick = onExportArchive, enabled = !ui.busy && ui.library.isNotEmpty(), contentPadding = PaddingValues(horizontal = 8.dp)) {
+            Icon(Icons.Default.Archive, null); Spacer(Modifier.width(LayoutTokens.Space1)); Text("Export")
         }
     }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
@@ -373,9 +397,19 @@ private fun AmiiboAdapterHero(ui: CompanionUiState, viewModel: CompanionViewMode
 }
 
 @Composable
-private fun AmiiboSelectedHero(item: AmiiboLibraryItem, ui: CompanionUiState, viewModel: CompanionViewModel, modifier: Modifier) {
+private fun AmiiboSelectedHero(item: AmiiboLibraryItem, ui: CompanionUiState, viewModel: CompanionViewModel, onImportKeys: () -> Unit, modifier: Modifier) {
     val catalog = ui.selectedAmiiboCatalog
     val details = ui.selectedAmiiboDetails
+    var initializeOpen by rememberSaveable(item.id) { mutableStateOf(false) }
+    if (initializeOpen) AlertDialog(
+        onDismissRequest = { initializeOpen = false },
+        title = { Text("Initialize this Amiibo?") },
+        text = { Text("This wipes the owner, nickname, registration and game data in the private phone copy, then re-signs it with your imported key_retail.bin. The UID and identity stay the same, the adapter is not changed, and this cannot be undone.") },
+        confirmButton = {
+            TextButton(onClick = { initializeOpen = false; viewModel.initializeSelectedAmiibo() }) { Text("Initialize") }
+        },
+        dismissButton = { TextButton(onClick = { initializeOpen = false }) { Text("Cancel") } },
+    )
     Card(modifier) {
         Column(Modifier.padding(LayoutTokens.Space3), verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -406,6 +440,11 @@ private fun AmiiboSelectedHero(item: AmiiboLibraryItem, ui: CompanionUiState, vi
                 Button(onClick = viewModel::loadSelectedAmiibo, enabled = ui.connection.connected && !ui.busy, modifier = Modifier.weight(1f)) { Text("Load") }
                 OutlinedButton(onClick = viewModel::syncSelectedAmiibo, enabled = ui.connection.connected && (ui.snapshot.amiibo.loaded || ui.snapshot.amiibo.v3Loaded) && !ui.busy, modifier = Modifier.weight(1f)) { Text("Sync") }
             }
+            OutlinedButton(
+                onClick = { if (ui.amiiboKeysLoaded) initializeOpen = true else onImportKeys() },
+                enabled = !ui.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(if (ui.amiiboKeysLoaded) "Initialize locally" else "Import key to initialize") }
             if (ui.snapshot.amiibo.dirty) {
                 Text("Console changes are not synced; download before clearing.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
@@ -511,10 +550,11 @@ private fun AmiiboGrid(
 }
 
 @Composable
-private fun AmiiboDetail(item: AmiiboLibraryItem?, ui: CompanionUiState, viewModel: CompanionViewModel, modifier: Modifier) {
+private fun AmiiboDetail(item: AmiiboLibraryItem?, ui: CompanionUiState, viewModel: CompanionViewModel, onImportKeys: () -> Unit, modifier: Modifier) {
     var renameOpen by rememberSaveable(item?.id) { mutableStateOf(false) }
     var deleteOpen by rememberSaveable(item?.id) { mutableStateOf(false) }
     var clearOpen by rememberSaveable { mutableStateOf(false) }
+    var initializeOpen by rememberSaveable(item?.id) { mutableStateOf(false) }
     var name by rememberSaveable(item?.id) { mutableStateOf(item?.displayName.orEmpty()) }
     if (renameOpen && item != null) AlertDialog(
         onDismissRequest = { renameOpen = false },
@@ -534,6 +574,15 @@ private fun AmiiboDetail(item: AmiiboLibraryItem?, ui: CompanionUiState, viewMod
         text = { Text("This removes the stored virtual Amiibo from the adapter. Your private phone backup remains available.") },
         confirmButton = { TextButton(onClick = { viewModel.clearAdapterAmiibo(); clearOpen = false }) { Text("Clear adapter") } },
         dismissButton = { TextButton(onClick = { clearOpen = false }) { Text("Cancel") } },
+    )
+    if (initializeOpen && item != null) AlertDialog(
+        onDismissRequest = { initializeOpen = false },
+        title = { Text("Initialize this Amiibo?") },
+        text = { Text("This wipes the owner, nickname, registration and game data in the private phone copy, then re-signs it with your imported key_retail.bin. The UID and identity stay the same, the adapter is not changed, and this cannot be undone.") },
+        confirmButton = {
+            TextButton(onClick = { initializeOpen = false; viewModel.initializeSelectedAmiibo() }) { Text("Initialize") }
+        },
+        dismissButton = { TextButton(onClick = { initializeOpen = false }) { Text("Cancel") } },
     )
     Card(modifier) {
         if (item == null) {
@@ -577,6 +626,12 @@ private fun AmiiboDetail(item: AmiiboLibraryItem?, ui: CompanionUiState, viewMod
                 AmiiboRegisterDetails(ui)
                 HorizontalDivider(Modifier.padding(vertical = LayoutTokens.Space3))
                 Button(onClick = viewModel::loadSelectedAmiibo, enabled = ui.connection.connected && !ui.busy, modifier = Modifier.fillMaxWidth()) { Text("Load onto adapter") }
+                Spacer(Modifier.height(LayoutTokens.Space2))
+                OutlinedButton(
+                    onClick = { if (ui.amiiboKeysLoaded) initializeOpen = true else onImportKeys() },
+                    enabled = !ui.busy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(if (ui.amiiboKeysLoaded) "Initialize locally" else "Import key to initialize") }
                 Spacer(Modifier.height(LayoutTokens.Space2))
                 Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
                     FilledTonalButton(onClick = { viewModel.setPresented(!ui.snapshot.amiibo.presented) }, enabled = ui.connection.connected && (ui.snapshot.amiibo.loaded || ui.snapshot.amiibo.v3Loaded), modifier = Modifier.weight(1f)) {

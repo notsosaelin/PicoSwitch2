@@ -27,9 +27,13 @@ The debug build provides real implementations for:
   friendly name/character/game series/Amiibo series/type/release, compatible games/title-ID labels,
   and best-effort artwork. The bounded network enhancement never gates local imports or adapter
   operations and degrades to local identity when offline;
-- optional portal-compatible read-only Amiibo metadata decryption from the user’s own validated
+- optional portal-compatible Amiibo metadata decryption and local re-signing from the user’s own validated
   160-byte `key_retail.bin` (owner, nickname, registration/write dates, write count, and game-data
   identifiers), with keys stored only in app-private storage;
+- explicit local Amiibo initialization: confirmation-gated wipe/re-sign of an imported ordinary or
+  figure-v3 image with the user-owned key, HMAC self-verification, and atomic private replacement;
+- portal-compatible v3 full-library ZIP export/import (flat `library.json` + `.bin` files), with
+  bounded traversal-safe parsing and all-or-nothing local replacement;
 - transactional `begin -> chunk -> commit -> persist` Amiibo uploads, 32 bytes per chunk;
 - adapter-to-library Sync, structural validation, strict figure-v3 whole-image CRC verification,
   ordinary-image unavailable-CRC compatibility, `downloaded`, persistence polling, and
@@ -160,8 +164,8 @@ empty, so its catalog lookup and actions do not depend on importing or syncing f
 
 ## Tests
 
-The Amiibo worker run passed **52 JVM tests**, **1 API-35 instrumented navigation/scroll smoke
-test**, Android lint (**0 errors; 15 advisory warnings**), and debug APK assembly. A connected AYN
+The Android JVM run passed **75 tests**, **1 API-35 instrumented navigation/scroll smoke
+test**, Android lint (**0 errors; 17 advisory warnings**), and debug APK assembly. A connected AYN
 Thor rerun of the UI test on 2026-08-13 did not expose a Compose hierarchy to the runner, so that
 device rerun is not treated as new UI evidence. JVM coverage includes:
 
@@ -174,6 +178,8 @@ device rerun is not treated as new UI evidence. JVM coverage includes:
 - exact neutral report, all 14 button bits, every hat direction/opposites, Thor-style GAS/BRAKE
   trigger normalization, stick dead zones/endpoints/inversion, and descriptor size;
 - Amiibo accepted sizes, identity extraction, and standard CRC32;
+- portal-compatible ZIP manifest/round-trip, traversal and size limits, transactional library
+  preservation, and initialize/re-sign wipe/self-verification against the shared golden vector;
 - upload ordering, 32-byte chunk count, and dirty-store replacement protection through a scripted
   fake management transport;
 - versioned local-library restart/recovery/corruption/collision/rollback behavior;
@@ -198,10 +204,10 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
 - Motion and rumble are not in the v1 Android HID contract and are labeled as unavailable.
 - Phone-NFC physical-tag backup is not implemented yet. Controller-as-reader commands are low-level
   and intentionally not exposed as a production user workflow.
-- Encrypted-data initialization/re-signing, ZIP library exchange, raw backup share/export, and Mii
-  rendering remain future client-side work. The current metadata reader is deliberately
-  read-only. User-supplied retail keys are accepted only in the exact 160-byte portal format,
-  stored in an app-private file, and never sent to firmware, diagnostics, or a library export.
+- Raw backup share/export and Mii rendering remain future client-side work. Initialization and ZIP
+  exchange are local-only and still await focused physical Amiibo/adapter validation. User-supplied
+  retail keys are accepted only in the exact 160-byte portal format, stored in an app-private file,
+  and never sent to firmware, diagnostics, or a library export.
 - Android controller source and Auto/Nintendo/Xbox face layout are persisted by input descriptor.
   Auto recognizes the audited AYN and Retroid built-in identities as Nintendo-style and otherwise
   falls back to Android's positional/Xbox convention; explicit selection covers unknown devices.
@@ -226,7 +232,7 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
   failure without discarding valid core state.
 - Rotation/process restoration retains destination, Amiibo/source selection, color edits, and
   pending identity-refresh state without replaying protocol mutations.
-- **Settings -> Developer / diagnostics** shows platform, HID, GATT, firmware, capability, report, and
+- **Settings -> Developer** shows platform, HID, GATT, firmware, capability, report, and
   re-enumeration state. Its Android share export is bounded and redacted: no raw Amiibo bytes, JSON
   replies, keys, or Bluetooth addresses.
 
@@ -258,14 +264,16 @@ the tested amiitool-compatible block in `web/index.html`: it validates the two 8
 reads the settings fields documented in `docs/switch2/amiibo-decrypted-data-surface.md`.
 
 The key file lives at app-private `filesDir/amiibo-private/.amiibo-retail-key.bin`; the Amiibo
-overflow menu is the only import/replace entry point, so the default library surface stays focused
-on artwork and identity. Android backup
+overflow menu is the only key import/replace entry point, so the default library surface stays
+focused on artwork and identity. Android backup
 is disabled, and neither raw key bytes nor decrypted values enter diagnostics, management commands,
-the local library export, or firmware. The page exposes import/replace only; uninstall removes the
-app-private key file, while local dumps and the adapter remain unaffected during normal use. An
+the local library export, or firmware. The page exposes explicit confirmation-gated initialization
+for an imported local copy; uninstall removes the app-private key file, while local dumps and the
+adapter remain unaffected during normal use. An
 HMAC failure is visibly reported and never renders owner/nickname junk.
 
-This slice is read-only and intentionally does not implement portal initialization/re-signing,
-physical phone-NFC reads, Mii rendering, or ZIP exchange. No network request is required for import,
-selection, upload, Sync, present/eject, or clean/used copy operations. See the dated evidence note
+This slice implements local portal-compatible initialization/re-signing and ZIP exchange, but not
+physical phone-NFC reads, raw backup sharing, or Mii rendering. No network request is required for
+import, selection, initialization, ZIP exchange, upload, Sync, present/eject, or clean/used copy
+operations. See the dated evidence note
 [`../../docs/experiments/android-amiibo-page-parity-2026-08-13.md`](../../docs/experiments/android-amiibo-page-parity-2026-08-13.md).

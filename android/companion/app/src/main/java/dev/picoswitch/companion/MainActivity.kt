@@ -83,6 +83,16 @@ class MainActivity : ComponentActivity() {
         uri?.let { viewModel.importAmiibo(it, "") }
     }
 
+    private val importAmiiboArchive = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(viewModel::importAmiiboArchive)
+    }
+
+    private val exportAmiiboArchive = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip"),
+    ) { uri ->
+        uri?.let(viewModel::exportAmiiboArchive)
+    }
+
     private val importAmiiboKeys = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { viewModel.importAmiiboKeys(it) }
     }
@@ -120,6 +130,8 @@ class MainActivity : ComponentActivity() {
                 onConnectAdapter = ::requestAdapterConnection,
                 onPairAdapter = ::requestNewAdapterPairing,
                 onImportAmiibo = { importAmiibo.launch(arrayOf("*/*")) },
+                onImportAmiiboArchive = { importAmiiboArchive.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
+                onExportAmiiboArchive = { exportAmiiboArchive.launch("PicoSwitch2-Amiibo-Library.zip") },
                 onImportAmiiboKeys = { importAmiiboKeys.launch(arrayOf("application/octet-stream", "application/*", "*/*")) },
                 onPrepareController = ::requestControllerBridge,
                 onExportDiagnostics = ::shareDiagnostics,

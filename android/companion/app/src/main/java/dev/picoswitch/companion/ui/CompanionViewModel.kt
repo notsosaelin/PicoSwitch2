@@ -267,6 +267,42 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         notice(if (result.duplicate) "That exact backup is already in the library" else "Imported ${result.item.displayName}")
     }
 
+    fun exportAmiiboArchive(uri: Uri) = launch("Exporting Amiibo library") {
+        val resolver = getApplication<Application>().contentResolver
+        val bytes = library.exportArchive(_ui.value.selectedAmiiboId)
+        resolver.openOutputStream(uri)?.use { stream ->
+            stream.write(bytes)
+            stream.flush()
+        } ?: error("Could not create Amiibo library archive")
+        notice("Exported ${_ui.value.library.size} Amiibo backups as a private ZIP")
+    }
+
+    fun importAmiiboArchive(uri: Uri) = launch("Importing Amiibo library") {
+        val resolver = getApplication<Application>().contentResolver
+        resolver.openAssetFileDescriptor(uri, "r")?.use { descriptor ->
+            if (descriptor.length > MAX_LIBRARY_ARCHIVE_BYTES)
+                error("Selected library archive is too large")
+        }
+        val bytes = resolver.openInputStream(uri)?.use { stream ->
+            val output = ByteArrayOutputStream()
+            val buffer = ByteArray(8192)
+            while (true) {
+                val count = stream.read(buffer)
+                if (count < 0) break
+                if (output.size() + count > MAX_LIBRARY_ARCHIVE_BYTES)
+                    error("Selected library archive is too large")
+                output.write(buffer, 0, count)
+            }
+            output.toByteArray()
+        } ?: error("Could not read Amiibo library archive")
+        val result = library.importArchive(bytes)
+        val selected = result.selectedId ?: result.items.firstOrNull()?.id
+        _ui.update { it.copy(selectedAmiiboId = selected, section = AppSection.Amiibo) }
+        savedState[KEY_AMIIBO] = selected
+        refreshSelectedAmiiboDetails()
+        notice("Imported ${result.items.size} Amiibo backups from a private ZIP")
+    }
+
     fun importAmiiboKeys(uri: Uri) = launch("Importing Amiibo keys") {
         val resolver = getApplication<Application>().contentResolver
         resolver.openAssetFileDescriptor(uri, "r")?.use { descriptor ->
@@ -293,6 +329,20 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         val id = requireNotNull(_ui.value.selectedAmiiboId) { "Select an Amiibo first" }
         adapter.uploadAmiibo(library.bytes(id)) { progress -> _ui.update { it.copy(operation = progress) } }
         notice("Amiibo loaded and saved on the adapter")
+    }
+
+    fun initializeSelectedAmiibo() = launch("Initializing Amiibo") {
+        val id = requireNotNull(_ui.value.selectedAmiiboId) { "Select an Amiibo first" }
+        val keys = amiiboKeyStore.read() ?: error("Import your own key_retail.bin before initializing an Amiibo")
+        val original = library.bytes(id)
+        val initialized = AmiiboCrypto.initialize(original, keys)
+        // updateFromAdapter is the same atomic file/index replacement used by
+        // Sync, but this path never sends the result to the adapter.
+        val item = library.updateFromAdapter(id, initialized)
+        _ui.update { it.copy(selectedAmiiboId = item.id, amiiboKeysLoaded = true) }
+        savedState[KEY_AMIIBO] = item.id
+        refreshSelectedAmiiboDetails()
+        notice("${item.displayName} initialized locally; the adapter was not changed")
     }
 
     fun syncSelectedAmiibo() = launch("Syncing Amiibo") {
@@ -658,6 +708,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
 
     companion object {
         private const val MAX_IMPORT_BYTES = 2048
+        private const val MAX_LIBRARY_ARCHIVE_BYTES = AmiiboLibraryArchive.MAX_ARCHIVE_BYTES
         private const val RETAIL_KEY_BYTES = 160
         private const val ADAPTER_POLL_MILLIS = 5_000L
         private const val AUTOMATIC_CONTROLLER_RESUME_TIMEOUT_MS = 20_000L

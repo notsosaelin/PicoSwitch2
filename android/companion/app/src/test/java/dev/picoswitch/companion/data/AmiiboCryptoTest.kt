@@ -104,6 +104,32 @@ class AmiiboCryptoTest {
         assertEquals("Unrecognised game (title 00010000034E0B00)", details.appDataLabel)
     }
 
+    @Test fun `initialize wipes and re-signs only after a valid HMAC round trip`() {
+        val root = requireNotNull(javaClass.getResourceAsStream("/amiibo-portal-golden.json"))
+            .use { Json.parseToJsonElement(it.readBytes().decodeToString()).jsonObject }
+        val keys = AmiiboCrypto.parseRetailKeys(hex(root.getValue("keysHex").jsonPrimitive.content))
+        val original = hex(root.getValue("tagHex").jsonPrimitive.content)
+        val initialized = AmiiboCrypto.initialize(original, keys)
+        val details = AmiiboCrypto.readDetails(initialized, keys)
+
+        assertEquals(AmiiboCryptoState.Valid, details.crypto)
+        assertFalse(details.setUp)
+        assertEquals("", details.owner)
+        assertEquals("", details.nickname)
+        assertNull(details.setupDate)
+        assertNull(details.lastWriteDate)
+        assertEquals(0, details.writeCounter)
+        assertFalse(details.hasAppData ?: true)
+        assertEquals("", details.titleId)
+        assertArrayEquals(original.copyOfRange(0, 0x14), initialized.copyOfRange(0, 0x14))
+        assertArrayEquals(original.copyOfRange(0x54, 0x80), initialized.copyOfRange(0x54, 0x80))
+        assertArrayEquals(original.copyOfRange(0x208, 0x21C), initialized.copyOfRange(0x208, 0x21C))
+        assertArrayEquals(initialized, AmiiboCrypto.initialize(initialized, keys))
+
+        val tampered = original.copyOf().also { it[0xA5] = (it[0xA5].toInt() xor 0xFF).toByte() }
+        assertThrows(IllegalArgumentException::class.java) { AmiiboCrypto.initialize(tampered, keys) }
+    }
+
     @Test fun `key store atomically persists only validated local key and can forget it`() {
         val store = AmiiboKeyStore(temporary.newFolder("keys"))
         assertFalse(store.exists())
