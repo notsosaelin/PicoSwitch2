@@ -82,6 +82,44 @@ proven flag pattern; lets a future session trigger *and* observe (`btstate` + th
 the exact CDC transition over UART without a BOOTSEL press. Prepared for review; see the implementation
 batch note.
 
+## P2 — controlled re-enumeration mechanism (task 8, design)
+
+**Which changes actually require re-enumeration (from the code/PLAN):**
+| Change | Host-visible? | Re-enum needed? |
+|---|---|---|
+| Body/Joy-Con colors (`body`/`jcl`/`jcr`/`lb`) | Yes — console reads color from factory memory (Pro2 offset `0x13019`) **at enumeration** | **Yes** (owner-observed) |
+| Output personality (`personality <t>`) | Yes — different descriptors/PID | **Yes** (already wired) |
+| Firmware-identity profile (`profile`) | Yes — descriptor identity tuple | **Yes** (already wired via `usb_apply_diag_reenumeration`) |
+| Button mapping | **No** — retired to **Switch-side** remapping on a stable emulated identity (PLAN.md "Reliability") | **No** (nothing adapter-side to apply) |
+| Amiibo / bonds / wake identity | No host-visible descriptor impact | No |
+
+**Proven primitive:** `usb_apply_diag_reenumeration()` (same-identity `tud_disconnect`→`tud_connect`,
+BT core untouched) — **UART-confirmed tonight** to leave the controller + management links byte-identical.
+This is the safe building block.
+
+**Recommended mechanism (clean, not scattered):**
+1. A single **edge-triggered** `g_usb_reenumerate_requested` flag (usb.h/usb.c), consumed at the same
+   safe loop point as `g_usb_personality_request_pending` in `usb_core_task` → calls
+   `usb_apply_diag_reenumeration()`. Feature code **never** calls the blocking re-enum inline.
+2. **Coalesce on an explicit apply, not per-change.** Color commands write RAM immediately; the console
+   only re-reads at enumeration. So the trigger belongs on the **`save`** step (or a dedicated `apply`),
+   which naturally collapses a burst of R/G/B edits into **one** re-enum. Recommend: `save` persists
+   **and** raises `g_usb_reenumerate_requested` when the pending changes include host-visible fields.
+3. **Ack / timing:** the re-enum briefly drops the console (controller blinks) but **not** the BT or
+   management links (proven). Over BLE the management reply survives the USB bounce, so the client gets
+   its ack; the client should warn "applying briefly reconnects the controller to the console."
+4. **Active controller state during the op:** unchanged — the BT controller stays connected; only the
+   console-facing USB re-enumerates. The `sleep_ms(USB_DETACH_MS)` core0 stall is bounded and identical
+   to the BOOTSEL cycle.
+5. **Open owner decision (UX):** auto-re-enum on Save (recommended — single action) vs. a separate
+   "Apply to console" control. Both use the same flag; only the trigger UI differs. Flagged for the
+   owner; **not implemented** pending that call.
+
+**Tests to prepare (host-side, no hardware):** the flag is edge-consumed like the existing
+`g_usb_personality_request_pending` (already covered by `tools/test_usb_mode_cycle.c`); a small unit
+around "save with host-visible change raises the flag; save without does not" can be added once the
+which-fields-are-dirty predicate exists.
+
 ## Shared management architecture — Android + portal (task 11, review)
 
 The management command **surface** is correctly shared and generic — the firmware has **no**
@@ -151,6 +189,49 @@ reasons grounded in the current architecture:
   ships: the triple-tap wipe must also clear persisted management-enabled, and/or a boot-health
   watchdog that reverts to off if the prior boot did not reach a healthy steady state (prevents the
   re-wedge brick). The install-marker reflash-erase remains the last-resort recovery.
+
+## ★ Overnight soak result (headline, 2026-08-12 23:49 → 08-13 05:22)
+
+`tools/mgmt_soak.ps1` ran ~5.4 h against the decoupling-fix firmware with a Classic controller
+(DualSense, `ble_conns=0`) + a management client connected. Full btlife ring (6 events, **0 dropped** —
+the rate-limit fix held):
+```
+scan_start → adv_start → scan_stop(ctrl paged in) → mgmt_connect
+  → [5.4h stable, 10 re-enumerations, every one ctrl+client survived, disc=0/0, suppress.mgmt_armed=0]
+  → 05:11:49  scan_start (scan.starts 1→2)  → hci_disconnect reason 0x13 handle 0x000B
+```
+
+**CONFIRMED (hardware):**
+- **5.4 h of stable coexistence + 10 clean re-enumerations** — the controller and management client both
+  survived every one (`disc=0/0`). The old firmware failed "after a short period"; this is a dramatic
+  improvement.
+- On the controller disconnect, **discovery resumed** (`scan.starts 1→2`) with **`suppress.mgmt_armed=0`**
+  — *this is the exact behavior the bug broke*. The old firmware would have suppressed this scan. The
+  decoupling fix demonstrably restores post-drop discovery.
+- **Management stayed connected** across the controller drop (`client=true`, `mgmt.disconnects=0`) — it did
+  **not** go undiscoverable.
+- **Final state is healthy, not wedged:** `scan_active=true, inquiry_active=true, controller_connected=false,
+  client=true` — the adapter is correctly scanning for the controller's return. This is the **opposite** of
+  the original failure (undiscoverable, power-cycle required).
+
+**INTERPRETATION (well-supported):** `reason=0x13` is `REMOTE_USER_TERMINATED_CONNECTION` — the controller
+*chose* to disconnect. After ~5.4 h idle (owner asleep, no input) the DualSense idle-slept (it is documented
+to power down; PLAN.md "Wake from sleep"). The firmware correctly does **not** chase a `0x13`/power-off
+reconnect (btstack_host.c:3775 `reason_warrants_reconnect`) and instead resumes discovery — precisely what
+we observe. This is **normal controller sleep, handled correctly**, not the failure.
+
+**NOT proven (needs the morning):**
+- **Reconnect-after-wake:** whether the DualSense re-pages and reconnects when woken (a physical button
+  press). The adapter is scanning + connectable, so it should — but this is unproven and is the single
+  most valuable morning check.
+- The **original `disc=0` wedge was NOT reproduced**, so the fix's sufficiency for *that specific*
+  mechanism remains inferred from the healthy post-drop scanning, not directly demonstrated. The `pipe`
+  diagnostic (below) is what would make a recurrence decisive.
+
+**Diagnostic bug found + to fix:** `mgmt_soak.ps1`'s failure detector flagged this intentional sleep as a
+"SPONTANEOUS FAILURE" because the controller was gone >30 s — it must treat `hci_disconnect` reason `0x13`
+(remote-user-terminated) and `0x15`/`0x16` (power-off / host-terminated) as **expected**, not a failure.
+Fixed below.
 
 ## P1 — trace-vs-code divergence analysis
 
