@@ -49,6 +49,7 @@ class AmiiboLibraryStore(private val root: File) {
     suspend fun import(displayName: String, sourceName: String, raw: ByteArray): AmiiboImportResult = ioLocked {
         val normalized = AmiiboFiles.normalizeImport(raw)
         val crc = AmiiboFiles.crc32(normalized)
+        val identity = AmiiboCrypto.identity(normalized)
         _items.value.firstOrNull { it.size == normalized.size && it.crc32.equals(crc, true) }?.let { candidate ->
             if (runCatching { fileFor(candidate.fileName).readBytes().contentEquals(normalized) }.getOrDefault(false)) {
                 return@ioLocked AmiiboImportResult(candidate, duplicate = true)
@@ -65,9 +66,17 @@ class AmiiboLibraryStore(private val root: File) {
             fileName = fileName,
             size = normalized.size,
             crc32 = crc,
-            uid = AmiiboFiles.uid(normalized),
-            figureId = AmiiboFiles.figureId(normalized),
+            uid = identity.uid,
+            figureId = identity.figureId,
             importedAtMillis = now,
+            characterGameCode = identity.characterGameCode,
+            characterVariant = identity.characterVariant,
+            tagType = identity.tagType,
+            typeName = identity.typeName,
+            modelNumber = identity.modelNumber,
+            seriesCode = identity.seriesCode,
+            formatVersion = identity.formatVersion,
+            extendedVariant = identity.extendedVariant,
         )
         val next = listOf(item) + _items.value
         try {
@@ -84,6 +93,7 @@ class AmiiboLibraryStore(private val root: File) {
         AmiiboFiles.validate(data)
         val uid = AmiiboFiles.uid(data)
         val figureId = AmiiboFiles.figureId(data)
+        val identity = AmiiboCrypto.identity(data)
         val existing = id?.let { wanted -> _items.value.firstOrNull { it.id == wanted } }
             ?.takeIf { it.uid == uid }
             ?: _items.value.firstOrNull { it.uid == uid && it.figureId == figureId }
@@ -98,6 +108,14 @@ class AmiiboLibraryStore(private val root: File) {
             crc32 = AmiiboFiles.crc32(data),
             uid = uid,
             figureId = figureId,
+            characterGameCode = identity.characterGameCode,
+            characterVariant = identity.characterVariant,
+            tagType = identity.tagType,
+            typeName = identity.typeName,
+            modelNumber = identity.modelNumber,
+            seriesCode = identity.seriesCode,
+            formatVersion = identity.formatVersion,
+            extendedVariant = identity.extendedVariant,
             updatedAtMillis = System.currentTimeMillis(),
             dirtyFromAdapter = false,
         )
@@ -161,11 +179,18 @@ class AmiiboLibraryStore(private val root: File) {
         }
         val id = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
+        val identity = AmiiboCrypto.identity(normalized)
         val fileName = "$id.bin"
         val destination = fileFor(fileName)
         writeAtomic(destination, normalized)
-        val item = AmiiboLibraryItem(id, displayName, fileName, normalized.size, crc, AmiiboFiles.uid(normalized),
-            AmiiboFiles.figureId(normalized), now)
+        val item = AmiiboLibraryItem(
+            id = id, displayName = displayName, fileName = fileName, size = normalized.size, crc32 = crc,
+            uid = identity.uid, figureId = identity.figureId, importedAtMillis = now,
+            characterGameCode = identity.characterGameCode, characterVariant = identity.characterVariant,
+            tagType = identity.tagType, typeName = identity.typeName, modelNumber = identity.modelNumber,
+            seriesCode = identity.seriesCode, formatVersion = identity.formatVersion,
+            extendedVariant = identity.extendedVariant,
+        )
         val next = listOf(item) + _items.value
         try { persistIndex(next) } catch (error: Throwable) { destination.delete(); throw error }
         _items.value = next
@@ -193,8 +218,17 @@ class AmiiboLibraryStore(private val root: File) {
                 warnings += "Kept unreadable backup file for ${item.displayName}; it was not deleted"
                 return@forEach
             }
+            val identity = AmiiboCrypto.identity(data)
             val repaired = item.copy(size = data.size, crc32 = AmiiboFiles.crc32(data), uid = AmiiboFiles.uid(data),
-                figureId = AmiiboFiles.figureId(data), updatedAtMillis = item.updatedAtMillis.takeIf { it > 0 } ?: item.importedAtMillis)
+                figureId = AmiiboFiles.figureId(data), updatedAtMillis = item.updatedAtMillis.takeIf { it > 0 } ?: item.importedAtMillis,
+                characterGameCode = identity.characterGameCode,
+                characterVariant = identity.characterVariant,
+                tagType = identity.tagType,
+                typeName = identity.typeName,
+                modelNumber = identity.modelNumber,
+                seriesCode = identity.seriesCode,
+                formatVersion = identity.formatVersion,
+                extendedVariant = identity.extendedVariant)
             if (item.crc32.isNotBlank() && (item.size != repaired.size || !item.crc32.equals(repaired.crc32, true) || item.uid != repaired.uid)) {
                 warnings += "Integrity metadata changed for ${item.displayName}; verify before using this backup"
                 return@forEach
@@ -207,8 +241,17 @@ class AmiiboLibraryStore(private val root: File) {
             val data = runCatching { file.readBytes().also(AmiiboFiles::validate) }.getOrNull() ?: return@forEach
             val id = file.name.removeSuffix(".bin")
             val stamp = file.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis()
+            val identity = AmiiboCrypto.identity(data)
             result += AmiiboLibraryItem(id, "Recovered Amiibo ${id.take(8)}", file.name, data.size,
-                AmiiboFiles.crc32(data), AmiiboFiles.uid(data), AmiiboFiles.figureId(data), stamp, stamp)
+                AmiiboFiles.crc32(data), identity.uid, identity.figureId, stamp, stamp,
+                characterGameCode = identity.characterGameCode,
+                characterVariant = identity.characterVariant,
+                tagType = identity.tagType,
+                typeName = identity.typeName,
+                modelNumber = identity.modelNumber,
+                seriesCode = identity.seriesCode,
+                formatVersion = identity.formatVersion,
+                extendedVariant = identity.extendedVariant)
             warnings += "Recovered an unindexed Amiibo backup"
         }
         _warnings.value = warnings.distinct()
@@ -267,12 +310,20 @@ class AmiiboLibraryStore(private val root: File) {
         put("id", id); put("displayName", displayName); put("fileName", fileName); put("size", size)
         put("crc32", crc32); put("uid", uid); put("figureId", figureId); put("importedAtMillis", importedAtMillis)
         put("updatedAtMillis", updatedAtMillis); put("dirtyFromAdapter", dirtyFromAdapter)
+        put("characterGameCode", characterGameCode); put("characterVariant", characterVariant)
+        put("tagType", tagType.name); put("typeName", typeName); put("modelNumber", modelNumber)
+        put("seriesCode", seriesCode); put("formatVersion", formatVersion); put("extendedVariant", extendedVariant)
     }
 
     private fun JsonObject.toItem() = AmiiboLibraryItem(
         id = s("id"), displayName = s("displayName").take(120), fileName = s("fileName"), size = i("size"),
         crc32 = s("crc32"), uid = s("uid"), figureId = s("figureId"), importedAtMillis = l("importedAtMillis"),
         updatedAtMillis = l("updatedAtMillis"), dirtyFromAdapter = b("dirtyFromAdapter"),
+        characterGameCode = s("characterGameCode"), characterVariant = i("characterVariant"),
+        tagType = runCatching { enumValueOf<dev.picoswitch.companion.model.AmiiboTagType>(s("tagType")) }
+            .getOrDefault(dev.picoswitch.companion.model.AmiiboTagType.Ntag215),
+        typeName = s("typeName").ifBlank { "Figure" }, modelNumber = s("modelNumber"),
+        seriesCode = i("seriesCode"), formatVersion = i("formatVersion"), extendedVariant = s("extendedVariant"),
     ).also { require(UUID_FILE.matches(it.fileName) && it.id.isNotBlank()) }
 
     private fun addWarning(message: String) { _warnings.value = (_warnings.value + message).distinct() }

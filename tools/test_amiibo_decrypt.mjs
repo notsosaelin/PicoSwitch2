@@ -4,7 +4,7 @@
 // own primitives), then decrypts and confirms the fields read back. Proves the
 // offset plumbing self-consistently; real-key correctness is confirmed against a
 // genuine console-written amiibo. Run: node tools/test_amiibo_decrypt.mjs
-import {readFileSync} from "node:fs";
+import {readFileSync, writeFileSync} from "node:fs";
 import {webcrypto} from "node:crypto";
 if (!globalThis.crypto) globalThis.crypto = webcrypto;
 
@@ -37,6 +37,85 @@ const exported = ["amiiboParseRetailKeys", "amiiboDecryptInternal",
   "amiiboInternalToTag", "amiiboInitializeImage", "amiiboDecodeDate",
   "AMIIBO_APP_IDS", "amiiboAppDataLabel"];
 const mod = new Function(`${block}\nreturn {${exported.join(",")}};`)();
+
+// This fixture is deliberately made from the portal block itself with
+// deterministic dummy masters. The Android JVM test reads the same bytes, so
+// it is a cross-language vector rather than a Kotlin self-round-trip. Refresh
+// it only with: node tools/test_amiibo_decrypt.mjs --write-golden
+const ANDROID_GOLDEN_URL = new URL(
+  "../android/companion/app/src/test/resources/amiibo-portal-golden.json",
+  import.meta.url,
+);
+const bytesToHex = bytes => [...bytes].map(b => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+const hexToBytes = value => {
+  if (!/^[0-9A-Fa-f]*$/.test(value) || value.length % 2) throw new Error("invalid golden hex");
+  const bytes = new Uint8Array(value.length / 2);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(value.slice(i * 2, i * 2 + 2), 16);
+  return bytes;
+};
+function deterministicMaster(typeString, seed) {
+  const master = new Uint8Array(80);
+  for (let i = 0; i < master.length; i++) master[i] = (i * 17 + seed) & 0xFF;
+  const label = new TextEncoder().encode(typeString);
+  master.set(label.subarray(0, 13), 16);
+  master[16 + Math.min(label.length, 13)] = 0;
+  master[30] = 0;
+  master[31] = 16;
+  return master;
+}
+async function makeAndroidGolden() {
+  const keysBytes = new Uint8Array(160);
+  keysBytes.set(deterministicMaster("unfixed infos", 0x11), 0);
+  keysBytes.set(deterministicMaster("locked secret", 0x22), 80);
+  const keys = mod.amiiboParseRetailKeys(keysBytes);
+  const internal = new Uint8Array(0x208);
+  // Valid NTAG215 UID + identity block, including checksums consumed by the
+  // Android import validator. The encrypted settings are fully deterministic.
+  internal[0] = 0x04; // BCC1 is the first byte mapped to tag offset 0x08.
+  internal.set([0x04, 0x01, 0x02, 0x8F, 0x03, 0x04, 0x05, 0x06], 0x1D4);
+  internal.set([
+    0x00, 0x01, 0x02, 0x03, 0x10, 0x11, 0x12, 0x13,
+    0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B,
+    0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23,
+    0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B,
+    0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33,
+  ], 0x1DC);
+  internal[0x2C] = 0x30; // registered + AppData initialized
+  internal[0x30] = 0x20; internal[0x31] = 0x43; // 2016-02-03
+  internal[0x32] = 0x2E; internal[0x33] = 0x8C; // 2023-04-12
+  putGoldenUtf16(internal, 0x38, "Sparky", false);
+  putGoldenUtf16(internal, 0x4C + 0x1A, "Miles", true);
+  internal.set([0x00, 0x01, 0x00, 0x00, 0x03, 0x4E, 0x0B, 0x00], 0xAC);
+  internal[0xB4] = 0x01; internal[0xB5] = 0x2C; // 300 writes
+  internal.set([0x10, 0x20, 0x30, 0x40], 0xB6);
+  for (let i = 0xDC; i < 0x1B4; i++) internal[i] = (i * 29 + 7) & 0xFF;
+  const originalTag = new Uint8Array(540);
+  originalTag.set([0x04, 0x01, 0x02, 0x8F, 0x03, 0x04, 0x05, 0x06, 0x04], 0);
+  const tag = await mod.amiiboPackInternal(keys, internal, originalTag, false);
+  return {
+    format: "picoswitch2-amiibo-portal-golden-v1",
+    keysHex: bytesToHex(keysBytes),
+    tagHex: bytesToHex(tag),
+    expected: {
+      uid: "04010203040506",
+      figureId: "0001020310111213",
+      owner: "Miles",
+      nickname: "Sparky",
+      setupDate: "2016-02-03",
+      lastWriteDate: "2023-04-12",
+      writeCounter: 300,
+      titleId: "00010000034E0B00",
+      appId: "10203040",
+    },
+  };
+}
+function putGoldenUtf16(buffer, offset, value, littleEndian) {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (littleEndian) { buffer[offset + i * 2] = code & 0xFF; buffer[offset + i * 2 + 1] = code >> 8; }
+    else { buffer[offset + i * 2] = code >> 8; buffer[offset + i * 2 + 1] = code & 0xFF; }
+  }
+}
 
 function assert(c, m) { if (!c) { console.error("FAIL:", m); process.exit(1); } }
 
@@ -72,6 +151,30 @@ function putUtf16(buf, off, str, le) {
 }
 
 const run = async () => {
+  const generatedGolden = await makeAndroidGolden();
+  if (process.argv.includes("--write-golden")) {
+    writeFileSync(ANDROID_GOLDEN_URL, `${JSON.stringify(generatedGolden, null, 2)}\n`);
+  }
+  const golden = JSON.parse(readFileSync(ANDROID_GOLDEN_URL, "utf8"));
+  assert(golden.format === generatedGolden.format, "Android golden format changed");
+  assert(golden.keysHex === generatedGolden.keysHex, "Android golden keys changed");
+  assert(golden.tagHex === generatedGolden.tagHex, "Android golden tag changed");
+  const goldenKeys = mod.amiiboParseRetailKeys(hexToBytes(golden.keysHex));
+  const goldenDecoded = await mod.amiiboDecryptInternal(
+    goldenKeys, hexToBytes(golden.tagHex), false);
+  assert(goldenDecoded.ok, "portal decrypts the Android golden vector");
+  const goldenInfo = mod.amiiboReadRegisterInfo(goldenDecoded.internal);
+  for (const [field, expected] of Object.entries(golden.expected))
+    assert(goldenInfo[field] === expected ||
+      (field === "uid" && bytesToHex(new Uint8Array([
+        goldenDecoded.internal[0x1D4], goldenDecoded.internal[0x1D5],
+        goldenDecoded.internal[0x1D6], goldenDecoded.internal[0x1D8],
+        goldenDecoded.internal[0x1D9], goldenDecoded.internal[0x1DA],
+        goldenDecoded.internal[0x1DB],
+      ])) === expected) ||
+      (field === "figureId" && bytesToHex(goldenDecoded.internal.subarray(0x1DC, 0x1E4)) === expected),
+      `portal golden ${field} mismatch`);
+
   const nickname = "Sparky";
   const owner = "Miles";
   const internal = new Uint8Array(0x208);

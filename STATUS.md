@@ -62,6 +62,16 @@ confirmed through registration and the start of the bonded host connection. Pico
 input, latency, and lifecycle teardown remain unvalidated. See
 [`docs/bluetooth/android-controller-bridge.md`](docs/bluetooth/android-controller-bridge.md).
 
+The native Android Amiibo page now has portal-parity raw identity/details: character code/variant,
+tag type, model/series, format, extended variant, and optional owner/nickname/date/write-count/game
+metadata. The latter uses a direct read-only port of the tested portal crypto path and the user’s
+validated 160-byte `key_retail.bin`; the key remains app-private, never enters firmware or
+diagnostics, and Android backup is disabled. This is source/JVM scope only; Android initialization,
+ZIP exchange, Mii rendering, and physical Amiibo hardware validation remain open. A bounded
+seven-day AmiiboAPI cache now supplies portal-matched friendly name/series/type/release, compatible
+games/title-ID labels, and best-effort artwork without gating local or adapter operations. See
+[`docs/experiments/android-amiibo-page-parity-2026-08-13.md`](docs/experiments/android-amiibo-page-parity-2026-08-13.md).
+
 Read-only ADB evidence from a Retroid Pocket Classic narrows the first risk: its API-34 OEM image
 has HID Device enabled and the service is actively bound, while its built-in controller exposes all
 required axes and standard buttons. It also proves source selection cannot filter on `isExternal`

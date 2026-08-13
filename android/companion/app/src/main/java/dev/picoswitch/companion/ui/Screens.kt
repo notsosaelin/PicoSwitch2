@@ -2,7 +2,9 @@
 
 package dev.picoswitch.companion.ui
 
+import android.graphics.BitmapFactory
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.*
@@ -23,6 +25,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -35,6 +39,10 @@ import dev.picoswitch.companion.controller.BridgePhase
 import dev.picoswitch.companion.controller.ControllerFaceLayout
 import dev.picoswitch.companion.data.ColorTarget
 import dev.picoswitch.companion.model.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
 
 @Composable
 fun HomeScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
@@ -131,7 +139,12 @@ private fun SafetyCard(ui: CompanionUiState) {
 }
 
 @Composable
-fun AmiiboScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onImport: () -> Unit) {
+fun AmiiboScreen(
+    ui: CompanionUiState,
+    viewModel: CompanionViewModel,
+    onImport: () -> Unit,
+    onImportKeys: () -> Unit,
+) {
     val selected = ui.library.firstOrNull { it.id == ui.selectedAmiiboId }
     val adapterLoaded = ui.snapshot.amiibo.loaded || ui.snapshot.amiibo.v3Loaded
     ScreenFrame("Amiibo library", "Private local backups with verified adapter transfers") {
@@ -140,7 +153,22 @@ fun AmiiboScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onImport: 
             FilledTonalButton(onClick = viewModel::syncSelectedAmiibo, enabled = ui.connection.connected && (ui.snapshot.amiibo.loaded || ui.snapshot.amiibo.v3Loaded) && !ui.busy) {
                 Icon(Icons.Default.Sync, null); Spacer(Modifier.width(LayoutTokens.Space2)); Text("Sync adapter")
             }
+            if (ui.amiiboKeysLoaded) {
+                OutlinedButton(onClick = viewModel::forgetAmiiboKeys, enabled = !ui.busy) {
+                    Icon(Icons.Default.KeyOff, null); Spacer(Modifier.width(LayoutTokens.Space2)); Text("Forget local keys")
+                }
+            } else {
+                OutlinedButton(onClick = onImportKeys, enabled = !ui.busy) {
+                    Icon(Icons.Default.Key, null); Spacer(Modifier.width(LayoutTokens.Space2)); Text("Import keys")
+                }
+            }
         }
+        Text(
+            if (ui.amiiboKeysLoaded) "Private metadata keys are available on this phone; they are never sent to the adapter or included in diagnostics."
+            else "Import your own portal-compatible 160-byte key_retail.bin to read owner, nickname, dates, write count, and game data. Local import and adapter transfers never require keys.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         ui.libraryWarnings.firstOrNull()?.let {
             Spacer(Modifier.height(LayoutTokens.Space2))
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -228,6 +256,7 @@ private fun AmiiboGrid(ui: CompanionUiState, viewModel: CompanionViewModel, modi
     ) {
         items(ui.library, key = { it.id }) { item ->
             val selected = item.id == ui.selectedAmiiboId
+            val catalog = ui.amiiboCatalogEntries[item.id]
             Card(
                 modifier = Modifier.fillMaxWidth().clickable { viewModel.selectAmiibo(item.id) },
                 colors = CardDefaults.cardColors(containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant),
@@ -236,10 +265,25 @@ private fun AmiiboGrid(ui: CompanionUiState, viewModel: CompanionViewModel, modi
                 Column(Modifier.padding(LayoutTokens.Space4)) {
                     Icon(Icons.Default.Contactless, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(36.dp))
                     Spacer(Modifier.height(LayoutTokens.Space3))
-                    Text(item.displayName, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        catalog?.name?.ifBlank { null } ?: catalog?.character?.ifBlank { null } ?: item.displayName,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium,
+                    )
                     Spacer(Modifier.height(LayoutTokens.Space1))
-                    Text(item.figureId.ifBlank { "Unknown figure" }, maxLines = 1, style = MaterialTheme.typography.bodySmall)
-                    Text("${item.size} bytes", style = MaterialTheme.typography.labelSmall)
+                    val catalogSubtitle = listOfNotNull(
+                        catalog?.gameSeries?.takeIf { it.isNotBlank() },
+                        catalog?.amiiboSeries?.takeIf { it.isNotBlank() },
+                        catalog?.type?.takeIf { it.isNotBlank() },
+                    ).joinToString(" · ")
+                    val subtitle = catalogSubtitle.ifBlank {
+                        listOfNotNull(item.typeName.takeIf { it.isNotBlank() }, item.characterGameCode.takeIf { it.isNotBlank() })
+                            .joinToString(" · ").ifBlank { item.figureId.ifBlank { "Unknown figure" } }
+                    }
+                    Text(
+                        subtitle,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text("${item.size} bytes · ${item.uid}", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
                 }
             }
         }
@@ -276,10 +320,25 @@ private fun AmiiboDetail(item: AmiiboLibraryItem?, ui: CompanionUiState, viewMod
             EmptyState(Icons.Default.TouchApp, "Select an Amiibo", "Choose a local backup to inspect or load.", Modifier.fillMaxSize())
         } else {
             Column(Modifier.padding(LayoutTokens.Space4).verticalScroll(rememberScrollState())) {
+                val catalog = ui.selectedAmiiboCatalog
+                if (catalog != null) {
+                    AmiiboArtwork(catalog.imageUrl, catalog.name.ifBlank { catalog.character })
+                    Spacer(Modifier.height(LayoutTokens.Space3))
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(item.displayName, style = MaterialTheme.typography.titleLarge)
-                        Text("Figure ${item.figureId}", style = MaterialTheme.typography.bodySmall)
+                        Text(catalog?.name?.ifBlank { null } ?: catalog?.character?.ifBlank { null } ?: item.displayName, style = MaterialTheme.typography.titleLarge)
+                        Text(
+                            listOfNotNull(
+                                catalog?.gameSeries?.takeIf { it.isNotBlank() },
+                                catalog?.amiiboSeries?.takeIf { it.isNotBlank() },
+                                catalog?.type?.takeIf { it.isNotBlank() },
+                            ).joinToString(" · ").ifBlank {
+                                listOfNotNull(item.typeName.takeIf { it.isNotBlank() }, item.characterGameCode.takeIf { it.isNotBlank() })
+                                    .joinToString(" · ").ifBlank { "Figure ${item.figureId}" }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
                     }
                     IconButton(onClick = { renameOpen = true }) { Icon(Icons.Default.Edit, "Rename local copy") }
                     IconButton(onClick = { deleteOpen = true }) { Icon(Icons.Default.DeleteOutline, "Delete local copy") }
@@ -288,6 +347,14 @@ private fun AmiiboDetail(item: AmiiboLibraryItem?, ui: CompanionUiState, viewMod
                 MetadataLine("UID", item.uid)
                 MetadataLine("CRC32", item.crc32)
                 MetadataLine("Format", if (item.size == 2048) "Figure v3 · 2 KB" else "NTAG215 · ${item.size} B")
+                MetadataLine("Character code", item.characterGameCode.ifBlank { "—" })
+                MetadataLine("Character variant", "%02X".format(item.characterVariant))
+                MetadataLine("Type", item.typeName.ifBlank { "Figure" })
+                MetadataLine("Model / series", listOf(item.modelNumber, "%02X".format(item.seriesCode)).joinToString(" · "))
+                MetadataLine("Format version", "%02X".format(item.formatVersion))
+                if (item.extendedVariant.isNotBlank()) MetadataLine("Extended variant", item.extendedVariant)
+                AmiiboCatalogDetails(catalog, ui.amiiboCatalogLoading)
+                AmiiboRegisterDetails(ui)
                 HorizontalDivider(Modifier.padding(vertical = LayoutTokens.Space3))
                 Button(onClick = viewModel::loadSelectedAmiibo, enabled = ui.connection.connected && !ui.busy, modifier = Modifier.fillMaxWidth()) { Text("Load onto adapter") }
                 Spacer(Modifier.height(LayoutTokens.Space2))
@@ -316,6 +383,106 @@ private fun AmiiboDetail(item: AmiiboLibraryItem?, ui: CompanionUiState, viewMod
                     TextButton(onClick = { clearOpen = true }, Modifier.fillMaxWidth()) { Text("Clear adapter Amiibo") }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun AmiiboCatalogDetails(catalog: AmiiboCatalogEntry?, loading: Boolean) {
+    Spacer(Modifier.height(LayoutTokens.Space2))
+    Text("Catalog details", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+    when {
+        catalog != null -> {
+            if (catalog.name.isNotBlank() && catalog.name != catalog.character)
+                MetadataLine("Name", catalog.name)
+            MetadataLine("Character", catalog.character.ifBlank { "Unknown" })
+            MetadataLine("Game series", catalog.gameSeries.ifBlank { "Unknown" })
+            MetadataLine("Amiibo series", catalog.amiiboSeries.ifBlank { "Unknown" })
+            MetadataLine("Product type", catalog.type.ifBlank { "Unknown" })
+            MetadataLine("First release", catalog.releaseDate.ifBlank { "Unknown" })
+            if (catalog.games.isNotEmpty()) {
+                val compatible = catalog.games.entries.joinToString(" · ") { (platform, names) ->
+                    "$platform: ${names.distinct().joinToString(", ")}"
+                }
+                MetadataLine("Works with", compatible.ifBlank { "Catalog listed" })
+            }
+        }
+        loading -> Text("Looking up optional AmiiboAPI details…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        else -> Text("Catalog unavailable offline; the local identity above remains authoritative.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun AmiiboArtwork(imageUrl: String, contentDescription: String) {
+    val image = produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, imageUrl) {
+        value = if (imageUrl.isBlank()) null else runCatching {
+            withContext(Dispatchers.IO) {
+                val connection = URL(imageUrl).openConnection() as HttpURLConnection
+                try {
+                    connection.connectTimeout = 2_500
+                    connection.readTimeout = 8_000
+                    connection.instanceFollowRedirects = true
+                    if (connection.responseCode !in 200..299) return@withContext null
+                    val bytes = connection.inputStream.use { input ->
+                        val output = java.io.ByteArrayOutputStream()
+                        val buffer = ByteArray(8192)
+                        while (true) {
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            if (output.size() + count > 2 * 1024 * 1024) return@withContext null
+                            output.write(buffer, 0, count)
+                        }
+                        output.toByteArray()
+                    }
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                } finally {
+                    connection.disconnect()
+                }
+            }
+        }.getOrNull()
+    }.value
+    if (image != null) {
+        Image(
+            bitmap = image,
+            contentDescription = contentDescription.ifBlank { "Amiibo artwork" },
+            modifier = Modifier.fillMaxWidth().heightIn(max = 180.dp),
+            contentScale = ContentScale.Fit,
+        )
+    } else {
+        Box(Modifier.fillMaxWidth().height(76.dp), contentAlignment = Alignment.Center) {
+            Icon(Icons.Default.Contactless, contentDescription, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(48.dp))
+        }
+    }
+}
+
+@Composable
+private fun AmiiboRegisterDetails(ui: CompanionUiState) {
+    val details = ui.selectedAmiiboDetails
+    Spacer(Modifier.height(LayoutTokens.Space2))
+    Text("Private register details", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+    when {
+        !ui.amiiboKeysLoaded -> {
+            Spacer(Modifier.height(LayoutTokens.Space1))
+            Text("Import your own 160-byte key_retail.bin to read encrypted owner, nickname, dates, write count, and game data. The key remains phone-local.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        details == null -> {
+            Spacer(Modifier.height(LayoutTokens.Space1))
+            Text("Reading local encrypted metadata…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        details.crypto == AmiiboCryptoState.Invalid -> {
+            Spacer(Modifier.height(LayoutTokens.Space1))
+            Text("The imported key did not verify this dump. No decrypted fields are shown.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+        }
+        details.crypto == AmiiboCryptoState.Valid -> {
+            MetadataLine("Owner", details.owner.ifBlank { "Not set" })
+            MetadataLine("Nickname", details.nickname.ifBlank { "Not set" })
+            MetadataLine("Registered", details.setupDate ?: "Not registered")
+            MetadataLine("Last written", details.lastWriteDate ?: "Never written")
+            MetadataLine("Write count", details.writeCounter?.toString() ?: "—")
+            MetadataLine("Game data", ui.selectedAmiiboTitleGame ?: details.appDataLabel.ifBlank { "None" })
+            if (details.titleId.isNotBlank()) MetadataLine("Title ID", details.titleId)
+            if (details.appId.isNotBlank()) MetadataLine("App ID", details.appId)
+            Text("HMAC verified locally", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
         }
     }
 }

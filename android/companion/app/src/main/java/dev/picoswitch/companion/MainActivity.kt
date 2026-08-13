@@ -51,6 +51,10 @@ class MainActivity : ComponentActivity() {
         uri?.let { viewModel.importAmiibo(it, "") }
     }
 
+    private val importAmiiboKeys = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { viewModel.importAmiiboKeys(it) }
+    }
+
     private val associationChooser = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
         @Suppress("DEPRECATION")
@@ -69,6 +73,7 @@ class MainActivity : ComponentActivity() {
                 viewModel = viewModel,
                 onConnectAdapter = ::requestAdapterConnection,
                 onImportAmiibo = { importAmiibo.launch(arrayOf("*/*")) },
+                onImportAmiiboKeys = { importAmiiboKeys.launch(arrayOf("application/octet-stream", "application/*", "*/*")) },
                 onPrepareController = ::requestControllerBridge,
                 onPairControllerHost = ::pairControllerHost,
                 onExportDiagnostics = ::shareDiagnostics,

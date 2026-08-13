@@ -23,6 +23,7 @@ import dev.picoswitch.companion.model.*
 import dev.picoswitch.companion.transport.BleGattManagementTransport
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -45,6 +46,13 @@ data class CompanionUiState(
     val library: List<AmiiboLibraryItem> = emptyList(),
     val libraryWarnings: List<String> = emptyList(),
     val selectedAmiiboId: String? = null,
+    /** Cache hits for library cards; this is metadata only and never raw tag data. */
+    val amiiboCatalogEntries: Map<String, AmiiboCatalogEntry> = emptyMap(),
+    val selectedAmiiboDetails: AmiiboDetails? = null,
+    val selectedAmiiboCatalog: AmiiboCatalogEntry? = null,
+    val selectedAmiiboTitleGame: String? = null,
+    val amiiboCatalogLoading: Boolean = false,
+    val amiiboKeysLoaded: Boolean = false,
     val operation: OperationProgress? = null,
     val busy: Boolean = false,
     val message: String? = null,
@@ -72,11 +80,15 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     private val controllerLayoutStore = ControllerLayoutStore(application)
     private val _theme = MutableStateFlow(themeStore.load())
     val theme: StateFlow<ThemeSelection> = _theme.asStateFlow()
+    private val amiiboKeyStore = AmiiboKeyStore(File(application.filesDir, "amiibo-private"))
+    private val amiiboCatalog = AmiiboCatalogStore(File(application.filesDir, "amiibo-private"))
+    private var selectedDetailsJob: Job? = null
     private val initialSection = savedState.get<String>(KEY_SECTION)?.let { runCatching { AppSection.valueOf(it) }.getOrNull() } ?: AppSection.Home
     private val _ui = MutableStateFlow(
         CompanionUiState(
             section = initialSection,
             selectedAmiiboId = savedState[KEY_AMIIBO],
+            amiiboKeysLoaded = amiiboKeyStore.read() != null,
             selectedSourceDescriptor = savedState[KEY_SOURCE],
             identityRefreshPending = savedState[KEY_IDENTITY_PENDING] ?: false,
         ),
@@ -92,8 +104,13 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                 _ui.update { old ->
                     val selected = old.selectedAmiiboId?.takeIf { id -> value.any { it.id == id } } ?: value.firstOrNull()?.id
                     savedState[KEY_AMIIBO] = selected
-                    old.copy(library = value, selectedAmiiboId = selected)
+                    old.copy(
+                        library = value,
+                        selectedAmiiboId = selected,
+                        amiiboCatalogEntries = catalogEntriesFor(value),
+                    )
                 }
+                refreshSelectedAmiiboDetails()
             }
         }
         viewModelScope.launch { library.warnings.collect { value -> _ui.update { it.copy(libraryWarnings = value) } } }
@@ -128,7 +145,11 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     fun setThemeMode(mode: ThemeMode) = updateTheme { it.copy(mode = mode) }
     fun setAccentPalette(palette: AccentPalette) = updateTheme { it.copy(palette = palette) }
     fun consumeMessage() { _ui.update { it.copy(message = null) } }
-    fun selectAmiibo(id: String) { savedState[KEY_AMIIBO] = id; _ui.update { it.copy(selectedAmiiboId = id) } }
+    fun selectAmiibo(id: String) {
+        savedState[KEY_AMIIBO] = id
+        _ui.update { it.copy(selectedAmiiboId = id) }
+        refreshSelectedAmiiboDetails()
+    }
 
     fun connect() = launch("Connecting to PicoSwitch2") { adapter.connect() }
     fun disconnect() = launch("Disconnecting") { adapter.disconnect() }
@@ -178,7 +199,37 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         val result = library.import(displayName, name, bytes)
         _ui.update { it.copy(selectedAmiiboId = result.item.id, section = AppSection.Amiibo) }
         savedState[KEY_AMIIBO] = result.item.id
+        refreshSelectedAmiiboDetails()
         notice(if (result.duplicate) "That exact backup is already in the library" else "Imported ${result.item.displayName}")
+    }
+
+    fun importAmiiboKeys(uri: Uri) = launch("Importing Amiibo keys") {
+        val resolver = getApplication<Application>().contentResolver
+        resolver.openAssetFileDescriptor(uri, "r")?.use { descriptor ->
+            if (descriptor.length > RETAIL_KEY_BYTES) error("key_retail.bin must be exactly 160 bytes")
+        }
+        val bytes = resolver.openInputStream(uri)?.use { stream ->
+            val output = ByteArrayOutputStream()
+            val buffer = ByteArray(256)
+            while (true) {
+                val count = stream.read(buffer)
+                if (count < 0) break
+                if (output.size() + count > RETAIL_KEY_BYTES) error("key_retail.bin must be exactly 160 bytes")
+                output.write(buffer, 0, count)
+            }
+            output.toByteArray()
+        } ?: error("Could not read key_retail.bin")
+        amiiboKeyStore.import(bytes)
+        _ui.update { it.copy(amiiboKeysLoaded = true) }
+        refreshSelectedAmiiboDetails()
+        notice("Amiibo keys imported to this phone only; they are never sent to the adapter or included in diagnostics.")
+    }
+
+    fun forgetAmiiboKeys() = launch("Forgetting Amiibo keys") {
+        amiiboKeyStore.clear()
+        _ui.update { it.copy(amiiboKeysLoaded = false, selectedAmiiboDetails = it.selectedAmiiboDetails?.copy(crypto = AmiiboCryptoState.KeyUnavailable)) }
+        refreshSelectedAmiiboDetails()
+        notice("Amiibo keys removed from this phone. Local backups and the adapter were not changed.")
     }
 
     fun loadSelectedAmiibo() = launch("Uploading Amiibo") {
@@ -194,6 +245,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         adapter.acknowledgeDownloadedAmiibo(download)
         _ui.update { it.copy(selectedAmiiboId = item.id) }
         savedState[KEY_AMIIBO] = item.id
+        refreshSelectedAmiiboDetails()
         notice("Synced console-written data into ${item.displayName}")
     }
 
@@ -210,6 +262,49 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         val id = _ui.value.selectedAmiiboId ?: return@launch
         library.rename(id, name)
     }
+
+    private fun refreshSelectedAmiiboDetails() {
+        selectedDetailsJob?.cancel()
+        val id = _ui.value.selectedAmiiboId
+        if (id == null) {
+            _ui.update { it.copy(selectedAmiiboDetails = null, selectedAmiiboCatalog = null, selectedAmiiboTitleGame = null, amiiboCatalogLoading = false) }
+            return
+        }
+        selectedDetailsJob = viewModelScope.launch {
+            val bytes = runCatching { library.bytes(id) }.getOrNull()
+            val keys = amiiboKeyStore.read()
+            val details = bytes?.let { runCatching { AmiiboCrypto.readDetails(it, keys) }.getOrNull() }
+            val libraryItem = _ui.value.library.firstOrNull { it.id == id }
+            val figureId = details?.figureId ?: libraryItem?.figureId.orEmpty()
+            val cachedCatalog = figureId.takeIf { it.isNotBlank() }?.let(amiiboCatalog::find)
+            val cachedTitleGame = details?.titleId?.let(amiiboCatalog::gameNameForTitleId)
+            _ui.update { state ->
+                if (state.selectedAmiiboId == id) state.copy(
+                    amiiboCatalogEntries = catalogEntriesFor(state.library),
+                    selectedAmiiboDetails = details,
+                    selectedAmiiboCatalog = cachedCatalog,
+                    selectedAmiiboTitleGame = cachedTitleGame,
+                    amiiboCatalogLoading = cachedCatalog == null,
+                ) else state
+            }
+            if (libraryItem != null && cachedCatalog == null) {
+                amiiboCatalog.ensureLoaded()
+                val refreshedCatalog = figureId.takeIf { it.isNotBlank() }?.let(amiiboCatalog::find)
+                val refreshedTitleGame = details?.titleId?.let(amiiboCatalog::gameNameForTitleId)
+                _ui.update { state ->
+                    if (state.selectedAmiiboId == id) state.copy(
+                        amiiboCatalogEntries = catalogEntriesFor(state.library),
+                        selectedAmiiboCatalog = refreshedCatalog,
+                        selectedAmiiboTitleGame = refreshedTitleGame,
+                        amiiboCatalogLoading = false,
+                    ) else state
+                }
+            }
+        }
+    }
+
+    private fun catalogEntriesFor(items: List<AmiiboLibraryItem>): Map<String, AmiiboCatalogEntry> =
+        items.mapNotNull { item -> amiiboCatalog.find(item.figureId)?.let { item.id to it } }.toMap()
 
     fun removeBond(index: Int) = launch("Removing management bond") {
         adapter.removeBond(index)
@@ -359,6 +454,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
 
     companion object {
         private const val MAX_IMPORT_BYTES = 2048
+        private const val RETAIL_KEY_BYTES = 160
         private const val ADAPTER_POLL_MILLIS = 5_000L
         private const val KEY_SECTION = "section"
         private const val KEY_AMIIBO = "selectedAmiibo"
