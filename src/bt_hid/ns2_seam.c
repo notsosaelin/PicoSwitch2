@@ -18,6 +18,7 @@
 #include "core/services/storage/flash.h"         // flash_on_bt_disconnect()
 
 #include "report.h"                              // set_global_gamepad_input(), report_get_rumble()
+#include "ns2_active_input.h"                    // one authoritative source gate
 #include "switch_pro.h"                           // switch_pro_input_t, SWITCH_MASK_*, pack_stick
 #include "bt/bthid/bthid.h"                       // bthid_get_device() — connected controller identity
 #include "bt/bthid/devices/vendors/sony/ds5_bt.h" // exact decoder provenance (not late SDP PID)
@@ -118,6 +119,11 @@ static bool ns2_is_switch2_pro(uint8_t dev_addr) {
 // -------------------------------------------------------------------------
 void router_submit_input(const input_event_t *e) {
     if (!e) return;
+    ns2_input_route_decision_t route;
+    // Do this before decoding/publishing any field.  An inactive source must
+    // not affect slot 0, identity, raw buttons, wake, motion, or mouse state.
+    if (!ns2_active_input_submit(e, &route))
+        return;
     switch_pro_input_t in;
     memset(&in, 0, sizeof(in));
     in.battery_level = e->battery_level;
@@ -317,19 +323,13 @@ void router_submit_input(const input_event_t *e) {
 
 // Controller dropped -> publish a neutral (centered, no buttons) state.
 void router_device_disconnected(uint8_t dev_addr, int8_t instance) {
-    (void)instance;
-    switch_pro_input_t in;
-    memset(&in, 0, sizeof(in));
-    switch_pro_pack_stick(SWITCH_STICK_MID, SWITCH_STICK_MID, in.left_stick);
-    switch_pro_pack_stick(SWITCH_STICK_MID, SWITCH_STICK_MID, in.right_stick);
-    uint8_t slot = ns2_slot(dev_addr);
+    bool was_active = ns2_active_input_disconnected(dev_addr, instance);
+    // Inactive disconnects are intentionally invisible to the console seam.
+    // In particular, do not clear a slot that a recycled connection index may
+    // now represent.
+    if (!was_active)
+        return;
     uint8_t wake_source = dev_addr < NS2_WAKE_SESSION_SOURCES ? dev_addr : 0;
-    // Identity is live state, not connection history. Leaving the previous name/VID/PID
-    // populated makes the portal and Android `device` command claim a powered-off
-    // controller is still attached after this neutral disconnect report.
-    set_global_device(slot, NULL, 0, 0);
-    set_global_gamepad_input(slot, &in);
-    set_global_raw_buttons(slot, 0);
     if (wake_session_active[wake_source]) {
         wake_session_active[wake_source] = false;
         ns2_wake_controller_session_ended(wake_source);
@@ -339,7 +339,9 @@ void router_device_disconnected(uint8_t dev_addr, int8_t instance) {
 // Raw HID report passthrough for config mode's debug view (overrides bthid.c's weak
 // default). Lets us reverse-engineer inputs a driver doesn't parse yet (Elite paddles).
 void bthid_on_raw_report(uint8_t conn_index, const uint8_t *data, uint16_t len) {
-    set_global_raw_report(ns2_slot(conn_index), data, len);
+    ns2_active_input_note_connection(conn_index);
+    if (ns2_active_input_connection_is_active(conn_index))
+        set_global_raw_report(0, data, len);
 }
 
 // Strong override of bthid.c's weak battery hook. BAS notifications can arrive
@@ -444,6 +446,13 @@ void flash_on_bt_disconnect(void) {}
 // -------------------------------------------------------------------------
 int find_player_index(int dev_addr, int instance) {
     (void)instance;
+    // Drivers use this hook before polling rumble/LED state.  Returning -1
+    // for an inactive source gates the drivers that honor the framework's
+    // negative result, while preserving slot-0 behavior for the selected
+    // source.  A few legacy vendor init paths still fall back to slot 0; those
+    // remain an explicit follow-up until feedback becomes source-aware.
+    if (dev_addr < 0 || !ns2_active_input_connection_is_active((uint8_t)dev_addr))
+        return -1;
     // Real, previously-latent bug (found 2026-07-12 tracing a hardware-reported rumble
     // regression): this used to pass `dev_addr` (actually the caller's BTstack connection
     // index — see every call site, all pass `event.dev_addr`/`conn_index`, never a real BT

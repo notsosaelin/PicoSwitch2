@@ -18,6 +18,12 @@ void report_init(void);
 void set_global_gamepad_input(uint8_t idx, const switch_pro_input_t *in);
 void get_global_gamepad_input(uint8_t idx, switch_pro_input_t *out);
 
+// Publish the complete neutral boundary used when the authoritative input
+// source changes or disconnects.  This clears gameplay, identity, raw-debug,
+// relative mouse, rumble, and player-LED state together so no old source can
+// leak through a source transition.
+void report_neutralize_slot(uint8_t idx);
+
 // Diagnostic: ms since the last set_global_gamepad_input for this slot
 // (UINT32_MAX if never). Distinguishes "BT stopped feeding input" from a healthy
 // pipeline in the UART `pipe` command.

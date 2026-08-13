@@ -585,6 +585,11 @@ Architecture and gates:
 - [ ] Hardware-validate corrected face labels, full controls, foreground/lifecycle neutralization,
   the rebuilt saved-relationship reconnect, latency, and return to a known physical controller
   before making a broader compatibility claim.
+- [x] Add the firmware-side bounded source registry/arbiter: multiple HID-ready sources may be
+  enumerated, exactly one explicit source owns console slot 0, source changes neutralize and gate
+  on a fresh report, and stale lifecycle events cannot clear a recycled connection. Host coverage
+  is complete; physical coexistence, latency, audio/motion, and repeated Android/physical switching
+  remain hardware gates.
 - [ ] Add a custom BLE GATT source driver only if a captured target-OEM failure proves the public
   Classic HID Device path unavailable; do not pre-emptively add a second protocol.
 
@@ -596,9 +601,10 @@ Architecture and gates:
 
 ## Out of scope for the current release
 
-- Multi-controller / local 4-player: the scope is now one dongle to one controller. Background
-  discovery idles once a controller is connected (hardware-confirmed; see STATUS.md). Actively
-  rejecting a 2nd bonded controller that pages in is a possible future increment, not done here.
+- Multi-controller / local 4-player console output remains out of scope: the firmware registry can
+  describe several available HID sources, but one explicit source owns the single console stream.
+  Background discovery still idles once a controller is connected; simultaneous radio links and
+  repeated physical/Android switching require the hardware gates in STATUS.md.
 - Pretending a paired Joy-Con 2 L/R pair is one combined USB identity
 - Persisting the volatile USB personality across power cycles
 - Shipping speculative NFC or motion packet semantics

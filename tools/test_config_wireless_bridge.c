@@ -82,6 +82,7 @@ static void test_wireless_command_policy(void)
 {
     assert(config_wireless_command_allowed("info"));
     assert(config_wireless_command_allowed("device"));
+    assert(config_wireless_command_allowed("input sources"));
     assert(config_wireless_command_allowed("personality"));
     assert(config_wireless_command_allowed("personality gc"));
     assert(config_wireless_command_allowed("wake"));
@@ -104,6 +105,7 @@ static void test_wireless_command_policy(void)
     assert(!config_wireless_command_allowed("sw2cap start"));
     assert(!config_wireless_command_allowed("btid desc 0"));
     assert(!config_wireless_command_allowed("state"));
+    assert(!config_wireless_command_allowed("input active 1"));
     assert(!config_wireless_command_allowed("raw"));
     assert(!config_wireless_command_allowed("getns2map 0"));
     assert(!config_wireless_command_allowed("setns2map 0 1 2"));

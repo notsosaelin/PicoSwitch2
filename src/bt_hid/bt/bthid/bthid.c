@@ -45,6 +45,13 @@ __attribute__((weak)) void bthid_on_battery_update(input_event_t *event) {
 // supplies them. Other bthid users retain a zero-cost no-op.
 __attribute__((weak)) void bthid_on_report_boundary(void) {}
 
+// Optional lifecycle hook.  PicoSwitch uses it to expose an idle-but-connected
+// controller in the active-input source registry before its first gameplay
+// report.  Standalone bthid users keep the zero-cost weak default.
+__attribute__((weak)) void bthid_on_hid_ready(uint8_t conn_index) {
+    (void)conn_index;
+}
+
 // ============================================================================
 // STATIC DATA
 // ============================================================================
@@ -52,6 +59,7 @@ __attribute__((weak)) void bthid_on_report_boundary(void) {}
 static bthid_device_t devices[BTHID_MAX_DEVICES];
 static const bthid_driver_t* drivers[BTHID_MAX_DRIVERS];
 static uint8_t driver_count = 0;
+static uint32_t next_connection_generation = 1u;
 
 // HID descriptor cache — stored when a vendor driver is active so the generic
 // driver can use it if a fallback is triggered later
@@ -81,6 +89,7 @@ void bthid_init(void)
 {
     memset(devices, 0, sizeof(devices));
     driver_count = 0;
+    next_connection_generation = 1u;
     printf("[BTHID] Initialized\n");
 }
 
@@ -144,6 +153,9 @@ static bthid_device_t* find_or_create_device(uint8_t conn_index)
             devices[i].active = true;
             devices[i].conn_index = conn_index;
             devices[i].player_index = 0xFF;  // Unassigned
+            devices[i].connection_generation = next_connection_generation++;
+            if (devices[i].connection_generation == 0u)
+                devices[i].connection_generation = next_connection_generation++;
             return &devices[i];
         }
     }
@@ -502,6 +514,7 @@ void bt_on_hid_ready(uint8_t conn_index)
     // Debug: confirm device state directly from array
     printf("[BTHID] Setup complete: devices[0].active=%d, devices[0].driver=%p\n",
            devices[0].active, devices[0].driver);
+    bthid_on_hid_ready(conn_index);
 }
 
 void bt_on_disconnect(uint8_t conn_index)

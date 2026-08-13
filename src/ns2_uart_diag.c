@@ -13,6 +13,7 @@
 #include "ns2_motion_hybrid_live.h"
 #include "ns2_ds5_motion40.h"
 #include "ns2_diag_input.h"
+#include "ns2_active_input.h"
 #include "ds5_audio_bridge.h"
 #include "ds5_motion_pair_capture.h"
 #include "controller_headset.h"
@@ -80,6 +81,48 @@ _Static_assert(NS2_MOTION_HYBRID_REASON_COUNT == 13u,
 
 static bool tx_pending(void) {
     return tx_position < tx_length;
+}
+
+static void queue_text(const char *text);
+
+static void queue_active_input_status(void) {
+    ns2_input_arbiter_status_t status;
+    ns2_active_input_status(&status);
+    int j = snprintf(trace_format_response, sizeof(trace_format_response),
+                     "{\"active_input\":{\"active\":%lu,\"pending\":%lu,"
+                     "\"explicit\":%s,\"fresh\":%s,\"transitions\":%lu,\"sources\":[",
+                     (unsigned long)status.active_id,
+                     (unsigned long)status.pending_id,
+                     status.explicit_active ? "true" : "false",
+                     status.awaiting_fresh ? "true" : "false",
+                     (unsigned long)status.transition_count);
+    for (unsigned i = 0; i < status.source_count && j < (int)sizeof(trace_format_response) - 96; ++i) {
+        const ns2_input_source_info_t *source = &status.sources[i];
+        char name[33];
+        unsigned n = 0;
+        for (; source->name[n] && n < sizeof(name) - 1u; ++n) {
+            unsigned char c = (unsigned char)source->name[n];
+            name[n] = (c < 0x20u || c == '"' || c == '\\') ? ' ' : (char)c;
+        }
+        name[n] = '\0';
+        j += snprintf(trace_format_response + j,
+                      sizeof(trace_format_response) - (size_t)j,
+                      "%s{\"id\":%lu,\"conn\":%u,\"transport\":%u,"
+                      "\"generation\":%lu,\"vid\":%u,\"pid\":%u,\"name\":\"%s\"}",
+                      i ? "," : "", (unsigned long)source->id,
+                      source->key.dev_addr, source->key.transport,
+                      (unsigned long)source->generation,
+                      source->vendor_id, source->product_id, name);
+        if (j < 0) j = 0;
+        if ((size_t)j >= sizeof(trace_format_response)) {
+            j = (int)sizeof(trace_format_response) - 1;
+            break;
+        }
+    }
+    snprintf(trace_format_response + j,
+             sizeof(trace_format_response) - (size_t)j,
+             "],\"more\":false}}}");
+    queue_text(trace_format_response);
 }
 
 static void queue_text(const char *text) {
@@ -1659,6 +1702,28 @@ static void handle_command(void) {
         } else {
             queue_text("{\"ds5motion\":\"error\",\"reason\":\"probe_rate_requires_axis_0_2_and_value_-4096_4096\"}");
         }
+    } else if (strcmp(rx_line, "input sources") == 0) {
+        queue_active_input_status();
+    } else if (strncmp(rx_line, "input active ", 13) == 0) {
+        const char *arg = rx_line + 13;
+        uint32_t id = 0;
+        if (strcmp(arg, "none") != 0) {
+            char *end = NULL;
+            unsigned long parsed = strtoul(arg, &end, 10);
+            if (!arg[0] || !end || *end != '\0' || parsed > UINT32_MAX) {
+                queue_text("{\"active_input\":\"error\",\"reason\":\"bad_source_id\"}");
+                goto command_done;
+            }
+            id = (uint32_t)parsed;
+        }
+        if (!ns2_active_input_request(id)) {
+            queue_text("{\"active_input\":\"error\",\"reason\":\"unknown_source\"}");
+        } else {
+            snprintf(trace_format_response, sizeof(trace_format_response),
+                     "{\"active_input\":\"queued\",\"active\":%lu}",
+                     (unsigned long)id);
+            queue_text(trace_format_response);
+        }
     } else if (strcmp(rx_line, "input") == 0 ||
                strcmp(rx_line, "input status") == 0) {
         switch_pro_input_t in;
@@ -2007,13 +2072,14 @@ static void handle_command(void) {
                    "\"imuref interval 6-24\","
                    "\"motionprobe status|latch|seed STATE|on|off|reset|set G0 G1 G2|rate AXIS VALUE|accel X Y Z\","
                    "\"button y\","
-                   "\"motionauto\",\"motionusb\",\"ds5motion status|on|off|frame body|world|carrier switch2|dscale|legacy|map SX SY SZ|probe rate AXIS VALUE|probe off|pdu40 on|off|status|accel live|half|zero\",\"input status\",\"audio status|clear|headset\",\"ds5codec status|lock on|lock off\","
+                   "\"motionauto\",\"motionusb\",\"ds5motion status|on|off|frame body|world|carrier switch2|dscale|legacy|map SX SY SZ|probe rate AXIS VALUE|probe off|pdu40 on|off|status|accel live|half|zero\",\"input status\",\"input sources\",\"input active ID|none\",\"audio status|clear|headset\",\"ds5codec status|lock on|lock off\","
                    "\"pro2audio on|off|status|live on|live off|complexity 0-10|analysis on|analysis off|replay|replay stop\","
                    "\"btreconnect\",\"btfresh\","
                    "\"reenumerate\",\"help\"]}");
     } else if (rx_length != 0) {
         queue_text("{\"error\":\"unknown command\"}");
     }
+command_done:
     rx_length = 0;
     rx_overflow = false;
 }

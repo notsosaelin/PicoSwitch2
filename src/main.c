@@ -12,6 +12,7 @@
 #include "config.h"
 #include "ds5_audio_bridge.h"
 #include "ns2_uart_diag.h"
+#include "ns2_active_input.h"
 
 // joypad-os Bluetooth stack — core1 entry (src/bt_hid/ns2_bt_host.c).
 void ns2_bt_core_task(void);
@@ -56,6 +57,7 @@ main()
 
 	// Initialize the cross-core shared input state before either core uses it.
 	report_init();
+	ns2_active_input_init();
 
 	// Load persistent settings (controller body/lightbar colour, mappings, etc.) from flash.
 	config_load();

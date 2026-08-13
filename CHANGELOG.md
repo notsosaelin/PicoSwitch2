@@ -54,6 +54,13 @@ Release notes describe user-visible behavior. Detailed implementation history re
   private user `key_retail.bin`; keys and decrypted values never enter firmware or diagnostics.
 - Android appearance now includes persisted System, Light, Dark, and true OLED-black themes plus
   labeled PicoSwitch and Joy-Con-inspired accent palettes that never change firmware identity.
+- Firmware-side explicit input ownership is now host-testable: connected HID sources receive stable
+  boot-scoped IDs plus connection generations, only one selected source can publish to console slot 0,
+  source changes emit a complete neutral boundary and require a fresh report, and active disconnects
+  remain neutral without silent fallback. `input sources` is a bounded status surface; wired UART
+  also accepts `input active <id|none>`. The default first-source path remains unchanged when no
+  explicit selection is requested. This is source/build evidence only; multiple-controller radio,
+  latency, audio/motion, and Android end-to-end switching still require hardware validation.
 
 - Default-off genuine/generated motion fitment harness. A verified Nintendo Pro Controller 2
   remains the immutable timing/status/packing/tail source while an independently aligned
