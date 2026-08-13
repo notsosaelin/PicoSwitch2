@@ -592,8 +592,13 @@ unchecked HID hardware gates below remain planned but are not part of Codex's cu
 - [x] Complete the handheld UI hierarchy pass: Home-only connection status, focused Home tiles,
   collapsed Settings categories, a full-height artwork-led Amiibo library, deterministic
   Name/Series/Recently added sorting, and shared adapter-only catalog identity on Home/Amiibo.
-- [ ] Add separately tested Android-local Amiibo initialization/re-signing and ZIP exchange without
+- [x] Add separately tested Android-local Amiibo initialization/re-signing and ZIP exchange without
   making either a prerequisite for local import or adapter operations.
+- [x] Add a strict foreground phone-NFC backup path for ordinary NTAG215 figures: exact version/page
+  reads, optional real originality signature, fail-closed BCC/shape validation, no writes/auth/NDEF,
+  and deliberate figure-v3 rejection until direct phone-RF evidence exists.
+- [ ] Hardware-validate phone NFC against an independently dumped ordinary Amiibo, including
+  signature stability, mid-read tag removal, duplicate handling, and byte-exact 540/572 output.
 - [ ] Hardware-validate corrected face labels, full controls, foreground/lifecycle neutralization,
   the rebuilt saved-relationship reconnect, latency, and return to a known physical controller
   before making a broader compatibility claim.

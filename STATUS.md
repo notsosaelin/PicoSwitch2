@@ -111,19 +111,22 @@ tree. No flash, UART mutation, or physical multi-source/latency validation was p
 
 The native Android Amiibo page now has portal-parity raw identity/details: character code/variant,
 tag type, model/series, format, extended variant, and optional owner/nickname/date/write-count/game
-metadata. The latter uses a direct read-only port of the tested portal crypto path and the user’s
+metadata. The latter uses a direct port of the tested portal crypto path and the user's
 validated 160-byte `key_retail.bin`; the key remains app-private, never enters firmware or
-diagnostics, and Android backup is disabled. This is source/JVM scope only; Android initialization,
-ZIP exchange, Mii rendering, and physical Amiibo hardware validation remain open. A bounded
+diagnostics, and Android backup is disabled. Local initialization/re-signing and bounded
+portal-compatible ZIP library exchange are implemented transactionally. A strict foreground
+phone-`NfcA` reader backs up ordinary NTAG215 figures as exact 540-byte images plus an optional real
+32-byte signature; it rejects malformed tags, other NTAG sizes, and figure-v3 rather than truncating
+or guessing. These paths are source/JVM validated; physical NFC/Amiibo validation and Mii rendering
+remain open. A bounded
 seven-day AmiiboAPI cache now supplies portal-matched friendly name/series/type/release, compatible
 games/title-ID labels, and best-effort artwork without gating local or adapter operations. See
 [`docs/experiments/android-amiibo-page-parity-2026-08-13.md`](docs/experiments/android-amiibo-page-parity-2026-08-13.md).
 
-Read-only ADB evidence from a Retroid Pocket Classic narrows the first risk: its API-34 OEM image
-has HID Device enabled and the service is actively bound, while its built-in controller exposes all
-required axes and standard buttons. It also proves source selection cannot filter on `isExternal`
-or virtual origin. An ordinary debug APK has not yet called the public profile/register APIs, so
-this remains source-device evidence rather than an end-to-end hardware pass.
+Earlier read-only ADB evidence from a Retroid Pocket Classic established that its API-34 OEM image
+has HID Device enabled and its built-in controller exposes the required axes/buttons. The later AYN
+Thor in-game pass supersedes the former API-feasibility uncertainty. The Retroid evidence still
+proves source selection cannot filter on `isExternal` or virtual origin.
 
 ## Switch 1 Joy-Con / Pro Controller motion — 🟢 at parity with genuine hardware 2026-07-27
 

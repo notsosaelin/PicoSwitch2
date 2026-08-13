@@ -11,6 +11,16 @@ Release notes describe user-visible behavior. Detailed implementation history re
   personality. The new bonded management command `reenumerate` queues the existing same-personality
   USB detach/reset/reconnect path on core 0; both the Android companion and web portal expose an
   explicit **Apply identity changes** action and warn about the brief console-side reconnect.
+- Android's private Amiibo library now supports bounded portal-v3 ZIP import/export and explicit
+  key-gated local initialization/re-signing. Imports validate every image before transactionally
+  replacing the library; archives exclude retail keys and adapter state.
+- Android can make a read-only physical backup of an ordinary NTAG215 Amiibo using foreground
+  `NfcA`: exact page reads produce 540 bytes and append the real 32-byte originality signature only
+  when `READ_SIG` succeeds. Malformed tags, other NTAG sizes, and figure-v3 fail closed; no NFC
+  writes, password authentication, NDEF, or adapter command is used.
+- LE bond enumeration is now versioned and complete-or-paginated within the wireless bridge's
+  511-byte response ceiling. Android verifies page cursors, totals, and duplicate-free assembly and
+  never presents a legacy or malformed partial list as complete.
 - Android companion navigation now uses a compact handheld dashboard: the adapter connection row
   appears only on Home, Home keeps controller/Amiibo status in focused tiles, and Settings exposes
   Appearance, Amiibo metadata, connections, About, and Developer details as collapsed categories.
