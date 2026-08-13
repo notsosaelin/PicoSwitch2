@@ -236,12 +236,28 @@ the stale-Classic-link wedge does not recur (watch `disc.*` and `controller_conn
 
 ## Remaining questions
 
-- Management-half wedge mechanism (symptoms 1–2) — the trace should localize it.
-- Exact time-to-failure and trigger (idle vs. active vs. a specific event).
-- Live color change: is a targeted re-enumeration after a color write the right UX (the owner
-  suggested manually triggering it), or should the Pro2 identity re-read colors without a full
-  re-enumeration? (Separate from this failure.)
-- Portal auto-refresh after Amiibo sync (UI-only).
+- **Leading hypothesis for the *spontaneous* Classic-controller drop (to check in the soak log):**
+  management **advertising while a controller is connected but no management client is attached**.
+  With the decoupling fix, `config_ble_service_task` advertises whenever authorized and the advertiser
+  is idle (no client, no wake) — so during a window with the portal disconnected, the adapter
+  advertises low-duty *while a Classic controller is streaming*. The original failure trace showed the
+  Classic controller dropping with **no HCI disconnect event** (`disc=0`), which is consistent with RF
+  contention rather than a protocol disconnect. The plan flagged exactly this as HW-check 7b, with a
+  fallback (suppress advertising while the audio/critical window is active). **What the soak proves:**
+  if a `controller_connected true→false` (or a stale wedge) is logged and correlates with `adv=true`
+  (i.e., it happened while advertising because no client was connected), that is the mechanism, and the
+  fix is to gate management advertising more tightly (e.g., don't advertise into an active controller
+  session unless a client is present/recent). **Do not implement this speculatively — it needs the soak
+  evidence first.** Note: in the current session a client is connected (`adv=false`), so this is only
+  exercised if the portal disconnects overnight.
+- Different-identity personality-switch re-enumeration (Pro2→GC/→CDC) — **not testable over UART**
+  tonight (needs BOOTSEL or a new diag command via a flash). Same-identity re-enum is proven clean.
+- Exact time-to-failure of the spontaneous variant (the soak is measuring this).
+- Live color change (P2): is a targeted re-enumeration after a color write the right UX (owner
+  suggested triggering it), or should the Pro2 identity re-read colors without a full re-enumeration?
+  Mechanism is the existing edge-triggered flag (`g_usb_personality_request_pending` pattern) →
+  `usb_apply_diag_reenumeration` (proven BT-safe tonight); the open decision is *when* to trigger
+  (every change vs. on Save vs. explicit apply) — an owner UX call, so designed but not implemented.
 
 ## Future work
 
