@@ -7,6 +7,11 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Added
 
+- The offline Switch 2 command atlas now accepts both console-side `trace` and controller-side
+  `blecap` captures, fails closed on absent/non-zero loss metadata, and retains capture-boundary,
+  transport, GATT-handle, completeness, payload-hash, and source-hash provenance. A durable corpus
+  report records the three controller-side initialization pairs and ranks the next bounded capture
+  gaps; the audit found no need for another generic protocol runner.
 - Declared Android's normal `VIBRATE` permission for the companion's implemented console-rumble
   feedback path, closing the four `MissingPermission` lint errors without adding a runtime prompt.
 - In-band BLE management is now bonded/encrypted and production-default-on. RX and notification-

@@ -17,19 +17,20 @@ Those changes are checkpoints, not part of the published `v1.5.0` artifacts.
 
 ### Immediate priority: genuine-controller protocol discovery
 
-- [ ] Extend `ns2_command_atlas.py` across the controller-side `blecap` schema before requesting
-  new hardware activity. The current offline baseline finds 42 zero-loss console-side traces and
+- [x] Extend `ns2_command_atlas.py` across the controller-side `blecap` schema before requesting
+  new hardware activity. The current offline audit admits 46 zero-loss console-side traces and
   30 command/subcommand pairs, but that corpus mixes emulated and relayed transactions. There are
-  29 zero-loss genuine BLE captures; only two contain command traffic, both covering the same
+  30 zero-loss BLE captures; only two contain command traffic, both covering the same
   initialization sequence. Keep transport/provenance explicit and separate observed wire shapes
   from inferred names.
-- [ ] Rank the resulting gaps by user value and captureability. Start with passive or reversible
+- [x] Rank the resulting gaps by user value and captureability. Start with passive or reversible
   genuine-controller surfaces: initialization/state transitions, headset/audio control, rumble,
   LED/player state, reconnect/power, and native NFC. Keep firmware-update capture prepared for the
   next real update opportunity rather than trying to manufacture one.
-- [ ] Add one bounded generic protocol runner only if the atlas exposes a repeated manual gap that
-  the existing tracer and `PicoSwitch2Lab.psm1` cannot package. Do not create another UART selector
-  or a second artifact format.
+- [x] Confirm that no additional generic protocol runner is currently justified: the completed
+  atlas exposes evidence gaps, but the existing tracer, BLE capture path, and
+  `PicoSwitch2Lab.psm1` can package each ranked experiment. Do not create another UART selector
+  or a second artifact format unless a later bounded experiment proves that packaging gap.
 - [ ] Promote a discovery only after a zero-loss capture, semantic A/B discriminator, active
   protocol-document update, and replay fixture where the transaction is deterministic.
 

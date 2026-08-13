@@ -37,6 +37,7 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | 8BitDo Ultimate Bluetooth paddles | [`../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md`](../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md) |
 | Pro Controller 2 USB protocol | [`switch2/usb-spec.md`](switch2/usb-spec.md) |
 | Console command surface | [`switch2/command-surface.md`](switch2/command-surface.md) |
+| Controller-side command atlas and ranked capture gaps | [`switch2/controller-command-atlas.md`](switch2/controller-command-atlas.md) |
 | Controller firmware identity | [`switch2/firmware-versioning.md`](switch2/firmware-versioning.md) |
 | Controller Safe Mode (recovery) | [`switch2/controller-safe-mode.md`](switch2/controller-safe-mode.md) |
 | Controller 2 MB NVM/SPI map | [`switch2/controller-nvm-map.md`](switch2/controller-nvm-map.md) |

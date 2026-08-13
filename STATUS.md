@@ -335,7 +335,12 @@ are in
 The NFC evidence workflow is now generalized without changing its proven runner.
 `tools/PicoSwitch2Lab.psm1` provides one manifest/provenance contract;
 `capture_to_fixture.py` generates deterministic JSON/C fixtures from zero-loss captures;
-`ns2_command_atlas.py` aggregates observed request/response shapes; and domain runners package
+`ns2_command_atlas.py` now aggregates console-side `trace` and controller-side `blecap`
+request/response shapes while retaining boundary, transport, GATT handle, completeness, and source
+hash provenance. It rejects missing or non-zero loss metadata. The 2026-08-13 corpus audit admits
+46 trace and 30 BLE captures but finds controller-side command traffic in only two files, covering
+the same three initialization pairs; the ranked gaps are documented in
+[`docs/switch2/controller-command-atlas.md`](docs/switch2/controller-command-atlas.md). Domain runners package
 motion, audio, and firmware-update evidence. Repository-local Codex skills under `.agents/skills/`
 enforce the same gates on a fresh clone.
 
