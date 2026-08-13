@@ -30,12 +30,22 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.FileProvider
 import dev.picoswitch.companion.bluetooth.AdapterBluetoothIdentity
+import dev.picoswitch.companion.nfc.AndroidNtag215Reader
 import dev.picoswitch.companion.ui.CompanionApp
 import dev.picoswitch.companion.ui.CompanionViewModel
 import java.util.regex.Pattern
 
 class MainActivity : ComponentActivity() {
     private val viewModel: CompanionViewModel by viewModels()
+    private val nfcReader by lazy {
+        AndroidNtag215Reader(
+            activity = this,
+            onTagDetected = viewModel::nfcScanReading,
+            onAccepted = viewModel::importNfcAmiibo,
+            onRejected = viewModel::nfcScanRejected,
+            onReaderError = viewModel::nfcReaderError,
+        )
+    }
     private enum class ManagementAction { Pair, Reconnect }
     private var pendingManagementAction = ManagementAction.Reconnect
     private var pendingBondDevice: BluetoothDevice? = null
@@ -124,6 +134,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        viewModel.setNfcReaderAvailable(nfcReader.isAvailable)
         setContent {
             CompanionApp(
                 viewModel = viewModel,
@@ -132,6 +143,7 @@ class MainActivity : ComponentActivity() {
                 onImportAmiibo = { importAmiibo.launch(arrayOf("*/*")) },
                 onImportAmiiboArchive = { importAmiiboArchive.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
                 onExportAmiiboArchive = { exportAmiiboArchive.launch("PicoSwitch2-Amiibo-Library.zip") },
+                onScanAmiibo = ::requestNfcScan,
                 onImportAmiiboKeys = { importAmiiboKeys.launch(arrayOf("application/octet-stream", "application/*", "*/*")) },
                 onPrepareController = ::requestControllerBridge,
                 onExportDiagnostics = ::shareDiagnostics,
@@ -167,6 +179,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onPause() {
+        nfcReader.disable()
+        viewModel.nfcScanDisarmed()
         viewModel.cancelAutomaticControllerResume()
         viewModel.neutralizeController()
         viewModel.recordLifecycle("paused; controller neutralized")
@@ -198,6 +212,11 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
+    override fun onDestroy() {
+        nfcReader.close()
+        super.onDestroy()
+    }
+
     override fun onResume() {
         super.onResume()
         // Controller mode is intentionally foreground-only. Keep the handheld display awake
@@ -211,6 +230,15 @@ class MainActivity : ComponentActivity() {
     private fun requestControllerBridge() {
         if (Build.VERSION.SDK_INT >= 31) controllerPermissions.launch(arrayOf(Manifest.permission.BLUETOOTH_CONNECT))
         else viewModel.acquireControllerBridge()
+    }
+
+    private fun requestNfcScan() {
+        if (!nfcReader.isAvailable) {
+            viewModel.nfcReaderUnavailable("This phone does not expose an NFC-A reader.")
+            return
+        }
+        viewModel.armNfcScan()
+        nfcReader.arm()
     }
 
     @SuppressLint("MissingPermission")

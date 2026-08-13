@@ -43,6 +43,7 @@ selection, upload, Sync, present/eject, and clean/used copy operations remain ke
 safe. A compact seven-day AmiiboAPI cache now adds portal-matched friendly names, series/type/release,
 compatible games/title-ID labels, and best-effort artwork; stale or offline catalog/image requests
 never gate the local library or adapter flows. Android now also provides confirmation-gated local
-initialization/re-signing with the user’s own key and a bounded, traversal-safe portal-compatible
-v3 ZIP library exchange; neither operation changes the adapter. Phone NFC and Mii rendering remain
-intentionally deferred.
+initialization/re-signing with the user's own key, a bounded traversal-safe portal-compatible v3 ZIP
+library exchange, and a host-tested foreground one-shot ordinary-NTAG215 NFC backup path. None
+changes the adapter. The physical NFC gate is pending, figure-v3 phone reads remain deliberately
+rejected, and Mii rendering remains deferred.
