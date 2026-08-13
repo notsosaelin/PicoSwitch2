@@ -4,6 +4,7 @@ import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
 import android.companion.AssociationInfo
 import android.companion.AssociationRequest
 import android.companion.BluetoothDeviceFilter
@@ -109,7 +110,12 @@ class MainActivity : ComponentActivity() {
             override fun onDeviceFound(chooserLauncher: IntentSender) = launchAssociation(chooserLauncher)
             override fun onAssociationPending(intentSender: IntentSender) = launchAssociation(intentSender)
             override fun onAssociationCreated(associationInfo: AssociationInfo) {
-                Toast.makeText(this@MainActivity, "Adapter associated. Android may now ask to bond.", Toast.LENGTH_SHORT).show()
+                val address = if (Build.VERSION.SDK_INT >= 33) associationInfo.deviceMacAddress?.toString() else null
+                val device = address?.let {
+                    runCatching { getSystemService(BluetoothManager::class.java).adapter.getRemoteDevice(it) }.getOrNull()
+                }
+                if (device != null) bondAndConnect(device)
+                else Toast.makeText(this@MainActivity, "Adapter associated. Select it from the saved-host list to connect.", Toast.LENGTH_LONG).show()
             }
             override fun onFailure(error: CharSequence?) {
                 Toast.makeText(this@MainActivity, error ?: "Adapter pairing was cancelled", Toast.LENGTH_LONG).show()
