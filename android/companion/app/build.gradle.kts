@@ -45,6 +45,10 @@ android {
     }
     packaging.resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     testOptions.unitTests.isIncludeAndroidResources = true
+    // DiagnosticLog mirrors every event to android.util.Log so hardware bring-up is
+    // observable over ADB. That class is covered by pure-JVM tests, where the android
+    // stubs throw unless unmocked calls are allowed to return their default value.
+    testOptions.unitTests.isReturnDefaultValues = true
 }
 
 dependencies {
