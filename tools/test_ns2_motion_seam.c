@@ -155,6 +155,7 @@ static void rows_are_permutations(void)
     const uint8_t sources[] = {
         SWITCH_MOTION_SOURCE_GENERIC, SWITCH_MOTION_SOURCE_DUALSENSE,
         SWITCH_MOTION_SOURCE_WII, SWITCH_MOTION_SOURCE_SWITCH1,
+        SWITCH_MOTION_SOURCE_ANDROID,
     };
     for (size_t s = 0; s < sizeof(sources) / sizeof(sources[0]); s++) {
         const ns2_motion_seam_t *row = ns2_motion_seam_for(sources[s]);
@@ -220,6 +221,7 @@ static void rows_are_proper_rotations(void)
     const uint8_t sources[] = {
         SWITCH_MOTION_SOURCE_GENERIC, SWITCH_MOTION_SOURCE_DUALSENSE,
         SWITCH_MOTION_SOURCE_WII, SWITCH_MOTION_SOURCE_SWITCH1,
+        SWITCH_MOTION_SOURCE_ANDROID,
     };
     for (size_t s = 0; s < sizeof(sources) / sizeof(sources[0]); s++) {
         const ns2_motion_seam_t *row = ns2_motion_seam_for(sources[s]);
@@ -244,6 +246,53 @@ static void unknown_source_falls_back(void)
     CHECK(ns2_motion_seam_for(255) == generic, "255 must fall back");
 }
 
+// Determinant +1 proves a row is a rotation. It does NOT prove it is the RIGHT
+// rotation: a 90 degree error is still proper, and exactly that shipped twice --
+// once on the DualSense and again on Android, each found only by a maintainer
+// reporting wrong aim in a game.
+//
+// The anchor that catches it is static and already measured: a genuine Pro
+// Controller 2 lying face-up reads +1 g on carrier slot 2 (+4279/+4309 observed,
+// 4096 counts/g after ns2_motion_seam_apply halves the interchange scale). So
+// every row, applied to ITS OWN source's face-up gravity vector, must land that
+// gravity on slot 2 and nowhere else. Each family declares that vector here in
+// its own frame, which is a documented property of the hardware rather than
+// something a test can infer.
+static void face_up_gravity_lands_on_slot_2(void)
+{
+    // Interchange scale in: 8192 counts/g. The seam halves it to the Pro2's 4096.
+    enum { G_IN = 8192, G_OUT = 4096 };
+    const struct {
+        uint8_t source;
+        int16_t face_up[3];
+        const char *why;
+    } families[] = {
+        // DualSense: face normal is Y. Fixed by the paired gravity capture that
+        // resolved this row (see ns2_seam.c).
+        { SWITCH_MOTION_SOURCE_DUALSENSE, { 0, G_IN, 0 }, "DS5 face normal is Y" },
+        { SWITCH_MOTION_SOURCE_WII, { 0, G_IN, 0 }, "wiimote_bt publishes in the DS5 arrangement" },
+        // Switch-1: raw LSM6DS3, Z is the face normal.
+        { SWITCH_MOTION_SOURCE_SWITCH1, { 0, 0, G_IN }, "Switch-1 face normal is Z" },
+        // Android: Z points out of the screen, by platform contract.
+        { SWITCH_MOTION_SOURCE_ANDROID, { 0, 0, G_IN }, "Android face normal is Z" },
+    };
+    const int16_t gyro_still[3] = { 0, 0, 0 };
+    for (size_t i = 0; i < sizeof(families) / sizeof(families[0]); i++) {
+        int16_t accel_out[3], gyro_out[3];
+        ns2_motion_seam_apply(families[i].source, families[i].face_up, gyro_still,
+                              accel_out, gyro_out);
+        CHECK(accel_out[2] == G_OUT,
+              "source %u resting face-up must put gravity on carrier slot 2 at "
+              "+%d, got %d (%s). A row can be a proper rotation and still be "
+              "rotated 90 degrees from the console's frame.",
+              families[i].source, G_OUT, accel_out[2], families[i].why);
+        CHECK(accel_out[0] == 0 && accel_out[1] == 0,
+              "source %u resting face-up must put nothing on slots 0/1, got "
+              "[%d, %d] (%s)",
+              families[i].source, accel_out[0], accel_out[1], families[i].why);
+    }
+}
+
 int main(void)
 {
     legacy_equivalence();
@@ -251,6 +300,7 @@ int main(void)
     rows_are_independent();
     rows_are_permutations();
     rows_are_proper_rotations();
+    face_up_gravity_lands_on_slot_2();
     unknown_source_falls_back();
 
     if (failures) {

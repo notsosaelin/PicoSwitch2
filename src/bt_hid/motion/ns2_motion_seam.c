@@ -66,8 +66,32 @@ static const ns2_motion_seam_t NS2_MOTION_SEAMS[] = {
     // (inverted axis = flip that sign; pitch acting as yaw = swap those src
     // slots); keep determinant +1. Kept in firmware, not the app, so a correction
     // is a flash rather than a new APK.
+    // Corrected 2026-08-14 from a static gravity check, after hardware reported
+    // correct yaw with attenuated pitch that snapped instead of tracking.
+    //
+    // Every row above lands its own source's face-up gravity on carrier slot 2 at
+    // +4096; that is the measured Pro2 anchor at the top of this file. The old
+    // Android row was copied from the DualSense one, which silently assumed the
+    // two frames share a face normal. They do not: the DualSense's face normal is
+    // its Y (fixed by the paired gravity capture in ns2_seam.c), while Android's
+    // is its Z (fixed by the platform contract -- Z points out of the screen). So
+    // the old row put Android's gravity on slot 1 at -4096 and left slot 2 empty,
+    // reporting the emulated controller as pitched 90 degrees nose-down.
+    //
+    // Yaw survived that because yaw is rotation about gravity, so a mount error
+    // transforms the rate and the reference together. Pitch did not: the console
+    // applies its own gravity correction, which fought the integrated attitude
+    // until the disagreement was large enough to snap -- the reported symptom.
+    //
+    // Derivation: convert Android a into the DualSense frame d, then apply the
+    // validated DS5 row. d_x = a_x (both right), d_y = a_z (both face normal),
+    // d_z = d_x X d_y = -a_y. The DS5 row then yields [+a_x, +a_y, +a_z]: the
+    // identity. Determinant +1 (identity permutation, no sign flips), so it is a
+    // proper rotation as tools/test_ns2_motion_seam.c requires. There is no
+    // residual sign freedom to guess at -- Android guarantees right-hand-rule
+    // gyro about these same axes, so the signs follow from the frame.
     [SWITCH_MOTION_SOURCE_ANDROID] = {
-        {0, 2, 1}, {1, -1, 1}, {0, 2, 1}, {1, -1, 1} },
+        {0, 1, 2}, {1, 1, 1}, {0, 1, 2}, {1, 1, 1} },
 };
 
 #define NS2_MOTION_SEAM_COUNT \
