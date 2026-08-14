@@ -134,10 +134,19 @@ class HidDeviceBridge(
                     // sensors registered with nothing consuming them.
                     releaseFeedbackResources()
                     input.neutralize()
-                    _state.value = _state.value.copy(
-                        phase = BridgePhase.Ready, hostName = null, message = "Controller link disconnected", registered = true,
+                    // Hand Android's single HID Device slot back. Holding it across a
+                    // dropped link is what made the next attempt collide with our own
+                    // orphaned registration and report that another app owns the
+                    // profile. Releasing here means a retry only ever fails when some
+                    // genuinely different app holds it. Re-acquiring is the normal
+                    // resume path, so nothing is lost by not keeping it warm.
+                    releaseRegistration()
+                    _state.value = BridgeState(
+                        phase = BridgePhase.Idle,
+                        message = "Controller link disconnected",
+                        registered = false,
                     )
-                    diagnostics?.event("controller", "host disconnected")
+                    diagnostics?.event("controller", "host disconnected", "released HID registration")
                 }
             }
         }
@@ -218,6 +227,21 @@ class HidDeviceBridge(
             closeFailedProfile(hid)
             fail("Android rejected HID Device registration", error)
         }
+    }
+
+    /**
+     * Give up this app's HID Device registration and proxy.
+     *
+     * Android exposes exactly one HID Device slot per system, so a registration we
+     * no longer need is indistinguishable, from the next attempt's point of view,
+     * from a third-party app owning it. Both calls are best-effort: the profile may
+     * already be gone, and failing to release must not throw into a callback.
+     */
+    private fun releaseRegistration() {
+        val hid = profile ?: return
+        profile = null
+        runCatching { hid.unregisterApp() }
+        runCatching { manager?.adapter?.closeProfileProxy(BluetoothProfile.HID_DEVICE, hid) }
     }
 
     private fun closeFailedProfile(hid: BluetoothHidDevice) {
