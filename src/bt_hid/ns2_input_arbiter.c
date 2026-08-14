@@ -106,7 +106,14 @@ bool ns2_input_arbiter_request_active(ns2_input_arbiter_t *arbiter,
     // A repeated request for the already active source is intentionally a
     // no-op.  This keeps source switching idempotent and avoids unnecessary
     // neutral boundaries when a UI retries an acknowledged command.
-    if (id == arbiter->active_id && !arbiter->awaiting_fresh &&
+    //
+    // It is only a no-op once the choice is already explicit. A source that owns
+    // the console by automatic policy is NOT the same state as one the user
+    // picked: selecting it is how the user pins it, and short-circuiting here
+    // would leave the choice implicit and let a higher-class source take the
+    // console away from them later.
+    if (id == arbiter->active_id && arbiter->explicit_active &&
+        !arbiter->awaiting_fresh &&
         atomic_load_u32(&arbiter->pending_request) == arbiter->applied_request) {
         return true;
     }
@@ -123,15 +130,63 @@ bool ns2_input_arbiter_queue_active(ns2_input_arbiter_t *arbiter,
     return true;
 }
 
+// Best source to own the console when nobody has been chosen explicitly.
+// Higher class wins; ties go to the earliest registered source so the result is
+// stable and does not flap between two peers of the same class.
+static int preferred_index(const ns2_input_arbiter_t *arbiter)
+{
+    int best = -1;
+    for (unsigned i = 0; i < NS2_INPUT_ARBITER_MAX_SOURCES; ++i) {
+        const ns2_input_source_info_t *source = &arbiter->sources[i];
+        if (!source->present) continue;
+        if (best < 0 || source->source_class > arbiter->sources[best].source_class)
+            best = (int)i;
+    }
+    return best;
+}
+
+// Apply the automatic ownership policy. Only ever called when the user has made
+// no explicit choice. Returns true when ownership actually moved, which obliges
+// the caller to emit a neutral boundary.
+static bool apply_auto_policy(ns2_input_arbiter_t *arbiter)
+{
+    if (arbiter->explicit_active) return false;
+    int best = preferred_index(arbiter);
+    uint32_t wanted = best < 0 ? NS2_INPUT_SOURCE_ID_NONE
+                               : arbiter->sources[best].id;
+    if (wanted == arbiter->active_id) return false;
+
+    bool had_owner = arbiter->active_id != NS2_INPUT_SOURCE_ID_NONE;
+    arbiter->active_id = wanted;
+    // A first owner may publish immediately: there is no previous stream whose
+    // final state has to be flushed. Taking the console away from a live source
+    // does require the replacement to prove itself with a fresh report, so a
+    // held button on the outgoing source cannot survive the handover.
+    arbiter->awaiting_fresh = (had_owner && wanted != NS2_INPUT_SOURCE_ID_NONE) ? 1u : 0u;
+    arbiter->transition_count++;
+    return had_owner;
+}
+
 static int register_source(ns2_input_arbiter_t *arbiter,
                            const ns2_input_source_key_t *key,
                            const char *name,
                            uint16_t vendor_id,
-                           uint16_t product_id)
+                           uint16_t product_id,
+                           uint8_t source_class,
+                           bool *auto_switched)
 {
     int existing = find_source(arbiter, key);
     if (existing >= 0) {
         update_metadata(&arbiter->sources[existing], name, vendor_id, product_id);
+        // A source registered by a connection hook starts UNKNOWN and is
+        // identified by its first report. That is a genuine change of standing,
+        // so ownership is re-evaluated exactly as it is for a new arrival --
+        // otherwise a controller that connected before it could be identified
+        // would never reclaim the console from the companion bridge.
+        if (arbiter->sources[existing].source_class != source_class) {
+            arbiter->sources[existing].source_class = source_class;
+            if (apply_auto_policy(arbiter) && auto_switched) *auto_switched = true;
+        }
         return existing;
     }
 
@@ -143,12 +198,12 @@ static int register_source(ns2_input_arbiter_t *arbiter,
         source->key = *key;
         source->id = next_nonzero(&arbiter->next_id);
         source->generation = next_nonzero(&arbiter->next_generation);
+        source->source_class = source_class;
         update_metadata(source, name, vendor_id, product_id);
-        if (arbiter->active_id == NS2_INPUT_SOURCE_ID_NONE &&
-            !arbiter->explicit_active) {
-            arbiter->active_id = source->id;
-            arbiter->awaiting_fresh = 0u;
-        }
+        // A newly arrived source can outrank the current default owner -- this is
+        // how a controller paired directly to the adapter reclaims the console
+        // from the companion bridge without the user touching anything.
+        if (apply_auto_policy(arbiter) && auto_switched) *auto_switched = true;
         return (int)i;
     }
     return -1;
@@ -185,6 +240,7 @@ bool ns2_input_arbiter_submit(ns2_input_arbiter_t *arbiter,
                               const char *name,
                               uint16_t vendor_id,
                               uint16_t product_id,
+                              uint8_t source_class,
                               ns2_input_route_decision_t *decision)
 {
     if (!arbiter || !key || !decision) return false;
@@ -192,8 +248,11 @@ bool ns2_input_arbiter_submit(ns2_input_arbiter_t *arbiter,
 
     status_begin(arbiter);
     bool transition = false;
+    bool auto_switched = false;
     (void)apply_pending(arbiter, &transition);
-    int source_index = register_source(arbiter, key, name, vendor_id, product_id);
+    int source_index = register_source(arbiter, key, name, vendor_id, product_id,
+                                       source_class, &auto_switched);
+    decision->auto_switched = auto_switched ? 1u : 0u;
     if (source_index < 0) {
         status_end(arbiter);
         return false;
@@ -236,12 +295,24 @@ bool ns2_input_arbiter_disconnect(ns2_input_arbiter_t *arbiter,
     if (was_active) *was_active = active;
     memset(&arbiter->sources[index], 0, sizeof(arbiter->sources[index]));
     if (active) {
-        // Explicit mode never falls back. Legacy mode may auto-select a later
-        // source only before a user has made an explicit choice.
         arbiter->active_id = NS2_INPUT_SOURCE_ID_NONE;
         arbiter->awaiting_fresh = 0u;
-        arbiter->explicit_active = 1u;
         arbiter->transition_count++;
+        // An explicit choice is final: losing it leaves the console deliberately
+        // unowned rather than handing control to a source the user did not pick.
+        //
+        // Without an explicit choice, ownership is policy, so fall back to the
+        // best remaining source. This is what returns the console to the
+        // companion bridge when the directly-paired controller disconnects or
+        // runs its battery flat. Previously this path latched explicit mode on
+        // every disconnect, which permanently disabled automatic selection for
+        // the rest of the session even though the user had never chosen anything.
+        //
+        // A source that vanished while it was the user's in-flight selection is
+        // the exception: the choice was made, so it is honoured by leaving the
+        // console unowned rather than reviving whatever else is connected.
+        if (pending_target) arbiter->explicit_active = 1u;
+        else (void)apply_auto_policy(arbiter);
     }
     if (pending_target) {
         atomic_store_u32(&arbiter->pending_id, NS2_INPUT_SOURCE_ID_NONE);

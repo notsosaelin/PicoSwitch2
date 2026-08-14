@@ -82,7 +82,7 @@ static void register_current_source(void)
     ns2_input_route_decision_t decision;
     (void)ns2_input_arbiter_submit(&arbiter, &key, device->name,
                                    device->vendor_id, device->product_id,
-                                   &decision);
+                                   NS2_INPUT_SOURCE_CLASS_DIRECT, &decision);
 }
 
 void bthid_on_hid_ready(uint8_t conn_index)
@@ -124,7 +124,7 @@ static void route_event(void)
     ns2_input_route_decision_t decision;
     if (ns2_input_arbiter_submit(&arbiter, &key, connection.name,
                                  connection.vendor_id, connection.product_id,
-                                 &decision)) {
+                                 NS2_INPUT_SOURCE_CLASS_DIRECT, &decision)) {
         // The driver-specific counter is incremented by the caller; this
         // marker makes the common route observable in the fixture.
     }

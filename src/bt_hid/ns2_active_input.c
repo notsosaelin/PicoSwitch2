@@ -59,8 +59,22 @@ bool ns2_active_input_submit(const input_event_t *event,
     const char *name = device ? device->name : NULL;
     uint16_t vendor_id = device ? device->vendor_id : 0u;
     uint16_t product_id = device ? device->product_id : 0u;
-    return ns2_input_arbiter_submit(&s_arbiter, &key, name,
-                                    vendor_id, product_id, decision);
+    // The companion bridge is identified by its own declared descriptor, never by
+    // name or VID/PID, so an ordinary controller can never be demoted by
+    // resembling it.
+    uint8_t source_class = event->from_android_bridge
+                               ? NS2_INPUT_SOURCE_CLASS_BRIDGE
+                               : NS2_INPUT_SOURCE_CLASS_DIRECT;
+    bool accepted = ns2_input_arbiter_submit(&s_arbiter, &key, name, vendor_id,
+                                             product_id, source_class, decision);
+    // The arbiter is a pure object and cannot reach the report seam, so the
+    // neutral boundary for a policy handover is owed here -- the same one an
+    // explicit selection emits.
+    if (decision->auto_switched) {
+        report_neutralize_slot(0);
+        ns2_native_motion_clear();
+    }
+    return accepted;
 }
 
 bool ns2_active_input_disconnected(uint8_t dev_addr, int8_t instance)
@@ -116,10 +130,14 @@ void ns2_active_input_note_connection(uint8_t conn_index)
     // the first normalized event will register the fully identified source.
     if (!device) return;
     ns2_input_route_decision_t decision;
+    // No report has arrived yet, so this source cannot be classified. UNKNOWN
+    // ranks lowest: it may take an idle console, never a claimed one, and its
+    // first report settles what it actually is.
     (void)ns2_input_arbiter_submit(&s_arbiter, &key,
                                    device ? device->name : NULL,
                                    device ? device->vendor_id : 0u,
                                    device ? device->product_id : 0u,
+                                   NS2_INPUT_SOURCE_CLASS_UNKNOWN,
                                    &decision);
 }
 
