@@ -65,6 +65,9 @@ data class CompanionUiState(
     val bridge: BridgeState = BridgeState(),
     val controllerState: ControllerState = ControllerState.Neutral,
     val sourceDevices: List<SourceDeviceUi> = emptyList(),
+    /** True only when more than one usable controller exists. */
+    val sourceChoiceRequired: Boolean = false,
+    val excludedSources: List<ExcludedSourceUi> = emptyList(),
     val selectedSourceDescriptor: String? = null,
     val requestedFaceLayout: ControllerFaceLayout = ControllerFaceLayout.Auto,
     val resolvedFaceLayout: ResolvedControllerLayout = ControllerLayoutResolver.resolve(ControllerFaceLayout.Auto, null),
@@ -76,6 +79,14 @@ data class CompanionUiState(
 )
 
 data class SourceDeviceUi(val id: Int, val descriptor: String, val name: String, val vendorId: Int, val productId: Int)
+
+/** An input Android offered that cannot serve as a controller, and why. */
+data class ExcludedSourceUi(
+    val name: String,
+    val vendorId: Int,
+    val productId: Int,
+    val reason: String,
+)
 
 class CompanionViewModel(application: Application, private val savedState: SavedStateHandle) : AndroidViewModel(application) {
     val diagnostics = DiagnosticLog()
@@ -629,17 +640,28 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     fun refreshSources() {
         val devices = inputRouter.eligibleDevices()
         val desired = savedState.get<String>(KEY_SOURCE)
-        if (inputRouter.selectedDescriptor != null && devices.none { it.descriptor == inputRouter.selectedDescriptor }) {
-            inputRouter.select(null)
-        }
-        if (inputRouter.selectedDescriptor == null && desired != null) {
-            val restored = devices.firstOrNull { it.descriptor == desired }
-            inputRouter.select(restored)
-            restored?.let { inputRouter.setFaceLayout(controllerLayoutStore.load(it.descriptor)) }
+        // Resolve the source without making the user choose the only option.
+        // Priority: an existing valid selection, then the saved preference, then
+        // the single usable controller. With two or more, nothing is guessed and
+        // the picker becomes visible instead.
+        val candidates = inputRouter.candidateDevices().map { it.second }
+        val current = inputRouter.selectedDescriptor
+        val preferred = ControllerCandidates.resolveSelection(candidates, current ?: desired)
+        if (preferred?.descriptor != current) {
+            val device = devices.firstOrNull { it.descriptor == preferred?.descriptor }
+            inputRouter.select(device)
+            device?.let { inputRouter.setFaceLayout(controllerLayoutStore.load(it.descriptor)) }
+            if (device != null && current == null) {
+                diagnostics.event("controller", "auto-selected", device.name)
+            }
         }
         _ui.update { state ->
             state.copy(
                 sourceDevices = devices.map { SourceDeviceUi(it.id, it.descriptor, it.name.take(120), it.vendorId, it.productId) },
+                // Selection UI only earns its space when there is a real choice.
+                sourceChoiceRequired = ControllerCandidates.needsUserChoice(candidates),
+                excludedSources = ControllerCandidates.excluded(candidates)
+                    .map { ExcludedSourceUi(it.name, it.vendorId, it.productId, it.exclusionReason.orEmpty()) },
                 selectedSourceDescriptor = inputRouter.selectedDescriptor,
                 requestedFaceLayout = inputRouter.requestedFaceLayout,
                 resolvedFaceLayout = inputRouter.resolvedFaceLayout,

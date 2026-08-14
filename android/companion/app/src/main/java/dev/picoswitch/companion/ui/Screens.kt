@@ -835,7 +835,8 @@ fun ControllerScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onPrep
                 Box(Modifier.weight(1f)) { bridge() }
             } else Column(verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space4)) { source(); layout(); bridge() }
         }
-        InputDiagnostics(ui.controllerState)
+        // Live raw controller state moved to Settings -> Developer: it is a
+        // troubleshooting instrument, not part of the normal Input workflow.
     }
 }
 
@@ -959,19 +960,40 @@ private fun InputSourceCard(ui: CompanionUiState, viewModel: CompanionViewModel)
             SectionHeading(Icons.Default.Gamepad, "Built-in input", Modifier.weight(1f))
             IconButton(onClick = viewModel::refreshSources) { Icon(Icons.Default.Refresh, "Refresh inputs") }
         }
-        if (ui.sourceDevices.isEmpty()) Text("No Android gamepad/joystick input device is visible to the app.")
-        ui.sourceDevices.forEach { source ->
-            val selected = source.descriptor == ui.selectedSourceDescriptor
-            Surface(
-                Modifier.fillMaxWidth().padding(top = LayoutTokens.Space2).clickable { viewModel.selectSource(source.descriptor) },
-                shape = MaterialTheme.shapes.medium,
-                color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+        val selectedName = ui.sourceDevices.firstOrNull { it.descriptor == ui.selectedSourceDescriptor }?.name
+        when {
+            ui.sourceDevices.isEmpty() -> Text(
+                "No usable controller is visible to the app.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            // One controller: state it and move on. Making the user select the
+            // only possible option is pure friction, so no picker is drawn.
+            !ui.sourceChoiceRequired && selectedName != null -> Row(
+                Modifier.fillMaxWidth().padding(top = LayoutTokens.Space2),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(Modifier.padding(LayoutTokens.Space3), verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(selected, { viewModel.selectSource(source.descriptor) })
-                    Column(Modifier.weight(1f)) {
-                        Text(source.name, style = MaterialTheme.typography.titleSmall)
-                        Text("VID %04X · PID %04X".format(source.vendorId, source.productId), style = MaterialTheme.typography.bodySmall)
+                Icon(
+                    Icons.Default.CheckCircle,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.width(LayoutTokens.Space2))
+                Text(selectedName, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+            }
+            // Two or more: the choice is real, so show it.
+            else -> ui.sourceDevices.forEach { source ->
+                val selected = source.descriptor == ui.selectedSourceDescriptor
+                Surface(
+                    Modifier.fillMaxWidth().padding(top = LayoutTokens.Space2).clickable { viewModel.selectSource(source.descriptor) },
+                    shape = MaterialTheme.shapes.medium,
+                    color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                ) {
+                    Row(Modifier.padding(LayoutTokens.Space3), verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected, { viewModel.selectSource(source.descriptor) })
+                        Column(Modifier.weight(1f)) {
+                            Text(source.name, style = MaterialTheme.typography.titleSmall)
+                            Text("VID %04X · PID %04X".format(source.vendorId, source.productId), style = MaterialTheme.typography.bodySmall)
+                        }
                     }
                 }
             }
@@ -1176,6 +1198,34 @@ fun SettingsScreen(
             MetadataLine("Last result", ui.diagnosticSummary.lastResult)
             MetadataLine("Last error", ui.diagnosticSummary.lastError)
             if (ui.identityRefreshPending) TextButton(onClick = viewModel::clearIdentityRefreshPending) { Text("Mark identity refresh complete") }
+
+            // Inputs Android offered that cannot drive the console. Listed with
+            // their reason so a wrongly-hidden device is identifiable from the
+            // field rather than guessed at.
+            if (ui.excludedSources.isNotEmpty()) {
+                HorizontalDivider(Modifier.padding(vertical = LayoutTokens.Space2))
+                Text(
+                    "Ignored inputs",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.padding(bottom = LayoutTokens.Space1),
+                )
+                ui.excludedSources.forEach { source ->
+                    MetadataLine(
+                        source.name.ifBlank { "Unnamed" },
+                        "VID %04X · PID %04X — %s".format(source.vendorId, source.productId, source.reason),
+                    )
+                }
+            }
+
+            // Live controller state is a development/troubleshooting tool, not a
+            // primary user feature, so it lives here rather than on the Input page.
+            HorizontalDivider(Modifier.padding(vertical = LayoutTokens.Space2))
+            Text(
+                "Live input",
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.padding(bottom = LayoutTokens.Space1),
+            )
+            InputDiagnostics(ui.controllerState)
             Button(onClick = onExportDiagnostics, Modifier.fillMaxWidth()) {
                 Icon(Icons.Default.Share, null); Spacer(Modifier.width(LayoutTokens.Space2)); Text("Share diagnostics")
             }
