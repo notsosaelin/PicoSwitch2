@@ -89,6 +89,39 @@ object ManagementProtocol {
             ?: AmiiboUpload(),
     ).also { requireShape(value.containsKey("loaded") && value.containsKey("v3loaded") && value.containsKey("upload"), "amiibo status") }
 
+    /**
+     * Outcome of an app-initiated console wake, as reported by `wake status`.
+     *
+     * The `wake` command itself can only confirm DELIVERY -- the adapter latches
+     * the request on one core and performs it on the other -- so treating its
+     * acknowledgement as success is what previously made the app claim the
+     * console had been woken when nothing happened. These are the adapter's real
+     * outcomes; anything unrecognised stays [Unknown] rather than being assumed
+     * successful.
+     */
+    enum class WakeResult { Pending, Advertised, ConsoleAwake, NoIdentity, RadioBusy, Unknown }
+
+    data class WakeStatus(
+        val result: WakeResult,
+        val consoleAsleep: Boolean,
+        val identityValid: Boolean,
+        val attempts: Long,
+    )
+
+    fun wakeStatus(value: JsonObject): WakeStatus = WakeStatus(
+        result = when (value["result"]?.jsonPrimitive?.contentOrNull) {
+            "pending" -> WakeResult.Pending
+            "advertised" -> WakeResult.Advertised
+            "console_awake" -> WakeResult.ConsoleAwake
+            "no_identity" -> WakeResult.NoIdentity
+            "radio_busy" -> WakeResult.RadioBusy
+            else -> WakeResult.Unknown
+        },
+        consoleAsleep = value["consoleAsleep"]?.jsonPrimitive?.booleanOrNull ?: false,
+        identityValid = value["identityValid"]?.jsonPrimitive?.booleanOrNull ?: false,
+        attempts = value["attempts"]?.jsonPrimitive?.longOrNull ?: 0L,
+    )
+
     fun managementEnabled(value: JsonObject) = value["enabled"]?.jsonPrimitive?.booleanOrNull
 
     fun inputSources(value: JsonObject): AdapterInputState {

@@ -217,6 +217,7 @@ bool config_wireless_command_allowed(const char *command)
            strncmp(command, "personality ", 12) == 0 ||
            strcmp(command, "reenumerate") == 0 ||
            strcmp(command, "wake") == 0 ||
+           strcmp(command, "wake status") == 0 ||
            strcmp(command, "mgmt") == 0 ||
            strncmp(command, "mgmt ", 5) == 0 ||
            strncmp(command, "bonds ", 6) == 0 ||

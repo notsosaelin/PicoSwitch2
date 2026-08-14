@@ -120,13 +120,62 @@ static bool ns2_is_switch2_pro(uint8_t dev_addr) {
 // Router: the ONE call every input driver makes. Translate the unified event
 // into the Pro Controller wire format (via the locked base map) and publish it.
 // -------------------------------------------------------------------------
+// Session bookkeeping + wake latch, shared by the publishing and non-publishing
+// paths so there is exactly one implementation of the neutral-baseline rules.
+static void seam_note_wake_intent(const input_event_t *e, bool non_neutral) {
+    uint8_t wake_source = e->dev_addr < NS2_WAKE_SESSION_SOURCES ? e->dev_addr : 0;
+    if (!wake_session_active[wake_source]) {
+        ns2_wake_controller_session_started(wake_source);
+        wake_session_active[wake_source] = true;
+    }
+    // A neutral reconnect after the dock's sleep power-cycle is not user
+    // intent. Only an actual controller button report may arm automatic wake.
+    // Some controller protocols briefly route startup reports while changing
+    // input modes. Keep their gameplay state live, but repeatedly discard wake
+    // intent until the driver declares the stream stable.
+    if (e->suppress_wake_input) {
+        ns2_wake_controller_rebaseline(wake_source);
+    } else {
+        ns2_wake_note_controller_input(wake_source, non_neutral, platform_time_ms());
+    }
+}
+
+// Wake intent for a source that does not own console output. Mirrors the
+// publishing path's button/trigger fold; sticks deliberately do not count, so a
+// drifting idle stick can never wake a sleeping console.
+static bool seam_event_wake_intent(const input_event_t *e) {
+    uint32_t b = e->buttons;
+    if (!e->suppress_l2r2_analog_fold) {
+        if (e->analog[ANALOG_L2] > 64) b |= JP_BUTTON_L2;
+        if (e->analog[ANALOG_R2] > 64) b |= JP_BUTTON_R2;
+    }
+    if (b) return true;
+    for (unsigned i = 0; i < 4; i++) {
+        if (e->hat[i] != 0xFF) return true;
+    }
+    return false;
+}
+
 void router_submit_input(const input_event_t *e) {
     if (!e) return;
     ns2_input_route_decision_t route;
     // Do this before decoding/publishing any field.  An inactive source must
-    // not affect slot 0, identity, raw buttons, wake, motion, or mouse state.
-    if (!ns2_active_input_submit(e, &route))
+    // not affect slot 0, identity, raw buttons, motion, or mouse state.
+    if (!ns2_active_input_submit(e, &route)) {
+        // ...but WAKE INTENT IS NOT PUBLICATION. Waking a sleeping console
+        // writes no slot-0 state, identity, motion, or mouse data, and while the
+        // console sleeps nothing is being published by anyone. Pressing a button
+        // on any connected controller unambiguously means "wake up", regardless
+        // of which source currently owns output.
+        //
+        // Hardware-observed 2026-08-14: with the Android companion connected as
+        // a second source, the physical controller silently lost the ability to
+        // wake the console, and regained it the moment the companion
+        // disconnected. Its reports were returning here, before the wake latch.
+        // Gate output; let intent through.
+        seam_note_wake_intent(e, seam_event_wake_intent(e));
         return;
+    }
     switch_pro_input_t in;
     memset(&in, 0, sizeof(in));
     in.battery_level = e->battery_level;
@@ -313,21 +362,7 @@ void router_submit_input(const input_event_t *e) {
         set_global_gamepad_input(slot, &in);
     }
     set_global_raw_buttons(slot, b);  // b includes analog L2/R2, for the live view
-    uint8_t wake_source = e->dev_addr < NS2_WAKE_SESSION_SOURCES ? e->dev_addr : 0;
-    if (!wake_session_active[wake_source]) {
-        ns2_wake_controller_session_started(wake_source);
-        wake_session_active[wake_source] = true;
-    }
-    // A neutral reconnect after the dock's sleep power-cycle is not user
-    // intent. Only an actual controller button report may arm automatic wake.
-    // Some controller protocols briefly route startup reports while changing
-    // input modes. Keep their gameplay state live, but repeatedly discard wake
-    // intent until the driver declares the stream stable.
-    if (e->suppress_wake_input) {
-        ns2_wake_controller_rebaseline(wake_source);
-    } else {
-        ns2_wake_note_controller_input(wake_source, b != 0, platform_time_ms());
-    }
+    seam_note_wake_intent(e, b != 0);
 }
 
 // Controller dropped -> publish a neutral (centered, no buttons) state.
