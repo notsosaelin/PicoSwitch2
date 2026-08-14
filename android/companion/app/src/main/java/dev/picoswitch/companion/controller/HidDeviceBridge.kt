@@ -52,6 +52,7 @@ class HidDeviceBridge(
     private var connectionTimeout: Job? = null
     private var requestedHost: BluetoothDevice? = null
     private var sender: Job? = null
+    private var hapticsWatchdog: Job? = null
     private var inputCollector: Job? = null
     // One latest-state mailbox prevents old motion reports surviving behind newer input.
     private val outgoing = LatestReportMailbox<ControllerState>()
@@ -372,7 +373,24 @@ class HidDeviceBridge(
         return ControllerReportEncoder.encode(withExtras)
     }
 
+    /**
+     * Rumble now repeats until cancelled, so something has to notice if this
+     * bridge stops servicing feedback. Deliberately its own low-rate timer rather
+     * than a hook in the sender loop: with motion off that loop blocks waiting
+     * for input, so it would false-trip the watchdog during ordinary idle.
+     */
+    private fun startHapticsWatchdog() {
+        hapticsWatchdog?.cancel()
+        hapticsWatchdog = scope.launch {
+            while (isActive) {
+                delay(HAPTICS_WATCHDOG_TICK_MS)
+                if (host == null) haptics.stop() else haptics.keepAlive()
+            }
+        }
+    }
+
     private fun startSender() {
+        startHapticsWatchdog()
         sender?.cancel()
         inputCollector?.cancel()
         inputCollector = scope.launch {
@@ -431,6 +449,7 @@ class HidDeviceBridge(
      * nothing is reading.
      */
     private fun releaseFeedbackResources() {
+        hapticsWatchdog?.cancel(); hapticsWatchdog = null
         feedback = ControllerFeedback.None
         haptics.stop()
         motionSource.stop()
@@ -451,6 +470,7 @@ class HidDeviceBridge(
     }
 
     companion object {
+        private const val HAPTICS_WATCHDOG_TICK_MS = 250L
         private const val REPORT_INTERVAL_MS = 8L
         private const val BATTERY_POLL_MS = 30_000L
         private const val REGISTRATION_CALLBACK_TIMEOUT_MS = 2_000L

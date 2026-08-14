@@ -7,7 +7,9 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.media.AudioAttributes
 import android.os.BatteryManager
+import android.os.VibrationAttributes
 import android.os.Build
 import android.os.SystemClock
 import android.os.VibrationEffect
@@ -203,13 +205,70 @@ class BatterySource(context: Context) {
 }
 
 /**
+ * Amplitude shaping, kept pure so it can be tested without a vibrator.
+ *
+ * The console sends 0..255. An actuator does not usefully reproduce all of that:
+ * below its start threshold an LRA (and an ERM below stiction) makes audible
+ * driver noise and no perceptible movement, which is the "buzzes but does
+ * nothing" failure. Tiny changes are also not worth an actuator restart, since
+ * Android has no public way to alter an effect's amplitude in flight.
+ */
+object RumbleShaping {
+    /** Below this the actuator is silenced entirely. */
+    const val GATE_OFF = 8
+
+    /** Rising edge, above GATE_OFF so a value parked on the boundary cannot chatter. */
+    const val GATE_ON = 14
+
+    /** Retrigger granularity; finer differences are imperceptible. */
+    const val STEP = 16
+
+    /**
+     * @param raw newest console amplitude
+     * @param previous the last value this function returned, for hysteresis
+     */
+    fun shape(raw: Int, previous: Int): Int {
+        val clamped = raw.coerceIn(0, 255)
+        val gated = when {
+            clamped <= GATE_OFF -> 0
+            clamped >= GATE_ON -> clamped
+            // Between the thresholds, hold whatever we were already doing.
+            else -> if (previous > 0) clamped else 0
+        }
+        if (gated == 0) return 0
+        // Round to nearest rather than down, so quantisation does not
+        // systematically under-drive, and clamp so full scale stays full scale --
+        // flooring would cap the console's hardest rumble at 240/255.
+        return (((gated + STEP / 2) / STEP) * STEP)
+            .coerceAtLeast(GATE_ON)
+            .coerceAtMost(255)
+    }
+}
+
+/**
  * Console rumble -> handheld vibration.
  *
- * A phone has one general-purpose actuator, so the two motor amplitudes are
- * combined. Each update issues a bounded one-shot slightly longer than the
- * adapter's update interval and the next update replaces it: continuous rumble
- * stays continuous while it is being refreshed, and it stops on its own if the
- * link dies mid-effect rather than buzzing forever.
+ * A phone has one general-purpose actuator, so the two motor amplitudes arrive
+ * already combined. Three things about Android make this less obvious than it
+ * looks, all of them verified against a real device's vibrator service:
+ *
+ * 1. USAGE. A bare vibrate(effect) is classified USAGE_TOUCH, which the system
+ *    "touch feedback" setting can disable outright. On the maintainer's handheld
+ *    that setting is off, so every rumble was being dropped with
+ *    `status: ignored_for_settings, scale: 0.00` while the media intensity was
+ *    perfectly enabled. Declaring this as media vibration is what makes rumble
+ *    reach the actuator at all -- it is not a cosmetic annotation.
+ *
+ * 2. DURATION. Both the firmware and this app suppress unchanged values, so a
+ *    game holding a constant amplitude sends exactly one report. A bounded
+ *    one-shot therefore expired mid-effect and left the handheld silent until
+ *    the console next changed the value. The effect now repeats until it is
+ *    explicitly cancelled, and a watchdog guarantees the cancel.
+ *
+ * 3. RATE. Feedback can change every few milliseconds. Android cancels a playing
+ *    vibration before starting the next unless both are flagged pipelined, and
+ *    that flag is not public, so every change is an audible stop/start. The
+ *    retrigger rate is therefore bounded, always using the newest value.
  */
 class HandheldHaptics(context: Context) {
     private val vibrator: Vibrator? = run {
@@ -222,35 +281,99 @@ class HandheldHaptics(context: Context) {
         }
     }
 
-    val available: Boolean get() = vibrator?.hasVibrator() == true
+    // Probed once. These were previously queried on every update, on the same
+    // thread that services the HID callbacks.
+    private val hasVibrator = runCatching { vibrator?.hasVibrator() == true }.getOrDefault(false)
+    private val hasAmplitudeControl =
+        runCatching { vibrator?.hasAmplitudeControl() == true }.getOrDefault(false)
 
-    private var lastAmplitude = -1
+    val available: Boolean get() = hasVibrator
 
+    @Volatile private var shaped = 0
+    @Volatile private var playing = false
+    @Volatile private var lastIssuedAtMs = 0L
+
+    @Synchronized
     fun apply(amplitude: Int) {
-        val clamped = amplitude.coerceIn(0, 255)
-        if (clamped == lastAmplitude) return
-        lastAmplitude = clamped
+        val next = RumbleShaping.shape(amplitude, shaped)
+        if (next == shaped) return
+        val now = SystemClock.elapsedRealtime()
+        // A stop is always immediate; only ramping up or changing level waits.
+        if (next != 0 && now - lastIssuedAtMs < MIN_RETRIGGER_MS) return
+        shaped = next
+        lastIssuedAtMs = now
+        issue(next)
+    }
+
+    /**
+     * Re-assert the current effect. The vibration repeats indefinitely, so this
+     * exists purely so a bridge that has gone quiet cannot leave the actuator
+     * running: the caller ticks this while the link is live, and [stop] is still
+     * called on every teardown path.
+     */
+    @Synchronized
+    fun keepAlive() {
+        if (!playing) return
+        if (SystemClock.elapsedRealtime() - lastIssuedAtMs > WATCHDOG_MS) stop()
+    }
+
+    private fun issue(amplitude: Int) {
         val device = vibrator ?: return
+        if (!hasVibrator) return
         runCatching {
-            if (clamped == 0) {
+            if (amplitude == 0) {
                 device.cancel()
-            } else if (device.hasAmplitudeControl()) {
-                device.vibrate(VibrationEffect.createOneShot(EFFECT_MS, clamped))
-            } else {
-                // No amplitude control: fall back to on/off so rumble is still felt.
-                device.vibrate(VibrationEffect.createOneShot(EFFECT_MS, VibrationEffect.DEFAULT_AMPLITUDE))
+                playing = false
+                return@runCatching
             }
+            val level = if (hasAmplitudeControl) amplitude else VibrationEffect.DEFAULT_AMPLITUDE
+            // Repeat from index 0 until cancelled. Consecutive segments carry the
+            // same amplitude, so looping is not an audible off/on.
+            val effect = VibrationEffect.createWaveform(
+                longArrayOf(SEGMENT_MS), intArrayOf(level), 0,
+            )
+            vibrateAsMedia(device, effect)
+            playing = true
         }
     }
 
+    /**
+     * Classify as media vibration: "game, or any interactive media that isn't
+     * touch feedback specifically" is exactly this. Without it the effect is
+     * treated as touch feedback and silently discarded on any device where the
+     * user has that turned off.
+     */
+    private fun vibrateAsMedia(device: Vibrator, effect: VibrationEffect) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            device.vibrate(effect, VibrationAttributes.createForUsage(VibrationAttributes.USAGE_MEDIA))
+        } else {
+            @Suppress("DEPRECATION")
+            device.vibrate(
+                effect,
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_GAME)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build(),
+            )
+        }
+    }
+
+    @Synchronized
     fun stop() {
-        lastAmplitude = -1
+        shaped = 0
+        playing = false
+        lastIssuedAtMs = 0L
         runCatching { vibrator?.cancel() }
     }
 
     private companion object {
-        /** Comfortably longer than the adapter's feedback cadence, short enough
-         *  that a lost link stops the motor quickly. */
-        const val EFFECT_MS = 350L
+        /** Loop length. Not perceptually load bearing; the effect repeats. */
+        const val SEGMENT_MS = 1000L
+
+        /** ~25 Hz ceiling on actuator restarts. */
+        const val MIN_RETRIGGER_MS = 40L
+
+        /** The effect never self-expires, so a stalled bridge must not leave it on. */
+        const val WATCHDOG_MS = 1000L
     }
 }
