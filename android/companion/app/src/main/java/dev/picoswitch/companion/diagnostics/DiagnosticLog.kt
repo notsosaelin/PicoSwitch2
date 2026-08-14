@@ -1,5 +1,7 @@
 package dev.picoswitch.companion.diagnostics
 
+import android.util.Log
+import dev.picoswitch.companion.BuildConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -27,6 +29,7 @@ class DiagnosticLog(private val capacity: Int = 400) {
     fun event(area: String, event: String, detail: String = "") {
         val safe = detail.replace(Regex("[\\r\\n]+"), " ").take(240)
         _entries.value = (_entries.value + DiagnosticEntry(System.currentTimeMillis(), area, event, safe)).takeLast(capacity)
+        mirrorToLogcat(area, event, safe)
     }
 
     fun commandStarted(command: String) {
@@ -67,7 +70,23 @@ class DiagnosticLog(private val capacity: Int = 400) {
         }
     }
 
+    /**
+     * Mirror to logcat so the companion is observable over ADB during hardware
+     * bring-up. The in-memory ring is only visible on the phone's own screen,
+     * which makes bridge behaviour (motion requests, player LED, rumble, report
+     * counts) impossible to verify from a workstation. Debug builds only, and it
+     * reuses the already-redacted text so nothing sensitive reaches the system log.
+     */
+    private fun mirrorToLogcat(area: String, event: String, detail: String) {
+        if (!BuildConfig.DEBUG) return
+        val line = if (detail.isBlank()) "$area/$event" else "$area/$event: $detail"
+        Log.d(LOG_TAG, line)
+    }
+
     companion object {
+        /** Single tag so `adb logcat -s PicoSwitch` captures the whole bridge. */
+        const val LOG_TAG = "PicoSwitch"
+
         fun commandType(command: String): String = when {
             command.startsWith("amiibo chunk ") -> "amiibo chunk [data omitted]"
             command.startsWith("amiibo begin ") -> "amiibo begin [checksum omitted]"
