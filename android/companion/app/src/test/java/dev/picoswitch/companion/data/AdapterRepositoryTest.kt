@@ -120,6 +120,29 @@ class AdapterRepositoryTest {
         assertFalse(transport.commands.contains("bonds remove 0"))
     }
 
+    // Removing a bond can revoke THIS phone's own authorization, and Android does
+    // not expose our address to compare against the entry. The caller must learn
+    // that the session died so the UI cannot keep showing "Connected" after the
+    // relationship permitting it was deleted.
+    @Test fun `bond removal reports a surviving session`() = runTest {
+        val transport = BondTransport()
+        val repository = AdapterRepository(transport)
+        repository.listBonds()
+        assertTrue(repository.removeBond(0))
+        assertTrue(transport.commands.contains("bonds remove 0"))
+    }
+
+    @Test fun `bond removal that ends this phone's session reports it`() = runTest {
+        val transport = BondTransport()
+        val repository = AdapterRepository(transport)
+        repository.listBonds()
+        // The link stops answering once our own authorization is gone.
+        transport.failBonds = true
+        assertFalse(repository.removeBond(0))
+        // The stale authoritative list must not survive an ambiguous mutation.
+        assertFalse(repository.snapshot.value.bondsComplete == true)
+    }
+
     @Test fun `response-too-large legacy reply switches to versioned pagination`() = runTest {
         val transport = BondTransport(oversizedLegacy = true)
         val repository = AdapterRepository(transport)
@@ -299,6 +322,7 @@ class AdapterRepositoryTest {
             if (command == "bonds list" && legacy) {
                 return """{"bonds":[{"i":0,"type":1,"addr":"010203040506"}]}"""
             }
+            if (command.startsWith("bonds remove")) return """{"ok":true}"""
             return when (command) {
                 "bonds list" -> """{"v":2,"total":3,"bonds":[{"i":0,"type":1,"addr":"010203040506"}],"next":4}"""
                 "bonds list v2" -> """{"v":2,"total":3,"bonds":[{"i":0,"type":1,"addr":"010203040506"}],"next":4}"""

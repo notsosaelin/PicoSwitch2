@@ -633,8 +633,17 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     private fun normalizeFigureId(value: String): String? = value.trim().uppercase().takeIf { FIGURE_ID.matches(it) }
 
     fun removeBond(index: Int) = launch("Removing management bond") {
-        adapter.removeBond(index)
-        notice("Management bond removed")
+        // Removing a bond may revoke THIS phone's own authorization. Reconcile
+        // the connection state immediately rather than leaving a stale
+        // "Connected" UI behind the relationship that permitted it.
+        val sessionSurvived = adapter.removeBond(index)
+        if (sessionSurvived) {
+            notice("Management bond removed")
+        } else {
+            adapter.disconnect()
+            diagnostics.event("adapter", "bond removal ended this session")
+            notice("Bond removed. This phone's access ended, so the adapter disconnected. Pair again to reconnect.")
+        }
     }
 
     fun refreshSources() {

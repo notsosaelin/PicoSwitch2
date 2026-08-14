@@ -1148,19 +1148,12 @@ fun SettingsScreen(
         SettingsGroup(Icons.Default.Key, "Amiibo metadata", if (ui.amiiboKeysLoaded) "Key file available" else "No key file imported", keysOpen, { keysOpen = !keysOpen }) {
             AmiiboKeySettingsContent(ui, onImportAmiiboKeys)
         }
-        SettingsGroup(Icons.Default.Link, "Connections", "Wireless management and phone bonds", connectionOpen, { connectionOpen = !connectionOpen }) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Wireless management", style = MaterialTheme.typography.titleSmall)
-                    Text("Available until the adapter reboots", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Switch(
-                    checked = ui.snapshot.managementEnabled == true,
-                    onCheckedChange = viewModel::setManagement,
-                    enabled = ui.connection.connected && ui.snapshot.capabilities.managementGate == CapabilityState.Available,
-                )
-            }
-            HorizontalDivider(Modifier.padding(vertical = LayoutTokens.Space2))
+        SettingsGroup(Icons.Default.Link, "Connections", "Paired phones", connectionOpen, { connectionOpen = !connectionOpen }) {
+            // The wireless-management toggle is intentionally NOT a user setting.
+            // Management is normal product behaviour and boots enabled; a switch
+            // here asked the user to understand and maintain firmware internals,
+            // and turning it off silently severed the very session they were
+            // using. The diagnostic control now lives under Developer.
             Text("Phone bonds", style = MaterialTheme.typography.titleSmall)
             when {
                 ui.snapshot.capabilities.bonds == CapabilityState.Unsupported -> Text("Bond controls are unavailable on this firmware.", style = MaterialTheme.typography.bodySmall)
@@ -1197,7 +1190,27 @@ fun SettingsScreen(
             MetadataLine("Last command", ui.diagnosticSummary.lastCommand)
             MetadataLine("Last result", ui.diagnosticSummary.lastResult)
             MetadataLine("Last error", ui.diagnosticSummary.lastError)
+            MetadataLine("Wireless management", if (ui.snapshot.managementEnabled == true) "On" else "Off")
             if (ui.identityRefreshPending) TextButton(onClick = viewModel::clearIdentityRefreshPending) { Text("Mark identity refresh complete") }
+
+            // Development-only gate. Normal product behaviour is management-on at
+            // boot, so this is deliberately not offered as a user setting: it is
+            // here purely to reproduce the disabled state during validation, and
+            // turning it off can end the session that is issuing the command.
+            if (ui.connection.connected &&
+                ui.snapshot.capabilities.managementGate == CapabilityState.Available
+            ) {
+                TextButton(
+                    onClick = { viewModel.setManagement(ui.snapshot.managementEnabled != true) },
+                    enabled = !ui.busy,
+                ) {
+                    Text(
+                        if (ui.snapshot.managementEnabled == true)
+                            "Disable wireless management (ends this session)"
+                        else "Enable wireless management",
+                    )
+                }
+            }
 
             // Inputs Android offered that cannot drive the console. Listed with
             // their reason so a wrongly-hidden device is identifiable from the
