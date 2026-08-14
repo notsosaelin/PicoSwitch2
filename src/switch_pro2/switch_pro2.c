@@ -1436,9 +1436,19 @@ static void ns2_build_report(uint8_t *p) {
     // timestamp, so they qualify. Routing them here instead of the generic phase
     // encoder is the same fix that resolved the DualSense's violent motion spam;
     // nothing in the translator or the DualSense driver changes.
+    // The Android companion qualifies on exactly the same terms as Switch-1, and
+    // omitting it was the whole of the "motion spams everywhere" report: its
+    // samples fell straight through to the generic phase encoder named above. The
+    // seam has already converted them to the shared interchange scale (16.384
+    // counts/dps, and 4096 counts/g after ns2_motion_seam_apply halves them), and
+    // the seam deliberately withholds a sensor timestamp for this source, so it
+    // takes the host-clock fallback that Switch-1 uses. What it gains here is the
+    // translator's bias removal, stillness gate, warmup and quaternion
+    // integration -- none of which the phase encoder performs.
     const bool ds5_motion_owned =
         (in.motion_source == SWITCH_MOTION_SOURCE_DUALSENSE ||
-         in.motion_source == SWITCH_MOTION_SOURCE_SWITCH1) &&
+         in.motion_source == SWITCH_MOTION_SOURCE_SWITCH1 ||
+         in.motion_source == SWITCH_MOTION_SOURCE_ANDROID) &&
         in.has_motion;
     if (ds5_motion_owned && ns2_ds5_motion_enabled) {
         if (!ns2_ds5_motion_source_active) {
