@@ -292,6 +292,16 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         notice(if (sourceId == 0L) "Console input paused" else "Active controller switched to ${source?.name ?: "selected source"}")
     }
 
+    /**
+     * Hold or release a console button that the handheld has no physical key for.
+     *
+     * Not routed through [launch]: this is live input on the HID report path, so it
+     * must not queue behind a management command or be blocked by the busy flag.
+     */
+    fun setConsoleButton(button: ControllerButton, pressed: Boolean) {
+        inputRouter.setVirtualButton(button, pressed)
+    }
+
     fun importAmiibo(uri: Uri, displayName: String) = launch("Importing Amiibo") {
         val resolver = getApplication<Application>().contentResolver
         resolver.openAssetFileDescriptor(uri, "r")?.use { descriptor ->
