@@ -309,7 +309,18 @@ void ns2_input_arbiter_get_status(const ns2_input_arbiter_t *arbiter,
         uint32_t before = atomic_load_u32(&arbiter->status_sequence);
         if (before & 1u) continue;
         status->active_id = arbiter->active_id;
-        status->pending_id = atomic_load_u32(&arbiter->pending_id);
+        // `pending_id` is a request slot: core 0 writes it, core 1 consumes it at a
+        // report boundary. It is deliberately never cleared at the apply site --
+        // clearing it from core 1 could wipe a newer core-0 request that landed
+        // between `applied_request` advancing and the clear, silently turning that
+        // selection into "no active source". The request counters are the
+        // authoritative record of whether a switch is still outstanding, so derive
+        // the reported value from them instead of exposing the stale target. Both
+        // counters are read inside this seqlock, so they cannot disagree.
+        uint32_t pending_request = atomic_load_u32(&arbiter->pending_request);
+        status->pending_id = (pending_request == arbiter->applied_request)
+                                 ? NS2_INPUT_SOURCE_ID_NONE
+                                 : atomic_load_u32(&arbiter->pending_id);
         status->transition_count = arbiter->transition_count;
         status->explicit_active = arbiter->explicit_active;
         status->awaiting_fresh = arbiter->awaiting_fresh;

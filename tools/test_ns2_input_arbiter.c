@@ -72,6 +72,11 @@ static void test_atomic_selection_and_fresh_gate(void)
     ns2_input_arbiter_get_status(&arbiter, &status);
     assert(status.active_id == second_id && status.awaiting_fresh);
     assert(status.explicit_active);
+    // The request has been applied, so no switch is outstanding any more. A stale
+    // pending target here is what left a streaming controller permanently labelled
+    // "switching" in the companion, and it also defeats the caller-side idempotence
+    // fast path, which re-neutralizes the console slot on every repeat selection.
+    assert(status.pending_id == NS2_INPUT_SOURCE_ID_NONE);
 
     // Exactly the first complete report from the selected source is accepted
     // as the fresh post-neutral state.
@@ -88,6 +93,16 @@ static void test_atomic_selection_and_fresh_gate(void)
     assert(decision.accepted && !decision.transition_applied);
     ns2_input_arbiter_get_status(&arbiter, &status);
     assert(status.transition_count == transitions);
+    assert(status.pending_id == NS2_INPUT_SOURCE_ID_NONE);
+
+    // While a switch to a different source really is outstanding, the pending
+    // target must still be reported: that is what the UI renders as "switching",
+    // and what makes a pending source's disconnect count as an ownership loss.
+    uint32_t first_id = source_id(&arbiter, &first);
+    assert(ns2_input_arbiter_request_active(&arbiter, first_id));
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    assert(status.pending_id == first_id);
+    assert(status.active_id == second_id);
 }
 
 static void test_disconnect_index_reuse_and_no_fallback(void)
