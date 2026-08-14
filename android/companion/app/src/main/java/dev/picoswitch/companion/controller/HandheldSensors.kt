@@ -35,15 +35,53 @@ class MotionSource(context: Context) : SensorEventListener {
     /** False on a handheld with no IMU; the bridge then simply never sends motion. */
     val available: Boolean get() = gyroscope != null && accelerometer != null
 
+    // Last gyro rate published to the console, held when no new sample arrived.
     @Volatile private var gyroX = 0
     @Volatile private var gyroY = 0
     @Volatile private var gyroZ = 0
+
+    /**
+     * Gyro accumulator, drained once per report.
+     *
+     * Android is asked for samples faster than reports go out, so taking only the
+     * newest sample would throw the rest away. Gyro is an angular *rate* that the
+     * console integrates into an angle, and discarding samples loses real rotation
+     * and aliases the ones that survive. The mean rate across the interval times
+     * the interval is exactly the true angle change, so averaging is the estimator
+     * that preserves aim rather than a smoothing filter bolted on afterwards.
+     *
+     * Accelerometer is deliberately NOT averaged: it is an orientation/gravity
+     * reference that is read instantaneously, not integrated.
+     */
+    private val gyroLock = Any()
+    private var gyroSumX = 0L
+    private var gyroSumY = 0L
+    private var gyroSumZ = 0L
+    private var gyroSamples = 0
+
     @Volatile private var accelX = 0
     @Volatile private var accelY = 0
     @Volatile private var accelZ = 0
     @Volatile private var sawGyro = false
     @Volatile private var sawAccel = false
     @Volatile private var running = false
+
+    /**
+     * Wire timestamp of the newest gyroscope sample, in milliseconds.
+     *
+     * This MUST come from the sensor event rather than from send time. The report
+     * cadence is faster than the IMU actually delivers, so the same physical
+     * sample is sent more than once; the adapter de-duplicates on this field and
+     * only advances its motion sequence when it genuinely changes. Stamping it at
+     * send time made every repeat look like a fresh IMU frame, which the console
+     * then integrated as real movement -- aim jitters and over-responds.
+     *
+     * The gyroscope is the reference because it is what aim integrates, and both
+     * sensors come from the same physical IMU at the same requested rate. Keying
+     * off "newest of either sensor" would advance the sequence twice per frame,
+     * since the two callbacks never carry an identical timestamp.
+     */
+    @Volatile private var gyroTimestampMs = 0
 
     @Synchronized
     fun start() {
@@ -61,6 +99,11 @@ class MotionSource(context: Context) : SensorEventListener {
         running = false
         sawGyro = false
         sawAccel = false
+        // Never carry a previous session's partial interval into the next one.
+        synchronized(gyroLock) {
+            gyroSumX = 0L; gyroSumY = 0L; gyroSumZ = 0L; gyroSamples = 0
+        }
+        gyroX = 0; gyroY = 0; gyroZ = 0
     }
 
     /**
@@ -72,6 +115,17 @@ class MotionSource(context: Context) : SensorEventListener {
     fun sample(): ControllerMotion {
         if (!running || !sawGyro || !sawAccel) return ControllerMotion.None
         val rotation = currentRotationDegrees()
+        // Drain the interval's samples. With none pending the previous rate is held
+        // rather than decaying to zero, which matches a controller whose IMU has
+        // not produced a new frame yet.
+        synchronized(gyroLock) {
+            if (gyroSamples > 0) {
+                gyroX = (gyroSumX / gyroSamples).toInt()
+                gyroY = (gyroSumY / gyroSamples).toInt()
+                gyroZ = (gyroSumZ / gyroSamples).toInt()
+                gyroSumX = 0L; gyroSumY = 0L; gyroSumZ = 0L; gyroSamples = 0
+            }
+        }
         return ControllerMotion(
             gyroX = MotionOrientation.remapX(gyroX, gyroY, rotation),
             gyroY = MotionOrientation.remapY(gyroX, gyroY, rotation),
@@ -79,7 +133,7 @@ class MotionSource(context: Context) : SensorEventListener {
             accelX = MotionOrientation.remapX(accelX, accelY, rotation),
             accelY = MotionOrientation.remapY(accelX, accelY, rotation),
             accelZ = MotionOrientation.remapZ(accelZ),
-            timestampMs = (SystemClock.elapsedRealtime() and 0xFFFF).toInt(),
+            timestampMs = gyroTimestampMs,
             valid = true,
         )
     }
@@ -115,9 +169,17 @@ class MotionSource(context: Context) : SensorEventListener {
     override fun onSensorChanged(event: SensorEvent) {
         when (event.sensor?.type) {
             Sensor.TYPE_GYROSCOPE -> {
-                gyroX = MotionScale.gyroCounts(event.values[0])
-                gyroY = MotionScale.gyroCounts(event.values[1])
-                gyroZ = MotionScale.gyroCounts(event.values[2])
+                synchronized(gyroLock) {
+                    gyroSumX += MotionScale.gyroCounts(event.values[0]).toLong()
+                    gyroSumY += MotionScale.gyroCounts(event.values[1]).toLong()
+                    gyroSumZ += MotionScale.gyroCounts(event.values[2]).toLong()
+                    gyroSamples++
+                }
+                // SensorEvent.timestamp is nanoseconds on the elapsed-realtime base.
+                // Narrowed to the contract's 16-bit millisecond field; wrap is
+                // expected and harmless, because the adapter only ever compares it
+                // to the previous value for equality.
+                gyroTimestampMs = ((event.timestamp / 1_000_000L) and 0xFFFF).toInt()
                 sawGyro = true
             }
             Sensor.TYPE_ACCELEROMETER -> {
