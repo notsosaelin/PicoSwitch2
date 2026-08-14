@@ -274,7 +274,17 @@ class AdapterRepository(private val transport: ManagementTransport) {
         return BondEnumeration(entries, complete = true, total = total)
     }
 
-    suspend fun removeBond(index: Int) {
+    /**
+     * Remove a stored phone bond.
+     *
+     * Returns true when this app's own session survived. Removing a bond can
+     * revoke **this phone's** authorization, and Android does not expose our
+     * Bluetooth address, so the entry cannot be compared against ourselves.
+     * The session is therefore verified rather than assumed: leaving the UI
+     * "Connected" after deleting the relationship that permits the connection is
+     * exactly the stale state this guards against.
+     */
+    suspend fun removeBond(index: Int): Boolean {
         if (_snapshot.value.bondsComplete != true) {
             throw ManagementException("Bond list completeness is unknown; refresh on a versioned firmware before removing a bond")
         }
@@ -282,8 +292,15 @@ class AdapterRepository(private val transport: ManagementTransport) {
         // authoritative list until a fresh complete enumeration succeeds.
         markBondsUnknown()
         ack("bonds remove $index")
-        val enumeration = listBondsRaw()
-        applyBondEnumeration(enumeration)
+        return try {
+            val enumeration = listBondsRaw()
+            applyBondEnumeration(enumeration)
+            true
+        } catch (error: Throwable) {
+            // The follow-up read is the probe: if the link or its authorization
+            // is gone, this is where it shows, and the caller reconciles.
+            false
+        }
     }
 
     suspend fun uploadAmiibo(data: ByteArray, useSave2: Boolean = false, progress: (OperationProgress) -> Unit = {}) {
