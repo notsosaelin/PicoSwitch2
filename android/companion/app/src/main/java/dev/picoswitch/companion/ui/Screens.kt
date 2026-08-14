@@ -886,10 +886,17 @@ private fun ActiveInputCard(ui: CompanionUiState, viewModel: CompanionViewModel)
                             Column(Modifier.weight(1f)) {
                                 Text(source.name, style = MaterialTheme.typography.titleSmall)
                                 Text(
-                                    if (source.id == input.pendingId || (source.id == input.activeId && input.awaitingFresh))
-                                        "Switching · waiting for fresh input"
-                                    else if (source.id == input.activeId) "Controlling the console"
-                                    else "Available",
+                                    // Active wins over pending: once the adapter has
+                                    // applied the switch both ids name this source, and
+                                    // reporting "switching" then would leave a streaming
+                                    // controller permanently labelled as waiting.
+                                    when {
+                                        source.id == input.activeId && input.awaitingFresh ->
+                                            "Switching · waiting for fresh input"
+                                        source.id == input.activeId -> "Controlling the console"
+                                        source.id == input.pendingId -> "Switching · waiting for fresh input"
+                                        else -> "Available"
+                                    },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
