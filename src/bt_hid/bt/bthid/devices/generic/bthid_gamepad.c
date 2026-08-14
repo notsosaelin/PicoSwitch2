@@ -441,7 +441,11 @@ static void process_report_dynamic(bthid_gamepad_data_t* gp, const uint8_t* data
     // Descriptor-declared Android bridge extension: motion + battery. Reset the
     // per-report motion validity first so a source that stops publishing motion
     // (sensors idled) cannot leave the last sample latched as if it were live.
-    if (android_bridge_ext_present(&map->bridge)) {
+    // Stated on every report, including ones carrying no motion: the input
+    // arbiter's ownership policy has to tell a companion bridge from a
+    // directly-paired controller regardless of what this report contains.
+    gp->event.from_android_bridge = android_bridge_ext_present(&map->bridge);
+    if (gp->event.from_android_bridge) {
         gp->event.has_motion = false;
         android_bridge_extract(&map->bridge, &gp->bridge_state, data, len,
                                &gp->event);

@@ -267,6 +267,13 @@ typedef struct {
     // frame on its own motion-seam row instead of widening identity checks.
     bool motion_from_android_bridge;
 
+    // Also set only by the generic Bluetooth driver from the declared descriptor,
+    // but unlike the flag above this is unconditional: it states what the source
+    // IS, not that this particular report carried motion. Ownership policy needs
+    // to know a companion bridge from a directly-paired controller even when the
+    // console is not consuming motion at all.
+    bool from_android_bridge;
+
     // Pressure-sensitive button data (DS3)
     // Order: up, right, down, left, l2, r2, l1, r1, triangle, circle, cross, square
     uint8_t pressure[12];       // 0x00 = released, 0xFF = fully pressed

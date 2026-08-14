@@ -15,6 +15,22 @@
 #define NS2_INPUT_SOURCE_NAME_MAX 32u
 #define NS2_INPUT_SOURCE_ID_NONE 0u
 
+// Source classes, ordered by automatic-selection preference.
+//
+// A controller paired directly to the adapter is what a user reaches for first,
+// so it outranks the companion app's software bridge. The bridge exists to make
+// a handheld usable when there is nothing else, not to take the console away
+// from real hardware. This ordering is consulted ONLY while the user has not
+// made an explicit choice; an explicit selection is never overridden.
+// UNKNOWN is what a lifecycle hook registers before any report has arrived: the
+// companion bridge is identified from its HID descriptor, which the connection
+// hook cannot see. Ranking it lowest means an unidentified source can take an
+// idle console but can never take one away from a source that has identified
+// itself. The first report reclassifies it and ownership is re-evaluated then.
+#define NS2_INPUT_SOURCE_CLASS_UNKNOWN 0u
+#define NS2_INPUT_SOURCE_CLASS_BRIDGE 1u
+#define NS2_INPUT_SOURCE_CLASS_DIRECT 2u
+
 typedef struct {
     uint8_t transport;             // input_transport_t value, kept opaque here
     uint8_t dev_addr;              // transport connection index
@@ -32,12 +48,18 @@ typedef struct {
     uint16_t product_id;
     char name[NS2_INPUT_SOURCE_NAME_MAX];
     uint8_t present;
+    uint8_t source_class;          // NS2_INPUT_SOURCE_CLASS_*
 } ns2_input_source_info_t;
 
 typedef struct {
     uint8_t accepted;              // this source may publish to console slot 0
     uint8_t transition_applied;    // caller must have emitted a neutral boundary
     uint8_t fresh_report;          // first complete report after a selection
+    // The arbiter changed owner by policy rather than by user request. It is a
+    // pure object with no access to the report seam, so the caller owes the
+    // console a neutral boundary when this is set, exactly as it does for an
+    // explicit selection.
+    uint8_t auto_switched;
 } ns2_input_route_decision_t;
 
 typedef struct {
@@ -87,13 +109,18 @@ bool ns2_input_arbiter_queue_active(ns2_input_arbiter_t *arbiter,
                                     uint32_t id);
 
 // Register/update a source and decide whether its complete report may publish.
-// The first source in legacy (non-explicit) mode is selected automatically;
-// additional sources remain connected but inactive until explicitly selected.
+//
+// While the user has not made an explicit choice, ownership follows source class
+// (see NS2_INPUT_SOURCE_CLASS_*): with nothing else connected the companion
+// bridge takes the console, and a controller paired directly to the adapter
+// takes it back automatically when one appears. Once the user selects a source
+// explicitly, that choice is final and no arrival or departure overrides it.
 bool ns2_input_arbiter_submit(ns2_input_arbiter_t *arbiter,
                               const ns2_input_source_key_t *key,
                               const char *name,
                               uint16_t vendor_id,
                               uint16_t product_id,
+                              uint8_t source_class,
                               ns2_input_route_decision_t *decision);
 
 // Remove exactly the source represented by key.  A key includes the lifecycle
