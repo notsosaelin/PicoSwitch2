@@ -27,8 +27,55 @@ class AndroidInputRouter {
     private var hatLeft = false
     private val heldButtonKeys = mutableSetOf<Int>()
 
-    fun eligibleDevices(): List<InputDevice> = InputDevice.getDeviceIds().asList().mapNotNull(InputDevice::getDevice)
-        .filter { it.supportsSource(InputDevice.SOURCE_GAMEPAD) || it.supportsSource(InputDevice.SOURCE_JOYSTICK) || it.supportsSource(InputDevice.SOURCE_DPAD) }
+    /**
+     * Every input device the app can see that plausibly relates to a controller,
+     * including ones later excluded. Diagnostics shows the excluded entries with
+     * their reason, so a wrongly-hidden device is identifiable from the field.
+     */
+    fun candidateDevices(): List<Pair<InputDevice, ControllerCandidate>> =
+        InputDevice.getDeviceIds().asList().mapNotNull(InputDevice::getDevice)
+            .filter {
+                it.supportsSource(InputDevice.SOURCE_GAMEPAD) ||
+                    it.supportsSource(InputDevice.SOURCE_JOYSTICK) ||
+                    it.supportsSource(InputDevice.SOURCE_DPAD)
+            }
+            .map { it to it.toCandidate() }
+
+    /** Devices that can actually serve as a controller source. */
+    fun eligibleDevices(): List<InputDevice> =
+        candidateDevices().filter { it.second.isUsable }.map { it.first }
+
+    private fun InputDevice.toCandidate(): ControllerCandidate {
+        val gamepadSource = supportsSource(InputDevice.SOURCE_GAMEPAD) ||
+            supportsSource(InputDevice.SOURCE_JOYSTICK)
+        // Sticks and triggers are the axes that make a device drivable; a hat
+        // alone is not enough, since keyboard-like devices report D-pad hats.
+        val stickAxes = intArrayOf(
+            MotionEvent.AXIS_X, MotionEvent.AXIS_Y, MotionEvent.AXIS_Z, MotionEvent.AXIS_RZ,
+            MotionEvent.AXIS_RX, MotionEvent.AXIS_RY,
+            MotionEvent.AXIS_LTRIGGER, MotionEvent.AXIS_RTRIGGER,
+            MotionEvent.AXIS_BRAKE, MotionEvent.AXIS_GAS,
+        )
+        val hasAxes = stickAxes.any { axis -> motionRanges.any { it.axis == axis } }
+        val gamepadKeys = intArrayOf(
+            KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_B,
+            KeyEvent.KEYCODE_BUTTON_X, KeyEvent.KEYCODE_BUTTON_Y,
+            KeyEvent.KEYCODE_BUTTON_L1, KeyEvent.KEYCODE_BUTTON_R1,
+            KeyEvent.KEYCODE_BUTTON_START, KeyEvent.KEYCODE_BUTTON_SELECT,
+        )
+        val hasButtons = runCatching { hasKeys(*gamepadKeys).any { it } }.getOrDefault(false)
+        return ControllerCandidate(
+            id = id,
+            descriptor = descriptor,
+            name = name.take(120),
+            vendorId = vendorId,
+            productId = productId,
+            hasMotionAxes = hasAxes,
+            hasGamepadButtons = hasButtons,
+            isVirtual = isVirtual,
+            hasGamepadSource = gamepadSource,
+        )
+    }
 
     fun select(device: InputDevice?) {
         selectedDescriptor = device?.descriptor
