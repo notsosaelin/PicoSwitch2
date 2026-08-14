@@ -22,8 +22,10 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -39,6 +41,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import dev.picoswitch.companion.BuildConfig
 import dev.picoswitch.companion.controller.BridgePhase
+import dev.picoswitch.companion.controller.ControllerButton
 import dev.picoswitch.companion.controller.ControllerFaceLayout
 import dev.picoswitch.companion.data.ColorTarget
 import dev.picoswitch.companion.model.*
@@ -59,12 +62,14 @@ fun HomeScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
                         ControllerCard(ui)
                     }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space4)) {
+                        ConsoleButtonsCard(ui, viewModel)
                         AmiiboStatusCard(ui, viewModel)
                     }
                 }
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space4)) {
-                    AdapterHero(ui, viewModel); ControllerCard(ui); AmiiboStatusCard(ui, viewModel)
+                    AdapterHero(ui, viewModel); ControllerCard(ui)
+                    ConsoleButtonsCard(ui, viewModel); AmiiboStatusCard(ui, viewModel)
                 }
             }
         }
@@ -90,6 +95,88 @@ private fun AdapterHero(ui: CompanionUiState, viewModel: CompanionViewModel) {
             IconButton(onClick = { viewModel.navigate(AppSection.Modes) }) {
                 Icon(Icons.Default.Tune, "Change adapter mode")
             }
+        }
+    }
+}
+
+/**
+ * Console buttons that most Android handhelds have no physical key for.
+ *
+ * Home and Capture exist on the Switch but not on a typical handheld's button
+ * cluster, so without these the functions are simply unreachable while the
+ * handheld is the active controller. C/GameChat is deliberately absent: the
+ * companion's HID descriptor declares fourteen button usages and all fourteen are
+ * assigned, so adding it is a wire-contract change that has to ship together with
+ * matching firmware, not a UI addition.
+ */
+@Composable
+private fun ConsoleButtonsCard(ui: CompanionUiState, viewModel: CompanionViewModel) {
+    // The buttons only mean anything while this handheld is actually streaming to
+    // the console; at any other phase a press would go nowhere.
+    val live = ui.bridge.phase == BridgePhase.Playing
+    HardwareCard {
+        SectionHeading(Icons.Default.Gamepad, "Console buttons")
+        Spacer(Modifier.height(LayoutTokens.Space2))
+        Text(
+            if (live) "Buttons this handheld does not have"
+            else "Available while this handheld is the controller",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(LayoutTokens.Space3))
+        Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
+            HoldButton(Modifier.weight(1f), Icons.Default.Home, "Home", live) {
+                viewModel.setConsoleButton(ControllerButton.Home, it)
+            }
+            HoldButton(Modifier.weight(1f), Icons.Default.PhotoCamera, "Capture", live) {
+                viewModel.setConsoleButton(ControllerButton.Capture, it)
+            }
+        }
+    }
+}
+
+/**
+ * A button that reports press and release rather than a completed click, because
+ * the console distinguishes a tap from a hold (Capture screenshots on release but
+ * records on a long hold, and Home has its own hold behaviour).
+ */
+@Composable
+private fun HoldButton(
+    modifier: Modifier,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    enabled: Boolean,
+    onHold: (Boolean) -> Unit,
+) {
+    val shape = MaterialTheme.shapes.medium
+    Surface(
+        modifier
+            .heightIn(min = 56.dp)
+            .then(
+                if (!enabled) Modifier else Modifier.pointerInput(label) {
+                    detectTapGestures(
+                        onPress = {
+                            onHold(true)
+                            // Releases on cancel too, so a drag off the button or an
+                            // interrupted gesture can never latch the button down.
+                            tryAwaitRelease()
+                            onHold(false)
+                        },
+                    )
+                }
+            ),
+        shape = shape,
+        color = if (enabled) MaterialTheme.colorScheme.secondaryContainer
+        else MaterialTheme.colorScheme.surfaceVariant,
+    ) {
+        Row(
+            Modifier.padding(LayoutTokens.Space3),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(icon, null)
+            Spacer(Modifier.width(LayoutTokens.Space2))
+            Text(label, style = MaterialTheme.typography.labelLarge)
         }
     }
 }

@@ -28,6 +28,17 @@ class AndroidInputRouter {
     private val heldButtonKeys = mutableSetOf<Int>()
 
     /**
+     * Buttons held from the on-screen touch controls.
+     *
+     * Most Android handhelds have no Home, Capture, or C/GameChat button, so those
+     * console functions are otherwise unreachable when the handheld is the active
+     * controller. They are kept separate from [heldButtonKeys] because a physical
+     * key and a touch press are independent sources for the same button: releasing
+     * one must not cancel the other.
+     */
+    private val virtualButtons = mutableSetOf<ControllerButton>()
+
+    /**
      * Every input device the app can see that plausibly relates to a controller,
      * including ones later excluded. Diagnostics shows the excluded entries with
      * their reason, so a wrongly-hidden device is identifiable from the field.
@@ -85,6 +96,9 @@ class AndroidInputRouter {
         resolvedFaceLayout = ControllerLayoutResolver.resolve(requestedFaceLayout, selectedIdentity)
         clearDpad()
         heldButtonKeys.clear()
+        // The published state resets to neutral here, so the touch set has to reset
+        // with it or a held button would survive only in this object.
+        virtualButtons.clear()
         _state.value = ControllerState.Neutral
     }
 
@@ -102,10 +116,7 @@ class AndroidInputRouter {
         val button = buttonForKey(event.keyCode)
         if (button != null) {
             if (pressed) heldButtonKeys += event.keyCode else heldButtonKeys -= event.keyCode
-            val buttons = ControllerButton.entries.filterTo(mutableSetOf()) { candidate ->
-                heldButtonKeys.any { keyCode -> buttonForKey(keyCode) == candidate }
-            }
-            _state.value = _state.value.copy(buttons = buttons)
+            publishButtons()
             return true
         }
         when (event.keyCode) {
@@ -157,7 +168,30 @@ class AndroidInputRouter {
         return true
     }
 
-    fun neutralize() { clearDpad(); heldButtonKeys.clear(); _state.value = ControllerState.Neutral }
+    /**
+     * Press or release a button from the on-screen controls.
+     *
+     * Unlike physical keys this is not gated on a selected input device: the touch
+     * controls belong to the handheld itself, and they stay usable even when the
+     * handheld has no built-in gamepad to select.
+     */
+    fun setVirtualButton(button: ControllerButton, pressed: Boolean) {
+        if (pressed) virtualButtons += button else virtualButtons -= button
+        publishButtons()
+    }
+
+    private fun publishButtons() {
+        val buttons = ControllerButton.entries.filterTo(mutableSetOf()) { candidate ->
+            candidate in virtualButtons ||
+                heldButtonKeys.any { keyCode -> buttonForKey(keyCode) == candidate }
+        }
+        _state.value = _state.value.copy(buttons = buttons)
+    }
+
+    fun neutralize() {
+        clearDpad(); heldButtonKeys.clear(); virtualButtons.clear()
+        _state.value = ControllerState.Neutral
+    }
 
     private fun buttonForKey(keyCode: Int): ControllerButton? {
         val positional = when (keyCode) {
