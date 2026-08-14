@@ -20,6 +20,7 @@ import dev.picoswitch.companion.diagnostics.DiagnosticEntry
 import dev.picoswitch.companion.diagnostics.DiagnosticLog
 import dev.picoswitch.companion.diagnostics.DiagnosticSummary
 import dev.picoswitch.companion.model.*
+import dev.picoswitch.companion.protocol.ManagementProtocol
 import dev.picoswitch.companion.transport.BleGattManagementTransport
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -222,7 +223,26 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     }
     fun disconnect() = launch("Disconnecting") { adapter.disconnect() }
     fun refresh() = launch("Refreshing adapter") { adapter.refreshAll() }
-    fun wake() = launch("Requesting console wake") { adapter.wakeConsole(); notice("Wake request queued") }
+    // Report what the adapter actually did, never merely that the command was
+    // transmitted. Each outcome is distinct and actionable: "advertised" is the
+    // only one that means a wake was really attempted on the radio, and even that
+    // does not promise the console obeyed, so it is not phrased as success.
+    fun wake() = launch("Requesting console wake") {
+        when (adapter.wakeConsole().result) {
+            ManagementProtocol.WakeResult.Advertised ->
+                notice("Wake signal broadcast. If the console stays asleep, press a button on a paired controller.")
+            ManagementProtocol.WakeResult.ConsoleAwake ->
+                notice("Console is already awake.")
+            ManagementProtocol.WakeResult.NoIdentity ->
+                notice("Cannot wake: the adapter has no saved console pairing. Connect it to the console once while the console is on.")
+            ManagementProtocol.WakeResult.RadioBusy ->
+                notice("Wake could not run: the adapter's radio was busy. Try again in a moment.")
+            ManagementProtocol.WakeResult.Pending ->
+                notice("Wake request sent; the adapter did not report an outcome.")
+            ManagementProtocol.WakeResult.Unknown ->
+                notice("Wake request sent. This adapter firmware cannot report whether it ran.")
+        }
+    }
 
     fun switchPersonality(personality: Personality) = launch("Switching adapter mode") {
         val reenumerating = adapter.setPersonality(personality)

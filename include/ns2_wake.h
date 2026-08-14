@@ -24,6 +24,32 @@ bool ns2_wake_request(void);
 // boolean, same publication model as the USB-state flags.
 void ns2_wake_manual_request(void);
 
+// Outcome of the most recent app/management-initiated wake.
+//
+// The `wake` command can only ever confirm that the COMMAND was delivered: the
+// request is latched on core0 and performed later on core1. Reporting that as
+// success is misleading, so core1 records what actually happened and the app
+// polls for it rather than assuming.
+typedef enum {
+    NS2_WAKE_RESULT_NONE = 0,      // no app wake requested since boot
+    NS2_WAKE_RESULT_PENDING,       // latched, core1 has not serviced it yet
+    NS2_WAKE_RESULT_ADVERTISED,    // wake advertisement actually started
+    NS2_WAKE_RESULT_CONSOLE_AWAKE, // console was not asleep; nothing to do
+    NS2_WAKE_RESULT_NO_IDENTITY,   // never completed a USB pairing while awake
+    NS2_WAKE_RESULT_RADIO_BUSY,    // radio/advertiser refused the request
+} ns2_wake_result_t;
+
+typedef struct {
+    uint8_t result;           // ns2_wake_result_t
+    uint8_t console_asleep;   // console state observed at the attempt
+    uint8_t identity_valid;   // a usable wake identity exists
+    uint32_t attempts;        // app wake requests serviced since boot
+    uint32_t last_attempt_ms; // when the last one was serviced
+} ns2_wake_status_t;
+
+void ns2_wake_get_status(ns2_wake_status_t *out);
+const char *ns2_wake_result_name(uint8_t result);
+
 // Automatic wake coordination. Core0 publishes TinyUSB host state; core1
 // latches real controller input and services the wake decision. Each distinct
 // neutral-to-pressed edge can make one attempt; a held button cannot repeat it.

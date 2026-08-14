@@ -1275,8 +1275,23 @@ static void handle_line(char *cmd) {
     } else if (strcmp(cmd, "wake") == 0) {
         // Queue an app-initiated console wake. core1's wake service performs it if
         // the console is asleep and a wake identity exists (paired once while on).
+        // This reply can only ever confirm the command was DELIVERED -- the work
+        // happens later on core1 -- so it deliberately does not claim success.
+        // The caller polls `wake status` for the real outcome.
         ns2_wake_manual_request();
-        reply("{\"ok\":true,\"queued\":true}");
+        reply("{\"ok\":true,\"queued\":true,\"result\":\"pending\"}");
+    } else if (strcmp(cmd, "wake status") == 0) {
+        ns2_wake_status_t st;
+        ns2_wake_get_status(&st);
+        snprintf(out, sizeof(out),
+                 "{\"result\":\"%s\",\"consoleAsleep\":%s,\"identityValid\":%s,"
+                 "\"attempts\":%lu,\"lastAttemptMs\":%lu}",
+                 ns2_wake_result_name(st.result),
+                 st.console_asleep ? "true" : "false",
+                 st.identity_valid ? "true" : "false",
+                 (unsigned long)st.attempts,
+                 (unsigned long)st.last_attempt_ms);
+        reply(out);
 #endif
     } else if (strcmp(cmd, "audiostat") == 0) {
         cmd_audiostat(false);

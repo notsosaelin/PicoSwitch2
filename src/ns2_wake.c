@@ -46,8 +46,37 @@ static uint32_t auto_wake_retry_ms;
 // One-shot app/management-initiated wake request (any core sets; core1 clears).
 static volatile bool manual_wake_pending;
 
+// Observable outcome of the last app-initiated wake. Core1 writes, any core
+// reads. Scalar fields only, same publication model as the USB-state flags.
+static volatile uint8_t manual_wake_result = NS2_WAKE_RESULT_NONE;
+static volatile uint8_t manual_wake_console_asleep;
+static volatile uint8_t manual_wake_identity_valid;
+static volatile uint32_t manual_wake_attempts;
+static volatile uint32_t manual_wake_last_ms;
+
 void ns2_wake_manual_request(void) {
+    manual_wake_result = NS2_WAKE_RESULT_PENDING;
     manual_wake_pending = true;
+}
+
+void ns2_wake_get_status(ns2_wake_status_t *out) {
+    if (!out) return;
+    out->result = manual_wake_result;
+    out->console_asleep = manual_wake_console_asleep;
+    out->identity_valid = manual_wake_identity_valid;
+    out->attempts = manual_wake_attempts;
+    out->last_attempt_ms = manual_wake_last_ms;
+}
+
+const char *ns2_wake_result_name(uint8_t result) {
+    switch (result) {
+        case NS2_WAKE_RESULT_PENDING:       return "pending";
+        case NS2_WAKE_RESULT_ADVERTISED:    return "advertised";
+        case NS2_WAKE_RESULT_CONSOLE_AWAKE: return "console_awake";
+        case NS2_WAKE_RESULT_NO_IDENTITY:   return "no_identity";
+        case NS2_WAKE_RESULT_RADIO_BUSY:    return "radio_busy";
+        default:                            return "none";
+    }
 }
 
 void ns2_wake_pairing_reset(void) {
@@ -214,11 +243,30 @@ void ns2_wake_service(uint32_t now_ms) {
     if (manual_wake_pending) {
         manual_wake_pending = false;
         bool asleep = !(usb_host_mounted && !usb_host_suspended);
-        if (asleep && !btstack_host_wake_advertisement_active()) {
-            printf("[NS2_WAKE] App-requested wake\n");
-            (void)ns2_wake_request();
+        config_wake_identity_t probe;
+        bool have_identity = config_get_wake_identity(&probe);
+
+        manual_wake_attempts++;
+        manual_wake_last_ms = now_ms;
+        manual_wake_console_asleep = asleep ? 1u : 0u;
+        manual_wake_identity_valid = have_identity ? 1u : 0u;
+
+        // Record what actually happened rather than letting the command's
+        // immediate acknowledgement stand in for a result. Each branch is a
+        // distinct, user-meaningful outcome the app can report honestly.
+        if (!asleep) {
+            manual_wake_result = NS2_WAKE_RESULT_CONSOLE_AWAKE;
+            printf("[NS2_WAKE] App wake ignored (console already awake)\n");
+        } else if (!have_identity) {
+            manual_wake_result = NS2_WAKE_RESULT_NO_IDENTITY;
+            printf("[NS2_WAKE] App wake rejected (no completed pairing identity)\n");
+        } else if (btstack_host_wake_advertisement_active()) {
+            manual_wake_result = NS2_WAKE_RESULT_RADIO_BUSY;
+            printf("[NS2_WAKE] App wake deferred (a wake advert is already running)\n");
         } else {
-            printf("[NS2_WAKE] App wake ignored (host awake or advert active)\n");
+            printf("[NS2_WAKE] App-requested wake\n");
+            manual_wake_result = ns2_wake_request() ? NS2_WAKE_RESULT_ADVERTISED
+                                                    : NS2_WAKE_RESULT_RADIO_BUSY;
         }
     }
 

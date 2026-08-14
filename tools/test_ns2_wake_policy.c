@@ -178,6 +178,56 @@ int main(void) {
     CHECK(advertisement_starts == 5,
           "unrelated controller disconnect cannot cancel another wake edge");
 
+    // ---------------------------------------------------------------------
+    // App/management-initiated wake must report what ACTUALLY happened.
+    //
+    // The `wake` command can only confirm delivery: it latches on core0 and is
+    // performed later on core1. Reporting that as success is what made the app
+    // claim the console was woken when it was not. Each branch below is a
+    // distinct outcome the app can now surface honestly.
+    // ---------------------------------------------------------------------
+    ns2_wake_status_t st;
+    ns2_wake_get_status(&st);
+    CHECK(st.result == NS2_WAKE_RESULT_NONE,
+          "no app wake reported before one is requested");
+
+    ns2_wake_manual_request();
+    ns2_wake_get_status(&st);
+    CHECK(st.result == NS2_WAKE_RESULT_PENDING,
+          "a latched app wake reads as pending until core1 services it");
+
+    // Console awake: nothing to do, and it must not be reported as success.
+    ns2_wake_publish_usb_state(true, false, 4000);
+    ns2_wake_service(4000);
+    ns2_wake_get_status(&st);
+    CHECK(st.result == NS2_WAKE_RESULT_CONSOLE_AWAKE,
+          "app wake while the console is awake reports console_awake, not success");
+    CHECK(st.attempts == 1, "a serviced app wake counts exactly one attempt");
+
+    // Console asleep and the radio free: the advertisement really starts.
+    advertisement_active = false;
+    ns2_wake_publish_usb_state(false, false, 4100);
+    ns2_wake_service(4900);
+    int before_manual = advertisement_starts;
+    ns2_wake_manual_request();
+    ns2_wake_service(4901);
+    ns2_wake_get_status(&st);
+    CHECK(advertisement_starts == before_manual + 1,
+          "app wake with the console asleep starts a wake advertisement");
+    CHECK(st.result == NS2_WAKE_RESULT_ADVERTISED,
+          "a started advertisement reports advertised");
+    CHECK(st.console_asleep == 1 && st.identity_valid == 1,
+          "status carries the console/identity preconditions it observed");
+
+    // Radio already busy with a wake burst: deferred, never a false success.
+    advertisement_active = true;
+    ns2_wake_manual_request();
+    ns2_wake_service(4950);
+    ns2_wake_get_status(&st);
+    CHECK(st.result == NS2_WAKE_RESULT_RADIO_BUSY,
+          "app wake while a wake advert is running reports radio_busy");
+    CHECK(st.attempts == 3, "every serviced app wake is counted");
+
     if (failures) return 1;
     printf("ns2_wake_policy: all tests passed\n");
     return 0;

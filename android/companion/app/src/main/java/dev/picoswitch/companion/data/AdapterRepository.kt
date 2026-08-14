@@ -159,7 +159,16 @@ class AdapterRepository(private val transport: ManagementTransport) {
         }
     }
 
-    suspend fun wakeConsole() {
+    /**
+     * Request a console wake and report what the adapter ACTUALLY did.
+     *
+     * `wake` only acknowledges delivery -- the adapter latches the request on one
+     * core and performs it on the other -- so this polls `wake status` for the
+     * real outcome instead of treating transmission as success. An adapter too
+     * old to know `wake status` returns [ManagementProtocol.WakeResult.Unknown],
+     * which the UI must present as "sent, outcome unknown", never as success.
+     */
+    suspend fun wakeConsole(): ManagementProtocol.WakeStatus {
         try {
             ack("wake")
             updateCapabilities { it.copy(wake = CapabilityState.Available) }
@@ -167,6 +176,24 @@ class AdapterRepository(private val transport: ManagementTransport) {
             if (error.isUnsupported()) updateCapabilities { it.copy(wake = CapabilityState.Unsupported) }
             throw error
         }
+        // The wake is serviced on the adapter's Bluetooth core within a control
+        // tick; poll briefly rather than reporting the still-pending state.
+        var status = ManagementProtocol.WakeStatus(
+            ManagementProtocol.WakeResult.Unknown, false, false, 0L,
+        )
+        repeat(WAKE_STATUS_POLLS) {
+            delay(WAKE_STATUS_POLL_MS)
+            status = try {
+                ManagementProtocol.wakeStatus(command("wake status"))
+            } catch (error: AdapterCommandException) {
+                // Older firmware without `wake status`: do not invent a result.
+                return ManagementProtocol.WakeStatus(
+                    ManagementProtocol.WakeResult.Unknown, false, false, 0L,
+                )
+            }
+            if (status.result != ManagementProtocol.WakeResult.Pending) return status
+        }
+        return status
     }
 
     suspend fun setManagementEnabled(enabled: Boolean) {
@@ -412,6 +439,11 @@ class AdapterRepository(private val transport: ManagementTransport) {
     private data class OptionalCapability<T>(val value: T?, val state: CapabilityState)
 
     private companion object {
+        // The adapter services an app wake on its Bluetooth core within a control
+        // tick; a short bounded poll resolves the real outcome without making the
+        // user wait or letting the UI fall back to claiming success.
+        const val WAKE_STATUS_POLLS = 6
+        const val WAKE_STATUS_POLL_MS = 150L
         const val UNAVAILABLE_PAYLOAD_CRC = "00000000"
     }
 }

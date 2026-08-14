@@ -161,4 +161,47 @@ class ManagementProtocolTest {
         assertEquals("No controller", value.name)
         assertFalse(value.attached)
     }
+
+    // The wake command can only confirm delivery; the adapter performs the work
+    // on another core. These map the adapter's real outcomes so the UI never
+    // presents "transmitted" as "the console woke up".
+    @Test fun `parses every reported wake outcome`() {
+        fun parse(json: String) = ManagementProtocol.wakeStatus(
+            ManagementProtocol.objectOrThrow("wake status", json),
+        )
+        assertEquals(
+            ManagementProtocol.WakeResult.Advertised,
+            parse("""{"result":"advertised","consoleAsleep":true,"identityValid":true,"attempts":1}""").result,
+        )
+        assertEquals(
+            ManagementProtocol.WakeResult.ConsoleAwake,
+            parse("""{"result":"console_awake"}""").result,
+        )
+        assertEquals(
+            ManagementProtocol.WakeResult.NoIdentity,
+            parse("""{"result":"no_identity"}""").result,
+        )
+        assertEquals(
+            ManagementProtocol.WakeResult.RadioBusy,
+            parse("""{"result":"radio_busy"}""").result,
+        )
+        assertEquals(
+            ManagementProtocol.WakeResult.Pending,
+            parse("""{"result":"pending"}""").result,
+        )
+    }
+
+    @Test fun `unrecognised or absent wake outcome is never treated as success`() {
+        fun parse(json: String) = ManagementProtocol.wakeStatus(
+            ManagementProtocol.objectOrThrow("wake status", json),
+        )
+        // A future/garbled value, or firmware too old to answer, must land on
+        // Unknown -- the UI reports "sent, outcome unknown", not success.
+        assertEquals(ManagementProtocol.WakeResult.Unknown, parse("""{"result":"woke_it"}""").result)
+        assertEquals(ManagementProtocol.WakeResult.Unknown, parse("""{"ok":true}""").result)
+        val status = parse("""{"ok":true}""")
+        assertFalse(status.consoleAsleep)
+        assertFalse(status.identityValid)
+        assertEquals(0L, status.attempts)
+    }
 }
