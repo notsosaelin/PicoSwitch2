@@ -60,6 +60,48 @@ class BridgeContractTest {
         }
     }
 
+    /**
+     * Regression: a healthy adapter briefly flashed an incompatibility warning
+     * between "connected" and "identity reply received", because the absent
+     * contract field was read as a finding rather than as "not asked yet".
+     */
+    @Test fun `no identity reply yet is Pending and never warns`() {
+        val pending = BridgeContract.evaluate(
+            firmwareContract = 0, connected = true, firmwareInfoAvailable = false,
+        )
+        assertTrue(pending is BridgeContract.Compatibility.Pending)
+        assertFalse(BridgeContract.isProvenCompatible(pending))
+        assertFalse("Pending must not warn", BridgeContract.warrantsWarning(pending))
+
+        // ...and it must not swallow a real mismatch that arrives later.
+        val settled = BridgeContract.evaluate(
+            firmwareContract = BridgeContract.VERSION - 1, connected = true,
+            firmwareInfoAvailable = true,
+        )
+        assertTrue(settled is BridgeContract.Compatibility.Mismatch)
+        assertTrue(BridgeContract.warrantsWarning(settled))
+    }
+
+    /** Unknown is preserved for firmware that answered and reported no contract. */
+    @Test fun `an answered reply with no contract is still Unknown and still warns`() {
+        val unknown = BridgeContract.evaluate(
+            firmwareContract = 0, connected = true, firmwareInfoAvailable = true,
+        )
+        assertTrue(unknown is BridgeContract.Compatibility.Unknown)
+        assertTrue(unknown.summary, unknown.summary.contains("UNVERIFIED"))
+        assertTrue(BridgeContract.warrantsWarning(unknown))
+    }
+
+    @Test fun `a healthy adapter warns at no point in its connect sequence`() {
+        // The exact sequence a good adapter walks: disconnected -> connected but
+        // silent -> identity received. None of it may show a warning.
+        listOf(
+            BridgeContract.evaluate(0, connected = false, firmwareInfoAvailable = false),
+            BridgeContract.evaluate(0, connected = true, firmwareInfoAvailable = false),
+            BridgeContract.evaluate(BridgeContract.VERSION, connected = true, firmwareInfoAvailable = true),
+        ).forEach { assertFalse(it.summary, BridgeContract.warrantsWarning(it)) }
+    }
+
     @Test fun `nothing connected is not a compatibility claim either way`() {
         val result = BridgeContract.evaluate(BridgeContract.VERSION, connected = false)
         assertEquals(BridgeContract.Compatibility.NotConnected, result)

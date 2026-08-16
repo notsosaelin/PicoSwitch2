@@ -95,7 +95,19 @@ object BridgeContract {
                 }
         }
 
-        /** The adapter did not report a contract at all. */
+        /**
+         * Connected, but the adapter's identity reply has not arrived yet.
+         *
+         * Distinct from [Unknown] on purpose. "We have not asked yet" and "we
+         * asked and this firmware has no contract" look identical if collapsed,
+         * and collapsing them made a healthy adapter flash an incompatibility
+         * warning for the second or two before its info reply landed.
+         */
+        data class Pending(val companion: Int) : Compatibility {
+            override val summary = "checking adapter firmware (expecting bridge contract $companion)"
+        }
+
+        /** The adapter answered, and reported no contract at all. */
         data class Unknown(val companion: Int) : Compatibility {
             override val summary =
                 "UNVERIFIED: this adapter firmware does not report a bridge contract, so it " +
@@ -112,15 +124,31 @@ object BridgeContract {
     /**
      * @param firmwareContract what the adapter reported, or null/<=0 when it
      *   reported nothing (older firmware, or the field was absent).
+     * @param firmwareInfoAvailable whether the adapter's identity reply has been
+     *   received at all. False means "not asked yet", which is [Compatibility.Pending]
+     *   and NOT a compatibility claim in either direction.
      */
-    fun evaluate(firmwareContract: Int?, connected: Boolean): Compatibility = when {
+    fun evaluate(
+        firmwareContract: Int?,
+        connected: Boolean,
+        firmwareInfoAvailable: Boolean = true,
+    ): Compatibility = when {
         !connected -> Compatibility.NotConnected
+        !firmwareInfoAvailable -> Compatibility.Pending(VERSION)
         firmwareContract == null || firmwareContract <= 0 -> Compatibility.Unknown(VERSION)
         firmwareContract == VERSION -> Compatibility.Compatible(VERSION)
         else -> Compatibility.Mismatch(firmwareContract, VERSION)
     }
 
-    /** True only when both ends reported and agreed. Never true on Unknown. */
+    /** True only when both ends reported and agreed. Never true on Pending or Unknown. */
     fun isProvenCompatible(compatibility: Compatibility): Boolean =
         compatibility is Compatibility.Compatible
+
+    /**
+     * Whether the user should be warned. Pending is deliberately silent: it is a
+     * transient state on every healthy connection, and warning during it trains
+     * people to ignore the warning that matters.
+     */
+    fun warrantsWarning(compatibility: Compatibility): Boolean =
+        compatibility is Compatibility.Mismatch || compatibility is Compatibility.Unknown
 }

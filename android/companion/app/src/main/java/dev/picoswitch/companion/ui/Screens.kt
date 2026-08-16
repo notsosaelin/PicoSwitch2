@@ -1115,9 +1115,7 @@ private fun BridgeCard(ui: CompanionUiState, viewModel: CompanionViewModel, onPr
         // while buttons still work, which is exactly what a skew looks like.
         // Silent on the compatible path so it adds no clutter.
         val compatibility = ui.bridgeCompatibility
-        if (compatibility is BridgeContract.Compatibility.Mismatch ||
-            compatibility is BridgeContract.Compatibility.Unknown
-        ) {
+        if (BridgeContract.warrantsWarning(compatibility)) {
             Spacer(Modifier.height(LayoutTokens.Space2))
             Text(
                 compatibility.summary,

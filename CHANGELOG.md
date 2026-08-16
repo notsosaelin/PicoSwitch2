@@ -534,8 +534,13 @@ identifier, not a product version.
 - The adapter firmware and the Android companion must be updated together. 2.0.0 uses a newer
   bridge contract (version 3) than earlier builds; a mismatch disables battery, motion and rumble while
   ordinary input continues to work. The companion now detects and reports this.
-- Android controller bridging is foreground-only. Android unregisters the HID Device profile when
-  the app is not in front, and only one HID Device application may be registered system-wide.
+- Keep the companion open on the handheld while playing. Android delivers controller input only to
+  the focused app, so the companion must be the foreground window to read the handheld's controls —
+  which is the normal case, since you are looking at the television rather than the handheld's
+  screen. A connected-device foreground service keeps the link and the rumble path alive
+  throughout, and backgrounding the app releases any held input rather than leaving it stuck.
+  Android also permits only one HID Device application system-wide, so another HID-emulation app
+  can prevent the bridge from registering.
 - Motion translation is validated per controller family, not universally: genuine Pro Controller 2
   passthrough, DualSense/DualSense Edge, and the Android companion are hardware-confirmed. Any
   additional family still needs its own calibration, axis, scale and timestamp validation before
