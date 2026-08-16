@@ -366,13 +366,26 @@ bool ns2_ds5_motion_update(ns2_ds5_motion_state_t *state,
     bool used_sensor_timestamp = false;
     if (input->motion_timestamp_valid) {
         if (state->sensor_timestamp_initialized) {
-            // Linux hid-playstation uses the same wrap-safe delta and rounded
-            // divide-by-three conversion for the DualSense's 0.33 us clock.
-            const uint32_t sensor_ticks =
-                input->motion_timestamp - state->last_sensor_timestamp;
-            const uint32_t sensor_elapsed_us =
-                sensor_ticks / 3u +
-                ((sensor_ticks % 3u) >= 2u ? 1u : 0u);
+            // Take the delta in the SOURCE's own modulus, then scale. Doing it
+            // the other way round is not wrap-safe: 2^32 is not divisible by 3,
+            // so converting an absolute DualSense tick count to microseconds
+            // before differencing corrupts every delta that straddles a wrap.
+            //
+            // Linux hid-playstation uses this same wrap-safe delta and rounded
+            // divide-by-three for the DualSense's 0.33 us clock.
+            uint32_t sensor_elapsed_us;
+            if (input->motion_timestamp_unit == SWITCH_MOTION_TS_100US_16) {
+                const uint32_t ticks =
+                    (input->motion_timestamp - state->last_sensor_timestamp) &
+                    0xFFFFu;
+                sensor_elapsed_us = ticks * 100u;
+            } else {
+                const uint32_t sensor_ticks =
+                    input->motion_timestamp - state->last_sensor_timestamp;
+                sensor_elapsed_us =
+                    sensor_ticks / 3u +
+                    ((sensor_ticks % 3u) >= 2u ? 1u : 0u);
+            }
             state->last_sensor_elapsed_us = sensor_elapsed_us;
             if (sensor_elapsed_us >= NS2_DS5_SENSOR_DT_MIN_US &&
                 sensor_elapsed_us <= NS2_DS5_SENSOR_DT_MAX_US) {

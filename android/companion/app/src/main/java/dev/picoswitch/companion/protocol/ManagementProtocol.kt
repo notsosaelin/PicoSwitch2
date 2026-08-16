@@ -51,6 +51,11 @@ object ManagementProtocol {
 
     fun firmware(value: JsonObject) = FirmwareInfo(
         id = value.string("id"), product = value.string("product"), version = value.string("version"),
+        // Optional: absent on firmware that predates contract reporting, which is
+        // itself the signal that it is older than this app. Never defaulted to
+        // the expected version -- see BridgeContract.Compatibility.Unknown.
+        bridgeContract = value.int("bridge_contract"),
+        build = value.string("build"),
     ).also { requireShape(it.id.isNotBlank() && it.version.isNotBlank(), "info") }
 
     fun controller(value: JsonObject) = ControllerInfo(

@@ -12,8 +12,11 @@ android {
         applicationId = "dev.picoswitch.companion"
         minSdk = 28
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // First public companion release, shipping alongside PicoSwitch2 v1.6.0.
+        // Keep this aligned with the firmware release the APK is published with:
+        // the two must be updated together (see BridgeContract).
+        versionCode = 2
+        versionName = "1.6.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
@@ -52,6 +55,11 @@ android {
 }
 
 dependencies {
+    // Bridge Core: the platform-neutral definition of the PicoSwitch Bridge. This
+    // app is one backend for it, not the definition itself. `api` so the Compose
+    // layer can observe the shared model directly.
+    api(project(":bridge-core"))
+
     val composeBom = platform("androidx.compose:compose-bom:2025.08.01")
     implementation(composeBom)
     androidTestImplementation(composeBom)

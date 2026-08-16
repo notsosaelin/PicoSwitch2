@@ -70,6 +70,9 @@ user remapping belongs in the Switch's persistent controller settings.
 
 ## Architecture
 
+Two independent paths. Management is Android-specific throughout; the controller bridge is split
+into a **platform-neutral core** plus an **Android backend**.
+
 ```text
 Compose adaptive screens
   -> CompanionViewModel / StateFlow
@@ -79,10 +82,28 @@ Compose adaptive screens
           -> PicoSwitch2 GATT newline-JSON service
 
 Activity KeyEvent / MotionEvent
-  -> AndroidInputRouter -> immutable ControllerState
-    -> ControllerReportEncoder
-      -> BluetoothHidDevice -> PicoSwitch2 Classic HID host
+  -> AndroidInputBackend                        (app,  Android)
+    -> ControllerInputState                     (core, neutral)
+      -> BridgeSession                          (core, neutral)
+        -> ControllerReportEncoder              (core, neutral)
+          -> AndroidHidTransport                (app,  Android)
+            -> BluetoothHidDevice -> PicoSwitch2 Classic HID host
+
+PicoSwitch2 -> AndroidHidTransport -> BridgeOutputCodec -> BridgeSession
+            -> RumbleRequest -> AndroidOutputBackend -> vibrator
 ```
+
+### Modules
+
+| Module | Contents | Android? |
+|---|---|---|
+| `:bridge-core` | `dev.picoswitch.bridge.{core,protocol,session}` — normalized controller model, canonical motion convention, capabilities, report codec, session and transport interfaces | **No.** Plain Kotlin/JVM; the Android SDK is not on its classpath, so a leak is a build failure. |
+| `:app` | `dev.picoswitch.companion.bridge` — the Android backend (`AndroidInputBackend`, `AndroidMotionBackend`, `AndroidBatteryBackend`, `AndroidOutputBackend`, `AndroidHidTransport`), plus UI, management, Amiibo, NFC | Yes |
+
+`AndroidBridge` is the assembly point: it plugs the four Android backends into the shared
+`BridgeSession` and is the only class that knows both sides. The contract a second platform would
+implement is documented in [`docs/bridge/PLATFORM_BACKEND.md`](../../docs/bridge/PLATFORM_BACKEND.md)
+and [`docs/bridge/PROTOCOL.md`](../../docs/bridge/PROTOCOL.md).
 
 `ManagementProtocol` owns UUIDs, framing limits, JSON parsing, and typed adapter errors. Raw command
 strings never appear in Compose screens. `AdapterRepository` owns workflows and external-state

@@ -7,6 +7,69 @@
 // PicoSwitch2 Android Controller Bridge — canonical HID contract
 // ============================================================================
 //
+// ============================================================================
+// BRIDGE CONTRACT VERSION -- READ BEFORE EDITING THE DESCRIPTOR
+// ============================================================================
+//
+// One integer identifying the bridge contract this build implements. Both ends
+// report it at runtime so a version skew is visible immediately instead of being
+// inferred from which features stopped working.
+//
+// ## Why this exists (real incident, 2026-08-15)
+//
+// C/GameChat changed the descriptor from 14 buttons + 2 pad bits to 15 + 1.
+// The companion APK was updated; the adapter kept running older firmware.
+// android_bridge_identify() does an EXACT 161-byte match, so it failed and the
+// firmware fell back to the v1 generic profile. Buttons, sticks, triggers and
+// the hat kept working -- they are v1 fields -- while battery, motion and
+// rumble/player-LED all disappeared together, because every one of them is
+// gated on that single match. Source-level parity checks all passed: they
+// compare the source tree to the source tree and cannot see what is flashed.
+//
+// ## WHEN TO BUMP
+//
+// Bump ANDROID_BRIDGE_CONTRACT_VERSION for any change a peer can observe:
+//
+//   * descriptor bytes of any kind (report count, usage minimum/maximum, field
+//     width, logical range, collection structure, report IDs);
+//   * wire layout (offsets, field sizes, endianness);
+//   * units or semantics of an existing field (e.g. the motion timestamp moving
+//     from milliseconds to 100 us ticks);
+//   * capabilities implied by the profile (adding/removing motion, battery,
+//     output);
+//   * the output report's contents or meaning.
+//
+// Do NOT bump for implementation-only changes: comments, formatting, internal
+// refactors, test edits, or anything that leaves the bytes on the wire and their
+// meaning identical.
+//
+// Bumping is cheap. Failing to bump costs a debugging session like the one above.
+//
+// ## HOW THIS IS ENFORCED
+//
+// A SHA-256 over all 161 descriptor bytes is registered per contract version in
+// BridgeContract.DESCRIPTOR_DIGESTS. Change ANY byte and the digest moves, so a
+// change without a bump fails:
+//
+//   * tools/check_android_descriptor_parity.py  (this C descriptor)
+//   * BridgeContractTest                        (the Kotlin mirror)
+//
+// Language-to-language parity alone is not enough: editing both sides together
+// keeps them equal while still changing the wire. The digest is what catches
+// that. Both checks print the digest to register and remind you to reflash.
+//
+// ## History
+//
+//   1  v1: buttons 1..14, sticks, triggers, hat. No vendor extension.
+//   2  v2: vendor extension added -- motion, battery, flags, millisecond motion
+//      timestamp -- plus output report 2 (rumble, player LED, motion-wanted).
+//   3  current: buttons 1..15 (15 = C / GameChat, inside the same two bytes) and
+//      the motion timestamp redefined to 100 us ticks.
+//
+// The Kotlin side mirrors this as BridgeContract.VERSION and
+// tools/check_android_descriptor_parity.py fails the build if the two disagree.
+#define ANDROID_BRIDGE_CONTRACT_VERSION 3u
+
 // Single source of truth for the descriptor and wire layout. The firmware parser
 // test (tools/test_bthid_android_controller.c) compiles this directly; the Kotlin
 // encoder (android/companion/.../controller/ControllerState.kt) mirrors the same
@@ -33,12 +96,19 @@
 // Wire layout, INPUT report 1 (Android -> PicoSwitch2), 26 bytes:
 //   [0]      report ID (1)
 //   [1..6]   X, Y, Z, Rz, Rx, Ry           (sticks, then triggers; 0..255)   v1
-//   [7..8]   buttons 1..14 + 2 pad bits                                       v1
+//   [7..8]   buttons 1..15 + 1 pad bit                                        v1+
 //   [9]      hat (low nibble, 8 = neutral) + 4 pad bits                       v1
+//
+// Button usage 15 is the Switch 2 "C" (GameChat) button. It was appended inside
+// the EXISTING two button bytes -- 14 buttons + 2 pad became 15 + 1 -- so every
+// later field keeps its byte offset and only the button count changed. The
+// firmware needs no change for it: the generic sequential profile already maps
+// usage 15 to JP_BUTTON_A3, which NS2_BASE_BUTTON_MAP routes to NS2_DST_C and
+// ns2_seam.c raises as SWITCH_EXTRA_C.
 //   [10..21] gyro X,Y,Z then accel X,Y,Z   (int16 little-endian)              v2
 //   [22]     battery level 0..100                                             v2
 //   [23]     flags (see ANDROID_BRIDGE_FLAG_*)                                v2
-//   [24..25] motion timestamp, milliseconds (uint16 LE, free-running/wrapping) v2
+//   [24..25] motion timestamp, 100 us ticks (uint16 LE, free-running/wrapping) v2
 //
 // Wire layout, OUTPUT report 2 (PicoSwitch2 -> Android), 5 bytes:
 //   [0] report ID (2)
@@ -72,7 +142,13 @@
 #define ANDROID_BRIDGE_OFF_ACCEL 16u   // 3 x int16 LE
 #define ANDROID_BRIDGE_OFF_BATTERY 22u
 #define ANDROID_BRIDGE_OFF_FLAGS 23u
-#define ANDROID_BRIDGE_OFF_TIMESTAMP 24u  // uint16 LE, milliseconds
+// uint16 LE, 100 us ticks, free-running and wrapping (6.5536 s period).
+// NOT milliseconds: at the 125 Hz report cadence a 1 ms quantum is 12.5% of the
+// interval, which is the same order as the arrival jitter this timestamp exists
+// to eliminate. 100 us keeps the quantization an order of magnitude below the
+// effect being corrected while still fitting the existing 16-bit field.
+#define ANDROID_BRIDGE_OFF_TIMESTAMP 24u
+#define ANDROID_BRIDGE_TIMESTAMP_TICK_US 100u
 
 // Input flags (wire byte 23).
 #define ANDROID_BRIDGE_FLAG_CHARGING 0x01u
@@ -174,14 +250,14 @@ static const uint8_t ANDROID_CONTROLLER_V2_HID_DESCRIPTOR[] = {
 
     0x05, 0x09,       // Usage Page (Button)
     0x19, 0x01,
-    0x29, 0x0E,
+    0x29, 0x0F,       // Usage Maximum (15) -- 15 is C / GameChat
     0x15, 0x00,
     0x25, 0x01,
     0x75, 0x01,
-    0x95, 0x0E,
+    0x95, 0x0F,       // Report Count (15)
     0x81, 0x02,
     0x75, 0x01,
-    0x95, 0x02,
+    0x95, 0x01,       // one pad bit; the field stays two bytes wide
     0x81, 0x03,
 
     0x05, 0x01,       // Usage Page (Generic Desktop)
@@ -221,7 +297,7 @@ static const uint8_t ANDROID_CONTROLLER_V2_HID_DESCRIPTOR[] = {
     0x95, 0x02,
     0x81, 0x02,
 
-    0x09, 0x32,       // Motion timestamp (ms)
+    0x09, 0x32,       // Motion timestamp (100 us ticks)
     0x15, 0x00,
     0x27, 0xFF, 0xFF, 0x00, 0x00, // Logical Maximum (65535)
     0x75, 0x10,

@@ -37,6 +37,7 @@
 #include "ns2_amiibo_v3_write.h"
 #include "ns2_ds5_motion.h"
 #include "ns2_ds5_motion40.h"
+#include "ns2_rumble_trace.h"
 #include "usb.h"         // g_usb_config_mode
 
 // This whole module is only built into the NS2 firmware. The vendor-class calls
@@ -369,18 +370,16 @@ void ns2_dbg_report_state(uint8_t *report_id, uint8_t *streaming, uint8_t *motio
     if (motion_len) *motion_len = ns2_dbg_motion_len;
 }
 
-// Motion-integration state for report 0x09, promoted to file scope (was function-local
-// statics) so ns2_dbg_motion_bias() below can expose it live — see the 2026-07-10 (test 2)
-// hardware finding that the stillness gate may never fire; this lets the next hardware pass
-// confirm it directly instead of guessing again.
-static uint16_t ns2_imu_tick;
-static uint32_t ns2_phase[3] = { 0, 0, 0x80000000u };  // Z starts ~ -180 deg (from capture)
-static uint32_t ns2_motion_last_us;
-static int32_t  ns2_gyro_lp[3];      // gyro low-pass, <<6 fixed point
-static int32_t  ns2_gyro_bias[3];    // slow bias estimate, <<6 fixed point
-static int32_t  ns2_gyro_prev_raw[3];
-static int32_t  ns2_gyro_jitter[3];  // EMA of |raw - prev_raw|, <<6 fixed point — the stillness signal
-static uint8_t  ns2_dbg_still;       // stillness gate state from the most recent report
+// Report-0x09 motion emit-side state.
+//
+// There is exactly ONE encoder for translated sources: ns2_ds5_motion.c. The
+// former per-axis "phase" integrator that used to live here was removed on
+// 2026-08-14; see docs/experiments/refuted-hypotheses.md ("report-0x09 phase
+// encoder"). It wrote three independent int32 angle accumulators into bytes
+// 0x04..0x0F, which the console decodes as a packed 26/25/24-bit smallest-three
+// quaternion plus a 2-bit chart state. Those are different representations, so
+// every source routed through it produced violent, meaningless motion. It was
+// never a valid reference implementation and must not be reintroduced.
 static bool     ns2_native_hold_active;
 static uint16_t ns2_native_hold_previous_tick;
 static ns2_ds5_motion_state_t ns2_ds5_motion;
@@ -471,27 +470,6 @@ void ns2_ds5_motion40_get_schedule(uint32_t *carrier_frames,
     if (last_tick) *last_tick = ns2_ds5_motion40.last_pdu_tick;
 }
 
-// Debug: bias estimate (converted to raw LSB units) + whether the stillness gate is
-// currently open. If `still` never reads 1 while the controller sits motionless on real
-// hardware, the gate itself is broken (not just under-tuned) — read this before touching
-// the bias-tracker constants again.
-void ns2_dbg_motion_bias(int32_t bias_out[3], uint8_t *still_out) {
-    if (bias_out) for (int i = 0; i < 3; i++) bias_out[i] = ns2_gyro_bias[i] >> 6;
-    if (still_out) *still_out = ns2_dbg_still;
-}
-
-// Debug: the CURRENT report-0x09 phase[] accumulator (raw int32, binary-angle units — 2^32 ==
-// 360 deg), as it would be written into the report right now if the IMU were enabled. Added
-// 2026-07-10 after the symptom was reclassified from gradual "drift" to abrupt multidirectional
-// jumps: bias/still alone can't distinguish "our own phase computation has a discontinuity" from
-// "our math is smooth but the console expects a different value semantic (e.g. a bounded raw
-// sample rather than an unbounded accumulator, per the sibling native-BLE motion format —
-// docs/experiments/switch2_native_motion_map_DyCOOL.md)." Watching this while the controller sits
-// still answers the first question directly, with no console needed.
-void ns2_dbg_motion_phase(int32_t phase_out[3]) {
-    if (phase_out) for (int i = 0; i < 3; i++) phase_out[i] = (int32_t)ns2_phase[i];
-}
-
 void ns2_dbg_ds5_motion(ns2_ds5_motion_diag_t *out) {
     if (!out) return;
     out->enabled = ns2_ds5_motion_enabled ? 1u : 0u;
@@ -579,208 +557,129 @@ void ns2_dbg_ds5_motion_set_carrier(uint8_t carrier) {
     ns2_ds5_motion_set_carrier(&ns2_ds5_motion, selected);
 }
 
-// The tracked timing word for the CURRENT phase[] values (set inside ns2_motion_tick(),
-// consumed by ns2_build_report() when actually writing report bytes).
-static uint16_t ns2_motion_timing;
+// ---------------------------------------------------------------------------
+// Report-0x09 motion: ONE encoder for every translated source.
+// ---------------------------------------------------------------------------
+//
+// A genuine Pro Controller 2 supplies its own opaque motion PDU and never
+// reaches this stage. EVERY other source -- DualSense, Switch 1, the Android
+// companion, and any generic gamepad whose driver publishes IMU data -- is
+// encoded by ns2_ds5_motion.c, which is the only implementation that has ever
+// produced correct motion on real hardware.
+//
+// Source-specific work happens strictly BEFORE this point:
+//
+//   driver HID parse  ->  shared interchange units (16.384 counts/dps,
+//                         8192 counts/g)
+//   ns2_motion_seam.c ->  that source's sensor frame rotated onto the carrier
+//                         frame (X right, Y forward, Z face normal)
+//   THIS STAGE        ->  bias/stillness tracking, quaternion integration, and
+//                         the Switch 2 wire encoding
+//
+// So this stage describes the target protocol, not the source controller. Do
+// not add per-controller behavior here; add a seam row instead.
+//
+// Returns true when a new physical sample was integrated.
+static bool ns2_motion_consume(const switch_pro_input_t *in) {
+    if (!in || !in->has_motion || !ns2_ds5_motion_enabled) return false;
 
-// Serialize timing/temperature/phase/accel into the 30-byte report-0x09 motion block
-// (docs/switch2/report-0x09-motion.md layout). Shared by ns2_build_report() (the real,
-// transmitted report) and the anomaly capture below (ns2_last_anom.motion_bytes) — using
-// ONE function for both means "does the phase->bytes serialization ever diverge from what's
-// actually sent" is answered by code structure (it physically cannot: same function, same
-// inputs, called at the same point), not by a separate, potentially-drifting copy of the
-// byte-packing logic.
-static void ns2_encode_motion30(uint8_t out[30], uint16_t timing, const int32_t phase[3],
-                                 const int16_t accel[3]) {
-    out[0x00] = (uint8_t)timing;  out[0x01] = (uint8_t)(timing >> 8);
-    out[0x02] = 0x00;             out[0x03] = 0x0C;  // temperature 0x0C00
-    for (int ax = 0; ax < 3; ax++) {
-        uint8_t *q = &out[0x04 + ax * 4];
-        int32_t v = phase[ax];
-        q[0] = (uint8_t)v;         q[1] = (uint8_t)(v >> 8);
-        q[2] = (uint8_t)(v >> 16); q[3] = (uint8_t)(v >> 24);
-    }
-    for (int ax = 0; ax < 3; ax++) {  // accel -> Q16.16 (integer counts << 16; 4096 = 1 g)
-        int32_t a = (int32_t)accel[ax] * 65536;
-        uint8_t *q = &out[0x10 + ax * 4];
-        q[0] = (uint8_t)a;         q[1] = (uint8_t)(a >> 8);
-        q[2] = (uint8_t)(a >> 16); q[3] = (uint8_t)(a >> 24);
-    }
-    out[0x1C] = 0; out[0x1D] = 0;  // tail
-}
-
-// ---- Discontinuity detector: bound derived from ns2_motion_tick()'s own arithmetic, not
-// chosen. Every value that can flow into a single phase increment is independently bounded:
-//   - in->gyro[ax] is int16_t (type-bounded, [-32768,32767]) and additionally clamped to that
-//     same range by ns2_clamp16() in ns2_seam.c before it ever reaches here.
-//   - ns2_gyro_lp[] is an EMA (weight 1/4) of that bounded input. By induction (a convex
-//     combination — glp_next = glp + (input-glp)>>2 — of values already in [-M,M] with an
-//     input in [-M,M] stays in [-M,M], and glp starts at 0), |ns2_gyro_lp[ax]| <= 32768<<6.
-//   - ns2_gyro_bias[] is the same EMA shape (weight 1/256) tracking ns2_gyro_lp[], so by the
-//     same induction |ns2_gyro_bias[ax]| <= 32768<<6 too.
-//   - g = (ns2_gyro_lp - ns2_gyro_bias) >> 6. By the triangle inequality, |g| <=
-//     2 * 32768<<6 / 64 = 2 * 32768 -- the honest worst case if glp and bias were ever at
-//     opposite extremes simultaneously (not expected of well-behaved sensor data, but not
-//     excluded by the code's own logic, so used here rather than a tighter guess).
-//   - dt_us is clamped to [500,16000] by this same function, a few lines below.
-// NS2_MAX_PHASE_DELTA is the largest |phase increment| this arithmetic can produce without a
-// computation defect (overflow, a clamp bypassed, memory corruption). It is a ceiling derived
-// from the code as written, not a heuristic "this looks too big" guess -- exceeding it proves a
-// defect in this function specifically, independent of what the phase VALUE should mean.
-#define NS2_MAX_G_MAGNITUDE 65536   // 2 * int16 range; see derivation above
-#define NS2_MAX_DT_US       16000   // this function's own dt_us ceiling, a few lines below
-#define NS2_MAX_PHASE_DELTA \
-    ((int32_t)((int64_t)NS2_MAX_G_MAGNITUDE * NS2_MAX_DT_US * 72818 / 100000))  // ~763.5M, ~64.0 deg
-
-// Small ring buffer of recent ticks' lightweight state, kept purely so an anomaly capture (below)
-// has real preceding context ("surrounding" state), not just the offending tick in isolation.
-// NS2_ANOM_TRAIL is defined in switch_pro2.h (shared with ns2_anom_capture_t's trail[] sizing).
-static ns2_anom_trail_t ns2_anom_trail[NS2_ANOM_TRAIL];
-static uint8_t ns2_anom_trail_pos;
-
-// Full context captured the moment a phase increment exceeds NS2_MAX_PHASE_DELTA. Pure
-// observability: nothing here feeds back into ns2_phase[], the bias tracker, or the transmitted
-// report -- this task is explicitly "detect and expose," not "correct."
-static ns2_anom_capture_t ns2_last_anom;
-static uint32_t ns2_anom_seq;  // total anomalies seen since boot (0 = none yet)
-
-const ns2_anom_capture_t *ns2_dbg_motion_anomaly(void) { return &ns2_last_anom; }
-
-// One step of the motion integration/bias-tracking state machine (timing, stillness gate,
-// bias tracker, phase integration) — everything EXCEPT writing bytes into a report buffer.
-// Deliberately independent of ns2_imu_enabled/ns2_streaming: a genuine PC2 withholds the
-// motion BLOCK until the host negotiates it, but there's no reason the internal state has to
-// wait too, and (2026-07-10 hardware finding) it must not, structurally — see
-// ns2_motion_debug_tick() below for why.
-static void ns2_motion_tick(const switch_pro_input_t *in) {
-    // Real elapsed time since the last tick -> 800 Hz IMU ticks. The genuine timing word
-    // tracks REAL time (sample_count 3/4), not a fixed pattern; this also gives the exact dt
-    // for integration so the console's rate reconstruction is consistent.
-    uint32_t now = time_us_32();
-    uint32_t dt_us = now - ns2_motion_last_us;
-    ns2_motion_last_us = now;
-    if (dt_us < 500)   dt_us = 500;    // clamp (first tick / stalls): ~2 kHz .. ~60 Hz
-    if (dt_us > 16000) dt_us = 16000;
-    uint8_t count = (uint8_t)((dt_us + 625) / 1250);   // 1 tick = 1/800 s = 1250 us
-    if (count < 1)  count = 1;
-    if (count > 15) count = 15;
-    ns2_imu_tick = (uint16_t)((ns2_imu_tick + count) & 0x0FFF);
-    ns2_motion_timing = (uint16_t)(((uint16_t)count << 12) | ns2_imu_tick);
-
-    // Angular phase = integral of rate over real dt. The genuine gyro is extremely clean
-    // (~0.05 dps noise, ~0.03 dps bias); a DualSense is noisier AND has non-negligible bias,
-    // so low-pass the gyro first (EMA a=0.25, <<6 fixed point so slow aiming still resolves).
-    //
-    // Stationary drift fix, take 2 (2026-07-10, second hardware pass — see
-    // gyro-hardware-validation-2026-07-10.md §6). Take 1 gated the bias tracker on RAW GYRO
-    // MAGNITUDE (|raw| < 40 LSB), which is self-defeating: a MEMS gyro's constant zero-rate
-    // bias is part of its magnitude, so if the DualSense's bias alone exceeds the threshold
-    // (very plausible — consumer MEMS bias is commonly several dps, and 40 LSB is only ~2.4
-    // dps at this 16.384 LSB/dps scale), the "still" gate never opens even when the
-    // controller is dead still, the bias estimate never adapts, and the fix is a no-op —
-    // which matches the second test's symptom exactly (drift persisted unchanged). Stillness
-    // is redefined as a STEADY reading (small frame-to-frame delta), not a SMALL one: a
-    // constant bias offset held still has ~zero derivative regardless of its absolute size,
-    // so this gates correctly no matter how large the bias turns out to be. Only fast motion
-    // (a real derivative) closes the gate now.
-    // Per-us-per-LSB phase step (16.384 LSB/dps): 2^32 / (16.384*360*1e6) = 0.72818 (*72818/1e5).
-    bool still = true;
-    for (int ax = 0; ax < 3; ax++) {
-        int32_t d = (int32_t)in->gyro[ax] - ns2_gyro_prev_raw[ax];
-        ns2_gyro_prev_raw[ax] = in->gyro[ax];
-        if (d < 0) d = -d;
-        ns2_gyro_jitter[ax] += ((d << 6) - ns2_gyro_jitter[ax]) >> 3;  // EMA of the derivative
-        if (ns2_gyro_jitter[ax] > (6 << 6)) still = false;             // > ~6 LSB/report of change
-    }
-    ns2_dbg_still = still ? 1 : 0;
-
-    int32_t phase_before[3], g_val[3], increment[3];
-    bool anomaly = false;
-    for (int ax = 0; ax < 3; ax++) {
-        ns2_gyro_lp[ax] += (((int32_t)in->gyro[ax] << 6) - ns2_gyro_lp[ax]) >> 2;  // low-pass
-        if (still) ns2_gyro_bias[ax] += (ns2_gyro_lp[ax] - ns2_gyro_bias[ax]) >> 8;  // slow (~seconds)
-        int32_t g = (ns2_gyro_lp[ax] - ns2_gyro_bias[ax]) >> 6;
-        int32_t inc = (int32_t)(((int64_t)g * dt_us * 72818) / 100000);
-        phase_before[ax] = (int32_t)ns2_phase[ax];
-        g_val[ax] = g;
-        increment[ax] = inc;
-        ns2_phase[ax] += (uint32_t)inc;
-        if (inc > NS2_MAX_PHASE_DELTA || inc < -NS2_MAX_PHASE_DELTA) anomaly = true;
+    if (!ns2_ds5_motion_source_active) {
+        // A source change must not carry the former controller's integrated
+        // orientation or learned zero-rate bias into a new session.
+        ns2_ds5_motion_reset(&ns2_ds5_motion);
+        ns2_ds5_motion_last_sequence = 0;
+        ns2_ds5_motion_report_valid = false;
+        ns2_ds5_motion_source_active = true;
     }
 
-    // Trail ring buffer updates every tick (anomalous or not) so a capture always has real
-    // preceding context, not just the tick that tripped the check.
-    ns2_anom_trail_t *slot = &ns2_anom_trail[ns2_anom_trail_pos];
-    for (int ax = 0; ax < 3; ax++) { slot->gyro[ax] = in->gyro[ax]; slot->delta[ax] = increment[ax]; }
-    slot->still = ns2_dbg_still;
-    slot->dt_us = dt_us;
-    ns2_anom_trail_pos = (uint8_t)((ns2_anom_trail_pos + 1) % NS2_ANOM_TRAIL);
+    // USB report generation runs near 1 kHz while a Bluetooth IMU report
+    // normally arrives near 250 Hz (125 Hz for the Android companion).
+    // Re-integrating a held sample is mathematically redundant and contends
+    // with the RAM-resident Opus encoder on core1. Consume each physical sample
+    // exactly once; the latest quaternion is still emitted on every USB poll.
+    // A source that publishes no sequence (0) is consumed every call, and
+    // ns2_ds5_motion_update()'s own elapsed-time gate rate-limits it.
+    if (in->motion_sequence != 0u &&
+        in->motion_sequence == ns2_ds5_motion_last_sequence) {
+        return false;
+    }
 
-    if (anomaly) {
-        ns2_anom_seq++;
-        ns2_last_anom.valid = 1;
-        ns2_last_anom.seq = ns2_anom_seq;
-        // Chronological order, oldest first: the slot we're about to overwrite next is the
-        // oldest surviving entry right now.
-        for (int i = 0; i < NS2_ANOM_TRAIL; i++)
-            ns2_last_anom.trail[i] = ns2_anom_trail[(ns2_anom_trail_pos + i) % NS2_ANOM_TRAIL];
-        for (int ax = 0; ax < 3; ax++) {
-            ns2_last_anom.gyro[ax] = in->gyro[ax];
-            ns2_last_anom.accel[ax] = in->accel[ax];
-            ns2_last_anom.g[ax] = g_val[ax];
-            ns2_last_anom.bias[ax] = ns2_gyro_bias[ax] >> 6;
-            ns2_last_anom.phase_before[ax] = phase_before[ax];
-            ns2_last_anom.phase_after[ax] = (int32_t)ns2_phase[ax];
-            ns2_last_anom.delta[ax] = increment[ax];
+    switch_pro_input_t sample = *in;
+    if (ns2_ds5_motion_probe_active) {
+        memcpy(sample.gyro, ns2_ds5_motion_probe_gyro,
+               sizeof(sample.gyro));
+    }
+    const uint32_t now_us = time_us_32();
+    const bool updated =
+        ns2_ds5_motion_update(&ns2_ds5_motion, &sample, now_us);
+    if (updated) {
+        // Encoding the unequal-width Switch 2 quaternion slots uses
+        // floating-point scaling. Do it once per physical IMU sample, not
+        // again on every ~1 kHz USB poll. The console can receive the latest
+        // complete PDU repeatedly between samples.
+        ns2_ds5_motion_report_valid =
+            ns2_ds5_motion_build(&ns2_ds5_motion, ns2_ds5_motion_report);
+
+        // Feed the same physical sample to the length-0x28 translator.
+        //
+        // Gyro must be the DE-BIASED sample the 0x1E path integrates, not the
+        // raw input. A DualSense at rest carries a zero-rate bias the console
+        // would read as slow continuous rotation: measured against the genuine
+        // stationary captures, raw input sits at 0.90 dps where real hardware
+        // reads 0.15 dps. ns2_ds5_motion_update() has already computed the
+        // corrected value, including its stillness gate and warmup, so reuse it
+        // rather than deriving a second bias estimate.
+        //
+        // Held behind the gate so a disabled feature does no work.
+        if (ns2_ds5_motion40_enabled) {
+            int16_t debiased[3];
+            for (unsigned axis = 0; axis < 3u; ++axis) {
+                int32_t value = ns2_ds5_motion.gyro_corrected[axis];
+                if (value > INT16_MAX) value = INT16_MAX;
+                if (value < INT16_MIN) value = INT16_MIN;
+                debiased[axis] = (int16_t)value;
+            }
+            // Snapshot the carrier HERE, with the sample it belongs to. The
+            // 0x28 prefix describes an instant ~15 ms in the past, so reading
+            // the carrier at build time would supply an orientation the packet
+            // is not allowed to claim.
+            uint32_t carrier_now[3];
+            if (ns2_ds5_motion_report_valid &&
+                ns2_motion_pdu30_get_orientation(ns2_ds5_motion_report,
+                                                 carrier_now)) {
+                ns2_ds5_motion40_sample(&ns2_ds5_motion40, sample.accel,
+                                        debiased, carrier_now,
+                                        ns2_ds5_motion.timing, now_us);
+            }
         }
-        ns2_last_anom.still = ns2_dbg_still;
-        ns2_last_anom.dt_us = dt_us;
-        ns2_last_anom.imu_tick = ns2_imu_tick;
-        ns2_last_anom.tick_count = (uint8_t)(ns2_motion_timing >> 12);
-        ns2_last_anom.imu_enabled = ns2_imu_enabled ? 1 : 0;
-        // What THIS tick's phase/accel would encode to, regardless of whether the IMU gate is
-        // currently open — answers "is the 30-byte serialization itself a source of
-        // discontinuity" independent of "was this tick actually transmitted." motion_len
-        // records whether it really was.
-        int32_t phase_now[3] = { (int32_t)ns2_phase[0], (int32_t)ns2_phase[1], (int32_t)ns2_phase[2] };
-        ns2_encode_motion30(ns2_last_anom.motion_bytes, ns2_motion_timing, phase_now, in->accel);
-        ns2_last_anom.motion_len = ns2_imu_enabled ? 30 : 0;
     }
+    ns2_ds5_motion_last_sequence = in->motion_sequence;
+    return updated;
 }
 
-// Shared ~250 Hz gate in front of ns2_motion_tick(). The low-pass/bias/jitter EMAs inside it use
-// fixed per-CALL right-shifts (>>2, >>3, >>8), not per-elapsed-time scaling, so their effective
-// real-time time-constants are inversely proportional to how often they're called — they were
-// tuned (first-cut, unvalidated — see STATUS.md "Technical Debt") assuming a 250 Hz caller.
-// The HID report cadence used to BE 250 Hz (bInterval 4), which made calling this once per
-// streamed report a no-op gate. Since the poll rate was raised to 1000Hz (bInterval 1, more
-// button/stick freshness), ns2_build_report() would otherwise call ns2_motion_tick() up to 4x more
-// often than before, silently compressing the bias tracker's ~1s adaptation time to ~250ms with
-// nobody having decided that — this gate keeps the tracker's cadence exactly as tuned regardless
-// of USB poll rate. (Phase integration itself is dt_us-scaled and unaffected either way; only the
-// EMA-shaped bias/jitter/low-pass state depends on call rate.) Shared by both callers: the normal
-// streaming path (ns2_build_report()) and the config-mode debug hook below.
-static bool ns2_motion_tick_gated(const switch_pro_input_t *in) {
-    static uint32_t last_us = 0;
-    uint32_t now = time_us_32();
-    if (now - last_us < 3800) return false;  // ~250 Hz cap
-    last_us = now;
-    ns2_motion_tick(in);
-    return true;
+// Drop translator state when nothing is publishing motion, so a later session
+// cannot resume from a stale orientation or an aged bias estimate.
+static void ns2_motion_release(void) {
+    if (!ns2_ds5_motion_source_active) return;
+    ns2_ds5_motion_reset(&ns2_ds5_motion);
+    ns2_ds5_motion_source_active = false;
+    ns2_ds5_motion_last_sequence = 0;
+    ns2_ds5_motion_report_valid = false;
 }
 
-// Config-mode debug hook. ns2_task()/ns2_build_report() — the only place ns2_motion_tick() used
-// to run — are NEVER called while the dongle is in config mode (usb.c's main loop takes the
-// `if (g_usb_config_mode) { config_cdc_task(); continue; }` branch unconditionally). That made
-// the `imu` debug command's bias=[...]/still=... fields dead static memory, frozen at their
-// power-on zero, whenever read the only way they're reachable — a real bug found 2026-07-10 from
-// hardware output (`bias=[0,0,0] still=0` on a moving, motion-feeding DualSense, which is
-// impossible if the tracker were actually running). This runs the same tick independently,
-// through the shared ~250 Hz gate above.
+// Config-mode debug hook. ns2_task()/ns2_build_report() -- the only places the
+// translator normally runs -- are NEVER called while the dongle is in config
+// mode (usb.c's main loop takes the `if (g_usb_config_mode) { config_cdc_task();
+// continue; }` branch unconditionally). Without this, the `imu` debug command
+// would report dead static memory frozen at its power-on zero whenever read the
+// only way it is reachable. That was a real bug found 2026-07-10 from hardware
+// output on a moving, motion-feeding DualSense; keep this hook whenever the
+// motion state machine changes.
 void ns2_motion_debug_tick(void) {
     switch_pro_input_t in;
     get_global_gamepad_input(0, &in);
-    if (in.has_motion) ns2_motion_tick_gated(&in);
+    if (in.has_motion) ns2_motion_consume(&in);
+    else ns2_motion_release();
 }
 
 // Diagnostic (NS2_DIAG): how far the host got, blinked on the LED by
@@ -1392,25 +1291,22 @@ static void ns2_build_report(uint8_t *p) {
                                                report_counter);
 #endif
 
-    // Motion (IMU) — report-0x09 int32 format, VERIFIED (docs/switch2/report-0x09-motion.md):
-    //   [0x0F] u16 timing    (low12 = 800 Hz IMU tick, high4 = ticks elapsed since last report)
-    //   [0x11] i16 temperature (0x0C00)
-    //   [0x13/0x17/0x1B] i32 angular phase X/Y/Z  (2^32 = 360 deg; the integral of gyro rate)
-    //   [0x1F/0x23/0x27] i32 accel X/Y/Z, Q16.16  (65536*4096 = 1 g; integer counts in the high 16)
-    //   [0x2B] u16 tail (0)
+    // Motion (IMU) — report-0x09 30-byte block (docs/switch2/report-0x09-motion.md):
+    //   [0x0F] u16 timing        (low12 = 800 Hz IMU tick, high4 = ticks elapsed since last report)
+    //   [0x11] i16 temperature   (0x0C00)
+    //   [0x13..0x1E] packed smallest-three orientation: 26/25/24 bits plus a
+    //                2-bit chart state. NOT three independent angles.
+    //   [0x1F/0x23/0x27] i32 accel X/Y/Z, Q16.16  (65536*4096 = 1 g)
+    //   [0x2B] u16 tail
     // Motion is a NEGOTIATED feature: emit length 0 until the host enables the IMU via 0x0C/0x04
-    // (Experiment C) — gates what's WRITTEN below, not the tracker state itself (ns2_motion_tick()
-    // always runs on live motion so it keeps working, and is debuggable, regardless of whether a
-    // host has negotiated the feature — see ns2_motion_tick()'s comment). Rate-limited to ~250 Hz
-    // by ns2_motion_tick_gated() independent of the USB poll rate (see that function's comment) —
-    // this call site runs once per report, which is now up to 1000 Hz (bInterval 1).
-    // FIRST CUT pending on-console validation: the phase-integration constant and axis SIGNS are
-    // best-effort — if the console reads rate too fast/slow, tune PHASE_K; if inverted, flip signs.
-    // A genuine Pro Controller 2 can supply the console's native variable-length motion PDU
-    // directly over BLE. Prefer that opaque, controller-generated block when fresh: decoding its
+    // (Experiment C). That gates what is WRITTEN below, not the translator state, which keeps
+    // running on live motion so it stays warm and debuggable (see ns2_motion_debug_tick()).
+    //
+    // A genuine Pro Controller 2 supplies the console's native variable-length motion PDU directly
+    // over BLE. Prefer that opaque, controller-generated block when fresh: decoding its
     // still-partly-unknown representation only to synthesize the same bytes again would add failure
     // modes without adding information. The side channel publishes only PID 0x2069 report-0x000E
-    // data and expires quickly, so every other controller keeps the existing generic IMU path.
+    // data and expires quickly.
     ns2_native_motion_snapshot_t native_motion;
     bool native_motion_fresh = ns2_native_motion_snapshot(
         &native_motion, time_us_32(), 50000u); // >6 packets at the verified 133Hz cadence
@@ -1421,114 +1317,22 @@ static void ns2_build_report(uint8_t *p) {
         native_motion.source_verified &&
         native_motion.source_vid == 0x057E &&
         native_motion.source_pid == 0x2069;
-    // Use the decoder's explicit provenance, not Bluetooth SDP identity, for
-    // translator ownership. Hardware proved that a genuine DualSense can be
-    // fully streaming with VID 0x054C while PID remains 0x0000. The former
-    // VID/PID gate therefore skipped this path and fell into the known-bad
-    // generic phase encoder, producing violent motion spam. DS4 and other Sony
-    // devices remain excluded because only ds5_bt stamps this source value.
+
+    // EVERY translated source goes through the one encoder. There is no source
+    // whitelist here any more, and no second encoder to fall through to.
     //
-    // The translator is not DualSense-specific: it consumes the shared
-    // interchange scale (NS2_DS5_GYRO_COUNTS_PER_DPS == 16.384, i.e. the same
-    // "+-32767 = +-2000 dps" every driver publishes) and already carries an
-    // explicit host-clock fallback for "sources without an authored IMU clock".
-    // Switch-1 controllers publish exactly that scale and have no sensor
-    // timestamp, so they qualify. Routing them here instead of the generic phase
-    // encoder is the same fix that resolved the DualSense's violent motion spam;
-    // nothing in the translator or the DualSense driver changes.
-    // The Android companion qualifies on exactly the same terms as Switch-1, and
-    // omitting it was the whole of the "motion spams everywhere" report: its
-    // samples fell straight through to the generic phase encoder named above. The
-    // seam has already converted them to the shared interchange scale (16.384
-    // counts/dps, and 4096 counts/g after ns2_motion_seam_apply halves them), and
-    // the seam deliberately withholds a sensor timestamp for this source, so it
-    // takes the host-clock fallback that Switch-1 uses. What it gains here is the
-    // translator's bias removal, stillness gate, warmup and quaternion
-    // integration -- none of which the phase encoder performs.
-    const bool ds5_motion_owned =
-        (in.motion_source == SWITCH_MOTION_SOURCE_DUALSENSE ||
-         in.motion_source == SWITCH_MOTION_SOURCE_SWITCH1 ||
-         in.motion_source == SWITCH_MOTION_SOURCE_ANDROID) &&
-        in.has_motion;
-    if (ds5_motion_owned && ns2_ds5_motion_enabled) {
-        if (!ns2_ds5_motion_source_active) {
-            ns2_ds5_motion_reset(&ns2_ds5_motion);
-            ns2_ds5_motion_last_sequence = 0;
-            ns2_ds5_motion_report_valid = false;
-        }
-        ns2_ds5_motion_source_active = true;
-        // USB report generation runs near 1 kHz while a DualSense Bluetooth
-        // IMU report normally arrives near 250 Hz. Re-integrating the held
-        // sample four times is mathematically redundant and contends with the
-        // RAM-resident Opus encoder on core1. Consume each physical sample
-        // exactly once; the latest quaternion is still emitted every USB poll.
-        if (in.motion_sequence == 0 ||
-            in.motion_sequence != ns2_ds5_motion_last_sequence) {
-            switch_pro_input_t ds5_motion_input = in;
-            if (ns2_ds5_motion_probe_active)
-                memcpy(ds5_motion_input.gyro, ns2_ds5_motion_probe_gyro,
-                       sizeof(ds5_motion_input.gyro));
-            const uint32_t ds5_motion_now_us = time_us_32();
-            if (ns2_ds5_motion_update(&ns2_ds5_motion,
-                                      &ds5_motion_input, ds5_motion_now_us)) {
-                // Encoding the unequal-width Switch 2 quaternion slots uses
-                // floating-point scaling. Do it once per physical ~250 Hz IMU
-                // sample, not again on every ~1 kHz USB poll. The console can
-                // receive the latest complete PDU repeatedly between samples.
-                ns2_ds5_motion_report_valid =
-                    ns2_ds5_motion_build(&ns2_ds5_motion,
-                                         ns2_ds5_motion_report);
-                // Feed the same physical sample to the length-0x28 translator.
-                //
-                // Gyro must be the DE-BIASED sample the 0x1E path integrates,
-                // not the raw input. A DualSense at rest carries a zero-rate
-                // bias the console would read as slow continuous rotation:
-                // measured against the genuine stationary captures, raw input
-                // sits at 0.90 dps where real hardware reads 0.15 dps.
-                // ns2_ds5_motion_update() has already computed the corrected
-                // value, including its stillness gate and warmup, so reuse it
-                // rather than re-deriving a second bias estimate.
-                //
-                // This runs once per physical IMU sample, which is what the
-                // 0x28 translator needs: its slots are placed by timestamp
-                // across the emit window, so feeding it at the ~1 kHz USB poll
-                // rate would stamp stale repeats as if they were new samples.
-                //
-                // Held behind the gate so a disabled feature does no work.
-                if (ns2_ds5_motion40_enabled) {
-                    int16_t debiased[3];
-                    for (unsigned axis = 0; axis < 3u; ++axis) {
-                        int32_t value = ns2_ds5_motion.gyro_corrected[axis];
-                        if (value > INT16_MAX) value = INT16_MAX;
-                        if (value < INT16_MIN) value = INT16_MIN;
-                        debiased[axis] = (int16_t)value;
-                    }
-                    // Snapshot the carrier HERE, with the sample it belongs
-                    // to. The 0x28 prefix describes an instant ~15 ms in the
-                    // past, so reading the carrier at build time would supply
-                    // an orientation the packet is not allowed to claim.
-                    uint32_t carrier_now[3];
-                    if (ns2_ds5_motion_report_valid &&
-                        ns2_motion_pdu30_get_orientation(ns2_ds5_motion_report,
-                                                         carrier_now)) {
-                        ns2_ds5_motion40_sample(&ns2_ds5_motion40,
-                                                ds5_motion_input.accel,
-                                                debiased, carrier_now,
-                                                ns2_ds5_motion.timing,
-                                                ds5_motion_now_us);
-                    }
-                }
-            }
-            ns2_ds5_motion_last_sequence = in.motion_sequence;
-        }
-    } else if (ns2_ds5_motion_source_active) {
-        // A source change must not carry the former controller's integrated
-        // orientation or learned zero-rate bias into a later DS5 session.
-        ns2_ds5_motion_reset(&ns2_ds5_motion);
-        ns2_ds5_motion_source_active = false;
-        ns2_ds5_motion_last_sequence = 0;
-        ns2_ds5_motion_report_valid = false;
-    }
+    // The former list (DualSense, then Switch 1, then Android, each added after
+    // its own hardware failure report) existed only because anything omitted
+    // fell into the per-axis phase encoder, which never worked on hardware and
+    // is now deleted. The translator is not DualSense-specific: it consumes the
+    // shared interchange scale (16.384 counts/dps -- the same "+-32767 = +-2000
+    // dps" every driver publishes) and carries an explicit host-clock fallback
+    // for sources without an authored IMU clock. Frame differences belong in
+    // ns2_motion_seam.c, one row per source, not in a branch here.
+    const bool translated_motion_owned = in.has_motion;
+    if (translated_motion_owned) ns2_motion_consume(&in);
+    else ns2_motion_release();
+
     uint8_t probe_motion[30];
     bool motion_probe_active = ns2_imu_enabled &&
         ns2_motion_probe_build(probe_motion);
@@ -1574,11 +1378,11 @@ static void ns2_build_report(uint8_t *p) {
         } else {
             ns2_native_hold_active = false;
         }
-    } else if (ds5_motion_owned) {
-        // Reports decoded by the DualSense driver use the native quaternion
-        // translator. Its production carrier uses the Switch 2 w/x/y/z
-        // smallest-three representation and changes the omitted component
-        // when a transmitted component reaches the chart boundary.
+    } else if (translated_motion_owned) {
+        // Every translated source emits through the one quaternion translator.
+        // Its production carrier uses the Switch 2 w/x/y/z smallest-three
+        // representation and changes the omitted component when a transmitted
+        // component reaches the chart boundary.
         //
         // The default remains the proven 0x1E carrier. The 2026-07-24 UART
         // experiment proved that a genuine 0x28 template with only timing and
@@ -1661,14 +1465,12 @@ static void ns2_build_report(uint8_t *p) {
         }
 motion_done:
         ns2_native_hold_active = false;
-    } else if (in.has_motion) {
-        ns2_motion_tick_gated(&in);
-        if (ns2_imu_enabled) {
-            p[0x0E] = 30;
-            int32_t phase_now[3] = { (int32_t)ns2_phase[0], (int32_t)ns2_phase[1], (int32_t)ns2_phase[2] };
-            ns2_encode_motion30(&p[0x0F], ns2_motion_timing, phase_now, in.accel);
-        }
     }
+    // There is deliberately no further branch. A source with motion is either
+    // genuine (opaque passthrough above) or translated (the one encoder above).
+    // The third branch that used to live here was the per-axis phase encoder;
+    // emitting NOTHING is strictly better than emitting a representation the
+    // console cannot decode.
     ns2_dbg_motion_len = p[0x0E];  // report-0x09 motion length just emitted (0, 30, or 40)
 }
 
@@ -1837,7 +1639,10 @@ void ns2_hid_out_report(uint8_t report_id, const uint8_t *data, uint16_t len) {
     if (!data || report_id != 0x02 || len < 6) return;
     uint16_t left = ns2_rumble_motor_amp(&data[1]);   // left packed = data bytes 1..5 (was buf 2..6)
     uint16_t right = len >= 22 ? ns2_rumble_motor_amp(&data[17]) : 0;  // right packed = data 17..21 (was buf 18..22)
-    report_set_rumble(0, (uint8_t)(left >> 2), (uint8_t)(right >> 2));  // 0..1023 -> 0..255
+    const uint8_t left8 = (uint8_t)(left >> 2);   // 0..1023 -> 0..255
+    const uint8_t right8 = (uint8_t)(right >> 2);
+    ns2_rumble_trace_console(left8, right8);
+    report_set_rumble(0, left8, right8);
 }
 
 void ns2_task(void) {

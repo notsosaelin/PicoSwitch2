@@ -14,6 +14,57 @@
 
 ---
 
+## Report-0x09 motion bytes `0x04..0x0F` are three independent int32 angular-phase accumulators
+
+**Held**: 2026-07-10 (first report-0x09 motion implementation) through 2026-08-14, at Strong in the
+protocol reference's own layout table, which is what let it survive so long.
+
+**The claim**: the twelve bytes at motion offsets `0x04..0x0F` are three 32-bit binary angles, one
+per body axis, `2^32 = 360°`, and the console reconstructs angular rate by differencing them. The
+firmware encoder built on it (`ns2_motion_tick()` + `ns2_encode_motion30()` in
+`src/switch_pro2/switch_pro2.c`) integrated gyro rate over real elapsed time at
+`2^32 / (16.384 LSB/dps · 360° · 1e6) = 0.72818` per µs·LSB, initialized `Z` to `0x80000000`
+(≈ −180°) from a capture, and wrote the three accumulators out little-endian.
+
+**Why it seemed reasonable at the time**: it was a large improvement over the model it replaced
+(interleaved int16 gyro/accel, refuted by the Q16.16 accelerometer discovery), it correctly
+predicted three 4-byte-aligned fields, `Z`'s resting value near `0x80000000` looked like a real
+angle offset, and the console *did* respond to it — both Zelda titles and Splatoon reacted to the
+generated stream, which reads as "the pipeline works, the numbers need tuning."
+
+**What overturned it**: the length-`0x1E` orientation carrier was decoded directly from genuine
+Pro Controller 2 captures. Those twelve bytes are ONE packed quaternion — `G0` 26 bits, `G1` 25
+bits, `G2` 24 bits, plus a 2-bit chart state in `G2`'s bits 25:24 (physically the low two bits of motion byte
+`0x04`), each field centered over the ±1/√2 smallest-three range and split 24+2 across
+non-aligned bytes. The independent confirmation is the paired DS5/Pro2 pitch capture:
+decoding without the `sqrt(2)` factor implies an impossible ~24.2 counts/(deg/s), while restoring
+it yields ~16.9, within 3.3% of the calibrated 16.384 carrier. See the "Orientation carrier"
+section of [`../switch2/report-0x09-motion.md`](../switch2/report-0x09-motion.md).
+
+Under the real layout an int32 angle straddles slot and state boundaries, so the decoded
+orientation is arbitrary and jumps discontinuously whenever a carry crosses bit 24 or bit 26. The
+predicted symptom is abrupt multidirectional motion that no amount of filtering can fix — which is
+exactly what hardware reported, and exactly what "motion spams everywhere" meant each time a new
+controller family reached this encoder instead of the translator.
+
+**Why this entry matters more than most**: the refutation was already in the repository. The
+carrier had been decoded, and `ns2_ds5_motion.c` had been shipping the correct packing for weeks —
+but the protocol reference's top-of-document layout table still said "Angular phase X/Y/Z", so the
+broken encoder kept looking like a legitimate general implementation with a tuning problem, and
+each newly-broken controller was fixed by adding it to a whitelist rather than by deleting the
+fallback. **A stale summary table outranked working code in practice.** When a model is
+overturned, correct the table at the top of the document, not only the section that proved it.
+
+**What replaced it (2026-08-14)**: the phase encoder, its anomaly-capture instrumentation, the
+`imuanom` CDC command and the `phase=[...]` field of the `imu` command were deleted.
+`ns2_build_report()` now has exactly two motion branches: opaque genuine passthrough, and one
+encoder for every translated source. There is no fallback — a source the translator cannot
+represent emits motion length 0.
+
+**Do not**: reintroduce a per-axis angle model for this field, or add a second motion encoder
+"for generic controllers". Per-source differences are frame differences and belong in
+`src/bt_hid/motion/ns2_motion_seam.c` as one determinant-+1 row per source.
+
 ## GC rumble output-report `0x03`, `data[0]` as a linear 0-255 amplitude byte
 
 **Held**: 2026-07-13 (initial implementation) through 2026-07-14 (two revisions), at Hypothesis

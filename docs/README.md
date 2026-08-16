@@ -29,6 +29,8 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Controller sleep research | [`bluetooth/controller-sleep-research.md`](bluetooth/controller-sleep-research.md) |
 | Generic Bluetooth gamepad quirks | [`bluetooth/generic-gamepad-quirks.md`](bluetooth/generic-gamepad-quirks.md) |
 | Android handheld controller bridge | [`bluetooth/android-controller-bridge.md`](bluetooth/android-controller-bridge.md) |
+| Bridge contract (platform-neutral) | [`bridge/PROTOCOL.md`](bridge/PROTOCOL.md) |
+| Implementing a new bridge platform backend | [`bridge/PLATFORM_BACKEND.md`](bridge/PLATFORM_BACKEND.md) |
 | Native Android companion app | [`android-companion.md`](android-companion.md) |
 | Retroid Pocket Classic Android bridge ADB audit | [`experiments/android-controller-retroid-pocket-classic-adb-audit-2026-08-11.md`](experiments/android-controller-retroid-pocket-classic-adb-audit-2026-08-11.md) |
 | AYN Thor Android companion live APK pass | [`experiments/android-companion-ayn-thor-live-2026-08-13.md`](experiments/android-companion-ayn-thor-live-2026-08-13.md) |
@@ -97,6 +99,14 @@ Current component ownership, data flow, concurrency, and lifecycle documentation
 ### `bluetooth/`
 
 BTstack/joypad-os integration, controller identity, pairing/reconnection, profiles, and wake design.
+
+### `bridge/`
+
+The PicoSwitch Bridge contract, defined independently of any host operating system: the normalized
+controller model, the canonical motion convention, output/rumble semantics, the wire format,
+session behavior, and what a new platform backend must provide. The Android companion is an
+implementation of this contract; `bluetooth/android-controller-bridge.md` remains the Android
+reference and validation record.
 
 ### `switch2/`
 

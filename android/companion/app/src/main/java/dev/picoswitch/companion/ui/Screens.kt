@@ -40,9 +40,11 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import dev.picoswitch.companion.BuildConfig
-import dev.picoswitch.companion.controller.BridgePhase
-import dev.picoswitch.companion.controller.ControllerButton
-import dev.picoswitch.companion.controller.ControllerFaceLayout
+import dev.picoswitch.bridge.core.ControllerState
+import dev.picoswitch.bridge.protocol.BridgeContract
+import dev.picoswitch.bridge.session.BridgeLinkPhase
+import dev.picoswitch.bridge.core.ControllerButton
+import dev.picoswitch.bridge.core.ControllerFaceLayout
 import dev.picoswitch.companion.data.ColorTarget
 import dev.picoswitch.companion.model.*
 import kotlinx.coroutines.Dispatchers
@@ -113,7 +115,7 @@ private fun AdapterHero(ui: CompanionUiState, viewModel: CompanionViewModel) {
 private fun ConsoleButtonsCard(ui: CompanionUiState, viewModel: CompanionViewModel) {
     // The buttons only mean anything while this handheld is actually streaming to
     // the console; at any other phase a press would go nowhere.
-    val live = ui.bridge.phase == BridgePhase.Playing
+    val live = ui.bridge.phase == BridgeLinkPhase.Playing
     HardwareCard {
         SectionHeading(Icons.Default.Gamepad, "Console buttons")
         Spacer(Modifier.height(LayoutTokens.Space2))
@@ -130,6 +132,12 @@ private fun ConsoleButtonsCard(ui: CompanionUiState, viewModel: CompanionViewMod
             }
             HoldButton(Modifier.weight(1f), Icons.Default.PhotoCamera, "Capture", live) {
                 viewModel.setConsoleButton(ControllerButton.Capture, it)
+            }
+            // C / GameChat. Like Home and Capture this reports press and release
+            // rather than a completed click, because the console distinguishes a
+            // tap from a hold.
+            HoldButton(Modifier.weight(1f), Icons.Default.Chat, "GameChat", live) {
+                viewModel.setConsoleButton(ControllerButton.C, it)
             }
         }
     }
@@ -1102,19 +1110,34 @@ private fun BridgeCard(ui: CompanionUiState, viewModel: CompanionViewModel, onPr
         Spacer(Modifier.height(LayoutTokens.Space2))
         Text(ui.bridge.phase.name, style = MaterialTheme.typography.titleLarge)
         ui.bridge.message?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        // Firmware/app bridge-contract skew. Shown here and nowhere else: this is
+        // the screen the user is on when battery, motion and rumble are missing
+        // while buttons still work, which is exactly what a skew looks like.
+        // Silent on the compatible path so it adds no clutter.
+        val compatibility = ui.bridgeCompatibility
+        if (compatibility is BridgeContract.Compatibility.Mismatch ||
+            compatibility is BridgeContract.Compatibility.Unknown
+        ) {
+            Spacer(Modifier.height(LayoutTokens.Space2))
+            Text(
+                compatibility.summary,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
         Spacer(Modifier.height(LayoutTokens.Space3))
         when (ui.bridge.phase) {
-            BridgePhase.Idle, BridgePhase.Unsupported, BridgePhase.Failed ->
+            BridgeLinkPhase.Idle, BridgeLinkPhase.Unsupported, BridgeLinkPhase.Failed ->
                 Button(
                     onClick = onPrepare,
                     enabled = ui.selectedSourceDescriptor != null && ui.adapterRelationship != null,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text(if (ui.adapterRelationship == null) "Pair Adapter first" else "Use this handheld") }
-            BridgePhase.Playing ->
+            BridgeLinkPhase.Playing ->
                 Button(onClick = viewModel::stopControllerBridge, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) { Text("Stop playing") }
             else -> LinearProgressIndicator(Modifier.fillMaxWidth())
         }
-        if (ui.bridge.phase == BridgePhase.Ready) {
+        if (ui.bridge.phase == BridgeLinkPhase.Ready) {
             val host = viewModel.knownControllerHost()
             FilledTonalButton(
                 onClick = { host?.let(viewModel::connectControllerHost) },
@@ -1131,7 +1154,7 @@ private fun BridgeCard(ui: CompanionUiState, viewModel: CompanionViewModel, onPr
 }
 
 @Composable
-private fun InputDiagnostics(state: dev.picoswitch.companion.controller.ControllerState) {
+private fun InputDiagnostics(state: ControllerState) {
     HardwareCard {
         SectionHeading(Icons.Default.MonitorHeart, "Live input")
         Spacer(Modifier.height(LayoutTokens.Space3))
@@ -1140,7 +1163,16 @@ private fun InputDiagnostics(state: dev.picoswitch.companion.controller.Controll
             AxisMeter("RX", state.rightX, Modifier.weight(1f)); AxisMeter("RY", state.rightY, Modifier.weight(1f))
         }
         Spacer(Modifier.height(LayoutTokens.Space3))
-        Text("L2 ${state.leftTrigger}  ·  R2 ${state.rightTrigger}  ·  Hat ${dev.picoswitch.companion.controller.ControllerReportEncoder.hat(state)}", style = MaterialTheme.typography.bodyMedium)
+        // Four retained directions, not the wire hat code: the UI shows the
+        // normalized model, and the hat is a protocol detail the encoder owns.
+        val dpad = listOfNotNull(
+            "Up".takeIf { state.dpadUp }, "Right".takeIf { state.dpadRight },
+            "Down".takeIf { state.dpadDown }, "Left".takeIf { state.dpadLeft },
+        )
+        Text(
+            "L2 ${state.leftTrigger}  ·  R2 ${state.rightTrigger}  ·  D-pad ${dpad.ifEmpty { listOf("centered") }.joinToString("+")}",
+            style = MaterialTheme.typography.bodyMedium,
+        )
         Text(if (state.buttons.isEmpty()) "No buttons held" else state.buttons.joinToString(" · ") { it.name }, style = MaterialTheme.typography.bodySmall)
     }
 }
@@ -1281,6 +1313,23 @@ fun SettingsScreen(
             MetadataLine("HID", "${ui.bridge.phase.name} · registered ${ui.bridge.registered}")
             MetadataLine("Saved host", if (viewModel.pairedControllerHosts().isEmpty()) "No" else "Yes")
             MetadataLine("Reports", ui.bridge.reportCount.toString())
+            // The layered bridge view. Platform, normalized and protocol are shown
+            // separately on purpose: which layer disagrees with the next one is
+            // what localizes a motion or rumble fault without a rebuild.
+            MetadataLine("Capabilities", ui.bridge.capabilities.let {
+                "sticks ${it.analogSticks} · triggers ${it.analogTriggers} · motion ${it.motion} · motors ${it.rumbleMotors}"
+            })
+            MetadataLine(
+                "Motion frame",
+                if (ui.bridge.motion.frameRotationMeasured) "${ui.bridge.motion.frameRotationDegrees}°"
+                else "unreadable; assuming 0°",
+            )
+            MetadataLine("Motion platform", ui.bridge.motion.platformRaw)
+            MetadataLine("Motion canonical", ui.bridge.motion.canonical)
+            MetadataLine("Output route", ui.bridge.output.route)
+            ui.bridge.output.warning?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
             MetadataLine("Last command", ui.diagnosticSummary.lastCommand)
             MetadataLine("Last result", ui.diagnosticSummary.lastResult)
             MetadataLine("Last error", ui.diagnosticSummary.lastError)

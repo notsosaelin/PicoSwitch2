@@ -69,7 +69,7 @@ Android reports sensors in the device's **natural** orientation, not the orienta
   orientation is portrait would not — i.e. it would work on some devices and not others, which is
   the worst kind of bug to diagnose from user reports.
 
-`MotionOrientation` now applies the same remap before the wire conversion
+`ScreenOrientation` (Bridge Core) now applies the same remap before the wire conversion
 (`0°` identity, `90°` `[x,y] → [−y,x]`, `180°` `[−x,−y]`, `270°` `[y,−x]`; Z is the screen normal and
 is never touched). Eight unit tests cover each rotation, the four-rotation identity, negative angles,
 malformed angles falling back to identity rather than scrambling axes, and int16-extreme negation.
@@ -90,7 +90,7 @@ malformed angles falling back to identity rather than scrambling axes, and int16
   |---|---|---|
   | Aim moves left when tilting right (or up/down inverted) | one sign wrong | flip that slot's sign |
   | Tilting produces the *other* axis's motion (pitch acts as yaw) | two `src` slots swapped | swap those `src` entries |
-  | Aim rotated 90° only on some devices | screen-orientation remap, not this row | `MotionOrientation` (app side) |
+  | Aim rotated 90° only on some devices | screen-orientation remap, not this row | `ScreenOrientation` (bridge core, driven by the platform backend) |
 
   Any correction must keep the row a proper rotation (determinant +1), which
   `tools/test_ns2_motion_seam.c` enforces.

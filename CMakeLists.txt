@@ -50,6 +50,45 @@ set_target_properties(PicoSwitchWGA PROPERTIES OUTPUT_NAME "PicoSwitchWGA-${PICO
 # (CFG_TUD_HID in tusb_config.h). Max 4 (the Switch supports 4 players).
 target_compile_definitions(PicoSwitchWGA PRIVATE SWITCH_PRO_MAX_CONTROLLERS=4)
 
+# ---------------------------------------------------------------------------
+# Firmware build identity
+# ---------------------------------------------------------------------------
+# "What is actually flashed on this adapter?" must be answerable without
+# guessing from file modification times. A version skew between the flashed
+# firmware and the installed companion once cost a long debugging session
+# (see tools/fixtures/android_controller_hid.h).
+#
+# Deliberately cheap: the git short hash plus a dirty marker, resolved at
+# configure time. No timestamp -- a timestamp would make every reconfigure
+# produce a different binary for identical sources, which is a worse trade than
+# the small chance of a stale hash after a commit without reconfiguring.
+find_package(Git QUIET)
+set(PICOSWITCH_BUILD_ID "unknown")
+if(GIT_FOUND)
+    execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --short=8 HEAD
+                    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                    OUTPUT_VARIABLE PICOSWITCH_GIT_HASH
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET)
+    execute_process(COMMAND ${GIT_EXECUTABLE} status --porcelain --untracked-files=no
+                    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                    OUTPUT_VARIABLE PICOSWITCH_GIT_DIRTY
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET)
+    if(PICOSWITCH_GIT_HASH)
+        set(PICOSWITCH_BUILD_ID "${PICOSWITCH_GIT_HASH}")
+        if(NOT PICOSWITCH_GIT_DIRTY STREQUAL "")
+            # The working tree had uncommitted changes at configure time. This
+            # matters: the incident above happened while the tree was dirty, and
+            # a bare hash would have implied a clean, reproducible build.
+            set(PICOSWITCH_BUILD_ID "${PICOSWITCH_GIT_HASH}+dirty")
+        endif()
+    endif()
+endif()
+message(STATUS "PicoSwitch build identity: ${PICOSWITCH_BUILD_ID}")
+target_compile_definitions(PicoSwitchWGA PRIVATE
+    PICOSWITCH_BUILD_ID="${PICOSWITCH_BUILD_ID}")
+
 # Build target: emulate the Switch 2 Pro Controller (VID 057E / PID 2069) instead
 # of the Switch 1 Pro Controller. Adds a vendor-bulk command interface (IF1) and
 # the switch_pro2 protocol module (src/switch_pro2). See docs/switch2/usb-spec.md.

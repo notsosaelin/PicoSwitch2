@@ -171,11 +171,11 @@ class MainActivity : ComponentActivity() {
 
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        return viewModel.inputRouter.onKey(event) || super.dispatchKeyEvent(event)
+        return viewModel.inputBackend.onKey(event) || super.dispatchKeyEvent(event)
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
-        return viewModel.inputRouter.onMotion(event) || super.dispatchGenericMotionEvent(event)
+        return viewModel.inputBackend.onMotion(event) || super.dispatchGenericMotionEvent(event)
     }
 
     override fun onPause() {
@@ -338,8 +338,8 @@ class MainActivity : ComponentActivity() {
             }
         }
         if (viewModel.ui.value.adapterRelationship == null) {
-            viewModel.pairedControllerHosts().firstOrNull()?.let { device ->
-                viewModel.recordAdapterAssociation(device.address, null, runCatching { device.name }.getOrNull())
+            viewModel.pairedControllerHosts().firstOrNull()?.let { host ->
+                viewModel.recordAdapterAssociation(host.address, null, host.name)
             }
         }
     }

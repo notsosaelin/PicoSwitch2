@@ -105,8 +105,15 @@ static void send_v2(const uint8_t *report)
 }
 
 // ---------------------------------------------------------------------------
-// The v1 contract must survive verbatim inside the v2 descriptor. This is the
-// regression that matters most: v1 is already hardware-validated in a game.
+// The v1 FIELD OFFSETS must survive verbatim inside the v2 descriptor. This is
+// the regression that matters most: v1 is already hardware-validated in a game.
+//
+// The button COUNT is allowed to grow, and did: usage 15 (C / GameChat) was
+// appended inside the existing two button bytes, turning 14 buttons + 2 pad bits
+// into 15 + 1. Every later field therefore keeps its byte offset, which is what
+// the offset assertions below actually protect. Growing the count is safe
+// precisely because the parser computes each item's bit offset from the
+// descriptor rather than assuming a layout.
 // ---------------------------------------------------------------------------
 static void test_v2_descriptor_preserves_v1_layout(void)
 {
@@ -116,9 +123,9 @@ static void test_v2_descriptor_preserves_v1_layout(void)
     char map[1024];
     CHECK(bthid_gamepad_dump_map(device.conn_index, map, sizeof(map)),
           "v2 descriptor parses through the production HID parser");
-    CHECK(strstr(map, "\"report_id\":1") && strstr(map, "\"button_cnt\":14") &&
+    CHECK(strstr(map, "\"report_id\":1") && strstr(map, "\"button_cnt\":15") &&
           strstr(map, "\"x\":{\"byte\":1") && strstr(map, "\"hat\":{\"byte\":9"),
-          "v2 keeps the v1 axis/button/hat offsets byte-identical");
+          "v2 keeps the v1 axis/hat offsets byte-identical and carries 15 buttons");
 
     send_v2(ANDROID_CONTROLLER_V2_NEUTRAL_REPORT);
     CHECK(submitted == 1 && last_event.buttons == 0 &&
@@ -138,6 +145,50 @@ static void test_v2_descriptor_preserves_v1_layout(void)
           last_event.analog[ANALOG_L2] == 64 &&
           last_event.buttons == (JP_BUTTON_B1 | JP_BUTTON_DR),
           "v1 axes/buttons/hat still decode correctly alongside the extension");
+}
+
+// ---------------------------------------------------------------------------
+// C / GameChat is wire button usage 15. It is the one console button an Android
+// handheld can offer that no handheld has a physical key for, so it exists only
+// as an on-screen control -- which makes "is it actually routed" a real question
+// rather than a formality.
+//
+// This proves the firmware half: bit 14 of the button field must arrive at the
+// router as JP_BUTTON_A3. The rest of the path is the static base map, where
+// index 18 (JP_BUTTON_A3's source slot) is NS2_DST_C, which ns2_seam.c raises as
+// SWITCH_EXTRA_C.
+// ---------------------------------------------------------------------------
+static void test_gamechat_button_routes(void)
+{
+    attach(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR,
+           sizeof(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR));
+    send_v2(ANDROID_CONTROLLER_V2_NEUTRAL_REPORT);
+
+    uint8_t report[ANDROID_CONTROLLER_V2_WIRE_REPORT_LEN];
+    memcpy(report, ANDROID_CONTROLLER_V2_NEUTRAL_REPORT, sizeof(report));
+    // Buttons occupy wire bytes 7..8; usage 15 is bit 14, i.e. bit 6 of byte 8.
+    report[8] = 0x40;
+    send_v2(report);
+    CHECK(last_event.buttons == JP_BUTTON_A3,
+          "wire button usage 15 routes as JP_BUTTON_A3 (C / GameChat) and nothing else");
+
+    // Usage 14 (Capture) is the neighbouring bit; a one-off in the mask would
+    // silently swap the two, which is exactly the kind of error a count change
+    // introduces.
+    memcpy(report, ANDROID_CONTROLLER_V2_NEUTRAL_REPORT, sizeof(report));
+    report[8] = 0x20;
+    send_v2(report);
+    CHECK(last_event.buttons == JP_BUTTON_A2,
+          "wire button usage 14 still routes as JP_BUTTON_A2 (Capture)");
+
+    memcpy(report, ANDROID_CONTROLLER_V2_NEUTRAL_REPORT, sizeof(report));
+    report[8] = 0x60;
+    send_v2(report);
+    CHECK(last_event.buttons == (JP_BUTTON_A2 | JP_BUTTON_A3),
+          "Capture and C are independent bits and can be held together");
+
+    send_v2(ANDROID_CONTROLLER_V2_NEUTRAL_REPORT);
+    CHECK(last_event.buttons == 0, "releasing C clears it from the routed event");
 }
 
 static void test_motion_ingest(void)
@@ -291,9 +342,72 @@ static void test_v1_device_is_unaffected(void)
           "no output report is sent to a device that did not declare one");
 }
 
+/*
+ * The identification trace.
+ *
+ * Battery, motion, rumble and the player LED are all gated on one exact
+ * descriptor match, so a v2 feature loss with working buttons means identify
+ * returned false -- and the trace has to say WHY, or the next investigation
+ * infers it from downstream silence again and gets it wrong.
+ */
+static void test_identify_trace(void)
+{
+    android_bridge_ext_t ext;
+    const android_bridge_identify_trace_t *t;
+
+    android_bridge_identify_trace_reset();
+    CHECK(android_bridge_identify(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR,
+                                  (uint16_t)sizeof(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR),
+                                  &ext),
+          "canonical descriptor still identifies as the bridge");
+    t = android_bridge_identify_trace();
+    CHECK(t->calls == 1 && t->matched == 1, "a match is counted");
+    CHECK(t->active_profile == 2u, "a match selects the v2 bridge profile");
+    CHECK(t->first_mismatch == -1, "a match reports no mismatch offset");
+
+    /* Wrong length: the v1 descriptor is a real, previously shipped case. */
+    android_bridge_identify_trace_reset();
+    CHECK(!android_bridge_identify(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR, 81u, &ext),
+          "a wrong-length descriptor is rejected");
+    t = android_bridge_identify_trace();
+    CHECK(t->rejected_length == 1 && t->rejected_content == 0,
+          "a length rejection is distinguished from a content rejection");
+    CHECK(t->last_len == 81u &&
+          t->expected_len == (uint16_t)sizeof(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR),
+          "both the received and required lengths are reported");
+    CHECK(t->active_profile == 1u, "a rejection leaves the v1 generic profile active");
+
+    /* Right length, one wrong byte: report exactly where and what. */
+    uint8_t mutated[sizeof(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR)];
+    memcpy(mutated, ANDROID_CONTROLLER_V2_HID_DESCRIPTOR, sizeof(mutated));
+    const uint16_t victim = 36u;  /* Usage Maximum: 14 buttons vs 15 */
+    const uint8_t original = mutated[victim];
+    mutated[victim] = (uint8_t)(original ^ 0x01u);
+    android_bridge_identify_trace_reset();
+    CHECK(!android_bridge_identify(mutated, (uint16_t)sizeof(mutated), &ext),
+          "a single wrong byte is rejected");
+    t = android_bridge_identify_trace();
+    CHECK(t->rejected_content == 1 && t->rejected_length == 0,
+          "a content rejection is distinguished from a length rejection");
+    CHECK(t->first_mismatch == (int32_t)victim,
+          "the first differing byte offset is reported");
+    CHECK(t->expected_byte == original && t->actual_byte == (uint8_t)(original ^ 0x01u),
+          "the expected and received bytes are both reported");
+
+    /* A null descriptor is its own case, not silently a length failure. */
+    android_bridge_identify_trace_reset();
+    CHECK(!android_bridge_identify(NULL, 161u, &ext), "a null descriptor is rejected");
+    t = android_bridge_identify_trace();
+    CHECK(t->rejected_null == 1, "a null descriptor is counted separately");
+
+    android_bridge_identify_trace_reset();
+}
+
 int main(void)
 {
+    test_identify_trace();
     test_v2_descriptor_preserves_v1_layout();
+    test_gamechat_button_routes();
     test_motion_ingest();
     test_battery_ingest();
     test_truncated_v2_report_is_atomic();

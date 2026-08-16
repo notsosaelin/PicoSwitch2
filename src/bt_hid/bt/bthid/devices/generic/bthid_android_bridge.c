@@ -16,17 +16,66 @@ static int16_t read_le16(const uint8_t *p) {
     return (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
 }
 
+// See the header: every v2 capability is gated on this match, so the outcome is
+// recorded rather than inferred from downstream silence.
+static android_bridge_identify_trace_t s_identify_trace = {
+    .expected_len = (uint16_t)sizeof(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR),
+    .first_mismatch = -1,
+};
+
+const android_bridge_identify_trace_t *android_bridge_identify_trace(void)
+{
+    return &s_identify_trace;
+}
+
+void android_bridge_identify_trace_reset(void)
+{
+    uint16_t expected = (uint16_t)sizeof(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR);
+    memset(&s_identify_trace, 0, sizeof(s_identify_trace));
+    s_identify_trace.expected_len = expected;
+    s_identify_trace.first_mismatch = -1;
+}
+
 bool android_bridge_identify(const uint8_t *descriptor, uint16_t descriptor_len,
                              android_bridge_ext_t *out)
 {
+    s_identify_trace.calls++;
+    s_identify_trace.expected_len =
+        (uint16_t)sizeof(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR);
+    s_identify_trace.last_len = descriptor_len;
+
     if (!out) return false;
     memset(out, 0, sizeof(*out));
-    if (!descriptor) return false;
-    if (descriptor_len != sizeof(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR)) return false;
-    if (memcmp(descriptor, ANDROID_CONTROLLER_V2_HID_DESCRIPTOR,
-               sizeof(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR)) != 0) {
+    if (!descriptor) {
+        s_identify_trace.rejected_null++;
+        s_identify_trace.active_profile = 1u;
         return false;
     }
+    if (descriptor_len != sizeof(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR)) {
+        s_identify_trace.rejected_length++;
+        s_identify_trace.active_profile = 1u;
+        return false;
+    }
+    if (memcmp(descriptor, ANDROID_CONTROLLER_V2_HID_DESCRIPTOR,
+               sizeof(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR)) != 0) {
+        s_identify_trace.rejected_content++;
+        s_identify_trace.first_mismatch = -1;
+        for (uint16_t i = 0; i < descriptor_len; i++) {
+            if (descriptor[i] != ANDROID_CONTROLLER_V2_HID_DESCRIPTOR[i]) {
+                s_identify_trace.first_mismatch = (int32_t)i;
+                s_identify_trace.expected_byte =
+                    ANDROID_CONTROLLER_V2_HID_DESCRIPTOR[i];
+                s_identify_trace.actual_byte = descriptor[i];
+                break;
+            }
+        }
+        s_identify_trace.active_profile = 1u;
+        return false;
+    }
+
+    s_identify_trace.matched++;
+    s_identify_trace.first_mismatch = -1;
+    s_identify_trace.active_profile = 2u;
 
     out->has_motion = true;
     out->has_battery = true;

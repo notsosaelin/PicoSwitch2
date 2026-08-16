@@ -1,5 +1,34 @@
 # PicoSwitch2 Roadmap
 
+## Reserved physical inputs (2026-08-15)
+
+Unknown or additional physical controller buttons are deliberately left **unassigned** so the future
+custom button-mapping / additional-input system can own them. Silently binding them to unrelated
+Switch actions creates surprising behavior and quietly spends inputs that are hard to reclaim later.
+
+Currently reserved and ignored: Android `KEYCODE_BUTTON_C`, `KEYCODE_BUTTON_Z`. Do not assign these
+to a Switch action as a convenience; add them to the mapping system when it exists.
+
+
+## Follow-ups opened 2026-08-14 (motion/rumble pass)
+
+1. **Rename `ns2_ds5_motion.*` to a neutral name.** It is now the ONE Switch 2 motion encoder for
+   every translated source, not a DualSense one, and the name actively misleads — it is why a
+   second "generic" encoder looked necessary in the first place. Deferred this pass because it is
+   373 references across code, tools, and docs with zero behavioral benefit; do it as its own
+   mechanical commit, not folded into a fix. The genuinely DualSense-specific code inside it is
+   only the 0.33 µs sensor-timestamp conversion, already gated on `motion_timestamp_valid`.
+2. **Re-confirm Wii Remote motion on the console.** Its 🟢 status predates the encoder unification
+   and was recorded while it still routed to the deleted encoder. See STATUS.md.
+3. **Fix the `NS2_PRO=OFF` build** (`build\pico_w_switch1`): `src/config.c` uses
+   `g_usb_reenumerate_request_pending` outside an `NS2_PRO` guard. Pre-existing at `HEAD`, small,
+   and it silently costs every future contributor a build configuration.
+4. **Decide whether display rotation is the right model for a handheld's held frame.** It is
+   correct whenever the display is oriented as the device is held, which is the normal case, but a
+   handheld with built-in controls has a *fixed* held frame that does not actually depend on the
+   display. Revisit only if hardware shows the rotation-based correction misbehaving.
+
+
 > Forward-looking work only. See [`STATUS.md`](STATUS.md) for current behavior and
 > [`docs/archive/roadmap-through-2026-07-15.archived.md`](docs/archive/roadmap-through-2026-07-15.archived.md) for
 > the completed milestone narrative.
@@ -629,6 +658,28 @@ extension while closing the remaining gates.
   arbiter boundary; it does not merge reports or automatically fall through on disconnect.
 - [ ] Add a custom BLE GATT source driver only if a captured target-OEM failure proves the public
   Classic HID Device path unavailable; do not pre-emptively add a second protocol.
+- [x] Split the companion's controller path into a platform-neutral `:bridge-core` module plus an
+  Android backend (2026-08-15). Core owns the normalized state, canonical motion convention,
+  capabilities, report/output codecs and `BridgeSession`; Android owns input, sensors, battery,
+  haptics and the HID transport. The module boundary is the guard — the Android SDK is not on
+  core's classpath. Contract: [`docs/bridge/PROTOCOL.md`](docs/bridge/PROTOCOL.md); backend guide:
+  [`docs/bridge/PLATFORM_BACKEND.md`](docs/bridge/PLATFORM_BACKEND.md).
+- [ ] Hardware re-validate the split on the AYN Thor: connect, buttons/sticks/triggers, rumble,
+  motion, and background/disconnect neutralization. Behavior was preserved deliberately, so this is
+  a regression pass rather than a new feasibility gate.
+
+### Future platform backends — deliberately not started
+
+A Windows or Linux bridge is now an implementation task, not an architecture task, but nothing has
+been built and nothing is scheduled. When one is picked up:
+
+- The first and only real feasibility gate is the **transport**: can that OS act as a Classic
+  Bluetooth HID *device* (not host) from an unprivileged application? Input, motion and output are
+  ordinary work on both platforms; this is the question that decided Android's viability.
+- Move `bridge-core/` up out of `android/companion/` at that point. Nothing in it depends on that
+  path; it lives there today only because the sole consumer does.
+- Do not pick a cross-platform UI framework as part of this. Portability of the architecture and
+  protocol matters; forcing every frontend into one toolkit does not.
 
 ## Longer-term
 

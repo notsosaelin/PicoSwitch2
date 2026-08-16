@@ -81,6 +81,12 @@
 // consumed by the USB core (core0). Sticks are pre-packed into the Pro
 // Controller's 12-bit-in-3-bytes wire format. IMU values are pre-scaled to the
 // Pro Controller's raw 16-bit units (filled in Phase 2; 0 = no motion).
+// Units a source can author its IMU timestamp in. Each entry fixes BOTH the tick
+// duration and the wrap width, because a delta must be taken in the source's own
+// modulus before it is scaled.
+#define SWITCH_MOTION_TS_DS5_THIRD_US 0u  // 1/3 us ticks, 32-bit wrap (DualSense)
+#define SWITCH_MOTION_TS_100US_16     1u  // 100 us ticks, 16-bit wrap (Android bridge)
+
 typedef struct {
     uint8_t buttons[3];      // SWITCH_MASK_* bitfields, indexed [0..2]
     uint8_t extra;           // SWITCH_EXTRA_* — Switch 2 extra buttons (C / GL / GR)
@@ -89,8 +95,16 @@ typedef struct {
     int16_t accel[3];        // x, y, z (raw Pro Controller accelerometer units)
     int16_t gyro[3];         // x, y, z (raw Pro Controller gyroscope units)
     uint32_t motion_sequence;// source IMU report generation; avoids re-integrating held samples
-    uint32_t motion_timestamp;// source IMU clock (DualSense: 0.33 us ticks)
+    uint32_t motion_timestamp;// source IMU clock, in motion_timestamp_unit ticks
     uint8_t motion_timestamp_valid; // 1 when motion_timestamp is source-authored
+    // Unit AND wrap width of motion_timestamp. A source's own IMU clock is the
+    // only correct thing to integrate against: the host clock measures packet
+    // ARRIVAL, and Bluetooth delivers a steady sender in bursts. Pairing a rate
+    // sample with an arrival interval it did not occur over costs measurable
+    // trajectory accuracy on varying-rate motion (0.505 deg vs 0.002 deg on a
+    // 2 Hz 120 dps sweep -- tools/test_ns2_motion_quality.c). Carry the unit with
+    // the sample so the encoder stays source-agnostic.
+    uint8_t motion_timestamp_unit;  // SWITCH_MOTION_TS_*
     uint8_t has_motion;      // 1 if this controller reports IMU (gate report-0x09 motion)
     uint8_t motion_source;   // SWITCH_MOTION_SOURCE_* decoder provenance
     uint8_t battery_level;   // normalized 0..100 percentage

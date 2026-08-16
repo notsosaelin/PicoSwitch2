@@ -13,6 +13,9 @@
 #include "ns2_motion_hybrid_live.h"
 #include "ns2_ds5_motion40.h"
 #include "ns2_diag_input.h"
+#include "ns2_rumble_trace.h"
+#include "bt/bthid/devices/generic/bthid_android_bridge.h"
+#include "fixtures/android_controller_hid.h" // ANDROID_BRIDGE_CONTRACT_VERSION
 #include "ns2_active_input.h"
 #include "ds5_audio_bridge.h"
 #include "ds5_motion_pair_capture.h"
@@ -72,6 +75,7 @@ static char pcm_format_response[896];
 static ds5_motion_pair_record_t motion_pair_format_record;
 static char motion_pair_format_payload[DS5_MOTION_PAIR_NATIVE_MAX * 2u + 1u];
 static char motion_pair_format_response[768];
+static char rumble_format_response[320];
 static ns2_motion_hybrid_capture_record_t motion_hybrid_format_record;
 static char motion_hybrid_base[NS2_MOTION_PDU40_LENGTH * 2u + 1u];
 static char motion_hybrid_xor[NS2_MOTION_PDU40_LENGTH * 2u + 1u];
@@ -728,6 +732,70 @@ static void handle_command(void) {
         tx_buffer[length++] = '\n';
         tx_length = length;
         tx_position = 0;
+    } else if (strcmp(rx_line, "rumble") == 0 ||
+               strcmp(rx_line, "rumble status") == 0) {
+        // Firmware-side end-to-end rumble trace. Read this BEFORE touching any
+        // amplitude: it separates "the console never asked", "we decoded it but
+        // never handed it to the bridge", and "we sent it and the handheld is
+        // still silent" -- three different bugs. See include/ns2_rumble_trace.h.
+        ns2_rumble_trace_t r;
+        ns2_rumble_trace_get(&r);
+        snprintf(rumble_format_response, sizeof(rumble_format_response),
+                 "{\"rumble\":{\"console\":{\"reports\":%lu,\"nonzero\":%lu,"
+                 "\"last\":[%u,%u]},\"bridge\":{\"sent\":%lu,\"failed\":%lu,"
+                 "\"nonzero\":%lu,\"last\":[%u,%u],\"player\":%u,"
+                 "\"motion_wanted\":%u}}}",
+                 (unsigned long)r.console_reports,
+                 (unsigned long)r.console_nonzero,
+                 r.console_left, r.console_right,
+                 (unsigned long)r.bridge_sent,
+                 (unsigned long)r.bridge_failed,
+                 (unsigned long)r.bridge_nonzero,
+                 r.bridge_left, r.bridge_right, r.bridge_player,
+                 r.bridge_motion_wanted);
+        queue_text(rumble_format_response);
+    } else if (strcmp(rx_line, "bridge") == 0 ||
+               strcmp(rx_line, "bridge status") == 0) {
+        // Direct answer to "did the adapter recognize the companion bridge".
+        // Battery, motion, rumble and the player LED are ALL gated on one exact
+        // descriptor match, so a v2 feature loss with working buttons means this
+        // returned false. Read it here instead of inferring it from missing
+        // feedback, which cannot tell "never called" from "rejected" from
+        // "matched but the console asked for nothing".
+        const android_bridge_identify_trace_t *t = android_bridge_identify_trace();
+        snprintf(rumble_format_response, sizeof(rumble_format_response),
+                 "{\"bridge_identify\":{\"contract\":%u,\"build\":\"%s\","
+                 "\"calls\":%lu,\"matched\":%lu,"
+                 "\"rejected\":{\"null\":%lu,\"length\":%lu,\"content\":%lu},"
+                 "\"last_len\":%u,\"expected_len\":%u,\"first_mismatch\":%ld,"
+                 "\"expected_byte\":%u,\"actual_byte\":%u,\"profile\":\"%s\","
+                 "\"suspected_skew\":%s}}",
+                 (unsigned)ANDROID_BRIDGE_CONTRACT_VERSION,
+                 PICOSWITCH_BUILD_ID,
+                 (unsigned long)t->calls,
+                 (unsigned long)t->matched,
+                 (unsigned long)t->rejected_null,
+                 (unsigned long)t->rejected_length,
+                 (unsigned long)t->rejected_content,
+                 t->last_len, t->expected_len,
+                 (long)t->first_mismatch,
+                 t->expected_byte, t->actual_byte,
+                 t->active_profile == 2u ? "v2-bridge"
+                     : (t->active_profile == 1u ? "v1-generic" : "none"),
+                 // Bounded, evidence-based: a peer that presented a descriptor of
+                 // exactly the expected LENGTH but different CONTENT is almost
+                 // certainly this bridge built against a different contract, not
+                 // an unrelated gamepad that happens to be 161 bytes. Reported as
+                 // a suspicion, never used to authorize anything.
+                 (t->rejected_content > 0u && t->last_len == t->expected_len)
+                     ? "true" : "false");
+        queue_text(rumble_format_response);
+    } else if (strcmp(rx_line, "bridge clear") == 0) {
+        android_bridge_identify_trace_reset();
+        queue_text("{\"ok\":true,\"cleared\":\"bridge\"}");
+    } else if (strcmp(rx_line, "rumble clear") == 0) {
+        ns2_rumble_trace_reset();
+        queue_text("{\"ok\":true,\"cleared\":\"rumble\"}");
     } else if (strcmp(rx_line, "clear") == 0) {
         ns2_firmware_diagnostics_reset();
         queue_text("{\"ok\":true,\"cleared\":true}");

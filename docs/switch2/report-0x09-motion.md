@@ -67,9 +67,7 @@ forwards genuine length-40 blocks alongside length-30 blocks.
 |---|---|---|---|---|
 | `0x00` | 2 | `uint16_le`| **Timing**          | low 12 bits = 800 Hz IMU tick (mod 4096); high 4 bits = ticks elapsed since previous report (usually 3–4). |
 | `0x02` | 2 | `int16_le` | **Temperature**     | constant `0x0C00` (3072). ICM: °C = raw/128 + 25 ⇒ 49 °C. 												 |
-| `0x04` | 4 | `int32_le` | **Angular phase X** | binary angle, `2^32 = 360°`. Integrated/filtered angular phase. 											 |
-| `0x08` | 4 | `int32_le` | **Angular phase Y** | 																											 |
-| `0x0C` | 4 | `int32_le` | **Angular phase Z** | starts near `0x80000000` (≈ −180°). 																		 |
+| `0x04` | 12 | packed | **Orientation carrier** | **NOT three independent angles.** One packed quaternion: `G0` 26 bits, `G1` 25 bits, `G2` 24 bits, plus a 2-bit chart state in `G2`'s bits 25:24. See "Orientation carrier" below. |
 | `0x10` | 4 | `int32_le` | **Accel X**         | **Q16.16 fixed point**; `65536 × 4096 = 1 g`. 															 |
 | `0x14` | 4 | `int32_le` | **Accel Y** 		| ICM-42670-P ±8 g ⇒ 4096 LSB/g. 																			 |
 | `0x18` | 4 | `int32_le` | **Accel Z** 		| 																											 |
@@ -79,18 +77,64 @@ forwards genuine length-40 blocks alongside length-30 blocks.
 typedef struct __attribute__((packed)) {
     uint16_t timing;        // (count << 12) | (tick & 0x0FFF)
     int16_t  temperature;   // 0x0C00
-    int32_t  phase[3];      // binary angle, 2^32 == 360 deg
+    uint32_t orientation[3];// packed carrier; widths 26/25/24 + 2-bit state, NOT 3 angles
     int32_t  accel_q16[3];  // Q16.16, 65536*4096 == 1 g
     uint16_t tail;          // 0
 } ns2_motion30_t;           // sizeof == 30
 ```
 
+### Orientation carrier — ✅ hardware-validated for generated output
+
+The three 32-bit-aligned words at `0x04..0x0F` carry ONE bounded quaternion, not one angle per
+axis. Each slot is a centered unsigned value over the usual ±1/√2 smallest-three physical range:
+
+```
+Each Gn is a 26-bit little-endian value stored as 24 bits + 2 high bits in a
+following byte. The three fields are NOT aligned 32-bit words:
+
+  0x04 bits 1:0   G2 bits 25:24  -> the CHART STATE (see below); bits 7:2 unrelated
+  0x05..0x07      G0 bits 23:0
+  0x08 bits 1:0   G0 bits 25:24;                                bits 7:2 unrelated
+  0x09..0x0B      G1 bits 23:0
+  0x0C bits 1:0   G1 bits 25:24;                                bits 7:2 unrelated
+  0x0D..0x0F      G2 bits 23:0
+
+Scales (the encoder uses fewer bits than the field provides for G1 and G2):
+
+  G0 = (component / sqrt(2) + 0.5) * 2^26     all 26 bits used
+  G1 = (component / sqrt(2) + 0.5) * 2^25     bit 25 always 0 in generated output
+  G2 = (component / sqrt(2) + 0.5) * 2^24     bits 25:24 carry the state instead
+```
+
+The chart state therefore lives in the **low two bits of motion byte `0x04`**, reached as G2's
+bits 25:24 after extraction. Extract 26 bits per field, then apply that field's scale.
+`ns2_motion_pdu30_get_orientation()` / `..._set_orientation()` in
+`src/bt_hid/motion/ns2_motion_pdu.c` are the authority; the setter preserves the six unrelated bits
+of bytes `0x04`, `0x08`, and `0x0C`.
+
+The state numbers components in wire order `w/x/y/z`, so identity is state 0, and the omitted
+component is recovered with the positive square root. This is what
+`ns2_ds5_motion.c::pack_switch2_smallest_three()` writes, and it is the only representation that
+has ever produced correct motion on a console. See the carrier sections further down for what is
+and is not established about the *genuine* controller's internal model — direct captures refute
+strict smallest-three as an exact description of genuine hardware, while confirming the cyclic
+chart topology and the paired sign-branch transition law.
+
+**The earlier "angular phase, 2^32 = 360°" reading of these bytes is REFUTED.** It survived in this
+table long after the carrier was resolved, and a firmware encoder was written against it: three
+independent integrated-rate accumulators written straight into `0x04..0x0F`. On hardware that
+produced violent, meaningless motion for every source routed through it. The encoder was deleted
+2026-08-14; the entry in
+[`../experiments/refuted-hypotheses.md`](../experiments/refuted-hypotheses.md) is the durable
+record. Do not reintroduce a per-axis angle model for this field.
+
 ### Conversions
 ```
-gyro_dps    = (int32_t)(phase - prev_phase) * 360.0 * 800.0 / (2^32 * sample_count)
 accel_g     = accel_q16 / (65536.0 * 4096.0)
 accel_count = accel_q16 / 65536.0            // ordinary ICM count (~±4096 = 1 g)
 ```
+Angular rate is not carried directly in a length-30 block; it is the time derivative of the
+orientation carrier. The length-`0x28` block is the one that carries packed IMU samples.
 
 ## Activation — motion is a *negotiated feature* (not always-on)
 
@@ -111,8 +155,8 @@ A Q16.16 accel value is `[ int16 high ][ frac16 low ]`. Reading `(int16)(accel_q
 the ordinary gravity count (~±4096) — so the old "accel" lane looked correct and produced a
 plausible 1 g magnitude. But the adjacent "gyro" lane was `(uint16)(accel_q16 & 0xFFFF)` — the
 **fractional half** — which sweeps most of the 16-bit range and looks like random full-scale gyro.
-Likewise the "first sample" was the low/high halves of the 32-bit phase fields. Replace
-`gyro16,accel16 × repeated` with `phase32 × 3, accel_q16_32 × 3`.
+Likewise the "first sample" was the low/high halves of the 32-bit orientation words. Replace
+`gyro16,accel16 × repeated` with `orientation32 × 3, accel_q16_32 × 3`.
 
 ## Calibration (from report-0x09-motion-analysis.md; not yet needed for basic gyro)
 
@@ -477,55 +521,41 @@ was deferred on 2026-08-01 because `0x28` adds cadence-dependent history rather 
 higher-fidelity gyro mode. Reopen it only for a concrete `0x1E` deficiency or a new observation
 point capable of resolving controller-private filter/FIFO/state behavior.
 
-🔵 **Historical/generic encoder path:** the Switch 2 reads the generated gyro pipeline (both Zeldas
-and Splatoon respond), but its exact fidelity remains unresolved. `src/switch_pro2/switch_pro2.c`
-`ns2_build_report()` emits the int32 layout above and **gates motion
-on the `0x0C/0x04` IMU-enable** (`ns2_imu_enabled`, reset per host session in `tud_mount_cb`) —
-length 0 until the console enables it, matching a real PC2. Angular phase = the integral of
-`in.gyro` over **real elapsed time** (`time_us_32`), scaled `2^32 / (16.384 LSB/dps · 360° · 1e6) =
-0.72818` per µs·LSB; the 800 Hz timing word tracks real time (`count = dt_us/1250`); accel is
-`in.accel * 65536` (Q16.16).
+🔴 **Removed: the per-axis "phase" encoder (2026-07-10 → 2026-08-14).**
 
-**First hardware test (2026-07-10): pipeline confirmed, math wrong.** Splatoon accepted the
-negotiated-feature gyro, but a **stationary controller still drifted the camera** — pure rate
-integration accumulating the DualSense's gyro bias with no correction (the genuine ~0.03 dps bias is
-negligible; a DualSense's is not, and any constant bias integrates without bound). **Take-1 fix**: a
-slow, stillness-gated per-axis bias tracker in `ns2_build_report()` before integration.
+`src/switch_pro2/switch_pro2.c` used to contain a second encoder, `ns2_motion_tick()` +
+`ns2_encode_motion30()`, that integrated `in.gyro` over real elapsed time into three independent
+`uint32` accumulators (`2^32 = 360°`, scale `0.72818` per µs·LSB, `Z` initialized to `0x80000000`)
+and wrote them straight into `0x04..0x0F`. It was written against the refuted layout at the top of
+this document and was the fallback for any motion source not explicitly routed to the translator.
 
-**Second hardware test (2026-07-10, same day): take-1 fix made no observable difference** — Splatoon
-and Zelda both still showed unusable, unstable motion while stationary. Root cause: the take-1
-stillness gate tested raw gyro **magnitude** (`|raw| < 40 LSB`) against a threshold that a MEMS
-gyro's own constant zero-rate bias can plausibly exceed on its own — self-defeating (the gate would
-never open, so the bias estimate would never adapt, reproducing exactly the un-fixed behavior).
-**Take-2 fix**: the gate now tests the gyro's frame-to-frame **derivative** (steadiness) instead of
-its magnitude, so it opens correctly regardless of how large the underlying bias is. The bias/gate
-state is now exposed live via the config-mode `imu` debug command (`bias=[…] still=0|1`) so the next
-test can confirm the mechanism directly instead of inferring it from in-game symptoms. Full writeup
-(both tests + both fixes): [gyro-hardware-validation-2026-07-10.md](../experiments/gyro-hardware-validation-2026-07-10.md).
+It never worked on hardware, and it could not have: those bytes are a packed 26/25/24-bit
+quaternion with a 2-bit chart state, so an int32 angle lands across slot and state boundaries and
+decodes as an arbitrary orientation that jumps whenever a carry crosses bit 24 or 26. That is a
+representation error, not a tuning error — which is why the 2026-07-10 bias-tracker and
+stillness-gate work correctly fixed the mechanisms it examined (a DualSense really does read
+`still=1` stationary) without improving the in-game symptom, and why the symptom was
+"abrupt multidirectional jumps" rather than drift. Every controller family later reported as
+"motion spams everywhere" was a family that had not yet been added to the translator's source list.
 
-**Axis signs / order** — reuses report-0x05's axis transform, which was **also found wrong** in the
-same test (pitch/roll swapped, yaw correct) and **fixed** in `ns2_seam.c` from a re-analysis of the
-genuine controller's own capture (🔵 medium confidence — see above and the hardware-validation doc).
-Both fixes are build-clean but **not yet hardware-tested**.
+Those experiments remain valid observations of what was measured; see
+[gyro-hardware-validation-2026-07-10.md](../experiments/gyro-hardware-validation-2026-07-10.md) and
+[refuted-hypotheses.md](../experiments/refuted-hypotheses.md). What changed is the conclusion drawn
+from them.
 
-Remaining knobs if jitter (not drift) persists: **low-pass strength** (EMA α 0.25→0.125). **Scale**
-`0.72818` (from 16.384 LSB/dps) and **initial phase** `Z = 0x80000000` (−180°) are unchanged from the
-first cut and still unverified against a moving on-console reference.
+✅ **Current path: one encoder for every translated source.** `ns2_build_report()` now has exactly
+two motion branches — opaque genuine passthrough, and `ns2_motion_consume()` feeding
+`ns2_ds5_motion.c` — with no third fallback and no per-source whitelist. A source with motion that
+the translator cannot represent emits motion length 0, which is strictly better than emitting a
+representation the console cannot decode. Motion remains gated on the `0x0C/0x04` IMU-enable
+(`ns2_imu_enabled`, reset per host session in `tud_mount_cb`), matching a real PC2, and accel is
+still `in.accel * 65536` (Q16.16).
 
-**Symptom reclassified, 2026-07-10 (later).** The in-game stationary symptom is **abrupt
-multidirectional jumps, not gradual drift** — a meaningful correction, since "drift" implied
-gradual bias-accumulation error and biased the investigation toward bias-tracker work specifically.
-That work independently confirmed the take-2 stillness gate works correctly on hardware (a
-DualSense reads `still=1` stationary / `still=0` moving), which rules the gate itself out as the
-jump's cause without explaining the jumps. A new, carefully-validated third-party decode of the
-Switch 2's **native BLE** motion format (`docs/experiments/switch2_native_motion_map_DyCOOL.md`)
-shows that format uses raw, bounded, clamped gyro *samples* rather than an unbounded accumulator —
-a concrete alternative value semantic for report 0x09's still-open "phase field semantics"
-question (item 2 below), though not proof either way for report 0x09 specifically (that document's
-own author explicitly leaves Pro Controller 2's report 0x09 "to be verified"). Also gyro-scale
-mismatch was checked and **ruled out** as an explanation for the current DualSense test (the
-joypad-os framework's own `event->gyro_range = 2000` for DS4/DS5 matches this repo's `16.384
-LSB/dps` constant exactly). New instrumentation (`ns2_dbg_motion_phase()`, exposed on the
-config-mode `imu` line as `phase=[...]`) now lets the phase accumulator itself be watched directly
-for discontinuities, independent of any console. Full analysis:
-[gyro-hardware-validation-2026-07-10.md](../experiments/gyro-hardware-validation-2026-07-10.md) §12.
+Per-source frame differences live in exactly one place, `src/bt_hid/motion/ns2_motion_seam.c`: one
+row per source, each a proper rotation (determinant +1) from that sensor's frame onto the carrier
+frame (X right, Y forward, Z face normal). Adding a controller family means adding a seam row, not
+a branch in the encoder.
+
+The bias tracker, stillness gate and warmup described in the 2026-07-10 experiments now live inside
+the translator (`ns2_ds5_motion_update()`), which is where they belong: they operate on normalized
+input, ahead of the wire encoding.
