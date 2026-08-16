@@ -4,3 +4,10 @@ local.properties
 build/
 app/build/
 captures/
+
+# Release signing material. NEVER commit these: the signing identity must stay
+# usable for future in-place upgrades, and a leaked key cannot be rotated
+# without breaking every installed copy.
+app/keystore.properties
+*.jks
+*.keystore

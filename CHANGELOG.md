@@ -3,11 +3,20 @@
 Release notes describe user-visible behavior. Detailed implementation history remains in
 `docs/archive/` and the experiment records.
 
-## 1.6.0 — 2026-08-15
+## 2.0.0 — 2026-08-15
 
-The native Android companion release. v1.5.0 had no Android application at all; management was
-web-portal only. v1.6.0 adds a full native companion plus a host-controller bridge that lets an
-Android handheld act as the console's controller.
+A major-generation release. v1.5.0 was a firmware-and-controller milestone whose only
+configuration surface was a `CONFIG.HTM` page served from an embedded USB mass-storage drive and
+opened in desktop Chrome or Edge; there was no Android application and no wireless management of
+any kind.
+
+2.0.0 replaces that whole model. It adds a native Android companion, a host-controller bridge that
+lets an Android handheld drive the console, bonded/encrypted in-band Bluetooth management, a
+complete Virtual Amiibo workflow, and translated motion from controller families beyond a genuine
+Pro Controller 2. The embedded web disk is gone; the local portal is served over CDC instead.
+
+The bridge contract is version 3 and is unchanged by this version bump — it is a wire-compatibility
+identifier, not a product version.
 
 ### Added
 
@@ -522,8 +531,8 @@ Android handheld act as the console's controller.
 
 ### Known limitations
 
-- The adapter firmware and the Android companion must be updated together. v1.6.0 uses a newer
-  bridge contract than earlier builds; a mismatch disables battery, motion and rumble while
+- The adapter firmware and the Android companion must be updated together. 2.0.0 uses a newer
+  bridge contract (version 3) than earlier builds; a mismatch disables battery, motion and rumble while
   ordinary input continues to work. The companion now detects and reports this.
 - Android controller bridging is foreground-only. Android unregisters the HID Device profile when
   the app is not in front, and only one HID Device application may be registered system-wide.

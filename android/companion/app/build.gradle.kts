@@ -1,8 +1,35 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+
+// Release signing credentials, loaded from OUTSIDE version control.
+//
+// Resolution order: `app/keystore.properties`, then environment variables. Both
+// are external by construction -- no key, password or alias is ever stored in
+// the repository.
+//
+// Absent credentials are NOT an error: the release variant still builds and
+// produces an unsigned APK. That keeps CI and ordinary contributors working
+// while making it obvious that a publishable artifact needs the real key.
+val keystoreProperties = Properties().apply {
+    val file = rootProject.file("app/keystore.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+
+fun signingValue(key: String, env: String): String? =
+    keystoreProperties.getProperty(key) ?: System.getenv(env)
+
+val releaseStoreFile = signingValue("storeFile", "PICOSWITCH_KEYSTORE")
+val releaseStorePassword = signingValue("storePassword", "PICOSWITCH_KEYSTORE_PASSWORD")
+val releaseKeyAlias = signingValue("keyAlias", "PICOSWITCH_KEY_ALIAS")
+val releaseKeyPassword = signingValue("keyPassword", "PICOSWITCH_KEY_PASSWORD")
+val hasReleaseSigning = listOf(
+    releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword,
+).all { !it.isNullOrBlank() } && File(releaseStoreFile!!).exists()
 
 android {
     namespace = "dev.picoswitch.companion"
@@ -12,19 +39,38 @@ android {
         applicationId = "dev.picoswitch.companion"
         minSdk = 28
         targetSdk = 35
-        // First public companion release, shipping alongside PicoSwitch2 v1.6.0.
-        // Keep this aligned with the firmware release the APK is published with:
-        // the two must be updated together (see BridgeContract).
-        versionCode = 2
-        versionName = "1.6.0"
+        // Ships alongside a PicoSwitch2 firmware release; the two must be updated
+        // together (see BridgeContract). Product version only -- it is NOT the
+        // bridge contract version, which changes only when the wire changes.
+        //
+        // versionCode scheme: major * 10000 + minor * 100 + patch.
+        versionCode = 20000
+        versionName = "2.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables.useSupportLibrary = true
         buildConfigField("String", "MGMT_PROTOCOL_VERSION", "\"1\"")
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = File(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
+    }
+
     buildTypes {
         debug {
+            // Suffixed so a debug build can sit alongside the published app. The
+            // RELEASE variant deliberately keeps the bare applicationId, which is
+            // what makes future in-place upgrades possible.
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
         }
@@ -34,6 +80,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
