@@ -611,6 +611,22 @@ static void gamepad_process_report(bthid_device_t* device, const uint8_t* data, 
 // answer for the NS2 personalities.
 __attribute__((weak)) bool bthid_host_wants_motion(void) { return true; }
 
+// Observability hook for the console -> handheld feedback path, called once per
+// attempted send whether or not the transport accepted it. Same weak-default
+// idiom as bthid_host_wants_motion() above: the vendored driver stays free of
+// PicoSwitch2 headers, and ns2_seam.c supplies the real implementation.
+// Deliberately not gated on `sent`: "the transport rejected it" and "nothing was
+// ever offered" are different failures and the diagnostic must tell them apart.
+__attribute__((weak)) void bthid_on_bridge_feedback(uint8_t rumble_left,
+                                                    uint8_t rumble_right,
+                                                    uint8_t player_led,
+                                                    bool motion_wanted,
+                                                    bool sent)
+{
+    (void)rumble_left; (void)rumble_right; (void)player_led;
+    (void)motion_wanted; (void)sent;
+}
+
 // feedback_led_t.pattern carries one bit per player (ns2_seam.c sets
 // 1 << (player - 1)). Recover the player number for the bridge's LED field.
 static uint8_t bridge_player_from_pattern(uint8_t pattern)
@@ -652,10 +668,12 @@ static void gamepad_task(bthid_device_t* device)
             uint8_t n = android_bridge_encode_feedback(
                 &gp->map.bridge, left, right, player, motion_wanted,
                 payload, (uint8_t)sizeof(payload));
-            if (n == 0 ||
-                !bthid_send_output_report(device->conn_index,
-                                          gp->map.bridge.output_report_id,
-                                          payload, n)) {
+            const bool sent = n != 0 &&
+                bthid_send_output_report(device->conn_index,
+                                         gp->map.bridge.output_report_id,
+                                         payload, n);
+            bthid_on_bridge_feedback(left, right, player, motion_wanted, sent);
+            if (!sent) {
                 return;  // keep dirty + cache so a failed send retries next tick
             }
             gp->rumble_left = left;

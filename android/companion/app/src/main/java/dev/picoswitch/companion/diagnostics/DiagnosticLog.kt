@@ -1,6 +1,7 @@
 package dev.picoswitch.companion.diagnostics
 
 import android.util.Log
+import dev.picoswitch.bridge.core.BridgeDiagnostics
 import dev.picoswitch.companion.BuildConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,15 +19,22 @@ data class DiagnosticSummary(
     val lastError: String = "None",
 )
 
-/** Bounded in-memory development log. It stores event classes, never raw Amiibo bytes or JSON replies. */
-class DiagnosticLog(private val capacity: Int = 400) {
+/**
+ * Bounded in-memory development log. It stores event classes, never raw Amiibo
+ * bytes or JSON replies.
+ *
+ * Also the app's [BridgeDiagnostics] implementation, so bridge-core, the
+ * transport and the platform backends land in the same stream as the app's own
+ * events instead of a second log the user has to correlate by hand.
+ */
+class DiagnosticLog(private val capacity: Int = 400) : BridgeDiagnostics {
     private val _entries = MutableStateFlow<List<DiagnosticEntry>>(emptyList())
     val entries: StateFlow<List<DiagnosticEntry>> = _entries.asStateFlow()
     private val _summary = MutableStateFlow(DiagnosticSummary())
     val summary: StateFlow<DiagnosticSummary> = _summary.asStateFlow()
 
     @Synchronized
-    fun event(area: String, event: String, detail: String = "") {
+    override fun event(area: String, event: String, detail: String) {
         val safe = detail.replace(Regex("[\\r\\n]+"), " ").take(240)
         _entries.value = (_entries.value + DiagnosticEntry(System.currentTimeMillis(), area, event, safe)).takeLast(capacity)
         mirrorToLogcat(area, event, safe)
@@ -44,7 +52,7 @@ class DiagnosticLog(private val capacity: Int = 400) {
         event("management", "result", result)
     }
 
-    fun error(area: String, operation: String, error: Throwable) {
+    override fun error(area: String, operation: String, error: Throwable) {
         val raw = error.message ?: error.javaClass.simpleName
         val redacted = raw
             .replace(Regex("amiibo chunk\\s+\\d+\\s+[0-9A-Fa-f]+", RegexOption.IGNORE_CASE), "amiibo chunk [data omitted]")

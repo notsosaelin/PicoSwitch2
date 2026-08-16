@@ -1,5 +1,17 @@
 # Android Handheld Controller Bridge
 
+> **2026-08-14 — motion frame defect, fixed, hardware-pending.** The app converts Android's
+> natural-orientation sensor frame to the frame the handheld is held in using the display rotation.
+> It read that rotation with `Context.getDisplay()` on the **application** context, which on API
+> 30+ throws `UnsupportedOperationException` for any non-visual context; the surrounding
+> `runCatching` swallowed it and the cached value stayed 0 forever, so the correction never ran on
+> any modern device. Now read via `DisplayManager.getDisplay(Display.DEFAULT_DISPLAY)`. On a
+> natural-portrait handheld the old behavior is a 90° error about the screen normal: yaw survives,
+> pitch and roll are exchanged and inverted — the reported AYN Thor symptom. The app now logs the
+> rotation it applied. See [`../agents/ANDROID.md`](../agents/ANDROID.md) and
+> [`../agents/MOTION.md`](../agents/MOTION.md).
+
+
 Status: implemented under `android/companion/`; AYN Thor app-side input, public HID Device
 registration, Pico receipt, and in-game console control were hardware-validated 2026-08-13. The
 new single-relationship pairing/reconnect UX and corrected face-label mapping are host/build
@@ -118,20 +130,41 @@ gates, including repeated physical → Android → physical switching and Androi
 ### Android project shape
 
 The independent Gradle project lives under `android/companion/` so the descriptor and Pico parser
-contract stay versioned together:
+contract stay versioned together. Since 2026-08-15 it is **two** modules, splitting the bridge
+definition from the Android implementation of it:
 
 ```text
 android/companion/
-  app/                         Compose UI and lifecycle
-  bridge/input/                InputDevice discovery and event normalization
-  bridge/hid/                  descriptor, report encoder, BluetoothHidDevice wrapper
-  bridge/pairing/              CompanionDeviceManager, bond, saved-host state machine
-  bridge/model/                immutable ControllerState
-  test/                        encoder and mapping fixtures
+  bridge-core/                 PLATFORM-NEUTRAL. Plain Kotlin/JVM, no Android dependency.
+    dev/picoswitch/bridge/core/       normalized ControllerState, buttons, capabilities,
+                                      canonical motion convention, layout resolver,
+                                      candidate/exclusion rule, rumble shaping
+    dev/picoswitch/bridge/protocol/   HID descriptor, report encoder, output-report codec
+    dev/picoswitch/bridge/session/    BridgeSession, BridgeTransport + backend interfaces,
+                                      observable BridgeState, resume policy
+
+  app/                         ANDROID.
+    dev/picoswitch/companion/bridge/  AndroidInputBackend, AndroidMotionBackend,
+                                      AndroidBatteryBackend, AndroidOutputBackend,
+                                      AndroidHidTransport, AndroidBridge (assembly),
+                                      BridgeForegroundService, layout store
+    dev/picoswitch/companion/ui/      Compose UI and lifecycle
+    ...                               management, Amiibo, NFC (unchanged, Android-specific)
 ```
 
-Do not add a native library for the first version. Kotlin/Java public framework APIs cover the
-whole data path and keep the compatibility boundary obvious.
+The module boundary is the architecture guard: `:bridge-core` has no Android SDK on its compile
+classpath, so an Android type in the shared model is a build failure rather than a review finding.
+`ArchitectureGuardTest` additionally scans core sources for platform vocabulary in identifiers and
+string literals.
+
+The platform-neutral contract is documented in
+[`../bridge/PROTOCOL.md`](../bridge/PROTOCOL.md), and what a future Windows/Linux backend would
+have to provide in [`../bridge/PLATFORM_BACKEND.md`](../bridge/PLATFORM_BACKEND.md). No Windows or
+Linux implementation exists or is planned yet; those documents exist so building one is an
+implementation task rather than another architecture exercise.
+
+Do not add a native library. Kotlin/Java public framework APIs cover the whole data path and keep
+the compatibility boundary obvious.
 
 ## Local VCC prototype reference audit
 
@@ -211,7 +244,11 @@ independently confirms the design against a different OEM and API level. Full ev
   with no `LTRIGGER`/`RTRIGGER` aliases**, so it validates that the documented trigger fallback is
   mandatory, not optional. Same tiny `flat=15` stick dead zone.
 - Its key map is a clean **superset of the 14-button contract**; only the Capture (usage 14) source
-  remains a per-device question (candidates `BUTTON_C`/`BUTTON_Z`), the same open item as the Retroid.
+  remains a per-device question, the same open item as the Retroid. **Resolved 2026-08-15 for
+  `BUTTON_C`/`BUTTON_Z` specifically: they are NOT Capture.** They were mapped there provisionally,
+  which was arbitrary and consumed two inputs the future custom-mapping system should own. Capture
+  is reached through its on-screen button instead. Unknown or additional physical buttons stay
+  unassigned as candidates for future custom mapping.
 - **No firmware/parser change required** — the Thor fits the already-checked-in descriptor + wire
   contract that `tools/test_bthid_android_controller.c` validates.
 
@@ -354,7 +391,7 @@ real controller provides, so an Android handheld is not a second-class input sou
 - **Screen orientation is normalized in the app.** Android reports sensors in the device's *natural*
   orientation, not the one being held, so raw axes would send pitch as roll on a phone held sideways —
   and would work on a handheld whose natural orientation is landscape while failing on one that is
-  portrait. `MotionOrientation` applies the same screen remap NS-PC-Control uses before the wire
+  portrait. `ScreenOrientation` applies the same screen remap NS-PC-Control uses before the wire
   conversion. This must stay app-side: only the client knows the display rotation.
 
 ### Audio and microphone — investigated, not feasible over this link

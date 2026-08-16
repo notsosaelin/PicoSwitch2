@@ -7,7 +7,11 @@ changing code. Then read:
 2. [`PLAN.md`](PLAN.md) — prioritized roadmap
 3. [`docs/README.md`](docs/README.md) — documentation authority and map
 4. [`docs/LLM/current-context.md`](docs/LLM/current-context.md) — concise continuation handoff
-5. The protocol or architecture document relevant to the task
+5. [`docs/agents/COMMON.md`](docs/agents/COMMON.md) — short durable briefs for focused work
+   (plus [`MOTION.md`](docs/agents/MOTION.md), [`RUMBLE.md`](docs/agents/RUMBLE.md),
+   [`ANDROID.md`](docs/agents/ANDROID.md)). Point a subagent at these instead of restating
+   project history in its prompt.
+6. The protocol or architecture document relevant to the task
 
 `CLAUDE.md` contains the longer maintainer philosophy. It remains applicable, but current source,
 captures, tests, and the documents above outrank old plans or conversation history.
@@ -58,6 +62,11 @@ captures, tests, and the documents above outrank old plans or conversation histo
 When a task can be split into several independent and substantial subtasks, spawn one
 `luna_worker` per subtask and run them in parallel. Keep anything that takes only a few minutes in
 the main thread.
+
+Keep prompts SHORT. Reference `docs/agents/*.md` rather than pasting project history: large
+repeated prompts waste context, cost money, and let agents reinterpret established hardware
+observations into softer claims. A good prompt names the question, the briefs to read, the
+boundary, and the expected return format.
 
 Each worker runs in its own thread. Do not assume it can see the main thread conversation. Make
 every task description self-contained: files in scope, boundaries, and expected output.

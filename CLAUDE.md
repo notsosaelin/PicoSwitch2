@@ -38,6 +38,15 @@ Documentation is a first-class deliverable.
 
 ---
 
+# Context Recovery
+
+Never broadly reread the repository or project documentation merely because context was compacted,
+interrupted, or usage limits reset. Resume from current conversation/context first. Consult specific
+documentation only when a missing fact blocks progress. Repository-wide reconnaissance is for new
+task sessions, not resumptions.
+
+---
+
 # Operating Philosophy
 
 Continuously build a complete mental model of the repository.

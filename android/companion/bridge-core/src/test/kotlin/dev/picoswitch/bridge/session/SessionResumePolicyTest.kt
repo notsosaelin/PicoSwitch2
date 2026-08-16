@@ -1,0 +1,31 @@
+package dev.picoswitch.bridge.session
+
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class SessionResumePolicyTest {
+    @Test fun `idle saved handheld may query after management reconnect`() {
+        assertTrue(SessionResumePolicy.canQueryAdapter(true, true, true, false, BridgeLinkPhase.Idle))
+        assertTrue(SessionResumePolicy.canQueryAdapter(true, true, true, false, BridgeLinkPhase.Ready))
+    }
+
+    @Test fun `missing relationship source or management cannot auto resume`() {
+        assertFalse(SessionResumePolicy.canQueryAdapter(false, true, true, false, BridgeLinkPhase.Idle))
+        assertFalse(SessionResumePolicy.canQueryAdapter(true, false, true, false, BridgeLinkPhase.Idle))
+        assertFalse(SessionResumePolicy.canQueryAdapter(true, true, false, false, BridgeLinkPhase.Idle))
+        assertFalse(SessionResumePolicy.canQueryAdapter(true, true, true, true, BridgeLinkPhase.Idle))
+    }
+
+    @Test fun `active bridge operation is never restarted`() {
+        assertFalse(SessionResumePolicy.canQueryAdapter(true, true, true, false, BridgeLinkPhase.Registering))
+        assertFalse(SessionResumePolicy.canQueryAdapter(true, true, true, false, BridgeLinkPhase.Connecting))
+        assertFalse(SessionResumePolicy.canQueryAdapter(true, true, true, false, BridgeLinkPhase.Playing))
+    }
+
+    @Test fun `physical controller prevents handheld takeover`() {
+        assertFalse(SessionResumePolicy.shouldAcquire(controllerAttached = true, bondedHostAvailable = true))
+        assertFalse(SessionResumePolicy.shouldAcquire(controllerAttached = false, bondedHostAvailable = false))
+        assertTrue(SessionResumePolicy.shouldAcquire(controllerAttached = false, bondedHostAvailable = true))
+    }
+}

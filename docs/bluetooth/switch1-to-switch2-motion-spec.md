@@ -155,9 +155,15 @@ console.
 Length `0x1E` smallest-three quaternion carrier + accel as Q16.16
 (`accel × NS2_DS5_ACCEL_PDU_PER_COUNT`, `= 68963`).
 
-> 🔵 **Open, pre-existing, not a Switch 1 issue:** with 4096 counts/g arriving, exact Q16.16 would
-> need `65536`, but the constant is `68963` — 5.2 % high. It is on the validated DualSense path and
-> applies to every source equally, so it is recorded, not touched.
+> ✅ **CLOSED 2026-08-14 — `68963` is CORRECT, and 4096 counts/g was the wrong reference.**
+> Measured directly from genuine Pro Controller 2 captures: decoding the length-`0x1E` Q16.16
+> acceleration lanes of 147 resting motion blocks across
+> `dumps/BLE CAPTURE/pro2-magraw-stationary-2026-07-24.jsonl` and
+> `pro2-native-baseline-2026-07-24.jsonl` gives a mean resting magnitude of **4310.1 ordinary
+> counts** (range 4289–4336). Exact Q16.16 at 4096 counts/g predicts 4096.0 (ratio 1.0523 — wrong);
+> `4096 × 68963 / 65536` predicts 4310.2 (ratio **1.0000**). Genuine hardware reports 1 g as ~4310
+> wire counts, so `68963` is the target protocol's own scale, not a DualSense correction leaking
+> into the shared encoder. Do not "fix" it toward 65536.
 
 ### Stage 6 — the console
 

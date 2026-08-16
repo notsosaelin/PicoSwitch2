@@ -31,6 +31,7 @@
 #endif
 #include "ns2_remap.h"                            // locked base button mapping
 #include "ns2_player_led.h"                       // Switch wire bitfield -> player number
+#include "ns2_rumble_trace.h"                     // console->handheld rumble observability
 #include "ns2_wake.h"                             // post-sleep real-input wake intent
 #include "platform/platform.h"                    // platform_time_ms()
 #ifdef NS2_PRO
@@ -335,10 +336,30 @@ void router_submit_input(const input_event_t *e) {
         else
             in.motion_source = SWITCH_MOTION_SOURCE_GENERIC;
         in.motion_sequence = e->motion_sequence;
-        if (in.motion_source == SWITCH_MOTION_SOURCE_DUALSENSE &&
-            e->motion_timestamp_valid) {
-            in.motion_timestamp = e->motion_timestamp;
-            in.motion_timestamp_valid = 1;
+        // Forward a source's own IMU clock whenever it authors one. This is not
+        // a DualSense privilege: the alternative is the host clock, which
+        // measures packet ARRIVAL, and Bluetooth delivers a steady 125 Hz sender
+        // in bursts. Integrating a rate sample over an arrival interval it did
+        // not occur over is what makes varying-rate motion feel choppy, and it
+        // additionally exposes the source to the translator's 3800 us
+        // minimum-period gate (which silently DROPS a sample arriving inside it)
+        // and its 16 ms anti-lurch clamp (which silently discards rotation
+        // beyond it). Measured cost on a 2 Hz 120 dps sweep with bursty arrival:
+        // 0.505 deg of trajectory error on the host clock, 0.002 deg on the
+        // source clock -- tools/test_ns2_motion_quality.c.
+        //
+        // The unit travels with the sample, so the encoder never has to know
+        // which controller produced it.
+        if (e->motion_timestamp_valid) {
+            if (in.motion_source == SWITCH_MOTION_SOURCE_DUALSENSE) {
+                in.motion_timestamp = e->motion_timestamp;
+                in.motion_timestamp_unit = SWITCH_MOTION_TS_DS5_THIRD_US;
+                in.motion_timestamp_valid = 1;
+            } else if (in.motion_source == SWITCH_MOTION_SOURCE_ANDROID) {
+                in.motion_timestamp = e->motion_timestamp;
+                in.motion_timestamp_unit = SWITCH_MOTION_TS_100US_16;
+                in.motion_timestamp_valid = 1;
+            }
         }
         ns2_motion_seam_apply(in.motion_source, e->accel, e->gyro,
                               in.accel, in.gyro);
@@ -420,6 +441,16 @@ bool bthid_host_wants_motion(void) {
 #else
     return true;
 #endif
+}
+
+// Strong override of the generic driver's weak bridge-feedback hook. This is the
+// last point inside the adapter where a console rumble value is observable: past
+// here it is an L2CAP interrupt-channel report and the next observer is the
+// Android companion's own diagnostics. See include/ns2_rumble_trace.h.
+void bthid_on_bridge_feedback(uint8_t rumble_left, uint8_t rumble_right,
+                              uint8_t player_led, bool motion_wanted, bool sent) {
+    ns2_rumble_trace_bridge(rumble_left, rumble_right, player_led,
+                            motion_wanted, sent);
 }
 
 // Strong override of bthid.c's weak battery hook. BAS notifications can arrive

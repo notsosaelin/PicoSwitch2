@@ -14,7 +14,22 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import dev.picoswitch.companion.BuildConfig
-import dev.picoswitch.companion.controller.*
+import dev.picoswitch.bridge.core.BridgeFormat
+import dev.picoswitch.bridge.core.ControllerButton
+import dev.picoswitch.bridge.core.ControllerCandidates
+import dev.picoswitch.bridge.core.ControllerFaceLayout
+import dev.picoswitch.bridge.core.ControllerLayoutResolver
+import dev.picoswitch.bridge.core.ControllerState
+import dev.picoswitch.bridge.core.ResolvedControllerLayout
+import dev.picoswitch.bridge.protocol.BridgeContract
+import dev.picoswitch.bridge.protocol.BridgeHidDescriptor
+import dev.picoswitch.bridge.protocol.ControllerReportEncoder
+import dev.picoswitch.bridge.session.BridgeHost
+import dev.picoswitch.bridge.session.BridgeLinkPhase
+import dev.picoswitch.bridge.session.BridgeState
+import dev.picoswitch.bridge.session.SessionResumePolicy
+import dev.picoswitch.companion.bridge.AndroidBridge
+import dev.picoswitch.companion.bridge.AndroidBridgeHost
 import dev.picoswitch.companion.data.*
 import dev.picoswitch.companion.diagnostics.DiagnosticEntry
 import dev.picoswitch.companion.diagnostics.DiagnosticLog
@@ -76,6 +91,11 @@ data class CompanionUiState(
     val diagnosticSummary: DiagnosticSummary = DiagnosticSummary(),
     val diagnosticEntries: List<DiagnosticEntry> = emptyList(),
     val identityRefreshPending: Boolean = false,
+    /**
+     * Whether the FLASHED adapter firmware implements the bridge contract this
+     * app speaks. Never silently assumed compatible; see [BridgeContract].
+     */
+    val bridgeCompatibility: BridgeContract.Compatibility = BridgeContract.Compatibility.NotConnected,
 )
 
 data class SourceDeviceUi(val id: Int, val descriptor: String, val name: String, val vendorId: Int, val productId: Int)
@@ -90,12 +110,24 @@ data class ExcludedSourceUi(
 
 class CompanionViewModel(application: Application, private val savedState: SavedStateHandle) : AndroidViewModel(application) {
     val diagnostics = DiagnosticLog()
-    val inputRouter = AndroidInputRouter()
-    val hidBridge = HidDeviceBridge(application, inputRouter, diagnostics)
+
+    /**
+     * The Android platform backend and the shared bridge session it drives.
+     *
+     * The ViewModel is the application-facing interface (§ UI separation): it
+     * observes [AndroidBridge.session] state and forwards user intent. It does not
+     * encode reports, touch the HID profile, or handle sensors — all of that is
+     * behind [bridge].
+     */
+    private val bridge = AndroidBridge(application, diagnostics)
+
+    /** Raw input entry point for the Activity's key/motion dispatch. */
+    val inputBackend get() = bridge.input
+    private val session get() = bridge.session
+
     private val adapter = AdapterRepository(BleGattManagementTransport(application, diagnostics))
     private val library = AmiiboLibrary(application)
     private val themeStore = ThemePreferenceStore(application)
-    private val controllerLayoutStore = ControllerLayoutStore(application)
     private val relationshipStore = AdapterRelationshipStore(application)
     private var autoReconnectAttempted = false
     private var automaticControllerResumeJob: Job? = null
@@ -132,6 +164,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                     )
                     relationshipStore.save(saved)
                     _ui.update { it.copy(connection = value, adapterRelationship = saved) }
+                    refreshBridgeCompatibility()
                 } else {
                     if (value.phase == ConnectionPhase.Idle ||
                         value.phase == ConnectionPhase.Reconnecting ||
@@ -140,12 +173,14 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                         adapter.clearDisconnectedSnapshot()
                     }
                     _ui.update { it.copy(connection = value) }
+                    refreshBridgeCompatibility()
                 }
             }
         }
         viewModelScope.launch {
             adapter.snapshot.collect { value ->
                 _ui.update { it.copy(snapshot = value) }
+                refreshBridgeCompatibility()
                 refreshAdapterAmiiboCatalog(value.amiibo)
             }
         }
@@ -164,8 +199,8 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             }
         }
         viewModelScope.launch { library.warnings.collect { value -> _ui.update { it.copy(libraryWarnings = value) } } }
-        viewModelScope.launch { hidBridge.state.collect { value -> _ui.update { it.copy(bridge = value) } } }
-        viewModelScope.launch { inputRouter.state.collect { value -> _ui.update { it.copy(controllerState = value) } } }
+        viewModelScope.launch { session.state.collect { value -> _ui.update { it.copy(bridge = value) } } }
+        viewModelScope.launch { inputBackend.state.collect { value -> _ui.update { it.copy(controllerState = value) } } }
         viewModelScope.launch { diagnostics.summary.collect { value -> _ui.update { it.copy(diagnosticSummary = value) } } }
         viewModelScope.launch { diagnostics.entries.collect { value -> _ui.update { it.copy(diagnosticEntries = value) } } }
         viewModelScope.launch {
@@ -186,6 +221,27 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         }
         refreshPlatformDiagnostics()
         refreshSources()
+    }
+
+    /**
+     * Compare the flashed firmware's bridge contract with the one this build
+     * speaks, and log every transition.
+     *
+     * Logged rather than only shown, because the symptom this detects (battery,
+     * motion and rumble all missing while buttons work) is one a user reports
+     * without ever opening the diagnostics screen.
+     */
+    private fun refreshBridgeCompatibility() {
+        val state = _ui.value
+        val next = BridgeContract.evaluate(
+            firmwareContract = state.snapshot.firmware.bridgeContract,
+            connected = state.connection.connected,
+        )
+        if (next == state.bridgeCompatibility) return
+        _ui.update { it.copy(bridgeCompatibility = next) }
+        if (next !is BridgeContract.Compatibility.NotConnected) {
+            diagnostics.event("adapter", "bridge contract", next.summary)
+        }
     }
 
     fun navigate(section: AppSection) {
@@ -299,7 +355,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
      * must not queue behind a management command or be blocked by the busy flag.
      */
     fun setConsoleButton(button: ControllerButton, pressed: Boolean) {
-        inputRouter.setVirtualButton(button, pressed)
+        inputBackend.setVirtualButton(button, pressed)
     }
 
     fun importAmiibo(uri: Uri, displayName: String) = launch("Importing Amiibo") {
@@ -657,21 +713,21 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     }
 
     fun refreshSources() {
-        val devices = inputRouter.eligibleDevices()
+        val devices = inputBackend.eligibleDevices()
         val desired = savedState.get<String>(KEY_SOURCE)
         // Resolve the source without making the user choose the only option.
         // Priority: an existing valid selection, then the saved preference, then
         // the single usable controller. With two or more, nothing is guessed and
         // the picker becomes visible instead.
-        val candidates = inputRouter.candidateDevices().map { it.second }
-        val current = inputRouter.selectedDescriptor
+        val candidates = inputBackend.candidateDevices().map { it.second }
+        val current = inputBackend.selectedDescriptor
         val preferred = ControllerCandidates.resolveSelection(candidates, current ?: desired)
         if (preferred?.descriptor != current) {
-            val device = devices.firstOrNull { it.descriptor == preferred?.descriptor }
-            inputRouter.select(device)
-            device?.let { inputRouter.setFaceLayout(controllerLayoutStore.load(it.descriptor)) }
-            if (device != null && current == null) {
-                diagnostics.event("controller", "auto-selected", device.name)
+            // One call: input selection and output binding must never disagree.
+            bridge.selectSource(preferred?.descriptor)
+            val chosen = inputBackend.selectedSource
+            if (chosen != null && current == null) {
+                diagnostics.event("controller", "auto-selected", chosen.name)
             }
         }
         _ui.update { state ->
@@ -681,52 +737,56 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                 sourceChoiceRequired = ControllerCandidates.needsUserChoice(candidates),
                 excludedSources = ControllerCandidates.excluded(candidates)
                     .map { ExcludedSourceUi(it.name, it.vendorId, it.productId, it.exclusionReason.orEmpty()) },
-                selectedSourceDescriptor = inputRouter.selectedDescriptor,
-                requestedFaceLayout = inputRouter.requestedFaceLayout,
-                resolvedFaceLayout = inputRouter.resolvedFaceLayout,
+                selectedSourceDescriptor = inputBackend.selectedDescriptor,
+                requestedFaceLayout = inputBackend.requestedFaceLayout,
+                resolvedFaceLayout = inputBackend.resolvedFaceLayout,
             )
         }
     }
 
     fun selectSource(descriptor: String) {
-        val device = inputRouter.eligibleDevices().firstOrNull { it.descriptor == descriptor }
-        inputRouter.select(device)
-        device?.let { inputRouter.setFaceLayout(controllerLayoutStore.load(it.descriptor)) }
-        savedState[KEY_SOURCE] = device?.descriptor
+        bridge.selectSource(descriptor)
+        savedState[KEY_SOURCE] = inputBackend.selectedDescriptor
         _ui.update {
             it.copy(
-                selectedSourceDescriptor = device?.descriptor,
-                requestedFaceLayout = inputRouter.requestedFaceLayout,
-                resolvedFaceLayout = inputRouter.resolvedFaceLayout,
+                selectedSourceDescriptor = inputBackend.selectedDescriptor,
+                requestedFaceLayout = inputBackend.requestedFaceLayout,
+                resolvedFaceLayout = inputBackend.resolvedFaceLayout,
             )
         }
     }
 
     fun setControllerFaceLayout(layout: ControllerFaceLayout) {
-        val descriptor = inputRouter.selectedDescriptor ?: return
-        controllerLayoutStore.save(descriptor, layout)
-        inputRouter.setFaceLayout(layout)
-        hidBridge.neutralize()
+        if (inputBackend.selectedDescriptor == null) return
+        bridge.setFaceLayout(layout)
         _ui.update {
             it.copy(
                 controllerState = ControllerState.Neutral,
-                requestedFaceLayout = inputRouter.requestedFaceLayout,
-                resolvedFaceLayout = inputRouter.resolvedFaceLayout,
+                requestedFaceLayout = inputBackend.requestedFaceLayout,
+                resolvedFaceLayout = inputBackend.resolvedFaceLayout,
             )
         }
-        diagnostics.event("controller", "face layout", "${layout.key}/${inputRouter.resolvedFaceLayout.layout.key}")
+        diagnostics.event("controller", "face layout", "${layout.key}/${inputBackend.resolvedFaceLayout.layout.key}")
         notice("Controller layout set to ${layout.title}; held input was cleared")
     }
 
+    /**
+     * The saved adapter, as a platform-neutral [BridgeHost].
+     *
+     * The Bluetooth device object stops here: everything above this line — the
+     * UI, and the bridge itself — sees only an address and a name, which is all
+     * either of them ever needed.
+     */
     @SuppressLint("MissingPermission")
-    fun knownControllerHost(): BluetoothDevice? {
+    fun knownControllerHost(): BridgeHost? {
         val relationship = relationshipStore.load() ?: return null
         val adapter = getApplication<Application>().getSystemService(BluetoothManager::class.java)?.adapter ?: return null
         return runCatching { adapter.getRemoteDevice(relationship.address) }
             .getOrNull()?.takeIf { it.bondState == BluetoothDevice.BOND_BONDED }
+            ?.let(::AndroidBridgeHost)
     }
 
-    fun acquireControllerBridge() = hidBridge.acquire(knownControllerHost())
+    fun acquireControllerBridge() = session.start(knownControllerHost())
 
     /**
      * Restore the handheld controller session after a foreground resume, but only after a fresh
@@ -743,18 +803,18 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                 while (true) {
                     val state = _ui.value
                     if (state.bridge.phase in setOf(
-                            BridgePhase.AcquiringProfile,
-                            BridgePhase.Registering,
-                            BridgePhase.Connecting,
-                            BridgePhase.Playing,
+                            BridgeLinkPhase.Preparing,
+                            BridgeLinkPhase.Registering,
+                            BridgeLinkPhase.Connecting,
+                            BridgeLinkPhase.Playing,
                         )
                     ) return@withTimeoutOrNull
-                    if (ControllerAutoResumePolicy.canQueryAdapter(
+                    if (SessionResumePolicy.canQueryAdapter(
                             hasSelectedSource = state.selectedSourceDescriptor != null,
                             hasRelationship = relationshipStore.load() != null,
                             managementConnected = state.connection.connected,
                             busy = state.busy,
-                            bridgePhase = state.bridge.phase,
+                            phase = state.bridge.phase,
                         )
                     ) {
                         val controller = runCatching { adapter.refreshController() }.getOrNull()
@@ -763,7 +823,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                             continue
                         }
                         val host = knownControllerHost()
-                        if (!ControllerAutoResumePolicy.shouldAcquire(controller.attached, host != null)) {
+                        if (!SessionResumePolicy.shouldAcquire(controller.attached, host != null)) {
                             if (!controller.attached) return@withTimeoutOrNull
                             diagnostics.event(
                                 "controller",
@@ -777,7 +837,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                             "automatic resume",
                             "adapter idle; restoring saved handheld",
                         )
-                        hidBridge.acquire(requireNotNull(host))
+                        session.start(requireNotNull(host))
                         return@withTimeoutOrNull
                     }
                     delay(AUTOMATIC_CONTROLLER_RESUME_RETRY_MS)
@@ -792,12 +852,10 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         automaticControllerResumeJob = null
     }
 
-    fun pairedControllerHosts(): List<BluetoothDevice> = hidBridge.pairedHosts()
-    @SuppressLint("MissingPermission")
-    fun controllerHostLabel(device: BluetoothDevice): String = runCatching { device.name }.getOrNull()?.take(80) ?: "saved adapter"
-    fun connectControllerHost(device: BluetoothDevice) = hidBridge.connect(device)
-    fun stopControllerBridge() = hidBridge.stop()
-    fun neutralizeController() = hidBridge.neutralize()
+    fun pairedControllerHosts(): List<BridgeHost> = session.knownHosts()
+    fun connectControllerHost(host: BridgeHost) = session.connect(host)
+    fun stopControllerBridge() = session.stop()
+    fun neutralizeController() = session.neutralize()
 
     fun recordLifecycle(event: String) {
         diagnostics.event("app", "lifecycle", event)
@@ -822,10 +880,15 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     }
 
     fun exportDiagnostics(): File {
+        // Pull the live motion sample text now, on demand. It is deliberately NOT
+        // refreshed on the report path: doing that wrote the observable state at
+        // 125 Hz and starved the sensors it was reporting on.
+        session.refreshMotionDiagnostics()
+        session.refreshOutputStatus()
         val ui = _ui.value
         val directory = File(getApplication<Application>().cacheDir, "diagnostics").apply { mkdirs() }
         val file = File(directory, "picoswitch-companion-diagnostics.txt")
-        val descriptorHash = MessageDigest.getInstance("SHA-256").digest(AndroidControllerDescriptor.bytes)
+        val descriptorHash = MessageDigest.getInstance("SHA-256").digest(BridgeHidDescriptor.bytes)
             .joinToString("") { "%02x".format(it) }
         val report = diagnostics.export(linkedMapOf(
             "App" to BuildConfig.VERSION_NAME,
@@ -837,12 +900,36 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             "Management state" to ui.connection.phase.name,
             "Adapter relationship" to if (ui.adapterRelationship == null) "none" else "saved",
             "Firmware" to ui.snapshot.firmware.version.ifBlank { "unknown" },
+            // The single line that would have ended the 2026-08-15 investigation
+            // in one read instead of several hours.
+            "Firmware build" to ui.snapshot.firmware.build.ifBlank { "not reported" },
+            "Bridge contract" to ("app expects ${BridgeContract.VERSION}; " +
+                "adapter reports ${ui.snapshot.firmware.bridgeContract.takeIf { it > 0 } ?: "nothing"}"),
+            "Bridge compatibility" to ui.bridgeCompatibility.summary,
             "Capabilities" to ui.snapshot.capabilities.toString(),
-            "HID state/registered" to "${ui.bridge.phase}/${ui.bridge.registered}",
-            "HID descriptor" to "${AndroidControllerDescriptor.bytes.size} bytes sha256=$descriptorHash",
+            "Bridge phase/registered" to "${ui.bridge.phase}/${ui.bridge.registered}",
+            "Bridge descriptor" to "${BridgeHidDescriptor.bytes.size} bytes sha256=$descriptorHash",
             "Saved HID hosts" to pairedControllerHosts().size.toString(),
             "Reports" to "${ui.bridge.reportCount}; last=${ui.bridge.lastReportAtMillis}",
-            "Controller state" to ControllerReportEncoder.encode(ui.controllerState).joinToString(" ") { "%02X".format(it) },
+            "Source capabilities" to ui.bridge.capabilities.toString(),
+            // The three layers, deliberately separate. A platform reading that
+            // disagrees with the normalized one localizes the fault to the
+            // backend; a normalized reading that disagrees with the wire bytes
+            // localizes it to the protocol layer.
+            "Normalized input" to BridgeFormat.describeNormalized(ui.controllerState),
+            "Wire report" to BridgeFormat.hex(ControllerReportEncoder.encode(ui.controllerState)),
+            "Platform motion" to ui.bridge.motion.platformRaw,
+            "Canonical motion" to ui.bridge.motion.canonical,
+            "Motion frame" to (
+                if (ui.bridge.motion.frameRotationMeasured) "${ui.bridge.motion.frameRotationDegrees} deg"
+                else "unreadable; assuming 0"
+                ),
+            // Ordered boundary counters. The first stage reading 0 while the one
+            // above it is non-zero IS the fault; nothing below it is worth reading.
+            "Bridge counters" to bridge.countersLine(),
+            "Bridge wiring" to bridge.wiringReport(),
+            "Output route" to ui.bridge.output.route,
+            "Output warning" to (ui.bridge.output.warning ?: "none"),
             "Controller face layout" to "${ui.requestedFaceLayout.key}/${ui.resolvedFaceLayout.layout.key}",
             "Adapter active input" to ui.snapshot.input.toString(),
             "Identity refresh pending" to ui.identityRefreshPending.toString(),
@@ -878,7 +965,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     }
 
     override fun onCleared() {
-        hidBridge.close()
+        bridge.close()
         adapter.close()
         super.onCleared()
     }

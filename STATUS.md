@@ -5,7 +5,7 @@
 > Planned work belongs in [`PLAN.md`](PLAN.md); evidence and protocol details belong under
 > [`docs/`](docs/README.md).
 
-Last verified: 2026-08-13 (AYN Thor Android companion app-side hardware pass)
+Last verified: 2026-08-14 (Thor rumble PHYSICALLY CONFIRMED via ADB self-test; motion chart/state question open)
 Branch: `ns2-testing`
 
 Documentation/resource audit: 2026-07-25
@@ -43,6 +43,304 @@ Works cannot provide MITM authentication, so this is accurately described as bon
 not `ATT_SECURITY_AUTHENTICATED`. Wake-burst advertiser handoff is implemented and awaits its
 runtime pass alongside the audio/gyro/latency coexistence checks. See
 [`docs/bluetooth/in-band-management-plan.md`](docs/bluetooth/in-band-management-plan.md).
+
+## Motion encoder — ✅ unified on the one hardware-validated encoder 2026-08-14
+
+There is now exactly **one** Switch 2 motion encoder for translated sources,
+`src/bt_hid/motion/ns2_ds5_motion.c`. `ns2_build_report()` has two motion branches — opaque genuine
+Pro Controller 2 passthrough, and the translator — with **no fallback and no per-source whitelist**.
+
+**Deleted:** the per-axis "phase" encoder (`ns2_motion_tick()`, `ns2_encode_motion30()`,
+`ns2_phase[]`, the anomaly-capture instrumentation, the `imuanom` CDC command, and the `phase=[…]`
+field of `imu`). It integrated gyro rate into three independent int32 accumulators and wrote them
+into motion bytes `0x04..0x0F`. **It never produced correct motion on hardware and could not have:**
+those twelve bytes are one packed quaternion — three 26-bit fields split 24+2 across
+non-aligned bytes, with the 2-bit chart state in the low bits of byte `0x04` — so an int32 angle
+straddles field and state boundaries and decodes as an orientation that jumps whenever a carry
+crosses a field boundary. That is a representation error, not a tuning error — which is why the
+2026-07-10 bias/stillness work correctly fixed the mechanisms it examined without improving the
+symptom, and why every newly-supported controller family reported "motion spams everywhere" until
+it was individually added to the translator's source list.
+
+The root cause of its survival was **documentation**, not code: the carrier had been decoded and the
+correct packing had been shipping for weeks, but the top-of-document layout table in
+`docs/switch2/report-0x09-motion.md` still read "Angular phase X/Y/Z". That table is now corrected
+and the refutation is recorded in
+[`docs/experiments/refuted-hypotheses.md`](docs/experiments/refuted-hypotheses.md).
+
+Per-source frame differences remain in exactly one place, `ns2_motion_seam.c`, one determinant-+1
+row per source. Adding a controller family means adding a seam row, not a branch in the encoder.
+Sample consumption is now a single shared function (`ns2_motion_consume()`) used by both the report
+builder and the config-mode debug tick, so those cannot drift.
+
+**LOCALLY VERIFIED:** both boards build clean; management/Android host tests 11/11; motion PDU,
+DS5 translator, and motion-seam host tests rebuilt and green; Python motion/trace tests green.
+**REQUIRES HARDWARE TEST:** that a Wii Remote and any other previously-generic source now produce
+usable motion (they reached the deleted encoder before this change).
+
+Open follow-up: `ns2_ds5_motion.*` should be renamed to a neutral name — it is the common encoder,
+not a DualSense one. Deferred as pure churn (373 references) rather than done as a rushed sed.
+
+## Android companion motion — 🟡 direction fixed on hardware; timing fix pending 2026-08-14
+
+**Hardware after the display-rotation fix:** left/right smooth and correct; up/down now the correct
+physical direction but noticeably less smooth — choppy/stepped, with occasional brief clipping or
+jumping that recovers within about half a second. Roughly two of three rotational dimensions
+behaving.
+
+**Axis mapping is now PROVEN correct in software, so this is not a mapping problem.**
+`tools/test_ns2_motion_quality.c` drives the production encoder with synthetic pure yaw, pure pitch
+and pure roll and decodes the wire output back to a rotation axis: leakage into each unintended
+axis is **0.00000**, driven-axis magnitude **1.00000**, integrated angle within 0.005% of analytic,
+on all three axes. Do not reshuffle seam rows to chase this.
+
+**Root cause of the remaining choppiness (strongest evidence, hardware-pending): the Android source
+was integrated against packet ARRIVAL time, not its own IMU clock.** The seam forwarded
+`motion_timestamp` only for the DualSense, so Android fell through to the host clock. Bluetooth
+delivers a steady 125 Hz sender in bursts, and pairing a rate sample with an interval it did not
+occur over costs trajectory accuracy. Measured on a 2 Hz / 120 dps sweep, same mean cadence, only
+the arrival pattern differing:
+
+| clock | arrival | worst trajectory error |
+|---|---|---|
+| host | even | 0.002° |
+| host | bursty | **0.505°** |
+| source | bursty | 0.002° |
+
+A constant rate cannot expose this (the intervals still sum to the true elapsed time, so the
+endpoint is right either way — measured −0.17° over 28.8°). Only varying-rate motion does, which is
+exactly when a player notices. The host-clock path additionally exposed Android to two hazards the
+DualSense never touches: the 3800 µs minimum-period gate, which silently **drops** a sample arriving
+inside it (and can starve bias warmup so that **no** motion is integrated at all), and the 16 ms
+anti-lurch clamp, which discards rotation beyond it (measured: 40 ms gaps report 57.6° of a true
+144°).
+
+**Why pitch and not yaw — and why that does not localize the cause.** Anything that perturbs
+integrated attitude surfaces in pitch and never in yaw, because the console cross-checks pitch
+against gravity and gravity says nothing about yaw. The asymmetry is therefore expected for *any*
+attitude-quality defect and is not evidence for a particular one. That is why this was measured
+rather than inferred.
+
+**Changed:** the source IMU clock is now forwarded for any source that authors one, with the unit
+carried alongside it (`switch_pro_input_t.motion_timestamp_unit`), so the encoder stays
+source-agnostic. The DualSense keeps 1/3 µs ticks with a 32-bit wrap; the Android bridge now sends
+100 µs ticks with a 16-bit wrap instead of milliseconds — at 125 Hz a 1 ms quantum is 12.5% of the
+interval, the same order as the jitter being removed. The delta is taken in the source's own
+modulus before scaling, because converting absolute DualSense ticks to microseconds first is not
+wrap-safe (2^32 is not divisible by 3). Wrap behavior is covered by a host test.
+
+**Also settled, and it closes a standing open question:** `NS2_MOTION30_ACCEL_Q16_PER_COUNT = 68963`
+is **correct**, not a DualSense correction leaking into the shared encoder. Decoding 147 resting
+motion blocks from two genuine Pro Controller 2 captures gives a mean resting magnitude of
+**4310.1 ordinary counts**; `4096 × 68963/65536` predicts 4310.2 (ratio 1.0000), while exact Q16.16
+at 4096 counts/g would be 5.23% low. The genuine wire scale is ~4310 counts/g. The prior note in
+`switch1-to-switch2-motion-spec.md` calling this "5.2% high, open" used the wrong reference and is
+corrected. This also **rejects** the acceleration-scale hypothesis for the choppy pitch.
+
+**LOCALLY VERIFIED:** both boards build; motion-quality harness (24 checks) green including the
+100 µs wrap case; all motion/bridge/management host tests green; Android compiles and unit tests
+pass. **REQUIRES HARDWARE TEST:** whether pitch smoothness is actually restored.
+
+## Android companion rumble — ✅ PHYSICALLY CONFIRMED WORKING 2026-08-14
+
+**The Thor rumbles.** Confirmed physically by the maintainer during an ADB-driven self-test.
+
+**Primary root cause was a device setting, not our code:** `Settings.System.VIBRATE_ON = 0`.
+Measured over ADB (`mVibrateOn=false` in `dumpsys vibrator_manager`). AOSP discards **every**
+vibration from **every** app when this is 0, for every usage except ACCESSIBILITY. That is the
+entire "zero rumble, ever" history and exactly the `ignored_for_settings, scale: 0.00` recorded
+against our package. Our usage flags were never involved.
+
+**Secondary cause, ours, introduced and fixed the same day:** the routing cascade copied Moonlight's
+`!isExternal()` guard for the system-vibrator fallback. The Thor's built-in controller reports
+`EXTERNAL` with `ids=[] hasVibrator=false`, so the guard resolved to `None` and cut off the only
+actuator. Removed — the project's own 2026-08-12 ADB audit already said "do not reject
+`isExternal == true`".
+
+Measured, driven autonomously through the app's own output path:
+
+| `vibrate_on` | routing | dumpsys status | physical |
+|---|---|---|---|
+| 0 | `System` | `ignored_for_settings` | nothing |
+| 1 | `System` | accepted, played, `cancelled_by_user` on stop | **felt** |
+
+**`VIBRATE_ON` is currently left at 1** (changed over ADB during the test). It is a user-facing
+setting under Settings → Sound & vibration; turning it off will silently kill rumble again, which
+the app now reports in its `haptics bound` line rather than failing invisibly.
+
+Also corrected: the `haptics bound` diagnostic **does** appear (logcat tag `PicoSwitch`); the
+earlier `USAGE_TOUCH` mechanism we recorded was wrong (a bare `vibrate()` is `USAGE_UNKNOWN`, which
+shares an intensity with `USAGE_MEDIA`, so that fix was a no-op); and `IGNORED_BACKGROUND` was not
+the cause — the foreground service is retained only because it is independently correct for a
+Bluetooth HID bridge.
+
+**Remaining, deferred:** the console → adapter → Android leg has not been re-measured since the fix.
+The firmware `rumble` UART counters and the app's `rumble received` log will confirm it in one
+session of actual play.
+
+## On-screen C / GameChat button — ✅ implemented 2026-08-15
+
+The companion's "Console buttons" row now offers **C / GameChat** alongside Home and Capture, wired
+through the same `setVirtualButton` path rather than being UI-only.
+
+**No firmware change was required.** The path already existed end to end: the generic sequential
+profile maps wire button usage 15 to `JP_BUTTON_A3`, `NS2_BASE_BUTTON_MAP` index 18 routes that to
+`NS2_DST_C`, and `ns2_seam.c` raises `SWITCH_EXTRA_C`. `BLE_MAX_BUTTONS` is 16, so there was already
+room.
+
+What changed is the wire contract and the app: 14 buttons + 2 pad bits became **15 + 1, inside the
+same two bytes**, so every later field kept its byte offset and the descriptor stayed 161 bytes.
+`tools/check_android_descriptor_parity.py` confirms the C and Kotlin descriptors remain
+byte-identical.
+
+Routing is proven, not assumed: `tools/test_bthid_android_bridge.c` drives wire bit 14 through the
+production driver and asserts it arrives as `JP_BUTTON_A3` and nothing else, that usage 14 still
+arrives as Capture (a one-off in the mask would have swapped them), and that the two are independent
+and clear on release.
+
+**Corrected 2026-08-15 (same day, maintainer direction):** `KEYCODE_BUTTON_C` and
+`KEYCODE_BUTTON_Z` are now **unmapped and ignored**. They had been routed to Capture, which was
+arbitrary — they are extra physical buttons on some handhelds and pads, not Capture keys — so it
+caused unexpected behavior and consumed two inputs the future custom button-mapping system should
+own. They are NOT reassigned to C / GameChat either. Capture consequently has no physical key by
+default, which matches both ADB audits (neither handheld has a dedicated Capture key); it is
+reached through its on-screen button. Home keeps `KEYCODE_BUTTON_MODE`.
+
+The key table now lives in the pure `AndroidInputBackend.positionalButtonForKey()` and is pinned by
+`PhysicalKeyMappingTest`, including a sweep asserting no physical key maps to Capture or C, and a
+check that both remain reachable as virtual buttons.
+
+**Durable rule recorded:** unknown or additional physical controller buttons should be preserved as
+candidates for future custom mapping rather than silently assigned to unrelated controller
+actions.
+
+**LOCALLY VERIFIED:** both boards build; 7/7 host tests; management/bridge suite 11/11; descriptor
+parity identical; Android unit tests pass (including four new C-button cases); APK builds.
+**REQUIRES HARDWARE TEST:** that the console actually opens GameChat when the on-screen C is pressed.
+
+## Next session — starting point
+
+**Rumble: CLOSED, physically confirmed.** Do not refactor it. If it ever regresses, check
+`adb shell settings get system vibrate_on` before touching any code.
+
+**Motion chart/state transitions: investigated and REJECTED as a cause 2026-08-14.** The maintainer's
+"S1/S2/S3-style" hunch was tested directly and does not hold. `tools/test_ns2_motion_quality.c` now
+decodes the encoder's wire output back to an orientation and compares consecutive samples with a
+sign-invariant angular metric. Across every trajectory — including a phased-axis run that reaches
+**all four charts** with 30 transitions — the worst orientation step at a chart change equals the
+worst step anywhere else, to four decimals (1.9237° vs 1.9237°, nominal 1.9200°). Zero build
+failures; packed round-trip exact over 400 combinations with unrelated bits preserved. **A chart
+change costs nothing.** Do not add hysteresis, and do not revisit this without new evidence.
+
+**MOTION IS FROZEN BY MAINTAINER DECISION (2026-08-15).** Motion is working much better, and the
+maintainer tested an Odin 2, Odin 3 and Odin 2 Mini and did **not** reproduce the remaining artifact
+on any of them. That makes it look Thor-specific rather than a defect in the shared implementation,
+so the shared motion path is not to be changed further without new evidence. The finding below is
+retained as a measured fact, not as an open work item.
+
+**Measured, not guessed: the bias estimator absorbs slow rotation.** A constant rotation below `NS2_DS5_GYRO_STILL_LIMIT` (40 counts = 2.44 dps) loses about
+half its motion:
+
+| rate | survives |
+|---|---|
+| 0.5 / 1.0 / 2.0 dps | ~52% |
+| 3.0 dps | 97.2% |
+| 5–30 dps | 100.1% |
+
+The cliff is exactly on the threshold. Fine aiming below it feels sluggish and "recovers" when the
+player speeds up. **Left unfixed on purpose:** the bias tracker exists because a DualSense at rest
+drifts, and its current derivative-gated form took two hardware passes to get right. Moving the
+threshold trades slow-aim fidelity for at-rest drift and needs a decision plus a hardware A/B.
+
+The principled fix if reopened: a gyro alone cannot separate "still" from "rotating slowly and
+smoothly" — both have near-zero derivative. The accelerometer can, because a real rotation moves the
+gravity vector. Gate stillness on gravity-vector stability as well, rather than moving the gyro
+threshold. Note this is a *different* symptom from the rare brief hitch the maintainer reported, so
+it may be an additional defect rather than the same one.
+
+**Not yet re-measured since the rumble fix:** the console → adapter → Android rumble leg. The
+firmware `rumble` UART counters plus the app's `rumble received` log will confirm it in one session
+of actual play.
+
+**Tooling available directly — use it instead of asking:**
+- ADB reaches the Thor wirelessly (`AYN_Thor`). Package `dev.picoswitch.companion.debug`;
+  diagnostics mirror to logcat under tag `PicoSwitch`.
+- Haptic self-test, no console or adapter needed:
+  `adb shell am broadcast -a dev.picoswitch.companion.SELF_TEST_RUMBLE --ei left 220 --ei right 220`
+- Adapter UART is the CP210x bridge on **COM11**. `tools/uart_query.ps1` exists for this but
+  **got no reply on its first trial and is unvalidated** — verify the line protocol (baud, newline,
+  echo, whether a prompt is required) before trusting it. This is the one piece of self-service
+  tooling still missing.
+
+## Agent knowledge briefs — ✅ added 2026-08-14
+
+[`docs/agents/`](docs/agents/) holds four short durable briefs — `COMMON`, `MOTION`, `RUMBLE`,
+`ANDROID` — so a focused investigation can be dispatched with a three-line prompt instead of pages
+of restated history. They exist because large repeated prompts waste context and let agents
+paraphrase established hardware observations into softer, wrong ones ("never worked" → "may have
+issues"). `AGENTS.md` now points at them and states the prompt-discipline rule.
+
+## Bridge contract version — ✅ implemented 2026-08-15
+
+Runtime skew detection between the flashed firmware and the installed companion. Both ends now
+report a bridge contract version (`ANDROID_BRIDGE_CONTRACT_VERSION` / `BridgeContract.VERSION`,
+currently **3**), and the firmware reports a git build identity.
+
+**The incident this closes:** C/GameChat changed the descriptor from 14 buttons to 15. The APK was
+updated while older firmware stayed flashed. `android_bridge_identify()` requires an exact 161-byte
+match, so it failed and the firmware fell back to the v1 generic profile — buttons and sticks kept
+working while battery, motion and rumble/player-LED disappeared together, with no error anywhere.
+Every source-level parity check passed, because they compare source tree to source tree and cannot
+see what is flashed. Root cause confirmed from runtime evidence: after flashing current firmware,
+`bridge_identify` reports `matched=2, profile=v2-bridge` and `bridge.sent` went 0 → 285.
+
+- **Firmware:** `bridge` / `bridge clear` UART commands report contract, build id, identify
+  call/match/reject counts, first mismatching byte on a content rejection, active profile, and a
+  bounded `suspected_skew` hint (expected length, different content).
+- **Companion:** the management `info` reply carries `bridge_contract` and `build`; a mismatch — or
+  firmware reporting no contract at all — surfaces on the controller-link card and in the export.
+  Never reported as compatible on silence.
+- **Guard:** `check_android_descriptor_parity.py` now pins the version across C and Kotlin, and
+  `BridgeContractTest` pins the version against the descriptor bytes that define it.
+
+Controller behavior is unchanged; the descriptor and report layout were not touched.
+
+## Bridge architecture split — ✅ implemented 2026-08-15, hardware re-validation pending
+
+The companion's controller path is no longer an Android-specific bridge; it is a
+**platform-neutral bridge with Android as its first backend**. `android/companion/` is now two
+Gradle modules:
+
+- **`:bridge-core`** — plain Kotlin/JVM, **no Android dependency**. Owns the normalized
+  `ControllerState`, the canonical motion convention (`MotionConvention` / `MotionScale` /
+  `ScreenOrientation`), `DeviceCapabilities`, the face-layout resolver, the source candidate rule,
+  `ControllerInputState`, the HID descriptor and report codec, the normalized `RumbleRequest` /
+  `BridgeOutput` model, and `BridgeSession` (cadence, motion gating, battery polling,
+  neutralization, report accounting) behind `BridgeTransport` / `MotionBackend` /
+  `BatteryBackend` / `OutputBackend` interfaces.
+- **`:app`** — `dev.picoswitch.companion.bridge` holds the five Android pieces
+  (`AndroidInputBackend`, `AndroidMotionBackend`, `AndroidBatteryBackend`, `AndroidOutputBackend`,
+  `AndroidHidTransport`) assembled by `AndroidBridge`. The old
+  `dev.picoswitch.companion.controller` package is gone.
+
+The module boundary **is** the architecture guard: the Android SDK is not on `:bridge-core`'s
+compile classpath, so a leak is a build failure. `ArchitectureGuardTest` additionally rejects
+platform vocabulary in core identifiers and string literals.
+
+The concrete payoff is test coverage that previously required a phone: `BridgeSessionTest` now
+proves link handling, motion gating, per-motor rumble delivery, battery polling, cadence mode
+switching, teardown ordering and neutralization on the JVM with fakes.
+
+Behavior is intentionally preserved except for three items, all caused by the coupling being
+corrected: the `AcquiringProfile` phase is renamed `Preparing`; the HID SDP service name is now
+`PicoSwitch Bridge Controller` (the firmware matches descriptor bytes, never the name); and the
+live-input panel shows D-pad directions instead of the wire hat code. **Not hardware re-validated
+since the split** — the smallest useful regression pass is one AYN Thor session covering connect,
+buttons/sticks/triggers, rumble, motion, and background/disconnect neutralization.
+
+Contract: [`docs/bridge/PROTOCOL.md`](docs/bridge/PROTOCOL.md). Backend guide:
+[`docs/bridge/PLATFORM_BACKEND.md`](docs/bridge/PLATFORM_BACKEND.md). No Windows or Linux backend
+exists or is planned; those documents exist so building one is an implementation task.
 
 ## Android handheld controller bridge — 🟡 AYN Thor in-game hardware pass 2026-08-13
 
@@ -207,6 +505,17 @@ Still open: EEPROM accelerometer calibration (fallback constants in use),
 passthrough bit-reversal for an extension behind an active MotionPlus, and
 re-expressing orientation detection on the calibrated vector. See
 [docs/bluetooth/wii-motion.md](docs/bluetooth/wii-motion.md) §12.5.
+
+**Unresolved evidential tension, raised 2026-08-14.** On 2026-07-27 the translator's source
+whitelist was DualSense-only, so a Wii Remote's report-0x09 motion reached the deleted per-axis
+phase encoder. That encoder cannot produce a decodable orientation (see the motion-encoder section
+above), so either this confirmation was made against report 0x05 (Steam/PC, which consumes
+`in.accel`/`in.gyro` directly and is unaffected), or "working" meant the console *responded* to
+motion rather than that motion was correct — the same ambiguity the old protocol reference carried
+("both Zeldas and Splatoon respond, but exact fidelity remains unresolved"). A console responds to a
+garbage orientation with wild movement, so response is not correctness. The Wii Remote now routes
+through the one validated encoder either way; **re-confirming it on the console is the cheapest way
+to close this**, and it is bundled into the next hardware pass.
 
 ## Virtual amiibo — v3 (NTAG I2C Plus 2K / Kirby Air Riders) — 🟡 IN PROGRESS 2026-07-28
 
@@ -903,6 +1212,9 @@ See [`docs/architecture/overview.md`](docs/architecture/overview.md) and
 | P2 | DualSense microphone return | 🟡 Headset presence is implemented; microphone Opus decode and USB return remain |
 | P2 | Let reconnecting BLE controllers sleep with the console without touching bonds or admission | 🔵 Research concluded: no safe generic host-only path; controller-specific evidence required |
 | P3 | Additional controller IMUs → console-native report `0x09` translation | 🔵 Native Pro2 passthrough and DualSense/Edge synthesis are confirmed; each remaining family needs verified calibration, axis, scale, and timestamp handling |
+| **P2** | **AYN Thor gyro axes** | 🟡 Root cause identified 2026-08-14: the app never measured display rotation (`Context.getDisplay()` throws on an application context, API 30+), so Android's natural-orientation sensor frame was published unrotated. Fixed via `DisplayManager`; awaiting the in-game pitch/roll check and the rotation value the app now logs. |
+| **P2** | **AYN Thor rumble** | 🔴 Never produced any rumble. Signal proven present as far as the Android vibrator service, which discarded it for `USAGE_TOUCH`; three app fixes are unvalidated. Firmware half now answerable in one UART `rumble` read. |
+| P3 | `build\pico_w_switch1` (`NS2_PRO=OFF`) does not compile | 🔴 Pre-existing at `HEAD`, unrelated to this pass: `src/config.c` references `g_usb_reenumerate_request_pending` outside an `NS2_PRO` guard. Verified by building a clean stash of `HEAD`. |
 | P3 | NFC/amiibo transactions | 🟡 Genuine Pro2 physical-tag reads and the complete Virtual Amiibo read/write/persist/eject/re-present/library workflow are hardware-confirmed. Native physical writes, production native-reader gating, and Switch 1 translation remain open |
 
 ## Validation
@@ -1030,6 +1342,22 @@ button map replaces the retired per-family remap table.
 - [`docs/experiments/`](docs/experiments/) — immutable experiment records and refuted hypotheses
 
 ## Next recommended work
+
+**Hardware pass, in this order (2026-08-14 changes):**
+
+1. Flash `build\pico2_w\PicoSwitchWGA-pico2_w.uf2`, install the rebuilt companion APK, and play
+   any motion game with the Thor. Read the app's diagnostic log line
+   `motion frame — screen rotation Ndeg`. If it reads 90/270 and pitch/roll are now correct, the
+   rotation defect was the cause and Thor motion is closed. If it reads 0, the Thor is
+   natural-landscape, the fix is a no-op, and the cause is elsewhere — say so and stop; do not
+   start tuning.
+2. In the same session, trigger console rumble and read UART `rumble`. The interpretation table in
+   [`docs/agents/RUMBLE.md`](docs/agents/RUMBLE.md) converts that one line into which stage is at
+   fault. If `bridge.sent` is advancing, the firmware half is done and the remaining question is
+   `adb shell dumpsys vibrator_manager`.
+3. Re-confirm Wii Remote motion on the console. It previously reached the deleted encoder, so its
+   🟢 status is not safe to carry forward unexamined (see the Wii Remote section).
+
 
 1. Run one bounded genuine-controller reconnect/power A/B from the completed controller-side atlas.
    The current corpus admits 46 zero-loss traces and 30 zero-loss BLE captures, but only two BLE

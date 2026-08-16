@@ -18,6 +18,7 @@
 #include "bt/bthid/bthid.h" // bthid_get_cached_descriptor (btid desc command)
 #include "ds5_audio_bridge.h" // DualSense audio stall diagnostics
 #include "bt/bthid/devices/generic/bthid_gamepad.h" // bthid_gamepad_dump_map (btid desc command)
+#include "fixtures/android_controller_hid.h" // ANDROID_BRIDGE_CONTRACT_VERSION (runtime skew detection)
 #include "virtual_amiibo_store.h"
 #include "config_wireless_bridge.h"
 #include "mgmt_bonds.h"
@@ -298,9 +299,7 @@ void config_service_save(void) {
 static char line[LINE_MAX];
 static uint16_t line_len;
 // 4096: sized for "sw2cap drain"'s batch reply (up to SW2CAP_DRAIN_MAX=16 entries, each up to
-// ~235 B with 64 hex-encoded payload bytes) — the largest reply this protocol produces. Also
-// comfortably covers "imuanom" (30 hex-encoded motion bytes + a 4-entry trail + per-axis
-// context), which no longer fits in the 256 B every simpler reply uses.
+// ~235 B with 64 hex-encoded payload bytes) — the largest reply this protocol produces.
 static char out[4096];
 
 typedef enum {
@@ -996,12 +995,11 @@ static void cmd_raw(void) {
 // the shared cross-core state) plus the USB report state (active report id, streaming,
 // and the motion-length report 0x09 last emitted). Bisects the gyro pipeline: if accel/gyro
 // move live here, the break is downstream (report format / Steam); if frozen, it's upstream.
-// (Getter prototypes come from switch_pro2.h; bias/still added 2026-07-10 for the stillness-gate
-// hardware check, phase added the same day after the symptom was reclassified from gradual drift
-// to abrupt jumps, anom added the same day again for the mathematically-derived discontinuity
-// detector — see switch_pro2.c's NS2_MAX_PHASE_DELTA derivation.)
+// `src` is the motion source class (SWITCH_MOTION_SOURCE_*), which selects the seam row that
+// rotated this sample onto the carrier frame — the field to read first for any axis complaint.
+// `enc` is the single motion encoder's live state. (Getter prototypes come from switch_pro2.h.)
 // NS2_PRO-only: the ns2_dbg_* bodies only exist in switch_pro2.c, which is entirely #ifdef
-// NS2_PRO. Found 2026-07-12: this command (and cmd_imuanom below) had no guard at all, so
+// NS2_PRO. Found 2026-07-12: this command had no guard at all, so
 // -DNS2_PRO=OFF (the plain Switch-1 build) failed to link ever since these commands were added
 // 2026-07-10 — a real, unnoticed regression, not something introduced by this pass.
 #ifdef NS2_PRO
@@ -1010,58 +1008,26 @@ static void cmd_imu(void) {
     get_global_gamepad_input(0, &in);
     uint8_t rid = 0, st = 0, mlen = 0;
     ns2_dbg_report_state(&rid, &st, &mlen);
-    int32_t bias[3] = {0, 0, 0};
-    uint8_t still = 0;
-    ns2_dbg_motion_bias(bias, &still);
-    int32_t phase[3] = {0, 0, 0};
-    ns2_dbg_motion_phase(phase);
-    uint32_t anom_seq = ns2_dbg_motion_anomaly()->seq;
+    ns2_ds5_motion_diag_t m;
+    ns2_dbg_ds5_motion(&m);
     snprintf(out, sizeof(out),
-             "{\"hm\":%u,\"a\":[%d,%d,%d],\"g\":[%d,%d,%d],\"rid\":%u,\"stream\":%u,\"mlen\":%u,"
-             "\"bias\":[%ld,%ld,%ld],\"still\":%u,\"phase\":[%ld,%ld,%ld],\"anom\":%lu}",
-             in.has_motion, in.accel[0], in.accel[1], in.accel[2],
+             "{\"hm\":%u,\"src\":%u,\"a\":[%d,%d,%d],\"g\":[%d,%d,%d],"
+             "\"rid\":%u,\"stream\":%u,\"mlen\":%u,"
+             "\"enc\":{\"on\":%u,\"active\":%u,\"warm\":%u,\"updates\":%lu,"
+             "\"bias\":[%ld,%ld,%ld],\"corr\":[%ld,%ld,%ld],"
+             "\"q\":[%ld,%ld,%ld,%ld],\"reject\":%lu,\"dt_us\":%lu}}",
+             in.has_motion, in.motion_source,
+             in.accel[0], in.accel[1], in.accel[2],
              in.gyro[0], in.gyro[1], in.gyro[2], rid, st, mlen,
-             (long)bias[0], (long)bias[1], (long)bias[2], still,
-             (long)phase[0], (long)phase[1], (long)phase[2], (unsigned long)anom_seq);
-    reply(out);
-}
-
-// Full context for the most recent report-0x09 phase-discontinuity anomaly (see
-// switch_pro2.c's NS2_MAX_PHASE_DELTA — a bound derived from the encoder's own arithmetic
-// limits, not a heuristic threshold). Call after `imu`'s "anom" count is nonzero; the reply is
-// large (trail + 30 motion bytes), so it is its own command rather than folded into the
-// frequently-polled `imu` line.
-static void cmd_imuanom(void) {
-    const ns2_anom_capture_t *a = ns2_dbg_motion_anomaly();
-    if (!a->valid) {
-        reply("{\"valid\":0}");
-        return;
-    }
-    int j = snprintf(out, sizeof(out),
-        "{\"valid\":1,\"seq\":%lu,\"gyro\":[%d,%d,%d],\"accel\":[%d,%d,%d],"
-        "\"g\":[%ld,%ld,%ld],\"bias\":[%ld,%ld,%ld],\"still\":%u,\"dt_us\":%lu,"
-        "\"phase_before\":[%ld,%ld,%ld],\"phase_after\":[%ld,%ld,%ld],\"delta\":[%ld,%ld,%ld],"
-        "\"imu_tick\":%u,\"tick_count\":%u,\"imu_enabled\":%u,\"motion_len\":%u,\"bytes\":\"",
-        (unsigned long)a->seq, a->gyro[0], a->gyro[1], a->gyro[2],
-        a->accel[0], a->accel[1], a->accel[2],
-        (long)a->g[0], (long)a->g[1], (long)a->g[2],
-        (long)a->bias[0], (long)a->bias[1], (long)a->bias[2], a->still, (unsigned long)a->dt_us,
-        (long)a->phase_before[0], (long)a->phase_before[1], (long)a->phase_before[2],
-        (long)a->phase_after[0], (long)a->phase_after[1], (long)a->phase_after[2],
-        (long)a->delta[0], (long)a->delta[1], (long)a->delta[2],
-        a->imu_tick, a->tick_count, a->imu_enabled, a->motion_len);
-    for (int i = 0; i < 30 && j < (int)sizeof(out) - 6; i++)
-        j += snprintf(out + j, sizeof(out) - j, "%02x", a->motion_bytes[i]);
-    j += snprintf(out + j, sizeof(out) - j, "\",\"trail\":[");
-    for (int i = 0; i < NS2_ANOM_TRAIL && j < (int)sizeof(out) - 96; i++) {
-        const ns2_anom_trail_t *t = &a->trail[i];
-        j += snprintf(out + j, sizeof(out) - j,
-            "%s{\"gyro\":[%d,%d,%d],\"delta\":[%ld,%ld,%ld],\"still\":%u,\"dt_us\":%lu}",
-            i ? "," : "", t->gyro[0], t->gyro[1], t->gyro[2],
-            (long)t->delta[0], (long)t->delta[1], (long)t->delta[2],
-            t->still, (unsigned long)t->dt_us);
-    }
-    snprintf(out + j, sizeof(out) - j, "]}");
+             m.enabled, m.source_active, m.has_sample,
+             (unsigned long)m.updates,
+             (long)m.bias_gyro[0], (long)m.bias_gyro[1], (long)m.bias_gyro[2],
+             (long)m.corrected_gyro[0], (long)m.corrected_gyro[1],
+             (long)m.corrected_gyro[2],
+             (long)m.quaternion_million[0], (long)m.quaternion_million[1],
+             (long)m.quaternion_million[2], (long)m.quaternion_million[3],
+             (unsigned long)m.representation_rejects,
+             (unsigned long)m.host_dt_us);
     reply(out);
 }
 
@@ -1242,7 +1208,17 @@ static void handle_line(char *cmd) {
     }
 
     if (strcmp(cmd, "info") == 0) {
-        reply("{\"id\":\"picoswitch\",\"product\":\"PicoSwitch Config\",\"version\":\"2.0\"}");
+        // bridge_contract and build are how the companion detects that the
+        // FLASHED firmware is older than the installed app. Source-level parity
+        // checks compare source tree to source tree and cannot see this; the
+        // resulting skew silently disables battery/motion/rumble while leaving
+        // buttons working. See tools/fixtures/android_controller_hid.h.
+        char info[192];
+        snprintf(info, sizeof(info),
+                 "{\"id\":\"picoswitch\",\"product\":\"PicoSwitch Config\","
+                 "\"version\":\"2.0\",\"bridge_contract\":%u,\"build\":\"%s\"}",
+                 (unsigned)ANDROID_BRIDGE_CONTRACT_VERSION, PICOSWITCH_BUILD_ID);
+        reply(info);
     } else if (strcmp(cmd, "ping") == 0) {
         reply("{\"ok\":true}");
     } else if (strcmp(cmd, "get") == 0) {
@@ -1302,8 +1278,6 @@ static void handle_line(char *cmd) {
 #ifdef NS2_PRO
     } else if (strcmp(cmd, "imu") == 0) {
         cmd_imu();
-    } else if (strcmp(cmd, "imuanom") == 0) {
-        cmd_imuanom();
     } else if (strcmp(cmd, "fwreads") == 0) {
         cmd_fwreads();
 #endif  // NS2_PRO

@@ -25,7 +25,20 @@ enum class Personality(val wireName: String, val title: String) {
     }
 }
 
-data class FirmwareInfo(val id: String = "", val product: String = "", val version: String = "")
+data class FirmwareInfo(
+    val id: String = "",
+    val product: String = "",
+    val version: String = "",
+    /**
+     * Bridge contract the FLASHED firmware implements, or 0 when it reported
+     * none (firmware predating contract reporting). Compared against
+     * `BridgeContract.VERSION`; see that class for why a skew is otherwise
+     * invisible.
+     */
+    val bridgeContract: Int = 0,
+    /** Git short hash of the flashed build, plus `+dirty`. Empty when unreported. */
+    val build: String = "",
+)
 
 data class ControllerInfo(
     val name: String = "No controller",

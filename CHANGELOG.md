@@ -3,9 +3,48 @@
 Release notes describe user-visible behavior. Detailed implementation history remains in
 `docs/archive/` and the experiment records.
 
-## Unreleased
+## 1.6.0 — 2026-08-15
+
+The native Android companion release. v1.5.0 had no Android application at all; management was
+web-portal only. v1.6.0 adds a full native companion plus a host-controller bridge that lets an
+Android handheld act as the console's controller.
 
 ### Added
+
+- **Native Android companion application** (`android/companion/`). Adapter management over
+  bonded/encrypted BLE, adapter mode and identity-colour configuration, an Amiibo library with
+  import/export/initialization and phone-NFC capture, active-controller selection, live input
+  diagnostics, and a shareable diagnostic export. No root, Shizuku, accessibility service, or
+  manual Bluetooth Settings visit is required at any point.
+- **Android controller bridge.** The handheld's own controls drive the console through the
+  adapter: buttons, both sticks, analog triggers, D-pad, motion, rumble and battery reporting.
+  Hardware-confirmed on an AYN Thor and an Odin 2.
+- **C / GameChat button.** The Switch 2 C button is now reachable, offered as an on-screen control
+  alongside Home and Capture — neither audited handheld has a physical key for any of the three.
+  The wire contract carries fifteen buttons within the existing report bytes, so no field moved.
+- **Handheld battery reporting.** The console shows the handheld's real battery level and charging
+  state instead of nothing.
+- **Bridge contract versioning with runtime compatibility reporting.** The adapter and the
+  companion each declare the bridge contract they implement, and the companion compares them on
+  connect. When they disagree the app says so plainly and names the fix, rather than silently
+  losing battery, motion and rumble while ordinary input keeps working. Firmware that predates
+  contract reporting is reported as unverified, never as compatible.
+- **Firmware build identity.** The adapter reports the git short hash of the build actually flashed
+  on it (with a `+dirty` marker), over both management `info` and UART. "What firmware is on this
+  adapter?" no longer has to be inferred from file timestamps.
+- **Descriptor fingerprint guard.** A SHA-256 over the complete 161-byte bridge HID descriptor is
+  registered per contract version. Any byte change in either the C or the Kotlin definition fails
+  the build until the contract version is deliberately bumped and the new digest registered —
+  including coordinated edits to both languages, which byte-for-byte parity alone cannot catch.
+- **Platform-neutral bridge core.** The companion's controller path is split into a shared core
+  (normalized controller model, canonical motion convention, capabilities, protocol codecs, session
+  and cadence) and an Android backend (input, sensors, battery, haptics, HID transport). The core
+  compiles without the Android SDK on its classpath, so platform types cannot leak into the shared
+  model. This ships the Android implementation; it does not ship any other platform.
+- **Bridge diagnostics.** Ordered boundary counters across the whole path, a firmware-side
+  identification trace with the failure reason and first mismatching descriptor byte, `bridge` /
+  `bridge clear` UART commands, and a startup wiring audit. All surfaced through the app's
+  diagnostic export.
 
 - Android reconnect now treats adapter identity validation as part of the saved-address attempt,
   falls back to service-filtered discovery when that address resolves to the wrong device, retries
@@ -315,6 +354,12 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Fixed
 
+- Console rumble now reaches the handheld's actuator. The companion binds the vibrator belonging to
+  the selected input device rather than the phone's system vibrator, classifies the effect so the
+  platform does not discard it as touch feedback, and holds a connected-device foreground service
+  for the life of the link so effects are not dropped while the user is looking at the television.
+- The companion's motion frame is corrected for display rotation, so aim is not rotated on a
+  handheld whose natural orientation differs from the way it is held.
 - Removed the unused transport-level `bt_disconnect()` operation whose only CYW43 implementation
   was a silent no-op. Real link teardown remains owned by BTstack's handle/HID-CID paths. The
   Switch 2 BLE report driver's stale rumble TODO now points to the existing connection-level LRA
@@ -436,6 +481,17 @@ Release notes describe user-visible behavior. Detailed implementation history re
 
 ### Validation
 
+- Clean Pico 2 W and Pico W release builds; both images carry a verified install-reset marker.
+- 311 JVM tests across the bridge core and the Android companion; Android lint clean; instrumented
+  test sources compile.
+- 11/11 in-band management and bridge C host suites, including the descriptor identification trace
+  and its failure modes.
+- Descriptor parity and the contract digest guard both pass. Both guard paths were verified by
+  deliberate mutation: a single vendor-block byte changed in both languages, and a version bump
+  with no registered digest — each was rejected with the corrective step printed.
+- Hardware sanity pass on an AYN Thor with no regressions: buttons, sticks, triggers, D-pad,
+  C/GameChat, battery, motion and rumble all confirmed, with the adapter reporting `v2-bridge`
+  identification.
 - The management session integration suite now links the production access-control module instead
   of a weaker local imitation. It proves allowlisted commands are rejected for bonded-but-plaintext
   and encrypted-but-disconnected states as well as unbonded, disabled, and diagnostic cases;
@@ -463,6 +519,29 @@ Release notes describe user-visible behavior. Detailed implementation history re
   logical removal. Pico W and Pico 2 W release builds both succeed. The 540-byte and 2048-byte
   write/eject/re-present/persistence lifecycles are hardware-confirmed; production-portal v3 Sync
   remains pending.
+
+### Known limitations
+
+- The adapter firmware and the Android companion must be updated together. v1.6.0 uses a newer
+  bridge contract than earlier builds; a mismatch disables battery, motion and rumble while
+  ordinary input continues to work. The companion now detects and reports this.
+- Android controller bridging is foreground-only. Android unregisters the HID Device profile when
+  the app is not in front, and only one HID Device application may be registered system-wide.
+- Motion translation is validated per controller family, not universally: genuine Pro Controller 2
+  passthrough, DualSense/DualSense Edge, and the Android companion are hardware-confirmed. Any
+  additional family still needs its own calibration, axis, scale and timestamp validation before
+  being routed through the translator.
+- No audio over the Android bridge. HID cannot carry audio, and the only transport with sufficient
+  bandwidth is WiFi, which this firmware will not enable. This is closed, not deferred.
+- DualSense audio requires Pico 2 W at 300 MHz. Pico W cannot sustain it and ships a non-audio
+  profile. DualSense microphone return remains unimplemented.
+- Joy-Con 2 reconnect is confirmed but has not had the twenty-cycle soak the Pro Controller 2
+  received.
+- Amiibo: the Virtual Amiibo read/write/persist/eject/re-present/library workflow and genuine
+  Pro Controller 2 physical tag reads are hardware-confirmed. Native physical writes, production
+  native-reader gating, and Switch 1 translation remain open.
+- The legacy `pico_w_switch1` (`NS2_PRO=OFF`) build target does not compile. Pre-existing and
+  unrelated to this release; the shipped Pico W and Pico 2 W targets are unaffected.
 
 ## 1.5.0 — 2026-07-22
 

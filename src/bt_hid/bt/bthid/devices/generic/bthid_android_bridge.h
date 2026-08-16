@@ -80,6 +80,35 @@ static inline bool android_bridge_ext_present(const android_bridge_ext_t *ext) {
 bool android_bridge_identify(const uint8_t *descriptor, uint16_t descriptor_len,
                              android_bridge_ext_t *out);
 
+// Identification trace.
+//
+// Battery, motion, rumble and the player LED are ALL gated on this one exact
+// match, so "none of the v2 features work but buttons do" is the single symptom
+// that identification failed. Inferring that from missing feedback is indirect
+// and was misleading in practice: it cannot distinguish "never called",
+// "rejected on length", "rejected on content", and "matched but the console
+// never asked for anything". This records the answer directly.
+//
+// `first_mismatch` is -1 unless a content rejection occurred, in which case it
+// is the byte offset that differed, with the expected and received values. That
+// turns a silent capability loss into a one-line diff.
+typedef struct {
+    uint32_t calls;            // identify attempts
+    uint32_t matched;          // exact matches -> v2 profile active
+    uint32_t rejected_null;    // null descriptor
+    uint32_t rejected_length;  // wrong descriptor length
+    uint32_t rejected_content; // right length, wrong bytes
+    uint16_t last_len;         // length of the most recent descriptor seen
+    uint16_t expected_len;     // length this firmware requires
+    int32_t first_mismatch;    // byte offset, or -1
+    uint8_t expected_byte;
+    uint8_t actual_byte;
+    uint8_t active_profile;    // 0 = none yet, 1 = v1 generic, 2 = v2 bridge
+} android_bridge_identify_trace_t;
+
+const android_bridge_identify_trace_t *android_bridge_identify_trace(void);
+void android_bridge_identify_trace_reset(void);
+
 // Populate motion/battery on an already button/axis-populated event. Silently
 // does nothing when the extension is absent or the report is too short, so a v1
 // app (no extension, 10-byte report) is unaffected.
