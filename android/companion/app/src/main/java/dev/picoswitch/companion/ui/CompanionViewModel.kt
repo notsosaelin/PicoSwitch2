@@ -236,10 +236,18 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         val next = BridgeContract.evaluate(
             firmwareContract = state.snapshot.firmware.bridgeContract,
             connected = state.connection.connected,
+            // The identity reply is what carries the contract. Until it lands we
+            // have not asked yet, which is Pending -- not a finding about this
+            // firmware. `version` is required by the protocol's own shape check,
+            // so a non-blank version means the reply really did arrive.
+            firmwareInfoAvailable = state.snapshot.firmware.version.isNotBlank(),
         )
         if (next == state.bridgeCompatibility) return
         _ui.update { it.copy(bridgeCompatibility = next) }
-        if (next !is BridgeContract.Compatibility.NotConnected) {
+        // Pending is transient on every healthy connection; logging it is noise.
+        if (next !is BridgeContract.Compatibility.NotConnected &&
+            next !is BridgeContract.Compatibility.Pending
+        ) {
             diagnostics.event("adapter", "bridge contract", next.summary)
         }
     }
