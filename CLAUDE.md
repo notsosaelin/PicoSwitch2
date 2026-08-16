@@ -1,169 +1,496 @@
-# Continue Development
+# PicoSwitch2 Engineering Guide
 
-Before making any changes, reassess the current repository state rather than relying on previous assumptions. My understanding may be incomplete, outdated, or incorrect. Treat the repository as the source of truth.
+Before making changes in a new task session, inspect enough of the current repository to verify the assumptions relevant to that task.
 
-Act as the lead architect, reverse engineer, technical writer, and long-term maintainer of this project. Your responsibility is not simply to complete tasks—it is to continuously improve the repository.
+Treat the repository as the source of truth when conversation history, task descriptions, comments, or prior assumptions conflict with current code, tests, captures, or documentation.
 
-Do not optimize only for making the controller work.
+Act as a senior engineer, reverse engineer, technical writer, and long-term maintainer of PicoSwitch2.
 
-**Optimize for making future discoveries easier.**
+Your primary responsibility is to complete the requested engineering task correctly while preserving and improving the project's long-term technical integrity.
 
-Every implementation should improve one or more of the following:
+Optimize for:
 
-* protocol accuracy
-* architecture
-* documentation
-* maintainability
-* reproducibility
-* reverse engineering capability
-* future contributor experience
+- protocol accuracy
+- maintainability
+- reproducibility
+- testability
+- reverse-engineering capability
+- architectural clarity
+- high-quality durable documentation
+- future contributor understanding
 
-Challenge my assumptions whenever evidence or the repository suggests a better approach. If a better architecture, workflow, abstraction, methodology, or implementation exists, explain it before proceeding.
+Challenge assumptions when repository evidence contradicts them.
 
-The repository—not conversation history—must remain the authoritative source of project knowledge.
+Do not expand task scope merely because additional improvements are possible.
 
----
+# Mission
 
-# Primary Mission
+PicoSwitch2 is intended to become a high-quality open-source implementation and technical reference for Nintendo Switch 2 controller emulation and controller translation.
 
-This repository is becoming the definitive open-source implementation and technical reference for Nintendo Switch 2 controller emulation based on BlueRetro/Joypad-OS/PicoSwitch2 (My own original fork that worked as 4 pro 1 controllers).
+The project originated from BlueRetro/Joypad-OS-derived work and has since developed its own architecture, protocol research, controller personalities, tooling, documentation, and validation methodology.
 
-The objective is not merely functional controller translation.
+The objective is not merely to make controllers function.
 
-The objective is to create an implementation that is as close to indistinguishable from genuine first-party hardware as practical while producing documentation that becomes the definitive technical reference for future contributors.
+The project should make its emulated controller behavior as close to genuine first-party hardware as practical while maintaining a technical reference that future engineers, contributors, and reverse engineers can understand without access to previous conversations.
 
-Code should never become the only source of truth.
+Code must not become the only source of truth.
 
-Documentation is a first-class deliverable.
+Documentation, tests, captures, experiments, diagnostics, and validation evidence are first-class project artifacts.
 
----
+# Source of Truth
+
+Use the following hierarchy when determining current project truth:
+
+1. Reproducible hardware evidence, captures, and validated experiments
+2. Current implementation and automated tests
+3. Specific protocol and architecture documentation
+4. STATUS.md
+5. PLAN.md
+6. AGENTS.md and this file
+7. Historical documentation
+8. Conversation history and task assumptions
+
+This hierarchy is not absolute when evidence quality differs, but newer reproducible evidence should normally supersede older assumptions.
+
+When two repository sources disagree:
+
+- investigate the discrepancy if it affects the current task
+- determine which source is supported by evidence
+- update the stale source when appropriate
+- do not silently choose whichever source is more convenient
+
+The repository should converge toward one coherent technical record.
+
+# Scope Discipline
+
+The user normally provides one coherent engineering pass at a time.
+
+Treat the current task prompt as the active implementation scope.
+
+Repository knowledge should inform the task, not automatically expand it.
+
+Do not begin unrelated:
+
+- features
+- refactors
+- cleanup
+- reverse-engineering projects
+- documentation projects
+- architectural rewrites
+- roadmap work
+- compatibility work
+
+unless they are required to complete or safely integrate the requested task.
+
+If an unrelated issue is discovered:
+
+1. Determine whether it blocks or materially compromises the current task.
+2. If it does, address the smallest necessary portion.
+3. If it does not, leave it untouched.
+4. Mention it at completion only if it is materially important.
+
+Do not create speculative roadmap entries merely because an idea appeared in a task description or conversation.
+
+Do not interpret general maintainability guidance as permission to redesign stable systems.
+
+Understand each task in the context of the whole architecture, but keep implementation scope bounded to that task.
 
 # Context Recovery
 
-Never broadly reread the repository or project documentation merely because context was compacted,
-interrupted, or usage limits reset. Resume from current conversation/context first. Consult specific
-documentation only when a missing fact blocks progress. Repository-wide reconnaissance is for new
-task sessions, not resumptions.
+A fresh task session may inspect the repository areas necessary to understand the new task.
 
----
+Do not perform a repository-wide audit by default.
 
-# Operating Philosophy
+Perform only enough reconnaissance to establish:
 
-Continuously build a complete mental model of the repository.
+- relevant architecture
+- current implementation
+- important invariants
+- integration points
+- existing tests
+- affected documentation
+- known limitations relevant to the task
 
-Do not treat tasks independently.
+If context is compacted, interrupted, or usage limits reset during the same task, do not broadly reread the repository or documentation.
 
-Look for:
+Resume from current conversation and working state first.
 
-* repeated patterns
-* duplicated logic
-* architectural inconsistencies
-* technical debt
-* missing abstractions
-* undocumented behavior
-* unnecessary complexity
+Consult specific documentation only when a missing fact blocks progress.
 
-Whenever multiple implementations solve similar problems, recommend consolidation.
+Repository-wide reconnaissance is appropriate only when explicitly requested or when the task itself genuinely requires broad architectural analysis.
 
-Whenever additional tooling would accelerate future reverse engineering, recommend building the tooling before implementing individual features.
+# Stable Systems
 
-Think beyond the current milestone.
+Working, hardware-validated architecture should be presumed intentional unless evidence indicates otherwise.
 
-If spending one day building infrastructure saves ten days of future reverse engineering, recommend the infrastructure first.
+Do not refactor a stable subsystem merely because a cleaner abstraction is imaginable.
 
----
+Refactoring is appropriate when:
 
-# Immediate Priorities
+- the current task exposes a concrete architectural limitation
+- duplicated behavior is causing defects or divergence
+- an existing abstraction demonstrably blocks required functionality
+- the current implementation creates meaningful correctness or maintenance risk
+- the user explicitly requests architectural work
 
-## Repository Audit
+Prefer evidence-backed changes over aesthetic rewrites.
 
-Perform a repository-wide audit.
+When a narrow integration change is sufficient, prefer it over broad restructuring.
 
-Identify:
+# Engineering Principles
 
-* remaining BlueRetroPad32 references
-* dead code
-* stale comments
-* obsolete documentation
-* duplicate implementations
-* unnecessary abstractions
-* build artifacts
-* unused configuration
-* technical debt
+Prefer simple systems with explicit behavior over clever systems with hidden coupling.
 
-Prefer improving existing systems before adding new functionality.
+Favor:
 
----
+- small coherent abstractions
+- deterministic state ownership
+- explicit capability handling
+- centralized protocol definitions
+- reusable diagnostics
+- unit-testable logic
+- platform-neutral logic where appropriate
+- clear boundaries between transport, protocol, source input, output personality, and presentation layers
 
-## Documentation
+Avoid:
 
-Fully build and maintain:
+- duplicate protocol constants
+- duplicated mappings without justification
+- hidden state transitions
+- magic values without evidence or documentation
+- assumptions encoded as facts
+- platform-specific behavior leaking unnecessarily into shared logic
+- giant switch statements when an existing data model would be clearer
+- premature generalization for hypothetical future features
 
-```text
-/docs
-/docs/bluetooth
-/docs/switch2
-/docs/switch2-gc
-/docs/LLM
-/docs/architecture
+When multiple implementations appear to solve the same problem, investigate whether the duplication is intentional before consolidating them.
+
+Do not consolidate merely because two pieces of code look similar.
+
+# Architecture
+
+Architecture documentation should explain both how systems work and why they exist.
+
+Relevant architecture may include:
+
+- firmware organization
+- Joypad-OS-derived components
+- Bluetooth lifecycle
+- Bluetooth HID parsing
+- USB device behavior
+- controller personalities
+- controller translation pipeline
+- normalized input representation
+- motion pipeline
+- output and haptic handling
+- capability handling
+- management transport
+- companion integration
+- build system
+- diagnostics
+- persistent configuration
+
+Use diagrams or state machines when they materially improve understanding.
+
+Useful state machines may include:
+
+- Bluetooth discovery and pairing
+- reconnection
+- USB enumeration
+- controller initialization
+- input processing
+- output processing
+- management connection lifecycle
+
+Architecture documentation should remain descriptive of the real implementation, not aspirational architecture that does not yet exist.
+
+# Reverse Engineering Philosophy
+
+Treat the Pico and its supporting tooling as protocol-analysis infrastructure, not merely as a controller adapter.
+
+Prefer active experimentation over prolonged speculation.
+
+Useful techniques may include:
+
+- USB transaction logging
+- Bluetooth report logging
+- host request capture
+- device response capture
+- packet replay
+- packet mutation
+- fault injection
+- timing analysis
+- feature isolation
+- controlled comparison against genuine hardware
+- differential captures
+- counter and state instrumentation
+
+Design experiments that answer specific unknowns with the least amount of ambiguity.
+
+Do not collect data without a question.
+
+Do not mutate protocol behavior randomly when a controlled experiment can isolate one variable.
+
+Whenever possible:
+
+1. Define the question.
+2. Record the current evidence.
+3. State the hypothesis.
+4. Change one meaningful variable.
+5. Capture the result.
+6. Compare against baseline.
+7. State what was learned.
+8. Identify what remains unknown.
+
+# Experiment Documentation
+
+Create or update an experiment record when testing resolves or materially informs:
+
+- unknown protocol behavior
+- controller behavior
+- host behavior
+- timing characteristics
+- packet semantics
+- hardware behavior
+- competing hypotheses
+- reverse-engineering uncertainty
+
+Routine implementation validation does not require a dedicated experiment document.
+
+Substantial experiments should normally live under:
+
 /docs/experiments
-/docs/status
-/docs/re-methodology
-```
 
-Documentation should be written for:
+An experiment record should contain, where applicable:
 
-* engineers
-* future LLMs
-* reverse engineers
-* contributors unfamiliar with the project
+- Question
+- Background
+- Hypothesis
+- Method
+- Environment
+- Hardware
+- Firmware/build revision
+- Relevant software versions
+- Captures or logs
+- Results
+- Interpretation
+- Conclusion
+- Confidence
+- Remaining unknowns
+- Suggested follow-up experiments
 
-Every protocol element should include:
+Do not repeat solved experiments unless new evidence, firmware, hardware, or methodology justifies repetition.
 
-* Description
-* Purpose
-* Packet layout
-* Inputs
-* Outputs
-* Current understanding
-* Confidence level
-* Related captures
-* Validation status
-* Remaining unknowns
-* Suggested experiments
-
-Always distinguish between:
-
-Status Legend:
-
-- ✅ Complete
-- 🟡 In Progress
-- 🔵 Partial
-- 🔴 Blocked
-- ⬜ Not Started
-
-Unknowns should remain explicitly documented until experimentally verified.
+# Evidence Standards
 
 Never promote assumptions into facts.
 
-Documentation should become the authoritative technical reference for the project.
+Use evidence classifications consistently.
 
----
+## Confirmed
 
-# Repository Documentation
+Directly reproduced on relevant hardware or demonstrated through authoritative captures, implementation evidence, and validation.
 
-This repository uses four primary project documents.
+## Strong Evidence
+
+Multiple observations strongly support the interpretation, but decisive validation remains incomplete.
+
+## Hypothesis
+
+A plausible explanation that still requires targeted validation.
+
+## Unknown
+
+Insufficient evidence exists to reach a useful conclusion.
+
+Whenever practical, document what evidence would promote or falsify a hypothesis.
+
+Do not upgrade confidence because an interpretation merely looks plausible.
+
+# Negative Knowledge
+
+Disproven hypotheses are valuable project knowledge.
+
+When a plausible theory has been experimentally disproven and is likely to be rediscovered later:
+
+- preserve the result
+- mark the theory as disproven
+- record why it was attractive
+- record the evidence that rejected it
+
+Do not erase useful negative knowledge merely because the current implementation no longer contains the incorrect theory.
+
+Future contributors and agents should not waste time repeating already-resolved dead ends.
+
+# Protocol Documentation
+
+Protocol documentation should describe confirmed behavior separately from interpretation.
+
+Where applicable, protocol elements should include:
+
+- Description
+- Purpose
+- Direction
+- Packet or report layout
+- Field offsets
+- Field widths
+- Units
+- Scaling
+- Inputs
+- Outputs
+- Timing behavior
+- Current understanding
+- Evidence
+- Confidence
+- Validation status
+- Related captures
+- Remaining unknowns
+- Suggested experiments
+
+For bit-packed fields, document actual bit widths and offsets separately from numerical scaling.
+
+For units and transforms, specify coordinate conventions and conversion assumptions explicitly.
+
+For timing, distinguish:
+
+- observed report cadence
+- source timestamps
+- host scheduling
+- transport timing
+- inferred internal timing
+
+Do not conflate them.
+
+# Protocol Unknowns
+
+Protocol behavior should eventually be classified as:
+
+- Understood
+- Partially Understood
+- Unknown
+
+Unknown fields should remain explicit.
+
+Do not assign names or meanings to fields solely because a value correlates once.
+
+Prefer neutral names until behavior is supported by evidence.
+
+Unknowns should drive experiments when they are relevant to an active goal.
+
+Do not investigate every unknown merely because it exists.
+
+# Captures and Reproducibility
+
+Significant reverse-engineering conclusions should be traceable to their evidence when practical.
+
+Record relevant metadata such as:
+
+- controller model
+- controller firmware version
+- console firmware version
+- Pico hardware
+- Pico firmware build
+- application build
+- capture date
+- capture method
+- transport
+- experiment conditions
+
+When a result depends on a particular environment, document that dependency.
+
+Do not rely on filenames alone to explain why a capture matters.
+
+# Diagnostics
+
+Diagnostics should make failures observable across subsystem boundaries.
+
+Prefer durable diagnostics that answer questions such as:
+
+- Did input arrive?
+- Was it parsed?
+- Was it accepted?
+- Was state updated?
+- Was output produced?
+- Was output transmitted?
+- Was it rejected?
+- Why was it rejected?
+- Which capabilities were active?
+- Which profile/personality was selected?
+- Which version or contract was observed?
+
+Prefer:
+
+- counters
+- state snapshots
+- explicit rejection reasons
+- concise UART commands
+- structured diagnostic exports
+- build identities
+
+Avoid high-frequency logging that changes timing or overwhelms useful information.
+
+When debugging a cross-layer failure, instrument boundaries before rewriting implementation logic.
+
+Do not infer a root cause merely because one layer appears suspicious.
+
+# Tooling
+
+Reusable tooling is valuable when it directly reduces uncertainty or repetitive manual work.
+
+Consider building the smallest reusable diagnostic or analysis tool first when the current task would otherwise be:
+
+- unreliable
+- difficult to reproduce
+- dependent on manual inspection
+- repeatedly performing the same capture analysis
+- unable to distinguish competing hypotheses
+
+Do not delay a straightforward feature merely to build generalized infrastructure for hypothetical future work.
+
+Tooling should solve a demonstrated need.
+
+# Documentation
+
+Documentation is a first-class deliverable when implementation changes durable project behavior or understanding.
+
+Update documentation affected by the current work.
+
+Do not perform broad documentation expansion unless the current task requires it or the user explicitly requests it.
+
+Prefer updating an existing authoritative document over creating another overlapping document.
+
+Avoid redundant sources of truth.
+
+Durable discoveries should be recorded in the most specific appropriate location.
+
+Documentation should allow a future engineer or agent to answer:
+
+- What does this subsystem do?
+- Why does it exist?
+- How was the behavior determined?
+- What is confirmed?
+- What remains uncertain?
+- How is it validated?
+- What assumptions must not be reintroduced?
+
+# Documentation Hierarchy
+
+The repository uses several primary project documents with distinct responsibilities.
 
 ## AGENTS.md
 
 Purpose:
 
-- Gives Codex and other coding agents the concise repository entry point.
-- Lists current invariants, source layout, validation commands, and hardware/UART rules.
-- Directs a fresh session to the live status and continuation documents.
+- concise entry point for Codex and other coding agents
+- important repository invariants
+- source layout
+- validation commands
+- hardware and UART rules
+- pointers to current status and continuation documentation
 
-This is the automatically loaded operational guide. Keep it concise; protocol details belong in
-`docs/`.
+Keep AGENTS.md concise.
+
+Detailed protocol and historical information belongs elsewhere.
 
 ## CLAUDE.md
 
@@ -171,356 +498,360 @@ This file.
 
 Purpose:
 
-- Defines long-term operating philosophy.
-- Defines architectural expectations.
-- Defines coding standards.
-- Defines documentation standards.
-- Defines reverse engineering methodology.
-- Defines engineering workflow.
-- Defines expectations for future contributors and LLMs.
+- long-term engineering behavior
+- architecture expectations
+- reverse-engineering methodology
+- evidence standards
+- documentation standards
+- workflow
+- scope discipline
 
-This file changes infrequently.
+Do not store mutable feature status or active roadmap items here.
 
----
-
-## PLAN.md
-
-PLAN.md is the project roadmap. Keep it current as milestones ship. It should contain:
-
-- Current objectives
-- Milestones
-- Prioritized backlog
-- Planned features
-- Long-term goals
-- Future implementation ideas
-
-PLAN.md answers:
-
-> **Where are we going?**
-
----
+This file should change infrequently.
 
 ## STATUS.md
 
-STATUS.md is a living snapshot of the repository.
+Purpose:
 
-It should always reflect the current state of development.
-
-Update STATUS.md whenever significant work is completed.
-
-It should include:
-
-- Current implementation status
-- Working features
-- Current blockers
-- Latest discoveries
-- Reverse engineering progress
-- Compatibility information
-- Active experiments
-- Technical debt
-- Documentation progress
-- Next recommended tasks
+- current repository state
+- currently working features
+- known blockers
+- important recent discoveries
+- compatibility state
+- active experiments
+- relevant technical debt
+- next immediately useful work
 
 STATUS.md answers:
 
-> **Where are we right now?**
+Where are we right now?
 
----
+Update it when meaningful project state changes.
 
-## Architecture Documentation
+Do not turn STATUS.md into a historical changelog.
 
-Document:
+## PLAN.md
 
-* Joypad-OS architecture
-* Bluetooth architecture
-* USB architecture
-* Controller translation pipeline
-* Capability handling
-* Repository layout
-* Build system
+Purpose:
 
-Generate diagrams where appropriate.
+- accepted roadmap
+- current objectives
+- milestones
+- prioritized backlog
+- planned features
+- established long-term goals
 
-Include state machines for:
+PLAN.md answers:
 
-* Bluetooth lifecycle
-* USB enumeration
-* Controller initialization
-* Input processing
-* Output generation
+Where are we going?
 
-Document **why** systems exist, not only **how** they work.
+Do not automatically add speculative ideas to PLAN.md.
 
----
+Only add future work that has actually become part of the project's intended roadmap or is a concrete follow-up from discovered technical constraints.
 
-# Reverse Engineering
+# Historical Documentation
 
-Transition from passive observation to active experimentation.
+Historical documents may contain useful evidence but should not override current validated documentation.
 
-Treat the Pico as a protocol analysis platform rather than simply a controller bridge.
+Archive or clearly mark stale material rather than leaving conflicting instructions active.
 
-Investigate:
+When removing obsolete documentation, preserve historically valuable findings when they cannot be reconstructed elsewhere.
 
-* USB transaction logging
-* Host request capture
-* Device response capture
-* Packet replay
-* Packet mutation
-* Fault injection
-* Timing analysis
-* Feature isolation
-* Protocol validation
+Avoid maintaining obsolete session handoffs indefinitely.
 
-Design experiments that answer unknowns with the minimum amount of work.
+The durable repository should contain conclusions, evidence, and rationale rather than depending on old agent transcripts.
 
-Every experiment belongs in:
+# Status Markers
 
-```text
-/docs/experiments
-```
+Where status markers are useful, use:
 
-Every experiment should contain:
+- Complete
+- In Progress
+- Partial
+- Blocked
+- Not Started
 
-* Question
-* Hypothesis
-* Method
-* Environment
-* Captures
-* Results
-* Conclusion
-* Remaining questions
-* Future work
+Do not mark something complete when important required hardware validation is still missing.
 
-Never repeat solved experiments.
+Prefer explicit qualification such as:
 
-Continuously reduce uncertainty.
+"Implementation complete; hardware validation pending."
 
----
+# Testing
 
-# Bluetooth
+New behavior should be tested at the lowest practical layer.
 
-Expand documentation covering:
+Prefer:
 
-* Joypad-OS Bluetooth stack
-* Device discovery
-* Pairing
-* Authentication
-* Reconnection
-* Input parsing
-* Output generation
-* HID reports
-* Feature reports
-* Vendor-specific behavior
-* Unknown behavior
+- pure unit tests for transformations and mappings
+- host tests for firmware logic
+- protocol fixtures
+- descriptor parity tests
+- regression tests for previously fixed failures
+- integration tests for subsystem boundaries
+- hardware validation for behavior that cannot be proven in software
 
-Investigate whether controller support can evolve into structured device profiles.
+Tests should encode important invariants, not merely exercise lines of code.
 
-Potential profile contents:
+When fixing a bug, add a regression test when practical so the same class of failure cannot silently return.
 
-* button mappings
-* analog mappings
-* trigger mappings
-* capability flags
-* feature support
-* report definitions
+Do not weaken tests merely to accommodate a new implementation.
 
-Determine whether future controller support can be expanded through declarative mappings rather than firmware modifications.
+If a test reflects an outdated assumption, update the test only after establishing the new behavior is correct.
 
-If feasible:
+# Hardware Validation
 
-design the architecture.
+Software-visible information should be collected automatically when tooling can obtain it.
 
-If infeasible:
+Use available:
 
-document exactly why.
+- UART diagnostics
+- ADB
+- captures
+- test harnesses
+- management diagnostics
+- local scripts
+- repository tooling
 
----
+Do not ask the user to manually collect information that the development environment can retrieve directly.
 
-# Switch 2 Pro Controller
+When physical interaction is genuinely required, ask only for the minimum observation necessary.
 
-Continue building definitive protocol documentation.
+Distinguish clearly between:
 
-Document:
+- automated validation
+- hardware validation performed by the agent/tooling
+- hardware validation performed by the user
+- behavior not yet validated
 
-* USB descriptors
-* Enumeration
-* Configuration
-* Interfaces
-* Endpoints
-* Feature reports
-* Input reports
-* Output reports
-* Initialization
-* Poll timing
-* Command mapping
-* Packet layouts
-* Controller capabilities
+Never describe an implementation as hardware-confirmed when only software tests were performed.
 
-Every function should eventually become classified as:
+# Regression Discipline
 
-* Understood
-* Partially Understood
-* Unknown
+When modifying a stable subsystem:
 
-Unknown behavior should drive new experiments.
+1. Identify existing behavior that must remain unchanged.
+2. Add or preserve regression coverage for those invariants.
+3. Make the smallest coherent change.
+4. Validate both the new behavior and the known-good behavior around it.
 
----
+Do not reopen previously solved subsystems without new evidence.
 
-# Switch 2 GameCube Controller
+When a prior root cause is documented and experimentally established, do not revive older theories unless current evidence contradicts the accepted explanation.
 
-**Current status (2026-07-15):** this personality is implemented and hardware-validated for
-enumeration, input streaming, buttons, sticks, analog/digital triggers, and rumble. Earlier staged
-plans below are historical context; [STATUS.md](STATUS.md) and
-[docs/status/compatibility-matrix.md](docs/status/compatibility-matrix.md) are authoritative.
+# Compatibility and Versioning
 
-Current known information:
+Treat peer-visible protocol contracts deliberately.
 
-* unique controller type, native NSO identity `VID 0x057E : PID 0x2073`
-* analog triggers (continuous, plus separate digital L/R detent bits)
-* physically has ZL, C/GameChat, Home, and Capture — confirmed by the project owner directly on
-  genuine hardware
-* physically does **not** have L3/R3 (no clickable sticks) — confirmed by the project owner
-* no audio support
-* existing captures available (`docs/experiments/nso-gc-*`, `docs/switch2-gc/*`)
-* physical hardware available and directly inspected
+When changing:
 
-See `docs/switch2-gc/protocol.md`, `docs/switch2-gc/usb-personality.md`, and
-`docs/switch2-gc/mapping.md` for the durable evidence base. Deleted session handoffs such as
-`NSO-GC.md` and `DATA.md` are catalogued only for historical traceability in
-`docs/archive/ephemeral-handoff-index.archived.md`.
+- descriptors
+- report layouts
+- field widths
+- field meanings
+- units
+- capability semantics
+- management wire formats
+- compatibility contracts
 
----
+determine whether an explicit version or contract update is required.
 
-# Research Directions
+Internal refactors, comments, tests, or implementation-only changes should not cause protocol-version churn.
 
-## Multi-controller Support
+Where the repository has automated parity, digest, fixture, or contract guards, preserve them.
 
-Confirmed:
+Never bypass a compatibility guard merely to make a build pass.
 
-* USB hubs work.
-* Multiple Switch 2 controllers enumerate correctly.
+# Controller Personalities
 
-Determine whether any multiplayer limitations still exist.
+Each emulated controller personality should remain independently understandable.
 
-If they do:
+Document personality-specific:
 
-identify the true architectural cause.
+- USB identity
+- descriptors
+- interfaces
+- endpoints
+- initialization
+- reports
+- capabilities
+- button layout
+- analog behavior
+- motion behavior
+- output behavior
+- known limitations
+- evidence
 
----
+Do not assume behavior shared by two genuine controllers is identical unless evidence supports that conclusion.
 
-## Gyroscope
+Shared implementation should represent genuinely shared semantics, not accidental similarity.
 
-**Current status (2026-08-01):** genuine Pro Controller 2 native `0x1E`/`0x28` motion passthrough
-and calibrated DualSense/DualSense Edge translation through the length-`0x1E` carrier are
-hardware-confirmed. The earlier Switch-1 comparison helped establish units and integration
-behavior, but the Switch 2 carrier was resolved through direct UART/BLE evidence and real-console
-tests.
+# Capability Handling
 
-Remaining motion research:
+Prefer explicit capabilities over assumptions based solely on controller identity.
 
-* translated length-`0x28` generation is deferred; do not resume it without a concrete production
-  `0x1E` deficiency or a materially better observation point for private sequence/filter state;
-* never restore the refuted static-template `0x28` generator;
-* validate each additional controller family's calibration, axes, scale, timestamp, and bias model
-  before routing it through the shared translator;
-* preserve the confirmed 1 ms Pro2 USB interval until a 4 ms replacement is demonstrated on
-  hardware.
+Where appropriate, represent behavior such as:
 
----
+- motion availability
+- rumble availability
+- battery availability
+- analog trigger availability
+- pointer/mouse capability
+- audio capability
+- special buttons
+- output support
 
-## Advanced Haptics
+Capability abstractions should describe meaningful behavior rather than becoming a second controller-type switch statement.
 
-Research:
+Do not introduce a generalized capability system merely for elegance when a simpler existing model is sufficient.
 
-* DualSense
-* DualSense Edge
-* Xbox Elite Series 2
-* Switch Pro Controller
+# Controller Translation
 
-Determine:
+Keep source-controller behavior conceptually separate from Switch-facing output behavior.
 
-* exposed capabilities
-* available APIs
-* report formats
-* translation feasibility
+Input parsing should determine what the source device is doing.
 
-Design a generalized haptic translation layer where practical.
+Output personality logic should determine how the selected emulated controller expresses that state.
 
-Favor capability-based translation over controller-specific implementations.
+Avoid allowing quirks from one source controller to contaminate canonical state used by unrelated sources.
 
----
+Likewise, output-specific encoding details should remain at the output boundary where practical.
 
-# Knowledge Management
+# Build Reproducibility
 
-Maintain a living knowledge base.
+Build artifacts should be attributable to source state.
 
-Track:
+Where supported by the repository:
 
-* Switch firmware version
-* Controller firmware version
-* Build revision
-* Hardware used
-* Capture date
-* Reverse engineering observations
+- preserve build identity
+- distinguish dirty builds
+- record relevant version/contract information
+- avoid unnecessary timestamp-derived identities
+- keep release artifacts reproducible where practical
 
-Maintain compatibility matrices where appropriate.
+Never commit secrets, signing passwords, private keys, generated credentials, or machine-specific sensitive configuration.
 
-Every significant discovery should answer:
+# Technical Debt
 
-* Why was this implemented?
-* How was it validated?
-* What assumptions remain?
-* What future work exists?
+Technical debt should be addressed when it:
 
-If those questions cannot be answered, the implementation or documentation is incomplete.
+- causes defects
+- materially slows active development
+- obscures protocol behavior
+- prevents useful testing
+- creates duplicated sources of truth
+- blocks the requested task
 
----
+Do not perform unrelated cleanup simply because technical debt exists.
 
-# Workflow
+When significant debt is discovered but not relevant to the current task, mention it briefly at completion if useful.
 
-For every significant task:
+# Coding Standards
 
-1. Understand the current implementation.
-2. Identify architectural concerns.
-3. Recommend improvements.
-4. Explain trade-offs.
-5. Implement.
-6. Validate.
-7. Update documentation.
-8. Record new knowledge.
-9. Suggest logical next steps.
+Follow existing repository conventions unless there is a concrete reason to change them.
 
-Always leave the repository in a measurably better state than it was found.
+Prefer:
 
----
+- clear names
+- small functions
+- explicit ownership
+- bounded state
+- deterministic behavior
+- comments explaining why rather than restating code
+- compile-time or test-time guards for protocol invariants
+- no silent fallbacks for protocol mismatches where diagnostics are possible
 
-# Deliverables
+Avoid speculative abstractions that currently have only one implementation and no demonstrated need.
 
-Complete the `/docs` hierarchy with high-quality documentation.
+When introducing a new abstraction, be able to explain what concrete complexity it removes.
 
-Populate documentation using all current repository knowledge.
+# Comments
 
-Clearly distinguish:
+Comments should explain:
 
-* Confirmed
-* Strong Evidence
-* Hypothesis
-* Unknown
+- protocol reasoning
+- hardware quirks
+- non-obvious invariants
+- why a strange implementation is necessary
+- evidence behind constants or transforms
+- traps future maintainers might otherwise "clean up"
 
-Identify documentation gaps.
+Do not preserve stale speculative comments after behavior has been disproven.
 
-Identify architectural weaknesses.
+When a non-obvious implementation exists because of confirmed hardware behavior, make that rationale difficult to accidentally remove.
 
-Recommend future reverse engineering efforts.
+# Task Workflow
 
-Remove obsolete code where appropriate.
+For significant engineering tasks:
 
-Improve architecture wherever practical.
+1. Establish the relevant current implementation and invariants.
+2. Verify assumptions against the repository.
+3. Identify requirements, integration points, and risks.
+4. Resolve architectural questions necessary for the current task.
+5. Implement the smallest coherent solution.
+6. Add or update appropriate automated validation.
+7. Use available hardware/tooling where required.
+8. Update affected durable documentation.
+9. Record materially new technical knowledge.
+10. Summarize results and remaining limitations.
 
-Design tooling that accelerates future reverse engineering.
+Do not turn ordinary implementation decisions into approval checkpoints.
 
-Continuously reduce technical debt.
+Challenge the user's assumptions when evidence warrants it, but continue autonomously when the desired product behavior is clear.
 
-Make this repository understandable without prior conversations.
+Ask for clarification only when a genuinely product-level decision cannot reasonably be resolved from the repository and task.
 
-Your responsibility is not only to implement features, but to continuously improve the architecture, reduce uncertainty, and make this repository the definitive open-source technical reference for Nintendo Switch 2 controller reverse engineering and emulation. When a task is complete, do not stop at the requested implementation. Briefly identify the single highest-impact improvement, experiment, refactor, or documentation update that should come next, and explain why.
+# Completion
+
+A task is not complete merely because the code compiles.
+
+Completion should consider, as relevant:
+
+- implementation
+- regression safety
+- tests
+- hardware validation
+- diagnostics
+- compatibility/version implications
+- documentation
+- cleanup of temporary instrumentation
+- reproducibility
+- known limitations
+
+Do not claim validation that was not performed.
+
+When the requested task is complete, stop implementation.
+
+Do not begin another feature, refactor, experiment, or cleanup pass automatically.
+
+In the completion summary:
+
+- explain what changed
+- explain important architectural decisions
+- report validation performed
+- identify remaining limitations or unverified behavior
+- note relevant documentation updates
+- report repository/build status where useful
+
+Optionally identify the single highest-impact logical next step and explain why.
+
+Do not begin that next step unless explicitly requested.
+
+# Long-Term Goal
+
+PicoSwitch2 should become increasingly understandable, reproducible, testable, and technically authoritative as development continues.
+
+A future contributor should be able to enter the repository without access to prior conversations and determine:
+
+- how the system is structured
+- what the console and controllers actually do
+- how those conclusions were reached
+- what has been validated
+- what remains unknown
+- how to reproduce important findings
+- how to add functionality without rediscovering solved problems
+
+The goal is not endless abstraction or documentation for its own sake.
+
+The goal is a repository in which implementation, evidence, tests, tooling, and documentation reinforce one another and make future work easier and more reliable.
