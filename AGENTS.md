@@ -1,93 +1,296 @@
 # PicoSwitch2 Agent Guide
 
-This file is the durable repository entry point for Codex and other coding agents. Read it before
-changing code. Then read:
+This file is the concise operational entry point for coding agents working in this repository.
 
-1. [`STATUS.md`](STATUS.md) — current validated state and open blockers
-2. [`PLAN.md`](PLAN.md) — prioritized roadmap
-3. [`docs/README.md`](docs/README.md) — documentation authority and map
-4. [`docs/LLM/current-context.md`](docs/LLM/current-context.md) — concise continuation handoff
-5. [`docs/agents/COMMON.md`](docs/agents/COMMON.md) — short durable briefs for focused work
-   (plus [`MOTION.md`](docs/agents/MOTION.md), [`RUMBLE.md`](docs/agents/RUMBLE.md),
-   [`ANDROID.md`](docs/agents/ANDROID.md)). Point a subagent at these instead of restating
-   project history in its prompt.
-6. The protocol or architecture document relevant to the task
+It defines repository navigation, important invariants, validation expectations, hardware rules, and task discipline.
 
-`CLAUDE.md` contains the longer maintainer philosophy. It remains applicable, but current source,
-captures, tests, and the documents above outrank old plans or conversation history.
+Detailed engineering philosophy belongs in `CLAUDE.md`.
 
-## Project invariants
+Current project state belongs in `STATUS.md`.
 
-- The goal is behavior as close to genuine Nintendo hardware as practical, without regressing
-  already validated input, rumble, audio, motion, reconnect, wake, LED, BOOTSEL, or config behavior.
-- Treat direct Switch 2/UART captures and hardware tests as primary evidence.
-- Do not treat third-party projects—including BlueRetro—as definitive Switch 2 protocol truth.
-- Never promote a hypothesis to fact. Record negative results in
-  `docs/experiments/refuted-hypotheses.md`.
-- Preserve historical experiment reports and `.archived.md` files. Correct active summaries and
-  links instead of rewriting what an old experiment observed.
-- The length-`0x28` PDU carries a packed multi-sample IMU payload plus a mode-3 orientation
-  carrier. There is no magnetometer lane: the former `G6/G7/G8` "reference vector" bit ranges cross
-  real packed gyro and acceleration samples, which is why a controlled magnet campaign found no
-  polarity or distance response. Do not reintroduce a magnetometer premise, and do not repeat the
-  refuted static-template generator — holding the other changing lanes static causes random motion.
-  A software `0x28` generator remains a valid long-term research target only once every changing
-  lane can be synthesized coherently, including exact integer projection/rounding. That target is
-  deliberately deferred as of 2026-08-01: do not request another flash or resume the live hybrid
-  campaign unless the maintainer explicitly reopens it because the validated `0x1E` production
-  path has a concrete deficiency or new evidence creates a materially better observation point.
-- Production DualSense/Edge motion uses the validated length-`0x1E` carrier.
-- Pico 2 W uses the validated 300 MHz audio build. Pico W intentionally retains its non-audio
-  profile.
-- Controller-family remapping is intentionally absent. Keep the compiled base map stable and leave
-  user remapping to the Switch's persistent emulated-controller settings.
-- Every flashed UF2 must retain the page-aligned install-reset marker. First boot clears settings,
-  Virtual Amiibo banks, wake identity, and Bluetooth bonds; ordinary reboots must not.
-- Configuration mode is CDC-only. Serve `web/index.html` locally with
-  `tools/run_config_portal.ps1`; do not reintroduce an MSC drive or embedded web disk.
+Future work belongs in `PLAN.md`.
 
-## Repository layout
+Protocol evidence, architecture details, experiments, and technical reference material belong under `docs/`.
 
-- `src/bt_hid/motion/` — genuine Pro2 motion ownership, DualSense translation, codecs, probes
-- `src/switch_pro2/` — console-facing Pro Controller 2 personality
-- `docs/switch2/` — current Switch 2 protocol references
-- `docs/bluetooth/` — controller input/output and translation references
-- `docs/experiments/` — dated methods/results, including negative evidence
-- `docs/archive/` — historical files, always suffixed `.archived.md`
-- `dumps/` — captures and derived media; read `dumps/README.md`
-- `tools/` — UART, decoder, capture, and host-test utilities
+Do not turn this file into a project history, changelog, experiment notebook, or duplicate status document.
 
-## Subagent delegation
+# Read Order
 
-When a task can be split into several independent and substantial subtasks, spawn one
-`luna_worker` per subtask and run them in parallel. Keep anything that takes only a few minutes in
-the main thread.
+For a new task session, read:
 
-Keep prompts SHORT. Reference `docs/agents/*.md` rather than pasting project history: large
-repeated prompts waste context, cost money, and let agents reinterpret established hardware
-observations into softer claims. A good prompt names the question, the briefs to read, the
-boundary, and the expected return format.
+1. `AGENTS.md` — this file
+2. `STATUS.md` — current validated state and open gates
+3. `PLAN.md` — accepted roadmap
+4. `docs/README.md` — documentation authority and map
+5. The protocol, architecture, methodology, or agent brief relevant to the task
 
-Each worker runs in its own thread. Do not assume it can see the main thread conversation. Make
-every task description self-contained: files in scope, boundaries, and expected output.
+Useful focused briefs live under:
 
-Independent read-only tasks can run in parallel. Any worker that writes files needs its own
-isolated worktree. Otherwise, run those workers sequentially.
+- `docs/agents/COMMON.md`
+- `docs/agents/MOTION.md`
+- `docs/agents/RUMBLE.md`
+- `docs/agents/ANDROID.md`
 
-After all workers finish, the main thread checks each result against the acceptance criteria in
-the dispatch prompt before combining them. Re-dispatch anything that fails.
+If `docs/LLM/current-context.md` contains an active continuation handoff relevant to the task, read it after the current-state documents.
 
-If you dispatched multiple workers but only one ever runs, first check whether
-`agents.max_concurrent_threads_per_session` is set to `1` in `config.toml`.
+Do not broadly read every document by default.
 
-The same approach works for any other custom subagents you've configured.
+Inspect only what is necessary to understand and safely complete the active task.
 
-## Build and verification
+# Source of Truth
 
-For a fresh workstation, clone the active branch with its Opus submodule:
+Prefer evidence in approximately this order:
+
+1. Reproducible hardware behavior and captures
+2. Current implementation and automated tests
+3. Specific protocol and architecture documentation
+4. `STATUS.md`
+5. `PLAN.md`
+6. `AGENTS.md` and `CLAUDE.md`
+7. Historical/archive documents
+8. Conversation history and assumptions in task prompts
+
+When sources conflict and the discrepancy matters to the task, resolve it rather than silently choosing one.
+
+The repository must remain authoritative over prior conversations.
+
+Do not treat an old comment, task description, or archived document as current merely because it is more detailed.
+
+# Scope Discipline
+
+Treat the current user task as the active engineering scope.
+
+Repository context should inform that task, not automatically expand it.
+
+Do not begin unrelated:
+
+- features
+- refactors
+- cleanup
+- protocol investigations
+- compatibility campaigns
+- documentation rewrites
+- architecture projects
+- roadmap work
+
+unless they are necessary to safely complete the requested task.
+
+If an unrelated issue is discovered:
+
+1. Determine whether it blocks or materially compromises the current task.
+2. If it does, make the smallest necessary correction.
+3. If it does not, leave it untouched.
+4. Mention it at completion only if materially important.
+
+Do not treat general maintainability guidance as permission to rewrite stable systems.
+
+Do not add speculative ideas to `PLAN.md` merely because they were mentioned in a task or conversation.
+
+# Core Project Invariants
+
+Preserve these unless the current task explicitly and deliberately changes them.
+
+## Console-facing fidelity
+
+The goal is behavior as close to genuine Nintendo hardware as practical.
+
+Do not regress already validated:
+
+- controller input
+- controller identities
+- rumble
+- motion
+- battery reporting
+- audio
+- LEDs
+- reconnect
+- wake
+- BOOTSEL behavior
+- management
+- Virtual Amiibo
+- USB personality behavior
+
+when working on an unrelated subsystem.
+
+## Evidence
+
+Direct Switch 2 behavior, UART evidence, genuine-controller captures, and controlled hardware experiments are primary evidence.
+
+Third-party projects may provide useful reference material but are not authoritative Switch 2 protocol truth.
+
+Never promote a hypothesis to fact.
+
+Preserve important disproven hypotheses when they are likely to be rediscovered.
+
+Use the existing experiment/refutation documentation rather than allowing rejected theories to quietly return.
+
+## Active input ownership
+
+The console-facing stream has one active logical input owner.
+
+Do not accidentally turn support for additional HID peers into arbitrary multi-controller merging.
+
+The source registry, source arbiter, neutralization behavior, and fresh-report boundaries are deliberate safety mechanisms.
+
+A logical source may contain more than one physical peer when a feature explicitly requires it, but that does not imply multiple independent controllers should simultaneously own the console stream.
+
+## Controller mappings
+
+Do not reintroduce the retired per-controller-family remapping system as a convenience.
+
+The existing physical-controller base mapping is intentionally stable.
+
+A new input source may have explicit source-specific mapping requirements when that is part of the task.
+
+Do not silently repurpose unknown or additional physical controls.
+
+Unknown or additional inputs should remain unassigned until deliberately supported.
+
+## Motion
+
+Production translated motion uses the currently validated common Switch 2 motion path.
+
+Do not create alternate generic motion encoders merely because an existing implementation has a misleading historical name.
+
+Do not resume synthesized translated length-`0x28` production work without:
+
+- a concrete deficiency in the validated production path, or
+- materially better evidence or observation capability
+
+The rejected static/template-derived `0x28` approach must not return.
+
+Read `docs/agents/MOTION.md` and the relevant motion evidence before modifying production motion behavior.
+
+## Audio
+
+Pico 2 W uses its validated audio-capable production configuration.
+
+Pico W intentionally retains its validated non-audio profile.
+
+Do not attempt to unify those configurations without a specific task and hardware evidence supporting it.
+
+## Configuration mode
+
+Configuration USB mode is CDC-only.
+
+Do not reintroduce:
+
+- MSC
+- the old embedded web disk
+- generated FAT/web-drive images
+
+Use the repository's current external portal tooling.
+
+## Install-reset marker
+
+Every releaseable UF2 must preserve the install-reset marker behavior.
+
+A newly flashed image performs the intended first-install reset.
+
+An ordinary reboot must not behave like a new installation.
+
+Do not modify persistence/reset semantics incidentally.
+
+## Firmware/application compatibility
+
+Peer-visible contracts must remain deliberate.
+
+Do not change:
+
+- descriptors
+- report layouts
+- field widths
+- field units
+- semantics
+- capabilities
+- management wire formats
+
+without checking the repository's compatibility/version rules.
+
+Preserve descriptor parity, contract-version tests, build identity reporting, and compatibility guards.
+
+Do not bypass a compatibility test merely to make a build pass.
+
+# Stable Architecture
+
+Hardware-validated architecture should be presumed intentional.
+
+Do not refactor a stable subsystem solely because another abstraction looks cleaner.
+
+Refactor only when:
+
+- the active task exposes a concrete limitation
+- duplicated behavior is causing defects or divergence
+- the current architecture prevents required functionality
+- correctness or maintainability risk is demonstrated
+- the maintainer explicitly requests architectural work
+
+Prefer the smallest coherent integration over broad redesign.
+
+When a subsystem has already survived hardware validation, require evidence before treating its architecture as the likely cause of a new failure.
+
+# Repository Layout
+
+Important locations include:
+
+- `src/` — firmware implementation
+- `src/bt_hid/` — Bluetooth HID controller handling and translation
+- `src/bt_hid/motion/` — translated/native Switch 2 motion implementation
+- `src/switch_pro2/` — Pro Controller 2 console-facing behavior
+- `android/companion/` — Android companion and platform-neutral bridge modules
+- `web/` — browser management interface
+- `tools/` — host tests, UART tooling, capture tooling, fixtures, and analysis
+- `docs/architecture/` — architecture documentation
+- `docs/bluetooth/` — Bluetooth/controller documentation
+- `docs/bridge/` — companion bridge protocol/backend documentation
+- `docs/switch2/` — Pro Controller 2 protocol documentation
+- `docs/switch2-gc/` — NSO GameCube documentation
+- `docs/switch2-joycon2/` — Joy-Con 2 documentation
+- `docs/experiments/` — dated reverse-engineering experiments
+- `docs/re-methodology/` — experiment and evidence methodology
+- `docs/status/` — compatibility/current validation matrices
+- `docs/agents/` — short specialist briefs
+- `docs/archive/` — historical documentation
+- `dumps/` — captures and derived research artifacts
+
+Read `docs/README.md` before inventing a new documentation location.
+
+Prefer extending an existing authoritative document over creating an overlapping one.
+
+# Starting a Task
+
+Before editing:
+
+1. Check the current working tree.
+2. Check the current branch.
+3. Identify the files and subsystems relevant to the task.
+4. Read the current status relevant to those subsystems.
+5. Identify existing tests and diagnostics.
+6. Identify behavior that must remain unchanged.
+7. Verify assumptions from the task against the repository.
+
+Do not perform a repository-wide audit unless the task requires one.
+
+Do not discard or overwrite unrelated user changes.
+
+# Context Recovery
+
+If the same task is resumed after compaction, interruption, or usage-limit reset:
+
+- continue from current conversation and working state
+- inspect the current diff/state as necessary
+- do not reread the repository broadly
+- consult only specific documents needed to recover missing facts
+- do not repeat completed investigation merely because the session context changed
+
+A new task session may perform targeted repository reconnaissance for the new task.
+
+# Build Setup
+
+Clone with submodules:
 
 ```powershell
-git clone --recurse-submodules -b ns2-testing https://github.com/notsosaelin/PicoSwitch2.git
+git clone --recurse-submodules https://github.com/notsosaelin/PicoSwitch2.git
 ```
 
 If the repository was cloned without submodules:
@@ -96,28 +299,51 @@ If the repository was cloned without submodules:
 git submodule update --init --recursive
 ```
 
-The Windows build helper expects the Raspberry Pi Pico VS Code extension toolchain described in
-`README.md`. On a newly configured machine, use `.\build.ps1 pico2_w` or `.\build.ps1 pico_w` to
-create the build directory before using direct `cmake --build` commands.
+Use the branch selected by the maintainer or the repository's current development branch.
 
-Use existing configured build directories when present:
+Do not assume a historical branch name is still correct without checking.
+
+The Windows build helper uses the Raspberry Pi Pico SDK/toolchain documented by the repository.
+
+On a fresh workstation, initialize build directories with:
+
+```powershell
+.\build.ps1 pico2_w
+.\build.ps1 pico_w
+```
+
+When configured build directories already exist, prefer incremental builds:
 
 ```powershell
 cmake --build build\pico2_w --config Release --parallel
 cmake --build build\pico_w --config Release --parallel
 ```
 
-Run all compiled host tests:
+Do not delete or reconfigure known-good build directories without a reason.
+
+# Standard Firmware Validation
+
+Run validation appropriate to the changed subsystem.
+
+For significant shared firmware changes, both supported production board builds should remain clean unless the task explicitly affects only one board.
+
+Run compiled host tests with:
 
 ```powershell
 $tests = Get-ChildItem build\host-tests -File -Filter 'test_*.exe'
+
 foreach ($test in $tests) {
     & $test.FullName
-    if ($LASTEXITCODE -ne 0) { throw "$($test.Name) failed" }
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "$($test.Name) failed"
+    }
 }
 ```
 
-Python host tests:
+Run relevant Python test suites as required by the changed subsystem.
+
+Useful general suites include:
 
 ```powershell
 python tools\test_ns2_trace.py
@@ -125,177 +351,415 @@ python tools\test_ns2_nfc_semantics.py
 python tools\test_amiibo_corpus.py
 ```
 
-The figure-v3 NFC state machine is host-replayable. A deterministic v3 parsing,
-state, timing, or record-layout bug belongs in this test, not on hardware:
+Do not rely on this short list as the complete subsystem test inventory.
 
-```powershell
-.\build\host-tests\test_ns2_amiibo_v3_runtime.exe
-```
+Use:
 
-Motion-specific checks:
+- changed files
+- existing test runners
+- relevant documentation
+- relevant agent briefs
 
-```powershell
-.\build\host-tests\build-host-test-ns2-motion-pdu.exe
-.\build\host-tests\build-host-test-ns2-motion-pdu40.exe
-.\build\host-tests\build-host-test-ns2-ds5-motion.exe
-.\build\host-tests\build-host-test-ns2-ds5-motion40.exe
-.\build\host-tests\test_ns2_motion_hybrid.exe
-.\build\host-tests\test_ns2_motion_hybrid_projector.exe
-python tools\test_ns2_magprobe.py
-python tools\test_ns2_motion_packet.py
-python tools\test_ns2_motion_carrier.py
-python tools\test_ns2_motion40_coherence.py
-python tools\test_ns2_motion_hybrid.py
-```
+to determine additional required validation.
 
-`test_ns2_motion40_coherence.py` is the sequence-level gate above the byte-exact codecs. It compiles
-the real C translators against an analytic 800 Hz trajectory, checks complete
-`0x1E -> 0x28 -> 0x1E` loops in physical units, and must also catch every built-in mutation. Run it
-after any scheduler, axis, scale, prefix, or carrier change.
+# Install-Reset Marker Validation
 
-The hybrid splicer test compiles with:
+For releaseable firmware artifacts, preserve the install-reset marker.
 
-```powershell
-gcc -Iinclude -Wall -Wextra -Werror `
-    -o build\host-tests\test_ns2_motion_hybrid.exe `
-    tools\test_ns2_motion_hybrid.c src\bt_hid\motion\ns2_motion_hybrid.c `
-    src\bt_hid\motion\ns2_motion_pdu.c -lm
-```
-
-The live projector test covers stationary-bias acquisition, strict-valid
-genuine-carrier alignment, genuine-clock donor windows, group-only changes,
-immutable status/tail, and byte-identical stale/repeated/layout fallbacks:
-
-```powershell
-gcc -Iinclude -Wall -Wextra -Werror `
-    -o build\host-tests\test_ns2_motion_hybrid_projector.exe `
-    tools\test_ns2_motion_hybrid_projector.c `
-    src\bt_hid\motion\ns2_motion_hybrid_projector.c `
-    src\bt_hid\motion\ns2_motion_hybrid.c `
-    src\bt_hid\motion\ns2_ds5_motion.c `
-    src\bt_hid\motion\ns2_ds5_motion40.c `
-    src\bt_hid\motion\ns2_motion_pdu.c -lm
-```
-
-`build-host-test-ns2-motion-pdu40` holds both firmware length-`0x28` packers to
-byte-exactness against genuine hardware: **981 catch-up** and **853 high-rate**
-packets, plus edge cases the corpus never reaches. Status is written verbatim in
-both — 5 genuine packets carry status `0x00`, so a `status ? status : default`
-idiom silently rewrites real data. Build it with:
-
-```powershell
-gcc -Iinclude -Itools\fixtures -Wall -Wextra `
-    -o build\host-tests\build-host-test-ns2-motion-pdu40.exe `
-    tools\test_ns2_motion_pdu40.c src\bt_hid\motion\ns2_motion_pdu.c
-```
-
-Its fixture is generated, not hand-written — regenerate after any capture
-corpus change with `python tools\gen_motion40_fixture.py`.
-
-`build-host-test-ns2-ds5-motion40` covers the layer above the packer — sample
-scaling, slot placement across the emit window, cadence, saturation clamping,
-the prefix epoch, and the modular prefix slice against 30 reference vectors:
-
-```powershell
-gcc -Iinclude -Itools\fixtures -Wall -Wextra `
-    -o build\host-tests\build-host-test-ns2-ds5-motion40.exe `
-    tools\test_ns2_ds5_motion40.c src\bt_hid\motion\ns2_ds5_motion40.c `
-    src\bt_hid\motion\ns2_motion_pdu.c
-```
-
-### Length-`0x28` readiness gate — run before requesting a flash
-
-```powershell
-python tools/ns2_motion40_validate.py     # exits non-zero unless every
-                                          # capture-answerable question passes
-```
-
-Byte-exact validation of a *generated* `0x28` is impossible from BLE captures:
-the controller transmits derived products, never its inputs. The internal
-800 Hz IMU stream is not sent (handle `0x000A` runs at the notification rate),
-and the carrier at the prefix's epoch instant is not sent either — across 449
-genuine packets the epoch coordinate landed on a transmitted `0x1E` **zero**
-times. The bar is therefore physical accuracy against interpolated truth with a
-stated per-field tolerance, not byte equality.
-
-Supporting measurements, each re-runnable:
-
-```powershell
-python tools/ns2_motion40_prefix_epoch.py   # when the prefix describes
-python tools/ns2_motion40_slot_timing.py    # where slots sit in the window
-python tools/ns2_motion40_gyro_axes.py      # gyro axis order and sign
-```
-
-### Length-`0x28` motion gate (DEFAULT OFF)
-
-```text
-ds5motion pdu40 on       # emit interleaved high-rate 0x28 + 0x1E
-ds5motion pdu40 off      # return to the proven 0x1E carrier
-ds5motion pdu40 status   # emitted / starved / overlong / saturated counters
-```
-
-Emission is **interleaved high-rate**: the `0x1E` carrier fills the polls
-between `0x28` packets, which is what genuine hardware does at this cadence.
-That is not a preference — it supplies the chart state the modular prefix is
-unwrapped against, and it delivers each `0x28` exactly once instead of ~20
-times at a 1 kHz poll. High-rate is the layout with paired ground truth: 768 of
-773 genuine `0x28` packets that have a `0x1E` alongside them are high-rate.
-
-`packing_mode`, not elapsed, is the layout discriminator. Elapsed only selects
-among the mode-3 cadence layouts; five corpus packets carry mode 0 and are a
-different structure entirely. `starved > 0` means the emit interval outran the source sample
-rate; saturation means motion exceeded the wire range (±2 g, ±499.5 dps — which
-is the sensor's own full scale, not a codec artifact) or the scaling is wrong.
-Both distinguish "well-formed but wrong" from "working".
-
-A byte-exact packet can still describe the wrong timeline. Two invariants above
-the packer are load-bearing and easy to break:
-
-- **Slots span the emit window.** Slot 0 is the oldest sample in the window and
-  the last slot the newest; filling from the first samples to arrive discards
-  the freshest data. Evidence and reproduction:
-  `python tools\ns2_motion40_slot_timing.py`.
-- **`elapsed` describes the samples, not the poll.** `last_emit_us` advances by
-  exactly the elapsed reported so truncation remainders carry forward rather
-  than drifting; `last_sample_us` separately bounds the next selection window
-  so a sample can never appear in two packets.
-
-**Not hardware-validated.** Use it only for a deliberate A/B against `0x1E`.
-
-Install-reset image checks:
+Current verification tooling:
 
 ```powershell
 python tools\verify_install_reset_marker.py build\pico2_w\PicoSwitchWGA-pico2_w.bin --flash-size 0x400000
 python tools\verify_install_reset_marker.py build\pico_w\PicoSwitchWGA-pico_w.bin --flash-size 0x200000
 ```
 
-Build success is not hardware validation. State exactly which level was checked.
+Failure here is a release blocker unless the current task deliberately changes the install/reset design.
 
-## Hardware and UART workflow
+# Motion Validation
 
-- The maintainer performs flashes and physical controller tests.
-- A headered Pico 2 W can remain connected to the Switch while UART connects to a PC.
-- Discover the local port with `tools\read_uart_diag.ps1 -List`; do not assume `COM11` on a new PC.
-- Only run live UART mutations after the maintainer says the expected controller/personality is
-  connected and ready.
-- Prefer passive capture and exact A/B experiments over repeated blind firmware guesses.
-- For non-NFC protocol work, follow
-  [`docs/re-methodology/controller-protocol-lab.md`](docs/re-methodology/controller-protocol-lab.md).
-  Use the domain runner (`motion_lab.ps1`, `audio_lab.ps1`, or `firmware_lab.ps1`) so every hardware
-  action records Git/build provenance, diagnostics, complete captures, analysis, fixtures, and
-  hashes. A dropped/overwritten capture cannot become a golden fixture.
-- For NFC/amiibo work, follow
-  [`docs/re-methodology/nfc-investigation-workflow.md`](docs/re-methodology/nfc-investigation-workflow.md):
-  classify the failing layer, run `tools/amiibo_corpus.py` on any new dump, decode existing captures
-  with `python tools/ns2_trace.py nfc`, and only then run one instrumented
-  `tools/nfc_lab.ps1` experiment naming its single intended variable. Console status values are not
-  diagnoses — `2115-0096` / `07 41` has had two unrelated causes.
+If the task changes motion behavior, read:
 
-## Git and release workflow
+- `docs/agents/MOTION.md`
+- the current motion protocol documentation
+- the relevant experiment records
 
-- Work on `ns2-testing` unless the maintainer directs otherwise.
-- Preserve unrelated user changes.
-- Update `STATUS.md`, `PLAN.md`, `CHANGELOG.md`, compatibility documentation, and protocol evidence
-  when behavior changes materially.
-- Commit, push, or publish a release only when the maintainer requests it.
-- A release requires both board builds and the relevant hardware regression checklist.
+Run the existing motion host, quality, and coherence suites appropriate to the code changed.
+
+Do not copy stale hardcoded inventories of every historical motion executable into new task prompts.
+
+The repository's current tests and motion brief are authoritative.
+
+Synthesized translated length-`0x28` remains research-only/deferred unless explicitly reopened.
+
+Do not request a hardware flash for a speculative motion change before available host/coherence gates pass.
+
+Do not revive previously rejected chart, magnetometer, template, or alternate-encoder theories without new contradictory evidence.
+
+# NFC / Amiibo Validation
+
+If the task changes NFC or Virtual Amiibo behavior, follow:
+
+`docs/re-methodology/nfc-investigation-workflow.md`
+
+Use existing:
+
+- corpus tooling
+- semantic decoder
+- host-replayable runtime
+- persistence tests
+- capture fixtures
+- NFC lab runner
+
+before requesting physical console testing.
+
+A deterministic parsing, state, timing, persistence, or record-layout bug should be reproduced in the host laboratory when possible rather than debugged through repeated blind flashes.
+
+Console-visible status values are observations, not diagnoses.
+
+Do not replace hardware-confirmed Virtual Amiibo behavior with speculative protocol semantics.
+
+# Android / Bridge Validation
+
+If the task changes the Android companion or platform-neutral bridge:
+
+- preserve the separation between platform-neutral bridge logic and Android-specific backends
+- run the existing Gradle/JVM tests for affected modules
+- build the affected APK variant
+- run descriptor/contract parity checks when the bridge wire contract or descriptor is touched
+- use ADB diagnostics when an Android device is available
+- do not ask the maintainer to manually retrieve information that ADB can obtain
+- preserve current firmware/application runtime compatibility handling
+
+The bridge contract and backend architecture are documented under:
+
+- `docs/bridge/PROTOCOL.md`
+- `docs/bridge/PLATFORM_BACKEND.md`
+
+Do not move Android-specific APIs into the platform-neutral module.
+
+Do not interpret a firmware/application contract mismatch as evidence of a bridge architecture failure without checking runtime compatibility diagnostics first.
+
+# Web / Management Validation
+
+If the task changes the web portal or management protocol:
+
+- preserve the current CDC/BLE transport model
+- preserve management authorization/security requirements
+- run existing portal/static tests
+- run relevant management host tests
+- check wire compatibility if command formats change
+- verify browser-visible state is not merely cached stale state when testing synchronization behavior
+
+Do not add a second configuration protocol when the existing management path can be extended cleanly.
+
+# Hardware Validation Levels
+
+Build success is not hardware validation.
+
+State clearly which level was performed:
+
+- static/source review
+- unit/host tests
+- board build
+- application build
+- automated device validation
+- physical hardware validation
+- real Switch 2 gameplay validation
+
+Never describe a feature as hardware-confirmed when only software tests passed.
+
+If hardware validation is pending, state exactly what remains unverified.
+
+# Hardware Workflow
+
+The maintainer performs physical flashes and interactions when physical access is required.
+
+Agents should autonomously use software-visible diagnostics when available.
+
+Useful sources may include:
+
+- UART
+- ADB
+- firmware counters
+- diagnostic exports
+- capture tools
+- repository scripts
+- test harnesses
+
+Do not assume a fixed COM port or Android device identifier on a different workstation or session.
+
+Discover currently connected hardware first.
+
+For UART, use repository tooling such as:
+
+```powershell
+tools\read_uart_diag.ps1 -List
+```
+
+or the current documented equivalent.
+
+Do not perform destructive or mutating live UART operations until the required hardware/personality state is known.
+
+Prefer passive observation and bounded A/B experiments over repeated firmware guesses.
+
+# Protocol Research Workflow
+
+For non-NFC protocol research, follow:
+
+`docs/re-methodology/controller-protocol-lab.md`
+
+Use the existing shared laboratory instead of inventing parallel capture infrastructure.
+
+Where applicable, preserve:
+
+- Git provenance
+- firmware/build identity
+- hardware identity
+- controller firmware identity
+- console firmware identity
+- timestamps
+- zero-loss status
+- raw captures
+- semantic analysis
+- fixtures
+- hashes
+
+A dropped or overwritten capture cannot become authoritative evidence or a golden fixture.
+
+Design experiments around one clear question and one meaningful variable whenever practical.
+
+# Experiments
+
+Create an experiment document when a task materially resolves or tests an unknown:
+
+- protocol behavior
+- hardware behavior
+- timing behavior
+- state-machine behavior
+- competing hypothesis
+- unexplained failure
+
+Routine implementation verification does not require a new experiment document.
+
+Experiment records belong under:
+
+`docs/experiments/`
+
+Preserve historical experiment observations even when later conclusions change.
+
+Correct active summaries rather than rewriting historical evidence.
+
+# Diagnostics
+
+Prefer diagnostics that expose subsystem boundaries.
+
+Useful patterns include:
+
+- report counters
+- accepted/rejected counts
+- rejection reasons
+- current source/profile/personality
+- connection generations
+- capability state
+- contract/build identity
+- descriptor match/mismatch state
+- last-error state
+- bounded state snapshots
+
+Avoid high-frequency logging that materially changes timing.
+
+When debugging a cross-layer failure, instrument boundaries before rewriting implementation logic.
+
+Prefer evidence that can distinguish:
+
+- input never arrived
+- parsing rejected it
+- state was not updated
+- output was not generated
+- output was not transmitted
+- host rejected or ignored it
+
+Do not infer a root cause solely from which subsystem looks suspicious.
+
+# Documentation Updates
+
+When behavior changes materially, update only the documentation affected by the change.
+
+Common destinations include:
+
+- `STATUS.md` for current state
+- `PLAN.md` only when accepted future work changes
+- protocol documentation for durable protocol knowledge
+- architecture documentation for architectural changes
+- compatibility matrix for hardware validation changes
+- experiment documentation for reverse-engineering evidence
+- `CHANGELOG.md` when appropriate for user-visible release history
+
+`STATUS.md` is not append-only.
+
+When updating it:
+
+- replace superseded state
+- remove resolved blockers
+- remove obsolete diagnoses
+- collapse completed investigation history into current conclusions
+- link detailed evidence instead of duplicating it
+- eliminate contradictions
+- remove stale next-session instructions
+- avoid duplicating `PLAN.md`
+
+If a reader needs the full sequence of an investigation, that sequence belongs in `docs/experiments/` or another specific technical document, not `STATUS.md`.
+
+Do not create speculative roadmap entries for ideas that are not accepted work.
+
+# Documentation Quality
+
+When documenting protocol behavior, distinguish:
+
+- Confirmed
+- Strong Evidence
+- Hypothesis
+- Unknown
+
+Do not present an inference as a wire fact.
+
+When a hypothesis is disproven and likely to be rediscovered, preserve the negative result in the appropriate evidence document.
+
+Document why non-obvious behavior exists when a future maintainer might otherwise "clean it up" and reintroduce a bug.
+
+Avoid duplicating the same current-state claim in multiple authoritative files.
+
+# Subagents
+
+Use subagents only when the active environment supports them and the task contains independent, substantial work that genuinely benefits from parallel execution.
+
+Do not spawn subagents for trivial tasks.
+
+Prompts should be short and self-contained.
+
+Prefer pointing a specialist at:
+
+- the exact question
+- the files in scope
+- the relevant `docs/agents/*.md` brief
+- the task boundary
+- the acceptance criteria
+- the expected return format
+
+rather than pasting large amounts of project history.
+
+Do not assume a subagent can see the parent conversation.
+
+Independent read-only investigations may run in parallel.
+
+Concurrent writers must not edit the same worktree/files unless the environment provides safe isolation.
+
+The primary agent remains responsible for validating and integrating subagent results.
+
+Do not delegate simply to appear parallel.
+
+# Git Workflow
+
+Before changes:
+
+```powershell
+git status --short
+git branch --show-current
+```
+
+Preserve unrelated user changes.
+
+Do not discard, reset, stash, or overwrite work merely to obtain a clean tree unless explicitly authorized.
+
+Use focused commits.
+
+Do not combine unrelated cleanup with a feature or fix commit.
+
+Do not commit:
+
+- passwords
+- signing secrets
+- private keys
+- keystores
+- machine-specific sensitive configuration
+- temporary captures not intended for the repository
+
+# Commit and Push Policy
+
+Do not assume every task requires a commit or push.
+
+Follow the maintainer's current instruction.
+
+When asked to commit:
+
+- review the intended diff
+- run appropriate validation
+- use a focused commit message
+- report the resulting commit identity
+
+When asked to push:
+
+- verify the intended branch
+- push only after requested validation succeeds
+
+Do not silently create tags or releases.
+
+# Release Workflow
+
+Do not tag or publish a release without explicit maintainer approval.
+
+A release candidate should be attributable to a clean source revision.
+
+Validation should match the changed subsystem and release risk.
+
+As applicable, verify:
+
+- Pico W production build
+- Pico 2 W production build
+- relevant host tests
+- Python/tooling tests
+- Android/JVM tests
+- companion build
+- descriptor parity
+- bridge contract/version guards
+- install-reset markers
+- application signing
+- signature verification
+- firmware build identity
+- artifact hashes
+- hardware sanity checks
+
+Do not require unrelated exhaustive hardware campaigns for a release that did not touch those subsystems.
+
+Do not publish a release from an unverified dirty build unless the maintainer explicitly intends that result.
+
+If firmware and companion share a peer-visible contract, release validation must ensure their versions are compatible.
+
+# Completion
+
+Before declaring a task complete:
+
+1. Review the final diff.
+2. Confirm the requested behavior is implemented.
+3. Confirm important surrounding behavior remains intact.
+4. Run appropriate automated validation.
+5. Perform or clearly report required hardware validation.
+6. Update affected durable documentation.
+7. Remove temporary debugging instrumentation that should not remain.
+8. Check for contradictions introduced into `STATUS.md` or other active docs.
+9. Check whether compatibility/version metadata needs updating.
+10. Report anything that remains unverified.
+
+At completion, summarize:
+
+- what changed
+- important design decisions
+- validation performed
+- hardware validation performed or still required
+- documentation updated
+- remaining limitations
+- repository status
+
+Stop after the requested task.
+
+Do not automatically begin the next feature, refactor, experiment, cleanup pass, or roadmap item.
