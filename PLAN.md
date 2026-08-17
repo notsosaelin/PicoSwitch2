@@ -45,79 +45,38 @@ motion, rumble, battery, descriptor, or bridge behavior without evidence of a co
 
 # Current Development Priority
 
-## Bluetooth Keyboard / Keyboard + Mouse Input
+## Bluetooth Keyboard / Keyboard + Mouse Input — Complete
 
-Add direct Bluetooth HID keyboard support to the Pico, including an optional Keyboard + Mouse mode.
+Delivered and hardware validated. Controller / Keyboard / Keyboard + Mouse input modes, the
+composite logical-source model, structural HID classification, the remapping-capable configuration
+foundation with canonical defaults and sparse user overrides, persistence with schema migration, the
+management and UART surface, diagnostics, and host coverage.
 
-This is a Pico-side input feature.
+Reference: [`docs/bluetooth/keyboard-mouse-input.md`](docs/bluetooth/keyboard-mouse-input.md).
+Current state and the confirmed reconnect/discovery architecture are recorded in
+[`STATUS.md`](STATUS.md).
 
-The intended source modes are:
+### Deferred follow-ups
 
-- Controller
-- Keyboard
-- Keyboard + Mouse
+Neither is in progress. Both need product decisions or hardware evidence, not more implementation.
 
-The existing semantic rule remains:
+- **Bounded partial-KB/M discovery policy.** Current hardware-correct behavior keeps discovery
+  active while only one KB/M role is present, which is what lets a returning role rejoin without
+  re-pairing. A future bounded completion-window pass would allow intentional keyboard-only or
+  mouse-only use without indefinite active discovery. Not specified here.
+- **Classic pointing-device admission in Controller mode.** Classic discovery admits only
+  gamepad-class Class-of-Device peripherals in Controller mode, so a Classic Bluetooth mouse driving
+  Joy-Con 2 mouse mode must initiate the connection itself. The KB/M pass opened that gate for its
+  own roles only. Whether Controller mode should also admit a pointing device from inquiry is a
+  product decision, not a defect, and needs hardware evidence about which mice actually page the
+  host.
 
-> One logical input source owns the console controller stream at a time.
+### Follow-on: graphical remapping editor
 
-Keyboard + Mouse may consist of two Bluetooth HID peers while still representing one logical
-controller source.
-
-### Requirements
-
-- [ ] Audit the existing Bluetooth admission/source-arbiter path before implementation.
-- [ ] Add conventional Bluetooth HID keyboard classification and parsing.
-- [ ] Add conventional Bluetooth HID mouse classification and parsing where required.
-- [ ] Preserve normal one-controller behavior.
-- [ ] Support Keyboard as a complete standalone controller source.
-- [ ] Support Keyboard + Mouse as one logical source.
-- [ ] Prevent a second keyboard, second mouse, or unrelated gamepad from becoming an unintended
-      concurrent controller source.
-- [ ] Preserve independent keyboard/mouse state ownership.
-- [ ] Guarantee disconnect/reset behavior cannot leave stuck inputs.
-- [ ] Add sensible default Keyboard mappings.
-- [ ] Add sensible default Keyboard + Mouse mappings.
-- [ ] Reuse the existing mouse abstraction/path where practical.
-
-### Existing mouse behavior
-
-PicoSwitch2 already supports generic HID mouse input for Joy-Con 2 native mouse output.
-
-The new Bluetooth KB/M work must inspect and reuse that implementation where appropriate rather
-than creating a competing mouse model.
-
-Bluetooth mouse input should support two output cases:
-
-1. Native mouse-capable output personality:
-   feed the existing Joy-Con mouse path where appropriate.
-
-2. Non-mouse output personality:
-   translate relative mouse motion into right-stick behavior.
-
-The existing Joy-Con mouse implementation must remain regression-free.
-
-### Validation
-
-Automated coverage should include:
-
-- keyboard press/release
-- simultaneous key handling
-- opposing directional input
-- keyboard disconnect neutralization
-- keyboard reconnect neutrality
-- keyboard/mouse state merging
-- mouse movement and button handling
-- mouse disconnect neutralization
-- native Joy-Con mouse output
-- mouse-to-stick output
-- source admission/rejection behavior
-- existing controller-mode regression coverage
-
-Hardware validation should cover both Keyboard and Keyboard + Mouse operation with available
-Bluetooth HID hardware.
-
-Pico W and Pico 2 W resource implications must both be checked.
+UX_PASS owns the polished Keyboard / Keyboard + Mouse remapping editor. It consumes the
+`kbm map` / `kbm bind` / `kbm reset` / `kbm mouse` configuration surface already shipped by this
+pass and must not need to restructure the Bluetooth input path, edit firmware constants, or
+reconstruct defaults from source.
 
 ---
 

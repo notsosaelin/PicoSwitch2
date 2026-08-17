@@ -115,4 +115,14 @@ struct ble_report_map_s {
 const gamepad_quirk_t *gamepad_quirks_identify(uint16_t vendor_id, uint16_t product_id,
                                                 const char *name, uint8_t button_count);
 
+// True when `quirk` is the unmatched fallback rather than a recognized controller
+// family. This is the project's established answer to "has this peer been
+// identified as a supported controller?", and it stays that way: it is derived
+// from the one ordered match table above, not from a second opinion about the
+// HID descriptor.
+//
+// Used to keep keyboard/mouse descriptor classification away from peers the
+// quirk table already claims -- see bthid.c's descriptor handling.
+bool gamepad_quirks_is_generic(const gamepad_quirk_t *quirk);
+
 #endif  // BTHID_GAMEPAD_QUIRKS_H

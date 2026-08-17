@@ -66,6 +66,27 @@ static int find_id(const ns2_input_arbiter_t *arbiter, uint32_t id)
     return -1;
 }
 
+// Group handle of whichever source currently owns the console, or 0 when the
+// owner is a standalone source (or there is no owner).
+static uint32_t active_group(const ns2_input_arbiter_t *arbiter)
+{
+    int index = find_id(arbiter, arbiter->active_id);
+    return index < 0 ? 0u : arbiter->sources[index].group_id;
+}
+
+// A source may publish when it IS the owner, or when it is another peer of the
+// owner's composite logical source.  Group membership is the only way two
+// transport peers ever share console ownership.
+static bool source_owns_console(const ns2_input_arbiter_t *arbiter,
+                                const ns2_input_source_info_t *source)
+{
+    if (!source->present || arbiter->active_id == NS2_INPUT_SOURCE_ID_NONE)
+        return false;
+    if (source->id == arbiter->active_id) return true;
+    if (source->group_id == 0u) return false;
+    return source->group_id == active_group(arbiter);
+}
+
 static uint32_t next_nonzero(volatile uint32_t *counter)
 {
     uint32_t value = atomic_add_u32(counter, 1u);
@@ -155,6 +176,13 @@ static bool apply_auto_policy(ns2_input_arbiter_t *arbiter)
     uint32_t wanted = best < 0 ? NS2_INPUT_SOURCE_ID_NONE
                                : arbiter->sources[best].id;
     if (wanted == arbiter->active_id) return false;
+    // A newly arrived peer of the composite that ALREADY owns the console is
+    // not a change of logical source. Without this, the second half of a
+    // Keyboard + Mouse source would move the owning token between two peers of
+    // the same owner and emit a neutral boundary in the middle of live input.
+    if (best >= 0 && arbiter->sources[best].group_id != 0u &&
+        arbiter->sources[best].group_id == active_group(arbiter))
+        return false;
 
     bool had_owner = arbiter->active_id != NS2_INPUT_SOURCE_ID_NONE;
     arbiter->active_id = wanted;
@@ -173,11 +201,13 @@ static int register_source(ns2_input_arbiter_t *arbiter,
                            uint16_t vendor_id,
                            uint16_t product_id,
                            uint8_t source_class,
+                           uint32_t group_id,
                            bool *auto_switched)
 {
     int existing = find_source(arbiter, key);
     if (existing >= 0) {
         update_metadata(&arbiter->sources[existing], name, vendor_id, product_id);
+        arbiter->sources[existing].group_id = group_id;
         // A source registered by a connection hook starts UNKNOWN and is
         // identified by its first report. That is a genuine change of standing,
         // so ownership is re-evaluated exactly as it is for a new arrival --
@@ -199,6 +229,7 @@ static int register_source(ns2_input_arbiter_t *arbiter,
         source->id = next_nonzero(&arbiter->next_id);
         source->generation = next_nonzero(&arbiter->next_generation);
         source->source_class = source_class;
+        source->group_id = group_id;
         update_metadata(source, name, vendor_id, product_id);
         // A newly arrived source can outrank the current default owner -- this is
         // how a controller paired directly to the adapter reclaims the console
@@ -243,6 +274,20 @@ bool ns2_input_arbiter_submit(ns2_input_arbiter_t *arbiter,
                               uint8_t source_class,
                               ns2_input_route_decision_t *decision)
 {
+    return ns2_input_arbiter_submit_group(arbiter, key, name, vendor_id,
+                                          product_id, source_class, 0u,
+                                          decision);
+}
+
+bool ns2_input_arbiter_submit_group(ns2_input_arbiter_t *arbiter,
+                                    const ns2_input_source_key_t *key,
+                                    const char *name,
+                                    uint16_t vendor_id,
+                                    uint16_t product_id,
+                                    uint8_t source_class,
+                                    uint32_t group_id,
+                                    ns2_input_route_decision_t *decision)
+{
     if (!arbiter || !key || !decision) return false;
     memset(decision, 0, sizeof(*decision));
 
@@ -251,7 +296,7 @@ bool ns2_input_arbiter_submit(ns2_input_arbiter_t *arbiter,
     bool auto_switched = false;
     (void)apply_pending(arbiter, &transition);
     int source_index = register_source(arbiter, key, name, vendor_id, product_id,
-                                       source_class, &auto_switched);
+                                       source_class, group_id, &auto_switched);
     decision->auto_switched = auto_switched ? 1u : 0u;
     if (source_index < 0) {
         status_end(arbiter);
@@ -260,7 +305,7 @@ bool ns2_input_arbiter_submit(ns2_input_arbiter_t *arbiter,
 
     ns2_input_source_info_t *source = &arbiter->sources[source_index];
     decision->transition_applied = transition ? 1u : 0u;
-    if (source->id == arbiter->active_id) {
+    if (source_owns_console(arbiter, source)) {
         decision->accepted = 1u;
         if (arbiter->awaiting_fresh) {
             arbiter->awaiting_fresh = 0u;
@@ -286,14 +331,40 @@ bool ns2_input_arbiter_disconnect(ns2_input_arbiter_t *arbiter,
     }
 
     uint32_t id = arbiter->sources[index].id;
-    bool pending_target = atomic_load_u32(&arbiter->pending_id) == id;
+    uint32_t group = arbiter->sources[index].group_id;
+    // Only a request that has NOT yet been applied is an in-flight selection.
+    // `pending_id` is deliberately never cleared at the apply site (see
+    // ns2_input_arbiter_get_status), so matching it alone would also fire for a
+    // long-settled choice -- which is indistinguishable in outcome for a
+    // standalone source, but would suppress the composite-source handover
+    // below for a user-selected Keyboard + Mouse peer.
+    bool pending_target =
+        atomic_load_u32(&arbiter->pending_request) != arbiter->applied_request &&
+        atomic_load_u32(&arbiter->pending_id) == id;
     bool active = id == arbiter->active_id;
     // A selected target can disappear after the core-0 request but before the
     // next report boundary.  Treat that as an ownership loss too: the caller
     // must re-affirm neutral and must not revive the previous source.
     if (pending_target) active = true;
-    if (was_active) *was_active = active;
     memset(&arbiter->sources[index], 0, sizeof(arbiter->sources[index]));
+
+    // A composite logical source survives losing one of its peers.  Hand the
+    // owning token to a surviving member instead of surrendering the console:
+    // for Keyboard + Mouse this is what keeps the keyboard working when the
+    // mouse's battery dies, without the remaining peer being mistaken for an
+    // unrelated new source.  The caller still clears the departed role's own
+    // state; only whole-source loss neutralizes the slot.
+    if (active && !pending_target && group != 0u) {
+        for (unsigned i = 0; i < NS2_INPUT_ARBITER_MAX_SOURCES; ++i) {
+            if (!arbiter->sources[i].present ||
+                arbiter->sources[i].group_id != group)
+                continue;
+            arbiter->active_id = arbiter->sources[i].id;
+            active = false;
+            break;
+        }
+    }
+    if (was_active) *was_active = active;
     if (active) {
         arbiter->active_id = NS2_INPUT_SOURCE_ID_NONE;
         arbiter->awaiting_fresh = 0u;
@@ -344,12 +415,11 @@ bool ns2_input_arbiter_is_active_connection_generation(
     for (;;) {
         uint32_t before = atomic_load_u32(&arbiter->status_sequence);
         if (before & 1u) continue;
-        uint32_t active_id = arbiter->active_id;
         bool active = false;
         for (unsigned i = 0; i < NS2_INPUT_ARBITER_MAX_SOURCES; ++i) {
             if (arbiter->sources[i].present &&
                 arbiter->sources[i].key.dev_addr == dev_addr &&
-                arbiter->sources[i].id == active_id &&
+                source_owns_console(arbiter, &arbiter->sources[i]) &&
                 (connection_generation == 0u ||
                  arbiter->sources[i].key.connection_generation ==
                      connection_generation)) {

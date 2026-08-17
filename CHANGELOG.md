@@ -3,6 +3,55 @@
 Release notes describe user-visible behavior. Detailed implementation history remains in
 `docs/archive/` and the experiment records.
 
+## Unreleased
+
+### Added
+
+- **Bluetooth keyboard and keyboard + mouse input.** A new **Input source** setting selects
+  Controller (the default and unchanged behavior), Keyboard, or Keyboard + Mouse. A Bluetooth
+  keyboard can drive the console by itself, and a keyboard plus a mouse act as one controller — one
+  logical input source, as before, just backed by two peers. A single device exposing both
+  keyboard and pointer fills both roles over one connection.
+- **Remappable keyboard and mouse profiles.** Each mode has its own independently configurable
+  profile over documented defaults (WASD/IJKL for the keyboard, WASD plus mouse look for keyboard +
+  mouse). Bindings can be changed, unassigned, or restored per profile; changes persist across
+  reboot and never affect unrelated settings. Mouse movement uses the Joy-Con 2 pointer where the
+  selected personality has one and translates to the right stick otherwise, with adjustable
+  sensitivity, inversion, and recenter time.
+- Portal card for selecting the input mode and seeing keyboard/mouse connection state, plus `kbm`
+  commands on management and UART for the full mapping surface.
+
+Hardware-validated 2026-08-16 with a Bluetooth keyboard and mouse: both connect together as one
+controller, either can be switched off and back on and rejoins on its own without re-pairing, and
+the one still connected keeps working throughout. See
+[`docs/bluetooth/keyboard-mouse-input.md`](docs/bluetooth/keyboard-mouse-input.md).
+
+### Changed
+
+- Persistent settings schema 10 → 11. Existing controller colours and the learned wake identity are
+  migrated in place; nothing a user had configured is reset by the upgrade.
+- A pairing window now stays open until the **selected** input source is complete, so pairing a
+  keyboard in Keyboard + Mouse mode no longer closes the window the mouse still needs. Controller
+  and Keyboard modes behave exactly as before.
+
+### Fixed
+
+- **A bonded Bluetooth peer failed to reconnect after being powered off and on again when a second
+  peer stayed connected.** The adapter tracked only one reconnect identity — whichever peer
+  connected most recently — so when a keyboard and mouse were both paired, powering one off made
+  the adapter chase the one that was still connected. Each of those attempts also stopped the scan,
+  so the device that had actually gone away was never looked for, and only re-pairing brought it
+  back. The adapter now selects from all of its saved pairings and never targets a device that is
+  already connected. Single-controller reconnect behaviour is unchanged.
+- **With a keyboard and mouse both paired and switched on, only the first one to connect worked.**
+  The adapter stopped looking for devices as soon as anything connected — a rule from when it only
+  ever served one controller — so the second device was never found, and the only way to get it on
+  was to power the first one off and then power-cycle the one that was waiting. The adapter now
+  keeps looking while the selected input source is still missing a device, and stops once the source
+  is complete. A single controller still ends discovery exactly as before.
+- A stale-pairing cleanup could delete the saved pairing of the wrong device when two were
+  connected, removing one that was still working.
+
 ## 2.0.0 — 2026-08-15
 
 A major-generation release. v1.5.0 was a firmware-and-controller milestone whose only

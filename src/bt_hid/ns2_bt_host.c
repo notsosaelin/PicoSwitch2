@@ -23,6 +23,7 @@
 #include "bootsel_action.h"
 #include "config.h"
 #include "ds5_audio_bridge.h"
+#include "ns2_kbm_runtime.h"
 #include "ns2_wake.h"
 #include "usb.h"
 
@@ -89,6 +90,35 @@ extern volatile uint8_t g_gc_stage;   // GameCube USB handshake progress (core0)
 extern volatile uint8_t g_gc_bad_report_id;  // valid only when g_gc_stage==21 -- see switch_gc.h
 #endif
 
+// One dongle serves one LOGICAL input source, which is not always one peer:
+// Keyboard + Mouse mode fills two roles. The pairing window and the idle-scan
+// rule must therefore ask "is the SELECTED source complete?", not "is anything
+// connected?" -- otherwise pairing a keyboard would immediately close the
+// window the mouse still needs, and in Keyboard mode a leftover connected
+// gamepad would stop discovery before a keyboard could ever be found.
+//
+// Controller mode is byte-for-byte the pre-existing "a controller is HID-ready"
+// test.
+static bool logical_source_complete(void) {
+    ns2_kbm_runtime_status_t status;
+    ns2_kbm_runtime_status(&status);
+    // The rule itself is pure and host-tested (see ns2_kbm_logical_source_complete
+    // and tools/test_ns2_kbm.c): a premature "complete" permanently strands the
+    // missing peer, so it is pinned by regression rather than restated here.
+    return ns2_kbm_logical_source_complete(status.keyboard_connected,
+                                           status.mouse_connected,
+                                           btstack_host_controller_connected());
+}
+
+// True while any KB/M role is held. Such a source is assembled incrementally,
+// which makes the historical "opening pairing replaces what is connected" rule
+// wrong for it.
+static bool kbm_source_present(void) {
+    ns2_kbm_runtime_status_t status;
+    ns2_kbm_runtime_status(&status);
+    return status.keyboard_connected || status.mouse_connected;
+}
+
 static void open_pairing_window(uint32_t now_ms) {
     // Don't stomp an already-admitted candidate that's still finishing a
     // connection from a *previous* window (see btstack_host_close_pairing_window):
@@ -99,12 +129,19 @@ static void open_pairing_window(uint32_t now_ms) {
     if (btstack_host_pairing_close_deferred()) {
         return;
     }
-    pairing_wait_for_disconnect = btstack_host_controller_connected();
+    // Historical replacement semantics apply to a STANDALONE controller source
+    // only: opening pairing with a gamepad connected still means "replace it".
+    //
+    // A KB/M composite is assembled role by role, so opening pairing while one
+    // of its roles is connected means "add the other one" -- disconnecting what
+    // is already there is exactly wrong, and is what made keyboard + mouse
+    // impossible to establish. A KB/M role is replaced by powering its device
+    // off (which frees the role) or by the pairing wipe gesture; that
+    // limitation is deliberate, because the BOOTSEL gesture cannot say which
+    // role the user means.
+    pairing_wait_for_disconnect =
+        !kbm_source_present() && btstack_host_controller_connected();
     if (pairing_wait_for_disconnect) {
-        // One dongle serves one controller. Entering pairing mode while a
-        // controller is active therefore means "replace the active source":
-        // preserve its bond, disconnect it, and wait for zero HID-ready
-        // controllers before allowing the normal auto-close rule below.
         btstack_host_disconnect_all_devices();
     }
     bt_set_pairing_mode(true);  // start scanning for new controllers
@@ -171,6 +208,10 @@ static void rumble_timer_handler(btstack_timer_source_t *ts) {
     // on the next timer callback even under high-rate DualSense Classic traffic.
     bootsel_core1_service();
     bthid_task();
+    // Mouse-to-stick recenter. A mouse that stops moving stops reporting, so
+    // without a periodic tick the translated stick would hold its last
+    // deflection indefinitely. Cheap early-out in every other mode.
+    ns2_kbm_runtime_service();
     btstack_run_loop_set_timer(ts, RUMBLE_TICK_MS);
     btstack_run_loop_add_timer(ts);
 }
@@ -262,7 +303,7 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
         pairing_wait_for_disconnect = false;
     }
     if (pairing_until_ms && !pairing_wait_for_disconnect &&
-        btstack_host_controller_connected()) {
+        logical_source_complete()) {
         bt_set_pairing_mode(false);
         pairing_until_ms = 0;
     }
@@ -272,7 +313,27 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
     // The host stays connectable, so a bonded controller still reconnects;
     // discovery resumes at 0 connections via btstack_host_process()'s safety-net.
     if (pairing_until_ms == 0) {
-        btstack_host_idle_scan_if_connected();
+        if (logical_source_complete()) {
+            btstack_host_idle_scan_if_connected();
+        } else {
+            // The selected source is still missing a role. Discovery must be
+            // RUNNING, not merely "not stopped".
+            //
+            // Confirmed first-peer-wins mechanism: when a BLE HID peer reaches
+            // ready, the host calls btstack_host_stop_scan() unconditionally --
+            // the legacy 1-dongle-1-controller rule. The only thing that would
+            // restore discovery is btstack_host_process()'s idle safety-net, and
+            // its last term is btstack_classic_get_connection_count() == 0, which
+            // despite the name counts BLE links too. With one BLE peer connected
+            // that term is false, so the safety-net predicate short-circuits and
+            // never even reaches start_scan() -- which is why the hardware showed
+            // scan starts == stops and no suppression counter climbing.
+            //
+            // Net effect: the first peer to arrive shut the door behind itself,
+            // and the second was only ever found in the brief window before that
+            // happened -- hence having to power-cycle the waiting peripheral.
+            btstack_host_scan_for_additional_peer();
+        }
     }
 
     // Service the Bluetooth stack. `bt_task()` (via cyw43_transport_task()) already calls

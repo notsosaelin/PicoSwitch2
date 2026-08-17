@@ -44,6 +44,18 @@ typedef struct {
     ns2_input_source_key_t key;
     uint32_t id;                   // opaque UI/API handle; never reused in a boot
     uint32_t generation;           // registry generation for this live source
+    // Composite logical-source handle, 0 for an ordinary standalone source.
+    //
+    // One logical input source owns the console at a time, but a feature may
+    // legitimately back that one source with more than one Bluetooth peer --
+    // currently Keyboard + Mouse, where a keyboard peer and a mouse peer are
+    // two halves of one controller. Sources sharing a nonzero group are one
+    // owner: any of them may publish while the group owns the console, and
+    // losing one member does not surrender ownership while another remains.
+    // This is deliberately NOT "raise the connection limit": every peer keeps
+    // its own stable identity and connection generation, and a source with no
+    // group still owns the console alone.
+    uint32_t group_id;
     uint16_t vendor_id;
     uint16_t product_id;
     char name[NS2_INPUT_SOURCE_NAME_MAX];
@@ -122,6 +134,20 @@ bool ns2_input_arbiter_submit(ns2_input_arbiter_t *arbiter,
                               uint16_t product_id,
                               uint8_t source_class,
                               ns2_input_route_decision_t *decision);
+
+// Composite form.  `group_id` of 0 is identical to ns2_input_arbiter_submit();
+// a nonzero value joins this source to the logical owner described by
+// ns2_input_source_info_t::group_id.  The group handle is supplied by the
+// feature that owns the composite (ns2_kbm's role registry) because only it
+// knows when two peers are halves of one controller.
+bool ns2_input_arbiter_submit_group(ns2_input_arbiter_t *arbiter,
+                                    const ns2_input_source_key_t *key,
+                                    const char *name,
+                                    uint16_t vendor_id,
+                                    uint16_t product_id,
+                                    uint8_t source_class,
+                                    uint32_t group_id,
+                                    ns2_input_route_decision_t *decision);
 
 // Remove exactly the source represented by key.  A key includes the lifecycle
 // generation, so a recycled connection index cannot remove a newer source.

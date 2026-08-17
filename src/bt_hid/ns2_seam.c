@@ -30,6 +30,8 @@
 #include "switch_pro2.h"                          // ns2_motion_negotiated() (motion-demand hook)
 #endif
 #include "ns2_remap.h"                            // locked base button mapping
+#include "ns2_kbm.h"                              // shared destination -> wire-bit table
+#include "ns2_kbm_runtime.h"                      // Bluetooth keyboard / KB+M source
 #include "ns2_player_led.h"                       // Switch wire bitfield -> player number
 #include "ns2_rumble_trace.h"                     // console->handheld rumble observability
 #include "ns2_wake.h"                             // post-sleep real-input wake intent
@@ -85,31 +87,13 @@ static const uint32_t SRC_TO_JP[NS2_SRC_COUNT] = {
 // Apply one locked base-map destination to the shared Pro Controller semantic
 // input. Output personalities may translate those semantics further (for
 // example, the single-Joy-Con sideways profile).
+//
+// The destination -> wire-bit table itself lives in ns2_kbm.c, which is the one
+// place both mapping systems (this locked physical map and the configurable
+// keyboard/mouse profiles) agree on what a NS2_DST_* means. Keeping two copies
+// is how they would eventually disagree.
 static void ns2_apply_dst(uint8_t dst, switch_pro_input_t *in) {
-    switch (dst) {
-        case NS2_DST_B:       in->buttons[0] |= SWITCH_MASK_B; break;
-        case NS2_DST_A:       in->buttons[0] |= SWITCH_MASK_A; break;
-        case NS2_DST_Y:       in->buttons[0] |= SWITCH_MASK_Y; break;
-        case NS2_DST_X:       in->buttons[0] |= SWITCH_MASK_X; break;
-        case NS2_DST_L:       in->buttons[2] |= SWITCH_MASK_L; break;
-        case NS2_DST_R:       in->buttons[0] |= SWITCH_MASK_R; break;
-        case NS2_DST_ZL:      in->buttons[2] |= SWITCH_MASK_ZL; break;
-        case NS2_DST_ZR:      in->buttons[0] |= SWITCH_MASK_ZR; break;
-        case NS2_DST_L3:      in->buttons[1] |= SWITCH_MASK_L3; break;
-        case NS2_DST_R3:      in->buttons[1] |= SWITCH_MASK_R3; break;
-        case NS2_DST_MINUS:   in->buttons[1] |= SWITCH_MASK_MINUS; break;
-        case NS2_DST_PLUS:    in->buttons[1] |= SWITCH_MASK_PLUS; break;
-        case NS2_DST_HOME:    in->buttons[1] |= SWITCH_MASK_HOME; break;
-        case NS2_DST_CAPTURE: in->buttons[1] |= SWITCH_MASK_CAPTURE; break;
-        case NS2_DST_DUP:     in->buttons[2] |= SWITCH_MASK_DPAD_UP; break;
-        case NS2_DST_DDOWN:   in->buttons[2] |= SWITCH_MASK_DPAD_DOWN; break;
-        case NS2_DST_DLEFT:   in->buttons[2] |= SWITCH_MASK_DPAD_LEFT; break;
-        case NS2_DST_DRIGHT:  in->buttons[2] |= SWITCH_MASK_DPAD_RIGHT; break;
-        case NS2_DST_GL:      in->extra |= SWITCH_EXTRA_GL; break;
-        case NS2_DST_GR:      in->extra |= SWITCH_EXTRA_GR; break;
-        case NS2_DST_C:       in->extra |= SWITCH_EXTRA_C; break;
-        default: break;  // NS2_DST_NONE
-    }
+    ns2_kbm_apply_destination(dst, in->buttons, &in->extra);
 }
 
 static bool ns2_is_switch2_pro(uint8_t dev_addr) {
@@ -159,6 +143,24 @@ static bool seam_event_wake_intent(const input_event_t *e) {
 
 void router_submit_input(const input_event_t *e) {
     if (!e) return;
+
+    // A Keyboard / Keyboard + Mouse mode replaces the console's logical input
+    // source outright: only the peers that feature admits may publish. That
+    // keeps the one-logical-source rule intact without loosening the ordinary
+    // controller gate, and it is why the selected mode -- not connection order
+    // -- decides what drives the console.
+    //
+    // Controller mode is completely untouched by this branch, including the
+    // existing Bluetooth-mouse path that feeds Joy-Con 2 mouse mode.
+    if (ns2_kbm_runtime_mode() != NS2_KBM_MODE_CONTROLLER) {
+        if (e->type == INPUT_TYPE_MOUSE)
+            (void)ns2_kbm_runtime_submit_mouse(e);
+        // Wake intent is not publication: a button on any connected peer still
+        // means "wake up", admitted source or not (see the gate below).
+        seam_note_wake_intent(e, seam_event_wake_intent(e));
+        return;
+    }
+
     ns2_input_route_decision_t route;
     // Do this before decoding/publishing any field.  An inactive source must
     // not affect slot 0, identity, raw buttons, motion, or mouse state.
@@ -386,6 +388,24 @@ void router_submit_input(const input_event_t *e) {
     seam_note_wake_intent(e, b != 0);
 }
 
+// Keyboard ingress. Kept here rather than in the driver so keyboard input goes
+// through exactly the same wake-intent rules as every other source: a key press
+// on a connected keyboard may wake a sleeping console even when the keyboard is
+// not (or not yet) the admitted logical source.
+void router_submit_keyboard_input(const input_event_t *e,
+                                  const uint8_t *usage_bitmap) {
+    if (!e || !usage_bitmap) return;
+    (void)ns2_kbm_runtime_submit_keyboard(e, usage_bitmap);
+    bool any_key = false;
+    for (unsigned i = 0; i < NS2_KBM_KEY_BITMAP_BYTES; ++i) {
+        if (usage_bitmap[i]) {
+            any_key = true;
+            break;
+        }
+    }
+    seam_note_wake_intent(e, any_key);
+}
+
 // Controller dropped -> publish a neutral (centered, no buttons) state.
 void router_device_disconnected(uint8_t dev_addr, int8_t instance) {
     router_device_disconnected_with_generation(dev_addr, instance, 0u);
@@ -400,6 +420,11 @@ void router_device_disconnected_with_generation(uint8_t dev_addr,
     // revoke the active source here.
     if (bthid_rebind_in_progress())
         return;
+
+    // Release any KB/M role this peer held first. A composite source survives
+    // losing one of its two peers, so this clears exactly that role's state
+    // while the arbiter below decides whether the whole logical source is gone.
+    (void)ns2_kbm_runtime_disconnect(dev_addr, instance, connection_generation);
 
     bool was_active = ns2_active_input_disconnected_generation(
         dev_addr, instance, connection_generation);

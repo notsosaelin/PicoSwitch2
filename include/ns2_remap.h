@@ -21,6 +21,16 @@ enum {
     NS2_DST_MINUS, NS2_DST_PLUS, NS2_DST_HOME, NS2_DST_CAPTURE,
     NS2_DST_DUP, NS2_DST_DDOWN, NS2_DST_DLEFT, NS2_DST_DRIGHT,
     NS2_DST_GL, NS2_DST_GR, NS2_DST_C,
+    // Digital analog-stick directions. A physical controller never needs these
+    // (its sticks are already analog), so NS2_BASE_BUTTON_MAP never uses them
+    // and ns2_seam.c's ns2_apply_dst() deliberately ignores them. They exist so
+    // a digital source -- currently the Bluetooth keyboard profiles in
+    // ns2_kbm.c -- can express stick deflection in the same normalized
+    // destination vocabulary as every other control, instead of inventing a
+    // second one. Opposing pairs are resolved by the consumer; see
+    // docs/bluetooth/keyboard-mouse-input.md.
+    NS2_DST_LSTICK_UP, NS2_DST_LSTICK_DOWN, NS2_DST_LSTICK_LEFT, NS2_DST_LSTICK_RIGHT,
+    NS2_DST_RSTICK_UP, NS2_DST_RSTICK_DOWN, NS2_DST_RSTICK_LEFT, NS2_DST_RSTICK_RIGHT,
     NS2_DST_COUNT
 };
 

@@ -109,6 +109,11 @@ static void mouse_process_report(bthid_device_t *device,
     }
 
     mouse->event.buttons = normalize_mouse_buttons(report.buttons);
+    // Preserve the HID button numbering alongside the lossy gamepad projection
+    // above: the KB/M mapping model binds mouse controls by button number, and
+    // recovering that from JP_BUTTON_* would be an inverse of a mapping that is
+    // free to change.
+    mouse->event.hid_buttons = report.buttons;
     mouse->event.button_count = mouse->has_report_map ? mouse->map.button_count : 3;
     mouse->event.delta_x = report.delta_x;
     mouse->event.delta_y = report.delta_y;

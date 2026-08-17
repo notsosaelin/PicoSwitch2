@@ -1,6 +1,6 @@
 # Compatibility Matrix
 
-Last updated: 2026-08-12
+Last updated: 2026-08-16
 
 This matrix records observed behavior, not inferred support. "Source-tested" means host tests or
 code inspection only; it is weaker than physical hardware confirmation.
@@ -31,6 +31,8 @@ code inspection only; it is weaker than physical hardware confirmation.
 | 8BitDo Ultimate Bluetooth (first model) | ✅ Confirmed | ✅ P1/P2 custom transport to GL/GR | Player LED path present | 🔵 Existing Switch output | Custom firmware paddles and console wake confirmed; reconnect remains slower than other Classic controllers |
 | Wiimote family | ✅ Confirmed | ✅ Standalone and attachment input | ✅ Player LEDs | ✅ Confirmed | Current regression pass complete |
 | Generic Bluetooth HID mouse | ✅ Confirmed in Joy-Con 2 modes | Buttons and relative X/Y/wheel | N/A | N/A | Pointer activation, mouse-only gating, disconnect cleanup, and wheel navigation confirmed |
+| Generic Bluetooth HID keyboard (Keyboard mode) | ✅ Confirmed | Boot and NKRO report shapes, remappable profile | N/A | N/A | ASUS ROG FALCHION RX: pairing, role binding, mapped input, and bonded reconnect after power cycle confirmed — see [`bluetooth/keyboard-mouse-input.md`](../bluetooth/keyboard-mouse-input.md#hardware-validation) |
+| Keyboard + Mouse (one composite source) | ✅ Confirmed | Two peers or one combo peer; native Joy-Con 2 pointer or mouse-to-stick | N/A | N/A | FALCHION RX + KERIS II ACE: both roles as one source in either connection order, per-role loss with the survivor intact, and automatic rejoin without re-pairing confirmed |
 | Android Controller Bridge (Retroid Pocket Classic + AYN Thor) | 🔵 Pico host-tested + Android ADB-audited on two devices | 14-button contract, D-pad, two sticks, analog triggers | N/A | N/A | Retroid API-34 and AYN Thor API-33 both expose the HID Device service and map onto the fixed contract (Thor validates the BRAKE/GAS trigger fallback); ordinary APK registration, pairing, and end-to-end hardware validation pending |
 
 ## Switch 2 motion

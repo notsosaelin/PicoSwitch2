@@ -28,6 +28,7 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Wii motion reference | [`bluetooth/wii-motion.md`](bluetooth/wii-motion.md) |
 | Controller sleep research | [`bluetooth/controller-sleep-research.md`](bluetooth/controller-sleep-research.md) |
 | Generic Bluetooth gamepad quirks | [`bluetooth/generic-gamepad-quirks.md`](bluetooth/generic-gamepad-quirks.md) |
+| Bluetooth Keyboard / Keyboard + Mouse input | [`bluetooth/keyboard-mouse-input.md`](bluetooth/keyboard-mouse-input.md) |
 | Android handheld controller bridge | [`bluetooth/android-controller-bridge.md`](bluetooth/android-controller-bridge.md) |
 | Bridge contract (platform-neutral) | [`bridge/PROTOCOL.md`](bridge/PROTOCOL.md) |
 | Implementing a new bridge platform backend | [`bridge/PLATFORM_BACKEND.md`](bridge/PLATFORM_BACKEND.md) |

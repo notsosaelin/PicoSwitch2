@@ -15,6 +15,22 @@ void ns2_active_input_init(void);
 
 bool ns2_active_input_submit(const input_event_t *event,
                              ns2_input_route_decision_t *decision);
+
+// Composite form for a feature whose one logical source is backed by more than
+// one Bluetooth peer (Keyboard + Mouse).  `group_id` is the composite handle
+// owned by that feature; 0 behaves exactly like ns2_active_input_submit().
+bool ns2_active_input_submit_group(const input_event_t *event,
+                                   uint32_t group_id,
+                                   ns2_input_route_decision_t *decision);
+
+// Opaque source id currently registered for this connection, or 0.
+uint32_t ns2_active_input_source_id_for(uint8_t conn_index,
+                                        uint32_t connection_generation);
+
+// Drop every registered source and leave the console neutral and unowned.
+// Used when an admission-policy change (an input-mode switch) invalidates the
+// entire registry; the caller re-registers whichever peers remain eligible.
+void ns2_active_input_reset(void);
 // Returns true only when the disconnected source owned the active output.
 bool ns2_active_input_disconnected(uint8_t dev_addr, int8_t instance);
 // Token-aware disconnect used by HID driver lifecycle callbacks.  A stale

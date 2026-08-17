@@ -308,8 +308,137 @@ static void test_unknown_source_is_reclassified_by_its_first_report(void)
     assert(!status.explicit_active);
 }
 
+// A composite logical source: two Bluetooth peers, one console owner. This is
+// the Keyboard + Mouse shape; the group handle comes from ns2_kbm's role
+// registry, which is the only component that knows two peers are halves of one
+// controller.
+static void test_composite_group_source(void)
+{
+    ns2_input_arbiter_t arbiter;
+    ns2_input_arbiter_init(&arbiter);
+    ns2_input_route_decision_t decision;
+    ns2_input_arbiter_status_t status;
+
+    ns2_input_source_key_t keyboard = key(2, 0, 0xA1, 1);
+    ns2_input_source_key_t mouse = key(2, 1, 0xB2, 2);
+    const uint32_t group = 7u;
+
+    // The first member takes the idle console.
+    assert(ns2_input_arbiter_submit_group(&arbiter, &keyboard, "KB", 0, 0,
+                                          NS2_INPUT_SOURCE_CLASS_DIRECT, group,
+                                          &decision));
+    uint32_t keyboard_id = source_id(&arbiter, &keyboard);
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    assert(status.active_id == keyboard_id);
+
+    // The second member publishes too, without a handover and without taking
+    // ownership away from the first.
+    assert(ns2_input_arbiter_submit_group(&arbiter, &mouse, "Mouse", 0, 0,
+                                          NS2_INPUT_SOURCE_CLASS_DIRECT, group,
+                                          &decision));
+    assert(!decision.auto_switched);
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    assert(status.active_id == keyboard_id);
+    assert(status.source_count == 2);
+
+    // A peer outside the group is registered but must not publish.
+    ns2_input_source_key_t pad = key(2, 2, 0xC3, 3);
+    assert(!ns2_input_arbiter_submit(&arbiter, &pad, "Pad", 0, 0,
+                                     NS2_INPUT_SOURCE_CLASS_DIRECT, &decision));
+
+    // Losing the owning member does NOT surrender the console: the surviving
+    // member of the composite inherits the token.
+    bool was_active = false;
+    assert(ns2_input_arbiter_disconnect(&arbiter, &keyboard, &was_active));
+    assert(!was_active);
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    assert(status.active_id == source_id(&arbiter, &mouse));
+    assert(ns2_input_arbiter_submit_group(&arbiter, &mouse, "Mouse", 0, 0,
+                                          NS2_INPUT_SOURCE_CLASS_DIRECT, group,
+                                          &decision));
+
+    // A stale disconnect for the departed peer cannot clear the replacement
+    // that reused its transport index.
+    ns2_input_source_key_t replacement = key(2, 0, 0xD4, 4);
+    assert(ns2_input_arbiter_submit_group(&arbiter, &replacement, "KB2", 0, 0,
+                                          NS2_INPUT_SOURCE_CLASS_DIRECT, group,
+                                          &decision));
+    assert(!ns2_input_arbiter_disconnect(&arbiter, &keyboard, &was_active));
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    assert(status.active_id == source_id(&arbiter, &mouse));
+    assert(source_id(&arbiter, &replacement) != NS2_INPUT_SOURCE_ID_NONE);
+
+    // Losing the last member of the composite IS whole-source loss, and the
+    // caller owes the console a neutral boundary.
+    assert(ns2_input_arbiter_disconnect(&arbiter, &replacement, &was_active));
+    assert(!was_active);  // the mouse still owns it
+    assert(ns2_input_arbiter_disconnect(&arbiter, &mouse, &was_active));
+    assert(was_active);
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    // With no explicit choice the automatic policy runs, and the only remaining
+    // source is the unrelated gamepad -- which is exactly the pre-existing
+    // fallback behavior, unchanged by grouping.
+    assert(status.active_id == source_id(&arbiter, &pad));
+
+    // Group 0 keeps the historical standalone behavior: two ungrouped sources
+    // never share the console.
+    ns2_input_arbiter_init(&arbiter);
+    ns2_input_source_key_t a = key(2, 0, 0x11, 1);
+    ns2_input_source_key_t b = key(2, 1, 0x22, 2);
+    assert(ns2_input_arbiter_submit_group(&arbiter, &a, "A", 0, 0,
+                                          NS2_INPUT_SOURCE_CLASS_DIRECT, 0u,
+                                          &decision));
+    assert(!ns2_input_arbiter_submit_group(&arbiter, &b, "B", 0, 0,
+                                           NS2_INPUT_SOURCE_CLASS_DIRECT, 0u,
+                                           &decision));
+}
+
+// An explicit user selection of one composite member still owns the console for
+// the whole group, and the explicit-choice rules are unchanged.
+static void test_composite_explicit_selection(void)
+{
+    ns2_input_arbiter_t arbiter;
+    ns2_input_arbiter_init(&arbiter);
+    ns2_input_route_decision_t decision;
+    ns2_input_arbiter_status_t status;
+
+    ns2_input_source_key_t keyboard = key(2, 0, 0xA1, 1);
+    ns2_input_source_key_t mouse = key(2, 1, 0xB2, 2);
+    const uint32_t group = 3u;
+    (void)ns2_input_arbiter_submit_group(&arbiter, &keyboard, "KB", 0, 0,
+                                         NS2_INPUT_SOURCE_CLASS_DIRECT, group,
+                                         &decision);
+    (void)ns2_input_arbiter_submit_group(&arbiter, &mouse, "Mouse", 0, 0,
+                                         NS2_INPUT_SOURCE_CLASS_DIRECT, group,
+                                         &decision);
+
+    // Select the mouse half explicitly; both halves keep publishing.
+    uint32_t mouse_id = source_id(&arbiter, &mouse);
+    assert(ns2_input_arbiter_request_active(&arbiter, mouse_id));
+    assert(ns2_input_arbiter_submit_group(&arbiter, &mouse, "Mouse", 0, 0,
+                                          NS2_INPUT_SOURCE_CLASS_DIRECT, group,
+                                          &decision));
+    assert(decision.fresh_report);
+    assert(ns2_input_arbiter_submit_group(&arbiter, &keyboard, "KB", 0, 0,
+                                          NS2_INPUT_SOURCE_CLASS_DIRECT, group,
+                                          &decision));
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    assert(status.explicit_active);
+
+    // Losing the explicitly selected half hands the token to the surviving
+    // member rather than dropping the user's choice of logical source.
+    bool was_active = false;
+    assert(ns2_input_arbiter_disconnect(&arbiter, &mouse, &was_active));
+    assert(!was_active);
+    ns2_input_arbiter_get_status(&arbiter, &status);
+    assert(status.active_id == source_id(&arbiter, &keyboard));
+    assert(status.explicit_active);
+}
+
 int main(void)
 {
+    test_composite_group_source();
+    test_composite_explicit_selection();
     test_bridge_defaults_and_yields_to_direct();
     test_unknown_source_is_reclassified_by_its_first_report();
     test_explicit_choice_is_never_overridden();

@@ -310,6 +310,37 @@
       </div>
     </section>
 
+    <section id="kbmPanel">
+      <h2>Input source</h2>
+      <p class="muted">The adapter normally works this out for itself: pair a keyboard and it becomes a
+        keyboard, add a mouse and the two become one controller. Use the selector only to force a
+        particular behavior. <b>Controller</b> is the normal mode.
+        <b>Keyboard</b> makes one Bluetooth keyboard the whole controller. <b>Keyboard + Mouse</b>
+        makes a keyboard and a mouse together one controller &mdash; mouse movement uses the
+        Joy-Con&nbsp;2 pointer where the selected personality has one, and the right stick otherwise.
+        Only the selected mode's devices can drive the console; open a pairing window
+        (double-tap BOOTSEL) to add each one. Mapping defaults and the full remapping editor are
+        documented in <code>docs/bluetooth/keyboard-mouse-input.md</code>.</p>
+      <div class="actions-bar">
+        <label>Mode
+          <select id="kbmMode">
+            <option value="auto">Automatic (recommended)</option>
+            <option value="controller">Controller</option>
+            <option value="keyboard">Keyboard</option>
+            <option value="kbmouse">Keyboard + Mouse</option>
+          </select>
+        </label>
+        <button id="kbmRefreshBtn">Refresh</button>
+        <button id="kbmResetBtn">Restore default mappings</button>
+      </div>
+      <div class="actions-bar" style="margin-top:8px">
+        <span id="kbmKeyboardState" class="pill bad">Keyboard: disconnected</span>
+        <span id="kbmMouseState" class="pill bad">Mouse: disconnected</span>
+        <span id="kbmProfileState" class="pill">profile &mdash;</span>
+      </div>
+      <p class="muted" id="kbmDetail" style="font-size:11px">&mdash;</p>
+    </section>
+
     <section id="mgmtPanel">
       <h2>In-band management <span class="pill">beta</span></h2>
       <p class="muted">Manage the adapter over Bluetooth <b>while a controller is driving the console</b>
@@ -3625,6 +3656,73 @@ $("#mgmtOnBtn").onclick = async () => { await sendCmd("mgmt on"); await mgmtRefr
 $("#mgmtOffBtn").onclick = async () => { await sendCmd("mgmt off"); await mgmtRefresh(); };
 $("#mgmtStatusBtn").onclick = () => mgmtRefresh();
 
+// Bluetooth Keyboard / Keyboard + Mouse input source. Deliberately minimal:
+// mode selection plus role/status visibility, which is what makes the feature
+// usable and testable. The graphical remapping editor belongs to UX_PASS and
+// builds on the same `kbm map` / `kbm bind` commands this panel already reaches.
+const KBM_MODE_LABELS = {
+  auto: "Automatic",
+  controller: "Controller",
+  keyboard: "Keyboard",
+  kbmouse: "Keyboard + Mouse",
+};
+
+function kbmRenderRole(el, label, connected, relevant) {
+  el.textContent = `${label}: ${relevant ? (connected ? "connected" : "disconnected") : "not used"}`;
+  el.className = "pill " + (!relevant ? "" : connected ? "ok" : "bad");
+}
+
+async function kbmRefresh(quiet) {
+  const r = await sendCmd("kbm status", quiet);
+  const detail = $("#kbmDetail");
+  if (!r || !r.mode) {
+    $("#kbmProfileState").textContent = "profile —";
+    kbmRenderRole($("#kbmKeyboardState"), "Keyboard", false, false);
+    kbmRenderRole($("#kbmMouseState"), "Mouse", false, false);
+    detail.textContent = "—";
+    return;
+  }
+  // The selector shows the OVERRIDE; the detail line shows what is in effect.
+  $("#kbmMode").value = r.override || r.mode;
+  const usesKeyboard = r.mode !== "controller";
+  const usesMouse = r.mode === "kbmouse";
+  kbmRenderRole($("#kbmKeyboardState"), "Keyboard", r.keyboard, usesKeyboard);
+  kbmRenderRole($("#kbmMouseState"), "Mouse", r.mouse, usesMouse);
+  $("#kbmProfileState").textContent = usesKeyboard
+    ? `profile ${r.profile}` : "profile —";
+  const parts = [(r.override && r.override !== "auto")
+    ? `mode ${KBM_MODE_LABELS[r.mode] || r.mode} (forced)`
+    : `mode ${KBM_MODE_LABELS[r.mode] || r.mode} (detected)`];
+  if (usesMouse) {
+    parts.push(r.nativeMouse
+      ? "mouse movement → Joy-Con 2 pointer"
+      : "mouse movement → right stick");
+  }
+  if (usesKeyboard) {
+    parts.push(`keyboard reports ${r.keyboardReports}`);
+    if (usesMouse) parts.push(`mouse reports ${r.mouseReports}`);
+    if (r.rejectedDuplicate) parts.push(`rejected duplicates ${r.rejectedDuplicate}`);
+    if (r.rollover) parts.push(`rollover reports ${r.rollover}`);
+  }
+  detail.textContent = parts.join(" · ");
+}
+
+$("#kbmMode").onchange = async () => {
+  const mode = $("#kbmMode").value;
+  const r = await sendCmd("kbm mode " + mode);
+  if (!r || !r.ok) log("! input mode change was not accepted");
+  else log(`== input mode: ${KBM_MODE_LABELS[mode] || mode} (save to keep it across reboot) ==`);
+  await kbmRefresh();
+};
+$("#kbmRefreshBtn").onclick = () => kbmRefresh();
+$("#kbmResetBtn").onclick = async () => {
+  const r = await sendCmd("kbm reset all");
+  log(r && r.ok
+    ? "== keyboard and keyboard+mouse mappings restored to defaults (save to keep) =="
+    : "! mapping reset was not accepted");
+  await kbmRefresh();
+};
+
 async function initializeAdapter(label) {
   amiiboSelectAdapterOnNextStatus = true;
   setConnected(true, label);
@@ -3635,6 +3733,7 @@ async function initializeAdapter(label) {
   else log("! warning: unexpected device (info=" + JSON.stringify(info) + ")");
   await reload();
   await mgmtRefresh(true);
+  await kbmRefresh(true);
 
   // Research-state synchronization is useful on the wired development path
   // but unnecessary traffic for the normal wireless settings/Amiibo workflow.

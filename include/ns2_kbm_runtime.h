@@ -1,0 +1,140 @@
+#ifndef _NS2_KBM_RUNTIME_H_
+#define _NS2_KBM_RUNTIME_H_
+
+// Firmware adapter for the Bluetooth Keyboard / Keyboard + Mouse model.
+//
+// ns2_kbm.c owns the portable contract (mappings, merge, translation, roles).
+// This module owns everything that needs the firmware around it: which peers
+// hold which role, the source-arbiter integration, the cross-core configuration
+// copy, publishing to report.c, and diagnostics.
+//
+// Ownership of the two cores:
+//   core 0  management/UART command handling, configuration mutation, persistence
+//   core 1  Bluetooth reports, role admission, resolve, publish
+// Configuration crosses that boundary through a generation counter plus a
+// seqlock snapshot, so core 1 never reads a half-written override table and a
+// mapping change always lands on an explicit neutral boundary.
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "core/input_event.h"
+#include "ns2_kbm.h"
+
+void ns2_kbm_runtime_init(void);
+
+// --- selected input mode -----------------------------------------------------
+// The EFFECTIVE mode: derived from which roles are actually held, so pairing an
+// ordinary HID device works without the user selecting a mode first.
+ns2_kbm_mode_t ns2_kbm_runtime_mode(void);
+// Sets the persisted OVERRIDE (NS2_KBM_MODE_AUTO restores inference). Returns
+// false for an out-of-range value. Changing it releases every KB/M role,
+// neutralizes the console slot, and re-evaluates every connected peer, so the
+// previous composition can never keep publishing.
+bool ns2_kbm_runtime_set_mode(ns2_kbm_mode_t mode);
+
+// --- configuration -----------------------------------------------------------
+// Adopt a persisted (or default) blob. Returns false when the blob had to be
+// repaired, which the caller may surface as "persisted mapping data was
+// unusable". Never fails closed into an unusable state.
+bool ns2_kbm_runtime_config_load(const ns2_kbm_config_t *config);
+void ns2_kbm_runtime_config_get(ns2_kbm_config_t *out);
+uint32_t ns2_kbm_runtime_config_generation(void);
+
+bool ns2_kbm_runtime_set_binding(ns2_kbm_profile_t profile,
+                                 ns2_kbm_source_t source, uint8_t destination);
+bool ns2_kbm_runtime_clear_binding(ns2_kbm_profile_t profile,
+                                   ns2_kbm_source_t source);
+void ns2_kbm_runtime_reset_profile(ns2_kbm_profile_t profile);
+void ns2_kbm_runtime_reset_all(void);
+bool ns2_kbm_runtime_set_mouse(const ns2_kbm_mouse_config_t *mouse);
+void ns2_kbm_runtime_get_mouse(ns2_kbm_mouse_config_t *out);
+
+// --- source admission gate ---------------------------------------------------
+// True when the KB/M feature, not the ordinary controller path, decides whether
+// this connection may own the console. Callers that speculatively register a
+// connected peer with the arbiter must honour it so a KB/M mode cannot be
+// silently taken over by a gamepad, and so a keyboard never becomes an
+// ordinary Controller-mode source.
+bool ns2_kbm_runtime_gates_connection(uint8_t conn_index);
+
+// Bind a live peer to its KB/M role from the driver bthid selected for it,
+// without waiting for its first input report. Called from the same lifecycle
+// hooks that register ordinary sources. Idempotent; a no-op in Controller mode
+// and for peers that are neither keyboard nor pointer.
+void ns2_kbm_runtime_note_ready(uint8_t conn_index);
+
+// True when the selected mode is still looking for a role a Bluetooth Classic
+// peripheral of this Class-of-Device could fill. Classic discovery admits
+// gamepad-class devices only; this is what lets a keyboard or a mouse be found
+// in a KB/M mode WITHOUT changing Controller mode's admission policy, and it
+// stops answering as soon as the role is filled. Always false in Controller
+// mode.
+bool ns2_kbm_runtime_wants_peripheral(bool cod_keyboard, bool cod_pointing);
+
+// --- report ingress (core 1) -------------------------------------------------
+// Record what a peer's descriptor declares. `declares_combo` must be set ONLY
+// from a positive statement by the device that it supplies both roles (a
+// Class-of-Device "combo keyboard/pointing" peripheral) -- never from the mere
+// presence of both capabilities, because gaming mice routinely declare keyboard
+// usages for their macro buttons and must leave the keyboard role free.
+void ns2_kbm_runtime_note_classification(uint8_t conn_index,
+                                         uint32_t connection_generation,
+                                         bool has_keyboard, bool has_pointer,
+                                         bool declares_combo);
+
+// Keyboard report. `usage_bitmap` is NS2_KBM_KEY_BITMAP_BYTES of held HID usage
+// page 0x07 ids and is borrowed for the duration of the call.
+bool ns2_kbm_runtime_submit_keyboard(const input_event_t *event,
+                                     const uint8_t *usage_bitmap);
+
+// Keyboard ingress used by the driver. Implemented in ns2_seam.c alongside
+// router_submit_input() so keyboard input follows the same wake-intent rules as
+// every other source; it forwards to ns2_kbm_runtime_submit_keyboard().
+void router_submit_keyboard_input(const input_event_t *event,
+                                  const uint8_t *usage_bitmap);
+// Mouse report. Returns false when this mode/peer has no mouse role, in which
+// case the caller keeps the legacy Controller-mode mouse behavior.
+bool ns2_kbm_runtime_submit_mouse(const input_event_t *event);
+
+// Record that a keyboard reported ErrorRollOver: the report carried no usable
+// key set and the previous held state was retained.
+void ns2_kbm_runtime_note_rollover(void);
+
+// Peer teardown. Returns true when a KB/M role was released.
+bool ns2_kbm_runtime_disconnect(uint8_t conn_index, int8_t instance,
+                                uint32_t connection_generation);
+
+// Periodic maintenance on core 1: advances the mouse-to-stick recenter and
+// republishes while the translated stick is off centre. Cheap no-op in
+// Controller mode.
+void ns2_kbm_runtime_service(void);
+
+// --- diagnostics -------------------------------------------------------------
+typedef struct {
+    uint8_t mode;           // EFFECTIVE mode, inferred from the role composition
+    uint8_t mode_override;  // persisted override; NS2_KBM_MODE_AUTO = infer
+    uint8_t profile;
+    uint8_t keyboard_connected;
+    uint8_t mouse_connected;
+    uint8_t native_mouse_output;
+    uint8_t keyboard_conn;
+    uint8_t mouse_conn;
+    uint32_t group_id;
+    uint32_t source_id;
+    uint32_t keyboard_reports;
+    uint32_t mouse_reports;
+    uint32_t rejected_mode;
+    uint32_t rejected_duplicate;
+    uint32_t rejected_not_owner;
+    uint32_t rollover_reports;
+    uint32_t role_losses;
+    uint32_t config_generation;
+    uint32_t remap_neutralizations;
+    uint32_t publishes;
+    uint32_t stick_recenters;
+} ns2_kbm_runtime_status_t;
+
+void ns2_kbm_runtime_status(ns2_kbm_runtime_status_t *out);
+
+#endif  // _NS2_KBM_RUNTIME_H_

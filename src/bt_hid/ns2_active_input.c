@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "bt/bthid/bthid.h"
+#include "ns2_kbm_runtime.h"
 #include "ns2_native_motion.h"
 #include "report.h"
 
@@ -44,10 +45,21 @@ static void source_key_for_connection(uint8_t conn_index,
 void ns2_active_input_init(void)
 {
     ns2_input_arbiter_init(&s_arbiter);
+    // The KB/M runtime gates registration here, so it must hold valid defaults
+    // before the first connection hook can consult it.  config_load() replaces
+    // those defaults with the persisted configuration shortly after.
+    ns2_kbm_runtime_init();
 }
 
 bool ns2_active_input_submit(const input_event_t *event,
                              ns2_input_route_decision_t *decision)
+{
+    return ns2_active_input_submit_group(event, 0u, decision);
+}
+
+bool ns2_active_input_submit_group(const input_event_t *event,
+                                   uint32_t group_id,
+                                   ns2_input_route_decision_t *decision)
 {
     if (!event || !decision) return false;
 
@@ -65,8 +77,10 @@ bool ns2_active_input_submit(const input_event_t *event,
     uint8_t source_class = event->from_android_bridge
                                ? NS2_INPUT_SOURCE_CLASS_BRIDGE
                                : NS2_INPUT_SOURCE_CLASS_DIRECT;
-    bool accepted = ns2_input_arbiter_submit(&s_arbiter, &key, name, vendor_id,
-                                             product_id, source_class, decision);
+    bool accepted = ns2_input_arbiter_submit_group(&s_arbiter, &key, name,
+                                                   vendor_id, product_id,
+                                                   source_class, group_id,
+                                                   decision);
     // The arbiter is a pure object and cannot reach the report seam, so the
     // neutral boundary for a policy handover is owed here -- the same one an
     // explicit selection emits.
@@ -119,6 +133,24 @@ uint32_t ns2_active_input_connection_generation(uint8_t conn_index)
     return device ? device->connection_generation : 0u;
 }
 
+uint32_t ns2_active_input_source_id_for(uint8_t conn_index,
+                                        uint32_t connection_generation)
+{
+    ns2_input_source_key_t key;
+    const bthid_device_t *device = NULL;
+    source_key_for_connection(conn_index, 0, INPUT_TRANSPORT_NONE,
+                              connection_generation, &key, &device);
+    if (!device) return NS2_INPUT_SOURCE_ID_NONE;
+    return ns2_input_arbiter_source_id(&s_arbiter, &key);
+}
+
+void ns2_active_input_reset(void)
+{
+    ns2_input_arbiter_init(&s_arbiter);
+    report_neutralize_slot(0);
+    ns2_native_motion_clear();
+}
+
 void ns2_active_input_note_connection(uint8_t conn_index)
 {
     ns2_input_source_key_t key;
@@ -129,6 +161,16 @@ void ns2_active_input_note_connection(uint8_t conn_index)
     // source with an empty address/generation; the HID-ready lifecycle hook or
     // the first normalized event will register the fully identified source.
     if (!device) return;
+    // Give the KB/M feature its own chance to bind this peer to a role, so a
+    // fully connected keyboard/mouse counts as present before it has sent its
+    // first report.
+    ns2_kbm_runtime_note_ready(conn_index);
+    // While a Keyboard / Keyboard + Mouse mode is selected, that feature owns
+    // admission: registering an arbitrary connected peer here would let a
+    // gamepad claim an idle console the selected mode's source is meant to own.
+    // In Controller mode the same gate keeps keyboards out, since they have no
+    // meaning there and would claim the console only to publish nothing.
+    if (ns2_kbm_runtime_gates_connection(conn_index)) return;
     ns2_input_route_decision_t decision;
     // No report has arrived yet, so this source cannot be classified. UNKNOWN
     // ranks lowest: it may take an idle console, never a claimed one, and its

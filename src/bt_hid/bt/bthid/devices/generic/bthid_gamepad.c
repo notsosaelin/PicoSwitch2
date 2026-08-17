@@ -271,6 +271,19 @@ void bthid_gamepad_update_vid(bthid_device_t* device)
                                              device->name, gp->map.buttonCnt);
 }
 
+bool bthid_gamepad_identity_unresolved(const bthid_device_t* device)
+{
+    if (!device) return false;
+    if ((const bthid_driver_t*)device->driver != &bthid_gamepad_driver) return false;
+    const bthid_gamepad_data_t* gp = (const bthid_gamepad_data_t*)device->driver_data;
+    // gamepad_init() already ran gamepad_quirks_identify() on the name/VID/PID
+    // available at connect, so a name-matched controller (the Xbox path, which
+    // BLE relies on because its PnP query often fails to resolve VID/PID) is
+    // recognized here well before its descriptor arrives.
+    if (!gp) return true;
+    return gamepad_quirks_is_generic(gp->map.quirk);
+}
+
 // Debug: format the parsed report-field map — see bthid_gamepad.h for why this exists
 // (inspecting real descriptor-parse results instead of guessing from input symptoms).
 bool bthid_gamepad_dump_map(uint8_t conn_index, char* out, unsigned out_size)

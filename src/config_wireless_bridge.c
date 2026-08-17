@@ -213,6 +213,13 @@ bool config_wireless_command_allowed(const char *command)
            strcmp(command, "device") == 0 ||
            strcmp(command, "input sources") == 0 ||
            strncmp(command, "input active ", 13) == 0 ||
+           // Keyboard / Keyboard + Mouse configuration. Mutating forms are
+           // included deliberately: wireless RX has already passed
+           // mgmt_allow_write() (bonded, encrypted, enabled), and the whole
+           // point of this surface is that a remapping UI can use it over the
+           // same transport as every other setting.
+           strcmp(command, "kbm") == 0 ||
+           strncmp(command, "kbm ", 4) == 0 ||
            strcmp(command, "personality") == 0 ||
            strncmp(command, "personality ", 12) == 0 ||
            strcmp(command, "reenumerate") == 0 ||
