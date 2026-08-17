@@ -33,6 +33,13 @@ the one still connected keeps working throughout. See
 - A pairing window now stays open until the **selected** input source is complete, so pairing a
   keyboard in Keyboard + Mouse mode no longer closes the window the mouse still needs. Controller
   and Keyboard modes behave exactly as before.
+- Keyboard-only and mouse-only no longer keep the adapter searching indefinitely. When only one of a
+  keyboard/mouse pair is connected, the adapter looks for the other for about ten seconds, then
+  settles and keeps working as keyboard-only or mouse-only. Turning both on around the same time
+  still pairs them up, and switching one off and back on rejoins it within that window. Nothing about
+  your input, mode, or connected device changes when the window ends, and the second device can still
+  join later: hold the pairing button and turn it on, and it joins while the first device keeps
+  working. No re-pairing, no unplugging, no turning anything off.
 
 ### Fixed
 

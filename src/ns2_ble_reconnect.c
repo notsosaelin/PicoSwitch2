@@ -5,7 +5,8 @@
 ns2_ble_reconnect_decision_t ns2_ble_reconnect_select(
     const ns2_ble_reconnect_candidate_t *candidates,
     uint8_t count,
-    uint32_t attempts)
+    uint32_t attempts,
+    bool pairing_window_open)
 {
     ns2_ble_reconnect_decision_t decision;
     memset(&decision, 0, sizeof(decision));
@@ -38,7 +39,14 @@ ns2_ble_reconnect_decision_t ns2_ble_reconnect_select(
     // Pass 2: direct-connect the preferred identity while it still has attempts
     // left. Beyond the bound, fall through to discovery so a stuck preferred
     // peer cannot monopolise the reconnect path and starve the others.
-    if (preferred && attempts < NS2_BLE_RECONNECT_DIRECT_ATTEMPT_LIMIT) {
+    //
+    // An open pairing window outranks this entirely. A direct connect stops the
+    // scan for its whole duration, and inside a user pairing window nothing
+    // re-arms discovery -- so a speculative attempt at a peer that is absent, or
+    // advertising under a fresh pairing address, would silently consume the
+    // window the user just asked for. See the header for the full rationale.
+    if (preferred && !pairing_window_open &&
+        attempts < NS2_BLE_RECONNECT_DIRECT_ATTEMPT_LIMIT) {
         decision.action = NS2_BLE_RECONNECT_DIRECT;
         memcpy(decision.addr, preferred->addr, sizeof(decision.addr));
         decision.addr_type = preferred->addr_type;

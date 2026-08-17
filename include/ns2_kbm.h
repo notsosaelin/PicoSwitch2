@@ -77,6 +77,98 @@ bool ns2_kbm_logical_source_complete(bool keyboard_connected,
                                      bool controller_connected);
 
 // ---------------------------------------------------------------------------
+// Partial-source completion window
+// ---------------------------------------------------------------------------
+// A partial KB/M source (exactly one role held) keeps discovery available so the
+// complementary role can join -- that is what makes "power both on, whichever
+// connects first, the other joins" work, and what lets a power-cycled peripheral
+// rejoin without re-pairing.
+//
+// But keyboard-only and mouse-only are legitimate, and a partial source is
+// indistinguishable from an intentional one. Scanning forever on that basis
+// would leave the radio aggressively discovering for as long as someone uses a
+// keyboard. So a partial source gets a BOUNDED window: discovery stays available
+// until it expires, then the source is treated as intentional and discovery may
+// idle.
+//
+// Expiry changes DISCOVERY POLICY ONLY. It never neutralizes input, changes the
+// effective mode, alters source ownership, or disconnects anything -- and it does
+// NOT lock the topology: an explicit pairing request re-opens discovery at any
+// time, and the complementary role may still join then.
+#define NS2_KBM_COMPLETION_WINDOW_MS 10000u
+
+// Which KB/M roles are held. Tracked so a change of *which* role is held counts
+// as a new partial state: keyboard-only becoming mouse-only is a genuinely new
+// source, not a continuation of the old window.
+typedef enum {
+    NS2_KBM_HELD_NONE = 0,
+    NS2_KBM_HELD_KEYBOARD = 1u << 0,
+    NS2_KBM_HELD_MOUSE = 1u << 1,
+} ns2_kbm_held_t;
+
+typedef struct {
+    uint8_t held;        // ns2_kbm_held_t bitmask seen on the previous update
+    uint8_t windowing;   // a completion window is currently running
+    uint32_t started_ms; // when the current partial state was entered
+} ns2_kbm_completion_t;
+
+typedef enum {
+    // Discovery may idle: the source is complete, or a partial source's window
+    // has expired and is now treated as intentional.
+    NS2_KBM_DISCOVERY_IDLE = 0,
+    // Discovery should be running: nothing is connected, or a partial KB/M
+    // source is still inside its completion window.
+    NS2_KBM_DISCOVERY_SEEK,
+} ns2_kbm_discovery_t;
+
+// Advance the completion window and decide whether discovery should be running.
+//
+// Call on a service tick with the CURRENT role state. The window is keyed
+// strictly to logical-source transitions, never to report traffic, so an
+// actively used keyboard cannot hold discovery open: `now_ms` only ever decides
+// whether an already-started window has expired.
+//
+// `state` must be zero-initialized before first use.
+ns2_kbm_discovery_t ns2_kbm_completion_update(ns2_kbm_completion_t *state,
+                                              bool keyboard_connected,
+                                              bool mouse_connected,
+                                              bool controller_connected,
+                                              uint32_t now_ms);
+
+// ---------------------------------------------------------------------------
+// Discovery ownership
+// ---------------------------------------------------------------------------
+// Discovery must be RUNNING, not merely "not stopped". Every BLE HID peer that
+// reaches ready calls btstack_host_stop_scan() unconditionally (the legacy
+// 1-dongle-1-controller rule), and the host's idle safety-net cannot restore it
+// while any link is up. So whatever wants discovery has to re-assert it on every
+// service tick; asking "who stopped the scan?" is the wrong question, because
+// any number of paths legitimately do.
+//
+// Two INDEPENDENT reasons discovery may be required, and neither may suppress
+// the other -- the defect this encodes was the bounded completion window being
+// evaluated only while no pairing window was open, so the first peer to finish
+// connecting inside an explicit pairing window stopped the scan and nothing
+// re-armed it for the rest of that window.
+typedef enum {
+    // Re-assert discovery now (idempotent; a no-op if already scanning).
+    NS2_KBM_DISCOVERY_ARM = 0,
+    // Discovery may be retired.
+    NS2_KBM_DISCOVERY_RETIRE,
+    // Leave scan state alone. Used while an explicit pairing window owns
+    // discovery and the source is already complete: the window closes itself,
+    // and retiring here would break controller replacement, which deliberately
+    // keeps scanning with a controller still connected.
+    NS2_KBM_DISCOVERY_LEAVE,
+} ns2_kbm_discovery_action_t;
+
+// `timed` is the completion-window verdict from ns2_kbm_completion_update().
+// An explicit pairing window is authoritative and outranks it.
+ns2_kbm_discovery_action_t ns2_kbm_discovery_policy(bool pairing_window_open,
+                                                    bool source_complete,
+                                                    ns2_kbm_discovery_t timed);
+
+// ---------------------------------------------------------------------------
 // Mapping profiles
 // ---------------------------------------------------------------------------
 typedef enum {

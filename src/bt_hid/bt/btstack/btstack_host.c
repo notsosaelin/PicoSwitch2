@@ -727,16 +727,34 @@ static struct {
     .handle = HCI_CON_HANDLE_INVALID,
 };
 
-static bool management_pairing_window_open;
+// True while the user's CONTROLLER/HID pairing window is open -- the BOOTSEL
+// double-tap window, not a companion/management-specific one. Assigned only by
+// btstack_host_set_pairing_window_open(), whose sole caller is the transport's
+// set_pairing_mode hook:
+//
+//   open_pairing_window()            (ns2_bt_host.c)
+//     -> bt_set_pairing_mode(true)   (bt_transport.h)
+//     -> cyw43_transport_set_pairing_mode()
+//          -> btstack_host_set_pairing_window_open(true)
+//          -> btstack_host_start_scan()
+//
+// and symmetrically with false when ns2_bt_host.c closes the window (deadline
+// reached, or the logical source became complete).
+//
+// It was previously named for management because mgmt_access consults it as the
+// user-gesture authorization for accepting a new companion bond -- a READER of
+// the HID pairing window, not a separate window. The old name made that look
+// like companion-only state; it is not.
+static bool hid_pairing_window_open;
 
 void btstack_host_set_pairing_window_open(bool open)
 {
-    management_pairing_window_open = open;
+    hid_pairing_window_open = open;
 }
 
 bool btstack_host_pairing_window_open(void)
 {
-    return management_pairing_window_open;
+    return hid_pairing_window_open;
 }
 
 static bool config_ble_link_trusted(hci_con_handle_t handle)
@@ -752,7 +770,7 @@ static bool config_ble_accept_new_bond(void)
         .console_awake = true,
         .wake_active = false,
         .scanning = false,
-        .pairing_window_open = management_pairing_window_open,
+        .pairing_window_open = hid_pairing_window_open,
         .client_connected = config_ble.handle != HCI_CON_HANDLE_INVALID,
         .client_bonded = config_ble.handle != HCI_CON_HANDLE_INVALID &&
             gap_bonded(config_ble.handle),
@@ -1801,7 +1819,10 @@ static ns2_ble_reconnect_decision_t btstack_host_pick_reconnect(void)
         n++;
     }
 
-    return ns2_ble_reconnect_select(candidates, n, hid_state.reconnect_attempts);
+    // A user-opened pairing window owns discovery; a speculative direct connect
+    // must not tear its scan down. See ns2_ble_reconnect.h.
+    return ns2_ble_reconnect_select(candidates, n, hid_state.reconnect_attempts,
+                                    hid_pairing_window_open);
 }
 
 // ---------------------------------------------------------------------------
