@@ -14,9 +14,11 @@
 #include <string.h>
 
 #include "bt/bthid/bthid.h"
+#include "bt/bthid/devices/generic/bthid_keyboard_report.h"
 #include "bt/transport/bt_transport.h"
 #include "bt_identity_log.h"
 #include "core/router/router.h"
+#include "fixtures/composite_gamepad_keyboard_hid.h"
 #include "ns2_input_arbiter.h"
 
 static int failures;
@@ -24,6 +26,10 @@ static bt_connection_t connection;
 static input_event_t event_storage;
 static ns2_input_arbiter_t arbiter;
 static bool descriptor_is_mouse;
+// Stands in for "the quirk table recognized this peer as a known controller
+// family". The real predicate reads the quirk resolved by gamepad_init(); this
+// fixture supplies a fake gamepad driver, so the state is set directly.
+static bool gamepad_identity_resolved;
 static unsigned generic_reports;
 static unsigned provisional_reports;
 static unsigned exact_reports;
@@ -281,6 +287,31 @@ const bthid_driver_t bthid_mouse_driver = {
     .disconnect = mouse_disconnect,
 };
 
+// Keyboard reclassification is exercised in test_bthid_keyboard_report.c; this
+// suite only needs the symbols bthid.c references, and a descriptor test that
+// never claims the lifecycle fixtures.
+const bthid_driver_t bthid_keyboard_driver = {
+    .name = "Generic lifecycle keyboard",
+    .transports = BTHID_TRANSPORT_BOTH,
+    .match = match_never,
+};
+
+// The REAL structural discriminator, not a stub: this suite's job here is to
+// prove bthid's reclassification precedence, which is only meaningful against
+// the production test. One line, mirroring bthid_keyboard.c, because linking
+// that file would drag in the whole KB/M runtime.
+bool bthid_keyboard_descriptor_is_keyboard(const uint8_t *desc, uint16_t desc_len)
+{
+    bthid_keyboard_report_map_t map;
+    return bthid_keyboard_parse_descriptor(desc, desc_len, &map);
+}
+
+void bthid_keyboard_set_descriptor(bthid_device_t *device, const uint8_t *desc,
+                                   uint16_t desc_len)
+{
+    (void)device; (void)desc; (void)desc_len;
+}
+
 const bthid_driver_t ds3_bt_driver = { .name = "DS3 lifecycle stub" };
 const bthid_driver_t ds4_bt_driver = {
     .name = "DS4 lifecycle stub",
@@ -331,6 +362,14 @@ void bthid_gamepad_set_descriptor(bthid_device_t *device,
 }
 
 void bthid_gamepad_update_vid(bthid_device_t *device) { (void)device; }
+
+bool bthid_gamepad_identity_unresolved(const bthid_device_t *device)
+{
+    if (!device) return false;
+    if ((const bthid_driver_t *)device->driver != &bthid_gamepad_driver)
+        return false;
+    return !gamepad_identity_resolved;
+}
 
 bool bthid_mouse_descriptor_is_mouse(const uint8_t *desc, uint16_t desc_len)
 {
@@ -413,6 +452,7 @@ static void reset_fixture(const char *name)
     connection.bd_addr[5] = 0x60;
     strncpy(connection.name, name, sizeof(connection.name) - 1u);
     descriptor_is_mouse = false;
+    gamepad_identity_resolved = false;
     generic_reports = provisional_reports = exact_reports = 0u;
     vendor_reports = mouse_reports = ds4_reports = ds5_reports = 0u;
     generic_disconnects = provisional_disconnects = exact_disconnects = 0u;
@@ -502,6 +542,91 @@ static void test_descriptor_rebind_preserves_owner(void)
     CHECK(mouse_reports == 1u, "input continues through descriptor-selected mouse driver");
 }
 
+// Regression: an Xbox Elite stopped producing input after the Keyboard/Mouse
+// pass. The Elite reaches its behavior through the established machinery --
+// generic gamepad driver -> gamepad_quirks_identify() (name-matched, because
+// BLE PnP often fails to resolve VID/PID) -> QUIRK_XBOX -> the 20-byte paddle
+// fallback in extract_extra(). Descriptor-time keyboard classification moved it
+// off the generic driver before bthid_gamepad_set_descriptor() ever ran, so its
+// report map was never built and its quirk was never consulted. The pad
+// connected, owned the console, and published nothing.
+//
+// The rule under test: keyboard/mouse descriptor classification applies to
+// UNRESOLVED generic HID peers only. A peer the quirk table already claims is a
+// controller and is not a candidate, whatever its descriptor also contains.
+static void test_known_controller_is_not_reclassified(void)
+{
+    // A keyboard descriptor -- a real one, not a composite -- offered to a peer
+    // the quirk table has already recognized.
+    reset_fixture("Xbox Wireless Controller");
+    // Set before begin_ready(): bthid re-feeds its cached descriptor when a
+    // device becomes ready, so a peer recognized at connect must already be
+    // protected at that point, not only when a fresh descriptor arrives.
+    gamepad_identity_resolved = true;
+    begin_ready();
+    bthid_device_t *device = bthid_get_device(0u);
+    uint32_t id = active_id();
+    uint32_t transitions = transition_count();
+    uint32_t generation = device ? device->connection_generation : 0u;
+
+    bthid_set_hid_descriptor(0u, KEYBOARD_ONLY_HID, sizeof(KEYBOARD_ONLY_HID));
+    CHECK(device && device->driver == &bthid_gamepad_driver,
+          "a quirk-recognized controller is not reclassified as a keyboard");
+    CHECK(device && device->type != BTHID_DEVICE_KEYBOARD,
+          "a quirk-recognized controller is not typed as a keyboard");
+    owner_preserved(id, transitions,
+                    "refusing reclassification causes no source handover");
+    CHECK(device && device->connection_generation == generation,
+          "refusing reclassification preserves the connection generation");
+    send_report(generation, 0x01u);
+    CHECK(generic_reports == 1u,
+          "a quirk-recognized controller keeps delivering reports to its driver");
+
+    // The same rule for the mouse discriminator.
+    reset_fixture("Xbox Wireless Controller");
+    gamepad_identity_resolved = true;
+    descriptor_is_mouse = true;
+    begin_ready();
+    device = bthid_get_device(0u);
+    CHECK(device && device->driver == &bthid_gamepad_driver,
+          "a quirk-recognized controller starts on the generic driver");
+    const uint8_t mouse_descriptor[] = { 0x05, 0x01, 0x09, 0x02 };
+    bthid_set_hid_descriptor(0u, mouse_descriptor, sizeof(mouse_descriptor));
+    CHECK(device && device->driver == &bthid_gamepad_driver,
+          "a quirk-recognized controller is not reclassified as a mouse");
+}
+
+// The other half of the contract: unresolved peers must still classify, or the
+// fix would have traded one regression for another.
+static void test_unresolved_peer_still_classifies(void)
+{
+    reset_fixture("Some Keyboard");
+    begin_ready();
+    bthid_device_t *device = bthid_get_device(0u);
+    bthid_set_hid_descriptor(0u, KEYBOARD_ONLY_HID, sizeof(KEYBOARD_ONLY_HID));
+    CHECK(device && device->driver == &bthid_keyboard_driver,
+          "an unresolved peer with a keyboard descriptor still becomes a keyboard");
+
+    // Secondary guard, for an unresolved peer the quirk table cannot help with:
+    // a no-name controller that declares keyboard usages alongside its Game Pad
+    // collection is still a controller.
+    reset_fixture("No Name Pad");
+    begin_ready();
+    device = bthid_get_device(0u);
+    bthid_set_hid_descriptor(0u, COMPOSITE_GAMEPAD_KEYBOARD_HID,
+                             sizeof(COMPOSITE_GAMEPAD_KEYBOARD_HID));
+    CHECK(device && device->driver == &bthid_gamepad_driver,
+          "an unresolved peer declaring a Game Pad collection stays generic");
+
+    reset_fixture("No Name Stick");
+    begin_ready();
+    device = bthid_get_device(0u);
+    bthid_set_hid_descriptor(0u, COMPOSITE_JOYSTICK_KEYBOARD_HID,
+                             sizeof(COMPOSITE_JOYSTICK_KEYBOARD_HID));
+    CHECK(device && device->driver == &bthid_gamepad_driver,
+          "an unresolved peer declaring a Joystick collection stays generic");
+}
+
 static void test_fallback_rebind_preserves_owner(void)
 {
     reset_fixture("Fallback Pad");
@@ -565,6 +690,8 @@ int main(void)
     test_late_identity_rebind_preserves_owner();
     test_sony_reclassification_preserves_owner();
     test_descriptor_rebind_preserves_owner();
+    test_known_controller_is_not_reclassified();
+    test_unresolved_peer_still_classifies();
     test_fallback_rebind_preserves_owner();
     test_stale_transport_callbacks_are_rejected();
     if (failures) {

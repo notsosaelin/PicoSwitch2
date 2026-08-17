@@ -6,6 +6,7 @@
 
 // Include all BT HID drivers
 #include "devices/generic/bthid_gamepad.h"
+#include "devices/generic/bthid_keyboard.h"
 #include "devices/generic/bthid_mouse.h"
 #include "devices/vendors/sony/ds3_bt.h"
 #include "devices/vendors/sony/ds4_bt.h"
@@ -73,6 +74,13 @@ void bthid_registry_init(void)
     // Augmental MouthPad (BLE mouse/keyboard/consumer — matches by name)
     mouthpad_ble_register();
 #endif  // NS2_BT_ALL_DRIVERS
+
+    // Generic keyboard must precede the generic mouse: a Class-of-Device
+    // "combo keyboard/pointing" peripheral is both, and only the keyboard
+    // driver can serve both KB/M roles from one connection. BLE keyboards have
+    // no Class of Device and are claimed by bthid.c's descriptor
+    // reclassification, which tests keyboard before mouse for the same reason.
+    bthid_keyboard_register();
 
     // Generic mouse must precede the catch-all BLE gamepad fallback. Classic
     // mice match by Class-of-Device; descriptor-time reclassification in

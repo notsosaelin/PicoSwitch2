@@ -181,6 +181,15 @@ typedef struct {
     int16_t delta_y;            // Vertical delta
     int8_t delta_wheel;         // Scroll wheel delta (8-bit, one-shot per event)
 
+    // Raw HID Usage Page 0x09 button bitmap for pointing devices: bit (n-1) is
+    // button n, in the order the descriptor declares them. `buttons` above is
+    // the gamepad-shaped JP_BUTTON_* projection a mouse driver assigns so
+    // existing consumers keep working; that projection is lossy and its
+    // inverse is not a stable identity. The KB/M mapping model binds mouse
+    // controls by HID button number, so it needs the original.
+    // 0 for devices that are not pointing devices.
+    uint16_t hid_buttons;
+
     // Consumer Control (HID Usage Page 0x0C) — media/volume/AC keys.
     // 0 = none. Emitted via the consumer-control output channel.
     uint16_t consumer_usage;    // Active Consumer page usage selector

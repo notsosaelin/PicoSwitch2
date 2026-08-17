@@ -7,10 +7,12 @@
 
 #include "btstack_host.h"
 #include "mgmt_bonds.h"
+#include "ns2_ble_reconnect.h"
 #include "ds5_audio_bridge.h"
 #include "ns2_pairing_crypto.h"
 #include "mgmt_access.h"
 #include "pico/time.h"
+#include "hardware/sync.h"   // __dmb() for the cross-core bond snapshot seqlock
 
 #ifdef BTSTACK_DEFER_SCAN
 static bool btstack_host_scan_enabled = false;
@@ -115,6 +117,7 @@ extern int find_player_index(int dev_addr, int instance);
 #include "bt_identity_log.h"
 #include "config_wireless_bridge.h"
 #include "usb.h" // read-only personality gate for automatic native Pro2 motion setup
+#include "ns2_kbm_runtime.h" // KB/M role-aware Classic discovery admission
 
 // ============================================================================
 // FLASH HELPERS (for TLV storage)
@@ -712,6 +715,14 @@ static struct {
     uint16_t tx_ccc_handle;
     btstack_context_callback_registration_t tx_request;
     uint8_t tx_chunk[512];
+    // Identity of the connected management/companion client. Recorded because
+    // the management link is a BONDED LE link (mgmt_session_authorized requires
+    // client_bonded), and BTstack has ONE global le_device_db shared by both
+    // roles -- so a companion bond sits in the same database the reconnect
+    // selector enumerates. A companion that is connected must not be counted as
+    // an absent peer. See btstack_host_pick_reconnect().
+    bd_addr_t client_addr;
+    bool client_addr_valid;
 } config_ble = {
     .handle = HCI_CON_HANDLE_INVALID,
 };
@@ -1532,6 +1543,20 @@ void btstack_host_force_switch2_fresh_pairing(void)
     btstack_run_loop_execute_on_main_thread(&switch2_force_fresh_cb);
 }
 
+// True when this address already has a live BLE link. Used to keep the periodic
+// bonded-reconnect from targeting a peer that is already connected, which would
+// stop the scan for no gain -- see its call site in btstack_host_process().
+static bool btstack_host_ble_addr_connected(const bd_addr_t addr)
+{
+    for (int i = 0; i < MAX_BLE_CONNECTIONS; i++) {
+        if (hid_state.connections[i].handle != HCI_CON_HANDLE_INVALID &&
+            memcmp(hid_state.connections[i].addr, addr, sizeof(bd_addr_t)) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Remember a BLE device only after its protocol-specific setup has actually
 // succeeded. Switch 2 controllers use a custom ATT pairing sequence and never
 // emit BTstack's SM_EVENT_PAIRING_COMPLETE, so relying on the SM callbacks alone
@@ -1677,6 +1702,178 @@ static void btstack_host_restore_last_connected(void)
 
 static uint32_t scan_timeout_end = 0;  // 0 = no timeout (indefinite scan)
 static bool scan_suppressed = false;   // App can suppress auto-restart (e.g. USB device connected)
+
+// ---------------------------------------------------------------------------
+// Multi-peer bonded-reconnect observability
+// ---------------------------------------------------------------------------
+// The existing reconnect counters are all scoped to the single `last_connected`
+// target, which is exactly the blind spot when two peers are bonded: a second
+// bonded peripheral that is power-cycled is invisible to every one of them.
+// These three separate "that bond is gone" from "it is advertising and nothing
+// targets it" from "its address rotates". Bounded counters only -- advertising
+// reports arrive continuously, so no per-report logging.
+static uint32_t bonded_adv_reports;
+static uint32_t nontarget_adv_reports;
+static uint32_t rpa_adv_reports;
+
+// True when this advertised address matches a stored LE bond by raw address.
+// Deliberately raw: if a peripheral rotates through resolvable private
+// addresses this returns false, which is itself the diagnosis (see
+// sightings_rpa) rather than something to paper over with name matching.
+// Core 1 only: touches the LE device DB.
+static bool btstack_host_addr_is_bonded(const bd_addr_t addr)
+{
+    for (int i = 0; i < le_device_db_max_count(); i++) {
+        int stored_type = BD_ADDR_TYPE_UNKNOWN;
+        bd_addr_t stored_addr;
+        memset(stored_addr, 0, sizeof(stored_addr));
+        le_device_db_info(i, &stored_type, stored_addr, NULL);
+        if (stored_type == BD_ADDR_TYPE_UNKNOWN) continue;
+        if (memcmp(stored_addr, addr, sizeof(bd_addr_t)) == 0) return true;
+    }
+    return false;
+}
+
+// Build the bonded-candidate list from the LE device DB -- the authority on
+// which identities are known -- and apply the reconnect policy. Core 1 only:
+// touches the LE device DB and the live connection table.
+//
+// This replaces "always target hid_state.last_connected", which fired at a peer
+// that was still connected whenever the surviving peer happened to be the most
+// recent one. See ns2_ble_reconnect.h for the full rationale.
+//
+// WHAT THE LE DEVICE DB ACTUALLY CONTAINS
+//
+// It is NOT controller-only. sm_init() is global and configured with
+// SM_AUTHREQ_BONDING, and BTstack keeps ONE le_device_db for the whole stack,
+// shared by central-role controller links and peripheral-role management links
+// alike. The management/companion path is explicitly a bonded link
+// (mgmt_session_authorized() requires client_bonded), so a paired companion's
+// identity IS stored in the same database enumerated here.
+//
+// Why an unrelated bond can never be dialled anyway:
+//
+//   * A direct connect requires decision.action == NS2_BLE_RECONNECT_DIRECT.
+//   * The selector only ever returns DIRECT for a `preferred` candidate.
+//   * `preferred` means the identity equals hid_state.last_connected_addr.
+//   * last_connected_addr is written ONLY by btstack_host_remember_ble_connection(),
+//     whose every caller passes a ble_connection_t from hid_state.connections[].
+//   * That table is populated only by find_free_connection() in the CENTRAL-role
+//     branch of HCI_SUBEVENT_LE_CONNECTION_COMPLETE. Peripheral-role ACLs are
+//     routed to config_ble_accept_connection() and `break` before reaching it.
+//
+// So a management/companion bond cannot become a reconnect target: it is
+// structurally excluded by role provenance, not by name matching. An
+// unclassified bond can still make the selector answer SCAN rather than IDLE,
+// which is harmless -- SCAN only means "leave discovery running" and never
+// authorises a connect. Note that discovery lifetime is NOT driven from here:
+// it is driven by whether the selected logical source is complete (see
+// ns2_bt_host.c), so a stale bond cannot hold the scan open.
+//
+// A companion that is CONNECTED is excluded outright below, so a present peer
+// is never mistaken for an absent one.
+static ns2_ble_reconnect_decision_t btstack_host_pick_reconnect(void)
+{
+    ns2_ble_reconnect_candidate_t candidates[NS2_BLE_RECONNECT_MAX_CANDIDATES];
+    uint8_t n = 0;
+
+    for (int i = 0; i < le_device_db_max_count() && n < NS2_BLE_RECONNECT_MAX_CANDIDATES; i++) {
+        int type = BD_ADDR_TYPE_UNKNOWN;
+        bd_addr_t a;
+        memset(a, 0, sizeof(a));
+        le_device_db_info(i, &type, a, NULL);
+        if (type == BD_ADDR_TYPE_UNKNOWN) continue;
+
+        // The connected management/companion client is present, not absent. It
+        // is a peripheral-role link and so never appears in the central-role
+        // connection table that `connected` is derived from, which would
+        // otherwise make a live companion look like a missing controller.
+        if (config_ble.client_addr_valid &&
+            memcmp(a, config_ble.client_addr, sizeof(bd_addr_t)) == 0)
+            continue;
+
+        memcpy(candidates[n].addr, a, sizeof(candidates[n].addr));
+        candidates[n].addr_type = (uint8_t)type;
+        candidates[n].connected = btstack_host_ble_addr_connected(a) ? 1u : 0u;
+        candidates[n].preferred =
+            (hid_state.has_last_connected &&
+             memcmp(a, hid_state.last_connected_addr, sizeof(bd_addr_t)) == 0) ? 1u : 0u;
+        n++;
+    }
+
+    return ns2_ble_reconnect_select(candidates, n, hid_state.reconnect_attempts);
+}
+
+// ---------------------------------------------------------------------------
+// Bond inventory snapshot
+// ---------------------------------------------------------------------------
+// The LE device DB belongs to the BTstack thread on core 1, so core 0's UART
+// diagnostics must never read it directly -- that is the same hazard config.c
+// marshals around for `bonds list`. Core 1 republishes a plain snapshot here on
+// its 30 ms process tick; core 0 reads it under a seqlock retry.
+//
+// This exists so a controlled reconnect test can record which bonds are present
+// BEFORE a peer is power-cycled and compare afterwards, instead of inferring
+// bond survival from whatever the adapter happens to be connected to.
+typedef struct {
+    uint8_t addr[6];
+    uint8_t addr_type;
+} bond_snapshot_entry_t;
+
+static volatile uint32_t bond_snapshot_seq;
+static bond_snapshot_entry_t bond_snapshot[MAX_NR_LE_DEVICE_DB_ENTRIES];
+static uint8_t bond_snapshot_count;
+
+// Core 1 only.
+static void bond_snapshot_refresh(void)
+{
+    uint32_t seq = bond_snapshot_seq + 1u;
+    bond_snapshot_seq = seq;               // odd => write in progress
+    __dmb();
+    uint8_t n = 0;
+    for (int i = 0; i < le_device_db_max_count() && n < MAX_NR_LE_DEVICE_DB_ENTRIES; i++) {
+        int type = BD_ADDR_TYPE_UNKNOWN;
+        bd_addr_t a;
+        memset(a, 0, sizeof(a));
+        le_device_db_info(i, &type, a, NULL);
+        if (type == BD_ADDR_TYPE_UNKNOWN) continue;
+        memcpy(bond_snapshot[n].addr, a, sizeof(a));
+        bond_snapshot[n].addr_type = (uint8_t)type;
+        n++;
+    }
+    bond_snapshot_count = n;
+    __dmb();
+    bond_snapshot_seq = seq + 1u;          // even => complete
+}
+
+bool btstack_host_bond_snapshot_get(uint8_t index, btstack_host_bond_entry_t *out)
+{
+    if (!out) return false;
+    for (int attempt = 0; attempt < 4; attempt++) {
+        uint32_t before = bond_snapshot_seq;
+        if (before & 1u) continue;         // write in progress
+        __dmb();
+        uint8_t count = bond_snapshot_count;
+        if (index >= count) {
+            __dmb();
+            if (bond_snapshot_seq == before) return false;
+            continue;
+        }
+        memcpy(out->addr, bond_snapshot[index].addr, sizeof(out->addr));
+        out->addr_type = bond_snapshot[index].addr_type;
+        __dmb();
+        if (bond_snapshot_seq == before) return true;
+    }
+    return false;
+}
+
+// A random address is "resolvable private" when its two most significant bits
+// are 0b01. Such an address changes periodically, so a raw comparison against a
+// stored identity address can never match it.
+static bool btstack_host_addr_is_rpa(const bd_addr_t addr, bd_addr_type_t type)
+{
+    return type == BD_ADDR_TYPE_LE_RANDOM && (addr[0] & 0xC0u) == 0x40u;
+}
 
 // ============================================================================
 // TEMPORARY BLE WAKE ADVERTISING
@@ -1872,7 +2069,8 @@ static void config_ble_start_advertising(void)
            g_usb_config_mode ? "CDC Config" : "in-band mgmt");
 }
 
-static bool config_ble_accept_connection(hci_con_handle_t handle)
+static bool config_ble_accept_connection(hci_con_handle_t handle,
+                                         const bd_addr_t peer_addr)
 {
     if (!config_ble.service_available || !config_ble.mode_active ||
         !config_ble_authorized() || config_ble.closing ||
@@ -1881,6 +2079,10 @@ static bool config_ble_accept_connection(hci_con_handle_t handle)
     }
 
     config_ble.handle = handle;
+    if (peer_addr) {
+        memcpy(config_ble.client_addr, peer_addr, sizeof(config_ble.client_addr));
+        config_ble.client_addr_valid = true;
+    }
     config_ble.advertising = false; // controller stops connectable advertising on connect
     config_ble.notifications_enabled = false;
     config_ble.tx_requested = false;
@@ -1901,6 +2103,7 @@ static bool config_ble_handle_disconnect(
     printf("[BTSTACK_HOST] Config BLE client disconnected: handle=0x%04X reason=0x%02X\n",
            handle, reason);
     config_ble.handle = HCI_CON_HANDLE_INVALID;
+    config_ble.client_addr_valid = false;
     config_ble.closing = false;
     config_ble.notifications_enabled = false;
     config_ble.tx_requested = false;
@@ -2238,6 +2441,39 @@ void btstack_host_idle_scan_if_connected(void)
     }
 }
 
+// Counterpart to btstack_host_idle_scan_if_connected(): keep discovery RUNNING
+// while the selected source is still missing a peer, even though another peer is
+// already connected.
+//
+// This exists because no other path can do it. A BLE HID peer reaching ready
+// stops the scan unconditionally, and the only thing that would restore it --
+// btstack_host_process()'s idle safety-net -- ends in
+// btstack_classic_get_connection_count() == 0, which counts BLE links despite
+// its name. With one peer connected that term is false, the predicate
+// short-circuits, and start_scan() is never even reached (which is why the
+// failing hardware showed scan starts == stops with no suppression counter
+// climbing). The first peer to arrive shut the door behind itself.
+//
+// The caller owns the policy: this only executes the mechanics.
+void btstack_host_scan_for_additional_peer(void)
+{
+    if (pairing_close_deferred) {
+        return;  // let an in-flight pairing candidate resolve first
+    }
+    // Never disturb a connect already in flight: btstack_host_start_scan()
+    // would overwrite hid_state.state out from under it.
+    if (hid_state.state == BLE_STATE_CONNECTING) {
+        return;
+    }
+    // Checked here rather than relying on start_scan()'s own guard so the
+    // steady state does not increment the ALREADY suppression counter on every
+    // 30 ms tick and drown the diagnostic.
+    if (hid_state.scan_active || classic_state.inquiry_active) {
+        return;
+    }
+    btstack_host_start_scan();
+}
+
 // ============================================================================
 // CONNECTION
 // ============================================================================
@@ -2433,11 +2669,25 @@ void btstack_host_process(void)
         !hid_state.scan_active &&
         classic_state.waiting_for_incoming_time == 0 &&
         !classic_state.pending_valid &&
+        // NOTE: despite its name this counts BLE links too (see its definition),
+        // so this whole predicate is false while ANY BLE peer is connected. That
+        // is deliberate for the 1-dongle-1-controller rule, but it means the
+        // safety net can NEVER restore discovery for a second peer -- it is not
+        // a fallback for a partial composite source. A KB/M source that is still
+        // missing a role is re-armed explicitly from ns2_bt_host.c via
+        // btstack_host_scan_for_additional_peer(); do not try to widen this term
+        // instead, or a single connected controller would resume discovery and
+        // undo the retired multi-controller scanning.
         btstack_classic_get_connection_count() == 0) {
         printf("[BTSTACK_HOST] Safety: idle with no connections, resuming scan\n");
         btstack_host_start_scan();
     }
 #endif
+
+    // Republish the bond inventory for core 0's diagnostics (see
+    // bond_snapshot_refresh). Cheap and bounded: at most 16 DB entries every
+    // 30 ms, and it is the only safe way core 0 can observe bond survival.
+    bond_snapshot_refresh();
 
     // State/scan_active sync: if BLE scan is running but state is not SCANNING,
     // fix the desync so the advertising handler can auto-connect to devices.
@@ -2451,20 +2701,35 @@ void btstack_host_process(void)
     // bonding — they expect the central to connect directly via gap_connect().
     // After the rapid reconnect attempts (right after disconnect) are exhausted,
     // alternate between scanning and reconnection attempts.
+    //
+    // `last_connected` is a single slot holding the most recent BLE peer, which
+    // is not necessarily a MISSING one. With a Keyboard + Mouse source the
+    // keyboard connects second and therefore owns that slot; when the mouse
+    // then powers off, this fired against the keyboard — which is still
+    // connected — and btstack_host_connect_ble() tore down the scan window on
+    // every attempt. Measured as balanced scan starts/stops with the bonded
+    // mouse advertising and never being seen. Selection now runs over the bond
+    // database and never yields a live identity, so the scan is left up for
+    // whichever peer is actually absent.
     if (!wake_adv.active &&
         !switch2_force_fresh_custom_pairing &&
         hid_state.state == BLE_STATE_SCANNING &&
-        hid_state.has_last_connected &&
         hid_state.scan_start_time != 0 &&
         (btstack_run_loop_get_time_ms() - hid_state.scan_start_time) >= BLE_RECONNECT_INTERVAL_MS) {
-        printf("[BTSTACK_HOST] Periodic reconnection to bonded device '%s'\n",
-               hid_state.last_connected_name);
-        strncpy(hid_state.pending_name, hid_state.last_connected_name, sizeof(hid_state.pending_name) - 1);
-        hid_state.pending_name[sizeof(hid_state.pending_name) - 1] = '\0';
-        hid_state.pending_profile = hid_state.last_connected_profile;
-        hid_state.pending_vid = hid_state.last_connected_vid;
-        hid_state.pending_pid = hid_state.last_connected_pid;
-        btstack_host_connect_ble(hid_state.last_connected_addr, hid_state.last_connected_addr_type);
+        ns2_ble_reconnect_decision_t periodic = btstack_host_pick_reconnect();
+        if (periodic.action == NS2_BLE_RECONNECT_DIRECT) {
+            printf("[BTSTACK_HOST] Periodic reconnection to bonded device '%s'\n",
+                   hid_state.last_connected_name);
+            strncpy(hid_state.pending_name, hid_state.last_connected_name, sizeof(hid_state.pending_name) - 1);
+            hid_state.pending_name[sizeof(hid_state.pending_name) - 1] = '\0';
+            hid_state.pending_profile = hid_state.last_connected_profile;
+            hid_state.pending_vid = hid_state.last_connected_vid;
+            hid_state.pending_pid = hid_state.last_connected_pid;
+            btstack_host_connect_ble(periodic.addr, periodic.addr_type);
+        }
+        // NS2_BLE_RECONNECT_SCAN / _IDLE: leave the scan running. For an absent
+        // peer without stored metadata the advertising path is what reconnects
+        // it, and it can only do that if the scan window survives.
     }
 }
 
@@ -2892,6 +3157,24 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
 
             bool is_controller = is_known_controller || is_generic_ble_hid;
 
+            // Multi-peer sighting bookkeeping. Counted for HID-looking peers
+            // only, so unrelated BLE traffic does not drown the signal.
+            if (is_controller || has_hid_uuid) {
+                if (btstack_host_addr_is_bonded(addr)) {
+                    bonded_adv_reports++;
+                    // A bonded peer that is not the single reconnect target:
+                    // if this climbs while the peer never rejoins, the peer is
+                    // present and the target selection is what is wrong.
+                    if (!hid_state.has_last_connected ||
+                        memcmp(addr, hid_state.last_connected_addr, sizeof(bd_addr_t)) != 0)
+                        nontarget_adv_reports++;
+                } else if (btstack_host_addr_is_rpa(addr, addr_type)) {
+                    // Rotating identity: a raw address compare can never match
+                    // the stored bond, whatever the bond database contains.
+                    rpa_adv_reports++;
+                }
+            }
+
             // Auto-connect to supported BLE controllers (skip classic-only devices)
             if (hid_state.state == BLE_STATE_SCANNING && is_controller &&
                 (profile->ble != BT_BLE_NONE || is_generic_ble_hid)) {
@@ -2955,6 +3238,20 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             bool is_gamepad = (major_class == 0x05) && ((minor_class & 0x0F) == 0x02);  // Gamepad
             bool is_joystick = (major_class == 0x05) && ((minor_class & 0x0F) == 0x01); // Joystick
 
+            // Keyboard / pointing peripherals sit in the OTHER half of the
+            // Peripheral minor class (bits 5-4: 01 keyboard, 10 pointing,
+            // 11 combo), which the gamepad test above cannot see. They are
+            // admitted only while a Keyboard / Keyboard + Mouse mode is
+            // actually looking for that role -- Controller mode's admission
+            // policy is deliberately left exactly as it was.
+            uint8_t peripheral_type = (minor_class >> 4) & 0x03;
+            bool cod_keyboard = (major_class == 0x05) &&
+                                (peripheral_type == 0x01 || peripheral_type == 0x03);
+            bool cod_pointing = (major_class == 0x05) &&
+                                (peripheral_type == 0x02 || peripheral_type == 0x03);
+            bool is_kbm_peripheral =
+                ns2_kbm_runtime_wants_peripheral(cod_keyboard, cod_pointing);
+
             // Identify device by name
             const bt_device_profile_t* profile = bt_device_lookup_by_name(name);
             bool is_wiimote_family = (profile->classic == BT_CLASSIC_DIRECT_L2CAP);
@@ -2963,12 +3260,15 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             const char* type_str = "";
             if (is_wiimote_family) type_str = " [WIIMOTE]";
             else if (is_gamepad || is_joystick) type_str = " [GAMEPAD]";
+            else if (is_kbm_peripheral) type_str = " [KB/M]";
             printf("[BTSTACK_HOST] Inquiry: %02X:%02X:%02X:%02X:%02X:%02X COD=0x%06X%s %s\n",
                    addr[5], addr[4], addr[3], addr[2], addr[1], addr[0],
                    (unsigned)cod, type_str, name);
 
-            // Auto-connect to gamepads and Wiimotes
-            if ((is_gamepad || is_joystick || is_wiimote_family) && classic_state.inquiry_active) {
+            // Auto-connect to gamepads, Wiimotes, and (only in a KB/M mode that
+            // still needs the role) keyboards and pointing devices.
+            if ((is_gamepad || is_joystick || is_wiimote_family ||
+                 is_kbm_peripheral) && classic_state.inquiry_active) {
                 // Skip if we already have an active incoming connection to this device
                 // (the device connected to us before we found it in inquiry)
                 if (classic_state.pending_valid && !classic_state.pending_outgoing &&
@@ -2977,7 +3277,9 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                     break;
                 }
 
-                printf("[BTSTACK_HOST] Classic gamepad found, connecting...\n");
+                printf("[BTSTACK_HOST] Classic %s found, connecting...\n",
+                       is_kbm_peripheral && !is_gamepad && !is_joystick
+                           ? "keyboard/pointing device" : "gamepad");
                 classic_pair_diag(0xFF, name, cod, 0, 0,
                                   "classic-candidate-admitted");
                 btstack_host_stop_scan();  // Stop inquiry
@@ -3391,7 +3693,10 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                     // that peripheral-role ACL before it can consume a HID
                     // controller slot or enter SM/GATT-client setup.
                     if (status == ERROR_CODE_SUCCESS && role == HCI_ROLE_SLAVE) {
-                        if (!config_ble_accept_connection(handle)) {
+                        bd_addr_t peripheral_peer;
+                        hci_subevent_le_connection_complete_get_peer_address(
+                            packet, peripheral_peer);
+                        if (!config_ble_accept_connection(handle, peripheral_peer)) {
                             printf("[BTSTACK_HOST] Rejecting unexpected LE peripheral-role connection "
                                    "outside Config service\n");
                             gap_disconnect(handle);
@@ -3445,10 +3750,15 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
 
                         hid_state.state = BLE_STATE_IDLE;
 
-                        // If reconnection attempt failed, try again or resume scanning
-                        if (hid_state.has_last_connected &&
-                            !switch2_force_fresh_custom_pairing &&
-                            hid_state.reconnect_attempts < 5) {
+                        // If reconnection attempt failed, try again or resume
+                        // scanning. Re-select rather than blindly retrying the
+                        // same slot: the peer may have come back on its own
+                        // during the attempt, in which case it must not be
+                        // targeted again (that is what stopped the scan
+                        // repeatedly and stranded the other peer).
+                        ns2_ble_reconnect_decision_t retry = btstack_host_pick_reconnect();
+                        if (retry.action == NS2_BLE_RECONNECT_DIRECT &&
+                            !switch2_force_fresh_custom_pairing) {
                             hid_state.reconnect_attempts++;
                             printf("[BTSTACK_HOST] Retrying reconnection (attempt %d)...\n",
                                    hid_state.reconnect_attempts);
@@ -3458,7 +3768,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                             strncpy(hid_state.pending_name, hid_state.last_connected_name,
                                     sizeof(hid_state.pending_name) - 1);
                             hid_state.pending_name[sizeof(hid_state.pending_name) - 1] = '\0';
-                            btstack_host_connect_ble(hid_state.last_connected_addr, hid_state.last_connected_addr_type);
+                            btstack_host_connect_ble(retry.addr, retry.addr_type);
                         } else {
                             printf("[BTSTACK_HOST] Reconnection failed after %d attempts, resuming scan\n",
                                    hid_state.reconnect_attempts);
@@ -3892,6 +4202,14 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             if (conn) {
                 uint8_t disconnected_conn_index = 0xFFu;
                 uint32_t disconnected_generation = 0u;
+                // Capture the departing peer's identity before the slot is torn
+                // down. The stale-bond deletion below must act on THIS peer --
+                // with two bonded peers, keying it off last_connected could
+                // delete the bond of the peer that is still connected and
+                // working.
+                bd_addr_t disconnected_addr;
+                uint8_t disconnected_addr_type = conn->addr_type;
+                memcpy(disconnected_addr, conn->addr, sizeof(disconnected_addr));
                 // An ACL is already a BLE connection as soon as it owns one of
                 // our BLE slots. During Switch 2 HOME authentication it can
                 // disconnect before bthid assigns conn_index; treating that as
@@ -3989,32 +4307,41 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 // -- a real supervision timeout or generic link loss must still just retry with
                 // the existing bond unchanged, since that connection was never actually broken at
                 // the key/authentication level.
-                if (hid_state.has_last_connected &&
-                    (reason == ERROR_CODE_AUTHENTICATION_FAILURE ||
-                     reason == ERROR_CODE_PIN_OR_KEY_MISSING)) {
+                if (reason == ERROR_CODE_AUTHENTICATION_FAILURE ||
+                    reason == ERROR_CODE_PIN_OR_KEY_MISSING) {
                     printf("[BTSTACK_HOST] Disconnect reason 0x%02X looks like a stale/mismatched "
                            "bond, not a link-quality problem; deleting local bond before retrying\n",
                            reason);
-                    gap_delete_bonding(hid_state.last_connected_addr_type, hid_state.last_connected_addr);
+                    // Scoped to the peer that actually dropped, not to
+                    // last_connected -- see the capture above.
+                    gap_delete_bonding((bd_addr_type_t)disconnected_addr_type, disconnected_addr);
                 }
 
-                // Try to reconnect to last connected device if we have one stored
-                if (hid_state.has_last_connected &&
+                // Reconnect a bonded peer that is actually ABSENT.
+                //
+                // This used to target hid_state.last_connected unconditionally.
+                // With two bonded peers that is wrong whenever the survivor is
+                // the more recent one: the reconnect fired at a peer that was
+                // still connected, and because btstack_host_connect_ble() stops
+                // the scan on every attempt, the 5-attempt cascade also erased
+                // the scan windows in which the departed peer's advertisements
+                // would have been seen. Selecting over the bond database and
+                // excluding live identities fixes both halves.
+                ns2_ble_reconnect_decision_t decision = btstack_host_pick_reconnect();
+                if (decision.action == NS2_BLE_RECONNECT_DIRECT &&
                     !switch2_force_fresh_custom_pairing &&
-                    hid_state.reconnect_attempts < 5 &&
                     reason_warrants_reconnect) {
                     hid_state.reconnect_attempts++;
                     printf("[BTSTACK_HOST] Attempting BLE reconnection to stored device (attempt %d)...\n",
                            hid_state.reconnect_attempts);
                     printf("[BTSTACK_HOST] Connecting to %02X:%02X:%02X:%02X:%02X:%02X name='%s'\n",
-                           hid_state.last_connected_addr[5], hid_state.last_connected_addr[4],
-                           hid_state.last_connected_addr[3], hid_state.last_connected_addr[2],
-                           hid_state.last_connected_addr[1], hid_state.last_connected_addr[0],
+                           decision.addr[5], decision.addr[4], decision.addr[3],
+                           decision.addr[2], decision.addr[1], decision.addr[0],
                            hid_state.last_connected_name);
                     // Copy stored name to pending so it's available when connection completes
                     strncpy(hid_state.pending_name, hid_state.last_connected_name, sizeof(hid_state.pending_name) - 1);
                     hid_state.pending_name[sizeof(hid_state.pending_name) - 1] = '\0';
-                    btstack_host_connect_ble(hid_state.last_connected_addr, hid_state.last_connected_addr_type);
+                    btstack_host_connect_ble(decision.addr, decision.addr_type);
                 } else if (btstack_classic_get_connection_count() == 0) {
                     if (hid_state.has_last_connected && !reason_warrants_reconnect) {
                         printf("[BTSTACK_HOST] Disconnect reason 0x%02X looks intentional (peer-initiated); "
@@ -9012,6 +9339,12 @@ void btstack_host_get_reconnect_diag(btstack_host_reconnect_diag_t *out)
     out->advertising_reports = hid_state.advertising_reports;
     out->target_advertising_reports = hid_state.target_advertising_reports;
     out->switch2_advertising_reports = hid_state.switch2_advertising_reports;
+    out->bonded_advertising_reports = bonded_adv_reports;
+    out->nontarget_advertising_reports = nontarget_adv_reports;
+    out->rpa_advertising_reports = rpa_adv_reports;
+    // Snapshot, not a live DB read: this getter is called from core 0.
+    out->bond_count = bond_snapshot_count;
+    out->bond_capacity = (uint8_t)MAX_NR_LE_DEVICE_DB_ENTRIES;
     out->target_connect_attempts = hid_state.target_connect_attempts;
     out->target_connect_successes = hid_state.target_connect_successes;
     out->target_connect_failures = hid_state.target_connect_failures;

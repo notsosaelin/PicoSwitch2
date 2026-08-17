@@ -80,3 +80,10 @@ const gamepad_quirk_t *gamepad_quirks_identify(uint16_t vendor_id, uint16_t prod
 
     return &QUIRK_GENERIC;
 }
+
+bool gamepad_quirks_is_generic(const gamepad_quirk_t *quirk)
+{
+    // NULL means identification has not run yet, which is not the same as
+    // "recognized". Treat it as unresolved.
+    return quirk == NULL || quirk == &QUIRK_GENERIC;
+}

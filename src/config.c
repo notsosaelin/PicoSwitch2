@@ -9,6 +9,7 @@
 // keeps parsing/flash waits out of BTstack callbacks.
 
 #include "config.h"
+#include "config_persist.h"  // persisted record layout, defaults, migration
 #include "report.h"      // get_global_raw_buttons / get_global_gamepad_input (live view)
 #include "switch_pro.h"  // switch_pro_input_t
 #include "switch_pro2.h" // ns2_dbg_* getters (report-0x09 motion/gyro debug instrumentation)
@@ -25,6 +26,9 @@
 #include "usb.h"  // g_usb_personality (personality query command)
 #include "ns2_wake.h"  // ns2_wake_manual_request (wake command)
 #include "ns2_active_input.h" // source registry / explicit active input
+#include "ns2_kbm.h"          // Bluetooth keyboard / KB+M mapping model
+#include "ns2_kbm_runtime.h"  // live KB/M configuration + status
+#include "ns2_kbm_status.h"   // shared KB/M status JSON formatter
 #include "bt/btstack/btstack_host.h"  // bonds list/remove (management)
 #ifdef NS2_PRO
 #include "ns2_nfc_mirror.h"  // amiibo reader (controller-as-reader backup)
@@ -43,8 +47,8 @@
 #include "hardware/clocks.h"
 #include "hardware/sync.h"
 
-#define CONFIG_MAGIC 0x50535731u  // 'PSW1'
-#define CONFIG_VERSION 10
+#define CONFIG_MAGIC CONFIG_PERSIST_MAGIC
+#define CONFIG_VERSION CONFIG_PERSIST_VERSION
 #define CONFIG_FLASH_OFFSET (PICO_FLASH_SIZE_BYTES - 4 * FLASH_SECTOR_SIZE)
 #define PERSISTENT_FLASH_START \
     (PICO_FLASH_SIZE_BYTES - 5u * FLASH_SECTOR_SIZE)
@@ -53,15 +57,15 @@
 #define CONFIG_WAKE_SAVE_DELAY_MS 5000
 #define INSTALL_MARKER_LENGTH 19u
 
-typedef struct {
-    uint32_t magic;
-    uint8_t version;
-    uint8_t body_color[3];                          // Pro2 body/lightbar R,G,B
-    uint8_t joycon2_left_accent[3];                 // Joy-Con 2 L highlight/lightbar
-    uint8_t joycon2_right_accent[3];                // Joy-Con 2 R highlight/lightbar
-    uint8_t wake_valid;
-    config_wake_identity_t wake_identity;
-} pico_config_t;
+// The record layout, its factory defaults, and schema migration live in
+// config_persist.c so both can be exercised by a host test; this file owns
+// where they are stored and when they are written.
+typedef config_record_t pico_config_t;
+
+// The record no longer fits one flash page. The settings sector is 4 KiB and is
+// erased whole on every save, so widening the programmed region costs nothing
+// but a slightly longer program; keep it a whole number of pages.
+#define CONFIG_RECORD_BYTES (4u * FLASH_PAGE_SIZE)
 
 // Every UF2 contains this pending marker in its own dedicated flash page.
 // First boot consumes it with a 1->0 page program after erasing all five
@@ -74,7 +78,12 @@ static const volatile uint8_t firmware_install_marker[FLASH_PAGE_SIZE]
     {'P', 'S', '2', '-', 'I', 'N', 'S', 'T', 'A', 'L',
      'L', '-', 'R', 'E', 'S', 'E', 'T', '-', '1'};
 
-_Static_assert(sizeof(pico_config_t) <= FLASH_PAGE_SIZE, "config must fit in one flash page");
+_Static_assert(sizeof(pico_config_t) <= CONFIG_RECORD_BYTES,
+               "config must fit in the programmed settings record");
+_Static_assert(CONFIG_RECORD_BYTES <= FLASH_SECTOR_SIZE,
+               "settings record must fit in its own erase sector");
+_Static_assert((CONFIG_RECORD_BYTES % FLASH_PAGE_SIZE) == 0u,
+               "flash_range_program requires whole pages");
 _Static_assert(sizeof(firmware_install_marker) == FLASH_PAGE_SIZE,
                "install marker must occupy one flash page");
 _Static_assert(INSTALL_MARKER_LENGTH < FLASH_PAGE_SIZE,
@@ -136,21 +145,7 @@ static bool consume_install_marker_and_erase_persistence(void)
 }
 
 static void load_defaults(void) {
-    memset(&cfg, 0, sizeof(cfg));
-    cfg.magic = CONFIG_MAGIC;
-    cfg.version = CONFIG_VERSION;
-    // Genuine retail Pro Controller 2 body colour. Users can replace this with
-    // any RGB value in config mode; it drives Sony lights while Pro2 is active.
-    cfg.body_color[0] = 0x23;
-    cfg.body_color[1] = 0x23;
-    cfg.body_color[2] = 0x23;
-    // Genuine retail Joy-Con 2 accent colours from the project's L/R SPI dumps.
-    cfg.joycon2_left_accent[0] = 0x9B;
-    cfg.joycon2_left_accent[1] = 0xE1;
-    cfg.joycon2_left_accent[2] = 0xE6;
-    cfg.joycon2_right_accent[0] = 0xFF;
-    cfg.joycon2_right_accent[1] = 0x8C;
-    cfg.joycon2_right_accent[2] = 0x5F;
+    config_persist_defaults(&cfg);
 }
 
 void config_load(void) {
@@ -160,12 +155,27 @@ void config_load(void) {
         (void)consume_install_marker_and_erase_persistence();
 
     const uint8_t *flash = (const uint8_t *)(XIP_BASE + CONFIG_FLASH_OFFSET);
-    const pico_config_t *f = (const pico_config_t *)flash;
-    if (f->magic == CONFIG_MAGIC && f->version == CONFIG_VERSION) {
-        memcpy(&cfg, f, sizeof(cfg));
-    } else {
-        load_defaults();
+    config_persist_load_t loaded =
+        config_persist_load(flash, CONFIG_RECORD_BYTES, &cfg);
+    switch (loaded) {
+        case CONFIG_PERSIST_MIGRATED:
+            printf("[CONFIG] Settings upgraded to schema %u; existing colours "
+                   "and wake identity preserved\n", (unsigned)CONFIG_VERSION);
+            // Persist the upgraded record so the migration runs exactly once.
+            save_requested = true;
+            break;
+        case CONFIG_PERSIST_REPAIRED:
+            printf("[CONFIG] Keyboard/mouse mapping data was unusable; "
+                   "canonical defaults restored\n");
+            save_requested = true;
+            break;
+        default:
+            break;
     }
+    // The KB/M runtime owns the live copy from here on; it validates again on
+    // adoption so a management write can never install something the loader
+    // would have rejected.
+    (void)ns2_kbm_runtime_config_load(&cfg.kbm);
     virtual_amiibo_store_init();
 }
 
@@ -269,21 +279,29 @@ void config_service_save(void) {
     if (not_before != 0 && (int32_t)(now - not_before) < 0)
         return;
 
+    // The KB/M runtime owns the live mapping state; take its current snapshot
+    // rather than a copy this module would have to keep in step by hand. Taken
+    // before cfg_lock deliberately: it spins on the runtime's own seqlock, and
+    // nesting two independent spin waits is how a lock-order bug starts.
+    ns2_kbm_config_t kbm_snapshot;
+    ns2_kbm_runtime_config_get(&kbm_snapshot);
+
     pico_config_t snap;
     critical_section_enter_blocking(&cfg_lock);
+    cfg.kbm = kbm_snapshot;
     snap = cfg;
     critical_section_exit(&cfg_lock);
 
-    uint8_t page[FLASH_PAGE_SIZE];
-    memset(page, 0xFF, sizeof(page));
-    memcpy(page, &snap, sizeof(snap));
+    static uint8_t record[CONFIG_RECORD_BYTES];
+    memset(record, 0xFF, sizeof(record));
+    memcpy(record, &snap, sizeof(snap));
 
     // Park core0 (USB) so it can't touch flash, then erase+program with our
     // interrupts off (an ISR could otherwise execute from now-disabled flash).
     multicore_lockout_start_blocking();
     uint32_t ints = save_and_disable_interrupts();
     flash_range_erase(CONFIG_FLASH_OFFSET, FLASH_SECTOR_SIZE);
-    flash_range_program(CONFIG_FLASH_OFFSET, page, FLASH_PAGE_SIZE);
+    flash_range_program(CONFIG_FLASH_OFFSET, record, CONFIG_RECORD_BYTES);
     restore_interrupts(ints);
     multicore_lockout_end_blocking();
 
@@ -847,6 +865,234 @@ static void cmd_input_active(const char *arg) {
     reply(out);
 }
 
+// ---------------------------------------------------------------------------
+// Bluetooth Keyboard / Keyboard + Mouse configuration
+// ---------------------------------------------------------------------------
+// This is the complete configuration surface a graphical remapping editor needs:
+// read the effective profile, change/clear a binding, restore defaults, and
+// read/write the mouse translation settings. It deliberately exposes stable
+// textual identifiers ("key:1A", "mouse:1", "lstick_up") rather than firmware
+// constants, so a UI never has to know a report layout or reconstruct defaults
+// from source.
+//
+// Responses stay inside the 512-byte wireless slot: the profile listing is
+// paged, and every page reports its own bounds.
+#define KBM_MAP_PAGE_SIZE 8u
+
+static void cmd_kbm_status(void) {
+    ns2_kbm_runtime_status_t status;
+    ns2_kbm_runtime_status(&status);
+    // One shared, host-tested formatter. This surface and the UART one each had
+    // their own printf, and adding a field shifted every argument in both --
+    // silently, because format/argument drift is not a compile error.
+    (void)ns2_kbm_status_format(&status, out, sizeof(out));
+    reply(out);
+}
+
+static void cmd_kbm_map(ns2_kbm_profile_t profile, unsigned page) {
+    ns2_kbm_config_t config;
+    ns2_kbm_runtime_config_get(&config);
+    static ns2_kbm_effective_t effective[NS2_KBM_MAX_EFFECTIVE];
+    uint16_t total = ns2_kbm_effective_bindings(&config, profile, effective,
+                                                NS2_KBM_MAX_EFFECTIVE);
+    uint16_t first = (uint16_t)(page * KBM_MAP_PAGE_SIZE);
+    int j = snprintf(out, sizeof(out),
+                     "{\"profile\":\"%s\",\"page\":%u,\"pageSize\":%u,"
+                     "\"total\":%u,\"bindings\":[",
+                     ns2_kbm_profile_name(profile), page,
+                     (unsigned)KBM_MAP_PAGE_SIZE, (unsigned)total);
+    for (uint16_t i = first;
+         i < total && i < first + KBM_MAP_PAGE_SIZE && j < (int)sizeof(out) - 64;
+         ++i) {
+        char source[12];
+        ns2_kbm_source_format(effective[i].source, source, sizeof(source));
+        j += snprintf(out + j, sizeof(out) - (size_t)j,
+                      "%s{\"src\":\"%s\",\"dst\":\"%s\",\"custom\":%s}",
+                      i > first ? "," : "", source,
+                      ns2_kbm_destination_name(effective[i].destination),
+                      effective[i].overridden ? "true" : "false");
+        if (j < 0 || (size_t)j >= sizeof(out)) {
+            j = (int)sizeof(out) - 1;
+            break;
+        }
+    }
+    snprintf(out + j, sizeof(out) - (size_t)j, "],\"more\":%s}",
+             (first + KBM_MAP_PAGE_SIZE) < total ? "true" : "false");
+    reply(out);
+}
+
+static void cmd_kbm_mouse_get(void) {
+    ns2_kbm_mouse_config_t mouse;
+    ns2_kbm_runtime_get_mouse(&mouse);
+    snprintf(out, sizeof(out),
+             "{\"sensitivityX\":%u,\"sensitivityY\":%u,\"recenterMs\":%u,"
+             "\"invertX\":%s,\"invertY\":%s,"
+             "\"sensitivityMin\":%u,\"sensitivityMax\":%u,"
+             "\"recenterMinMs\":%u,\"recenterMaxMs\":%u}",
+             mouse.sensitivity_x, mouse.sensitivity_y, mouse.recenter_ms,
+             mouse.invert_x ? "true" : "false",
+             mouse.invert_y ? "true" : "false",
+             (unsigned)NS2_KBM_MOUSE_SENS_MIN, (unsigned)NS2_KBM_MOUSE_SENS_MAX,
+             (unsigned)NS2_KBM_MOUSE_RECENTER_MIN_MS,
+             (unsigned)NS2_KBM_MOUSE_RECENTER_MAX_MS);
+    reply(out);
+}
+
+static bool kbm_mouse_apply(const char *field, long value) {
+    ns2_kbm_mouse_config_t mouse;
+    ns2_kbm_runtime_get_mouse(&mouse);
+    if (value < 0 || value > 65535L) return false;
+    if (strcmp(field, "sensitivity") == 0) {
+        mouse.sensitivity_x = (uint16_t)value;
+        mouse.sensitivity_y = (uint16_t)value;
+    } else if (strcmp(field, "sensitivityx") == 0) {
+        mouse.sensitivity_x = (uint16_t)value;
+    } else if (strcmp(field, "sensitivityy") == 0) {
+        mouse.sensitivity_y = (uint16_t)value;
+    } else if (strcmp(field, "recenter") == 0) {
+        mouse.recenter_ms = (uint16_t)value;
+    } else if (strcmp(field, "invertx") == 0) {
+        if (value > 1) return false;
+        mouse.invert_x = (uint8_t)value;
+    } else if (strcmp(field, "inverty") == 0) {
+        if (value > 1) return false;
+        mouse.invert_y = (uint8_t)value;
+    } else {
+        return false;
+    }
+    return ns2_kbm_runtime_set_mouse(&mouse);
+}
+
+static void cmd_kbm(char *arg) {
+    if (!arg || !arg[0] || strcmp(arg, "status") == 0) {
+        cmd_kbm_status();
+        return;
+    }
+
+    if (strcmp(arg, "mode") == 0) {
+        // `mode` is the EFFECTIVE mode, inferred from the admitted roles;
+        // `override` is the persisted user choice, "auto" when inferring.
+        ns2_kbm_runtime_status_t status;
+        ns2_kbm_runtime_status(&status);
+        snprintf(out, sizeof(out),
+                 "{\"mode\":\"%s\",\"override\":\"%s\",\"available\":"
+                 "[\"auto\",\"controller\",\"keyboard\",\"kbmouse\"]}",
+                 ns2_kbm_mode_name((ns2_kbm_mode_t)status.mode),
+                 ns2_kbm_mode_name((ns2_kbm_mode_t)status.mode_override));
+        reply(out);
+        return;
+    }
+    if (strncmp(arg, "mode ", 5) == 0) {
+        ns2_kbm_mode_t mode;
+        if (!ns2_kbm_mode_from_name(arg + 5, &mode) ||
+            !ns2_kbm_runtime_set_mode(mode)) {
+            reply("{\"error\":\"usage: kbm mode auto|controller|keyboard|kbmouse\"}");
+            return;
+        }
+        snprintf(out, sizeof(out), "{\"ok\":true,\"mode\":\"%s\"}",
+                 ns2_kbm_mode_name(mode));
+        reply(out);
+        return;
+    }
+
+    if (strncmp(arg, "map ", 4) == 0) {
+        char name[8] = {0};
+        unsigned page = 0;
+        int consumed = 0;
+        int fields = sscanf(arg + 4, "%7s %u %n", name, &page, &consumed);
+        if (fields < 1) {
+            reply("{\"error\":\"usage: kbm map <kb|kbm> [page]\"}");
+            return;
+        }
+        ns2_kbm_profile_t profile;
+        if (!ns2_kbm_profile_from_name(name, &profile) || page > 32u) {
+            reply("{\"error\":\"usage: kbm map <kb|kbm> [page]\"}");
+            return;
+        }
+        cmd_kbm_map(profile, page);
+        return;
+    }
+
+    if (strncmp(arg, "bind ", 5) == 0) {
+        char name[8] = {0};
+        char source_text[16] = {0};
+        char dest_text[16] = {0};
+        if (sscanf(arg + 5, "%7s %15s %15s", name, source_text, dest_text) != 3) {
+            reply("{\"error\":\"usage: kbm bind <kb|kbm> <key:NN|mouse:N> "
+                  "<dest|none|default>\"}");
+            return;
+        }
+        ns2_kbm_profile_t profile;
+        ns2_kbm_source_t source;
+        if (!ns2_kbm_profile_from_name(name, &profile)) {
+            reply("{\"error\":\"unknown profile\"}");
+            return;
+        }
+        if (!ns2_kbm_source_parse(source_text, &source)) {
+            reply("{\"error\":\"unknown source input\"}");
+            return;
+        }
+        bool ok;
+        if (strcmp(dest_text, "default") == 0) {
+            ok = ns2_kbm_runtime_clear_binding(profile, source);
+        } else {
+            uint8_t destination;
+            if (!ns2_kbm_destination_from_name(dest_text, &destination)) {
+                reply("{\"error\":\"unknown destination\"}");
+                return;
+            }
+            ok = ns2_kbm_runtime_set_binding(profile, source, destination);
+        }
+        if (!ok) {
+            reply("{\"error\":\"mapping storage full\"}");
+            return;
+        }
+        snprintf(out, sizeof(out),
+                 "{\"ok\":true,\"profile\":\"%s\",\"src\":\"%s\",\"dst\":\"%s\"}",
+                 ns2_kbm_profile_name(profile), source_text, dest_text);
+        reply(out);
+        return;
+    }
+
+    if (strncmp(arg, "reset", 5) == 0) {
+        const char *what = arg[5] == ' ' ? arg + 6 : "";
+        if (strcmp(what, "all") == 0 || what[0] == '\0') {
+            ns2_kbm_runtime_reset_all();
+            reply("{\"ok\":true,\"reset\":\"all\"}");
+            return;
+        }
+        ns2_kbm_profile_t profile;
+        if (!ns2_kbm_profile_from_name(what, &profile)) {
+            reply("{\"error\":\"usage: kbm reset kb|kbm|all\"}");
+            return;
+        }
+        ns2_kbm_runtime_reset_profile(profile);
+        snprintf(out, sizeof(out), "{\"ok\":true,\"reset\":\"%s\"}",
+                 ns2_kbm_profile_name(profile));
+        reply(out);
+        return;
+    }
+
+    if (strcmp(arg, "mouse") == 0) {
+        cmd_kbm_mouse_get();
+        return;
+    }
+    if (strncmp(arg, "mouse ", 6) == 0) {
+        char field[16] = {0};
+        long value = 0;
+        if (sscanf(arg + 6, "%15s %ld", field, &value) != 2 ||
+            !kbm_mouse_apply(field, value)) {
+            reply("{\"error\":\"usage: kbm mouse <sensitivity|sensitivityx|"
+                  "sensitivityy|recenter|invertx|inverty> <value>\"}");
+            return;
+        }
+        cmd_kbm_mouse_get();
+        return;
+    }
+
+    reply("{\"error\":\"usage: kbm status|mode|map|bind|reset|mouse\"}");
+}
+
 // Current output personality (read-only). Lets the management app display the mode and gate
 // mode-specific controls (e.g. amiibo controls are only meaningful in Pro2). The switch action
 // itself is a separate future command (see docs/bluetooth/app-interface-audit.md G2). "config" is
@@ -1235,6 +1481,10 @@ static void handle_line(char *cmd) {
         // blocked before management authorization landed; keep one shared
         // mutation path now that the transport supplies that security gate.
         cmd_input_active(cmd + 13);
+    } else if (strcmp(cmd, "kbm") == 0) {
+        cmd_kbm(NULL);
+    } else if (strncmp(cmd, "kbm ", 4) == 0) {
+        cmd_kbm(cmd + 4);
     } else if (strcmp(cmd, "personality") == 0) {
         cmd_personality();
     } else if (strncmp(cmd, "personality ", 12) == 0) {

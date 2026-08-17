@@ -7,11 +7,13 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
-- **Last verified:** 2026-08-16 — documentation reconciliation against the released tree. No new
-  hardware testing was performed in that pass.
+- **Last verified:** 2026-08-16 — Bluetooth Keyboard / Keyboard + Mouse input pass. Both board
+  builds, install-reset markers, and the host suites are green; **no hardware testing has been
+  performed on the new input source**.
 - **Current release:** v2.0.0, published 2026-08-15 from commit `a1491b2`.
-- **Development branch:** `ns2-testing`; its HEAD is the v2.0.0 tag.
-- **Bridge contract:** 3 (`ANDROID_BRIDGE_CONTRACT_VERSION` / `BridgeContract.VERSION`).
+- **Development branch:** `ns2-testing`; v2.0.0 is the last tag on it.
+- **Bridge contract:** 3 (`ANDROID_BRIDGE_CONTRACT_VERSION` / `BridgeContract.VERSION`) — unchanged.
+- **Settings schema:** 11 (was 10; adds KB/M configuration, migrates v10 in place).
 
 ## Release baseline
 
@@ -77,7 +79,9 @@ persisted across power cycles. Host-visible identity changes (colors) require th
 
 The console-facing stream has exactly one active logical owner. The firmware keeps a bounded
 registry of HID-ready sources keyed by stable Bluetooth identity plus a monotonic connection
-generation, never by a reusable BTstack connection index.
+generation, never by a reusable BTstack connection index. A logical source is normally one peer;
+Keyboard + Mouse is the one case where it is two, joined by an opaque composite handle rather than
+by loosening the connection limit (see [Keyboard and mouse input](#keyboard-and-mouse-input)).
 
 - Automatic selection ranks by source class — DIRECT (a controller paired to the adapter) over
   BRIDGE (the companion) over UNKNOWN — and applies only while the user has made no explicit
@@ -96,6 +100,84 @@ generation, never by a reusable BTstack connection index.
   stable address and connection generation, not just the reusable index.
 - Surfaces: UART `input sources` / `input active <id|none>`, the same bounded query over
   bonded management, and the companion's **Active controller** selector.
+
+## Keyboard and mouse input — Complete, hardware validated
+
+Validated on hardware 2026-08-16 with an ASUS ROG FALCHION RX keyboard and ROG KERIS II ACE mouse:
+both peers connected simultaneously as one logical source with distinct connections; either role
+powered off leaves the survivor working; either role returns and rejoins automatically **without
+re-pairing and without touching the surviving peer**; discovery retires once both are present and
+returns when the source is partial or empty.
+
+The adapter **infers** what to be from what is actually admitted: pair a keyboard and it becomes a
+keyboard; add a mouse and the two become one controller. The persisted setting is an *override*
+(default `auto`), not a mode you must select before pairing. A disconnected mouse never turns the
+Keyboard + Mouse profile back into the Keyboard profile when the override pinned it.
+
+- **Recognized controllers are unchanged**, including the existing Bluetooth-mouse path that feeds Joy-Con 2
+  mouse mode. Keyboards are simply not registered as sources there.
+- **Capability is not role ownership.** An ASUS ROG KERIS II gaming mouse reports `kbcap` *and*
+  `mousecap` — macro buttons put a keyboard collection in its descriptor — and bthid binds it to the
+  keyboard driver. It is still a mouse. A peer's *primary* kind decides which role it takes;
+  capabilities only say what reports it can emit. For an unresolved peer, pointer capability wins,
+  and COMBO is never inferred from "has both" — only a Class-of-Device combo declaration grants it.
+  A single-primary peer whose role is taken is a duplicate and never falls back to the other role.
+- **Role assignment is symmetric for genuine combos.** A declared combo peer takes both roles when
+  both are free and whichever one is free otherwise. An earlier rule rejected such a peer outright
+  when the keyboard role was taken, which is what made keyboard + mouse impossible to establish
+  (1547 refusals with both peers connected).
+- **Keyboard + Mouse is one logical source over two peers.** Role binding happens above the source
+  arbiter; the arbiter itself gained a `group_id` so members of one composite share ownership, and
+  losing one member hands the token to the survivor instead of surrendering the console. Standalone
+  sources (`group_id == 0`) behave exactly as before. A second keyboard, a second mouse, or an
+  unrelated gamepad is rejected and counted.
+- **Classification is structural** — Class of Device on Classic, report descriptor on BLE, keyboard
+  tested before mouse so a combo peer can fill both roles from one connection. Names are never used.
+- **Mapping lives outside the Bluetooth parsers** as sparse user overrides on immutable canonical
+  defaults, one profile per mode, independently resettable. Output is recomputed from the held
+  source set every publish, which is what makes duplicate bindings safe and makes a stuck
+  destination impossible. Opposing digital directions neutralize.
+- **Mouse movement** feeds the existing Joy-Con 2 native pointer where the personality has one, and
+  otherwise translates to the right stick with a constant-rate recenter driven by the existing 3 ms
+  core-1 tick, so it can never latch off-centre. Only the translator is configurable; the validated
+  native wire path is not.
+- **Pairing never disconnects a KB/M role.** Historical "opening pairing replaces the connected
+  device" semantics apply to a standalone controller only. Replacing a KB/M role means powering that
+  device off; the BOOTSEL gesture cannot say which role is meant.
+- **A freed role is never absorbed by a surviving peer.** Once a peer holds a role, that is its role
+  for the connection generation — only a positively-declared COMBO may hold both. Without that
+  invariant a KERIS II mouse took the keyboard role the moment the real keyboard powered off
+  (`keyboardConn == mouseConn`), the source looked complete, and the keyboard could never return.
+  Supporting fixes: a peer's classification record is keyed by generation and never wildcard-wiped
+  by connection index (indexes are reused); capabilities accumulate and are never narrowed; and a
+  BLE peer on the keyboard driver waits for its descriptor classification instead of latching the
+  driver binding's partial keyboard-only view.
+- **Reconnect targets a bonded identity that is actually absent.** Selection runs over BTstack's LE
+  device DB through `ns2_ble_reconnect_select()` (pure, host-tested) at all three reconnect sites —
+  the disconnect handler, the connection-failure retry cascade, and the periodic reconnect — and
+  **never returns an identity that is already connected**. Only an identity with stored metadata is
+  direct-connected; any other absent peer is reached by discovery, which carries its name and profile.
+  Legacy single-controller reconnect is unchanged. A bonded management/companion identity lives in the
+  same LE DB but can never be dialled: a direct connect requires the stored-target flag, which only a
+  central-role HID connection can set.
+- **Discovery lifetime follows logical-source completeness.** A complete source — one standalone
+  controller, or both KB/M roles — retires discovery. A partial KB/M source keeps it available so the
+  missing role can rejoin, which is what makes bonded rejoin work without re-pairing. The rule is the
+  pure, host-tested `ns2_kbm_logical_source_complete()`, deliberately independent of the AUTO-derived
+  effective mode: AUTO describes the roles currently present, so keying completeness off it would
+  report "complete" the moment one peer arrived. `ns2_bt_host.c` owns the policy;
+  `btstack_host_scan_for_additional_peer()` executes the mechanics.
+- **Stale-bond deletion is scoped to the peer that dropped**, not to the stored target — with two
+  bonded peers it could otherwise delete the bond of the peer still connected and working.
+- **Surfaces:** `kbm` on management and UART (mode, status, paged effective map, bind, reset, mouse
+  settings), plus an input-source card in the web portal. The wire format is what UX_PASS's
+  remapping editor is meant to build on.
+- **Resource impact:** two HID peers fit inside the existing BTstack capacities on both boards; no
+  limit was raised. Measured build delta against a clean build of `505a0c8`: Pico W +20 472 B flash
+  / +4 012 B RAM, Pico 2 W +18 600 B / +4 020 B.
+
+**Hardware validation is pending** — this is implementation plus host tests only. Reference:
+[`docs/bluetooth/keyboard-mouse-input.md`](docs/bluetooth/keyboard-mouse-input.md).
 
 ## Android companion
 
@@ -130,8 +212,11 @@ Briefs: [`docs/agents/ANDROID.md`](docs/agents/ANDROID.md),
 
 - Exactly one logical input source owns the console stream at a time (see
   [Input sources](#input-sources)). For ordinary direct physical-controller operation, background
-  BLE scan and Classic inquiry idle once any controller becomes HID-ready — the pairing window
-  closes, the LED goes solid, and the radio is freed. The host stays connectable and discoverable,
+  BLE scan and Classic inquiry idle once the selected logical source is complete — the pairing
+  window closes, the LED goes solid, and the radio is freed. "Complete" is one HID-ready controller
+  in Controller and Keyboard modes, exactly as before; in Keyboard + Mouse mode it is both roles,
+  so pairing a keyboard does not close the window the mouse still needs. Classic discovery admits
+  keyboard/pointing Class-of-Device peripherals only while a KB/M mode is still missing that role. The host stays connectable and discoverable,
   so a bonded Classic controller still reconnects by paging in and a bonded BLE controller
   reconnects once discovery resumes at zero connections. An Android companion connection is
   app-initiated, so it does not depend on the adapter's own discovery being active.
@@ -275,8 +360,9 @@ is not duplicated here.
 
 Summary: all four Switch 2 output personalities enumerate and stream input on real hardware with
 rumble; the Sony, Xbox, Nintendo (Switch 1 and Switch 2), Wii, 8BitDo, and Retro Fighters families
-are confirmed as input sources; and the Android bridge is confirmed on two handhelds. Note the
-matrix was last updated 2026-08-12 and its Android-bridge row predates the v2.0.0 hardware pass.
+are confirmed as input sources; and the Android bridge is confirmed on two handhelds. Two rows are
+knowingly behind: the Android-bridge row still describes the pre-v2.0.0 audit rather than that
+release's hardware pass, and the two keyboard/mouse rows are source-tested only.
 
 ## Open validation gates
 
@@ -302,6 +388,13 @@ These are the genuinely open items. None is a known release-blocking regression.
    in the released APK, plus latency and teardown, have not had a dedicated physical pass.
 8. **Native physical NFC writes and native reader gating**, including Joy-Con 2 Right, which has
    confirmed NFC hardware but an undocumented command protocol.
+9. **Bluetooth Keyboard / Keyboard + Mouse on hardware.** The complete pass is implemented and
+   host-validated but has never met a real keyboard, mouse, or console. The specific checklist —
+   pairing and role binding on both transports, mapped input, remapping and reset through the
+   management path, per-role disconnect/reconnect, partial-source safety, duplicate rejection,
+   native versus translated mouse output, persistence across reboot, and Controller-mode regression
+   — is in
+   [`docs/bluetooth/keyboard-mouse-input.md`](docs/bluetooth/keyboard-mouse-input.md#hardware-validation).
 
 ## Known technical debt
 
@@ -316,8 +409,8 @@ These are the genuinely open items. None is a known release-blocking regression.
 - **Feedback is not fully source-aware.** `find_player_index()` returns −1 for an inactive source,
   but a few legacy vendor initialization paths still fall back to slot 0, so the arbiter does not
   claim complete rumble/LED isolation between sources.
-- **Compatibility matrix drift.** Its header date (2026-08-12) predates the v2.0.0 Android bridge
-  hardware pass.
+- **Compatibility matrix drift.** Its Android-bridge row still describes the pre-v2.0.0 ADB audit
+  rather than that release's hardware pass, so it understates what is confirmed.
 
 ## Negative knowledge — settled, do not rediscover
 
@@ -342,6 +435,15 @@ These are the genuinely open items. None is a known release-blocking regression.
   that is how a wrong row shipped twice. Rows are now pinned by a gravity-anchor test as well.
 - **The Switch 2 validates amiibo cryptography.** Key-free generated images and random-UID modes are
   rejected on the console; the portal identifying them proves nothing.
+- **The quirk table, not a descriptor heuristic, decides whether a peer is a supported controller.**
+  `gamepad_quirks_identify()` is name-driven as well as VID/PID-driven precisely because BLE PnP
+  often fails to resolve VID/PID: an Xbox pad reporting `vid=0 pid=0` still resolves to `QUIRK_XBOX`
+  by name at `gamepad_init()`, which is what keeps the Elite's "Xbox + 20-byte report" paddle
+  fallback reachable. Keyboard/mouse descriptor classification therefore applies to **unresolved**
+  generic peers only. Ignoring that cost an Xbox Elite regression during the KB/M pass — the pad was
+  reclassified off the generic driver before its descriptor was parsed, so it owned the console and
+  published nothing, and `vid/pid 0/0` was a symptom rather than the cause. Rule, layering, and
+  fixture-backed tests: [`docs/bluetooth/keyboard-mouse-input.md`](docs/bluetooth/keyboard-mouse-input.md).
 
 ## Research tooling
 
@@ -369,7 +471,8 @@ Standard families, with commands and the current inventory in [`AGENTS.md`](AGEN
 
 - compiled C host tests (`build/host-tests`), including protocol codecs, report encoders, motion PDU
   and seam invariants, BOOTSEL policy, wake identity, battery, audio packet/resampler, virtual-tag
-  store and v3 runtime replay, and the management/bridge suites via `tools/run_mgmt_tests.ps1`
+  store and v3 runtime replay, the keyboard/mouse mapping model, keyboard HID report decoding, and
+  settings-schema migration, plus the management/bridge suites via `tools/run_mgmt_tests.ps1`
 - Python suites for trace decoding, NFC semantics, the amiibo corpus, and motion analysis
 - JVM tests for `:bridge-core` and the Android backends, plus the architecture guard
 - contract guards: Android descriptor parity across C and Kotlin, the per-contract descriptor
@@ -394,10 +497,11 @@ validation; state the level performed.
 
 ## Immediate status
 
-No known release-blocking regression. v2.0.0 is the current baseline and the branch is at the tag.
+No known release-blocking regression. v2.0.0 remains the released baseline; the branch now carries
+the Bluetooth Keyboard / Keyboard + Mouse input pass on top of it.
 
 The open items above are hardware gates to close opportunistically when the relevant hardware is in
-front of the maintainer; they do not block development. The next accepted engineering work is the
-current development priority in [`PLAN.md`](PLAN.md) — Bluetooth HID keyboard and Keyboard + Mouse
-input — which should begin by auditing the existing admission/source-arbiter and Joy-Con 2 mouse
-paths rather than creating a competing model.
+front of the maintainer. The newest one (gate 9) is the only one blocking a claim about a shipped
+feature: KB/M is implementation-complete and host-validated, but nothing about it is
+hardware-confirmed. The next accepted engineering work is the current development priority in
+[`PLAN.md`](PLAN.md).

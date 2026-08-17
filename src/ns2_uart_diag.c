@@ -17,6 +17,13 @@
 #include "bt/bthid/devices/generic/bthid_android_bridge.h"
 #include "fixtures/android_controller_hid.h" // ANDROID_BRIDGE_CONTRACT_VERSION
 #include "ns2_active_input.h"
+#include "ns2_kbm.h"
+#include "ns2_kbm_runtime.h"
+#include "ns2_kbm_status.h"
+#include "bt/bthid/bthid.h"                                  // live device table (btdev)
+#include "bt/bthid/devices/generic/bthid_gamepad.h"           // generic-fallback identity
+#include "bt/bthid/devices/generic/bthid_keyboard.h"          // structural keyboard test
+#include "bt/bthid/devices/generic/bthid_mouse.h"             // structural mouse test
 #include "ds5_audio_bridge.h"
 #include "ds5_motion_pair_capture.h"
 #include "controller_headset.h"
@@ -321,6 +328,29 @@ static void queue_btstate(void) {
         (unsigned long)d.mgmt_connects, (unsigned long)d.mgmt_disconnects,
         (unsigned long)d.ctrl_disconnects, (unsigned long)d.hci_disconnects,
         d.last_disc_handle, d.last_disc_reason);
+    queue_text(trace_format_response);
+}
+
+// Bond inventory, read from the core-1 snapshot. `bonds list` reaches the same
+// data but only over CDC or the BLE management bridge, and neither is available
+// while the adapter's USB-C is on the console -- which is exactly when a
+// reconnect test runs. Bounded to the LE device DB capacity.
+static void queue_btbonds(void) {
+    size_t n = 0;
+    n += (size_t)snprintf(trace_format_response, sizeof(trace_format_response),
+                          "{\"btbonds\":[");
+    for (uint8_t i = 0; i < 16u && n < sizeof(trace_format_response); i++) {
+        btstack_host_bond_entry_t e;
+        if (!btstack_host_bond_snapshot_get(i, &e)) break;
+        n += (size_t)snprintf(trace_format_response + n, sizeof(trace_format_response) - n,
+                              "%s{\"i\":%u,\"type\":%u,"
+                              "\"addr\":\"%02X:%02X:%02X:%02X:%02X:%02X\"}",
+                              i ? "," : "", i, e.addr_type,
+                              e.addr[0], e.addr[1], e.addr[2],
+                              e.addr[3], e.addr[4], e.addr[5]);
+    }
+    if (n < sizeof(trace_format_response))
+        snprintf(trace_format_response + n, sizeof(trace_format_response) - n, "]}");
     queue_text(trace_format_response);
 }
 
@@ -892,6 +922,8 @@ static void handle_command(void) {
                strcmp(rx_line, "btlife status") == 0) {
         // Live BLE/management coexistence snapshot + suppression counters.
         queue_btstate();
+    } else if (strcmp(rx_line, "btbonds") == 0) {
+        queue_btbonds();
     } else if (strcmp(rx_line, "btlife clear") == 0) {
         btstack_host_life_clear();
         queue_text("{\"btlife\":\"cleared\"}");
@@ -1770,6 +1802,102 @@ static void handle_command(void) {
         } else {
             queue_text("{\"ds5motion\":\"error\",\"reason\":\"probe_rate_requires_axis_0_2_and_value_-4096_4096\"}");
         }
+    } else if (strcmp(rx_line, "btdev") == 0) {
+        // Bounded snapshot of the live BTHID device table.
+        //
+        // Exists because "which driver is actually bound to this peer?" was not
+        // answerable over UART, and every identity/classification question --
+        // late VID/PID promotion, descriptor-time reclassification, generic
+        // fallback -- resolves to exactly that. Names are truncated and the
+        // table is capped at BTHID_MAX_DEVICES, so the reply stays bounded.
+        //
+        // `kbcap`/`mousecap` re-run the structural descriptor tests against the
+        // cached descriptor. bthid caches one descriptor at a time, so they are
+        // reported only for the connection that descriptor belongs to; a `null`
+        // means "not this peer's descriptor", not "capability absent".
+        const uint8_t *cached = NULL;
+        uint16_t cached_len = 0;
+        uint8_t cached_conn = 0;
+        bool have_cached = bthid_get_cached_descriptor(&cached, &cached_len,
+                                                       &cached_conn);
+        int j = snprintf(trace_format_response, sizeof(trace_format_response),
+                         "{\"btdev\":[");
+        for (uint8_t slot = 0; slot < BTHID_MAX_DEVICES; ++slot) {
+            const bthid_device_t *dev = bthid_get_device_slot(slot);
+            if (!dev) continue;
+            const bthid_driver_t *drv = (const bthid_driver_t *)dev->driver;
+            char name[17];
+            unsigned n = 0;
+            for (; dev->name[n] && n < sizeof(name) - 1u; ++n) {
+                unsigned char c = (unsigned char)dev->name[n];
+                name[n] = (c < 0x20u || c == '"' || c == '\\') ? ' ' : (char)c;
+            }
+            name[n] = '\0';
+            bool desc_is_ours = have_cached && cached_conn == dev->conn_index &&
+                                cached_len > 0;
+            char kbcap[8] = "null";
+            char mousecap[8] = "null";
+            if (desc_is_ours) {
+                snprintf(kbcap, sizeof(kbcap), "%s",
+                         bthid_keyboard_descriptor_is_keyboard(cached, cached_len)
+                             ? "true" : "false");
+                snprintf(mousecap, sizeof(mousecap), "%s",
+                         bthid_mouse_descriptor_is_mouse(cached, cached_len)
+                             ? "true" : "false");
+            }
+            j += snprintf(trace_format_response + j,
+                          sizeof(trace_format_response) - (size_t)j,
+                          "%s{\"conn\":%u,\"gen\":%lu,\"ble\":%s,"
+                          "\"name\":\"%.16s\",\"vid\":\"0x%04X\",\"pid\":\"0x%04X\","
+                          "\"driver\":\"%.24s\",\"type\":%u,"
+                          "\"desc_len\":%u,\"desc_mine\":%s,"
+                          "\"kbcap\":%s,\"mousecap\":%s,\"generic\":%s}",
+                          j > 10 ? "," : "",
+                          dev->conn_index,
+                          (unsigned long)dev->connection_generation,
+                          dev->is_ble ? "true" : "false",
+                          name, dev->vendor_id, dev->product_id,
+                          drv && drv->name ? drv->name : "none",
+                          (unsigned)dev->type,
+                          desc_is_ours ? cached_len : 0u,
+                          desc_is_ours ? "true" : "false",
+                          kbcap, mousecap,
+                          drv == &bthid_gamepad_driver ? "true" : "false");
+            if (j < 0 || (size_t)j >= sizeof(trace_format_response)) {
+                j = (int)sizeof(trace_format_response) - 1;
+                break;
+            }
+        }
+        snprintf(trace_format_response + j,
+                 sizeof(trace_format_response) - (size_t)j, "]}");
+        queue_text(trace_format_response);
+    } else if (strcmp(rx_line, "kbm") == 0 ||
+               strcmp(rx_line, "kbm status") == 0) {
+        // One bounded snapshot answering the cross-layer questions for a KB/M
+        // session: which mode is selected, which roles are filled, whether
+        // reports are arriving, and why a peer was refused.
+        ns2_kbm_runtime_status_t kbm;
+        ns2_kbm_runtime_status(&kbm);
+        // Shared with the management surface and pinned by a host test. Keeping
+        // a second copy of this format string here is what produced a
+        // diagnostic reporting `"override":"kb","profile":"false"` and a
+        // garbage counter -- worse than no diagnostic, because it invites wrong
+        // conclusions about hardware.
+        (void)ns2_kbm_status_format(&kbm, trace_format_response,
+                                    sizeof(trace_format_response));
+        queue_text(trace_format_response);
+    } else if (strncmp(rx_line, "kbm mode ", 9) == 0) {
+        ns2_kbm_mode_t mode;
+        if (!ns2_kbm_mode_from_name(rx_line + 9, &mode) ||
+            !ns2_kbm_runtime_set_mode(mode)) {
+            queue_text("{\"kbm\":\"error\",\"reason\":"
+                       "\"mode_must_be_auto_controller_keyboard_or_kbmouse\"}");
+        } else {
+            snprintf(trace_format_response, sizeof(trace_format_response),
+                     "{\"kbm\":\"mode\",\"value\":\"%s\"}",
+                     ns2_kbm_mode_name(mode));
+            queue_text(trace_format_response);
+        }
     } else if (strcmp(rx_line, "input sources") == 0) {
         queue_active_input_status();
     } else if (strncmp(rx_line, "input active ", 13) == 0) {
@@ -2037,6 +2165,8 @@ static void handle_command(void) {
                  "\"addr\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
                  "\"name\":\"%s\",\"adv\":%lu,\"target_adv\":%lu,"
                  "\"switch2_adv\":%lu,\"target_adv_type\":%u,"
+                 "\"bonds\":%u,\"bond_cap\":%u,\"bonded_adv\":%lu,"
+                 "\"nontarget_adv\":%lu,\"rpa_adv\":%lu,"
                  "\"target_connects\":%lu,\"target_success\":%lu,"
                  "\"target_fail\":%lu,\"last_status\":\"0x%02X\","
                  "\"reencrypt_start\":%lu,\"reencrypt_ok\":%lu,"
@@ -2069,6 +2199,10 @@ static void handle_command(void) {
                  (unsigned long)d.target_advertising_reports,
                  (unsigned long)d.switch2_advertising_reports,
                  d.last_target_advertising_event_type,
+                 d.bond_count, d.bond_capacity,
+                 (unsigned long)d.bonded_advertising_reports,
+                 (unsigned long)d.nontarget_advertising_reports,
+                 (unsigned long)d.rpa_advertising_reports,
                  (unsigned long)d.target_connect_attempts,
                  (unsigned long)d.target_connect_successes,
                  (unsigned long)d.target_connect_failures,
@@ -2142,7 +2276,8 @@ static void handle_command(void) {
                    "\"button y\","
                    "\"motionauto\",\"motionusb\",\"ds5motion status|on|off|frame body|world|carrier switch2|dscale|legacy|map SX SY SZ|probe rate AXIS VALUE|probe off|pdu40 on|off|status|accel live|half|zero\",\"input status\",\"input sources\",\"input active ID|none\",\"audio status|clear|headset\",\"ds5codec status|lock on|lock off\","
                    "\"pro2audio on|off|status|live on|live off|complexity 0-10|analysis on|analysis off|replay|replay stop\","
-                   "\"btreconnect\",\"btfresh\","
+                   "\"kbm status\",\"kbm mode auto|controller|keyboard|kbmouse\",\"btdev\","
+                   "\"btreconnect\",\"btbonds\",\"btfresh\","
                    "\"reenumerate\",\"help\"]}");
     } else if (rx_length != 0) {
         queue_text("{\"error\":\"unknown command\"}");

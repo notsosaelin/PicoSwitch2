@@ -5,6 +5,7 @@
 #include "core/input_event.h"
 #include "bt/transport/bt_transport.h"
 #include "devices/generic/bthid_gamepad.h"
+#include "devices/generic/bthid_keyboard.h"
 #include "devices/generic/bthid_mouse.h"
 #include "devices/vendors/sony/ds3_bt.h"
 #include "devices/vendors/sony/ds4_bt.h"
@@ -205,6 +206,12 @@ bthid_device_t* bthid_get_device(uint8_t conn_index)
         }
     }
     return NULL;
+}
+
+bthid_device_t* bthid_get_device_slot(uint8_t slot)
+{
+    if (slot >= BTHID_MAX_DEVICES) return NULL;
+    return devices[slot].active ? &devices[slot] : NULL;
 }
 
 uint8_t bthid_get_device_count(void)
@@ -729,10 +736,73 @@ void bthid_set_hid_descriptor(uint8_t conn_index, const uint8_t* desc, uint16_t 
                             "descriptor-arrived", (int8_t)device->player_index);
 
     const bthid_driver_t *current = (const bthid_driver_t*)device->driver;
-    if (current == &bthid_gamepad_driver &&
-        bthid_mouse_descriptor_is_mouse(desc, desc_len)) {
+
+    // Keyboard/mouse descriptor classification applies to UNRESOLVED generic HID
+    // peers only.
+    //
+    // The generic gamepad driver is the catch-all for BLE, so "bound to it" says
+    // nothing on its own -- but the quirk the device resolved to does. A peer
+    // the quirk table already claims (QUIRK_XBOX, QUIRK_BITDO_*, ...) has been
+    // identified as a supported controller by the project's established
+    // identification machinery, and that machinery stays the source of truth:
+    // it is deliberately name/VID/PID-driven precisely because BLE PnP often
+    // fails to resolve VID/PID, and it is what makes the Xbox Elite's 20-byte
+    // paddle fallback reachable at report time.
+    //
+    // Regression this prevents: reclassifying such a peer moves it off the
+    // generic driver, so bthid_gamepad_set_descriptor() never builds its report
+    // map and its quirk's extract_extra() is never called. The controller
+    // connects, registers as an active input source, and publishes nothing.
+    bool may_reclassify = bthid_gamepad_identity_unresolved(device);
+
+    // Among unresolved peers, keyboard is tested before mouse: a combo
+    // keyboard+pointer peer declares relative X/Y as well, and the keyboard
+    // driver is the one that can serve BOTH roles from a single connection.
+    // Testing mouse first would strand the keyboard half of such a device.
+    if (may_reclassify &&
+        bthid_keyboard_descriptor_is_keyboard(desc, desc_len)) {
+        printf("[BTHID] Descriptor reclassify: generic gamepad -> keyboard (%s)\n",
+               device->name);
+        bthid_rebind_begin();
+        if (current->disconnect) current->disconnect(device);
+        bthid_rebind_end();
+        device->driver_data = NULL;
+        device->driver = &bthid_keyboard_driver;
+        device->type = BTHID_DEVICE_KEYBOARD;
+        if (bthid_keyboard_driver.init && bthid_keyboard_driver.init(device))
+            bthid_keyboard_set_descriptor(device, desc, desc_len);
+        bind_driver_event_generation(device);
+        bthid_on_hid_rebind(conn_index);
+        return;
+    }
+    if (current == &bthid_keyboard_driver) {
+        if (bthid_keyboard_descriptor_is_keyboard(desc, desc_len)) {
+            bthid_keyboard_set_descriptor(device, desc, desc_len);
+            return;
+        }
+        // Bound to the keyboard driver but the descriptor says otherwise --
+        // reachable when the Class of Device claimed "combo keyboard/pointing"
+        // for something that is really a controller. Hand it back rather than
+        // leaving a peer stranded on a driver that will decode none of its
+        // reports.
+        printf("[BTHID] Descriptor reclassify: keyboard -> generic gamepad (%s)\n",
+               device->name);
+        bthid_rebind_begin();
+        if (current->disconnect) current->disconnect(device);
+        bthid_rebind_end();
+        device->driver_data = NULL;
+        device->driver = &bthid_gamepad_driver;
+        device->type = BTHID_DEVICE_GAMEPAD;
+        if (bthid_gamepad_driver.init) bthid_gamepad_driver.init(device);
+        bind_driver_event_generation(device);
+        bthid_gamepad_set_descriptor(device, desc, desc_len);
+        bthid_on_hid_rebind(conn_index);
+        return;
+    }
+    if (may_reclassify && bthid_mouse_descriptor_is_mouse(desc, desc_len)) {
         // BLE has no Class-of-Device, and many mice advertise opaque product
-        // names. The relative X+Y descriptor is the authoritative discriminator.
+        // names. The relative X+Y descriptor is the authoritative discriminator
+        // among peers the quirk table did not claim.
         printf("[BTHID] Descriptor reclassify: generic gamepad -> generic mouse (%s)\n",
                device->name);
         bthid_rebind_begin();

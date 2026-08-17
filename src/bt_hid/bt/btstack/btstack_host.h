@@ -89,6 +89,11 @@ bool btstack_host_controller_connected(void);
 // resumes automatically at 0 connections.
 void btstack_host_idle_scan_if_connected(void);
 
+// Keep discovery running while the selected source is still missing a peer, even
+// though another peer is already connected. Counterpart to
+// btstack_host_idle_scan_if_connected(); never disturbs an in-flight connect.
+void btstack_host_scan_for_additional_peer(void);
+
 // Temporarily pause discovery and emit one or two non-connectable legacy BLE
 // advertisements from an exact random address. Used for Switch 2 wake replay;
 // the sequence is timer-driven and never blocks the BTstack run loop. Returns
@@ -150,6 +155,16 @@ typedef struct {
     uint16_t last_connected_pid;
     uint32_t advertising_reports;
     uint32_t target_advertising_reports;
+    // Multi-peer reconnect: every counter above is scoped to the single
+    // `last_connected` target, so a second bonded peer is invisible to them.
+    // These distinguish "the other bond is gone" from "it is advertising but
+    // nothing targets it" from "its address rotates so no raw match is
+    // possible".
+    uint32_t bonded_advertising_reports;     // sighting matched ANY stored bond
+    uint32_t nontarget_advertising_reports;  // ...a bond that is not the target
+    uint32_t rpa_advertising_reports;        // unmatchable resolvable private addr
+    uint8_t bond_count;                      // stored LE bonds
+    uint8_t bond_capacity;                   // MAX_NR_LE_DEVICE_DB_ENTRIES
     uint32_t switch2_advertising_reports;
     uint32_t target_connect_attempts;
     uint32_t target_connect_successes;
@@ -242,6 +257,18 @@ typedef struct {
 } btstack_host_mgmt_diag_t;
 
 void btstack_host_get_mgmt_diag(btstack_host_mgmt_diag_t *out);
+
+// One entry of the bond inventory snapshot published by core 1 (see
+// bond_snapshot_refresh). Safe to call from core 0; false when `index` is past
+// the current bond count. Lets a controlled reconnect test record which bonds
+// exist BEFORE a peer is power-cycled, so bond survival is observed rather than
+// inferred from the adapter's connected state.
+typedef struct {
+    uint8_t addr[6];
+    uint8_t addr_type;
+} btstack_host_bond_entry_t;
+
+bool btstack_host_bond_snapshot_get(uint8_t index, btstack_host_bond_entry_t *out);
 // Read lifecycle event at logical index (0 = oldest). False when index >= count.
 bool btstack_host_life_get(uint16_t index, btstack_host_life_record_t *out);
 void btstack_host_life_clear(void);

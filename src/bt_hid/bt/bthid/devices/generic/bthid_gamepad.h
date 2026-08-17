@@ -18,6 +18,17 @@ void bthid_gamepad_set_descriptor(bthid_device_t* device, const uint8_t* desc, u
 // Update VID-dependent flags (e.g., is_xbox) when VID/PID arrives after descriptor parsing
 void bthid_gamepad_update_vid(bthid_device_t* device);
 
+// True when this device is on the generic gamepad driver AND the quirk table
+// has not recognized it as any known controller family -- an unresolved generic
+// HID peer.
+//
+// The generic gamepad driver is the catch-all for BLE HID, so "bound to it" on
+// its own says nothing. The quirk resolved for it does: a peer matching
+// QUIRK_XBOX, QUIRK_BITDO_*, etc. has been identified by the established
+// identification machinery and is a controller. Only an unresolved peer is a
+// candidate for keyboard/mouse descriptor classification.
+bool bthid_gamepad_identity_unresolved(const bthid_device_t* device);
+
 // Debug: format the parsed report-field map for a connection into a compact JSON fragment
 // (no surrounding braces) for the `btid desc` config command — added 2026-07-12 to inspect
 // real HID descriptor parsing results without guessing from symptomatic input behavior.

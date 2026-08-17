@@ -158,6 +158,11 @@ void bthid_task(void);
 // Get device by connection index
 bthid_device_t* bthid_get_device(uint8_t conn_index);
 
+// Enumerate the device table by slot (NOT by connection index). Returns NULL
+// for an unused slot. Used to re-evaluate every live peer after a policy change
+// that must not wait for each of them to send another report.
+bthid_device_t* bthid_get_device_slot(uint8_t slot);
+
 // Get device count
 uint8_t bthid_get_device_count(void);
 
