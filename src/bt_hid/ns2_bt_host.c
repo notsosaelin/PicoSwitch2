@@ -76,6 +76,11 @@ static btstack_timer_source_t audio_timer;
 #endif
 static uint32_t control_tick;
 static uint32_t pairing_until_ms;  // 0 = locked; else scan window open until this time
+
+// Bounded discovery for a partial KB/M source. Runtime only -- no persistence,
+// no record of which peripherals exist; it tracks the CURRENT logical source
+// lifecycle and nothing else. See ns2_kbm_completion_update().
+static ns2_kbm_completion_t kbm_completion;
 static bool pairing_wait_for_disconnect;
 static uint32_t wipe_until_ms;     // 0 = idle; else show the fast wipe flash until this time
 
@@ -308,32 +313,63 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
         pairing_until_ms = 0;
     }
 
-    // Outside a pairing window, keep discovery off while a controller is
-    // connected (retired multi-controller scanning; frees Bluetooth bandwidth).
-    // The host stays connectable, so a bonded controller still reconnects;
-    // discovery resumes at 0 connections via btstack_host_process()'s safety-net.
-    if (pairing_until_ms == 0) {
-        if (logical_source_complete()) {
-            btstack_host_idle_scan_if_connected();
-        } else {
-            // The selected source is still missing a role. Discovery must be
-            // RUNNING, not merely "not stopped".
-            //
-            // Confirmed first-peer-wins mechanism: when a BLE HID peer reaches
-            // ready, the host calls btstack_host_stop_scan() unconditionally --
-            // the legacy 1-dongle-1-controller rule. The only thing that would
-            // restore discovery is btstack_host_process()'s idle safety-net, and
-            // its last term is btstack_classic_get_connection_count() == 0, which
-            // despite the name counts BLE links too. With one BLE peer connected
-            // that term is false, so the safety-net predicate short-circuits and
-            // never even reaches start_scan() -- which is why the hardware showed
-            // scan starts == stops and no suppression counter climbing.
-            //
-            // Net effect: the first peer to arrive shut the door behind itself,
-            // and the second was only ever found in the brief window before that
-            // happened -- hence having to power-cycle the waiting peripheral.
-            btstack_host_scan_for_additional_peer();
-        }
+    // ---------------------------------------------------------------------
+    // Discovery ownership
+    // ---------------------------------------------------------------------
+    // Discovery must be RUNNING, not merely "not stopped". Every BLE HID peer
+    // that reaches ready calls btstack_host_stop_scan() unconditionally (the
+    // legacy 1-dongle-1-controller rule, three call sites in btstack_host.c),
+    // and the idle safety-net cannot restore it: its final term is
+    // btstack_classic_get_connection_count() == 0, which counts BLE links
+    // despite its name, so with any peer connected the predicate short-circuits
+    // and never reaches start_scan(). Whatever wants discovery must therefore
+    // re-arm it explicitly, every tick.
+    //
+    // There are TWO independent reasons discovery may be required, and neither
+    // may suppress the other:
+    //
+    //   1. an explicit pairing window the user opened, while the selected
+    //      source is still incomplete;
+    //   2. the bounded completion window for a partial KB/M source.
+    //
+    // This decision used to sit inside `if (pairing_until_ms == 0)`, which meant
+    // reason 2 could never run during a pairing window -- so the first peer to
+    // finish connecting inside an explicit pairing window stopped the scan and
+    // nothing re-armed it for the rest of that window. Hardware showed exactly
+    // that: keyboard connected, source still partial, yet hid_state=0 /
+    // scan_active=false with scan starts == stops.
+    ns2_kbm_runtime_status_t discovery_status;
+    ns2_kbm_runtime_status(&discovery_status);
+    const bool controller_ready = btstack_host_controller_connected();
+    const bool source_complete = ns2_kbm_logical_source_complete(
+        discovery_status.keyboard_connected, discovery_status.mouse_connected,
+        controller_ready);
+
+    // Always advance the completion window, including during a pairing window,
+    // so its notion of the current partial state cannot go stale. It is keyed to
+    // logical-source transitions, so neither this tick rate nor any amount of
+    // keyboard/mouse traffic can extend it.
+    const ns2_kbm_discovery_t timed_discovery = ns2_kbm_completion_update(
+        &kbm_completion, discovery_status.keyboard_connected,
+        discovery_status.mouse_connected, controller_ready, now);
+
+    // The matrix itself is pure and host-tested (ns2_kbm_discovery_policy), so it
+    // is pinned by regression rather than restated here. Re-asserted every tick:
+    // btstack_host_scan_for_additional_peer() is idempotent and returns early
+    // when a scan or inquiry is already running, so this costs nothing in the
+    // steady state and self-heals whichever path stopped the scan.
+    switch (ns2_kbm_discovery_policy(pairing_until_ms != 0, source_complete,
+                                     timed_discovery)) {
+    case NS2_KBM_DISCOVERY_ARM:
+        btstack_host_scan_for_additional_peer();
+        break;
+    case NS2_KBM_DISCOVERY_RETIRE:
+        // Retired multi-controller scanning; frees Bluetooth bandwidth. The host
+        // stays connectable, so a bonded controller still reconnects.
+        btstack_host_idle_scan_if_connected();
+        break;
+    case NS2_KBM_DISCOVERY_LEAVE:
+        break;   // an open pairing window owns the scan; it closes itself
     }
 
     // Service the Bluetooth stack. `bt_task()` (via cyw43_transport_task()) already calls

@@ -103,11 +103,21 @@ by loosening the connection limit (see [Keyboard and mouse input](#keyboard-and-
 
 ## Keyboard and mouse input — Complete, hardware validated
 
-Validated on hardware 2026-08-16 with an ASUS ROG FALCHION RX keyboard and ROG KERIS II ACE mouse:
-both peers connected simultaneously as one logical source with distinct connections; either role
-powered off leaves the survivor working; either role returns and rejoins automatically **without
-re-pairing and without touching the surviving peer**; discovery retires once both are present and
-returns when the source is partial or empty.
+Validated on hardware with an ASUS ROG FALCHION RX keyboard and ROG KERIS II ACE mouse.
+
+2026-08-16 — both peers connected simultaneously as one logical source with distinct connections;
+either role powered off leaves the survivor working; either role returns and rejoins automatically
+**without re-pairing and without touching the surviving peer**.
+
+2026-08-17 — bounded partial-source discovery, end to end: zero peers restores normal discovery
+(`ble_conns=0`, `scan_active=true`); the first role joining keeps discovery active (`ble_conns=1`,
+`scan_active=true`); ~30 s later the completion window has expired and discovery retires
+(`scan_active=false`) with the keyboard still connected and working; a BOOTSEL double-tap then
+re-arms discovery (`scan_active=true`) even though the background window is long gone; and with that
+pairing window open, powering the mouse on joined it as the second role — `keyboard=true mouse=true`,
+`keyboardConn=4 mouseConn=5`, `ble_conns=2`, mouse input confirmed — after which discovery retired
+because the source was complete. No reboot, no bond clearing, no disconnecting the keyboard, no
+manual mode change.
 
 The adapter **infers** what to be from what is actually admitted: pair a keyboard and it becomes a
 keyboard; add a mouse and the two become one controller. The persisted setting is an *override*
@@ -167,6 +177,36 @@ Keyboard + Mouse profile back into the Keyboard profile when the override pinned
   effective mode: AUTO describes the roles currently present, so keying completeness off it would
   report "complete" the moment one peer arrived. `ns2_bt_host.c` owns the policy;
   `btstack_host_scan_for_additional_peer()` executes the mechanics.
+- **Discovery ownership is re-asserted every tick, by two independent reasons.** Every BLE HID peer
+  reaching ready calls `btstack_host_stop_scan()` (three sites), and the idle safety-net cannot
+  restore it while any link is up, so whatever wants discovery must re-assert it continuously rather
+  than rely on nobody stopping it. The matrix is the pure, host-tested `ns2_kbm_discovery_policy()`:
+  an explicit pairing window is authoritative and keeps discovery armed until the source is complete
+  (then leaves the scan alone, so controller replacement still works); outside a pairing window the
+  bounded completion window decides. The two used to be mutually exclusive — the completion window
+  was evaluated only inside `if (pairing_until_ms == 0)` — so the first peer to finish connecting
+  *inside* an explicit pairing window stopped the scan and nothing re-armed it for the rest of that
+  window. Hardware showed exactly that: keyboard connected, source still partial, `hid_state=0`,
+  `scan_active=false`, `scan starts == stops`.
+- **Partial KB/M discovery is bounded by a completion window.** A partial source holds discovery open
+  for 10 s (`ns2_kbm_completion_update()`, pure and host-tested) so the missing role can join, then
+  settles as intentional keyboard-only or mouse-only. The window is keyed to logical-source
+  transitions — entering partial from empty, from complete after a role loss, or from the other
+  partial state — so no amount of keyboard or mouse traffic extends it. Expiry changes discovery
+  policy only; input, effective mode, source ownership, and the surviving link are untouched, and the
+  complement may still join later when discovery is re-opened. It is not a persisted choice — nothing
+  records a keyboard-only or mouse-only preference.
+- **An open pairing window outranks a speculative direct reconnect.** Exposed by the completion
+  window: settling calls `btstack_host_stop_scan()`, which clears `hid_state.scan_start_time`; the
+  next `btstack_host_start_scan()` (from explicit pairing) therefore takes the "first scan with a
+  bonded device" fast path and backdates that timestamp so the periodic reconnect becomes eligible
+  ~3 s in. It then DIRECT-targeted the absent peer, and `btstack_host_connect_ble()` stops the scan
+  for the whole attempt (10 s timeout, then retries) while nothing re-arms discovery — the app-layer
+  re-arm is gated on `pairing_until_ms == 0`. The user's pairing window was consumed with the radio
+  not scanning. `ns2_ble_reconnect_select()` now takes `pairing_window_open` and never returns DIRECT
+  while it is set: discovery is strictly better there, because the advertising path admits bonded and
+  unbonded peers alike and resolves identity from the advertisement. Background direct reconnect
+  outside a pairing window is unchanged, so peers that stop advertising after bonding still work.
 - **Stale-bond deletion is scoped to the peer that dropped**, not to the stored target — with two
   bonded peers it could otherwise delete the bond of the peer still connected and working.
 - **Surfaces:** `kbm` on management and UART (mode, status, paged effective map, bind, reset, mouse

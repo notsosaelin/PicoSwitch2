@@ -825,6 +825,294 @@ static void test_completeness_not_derived_from_effective_mode(void) {
     printf("OK:   completeness is independent of the AUTO-derived effective mode\n");
 }
 
+// ---------------------------------------------------------------------------
+// Partial-source completion window
+// ---------------------------------------------------------------------------
+// A partial KB/M source holds discovery open so the complementary role can join.
+// That must stay bounded: keyboard-only and mouse-only are legitimate, and
+// scanning forever would keep the radio hunting for as long as someone uses a
+// keyboard. Expiry settles the source; it does NOT lock the topology.
+
+#define W NS2_KBM_COMPLETION_WINDOW_MS
+
+static void test_completion_keyboard_first(void) {
+    ns2_kbm_completion_t s;
+    memset(&s, 0, sizeof(s));
+
+    // Nothing connected: ordinary always-on discovery, no window.
+    assert(ns2_kbm_completion_update(&s, false, false, false, 1000) == NS2_KBM_DISCOVERY_SEEK);
+    assert(!s.windowing);
+
+    // Keyboard joins -> partial, window opens.
+    assert(ns2_kbm_completion_update(&s, true, false, false, 1000) == NS2_KBM_DISCOVERY_SEEK);
+    assert(s.windowing && s.started_ms == 1000);
+
+    // Inside the window discovery keeps running.
+    assert(ns2_kbm_completion_update(&s, true, false, false, 1000 + W - 1) == NS2_KBM_DISCOVERY_SEEK);
+
+    // At the deadline the partial source is treated as intentional.
+    assert(ns2_kbm_completion_update(&s, true, false, false, 1000 + W) == NS2_KBM_DISCOVERY_IDLE);
+    assert(!s.windowing);
+
+    // ...and stays settled rather than oscillating back into seeking.
+    assert(ns2_kbm_completion_update(&s, true, false, false, 1000 + W + 5000) == NS2_KBM_DISCOVERY_IDLE);
+    printf("OK:   keyboard-only seeks for the completion window, then settles\n");
+}
+
+static void test_completion_mouse_first(void) {
+    ns2_kbm_completion_t s;
+    memset(&s, 0, sizeof(s));
+
+    assert(ns2_kbm_completion_update(&s, false, true, false, 500) == NS2_KBM_DISCOVERY_SEEK);
+    assert(s.windowing && s.started_ms == 500);
+    assert(ns2_kbm_completion_update(&s, false, true, false, 500 + W - 1) == NS2_KBM_DISCOVERY_SEEK);
+    assert(ns2_kbm_completion_update(&s, false, true, false, 500 + W) == NS2_KBM_DISCOVERY_IDLE);
+    printf("OK:   mouse-only seeks for the completion window, then settles\n");
+}
+
+// The hardware-validated fast path: both powered together, complement arrives
+// inside the window. This must never regress to "first peer wins".
+static void test_completion_complement_joins(void) {
+    ns2_kbm_completion_t s;
+    memset(&s, 0, sizeof(s));
+
+    assert(ns2_kbm_completion_update(&s, true, false, false, 0) == NS2_KBM_DISCOVERY_SEEK);
+    assert(ns2_kbm_completion_update(&s, true, true, false, W / 2) == NS2_KBM_DISCOVERY_IDLE);
+    assert(!s.windowing);   // cancelled immediately on completion
+
+    memset(&s, 0, sizeof(s));
+    assert(ns2_kbm_completion_update(&s, false, true, false, 0) == NS2_KBM_DISCOVERY_SEEK);
+    assert(ns2_kbm_completion_update(&s, true, true, false, W / 2) == NS2_KBM_DISCOVERY_IDLE);
+    assert(!s.windowing);
+    printf("OK:   complement joining inside the window completes the source and cancels it\n");
+}
+
+// Role loss from a complete pair opens a NEW window, so a power-cycled
+// peripheral has a grace period to rejoin without re-pairing.
+static void test_completion_role_loss_reopens(void) {
+    ns2_kbm_completion_t s;
+    memset(&s, 0, sizeof(s));
+
+    assert(ns2_kbm_completion_update(&s, true, true, false, 0) == NS2_KBM_DISCOVERY_IDLE);
+    assert(!s.windowing);
+
+    // Mouse powers off -> partial -> new window from that moment.
+    assert(ns2_kbm_completion_update(&s, true, false, false, 8000) == NS2_KBM_DISCOVERY_SEEK);
+    assert(s.windowing && s.started_ms == 8000);
+
+    // Mouse returns inside the window -> complete again, window cancelled.
+    assert(ns2_kbm_completion_update(&s, true, true, false, 8000 + W - 1) == NS2_KBM_DISCOVERY_IDLE);
+    assert(!s.windowing);
+
+    // Mirror: keyboard powers off and returns.
+    assert(ns2_kbm_completion_update(&s, false, true, false, 20000) == NS2_KBM_DISCOVERY_SEEK);
+    assert(s.windowing && s.started_ms == 20000);
+    assert(ns2_kbm_completion_update(&s, true, true, false, 20100) == NS2_KBM_DISCOVERY_IDLE);
+    printf("OK:   losing a role reopens the window; the role returning cancels it\n");
+}
+
+// Keyed to logical-source transitions, never to traffic. Servicing repeatedly --
+// what happens while a keyboard is actively used -- must not push the deadline.
+static void test_completion_not_extended_by_service(void) {
+    ns2_kbm_completion_t s;
+    memset(&s, 0, sizeof(s));
+
+    assert(ns2_kbm_completion_update(&s, true, false, false, 100) == NS2_KBM_DISCOVERY_SEEK);
+    for (uint32_t t = 100; t < 100 + W; t += 250) {
+        assert(ns2_kbm_completion_update(&s, true, false, false, t) == NS2_KBM_DISCOVERY_SEEK);
+        assert(s.started_ms == 100);   // deadline never moves
+    }
+    assert(ns2_kbm_completion_update(&s, true, false, false, 100 + W) == NS2_KBM_DISCOVERY_IDLE);
+    printf("OK:   repeated servicing cannot extend the completion window\n");
+}
+
+// A settled partial source is NOT a locked topology. Expiry only ends background
+// hunting; the surviving role keeps working and the complement may still join
+// when discovery is re-opened explicitly. This is the transition the bounded
+// window made first-class, and the one that exposed the reconnect regression.
+static void test_completion_settled_then_complement_joins(void) {
+    ns2_kbm_completion_t s;
+    memset(&s, 0, sizeof(s));
+
+    // Keyboard settles alone.
+    assert(ns2_kbm_completion_update(&s, true, false, false, 0) == NS2_KBM_DISCOVERY_SEEK);
+    assert(ns2_kbm_completion_update(&s, true, false, false, W) == NS2_KBM_DISCOVERY_IDLE);
+    assert(!s.windowing);
+    // The keyboard role is untouched by expiry -- settling is a discovery
+    // decision, not a source change.
+    assert(s.held == (uint8_t)NS2_KBM_HELD_KEYBOARD);
+
+    // Long after settling, the mouse joins via an explicitly re-opened window.
+    // The source completes and discovery idles for the right reason.
+    assert(ns2_kbm_completion_update(&s, true, true, false, W + 600000u) == NS2_KBM_DISCOVERY_IDLE);
+    assert(!s.windowing);
+    assert(s.held == (uint8_t)(NS2_KBM_HELD_KEYBOARD | NS2_KBM_HELD_MOUSE));
+
+    // Mirror: mouse settles alone, keyboard joins much later.
+    memset(&s, 0, sizeof(s));
+    assert(ns2_kbm_completion_update(&s, false, true, false, 0) == NS2_KBM_DISCOVERY_SEEK);
+    assert(ns2_kbm_completion_update(&s, false, true, false, W) == NS2_KBM_DISCOVERY_IDLE);
+    assert(s.held == (uint8_t)NS2_KBM_HELD_MOUSE);
+    assert(ns2_kbm_completion_update(&s, true, true, false, W + 600000u) == NS2_KBM_DISCOVERY_IDLE);
+    assert(s.held == (uint8_t)(NS2_KBM_HELD_KEYBOARD | NS2_KBM_HELD_MOUSE));
+    printf("OK:   a settled partial source still accepts its complement later\n");
+}
+
+static void test_completion_all_roles_gone(void) {
+    ns2_kbm_completion_t s;
+    memset(&s, 0, sizeof(s));
+
+    assert(ns2_kbm_completion_update(&s, true, false, false, 0) == NS2_KBM_DISCOVERY_SEEK);
+    assert(s.windowing);
+    assert(ns2_kbm_completion_update(&s, false, false, false, 1000) == NS2_KBM_DISCOVERY_SEEK);
+    assert(!s.windowing && s.started_ms == 0);
+    printf("OK:   losing the last KB/M role clears the window\n");
+}
+
+static void test_completion_role_swap_restarts(void) {
+    ns2_kbm_completion_t s;
+    memset(&s, 0, sizeof(s));
+
+    assert(ns2_kbm_completion_update(&s, true, false, false, 0) == NS2_KBM_DISCOVERY_SEEK);
+    assert(s.started_ms == 0);
+    // Keyboard-only becoming mouse-only is a new source, not a continuation.
+    assert(ns2_kbm_completion_update(&s, false, true, false, 4000) == NS2_KBM_DISCOVERY_SEEK);
+    assert(s.started_ms == 4000);
+    assert(ns2_kbm_completion_update(&s, false, true, false, 4000 + W - 1) == NS2_KBM_DISCOVERY_SEEK);
+    printf("OK:   swapping which single role is held restarts the window\n");
+}
+
+static void test_completion_ordinary_controller(void) {
+    ns2_kbm_completion_t s;
+    memset(&s, 0, sizeof(s));
+
+    assert(ns2_kbm_completion_update(&s, false, false, true, 0) == NS2_KBM_DISCOVERY_IDLE);
+    assert(!s.windowing);
+    // A controller never gets timed multi-peer scanning.
+    assert(ns2_kbm_completion_update(&s, false, false, true, 10u * W) == NS2_KBM_DISCOVERY_IDLE);
+    assert(!s.windowing);
+    printf("OK:   an ordinary controller idles discovery immediately, with no window\n");
+}
+
+static void test_completion_independent_of_effective_mode(void) {
+    ns2_kbm_completion_t s;
+    memset(&s, 0, sizeof(s));
+
+    assert(ns2_kbm_effective_mode(NS2_KBM_MODE_AUTO, true, false) == NS2_KBM_MODE_KEYBOARD);
+    assert(ns2_kbm_completion_update(&s, true, false, false, 0) == NS2_KBM_DISCOVERY_SEEK);
+
+    memset(&s, 0, sizeof(s));
+    assert(ns2_kbm_effective_mode(NS2_KBM_MODE_AUTO, false, true) == NS2_KBM_MODE_KEYBOARD_MOUSE);
+    assert(ns2_kbm_completion_update(&s, false, true, false, 0) == NS2_KBM_DISCOVERY_SEEK);
+    printf("OK:   the completion window is independent of the AUTO effective mode\n");
+}
+
+static void test_completion_wrap_and_null(void) {
+    ns2_kbm_completion_t s;
+    memset(&s, 0, sizeof(s));
+
+    const uint32_t near_wrap = 0xFFFFFFFFu - (W / 2u);
+    assert(ns2_kbm_completion_update(&s, true, false, false, near_wrap) == NS2_KBM_DISCOVERY_SEEK);
+    assert(ns2_kbm_completion_update(&s, true, false, false,
+                                     (uint32_t)(near_wrap + W - 1u)) == NS2_KBM_DISCOVERY_SEEK);
+    assert(ns2_kbm_completion_update(&s, true, false, false,
+                                     (uint32_t)(near_wrap + W)) == NS2_KBM_DISCOVERY_IDLE);
+
+    assert(ns2_kbm_completion_update(NULL, true, false, false, 0) == NS2_KBM_DISCOVERY_SEEK);
+    printf("OK:   completion window is wrap-safe and NULL-safe\n");
+}
+
+// Discovery ownership matrix. Hardware-proven regression: with the completion
+// window evaluated only while no pairing window was open, the first peer to
+// finish connecting inside an explicit pairing window stopped the scan (every
+// HID_READY path calls btstack_host_stop_scan()) and nothing re-armed it --
+// keyboard connected, source still partial, yet hid_state=0 / scan_active=false
+// with scan starts == stops. Explicit pairing is authoritative.
+static void test_discovery_ownership_matrix(void) {
+    // 1. pairing open + partial KB/M -> discovery ON.
+    //    True regardless of the completion window's verdict, including after it
+    //    has expired: the user's explicit request outranks it.
+    assert(ns2_kbm_discovery_policy(true, false, NS2_KBM_DISCOVERY_SEEK) ==
+           NS2_KBM_DISCOVERY_ARM);
+    assert(ns2_kbm_discovery_policy(true, false, NS2_KBM_DISCOVERY_IDLE) ==
+           NS2_KBM_DISCOVERY_ARM);
+
+    // 2. pairing open + complete -> the window closes itself; never retire here,
+    //    or controller replacement (which keeps scanning with a controller
+    //    connected) would break.
+    assert(ns2_kbm_discovery_policy(true, true, NS2_KBM_DISCOVERY_IDLE) ==
+           NS2_KBM_DISCOVERY_LEAVE);
+    assert(ns2_kbm_discovery_policy(true, true, NS2_KBM_DISCOVERY_SEEK) ==
+           NS2_KBM_DISCOVERY_LEAVE);
+
+    // 3. pairing closed + partial + completion window running -> discovery ON.
+    assert(ns2_kbm_discovery_policy(false, false, NS2_KBM_DISCOVERY_SEEK) ==
+           NS2_KBM_DISCOVERY_ARM);
+
+    // 4. pairing closed + completion window expired -> discovery OFF.
+    assert(ns2_kbm_discovery_policy(false, false, NS2_KBM_DISCOVERY_IDLE) ==
+           NS2_KBM_DISCOVERY_RETIRE);
+
+    // 5. pairing closed + complete source (KB/M pair, or one controller) -> OFF.
+    assert(ns2_kbm_discovery_policy(false, true, NS2_KBM_DISCOVERY_IDLE) ==
+           NS2_KBM_DISCOVERY_RETIRE);
+
+    printf("OK:   discovery ownership matrix: explicit pairing outranks the window\n");
+}
+
+// End-to-end lifecycle over the same two functions production calls, in the
+// order production calls them: advance the window, then apply the policy.
+static void test_discovery_pairing_window_survives_first_peer(void) {
+    ns2_kbm_completion_t s;
+    memset(&s, 0, sizeof(s));
+
+    // Pairing window open, nothing connected yet -> discovery on.
+    ns2_kbm_discovery_t t = ns2_kbm_completion_update(&s, false, false, false, 0);
+    assert(ns2_kbm_discovery_policy(true,
+               ns2_kbm_logical_source_complete(false, false, false), t) ==
+           NS2_KBM_DISCOVERY_ARM);
+
+    // Keyboard finishes connecting INSIDE the pairing window. Its HID_READY
+    // stopped the scan; the source is still partial, so discovery must be
+    // re-armed on this very tick.
+    t = ns2_kbm_completion_update(&s, true, false, false, 100);
+    assert(ns2_kbm_discovery_policy(true,
+               ns2_kbm_logical_source_complete(true, false, false), t) ==
+           NS2_KBM_DISCOVERY_ARM);
+
+    // Still partial much later in the window, after the completion window has
+    // expired: explicit pairing keeps discovery on so the mouse can still join.
+    t = ns2_kbm_completion_update(&s, true, false, false, 100 + W + 5000);
+    assert(t == NS2_KBM_DISCOVERY_IDLE);        // window itself has expired
+    assert(ns2_kbm_discovery_policy(true,
+               ns2_kbm_logical_source_complete(true, false, false), t) ==
+           NS2_KBM_DISCOVERY_ARM);              // ...but pairing outranks it
+
+    // Mouse joins -> source complete -> the window may close and discovery stop.
+    t = ns2_kbm_completion_update(&s, true, true, false, 100 + W + 6000);
+    assert(ns2_kbm_discovery_policy(true,
+               ns2_kbm_logical_source_complete(true, true, false), t) ==
+           NS2_KBM_DISCOVERY_LEAVE);
+    assert(ns2_kbm_discovery_policy(false,
+               ns2_kbm_logical_source_complete(true, true, false), t) ==
+           NS2_KBM_DISCOVERY_RETIRE);
+
+    // Mirror: mouse first inside the pairing window.
+    memset(&s, 0, sizeof(s));
+    t = ns2_kbm_completion_update(&s, false, true, false, 0);
+    assert(ns2_kbm_discovery_policy(true,
+               ns2_kbm_logical_source_complete(false, true, false), t) ==
+           NS2_KBM_DISCOVERY_ARM);
+    t = ns2_kbm_completion_update(&s, true, true, false, 500);
+    assert(ns2_kbm_discovery_policy(false,
+               ns2_kbm_logical_source_complete(true, true, false), t) ==
+           NS2_KBM_DISCOVERY_RETIRE);
+
+    printf("OK:   a pairing window keeps discovery up after its first peer connects\n");
+}
+
+#undef W
+
 static void test_effective_mode_inference(void) {
     assert(ns2_kbm_effective_mode(NS2_KBM_MODE_AUTO, false, false) ==
            NS2_KBM_MODE_CONTROLLER);
@@ -1213,6 +1501,19 @@ int main(void) {
     test_logical_source_completeness();
     test_discovery_reopens_on_role_loss();
     test_completeness_not_derived_from_effective_mode();
+    test_completion_keyboard_first();
+    test_completion_mouse_first();
+    test_completion_complement_joins();
+    test_completion_role_loss_reopens();
+    test_completion_not_extended_by_service();
+    test_completion_settled_then_complement_joins();
+    test_completion_all_roles_gone();
+    test_completion_role_swap_restarts();
+    test_completion_ordinary_controller();
+    test_completion_independent_of_effective_mode();
+    test_completion_wrap_and_null();
+    test_discovery_ownership_matrix();
+    test_discovery_pairing_window_survives_first_peer();
     test_primary_from_caps();
     test_roles_and_admission();
     test_role_reconnect_while_partner_live();

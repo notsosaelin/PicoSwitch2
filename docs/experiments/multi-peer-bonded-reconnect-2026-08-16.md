@@ -269,6 +269,64 @@ markers verified.
   partial (intentional keyboard-only or mouse-only use). That is the behaviour
   that makes rejoin work; bounding it is deferred future work, not a defect.
 
+## Follow-on: bounded partial-source discovery (2026-08-17)
+
+Bounding a partial KB/M source's discovery to a 10 s completion window created a
+state this investigation never exercised — **settled partial**: one role live,
+discovery idle, source still incomplete. Two latent defects surfaced there, both
+fixed and hardware validated.
+
+**1. HID_READY stops the scan, and nothing re-asserted it.** Every BLE HID peer
+reaching ready calls `btstack_host_stop_scan()` (three sites in `btstack_host.c`).
+That is legitimate low-level behaviour. The defect was at the policy layer: the
+partial-source re-arm lived inside `if (pairing_until_ms == 0)`, so the first peer
+to finish connecting *inside* an explicit pairing window killed discovery for the
+rest of that window. Measured: keyboard connected, source partial, `hid_state=0`,
+`scan_active=false`, `scan starts == stops`.
+
+The durable lesson: **discovery ownership must be re-asserted every tick, not
+assumed.** `stop_scan()` has many legitimate callers, so "who stopped the scan?"
+is the wrong question. `ns2_kbm_discovery_policy()` now evaluates intent on every
+control tick and re-arms idempotently. The zero-connection idle safety net is not
+a substitute — its final term counts BLE links, so it cannot fire while a partial
+source has one peer connected.
+
+**2. Speculative DIRECT reconnect could consume an explicit pairing window.**
+`stop_scan()` clears `scan_start_time`; the pairing window's `start_scan()` then
+takes the "first scan with a bonded device" fast path and backdates it, making the
+periodic reconnect eligible ~3 s into the window. `btstack_host_connect_ble()`
+stops the scan for the whole attempt. `ns2_ble_reconnect_select()` now takes
+`pairing_window_open` and never returns DIRECT while it is set.
+
+That flag's provenance was verified from production code, because its old name was
+misleading: `management_pairing_window_open` was **not** a companion/management
+window. It is the HID/BOOTSEL pairing window —
+`open_pairing_window()` → `bt_set_pairing_mode(true)` →
+`cyw43_transport_set_pairing_mode()` → `btstack_host_set_pairing_window_open(true)`,
+one assignment site, cleared on the same path when the window closes. The
+management bond gate is a *reader* of it, not a separate window. Renamed to
+`hid_pairing_window_open`.
+
+### Rejected designs — do not resurrect
+
+| Idea | Why rejected |
+|---|---|
+| Persistent HID peer roster (keyboard/mouse addresses, expected-peer database) | "Known HID peer" is not "expected member of the current logical source"; it would make every historical gamepad an expected peer and keep discovery alive. BTstack remains the bond authority. |
+| AUTO effective mode as the completeness authority | AUTO is *derived* from the roles currently present, so it reports "complete" the moment one peer arrives and can never ask discovery to keep looking. |
+| Extending the completion window on report traffic | An actively used keyboard would hold discovery open forever. The window is keyed to logical-source transitions and expires from the original transition time. |
+| Reverting the bounded window to hide the exposed bug | The settled-partial state is part of the feature contract; the exposed defects were real and were fixed. |
+
+### Final hardware result — 2026-08-17, PASS
+
+FALCHION RX + KERIS II ACE on Pico W. Zero peers → normal discovery restored.
+First role joins → discovery stays active. ~30 s later → completion window expired,
+discovery retired, keyboard still connected and working. BOOTSEL double-tap →
+discovery re-armed despite the background window being long gone. Mouse powered on
+inside that pairing window → joined as the second role (`keyboard=true mouse=true`,
+`keyboardConn=4 mouseConn=5`, `ble_conns=2`, mouse input confirmed), then discovery
+retired because the source was complete. No reboot, no bond clearing, no
+disconnecting the keyboard, no manual mode change.
+
 ## Do not
 
 - Do not treat post-repair bond state as evidence about the original failure.

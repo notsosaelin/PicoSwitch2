@@ -81,11 +81,24 @@ typedef struct {
 // already consumed; past NS2_BLE_RECONNECT_DIRECT_ATTEMPT_LIMIT the policy stops
 // hammering it and yields SCAN so other absent peers still get a chance.
 //
+// `pairing_window_open` means the user has explicitly asked the adapter to
+// discover. A direct connect is speculative and DESTRUCTIVE to discovery: the
+// host stops the scan for the whole attempt (up to a 10 s connect timeout, and
+// the failure path retries), and during a user pairing window nothing re-arms it.
+// A peer that is merely bonded-and-absent may also be advertising under a fresh
+// pairing address that no connect to its stored address can ever reach. So while
+// a pairing window is open the policy never returns DIRECT: discovery is strictly
+// better, because the advertising path admits bonded and unbonded peers alike and
+// resolves identity from the advertisement. Outside a pairing window direct
+// reconnect is unchanged, which keeps peers that stop advertising after bonding
+// working.
+//
 // Deterministic: the same inputs always produce the same decision.
 ns2_ble_reconnect_decision_t ns2_ble_reconnect_select(
     const ns2_ble_reconnect_candidate_t *candidates,
     uint8_t count,
-    uint32_t attempts);
+    uint32_t attempts,
+    bool pairing_window_open);
 
 #ifdef __cplusplus
 }

@@ -919,6 +919,75 @@ ns2_kbm_mode_t ns2_kbm_effective_mode(ns2_kbm_mode_t override_mode,
     return NS2_KBM_MODE_CONTROLLER;
 }
 
+ns2_kbm_discovery_t ns2_kbm_completion_update(ns2_kbm_completion_t *state,
+                                              bool keyboard_connected,
+                                              bool mouse_connected,
+                                              bool controller_connected,
+                                              uint32_t now_ms) {
+    if (!state) return NS2_KBM_DISCOVERY_SEEK;
+
+    uint8_t held = 0u;
+    if (keyboard_connected) held |= (uint8_t)NS2_KBM_HELD_KEYBOARD;
+    if (mouse_connected) held |= (uint8_t)NS2_KBM_HELD_MOUSE;
+
+    const bool partial = (held == (uint8_t)NS2_KBM_HELD_KEYBOARD) ||
+                         (held == (uint8_t)NS2_KBM_HELD_MOUSE);
+
+    if (!partial) {
+        // Complete, or no KB/M role at all. Either way there is no window: a
+        // complete source idles discovery, and a source with nothing connected
+        // falls back to the ordinary always-on discovery behavior, which stays
+        // authoritative.
+        state->held = held;
+        state->windowing = 0u;
+        state->started_ms = 0u;
+        return ns2_kbm_logical_source_complete(keyboard_connected, mouse_connected,
+                                               controller_connected)
+                   ? NS2_KBM_DISCOVERY_IDLE : NS2_KBM_DISCOVERY_SEEK;
+    }
+
+    // Partial. Start a window only on a TRANSITION into this partial state --
+    // from complete (a role was lost), from empty (the first role arrived), or
+    // from the other partial state (keyboard-only became mouse-only, a new
+    // source rather than a continuation).
+    if (state->held != held) {
+        state->held = held;
+        state->windowing = 1u;
+        state->started_ms = now_ms;
+        return NS2_KBM_DISCOVERY_SEEK;
+    }
+
+    // Unchanged partial state. Nothing here can restart the window: this branch
+    // is reached on every service tick regardless of how much keyboard or mouse
+    // traffic arrived, so an actively used peripheral cannot keep discovery
+    // alive.
+    if (!state->windowing) return NS2_KBM_DISCOVERY_IDLE;
+
+    // Unsigned elapsed comparison, wrap-safe across the 32-bit ms rollover.
+    if ((uint32_t)(now_ms - state->started_ms) >= NS2_KBM_COMPLETION_WINDOW_MS) {
+        // The complementary role did not arrive. Treat the partial source as
+        // intentional: it keeps working, the radio just stops hunting. An
+        // explicit pairing request can still re-open discovery later.
+        state->windowing = 0u;
+        return NS2_KBM_DISCOVERY_IDLE;
+    }
+    return NS2_KBM_DISCOVERY_SEEK;
+}
+
+ns2_kbm_discovery_action_t ns2_kbm_discovery_policy(bool pairing_window_open,
+                                                    bool source_complete,
+                                                    ns2_kbm_discovery_t timed) {
+    if (pairing_window_open) {
+        // The user explicitly asked to discover. That outranks the bounded
+        // window entirely: keep re-asserting until the source is complete, so a
+        // peer finishing its connection mid-window cannot end discovery for the
+        // rest of it.
+        return source_complete ? NS2_KBM_DISCOVERY_LEAVE : NS2_KBM_DISCOVERY_ARM;
+    }
+    return (timed == NS2_KBM_DISCOVERY_SEEK) ? NS2_KBM_DISCOVERY_ARM
+                                             : NS2_KBM_DISCOVERY_RETIRE;
+}
+
 bool ns2_kbm_logical_source_complete(bool keyboard_connected,
                                      bool mouse_connected,
                                      bool controller_connected) {

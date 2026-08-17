@@ -836,6 +836,10 @@ that no mapping configuration changes Switch-facing descriptors.
 - While a KB/M source is deliberately partial (intentional keyboard-only or mouse-only use),
   discovery stays active indefinitely. That is exactly what lets a missing role rejoin without
   re-pairing; bounding it with a completion window is deferred future work, not a defect.
+- A partial KB/M source holds discovery open for a bounded **completion window** (10 s) rather than
+  indefinitely, then settles as an intentional keyboard-only or mouse-only source. Settling is not a
+  lock — a BOOTSEL pairing window re-arms discovery and the complementary role still joins, confirmed
+  on hardware — but a peripheral powered on much later is not picked up *automatically*.
 - Only one keyboard report ID is followed. A keyboard declaring a second keyboard report (some
   vendor NKRO alternates) uses the first declared one, chosen deterministically so decoding never
   depends on which report happens to arrive first.

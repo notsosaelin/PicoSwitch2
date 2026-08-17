@@ -58,12 +58,8 @@ Current state and the confirmed reconnect/discovery architecture are recorded in
 
 ### Deferred follow-ups
 
-Neither is in progress. Both need product decisions or hardware evidence, not more implementation.
+Not in progress. Needs a product decision and hardware evidence, not more implementation.
 
-- **Bounded partial-KB/M discovery policy.** Current hardware-correct behavior keeps discovery
-  active while only one KB/M role is present, which is what lets a returning role rejoin without
-  re-pairing. A future bounded completion-window pass would allow intentional keyboard-only or
-  mouse-only use without indefinite active discovery. Not specified here.
 - **Classic pointing-device admission in Controller mode.** Classic discovery admits only
   gamepad-class Class-of-Device peripherals in Controller mode, so a Classic Bluetooth mouse driving
   Joy-Con 2 mouse mode must initiate the connection itself. The KB/M pass opened that gate for its
