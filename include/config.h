@@ -22,6 +22,13 @@ void config_cdc_task(void);
 // just CDC Config. docs/bluetooth/in-band-management-plan.md C2.
 void config_wireless_task(void);
 
+// Arm the deferred settings flash write, exactly as the `save` command does.
+// For surfaces that are not the config command parser (the UART diagnostic
+// channel); the write itself is still performed by config_service_save() on
+// core1, so there is one persistence path and one record composition. Saves the
+// COMPLETE settings record, including the live keyboard/mouse configuration.
+void config_request_save(void);
+
 // Perform a pending flash save, if requested. MUST be called from core1 (the
 // Bluetooth core), which holds the multicore-lockout requester role used to park
 // core0 during the flash write. Safe to call every control tick.

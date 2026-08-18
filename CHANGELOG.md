@@ -17,7 +17,13 @@ Release notes describe user-visible behavior. Detailed implementation history re
   mouse). Bindings can be changed, unassigned, or restored per profile; changes persist across
   reboot and never affect unrelated settings. Mouse movement uses the Joy-Con 2 pointer where the
   selected personality has one and translates to the right stick otherwise, with adjustable
-  sensitivity, inversion, and recenter time.
+  sensitivity and inversion. The translation follows mouse *speed*: moving continuously holds the
+  stick deflected in that direction, moving faster deflects it further up to full scale, and
+  stopping returns it to centre immediately. An optional **anti-deadzone** (off by default) lifts
+  slow movement over a game's own stick deadzone, so a slow mouse sweep produces slow but real
+  camera movement; a stationary mouse still produces none at all.
+- Mouse settings and `save` are available on the UART diagnostic channel (`kbm mouse …`), so
+  translation gain can be tuned against a running game without a management client.
 - Portal card for selecting the input mode and seeing keyboard/mouse connection state, plus `kbm`
   commands on management and UART for the full mapping surface.
 

@@ -266,6 +266,18 @@ void config_store_wake_identity(const config_wake_identity_t *identity) {
     save_requested = true;
 }
 
+void config_request_save(void) {
+    // An explicit save overrides any deferred automatic save.
+    //
+    // Exists so a surface that is not the command parser -- the UART diagnostic
+    // channel -- arms the SAME deferred write rather than growing a second
+    // persistence path. The record is composed and written by
+    // config_service_save() on core1 either way, which is also what makes the
+    // live KB/M configuration part of the saved record.
+    save_not_before_ms = 0;
+    save_requested = true;
+}
+
 void config_service_save(void) {
     // The virtual-tag journal has its own sector and request flag, but shares
     // this core1-only flash/lockout execution point.
@@ -921,45 +933,21 @@ static void cmd_kbm_map(ns2_kbm_profile_t profile, unsigned page) {
     reply(out);
 }
 
+// Both of these delegate to ns2_kbm_status.c so this surface and the UART
+// diagnostic channel cannot drift apart -- the same reason `kbm status` is
+// rendered there. Parsing, the response schema, and the accepted field set live
+// in exactly one place; range validation stays in ns2_kbm_runtime_set_mouse().
 static void cmd_kbm_mouse_get(void) {
     ns2_kbm_mouse_config_t mouse;
     ns2_kbm_runtime_get_mouse(&mouse);
-    snprintf(out, sizeof(out),
-             "{\"sensitivityX\":%u,\"sensitivityY\":%u,\"recenterMs\":%u,"
-             "\"invertX\":%s,\"invertY\":%s,"
-             "\"sensitivityMin\":%u,\"sensitivityMax\":%u,"
-             "\"recenterMinMs\":%u,\"recenterMaxMs\":%u}",
-             mouse.sensitivity_x, mouse.sensitivity_y, mouse.recenter_ms,
-             mouse.invert_x ? "true" : "false",
-             mouse.invert_y ? "true" : "false",
-             (unsigned)NS2_KBM_MOUSE_SENS_MIN, (unsigned)NS2_KBM_MOUSE_SENS_MAX,
-             (unsigned)NS2_KBM_MOUSE_RECENTER_MIN_MS,
-             (unsigned)NS2_KBM_MOUSE_RECENTER_MAX_MS);
+    (void)ns2_kbm_mouse_format(&mouse, out, sizeof(out));
     reply(out);
 }
 
-static bool kbm_mouse_apply(const char *field, long value) {
+static bool kbm_mouse_apply(const char *args) {
     ns2_kbm_mouse_config_t mouse;
     ns2_kbm_runtime_get_mouse(&mouse);
-    if (value < 0 || value > 65535L) return false;
-    if (strcmp(field, "sensitivity") == 0) {
-        mouse.sensitivity_x = (uint16_t)value;
-        mouse.sensitivity_y = (uint16_t)value;
-    } else if (strcmp(field, "sensitivityx") == 0) {
-        mouse.sensitivity_x = (uint16_t)value;
-    } else if (strcmp(field, "sensitivityy") == 0) {
-        mouse.sensitivity_y = (uint16_t)value;
-    } else if (strcmp(field, "recenter") == 0) {
-        mouse.recenter_ms = (uint16_t)value;
-    } else if (strcmp(field, "invertx") == 0) {
-        if (value > 1) return false;
-        mouse.invert_x = (uint8_t)value;
-    } else if (strcmp(field, "inverty") == 0) {
-        if (value > 1) return false;
-        mouse.invert_y = (uint8_t)value;
-    } else {
-        return false;
-    }
+    if (!ns2_kbm_mouse_command_apply(&mouse, args)) return false;
     return ns2_kbm_runtime_set_mouse(&mouse);
 }
 
@@ -1078,12 +1066,10 @@ static void cmd_kbm(char *arg) {
         return;
     }
     if (strncmp(arg, "mouse ", 6) == 0) {
-        char field[16] = {0};
-        long value = 0;
-        if (sscanf(arg + 6, "%15s %ld", field, &value) != 2 ||
-            !kbm_mouse_apply(field, value)) {
+        if (!kbm_mouse_apply(arg + 6)) {
             reply("{\"error\":\"usage: kbm mouse <sensitivity|sensitivityx|"
-                  "sensitivityy|recenter|invertx|inverty> <value>\"}");
+                  "sensitivityy|recenter|invertx|inverty|antideadzone> "
+                  "<value>\"}");
             return;
         }
         cmd_kbm_mouse_get();
@@ -1568,9 +1554,7 @@ static void handle_line(char *cmd) {
             reply("{\"error\":\"bad args\"}");
         }
     } else if (strcmp(cmd, "save") == 0) {
-        // An explicit save overrides any deferred automatic save.
-        save_not_before_ms = 0;
-        save_requested = true;
+        config_request_save();
         if (reply_transport == CONFIG_REPLY_WIRELESS) {
             // In-band management runs WHILE a controller drives the console, so
             // core0 must never busy-wait for the flash write here -- an up-to-2 s

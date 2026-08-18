@@ -164,12 +164,199 @@ static void test_zeroed_status_is_sane(void) {
     puts("  zeroed status");
 }
 
+// ---------------------------------------------------------------------------
+// Mouse-settings command surface
+// ---------------------------------------------------------------------------
+// One parser and one response schema serve the management/CDC command surface
+// and the UART diagnostic channel. These tests exercise the literal command
+// text both of them hand over, so the accepted field set and the accept/reject
+// boundary cannot drift between the two surfaces or shift under a refactor.
+
+static ns2_kbm_mouse_config_t default_mouse(void) {
+    ns2_kbm_config_t config;
+    ns2_kbm_config_defaults(&config);
+    return config.mouse;
+}
+
+static void test_mouse_format_exact_output(void) {
+    ns2_kbm_mouse_config_t mouse = default_mouse();
+    mouse.sensitivity_x = 768u;
+    mouse.sensitivity_y = 1024u;
+    mouse.recenter_ms = 120u;
+    mouse.invert_x = 0u;
+    mouse.invert_y = 1u;
+
+    char out[512];
+    int written = ns2_kbm_mouse_format(&mouse, out, sizeof(out));
+
+    // The advertised limits travel with the values: a client must not carry its
+    // own copy of the accepted range.
+    static const char expected[] =
+        "{\"sensitivityX\":768,\"sensitivityY\":1024,\"recenterMs\":120,"
+        "\"invertX\":false,\"invertY\":true,\"antiDeadzone\":0,"
+        "\"sensitivityMin\":16,\"sensitivityMax\":8192,"
+        "\"recenterMinMs\":10,\"recenterMaxMs\":2000,"
+        "\"antiDeadzoneMax\":50}";
+    if (strcmp(out, expected) != 0) {
+        printf("FAIL: mouse formatter drifted\n  expected: %s\n  actual:   %s\n",
+               expected, out);
+        assert(0);
+    }
+    assert(written == (int)strlen(expected));
+
+    char tiny[8];
+    assert(ns2_kbm_mouse_format(&mouse, tiny, sizeof(tiny)) > (int)sizeof(tiny));
+    assert(tiny[sizeof(tiny) - 1u] == '\0');
+    out[0] = 'x';
+    assert(ns2_kbm_mouse_format(NULL, out, sizeof(out)) == 0);
+    assert(out[0] == '\0');
+    assert(ns2_kbm_mouse_format(&mouse, NULL, 16u) == 0);
+    assert(ns2_kbm_mouse_format(&mouse, out, 0u) == 0);
+    puts("  mouse settings formatter");
+}
+
+static void test_mouse_command_fields(void) {
+    // `sensitivity` is both axes; the per-axis forms leave the other alone.
+    ns2_kbm_mouse_config_t mouse = default_mouse();
+    assert(ns2_kbm_mouse_command_apply(&mouse, "sensitivity 768"));
+    assert(mouse.sensitivity_x == 768u && mouse.sensitivity_y == 768u);
+
+    assert(ns2_kbm_mouse_command_apply(&mouse, "sensitivityx 1024"));
+    assert(mouse.sensitivity_x == 1024u && mouse.sensitivity_y == 768u);
+
+    assert(ns2_kbm_mouse_command_apply(&mouse, "sensitivityy 1536"));
+    assert(mouse.sensitivity_x == 1024u && mouse.sensitivity_y == 1536u);
+
+    // Every remaining field of the existing surface stays reachable: the UART
+    // channel deliberately has no allowlist of its own.
+    assert(ns2_kbm_mouse_command_apply(&mouse, "recenter 240"));
+    assert(mouse.recenter_ms == 240u);
+    assert(ns2_kbm_mouse_command_apply(&mouse, "invertx 1"));
+    assert(mouse.invert_x == 1u);
+    assert(ns2_kbm_mouse_command_apply(&mouse, "inverty 1"));
+    assert(mouse.invert_y == 1u);
+    assert(ns2_kbm_mouse_command_apply(&mouse, "invertx 0"));
+    assert(mouse.invert_x == 0u);
+
+    // Anti-deadzone across its whole configured range, on the same surface.
+    for (unsigned percent = 0; percent <= NS2_KBM_MOUSE_ADZ_MAX; ++percent) {
+        char line[32];
+        snprintf(line, sizeof(line), "antideadzone %u", percent);
+        assert(ns2_kbm_mouse_command_apply(&mouse, line));
+        assert(mouse.anti_deadzone == (uint8_t)percent);
+    }
+
+    // One command sets exactly one field.
+    ns2_kbm_mouse_config_t before = mouse;
+    assert(ns2_kbm_mouse_command_apply(&mouse, "sensitivityx 2048"));
+    assert(mouse.sensitivity_y == before.sensitivity_y);
+    assert(mouse.recenter_ms == before.recenter_ms);
+    assert(mouse.invert_x == before.invert_x);
+    assert(mouse.invert_y == before.invert_y);
+    puts("  mouse command fields");
+}
+
+static void test_mouse_command_rejects(void) {
+    ns2_kbm_mouse_config_t mouse = default_mouse();
+    const ns2_kbm_mouse_config_t original = mouse;
+
+    static const char *const bad[] = {
+        "",                    // nothing at all
+        "sensitivity",         // field with no value
+        "sensitivity abc",     // value is not a number
+        "bogus 5",             // unknown field
+        "sensitivity -1",      // negative
+        "sensitivity 70000",   // beyond the persisted uint16_t
+        "invertx 2",           // boolean field, non-boolean value
+        "inverty 255",
+        // Beyond a uint8_t. Without an explicit guard this would truncate to 0
+        // and be accepted as "anti-deadzone off" -- a silently wrong setting is
+        // worse than a rejected one.
+        "antideadzone 256",
+        "antideadzone 65535",
+    };
+    for (unsigned i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+        if (ns2_kbm_mouse_command_apply(&mouse, bad[i])) {
+            printf("FAIL: accepted \"%s\"\n", bad[i]);
+            assert(0);
+        }
+    }
+    // A rejected command must not have half-applied anything.
+    assert(memcmp(&mouse, &original, sizeof(mouse)) == 0);
+    assert(!ns2_kbm_mouse_command_apply(NULL, "sensitivity 768"));
+    assert(!ns2_kbm_mouse_command_apply(&mouse, NULL));
+
+    // Trailing text after the value has always been tolerated by this surface.
+    // Tightening it would silently change which commands an existing client can
+    // send, so it is pinned rather than left to drift.
+    assert(ns2_kbm_mouse_command_apply(&mouse, "sensitivity 768 trailing"));
+    assert(mouse.sensitivity_x == 768u);
+    puts("  mouse command rejects");
+}
+
+// The parser deliberately does NOT enforce the configured range: that stays
+// with ns2_kbm_runtime_set_mouse(), which rejects rather than clamps. A value
+// that is representable but out of range must therefore pass the parser and be
+// caught by sanitize, so both surfaces report it the same way.
+static void test_range_enforcement_stays_with_sanitize(void) {
+    ns2_kbm_config_t config;
+    ns2_kbm_config_defaults(&config);
+
+    ns2_kbm_mouse_config_t mouse = config.mouse;
+    assert(ns2_kbm_mouse_command_apply(&mouse, "sensitivity 4"));  // below min
+    config.mouse = mouse;
+    assert(!ns2_kbm_config_sanitize(&config));
+
+    ns2_kbm_config_defaults(&config);
+    mouse = config.mouse;
+    assert(ns2_kbm_mouse_command_apply(&mouse, "recenter 9000"));  // above max
+    config.mouse = mouse;
+    assert(!ns2_kbm_config_sanitize(&config));
+
+    // Anti-deadzone: representable but above the cap. The parser takes it, and
+    // sanitize turns it OFF rather than clamping it -- an unusable value must
+    // restore the validated linear response, not some compensation the user
+    // never chose. The command therefore reports failure either way.
+    ns2_kbm_config_defaults(&config);
+    mouse = config.mouse;
+    assert(ns2_kbm_mouse_command_apply(&mouse, "antideadzone 51"));
+    config.mouse = mouse;
+    assert(!ns2_kbm_config_sanitize(&config));
+    assert(config.mouse.anti_deadzone == 0u);
+
+    ns2_kbm_config_defaults(&config);
+    mouse = config.mouse;
+    assert(ns2_kbm_mouse_command_apply(&mouse, "antideadzone 200"));
+    config.mouse = mouse;
+    assert(!ns2_kbm_config_sanitize(&config));
+    assert(config.mouse.anti_deadzone == 0u);
+
+    // And values inside the range pass both.
+    ns2_kbm_config_defaults(&config);
+    mouse = config.mouse;
+    assert(ns2_kbm_mouse_command_apply(&mouse, "sensitivity 1536"));
+    assert(ns2_kbm_mouse_command_apply(&mouse, "antideadzone 15"));
+    config.mouse = mouse;
+    assert(ns2_kbm_config_sanitize(&config));
+    assert(config.mouse.sensitivity_x == 1536u);
+    assert(config.mouse.anti_deadzone == 15u);
+    assert(ns2_kbm_mouse_command_apply(&mouse, "antideadzone 50"));
+    config.mouse = mouse;
+    assert(ns2_kbm_config_sanitize(&config));
+    assert(config.mouse.anti_deadzone == NS2_KBM_MOUSE_ADZ_MAX);
+    puts("  range enforcement stays with sanitize");
+}
+
 int main(void) {
     puts("ns2_kbm status formatter:");
     test_exact_output();
     test_every_field_is_distinct();
     test_bounds_and_null_safety();
     test_zeroed_status_is_sane();
+    test_mouse_format_exact_output();
+    test_mouse_command_fields();
+    test_mouse_command_rejects();
+    test_range_enforcement_stays_with_sanitize();
     puts("ns2_kbm status formatter tests passed");
     return 0;
 }

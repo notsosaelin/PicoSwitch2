@@ -134,7 +134,140 @@ static void test_v10_migration(void) {
     assert(config_persist_load(sector, sizeof(sector), &again) ==
            CONFIG_PERSIST_MIGRATED);
     assert(memcmp(&record, &again, sizeof(record)) == 0);
-    puts("  schema 10 -> 11 migration");
+    puts("  schema 10 -> current migration");
+}
+
+// Schema 12 appends the mouse anti-deadzone INSIDE the KB/M block, which
+// resizes the mouse settings. A v11 adapter's stored bytes therefore cannot be
+// read as a v12 record, and the migration must land every existing field on its
+// new home while the one new setting takes its OFF default -- so upgrading an
+// installed adapter cannot change how it already feels.
+static void test_v11_migration(void) {
+    config_record_v11_t old;
+    memset(&old, 0, sizeof(old));
+    old.magic = CONFIG_PERSIST_MAGIC;
+    old.version = 11u;
+    old.body_color[0] = 0x11;
+    old.body_color[1] = 0x22;
+    old.body_color[2] = 0x33;
+    old.joycon2_left_accent[0] = 0x44;
+    old.joycon2_right_accent[0] = 0x55;
+    old.wake_valid = 0xA5u;
+    old.wake_identity.product_id = 0x2069u;
+    old.wake_identity.host_count = 1u;
+    old.wake_identity.controller_addr_wire[0] = 0xAB;
+    old.wake_identity.host_addr_wire[0][0] = 0xCD;
+
+    // A user who had customized their KB/M setup on v11.
+    old.kbm.mode = (uint8_t)NS2_KBM_MODE_KEYBOARD_MOUSE;
+    old.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD].count = 1u;
+    old.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD].entries[0].source.kind =
+        NS2_KBM_SRC_KEY;
+    old.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD].entries[0].source.code = KEY_F;
+    old.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD].entries[0].destination =
+        NS2_DST_X;
+    old.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD_MOUSE].count = 1u;
+    old.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD_MOUSE].entries[0].source.kind =
+        NS2_KBM_SRC_MOUSE;
+    old.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD_MOUSE].entries[0].source.code = 3u;
+    old.kbm.profiles[NS2_KBM_PROFILE_KEYBOARD_MOUSE].entries[0].destination =
+        NS2_DST_B;
+    old.kbm.mouse.sensitivity_x = 1024u;
+    old.kbm.mouse.sensitivity_y = 1536u;
+    old.kbm.mouse.recenter_ms = 240u;
+    old.kbm.mouse.invert_x = 1u;
+    old.kbm.mouse.invert_y = 0u;
+
+    uint8_t sector[sizeof(config_record_t) + 64];
+    memset(sector, 0xFF, sizeof(sector));
+    memcpy(sector, &old, sizeof(old));
+
+    config_record_t record;
+    assert(config_persist_load(sector, sizeof(sector), &record) ==
+           CONFIG_PERSIST_MIGRATED);
+    assert(record.version == CONFIG_PERSIST_VERSION);
+    assert(CONFIG_PERSIST_VERSION == 12u);
+
+    // Unrelated settings survive.
+    assert(record.body_color[0] == 0x11 && record.body_color[1] == 0x22 &&
+           record.body_color[2] == 0x33);
+    assert(record.joycon2_left_accent[0] == 0x44);
+    assert(record.joycon2_right_accent[0] == 0x55);
+    assert(record.wake_valid == 0xA5u);
+    assert(record.wake_identity.product_id == 0x2069u);
+    assert(record.wake_identity.host_count == 1u);
+    assert(record.wake_identity.controller_addr_wire[0] == 0xAB);
+    assert(record.wake_identity.host_addr_wire[0][0] == 0xCD);
+
+    // The whole KB/M block survives, mode, both mapping profiles and every
+    // mouse setting alike.
+    assert(record.kbm.mode == (uint8_t)NS2_KBM_MODE_KEYBOARD_MOUSE);
+    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_PROFILE_KEYBOARD, key(KEY_F)) ==
+           NS2_DST_X);
+    ns2_kbm_source_t middle = {NS2_KBM_SRC_MOUSE, 3u};
+    assert(ns2_kbm_binding(&record.kbm, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+                           middle) == NS2_DST_B);
+    assert(record.kbm.mouse.sensitivity_x == 1024u);
+    assert(record.kbm.mouse.sensitivity_y == 1536u);
+    assert(record.kbm.mouse.recenter_ms == 240u);
+    assert(record.kbm.mouse.invert_x == 1u);
+    assert(record.kbm.mouse.invert_y == 0u);
+
+    // The one new setting is OFF, and is NOT whatever bytes followed the v11
+    // record in flash (0xFF here, which would be a wildly out-of-range value).
+    assert(record.kbm.mouse.anti_deadzone == 0u);
+    assert(record.kbm.mouse.anti_deadzone == NS2_KBM_MOUSE_ADZ_DEFAULT);
+
+    // Deterministic.
+    config_record_t again;
+    assert(config_persist_load(sector, sizeof(sector), &again) ==
+           CONFIG_PERSIST_MIGRATED);
+    assert(memcmp(&record, &again, sizeof(record)) == 0);
+
+    // A truncated v11 record is refused rather than partially interpreted.
+    assert(config_persist_load(sector, sizeof(config_record_v11_t) - 1u,
+                               &record) == CONFIG_PERSIST_DEFAULTED);
+    puts("  schema 11 -> 12 migration");
+}
+
+// A v12 record round-trips the new setting, and an out-of-range stored value is
+// repaired to OFF by the existing sanitize policy rather than being applied.
+static void test_anti_deadzone_persistence(void) {
+    config_record_t stored;
+    config_persist_defaults(&stored);
+    assert(stored.kbm.mouse.anti_deadzone == 0u);
+
+    stored.kbm.mouse.anti_deadzone = 15u;
+    stored.kbm.mouse.sensitivity_x = 1024u;
+
+    config_record_t loaded;
+    assert(config_persist_load(&stored, sizeof(stored), &loaded) ==
+           CONFIG_PERSIST_CURRENT);
+    assert(loaded.kbm.mouse.anti_deadzone == 15u);
+    assert(loaded.kbm.mouse.sensitivity_x == 1024u);
+
+    // Every value across the configured range survives a save/reload.
+    for (unsigned percent = 0; percent <= NS2_KBM_MOUSE_ADZ_MAX; ++percent) {
+        stored.kbm.mouse.anti_deadzone = (uint8_t)percent;
+        assert(config_persist_load(&stored, sizeof(stored), &loaded) ==
+               CONFIG_PERSIST_CURRENT);
+        assert(loaded.kbm.mouse.anti_deadzone == (uint8_t)percent);
+    }
+
+    // Corrupt/out-of-range persisted values fail closed to OFF, and the record
+    // is reported as repaired rather than silently accepted.
+    stored.kbm.mouse.anti_deadzone = 0xFFu;
+    assert(config_persist_load(&stored, sizeof(stored), &loaded) ==
+           CONFIG_PERSIST_REPAIRED);
+    assert(loaded.kbm.mouse.anti_deadzone == 0u);
+    // The rest of the record is untouched by that repair.
+    assert(loaded.kbm.mouse.sensitivity_x == 1024u);
+
+    stored.kbm.mouse.anti_deadzone = (uint8_t)(NS2_KBM_MOUSE_ADZ_MAX + 1u);
+    assert(config_persist_load(&stored, sizeof(stored), &loaded) ==
+           CONFIG_PERSIST_REPAIRED);
+    assert(loaded.kbm.mouse.anti_deadzone == 0u);
+    puts("  anti-deadzone persistence");
 }
 
 static void test_mapping_round_trip(void) {
@@ -225,6 +358,8 @@ int main(void) {
     test_defaults();
     test_blank_and_foreign_records();
     test_v10_migration();
+    test_v11_migration();
+    test_anti_deadzone_persistence();
     test_mapping_round_trip();
     test_corrupt_mapping_fails_safe();
     puts("config persistence tests passed");

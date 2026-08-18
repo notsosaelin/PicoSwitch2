@@ -255,14 +255,57 @@ typedef struct {
 #define NS2_KBM_MOUSE_RECENTER_MAX_MS 2000u
 #define NS2_KBM_MOUSE_RECENTER_DEFAULT_MS 120u
 
+// Time constant of the mouse-velocity estimate the translated stick is derived
+// from. Mouse reports are impulses on a Bluetooth cadence -- real BR/EDR sniff
+// and BLE connection intervals put peripherals around 8..15 ms -- so the
+// estimate low-passes over a few report intervals: long enough that one missing
+// or empty report cannot collapse the deflection, short enough that starting,
+// stopping and reversing stay tight. Not user configurable: it is a property of
+// the transport, not a preference.
+#define NS2_KBM_MOUSE_VELOCITY_MS 40u
+
+// Largest anti-deadzone the translator will apply, as a percentage of full
+// scale. This is COMPENSATION for a destination that discards the bottom of the
+// stick range, not a general-purpose boost: a value above the game's real
+// deadzone produces a minimum non-zero turn rate on the smallest movement, and
+// holds it through the release tail. The cap keeps an obviously wrong value from
+// being configurable at all.
+#define NS2_KBM_MOUSE_ADZ_MAX 50u
+// Off. Every existing installation and every default therefore keeps exactly the
+// hardware-validated linear response.
+#define NS2_KBM_MOUSE_ADZ_DEFAULT 0u
+
+// How long the translator waits after the last report that carried real
+// movement before forcing EXACT centre. Comfortably longer than any normal
+// report interval so an ordinary gap inside one continuous gesture cannot
+// produce a pulse, and short enough that releasing the mouse ends the camera
+// command immediately. By this point the velocity estimate has already decayed
+// well below any game deadzone; the deadline exists to guarantee exact centre,
+// not to do the decelerating.
+#define NS2_KBM_MOUSE_IDLE_MS 64u
+
 typedef struct {
     uint16_t sensitivity_x;  // Q8.8 stick units per mouse count
     uint16_t sensitivity_y;
-    // Time a FULL deflection takes to return to neutral with no further motion,
-    // at a constant rate. Smaller deflections return proportionally sooner.
+    // Velocity reference interval. Deflection is what `sensitivity` would make
+    // of the mouse movement occurring over this interval AT THE CURRENT SPEED:
+    //
+    //   stick = mouse_counts_per_ms * (sensitivity / 256) * recenter_ms
+    //
+    // Historically this was the time a full deflection took to decay back to
+    // neutral under constant-rate friction. That model made deflection depend on
+    // whether input could outrun the decay, so the same number is now the
+    // reference interval of the velocity model that replaced it -- see
+    // src/ns2_kbm.c. The stored value, range, default and direction of effect
+    // (larger = more deflection held for the same motion) are all unchanged, so
+    // no persisted configuration is reinterpreted into a different feel.
     uint16_t recenter_ms;
     uint8_t invert_x;
     uint8_t invert_y;
+    // Percentage of full scale that genuine motion starts at, 0..
+    // NS2_KBM_MOUSE_ADZ_MAX. See ns2_kbm_mouse_anti_deadzone().
+    uint8_t anti_deadzone;
+    uint8_t reserved;  // keeps the persisted struct free of implicit padding
 } ns2_kbm_mouse_config_t;
 
 // ---------------------------------------------------------------------------
@@ -342,10 +385,17 @@ typedef struct {
     int16_t mouse_delta_x;   // relative motion pending for a native mouse output
     int16_t mouse_delta_y;
     int8_t mouse_delta_wheel;
-    int32_t stick_x;         // mouse-to-stick deflection, stick units around 0
+    // Mouse-to-stick translator. `motion_*` is the low-pass velocity estimate in
+    // scaled counts (see src/ns2_kbm.c); `stick_*` is the deflection derived
+    // from it, in stick units around 0, and is the only field the output path
+    // reads.
+    int32_t motion_x;
+    int32_t motion_y;
+    int32_t stick_x;
     int32_t stick_y;
-    uint32_t last_decay_ms;
-    uint8_t decay_clock_valid;
+    uint32_t motion_clock_ms;    // last time the estimate was advanced
+    uint32_t last_motion_ms;     // last report that carried real movement
+    uint8_t motion_clock_valid;
 } ns2_kbm_state_t;
 
 void ns2_kbm_state_init(ns2_kbm_state_t *state);
@@ -366,12 +416,44 @@ void ns2_kbm_state_mouse_report(ns2_kbm_state_t *state, uint16_t buttons,
                                 const ns2_kbm_mouse_config_t *mouse,
                                 uint32_t now_ms);
 
-// Advance the mouse-to-stick recenter. Safe (and required) to call with no new
-// motion; this is what guarantees the emulated stick returns to neutral and
-// never latches off-center.
+// Advance the mouse-to-stick translator to `now_ms`: decay the velocity
+// estimate over the interval that elapsed and, once the inactivity deadline has
+// passed, force exact centre. Safe (and required) to call with no new motion --
+// a mouse that stops moving stops reporting, so this is what guarantees the
+// emulated stick returns to neutral and never latches off-centre.
 void ns2_kbm_state_service(ns2_kbm_state_t *state,
                            const ns2_kbm_mouse_config_t *mouse,
                            uint32_t now_ms);
+
+// Radial anti-deadzone: map a translated stick vector's MAGNITUDE from
+// [0..full] into [percent..full], rescaling both axes by the same ratio.
+//
+// This is an output-response mapping applied after the velocity estimator, not
+// part of it. It exists because a linear velocity->stick map hands the game a
+// small deflection for slow mouse movement, and a game that discards its bottom
+// N% turns that into no camera movement at all -- which measured as the slowest
+// N% of the entire usable speed range being invisible, at EVERY sensitivity,
+// because scaling a linear map cannot change that ratio.
+//
+// Radial, not per-axis. Independent per-axis floors rotate the vector: a slow
+// nearly-horizontal sweep (x=20%, y=1%) becomes a 26-degree diagonal, because
+// the floor lifts the tiny orthogonal component as hard as the real one.
+// Scaling the magnitude preserves the angle to within integer rounding.
+//
+// Invariants:
+//   * a zero vector is returned unchanged -- exact centre stays exact centre,
+//     and no amount of anti-deadzone can invent movement
+//   * percent == 0 is an exact no-op, so the default reproduces the linear
+//     response byte for byte
+//   * a magnitude already at or beyond full scale is left alone, so this can
+//     only ever raise a deflection, never shrink one
+void ns2_kbm_mouse_anti_deadzone(int32_t *x, int32_t *y, uint8_t percent);
+
+// True while the translator still owns motion state a service tick has to
+// advance: a live deflection to release, or a velocity estimate still decaying.
+// False means the translated stick is exactly centred and idle, so the caller
+// may stop ticking until the next mouse report.
+bool ns2_kbm_state_mouse_motion_pending(const ns2_kbm_state_t *state);
 
 // ---------------------------------------------------------------------------
 // Resolved normalized controller output
