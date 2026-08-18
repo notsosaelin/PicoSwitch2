@@ -5,6 +5,7 @@
 // binding, remap-neutralization, and mouse-translation contracts.
 
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -473,6 +474,704 @@ static void test_remap_while_held(void) {
     puts("  remap while held");
 }
 
+// Mirrors the private KBM_STICK_LIMIT in src/ns2_kbm.c. test_mouse_translation()
+// pins it against SWITCH_STICK_MAX, so the two cannot drift apart silently.
+#define KBM_STICK_FULL_SCALE 2048
+
+// ---------------------------------------------------------------------------
+// Mouse-to-stick temporal harness
+// ---------------------------------------------------------------------------
+// The mouse-to-stick translator is a TIME-domain component, so testing it one
+// report at a time proves nothing about how it feels. This drives it exactly the
+// way the firmware does: mouse reports on a Bluetooth-like cadence, plus the
+// production 3 ms core-1 service tick (RUMBLE_TICK_MS in ns2_bt_host.c), and
+// samples the deflection every simulated millisecond.
+#define SIM_TICK_MS 3u
+
+typedef struct {
+    ns2_kbm_config_t config;
+    ns2_kbm_state_t state;
+    uint32_t now_ms;
+} mouse_sim_t;
+
+typedef struct {
+    int32_t min_x, max_x;
+    int32_t min_y, max_y;
+    unsigned centred;  // samples with the translated stick at exact neutral
+    unsigned samples;
+} sim_stats_t;
+
+static void sim_init(mouse_sim_t *sim) {
+    ns2_kbm_config_defaults(&sim->config);
+    ns2_kbm_state_init(&sim->state);
+    sim->now_ms = 0u;
+}
+
+static void stats_init(sim_stats_t *stats) {
+    stats->min_x = stats->min_y = INT32_MAX;
+    stats->max_x = stats->max_y = INT32_MIN;
+    stats->centred = 0u;
+    stats->samples = 0u;
+}
+
+// Run for `duration_ms`, delivering (dx, dy) every `period_ms` (0 = no reports
+// at all, i.e. the mouse is not moving). Samples taken after `settle_ms` are
+// folded into `stats`, which may be NULL.
+static void sim_run(mouse_sim_t *sim, int dx, int dy, unsigned period_ms,
+                    unsigned duration_ms, unsigned settle_ms,
+                    sim_stats_t *stats) {
+    uint32_t start = sim->now_ms;
+    for (unsigned step = 1u; step <= duration_ms; ++step) {
+        sim->now_ms = start + step;
+        if (period_ms && (step % period_ms) == 0u)
+            ns2_kbm_state_mouse_report(&sim->state, 0, (int16_t)dx, (int16_t)dy,
+                                       0, &sim->config.mouse, sim->now_ms);
+        if ((step % SIM_TICK_MS) == 0u)
+            ns2_kbm_state_service(&sim->state, &sim->config.mouse, sim->now_ms);
+        if (!stats || step < settle_ms) continue;
+        if (sim->state.stick_x < stats->min_x) stats->min_x = sim->state.stick_x;
+        if (sim->state.stick_x > stats->max_x) stats->max_x = sim->state.stick_x;
+        if (sim->state.stick_y < stats->min_y) stats->min_y = sim->state.stick_y;
+        if (sim->state.stick_y > stats->max_y) stats->max_y = sim->state.stick_y;
+        if (sim->state.stick_x == 0 && sim->state.stick_y == 0) stats->centred++;
+        stats->samples++;
+    }
+}
+
+// Continuous movement must look to the console like a stick being HELD, not
+// like one being tapped.
+//
+// This is the regression for the model that shipped before it. That one was a
+// leaky position accumulator -- `stick += delta * sensitivity` against a
+// constant friction of KBM_STICK_LIMIT / recenter_ms per millisecond -- so
+// deflection existed only while the mouse outran the friction. On the shipped
+// defaults the break-even was 8.53 counts/ms (~8533 counts/s): measured, the
+// three slower cases below sat at EXACT CENTRE 50%, 75% and 80% of the time and
+// never exceeded 40, 10 and 2 units of a 2048 full scale. Everything asserted
+// here about sustained deflection therefore failed under that model, which is
+// what the user felt in Splatoon as move / brief turn / stop / move / brief
+// turn / stop.
+static void test_mouse_sustained_motion_holds_deflection(void) {
+    mouse_sim_t sim;
+    sim_stats_t slow, medium, fast;
+
+    // Slow: 5 counts every 8 ms = 0.62 counts/ms, an order of magnitude below
+    // the old model's break-even speed.
+    sim_init(&sim);
+    stats_init(&slow);
+    sim_run(&sim, 5, 0, 8u, 300u, 150u, &slow);
+    assert(slow.samples > 100u);
+    assert(slow.centred == 0u);   // never collapses between reports
+    assert(slow.min_x > 100);     // and stays meaningfully deflected
+    assert(slow.max_x < 300);
+
+    // Medium: 20 counts every 8 ms.
+    sim_init(&sim);
+    stats_init(&medium);
+    sim_run(&sim, 20, 0, 8u, 300u, 150u, &medium);
+    assert(medium.centred == 0u);
+    assert(medium.min_x > 450);
+
+    // Faster movement means MORE deflection, with no overlap between speeds.
+    assert(medium.min_x > slow.max_x);
+
+    // Fast: 50 counts every 8 ms = 6.25 counts/ms, still under the old
+    // break-even, so the old model produced pulses here too.
+    sim_init(&sim);
+    stats_init(&fast);
+    sim_run(&sim, 50, 0, 8u, 300u, 150u, &fast);
+    assert(fast.centred == 0u);
+    assert(fast.min_x > medium.max_x);
+    assert(fast.max_x <= KBM_STICK_FULL_SCALE);
+
+    // Ripple between reports must stay small: the console sees a level, not a
+    // sawtooth. (Old model: the trough was zero in every one of these cases.)
+    assert(medium.min_x * 4 > medium.max_x * 3);  // trough > 75% of peak
+    puts("  mouse sustained motion holds deflection");
+}
+
+// The old model's hidden velocity threshold must be gone: useful deflection has
+// to exist far below the rate that used to be needed merely to beat the decay.
+static void test_mouse_low_speed_has_no_threshold(void) {
+    mouse_sim_t sim;
+    sim_stats_t stats;
+
+    // 1 count every 10 ms = 0.1 counts/ms, 85x below the old break-even. The
+    // old model produced 0 for 80% of samples and never more than 2 units.
+    sim_init(&sim);
+    stats_init(&stats);
+    sim_run(&sim, 1, 0, 10u, 400u, 200u, &stats);
+    assert(stats.centred == 0u);
+    assert(stats.min_x > 10);
+
+    // Sub-unit contributions survive at minimum sensitivity too: the Q8.8 scale
+    // is divided out at the output, not truncated per report. The old model
+    // computed delta * 16 / 256 == 0 for every report of fewer than 16 counts,
+    // so the minimum sensitivity was not merely insensitive, it was deaf.
+    sim_init(&sim);
+    sim.config.mouse.sensitivity_x = NS2_KBM_MOUSE_SENS_MIN;
+    stats_init(&stats);
+    sim_run(&sim, 4, 0, 8u, 400u, 200u, &stats);
+    assert(stats.min_x > 0);
+    puts("  mouse low speed has no threshold");
+}
+
+// Stopping must end the camera command promptly and at EXACT centre.
+static void test_mouse_release_returns_to_exact_centre(void) {
+    mouse_sim_t sim;
+    ns2_kbm_output_t out;
+
+    sim_init(&sim);
+    sim_run(&sim, 40, 0, 8u, 200u, 0u, NULL);
+    assert(sim.state.stick_x > 500);
+
+    // Silence. The deflection must be gone by the inactivity deadline plus one
+    // service tick, and it must be exactly neutral rather than nearly so.
+    sim_run(&sim, 0, 0, 0u, NS2_KBM_MOUSE_IDLE_MS + SIM_TICK_MS, 0u, NULL);
+    assert(sim.state.stick_x == 0 && sim.state.stick_y == 0);
+    assert(sim.state.motion_x == 0 && sim.state.motion_y == 0);
+    assert(!ns2_kbm_state_mouse_motion_pending(&sim.state));
+    ns2_kbm_resolve(&sim.state, &sim.config, NS2_KBM_MODE_KEYBOARD_MOUSE, false,
+                    &out);
+    assert(out.right_x == SWITCH_STICK_MID && out.right_y == SWITCH_STICK_MID);
+
+    // It must also already be DECELERATING well before the deadline, so the
+    // release reads as the camera stopping rather than as a hard cut.
+    sim_init(&sim);
+    sim_run(&sim, 40, 0, 8u, 200u, 0u, NULL);
+    int32_t held = sim.state.stick_x;
+    sim_run(&sim, 0, 0, 0u, NS2_KBM_MOUSE_VELOCITY_MS, 0u, NULL);
+    assert(sim.state.stick_x < held / 2);
+
+    // No wind-up: a violent flick releases on the same deadline as a gentle
+    // one. An unclamped velocity estimate would keep the stick pinned for as
+    // long as it took to bleed off, which is post-motion camera drift.
+    sim_init(&sim);
+    sim_run(&sim, 4000, 0, 4u, 400u, 0u, NULL);
+    assert(sim.state.stick_x == KBM_STICK_FULL_SCALE);
+    sim_run(&sim, 0, 0, 0u, NS2_KBM_MOUSE_IDLE_MS + SIM_TICK_MS, 0u, NULL);
+    assert(sim.state.stick_x == 0);
+    puts("  mouse release returns to exact centre");
+}
+
+// A gesture is a span of time, not a run of non-empty reports.
+static void test_mouse_gesture_continuity(void) {
+    mouse_sim_t sim;
+    sim_stats_t stats;
+
+    // Sparse reports well inside the inactivity allowance must not produce
+    // visible right / centre / right pulses.
+    sim_init(&sim);
+    stats_init(&stats);
+    sim_run(&sim, 30, 0, 20u, 400u, 200u, &stats);
+    assert(stats.centred == 0u);
+    assert(stats.min_x > 200);
+
+    // Neither may an empty report inside a live gesture: mouse report timing and
+    // quantization put dx == dy == 0 reports in the middle of continuous
+    // physical motion all the time.
+    sim_init(&sim);
+    sim_run(&sim, 30, 0, 8u, 200u, 0u, NULL);
+    int32_t before = sim.state.stick_x;
+    ns2_kbm_state_mouse_report(&sim.state, 0, 0, 0, 0, &sim.config.mouse,
+                               ++sim.now_ms);
+    assert(sim.state.stick_x > before / 2);
+
+    // Past the allowance, exact centre -- and a button-only report does not
+    // extend the gesture, because only real movement does.
+    sim_init(&sim);
+    sim_run(&sim, 30, 0, 8u, 200u, 0u, NULL);
+    for (unsigned i = 0; i < 4u; ++i) {
+        sim.now_ms += NS2_KBM_MOUSE_IDLE_MS / 2u;
+        ns2_kbm_state_mouse_report(&sim.state, 1u << 0, 0, 0, 0,
+                                   &sim.config.mouse, sim.now_ms);
+    }
+    assert(sim.state.stick_x == 0 && sim.state.motion_x == 0);
+    puts("  mouse gesture continuity");
+}
+
+// Reversing direction must reorient the stick, not fight a stale tail.
+static void test_mouse_direction_reversal(void) {
+    mouse_sim_t sim;
+    sim_stats_t stats;
+
+    sim_init(&sim);
+    sim_run(&sim, 30, 0, 8u, 200u, 0u, NULL);
+    assert(sim.state.stick_x > 500);
+
+    // Crossing centre must take on the order of the estimator time constant,
+    // not the length of the gesture that preceded it.
+    sim_run(&sim, -30, 0, 8u, NS2_KBM_MOUSE_VELOCITY_MS, 0u, NULL);
+    assert(sim.state.stick_x < 0);
+
+    // And it settles at the mirror image of the original deflection.
+    stats_init(&stats);
+    sim_run(&sim, -30, 0, 8u, 200u, 100u, &stats);
+    assert(stats.max_x < -500);
+    assert(stats.centred == 0u);
+    puts("  mouse direction reversal");
+}
+
+// Speed maps to magnitude monotonically until the axis runs out of range, and
+// the axes are independent.
+static void test_mouse_speed_scaling_and_axes(void) {
+    mouse_sim_t sim;
+    sim_stats_t stats;
+
+    // Above the speed that maps to full scale, the output stays at full scale.
+    // A faster mouse cannot make the game turn faster than its own maximum
+    // analog turn rate; that is a property of the destination, not a defect.
+    sim_init(&sim);
+    stats_init(&stats);
+    sim_run(&sim, 2000, 0, 8u, 300u, 150u, &stats);
+    assert(stats.max_x == KBM_STICK_FULL_SCALE);
+    assert(stats.min_x > KBM_STICK_FULL_SCALE / 2);
+
+    // Diagonal movement: equal speeds give equal magnitudes, and the axes carry
+    // their own estimates rather than sharing one.
+    sim_init(&sim);
+    stats_init(&stats);
+    sim_run(&sim, 20, -20, 8u, 300u, 150u, &stats);
+    assert(stats.min_x > 450);
+    assert(stats.max_y < -450);
+    assert(stats.min_x == -stats.max_y);
+    assert(stats.max_x <= KBM_STICK_FULL_SCALE);
+
+    // One axis moving leaves the other at exact centre.
+    sim_init(&sim);
+    stats_init(&stats);
+    sim_run(&sim, 20, 0, 8u, 300u, 0u, &stats);
+    assert(stats.min_y == 0 && stats.max_y == 0);
+
+    // The reference interval is live configuration, so it can change with a
+    // gesture in flight. Both extremes of the range have to stay bounded: the
+    // estimate is held in scaled counts sized against the interval in force
+    // when it was stored, and the largest one is 200x the smallest.
+    sim_init(&sim);
+    sim.config.mouse.recenter_ms = NS2_KBM_MOUSE_RECENTER_MIN_MS;
+    sim_run(&sim, 4000, 4000, 4u, 200u, 0u, NULL);
+    assert(sim.state.stick_x == KBM_STICK_FULL_SCALE);
+    sim.config.mouse.recenter_ms = NS2_KBM_MOUSE_RECENTER_MAX_MS;
+    stats_init(&stats);
+    sim_run(&sim, 4000, 4000, 4u, 200u, 0u, &stats);
+    assert(stats.max_x == KBM_STICK_FULL_SCALE);
+    assert(stats.min_x >= 0 && stats.min_y >= 0);   // no wrapped product
+    sim_run(&sim, 0, 0, 0u, NS2_KBM_MOUSE_IDLE_MS + SIM_TICK_MS, 0u, NULL);
+    assert(sim.state.stick_x == 0 && sim.state.stick_y == 0);
+    puts("  mouse speed scaling and axes");
+}
+
+// The translated stick is for personalities WITHOUT a pointer. The Joy-Con 2
+// native mouse path is hardware validated and takes relative deltas unchanged,
+// with no sensitivity, velocity estimate, continuity or release behavior
+// applied to it.
+static void test_mouse_native_path_untouched(void) {
+    mouse_sim_t sim;
+    ns2_kbm_output_t out;
+
+    sim_init(&sim);
+    sim_run(&sim, 30, -10, 8u, 200u, 0u, NULL);
+    ns2_kbm_resolve(&sim.state, &sim.config, NS2_KBM_MODE_KEYBOARD_MOUSE, true,
+                    &out);
+    assert(out.has_mouse == 1);
+    // Whatever accumulated since the last publish, verbatim and unscaled: 25
+    // reports of (30, -10) over the 200 ms gesture, with no sensitivity, no
+    // velocity estimate and no release applied to any of it.
+    assert(out.mouse_delta_x == 25 * 30 && out.mouse_delta_y == 25 * -10);
+    // Mid-gesture, with a large velocity estimate live, the stick is untouched.
+    assert(sim.state.stick_x > 500);
+    assert(out.right_x == SWITCH_STICK_MID && out.right_y == SWITCH_STICK_MID);
+
+    // Relative movement stays an event: a republish with no new motion must not
+    // replay it, however deflected the translated stick happens to be.
+    ns2_kbm_resolve(&sim.state, &sim.config, NS2_KBM_MODE_KEYBOARD_MOUSE, true,
+                    &out);
+    assert(out.has_mouse == 1);
+    assert(out.mouse_delta_x == 0 && out.mouse_delta_y == 0);
+    assert(out.mouse_delta_wheel == 0);
+    puts("  mouse native path untouched");
+}
+
+// A held digital right-stick binding remains authoritative.
+static void test_mouse_digital_stick_precedence(void) {
+    mouse_sim_t sim;
+    ns2_kbm_output_t out;
+
+    sim_init(&sim);
+    // IJKL are deliberately unbound in the Keyboard + Mouse profile, so bind one
+    // explicitly rather than relying on a default that does not exist.
+    assert(ns2_kbm_set_binding(&sim.config, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+                               key(KEY_I), NS2_DST_RSTICK_UP));
+    sim_run(&sim, 30, 30, 8u, 200u, 0u, NULL);
+    assert(sim.state.stick_x > 500);
+
+    const uint8_t aim_up[] = {KEY_I};
+    press_keys(&sim.state, aim_up, 1);
+    ns2_kbm_resolve(&sim.state, &sim.config, NS2_KBM_MODE_KEYBOARD_MOUSE, false,
+                    &out);
+    // The digital binding owns the whole right stick while it is held: the
+    // translated deflection does not leak onto the other axis either.
+    assert(out.right_y == SWITCH_STICK_MAX);
+    assert(out.right_x == SWITCH_STICK_MID);
+
+    // Releasing it hands the axis back to the live gesture.
+    release_all(&sim.state);
+    ns2_kbm_resolve(&sim.state, &sim.config, NS2_KBM_MODE_KEYBOARD_MOUSE, false,
+                    &out);
+    assert(out.right_x > SWITCH_STICK_MID);
+    puts("  mouse digital stick precedence");
+}
+
+// ---------------------------------------------------------------------------
+// Radial anti-deadzone (output response mapping)
+// ---------------------------------------------------------------------------
+// Compensation for a destination that discards the bottom of its stick range.
+// It is applied AFTER the velocity estimator and must not disturb any temporal
+// property: at 0 it is a byte-for-byte no-op, and at any value a zero vector
+// stays exactly zero.
+
+static void adz(int32_t *x, int32_t *y, uint8_t percent) {
+    ns2_kbm_mouse_anti_deadzone(x, y, percent);
+}
+
+// Magnitude, computed in floating point HERE on purpose: the implementation's
+// integer sqrt is the thing under test, so the test must not reuse it.
+static double magnitude_of(int32_t x, int32_t y) {
+    return sqrt((double)x * x + (double)y * y);
+}
+
+static void test_anti_deadzone_zero_and_identity(void) {
+    // Off is an exact no-op at every magnitude, including the extremes.
+    const int32_t samples[][2] = {{0, 0},       {1, 0},      {-1, 0},
+                                  {0, 1},       {37, -11},   {1024, 1024},
+                                  {2048, 0},    {-2048, -2048}, {5, 5}};
+    for (unsigned i = 0; i < sizeof(samples) / sizeof(samples[0]); ++i) {
+        int32_t x = samples[i][0], y = samples[i][1];
+        adz(&x, &y, 0);
+        assert(x == samples[i][0] && y == samples[i][1]);
+    }
+
+    // A zero vector stays EXACTLY zero at every configured value. No setting may
+    // turn "not moving the mouse" into stick deflection.
+    for (unsigned percent = 0; percent <= NS2_KBM_MOUSE_ADZ_MAX; ++percent) {
+        int32_t x = 0, y = 0;
+        adz(&x, &y, (uint8_t)percent);
+        assert(x == 0 && y == 0);
+    }
+    // Including values above the cap, which clamp rather than misbehave.
+    int32_t x = 0, y = 0;
+    adz(&x, &y, 255u);
+    assert(x == 0 && y == 0);
+    puts("  anti-deadzone zero and identity");
+}
+
+static void test_anti_deadzone_magnitude_mapping(void) {
+    const int32_t full = KBM_STICK_FULL_SCALE;
+    for (unsigned percent = 5; percent <= NS2_KBM_MOUSE_ADZ_MAX; percent += 5) {
+        double floor_units = (double)full * percent / 100.0;
+
+        // The smallest possible movement lands on the floor, not above it.
+        int32_t x = 1, y = 0;
+        adz(&x, &y, (uint8_t)percent);
+        assert(x >= (int32_t)floor_units - 2 && x <= (int32_t)floor_units + 2);
+        assert(y == 0);
+
+        // Full scale stays full scale: this may only ever raise a deflection.
+        x = full;
+        y = 0;
+        adz(&x, &y, (uint8_t)percent);
+        assert(x == full && y == 0);
+
+        // A magnitude already past full scale (diagonal corners reach 1.41x) is
+        // left alone rather than rescaled down.
+        x = full;
+        y = full;
+        adz(&x, &y, (uint8_t)percent);
+        assert(x == full && y == full);
+
+        // Halfway in maps halfway between the floor and full.
+        x = full / 2;
+        y = 0;
+        adz(&x, &y, (uint8_t)percent);
+        double expected = floor_units + (full - floor_units) * 0.5;
+        assert(fabs((double)x - expected) <= 2.0);
+
+        // Monotonic and bounded across the whole input range.
+        int32_t previous = -1;
+        for (int32_t in = 0; in <= full; in += 16) {
+            x = in;
+            y = 0;
+            adz(&x, &y, (uint8_t)percent);
+            assert(x >= previous);        // never folds back on itself
+            assert(x <= full);            // never leaves the axis range
+            assert(in == 0 || x >= in);   // never shrinks a real deflection
+            previous = x;
+        }
+    }
+    puts("  anti-deadzone magnitude mapping");
+}
+
+// The reason this is radial and not a pair of per-axis floors: independent
+// floors rotate the vector, turning a slow nearly-horizontal sweep into a
+// diagonal one.
+static void test_anti_deadzone_preserves_direction(void) {
+    const uint8_t percent = 15u;
+
+    // Cardinals stay exactly cardinal, in all four directions.
+    const int32_t cardinals[][2] = {{300, 0}, {-300, 0}, {0, 300}, {0, -300}};
+    for (unsigned i = 0; i < 4; ++i) {
+        int32_t x = cardinals[i][0], y = cardinals[i][1];
+        adz(&x, &y, percent);
+        assert((cardinals[i][0] == 0) == (x == 0));
+        assert((cardinals[i][1] == 0) == (y == 0));
+        // Sign is never inverted.
+        assert(cardinals[i][0] <= 0 ? x <= 0 : x >= 0);
+        assert(cardinals[i][1] <= 0 ? y <= 0 : y >= 0);
+    }
+
+    // Exact diagonal stays exact.
+    int32_t x = 400, y = -400;
+    adz(&x, &y, percent);
+    assert(x == -y);
+
+    // The case that motivated the radial form: 20% right, 1% up. A per-axis
+    // floor would lift the tiny component to the floor too and swing this from
+    // ~3 degrees to ~26. Radial keeps the angle.
+    const double tolerance_degrees = 1.0;
+    const int32_t vectors[][2] = {
+        {410, 20}, {410, -20}, {-410, 20}, {20, 410}, {1000, 3}, {60, 5},
+    };
+    for (unsigned i = 0; i < sizeof(vectors) / sizeof(vectors[0]); ++i) {
+        int32_t ax = vectors[i][0], ay = vectors[i][1];
+        double before = atan2((double)ay, (double)ax);
+        adz(&ax, &ay, percent);
+        double after = atan2((double)ay, (double)ax);
+        double drift = fabs(before - after) * 180.0 / 3.14159265358979;
+        if (drift > tolerance_degrees) {
+            printf("FAIL: (%d,%d) rotated by %.2f degrees\n", vectors[i][0],
+                   vectors[i][1], drift);
+            assert(0);
+        }
+        // And the magnitude really was raised over the floor.
+        assert(magnitude_of(ax, ay) >=
+               (double)KBM_STICK_FULL_SCALE * percent / 100.0 - 2.0);
+    }
+    puts("  anti-deadzone preserves direction");
+}
+
+// The configured percentage must mean that percentage of RADIAL magnitude at
+// every angle -- which is a statement about the precision of the divisor, not
+// about the shape of the mapping.
+//
+// This is a regression for a real defect. The first implementation took the
+// magnitude as floor(sqrt(x^2 + y^2)) in whole stick units and then divided by
+// it, so any vector whose true magnitude was not an integer had its output
+// inflated by the truncation. The smallest diagonal was the worst case: |(1,1)|
+// is 1.414, floored to 1, and a configured 15% radial floor came out as 21.2%
+// (50% came out as 70.7%) while a cardinal vector of the same magnitude got its
+// 15% exactly. Direction was fine; the magnitude was not. The magnitude is now
+// computed in sixteenths of a unit.
+static void test_anti_deadzone_radial_precision(void) {
+    const uint8_t percents[] = {5, 10, 15, 20, 25, 50};
+    const int32_t vectors[][2] = {
+        {1, 0}, {0, 1}, {1, 1},  {-1, 1}, {2, 1},  {1, 2},
+        {3, 3}, {5, 5}, {7, 7},  {7, 0},  {10, 0}, {2, 0},
+    };
+    for (unsigned p = 0; p < sizeof(percents) / sizeof(percents[0]); ++p) {
+        double floor_units =
+            (double)(KBM_STICK_FULL_SCALE * percents[p] / 100);
+        for (unsigned v = 0; v < sizeof(vectors) / sizeof(vectors[0]); ++v) {
+            int32_t x = vectors[v][0], y = vectors[v][1];
+            double before = magnitude_of(x, y);
+            adz(&x, &y, percents[p]);
+            double after = magnitude_of(x, y);
+            // floor, plus the linear ramp's contribution for this input.
+            double expected =
+                floor_units +
+                before * (KBM_STICK_FULL_SCALE - floor_units) /
+                    KBM_STICK_FULL_SCALE;
+            double tolerance = expected * 0.05 + 3.0;
+            if (fabs(after - expected) > tolerance) {
+                printf("FAIL: (%d,%d) at %u%% -> magnitude %.2f, expected "
+                       "%.2f (+/- %.2f)\n",
+                       vectors[v][0], vectors[v][1], percents[p], after,
+                       expected, tolerance);
+                assert(0);
+            }
+        }
+    }
+
+    // Equal physical magnitude at different angles must receive comparable
+    // compensation. |(7,0)| = 7.00 and |(5,5)| = 7.07; the broken version gave
+    // 15.23% and 16.85% for these at a configured 15%.
+    for (unsigned p = 0; p < sizeof(percents) / sizeof(percents[0]); ++p) {
+        int32_t cx = 7, cy = 0, dx = 5, dy = 5;
+        adz(&cx, &cy, percents[p]);
+        adz(&dx, &dy, percents[p]);
+        double cardinal = magnitude_of(cx, cy);
+        double diagonal = magnitude_of(dx, dy);
+        assert(fabs(cardinal - diagonal) <= cardinal * 0.03 + 2.0);
+    }
+
+    // And the specific numbers from the defect report, stated as bounds rather
+    // than as a formula, so a future rewrite has to reproduce the behaviour and
+    // not merely the arithmetic.
+    int32_t x = 1, y = 1;
+    adz(&x, &y, 15u);
+    double m = magnitude_of(x, y);
+    assert(m > (double)KBM_STICK_FULL_SCALE * 0.14);
+    assert(m < (double)KBM_STICK_FULL_SCALE * 0.17);  // was 0.212
+    x = 1;
+    y = 1;
+    adz(&x, &y, 50u);
+    m = magnitude_of(x, y);
+    assert(m > (double)KBM_STICK_FULL_SCALE * 0.48);
+    assert(m < (double)KBM_STICK_FULL_SCALE * 0.54);  // was 0.707
+    puts("  anti-deadzone radial precision");
+}
+
+// The integer sqrt is the one piece of new arithmetic; exercise its edges and
+// prove nothing overflows at the extremes of the axis range.
+static void test_anti_deadzone_bounds_and_overflow(void) {
+    const int32_t full = KBM_STICK_FULL_SCALE;
+    for (uint8_t percent = 0; percent <= NS2_KBM_MOUSE_ADZ_MAX; ++percent) {
+        const int32_t extremes[][2] = {
+            {full, full},   {-full, -full}, {full, -full}, {-full, full},
+            {full, 1},      {1, full},      {full - 1, full - 1},
+            {1, 1},         {-1, -1},       {2, 1},        {0, full},
+        };
+        for (unsigned i = 0; i < sizeof(extremes) / sizeof(extremes[0]); ++i) {
+            int32_t x = extremes[i][0], y = extremes[i][1];
+            adz(&x, &y, percent);
+            // Bounded, sign-preserving, and never NaN-ish garbage from a bad
+            // division.
+            assert(x >= -full && x <= full);
+            assert(y >= -full && y <= full);
+            assert(extremes[i][0] < 0 ? x <= 0 : x >= 0);
+            assert(extremes[i][1] < 0 ? y <= 0 : y >= 0);
+        }
+    }
+    assert((ns2_kbm_mouse_anti_deadzone(NULL, NULL, 15u), true));
+    int32_t only_x = 100;
+    ns2_kbm_mouse_anti_deadzone(&only_x, NULL, 15u);
+    assert(only_x == 100);
+    puts("  anti-deadzone bounds and overflow");
+}
+
+// End to end through the real translator: the mapping reaches the wire, the
+// temporal model is untouched by it, and the paths that must not see it do not.
+static void test_anti_deadzone_through_resolve(void) {
+    mouse_sim_t sim;
+    ns2_kbm_output_t out;
+
+    // A slow sweep that lands well under a game deadzone today.
+    sim_init(&sim);
+    sim_run(&sim, 1, 0, 10u, 400u, 0u, NULL);
+    int32_t slow_state = sim.state.stick_x;
+    assert(slow_state > 0 && slow_state < 60);  // ~1% of full scale
+
+    ns2_kbm_resolve(&sim.state, &sim.config, NS2_KBM_MODE_KEYBOARD_MOUSE, false,
+                    &out);
+    uint16_t linear = out.right_x;
+
+    sim.config.mouse.anti_deadzone = 15u;
+    ns2_kbm_resolve(&sim.state, &sim.config, NS2_KBM_MODE_KEYBOARD_MOUSE, false,
+                    &out);
+    uint16_t compensated = out.right_x;
+    assert(compensated > linear);
+    // Above 15% of full scale, i.e. out of a 15% deadzone.
+    assert(compensated - SWITCH_STICK_MID >= KBM_STICK_FULL_SCALE * 15 / 100);
+    // The estimator itself was not touched by the mapping.
+    assert(sim.state.stick_x == slow_state);
+
+    // Stationary mouse: exact centre at every value, even mid-gesture state.
+    for (unsigned percent = 0; percent <= NS2_KBM_MOUSE_ADZ_MAX; percent += 5) {
+        sim_init(&sim);
+        sim.config.mouse.anti_deadzone = (uint8_t)percent;
+        sim_run(&sim, 30, 30, 8u, 200u, 0u, NULL);
+        sim_run(&sim, 0, 0, 0u, NS2_KBM_MOUSE_IDLE_MS + SIM_TICK_MS, 0u, NULL);
+        ns2_kbm_resolve(&sim.state, &sim.config, NS2_KBM_MODE_KEYBOARD_MOUSE,
+                        false, &out);
+        assert(out.right_x == SWITCH_STICK_MID);
+        assert(out.right_y == SWITCH_STICK_MID);
+    }
+
+    // A fresh state with no mouse activity at all publishes exact centre.
+    sim_init(&sim);
+    sim.config.mouse.anti_deadzone = NS2_KBM_MOUSE_ADZ_MAX;
+    ns2_kbm_resolve(&sim.state, &sim.config, NS2_KBM_MODE_KEYBOARD_MOUSE, false,
+                    &out);
+    assert(out.right_x == SWITCH_STICK_MID && out.right_y == SWITCH_STICK_MID);
+
+    // Native Joy-Con pointer output never sees it: deltas verbatim, stick centred.
+    sim_init(&sim);
+    sim.config.mouse.anti_deadzone = NS2_KBM_MOUSE_ADZ_MAX;
+    sim_run(&sim, 3, -2, 8u, 200u, 0u, NULL);
+    ns2_kbm_resolve(&sim.state, &sim.config, NS2_KBM_MODE_KEYBOARD_MOUSE, true,
+                    &out);
+    assert(out.has_mouse == 1);
+    assert(out.mouse_delta_x == 25 * 3 && out.mouse_delta_y == 25 * -2);
+    assert(out.right_x == SWITCH_STICK_MID && out.right_y == SWITCH_STICK_MID);
+
+    // A held digital right-stick binding still wins outright.
+    sim_init(&sim);
+    sim.config.mouse.anti_deadzone = 20u;
+    assert(ns2_kbm_set_binding(&sim.config, NS2_KBM_PROFILE_KEYBOARD_MOUSE,
+                               key(KEY_I), NS2_DST_RSTICK_UP));
+    sim_run(&sim, 30, 0, 8u, 200u, 0u, NULL);
+    const uint8_t aim_up[] = {KEY_I};
+    press_keys(&sim.state, aim_up, 1);
+    ns2_kbm_resolve(&sim.state, &sim.config, NS2_KBM_MODE_KEYBOARD_MOUSE, false,
+                    &out);
+    assert(out.right_y == SWITCH_STICK_MAX);
+    assert(out.right_x == SWITCH_STICK_MID);
+    puts("  anti-deadzone through resolve");
+}
+
+// The tuning tradeoff, pinned as data rather than left to a comment: while the
+// velocity estimate decays after the user stops, anti-deadzone holds the output
+// at or above its floor until the idle deadline forces exact centre. A value
+// above the game's real deadzone therefore shows up as low-speed creep for that
+// window. This does not assert a "correct" value -- only that the behaviour is
+// bounded, ends in exact zero, and is what the tuning rule says it is.
+static void test_anti_deadzone_release_tail(void) {
+    const uint8_t values[] = {0, 5, 10, 15, 20};
+    for (unsigned v = 0; v < sizeof(values) / sizeof(values[0]); ++v) {
+        mouse_sim_t sim;
+        ns2_kbm_output_t out;
+        sim_init(&sim);
+        sim.config.mouse.anti_deadzone = values[v];
+        sim_run(&sim, 20, 0, 8u, 200u, 0u, NULL);
+
+        int32_t floor_units = KBM_STICK_FULL_SCALE * values[v] / 100;
+        int32_t last = 0;
+        unsigned centred_at = 0;
+        // Stepped one millisecond at a time so the deflection can be sampled at
+        // every publish, with the service tick on its production 3 ms cadence.
+        for (unsigned ms = 1; ms <= NS2_KBM_MOUSE_IDLE_MS + SIM_TICK_MS; ++ms) {
+            sim.now_ms++;
+            if ((sim.now_ms % SIM_TICK_MS) == 0u)
+                ns2_kbm_state_service(&sim.state, &sim.config.mouse, sim.now_ms);
+            ns2_kbm_resolve(&sim.state, &sim.config,
+                            NS2_KBM_MODE_KEYBOARD_MOUSE, false, &out);
+            int32_t deflection = (int32_t)out.right_x - SWITCH_STICK_MID;
+            if (deflection == 0) {
+                centred_at = ms;
+                break;
+            }
+            // Never below the floor while the estimate is still alive, and
+            // never rising on its own.
+            assert(deflection >= floor_units - 2);
+            assert(last == 0 || deflection <= last);
+            last = deflection;
+        }
+        // Always reaches EXACT centre, on the same deadline as anti-deadzone 0.
+        assert(centred_at != 0);
+        assert(centred_at <= NS2_KBM_MOUSE_IDLE_MS + SIM_TICK_MS);
+    }
+    puts("  anti-deadzone release tail");
+}
+
 static void test_mouse_translation(void) {
     ns2_kbm_config_t config;
     ns2_kbm_config_defaults(&config);
@@ -507,16 +1206,28 @@ static void test_mouse_translation(void) {
     config.mouse.sensitivity_x = NS2_KBM_MOUSE_SENS_DEFAULT;
     ns2_kbm_state_mouse_report(&state, 0, 20, 0, 0, &config.mouse, 0);
     int32_t slow = state.stick_x;
+    assert(slow > 0);
     ns2_kbm_state_init(&state);
     config.mouse.sensitivity_x = (uint16_t)(NS2_KBM_MOUSE_SENS_DEFAULT * 2u);
     ns2_kbm_state_mouse_report(&state, 0, 20, 0, 0, &config.mouse, 0);
     assert(state.stick_x == slow * 2);
     config.mouse.sensitivity_x = NS2_KBM_MOUSE_SENS_DEFAULT;
 
+    // The velocity reference interval scales it the same way, in the same
+    // direction the old constant-rate `recenter_ms` did: a larger value holds
+    // more deflection for the same movement.
+    ns2_kbm_state_init(&state);
+    config.mouse.recenter_ms =
+        (uint16_t)(NS2_KBM_MOUSE_RECENTER_DEFAULT_MS * 2u);
+    ns2_kbm_state_mouse_report(&state, 0, 20, 0, 0, &config.mouse, 0);
+    assert(state.stick_x == slow * 2);
+    config.mouse.recenter_ms = NS2_KBM_MOUSE_RECENTER_DEFAULT_MS;
+
     // High-DPI bursts clamp instead of accumulating without bound.
     ns2_kbm_state_init(&state);
     for (unsigned i = 0; i < 100; ++i)
         ns2_kbm_state_mouse_report(&state, 0, 30000, 0, 0, &config.mouse, 0);
+    assert(state.stick_x == KBM_STICK_FULL_SCALE);
     ns2_kbm_resolve(&state, &config, NS2_KBM_MODE_KEYBOARD_MOUSE, false, &out);
     assert(out.right_x == SWITCH_STICK_MAX);
 
@@ -532,6 +1243,7 @@ static void test_mouse_translation(void) {
     ns2_kbm_state_mouse_report(&state, 0, 500, 500, 0, &config.mouse, 0);
     ns2_kbm_state_service(&state, &config.mouse, 100000u);
     assert(state.stick_x == 0 && state.stick_y == 0);
+    assert(!ns2_kbm_state_mouse_motion_pending(&state));
 
     // Native mouse output takes the relative deltas untouched and leaves the
     // right stick alone.
@@ -1495,6 +2207,21 @@ int main(void) {
     test_duplicate_destinations();
     test_remap_while_held();
     test_mouse_translation();
+    test_mouse_sustained_motion_holds_deflection();
+    test_mouse_low_speed_has_no_threshold();
+    test_mouse_release_returns_to_exact_centre();
+    test_mouse_gesture_continuity();
+    test_mouse_direction_reversal();
+    test_mouse_speed_scaling_and_axes();
+    test_mouse_native_path_untouched();
+    test_mouse_digital_stick_precedence();
+    test_anti_deadzone_zero_and_identity();
+    test_anti_deadzone_magnitude_mapping();
+    test_anti_deadzone_preserves_direction();
+    test_anti_deadzone_radial_precision();
+    test_anti_deadzone_bounds_and_overflow();
+    test_anti_deadzone_through_resolve();
+    test_anti_deadzone_release_tail();
     test_state_ownership();
     test_config_validation();
     test_effective_mode_inference();

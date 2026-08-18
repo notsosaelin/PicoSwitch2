@@ -495,23 +495,98 @@ keyboard-triggered republish, so relative movement cannot be lost between USB fr
 
 ### Mouse-to-stick translation (every other personality)
 
-Movement is translated to the **right stick**:
+A relative mouse is a **velocity** device and an analog stick is a **position** device, so the
+translator's whole job is turning *how fast the mouse is moving right now* into *how far the stick
+is being held*:
 
-- Each report adds `delta × sensitivity` (Q8.8) to a per-axis deflection, clamped to full scale.
-- The deflection recenters at a **constant rate**: `recenter_ms` is the time a full deflection takes
-  to return to neutral, so a smaller deflection returns proportionally sooner. Decaying by a
-  fraction of the current magnitude would be an exponential that never actually reaches zero, which
-  is the wrong shape for a setting whose purpose is guaranteeing the stick comes back to centre.
-- The recenter is driven by a 3 ms core-1 tick, not only by mouse reports, because a mouse that
-  stops moving stops reporting. This is what makes "movement never leaves the stick stuck
-  off-centre" true rather than merely likely.
-- Deltas are never permanently accumulated: the deflection is clamped, and a gap longer than
-  `recenter_ms` snaps to exact neutral.
+```
+deflection = mouse_counts_per_ms × (sensitivity / 256) × recenter_ms
+```
+
+- Each report adds `delta × sensitivity` (Q8.8, undivided) to a per-axis **velocity estimate**, a
+  first-order low pass with a time constant of `NS2_KBM_MOUSE_VELOCITY_MS` (40 ms — a few Bluetooth
+  report intervals). The deflection is derived from that estimate, so continuous movement holds a
+  continuous level instead of re-earning it on every report. The 1/256 is applied once at the
+  output, which is also why sub-unit movement at low sensitivity accumulates rather than being
+  truncated away report by report.
+- The estimate is clamped to the value that already maps to full scale. Clamping the *estimate* and
+  not only the output is what prevents wind-up: without it a fast flick would leave the stick pinned
+  after the mouse stopped.
+- **Gesture continuity and release are separate concepts.** The decay shapes how the camera slows
+  down; `NS2_KBM_MOUSE_IDLE_MS` (64 ms without a report carrying real movement) forces *exact*
+  neutral. The deadline is a time bound, not "this report had no movement", because report timing and
+  quantization put empty reports in the middle of continuous physical motion.
+- The service tick is a 3 ms core-1 tick, not only mouse reports, because a mouse that stops moving
+  stops reporting. This is what makes "movement never leaves the stick stuck off-centre" true rather
+  than merely likely.
 - A digital right-stick binding that is actually held wins over the translation, so the two never
   fight over the same axis.
+- Above the speed that maps to full scale the output stays at full scale. A faster mouse cannot make
+  a game turn faster than its own maximum analog turn rate; that is a property of the destination,
+  not a defect to fix here. This is a mouse-to-stick translator, not native mouse input.
 
-No smoothing and no response-curve selection exist, because the production translator does not use
-them. Only parameters with a technical reason are exposed.
+#### Disproven predecessor — do not reintroduce
+
+The first implementation was a **leaky position accumulator**: each report added
+`delta × sensitivity` to the deflection, and a constant-rate friction of
+`KBM_STICK_LIMIT / recenter_ms` per millisecond pulled it back. That made deflection depend on
+whether the mouse could *outrun the friction*, which imposed a hidden minimum speed. Measured on the
+shipped defaults (sensitivity 512 = 2 units/count, recenter 120 ms = **17.07 units/ms** of decay),
+break-even was **8.53 counts/ms ≈ 8533 counts/s**, and below it the translator emitted pulses rather
+than a level:
+
+| Sustained input | Old model: mean / peak deflection (of 2048) | Old model: samples at exact centre |
+|---|---|---|
+| 1 count / 10 ms | 0 / 2 | 80 % |
+| 5 counts / 8 ms | 2 / 10 | 75 % |
+| 20 counts / 8 ms | 13 / 40 | 50 % |
+| 50 counts / 8 ms | 55 / 100 | 12 % |
+| 80 counts / 8 ms | 1005 / 1360 | 0 % |
+
+A measured trace at 20 counts per 8 ms: `40 40 40 0 0 0 0 0 40 23 23 23 0 0 0 0 …`. Users felt this
+in stick-camera games as *move → brief turn → stop → move → brief turn → stop*, and the cliff at
+8.53 counts/ms meant slower movement did almost nothing while faster movement slammed to full scale.
+Slowing the friction down only trades the pulsing for post-motion coasting — the temporal model
+itself was wrong, not its tuning. `test_mouse_sustained_motion_holds_deflection()` and
+`test_mouse_low_speed_has_no_threshold()` fail under that model by construction.
+
+No response-curve selection exists, because the production translator does not use one. Only
+parameters with a technical reason are exposed.
+
+#### Anti-deadzone (radial output response)
+
+A linear velocity→stick map hands the game a small deflection for slow mouse movement, and a game
+that discards the bottom N% of its stick range turns that into no camera movement at all. Measured:
+**the dead fraction of the speed range equals the game's deadzone exactly, at every sensitivity** —
+a 15% deadzone makes the slowest 15% of the usable speed range invisible, and raising sensitivity
+slides that window down (dead below 1.28 → 0.32 counts/ms from 512 to 2048) without changing the
+ratio, while costing the top end proportionally (saturation 8.53 → 2.13 counts/ms). Sensitivity is
+therefore a useful lever and not a fix.
+
+`antideadzone` maps the translated vector's **magnitude** from `[0..full]` into `[percent..full]`,
+rescaling both axes by the same ratio. Applied at the output boundary in `ns2_kbm_resolve()`, after
+the velocity estimator and on a copy — the estimate itself, and every temporal property validated on
+hardware, is untouched by it. With the value matched to the game's deadzone the composite response
+is exactly the clean linear velocity map again.
+
+- **Radial, not per-axis.** Independent per-axis floors rotate the vector: a slow nearly-horizontal
+  sweep (x=20%, y=1%) becomes a 26° diagonal because the floor lifts the tiny orthogonal component
+  as hard as the real one.
+- **Zero stays exactly zero.** No value can invent deflection from a stationary mouse, and the 64 ms
+  inactivity deadline still forces exact centre first.
+- **0 is a byte-for-byte no-op**, so the default and every migrated configuration keep the validated
+  linear response.
+- **Magnitude precision matters more than it looks.** The magnitude is the divisor in the rescale, so
+  it is computed in sixteenths of a stick unit. Taking it as `floor(sqrt())` in whole units inflated
+  small vectors by up to 41%: `|(1,1)|` is 1.414 but floors to 1, so a configured 15% radial floor
+  measured **21.2%** at 45° (50% measured 70.7%) while a cardinal vector of the same magnitude got
+  its 15% exactly. Direction was never the problem; the divisor was.
+
+Tuning rule: **raise from 0 only until extremely slow genuine mouse motion registers reliably
+in-game, and use the smallest effective value.** This is compensation, not a boost. A value above the
+game's real deadzone produces a minimum non-zero turn rate on the smallest movement (measured: a
+floor 5 points high gives 5.9% of max turn rate, 10 points high gives 11.8%) and holds it through the
+release tail until the inactivity deadline. Undershooting is safe; overshooting creeps.
 
 ### Configurable mouse settings
 
@@ -519,8 +594,19 @@ them. Only parameters with a technical reason are exposed.
 |---|---|---|---|
 | `sensitivity` | 16..8192 | 512 | Q8.8 stick units per mouse count, both axes |
 | `sensitivityx` / `sensitivityy` | 16..8192 | 512 | per-axis override |
-| `recenter` | 10..2000 ms | 120 | full-deflection recenter time |
+| `recenter` | 10..2000 ms | 120 | velocity reference interval (see below) |
 | `invertx` / `inverty` | 0/1 | 0 | axis inversion |
+| `antideadzone` | 0..50 % | 0 | radial deadzone compensation (see below) |
+
+`recenter` was the full-deflection recenter time of the constant-friction model. It is now the
+**velocity reference interval**: deflection is what `sensitivity` makes of the movement occurring
+over that interval at the current speed. The wire name, stored representation, range, default and
+*direction of effect* are all unchanged — larger still means more deflection held for the same
+motion — so persisted configuration keeps working and no config version was bumped. The value was
+also chosen to line up: at the default 120 ms, full scale is reached at 8.53 counts/ms, exactly the
+speed that used to be the old model's break-even. Return-to-centre is no longer tunable because it
+no longer needs to be: it is governed by the fixed velocity time constant and inactivity deadline
+above.
 
 Every value is validated on entry and again on load. An out-of-range management value is **rejected**
 rather than silently clamped: a client that sent a bad value must be told, not quietly given a
@@ -693,7 +779,27 @@ setting's bounds alongside its value.
 
 ### UART
 
-`kbm status` and `kbm mode <mode>` are also available on the UART diagnostic channel.
+`kbm status`, `kbm mode <mode>`, `kbm mouse`, `kbm mouse <field> <value>` and `save` are also
+available on the UART diagnostic channel.
+
+The mouse commands are the surface for tuning translation gain against real hardware without a
+management client. They are not a second implementation: the parser, the accepted field set and the
+response schema live in `ns2_kbm_status.c` and are shared with the management/CDC surface, exactly
+as `kbm status` already was — see the header comment there for why a second copy is not allowed to
+exist. Range validation stays in `ns2_kbm_runtime_set_mouse()`, which rejects rather than clamps, so
+UART reports a bad value instead of quietly substituting a different one.
+
+`save` arms the same deferred flash write the `save` command arms everywhere else
+(`config_request_save()` → core-1 `config_service_save()`); it persists the **complete** settings
+record, not just KB/M. Settings applied without it stay in RAM and are lost on power cycle, which is
+what makes interactive tuning safe to experiment with.
+
+```
+kbm mouse                      -> {"sensitivityX":512,...,"antiDeadzone":0,...,"antiDeadzoneMax":50}
+kbm mouse sensitivity 1024     -> the same object, with the new values
+kbm mouse antideadzone 10      -> the same object, with the new values
+save                           -> {"ok":true,"save":"queued"}
+```
 
 ---
 
@@ -715,7 +821,7 @@ KB/M session:
 | `rollover` | keyboard reported ErrorRollOver; previous state retained |
 | `role_losses` | role releases, including stale-generation rejections implicitly (they do not count) |
 | `map_generation`, `neutralizations` | configuration changes and the boundaries they produced |
-| `publishes`, `recenters` | output activity and mouse-to-stick recenter ticks |
+| `publishes`, `recenters` | output activity and mouse-to-stick service ticks (the counter keeps its wire name) |
 
 These are bounded counters and a state snapshot; there is no per-report logging.
 
@@ -773,7 +879,7 @@ bounded effective-binding response buffer (384 bytes).
 
 There is no board on which this feature is disabled or behaves differently: the code is shared and
 board-agnostic, Pico W's non-audio profile and Pico 2 W's audio profile are unaffected, and the
-mouse recenter tick shares the existing 3 ms core-1 timer rather than adding one — which keeps it
+mouse-to-stick service tick shares the existing 3 ms core-1 timer rather than adding one — which keeps it
 off Pico 2 W's audio-sensitive scheduling.
 
 ---
@@ -784,9 +890,11 @@ Host tests (`pwsh -File tools/run_mgmt_tests.ps1` builds and runs them into `bui
 
 | Test | Covers |
 |---|---|
-| `test_ns2_kbm` | identifiers, canonical defaults, key down/up, simultaneous keys, report-order independence, unmapped keys, opposing directions, overrides, profile independence, override-table bounds, duplicate destinations, one-source-one-destination, remap while held, mouse translation (sensitivity, inversion, clamping, neutral return, one-shot deltas, native vs stick), state ownership and per-role clearing, configuration validation against arbitrary bytes, role admission and composite identity |
+| `test_ns2_kbm` | identifiers, canonical defaults, key down/up, simultaneous keys, report-order independence, unmapped keys, opposing directions, overrides, profile independence, override-table bounds, duplicate destinations, one-source-one-destination, remap while held, mouse translation (sensitivity, reference interval, inversion, clamping, neutral return, one-shot deltas, native vs stick), state ownership and per-role clearing, configuration validation against arbitrary bytes, role admission and composite identity |
+| `test_ns2_kbm` (temporal) | the mouse-to-stick model is time-domain, so these drive it on a simulated Bluetooth report cadence plus the production 3 ms tick: sustained motion holds deflection with no collapse between reports, low speed has no hidden threshold (including sub-unit accumulation at minimum sensitivity), release reaches *exact* centre by the inactivity deadline and decelerates before it, no wind-up after a flick, gesture continuity across sparse and empty reports, expiry past the deadline, direction reversal, speed→magnitude monotonicity and full-scale clamp, axis independence, the native Joy-Con path untouched mid-gesture, and digital right-stick precedence |
+| `test_ns2_kbm` (anti-deadzone) | 0 is a byte-for-byte no-op, zero vector stays zero at every value, magnitude maps linearly from floor to full, full scale and beyond are left alone, direction preserved for cardinals/diagonals/near-horizontals, **radial magnitude precision at small vectors** (the `floor(sqrt())` overshoot regression), bounds and overflow at axis extremes, end-to-end through `ns2_kbm_resolve()` with the estimator unchanged, native path and digital precedence unaffected, and the release-tail characterization at 0/5/10/15/20 % |
 | `test_bthid_keyboard_report` | boot and NKRO descriptor classification, gamepad rejection, truncated descriptors, key down/up, modifiers, simultaneous keys, slot-order independence, rollover, truncated reports, report-ID filtering, >6 keys, error-code usages, boot fallback |
-| `test_ns2_kbm_config_persistence` | defaults, erased sector, wrong magic, unknown schema, truncated record, v10→v11 migration determinism and preservation, mapping round trip, profile independence across reboot, explicit unassign persistence, reset scope, corrupt mapping repair |
+| `test_ns2_kbm_config_persistence` | defaults, erased sector, wrong magic, unknown schema, truncated record, v10 and v11 migration determinism and preservation, anti-deadzone round trip and fail-closed repair, mapping round trip, profile independence across reboot, explicit unassign persistence, reset scope, corrupt mapping repair |
 | `test_ns2_input_arbiter` | (extended) composite group ownership, non-member gating, member-loss handover, stale disconnect after index reuse, whole-source loss falling back to policy, group-0 standalone behavior unchanged, explicit selection of a composite member |
 | `test_ns2_active_input_lifecycle` | (unchanged) driver rebinding and lifecycle, with keyboard stubs added |
 
@@ -810,6 +918,44 @@ Confirmed on hardware, with no re-pairing at any point in the sequence:
   surviving peer, and without a manual mode change.
 - Discovery follows source completeness: active while the source is partial or empty
   (`scan_active=true`), retired once both roles are present (`scan_active=false`).
+
+### Translated mouse-to-stick — performed 2026-08-18
+
+Same hardware, in **Splatoon** on the Pro Controller 2 personality (no native pointer, so the
+translated stick is the live path).
+
+- **The pulse defect is gone.** Continuous mouse movement produces continuous camera motion instead
+  of the original move / stop / move / stop. The temporal model needed no retuning on hardware.
+- **Slow movement was the remaining failure, and anti-deadzone fixed it.** With compensation too low,
+  an extremely slow physical sweep produced no visible camera movement at all — the destination
+  discarding a legitimate small deflection, reproducible on demand. Raising anti-deadzone restored
+  slow camera movement.
+- **Live UART tuning works end to end.** `kbm mouse` reads back authoritative state, and
+  `kbm mouse antideadzone` was exercised at 0, 5, 10, 15 and 25 with each value taking effect
+  immediately and without a reconnect or reboot. `save` returned `{"ok":true,"save":"queued"}`,
+  which confirms the existing deferred settings write was requested — it is not by itself a
+  post-power-cycle persistence measurement.
+- **Sensitivity sets where the ceiling lands.** 1024 saturated too early to leave useful headroom for
+  medium and fast hand speeds; 768 kept more of that range while staying responsive. This matches the
+  host characterization (full stick at 8.53 / 5.69 / 4.27 counts/ms for 512 / 768 / 1024), and is why
+  the two knobs are documented as having separate jobs: **anti-deadzone recovers the destination's
+  dead low end, sensitivity decides how soon full-stick saturation arrives.**
+
+#### Example tuning — game-specific hardware evidence, NOT a default
+
+Tested combination that felt substantially better than stock in Splatoon:
+
+| Setting | Value |
+|---|---|
+| `sensitivityx` / `sensitivityy` | 768 |
+| `antideadzone` | 25 |
+| `recenter` | 120 (unchanged) |
+| Splatoon's own right-stick sensitivity | +5 |
+
+This is one game on one mouse at one DPI. **Firmware defaults deliberately remain `sensitivity 512`
+and `antideadzone 0`**, which reproduce the validated linear response exactly; anti-deadzone above a
+destination's real deadzone costs a minimum turn rate on the smallest movement and a small creep
+through the release tail, so the smallest effective value is still the rule.
 
 Remaining checklist items, exercised in host tests but not individually re-confirmed on hardware in
 this session:

@@ -628,8 +628,8 @@ bool ns2_kbm_runtime_submit_keyboard(const input_event_t *event,
     note_battery(event);
     ns2_kbm_state_set_keys(&s_state, usage_bitmap);
     s_roles.keyboard_reports++;
-    // Keep the recenter clock moving even on a keyboard-only report so a stale
-    // mouse deflection cannot be frozen by keyboard traffic.
+    // Keep the translator clock moving even on a keyboard-only report so a
+    // stale mouse deflection cannot be frozen by keyboard traffic.
     ns2_kbm_state_service(&s_state, &s_active.mouse, platform_time_ms());
     publish_locked();
     return true;
@@ -714,7 +714,10 @@ void ns2_kbm_runtime_service(void) {
 
     if (ns2_kbm_runtime_mode() != NS2_KBM_MODE_KEYBOARD_MOUSE) return;
     if (!s_active_valid || !s_state.mouse_present) return;
-    if (s_state.stick_x == 0 && s_state.stick_y == 0) return;
+    // Ticking is driven by the translator still owning motion state, not by the
+    // deflection alone: a velocity estimate below one stick unit still has to be
+    // advanced so the inactivity deadline lands and the gesture ends exactly.
+    if (!ns2_kbm_state_mouse_motion_pending(&s_state)) return;
     if (output_supports_native_mouse()) return;  // no translated stick to recenter
 
     ns2_kbm_state_service(&s_state, &s_active.mouse, platform_time_ms());

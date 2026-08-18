@@ -148,9 +148,33 @@ Keyboard + Mouse profile back into the Keyboard profile when the override pinned
   source set every publish, which is what makes duplicate bindings safe and makes a stuck
   destination impossible. Opposing digital directions neutralize.
 - **Mouse movement** feeds the existing Joy-Con 2 native pointer where the personality has one, and
-  otherwise translates to the right stick with a constant-rate recenter driven by the existing 3 ms
-  core-1 tick, so it can never latch off-centre. Only the translator is configurable; the validated
-  native wire path is not.
+  otherwise translates to the right stick from a **velocity estimate** — deflection tracks how fast
+  the mouse is currently moving, so continuous movement holds a continuous level — with an
+  inactivity deadline driven by the existing 3 ms core-1 tick, so it can never latch off-centre. The
+  original constant-friction accumulator is disproven and documented as such in
+  [`docs/bluetooth/keyboard-mouse-input.md`](docs/bluetooth/keyboard-mouse-input.md): it imposed a
+  hidden 8.53 counts/ms threshold and emitted pulses below it. Only the translator is configurable;
+  the validated native wire path is not. **Hardware validated 2026-08-18 in Splatoon**: continuous
+  mouse motion holds a continuous stick level and the pulse defect is gone. No mouse-to-stick blocker
+  remains.
+- **Mouse amplitude at the low end** is compensated by an optional radial `antideadzone` (0..50 %,
+  default **0** = the validated linear response). A linear velocity map loses the slowest N % of the
+  speed range to a game's N % stick deadzone *at every sensitivity*, so sensitivity alone cannot fix
+  it. Applied to a resolved output copy only — the velocity estimator never sees it. Radial rather
+  than per-axis because independent floors rotate small vectors; magnitude is carried in sixteenths
+  of a stick unit, without which a tiny diagonal overshot its configured floor by up to 41 %.
+  Hardware validated: too little compensation reproduced the invisible-slow-sweep failure, and
+  raising it restored slow camera movement.
+- **The two mouse knobs have separate jobs.** `antideadzone` recovers the destination's dead low end;
+  `sensitivity` sets the velocity-to-stick gain and therefore how soon full-stick saturation arrives
+  (full stick at 8.53 / 5.69 / 4.27 counts/ms for 512 / 768 / 1024). Once the translated stick reads
+  full deflection the destination owns the maximum turn rate, which is why realistic fast flicks
+  cannot be made to "snap" harder from this side.
+- **Live tuning without a management client**: `kbm mouse [field] [value]` and `save` on the UART
+  diagnostic channel, sharing one parser/formatter with the management surface. Settings live-apply
+  in RAM and persist only on an explicit `save`. Splatoon-tested example tuning (sensitivity 768,
+  anti-deadzone 25, in-game right-stick +5) is recorded in the KB/M document as **game-specific
+  evidence, not a default** — firmware defaults remain sensitivity 512 and anti-deadzone 0.
 - **Pairing never disconnects a KB/M role.** Historical "opening pairing replaces the connected
   device" semantics apply to a standalone controller only. Replacing a KB/M role means powering that
   device off; the BOOTSEL gesture cannot say which role is meant.

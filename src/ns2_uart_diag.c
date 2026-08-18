@@ -20,6 +20,7 @@
 #include "ns2_kbm.h"
 #include "ns2_kbm_runtime.h"
 #include "ns2_kbm_status.h"
+#include "config.h"  // config_request_save (the shared deferred settings write)
 #include "bt/bthid/bthid.h"                                  // live device table (btdev)
 #include "bt/bthid/devices/generic/bthid_gamepad.h"           // generic-fallback identity
 #include "bt/bthid/devices/generic/bthid_keyboard.h"          // structural keyboard test
@@ -712,8 +713,12 @@ static void queue_pcm_record(uint16_t offset) {
     queue_text(pcm_format_response);
 }
 
-// Parse an even-length hex string into bytes. Local to the diagnostic channel so
-// it does not depend on config.c (which is only linked in config mode).
+// Parse an even-length hex string into bytes. Local to the diagnostic channel
+// rather than shared with config.c's parser: this channel deliberately reaches
+// for subsystem APIs, not for the config command surface. (config.c itself is
+// in every image -- CMakeLists globs src/*.c -- and this file is the optional
+// one, guarded by NS2_UART_DIAG, so the one dependency it does take,
+// config_request_save(), cannot break a -NoUartDiag build.)
 static void queue_amiibo_result(virtual_amiibo_result_t result)
 {
     if (result == VIRTUAL_AMIIBO_OK) {
@@ -1886,6 +1891,32 @@ static void handle_command(void) {
         (void)ns2_kbm_status_format(&kbm, trace_format_response,
                                     sizeof(trace_format_response));
         queue_text(trace_format_response);
+    } else if (strcmp(rx_line, "kbm mouse") == 0) {
+        // Mouse-translation settings, rendered by the same formatter the
+        // management surface uses. This channel deliberately owns no copy of
+        // the schema, the field set, or the accepted values.
+        ns2_kbm_mouse_config_t mouse;
+        ns2_kbm_runtime_get_mouse(&mouse);
+        (void)ns2_kbm_mouse_format(&mouse, trace_format_response,
+                                   sizeof(trace_format_response));
+        queue_text(trace_format_response);
+    } else if (strncmp(rx_line, "kbm mouse ", 10) == 0) {
+        // Apply to a copy, then store: ns2_kbm_runtime_set_mouse() is what
+        // validates the range, and it REJECTS rather than clamping, so a bad
+        // value is reported instead of silently becoming a different one. The
+        // new value applies live on the next mouse report and stays in RAM
+        // until an explicit `save`.
+        ns2_kbm_mouse_config_t mouse;
+        ns2_kbm_runtime_get_mouse(&mouse);
+        if (!ns2_kbm_mouse_command_apply(&mouse, rx_line + 10) ||
+            !ns2_kbm_runtime_set_mouse(&mouse)) {
+            queue_text("{\"kbm\":\"error\",\"reason\":"
+                       "\"mouse_field_or_value_out_of_range\"}");
+        } else {
+            (void)ns2_kbm_mouse_format(&mouse, trace_format_response,
+                                       sizeof(trace_format_response));
+            queue_text(trace_format_response);
+        }
     } else if (strncmp(rx_line, "kbm mode ", 9) == 0) {
         ns2_kbm_mode_t mode;
         if (!ns2_kbm_mode_from_name(rx_line + 9, &mode) ||
@@ -2252,6 +2283,14 @@ static void handle_command(void) {
     } else if (strcmp(rx_line, "reenumerate") == 0) {
         reenumerate_requested = true;
         queue_text("{\"ok\":true,\"reenumerate\":true}");
+    } else if (strcmp(rx_line, "save") == 0) {
+        // Arms the SAME deferred write the `save` command arms on every other
+        // surface; core1's control tick performs it within ~30 ms. Acked
+        // immediately rather than waited on, matching the in-band management
+        // path -- the flash erase parks core0 and must not be blocked on here.
+        // Persists the complete settings record, not just KB/M.
+        config_request_save();
+        queue_text("{\"ok\":true,\"save\":\"queued\"}");
     } else if (strcmp(rx_line, "help") == 0) {
         queue_text("{\"commands\":[\"ping\",\"fwreads\",\"status\",\"clear\","
                    "\"profile\",\"profile default\","
@@ -2276,9 +2315,12 @@ static void handle_command(void) {
                    "\"button y\","
                    "\"motionauto\",\"motionusb\",\"ds5motion status|on|off|frame body|world|carrier switch2|dscale|legacy|map SX SY SZ|probe rate AXIS VALUE|probe off|pdu40 on|off|status|accel live|half|zero\",\"input status\",\"input sources\",\"input active ID|none\",\"audio status|clear|headset\",\"ds5codec status|lock on|lock off\","
                    "\"pro2audio on|off|status|live on|live off|complexity 0-10|analysis on|analysis off|replay|replay stop\","
-                   "\"kbm status\",\"kbm mode auto|controller|keyboard|kbmouse\",\"btdev\","
+                   "\"kbm status\",\"kbm mode auto|controller|keyboard|kbmouse\","
+                   "\"kbm mouse\",\"kbm mouse sensitivity|sensitivityx|"
+                   "sensitivityy|recenter|invertx|inverty|antideadzone "
+                   "<value>\",\"btdev\","
                    "\"btreconnect\",\"btbonds\",\"btfresh\","
-                   "\"reenumerate\",\"help\"]}");
+                   "\"reenumerate\",\"save\",\"help\"]}");
     } else if (rx_length != 0) {
         queue_text("{\"error\":\"unknown command\"}");
     }

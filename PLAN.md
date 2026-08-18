@@ -52,6 +52,12 @@ composite logical-source model, structural HID classification, the remapping-cap
 foundation with canonical defaults and sparse user overrides, persistence with schema migration, the
 management and UART surface, diagnostics, and host coverage.
 
+The translated relative-mouse path is also complete and hardware validated (2026-08-18, Splatoon):
+mouse velocity drives a held right-stick level, an optional radial anti-deadzone recovers the
+destination's dead low end, and both are tunable live over UART with an explicit `save`. Native
+Joy-Con 2 pointer output remains a separate, untouched path. Nothing in the mouse-to-stick area is
+outstanding.
+
 Reference: [`docs/bluetooth/keyboard-mouse-input.md`](docs/bluetooth/keyboard-mouse-input.md).
 Current state and the confirmed reconnect/discovery architecture are recorded in
 [`STATUS.md`](STATUS.md).

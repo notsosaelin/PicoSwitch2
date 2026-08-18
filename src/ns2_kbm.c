@@ -226,6 +226,8 @@ static void mouse_defaults(ns2_kbm_mouse_config_t *mouse) {
     mouse->recenter_ms = NS2_KBM_MOUSE_RECENTER_DEFAULT_MS;
     mouse->invert_x = 0;
     mouse->invert_y = 0;
+    mouse->anti_deadzone = (uint8_t)NS2_KBM_MOUSE_ADZ_DEFAULT;
+    mouse->reserved = 0;
 }
 
 void ns2_kbm_config_defaults(ns2_kbm_config_t *config) {
@@ -316,6 +318,14 @@ bool ns2_kbm_config_sanitize(ns2_kbm_config_t *config) {
         clean = false;
     if (config->mouse.invert_x > 1u) { config->mouse.invert_x = 0; clean = false; }
     if (config->mouse.invert_y > 1u) { config->mouse.invert_y = 0; clean = false; }
+    // Fails closed to OFF, not to a clamped value: an unusable anti-deadzone
+    // must restore the validated linear response rather than apply some
+    // arbitrary compensation the user never chose.
+    if (config->mouse.anti_deadzone > NS2_KBM_MOUSE_ADZ_MAX) {
+        config->mouse.anti_deadzone = (uint8_t)NS2_KBM_MOUSE_ADZ_DEFAULT;
+        clean = false;
+    }
+    config->mouse.reserved = 0;
 
     return clean;
 }
@@ -451,10 +461,13 @@ void ns2_kbm_state_clear_mouse(ns2_kbm_state_t *state) {
     state->mouse_delta_x = 0;
     state->mouse_delta_y = 0;
     state->mouse_delta_wheel = 0;
+    state->motion_x = 0;
+    state->motion_y = 0;
     state->stick_x = 0;
     state->stick_y = 0;
-    state->decay_clock_valid = 0;
-    state->last_decay_ms = 0;
+    state->motion_clock_valid = 0;
+    state->motion_clock_ms = 0;
+    state->last_motion_ms = 0;
 }
 
 void ns2_kbm_state_set_keys(ns2_kbm_state_t *state, const uint8_t *bitmap) {
@@ -482,32 +495,163 @@ static int8_t clamp_i8(int32_t value) {
     return (int8_t)clamp_i32(value, -127, 127);
 }
 
-// Largest deflection the mouse translator may accumulate on one axis. The
+// Largest deflection the mouse translator may produce on one axis. The
 // 12-bit centre is not the midpoint of the range, so the positive side clamps
 // one count short of the limit; ns2_seam.c's ns2_to12() handles the same
 // asymmetry for analog sources.
 #define KBM_STICK_LIMIT 2048
 
-// Constant-rate recenter: `recenter_ms` is the time a FULL deflection takes to
-// return to neutral, so a smaller deflection returns proportionally sooner.
+// ---------------------------------------------------------------------------
+// Mouse-to-stick translation
+// ---------------------------------------------------------------------------
+// A relative mouse is a VELOCITY device and an analog stick is a POSITION
+// device, so the translator's whole job is turning "how fast is the mouse
+// moving right now" into "how far is the stick being held".
 //
-// The alternative -- decaying by a fraction of the current magnitude -- is an
-// exponential that never actually reaches zero, which is the wrong shape for a
-// setting whose whole purpose is guaranteeing the emulated stick comes back to
-// centre. Constant rate also makes deflection track mouse speed rather than
-// mouse history, which is what makes it feel like a stick.
-static int32_t recenter_axis(int32_t value, uint32_t elapsed_ms,
-                             uint32_t recenter_ms) {
-    if (value == 0) return 0;
-    int32_t magnitude = value < 0 ? -value : value;
-    int32_t step = (int32_t)(((uint32_t)KBM_STICK_LIMIT * elapsed_ms) / recenter_ms);
-    // Without this floor a very long recenter time with a short tick could
-    // decay by zero forever, which is exactly the "stick stuck off centre"
-    // failure this model exists to prevent.
-    if (step == 0) step = 1;
-    magnitude -= step;
-    if (magnitude < 0) magnitude = 0;
-    return value < 0 ? -magnitude : magnitude;
+//   deflection = mouse_counts_per_ms * (sensitivity / 256) * recenter_ms
+//
+// Continuous movement therefore holds a continuous deflection: the level is a
+// function of current SPEED, not of accumulated distance, so it does not have
+// to be re-earned on every report.
+//
+// DISPROVEN PREDECESSOR -- do not reintroduce. This was originally a leaky
+// position accumulator: each report added `delta * sensitivity` to the
+// deflection and a constant-rate friction subtracted KBM_STICK_LIMIT /
+// recenter_ms per millisecond. That is `stick += delta; stick -= friction`,
+// which makes deflection depend on whether the mouse can OUTRUN the friction,
+// and so it silently imposed a minimum speed. Measured on the shipped defaults
+// (sensitivity 512 = 2 units/count, recenter 120 ms = 17.07 units/ms of decay):
+// break-even was 8.53 counts/ms (~8533 counts/s). Below it the stick sat at
+// exact centre 50-80% of the time and never exceeded ~2% deflection -- the
+// console saw a train of pulses, not a held stick (measured trace at 20 counts
+// per 8 ms: 40 40 40 0 0 0 0 0 40 23 23 23 0 0 0 0 ...). Above it the stick
+// slammed to ~full scale. That cliff is what made stick-camera games feel like
+// "move, brief turn, stop, move, brief turn, stop". Slowing the friction down
+// only trades the pulsing for post-motion coasting; the model itself was wrong.
+//
+// `motion_*` is that velocity estimate, held as a first-order low pass over
+// SCALED COUNTS: each report adds `delta * sensitivity` (Q8.8, undivided -- the
+// 1/256 is applied once at the output, so sub-unit movement at low sensitivity
+// accumulates instead of being truncated away report by report), and the value
+// leaks with time constant NS2_KBM_MOUSE_VELOCITY_MS. Under sustained movement
+// at rate R counts/ms it settles at R * sensitivity * NS2_KBM_MOUSE_VELOCITY_MS,
+// which is why the output scaling below divides that constant back out.
+
+// Largest velocity estimate worth holding: the one that already maps to full
+// deflection. Clamping HERE and not only at the output is what prevents wind-up
+// -- without it a fast flick would leave an estimate far above full scale that
+// kept the stick pinned after the mouse stopped, which is exactly the
+// post-motion camera drift this translator must never produce.
+static int32_t motion_limit(uint32_t recenter_ms) {
+    // Rounded UP, so that a clamped estimate maps to exactly full scale rather
+    // than one unit short of it after the output division truncates.
+    uint32_t scale = (uint32_t)KBM_STICK_LIMIT * NS2_KBM_MOUSE_VELOCITY_MS * 256u;
+    return (int32_t)((scale + recenter_ms - 1u) / recenter_ms);
+}
+
+// Deflection for a velocity estimate. Integer division truncates toward zero,
+// so the two directions are treated identically and neither gains a bias.
+static int32_t motion_to_stick(int32_t motion, uint32_t recenter_ms) {
+    // Re-clamp against the CURRENT reference interval before scaling. The
+    // estimate is already bounded when it is stored, but `recenter_ms` is live
+    // configuration: raising it mid-gesture would otherwise scale an estimate
+    // bounded for the old, smaller interval and overflow the product.
+    int32_t limit = motion_limit(recenter_ms);
+    motion = clamp_i32(motion, -limit, limit);
+    // So the product cannot exceed KBM_STICK_LIMIT *
+    // NS2_KBM_MOUSE_VELOCITY_MS * 256 (~21e6) plus one interval's rounding,
+    // whatever recenter_ms is -- well inside int32.
+    int32_t stick = (motion * (int32_t)recenter_ms) /
+                    (int32_t)(NS2_KBM_MOUSE_VELOCITY_MS * 256u);
+    return clamp_i32(stick, -KBM_STICK_LIMIT, KBM_STICK_LIMIT);
+}
+
+// One first-order decay step over `elapsed_ms`, as tau / (tau + elapsed).
+//
+// That is the exponential to first order at the 3 ms service tick this actually
+// runs on (0.930 vs 0.928 at tau = 40 ms) while staying monotone and strictly
+// positive for any gap length, so an unusually long interval between two
+// reports of one continuous gesture merely decays the level further instead of
+// dropping it to centre. Integer truncation brings small values to exactly zero
+// on its own; exact centre is guaranteed by the inactivity deadline regardless.
+static int32_t motion_decay(int32_t motion, uint32_t elapsed_ms) {
+    if (motion == 0) return 0;
+    int32_t magnitude = motion < 0 ? -motion : motion;
+    magnitude = (int32_t)(((int64_t)magnitude * NS2_KBM_MOUSE_VELOCITY_MS) /
+                          (int64_t)(NS2_KBM_MOUSE_VELOCITY_MS + elapsed_ms));
+    return motion < 0 ? -magnitude : magnitude;
+}
+
+// ---------------------------------------------------------------------------
+// Radial anti-deadzone (output response, NOT part of the temporal model)
+// ---------------------------------------------------------------------------
+// Exact floor(sqrt(value)). Integer because everything else on this path is,
+// and because the result feeds a ratio that must be reproducible on the host
+// test as well as on the MCU. Runs at most once per publish (~350/s).
+static uint32_t isqrt_u32(uint32_t value) {
+    uint32_t result = 0;
+    uint32_t bit = 1u << 30;
+    while (bit > value) bit >>= 2;
+    while (bit != 0u) {
+        if (value >= result + bit) {
+            value -= result + bit;
+            result = (result >> 1) + bit;
+        } else {
+            result >>= 1;
+        }
+        bit >>= 2;
+    }
+    return result;
+}
+
+// Fixed-point resolution of the radial magnitude, in sixteenths of a stick unit.
+//
+// The magnitude is the DIVISOR in the rescale below, so truncating it to a whole
+// stick unit is not a rounding detail -- it is a systematic overshoot of the
+// configured floor at every angle whose true magnitude is not an integer, and it
+// is worst exactly where the compensation matters most. Measured against the
+// whole-unit version: |(1,1)| is 1.414 but floored to 1, inflating the ratio by
+// 41%, so a configured 15% radial floor came out as 21.2% at 45 degrees (and 50%
+// came out as 70.7%) while a cardinal vector got its 15% exactly. Direction was
+// preserved throughout -- the bug was purely magnitude.
+//
+// Squaring in a sixteenths domain removes it: the largest possible input is
+// 2 * 2048^2 * 16^2 = 2^31, which is the most precision available while the
+// intermediate still fits a uint32, so this stays one 32-bit integer sqrt.
+#define KBM_ADZ_SCALE 16
+
+void ns2_kbm_mouse_anti_deadzone(int32_t *x, int32_t *y, uint8_t percent) {
+    if (!x || !y) return;
+    // Exact zero is the whole safety property: no configuration may turn "the
+    // user is not moving the mouse" into stick deflection.
+    if (percent == 0u || (*x == 0 && *y == 0)) return;
+    if (percent > NS2_KBM_MOUSE_ADZ_MAX) percent = (uint8_t)NS2_KBM_MOUSE_ADZ_MAX;
+
+    // Bounded by construction: each axis is clamped to KBM_STICK_LIMIT, so the
+    // sum of squares cannot exceed 2 * 2048^2 = 2^23, and the scaled square
+    // cannot exceed 2^31.
+    uint32_t squared = (uint32_t)(*x * *x) + (uint32_t)(*y * *y);
+    uint32_t magnitude =
+        isqrt_u32(squared * (uint32_t)(KBM_ADZ_SCALE * KBM_ADZ_SCALE));
+    if (magnitude == 0u) return;
+    // A vector already at or past full scale (the diagonal corners reach
+    // 1.41x) is left alone. Anti-deadzone may only ever RAISE a deflection;
+    // rescaling here would quietly cut the top of the range instead.
+    if (magnitude >= (uint32_t)KBM_STICK_LIMIT * KBM_ADZ_SCALE) return;
+
+    int32_t floor_units =
+        (int32_t)(((uint32_t)KBM_STICK_LIMIT * percent) / 100u);
+    // magnitude is in sixteenths, so the linear term divides by the scaled
+    // limit. Bounded by 32768 * 2048 = 2^26.
+    int32_t mapped =
+        floor_units +
+        (int32_t)((magnitude * (uint32_t)(KBM_STICK_LIMIT - floor_units)) /
+                  ((uint32_t)KBM_STICK_LIMIT * KBM_ADZ_SCALE));
+    // |axis| < 2048 and mapped <= 2048, so the product is under 2^22 and the
+    // scaled numerator under 2^26; no axis can leave the clamped range because
+    // mapped never exceeds KBM_STICK_LIMIT.
+    *x = (*x * mapped * KBM_ADZ_SCALE) / (int32_t)magnitude;
+    *y = (*y * mapped * KBM_ADZ_SCALE) / (int32_t)magnitude;
 }
 
 static uint16_t mouse_recenter_ms(const ns2_kbm_mouse_config_t *mouse) {
@@ -523,28 +667,48 @@ static uint16_t mouse_sensitivity(uint16_t value) {
     return value;
 }
 
+bool ns2_kbm_state_mouse_motion_pending(const ns2_kbm_state_t *state) {
+    if (!state) return false;
+    return state->motion_x != 0 || state->motion_y != 0 ||
+           state->stick_x != 0 || state->stick_y != 0;
+}
+
 void ns2_kbm_state_service(ns2_kbm_state_t *state,
                            const ns2_kbm_mouse_config_t *mouse,
                            uint32_t now_ms) {
     if (!state) return;
-    if (!state->decay_clock_valid) {
-        state->decay_clock_valid = 1;
-        state->last_decay_ms = now_ms;
+    if (!state->motion_clock_valid) {
+        state->motion_clock_valid = 1;
+        state->motion_clock_ms = now_ms;
+        state->last_motion_ms = now_ms;
         return;
     }
-    uint32_t elapsed = now_ms - state->last_decay_ms;  // wrap-safe
+    uint32_t elapsed = now_ms - state->motion_clock_ms;  // wrap-safe
     if (elapsed == 0u) return;
-    state->last_decay_ms = now_ms;
-    if (state->stick_x == 0 && state->stick_y == 0) return;
+    state->motion_clock_ms = now_ms;
 
-    uint32_t recenter = mouse_recenter_ms(mouse);
-    if (elapsed >= recenter) {
+    // Gesture over. The deadline is deliberately separate from the decay: the
+    // decay shapes how the camera slows down, this guarantees it actually stops
+    // at EXACT centre rather than asymptotically near it.
+    if ((uint32_t)(now_ms - state->last_motion_ms) >= NS2_KBM_MOUSE_IDLE_MS) {
+        state->motion_x = 0;
+        state->motion_y = 0;
         state->stick_x = 0;
         state->stick_y = 0;
         return;
     }
-    state->stick_x = recenter_axis(state->stick_x, elapsed, recenter);
-    state->stick_y = recenter_axis(state->stick_y, elapsed, recenter);
+    if (state->motion_x == 0 && state->motion_y == 0) return;
+
+    uint32_t recenter = mouse_recenter_ms(mouse);
+    int32_t limit = motion_limit(recenter);
+    // Clamping on the way through absorbs a live reference-interval change
+    // instead of carrying an estimate bounded for the previous one.
+    state->motion_x =
+        clamp_i32(motion_decay(state->motion_x, elapsed), -limit, limit);
+    state->motion_y =
+        clamp_i32(motion_decay(state->motion_y, elapsed), -limit, limit);
+    state->stick_x = motion_to_stick(state->motion_x, recenter);
+    state->stick_y = motion_to_stick(state->motion_y, recenter);
 }
 
 void ns2_kbm_state_mouse_report(ns2_kbm_state_t *state, uint16_t buttons,
@@ -553,8 +717,10 @@ void ns2_kbm_state_mouse_report(ns2_kbm_state_t *state, uint16_t buttons,
                                 const ns2_kbm_mouse_config_t *mouse,
                                 uint32_t now_ms) {
     if (!state) return;
-    // Recenter over the interval that just elapsed BEFORE folding in this
-    // report's movement, so a fast report rate cannot outrun the decay.
+    // Decay over the interval that just elapsed BEFORE folding in this report,
+    // so the estimate is a function of elapsed time and never of report rate: a
+    // 1000 Hz mouse and a 125 Hz mouse moving at the same speed settle on the
+    // same deflection.
     ns2_kbm_state_service(state, mouse, now_ms);
     state->mouse_present = 1;
     state->mouse_buttons =
@@ -564,18 +730,30 @@ void ns2_kbm_state_mouse_report(ns2_kbm_state_t *state, uint16_t buttons,
     state->mouse_delta_wheel =
         clamp_i8((int32_t)state->mouse_delta_wheel + delta_wheel);
 
-    int32_t step_x = ((int32_t)delta_x * mouse_sensitivity(
-                          mouse ? mouse->sensitivity_x
-                                : NS2_KBM_MOUSE_SENS_DEFAULT)) / 256;
-    int32_t step_y = ((int32_t)delta_y * mouse_sensitivity(
-                          mouse ? mouse->sensitivity_y
-                                : NS2_KBM_MOUSE_SENS_DEFAULT)) / 256;
+    // Scaled counts, NOT stick units: the Q8.8 sensitivity is applied whole and
+    // divided out at the output, so a slow mouse at low sensitivity contributes
+    // a fraction of a stick unit per report instead of truncating to nothing.
+    int32_t step_x = (int32_t)delta_x * mouse_sensitivity(
+                         mouse ? mouse->sensitivity_x
+                               : NS2_KBM_MOUSE_SENS_DEFAULT);
+    int32_t step_y = (int32_t)delta_y * mouse_sensitivity(
+                         mouse ? mouse->sensitivity_y
+                               : NS2_KBM_MOUSE_SENS_DEFAULT);
     if (mouse && mouse->invert_x) step_x = -step_x;
     if (mouse && mouse->invert_y) step_y = -step_y;
-    state->stick_x = clamp_i32(state->stick_x + step_x,
-                               -KBM_STICK_LIMIT, KBM_STICK_LIMIT);
-    state->stick_y = clamp_i32(state->stick_y + step_y,
-                               -KBM_STICK_LIMIT, KBM_STICK_LIMIT);
+
+    uint32_t recenter = mouse_recenter_ms(mouse);
+    int32_t limit = motion_limit(recenter);
+    state->motion_x = clamp_i32(state->motion_x + step_x, -limit, limit);
+    state->motion_y = clamp_i32(state->motion_y + step_y, -limit, limit);
+    state->stick_x = motion_to_stick(state->motion_x, recenter);
+    state->stick_y = motion_to_stick(state->motion_y, recenter);
+
+    // Only real movement extends the gesture. A button-only or empty report
+    // must not keep a stale deflection alive, and equally must not end a
+    // gesture that is merely between reports -- which is why the inactivity
+    // deadline is a time bound and not "this report had no movement".
+    if (delta_x != 0 || delta_y != 0) state->last_motion_ms = now_ms;
 }
 
 // ---------------------------------------------------------------------------
@@ -688,10 +866,20 @@ void ns2_kbm_resolve(ns2_kbm_state_t *state, const ns2_kbm_config_t *config,
             // No native pointer: translate movement to the right stick. A
             // digital right-stick binding that is actually held wins, so the
             // two never fight over the same axis.
+            //
+            // Anti-deadzone is applied HERE, on a copy, and nowhere else. It is
+            // compensation for the destination -- the same kind of concern as
+            // the Y negation below -- so the velocity estimate in state->stick_*
+            // stays a pure function of mouse speed and every temporal property
+            // validated on hardware is untouched by it.
+            int32_t stick_x = state->stick_x;
+            int32_t stick_y = state->stick_y;
+            ns2_kbm_mouse_anti_deadzone(&stick_x, &stick_y,
+                                        config->mouse.anti_deadzone);
             out->right_x = (uint16_t)clamp_i32(
-                (int32_t)SWITCH_STICK_MID + state->stick_x, 0, SWITCH_STICK_MAX);
+                (int32_t)SWITCH_STICK_MID + stick_x, 0, SWITCH_STICK_MAX);
             out->right_y = (uint16_t)clamp_i32(
-                (int32_t)SWITCH_STICK_MID - state->stick_y, 0, SWITCH_STICK_MAX);
+                (int32_t)SWITCH_STICK_MID - stick_y, 0, SWITCH_STICK_MAX);
         }
     }
 

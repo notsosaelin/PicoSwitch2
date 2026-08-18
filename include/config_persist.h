@@ -22,7 +22,7 @@
 #include "ns2_kbm.h"  // ns2_kbm_config_t
 
 #define CONFIG_PERSIST_MAGIC 0x50535731u  // 'PSW1'
-#define CONFIG_PERSIST_VERSION 11u
+#define CONFIG_PERSIST_VERSION 12u
 
 // Schema 10 (PicoSwitch2 v2.0.0 and earlier). Frozen: it describes bytes that
 // already exist on real adapters. Never edit it.
@@ -36,7 +36,44 @@ typedef struct {
     config_wake_identity_t wake_identity;
 } config_record_v10_t;
 
-// Schema 11 adds the Bluetooth Keyboard / Keyboard + Mouse configuration.
+// Schema 11's mouse-translation settings. Frozen: schema 12 appends
+// `anti_deadzone` to the live ns2_kbm_mouse_config_t, which RESIZES it, so the
+// v11 bytes on existing adapters can only be read through their own layout.
+// Never edit it.
+typedef struct {
+    uint16_t sensitivity_x;
+    uint16_t sensitivity_y;
+    uint16_t recenter_ms;
+    uint8_t invert_x;
+    uint8_t invert_y;
+} ns2_kbm_mouse_config_v11_t;
+
+// Schema 11's keyboard/mouse block. The profile table is shared with the live
+// type on purpose -- it did not change -- and config_persist.c static-asserts
+// that, so a future edit to the mapping tables cannot silently redefine what
+// v11 bytes mean. Never edit it.
+typedef struct {
+    uint8_t mode;
+    uint8_t reserved[3];
+    ns2_kbm_profile_overrides_t profiles[NS2_KBM_PROFILE_COUNT];
+    ns2_kbm_mouse_config_v11_t mouse;
+} ns2_kbm_config_v11_t;
+
+// Schema 11 (PicoSwitch2 v2.1.x). Added the Bluetooth Keyboard / Keyboard +
+// Mouse configuration. Frozen: it describes bytes that already exist on real
+// adapters. Never edit it.
+typedef struct {
+    uint32_t magic;
+    uint8_t version;
+    uint8_t body_color[3];
+    uint8_t joycon2_left_accent[3];
+    uint8_t joycon2_right_accent[3];
+    uint8_t wake_valid;
+    config_wake_identity_t wake_identity;
+    ns2_kbm_config_v11_t kbm;
+} config_record_v11_t;
+
+// Schema 12 adds the mouse-to-stick anti-deadzone (inside the KB/M block).
 typedef struct {
     uint32_t magic;
     uint8_t version;
@@ -45,7 +82,7 @@ typedef struct {
     uint8_t joycon2_right_accent[3]; // Joy-Con 2 R highlight/lightbar
     uint8_t wake_valid;
     config_wake_identity_t wake_identity;
-    ns2_kbm_config_t kbm;            // v11
+    ns2_kbm_config_t kbm;            // v11; mouse block extended in v12
 } config_record_t;
 
 typedef enum {
