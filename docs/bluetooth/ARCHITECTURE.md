@@ -80,7 +80,8 @@ link for disconnect.
 - a pending BLE connect keeps the pairing-window close deferred until that attempt resolves.
 
 Discovery is not authorization. Every connection/security path MUST independently enforce trust
-admission.
+admission. The transport-specific guarantees and compatibility limits are in
+[`SECURITY.md`](SECURITY.md).
 
 ## Connection identity and roles
 
@@ -93,6 +94,14 @@ The underlying LE database itself has no PicoSwitch2 role field. Consequently, i
 address/type but cannot label a disconnected entry as controller versus management. An unknown
 entry may cause policy to prefer scanning, but only the `JPLC` identity is eligible for direct
 reconnect and SM still controls cryptographic reuse.
+
+## Radio state recovery
+
+When HCI leaves `HCI_STATE_WORKING`, firmware retires all HID-ready source generations before it
+clears raw Classic/LE slots, GATT listeners, transient admission latches, pending reconnect work,
+management session state and wake ownership. Durable Classic/LE bonds and `JPLC` are preserved.
+This makes the next working-state transition a clean live-session reconstruction rather than a
+trust wipe, and prevents a stale slot from keeping the console-facing owner logically connected.
 
 ## Stable boundaries
 

@@ -30,6 +30,8 @@ Relevant JSON groups include:
 |---|---|
 | `scan_active`, `inquiry_active` | LE and Classic discovery mechanics |
 | `wake_adv` | temporary wake advertisement owns the radio |
+| `connections.classic_raw`, `connections.ble_raw` | allocated transport slots; not readiness |
+| `connections.classic_ready`, `connections.ble_ready` | HID/protocol-ready controller links |
 | `pairing.window_open` | explicit fresh-pair authority is open |
 | `pairing.close_deferred` | UI window expired while an LE connection was in flight |
 | `pairing.lockout` | post-wipe/install global admission lock |
@@ -38,10 +40,19 @@ Relevant JSON groups include:
 | `admission.reject_window` | fresh trust/security attempts rejected because no window was open |
 | `admission.reject_lockout` | attempts rejected by the stronger wipe/install lock |
 | `wipe_completions` | synchronous trust-store wipe sequences completed; disconnect events may follow |
-| `disc.*` | aggregate controller/HCI disconnect counts and last HCI reason |
+| `disc.*` | aggregate controller/HCI disconnects, state losses and last HCI reason |
+| `owner_led.reason`, `owner_led.on` | selected owner-LED policy reason and current output |
+| `owner_led.last_transition_ms` | wall-clock time of the last output transition |
+| `owner_led.timer_max_gap_ms` | largest observed gap between owner-LED timer service calls |
 
 Counters are monotonic for the boot and may count more than one defensive rejection in a single
 remote attempt. They explain policy activity; they are not a unique-peer count.
+
+The owner LED uses this fixed priority: mode acknowledgement, GameCube diagnostic, Config mode,
+wipe acknowledgement, pairing, controller ready, idle. “Connected” is driven only by a ready
+controller count, never by a raw ACL/LE slot. Every cadence uses elapsed milliseconds, so callback
+frequency cannot speed it up. Idle is one 90 ms pulse per 10 seconds; a solid LED means a controller
+is protocol-ready unless a higher-priority state is active.
 
 ## Distinguishing persistence from automatic re-pairing
 
@@ -72,6 +83,9 @@ Combine snapshots to distinguish:
 - management occupied or changed its own role (`cble.*`, management events);
 - discovery restart was suppressed (`suppress.*`);
 - trust creation was refused by policy (`admission.*`).
+
+If `disc.state_losses` increases, correlate it with ready-count retirement and HCI recovery. A raw
+slot without a ready count must not select the solid-connected LED state.
 
 ## Secret-handling policy
 

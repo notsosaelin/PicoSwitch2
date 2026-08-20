@@ -1,8 +1,7 @@
 # Bluetooth validation and invariant traceability
 
-Status: software gates passed on 2026-08-20 at lifecycle commits
-`3cb11ced279fb4280ce03f71954b35a4173c59b5` and
-`7ad47061727c17e40aa274d6307d7905b50feaa1`; physical lifecycle validation is pending.
+Status: software gates passed on 2026-08-20 through Bluetooth hardening commit
+`83bfc4139ca9d2d3f0524ab0bac3d6700c5f9047`; physical lifecycle validation is pending.
 
 ## Invariants
 
@@ -23,20 +22,27 @@ Status: software gates passed on 2026-08-20 at lifecycle commits
 | BT-INV-013 | Keyboard/mouse role loss preserves the survivor and permits controlled rejoin. |
 | BT-INV-014 | Ordinary diagnostics never expose Bluetooth secret key material. |
 | BT-INV-015 | Persistent BTstack mutation occurs only on the owning run-loop context. |
+| BT-INV-016 | A Classic replacement key is not durable until matching authentication succeeds. |
+| BT-INV-017 | An LE RPA may reach SM as a bounded reconnect candidate but never grants fresh trust. |
+| BT-INV-018 | Raw radio slots cannot assert controller-ready connection truth or the solid owner LED. |
+| BT-INV-019 | HCI state loss retires live source generations without deleting durable trust. |
 
 ## Automated evidence
 
 | Gate | Result | Coverage |
 |---|---:|---|
-| `pwsh -File tools/run_mgmt_tests.ps1` | 19/19 passed | lifecycle policy, sparse slot lookup, reconnect policy, management, KB/M and adjacent seams |
-| compiled `build/host-tests/test_*.exe` inventory | 75/75 passed | complete currently built host-test set |
+| `pwsh -File tools/run_mgmt_tests.ps1` | 21/21 passed | lifecycle policy, secret diagnostics, owner LED, sparse lookup, reconnect policy, management, KB/M and adjacent seams |
+| compiled `build/host-tests/test_*.exe` inventory | 76/76 passed | complete currently built host-test set |
+| `python tools/test_ns2_trace.py` | 5/5 passed | diagnostic trace parser regression |
 | `build.ps1 pico_w,pico2_w` | both passed | production RP2040 and RP2350 firmware |
 | install-reset marker verifier | both passed | marker present below `SIZE-6S` reserved persistence start |
 | `git diff --check` | passed for checkpoint | whitespace integrity |
 
-`test_ns2_bt_lifecycle` pins BT-INV-001/002/005/006 at the pure-policy layer, including a bond in
-slot 15 with only two active entries. Board builds prove the event wiring compiles against the
-pinned BTstack APIs. They do not prove RF timing or controller behavior.
+`test_ns2_bt_lifecycle` pins BT-INV-001/002/005/006/016/017 at the pure-policy layer, including a
+bond in slot 15 with only two active entries. `test_ns2_owner_led` pins BT-INV-018 and elapsed-time
+cadences. `test_bluetooth_secret_diagnostics.py` guards BT-INV-014 at the source surface. Board
+builds prove the event wiring compiles against the pinned BTstack APIs. They do not prove RF timing
+or controller behavior.
 
 ## Required physical matrix
 
@@ -120,3 +126,6 @@ until the powered-on, powered-off, reboot and UF2 cases above pass with pre-admi
 | Wake leaves discovery incoherent | High | bounded save/restore policy | combined hardware test |
 | KB/M lifecycle regresses | High | existing host suite | targeted role-loss regression |
 | Flash semantics misunderstood | High | exact six-sector contract and procedure | release-UF2 hardware test |
+| Classic replacement trust commits before authentication | Critical | deferred candidate plus matching auth-complete commit | Classic family hardware matrix |
+| RPA accidentally becomes fresh trust | Critical | reconnect-only RPA admission and final protocol gate | privacy-enabled LE hardware matrix |
+| Raw slot presents false connected LED | Medium | ready-count policy and deterministic timer test | passive/runtime observation |
