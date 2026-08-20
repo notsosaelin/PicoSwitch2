@@ -117,11 +117,16 @@ The Android backend:
 1. scans by service UUID or directly connects to a previously saved address;
 2. discovers the service and RX/TX characteristics;
 3. enables local notifications and writes the TX CCC;
-4. reports Connected only after the descriptor write succeeds;
+4. treats the descriptor write as carrier-ready but reports product Connected only after the
+   management identity probe verifies PicoSwitch2;
 5. serializes transactions until explicit or remote disconnect;
-6. closes GATT and clears characteristic/reply state on failure or disposal.
+6. retires the owned GATT generation by requesting disconnect, waiting up to 1.25 seconds for its
+   matching callback, then closing exactly once and rejecting late callbacks;
+7. gives connect statuses 133, connection timeout, and congestion at most one clean retry before one
+   service scan restricted to the saved relationship address.
 
-Portable `ManagementClient` starts only at step 4. Android permission, association, bond repair,
+Portable `ManagementClient` starts after carrier subscription in step 4 and performs the identity
+probe that promotes the session. Android permission, association, bond repair,
 and user-facing retry behavior remain app/backend responsibilities.
 
 ## Existing Config USB CDC path
