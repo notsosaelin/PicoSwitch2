@@ -53,6 +53,7 @@ class ProtocolConformanceTest {
             ),
             "mouseSensitivityX" to ManagementCommands.kbmMouse(KbmMouseField.SensitivityX, 512),
             "bodyColor" to ManagementCommands.color(ColorTarget.Body, RgbColor(1, 2, 3)),
+            "saveStatus" to ManagementCommands.SAVE_STATUS,
             "amiiboRead" to ManagementCommands.amiiboRead(32, 16),
         )
         fixtureRoot["builders"]!!.jsonArray.forEach { element ->
@@ -174,14 +175,23 @@ class ProtocolConformanceTest {
         assertTrue(amiibo.v3Loaded)
         assertEquals(42, amiibo.generation)
         val wakeVector = vector("wakeStatus")
-        assertEquals(WakeResult.Advertised, ManagementProtocol.wakeStatus(wakeVector.command, wakeVector.reply).result)
+        val wake = ManagementProtocol.wakeStatus(wakeVector.command, wakeVector.reply)
+        assertEquals(WakeResult.Advertised, wake.result)
+        assertEquals(1234, wake.lastAttemptMs)
     }
 
     @Test fun `queued save does not claim completed durability`() {
         val vector = vector("saveQueued")
         val acknowledgement = ManagementProtocol.acknowledgement(vector.command, vector.reply)
         assertTrue(acknowledgement.queued)
+        assertEquals(7L, acknowledgement.requested)
         assertFalse(acknowledgement.reenumerating)
+
+        val statusVector = vector("saveStatus")
+        val status = ManagementProtocol.persistenceStatus(statusVector.command, statusVector.reply)
+        assertTrue(status.pending)
+        assertEquals(7, status.requested)
+        assertEquals(6, status.completed)
     }
 
     @Test fun `firmware errors retain command code and message`() {
@@ -211,6 +221,34 @@ class ProtocolConformanceTest {
         }
         assertThrows(IllegalArgumentException::class.java) {
             ManagementCommands.kbmMap(KbmProfile.Keyboard, 33)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            ManagementCommands.bondsPage(-1)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            ManagementCommands.amiiboBegin(541, "12345678")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            ManagementCommands.amiiboBegin(540, "not-crc")
+        }
+        assertEquals("amiibo begin 540 A1B2C3D4", ManagementCommands.amiiboBegin(540, "a1b2c3d4"))
+    }
+
+    @Test fun `wrong JSON value and container types normalize to protocol errors`() {
+        val malformed = listOf<() -> Unit>(
+            { ManagementProtocol.firmware("info", """{"id":[],"version":"2.0"}""") },
+            { ManagementProtocol.personality("personality", """{"current":"pro2","available":{}}""") },
+            { ManagementProtocol.personality("personality", """{"current":"pro2","available":[2]}""") },
+            { ManagementProtocol.config("get", """{"body_color":"red","joycon2_left_accent":[0,0,0],"joycon2_right_accent":[0,0,0]}""") },
+            { ManagementProtocol.config("get", """{"body_color":["0",0,0],"joycon2_left_accent":[0,0,0],"joycon2_right_accent":[0,0,0]}""") },
+            { ManagementProtocol.isVersionedBondResponse("bonds list", """{"v":"2","bonds":[]}""") },
+            { ManagementProtocol.inputSources("input sources", """{"active":"0","pending":0,"explicit":false,"fresh":false,"transitions":0,"sources":[],"more":false}""") },
+            { ManagementProtocol.acknowledgement("save", """{"ok":"true"}""") },
+            { ManagementProtocol.acknowledgement("save", """{"error":[],"code":413}""") },
+            { ManagementProtocol.acknowledgement("save", """{"error":"bad","code":"413"}""") },
+        )
+        malformed.forEachIndexed { index, operation ->
+            assertThrows("malformed case $index", ManagementProtocolException::class.java) { operation() }
         }
     }
 

@@ -75,10 +75,13 @@ kbm status                  optional
 kbm mouse                   only if KB/M exists
 ```
 
-Treat `unknown command` or `command unavailable` as an unsupported optional family. Other errors
-are failures or unknown capability, not proof of unsupported firmware. Keep capability state
-explicit. On disconnect, clear the live snapshot, maps, and connection-scoped counters; retain local
-files/preferences and the platform relationship.
+Treat a typed firmware `unknown command` or explicit `unavailable` response as an unsupported
+optional family. A timeout, disconnect, invalidated channel, reply overflow, malformed/incomplete
+reply, pagination failure, or any other transaction failure MUST propagate and fail the refresh;
+it must not be converted to `CapabilityState.Unknown`. `AdapterCapabilities.kbm` reflects whether
+the KB/M status family was observed or explicitly unsupported. On disconnect, clear the live
+snapshot, maps, and connection-scoped counters; retain local files/preferences and the platform
+relationship.
 
 The Kotlin reference implements this as `ManagementClient.refreshAll` and returns
 `ManagementRefresh`.
@@ -116,12 +119,19 @@ controller-side USB re-enumeration. A Config CDC caller can lose its own transpo
 Settings changes are RAM-immediate unless their command says otherwise. Call `save` separately when
 the user requests persistence.
 
-Over BLE, `{"ok":true,"queued":true}` means the deferred flash operation was accepted. Report
-**save requested/queued**, not **saved to flash**, because firmware exposes no later general settings
-durability query. The Kotlin API returns `PersistenceState.Queued` versus `Accepted` so callers do
-not erase that distinction.
+Over BLE, `{"ok":true,"queued":true,"requested":N}` means the deferred flash operation was
+accepted. Report **save requested/queued**, not **saved to flash**, until `save status` reports a
+`completed` counter that has reached `N` in modulo-uint32 order. A later automatic save may make the
+status remain `pending:true` after `N` completed, so wait for the acknowledged identity rather than
+only for a naked pending flag.
 
-Virtual Amiibo uses its own `amiibo persist` flags and can be polled to a stronger state.
+`ManagementClient.save()` preserves queued/accepted state and the optional request identity.
+`saveAndAwait()` and `awaitPersistence()` provide bounded authoritative polling. If old firmware
+omits the identity or does not implement `save status`, requesting persistence remains compatible
+but durable completion cannot be claimed. The Config CDC path waits synchronously before its `save`
+reply, and now returns the same completed request identity.
+
+Virtual Amiibo keeps its separate `amiibo persist` flags and workflow.
 
 ## 8. Retrieve paged data safely
 

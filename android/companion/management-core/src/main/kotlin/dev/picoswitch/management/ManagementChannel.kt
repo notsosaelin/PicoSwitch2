@@ -34,5 +34,7 @@ class ManagementProtocolException(message: String, cause: Throwable? = null) :
 class ManagementPaginationException(message: String) : ManagementException(message)
 
 fun AdapterCommandException.isUnsupported(): Boolean =
-    adapterMessage.contains("unknown command", ignoreCase = true) ||
-        adapterMessage.contains("unavailable", ignoreCase = true)
+    adapterMessage.equals("unknown command", ignoreCase = true) ||
+        adapterMessage.equals("unavailable", ignoreCase = true) ||
+        adapterMessage.startsWith("unavailable in ", ignoreCase = true) ||
+        adapterMessage.equals("command unavailable over Bluetooth", ignoreCase = true)

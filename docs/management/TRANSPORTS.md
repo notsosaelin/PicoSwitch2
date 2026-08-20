@@ -102,7 +102,8 @@ coalesce before transmission; an already-transmitted request is never abandoned.
 The Android backend uses 15 seconds for scan and connect, and the channel default is 10 seconds per
 logical command. Firmware bond database operations have a one-second internal deadline and can
 return `{"error":"timeout"}`. Portable Amiibo persistence polling has a separate six-second
-workflow deadline.
+workflow deadline. General settings completion polling is also bounded to six seconds by the
+reference client and follows the request identity returned by `save`.
 
 Scan, GATT discovery, missing characteristics/CCCD, write status, disconnect, and platform timeout
 are backend failures. Firmware JSON errors are parsed above the carrier. On transaction timeout,
@@ -162,7 +163,8 @@ CDC maintenance path, and diagnostic UART overlap. No new physical transport was
 ## Evidence and tests
 
 Firmware host tests exercise access-control truth tables, allowlisting, fragmented RX, busy
-rejection, overlong recovery, response chunking, stale-session invalidation, and bond pagination.
+rejection, overlong recovery, response chunking, stale-session invalidation, bond pagination, and
+general-save request/completion ordering.
 Core JVM tests exercise serialization/cancellation. Android unit/architecture tests enforce core
 ownership and repository state invalidation. Android SDK callback behavior is build/lint-tested;
 physical BLE behavior was not revalidated during this pass.

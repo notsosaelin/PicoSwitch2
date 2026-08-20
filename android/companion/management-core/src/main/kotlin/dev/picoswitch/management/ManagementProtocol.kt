@@ -10,7 +10,6 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
 /** Logical newline/JSON contract implemented by firmware `src/config.c`. */
@@ -18,6 +17,7 @@ object ManagementProtocol {
     const val MAX_COMMAND_BYTES = 127
     const val AMIIBO_CHUNK_BYTES = 32
     const val BONDS_PROTOCOL_VERSION = 2
+    private const val UINT32_MAX = 0xFFFF_FFFFL
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -29,7 +29,7 @@ object ManagementProtocol {
         return commandBytes + '\n'.code.toByte()
     }
 
-    fun firmware(command: String, response: String): FirmwareInfo = objectOrThrow(command, response).let { value ->
+    fun firmware(command: String, response: String): FirmwareInfo = decode(command, response) { value ->
         FirmwareInfo(
             id = value.string("id"),
             product = value.string("product"),
@@ -39,7 +39,7 @@ object ManagementProtocol {
         ).also { requireShape(it.id.isNotBlank() && it.version.isNotBlank(), command) }
     }
 
-    fun controller(command: String, response: String): ControllerInfo = objectOrThrow(command, response).let { value ->
+    fun controller(command: String, response: String): ControllerInfo = decode(command, response) { value ->
         ControllerInfo(
             name = value.string("name", "No controller").ifBlank { "No controller" },
             vid = value.int("vid"),
@@ -50,17 +50,23 @@ object ManagementProtocol {
         )
     }
 
-    fun personality(command: String, response: String): PersonalityState = objectOrThrow(command, response).let { value ->
+    fun personality(command: String, response: String): PersonalityState = decode(command, response) { value ->
         PersonalityState(
             current = Personality.fromWire(value.string("current")),
-            available = value["available"]?.jsonArray?.map { Personality.fromWire(it.jsonPrimitive.content) }
+            available = value["available"]?.jsonArray?.map { element ->
+                val primitive = element as? JsonPrimitive
+                Personality.fromWire(
+                    primitive?.takeIf { it.isString }?.contentOrNull
+                        ?: throw IllegalArgumentException("'available' entries must be strings"),
+                )
+            }
                 ?: emptyList(),
         ).also {
             requireShape(it.current != Personality.Unknown && it.available.isNotEmpty(), command)
         }
     }
 
-    fun config(command: String, response: String): AdapterConfig = objectOrThrow(command, response).let { value ->
+    fun config(command: String, response: String): AdapterConfig = decode(command, response) { value ->
         requireShape(
             value.containsKey("body_color") && value.containsKey("joycon2_left_accent") &&
                 value.containsKey("joycon2_right_accent"),
@@ -68,18 +74,20 @@ object ManagementProtocol {
         )
 
         fun color(key: String): RgbColor {
-            val array = value[key]?.jsonArray ?: return RgbColor(0, 0, 0)
-            return RgbColor(
-                array.getOrNull(0)?.jsonPrimitive?.intOrNull ?: 0,
-                array.getOrNull(1)?.jsonPrimitive?.intOrNull ?: 0,
-                array.getOrNull(2)?.jsonPrimitive?.intOrNull ?: 0,
-            )
+            val array = value[key] as? JsonArray
+                ?: throw IllegalArgumentException("'$key' must be an RGB array")
+            require(array.size == 3) { "'$key' must contain three RGB components" }
+            val components = array.map { element ->
+                (element as? JsonPrimitive)?.takeUnless { it.isString }?.intOrNull
+                    ?: throw IllegalArgumentException("'$key' components must be integers")
+            }
+            return RgbColor(components[0], components[1], components[2])
         }
 
         AdapterConfig(color("body_color"), color("joycon2_left_accent"), color("joycon2_right_accent"))
     }
 
-    fun amiibo(command: String, response: String): AmiiboStatus = objectOrThrow(command, response).let { value ->
+    fun amiibo(command: String, response: String): AmiiboStatus = decode(command, response) { value ->
         requireShape(
             value.containsKey("loaded") && value.containsKey("v3loaded") && value.containsKey("upload"),
             command,
@@ -105,7 +113,7 @@ object ManagementProtocol {
         )
     }
 
-    fun wakeStatus(command: String, response: String): WakeStatus = objectOrThrow(command, response).let { value ->
+    fun wakeStatus(command: String, response: String): WakeStatus = decode(command, response) { value ->
         WakeStatus(
             result = when (value.string("result")) {
                 "pending" -> WakeResult.Pending
@@ -118,13 +126,33 @@ object ManagementProtocol {
             consoleAsleep = value.bool("consoleAsleep"),
             identityValid = value.bool("identityValid"),
             attempts = value.long("attempts"),
+            lastAttemptMs = value.long("lastAttemptMs"),
         )
     }
 
-    fun managementEnabled(command: String, response: String): Boolean? =
-        objectOrThrow(command, response)["enabled"]?.jsonPrimitive?.booleanOrNull
+    fun persistenceStatus(command: String, response: String): PersistenceStatus = decode(command, response) { value ->
+        requireShape(
+            value.containsKey("pending") && value.containsKey("requested") && value.containsKey("completed"),
+            command,
+        )
+        val requested = value.long("requested")
+        val completed = value.long("completed")
+        val pending = value.bool("pending")
+        requireShape(
+            requested in 0..UINT32_MAX && completed in 0..UINT32_MAX && pending == (requested != completed),
+            command,
+        )
+        PersistenceStatus(pending, requested, completed)
+    }
 
-    fun kbmStatus(command: String, response: String): KbmStatus = objectOrThrow(command, response).let { value ->
+    fun managementEnabled(command: String, response: String): Boolean? = decode(command, response) { value ->
+        value.primitive("enabled")?.let { primitive ->
+            primitive.takeUnless { it.isString }?.booleanOrNull
+                ?: throw IllegalArgumentException("'enabled' must be a boolean")
+        }
+    }
+
+    fun kbmStatus(command: String, response: String): KbmStatus = decode(command, response) { value ->
         val mode = KbmMode.fromWire(value.string("mode"))
         val override = KbmMode.fromWire(value.string("override"))
         val profile = KbmProfile.fromWire(value.string("profile"))
@@ -155,7 +183,7 @@ object ManagementProtocol {
         )
     }
 
-    fun kbmMapPage(command: String, response: String): KbmMapPage = objectOrThrow(command, response).let { value ->
+    fun kbmMapPage(command: String, response: String): KbmMapPage = decode(command, response) { value ->
         val profile = KbmProfile.fromWire(value.string("profile"))
         val entries = value["bindings"] as? JsonArray
         requireShape(profile != null && entries != null && value.containsKey("total") && value.containsKey("more"), command)
@@ -174,7 +202,7 @@ object ManagementProtocol {
         KbmMapPage(profile!!, page, pageSize, total, bindings, value.bool("more"))
     }
 
-    fun kbmMouse(command: String, response: String): KbmMouseConfig = objectOrThrow(command, response).let { value ->
+    fun kbmMouse(command: String, response: String): KbmMouseConfig = decode(command, response) { value ->
         requireShape(
             value.containsKey("sensitivityX") && value.containsKey("sensitivityY") &&
                 value.containsKey("sensitivityMin") && value.containsKey("sensitivityMax") &&
@@ -202,18 +230,14 @@ object ManagementProtocol {
         }
     }
 
-    fun inputSources(command: String, response: String): AdapterInputState = objectOrThrow(command, response).let { value ->
-        fun requiredLong(key: String): Long = value[key]?.jsonPrimitive?.longOrNull
-            ?: throw incomplete(command)
-        fun requiredBoolean(key: String): Boolean = value[key]?.jsonPrimitive?.booleanOrNull
-            ?: throw incomplete(command)
+    fun inputSources(command: String, response: String): AdapterInputState = decode(command, response) { value ->
         val sources = value["sources"]?.jsonArray?.map { element ->
             val source = element.jsonObject
-            val id = source["id"]?.jsonPrimitive?.longOrNull ?: throw incomplete(command)
-            val connection = source["conn"]?.jsonPrimitive?.intOrNull ?: throw incomplete(command)
-            val transport = source["transport"]?.jsonPrimitive?.intOrNull ?: throw incomplete(command)
-            val generation = source["generation"]?.jsonPrimitive?.longOrNull ?: throw incomplete(command)
-            val name = source["name"]?.jsonPrimitive?.contentOrNull ?: throw incomplete(command)
+            val id = source.requiredLong("id")
+            val connection = source.requiredInt("conn")
+            val transport = source.requiredInt("transport")
+            val generation = source.requiredLong("generation")
+            val name = source.string("name")
             requireShape(
                 id in 1..0xFFFF_FFFFL && connection in 0..255 && transport in 0..255 &&
                     generation in 0..0xFFFF_FFFFL,
@@ -221,9 +245,9 @@ object ManagementProtocol {
             )
             AdapterInputSource(id, connection, transport, generation, name.ifBlank { "Controller" })
         } ?: throw incomplete(command)
-        val active = requiredLong("active")
-        val pending = requiredLong("pending")
-        val transitions = requiredLong("transitions")
+        val active = value.requiredLong("active")
+        val pending = value.requiredLong("pending")
+        val transitions = value.requiredLong("transitions")
         requireShape(
             active in 0..0xFFFF_FFFFL && pending in 0..0xFFFF_FFFFL &&
                 transitions in 0..0xFFFF_FFFFL && sources.map { it.id }.distinct().size == sources.size,
@@ -232,17 +256,17 @@ object ManagementProtocol {
         AdapterInputState(
             activeId = active,
             pendingId = pending,
-            explicit = requiredBoolean("explicit"),
-            awaitingFresh = requiredBoolean("fresh"),
+            explicit = value.requiredBoolean("explicit"),
+            awaitingFresh = value.requiredBoolean("fresh"),
             transitions = transitions,
             sources = sources,
-            truncated = requiredBoolean("more"),
+            truncated = value.requiredBoolean("more"),
         )
     }
 
-    fun bondsPage(command: String, response: String): BondPage = objectOrThrow(command, response).let { value ->
-        requireShape(value["v"]?.jsonPrimitive?.intOrNull == BONDS_PROTOCOL_VERSION, command)
-        val total = value["total"]?.jsonPrimitive?.intOrNull ?: throw incomplete(command)
+    fun bondsPage(command: String, response: String): BondPage = decode(command, response) { value ->
+        requireShape(value.requiredInt("v") == BONDS_PROTOCOL_VERSION, command)
+        val total = value.requiredInt("total")
         val array = value["bonds"]?.jsonArray ?: throw incomplete(command)
         val nextElement = value["next"] ?: throw incomplete(command)
         val next: Int? = when (nextElement) {
@@ -254,30 +278,34 @@ object ManagementProtocol {
         val entries = array.mapIndexed { position, element ->
             val item = element.jsonObject
             BondInfo(
-                index = item["i"]?.jsonPrimitive?.intOrNull
-                    ?: item["index"]?.jsonPrimitive?.intOrNull ?: position,
-                address = item["addr"]?.jsonPrimitive?.content
-                    ?: item["address"]?.jsonPrimitive?.content.orEmpty(),
-                name = item["name"]?.jsonPrimitive?.contentOrNull,
-                type = item["type"]?.jsonPrimitive?.intOrNull,
+                index = item.optionalInt("i") ?: item.optionalInt("index") ?: position,
+                address = when {
+                    item.containsKey("addr") -> item.string("addr")
+                    item.containsKey("address") -> item.string("address")
+                    else -> ""
+                },
+                name = item.optionalString("name"),
+                type = item.optionalInt("type"),
             )
         }
         requireShape(entries.size <= total && (next == null || entries.isNotEmpty()), command)
         BondPage(entries, total, next)
     }
 
-    fun legacyBonds(command: String, response: String): BondEnumeration = objectOrThrow(command, response).let { value ->
+    fun legacyBonds(command: String, response: String): BondEnumeration = decode(command, response) { value ->
         val array = value["bonds"]?.jsonArray ?: throw incomplete(command)
         BondEnumeration(
             entries = array.mapIndexed { position, element ->
                 val item = element.jsonObject
                 BondInfo(
-                    index = item["i"]?.jsonPrimitive?.intOrNull
-                        ?: item["index"]?.jsonPrimitive?.intOrNull ?: position,
-                    address = item["addr"]?.jsonPrimitive?.content
-                        ?: item["address"]?.jsonPrimitive?.content.orEmpty(),
-                    name = item["name"]?.jsonPrimitive?.contentOrNull,
-                    type = item["type"]?.jsonPrimitive?.intOrNull,
+                    index = item.optionalInt("i") ?: item.optionalInt("index") ?: position,
+                    address = when {
+                        item.containsKey("addr") -> item.string("addr")
+                        item.containsKey("address") -> item.string("address")
+                        else -> ""
+                    },
+                    name = item.optionalString("name"),
+                    type = item.optionalInt("type"),
                 )
             },
             complete = false,
@@ -285,13 +313,17 @@ object ManagementProtocol {
         )
     }
 
-    fun isVersionedBondResponse(command: String, response: String): Boolean =
-        objectOrThrow(command, response)["v"]?.jsonPrimitive?.intOrNull == BONDS_PROTOCOL_VERSION
+    fun isVersionedBondResponse(command: String, response: String): Boolean = decode(command, response) { value ->
+        value.primitive("v")?.let { primitive ->
+            primitive.takeUnless { it.isString }?.intOrNull
+                ?: throw IllegalArgumentException("'v' must be an integer")
+        } == BONDS_PROTOCOL_VERSION
+    }
 
-    fun readData(command: String, response: String): ByteArray {
-        val hex = objectOrThrow(command, response).string("data")
+    fun readData(command: String, response: String): ByteArray = decode(command, response) { value ->
+        val hex = value.string("data")
         if (hex.length % 2 != 0) throw ManagementProtocolException("Adapter returned odd-length Amiibo data")
-        return try {
+        try {
             ByteArray(hex.length / 2) { index -> hex.substring(index * 2, index * 2 + 2).toInt(16).toByte() }
         } catch (error: NumberFormatException) {
             throw ManagementProtocolException("Adapter returned non-hex Amiibo data", error)
@@ -299,18 +331,39 @@ object ManagementProtocol {
     }
 
     fun acknowledgement(command: String, response: String): CommandAcknowledgement =
-        objectOrThrow(command, response).let { value ->
-            if (value["ok"]?.jsonPrimitive?.booleanOrNull != true) {
+        decode(command, response) { value ->
+            if (!value.bool("ok")) {
                 throw ManagementProtocolException("Adapter returned an unexpected response for '$command'")
             }
+            val requested = value.optionalLong("requested")
+            requireShape(requested == null || requested in 0..UINT32_MAX, command)
             CommandAcknowledgement(
                 queued = value.bool("queued"),
                 switching = value.bool("switching"),
                 unchanged = value.bool("unchanged"),
                 reenumerating = value.bool("reenumerating"),
-                enabled = value["enabled"]?.jsonPrimitive?.booleanOrNull,
+                enabled = value.optionalBoolean("enabled"),
+                requested = requested,
             )
         }
+
+    private inline fun <T> decode(
+        command: String,
+        response: String,
+        block: (JsonObject) -> T,
+    ): T {
+        val root = objectOrThrow(command, response)
+        return try {
+            block(root)
+        } catch (error: ManagementException) {
+            throw error
+        } catch (error: Exception) {
+            throw ManagementProtocolException(
+                "Adapter returned an incomplete response for '$command'",
+                error,
+            )
+        }
+    }
 
     private fun objectOrThrow(command: String, response: String): JsonObject {
         val root = try {
@@ -318,20 +371,93 @@ object ManagementProtocol {
         } catch (error: Exception) {
             throw ManagementProtocolException("Adapter returned malformed JSON for '$command'", error)
         }
-        root["error"]?.jsonPrimitive?.contentOrNull?.let { message ->
-            throw AdapterCommandException(command, root["code"]?.jsonPrimitive?.intOrNull, message)
+        root["error"]?.let { errorElement ->
+            val message = (errorElement as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+                ?: throw ManagementProtocolException("Adapter returned a malformed error for '$command'")
+            val code = root["code"]?.let { codeElement ->
+                (codeElement as? JsonPrimitive)?.takeUnless { it.isString }?.intOrNull
+                    ?: throw ManagementProtocolException("Adapter returned a malformed error code for '$command'")
+            }
+            throw AdapterCommandException(command, code, message)
         }
         return root
     }
 
-    private fun JsonObject.string(key: String, fallback: String = "") =
-        this[key]?.jsonPrimitive?.contentOrNull ?: fallback
-    private fun JsonObject.int(key: String) = this[key]?.jsonPrimitive?.intOrNull ?: 0
-    private fun JsonObject.long(key: String) = this[key]?.jsonPrimitive?.longOrNull ?: 0L
-    private fun JsonObject.bool(key: String) = this[key]?.jsonPrimitive?.booleanOrNull ?: false
+    private fun JsonObject.primitive(key: String): JsonPrimitive? {
+        val element = this[key] ?: return null
+        return element as? JsonPrimitive
+            ?: throw IllegalArgumentException("'$key' must be a JSON primitive")
+    }
+
+    private fun JsonObject.string(key: String, fallback: String = ""): String {
+        val primitive = primitive(key) ?: return fallback
+        return primitive.takeIf { it.isString }?.contentOrNull
+            ?: throw IllegalArgumentException("'$key' must be a string")
+    }
+    private fun JsonObject.int(key: String): Int {
+        val primitive = primitive(key) ?: return 0
+        return primitive.takeUnless { it.isString }?.intOrNull
+            ?: throw IllegalArgumentException("'$key' must be an integer")
+    }
+    private fun JsonObject.long(key: String): Long {
+        val primitive = primitive(key) ?: return 0L
+        return primitive.takeUnless { it.isString }?.longOrNull
+            ?: throw IllegalArgumentException("'$key' must be an integer")
+    }
+    private fun JsonObject.bool(key: String): Boolean {
+        val primitive = primitive(key) ?: return false
+        return primitive.takeUnless { it.isString }?.booleanOrNull
+            ?: throw IllegalArgumentException("'$key' must be a boolean")
+    }
     private fun JsonObject.boolInt(key: String): Boolean {
-        val primitive = this[key]?.jsonPrimitive ?: return false
-        return primitive.booleanOrNull ?: ((primitive.intOrNull ?: 0) != 0)
+        val primitive = primitive(key) ?: return false
+        if (primitive.isString) throw IllegalArgumentException("'$key' must be a boolean or integer")
+        return primitive.booleanOrNull
+            ?: primitive.intOrNull?.let { it != 0 }
+            ?: throw IllegalArgumentException("'$key' must be a boolean or integer")
+    }
+
+    private fun JsonObject.requiredInt(key: String): Int {
+        require(containsKey(key)) { "Missing '$key'" }
+        return int(key)
+    }
+
+    private fun JsonObject.requiredLong(key: String): Long {
+        require(containsKey(key)) { "Missing '$key'" }
+        return long(key)
+    }
+
+    private fun JsonObject.requiredBoolean(key: String): Boolean {
+        require(containsKey(key)) { "Missing '$key'" }
+        return bool(key)
+    }
+
+    private fun JsonObject.optionalInt(key: String): Int? {
+        val element = this[key] ?: return null
+        if (element === JsonNull) return null
+        return (element as? JsonPrimitive)?.takeUnless { it.isString }?.intOrNull
+            ?: throw IllegalArgumentException("'$key' must be an integer or null")
+    }
+
+    private fun JsonObject.optionalLong(key: String): Long? {
+        val element = this[key] ?: return null
+        if (element === JsonNull) return null
+        return (element as? JsonPrimitive)?.takeUnless { it.isString }?.longOrNull
+            ?: throw IllegalArgumentException("'$key' must be an integer or null")
+    }
+
+    private fun JsonObject.optionalString(key: String): String? {
+        val element = this[key] ?: return null
+        if (element === JsonNull) return null
+        return (element as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+            ?: throw IllegalArgumentException("'$key' must be a string or null")
+    }
+
+    private fun JsonObject.optionalBoolean(key: String): Boolean? {
+        val element = this[key] ?: return null
+        if (element === JsonNull) return null
+        return (element as? JsonPrimitive)?.takeUnless { it.isString }?.booleanOrNull
+            ?: throw IllegalArgumentException("'$key' must be a boolean or null")
     }
 
     private fun requireShape(valid: Boolean, command: String) {
@@ -355,6 +481,7 @@ object ManagementCommands {
     const val WAKE_STATUS = "wake status"
     const val MANAGEMENT_STATUS = "mgmt status"
     const val SAVE = "save"
+    const val SAVE_STATUS = "save status"
     const val AMIIBO_STATUS = "amiibo status"
     const val KBM_STATUS = "kbm status"
     const val KBM_MOUSE = "kbm mouse"
@@ -370,7 +497,10 @@ object ManagementCommands {
     }
 
     fun managementEnabled(enabled: Boolean) = if (enabled) "mgmt on" else "mgmt off"
-    fun bondsPage(cursor: Int? = null) = "bonds list v2" + (cursor?.let { " $it" } ?: "")
+    fun bondsPage(cursor: Int? = null): String {
+        require(cursor == null || cursor >= 0) { "Bond cursor cannot be negative" }
+        return "bonds list v2" + (cursor?.let { " $it" } ?: "")
+    }
     fun bondRemove(index: Int): String {
         require(index >= 0)
         return "bonds remove $index"
@@ -389,7 +519,11 @@ object ManagementCommands {
     fun kbmMouse(field: KbmMouseField, value: Int) = "kbm mouse ${field.wire} $value"
 
     fun color(target: ColorTarget, color: RgbColor) = "${target.command} ${color.wire()}"
-    fun amiiboBegin(size: Int, crc32: String) = "amiibo begin $size $crc32"
+    fun amiiboBegin(size: Int, crc32: String): String {
+        require(size in setOf(540, 572, 2048)) { "Unsupported Amiibo image size" }
+        require(crc32.matches(Regex("[0-9A-Fa-f]{8}"))) { "CRC32 must contain exactly eight hex digits" }
+        return "amiibo begin $size ${crc32.uppercase()}"
+    }
     fun amiiboChunk(offset: Int, bytes: ByteArray): String {
         require(offset >= 0 && bytes.isNotEmpty() && bytes.size <= ManagementProtocol.AMIIBO_CHUNK_BYTES)
         return "amiibo chunk $offset ${hex(bytes)}"

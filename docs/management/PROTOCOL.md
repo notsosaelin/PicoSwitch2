@@ -29,7 +29,9 @@ reference is `android/companion/management-core`, and representative wire values
   interoperability.
 - The BLE reply slot is 512 bytes including LF, so its JSON payload is at most 511 bytes. Firmware
   substitutes `{"error":"response_too_large","code":413}` instead of publishing a partial reply.
-- Exactly one logical reply belongs to one logical command. There are no request IDs.
+- Exactly one logical reply belongs to one logical command. There are no carrier transaction IDs.
+  The general persistence counters described below identify save work only; they do not correlate
+  arbitrary commands or permit concurrent BLE transactions.
 - JSON object field order is not significant. Clients MUST ignore unknown fields and MUST validate
   the fields required by the operation they requested.
 - Integers are JSON numbers unless a field is explicitly hexadecimal text. Boolean fields are JSON
@@ -90,7 +92,8 @@ state. A client MUST NOT synthesize or merge source identities.
 | `bonds list` | read; BLE, Config CDC | if bounded: v2 envelope described below; if not: error 413 | no partial success | `cmd_bonds`, `mgmt_bonds_format_legacy` |
 | `bonds list v2 [cursor]` | paged read; BLE, Config CDC | `v:2`, `total`, `bonds[]`, `next` integer or null | follow `next` until null; validate stable total and unique indices | `mgmt_bonds_format_page`; `bonds_page` vector |
 | `bonds remove <index>` | mutation; BLE, Config CDC | `{"ok":true}` or error | removes an adapter-side LE bond; list again. It is distinct from Android association/bond state and may interrupt the affected peer | `cmd_bonds`; workflow tests |
-| `save` | mutation; BLE, Config CDC | BLE: `ok`, `queued:true`; CDC: `ok` only after the synchronous wait, or `save timeout` | BLE means persistence was requested/queued, not proven durable. Do not report a completed flash write | `handle_line`; `saveQueued` vector |
+| `save` | mutation; BLE, Config CDC | BLE: `ok`, `queued:true`, `requested`; CDC: `ok`, `requested` only after the synchronous wait, or `save timeout` | `requested` is the session-local unsigned 32-bit identity assigned to this persistence request. BLE acceptance is not durable completion | `handle_line`; `saveQueued` vector |
+| `save status` | read; BLE, Config CDC | `pending`, `requested`, `completed` | authoritative general-settings persistence snapshot; `pending` is exactly `requested != completed` | `handle_line`; `saveStatus` vector |
 
 Bond entries use `i` (device-DB index), `addr`, and may include `name` and `type`. Clients MAY accept
 the historical `index`/`address` aliases. A v2 total changing between pages, a repeated index,
@@ -102,6 +105,15 @@ accordingly.
 management protocol version. Compatibility is currently exact command behavior, optional-family
 fallback through `unknown command`/`unavailable`, bond envelope `v:2`, tolerant unknown JSON fields,
 and firmware build identity.
+
+General persistence identities start at zero on boot and advance modulo 2^32 for every settings
+save request, including automatic/internal requests. `completed` advances only after the actual
+settings-sector erase/program finishes. A client waiting for the ID returned by `save` considers
+that request complete when `completed` has reached it in modulo-uint32 order; a later automatic
+request may therefore leave `pending:true` even though the client's earlier request is complete.
+Clients MUST use a bounded poll and MUST NOT interpret `queued:true` alone as durable completion.
+Older firmware can omit `requested` and return `unknown command` for `save status`; clients may
+still request a legacy save but cannot claim authoritative completion on that firmware.
 
 ## Keyboard and mouse
 
@@ -180,7 +192,8 @@ surface shares KB/M parsers/formatters but is not the connected management trans
 - Personality mutation queues USB switching; `reenumerate` queues a USB detach/reconnect.
 - Virtual Amiibo has its own `persist`/`clear` lifecycle and status flags.
 - LE bonds live in the BTstack device DB and are removed with bond operations or install reset.
-- `queued:true` is acceptance of deferred work, never proof that the flash write completed.
+- `queued:true` is acceptance of deferred work, never proof that the flash write completed; use the
+  acknowledged `requested` identity with `save status` when durable completion matters.
 
 ## Non-normative examples
 

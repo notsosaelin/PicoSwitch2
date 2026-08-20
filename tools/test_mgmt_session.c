@@ -72,6 +72,8 @@ static void test_bonded_user_command_succeeds(void) {
     assert(strstr(reply, "\"ok\":true"));
     assert(run_turn(&s, "reenumerate", reply, sizeof(reply)));
     assert(strstr(reply, "\"ok\":true"));
+    assert(run_turn(&s, "save status", reply, sizeof(reply)));
+    assert(strstr(reply, "\"ok\":true"));
 }
 
 static void test_diagnostic_command_rejected_over_ble(void) {
@@ -96,6 +98,8 @@ static void test_unbonded_client_cannot_command(void) {
     char reply[128];
     // Even an allowlisted, otherwise-valid command is refused without a bond.
     assert(run_turn(&s, "save", reply, sizeof(reply)));
+    assert(strstr(reply, "unavailable"));
+    assert(run_turn(&s, "save status", reply, sizeof(reply)));
     assert(strstr(reply, "unavailable"));
     assert(run_turn(&s, "amiibo present", reply, sizeof(reply)));
     assert(strstr(reply, "unavailable"));

@@ -229,6 +229,7 @@ bool config_wireless_command_allowed(const char *command)
            strncmp(command, "mgmt ", 5) == 0 ||
            strncmp(command, "bonds ", 6) == 0 ||
            strcmp(command, "save") == 0 ||
+           strcmp(command, "save status") == 0 ||
            strncmp(command, "amiibo ", 7) == 0 ||
            strncmp(command, "body ", 5) == 0 ||
            strncmp(command, "jcl ", 4) == 0 ||
