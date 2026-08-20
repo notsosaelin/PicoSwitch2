@@ -227,7 +227,10 @@ typedef struct {
     bool inquiry_active;
     bool wake_adv_active;
     bool controller_connected;
+    uint8_t connected_classic_count;
+    uint8_t ready_classic_count;
     uint8_t connected_ble_count;
+    uint8_t ready_ble_count;
     bool pairing_window_open;
     bool pairing_close_deferred;
     bool pairing_lockout;
@@ -253,12 +256,17 @@ typedef struct {
     uint32_t mgmt_disconnects;
     uint32_t ctrl_disconnects;
     uint32_t hci_disconnects;
+    uint32_t hci_state_losses;
     uint32_t fresh_admission_accepts;
     uint32_t fresh_admission_reject_window;
     uint32_t fresh_admission_reject_lockout;
     uint32_t wipe_completions;
     uint16_t last_disc_handle;
     uint8_t last_disc_reason;
+    uint8_t owner_led_reason;
+    bool owner_led_output_on;
+    uint32_t owner_led_last_transition_ms;
+    uint32_t owner_led_timer_max_gap_ms;
 } btstack_host_mgmt_diag_t;
 
 void btstack_host_get_mgmt_diag(btstack_host_mgmt_diag_t *out);

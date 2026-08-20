@@ -14,6 +14,51 @@ ns2_bt_admission_t ns2_bt_admission_decide(bool pairing_lockout,
                                : NS2_BT_ADMISSION_REJECT;
 }
 
+bool ns2_bt_classic_key_update_admitted(bool pairing_lockout,
+                                        bool pending_identity_matches,
+                                        bool fresh_pairing_admitted,
+                                        bool trust_present,
+                                        bool same_existing_key,
+                                        bool authenticated_key_change)
+{
+    if (pairing_lockout || !pending_identity_matches)
+        return false;
+    if (fresh_pairing_admitted)
+        return true;
+    return trust_present && (same_existing_key || authenticated_key_change);
+}
+
+bool ns2_bt_classic_key_commit_allowed(bool pairing_lockout,
+                                       bool authentication_succeeded,
+                                       bool pending_key_present,
+                                       bool key_update_admitted)
+{
+    return !pairing_lockout && authentication_succeeded &&
+           pending_key_present && key_update_admitted;
+}
+
+bool ns2_bt_classic_auth_failure_forgets_existing(uint8_t hci_status)
+{
+    return hci_status == 0x06;
+}
+
+ns2_bt_custom_admission_t ns2_bt_custom_admission_decide(
+    bool pairing_lockout,
+    bool encrypted_reconnect,
+    bool fresh_pairing_admitted,
+    bool rpa_trust_candidate)
+{
+    if (pairing_lockout)
+        return NS2_BT_CUSTOM_REJECT;
+    if (encrypted_reconnect)
+        return NS2_BT_CUSTOM_ENCRYPTED_RECONNECT;
+    if (fresh_pairing_admitted)
+        return NS2_BT_CUSTOM_FRESH;
+    if (rpa_trust_candidate)
+        return NS2_BT_CUSTOM_VERIFY_RECONNECT;
+    return NS2_BT_CUSTOM_REJECT;
+}
+
 bool ns2_bt_boot_pairing_locked(bool persisted_lockout,
                                 bool install_reset_performed)
 {

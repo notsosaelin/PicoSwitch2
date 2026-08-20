@@ -9,6 +9,7 @@
 #include "mgmt_bonds.h"
 #include "ns2_bt_lifecycle.h"
 #include "ns2_ble_reconnect.h"
+#include "ns2_owner_led.h"
 #include "ds5_audio_bridge.h"
 #include "ns2_pairing_crypto.h"
 #include "mgmt_access.h"
@@ -216,6 +217,9 @@ typedef struct {
     // remains valid while the bounded handshake finishes, even if the scan
     // window closes after the raw ACL connects.
     bool fresh_pairing_admitted;
+    // A loose RPA sighting is only permission to reach SM for cryptographic
+    // identity resolution. It is never fresh-pair authority.
+    bool rpa_trust_candidate;
 
     // Per-connection BLE HID client id. MUST be per-connection (not a single
     // global) so two BLE HID devices route reports + descriptors independently —
@@ -257,6 +261,7 @@ static struct {
     uint16_t pending_vid;
     uint16_t pending_pid;
     bool pending_fresh_pairing_admitted;
+    bool pending_rpa_trust_candidate;
 
     // Last connected device (for reconnection)
     bd_addr_t last_connected_addr;
@@ -364,6 +369,14 @@ static struct {
     bool pending_outgoing;  // True if we initiated the connection (hid_host_connect)
     bool pending_trust_present;
     bool pending_fresh_pairing_admitted;
+    bool pending_existing_link_key_valid;
+    link_key_t pending_existing_link_key;
+    link_key_type_t pending_existing_link_key_type;
+    bool pending_notified_link_key_valid;
+    bool pending_notified_link_key_admitted;
+    link_key_t pending_notified_link_key;
+    link_key_type_t pending_notified_link_key_type;
+    bool pending_auth_succeeded;
     hci_con_handle_t pending_acl_handle;  // ACL handle for pending incoming connection
     const bt_device_profile_t* pending_profile;
     // Pending HID connect (deferred until encryption completes)
@@ -756,10 +769,21 @@ static struct {
 // the HID pairing window, not a separate window. The old name made that look
 // like companion-only state; it is not.
 static bool hid_pairing_window_open;
+static bool pairing_lockout;
 
 void btstack_host_set_pairing_window_open(bool open)
 {
     hid_pairing_window_open = open;
+#if !defined(BTSTACK_USE_ESP32) && !defined(BTSTACK_USE_NRF) && !defined(CONFIG_USB2BLE)
+    if (hid_state.powered_on) {
+        // Bonded controllers remain connectable outside the window, but fresh
+        // SSP confirmation and discoverability exist only while the user's
+        // explicit pairing authority is open.
+        gap_ssp_set_auto_accept(open && !pairing_lockout);
+        gap_discoverable_control(open && !pairing_lockout);
+        gap_connectable_control(!pairing_lockout);
+    }
+#endif
 }
 
 bool btstack_host_pairing_window_open(void)
@@ -1274,13 +1298,13 @@ void btstack_host_power_on(void)
 // This is global by design. Triple-tap means "forget everything," so a MAC
 // denylist would miss powered-off devices, private-address rotation, and the
 // Switch 2 custom ATT path that never creates a BTstack bond.
-static bool pairing_lockout;
 static bool switch2_force_fresh_custom_pairing;
 static bool switch2_explicit_fresh_pairing_admitted;
 static uint32_t fresh_admission_accepts;
 static uint32_t fresh_admission_reject_window;
 static uint32_t fresh_admission_reject_lockout;
 static uint32_t wipe_completions;
+static uint32_t hci_state_losses;
 
 // Authoritative Switch 2 bond-key snapshot read from controller SPI during
 // the custom ATT init sequence. Declared with reconnect persistence because
@@ -2406,6 +2430,81 @@ static void btstack_host_record_fresh_admission(bool accepted)
     }
 }
 
+static void classic_pending_security_clear(void)
+{
+    classic_state.pending_trust_present = false;
+    classic_state.pending_fresh_pairing_admitted = false;
+    classic_state.pending_existing_link_key_valid = false;
+    memset(classic_state.pending_existing_link_key, 0,
+           sizeof(classic_state.pending_existing_link_key));
+    classic_state.pending_existing_link_key_type = INVALID_LINK_KEY;
+    classic_state.pending_notified_link_key_valid = false;
+    classic_state.pending_notified_link_key_admitted = false;
+    memset(classic_state.pending_notified_link_key, 0,
+           sizeof(classic_state.pending_notified_link_key));
+    classic_state.pending_notified_link_key_type = INVALID_LINK_KEY;
+    classic_state.pending_auth_succeeded = false;
+}
+
+static void classic_pending_security_prepare(const bd_addr_t addr,
+                                             bool fresh_pairing_admitted)
+{
+    classic_pending_security_clear();
+    classic_state.pending_existing_link_key_valid =
+        gap_get_link_key_for_bd_addr((uint8_t *)addr,
+            classic_state.pending_existing_link_key,
+            &classic_state.pending_existing_link_key_type);
+    classic_state.pending_trust_present =
+        classic_state.pending_existing_link_key_valid;
+    classic_state.pending_fresh_pairing_admitted =
+        fresh_pairing_admitted && !pairing_lockout;
+}
+
+// BTstack processes Link Key Notification before forwarding it to application
+// handlers, so its default path may already have replaced the durable entry.
+// Undo that write until Authentication Complete proves the candidate key.
+static void classic_restore_existing_key(void)
+{
+    gap_drop_link_key_for_bd_addr(classic_state.pending_addr);
+    if (classic_state.pending_existing_link_key_valid) {
+        gap_store_link_key_for_bd_addr(
+            classic_state.pending_addr,
+            classic_state.pending_existing_link_key,
+            classic_state.pending_existing_link_key_type);
+    }
+}
+
+static void classic_commit_notified_key_if_authenticated(void)
+{
+    if (!ns2_bt_classic_key_commit_allowed(
+            pairing_lockout, classic_state.pending_auth_succeeded,
+            classic_state.pending_notified_link_key_valid,
+            classic_state.pending_notified_link_key_admitted)) {
+        return;
+    }
+
+    gap_store_link_key_for_bd_addr(
+        classic_state.pending_addr,
+        classic_state.pending_notified_link_key,
+        classic_state.pending_notified_link_key_type);
+    if (classic_state.pending_fresh_pairing_admitted) {
+        btstack_host_record_fresh_admission(true);
+    }
+    classic_state.pending_trust_present = true;
+    classic_state.pending_fresh_pairing_admitted = false;
+    classic_state.pending_existing_link_key_valid = true;
+    memcpy(classic_state.pending_existing_link_key,
+           classic_state.pending_notified_link_key,
+           sizeof(classic_state.pending_existing_link_key));
+    classic_state.pending_existing_link_key_type =
+        classic_state.pending_notified_link_key_type;
+    classic_state.pending_notified_link_key_valid = false;
+    classic_state.pending_notified_link_key_admitted = false;
+    memset(classic_state.pending_notified_link_key, 0,
+           sizeof(classic_state.pending_notified_link_key));
+    printf("[BTSTACK_HOST] Authenticated Classic link-key update committed\n");
+}
+
 static int btstack_host_classic_connection_filter(bd_addr_t addr,
                                                    hci_link_type_t link_type)
 {
@@ -2431,7 +2530,8 @@ void btstack_host_clear_pairing_lockout(void)
     printf("[BTSTACK_HOST] Pairing admission re-enabled by explicit pairing window\n");
 
 #if !defined(BTSTACK_USE_ESP32) && !defined(BTSTACK_USE_NRF) && !defined(CONFIG_USB2BLE)
-    gap_discoverable_control(1);
+    gap_ssp_set_auto_accept(hid_pairing_window_open ? 1 : 0);
+    gap_discoverable_control(hid_pairing_window_open ? 1 : 0);
     gap_connectable_control(1);
 #endif
 }
@@ -2572,7 +2672,9 @@ void btstack_host_scan_for_additional_peer(void)
 
 #define BLE_CONNECT_TIMEOUT_MS 10000   // 10s timeout for BLE connection attempts
 
-void btstack_host_connect_ble(bd_addr_t addr, bd_addr_type_t addr_type)
+static void btstack_host_connect_ble_candidate(bd_addr_t addr,
+                                                bd_addr_type_t addr_type,
+                                                bool rpa_trust_candidate)
 {
     // No config/management gate here: the controller link is independent of the
     // USB face (see btstack_host_start_scan). A controller connects/reconnects
@@ -2587,6 +2689,7 @@ void btstack_host_connect_ble(bd_addr_t addr, bd_addr_type_t addr_type)
     // Save pending connection info
     memcpy(hid_state.pending_addr, addr, 6);
     hid_state.pending_addr_type = addr_type;
+    hid_state.pending_rpa_trust_candidate = rpa_trust_candidate;
     hid_state.pending_fresh_pairing_admitted =
         !pairing_lockout &&
         (hid_pairing_window_open ||
@@ -2610,6 +2713,11 @@ void btstack_host_connect_ble(bd_addr_t addr, bd_addr_type_t addr_type)
     // Create connection
     uint8_t status = gap_connect(addr, addr_type);
     printf("[BTSTACK_HOST] gap_connect returned status=%d\n", status);
+}
+
+void btstack_host_connect_ble(bd_addr_t addr, bd_addr_type_t addr_type)
+{
+    btstack_host_connect_ble_candidate(addr, addr_type, false);
 }
 
 // ============================================================================
@@ -2740,6 +2848,7 @@ void btstack_host_process(void)
             memset(conn, 0, sizeof(*conn));
             classic_state.pending_valid = false;
             classic_state.pending_hid_connect = false;
+            classic_pending_security_clear();
 
             // Start recovery timer and try to resume scanning
             classic_state.recovery_start_time = btstack_run_loop_get_time_ms();
@@ -2979,6 +3088,63 @@ static void classic_identity_query_service(void)
     }
 }
 
+static void btstack_host_clear_transient_radio_state(void)
+{
+    // HCI state loss does not reliably produce one disconnect event per link.
+    // Retire every source generation mechanically so input ownership and the
+    // owner LED cannot remain attached to stale transport slots.
+    for (int i = 0; i < MAX_CLASSIC_CONNECTIONS; ++i) {
+        classic_connection_t *conn = &classic_state.connections[i];
+        if (conn->active && conn->hid_ready) {
+            bt_on_disconnect_with_generation(
+                (uint8_t)i, bthid_get_connection_generation((uint8_t)i));
+        }
+        memset(conn, 0, sizeof(*conn));
+    }
+    for (int i = 0; i < MAX_BLE_CONNECTIONS; ++i) {
+        ble_connection_t *conn = &hid_state.connections[i];
+        if (conn->handle != HCI_CON_HANDLE_INVALID && conn->conn_index > 0u) {
+            bt_on_disconnect_with_generation(
+                conn->conn_index,
+                bthid_get_connection_generation(conn->conn_index));
+        }
+        memset(conn, 0, sizeof(*conn));
+        conn->handle = HCI_CON_HANDLE_INVALID;
+    }
+
+    switch2_cleanup_on_disconnect(0xFFu, 0u);
+    memset(&wiimote_conn, 0, sizeof(wiimote_conn));
+    classic_state.inquiry_active = false;
+    classic_state.pending_valid = false;
+    classic_state.pending_hid_connect = false;
+    classic_state.pending_acl_handle = HCI_CON_HANDLE_INVALID;
+    classic_state.waiting_for_incoming_time = 0u;
+    classic_state.recovery_start_time = 0u;
+    classic_pending_security_clear();
+
+    hid_state.powered_on = false;
+    hid_state.state = BLE_STATE_IDLE;
+    hid_state.scan_active = false;
+    hid_state.reconnect_attempt_time = 0u;
+    hid_state.reconnect_attempts = 0u;
+    hid_state.pending_fresh_pairing_admitted = false;
+    hid_state.pending_rpa_trust_candidate = false;
+    hid_state.gatt_state = GATT_IDLE;
+    hid_state.gatt_handle = HCI_CON_HANDLE_INVALID;
+    hid_state.bas_cid = 0u;
+    ble_report_pending = false;
+    pairing_close_deferred = false;
+
+    config_ble.advertising = false;
+    config_ble.handle = HCI_CON_HANDLE_INVALID;
+    config_ble.client_addr_valid = false;
+    config_ble.closing = false;
+    config_ble.notifications_enabled = false;
+    config_ble.tx_requested = false;
+    config_wireless_bridge_reset_session();
+    memset(&wake_adv, 0, sizeof(wake_adv));
+}
+
 // ============================================================================
 // HCI EVENT HANDLER
 // ============================================================================
@@ -2992,6 +3158,9 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
 
     uint8_t event_type = hci_event_packet_get_type(packet);
 
+    // Verbose event traces are development-only. Production diagnostics use
+    // bounded counters/snapshots so radio traffic cannot become log traffic.
+#ifdef NS2_DIAG
     // Debug: log key HCI events to debug Wiimote reconnection
     // 0x04=CONNECTION_COMPLETE, 0x05=DISCONNECTION_COMPLETE, 0x06=AUTH_COMPLETE
     // 0x08=ENCRYPTION_CHANGE, 0x17=LINK_KEY_REQUEST, 0x18=LINK_KEY_NOTIFICATION
@@ -3005,6 +3174,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
     if (event_type == GATT_EVENT_NOTIFICATION) {
         printf("[BTSTACK_HOST] >>> RAW GATT NOTIFICATION! len=%d\n", size);
     }
+#endif
 
 #ifdef NS2_DS5_AUDIO
     // l2cap_send() only confirms that BTstack/HCI accepted an ACL packet. The
@@ -3028,8 +3198,20 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
 #endif
 
     switch (event_type) {
-        case BTSTACK_EVENT_STATE:
-            if (btstack_event_state_get_state(packet) == HCI_STATE_WORKING) {
+        case BTSTACK_EVENT_STATE: {
+            uint8_t stack_state = btstack_event_state_get_state(packet);
+            if (stack_state != HCI_STATE_WORKING) {
+                if (hid_state.powered_on ||
+                    btstack_classic_get_connection_count() > 0u ||
+                    config_ble.handle != HCI_CON_HANDLE_INVALID) {
+                    hci_state_losses++;
+                    printf("[BTSTACK_HOST] HCI left working state (%u); clearing transient links\n",
+                           stack_state);
+                    btstack_host_clear_transient_radio_state();
+                }
+                break;
+            }
+            {
                 printf("[BTSTACK_HOST] HCI working\n");
                 hid_state.powered_on = true;
 
@@ -3101,12 +3283,16 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
 
                 // Request bonding during SSP (required for BTstack to store link keys!)
                 gap_ssp_set_authentication_requirement(SSP_IO_AUTHREQ_MITM_PROTECTION_NOT_REQUIRED_DEDICATED_BONDING);
-                // Auto-accept incoming SSP pairing requests
-                gap_ssp_set_auto_accept(1);
+                // SSP UI confirmation is auto-accepted only inside the
+                // explicit pairing window. Link-key notification and auth
+                // completion independently enforce the trust transition.
+                gap_ssp_set_auto_accept(
+                    hid_pairing_window_open && !pairing_lockout);
 
                 // Make host discoverable and connectable for incoming connections
                 // Required for Sony controllers (DS3, DS4, DS5) which initiate connections
-                gap_discoverable_control(pairing_lockout ? 0 : 1);
+                gap_discoverable_control(
+                    hid_pairing_window_open && !pairing_lockout);
                 gap_connectable_control(pairing_lockout ? 0 : 1);
 #endif
                 // USB2BLE: Classic BT stays non-discoverable/non-connectable by default
@@ -3125,6 +3311,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
 #endif
             }
             break;
+        }
 
         case GAP_EVENT_ADVERTISING_REPORT: {
             bd_addr_t addr;
@@ -3189,28 +3376,34 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                     if (mfr_company_id == 0x0553) {
                         hid_state.switch2_advertising_reports++;
                         // Debug: print raw manufacturer data
+#ifdef NS2_DIAG
                         printf("[SW2_BLE] Mfr data (%d bytes):", len);
                         for (int i = 0; i < len && i < 12; i++) {
                             printf(" %02X", data[i]);
                         }
                         printf("\n");
+#endif
                         if (len >= 9) {
                             // VID at bytes 5-6, PID at bytes 7-8 (relative to after company ID)
                             // This matches BlueRetro's offsets accounting for length byte difference
                             sw2_vid = data[5] | (data[6] << 8);
                             sw2_pid = data[7] | (data[8] << 8);
                         }
+#ifdef NS2_DIAG
                         printf("[BTSTACK_HOST] Switch 2 controller detected! VID=0x%04X PID=0x%04X\n",
                                sw2_vid, sw2_pid);
+#endif
                     }
                 }
             }
 
-            // Log all BLE advertisements with names for debugging
+            // Log all BLE advertisements with names only in diagnostic builds.
+#ifdef NS2_DIAG
             if (name[0] != 0) {
                 printf("[BTSTACK_HOST] BLE adv: %02X:%02X:%02X:%02X:%02X:%02X name=\"%s\"\n",
                        addr[5], addr[4], addr[3], addr[2], addr[1], addr[0], name);
             }
+#endif
 
             // Merge with pending gamepad data: if we previously saw a gamepad appearance
             // or HID UUID for this address but no name (ADV packet), and now we have
@@ -3281,7 +3474,10 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                  profile == &BT_PROFILE_SWITCH2);
             ns2_bt_admission_t ble_admission = ns2_bt_admission_decide(
                 pairing_lockout, fresh_pairing_authorized,
-                ble_trust_present || ble_rpa_trust_candidate);
+                ble_trust_present);
+            bool ble_candidate_admitted =
+                ble_admission != NS2_BT_ADMISSION_REJECT ||
+                (!pairing_lockout && ble_rpa_trust_candidate);
 
             // Multi-peer sighting bookkeeping. Counted for HID-looking peers
             // only, so unrelated BLE traffic does not drown the signal.
@@ -3304,7 +3500,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             // Auto-connect to supported BLE controllers (skip classic-only devices)
             if (hid_state.state == BLE_STATE_SCANNING && is_controller &&
                 (profile->ble != BT_BLE_NONE || is_generic_ble_hid) &&
-                ble_admission != NS2_BT_ADMISSION_REJECT) {
+                ble_candidate_admitted) {
                 printf("[BTSTACK_HOST] BLE controller: %02X:%02X:%02X:%02X:%02X:%02X name=\"%s\"\n",
                        addr[5], addr[4], addr[3], addr[2], addr[1], addr[0], name);
                 // Determine display name from profile and PID
@@ -3338,7 +3534,8 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 hid_state.pending_profile = profile;
                 hid_state.pending_vid = sw2_vid;
                 hid_state.pending_pid = sw2_pid;
-                btstack_host_connect_ble(addr, addr_type);
+                btstack_host_connect_ble_candidate(
+                    addr, addr_type, ble_rpa_trust_candidate);
             }
             break;
         }
@@ -3384,6 +3581,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             bool is_wiimote_family = (profile->classic == BT_CLASSIC_DIRECT_L2CAP);
 
             // Log all inquiry results for debugging (gamepads highlighted)
+#ifdef NS2_DIAG
             const char* type_str = "";
             if (is_wiimote_family) type_str = " [WIIMOTE]";
             else if (is_gamepad || is_joystick) type_str = " [GAMEPAD]";
@@ -3391,6 +3589,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             printf("[BTSTACK_HOST] Inquiry: %02X:%02X:%02X:%02X:%02X:%02X COD=0x%06X%s %s\n",
                    addr[5], addr[4], addr[3], addr[2], addr[1], addr[0],
                    (unsigned)cod, type_str, name);
+#endif
 
             // Auto-connect to gamepads, Wiimotes, and (only in a KB/M mode that
             // still needs the role) keyboards and pointing devices.
@@ -3425,9 +3624,8 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 classic_state.pending_profile = profile;
                 classic_state.pending_valid = true;
                 classic_state.pending_outgoing = true;  // We initiated this connection
-                classic_state.pending_trust_present = classic_trust_present;
-                classic_state.pending_fresh_pairing_admitted =
-                    hid_pairing_window_open && !pairing_lockout;
+                classic_pending_security_prepare(
+                    addr, hid_pairing_window_open && !pairing_lockout);
 
                 // If name is unavailable, request it and defer connection to
                 // REMOTE_NAME_REQUEST_COMPLETE. Wiimote-family devices (Wii U Pro,
@@ -3577,9 +3775,8 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             classic_state.pending_pid = 0;
             classic_state.pending_valid = true;
             classic_state.pending_outgoing = false;  // Device initiated this connection
-            classic_state.pending_trust_present = classic_trust_present;
-            classic_state.pending_fresh_pairing_admitted =
-                hid_pairing_window_open && !pairing_lockout;
+            classic_pending_security_prepare(
+                addr, hid_pairing_window_open && !pairing_lockout);
             classic_state.waiting_for_incoming_time = 0;  // Device reconnected
             // BTstack will auto-accept with the current master_slave_policy
             break;
@@ -3609,6 +3806,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                     printf("[BTSTACK_HOST] Disconnecting late Classic connection after pairing wipe\n");
                     gap_disconnect(handle);
                     classic_state.pending_valid = false;
+                    classic_pending_security_clear();
                     break;
                 }
                 if (classic_state.pending_valid &&
@@ -3949,6 +4147,8 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                         conn->pid = hid_state.pending_pid;
                         conn->fresh_pairing_admitted =
                             hid_state.pending_fresh_pairing_admitted;
+                        conn->rpa_trust_candidate =
+                            hid_state.pending_rpa_trust_candidate;
 
                         printf("[BTSTACK_HOST] Connection stored: name='%s' profile=%s vid=0x%04X pid=0x%04X\n",
                                conn->name, conn->profile ? conn->profile->name : "default",
@@ -3962,17 +4162,30 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                             bool encrypted_reconnect = target_attempt &&
                                 hid_state.has_last_connected_ltk &&
                                 !switch2_force_fresh_custom_pairing;
-                            if (encrypted_reconnect) {
+                            ns2_bt_custom_admission_t custom_admission =
+                                ns2_bt_custom_admission_decide(
+                                    pairing_lockout, encrypted_reconnect,
+                                    conn->fresh_pairing_admitted,
+                                    conn->rpa_trust_candidate);
+                            if (custom_admission ==
+                                NS2_BT_CUSTOM_ENCRYPTED_RECONNECT) {
                                 printf("[SW2_BLE] Saved target connected; requesting bonded SM re-encryption\n");
                                 if (!btstack_host_install_switch2_ltk()) {
                                     gap_disconnect(handle);
                                 } else {
                                     sm_request_pairing(handle);
                                 }
-                            } else {
+                            } else if (custom_admission ==
+                                       NS2_BT_CUSTOM_VERIFY_RECONNECT) {
+                                printf("[SW2_BLE] RPA candidate connected; requiring SM identity reuse\n");
+                                sm_request_pairing(handle);
+                            } else if (custom_admission == NS2_BT_CUSTOM_FRESH) {
                                 printf("[BTSTACK_HOST] %s: fresh custom pairing via direct ATT setup\n",
                                        conn->profile->name);
                                 register_switch2_hid_listener(handle);
+                            } else {
+                                printf("[SW2_BLE] Custom ATT admission missing; disconnecting\n");
+                                gap_disconnect(handle);
                             }
                         } else {
                             // Request pairing (SM will handle Secure Connections)
@@ -4516,6 +4729,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 if (classic_state.pending_valid) {
                     classic_state.pending_valid = false;
                     classic_state.pending_hid_connect = false;
+                    classic_pending_security_clear();
                 }
             }
             break;
@@ -4608,16 +4822,31 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             printf("[BTSTACK_HOST] Link key notification: %02X:%02X:%02X:%02X:%02X:%02X type=%d\n",
                    notif_addr[0], notif_addr[1], notif_addr[2], notif_addr[3], notif_addr[4], notif_addr[5], key_type);
 
-            bool trust_update_admitted = classic_state.pending_valid &&
-                bd_addr_cmp(notif_addr, classic_state.pending_addr) == 0 &&
-                (classic_state.pending_trust_present ||
-                 classic_state.pending_fresh_pairing_admitted);
+            bool pending_identity_matches = classic_state.pending_valid &&
+                bd_addr_cmp(notif_addr, classic_state.pending_addr) == 0;
+            bool same_existing_key =
+                classic_state.pending_existing_link_key_valid &&
+                memcmp(link_key, classic_state.pending_existing_link_key,
+                       sizeof(link_key_t)) == 0;
+            bool authenticated_key_change =
+                key_type == CHANGED_COMBINATION_KEY;
+            bool trust_update_admitted = ns2_bt_classic_key_update_admitted(
+                pairing_lockout, pending_identity_matches,
+                classic_state.pending_fresh_pairing_admitted,
+                classic_state.pending_trust_present,
+                same_existing_key, authenticated_key_change);
             if (!trust_update_admitted) {
                 // BTstack may already have auto-stored the event's key. Delete
-                // it explicitly so an unexpected SSP flow cannot create trust.
+                // it explicitly so stale local trust cannot authorize a new SSP
+                // relationship. Restore the previous key when this identity had
+                // one; a generic failed replacement must not destroy it.
                 btstack_host_record_fresh_admission(false);
                 printf("[BTSTACK_HOST] Dropping unadmitted Classic link key\n");
-                gap_drop_link_key_for_bd_addr(notif_addr);
+                if (pending_identity_matches) {
+                    classic_restore_existing_key();
+                } else {
+                    gap_drop_link_key_for_bd_addr(notif_addr);
+                }
                 hci_connection_t *unadmitted =
                     hci_connection_for_bd_addr_and_type(notif_addr,
                                                         BD_ADDR_TYPE_ACL);
@@ -4625,20 +4854,24 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 break;
             }
 
-            if (classic_state.pending_fresh_pairing_admitted) {
-                btstack_host_record_fresh_admission(true);
-                classic_state.pending_trust_present = true;
-                classic_state.pending_fresh_pairing_admitted = false;
-            }
-
-            // Explicitly store the link key (BTstack's auto-storage may not work for legacy pairing)
-            gap_store_link_key_for_bd_addr(notif_addr, link_key, key_type);
+            memcpy(classic_state.pending_notified_link_key, link_key,
+                   sizeof(classic_state.pending_notified_link_key));
+            classic_state.pending_notified_link_key_type = key_type;
+            classic_state.pending_notified_link_key_valid = true;
+            classic_state.pending_notified_link_key_admitted = true;
+            classic_restore_existing_key();
+            classic_commit_notified_key_if_authenticated();
             break;
         }
 
         case HCI_EVENT_AUTHENTICATION_COMPLETE: {
             uint8_t status = packet[2];
             hci_con_handle_t handle = little_endian_read_16(packet, 3);
+            hci_connection_t *auth_conn = hci_connection_for_handle(handle);
+            bool pending_identity_matches = classic_state.pending_valid &&
+                auth_conn &&
+                bd_addr_cmp(auth_conn->address,
+                            classic_state.pending_addr) == 0;
             printf("[BTSTACK_HOST] Authentication complete: handle=0x%04X status=0x%02X\n", handle, status);
             {
                 char reason[BTID_REASON_LEN];
@@ -4649,12 +4882,29 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                                   classic_state.pending_pid, reason);
             }
 
-            // Handle PIN_OR_KEY_MISSING (0x06): controller cleared its link key
-            // (e.g., put in pairing mode) but we still have a stale stored key.
-            // Delete the stale key and disconnect so next attempt triggers fresh pairing.
-            if (status == 0x06 && classic_state.pending_valid) {
-                printf("[BTSTACK_HOST] Auth failed (key rejected), deleting stale link key\n");
-                gap_drop_link_key_for_bd_addr(classic_state.pending_addr);
+            if (pending_identity_matches) {
+                if (status == ERROR_CODE_SUCCESS) {
+                    classic_state.pending_auth_succeeded = true;
+                    classic_commit_notified_key_if_authenticated();
+                    break;
+                }
+
+                // 0x05 Authentication Failure is generic: preserve the known
+                // local key. 0x06 PIN_OR_KEY_MISSING specifically says the peer
+                // no longer has it, so only that status invalidates old trust.
+                if (ns2_bt_classic_auth_failure_forgets_existing(status)) {
+                    printf("[BTSTACK_HOST] Peer reports PIN/key missing; deleting stale Classic key\n");
+                    gap_drop_link_key_for_bd_addr(classic_state.pending_addr);
+                    classic_state.pending_existing_link_key_valid = false;
+                    classic_state.pending_trust_present = false;
+                } else {
+                    classic_restore_existing_key();
+                    printf("[BTSTACK_HOST] Classic authentication failed; preserving existing key\n");
+                }
+                classic_state.pending_notified_link_key_valid = false;
+                classic_state.pending_notified_link_key_admitted = false;
+                memset(classic_state.pending_notified_link_key, 0,
+                       sizeof(classic_state.pending_notified_link_key));
 
                 // Clean up wiimote state if auth failed before L2CAP channels were created
                 if (wiimote_conn.active && wiimote_conn.acl_handle == handle) {
@@ -5519,7 +5769,9 @@ static void ble_hid_notification_handler(uint8_t packet_type, uint16_t channel, 
     uint16_t value_length = gatt_event_notification_get_value_length(packet);
     const uint8_t *value = gatt_event_notification_get_value(packet);
 
-    // Debug: log all notifications to identify chatpad/keyboard reports
+    // Debug: log notification shapes only in diagnostic builds. Alternating
+    // report lengths otherwise turn this into an unbounded production path.
+#ifdef NS2_DIAG
     static uint16_t last_handle = 0;
     static uint16_t last_len = 0;
     if (value_handle != last_handle || value_length != last_len) {
@@ -5532,6 +5784,7 @@ static void ble_hid_notification_handler(uint8_t packet_type, uint16_t channel, 
         last_handle = value_handle;
         last_len = value_length;
     }
+#endif
 
     // Accept HID report notifications - filter by reasonable gamepad report length
     if (value_length < 10 || value_length > sizeof(pending_ble_report)) return;
@@ -8574,6 +8827,20 @@ static void switch2_ack_notification_handler(uint8_t packet_type, uint16_t chann
 
         case SW2_CMD_SET_LED:
             if (sw2_init_state == SW2_INIT_SET_LED) {
+                ble_connection_t *conn =
+                    find_connection_by_handle(con_handle);
+                bool encrypted_reconnect = conn && switch2_link_encrypted &&
+                    switch2_link_encrypted_handle == con_handle &&
+                    gap_encryption_key_size(con_handle) > 0u;
+                bool fresh_custom =
+                    conn && conn->fresh_pairing_admitted;
+                if (pairing_lockout || (!encrypted_reconnect && !fresh_custom)) {
+                    btstack_host_record_fresh_admission(false);
+                    printf("[SW2_BLE] Final custom admission missing; disconnecting before readiness\n");
+                    sw2_init_state = SW2_INIT_IDLE;
+                    gap_disconnect(con_handle);
+                    break;
+                }
                 printf("[SW2_BLE] LED set! Init done.\n");
                 sw2_init_state = SW2_INIT_DONE;
                 s_sw2_init_done_ms = btstack_run_loop_get_time_ms();
@@ -8581,8 +8848,7 @@ static void switch2_ack_notification_handler(uint8_t packet_type, uint16_t chann
                 // so this successful terminal ACK is its equivalent of a
                 // pairing-complete event. Persist the peer now, never merely
                 // from an advertisement or raw ACL connection.
-                btstack_host_remember_ble_connection(
-                    find_connection_by_handle(con_handle));
+                btstack_host_remember_ble_connection(conn);
                 // Terminal state — not followed by switch2_send_init_cmd(), so captured here
                 // directly (every other transition is captured at the top of that function).
                 uint8_t s = (uint8_t)SW2_INIT_DONE;
@@ -9651,9 +9917,19 @@ void btstack_host_get_mgmt_diag(btstack_host_mgmt_diag_t *out)
     out->inquiry_active = classic_state.inquiry_active;
     out->wake_adv_active = wake_adv.active;
     out->controller_connected = btstack_host_controller_connected();
+    for (int i = 0; i < MAX_CLASSIC_CONNECTIONS; i++) {
+        if (classic_state.connections[i].active)
+            out->connected_classic_count++;
+        if (classic_state.connections[i].active &&
+            classic_state.connections[i].hid_ready)
+            out->ready_classic_count++;
+    }
     for (int i = 0; i < MAX_BLE_CONNECTIONS; i++) {
         if (hid_state.connections[i].handle != HCI_CON_HANDLE_INVALID)
             out->connected_ble_count++;
+        if (hid_state.connections[i].handle != HCI_CON_HANDLE_INVALID &&
+            hid_state.connections[i].hid_ready)
+            out->ready_ble_count++;
     }
     out->pairing_window_open = hid_pairing_window_open;
     out->pairing_close_deferred = pairing_close_deferred;
@@ -9683,12 +9959,19 @@ void btstack_host_get_mgmt_diag(btstack_host_mgmt_diag_t *out)
     out->mgmt_disconnects = btlife.mgmt_disconnect;
     out->ctrl_disconnects = btlife.ctrl_disconnect;
     out->hci_disconnects = btlife.hci_disconnect;
+    out->hci_state_losses = hci_state_losses;
     out->fresh_admission_accepts = fresh_admission_accepts;
     out->fresh_admission_reject_window = fresh_admission_reject_window;
     out->fresh_admission_reject_lockout = fresh_admission_reject_lockout;
     out->wipe_completions = wipe_completions;
     out->last_disc_handle = btlife.last_disc_handle;
     out->last_disc_reason = btlife.last_disc_reason;
+    ns2_owner_led_diag_t led_diag;
+    ns2_owner_led_diag_snapshot(&led_diag);
+    out->owner_led_reason = led_diag.reason;
+    out->owner_led_output_on = led_diag.output_on;
+    out->owner_led_last_transition_ms = led_diag.last_transition_ms;
+    out->owner_led_timer_max_gap_ms = led_diag.timer_max_gap_ms;
 }
 
 // ============================================================================
@@ -9832,6 +10115,7 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
 
             // Clear pending connection info now that HID is established
             classic_state.pending_valid = false;
+            classic_pending_security_clear();
 
             if (status != ERROR_CODE_SUCCESS) {
                 printf("[BTSTACK_HOST] HID connection failed, cid=0x%04X status=0x%02X\n", hid_cid, status);
@@ -9855,6 +10139,7 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
                     gap_disconnect(con_handle);
                     classic_state.pending_outgoing = false;
                     classic_state.pending_valid = false;
+                    classic_pending_security_clear();
                     // Don't scan — stay connectable, wait for incoming reconnection
                     classic_state.waiting_for_incoming_time = btstack_run_loop_get_time_ms();
                 }
@@ -10709,8 +10994,7 @@ void btstack_host_delete_all_bonds(void)
     classic_state.recovery_start_time = 0;
     classic_state.waiting_for_incoming_time = 0;
     classic_state.pending_valid = false;
-    classic_state.pending_trust_present = false;
-    classic_state.pending_fresh_pairing_admitted = false;
+    classic_pending_security_clear();
     hid_state.pending_fresh_pairing_admitted = false;
     switch2_explicit_fresh_pairing_admitted = false;
     if (hid_state.state == BLE_STATE_CONNECTING) gap_connect_cancel();
