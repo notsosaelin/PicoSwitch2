@@ -30,6 +30,11 @@ class AdapterRepository(private val transport: ManagementTransport) {
         validateConnectedAdapter()
     }
 
+    suspend fun discoverForPairing(context: ManagementConnectionContext): DiscoveredManagementPeer {
+        transport.prepareConnection(context)
+        return transport.discover()
+    }
+
     suspend fun connectKnown(
         address: String,
         context: ManagementConnectionContext = ManagementConnectionContext(),

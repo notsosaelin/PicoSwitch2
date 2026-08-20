@@ -172,6 +172,9 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     private val themeStore = ThemePreferenceStore(application)
     private val relationshipStore = AdapterRelationshipStore(application)
     private val relationshipCoordinator = AdapterRelationshipCoordinator(relationshipStore.load())
+    private data class PairingDevice(val generation: Long, val device: BluetoothDevice)
+    @Volatile private var pairingDevice: PairingDevice? = null
+    private var relationshipPairingJob: Job? = null
     private var relationshipConnectionJob: Job? = null
     private var relationshipRetirementJob: Job? = null
     private var autoReconnectAttempted = false
@@ -347,53 +350,78 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         tryAutoReconnect()
     }
 
-    /** Begin one authoritative CDM association attempt. The returned generation belongs to both
-     * Android completion paths and makes the documented duplicate delivery harmless. */
+    /** Discover one advertised management endpoint and feed its exact BLE device into the existing
+     * generation coordinator before any bond or GATT decision is made. */
+    @SuppressLint("MissingPermission")
     fun beginAdapterPairing(): Long {
+        relationshipPairingJob?.cancel()
         relationshipConnectionJob?.cancel()
+        pairingDevice = null
         val generation = relationshipCoordinator.beginAssociation()
         publishRelationshipStatus(ConnectionPhase.Associating)
-        diagnostics.event("relationship", "association.start", "attempt=$generation")
+        diagnostics.event("relationship", "pair.discovery_start", "attempt=$generation")
         if (relationshipRetirementJob?.isActive != true) {
             relationshipRetirementJob = viewModelScope.launch { runCatching { adapter.disconnect() } }
         }
+        val retirement = relationshipRetirementJob
+        relationshipPairingJob = viewModelScope.launch {
+            try {
+                retirement?.join()
+                val peer = adapter.discoverForPairing(
+                    ManagementConnectionContext(
+                        logicalAttempt = generation,
+                        reason = AdapterConnectReason.FirstPair.diagnosticName,
+                        useDiscoveredPeer = true,
+                    ),
+                )
+                val device = peer.device
+                pairingDevice = PairingDevice(generation, device)
+                val bond = device.bondState.toProductBondState()
+                val relationship = AdapterRelationship(
+                    address = device.address,
+                    associationId = null,
+                    displayName = peer.displayName.orEmpty().ifBlank { "PicoSwitch2" },
+                )
+                val decision = relationshipCoordinator.deviceDiscovered(generation, relationship, bond)
+                publishRelationshipStatus()
+                diagnostics.event(
+                    "relationship",
+                    "pair.device_discovered",
+                    "attempt=$generation bond=$bond decision=${decision.javaClass.simpleName}",
+                )
+                when (decision) {
+                    is AdapterLifecycleDecision.AwaitBond -> {
+                        diagnostics.event(
+                            "relationship",
+                            if (decision.startBond) "bond.start" else "bond.wait",
+                            "attempt=$generation bond=$bond",
+                        )
+                        if (decision.startBond && !device.createBond()) {
+                            adapterBondStartFailed(device.address)
+                        }
+                    }
+                    is AdapterLifecycleDecision.Connect -> {
+                        if (bond == AndroidBondState.Bonded) notice("Adapter already paired")
+                        pairingDevice = null
+                        executeLifecycleDecision(decision)
+                    }
+                    else -> executeLifecycleDecision(decision)
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                diagnostics.event("relationship", "pair.discovery_cancelled", "attempt=$generation")
+                throw cancelled
+            } catch (error: Throwable) {
+                val message = "Couldn’t find the adapter. Make sure its pairing mode is active, then try again."
+                relationshipCoordinator.associationFailed(generation, message)
+                publishRelationshipStatus()
+                diagnostics.error("relationship", "pair discovery attempt $generation", error)
+                notice(message)
+            } finally {
+                if (relationshipPairingJob === coroutineContext[Job]) relationshipPairingJob = null
+            }
+        }
         return generation
     }
-
-    fun adapterAssociationCreated(
-        generation: Long,
-        address: String,
-        associationId: Int?,
-        displayName: String?,
-        bond: AndroidBondState,
-    ): AdapterLifecycleDecision {
-        val relationship = AdapterRelationship(address, associationId, displayName.orEmpty().ifBlank { "PicoSwitch2" })
-        val decision = relationshipCoordinator.associationCreated(generation, relationship, bond)
-        publishRelationshipStatus()
-        diagnostics.event(
-            "relationship", "association.created",
-            "attempt=$generation association=${associationId ?: "legacy"} bond=$bond decision=${decision.javaClass.simpleName}",
-        )
-        if (decision is AdapterLifecycleDecision.AwaitBond) {
-            diagnostics.event(
-                "relationship",
-                if (decision.startBond) "bond.start" else "bond.wait",
-                "attempt=$generation bond=$bond",
-            )
-        }
-        executeLifecycleDecision(decision)
-        return decision
-    }
-
-    fun adapterAssociationFailed(generation: Long, message: String) {
-        relationshipCoordinator.associationFailed(generation, message)
-        publishRelationshipStatus()
-        diagnostics.event("relationship", "association.failed", "attempt=$generation $message")
-    }
-
-    fun pendingAssociationGeneration(): Long? = relationshipCoordinator.status
-        .takeIf { it.phase == AdapterRelationshipPhase.Associating }
-        ?.generation
 
     fun adapterBondChanged(address: String, bond: AndroidBondState) {
         val decision = relationshipCoordinator.bondChanged(address, bond)
@@ -402,7 +430,19 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             "relationship", "bond.state",
             "attempt=${relationshipCoordinator.status.generation} bond=$bond decision=${decision.javaClass.simpleName}",
         )
+        if (decision is AdapterLifecycleDecision.Connect || decision is AdapterLifecycleDecision.RepairRequired) {
+            pairingDevice = null
+        }
         executeLifecycleDecision(decision)
+    }
+
+    /** Recover an authoritative bond completion that occurred while the Activity receiver was stopped. */
+    @SuppressLint("MissingPermission")
+    fun resumePendingAdapterBond() {
+        if (relationshipCoordinator.status.phase != AdapterRelationshipPhase.Bonding) return
+        val candidate = pairingDevice?.takeIf { it.generation == relationshipCoordinator.status.generation } ?: return
+        val device = candidate.device
+        adapterBondChanged(device.address, device.bondState.toProductBondState())
     }
 
     fun adapterBondStartFailed(address: String) {
@@ -431,9 +471,9 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     }
 
     fun forgetAdapterRelationship() {
-        // This app's only CDM association call site is the PicoSwitch2 name-filtered chooser.
-        // Explicit Forget is therefore the safe lifecycle point to remove stale app-owned Pico
-        // associations as well as the selected record, while retaining platform/Pico bonds.
+        // Historical builds created CDM records only through a PicoSwitch2 name-filtered chooser.
+        // Explicit Forget is the safe lifecycle point to remove those stale app-owned records as
+        // well as the selected relationship, while retaining platform/Pico bonds.
         clearOwnedRelationship(relationshipStore.load(), removeAllCompanionAssociations = true)
     }
 
@@ -454,7 +494,9 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     }
 
     fun disconnect() {
+        relationshipPairingJob?.cancel()
         relationshipConnectionJob?.cancel()
+        pairingDevice = null
         relationshipCoordinator.cancelAndRetainRelationship()
         publishRelationshipStatus(ConnectionPhase.Disconnecting)
         diagnostics.event("relationship", "disconnect.user", "management only")
@@ -1271,6 +1313,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                         reason = attempt.reason.diagnosticName,
                         associationId = attempt.relationship.associationId,
                         bondState = relationshipCoordinator.status.bond.name,
+                        useDiscoveredPeer = attempt.reason == AdapterConnectReason.FirstPair,
                     ),
                 )
                 val verified = relationshipCoordinator.connectionSucceeded(attempt.generation) ?: return@launch
@@ -1340,12 +1383,21 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         }
     }.getOrDefault(AndroidBondState.Unknown)
 
+    private fun Int.toProductBondState(): AndroidBondState = when (this) {
+        BluetoothDevice.BOND_NONE -> AndroidBondState.None
+        BluetoothDevice.BOND_BONDING -> AndroidBondState.Bonding
+        BluetoothDevice.BOND_BONDED -> AndroidBondState.Bonded
+        else -> AndroidBondState.Unknown
+    }
+
     private fun clearOwnedRelationship(
         relationship: AdapterRelationship?,
         removeAllCompanionAssociations: Boolean = false,
         onComplete: (() -> Unit)? = null,
     ) {
+        relationshipPairingJob?.cancel()
         relationshipConnectionJob?.cancel()
+        pairingDevice = null
         autoReconnectAttempted = false
         relationshipStore.clear()
         relationshipCoordinator.forget()

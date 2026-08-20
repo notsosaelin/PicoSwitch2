@@ -15,6 +15,7 @@ enum class AdapterRelationshipPhase {
 }
 
 enum class AdapterConnectReason(val diagnosticName: String) {
+    FirstPair("first-pair"),
     ForegroundAuto("foreground-auto"),
     Manual("manual"),
     AfterBond("after-bond"),
@@ -74,16 +75,32 @@ class AdapterRelationshipCoordinator(initialRelationship: AdapterRelationship?) 
         status = AdapterRelationshipStatus(
             phase = AdapterRelationshipPhase.Associating,
             generation = generation,
-            message = "Choose PicoSwitch2 in Android's secure pairing screen.",
+            message = "Looking for PicoSwitch2. Keep the adapter in pairing mode.",
         )
         return generation
     }
+
+    /** Feed the exact device obtained from the management-service BLE scan into bond progression. */
+    @Synchronized
+    fun deviceDiscovered(
+        discoveryGeneration: Long,
+        relationship: AdapterRelationship,
+        bond: AndroidBondState,
+    ): AdapterLifecycleDecision = associationCreated(
+        associationGeneration = discoveryGeneration,
+        relationship = relationship,
+        bond = bond,
+        associationState = CompanionAssociationState.Missing,
+        connectReason = AdapterConnectReason.FirstPair,
+    )
 
     @Synchronized
     fun associationCreated(
         associationGeneration: Long,
         relationship: AdapterRelationship,
         bond: AndroidBondState,
+        associationState: CompanionAssociationState = CompanionAssociationState.Present,
+        connectReason: AdapterConnectReason = AdapterConnectReason.AfterBond,
     ): AdapterLifecycleDecision {
         if (associationGeneration != generation || status.phase != AdapterRelationshipPhase.Associating) {
             // The second API-33 completion is expected. It may improve the association ID, but it
@@ -99,7 +116,7 @@ class AdapterRelationshipCoordinator(initialRelationship: AdapterRelationship?) 
         }
 
         candidate = relationship
-        val attempt = AdapterConnectionAttempt(generation, AdapterConnectReason.AfterBond, relationship)
+        val attempt = AdapterConnectionAttempt(generation, connectReason, relationship)
         activeAttempt = attempt
         return when (bond) {
             AndroidBondState.Bonded -> {
@@ -107,7 +124,7 @@ class AdapterRelationshipCoordinator(initialRelationship: AdapterRelationship?) 
                     phase = AdapterRelationshipPhase.Connecting,
                     reason = attempt.reason,
                     bond = bond,
-                    companionAssociation = CompanionAssociationState.Present,
+                    companionAssociation = associationState,
                     message = "Secure pairing complete; connecting management.",
                 )
                 AdapterLifecycleDecision.Connect(attempt)
@@ -117,7 +134,7 @@ class AdapterRelationshipCoordinator(initialRelationship: AdapterRelationship?) 
                     phase = AdapterRelationshipPhase.Bonding,
                     reason = attempt.reason,
                     bond = bond,
-                    companionAssociation = CompanionAssociationState.Present,
+                    companionAssociation = associationState,
                     message = "Waiting for Android secure pairing to complete.",
                 )
                 AdapterLifecycleDecision.AwaitBond(attempt, startBond = bond == AndroidBondState.None)
@@ -127,7 +144,7 @@ class AdapterRelationshipCoordinator(initialRelationship: AdapterRelationship?) 
                 status = status.copy(
                     phase = AdapterRelationshipPhase.Failed,
                     bond = bond,
-                    companionAssociation = CompanionAssociationState.Present,
+                    companionAssociation = associationState,
                     message = message,
                 )
                 activeAttempt = null
@@ -165,7 +182,7 @@ class AdapterRelationshipCoordinator(initialRelationship: AdapterRelationship?) 
                 AdapterLifecycleDecision.Connect(attempt)
             }
             AndroidBondState.None -> {
-                val message = "Android pairing did not complete. Open the adapter pairing window and try Repair pairing."
+                val message = PAIRING_FAILED_MESSAGE
                 status = status.copy(phase = AdapterRelationshipPhase.RepairRequired, message = message)
                 activeAttempt = null
                 AdapterLifecycleDecision.RepairRequired(message)
@@ -347,4 +364,9 @@ class AdapterRelationshipCoordinator(initialRelationship: AdapterRelationship?) 
         associationId = new.associationId ?: old.associationId,
         displayName = new.displayName.takeIf(String::isNotBlank) ?: old.displayName,
     )
+
+    companion object {
+        const val PAIRING_FAILED_MESSAGE =
+            "Couldn’t pair with the adapter. Make sure its pairing mode is active, then try again."
+    }
 }

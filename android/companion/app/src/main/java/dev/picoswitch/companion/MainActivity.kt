@@ -2,23 +2,16 @@ package dev.picoswitch.companion
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
-import android.companion.AssociationInfo
-import android.companion.AssociationRequest
-import android.companion.BluetoothDeviceFilter
 import android.companion.CompanionDeviceManager
 import android.content.Intent
-import android.content.IntentSender
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.IntentFilter
 import android.hardware.input.InputManager
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.provider.Settings
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -26,19 +19,15 @@ import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.FileProvider
-import dev.picoswitch.companion.bluetooth.AdapterBluetoothIdentity
-import dev.picoswitch.companion.data.AdapterLifecycleDecision
 import dev.picoswitch.companion.data.AdapterConnectReason
 import dev.picoswitch.companion.data.AndroidBondState
 import dev.picoswitch.companion.data.SystemCompanionAssociation
 import dev.picoswitch.companion.nfc.AndroidNtag215Reader
 import dev.picoswitch.companion.ui.CompanionApp
 import dev.picoswitch.companion.ui.CompanionViewModel
-import java.util.regex.Pattern
 
 class MainActivity : ComponentActivity() {
     private val viewModel: CompanionViewModel by viewModels()
@@ -53,7 +42,6 @@ class MainActivity : ComponentActivity() {
     }
     private enum class ManagementAction { Pair, Reconnect }
     private var pendingManagementAction = ManagementAction.Reconnect
-    private var pendingAssociationGeneration: Long? = null
     private var bondReceiverRegistered = false
     private val bondReceiver = object : BroadcastReceiver() {
         @SuppressLint("MissingPermission")
@@ -102,40 +90,6 @@ class MainActivity : ComponentActivity() {
 
     private val importAmiiboKeys = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { viewModel.importAmiiboKeys(it) }
-    }
-
-    private val associationChooser = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
-        val generation = pendingAssociationGeneration ?: viewModel.pendingAssociationGeneration()
-            ?: return@registerForActivityResult
-        if (result.resultCode != Activity.RESULT_OK) {
-            viewModel.adapterAssociationFailed(generation, "Adapter pairing was cancelled")
-            return@registerForActivityResult
-        }
-        val associationAddress: String?
-        val associationId: Int?
-        if (Build.VERSION.SDK_INT >= 33) {
-            val association = result.data?.getParcelableExtra(
-                CompanionDeviceManager.EXTRA_ASSOCIATION,
-                AssociationInfo::class.java,
-            )
-            associationAddress = association?.deviceMacAddress?.toString()
-            associationId = association?.id
-        } else {
-            associationAddress = null
-            associationId = null
-        }
-        @Suppress("DEPRECATION")
-        val legacyDevice = if (Build.VERSION.SDK_INT >= 33) {
-            result.data?.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE, BluetoothDevice::class.java)
-        } else result.data?.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE) as? BluetoothDevice
-        val device = associationAddress?.let(::remoteDevice) ?: legacyDevice
-        if (device == null) {
-            viewModel.adapterAssociationFailed(
-                generation,
-                "Android associated the adapter but did not return its Bluetooth address",
-            )
-            Toast.makeText(this, "Android associated the adapter but did not return its Bluetooth address", Toast.LENGTH_LONG).show()
-        } else completeAssociation(generation, device, associationId)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -206,6 +160,7 @@ class MainActivity : ComponentActivity() {
         getSystemService(InputManager::class.java)?.registerInputDeviceListener(inputDeviceListener, null)
         if (hasManagementPermissions()) {
             restoreSystemAssociation()
+            viewModel.resumePendingAdapterBond()
             viewModel.beginForegroundSession()
         }
     }
@@ -248,90 +203,8 @@ class MainActivity : ComponentActivity() {
         nfcReader.arm()
     }
 
-    @SuppressLint("MissingPermission")
     private fun pairAdapter() {
-        val generation = viewModel.beginAdapterPairing()
-        pendingAssociationGeneration = generation
-        val request = AssociationRequest.Builder()
-            .addDeviceFilter(BluetoothDeviceFilter.Builder().setNamePattern(
-                Pattern.compile(AdapterBluetoothIdentity.CHOOSER_NAME_PATTERN, Pattern.CASE_INSENSITIVE),
-            ).build())
-            .setSingleDevice(false)
-            .build()
-        val manager = getSystemService(CompanionDeviceManager::class.java) ?: run {
-            viewModel.adapterAssociationFailed(generation, "Companion Device Manager is unavailable")
-            Toast.makeText(
-                this, "Companion Device Manager is unavailable on this Android build", Toast.LENGTH_LONG,
-            ).show()
-            return
-        }
-        val callback = object : CompanionDeviceManager.Callback() {
-            @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
-            @Deprecated("Legacy association callback")
-            override fun onDeviceFound(chooserLauncher: IntentSender) = launchAssociation(chooserLauncher)
-            override fun onAssociationPending(intentSender: IntentSender) = launchAssociation(intentSender)
-            override fun onAssociationCreated(associationInfo: AssociationInfo) {
-                val address: String?
-                val associationId: Int?
-                if (Build.VERSION.SDK_INT >= 33) {
-                    address = associationInfo.deviceMacAddress?.toString()
-                    associationId = associationInfo.id
-                } else {
-                    address = null
-                    associationId = null
-                }
-                val device = address?.let(::remoteDevice)
-                if (device != null) completeAssociation(generation, device, associationId)
-                else {
-                    viewModel.adapterAssociationFailed(
-                        generation,
-                        "Android associated the adapter but did not return its Bluetooth address",
-                    )
-                    Toast.makeText(this@MainActivity, "Adapter associated, but Android did not return its address.", Toast.LENGTH_LONG).show()
-                }
-            }
-            override fun onFailure(error: CharSequence?) {
-                viewModel.adapterAssociationFailed(generation, error?.toString() ?: "Adapter pairing was cancelled")
-                Toast.makeText(this@MainActivity, error ?: "Adapter pairing was cancelled", Toast.LENGTH_LONG).show()
-            }
-        }
-        try {
-            if (Build.VERSION.SDK_INT >= 33) manager.associate(request, mainExecutor, callback)
-            else @Suppress("DEPRECATION") manager.associate(request, callback, Handler(Looper.getMainLooper()))
-        } catch (error: Throwable) {
-            // Some OEM frameworks reject association synchronously. Controller setup must
-            // report that as a recoverable error, never take down the foreground app.
-            viewModel.diagnostics.error("controller", "companion association", error)
-            viewModel.adapterAssociationFailed(generation, error.message ?: "Android could not open adapter pairing")
-            Toast.makeText(
-                this,
-                error.message?.take(180) ?: "Android could not open the controller pairing chooser",
-                Toast.LENGTH_LONG,
-            ).show()
-        }
-    }
-
-    private fun launchAssociation(sender: IntentSender) {
-        runOnUiThread { associationChooser.launch(IntentSenderRequest.Builder(sender).build()) }
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun completeAssociation(generation: Long, device: BluetoothDevice, associationId: Int?) {
-        val decision = viewModel.adapterAssociationCreated(
-            generation = generation,
-            address = device.address,
-            associationId = associationId,
-            displayName = runCatching { device.name }.getOrNull(),
-            bond = device.bondState.toProductBondState(),
-        )
-        if (decision is AdapterLifecycleDecision.AwaitBond && decision.startBond) {
-            if (device.createBond()) {
-                Toast.makeText(this, "Approve Android's secure pairing prompt", Toast.LENGTH_LONG).show()
-            } else {
-                viewModel.adapterBondStartFailed(device.address)
-                Toast.makeText(this, "Android could not start secure pairing", Toast.LENGTH_LONG).show()
-            }
-        }
+        viewModel.beginAdapterPairing()
     }
 
     @SuppressLint("MissingPermission")

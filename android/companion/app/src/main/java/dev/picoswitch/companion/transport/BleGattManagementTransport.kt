@@ -43,6 +43,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.util.UUID
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /** Android GATT ownership for exactly one management session at a time. */
 @SuppressLint("MissingPermission")
@@ -74,12 +75,16 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         val disconnected = CompletableDeferred<Unit>()
     }
 
+    private data class PairingCandidate(val generation: Long, val device: BluetoothDevice)
+
     @Volatile private var current: OwnedGatt? = null
+    @Volatile private var pairingCandidate: PairingCandidate? = null
     @Volatile private var nextContext = ManagementConnectionContext()
     private var nextGattGeneration = 0L
 
     override fun prepareConnection(context: ManagementConnectionContext) {
         nextContext = context
+        if (!context.useDiscoveredPeer) pairingCandidate = null
         if (context.retry > 0) {
             diagnostics?.event(
                 "management",
@@ -215,22 +220,54 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
 
     override suspend fun scanAndConnect(expectedAddress: String) = scanAndConnectInternal(expectedAddress.uppercase())
 
+    override suspend fun discover(): dev.picoswitch.companion.protocol.DiscoveredManagementPeer = lifecycle.withLock {
+        retireCurrentLocked("before pairing discovery", settleIdle = true)
+        val context = nextContext
+        val device = scanDeviceLocked(
+            expectedAddress = null,
+            context = context,
+            message = "Looking for PicoSwitch2 in pairing mode",
+            diagnosticEvent = "pair.scan",
+        )
+        pairingCandidate = PairingCandidate(context.logicalAttempt, device)
+        log(context, "pair.discovered", "bond=${device.bondState}")
+        dev.picoswitch.companion.protocol.DiscoveredManagementPeer(
+            device = device,
+            displayName = safeName(device),
+        )
+    }
+
     private suspend fun scanAndConnectInternal(expectedAddress: String?) = lifecycle.withLock {
         retireCurrentLocked("before scan", settleIdle = true)
+        val context = nextContext
+        val device = scanDeviceLocked(
+            expectedAddress = expectedAddress,
+            context = context,
+            message = if (expectedAddress == null) "Looking for PicoSwitch2" else "Looking for the saved PicoSwitch2",
+            diagnosticEvent = "connect.scan_fallback",
+        )
+        connectDeviceLocked(device)
+    }
+
+    private suspend fun scanDeviceLocked(
+        expectedAddress: String?,
+        context: ManagementConnectionContext,
+        message: String,
+        diagnosticEvent: String,
+    ): BluetoothDevice {
         val bluetooth = adapter ?: throw ManagementException("Bluetooth is not available on this device")
         if (!bluetooth.isEnabled) throw ManagementException("Turn on Bluetooth to find PicoSwitch2")
         val scanner = bluetooth.bluetoothLeScanner ?: throw ManagementException("Bluetooth LE scanning is unavailable")
-        val context = nextContext
         _connection.value = ConnectionState(
             phase = ConnectionPhase.Scanning,
-            message = if (expectedAddress == null) "Looking for PicoSwitch2" else "Looking for the saved PicoSwitch2",
+            message = message,
             attempt = context.logicalAttempt.toInt(),
         )
         diagnostics?.event(
-            "relationship", "connect.scan_fallback",
+            "relationship", diagnosticEvent,
             "attempt=${context.logicalAttempt} reason=${context.reason} expected=${if (expectedAddress == null) "any" else "saved"}",
         )
-        val device = try {
+        return try {
             withTimeout(SCAN_TIMEOUT_MILLIS) {
                 suspendCancellableCoroutine<BluetoothDevice> { continuation ->
                     val filter = ScanFilter.Builder()
@@ -241,17 +278,17 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
                         override fun onScanResult(callbackType: Int, result: ScanResult) {
                             if (!continuation.isActive) return
                             if (expectedAddress != null && !result.device.address.equals(expectedAddress, true)) return
-                            scanner.stopScan(this)
+                            runCatching { scanner.stopScan(this) }
                             continuation.resume(result.device)
                         }
 
                         override fun onScanFailed(errorCode: Int) {
                             if (continuation.isActive) {
-                                continuation.cancel(ManagementException("Bluetooth scan failed ($errorCode)"))
+                                continuation.resumeWithException(ManagementException("Bluetooth scan failed ($errorCode)"))
                             }
                         }
                     }
-                    continuation.invokeOnCancellation { scanner.stopScan(scanCallback) }
+                    continuation.invokeOnCancellation { runCatching { scanner.stopScan(scanCallback) } }
                     scanner.startScan(listOf(filter), settings, scanCallback)
                 }
             }
@@ -266,15 +303,19 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
             diagnostics?.error("management", "discovery", error)
             throw ManagementException("No matching PicoSwitch2 management service was found within 15 seconds", error)
         }
-        connectDeviceLocked(device)
     }
 
     override suspend fun connectKnown(address: String) = lifecycle.withLock {
         retireCurrentLocked("before direct connect", settleIdle = true)
         val bluetooth = adapter ?: throw ManagementException("Bluetooth is not available on this device")
         if (!bluetooth.isEnabled) throw ManagementException("Turn on Bluetooth to connect to PicoSwitch2")
-        val device = runCatching { bluetooth.getRemoteDevice(address) }
-            .getOrElse { throw ManagementException("The saved PicoSwitch2 address is invalid", it) }
+        val device = pairingCandidate?.takeIf {
+            nextContext.useDiscoveredPeer &&
+                it.generation == nextContext.logicalAttempt &&
+                it.device.address.equals(address, true)
+        }?.device
+            ?: runCatching { bluetooth.getRemoteDevice(address) }
+                .getOrElse { throw ManagementException("The saved PicoSwitch2 address is invalid", it) }
         connectDeviceLocked(device)
     }
 
@@ -321,6 +362,7 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         val owner = current ?: return
         if (!owner.ready.isCompleted || owner.terminalFailure || owner.closed) return
         _connection.value = connectionState(owner, ConnectionPhase.Connected, null)
+        pairingCandidate = null
         log(owner, "gatt.ready", "management identity verified")
     }
 
@@ -334,6 +376,7 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
     override fun close() {
         val owner = current
         current = null
+        pairingCandidate = null
         owner?.closeRequested = true
         runCatching { owner?.gatt?.disconnect() }
         owner?.let(::closeExactlyOnce)
@@ -481,6 +524,11 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
     private fun log(owner: OwnedGatt, event: String, detail: String = "") {
         val prefix = "attempt=${owner.context.logicalAttempt.takeIf { it > 0 } ?: owner.generation} " +
             "gatt=${owner.generation} reason=${owner.context.reason} retry=${owner.context.retry}/${GattRecoveryPolicy.MAX_CLEAN_RETRIES}"
+        diagnostics?.event("management", event, if (detail.isBlank()) prefix else "$prefix $detail")
+    }
+
+    private fun log(context: ManagementConnectionContext, event: String, detail: String = "") {
+        val prefix = "attempt=${context.logicalAttempt} reason=${context.reason} retry=${context.retry}/${GattRecoveryPolicy.MAX_CLEAN_RETRIES}"
         diagnostics?.event("management", event, if (detail.isBlank()) prefix else "$prefix $detail")
     }
 
