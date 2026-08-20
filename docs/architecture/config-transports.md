@@ -1,5 +1,9 @@
 # Configuration transports
 
+> The canonical cross-platform management architecture and logical protocol now live under
+> [`../management/`](../management/README.md). This document remains the focused firmware transport,
+> resource, and hardware-validation record.
+
 Status: 🟡 implemented and host/build validated; bonded/encrypted Bluetooth hardware validation pending  
 Last updated: 2026-08-13
 
