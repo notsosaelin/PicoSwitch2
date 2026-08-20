@@ -9,6 +9,11 @@
 > from the date of each change; only items still open in the compatibility matrix remain current.
 > References to `DATA.md` in those snapshots mean the deleted session brief catalogued in
 > `docs/archive/ephemeral-handoff-index.archived.md`, not a current authority.
+>
+> Current trust, persistence, wipe, and admission contracts are maintained in
+> [`README.md`](README.md), [`PERSISTENCE.md`](PERSISTENCE.md), and
+> [`LIFECYCLE.md`](LIFECYCLE.md). When an older lifecycle passage below conflicts with those
+> current-state documents or source, the current contract and source win.
 
 This project implements a native Bluetooth HID host stack based on [joypad-os](https://github.com/joypad-ai/joypad-os) to handle controller connections and inputs. **Bluepad32 has been completely removed** from this project in favor of this implementation, which provides much finer-grained control and parses extra controller features (e.g., paddles, capture buttons).
 
@@ -669,15 +674,15 @@ during a hardware test.
 
 | # | Transition | Trigger / event | Owning layer | Key state | Initiator | Cleanup | Next |
 |---|---|---|---|---|---|---|---|
-| 1 | Cold boot, no bond | `BTSTACK_EVENT_STATE` → `HCI_STATE_WORKING` | `btstack_host.c` `packet_handler()` | `hid_state.powered_on=true`; Classic made discoverable+connectable; `btstack_host_restore_last_connected()` (no-op, nothing stored); `btstack_host_start_scan()` | — | — | 2 |
-| 2 | Discovery + first pairing (BLE) | `GAP_EVENT_ADVERTISING_REPORT` matches a known profile or generic-HID heuristic | `packet_handler()` | `hid_state.pending_*` set; `btstack_host_connect_ble()` called | **Pico-initiated** (direct `gap_connect()` to the advertised address) | scan stopped | 3 |
-| 2b | Discovery + first pairing (Classic) | `GAP_EVENT_INQUIRY_RESULT` matches gamepad/joystick/Wiimote COD or profile | `packet_handler()` | `classic_state.pending_*` set; `hid_host_connect()` or direct L2CAP | **Pico-initiated** | inquiry stopped | 3 |
+| 1 | Cold boot | `BTSTACK_EVENT_STATE` → `HCI_STATE_WORKING` | `btstack_host.c` `packet_handler()` | Restore `JPLC` and `JPLK`; a newly consumed install marker recreates the lock before discovery. Ordinary boot scans only when policy permits it. | — | — | 2 |
+| 2 | Discovery + first pairing (BLE) | Explicit pairing window plus matching `GAP_EVENT_ADVERTISING_REPORT` | `packet_handler()` | Admission policy allows fresh trust; `pending_fresh_pairing_admitted` is latched for this attempt before `gap_connect()` | **Pico-initiated** | scan stopped | 3 |
+| 2b | Discovery + first pairing (Classic) | Explicit pairing window plus admitted inquiry/incoming ACL candidate | `packet_handler()` | Existing-key versus fresh-window authority is latched; `hid_host_connect()` or direct L2CAP proceeds | Either | inquiry may stop | 3 |
 | 3 | Connected, HID readiness | `HCI_SUBEVENT_LE_CONNECTION_COMPLETE` (status 0) → `register_switch2_hid_listener()`/`sm_request_pairing()`/`start_hids_client()`; or `HID_SUBEVENT_CONNECTION_OPENED` for Classic | `packet_handler()` / `hid_host_packet_handler()` | `ble_connection_t`/`classic_connection_t` slot filled; for `BT_BLE_CUSTOM` (Switch2), `switch2_send_next_init_cmd()` starts the GATT init state machine (`SW2_INIT_READ_INFO → PAIR_STEP1-4 → SET_LED → DONE`) | — | `hid_state.reconnect_attempts = 0`, `has_last_connected = true` (3 separate confirmed reset sites) | 4/7 |
 | 4 | Controller-initiated disconnect / radio loss | `HCI_EVENT_DISCONNECTION_COMPLETE` | `packet_handler()` | `reason` byte captured (now consulted, see fix above); `switch2_cleanup_on_disconnect()` unconditionally resets `sw2_init_state=IDLE` before the reconnect decision | Either | GATT listeners unregistered, HIDS/BAS clients disconnected, connection slot memset | 5 or "resume scan" |
 | 5 | Controller attempts to reconnect | Controller re-advertises (BLE) or re-pages (Classic) | Radio/controller-side, outside this project's control | — | **Controller-initiated** | — | 2 (BLE: only if scanning is active — see root cause) / 2b |
 | 6 | Pico initiates a connection | Same as row 2 — the *only* Pico-initiated paths are scan-triggered auto-connect and the post-disconnect reconnect cascade (row 4→2) | `packet_handler()` | — | **Pico-initiated** | — | 3 or failure→7 |
 | 7 | Failed auth / timeout / cancel / retry | `HCI_SUBEVENT_LE_CONNECTION_COMPLETE` (status≠0), or the `BLE_CONNECT_TIMEOUT_MS` safety-net in `btstack_host_process()` calling `gap_connect_cancel()` | `packet_handler()` / `btstack_host_process()` | `reconnect_attempts` incremented (capped at 5); `reconnect_attempt_time` cleared on cancel | — | — | retry (4→2) or fallback scan |
-| 8 | Intentional shutdown/unpair/forget | BOOTSEL triple-tap → `wipe_all_devices()` (`ns2_bt_host.c`) → `btstack_host_disconnect_all_devices()` + `btstack_host_delete_all_bonds()` | `ns2_bt_host.c` control-tick handler | `has_last_connected=false`/`reconnect_attempts=0` set **synchronously** inside `delete_all_bonds()`, which runs before the async `HCI_EVENT_DISCONNECTION_COMPLETE` for each torn-down link arrives — so the reconnect cascade never fires for a wipe, by call-order, not by an explicit guard | User (BOOTSEL) | `le_device_db` bonds removed, link keys cleared | 1 |
+| 8 | Global wipe | BOOTSEL triple-tap → `wipe_all_devices()` | `ns2_bt_host.c` and `btstack_host.c`, core 1 | Explicit lockout closes admission before cancellation/deletion; Classic keys, all LE slots, `JPLC`, Switch 2 material and pending latches are cleared; `JPLK` is stored before async disconnect completions | User (BOOTSEL) | Controller and management links queued for disconnect | locked until explicit window |
 
 ### Answers to the required questions (Phase 1)
 
@@ -1068,14 +1073,14 @@ being the load-bearing part of this change.
 
 ### Current validation status
 
-Explicit pairing windows, new pairing, bonded reconnect, and the 30-second UX are hardware-confirmed
-with genuine Switch 2 controllers and the broader controller matrix. The exact old-boundary and
-forced-failure cases below were not isolated as dedicated fault-injection tests:
+Explicit pairing windows, new pairing, bonded reconnect, and the 30-second UX were hardware-confirmed
+with genuine Switch 2 controllers and the broader controller matrix. The broader wipe/flash
+readmission claim was reopened on 2026-08-20; use [`VALIDATION.md`](VALIDATION.md) for the current
+matrix. The exact old-boundary and forced-failure cases below remain useful focused tests:
 
-1. If the Switch 2 Pro Controller is already bonded from a prior session, wipe only that bond
-   (BOOTSEL triple-tap wipes *all* bonds — there's no per-device wipe command yet, so either accept
-   re-pairing everything, or skip straight to step 3 to test reconnect-of-an-existing-bond instead of
-   fresh pairing).
+1. If the Switch 2 Pro Controller is already bonded from a prior session, remove its typed LE entry
+   through the management `bonds remove` path, or use BOOTSEL triple-tap for the separate global-wipe
+   case. Record `btbonds` before the controller returns.
 2. Double-tap BOOTSEL to open the (now 30s) pairing window, then power on/wake the Switch 2 Pro
    Controller so it starts advertising. Repeat several times across separate windows — this is the
    scenario that was previously unreliable.
@@ -1096,12 +1101,12 @@ forced-failure cases below were not isolated as dedicated fault-injection tests:
 
 ### Not changed this pass, and why
 
-- **Classic BT admission latching** — traced and found not vulnerable to this specific bug (its own
-  watchdog is independent of `hid_state.state`); adding defer logic there would be unneeded
-  complexity for a problem that doesn't exist. If a real Classic-side symptom ever surfaces, retrace
-  first rather than assuming this fix's BLE-side reasoning transfers directly.
-- **Per-device bond wipe** — BOOTSEL triple-tap still wipes every bond; the hardware validation
-  procedure above works around this rather than expanding scope to add one.
+- **Classic pairing-window close deferral** — remains unnecessary because the Classic connection
+  watchdog is independent of `hid_state.state`. Classic *trust admission* is now separately latched
+  at inquiry/incoming ACL and enforced again at PIN/link-key events; do not confuse that security
+  gate with the BLE-only close-deferral timing fix described above.
+- **Classic per-device management command** — the management `bonds remove` command removes one
+  typed LE entry. BOOTSEL triple-tap remains the only user-facing Classic/global wipe.
 - **`PAIRING_WINDOW_MS`'s exact value (30s)** — chosen for usability per explicit instruction, not
   derived from any protocol constant; treat it as adjustable UX, not load-bearing.
 

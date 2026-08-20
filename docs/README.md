@@ -20,7 +20,8 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Shared controller protocol laboratory | [`re-methodology/controller-protocol-lab.md`](re-methodology/controller-protocol-lab.md) |
 | NFC investigation workflow and lab tooling | [`re-methodology/nfc-investigation-workflow.md`](re-methodology/nfc-investigation-workflow.md) |
 | What we discovered vs. inherited | [`provenance.md`](provenance.md) |
-| Bluetooth implementation | [`bluetooth/btstack-implementation.md`](bluetooth/btstack-implementation.md) |
+| Bluetooth subsystem current-state index | [`bluetooth/README.md`](bluetooth/README.md) |
+| Bluetooth implementation deep dive | [`bluetooth/btstack-implementation.md`](bluetooth/btstack-implementation.md) |
 | Battery passthrough and validation matrix | [`bluetooth/battery-passthrough.md`](bluetooth/battery-passthrough.md) |
 | DualSense audio implementation and research | [`switch2/audio-passthrough-research.md`](switch2/audio-passthrough-research.md) |
 | DualSense motion translation | [`bluetooth/dualsense-motion.md`](bluetooth/dualsense-motion.md) |
