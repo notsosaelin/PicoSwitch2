@@ -6,6 +6,55 @@ import org.junit.Test
 class AdapterRelationshipLifecycleTest {
     private val adapter = AdapterRelationship("88:A2:9E:D1:77:78", 7, "PicoSwitch2")
 
+    @Test fun `BLE discovered unbonded device starts exactly one secure bond`() {
+        val coordinator = AdapterRelationshipCoordinator(null)
+        val generation = coordinator.beginAssociation()
+        val decision = coordinator.deviceDiscovered(
+            generation,
+            adapter.copy(associationId = null),
+            AndroidBondState.None,
+        ) as AdapterLifecycleDecision.AwaitBond
+        assertTrue(decision.startBond)
+        assertEquals(AdapterConnectReason.FirstPair, decision.attempt.reason)
+        assertEquals(AdapterRelationshipPhase.Bonding, coordinator.status.phase)
+        assertEquals(CompanionAssociationState.Missing, coordinator.status.companionAssociation)
+    }
+
+    @Test fun `BLE discovered bonded device connects without another bond`() {
+        val coordinator = AdapterRelationshipCoordinator(null)
+        val generation = coordinator.beginAssociation()
+        val decision = coordinator.deviceDiscovered(
+            generation,
+            adapter.copy(associationId = null),
+            AndroidBondState.Bonded,
+        ) as AdapterLifecycleDecision.Connect
+        assertEquals(AdapterConnectReason.FirstPair, decision.attempt.reason)
+        assertEquals(AdapterRelationshipPhase.Connecting, coordinator.status.phase)
+    }
+
+    @Test fun `BLE discovered device already bonding is joined without restart`() {
+        val coordinator = AdapterRelationshipCoordinator(null)
+        val generation = coordinator.beginAssociation()
+        val decision = coordinator.deviceDiscovered(
+            generation,
+            adapter.copy(associationId = null),
+            AndroidBondState.Bonding,
+        ) as AdapterLifecycleDecision.AwaitBond
+        assertFalse(decision.startBond)
+        assertEquals(AdapterRelationshipPhase.Bonding, coordinator.status.phase)
+    }
+
+    @Test fun `rejected BLE bond reports pairing mode guidance and never connects`() {
+        val coordinator = AdapterRelationshipCoordinator(null)
+        val generation = coordinator.beginAssociation()
+        coordinator.deviceDiscovered(generation, adapter.copy(associationId = null), AndroidBondState.None)
+        val failure = coordinator.bondChanged(adapter.address, AndroidBondState.None)
+            as AdapterLifecycleDecision.RepairRequired
+        assertEquals(AdapterRelationshipCoordinator.PAIRING_FAILED_MESSAGE, failure.message)
+        assertEquals(AdapterRelationshipPhase.RepairRequired, coordinator.status.phase)
+        assertNull(coordinator.connectionSucceeded(generation))
+    }
+
     @Test fun `duplicate association completion advances only once`() {
         val coordinator = AdapterRelationshipCoordinator(null)
         val generation = coordinator.beginAssociation()

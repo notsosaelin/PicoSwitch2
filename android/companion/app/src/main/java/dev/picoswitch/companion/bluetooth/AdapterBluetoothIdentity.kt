@@ -11,7 +11,7 @@ object AdapterBluetoothIdentity {
     // an already-installed adapter during migration to PicoSwitch2.
     const val LEGACY_NAME = "Joypad Adapter"
 
-    // CompanionDeviceManager applies this to the system-owned chooser.
+    // Retained for legacy-name compatibility tests and any future user-visible filtering.
     const val CHOOSER_NAME_PATTERN = "^(?:PicoSwitch2|Joypad Adapter)$"
 
     fun isCurrentName(name: String?): Boolean =

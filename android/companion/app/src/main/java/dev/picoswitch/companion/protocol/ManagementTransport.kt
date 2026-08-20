@@ -1,5 +1,6 @@
 package dev.picoswitch.companion.protocol
 
+import android.bluetooth.BluetoothDevice
 import dev.picoswitch.companion.model.ConnectionState
 import dev.picoswitch.management.ManagementChannel
 import kotlinx.coroutines.flow.StateFlow
@@ -7,6 +8,9 @@ import kotlinx.coroutines.flow.StateFlow
 interface ManagementTransport : ManagementChannel {
     val connection: StateFlow<ConnectionState>
     fun prepareConnection(context: ManagementConnectionContext) = Unit
+    /** Discover the advertised management endpoint without opening GATT. */
+    suspend fun discover(): DiscoveredManagementPeer =
+        throw ManagementException("BLE management discovery is unavailable")
     suspend fun scanAndConnect()
     suspend fun scanAndConnect(expectedAddress: String) = scanAndConnect()
     suspend fun connectKnown(address: String) = scanAndConnect()
@@ -17,6 +21,14 @@ interface ManagementTransport : ManagementChannel {
     fun close() = Unit
 }
 
+data class DiscoveredManagementPeer(
+    /** The exact BluetoothDevice delivered by the filtered BLE ScanResult. */
+    val device: BluetoothDevice,
+    val displayName: String? = null,
+) {
+    val address: String get() = device.address
+}
+
 data class ManagementConnectionContext(
     val logicalAttempt: Long = 0,
     val reason: String = "unspecified",
@@ -24,6 +36,7 @@ data class ManagementConnectionContext(
     val bondState: String = "unknown",
     val retry: Int = 0,
     val priorGattRetired: Boolean = false,
+    val useDiscoveredPeer: Boolean = false,
 )
 
 typealias ManagementException = dev.picoswitch.management.ManagementException
