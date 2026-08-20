@@ -49,21 +49,26 @@ explicit pairing window
   -> connection filter checks existing link key or open window
   -> pending state latches trust-present versus fresh-admitted
   -> legacy PIN or SSP proceeds
-  -> link-key notification is accepted only for the latched identity
-  -> key persists in the Classic TLV DB
+  -> link-key notification is interposed and held as an in-RAM candidate
+  -> matching authentication completion succeeds
+  -> eligible key persists in the Classic TLV DB
   -> HID/direct-L2CAP setup completes
 ```
 
-Classic SSP remains controller-side auto-accept at the HCI setting, so admission is enforced at the
-ACL filter and defended again at link-key notification. An unadmitted notification is deleted and
-its ACL is disconnected.
+Classic SSP auto-accept and discoverability are enabled only inside the explicit pairing window.
+Admission is enforced at the ACL filter and defended again at link-key notification and matching
+authentication completion. Because pinned BTstack writes the notification before emitting it, the
+application restores the old key or removes an unadmitted write until the transition is proven.
+Outside a fresh window only the identical existing key or `CHANGED_COMBINATION_KEY` is eligible;
+an unrelated replacement is rejected and disconnected.
 
 ## Bonded reconnect
 
 Valid existing trust MAY reconnect with the pairing window closed:
 
 - Classic incoming ACL is admitted only when a stored key exists.
-- LE exact-identity and RPA candidates may connect, but SM must reuse valid security state.
+- LE exact-identity and RPA candidates may connect, but an RPA is only a bounded candidate: SM must
+  resolve and reuse valid security state before it can become ready.
 - Only `JPLC` can become the preferred direct LE reconnect target.
 - A connected peer is excluded from candidate selection.
 - An explicit pairing window disables speculative direct reconnect so discovery remains available.
@@ -80,8 +85,9 @@ pairing closed. The user must open a new window to create replacement trust.
 For a Switch 2 custom reconnect, failure preserves the known custom material for bounded retry.
 `btfresh` is the deliberate path that discards the target bond and admits one clean custom pairing.
 
-For Classic `PIN_OR_KEY_MISSING`, only the affected link key is removed. The next fresh trust
-creation remains subject to the explicit window.
+For Classic `PIN_OR_KEY_MISSING`, only the affected link key is removed. A generic authentication
+failure preserves the old key. The next fresh trust creation remains subject to the explicit
+window.
 
 ## Forget one
 

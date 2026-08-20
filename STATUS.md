@@ -7,9 +7,10 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
-- **Last software verification:** 2026-08-20 — Bluetooth trust-lifecycle correction. Both board
-  builds, all 75 compiled host tests, the 19-test focused management suite, and install-reset
-  markers are green. The controlled wipe/flash/re-admission hardware matrix is pending.
+- **Last software verification:** 2026-08-20 — Bluetooth trust/admission and connection-truth
+  hardening. Both board builds, all 76 compiled host tests, the 21-test focused management suite,
+  five trace-parser tests, and both install-reset markers are green. The controlled
+  wipe/flash/re-admission hardware matrix is pending.
 - **Current release:** v2.0.0, published 2026-08-15 from commit `a1491b2`.
 - **Development branch:** `ns2-testing`; v2.0.0 is the last tag on it.
 - **Bridge contract:** 3 (`ANDROID_BRIDGE_CONTRACT_VERSION` / `BridgeContract.VERSION`) — unchanged.
@@ -280,7 +281,8 @@ Briefs: [`docs/agents/ANDROID.md`](docs/agents/ANDROID.md),
   window closes, the LED goes solid, and the radio is freed. "Complete" is one HID-ready controller
   in Controller and Keyboard modes, exactly as before; in Keyboard + Mouse mode it is both roles,
   so pairing a keyboard does not close the window the mouse still needs. Classic discovery admits
-  keyboard/pointing Class-of-Device peripherals only while a KB/M mode is still missing that role. The host stays connectable and discoverable,
+  keyboard/pointing Class-of-Device peripherals only while a KB/M mode is still missing that role.
+  The host stays connectable outside the pairing window but becomes discoverable only inside it,
   so a bonded Classic controller still reconnects by paging in and a bonded BLE controller
   reconnects once discovery resumes at zero connections. An Android companion connection is
   app-initiated, so it does not depend on the adapter's own discovery being active.
@@ -296,6 +298,15 @@ Briefs: [`docs/agents/ANDROID.md`](docs/agents/ANDROID.md),
   public GAP deletion, clears all project-owned reconnect/key material, and includes the shared
   management bond. A new UF2 erases the full six-sector reserved persistence region and recreates
   the lock before discovery starts.
+- Classic link-key notifications are held as in-RAM candidates and committed only after matching
+  successful authentication. Existing trust survives generic authentication failure; only the
+  missing-key status removes that peer's stale key. LE RPAs can reach SM only as bounded reconnect
+  candidates and cannot grant fresh trust. An HCI state loss retires live input generations and
+  clears transient radio state while preserving durable bonds.
+- Owner-LED policy now uses HID/protocol-ready counts rather than raw radio slots and uses elapsed
+  wall time for every cadence. Idle is a 90 ms pulse every 10 seconds; solid means controller-ready
+  unless a higher-priority acknowledgement/configuration state owns the LED. `btstate` exposes raw
+  versus ready counts, the selected LED reason/timing and HCI state-loss count without key material.
 - The older claim that post-wipe automatic readmission was hardware-confirmed is **reopened** after
   the owner observed controller reconnects following wipe/flash. The source audit found automatic
   fresh re-pairing that could explain the symptom, and the correction is host-tested/board-built;

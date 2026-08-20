@@ -9,6 +9,7 @@ are:
 | Need | Document |
 |---|---|
 | Runtime owners and radio roles | [`ARCHITECTURE.md`](ARCHITECTURE.md) |
+| Admission, authentication, encryption and trust guarantees | [`SECURITY.md`](SECURITY.md) |
 | Flash, keys, bonds, update/reset, forget and wipe | [`PERSISTENCE.md`](PERSISTENCE.md) |
 | Pair, reconnect, stale-key recovery and coexistence sequences | [`LIFECYCLE.md`](LIFECYCLE.md) |
 | UART snapshots and failure classification | [`DIAGNOSTICS.md`](DIAGNOSTICS.md) |
@@ -16,7 +17,7 @@ are:
 | Detailed implementation history and controller-specific notes | [`btstack-implementation.md`](btstack-implementation.md) |
 | Keyboard / mouse composite-source behavior | [`keyboard-mouse-input.md`](keyboard-mouse-input.md) |
 
-The first five documents describe current contracts. `btstack-implementation.md` remains the deeper
+The first six documents describe current contracts. `btstack-implementation.md` remains the deeper
 implementation record; when an older passage conflicts with the current source or these contracts,
 the source and the current-state documents win.
 
@@ -25,7 +26,9 @@ the source and the current-state documents win.
 - **Confirmed:** the pinned SDK installs Classic and LE databases into one two-bank TLV store;
   current source uses public GAP deletion for LE trust and runs persistent mutations on core 1.
 - **Source-tested:** fresh-controller trust is rejected outside explicit admission; sparse LE slots
-  are traversed by capacity; install reset covers the full six-sector reserved persistence region.
+  are traversed by capacity; Classic replacement keys are deferred until authentication; an RPA is
+  only a cryptographic reconnect candidate; install reset covers the full six-sector reserved
+  persistence region.
 - **Reopened:** a wiped or newly flashed adapter cannot silently form replacement trust when the
   remote returns. Older hardware results said this passed, but the owner later observed reconnects
   after wipe/flash. The code audit found an automatic re-pairing path that can explain that symptom.
