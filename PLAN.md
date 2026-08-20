@@ -45,6 +45,24 @@ motion, rumble, battery, descriptor, or bridge behavior without evidence of a co
 
 # Current Development Priority
 
+## Bluetooth Trust Lifecycle Hardware Closure
+
+The 2026-08-20 source pass corrected fresh-pair admission, sparse-slot deletion, public BTstack
+deletion side effects, project-owned Switch 2 key cleanup, and the new-UF2 persistence boundary.
+Host tests and both production board builds are green. The remaining accepted work is the single
+controlled physical matrix in [`docs/bluetooth/VALIDATION.md`](docs/bluetooth/VALIDATION.md):
+
+- [ ] Wipe with the peer powered on, then reboot and power-cycle the peer.
+- [ ] Wipe with the peer powered off; inspect clean state before it returns.
+- [ ] Release-UF2 install reset before the peer returns.
+- [ ] Explicit re-pair after rejection, then normal bonded reconnect regression.
+- [ ] Standard LE, Classic SSP, Switch 2 custom LE, management coexistence, and KB/M role-loss
+      coverage with available hardware.
+
+Bond snapshots MUST be recorded before the remote returns so persistence cannot be confused with
+automatic replacement pairing. Do not add speculative retries or key tuning while this matrix is
+pending.
+
 ## Bluetooth Keyboard / Keyboard + Mouse Input — Complete
 
 Delivered and hardware validated. Controller / Keyboard / Keyboard + Mouse input modes, the

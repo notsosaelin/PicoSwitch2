@@ -54,10 +54,12 @@ code inspection only; it is weaker than physical hardware confirmation.
 | Single-tap controller-only personality cycle | ✅ Confirmed (owner, 2026-08-12): routine BOOTSEL personality cycle on a live Switch 2 — the console detects the new controller and drops the old one |
 | Two-second direct Config entry and Config→Pro2 exit | ✅ Confirmed during CDC-only Virtual Amiibo validation |
 | Paired double-tap disconnect-without-bond-delete then pairing | ✅ Confirmed (PLAN.md: double-tap validated on hardware with DualSense connected) |
-| Triple-tap wipe from normal and Config modes | ✅ Confirmed (PLAN.md: triple-tap validated on hardware; triple-tap admission blocking hardware-confirmed) |
+| Triple-tap gesture dispatch from normal and Config modes | ✅ Previously hardware-confirmed; gesture recognition remains valid |
 | DualSense/Edge rumble while gestures remain responsive | ✅ Confirmed |
-| Post-wipe automatic readmission remains blocked | ✅ Confirmed for reported workflow; include in release matrix |
-| Re-pair after explicit new pairing window | ✅ Confirmed |
+| Wipe deletes Classic/LE trust, reconnect metadata, and Switch 2 custom material | 🔵 Source-tested; controlled powered-on/off and reboot matrix pending |
+| Post-wipe automatic readmission remains blocked | 🟡 Reopened 2026-08-20 after owner observed reconnect following wipe/flash; admission-path correction is host-tested and board-built, physical matrix pending |
+| New-UF2 Bluetooth reset and pre-discovery lockout | 🔵 Six-sector erase, marker, and both board builds verified; physical release-UF2 test pending |
+| Re-pair after explicit new pairing window | ✅ Previously confirmed; must be rechecked with the corrected Classic/LE admission gates |
 
 ## DualSense audio
 

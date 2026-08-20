@@ -7,9 +7,9 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
-- **Last verified:** 2026-08-16 — Bluetooth Keyboard / Keyboard + Mouse input pass. Both board
-  builds, install-reset markers, and the host suites are green; **no hardware testing has been
-  performed on the new input source**.
+- **Last software verification:** 2026-08-20 — Bluetooth trust-lifecycle correction. Both board
+  builds, all 75 compiled host tests, the 19-test focused management suite, and install-reset
+  markers are green. The controlled wipe/flash/re-admission hardware matrix is pending.
 - **Current release:** v2.0.0, published 2026-08-15 from commit `a1491b2`.
 - **Development branch:** `ns2-testing`; v2.0.0 is the last tag on it.
 - **Bridge contract:** 3 (`ANDROID_BRIDGE_CONTRACT_VERSION` / `BridgeContract.VERSION`) — unchanged.
@@ -290,7 +290,16 @@ Briefs: [`docs/agents/ANDROID.md`](docs/agents/ANDROID.md),
   BTstack restores bonded security state, after which the dongle restores ACK/input CCCs, reasserts
   P1, and reruns the native-motion feature sequence.
 - A persistent global pairing lock is installed before triple-tap disconnect/erase; only an explicit
-  double-tap pairing window reopens admission.
+  double-tap pairing window reopens admission. Fresh Classic keys, standard LE Just Works, and the
+  Switch 2 custom path now carry per-attempt admission state; erased or stale trust cannot silently
+  recreate itself while the window is closed. Wipe traverses sparse LE slots by capacity, uses
+  public GAP deletion, clears all project-owned reconnect/key material, and includes the shared
+  management bond. A new UF2 erases the full six-sector reserved persistence region and recreates
+  the lock before discovery starts.
+- The older claim that post-wipe automatic readmission was hardware-confirmed is **reopened** after
+  the owner observed controller reconnects following wipe/flash. The source audit found automatic
+  fresh re-pairing that could explain the symptom, and the correction is host-tested/board-built;
+  powered-on, powered-off, reboot, and release-UF2 hardware cases remain required.
 - BLE HID binds from the best identity available and enables notifications before querying DIS; a
   later DIS VID/PID is handed back for idempotent re-evaluation, so contradictory name matches
   cannot pin the wrong parser while input streams.
@@ -298,7 +307,7 @@ Briefs: [`docs/agents/ANDROID.md`](docs/agents/ANDROID.md),
   boundaries, with timers as the quiet/disconnected fallback.
 - Console wake from sleep uses the learned wake identity and is hardware-confirmed.
 
-See [`docs/bluetooth/btstack-implementation.md`](docs/bluetooth/btstack-implementation.md).
+See [`docs/bluetooth/README.md`](docs/bluetooth/README.md).
 
 ## Management
 
@@ -398,8 +407,8 @@ Reference: [`docs/switch2/audio-passthrough-research.md`](docs/switch2/audio-pas
 Virtual Amiibo is a production subsystem and is always available; a blank adapter presents no
 virtual tag and can still fall through to a real reader source. The board stores exactly one amiibo;
 the two flash banks are persistence generations of that one image, not two active tags. A newly
-flashed UF2 performs a one-shot erase of all five persistence sectors; ordinary power cycles retain
-state.
+flashed UF2 performs a one-shot erase of all six reserved persistence sectors; ordinary power
+cycles retain state.
 
 Hardware-confirmed: 540/572-byte tags and the complete 2048-byte figure-v3 (NTAG I2C Plus 2K / Kirby
 Air Riders) path, including the `0x14`/`0x21` device command, the two-stage Air Riders extended
@@ -430,7 +439,8 @@ release's hardware pass, and the two keyboard/mouse rows are source-tested only.
 
 ## Open validation gates
 
-These are the genuinely open items. None is a known release-blocking regression.
+These are the genuinely open items. The reopened Bluetooth trust lifecycle is a release gate until
+its controlled physical matrix passes.
 
 1. **Management active-use coexistence.** A console-awake session with a charged controller
    covering audio, gyro, wake, and latency alongside a connected management client. Recovery is
@@ -459,6 +469,10 @@ These are the genuinely open items. None is a known release-blocking regression.
    native versus translated mouse output, persistence across reboot, and Controller-mode regression
    — is in
    [`docs/bluetooth/keyboard-mouse-input.md`](docs/bluetooth/keyboard-mouse-input.md#hardware-validation).
+10. **Bluetooth wipe/flash trust lifecycle.** Run the powered-on wipe, powered-off wipe, reboot,
+   release-UF2, explicit re-pair, normal bonded reconnect, management coexistence, and KB/M role-loss
+   cases in [`docs/bluetooth/VALIDATION.md`](docs/bluetooth/VALIDATION.md). Record bond state before
+   the remote returns so old trust and automatic replacement trust cannot be confused.
 
 ## Known technical debt
 
