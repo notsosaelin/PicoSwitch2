@@ -51,8 +51,8 @@
 #define CONFIG_VERSION CONFIG_PERSIST_VERSION
 #define CONFIG_FLASH_OFFSET (PICO_FLASH_SIZE_BYTES - 4 * FLASH_SECTOR_SIZE)
 #define PERSISTENT_FLASH_START \
-    (PICO_FLASH_SIZE_BYTES - 5u * FLASH_SECTOR_SIZE)
-#define PERSISTENT_FLASH_SIZE (5u * FLASH_SECTOR_SIZE)
+    (PICO_FLASH_SIZE_BYTES - 6u * FLASH_SECTOR_SIZE)
+#define PERSISTENT_FLASH_SIZE (6u * FLASH_SECTOR_SIZE)
 #define CONFIG_WAKE_VALID 0xA5
 #define CONFIG_WAKE_SAVE_DELAY_MS 5000
 #define INSTALL_MARKER_LENGTH 19u
@@ -68,7 +68,7 @@ typedef config_record_t pico_config_t;
 #define CONFIG_RECORD_BYTES (4u * FLASH_PAGE_SIZE)
 
 // Every UF2 contains this pending marker in its own dedicated flash page.
-// First boot consumes it with a 1->0 page program after erasing all five
+// First boot consumes it with a 1->0 page program after erasing all six
 // PicoSwitch2 persistence sectors. Reflashing even the same UF2 rewrites the
 // application sector and restores the pending marker, while an ordinary reboot
 // leaves the consumed page untouched.
@@ -93,6 +93,7 @@ static pico_config_t cfg;
 static critical_section_t cfg_lock;
 static volatile bool save_requested;
 static volatile uint32_t save_not_before_ms;
+static bool install_reset_performed;
 
 static bool firmware_install_reset_pending(void)
 {
@@ -151,8 +152,8 @@ static void load_defaults(void) {
 void config_load(void) {
     critical_section_init(&cfg_lock);
     config_wireless_bridge_init();
-    if (firmware_install_reset_pending())
-        (void)consume_install_marker_and_erase_persistence();
+    install_reset_performed = firmware_install_reset_pending() &&
+        consume_install_marker_and_erase_persistence();
 
     const uint8_t *flash = (const uint8_t *)(XIP_BASE + CONFIG_FLASH_OFFSET);
     config_persist_load_t loaded =
@@ -177,6 +178,10 @@ void config_load(void) {
     // would have rejected.
     (void)ns2_kbm_runtime_config_load(&cfg.kbm);
     virtual_amiibo_store_init();
+}
+
+bool config_install_reset_performed(void) {
+    return install_reset_performed;
 }
 
 void config_get_body_color(uint8_t rgb[3]) {

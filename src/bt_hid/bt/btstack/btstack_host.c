@@ -7,6 +7,7 @@
 
 #include "btstack_host.h"
 #include "mgmt_bonds.h"
+#include "ns2_bt_lifecycle.h"
 #include "ns2_ble_reconnect.h"
 #include "ds5_audio_bridge.h"
 #include "ns2_pairing_crypto.h"
@@ -116,6 +117,7 @@ extern int find_player_index(int dev_addr, int instance);
 #include "bt/bthid/bthid.h"
 #include "bt_identity_log.h"
 #include "config_wireless_bridge.h"
+#include "config.h"
 #include "usb.h" // read-only personality gate for automatic native Pro2 motion setup
 #include "ns2_kbm_runtime.h" // KB/M role-aware Classic discovery admission
 
@@ -210,6 +212,10 @@ typedef struct {
     // Connection index for bthid layer (offset by MAX_CLASSIC_CONNECTIONS)
     uint8_t conn_index;
     bool hid_ready;
+    // Latched when an explicit pairing window admitted this connection. It
+    // remains valid while the bounded handshake finishes, even if the scan
+    // window closes after the raw ACL connects.
+    bool fresh_pairing_admitted;
 
     // Per-connection BLE HID client id. MUST be per-connection (not a single
     // global) so two BLE HID devices route reports + descriptors independently —
@@ -250,6 +256,7 @@ static struct {
     // decoded command/SPI response merely because two bytes resemble VID/PID.
     uint16_t pending_vid;
     uint16_t pending_pid;
+    bool pending_fresh_pairing_admitted;
 
     // Last connected device (for reconnection)
     bd_addr_t last_connected_addr;
@@ -355,6 +362,8 @@ static struct {
     uint16_t pending_pid;
     bool pending_valid;
     bool pending_outgoing;  // True if we initiated the connection (hid_host_connect)
+    bool pending_trust_present;
+    bool pending_fresh_pairing_admitted;
     hci_con_handle_t pending_acl_handle;  // ACL handle for pending incoming connection
     const bt_device_profile_t* pending_profile;
     // Pending HID connect (deferred until encryption completes)
@@ -525,6 +534,7 @@ static struct {
 
 static void classic_identity_query_schedule(const bd_addr_t addr);
 static void classic_identity_query_service(void);
+static void btstack_host_record_fresh_admission(bool accepted);
 
 // Classic HID descriptor storage
 static uint8_t classic_hid_descriptor_storage[512];
@@ -1266,6 +1276,11 @@ void btstack_host_power_on(void)
 // Switch 2 custom ATT path that never creates a BTstack bond.
 static bool pairing_lockout;
 static bool switch2_force_fresh_custom_pairing;
+static bool switch2_explicit_fresh_pairing_admitted;
+static uint32_t fresh_admission_accepts;
+static uint32_t fresh_admission_reject_window;
+static uint32_t fresh_admission_reject_lockout;
+static uint32_t wipe_completions;
 
 // Authoritative Switch 2 bond-key snapshot read from controller SPI during
 // the custom ATT init sequence. Declared with reconnect persistence because
@@ -1354,6 +1369,19 @@ static void btstack_host_clear_last_connected(void)
     hid_state.has_last_connected = false;
     hid_state.reconnect_attempts = 0;
     hid_state.reconnect_attempt_time = 0;
+    memset(sw2_pairing_ltk_raw, 0, sizeof(sw2_pairing_ltk_raw));
+    memset(sw2_pairing_ltk_normalized, 0,
+           sizeof(sw2_pairing_ltk_normalized));
+    sw2_pairing_ltk_valid = false;
+    sw2_pairing_ltk_handle = HCI_CON_HANDLE_INVALID;
+    sw2_pairing_ltk_phase = SW2_ENCRYPT_NONE;
+    switch2_force_fresh_custom_pairing = false;
+    switch2_explicit_fresh_pairing_admitted = false;
+    switch2_direct_reencrypt_active = false;
+    switch2_direct_reencrypt_handle = HCI_CON_HANDLE_INVALID;
+    switch2_direct_encrypt_phase = SW2_ENCRYPT_NONE;
+    switch2_link_encrypted = false;
+    switch2_link_encrypted_handle = HCI_CON_HANDLE_INVALID;
 
     const btstack_tlv_t *tlv_impl = NULL;
     void *tlv_context = NULL;
@@ -1422,18 +1450,28 @@ static void btstack_host_save_last_connected(void)
                         (const uint8_t *)&record, sizeof(record));
 }
 
-static int btstack_host_find_le_device(const bd_addr_t addr, bd_addr_type_t addr_type)
+static bool btstack_host_le_bond_entry_at(void *context, int slot,
+                                           int *address_type,
+                                           uint8_t address[6])
 {
-    for (int i = 0; i < le_device_db_max_count(); i++) {
-        int stored_type = BD_ADDR_TYPE_UNKNOWN;
-        bd_addr_t stored_addr;
-        le_device_db_info(i, &stored_type, stored_addr, NULL);
-        if (stored_type == (int)addr_type &&
-            memcmp(stored_addr, addr, sizeof(bd_addr_t)) == 0) {
-            return i;
-        }
-    }
-    return -1;
+    (void)context;
+    if (slot < 0 || slot >= le_device_db_max_count()) return false;
+
+    int stored_type = BD_ADDR_TYPE_UNKNOWN;
+    bd_addr_t stored_addr;
+    le_device_db_info(slot, &stored_type, stored_addr, NULL);
+    if (stored_type == BD_ADDR_TYPE_UNKNOWN) return false;
+    if (address_type) *address_type = stored_type;
+    if (address) memcpy(address, stored_addr, sizeof(stored_addr));
+    return true;
+}
+
+static int btstack_host_find_le_device(const bd_addr_t addr,
+                                        bd_addr_type_t addr_type)
+{
+    return ns2_bt_find_bond_slot(
+        btstack_host_le_bond_entry_at, NULL, le_device_db_max_count(), addr,
+        (int)addr_type, true);
 }
 
 static bool btstack_host_install_switch2_ltk(void)
@@ -1510,6 +1548,7 @@ static void btstack_host_force_switch2_fresh_pairing_run(void *context)
 {
     (void)context;
     switch2_force_fresh_custom_pairing = true;
+    switch2_explicit_fresh_pairing_admitted = true;
 
     // UART access is itself an explicit local diagnostic action, equivalent
     // to opening the bounded pairing window with BOOTSEL. A freshly wiped
@@ -1582,6 +1621,12 @@ static bool btstack_host_ble_addr_connected(const bd_addr_t addr)
 static void btstack_host_remember_ble_connection(ble_connection_t *conn)
 {
     if (!conn) return;
+
+    if (conn->fresh_pairing_admitted &&
+        conn->profile == &BT_PROFILE_SWITCH2) {
+        btstack_host_record_fresh_admission(true);
+        conn->fresh_pairing_admitted = false;
+    }
 
     const bool same_addr = hid_state.has_last_connected &&
         memcmp(hid_state.last_connected_addr, conn->addr, sizeof(bd_addr_t)) == 0;
@@ -2343,11 +2388,37 @@ bool btstack_host_pairing_locked(void)
     return pairing_lockout;
 }
 
-static int btstack_host_classic_connection_filter(bd_addr_t addr, hci_link_type_t link_type)
+static bool btstack_host_classic_has_trust(const bd_addr_t addr)
 {
-    UNUSED(addr);
+    link_key_t link_key;
+    link_key_type_t key_type;
+    return gap_get_link_key_for_bd_addr((uint8_t *)addr, link_key, &key_type);
+}
+
+static void btstack_host_record_fresh_admission(bool accepted)
+{
+    if (accepted) {
+        fresh_admission_accepts++;
+    } else if (pairing_lockout) {
+        fresh_admission_reject_lockout++;
+    } else {
+        fresh_admission_reject_window++;
+    }
+}
+
+static int btstack_host_classic_connection_filter(bd_addr_t addr,
+                                                   hci_link_type_t link_type)
+{
     UNUSED(link_type);
-    return pairing_lockout ? 0 : 1;
+    ns2_bt_admission_t admission = ns2_bt_admission_decide(
+        pairing_lockout, hid_pairing_window_open,
+        btstack_host_classic_has_trust(addr));
+    if (admission == NS2_BT_ADMISSION_REJECT) {
+        btstack_host_record_fresh_admission(false);
+        printf("[BTSTACK_HOST] Rejecting unbonded Classic ACL outside pairing window\n");
+        return 0;
+    }
+    return 1;
 }
 
 void btstack_host_clear_pairing_lockout(void)
@@ -2516,6 +2587,18 @@ void btstack_host_connect_ble(bd_addr_t addr, bd_addr_type_t addr_type)
     // Save pending connection info
     memcpy(hid_state.pending_addr, addr, 6);
     hid_state.pending_addr_type = addr_type;
+    hid_state.pending_fresh_pairing_admitted =
+        !pairing_lockout &&
+        (hid_pairing_window_open ||
+         (switch2_explicit_fresh_pairing_admitted &&
+          hid_state.pending_profile == &BT_PROFILE_SWITCH2));
+    if (hid_state.pending_fresh_pairing_admitted &&
+        switch2_explicit_fresh_pairing_admitted &&
+        hid_state.pending_profile == &BT_PROFILE_SWITCH2) {
+        // UART `btfresh` is a one-candidate diagnostic admission, not an
+        // unbounded global pairing mode.
+        switch2_explicit_fresh_pairing_admitted = false;
+    }
     hid_state.state = BLE_STATE_CONNECTING;
     hid_state.reconnect_attempt_time = btstack_run_loop_get_time_ms();
 
@@ -2954,6 +3037,16 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 hid_state.scan_active = false;
                 classic_state.inquiry_active = false;
                 btstack_host_restore_pairing_lockout();
+                const bool install_reset = config_install_reset_performed();
+                pairing_lockout = ns2_bt_boot_pairing_locked(
+                    pairing_lockout, install_reset);
+                if (install_reset) {
+                    // config_load() erased the complete persistence region
+                    // before BTstack/TLV existed. Recreate only the lock tag
+                    // now, before discovery or connectability can be enabled.
+                    btstack_host_store_pairing_lockout(true);
+                    printf("[BTSTACK_HOST] New firmware install: pairing admission locked until explicit gesture\n");
+                }
 
 #if !defined(BTSTACK_USE_ESP32) && !defined(BTSTACK_USE_NRF)
                 // Set master role policy for incoming Classic connections
@@ -3177,6 +3270,18 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             }
 
             bool is_controller = is_known_controller || is_generic_ble_hid;
+            bool ble_trust_present = is_controller &&
+                btstack_host_find_le_device(addr, addr_type) >= 0;
+            bool ble_rpa_trust_candidate = is_controller &&
+                !ble_trust_present &&
+                btstack_host_addr_is_rpa(addr, addr_type) &&
+                le_device_db_count() > 0;
+            bool fresh_pairing_authorized = hid_pairing_window_open ||
+                (switch2_explicit_fresh_pairing_admitted &&
+                 profile == &BT_PROFILE_SWITCH2);
+            ns2_bt_admission_t ble_admission = ns2_bt_admission_decide(
+                pairing_lockout, fresh_pairing_authorized,
+                ble_trust_present || ble_rpa_trust_candidate);
 
             // Multi-peer sighting bookkeeping. Counted for HID-looking peers
             // only, so unrelated BLE traffic does not drown the signal.
@@ -3198,7 +3303,8 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
 
             // Auto-connect to supported BLE controllers (skip classic-only devices)
             if (hid_state.state == BLE_STATE_SCANNING && is_controller &&
-                (profile->ble != BT_BLE_NONE || is_generic_ble_hid)) {
+                (profile->ble != BT_BLE_NONE || is_generic_ble_hid) &&
+                ble_admission != NS2_BT_ADMISSION_REJECT) {
                 printf("[BTSTACK_HOST] BLE controller: %02X:%02X:%02X:%02X:%02X:%02X name=\"%s\"\n",
                        addr[5], addr[4], addr[3], addr[2], addr[1], addr[0], name);
                 // Determine display name from profile and PID
@@ -3290,6 +3396,12 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             // still needs the role) keyboards and pointing devices.
             if ((is_gamepad || is_joystick || is_wiimote_family ||
                  is_kbm_peripheral) && classic_state.inquiry_active) {
+                bool classic_trust_present = btstack_host_classic_has_trust(addr);
+                ns2_bt_admission_t classic_admission = ns2_bt_admission_decide(
+                    pairing_lockout, hid_pairing_window_open,
+                    classic_trust_present);
+                if (classic_admission == NS2_BT_ADMISSION_REJECT)
+                    break;
                 // Skip if we already have an active incoming connection to this device
                 // (the device connected to us before we found it in inquiry)
                 if (classic_state.pending_valid && !classic_state.pending_outgoing &&
@@ -3313,6 +3425,9 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 classic_state.pending_profile = profile;
                 classic_state.pending_valid = true;
                 classic_state.pending_outgoing = true;  // We initiated this connection
+                classic_state.pending_trust_present = classic_trust_present;
+                classic_state.pending_fresh_pairing_admitted =
+                    hid_pairing_window_open && !pairing_lockout;
 
                 // If name is unavailable, request it and defer connection to
                 // REMOTE_NAME_REQUEST_COMPLETE. Wiimote-family devices (Wii U Pro,
@@ -3439,10 +3554,14 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             printf("[BTSTACK_HOST] Incoming connection: %02X:%02X:%02X:%02X:%02X:%02X COD=0x%06X link=%d\n",
                    addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], (unsigned)cod, link_type);
 
-            if (pairing_lockout) {
-                // The registered HCI filter rejects this before admission. Do not create
-                // pending bookkeeping if BTstack still forwards the request event.
-                printf("[BTSTACK_HOST] Rejecting Classic connection while pairing is locked\n");
+            bool classic_trust_present = btstack_host_classic_has_trust(addr);
+            ns2_bt_admission_t classic_admission = ns2_bt_admission_decide(
+                pairing_lockout, hid_pairing_window_open,
+                classic_trust_present);
+            if (classic_admission == NS2_BT_ADMISSION_REJECT) {
+                // The registered HCI filter rejects this before admission. Do
+                // not create pending bookkeeping if BTstack still forwards it.
+                printf("[BTSTACK_HOST] Rejecting unbonded Classic connection outside pairing window\n");
                 break;
             }
 
@@ -3458,6 +3577,9 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             classic_state.pending_pid = 0;
             classic_state.pending_valid = true;
             classic_state.pending_outgoing = false;  // Device initiated this connection
+            classic_state.pending_trust_present = classic_trust_present;
+            classic_state.pending_fresh_pairing_admitted =
+                hid_pairing_window_open && !pairing_lockout;
             classic_state.waiting_for_incoming_time = 0;  // Device reconnected
             // BTstack will auto-accept with the current master_slave_policy
             break;
@@ -3825,6 +3947,8 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                         conn->profile = hid_state.pending_profile;
                         conn->vid = hid_state.pending_vid;
                         conn->pid = hid_state.pending_pid;
+                        conn->fresh_pairing_admitted =
+                            hid_state.pending_fresh_pairing_admitted;
 
                         printf("[BTSTACK_HOST] Connection stored: name='%s' profile=%s vid=0x%04X pid=0x%04X\n",
                                conn->name, conn->profile ? conn->profile->name : "default",
@@ -4424,6 +4548,16 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             printf("[BTSTACK_HOST] PIN code request: %02X:%02X:%02X:%02X:%02X:%02X\n",
                    pin_addr[0], pin_addr[1], pin_addr[2], pin_addr[3], pin_addr[4], pin_addr[5]);
 
+            bool fresh_pairing_admitted = classic_state.pending_valid &&
+                bd_addr_cmp(pin_addr, classic_state.pending_addr) == 0 &&
+                classic_state.pending_fresh_pairing_admitted;
+            if (!fresh_pairing_admitted) {
+                btstack_host_record_fresh_admission(false);
+                printf("[BTSTACK_HOST] PIN request rejected outside explicit pairing window\n");
+                gap_pin_code_negative(pin_addr);
+                break;
+            }
+
             // Check if device needs BD_ADDR-based PIN (Wiimote/Wii U Pro)
             bool needs_bdaddr_pin = false;
             if (classic_state.pending_valid &&
@@ -4473,6 +4607,29 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
 
             printf("[BTSTACK_HOST] Link key notification: %02X:%02X:%02X:%02X:%02X:%02X type=%d\n",
                    notif_addr[0], notif_addr[1], notif_addr[2], notif_addr[3], notif_addr[4], notif_addr[5], key_type);
+
+            bool trust_update_admitted = classic_state.pending_valid &&
+                bd_addr_cmp(notif_addr, classic_state.pending_addr) == 0 &&
+                (classic_state.pending_trust_present ||
+                 classic_state.pending_fresh_pairing_admitted);
+            if (!trust_update_admitted) {
+                // BTstack may already have auto-stored the event's key. Delete
+                // it explicitly so an unexpected SSP flow cannot create trust.
+                btstack_host_record_fresh_admission(false);
+                printf("[BTSTACK_HOST] Dropping unadmitted Classic link key\n");
+                gap_drop_link_key_for_bd_addr(notif_addr);
+                hci_connection_t *unadmitted =
+                    hci_connection_for_bd_addr_and_type(notif_addr,
+                                                        BD_ADDR_TYPE_ACL);
+                if (unadmitted) gap_disconnect(unadmitted->con_handle);
+                break;
+            }
+
+            if (classic_state.pending_fresh_pairing_admitted) {
+                btstack_host_record_fresh_admission(true);
+                classic_state.pending_trust_present = true;
+                classic_state.pending_fresh_pairing_admitted = false;
+            }
 
             // Explicitly store the link key (BTstack's auto-storage may not work for legacy pairing)
             gap_store_link_key_for_bd_addr(notif_addr, link_key, key_type);
@@ -4656,8 +4813,18 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *pa
                 }
                 break;
             }
-            printf("[BTSTACK_HOST] SM: controller Just Works request\n");
-            sm_just_works_confirm(handle);
+            ble_connection_t *conn = find_connection_by_handle(handle);
+            if (conn && conn->fresh_pairing_admitted) {
+                btstack_host_record_fresh_admission(true);
+                conn->fresh_pairing_admitted = false;
+                printf("[BTSTACK_HOST] SM: controller Just Works accepted from explicit pairing window\n");
+                sm_just_works_confirm(handle);
+            } else {
+                btstack_host_record_fresh_admission(false);
+                printf("[BTSTACK_HOST] SM: controller Just Works declined outside pairing window\n");
+                sm_bonding_decline(handle);
+                gap_disconnect(handle);
+            }
             break;
         }
 
@@ -4755,12 +4922,19 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *pa
                     btstack_host_install_switch2_ltk();
                     gap_disconnect(handle);
                 } else {
-                    // Standard BLE devices can fall back to ordinary pairing.
+                    // Remove only the failed relationship. Creating replacement
+                    // trust still requires the explicit pairing window that was
+                    // latched when this connection was admitted.
                     bd_addr_t addr;
                     sm_event_reencryption_complete_get_address(packet, addr);
                     bd_addr_type_t addr_type = sm_event_reencryption_complete_get_addr_type(packet);
                     gap_delete_bonding(addr_type, addr);
-                    sm_request_pairing(handle);
+                    if (conn && conn->fresh_pairing_admitted) {
+                        sm_request_pairing(handle);
+                    } else {
+                        printf("[BTSTACK_HOST] Stale LE bond removed; fresh pairing remains closed\n");
+                        gap_disconnect(handle);
+                    }
                 }
             }
             break;
@@ -5129,21 +5303,18 @@ static volatile int  bonds_page_start;
 static volatile bool bonds_remove_ok;
 static volatile bool bonds_list_complete;
 static char bonds_list_json[MGMT_BONDS_RESPONSE_CAPACITY];
+static bool btstack_host_forget_device_typed(const uint8_t bd_addr[6],
+                                              int address_type,
+                                              bool match_address_type);
 
 static bool bonds_entry_at(void *context, int slot, mgmt_bond_entry_t *entry)
 {
-    (void)context;
-    if (!entry || slot < 0 || slot >= le_device_db_max_count())
+    if (!entry)
         return false;
-
-    int type = BD_ADDR_TYPE_UNKNOWN;
-    bd_addr_t address;
-    le_device_db_info(slot, &type, address, NULL);
-    if (type == BD_ADDR_TYPE_UNKNOWN)
+    if (!btstack_host_le_bond_entry_at(context, slot, &entry->type,
+                                       entry->address))
         return false;
     entry->index = slot;
-    entry->type = type;
-    memcpy(entry->address, address, sizeof(entry->address));
     return true;
 }
 
@@ -5158,8 +5329,8 @@ static void bonds_op_run(void *ctx)  // BTstack thread (core1)
             bd_addr_t addr;
             le_device_db_info(idx, &type, addr, NULL);
             if (type != BD_ADDR_TYPE_UNKNOWN) {
-                le_device_db_remove(idx);   // persists to the TLV flash bank
-                bonds_remove_ok = true;
+                bonds_remove_ok = btstack_host_forget_device_typed(
+                    addr, type, true);
             }
         }
     } else if (bonds_op_is_page) {
@@ -9489,6 +9660,9 @@ void btstack_host_get_mgmt_diag(btstack_host_mgmt_diag_t *out)
         if (hid_state.connections[i].handle != HCI_CON_HANDLE_INVALID)
             out->connected_ble_count++;
     }
+    out->pairing_window_open = hid_pairing_window_open;
+    out->pairing_close_deferred = pairing_close_deferred;
+    out->pairing_lockout = pairing_lockout;
     // config/management BLE service
     out->cble_service_available = config_ble.service_available;
     out->cble_mode_active = config_ble.mode_active;
@@ -9514,6 +9688,10 @@ void btstack_host_get_mgmt_diag(btstack_host_mgmt_diag_t *out)
     out->mgmt_disconnects = btlife.mgmt_disconnect;
     out->ctrl_disconnects = btlife.ctrl_disconnect;
     out->hci_disconnects = btlife.hci_disconnect;
+    out->fresh_admission_accepts = fresh_admission_accepts;
+    out->fresh_admission_reject_window = fresh_admission_reject_window;
+    out->fresh_admission_reject_lockout = fresh_admission_reject_lockout;
+    out->wipe_completions = wipe_completions;
     out->last_disc_handle = btlife.last_disc_handle;
     out->last_disc_reason = btlife.last_disc_reason;
 }
@@ -10536,6 +10714,10 @@ void btstack_host_delete_all_bonds(void)
     classic_state.recovery_start_time = 0;
     classic_state.waiting_for_incoming_time = 0;
     classic_state.pending_valid = false;
+    classic_state.pending_trust_present = false;
+    classic_state.pending_fresh_pairing_admitted = false;
+    hid_state.pending_fresh_pairing_admitted = false;
+    switch2_explicit_fresh_pairing_admitted = false;
     if (hid_state.state == BLE_STATE_CONNECTING) gap_connect_cancel();
     btstack_host_stop_scan();
 
@@ -10560,18 +10742,31 @@ void btstack_host_delete_all_bonds(void)
     printf("[BTSTACK_HOST] Classic BT link keys deleted\n");
 
     int ble_count = le_device_db_count();
-    // le_device_db_init() is a no-op for the TLV backend used by CYW43. Remove
-    // every slot explicitly or the supposedly wiped LE keys survive in flash.
+    // le_device_db_init() is a no-op for the TLV backend used by CYW43. Walk
+    // every slot explicitly because the backend permits holes, and use GAP's
+    // public deletion API so its resolving-list side effects are retained.
     for (int i = le_device_db_max_count() - 1; i >= 0; --i) {
-        le_device_db_remove(i);
+        int type = BD_ADDR_TYPE_UNKNOWN;
+        bd_addr_t addr;
+        le_device_db_info(i, &type, addr, NULL);
+        if (type != BD_ADDR_TYPE_UNKNOWN)
+            gap_delete_bonding((bd_addr_type_t)type, addr);
     }
-    printf("[BTSTACK_HOST] BLE bonds deleted (was %d devices)\n", ble_count);
+    printf("[BTSTACK_HOST] BLE bonds deleted (was %d devices, now %d)\n",
+           ble_count, le_device_db_count());
 #endif
 
     btstack_host_clear_last_connected();
     // Store after a flash-bank erase/re-init so the post-wipe lock survives reboot.
     btstack_host_store_pairing_lockout(true);
 
+    // The shared LE DB also owns the management peripheral bond. Wipe-all is
+    // intentionally global, so terminate that link without touching unrelated
+    // controller/management lifecycles during ordinary disconnects.
+    if (config_ble.handle != HCI_CON_HANDLE_INVALID)
+        gap_disconnect(config_ble.handle);
+
+    wipe_completions++;
     printf("[BTSTACK_HOST] All bonds cleared. Devices will need to re-pair.\n");
 }
 
@@ -10587,36 +10782,73 @@ bool btstack_host_get_last_connected(uint8_t bd_addr_out[6], char name_out[48])
     return true;
 }
 
-void btstack_host_forget_device(const uint8_t bd_addr[6])
+static bool btstack_host_forget_device_typed(const uint8_t bd_addr[6],
+                                              int address_type,
+                                              bool match_address_type)
 {
-    if (!hid_state.initialized) return;
+    if (!hid_state.initialized || !bd_addr) return false;
 
     bd_addr_t addr;
     memcpy(addr, bd_addr, 6);
+    bool affected = false;
 
     printf("[BTSTACK_HOST] Forgetting device %02X:%02X:%02X:%02X:%02X:%02X\n",
            addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
 
-    // Disconnect if currently connected
+    // Cancel an in-flight connect to this identity before mutating trust.
+    if (hid_state.state == BLE_STATE_CONNECTING &&
+        memcmp(hid_state.pending_addr, addr, sizeof(addr)) == 0 &&
+        (!match_address_type ||
+         hid_state.pending_addr_type == (bd_addr_type_t)address_type)) {
+        gap_connect_cancel();
+        hid_state.pending_fresh_pairing_admitted = false;
+        affected = true;
+    }
+
+    // Disconnect controller-role BLE links for this identity.
     for (int i = 0; i < MAX_BLE_CONNECTIONS; i++) {
         if (hid_state.connections[i].handle != HCI_CON_HANDLE_INVALID &&
-            memcmp(hid_state.connections[i].addr, addr, 6) == 0) {
+            memcmp(hid_state.connections[i].addr, addr, 6) == 0 &&
+            (!match_address_type ||
+             hid_state.connections[i].addr_type ==
+                 (bd_addr_type_t)address_type)) {
             gap_disconnect(hid_state.connections[i].handle);
+            affected = true;
         }
     }
 
-    // Remove BLE bond
-    int bond_count = le_device_db_count();
-    for (int i = 0; i < bond_count; i++) {
-        int addr_type;
-        bd_addr_t bond_addr;
-        sm_key_t irk;
-        le_device_db_info(i, &addr_type, bond_addr, irk);
-        if (addr_type < 0) continue;
-        if (memcmp(bond_addr, addr, 6) == 0) {
-            le_device_db_remove(i);
-            printf("[BTSTACK_HOST] Removed BLE bond at index %d\n", i);
-            break;
+    // The management peripheral shares the LE DB but not the controller table.
+    if (config_ble.handle != HCI_CON_HANDLE_INVALID &&
+        config_ble.client_addr_valid &&
+        memcmp(config_ble.client_addr, addr, sizeof(addr)) == 0) {
+        gap_disconnect(config_ble.handle);
+        affected = true;
+    }
+
+    // Classic trust uses the same six-byte identity but a separate database.
+    for (int i = 0; i < MAX_CLASSIC_CONNECTIONS; ++i) {
+        classic_connection_t *conn = &classic_state.connections[i];
+        if (!conn->active || memcmp(conn->addr, addr, sizeof(addr)) != 0)
+            continue;
+        hci_connection_t *hci_conn = hci_connection_for_bd_addr_and_type(
+            conn->addr, BD_ADDR_TYPE_ACL);
+        if (hci_conn) gap_disconnect(hci_conn->con_handle);
+        affected = true;
+    }
+
+    // Search the full capacity: count() is not a slot bound when the TLV DB is
+    // sparse. Use GAP deletion to refresh the controller resolving list.
+    int bond_slot = ns2_bt_find_bond_slot(
+        btstack_host_le_bond_entry_at, NULL, le_device_db_max_count(), addr,
+        address_type, match_address_type);
+    if (bond_slot >= 0) {
+        int stored_type = BD_ADDR_TYPE_UNKNOWN;
+        bd_addr_t stored_addr;
+        le_device_db_info(bond_slot, &stored_type, stored_addr, NULL);
+        if (stored_type != BD_ADDR_TYPE_UNKNOWN) {
+            gap_delete_bonding((bd_addr_type_t)stored_type, stored_addr);
+            printf("[BTSTACK_HOST] Removed BLE bond at index %d\n", bond_slot);
+            affected = true;
         }
     }
 
@@ -10627,9 +10859,18 @@ void btstack_host_forget_device(const uint8_t bd_addr[6])
 
     // Clear last-connected if it matches
     if (hid_state.has_last_connected &&
-        memcmp(hid_state.last_connected_addr, addr, 6) == 0) {
-        memset(hid_state.last_connected_addr, 0, 6);
-        hid_state.has_last_connected = false;
-        btstack_host_save_last_connected();  // Save the cleared state
+        memcmp(hid_state.last_connected_addr, addr, 6) == 0 &&
+        (!match_address_type ||
+         hid_state.last_connected_addr_type ==
+             (bd_addr_type_t)address_type)) {
+        btstack_host_clear_last_connected();
+        affected = true;
     }
+    return affected;
+}
+
+void btstack_host_forget_device(const uint8_t bd_addr[6])
+{
+    (void)btstack_host_forget_device_typed(
+        bd_addr, BD_ADDR_TYPE_UNKNOWN, false);
 }
