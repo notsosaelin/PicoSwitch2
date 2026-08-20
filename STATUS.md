@@ -271,6 +271,20 @@ console-facing protocol owner. Reference hardware is an AYN Thor (Android 13 / A
   mode, both mapping profiles with a per-input editor, and mouse tuning. KB/M changes apply to
   adapter RAM immediately and are persisted by an explicit Save; the app models that rather than
   implying storage. Implementation complete; hardware validation of the mutation paths pending.
+- **Relationship lifecycle:** source/JVM-tested 2026-08-20. One Android-side generation coordinator
+  owns CDM association, Bluetooth bond wait, foreground/manual reconnect, and identity-verified GATT
+  progression. API-33 duplicate association completion is idempotent; missing bonds become Repair
+  pairing; ordinary Disconnect retains the relationship and touches management only. GATT teardown
+  is callback-or-timeout bounded and close-once; 133/timeout/congestion receive one clean retry and
+  one saved-address-pinned scan fallback. The controller-drop/solid-LED report remains **Unknown**
+  pending the focused UART + ADB physical matrix; firmware/controller architecture was not changed.
+- **Identity color UX:** source/JVM-tested 2026-08-20. One commit now performs mutation, readback,
+  persistence completion when identified, and automatic same-personality re-enumeration. Only a
+  partial USB-refresh failure leaves Retry. Physical Switch 2 validation remains pending.
+- **Relationship terminology:** Settings separately reports Saved adapter, Android companion
+  association, Android Bluetooth pairing, and Adapter Bluetooth LE bonds. The adapter list is not a
+  phone directory and is not name-deduplicated because firmware exposes no proof that two entries
+  represent one physical phone.
 - **Known limitations:** input is delivered through Activity dispatch, so the companion must be the
   foreground window while playing (backgrounding releases held input; the connected-device
   foreground service keeps the link and rumble path alive). Android permits one HID Device

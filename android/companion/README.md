@@ -16,8 +16,8 @@ The debug build provides real implementations for:
   color, LE bond, and Amiibo state reads;
 - Pro Controller 2, GameCube, Joy-Con 2 L, and Joy-Con 2 R personality switching with an explicit
   USB re-enumeration warning;
-- body/lightbar and Joy-Con accent colors, followed by queued firmware persistence and an explicit
-  same-personality USB identity refresh;
+- body/lightbar and Joy-Con accent colors, followed by authoritative readback, persistence
+  completion when the firmware reports it, and automatic same-personality USB identity refresh;
 - queued console wake requests;
 - a private, versioned, recoverable on-device Amiibo library using app-internal files and atomic replacement;
 - import and validation of exact 540-byte, 572-byte, and 2048-byte user backups;
@@ -43,11 +43,12 @@ The debug build provides real implementations for:
   immediate state/cache replacement after console-modified data is retrieved;
 - present, eject, clean/used copy selection, and guarded adapter clear operations;
 - Android built-in controller discovery and live input diagnostics;
-- the public Android `BluetoothHidDevice` controller bridge using the exact 81-byte descriptor and
-  nine-byte payload pinned by `tools/fixtures/android_controller_hid.h`;
-- one persisted adapter relationship with first-use **Pair Adapter**, returning direct GATT
-  reconnect plus bounded service-scan fallback (including saved-address identity mismatch), one
-  fresh automatic attempt per foreground session, disconnected-state cleanup, and controller-mode reuse of the saved Classic bond,
+- the public Android `BluetoothHidDevice` controller bridge using the exact 161-byte descriptor and
+  26-byte input payload pinned by `tools/fixtures/android_controller_hid.h`;
+- one persisted adapter relationship with a generation-owned association/bond/connect coordinator,
+  first-use **Pair Adapter**, returning direct GATT reconnect, one clean retry for recoverable
+  Android stack failures, an address-pinned service-scan fallback, explicit repair for missing
+  Android bonds, and controller-mode reuse of the saved Classic bond,
   capacity-one full-state reports at an 8 ms ceiling, input-device hot-plug recovery, and
   neutralization on pause/stop/disconnect;
 - the complete Keyboard & Mouse management surface: live device and role status with names resolved
@@ -105,6 +106,36 @@ our Bluetooth address, so the app cannot tell whether an entry is itself. `Adapt
 therefore probes the link after the removal and reports whether the session survived; the
 ViewModel disconnects and reconciles when it did not, rather than leaving the UI connected to a
 relationship that no longer exists.
+
+### Adapter relationship and GATT lifecycle
+
+The app keeps four truths separate: its one **Saved adapter**, app-owned Android companion
+associations, Android's Bluetooth bond, and the adapter's own Bluetooth LE bond database. **Forget**
+clears the first two (including stale app-owned associations) and deliberately retains both
+Bluetooth bonds. **Disconnect** closes only the
+management GATT session and retains the complete relationship; it never calls the independent
+Controller Bridge or a physical-controller path.
+
+`AdapterRelationshipCoordinator` is the single product-level authority. Every pairing/connect
+attempt has a generation, duplicate API-33 CDM completion through both `onAssociationCreated` and
+the Activity result is idempotent, a bond broadcast advances only the attempt waiting for that
+address, and foreground/manual requests cannot overlap it. A relationship is persisted only after
+the subscribed GATT session answers the management identity probe as PicoSwitch2.
+
+Public API evidence: Android documents the dual association delivery in
+[`CompanionDeviceManager.Callback`](https://developer.android.com/reference/android/companion/CompanionDeviceManager.Callback),
+asynchronous bond completion in
+[`BluetoothDevice.createBond`](https://developer.android.com/reference/android/bluetooth/BluetoothDevice#createBond()),
+and app-owned association removal separately from Bluetooth bonding in
+[`CompanionDeviceManager.disassociate`](https://developer.android.com/reference/android/companion/CompanionDeviceManager#disassociate(int)).
+
+`BleGattManagementTransport` separately owns one Android `BluetoothGatt` generation. Retirement
+requests `disconnect()`, waits up to 1.25 seconds for that same client's disconnected callback, and
+then closes exactly once; late callbacks from older generations are diagnostic-only. Status 133,
+the public connection-timeout status, and connection congestion receive at most one clean direct
+retry. A failed direct sequence gets one service-filtered scan restricted to the saved address, so
+another nearby PicoSwitch2 cannot silently replace the relationship. Repeated failures remain
+actionable but do not erase trust or create a reconnect loop.
 
 ### Shared UI primitives
 
@@ -253,8 +284,10 @@ adb install -r app\build\outputs\apk\debug\app-debug.apk
 ```
 
 The app requires Android 9/API 28 or newer. Android 12+ presents the standard Nearby Devices
-permission. The Android controller bridge also uses Android-owned chooser and bond-confirmation UI;
-no root, Shizuku, accessibility service, hidden API, or visit to Bluetooth Settings is required.
+permission. Pairing uses Android-owned chooser and bond-confirmation UI; no root, Shizuku,
+accessibility service, or hidden API is used. Ordinary pairing/reconnect stays in the app. Android
+Settings is requested only when Repair pairing finds a still-present platform bond that public APIs
+cannot remove.
 
 ## Firmware setup and safety
 
@@ -316,7 +349,8 @@ up, and finally verifies the pulled PNG's own dimensions before accepting it as 
 
 ## Tests
 
-A clean JVM run passed **139 `:app` tests** and **114 `:bridge-core` tests**, plus **2 instrumented
+A clean JVM run passed **145 `:app` tests**, **114 `:bridge-core` tests**, and **45
+`:management-core` tests**, plus **2 instrumented
 emulator tests** (every top-level destination rendering offline, and the Diagnostics overlay opening
 and closing), Android lint with zero errors, and debug APK assembly. A connected AYN
 Thor rerun of the UI test on 2026-08-13 did not expose a Compose hierarchy to the runner, so that
@@ -393,10 +427,11 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
 - The Input page reads the firmware's bounded source registry and lets a bonded/encrypted management
   client choose one Active controller. A handoff neutralizes the console output and waits for a fresh
   complete report from the selected source; it never merges two controllers.
-- Color changes save first and remain pending until the user chooses **Apply identity changes**.
-  Firmware then queues the existing same-personality USB re-enumeration path; the console-side
-  controller pauses briefly. This path is host/build-tested but still needs the physical recovery
-  checklist in `HARDWARE_VALIDATION.md`.
+- A color commit mutates, reads back, saves, waits for identified persistence completion when
+  supported, and automatically queues same-personality USB re-enumeration. Only a partial failure
+  leaves **Retry** visible with the truthful message that color was saved but identity refresh is
+  pending. This path is source/JVM-tested and still needs the physical recovery checklist in
+  `HARDWARE_VALIDATION.md`.
 - App appearance preferences are local to this Android install. Joy-Con-inspired palettes are UI
   references only; they do not imply or alter the adapter's body/lightbar/Joy-Con identity values.
 - LE bond lists are bounded by the wireless reply bridge's 511-byte payload ceiling. Firmware now
@@ -412,8 +447,9 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
   queued persistence. Failed local storage leaves firmware dirty protection intact.
 - Optional feature probes distinguish unavailable firmware commands from transient communication
   failure without discarding valid core state.
-- Rotation/process restoration retains destination, Amiibo/source selection, color edits, and
-  pending identity-refresh state without replaying protocol mutations.
+- Rotation/process restoration retains destination, Amiibo/source selection, color edits, and a
+  partial color-apply retry without replaying protocol mutations. An association result can recover
+  its active ViewModel generation after Activity recreation.
 - **Diagnostics** (Settings -> About -> Diagnostics) groups identity, management link, controller
   bridge, keyboard/mouse arbitration, adapter state, Android platform, and live input by the layer
   each describes, so a cross-layer failure's first question -- which side disagrees -- is answered by

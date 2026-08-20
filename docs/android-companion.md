@@ -18,13 +18,28 @@ session rules, and conformance material are indexed at
 local files, NFC, and presentation; it consumes portable command/reply and workflow behavior from
 `:management-core`.
 
-The UI now models these transports as one saved adapter relationship: first use says **Pair
-Adapter**, returning launches direct management reconnect with discovery fallback, and controller
-mode reuses the saved Classic bond without a second chooser. Android still owns the required
-companion association, bond prompt, foreground HID registration, and HID connection underneath.
-The AYN Thor completed the original app-led HID path through PicoSwitch2 into a real game on
-2026-08-13; the simplified relationship flow and corrected Nintendo face-label mapping await a
-focused replay.
+The UI now models these transports as one saved adapter relationship, while keeping four underlying
+truths explicit: app relationship, app-owned CompanionDeviceManager association, Android Bluetooth
+bond, and adapter-side LE bond database. One generation-owned coordinator arbitrates association,
+bond, foreground/manual reconnect, and verified management progression. Android 13+ documents that
+association success is delivered through both `onAssociationCreated` and the Activity result; that
+duplicate is idempotent, and `BOND_BONDING` never starts GATT. First use says **Pair Adapter**,
+returning use reconnects without a chooser, a missing platform bond becomes **Repair pairing**, and
+controller mode reuses the saved Classic bond without a second chooser.
+
+The Android backend also owns one `BluetoothGatt` generation at a time. Teardown waits for its
+matching disconnected callback with a bounded timeout before closing exactly once; stale callbacks
+cannot mutate a newer session. A recoverable 133, connection timeout, or congestion result receives
+one clean retry, followed by one service scan pinned to the saved address. Management reports
+Connected only after the PicoSwitch2 identity probe succeeds. Explicit Disconnect closes management
+only and does not call the independent Controller Bridge or physical-controller paths.
+
+Color commit is now one happy-path action: mutate, authoritative readback, save, identified
+persistence completion when supported, and automatic same-personality USB re-enumeration. Only a
+partial re-enumeration failure leaves a Retry affordance. These lifecycle/color changes are
+source/JVM-tested as of 2026-08-20 and await the focused AYN Thor matrix in
+[`HARDWARE_VALIDATION.md`](../android/companion/HARDWARE_VALIDATION.md). The original app-led HID
+path through PicoSwitch2 into a real game remains hardware-confirmed from 2026-08-13.
 
 The application is organized around five destinations — **Adapter**, **Keyboard**, **Amiibo**,
 **Gamepad**, **Settings** — with **Diagnostics** and **Amiibo settings** pushed over them rather

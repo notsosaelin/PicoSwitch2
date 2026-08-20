@@ -140,27 +140,6 @@ Do not combine this pass with unrelated controller, protocol, or platform work.
 
 ---
 
-## Android Companion Polish
-
-Perform a dedicated Android UI/UX and reliability pass after major functionality is stable.
-
-Potential work should be based on the actual current application rather than historical UI plans.
-
-Focus areas may include:
-
-- clearer connection state
-- clearer active-source state
-- input configuration discoverability
-- adapter/firmware compatibility presentation
-- Amiibo workflow polish
-- diagnostics accessibility
-- lifecycle/reconnection behavior
-- handheld-sized layout consistency
-
-Do not use this as an excuse to refactor bridge-core or firmware behavior.
-
----
-
 # Platform Backend Expansion
 
 The platform-neutral bridge architecture intentionally allows additional host platforms.

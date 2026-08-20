@@ -1,53 +1,99 @@
-# Minimal first hardware validation
+# Android relationship reliability gate (pending)
 
-Validated baseline on 2026-08-13: AYN Thor / Android 13 discovers the adapter, displays adapter and
-live built-in-controller state, switches personality, and controls a real game through the Android
-HID bridge and PicoSwitch2. The pass exposed inverted Nintendo-style face labels; Auto/Nintendo/
-Xbox normalization is now implemented but awaits replay. Ordinary Amiibo
-Sync's former `CRC Failed Verification` was a client bug caused by firmware's zero unavailable-CRC
-sentinel. The fixed APK completed the same 540-byte Sync on the Thor with no error; it retains
-structural validation and strict figure-v3 CRC checks.
+The 2026-08-20 relationship/GATT/color pass is **source-tested**, not physically closed. The older
+AYN Thor / Android 13 baseline proved service discovery and the controller bridge, but it does not
+prove the new association generations, callback-aware teardown, bounded 133 recovery, or automatic
+color apply. Run the matrices below in order and record the exact starting Android bond, companion
+association, app relationship, adapter LE bond list, firmware build, app build, and console state.
 
-1. Install `app-debug.apk`, open it, and grant Nearby devices.
-2. Open **Settings -> Appearance**. Select System, Light, Dark, and OLED black once; confirm the
-   controls remain readable after each change, the OLED background is true black, and the choice
-   remains after closing/reopening the app. Select each inspired palette and confirm this changes
-   only app accents; it must not send a firmware color command.
-3. Open **Settings -> Developer**. Confirm Bluetooth available/enabled, both permissions
-   true, Companion manager true, and management initially offline.
-4. On a source-default image, confirm PicoSwitch2 advertises management without entering Config.
-   First try **Pair Adapter** outside the pairing window and confirm a new bond cannot complete.
-   Double-tap BOOTSEL, tap **Pair Adapter**, and select PicoSwitch2 in Android's chooser. Expect GATT
-   `Connected`, firmware `2.0`, and populated Adapter/Amiibo state.
-   Disconnect/reconnect outside the window and confirm the stored bond works. From Developer,
-   issue `mgmt off` and confirm the current session closes and advertising stops; reboot the adapter
-   and confirm production-default advertising returns. An unbonded/plaintext client must never
-   execute a command.
-5. Change to each output personality once. Expect a success message and **Identity refresh:
-   Required**; confirm the console-facing USB controller returns after re-enumeration.
-6. Change the active personality's controller color and save. Confirm it is marked pending, choose
-   **Apply identity changes**, and verify the Switch 2 renders the new color after one brief USB
-   reconnect. Confirm input, motion, rumble, audio (Pico 2 W), wake, and the management connection
-   recover without a power cycle.
-7. Import one owned 540/572-byte backup, load it, present/eject it, then make one console write and
-   Sync. Expect dirty protection before Sync and a clean persisted state afterward. Reopen the app
-   and confirm the local backup remains.
-8. Close/reopen the app. Expect the saved adapter to reconnect without a chooser; if unavailable,
-   expect **Reconnect** and **Pair another** to remain distinct actions.
-9. On **Input**, choose the built-in controller, leave layout on **Auto**, and tap **Use this
-   handheld**. There must be no second adapter chooser. Move every stick and trigger, D-pad
-   diagonals, and all buttons. Confirm physical A/B/X/Y labels now match console actions, then check
-   explicit Nintendo and Xbox modes. Expect the live panel and report counter to change and the
-   console to receive the same inputs.
-   Android permits only one registered provider. On AYN Thor, wait for the registration callback:
-   its immediate API result can be false even when registration succeeds milliseconds later. The
-   app handles that OEM behavior without root or Shizuku.
-10. Rotate once while connected and once while the bridge is ready. Expect the destination,
-   selection, colors, and bridge state to remain, with no repeated mutation.
-11. If anything differs, open Settings -> Developer and **Share diagnostics**. Send the text file
-   with the exact failed step; no Android Studio or logcat is required.
+Do not delete an Android bond, disassociate a companion relationship, clear an adapter bond, install
+an APK, or flash firmware unless the maintainer has explicitly chosen that destructive step.
 
-This checklist validates hardware behavior. JVM/emulator/build success does not replace it.
+## Diagnostics for every failure
+
+Keep `adb logcat -s PicoSwitch` running when ADB is available, then export **Settings -> About ->
+Diagnostics**. Android events include the logical attempt, reason, association presence, bond state,
+GATT generation/status, retry count, close request, callback/timeout retirement, and stale callback.
+
+For the controller-drop/solid-LED symptom, discover UART first with:
+
+```powershell
+tools\read_uart_diag.ps1 -List
+```
+
+Capture these immediately before management Disconnect and immediately after it:
+
+```powershell
+pwsh -File tools\uart_query.ps1 -Port <COM> -Command btstate
+pwsh -File tools\uart_query.ps1 -Port <COM> -Command "input sources"
+pwsh -File tools\uart_query.ps1 -Port <COM> -Command btdev
+```
+
+`btstate.cble` distinguishes the management peripheral link; `connections.*_ready` and `input
+sources` distinguish physical-controller readiness/ownership; `owner_led.reason` explains the LED.
+A solid LED alone is not evidence that trust was deleted or that management disconnected a
+controller.
+
+## Matrix A — clean first pairing
+
+Only after an explicitly authorized clean-state setup:
+
+1. Open the Pico's physical pairing window and tap **Pair Adapter** once.
+2. Approve Android's system association/bond UI once.
+3. Confirm the app stays in Pairing while Android reports `BOND_BONDING`, then reports Connected
+   only after management identity/state populate.
+4. Confirm one saved adapter and one app-owned companion association. Record the Android bond and
+   adapter LE bond separately.
+
+Pass: one logical app attempt, no duplicate GATT connection, no redundant chooser/prompt, and a
+verified saved relationship.
+
+## Matrix B — ordinary returning reconnect
+
+Close and reopen the app without opening the Pico pairing window. Expect one direct automatic
+attempt, no system pairing UI, a verified management session, and no parallel scan. If the adapter
+is unavailable, expect a terminal Reconnect state rather than an infinite loop.
+
+## Matrix C — explicit management disconnect and controller isolation
+
+With an external physical controller already working, connect management, capture the diagnostics
+above, tap **Disconnect**, and capture them again. The app must become offline with **Reconnect**;
+the saved relationship, Android bond, companion association, adapter LE bond, physical controller,
+active input, and Controller Bridge must not be intentionally changed. Record the exact LED reason.
+
+## Matrix D — repeated reconnect
+
+Repeat connect -> Disconnect -> Reconnect at least five times. Every old GATT must reach
+`gatt.closed` before the next `connect.generation`. A transient 133 may receive one retry; it must
+not create a storm, erase the relationship, or routinely require Android Settings.
+
+## Matrix E — controlled transient failure
+
+Only when explicitly authorized, interrupt the radio during one connect. Confirm one clean bounded
+retry, then either recovery or one actionable terminal state. Preserve the attempt/status/close
+sequence; status 133 is a symptom, not a root-cause finding.
+
+## Matrix F — color
+
+Commit one active-personality identity color once. Expect mutation, readback, completed persistence
+when supported, automatic same-personality USB re-enumeration, and the new console color after one
+brief controller pause. No second Apply press should appear. If USB refresh alone fails, expect
+**Color saved; USB identity refresh still needs to be applied** and one **Retry** action.
+
+## Matrix G — repair pairing
+
+Only after explicitly authorized destructive Android bond manipulation, create a known missing/stale
+bond state. Confirm **Repair pairing** explains the distinction, removes only app/CDM state it owns,
+uses Android Bluetooth Settings only when the public API cannot remove the platform bond, and
+returns to ordinary Pair Adapter afterward. It must not clear all adapter LE bonds.
+
+## Matrix H — Controller Bridge coexistence
+
+While the handheld is also the active Controller Bridge, connect and disconnect management. The HID
+bridge must remain independent, input must continue, and diagnostics must attribute any solid LED
+to the actual ready owner. Repeat once with a directly paired physical controller as owner.
+
+These matrices validate hardware behavior. JVM/build success does not replace them.
 
 ## Phone NFC physical gate (pending)
 
