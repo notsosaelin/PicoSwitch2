@@ -342,13 +342,18 @@ controller drives the console and without a CDC re-enumeration that would drop t
 - Commands run through the existing core-0 parser behind an allowlist. Flash operations (`save`,
   `amiibo clear`, `amiibo persist`) and bond list/remove are deferred rather than busy-waited, with
   session-bound replies.
+- The Android-free `:management-core` module now owns logical commands, typed replies, paging,
+  mutation/readback, Amiibo transfer workflows, and BLE session serialization. Android owns only
+  connection/pairing/lifecycle and presentation. The language-neutral contract and conformance
+  vectors start at [`docs/management/README.md`](docs/management/README.md).
 - Management advertising no longer suppresses controller discovery. A 5.4-hour soak held a Classic
   controller plus a management client through ten USB re-enumerations and three controller
   disconnect/reconnect cycles, with automatic controller recovery and no management disconnects.
 
 Remaining gates are listed under [Open validation gates](#open-validation-gates). Reference:
 [`docs/bluetooth/in-band-management-plan.md`](docs/bluetooth/in-band-management-plan.md),
-[`docs/architecture/config-transports.md`](docs/architecture/config-transports.md).
+[`docs/architecture/config-transports.md`](docs/architecture/config-transports.md),
+[`docs/management/README.md`](docs/management/README.md).
 
 ## Motion
 

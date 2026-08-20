@@ -12,6 +12,12 @@ The application consumes two intentionally separate PicoSwitch2 interfaces:
 The Android client does not redefine either protocol. Firmware sources and host fixtures remain the
 authority for the wire contracts.
 
+Management's Android-free reference implementation, normative language-neutral contract, BLE
+session rules, and conformance material are indexed at
+[`management/README.md`](management/README.md). Android keeps discovery, pairing, GATT lifecycle,
+local files, NFC, and presentation; it consumes portable command/reply and workflow behavior from
+`:management-core`.
+
 The UI now models these transports as one saved adapter relationship: first use says **Pair
 Adapter**, returning launches direct management reconnect with discovery fallback, and controller
 mode reuses the saved Classic bond without a second chooser. Android still owns the required

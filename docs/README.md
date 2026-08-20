@@ -14,7 +14,8 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | Current project state | [`../STATUS.md`](../STATUS.md) |
 | Forward roadmap | [`../PLAN.md`](../PLAN.md) |
 | Runtime architecture | [`architecture/overview.md`](architecture/overview.md) |
-| USB Serial and bonded/encrypted in-band BLE management | [`architecture/config-transports.md`](architecture/config-transports.md) |
+| Management architecture, protocol, clients, and conformance | [`management/README.md`](management/README.md) |
+| USB Serial and bonded/encrypted in-band BLE carrier history/details | [`architecture/config-transports.md`](architecture/config-transports.md) |
 | Compatibility results | [`status/compatibility-matrix.md`](status/compatibility-matrix.md) |
 | Evidence and RE rules | [`re-methodology/evidence-standards.md`](re-methodology/evidence-standards.md) |
 | Shared controller protocol laboratory | [`re-methodology/controller-protocol-lab.md`](re-methodology/controller-protocol-lab.md) |
@@ -109,6 +110,13 @@ controller model, the canonical motion convention, output/rumble semantics, the 
 session behavior, and what a new platform backend must provide. The Android companion is an
 implementation of this contract; `bluetooth/android-controller-bridge.md` remains the Android
 reference and validation record.
+
+### `management/`
+
+The normative logical management contract, portable-client architecture, current BLE carrier,
+third-party implementation guide, conformance assets, and architecture decisions. This is the
+starting point for management work; the older transport and Bluetooth documents remain supporting
+implementation/evidence records.
 
 ### `switch2/`
 

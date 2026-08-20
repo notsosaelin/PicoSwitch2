@@ -54,5 +54,58 @@
       "command": "amiibo commit",
       "reply": {"error":"dirty","code":8}
     }
+  },
+  "limits": {
+    "commandPayloadBytes": 127,
+    "bleReplyPayloadBytes": 511,
+    "amiiboChunkBytes": 32,
+    "bondEnvelopeVersion": 2
+  },
+  "ble": {
+    "serviceUuid": "7c5ad4ed-2731-417c-b316-058505c7c083",
+    "rxUuid": "5252186a-817f-489f-ad75-94c3bd444769",
+    "txUuid": "81462706-8e64-407a-bc3d-d303529fbe1c",
+    "minimumMtuPayloadBytes": 20
+  },
+  "builders": [
+    {"operation":"inputNone","command":"input active none"},
+    {"operation":"setPersonality","command":"personality jcr"},
+    {"operation":"bondPage","command":"bonds list v2 3"},
+    {"operation":"kbmDefault","command":"kbm bind kbm key:1A default"},
+    {"operation":"kbmNone","command":"kbm bind kbm key:1A none"},
+    {"operation":"mouseSensitivityX","command":"kbm mouse sensitivityx 512"},
+    {"operation":"bodyColor","command":"body 1 2 3"},
+    {"operation":"amiiboRead","command":"amiibo read 32 16"}
+  ],
+  "pagination": {
+    "bonds": [
+      {"command":"bonds list v2","reply":{"v":2,"total":2,"bonds":[{"i":0,"type":0,"addr":"001122334455"}],"next":3}},
+      {"command":"bonds list v2 3","reply":{"v":2,"total":2,"bonds":[{"i":3,"type":0,"addr":"AABBCCDDEEFF"}],"next":null}}
+    ],
+    "kbm": [
+      {"command":"kbm map kb 0","reply":{"profile":"kb","page":0,"pageSize":1,"total":2,"bindings":[{"src":"key:1A","dst":"lstick_up","custom":false}],"more":true}},
+      {"command":"kbm map kb 1","reply":{"profile":"kb","page":1,"pageSize":1,"total":2,"bindings":[{"src":"key:16","dst":"lstick_down","custom":false}],"more":false}}
+    ]
+  },
+  "errors": [
+    {"case":"malformedJson","command":"info","replyText":"{not-json"},
+    {"case":"incompleteInfo","command":"info","replyText":"{\"id\":\"picoswitch\"}"},
+    {"case":"responseTooLarge","command":"bonds list","replyText":"{\"error\":\"response_too_large\",\"code\":413}"},
+    {"case":"oddHex","command":"amiibo read 0 1","replyText":"{\"offset\":0,\"data\":\"F\"}"}
+  ],
+  "traces": {
+    "kbmMutationReadback": [
+      "kbm bind kbm key:1A none",
+      "kbm map kbm 0"
+    ],
+    "amiiboUpload540": [
+      "amiibo status",
+      "amiibo begin 540 <crc32>",
+      "amiibo chunk 0 <1-32 bytes hex>",
+      "... contiguous chunks ...",
+      "amiibo commit",
+      "amiibo persist",
+      "amiibo status ... until persisted=true and persistPending=false"
+    ]
   }
 }

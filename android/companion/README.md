@@ -70,16 +70,17 @@ user remapping belongs in the Switch's persistent controller settings.
 
 ## Architecture
 
-Two independent paths. Management is Android-specific throughout; the controller bridge is split
-into a **platform-neutral core** plus an **Android backend**.
+Two independent paths. Both management and Controller Bridge have a platform-neutral core plus an
+Android backend; their contracts, transports, and state machines remain separate.
 
 ```text
 Compose adaptive screens
   -> CompanionViewModel / StateFlow
     -> AdapterRepository
-      -> ManagementTransport
-        -> BleGattManagementTransport
-          -> PicoSwitch2 GATT newline-JSON service
+      -> ManagementClient                    (management-core, neutral)
+        -> ManagementChannel                 (management-core, neutral)
+          -> BleGattManagementTransport      (app, Android)
+            -> PicoSwitch2 GATT newline-JSON service
 
 Activity KeyEvent / MotionEvent
   -> AndroidInputBackend                        (app,  Android)
@@ -97,18 +98,21 @@ PicoSwitch2 -> AndroidHidTransport -> BridgeOutputCodec -> BridgeSession
 
 | Module | Contents | Android? |
 |---|---|---|
+| `:management-core` | `dev.picoswitch.management` — logical commands/replies, domain models, portable workflows, and connected-session serialization | **No.** Plain Kotlin/JVM; it is the tested reference implementation, while `docs/management/PROTOCOL.md` and the shared fixture specify non-JVM interoperability. |
 | `:bridge-core` | `dev.picoswitch.bridge.{core,protocol,session}` — normalized controller model, canonical motion convention, capabilities, report codec, session and transport interfaces | **No.** Plain Kotlin/JVM; the Android SDK is not on its classpath, so a leak is a build failure. |
-| `:app` | `dev.picoswitch.companion.bridge` — the Android backend (`AndroidInputBackend`, `AndroidMotionBackend`, `AndroidBatteryBackend`, `AndroidOutputBackend`, `AndroidHidTransport`), plus UI, management, Amiibo, NFC | Yes |
+| `:app` | Android BLE discovery/pairing/GATT, Controller Bridge Android backends, UI, local Amiibo library, and NFC | Yes |
 
 `AndroidBridge` is the assembly point: it plugs the four Android backends into the shared
 `BridgeSession` and is the only class that knows both sides. The contract a second platform would
 implement is documented in [`docs/bridge/PLATFORM_BACKEND.md`](../../docs/bridge/PLATFORM_BACKEND.md)
 and [`docs/bridge/PROTOCOL.md`](../../docs/bridge/PROTOCOL.md).
 
-`ManagementProtocol` owns UUIDs, framing limits, JSON parsing, and typed adapter errors. Raw command
-strings never appear in Compose screens. `AdapterRepository` owns workflows and external-state
-refresh. The BLE transport accepts one transaction at a time because the firmware bridge has one
-command slot and one reply slot.
+`:management-core` owns command construction, framing limits, JSON parsing, typed errors, paging,
+external-state refresh, mutation/readback, and adapter Amiibo workflows. `AdapterRepository` adapts
+those typed results to app state. The Android BLE backend owns discovery, GATT subscription,
+fragmentation/reassembly, and session cleanup; it serializes transactions because the firmware
+bridge has one command slot and one reply slot. See
+[`docs/management/README.md`](../../docs/management/README.md).
 
 The controller bridge is an independent Classic Bluetooth connection. It never sends controller
 input over the management GATT service and does not impersonate Nintendo, Xbox, or Sony hardware.
