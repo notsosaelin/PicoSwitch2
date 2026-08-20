@@ -16,7 +16,6 @@ import kotlinx.serialization.json.longOrNull
 /** Logical newline/JSON contract implemented by firmware `src/config.c`. */
 object ManagementProtocol {
     const val MAX_COMMAND_BYTES = 127
-    const val MAX_REPLY_PAYLOAD_BYTES = 511
     const val AMIIBO_CHUNK_BYTES = 32
     const val BONDS_PROTOCOL_VERSION = 2
 
@@ -28,19 +27,6 @@ object ManagementProtocol {
         val commandBytes = command.encodeToByteArray()
         require(commandBytes.size <= MAX_COMMAND_BYTES) { "Command exceeds $MAX_COMMAND_BYTES bytes" }
         return commandBytes + '\n'.code.toByte()
-    }
-
-    fun chunks(command: String, payloadBytes: Int): List<ByteArray> {
-        require(payloadBytes > 0) { "Payload size must be positive" }
-        return frame(command).toList().chunked(payloadBytes).map { it.toByteArray() }
-    }
-
-    fun requireReplyWithinLimit(payloadBytes: Int) {
-        if (payloadBytes > MAX_REPLY_PAYLOAD_BYTES) {
-            throw ManagementReplyTooLargeException(
-                "Adapter reply exceeded the $MAX_REPLY_PAYLOAD_BYTES-byte wireless payload limit",
-            )
-        }
     }
 
     fun firmware(command: String, response: String): FirmwareInfo = objectOrThrow(command, response).let { value ->
@@ -354,14 +340,6 @@ object ManagementProtocol {
 
     private fun incomplete(command: String) =
         ManagementProtocolException("Adapter returned an incomplete response for '$command'")
-}
-
-/** BLE carrier constants. These are transport contract, not logical domain semantics. */
-object BleManagementContract {
-    const val SERVICE_UUID = "7c5ad4ed-2731-417c-b316-058505c7c083"
-    const val RX_UUID = "5252186a-817f-489f-ad75-94c3bd444769"
-    const val TX_UUID = "81462706-8e64-407a-bc3d-d303529fbe1c"
-    const val ATT_PAYLOAD_WITH_DEFAULT_MTU = 20
 }
 
 /** Exact command vocabulary and argument encoding accepted by production management. */

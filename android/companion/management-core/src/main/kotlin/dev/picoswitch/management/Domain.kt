@@ -1,12 +1,12 @@
 package dev.picoswitch.management
 
-enum class Personality(val wireName: String, val title: String) {
-    Pro2("pro2", "Pro Controller 2"),
-    GameCube("gc", "GameCube"),
-    JoyConLeft("jcl", "Joy-Con 2 (L)"),
-    JoyConRight("jcr", "Joy-Con 2 (R)"),
-    Config("config", "Configuration"),
-    Unknown("unknown", "Unknown");
+enum class Personality(val wireName: String) {
+    Pro2("pro2"),
+    GameCube("gc"),
+    JoyConLeft("jcl"),
+    JoyConRight("jcr"),
+    Config("config"),
+    Unknown("unknown");
 
     companion object {
         fun fromWire(value: String?) = entries.firstOrNull { it.wireName == value } ?: Unknown
@@ -39,7 +39,6 @@ data class RgbColor(val red: Int, val green: Int, val blue: Int) {
     }
 
     fun wire() = "$red $green $blue"
-    fun argb() = 0xFF000000L.or((red.toLong() shl 16)).or((green.toLong() shl 8)).or(blue.toLong())
 }
 
 data class AdapterConfig(

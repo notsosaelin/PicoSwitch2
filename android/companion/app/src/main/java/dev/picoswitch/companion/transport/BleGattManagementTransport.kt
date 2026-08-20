@@ -13,16 +13,15 @@ import dev.picoswitch.companion.diagnostics.DiagnosticLog
 import dev.picoswitch.companion.model.ConnectionPhase
 import dev.picoswitch.companion.model.ConnectionState
 import dev.picoswitch.companion.protocol.ManagementException
-import dev.picoswitch.companion.protocol.ManagementProtocol
 import dev.picoswitch.companion.protocol.ManagementReplyTooLargeException
 import dev.picoswitch.companion.protocol.ManagementTransport
 import dev.picoswitch.management.BleManagementContract
+import dev.picoswitch.management.BleReplyAssembler
 import dev.picoswitch.management.SerializedManagementSession
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import java.io.ByteArrayOutputStream
 import java.util.UUID
 import kotlin.coroutines.resume
 
@@ -215,6 +214,7 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         runCatching { active?.close() }
         while (notifications.tryReceive().isSuccess) Unit
         _connection.value = ConnectionState()
+        notifications.trySend(ByteArray(0))
     }
 
     override suspend fun transact(command: String, timeoutMillis: Long): String = session.exchange {
@@ -226,23 +226,18 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         val mtuPayload = BleManagementContract.ATT_PAYLOAD_WITH_DEFAULT_MTU
         try {
             withTimeout(timeoutMillis) {
-                for (part in ManagementProtocol.chunks(command, mtuPayload)) {
+                for (part in BleManagementContract.commandChunks(command, mtuPayload)) {
                     writeReady = CompletableDeferred()
                     if (!writeCharacteristic(activeGatt, characteristic, part)) throw ManagementException("Could not send '$command'")
                     writeReady?.await()
                 }
-                val buffer = ByteArrayOutputStream()
+                val assembler = BleReplyAssembler()
                 while (true) {
                     val part = notifications.receive()
                     if (part.isEmpty() && !_connection.value.connected) throw ManagementException("Adapter disconnected during '$command'")
-                    for (byte in part) {
-                        if (byte.toInt() == '\n'.code) {
-                            val response = buffer.toString(Charsets.UTF_8.name()).trimEnd('\r')
-                            diagnostics?.commandFinished(command, buffer.size())
-                            return@withTimeout response
-                        }
-                        buffer.write(byte.toInt())
-                        ManagementProtocol.requireReplyWithinLimit(buffer.size())
+                    assembler.accept(part)?.let { response ->
+                        diagnostics?.commandFinished(command, response.encodeToByteArray().size)
+                        return@withTimeout response
                     }
                 }
                 @Suppress("UNREACHABLE_CODE") ""

@@ -84,7 +84,8 @@ carrier.
 2. once transmission owns the session, external caller cancellation does not release it;
 3. the operation consumes the reply or the backend invalidates the GATT session;
 4. only then can another exchange transmit;
-5. suspendable disconnect is ordered through the same mutex.
+5. suspendable disconnect is ordered through the same mutex and, once it owns the session, its
+   cleanup completes even if its caller is cancelled.
 
 This prevents a late reply from becoming the next command's reply. Timeout or reply overflow closes
 and invalidates GATT, because draining an unknown late response cannot prove synchronization.
