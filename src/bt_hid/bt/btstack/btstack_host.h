@@ -197,8 +197,6 @@ typedef struct {
     uint8_t last_direct_encrypt_status;
     uint8_t last_direct_encrypt_enabled;
     uint8_t last_switch2_disconnect_reason;
-    uint8_t pairing_ltk_raw[16];
-    uint8_t pairing_ltk_normalized[16];
     char last_connected_name[48];
 } btstack_host_reconnect_diag_t;
 
