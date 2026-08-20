@@ -23,6 +23,13 @@ ns2_bt_admission_t ns2_bt_admission_decide(bool pairing_lockout,
 bool ns2_bt_boot_pairing_locked(bool persisted_lockout,
                                 bool install_reset_performed);
 
+// A management removal names an LE address type. The public address-only
+// helper is intentionally cross-transport, but a typed removal must not match
+// a same-address Classic relationship.
+bool ns2_bt_forget_matches_address_type(bool match_address_type,
+                                        int requested_address_type,
+                                        int candidate_address_type);
+
 typedef bool (*ns2_bt_bond_entry_at_fn)(void *context, int slot,
                                         int *address_type,
                                         uint8_t address[6]);

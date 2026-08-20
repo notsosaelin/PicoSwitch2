@@ -20,6 +20,14 @@ bool ns2_bt_boot_pairing_locked(bool persisted_lockout,
     return persisted_lockout || install_reset_performed;
 }
 
+bool ns2_bt_forget_matches_address_type(bool match_address_type,
+                                        int requested_address_type,
+                                        int candidate_address_type)
+{
+    return !match_address_type ||
+           requested_address_type == candidate_address_type;
+}
+
 int ns2_bt_find_bond_slot(ns2_bt_bond_entry_at_fn entry_at,
                           void *context,
                           int slot_count,

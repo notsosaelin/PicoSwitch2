@@ -10825,15 +10825,19 @@ static bool btstack_host_forget_device_typed(const uint8_t bd_addr[6],
         affected = true;
     }
 
-    // Classic trust uses the same six-byte identity but a separate database.
-    for (int i = 0; i < MAX_CLASSIC_CONNECTIONS; ++i) {
-        classic_connection_t *conn = &classic_state.connections[i];
-        if (!conn->active || memcmp(conn->addr, addr, sizeof(addr)) != 0)
-            continue;
-        hci_connection_t *hci_conn = hci_connection_for_bd_addr_and_type(
-            conn->addr, BD_ADDR_TYPE_ACL);
-        if (hci_conn) gap_disconnect(hci_conn->con_handle);
-        affected = true;
+    // A typed LE management removal MUST NOT disturb a same-address Classic
+    // relationship. The public address-only helper intentionally covers both.
+    if (ns2_bt_forget_matches_address_type(
+            match_address_type, address_type, BD_ADDR_TYPE_ACL)) {
+        for (int i = 0; i < MAX_CLASSIC_CONNECTIONS; ++i) {
+            classic_connection_t *conn = &classic_state.connections[i];
+            if (!conn->active || memcmp(conn->addr, addr, sizeof(addr)) != 0)
+                continue;
+            hci_connection_t *hci_conn = hci_connection_for_bd_addr_and_type(
+                conn->addr, BD_ADDR_TYPE_ACL);
+            if (hci_conn) gap_disconnect(hci_conn->con_handle);
+            affected = true;
+        }
     }
 
     // Search the full capacity: count() is not a slot bound when the TLV DB is
@@ -10852,10 +10856,13 @@ static bool btstack_host_forget_device_typed(const uint8_t bd_addr[6],
         }
     }
 
-    // Remove Classic link key
+    // Remove Classic link key only for the address-only cross-transport helper.
+    if (ns2_bt_forget_matches_address_type(
+            match_address_type, address_type, BD_ADDR_TYPE_ACL)) {
 #ifdef ENABLE_CLASSIC
-    gap_drop_link_key_for_bd_addr(addr);
+        gap_drop_link_key_for_bd_addr(addr);
 #endif
+    }
 
     // Clear last-connected if it matches
     if (hid_state.has_last_connected &&
