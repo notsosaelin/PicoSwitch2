@@ -265,7 +265,7 @@ class AdapterRepositoryTest {
                 command.startsWith("amiibo read ") -> {
                     val parts = command.split(' ')
                     val offset = parts[2].toInt(); val count = parts[3].toInt()
-                    """{"offset":$offset,"data":"${ManagementProtocol.hex(data.copyOfRange(offset, offset + count))}"}"""
+                    """{"offset":$offset,"data":"${dev.picoswitch.management.ManagementCommands.hex(data.copyOfRange(offset, offset + count))}"}"""
                 }
                 command.startsWith("amiibo begin ") && unexpectedBegin -> "{}"
                 command == "reenumerate" && !unexpectedReenumerate -> """{"ok":true,"reenumerating":true}"""

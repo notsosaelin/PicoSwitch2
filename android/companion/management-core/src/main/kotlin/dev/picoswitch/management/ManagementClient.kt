@@ -235,7 +235,11 @@ class ManagementClient(
     ): AmiiboDownload {
         val status = amiiboStatus()
         if (!status.loaded && !status.v3Loaded) throw ManagementException("No Amiibo is loaded on the adapter")
-        validateAmiiboSize(status.size)
+        if (status.size !in AMIIBO_SUPPORTED_SIZES) {
+            throw ManagementException(
+                "Adapter reported unsupported Amiibo size ${status.size}; no memory was allocated",
+            )
+        }
         val output = ByteArray(status.size)
         var offset = 0
         while (offset < output.size) {

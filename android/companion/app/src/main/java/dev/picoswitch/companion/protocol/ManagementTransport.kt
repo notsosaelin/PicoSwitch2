@@ -1,23 +1,18 @@
 package dev.picoswitch.companion.protocol
 
 import dev.picoswitch.companion.model.ConnectionState
+import dev.picoswitch.management.ManagementChannel
 import kotlinx.coroutines.flow.StateFlow
 
-interface ManagementTransport {
+interface ManagementTransport : ManagementChannel {
     val connection: StateFlow<ConnectionState>
     suspend fun scanAndConnect()
     suspend fun connectKnown(address: String) = scanAndConnect()
     suspend fun disconnect()
-    suspend fun transact(command: String, timeoutMillis: Long = 10_000): String
+    override suspend fun transact(command: String, timeoutMillis: Long): String
     fun close() = Unit
 }
 
-open class ManagementException(message: String, cause: Throwable? = null) : Exception(message, cause)
-
-class ManagementReplyTooLargeException(message: String) : ManagementException(message)
-
-class AdapterCommandException(
-    val command: String,
-    val code: Int?,
-    message: String,
-) : Exception(message)
+typealias ManagementException = dev.picoswitch.management.ManagementException
+typealias ManagementReplyTooLargeException = dev.picoswitch.management.ManagementReplyTooLargeException
+typealias AdapterCommandException = dev.picoswitch.management.AdapterCommandException
