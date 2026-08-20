@@ -230,6 +230,9 @@ typedef struct {
     bool wake_adv_active;
     bool controller_connected;
     uint8_t connected_ble_count;
+    bool pairing_window_open;
+    bool pairing_close_deferred;
+    bool pairing_lockout;
     // config/management BLE service
     bool cble_service_available;
     bool cble_mode_active;            // service armed (Config OR mgmt)
@@ -252,6 +255,10 @@ typedef struct {
     uint32_t mgmt_disconnects;
     uint32_t ctrl_disconnects;
     uint32_t hci_disconnects;
+    uint32_t fresh_admission_accepts;
+    uint32_t fresh_admission_reject_window;
+    uint32_t fresh_admission_reject_lockout;
+    uint32_t wipe_completions;
     uint16_t last_disc_handle;
     uint8_t last_disc_reason;
 } btstack_host_mgmt_diag_t;

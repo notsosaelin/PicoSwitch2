@@ -10,6 +10,11 @@
 // Call once from core0 before launching core1.
 void config_load(void);
 
+// True only on the boot that consumed a newly flashed install-reset marker.
+// Core1 uses this after BTstack initializes its now-empty TLV store to persist
+// the post-install pairing lock before enabling controller admission.
+bool config_install_reset_performed(void);
+
 // Service the configuration-mode CDC serial link (read command lines, reply
 // JSON). Called from the USB core (core0) while in config mode.
 void config_cdc_task(void);

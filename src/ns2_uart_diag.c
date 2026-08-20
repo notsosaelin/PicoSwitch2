@@ -302,6 +302,8 @@ static void queue_btstate(void) {
         "\"personality\":\"%s\",\"powered_on\":%s,\"hid_state\":%u,"
         "\"scan_active\":%s,\"inquiry_active\":%s,\"wake_adv\":%s,"
         "\"controller_connected\":%s,\"ble_conns\":%u,"
+        "\"pairing\":{\"window_open\":%s,\"close_deferred\":%s,"
+        "\"lockout\":%s},"
         "\"cble\":{\"available\":%s,\"armed\":%s,\"advertising\":%s,"
         "\"client\":%s,\"closing\":%s,\"notify\":%s},"
         "\"events\":{\"count\":%u,\"dropped\":%lu},"
@@ -310,6 +312,8 @@ static void queue_btstate(void) {
         "\"suppress\":{\"config_mode\":%lu,\"mgmt_armed\":%lu,\"wake\":%lu,"
         "\"other\":%lu},"
         "\"mgmt\":{\"connects\":%lu,\"disconnects\":%lu},"
+        "\"admission\":{\"fresh_accepted\":%lu,\"reject_window\":%lu,"
+        "\"reject_lockout\":%lu},\"wipe_completions\":%lu,"
         "\"disc\":{\"ctrl\":%lu,\"hci\":%lu,\"last_handle\":\"0x%04X\","
         "\"last_reason\":\"0x%02X\"}}",
         d.mgmt_enabled ? "true" : "false", d.config_mode ? "true" : "false",
@@ -317,6 +321,9 @@ static void queue_btstate(void) {
         d.hid_state, d.scan_active ? "true" : "false",
         d.inquiry_active ? "true" : "false", d.wake_adv_active ? "true" : "false",
         d.controller_connected ? "true" : "false", d.connected_ble_count,
+        d.pairing_window_open ? "true" : "false",
+        d.pairing_close_deferred ? "true" : "false",
+        d.pairing_lockout ? "true" : "false",
         d.cble_service_available ? "true" : "false",
         d.cble_mode_active ? "true" : "false",
         d.cble_advertising ? "true" : "false", d.cble_has_client ? "true" : "false",
@@ -327,6 +334,10 @@ static void queue_btstate(void) {
         (unsigned long)d.suppress_config_mode, (unsigned long)d.suppress_mgmt_armed,
         (unsigned long)d.suppress_wake, (unsigned long)d.suppress_other,
         (unsigned long)d.mgmt_connects, (unsigned long)d.mgmt_disconnects,
+        (unsigned long)d.fresh_admission_accepts,
+        (unsigned long)d.fresh_admission_reject_window,
+        (unsigned long)d.fresh_admission_reject_lockout,
+        (unsigned long)d.wipe_completions,
         (unsigned long)d.ctrl_disconnects, (unsigned long)d.hci_disconnects,
         d.last_disc_handle, d.last_disc_reason);
     queue_text(trace_format_response);
