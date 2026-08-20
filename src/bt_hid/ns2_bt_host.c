@@ -24,6 +24,7 @@
 #include "config.h"
 #include "ds5_audio_bridge.h"
 #include "ns2_kbm_runtime.h"
+#include "ns2_owner_led.h"
 #include "ns2_wake.h"
 #include "usb.h"
 
@@ -62,20 +63,19 @@ extern const bt_transport_t bt_transport_cyw43;
 // See docs/bluetooth/btstack-implementation.md "Pairing window vs in-flight connect".
 #define PAIRING_WINDOW_MS 30000
 #define WIPE_FLASH_MS     1200
-// Must match usb.c's USB_MODE_ACK_MS -- core0 computes g_usb_mode_ack_until_ms
-// as now+USB_MODE_ACK_MS and this file only needs the duration back to derive
-// elapsed time for the flash pattern below; duplicated rather than shared via
-// a header since it's a single cosmetic LED-timing constant, not shared logic.
-#define USB_MODE_ACK_MS_FOR_LED 1200
-
 static btstack_timer_source_t control_timer;
 static btstack_timer_source_t rumble_timer;  // see RUMBLE_TICK_MS's own comment above
 #ifdef NS2_DS5_AUDIO
 static btstack_timer_source_t audio_timer;
 #define AUDIO_TICK_MS 2
 #endif
-static uint32_t control_tick;
 static uint32_t pairing_until_ms;  // 0 = locked; else scan window open until this time
+static bool owner_led_initialized;
+static ns2_owner_led_reason_t owner_led_reason;
+static uint16_t owner_led_detail;
+static uint32_t owner_led_mode_started_ms;
+static uint32_t owner_led_last_timer_ms;
+static uint32_t owner_led_timer_max_gap_ms;
 
 // Bounded discovery for a partial KB/M source. Runtime only -- no persistence,
 // no record of which peripherals exist; it tracks the CURRENT logical source
@@ -85,7 +85,6 @@ static bool pairing_wait_for_disconnect;
 static uint32_t wipe_until_ms;     // 0 = idle; else show the fast wipe flash until this time
 
 #if defined(NS2_PRO) && defined(NS2_DIAG)
-extern volatile uint8_t g_ns2_stage;  // Pro2 USB handshake progress (core0), blinked here
 extern volatile uint8_t g_gc_stage;   // GameCube USB handshake progress (core0), blinked here --
                                        // deliberately a SEPARATE variable/blink path from
                                        // g_ns2_stage (not reused), per explicit instruction to
@@ -272,6 +271,13 @@ void bthid_on_report_boundary(void) {
 static void control_timer_handler(btstack_timer_source_t *ts) {
     uint32_t now = to_ms_since_boot(get_absolute_time());
 
+    if (owner_led_last_timer_ms != 0u) {
+        uint32_t gap_ms = now - owner_led_last_timer_ms;
+        if (gap_ms > owner_led_timer_max_gap_ms)
+            owner_led_timer_max_gap_ms = gap_ms;
+    }
+    owner_led_last_timer_ms = now;
+
     if (wipe_until_ms && now >= wipe_until_ms) {
         wipe_until_ms = 0;
         ns2_wake_set_input_suppressed(false);
@@ -378,86 +384,54 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
     // 2026-07-14 -- see RUMBLE_TICK_MS's comment for why the extra cadence was added).
     bt_task();
 
-    // LED state (priority: mode-cycle ack > config > wipe burst > pairing window >
-    // connected > idle). The mode-cycle ack is highest priority and self-expiring
-    // (~1.2s) -- a brief, explicit "you just changed something" signal takes
-    // precedence over the ambient status patterns below it, then gets out of the
-    // way. See docs/switch2-gc/usb-personality.md "Transition sequence" (LED ack
-    // requirement) -- core0 (usb.c) only publishes WHEN/WHICH; core1 renders it
-    // here since it already owns all LED GPIO access.
-    bool led;
+    // Owner LED policy is based on authoritative HID readiness, not raw ACL or
+    // ATT slot occupancy. All cadences use elapsed milliseconds, so delayed
+    // callbacks cannot compress the idle heartbeat into an apparent 2-3 s
+    // second flash.
+    ns2_owner_led_inputs_t led_inputs = {
+        .config_mode = g_usb_config_mode,
+        .wipe_active = wipe_until_ms && now < wipe_until_ms,
+        .pairing_active = pairing_until_ms ||
+                          btstack_host_pairing_close_deferred(),
+        .controller_ready = controller_ready,
+    };
+    uint8_t flash_count = 0u;
+    uint8_t gc_stage = 0u;
+    uint8_t gc_bad_report_id = 0u;
 #ifdef NS2_PRO
-    if (g_usb_mode_ack_until_ms && now < g_usb_mode_ack_until_ms) {
-        // N short flashes, 150ms on/150ms off, then LED goes dark for the remainder of the ack
-        // window. N = the personality's position in the cycle + 1 (1 Pro2 / 2 GameCube /
-        // 3 Joy-Con2 Left / 4 Joy-Con2 Right / 5 Config) -- derived directly from the enum's
-        // ordinal value (usb.h) rather than a hardcoded per-personality chain, so this stays
-        // correct automatically if the cycle ever gains or loses a stage. No personality gets
-        // special-cased "experimental" LED behavior -- Joy-Con2 L/R just occupy their ordinary
-        // position in the same counting scheme every other personality already uses.
-        int flashes = (int)g_usb_mode_ack_personality + 1;
-        uint32_t elapsed = USB_MODE_ACK_MS_FOR_LED - (g_usb_mode_ack_until_ms - now);
-        uint32_t slot = elapsed / 150;
-        led = (slot % 2 == 0) && (slot < (uint32_t)(2 * flashes));
-    } else
+    led_inputs.mode_ack = g_usb_mode_ack_until_ms &&
+                          now < g_usb_mode_ack_until_ms;
+    flash_count = (uint8_t)g_usb_mode_ack_personality + 1u;
 #endif
 #if defined(NS2_PRO) && defined(NS2_DIAG)
-    // Scoped to GameCube personality ONLY (2026-07-13), per explicit instruction: showing this
-    // same N-flash diagnostic for Pro2 too (reading g_ns2_stage) risked the two personalities'
-    // flash counts being confused with each other during a GameCube-focused hardware session --
-    // g_ns2_stage and g_gc_stage are separate variables with independently-defined stage meanings
-    // (see switch_gc.c's own comment for GameCube's stage numbers), and only one can ever be
-    // showing at a time anyway since the two personalities are mutually exclusive, but making the
-    // condition explicit here removes any doubt about which is currently driving the LED. Pro2
-    // mode falls through to its normal (non-diagnostic) LED behavior below even with NS2_DIAG on.
-    if (g_usb_personality == USB_PERSONALITY_NSO_GAMECUBE) {
-        uint8_t st = g_gc_stage;
-        if (st == 255) {
-            led = true;  // full success sentinel (report selected, streaming armed) -- solid on,
-                         // deliberately distinct from the N-flash counting scheme below so it can
-                         // never be mistaken for "9 or more commands received but still not armed"
-        } else if (st == 0) {
-            led = (control_tick / 25) % 2 == 0;  // ~0.75 s heartbeat = waiting
-        } else if (st == 21) {
-            // Two-digit tens/ones burst encoding g_gc_bad_report_id, instead of the flat N-flash
-            // scheme below -- lets an arbitrary byte value (not just a small stage number) be
-            // read directly off the LED: count the first burst (tens), a ~1s gap, then the
-            // second burst (ones); a burst of 0 is simply no flashes for that digit.
-            uint8_t val = g_gc_bad_report_id;
-            uint32_t tens_ticks = (uint32_t)(val / 10) * 10;
-            uint32_t gap_ticks = 33;
-            uint32_t ones_ticks = (uint32_t)(val % 10) * 10;
-            uint32_t tail_ticks = 60;
-            uint32_t cycle = tens_ticks + gap_ticks + ones_ticks + tail_ticks;
-            uint32_t pos = control_tick % cycle;
-            if (pos < tens_ticks) {
-                led = (pos % 10) < 5;
-            } else if (pos < tens_ticks + gap_ticks) {
-                led = false;
-            } else if (pos < tens_ticks + gap_ticks + ones_ticks) {
-                led = ((pos - tens_ticks - gap_ticks) % 10) < 5;
-            } else {
-                led = false;
-            }
-        } else {
-            uint32_t per = 50, cycle = (uint32_t)st * per + 333, pos = control_tick % cycle;
-            led = (pos < (uint32_t)st * per) && ((pos % per) < 10);  // N flashes, 1.5 s apart
-        }
-    } else
+    led_inputs.gc_diag =
+        g_usb_personality == USB_PERSONALITY_NSO_GAMECUBE;
+    gc_stage = g_gc_stage;
+    gc_bad_report_id = g_gc_bad_report_id;
 #endif
-    if (g_usb_config_mode)
-        led = (control_tick / 16) % 2 == 0;  // steady ~1 s blink = config mode
-    else if (wipe_until_ms && now < wipe_until_ms)
-        led = (control_tick & 1);  // very fast flash = erasing pairings
-    else if (pairing_until_ms || btstack_host_pairing_close_deferred())
-        led = (control_tick / 4) % 2 == 0;  // fast blink = pairing window (incl. in-flight-candidate grace period)
-    else if (bt_get_connection_count() > 0)
-        led = true;  // solid = controller connected
-    else
-        led = (control_tick % 66) < 3;  // brief flash every ~2 s = idle
-    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, led);
 
-    control_tick++;
+    ns2_owner_led_reason_t next_reason = ns2_owner_led_decide(led_inputs);
+    uint16_t next_detail = 0u;
+    if (next_reason == NS2_OWNER_LED_MODE_ACK)
+        next_detail = flash_count;
+    else if (next_reason == NS2_OWNER_LED_GC_DIAG)
+        next_detail = (uint16_t)gc_stage << 8 | gc_bad_report_id;
+    if (!owner_led_initialized || next_reason != owner_led_reason ||
+        next_detail != owner_led_detail) {
+        owner_led_initialized = true;
+        owner_led_reason = next_reason;
+        owner_led_detail = next_detail;
+        owner_led_mode_started_ms = now;
+    }
+
+    bool led = ns2_owner_led_render(
+        owner_led_reason, now - owner_led_mode_started_ms, flash_count,
+        gc_stage, gc_bad_report_id);
+    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, led);
+    ns2_owner_led_diag_publish(owner_led_reason, led,
+                               owner_led_mode_started_ms,
+                               owner_led_timer_max_gap_ms);
+
     btstack_run_loop_set_timer(ts, CONTROL_TICK_MS);
     btstack_run_loop_add_timer(ts);
 }

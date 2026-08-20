@@ -20,6 +20,7 @@
 #include "ns2_kbm.h"
 #include "ns2_kbm_runtime.h"
 #include "ns2_kbm_status.h"
+#include "ns2_owner_led.h"
 #include "config.h"  // config_request_save (the shared deferred settings write)
 #include "bt/bthid/bthid.h"                                  // live device table (btdev)
 #include "bt/bthid/devices/generic/bthid_gamepad.h"           // generic-fallback identity
@@ -301,7 +302,9 @@ static void queue_btstate(void) {
         "{\"btstate\":\"status\",\"mgmt_enabled\":%s,\"config_mode\":%s,"
         "\"personality\":\"%s\",\"powered_on\":%s,\"hid_state\":%u,"
         "\"scan_active\":%s,\"inquiry_active\":%s,\"wake_adv\":%s,"
-        "\"controller_connected\":%s,\"ble_conns\":%u,"
+        "\"controller_connected\":%s,"
+        "\"connections\":{\"classic_raw\":%u,\"classic_ready\":%u,"
+        "\"ble_raw\":%u,\"ble_ready\":%u},"
         "\"pairing\":{\"window_open\":%s,\"close_deferred\":%s,"
         "\"lockout\":%s},"
         "\"cble\":{\"available\":%s,\"armed\":%s,\"advertising\":%s,"
@@ -314,13 +317,18 @@ static void queue_btstate(void) {
         "\"mgmt\":{\"connects\":%lu,\"disconnects\":%lu},"
         "\"admission\":{\"fresh_accepted\":%lu,\"reject_window\":%lu,"
         "\"reject_lockout\":%lu},\"wipe_completions\":%lu,"
-        "\"disc\":{\"ctrl\":%lu,\"hci\":%lu,\"last_handle\":\"0x%04X\","
-        "\"last_reason\":\"0x%02X\"}}",
+        "\"disc\":{\"ctrl\":%lu,\"hci\":%lu,\"state_losses\":%lu,"
+        "\"last_handle\":\"0x%04X\","
+        "\"last_reason\":\"0x%02X\"},"
+        "\"owner_led\":{\"reason\":\"%s\",\"on\":%s,"
+        "\"last_transition_ms\":%lu,\"timer_max_gap_ms\":%lu}}",
         d.mgmt_enabled ? "true" : "false", d.config_mode ? "true" : "false",
         trace_personality_name(d.personality), d.powered_on ? "true" : "false",
         d.hid_state, d.scan_active ? "true" : "false",
         d.inquiry_active ? "true" : "false", d.wake_adv_active ? "true" : "false",
-        d.controller_connected ? "true" : "false", d.connected_ble_count,
+        d.controller_connected ? "true" : "false",
+        d.connected_classic_count, d.ready_classic_count,
+        d.connected_ble_count, d.ready_ble_count,
         d.pairing_window_open ? "true" : "false",
         d.pairing_close_deferred ? "true" : "false",
         d.pairing_lockout ? "true" : "false",
@@ -339,7 +347,13 @@ static void queue_btstate(void) {
         (unsigned long)d.fresh_admission_reject_lockout,
         (unsigned long)d.wipe_completions,
         (unsigned long)d.ctrl_disconnects, (unsigned long)d.hci_disconnects,
-        d.last_disc_handle, d.last_disc_reason);
+        (unsigned long)d.hci_state_losses,
+        d.last_disc_handle, d.last_disc_reason,
+        ns2_owner_led_reason_name(
+            (ns2_owner_led_reason_t)d.owner_led_reason),
+        d.owner_led_output_on ? "true" : "false",
+        (unsigned long)d.owner_led_last_transition_ms,
+        (unsigned long)d.owner_led_timer_max_gap_ms);
     queue_text(trace_format_response);
 }
 
