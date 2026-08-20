@@ -102,6 +102,19 @@ The acknowledgement proves acceptance, not the final observed value. `Management
 readback for active input, colors, KB/M mode/bind/reset/mouse, and bond removal. Personality
 changes and USB re-enumeration return explicit side-effect flags instead.
 
+### General settings persistence
+
+```text
+save -> accepted(requested=N) -> poll save status -> completed has reached N
+                                      requested may be newer than N
+```
+
+Firmware assigns every explicit or automatic general-settings save a session-local monotonic
+identity. Core 1 snapshots the newest request before composing and writing the settings record, and
+publishes that identity as completed only after flash erase/program returns. A request arriving
+around a write remains newer than completed and cannot be erased by completion of the older
+snapshot. BLE never busy-waits; Config CDC may synchronously wait for its own identity.
+
 ### Transactional Amiibo upload
 
 ```text
@@ -141,9 +154,14 @@ from an address, app association, or a `connected` label.
 ## Compatibility
 
 Unknown JSON fields are ignored. Required fields for a typed result are validated. Unsupported
-optional families are reported through `CapabilityState` during refresh. Bond v2 metadata is
-required for provably complete pagination; a bounded legacy reply is exposed as `complete=false`.
-No management protocol version was bumped because no wire field or command changed.
+optional families are reported through `CapabilityState` during refresh. Transport/session/protocol
+failures propagate instead of fabricating an Unknown capability. KB/M has one explicit capability
+derived from its status family. Bond v2 metadata is required for provably complete pagination; a
+bounded legacy reply is exposed as `complete=false`.
+
+No management protocol version was bumped. `save status` and the `save.requested` field are
+additive; older clients ignore the field, while newer clients degrade to request-only semantics on
+older firmware rather than claiming durability.
 
 ## Relationship to Controller Bridge
 

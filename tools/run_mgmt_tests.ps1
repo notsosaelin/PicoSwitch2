@@ -23,6 +23,7 @@ $tests = @(
     @{ n='test_ns2_kbm';                            src='tools/test_ns2_kbm.c src/ns2_kbm.c';                                           flags='' }
     @{ n='test_bthid_keyboard_report';              src='tools/test_bthid_keyboard_report.c src/bt_hid/bt/bthid/devices/generic/bthid_keyboard_report.c'; flags='-Isrc/bt_hid' }
     @{ n='test_ns2_kbm_config_persistence';         src='tools/test_ns2_kbm_config_persistence.c src/config_persist.c src/ns2_kbm.c';   flags='' }
+    @{ n='test_config_save_tracker';                src='tools/test_config_save_tracker.c src/config_save_tracker.c';                   flags='' }
     # The KB/M status snapshot is rendered by ONE formatter shared by the
     # management and UART surfaces. Both previously had their own printf, and a
     # format/argument mismatch silently corrupted every field of the diagnostic.

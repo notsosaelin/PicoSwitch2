@@ -107,6 +107,7 @@ data class AdapterCapabilities(
     val bonds: CapabilityState = CapabilityState.Unknown,
     val wake: CapabilityState = CapabilityState.Unknown,
     val activeInput: CapabilityState = CapabilityState.Unknown,
+    val kbm: CapabilityState = CapabilityState.Unknown,
 )
 
 data class AdapterSnapshot(
@@ -281,6 +282,7 @@ data class WakeStatus(
     val consoleAsleep: Boolean,
     val identityValid: Boolean,
     val attempts: Long,
+    val lastAttemptMs: Long = 0,
 )
 
 data class CommandAcknowledgement(
@@ -289,10 +291,12 @@ data class CommandAcknowledgement(
     val unchanged: Boolean = false,
     val reenumerating: Boolean = false,
     val enabled: Boolean? = null,
+    val requested: Long? = null,
 )
 
 enum class PersistenceState { Accepted, Queued }
-data class PersistenceAcknowledgement(val state: PersistenceState)
+data class PersistenceAcknowledgement(val state: PersistenceState, val requestId: Long? = null)
+data class PersistenceStatus(val pending: Boolean, val requested: Long, val completed: Long)
 
 data class AmiiboDownload(val bytes: ByteArray, val generation: Long, val payloadCrc: String?)
 

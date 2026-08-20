@@ -26,6 +26,7 @@ The reference test locations are:
 |---|---|
 | Protocol/vectors | `management-core/.../ProtocolConformanceTest.kt` |
 | Portable workflows | `management-core/.../ManagementWorkflowTest.kt` |
+| Corrective closeout | `management-core/.../ManagementCorrectiveCloseoutTest.kt` |
 | Session ownership | `management-core/.../SerializedManagementSessionTest.kt` |
 | No-Android boundary | `management-core/.../ArchitectureGuardTest.kt` |
 | Android consumer boundary | `app/.../ManagementProtocolTest.kt` |
@@ -50,11 +51,17 @@ A client implementation must prove:
 
 ### Refresh and mutations
 
-- Core refresh distinguishes available, unsupported, and unknown optional families.
+- Core refresh maps only explicit firmware unsupported responses to Unsupported. Timeout,
+  disconnect/invalid session, malformed/incomplete reply, overflow, and pagination failure all
+  propagate.
+- KB/M capability is Available after a valid status response and Unsupported only after an explicit
+  unsupported firmware response.
 - Active-input, color, KB/M, and bond mutations perform the authoritative readback specified by the
   contract.
 - Personality/re-enumeration acknowledgements preserve side-effect flags.
-- `queued:true` is represented as queued persistence, not durable completion.
+- `queued:true` is represented as queued persistence, not durable completion. General persistence
+  polling follows the acknowledged request identity, tolerates a newer automatic request, and is
+  bounded by a client timeout.
 
 ### KB/M
 
@@ -97,7 +104,30 @@ For a one-slot/no-request-ID carrier such as BLE, prove:
 - resources and buffered fragments are cleared on close.
 
 Firmware must additionally pass access decision, bonded/encrypted write, allowlist, fragmented RX,
-busy rejection, oversized-line recovery, response chunking, and stale-session tests.
+busy rejection, oversized-line recovery, response chunking, stale-session tests, and save tracker
+request/completion ordering.
+
+## Physical Android BLE smoke procedure
+
+This procedure is pending until the maintainer explicitly authorizes and performs it. Use one
+normal controller personality with the console awake; do not flash or alter bonds merely to run it.
+
+1. Record the app version, adapter `info` build ID, board, controller personality, Android device,
+   and console firmware. Confirm the controller is already functional on Switch 2.
+2. Open the Android companion, connect through the saved bonded/encrypted BLE relationship, and run
+   one full refresh. Record firmware, config, controller, personality, active-input, and capability
+   state; no family may silently become Unknown after a transaction failure.
+3. Enumerate all bonds to a terminal v2 page. Open KB/M status, both mapping profiles, and mouse
+   settings; do not mutate mappings during this smoke.
+4. Make one harmless reversible body-color change, read `get` back, then restore the original color
+   and read it back again.
+5. Request `save`; record its `requested=N`. Poll `save status` until `completed` has reached `N`,
+   recording the final `pending/requested/completed` tuple. Do not call queued acceptance durable.
+6. Read `amiibo status` without loading, clearing, presenting, or modifying an Amiibo.
+7. Disconnect in the app, verify the controller still drives the console, reconnect, and repeat a
+   full refresh. Confirm build/personality/config and the restored color are unchanged.
+8. Report each step as pass/fail with the exact error and last successful command. This establishes
+   Android-to-Pico BLE behavior only; it is not a giant gameplay or compatibility matrix.
 
 ## Repository commands
 

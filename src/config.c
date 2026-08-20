@@ -10,6 +10,7 @@
 
 #include "config.h"
 #include "config_persist.h"  // persisted record layout, defaults, migration
+#include "config_save_tracker.h"
 #include "report.h"      // get_global_raw_buttons / get_global_gamepad_input (live view)
 #include "switch_pro.h"  // switch_pro_input_t
 #include "switch_pro2.h" // ns2_dbg_* getters (report-0x09 motion/gyro debug instrumentation)
@@ -91,7 +92,7 @@ _Static_assert(INSTALL_MARKER_LENGTH < FLASH_PAGE_SIZE,
 
 static pico_config_t cfg;
 static critical_section_t cfg_lock;
-static volatile bool save_requested;
+static config_save_tracker_t save_tracker;
 static volatile uint32_t save_not_before_ms;
 static bool install_reset_performed;
 
@@ -163,12 +164,12 @@ void config_load(void) {
             printf("[CONFIG] Settings upgraded to schema %u; existing colours "
                    "and wake identity preserved\n", (unsigned)CONFIG_VERSION);
             // Persist the upgraded record so the migration runs exactly once.
-            save_requested = true;
+            (void)config_request_save();
             break;
         case CONFIG_PERSIST_REPAIRED:
             printf("[CONFIG] Keyboard/mouse mapping data was unusable; "
                    "canonical defaults restored\n");
-            save_requested = true;
+            (void)config_request_save();
             break;
         default:
             break;
@@ -268,10 +269,10 @@ void config_store_wake_identity(const config_wake_identity_t *identity) {
     // Pairing continues for several USB commands after 0x15/03. A flash erase
     // parks core0, so postpone it until that timing-sensitive exchange is over.
     save_not_before_ms = to_ms_since_boot(get_absolute_time()) + CONFIG_WAKE_SAVE_DELAY_MS;
-    save_requested = true;
+    (void)config_save_tracker_request(&save_tracker);
 }
 
-void config_request_save(void) {
+uint32_t config_request_save(void) {
     // An explicit save overrides any deferred automatic save.
     //
     // Exists so a surface that is not the command parser -- the UART diagnostic
@@ -280,7 +281,7 @@ void config_request_save(void) {
     // config_service_save() on core1 either way, which is also what makes the
     // live KB/M configuration part of the saved record.
     save_not_before_ms = 0;
-    save_requested = true;
+    return config_save_tracker_request(&save_tracker);
 }
 
 void config_service_save(void) {
@@ -288,13 +289,18 @@ void config_service_save(void) {
     // this core1-only flash/lockout execution point.
     virtual_amiibo_store_service_save();
 
-    if (!save_requested)
+    if (!config_save_tracker_pending(&save_tracker))
         return;
 
     uint32_t not_before = save_not_before_ms;
     uint32_t now = to_ms_since_boot(get_absolute_time());
     if (not_before != 0 && (int32_t)(now - not_before) < 0)
         return;
+
+    // Snapshot the newest request before composing the record. A request that
+    // arrives during the write remains newer than completed and is serviced on
+    // a later control tick rather than being lost when this write finishes.
+    uint32_t completing_request = config_save_tracker_requested(&save_tracker);
 
     // The KB/M runtime owns the live mapping state; take its current snapshot
     // rather than a copy this module would have to keep in step by hand. Taken
@@ -322,7 +328,7 @@ void config_service_save(void) {
     restore_interrupts(ints);
     multicore_lockout_end_blocking();
 
-    save_requested = false;
+    config_save_tracker_complete(&save_tracker, completing_request);
     save_not_before_ms = 0;
 }
 
@@ -1558,22 +1564,43 @@ static void handle_line(char *cmd) {
         } else {
             reply("{\"error\":\"bad args\"}");
         }
+    } else if (strcmp(cmd, "save status") == 0) {
+        uint32_t requested = config_save_tracker_requested(&save_tracker);
+        uint32_t completed = config_save_tracker_completed(&save_tracker);
+        snprintf(out, sizeof(out),
+                 "{\"pending\":%s,\"requested\":%lu,\"completed\":%lu}",
+                 requested != completed ? "true" : "false",
+                 (unsigned long)requested, (unsigned long)completed);
+        reply(out);
     } else if (strcmp(cmd, "save") == 0) {
-        config_request_save();
+        uint32_t request_id = config_request_save();
         if (reply_transport == CONFIG_REPLY_WIRELESS) {
             // In-band management runs WHILE a controller drives the console, so
             // core0 must never busy-wait for the flash write here -- an up-to-2 s
             // stall would hitch the controller report loop. core1's control tick
             // performs the deferred write at a safe point; ack immediately.
             // docs/bluetooth/in-band-management-plan.md C6.
-            reply("{\"ok\":true,\"queued\":true}");
+            snprintf(out, sizeof(out),
+                     "{\"ok\":true,\"queued\":true,\"requested\":%lu}",
+                     (unsigned long)request_id);
+            reply(out);
         } else {
             // CDC Config drops the console for its session, so a synchronous
             // confirmation (pumping USB) is fine and nicer for the wired UI.
             absolute_time_t deadline = make_timeout_time_ms(2000);
-            while (save_requested && !time_reached(deadline))
+            while (!config_save_tracker_reached(
+                       config_save_tracker_completed(&save_tracker), request_id) &&
+                   !time_reached(deadline))
                 tud_task();
-            reply(save_requested ? "{\"error\":\"save timeout\"}" : "{\"ok\":true}");
+            if (!config_save_tracker_reached(
+                    config_save_tracker_completed(&save_tracker), request_id)) {
+                reply("{\"error\":\"save timeout\"}");
+            } else {
+                snprintf(out, sizeof(out),
+                         "{\"ok\":true,\"requested\":%lu}",
+                         (unsigned long)request_id);
+                reply(out);
+            }
         }
     } else {
         reply("{\"error\":\"unknown command\"}");

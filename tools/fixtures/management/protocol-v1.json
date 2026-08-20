@@ -48,7 +48,11 @@
     },
     "saveQueued": {
       "command": "save",
-      "reply": {"ok":true,"queued":true}
+      "reply": {"ok":true,"queued":true,"requested":7}
+    },
+    "saveStatus": {
+      "command": "save status",
+      "reply": {"pending":true,"requested":7,"completed":6}
     },
     "adapterError": {
       "command": "amiibo commit",
@@ -75,6 +79,7 @@
     {"operation":"kbmNone","command":"kbm bind kbm key:1A none"},
     {"operation":"mouseSensitivityX","command":"kbm mouse sensitivityx 512"},
     {"operation":"bodyColor","command":"body 1 2 3"},
+    {"operation":"saveStatus","command":"save status"},
     {"operation":"amiiboRead","command":"amiibo read 32 16"}
   ],
   "pagination": {

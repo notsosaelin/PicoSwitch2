@@ -25,6 +25,8 @@ class ManagementClient(
     suspend fun managementEnabled() = exchange(ManagementCommands.MANAGEMENT_STATUS, ManagementProtocol::managementEnabled)
     suspend fun kbmStatus() = exchange(ManagementCommands.KBM_STATUS, ManagementProtocol::kbmStatus)
     suspend fun kbmMouse() = exchange(ManagementCommands.KBM_MOUSE, ManagementProtocol::kbmMouse)
+    suspend fun persistenceStatus() =
+        exchange(ManagementCommands.SAVE_STATUS, ManagementProtocol::persistenceStatus)
 
     /** Initial portable state composition. Unsupported optional families remain explicit. */
     suspend fun refreshAll(previous: AdapterSnapshot = AdapterSnapshot()): ManagementRefresh {
@@ -64,6 +66,7 @@ class ManagementClient(
                     bonds = bondCapability,
                     wake = previous.capabilities.wake,
                     activeInput = input.state,
+                    kbm = kbmStatus.state,
                 ),
                 refreshedAtMillis = nowMillis(),
             ),
@@ -103,13 +106,13 @@ class ManagementClient(
 
     suspend fun wakeConsole(): WakeStatus {
         acknowledge(ManagementCommands.WAKE)
-        var status = WakeStatus(WakeResult.Unknown, false, false, 0)
+        var status = WakeStatus(WakeResult.Unknown, false, false, 0, 0)
         repeat(WAKE_STATUS_POLLS) {
             delay(WAKE_STATUS_POLL_MILLIS)
             status = try {
                 exchange(ManagementCommands.WAKE_STATUS, ManagementProtocol::wakeStatus)
             } catch (error: AdapterCommandException) {
-                if (error.isUnsupported()) return WakeStatus(WakeResult.Unknown, false, false, 0)
+                if (error.isUnsupported()) return WakeStatus(WakeResult.Unknown, false, false, 0, 0)
                 throw error
             }
             if (status.result != WakeResult.Pending) return status
@@ -201,7 +204,35 @@ class ManagementClient(
         val acknowledgement = acknowledge(ManagementCommands.SAVE)
         return PersistenceAcknowledgement(
             if (acknowledgement.queued) PersistenceState.Queued else PersistenceState.Accepted,
+            acknowledgement.requested,
         )
+    }
+
+    suspend fun saveAndAwait(timeoutMillis: Long = PERSIST_TIMEOUT_MILLIS): PersistenceStatus {
+        val acknowledgement = save()
+        return awaitPersistence(acknowledgement, timeoutMillis)
+    }
+
+    suspend fun awaitPersistence(
+        acknowledgement: PersistenceAcknowledgement,
+        timeoutMillis: Long = PERSIST_TIMEOUT_MILLIS,
+    ): PersistenceStatus {
+        require(timeoutMillis > 0) { "Persistence timeout must be positive" }
+        val requestId = acknowledgement.requestId
+            ?: throw ManagementProtocolException("Adapter did not identify the persistence request")
+        return try {
+            withTimeout(timeoutMillis) {
+                while (true) {
+                    val status = persistenceStatus()
+                    if (requestReached(status.completed, requestId)) return@withTimeout status
+                    delay(PERSIST_POLL_MILLIS)
+                }
+                @Suppress("UNREACHABLE_CODE")
+                PersistenceStatus(false, 0, 0)
+            }
+        } catch (error: TimeoutCancellationException) {
+            throw ManagementException("Adapter did not finish settings persistence in time", error)
+        }
     }
 
     suspend fun uploadAmiibo(
@@ -358,8 +389,11 @@ class ManagementClient(
         OptionalResult(block(), CapabilityState.Available)
     } catch (error: AdapterCommandException) {
         if (error.isUnsupported()) OptionalResult(null, CapabilityState.Unsupported) else throw error
-    } catch (_: ManagementException) {
-        OptionalResult(null, CapabilityState.Unknown)
+    }
+
+    private fun requestReached(completed: Long, requestId: Long): Boolean {
+        val difference = (completed - requestId) and UINT32_MASK
+        return difference < UINT32_HALF_RANGE
     }
 
     private fun validateAmiiboSize(size: Int) {
@@ -380,6 +414,10 @@ class ManagementClient(
         const val WAKE_STATUS_POLL_MILLIS = 150L
         const val AMIIBO_PERSIST_TIMEOUT_MILLIS = 6_000L
         const val AMIIBO_POLL_MILLIS = 200L
+        const val PERSIST_TIMEOUT_MILLIS = 6_000L
+        const val PERSIST_POLL_MILLIS = 100L
+        const val UINT32_MASK = 0xFFFF_FFFFL
+        const val UINT32_HALF_RANGE = 0x8000_0000L
         const val UNAVAILABLE_PAYLOAD_CRC = "00000000"
         val AMIIBO_SUPPORTED_SIZES = setOf(540, 572, 2048)
     }

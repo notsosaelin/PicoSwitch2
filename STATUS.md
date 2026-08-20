@@ -341,11 +341,15 @@ controller drives the console and without a CDC re-enumeration that would drop t
   described as bonded and encrypted, never as `ATT_SECURITY_AUTHENTICATED`.
 - Commands run through the existing core-0 parser behind an allowlist. Flash operations (`save`,
   `amiibo clear`, `amiibo persist`) and bond list/remove are deferred rather than busy-waited, with
-  session-bound replies.
+  session-bound replies. General `save` now returns a monotonic request identity and `save status`
+  exposes authoritative core-1 flash completion without blocking the BLE command path.
 - The Android-free `:management-core` module now owns logical commands, typed replies, paging,
   mutation/readback, Amiibo transfer workflows, and BLE session serialization. Android owns only
   connection/pairing/lifecycle and presentation. The language-neutral contract and conformance
   vectors start at [`docs/management/README.md`](docs/management/README.md).
+- Optional capability probing treats only explicit firmware unsupported replies as Unsupported;
+  broken sessions and malformed/pagination failures propagate. KB/M capability is explicit, and
+  portable wake status preserves the firmware's `lastAttemptMs` field.
 - Management advertising no longer suppresses controller discovery. A 5.4-hour soak held a Classic
   controller plus a management client through ten USB re-enumerations and three controller
   disconnect/reconnect cycles, with automatic controller recovery and no management disconnects.
