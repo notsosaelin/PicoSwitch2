@@ -50,7 +50,13 @@ The debug build provides real implementations for:
   fresh automatic attempt per foreground session, disconnected-state cleanup, and controller-mode reuse of the saved Classic bond,
   capacity-one full-state reports at an 8 ms ceiling, input-device hot-plug recovery, and
   neutralization on pause/stop/disconnect;
-- collapsed Settings categories, including Developer diagnostics and a privacy-redacted share export; and
+- the complete Keyboard & Mouse management surface: live device and role status with names resolved
+  from the adapter's own source registry, input mode, both mapping profiles with a focused
+  per-input editor, mouse-button mapping, sensitivity with linked or independent axes, deadzone
+  compensation, inversion, the advanced movement-window control, adapter-default restore, and an
+  explicit live-apply/save model;
+- a grouped Diagnostics screen with copy affordances on the values worth sharing and a one-tap
+  summary, plus a privacy-redacted share export; and
 - five-second controller and Amiibo state refresh while connected and idle, including an adapter-only download,
   present/eject, and guarded-clear workflow when no local item matches.
 
@@ -65,8 +71,114 @@ the repository's verified `#9BE1E6` left and `#FF8C5F` right accent references; 
 change only app UI accents and never write controller identity colors. Theme controls are full-row
 radio choices with text labels, not color-only state, and keep Material error/status roles readable.
 
-There is deliberately no user remapping editor. PicoSwitch2's compiled controller map is stable and
-user remapping belongs in the Switch's persistent controller settings.
+## Product structure
+
+Five top-level destinations, chosen so each names something the user is trying to do rather than a
+group of commands:
+
+| Destination | Contents |
+|---|---|
+| **Adapter** | Which adapter, its state, what is attached, controller mode (personality), and appearance colours. |
+| **Keyboard** | The complete Keyboard & Mouse management surface: devices, input mode, both mapping profiles, and mouse tuning. |
+| **Amiibo** | The artwork-first library. Search, sort, and per-figure actions. |
+| **Gamepad** | Which controller drives the console, and using this handheld as one. |
+| **Settings** | Appearance, Amiibo settings, adapter pairing, About. |
+
+Two screens are pushed over a destination rather than being one: **Diagnostics** (from Settings ->
+About, or the copy action in its own header) and **Amiibo settings** (from the Amiibo overflow or
+Settings -> Amiibo). Both are troubleshooting or maintenance surfaces that are visited rarely and
+should not hold permanent navigation space.
+
+Personality and colours moved onto Adapter because they are properties of the one physical device;
+having them on a separate page made changing a colour a navigation task. Diagnostics absorbed the
+former Settings -> Developer block, which had grown to dominate ordinary settings.
+
+### Connection state
+
+One authoritative connection state, rendered by the app shell as a strip above every destination.
+No screen derives its own notion of connected, and controls are enabled from that single state, so
+a session that ends while the user is on another page is visible where it happens. The strip also
+carries the unsaved-changes marker, because that marker outlives the page that created it.
+
+Removing a stored pairing may revoke this phone's own authorization, and Android does not expose
+our Bluetooth address, so the app cannot tell whether an entry is itself. `AdapterRepository`
+therefore probes the link after the removal and reports whether the session survived; the
+ViewModel disconnects and reconciles when it did not, rather than leaving the UI connected to a
+relationship that no longer exists.
+
+### Shared UI primitives
+
+`ui/Components.kt` holds the recurring surfaces exactly once: `SectionCard`, `SettingsRow`,
+`LabelValueRow`, `DeviceStatusRow`, `StatusChip`, `InlineNotice`, `EmptyStateBlock`,
+`SegmentedSelector`, `ExpandableSection`, and the `PicoDialog`/`ConfirmDialog` pair that every
+popup goes through. `LayoutTokens` is the single place a spacing, radius, breakpoint or row height
+is decided; a literal dp inside a screen is treated as suspicious, because the previous per-screen
+copies meant one spacing correction had to be repeated per screen and was missed on the screens
+nobody re-opened.
+
+Two of those primitives measure rather than assume:
+
+- `SegmentedSelector` measures its longest label and falls back to a wrapping chip row when the
+  segments cannot hold it. A fixed threshold was wrong in both directions -- it clipped
+  "Keyboard + Mouse" into "Keyboard…" in a two-column landscape, and would have pushed four short
+  labels into chips where they fit. Measuring is also correct at every font scale for free.
+- The navigation bar compares the per-item width against the width one label needs at the current
+  font scale, and drops to Material's icon-only bar below it. An ellipsised destination name is a
+  navigation the user has to guess at.
+
+### Keyboard & Mouse
+
+The complete `kbm` command surface is wired into the client, so ordinary keyboard and mouse
+configuration no longer requires UART. `KbmModels.kt` names the wire values and translates them
+into product language; `ManagementProtocol` parses them strictly; `AdapterRepository` owns every
+command, including the paginated `kbm map` assembly. No Composable builds a command string.
+
+The page is four areas: devices, input mode, mapping, mouse tuning.
+
+- **Devices.** `kbm status` reports only a transport connection index per admitted role. The peer
+  names live in `input sources`, keyed by the same index, so `resolveKbmDeviceName` correlates the
+  two and shows a plain "Connected" when they disagree -- rather than borrowing a name from an
+  unrelated source. Keyboard-only and mouse-only are ordinary operation and get a quiet chip, not a
+  warning banner.
+- **Input mode.** The chosen override and the mode actually in force are shown as two facts, because
+  under **Automatic** the adapter infers the live mode from what is admitted and the two legitimately
+  differ.
+- **Mapping.** Both profiles are editable and are presented as the independent layouts they are;
+  which one the adapter is running is marked separately from which one is on screen. A row opens a
+  focused editor with a searchable, grouped destination list that scrolls to the current binding.
+  Unassign (`none`) and Restore default (`default`) are distinct actions because they are distinct
+  firmware commands.
+- **Mouse tuning.** Sensitivity uses a logarithmic slider: the adapter accepts a 512:1 range, so a
+  linear control cannot resolve the useful low end at all. Axes are linked by default with an
+  explicit unlink. The radial anti-deadzone is presented as **Deadzone compensation** in percent,
+  with zero clearly meaning off. `recenterMs` is surfaced under Advanced as **Movement window**,
+  named for what it does now: the firmware's own header records that it is the velocity model's
+  reference interval and no longer a recentring delay.
+
+Every accepted range comes from the adapter's own `kbm mouse` reply. The client carries no copy of
+a limit, because a client that did would refuse values a newer firmware had widened.
+
+### Live apply versus save
+
+KB/M changes apply to adapter RAM immediately; `save` is what writes flash. The UI models exactly
+that: a change takes effect at once, the page becomes locally unsaved, and **Save** persists it.
+Slider drags are debounced during the gesture and sent unconditionally on release, so tuning stays
+live without flooding a link that carries one command at a time. The adapter's reply is adopted as
+the new truth rather than the value that was asked for, because it validates and rejects rather
+than clamping.
+
+The protocol cannot say whether an arbitrary runtime value matches flash, so a fresh connection
+starts clean by definition rather than by inference, and the unsaved marker is cleared with the
+rest of the session state on disconnect. A rejected save leaves the marker set.
+
+### Controller remapping
+
+There is still no controller remapping editor, and this is a firmware capability gap rather than a
+product decision. `NS2_BASE_BUTTON_MAP` in `include/ns2_remap.h` is a compile-time `const uint8_t`
+table with no runtime override storage and no management command; `src/config.c` exposes nothing
+for it. Adding the page needs a `remap` command family analogous to `kbm bind` -- list, bind,
+reset -- plus persisted overrides and a wireless allowlist entry. Nothing client-side can substitute
+for that, and inventing an unsupported command would be worse than the gap.
 
 ## Architecture
 
@@ -161,43 +273,72 @@ HID Device registration, and HID connection remain separate Android states.
 
 ## Responsive strategy and validation
 
-The app selects navigation and content structure from available width, not orientation names:
+The app selects navigation and content structure from available space, never from orientation or
+device names:
 
 - bottom navigation below 720 dp, navigation rail at 720 dp and above;
-- two-pane hardware, controller, and color layouts at 760 dp; Amiibo uses two panes from 600 dp so
-  short handheld landscapes retain a usable library and detail surface;
-- adaptive Amiibo grid cells with a 168 dp minimum; compact Amiibo uses a bounded artwork/name hero
-  and scrollable figure rows so 538 dp-wide landscape still exposes a usable primary action. A
-  compact sort menu deterministically orders both surfaces by Name, Series, or Recently added;
+- the bottom bar drops to Material's icon-only form when the per-item width is below what one label
+  needs at the current font scale;
+- two columns of section cards from 760 dp of **content** width -- measured after the rail and the
+  page gutters, not from the window's size bucket. Those two disagree exactly on a landscape
+  handheld, and reading the bucket left a 960 dp display running one column of very wide rows;
+- cards that branch internally measure themselves, because in a two-column layout a card only gets
+  half the page. The appearance tiles fall back to rows below 320 dp of card width;
+- adaptive Amiibo grid cells with a 132 dp minimum, so the column count follows the display instead
+  of stretching a fixed number of columns;
+- a tighter vertical rhythm and a smaller page title under 560 dp of height, which is where
+  landscape handhelds and raised font scales both land;
 - a 1240 dp content maximum on unusually wide displays;
 - one shared spacing/radius/touch-target token set; scrolling rather than shrinking or clipping.
 
-Theme and palette controls live in the same scrollable Settings surface, so they remain reachable in
-short landscape windows and at larger font scales. Status and navigation bars follow the selected
-scheme, including light-system-bar treatment in light mode.
+Dialogs are bounded at 520 dp and their scrolling lists at 280 dp, so a popup stays a focused
+decision on a wide display and cannot push its buttons off a short one.
 
-The adapter connection row is deliberately Home-only. Home presents three focused tiles for the
-adapter personality, active input, and loaded Amiibo; protocol warnings and raw identifiers stay in
-Settings -> Developer. Settings starts as a compact category list and expands only the category the
-user asks for. Amiibo key selection lives under Settings -> Amiibo metadata and has no delete or
-library-page replacement control.
+### The layout lab
 
-The debug APK was emulator-launched and visually inspected at 16:9 portrait/landscape, 16:10
-landscape, 4:3 portrait/landscape, 1:1, 900x2100 narrow/tall, and 2400x1200 wide-handheld/tablet
-profiles. The 16:9 landscape pass exposed underused horizontal space; lowering the content
-two-pane threshold from 900 to 760 dp corrected it. A retained scroll-position issue across top-level
-destinations was also fixed by keying each destination's composition. The second pass additionally
-removed a duplicate/clipped empty-library card, bounded the compact Amiibo detail pane so its grid
-remains reachable at 150% text, and exercised an 80-item library with long names. The current page
-also treats an active adapter tag as a first-class display item when the private library index is
-empty, so its catalog lookup and actions do not depend on importing or syncing first.
+Most of these screens only exist in their interesting form while an adapter with a keyboard, a
+mouse and an Amiibo library is attached, so inspecting only the disconnected empty states would
+have inspected the half of each screen with no layout in it. `app/src/debug` therefore carries a
+**layout lab** activity that renders the real application shell against synthetic adapter state.
+It is debug-variant only and reachable through:
+
+```powershell
+adb shell am start -n dev.picoswitch.companion.debug/dev.picoswitch.companion.lab.LayoutLabActivity `
+    --es section Keyboard [--es overlay Diagnostics] [--ez empty true]
+```
+
+Window shapes come from `wm size`/`wm density` overrides on one AVD. Two properties of that
+approach are worth recording because both produced wrong evidence before they were handled: the
+resize is asynchronous, so a screenshot taken immediately captures the previous shape, and the
+emulator restarts often enough under repeated resizes that a launch can be backgrounded. The
+capture script polls the shape readback, checks `am start -W` for the activity that actually came
+up, and finally verifies the pulled PNG's own dimensions before accepting it as evidence.
 
 ## Tests
 
-The Android JVM run passed **123 tests**, **1 API-35 instrumented navigation/scroll smoke test**,
-Android lint, and debug APK assembly. A connected AYN
+A clean JVM run passed **139 `:app` tests** and **114 `:bridge-core` tests**, plus **2 instrumented
+emulator tests** (every top-level destination rendering offline, and the Diagnostics overlay opening
+and closing), Android lint with zero errors, and debug APK assembly. A connected AYN
 Thor rerun of the UI test on 2026-08-13 did not expose a Compose hierarchy to the runner, so that
 device rerun is not treated as new UI evidence. JVM coverage includes:
+
+- the Keyboard/Mouse wire contract against replies shaped exactly like the firmware's own
+  `snprintf` templates: complete status, a refused unknown mode, a status missing a role field,
+  mapping pages, a refused unknown destination, mouse configuration with its reported limits, a
+  refused reply that omits them, and the longest `kbm bind` command against the 127-byte frame;
+- the KB/M client model: source wire round trips in both widths, refusal of the usage ids the
+  firmware will not bind, every destination/mode/profile name the firmware emits being
+  representable, every default binding resolving to a named key, and the neutral fallback for an
+  unnamed usage;
+- the logarithmic sensitivity mapping: round trip across the range, the default landing near the
+  middle of the travel rather than at 6% of it, clamping to adapter-reported bounds, and a
+  degenerate min == max range that would otherwise divide by zero;
+- KB/M repository behaviour through a scripted transport: paginated mapping assembly, refusal of a
+  page for the wrong profile, of a total that changes mid-pagination, and of a non-terminating
+  cursor; `none` versus `default` staying distinct commands; a mouse change adopting the adapter's
+  reply rather than the requested value; a mode change re-reading the effective mode; the unsaved
+  marker surviving a failed save; and a disconnect dropping one session's mapping and marker
+  entirely;
 
 - command framing/limits, config, personality, complete Amiibo status, malformed/error replies;
 - accepted key_retail.bin length/master labels, reversed-master normalization, richer identity,
@@ -273,9 +414,15 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
   failure without discarding valid core state.
 - Rotation/process restoration retains destination, Amiibo/source selection, color edits, and
   pending identity-refresh state without replaying protocol mutations.
-- **Settings -> Developer** shows platform, HID, GATT, firmware, capability, report, and
-  re-enumeration state. Its Android share export is bounded and redacted: no raw Amiibo bytes, JSON
-  replies, keys, or Bluetooth addresses.
+- **Diagnostics** (Settings -> About -> Diagnostics) groups identity, management link, controller
+  bridge, keyboard/mouse arbitration, adapter state, Android platform, and live input by the layer
+  each describes, so a cross-layer failure's first question -- which side disagrees -- is answered by
+  reading down one column. Identifiers render monospaced with copy affordances, and a header action
+  copies a short summary. Its Android share export remains bounded and redacted: no raw Amiibo
+  bytes, JSON replies, keys, or Bluetooth addresses.
+- The wireless-management gate is a development control and lives in Diagnostics behind a
+  confirmation that states the cost, because disabling it ends the session issuing the command. It
+  is not an ordinary product setting: management is normal product behaviour and boots enabled.
 
 ## Source/document reconciliation
 

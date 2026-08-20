@@ -264,10 +264,22 @@ console-facing protocol owner. Reference hardware is an AYN Thor (Android 13 / A
 - **Hardware state:** the v2.0.0 sanity pass on an AYN Thor confirmed buttons, sticks, triggers,
   D-pad, C/GameChat, battery, motion and rumble with the adapter reporting `v2-bridge`
   identification; the bridge is also confirmed on an Odin 2.
+- **Management surface:** the app is organized around five destinations — Adapter, Keyboard,
+  Amiibo, Gamepad, Settings — with Diagnostics and Amiibo settings as pushed screens rather than
+  permanent navigation. Keyboard & Mouse is now a first-class product area covering the complete
+  `kbm` command surface: device/role status with names resolved from the source registry, input
+  mode, both mapping profiles with a per-input editor, and mouse tuning. KB/M changes apply to
+  adapter RAM immediately and are persisted by an explicit Save; the app models that rather than
+  implying storage. Implementation complete; hardware validation of the mutation paths pending.
 - **Known limitations:** input is delivered through Activity dispatch, so the companion must be the
   foreground window while playing (backgrounding releases held input; the connected-device
   foreground service keeps the link and rumble path alive). Android permits one HID Device
   application system-wide.
+- **Blocked on firmware, not on the client:** controller remapping and adapter renaming have no
+  management command at all. `NS2_BASE_BUTTON_MAP` is a compile-time table with no runtime override
+  storage, and the advertised name is a compile-time constant locked to 11 bytes by a
+  `_Static_assert` and written into fixed-length LE scan-response, Classic EIR and ATT Device Name
+  data. Both need firmware work before any client can offer them.
 
 Briefs: [`docs/agents/ANDROID.md`](docs/agents/ANDROID.md),
 [`docs/bluetooth/android-controller-bridge.md`](docs/bluetooth/android-controller-bridge.md),

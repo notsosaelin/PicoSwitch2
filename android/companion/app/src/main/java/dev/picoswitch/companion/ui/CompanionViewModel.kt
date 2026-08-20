@@ -46,7 +46,38 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
 
-enum class AppSection(val label: String) { Home("Home"), Amiibo("Amiibo"), Controller("Input"), Modes("Adapter"), Settings("Settings") }
+/**
+ * The application's top-level destinations.
+ *
+ * Five, deliberately: the adapter itself, the two things it can be configured
+ * to do (Keyboard & Mouse, Amiibo), using this handheld as the controller, and
+ * settings. Personality and appearance moved into [Adapter] because they are
+ * facts about the same physical device rather than a separate place to visit,
+ * and Diagnostics is reached from Settings because it is a troubleshooting
+ * instrument, not a daily destination.
+ *
+ * `label` is what the navigation bar shows and `title` is the page heading.
+ * They are separate because a five-item compact bar gives an unselected item
+ * roughly eight characters before Material ellipsises it -- and an ellipsised
+ * destination name is a navigation the user has to guess at. Every label is
+ * therefore kept short enough to survive that, plus a raised font scale.
+ */
+enum class AppSection(val label: String, val title: String, val subtitle: String = "") {
+    Adapter("Adapter", "Adapter", "Status, mode, and appearance"),
+    Keyboard("Keyboard", "Keyboard & Mouse", "Devices, mapping, and mouse feel"),
+    Amiibo("Amiibo", "Amiibo", "Your private figure library"),
+    Controller("Gamepad", "Gamepad", "Choose what drives the console"),
+    Settings("Settings", "Settings", ""),
+}
+
+/**
+ * A screen that is pushed over a section rather than being one of its own.
+ *
+ * Kept as explicit state instead of a navigation library because the app has
+ * exactly two such screens and the section state is already saved and restored
+ * here; adding a graph would move that ownership without removing any.
+ */
+enum class AppOverlay { None, Diagnostics, AmiiboSettings }
 
 data class PlatformDiagnostics(
     val bluetoothAvailable: Boolean = false,
@@ -57,7 +88,16 @@ data class PlatformDiagnostics(
 )
 
 data class CompanionUiState(
-    val section: AppSection = AppSection.Home,
+    val section: AppSection = AppSection.Adapter,
+    val overlay: AppOverlay = AppOverlay.None,
+    val kbm: KbmState = KbmState(),
+    /**
+     * A Keyboard & Mouse command is in flight. Deliberately separate from
+     * [busy]: mapping and tuning changes are frequent and local, and covering
+     * the whole application with the modal progress overlay for each one made
+     * live mouse tuning unusable.
+     */
+    val kbmBusy: Boolean = false,
     val connection: ConnectionState = ConnectionState(),
     val snapshot: AdapterSnapshot = AdapterSnapshot(),
     val library: List<AmiiboLibraryItem> = emptyList(),
@@ -138,7 +178,9 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     private var selectedDetailsJob: Job? = null
     private var adapterCatalogJob: Job? = null
     private var adapterCatalogFigureId: String? = null
-    private val initialSection = savedState.get<String>(KEY_SECTION)?.let { runCatching { AppSection.valueOf(it) }.getOrNull() } ?: AppSection.Home
+    private var kbmMouseJob: Job? = null
+    private var kbmMappingsLoaded = false
+    private val initialSection = savedState.get<String>(KEY_SECTION)?.let { runCatching { AppSection.valueOf(it) }.getOrNull() } ?: AppSection.Adapter
     private val _ui = MutableStateFlow(
         CompanionUiState(
             section = initialSection,
@@ -171,6 +213,10 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                         value.phase == ConnectionPhase.Failed
                     ) {
                         adapter.clearDisconnectedSnapshot()
+                        // Bindings belong to the adapter that was connected.
+                        // Keeping them across a disconnect would let the next
+                        // session open on another adapter's mapping.
+                        kbmMappingsLoaded = false
                     }
                     _ui.update { it.copy(connection = value) }
                     refreshBridgeCompatibility()
@@ -198,6 +244,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                 refreshSelectedAmiiboDetails()
             }
         }
+        viewModelScope.launch { adapter.kbm.collect { value -> _ui.update { it.copy(kbm = value) } } }
         viewModelScope.launch { library.warnings.collect { value -> _ui.update { it.copy(libraryWarnings = value) } } }
         viewModelScope.launch { session.state.collect { value -> _ui.update { it.copy(bridge = value) } } }
         viewModelScope.launch { inputBackend.state.collect { value -> _ui.update { it.copy(controllerState = value) } } }
@@ -254,7 +301,16 @@ class CompanionViewModel(application: Application, private val savedState: Saved
 
     fun navigate(section: AppSection) {
         savedState[KEY_SECTION] = section.name
-        _ui.update { it.copy(section = section, message = null) }
+        _ui.update { it.copy(section = section, overlay = AppOverlay.None, message = null) }
+        if (section == AppSection.Keyboard) ensureKbmMappings()
+    }
+
+    fun openOverlay(overlay: AppOverlay) {
+        _ui.update { it.copy(overlay = overlay, message = null) }
+    }
+
+    fun closeOverlay() {
+        _ui.update { it.copy(overlay = AppOverlay.None) }
     }
     fun setThemeMode(mode: ThemeMode) = updateTheme { it.copy(mode = mode) }
     fun setAccentPalette(palette: AccentPalette) = updateTheme { it.copy(palette = palette) }
@@ -343,6 +399,109 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         _ui.update { it.copy(identityRefreshPending = false) }
         diagnostics.event("adapter", "identity changes applied")
         notice("USB identity refreshed. The console controller may pause briefly while it reconnects.")
+    }
+
+    // -----------------------------------------------------------------------
+    // Keyboard & Mouse
+    // -----------------------------------------------------------------------
+    // These run outside [launch] on purpose. That helper raises the modal
+    // progress overlay and refuses to start while any other operation is in
+    // flight, which is right for uploading an Amiibo and wrong for dragging a
+    // sensitivity slider: the page has to stay interactive and a rejected
+    // command must not simply vanish.
+
+    /**
+     * Fetch the binding lists the page needs, once per connection.
+     *
+     * Each profile costs several paginated round trips, so this is not part of
+     * the ordinary refresh; it runs when the page is first opened and after a
+     * reconnect (the flag is cleared with the rest of the session state).
+     */
+    fun ensureKbmMappings(force: Boolean = false) {
+        if (!_ui.value.connection.connected) return
+        if (_ui.value.kbm.available == CapabilityState.Unsupported) return
+        if (kbmMappingsLoaded && !force) return
+        kbmMappingsLoaded = true
+        kbmOperation("Reading keyboard mapping") {
+            if (_ui.value.kbm.available != CapabilityState.Available) adapter.refreshKbm()
+            KbmProfile.entries.forEach { adapter.loadKbmMapping(it) }
+        }
+    }
+
+    fun refreshKbm() = kbmOperation("Refreshing keyboard and mouse") {
+        adapter.refreshKbm()
+        KbmProfile.entries.forEach { adapter.loadKbmMapping(it) }
+    }
+
+    fun setKbmMode(mode: KbmMode) = kbmOperation("Changing input mode") {
+        adapter.setKbmMode(mode)
+    }
+
+    /** `null` destination restores this input's canonical binding. */
+    fun bindKbm(profile: KbmProfile, source: KbmSource, destination: KbmDestination?) =
+        kbmOperation("Updating binding") {
+            adapter.bindKbm(profile, source, destination)
+        }
+
+    fun resetKbmProfile(profile: KbmProfile) = kbmOperation("Restoring ${profile.title} defaults") {
+        adapter.resetKbmProfile(profile)
+        notice("${profile.title} mapping restored to defaults")
+    }
+
+    fun resetKbmAll() = kbmOperation("Restoring keyboard and mouse defaults") {
+        adapter.resetKbmAll()
+        notice("Keyboard, mouse, and mapping defaults restored")
+    }
+
+    /**
+     * Apply a mouse setting while the control is still being dragged.
+     *
+     * Debounced rather than sent per pixel: the management link carries one
+     * command at a time, and a slider produces far more values than it can
+     * absorb. The delay is short enough that the change still reads as live.
+     * [commitMouseField] then sends the released value unconditionally so the
+     * adapter always ends on exactly what the user chose.
+     */
+    fun previewMouseField(field: KbmMouseField, value: Int) {
+        kbmMouseJob?.cancel()
+        kbmMouseJob = viewModelScope.launch {
+            delay(MOUSE_APPLY_DEBOUNCE_MS)
+            runCatching { adapter.setKbmMouse(field, value) }
+                .onFailure { diagnostics.error("kbm", "mouse ${field.wire} preview", it) }
+        }
+    }
+
+    fun commitMouseField(field: KbmMouseField, value: Int) {
+        kbmMouseJob?.cancel()
+        kbmMouseJob = viewModelScope.launch {
+            _ui.update { it.copy(kbmBusy = true) }
+            runCatching { adapter.setKbmMouse(field, value) }
+                .onFailure { error ->
+                    diagnostics.error("kbm", "mouse ${field.wire}", error)
+                    notice(error.message ?: "The adapter rejected that value")
+                    // The adapter is the authority on what is in effect; re-read
+                    // rather than leaving the control showing a value it refused.
+                    runCatching { adapter.refreshKbm() }
+                }
+            _ui.update { it.copy(kbmBusy = false) }
+        }
+    }
+
+    fun saveAdapterConfiguration() = kbmOperation("Saving to adapter") {
+        adapter.saveConfiguration()
+        notice("Saved to adapter")
+    }
+
+    private fun kbmOperation(label: String, action: suspend () -> Unit): Job? {
+        if (_ui.value.kbmBusy) return null
+        return viewModelScope.launch {
+            _ui.update { it.copy(kbmBusy = true) }
+            runCatching { action() }.onFailure { error ->
+                diagnostics.error("kbm", label, error)
+                notice(error.message ?: "$label failed")
+            }
+            _ui.update { it.copy(kbmBusy = false) }
+        }
     }
 
     fun setManagement(enabled: Boolean) = launch("Updating management access") {
@@ -964,6 +1123,23 @@ class CompanionViewModel(application: Application, private val savedState: Saved
 
     private fun notice(message: String) { _ui.update { it.copy(message = message) } }
 
+    /**
+     * Replace the UI state wholesale, for the debug-only layout lab.
+     *
+     * Visual inspection is part of acceptance for a UI change, and most of this
+     * application's screens only exist in their interesting form while an
+     * adapter with a keyboard, a mouse and an Amiibo library is attached. The
+     * lab (`app/src/debug`) renders those states synthetically so every screen
+     * can be checked at every window shape without hardware.
+     *
+     * No product code path calls this, and the lab activity it serves is not
+     * part of the release variant. It is a seam for inspection, never a way to
+     * fabricate adapter state the user could see.
+     */
+    internal fun applyLayoutLabState(transform: (CompanionUiState) -> CompanionUiState) {
+        _ui.update(transform)
+    }
+
     private fun updateTheme(update: (ThemeSelection) -> ThemeSelection) {
         val next = update(_theme.value)
         if (next == _theme.value) return
@@ -983,6 +1159,10 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         private const val MAX_LIBRARY_ARCHIVE_BYTES = AmiiboLibraryArchive.MAX_ARCHIVE_BYTES
         private const val RETAIL_KEY_BYTES = 160
         private const val ADAPTER_POLL_MILLIS = 5_000L
+        // Long enough that a slider drag issues a handful of commands rather
+        // than hundreds, short enough that the change still reads as live while
+        // the finger is down.
+        private const val MOUSE_APPLY_DEBOUNCE_MS = 140L
         private const val AUTOMATIC_CONTROLLER_RESUME_TIMEOUT_MS = 20_000L
         private const val AUTOMATIC_CONTROLLER_RESUME_RETRY_MS = 250L
         private const val KEY_SECTION = "section"

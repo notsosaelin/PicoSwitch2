@@ -1,5 +1,10 @@
 package dev.picoswitch.companion.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.BluetoothSearching
@@ -10,18 +15,29 @@ import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.picoswitch.companion.model.ConnectionPhase
 
 private data class NavItem(val section: AppSection, val icon: ImageVector)
+
+/**
+ * The application's five destinations, in the order they are used.
+ *
+ * Adapter first because it is the physical thing being managed; Settings last
+ * because it is the least frequent. Diagnostics is intentionally absent -- it
+ * is opened from Settings, not visited daily.
+ */
 private val navItems = listOf(
-    NavItem(AppSection.Home, Icons.Default.Home),
+    NavItem(AppSection.Adapter, Icons.Default.Cable),
+    NavItem(AppSection.Keyboard, Icons.Default.Keyboard),
     NavItem(AppSection.Amiibo, Icons.Default.Contactless),
     NavItem(AppSection.Controller, Icons.Default.SportsEsports),
-    NavItem(AppSection.Modes, Icons.Default.SettingsInputComponent),
     NavItem(AppSection.Settings, Icons.Default.Settings),
 )
 
@@ -49,70 +65,152 @@ fun CompanionApp(
     CompanionTheme(theme) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val useRail = maxWidth >= LayoutTokens.NavigationBreakpoint
-            Scaffold(
-                modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing),
-                snackbarHost = { SnackbarHost(snackbarHostState) },
-                bottomBar = {
-                    if (!useRail) NavigationBar {
-                        navItems.forEach { item ->
-                            NavigationBarItem(
-                                selected = ui.section == item.section,
-                                onClick = { viewModel.navigate(item.section) },
-                                icon = { Icon(item.icon, null) }, label = { Text(item.section.label) },
-                            )
-                        }
-                    }
-                },
-            ) { padding ->
-                Row(Modifier.fillMaxSize().padding(padding)) {
-                    if (useRail) {
-                        NavigationRail(
-                            header = {
-                                Icon(Icons.Default.Gamepad, "PicoSwitch Companion", Modifier.padding(vertical = 20.dp))
-                            },
-                        ) {
-                            Spacer(Modifier.weight(1f))
-                            navItems.forEach { item ->
-                                NavigationRailItem(
-                                    selected = ui.section == item.section,
-                                    onClick = { viewModel.navigate(item.section) },
-                                    icon = { Icon(item.icon, null) }, label = { Text(item.section.label) },
-                                )
+            val windowHeight = maxHeight
+            val fontScale = LocalDensity.current.fontScale
+            ProvideShortWindow(windowHeight) {
+                Scaffold(
+                    modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing),
+                    snackbarHost = { SnackbarHost(snackbarHostState) },
+                    bottomBar = {
+                        if (!useRail) {
+                            // Material gives the selected item extra width, so the
+                            // unselected labels are what run out of room first --
+                            // and an ellipsised destination name ("Keybo…") is a
+                            // navigation the user has to guess at. Below the width
+                            // one label actually needs, fall back to Material's
+                            // icon-only bar, where only the selected item is
+                            // labelled and the rest stay legible icons with content
+                            // descriptions. The threshold scales with the font
+                            // scale because that, not the display, is usually what
+                            // makes the text too wide.
+                            val labelWidth = LayoutTokens.NavLabelWidth * fontScale
+                            val showLabels = (maxWidth / navItems.size) >= labelWidth
+                            NavigationBar {
+                                navItems.forEach { item ->
+                                    NavigationBarItem(
+                                        selected = ui.section == item.section,
+                                        onClick = { viewModel.navigate(item.section) },
+                                        icon = { Icon(item.icon, item.section.label) },
+                                        label = {
+                                            Text(
+                                                item.section.label,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        },
+                                        alwaysShowLabel = showLabels,
+                                    )
+                                }
                             }
-                            Spacer(Modifier.weight(1f))
                         }
-                    }
-                    Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
-                        Column(
-                            Modifier.fillMaxSize().widthIn(max = LayoutTokens.ContentMaxWidth)
-                                .padding(horizontal = LayoutTokens.Space4),
-                        ) {
-                            if (ui.section == AppSection.Home) {
+                    },
+                ) { padding ->
+                    Row(Modifier.fillMaxSize().padding(padding)) {
+                        if (useRail) {
+                            NavigationRail(
+                                header = {
+                                    Icon(
+                                        Icons.Default.Gamepad,
+                                        "PicoSwitch2 Companion",
+                                        Modifier.padding(vertical = LayoutTokens.Space4),
+                                    )
+                                },
+                            ) {
+                                Spacer(Modifier.weight(1f))
+                                navItems.forEach { item ->
+                                    NavigationRailItem(
+                                        selected = ui.section == item.section,
+                                        onClick = { viewModel.navigate(item.section) },
+                                        icon = { Icon(item.icon, null) },
+                                        label = { Text(item.section.label, maxLines = 1) },
+                                    )
+                                }
+                                Spacer(Modifier.weight(1f))
+                            }
+                        }
+                        Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.TopCenter) {
+                            Column(
+                                Modifier.fillMaxSize()
+                                    .widthIn(max = LayoutTokens.ContentMaxWidth)
+                                    .padding(horizontal = LayoutTokens.Space4),
+                            ) {
+                                // One connection indicator for the whole
+                                // application. Screens read it rather than
+                                // deriving their own idea of "connected",
+                                // which is what left stale green badges behind
+                                // after a session ended.
                                 ConnectionStrip(ui, viewModel, onConnectAdapter, onPairAdapter)
-                            }
-                            Box(Modifier.weight(1f).fillMaxWidth()) {
-                                destinationState.SaveableStateProvider(ui.section.name) {
-                                    when (ui.section) {
-                                        AppSection.Home -> HomeScreen(ui, viewModel)
-                                        AppSection.Amiibo -> AmiiboScreen(
-                                            ui, viewModel, onImportAmiibo, onImportAmiiboArchive,
-                                            onExportAmiiboArchive, onImportAmiiboKeys, onScanAmiibo,
-                                        )
-                                        AppSection.Controller -> ControllerScreen(ui, viewModel, onPrepareController)
-                                        AppSection.Modes -> ModesScreen(ui, viewModel)
-                                        AppSection.Settings -> SettingsScreen(ui, viewModel, onExportDiagnostics, onImportAmiiboKeys, theme)
+                                Box(Modifier.weight(1f).fillMaxWidth()) {
+                                    destinationState.SaveableStateProvider(ui.section.name) {
+                                        when (ui.section) {
+                                            AppSection.Adapter -> AdapterScreen(ui, viewModel)
+                                            AppSection.Keyboard -> KeyboardMouseScreen(ui, viewModel)
+                                            AppSection.Amiibo -> AmiiboScreen(
+                                                ui, viewModel, onImportAmiibo, onImportKeys = onImportAmiiboKeys,
+                                                onScan = onScanAmiibo,
+                                            )
+                                            AppSection.Controller -> ControllerScreen(ui, viewModel, onPrepareController)
+                                            AppSection.Settings -> SettingsScreen(
+                                                ui, viewModel, onImportAmiiboKeys, theme,
+                                            )
+                                        }
                                     }
+                                    OverlayHost(
+                                        ui, viewModel, onExportDiagnostics,
+                                        onImportAmiiboArchive, onExportAmiiboArchive,
+                                        onImportAmiiboKeys,
+                                    )
                                 }
                             }
                         }
                     }
+                    ui.operation?.let { OperationOverlay(it) }
                 }
-                ui.operation?.let { OperationOverlay(it) }
             }
         }
     }
 }
 
+/**
+ * Screens pushed over the current section.
+ *
+ * They slide in rather than cutting so the relationship to the page behind them
+ * stays obvious; there are only two, so this is cheaper and more predictable
+ * than adding a navigation graph.
+ */
+@Composable
+private fun OverlayHost(
+    ui: CompanionUiState,
+    viewModel: CompanionViewModel,
+    onExportDiagnostics: () -> Unit,
+    onImportAmiiboArchive: () -> Unit,
+    onExportAmiiboArchive: () -> Unit,
+    onImportAmiiboKeys: () -> Unit,
+) {
+    AnimatedVisibility(
+        visible = ui.overlay != AppOverlay.None,
+        enter = slideInHorizontally(initialOffsetX = { it / 3 }) + fadeIn(),
+        exit = slideOutHorizontally(targetOffsetX = { it / 3 }) + fadeOut(),
+    ) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            when (ui.overlay) {
+                AppOverlay.Diagnostics -> DiagnosticsScreen(ui, viewModel, onExportDiagnostics)
+                AppOverlay.AmiiboSettings -> AmiiboSettingsScreen(
+                    ui, viewModel, onImportAmiiboArchive, onExportAmiiboArchive, onImportAmiiboKeys,
+                )
+                AppOverlay.None -> Unit
+            }
+        }
+    }
+}
+
+/**
+ * The application-wide connection state.
+ *
+ * Present on every page rather than only on the home screen, because every page
+ * has controls whose availability depends on it and because a disconnect that
+ * happens while looking at another page must be visible where it happens.
+ */
 @Composable
 private fun ConnectionStrip(
     ui: CompanionUiState,
@@ -120,36 +218,70 @@ private fun ConnectionStrip(
     onConnect: () -> Unit,
     onPairAdapter: () -> Unit,
 ) {
+    val connected = ui.connection.connected
+    val busyPhase = ui.connection.phase == ConnectionPhase.Scanning ||
+        ui.connection.phase == ConnectionPhase.Connecting
     Surface(
         modifier = Modifier.fillMaxWidth().padding(top = LayoutTokens.Space2),
-        color = if (ui.connection.connected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+        color = if (connected) MaterialTheme.colorScheme.primaryContainer
+        else MaterialTheme.colorScheme.surfaceVariant,
         shape = MaterialTheme.shapes.medium,
     ) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = LayoutTokens.Space3, vertical = LayoutTokens.Space1),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(if (ui.connection.connected) Icons.Default.BluetoothConnected else Icons.AutoMirrored.Filled.BluetoothSearching, null)
-            Spacer(Modifier.width(LayoutTokens.Space2))
-            Column(Modifier.weight(1f)) {
-                Text(if (ui.connection.connected) ui.connection.deviceName ?: "PicoSwitch2" else phaseLabel(ui), style = MaterialTheme.typography.titleSmall)
-                ui.connection.message?.let {
-                    Text(it, style = MaterialTheme.typography.labelSmall, maxLines = 1)
-                }
-            }
-            if (ui.connection.connected) {
-                IconButton(onClick = viewModel::refresh, enabled = !ui.busy) { Icon(Icons.Default.Refresh, "Refresh") }
-                IconButton(onClick = viewModel::disconnect, enabled = !ui.busy) {
-                    Icon(Icons.Default.LinkOff, "Disconnect")
-                }
-            } else {
-                if (ui.adapterRelationship != null) {
-                    IconButton(onClick = onPairAdapter, enabled = !ui.busy) {
-                        Icon(Icons.Default.AddLink, "Pair another adapter")
+        Column {
+            // Progress is a bar rather than a spinner in a corner so a slow
+            // connect is legible without blocking the page behind it.
+            if (busyPhase) LinearProgressIndicator(Modifier.fillMaxWidth())
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = LayoutTokens.TouchHeight)
+                    .padding(horizontal = LayoutTokens.Space3, vertical = LayoutTokens.Space1)
+                    .semantics { liveRegion = LiveRegionMode.Polite },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    if (connected) Icons.Default.BluetoothConnected
+                    else Icons.AutoMirrored.Filled.BluetoothSearching,
+                    null,
+                    Modifier.size(LayoutTokens.IconSize),
+                )
+                Spacer(Modifier.width(LayoutTokens.Space2))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (connected) ui.connection.deviceName ?: "PicoSwitch2" else phaseLabel(ui),
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    ui.connection.message?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.labelSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
                 }
-                Button(onClick = onConnect, enabled = !ui.busy) {
-                    Text(if (ui.adapterRelationship == null) "Pair Adapter" else "Reconnect")
+                if (connected) {
+                    if (ui.kbm.dirty) {
+                        StatusChip("Unsaved", tone = ChipTone.Attention)
+                        Spacer(Modifier.width(LayoutTokens.Space2))
+                    }
+                    IconButton(onClick = viewModel::refresh, enabled = !ui.busy) {
+                        Icon(Icons.Default.Refresh, "Refresh adapter")
+                    }
+                    IconButton(onClick = viewModel::disconnect, enabled = !ui.busy) {
+                        Icon(Icons.Default.LinkOff, "Disconnect")
+                    }
+                } else {
+                    if (ui.adapterRelationship != null) {
+                        IconButton(onClick = onPairAdapter, enabled = !ui.busy) {
+                            Icon(Icons.Default.AddLink, "Pair another adapter")
+                        }
+                    }
+                    Button(onClick = onConnect, enabled = !ui.busy) {
+                        Text(if (ui.adapterRelationship == null) "Pair Adapter" else "Reconnect")
+                    }
                 }
             }
         }
@@ -157,23 +289,38 @@ private fun ConnectionStrip(
 }
 
 private fun phaseLabel(ui: CompanionUiState) = when (ui.connection.phase) {
-    dev.picoswitch.companion.model.ConnectionPhase.Scanning -> "Finding PicoSwitch2…"
-    dev.picoswitch.companion.model.ConnectionPhase.Connecting -> "Connecting…"
-    dev.picoswitch.companion.model.ConnectionPhase.Reconnecting -> "Adapter disconnected"
-    dev.picoswitch.companion.model.ConnectionPhase.Failed -> "Connection failed"
+    ConnectionPhase.Scanning -> "Finding PicoSwitch2…"
+    ConnectionPhase.Connecting -> "Connecting…"
+    ConnectionPhase.Reconnecting -> "Adapter disconnected"
+    ConnectionPhase.Failed -> "Connection failed"
     else -> "Adapter offline"
 }
 
 @Composable
 private fun OperationOverlay(progress: dev.picoswitch.companion.model.OperationProgress) {
-    Surface(Modifier.fillMaxSize().semantics { liveRegion = LiveRegionMode.Assertive }, color = MaterialTheme.colorScheme.scrim.copy(alpha = .45f)) {
+    Surface(
+        Modifier.fillMaxSize().semantics { liveRegion = LiveRegionMode.Assertive },
+        color = MaterialTheme.colorScheme.scrim.copy(alpha = .45f),
+    ) {
         Box(contentAlignment = Alignment.Center) {
             Card(Modifier.widthIn(min = 260.dp, max = 380.dp).padding(LayoutTokens.Space4)) {
-                Column(Modifier.padding(LayoutTokens.Space5), horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(progress = { if (progress.total > 0) progress.fraction else 0f })
-                    Spacer(Modifier.height(LayoutTokens.Space4))
+                Column(
+                    Modifier.padding(LayoutTokens.Space5).fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space3),
+                ) {
+                    if (progress.total > 0) {
+                        CircularProgressIndicator(progress = { progress.fraction })
+                    } else {
+                        CircularProgressIndicator()
+                    }
                     Text(progress.label, style = MaterialTheme.typography.titleMedium)
-                    if (progress.total > 0) Text("${progress.completed} / ${progress.total} bytes", style = MaterialTheme.typography.bodySmall)
+                    if (progress.total > 0) {
+                        Text(
+                            "${progress.completed} / ${progress.total} bytes",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                 }
             }
         }

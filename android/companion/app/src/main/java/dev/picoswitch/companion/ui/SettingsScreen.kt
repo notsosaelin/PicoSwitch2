@@ -1,0 +1,241 @@
+package dev.picoswitch.companion.ui
+
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import dev.picoswitch.companion.BuildConfig
+import dev.picoswitch.companion.model.BondInfo
+import dev.picoswitch.companion.model.CapabilityState
+
+/**
+ * Ordinary product settings.
+ *
+ * What belongs here is what a user intentionally configures. Development and
+ * troubleshooting instruments moved to Diagnostics: they previously dominated
+ * this page, and one of them -- the wireless management gate -- asked the user
+ * to understand an internal transport concept and could silently end the very
+ * session issuing the command.
+ */
+@Composable
+fun SettingsScreen(
+    ui: CompanionUiState,
+    viewModel: CompanionViewModel,
+    onImportAmiiboKeys: () -> Unit,
+    theme: ThemeSelection,
+) {
+    var themeOpen by rememberSaveable { mutableStateOf(false) }
+    var paletteOpen by rememberSaveable { mutableStateOf(false) }
+    var forgetOpen by rememberSaveable { mutableStateOf(false) }
+    var removeBond by remember { mutableStateOf<BondInfo?>(null) }
+
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val twoColumn = twoColumnLayout(maxWidth)
+        val gap = if (LocalShortWindow.current) LayoutTokens.Space3 else LayoutTokens.Space4
+
+        val appearance: @Composable () -> Unit = {
+            SectionCard(title = "Appearance", icon = Icons.Default.Palette) {
+                SettingsRow(
+                    title = "Theme",
+                    supporting = theme.mode.title,
+                    onClick = { themeOpen = true },
+                    trailing = { Icon(Icons.Default.ChevronRight, null) },
+                )
+                SettingsRow(
+                    title = "Accent",
+                    supporting = theme.palette.title,
+                    onClick = { paletteOpen = true },
+                    trailing = {
+                        ColorSwatch(theme.palette.leftSwatch, "Left accent sample", size = 20.dp)
+                        Spacer(Modifier.width(LayoutTokens.Space1))
+                        ColorSwatch(theme.palette.rightSwatch, "Right accent sample", size = 20.dp)
+                        Icon(Icons.Default.ChevronRight, null)
+                    },
+                )
+            }
+        }
+
+        val amiibo: @Composable () -> Unit = {
+            SectionCard(title = "Amiibo", icon = Icons.Default.Contactless) {
+                SettingsRow(
+                    title = "Amiibo settings",
+                    supporting = "Library, import and export, metadata key",
+                    onClick = { viewModel.openOverlay(AppOverlay.AmiiboSettings) },
+                    trailing = { Icon(Icons.Default.ChevronRight, null) },
+                )
+                SettingsRow(
+                    title = "Metadata key",
+                    // Says what the key is for, not whether it is present -- the
+                    // chip beside it already answers that.
+                    supporting = "Reads owner, nickname, and game data",
+                    enabled = !ui.busy,
+                    onClick = onImportAmiiboKeys,
+                    trailing = {
+                        StatusChip(
+                            if (ui.amiiboKeysLoaded) "Loaded" else "None",
+                            tone = if (ui.amiiboKeysLoaded) ChipTone.Positive else ChipTone.Neutral,
+                        )
+                    },
+                )
+            }
+        }
+
+        val adapter: @Composable () -> Unit = {
+            SectionCard(title = "Adapter pairing", icon = Icons.Default.Link) {
+                SettingsRow(
+                    title = "Saved adapter",
+                    supporting = ui.adapterRelationship?.displayName ?: "None saved",
+                    trailing = {
+                        if (ui.adapterRelationship != null) {
+                            TextButton(onClick = { forgetOpen = true }, enabled = !ui.busy) { Text("Forget") }
+                        }
+                    },
+                )
+                HorizontalDivider()
+                SubsectionLabel("Phones paired with the adapter")
+                when {
+                    ui.snapshot.capabilities.bonds == CapabilityState.Unsupported ->
+                        InlineNotice("This firmware does not report stored pairings.")
+                    !ui.connection.connected ->
+                        InlineNotice("Connect to the adapter to review its stored pairings.")
+                    // Never present a partial enumeration as the whole list: a
+                    // missing entry here is an entry the user cannot revoke.
+                    ui.snapshot.bondsComplete != true ->
+                        InlineNotice(
+                            "The stored-pairing list could not be read completely, so none are shown.",
+                            tone = ChipTone.Error,
+                        )
+                    ui.snapshot.bonds.isEmpty() -> InlineNotice("No phones are paired with this adapter.")
+                    else -> ui.snapshot.bonds.forEach { bond ->
+                        SettingsRow(
+                            title = bond.name?.takeIf(String::isNotBlank) ?: bond.address,
+                            supporting = bond.name?.takeIf(String::isNotBlank)?.let { bond.address },
+                            enabled = !ui.busy,
+                            trailing = {
+                                IconButton(onClick = { removeBond = bond }, enabled = !ui.busy) {
+                                    Icon(Icons.Default.LinkOff, "Remove pairing ${bond.index}")
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+        }
+
+        val about: @Composable () -> Unit = {
+            SectionCard(title = "About", icon = Icons.Default.Info) {
+                LabelValueRow("App", BuildConfig.VERSION_NAME)
+                LabelValueRow("Firmware", ui.snapshot.firmware.version.ifBlank { "Not connected" })
+                SettingsRow(
+                    title = "Diagnostics",
+                    supporting = "Connection, bridge, and adapter detail",
+                    leading = Icons.Default.MonitorHeart,
+                    onClick = { viewModel.openOverlay(AppOverlay.Diagnostics) },
+                    trailing = { Icon(Icons.Default.ChevronRight, null) },
+                )
+            }
+        }
+
+        Column(Modifier.fillMaxSize()) {
+            ScreenHeader(AppSection.Settings.title)
+            Spacer(Modifier.height(LayoutTokens.Space3))
+            if (twoColumn) {
+                Row(
+                    Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(gap),
+                ) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(gap)) {
+                        appearance(); amiibo()
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(gap)) {
+                        adapter(); about()
+                    }
+                }
+            } else {
+                Column(
+                    Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(gap),
+                ) {
+                    appearance(); amiibo(); adapter(); about()
+                    Spacer(Modifier.height(LayoutTokens.Space5))
+                }
+            }
+        }
+    }
+
+    if (themeOpen) PicoDialog(
+        onDismiss = { themeOpen = false },
+        title = "Theme",
+        dismissLabel = "Done",
+    ) {
+        ThemeMode.entries.forEach { mode ->
+            SettingsRow(
+                title = mode.title,
+                supporting = mode.description,
+                onClick = { viewModel.setThemeMode(mode) },
+                role = Role.RadioButton,
+                trailing = { RadioButton(selected = theme.mode == mode, onClick = null) },
+            )
+        }
+    }
+
+    if (paletteOpen) PicoDialog(
+        onDismiss = { paletteOpen = false },
+        title = "Accent",
+        dismissLabel = "Done",
+    ) {
+        Text(
+            "Application accents only. These never change the colours the adapter reports to the console.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        AccentPalette.entries.forEach { palette ->
+            SettingsRow(
+                title = palette.title,
+                supporting = palette.description,
+                onClick = { viewModel.setAccentPalette(palette) },
+                role = Role.RadioButton,
+                trailing = {
+                    ColorSwatch(palette.leftSwatch, "${palette.title} left sample", size = 20.dp)
+                    Spacer(Modifier.width(LayoutTokens.Space1))
+                    ColorSwatch(palette.rightSwatch, "${palette.title} right sample", size = 20.dp)
+                    Spacer(Modifier.width(LayoutTokens.Space2))
+                    RadioButton(selected = theme.palette == palette, onClick = null)
+                },
+            )
+        }
+    }
+
+    if (forgetOpen) ConfirmDialog(
+        onDismiss = { forgetOpen = false },
+        title = "Forget this adapter?",
+        body = "The app stops reconnecting automatically. The adapter keeps its own pairing until it is removed above, and pairing again restores the relationship.",
+        confirmLabel = "Forget",
+        destructive = true,
+        onConfirm = { forgetOpen = false; viewModel.forgetAdapterRelationship() },
+    )
+
+    removeBond?.let { bond ->
+        ConfirmDialog(
+            onDismiss = { removeBond = null },
+            title = "Remove this pairing?",
+            // The app cannot tell whether the entry is this phone -- Android
+            // does not expose our own Bluetooth address -- so the honest
+            // statement is that it might be, and the session reconciles for real
+            // afterwards rather than staying optimistically "Connected".
+            body = "If this entry is this phone, the management session ends immediately and you will need to pair again.",
+            confirmLabel = "Remove",
+            destructive = true,
+            onConfirm = { viewModel.removeBond(bond.index); removeBond = null },
+        )
+    }
+}
