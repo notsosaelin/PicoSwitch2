@@ -16,12 +16,12 @@ import dev.picoswitch.companion.protocol.ManagementException
 import dev.picoswitch.companion.protocol.ManagementProtocol
 import dev.picoswitch.companion.protocol.ManagementReplyTooLargeException
 import dev.picoswitch.companion.protocol.ManagementTransport
+import dev.picoswitch.management.BleManagementContract
+import dev.picoswitch.management.SerializedManagementSession
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.io.ByteArrayOutputStream
 import java.util.UUID
 import kotlin.coroutines.resume
@@ -31,7 +31,7 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
     private val appContext = context.applicationContext
     private val manager = appContext.getSystemService(BluetoothManager::class.java)
     private val adapter get() = manager?.adapter
-    private val commandMutex = Mutex()
+    private val session = SerializedManagementSession()
     private val notifications = Channel<ByteArray>(capacity = 32)
     private val _connection = MutableStateFlow(ConnectionState())
     override val connection: StateFlow<ConnectionState> = _connection
@@ -77,10 +77,10 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
             if (gatt !== g) return
             diagnostics?.event("management", "services discovered", "status=$status")
             if (status != BluetoothGatt.GATT_SUCCESS) return failConnection("Service discovery failed ($status)")
-            val service = g.getService(UUID.fromString(ManagementProtocol.SERVICE_UUID))
+            val service = g.getService(UUID.fromString(BleManagementContract.SERVICE_UUID))
                 ?: return failConnection("This device does not expose PicoSwitch management")
-            rx = service.getCharacteristic(UUID.fromString(ManagementProtocol.RX_UUID))
-            tx = service.getCharacteristic(UUID.fromString(ManagementProtocol.TX_UUID))
+            rx = service.getCharacteristic(UUID.fromString(BleManagementContract.RX_UUID))
+            tx = service.getCharacteristic(UUID.fromString(BleManagementContract.TX_UUID))
             val output = tx ?: return failConnection("Management notification characteristic is missing")
             if (rx == null) return failConnection("Management command characteristic is missing")
             if (!g.setCharacteristicNotification(output, true)) return failConnection("Could not enable management replies")
@@ -109,11 +109,11 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
         @Deprecated("Deprecated in API 33")
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-            if (gatt === g && characteristic.uuid == UUID.fromString(ManagementProtocol.TX_UUID)) notifications.trySend(characteristic.value.copyOf())
+            if (gatt === g && characteristic.uuid == UUID.fromString(BleManagementContract.TX_UUID)) notifications.trySend(characteristic.value.copyOf())
         }
 
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
-            if (gatt === g && characteristic.uuid == UUID.fromString(ManagementProtocol.TX_UUID)) notifications.trySend(value.copyOf())
+            if (gatt === g && characteristic.uuid == UUID.fromString(BleManagementContract.TX_UUID)) notifications.trySend(value.copyOf())
         }
 
         @Deprecated("Deprecated in API 33")
@@ -134,7 +134,7 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         val device = try {
             withTimeout(15_000) {
                 suspendCancellableCoroutine<BluetoothDevice> { continuation ->
-                    val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid.fromString(ManagementProtocol.SERVICE_UUID)).build()
+                    val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid.fromString(BleManagementContract.SERVICE_UUID)).build()
                     val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
                     val scanCallback = object : ScanCallback() {
                         override fun onScanResult(callbackType: Int, result: ScanResult) {
@@ -186,7 +186,7 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
     }
 
     override suspend fun disconnect() {
-        commandMutex.withLock {
+        session.mutate {
             requestedDisconnect = true
             val active = gatt
             if (active != null) {
@@ -217,13 +217,13 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         _connection.value = ConnectionState()
     }
 
-    override suspend fun transact(command: String, timeoutMillis: Long): String = commandMutex.withLock {
+    override suspend fun transact(command: String, timeoutMillis: Long): String = session.exchange {
         val activeGatt = gatt ?: throw ManagementException("Connect to the adapter first")
         val characteristic = rx ?: throw ManagementException("Management service is not ready")
         if (!_connection.value.connected) throw ManagementException("Adapter is not connected")
         while (notifications.tryReceive().isSuccess) Unit
         diagnostics?.commandStarted(command)
-        val mtuPayload = (characteristic.writeType.let { 20 }).coerceAtLeast(ManagementProtocol.MIN_GATT_PAYLOAD)
+        val mtuPayload = BleManagementContract.ATT_PAYLOAD_WITH_DEFAULT_MTU
         try {
             withTimeout(timeoutMillis) {
                 for (part in ManagementProtocol.chunks(command, mtuPayload)) {

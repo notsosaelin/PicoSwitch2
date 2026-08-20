@@ -35,7 +35,7 @@ import dev.picoswitch.companion.diagnostics.DiagnosticEntry
 import dev.picoswitch.companion.diagnostics.DiagnosticLog
 import dev.picoswitch.companion.diagnostics.DiagnosticSummary
 import dev.picoswitch.companion.model.*
-import dev.picoswitch.companion.protocol.ManagementProtocol
+import dev.picoswitch.management.WakeResult
 import dev.picoswitch.companion.transport.BleGattManagementTransport
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -304,17 +304,17 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     // does not promise the console obeyed, so it is not phrased as success.
     fun wake() = launch("Requesting console wake") {
         when (adapter.wakeConsole().result) {
-            ManagementProtocol.WakeResult.Advertised ->
+            WakeResult.Advertised ->
                 notice("Wake signal broadcast. If the console stays asleep, press a button on a paired controller.")
-            ManagementProtocol.WakeResult.ConsoleAwake ->
+            WakeResult.ConsoleAwake ->
                 notice("Console is already awake.")
-            ManagementProtocol.WakeResult.NoIdentity ->
+            WakeResult.NoIdentity ->
                 notice("Cannot wake: the adapter has no saved console pairing. Connect it to the console once while the console is on.")
-            ManagementProtocol.WakeResult.RadioBusy ->
+            WakeResult.RadioBusy ->
                 notice("Wake could not run: the adapter's radio was busy. Try again in a moment.")
-            ManagementProtocol.WakeResult.Pending ->
+            WakeResult.Pending ->
                 notice("Wake request sent; the adapter did not report an outcome.")
-            ManagementProtocol.WakeResult.Unknown ->
+            WakeResult.Unknown ->
                 notice("Wake request sent. This adapter firmware cannot report whether it ran.")
         }
     }

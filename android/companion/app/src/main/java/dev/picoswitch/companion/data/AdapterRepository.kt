@@ -2,23 +2,25 @@ package dev.picoswitch.companion.data
 
 import dev.picoswitch.companion.model.*
 import dev.picoswitch.companion.protocol.*
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.TimeoutCancellationException
+import dev.picoswitch.management.ManagementClient
+import dev.picoswitch.management.WakeStatus
+import dev.picoswitch.management.isUnsupported
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.intOrNull
 import java.util.zip.CRC32
 
 class AdapterRepository(private val transport: ManagementTransport) {
+    private val client = ManagementClient(transport)
     val connection: StateFlow<ConnectionState> = transport.connection
     private val _snapshot = MutableStateFlow(AdapterSnapshot())
     val snapshot: StateFlow<AdapterSnapshot> = _snapshot.asStateFlow()
+    /**
+     * Keyboard/Mouse configuration is a separate flow from [snapshot] on
+     * purpose: it is polled and mutated at a different rate, and its unsaved
+     * flag belongs to the connection rather than to any one refresh.
+     */
+    private val _kbm = MutableStateFlow(KbmState())
 
     fun close() = transport.close()
 
@@ -58,57 +60,39 @@ class AdapterRepository(private val transport: ManagementTransport) {
 
     fun clearDisconnectedSnapshot() {
         _snapshot.value = AdapterSnapshot()
+        // The unsaved-changes flag describes one management session. A new
+        // connection must start from the adapter's authoritative state rather
+        // than inheriting a dirty marker whose changes may never have landed.
+        clearKbm()
     }
 
     suspend fun refreshAll() {
-        val firmware = parse("info", ManagementProtocol::firmware)
-        val config = parse("get", ManagementProtocol::config)
-        val controller = parse("device", ManagementProtocol::controller)
         val old = _snapshot.value
-        val personality = optional("personality") { parse("personality", ManagementProtocol::personality) }
-        val amiibo = optional("amiibo") { parse("amiibo status", ManagementProtocol::amiibo) }
-        val management = optional("management gate") { parse("mgmt status", ManagementProtocol::managementEnabled) }
-        val bonds = optional("bond management") { listBondsRaw() }
-        val input = optional("active input") { parse("input sources", ManagementProtocol::inputSources) }
-        val bondCapability = when {
-            bonds.value == null -> bonds.state
-            bonds.value.complete -> CapabilityState.Available
-            else -> CapabilityState.Unknown
+        val refresh = client.refreshAll(old)
+        _snapshot.value = refresh.snapshot
+        val kbmStatus = refresh.kbmStatus
+        val kbmMouse = refresh.kbmMouse
+        if (kbmStatus != null && kbmMouse != null) {
+            _kbm.value = _kbm.value.copy(
+                status = kbmStatus,
+                mouse = kbmMouse,
+                available = CapabilityState.Available,
+                loading = false,
+            )
+        } else {
+            _kbm.value = _kbm.value.copy(available = CapabilityState.Unknown, loading = false)
         }
-        _snapshot.value = AdapterSnapshot(
-            firmware = firmware,
-            controller = controller,
-            personality = personality.value ?: old.personality,
-            config = config,
-            amiibo = amiibo.value ?: old.amiibo,
-            managementEnabled = management.value ?: old.managementEnabled,
-            bonds = bonds.value?.entries ?: emptyList(),
-            bondsComplete = bonds.value?.complete,
-            bondsTotal = bonds.value?.total,
-            input = input.value ?: old.input,
-            capabilities = AdapterCapabilities(
-                core = CapabilityState.Available,
-                personality = personality.state,
-                colors = CapabilityState.Available,
-                amiibo = amiibo.state,
-                managementGate = management.state,
-                bonds = bondCapability,
-                wake = old.capabilities.wake,
-                activeInput = input.state,
-            ),
-            refreshedAtMillis = System.currentTimeMillis(),
-        )
     }
 
     suspend fun refreshAmiibo(): AmiiboStatus {
-        val status = parse("amiibo status", ManagementProtocol::amiibo)
+        val status = client.amiiboStatus()
         _snapshot.value = _snapshot.value.copy(amiibo = status, refreshedAtMillis = System.currentTimeMillis())
         return status
     }
 
     suspend fun refreshController(): ControllerInfo {
-        val controller = parse("device", ManagementProtocol::controller)
-        val input = optional("active input") { parse("input sources", ManagementProtocol::inputSources) }
+        val controller = client.controller()
+        val input = optional("active input") { client.inputSources() }
         _snapshot.value = _snapshot.value.copy(
             controller = controller,
             input = input.value ?: _snapshot.value.input,
@@ -119,10 +103,7 @@ class AdapterRepository(private val transport: ManagementTransport) {
     }
 
     suspend fun setActiveInput(sourceId: Long) {
-        require(sourceId in 0..0xFFFF_FFFFL)
-        val argument = if (sourceId == 0L) "none" else sourceId.toString()
-        ack("input active $argument")
-        val input = parse("input sources", ManagementProtocol::inputSources)
+        val input = client.setActiveInput(sourceId)
         _snapshot.value = _snapshot.value.copy(
             input = input,
             capabilities = _snapshot.value.capabilities.copy(activeInput = CapabilityState.Available),
@@ -131,9 +112,7 @@ class AdapterRepository(private val transport: ManagementTransport) {
     }
 
     suspend fun setPersonality(personality: Personality): Boolean {
-        require(personality in listOf(Personality.Pro2, Personality.GameCube, Personality.JoyConLeft, Personality.JoyConRight))
-        val value = ack("personality ${personality.wireName}")
-        val switching = value["switching"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() == true
+        val switching = client.setPersonality(personality).switching
         // A switching acknowledgement precedes USB detach/re-enumeration; retain the last
         // verified identity until a reconnect proves the requested personality is active.
         if (!switching) _snapshot.value = _snapshot.value.copy(personality = _snapshot.value.personality.copy(current = personality))
@@ -141,23 +120,11 @@ class AdapterRepository(private val transport: ManagementTransport) {
     }
 
     suspend fun setColor(target: ColorTarget, color: RgbColor, persist: Boolean = true) {
-        ack("${target.command} ${color.wire()}")
-        if (persist) ack("save")
-        val old = _snapshot.value.config
-        val next = when (target) {
-            ColorTarget.Body -> old.copy(bodyColor = color)
-            ColorTarget.LeftAccent -> old.copy(leftAccent = color)
-            ColorTarget.RightAccent -> old.copy(rightAccent = color)
-        }
-        _snapshot.value = _snapshot.value.copy(config = next)
+        val (config) = client.setColor(target, color, persist)
+        _snapshot.value = _snapshot.value.copy(config = config)
     }
 
-    suspend fun reenumerateUsb() {
-        val result = ack("reenumerate")
-        if (result["reenumerating"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() != true) {
-            throw ManagementException("Adapter did not confirm USB re-enumeration")
-        }
-    }
+    suspend fun reenumerateUsb() = client.reenumerateUsb()
 
     /**
      * Request a console wake and report what the adapter ACTUALLY did.
@@ -165,113 +132,168 @@ class AdapterRepository(private val transport: ManagementTransport) {
      * `wake` only acknowledges delivery -- the adapter latches the request on one
      * core and performs it on the other -- so this polls `wake status` for the
      * real outcome instead of treating transmission as success. An adapter too
-     * old to know `wake status` returns [ManagementProtocol.WakeResult.Unknown],
+     * old to know `wake status` returns an Unknown result,
      * which the UI must present as "sent, outcome unknown", never as success.
      */
-    suspend fun wakeConsole(): ManagementProtocol.WakeStatus {
+    suspend fun wakeConsole(): WakeStatus {
         try {
-            ack("wake")
+            val status = client.wakeConsole()
             updateCapabilities { it.copy(wake = CapabilityState.Available) }
+            return status
         } catch (error: AdapterCommandException) {
             if (error.isUnsupported()) updateCapabilities { it.copy(wake = CapabilityState.Unsupported) }
             throw error
         }
-        // The wake is serviced on the adapter's Bluetooth core within a control
-        // tick; poll briefly rather than reporting the still-pending state.
-        var status = ManagementProtocol.WakeStatus(
-            ManagementProtocol.WakeResult.Unknown, false, false, 0L,
-        )
-        repeat(WAKE_STATUS_POLLS) {
-            delay(WAKE_STATUS_POLL_MS)
-            status = try {
-                ManagementProtocol.wakeStatus(command("wake status"))
-            } catch (error: AdapterCommandException) {
-                // Older firmware without `wake status`: do not invent a result.
-                return ManagementProtocol.WakeStatus(
-                    ManagementProtocol.WakeResult.Unknown, false, false, 0L,
-                )
+    }
+
+    // -----------------------------------------------------------------------
+    // Keyboard / Keyboard + Mouse
+    // -----------------------------------------------------------------------
+    // Every KB/M command is issued from here rather than from a screen, so the
+    // page never assembles wire text and the accepted values stay with the
+    // protocol. All of these apply to adapter RAM immediately; only
+    // [saveConfiguration] writes flash.
+
+    val kbm: StateFlow<KbmState> = _kbm.asStateFlow()
+
+    /** Live roles, effective mode, and mouse translation settings. */
+    suspend fun refreshKbm(): KbmState {
+        _kbm.value = _kbm.value.copy(loading = true)
+        return try {
+            val status = client.kbmStatus()
+            val mouse = client.kbmMouse()
+            _kbm.value = _kbm.value.copy(
+                status = status,
+                mouse = mouse,
+                available = CapabilityState.Available,
+                loading = false,
+            )
+            _kbm.value
+        } catch (error: AdapterCommandException) {
+            // Firmware without the KB/M surface: report it as unsupported so the
+            // page can say so, rather than showing an empty configuration that
+            // looks like a connected keyboard with nothing bound.
+            if (error.isUnsupported()) {
+                _kbm.value = KbmState(available = CapabilityState.Unsupported)
+                _kbm.value
+            } else {
+                _kbm.value = _kbm.value.copy(loading = false)
+                throw error
             }
-            if (status.result != ManagementProtocol.WakeResult.Pending) return status
+        } catch (error: Throwable) {
+            _kbm.value = _kbm.value.copy(loading = false)
+            throw error
         }
-        return status
+    }
+
+    /**
+     * Read one profile's complete effective binding set.
+     *
+     * `kbm map` is paginated because a full binding list does not fit the
+     * 511-byte wireless reply limit. The cursor is the page index and the
+     * adapter reports `total`, so the loop is bounded by both and refuses a
+     * page whose shape contradicts the first one.
+     */
+    suspend fun loadKbmMapping(profile: KbmProfile): KbmMapping {
+        val mapping = client.loadKbmMapping(profile)
+        _kbm.value = _kbm.value.copy(mappings = _kbm.value.mappings + (profile to mapping))
+        return mapping
+    }
+
+    suspend fun setKbmMode(mode: KbmMode) {
+        val status = client.setKbmMode(mode)
+        _kbm.value = _kbm.value.copy(status = status)
+        markKbmDirty()
+    }
+
+    /**
+     * Bind, unassign, or restore one input.
+     *
+     * `none` and `default` are genuinely different: `none` is an override that
+     * says "this input does nothing", `default` removes the override so the
+     * profile's canonical binding applies again.
+     */
+    suspend fun bindKbm(profile: KbmProfile, source: KbmSource, destination: KbmDestination?) {
+        val mapping = client.bindKbm(profile, source, destination)
+        _kbm.value = _kbm.value.copy(mappings = _kbm.value.mappings + (profile to mapping))
+        markKbmDirty()
+    }
+
+    /** Restore one profile's canonical bindings. Other settings are untouched. */
+    suspend fun resetKbmProfile(profile: KbmProfile) {
+        val mapping = client.resetKbmProfile(profile)
+        _kbm.value = _kbm.value.copy(mappings = _kbm.value.mappings + (profile to mapping))
+        markKbmDirty()
+    }
+
+    /**
+     * Restore every KB/M default the adapter owns.
+     *
+     * This is the only reset the firmware exposes that reaches the mouse
+     * translation settings, and it necessarily resets both profiles' bindings
+     * at the same time (`ns2_kbm_runtime_reset_all`). It is presented to the
+     * user as exactly that rather than as a mouse-only reset.
+     */
+    suspend fun resetKbmAll() {
+        val (current, mappings) = client.resetAllKbm()
+        _kbm.value = _kbm.value.copy(
+            status = current.first,
+            mouse = current.second,
+            mappings = mappings,
+            available = CapabilityState.Available,
+        )
+        markKbmDirty()
+    }
+
+    /**
+     * Apply one mouse translation field.
+     *
+     * The adapter validates the value against its own range and rejects rather
+     * than clamps, so the reply is the authority on what is now in effect and
+     * is used to replace the cached configuration wholesale.
+     */
+    suspend fun setKbmMouse(field: KbmMouseField, value: Int) {
+        _kbm.value = _kbm.value.copy(mouse = client.setKbmMouse(field, value))
+        markKbmDirty()
+    }
+
+    /**
+     * Persist the adapter's current runtime configuration to flash.
+     *
+     * Over the wireless transport this is acknowledged as queued -- core1
+     * performs the write at a safe point so the controller report loop is not
+     * stalled -- so a successful ack means accepted, not yet written. The UI
+     * says "Saved to adapter" only on that acceptance because the protocol
+     * offers nothing stronger to wait for.
+     */
+    suspend fun saveConfiguration() {
+        _kbm.value = _kbm.value.copy(saving = true)
+        try {
+            client.save()
+            _kbm.value = _kbm.value.copy(dirty = false, saving = false)
+        } catch (error: Throwable) {
+            _kbm.value = _kbm.value.copy(saving = false)
+            throw error
+        }
+    }
+
+    private fun markKbmDirty() {
+        _kbm.value = _kbm.value.copy(dirty = true)
+    }
+
+    private fun clearKbm() {
+        _kbm.value = KbmState()
     }
 
     suspend fun setManagementEnabled(enabled: Boolean) {
-        val result = ack(if (enabled) "mgmt on" else "mgmt off")
-        _snapshot.value = _snapshot.value.copy(managementEnabled = ManagementProtocol.managementEnabled(result))
+        _snapshot.value = _snapshot.value.copy(managementEnabled = client.setManagementEnabled(enabled))
     }
 
     suspend fun listBonds(): List<BondInfo> {
         markBondsUnknown()
-        val enumeration = listBondsRaw()
+        val enumeration = client.listBonds()
         applyBondEnumeration(enumeration)
         return enumeration.entries
-    }
-
-    private suspend fun listBondsRaw(): BondEnumeration {
-        val first = try {
-            command("bonds list")
-        } catch (error: AdapterCommandException) {
-            if (error.code == 413 || error.message?.contains("response_too_large", true) == true) {
-                return listBondsV2()
-            }
-            throw error
-        }
-        if (first["v"]?.jsonPrimitive?.intOrNull == ManagementProtocol.BONDS_PROTOCOL_VERSION)
-            return collectBondPages(first)
-
-        // Older firmware returns only the historical `bonds` array. Preserve
-        // the entries for diagnostics, but mark them incomplete so the app
-        // never presents an unbounded legacy result as authoritative.
-        val array = first["bonds"]?.jsonArray
-            ?: throw ManagementException("Adapter returned an incomplete bond list")
-        return BondEnumeration(array.mapIndexed { position, element ->
-            val item = element.jsonObject
-            BondInfo(
-                index = item["i"]?.jsonPrimitive?.content?.toIntOrNull()
-                    ?: item["index"]?.jsonPrimitive?.content?.toIntOrNull() ?: position,
-                address = item["addr"]?.jsonPrimitive?.content
-                    ?: item["address"]?.jsonPrimitive?.content.orEmpty(),
-                name = item["name"]?.jsonPrimitive?.content,
-                type = item["type"]?.jsonPrimitive?.content?.toIntOrNull(),
-            )
-        }, complete = false, total = null)
-    }
-
-    private suspend fun listBondsV2(): BondEnumeration =
-        collectBondPages(command("bonds list v2"))
-
-    private suspend fun collectBondPages(first: JsonObject): BondEnumeration {
-        val entries = mutableListOf<BondInfo>()
-        val seen = mutableSetOf<Int>()
-        var page = first
-        var cursor = 0
-        var expectedTotal: Int? = null
-        var pageCount = 0
-        while (true) {
-            val parsed = ManagementProtocol.bondsPage(page)
-            if (expectedTotal == null) expectedTotal = parsed.total
-            if (expectedTotal != parsed.total) {
-                throw ManagementException("Adapter changed the bond-list total during pagination")
-            }
-            parsed.entries.forEach { entry ->
-                if (!seen.add(entry.index)) {
-                    throw ManagementException("Adapter repeated a bond during pagination")
-                }
-                entries += entry
-            }
-            val next = parsed.next ?: break
-            if (next <= cursor || ++pageCount > 128) {
-                throw ManagementException("Adapter returned a non-progressing bond-list cursor")
-            }
-            cursor = next
-            page = command("bonds list v2 $next")
-        }
-        val total = expectedTotal ?: 0
-        if (entries.size != total) {
-            throw ManagementException("Adapter returned an incomplete paginated bond list")
-        }
-        return BondEnumeration(entries, complete = true, total = total)
     }
 
     /**
@@ -291,9 +313,8 @@ class AdapterRepository(private val transport: ManagementTransport) {
         // A timeout after a flash mutation is ambiguous; hide the previous
         // authoritative list until a fresh complete enumeration succeeds.
         markBondsUnknown()
-        ack("bonds remove $index")
         return try {
-            val enumeration = listBondsRaw()
+            val enumeration = client.removeBond(index)
             applyBondEnumeration(enumeration)
             true
         } catch (error: Throwable) {
@@ -305,118 +326,42 @@ class AdapterRepository(private val transport: ManagementTransport) {
 
     suspend fun uploadAmiibo(data: ByteArray, useSave2: Boolean = false, progress: (OperationProgress) -> Unit = {}) {
         AmiiboFiles.validate(data)
-        val current = refreshAmiibo()
-        if (current.dirty) throw ManagementException("Sync the modified Amiibo before replacing it")
-        val crc = AmiiboFiles.crc32(data)
-        try {
-            ack("amiibo begin ${data.size} $crc")
-            data.asList().chunked(ManagementProtocol.AMIIBO_CHUNK_BYTES).forEachIndexed { index, values ->
-                val offset = index * ManagementProtocol.AMIIBO_CHUNK_BYTES
-                val chunk = values.toByteArray()
-                ack("amiibo chunk $offset ${ManagementProtocol.hex(chunk)}")
-                progress(OperationProgress("Uploading Amiibo", (offset + chunk.size).coerceAtMost(data.size), data.size))
-            }
-            ack(if (useSave2) "amiibo commit save2" else "amiibo commit")
-            ack("amiibo persist")
-            awaitPersisted()
-        } catch (error: Throwable) {
-            runCatching { ack("amiibo cancel") }
-            throw error
+        val status = client.uploadAmiibo(data, useSave2) { completed, total ->
+            progress(OperationProgress("Uploading Amiibo", completed, total))
         }
-        refreshAmiibo()
+        _snapshot.value = _snapshot.value.copy(amiibo = status, refreshedAtMillis = System.currentTimeMillis())
     }
 
     suspend fun downloadAmiibo(progress: (OperationProgress) -> Unit = {}): AmiiboDownload {
-        val status = refreshAmiibo()
-        if (!status.loaded && !status.v3Loaded) throw ManagementException("No Amiibo is loaded on the adapter")
-        if (status.size !in AmiiboFiles.supportedSizes) {
-            throw ManagementException("Adapter reported unsupported Amiibo size ${status.size}; no memory was allocated")
+        val download = client.downloadAmiibo { completed, total ->
+            progress(OperationProgress("Syncing Amiibo", completed, total))
         }
-        val output = ByteArray(status.size)
-        var offset = 0
-        while (offset < output.size) {
-            val count = minOf(ManagementProtocol.AMIIBO_CHUNK_BYTES, output.size - offset)
-            val bytes = ManagementProtocol.readData(command("amiibo read $offset $count"))
-            if (bytes.size != count) throw ManagementException("Adapter returned ${bytes.size} of $count requested bytes")
-            bytes.copyInto(output, offset)
-            offset += count
-            progress(OperationProgress("Syncing Amiibo", offset, output.size))
-        }
-        AmiiboFiles.validate(output)
-        val crc = AmiiboFiles.crc32(output)
-        // Current firmware exposes a whole-image CRC for v3 but leaves ordinary
-        // NTAG215 payloadCrc at its zero-initialized sentinel. The portal treats
-        // that field as unavailable too. Preserve validation and generation-race
-        // protection rather than rejecting every ordinary adapter backup.
-        val expectedCrc = status.payloadCrc.takeIf {
-            status.v3Loaded || !it.equals(UNAVAILABLE_PAYLOAD_CRC, ignoreCase = true)
-        }
-        if (expectedCrc != null && !expectedCrc.equals(crc, ignoreCase = true)) {
-            throw ManagementException("Synced Amiibo failed CRC verification ($expectedCrc != $crc)")
-        }
-        return AmiiboDownload(output, status.generation, expectedCrc)
+        AmiiboFiles.validate(download.bytes)
+        return download
     }
 
     /** Call only after [AmiiboDownload.bytes] is durably stored in the private local library. */
     suspend fun acknowledgeDownloadedAmiibo(download: AmiiboDownload) {
-        val current = refreshAmiibo()
-        val crcChanged = download.payloadCrc != null &&
-            !current.payloadCrc.equals(download.payloadCrc, true)
-        if (current.generation != download.generation || crcChanged) {
-            throw ManagementException("Adapter Amiibo changed during Sync; the saved local copy was not acknowledged. Sync again.")
-        }
-        ack("amiibo downloaded")
-        ack("amiibo persist")
-        awaitPersisted()
-        refreshAmiibo() // Required cache/state invalidation after console-mutated data is downloaded.
+        val status = client.acknowledgeDownloadedAmiibo(download)
+        _snapshot.value = _snapshot.value.copy(amiibo = status, refreshedAtMillis = System.currentTimeMillis())
     }
 
     suspend fun setPresented(presented: Boolean) {
-        ack(if (presented) "amiibo present" else "amiibo eject")
-        refreshAmiibo()
+        val status = client.setAmiiboPresented(presented)
+        _snapshot.value = _snapshot.value.copy(amiibo = status, refreshedAtMillis = System.currentTimeMillis())
     }
 
     suspend fun selectAmiiboCopy(used: Boolean) {
-        val current = refreshAmiibo()
-        if (!current.hasSave2 || current.v3Loaded) throw ManagementException("This Amiibo does not expose a separate console-written copy")
-        ack(if (used) "amiibo select save2" else "amiibo select save1")
-        refreshAmiibo()
+        val status = client.selectAmiiboCopy(used)
+        _snapshot.value = _snapshot.value.copy(amiibo = status, refreshedAtMillis = System.currentTimeMillis())
     }
 
     suspend fun clearAmiibo() {
-        val status = refreshAmiibo()
-        if (status.dirty) throw ManagementException("Sync the modified Amiibo before clearing it")
-        ack("amiibo clear")
-        awaitCondition { !it.loaded && !it.v3Loaded && !it.persistPending }
+        val status = client.clearAmiibo()
+        _snapshot.value = _snapshot.value.copy(amiibo = status, refreshedAtMillis = System.currentTimeMillis())
     }
 
-    private suspend fun awaitPersisted(): AmiiboStatus = awaitCondition { it.persisted && !it.persistPending }
-
-    private suspend fun awaitCondition(predicate: (AmiiboStatus) -> Boolean): AmiiboStatus {
-        try {
-            return withTimeout(6_000) {
-                while (true) {
-                    val status = refreshAmiibo()
-                    if (predicate(status)) return@withTimeout status
-                    delay(200)
-                }
-                @Suppress("UNREACHABLE_CODE") AmiiboStatus()
-            }
-        } catch (error: TimeoutCancellationException) {
-            throw ManagementException("Adapter did not finish saving within 6 seconds", error)
-        }
-    }
-
-    private suspend fun command(command: String): JsonObject {
-        val response = transport.transact(command)
-        return ManagementProtocol.objectOrThrow(command, response)
-    }
-
-    private suspend fun ack(command: String): JsonObject = ManagementProtocol.requireOk(command, command(command))
-
-    private suspend fun <T> parse(command: String, parser: (JsonObject) -> T): T = parser(command(command))
-
-    private suspend fun <T> optional(name: String, block: suspend () -> T): OptionalCapability<T> = try {
+    private suspend fun <T> optional(@Suppress("UNUSED_PARAMETER") name: String, block: suspend () -> T): OptionalCapability<T> = try {
         OptionalCapability(block(), CapabilityState.Available)
     } catch (error: AdapterCommandException) {
         if (error.isUnsupported()) OptionalCapability(null, CapabilityState.Unsupported) else throw error
@@ -425,9 +370,6 @@ class AdapterRepository(private val transport: ManagementTransport) {
     } catch (_: ManagementException) {
         OptionalCapability(null, CapabilityState.Unknown)
     }
-
-    private fun AdapterCommandException.isUnsupported(): Boolean =
-        message?.contains("unknown command", true) == true || message?.contains("unavailable", true) == true
 
     private fun updateCapabilities(transform: (AdapterCapabilities) -> AdapterCapabilities) {
         _snapshot.value = _snapshot.value.copy(capabilities = transform(_snapshot.value.capabilities))
@@ -455,19 +397,10 @@ class AdapterRepository(private val transport: ManagementTransport) {
 
     private data class OptionalCapability<T>(val value: T?, val state: CapabilityState)
 
-    private companion object {
-        // The adapter services an app wake on its Bluetooth core within a control
-        // tick; a short bounded poll resolves the real outcome without making the
-        // user wait or letting the UI fall back to claiming success.
-        const val WAKE_STATUS_POLLS = 6
-        const val WAKE_STATUS_POLL_MS = 150L
-        const val UNAVAILABLE_PAYLOAD_CRC = "00000000"
-    }
 }
 
-data class AmiiboDownload(val bytes: ByteArray, val generation: Long, val payloadCrc: String?)
-
-enum class ColorTarget(val command: String) { Body("body"), LeftAccent("jcl"), RightAccent("jcr") }
+typealias AmiiboDownload = dev.picoswitch.management.AmiiboDownload
+typealias ColorTarget = dev.picoswitch.management.ColorTarget
 
 object AmiiboFiles {
     val supportedSizes = setOf(540, 572, 2048)
