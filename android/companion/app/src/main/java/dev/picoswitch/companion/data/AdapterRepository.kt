@@ -8,6 +8,7 @@ import dev.picoswitch.management.isUnsupported
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.delay
 import java.util.zip.CRC32
 
 class AdapterRepository(private val transport: ManagementTransport) {
@@ -29,24 +30,47 @@ class AdapterRepository(private val transport: ManagementTransport) {
         validateConnectedAdapter()
     }
 
-    suspend fun connectKnown(address: String) {
-        val direct = runCatching {
-            transport.connectKnown(address)
-            validateConnectedAdapter()
+    suspend fun connectKnown(
+        address: String,
+        context: ManagementConnectionContext = ManagementConnectionContext(),
+    ) {
+        var retriesUsed = 0
+        var directFailure: Throwable
+        while (true) {
+            transport.prepareConnection(context.copy(retry = retriesUsed, priorGattRetired = retriesUsed > 0))
+            val direct = runCatching {
+                transport.connectKnown(address)
+                validateConnectedAdapter()
+            }
+            if (direct.isSuccess) return
+            directFailure = direct.exceptionOrNull()!!
+            if (!dev.picoswitch.companion.transport.GattRecoveryPolicy.shouldRetry(directFailure, retriesUsed)) break
+            retriesUsed += 1
+            runCatching { transport.disconnect() }
+            delay(dev.picoswitch.companion.transport.GattRecoveryPolicy.RETRY_BACKOFF_MILLIS)
         }
-        if (direct.isSuccess) return
 
-        // A stale address can still complete GATT against an unrelated device. Treat identity
-        // validation as part of the direct attempt and fall back to service-filtered discovery.
+        // Retire the direct GATT completely before the one service-filtered fallback. Restrict the
+        // scan to the saved address: discovering another valid Pico nearby is not permission to
+        // silently replace the user's relationship.
         runCatching { transport.disconnect() }
-        transport.scanAndConnect()
-        validateConnectedAdapter()
+        transport.prepareConnection(
+            context.copy(reason = "scan-fallback", retry = retriesUsed, priorGattRetired = true),
+        )
+        try {
+            transport.scanAndConnect(address)
+            validateConnectedAdapter()
+        } catch (fallbackFailure: Throwable) {
+            fallbackFailure.addSuppressed(directFailure)
+            throw fallbackFailure
+        }
     }
 
     private suspend fun validateConnectedAdapter() {
         try {
             refreshAll()
             if (_snapshot.value.firmware.id != "picoswitch") throw ManagementException("The discovered Bluetooth device is not a PicoSwitch2 adapter")
+            transport.markValidated()
         } catch (error: Throwable) {
             runCatching { transport.disconnect() }
             throw error
@@ -119,9 +143,13 @@ class AdapterRepository(private val transport: ManagementTransport) {
         return switching
     }
 
-    suspend fun setColor(target: ColorTarget, color: RgbColor, persist: Boolean = true) {
-        val (config) = client.setColor(target, color, persist)
+    /** Returns true when modern firmware identified and completed the persistence request. */
+    suspend fun setColor(target: ColorTarget, color: RgbColor, persist: Boolean = true): Boolean {
+        val (config) = client.setColor(target, color, persist = false)
         _snapshot.value = _snapshot.value.copy(config = config)
+        val persistence = if (persist) client.save() else null
+        if (persistence?.requestId != null) client.awaitPersistence(persistence)
+        return persistence?.requestId != null
     }
 
     suspend fun reenumerateUsb() = client.reenumerateUsb()

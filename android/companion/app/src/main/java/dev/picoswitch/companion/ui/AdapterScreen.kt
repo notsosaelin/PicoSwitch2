@@ -177,9 +177,8 @@ private fun AdapterOverviewCard(ui: CompanionUiState, viewModel: CompanionViewMo
             )
         }
 
-        // A change that only the USB host can observe needs a re-enumeration to
-        // become visible. Surfaced as an action rather than a warning, because
-        // it is a normal step and not a fault.
+        // The happy path applies automatically. This recovery action exists only
+        // when persistence succeeded but USB re-enumeration did not.
         if (ui.identityRefreshPending) {
             Surface(
                 Modifier.fillMaxWidth(),
@@ -191,15 +190,15 @@ private fun AdapterOverviewCard(ui: CompanionUiState, viewModel: CompanionViewMo
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f)) {
-                        Text("Apply to the console", style = MaterialTheme.typography.titleSmall)
+                        Text("USB identity refresh pending", style = MaterialTheme.typography.titleSmall)
                         Text(
-                            "Colour changes reach the console at the next USB reconnect.",
+                            "The color is saved; retry the brief USB reconnect.",
                             style = MaterialTheme.typography.bodySmall,
                         )
                     }
                     Spacer(Modifier.width(LayoutTokens.Space2))
                     TextButton(onClick = viewModel::applyIdentityChanges, enabled = !ui.busy) {
-                        Text("Apply")
+                        Text("Retry")
                     }
                 }
             }

@@ -3,9 +3,13 @@ package dev.picoswitch.companion.data
 import dev.picoswitch.companion.model.ConnectionState
 import dev.picoswitch.companion.model.CapabilityState
 import dev.picoswitch.companion.model.AdapterSnapshot
+import dev.picoswitch.companion.model.RgbColor
 import dev.picoswitch.companion.protocol.ManagementException
+import dev.picoswitch.companion.protocol.ManagementConnectionContext
 import dev.picoswitch.companion.protocol.ManagementProtocol
 import dev.picoswitch.companion.protocol.ManagementTransport
+import dev.picoswitch.companion.transport.GattFailureStage
+import dev.picoswitch.companion.transport.GattTransportException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
@@ -186,6 +190,41 @@ class AdapterRepositoryTest {
         assertEquals("picoswitch", repository.snapshot.value.firmware.id)
     }
 
+    @Test fun `GATT 133 gets one clean direct retry before discovery fallback`() = runTest {
+        val transport = RecoveryTransport(failures = 1, status = 133)
+        AdapterRepository(transport).connectKnown("88:A2:9E:D1:77:78")
+        assertEquals(2, transport.knownConnects)
+        assertEquals(0, transport.scans)
+        assertEquals(1, transport.disconnects)
+    }
+
+    @Test fun `second GATT 133 retires direct attempts and uses one fallback`() = runTest {
+        val transport = RecoveryTransport(failures = 2, status = 133)
+        AdapterRepository(transport).connectKnown("88:A2:9E:D1:77:78")
+        assertEquals(2, transport.knownConnects)
+        assertEquals(1, transport.scans)
+        assertEquals(2, transport.disconnects)
+        assertEquals(listOf(0, 1, 1), transport.contexts.map { it.retry })
+        assertEquals(listOf(false, true, true), transport.contexts.map { it.priorGattRetired })
+    }
+
+    @Test fun `repeated GATT failure terminates after retry and one fallback`() = runTest {
+        val transport = RecoveryTransport(failures = 3, status = 133, failScan = true)
+        val error = runCatching {
+            AdapterRepository(transport).connectKnown("88:A2:9E:D1:77:78")
+        }.exceptionOrNull()
+        assertNotNull(error)
+        assertEquals(2, transport.knownConnects)
+        assertEquals(1, transport.scans)
+    }
+
+    @Test fun `non retryable direct failure skips retry but retains bounded fallback`() = runTest {
+        val transport = RecoveryTransport(failures = 1, status = 5)
+        AdapterRepository(transport).connectKnown("88:A2:9E:D1:77:78")
+        assertEquals(1, transport.knownConnects)
+        assertEquals(1, transport.scans)
+    }
+
     @Test fun `disconnect clears all adapter derived state`() = runTest {
         val transport = CompatibilityTransport(validImage())
         val repository = AdapterRepository(transport)
@@ -212,6 +251,22 @@ class AdapterRepositoryTest {
         val transport = ScriptedTransport(validImage(), unexpectedReenumerate = true)
         val error = runCatching { AdapterRepository(transport).reenumerateUsb() }.exceptionOrNull()
         assertTrue(error is ManagementException)
+    }
+
+    @Test fun `color mutation reads back then awaits persistence before USB apply`() = runTest {
+        val transport = ColorTransport(modernPersistence = true)
+        val repository = AdapterRepository(transport)
+        assertTrue(repository.setColor(ColorTarget.Body, RgbColor(1, 2, 3)))
+        repository.reenumerateUsb()
+        assertEquals(listOf("body 1 2 3", "get", "save", "save status", "reenumerate"), transport.commands)
+    }
+
+    @Test fun `legacy persistence acknowledgement remains compatible with color apply`() = runTest {
+        val transport = ColorTransport(modernPersistence = false)
+        val repository = AdapterRepository(transport)
+        assertFalse(repository.setColor(ColorTarget.LeftAccent, RgbColor(4, 5, 6)))
+        repository.reenumerateUsb()
+        assertEquals(listOf("jcl 4 5 6", "get", "save", "reenumerate"), transport.commands)
     }
 
     @Test fun `active input selection is acknowledged then refreshed`() = runTest {
@@ -327,6 +382,56 @@ class AdapterRepositoryTest {
                 "bonds list" -> """{"v":2,"total":3,"bonds":[{"i":0,"type":1,"addr":"010203040506"}],"next":4}"""
                 "bonds list v2" -> """{"v":2,"total":3,"bonds":[{"i":0,"type":1,"addr":"010203040506"}],"next":4}"""
                 "bonds list v2 4" -> """{"v":2,"total":3,"bonds":[{"i":4,"type":0,"addr":"AABBCCDDEEFF"},{"i":7,"type":1,"addr":"102030405060"}],"next":null}"""
+                else -> """{"error":"unknown command"}"""
+            }
+        }
+    }
+
+    private class RecoveryTransport(
+        private var failures: Int,
+        private val status: Int,
+        private val failScan: Boolean = false,
+    ) : ManagementTransport {
+        override val connection = MutableStateFlow(ConnectionState())
+        var knownConnects = 0
+        var scans = 0
+        var disconnects = 0
+        val contexts = mutableListOf<ManagementConnectionContext>()
+        override fun prepareConnection(context: ManagementConnectionContext) { contexts += context }
+        override suspend fun scanAndConnect() { scans++; if (failScan) throw connectFailure() }
+        override suspend fun scanAndConnect(expectedAddress: String) { scans++; if (failScan) throw connectFailure() }
+        override suspend fun connectKnown(address: String) {
+            knownConnects++
+            if (failures-- > 0) throw connectFailure()
+        }
+        override suspend fun disconnect() { disconnects++ }
+        override suspend fun transact(command: String, timeoutMillis: Long): String = when (command) {
+            "info" -> """{"id":"picoswitch","product":"PicoSwitch Config","version":"2.0"}"""
+            "get" -> """{"body_color":[1,2,3],"joycon2_left_accent":[4,5,6],"joycon2_right_accent":[7,8,9]}"""
+            "device" -> """{"name":"Controller","vid":1,"pid":2,"batteryValid":0,"battery":0,"charging":0}"""
+            "amiibo status" -> """{"loaded":false,"dirty":false,"presented":false,"v3loaded":false,"persisted":false,"persistPending":false,"size":0,"signature":false,"hasSave2":false,"usingSave2":false,"generation":0,"payloadCrc":"00000000","uid":"","figureId":"","upload":{"active":false,"received":0,"size":0}}"""
+            else -> """{"error":"unknown command"}"""
+        }
+
+        private fun connectFailure() = GattTransportException(
+            "Bluetooth connection failed ($status)", status, GattFailureStage.Connect,
+        )
+    }
+
+    private class ColorTransport(private val modernPersistence: Boolean) : ManagementTransport {
+        override val connection = MutableStateFlow(ConnectionState())
+        val commands = mutableListOf<String>()
+        override suspend fun scanAndConnect() = Unit
+        override suspend fun disconnect() = Unit
+        override suspend fun transact(command: String, timeoutMillis: Long): String {
+            commands += command
+            return when {
+                command.startsWith("body ") || command.startsWith("jcl ") || command.startsWith("jcr ") -> """{"ok":true}"""
+                command == "get" -> """{"body_color":[1,2,3],"joycon2_left_accent":[4,5,6],"joycon2_right_accent":[7,8,9]}"""
+                command == "save" && modernPersistence -> """{"ok":true,"queued":true,"requested":9}"""
+                command == "save" -> """{"ok":true}"""
+                command == "save status" -> """{"pending":false,"requested":9,"completed":9}"""
+                command == "reenumerate" -> """{"ok":true,"reenumerating":true}"""
                 else -> """{"error":"unknown command"}"""
             }
         }
