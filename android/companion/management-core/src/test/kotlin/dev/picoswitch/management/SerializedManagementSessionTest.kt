@@ -82,4 +82,31 @@ class SerializedManagementSessionTest {
         mutation.join()
         assertEquals(listOf("exchange", "disconnect"), order)
     }
+
+    @Test fun `cancellation after mutation ownership cannot expose partial cleanup`() = runTest {
+        val session = SerializedManagementSession()
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        var cleanupCompleted = false
+        val mutation = launch {
+            session.mutate {
+                started.complete(Unit)
+                release.await()
+                cleanupCompleted = true
+            }
+        }
+        started.await()
+        mutation.cancel()
+
+        val exchangeStarted = CompletableDeferred<Unit>()
+        val exchange = launch { session.exchange { exchangeStarted.complete(Unit) } }
+        runCurrent()
+        assertFalse(exchangeStarted.isCompleted)
+
+        release.complete(Unit)
+        mutation.join()
+        exchange.join()
+        assertTrue(cleanupCompleted)
+        assertTrue(exchangeStarted.isCompleted)
+    }
 }

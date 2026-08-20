@@ -20,6 +20,12 @@ class SerializedManagementSession {
         withContext(NonCancellable) { operation() }
     }
 
-    /** Serialize lifecycle mutation, such as disconnect, against an exchange. */
-    suspend fun <T> mutate(operation: suspend () -> T): T = mutex.withLock { operation() }
+    /**
+     * Serialize lifecycle mutation, such as disconnect, against an exchange.
+     * Once ownership is acquired, cleanup also runs to completion so caller
+     * cancellation cannot expose a half-invalidated carrier to another owner.
+     */
+    suspend fun <T> mutate(operation: suspend () -> T): T = mutex.withLock {
+        withContext(NonCancellable) { operation() }
+    }
 }

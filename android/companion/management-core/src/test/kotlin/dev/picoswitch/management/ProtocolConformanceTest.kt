@@ -22,7 +22,7 @@ class ProtocolConformanceTest {
     @Test fun `fixture limits and BLE constants match the implementation`() {
         val limits = fixtureRoot["limits"]!!.jsonObject
         assertEquals(ManagementProtocol.MAX_COMMAND_BYTES, limits["commandPayloadBytes"]!!.jsonPrimitive.int)
-        assertEquals(ManagementProtocol.MAX_REPLY_PAYLOAD_BYTES, limits["bleReplyPayloadBytes"]!!.jsonPrimitive.int)
+        assertEquals(BleManagementContract.MAX_REPLY_PAYLOAD_BYTES, limits["bleReplyPayloadBytes"]!!.jsonPrimitive.int)
         assertEquals(ManagementProtocol.AMIIBO_CHUNK_BYTES, limits["amiiboChunkBytes"]!!.jsonPrimitive.int)
         assertEquals(ManagementProtocol.BONDS_PROTOCOL_VERSION, limits["bondEnvelopeVersion"]!!.jsonPrimitive.int)
 
@@ -95,14 +95,24 @@ class ProtocolConformanceTest {
     }
 
     @Test fun `BLE chunks preserve the exact logical frame`() {
-        val joined = ManagementProtocol.chunks("amiibo status", 5).flatMap(ByteArray::asIterable).toByteArray()
+        val joined = BleManagementContract.commandChunks("amiibo status", 5)
+            .flatMap(ByteArray::asIterable)
+            .toByteArray()
         assertArrayEquals("amiibo status\n".encodeToByteArray(), joined)
     }
 
-    @Test fun `wire payload limit rejects 512 bytes`() {
-        ManagementProtocol.requireReplyWithinLimit(511)
+    @Test fun `BLE reply assembler handles fragments CRLF and payload limit`() {
+        val assembler = BleReplyAssembler()
+        assertEquals(null, assembler.accept("{\"ok\":".encodeToByteArray()))
+        assertEquals("{\"ok\":true}", assembler.accept("true}\r\n".encodeToByteArray()))
+
+        val boundary = BleReplyAssembler()
+        assertEquals(null, boundary.accept(ByteArray(511) { 'x'.code.toByte() }))
+        assertEquals("x".repeat(511), boundary.accept("\n".encodeToByteArray()))
+
+        val oversized = BleReplyAssembler()
         assertThrows(ManagementReplyTooLargeException::class.java) {
-            ManagementProtocol.requireReplyWithinLimit(512)
+            oversized.accept(ByteArray(512) { 'x'.code.toByte() })
         }
     }
 
@@ -201,6 +211,31 @@ class ProtocolConformanceTest {
         }
         assertThrows(IllegalArgumentException::class.java) {
             ManagementCommands.kbmMap(KbmProfile.Keyboard, 33)
+        }
+    }
+
+    @Test fun `language-neutral error fixtures fail through the expected boundary`() {
+        fixtureRoot["errors"]!!.jsonArray.forEach { element ->
+            val value = element.jsonObject
+            val command = value["command"]!!.jsonPrimitive.content
+            val reply = value["replyText"]!!.jsonPrimitive.content
+            when (value["case"]!!.jsonPrimitive.content) {
+                "malformedJson", "incompleteInfo" ->
+                    assertThrows(ManagementProtocolException::class.java) {
+                        ManagementProtocol.firmware(command, reply)
+                    }
+                "responseTooLarge" -> {
+                    val error = assertThrows(AdapterCommandException::class.java) {
+                        ManagementProtocol.acknowledgement(command, reply)
+                    }
+                    assertEquals(413, error.code)
+                }
+                "oddHex" ->
+                    assertThrows(ManagementProtocolException::class.java) {
+                        ManagementProtocol.readData(command, reply)
+                    }
+                else -> throw AssertionError("Unknown error fixture case")
+            }
         }
     }
 

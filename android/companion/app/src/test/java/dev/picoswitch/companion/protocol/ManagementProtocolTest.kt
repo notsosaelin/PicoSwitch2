@@ -33,7 +33,9 @@ class ManagementProtocolTest {
             Path.of("src", "main", "java", "dev", "picoswitch", "companion", "transport", "BleGattManagementTransport.kt"),
         ))
         assertTrue(source.contains("SerializedManagementSession"))
+        assertTrue(source.contains("BleReplyAssembler"))
         assertTrue(source.contains("BleManagementContract.SERVICE_UUID"))
+        assertTrue(source.contains("notifications.trySend(ByteArray(0))"))
         assertFalse(source.contains("7c5ad4ed-2731-417c-b316-058505c7c083"))
     }
 }

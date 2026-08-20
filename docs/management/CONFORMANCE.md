@@ -89,7 +89,8 @@ For a one-slot/no-request-ID carrier such as BLE, prove:
 - concurrent callers transmit serially;
 - cancellation before ownership does not transmit;
 - cancellation after transmit cannot release ownership before reply consumption/session failure;
-- disconnect/lifecycle mutation is ordered with an exchange;
+- disconnect/lifecycle mutation is ordered with an exchange and cannot be cancelled halfway after
+  acquiring ownership;
 - timeout, overflow, and mid-command disconnect invalidate the carrier;
 - a late old-session reply cannot enter a new session;
 - subscription readiness precedes writes;

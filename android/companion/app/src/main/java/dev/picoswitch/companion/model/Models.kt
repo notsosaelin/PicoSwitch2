@@ -32,6 +32,18 @@ typealias CapabilityState = dev.picoswitch.management.CapabilityState
 typealias AdapterCapabilities = dev.picoswitch.management.AdapterCapabilities
 typealias AdapterSnapshot = dev.picoswitch.management.AdapterSnapshot
 
+val Personality.title: String get() = when (this) {
+    Personality.Pro2 -> "Pro Controller 2"
+    Personality.GameCube -> "GameCube"
+    Personality.JoyConLeft -> "Joy-Con 2 (L)"
+    Personality.JoyConRight -> "Joy-Con 2 (R)"
+    Personality.Config -> "Configuration"
+    Personality.Unknown -> "Unknown"
+}
+
+fun RgbColor.argb(): Long =
+    0xFF000000L.or((red.toLong() shl 16)).or((green.toLong() shl 8)).or(blue.toLong())
+
 data class AmiiboLibraryItem(
     val id: String,
     val displayName: String,
