@@ -108,6 +108,7 @@ dependencies {
     // app is one backend for it, not the definition itself. `api` so the Compose
     // layer can observe the shared model directly.
     api(project(":bridge-core"))
+    api(project(":management-core"))
 
     val composeBom = platform("androidx.compose:compose-bom:2025.08.01")
     implementation(composeBom)
