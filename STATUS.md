@@ -297,24 +297,27 @@ Briefs: [`docs/agents/ANDROID.md`](docs/agents/ANDROID.md),
   recreate itself while the window is closed. Wipe traverses sparse LE slots by capacity, uses
   public GAP deletion, clears all project-owned reconnect/key material, and includes the shared
   management bond. A new UF2 erases the full six-sector reserved persistence region and recreates
-  the lock before discovery starts.
+  the lock before discovery starts. The install-reset boot fact is consumed exactly once, so an HCI
+  restart cannot re-lock pairing after the user explicitly reopens it.
 - Classic link-key notifications are held as in-RAM candidates and committed only after matching
   successful authentication. Existing trust survives generic authentication failure; only the
   missing-key status removes that peer's stale key. LE RPAs can reach SM only as bounded reconnect
-  candidates and cannot grant fresh trust. An HCI state loss retires live input generations and
-  clears transient radio state while preserving durable bonds.
+  candidates and cannot grant fresh trust. Classic global SSP auto-accept remains disabled;
+  confirmation is granted only to the matching per-attempt fresh latch, so window expiry blocks new
+  candidates without revoking an admitted in-flight attempt. An HCI state loss retires live input
+  generations, cancels any registered wake timer, and clears transient radio state while preserving
+  durable bonds.
 - Owner-LED policy now uses HID/protocol-ready counts rather than raw radio slots and uses elapsed
   wall time for every cadence. Idle is a 90 ms pulse every 10 seconds; solid means controller-ready
   unless a higher-priority acknowledgement/configuration state owns the LED. `btstate` exposes raw
   versus ready counts, the selected LED reason/timing and HCI state-loss count without key material.
-- The first physical retest showed that triple tap stopped input but left the controller presenting
-  as connected. That refutes project-slot disconnect as a complete wipe boundary. Wipe now locks
-  radio admission and terminates the stack-owned HCI connection inventory before completing trust
-  deletion; this correction is source-tested and awaits the same physical retest.
-- The older claim that post-wipe automatic readmission was hardware-confirmed is **reopened** after
-  the owner observed controller reconnects following wipe/flash. The source audit found automatic
-  fresh re-pairing that could explain the symptom, and the correction is host-tested/board-built;
-  powered-on, powered-off, reboot, and release-UF2 hardware cases remain required.
+  `owner_led.last_transition_ms` is the last actual on/off edge, not the reason start time.
+- The first physical Xbox Elite Series 2 test showed that triple tap stopped input but left the
+  controller presenting as connected. That confirmed failure refutes project-slot disconnect as a
+  complete wipe boundary. `c6d53e7` moved teardown to BTstack's complete HCI registry; its strict
+  Elite 2 retest passed, forcing the controller disconnected and preventing another session until
+  pairing was explicitly reopened. Other controller families and flash-path cases remain separate
+  validation gaps.
 - BLE HID binds from the best identity available and enables notifications before querying DIS; a
   later DIS VID/PID is handed back for idempotent re-evaluation, so contradictory name matches
   cannot pin the wrong parser while input streams.
@@ -454,8 +457,8 @@ release's hardware pass, and the two keyboard/mouse rows are source-tested only.
 
 ## Open validation gates
 
-These are the genuinely open items. The reopened Bluetooth trust lifecycle is a release gate until
-its controlled physical matrix passes.
+These are the genuinely open items. Bluetooth software closeout is complete and the subsystem is
+frozen; remaining Bluetooth entries are targeted physical validation, not an open architecture pass.
 
 1. **Management active-use coexistence.** A console-awake session with a charged controller
    covering audio, gyro, wake, and latency alongside a connected management client. Recovery is
@@ -484,10 +487,10 @@ its controlled physical matrix passes.
    native versus translated mouse output, persistence across reboot, and Controller-mode regression
    — is in
    [`docs/bluetooth/keyboard-mouse-input.md`](docs/bluetooth/keyboard-mouse-input.md#hardware-validation).
-10. **Bluetooth wipe/flash trust lifecycle.** Run the powered-on wipe, powered-off wipe, reboot,
-   release-UF2, explicit re-pair, normal bonded reconnect, management coexistence, and KB/M role-loss
-   cases in [`docs/bluetooth/VALIDATION.md`](docs/bluetooth/VALIDATION.md). Record bond state before
-   the remote returns so old trust and automatic replacement trust cannot be confused.
+10. **Remaining Bluetooth wipe/flash matrix.** The strict Xbox Elite Series 2 corrected-wipe retest
+   passed. Run the still-uncovered powered-off/reboot/release-UF2 and other-family cases in
+   [`docs/bluetooth/VALIDATION.md`](docs/bluetooth/VALIDATION.md). Record bond state before the remote
+   returns so old trust and automatic replacement trust cannot be confused.
 
 ## Known technical debt
 

@@ -65,6 +65,23 @@ bool ns2_bt_boot_pairing_locked(bool persisted_lockout,
     return persisted_lockout || install_reset_performed;
 }
 
+bool ns2_bt_install_reset_bootstrap_take(bool install_reset_performed,
+                                         bool *consumed)
+{
+    if (!consumed || *consumed)
+        return false;
+    *consumed = true;
+    return install_reset_performed;
+}
+
+bool ns2_bt_classic_ssp_response_admitted(bool pairing_lockout,
+                                          bool pending_identity_matches,
+                                          bool fresh_pairing_admitted)
+{
+    return !pairing_lockout && pending_identity_matches &&
+           fresh_pairing_admitted;
+}
+
 bool ns2_bt_forget_matches_address_type(bool match_address_type,
                                         int requested_address_type,
                                         int candidate_address_type)

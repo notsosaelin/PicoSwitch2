@@ -102,6 +102,9 @@ clears raw Classic/LE slots, GATT listeners, transient admission latches, pendin
 management session state and wake ownership. Durable Classic/LE bonds and `JPLC` are preserved.
 This makes the next working-state transition a clean live-session reconstruction rather than a
 trust wipe, and prevents a stale slot from keeping the console-facing owner logically connected.
+The intrusive wake timer is removed from the run loop before wake state is cleared. The sticky
+install-reset fact is consumed only on the boot's first working-state transition, so later HCI
+recovery preserves the current pairing-lock policy.
 
 ## Stable boundaries
 

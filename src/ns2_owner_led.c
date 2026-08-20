@@ -83,6 +83,15 @@ const char *ns2_owner_led_reason_name(ns2_owner_led_reason_t reason)
     }
 }
 
+void ns2_owner_led_track_output(ns2_owner_led_output_state_t *state,
+                                bool output_on,
+                                uint32_t now_ms)
+{
+    if (!state || state->output_on == output_on) return;
+    state->output_on = output_on;
+    state->last_transition_ms = now_ms;
+}
+
 void ns2_owner_led_diag_publish(ns2_owner_led_reason_t reason,
                                 bool output_on,
                                 uint32_t last_transition_ms,

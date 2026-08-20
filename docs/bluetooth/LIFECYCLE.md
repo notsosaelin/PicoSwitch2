@@ -1,7 +1,8 @@
 # Bluetooth trust lifecycle
 
-Status: current implementation contract as of 2026-08-20. Automated policy coverage and board
-builds pass; the physical wipe/flash matrix is pending.
+Status: software-closeout contract as of 2026-08-20. Automated policy coverage and board builds
+pass. The corrected HCI-owner wipe boundary passed its strict Xbox Elite Series 2 retest; the
+broader controller-family wipe/flash matrix remains pending.
 
 ## Admission authority
 
@@ -55,12 +56,16 @@ explicit pairing window
   -> HID/direct-L2CAP setup completes
 ```
 
-Classic SSP auto-accept and discoverability are enabled only inside the explicit pairing window.
-Admission is enforced at the ACL filter and defended again at link-key notification and matching
-authentication completion. Because pinned BTstack writes the notification before emitting it, the
-application restores the old key or removes an unadmitted write until the transition is proven.
-Outside a fresh window only the identical existing key or `CHANGED_COMBINATION_KEY` is eligible;
-an unrelated replacement is rejected and disconnected.
+Classic discoverability is enabled only inside the explicit pairing window. BTstack's global SSP
+auto-accept remains disabled: the application accepts numeric confirmation or the compatible
+zero-passkey response only for the matching pending attempt whose fresh authority was latched while
+the window was open. Closing the window blocks new candidates without revoking that in-flight
+attempt; post-wipe lockout still rejects it. Legacy PIN handling remains unchanged. Admission is
+defended again at link-key notification and matching authentication completion. Because pinned
+BTstack writes the notification before emitting it, the application restores the old key or
+removes an unadmitted write until the transition is proven. Outside a fresh window only the
+identical existing key or `CHANGED_COMBINATION_KEY` is eligible; an unrelated replacement is
+rejected and disconnected.
 
 ## Bonded reconnect
 
@@ -127,12 +132,19 @@ The HCI-owner sweep is required in addition to profile-slot disconnects. Hardwar
 slot-only teardown could stop input while a controller still presented as connected; “neutral
 input” is therefore not evidence that wipe completed its active-link contract. See
 [`../experiments/bluetooth-wipe-transport-retention-2026-08-20.md`](../experiments/bluetooth-wipe-transport-retention-2026-08-20.md).
+The strict `c6d53e7` Xbox Elite Series 2 retest passed the corrected boundary: wipe forced the
+controller disconnected and it could not establish another session until pairing was explicitly
+reopened. This is narrow confirmation of the HCI-owner correction, not the full family matrix.
 
 ## Install reset
 
 The install marker erases trust before BTstack or discovery starts. Because that erase also removes
 `JPLK`, core 1 receives a boot-local `install_reset_performed` fact and writes the lock into the new
 empty TLV before radio admission. See [`PERSISTENCE.md`](PERSISTENCE.md).
+
+That boot-local fact is consumed exactly once. If the user later opens pairing and HCI restarts in
+the same Pico boot, recovery restores the current persisted lock state and does not replay the
+install-reset bootstrap.
 
 This directly addresses the observed ambiguity:
 
@@ -154,6 +166,8 @@ management identity cannot write `JPLC`, so it cannot become a direct controller
 ## Wake and Keyboard + Mouse
 
 Wake replay is a bounded radio mode, not trust creation. It restores the previous scan/inquiry
-policy afterward. Keyboard + Mouse may contain two physical peers, but it remains one logical input
-source; role loss preserves the survivor and reopens only the controlled discovery policy described
-in [`keyboard-mouse-input.md`](keyboard-mouse-input.md).
+policy afterward. HCI state loss removes the intrusive wake timer before clearing wake state, so no
+stale callback survives recovery and a later wake can arm from clean state. Keyboard + Mouse may
+contain two physical peers, but it remains one logical input source; role loss preserves the
+survivor and reopens only the controlled discovery policy described in
+[`keyboard-mouse-input.md`](keyboard-mouse-input.md).
