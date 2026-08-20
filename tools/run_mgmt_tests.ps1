@@ -76,6 +76,15 @@ if ($LASTEXITCODE -ne 0) {
     $pass++
 }
 
+Write-Host "== test_bluetooth_wipe_transport ==" -ForegroundColor Cyan
+python tools/test_bluetooth_wipe_transport.py
+if ($LASTEXITCODE -ne 0) {
+    $fail++
+    $failed += 'test_bluetooth_wipe_transport (run)'
+} else {
+    $pass++
+}
+
 Write-Host ""
 Write-Host "in-band management suite: $pass passed, $fail failed" -ForegroundColor ($fail ? 'Red' : 'Green')
 if ($fail) { $failed | ForEach-Object { Write-Host "  FAILED: $_" -ForegroundColor Red }; exit 1 }

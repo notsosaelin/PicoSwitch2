@@ -66,6 +66,12 @@ Global bondability remains enabled because the stack needs to support both Class
 It is a mechanism, not the policy authority. Window-scoped SSP acceptance, LE Just Works checks,
 custom final-admission checks, key-transition interposition and the post-wipe lock enforce policy.
 
+Wipe is stronger than input neutralization or project-slot cleanup. After closing admission and
+radio discovery/page scan, it terminates the pinned stack's complete HCI connection inventory,
+including raw links that have not reached a project HID slot. This boundary was added after
+physical testing showed that slot-only teardown could stop input while a controller still appeared
+connected.
+
 ## Diagnostic boundary
 
 Ordinary diagnostics may expose identities, address types, key-presence booleans, negotiated key

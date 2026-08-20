@@ -111,6 +111,7 @@ Forget-one MUST NOT wipe unrelated peers.
 set persistent admission lock in RAM
   -> close pairing and discovery; cancel pending LE connect
   -> clear pending Classic/LE admission latches
+  -> terminate every stack-owned HCI link, including links outside project slots
   -> delete all Classic keys
   -> enumerate every LE slot and delete via GAP
   -> clear JPLC and all in-memory Switch 2 security/reconnect material
@@ -121,6 +122,11 @@ set persistent admission lock in RAM
 
 Disconnect-complete events arriving after the wipe see the lock and cannot restart an admitted
 handshake. Only an explicit pairing-window gesture clears `JPLK` and re-enables discovery.
+
+The HCI-owner sweep is required in addition to profile-slot disconnects. Hardware showed that
+slot-only teardown could stop input while a controller still presented as connected; “neutral
+input” is therefore not evidence that wipe completed its active-link contract. See
+[`../experiments/bluetooth-wipe-transport-retention-2026-08-20.md`](../experiments/bluetooth-wipe-transport-retention-2026-08-20.md).
 
 ## Install reset
 

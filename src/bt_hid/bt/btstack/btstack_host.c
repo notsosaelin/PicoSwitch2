@@ -11005,6 +11005,17 @@ void btstack_host_delete_all_bonds(void)
     gap_connectable_control(0);
 #endif
 
+    // Wipe is global, including the management relationship, so terminate at
+    // the HCI owner's complete connection list instead of relying only on the
+    // controller slot tables below. Hardware validation on 2026-08-20 showed
+    // that the slot-only sweep could leave a controller transport connected
+    // even though input ownership and durable trust had already been removed.
+    // hci_disconnect_all() also covers raw/in-flight Classic, BLE, and SCO
+    // links which have not reached a HID-ready project slot. The lock and radio
+    // admission controls above are established first, so completion events or
+    // a new page cannot turn this teardown into an automatic re-admission.
+    hci_disconnect_all();
+
 #if !defined(BTSTACK_USE_CYW43) && !defined(BTSTACK_USE_ESP32) && !defined(BTSTACK_USE_NRF)
     // Erase BTstack flash banks to force clean re-initialization
     // This is more reliable than using BTstack's delete APIs when flash was corrupted

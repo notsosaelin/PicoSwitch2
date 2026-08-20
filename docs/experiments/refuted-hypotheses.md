@@ -608,6 +608,25 @@ whichever live doc now carries the corrected understanding. Don't delete an entr
 replacement is itself later refuted — append a note here instead, so the history of *why* stays
 intact.
 
+---
+
+## Bluetooth wipe: disconnecting project slots is equivalent to disconnecting every live link
+
+**Held:** as a source-tested assumption after wipe gained pairing lockout, scan/page shutdown,
+per-slot disconnects, and raw connection-complete rejection.
+
+**The claim:** iterating `classic_state.connections[]` and `hid_state.connections[]` was sufficient
+to make triple-tap wipe externally disconnect every controller relationship.
+
+**What refuted it:** on the newest supplied build, the maintainer observed that triple tap stopped
+input forwarding but the controller still presented as connected to the adapter. This is direct
+physical evidence that input/trust invalidation and transport teardown diverged.
+
+**Correction:** project slot tables are not the HCI owner's complete connection inventory. Wipe now
+locks admission, disables discovery/page scan, and calls pinned BTstack's `hci_disconnect_all()`
+before completing trust deletion. The corrected build remains pending the same physical retest.
+See [`bluetooth-wipe-transport-retention-2026-08-20.md`](bluetooth-wipe-transport-retention-2026-08-20.md).
+
 ## Switch 2 motion: length-`0x1E` byte 12 bit 7 is the omitted-component sign
 
 **The claim**: the unexplained flag at byte 12 bit 7 records the whole-quaternion

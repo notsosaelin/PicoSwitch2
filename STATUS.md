@@ -8,9 +8,9 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
 - **Last software verification:** 2026-08-20 — Bluetooth trust/admission and connection-truth
-  hardening. Both board builds, all 76 compiled host tests, the 21-test focused management suite,
-  five trace-parser tests, and both install-reset markers are green. The controlled
-  wipe/flash/re-admission hardware matrix is pending.
+  hardening. After a physical wipe-teardown failure, the corrected transport-owner sweep passes
+  both board builds, 76/76 compiled host tests, the 22-test focused suite, five trace-parser tests,
+  and both install-reset markers. The corrected physical retest is pending.
 - **Current release:** v2.0.0, published 2026-08-15 from commit `a1491b2`.
 - **Development branch:** `ns2-testing`; v2.0.0 is the last tag on it.
 - **Bridge contract:** 3 (`ANDROID_BRIDGE_CONTRACT_VERSION` / `BridgeContract.VERSION`) — unchanged.
@@ -307,6 +307,10 @@ Briefs: [`docs/agents/ANDROID.md`](docs/agents/ANDROID.md),
   wall time for every cadence. Idle is a 90 ms pulse every 10 seconds; solid means controller-ready
   unless a higher-priority acknowledgement/configuration state owns the LED. `btstate` exposes raw
   versus ready counts, the selected LED reason/timing and HCI state-loss count without key material.
+- The first physical retest showed that triple tap stopped input but left the controller presenting
+  as connected. That refutes project-slot disconnect as a complete wipe boundary. Wipe now locks
+  radio admission and terminates the stack-owned HCI connection inventory before completing trust
+  deletion; this correction is source-tested and awaits the same physical retest.
 - The older claim that post-wipe automatic readmission was hardware-confirmed is **reopened** after
   the owner observed controller reconnects following wipe/flash. The source audit found automatic
   fresh re-pairing that could explain the symptom, and the correction is host-tested/board-built;

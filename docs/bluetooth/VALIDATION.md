@@ -1,7 +1,7 @@
 # Bluetooth validation and invariant traceability
 
-Status: software gates passed on 2026-08-20 through Bluetooth hardening commit
-`83bfc4139ca9d2d3f0524ab0bac3d6700c5f9047`; physical lifecycle validation is pending.
+Status: the first physical wipe retest failed active-link teardown on 2026-08-20. The
+transport-owner correction passes software validation and remains pending physical retest.
 
 ## Invariants
 
@@ -26,12 +26,13 @@ Status: software gates passed on 2026-08-20 through Bluetooth hardening commit
 | BT-INV-017 | An LE RPA may reach SM as a bounded reconnect candidate but never grants fresh trust. |
 | BT-INV-018 | Raw radio slots cannot assert controller-ready connection truth or the solid owner LED. |
 | BT-INV-019 | HCI state loss retires live source generations without deleting durable trust. |
+| BT-INV-020 | Wipe terminates every stack-owned HCI link, not only links represented by project controller slots. |
 
 ## Automated evidence
 
 | Gate | Result | Coverage |
 |---|---:|---|
-| `pwsh -File tools/run_mgmt_tests.ps1` | 21/21 passed | lifecycle policy, secret diagnostics, owner LED, sparse lookup, reconnect policy, management, KB/M and adjacent seams |
+| `pwsh -File tools/run_mgmt_tests.ps1` | 22/22 passed | lifecycle policy, secret diagnostics, wipe transport boundary, owner LED, sparse lookup, reconnect policy, management, KB/M and adjacent seams |
 | compiled `build/host-tests/test_*.exe` inventory | 76/76 passed | complete currently built host-test set |
 | `python tools/test_ns2_trace.py` | 5/5 passed | diagnostic trace parser regression |
 | `build.ps1 pico_w,pico2_w` | both passed | production RP2040 and RP2350 firmware |
@@ -40,9 +41,15 @@ Status: software gates passed on 2026-08-20 through Bluetooth hardening commit
 
 `test_ns2_bt_lifecycle` pins BT-INV-001/002/005/006/016/017 at the pure-policy layer, including a
 bond in slot 15 with only two active entries. `test_ns2_owner_led` pins BT-INV-018 and elapsed-time
-cadences. `test_bluetooth_secret_diagnostics.py` guards BT-INV-014 at the source surface. Board
-builds prove the event wiring compiles against the pinned BTstack APIs. They do not prove RF timing
-or controller behavior.
+cadences. `test_bluetooth_secret_diagnostics.py` guards BT-INV-014 at the source surface, and
+`test_bluetooth_wipe_transport.py` pins the BT-INV-020 stack-owner ordering. Board builds prove the
+event wiring compiles against the pinned BTstack APIs. They do not prove RF timing or controller
+behavior.
+
+The first post-hardening physical wipe attempt failed BT-INV-020: input stopped, but the controller
+still presented as connected to the adapter. The slot-only disconnect model is preserved as a
+refuted hypothesis, and the HCI-owner sweep is pending physical retest. See
+[`../experiments/bluetooth-wipe-transport-retention-2026-08-20.md`](../experiments/bluetooth-wipe-transport-retention-2026-08-20.md).
 
 ## Required physical matrix
 
@@ -129,3 +136,4 @@ until the powered-on, powered-off, reboot and UF2 cases above pass with pre-admi
 | Classic replacement trust commits before authentication | Critical | deferred candidate plus matching auth-complete commit | Classic family hardware matrix |
 | RPA accidentally becomes fresh trust | Critical | reconnect-only RPA admission and final protocol gate | privacy-enabled LE hardware matrix |
 | Raw slot presents false connected LED | Medium | ready-count policy and deterministic timer test | passive/runtime observation |
+| Wipe stops input but leaves transport connected | Critical | lock/page shutdown plus stack-owned HCI disconnect-all sweep | corrected-build physical retest |
