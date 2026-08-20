@@ -37,6 +37,7 @@ import dev.picoswitch.companion.diagnostics.DiagnosticSummary
 import dev.picoswitch.companion.model.*
 import dev.picoswitch.management.WakeResult
 import dev.picoswitch.companion.transport.BleGattManagementTransport
+import dev.picoswitch.companion.protocol.ManagementConnectionContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.Job
@@ -127,6 +128,7 @@ data class CompanionUiState(
     val requestedFaceLayout: ControllerFaceLayout = ControllerFaceLayout.Auto,
     val resolvedFaceLayout: ResolvedControllerLayout = ControllerLayoutResolver.resolve(ControllerFaceLayout.Auto, null),
     val adapterRelationship: AdapterRelationship? = null,
+    val relationshipStatus: AdapterRelationshipStatus = AdapterRelationshipStatus(AdapterRelationshipPhase.NoRelationship),
     val platform: PlatformDiagnostics = PlatformDiagnostics(),
     val diagnosticSummary: DiagnosticSummary = DiagnosticSummary(),
     val diagnosticEntries: List<DiagnosticEntry> = emptyList(),
@@ -169,6 +171,9 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     private val library = AmiiboLibrary(application)
     private val themeStore = ThemePreferenceStore(application)
     private val relationshipStore = AdapterRelationshipStore(application)
+    private val relationshipCoordinator = AdapterRelationshipCoordinator(relationshipStore.load())
+    private var relationshipConnectionJob: Job? = null
+    private var relationshipRetirementJob: Job? = null
     private var autoReconnectAttempted = false
     private var automaticControllerResumeJob: Job? = null
     private val _theme = MutableStateFlow(themeStore.load())
@@ -188,6 +193,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             amiiboKeysLoaded = amiiboKeyStore.read() != null,
             selectedSourceDescriptor = savedState[KEY_SOURCE],
             adapterRelationship = relationshipStore.load(),
+            relationshipStatus = relationshipCoordinator.status,
             identityRefreshPending = savedState[KEY_IDENTITY_PENDING] ?: false,
         ),
     )
@@ -197,28 +203,27 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         diagnostics.event("app", "created", "version ${BuildConfig.VERSION_NAME}")
         viewModelScope.launch {
             adapter.connection.collect { value ->
-                if (value.connected && !value.address.isNullOrBlank()) {
-                    val existing = relationshipStore.load()
-                    val saved = AdapterRelationship(
-                        address = value.address,
-                        associationId = existing?.associationId,
-                        displayName = value.deviceName ?: existing?.displayName ?: "PicoSwitch2",
-                    )
-                    relationshipStore.save(saved)
-                    _ui.update { it.copy(connection = value, adapterRelationship = saved) }
+                if (value.connected) {
+                    // The lifecycle coordinator persists a relationship only after AdapterRepository
+                    // has verified the management identity. A ready CCC subscription alone is not
+                    // product-level success and must not create or replace a saved adapter.
+                    _ui.update { it.copy(connection = value) }
                     refreshBridgeCompatibility()
                 } else {
                     if (value.phase == ConnectionPhase.Idle ||
                         value.phase == ConnectionPhase.Reconnecting ||
                         value.phase == ConnectionPhase.Failed
                     ) {
+                        relationshipCoordinator.connectionEnded(value.message)
                         adapter.clearDisconnectedSnapshot()
                         // Bindings belong to the adapter that was connected.
                         // Keeping them across a disconnect would let the next
                         // session open on another adapter's mapping.
                         kbmMappingsLoaded = false
                     }
-                    _ui.update { it.copy(connection = value) }
+                    _ui.update {
+                        it.copy(connection = value, relationshipStatus = relationshipCoordinator.status)
+                    }
                     refreshBridgeCompatibility()
                 }
             }
@@ -321,17 +326,20 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         refreshSelectedAmiiboDetails()
     }
 
-    fun connect() = launch("Connecting to PicoSwitch2") { adapter.connect() }
-    fun reconnectKnownAdapter() {
+    fun connect() = reconnectKnownAdapter(AdapterConnectReason.Manual)
+
+    fun reconnectKnownAdapter(reason: AdapterConnectReason = AdapterConnectReason.Manual) {
         val relationship = relationshipStore.load() ?: return
-        launch("Reconnecting to ${relationship.displayName}") { adapter.connectKnown(relationship.address) }
+        val decision = relationshipCoordinator.requestReconnect(relationship, reason, bondState(relationship.address))
+        publishRelationshipStatus()
+        executeLifecycleDecision(decision)
     }
 
     fun tryAutoReconnect() {
         if (autoReconnectAttempted || _ui.value.connection.connected || _ui.value.busy) return
         if (relationshipStore.load() == null) return
         autoReconnectAttempted = true
-        reconnectKnownAdapter()
+        reconnectKnownAdapter(AdapterConnectReason.ForegroundAuto)
     }
 
     fun beginForegroundSession() {
@@ -339,20 +347,125 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         tryAutoReconnect()
     }
 
-    fun recordAdapterAssociation(address: String, associationId: Int?, displayName: String?) {
+    /** Begin one authoritative CDM association attempt. The returned generation belongs to both
+     * Android completion paths and makes the documented duplicate delivery harmless. */
+    fun beginAdapterPairing(): Long {
+        relationshipConnectionJob?.cancel()
+        val generation = relationshipCoordinator.beginAssociation()
+        publishRelationshipStatus(ConnectionPhase.Associating)
+        diagnostics.event("relationship", "association.start", "attempt=$generation")
+        if (relationshipRetirementJob?.isActive != true) {
+            relationshipRetirementJob = viewModelScope.launch { runCatching { adapter.disconnect() } }
+        }
+        return generation
+    }
+
+    fun adapterAssociationCreated(
+        generation: Long,
+        address: String,
+        associationId: Int?,
+        displayName: String?,
+        bond: AndroidBondState,
+    ): AdapterLifecycleDecision {
         val relationship = AdapterRelationship(address, associationId, displayName.orEmpty().ifBlank { "PicoSwitch2" })
-        relationshipStore.save(relationship)
-        _ui.update { it.copy(adapterRelationship = relationship) }
-        diagnostics.event("adapter", "relationship saved", "association=${associationId ?: "legacy"}")
+        val decision = relationshipCoordinator.associationCreated(generation, relationship, bond)
+        publishRelationshipStatus()
+        diagnostics.event(
+            "relationship", "association.created",
+            "attempt=$generation association=${associationId ?: "legacy"} bond=$bond decision=${decision.javaClass.simpleName}",
+        )
+        if (decision is AdapterLifecycleDecision.AwaitBond) {
+            diagnostics.event(
+                "relationship",
+                if (decision.startBond) "bond.start" else "bond.wait",
+                "attempt=$generation bond=$bond",
+            )
+        }
+        executeLifecycleDecision(decision)
+        return decision
+    }
+
+    fun adapterAssociationFailed(generation: Long, message: String) {
+        relationshipCoordinator.associationFailed(generation, message)
+        publishRelationshipStatus()
+        diagnostics.event("relationship", "association.failed", "attempt=$generation $message")
+    }
+
+    fun pendingAssociationGeneration(): Long? = relationshipCoordinator.status
+        .takeIf { it.phase == AdapterRelationshipPhase.Associating }
+        ?.generation
+
+    fun adapterBondChanged(address: String, bond: AndroidBondState) {
+        val decision = relationshipCoordinator.bondChanged(address, bond)
+        publishRelationshipStatus()
+        diagnostics.event(
+            "relationship", "bond.state",
+            "attempt=${relationshipCoordinator.status.generation} bond=$bond decision=${decision.javaClass.simpleName}",
+        )
+        executeLifecycleDecision(decision)
+    }
+
+    fun adapterBondStartFailed(address: String) {
+        adapterBondChanged(address, AndroidBondState.None)
+    }
+
+    fun reconcileAdapterRelationships(associations: List<SystemCompanionAssociation>) {
+        if (relationshipCoordinator.status.attemptActive) {
+            diagnostics.event("relationship", "association.reconcile", "deferred while attempt is active")
+            return
+        }
+        // HID-device hosts are consoles paired to the phone's Controller Bridge, not management
+        // adapters. Never use that unrelated Bluetooth truth to reconstruct this relationship.
+        val result = AdapterRelationshipReconciler.reconcile(relationshipStore.load(), associations)
+        result.relationship?.let(relationshipStore::save)
+        relationshipCoordinator.restore(
+            result.relationship,
+            result.associationState,
+            result.relationship?.let { bondState(it.address) } ?: AndroidBondState.Unknown,
+        )
+        _ui.update { it.copy(adapterRelationship = result.relationship, relationshipStatus = relationshipCoordinator.status) }
+        diagnostics.event(
+            "relationship", "association.reconciled",
+            "source=${result.source} records=${associations.size} association=${result.relationship?.associationId ?: "none"} state=${result.associationState}",
+        )
     }
 
     fun forgetAdapterRelationship() {
-        relationshipStore.clear()
-        autoReconnectAttempted = false
-        _ui.update { it.copy(adapterRelationship = null) }
-        diagnostics.event("adapter", "relationship forgotten")
+        // This app's only CDM association call site is the PicoSwitch2 name-filtered chooser.
+        // Explicit Forget is therefore the safe lifecycle point to remove stale app-owned Pico
+        // associations as well as the selected record, while retaining platform/Pico bonds.
+        clearOwnedRelationship(relationshipStore.load(), removeAllCompanionAssociations = true)
     }
-    fun disconnect() = launch("Disconnecting") { adapter.disconnect() }
+
+    fun prepareRepairPairing(onReady: (needsAndroidSettings: Boolean) -> Unit) {
+        val relationship = relationshipStore.load()
+        val ambiguousAssociations = relationshipCoordinator.status.companionAssociation == CompanionAssociationState.Ambiguous
+        val needsSettings = relationship?.let { bondState(it.address) == AndroidBondState.Bonded } == true
+        diagnostics.event(
+            "relationship",
+            "repair.started",
+            "association=${relationship?.associationId ?: "none"} ambiguous=$ambiguousAssociations platformBond=$needsSettings",
+        )
+        clearOwnedRelationship(
+            relationship,
+            removeAllCompanionAssociations = ambiguousAssociations,
+            onComplete = { onReady(needsSettings) },
+        )
+    }
+
+    fun disconnect() {
+        relationshipConnectionJob?.cancel()
+        relationshipCoordinator.cancelAndRetainRelationship()
+        publishRelationshipStatus(ConnectionPhase.Disconnecting)
+        diagnostics.event("relationship", "disconnect.user", "management only")
+        if (relationshipRetirementJob?.isActive != true) {
+            relationshipRetirementJob = viewModelScope.launch {
+                runCatching { adapter.disconnect() }
+                    .onFailure { diagnostics.error("management", "disconnect.user", it) }
+                publishRelationshipStatus(ConnectionPhase.Idle)
+            }
+        }
+    }
     fun refresh() = launch("Refreshing adapter") { adapter.refreshAll() }
     // Report what the adapter actually did, never merely that the command was
     // transmitted. Each outcome is distinct and actionable: "advertised" is the
@@ -382,9 +495,22 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     }
 
     fun saveColor(target: ColorTarget, color: RgbColor) = launch("Saving color") {
-        adapter.setColor(target, color)
+        val persistenceVerified = adapter.setColor(target, color)
         markIdentityRefreshPending("identity color saved")
-        notice("Color saved. Reconnect or re-enumerate USB before expecting the console to refresh identity colors.")
+        runCatching { adapter.reenumerateUsb() }
+            .onSuccess {
+                savedState[KEY_IDENTITY_PENDING] = false
+                _ui.update { it.copy(identityRefreshPending = false) }
+                diagnostics.event(
+                    "adapter", "identity changes applied",
+                    "color persistence=${if (persistenceVerified) "verified" else "legacy-accepted"}",
+                )
+                notice("Color saved and applied. The console controller may pause briefly while USB reconnects.")
+            }
+            .onFailure { error ->
+                diagnostics.error("adapter", "automatic identity refresh", error)
+                notice("Color saved; USB identity refresh still needs to be applied.")
+            }
     }
 
     fun clearIdentityRefreshPending() {
@@ -1066,6 +1192,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             "CompanionDeviceManager" to ui.platform.companionDeviceManager.toString(),
             "Management state" to ui.connection.phase.name,
             "Adapter relationship" to if (ui.adapterRelationship == null) "none" else "saved",
+            "Relationship lifecycle" to ui.relationshipStatus.toString(),
             "Firmware" to ui.snapshot.firmware.version.ifBlank { "unknown" },
             // The single line that would have ended the 2026-08-15 investigation
             // in one read instead of several hours.
@@ -1104,6 +1231,185 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         file.writeText(report)
         diagnostics.event("app", "diagnostics exported")
         return file
+    }
+
+    private fun executeLifecycleDecision(decision: AdapterLifecycleDecision) {
+        when (decision) {
+            AdapterLifecycleDecision.Ignored -> Unit
+            is AdapterLifecycleDecision.AwaitBond -> Unit
+            is AdapterLifecycleDecision.Connect -> startVerifiedManagementConnection(decision.attempt)
+            is AdapterLifecycleDecision.RelationshipMetadataUpdated -> {
+                relationshipStore.save(decision.relationship)
+                _ui.update { it.copy(adapterRelationship = decision.relationship) }
+                diagnostics.event(
+                    "relationship",
+                    "association.metadata",
+                    "association=${decision.relationship.associationId ?: "legacy"}",
+                )
+            }
+            is AdapterLifecycleDecision.RepairRequired -> {
+                diagnostics.event("relationship", "repair.required", decision.message)
+                notice(decision.message)
+            }
+        }
+    }
+
+    private fun startVerifiedManagementConnection(attempt: AdapterConnectionAttempt) {
+        if (relationshipConnectionJob?.isActive == true) return
+        diagnostics.event(
+            "relationship", "connect.request",
+            "attempt=${attempt.generation} reason=${attempt.reason.diagnosticName} " +
+                "association=${attempt.relationship.associationId ?: "none"} bond=${relationshipCoordinator.status.bond}",
+        )
+        relationshipConnectionJob = viewModelScope.launch {
+            try {
+                relationshipRetirementJob?.join()
+                adapter.connectKnown(
+                    attempt.relationship.address,
+                    ManagementConnectionContext(
+                        logicalAttempt = attempt.generation,
+                        reason = attempt.reason.diagnosticName,
+                        associationId = attempt.relationship.associationId,
+                        bondState = relationshipCoordinator.status.bond.name,
+                    ),
+                )
+                val verified = relationshipCoordinator.connectionSucceeded(attempt.generation) ?: return@launch
+                val previous = relationshipStore.load()
+                relationshipStore.save(verified)
+                if (previous?.associationId != null && previous.associationId != verified.associationId) {
+                    disassociate(previous)
+                }
+                _ui.update {
+                    it.copy(
+                        adapterRelationship = verified,
+                        relationshipStatus = relationshipCoordinator.status,
+                    )
+                }
+                diagnostics.event(
+                    "relationship", "connect.verified",
+                    "attempt=${attempt.generation} reason=${attempt.reason.diagnosticName} association=${verified.associationId ?: "legacy"}",
+                )
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                diagnostics.event("relationship", "connect.cancelled", "attempt=${attempt.generation}")
+                throw cancelled
+            } catch (error: Throwable) {
+                relationshipCoordinator.connectionFailed(
+                    attempt.generation,
+                    error.message ?: "The adapter connection could not be verified.",
+                )
+                publishRelationshipStatus()
+                diagnostics.error("relationship", "connect attempt ${attempt.generation}", error)
+                notice(error.message ?: "The adapter connection could not be verified.")
+            } finally {
+                // A cancelled generation may finish after its replacement has already been
+                // assigned. It must not clear ownership of that newer job.
+                if (relationshipConnectionJob === coroutineContext[Job]) {
+                    relationshipConnectionJob = null
+                }
+            }
+        }
+    }
+
+    private fun publishRelationshipStatus(connectionOverride: ConnectionPhase? = null) {
+        val relationship = relationshipCoordinator.status
+        val phase = connectionOverride ?: when (relationship.phase) {
+            AdapterRelationshipPhase.NoRelationship, AdapterRelationshipPhase.Idle -> ConnectionPhase.Idle
+            AdapterRelationshipPhase.Associating -> ConnectionPhase.Associating
+            AdapterRelationshipPhase.Bonding -> ConnectionPhase.Bonding
+            AdapterRelationshipPhase.Connecting -> ConnectionPhase.Connecting
+            AdapterRelationshipPhase.Connected -> ConnectionPhase.Connected
+            AdapterRelationshipPhase.Failed -> ConnectionPhase.Failed
+            AdapterRelationshipPhase.RepairRequired -> ConnectionPhase.RepairRequired
+        }
+        _ui.update { state ->
+            val connection = if (phase == ConnectionPhase.Connected && state.connection.connected) {
+                state.connection
+            } else state.connection.copy(phase = phase, message = relationship.message, attempt = relationship.generation.toInt())
+            state.copy(relationshipStatus = relationship, connection = connection)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun bondState(address: String): AndroidBondState = runCatching {
+        val manager = getApplication<Application>().getSystemService(BluetoothManager::class.java)
+        when (manager.adapter.getRemoteDevice(address).bondState) {
+            BluetoothDevice.BOND_NONE -> AndroidBondState.None
+            BluetoothDevice.BOND_BONDING -> AndroidBondState.Bonding
+            BluetoothDevice.BOND_BONDED -> AndroidBondState.Bonded
+            else -> AndroidBondState.Unknown
+        }
+    }.getOrDefault(AndroidBondState.Unknown)
+
+    private fun clearOwnedRelationship(
+        relationship: AdapterRelationship?,
+        removeAllCompanionAssociations: Boolean = false,
+        onComplete: (() -> Unit)? = null,
+    ) {
+        relationshipConnectionJob?.cancel()
+        autoReconnectAttempted = false
+        relationshipStore.clear()
+        relationshipCoordinator.forget()
+        _ui.update {
+            it.copy(
+                adapterRelationship = null,
+                relationshipStatus = relationshipCoordinator.status,
+                connection = ConnectionState(),
+            )
+        }
+        diagnostics.event(
+            "relationship", "relationship.clear",
+            "app record cleared; Android bond and adapter bonds retained",
+        )
+        val priorRetirement = relationshipRetirementJob
+        relationshipRetirementJob = viewModelScope.launch {
+            if (priorRetirement?.isActive == true) {
+                priorRetirement.join()
+            } else {
+                runCatching { adapter.disconnect() }
+                    .onFailure { diagnostics.error("management", "relationship clear disconnect", it) }
+            }
+            if (removeAllCompanionAssociations) disassociateAllCompanionAssociations()
+            else relationship?.let(::disassociate)
+            onComplete?.invoke()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun disassociate(relationship: AdapterRelationship) {
+        val manager = getApplication<Application>().getSystemService(CompanionDeviceManager::class.java) ?: return
+        runCatching {
+            if (Build.VERSION.SDK_INT >= 33) {
+                val associationId = relationship.associationId ?: manager.myAssociations
+                    .singleOrNull { it.deviceMacAddress?.toString().equals(relationship.address, true) }
+                    ?.id
+                if (associationId != null) manager.disassociate(associationId)
+            } else {
+                @Suppress("DEPRECATION")
+                manager.disassociate(relationship.address)
+            }
+        }.onSuccess {
+            diagnostics.event(
+                "relationship", "association.removed",
+                "association=${relationship.associationId ?: "legacy"}; Android bond retained",
+            )
+        }.onFailure { diagnostics.error("relationship", "association.remove", it) }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun disassociateAllCompanionAssociations() {
+        val manager = getApplication<Application>().getSystemService(CompanionDeviceManager::class.java) ?: return
+        runCatching {
+            // This app has one CDM association call site and it is name-filtered to PicoSwitch2's
+            // current/legacy identities. Clearing all app-owned records is reserved for the
+            // explicit ambiguous Repair flow; ordinary Forget removes only the saved relationship.
+            val count = if (Build.VERSION.SDK_INT >= 33) {
+                manager.myAssociations.onEach { manager.disassociate(it.id) }.size
+            } else {
+                @Suppress("DEPRECATION")
+                manager.associations.onEach { manager.disassociate(it) }.size
+            }
+            diagnostics.event("relationship", "association.repair_clear", "removed=$count; Android bonds retained")
+        }.onFailure { diagnostics.error("relationship", "association.repair_clear", it) }
     }
 
     private fun launch(label: String, action: suspend () -> Unit) {

@@ -61,7 +61,7 @@ class LayoutLabActivity : ComponentActivity() {
         setContent {
             CompanionApp(
                 viewModel = viewModel,
-                onConnectAdapter = {}, onPairAdapter = {}, onImportAmiibo = {},
+                onConnectAdapter = {}, onPairAdapter = {}, onRepairAdapter = {}, onImportAmiibo = {},
                 onImportAmiiboArchive = {}, onExportAmiiboArchive = {}, onScanAmiibo = {},
                 onImportAmiiboKeys = {}, onPrepareController = {}, onExportDiagnostics = {},
             )

@@ -1,6 +1,6 @@
 package dev.picoswitch.companion.model
 
-enum class ConnectionPhase { Idle, Scanning, Connecting, Connected, Reconnecting, Disconnecting, Failed }
+enum class ConnectionPhase { Idle, Associating, Bonding, Scanning, Connecting, Connected, Reconnecting, Disconnecting, Failed, RepairRequired }
 
 data class ConnectionState(
     val phase: ConnectionPhase = ConnectionPhase.Idle,

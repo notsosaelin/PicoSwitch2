@@ -19,6 +19,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.WindowManager
@@ -30,6 +31,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.FileProvider
 import dev.picoswitch.companion.bluetooth.AdapterBluetoothIdentity
+import dev.picoswitch.companion.data.AdapterLifecycleDecision
+import dev.picoswitch.companion.data.AdapterConnectReason
+import dev.picoswitch.companion.data.AndroidBondState
+import dev.picoswitch.companion.data.SystemCompanionAssociation
 import dev.picoswitch.companion.nfc.AndroidNtag215Reader
 import dev.picoswitch.companion.ui.CompanionApp
 import dev.picoswitch.companion.ui.CompanionViewModel
@@ -48,7 +53,7 @@ class MainActivity : ComponentActivity() {
     }
     private enum class ManagementAction { Pair, Reconnect }
     private var pendingManagementAction = ManagementAction.Reconnect
-    private var pendingBondDevice: BluetoothDevice? = null
+    private var pendingAssociationGeneration: Long? = null
     private var bondReceiverRegistered = false
     private val bondReceiver = object : BroadcastReceiver() {
         @SuppressLint("MissingPermission")
@@ -58,17 +63,8 @@ class MainActivity : ComponentActivity() {
             val device = (if (Build.VERSION.SDK_INT >= 33) {
                 intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
             } else intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE) as? BluetoothDevice) ?: return
-            if (device.address != pendingBondDevice?.address) return
-            when (device.bondState) {
-                BluetoothDevice.BOND_BONDED -> {
-                    pendingBondDevice = null
-                    viewModel.reconnectKnownAdapter()
-                }
-                BluetoothDevice.BOND_NONE -> {
-                    pendingBondDevice = null
-                    Toast.makeText(this@MainActivity, "Adapter bonding did not complete", Toast.LENGTH_LONG).show()
-                }
-            }
+            val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, device.bondState).toProductBondState()
+            viewModel.adapterBondChanged(device.address, state)
         }
     }
     private val inputDeviceListener = object : InputManager.InputDeviceListener {
@@ -79,7 +75,8 @@ class MainActivity : ComponentActivity() {
 
     private val managementPermissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         if (result.values.all { it }) {
-            if (pendingManagementAction == ManagementAction.Pair) pairAdapter() else viewModel.reconnectKnownAdapter()
+            if (pendingManagementAction == ManagementAction.Pair) pairAdapter()
+            else viewModel.reconnectKnownAdapter(AdapterConnectReason.Manual)
         }
         else Toast.makeText(this, "Nearby devices permission is required to find PicoSwitch2", Toast.LENGTH_LONG).show()
     }
@@ -108,7 +105,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private val associationChooser = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
-        if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
+        val generation = pendingAssociationGeneration ?: viewModel.pendingAssociationGeneration()
+            ?: return@registerForActivityResult
+        if (result.resultCode != Activity.RESULT_OK) {
+            viewModel.adapterAssociationFailed(generation, "Adapter pairing was cancelled")
+            return@registerForActivityResult
+        }
         val associationAddress: String?
         val associationId: Int?
         if (Build.VERSION.SDK_INT >= 33) {
@@ -128,8 +130,12 @@ class MainActivity : ComponentActivity() {
         } else result.data?.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE) as? BluetoothDevice
         val device = associationAddress?.let(::remoteDevice) ?: legacyDevice
         if (device == null) {
+            viewModel.adapterAssociationFailed(
+                generation,
+                "Android associated the adapter but did not return its Bluetooth address",
+            )
             Toast.makeText(this, "Android associated the adapter but did not return its Bluetooth address", Toast.LENGTH_LONG).show()
-        } else rememberBondAndConnect(device, associationId)
+        } else completeAssociation(generation, device, associationId)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -140,6 +146,7 @@ class MainActivity : ComponentActivity() {
                 viewModel = viewModel,
                 onConnectAdapter = ::requestAdapterConnection,
                 onPairAdapter = ::requestNewAdapterPairing,
+                onRepairAdapter = ::requestAdapterRepair,
                 onImportAmiibo = { importAmiibo.launch(arrayOf("*/*")) },
                 onImportAmiiboArchive = { importAmiiboArchive.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
                 onExportAmiiboArchive = { exportAmiiboArchive.launch("PicoSwitch2-Amiibo-Library.zip") },
@@ -243,15 +250,21 @@ class MainActivity : ComponentActivity() {
 
     @SuppressLint("MissingPermission")
     private fun pairAdapter() {
+        val generation = viewModel.beginAdapterPairing()
+        pendingAssociationGeneration = generation
         val request = AssociationRequest.Builder()
             .addDeviceFilter(BluetoothDeviceFilter.Builder().setNamePattern(
                 Pattern.compile(AdapterBluetoothIdentity.CHOOSER_NAME_PATTERN, Pattern.CASE_INSENSITIVE),
             ).build())
             .setSingleDevice(false)
             .build()
-        val manager = getSystemService(CompanionDeviceManager::class.java) ?: return Toast.makeText(
-            this, "Companion Device Manager is unavailable on this Android build", Toast.LENGTH_LONG,
-        ).show()
+        val manager = getSystemService(CompanionDeviceManager::class.java) ?: run {
+            viewModel.adapterAssociationFailed(generation, "Companion Device Manager is unavailable")
+            Toast.makeText(
+                this, "Companion Device Manager is unavailable on this Android build", Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
         val callback = object : CompanionDeviceManager.Callback() {
             @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
             @Deprecated("Legacy association callback")
@@ -268,10 +281,17 @@ class MainActivity : ComponentActivity() {
                     associationId = null
                 }
                 val device = address?.let(::remoteDevice)
-                if (device != null) rememberBondAndConnect(device, associationId)
-                else Toast.makeText(this@MainActivity, "Adapter associated, but Android did not return its address.", Toast.LENGTH_LONG).show()
+                if (device != null) completeAssociation(generation, device, associationId)
+                else {
+                    viewModel.adapterAssociationFailed(
+                        generation,
+                        "Android associated the adapter but did not return its Bluetooth address",
+                    )
+                    Toast.makeText(this@MainActivity, "Adapter associated, but Android did not return its address.", Toast.LENGTH_LONG).show()
+                }
             }
             override fun onFailure(error: CharSequence?) {
+                viewModel.adapterAssociationFailed(generation, error?.toString() ?: "Adapter pairing was cancelled")
                 Toast.makeText(this@MainActivity, error ?: "Adapter pairing was cancelled", Toast.LENGTH_LONG).show()
             }
         }
@@ -282,6 +302,7 @@ class MainActivity : ComponentActivity() {
             // Some OEM frameworks reject association synchronously. Controller setup must
             // report that as a recoverable error, never take down the foreground app.
             viewModel.diagnostics.error("controller", "companion association", error)
+            viewModel.adapterAssociationFailed(generation, error.message ?: "Android could not open adapter pairing")
             Toast.makeText(
                 this,
                 error.message?.take(180) ?: "Android could not open the controller pairing chooser",
@@ -295,16 +316,21 @@ class MainActivity : ComponentActivity() {
     }
 
     @SuppressLint("MissingPermission")
-    private fun rememberBondAndConnect(device: BluetoothDevice, associationId: Int?) {
-        viewModel.recordAdapterAssociation(device.address, associationId, runCatching { device.name }.getOrNull())
-        when (device.bondState) {
-            BluetoothDevice.BOND_BONDED -> viewModel.reconnectKnownAdapter()
-            BluetoothDevice.BOND_NONE -> {
-                pendingBondDevice = device
-                if (device.createBond()) Toast.makeText(this, "Approve Android’s adapter bond prompt", Toast.LENGTH_LONG).show()
-                else Toast.makeText(this, "Android could not start bonding", Toast.LENGTH_LONG).show()
+    private fun completeAssociation(generation: Long, device: BluetoothDevice, associationId: Int?) {
+        val decision = viewModel.adapterAssociationCreated(
+            generation = generation,
+            address = device.address,
+            associationId = associationId,
+            displayName = runCatching { device.name }.getOrNull(),
+            bond = device.bondState.toProductBondState(),
+        )
+        if (decision is AdapterLifecycleDecision.AwaitBond && decision.startBond) {
+            if (device.createBond()) {
+                Toast.makeText(this, "Approve Android's secure pairing prompt", Toast.LENGTH_LONG).show()
+            } else {
+                viewModel.adapterBondStartFailed(device.address)
+                Toast.makeText(this, "Android could not start secure pairing", Toast.LENGTH_LONG).show()
             }
-            BluetoothDevice.BOND_BONDING -> pendingBondDevice = device
         }
     }
 
@@ -322,26 +348,42 @@ class MainActivity : ComponentActivity() {
 
     @SuppressLint("MissingPermission")
     private fun restoreSystemAssociation() {
-        if (viewModel.ui.value.adapterRelationship != null) return
         val manager = getSystemService(CompanionDeviceManager::class.java) ?: return
-        if (Build.VERSION.SDK_INT >= 33) {
-            manager.myAssociations.firstOrNull { it.deviceMacAddress != null }?.let { association ->
-                viewModel.recordAdapterAssociation(
-                    association.deviceMacAddress.toString(), association.id,
-                    association.displayName?.toString(),
-                )
+        val associations = if (Build.VERSION.SDK_INT >= 33) {
+            manager.myAssociations.mapNotNull { association ->
+                association.deviceMacAddress?.toString()?.let { address ->
+                    SystemCompanionAssociation(association.id, address, association.displayName?.toString())
+                }
             }
         } else {
             @Suppress("DEPRECATION")
-            manager.associations.firstOrNull()?.let { address ->
-                viewModel.recordAdapterAssociation(address, null, remoteDevice(address)?.name)
+            manager.associations.map { address ->
+                SystemCompanionAssociation(null, address, remoteDevice(address)?.name)
             }
         }
-        if (viewModel.ui.value.adapterRelationship == null) {
-            viewModel.pairedControllerHosts().firstOrNull()?.let { host ->
-                viewModel.recordAdapterAssociation(host.address, null, host.name)
+        viewModel.reconcileAdapterRelationships(associations)
+    }
+
+    private fun requestAdapterRepair() {
+        viewModel.prepareRepairPairing { needsAndroidSettings ->
+            if (needsAndroidSettings) {
+                Toast.makeText(
+                    this,
+                    "Remove PicoSwitch2 from Android's paired devices, then return and tap Pair Adapter.",
+                    Toast.LENGTH_LONG,
+                ).show()
+                startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+            } else {
+                requestNewAdapterPairing()
             }
         }
+    }
+
+    private fun Int.toProductBondState(): AndroidBondState = when (this) {
+        BluetoothDevice.BOND_NONE -> AndroidBondState.None
+        BluetoothDevice.BOND_BONDING -> AndroidBondState.Bonding
+        BluetoothDevice.BOND_BONDED -> AndroidBondState.Bonded
+        else -> AndroidBondState.Unknown
     }
 
     private fun shareDiagnostics() {

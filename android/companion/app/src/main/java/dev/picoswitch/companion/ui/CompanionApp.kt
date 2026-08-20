@@ -46,6 +46,7 @@ fun CompanionApp(
     viewModel: CompanionViewModel,
     onConnectAdapter: () -> Unit,
     onPairAdapter: () -> Unit,
+    onRepairAdapter: () -> Unit,
     onImportAmiibo: () -> Unit,
     onImportAmiiboArchive: () -> Unit,
     onExportAmiiboArchive: () -> Unit,
@@ -139,7 +140,7 @@ fun CompanionApp(
                                 // deriving their own idea of "connected",
                                 // which is what left stale green badges behind
                                 // after a session ended.
-                                ConnectionStrip(ui, viewModel, onConnectAdapter, onPairAdapter)
+                                ConnectionStrip(ui, viewModel, onConnectAdapter, onPairAdapter, onRepairAdapter)
                                 Box(Modifier.weight(1f).fillMaxWidth()) {
                                     destinationState.SaveableStateProvider(ui.section.name) {
                                         when (ui.section) {
@@ -217,9 +218,12 @@ private fun ConnectionStrip(
     viewModel: CompanionViewModel,
     onConnect: () -> Unit,
     onPairAdapter: () -> Unit,
+    onRepairAdapter: () -> Unit,
 ) {
     val connected = ui.connection.connected
-    val busyPhase = ui.connection.phase == ConnectionPhase.Scanning ||
+    val busyPhase = ui.connection.phase == ConnectionPhase.Associating ||
+        ui.connection.phase == ConnectionPhase.Bonding ||
+        ui.connection.phase == ConnectionPhase.Scanning ||
         ui.connection.phase == ConnectionPhase.Connecting
     Surface(
         modifier = Modifier.fillMaxWidth().padding(top = LayoutTokens.Space2),
@@ -274,13 +278,18 @@ private fun ConnectionStrip(
                         Icon(Icons.Default.LinkOff, "Disconnect")
                     }
                 } else {
-                    if (ui.adapterRelationship != null) {
-                        IconButton(onClick = onPairAdapter, enabled = !ui.busy) {
+                    val actionEnabled = !ui.busy && !ui.relationshipStatus.attemptActive
+                    if (ui.adapterRelationship != null && ui.connection.phase != ConnectionPhase.RepairRequired) {
+                        IconButton(onClick = onPairAdapter, enabled = actionEnabled) {
                             Icon(Icons.Default.AddLink, "Pair another adapter")
                         }
                     }
-                    Button(onClick = onConnect, enabled = !ui.busy) {
-                        Text(if (ui.adapterRelationship == null) "Pair Adapter" else "Reconnect")
+                    if (ui.connection.phase == ConnectionPhase.RepairRequired) {
+                        Button(onClick = onRepairAdapter, enabled = actionEnabled) { Text("Repair pairing") }
+                    } else {
+                        Button(onClick = onConnect, enabled = actionEnabled) {
+                            Text(if (ui.adapterRelationship == null) "Pair Adapter" else "Reconnect")
+                        }
                     }
                 }
             }
@@ -289,9 +298,12 @@ private fun ConnectionStrip(
 }
 
 private fun phaseLabel(ui: CompanionUiState) = when (ui.connection.phase) {
+    ConnectionPhase.Associating -> "Pairing adapter…"
+    ConnectionPhase.Bonding -> "Securing Android pairing…"
     ConnectionPhase.Scanning -> "Finding PicoSwitch2…"
     ConnectionPhase.Connecting -> "Connecting…"
     ConnectionPhase.Reconnecting -> "Adapter disconnected"
+    ConnectionPhase.RepairRequired -> "Pairing repair needed"
     ConnectionPhase.Failed -> "Connection failed"
     else -> "Adapter offline"
 }

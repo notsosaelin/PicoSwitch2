@@ -14,6 +14,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.picoswitch.companion.BuildConfig
+import dev.picoswitch.companion.data.AndroidBondState
+import dev.picoswitch.companion.data.CompanionAssociationState
 import dev.picoswitch.companion.model.BondInfo
 import dev.picoswitch.companion.model.CapabilityState
 
@@ -101,7 +103,26 @@ fun SettingsScreen(
                     },
                 )
                 HorizontalDivider()
-                SubsectionLabel("Phones paired with the adapter")
+                LabelValueRow(
+                    "Android companion association",
+                    when (ui.relationshipStatus.companionAssociation) {
+                        CompanionAssociationState.Present -> "Present"
+                        CompanionAssociationState.Missing -> "Not present"
+                        CompanionAssociationState.Ambiguous -> "Multiple; repair needed"
+                        CompanionAssociationState.Unknown -> "Not checked"
+                    },
+                )
+                LabelValueRow(
+                    "Android Bluetooth pairing",
+                    when (ui.relationshipStatus.bond) {
+                        AndroidBondState.Bonded -> "Paired"
+                        AndroidBondState.Bonding -> "Pairing"
+                        AndroidBondState.None -> "Not paired"
+                        AndroidBondState.Unknown -> "Not checked"
+                    },
+                )
+                HorizontalDivider()
+                SubsectionLabel("Adapter Bluetooth LE bonds")
                 when {
                     ui.snapshot.capabilities.bonds == CapabilityState.Unsupported ->
                         InlineNotice("This firmware does not report stored pairings.")
@@ -114,7 +135,7 @@ fun SettingsScreen(
                             "The stored-pairing list could not be read completely, so none are shown.",
                             tone = ChipTone.Error,
                         )
-                    ui.snapshot.bonds.isEmpty() -> InlineNotice("No phones are paired with this adapter.")
+                    ui.snapshot.bonds.isEmpty() -> InlineNotice("No Bluetooth LE bonds are stored on this adapter.")
                     else -> ui.snapshot.bonds.forEach { bond ->
                         SettingsRow(
                             title = bond.name?.takeIf(String::isNotBlank) ?: bond.address,
@@ -218,7 +239,7 @@ fun SettingsScreen(
     if (forgetOpen) ConfirmDialog(
         onDismiss = { forgetOpen = false },
         title = "Forget this adapter?",
-        body = "The app stops reconnecting automatically. The adapter keeps its own pairing until it is removed above, and pairing again restores the relationship.",
+        body = "This clears the app's saved adapter and its PicoSwitch2 companion associations. Android Bluetooth pairing and the adapter's own LE bonds remain until you remove them explicitly.",
         confirmLabel = "Forget",
         destructive = true,
         onConfirm = { forgetOpen = false; viewModel.forgetAdapterRelationship() },
