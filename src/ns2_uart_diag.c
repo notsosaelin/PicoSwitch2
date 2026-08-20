@@ -2220,9 +2220,7 @@ static void handle_command(void) {
                  "\"encrypt_evt_n\":%lu,\"encrypt_evt_status\":\"0x%02X\",\"encrypt_enabled\":%u,"
                  "\"disconnect_n\":%lu,\"disconnect_reason\":\"0x%02X\","
                  "\"ltk_reads\":%lu,\"spi_ltk_valid\":%s,\"spi_ltk_phase\":%u,"
-                 "\"spi_norm_matches_derived\":%s,\"spi_raw_matches_derived\":%s,"
-                 "\"spi_ltk_raw\":\"%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X\","
-                 "\"spi_ltk_normalized\":\"%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X%02X\"}",
+                 "\"spi_norm_matches_derived\":%s,\"spi_raw_matches_derived\":%s}",
                  d.powered_on ? "true" : "false", d.state,
                  d.scan_active ? "true" : "false", d.connected_ble_count,
                  d.has_last_connected ? "true" : "false",
@@ -2270,23 +2268,7 @@ static void handle_command(void) {
                  (unsigned long)d.pairing_ltk_reads,
                  d.pairing_ltk_valid ? "true" : "false", d.pairing_ltk_phase,
                  d.pairing_ltk_matches_derived ? "true" : "false",
-                 d.pairing_ltk_raw_matches_derived ? "true" : "false",
-                 d.pairing_ltk_raw[0], d.pairing_ltk_raw[1],
-                 d.pairing_ltk_raw[2], d.pairing_ltk_raw[3],
-                 d.pairing_ltk_raw[4], d.pairing_ltk_raw[5],
-                 d.pairing_ltk_raw[6], d.pairing_ltk_raw[7],
-                 d.pairing_ltk_raw[8], d.pairing_ltk_raw[9],
-                 d.pairing_ltk_raw[10], d.pairing_ltk_raw[11],
-                 d.pairing_ltk_raw[12], d.pairing_ltk_raw[13],
-                 d.pairing_ltk_raw[14], d.pairing_ltk_raw[15],
-                 d.pairing_ltk_normalized[0], d.pairing_ltk_normalized[1],
-                 d.pairing_ltk_normalized[2], d.pairing_ltk_normalized[3],
-                 d.pairing_ltk_normalized[4], d.pairing_ltk_normalized[5],
-                 d.pairing_ltk_normalized[6], d.pairing_ltk_normalized[7],
-                 d.pairing_ltk_normalized[8], d.pairing_ltk_normalized[9],
-                 d.pairing_ltk_normalized[10], d.pairing_ltk_normalized[11],
-                 d.pairing_ltk_normalized[12], d.pairing_ltk_normalized[13],
-                 d.pairing_ltk_normalized[14], d.pairing_ltk_normalized[15]);
+                 d.pairing_ltk_raw_matches_derived ? "true" : "false");
         queue_text(trace_format_response);
     } else if (strcmp(rx_line, "btfresh") == 0) {
         btstack_host_force_switch2_fresh_pairing();

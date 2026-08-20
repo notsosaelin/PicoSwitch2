@@ -5831,10 +5831,9 @@ static hci_con_handle_t sw2_init_handle = 0;
 // table. Live reads confirm the authoritative 16 bytes at 0x1FA01A after
 // pairing. BTstack's LE database uses
 // the opposite (human/crypto) byte order and reverses it again when formatting
-// that HCI command, so `normalized` below is always reverse(`raw`). Keeping
-// both forms and their comparison results visible over UART makes an endian or
-// key-derivation mistake diagnosable without perturbing the proven input/gyro
-// report path.
+// that HCI command, so `normalized` below is always reverse(`raw`). The live
+// bytes remain private to this translation unit. Ordinary diagnostics expose
+// only validity and comparison results, never either key representation.
 static void switch2_record_pairing_ltk(hci_con_handle_t con_handle,
                                        const uint8_t raw_ltk[16], uint8_t phase)
 {
@@ -9571,10 +9570,6 @@ void btstack_host_get_reconnect_diag(btstack_host_reconnect_diag_t *out)
     out->pairing_ltk_matches_derived = sw2_pairing_ltk_matches_derived;
     out->pairing_ltk_raw_matches_derived = sw2_pairing_ltk_raw_matches_derived;
     gap_local_bd_addr(out->local_addr);
-    memcpy(out->pairing_ltk_raw, sw2_pairing_ltk_raw,
-           sizeof(out->pairing_ltk_raw));
-    memcpy(out->pairing_ltk_normalized, sw2_pairing_ltk_normalized,
-           sizeof(out->pairing_ltk_normalized));
     memcpy(out->last_connected_addr, hid_state.last_connected_addr,
            sizeof(out->last_connected_addr));
     strncpy(out->last_connected_name, hid_state.last_connected_name,

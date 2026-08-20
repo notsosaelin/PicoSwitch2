@@ -66,6 +66,15 @@ foreach ($t in $tests) {
     if ($LASTEXITCODE -ne 0) { $fail++; $failed += "$($t.n) (run)" } else { $pass++ }
 }
 
+Write-Host "== test_bluetooth_secret_diagnostics ==" -ForegroundColor Cyan
+python tools/test_bluetooth_secret_diagnostics.py
+if ($LASTEXITCODE -ne 0) {
+    $fail++
+    $failed += 'test_bluetooth_secret_diagnostics (run)'
+} else {
+    $pass++
+}
+
 Write-Host ""
 Write-Host "in-band management suite: $pass passed, $fail failed" -ForegroundColor ($fail ? 'Red' : 'Green')
 if ($fail) { $failed | ForEach-Object { Write-Host "  FAILED: $_" -ForegroundColor Red }; exit 1 }
