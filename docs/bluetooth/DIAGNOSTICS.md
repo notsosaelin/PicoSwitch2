@@ -42,7 +42,7 @@ Relevant JSON groups include:
 | `wipe_completions` | synchronous trust-store wipe sequences completed; disconnect events may follow |
 | `disc.*` | aggregate controller/HCI disconnects, state losses and last HCI reason |
 | `owner_led.reason`, `owner_led.on` | selected owner-LED policy reason and current output |
-| `owner_led.last_transition_ms` | wall-clock time of the last output transition |
+| `owner_led.last_transition_ms` | wall-clock time of the most recent actual LED on/off edge; zero until the initially-off output first changes |
 | `owner_led.timer_max_gap_ms` | largest observed gap between owner-LED timer service calls |
 
 Counters are monotonic for the boot and may count more than one defensive rejection in a single
@@ -53,6 +53,11 @@ wipe acknowledgement, pairing, controller ready, idle. “Connected” is driven
 controller count, never by a raw ACL/LE slot. Every cadence uses elapsed milliseconds, so callback
 frequency cannot speed it up. Idle is one 90 ms pulse per 10 seconds; a solid LED means a controller
 is protocol-ready unless a higher-priority state is active.
+
+The reason/pattern epoch is internal and separate from `last_transition_ms`; changing reason without
+changing electrical output does not advance the diagnostic timestamp. Packet-rate Bluetooth and
+Wiimote transport logging is diagnostic-gated or bounded; production investigation should prefer
+the pull snapshots and counters above.
 
 ## Distinguishing persistence from automatic re-pairing
 

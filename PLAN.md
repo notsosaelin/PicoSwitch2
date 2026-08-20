@@ -45,12 +45,16 @@ motion, rumble, battery, descriptor, or bridge behavior without evidence of a co
 
 # Current Development Priority
 
-## Bluetooth Trust Lifecycle Hardware Closure
+## Bluetooth Trust Lifecycle — Software Closed / Frozen
 
 The 2026-08-20 source pass corrected fresh-pair admission, sparse-slot deletion, public BTstack
-deletion side effects, project-owned Switch 2 key cleanup, and the new-UF2 persistence boundary.
-Host tests and both production board builds are green. The remaining accepted work is the single
-controlled physical matrix in [`docs/bluetooth/VALIDATION.md`](docs/bluetooth/VALIDATION.md):
+deletion side effects, project-owned Switch 2 key cleanup, the new-UF2 persistence boundary, complete
+HCI-owner wipe teardown, one-shot install-reset bootstrap, wake-timer cancellation, per-attempt
+Classic SSP completion, and truthful owner-LED transition diagnostics. The strict Xbox Elite Series
+2 corrected-wipe retest passed. Bluetooth is frozen after this software closeout.
+
+The following are opportunistic physical validation items in
+[`docs/bluetooth/VALIDATION.md`](docs/bluetooth/VALIDATION.md), not an active architecture pass:
 
 - [ ] Wipe with the peer powered on, then reboot and power-cycle the peer.
 - [ ] Wipe with the peer powered off; inspect clean state before it returns.
@@ -61,7 +65,8 @@ controlled physical matrix in [`docs/bluetooth/VALIDATION.md`](docs/bluetooth/VA
 
 Bond snapshots MUST be recorded before the remote returns so persistence cannot be confused with
 automatic replacement pairing. Do not add speculative retries or key tuning while this matrix is
-pending.
+pending. Treat future Bluetooth reports as targeted bugs/regressions unless new evidence justifies
+reopening the subsystem.
 
 ## Bluetooth Keyboard / Keyboard + Mouse Input — Complete
 

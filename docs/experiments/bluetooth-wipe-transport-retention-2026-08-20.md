@@ -1,7 +1,7 @@
 # Bluetooth wipe transport retention — 2026-08-20
 
-Status: **Confirmed physical failure** on the pre-correction build; transport-owner correction is
-source-tested and awaiting the same physical retest.
+Status: **Confirmed physical failure** on the pre-correction build; the transport-owner correction
+passed the strict physical Xbox Elite Series 2 retest on `c6d53e7`.
 
 ## Question
 
@@ -14,8 +14,8 @@ The maintainer tested the newest supplied build after the trust/admission harden
 triple-tap wipe, the controller still presented as connected to the adapter, but controller input
 was no longer forwarded.
 
-The exact controller family and UF2 hash were not captured with this report. Do not infer a
-transport family or claim a byte-level trace from it.
+The controller was later identified as an Xbox Elite Series 2. A byte-level trace and UF2 artifact
+hash were not retained, so do not infer more detailed transport behavior from this observation.
 
 ## Result
 
@@ -46,11 +46,14 @@ it is no longer the only transport boundary.
 ## Validation state
 
 - physical failure on the earlier build: **Confirmed**;
-- exact controller family and transport: **Unknown**;
+- controller family: **Xbox Elite Series 2**;
+- byte-level transport trace and earlier UF2 hash: **Not retained**;
 - source ordering and regression guard: **Source-tested**;
 - production board builds: recorded in [`../bluetooth/VALIDATION.md`](../bluetooth/VALIDATION.md);
-- corrected physical result: **Pending**.
+- corrected `c6d53e7` physical result: **Confirmed pass** for the strict Elite 2 discriminator.
 
 The retest discriminator is strict: after triple tap, the controller must enter its disconnected
 state and remain unable to establish a link until an explicit pairing window is opened. Input
-remaining neutral is necessary but not sufficient.
+remaining neutral is necessary but not sufficient. The `c6d53e7` retest met this discriminator.
+This single-family result confirms the corrected HCI-owner boundary without claiming the broader
+controller-family wipe/flash matrix is complete.

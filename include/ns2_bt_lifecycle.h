@@ -63,6 +63,19 @@ ns2_bt_custom_admission_t ns2_bt_custom_admission_decide(
 bool ns2_bt_boot_pairing_locked(bool persisted_lockout,
                                 bool install_reset_performed);
 
+// config_install_reset_performed() is a boot fact, not an HCI-state fact.
+// Consume it exactly once so a later HCI restart cannot re-lock pairing after
+// the user has explicitly reopened the pairing window.
+bool ns2_bt_install_reset_bootstrap_take(bool install_reset_performed,
+                                         bool *consumed);
+
+// An SSP prompt belongs to the Classic connection attempt that was admitted.
+// Window expiry may close admission for new candidates, but it must not revoke
+// an already-admitted matching attempt. A wipe lockout still wins immediately.
+bool ns2_bt_classic_ssp_response_admitted(bool pairing_lockout,
+                                          bool pending_identity_matches,
+                                          bool fresh_pairing_admitted);
+
 // A management removal names an LE address type. The public address-only
 // helper is intentionally cross-transport, but a typed removal must not match
 // a same-address Classic relationship.

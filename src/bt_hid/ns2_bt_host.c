@@ -74,6 +74,7 @@ static bool owner_led_initialized;
 static ns2_owner_led_reason_t owner_led_reason;
 static uint16_t owner_led_detail;
 static uint32_t owner_led_mode_started_ms;
+static ns2_owner_led_output_state_t owner_led_output_state;
 static uint32_t owner_led_last_timer_ms;
 static uint32_t owner_led_timer_max_gap_ms;
 
@@ -427,9 +428,10 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
     bool led = ns2_owner_led_render(
         owner_led_reason, now - owner_led_mode_started_ms, flash_count,
         gc_stage, gc_bad_report_id);
+    ns2_owner_led_track_output(&owner_led_output_state, led, now);
     cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, led);
     ns2_owner_led_diag_publish(owner_led_reason, led,
-                               owner_led_mode_started_ms,
+                               owner_led_output_state.last_transition_ms,
                                owner_led_timer_max_gap_ms);
 
     btstack_run_loop_set_timer(ts, CONTROL_TICK_MS);

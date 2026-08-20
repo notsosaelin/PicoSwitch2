@@ -13,7 +13,7 @@ checks that authority at the protocol boundary that can persist or activate the 
 
 | Path | Fresh admission | Authentication and encryption | Durable trust | MITM / key size |
 |---|---|---|---|---|
-| Classic SSP HID | Explicit window; SSP auto-accept and discoverability are window-scoped | Dedicated bonding with NoInputNoOutput; applicable connection paths request `LEVEL_2` | A candidate link key is held in RAM and committed only after matching successful authentication | Just Works, no MITM. Classic link keys are 16 bytes; negotiated encryption is not currently exposed in `btstate` |
+| Classic SSP HID | Explicit window latches one admitted attempt; discoverability closes with the window, while that matching in-flight SSP prompt may finish | Dedicated bonding with NoInputNoOutput; global auto-accept is disabled and application responses require the attempt latch; applicable connection paths request `LEVEL_2` | A candidate link key is held in RAM and committed only after matching successful authentication | Just Works, no MITM. Classic link keys are 16 bytes; negotiated encryption is not currently exposed in `btstate` |
 | Classic legacy PIN / direct L2CAP | Explicit window for a new key; stored key permits reconnect | PIN handling and selected direct-L2CAP paths request `LEVEL_2`; HID service registration remains `LEVEL_0` for DS3 compatibility | Same deferred link-key commit rule as SSP | Legacy device-specific PIN, not a general MITM guarantee. Classic link key is 16 bytes |
 | Standard LE HOGP | Per-connection fresh latch for Just Works, or existing SM identity for reconnect | Bonding and LE Secure Connections requested; NoInputNoOutput; stale re-encryption cannot silently become fresh pairing | BTstack LE device DB | No MITM. Negotiated key-size range is 7-16 bytes. Secure Connections is preferred, not strict-only |
 | Switch 2 custom ATT, fresh | Explicit window or the bounded UART-only `btfresh` laboratory action | Initial custom exchange may be unencrypted; the public protocol derives the 16-byte LTK before readiness | Normalized LTK in BTstack LE DB plus `JPLC` reconnect metadata | No independent MITM proof. Final ready transition requires the fresh latch |
@@ -63,14 +63,20 @@ bonds and `JPLC` intact. This prevents stale raw state from impersonating a conn
 after radio recovery without turning a controller reset into a trust wipe.
 
 Global bondability remains enabled because the stack needs to support both Classic and LE bonding.
-It is a mechanism, not the policy authority. Window-scoped SSP acceptance, LE Just Works checks,
+It is a mechanism, not the policy authority. Attempt-scoped SSP responses, LE Just Works checks,
 custom final-admission checks, key-transition interposition and the post-wipe lock enforce policy.
+
+The install-reset fact is consumed once on the first HCI working transition of that Pico boot. It
+can create the initial empty-store lock before discovery, but a later HCI restart cannot replay the
+sticky fact and undo a user's explicit pairing unlock.
 
 Wipe is stronger than input neutralization or project-slot cleanup. After closing admission and
 radio discovery/page scan, it terminates the pinned stack's complete HCI connection inventory,
 including raw links that have not reached a project HID slot. This boundary was added after
 physical testing showed that slot-only teardown could stop input while a controller still appeared
-connected.
+connected. The strict Xbox Elite Series 2 retest of `c6d53e7` confirmed that the corrected wipe
+forces the peer disconnected and prevents another controller session until pairing is reopened;
+that result does not generalize to every controller family.
 
 ## Diagnostic boundary
 

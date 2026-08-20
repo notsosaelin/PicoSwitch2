@@ -63,6 +63,51 @@ static void test_boot_lockout(void)
     assert(ns2_bt_boot_pairing_locked(true, true));
 }
 
+static void test_install_reset_bootstrap_is_one_shot(void)
+{
+    bool consumed = false;
+
+    // A normal boot consumes the check without requesting a reset lockout.
+    assert(!ns2_bt_install_reset_bootstrap_take(false, &consumed));
+    assert(consumed);
+    assert(!ns2_bt_install_reset_bootstrap_take(false, &consumed));
+
+    // An install reset applies on the first HCI working transition only.
+    consumed = false;
+    assert(ns2_bt_install_reset_bootstrap_take(true, &consumed));
+    assert(consumed);
+    assert(!ns2_bt_install_reset_bootstrap_take(true, &consumed));
+
+    // Once the user unlocks pairing, a later HCI restart must honor the
+    // current persisted state instead of replaying the sticky install fact.
+    consumed = false;
+    bool pairing_locked = ns2_bt_boot_pairing_locked(
+        false, ns2_bt_install_reset_bootstrap_take(true, &consumed));
+    assert(pairing_locked);
+    pairing_locked = false;
+    pairing_locked = ns2_bt_boot_pairing_locked(
+        pairing_locked,
+        ns2_bt_install_reset_bootstrap_take(true, &consumed));
+    assert(!pairing_locked);
+
+    assert(!ns2_bt_install_reset_bootstrap_take(true, NULL));
+}
+
+static void test_classic_ssp_attempt_admission(void)
+{
+    // The per-attempt latch, not the current global window, authorizes the SSP
+    // response. This is the window-expired-but-in-flight success case.
+    assert(ns2_bt_classic_ssp_response_admitted(false, true, true));
+
+    // New/stale identities and trusted reconnects without a fresh attempt do
+    // not receive an SSP response outside the window.
+    assert(!ns2_bt_classic_ssp_response_admitted(false, false, true));
+    assert(!ns2_bt_classic_ssp_response_admitted(false, true, false));
+
+    // Post-wipe lockout outranks a previously admitted attempt.
+    assert(!ns2_bt_classic_ssp_response_admitted(true, true, true));
+}
+
 static void test_classic_key_replacement(void)
 {
     // Fresh pairing admits a new key, but notification alone is never enough
@@ -147,6 +192,8 @@ int main(void)
 {
     test_pairing_admission();
     test_boot_lockout();
+    test_install_reset_bootstrap_is_one_shot();
+    test_classic_ssp_attempt_admission();
     test_classic_key_replacement();
     test_switch2_custom_admission();
     test_typed_forget_scope();

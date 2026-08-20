@@ -770,16 +770,16 @@ static struct {
 // like companion-only state; it is not.
 static bool hid_pairing_window_open;
 static bool pairing_lockout;
+static bool install_reset_bootstrap_consumed;
 
 void btstack_host_set_pairing_window_open(bool open)
 {
     hid_pairing_window_open = open;
 #if !defined(BTSTACK_USE_ESP32) && !defined(BTSTACK_USE_NRF) && !defined(CONFIG_USB2BLE)
     if (hid_state.powered_on) {
-        // Bonded controllers remain connectable outside the window, but fresh
-        // SSP confirmation and discoverability exist only while the user's
-        // explicit pairing authority is open.
-        gap_ssp_set_auto_accept(open && !pairing_lockout);
+        // Bonded controllers remain connectable outside the window. New
+        // candidates require this explicit discoverability window; SSP itself
+        // is answered per admitted attempt in packet_handler().
         gap_discoverable_control(open && !pairing_lockout);
         gap_connectable_control(!pairing_lockout);
     }
@@ -2090,6 +2090,9 @@ bool btstack_host_start_wake_advertisement(
         return false;
     }
 
+    // A completed sequence has no registered timer, but remove defensively
+    // before reusing the embedded timer source.
+    btstack_run_loop_remove_timer(&wake_adv.timer);
     memset(&wake_adv, 0, sizeof(wake_adv));
     wake_adv.active = true;  // gates every scan restart before scans are paused
     wake_adv.phase = WAKE_ADV_PHASE_PREPARE;
@@ -2530,7 +2533,6 @@ void btstack_host_clear_pairing_lockout(void)
     printf("[BTSTACK_HOST] Pairing admission re-enabled by explicit pairing window\n");
 
 #if !defined(BTSTACK_USE_ESP32) && !defined(BTSTACK_USE_NRF) && !defined(CONFIG_USB2BLE)
-    gap_ssp_set_auto_accept(hid_pairing_window_open ? 1 : 0);
     gap_discoverable_control(hid_pairing_window_open ? 1 : 0);
     gap_connectable_control(1);
 #endif
@@ -3142,6 +3144,10 @@ static void btstack_host_clear_transient_radio_state(void)
     config_ble.notifications_enabled = false;
     config_ble.tx_requested = false;
     config_wireless_bridge_reset_session();
+    // A transient HCI loss can arrive between any wake phases. Detach the
+    // embedded timer before clearing its callback/list linkage so no stale
+    // callback can run against reinitialized state after HCI recovery.
+    btstack_run_loop_remove_timer(&wake_adv.timer);
     memset(&wake_adv, 0, sizeof(wake_adv));
 }
 
@@ -3219,7 +3225,10 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 hid_state.scan_active = false;
                 classic_state.inquiry_active = false;
                 btstack_host_restore_pairing_lockout();
-                const bool install_reset = config_install_reset_performed();
+                const bool install_reset =
+                    ns2_bt_install_reset_bootstrap_take(
+                        config_install_reset_performed(),
+                        &install_reset_bootstrap_consumed);
                 pairing_lockout = ns2_bt_boot_pairing_locked(
                     pairing_lockout, install_reset);
                 if (install_reset) {
@@ -3283,11 +3292,11 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
 
                 // Request bonding during SSP (required for BTstack to store link keys!)
                 gap_ssp_set_authentication_requirement(SSP_IO_AUTHREQ_MITM_PROTECTION_NOT_REQUIRED_DEDICATED_BONDING);
-                // SSP UI confirmation is auto-accepted only inside the
-                // explicit pairing window. Link-key notification and auth
-                // completion independently enforce the trust transition.
-                gap_ssp_set_auto_accept(
-                    hid_pairing_window_open && !pairing_lockout);
+                // Keep BTstack's global SSP auto-accept disabled. The app
+                // answers each prompt from the admission latch captured for
+                // that Classic attempt, so window expiry cannot revoke an
+                // in-flight candidate or authorize a later one.
+                gap_ssp_set_auto_accept(0);
 
                 // Make host discoverable and connectable for incoming connections
                 // Required for Sony controllers (DS3, DS4, DS5) which initiate connections
@@ -4808,6 +4817,44 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 // No BD_ADDR PIN needed - reject (SSP devices shouldn't ask for PIN)
                 printf("[BTSTACK_HOST] PIN request rejected (no BD_ADDR PIN profile)\n");
                 gap_pin_code_negative(pin_addr);
+            }
+            break;
+        }
+
+        case HCI_EVENT_USER_CONFIRMATION_REQUEST: {
+            bd_addr_t ssp_addr;
+            hci_event_user_confirmation_request_get_bd_addr(packet, ssp_addr);
+            bool pending_identity_matches = classic_state.pending_valid &&
+                bd_addr_cmp(ssp_addr, classic_state.pending_addr) == 0;
+            bool admitted = ns2_bt_classic_ssp_response_admitted(
+                pairing_lockout, pending_identity_matches,
+                classic_state.pending_fresh_pairing_admitted);
+            if (admitted) {
+                printf("[BTSTACK_HOST] Accepting SSP confirmation for admitted Classic attempt\n");
+                gap_ssp_confirmation_response(ssp_addr);
+            } else {
+                btstack_host_record_fresh_admission(false);
+                printf("[BTSTACK_HOST] Rejecting unadmitted Classic SSP confirmation\n");
+                gap_ssp_confirmation_negative(ssp_addr);
+            }
+            break;
+        }
+
+        case HCI_EVENT_USER_PASSKEY_REQUEST: {
+            bd_addr_t ssp_addr;
+            hci_event_user_passkey_request_get_bd_addr(packet, ssp_addr);
+            bool pending_identity_matches = classic_state.pending_valid &&
+                bd_addr_cmp(ssp_addr, classic_state.pending_addr) == 0;
+            bool admitted = ns2_bt_classic_ssp_response_admitted(
+                pairing_lockout, pending_identity_matches,
+                classic_state.pending_fresh_pairing_admitted);
+            if (admitted) {
+                printf("[BTSTACK_HOST] Answering SSP passkey for admitted Classic attempt\n");
+                gap_ssp_passkey_response(ssp_addr, 0u);
+            } else {
+                btstack_host_record_fresh_admission(false);
+                printf("[BTSTACK_HOST] Rejecting unadmitted Classic SSP passkey request\n");
+                gap_ssp_passkey_negative(ssp_addr);
             }
             break;
         }
@@ -10540,8 +10587,10 @@ static void wiimote_l2cap_packet_handler(uint8_t packet_type, uint16_t channel, 
                     bt_on_hid_report(wiimote_conn.conn_index, packet, size);
                 }
             } else {
+#ifdef NS2_DIAG
                 printf("[BTSTACK_HOST] Wiimote data dropped: active=%d state=%d\n",
                        wiimote_conn.active, wiimote_conn.state);
+#endif
             }
             break;
         }
@@ -10762,15 +10811,22 @@ bool btstack_wiimote_can_send(uint8_t conn_index)
 // Send raw L2CAP data to Wiimote on INTERRUPT channel
 bool btstack_wiimote_send_raw(uint8_t conn_index, const uint8_t* data, uint16_t len)
 {
+    UNUSED(conn_index);
+#ifdef NS2_DIAG
     printf("[BTSTACK_HOST] wiimote_send_raw: active=%d using_hid=%d hid_ready=%d int_cid=0x%04X\n",
            wiimote_conn.active, wiimote_conn.using_hid_host, wiimote_conn.hid_host_ready, wiimote_conn.interrupt_cid);
+#endif
 
     if (!wiimote_conn.active) {
+#ifdef NS2_DIAG
         printf("[BTSTACK_HOST] wiimote_send_raw: no active connection\n");
+#endif
         return false;
     }
     if (len == 0 || len > 80) {
+#ifdef NS2_DIAG
         printf("[BTSTACK_HOST] wiimote_send_raw: bad len=%d\n", len);
+#endif
         return false;
     }
 
@@ -10778,16 +10834,22 @@ bool btstack_wiimote_send_raw(uint8_t conn_index, const uint8_t* data, uint16_t 
     // This bypasses hid_host_send_report which can fail with 0x0C if HID Host state isn't ready
     if (wiimote_conn.interrupt_cid != 0) {
         if (!l2cap_can_send_packet_now(wiimote_conn.interrupt_cid)) {
+#ifdef NS2_DIAG
             printf("[BTSTACK_HOST] wiimote_send_raw: L2CAP not ready to send\n");
+#endif
             return false;
         }
 
         uint8_t status = l2cap_send(wiimote_conn.interrupt_cid, data, len);
         if (status != ERROR_CODE_SUCCESS) {
+#ifdef NS2_DIAG
             printf("[BTSTACK_HOST] wiimote_send_raw: l2cap_send failed status=0x%02X\n", status);
+#endif
         } else {
+#ifdef NS2_DIAG
             printf("[BTSTACK_HOST] wiimote_send_raw: sent %d bytes on INTR cid=0x%04X (0x%02X 0x%02X...)\n",
                    len, wiimote_conn.interrupt_cid, data[0], len > 1 ? data[1] : 0);
+#endif
         }
         return status == ERROR_CODE_SUCCESS;
     }
@@ -10802,40 +10864,57 @@ bool btstack_wiimote_send_raw(uint8_t conn_index, const uint8_t* data, uint16_t 
         static uint8_t wiimote_hid_report_buf[80];
         if (payload_len > sizeof(wiimote_hid_report_buf)) return false;
         if (payload_len > 0) memcpy(wiimote_hid_report_buf, &data[2], payload_len);
+#ifdef NS2_DIAG
         printf("[BTSTACK_HOST] wiimote_send_raw via HID Host: cid=0x%04X report=0x%02X len=%d\n",
                wiimote_conn.hid_host_cid, report_id, payload_len);
+#endif
         uint8_t status = hid_host_send_report(wiimote_conn.hid_host_cid, report_id, wiimote_hid_report_buf, payload_len);
         if (status == ERROR_CODE_SUCCESS) {
+#ifdef NS2_DIAG
             printf("[BTSTACK_HOST] wiimote_send_raw: sent %d bytes via HID Host\n", len);
+#endif
         } else {
+#ifdef NS2_DIAG
             printf("[BTSTACK_HOST] wiimote_send_raw: HID Host send failed status=0x%02X\n", status);
+#endif
         }
         return status == ERROR_CODE_SUCCESS;
     }
 
+#ifdef NS2_DIAG
     printf("[BTSTACK_HOST] wiimote_send_raw: no interrupt CID and HID Host not ready\n");
+#endif
     return false;
 }
 
 // Send raw L2CAP data to Wiimote on CONTROL channel
 bool btstack_wiimote_send_control(uint8_t conn_index, const uint8_t* data, uint16_t len)
 {
+    UNUSED(conn_index);
+#ifdef NS2_DIAG
     printf("[BTSTACK_HOST] wiimote_send_control: idx=%d len=%d control_cid=0x%04X using_hid_host=%d\n",
            conn_index, len, wiimote_conn.control_cid, wiimote_conn.using_hid_host);
+#endif
 
     if (!wiimote_conn.active) {
+#ifdef NS2_DIAG
         printf("[BTSTACK_HOST] wiimote_send_control: no active connection\n");
+#endif
         return false;
     }
     if (len == 0 || len > 64) {
+#ifdef NS2_DIAG
         printf("[BTSTACK_HOST] wiimote_send_control: bad len=%d\n", len);
+#endif
         return false;
     }
 
     // Prefer direct L2CAP when we have the control CID (works even with HID Host)
     if (wiimote_conn.control_cid != 0) {
         if (!l2cap_can_send_packet_now(wiimote_conn.control_cid)) {
+#ifdef NS2_DIAG
             printf("[BTSTACK_HOST] wiimote_send_control: L2CAP not ready to send\n");
+#endif
             return false;
         }
 
@@ -10847,11 +10926,15 @@ bool btstack_wiimote_send_control(uint8_t conn_index, const uint8_t* data, uint1
             send_buf[0] = 0x52;  // SET_REPORT | OUTPUT
         }
 
+#ifdef NS2_DIAG
         printf("[BTSTACK_HOST] wiimote_send_control via L2CAP: cid=0x%04X len=%d hdr=0x%02X\n",
                wiimote_conn.control_cid, len, send_buf[0]);
+#endif
         uint8_t status = l2cap_send(wiimote_conn.control_cid, send_buf, len);
         if (status != ERROR_CODE_SUCCESS) {
+#ifdef NS2_DIAG
             printf("[BTSTACK_HOST] wiimote_send_control: l2cap_send failed status=0x%02X\n", status);
+#endif
         }
         return status == ERROR_CODE_SUCCESS;
     }
@@ -10869,12 +10952,16 @@ bool btstack_wiimote_send_control(uint8_t conn_index, const uint8_t* data, uint1
         uint8_t status = hid_host_send_set_report(wiimote_conn.hid_host_cid, HID_REPORT_TYPE_OUTPUT,
                                                    report_id, wiimote_hid_setreport_buf, payload_len);
         if (status == ERROR_CODE_SUCCESS) {
+#ifdef NS2_DIAG
             printf("[BTSTACK_HOST] wiimote_send_control: sent %d bytes via HID Host\n", len);
+#endif
         }
         return status == ERROR_CODE_SUCCESS;
     }
 
+#ifdef NS2_DIAG
     printf("[BTSTACK_HOST] wiimote_send_control: no control CID and HID Host not ready\n");
+#endif
     return false;
 }
 

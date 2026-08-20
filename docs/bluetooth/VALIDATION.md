@@ -1,7 +1,8 @@
 # Bluetooth validation and invariant traceability
 
-Status: the first physical wipe retest failed active-link teardown on 2026-08-20. The
-transport-owner correction passes software validation and remains pending physical retest.
+Status: the first physical Xbox Elite Series 2 wipe test confirmed active-link retention on
+2026-08-20. The `c6d53e7` transport-owner correction then passed the strict Elite 2 disconnected-
+state retest. Broader controller-family and flash-path coverage remains pending.
 
 ## Invariants
 
@@ -27,28 +28,34 @@ transport-owner correction passes software validation and remains pending physic
 | BT-INV-018 | Raw radio slots cannot assert controller-ready connection truth or the solid owner LED. |
 | BT-INV-019 | HCI state loss retires live source generations without deleting durable trust. |
 | BT-INV-020 | Wipe terminates every stack-owned HCI link, not only links represented by project controller slots. |
+| BT-INV-021 | Install-reset pairing bootstrap is applied once per Pico boot and is not replayed by a later HCI restart. |
+| BT-INV-022 | An admitted matching Classic SSP attempt may finish after window expiry; new or locked-out candidates cannot. |
+| BT-INV-023 | Wake timer registration is removed before wake state is cleared or reused. |
+| BT-INV-024 | Owner LED transition diagnostics report actual output edges, independently of reason timing. |
 
 ## Automated evidence
 
 | Gate | Result | Coverage |
 |---|---:|---|
-| `pwsh -File tools/run_mgmt_tests.ps1` | 22/22 passed | lifecycle policy, secret diagnostics, wipe transport boundary, owner LED, sparse lookup, reconnect policy, management, KB/M and adjacent seams |
+| `pwsh -File tools/run_mgmt_tests.ps1` | 23/23 passed | lifecycle policy, closeout wiring, secret diagnostics, wipe transport boundary, owner LED, sparse lookup, reconnect policy, management, KB/M and adjacent seams |
 | compiled `build/host-tests/test_*.exe` inventory | 76/76 passed | complete currently built host-test set |
 | `python tools/test_ns2_trace.py` | 5/5 passed | diagnostic trace parser regression |
 | `build.ps1 pico_w,pico2_w` | both passed | production RP2040 and RP2350 firmware |
 | install-reset marker verifier | both passed | marker present below `SIZE-6S` reserved persistence start |
 | `git diff --check` | passed for checkpoint | whitespace integrity |
 
-`test_ns2_bt_lifecycle` pins BT-INV-001/002/005/006/016/017 at the pure-policy layer, including a
-bond in slot 15 with only two active entries. `test_ns2_owner_led` pins BT-INV-018 and elapsed-time
-cadences. `test_bluetooth_secret_diagnostics.py` guards BT-INV-014 at the source surface, and
-`test_bluetooth_wipe_transport.py` pins the BT-INV-020 stack-owner ordering. Board builds prove the
-event wiring compiles against the pinned BTstack APIs. They do not prove RF timing or controller
-behavior.
+`test_ns2_bt_lifecycle` pins BT-INV-001/002/005/006/016/017/021/022 at the pure-policy layer,
+including a bond in slot 15 with only two active entries. `test_ns2_owner_led` pins BT-INV-018/024
+and every accepted elapsed-time cadence. `test_bluetooth_secret_diagnostics.py` guards BT-INV-014
+at the source surface, `test_bluetooth_wipe_transport.py` pins the BT-INV-020 stack-owner ordering,
+and `test_bluetooth_closeout_wiring.py` pins BT-INV-021/022/023 against the production event wiring.
+Board builds prove the event wiring compiles against the pinned BTstack APIs. They do not prove RF
+timing or controller behavior.
 
-The first post-hardening physical wipe attempt failed BT-INV-020: input stopped, but the controller
-still presented as connected to the adapter. The slot-only disconnect model is preserved as a
-refuted hypothesis, and the HCI-owner sweep is pending physical retest. See
+The first post-hardening physical Elite 2 wipe attempt failed BT-INV-020: input stopped, but the
+controller still presented as connected to the adapter. The slot-only disconnect model remains a
+refuted hypothesis. The strict `c6d53e7` retest confirmed the HCI-owner sweep forces the Elite 2
+disconnected and prevents another link until explicit pairing is reopened. See
 [`../experiments/bluetooth-wipe-transport-retention-2026-08-20.md`](../experiments/bluetooth-wipe-transport-retention-2026-08-20.md).
 
 ## Required physical matrix
@@ -117,23 +124,23 @@ Switch 2 Pro Controller to protect HOME reconnect.
   observed.
 - **Unknown** means the matrix has not answered it.
 
-The old “post-wipe automatic readmission confirmed” result remains historical evidence for its
-workflow, but the later owner observation reopened the broader claim. Do not restore `Confirmed`
-until the powered-on, powered-off, reboot and UF2 cases above pass with pre-admission bond snapshots.
+The strict Elite 2 result confirms BT-INV-020 for the corrected build. It does not confirm every
+controller family, powered-off/reboot path, or release-UF2 install-reset case. Preserve those as
+explicitly narrower evidence gaps rather than reopening the corrected architecture by default.
 
 ## Risk register
 
 | Risk | Severity | Current mitigation | Residual evidence gap |
 |---|---|---|---|
-| Wiped peer silently re-pairs | Critical | per-path admission latches, lockout, policy test | physical matrix |
+| Wiped peer silently re-pairs | Critical | per-path admission latches, lockout, policy test; strict Elite 2 retest passed | remaining family/flash matrix |
 | Sparse LE entry survives forget | High | capacity traversal and test | physical sparse fixture optional |
 | Resolving list retains deleted peer | High | public GAP deletion | controller-level observation |
 | Valid bond deleted on ordinary RF loss | High | narrow stale-security classification | repeated hardware reconnect |
 | Management teardown affects controller | High | separate live tables | abrupt-loss hardware test |
-| Wake leaves discovery incoherent | High | bounded save/restore policy | combined hardware test |
+| Wake leaves discovery incoherent | High | bounded save/restore policy plus timer cancellation before reset | combined hardware test |
 | KB/M lifecycle regresses | High | existing host suite | targeted role-loss regression |
 | Flash semantics misunderstood | High | exact six-sector contract and procedure | release-UF2 hardware test |
 | Classic replacement trust commits before authentication | Critical | deferred candidate plus matching auth-complete commit | Classic family hardware matrix |
 | RPA accidentally becomes fresh trust | Critical | reconnect-only RPA admission and final protocol gate | privacy-enabled LE hardware matrix |
 | Raw slot presents false connected LED | Medium | ready-count policy and deterministic timer test | passive/runtime observation |
-| Wipe stops input but leaves transport connected | Critical | lock/page shutdown plus stack-owned HCI disconnect-all sweep | corrected-build physical retest |
+| Wipe stops input but leaves transport connected | Critical | lock/page shutdown plus stack-owned HCI disconnect-all sweep | Elite 2 corrected retest passed; other families pending |
