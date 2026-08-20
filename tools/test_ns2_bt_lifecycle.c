@@ -63,6 +63,16 @@ static void test_boot_lockout(void)
     assert(ns2_bt_boot_pairing_locked(true, true));
 }
 
+static void test_typed_forget_scope(void)
+{
+    enum { LE_PUBLIC = 0, CLASSIC_ACL = 0xfd };
+    assert(ns2_bt_forget_matches_address_type(false, LE_PUBLIC,
+                                               CLASSIC_ACL));
+    assert(ns2_bt_forget_matches_address_type(true, LE_PUBLIC, LE_PUBLIC));
+    assert(!ns2_bt_forget_matches_address_type(true, LE_PUBLIC,
+                                                CLASSIC_ACL));
+}
+
 static void test_sparse_slot_lookup(void)
 {
     fixture_slot_t slots[SLOT_COUNT] = {0};
@@ -88,6 +98,7 @@ int main(void)
 {
     test_pairing_admission();
     test_boot_lockout();
+    test_typed_forget_scope();
     test_sparse_slot_lookup();
     puts("Bluetooth lifecycle policy tests passed");
     return 0;
