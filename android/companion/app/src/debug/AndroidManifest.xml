@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-variant additions. Not present in the release variant at all.
+
+  The layout lab renders every screen against synthetic adapter state so the
+  layouts can be inspected at each window shape without hardware.
+
+  It is exported because `adb shell am start` cannot launch it otherwise, and it
+  carries no intent filter so it never appears as a second launcher icon. That
+  is acceptable here because the activity only displays fabricated state: its
+  callbacks are no-ops, it never connects to an adapter, and it can neither read
+  nor mutate anything a caller could not already reach through the normal app.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name="dev.picoswitch.companion.lab.LayoutLabActivity"
+            android:exported="true"
+            android:label="PicoSwitch2 Layout Lab" />
+    </application>
+</manifest>

@@ -26,6 +26,26 @@ The AYN Thor completed the original app-led HID path through PicoSwitch2 into a 
 2026-08-13; the simplified relationship flow and corrected Nintendo face-label mapping await a
 focused replay.
 
+The application is organized around five destinations — **Adapter**, **Keyboard**, **Amiibo**,
+**Gamepad**, **Settings** — with **Diagnostics** and **Amiibo settings** pushed over them rather
+than holding permanent navigation space. Layout branches on measured content width, never on
+orientation or device names. The full information architecture, shared Compose primitives,
+responsive rules, and the debug-only layout lab used to inspect them are documented in
+[`android/companion/README.md`](../android/companion/README.md).
+
+**Keyboard & Mouse** is a first-class management area covering the firmware's complete `kbm`
+surface: device and role status, input mode, both mapping profiles with a per-input editor, mouse
+button mapping, and mouse translation tuning. Those settings apply to adapter RAM immediately and
+are written to flash only by an explicit Save, and the UI represents exactly that rather than
+implying persistence. Every accepted range is taken from the adapter's own `kbm mouse` reply, so
+the client never carries a duplicate copy of a firmware limit.
+
+Two requested management features are **blocked by missing firmware capability**, not by client
+work. Controller remapping would need a `remap` command family with persisted overrides —
+`NS2_BASE_BUTTON_MAP` is a compile-time table today. Adapter renaming would need a persisted name
+plus dynamic advertising, EIR and ATT Device Name construction — the name is currently a
+compile-time constant whose length is locked by a `_Static_assert`.
+
 The companion's appearance is intentionally client-local. It supports System, Light, Dark, and
 true OLED-black themes, with a small set of labeled Joy-Con-inspired accent palettes. The verified
 Joy-Con 2 references are the left `#9BE1E6` and right `#FF8C5F` accents documented in

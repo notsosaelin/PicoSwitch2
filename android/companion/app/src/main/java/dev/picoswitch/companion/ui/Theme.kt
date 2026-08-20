@@ -20,6 +20,14 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.edit
 import androidx.core.view.WindowCompat
 
+/**
+ * The one place a spacing, size or breakpoint number is decided.
+ *
+ * A literal dp in a screen is treated as suspicious: the earlier layouts each
+ * carried their own card padding and row heights, so cards on adjacent screens
+ * did not line up and a correction had to be made once per screen. Anything
+ * reused by more than one composable belongs here.
+ */
 object LayoutTokens {
     val Space1 = 4.dp
     val Space2 = 8.dp
@@ -29,13 +37,67 @@ object LayoutTokens {
     val Space6 = 32.dp
     val CardRadius = 20.dp
     val ControlRadius = 14.dp
+    val CardPadding = 16.dp
+
+    /** Material's minimum comfortable touch target; every tappable row honours it. */
     val TouchHeight = 48.dp
+    /** Read-only rows carry no touch target, so they may be tighter than [TouchHeight]. */
+    val CompactRowHeight = 32.dp
+    val IconSize = 20.dp
+    val LabelWidth = 96.dp
+    val DisabledAlpha = 0.38f
+
     val ContentMaxWidth = 1240.dp
     val DetailWidth = 360.dp
+    val EmptyStateWidth = 340.dp
+    /**
+     * Amiibo grid cell sizing. The minimum keeps the artwork recognisable on a
+     * narrow phone; the adaptive column count then uses whatever extra width a
+     * handheld or tablet has instead of stretching a fixed number of columns.
+     */
+    val AmiiboCellMinWidth = 132.dp
+    val AmiiboArtHeight = 84.dp
+    /**
+     * Width the Amiibo toolbar needs before filter, sort and scan can stay as
+     * their own buttons: six 48 dp targets plus a readable title. Below it they
+     * collapse into the overflow menu.
+     */
+    val AmiiboToolbarWideWidth = 480.dp
+    /** Three appearance tiles need this much width before they beat three rows. */
+    val ColorTileRowMinWidth = 320.dp
+    /** Beyond this a dialog stops reading as a focused decision on a wide handheld. */
+    val DialogMaxWidth = 520.dp
+    /**
+     * A scrolling list inside a dialog. Bounded so the dialog cannot grow past
+     * the buttons in landscape, where the whole window is barely taller than
+     * this.
+     */
+    val DialogListMaxHeight = 280.dp
+    /**
+     * Space a segmented button needs beyond its label text: the button's own
+     * horizontal inset plus the selected segment's leading check icon.
+     */
+    val SegmentPadding = 40.dp
+
     val NavigationBreakpoint = 720.dp
+    /**
+     * Width one navigation-bar label needs at font scale 1.0, including the
+     * item's own padding. Compared against the per-item share of the bar to
+     * decide whether labels fit or the bar drops to icon-only.
+     */
+    val NavLabelWidth = 78.dp
     // After the rail and page gutters, a 960dp-class landscape handheld still has room for
     // two intentional columns. Detail panes keep their own 360dp lower bound.
     val TwoPaneBreakpoint = 760.dp
+    /** Width buckets consumed through [WindowSize]; never branch on device names. */
+    val MediumBreakpoint = 600.dp
+    val ExpandedBreakpoint = 840.dp
+    /**
+     * Under this height the page uses its tighter vertical rhythm. Landscape
+     * handhelds and large font scales both land here, and both are cases where
+     * generous section gaps cost a whole extra screen of scrolling.
+     */
+    val ShortWindowHeight = 560.dp
 }
 
 /** The complete appearance choice stored by the app. Firmware/controller colors are separate. */
