@@ -20,4 +20,5 @@ rootProject.name = "PicoSwitch Companion"
 // its compile classpath, so any Android type that leaks into the shared model is a
 // build failure rather than a review finding. See docs/bridge/PLATFORM_BACKEND.md.
 include(":bridge-core")
+include(":management-core")
 include(":app")

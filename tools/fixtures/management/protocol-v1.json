@@ -1,0 +1,58 @@
+{
+  "fixtureVersion": 1,
+  "authority": "Firmware-shaped vectors cross-checked against src/config.c formatters",
+  "vectors": {
+    "info": {
+      "command": "info",
+      "reply": {"id":"picoswitch","product":"PicoSwitch Config","version":"2.0","bridge_contract":3,"build":"5c30084"}
+    },
+    "config": {
+      "command": "get",
+      "reply": {"body_color":[1,2,3],"joycon2_left_accent":[4,5,6],"joycon2_right_accent":[7,8,9],"lightbar":[[1,2,3],[1,2,3],[1,2,3],[1,2,3]]}
+    },
+    "device": {
+      "command": "device",
+      "reply": {"name":"Test Controller","vid":1356,"pid":3302,"batteryValid":1,"battery":75,"charging":0}
+    },
+    "personality": {
+      "command": "personality",
+      "reply": {"current":"pro2","available":["pro2","gc","jcl","jcr"]}
+    },
+    "inputSources": {
+      "command": "input sources",
+      "reply": {"active":7,"pending":0,"explicit":true,"fresh":false,"transitions":4,"sources":[{"id":7,"conn":2,"transport":1,"generation":9,"name":"Controller"}],"more":false}
+    },
+    "kbmStatus": {
+      "command": "kbm status",
+      "reply": {"mode":"kbmouse","override":"auto","profile":"kbm","keyboard":true,"mouse":true,"nativeMouse":false,"keyboardConn":2,"mouseConn":3,"keyboardReports":10,"mouseReports":20,"rejectedMode":1,"rejectedDuplicate":2,"rejectedNotOwner":3,"rollover":4,"roleLosses":5,"mapGeneration":6,"publishes":7,"recenters":8}
+    },
+    "kbmMap": {
+      "command": "kbm map kbm 0",
+      "reply": {"profile":"kbm","page":0,"pageSize":8,"total":2,"bindings":[{"src":"key:1A","dst":"lstick_up","custom":false},{"src":"mouse:1","dst":"zr","custom":true}],"more":false}
+    },
+    "kbmMouse": {
+      "command": "kbm mouse",
+      "reply": {"sensitivityX":512,"sensitivityY":768,"recenterMs":12,"invertX":false,"invertY":true,"antiDeadzone":25,"sensitivityMin":16,"sensitivityMax":8192,"recenterMinMs":1,"recenterMaxMs":100,"antiDeadzoneMax":50}
+    },
+    "bondsPage": {
+      "command": "bonds list v2",
+      "reply": {"v":2,"total":2,"bonds":[{"i":0,"type":0,"addr":"001122334455"}],"next":3}
+    },
+    "amiiboStatus": {
+      "command": "amiibo status",
+      "reply": {"loaded":false,"dirty":false,"presented":false,"v3loaded":true,"persisted":true,"persistPending":false,"size":2048,"signature":true,"hasSave2":false,"usingSave2":false,"generation":42,"payloadCrc":"A1B2C3D4","uid":"04112233445566","figureId":"0000000000000003","upload":{"active":false,"received":0,"size":0}}
+    },
+    "wakeStatus": {
+      "command": "wake status",
+      "reply": {"result":"advertised","consoleAsleep":true,"identityValid":true,"attempts":2,"lastAttemptMs":1234}
+    },
+    "saveQueued": {
+      "command": "save",
+      "reply": {"ok":true,"queued":true}
+    },
+    "adapterError": {
+      "command": "amiibo commit",
+      "reply": {"error":"dirty","code":8}
+    }
+  }
+}
