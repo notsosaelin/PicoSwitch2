@@ -330,16 +330,31 @@ For significant shared firmware changes, both supported production board builds 
 Run compiled host tests with:
 
 ```powershell
-$tests = Get-ChildItem build\host-tests -File -Filter 'test_*.exe'
-
-foreach ($test in $tests) {
-    & $test.FullName
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "$($test.Name) failed"
-    }
-}
+pwsh -File tools\run_host_tests.ps1
 ```
+
+That is the authoritative command. It recreates `build/host-tests` empty, builds every declared host
+test from current source, runs only what it just built, and reports a total derived from that run.
+`tools/run_host_tests.ps1` owns the single build manifest; `-Group` and `-Filter` select a subset
+(`tools/run_mgmt_tests.ps1` is the `management` group plus its Python suites).
+
+Do NOT enumerate `build\host-tests\*.exe` and run whatever is present. That was the previous
+instruction here, and it was wrong: only 23 of the repository's 79 host-test sources had a build
+recipe, so the directory accumulated executables from ad-hoc `gcc` invocations of unknown vintage.
+Totals derived that way described the directory, not the source tree. **A stale executable must
+never count as a passing test.**
+
+Every `tools/test_*.c` must appear either in the manifest or in the runner's `$notHostTests` table
+with a reason. An unlisted source fails the run, so a test cannot silently stop being built.
+
+`build/host-tests` is owned by whichever runner last executed, and each one recreates it empty. So
+after a scoped run — `-Group`, `-Filter`, or `tools/run_mgmt_tests.ps1` — the directory holds only
+that subset. **Its contents are never an authoritative count.** Only the total printed by the run
+that built them is. Re-run the full suite before quoting a number.
+
+Report the result as "N/N declared active host-test targets rebuilt from current source and passed",
+with the count of sources classified outside the suite. Do not write "all tests pass": the excluded
+sources include genuinely uncovered code — see [`docs/host-test-inventory.md`](docs/host-test-inventory.md).
 
 Run relevant Python test suites as required by the changed subsystem.
 

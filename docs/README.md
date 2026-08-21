@@ -165,6 +165,19 @@ and searchable while making their lifecycle status explicit in links and file li
 part of PicoSwitch2's source history. Cite upstream URL, branch, and commit in an experiment report;
 do not edit or stage the nested repositories as if their Markdown were first-party documentation.
 
+## Local, untracked evidence
+
+Large captures, recordings, and reference clones live outside Git in `/lab-evidence/`,
+`/usbpcaptures/`, and `/nso-gc-refs/`. They must never live in `build/`, which is disposable.
+[`lab-evidence-index.md`](lab-evidence-index.md) is the tracked index: provenance, classification
+(primary / derived / regenerable), checksums for key artifacts, and retention.
+
+## Test inventory
+
+[`host-test-inventory.md`](host-test-inventory.md) classifies every `tools/test_*.c` and records
+which are outside the active host suite and why. The authoritative runner is
+`tools/run_host_tests.ps1`.
+
 ## Documentation maintenance rules
 
 - Keep `STATUS.md` concise and current; move chronological narratives to `archive/` or

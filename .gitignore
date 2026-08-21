@@ -40,6 +40,12 @@ build
 /nso-gc-refs/
 /usbpcaptures/
 
+# Durable laboratory evidence: captures, recordings, and derived analysis that
+# must survive a `build/` wipe. Deliberately OUTSIDE build/, which is disposable
+# and was found holding ~900 MB of irreplaceable capture material on 2026-08-21.
+# Too large for Git; the tracked index is docs/lab-evidence-index.md.
+/lab-evidence/
+
 # Generated amiibo test artifacts (tools/generate_test_amiibo.py)
 amiibo-*-test.bin
 tools/amiibo-*-test.bin
