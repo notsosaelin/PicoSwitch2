@@ -73,8 +73,19 @@ class AdapterRepository(private val transport: ManagementTransport) {
 
     private suspend fun validateConnectedAdapter() {
         try {
-            refreshAll()
-            if (_snapshot.value.firmware.id != "picoswitch") throw ManagementException("The discovered Bluetooth device is not a PicoSwitch2 adapter")
+            // Product-level Connected is gated by one real protocol exchange, not merely by a
+            // GATT/CCC callback. Keep this boundary intentionally small: the old ten-command
+            // refresh made an optional bonds/KBM/Amiibo probe capable of rejecting a healthy,
+            // identity-verified carrier before the UI could even offer Refresh.
+            val firmware = client.firmware()
+            if (firmware.id != "picoswitch") {
+                throw ManagementException("The discovered Bluetooth device is not a PicoSwitch2 adapter")
+            }
+            _snapshot.value = _snapshot.value.copy(
+                firmware = firmware,
+                capabilities = _snapshot.value.capabilities.copy(core = CapabilityState.Available),
+                refreshedAtMillis = System.currentTimeMillis(),
+            )
             transport.markValidated()
         } catch (error: Throwable) {
             runCatching { transport.disconnect() }
@@ -129,6 +140,28 @@ class AdapterRepository(private val transport: ManagementTransport) {
             refreshedAtMillis = System.currentTimeMillis(),
         )
         return controller
+    }
+
+    /** Refresh only the source-arbiter truth used by Controller Link ownership policy. */
+    suspend fun refreshInputSources(): AdapterInputState {
+        val input = client.inputSources()
+        _snapshot.value = _snapshot.value.copy(
+            input = input,
+            capabilities = _snapshot.value.capabilities.copy(activeInput = CapabilityState.Available),
+            refreshedAtMillis = System.currentTimeMillis(),
+        )
+        return input
+    }
+
+    /** Authoritative post-transition readback without launching the full optional refresh. */
+    suspend fun refreshPersonality(): Personality {
+        val personality = client.personality()
+        _snapshot.value = _snapshot.value.copy(
+            personality = personality,
+            capabilities = _snapshot.value.capabilities.copy(personality = CapabilityState.Available),
+            refreshedAtMillis = System.currentTimeMillis(),
+        )
+        return personality.current
     }
 
     suspend fun setActiveInput(sourceId: Long) {

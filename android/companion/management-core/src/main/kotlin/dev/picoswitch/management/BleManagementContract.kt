@@ -2,6 +2,7 @@ package dev.picoswitch.management
 
 /** BLE carrier constants and fragmentation, separate from logical command semantics. */
 object BleManagementContract {
+    const val DEFAULT_ATT_MTU = 23
     const val SERVICE_UUID = "7c5ad4ed-2731-417c-b316-058505c7c083"
     const val RX_UUID = "5252186a-817f-489f-ad75-94c3bd444769"
     const val TX_UUID = "81462706-8e64-407a-bc3d-d303529fbe1c"

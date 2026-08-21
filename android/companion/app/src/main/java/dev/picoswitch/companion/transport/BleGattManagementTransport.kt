@@ -17,6 +17,7 @@ import android.content.Context
 import android.os.Build
 import android.os.ParcelUuid
 import dev.picoswitch.companion.diagnostics.DiagnosticLog
+import dev.picoswitch.companion.diagnostics.ManagementDiagnosticContext
 import dev.picoswitch.companion.model.ConnectionPhase
 import dev.picoswitch.companion.model.ConnectionState
 import dev.picoswitch.companion.protocol.ManagementConnectionContext
@@ -33,6 +34,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -71,8 +73,24 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         @Volatile var closeRequested = false
         @Volatile var terminalFailure = false
         @Volatile var closed = false
+        @Volatile var serviceDiscoveryStarted = false
+        @Volatile var negotiatedMtu = BleManagementContract.DEFAULT_ATT_MTU
+        @Volatile var readyAtMillis = 0L
+        @Volatile var lastReplyAtMillis = 0L
+        @Volatile var commandTrace: CommandTrace? = null
         val ready = CompletableDeferred<Unit>()
         val disconnected = CompletableDeferred<Unit>()
+    }
+
+    private class CommandTrace(
+        val sequence: Long,
+        val type: String,
+        val startedAtMillis: Long,
+    ) {
+        @Volatile var writeCallbacks = 0
+        @Volatile var notificationCount = 0
+        @Volatile var notificationBytes = 0
+        @Volatile var firstNotificationAtMillis = 0L
     }
 
     private data class PairingCandidate(val generation: Long, val device: BluetoothDevice)
@@ -81,6 +99,7 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
     @Volatile private var pairingCandidate: PairingCandidate? = null
     @Volatile private var nextContext = ManagementConnectionContext()
     private var nextGattGeneration = 0L
+    private var nextCommandSequence = 0L
 
     override fun prepareConnection(context: ManagementConnectionContext) {
         nextContext = context
@@ -104,7 +123,8 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
             )
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 val failure = GattTransportException(
-                    "Bluetooth connection failed ($status)", status, GattFailureStage.Connect,
+                    "Bluetooth connection failed (${GattStatusFormatter.describe(GattFailureStage.Connect, status)})",
+                    status, GattFailureStage.Connect,
                 )
                 fail(owner, failure)
                 if (newState == BluetoothProfile.STATE_DISCONNECTED) {
@@ -116,12 +136,20 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
             }
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
-                    _connection.value = connectionState(owner, ConnectionPhase.Connecting, "Discovering adapter services")
-                    if (!gatt.discoverServices()) {
-                        fail(owner, GattTransportException(
-                            "Service discovery could not start", null, GattFailureStage.Services,
-                        ))
-                    }
+                    _connection.value = connectionState(owner, ConnectionPhase.Connecting, "Preparing management link")
+                    val priorityAccepted = runCatching {
+                        gatt.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                    }.getOrDefault(false)
+                    log(owner, "gatt.priority", "high requested=$priorityAccepted")
+
+                    // The management protocol can return nearly 512 bytes. Staying at the default
+                    // 23-byte ATT MTU turns one reply into dozens of notifications and exposed a
+                    // reproducible Android 13 failure where the following command never reached a
+                    // reply. Negotiate once before discovery; the overall connect deadline still
+                    // bounds OEMs that accept the request but never issue the callback.
+                    val mtuRequested = runCatching { gatt.requestMtu(REQUESTED_ATT_MTU) }.getOrDefault(false)
+                    log(owner, "gatt.mtu_request", "mtu=$REQUESTED_ATT_MTU requested=$mtuRequested")
+                    if (!mtuRequested) discoverServices(owner, gatt)
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     owner.disconnected.complete(Unit)
@@ -142,12 +170,20 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
             }
         }
 
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            val owner = ownerFor(gatt) ?: return staleCallback("mtu", gatt)
+            if (status == BluetoothGatt.GATT_SUCCESS) owner.negotiatedMtu = mtu
+            log(owner, "gatt.mtu", "status=$status mtu=$mtu")
+            discoverServices(owner, gatt)
+        }
+
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             val owner = ownerFor(gatt) ?: return staleCallback("services", gatt)
             log(owner, "gatt.services", "status=$status")
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 return fail(owner, GattTransportException(
-                    "Service discovery failed ($status)", status, GattFailureStage.Services,
+                    "Service discovery failed (${GattStatusFormatter.describe(GattFailureStage.Services, status)})",
+                    status, GattFailureStage.Services,
                 ))
             }
             val service = gatt.getService(UUID.fromString(BleManagementContract.SERVICE_UUID))
@@ -181,10 +217,12 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
             log(owner, "gatt.subscribe", "status=$status")
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 _connection.value = connectionState(owner, ConnectionPhase.Connecting, "Verifying PicoSwitch2 identity")
+                owner.readyAtMillis = System.currentTimeMillis()
                 owner.ready.complete(Unit)
             } else {
                 fail(owner, GattTransportException(
-                    "Notification subscription failed ($status)", status, GattFailureStage.Subscribe,
+                    "Notification subscription failed (${GattStatusFormatter.describe(GattFailureStage.Subscribe, status)})",
+                    status, GattFailureStage.Subscribe,
                 ))
             }
         }
@@ -193,7 +231,7 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         @Deprecated("Deprecated in API 33")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             if (ownerFor(gatt) != null && characteristic.uuid == TX_UUID) {
-                notifications.trySend(characteristic.value.copyOf())
+                recordNotification(ownerFor(gatt), characteristic.value)
             }
         }
 
@@ -202,18 +240,53 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray,
         ) {
-            if (ownerFor(gatt) != null && characteristic.uuid == TX_UUID) notifications.trySend(value.copyOf())
+            if (characteristic.uuid == TX_UUID) recordNotification(ownerFor(gatt), value)
         }
 
         @Deprecated("Deprecated in API 33")
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
             ownerFor(gatt)?.let { owner ->
+                owner.commandTrace?.let { trace ->
+                    trace.writeCallbacks += 1
+                    log(
+                        owner,
+                        "command.write",
+                        "seq=${trace.sequence} type=${trace.type} callback=${trace.writeCallbacks} status=$status " +
+                            "elapsedMs=${System.currentTimeMillis() - trace.startedAtMillis}",
+                    )
+                }
                 if (status == BluetoothGatt.GATT_SUCCESS) owner.writeReady?.complete(Unit)
                 else owner.writeReady?.completeExceptionally(GattTransportException(
-                    "Bluetooth write failed ($status)", status, GattFailureStage.Command,
+                    "Bluetooth write failed (${GattStatusFormatter.describe(GattFailureStage.Command, status)})",
+                    status, GattFailureStage.Command,
                 ))
             }
         }
+    }
+
+    private fun discoverServices(owner: OwnedGatt, gatt: BluetoothGatt) {
+        synchronized(owner) {
+            if (owner.serviceDiscoveryStarted || owner.closed || owner.terminalFailure) return
+            owner.serviceDiscoveryStarted = true
+        }
+        _connection.value = connectionState(owner, ConnectionPhase.Connecting, "Discovering adapter services")
+        if (!gatt.discoverServices()) {
+            fail(owner, GattTransportException(
+                "Service discovery could not start", null, GattFailureStage.Services,
+            ))
+        }
+    }
+
+    private fun recordNotification(owner: OwnedGatt?, value: ByteArray) {
+        if (owner == null) return
+        owner.commandTrace?.let { trace ->
+            if (trace.firstNotificationAtMillis == 0L) {
+                trace.firstNotificationAtMillis = System.currentTimeMillis()
+            }
+            trace.notificationCount += 1
+            trace.notificationBytes += value.size
+        }
+        notifications.trySend(value.copyOf())
     }
 
     override suspend fun scanAndConnect() = scanAndConnectInternal(expectedAddress = null)
@@ -328,6 +401,7 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
             "connect.generation",
             "reason=${owner.context.reason} association=${owner.context.associationId ?: "none"} " +
                 "bond=${owner.context.bondState} priorGattRetired=${owner.context.priorGattRetired} " +
+                "expectsBonding=${owner.context.expectsBonding} " +
                 "retry=${owner.context.retry}/${GattRecoveryPolicy.MAX_CLEAN_RETRIES}",
         )
         val pendingGatt = try {
@@ -345,8 +419,13 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
             throw failure
         }
         owner.gatt = pendingGatt
+        // An ordinary connect runs over an already-bonded link, so 15 s is generous. A connect that
+        // is deliberately provoking LE bonding has Android's own pairing dialog inside it, and that
+        // is human-paced; failing it on the normal deadline would look like a connect fault.
+        val deadline = if (owner.context.expectsBonding) BONDING_CONNECT_TIMEOUT_MILLIS
+                       else CONNECT_TIMEOUT_MILLIS
         try {
-            withTimeout(CONNECT_TIMEOUT_MILLIS) { owner.ready.await() }
+            withTimeout(deadline) { owner.ready.await() }
         } catch (timeout: TimeoutCancellationException) {
             val failure = GattTransportException("PicoSwitch2 connection timed out", null, GattFailureStage.Connect, timeout)
             fail(owner, failure)
@@ -361,6 +440,10 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
     override fun markValidated() {
         val owner = current ?: return
         if (!owner.ready.isCompleted || owner.terminalFailure || owner.closed) return
+        val balancedAccepted = runCatching {
+            owner.gatt?.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_BALANCED) == true
+        }.getOrDefault(false)
+        log(owner, "gatt.priority", "balanced requested=$balancedAccepted after identity validation")
         _connection.value = connectionState(owner, ConnectionPhase.Connected, null)
         pairingCandidate = null
         log(owner, "gatt.ready", "management identity verified")
@@ -395,8 +478,28 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
         if (!owner.ready.isCompleted || owner.terminalFailure || owner.closed) {
             throw ManagementException("Adapter management service is not ready")
         }
+        // The adapter's wireless carrier is a one-slot cross-core bridge. Android can deliver the
+        // final notification to this process before the firmware's next task turn has made that
+        // slot available to core0 again. A new write in the observed 1-3 ms window was accepted by
+        // GATT but intermittently produced no reply. Keep the logical single-flight guarantee and
+        // include one bounded carrier turnaround between exchanges; do not inflate command timeouts.
+        val turnaround = ManagementTurnaroundPolicy.delayMillis(
+            System.currentTimeMillis(), owner.lastReplyAtMillis,
+        )
+        if (turnaround > 0L) delay(turnaround)
         while (notifications.tryReceive().isSuccess) Unit
-        diagnostics?.commandStarted(command)
+        val now = System.currentTimeMillis()
+        val trace = CommandTrace(++nextCommandSequence, DiagnosticLog.commandType(command), now)
+        owner.commandTrace = trace
+        diagnostics?.commandStarted(
+            command,
+            "seq=${trace.sequence} gatt=${owner.generation} mtu=${owner.negotiatedMtu} " +
+                "caller=${ManagementDiagnosticContext.workflow()} " +
+                "bridge=${ManagementDiagnosticContext.bridgePhase()} " +
+                "personality=${ManagementDiagnosticContext.personalityPhase()} " +
+                "sinceReadyMs=${elapsedOrNone(now, owner.readyAtMillis)} " +
+                "sinceReplyMs=${elapsedOrNone(now, owner.lastReplyAtMillis)}",
+        )
         try {
             withTimeout(timeoutMillis) {
                 for (part in BleManagementContract.commandChunks(command, BleManagementContract.ATT_PAYLOAD_WITH_DEFAULT_MTU)) {
@@ -413,24 +516,47 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
                         throw ManagementException("Adapter disconnected during '$command'")
                     }
                     assembler.accept(part)?.let { response ->
-                        diagnostics?.commandFinished(command, response.encodeToByteArray().size)
+                        val completedAt = System.currentTimeMillis()
+                        owner.lastReplyAtMillis = completedAt
+                        diagnostics?.commandFinished(
+                            command,
+                            response.encodeToByteArray().size,
+                            "seq=${trace.sequence} gatt=${owner.generation} elapsedMs=${completedAt - trace.startedAtMillis} " +
+                                "firstNotifyMs=${elapsedOrNone(trace.firstNotificationAtMillis, trace.startedAtMillis)} " +
+                                "notifications=${trace.notificationCount}/${trace.notificationBytes}B writes=${trace.writeCallbacks}",
+                        )
                         return@withTimeout response
                     }
                 }
                 @Suppress("UNREACHABLE_CODE") ""
             }
         } catch (error: TimeoutCancellationException) {
+            logTerminal(owner, trace, error)
             invalidate(owner, "Adapter did not reply. Reconnect to start a clean management session.")
             diagnostics?.error("management", DiagnosticLog.commandType(command), error)
             throw ManagementException("${DiagnosticLog.commandType(command)} timed out after ${timeoutMillis / 1000} seconds", error)
         } catch (error: ManagementReplyTooLargeException) {
+            logTerminal(owner, trace, error)
             invalidate(owner, "Reply was too large; reconnect to start a clean management session")
             diagnostics?.error("management", DiagnosticLog.commandType(command), error)
             throw error
         } catch (error: ManagementException) {
+            logTerminal(owner, trace, error)
             diagnostics?.error("management", DiagnosticLog.commandType(command), error)
             throw error
+        } finally {
+            if (owner.commandTrace === trace) owner.commandTrace = null
         }
+    }
+
+    private fun logTerminal(owner: OwnedGatt, trace: CommandTrace, error: Throwable) {
+        log(
+            owner,
+            "command.terminal",
+            "seq=${trace.sequence} type=${trace.type} elapsedMs=${System.currentTimeMillis() - trace.startedAtMillis} " +
+                "notifications=${trace.notificationCount}/${trace.notificationBytes}B writes=${trace.writeCallbacks} " +
+                "error=${error.javaClass.simpleName}",
+        )
     }
 
     private fun invalidate(owner: OwnedGatt, message: String) {
@@ -534,6 +660,9 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
 
     private fun safeName(device: BluetoothDevice): String? = runCatching { device.name }.getOrNull()
 
+    private fun elapsedOrNone(later: Long, earlier: Long): String =
+        if (earlier == 0L || later < earlier) "none" else (later - earlier).toString()
+
     private fun writeCharacteristic(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, bytes: ByteArray): Boolean {
         return if (Build.VERSION.SDK_INT >= 33) {
             gatt.writeCharacteristic(
@@ -565,8 +694,10 @@ class BleGattManagementTransport(context: Context, private val diagnostics: Diag
 
     companion object {
         private const val CONNECT_TIMEOUT_MILLIS = 15_000L
+        private const val BONDING_CONNECT_TIMEOUT_MILLIS = 60_000L
         private const val SCAN_TIMEOUT_MILLIS = 15_000L
         private const val DISCONNECT_TIMEOUT_MILLIS = 1_250L
+        private const val REQUESTED_ATT_MTU = 517
         private val CLIENT_CHARACTERISTIC_CONFIG = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private val TX_UUID = UUID.fromString(BleManagementContract.TX_UUID)
     }

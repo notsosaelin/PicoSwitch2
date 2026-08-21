@@ -34,6 +34,7 @@ import dev.picoswitch.companion.data.*
 import dev.picoswitch.companion.diagnostics.DiagnosticEntry
 import dev.picoswitch.companion.diagnostics.DiagnosticLog
 import dev.picoswitch.companion.diagnostics.DiagnosticSummary
+import dev.picoswitch.companion.diagnostics.ManagementDiagnosticContext
 import dev.picoswitch.companion.model.*
 import dev.picoswitch.management.WakeResult
 import dev.picoswitch.companion.transport.BleGattManagementTransport
@@ -177,8 +178,15 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     private var relationshipPairingJob: Job? = null
     private var relationshipConnectionJob: Job? = null
     private var relationshipRetirementJob: Job? = null
+    // Non-zero only for the attempt whose bond is being provoked by the management GATT link
+    // itself (the compatibility path). That connect has to hold Android's pairing dialog inside
+    // its deadline, which an ordinary bonded connect never does.
+    @Volatile private var gattInitiatedBondGeneration = 0L
+    private val operationAdmission = OperationAdmissionGate()
     private var autoReconnectAttempted = false
     private var automaticControllerResumeJob: Job? = null
+    private var bridgeSourceReconciliationJob: Job? = null
+    @Volatile private var personalityTransitionActive = false
     private val _theme = MutableStateFlow(themeStore.load())
     val theme: StateFlow<ThemeSelection> = _theme.asStateFlow()
     private val amiiboKeyStore = AmiiboKeyStore(File(application.filesDir, "amiibo-private"))
@@ -255,6 +263,14 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         viewModelScope.launch { adapter.kbm.collect { value -> _ui.update { it.copy(kbm = value) } } }
         viewModelScope.launch { library.warnings.collect { value -> _ui.update { it.copy(libraryWarnings = value) } } }
         viewModelScope.launch { session.state.collect { value -> _ui.update { it.copy(bridge = value) } } }
+        viewModelScope.launch {
+            session.state.map { it.phase }.distinctUntilChanged().collect { phase ->
+                ManagementDiagnosticContext.setBridgePhase(phase)
+                diagnostics.event("controller", "bridge.phase", phase.name)
+                if (phase == BridgeLinkPhase.Playing) reconcileControllerLinkSource()
+                else bridgeSourceReconciliationJob?.cancel()
+            }
+        }
         viewModelScope.launch { inputBackend.state.collect { value -> _ui.update { it.copy(controllerState = value) } } }
         viewModelScope.launch { diagnostics.summary.collect { value -> _ui.update { it.copy(diagnosticSummary = value) } } }
         viewModelScope.launch { diagnostics.entries.collect { value -> _ui.update { it.copy(diagnosticEntries = value) } } }
@@ -263,13 +279,27 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                 while (connected) {
                     delay(ADAPTER_POLL_MILLIS)
                     val state = _ui.value
-                    if (!state.busy) {
-                        runCatching { adapter.refreshController() }
-                            .onFailure { diagnostics.error("management", "background controller refresh", it) }
-                        if (state.snapshot.capabilities.amiibo == CapabilityState.Available) {
-                            runCatching { adapter.refreshAmiibo() }
-                                .onFailure { diagnostics.error("management", "background Amiibo refresh", it) }
+                    if (!state.busy && !state.kbmBusy && !personalityTransitionActive &&
+                        state.bridge.phase !in setOf(
+                            BridgeLinkPhase.Preparing,
+                            BridgeLinkPhase.Registering,
+                            BridgeLinkPhase.Connecting,
+                        )
+                    ) {
+                        // Periodic work only needs source-arbiter truth. The former full controller
+                        // + Amiibo refresh kept this single-flight carrier almost permanently busy
+                        // and could queue an unrelated `kbm` behind Controller Link startup.
+                        runCatching {
+                            ManagementDiagnosticContext.withWorkflow("background-input-poll") {
+                                adapter.refreshInputSources()
+                            }
                         }
+                            .onSuccess { input ->
+                                if (_ui.value.bridge.phase == BridgeLinkPhase.Playing) {
+                                    reconcileControllerLinkSource(input)
+                                }
+                            }
+                            .onFailure { diagnostics.error("management", "background input poll", it) }
                     }
                 }
             }
@@ -396,8 +426,29 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                             if (decision.startBond) "bond.start" else "bond.wait",
                             "attempt=$generation bond=$bond",
                         )
-                        if (decision.startBond && !device.createBond()) {
-                            adapterBondStartFailed(device.address)
+                        if (!decision.startBond) {
+                            awaitAdapterBond(generation, device, bond)
+                        } else {
+                            val started = AdapterBondStarter(androidBondPlatform(device)).start()
+                            diagnostics.event(
+                                "relationship", "bond.mechanism",
+                                "attempt=$generation mechanism=${started.mechanism.diagnosticName} ${started.detail}",
+                            )
+                            when {
+                                started.startedExplicitBond -> awaitAdapterBond(generation, device, bond)
+                                // Compatibility path: Android owns no explicit LE bond call here, so
+                                // the encrypted management GATT link provokes SMP instead. Ownership
+                                // of the attempt moves to the connect job; the bond broadcast still
+                                // arrives, just during the connect rather than before it.
+                                started.delegatesToGatt -> {
+                                    gattInitiatedBondGeneration = generation
+                                    pairingDevice = null
+                                    val delegated = relationshipCoordinator.bondDelegatedToGatt(generation)
+                                    publishRelationshipStatus()
+                                    executeLifecycleDecision(delegated)
+                                }
+                                else -> adapterBondStartFailed(device.address)
+                            }
                         }
                     }
                     is AdapterLifecycleDecision.Connect -> {
@@ -447,6 +498,87 @@ class CompanionViewModel(application: Application, private val savedState: Saved
 
     fun adapterBondStartFailed(address: String) {
         adapterBondChanged(address, AndroidBondState.None)
+    }
+
+    /**
+     * The one and only compatibility seam that touches a non-SDK Bluetooth entry point.
+     *
+     * `BluetoothDevice.createBond(int transport)` is absent from `android.jar` through API 36 and
+     * public from API 37, so on every currently shipping Android the transport-specific bond this
+     * product requires can only be reached by name. `getMethod` IS the runtime feature detection:
+     * a platform that hides or blocks it throws, this returns null, and [AdapterBondStarter] routes
+     * to the public GATT-initiated LE path instead. On API 37+ the very same method is resolved,
+     * now as public API, so this seam becomes a plain call without a behaviour change.
+     *
+     * Nothing else in the app uses hidden API. TRANSPORT_AUTO is deliberately not offered here.
+     */
+    @SuppressLint("MissingPermission")
+    private fun androidBondPlatform(device: BluetoothDevice) = object : AdapterBondStarter.Platform {
+        override fun createBondOnLe(): Boolean? = runCatching {
+            BluetoothDevice::class.java
+                .getMethod("createBond", Int::class.javaPrimitiveType)
+                .invoke(device, BluetoothDevice.TRANSPORT_LE) as? Boolean
+        }.getOrNull()
+
+        override fun cachedDeviceTypeName(): String = when (device.type) {
+            BluetoothDevice.DEVICE_TYPE_CLASSIC -> "classic"
+            BluetoothDevice.DEVICE_TYPE_LE -> "le"
+            BluetoothDevice.DEVICE_TYPE_DUAL -> "dual"
+            else -> "unknown"
+        }
+    }
+
+    /**
+     * Bluetooth's bond broadcast is advisory wake-up here, not the sole progression mechanism.
+     * Some Android builds deliver it from a privileged package that an Activity receiver can miss;
+     * retaining and sampling the exact scan-result device keeps bond and GATT in one generation.
+     */
+    @SuppressLint("MissingPermission")
+    private suspend fun awaitAdapterBond(
+        generation: Long,
+        device: BluetoothDevice,
+        initialBond: AndroidBondState,
+    ) {
+        val policy = AdapterBondWaitPolicy(initialBond)
+        val completed = withTimeoutOrNull<Boolean>(ADAPTER_BOND_TIMEOUT_MS) {
+            while (true) {
+                val candidate = pairingDevice
+                if (candidate == null || candidate.generation != generation ||
+                    relationshipCoordinator.status.generation != generation ||
+                    relationshipCoordinator.status.phase != AdapterRelationshipPhase.Bonding
+                ) return@withTimeoutOrNull true
+
+                val state = runCatching { device.bondState.toProductBondState() }
+                    .getOrDefault(AndroidBondState.Unknown)
+                when (policy.observe(state)) {
+                    AdapterBondWaitOutcome.Bonded -> {
+                        adapterBondChanged(device.address, AndroidBondState.Bonded)
+                        return@withTimeoutOrNull true
+                    }
+                    AdapterBondWaitOutcome.Rejected -> {
+                        adapterBondChanged(device.address, AndroidBondState.None)
+                        return@withTimeoutOrNull true
+                    }
+                    AdapterBondWaitOutcome.Continue -> delay(ADAPTER_BOND_POLL_MS)
+                }
+            }
+            @Suppress("UNREACHABLE_CODE")
+            false
+        } ?: false
+
+        if (!completed && pairingDevice?.generation == generation &&
+            relationshipCoordinator.status.generation == generation &&
+            relationshipCoordinator.status.phase == AdapterRelationshipPhase.Bonding
+        ) {
+            diagnostics.event("relationship", "bond.timeout", "attempt=$generation")
+            adapterBondChanged(device.address, AndroidBondState.None)
+        }
+    }
+
+    fun systemAssociationQueryFailed(error: Throwable) {
+        // CDM is optional metadata. Its absence or an OEM service failure cannot block startup,
+        // BLE discovery, bonding, or management GATT.
+        diagnostics.error("relationship", "association.query_optional", error)
     }
 
     fun reconcileAdapterRelationships(associations: List<SystemCompanionAssociation>) {
@@ -531,9 +663,81 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     }
 
     fun switchPersonality(personality: Personality) = launch("Switching adapter mode") {
-        val reenumerating = adapter.setPersonality(personality)
-        if (reenumerating) markIdentityRefreshPending("personality switch")
-        notice(if (reenumerating) "Mode changed. USB is re-enumerating; controller and audio may pause briefly." else "Already using ${personality.title}")
+        personalityTransitionActive = true
+        ManagementDiagnosticContext.setPersonalityPhase("mutation")
+        try {
+            val reenumerating = adapter.setPersonality(personality)
+            if (!reenumerating) {
+                notice("Already using ${personality.title}")
+                return@launch
+            }
+            markIdentityRefreshPending("personality switch")
+            ManagementDiagnosticContext.setPersonalityPhase("readback")
+            val confirmedOnCurrentGatt = confirmPersonalityOnCurrentGatt(personality)
+
+            // Source review shows USB re-enumeration should not tear down Bluetooth. If an OEM or
+            // runtime transition nevertheless does, make it an expected, owned generation change
+            // and prove identity + requested mode again before reporting success.
+            val disconnectedDuringTransition = if (confirmedOnCurrentGatt) {
+                withTimeoutOrNull(PERSONALITY_DISCONNECT_GRACE_MS) {
+                    adapter.connection.first { !it.connected }
+                    true
+                } ?: false
+            } else !adapter.connection.value.connected
+
+            if (disconnectedDuringTransition) {
+                recoverManagementAfterPersonality(personality)
+            } else if (!confirmedOnCurrentGatt) {
+                throw dev.picoswitch.companion.protocol.ManagementException(
+                    "Adapter mode changed, but management readback did not complete",
+                )
+            }
+            savedState[KEY_IDENTITY_PENDING] = false
+            _ui.update { it.copy(identityRefreshPending = false) }
+            notice("Mode changed to ${personality.title}. USB re-enumerated and management is ready.")
+        } finally {
+            personalityTransitionActive = false
+            ManagementDiagnosticContext.setPersonalityPhase("idle")
+        }
+    }
+
+    private suspend fun confirmPersonalityOnCurrentGatt(expected: Personality): Boolean {
+        repeat(PERSONALITY_READBACK_ATTEMPTS) { attempt ->
+            if (!adapter.connection.value.connected) return false
+            val observed = runCatching { adapter.refreshPersonality() }.getOrNull()
+            if (observed == expected) {
+                diagnostics.event("adapter", "personality.confirmed", "mode=${expected.wireName} attempt=${attempt + 1}")
+                return true
+            }
+            delay(PERSONALITY_READBACK_RETRY_MS)
+        }
+        return false
+    }
+
+    private suspend fun recoverManagementAfterPersonality(expected: Personality) {
+        ManagementDiagnosticContext.setPersonalityPhase("reconnect")
+        val ready = withTimeoutOrNull(PERSONALITY_RECONNECT_TIMEOUT_MS) {
+            while (relationshipCoordinator.status.attemptActive ||
+                relationshipCoordinator.status.phase == AdapterRelationshipPhase.Connected
+            ) {
+                delay(PERSONALITY_READBACK_RETRY_MS)
+            }
+            reconnectKnownAdapter(AdapterConnectReason.AfterPersonality)
+            adapter.connection.first { it.connected }
+            true
+        } ?: false
+        if (!ready) {
+            throw dev.picoswitch.companion.protocol.ManagementException(
+                "Mode changed, but management could not reconnect",
+            )
+        }
+        ManagementDiagnosticContext.setPersonalityPhase("reconnected-readback")
+        if (adapter.refreshPersonality() != expected) {
+            throw dev.picoswitch.companion.protocol.ManagementException(
+                "Management reconnected, but the requested adapter mode was not active",
+            )
+        }
+        diagnostics.event("adapter", "personality.recovered", "mode=${expected.wireName}")
     }
 
     fun saveColor(target: ColorTarget, color: RgbColor) = launch("Saving color") {
@@ -634,7 +838,11 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         kbmMouseJob?.cancel()
         kbmMouseJob = viewModelScope.launch {
             delay(MOUSE_APPLY_DEBOUNCE_MS)
-            runCatching { adapter.setKbmMouse(field, value) }
+            runCatching {
+                ManagementDiagnosticContext.withWorkflow("mouse-${field.wire}-preview") {
+                    adapter.setKbmMouse(field, value)
+                }
+            }
                 .onFailure { diagnostics.error("kbm", "mouse ${field.wire} preview", it) }
         }
     }
@@ -643,13 +851,21 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         kbmMouseJob?.cancel()
         kbmMouseJob = viewModelScope.launch {
             _ui.update { it.copy(kbmBusy = true) }
-            runCatching { adapter.setKbmMouse(field, value) }
+            runCatching {
+                ManagementDiagnosticContext.withWorkflow("mouse-${field.wire}-commit") {
+                    adapter.setKbmMouse(field, value)
+                }
+            }
                 .onFailure { error ->
                     diagnostics.error("kbm", "mouse ${field.wire}", error)
                     notice(error.message ?: "The adapter rejected that value")
                     // The adapter is the authority on what is in effect; re-read
                     // rather than leaving the control showing a value it refused.
-                    runCatching { adapter.refreshKbm() }
+                    runCatching {
+                        ManagementDiagnosticContext.withWorkflow("mouse-recovery-readback") {
+                            adapter.refreshKbm()
+                        }
+                    }
                 }
             _ui.update { it.copy(kbmBusy = false) }
         }
@@ -664,7 +880,9 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         if (_ui.value.kbmBusy) return null
         return viewModelScope.launch {
             _ui.update { it.copy(kbmBusy = true) }
-            runCatching { action() }.onFailure { error ->
+            runCatching {
+                ManagementDiagnosticContext.withWorkflow(label) { action() }
+            }.onFailure { error ->
                 diagnostics.error("kbm", label, error)
                 notice(error.message ?: "$label failed")
             }
@@ -1152,18 +1370,22 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                             phase = state.bridge.phase,
                         )
                     ) {
-                        val controller = runCatching { adapter.refreshController() }.getOrNull()
-                        if (controller == null) {
+                        val input = runCatching {
+                            ManagementDiagnosticContext.withWorkflow("automatic-controller-resume") {
+                                adapter.refreshInputSources()
+                            }
+                        }.getOrNull()
+                        if (input == null) {
                             delay(AUTOMATIC_CONTROLLER_RESUME_RETRY_MS)
                             continue
                         }
                         val host = knownControllerHost()
-                        if (!SessionResumePolicy.shouldAcquire(controller.attached, host != null)) {
-                            if (!controller.attached) return@withTimeoutOrNull
+                        if (!SessionResumePolicy.shouldAcquire(input.activeId, host != null)) {
+                            if (input.activeId == 0L) return@withTimeoutOrNull
                             diagnostics.event(
                                 "controller",
                                 "automatic resume skipped",
-                                "adapter already has an input source",
+                                "adapter active source=${input.activeId}",
                             )
                             return@withTimeoutOrNull
                         }
@@ -1275,6 +1497,68 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         return file
     }
 
+    private fun reconcileControllerLinkSource(observed: dev.picoswitch.management.AdapterInputState? = null) {
+        if (_ui.value.bridge.phase != BridgeLinkPhase.Playing || !_ui.value.connection.connected) return
+        if (bridgeSourceReconciliationJob?.isActive == true) return
+        bridgeSourceReconciliationJob = viewModelScope.launch {
+            withTimeoutOrNull(CONTROLLER_SOURCE_RECONCILE_TIMEOUT_MS) {
+                var input = observed
+                while (_ui.value.bridge.phase == BridgeLinkPhase.Playing && _ui.value.connection.connected) {
+                    if (_ui.value.busy || _ui.value.kbmBusy || personalityTransitionActive) {
+                        delay(CONTROLLER_SOURCE_RECONCILE_RETRY_MS)
+                        continue
+                    }
+                    input = input ?: runCatching {
+                        ManagementDiagnosticContext.withWorkflow("controller-source-reconcile") {
+                            adapter.refreshInputSources()
+                        }
+                    }.getOrNull()
+                    if (input == null) {
+                        delay(CONTROLLER_SOURCE_RECONCILE_RETRY_MS)
+                        continue
+                    }
+                    if (input.activeId != 0L) {
+                        diagnostics.event(
+                            "controller", "source.auto_skipped", "active=${input.activeId}; existing owner retained",
+                        )
+                        return@withTimeoutOrNull
+                    }
+                    val sourceId = SessionResumePolicy.soleSourceToActivate(
+                        input.activeId,
+                        input.sources.map { it.id },
+                    )
+                    if (sourceId != null) {
+                        // Read once more immediately before the mutation so a physical controller
+                        // that won the race is not displaced by stale source-list state.
+                        val current = runCatching {
+                            ManagementDiagnosticContext.withWorkflow("controller-source-confirm") {
+                                adapter.refreshInputSources()
+                            }
+                        }.getOrNull()
+                        if (current != null && SessionResumePolicy.soleSourceToActivate(
+                                current.activeId,
+                                current.sources.map { it.id },
+                            ) == sourceId
+                        ) {
+                            ManagementDiagnosticContext.withWorkflow("controller-source-auto-select") {
+                                adapter.setActiveInput(sourceId)
+                            }
+                            diagnostics.event("controller", "source.auto_selected", "source=$sourceId")
+                        }
+                        return@withTimeoutOrNull
+                    }
+                    if (input.sources.size > 1) {
+                        diagnostics.event("controller", "source.auto_skipped", "multiple ready sources")
+                        return@withTimeoutOrNull
+                    }
+                    input = null
+                    delay(CONTROLLER_SOURCE_RECONCILE_RETRY_MS)
+                }
+            }
+            bridgeSourceReconciliationJob = null
+        }
+    }
+
     private fun executeLifecycleDecision(decision: AdapterLifecycleDecision) {
         when (decision) {
             AdapterLifecycleDecision.Ignored -> Unit
@@ -1306,16 +1590,19 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         relationshipConnectionJob = viewModelScope.launch {
             try {
                 relationshipRetirementJob?.join()
-                adapter.connectKnown(
-                    attempt.relationship.address,
-                    ManagementConnectionContext(
-                        logicalAttempt = attempt.generation,
-                        reason = attempt.reason.diagnosticName,
-                        associationId = attempt.relationship.associationId,
-                        bondState = relationshipCoordinator.status.bond.name,
-                        useDiscoveredPeer = attempt.reason == AdapterConnectReason.FirstPair,
-                    ),
-                )
+                ManagementDiagnosticContext.withWorkflow("connect-identity") {
+                    adapter.connectKnown(
+                        attempt.relationship.address,
+                        ManagementConnectionContext(
+                            logicalAttempt = attempt.generation,
+                            reason = attempt.reason.diagnosticName,
+                            associationId = attempt.relationship.associationId,
+                            bondState = relationshipCoordinator.status.bond.name,
+                            useDiscoveredPeer = attempt.reason == AdapterConnectReason.FirstPair,
+                            expectsBonding = attempt.generation == gattInitiatedBondGeneration,
+                        ),
+                    )
+                }
                 val verified = relationshipCoordinator.connectionSucceeded(attempt.generation) ?: return@launch
                 val previous = relationshipStore.load()
                 relationshipStore.save(verified)
@@ -1332,6 +1619,10 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                     "relationship", "connect.verified",
                     "attempt=${attempt.generation} reason=${attempt.reason.diagnosticName} association=${verified.associationId ?: "legacy"}",
                 )
+                // A fresh BLE management bond is not proof that the Classic HID-device path is
+                // ready. Exercise it immediately while the user's Pico pairing window is still
+                // open; the ownership read prevents stealing an already-active controller.
+                requestAutomaticControllerResume()
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 diagnostics.event("relationship", "connect.cancelled", "attempt=${attempt.generation}")
                 throw cancelled
@@ -1465,11 +1756,20 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     }
 
     private fun launch(label: String, action: suspend () -> Unit) {
-        if (_ui.value.busy) return
+        // Admission happens synchronously, before the coroutine can be queued.
+        // The UI busy flag is presentation state and can lag one dispatcher
+        // turn behind a burst of taps, so it cannot be the concurrency lock.
+        if (!operationAdmission.tryAcquire()) return
         viewModelScope.launch {
-            _ui.update { it.copy(busy = true, operation = OperationProgress(label, 0, 0), message = null) }
-            runCatching { action() }.onFailure { error -> diagnostics.error("app", label, error); notice(error.message ?: "Operation failed") }
-            _ui.update { it.copy(busy = false, operation = null) }
+            try {
+                _ui.update { it.copy(busy = true, operation = OperationProgress(label, 0, 0), message = null) }
+                runCatching {
+                    ManagementDiagnosticContext.withWorkflow(label) { action() }
+                }.onFailure { error -> diagnostics.error("app", label, error); notice(error.message ?: "Operation failed") }
+            } finally {
+                _ui.update { it.copy(busy = false, operation = null) }
+                operationAdmission.release()
+            }
         }
     }
 
@@ -1523,6 +1823,14 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         private const val MOUSE_APPLY_DEBOUNCE_MS = 140L
         private const val AUTOMATIC_CONTROLLER_RESUME_TIMEOUT_MS = 20_000L
         private const val AUTOMATIC_CONTROLLER_RESUME_RETRY_MS = 250L
+        private const val CONTROLLER_SOURCE_RECONCILE_TIMEOUT_MS = 8_000L
+        private const val CONTROLLER_SOURCE_RECONCILE_RETRY_MS = 250L
+        private const val PERSONALITY_READBACK_ATTEMPTS = 3
+        private const val PERSONALITY_READBACK_RETRY_MS = 200L
+        private const val PERSONALITY_DISCONNECT_GRACE_MS = 1_500L
+        private const val PERSONALITY_RECONNECT_TIMEOUT_MS = 40_000L
+        private const val ADAPTER_BOND_POLL_MS = 250L
+        private const val ADAPTER_BOND_TIMEOUT_MS = 60_000L
         private const val KEY_SECTION = "section"
         private const val KEY_AMIIBO = "selectedAmiibo"
         private const val KEY_SOURCE = "selectedSource"

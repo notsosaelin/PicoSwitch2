@@ -55,6 +55,33 @@ class AdapterRelationshipLifecycleTest {
         assertNull(coordinator.connectionSucceeded(generation))
     }
 
+    @Test fun `bond delegated to GATT advances the same attempt to connecting`() {
+        val coordinator = AdapterRelationshipCoordinator(null)
+        val generation = coordinator.beginAssociation()
+        coordinator.deviceDiscovered(generation, adapter.copy(associationId = null), AndroidBondState.None)
+
+        val decision = coordinator.bondDelegatedToGatt(generation) as AdapterLifecycleDecision.Connect
+
+        assertEquals(generation, decision.attempt.generation)
+        assertEquals(AdapterConnectReason.FirstPair, decision.attempt.reason)
+        assertEquals(AdapterRelationshipPhase.Connecting, coordinator.status.phase)
+        // It is a phase transition, not a bond claim: Android still owns the bond state.
+        assertEquals(AndroidBondState.None, coordinator.status.bond)
+    }
+
+    @Test fun `bond delegation is inert outside its own bonding attempt`() {
+        val coordinator = AdapterRelationshipCoordinator(null)
+        val generation = coordinator.beginAssociation()
+        coordinator.deviceDiscovered(generation, adapter.copy(associationId = null), AndroidBondState.None)
+
+        assertTrue(coordinator.bondDelegatedToGatt(generation - 1) is AdapterLifecycleDecision.Ignored)
+        assertEquals(AdapterRelationshipPhase.Bonding, coordinator.status.phase)
+
+        coordinator.bondDelegatedToGatt(generation)
+        // Already connecting: a duplicate delegation must not start a second connect.
+        assertTrue(coordinator.bondDelegatedToGatt(generation) is AdapterLifecycleDecision.Ignored)
+    }
+
     @Test fun `duplicate association completion advances only once`() {
         val coordinator = AdapterRelationshipCoordinator(null)
         val generation = coordinator.beginAssociation()

@@ -64,6 +64,14 @@ object SessionResumePolicy {
     ): Boolean = hasSelectedSource && hasRelationship && managementConnected && !busy &&
         phase in setOf(BridgeLinkPhase.Idle, BridgeLinkPhase.Ready, BridgeLinkPhase.Failed)
 
-    fun shouldAcquire(controllerAttached: Boolean, bondedHostAvailable: Boolean): Boolean =
-        !controllerAttached && bondedHostAvailable
+    fun shouldAcquire(activeSourceId: Long, bondedHostAvailable: Boolean): Boolean =
+        activeSourceId == 0L && bondedHostAvailable
+
+    /**
+     * Choose nothing until the bridge is physically present in Pico's registry. A sole source can
+     * safely become active only while the arbiter still reports no owner; multiple candidates are
+     * deliberately ambiguous and an existing owner is never stolen.
+     */
+    fun soleSourceToActivate(activeSourceId: Long, sourceIds: List<Long>): Long? =
+        sourceIds.singleOrNull()?.takeIf { activeSourceId == 0L }
 }

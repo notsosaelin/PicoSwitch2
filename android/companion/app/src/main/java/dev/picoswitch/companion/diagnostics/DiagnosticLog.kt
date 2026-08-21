@@ -40,16 +40,16 @@ class DiagnosticLog(private val capacity: Int = 400) : BridgeDiagnostics {
         mirrorToLogcat(area, event, safe)
     }
 
-    fun commandStarted(command: String) {
+    fun commandStarted(command: String, detail: String = "") {
         val type = commandType(command)
         _summary.value = _summary.value.copy(lastCommand = type)
-        event("management", "command", type)
+        event("management", "command", if (detail.isBlank()) type else "$type $detail")
     }
 
-    fun commandFinished(command: String, replyBytes: Int) {
+    fun commandFinished(command: String, replyBytes: Int, detail: String = "") {
         val result = "${commandType(command)}: complete ($replyBytes bytes)"
         _summary.value = _summary.value.copy(lastResult = result)
-        event("management", "result", result)
+        event("management", "result", if (detail.isBlank()) result else "$result $detail")
     }
 
     override fun error(area: String, operation: String, error: Throwable) {

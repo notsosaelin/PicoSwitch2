@@ -82,6 +82,7 @@ class AndroidHidTransport(
     @Volatile private var registered = false
     @Volatile private var stopped = false
     @Volatile private var phase = BridgeLinkPhase.Idle
+    @Volatile private var connectStartedAtMillis = 0L
 
     override fun attach(listener: BridgeTransport.Listener) {
         this.listener = listener
@@ -182,6 +183,12 @@ class AndroidHidTransport(
     }
 
     override fun onServiceDisconnected(profileId: Int) {
+        // Closing our own proxy after a failed/ended host connection produces this callback too.
+        // The connection callback already published the authoritative product state in that case.
+        if (profile == null && !registered) {
+            diagnostics.event("transport", "HID profile", "released proxy confirmed")
+            return
+        }
         registrationTimeout?.cancel(); registrationTimeout = null
         connectionTimeout?.cancel(); connectionTimeout = null
         host = null
@@ -240,11 +247,13 @@ class AndroidHidTransport(
     private fun beginConnect(device: BluetoothDevice) {
         val hid = profile ?: return publish(BridgeLinkPhase.Failed, message = "HID profile is not ready")
         connectionTimeout?.cancel()
+        connectStartedAtMillis = System.currentTimeMillis()
         publish(BridgeLinkPhase.Connecting, device.name, "Connecting controller mode", registered = true)
         try {
             val immediateAccepted = hid.connect(device)
-            if (!immediateAccepted) diagnostics.event(
-                "transport", "HID connection", "immediate result false; awaiting callback",
+            diagnostics.event(
+                "transport", "HID connection",
+                "requested accepted=$immediateAccepted bond=${device.bondState} type=${device.type}; awaiting callback",
             )
             connectionTimeout = scope.launch {
                 delay(CONNECTION_CALLBACK_TIMEOUT_MS)
@@ -323,6 +332,8 @@ class AndroidHidTransport(
                         "Controller mode is ready", registered = true,
                     )
                 }
+            } else if (profile == null) {
+                diagnostics.event("transport", "HID registration", "released registration confirmed")
             } else if (phase != BridgeLinkPhase.Idle) {
                 profile?.let(::closeFailedProfile)
                 publish(
@@ -384,15 +395,30 @@ class AndroidHidTransport(
                     listener.onLinkUp(device.name)
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
+                    val priorPhase = phase
+                    val elapsed = if (connectStartedAtMillis == 0L) 0L
+                        else System.currentTimeMillis() - connectStartedAtMillis
                     host = null
                     BridgeForegroundService.stop(appContext, diagnostics)
                     // Hand Android's single HID Device slot back before telling the
                     // session, so a resume attempt cannot race our own orphaned
                     // registration.
                     releaseRegistration()
-                    phase = BridgeLinkPhase.Idle
-                    diagnostics.event("transport", "host disconnected", "released HID registration")
-                    listener.onLinkDown("Controller link disconnected")
+                    if (priorPhase == BridgeLinkPhase.Connecting) {
+                        publish(
+                            BridgeLinkPhase.Failed,
+                            device.name,
+                            "Couldn’t finish Controller Link. Put PicoSwitch2 in pairing mode, then try again.",
+                        )
+                        diagnostics.event(
+                            "transport", "HID connection rejected",
+                            "elapsedMs=$elapsed bond=${device.bondState} type=${device.type}; released registration",
+                        )
+                    } else {
+                        phase = BridgeLinkPhase.Idle
+                        diagnostics.event("transport", "host disconnected", "elapsedMs=$elapsed; released HID registration")
+                        listener.onLinkDown("Controller link disconnected")
+                    }
                 }
             }
         }
