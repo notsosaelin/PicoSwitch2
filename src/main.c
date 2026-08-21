@@ -13,6 +13,7 @@
 #include "ds5_audio_bridge.h"
 #include "ns2_uart_diag.h"
 #include "ns2_active_input.h"
+#include "ns2_bt_recovery_runtime.h"
 
 // joypad-os Bluetooth stack — core1 entry (src/bt_hid/ns2_bt_host.c).
 void ns2_bt_core_task(void);
@@ -62,6 +63,7 @@ main()
 	// Load persistent settings (controller body/lightbar colour, mappings, etc.) from flash.
 	config_load();
 	ds5_audio_bridge_init();
+	ns2_bt_recovery_runtime_init();
 
 #ifdef NS2_DS5_AUDIO_LIVE_OPUS
 	for (size_t i = 0; i < NS2_AUDIO_CORE1_STACK_BYTES / sizeof(uint32_t); ++i)

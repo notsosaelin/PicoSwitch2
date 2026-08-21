@@ -53,6 +53,26 @@ bool mgmt_accept_connection(const mgmt_state_t *s);
 //     opened only to add a CONTROLLER while management is off.
 bool mgmt_accept_bonding(const mgmt_state_t *s);
 
+// (3b) Per-attempt form of (3). The pairing window authorizes an ATTEMPT, and
+//      the caller latches mgmt_accept_bonding()'s answer at the moment the
+//      management connection is ACCEPTED. SM confirmation then consults the
+//      latch instead of re-reading the live window.
+//
+//      Why: the window is a fixed 30 s (PAIRING_WINDOW_MS) from a physical
+//      BOOTSEL gesture, but an Android fresh bond interposes the phone's own
+//      pairing dialog between the LE connection and SMP confirmation. Re-reading
+//      the live window there made a user's already-given authorization expire
+//      mid-procedure. Controller BLE candidates never had this problem because
+//      they latch at connection complete (conn->fresh_pairing_admitted); this
+//      makes management match that established rule.
+//
+//      This does not widen WHO may bond: an attempt that was not admitted when
+//      it connected can never become admitted later, and `enabled` is re-read so
+//      the `mgmt off` escape hatch still revokes a latched attempt. The latch is
+//      bounded by its own connection -- the caller clears it on disconnect and
+//      on HCI loss.
+bool mgmt_accept_latched_bonding(bool enabled, bool attempt_admitted);
+
 // A management ATT session is usable only after the link is encrypted with a
 // stored bond. No-display Android Just Works cannot provide MITM
 // authentication, so the firmware must not claim ATT_SECURITY_AUTHENTICATED.

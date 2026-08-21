@@ -25,6 +25,7 @@
 #include "ds5_audio_bridge.h"
 #include "ns2_kbm_runtime.h"
 #include "ns2_owner_led.h"
+#include "ns2_bt_recovery_runtime.h"
 #include "ns2_wake.h"
 #include "usb.h"
 
@@ -229,6 +230,8 @@ static void audio_timer_handler(btstack_timer_source_t *ts) {
     // Combined with the report-boundary sample below, this is a core-1
     // liveness heartbeat rather than a timer-punctuality-only measurement.
     ds5_audio_diag_note_core1_activity(time_us_32());
+    ns2_bt_recovery_note_core1_activity(
+        to_ms_since_boot(get_absolute_time()));
     bootsel_core1_service();
     ds5_bt_audio_service();
     // The genuine Pro Controller 2 transport interleaves Opus headphone audio
@@ -250,6 +253,7 @@ static void audio_timer_handler(btstack_timer_source_t *ts) {
 // remain the fallback while a controller is quiet or disconnected.
 void bthid_on_report_boundary(void) {
     uint32_t now = to_ms_since_boot(get_absolute_time());
+    ns2_bt_recovery_note_core1_activity(now);
 #ifdef NS2_DS5_AUDIO
     // If inbound HID traffic delays the audio timer while core 1 remains live,
     // report boundaries keep this heartbeat moving. A long gap therefore means
@@ -271,6 +275,7 @@ void bthid_on_report_boundary(void) {
 
 static void control_timer_handler(btstack_timer_source_t *ts) {
     uint32_t now = to_ms_since_boot(get_absolute_time());
+    ns2_bt_recovery_note_control_tick(now);
 
     if (owner_led_last_timer_ms != 0u) {
         uint32_t gap_ms = now - owner_led_last_timer_ms;

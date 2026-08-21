@@ -30,6 +30,7 @@ $tests = @(
     @{ n='test_ns2_kbm_status';                     src='tools/test_ns2_kbm_status.c src/ns2_kbm_status.c src/ns2_kbm.c';               flags='-Isrc/bt_hid -Wno-unused-parameter' }
     @{ n='test_ns2_ble_reconnect';                  src='tools/test_ns2_ble_reconnect.c src/ns2_ble_reconnect.c';                       flags='' }
     @{ n='test_ns2_bt_lifecycle';                   src='tools/test_ns2_bt_lifecycle.c src/ns2_bt_lifecycle.c';                         flags='' }
+    @{ n='test_ns2_bt_health';                      src='tools/test_ns2_bt_health.c src/ns2_bt_health.c';                               flags='' }
     @{ n='test_ns2_owner_led';                      src='tools/test_ns2_owner_led.c src/ns2_owner_led.c';                               flags='' }
     # Xbox / Xbox Elite quirk pipeline. The Elite is identified by the quirk
     # table (name-matched, because BLE PnP often fails to resolve VID/PID), not
