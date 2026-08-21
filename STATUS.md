@@ -8,10 +8,22 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
 - **Last software verification:** 2026-08-21 — Android/Bluetooth reliability pass. Both board
-  builds, 78/78 compiled host tests, the 25-test in-band management suite, four Bluetooth/trace
-  Python suites, descriptor parity, 494 Android JVM tests (app debug 167, app release 167,
-  bridge-core 115, management-core 45), `lintDebug` + `lintRelease`, both APKs, and both
-  install-reset markers.
+  builds, **70/70 declared active host-test targets rebuilt from current source and passed; 9 test
+  sources are explicitly classified outside the active host suite**
+  (`pwsh -File tools/run_host_tests.ps1`, inventory in
+  [`docs/host-test-inventory.md`](docs/host-test-inventory.md)), the in-band management group plus
+  its four Python boundary suites, descriptor parity, 508 Android JVM tests (app debug 174, app
+  release 174, bridge-core 115, management-core 45), `lintDebug` + `lintRelease`, both APKs, and
+  both install-reset markers. This is not a claim that every test in the tree passes: five of the
+  nine excluded sources are uncovered on the host, and three represent coverage lost when the code
+  they exercised changed.
+- **Withdrawn claim (negative knowledge, 2026-08-21):** earlier entries citing "76/76", "78/78", or
+  "79/79 compiled host tests" were **not** valid proof about current source. Only 23 of the 79
+  host-test sources had a build recipe; the rest were executables accumulated in `build/host-tests`
+  by ad-hoc `gcc` invocations of unknown vintage, and the documented procedure was to run whatever
+  binaries the directory happened to contain. Cleaning `build/` exposed this. The runner now
+  recreates its output directory empty, refuses to start if any `tools/test_*.c` lacks either a
+  recipe or a declared exclusion, and counts only what it built. Do not restore the old totals.
 - **Last hardware validation:** 2026-08-21 — fresh LE management pairing, repeated Refresh,
   personality switching with post-transition management recovery, DualSense Edge + BLE management
   coexistence, Controller Link ↔ physical-controller source switching, a ≥75-minute mixed soak with
@@ -661,10 +673,16 @@ concentrated on initialization. The corpus counts and the ranked capture gaps ar
 
 Standard families, with commands and the current inventory in [`AGENTS.md`](AGENTS.md):
 
-- compiled C host tests (`build/host-tests`), including protocol codecs, report encoders, motion PDU
-  and seam invariants, BOOTSEL policy, wake identity, battery, audio packet/resampler, virtual-tag
-  store and v3 runtime replay, the keyboard/mouse mapping model, keyboard HID report decoding, and
-  settings-schema migration, plus the management/bridge suites via `tools/run_mgmt_tests.ps1`
+- compiled C host tests — **one manifest, one command**: `pwsh -File tools/run_host_tests.ps1`
+  builds all 70 declared tests from current source into a freshly emptied `build/host-tests` and
+  runs only what it built. Covers protocol codecs, report encoders, motion PDU/seam invariants,
+  BOOTSEL policy, wake identity, battery, audio control/resampler, virtual-tag store and v3 runtime
+  replay, the keyboard/mouse mapping model, keyboard HID report decoding, settings-schema migration,
+  the Bluetooth admission/liveness/lifecycle policy objects, and the seeded lifecycle model.
+  `tools/run_mgmt_tests.ps1` is the `management` group plus its Python boundary suites. Nine further
+  `tools/test_*.c` are declared non-suite (platform-dependent, obsolete, or a separate lab tool) in
+  the runner's `$notHostTests` table — see also
+  [`docs/host-test-inventory.md`](docs/host-test-inventory.md)
 - Python suites for trace decoding, NFC semantics, the amiibo corpus, and motion analysis
 - JVM tests for `:bridge-core` and the Android backends, plus the architecture guard
 - contract guards: Android descriptor parity across C and Kotlin, the per-contract descriptor
