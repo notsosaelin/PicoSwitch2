@@ -435,8 +435,36 @@ static void test_composite_explicit_selection(void)
     assert(status.explicit_active);
 }
 
+// The Android Controller Link arrives as an INCOMING Classic HID Device
+// connection, so no inquiry record ever supplies a Bluetooth name and bthid
+// leaves it empty (hardware-confirmed 2026-08-21). An empty name must not
+// become "no controller" on the console slot or in the source list.
+static void test_nameless_bridge_source_is_still_identified(void)
+{
+    const char *bridge = ns2_input_source_display_name(
+        "", NS2_INPUT_SOURCE_CLASS_BRIDGE);
+    assert(bridge && strcmp(bridge, "Controller Link") == 0);
+    assert(strcmp(ns2_input_source_display_name(NULL,
+               NS2_INPUT_SOURCE_CLASS_BRIDGE), "Controller Link") == 0);
+    // Whitespace-only is as unusable as empty for a UI row.
+    assert(strcmp(ns2_input_source_display_name("   ",
+               NS2_INPUT_SOURCE_CLASS_BRIDGE), "Controller Link") == 0);
+
+    // A real Bluetooth name always wins; the substitution never renames a peer.
+    assert(strcmp(ns2_input_source_display_name("DualSense Edge",
+               NS2_INPUT_SOURCE_CLASS_DIRECT), "DualSense Edge") == 0);
+    assert(strcmp(ns2_input_source_display_name("PicoSwitch Bridge",
+               NS2_INPUT_SOURCE_CLASS_BRIDGE), "PicoSwitch Bridge") == 0);
+
+    // Only the bridge has a truthful stand-in. A nameless direct controller
+    // stays nameless rather than being labelled as something it is not.
+    assert(ns2_input_source_display_name("", NS2_INPUT_SOURCE_CLASS_DIRECT) == NULL);
+    assert(ns2_input_source_display_name("", NS2_INPUT_SOURCE_CLASS_UNKNOWN) == NULL);
+}
+
 int main(void)
 {
+    test_nameless_bridge_source_is_still_identified();
     test_composite_group_source();
     test_composite_explicit_selection();
     test_bridge_defaults_and_yields_to_direct();

@@ -19,6 +19,7 @@
 
 #include "report.h"                              // set_global_gamepad_input(), report_get_rumble()
 #include "ns2_active_input.h"                    // one authoritative source gate
+#include "ns2_input_arbiter.h"                   // source classes + display-name rule
 #include "switch_pro.h"                           // switch_pro_input_t, SWITCH_MASK_*, pack_stick
 #include "bt/bthid/bthid.h"                       // bthid_get_device() — connected controller identity
 #include "bt/bthid/devices/vendors/sony/ds5_bt.h" // exact decoder provenance (not late SDP PID)
@@ -45,10 +46,29 @@
 #define NS2_WAKE_SESSION_SOURCES 8
 static bool wake_session_active[NS2_WAKE_SESSION_SOURCES];
 
-// bthid conn_index (0..N) arrives as dev_addr; map it to an output slot.
-static inline uint8_t ns2_slot(uint8_t dev_addr) {
-    return (dev_addr < NS2_SLOTS) ? dev_addr : 0;
-}
+// The console-facing output slot. This project has ONE output identity: every
+// console-facing reader is a hardcoded get_global_gamepad_input(0, ...), and
+// every other publisher (ns2_kbm_runtime, bthid_on_raw_report) already writes
+// slot 0 unconditionally. The arbiter upstream guarantees at most one source
+// reaches the publish below, so the slot is a constant, not a per-peer index.
+//
+// This used to be `ns2_slot(dev_addr)`, returning the caller's BTstack
+// connection index whenever it was < NS2_SLOTS (4). That is the INPUT-direction
+// twin of the feedback bug fixed on 2026-07-12 in find_player_index() below,
+// and it stayed latent for the same two reasons: BLE conn indices are offset by
+// BLE_CONN_INDEX_OFFSET so they are always >= NS2_SLOTS and fell back to 0, and
+// two *Classic* sources rarely coexisted. Once a physical Classic controller
+// and the Android Controller Link are connected together, whichever one is
+// allocated connection index 1..3 published its decoded state into a slot no
+// console reader ever reads.
+//
+// Hardware-confirmed 2026-08-21: DualSense Edge on conn 0 drove the console
+// normally, while Controller Link on conn 1 was accepted by the arbiter (its
+// awaiting-fresh latch cleared) yet slot 0 stayed at the handover's neutral
+// state -- `pipe.inputAgeMs` climbed monotonically and `input status` reported
+// vid/pid 0x0000. Both the dead Controller Link input and the Adapter page's
+// "None paired" were that one silent misroute.
+#define NS2_CONSOLE_SLOT 0u
 
 // 0-255 (center 128) -> 12-bit (center 2048). Piecewise linear, not a single `v*4095/255` scale:
 // that single-scale formula treats 0-255 as a plain linear range, but the source convention
@@ -276,7 +296,7 @@ void router_submit_input(const input_event_t *e) {
 
     // Apply the stable base mapping. Users can remap the emulated Nintendo
     // identity on the console, which then persists across physical controllers.
-    uint8_t slot = ns2_slot(e->dev_addr);
+    const uint8_t slot = NS2_CONSOLE_SLOT;
     const bthid_device_t *dev = bthid_get_device(e->dev_addr);
     for (int src = 0; src < NS2_SRC_COUNT; src++) {
         if (b & SRC_TO_JP[src])
@@ -372,8 +392,16 @@ void router_submit_input(const input_event_t *e) {
 
     // Publish identity before input so core0 can make source-specific policy decisions on the
     // new state (notably native Pro2 motion ownership) without one report of stale identity.
-    if (dev)
-        set_global_device(slot, dev->name, dev->vendor_id, dev->product_id);
+    // The Controller Link has no Bluetooth name to publish, so the same truthful substitution
+    // the source registry uses is applied here -- otherwise the console slot would claim an
+    // attached controller with a blank name.
+    if (dev) {
+        const char *display = ns2_input_source_display_name(
+            dev->name, e->from_android_bridge ? NS2_INPUT_SOURCE_CLASS_BRIDGE
+                                              : NS2_INPUT_SOURCE_CLASS_DIRECT);
+        set_global_device(slot, display ? display : dev->name,
+                          dev->vendor_id, dev->product_id);
+    }
 
     if (e->type == INPUT_TYPE_MOUSE) {
         in.has_mouse = 1;

@@ -39,6 +39,7 @@ were tested. Conversation transcripts and temporary handoff files are not author
 | AYN Thor Android companion live APK pass | [`experiments/android-companion-ayn-thor-live-2026-08-13.md`](experiments/android-companion-ayn-thor-live-2026-08-13.md) |
 | Android Amiibo page parity evidence | [`experiments/android-amiibo-page-parity-2026-08-13.md`](experiments/android-amiibo-page-parity-2026-08-13.md) |
 | Android LE bond transport, admission latch, and coexistence soak | [`experiments/android-le-bond-transport-and-coexistence-soak-2026-08-21.md`](experiments/android-le-bond-transport-and-coexistence-soak-2026-08-21.md) |
+| Controller Link input published to a slot nothing reads | [`experiments/controller-link-console-slot-misroute-2026-08-21.md`](experiments/controller-link-console-slot-misroute-2026-08-21.md) |
 | Retro Fighters BattlerGC Pro | [`bluetooth/retrofighters-battlergc-pro.md`](bluetooth/retrofighters-battlergc-pro.md) |
 | 8BitDo Ultimate Bluetooth paddles | [`../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md`](../8Bitdo/docs/8bitdo-ultimate-bluetooth-paddles.md) |
 | Pro Controller 2 USB protocol | [`switch2/usb-spec.md`](switch2/usb-spec.md) |

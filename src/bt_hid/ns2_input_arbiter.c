@@ -2,6 +2,25 @@
 
 #include <string.h>
 
+// The product name for the Android companion's console-input bridge. It is the
+// same relationship the app presents as "Controller Link", so the adapter and
+// the app agree on what the console is being driven by.
+#define NS2_INPUT_BRIDGE_DISPLAY_NAME "Controller Link"
+
+const char *ns2_input_source_display_name(const char *name,
+                                          uint8_t source_class)
+{
+    if (name) {
+        // Whitespace-only is as unusable as empty for a UI row.
+        for (const char *c = name; *c; ++c) {
+            if (*c != ' ' && *c != '\t') return name;
+        }
+    }
+    if (source_class == NS2_INPUT_SOURCE_CLASS_BRIDGE)
+        return NS2_INPUT_BRIDGE_DISPLAY_NAME;
+    return NULL;
+}
+
 static uint32_t atomic_load_u32(const volatile uint32_t *value)
 {
     return __atomic_load_n(value, __ATOMIC_ACQUIRE);

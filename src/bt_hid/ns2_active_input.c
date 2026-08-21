@@ -68,7 +68,6 @@ bool ns2_active_input_submit_group(const input_event_t *event,
     source_key_for_connection(event->dev_addr, event->instance,
                               (uint8_t)event->transport,
                               event->connection_generation, &key, &device);
-    const char *name = device ? device->name : NULL;
     uint16_t vendor_id = device ? device->vendor_id : 0u;
     uint16_t product_id = device ? device->product_id : 0u;
     // The companion bridge is identified by its own declared descriptor, never by
@@ -77,6 +76,8 @@ bool ns2_active_input_submit_group(const input_event_t *event,
     uint8_t source_class = event->from_android_bridge
                                ? NS2_INPUT_SOURCE_CLASS_BRIDGE
                                : NS2_INPUT_SOURCE_CLASS_DIRECT;
+    const char *name = ns2_input_source_display_name(
+        device ? device->name : NULL, source_class);
     bool accepted = ns2_input_arbiter_submit_group(&s_arbiter, &key, name,
                                                    vendor_id, product_id,
                                                    source_class, group_id,

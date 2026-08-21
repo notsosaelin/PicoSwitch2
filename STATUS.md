@@ -14,9 +14,11 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   install-reset markers.
 - **Last hardware validation:** 2026-08-21 — fresh LE management pairing, repeated Refresh,
   personality switching with post-transition management recovery, DualSense Edge + BLE management
-  coexistence, Controller Link ↔ physical-controller source switching, and a ≥75-minute mixed
-  soak with continuous controller audio and no drops. Record:
-  [`docs/experiments/android-le-bond-transport-and-coexistence-soak-2026-08-21.md`](docs/experiments/android-le-bond-transport-and-coexistence-soak-2026-08-21.md).
+  coexistence, Controller Link ↔ physical-controller source switching, a ≥75-minute mixed soak with
+  continuous controller audio and no drops, and Controller Link input reaching the console from a
+  non-zero Classic connection index. Records:
+  [`docs/experiments/android-le-bond-transport-and-coexistence-soak-2026-08-21.md`](docs/experiments/android-le-bond-transport-and-coexistence-soak-2026-08-21.md),
+  [`docs/experiments/controller-link-console-slot-misroute-2026-08-21.md`](docs/experiments/controller-link-console-slot-misroute-2026-08-21.md).
 - **Current release:** v2.0.0, published 2026-08-15 from commit `a1491b2`.
 - **Development branch:** `ns2-testing`; v2.0.0 is the last tag on it.
 - **Bridge contract:** 3 (`ANDROID_BRIDGE_CONTRACT_VERSION` / `BridgeContract.VERSION`) — unchanged.
@@ -105,8 +107,23 @@ by loosening the connection limit (see [Keyboard and mouse input](#keyboard-and-
   returns the console to the companion when a directly paired controller disconnects or runs flat.
 - Stale disconnects cannot remove a source after connection-index reuse: the source key carries the
   stable address and connection generation, not just the reusable index.
+- **There is exactly ONE console output slot, and a BTstack connection index is never a slot.**
+  Every console-facing reader is a hardcoded `get_global_gamepad_input(0, …)`, and the arbiter
+  already guarantees a single accepted source, so `router_submit_input()` publishes through
+  `NS2_CONSOLE_SLOT` and `find_player_index()` returns 0. Indexing the shared slot arrays by
+  connection index has silently discarded a correctly-arbitrated peer twice — rumble on 2026-07-12,
+  input on 2026-08-21 — because BLE connection indices are offset past `NS2_SLOTS` and fall back to
+  0, so only a *Classic* peer on connection 1..3 is affected. Pinned by
+  `tools/test_ns2_console_slot_wiring.py`.
+- A source with no Bluetooth name is not "no controller". The Android Controller Link arrives as an
+  incoming Classic HID Device connection, so no inquiry record ever names it;
+  `ns2_input_source_display_name()` supplies "Controller Link" from the source class the firmware
+  derived from the bridge's own declared HID descriptor. A real name always wins, and a nameless
+  direct controller stays nameless.
 - Surfaces: UART `input sources` / `input active <id|none>`, the same bounded query over
-  bonded management, and the companion's **Active controller** selector.
+  bonded management (source names truncated to 16 characters), and the companion's
+  **Active controller** selector. The Adapter page's Controller row is the console slot's published
+  identity — active-input truth, not physical attachment.
 
 ## Keyboard and mouse input — Complete, hardware validated
 
