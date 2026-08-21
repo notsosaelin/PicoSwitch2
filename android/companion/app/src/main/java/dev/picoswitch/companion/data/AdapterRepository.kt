@@ -91,6 +91,22 @@ class AdapterRepository(private val transport: ManagementTransport) {
             runCatching { transport.disconnect() }
             throw error
         }
+        // The main screen states what the console currently sees this adapter as, and what is
+        // driving it. Both are adapter truth, and neither was read anywhere except the manual
+        // Refresh button, so a freshly connected session showed "Acting as Unknown" with no
+        // controller until the user pressed Refresh (observed 2026-08-21 alongside the Controller
+        // row staleness). Read them once here, AFTER validation, and optionally: identity
+        // validation still hinges on `firmware` alone, so a slow or unsupported reply can never
+        // reject a healthy carrier -- that is what the lean boundary above exists to prevent.
+        runCatching { client.personality() }.getOrNull()?.let { personality ->
+            _snapshot.value = _snapshot.value.copy(
+                personality = personality,
+                capabilities = _snapshot.value.capabilities.copy(personality = CapabilityState.Available),
+            )
+        }
+        runCatching { client.controller() }.getOrNull()?.let { controller ->
+            _snapshot.value = _snapshot.value.copy(controller = controller)
+        }
     }
 
     suspend fun disconnect() {
@@ -137,6 +153,22 @@ class AdapterRepository(private val transport: ManagementTransport) {
             controller = controller,
             input = input.value ?: _snapshot.value.input,
             capabilities = _snapshot.value.capabilities.copy(activeInput = input.state),
+            refreshedAtMillis = System.currentTimeMillis(),
+        )
+        return controller
+    }
+
+    /**
+     * Re-read only the adapter's canonical slot-0 controller identity.
+     *
+     * [refreshController] also re-reads the source list, which is two commands on a single-flight
+     * carrier. Convergence after an ownership handover only needs the identity, so this asks for
+     * exactly that.
+     */
+    suspend fun refreshControllerIdentity(): ControllerInfo {
+        val controller = client.controller()
+        _snapshot.value = _snapshot.value.copy(
+            controller = controller,
             refreshedAtMillis = System.currentTimeMillis(),
         )
         return controller

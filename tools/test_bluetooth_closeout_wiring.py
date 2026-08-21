@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HOST = ROOT / "src/bt_hid/bt/btstack/btstack_host.c"
 AUDIO_BRIDGE = ROOT / "src/ds5_audio_bridge.c"
 DS5_BT = ROOT / "src/bt_hid/bt/bthid/devices/vendors/sony/ds5_bt.c"
+BT_TRANSPORT = ROOT / "src/bt_hid/ns2_bt_host.c"
 
 
 def function_body(source: str, start: str, end: str) -> str:
@@ -62,8 +63,86 @@ def main() -> None:
 
     check_management_bond_admission_is_latched(source)
     check_audio_sink_is_independent_of_input_ownership()
+    check_controller_discovery_never_touches_management(source)
 
     print("Bluetooth closeout wiring tests passed")
+
+
+def check_controller_discovery_never_touches_management(source: str) -> None:
+    """Opening or closing controller discovery is not collateral damage for the
+    management session.
+
+    Field case 2026-08-21: a pairing window was opened while an Android management
+    client was connected and a controller was already trying to pair. Management
+    dropped, the controller handshake collapsed, and the radio wedged badly enough
+    that the watchdog had to rescue the device.
+
+    The chosen product behaviour is COEXISTENCE: controller discovery is a
+    central-role LE scan plus Classic inquiry, while management owns the
+    peripheral-role advertiser and its own ACL. They are different radio
+    functions and the code already treats them as independent. If that ever has
+    to become deliberate serialisation instead, it must be an explicit,
+    reason-carrying retirement with recorded reconnect ownership -- never a side
+    effect of a discovery routine. These guards make the silent version
+    impossible to reintroduce.
+    """
+    regions = {
+        "start_scan": function_body(
+            source,
+            r"void btstack_host_start_scan\(void\)\s*\{",
+            r"\n\}\s*\n\s*void btstack_host_stop_scan",
+        ),
+        "stop_scan": function_body(
+            source,
+            r"void btstack_host_stop_scan\(void\)\s*\{",
+            r"\n\}",
+        ),
+        "pairing_window": function_body(
+            source,
+            r"void btstack_host_set_pairing_window_open\(bool open\)\s*\{",
+            r"\n\}",
+        ),
+        "disconnect_all": function_body(
+            source,
+            r"void btstack_host_disconnect_all_devices\(void\)\s*\{",
+            r"\n\}",
+        ),
+    }
+    for name, body in regions.items():
+        assert "config_ble" not in body, (
+            f"{name}() must not touch management session state; opening or "
+            f"closing controller discovery cannot retire a management client"
+        )
+
+    # The BOOTSEL pairing gesture itself must not reach for management either.
+    transport = BT_TRANSPORT.read_text(encoding="utf-8")
+    open_window = function_body(
+        transport,
+        r"static void open_pairing_window\(uint32_t now_ms\) \{",
+        r"\n\}",
+    )
+    for forbidden in ("config_ble", "mgmt_", "g_mgmt_enabled"):
+        assert forbidden not in open_window, (
+            f"open_pairing_window() must not reach into management state "
+            f"({forbidden})"
+        )
+
+    # Liveness escalation must consult whether a security procedure is running,
+    # so an ordinary pairing is never mistaken for a wedged radio.
+    service = function_body(
+        source,
+        r"static void bt_health_service\(void\)\s*\{",
+        r"\n\}",
+    )
+    assert ".security_in_flight = bt_health_security_in_flight()" in service, (
+        "liveness escalation must know when an admitted security procedure owns "
+        "the radio"
+    )
+    # And the escalation context must be captured before the reboot erases it.
+    assert service.count("bt_health_note_escalation();") == 2, (
+        "both the power-cycle and the reboot escalation must record a snapshot "
+        "that survives the reboot"
+    )
 
 
 def check_management_bond_admission_is_latched(source: str) -> None:

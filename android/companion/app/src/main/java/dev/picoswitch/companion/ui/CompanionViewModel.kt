@@ -183,6 +183,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     // its deadline, which an ordinary bonded connect never does.
     @Volatile private var gattInitiatedBondGeneration = 0L
     private val operationAdmission = OperationAdmissionGate()
+    private val activeIdentityPolicy = ActiveControllerIdentityPolicy()
     private var autoReconnectAttempted = false
     private var automaticControllerResumeJob: Job? = null
     private var bridgeSourceReconciliationJob: Job? = null
@@ -295,6 +296,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                             }
                         }
                             .onSuccess { input ->
+                                convergeActiveControllerIdentity(input.activeId)
                                 if (_ui.value.bridge.phase == BridgeLinkPhase.Playing) {
                                     reconcileControllerLinkSource(input)
                                 }
@@ -897,8 +899,37 @@ class CompanionViewModel(application: Application, private val savedState: Saved
 
     fun setActiveInput(sourceId: Long) = launch("Switching active controller") {
         adapter.setActiveInput(sourceId)
+        // Ownership handover neutralizes the console slot until the new owner's first fresh
+        // report, so this first read often returns no identity. That is the transitional state,
+        // not the answer; the background poll converges it as soon as the report lands.
+        convergeActiveControllerIdentity(sourceId)
         val source = _ui.value.snapshot.input.sources.firstOrNull { it.id == sourceId }
         notice(if (sourceId == 0L) "Console input paused" else "Active controller switched to ${source?.name ?: "selected source"}")
+    }
+
+    /**
+     * Keep the Adapter page's Controller row on the adapter's canonical slot-0 identity.
+     *
+     * Nothing outside the manual Refresh button ever re-read that identity, so switching the
+     * active console input left the row showing whatever the last Refresh happened to see
+     * (hardware-confirmed 2026-08-21). This is the only place that re-reads it, the adapter stays
+     * the single source of truth, and [ActiveControllerIdentityPolicy] bounds how often it asks.
+     */
+    private suspend fun convergeActiveControllerIdentity(activeSourceId: Long) {
+        if (!activeIdentityPolicy.shouldRefresh(activeSourceId)) return
+        val identity = runCatching {
+            ManagementDiagnosticContext.withWorkflow("active-identity-converge") {
+                adapter.refreshControllerIdentity()
+            }
+        }.getOrElse {
+            diagnostics.error("controller", "active identity refresh", it)
+            return
+        }
+        activeIdentityPolicy.identityRead(activeSourceId, identity.attached)
+        diagnostics.event(
+            "controller", "identity.observed",
+            "active=$activeSourceId attached=${identity.attached}",
+        )
     }
 
     /**

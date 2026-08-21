@@ -2800,14 +2800,52 @@ static hci_con_handle_t bt_health_find_probe_handle(void)
     return HCI_CON_HANDLE_INVALID;
 }
 
+// True while an admitted pairing/security procedure owns the radio. Such a
+// procedure is legitimately quiet on the HCI event path -- a peer is running
+// SSP/SMP, inquiry is sweeping, or the user is reading a pairing dialog -- so
+// liveness escalation is suppressed for a bounded interval rather than mistaking
+// it for a wedge. See NS2_BT_HEALTH_SECURITY_SUPPRESS_MAX_MS.
+static bool bt_health_security_in_flight(void)
+{
+    if (hid_pairing_window_open || pairing_close_deferred) return true;
+    if (classic_state.pending_valid) return true;
+    return config_ble.handle != HCI_CON_HANDLE_INVALID &&
+           config_ble.fresh_bond_admitted;
+}
+
+static void bt_health_note_escalation(void)
+{
+    ns2_bt_recovery_escalation_t snapshot = {
+        .phase = (uint8_t)bt_health.phase,
+        .probes_sent = (uint8_t)bt_health.probes_sent,
+        .probe_failures =
+            (uint8_t)(bt_health.probes_failed + bt_health.probe_timeouts),
+        .recovery_attempts = (uint8_t)bt_health.recovery_attempts,
+        .uptime_s = (uint8_t)(btstack_run_loop_get_time_ms() / 1000u),
+        .pairing_window_open = hid_pairing_window_open,
+        .management_client = config_ble.handle != HCI_CON_HANDLE_INVALID,
+        .classic_link = btstack_classic_get_connection_count() > 0,
+        .ble_link = bt_health_find_probe_handle() != HCI_CON_HANDLE_INVALID,
+        .discovery_active = hid_state.scan_active || classic_state.inquiry_active,
+        .valid = true,
+    };
+    ns2_bt_recovery_note_escalation(&snapshot);
+}
+
 static void bt_health_service(void)
 {
     uint32_t const now = btstack_run_loop_get_time_ms();
     HCI_STATE const state = hci_get_state();
     hci_con_handle_t const candidate = bt_health_find_probe_handle();
-    ns2_bt_health_action_t const action = ns2_bt_health_tick(
-        &bt_health, now, state == HCI_STATE_WORKING, state == HCI_STATE_OFF,
-        bt_health_claimed_acl(), candidate != HCI_CON_HANDLE_INVALID);
+    ns2_bt_health_inputs_t const inputs = {
+        .hci_working = state == HCI_STATE_WORKING,
+        .hci_off = state == HCI_STATE_OFF,
+        .claimed_acl = bt_health_claimed_acl(),
+        .probe_handle_available = candidate != HCI_CON_HANDLE_INVALID,
+        .security_in_flight = bt_health_security_in_flight(),
+    };
+    ns2_bt_health_action_t const action =
+        ns2_bt_health_tick(&bt_health, now, &inputs);
 
     switch (action) {
         case NS2_BT_HEALTH_ACTION_SEND_PROBE:
@@ -2820,6 +2858,10 @@ static void bt_health_service(void)
             break;
         case NS2_BT_HEALTH_ACTION_POWER_OFF:
             bt_health_probe_handle = HCI_CON_HANDLE_INVALID;
+            // Capture the radio context now, while it is still true. If the
+            // power cycle itself times out this is the only description of the
+            // event that survives the reboot.
+            bt_health_note_escalation();
             printf("[BT_HEALTH] HCI liveness failed; requesting bounded power cycle\n");
             hci_power_control(HCI_POWER_OFF);
             break;
@@ -2828,7 +2870,12 @@ static void bt_health_service(void)
             hci_power_control(HCI_POWER_ON);
             break;
         case NS2_BT_HEALTH_ACTION_REQUEST_REBOOT:
-            printf("[BT_HEALTH] HCI power transition timed out; requesting rate-limited reboot\n");
+            // Re-record so the surviving snapshot names the phase that actually
+            // timed out (POWERING_OFF vs POWERING_ON), which the 2026-08-21
+            // field event could not tell us.
+            bt_health_note_escalation();
+            printf("[BT_HEALTH] HCI power transition timed out in %s; requesting rate-limited reboot\n",
+                   ns2_bt_health_phase_name(bt_health.phase));
             ns2_bt_recovery_request_reboot(NS2_BT_REBOOT_CAUSE_HCI_POWER_TIMEOUT);
             break;
         case NS2_BT_HEALTH_ACTION_NONE:
