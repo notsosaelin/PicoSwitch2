@@ -81,6 +81,37 @@ static void test_bond_only_in_window_when_enabled(void) {
     assert(!mgmt_accept_bonding(&s));
 }
 
+// The per-attempt latch must be exactly "what (3) said when the connection was
+// accepted", still gated by the runtime feature switch. It must never consult
+// the live window, and must never manufacture admission for an attempt that was
+// refused at connect time.
+static void test_latched_bond_is_per_attempt(void) {
+    assert(mgmt_accept_latched_bonding(true, true));
+    assert(!mgmt_accept_latched_bonding(true, false));   // never admitted -> never bonds
+    assert(!mgmt_accept_latched_bonding(false, true));   // `mgmt off` revokes a latched attempt
+    assert(!mgmt_accept_latched_bonding(false, false));
+
+    // Equivalence with (3) at admission time, across every mgmt_state_t input.
+    for (unsigned bits = 0; bits < 256u; bits++) {
+        mgmt_state_t s = {
+            .enabled           = (bits & 0x01u) != 0,
+            .console_awake     = (bits & 0x02u) != 0,
+            .wake_active       = (bits & 0x04u) != 0,
+            .scanning          = (bits & 0x08u) != 0,
+            .pairing_window_open = (bits & 0x10u) != 0,
+            .client_connected  = (bits & 0x20u) != 0,
+            .client_bonded     = (bits & 0x40u) != 0,
+            .client_encrypted  = (bits & 0x80u) != 0,
+        };
+        bool latched = mgmt_accept_bonding(&s);
+        assert(mgmt_accept_latched_bonding(s.enabled, latched) == mgmt_accept_bonding(&s));
+        // Closing the window after admission does not revoke that attempt...
+        assert(mgmt_accept_latched_bonding(s.enabled, latched) == latched);
+        // ...but it does keep a never-admitted attempt refused.
+        if (!latched) assert(!mgmt_accept_latched_bonding(s.enabled, latched));
+    }
+}
+
 static void test_writes_require_bond_and_allowlist(void) {
     mgmt_state_t s = IDLE_ENABLED;
     s.client_connected = true;
@@ -193,6 +224,7 @@ int main(void) {
     test_advertises_only_when_safe();
     test_wake_is_never_broken();
     test_bond_only_in_window_when_enabled();
+    test_latched_bond_is_per_attempt();
     test_writes_require_bond_and_allowlist();
     test_single_client();
     test_link_trust_requires_bond_and_active_ble_encryption();

@@ -21,6 +21,8 @@
 #include "ns2_kbm_runtime.h"
 #include "ns2_kbm_status.h"
 #include "ns2_owner_led.h"
+#include "ns2_bt_health.h"
+#include "ns2_bt_recovery_runtime.h"
 #include "config.h"  // config_request_save (the shared deferred settings write)
 #include "bt/bthid/bthid.h"                                  // live device table (btdev)
 #include "bt/bthid/devices/generic/bthid_gamepad.h"           // generic-fallback identity
@@ -308,7 +310,8 @@ static void queue_btstate(void) {
         "\"pairing\":{\"window_open\":%s,\"close_deferred\":%s,"
         "\"lockout\":%s},"
         "\"cble\":{\"available\":%s,\"armed\":%s,\"advertising\":%s,"
-        "\"client\":%s,\"closing\":%s,\"notify\":%s},"
+        "\"client\":%s,\"closing\":%s,\"notify\":%s,"
+        "\"fresh_bond\":%s},"
         "\"events\":{\"count\":%u,\"dropped\":%lu},"
         "\"scan\":{\"starts\":%lu,\"stops\":%lu},"
         "\"adv\":{\"starts\":%lu,\"stops\":%lu},"
@@ -336,6 +339,7 @@ static void queue_btstate(void) {
         d.cble_mode_active ? "true" : "false",
         d.cble_advertising ? "true" : "false", d.cble_has_client ? "true" : "false",
         d.cble_closing ? "true" : "false", d.cble_notifications ? "true" : "false",
+        d.cble_fresh_bond_admitted ? "true" : "false",
         d.event_count, (unsigned long)d.event_dropped,
         (unsigned long)d.scan_starts, (unsigned long)d.scan_stops,
         (unsigned long)d.adv_starts, (unsigned long)d.adv_stops,
@@ -354,6 +358,40 @@ static void queue_btstate(void) {
         d.owner_led_output_on ? "true" : "false",
         (unsigned long)d.owner_led_last_transition_ms,
         (unsigned long)d.owner_led_timer_max_gap_ms);
+    queue_text(trace_format_response);
+}
+
+static void queue_bthealth(void) {
+    btstack_host_mgmt_diag_t bt;
+    ns2_bt_recovery_runtime_diag_t runtime;
+    btstack_host_get_mgmt_diag(&bt);
+    ns2_bt_recovery_runtime_get_diag(&runtime);
+    snprintf(trace_format_response, sizeof(trace_format_response),
+        "{\"bthealth\":\"status\",\"core1\":{\"sequence\":%lu,"
+        "\"age_ms\":%lu,\"control_tick_age_ms\":%lu,"
+        "\"control_tick_max_gap_ms\":%lu},"
+        "\"hci\":{\"state\":%u,\"phase\":\"%s\",\"last_event_age_ms\":%lu,"
+        "\"probe_handle\":\"0x%04X\",\"probes\":{\"sent\":%lu,"
+        "\"ok\":%lu,\"failed\":%lu,\"timeouts\":%lu},"
+        "\"recovery\":{\"attempts\":%lu,\"completions\":%lu}},"
+        "\"reboot\":{\"pending\":%s,\"suppressed\":%s,"
+        "\"requests\":%lu,\"consecutive_boots\":%u,\"last_boot_cause\":%u}}",
+        (unsigned long)runtime.core1_heartbeat_sequence,
+        (unsigned long)runtime.core1_heartbeat_age_ms,
+        (unsigned long)runtime.control_tick_age_ms,
+        (unsigned long)runtime.control_tick_max_gap_ms,
+        bt.hci_state,
+        ns2_bt_health_phase_name((ns2_bt_health_phase_t)bt.hci_health_phase),
+        (unsigned long)bt.hci_last_event_age_ms, bt.hci_probe_handle,
+        (unsigned long)bt.hci_probes_sent, (unsigned long)bt.hci_probes_ok,
+        (unsigned long)bt.hci_probes_failed,
+        (unsigned long)bt.hci_probe_timeouts,
+        (unsigned long)bt.hci_recovery_attempts,
+        (unsigned long)bt.hci_recovery_completions,
+        runtime.reboot_pending ? "true" : "false",
+        runtime.reboot_suppressed ? "true" : "false",
+        (unsigned long)runtime.reboot_requests,
+        runtime.consecutive_recovery_boots, runtime.last_boot_cause);
     queue_text(trace_format_response);
 }
 
@@ -952,6 +990,8 @@ static void handle_command(void) {
                strcmp(rx_line, "btlife status") == 0) {
         // Live BLE/management coexistence snapshot + suppression counters.
         queue_btstate();
+    } else if (strcmp(rx_line, "bthealth") == 0) {
+        queue_bthealth();
     } else if (strcmp(rx_line, "btbonds") == 0) {
         queue_btbonds();
     } else if (strcmp(rx_line, "btlife clear") == 0) {

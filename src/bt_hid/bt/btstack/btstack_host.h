@@ -241,6 +241,7 @@ typedef struct {
     bool cble_has_client;
     bool cble_closing;
     bool cble_notifications;
+    bool cble_fresh_bond_admitted;
     // Ring + counters
     uint16_t event_count;
     uint32_t event_dropped;
@@ -257,6 +258,16 @@ typedef struct {
     uint32_t ctrl_disconnects;
     uint32_t hci_disconnects;
     uint32_t hci_state_losses;
+    uint8_t hci_state;
+    uint8_t hci_health_phase;
+    uint16_t hci_probe_handle;
+    uint32_t hci_last_event_age_ms;
+    uint32_t hci_probes_sent;
+    uint32_t hci_probes_ok;
+    uint32_t hci_probes_failed;
+    uint32_t hci_probe_timeouts;
+    uint32_t hci_recovery_attempts;
+    uint32_t hci_recovery_completions;
     uint32_t fresh_admission_accepts;
     uint32_t fresh_admission_reject_window;
     uint32_t fresh_admission_reject_lockout;

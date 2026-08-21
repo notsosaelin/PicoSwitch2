@@ -342,6 +342,7 @@ target_link_libraries(PicoSwitchWGA
     tinyusb_board
     pico_multicore
     hardware_flash
+    hardware_watchdog
 )
 if(NS2_PRO AND NS2_UART_DIAG)
     target_link_libraries(PicoSwitchWGA hardware_uart)

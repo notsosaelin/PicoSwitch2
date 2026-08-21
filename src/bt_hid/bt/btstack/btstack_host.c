@@ -10,6 +10,8 @@
 #include "ns2_bt_lifecycle.h"
 #include "ns2_ble_reconnect.h"
 #include "ns2_owner_led.h"
+#include "ns2_bt_health.h"
+#include "ns2_bt_recovery_runtime.h"
 #include "ds5_audio_bridge.h"
 #include "ns2_pairing_crypto.h"
 #include "mgmt_access.h"
@@ -319,6 +321,8 @@ static uint8_t hid_descriptor_storage[1024];  // room for 2 BLE HID descriptors 
 
 static btstack_packet_callback_registration_t hci_event_callback_registration;
 static btstack_packet_callback_registration_t sm_event_callback_registration;
+static ns2_bt_health_t bt_health;
+static hci_con_handle_t bt_health_probe_handle = HCI_CON_HANDLE_INVALID;
 
 // Direct notification listener for Xbox HID reports (bypasses HIDS client)
 static gatt_client_notification_t xbox_hid_notification_listener;
@@ -746,6 +750,18 @@ static struct {
     // an absent peer. See btstack_host_pick_reconnect().
     bd_addr_t client_addr;
     bool client_addr_valid;
+    // Per-attempt fresh-bond admission, latched when this connection was
+    // ACCEPTED. Controller BLE candidates already work this way
+    // (conn->fresh_pairing_admitted, latched from
+    // hid_state.pending_fresh_pairing_admitted at connection complete); the
+    // management peripheral was the one path that instead re-read the live
+    // window at SM confirmation time. That made admission depend on where the
+    // 30 s PAIRING_WINDOW_MS deadline happened to fall relative to the user's
+    // tap on Android's own pairing dialog, so authorization the user had
+    // already given could expire mid-procedure. Latching here makes management
+    // match the established per-attempt rule: the window authorizes an
+    // ATTEMPT, and that attempt is bounded by its own connection.
+    bool fresh_bond_admitted;
 } config_ble = {
     .handle = HCI_CON_HANDLE_INVALID,
 };
@@ -797,7 +813,9 @@ static bool config_ble_link_trusted(hci_con_handle_t handle)
     return mgmt_link_is_trusted(gap_bonded(handle), gap_encryption_key_size(handle));
 }
 
-static bool config_ble_accept_new_bond(void)
+// Evaluated at CONNECTION ADMISSION, not at SM confirmation.
+// See config_ble.fresh_bond_admitted.
+static bool config_ble_bond_admission_open(void)
 {
     mgmt_state_t state = {
         .enabled = g_mgmt_enabled,
@@ -812,6 +830,14 @@ static bool config_ble_accept_new_bond(void)
             gap_encryption_key_size(config_ble.handle) == 16u,
     };
     return mgmt_accept_bonding(&state);
+}
+
+static bool config_ble_accept_new_bond(void)
+{
+    // g_mgmt_enabled is re-read so the `mgmt off` escape hatch still revokes
+    // admission for a connection that was latched before it was used.
+    return mgmt_accept_latched_bonding(g_mgmt_enabled,
+                                       config_ble.fresh_bond_admitted);
 }
 
 static void config_ble_start_advertising(void);
@@ -1133,6 +1159,8 @@ static void setup_hid_handlers(void)
     sm_event_callback_registration.callback = sm_packet_handler;
     sm_add_event_handler(&sm_event_callback_registration);
 
+    ns2_bt_health_init(&bt_health, btstack_run_loop_get_time_ms());
+    bt_health_probe_handle = HCI_CON_HANDLE_INVALID;
     hid_state.initialized = true;
     printf("[BTSTACK_HOST] HID handlers initialized (BLE + Classic)\n");
 }
@@ -2172,6 +2200,9 @@ static bool config_ble_accept_connection(hci_con_handle_t handle,
     }
 
     config_ble.handle = handle;
+    // Latch before anything else can move the window. The admission test reads
+    // config_ble.handle, so it must follow the assignment above.
+    config_ble.fresh_bond_admitted = config_ble_bond_admission_open();
     if (peer_addr) {
         memcpy(config_ble.client_addr, peer_addr, sizeof(config_ble.client_addr));
         config_ble.client_addr_valid = true;
@@ -2181,7 +2212,8 @@ static bool config_ble_accept_connection(hci_con_handle_t handle,
     config_ble.tx_requested = false;
     config_wireless_bridge_reset_session();
     btlife_record(BTLIFE_MGMT_CONNECT, g_usb_config_mode ? 0u : 1u, handle);
-    printf("[BTSTACK_HOST] Config BLE client connected: handle=0x%04X\n", handle);
+    printf("[BTSTACK_HOST] Config BLE client connected: handle=0x%04X fresh_bond=%d\n",
+           handle, config_ble.fresh_bond_admitted ? 1 : 0);
     return true;
 }
 
@@ -2196,6 +2228,7 @@ static bool config_ble_handle_disconnect(
     printf("[BTSTACK_HOST] Config BLE client disconnected: handle=0x%04X reason=0x%02X\n",
            handle, reason);
     config_ble.handle = HCI_CON_HANDLE_INVALID;
+    config_ble.fresh_bond_admitted = false;
     config_ble.client_addr_valid = false;
     config_ble.closing = false;
     config_ble.notifications_enabled = false;
@@ -2740,6 +2773,70 @@ void btstack_host_register_connect_callback(btstack_host_connect_callback_t call
 // MAIN LOOP
 // ============================================================================
 
+static bool bt_health_claimed_acl(void)
+{
+    if (config_ble.handle != HCI_CON_HANDLE_INVALID) return true;
+    for (int i = 0; i < MAX_BLE_CONNECTIONS; ++i) {
+        if (hid_state.connections[i].handle != HCI_CON_HANDLE_INVALID) return true;
+    }
+    for (int i = 0; i < MAX_CLASSIC_CONNECTIONS; ++i) {
+        if (classic_state.connections[i].active) return true;
+    }
+    return false;
+}
+
+static hci_con_handle_t bt_health_find_probe_handle(void)
+{
+    btstack_linked_list_iterator_t iterator;
+    hci_connections_get_iterator(&iterator);
+    while (btstack_linked_list_iterator_has_next(&iterator)) {
+        hci_connection_t *connection =
+            (hci_connection_t *)btstack_linked_list_iterator_next(&iterator);
+        if (connection->state == OPEN &&
+            connection->con_handle != HCI_CON_HANDLE_INVALID) {
+            return connection->con_handle;
+        }
+    }
+    return HCI_CON_HANDLE_INVALID;
+}
+
+static void bt_health_service(void)
+{
+    uint32_t const now = btstack_run_loop_get_time_ms();
+    HCI_STATE const state = hci_get_state();
+    hci_con_handle_t const candidate = bt_health_find_probe_handle();
+    ns2_bt_health_action_t const action = ns2_bt_health_tick(
+        &bt_health, now, state == HCI_STATE_WORKING, state == HCI_STATE_OFF,
+        bt_health_claimed_acl(), candidate != HCI_CON_HANDLE_INVALID);
+
+    switch (action) {
+        case NS2_BT_HEALTH_ACTION_SEND_PROBE:
+            bt_health_probe_handle = candidate;
+            printf("[BT_HEALTH] probing handle 0x%04X after quiet HCI interval\n",
+                   candidate);
+            if (!gap_read_rssi(candidate)) {
+                ns2_bt_health_note_probe_complete(&bt_health, now, 0xFFu);
+            }
+            break;
+        case NS2_BT_HEALTH_ACTION_POWER_OFF:
+            bt_health_probe_handle = HCI_CON_HANDLE_INVALID;
+            printf("[BT_HEALTH] HCI liveness failed; requesting bounded power cycle\n");
+            hci_power_control(HCI_POWER_OFF);
+            break;
+        case NS2_BT_HEALTH_ACTION_POWER_ON:
+            printf("[BT_HEALTH] HCI is off; restoring controller power\n");
+            hci_power_control(HCI_POWER_ON);
+            break;
+        case NS2_BT_HEALTH_ACTION_REQUEST_REBOOT:
+            printf("[BT_HEALTH] HCI power transition timed out; requesting rate-limited reboot\n");
+            ns2_bt_recovery_request_reboot(NS2_BT_REBOOT_CAUSE_HCI_POWER_TIMEOUT);
+            break;
+        case NS2_BT_HEALTH_ACTION_NONE:
+        default:
+            break;
+    }
+}
+
 
 // Transport-specific process function (weak, overridden by transport)
 __attribute__((weak)) void btstack_host_transport_process(void) {
@@ -2749,6 +2846,8 @@ __attribute__((weak)) void btstack_host_transport_process(void) {
 void btstack_host_process(void)
 {
     if (!hid_state.initialized) return;
+
+    bt_health_service();
 
     // Configuration/management is a BLE peripheral while USB is in the explicit
     // CDC Config personality OR when in-band management is enabled (production
@@ -2959,7 +3058,6 @@ static void sdp_query_vid_pid_callback(uint8_t packet_type, uint16_t channel, ui
     if (packet_type != HCI_EVENT_PACKET) return;
 
     uint8_t event_type = hci_event_packet_get_type(packet);
-
     // Debug: log connection-related HCI events for Wiimote troubleshooting
     if (wiimote_conn.active && event_type >= 0x01 && event_type <= 0x20) {
         printf("[BTSTACK_HOST] HCI event: 0x%02X\n", event_type);
@@ -3139,6 +3237,7 @@ static void btstack_host_clear_transient_radio_state(void)
 
     config_ble.advertising = false;
     config_ble.handle = HCI_CON_HANDLE_INVALID;
+    config_ble.fresh_bond_admitted = false;
     config_ble.client_addr_valid = false;
     config_ble.closing = false;
     config_ble.notifications_enabled = false;
@@ -3163,6 +3262,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
     if (packet_type != HCI_EVENT_PACKET) return;
 
     uint8_t event_type = hci_event_packet_get_type(packet);
+    ns2_bt_health_note_hci_event(&bt_health, btstack_run_loop_get_time_ms());
 
     // Verbose event traces are development-only. Production diagnostics use
     // bounded counters/snapshots so radio traffic cannot become log traffic.
@@ -4534,6 +4634,19 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
 
         case HCI_EVENT_COMMAND_COMPLETE: {
             uint16_t opcode = hci_event_command_complete_get_command_opcode(packet);
+            if (opcode == HCI_OPCODE_HCI_READ_RSSI && size >= 9u &&
+                bt_health_probe_handle != HCI_CON_HANDLE_INVALID) {
+                const uint8_t *params =
+                    hci_event_command_complete_get_return_parameters(packet);
+                hci_con_handle_t const handle = little_endian_read_16(params, 1u);
+                if (handle == bt_health_probe_handle) {
+                    ns2_bt_health_note_probe_complete(
+                        &bt_health, btstack_run_loop_get_time_ms(), params[0]);
+                    printf("[BT_HEALTH] RSSI probe complete handle=0x%04X status=0x%02X\n",
+                           handle, params[0]);
+                    bt_health_probe_handle = HCI_CON_HANDLE_INVALID;
+                }
+            }
             if (opcode == HCI_OPCODE_HCI_LE_START_ENCRYPTION) {
                 switch2_direct_cmd_complete_events++;
                 switch2_last_cmd_complete_opcode = opcode;
@@ -5102,10 +5215,12 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *pa
                 sm_event_just_works_request_get_handle(packet);
             if (handle == config_ble.handle) {
                 if (config_ble_accept_new_bond()) {
-                    printf("[BTSTACK_HOST] SM: management Just Works accepted inside pairing window\n");
+                    printf("[BTSTACK_HOST] SM: management Just Works accepted "
+                           "(admitted when this connection was accepted)\n");
                     sm_just_works_confirm(handle);
                 } else {
-                    printf("[BTSTACK_HOST] SM: management Just Works declined outside pairing window\n");
+                    printf("[BTSTACK_HOST] SM: management Just Works declined -- this "
+                           "connection was not admitted by an open pairing window\n");
                     sm_bonding_decline(handle);
                 }
                 break;
@@ -9988,6 +10103,7 @@ void btstack_host_get_mgmt_diag(btstack_host_mgmt_diag_t *out)
     out->cble_has_client = config_ble.handle != HCI_CON_HANDLE_INVALID;
     out->cble_closing = config_ble.closing;
     out->cble_notifications = config_ble.notifications_enabled;
+    out->cble_fresh_bond_admitted = config_ble.fresh_bond_admitted;
     // Counters (ring-independent totals)
     out->event_count = btlife_count;
     out->event_dropped = btlife_dropped;
@@ -10007,6 +10123,17 @@ void btstack_host_get_mgmt_diag(btstack_host_mgmt_diag_t *out)
     out->ctrl_disconnects = btlife.ctrl_disconnect;
     out->hci_disconnects = btlife.hci_disconnect;
     out->hci_state_losses = hci_state_losses;
+    out->hci_state = (uint8_t)hci_get_state();
+    out->hci_health_phase = (uint8_t)bt_health.phase;
+    out->hci_probe_handle = bt_health_probe_handle;
+    out->hci_last_event_age_ms =
+        btstack_run_loop_get_time_ms() - bt_health.last_hci_event_ms;
+    out->hci_probes_sent = bt_health.probes_sent;
+    out->hci_probes_ok = bt_health.probes_ok;
+    out->hci_probes_failed = bt_health.probes_failed;
+    out->hci_probe_timeouts = bt_health.probe_timeouts;
+    out->hci_recovery_attempts = bt_health.recovery_attempts;
+    out->hci_recovery_completions = bt_health.recovery_completions;
     out->fresh_admission_accepts = fresh_admission_accepts;
     out->fresh_admission_reject_window = fresh_admission_reject_window;
     out->fresh_admission_reject_lockout = fresh_admission_reject_lockout;

@@ -38,6 +38,7 @@
 #include "ns2_ds5_motion.h"
 #include "ns2_ds5_motion40.h"
 #include "ns2_rumble_trace.h"
+#include "ns2_bt_recovery_runtime.h"
 #include "usb.h"         // g_usb_config_mode
 
 // This whole module is only built into the NS2 firmware. The vendor-class calls
@@ -2105,6 +2106,18 @@ static bool ns2_audio_xfer(uint8_t rhport, uint8_t ep_addr, xfer_result_t result
             usbd_edpt_xfer(rhport, ep_addr, ns2_audio_speaker_packet,
                            NS2_AUDIO_PACKET_SIZE);
         ns2_audio_speaker_armed = armed;
+
+        // TinyUSB's bare-metal device task drains its event queue before it
+        // returns. With both PC2 isochronous endpoints continuously rearmed,
+        // the queue can remain non-empty for seconds and starve the ordinary
+        // core0 loop (including BLE management). The write has already been
+        // acknowledged on core1 by then, so Android sees a successful GATT
+        // write while no reply is published. Service the self-gated wireless
+        // bridge only after speaker PCM is consumed and this endpoint is safe.
+        // Wireless mutations are deliberately deferred by config.c; none take
+        // the CDC-only blocking persistence paths here.
+        config_wireless_task();
+        ns2_bt_recovery_core0_service();
         return armed;
     }
     if (ep_addr == NS2_AUDIO_MIC_EP) {
@@ -2114,6 +2127,8 @@ static bool ns2_audio_xfer(uint8_t rhport, uint8_t ep_addr, xfer_result_t result
             usbd_edpt_xfer(rhport, ep_addr, ns2_audio_mic_silence,
                            NS2_AUDIO_PACKET_SIZE);
         ns2_audio_mic_armed = armed;
+        config_wireless_task();
+        ns2_bt_recovery_core0_service();
         return armed;
     }
     return true;

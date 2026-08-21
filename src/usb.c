@@ -12,6 +12,7 @@
 #include "config.h"
 #include "bootsel.h"
 #include "ns2_uart_diag.h"
+#include "ns2_bt_recovery_runtime.h"
 
 #ifdef NS2_PRO
 #include "switch_pro2.h"
@@ -198,6 +199,9 @@ void usb_core_task() {
 #endif
 
     while (1) {
+        // Core 0 owns the final whole-device fallback. The request is made only
+        // after core 1's bounded HCI OFF/ON transition itself times out.
+        ns2_bt_recovery_core0_service();
 #ifdef NS2_PRO
         // Advance the runtime USB personality cycle. Volatile, not persisted
         // to flash -- see docs/switch2-gc/usb-personality.md "Runtime mode
