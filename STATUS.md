@@ -7,10 +7,16 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
-- **Last software verification:** 2026-08-20 — Bluetooth trust/admission and connection-truth
-  hardening. After a physical wipe-teardown failure, the corrected transport-owner sweep passes
-  both board builds, 76/76 compiled host tests, the 22-test focused suite, five trace-parser tests,
-  and both install-reset markers. The corrected physical retest is pending.
+- **Last software verification:** 2026-08-21 — Android/Bluetooth reliability pass. Both board
+  builds, 78/78 compiled host tests, the 25-test in-band management suite, four Bluetooth/trace
+  Python suites, descriptor parity, 494 Android JVM tests (app debug 167, app release 167,
+  bridge-core 115, management-core 45), `lintDebug` + `lintRelease`, both APKs, and both
+  install-reset markers.
+- **Last hardware validation:** 2026-08-21 — fresh LE management pairing, repeated Refresh,
+  personality switching with post-transition management recovery, DualSense Edge + BLE management
+  coexistence, Controller Link ↔ physical-controller source switching, and a ≥75-minute mixed
+  soak with continuous controller audio and no drops. Record:
+  [`docs/experiments/android-le-bond-transport-and-coexistence-soak-2026-08-21.md`](docs/experiments/android-le-bond-transport-and-coexistence-soak-2026-08-21.md).
 - **Current release:** v2.0.0, published 2026-08-15 from commit `a1491b2`.
 - **Development branch:** `ns2-testing`; v2.0.0 is the last tag on it.
 - **Bridge contract:** 3 (`ANDROID_BRIDGE_CONTRACT_VERSION` / `BridgeContract.VERSION`) — unchanged.
@@ -350,8 +356,29 @@ Briefs: [`docs/agents/ANDROID.md`](docs/agents/ANDROID.md),
 - BOOTSEL sampling, gesture recognition, and `bthid_task()` are serviced at incoming HID report
   boundaries, with timers as the quiet/disconnected fallback.
 - Console wake from sleep uses the learned wake identity and is hardware-confirmed.
+- **Android fresh pairing bonds on the LE transport explicitly — Complete, hardware validated
+  (2026-08-21).** The adapter is dual-mode on one public BD_ADDR, so once a phone has observed its
+  Classic identity Android caches `DEVICE_TYPE_DUAL` and keeps that across *Forget*.
+  `createBond()` is `createBond(TRANSPORT_AUTO)`, which then prefers BR/EDR and runs SSP against the
+  controller admission gate; that gate correctly refuses an unbonded Classic ACL and Android reports
+  it as "Couldn't pair because of incorrect PIN or passkey". The companion now always bonds on
+  TRANSPORT_LE and never falls back to TRANSPORT_AUTO. A Classic link key could not satisfy
+  `mgmt_session_authorized()` anyway, so BR/EDR was never a slower-but-valid path here.
+- **Management fresh-bond admission is per-attempt.** `config_ble.fresh_bond_admitted` latches
+  `mgmt_accept_bonding()` when the management connection is *accepted*, matching what controller BLE
+  candidates already do via `conn->fresh_pairing_admitted`. SM confirmation sits after Android's own
+  human-paced pairing dialog, so re-reading the live 30 s window there could expire authorization the
+  user had already given. Who may bond is unchanged: `mgmt off` still revokes a latched attempt, an
+  attempt never admitted cannot become admitted, and the latch is cleared on disconnect and on the
+  HCI-loss transient reset.
+- `admission.reject_window` is a refusal odometer, not a fault counter. Measured on hardware: ≈1/min
+  while the adapter has no controller and is running BLE scan + Classic inquiry, and **0 in 3
+  minutes** once a controller is connected and discovery is idle. All seven increment sites refuse an
+  unbonded peer trying to form trust outside the pairing window. It records no transport or peer;
+  that is a known diagnostics gap, not a defect.
 
-See [`docs/bluetooth/README.md`](docs/bluetooth/README.md).
+See [`docs/bluetooth/README.md`](docs/bluetooth/README.md) and
+[`docs/experiments/android-le-bond-transport-and-coexistence-soak-2026-08-21.md`](docs/experiments/android-le-bond-transport-and-coexistence-soak-2026-08-21.md).
 
 ## Management
 
@@ -452,6 +479,16 @@ built-in controller is classified EXTERNAL. Brief: [`docs/agents/RUMBLE.md`](doc
   hardware.
 - **Not implemented:** DualSense microphone decode and USB return. Headset presence exists; the
   return path does not.
+- **Audio sink ownership is independent of console input ownership — intentional as of 2026-08-21.**
+  `ds5_audio_bridge` claims its sink in `ds5_connect()` and releases it in `ds5_disconnect()`, keyed
+  on the audio-capable link's own connection index; it never consults `ns2_input_arbiter` /
+  `ns2_active_input`. So Controller Link may be the active console input source while a connected
+  DualSense remains the audio sink — hardware-observed, and the behaviour the product wants, because
+  the Android bridge cannot transport controller audio. Pinned by
+  `tools/test_bluetooth_closeout_wiring.py`; do not couple these two ownership domains.
+- The only remaining audio interruption during normal use is USB personality re-enumeration, which
+  is a deliberate simulated USB disconnect/reconnect. Refresh no longer causes a meaningful gap
+  (hardware-observed 2026-08-21).
 
 Reference: [`docs/switch2/audio-passthrough-research.md`](docs/switch2/audio-passthrough-research.md).
 
@@ -495,14 +532,19 @@ release's hardware pass, and the two keyboard/mouse rows are source-tested only.
 These are the genuinely open items. Bluetooth software closeout is complete and the subsystem is
 frozen; remaining Bluetooth entries are targeted physical validation, not an open architecture pass.
 
-1. **Management active-use coexistence.** A console-awake session with a charged controller
-   covering audio, gyro, wake, and latency alongside a connected management client. Recovery is
-   confirmed; coexistence under real load is not.
-2. **Management bonded-security physical pass.** First pair inside the pairing window, bonded
-   reconnect, unbonded/plaintext write rejection, reboot restoring management on, and the
-   wake-burst advertiser handoff.
-3. **`reenumerate` on hardware.** Implemented and host/build validated; the console refreshing
-   controller colors and input recovering cleanly is unconfirmed.
+1. **Management active-use coexistence — mostly closed 2026-08-21.** Confirmed: a console-awake
+   session with a DualSense Edge connected, continuous controller audio, and a connected management
+   client, held ≥75 minutes with zero Bluetooth lifecycle events, plus Controller Link ↔
+   physical-controller source switching with no drops. Still uncovered: gyro under that load, wake
+   from sleep during a management session, and latency measurement.
+2. **Management bonded-security physical pass — partially closed 2026-08-21.** Confirmed: fresh LE
+   pair inside the pairing window, and the SM decline when the connection was not admitted. Still
+   uncovered: bonded reconnect after a deliberate teardown, unbonded/plaintext write rejection,
+   reboot restoring management on, and the wake-burst advertiser handoff.
+3. **`reenumerate` on hardware — partially closed 2026-08-21.** Confirmed: personality switching
+   re-enumerates without dropping the management link, and Refresh still works after the transition;
+   the only audio interruption is the deliberate USB disconnect/reconnect. Still uncovered: the
+   console picking up refreshed controller colors.
 4. **Web portal Amiibo Sync refresh.** The `amiiboInfoCache` invalidation fix is in `web/index.html`
    but is frontend-only and needs a browser + adapter check.
 5. **Virtual Amiibo portal Sync of a retained dirty v3 generation**, with firmware acknowledgement
@@ -511,8 +553,10 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
    refuted phase encoder, which its report-`0x09` motion reached at the time; either that pass was
    report `0x05` (unaffected) or "working" meant the console merely responded. It now routes through
    the validated encoder, so one console session closes this.
-7. **Companion adapter-relationship lifecycle.** First-run pairing and returning-session reconnect
-   in the released APK, plus latency and teardown, have not had a dedicated physical pass.
+7. **Companion adapter-relationship lifecycle — partially closed 2026-08-21.** Confirmed on a debug
+   APK: first-run discovery, forced-LE bond, Connected, and repeated Refresh. Still uncovered:
+   returning-session reconnect after the app is closed, teardown, latency, and the same pass on a
+   release APK.
 8. **Native physical NFC writes and native reader gating**, including Joy-Con 2 Right, which has
    confirmed NFC hardware but an undocumented command protocol.
 9. **Bluetooth Keyboard / Keyboard + Mouse on hardware.** The complete pass is implemented and
@@ -629,7 +673,15 @@ validation; state the level performed.
 ## Immediate status
 
 No known release-blocking regression. v2.0.0 remains the released baseline; the branch now carries
-the Bluetooth Keyboard / Keyboard + Mouse input pass on top of it.
+the Bluetooth Keyboard / Keyboard + Mouse input pass and the 2026-08-21 Android/Bluetooth
+reliability pass on top of it.
+
+The reliability pass is physically accepted. Confirmed on hardware: fresh LE management pairing,
+repeated Refresh, personality switching with post-transition management recovery, DualSense Edge +
+BLE management coexistence, Controller Link ↔ physical-controller source switching, and a ≥75-minute
+mixed soak with continuous controller audio and no controller, management, or bond loss. The bounded
+HCI/CYW43 OFF/ON recovery it added has still never fired on hardware — its logic is host-tested, but
+the recovery path itself remains unvalidated in the field.
 
 The open items above are hardware gates to close opportunistically when the relevant hardware is in
 front of the maintainer. The newest one (gate 9) is the only one blocking a claim about a shipped

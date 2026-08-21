@@ -27,6 +27,34 @@ duplicate is idempotent, and `BOND_BONDING` never starts GATT. First use says **
 returning use reconnects without a chooser, a missing platform bond becomes **Repair pairing**, and
 controller mode reuses the saved Classic bond without a second chooser.
 
+### The management bond is always started on the LE transport
+
+The adapter is genuinely dual-mode on one public BD_ADDR, so once a phone has observed its Classic
+identity Android caches `DEVICE_TYPE_DUAL` and keeps that across *Forget*. `createBond()` is
+`createBond(TRANSPORT_AUTO)`, which then prefers **BR/EDR** and runs SSP against the adapter's
+*controller* admission gate; that gate correctly refuses an unbonded Classic ACL and Android reports
+the refusal as "Couldn't pair because of incorrect PIN or passkey" (hardware-confirmed 2026-08-21).
+A Classic link key could not satisfy `mgmt_session_authorized()` in any case, so BR/EDR was never a
+slower-but-valid route here.
+
+`AdapterBondStarter` therefore only ever picks LE mechanisms, and **TRANSPORT_AUTO is never used,
+not even as a fallback**:
+
+| Mechanism | When | API |
+|---|---|---|
+| `le-create-bond` | normal | `createBond(TRANSPORT_LE)` — public from API 37, otherwise reached through the single reflective seam `CompanionViewModel.androidBondPlatform` |
+| `le-gatt-initiated` | the seam is blocked or absent | open the `TRANSPORT_LE` management GATT link and let the encryption-required characteristics provoke SMP — public API only |
+| `none` | a working entry point refused | reported, not papered over |
+
+`getMethod` is the runtime feature detection: a platform that hides or blocks the overload throws,
+and the policy routes to the public GATT path. That one method is the *only* non-SDK Bluetooth entry
+point in the app. The chosen mechanism and Android's cached device type are always logged as
+`relationship/bond.mechanism`, so a future pairing failure is attributable from one line.
+
+The GATT-initiated path carries Android's own human-paced pairing dialog inside its connect
+deadline, so `ManagementConnectionContext.expectsBonding` raises that one connect's timeout; every
+other connect keeps the ordinary bonded-link deadline.
+
 The Android backend also owns one `BluetoothGatt` generation at a time. Teardown waits for its
 matching disconnected callback with a bounded timeout before closing exactly once; stale callbacks
 cannot mutate a newer session. A recoverable 133, connection timeout, or congestion result receives
