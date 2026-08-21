@@ -3,6 +3,9 @@
     xmlns:tools="http://schemas.android.com/tools">
     <uses-feature android:name="android.hardware.bluetooth" android:required="true" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <!-- CDM is legacy relationship metadata only, not the source of BLE device identity. Android
+         rejects even a read of app-owned associations unless this optional feature is declared. -->
+    <uses-feature android:name="android.software.companion_device_setup" android:required="false" />
     <uses-feature android:name="android.hardware.nfc" android:required="false" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />

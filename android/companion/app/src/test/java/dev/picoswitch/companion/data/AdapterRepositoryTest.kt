@@ -172,6 +172,7 @@ class AdapterRepositoryTest {
         AdapterRepository(transport).connectKnown("88:A2:9E:D1:77:78")
         assertEquals(1, transport.knownConnects)
         assertEquals(0, transport.scans)
+        assertEquals(listOf("info"), transport.commands)
     }
 
     @Test fun `failed known adapter reconnect falls back to bounded discovery`() = runTest {
@@ -338,22 +339,26 @@ class AdapterRepositoryTest {
         override val connection = MutableStateFlow(ConnectionState())
         var knownConnects = 0
         var scans = 0
+        val commands = mutableListOf<String>()
         override suspend fun scanAndConnect() { scans++ }
         override suspend fun connectKnown(address: String) {
             knownConnects++
             if (failKnown) throw ManagementException("saved adapter unavailable")
         }
         override suspend fun disconnect() = Unit
-        override suspend fun transact(command: String, timeoutMillis: Long): String = when (command) {
-            "info" -> if (wrongKnownIdentity && scans == 0) {
-                """{"id":"other-device","product":"Unrelated","version":"1.0"}"""
-            } else {
-                """{"id":"picoswitch","product":"PicoSwitch Config","version":"2.0"}"""
+        override suspend fun transact(command: String, timeoutMillis: Long): String {
+            commands += command
+            return when (command) {
+                "info" -> if (wrongKnownIdentity && scans == 0) {
+                    """{"id":"other-device","product":"Unrelated","version":"1.0"}"""
+                } else {
+                    """{"id":"picoswitch","product":"PicoSwitch Config","version":"2.0"}"""
+                }
+                "get" -> """{"body_color":[1,2,3],"joycon2_left_accent":[4,5,6],"joycon2_right_accent":[7,8,9]}"""
+                "device" -> """{"name":"Controller","vid":1,"pid":2,"batteryValid":0,"battery":0,"charging":0}"""
+                "amiibo status" -> """{"loaded":false,"dirty":false,"presented":false,"v3loaded":false,"persisted":false,"persistPending":false,"size":0,"signature":false,"hasSave2":false,"usingSave2":false,"generation":0,"payloadCrc":"00000000","uid":"","figureId":"","upload":{"active":false,"received":0,"size":0}}"""
+                else -> """{"error":"unknown command"}"""
             }
-            "get" -> """{"body_color":[1,2,3],"joycon2_left_accent":[4,5,6],"joycon2_right_accent":[7,8,9]}"""
-            "device" -> """{"name":"Controller","vid":1,"pid":2,"batteryValid":0,"battery":0,"charging":0}"""
-            "amiibo status" -> """{"loaded":false,"dirty":false,"presented":false,"v3loaded":false,"persisted":false,"persistPending":false,"size":0,"signature":false,"hasSave2":false,"usingSave2":false,"generation":0,"payloadCrc":"00000000","uid":"","figureId":"","upload":{"active":false,"received":0,"size":0}}"""
-            else -> """{"error":"unknown command"}"""
         }
     }
 
@@ -395,6 +400,7 @@ class AdapterRepositoryTest {
         override val connection = MutableStateFlow(ConnectionState())
         var knownConnects = 0
         var scans = 0
+        val commands = mutableListOf<String>()
         var disconnects = 0
         val contexts = mutableListOf<ManagementConnectionContext>()
         override fun prepareConnection(context: ManagementConnectionContext) { contexts += context }
@@ -405,12 +411,15 @@ class AdapterRepositoryTest {
             if (failures-- > 0) throw connectFailure()
         }
         override suspend fun disconnect() { disconnects++ }
-        override suspend fun transact(command: String, timeoutMillis: Long): String = when (command) {
+        override suspend fun transact(command: String, timeoutMillis: Long): String {
+            commands += command
+            return when (command) {
             "info" -> """{"id":"picoswitch","product":"PicoSwitch Config","version":"2.0"}"""
             "get" -> """{"body_color":[1,2,3],"joycon2_left_accent":[4,5,6],"joycon2_right_accent":[7,8,9]}"""
             "device" -> """{"name":"Controller","vid":1,"pid":2,"batteryValid":0,"battery":0,"charging":0}"""
             "amiibo status" -> """{"loaded":false,"dirty":false,"presented":false,"v3loaded":false,"persisted":false,"persistPending":false,"size":0,"signature":false,"hasSave2":false,"usingSave2":false,"generation":0,"payloadCrc":"00000000","uid":"","figureId":"","upload":{"active":false,"received":0,"size":0}}"""
-            else -> """{"error":"unknown command"}"""
+                else -> """{"error":"unknown command"}"""
+            }
         }
 
         private fun connectFailure() = GattTransportException(

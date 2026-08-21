@@ -37,6 +37,12 @@ data class ManagementConnectionContext(
     val retry: Int = 0,
     val priorGattRetired: Boolean = false,
     val useDiscoveredPeer: Boolean = false,
+    /**
+     * This connection is expected to provoke Android's LE bonding procedure rather than run over
+     * an already-bonded link, so the user's own pairing dialog sits inside the connect deadline.
+     * Only the compatibility path in [dev.picoswitch.companion.data.AdapterBondStarter] sets this.
+     */
+    val expectsBonding: Boolean = false,
 )
 
 typealias ManagementException = dev.picoswitch.management.ManagementException

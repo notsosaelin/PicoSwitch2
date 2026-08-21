@@ -153,7 +153,9 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         if (!bondReceiverRegistered) {
             val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
-            if (Build.VERSION.SDK_INT >= 33) registerReceiver(bondReceiver, filter, RECEIVER_NOT_EXPORTED)
+            // Bluetooth broadcasts originate from the privileged Bluetooth package rather than
+            // this app. NOT_EXPORTED silently drops them on affected Android 13 builds.
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(bondReceiver, filter, RECEIVER_EXPORTED)
             else @Suppress("DEPRECATION") registerReceiver(bondReceiver, filter)
             bondReceiverRegistered = true
         }
@@ -222,18 +224,20 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("MissingPermission")
     private fun restoreSystemAssociation() {
         val manager = getSystemService(CompanionDeviceManager::class.java) ?: return
-        val associations = if (Build.VERSION.SDK_INT >= 33) {
-            manager.myAssociations.mapNotNull { association ->
-                association.deviceMacAddress?.toString()?.let { address ->
-                    SystemCompanionAssociation(association.id, address, association.displayName?.toString())
+        val associations = runCatching {
+            if (Build.VERSION.SDK_INT >= 33) {
+                manager.myAssociations.mapNotNull { association ->
+                    association.deviceMacAddress?.toString()?.let { address ->
+                        SystemCompanionAssociation(association.id, address, association.displayName?.toString())
+                    }
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                manager.associations.map { address ->
+                    SystemCompanionAssociation(null, address, remoteDevice(address)?.name)
                 }
             }
-        } else {
-            @Suppress("DEPRECATION")
-            manager.associations.map { address ->
-                SystemCompanionAssociation(null, address, remoteDevice(address)?.name)
-            }
-        }
+        }.onFailure(viewModel::systemAssociationQueryFailed).getOrNull() ?: return
         viewModel.reconcileAdapterRelationships(associations)
     }
 

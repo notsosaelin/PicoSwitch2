@@ -19,6 +19,7 @@ enum class AdapterConnectReason(val diagnosticName: String) {
     ForegroundAuto("foreground-auto"),
     Manual("manual"),
     AfterBond("after-bond"),
+    AfterPersonality("after-personality"),
 }
 
 data class AdapterRelationshipStatus(
@@ -151,6 +152,28 @@ class AdapterRelationshipCoordinator(initialRelationship: AdapterRelationship?) 
                 AdapterLifecycleDecision.RepairRequired(message)
             }
         }
+    }
+
+    /**
+     * No explicit LE bond call was available, so the management GATT connection itself must provoke
+     * SMP. Moves the attempt from Bonding to Connecting without inventing a bond state: Android
+     * will still broadcast BOND_BONDED, but it does so *during* the connect rather than before it.
+     *
+     * Only the compatibility path takes this route. It is a phase transition, never a bond claim.
+     */
+    @Synchronized
+    fun bondDelegatedToGatt(attemptGeneration: Long): AdapterLifecycleDecision {
+        val attempt = activeAttempt ?: return AdapterLifecycleDecision.Ignored
+        if (attempt.generation != attemptGeneration ||
+            generation != attemptGeneration ||
+            status.phase != AdapterRelationshipPhase.Bonding
+        ) return AdapterLifecycleDecision.Ignored
+
+        status = status.copy(
+            phase = AdapterRelationshipPhase.Connecting,
+            message = "Confirm Android's pairing request to finish setting up the adapter.",
+        )
+        return AdapterLifecycleDecision.Connect(attempt)
     }
 
     @Synchronized
