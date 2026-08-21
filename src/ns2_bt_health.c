@@ -58,23 +58,54 @@ static ns2_bt_health_action_t fail_to_reboot(ns2_bt_health_t *health,
 
 ns2_bt_health_action_t ns2_bt_health_tick(ns2_bt_health_t *health,
                                           uint32_t now_ms,
-                                          bool hci_working,
-                                          bool hci_off,
-                                          bool claimed_acl,
-                                          bool probe_handle_available)
+                                          const ns2_bt_health_inputs_t *in)
 {
-    if (!health) return NS2_BT_HEALTH_ACTION_NONE;
+    if (!health || !in) return NS2_BT_HEALTH_ACTION_NONE;
 
     switch (health->phase) {
         case NS2_BT_HEALTH_IDLE:
-            if (!hci_working || !claimed_acl ||
-                !elapsed(now_ms, health->last_hci_event_ms,
-                         NS2_BT_HEALTH_QUIET_BEFORE_PROBE_MS)) {
+            if (!in->hci_working || !in->claimed_acl) {
+                health->no_handle_armed = false;
+                health->security_suppress_armed = false;
                 return NS2_BT_HEALTH_ACTION_NONE;
             }
-            if (!probe_handle_available) {
+            // An admitted pairing/security procedure owns the radio and is
+            // expected to be quiet on this path. Suppress escalation while it
+            // runs, but bound the suppression so a wedge DURING pairing -- the
+            // exact 2026-08-21 field case -- still recovers.
+            if (in->security_in_flight) {
+                if (!health->security_suppress_armed) {
+                    health->security_suppress_armed = true;
+                    health->security_suppress_since_ms = now_ms;
+                    health->security_suppressions++;
+                }
+                if (!elapsed(now_ms, health->security_suppress_since_ms,
+                             NS2_BT_HEALTH_SECURITY_SUPPRESS_MAX_MS)) {
+                    health->no_handle_armed = false;
+                    return NS2_BT_HEALTH_ACTION_NONE;
+                }
+            } else {
+                health->security_suppress_armed = false;
+            }
+            if (!elapsed(now_ms, health->last_hci_event_ms,
+                         NS2_BT_HEALTH_QUIET_BEFORE_PROBE_MS)) {
+                health->no_handle_armed = false;
+                return NS2_BT_HEALTH_ACTION_NONE;
+            }
+            if (!in->probe_handle_available) {
+                // Not evidence of a wedge on its own. Confirm it persists.
+                if (!health->no_handle_armed) {
+                    health->no_handle_armed = true;
+                    health->no_handle_since_ms = now_ms;
+                    return NS2_BT_HEALTH_ACTION_NONE;
+                }
+                if (!elapsed(now_ms, health->no_handle_since_ms,
+                             NS2_BT_HEALTH_NO_HANDLE_GRACE_MS)) {
+                    return NS2_BT_HEALTH_ACTION_NONE;
+                }
                 return start_power_off(health, now_ms);
             }
+            health->no_handle_armed = false;
             health->phase = NS2_BT_HEALTH_PROBE_PENDING;
             health->phase_started_ms = now_ms;
             health->probe_event_sequence = health->hci_event_sequence;
@@ -101,7 +132,7 @@ ns2_bt_health_action_t ns2_bt_health_tick(ns2_bt_health_t *health,
             return NS2_BT_HEALTH_ACTION_NONE;
 
         case NS2_BT_HEALTH_POWERING_OFF:
-            if (hci_off) {
+            if (in->hci_off) {
                 health->phase = NS2_BT_HEALTH_WAIT_POWER_ON;
                 health->phase_started_ms = now_ms;
                 return NS2_BT_HEALTH_ACTION_NONE;
@@ -122,7 +153,7 @@ ns2_bt_health_action_t ns2_bt_health_tick(ns2_bt_health_t *health,
             return NS2_BT_HEALTH_ACTION_NONE;
 
         case NS2_BT_HEALTH_POWERING_ON:
-            if (hci_working) {
+            if (in->hci_working) {
                 health->phase = NS2_BT_HEALTH_IDLE;
                 health->phase_started_ms = now_ms;
                 health->last_hci_event_ms = now_ms;

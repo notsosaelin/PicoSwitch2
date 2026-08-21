@@ -375,7 +375,14 @@ static void queue_bthealth(void) {
         "\"ok\":%lu,\"failed\":%lu,\"timeouts\":%lu},"
         "\"recovery\":{\"attempts\":%lu,\"completions\":%lu}},"
         "\"reboot\":{\"pending\":%s,\"suppressed\":%s,"
-        "\"requests\":%lu,\"consecutive_boots\":%u,\"last_boot_cause\":%u}}",
+        "\"requests\":%lu,\"consecutive_boots\":%u,\"last_boot_cause\":%u},"
+        // What the radio was doing when the PREVIOUS boot escalated. Survives
+        // the reboot in watchdog scratch; "valid":false means this boot was not
+        // entered through recovery.
+        "\"last_escalation\":{\"valid\":%s,\"phase\":\"%s\","
+        "\"probes_sent\":%u,\"probe_failures\":%u,\"recovery_attempts\":%u,"
+        "\"uptime_s\":%u,\"pairing_window\":%s,\"mgmt_client\":%s,"
+        "\"classic_link\":%s,\"ble_link\":%s,\"discovery\":%s}}",
         (unsigned long)runtime.core1_heartbeat_sequence,
         (unsigned long)runtime.core1_heartbeat_age_ms,
         (unsigned long)runtime.control_tick_age_ms,
@@ -391,7 +398,19 @@ static void queue_bthealth(void) {
         runtime.reboot_pending ? "true" : "false",
         runtime.reboot_suppressed ? "true" : "false",
         (unsigned long)runtime.reboot_requests,
-        runtime.consecutive_recovery_boots, runtime.last_boot_cause);
+        runtime.consecutive_recovery_boots, runtime.last_boot_cause,
+        runtime.last_escalation.valid ? "true" : "false",
+        ns2_bt_health_phase_name(
+            (ns2_bt_health_phase_t)runtime.last_escalation.phase),
+        runtime.last_escalation.probes_sent,
+        runtime.last_escalation.probe_failures,
+        runtime.last_escalation.recovery_attempts,
+        runtime.last_escalation.uptime_s,
+        runtime.last_escalation.pairing_window_open ? "true" : "false",
+        runtime.last_escalation.management_client ? "true" : "false",
+        runtime.last_escalation.classic_link ? "true" : "false",
+        runtime.last_escalation.ble_link ? "true" : "false",
+        runtime.last_escalation.discovery_active ? "true" : "false");
     queue_text(trace_format_response);
 }
 

@@ -172,7 +172,25 @@ class AdapterRepositoryTest {
         AdapterRepository(transport).connectKnown("88:A2:9E:D1:77:78")
         assertEquals(1, transport.knownConnects)
         assertEquals(0, transport.scans)
-        assertEquals(listOf("info"), transport.commands)
+        // Identity validation is still gated on ONE command. The main screen's own truth
+        // (personality, console-slot controller identity) is read after that, so a freshly
+        // connected session is not blank until the user presses Refresh -- but it can never
+        // decide whether the carrier is healthy.
+        assertEquals("info", transport.commands.first())
+        assertEquals(listOf("info", "personality", "device"), transport.commands)
+    }
+
+    @Test fun `a failing main-screen read cannot reject a validated adapter`() = runTest {
+        val transport = CompatibilityTransport(validImage(), failAfterInfo = true)
+        val repository = AdapterRepository(transport)
+        repository.connectKnown("88:A2:9E:D1:77:78")
+
+        // The carrier was identity-verified, so it stays connected and usable...
+        assertEquals(1, transport.knownConnects)
+        assertEquals(0, transport.disconnects)
+        assertEquals("picoswitch", repository.snapshot.value.firmware.id)
+        // ...even though the optional main-screen reads failed.
+        assertFalse(repository.snapshot.value.controller.attached)
     }
 
     @Test fun `failed known adapter reconnect falls back to bounded discovery`() = runTest {
@@ -335,19 +353,24 @@ class AdapterRepositoryTest {
         private val data: ByteArray,
         private val failKnown: Boolean = false,
         private val wrongKnownIdentity: Boolean = false,
+        private val failAfterInfo: Boolean = false,
     ) : ManagementTransport {
         override val connection = MutableStateFlow(ConnectionState())
         var knownConnects = 0
         var scans = 0
+        var disconnects = 0
         val commands = mutableListOf<String>()
         override suspend fun scanAndConnect() { scans++ }
         override suspend fun connectKnown(address: String) {
             knownConnects++
             if (failKnown) throw ManagementException("saved adapter unavailable")
         }
-        override suspend fun disconnect() = Unit
+        override suspend fun disconnect() { disconnects++ }
         override suspend fun transact(command: String, timeoutMillis: Long): String {
             commands += command
+            if (failAfterInfo && command != "info") {
+                throw ManagementException("adapter is busy")
+            }
             return when (command) {
                 "info" -> if (wrongKnownIdentity && scans == 0) {
                     """{"id":"other-device","product":"Unrelated","version":"1.0"}"""
