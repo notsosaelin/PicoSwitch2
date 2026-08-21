@@ -1,0 +1,358 @@
+{
+  "schema": "picoswitch2-lab/v1",
+  "tool": "audio_lab",
+  "scenario": "android-mgmt-starvation-baseline",
+  "timestamp": "2026-08-20T21:08:12.5147845-04:00",
+  "kind": "observation",
+  "hypothesis": "",
+  "variable": "",
+  "expectation": "",
+  "action": "Observe current playback and management state without changing routes or counters",
+  "port": "COM11",
+  "baseline": "",
+  "conditions": {
+    "duration_seconds": 30,
+    "sample_seconds": 5,
+    "reset_counters": false,
+    "mutation_policy": "observational except explicit counter reset"
+  },
+  "git": {
+    "branch": "ns2-testing",
+    "commit": "8616558f50c76eb3bacb99b5525326ffd4d4f508",
+    "dirty": true,
+    "dirty_count": 19,
+    "dirty_files": [
+      " M android/companion/app/src/main/AndroidManifest.xml",
+      " M android/companion/app/src/main/java/dev/picoswitch/companion/MainActivity.kt",
+      " M android/companion/app/src/main/java/dev/picoswitch/companion/bridge/AndroidHidTransport.kt",
+      " M android/companion/app/src/main/java/dev/picoswitch/companion/data/AdapterRelationshipLifecycle.kt",
+      " M android/companion/app/src/main/java/dev/picoswitch/companion/data/AdapterRepository.kt",
+      " M android/companion/app/src/main/java/dev/picoswitch/companion/diagnostics/DiagnosticLog.kt",
+      " M android/companion/app/src/main/java/dev/picoswitch/companion/transport/BleGattManagementTransport.kt",
+      " M android/companion/app/src/main/java/dev/picoswitch/companion/ui/CompanionViewModel.kt",
+      " M android/companion/app/src/test/java/dev/picoswitch/companion/data/AdapterRepositoryTest.kt",
+      " M android/companion/bridge-core/src/main/kotlin/dev/picoswitch/bridge/session/BridgeState.kt",
+      " M android/companion/bridge-core/src/test/kotlin/dev/picoswitch/bridge/session/SessionResumePolicyTest.kt",
+      " M android/companion/management-core/src/main/kotlin/dev/picoswitch/management/BleManagementContract.kt",
+      " M src/switch_pro2/switch_pro2.c",
+      "?? android/companion/app/src/main/java/dev/picoswitch/companion/data/AdapterBondWaitPolicy.kt",
+      "?? android/companion/app/src/main/java/dev/picoswitch/companion/diagnostics/ManagementDiagnosticContext.kt",
+      "?? android/companion/app/src/main/java/dev/picoswitch/companion/transport/ManagementTurnaroundPolicy.kt",
+      "?? android/companion/app/src/test/java/dev/picoswitch/companion/data/AdapterBondWaitPolicyTest.kt",
+      "?? android/companion/app/src/test/java/dev/picoswitch/companion/transport/ManagementTurnaroundPolicyTest.kt",
+      "?? dumps/experiments/20260820-210732-android-mgmt-starvation-baseline/"
+    ]
+  },
+  "diagnostics": {
+    "before": {
+      "audio status": {
+        "audio": true,
+        "usb_active": false,
+        "send_max_us": 0,
+        "send_over_40ms": 0,
+        "sends": 0,
+        "hci_max_us": 0,
+        "hci_over_40ms": 0,
+        "hci_events": 0,
+        "hci_packets": 0,
+        "hci_max_batch": 0,
+        "pcm_packets": 0,
+        "pcm_nonzero": 0,
+        "pcm_short": 0,
+        "pcm_dropped": 0,
+        "pcm_max_gap_us": 0,
+        "pcm_over_2ms": 0,
+        "pcm_queue_max": 0,
+        "opus_frames": 0,
+        "opus_errors": 0,
+        "opus_encode_max_us": 0,
+        "opus_gap_max_us": 0,
+        "opus_over_20ms": 0,
+        "pipeline_resets": 3,
+        "codec_calls": 0,
+        "codec_blocks": 0,
+        "codec_no_encoder": 0,
+        "codec_no_pcm": 0,
+        "codec_disconnected": 0,
+        "codec_usb_inactive": 0,
+        "codec_gap_max_us": 0,
+        "codec_over_10ms": 0,
+        "codec_hist_3_7_12_25_over": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "core1_gap_max_us": 0,
+        "core1_over_10ms": 0,
+        "usb_edges_on_off": [
+          0,
+          0
+        ],
+        "usb_active_us": 0,
+        "core1_stack_free": 29724
+      },
+      "audio headset": {
+        "headset": true,
+        "state": 0,
+        "kind": "none",
+        "vid": "0x0000",
+        "pid": "0x0000"
+      },
+      "ds5codec status": {
+        "ds5codec": true,
+        "bitrate": 160000,
+        "format": "fullband_stereo",
+        "exclusive_encode": true,
+        "transport_bytes": 200
+      },
+      "pro2audio status": {
+        "pro2audio": true,
+        "requested": false,
+        "active": false,
+        "state": 0,
+        "att_status": "0x00",
+        "pid": "0x0000",
+        "handle": "0x0000",
+        "notifications": 0,
+        "last_len": 0,
+        "max_len": 0,
+        "headset_raw": "0x00",
+        "audio_len": 0,
+        "compact_failures": 0,
+        "replay_requested": false,
+        "replay_active": false,
+        "replay_state": 0,
+        "replay_status": "0x00",
+        "replay_frames": 0,
+        "live_requested": false,
+        "live_active": false,
+        "live_state": 0,
+        "live_status": "0x00",
+        "live_toc": "0x00",
+        "live_prefix": "000000000000",
+        "complexity": 0,
+        "analysis": false,
+        "live_prime": 0,
+        "live_frames": 0,
+        "live_underruns": 0
+      },
+      "input status": {
+        "input": true,
+        "raw": "0x00000000",
+        "mapped": [
+          0,
+          0,
+          0
+        ],
+        "extra": 0,
+        "sticks": [
+          0,
+          8,
+          128,
+          0,
+          8,
+          128
+        ],
+        "has_motion": false,
+        "motion_source": 0,
+        "gyro": [
+          0,
+          0,
+          0
+        ],
+        "accel": [
+          0,
+          0,
+          0
+        ],
+        "vid": "0x0000",
+        "pid": "0x0000"
+      },
+      "motionauto": {
+        "motionauto": true,
+        "checks": 0,
+        "starts": 0,
+        "wait_ms": 0,
+        "pid": "0x0000",
+        "personality": 255,
+        "init_state": 0,
+        "v2_state": 0,
+        "fired": false,
+        "armed": 0,
+        "gattdisc": false,
+        "block_mask": "0x00"
+      }
+    },
+    "after": {
+      "audio status": {
+        "audio": true,
+        "usb_active": false,
+        "send_max_us": 0,
+        "send_over_40ms": 0,
+        "sends": 0,
+        "hci_max_us": 0,
+        "hci_over_40ms": 0,
+        "hci_events": 0,
+        "hci_packets": 0,
+        "hci_max_batch": 0,
+        "pcm_packets": 0,
+        "pcm_nonzero": 0,
+        "pcm_short": 0,
+        "pcm_dropped": 0,
+        "pcm_max_gap_us": 0,
+        "pcm_over_2ms": 0,
+        "pcm_queue_max": 0,
+        "opus_frames": 0,
+        "opus_errors": 0,
+        "opus_encode_max_us": 0,
+        "opus_gap_max_us": 0,
+        "opus_over_20ms": 0,
+        "pipeline_resets": 3,
+        "codec_calls": 0,
+        "codec_blocks": 0,
+        "codec_no_encoder": 0,
+        "codec_no_pcm": 0,
+        "codec_disconnected": 0,
+        "codec_usb_inactive": 0,
+        "codec_gap_max_us": 0,
+        "codec_over_10ms": 0,
+        "codec_hist_3_7_12_25_over": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "core1_gap_max_us": 0,
+        "core1_over_10ms": 0,
+        "usb_edges_on_off": [
+          0,
+          0
+        ],
+        "usb_active_us": 0,
+        "core1_stack_free": 29724
+      },
+      "audio headset": {
+        "headset": true,
+        "state": 0,
+        "kind": "none",
+        "vid": "0x0000",
+        "pid": "0x0000"
+      },
+      "ds5codec status": {
+        "ds5codec": true,
+        "bitrate": 160000,
+        "format": "fullband_stereo",
+        "exclusive_encode": true,
+        "transport_bytes": 200
+      },
+      "pro2audio status": {
+        "pro2audio": true,
+        "requested": false,
+        "active": false,
+        "state": 0,
+        "att_status": "0x00",
+        "pid": "0x0000",
+        "handle": "0x0000",
+        "notifications": 0,
+        "last_len": 0,
+        "max_len": 0,
+        "headset_raw": "0x00",
+        "audio_len": 0,
+        "compact_failures": 0,
+        "replay_requested": false,
+        "replay_active": false,
+        "replay_state": 0,
+        "replay_status": "0x00",
+        "replay_frames": 0,
+        "live_requested": false,
+        "live_active": false,
+        "live_state": 0,
+        "live_status": "0x00",
+        "live_toc": "0x00",
+        "live_prefix": "000000000000",
+        "complexity": 0,
+        "analysis": false,
+        "live_prime": 0,
+        "live_frames": 0,
+        "live_underruns": 0
+      },
+      "input status": {
+        "input": true,
+        "raw": "0x00000000",
+        "mapped": [
+          0,
+          0,
+          0
+        ],
+        "extra": 0,
+        "sticks": [
+          0,
+          8,
+          128,
+          0,
+          8,
+          128
+        ],
+        "has_motion": false,
+        "motion_source": 0,
+        "gyro": [
+          0,
+          0,
+          0
+        ],
+        "accel": [
+          0,
+          0,
+          0
+        ],
+        "vid": "0x0000",
+        "pid": "0x0000"
+      },
+      "motionauto": {
+        "motionauto": true,
+        "checks": 0,
+        "starts": 0,
+        "wait_ms": 0,
+        "pid": "0x0000",
+        "personality": 255,
+        "init_state": 0,
+        "v2_state": 0,
+        "fired": false,
+        "armed": 0,
+        "gattdisc": false,
+        "block_mask": "0x00"
+      }
+    }
+  },
+  "verdict": "OBSERVE",
+  "artifacts": [
+    {
+      "path": "diagnostics.before.json",
+      "bytes": 2826,
+      "sha256": "772B3C8644746D5311E75EF3D6DED4643B0064F6334FFE1EB10F3ABBCB210675"
+    },
+    {
+      "path": "diagnostics.after.json",
+      "bytes": 2826,
+      "sha256": "772B3C8644746D5311E75EF3D6DED4643B0064F6334FFE1EB10F3ABBCB210675"
+    },
+    {
+      "path": "audio.samples.json",
+      "bytes": 8107,
+      "sha256": "643312AA1E43D9CEDAAE3B9A53C084B630AC682CFD7C0A9F177AFD7A28B49A56"
+    },
+    {
+      "path": "audio.analysis.txt",
+      "bytes": 931,
+      "sha256": "AE7F4EB92904E187C869716D5FA6170EEFFDC3F75C3E59FB76F5B5879FCA8961"
+    },
+    {
+      "path": "audio.analysis.json",
+      "bytes": 1212,
+      "sha256": "98D3F1C29D02E1D10E7BAC2DCB57557D4E688EA4BA718F2B214ACD5C351A8BFD"
+    }
+  ]
+}

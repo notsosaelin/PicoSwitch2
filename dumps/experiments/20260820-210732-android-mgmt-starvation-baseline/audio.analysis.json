@@ -1,0 +1,46 @@
+{
+  "active_samples": 0,
+  "boundary": "Timing maxima identify where to investigate; they do not by themselves prove audible failure. PCM drops and Opus errors are hard failures.",
+  "deltas": {
+    "codec_blocks": 0,
+    "codec_calls": 0,
+    "codec_disconnected": 0,
+    "codec_no_encoder": 0,
+    "codec_no_pcm": 0,
+    "codec_over_10ms": 0,
+    "codec_usb_inactive": 0,
+    "core1_over_10ms": 0,
+    "hci_events": 0,
+    "hci_packets": 0,
+    "opus_errors": 0,
+    "opus_frames": 0,
+    "opus_over_20ms": 0,
+    "pcm_dropped": 0,
+    "pcm_nonzero": 0,
+    "pcm_over_2ms": 0,
+    "pcm_packets": 0,
+    "pcm_short": 0,
+    "pipeline_resets": 0,
+    "sends": 0,
+    "usb_active_us": 0
+  },
+  "duration_s": 30.062,
+  "failures": [],
+  "minimum_core1_stack_free": 29724,
+  "observed_maxima": {
+    "codec_gap_max_us": 0,
+    "core1_gap_max_us": 0,
+    "hci_max_us": 0,
+    "opus_encode_max_us": 0,
+    "opus_gap_max_us": 0,
+    "pcm_max_gap_us": 0,
+    "pcm_queue_max": 0,
+    "send_max_us": 0
+  },
+  "sample_count": 6,
+  "schema": "picoswitch2-audio-analysis/v1",
+  "verdict": "OBSERVE",
+  "warnings": [
+    "USB speaker stream was inactive in every snapshot"
+  ]
+}

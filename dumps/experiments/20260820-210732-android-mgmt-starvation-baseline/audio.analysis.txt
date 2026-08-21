@@ -1,0 +1,42 @@
+Verdict: OBSERVE
+Samples: 6 over 30.1 s
+USB-active samples: 0
+Core-1 stack free minimum: 29724 bytes
+
+Counter deltas:
+  sends: 0
+  hci_events: 0
+  hci_packets: 0
+  pcm_packets: 0
+  pcm_nonzero: 0
+  pcm_short: 0
+  pcm_dropped: 0
+  pcm_over_2ms: 0
+  opus_frames: 0
+  opus_errors: 0
+  opus_over_20ms: 0
+  pipeline_resets: 0
+  codec_calls: 0
+  codec_blocks: 0
+  codec_no_encoder: 0
+  codec_no_pcm: 0
+  codec_disconnected: 0
+  codec_usb_inactive: 0
+  codec_over_10ms: 0
+  core1_over_10ms: 0
+  usb_active_us: 0
+
+Observed maxima:
+  send_max_us: 0
+  hci_max_us: 0
+  pcm_max_gap_us: 0
+  pcm_queue_max: 0
+  opus_encode_max_us: 0
+  opus_gap_max_us: 0
+  codec_gap_max_us: 0
+  core1_gap_max_us: 0
+
+Warnings:
+  - USB speaker stream was inactive in every snapshot
+
+Timing maxima identify where to investigate; they do not by themselves prove audible failure. PCM drops and Opus errors are hard failures.
