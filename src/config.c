@@ -840,7 +840,12 @@ static void cmd_input_sources(void) {
     unsigned shown = status.source_count < 4u ? status.source_count : 4u;
     for (unsigned i = 0; i < shown && j < (int)sizeof(out) - 96; ++i) {
         const ns2_input_source_info_t *source = &status.sources[i];
-        char name[13];
+        // 16 characters, not 12: "Controller Link" is the truthful name for a
+        // source with no Bluetooth name of its own (ns2_input_source_display_name),
+        // and 12 cut it to "Controller L". Four sources cost at most 16 extra
+        // bytes, well inside this reply's remaining room in the 512-byte
+        // wireless slot, and the per-entry headroom check below is unchanged.
+        char name[17];
         unsigned n = 0;
         for (; source->name[n] && n < sizeof(name) - 1u; ++n) {
             unsigned char c = (unsigned char)source->name[n];
@@ -849,7 +854,7 @@ static void cmd_input_sources(void) {
         name[n] = '\0';
         j += snprintf(out + j, sizeof(out) - (size_t)j,
                       "%s{\"id\":%lu,\"conn\":%u,\"transport\":%u,"
-                      "\"generation\":%lu,\"name\":\"%.12s\"}",
+                      "\"generation\":%lu,\"name\":\"%.16s\"}",
                       i ? "," : "", (unsigned long)source->id,
                       source->key.dev_addr, source->key.transport,
                       (unsigned long)source->generation,

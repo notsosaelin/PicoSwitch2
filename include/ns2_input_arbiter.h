@@ -106,6 +106,23 @@ typedef struct {
     volatile uint32_t status_sequence;
 } ns2_input_arbiter_t;
 
+// Truthful display name for a source, for the source list and for the console
+// slot's published identity.
+//
+// A directly paired controller carries a Bluetooth name (SDP/inquiry). The
+// Android Controller Link does not: it reaches the adapter as an INCOMING
+// Classic HID Device connection, so no inquiry record ever supplied a name and
+// bthid leaves it empty. Hardware-confirmed 2026-08-21 -- `btdev` and
+// `input sources` both reported name "" for the bridge connection.
+//
+// An empty name is not "no controller". Substituting the source class the
+// firmware already determined from the bridge's own declared HID descriptor
+// (never from its name or VID/PID) keeps the answer firmware truth rather than
+// something reconstructed from Android UI state. Returns NULL when there is
+// nothing truthful to say, so callers keep their existing empty-name behaviour.
+const char *ns2_input_source_display_name(const char *name,
+                                          uint8_t source_class);
+
 void ns2_input_arbiter_init(ns2_input_arbiter_t *arbiter);
 
 // Queue an explicit active-source request.  id=0 deliberately selects no
