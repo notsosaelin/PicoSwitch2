@@ -622,7 +622,25 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
    returns so old trust and automatic replacement trust cannot be confused.
 
 12. **Controller Link reliability candidate — the single open Bluetooth flash gate.** Implemented and
-   source-tested 2026-08-22; **nothing about it has run on hardware**. Flash exactly one artifact,
+   source-tested 2026-08-22; **nothing about it has run on hardware**.
+
+   **Blocker found and fixed 2026-08-22 (identity).** The first flashed candidate failed 10/10 on a
+   fresh pairing for a reason unrelated to any of the three changes below: the LE management service
+   advertised GAP Appearance `0x03C0` (Generic HID) while the adapter is the HID *host*. Android
+   synthesises a Class of Device from that Appearance whenever it has none stored — every fresh
+   pairing — persisting major class 5 (Peripheral). Its own HID Device profile then refuses the
+   adapter (`btif_hd` → `check_cod_hid`, `(cod & 0x1F00) == 0x0500`) *after* the ACL,
+   authentication, encryption and both HID channels succeed. Appearance is now `0x0080` Generic
+   Computer, agreeing with the unchanged Classic CoD `0x000104`, guarded by a `_Static_assert` and a
+   source check in `tools/test_bluetooth_closeout_wiring.py`. Confirmed from the app over ADB on the
+   failing build: `major=0x0500 hostOk=false`.
+
+   Because the poisoned class lives in the *phone's* record, an already-poisoned pairing must be
+   cleared once and re-made against corrected firmware. No migration path was added: those records
+   were produced by development builds, and encoding cleanup for them into production architecture
+   would be worse than clearing the test relationship once. **Note a fresh management bond requires
+   the physical pairing gesture** (`mgmt_accept_bonding` → `pairing_window_open`), so the clean-state
+   validation cannot be automated. Flash exactly one artifact,
    `build/pico2_w/PicoSwitchWGA-pico2_w.uf2` from commit `f6cbe41`, and run the turnkey procedure in
    [`docs/experiments/controller-link-cycling-failure-2026-08-22.md`](docs/experiments/controller-link-cycling-failure-2026-08-22.md).
    It bundles three independent changes so one campaign settles all of them, and their evidence
