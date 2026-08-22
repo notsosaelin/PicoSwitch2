@@ -80,6 +80,13 @@ void btstack_host_start_timed_scan(uint32_t timeout_ms);
 // Explicit start_timed_scan clears suppression.
 void btstack_host_suppress_scan(bool suppress);
 
+// Address and trust-lookup outcome of the most recent admission rejection.
+// The reject COUNTERS are anonymous, which left a real field question
+// unanswerable: `reject_window` reached 11 with no way to tell whether the
+// rejected peer was the phone whose Controller Link was failing or an unrelated
+// Classic device. Returns false until a rejection has occurred.
+bool btstack_host_last_reject(uint8_t *addr_out, bool *trust_present);
+
 // True when a controller is fully connected (HID ready) on either transport.
 // Used for the 1-dongle-1-controller discovery gating.
 bool btstack_host_controller_connected(void);

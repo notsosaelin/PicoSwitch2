@@ -361,6 +361,7 @@ typedef struct {
 
 static struct {
     bool inquiry_active;
+    uint32_t inquiry_restart_at_ms;  // 0 = no deferred inquiry restart pending
     bool use_liac;  // Alternate between GIAC and LIAC for Wiimote/Wii U Pro discovery
     classic_connection_t connections[MAX_CLASSIC_CONNECTIONS];
     // Pending incoming connection info (from HCI_EVENT_CONNECTION_REQUEST)
@@ -2210,6 +2211,21 @@ static bool config_ble_accept_connection(hci_con_handle_t handle,
     config_ble.advertising = false; // controller stops connectable advertising on connect
     config_ble.notifications_enabled = false;
     config_ble.tx_requested = false;
+
+    // Ask the central for supervision margin. We are the peripheral here, so
+    // this is a request the phone may refuse -- best-effort, and nothing below
+    // depends on it succeeding. See ns2_bt_mgmt_link_params() for the captured
+    // peer-sleep failure this exists to ride through.
+    ns2_bt_le_link_params_t link = ns2_bt_mgmt_link_params();
+    if (ns2_bt_le_link_params_valid(link)) {
+        int param_status = gap_request_connection_parameter_update(
+            handle, link.interval_min_units, link.interval_max_units,
+            link.latency, link.supervision_timeout_units);
+        if (param_status != ERROR_CODE_SUCCESS) {
+            printf("[BTSTACK_HOST] Config BLE link param request failed: 0x%02X\n",
+                   param_status);
+        }
+    }
     config_wireless_bridge_reset_session();
     btlife_record(BTLIFE_MGMT_CONNECT, g_usb_config_mode ? 0u : 1u, handle);
     printf("[BTSTACK_HOST] Config BLE client connected: handle=0x%04X fresh_bond=%d\n",
@@ -2412,6 +2428,7 @@ void btstack_host_stop_scan(void)
     }
 
 #if !defined(BTSTACK_USE_ESP32) && !defined(BTSTACK_USE_NRF)
+    classic_state.inquiry_restart_at_ms = 0;
     if (classic_state.inquiry_active) {
         printf("[BTSTACK_HOST] Stopping Classic inquiry\n");
         gap_inquiry_stop();
@@ -2448,12 +2465,33 @@ bool btstack_host_pairing_locked(void)
     return pairing_lockout;
 }
 
+// A stored Classic link key is not the only proof this identity was admitted.
+// See ns2_bt_classic_trust_present(): the Android companion pairs over LE and
+// then arrives as a Classic HID Device, and pinned BTstack does not persist the
+// cross-transport-derived Classic key atomically with the LE bond. Core 1 only:
+// btstack_host_addr_is_bonded() touches the LE device DB.
 static bool btstack_host_classic_has_trust(const bd_addr_t addr)
 {
     link_key_t link_key;
     link_key_type_t key_type;
-    return gap_get_link_key_for_bd_addr((uint8_t *)addr, link_key, &key_type);
+    bool classic_key =
+        gap_get_link_key_for_bd_addr((uint8_t *)addr, link_key, &key_type);
+    return ns2_bt_classic_trust_present(classic_key,
+                                        btstack_host_addr_is_bonded(addr));
 }
+
+// Attribution for the most recent admission rejection.
+//
+// The counters alone are anonymous, which made a real question unanswerable in
+// the field: `reject_window` reached 11 during one session with no way to tell
+// whether the rejected peer was the phone whose Controller Link was failing or
+// some unrelated Classic device. Recording the address and what the trust lookup
+// actually returned is what turns "something was rejected" into evidence.
+//
+// Read-only, RAM-only, one slot; costs nothing until a rejection happens.
+static bd_addr_t last_reject_addr;
+static bool last_reject_trust_present;
+static bool last_reject_valid;
 
 static void btstack_host_record_fresh_admission(bool accepted)
 {
@@ -2464,6 +2502,21 @@ static void btstack_host_record_fresh_admission(bool accepted)
     } else {
         fresh_admission_reject_window++;
     }
+}
+
+static void btstack_host_note_admission_reject(const bd_addr_t addr, bool trust_present)
+{
+    (void)memcpy(last_reject_addr, addr, sizeof(bd_addr_t));
+    last_reject_trust_present = trust_present;
+    last_reject_valid = true;
+}
+
+bool btstack_host_last_reject(uint8_t *addr_out, bool *trust_present)
+{
+    if (!last_reject_valid) return false;
+    if (addr_out) (void)memcpy(addr_out, last_reject_addr, sizeof(bd_addr_t));
+    if (trust_present) *trust_present = last_reject_trust_present;
+    return true;
 }
 
 static void classic_pending_security_clear(void)
@@ -2541,6 +2594,21 @@ static void classic_commit_notified_key_if_authenticated(void)
     printf("[BTSTACK_HOST] Authenticated Classic link-key update committed\n");
 }
 
+// Start the next Classic inquiry round, alternating GIAC/LIAC so both normally
+// discoverable and SYNC-button (limited) devices stay reachable.
+static void classic_restart_inquiry(void)
+{
+    classic_state.inquiry_restart_at_ms = 0;
+    classic_state.use_liac = !classic_state.use_liac;
+    uint32_t lap = classic_state.use_liac ? GAP_IAC_LIMITED_INQUIRY
+                                          : GAP_IAC_GENERAL_INQUIRY;
+    printf("[BTSTACK_HOST] Restarting inquiry (LAP=%s)...\n",
+           classic_state.use_liac ? "LIAC" : "GIAC");
+    gap_inquiry_set_lap(lap);
+    gap_inquiry_start(INQUIRY_DURATION);
+    classic_state.inquiry_active = true;
+}
+
 static int btstack_host_classic_connection_filter(bd_addr_t addr,
                                                    hci_link_type_t link_type)
 {
@@ -2550,6 +2618,7 @@ static int btstack_host_classic_connection_filter(bd_addr_t addr,
         btstack_host_classic_has_trust(addr));
     if (admission == NS2_BT_ADMISSION_REJECT) {
         btstack_host_record_fresh_admission(false);
+        btstack_host_note_admission_reject(addr, btstack_host_classic_has_trust(addr));
         printf("[BTSTACK_HOST] Rejecting unbonded Classic ACL outside pairing window\n");
         return 0;
     }
@@ -2961,6 +3030,17 @@ void btstack_host_process(void)
         gap_connect_cancel();
         hid_state.state = BLE_STATE_IDLE;
         hid_state.reconnect_attempt_time = 0;
+    }
+
+    // Deferred Classic inquiry restart. The gap between rounds is what leaves
+    // the controller room to answer an incoming page; see
+    // ns2_bt_inquiry_restart_delay_ms().
+    if (classic_state.inquiry_restart_at_ms != 0 &&
+        !classic_state.inquiry_active &&
+        hid_state.state == BLE_STATE_SCANNING &&
+        (int32_t)(btstack_run_loop_get_time_ms() -
+                  classic_state.inquiry_restart_at_ms) >= 0) {
+        classic_restart_inquiry();
     }
 
     // Timeout for "waiting for incoming reconnection" after outgoing Classic HID failure.
@@ -3888,13 +3968,15 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             // Restart inquiry after it completes (if we're still in scan mode)
             // Toggle between GIAC and LIAC to discover all device types
             if (hid_state.state == BLE_STATE_SCANNING) {
-                classic_state.use_liac = !classic_state.use_liac;
-                uint32_t lap = classic_state.use_liac ? GAP_IAC_LIMITED_INQUIRY : GAP_IAC_GENERAL_INQUIRY;
-                printf("[BTSTACK_HOST] Restarting inquiry (LAP=%s)...\n",
-                       classic_state.use_liac ? "LIAC" : "GIAC");
-                gap_inquiry_set_lap(lap);
-                gap_inquiry_start(INQUIRY_DURATION);
-                classic_state.inquiry_active = true;
+                // Not back to back: see ns2_bt_inquiry_restart_delay_ms().
+                uint32_t delay =
+                    ns2_bt_inquiry_restart_delay_ms(hid_pairing_window_open);
+                if (delay == 0u) {
+                    classic_restart_inquiry();
+                } else {
+                    classic_state.inquiry_restart_at_ms =
+                        btstack_run_loop_get_time_ms() + delay;
+                }
             }
 #endif
             break;
@@ -3915,6 +3997,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             if (classic_admission == NS2_BT_ADMISSION_REJECT) {
                 // The registered HCI filter rejects this before admission. Do
                 // not create pending bookkeeping if BTstack still forwards it.
+                btstack_host_note_admission_reject(addr, classic_trust_present);
                 printf("[BTSTACK_HOST] Rejecting unbonded Classic connection outside pairing window\n");
                 break;
             }
@@ -3931,8 +4014,13 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             classic_state.pending_pid = 0;
             classic_state.pending_valid = true;
             classic_state.pending_outgoing = false;  // Device initiated this connection
+            // An LE-bonded identity may also commit a Classic key. Without
+            // this it is admitted but never converges: no key is ever stored,
+            // so it re-runs SSP on every reconnect.
             classic_pending_security_prepare(
-                addr, hid_pairing_window_open && !pairing_lockout);
+                addr,
+                (hid_pairing_window_open || btstack_host_addr_is_bonded(addr)) &&
+                    !pairing_lockout);
             classic_state.waiting_for_incoming_time = 0;  // Device reconnected
             // BTstack will auto-accept with the current master_slave_policy
             break;

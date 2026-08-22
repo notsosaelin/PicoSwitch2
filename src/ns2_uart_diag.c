@@ -1009,6 +1009,21 @@ static void handle_command(void) {
                strcmp(rx_line, "btlife status") == 0) {
         // Live BLE/management coexistence snapshot + suppression counters.
         queue_btstate();
+    } else if (strcmp(rx_line, "btreject") == 0) {
+        // Attribution for the most recent Classic admission rejection. The
+        // reject counters in `btstate` are anonymous; this says WHICH peer was
+        // rejected and what the trust lookup returned for it, which is the
+        // difference between "something was rejected" and evidence.
+        uint8_t a[6]; bool trust = false;
+        if (!btstack_host_last_reject(a, &trust)) {
+            queue_text("{\"btreject\":\"none\"}");
+        } else {
+            snprintf(trace_format_response, sizeof(trace_format_response),
+                "{\"btreject\":\"last\",\"addr\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
+                "\"trust_present\":%s}",
+                a[0], a[1], a[2], a[3], a[4], a[5], trust ? "true" : "false");
+            queue_text(trace_format_response);
+        }
     } else if (strcmp(rx_line, "bthealth") == 0) {
         queue_bthealth();
     } else if (strcmp(rx_line, "btbonds") == 0) {
@@ -2385,7 +2400,7 @@ static void handle_command(void) {
                    "\"kbm mouse\",\"kbm mouse sensitivity|sensitivityx|"
                    "sensitivityy|recenter|invertx|inverty|antideadzone "
                    "<value>\",\"btdev\","
-                   "\"btreconnect\",\"btbonds\",\"btfresh\","
+                   "\"btreconnect\",\"btbonds\",\"btfresh\",\"btreject\","
                    "\"reenumerate\",\"save\",\"help\"]}");
     } else if (rx_length != 0) {
         queue_text("{\"error\":\"unknown command\"}");

@@ -188,8 +188,112 @@ static void test_sparse_slot_lookup(void)
                                  missing, 0, false) == -1);
 }
 
+/*
+ * Regression, 2026-08-22. Controller Link could not be admitted.
+ *
+ * 3cb11ce (2026-08-20) replaced the Classic connection filter's
+ * "return pairing_lockout ? 0 : 1;" with trust gating. The Android companion
+ * pairs over LE but arrives as a Classic HID Device, and the pairing window's
+ * only opener is the physical gesture -- so it had no way to satisfy the new
+ * requirement whenever pinned BTstack's non-atomic cross-transport derivation
+ * left the LE bond without a matching Classic link key.
+ */
+static void test_classic_trust_is_cross_transport(void)
+{
+    // The state that rejected every Controller Link attempt for good.
+    assert(ns2_bt_classic_trust_present(false, true));
+    assert(ns2_bt_admission_decide(false, false,
+                                   ns2_bt_classic_trust_present(false, true)) ==
+           NS2_BT_ADMISSION_RECONNECT);
+
+    // A Classic link key alone still suffices: controllers are unaffected.
+    assert(ns2_bt_classic_trust_present(true, false));
+
+    // Neither form of trust is still no trust. This must not become a blanket
+    // "admit anything", which is what the trust gating existed to stop.
+    assert(!ns2_bt_classic_trust_present(false, false));
+    assert(ns2_bt_admission_decide(false, false,
+                                   ns2_bt_classic_trust_present(false, false)) ==
+           NS2_BT_ADMISSION_REJECT);
+
+    // A wipe lockout outranks cross-transport trust.
+    assert(ns2_bt_admission_decide(true, false,
+                                   ns2_bt_classic_trust_present(false, true)) ==
+           NS2_BT_ADMISSION_REJECT);
+}
+
+/*
+ * Idle discovery restarted Classic inquiry the instant the previous round
+ * ended, so the radio was inquiring essentially continuously in exactly the
+ * zero-controller configuration that fails. The gap is what leaves room to
+ * answer an incoming page.
+ */
+static void test_inquiry_restart_gap(void)
+{
+    assert(ns2_bt_inquiry_restart_delay_ms(false) == NS2_BT_INQUIRY_IDLE_GAP_MS);
+    assert(ns2_bt_inquiry_restart_delay_ms(false) > 0u);
+
+    // Actively pairing: discovery latency wins, restart immediately.
+    assert(ns2_bt_inquiry_restart_delay_ms(true) == 0u);
+}
+
+/*
+ * Regression, 2026-08-22. Captured on hardware: the tablet's Bluetooth SoC sent
+ * SLEEP_IND and did not wake for ~2.35 s while two ACLs were live; both links
+ * returned HCI reason 0x08. The adapter is the LE peripheral on the management
+ * link and asked for nothing, so the phone's supervision timeout decided how
+ * long a peer stall had to be to kill the session.
+ */
+static void test_mgmt_link_params_ride_through_peer_stalls(void)
+{
+    ns2_bt_le_link_params_t p = ns2_bt_mgmt_link_params();
+
+    // The controller must accept what we ask for.
+    assert(ns2_bt_le_link_params_valid(p));
+
+    // The captured stall was ~2.35 s. JoypadOS moved this class from 2 s to 6 s
+    // (efa0202). Anything at or under the observed stall reopens the failure.
+    assert(p.supervision_timeout_units * 10u >= 6000u);
+
+    // Latency must stay 0: a skipped connection event is dead time added on top
+    // of whatever the peer is already doing.
+    assert(p.latency == 0u);
+}
+
+static void test_le_link_params_validity_rules(void)
+{
+    ns2_bt_le_link_params_t p = ns2_bt_mgmt_link_params();
+
+    // supervision_timeout > (1 + latency) * interval_max * 2.
+    // 50 ms max interval needs > 100 ms; 90 ms must fail, 6 s must pass.
+    ns2_bt_le_link_params_t tight = p;
+    tight.supervision_timeout_units = 9u;   // 90 ms
+    assert(!ns2_bt_le_link_params_valid(tight));
+
+    // Latency widens the requirement, so a timeout that passed at latency 0 can
+    // stop passing. This is the arithmetic a future edit is most likely to break.
+    ns2_bt_le_link_params_t latent = p;
+    latent.latency = 100u;
+    latent.supervision_timeout_units = 100u;  // 1 s, but needs > 10.1 s
+    assert(!ns2_bt_le_link_params_valid(latent));
+
+    // Out-of-range values are rejected rather than sent to the controller.
+    ns2_bt_le_link_params_t bad = p;
+    bad.interval_min_units = 5u;            // below the 7.5 ms floor
+    assert(!ns2_bt_le_link_params_valid(bad));
+
+    bad = p;
+    bad.interval_min_units = 100u;
+    bad.interval_max_units = 40u;           // inverted range
+    assert(!ns2_bt_le_link_params_valid(bad));
+}
+
 int main(void)
 {
+    test_mgmt_link_params_ride_through_peer_stalls();
+    test_le_link_params_validity_rules();
+    test_classic_trust_is_cross_transport();
+    test_inquiry_restart_gap();
     test_pairing_admission();
     test_boot_lockout();
     test_install_reset_bootstrap_is_one_shot();
