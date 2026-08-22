@@ -644,9 +644,11 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
   `btstack_host_list_classic_bonds()` over `gap_link_key_iterator_*()`, which works on both the
   USB-dongle and CYW43 paths. Deliberately **not** done in this pass: making it user-visible needs
   management wire and UI changes too, which is not the "clearly separable, low-risk" bar. Note that
-  the Settings string *"The stored-pairing list could not be read completely"* is a **different**
-  issue — that section is explicitly scoped to LE bonds and keys off a `bondsComplete` flag; do not
-  conflate the two.
+  the Settings string *"The stored-pairing list could not be read completely"* is a **different and
+  smaller** issue — do not conflate the two. That section is explicitly scoped to LE bonds, and it
+  renders on `bondsComplete != true`, which also catches `null`. `markBondsUnknown()` sets exactly
+  that, so *"not read yet"* is presented to the user as *"could not be read"*. A three-state flag
+  rendered as two states; the fix is to distinguish unread from truncated.
 - **RSSI liveness probe cannot detect a dead remote (JoypadOS lineage `4486e7c`).**
   `HCI_Read_RSSI` is answered by the *local* controller, so a healthy reply proves nothing about the
   peer. JoypadOS removed theirs after it shot healthy links every 8 s under Classic+BLE coexistence
