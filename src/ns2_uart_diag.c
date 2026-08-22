@@ -1030,6 +1030,29 @@ static void handle_command(void) {
                 a[0], a[1], a[2], a[3], a[4], a[5], trust ? "true" : "false");
             queue_text(trace_format_response);
         }
+    } else if (strcmp(rx_line, "btauth") == 0) {
+        // Why the last Classic Authentication Complete did or did not stand
+        // down from BTstack's automatic encryption request.
+        btstack_host_auth_decision_t a;
+        if (!btstack_host_last_auth_decision(&a)) {
+            queue_text("{\"btauth\":\"none\"}");
+        } else {
+            snprintf(trace_format_response, sizeof(trace_format_response),
+                "{\"btauth\":\"last\",\"handle\":\"0x%04X\","
+                "\"mgmt_connected\":%s,\"mgmt_addr_known\":%s,"
+                "\"mgmt_addr_matches\":%s,\"mgmt_link_trusted\":%s,"
+                "\"we_own_fresh_pairing\":%s,\"request_was_pending\":%s,"
+                "\"stood_down\":%s}",
+                a.handle,
+                a.mgmt_connected ? "true" : "false",
+                a.mgmt_addr_known ? "true" : "false",
+                a.mgmt_addr_matches ? "true" : "false",
+                a.mgmt_link_trusted ? "true" : "false",
+                a.we_own_fresh_pairing ? "true" : "false",
+                a.request_was_pending ? "true" : "false",
+                a.stood_down ? "true" : "false");
+            queue_text(trace_format_response);
+        }
     } else if (strcmp(rx_line, "bthealth") == 0) {
         queue_bthealth();
     } else if (strcmp(rx_line, "btbonds") == 0) {
@@ -2406,7 +2429,7 @@ static void handle_command(void) {
                    "\"kbm mouse\",\"kbm mouse sensitivity|sensitivityx|"
                    "sensitivityy|recenter|invertx|inverty|antideadzone "
                    "<value>\",\"btdev\","
-                   "\"btreconnect\",\"btbonds\",\"btfresh\",\"btreject\","
+                   "\"btreconnect\",\"btbonds\",\"btfresh\",\"btreject\",\"btauth\","
                    "\"reenumerate\",\"save\",\"help\"]}");
     } else if (rx_length != 0) {
         queue_text("{\"error\":\"unknown command\"}");
