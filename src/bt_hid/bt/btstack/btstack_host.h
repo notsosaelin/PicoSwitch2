@@ -278,6 +278,10 @@ typedef struct {
     uint32_t fresh_admission_accepts;
     uint32_t fresh_admission_reject_window;
     uint32_t fresh_admission_reject_lockout;
+    // Times this host stood down from BTstack's automatic Classic encryption
+    // request so it would not race the companion. Non-zero on the next flashed
+    // build is what confirms the Type C mechanism on hardware.
+    uint32_t classic_encryption_deferrals;
     uint32_t wipe_completions;
     uint16_t last_disc_handle;
     uint8_t last_disc_reason;

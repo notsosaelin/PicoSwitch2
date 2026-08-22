@@ -338,8 +338,39 @@ static void test_le_link_params_validity_rules(void)
     assert(!ns2_bt_le_link_params_valid(bad));
 }
 
+/*
+ * Regression, 2026-08-22 (Type C). Captured 8 times in a 25-cycle campaign:
+ * authentication succeeds, Android sends SET_CONNECTION_ENCRYPTION, and ~7 ms
+ * later "Encryption failure 35" = HCI_ERR_LMP_ERR_TRANS_COLLISION, after which
+ * Android drops the ACL and the Controller Link never comes up.
+ *
+ * Cause: BTstack queues its own encryption request on every successful
+ * Authentication Complete (hci.c:4240), unconditionally. Both controllers
+ * report that event, so both hosts start the same LMP procedure.
+ */
+static void test_defer_classic_encryption_is_narrow(void)
+{
+    // The captured case: the companion's link, peer-initiated authentication.
+    assert(ns2_bt_defer_classic_encryption(true, false));
+
+    // A link we asked to authenticate stays ours to encrypt. Standing down here
+    // could leave a link unencrypted that would otherwise have been encrypted.
+    assert(!ns2_bt_defer_classic_encryption(true, true));
+
+    // Controllers are untouched. This must never become "never encrypt": every
+    // non-companion peer keeps BTstack's automatic behaviour exactly as before.
+    assert(!ns2_bt_defer_classic_encryption(false, false));
+    assert(!ns2_bt_defer_classic_encryption(false, true));
+
+    // The companion predicate is the same proven-session one used for
+    // admission, so an impostor cannot reach the deferral either.
+    bool impostor = ns2_bt_companion_session_trust(true, true, false, true);
+    assert(!ns2_bt_defer_classic_encryption(impostor, false));
+}
+
 int main(void)
 {
+    test_defer_classic_encryption_is_narrow();
     test_mgmt_link_params_ride_through_peer_stalls();
     test_le_link_params_validity_rules();
     test_classic_trust_is_cross_transport();

@@ -100,6 +100,32 @@ ns2_bt_admission_t ns2_bt_admission_decide(bool pairing_lockout,
 bool ns2_bt_classic_trust_present(bool classic_link_key_present,
                                   bool companion_session_trusted);
 
+// Who drives Classic encryption once authentication completes.
+//
+// BTstack queues its own HCI_Set_Connection_Encryption on EVERY successful
+// Authentication Complete where the link is not already encrypted
+// (hci.c:4240 -> BONDING_SEND_ENCRYPTION_REQUEST -> hci.c:7472). That is
+// unconditional: it does not consider who started authentication, nor whether
+// this host requires encryption at all. Pinned 1.6.2 and upstream master both
+// behave this way, so there is no upstream fix to take.
+//
+// Both controllers report Authentication Complete for the same LMP
+// authentication, so both hosts then start the LMP encryption procedure. That
+// is precisely what HCI_ERR_LMP_ERR_TRANS_COLLISION (0x23) means -- the same
+// procedure initiated from both ends -- and it is what the 2026-08-22 campaign
+// captured 8 times: authentication succeeds, Android sends
+// SET_CONNECTION_ENCRYPTION, and ~7 ms later "Encryption failure 35", after
+// which Android drops the ACL and the Controller Link never comes up.
+//
+// Deferring is deliberately narrow. It applies only when the peer is the
+// companion holding a live encrypted management session -- a phone whose HID
+// Device profile requires encryption and will always drive it -- and only when
+// this host did not itself request security on that link. Controllers are
+// untouched, and a peer we asked to authenticate is still ours to encrypt, so
+// no link silently loses encryption it would otherwise have had.
+bool ns2_bt_defer_classic_encryption(bool peer_is_companion_session,
+                                     bool we_requested_security);
+
 // The association itself, extracted so the conjunction is pinned by tests
 // rather than by convention. Every condition is load-bearing:
 //
