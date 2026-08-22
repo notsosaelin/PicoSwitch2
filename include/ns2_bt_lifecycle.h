@@ -126,6 +126,21 @@ bool ns2_bt_classic_trust_present(bool classic_link_key_present,
 bool ns2_bt_defer_classic_encryption(bool peer_is_companion_session,
                                      bool we_requested_security);
 
+// Classifying the Encryption Change that follows a stand-down.
+//
+// Standing down is only correct if the peer actually finishes the job, so the
+// two outcomes are counted separately rather than assumed. A collision is
+// identified by status alone -- it can arrive on any link, including one we
+// never deferred -- whereas peer-led completion is only attributable when it
+// lands on the handle we stood down on, otherwise an ordinary encrypted
+// reconnect would be miscounted as proof the mechanism worked.
+#define NS2_BT_HCI_LMP_TRANSACTION_COLLISION 0x23u
+
+bool ns2_bt_encryption_collision(uint8_t hci_status);
+bool ns2_bt_encryption_completed_for_deferral(uint8_t hci_status,
+                                              bool encryption_enabled,
+                                              bool handle_matches_deferral);
+
 // The association itself, extracted so the conjunction is pinned by tests
 // rather than by convention. Every condition is load-bearing:
 //

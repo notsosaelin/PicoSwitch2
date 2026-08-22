@@ -368,8 +368,111 @@ static void test_defer_classic_encryption_is_narrow(void)
     assert(!ns2_bt_defer_classic_encryption(impostor, false));
 }
 
+/*
+ * Standing down is only correct if the peer finishes the job, so the two
+ * outcomes must stay distinguishable. Getting this wrong would let an ordinary
+ * encrypted reconnect masquerade as proof the mechanism worked.
+ */
+static void test_encryption_outcome_classification(void)
+{
+    // The collision itself, on any link -- it can arrive where we never deferred.
+    assert(ns2_bt_encryption_collision(0x23u));
+    assert(!ns2_bt_encryption_collision(0x00u));
+    assert(!ns2_bt_encryption_collision(0x05u));  // auth failure is not a collision
+    assert(!ns2_bt_encryption_collision(0x06u));  // nor is PIN/key missing
+
+    // Peer-led completion, attributable only on the deferral handle.
+    assert(ns2_bt_encryption_completed_for_deferral(0x00u, true, true));
+    assert(!ns2_bt_encryption_completed_for_deferral(0x00u, true, false));
+
+    // "Encryption off" is not completion, even on the right handle -- that is
+    // the peer turning encryption OFF, which must never count as success.
+    assert(!ns2_bt_encryption_completed_for_deferral(0x00u, false, true));
+
+    // A failed encryption change is never completion.
+    assert(!ns2_bt_encryption_completed_for_deferral(0x23u, true, true));
+    assert(!ns2_bt_encryption_completed_for_deferral(0x05u, true, true));
+
+    // A collision and a completion are mutually exclusive for any input.
+    for (unsigned s = 0; s < 256u; s++) {
+        for (int en = 0; en < 2; en++) {
+            for (int m = 0; m < 2; m++) {
+                bool coll = ns2_bt_encryption_collision((uint8_t)s);
+                bool done = ns2_bt_encryption_completed_for_deferral(
+                    (uint8_t)s, en != 0, m != 0);
+                assert(!(coll && done));
+            }
+        }
+    }
+}
+
+/*
+ * Event-order and stale-state invariants around companion Classic security.
+ * The firmware tracks two per-handle values (the handle we requested security
+ * on, and the handle we stood down on); handles are reused, so neither may
+ * survive its connection. This models those transitions against the real
+ * policy functions.
+ */
+#define NO_HANDLE 0xFFFFu
+static void test_classic_security_event_orders(void)
+{
+    unsigned requested = NO_HANDLE, deferred = NO_HANDLE;
+    const unsigned H1 = 0x0005u, H2 = 0x000Bu;
+
+    // --- Peer-led success: auth complete -> defer -> peer encryption ON ------
+    bool defer = ns2_bt_defer_classic_encryption(
+        ns2_bt_companion_session_trust(true, true, true, true),
+        requested == H1);
+    assert(defer);
+    deferred = H1;
+    assert(ns2_bt_encryption_completed_for_deferral(0x00u, true, deferred == H1));
+
+    // --- Disconnect must clear per-handle state -----------------------------
+    if (deferred == H1) deferred = NO_HANDLE;
+    if (requested == H1) requested = NO_HANDLE;
+    // A late Encryption Change for the dead handle is no longer attributable.
+    assert(!ns2_bt_encryption_completed_for_deferral(0x00u, true, deferred == H1));
+
+    // --- Handle reuse: a new connection must not inherit the old decision ---
+    deferred = NO_HANDLE;
+    assert(!ns2_bt_encryption_completed_for_deferral(0x00u, true, deferred == H2));
+
+    // --- We requested security ourselves: never defer -----------------------
+    requested = H2;
+    assert(!ns2_bt_defer_classic_encryption(
+        ns2_bt_companion_session_trust(true, true, true, true), requested == H2));
+
+    // --- Management session dropped before Classic auth completes -----------
+    // Trust is live state, so it evaluates false and we simply do not defer:
+    // BTstack's own encryption request stands, which is the safe direction.
+    requested = NO_HANDLE;
+    assert(!ns2_bt_defer_classic_encryption(
+        ns2_bt_companion_session_trust(false, false, false, false),
+        requested == H1));
+
+    // --- Wrong peer while a genuine companion session is live ---------------
+    assert(!ns2_bt_defer_classic_encryption(
+        ns2_bt_companion_session_trust(true, true, false, true),
+        requested == H1));
+
+    // --- Peer encryption fails: must not look like success ------------------
+    deferred = H1;
+    assert(!ns2_bt_encryption_completed_for_deferral(0x23u, true, deferred == H1));
+    assert(ns2_bt_encryption_collision(0x23u));
+
+    // --- Duplicate Encryption Change after attribution ----------------------
+    // The firmware clears the deferral handle on the first success, so a repeat
+    // cannot be counted twice.
+    deferred = H1;
+    assert(ns2_bt_encryption_completed_for_deferral(0x00u, true, deferred == H1));
+    deferred = NO_HANDLE;
+    assert(!ns2_bt_encryption_completed_for_deferral(0x00u, true, deferred == H1));
+}
+
 int main(void)
 {
+    test_encryption_outcome_classification();
+    test_classic_security_event_orders();
     test_defer_classic_encryption_is_narrow();
     test_mgmt_link_params_ride_through_peer_stalls();
     test_le_link_params_validity_rules();
