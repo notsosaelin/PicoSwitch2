@@ -687,3 +687,57 @@ genuine/donor orientation histories. Its corrected sequence-wide prefix owner
 is host/build validated but deliberately unflashed after the campaign was
 deferred. See
 [`ds5-pdu40-interleaved-hardware-2026-08-01.md`](ds5-pdu40-interleaved-hardware-2026-08-01.md).
+
+---
+
+## The Controller Link cycling failure is an adapter-side fault
+
+**Held**: 2026-08-21 through 2026-08-22, at Hypothesis, across several competing adapter-side
+theories. It was the natural reading: the user-visible symptom is "the adapter won't accept the
+Controller Link", and the adapter is the component we control.
+
+**The claims**, in the order they were entertained and dropped:
+
+- *Admission rejection (Mode 2)* — the 2026-08-20 trust gating (`3cb11ce`) made a stored Classic
+  link key the only way in outside a pairing window, and the companion pairs over LE. Attractive
+  because it is a genuine, source-provable gap with the right date.
+- *Idle discovery starving inbound paging (Mode 1)* — with zero controllers attached the host runs
+  back-to-back 6.4 s Classic inquiries plus a 50%-duty active LE scan on one CYW43 radio.
+  Attractive because that occupancy exists in exactly the failing configuration and stops in the
+  configuration that was physically accepted on 2026-08-21.
+- *Core-1 starvation during flash persistence* — BTstack runs on core 1 and the SDK's TLV flash
+  bank calls `flash_safe_execute(..., UINT32_MAX)`, which blocks until core 0 enters lockout;
+  `1271da8` had already documented core 0 stalling "for seconds" inside TinyUSB's drain, and named
+  this exact symptom ("Android then sees a successful GATT write with no reply").
+- *The bounded HCI/CYW43 OFF/ON recovery firing mid-session.*
+- *Android GATT 133 as a cause* rather than a consequence.
+
+**What refuted them:** ten scripted lifecycle cycles on the currently-flashed build, with UART
+telemetry sampled every cycle, reproduced the failure on cycle 3 — and the adapter's own counters
+excluded every adapter-side theory at once:
+
+- `admission.reject_window` stayed at **1** through both failures — the adapter never rejected the
+  peer, so it was not Mode 2;
+- `core1.control_tick_max_gap_ms` stayed at its pre-existing **851 ms** high-water mark and never
+  moved — core 1 was never starved anywhere near a supervision timeout;
+- `hci.recovery.attempts` and `reboot.requests` stayed **0** — the recovery path has still never
+  fired on hardware;
+- `hci.probes` were `443/443` with zero failures or timeouts.
+
+The tablet's logs then showed the actual cause positively, not just by elimination:
+`ActivityManager: Process com.android.bluetooth (pid 2815) has died ... Reason is CRASH`, preceded
+by Qualcomm `WakeRetransTimeout` / `SocRxDWakeup` and followed by `soc_need_reload_patch=1`. The
+maintainer's earlier production failure was the same subsystem in its other mode: the SoC sent
+`SLEEP_IND` and did not wake for ~2.35 s while two ACLs were live, and both links returned HCI
+`0x08`.
+
+**Correction:** the failure is a Bluetooth sleep/wake fault in the tablet's Qualcomm controller.
+One radio serves both transports, which is why management and Controller Link always die together.
+`0x85` is our own label for Android GATT 133 and is downstream of the peer's stack disappearing —
+and is unrelated to the `0x85` Fluoride prints constantly as a BTM power-mode state.
+
+Two of the refuted theories nonetheless described **real** defects and their fixes were kept on
+their own merits, explicitly *not* as the cause of this failure: the cross-transport trust gap
+(`ns2_bt_classic_trust_present()`) and idle inquiry occupancy
+(`ns2_bt_inquiry_restart_delay_ms()`). Do not re-attribute the cycling failure to either.
+See [`controller-link-cycling-failure-2026-08-22.md`](controller-link-cycling-failure-2026-08-22.md).

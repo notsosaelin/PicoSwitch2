@@ -2,6 +2,43 @@
 
 #include <string.h>
 
+ns2_bt_le_link_params_t ns2_bt_mgmt_link_params(void)
+{
+    // 15--50 ms interval, 6 s supervision timeout. The timeout is the point:
+    // see the header for the captured ~2.35 s peer sleep that dropped both
+    // links, and for the JoypadOS commit that resolved the same class.
+    ns2_bt_le_link_params_t params = {
+        .interval_min_units = 12u,          // 15 ms
+        .interval_max_units = 40u,          // 50 ms
+        .latency = 0u,
+        .supervision_timeout_units = 600u,  // 6 s
+    };
+    return params;
+}
+
+bool ns2_bt_le_link_params_valid(ns2_bt_le_link_params_t params)
+{
+    // Core spec ranges.
+    if (params.interval_min_units < 6u || params.interval_max_units > 3200u)
+        return false;
+    if (params.interval_min_units > params.interval_max_units)
+        return false;
+    if (params.supervision_timeout_units < 10u ||
+        params.supervision_timeout_units > 3200u)
+        return false;
+    if (params.latency > 499u)
+        return false;
+
+    // supervision_timeout > (1 + latency) * interval_max * 2, all in ms.
+    // interval units are 1.25 ms and timeout units are 10 ms, so compare in
+    // quarter-milliseconds to stay in integers without losing the 1.25 ms step.
+    uint32_t interval_max_qms = (uint32_t)params.interval_max_units * 5u;
+    uint32_t required_qms =
+        ((uint32_t)params.latency + 1u) * interval_max_qms * 2u;
+    uint32_t timeout_qms = (uint32_t)params.supervision_timeout_units * 40u;
+    return timeout_qms > required_qms;
+}
+
 ns2_bt_admission_t ns2_bt_admission_decide(bool pairing_lockout,
                                             bool pairing_window_open,
                                             bool trust_present)
@@ -12,6 +49,17 @@ ns2_bt_admission_t ns2_bt_admission_decide(bool pairing_lockout,
         return NS2_BT_ADMISSION_RECONNECT;
     return pairing_window_open ? NS2_BT_ADMISSION_FRESH
                                : NS2_BT_ADMISSION_REJECT;
+}
+
+bool ns2_bt_classic_trust_present(bool classic_link_key_present,
+                                  bool le_bond_present)
+{
+    return classic_link_key_present || le_bond_present;
+}
+
+uint32_t ns2_bt_inquiry_restart_delay_ms(bool pairing_window_open)
+{
+    return pairing_window_open ? 0u : NS2_BT_INQUIRY_IDLE_GAP_MS;
 }
 
 bool ns2_bt_classic_key_update_admitted(bool pairing_lockout,

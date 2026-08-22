@@ -296,6 +296,20 @@ console-facing protocol owner. Reference hardware is an AYN Thor (Android 13 / A
   `KEYCODE_BUTTON_MODE` physical mapping; Capture and C/GameChat have no default physical-key
   mapping, which matches both audited handhelds. `KEYCODE_BUTTON_C` and `KEYCODE_BUTTON_Z` are
   deliberately unmapped and reserved for a future mapping system.
+- **Touch Gamepad:** implemented and source-tested 2026-08-21; **physical acceptance open.** The
+  touchscreen itself can be the controller, for a host with no gamepad at all. Gamepad -> Touch
+  Gamepad opens a full-screen mode whose input terminates in the same `ControllerState` and crosses
+  the same transport, so the firmware is unchanged and cannot tell the state came from a screen.
+  The portable half is `:bridge-core`'s `dev.picoswitch.bridge.touch` — contact ownership keyed on
+  the platform's stable contact identifier (never its array index), circular stick clamping with a
+  rescaling radial deadzone, eight D-pad sectors with radial and angular hysteresis, a declarative
+  layout resolved into the interaction-safe rectangle and mechanically audited for overlap/target
+  size/bounds, and one idempotent release-all invoked from every invalidating boundary. Physical
+  versus touch input is an explicit `InputAuthority`, never a merge; entering rebinds the session
+  with `bindSource(null, touchCapabilities)` so console rumble reaches the host's own actuator, and
+  no synthetic input device is invented. Face controls are positions resolved through the existing
+  `ControllerLayoutResolver`, so the drawn legend and the transmitted bit cannot disagree. Open:
+  multi-touch, feel, the stuck-input torture matrix and in-game correctness on real hardware.
 - **Hardware state:** the v2.0.0 sanity pass on an AYN Thor confirmed buttons, sticks, triggers,
   D-pad, C/GameChat, battery, motion and rumble with the adapter reporting `v2-bridge`
   identification; the bridge is also confirmed on an Odin 2.
@@ -595,7 +609,14 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
    native versus translated mouse output, persistence across reboot, and Controller-mode regression
    — is in
    [`docs/bluetooth/keyboard-mouse-input.md`](docs/bluetooth/keyboard-mouse-input.md#hardware-validation).
-10. **Remaining Bluetooth wipe/flash matrix.** The strict Xbox Elite Series 2 corrected-wipe retest
+10. **Touch Gamepad physical acceptance.** Implemented and source-tested 2026-08-21; nothing about
+   it has met a finger. The uncovered set is exactly the part software cannot answer: every control
+   producing the right console input, the four D-pad diagonals and sliding between them, both sticks
+   through full circular travel simultaneously, movement + trigger + face chords, thumb ergonomics
+   and whether the 0.05 stick deadzone is right, and — release-blocking — the stuck-input torture
+   matrix (background, lock, rotate, swipe the system bars in, disconnect, reconnect, and exit while
+   deliberately holding a control; the console must be neutral after each).
+11. **Remaining Bluetooth wipe/flash matrix.** The strict Xbox Elite Series 2 corrected-wipe retest
    passed. Run the still-uncovered powered-off/reboot/release-UF2 and other-family cases in
    [`docs/bluetooth/VALIDATION.md`](docs/bluetooth/VALIDATION.md). Record bond state before the remote
    returns so old trust and automatic replacement trust cannot be confused.
@@ -615,9 +636,38 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
   claim complete rumble/LED isolation between sources.
 - **Compatibility matrix drift.** Its Android-bridge row still describes the pre-v2.0.0 ADB audit
   rather than that release's hardware pass, so it understates what is confirmed.
+- **Stay on Pico SDK 2.2.0 / BTstack 1.6.2 — deliberately, not by neglect (audited 2026-08-22).**
+  SDK 2.3.0 pins BTstack `075a0780f` (= `v1.8.2`), which does contain all three upstream fixes that
+  looked relevant: `be7469f18` (connection collision — ignore `PAGE_TIMEOUT` after an incoming
+  connection event), `9a82d560f` (page scan repetition mode R1), and `232f80e60` (derive the BR/EDR
+  link key before sending DHKey Check). It does **not** contain the two commits that fix the CTKD
+  rework `232f80e60` introduced: `f25861592` (store the derived link key in `sm_key_t` byte order)
+  and `a0f82a97c` (*"store link key only for LE→BR/EDR key derivation"*, Fixes #744, authored by a
+  Raspberry Pi engineer). In `v1.8.2`, `sm_process_bonding_information()` calls
+  `sm_store_classic_bonding_information()` unconditionally, so in the BR/EDR→LE direction it writes
+  the *existing* link key back in the wrong byte order and **corrupts the link key DB**. Both fixes
+  landed 2026-08-18 and are upstream-master only. Upgrading the SDK today would therefore trade a
+  known-good CTKD path for a known-broken one. Of the three "relevant" fixes, only `be7469f18`
+  plausibly touches our paths at all, and the R1 change is about the *remote's*
+  Page_Scan_Repetition_Mode in our outgoing `Create_Connection` — it cannot affect whether a phone
+  can page us. Revisit when a Pico SDK ships a BTstack containing `a0f82a97c`.
 
 ## Negative knowledge — settled, do not rediscover
 
+- **The Controller Link "cycling failure" is the tablet's Bluetooth controller, not the adapter.**
+  Repeated management → Touch Gamepad → stop → end-management cycles eventually fail with
+  management and Controller Link dropping together, `0x85` in the app, and self-recovery without an
+  adapter reboot. Reproduced on cycle 3 of 10 over ADB against the flashed build. Adapter counters
+  cleared every adapter-side theory in the same run: `reject_window` unchanged (not admission),
+  `control_tick_max_gap_ms` pinned at its old 851 ms high-water mark (not core-1 starvation),
+  `recovery.attempts`/`reboot.requests` still 0. The tablet's logs show the cause directly —
+  `Process com.android.bluetooth ... has died ... Reason is CRASH` after Qualcomm
+  `WakeRetransTimeout`/`soc_need_reload_patch=1`, and in the other observed mode the SoC sent
+  `SLEEP_IND` and did not wake for ~2.35 s while two ACLs were live, dropping both on HCI `0x08`.
+  One radio serves both transports, which is why they always die together. `0x85` is *our* label
+  for Android GATT 133 and is downstream; Fluoride separately prints `0x85` constantly as a BTM
+  power-mode state, which is unrelated noise. Do not re-open this as an adapter bug.
+  [`docs/experiments/controller-link-cycling-failure-2026-08-22.md`](docs/experiments/controller-link-cycling-failure-2026-08-22.md)
 - **Chart/state transitions in the motion carrier cost nothing.** Measured: the worst orientation
   step across a chart change equals the worst step anywhere else, to four decimals, across all four
   charts. Do not add hysteresis to the chart selector.
@@ -684,7 +734,11 @@ Standard families, with commands and the current inventory in [`AGENTS.md`](AGEN
   the runner's `$notHostTests` table — see also
   [`docs/host-test-inventory.md`](docs/host-test-inventory.md)
 - Python suites for trace decoding, NFC semantics, the amiibo corpus, and motion analysis
-- JVM tests for `:bridge-core` and the Android backends, plus the architecture guard
+- JVM tests for `:bridge-core` and the Android backends, plus the architecture guard. The Touch
+  Gamepad's correctness lives here rather than on a device: contact ownership under reordered
+  batches and non-contiguous identifiers, stick and D-pad geometry, authority transitions, release
+  safety, and the declarative layout audited on real resolved geometry at seven window shapes and
+  four densities
 - contract guards: Android descriptor parity across C and Kotlin, the per-contract descriptor
   digest, and the bridge contract version pin
 - board builds for `pico_w` and `pico2_w` plus install-reset marker verification
@@ -708,8 +762,8 @@ validation; state the level performed.
 ## Immediate status
 
 No known release-blocking regression. v2.0.0 remains the released baseline; the branch now carries
-the Bluetooth Keyboard / Keyboard + Mouse input pass and the 2026-08-21 Android/Bluetooth
-reliability pass on top of it.
+the Bluetooth Keyboard / Keyboard + Mouse input pass, the 2026-08-21 Android/Bluetooth reliability
+pass, and the Touch Gamepad on top of it.
 
 The reliability pass is physically accepted. Confirmed on hardware: fresh LE management pairing,
 repeated Refresh, personality switching with post-transition management recovery, DualSense Edge +
@@ -719,7 +773,9 @@ HCI/CYW43 OFF/ON recovery it added has still never fired on hardware — its log
 the recovery path itself remains unvalidated in the field.
 
 The open items above are hardware gates to close opportunistically when the relevant hardware is in
-front of the maintainer. The newest one (gate 9) is the only one blocking a claim about a shipped
-feature: KB/M is implementation-complete and host-validated, but nothing about it is
-hardware-confirmed. The next accepted engineering work is the current development priority in
-[`PLAN.md`](PLAN.md).
+front of the maintainer. Two of them block a claim about a shipped feature rather than a
+nice-to-have: KB/M (gate 9) and the Touch Gamepad (gate 10) are both implementation-complete and
+host-validated with nothing hardware-confirmed. Gate 10 additionally carries a release-blocking
+sub-item — the stuck-input torture matrix — because the failure it guards against is a console left
+holding a control with no finger on the screen. The next accepted engineering work is the current
+development priority in [`PLAN.md`](PLAN.md).
