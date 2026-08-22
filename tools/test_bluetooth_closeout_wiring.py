@@ -20,6 +20,8 @@ def function_body(source: str, start: str, end: str) -> str:
 def main() -> None:
     source = HOST.read_text(encoding="utf-8")
 
+    check_le_appearance_is_a_host(source)
+
     start_wake = function_body(
         source,
         r"bool btstack_host_start_wake_advertisement\(",
@@ -235,6 +237,37 @@ def check_audio_sink_is_independent_of_input_ownership() -> None:
     # The claim/release sites are the DS5 HID lifecycle hooks and nothing else.
     assert ds5.count("ds5_audio_bridge_connect(device->conn_index);") == 1
     assert ds5.count("ds5_audio_bridge_disconnect(device->conn_index);") == 1
+
+
+def check_le_appearance_is_a_host(source: str) -> None:
+    """The LE management Appearance must never describe a HID peripheral.
+
+    PicoSwitch2 is the HID *host* for Controller Link. It previously advertised
+    GAP Appearance 0x03C0 (Generic HID), and Android turns that into a stored
+    Class of Device with major class 5 (Peripheral) whenever it pairs with no
+    Classic class on record. Its own HID Device profile then refuses the
+    adapter -- `btif_hd` checks `check_cod_hid()`, `(cod & 0x1F00) == 0x0500`,
+    at `BTA_HD_OPEN_EVT` -- after the ACL, authentication, encryption and both
+    HID channels have already succeeded. Controller Link fails deterministically
+    and nothing about the failure points at the Appearance.
+
+    The firmware carries a `_Static_assert` for this too. This is the second
+    guard because the constant is easy to "correct" back to a HID value by
+    someone reasoning that the adapter carries HID traffic.
+    """
+    match = re.search(r"#define HOST_ATT_APPEARANCE\s+0x([0-9A-Fa-f]{4})u", source)
+    assert match, "HOST_ATT_APPEARANCE is no longer a single named constant"
+    appearance = int(match.group(1), 16)
+    assert appearance & 0xFFC0 != 0x03C0, (
+        f"LE Appearance 0x{appearance:04X} is in the HID range (0x03C0-0x03FF); "
+        "Android will store a HID-peripheral Class of Device for the adapter and "
+        "refuse the Controller Link"
+    )
+    # And it must stay coherent with the Classic identity we actually advertise.
+    assert "gap_set_class_of_device(0x000104)" in source, (
+        "Classic Class of Device changed; re-check that it still agrees with the "
+        "LE Appearance (both should describe a computer/host, not a peripheral)"
+    )
 
 
 if __name__ == "__main__":

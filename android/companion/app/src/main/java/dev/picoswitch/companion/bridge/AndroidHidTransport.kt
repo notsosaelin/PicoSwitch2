@@ -81,8 +81,18 @@ class AndroidHidTransport(
     private var connectionTimeout: Job? = null
     @Volatile private var registered = false
     @Volatile private var stopped = false
+
+    /**
+     * Whether an establishment is outstanding. See [HidEstablishmentPolicy]:
+     * "not stopped" is not the same as "wants a link", and treating them as the
+     * same let an Android profile rebind start an attempt nobody requested.
+     */
+    @Volatile private var intent = HidEstablishmentIntent.Idle
     @Volatile private var phase = BridgeLinkPhase.Idle
     @Volatile private var connectStartedAtMillis = 0L
+
+    /** One deadline for the whole connect attempt; see [armConnectionTimeout]. */
+    @Volatile private var connectDeadlineAtMillis = 0L
 
     override fun attach(listener: BridgeTransport.Listener) {
         this.listener = listener
@@ -102,6 +112,9 @@ class AndroidHidTransport(
 
     override fun start(preferredHost: BridgeHost?) {
         stopped = false
+        // An explicit request is the ONLY thing that grants establishment
+        // authority; see HidEstablishmentPolicy.
+        intent = HidEstablishmentIntent.Wanted
         requestedHost = (preferredHost as? AndroidBridgeHost)?.device ?: requestedHost
         profile?.let { hid ->
             if (registered) {
@@ -132,6 +145,7 @@ class AndroidHidTransport(
     override fun connect(host: BridgeHost) {
         val device = (host as? AndroidBridgeHost)?.device ?: return
         stopped = false
+        intent = HidEstablishmentIntent.Wanted
         requestedHost = device
         if (profile == null) {
             start(host)
@@ -148,6 +162,7 @@ class AndroidHidTransport(
 
     override fun stop() {
         stopped = true
+        intent = HidEstablishmentIntent.Idle
         registrationTimeout?.cancel(); registrationTimeout = null
         connectionTimeout?.cancel(); connectionTimeout = null
         val hid = profile
@@ -179,6 +194,16 @@ class AndroidHidTransport(
         }
         val hid = proxy as? BluetoothHidDevice ?: return
         profile = hid
+        // Only an outstanding request may drive registration+connect from here.
+        // Android rebinds this service on its own, and doing it unconditionally
+        // resurrected failed attempts as a second, unowned generation.
+        if (!HidEstablishmentPolicy.mayAutoRegister(intent, stopped)) {
+            diagnostics.event(
+                "transport", "HID profile",
+                "bound with no establishment requested; staying passive",
+            )
+            return
+        }
         register(hid)
     }
 
@@ -194,6 +219,10 @@ class AndroidHidTransport(
         host = null
         profile = null
         registered = false
+        // Losing the profile service ends this generation's authority. Without
+        // this, Android's own rebind re-entered onServiceConnected() and started
+        // a second, unrequested attempt.
+        intent = HidEstablishmentIntent.Idle
         BridgeForegroundService.stop(appContext, diagnostics)
         listener.onLinkDown("Android HID Device service became unavailable")
         if (stopped) return
@@ -248,26 +277,75 @@ class AndroidHidTransport(
         val hid = profile ?: return publish(BridgeLinkPhase.Failed, message = "HID profile is not ready")
         connectionTimeout?.cancel()
         connectStartedAtMillis = System.currentTimeMillis()
+        connectDeadlineAtMillis = connectStartedAtMillis + CONNECTION_CALLBACK_TIMEOUT_MS
         publish(BridgeLinkPhase.Connecting, device.name, "Connecting controller mode", registered = true)
         try {
             val immediateAccepted = hid.connect(device)
+            // Android's HID Device profile refuses a host whose stored Class of
+            // Device looks like a HID peripheral: btif_hd checks
+            // (cod & 0x1F00) == 0x0500 at BTA_HD_OPEN_EVT and disconnects with
+            // "remote device is not hid host". That check reads system remote
+            // metadata we cannot see from the connect result, so record the
+            // framework's own view of the host here -- it is the difference
+            // between "the link failed" and "the phone refused this identity".
+            val cls = runCatching { device.bluetoothClass }.getOrNull()
             diagnostics.event(
                 "transport", "HID connection",
-                "requested accepted=$immediateAccepted bond=${device.bondState} type=${device.type}; awaiting callback",
+                "requested accepted=$immediateAccepted bond=${device.bondState} type=${device.type} " +
+                    "major=0x%04X device=0x%04X hostOk=%s; awaiting callback".format(
+                        cls?.majorDeviceClass ?: -1,
+                        cls?.deviceClass ?: -1,
+                        (cls != null && cls.majorDeviceClass != PERIPHERAL_MAJOR_CLASS).toString(),
+                    ),
             )
-            connectionTimeout = scope.launch {
-                delay(CONNECTION_CALLBACK_TIMEOUT_MS)
-                if (stopped || profile !== hid || phase != BridgeLinkPhase.Connecting) return@launch
-                publish(
-                    BridgeLinkPhase.Failed,
-                    device.name,
-                    "Android did not complete controller mode; reopen the adapter pairing window and retry",
-                    registered = true,
-                )
-                diagnostics.event("transport", "HID connection", "callback timeout")
-            }
+            armConnectionTimeout(hid, device)
         } catch (error: Throwable) {
             fail("Android could not start controller mode", error)
+        }
+    }
+
+    /**
+     * The watchdog for a connect that never resolves.
+     *
+     * Bounded by ONE deadline for the whole attempt, set in [beginConnect] and
+     * never extended. Two different silences have to be caught and only a
+     * whole-attempt deadline catches both:
+     *
+     * - the stack accepts `connect()` and then says nothing at all, so no
+     *   callback ever arrives to cancel this;
+     * - the stack reports STATE_CONNECTING, which cancels the pending watchdog,
+     *   and then says nothing more. Re-arming for a fresh interval each time
+     *   would let a chatty stack push the deadline out forever, which is the same
+     *   indefinite lie in a different costume.
+     *
+     * Declining to fire is logged with the reason. A watchdog that silently
+     * decides not to bark is indistinguishable from one that never ran, and that
+     * ambiguity costs a debugging session.
+     */
+    private fun armConnectionTimeout(hid: BluetoothHidDevice, device: BluetoothDevice) {
+        connectionTimeout?.cancel()
+        val remaining = connectDeadlineAtMillis - System.currentTimeMillis()
+        connectionTimeout = scope.launch {
+            if (remaining > 0) delay(remaining)
+            val elapsed = System.currentTimeMillis() - connectStartedAtMillis
+            if (stopped || profile !== hid || phase != BridgeLinkPhase.Connecting) {
+                diagnostics.event(
+                    "transport", "HID connection",
+                    "watchdog stood down after ${elapsed}ms: stopped=$stopped " +
+                        "sameProfile=${profile === hid} phase=$phase",
+                )
+                return@launch
+            }
+            publish(
+                BridgeLinkPhase.Failed,
+                device.name,
+                "Android did not complete controller mode; reopen the adapter pairing window and retry",
+                registered = true,
+            )
+            diagnostics.event(
+                "transport", "HID connection",
+                "callback timeout after ${elapsed}ms bond=${device.bondState} type=${device.type}",
+            )
         }
     }
 
@@ -309,8 +387,21 @@ class AndroidHidTransport(
     ) {
         phase = next
         this.registered = registered
+        // One place decides when an establishment is over. Playing means it
+        // succeeded; Failed/Unsupported/Idle mean it ended. In every case the
+        // authority to start another one goes back to the caller, so an Android
+        // profile rebind cannot resurrect it. See HidEstablishmentPolicy.
+        when (next) {
+            BridgeLinkPhase.Playing,
+            BridgeLinkPhase.Failed,
+            BridgeLinkPhase.Unsupported,
+            BridgeLinkPhase.Idle -> intent = HidEstablishmentIntent.Idle
+            else -> Unit
+        }
         listener.onPhase(next, hostName, message, registered)
     }
+
+    private fun stateName(state: Int): String = HidConnectionState.name(state)
 
     private val callback = object : BluetoothHidDevice.Callback() {
         override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
@@ -375,13 +466,30 @@ class AndroidHidTransport(
 
         override fun onConnectionStateChanged(device: BluetoothDevice, state: Int) {
             if (stopped) return
-            connectionTimeout?.cancel()
-            connectionTimeout = null
+            diagnostics.event("transport", "HID connection state", stateName(state))
+            // ONLY a terminal state disarms the watchdog.
+            //
+            // This callback used to cancel it unconditionally, before deciding
+            // whether the state was one it handles. STATE_DISCONNECTING has no
+            // branch below, so on a stack that reports it the watchdog was
+            // silently thrown away and the phase stayed on "Connecting" forever
+            // with nothing left that could ever resolve it. Measured on an
+            // Android 16 tablet 2026-08-21: the BR/EDR ACL came up, the adapter
+            // dropped it 750 ms later, and the app waited indefinitely.
+            if (HidConnectionState.isTerminal(state)) {
+                connectionTimeout?.cancel()
+                connectionTimeout = null
+            }
             when (state) {
-                BluetoothProfile.STATE_CONNECTING -> publish(
-                    BridgeLinkPhase.Connecting, device.name,
-                    "Connecting controller mode", registered = true,
-                )
+                BluetoothProfile.STATE_CONNECTING -> {
+                    publish(
+                        BridgeLinkPhase.Connecting, device.name,
+                        "Connecting controller mode", registered = true,
+                    )
+                    // Re-armed against the SAME whole-attempt deadline, so a
+                    // chatty stack cannot push it out; see armConnectionTimeout.
+                    profile?.let { armConnectionTimeout(it, device) }
+                }
                 BluetoothProfile.STATE_CONNECTED -> {
                     host = device
                     requestedHost = device
@@ -427,5 +535,16 @@ class AndroidHidTransport(
     private companion object {
         const val REGISTRATION_CALLBACK_TIMEOUT_MS = 2_000L
         const val CONNECTION_CALLBACK_TIMEOUT_MS = 8_000L
+
+        /**
+         * `BluetoothClass.Device.Major.PERIPHERAL`.
+         *
+         * A host whose stored class carries this major class is rejected by
+         * Android's own HID Device profile (`btif_hd`, `check_cod_hid()`:
+         * `(cod & 0x1F00) == 0x0500`) immediately after the HID channels open,
+         * with `remote device is not hid host, disconnecting`. The adapter is
+         * the HID *host*, so this value never legitimately describes it.
+         */
+        const val PERIPHERAL_MAJOR_CLASS = 0x0500
     }
 }

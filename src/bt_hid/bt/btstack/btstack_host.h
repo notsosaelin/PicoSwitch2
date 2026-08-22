@@ -87,6 +87,25 @@ void btstack_host_suppress_scan(bool suppress);
 // Classic device. Returns false until a rejection has occurred.
 bool btstack_host_last_reject(uint8_t *addr_out, bool *trust_present);
 
+// Deciding inputs of the most recent Classic Authentication Complete. Exists
+// because enc.deferrals staying zero while security succeeds is ambiguous on
+// its own: it cannot distinguish "the hook never ran" from "one predicate was
+// false", and guessing between those costs a flash cycle.
+typedef struct {
+    uint16_t handle;
+    bool mgmt_connected;
+    bool mgmt_addr_known;
+    bool mgmt_addr_matches;
+    bool mgmt_link_trusted;
+    bool we_own_fresh_pairing;
+    bool request_was_pending;
+    bool stood_down;
+} btstack_host_auth_decision_t;
+
+bool btstack_host_last_auth_decision(btstack_host_auth_decision_t *out);
+
+
+
 // True when a controller is fully connected (HID ready) on either transport.
 // Used for the 1-dongle-1-controller discovery gating.
 bool btstack_host_controller_connected(void);

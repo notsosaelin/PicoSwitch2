@@ -697,7 +697,45 @@ static void dis_client_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
 _Static_assert(sizeof(PICO_SWITCH2_BLUETOOTH_NAME) - 1u == 11u,
                "PicoSwitch2 Bluetooth name length changed");
 static uint8_t host_att_device_name[] = PICO_SWITCH2_BLUETOOTH_NAME;
-static const uint8_t host_att_appearance[] = { 0xC0, 0x03 }; // 0x03C0 Generic HID, LE
+// GAP Appearance for the LE management service.
+//
+// MUST NOT be a HID appearance (0x03C0..0x03FF). PicoSwitch2 is the HID *Host*;
+// a HID appearance was always the wrong role, and it deterministically breaks
+// the Controller Link on a freshly paired Android device:
+//
+//   btm_ble_read_remote_appearance_cmpl: Appearance 0x03c0,
+//                                        Class of Device 0-5-0 found for ...
+//   btif_update_remote_properties: CoD from storage was zero
+//   btif_update_remote_properties: ... CoD: 0x001f00 -> 0x000500
+//   btif_hd_upstreams_evt: BTA_HD_OPEN_EVT
+//   btif_hd_upstreams_evt: remote device is not hid host, disconnecting
+//
+// Android reads this characteristic during LE pairing. When it has no stored
+// Classic CoD ("CoD from storage was zero" -- true for any fresh pairing) it
+// synthesises one from the appearance and PERSISTS it. 0x03C0 becomes major
+// device class 5 (Peripheral). Fluoride's check_cod_hid() is
+// (cod & 0x1F00) == 0x0500, so the phone then classifies this adapter as a HID
+// peripheral and its HID Device profile refuses to run against it -- the ACL,
+// authentication, encryption and both HID L2CAP channels all succeed first, and
+// BTIF_HD drops the link ~40 ms later. 10 of 10 attempts, deterministic.
+//
+// A bond record created while the adapter was Classic-discoverable holds the
+// real CoD instead, which is why this stayed hidden: it only bites on a fresh
+// pairing, and the stale-but-correct record masked it indefinitely.
+//
+// 0x0080 is Generic Computer, matching the Classic CoD 0x000104
+// (Computer/Desktop) set at init, so both transports report one coherent
+// identity -- the rule the device name above already follows.
+#define HOST_ATT_APPEARANCE 0x0080u
+_Static_assert((HOST_ATT_APPEARANCE & 0xFFC0u) != 0x03C0u,
+               "LE appearance is in the HID range: Android will synthesise a "
+               "HID-peripheral Class of Device on a fresh pair and refuse the "
+               "Controller Link (check_cod_hid). Keep this a host/computer "
+               "appearance consistent with gap_set_class_of_device().");
+static const uint8_t host_att_appearance[] = {
+    (uint8_t)(HOST_ATT_APPEARANCE & 0xFFu),
+    (uint8_t)(HOST_ATT_APPEARANCE >> 8),
+};
 
 // Config/in-band BLE management service. UUIDs are project-owned random UUIDs,
 // deliberately distinct from Nordic UART so the browser cannot accidentally
@@ -789,6 +827,22 @@ static bool hid_pairing_window_open;
 static bool pairing_lockout;
 static bool install_reset_bootstrap_consumed;
 
+// Bounded identity-refresh discoverability.
+//
+// Android stores a Class of Device per remote and its HID Device profile
+// refuses any host whose stored class looks like a HID peripheral
+// (btif_hd -> check_cod_hid: (cod & 0x1F00) == 0x0500). On a pairing where
+// Android has no Classic CoD yet ("CoD from storage was zero") it synthesises
+// one from our LE Appearance and persists it. Our real Classic CoD (0x000104,
+// Computer/Desktop) only reaches Android through an inquiry response, and we
+// are not discoverable outside a pairing window -- so a phone that learned a
+// wrong class had no way to ever correct it, and the Controller Link failed
+// deterministically forever after.
+//
+// This window exists purely so Android can re-learn our real class. It grants
+// NO pairing authority: hid_pairing_window_open is untouched, so admission,
+// SSP response and fresh-key commit all behave exactly as if it were closed.
+// It only makes us answer inquiry, which is what carries the CoD.
 void btstack_host_set_pairing_window_open(bool open)
 {
     hid_pairing_window_open = open;
@@ -2527,6 +2581,25 @@ _Static_assert(BTSTACK_VERSION_MAJOR == 1 && BTSTACK_VERSION_MINOR == 6 &&
                "hci_run() consumes it (see docs/experiments/"
                "controller-link-cycling-failure-2026-08-22.md)");
 
+// Why the last Classic Authentication Complete did or did not stand down.
+//
+// enc.deferrals staying zero while authentication and encryption both succeed
+// is an integration contradiction, not a detail: it means the hook did not run,
+// or one predicate was false, and the counters alone cannot say which. This
+// records the deciding inputs from the most recent Authentication Complete so a
+// single flashed attempt answers it instead of another diagnostic round.
+static struct {
+    bool valid;
+    uint16_t handle;
+    bool mgmt_connected;
+    bool mgmt_addr_known;
+    bool mgmt_addr_matches;
+    bool mgmt_link_trusted;
+    bool we_own_fresh_pairing;
+    bool request_was_pending;
+    bool stood_down;
+} last_auth_decision;
+
 // Returns true when the automatic request was actually pending and cleared.
 static bool btstack_host_stand_down_from_encryption(hci_connection_t *conn)
 {
@@ -2619,6 +2692,20 @@ static void btstack_host_note_admission_reject(const bd_addr_t addr, bool trust_
     (void)memcpy(last_reject_addr, addr, sizeof(bd_addr_t));
     last_reject_trust_present = trust_present;
     last_reject_valid = true;
+}
+
+bool btstack_host_last_auth_decision(btstack_host_auth_decision_t *out)
+{
+    if (!out || !last_auth_decision.valid) return false;
+    out->handle = last_auth_decision.handle;
+    out->mgmt_connected = last_auth_decision.mgmt_connected;
+    out->mgmt_addr_known = last_auth_decision.mgmt_addr_known;
+    out->mgmt_addr_matches = last_auth_decision.mgmt_addr_matches;
+    out->mgmt_link_trusted = last_auth_decision.mgmt_link_trusted;
+    out->we_own_fresh_pairing = last_auth_decision.we_own_fresh_pairing;
+    out->request_was_pending = last_auth_decision.request_was_pending;
+    out->stood_down = last_auth_decision.stood_down;
+    return true;
 }
 
 bool btstack_host_last_reject(uint8_t *addr_out, bool *trust_present)
@@ -5305,10 +5392,30 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             // ns2_bt_defer_classic_encryption() for the captured collision.
             if (status == ERROR_CODE_SUCCESS && auth_conn != NULL) {
                 bool we_own_fresh_pairing = (classic_fresh_pairing_security_handle == handle);
+                // Capture the deciding inputs before acting on them; see
+                // last_auth_decision for why the counters alone are not enough.
+                last_auth_decision.valid = true;
+                last_auth_decision.handle = handle;
+                last_auth_decision.mgmt_connected =
+                    config_ble.handle != HCI_CON_HANDLE_INVALID;
+                last_auth_decision.mgmt_addr_known =
+                    last_auth_decision.mgmt_connected && config_ble.client_addr_valid;
+                last_auth_decision.mgmt_addr_matches =
+                    last_auth_decision.mgmt_addr_known &&
+                    memcmp(config_ble.client_addr, auth_conn->address,
+                           sizeof(bd_addr_t)) == 0;
+                last_auth_decision.mgmt_link_trusted =
+                    last_auth_decision.mgmt_addr_matches &&
+                    config_ble_link_trusted(config_ble.handle);
+                last_auth_decision.we_own_fresh_pairing = we_own_fresh_pairing;
+                last_auth_decision.request_was_pending =
+                    (auth_conn->bonding_flags & BONDING_SEND_ENCRYPTION_REQUEST) != 0;
+                last_auth_decision.stood_down = false;
                 if (ns2_bt_defer_classic_encryption(
                         btstack_host_classic_companion_session_trust(auth_conn->address),
                         we_own_fresh_pairing) &&
                     btstack_host_stand_down_from_encryption(auth_conn)) {
+                    last_auth_decision.stood_down = true;
                     classic_encryption_deferrals++;
                     classic_encryption_deferred_handle = handle;
                     printf("[BTSTACK_HOST] Deferring Classic encryption to companion "
