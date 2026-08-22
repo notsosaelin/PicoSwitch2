@@ -690,9 +690,33 @@ Then confirm the identity fix took, **before** anything else:
 pwsh -File tools\uart_query.ps1 -Port COM11 -Command 'bridge'   # build id must match the flash
 ```
 
-and in `adb logcat` the app's connect line must now read `hostOk=true` with a major class that is
-not `0x0500`. If it still reads `major=0x0500 hostOk=false`, the pairing was not actually fresh -
-the phone kept its old record - and the rest of this procedure is meaningless until it is.
+and in `adb logcat` the app's connect line should now read `hostOk=true` with a major class that is
+not `0x0500`.
+
+**Do not infer anything from `hostOk` alone.** A fresh cryptographic bond is not the same state as a
+fresh remote-device record, and Android may retain remote metadata across bond removal. If
+`hostOk=false` persists, the reason is directly readable rather than guessable -- grep the pairing
+for these three lines, in this order:
+
+| line | meaning |
+|---|---|
+| `btif_update_remote_properties: CoD from storage was zero` | Android started from no stored class. Absent => it kept an old record, and this test cannot evaluate the fix. |
+| `btm_ble_read_remote_appearance_cmpl: Appearance 0x....` | what the adapter actually advertised. Must read `0x0080`; `0x03c0` means the flash did not take. |
+| `btif_update_remote_properties: ... CoD: 0x... -> 0x...` | the class Android derived and stored. |
+
+Only the combination decides it. `Appearance 0x0080` with a stored class whose major nibble is not
+`5` is the fix working; `Appearance 0x0080` with a `0x0005xx` class would mean the mapping
+assumption is wrong; a missing `CoD from storage was zero` means the record was not fresh and the
+run proves nothing either way.
+
+**On whether Forget is sufficient**, the only direct evidence is from this device on 2026-08-22: a
+`removeBond()` at 17:45:53 was followed at 17:46:13 by `CoD from storage was zero`, so on that
+occasion the stored class did not survive bond removal. That is one observation on one device, not a
+general rule -- which is exactly why the procedure reads the three lines above instead of assuming.
+
+Useful robustness note: the pre-appearance value in that trace was `0x001f00` (uncategorised).
+`(0x001f00 & 0x1F00) == 0x1F00`, which is not `0x0500`, so even a peer that never maps our new
+Appearance at all lands on a class the predicate accepts.
 
 The clean path being proved is: fresh pair -> management -> Touch Gamepad -> Classic host recognised
 -> HID connection -> encrypted Controller Link -> input works.
