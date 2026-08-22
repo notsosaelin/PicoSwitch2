@@ -68,6 +68,16 @@ automatic replacement pairing. Do not add speculative retries or key tuning whil
 pending. Treat future Bluetooth reports as targeted bugs/regressions unless new evidence justifies
 reopening the subsystem.
 
+**2026-08-22 — the freeze held, and this is what "targeted" looked like.** A reproducible Controller
+Link failure produced new evidence, so three narrow defects were fixed without reopening the
+architecture: a Classic encryption-procedure collision with the Android companion (Type C, 8 of 10
+captured failures), a cross-transport admission gap that could reject the companion outright
+(Mode 2), and continuous idle Classic inquiry starving inbound paging (Mode 1). None of it has run
+on hardware. The subsystem is **not** frozen in the sense of "nothing pending" — see open validation
+gate 12 in [`STATUS.md`](STATUS.md) and
+[`docs/experiments/controller-link-cycling-failure-2026-08-22.md`](docs/experiments/controller-link-cycling-failure-2026-08-22.md).
+The "no speculative retries or key tuning" rule above was applied throughout and still stands.
+
 ## Bluetooth Keyboard / Keyboard + Mouse Input — Complete
 
 Delivered and hardware validated. Controller / Keyboard / Keyboard + Mouse input modes, the

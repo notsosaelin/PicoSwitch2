@@ -555,6 +555,61 @@ Scoped deliberately, because it is easy to over-credit:
   introduced 2026-08-20, but `reject_window` proves it was **not** the failure captured here.
 - Refuted paths recorded in [`refuted-hypotheses.md`](refuted-hypotheses.md).
 
+## Reproducing the candidate
+
+| | |
+|---|---|
+| Commit | `0054a6d` (branch `ns2-testing`) |
+| Flash | `build/pico2_w/PicoSwitchWGA-pico2_w.uf2` |
+| SHA-256 | `c5999357bc83ec400ece16ed9e85e06ccdfb22cab71d0942031250c418d31db6` |
+| Size | 2,028,032 bytes |
+| Also built | `build/pico_w/PicoSwitchWGA-pico_w.uf2` - **not** the acceptance target |
+| Reported build id | `0054a6d0+dirty` |
+
+```powershell
+.\build.ps1                            # both boards
+pwsh -File tools\run_host_tests.ps1     # firmware host suite (expect 70/70)
+pwsh -File tools\run_android_tests.ps1  # companion unit tests
+pwsh -File tools\uart_query.ps1 -Port COM11 -Command 'btstate'
+```
+
+**On `+dirty`, which will look alarming and is not.** `CMakeLists.txt` derives the build id from
+`git status --porcelain --untracked-files=no`, so *any* modified tracked file marks the firmware
+dirty. Firmware source is clean at this commit - verify with
+`git status --porcelain --untracked-files=no -- src/ include/ tools/ CMakeLists.txt cmake/`, which
+prints nothing. The suffix comes solely from the deliberately held Android/Touch Gamepad work (see
+`TOUCH_GAMEPAD_ACCEPTANCE.md`). Do not stash that work to chase a clean id.
+
+**Confirming the right firmware is running after the flash:** `uart_query.ps1 -Command 'bridge'`
+reports a `build` field carrying `PICOSWITCH_BUILD_ID`. It must read `0054a6d0+dirty`. Anything else
+means the flash did not take, or a different tree was built. (`status` reports the firmware *profile*
+versions `2.1.4 / 12.0.0 / 0.2.3`, which are configured values and do **not** change per commit -
+they cannot identify the build.)
+
+## Rollback
+
+The candidate bundles three independent changes across several commits, so "revert the last commit"
+does **not** undo Type C. Two clean recovery points:
+
+| target | commit | what it gives you |
+|---|---|---|
+| Everything except Type C | `bed9035` | keeps the Mode 1 inquiry gap, Mode 2 cross-transport trust and the 6 s supervision margin; drops the encryption stand-down and its instrumentation |
+| Pre-investigation baseline | `713a52b` | the build currently flashed (`bridge` reports `713a52ba+dirty`), known-good for everyday use and the state all the 2026-08-22 evidence was gathered against |
+
+Type C spans `d92c85f` (stand-down introduced) -> `f6cbe41` (hardening + instrumentation) ->
+`0054a6d` (naming/docs). Reverting only `0054a6d` leaves the workaround active.
+
+No rollback binaries were retained; rebuild from source:
+
+```powershell
+git checkout <target>
+.\build.ps1 pico2_w -Clean      # -Clean is required: an incremental build after
+                                # changing commits can leave a stale uf2
+```
+
+Confirm the rollback took by reading `bridge` over UART and checking the `build` field matches the
+target's short hash.
+
 ## Physical acceptance procedure — pending
 
 One flash, one run. Designed so no second firmware iteration is needed unless the hypothesis is
@@ -572,8 +627,16 @@ actually false.
    `enc.collisions == 0`, `enc.unencrypted_active == 0`.
    - `deferrals == 0` ⇒ the stand-down never fired; the Type C model is wrong. Stop and report.
    - `unencrypted_active > 0` ⇒ the peer-enforced encryption invariant is false. Stop and report.
-5. **Campaign.** Run the established lifecycle cycling ≥ 30 cycles at human pacing. The automated
-   driver used for the 35-cycle baseline is reproduced in this document's Method section.
+5. **Campaign.** Run the same workload the baseline was measured on -- a different workload makes
+   the before/after comparison meaningless:
+
+   ```powershell
+   python tools\controller_link_cycle.py --cycles 30 --port COM11
+   ```
+
+   It drives the full lifecycle over ADB, classifies every failed cycle into Type C / Mode 1 /
+   Mode 2 / Type A / unknown, and prints a verdict against the criteria below. Requires the tablet
+   unlocked with its screen on.
 6. **Accept when:** Type C = 0 (no `Encryption failure 35` in `adb logcat`, `enc.collisions == 0`),
    Mode 2 = 0 (`admission.reject_window` unchanged), `enc.unencrypted_active == 0`, management stays
    usable, and Touch Gamepad input keeps working.
@@ -581,5 +644,49 @@ actually false.
    so a clean 30-cycle run neither confirms nor refutes the inquiry-gap change), and any
    `Process com.android.bluetooth ... has died` (Type A — an Android defect this pass does not
    address).
+
+8. **Confirm the firmware first.** Before step 1, `uart_query.ps1 -Command 'bridge'` must report
+   `build` = `0054a6d0+dirty`. See *Reproducing the candidate* for why `+dirty` is expected here.
+
+### Classifying each failure
+
+A cycle "fails" when the Controller Link does not become active within ~25 s. Classify from
+`adb logcat` plus `btstate`; the four modes are distinguishable and must not be pooled:
+
+| signature | mode | counts against the fix? |
+|---|---|---|
+| `btm_sec_encryption_change_evt: Encryption failure 35` / `LMP_ERR_TRANS_COLLISION`, or `enc.collisions > 0` | **Type C** | **yes** |
+| `OnConnectFail: ... reason:PAGE_TIMEOUT(0x04)` | Mode 1 | no - record separately |
+| `admission.reject_window` increased | Mode 2 | **yes** - would be a regression |
+| `Process com.android.bluetooth ... has died` / `DeadObjectException` | Type A | no - Android defect |
+| none of the above | unknown | investigate before judging |
+
+### Verdicts
+
+- **Accept Type C fix** - `enc.deferrals > 0`, `enc.peer_completed` tracks deferrals,
+  `enc.collisions == 0`, `enc.unencrypted_active == 0`, and **zero Type C failures** across the
+  campaign. Baseline was 8 Type C in 25 cycles, so ~30 clean cycles is a decisive result.
+- **Mechanism falsified** - links establish normally but `enc.deferrals` stays 0. The stand-down
+  never fired, so the source-established model is wrong. Capture `btstate` + logcat and stop; do not
+  iterate blind.
+- **Security failure** - `enc.unencrypted_active > 0`. Stop immediately: the peer-enforced
+  encryption invariant is false and the stand-down must be reconsidered.
+- **Residual collision** - `enc.collisions > 0` or the Android encryption-failure signature persists.
+  The mechanism is right but the stand-down is not covering every path; capture the cycle.
+- **Separate failure** - `PAGE_TIMEOUT` with no Type C evidence is Mode 1. At 1 occurrence in 35
+  baseline cycles it neither confirms nor refutes the inquiry gap; log it and move on.
+
+### Final user-flow check
+
+Counters prove the mechanism; they do not prove the product. After the campaign, run one ordinary
+session end to end and confirm:
+
+- Touch Gamepad controls actually drive the console (sticks, D-pad, face buttons, triggers)
+- Controller Link holds input authority while active
+- exiting Touch Gamepad and Stop playing leave the console neutral - no stuck inputs
+- management can be ended and reconnected afterwards
+- no unexpected management loss during play
+- if a physical controller is to hand, it still connects and works (no regression from the
+  companion-only changes)
 
 Baseline for comparison: **10 failures in 25 cycles (40 %)**, of which 8 were Type C.
