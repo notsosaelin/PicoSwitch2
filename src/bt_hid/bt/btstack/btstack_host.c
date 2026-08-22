@@ -2465,10 +2465,66 @@ static bool pairing_close_deferred;
 // we may defer encryption to the peer. See ns2_bt_defer_classic_encryption().
 static hci_con_handle_t classic_security_requested_handle = HCI_CON_HANDLE_INVALID;
 
-// How many times we stood down from BTstack's automatic encryption request.
-// Type C is invisible on the flashed build; this is the counter that makes the
-// mechanism observable over UART on the next one.
-static uint32_t classic_encryption_deferrals;
+// Type C observability. Classic security is otherwise entirely invisible on a
+// flashed build: there is no HCI trace, printf does not reach the UART diag
+// channel, and the btlife ring records no security events.
+static uint32_t classic_encryption_deferrals;      // we stood down
+static uint32_t classic_encryption_peer_completed; // peer-led encryption came up
+static uint32_t classic_encryption_collisions;     // 0x23 observed on our side
+static uint32_t classic_encryption_unencrypted_active; // HID ready, not encrypted
+// Handle we most recently stood down on, so peer-led completion can be
+// attributed to the deferral rather than to an ordinary encrypted reconnect.
+static hci_con_handle_t classic_encryption_deferred_handle = HCI_CON_HANDLE_INVALID;
+
+// ---------------------------------------------------------------------------
+// PINNED-BTSTACK COMPATIBILITY: stand down from the automatic encryption request
+//
+// This is the only place that reaches into BTstack's bonding state machine, and
+// it exists because of one specific pinned behaviour:
+//
+//   hci.c:4240  HCI_EVENT_AUTHENTICATION_COMPLETE_EVENT, status 0, not yet
+//               encrypted  ->  conn->bonding_flags |= BONDING_SEND_ENCRYPTION_REQUEST
+//   hci.c:7472  hci_run()  ->  hci_send_cmd(&hci_set_connection_encryption, ...)
+//
+// That is unconditional: it does not consider who started authentication, nor
+// whether this host requires encryption (our HID Host registers LEVEL_0 and
+// requires none). Both controllers report Authentication Complete for the same
+// LMP authentication, so both hosts start the LMP encryption procedure and the
+// loser is rejected with HCI_ERR_LMP_ERR_TRANS_COLLISION. BTstack itself
+// tolerates that -- SET_CONNECTION_ENCRYPTION is not handled in
+// handle_command_status_event() at all, and the Encryption Change failure path
+// only drops to security level 0 -- but Android disconnects the ACL on
+// encryption failure, which is what kills the Controller Link.
+//
+// Clearing the flag from here works because hci.c:4708 forwards the event to
+// the application ("notify upper stack") AFTER the switch that sets it and
+// BEFORE hci_run() consumes it. That ordering is the load-bearing assumption.
+//
+// The asserts below are deliberately noisy on an SDK bump: if BTstack renumbers
+// the flag or the pinned version moves, this must be re-verified against the
+// new hci.c rather than silently becoming a no-op. Upstream master still had
+// the same unconditional behaviour when this was written (hci.c:5046), so a
+// newer BTstack is not automatically a fix.
+// ---------------------------------------------------------------------------
+_Static_assert(BONDING_SEND_ENCRYPTION_REQUEST == 0x2000,
+               "Pinned BTstack renumbered BONDING_SEND_ENCRYPTION_REQUEST; "
+               "re-verify the Type C encryption-race stand-down against hci.c");
+_Static_assert(BTSTACK_VERSION_MAJOR == 1 && BTSTACK_VERSION_MINOR == 6 &&
+               BTSTACK_VERSION_PATCH == 2,
+               "BTstack moved off the pinned 1.6.2; re-verify that hci.c still "
+               "sets BONDING_SEND_ENCRYPTION_REQUEST unconditionally on "
+               "Authentication Complete and still notifies the app before "
+               "hci_run() consumes it (see docs/experiments/"
+               "controller-link-cycling-failure-2026-08-22.md)");
+
+// Returns true when the automatic request was actually pending and cleared.
+static bool btstack_host_stand_down_from_encryption(hci_connection_t *conn)
+{
+    if (conn == NULL) return false;
+    if ((conn->bonding_flags & BONDING_SEND_ENCRYPTION_REQUEST) == 0) return false;
+    conn->bonding_flags &= ~BONDING_SEND_ENCRYPTION_REQUEST;
+    return true;
+}
 
 bool btstack_host_pairing_locked(void)
 {
@@ -4856,6 +4912,17 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             // Non-management (controller/other) ACL drop. Recorded with its HCI
             // reason so the UART trace shows which link died first and why.
             btlife_record(BTLIFE_HCI_DISCONNECT, reason, handle);
+
+            // Handles are reused, so per-handle Classic security state must not
+            // survive the connection that created it. Both of these are
+            // fail-safe if missed (we simply do not defer next time), but a
+            // stale match would silently change behaviour on an unrelated link.
+            if (classic_security_requested_handle == handle) {
+                classic_security_requested_handle = HCI_CON_HANDLE_INVALID;
+            }
+            if (classic_encryption_deferred_handle == handle) {
+                classic_encryption_deferred_handle = HCI_CON_HANDLE_INVALID;
+            }
             printf("[BTSTACK_HOST] Disconnected: handle=0x%04X reason=0x%02X\n", handle, reason);
 
             ble_connection_t *conn = find_connection_by_handle(handle);
@@ -5230,9 +5297,10 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 bool we_requested = (classic_security_requested_handle == handle);
                 if (ns2_bt_defer_classic_encryption(
                         btstack_host_classic_companion_session_trust(auth_conn->address),
-                        we_requested)) {
-                    auth_conn->bonding_flags &= ~BONDING_SEND_ENCRYPTION_REQUEST;
+                        we_requested) &&
+                    btstack_host_stand_down_from_encryption(auth_conn)) {
                     classic_encryption_deferrals++;
+                    classic_encryption_deferred_handle = handle;
                     printf("[BTSTACK_HOST] Deferring Classic encryption to companion "
                            "(handle=0x%04X, deferrals=%lu)\n",
                            handle, (unsigned long)classic_encryption_deferrals);
@@ -5300,6 +5368,19 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
 
             printf("[BTSTACK_HOST] Encryption change: handle=0x%04X status=0x%02X enabled=%d\n",
                    handle, status, enabled);
+
+            // Type C observability. ERROR_CODE_LMP_ERROR_TRANSACTION_COLLISION
+            // (0x23) is the collision itself; on the deferral handle a clean
+            // enable is the peer completing encryption for us, which is the
+            // whole point of standing down.
+            if (ns2_bt_encryption_collision(status)) {
+                classic_encryption_collisions++;
+            } else if (ns2_bt_encryption_completed_for_deferral(
+                           status, enabled != 0,
+                           handle == classic_encryption_deferred_handle)) {
+                classic_encryption_peer_completed++;
+                classic_encryption_deferred_handle = HCI_CON_HANDLE_INVALID;
+            }
 
             if (switch2_direct_reencrypt_active &&
                 switch2_direct_reencrypt_handle == handle) {
@@ -10344,6 +10425,9 @@ void btstack_host_get_mgmt_diag(btstack_host_mgmt_diag_t *out)
     out->hci_recovery_completions = bt_health.recovery_completions;
     out->fresh_admission_accepts = fresh_admission_accepts;
     out->classic_encryption_deferrals = classic_encryption_deferrals;
+    out->classic_encryption_peer_completed = classic_encryption_peer_completed;
+    out->classic_encryption_collisions = classic_encryption_collisions;
+    out->classic_encryption_unencrypted_active = classic_encryption_unencrypted_active;
     out->fresh_admission_reject_window = fresh_admission_reject_window;
     out->fresh_admission_reject_lockout = fresh_admission_reject_lockout;
     out->wipe_completions = wipe_completions;
@@ -10535,6 +10619,25 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
             classic_connection_t* conn = find_classic_connection_by_cid(hid_cid);
             if (conn) {
                 conn->hid_ready = true;
+
+                // Type C invariant check. Standing down from our own encryption
+                // request must not turn "occasionally fails while encrypting"
+                // into "connects but stays unencrypted". Android's HID Device
+                // profile requires encryption before it opens these channels,
+                // so reaching here unencrypted should be impossible -- this
+                // counts it rather than assuming it. Reported as
+                // admission.enc_unencrypted_active over UART.
+                hci_connection_t *acl =
+                    hci_connection_for_bd_addr_and_type(conn->addr, BD_ADDR_TYPE_ACL);
+                if (acl != NULL &&
+                    btstack_host_classic_companion_session_trust(conn->addr) &&
+                    gap_encryption_key_size(acl->con_handle) == 0u) {
+                    classic_encryption_unencrypted_active++;
+                    printf("[BTSTACK_HOST] WARNING: companion HID ready with no Classic "
+                           "encryption (handle=0x%04X, count=%lu)\n",
+                           acl->con_handle,
+                           (unsigned long)classic_encryption_unencrypted_active);
+                }
 
                 // Check if this is a direct-L2CAP device by profile or name
                 bool is_direct_l2cap = (conn->profile &&

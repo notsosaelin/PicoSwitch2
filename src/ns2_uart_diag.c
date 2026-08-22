@@ -319,7 +319,9 @@ static void queue_btstate(void) {
         "\"other\":%lu},"
         "\"mgmt\":{\"connects\":%lu,\"disconnects\":%lu},"
         "\"admission\":{\"fresh_accepted\":%lu,\"reject_window\":%lu,"
-        "\"reject_lockout\":%lu},\"enc_deferrals\":%lu,\"wipe_completions\":%lu,"
+        "\"reject_lockout\":%lu},"
+        "\"enc\":{\"deferrals\":%lu,\"peer_completed\":%lu,\"collisions\":%lu,"
+        "\"unencrypted_active\":%lu},\"wipe_completions\":%lu,"
         "\"disc\":{\"ctrl\":%lu,\"hci\":%lu,\"state_losses\":%lu,"
         "\"last_handle\":\"0x%04X\","
         "\"last_reason\":\"0x%02X\"},"
@@ -350,6 +352,9 @@ static void queue_btstate(void) {
         (unsigned long)d.fresh_admission_reject_window,
         (unsigned long)d.fresh_admission_reject_lockout,
         (unsigned long)d.classic_encryption_deferrals,
+        (unsigned long)d.classic_encryption_peer_completed,
+        (unsigned long)d.classic_encryption_collisions,
+        (unsigned long)d.classic_encryption_unencrypted_active,
         (unsigned long)d.wipe_completions,
         (unsigned long)d.ctrl_disconnects, (unsigned long)d.hci_disconnects,
         (unsigned long)d.hci_state_losses,

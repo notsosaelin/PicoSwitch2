@@ -66,6 +66,18 @@ bool ns2_bt_defer_classic_encryption(bool peer_is_companion_session,
     return peer_is_companion_session && !we_requested_security;
 }
 
+bool ns2_bt_encryption_collision(uint8_t hci_status)
+{
+    return hci_status == NS2_BT_HCI_LMP_TRANSACTION_COLLISION;
+}
+
+bool ns2_bt_encryption_completed_for_deferral(uint8_t hci_status,
+                                              bool encryption_enabled,
+                                              bool handle_matches_deferral)
+{
+    return hci_status == 0u && encryption_enabled && handle_matches_deferral;
+}
+
 bool ns2_bt_companion_session_trust(bool session_connected,
                                     bool peer_address_known,
                                     bool peer_address_matches,

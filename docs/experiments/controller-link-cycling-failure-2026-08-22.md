@@ -141,6 +141,64 @@ the race outcome, and our side losing/winning depends on whether `hci_run()` had
 **Upstream master behaves identically** (`hci.c:5046`), so there is no upstream fix to backport, and
 this is not a reason to revisit the SDK 2.3.0 decision.
 
+#### Strategy choice
+
+Three production strategies were compared in source before touching the implementation again.
+
+**Strategy C — make the collision non-fatal — is unnecessary: BTstack already is.**
+`HCI_OPCODE_HCI_SET_CONNECTION_ENCRYPTION` does not appear in
+`handle_command_status_event()` at all, so a `0x23` command status falls through `default:` and is
+silently dropped — no retry, no disconnect, no GAP propagation. The Encryption-Change failure path
+(`hci.c:4205`) only clears dedicated bonding and drops to security level 0. **Android is the fatal
+actor**: it calls `disconnect_acl(... "Encryption Failure")`. We cannot change Android, so the fix
+must be to not create the collision.
+
+**Strategy B — defer with a local fallback — was rejected as unfounded.** A fallback would need a
+principled trigger, and none exists without physical evidence: BTstack exposes no "peer encryption
+never happened" event, and inventing a timer is exactly the arbitrary-delay fix this investigation
+has avoided throughout. The pending uncertainty is made *observable* instead (see instrumentation).
+Note also that the pre-change behaviour already left links unencrypted after a collision — BTstack
+never retried — so deferring introduces no new exposure.
+
+**Strategy A — stand down for the trusted live companion — chosen**, because the peer-led path is
+provably equivalent in BTstack:
+
+```
+HCI_EVENT_ENCRYPTION_CHANGE (hci.c:4135)   <- keyed on handle only, initiator-agnostic
+  -> BIAS Secure-Connections downgrade check
+  -> AUTH_FLAG_CONNECTION_AUTHENTICATED
+  -> BONDING_SEND_READ_ENCRYPTION_KEY_SIZE
+       -> hci_handle_read_encryption_key_size_complete()  (hci.c:2750)
+            -> AUTH_FLAG_CONNECTION_ENCRYPTED, conn->encryption_key_size
+            -> hci_handle_mutual_authentication_completed() -> GAP_EVENT_SECURITY_LEVEL
+```
+
+Encryption state, key size, BIAS protection and the security-level event are populated identically
+whether we or the peer initiated. Nothing downstream can tell the difference.
+
+#### The Classic encryption invariant
+
+Standing down must not convert "occasionally fails while encrypting" into "connects but stays
+unencrypted". It cannot, and this is **Confirmed from the capture** rather than argued:
+
+```
+15:30:50.324 l2c_csm: LCID 0x006d st: ORIG_W4_SEC_COMP  psm: BT_PSM_HIDC(0x0011)
+15:30:50.382 btm_sec_encrypt_change: HCI_SUCCESS ... key_size:16
+15:30:50.383 l2c_csm: ... evt: L2CEVT_SEC_COMP(0x7)
+             Exit chnl_state=CST_W4_L2CAP_CONNECT_RSP
+```
+
+Android's HID control channel waits in `CST_ORIG_W4_SEC_COMP` — *originator waiting for security
+complete* — and only advances on `L2CEVT_SEC_COMP`. Its HID Device profile requires encryption
+(`security:0x30b6`), so **the peer's own L2CAP state machine blocks HID establishment until Classic
+encryption is up**. Our HID Host being `LEVEL_0` does not weaken this, because the peer is the
+originator here. Gating bridge activation on the security transition would therefore be redundant
+with the peer's CSM, and was not added.
+
+Because that is a peer guarantee rather than one we enforce, it is **verified rather than assumed**:
+`enc.unencrypted_active` counts any companion HID-ready with `gap_encryption_key_size() == 0`. It
+should always read 0; a non-zero value falsifies the paragraph above.
+
 #### The fix
 
 `hci.c:4708` forwards the event to the application ("notify upper stack") *after* setting the flag
@@ -153,8 +211,35 @@ On Authentication Complete our handler now clears that flag, but only when
 `ns2_bt_defer_classic_encryption()` allows: the peer must be the companion holding a live encrypted
 management session, **and** this host must not have requested security on that link itself.
 Controllers are untouched, and a link we asked to authenticate stays ours to encrypt — so no link
-silently loses encryption it would otherwise have had. A `enc_deferrals` counter is exposed in
-`btstate` because Type C is otherwise **completely unobservable** on the flashed build.
+silently loses encryption it would otherwise have had.
+
+The BTstack coupling is confined to one named helper,
+`btstack_host_stand_down_from_encryption()`, guarded by two `_Static_assert`s: one on
+`BONDING_SEND_ENCRYPTION_REQUEST == 0x2000` and one pinning BTstack 1.6.2. A future SDK bump
+therefore **fails the build** rather than silently turning the race fix into a no-op — which
+matters, because upstream master still behaves the same way, so a newer BTstack is not
+automatically a fix.
+
+Per-handle state (`classic_security_requested_handle`, `classic_encryption_deferred_handle`) is
+cleared on HCI disconnect, since handles are reused. Both are fail-safe if missed: the effect is
+simply that the next link does not defer, i.e. it reverts to stock BTstack behaviour.
+
+#### What the next flash will tell us
+
+Type C is otherwise **completely unobservable** on a flashed build — no HCI trace, `printf` does not
+reach the UART diag channel, the `btlife` ring records no security events, and the tablet is a
+production build with no root for btsnoop. `btstate` now reports:
+
+| counter | meaning | expected |
+|---|---|---|
+| `enc.deferrals` | we stood down for the companion | **> 0** — proves the second request was real |
+| `enc.peer_completed` | peer-led encryption came up on the deferral handle | **≈ deferrals** |
+| `enc.collisions` | `0x23` seen on our side | **0** after the fix |
+| `enc.unencrypted_active` | companion HID ready with no Classic encryption | **0** — invariant tripwire |
+
+`deferrals > 0` with `collisions == 0` and `peer_completed ≈ deferrals` confirms the mechanism *and*
+the fix in a single run. `deferrals == 0` would mean the stand-down never fired and the model is
+wrong — which is exactly the falsification this is built to allow.
 
 ### What the reproduction rules out
 
@@ -469,3 +554,32 @@ Scoped deliberately, because it is easy to over-credit:
 - Cross-transport Classic trust: see `ns2_bt_classic_trust_present()`. Closes a real admission gap
   introduced 2026-08-20, but `reject_window` proves it was **not** the failure captured here.
 - Refuted paths recorded in [`refuted-hypotheses.md`](refuted-hypotheses.md).
+
+## Physical acceptance procedure — pending
+
+One flash, one run. Designed so no second firmware iteration is needed unless the hypothesis is
+actually false.
+
+**Flash** `build/pico2_w/PicoSwitchWGA-pico2_w.uf2` from the commit recorded below.
+
+1. **Baseline.** `pwsh -File tools/uart_query.ps1 -Port COM11 -Command 'btstate'` — record `enc`,
+   `admission`, `disc`. All `enc` counters start at 0.
+2. **Management.** Connect the companion. Confirm the app logs no
+   `Config BLE link param request failed` (the 6 s supervision request was accepted).
+3. **One cycle.** Open Touch Gamepad, confirm input reaches the console, exit, Stop playing, end
+   management.
+4. **Read `btstate`.** Expect `enc.deferrals >= 1`, `enc.peer_completed ≈ deferrals`,
+   `enc.collisions == 0`, `enc.unencrypted_active == 0`.
+   - `deferrals == 0` ⇒ the stand-down never fired; the Type C model is wrong. Stop and report.
+   - `unencrypted_active > 0` ⇒ the peer-enforced encryption invariant is false. Stop and report.
+5. **Campaign.** Run the established lifecycle cycling ≥ 30 cycles at human pacing. The automated
+   driver used for the 35-cycle baseline is reproduced in this document's Method section.
+6. **Accept when:** Type C = 0 (no `Encryption failure 35` in `adb logcat`, `enc.collisions == 0`),
+   Mode 2 = 0 (`admission.reject_window` unchanged), `enc.unencrypted_active == 0`, management stays
+   usable, and Touch Gamepad input keeps working.
+7. **Record separately, do not treat as Type C:** any `PAGE_TIMEOUT` (Mode 1 — baseline was 1 in 35,
+   so a clean 30-cycle run neither confirms nor refutes the inquiry-gap change), and any
+   `Process com.android.bluetooth ... has died` (Type A — an Android defect this pass does not
+   address).
+
+Baseline for comparison: **10 failures in 25 cycles (40 %)**, of which 8 were Type C.
