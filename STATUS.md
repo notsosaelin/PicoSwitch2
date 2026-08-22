@@ -679,8 +679,14 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
   adapter reboot. Reproduced on cycle 3 of 10 over ADB against the flashed build. Adapter counters
   cleared every adapter-side theory in the same run: `reject_window` unchanged (not admission),
   `control_tick_max_gap_ms` pinned at its old 851 ms high-water mark (not core-1 starvation),
-  `recovery.attempts`/`reboot.requests` still 0. There are **two** distinct tablet-side failures and
-  they must not be merged. *Type A*: Android's own Bluetooth stack aborts —
+  `recovery.attempts`/`reboot.requests` still 0. Across **35 automated cycles** the dominant failure
+  (8 of 10 in the 25-cycle campaign) is **Type C**: the ACL comes up in ~1 s, authentication
+  **succeeds**, and then `SET_CONNECTION_ENCRYPTION` returns
+  `HCI_ERR_LMP_ERR_TRANS_COLLISION` (0x23) in ~7 ms, Android tears the ACL down, and the app burns
+  its ~21 s establishment budget. Which two LMP transactions collide is **Unknown**; the adapter's
+  `LM_LINK_POLICY_ENABLE_SNIFF_MODE` is a candidate but was not changed on a hypothesis. In the same
+  35 cycles Mode 2 never occurred at all and Mode 1 (`PAGE_TIMEOUT`) occurred **once**. The other
+  two tablet-side failures are rarer and must not be merged with Type C or each other. *Type A*: Android's own Bluetooth stack aborts —
   `hci_layer.cc:255 handle_command_response: Waiting for READ_REMOTE_SUPPORTED_FEATURES(0x041b),
   got LINK_KEY_REQUEST_REPLY(0x040b)` → SIGABRT in `gd_stack_thread`, process dies and restarts.
   Android initiated that ACL and L2CAP itself and warns about the window in its own log ("*Maybe

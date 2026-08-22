@@ -51,10 +51,69 @@ Two independent bodies of evidence:
 
 The failure reproduced on cycle 3 of 10, matching the maintainer's "4–5 cycles".
 
+### Second campaign — 25 cycles, and the dominant failure is neither A nor B
+
+A longer run (25 cycles, same driver and pacing) failed **10 times (40 %)** and changed the
+picture. Only **one** failure involved a Bluetooth process crash. Classified from the tablet's logs:
+
+| count | mode | signature |
+|-------|------|-----------|
+| **8** | **Type C — encryption LMP collision** | `btm_sec_encryption_change_evt: Encryption failure 35` → `HCI_ERR_LMP_ERR_TRANS_COLLISION` → `disconnect_acl ... Encryption Failure` |
+| 1 | Type A — host-stack abort | PID change; the crash at 15:21:28 |
+| 1 | **Mode 1 — pre-ACL** | `OnConnectFail: ... reason:PAGE_TIMEOUT(0x04)` after 5.18 s |
+| **0** | Mode 2 — admission | `reject_window` never moved, in this run or the first |
+
+So across **35 total cycles**: Mode 2 never occurred, Mode 1 occurred **once**, and the failure the
+maintainer actually experiences is overwhelmingly **Type C**.
+
+#### Type C in detail
+
+The ACL succeeds — this is *not* a paging or admission problem:
+
+```
+15:31:25.807 acl.cc: CreateClassicConnection ... remote:...77:78
+15:31:26.868 acl.cc: OnConnectSuccess ... handle:5 initiator:local      <- ACL up in 1.06 s
+15:31:26.871 btm_acl_role_changed: ... new_role:peripheral              <- adapter is master
+15:31:26.871 transmit_command: AUTHENTICATION_REQUESTED(0x0411)
+15:31:26.880 transmit_command: LINK_KEY_REQUEST_REPLY(0x040b)
+15:31:26.915 btm_sec_auth_complete: status: 0                           <- AUTH SUCCEEDS
+15:31:26.915 transmit_command: SET_CONNECTION_ENCRYPTION(0x0413)
+15:31:26.922 btm_sec_encryption_change_evt: Encryption failure 35, disconnecting 5
+15:31:26.922 btm_sec_encrypt_change: Encryption collision failed
+             status:HCI_ERR_LMP_ERR_TRANS_COLLISION
+15:31:26.922 disconnect_acl: ... comment: ... Encryption Failure
+15:31:33.806 PicoSwitch: transport/HID connection: callback timeout after 8001ms
+15:31:47.156 PicoSwitch: transport/host disconnected: elapsedMs=21324
+```
+
+Authentication **succeeds** — the stored Classic link key is fine, which independently confirms the
+trust state is healthy. Encryption then fails with `HCI_ERR_LMP_ERR_TRANS_COLLISION` (0x23 = 35),
+Android tears the ACL down, and the app sits out its ~21 s establishment budget.
+
+A differential against a successful cycle shows identical structure and one telling difference:
+
+| | success (15:30:50) | failure (15:31:26) |
+|---|---|---|
+| auth complete → encryption result | **47 ms**, `HCI_SUCCESS`, `key_size:16` | **7 ms**, collision |
+| remote-features read | completes 7 ms after encryption starts | completes 3 ms **after the collision** |
+
+The 7 ms rejection is the controller refusing immediately because another LMP transaction was in
+flight. Android's own log flags the overlap in both cases
+(`acl_peer_supports_sniff_subrating: Checking remote features but remote feature read is
+incomplete`, and the `TIP: Maybe wait until read feature complete beforehand` seen in Type A).
+
+**Which two LMP transactions collided is Unknown.** Visible candidates overlapping the security
+procedure are the remote-features read and sniff/power-mode negotiation. Adapter-side, this link
+runs with `LM_LINK_POLICY_ENABLE_SNIFF_MODE | LM_LINK_POLICY_ENABLE_ROLE_SWITCH`
+(`btstack_host.c:1149`), so sniff transitions are permitted — a **candidate** contributor, not an
+established one. That policy carries a hardware-confirmed rationale for audio timing, so it was
+**not changed** on a hypothesis. This is the highest-value open question left.
+
 ### What the reproduction rules out
 
 - **Not admission (Mode 2).** `admission.reject_window` stayed at **1** across all ten cycles,
-  including both failures. The adapter never rejected the tablet.
+  including both failures — and across all 25 cycles of the second campaign too. In **35 cycles**
+  the adapter never once rejected the tablet.
 - **Not core-1 starvation.** `core1.control_tick_max_gap_ms` stayed at **851 ms** — its
   pre-existing high-water mark — and never moved. Nothing approached a supervision timeout.
 - **Not the bounded HCI/CYW43 recovery.** `hci.recovery.attempts = 0`, `reboot.requests = 0`
@@ -301,8 +360,16 @@ Scoped deliberately, because it is easy to over-credit:
   override anywhere in this firmware.
 - IBS UART sleep with live ACLs is routine on this device, not pathology: 124 sleep cycles
   alongside 113 successful GATT round trips in the ten healthy minutes preceding the Type B failure.
-- The Mode-2 trust defect existed independently of any of this.
+- The Mode-2 trust defect existed independently of any of this, and Mode 2 **never occurred** in 35
+  cycles.
 - Real controller/stack outage after a Type A crash is ~2 s, patch reload included.
+- The dominant failure is Type C: 8 of 10 failures in the 25-cycle campaign ended in
+  `HCI_ERR_LMP_ERR_TRANS_COLLISION` on `SET_CONNECTION_ENCRYPTION`, **after authentication had
+  already succeeded**.
+- Mode 1 (`PAGE_TIMEOUT`) is real but rare in this workload: **1 occurrence in 35 cycles**.
+- Failures are not evenly spread: they cluster into adjacent pairs (cycles 13+14, 21+22, 24+25).
+- Successful link-up latency does **not** degrade before a failure; it is bimodal at ~3.2 s / ~6.3 s,
+  which is an artifact of the 2 s UART sampling interval, not a real distribution.
 
 ### Strongly supported, awaiting acceptance on new firmware
 
@@ -310,7 +377,10 @@ Scoped deliberately, because it is easy to over-credit:
   (Classic 20 s vs LE ~2 s), and JoypadOS fixed link loss of the same class with the same parameter
   move. Note this rests on the asymmetry and the lineage, **not** on the captured 2.35 s, which was
   a UART sleep window rather than a measured outage.
-- The idle inquiry gap should improve inbound Classic page opportunity.
+- The idle inquiry gap should improve inbound Classic page opportunity. Mode 1 **did** finally
+  reproduce (cycle 4, `PAGE_TIMEOUT` after 5.18 s), so the failure this targets is real rather than
+  historical — but at 1 occurrence in 35 cycles it accounts for ~10 % of failures, so it cannot be
+  the fix for the cycling problem the maintainer reports.
 - Cross-transport trust closes the known Mode-2 admission hole, bound to a live encrypted session.
 
 ### Still unproven
@@ -321,7 +391,13 @@ Scoped deliberately, because it is easy to over-credit:
   supervision expired or was bypassed, which is not consistent with a brief stall. This is the
   single biggest remaining hole in the Type B account.
 - Which side stopped responding first in Type B.
-- That the inquiry gap removes Mode-1 `PAGE_TIMEOUT`. Mode 1 did not occur in any cycle here.
+- That the inquiry gap removes Mode-1 `PAGE_TIMEOUT`. Mode 1 occurred once in 35 cycles, so this
+  needs a far longer campaign on the new firmware to show any effect at all.
+- **Which two LMP transactions collide in Type C.** This is now the single most valuable open
+  question, because Type C is the dominant failure and none of this pass's changes address it.
+- Whether the adapter's `LM_LINK_POLICY_ENABLE_SNIFF_MODE` contributes to Type C. Candidate only;
+  deliberately not changed, since that policy carries a hardware-confirmed audio rationale.
+- Why failures cluster into adjacent pairs.
 - Adapter behaviour during a real Android Bluetooth reset — never exercised on the new build.
 - Anything requiring the newly built firmware to actually run.
 - Whether the app's 5 s `background-input-poll` cadence contributes by forcing repeated sleep/wake
