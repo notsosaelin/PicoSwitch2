@@ -200,7 +200,8 @@ static void test_sparse_slot_lookup(void)
  */
 static void test_classic_trust_is_cross_transport(void)
 {
-    // The state that rejected every Controller Link attempt for good.
+    // Same peer, live encrypted management session: the state that otherwise
+    // rejected every Controller Link attempt for good.
     assert(ns2_bt_classic_trust_present(false, true));
     assert(ns2_bt_admission_decide(false, false,
                                    ns2_bt_classic_trust_present(false, true)) ==
@@ -208,6 +209,9 @@ static void test_classic_trust_is_cross_transport(void)
 
     // A Classic link key alone still suffices: controllers are unaffected.
     assert(ns2_bt_classic_trust_present(true, false));
+    assert(ns2_bt_admission_decide(false, false,
+                                   ns2_bt_classic_trust_present(true, false)) ==
+           NS2_BT_ADMISSION_RECONNECT);
 
     // Neither form of trust is still no trust. This must not become a blanket
     // "admit anything", which is what the trust gating existed to stop.
@@ -219,6 +223,47 @@ static void test_classic_trust_is_cross_transport(void)
     // A wipe lockout outranks cross-transport trust.
     assert(ns2_bt_admission_decide(true, false,
                                    ns2_bt_classic_trust_present(false, true)) ==
+           NS2_BT_ADMISSION_REJECT);
+    assert(ns2_bt_admission_decide(true, true,
+                                   ns2_bt_classic_trust_present(true, true)) ==
+           NS2_BT_ADMISSION_REJECT);
+}
+
+/*
+ * The identity binding. "A trusted LE relationship satisfies Classic reconnect
+ * trust" must mean the SAME peer, proven cryptographically -- never "some
+ * companion is bonded", and never a bare address match, which any device can
+ * claim by setting its BD_ADDR.
+ */
+static void test_companion_session_trust_is_peer_bound(void)
+{
+    // The legitimate case: connected, address known, address matches, and the
+    // session is bonded and encrypted.
+    assert(ns2_bt_companion_session_trust(true, true, true, true));
+
+    // An UNRELATED peer that happens to arrive while our companion holds a
+    // perfectly good session gets nothing from it. This is the exact failure
+    // the contract exists to prevent.
+    assert(!ns2_bt_companion_session_trust(true, true, false, true));
+
+    // Address match WITHOUT cryptographic proof is a spoofable claim.
+    assert(!ns2_bt_companion_session_trust(true, true, true, false));
+
+    // A stored bond is not a live proof: with no session connected there is
+    // nothing to have proven anything.
+    assert(!ns2_bt_companion_session_trust(false, true, true, true));
+
+    // Never compare against an address we never captured.
+    assert(!ns2_bt_companion_session_trust(true, false, true, true));
+
+    // Every condition is load-bearing: dropping any single one must not admit.
+    assert(!ns2_bt_companion_session_trust(false, false, false, false));
+
+    // And the composition an attacker would need: an unrelated peer cannot
+    // reach RECONNECT even while a genuine companion session is live.
+    bool impostor = ns2_bt_companion_session_trust(true, true, false, true);
+    assert(ns2_bt_admission_decide(false, false,
+                                   ns2_bt_classic_trust_present(false, impostor)) ==
            NS2_BT_ADMISSION_REJECT);
 }
 
@@ -238,11 +283,10 @@ static void test_inquiry_restart_gap(void)
 }
 
 /*
- * Regression, 2026-08-22. Captured on hardware: the tablet's Bluetooth SoC sent
- * SLEEP_IND and did not wake for ~2.35 s while two ACLs were live; both links
- * returned HCI reason 0x08. The adapter is the LE peripheral on the management
- * link and asked for nothing, so the phone's supervision timeout decided how
- * long a peer stall had to be to kill the session.
+ * Regression, 2026-08-22. The adapter is the LE peripheral on the management
+ * link and asked for nothing, so the phone's supervision timeout alone decided
+ * how long a peer stall had to be to kill the session -- while the Classic link
+ * beside it carries 20 s. This pins the margin against that asymmetry.
  */
 static void test_mgmt_link_params_ride_through_peer_stalls(void)
 {
@@ -251,13 +295,19 @@ static void test_mgmt_link_params_ride_through_peer_stalls(void)
     // The controller must accept what we ask for.
     assert(ns2_bt_le_link_params_valid(p));
 
-    // The captured stall was ~2.35 s. JoypadOS moved this class from 2 s to 6 s
-    // (efa0202). Anything at or under the observed stall reopens the failure.
+    // JoypadOS moved this class from 2 s to 6 s (efa0202) under single-radio
+    // LE+Classic coexistence. Dropping back toward the phone's ~2 s default
+    // restores the asymmetry this exists to remove.
     assert(p.supervision_timeout_units * 10u >= 6000u);
 
     // Latency must stay 0: a skipped connection event is dead time added on top
     // of whatever the peer is already doing.
     assert(p.latency == 0u);
+
+    // The interval floor stays at the spec minimum. Raising it would slow the
+    // link to buy margin the timeout already buys, and would tax bulk
+    // management transfers for a reason no evidence supports.
+    assert(p.interval_min_units == 6u);
 }
 
 static void test_le_link_params_validity_rules(void)
@@ -293,6 +343,7 @@ int main(void)
     test_mgmt_link_params_ride_through_peer_stalls();
     test_le_link_params_validity_rules();
     test_classic_trust_is_cross_transport();
+    test_companion_session_trust_is_peer_bound();
     test_inquiry_restart_gap();
     test_pairing_admission();
     test_boot_lockout();

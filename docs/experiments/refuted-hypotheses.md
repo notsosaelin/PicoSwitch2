@@ -724,17 +724,43 @@ excluded every adapter-side theory at once:
   fired on hardware;
 - `hci.probes` were `443/443` with zero failures or timeouts.
 
-The tablet's logs then showed the actual cause positively, not just by elimination:
-`ActivityManager: Process com.android.bluetooth (pid 2815) has died ... Reason is CRASH`, preceded
-by Qualcomm `WakeRetransTimeout` / `SocRxDWakeup` and followed by `soc_need_reload_patch=1`. The
-maintainer's earlier production failure was the same subsystem in its other mode: the SoC sent
-`SLEEP_IND` and did not wake for ~2.35 s while two ACLs were live, and both links returned HCI
-`0x08`.
+The tablet's logs then showed the actual cause positively, not just by elimination — and showed
+**two different faults**, which an intermediate revision of this entry wrongly merged into one:
 
-**Correction:** the failure is a Bluetooth sleep/wake fault in the tablet's Qualcomm controller.
-One radio serves both transports, which is why management and Controller Link always die together.
-`0x85` is our own label for Android GATT 133 and is downstream of the peer's stack disappearing —
-and is unrelated to the `0x85` Fluoride prints constantly as a BTM power-mode state.
+- *Type A* (the reproduced cycle-3 failure): `libc: Fatal signal 6 (SIGABRT) in tid 2843
+  (gd_stack_thread)`, abort message `system/gd/hci/hci_layer.cc:255 handle_command_response:
+  Waiting for READ_REMOTE_SUPPORTED_FEATURES(0x041b), got LINK_KEY_REQUEST_REPLY(0x040b)`, frame
+  `libbluetooth_jni.so HciLayer::impl::on_hci_event`. Android's Gd HCI layer asserts that a command
+  completion matches the command it awaits, and killed its own process. Android initiated both the
+  ACL (`initiator:local`) and the L2CAP security procedure (`is_originator:true, psm=0x0011`), and
+  logs its own warning 24 ms earlier: *"TIP: Maybe wait until read feature complete beforehand"*.
+- *Type B* (the maintainer's earlier production failure): **no abort anywhere in that log**. The
+  tablet's controller reported both ACLs lost with HCI `0x08` and raised the wake itself to report
+  them.
+
+**A third correction inside this entry: the "~2.35 s stall" was never a stall.** It is a host↔chip
+IBS UART sleep window, which is routine — the same log shows 124 sleep cycles alongside 113
+successful GATT round trips in the ten healthy minutes beforehand. It bounds *when the host was
+told*, not how long the radio was out. The supervision-timeout change was briefly justified by
+"2.35 s < 6 s"; that inference is withdrawn. The change stands on the unexplained Classic-20 s /
+LE-~2 s asymmetry and on JoypadOS lineage instead, and the true Type B outage length remains
+**unmeasured**.
+
+**A second correction inside this entry:** the Qualcomm `WakeRetransTimeout` / `SocRxDWakeup` /
+`soc_need_reload_patch=1` sequence around the Type A crash was initially read as its *cause*. It is
+HAL **cleanup after the host process died** — the causality was backwards. Type A is an
+Android/Fluoride host-stack defect, not a Qualcomm SSR.
+
+**Correction:** the failure is on the tablet, by two independent routes — an Android host-stack
+assertion failure, and the controller becoming unavailable beneath a surviving host (mechanism
+**Unknown** — explicitly not established as a sleep/wake stall). One radio serves both transports, which is why
+management and Controller Link always die together in either case. `0x85` is our own label for
+Android GATT 133 and is downstream of the peer's stack disappearing — and is unrelated to the
+`0x85` Fluoride prints constantly as a BTM power-mode state.
+
+**Also refuted here: that the ~30–40 s recovery is controller downtime.** Measured from the Type A
+crash, the stack is fully `STATE_ON` — including a complete controller firmware patch reload — by
+T+1.9 s. The wait is one doomed ~20 s app-side HID attempt plus retry latency.
 
 Two of the refuted theories nonetheless described **real** defects and their fixes were kept on
 their own merits, explicitly *not* as the cause of this failure: the cross-transport trust gap

@@ -2465,19 +2465,53 @@ bool btstack_host_pairing_locked(void)
     return pairing_lockout;
 }
 
+// Does this incoming Classic peer hold a live, cryptographically proven
+// management session right now?
+//
+// This is the identity binding behind cross-transport trust, and it is
+// deliberately stricter than "some LE bond exists" -- and stricter than a bare
+// address match against the bond database, which any device can claim by
+// setting its BD_ADDR. All three must hold:
+//
+//   1. a management session is connected right now;
+//   2. its peer address equals this Classic peer's address;
+//   3. that session is bonded AND encrypted with a full-length key
+//      (config_ble_link_trusted -> mgmt_link_is_trusted).
+//
+// (3) is what makes (2) meaningful: an impostor can spoof the address, but it
+// cannot bring up an encrypted session as that identity without the LTK. Losing
+// the management session revokes this immediately -- it is live state, not a
+// stored grant, so it cannot outlive the proof that created it.
+//
+// Core 1 only: touches the live connection table.
+static bool btstack_host_classic_companion_session_trust(const bd_addr_t addr)
+{
+    bool connected = config_ble.handle != HCI_CON_HANDLE_INVALID;
+    bool addr_known = connected && config_ble.client_addr_valid;
+    bool addr_matches =
+        addr_known &&
+        memcmp(config_ble.client_addr, addr, sizeof(bd_addr_t)) == 0;
+    // Evaluated only for the matching peer: gap_bonded()/gap_encryption_key_size()
+    // are keyed on the handle, so asking about a non-match proves nothing.
+    bool session_trusted =
+        addr_matches && config_ble_link_trusted(config_ble.handle);
+    return ns2_bt_companion_session_trust(connected, addr_known, addr_matches,
+                                          session_trusted);
+}
+
 // A stored Classic link key is not the only proof this identity was admitted.
 // See ns2_bt_classic_trust_present(): the Android companion pairs over LE and
 // then arrives as a Classic HID Device, and pinned BTstack does not persist the
-// cross-transport-derived Classic key atomically with the LE bond. Core 1 only:
-// btstack_host_addr_is_bonded() touches the LE device DB.
+// cross-transport-derived Classic key atomically with the LE bond, so the LE
+// bond can exist with no Classic key and reject the Controller Link for good.
 static bool btstack_host_classic_has_trust(const bd_addr_t addr)
 {
     link_key_t link_key;
     link_key_type_t key_type;
     bool classic_key =
         gap_get_link_key_for_bd_addr((uint8_t *)addr, link_key, &key_type);
-    return ns2_bt_classic_trust_present(classic_key,
-                                        btstack_host_addr_is_bonded(addr));
+    return ns2_bt_classic_trust_present(
+        classic_key, btstack_host_classic_companion_session_trust(addr));
 }
 
 // Attribution for the most recent admission rejection.
@@ -4014,12 +4048,15 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             classic_state.pending_pid = 0;
             classic_state.pending_valid = true;
             classic_state.pending_outgoing = false;  // Device initiated this connection
-            // An LE-bonded identity may also commit a Classic key. Without
-            // this it is admitted but never converges: no key is ever stored,
-            // so it re-runs SSP on every reconnect.
+            // A peer holding a live encrypted management session may also
+            // commit a Classic key; without that it is admitted but never
+            // converges, re-running SSP on every reconnect. Gated on the same
+            // proof as admission -- an address match alone must never buy the
+            // authority to write a stored key outside a pairing window.
             classic_pending_security_prepare(
                 addr,
-                (hid_pairing_window_open || btstack_host_addr_is_bonded(addr)) &&
+                (hid_pairing_window_open ||
+                 btstack_host_classic_companion_session_trust(addr)) &&
                     !pairing_lockout);
             classic_state.waiting_for_incoming_time = 0;  // Device reconnected
             // BTstack will auto-accept with the current master_slave_policy
