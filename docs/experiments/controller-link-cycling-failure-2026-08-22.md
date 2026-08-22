@@ -612,12 +612,90 @@ git checkout <target>
 Confirm the rollback took by reading `bridge` over UART and checking the `build` field matches the
 target's short hash.
 
+## Identity defect found on the first flashed candidate
+
+The first integrated candidate was flashed and failed **10 of 10** Touch Gamepad attempts on a fresh
+pairing. The cause is unrelated to Type C, Mode 1 or Mode 2, and it had been latent the whole time.
+
+```
+btm_ble_read_remote_appearance_cmpl: Appearance 0x03c0, Class of Device 0-5-0 found for ...
+btif_update_remote_properties: CoD from storage was zero
+btif_update_remote_properties: ... CoD: 0x001f00 -> 0x000500
+btif_hd_upstreams_evt: BTA_HD_OPEN_EVT
+btif_hd_upstreams_evt: remote device is not hid host, disconnecting
+```
+
+The adapter is the HID **host**, but its LE management service advertised GAP Appearance `0x03C0`
+(Generic HID). Android reads that during LE pairing and, when it holds no Classic class for the peer,
+synthesises one from it and persists it — major device class 5, Peripheral. `check_cod_hid()` is
+`(cod & 0x1F00) == 0x0500`, so the phone then refuses to run its HID Device profile against us. The
+ACL, authentication, encryption and both HID L2CAP channels all succeed first; `BTIF_HD` drops the
+link ~40 ms later.
+
+Confirmed independently from the app over ADB on the failing build: `major=0x0500 hostOk=false`.
+
+**Why it looked intermittent for so long.** `CoD from storage was zero` is the discriminator, and it
+is only true for a genuinely new device record. Every earlier "working" capture — `live-logcat.txt`,
+`cycles.txt`, `c25.txt` — contains **zero** bond-creation events; they are all reconnects of a
+pre-existing record that already held a real Classic class. That stale-but-correct record masked the
+defect completely, and no capture in this investigation ever covered a true fresh pair until the
+candidate was flashed.
+
+**Fix.** Appearance is now `0x0080` (Generic Computer), coherent with the Classic CoD `0x000104`
+(Computer/Desktop) that init already sets and which is deliberately unchanged. Guarded twice: a
+`_Static_assert` on the HID range in `btstack_host.c`, and a source check in
+`tools/test_bluetooth_closeout_wiring.py` verified to fire on `0x03C0`. Two guards because the
+constant is easy to "correct" back to a HID value by someone reasoning that the adapter carries HID
+traffic.
+
+**No recovery path was added.** The wrong class lives in the phone's record, not ours. Those records
+were produced by development builds, so an already-poisoned pairing is cleared once rather than
+migrated. An automatic repair was prototyped and removed: it required making the adapter
+discoverable during the healthy lifecycle, which is a workaround leaking into the architecture.
+
+Note that a fresh management bond requires the physical pairing gesture
+(`mgmt_accept_bonding` → `pairing_window_open`), so clean-state validation cannot be automated.
+
+### This invalidates nothing about Type C, Mode 1 or Mode 2 — and validates nothing either
+
+`enc.deferrals` stayed **0** through all ten failures, so the Type C stand-down never executed. The
+run therefore neither confirms nor refutes it. `btauth` was added for exactly this: it reports the
+deciding inputs of the last Classic Authentication Complete (management connected / address known /
+address matching / link trusted, fresh-pairing ownership, whether
+`BONDING_SEND_ENCRYPTION_REQUEST` was pending, and whether we stood down), so one attempt on the
+next build explains the zero instead of costing another round trip.
+
 ## Physical acceptance procedure — pending
 
-One flash, one run. Designed so no second firmware iteration is needed unless the hypothesis is
+One flash, one run. Designed so no second firmware iteration is needed unless a hypothesis is
 actually false.
 
 **Flash** `build/pico2_w/PicoSwitchWGA-pico2_w.uf2` from the commit recorded below.
+
+### Step 0 - clean state (required, and it is the point)
+
+The previous candidate poisoned this phone's record for the adapter, and the fix prevents that
+happening again rather than repairing what already exists. So the corrected build has to be
+evaluated as a fresh installation:
+
+1. Flash the candidate.
+2. On the tablet, **Forget** the adapter in Android Bluetooth settings.
+3. Open the adapter's pairing window with the physical gesture - a fresh management bond requires it
+   (`mgmt_accept_bonding` -> `pairing_window_open`), which is also why this step cannot be automated.
+4. Pair the companion again as a normal first-time user would.
+
+Then confirm the identity fix took, **before** anything else:
+
+```powershell
+pwsh -File tools\uart_query.ps1 -Port COM11 -Command 'bridge'   # build id must match the flash
+```
+
+and in `adb logcat` the app's connect line must now read `hostOk=true` with a major class that is
+not `0x0500`. If it still reads `major=0x0500 hostOk=false`, the pairing was not actually fresh -
+the phone kept its old record - and the rest of this procedure is meaningless until it is.
+
+The clean path being proved is: fresh pair -> management -> Touch Gamepad -> Classic host recognised
+-> HID connection -> encrypted Controller Link -> input works.
 
 1. **Baseline.** `pwsh -File tools/uart_query.ps1 -Port COM11 -Command 'btstate'` — record `enc`,
    `admission`, `disc`. All `enc` counters start at 0.
@@ -625,6 +703,13 @@ actually false.
    `Config BLE link param request failed` (the 6 s supervision request was accepted).
 3. **One cycle.** Open Touch Gamepad, confirm input reaches the console, exit, Stop playing, end
    management.
+3b. **Explain the zero.** `pwsh -File tools\uart_query.ps1 -Port COM11 -Command 'btauth'` reports the
+   deciding inputs of that Authentication Complete. If `stood_down` is false, the reported booleans
+   say exactly which predicate blocked it (`mgmt_connected`, `mgmt_addr_known`, `mgmt_addr_matches`,
+   `mgmt_link_trusted`, `we_own_fresh_pairing`) and whether `request_was_pending` was even set. A
+   `btauth` of `"none"` means the hook never ran at all, which is a different failure from any
+   predicate being false.
+
 4. **Read `btstate`.** Expect `enc.deferrals >= 1`, `enc.peer_completed ≈ deferrals`,
    `enc.collisions == 0`, `enc.unencrypted_active == 0`.
    - `deferrals == 0` ⇒ the stand-down never fired; the Type C model is wrong. Stop and report.
