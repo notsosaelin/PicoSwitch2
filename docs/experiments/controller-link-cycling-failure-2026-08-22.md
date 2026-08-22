@@ -559,12 +559,12 @@ Scoped deliberately, because it is easy to over-credit:
 
 | | |
 |---|---|
-| Commit | `0054a6d` (branch `ns2-testing`) |
+| Commit | the branch tip of `ns2-testing` at flash time; the Type C logic last changed in `0054a6d` |
 | Flash | `build/pico2_w/PicoSwitchWGA-pico2_w.uf2` |
-| SHA-256 | `c5999357bc83ec400ece16ed9e85e06ccdfb22cab71d0942031250c418d31db6` |
-| Size | 2,028,032 bytes |
+| SHA-256 | recompute after building - it embeds the build id, so it changes with every commit |
+| Size | ~2.03 MB |
 | Also built | `build/pico_w/PicoSwitchWGA-pico_w.uf2` - **not** the acceptance target |
-| Reported build id | `0054a6d0+dirty` |
+| Reported build id | `<short8 of HEAD>+dirty` - see below |
 
 ```powershell
 .\build.ps1                            # both boards
@@ -581,8 +581,10 @@ prints nothing. The suffix comes solely from the deliberately held Android/Touch
 `TOUCH_GAMEPAD_ACCEPTANCE.md`). Do not stash that work to chase a clean id.
 
 **Confirming the right firmware is running after the flash:** `uart_query.ps1 -Command 'bridge'`
-reports a `build` field carrying `PICOSWITCH_BUILD_ID`. It must read `0054a6d0+dirty`. Anything else
-means the flash did not take, or a different tree was built. (`status` reports the firmware *profile*
+reports a `build` field carrying `PICOSWITCH_BUILD_ID`. It must equal
+`git rev-parse --short=8 <the commit you built>` followed by `+dirty`. Do not hardcode a hash here:
+the id is derived from HEAD, so it changes on every commit, and so does the UF2's SHA-256. Anything
+that does not match means the flash did not take, or a different tree was built. (`status` reports the firmware *profile*
 versions `2.1.4 / 12.0.0 / 0.2.3`, which are configured values and do **not** change per commit -
 they cannot identify the build.)
 
@@ -646,7 +648,7 @@ actually false.
    address).
 
 8. **Confirm the firmware first.** Before step 1, `uart_query.ps1 -Command 'bridge'` must report
-   `build` = `0054a6d0+dirty`. See *Reproducing the candidate* for why `+dirty` is expected here.
+   `build` = the short-8 hash of the commit you built, plus `+dirty`. See *Reproducing the candidate* for why `+dirty` is expected here.
 
 ### Classifying each failure
 
