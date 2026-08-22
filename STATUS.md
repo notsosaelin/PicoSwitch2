@@ -636,6 +636,23 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
   claim complete rumble/LED isolation between sources.
 - **Compatibility matrix drift.** Its Android-bridge row still describes the pre-v2.0.0 ADB audit
   rather than that release's hardware pass, so it understates what is confirmed.
+- **Classic link keys are invisible to every enumeration surface (JoypadOS lineage `08a7e1e`).**
+  `bond_snapshot_refresh()` walks `le_device_db` only, so UART `btbonds` and the management bond
+  list can only ever show LE bonds. A bonded Classic controller that is powered off appears
+  nowhere even though its key is persisted and it reconnects fine, and during the 2026-08-22
+  investigation this is what made Mode-2 rejections unattributable. JoypadOS added
+  `btstack_host_list_classic_bonds()` over `gap_link_key_iterator_*()`, which works on both the
+  USB-dongle and CYW43 paths. Deliberately **not** done in this pass: making it user-visible needs
+  management wire and UI changes too, which is not the "clearly separable, low-risk" bar. Note that
+  the Settings string *"The stored-pairing list could not be read completely"* is a **different**
+  issue — that section is explicitly scoped to LE bonds and keys off a `bondsComplete` flag; do not
+  conflate the two.
+- **RSSI liveness probe cannot detect a dead remote (JoypadOS lineage `4486e7c`).**
+  `HCI_Read_RSSI` is answered by the *local* controller, so a healthy reply proves nothing about the
+  peer. JoypadOS removed theirs after it shot healthy links every 8 s under Classic+BLE coexistence
+  load, when the CYW43 delayed the command-complete. We share the design flaw, but our telemetry
+  shows it has never misfired (`probes 445/445`, `failed 0`, `timeouts 0`, `recovery.attempts 0`),
+  so it is a cleanup task, not an incident. Do not remove it without new evidence implicating it.
 - **Stay on Pico SDK 2.2.0 / BTstack 1.6.2 — deliberately, not by neglect (audited 2026-08-22).**
   SDK 2.3.0 pins BTstack `075a0780f` (= `v1.8.2`), which does contain all three upstream fixes that
   looked relevant: `be7469f18` (connection collision — ignore `PAGE_TIMEOUT` after an incoming
@@ -660,13 +677,26 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
   adapter reboot. Reproduced on cycle 3 of 10 over ADB against the flashed build. Adapter counters
   cleared every adapter-side theory in the same run: `reject_window` unchanged (not admission),
   `control_tick_max_gap_ms` pinned at its old 851 ms high-water mark (not core-1 starvation),
-  `recovery.attempts`/`reboot.requests` still 0. The tablet's logs show the cause directly —
-  `Process com.android.bluetooth ... has died ... Reason is CRASH` after Qualcomm
-  `WakeRetransTimeout`/`soc_need_reload_patch=1`, and in the other observed mode the SoC sent
-  `SLEEP_IND` and did not wake for ~2.35 s while two ACLs were live, dropping both on HCI `0x08`.
-  One radio serves both transports, which is why they always die together. `0x85` is *our* label
-  for Android GATT 133 and is downstream; Fluoride separately prints `0x85` constantly as a BTM
-  power-mode state, which is unrelated noise. Do not re-open this as an adapter bug.
+  `recovery.attempts`/`reboot.requests` still 0. There are **two** distinct tablet-side failures and
+  they must not be merged. *Type A*: Android's own Bluetooth stack aborts —
+  `hci_layer.cc:255 handle_command_response: Waiting for READ_REMOTE_SUPPORTED_FEATURES(0x041b),
+  got LINK_KEY_REQUEST_REPLY(0x040b)` → SIGABRT in `gd_stack_thread`, process dies and restarts.
+  Android initiated that ACL and L2CAP itself and warns about the window in its own log ("*Maybe
+  wait until read feature complete beforehand*"); no adapter behaviour was found to provoke it, and
+  the Qualcomm patch reload is cleanup *after* the crash, not its cause. *Type B*: no crash at all —
+  the tablet's controller reported both ACLs lost with HCI `0x08` and woke the host to say so. The
+  2.35 s `SLEEP_IND` window there is **routine IBS UART idle, not an outage** (124 sleep cycles
+  alongside 113 successful GATT round trips in the preceding ten healthy minutes), so the real
+  outage length is unmeasured — do not quote 2.35 s as one. Awkwardly, the Classic link carries a
+  20 s supervision timeout and reported `0x08` anyway only ~8.4 s after the last healthy round trip,
+  so Type B's mechanism below the surviving host is **Unknown**; "the controller became
+  unavailable" is the honest ceiling, and it is explicitly *not* established as a sleep/wake stall.
+  One radio serves both transports, which is why they always die together. `0x85` is
+  *our* label for Android GATT 133 and is downstream; Fluoride separately prints `0x85` constantly
+  as a BTM power-mode state, which is unrelated noise. The user-visible ~30–40 s recovery is
+  ~2 s of real outage (process restart *and* controller firmware patch reload complete by T+1.9 s),
+  then one doomed ~20 s app-side HID attempt, then retry latency. Do not re-open this as an adapter
+  bug.
   [`docs/experiments/controller-link-cycling-failure-2026-08-22.md`](docs/experiments/controller-link-cycling-failure-2026-08-22.md)
 - **Chart/state transitions in the motion carrier cost nothing.** Measured: the worst orientation
   step across a chart change equals the worst step anywhere else, to four decimals, across all four

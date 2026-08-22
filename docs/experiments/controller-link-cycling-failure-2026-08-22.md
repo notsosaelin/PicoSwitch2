@@ -1,8 +1,11 @@
 # Controller Link cycling failure — 2026-08-22
 
-Status: **root cause Confirmed, and it is not in PicoSwitch2.** The failure is a Bluetooth
-sleep/wake fault in the *tablet's* Qualcomm controller. Adapter-side changes in this pass add
-margin against it; they do not remove it.
+Status: **root cause Confirmed, and it is not in PicoSwitch2.** The tablet's Bluetooth becomes
+unavailable by **two independent routes**: an abort inside Android's own Gd HCI layer (process
+dies), and the controller becoming unavailable beneath a surviving host — mechanism **Unknown**,
+and deliberately not called a sleep/wake stall. Both present identically to the user
+because one radio serves both transports. Adapter-side changes in this pass add margin against the
+second only; nothing here removes either fault.
 
 ## Question
 
@@ -63,20 +66,44 @@ teardown). Failing cycles ended `0x08` (`CONNECTION_TIMEOUT`).
 
 ### Cause, from the tablet's own logs
 
-**Reproduced failure (14:18:00)** — Android's Bluetooth stack process crashed:
+**There are two distinct tablet-side failures, not one.** They must not be merged: one is a radio
+power-mode stall with the Bluetooth process alive throughout, the other is a host-stack crash.
+
+#### Failure type A — reproduced 14:18:00: Android's Bluetooth stack aborts
 
 ```
-14:17:52.213 vendor.qti.bluetooth@1.0-uart_transport: SocRxDWakeup: Flow off->Change UART
-                                                      baudrate to 38.4kbs->send 0x00->...
-14:17:52.235 vendor.qti.bluetooth@1.0-ibs_handler:   WakeRetransTimeout: Writing HCI_IBS_WAKE_IND
-14:17:52.245 vendor.qti.bluetooth@1.0-ibs_handler:   WakeRetransTimeout: Writing HCI_IBS_WAKE_IND
-14:18:00.205 vendor.qti.bluetooth@1.0-uart_controller: UartController::Cleanup,
-                                                       soc_need_reload_patch=1
-14:18:00.208 ActivityManager: ... BluetoothManagerService.resetAdapter(...:1954)
+14:17:56.287 acl.cc: CreateClassicConnection: Connection initiated for classic to ...77:78
+14:17:59.104 acl.cc: OnConnectSuccess: ... handle:11 initiator:local
+14:17:59.105 btm_acl_created: ... role:peripheral            <- Android peripheral, adapter master
+14:17:59.105 btm_acl: change_connection_packet_types: Unable to include remote supported
+                      packet types as read feature incomplete
+14:17:59.105 btm_acl: TIP: Maybe wait until read feature complete beforehand
+14:17:59.106 btm_sec: btm_sec_l2cap_access_req: is_originator:true, psm=0x0011
+14:17:59.106 btm_sec: btm_sec_check_upgrade: verify whether the link key should be upgraded
+14:17:59.129 libc: Fatal signal 6 (SIGABRT) in tid 2843 (gd_stack_thread), pid 2815
+14:18:00.110 DEBUG: Abort message: 'system/gd/hci/hci_layer.cc:255 handle_command_response:
+                    Waiting for READ_REMOTE_SUPPORTED_FEATURES(0x041b),
+                    got LINK_KEY_REQUEST_REPLY(0x040b)'
+                    #04 libbluetooth_jni.so (HciLayer::impl::on_hci_event(...)+12172)
 14:18:00.210 ActivityManager: Process com.android.bluetooth (pid 2815) has died: psvc PER
-14:18:00.210 BluetoothSystemServer: Package [BluetoothSystemServer] requested to [Disable].
-                                    Reason is CRASH
+14:18:00.210 BluetoothSystemServer: ... requested to [Disable]. Reason is CRASH
 ```
+
+This is a **native assertion failure inside Android's own Gd HCI layer**. It asserts that a command
+completion matches the command it is waiting for, received `LINK_KEY_REQUEST_REPLY` while waiting
+for `READ_REMOTE_SUPPORTED_FEATURES`, and called `log::fatal`. Android's own code warns about this
+window 24 ms earlier ("*Maybe wait until read feature complete beforehand*").
+
+Android was the **initiator** of both the ACL and the L2CAP connection
+(`initiator:local`, `is_originator:true, psm=0x0011`), so the authentication that produced the
+link-key request was started by Android's own outgoing security requirement. **No adapter behaviour
+was identified that provokes it**, and the firmware deliberately does *not* request early
+authentication for `hid_host_connect` peers (see the CYW43/DS4-clone note at the
+`gap_request_security_level` call site). Treat this as an Android/Fluoride defect.
+
+The Qualcomm `WakeRetransTimeout` at 14:17:52 and `soc_need_reload_patch=1` at 14:18:00.205 are HAL
+**cleanup after the host process died**, not the cause. An earlier revision of this document had
+that causality backwards.
 
 The Bluetooth PID changed 2815 → 28621. The app then logged
 `transport/HID profile: service disconnected` followed by five
@@ -84,22 +111,41 @@ The Bluetooth PID changed 2815 → 28621. The app then logged
 immediately afterwards (`HID connection rejected: elapsedMs=5222`) while the stack was still
 re-initialising — a consequence of the crash, not an independent fault.
 
-**Maintainer's production failure (13:00:01)** — same subsystem, different outcome. The SoC slept
-through its own live links:
+#### Failure type B — production 13:00:01: controller reports both links lost, no crash
+
+**There is no abort and no process death anywhere in the log covering this failure.** The Bluetooth
+process survived.
 
 ```
+12:59:52.752 management/result: input: complete    <- last healthy GATT round trip (103 ms)
+12:59:57.769 management/command.write: seq=2258    <- write sent, never answered
 12:59:58.791 ibs_handler: DeviceSleep: TX Awake, Sending SLEEP_IND
 12:59:58.791 ibs_handler: SerialClockVote: vote for UART CLK OFF
-             ... 2.35 s with no host<->SoC traffic, two ACLs live ...
-13:00:01.141 ibs_handler: ProcessIbsCmd: Received IBS_WAKE_IND: 0xFD
+             ... 2.35 s of UART idle ...
+13:00:01.141 ibs_handler: ProcessIbsCmd: Received IBS_WAKE_IND: 0xFD   <- chip wakes the host
 13:00:01.145 bt_shim_hci: disconnection ... handle: 0x07, reason: 0x08
 13:00:01.148 bt_shim_hci: disconnection ... handle: 0x06, reason: 0x08
 ```
 
-Handle `0x06` was the LE management link and `0x07` the Classic HID link. **Both dropped together
-because there is one SoC and it was asleep.** A separate wake-retransmit storm at 12:07:25 (dozens
-of `WakeRetransTimeout` at 10 ms intervals) shows the same wake path failing repeatedly on this
-device.
+Handle `0x06` was the LE management link and `0x07` the Classic HID link. Both were reported lost
+with HCI reason `0x08`, and the chip raised the wake itself in order to report them.
+
+**Do not read the 2.35 s as an outage.** It is a host↔chip **IBS UART sleep window**, and that is
+routine: in the ten healthy minutes before this failure the same log contains **124 sleep cycles
+alongside 113 successful GATT round trips**. Sleeping with live ACLs is normal and harmless — the
+chip maintains the links autonomously while the UART is idle. All the window tells us is *when the
+host learned*, not when the radio lost anything.
+
+An earlier revision of this document treated 2.35 s as a measured stall and used "2.35 s < 6 s" to
+justify the supervision-timeout change. That inference was wrong and has been withdrawn; see
+*Confidence*.
+
+What the logs **do** establish: the tablet's controller declared both ACLs timed out, the host was
+told on the next wake, and its Bluetooth process never crashed. What they do **not** establish: how
+long the radio-level outage actually was, or which side stopped responding first. A separate
+wake-retransmit storm at 12:07:25 (dozens of `WakeRetransTimeout` at 10 ms intervals) shows this
+device's wake path failing on other occasions, but that is a different moment and is not evidence
+about this one.
 
 ### `0x85`
 
@@ -115,39 +161,173 @@ negotiation); that one is noise and must not be confused with ours.
 
 ## Interpretation
 
-One radio on the tablet serves both transports, so a fault in its sleep/wake path takes down the
-LE management session and the Classic Controller Link simultaneously. Two observed outcomes:
+The tablet has two independent ways to take the Controller Link down, and both present identically
+to the user. One radio serves both transports, so either takes management with it.
 
-- SoC sleeps through live links → both drop on supervision timeout (`0x08`);
-- host cannot wake the SoC → vendor SSR, `com.android.bluetooth` restarts (~30–60 s).
+| | Type A (14:18) | Type B (13:00) |
+|---|---|---|
+| Bluetooth process | **dies** (SIGABRT, PID 2815→28621) | **survives** |
+| Native abort | `hci_layer.cc:255` assertion | none in the entire log |
+| Layer | Android Gd host stack | controller/radio, below the surviving host |
+| Trigger seen | Android's own command-response ordering during its outgoing L2CAP security | none identified; controller simply reported both ACLs timed out |
+| Adapter involvement | none identified | none identified |
+| Recovery | stack restart (see below) | link re-establishment only |
+
+What is common to both is only the *outcome*: the tablet's Bluetooth becomes unavailable, both ACLs
+go, and the app surfaces `0x85`. That is as far as a shared explanation may be taken.
+
+For Type B the honest ceiling is **"the tablet's Bluetooth controller became unavailable"**. Calling
+it a sleep/wake fault reads more into the trace than it supports — the sleep window is routine, and
+the Classic link's 20 s margin argues against a brief stall. The mechanism below the host is
+**Unknown**.
 
 Both are consistent with every symptom the maintainer reported: majority of cycles fine,
 simultaneous management + Controller Link loss, `0x85`, self-recovery, and **no adapter reboot ever
 required** — the adapter was never in a bad state.
 
+### Where the ~30–40 s recovery actually goes
+
+Measured from the Type A crash. The controller outage is the *smallest* term:
+
+| T+ | event |
+|----|-------|
+| 0.00 s | `Process com.android.bluetooth (pid 2815) has died` |
+| 0.52 s | `AdapterService` rebound in the new process |
+| 1.12 s | vendor `patch_dl_manager` opens `cmbtfw13.tlv` |
+| 1.43 s | **`Firmware download succeded.`** — controller re-patched |
+| 1.91 s | `Bluetooth state changed: STATE_ON` |
+| 1.99 s | app: `HID connection state: connecting` (immediate retry) |
+| 10.0 s | app: `HID connection: callback timeout after 8006ms` |
+| **21.9 s** | app: `transport/host disconnected: elapsedMs=20025` — the doomed attempt ends |
+| 44.3 s | next attempt begins (script pacing; a human retrying by hand) |
+| 46.5 s | `relationship/connect.verified` — management healthy again, 2.2 s after asking |
+
+So the decomposition is:
+
+1. **~2 s — genuine Bluetooth controller/stack outage.** Process restart *and* a full controller
+   firmware patch re-download complete inside two seconds. This is not what the user waits for.
+2. **~20 s — the app's own HID establishment attempt failing** against a stack that has only just
+   returned. This is the dominant term and it is entirely app-side budget.
+3. **remainder — retry latency**, i.e. how soon anyone asks again. Management itself reconnects in
+   ~2.2 s once asked.
+
+The user-visible "wait ~30 seconds and try again" is therefore **not** the tablet being unavailable.
+It is one doomed 20 s attempt plus the delay before the next one.
+
+Note this does **not** reduce to "retry sooner": cycle 4 retried ~58 s after the crash and was still
+rejected in 5.2 s. Shortening or backing off the app's attempt window is a plausible improvement but
+is **not** demonstrated by this data, so nothing was changed. Recorded as a candidate, not a fix.
+
+### Classic supervision timeout is not the Classic drop's explanation
+
+Traced from source: `hci.c:5010` initialises `link_supervision_timeout` to
+`HCI_LINK_SUPERVISION_TIMEOUT_DEFAULT` (`0x7D00` = 32000 × 0.625 ms = **20 s**); this firmware never
+calls `gap_set_link_supervision_timeout()`; and `hci.c:3859` queues
+`GAP_CONNECTION_TASK_WRITE_SUPERVISION_TIMEOUT` only when the value *differs* from that default. So
+no `Write_Link_Supervision_Timeout` is ever sent and the controller keeps its own default, also 20 s.
+
+This is the most awkward fact in the Type B account, and it should stay visible rather than be
+smoothed over: the Classic link had **20 s** of margin and still reported `0x08`. The last healthy
+GATT round trip was only ~8.4 s before the disconnects, so a 20 s Classic supervision timeout should
+not have expired in that window at all. Either the outage began earlier than any log line shows, or
+the Classic loss was **not** a supervision timeout but a consequence of the controller tearing its
+links down. The evidence does not choose between those, and neither should this document.
+
+**Do not lengthen the Classic timeout.** At 20 s it is already far outside anything observed, and
+nothing here suggests a longer value would have changed the outcome.
+
 ## Adapter-side response
 
-We cannot fix the tablet's firmware. We can stop a *transient* peer stall from becoming a dropped
-session. The adapter is the LE peripheral on the management link and previously requested nothing,
-so Android's chosen supervision timeout decided how long a stall had to be to kill it.
-`ns2_bt_mgmt_link_params()` now requests 15–50 ms interval, latency 0, **6 s supervision timeout**.
-The 13:00:01 stall was ~2.35 s and would have been ridden through.
+We cannot fix the tablet's firmware. The adapter is the LE peripheral on the management link and
+previously requested **nothing**, so Android's chosen supervision timeout alone decided how long a
+peer stall had to be to kill the session.
 
-This is not invented: JoypadOS hit the same class on a single-radio dongle running LE and Classic
-together and fixed it the same way — see the lineage note below.
+Two things justify asking for margin, and note that the captured 2.35 s figure is **not** one of
+them (see Type B — it is a UART sleep window, not an outage):
+
+1. **An unexplained asymmetry.** The Classic link carries a 20 s supervision timeout while the LE
+   management link runs on whatever the phone picked, typically ~2 s. Nothing in this project chose
+   that asymmetry or defends it.
+2. **Independent lineage evidence.** JoypadOS hit link loss under single-radio LE+Classic
+   coexistence and fixed it by moving exactly this parameter from 2 s to 6 s (`efa0202`), reporting
+   that the link then "rides through contention".
+`ns2_bt_mgmt_link_params()` now requests a **6 s supervision timeout**, latency 0, and a
+deliberately permissive 7.5–50 ms interval range. Only the timeout is the ask: the evidence calls
+for margin, not a slower link, so the central keeps whatever interval it already chose. (JoypadOS
+narrowed the interval too, but their dongle was also carrying DualSense audio; we have no evidence
+requiring that here, and narrowing it would tax bulk management transfers for nothing.)
+`gap_request_connection_parameter_update()` performs **no validation of its own** — it stores the
+values and triggers L2CAP — so `ns2_bt_le_link_params_valid()` is the only thing standing between a
+future edit and a combination the controller rejects.
+
+### Exactly what that change can and cannot do
+
+Scoped deliberately, because it is easy to over-credit:
+
+- **Type B, LE management — may help, unquantified.** It raises the bar a peer stall must clear to
+  kill the session from ~2 s to 6 s. Because the real outage length was never measured (the 2.35 s
+  was UART idle, not outage), **we cannot say whether the captured failure would have survived it**.
+  This is margin, not a proven cure.
+- **Type B, Classic — no effect.** Classic supervision is a separate 20 s controller-side value we
+  do not set and are not changing. Note this cuts against the simple story: Classic already had 20 s
+  of margin and lost the link anyway, which means whatever happened was either longer than 20 s or
+  not a supervision timeout at all. Either way this parameter could not have influenced it.
+- **Type A — cannot help at all.** No connection parameter survives the peer's Bluetooth process
+  aborting. Expect no improvement in the crash case.
+- **No indirect benefit via cascade.** Checked in source: `CompanionViewModel.disconnect()` is
+  explicitly *"management only"*, and the sole `releaseTouchInput(LinkEnded)` path keys on the
+  bridge's **own** `BridgeLinkPhase`, not on management state. Nothing in the GATT-error path calls
+  `session.stop()`. This matches BT-INV-008 and was observed live: after the 13:00 failure the app
+  showed management "Connection failed" while Controller Link stayed `Playing` / "Input is
+  streaming". **Keeping management alive therefore does not indirectly preserve the Controller
+  Link** — the hoped-for secondary benefit does not exist, and the change must not be credited with
+  it.
 
 ## Confidence
 
-- Android Bluetooth process crash and vendor SSR: **Confirmed** (ActivityManager process death,
-  PID change, vendor HAL trace).
-- Simultaneous dual-transport loss caused by the peer's SoC sleeping through live links:
-  **Confirmed** for the 13:00:01 event (HAL sleep/wake trace bracketing both disconnects).
-- `0x85` as a downstream consequence rather than a cause: **Confirmed**.
-- That a 6 s supervision timeout prevents this class of drop: **Strong** — the arithmetic is
-  decisive against the captured 2.35 s stall, and JoypadOS reports the same remedy working, but it
-  has not yet been physically validated on this hardware.
-- Whether the app's 5 s `background-input-poll` cadence contributes by forcing repeated
-  sleep/wake transitions: **Hypothesis**. Not tested.
+### Confirmed
+
+- The lifecycle failure reproduces autonomously, without any physical interaction.
+- Adapter admission counters do not move during it (`reject_window` unchanged across every cycle).
+- Adapter core-starvation and recovery counters do not explain it (`control_tick_max_gap_ms` pinned
+  at its prior high-water mark; `recovery.attempts` and `reboot.requests` both 0).
+- Type A is an abort inside Android's own Gd HCI layer: SIGABRT in `gd_stack_thread`, assertion text
+  and stack frame captured, PID 2815 → 28621.
+- Type B has **no** abort and no process death anywhere in its log; the HAL sleep/wake trace
+  brackets both disconnects.
+- Both ACLs die together in the captured cases, LE and Classic.
+- `0x85` is our label for Android GATT 133 and is downstream, established from our own log line.
+- The Classic link carries a 20 s supervision timeout, traced to `hci.c:5010` / `hci.c:3859` with no
+  override anywhere in this firmware.
+- IBS UART sleep with live ACLs is routine on this device, not pathology: 124 sleep cycles
+  alongside 113 successful GATT round trips in the ten healthy minutes preceding the Type B failure.
+- The Mode-2 trust defect existed independently of any of this.
+- Real controller/stack outage after a Type A crash is ~2 s, patch reload included.
+
+### Strongly supported, awaiting acceptance on new firmware
+
+- A 6 s LE supervision timeout is the right *shape* of change: it removes an unexplained asymmetry
+  (Classic 20 s vs LE ~2 s), and JoypadOS fixed link loss of the same class with the same parameter
+  move. Note this rests on the asymmetry and the lineage, **not** on the captured 2.35 s, which was
+  a UART sleep window rather than a measured outage.
+- The idle inquiry gap should improve inbound Classic page opportunity.
+- Cross-transport trust closes the known Mode-2 admission hole, bound to a live encrypted session.
+
+### Still unproven
+
+- That the supervision change removes the user-visible cycling failure. It cannot touch Type A at
+  all, and Type B's Classic leg is governed by a timeout we are not changing.
+- **How long the Type B radio outage actually was.** The only bound available is that Classic's 20 s
+  supervision expired or was bypassed, which is not consistent with a brief stall. This is the
+  single biggest remaining hole in the Type B account.
+- Which side stopped responding first in Type B.
+- That the inquiry gap removes Mode-1 `PAGE_TIMEOUT`. Mode 1 did not occur in any cycle here.
+- Adapter behaviour during a real Android Bluetooth reset — never exercised on the new build.
+- Anything requiring the newly built firmware to actually run.
+- Whether the app's 5 s `background-input-poll` cadence contributes by forcing repeated sleep/wake
+  transitions: **Hypothesis**, untested.
+- Whether shortening or backing off the app's ~20 s HID attempt window would help. Cycle 4 failed
+  ~58 s after the crash, so "retry sooner" is not established.
 
 ## Remaining unknowns
 

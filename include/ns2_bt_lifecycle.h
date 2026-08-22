@@ -16,21 +16,34 @@ typedef enum {
 // Connection parameters the adapter asks for on the LE management link.
 //
 // The adapter is the LE peripheral there, so the phone picks the parameters and
-// we previously never asked for anything else. On 2026-08-22 a captured failure
-// showed why that matters: the tablet's Bluetooth SoC entered its vendor sleep
-// state (SLEEP_IND) and did not wake for ~2.35 s while two ACLs were live, and
-// both links came back as HCI reason 0x08 (connection timeout). A supervision
-// timeout shorter than a peer's radio stall turns a transient stall into a
-// dropped session.
+// we previously never asked for anything at all. Two things justify asking:
+//
+//   1. an unexplained asymmetry -- the Classic link runs on a 20 s supervision
+//      timeout while this one runs on whatever the phone chose, typically ~2 s,
+//      and nothing in this project chose or defends that gap;
+//   2. JoypadOS hit link loss under single-radio LE+Classic coexistence and
+//      fixed it by moving exactly this parameter from 2 s to 6 s (efa0202).
+//
+// Deliberately NOT justified by the 2026-08-22 capture: the ~2.35 s SLEEP_IND
+// window in that trace is routine IBS UART idle (the same log has 124 sleep
+// cycles alongside 113 successful GATT round trips while healthy), not a
+// measured outage. Do not reintroduce "2.35 s < 6 s" as the rationale.
 //
 // JoypadOS hit the same class on a single-radio dongle running LE and Classic
 // together and fixed it the same way (efa0202, "coexistence-safe params"):
 // it moved off a 2 s supervision timeout to 6 s so the link "rides through
 // contention". Our fork predates that commit and never inherited it.
 //
-// Latency is 0 so no connection event is skipped, and the interval range stays
-// wide enough that the central keeps its scheduling freedom. The central may
-// reject or ignore the request; this is best-effort margin, not a guarantee.
+// Latency is 0 so no connection event is skipped. The interval range is left
+// wide on purpose -- the evidence calls for supervision margin, not a slower
+// link, so the central keeps its scheduling freedom and only the timeout
+// changes. The central may reject or ignore the request entirely; this is
+// best-effort margin, not a guarantee.
+//
+// Scope, so this is not over-credited: it can only protect the LE management
+// session across a short peer stall. Classic supervision is a separate 20 s
+// controller-side value this firmware does not set, and nothing here survives
+// the peer's Bluetooth process aborting.
 typedef struct {
     uint16_t interval_min_units;         // 1.25 ms units
     uint16_t interval_max_units;         // 1.25 ms units
@@ -68,11 +81,38 @@ ns2_bt_admission_t ns2_bt_admission_decide(bool pairing_lockout,
 // Classic link key, and after trust gating that state rejects every Controller
 // Link attempt for good.
 //
-// An LE bond is proof the maintainer admitted this identity through a physical
-// pairing window. Honouring it for Classic is strictly narrower than the
-// pre-2026-08-20 behaviour it restores, and never bypasses pairing_lockout.
+// SECURITY CONTRACT. Both inputs must describe THE SAME PEER as the incoming
+// Classic connection. This layer cannot enforce that -- it sees booleans, not
+// addresses -- so the binding lives at the call site and must not be loosened
+// there. The second input is deliberately NOT "an LE bond exists somewhere",
+// and not even "some bond has this address": it is
+// btstack_host_classic_companion_session_trust(), which requires a management
+// session that is connected right now, whose peer address equals this Classic
+// peer's, and which is bonded and encrypted with a full-length key.
+//
+// The encryption requirement is what makes the address match meaningful. Any
+// device can claim a BD_ADDR; none can bring up an encrypted session as that
+// identity without the LTK. Because it is live state rather than a stored
+// grant, losing the management session revokes it at once.
+//
+// This is strictly narrower than the pre-2026-08-20 behaviour it restores
+// (which admitted every peer), and never bypasses pairing_lockout.
 bool ns2_bt_classic_trust_present(bool classic_link_key_present,
-                                  bool le_bond_present);
+                                  bool companion_session_trusted);
+
+// The association itself, extracted so the conjunction is pinned by tests
+// rather than by convention. Every condition is load-bearing:
+//
+//   session_connected            - a stored bond is not a live proof
+//   peer_address_known           - never compare against an unset address
+//   peer_address_matches         - the SAME peer, not merely some companion
+//   session_bonded_and_encrypted - what an impostor cannot forge
+//
+// Dropping any one of these turns a cryptographic binding into a spoofable one.
+bool ns2_bt_companion_session_trust(bool session_connected,
+                                    bool peer_address_known,
+                                    bool peer_address_matches,
+                                    bool session_bonded_and_encrypted);
 
 // Delay before Classic inquiry restarts, in milliseconds.
 //

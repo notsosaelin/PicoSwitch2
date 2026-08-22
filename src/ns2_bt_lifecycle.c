@@ -4,14 +4,17 @@
 
 ns2_bt_le_link_params_t ns2_bt_mgmt_link_params(void)
 {
-    // 15--50 ms interval, 6 s supervision timeout. The timeout is the point:
-    // see the header for the captured ~2.35 s peer sleep that dropped both
-    // links, and for the JoypadOS commit that resolved the same class.
+    // The supervision timeout is the entire point of this request. The interval
+    // range is deliberately PERMISSIVE rather than JoypadOS's 30--50 ms: the
+    // captured evidence requires margin, not a slower link, and narrowing the
+    // interval would tax bulk management transfers for no evidenced reason.
+    // Leaving the floor at the 7.5 ms spec minimum lets the central keep
+    // whatever interval it already chose and change only the timeout.
     ns2_bt_le_link_params_t params = {
-        .interval_min_units = 12u,          // 15 ms
+        .interval_min_units = 6u,           // 7.5 ms, spec minimum
         .interval_max_units = 40u,          // 50 ms
         .latency = 0u,
-        .supervision_timeout_units = 600u,  // 6 s
+        .supervision_timeout_units = 600u,  // 6 s -- see the header
     };
     return params;
 }
@@ -52,9 +55,18 @@ ns2_bt_admission_t ns2_bt_admission_decide(bool pairing_lockout,
 }
 
 bool ns2_bt_classic_trust_present(bool classic_link_key_present,
-                                  bool le_bond_present)
+                                  bool companion_session_trusted)
 {
-    return classic_link_key_present || le_bond_present;
+    return classic_link_key_present || companion_session_trusted;
+}
+
+bool ns2_bt_companion_session_trust(bool session_connected,
+                                    bool peer_address_known,
+                                    bool peer_address_matches,
+                                    bool session_bonded_and_encrypted)
+{
+    return session_connected && peer_address_known && peer_address_matches &&
+           session_bonded_and_encrypted;
 }
 
 uint32_t ns2_bt_inquiry_restart_delay_ms(bool pairing_window_open)
