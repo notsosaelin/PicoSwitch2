@@ -2460,10 +2460,20 @@ void btstack_host_stop_scan(void)
 // defer logic is needed or added.
 static bool pairing_close_deferred;
 
-// The Classic ACL handle on which THIS host requested security, if any. Used to
-// tell "the peer asked for authentication" from "we did", which decides whether
-// we may defer encryption to the peer. See ns2_bt_defer_classic_encryption().
-static hci_con_handle_t classic_security_requested_handle = HCI_CON_HANDLE_INVALID;
+// The Classic ACL handle on which this host requested security as part of a
+// FRESH PAIRING, if any.
+//
+// Read the qualifier carefully. On an ordinary reconnect with a stored link key
+// this host also calls gap_request_security_level(handle, LEVEL_2) (see the
+// incoming-connection path), which stores a requested level and sets
+// BONDING_SEND_AUTHENTICATE_REQUEST -- so "did we request security at all" is
+// TRUE for essentially every companion link and would make the stand-down dead
+// code. What actually distinguishes the two cases is ownership: during a fresh
+// pairing we are driving the whole security establishment and must finish it
+// ourselves; on a reconnect the peer requires and drives its own encryption,
+// and the level we asked for is satisfied by the peer's Encryption Change
+// through the identical hci.c:4135 path. Only the fresh-pairing site sets this.
+static hci_con_handle_t classic_fresh_pairing_security_handle = HCI_CON_HANDLE_INVALID;
 
 // Type C observability. Classic security is otherwise entirely invisible on a
 // flashed build: there is no HCI trace, printf does not reach the UART diag
@@ -4763,7 +4773,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                         printf("[BTSTACK_HOST] No stored key, requesting auth for SSP pairing\n");
                         // Remember that WE drove security on this link: see
                         // ns2_bt_defer_classic_encryption().
-                        classic_security_requested_handle =
+                        classic_fresh_pairing_security_handle =
                             classic_state.pending_acl_handle;
                         gap_request_security_level(classic_state.pending_acl_handle, LEVEL_2);
                     }
@@ -4917,8 +4927,8 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             // survive the connection that created it. Both of these are
             // fail-safe if missed (we simply do not defer next time), but a
             // stale match would silently change behaviour on an unrelated link.
-            if (classic_security_requested_handle == handle) {
-                classic_security_requested_handle = HCI_CON_HANDLE_INVALID;
+            if (classic_fresh_pairing_security_handle == handle) {
+                classic_fresh_pairing_security_handle = HCI_CON_HANDLE_INVALID;
             }
             if (classic_encryption_deferred_handle == handle) {
                 classic_encryption_deferred_handle = HCI_CON_HANDLE_INVALID;
@@ -5294,10 +5304,10 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             // from starting the same LMP procedure. See
             // ns2_bt_defer_classic_encryption() for the captured collision.
             if (status == ERROR_CODE_SUCCESS && auth_conn != NULL) {
-                bool we_requested = (classic_security_requested_handle == handle);
+                bool we_own_fresh_pairing = (classic_fresh_pairing_security_handle == handle);
                 if (ns2_bt_defer_classic_encryption(
                         btstack_host_classic_companion_session_trust(auth_conn->address),
-                        we_requested) &&
+                        we_own_fresh_pairing) &&
                     btstack_host_stand_down_from_encryption(auth_conn)) {
                     classic_encryption_deferrals++;
                     classic_encryption_deferred_handle = handle;
@@ -5306,8 +5316,8 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                            handle, (unsigned long)classic_encryption_deferrals);
                 }
             }
-            if (classic_security_requested_handle == handle) {
-                classic_security_requested_handle = HCI_CON_HANDLE_INVALID;
+            if (classic_fresh_pairing_security_handle == handle) {
+                classic_fresh_pairing_security_handle = HCI_CON_HANDLE_INVALID;
             }
             {
                 char reason[BTID_REASON_LEN];

@@ -61,9 +61,9 @@ bool ns2_bt_classic_trust_present(bool classic_link_key_present,
 }
 
 bool ns2_bt_defer_classic_encryption(bool peer_is_companion_session,
-                                     bool we_requested_security)
+                                     bool we_own_fresh_pairing_security)
 {
-    return peer_is_companion_session && !we_requested_security;
+    return peer_is_companion_session && !we_own_fresh_pairing_security;
 }
 
 bool ns2_bt_encryption_collision(uint8_t hci_status)

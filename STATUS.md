@@ -621,6 +621,23 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
    [`docs/bluetooth/VALIDATION.md`](docs/bluetooth/VALIDATION.md). Record bond state before the remote
    returns so old trust and automatic replacement trust cannot be confused.
 
+12. **Controller Link reliability candidate — the single open Bluetooth flash gate.** Implemented and
+   source-tested 2026-08-22; **nothing about it has run on hardware**. Flash exactly one artifact,
+   `build/pico2_w/PicoSwitchWGA-pico2_w.uf2` from commit `f6cbe41`, and run the turnkey procedure in
+   [`docs/experiments/controller-link-cycling-failure-2026-08-22.md`](docs/experiments/controller-link-cycling-failure-2026-08-22.md).
+   It bundles three independent changes so one campaign settles all of them, and their evidence
+   levels differ — do not let a single pass/fail collapse them:
+   - **Type C** (dominant, 8 of 10 failures): companion encryption stand-down. Mechanism is
+     source-established, **not** Confirmed — the acceptance run is what proves or falsifies it.
+     `enc.deferrals > 0`, `enc.peer_completed ≈ deferrals`, `enc.collisions == 0`,
+     `enc.unencrypted_active == 0`.
+   - **Mode 1** (1 occurrence in 35 cycles): idle inquiry restart gap. Too rare for a 30-cycle run to
+     confirm or refute; record any `PAGE_TIMEOUT` separately and do not read it as Type C.
+   - **Mode 2** (0 occurrences in 35 cycles): cross-transport Classic trust. A real independent
+     source-level defect; the campaign can only show it stays absent (`reject_window` unchanged).
+   Type A (Android's own Bluetooth process abort) is an Android defect this candidate does not
+   address and must be excluded from Type C statistics.
+
 ## Known technical debt
 
 - **`NS2_PRO=OFF` does not build.** Verified 2026-08-16 by building `build/pico_w_switch1`: the
