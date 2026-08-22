@@ -634,12 +634,23 @@ link ~40 ms later.
 
 Confirmed independently from the app over ADB on the failing build: `major=0x0500 hostOk=false`.
 
-**Why it looked intermittent for so long.** `CoD from storage was zero` is the discriminator, and it
-is only true for a genuinely new device record. Every earlier "working" capture — `live-logcat.txt`,
-`cycles.txt`, `c25.txt` — contains **zero** bond-creation events; they are all reconnects of a
-pre-existing record that already held a real Classic class. That stale-but-correct record masked the
-defect completely, and no capture in this investigation ever covered a true fresh pair until the
-candidate was flashed.
+**Why it stayed hidden - stated at the confidence the evidence supports.**
+
+*Proven:* in the 2026-08-22 failing capture, `CoD from storage was zero` was logged at the pairing
+that followed a `removeBond()`, and the stored class then became `0x000500` after the Appearance
+read. *Proven:* the three earlier captures (`live-logcat.txt`, `cycles.txt`, `c25.txt`) contain no
+bond-creation events and no `CoD from storage was zero`.
+
+*Not proven, and previously overstated here:* that those earlier physical tests were not fresh-pair
+tests. Absence of bond-creation lines in a capture shows only that the capture does not cover that
+moment. *Also not proven:* that a fresh bond generally implies empty CoD storage - a fresh
+cryptographic bond and a fresh remote-device record are separate states, and Android may retain
+remote metadata across bond removal.
+
+So "an older record held a valid class and masked the defect" remains a **hypothesis**. What is
+established is narrower, and sufficient to act on: the adapter advertised a HID Appearance, Android
+derived and stored a HID-peripheral class from it, and Android's HID Device profile rejected the
+adapter for exactly that class.
 
 **Fix.** Appearance is now `0x0080` (Generic Computer), coherent with the Classic CoD `0x000104`
 (Computer/Desktop) that init already sets and which is deliberately unchanged. Guarded twice: a
