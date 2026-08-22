@@ -102,12 +102,59 @@ flight. Android's own log flags the overlap in both cases
 (`acl_peer_supports_sniff_subrating: Checking remote features but remote feature read is
 incomplete`, and the `TIP: Maybe wait until read feature complete beforehand` seen in Type A).
 
-**Which two LMP transactions collided is Unknown.** Visible candidates overlapping the security
-procedure are the remote-features read and sniff/power-mode negotiation. Adapter-side, this link
-runs with `LM_LINK_POLICY_ENABLE_SNIFF_MODE | LM_LINK_POLICY_ENABLE_ROLE_SWITCH`
-(`btstack_host.c:1149`), so sniff transitions are permitted — a **candidate** contributor, not an
-established one. That policy carries a hardware-confirmed rationale for audio timing, so it was
-**not changed** on a hypothesis. This is the highest-value open question left.
+#### Type C root cause: both hosts start the encryption procedure
+
+Resolved by elimination on the Android side, then located in source on ours.
+
+**Android is not the variable.** Across all 8 failures and 11 successes the Android-side HCI
+sequence is *structurally identical* — same commands, same relative timings
+(`role_change`, `WRITE_LINK_POLICY_SETTINGS`, `CHANGE_CONNECTION_PACKET_TYPE`,
+`AUTHENTICATION_REQUESTED`, `LINK_KEY_REQUEST_REPLY`, `auth_complete`, `SET_CONNECTION_ENCRYPTION`).
+Specifically eliminated:
+
+- **Sniff / power-mode.** No `mode_change`, `bta_dm_pm_sniff` or `btm_pm_snd_md_req` appears in any
+  collision window, success or failure. The sniff-policy hypothesis is **dead**; do not revive it.
+- **Packet-type change.** `CHANGE_CONNECTION_PACKET_TYPE` is outstanding at encryption time in
+  successes too, with the same ~45–50 ms gap. Not the discriminator.
+- **Duplicate connects / app-driven security.** 26 app requests produced exactly 26
+  `L2CA_ConnectReq` and 26 `CreateClassicConnection` — strictly 1:1 — and zero `createBond` /
+  `setPairingConfirmation` / `removeBond` calls. The uncommitted Android establishment work is
+  **exonerated**.
+
+Since Android's behaviour is constant, the variable is ours. In pinned BTstack:
+
+```c
+// hci.c:4227  HCI_EVENT_AUTHENTICATION_COMPLETE_EVENT
+if (status == 0) {
+    conn->authentication_flags |= AUTH_FLAG_CONNECTION_AUTHENTICATED;
+    if ((conn->authentication_flags & AUTH_FLAG_CONNECTION_ENCRYPTED) == 0){
+        conn->bonding_flags |= BONDING_SEND_ENCRYPTION_REQUEST;   // -> hci.c:7472
+```
+
+This is **unconditional**. It does not consider who initiated authentication, nor whether this host
+requires encryption (our HID Host registers at `LEVEL_0` and requires none). Both controllers report
+Authentication Complete for the same LMP authentication, so **both hosts then start the LMP
+encryption procedure** — which is exactly what `LMP Error Transaction Collision` means, as opposed
+to a generic "radio busy". Whichever request loses the race is rejected; the 7 ms-vs-47 ms split is
+the race outcome, and our side losing/winning depends on whether `hci_run()` had a free command slot.
+
+**Upstream master behaves identically** (`hci.c:5046`), so there is no upstream fix to backport, and
+this is not a reason to revisit the SDK 2.3.0 decision.
+
+#### The fix
+
+`hci.c:4708` forwards the event to the application ("notify upper stack") *after* setting the flag
+and *before* `hci_run()` consumes it, so the application handler sits exactly in the gap.
+`BONDING_SEND_ENCRYPTION_REQUEST`, `bonding_flags` and `hci_connection_for_handle()` are all public
+in `hci.h`, so this needs **no BTstack patch** — which matters, because BTstack ships inside the
+pinned SDK.
+
+On Authentication Complete our handler now clears that flag, but only when
+`ns2_bt_defer_classic_encryption()` allows: the peer must be the companion holding a live encrypted
+management session, **and** this host must not have requested security on that link itself.
+Controllers are untouched, and a link we asked to authenticate stays ours to encrypt — so no link
+silently loses encryption it would otherwise have had. A `enc_deferrals` counter is exposed in
+`btstate` because Type C is otherwise **completely unobservable** on the flashed build.
 
 ### What the reproduction rules out
 
@@ -393,10 +440,11 @@ Scoped deliberately, because it is easy to over-credit:
 - Which side stopped responding first in Type B.
 - That the inquiry gap removes Mode-1 `PAGE_TIMEOUT`. Mode 1 occurred once in 35 cycles, so this
   needs a far longer campaign on the new firmware to show any effect at all.
-- **Which two LMP transactions collide in Type C.** This is now the single most valuable open
-  question, because Type C is the dominant failure and none of this pass's changes address it.
-- Whether the adapter's `LM_LINK_POLICY_ENABLE_SNIFF_MODE` contributes to Type C. Candidate only;
-  deliberately not changed, since that policy carries a hardware-confirmed audio rationale.
+- **That the Type C fix works.** The mechanism is source-established and the deferral is implemented,
+  but our side's second `Set_Connection_Encryption` has never been *observed* — the flashed build
+  emits no HCI trace, its `printf` output does not reach the UART diag channel, and the `btlife`
+  ring records no security events. `enc_deferrals` in `btstate` is the counter that settles it on the
+  next flash: non-zero means the collision source was real and is now suppressed.
 - Why failures cluster into adjacent pairs.
 - Adapter behaviour during a real Android Bluetooth reset — never exercised on the new build.
 - Anything requiring the newly built firmware to actually run.

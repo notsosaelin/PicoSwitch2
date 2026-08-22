@@ -2460,6 +2460,16 @@ void btstack_host_stop_scan(void)
 // defer logic is needed or added.
 static bool pairing_close_deferred;
 
+// The Classic ACL handle on which THIS host requested security, if any. Used to
+// tell "the peer asked for authentication" from "we did", which decides whether
+// we may defer encryption to the peer. See ns2_bt_defer_classic_encryption().
+static hci_con_handle_t classic_security_requested_handle = HCI_CON_HANDLE_INVALID;
+
+// How many times we stood down from BTstack's automatic encryption request.
+// Type C is invisible on the flashed build; this is the counter that makes the
+// mechanism observable over UART on the next one.
+static uint32_t classic_encryption_deferrals;
+
 bool btstack_host_pairing_locked(void)
 {
     return pairing_lockout;
@@ -4695,6 +4705,10 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                     link_key_type_t late_key_type;
                     if (!gap_get_link_key_for_bd_addr(name_addr, late_link_key, &late_key_type)) {
                         printf("[BTSTACK_HOST] No stored key, requesting auth for SSP pairing\n");
+                        // Remember that WE drove security on this link: see
+                        // ns2_bt_defer_classic_encryption().
+                        classic_security_requested_handle =
+                            classic_state.pending_acl_handle;
                         gap_request_security_level(classic_state.pending_acl_handle, LEVEL_2);
                     }
                 }
@@ -5205,6 +5219,28 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 bd_addr_cmp(auth_conn->address,
                             classic_state.pending_addr) == 0;
             printf("[BTSTACK_HOST] Authentication complete: handle=0x%04X status=0x%02X\n", handle, status);
+
+            // Stand down from BTstack's automatic encryption request for the
+            // companion's Controller Link. BTstack set BONDING_SEND_ENCRYPTION_REQUEST
+            // in the event handler that ran just before this one; hci_run() has
+            // not consumed it yet, so clearing it here is what keeps both hosts
+            // from starting the same LMP procedure. See
+            // ns2_bt_defer_classic_encryption() for the captured collision.
+            if (status == ERROR_CODE_SUCCESS && auth_conn != NULL) {
+                bool we_requested = (classic_security_requested_handle == handle);
+                if (ns2_bt_defer_classic_encryption(
+                        btstack_host_classic_companion_session_trust(auth_conn->address),
+                        we_requested)) {
+                    auth_conn->bonding_flags &= ~BONDING_SEND_ENCRYPTION_REQUEST;
+                    classic_encryption_deferrals++;
+                    printf("[BTSTACK_HOST] Deferring Classic encryption to companion "
+                           "(handle=0x%04X, deferrals=%lu)\n",
+                           handle, (unsigned long)classic_encryption_deferrals);
+                }
+            }
+            if (classic_security_requested_handle == handle) {
+                classic_security_requested_handle = HCI_CON_HANDLE_INVALID;
+            }
             {
                 char reason[BTID_REASON_LEN];
                 snprintf(reason, sizeof(reason), "classic-auth-status-0x%02X", status);
@@ -10307,6 +10343,7 @@ void btstack_host_get_mgmt_diag(btstack_host_mgmt_diag_t *out)
     out->hci_recovery_attempts = bt_health.recovery_attempts;
     out->hci_recovery_completions = bt_health.recovery_completions;
     out->fresh_admission_accepts = fresh_admission_accepts;
+    out->classic_encryption_deferrals = classic_encryption_deferrals;
     out->fresh_admission_reject_window = fresh_admission_reject_window;
     out->fresh_admission_reject_lockout = fresh_admission_reject_lockout;
     out->wipe_completions = wipe_completions;

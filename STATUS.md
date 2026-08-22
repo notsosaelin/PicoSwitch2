@@ -686,7 +686,16 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
   its ~21 s establishment budget. Which two LMP transactions collide is **Unknown**; the adapter's
   `LM_LINK_POLICY_ENABLE_SNIFF_MODE` is a candidate but was not changed on a hypothesis. In the same
   35 cycles Mode 2 never occurred at all and Mode 1 (`PAGE_TIMEOUT`) occurred **once**. The other
-  two tablet-side failures are rarer and must not be merged with Type C or each other. *Type A*: Android's own Bluetooth stack aborts —
+  two tablet-side failures are rarer and must not be merged with Type C or each other.
+  **Type C is ours, and it is now located.** Android's sequence is structurally identical in all 8
+  failures and 11 successes, so it is not the variable — sniff, packet-type change and duplicate
+  connects are all specifically eliminated. Pinned BTstack sets `BONDING_SEND_ENCRYPTION_REQUEST`
+  unconditionally on every successful Authentication Complete (`hci.c:4240`), without regard to who
+  initiated authentication or whether this host requires encryption at all (our HID Host registers
+  `LEVEL_0`). Both controllers report that event, so both hosts start the same LMP procedure — which
+  is precisely what `LMP Error Transaction Collision` denotes. Upstream master is identical
+  (`hci.c:5046`), so there is nothing to backport. Fixed in-repo without patching BTstack, because
+  `hci.c:4708` notifies the application between the flag being set and `hci_run()` consuming it. *Type A*: Android's own Bluetooth stack aborts —
   `hci_layer.cc:255 handle_command_response: Waiting for READ_REMOTE_SUPPORTED_FEATURES(0x041b),
   got LINK_KEY_REQUEST_REPLY(0x040b)` → SIGABRT in `gd_stack_thread`, process dies and restarts.
   Android initiated that ACL and L2CAP itself and warns about the window in its own log ("*Maybe
