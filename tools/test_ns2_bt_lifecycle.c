@@ -350,11 +350,15 @@ static void test_le_link_params_validity_rules(void)
  */
 static void test_defer_classic_encryption_is_narrow(void)
 {
-    // The captured case: the companion's link, peer-initiated authentication.
+    // The captured case: the companion reconnecting with a stored link key.
+    // Note the second argument is "do we own a FRESH PAIRING", not "did we
+    // request security at all" -- on a reconnect this host also calls
+    // gap_request_security_level(LEVEL_2), so the broader reading would be true
+    // here and would make the stand-down dead code.
     assert(ns2_bt_defer_classic_encryption(true, false));
 
-    // A link we asked to authenticate stays ours to encrypt. Standing down here
-    // could leave a link unencrypted that would otherwise have been encrypted.
+    // A fresh pairing is ours to finish: we are driving the whole security
+    // establishment, so we must not hand encryption to the peer mid-way.
     assert(!ns2_bt_defer_classic_encryption(true, true));
 
     // Controllers are untouched. This must never become "never encrypt": every

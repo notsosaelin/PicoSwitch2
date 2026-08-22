@@ -29,10 +29,7 @@ typedef enum {
 // cycles alongside 113 successful GATT round trips while healthy), not a
 // measured outage. Do not reintroduce "2.35 s < 6 s" as the rationale.
 //
-// JoypadOS hit the same class on a single-radio dongle running LE and Classic
-// together and fixed it the same way (efa0202, "coexistence-safe params"):
-// it moved off a 2 s supervision timeout to 6 s so the link "rides through
-// contention". Our fork predates that commit and never inherited it.
+// Our fork predates efa0202 and never inherited it.
 //
 // Latency is 0 so no connection event is skipped. The interval range is left
 // wide on purpose -- the evidence calls for supervision margin, not a slower
@@ -120,11 +117,20 @@ bool ns2_bt_classic_trust_present(bool classic_link_key_present,
 // Deferring is deliberately narrow. It applies only when the peer is the
 // companion holding a live encrypted management session -- a phone whose HID
 // Device profile requires encryption and will always drive it -- and only when
-// this host did not itself request security on that link. Controllers are
-// untouched, and a peer we asked to authenticate is still ours to encrypt, so
-// no link silently loses encryption it would otherwise have had.
+// this host does not own a FRESH PAIRING on that link.
+//
+// The second condition is not "did we request security at all". On an ordinary
+// reconnect this host also calls gap_request_security_level(LEVEL_2), so that
+// broader reading is true for essentially every companion link and would make
+// the stand-down dead code. The distinction is ownership: during a fresh
+// pairing we drive the whole establishment and must finish it; on a reconnect
+// the peer requires and drives encryption, and the level we asked for is
+// satisfied by the peer's Encryption Change through the identical code path.
+//
+// Physical controllers are untouched either way: they never satisfy the
+// companion predicate, so they keep BTstack's stock behaviour exactly.
 bool ns2_bt_defer_classic_encryption(bool peer_is_companion_session,
-                                     bool we_requested_security);
+                                     bool we_own_fresh_pairing_security);
 
 // Classifying the Encryption Change that follows a stand-down.
 //
