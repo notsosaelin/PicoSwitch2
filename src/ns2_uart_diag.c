@@ -1052,6 +1052,30 @@ static void handle_command(void) {
                 a[0], a[1], a[2], a[3], a[4], a[5], trust ? "true" : "false");
             queue_text(trace_format_response);
         }
+    } else if (strcmp(rx_line, "btrefuse") == 0) {
+        // Which term of the Controller-Link admission predicate was false.
+        // `clink.refused_no_mgmt` counts refusals; this says why the last one
+        // happened, which is the difference between a number and a diagnosis.
+        btstack_host_link_refusal_t r;
+        if (!btstack_host_last_link_refusal(&r)) {
+            queue_text("{\"btrefuse\":\"none\"}");
+        } else {
+            snprintf(trace_format_response, sizeof(trace_format_response),
+                "{\"btrefuse\":\"last\",\"addr\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
+                "\"cross_transport\":%s,\"mgmt_connected\":%s,"
+                "\"mgmt_addr_known\":%s,\"mgmt_raw_matches\":%s,"
+                "\"mgmt_identity_known\":%s,\"mgmt_identity_matches\":%s,"
+                "\"mgmt_link_trusted\":%s}",
+                r.addr[0], r.addr[1], r.addr[2], r.addr[3], r.addr[4], r.addr[5],
+                r.cross_transport ? "true" : "false",
+                r.mgmt_connected ? "true" : "false",
+                r.mgmt_addr_known ? "true" : "false",
+                r.mgmt_raw_matches ? "true" : "false",
+                r.mgmt_identity_known ? "true" : "false",
+                r.mgmt_identity_matches ? "true" : "false",
+                r.mgmt_link_trusted ? "true" : "false");
+            queue_text(trace_format_response);
+        }
     } else if (strcmp(rx_line, "btauth") == 0) {
         // Why the last Classic Authentication Complete did or did not stand
         // down from BTstack's automatic encryption request.
@@ -2489,7 +2513,8 @@ static void handle_command(void) {
                    "\"kbm mouse\",\"kbm mouse sensitivity|sensitivityx|"
                    "sensitivityy|recenter|invertx|inverty|antideadzone "
                    "<value>\",\"btdev\","
-                   "\"btreconnect\",\"btbonds\",\"btfresh\",\"btreject\",\"btauth\","
+                   "\"btreconnect\",\"btbonds\",\"btfresh\",\"btreject\",\"btrefuse\","
+                   "\"btauth\","
                    "\"reenumerate\",\"bootsel\",\"save\",\"help\"]}");
     } else if (rx_length != 0) {
         queue_text("{\"error\":\"unknown command\"}");
