@@ -66,6 +66,16 @@ bool ns2_bt_defer_classic_encryption(bool peer_is_companion_session,
     return peer_is_companion_session && !we_own_fresh_pairing_security;
 }
 
+bool ns2_bt_defer_classic_authentication(bool peer_is_companion_session,
+                                         bool stored_classic_key_present,
+                                         bool we_own_fresh_pairing_security)
+{
+    // A stored key is required: without one there is nothing to authenticate
+    // against and this host must drive the fresh pairing itself.
+    return peer_is_companion_session && stored_classic_key_present &&
+           !we_own_fresh_pairing_security;
+}
+
 bool ns2_bt_encryption_collision(uint8_t hci_status)
 {
     return hci_status == NS2_BT_HCI_LMP_TRANSACTION_COLLISION;

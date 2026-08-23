@@ -473,8 +473,58 @@ static void test_classic_security_event_orders(void)
     assert(!ns2_bt_encryption_completed_for_deferral(0x00u, true, deferred == H1));
 }
 
+/*
+ * Regression, 2026-08-22 (Type C, authentication half). Captured across 20
+ * companion reconnects on one build: six attempts logged
+ * `btm_sec_auth_complete: ... status: 35` (0x23, LMP Error Transaction
+ * Collision) and recovered, and two landed the same collision on encryption,
+ * where Android disconnects the ACL instead of retrying.
+ *
+ * Both hosts were starting the LMP authentication procedure: this host calls
+ * gap_request_security_level(LEVEL_2) on an incoming link with a stored key,
+ * and Android's HID Device profile starts it too. Standing down from the
+ * encryption request alone could not prevent that, because the redundant
+ * request that races is the authentication one.
+ */
+static void test_defer_classic_authentication_is_narrow(void)
+{
+    // The captured case: companion, stored key, not our fresh pairing.
+    assert(ns2_bt_defer_classic_authentication(true, true, false));
+
+    // No stored key means there is nothing to authenticate against, and this
+    // host must drive the fresh pairing itself.
+    assert(!ns2_bt_defer_classic_authentication(true, false, false));
+
+    // A fresh pairing we own stays ours to complete.
+    assert(!ns2_bt_defer_classic_authentication(true, true, true));
+
+    // Physical controllers and unknown peers are untouched in every
+    // combination -- they keep BTstack's behaviour exactly as before.
+    for (int key = 0; key < 2; key++)
+        for (int fresh = 0; fresh < 2; fresh++)
+            assert(!ns2_bt_defer_classic_authentication(false, key != 0, fresh != 0));
+
+    // An impostor cannot reach it either: the companion predicate is the same
+    // proven-live-session one used for admission and the encryption stand-down.
+    bool impostor = ns2_bt_companion_session_trust(true, true, false, true);
+    assert(!ns2_bt_defer_classic_authentication(impostor, true, false));
+}
+
+/*
+ * Standing down changes WHO INITIATES, never WHAT IS REQUIRED. The required key
+ * size is stated once and shared with the firmware's HID-ready gate, so an edit
+ * cannot quietly relax the acceptance invariant while leaving the stand-down in
+ * place.
+ */
+static void test_required_key_size_is_not_relaxed(void)
+{
+    assert(NS2_BT_REQUIRED_CLASSIC_KEY_SIZE == 16u);
+}
+
 int main(void)
 {
+    test_defer_classic_authentication_is_narrow();
+    test_required_key_size_is_not_relaxed();
     test_encryption_outcome_classification();
     test_classic_security_event_orders();
     test_defer_classic_encryption_is_narrow();

@@ -132,6 +132,40 @@ bool ns2_bt_classic_trust_present(bool classic_link_key_present,
 bool ns2_bt_defer_classic_encryption(bool peer_is_companion_session,
                                      bool we_own_fresh_pairing_security);
 
+// Whether to stand down from initiating Classic AUTHENTICATION as well.
+//
+// Same principle as ns2_bt_defer_classic_encryption(), one procedure earlier.
+// On an incoming Classic connection that already has a stored link key, this
+// host calls gap_request_security_level(LEVEL_2), which sets
+// BONDING_SEND_AUTHENTICATE_REQUEST and sends HCI_Authentication_Requested.
+// Android sends it too, because its HID Device profile's L2CAP security
+// requires it. Both Link Managers then run the same LMP procedure.
+//
+// Captured on hardware 2026-08-22 across 20 companion reconnects on one build:
+// six attempts logged `btm_sec_auth_complete: ... status: 35` (0x23, LMP Error
+// Transaction Collision) and recovered, and two landed the same collision on
+// the encryption step instead, where Android does not recover -- it disconnects
+// the ACL and the Controller Link fails. The encryption-side stand-down alone
+// could not prevent those, because the redundant request that races is the
+// authentication one.
+//
+// SECURITY NOTE. This changes WHO INITIATES, never WHAT IS REQUIRED. The link
+// must still reach Authentication Complete, encryption, and the required key
+// size before HID is usable; see btstack_host's HID-ready gate. Standing down
+// is only safe because the peer is the companion, whose HID Device profile is
+// guaranteed to drive security -- and if it somehow does not, the link fails
+// closed rather than running unauthenticated.
+// Classic encryption key size the companion link must reach before HID is
+// allowed to become usable. BTstack's own gap_required_encryption_key_size
+// governs its internal security level; this is the acceptance invariant for the
+// Controller Link specifically, kept explicit so a stand-down can never be
+// mistaken for a relaxation of what security is required.
+#define NS2_BT_REQUIRED_CLASSIC_KEY_SIZE 16u
+
+bool ns2_bt_defer_classic_authentication(bool peer_is_companion_session,
+                                         bool stored_classic_key_present,
+                                         bool we_own_fresh_pairing_security);
+
 // Classifying the Encryption Change that follows a stand-down.
 //
 // Standing down is only correct if the peer actually finishes the job, so the
