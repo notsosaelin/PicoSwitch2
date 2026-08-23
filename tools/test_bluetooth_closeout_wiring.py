@@ -64,6 +64,7 @@ def main() -> None:
     assert "&install_reset_bootstrap_consumed" in working
 
     check_controller_link_is_bound_to_management(source)
+    check_paging_instrumentation_is_observation_only(source)
     check_management_bond_admission_is_latched(source)
     check_audio_sink_is_independent_of_input_ownership()
     check_controller_discovery_never_touches_management(source)
@@ -247,6 +248,65 @@ def check_controller_link_is_bound_to_management(source: str) -> None:
     )
     for outcome in ("NS2_BT_AUTH_OBSERVED_OK", "NS2_BT_AUTH_OBSERVED_FAILED"):
         assert outcome in source
+
+
+def check_paging_instrumentation_is_observation_only(source: str) -> None:
+    """Classic paging events observe; they must never steer.
+
+    The 2026-08-23 soak put the failure entirely inside paging -- 9 of 101 page
+    attempts ended in HCI_ERR_PAGE_TIMEOUT before any ACL, authentication or
+    encryption -- and the adapter had no way to say what it was doing at the
+    time. These events exist to answer that and nothing else.
+
+    The risk being guarded is a later edit that "improves" paging from inside a
+    diagnostic: a retry, a scan-enable toggle, a delay. Recording is appends to a
+    RAM ring plus counters; if a radio call ever appears in the recorder, this
+    stops being instrumentation.
+    """
+    recorder = function_body(
+        source,
+        r"static void btlife_record_addr\(uint8_t code, uint8_t a, uint16_t b,"
+        r"\s*const bd_addr_t addr\)\s*\{",
+        r"\n\}",
+    )
+    flags = function_body(
+        source, r"static uint8_t btlife_radio_flags\(void\)\s*\{", r"\n\}")
+    for name, body in (("recorder", recorder), ("radio snapshot", flags)):
+        for forbidden in ("gap_", "hci_send", "sleep", "btstack_run_loop_set_timer",
+                          "l2cap_", "sm_"):
+            assert forbidden not in body, (
+                f"btlife {name} must observe only; found {forbidden!r}. Paging "
+                "instrumentation may not acquire the radio or change timing."
+            )
+
+    # Both edges of every state the correlation depends on.
+    for event in ("BTLIFE_PAGE_SCAN_ON", "BTLIFE_PAGE_SCAN_OFF",
+                  "BTLIFE_INQUIRY_START", "BTLIFE_INQUIRY_STOP",
+                  "BTLIFE_PAGE_RX", "BTLIFE_PAGE_ACCEPT", "BTLIFE_PAGE_REJECT",
+                  "BTLIFE_ACL_UP", "BTLIFE_ACL_FAIL"):
+        assert source.count(event) >= 2, (
+            f"{event} must be both defined and recorded somewhere"
+        )
+
+    # PAGE_RX is only meaningful at HCI_EVENT_CONNECTION_REQUEST -- the point at
+    # which the controller has already answered a page. Recording it anywhere
+    # else would misrepresent what the adapter actually saw.
+    request = function_body(
+        source,
+        r"case HCI_EVENT_CONNECTION_REQUEST: \{",
+        r"\n\s*case HCI_EVENT_CONNECTION_COMPLETE:",
+    )
+    assert "btlife_record_addr(BTLIFE_PAGE_RX" in request, (
+        "PAGE_RX belongs to the connection-request event and nowhere else"
+    )
+
+    # The ring must stay large enough to survive an acceptance soak. At 48 it
+    # overflowed inside the first minute of the 100-cycle run, which is why a
+    # failure at cycle 93 could not be explained afterwards.
+    match = re.search(r"#define BTLIFE_RING_SIZE\s+(\d+)u", source)
+    assert match and int(match.group(1)) >= 1024, (
+        "BTLIFE_RING_SIZE must retain a full soak (>= 1024 entries)"
+    )
 
 
 def check_management_bond_admission_is_latched(source: str) -> None:
