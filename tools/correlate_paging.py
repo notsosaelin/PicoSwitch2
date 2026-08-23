@@ -40,6 +40,10 @@ import statistics
 import sys
 
 # Verdicts, kept deliberately blunt.
+# The phone never transmitted a page, so the adapter is not implicated and the
+# absence of page_rx is expected rather than evidence. Confirmed 2026-08-23,
+# cycle 3: OnConnectFail reason:CONNECTION_ALREADY_EXISTS(0x0b).
+PHONE_NEVER_PAGED = "PHONE_NEVER_PAGED"
 A_SCAN_OFF = "A_PAGE_SCAN_DISABLED"
 A_OR_B = "A_OR_B_NO_PAGE_RX"
 C_AFTER_RESPONSE = "C_RESPONDED_THEN_FAILED"
@@ -114,9 +118,20 @@ def align(timelines: list[dict], btlife: list[dict]) -> tuple[float, float, int]
     return statistics.median(offsets), statistics.pstdev(offsets), pairs
 
 
-def classify_failure(events: list[dict]) -> tuple[str, dict]:
+def classify_failure(events: list[dict],
+                     harness_detail: dict | None = None) -> tuple[str, dict]:
     codes = [e["code"] for e in events]
     detail = {"btlife_events": codes}
+
+    # Before asking anything of the adapter, check whether the phone actually
+    # paged. If its own reason is not PAGE_TIMEOUT it never put a page on the
+    # air, and a missing page_rx says nothing about this adapter.
+    reason = (harness_detail or {}).get("connect_fail_reason")
+    if reason and "PAGE_TIMEOUT" not in reason:
+        detail["phone_reason"] = reason
+        detail["adapter_saw_page"] = "page_rx" in codes
+        return PHONE_NEVER_PAGED, detail
+
     if not events:
         return NO_DATA, detail
     if "page_reject" in codes:
@@ -170,7 +185,7 @@ def main() -> int:
         # 5.12 s Android page timeout.
         lo, hi = opened - 1.0, opened + 8.0
         window = [e for e in btlife if lo <= e["t_ms"] / 1000.0 + offset <= hi]
-        verdict, detail = classify_failure(window)
+        verdict, detail = classify_failure(window, r.get("detail"))
         verdicts[verdict] = verdicts.get(verdict, 0) + 1
         print(f"{r['cycle']:5}  {r['result']:<30}  {verdict}")
         print(f"       {json.dumps(detail)}")
@@ -187,6 +202,9 @@ def main() -> int:
         for r in timelines:
             if (r["result"] == "ok") != want_ok:
                 continue
+            reason = (r.get("detail") or {}).get("connect_fail_reason")
+            if reason and "PAGE_TIMEOUT" not in reason:
+                continue  # the phone never paged; not a paging sample
             opened = next((wall_seconds(row["at"]) for row in r["timeline"]
                            if row["event"] == "app.touch_opened"), None)
             if opened is None:
