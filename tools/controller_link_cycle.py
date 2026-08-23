@@ -109,6 +109,18 @@ APP_UI_STATE_UNEXPECTED = "app:UI_STATE_UNEXPECTED"
 APP_DUPLICATE_OWNER = "app:DUPLICATE_OWNER"
 APP_BT_PROCESS_DIED = "app:ANDROID_BT_PROCESS_DIED"
 APP_COD_REJECTED = "app:COD_REJECTED"
+# The phone refused or failed the connection for a reason of its own -- local
+# connection-state bookkeeping, not the radio. Confirmed on 2026-08-23, cycle 3
+# of the 100-cycle soak: OnConnectFail reason:CONNECTION_ALREADY_EXISTS(0x0b),
+# 4.6 s after the request, on a link whose previous ACL had been fully down for
+# 10 s. No page is transmitted in this case, so the adapter is uninvolved and
+# calling it a Classic page failure would be simply wrong.
+APP_CONNECTION_STATE_FAILURE = "app:CONNECTION_STATE_FAILURE"
+# The app's own 8 s HID callback watchdog fired with no stack-level outcome at
+# all -- neither a connect failure nor a connection.
+APP_HID_CALLBACK_TIMEOUT = "app:HID_CALLBACK_TIMEOUT"
+# The app never got as far as asking for a connection.
+APP_NO_CONNECT_ATTEMPT = "app:NO_CONNECT_ATTEMPT"
 
 HARNESS_ADB_DEVICE_LOST = "harness:ADB_DEVICE_LOST"
 HARNESS_ADB_COMMAND_FAILED = "harness:ADB_COMMAND_FAILED"
@@ -293,7 +305,10 @@ TIMELINE_MARKERS: tuple[tuple[str, str], ...] = (
     ("app.state_connected",  "transport/HID connection state: connected"),
     ("app.link_up",          "bridge/link up"),
     # Terminal events
+    ("fail.connect_fail",    "OnConnectFail"),
     ("fail.page_timeout",    "PAGE_TIMEOUT"),
+    ("app.bridge_failed",    "controller/bridge.phase: Failed"),
+    ("app.callback_timeout", "HID connection: callback timeout"),
     ("fail.hid_rejected",    "transport/HID connection rejected"),
     ("fail.acl_down",        "ACL link down"),
     ("fail.gatt_error",      "management/gatt.error"),
@@ -348,6 +363,23 @@ def acl_down_reason(log: str) -> str | None:
     return reason
 
 
+def connect_fail_reason(log: str) -> str | None:
+    """The phone stack's own reason for abandoning a Classic connect.
+
+    `OnConnectFail ... reason:X` is the discriminator that separates a real
+    over-the-air paging failure from the phone declining locally. PAGE_TIMEOUT
+    means the controller paged and heard nothing; anything else means it did not
+    page at all, and the adapter cannot be implicated.
+    """
+    match = None
+    for line in log.splitlines():
+        if "OnConnectFail" in line:
+            found = re.search(r"reason:(\S+)", line)
+            if found:
+                match = found.group(1)
+    return match
+
+
 def classify(log: str, timeline: list[dict] | None = None) -> tuple[str, dict]:
     """Name the device failure and say what the evidence was.
 
@@ -386,7 +418,25 @@ def classify(log: str, timeline: list[dict] | None = None) -> tuple[str, dict]:
     if "btm_sec_auth_complete" in log and "status: 0" not in log:
         return DEV_AUTH_FAILURE, detail
 
-    if "fail.page_timeout" in reached:
+    # The phone's own reason comes first, because it decides whether the radio
+    # was ever asked to do anything. Never attribute a failure to the adapter
+    # without evidence that a page was actually transmitted.
+    reason = connect_fail_reason(log)
+    detail["connect_fail_reason"] = reason
+    if reason is not None and "PAGE_TIMEOUT" not in reason:
+        detail["hid_registered"] = "app.hid_registered" in reached
+        detail["connect_requested"] = "app.connect_requested" in reached
+        return APP_CONNECTION_STATE_FAILURE, detail
+
+    # The cycle demonstrably started but never asked for a connection: an
+    # app-state fault, not a link fault. Requires app.touch_opened, because a
+    # window with nothing in it is missing evidence rather than showing a
+    # refusal, and those must not collapse into the same answer.
+    if "app.touch_opened" in reached and "app.connect_requested" not in reached:
+        detail["reached"] = sorted(reached)
+        return APP_NO_CONNECT_ATTEMPT, detail
+
+    if "fail.page_timeout" in reached or (reason and "PAGE_TIMEOUT" in reason):
         requested = next((r for r in rows if r["event"] == "app.connect_requested"), None)
         rejected = next((r for r in rows if r["event"] == "fail.hid_rejected"), None)
         detail["paging_seconds"] = (
@@ -400,6 +450,12 @@ def classify(log: str, timeline: list[dict] | None = None) -> tuple[str, dict]:
     if "classic.acl_up" in reached and "app.link_up" not in reached:
         detail["last_stage"] = rows[-1]["event"] if rows else None
         return DEV_HID_TIMEOUT, detail
+
+    # The app's watchdog fired with no stack outcome either way. That is the
+    # phone giving up, not the link failing.
+    if "app.callback_timeout" in reached:
+        detail["last_stage"] = rows[-1]["event"] if rows else None
+        return APP_HID_CALLBACK_TIMEOUT, detail
 
     detail["last_stage"] = rows[-1]["event"] if rows else None
     detail["markers_seen"] = sorted(reached)

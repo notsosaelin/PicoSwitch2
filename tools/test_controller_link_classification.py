@@ -146,6 +146,63 @@ def test_shell_result_cannot_look_like_success_when_it_failed():
     assert not clc.ShellResult(timed_out=True).ok
 
 
+CONNECTION_ALREADY_EXISTS = """08-23 08:42:31.257 D/PicoSwitch( 3953): controller/touch gamepad: opened
+08-23 08:42:31.285 D/PicoSwitch( 3953): transport/HID profile: acquiring
+08-23 08:42:31.312 D/PicoSwitch( 3953): transport/HID registration: registered
+08-23 08:42:31.316 D/PicoSwitch( 3953): transport/HID connection: requested accepted=true hostOk=true
+08-23 08:42:31.324 D/PicoSwitch( 3953): transport/HID connection state: connecting
+08-23 08:42:31.359 D/PicoSwitch( 3953): management/result: input: complete (98 bytes) elapsedMs=135
+08-23 08:42:35.926 W/bluetooth(10280): OnConnectFail: Connection failed classic remote:xx reason:CONNECTION_ALREADY_EXISTS(0x0b)
+08-23 08:42:39.316 D/PicoSwitch( 3953): controller/bridge.phase: Failed
+08-23 08:42:39.318 D/PicoSwitch( 3953): transport/HID connection: callback timeout after 8001ms bond=12 type=3
+"""
+
+NEVER_REQUESTED = """08-23 08:42:31.257 D/PicoSwitch( 3953): controller/touch gamepad: opened
+08-23 08:42:31.285 D/PicoSwitch( 3953): transport/HID profile: acquiring
+08-23 08:42:39.316 D/PicoSwitch( 3953): controller/bridge.phase: Failed
+"""
+
+
+def test_phone_side_connect_refusal_is_not_a_paging_failure():
+    """The 2026-08-23 cycle-3 case, and the whole point of this split.
+
+    CONNECTION_ALREADY_EXISTS means the phone's own stack abandoned the connect;
+    no page is transmitted, so the adapter is uninvolved. Reporting it as
+    CLASSIC_PAGE_TIMEOUT would have inflated the paging failure count by 11% and
+    sent the investigation at the wrong radio.
+    """
+    outcome, detail = clc.classify(CONNECTION_ALREADY_EXISTS)
+    assert outcome == clc.APP_CONNECTION_STATE_FAILURE, outcome
+    assert clc.domain(outcome) == "app"
+    assert detail["connect_fail_reason"] == "CONNECTION_ALREADY_EXISTS(0x0b)"
+    # It must record that the app DID try -- that is what separates this from
+    # "the app refused to start".
+    assert detail["hid_registered"] is True
+    assert detail["connect_requested"] is True
+
+
+def test_page_timeout_survives_the_new_ordering():
+    # The reason check runs first, so PAGE_TIMEOUT must still reach the device
+    # verdict rather than being swallowed as a phone-side refusal.
+    outcome, detail = clc.classify(PAGE_TIMEOUT)
+    assert outcome == clc.DEV_CLASSIC_PAGE_TIMEOUT, outcome
+    assert clc.domain(outcome) == "device"
+
+
+def test_no_connect_attempt_is_named_separately():
+    outcome, _ = clc.classify(NEVER_REQUESTED)
+    assert outcome == clc.APP_NO_CONNECT_ATTEMPT, outcome
+    assert clc.domain(outcome) == "app"
+
+
+def test_connect_fail_reason_takes_the_last_occurrence():
+    doubled = (CONNECTION_ALREADY_EXISTS +
+               "08-23 08:42:44.000 W/bluetooth(1): OnConnectFail: "
+               "reason:PAGE_TIMEOUT(0x04)\n")
+    assert "PAGE_TIMEOUT" in clc.connect_fail_reason(doubled)
+    assert clc.connect_fail_reason("nothing here") is None
+
+
 def _with_adb(stub):
     """Swap adb_run for the duration of a test."""
     original = clc.adb_run
