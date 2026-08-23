@@ -238,6 +238,67 @@ def test_phone_state_reasons_are_whitelisted_not_inferred():
     assert "CONNECTION_TIMEOUT" not in clc.PHONE_STATE_REASONS
 
 
+def test_missing_or_partial_logcat_never_raises():
+    """The cycle-82 crash shape: None reaching build_timeline().
+
+    A decode failure inside subprocess's reader thread left stdout as None, and
+    the visible error was AttributeError three frames from the cause. Nothing in
+    the parsing path may raise on absent input, and none of it may invent a
+    device verdict from it.
+    """
+    for empty in (None, "", "   ", "garbage with no timestamps"):
+        assert clc.build_timeline(empty) == [] or isinstance(
+            clc.build_timeline(empty), list)
+        assert clc.acl_down_reason(empty) is None
+        assert clc.connect_fail_reason(empty) is None
+        outcome, detail = clc.classify(empty)
+        # Unknown, with evidence -- never a specific device failure invented
+        # from nothing.
+        assert outcome == clc.DEV_UNKNOWN_TIMEOUT, (empty, outcome)
+        assert "markers_seen" in detail
+
+
+def test_adb_output_is_always_a_string():
+    # ShellResult must never carry None, whatever subprocess hands back.
+    assert clc.ShellResult().stdout == ""
+    assert clc.ShellResult().stderr == ""
+    original = _with_adb(lambda *a, **k: clc.ShellResult(stdout="x", code=0))
+    try:
+        assert isinstance(clc.adb("shell", "true"), str)
+    finally:
+        clc.adb_run = original
+
+
+def test_adb_run_survives_undecodable_bytes():
+    """The real wrapper, against the exact byte that killed cycle 82.
+
+    0x9d is undefined in cp1252. With text=True the decode raised inside
+    subprocess's reader THREAD, so subprocess.run returned with stdout as None
+    instead of propagating, and the visible failure surfaced three frames later
+    as AttributeError on None.splitlines(). Decoding must be explicit UTF-8 with
+    errors="replace" so the byte becomes a replacement character and the run
+    continues.
+    """
+    import subprocess as sp
+    bad = bytes((0x41, 0x9D, 0x42))          # "A", undecodable in cp1252, "B"
+    real = clc.subprocess.run
+
+    def fake_run(args, **kwargs):
+        assert kwargs.get("encoding") == "utf-8", (
+            "adb output must not be decoded with the locale codec")
+        assert kwargs.get("errors") == "replace"
+        return sp.CompletedProcess(
+            args, 0, bad.decode(kwargs["encoding"], errors=kwargs["errors"]), "")
+
+    clc.subprocess.run = fake_run
+    try:
+        result = clc.adb_run("logcat", "-d")
+        assert result.ok
+        assert result.stdout.startswith("A") and result.stdout.endswith("B")
+    finally:
+        clc.subprocess.run = real
+
+
 def _with_adb(stub):
     """Swap adb_run for the duration of a test."""
     original = clc.adb_run
