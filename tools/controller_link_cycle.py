@@ -162,13 +162,32 @@ class ShellResult:
 
 
 def adb_run(*args: str, timeout: int = 90) -> ShellResult:
+    """Run adb and return a result that is always a string, never None.
+
+    encoding/errors are explicit because text=True decodes with the LOCALE
+    codec, which on Windows is cp1252. logcat carries arbitrary bytes, and the
+    200-cycle run died at cycle 82 on `'charmap' codec can't decode byte 0x9d`.
+    Worse than the crash was the shape of it: the decode raised inside
+    subprocess's reader THREAD, so subprocess.run returned with stdout set to
+    None rather than propagating, adb() handed None to build_timeline(), and the
+    visible failure was AttributeError: 'NoneType' has no attribute 'splitlines'
+    -- three frames away from the cause.
+
+    UnicodeDecodeError is also caught explicitly: errors="replace" should make
+    it unreachable, but a decode failure must never again be able to surface as
+    a None that looks like a device problem.
+    """
     try:
         done = subprocess.run(
-            ("adb",) + args, capture_output=True, text=True, timeout=timeout
+            ("adb",) + args, capture_output=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
         )
-        return ShellResult(done.stdout, done.stderr, done.returncode, False)
+        return ShellResult(done.stdout or "", done.stderr or "",
+                           done.returncode, False)
     except subprocess.TimeoutExpired:
         return ShellResult(timed_out=True)
+    except UnicodeDecodeError as error:
+        return ShellResult(stderr=f"undecodable adb output: {error}", code=-1)
     except OSError as error:
         return ShellResult(stderr=str(error), code=-1)
 
@@ -332,14 +351,14 @@ def _stamp_seconds(line: str) -> float | None:
     return int(hours) * 3600 + int(minutes) * 60 + float(rest)
 
 
-def build_timeline(log: str) -> list[dict]:
+def build_timeline(log: str | None) -> list[dict]:
     """First occurrence of each marker, with an offset from the touch open.
 
     Returned in observed order so a failed attempt can be diffed against a
     successful one row by row.
     """
     seen: dict[str, tuple[str, float | None, str]] = {}
-    for line in log.splitlines():
+    for line in (log or "").splitlines():
         for name, needle in TIMELINE_MARKERS:
             if needle in line and name not in seen:
                 seen[name] = (line[:23], _stamp_seconds(line), line.strip()[:200])
@@ -363,7 +382,7 @@ def build_timeline(log: str) -> list[dict]:
 def acl_down_reason(log: str) -> str | None:
     """The controller's own reason for the last ACL drop, if one is present."""
     reason = None
-    for line in log.splitlines():
+    for line in (log or "").splitlines():
         if "btif_dm_acl_evt" in line and "link down" in line and "reason:" in line:
             reason = line.rsplit("reason:", 1)[1].strip()
     return reason
@@ -392,7 +411,7 @@ def connect_fail_reason(log: str) -> str | None:
     page at all, and the adapter cannot be implicated.
     """
     match = None
-    for line in log.splitlines():
+    for line in (log or "").splitlines():
         if "OnConnectFail" in line:
             found = re.search(r"reason:(\S+)", line)
             if found:
@@ -400,12 +419,13 @@ def connect_fail_reason(log: str) -> str | None:
     return match
 
 
-def classify(log: str, timeline: list[dict] | None = None) -> tuple[str, dict]:
+def classify(log: str | None, timeline: list[dict] | None = None) -> tuple[str, dict]:
     """Name the device failure and say what the evidence was.
 
     Ordered most specific first. Every branch reports the facts that justified
     it, so a report never has to say only "failed".
     """
+    log = log or ""
     rows = timeline if timeline is not None else build_timeline(log)
     reached = {row["event"] for row in rows}
     detail: dict = {"acl_down_reason": acl_down_reason(log)}
@@ -855,7 +875,14 @@ def cycle_touch_only(dev: Adapter, settle: float) -> tuple[str, float, dict]:
         return enter_problem, -1.0, info
 
     linked, detected_at = await_link(dev)
-    window = adb("logcat", "-d", "-v", "time", "-t", "4000")
+    log_read = adb_run("logcat", "-d", "-v", "time", "-t", "4000")
+    window = log_read.stdout
+    if not log_read.ok:
+        # No capture means no evidence. Report that rather than classifying a
+        # device failure from an empty string.
+        info["logcat_error"] = log_read.stderr[:200]
+        app_exit_touch(settle)
+        return HARNESS_ADB_COMMAND_FAILED, -1.0, info
     timeline = build_timeline(window)
     info["timeline"] = timeline
     info["acl_down_reason"] = acl_down_reason(window)
