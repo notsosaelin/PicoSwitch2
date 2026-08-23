@@ -186,4 +186,54 @@ class AdapterRelationshipLifecycleTest {
             ) is AdapterLifecycleDecision.Connect,
         )
     }
+
+    @Test fun `a key failure against a live bond escalates straight to repair`() {
+        val coordinator = AdapterRelationshipCoordinator(adapter)
+        val decision = coordinator.requestReconnect(
+            adapter, AdapterConnectReason.ForegroundAuto, AndroidBondState.Bonded,
+        ) as AdapterLifecycleDecision.Connect
+
+        val outcome = coordinator.connectionFailed(
+            decision.attempt.generation, "connect failed", bondMismatch = true,
+        )
+
+        // Not Failed. Failed leaves foreground-auto free to try again, which is
+        // how six attempts across fourteen minutes happened on 2026-08-23 while
+        // the adapter had no key to authenticate with at all.
+        assertTrue(outcome is AdapterLifecycleDecision.RepairRequired)
+        assertEquals(AdapterRelationshipPhase.RepairRequired, coordinator.status.phase)
+        assertEquals(
+            dev.picoswitch.companion.transport.AdapterResetSignature.REPAIR_MESSAGE,
+            coordinator.status.message,
+        )
+    }
+
+    @Test fun `an ordinary connect failure stays retryable`() {
+        val coordinator = AdapterRelationshipCoordinator(adapter)
+        val decision = coordinator.requestReconnect(
+            adapter, AdapterConnectReason.ForegroundAuto, AndroidBondState.Bonded,
+        ) as AdapterLifecycleDecision.Connect
+
+        val outcome = coordinator.connectionFailed(
+            decision.attempt.generation, "stack error 133", bondMismatch = false,
+        )
+
+        assertTrue(outcome is AdapterLifecycleDecision.Ignored)
+        assertEquals(AdapterRelationshipPhase.Failed, coordinator.status.phase)
+        assertEquals("stack error 133", coordinator.status.message)
+    }
+
+    @Test fun `a stale generation cannot force repair`() {
+        val coordinator = AdapterRelationshipCoordinator(adapter)
+        val decision = coordinator.requestReconnect(
+            adapter, AdapterConnectReason.ForegroundAuto, AndroidBondState.Bonded,
+        ) as AdapterLifecycleDecision.Connect
+
+        val outcome = coordinator.connectionFailed(
+            decision.attempt.generation + 99, "connect failed", bondMismatch = true,
+        )
+
+        assertTrue(outcome is AdapterLifecycleDecision.Ignored)
+        assertEquals(AdapterRelationshipPhase.Connecting, coordinator.status.phase)
+    }
 }

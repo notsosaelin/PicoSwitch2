@@ -1,5 +1,9 @@
 package dev.picoswitch.companion.ui
 
+import android.content.Intent
+import android.provider.Settings
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -298,6 +302,24 @@ private fun ConnectionStrip(
                         }
                     }
                     if (ui.connection.phase == ConnectionPhase.RepairRequired) {
+                        // Forgetting the Android bond is the one repair step
+                        // this app cannot perform: BluetoothDevice.removeBond()
+                        // is a @SystemApi gated on BLUETOOTH_PRIVILEGED. Offer
+                        // the shortest supported route to it instead of leaving
+                        // the user to find it.
+                        val context = LocalContext.current
+                        TextButton(
+                            onClick = {
+                                runCatching {
+                                    context.startActivity(
+                                        Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                    )
+                                }
+                            },
+                            enabled = actionEnabled,
+                        ) { Text("Bluetooth settings") }
+                        Spacer(Modifier.width(LayoutTokens.Space2))
                         Button(onClick = onRepairAdapter, enabled = actionEnabled) { Text("Repair pairing") }
                     } else {
                         Button(onClick = onConnect, enabled = actionEnabled) {
