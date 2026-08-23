@@ -195,6 +195,41 @@ bool ns2_bt_companion_session_trust(bool session_connected,
                                     bool peer_address_matches,
                                     bool session_bonded_and_encrypted);
 
+// Controller Link is not a standalone transport.
+//
+// PRODUCT INVARIANT. The Android companion's Controller Link is a facility of a
+// live management relationship, not an independent way to be a controller. BLE
+// management may run alone for as long as it likes; Controller Link may not.
+// Concretely: it may be established only while that same peer holds a connected,
+// bonded, encrypted management session, and it must be torn down when that
+// session is genuinely lost.
+//
+// This is a product rule, but it also closes a real failure path. A companion
+// that reaches Classic admission on its stored link key alone is NOT recognised
+// as the companion -- companion trust is live state -- so it falls through into
+// the ordinary physical-controller security path, where this host calls
+// gap_request_security_level(LEVEL_2) while Android's HID Device profile starts
+// the identical LMP authentication. That is the dual-initiation collision
+// (0x23) captured on 2026-08-22; see ns2_bt_defer_classic_authentication().
+// Refusing the connection outright is strictly cleaner than admitting it and
+// then racing over who owns security on a link that must not exist.
+//
+// The first input means "this identity exists on both transports". The call
+// site derives it from the LE bond database, because the companion is the only
+// peer this firmware creates that way: it bonds over LE for management, and its
+// Classic key is cross-transport-derived from that same LE bond. Physical
+// controllers are single-transport -- Classic controllers hold no LE bond, and
+// BLE controllers never arrive on Classic -- so none of them can satisfy it and
+// none of them change behaviour. If a future controller ever pairs over BOTH
+// transports under one identity address, this predicate would start refusing
+// its Classic reconnects while management is down, and the call site (not this
+// layer) is where that would have to be narrowed.
+//
+// Physical controllers are unaffected in the other direction too: a false first
+// input makes this the identity function on admission.
+bool ns2_bt_companion_classic_admission_allowed(
+    bool peer_is_cross_transport_companion, bool companion_session_trusted);
+
 // Delay before Classic inquiry restarts, in milliseconds.
 //
 // Idle discovery restarted inquiry the instant the previous round completed

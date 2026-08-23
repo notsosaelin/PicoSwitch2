@@ -106,6 +106,9 @@ typedef struct {
     bool encrypted_ok;
     uint8_t encryption_key_size;
     bool hid_ready;
+    // The ACL this record describes has disconnected. Every field above is a
+    // post-mortem of that link and none of them will be updated again.
+    bool link_closed;
 } btstack_host_auth_decision_t;
 
 // Count of companion links where this host did NOT initiate authentication.
@@ -313,6 +316,18 @@ typedef struct {
     uint32_t classic_encryption_peer_completed;
     uint32_t classic_encryption_collisions;
     uint32_t classic_encryption_unencrypted_active;
+    // Stand-downs and collisions on the AUTHENTICATION procedure. Counted
+    // separately from the encryption ones: the captured race happens on
+    // authentication first, and a run that only watches encryption can
+    // report success while it is still occurring.
+    uint32_t classic_authentication_deferrals;
+    uint32_t classic_authentication_collisions;
+    // Controller Link lifecycle. See
+    // ns2_bt_companion_classic_admission_allowed(): the companion's Classic
+    // link exists only for the duration of its management session.
+    uint16_t classic_companion_handle;          // live Controller Link ACL
+    uint32_t classic_companion_refused_no_mgmt; // refused: management not live
+    uint32_t classic_companion_mgmt_teardowns;  // torn down on management loss
     uint32_t wipe_completions;
     uint16_t last_disc_handle;
     uint8_t last_disc_reason;

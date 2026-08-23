@@ -656,6 +656,37 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
    Type A (Android's own Bluetooth process abort) is an Android defect this candidate does not
    address and must be excluded from Type C statistics.
 
+   **Appearance fix validated on hardware 2026-08-22.** Build `4b19842`, forgotten and re-paired:
+   Appearance `0x0080` → Android stored Class of Device `0x000100` (Computer) → **18 consecutive
+   Controller Link establishments, zero `check_cod_hid` refusals**. The encryption stand-down also
+   fired for real on that build (`enc.deferrals 1`, `enc.peer_completed 1`, `enc.collisions 0`,
+   `enc.unencrypted_active 0`). Type C, Mode 1 and Mode 2 remain as described above.
+
+   **Controller Link is not a standalone transport — invariant violation found and fixed
+   2026-08-22.** Android's Controller Link is a facility of a live BLE management relationship, not
+   an independent transport: it may be established only while that peer holds a connected, bonded,
+   encrypted management session, and it must be torn down when that session is genuinely lost.
+   *Confirmed on hardware* that build `4b19842` did neither. Forcing a real management loss with
+   `mgmt off` (which drops only the LE ACL, leaving the phone's Classic HID link untouched) left
+   `cble.client false` with `classic_ready 1`, the tablet still listed in `btdev`, still holding
+   active input ownership, and still streaming (`out:sent=41` 18 s later).
+   `config_ble_handle_disconnect()` never referred to the Classic link its session had authorised,
+   so there was no cleanup for the degraded session to have bypassed. Fixed by refusing
+   cross-transport Classic admission with no live management session (at the HCI connection filter,
+   before an ACL exists) and by tearing the latched companion ACL down on management disconnect
+   through the existing Classic close path. Physical controllers are single-transport and cannot
+   reach either change. `btauth` is now per-ACL, and `btstate` gained `auth:{deferrals,collisions}`
+   (authentication-side `0x23` was previously counted nowhere) and
+   `clink:{handle,refused_no_mgmt,mgmt_teardowns}`. Soak workloads A–D live in
+   `tools/controller_link_cycle.py`. **Not claimed:** that the authentication collisions caused the
+   CYW43/HCI wedge.
+
+   **`bootsel` UART command added.** The adapter's BOOTSEL button is bound to pairing/personality
+   gestures, and the running firmware exposed no way into the bootloader, so every soak iteration
+   cost a physical unplug-and-hold. `bootsel` reboots via `reset_usb_boot()` — UART only, dev builds
+   only, same trust boundary as `persona` and `mgmt off`. One manual BOOTSEL flash is still needed to
+   *install* the build that carries it; every iteration after that is unattended.
+
 ## Known technical debt
 
 - **`NS2_PRO=OFF` does not build.** Verified 2026-08-16 by building `build/pico_w_switch1`: the
