@@ -390,6 +390,22 @@ const char *btstack_host_life_cause_name(uint8_t cause);
 //   C classic  w wake-adv  p pairing-window
 void btstack_host_life_flag_names(uint8_t flags, char out[9]);
 
+// ---------------------------------------------------------------------------
+// EXPERIMENT ONLY -- NOT PRODUCTION BEHAVIOUR. Default OFF.
+//
+// With the flag ON, Classic inquiry RESTARTS are postponed (never cancelled)
+// for the duration of an incoming Classic ACL establishment, i.e. between
+// page acceptance and HCI Connection Complete -- the ACCEPTED_CONNECTION_REQUEST
+// window in which CLASSIC_ACL_TIMEOUT (0x08) is observed. Nothing else changes:
+// no inquiry stop, no page scan change, no retry, no timing change.
+//
+// The flag is runtime-toggled over UART (`expmode inquiry on|off|status`) so
+// both arms of the A/B comparison run from ONE binary against ONE pairing.
+// With the flag OFF the code paths are production behaviour exactly.
+// ---------------------------------------------------------------------------
+bool btstack_host_experiment_inquiry_suppression(void);
+void btstack_host_set_experiment_inquiry_suppression(bool enable);
+
 // UART diagnostic control: discard only the saved target's BTstack LE bond,
 // disconnect its current link, and arm Nintendo custom ATT pairing. The durable
 // target identity is retained so the next SYNC advertisement is recognized.

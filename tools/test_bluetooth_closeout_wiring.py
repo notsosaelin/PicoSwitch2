@@ -65,6 +65,7 @@ def main() -> None:
 
     check_controller_link_is_bound_to_management(source)
     check_paging_instrumentation_is_observation_only(source)
+    check_experiment_inquiry_suppression_is_inert_by_default(source)
     check_management_bond_admission_is_latched(source)
     check_audio_sink_is_independent_of_input_ownership()
     check_controller_discovery_never_touches_management(source)
@@ -248,6 +249,81 @@ def check_controller_link_is_bound_to_management(source: str) -> None:
     )
     for outcome in ("NS2_BT_AUTH_OBSERVED_OK", "NS2_BT_AUTH_OBSERVED_FAILED"):
         assert outcome in source
+
+
+def check_experiment_inquiry_suppression_is_inert_by_default(source: str) -> None:
+    """The inquiry-suppression experiment must stay an experiment.
+
+    It exists to answer one question: does removing the inquiry restart from the
+    ACCEPTED_CONNECTION_REQUEST window eliminate CLASSIC_ACL_TIMEOUT? Both arms
+    run from one binary, so the OFF arm has to be production behaviour exactly
+    or the comparison measures the firmware rather than the hypothesis.
+
+    Three ways that quietly stops being true, all guarded here: the flag gaining
+    a default, the treatment growing past "postpone a restart", and the window
+    losing its bound so a Connection Complete that never arrives takes discovery
+    with it.
+    """
+    decl = re.search(r"static bool exp_inquiry_suppression_enabled\s*(=[^;]*)?;",
+                     source)
+    assert decl is not None, "experiment flag declaration not found"
+    assert decl.group(1) is None, (
+        "the experiment flag must default OFF with no initializer; an ON default "
+        "would ship the experimental arm as production behaviour"
+    )
+
+    # The treatment is exactly "postpone an inquiry restart". Anything that
+    # acquires the radio, stops a round in flight, or touches scan enable is a
+    # different experiment and invalidates the OFF-arm baseline.
+    for helper in (r"static void exp_classic_setup_begin\(void\)\s*\{",
+                   r"static void exp_classic_setup_end\(void\)\s*\{",
+                   r"static bool exp_inquiry_should_hold\(void\)\s*\{"):
+        body = function_body(source, helper, r"\n\}")
+        for forbidden in ("gap_inquiry_stop", "gap_inquiry_start", "gap_connectable_control",
+                          "gap_discoverable_control", "hci_send", "l2cap_", "sm_",
+                          "sleep", "btstack_run_loop_set_timer"):
+            assert forbidden not in body, (
+                f"experiment helper must not call {forbidden!r}: the agreed "
+                "treatment postpones inquiry restarts and does nothing else"
+            )
+
+    # One window opener, and it is the incoming-page accept path. hci.c consults
+    # gap_classic_accept_callback only for incoming requests, so this is also
+    # what keeps the outgoing SENT_CREATE_CONNECTION path out of the experiment.
+    assert source.count("exp_classic_setup_begin();") == 1, (
+        "the suppression window must open at exactly one site"
+    )
+    accept = function_body(
+        source,
+        r"static int btstack_host_classic_connection_filter\(bd_addr_t addr,"
+        r"\s*hci_link_type_t link_type\)\s*\{",
+        r"\n\}",
+    )
+    assert "exp_classic_setup_begin();" in accept, (
+        "the window must open from the Classic accept callback, so that only "
+        "incoming page acceptance can start it"
+    )
+    assert "HCI_LINK_TYPE_ACL" in accept, (
+        "only an ACL request may open the window; a SCO request would open one "
+        "that no ACL Connection Complete closes"
+    )
+
+    # Closed on both outcomes, at the awaited edge out of the tested state.
+    complete = function_body(
+        source, r"case HCI_EVENT_CONNECTION_COMPLETE:\s*\{", r"\n\s*case HCI_EVENT_")
+    assert "exp_classic_setup_end();" in complete, (
+        "acl_up and acl_fail must both close the window"
+    )
+
+    # Bounded, and bounded on the run loop rather than only when a restart
+    # happens to be considered.
+    assert re.search(r"#define EXP_CLASSIC_SETUP_MAX_MS\s+\d+u", source), (
+        "the suppression window must carry an explicit upper bound"
+    )
+    assert source.count("EXP_CLASSIC_SETUP_MAX_MS") >= 3, (
+        "the bound must be enforced on the periodic loop, not only inside the "
+        "hold predicate; otherwise a window with no pending restart never expires"
+    )
 
 
 def check_paging_instrumentation_is_observation_only(source: str) -> None:
