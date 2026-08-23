@@ -116,6 +116,12 @@ APP_COD_REJECTED = "app:COD_REJECTED"
 # 10 s. No page is transmitted in this case, so the adapter is uninvolved and
 # calling it a Classic page failure would be simply wrong.
 APP_CONNECTION_STATE_FAILURE = "app:CONNECTION_STATE_FAILURE"
+# The adapter answered the page and the ACL still never completed. Confirmed
+# 2026-08-23, 40-cycle run cycle 3: adapter page_rx + page_accept at 10:02:08.846,
+# then both sides reported HCI 0x08 CONNECTION_TIMEOUT at 10:02:29.12 -- 24.4 s
+# after the request. A genuine link failure, and NOT a paging failure: the page
+# was received and answered.
+DEV_CLASSIC_ACL_TIMEOUT = "device:CLASSIC_ACL_TIMEOUT"
 # The app's own 8 s HID callback watchdog fired with no stack-level outcome at
 # all -- neither a connect failure nor a connection.
 APP_HID_CALLBACK_TIMEOUT = "app:HID_CALLBACK_TIMEOUT"
@@ -363,6 +369,20 @@ def acl_down_reason(log: str) -> str | None:
     return reason
 
 
+# Reasons that mean the PHONE declined locally and never put a page on the air.
+# Whitelisted rather than inferred by excluding PAGE_TIMEOUT: that earlier,
+# broader rule would have mislabelled CONNECTION_TIMEOUT(0x08) -- a real link
+# failure after a page the adapter demonstrably received and answered -- as a
+# phone-side state fault.
+PHONE_STATE_REASONS = (
+    "CONNECTION_ALREADY_EXISTS",  # 0x0b
+    "COMMAND_DISALLOWED",         # 0x0c
+    "CONTROLLER_BUSY",            # 0x3a
+    "MEMORY_FULL",                # 0x07
+    "REPEATED_ATTEMPTS",          # 0x17
+)
+
+
 def connect_fail_reason(log: str) -> str | None:
     """The phone stack's own reason for abandoning a Classic connect.
 
@@ -423,10 +443,14 @@ def classify(log: str, timeline: list[dict] | None = None) -> tuple[str, dict]:
     # without evidence that a page was actually transmitted.
     reason = connect_fail_reason(log)
     detail["connect_fail_reason"] = reason
-    if reason is not None and "PAGE_TIMEOUT" not in reason:
+    if reason is not None and any(r in reason for r in PHONE_STATE_REASONS):
         detail["hid_registered"] = "app.hid_registered" in reached
         detail["connect_requested"] = "app.connect_requested" in reached
         return APP_CONNECTION_STATE_FAILURE, detail
+    if reason is not None and "CONNECTION_TIMEOUT" in reason:
+        # 0x08 after a page that was received and answered: establishment
+        # failed, paging did not. Correlate btlife page_rx to confirm.
+        return DEV_CLASSIC_ACL_TIMEOUT, detail
 
     # The cycle demonstrably started but never asked for a connection: an
     # app-state fault, not a link fault. Requires app.touch_opened, because a

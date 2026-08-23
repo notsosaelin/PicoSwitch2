@@ -203,6 +203,41 @@ def test_connect_fail_reason_takes_the_last_occurrence():
     assert clc.connect_fail_reason("nothing here") is None
 
 
+ACL_TIMEOUT_AFTER_PAGE = """08-23 10:02:04.690 D/PicoSwitch( 3953): controller/touch gamepad: opened
+08-23 10:02:04.756 D/PicoSwitch( 3953): transport/HID registration: registered
+08-23 10:02:04.760 D/PicoSwitch( 3953): transport/HID connection: requested accepted=true hostOk=true
+08-23 10:02:04.763 D/PicoSwitch( 3953): transport/HID connection state: connecting
+08-23 10:02:12.767 D/PicoSwitch( 3953): transport/HID connection: callback timeout after 8002ms
+08-23 10:02:29.117 W/bluetooth(10280): OnConnectFail: Connection failed classic remote:xx reason:CONNECTION_TIMEOUT(0x08)
+"""
+
+
+def test_acl_timeout_after_a_received_page_is_a_device_failure():
+    """0x08 is NOT a phone-side refusal, and the earlier rule got this wrong.
+
+    40-cycle run, cycle 3: the adapter recorded page_rx AND page_accept at
+    10:02:08.846, then both sides reported HCI 0x08 CONNECTION_TIMEOUT 24.4 s
+    after the request. The page was received and answered; establishment failed
+    afterwards. Excluding only PAGE_TIMEOUT would have filed this under
+    app:CONNECTION_STATE_FAILURE and hidden a real link failure.
+    """
+    outcome, detail = clc.classify(ACL_TIMEOUT_AFTER_PAGE)
+    assert outcome == clc.DEV_CLASSIC_ACL_TIMEOUT, outcome
+    assert clc.domain(outcome) == "device"
+    assert detail["connect_fail_reason"] == "CONNECTION_TIMEOUT(0x08)"
+
+
+def test_phone_state_reasons_are_whitelisted_not_inferred():
+    # Only these mean "the phone declined locally". Anything else must not be
+    # laundered into the app domain just because it is not PAGE_TIMEOUT.
+    for reason in clc.PHONE_STATE_REASONS:
+        log = (CONNECTION_ALREADY_EXISTS.replace(
+            "CONNECTION_ALREADY_EXISTS(0x0b)", f"{reason}(0xff)"))
+        outcome, _ = clc.classify(log)
+        assert outcome == clc.APP_CONNECTION_STATE_FAILURE, (reason, outcome)
+    assert "CONNECTION_TIMEOUT" not in clc.PHONE_STATE_REASONS
+
+
 def _with_adb(stub):
     """Swap adb_run for the duration of a test."""
     original = clc.adb_run
