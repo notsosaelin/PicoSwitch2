@@ -28,6 +28,8 @@ import dev.picoswitch.bridge.session.BridgeHost
 import dev.picoswitch.bridge.session.BridgeLinkPhase
 import dev.picoswitch.bridge.session.BridgeState
 import dev.picoswitch.bridge.session.SessionResumePolicy
+import dev.picoswitch.bridge.touch.TouchControlConfig
+import dev.picoswitch.bridge.touch.TouchReleaseReason
 import dev.picoswitch.companion.bridge.AndroidBridge
 import dev.picoswitch.companion.bridge.AndroidBridgeHost
 import dev.picoswitch.companion.data.*
@@ -39,6 +41,9 @@ import dev.picoswitch.companion.model.*
 import dev.picoswitch.management.WakeResult
 import dev.picoswitch.companion.transport.BleGattManagementTransport
 import dev.picoswitch.companion.protocol.ManagementConnectionContext
+import dev.picoswitch.companion.ui.touch.TouchBackgroundStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.Job
@@ -128,6 +133,22 @@ data class CompanionUiState(
     val selectedSourceDescriptor: String? = null,
     val requestedFaceLayout: ControllerFaceLayout = ControllerFaceLayout.Auto,
     val resolvedFaceLayout: ResolvedControllerLayout = ControllerLayoutResolver.resolve(ControllerFaceLayout.Auto, null),
+    /**
+     * The on-screen controller is open and is the authoritative gameplay input.
+     *
+     * Deliberately not an [AppSection] or an [AppOverlay]: it is a full-screen
+     * application MODE that owns its own presentation, hides the navigation
+     * chrome, and has to be entered and left explicitly. Squeezing it into the
+     * ordinary content column would give it the scaffold's insets and width
+     * limits, which is the opposite of what a gameplay surface needs.
+     */
+    val touchGamepadActive: Boolean = false,
+    val touchSettings: TouchGamepadSettings = TouchGamepadSettings.Default,
+    /**
+     * Face presentation for the DRAWN diamond. Separate persistence from the
+     * per-device preference, same resolver; see [AndroidControllerLayoutStore].
+     */
+    val touchFaceLayout: ControllerFaceLayout = ControllerFaceLayout.Nintendo,
     val adapterRelationship: AdapterRelationship? = null,
     val relationshipStatus: AdapterRelationshipStatus = AdapterRelationshipStatus(AdapterRelationshipPhase.NoRelationship),
     val platform: PlatformDiagnostics = PlatformDiagnostics(),
@@ -168,9 +189,24 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     val inputBackend get() = bridge.input
     private val session get() = bridge.session
 
-    private val adapter = AdapterRepository(BleGattManagementTransport(application, diagnostics))
+    /**
+     * The on-screen controller, for the surface that renders it.
+     *
+     * Exposed rather than proxied because the surface is the only thing that can
+     * supply the two platform pieces it needs — a measured interaction rectangle
+     * and a view to feel haptics through — and wrapping every contact in a
+     * ViewModel call would put the report path behind a state holder for nothing.
+     */
+    val touchGamepad get() = bridge.touch
+
+    // One management relationship per process, not per screen. Constructing this
+    // here used to give every stacked Activity its own transport, GATT and
+    // background poller -- five of them were live at once on 2026-08-23. See
+    // ManagementOwner for the captured evidence.
+    private val adapter = ManagementOwner.get(application, diagnostics)
     private val library = AmiiboLibrary(application)
     private val themeStore = ThemePreferenceStore(application)
+    private val touchSettingsStore = TouchGamepadSettingsStore(application)
     private val relationshipStore = AdapterRelationshipStore(application)
     private val relationshipCoordinator = AdapterRelationshipCoordinator(relationshipStore.load())
     private data class PairingDevice(val generation: Long, val device: BluetoothDevice)
@@ -207,6 +243,10 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             adapterRelationship = relationshipStore.load(),
             relationshipStatus = relationshipCoordinator.status,
             identityRefreshPending = savedState[KEY_IDENTITY_PENDING] ?: false,
+            // Configuration only. Nothing about what is currently HELD survives a
+            // process restart -- see TouchGamepadSettings.
+            touchSettings = touchSettingsStore.load(),
+            touchFaceLayout = bridge.layoutStore.loadTouch(),
         ),
     )
     val ui: StateFlow<CompanionUiState> = _ui.asStateFlow()
@@ -268,8 +308,16 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             session.state.map { it.phase }.distinctUntilChanged().collect { phase ->
                 ManagementDiagnosticContext.setBridgePhase(phase)
                 diagnostics.event("controller", "bridge.phase", phase.name)
-                if (phase == BridgeLinkPhase.Playing) reconcileControllerLinkSource()
-                else bridgeSourceReconciliationJob?.cancel()
+                if (phase == BridgeLinkPhase.Playing) {
+                    reconcileControllerLinkSource()
+                } else {
+                    bridgeSourceReconciliationJob?.cancel()
+                    // The link is gone, so held input can no longer be cleared
+                    // through it. Dropping it here is also what makes a reconnect
+                    // start from neutral instead of replaying whatever was down
+                    // when the link dropped.
+                    bridge.releaseTouchInput(TouchReleaseReason.LinkEnded)
+                }
             }
         }
         viewModelScope.launch { inputBackend.state.collect { value -> _ui.update { it.copy(controllerState = value) } } }
@@ -1381,7 +1429,11 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     fun requestAutomaticControllerResume() {
         automaticControllerResumeJob?.cancel()
         val hasRelationship = relationshipStore.load() != null
-        if (_ui.value.selectedSourceDescriptor == null || !hasRelationship) return
+        // A touchscreen-only host has no physical descriptor and is still a
+        // complete controller source, so the on-screen controller being open
+        // satisfies the same precondition a selected pad does.
+        val hasInputSource = _ui.value.selectedSourceDescriptor != null || bridge.touch.active
+        if (!hasInputSource || !hasRelationship) return
         automaticControllerResumeJob = viewModelScope.launch {
             withTimeoutOrNull(AUTOMATIC_CONTROLLER_RESUME_TIMEOUT_MS) {
                 while (true) {
@@ -1394,7 +1446,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                         )
                     ) return@withTimeoutOrNull
                     if (SessionResumePolicy.canQueryAdapter(
-                            hasSelectedSource = state.selectedSourceDescriptor != null,
+                            hasSelectedSource = state.selectedSourceDescriptor != null || bridge.touch.active,
                             hasRelationship = relationshipStore.load() != null,
                             managementConnected = state.connection.connected,
                             busy = state.busy,
@@ -1442,8 +1494,144 @@ class CompanionViewModel(application: Application, private val savedState: Saved
 
     fun pairedControllerHosts(): List<BridgeHost> = session.knownHosts()
     fun connectControllerHost(host: BridgeHost) = session.connect(host)
-    fun stopControllerBridge() = session.stop()
-    fun neutralizeController() = session.neutralize()
+
+    fun stopControllerBridge() {
+        bridge.releaseTouchInput(TouchReleaseReason.LinkEnded)
+        session.stop()
+    }
+
+    /**
+     * Clear held input and push a neutral report.
+     *
+     * Releases the on-screen controller FIRST. Neutralizing only the state
+     * machine would leave the engine believing a control is still down, so the
+     * next contact event would republish it — which is precisely the "the console
+     * kept walking after I switched apps" failure this call exists to prevent.
+     */
+    fun neutralizeController() {
+        bridge.releaseTouchInput(TouchReleaseReason.HostInactive)
+        session.neutralize()
+    }
+
+    // ------------------------------------------------------- on-screen controller
+
+    /**
+     * Open the on-screen controller and give it gameplay input.
+     *
+     * Everything about authority, actuator binding and face presentation happens
+     * inside [AndroidBridge.enterTouchMode]; this adds only the user-visible
+     * state and the tuning the settings screen owns.
+     */
+    fun enterTouchGamepad() {
+        bridge.enterTouchMode()
+        applyTouchSettings(_ui.value.touchSettings)
+        _ui.update {
+            it.copy(
+                touchGamepadActive = true,
+                touchFaceLayout = inputBackend.requestedFaceLayout,
+                overlay = AppOverlay.None,
+                message = null,
+            )
+        }
+        diagnostics.event("controller", "touch gamepad", "opened")
+    }
+
+    /** Put the on-screen controller away and hand input back to the physical pad. */
+    fun exitTouchGamepad() {
+        if (!_ui.value.touchGamepadActive) return
+        bridge.exitTouchMode()
+        _ui.update {
+            it.copy(
+                touchGamepadActive = false,
+                selectedSourceDescriptor = inputBackend.selectedDescriptor,
+                requestedFaceLayout = inputBackend.requestedFaceLayout,
+                resolvedFaceLayout = inputBackend.resolvedFaceLayout,
+                controllerState = ControllerState.Neutral,
+            )
+        }
+        diagnostics.event("controller", "touch gamepad", "closed")
+    }
+
+    /** Drop every held on-screen control at a boundary, without leaving the mode. */
+    fun releaseTouchInput(reason: TouchReleaseReason) = bridge.releaseTouchInput(reason)
+
+    fun setTouchSettings(settings: TouchGamepadSettings) {
+        touchSettingsStore.save(settings)
+        applyTouchSettings(settings)
+        _ui.update { it.copy(touchSettings = settings) }
+    }
+
+    /**
+     * Adopt a picked image as the controller background.
+     *
+     * The picture is downsampled and COPIED into the app's own files, off the
+     * main thread, before anything is stored. A reference into somebody's photo
+     * library is a thing that stops working later — a lapsed grant, a deleted
+     * picture — for reasons the app cannot see, and the copy is a few hundred
+     * kilobytes. Nothing leaves the device.
+     */
+    fun adoptTouchBackground(uri: Uri) {
+        viewModelScope.launch {
+            val application = getApplication<Application>()
+            val stored = withContext(Dispatchers.IO) { TouchBackgroundStore.adopt(application, uri) }
+            if (stored == null) {
+                notice("That picture could not be read")
+                return@launch
+            }
+            setTouchBackground(stored)
+        }
+    }
+
+    /** Point at a stored copy, or drop back to the default dark background. */
+    fun setTouchBackground(reference: String?) {
+        if (reference == null) TouchBackgroundStore.remove(getApplication())
+        setTouchSettings(_ui.value.touchSettings.copy(backgroundImage = reference))
+        diagnostics.event(
+            "controller", "touch background",
+            if (reference == null) "cleared" else "stored a private copy",
+        )
+    }
+
+    /** The drawn diamond's presentation. Same resolver as the physical path. */
+    fun setTouchFaceLayout(layout: ControllerFaceLayout) {
+        bridge.setFaceLayout(layout)
+        _ui.update {
+            it.copy(
+                touchFaceLayout = inputBackend.requestedFaceLayout,
+                controllerState = ControllerState.Neutral,
+            )
+        }
+        diagnostics.event("controller", "touch face layout", layout.key)
+    }
+
+    private fun applyTouchSettings(settings: TouchGamepadSettings) {
+        bridge.touch.setConfig(TouchControlConfig.Default.copy(stickDeadzone = settings.stickDeadzone))
+    }
+
+    /**
+     * One line that localizes an on-screen control that "does not work".
+     *
+     * Read left to right: contacts arriving at all, contacts that landed on
+     * nothing, contacts that hit an already-owned control, how many controls are
+     * held now, and why the last global release happened. A zero in the first
+     * position and a non-zero in the second are completely different faults with
+     * the same symptom.
+     */
+    private fun describeTouchGamepad(): String {
+        val touch = bridge.touch
+        val snapshot = touch.diagnostics()
+        return buildString {
+            append(if (touch.active) "active" else "inactive")
+            append(" claimed=").append(snapshot.contactsClaimed)
+            append(" unclaimed=").append(snapshot.contactsUnclaimed)
+            append(" contested=").append(snapshot.contactsContested)
+            append(" cancelled=").append(snapshot.contactsCancelled)
+            append(" held=").append(snapshot.ownedControls)
+            append(" releaseAll=").append(snapshot.releaseAllCount)
+            append("/").append(snapshot.lastReleaseReason?.name ?: "none")
+            append(" layoutFits=").append(touch.engine.resolvedLayout.fits)
+        }
+    }
 
     fun recordLifecycle(event: String) {
         diagnostics.event("app", "lifecycle", event)
@@ -1520,6 +1708,15 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             "Output route" to ui.bridge.output.route,
             "Output warning" to (ui.bridge.output.warning ?: "none"),
             "Controller face layout" to "${ui.requestedFaceLayout.key}/${ui.resolvedFaceLayout.layout.key}",
+            // The on-screen controller's own boundary chain, in the order it has
+            // to be read: did contacts arrive, did one claim a control, is touch
+            // authoritative, and is it holding something the authority is
+            // discarding. Counters and last-known values only -- a diagnostic
+            // that sampled at the contact rate would be the stall it was
+            // reporting on.
+            "Host input authority" to inputBackend.controller.authority.name,
+            "Touch gamepad" to describeTouchGamepad(),
+            "Touch contribution" to inputBackend.controller.touchContribution.toString(),
             "Adapter active input" to ui.snapshot.input.toString(),
             "Identity refresh pending" to ui.identityRefreshPending.toString(),
         ))
@@ -1839,7 +2036,10 @@ class CompanionViewModel(application: Application, private val savedState: Saved
 
     override fun onCleared() {
         bridge.close()
-        adapter.close()
+        // Retire the session, do not close the transport: it is process-scoped
+        // now, and close() cancels its lifecycle scope permanently. See
+        // ManagementOwner.releaseSession().
+        ManagementOwner.releaseSession()
         super.onCleared()
     }
 

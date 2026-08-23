@@ -1,0 +1,35 @@
+package dev.picoswitch.companion.bridge
+
+import android.view.HapticFeedbackConstants
+import android.view.View
+import dev.picoswitch.bridge.touch.TouchFeedbackBackend
+import dev.picoswitch.bridge.touch.TouchFeedbackEvent
+
+/**
+ * Local touch feedback for the on-screen controller.
+ *
+ * NOT console rumble, and deliberately not routed through [AndroidOutputBackend].
+ * The two are different data paths with different owners: console rumble arrives
+ * from the adapter and drives whatever actuator the session bound, while this is
+ * a UI affordance that says a control was hit. Running a button press through the
+ * rumble backend would let the interface mutate bridge output state and fight a
+ * game's own effects.
+ *
+ * `View.performHapticFeedback` rather than a vibrator handle, because that is the
+ * API that respects the user's touch-feedback setting. The "ignore global
+ * setting" flags exist and are not used: a person who turned haptics off meant it.
+ */
+class AndroidTouchFeedback(private val view: View) : TouchFeedbackBackend {
+
+    override fun perform(event: TouchFeedbackEvent) {
+        val constant = when (event) {
+            TouchFeedbackEvent.Press -> HapticFeedbackConstants.VIRTUAL_KEY
+            TouchFeedbackEvent.Release -> HapticFeedbackConstants.VIRTUAL_KEY_RELEASE
+            // Crossing a D-pad sector is a smaller moment than a press; a full
+            // virtual-key tap for every direction change while sliding a thumb
+            // around the ring turns into a rattle.
+            TouchFeedbackEvent.DirectionChange -> HapticFeedbackConstants.CLOCK_TICK
+        }
+        runCatching { view.performHapticFeedback(constant) }
+    }
+}

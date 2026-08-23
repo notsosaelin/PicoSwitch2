@@ -22,6 +22,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.FileProvider
+import dev.picoswitch.bridge.session.BridgeLinkPhase
 import dev.picoswitch.companion.data.AdapterConnectReason
 import dev.picoswitch.companion.data.AndroidBondState
 import dev.picoswitch.companion.data.SystemCompanionAssociation
@@ -92,6 +93,21 @@ class MainActivity : ComponentActivity() {
         uri?.let { viewModel.importAmiiboKeys(it) }
     }
 
+    /**
+     * One picture for the on-screen controller's background.
+     *
+     * The system photo picker, image-only. No storage or media permission is
+     * requested and none is needed: the picker hands back a single grant, the app
+     * immediately copies the image into its own files, and the grant is never
+     * relied on again. AndroidX falls back to the document picker on devices with
+     * no photo picker, which behaves identically for this purpose.
+     */
+    private val pickTouchBackground = registerForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        uri?.let(viewModel::adoptTouchBackground)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         viewModel.setNfcReaderAvailable(nfcReader.isAvailable)
@@ -107,6 +123,14 @@ class MainActivity : ComponentActivity() {
                 onScanAmiibo = ::requestNfcScan,
                 onImportAmiiboKeys = { importAmiiboKeys.launch(arrayOf("application/octet-stream", "application/*", "*/*")) },
                 onPrepareController = ::requestControllerBridge,
+                onOpenTouchGamepad = ::openTouchGamepad,
+                onPickTouchBackground = {
+                    pickTouchBackground.launch(
+                        androidx.activity.result.PickVisualMediaRequest(
+                            ActivityResultContracts.PickVisualMedia.ImageOnly,
+                        ),
+                    )
+                },
                 onExportDiagnostics = ::shareDiagnostics,
             )
         }
@@ -196,6 +220,20 @@ class MainActivity : ComponentActivity() {
         else viewModel.acquireControllerBridge()
     }
 
+    /**
+     * Open the on-screen controller, and get the link going if it is not already.
+     *
+     * The surface opens either way. Waiting for the link before showing anything
+     * would leave the user looking at the previous page with no explanation,
+     * whereas the controller with a "connecting" strip is honest and is already
+     * the state it will be in after any later disconnect.
+     */
+    private fun openTouchGamepad() {
+        viewModel.enterTouchGamepad()
+        val phase = viewModel.ui.value.bridge.phase
+        if (phase !in ACTIVE_BRIDGE_PHASES) requestControllerBridge()
+    }
+
     private fun requestNfcScan() {
         if (!nfcReader.isAvailable) {
             viewModel.nfcReaderUnavailable("This phone does not expose an NFC-A reader.")
@@ -254,6 +292,16 @@ class MainActivity : ComponentActivity() {
                 requestNewAdapterPairing()
             }
         }
+    }
+
+    private companion object {
+        /** Phases in which the controller link is already being established or is live. */
+        val ACTIVE_BRIDGE_PHASES = setOf(
+            BridgeLinkPhase.Preparing,
+            BridgeLinkPhase.Registering,
+            BridgeLinkPhase.Connecting,
+            BridgeLinkPhase.Playing,
+        )
     }
 
     private fun Int.toProductBondState(): AndroidBondState = when (this) {

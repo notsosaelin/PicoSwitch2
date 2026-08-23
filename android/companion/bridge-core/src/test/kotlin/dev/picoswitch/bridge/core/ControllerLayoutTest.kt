@@ -34,4 +34,35 @@ class ControllerLayoutTest {
         assertEquals(ControllerFaceLayout.Xbox, ControllerLayoutResolver.resolve(ControllerFaceLayout.Xbox, known).layout)
         assertEquals(ControllerFaceLayout.Nintendo, ControllerLayoutResolver.resolve(ControllerFaceLayout.Nintendo, null).layout)
     }
+
+    /**
+     * A drawn legend and the bit that is sent must come from the same decision.
+     * A renderer with its own `when(layout)` block produces a button that says A
+     * and sends B, and nothing catches it until someone presses it on a console.
+     */
+    @Test fun `a face position's drawn label is the button that position sends`() {
+        listOf(ControllerFaceLayout.Nintendo, ControllerFaceLayout.Xbox).forEach { layout ->
+            FaceButtonPosition.entries.forEach { position ->
+                assertEquals(
+                    "$layout $position",
+                    ControllerLayoutResolver.mapFaceButton(position.positional, layout).name,
+                    ControllerLayoutResolver.faceLabel(position, layout),
+                )
+            }
+        }
+    }
+
+    @Test fun `face positions carry the platform-standard positional order`() {
+        assertEquals(ControllerButton.A, FaceButtonPosition.South.positional)
+        assertEquals(ControllerButton.B, FaceButtonPosition.East.positional)
+        assertEquals(ControllerButton.X, FaceButtonPosition.West.positional)
+        assertEquals(ControllerButton.Y, FaceButtonPosition.North.positional)
+    }
+
+    @Test fun `Nintendo labels read like a Switch controller`() {
+        assertEquals("B", ControllerLayoutResolver.faceLabel(FaceButtonPosition.South, ControllerFaceLayout.Nintendo))
+        assertEquals("A", ControllerLayoutResolver.faceLabel(FaceButtonPosition.East, ControllerFaceLayout.Nintendo))
+        assertEquals("Y", ControllerLayoutResolver.faceLabel(FaceButtonPosition.West, ControllerFaceLayout.Nintendo))
+        assertEquals("X", ControllerLayoutResolver.faceLabel(FaceButtonPosition.North, ControllerFaceLayout.Nintendo))
+    }
 }

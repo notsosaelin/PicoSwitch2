@@ -5,6 +5,8 @@ import dev.picoswitch.bridge.core.BridgeCounters
 import dev.picoswitch.bridge.core.BridgeDiagnostics
 import dev.picoswitch.bridge.core.ControllerFaceLayout
 import dev.picoswitch.bridge.session.BridgeSession
+import dev.picoswitch.bridge.touch.TouchGamepad
+import dev.picoswitch.bridge.touch.TouchReleaseReason
 
 /**
  * The Android platform backend, assembled.
@@ -57,6 +59,26 @@ class AndroidBridge(
 
     /** Per-source layout preference, persisted by Android. */
     val layoutStore = AndroidControllerLayoutStore(context)
+
+    /**
+     * The on-screen controller, above the same shared state machine.
+     *
+     * Not a second input path: it feeds [AndroidInputBackend.controller] exactly
+     * as the key/motion adapter does, and the session below it cannot tell which
+     * one produced the state it is encoding.
+     */
+    val touch = TouchGamepad(input.controller)
+
+    /**
+     * The physical source to hand input back to when the on-screen controller is
+     * put away.
+     *
+     * Held here rather than left in the input backend because the two answer
+     * different questions while touch mode is active: the backend still knows
+     * which pad the user chose, and this knows which pad to re-bind the session's
+     * actuators to on the way out.
+     */
+    private var restoreDescriptor: String? = null
 
     init {
         selfTest.register()
@@ -133,20 +155,88 @@ class AndroidBridge(
         val device = descriptor?.let { wanted ->
             input.eligibleDevices().firstOrNull { it.descriptor == wanted }
         }
+        if (touch.active) {
+            // The on-screen controller owns gameplay input AND the host's own
+            // actuator right now. Applying a physical selection here would rebind
+            // rumble to a pad that is driving nothing, so the choice is recorded
+            // and applied on the way out instead.
+            restoreDescriptor = device?.descriptor
+            return
+        }
         input.select(device)
         session.bindSource(input.selectedSource, input.sourceCapabilities())
         input.setFaceLayout(layoutStore.load(input.selectedDescriptor))
     }
 
     fun setFaceLayout(layout: ControllerFaceLayout) {
+        if (touch.active) {
+            layoutStore.saveTouch(layout)
+            applyLayout(layout)
+            return
+        }
         val descriptor = input.selectedDescriptor ?: return
         layoutStore.save(descriptor, layout)
+        applyLayout(layout)
+    }
+
+    /**
+     * Remap face controls without leaving one held.
+     *
+     * The engine has to be released alongside the state machine: neutralizing
+     * only the state machine leaves the engine believing a control is still down,
+     * and the next contact event would republish it under the NEW mapping — a
+     * button the user pressed before the change arriving as a different one.
+     */
+    private fun applyLayout(layout: ControllerFaceLayout) {
+        touch.release(TouchReleaseReason.AuthorityChanged)
         input.setFaceLayout(layout)
         session.neutralize()
     }
 
+    /**
+     * Make the touchscreen the controller.
+     *
+     * Order matters and is the whole point of doing this in one place:
+     *
+     * 1. remember the physical selection, before anything disturbs it;
+     * 2. neutralize while the link is still up, so whatever the physical controls
+     *    were holding is cleared on the CONSOLE rather than merely forgotten here;
+     * 3. take input authority (which releases the engine and neutralizes again);
+     * 4. rebind the session to the host itself — the phone's own vibrator is the
+     *    legitimate actuator when the phone is the controller, and binding to no
+     *    source is exactly what resolves it. No synthetic device is invented;
+     * 5. apply the on-screen controller's own face presentation.
+     */
+    fun enterTouchMode() {
+        if (touch.active) return
+        restoreDescriptor = input.selectedDescriptor
+        session.neutralize()
+        touch.activate()
+        session.bindSource(null, input.touchCapabilities)
+        input.setFaceLayout(layoutStore.loadTouch())
+        diagnostics.event("controller", "touch mode", "on-screen controller is authoritative")
+    }
+
+    /** Put the on-screen controller away and give the physical pad its input back. */
+    fun exitTouchMode() {
+        if (!touch.active) return
+        touch.deactivate()
+        session.neutralize()
+        val descriptor = restoreDescriptor
+        restoreDescriptor = null
+        selectSource(descriptor)
+        diagnostics.event("controller", "touch mode", "physical input restored")
+    }
+
+    /** Drop every held on-screen control without giving up authority. */
+    fun releaseTouchInput(reason: TouchReleaseReason) {
+        if (!touch.active) return
+        touch.release(reason)
+    }
+
     fun close() {
         selfTest.unregister()
+        touch.deactivate()
         session.close()
         motion.close()
     }

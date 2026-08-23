@@ -51,6 +51,11 @@ The debug build provides real implementations for:
   Android bonds, and controller-mode reuse of the saved Classic bond,
   capacity-one full-state reports at an 8 ms ceiling, input-device hot-plug recovery, and
   neutralization on pause/stop/disconnect;
+- a full-screen **Touch Gamepad** that turns the touchscreen itself into the controller carried by
+  the same bridge: two analog sticks, an eight-way sliding D-pad, a positional face diamond, L/R,
+  ZL/ZR, L3/R3, `-`, `+`, Home, Capture and C, all usable simultaneously through one deliberate
+  multi-touch router keyed on stable contact identifiers, with responsive safe-area geometry,
+  optional local touch haptics, and an optional private background image;
 - the complete Keyboard & Mouse management surface: live device and role status with names resolved
   from the adapter's own source registry, input mode, both mapping profiles with a focused
   per-input editor, mouse-button mapping, sensitivity with linked or independent axes, deadzone
@@ -82,13 +87,19 @@ group of commands:
 | **Adapter** | Which adapter, its state, what is attached, controller mode (personality), and appearance colours. |
 | **Keyboard** | The complete Keyboard & Mouse management surface: devices, input mode, both mapping profiles, and mouse tuning. |
 | **Amiibo** | The artwork-first library. Search, sort, and per-figure actions. |
-| **Gamepad** | Which controller drives the console, and using this handheld as one. |
+| **Gamepad** | Which controller drives the console, using this handheld as one, and the Touch Gamepad. |
 | **Settings** | Appearance, Amiibo settings, adapter pairing, About. |
 
 Two screens are pushed over a destination rather than being one: **Diagnostics** (from Settings ->
 About, or the copy action in its own header) and **Amiibo settings** (from the Amiibo overflow or
 Settings -> Amiibo). Both are troubleshooting or maintenance surfaces that are visited rarely and
 should not hold permanent navigation space.
+
+**Touch Gamepad** is neither a destination nor an overlay but a full-screen application *mode*,
+entered deliberately from Gamepad and left by its own menu or by back. It is not a sixth navigation
+item because it is not somewhere you browse to; it owns edge-to-edge presentation, hides the
+navigation chrome, and prefers landscape, none of which the scaffold's content column can give it.
+Nothing covers the app with virtual controls merely because no physical gamepad is present.
 
 Personality and colours moved onto Adapter because they are properties of the one physical device;
 having them on a separate page made changing a colour a navigation task. Diagnostics absorbed the
@@ -202,6 +213,66 @@ The protocol cannot say whether an arbitrary runtime value matches flash, so a f
 starts clean by definition rather than by inference, and the unsaved marker is cleared with the
 rest of the session state on disconnect. A rejected save leaves the marker set.
 
+### Touch Gamepad
+
+A phone or tablet with no gamepad attached is still a complete controller, because its screen is
+one. Gamepad -> **Touch Gamepad** opens a full-screen controller whose input travels the existing
+bridge unchanged; the adapter and the firmware learn nothing about where the state came from.
+
+The engineering is split so that the interesting half is portable. `:bridge-core`'s
+`dev.picoswitch.bridge.touch` owns contact ownership, stick and D-pad geometry, the declarative
+layout and the release rules; the app supplies pointer events, a rectangle and a haptic. A future
+touchscreen host implements the same three things — see
+[`docs/bridge/PLATFORM_BACKEND.md` §3.7](../../docs/bridge/PLATFORM_BACKEND.md).
+
+**Contacts are owned by identifier, never by position.** Android guarantees a stable `PointerId`
+for a contact's lifetime and explicitly does *not* guarantee its index; a router keyed on the index
+works perfectly with two fingers and swaps which control a thumb is holding the moment a third
+arrives or the first lifts. One deliberate root-level router (`awaitPointerEventScope`) does the
+hit-testing rather than a forest of gesture detectors, which would otherwise compete for gesture
+ownership, wait for touch slop before moving a stick, and have no notion of a five-finger chord.
+
+**A claim is made once, on Down.** After that a contact belongs to its control until it ends. A
+stick keeps its contact when the thumb leaves the visual circle and clamps at full deflection,
+because the alternative is a wide turn ending as a face-button press. A second contact landing on
+an owned control is ignored rather than stealing it — two contradictory positions for one stick
+have no correct answer.
+
+**Face controls are positions, not letters.** `FaceButtonPosition` names South/East/West/North and
+resolves through the same `ControllerLayoutResolver` the physical path uses, so the drawn legend and
+the transmitted bit come from one decision and cannot disagree. The presentation is persisted
+separately (there is no physical descriptor to key the per-device store) and deliberately never
+resolves to `Auto`, which exists to guess a *printed* legend that a drawn control does not have. The
+default is Nintendo, because the diamond being drawn is a Switch controller's.
+
+**Exactly one host control set is the controller.** `InputAuthority` is explicit: entering the mode
+neutralizes through the still-live link, takes authority, and rebinds the session to the host itself
+so console rumble reaches the phone's own actuator; leaving reverses all of it and restores the
+previous physical selection. Physical events are declined while touch is authoritative, and touch
+events are declined while it is not. Home, Capture and C remain available from either, because they
+are host actions rather than a second controller. There is no merge, at any point.
+
+**Every boundary releases.** Contact end, gesture cancellation, a contact the platform stops
+reporting, menu open, mode exit, `ON_PAUSE`/`ON_STOP`, geometry invalidation, authority change, link
+down, link stop and disposal all call one idempotent release. Ordering is load bearing: the engine
+is released *before* the session neutralizes, so the neutral report still crosses a live transport.
+Configuration is persisted; nothing that describes what is currently held ever is.
+
+**Geometry is declarative and audited.** The layout is normalized against the interaction-safe
+rectangle (system gesture insets, cutouts, caption bar) while the background draws edge to edge, so
+no control lives under a back-gesture strip. Controls stop growing past an ergonomic ceiling and the
+extra room becomes gutter — a twelve-inch tablet does not come with larger thumbs. `TouchLayoutAudit`
+mechanically rejects overlapping hit regions, targets under 44 units, controls outside the
+rectangle and duplicate ids, and it runs on real resolved geometry at every representative window
+shape rather than on the authored numbers. A window that genuinely cannot hold the controller says
+so after neutralizing, rather than drawing overlapping targets that would send the console input the
+user did not choose.
+
+The custom background is copied into app-private storage rather than referenced. A picker grant can
+lapse and a picture can be deleted; a downsampled private copy is a few hundred kilobytes and simply
+keeps working, with no storage permission to request and nothing to revoke. Nothing leaves the
+device.
+
 ### Controller remapping
 
 There is still no controller remapping editor, and this is a firmware capability gap rather than a
@@ -233,6 +304,12 @@ Activity KeyEvent / MotionEvent
           -> AndroidHidTransport                (app,  Android)
             -> BluetoothHidDevice -> PicoSwitch2 Classic HID host
 
+Compose pointer events                          (Touch Gamepad, same destination)
+  -> Modifier.touchGamepadContacts               (app,  Android)
+    -> TouchContactTracker -> TouchControlEngine (core, neutral)
+      -> TouchContribution
+        -> ControllerInputState ...              (the identical path from here down)
+
 PicoSwitch2 -> AndroidHidTransport -> BridgeOutputCodec -> BridgeSession
             -> RumbleRequest -> AndroidOutputBackend -> vibrator
 ```
@@ -242,7 +319,7 @@ PicoSwitch2 -> AndroidHidTransport -> BridgeOutputCodec -> BridgeSession
 | Module | Contents | Android? |
 |---|---|---|
 | `:management-core` | `dev.picoswitch.management` — logical commands/replies, domain models, portable workflows, and connected-session serialization | **No.** Plain Kotlin/JVM; it is the tested reference implementation, while `docs/management/PROTOCOL.md` and the shared fixture specify non-JVM interoperability. |
-| `:bridge-core` | `dev.picoswitch.bridge.{core,protocol,session}` — normalized controller model, canonical motion convention, capabilities, report codec, session and transport interfaces | **No.** Plain Kotlin/JVM; the Android SDK is not on its classpath, so a leak is a build failure. |
+| `:bridge-core` | `dev.picoswitch.bridge.{core,protocol,session,touch}` — normalized controller model, canonical motion convention, capabilities, report codec, session and transport interfaces, and the portable on-screen controller (contact ownership, stick/D-pad geometry, declarative layout) | **No.** Plain Kotlin/JVM; the Android SDK is not on its classpath, so a leak is a build failure. |
 | `:app` | Android BLE discovery/pairing/GATT, Controller Bridge Android backends, UI, local Amiibo library, and NFC | Yes |
 
 `AndroidBridge` is the assembly point: it plugs the four Android backends into the shared
@@ -337,8 +414,12 @@ It is debug-variant only and reachable through:
 
 ```powershell
 adb shell am start -n dev.picoswitch.companion.debug/dev.picoswitch.companion.lab.LayoutLabActivity `
-    --es section Keyboard [--es overlay Diagnostics] [--ez empty true]
+    --es section Keyboard [--es overlay Diagnostics] [--ez empty true] [--ez touch true]
 ```
+
+`--ez touch true` opens the real Touch Gamepad mode, which is how its geometry is inspected at an
+arbitrary window size with no adapter paired. It enters the mode the product way rather than
+rendering a mock, because a mock is what would get inspected otherwise.
 
 Window shapes come from `wm size`/`wm density` overrides on one AVD. Two properties of that
 approach are worth recording because both produced wrong evidence before they were handled: the
@@ -349,12 +430,13 @@ up, and finally verifies the pulled PNG's own dimensions before accepting it as 
 
 ## Tests
 
-A clean JVM run passed **145 `:app` tests**, **114 `:bridge-core` tests**, and **45
-`:management-core` tests**, plus **2 instrumented
-emulator tests** (every top-level destination rendering offline, and the Diagnostics overlay opening
-and closing), Android lint with zero errors, and debug APK assembly. A connected AYN
-Thor rerun of the UI test on 2026-08-13 did not expose a Compose hierarchy to the runner, so that
-device rerun is not treated as new UI evidence. JVM coverage includes:
+A clean JVM run passed **187 `:app` tests** (identical in the debug and release variants), **201
+`:bridge-core` tests**, and **45 `:management-core` tests**, plus **8 instrumented tests** (every
+top-level destination rendering offline, the Diagnostics overlay opening and closing, and six
+Touch Gamepad pointer-adapter cases), Android lint with zero errors in both variants, and debug and
+release APK assembly. A connected AYN Thor rerun of the UI test on 2026-08-13 did not expose a
+Compose hierarchy to the runner, so that device rerun is not treated as new UI evidence. JVM
+coverage includes:
 
 - the Keyboard/Mouse wire contract against replies shaped exactly like the firmware's own
   `snprintf` templates: complete status, a refused unknown mode, a status missing a role field,
@@ -374,6 +456,26 @@ device rerun is not treated as new UI evidence. JVM coverage includes:
   marker surviving a failed save; and a disconnect dropping one session's mapping and marker
   entirely;
 
+- the Touch Gamepad's portable half: the single conversion into bridge units asserted against the
+  physical path's own conversion at every endpoint, circular clamping proving a diagonal has
+  magnitude one rather than root two, the radial deadzone rescaling to full magnitude, all eight
+  D-pad sectors with both the radial and the angular hysteresis boundaries, a full-circle slide that
+  never produces opposites, and non-finite input resolving to rest rather than to a garbage axis
+  byte;
+- contact ownership: a contact claiming exactly one control, an unowned contact that cannot seize
+  one by wandering onto it, a second contact that cannot steal an owned stick, a stick keeping its
+  contact across the whole area, a seven-contact chord, batches delivered in a different order each
+  time with non-contiguous identifiers, a contact the platform stops reporting being cancelled, and
+  release-all being idempotent and unable to be resumed by a contact held across it;
+- input authority: touch state reaching the wire, physical events discarded while touch is
+  authoritative and the reverse, both transitions neutralizing, software Home/Capture/C surviving
+  either, the face layout applying identically to a touch press, and a touch trigger encoding as
+  both the digital bit and the analog byte;
+- the default layout resolved at seven representative window shapes and four display densities,
+  audited for overlapping hit regions, undersized targets, controls outside the safe rectangle and
+  duplicate ids, plus the refusal of a window too small to hold a controller;
+- Touch Gamepad settings decoding: out-of-range and non-finite stored values becoming usable
+  defaults, and a structural assertion that the persisted model carries no gameplay state;
 - command framing/limits, config, personality, complete Amiibo status, malformed/error replies;
 - accepted key_retail.bin length/master labels, reversed-master normalization, richer identity,
   packed-date edges, HMAC-invalid metadata suppression, private key-store replacement behavior, and the

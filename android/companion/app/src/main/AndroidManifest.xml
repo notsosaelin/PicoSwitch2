@@ -37,9 +37,15 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
         android:theme="@style/Theme.PicoSwitch.Companion">
+        <!-- singleTask: one adapter relationship per process. Under the
+             default "standard" mode, re-entering the app stacked another
+             MainActivity - five were live at once on 2026-08-23 - and each
+             owned its own management GATT and background poller. See
+             data/ManagementOwner.kt for the captured evidence. -->
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

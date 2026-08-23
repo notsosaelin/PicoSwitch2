@@ -34,6 +34,21 @@ import kotlinx.coroutines.flow.asStateFlow
  * devices have no Home, Capture or C/GameChat key, so for those three the
  * virtual path is the only path.
  *
+ * ## The three gameplay origins
+ *
+ * ```text
+ * physical controls   ---\
+ *                         >--  [authority] picks ONE  --\
+ * on-screen controller ---/                              >-- published state
+ * software/meta buttons  ------- always contribute ------/
+ * ```
+ *
+ * [authority] is the explicit answer to "which host control set is the
+ * controller right now". A merge would be indefensible — a physical stick left
+ * and a touch stick right have no combined meaning — so the inactive origin's
+ * mutations are discarded rather than retained, and switching authority
+ * neutralizes. See [InputAuthority].
+ *
  * Not thread-safe by design; drive it from one input thread, exactly as every
  * platform delivers input events.
  */
@@ -49,10 +64,27 @@ class ControllerInputState {
         ControllerLayoutResolver.resolve(ControllerFaceLayout.Auto, null)
         private set
 
+    /** Which host control set drives gameplay input. See [InputAuthority]. */
+    var authority: InputAuthority = InputAuthority.Physical
+        private set
+
     private val heldPositionalButtons = mutableSetOf<ControllerButton>()
     private val virtualButtons = mutableSetOf<ControllerButton>()
     private var keyDpad = DpadState.None
     private var hatDpad = DpadState.None
+    private var physicalAnalog = NEUTRAL_ANALOG
+    private var touch = TouchContribution.Neutral
+
+    /**
+     * The on-screen controller's current contribution, whether or not it is
+     * currently authoritative.
+     *
+     * Exposed so a diagnostic can distinguish "touch is holding nothing" from
+     * "touch is holding something the authority is discarding" — two states that
+     * look identical in the published [state] and mean completely different
+     * things when a control appears not to work.
+     */
+    val touchContribution: TouchContribution get() = touch
 
     /**
      * Point the state machine at a new input source, or at none.
@@ -73,27 +105,43 @@ class ControllerInputState {
         neutralize()
     }
 
+    /**
+     * Hand gameplay input to a different host control set.
+     *
+     * Always neutralizes, even when nothing appears to be held: a control that
+     * was down at the moment of the switch belongs to the origin being left, and
+     * carrying it across the boundary is exactly how a console ends up walking
+     * into a wall after the user opened a different screen.
+     */
+    fun setAuthority(next: InputAuthority) {
+        if (next == authority) return
+        authority = next
+        neutralize()
+    }
+
     /** A physical button, identified by its POSITION on the pad. */
     fun pressButton(positional: ControllerButton, pressed: Boolean) {
+        if (authority != InputAuthority.Physical) return
         if (pressed) heldPositionalButtons += positional else heldPositionalButtons -= positional
-        publishButtons()
+        publish()
     }
 
     /** An on-screen / software button, already in logical bridge semantics. */
     fun setVirtualButton(button: ControllerButton, pressed: Boolean) {
         if (pressed) virtualButtons += button else virtualButtons -= button
-        publishButtons()
+        publish()
     }
 
     /** A discrete D-pad key. Merged with any hat axes; opposites cancel at encode time. */
     fun pressDpad(up: Boolean? = null, right: Boolean? = null, down: Boolean? = null, left: Boolean? = null) {
+        if (authority != InputAuthority.Physical) return
         keyDpad = DpadState(
             up = up ?: keyDpad.up,
             right = right ?: keyDpad.right,
             down = down ?: keyDpad.down,
             left = left ?: keyDpad.left,
         )
-        publishDpad()
+        publish()
     }
 
     /**
@@ -103,47 +151,99 @@ class ControllerInputState {
      * observable snapshot rather than three.
      */
     fun applyAnalog(frame: AnalogFrame) {
+        if (authority != InputAuthority.Physical) return
         frame.dpad?.let { hatDpad = it }
-        _state.value = _state.value.copy(
-            leftX = frame.leftX, leftY = frame.leftY,
-            rightX = frame.rightX, rightY = frame.rightY,
-            leftTrigger = frame.leftTrigger, rightTrigger = frame.rightTrigger,
-            dpadUp = keyDpad.up || hatDpad.up,
-            dpadRight = keyDpad.right || hatDpad.right,
-            dpadDown = keyDpad.down || hatDpad.down,
-            dpadLeft = keyDpad.left || hatDpad.left,
-        )
+        physicalAnalog = frame
+        publish()
+    }
+
+    /**
+     * One complete on-screen controller event: both sticks, both triggers, the
+     * D-pad and every held button.
+     *
+     * Whole rather than incremental for the same reason as [applyAnalog]: one
+     * contact event can change several controls at once, and a half-applied
+     * snapshot must never be observable.
+     */
+    fun applyTouch(contribution: TouchContribution) {
+        if (authority != InputAuthority.Touch) return
+        touch = contribution
+        publish()
     }
 
     /**
      * Drop every held input and publish neutral.
      *
-     * Called on source change, layout change, link loss and teardown. A held
-     * input that outlives its own boundary reaches the console as a stuck button.
+     * Called on source change, layout change, authority change, link loss and
+     * teardown. A held input that outlives its own boundary reaches the console
+     * as a stuck button.
      */
     fun neutralize() {
         heldPositionalButtons.clear()
         virtualButtons.clear()
         keyDpad = DpadState.None
         hatDpad = DpadState.None
+        physicalAnalog = NEUTRAL_ANALOG
+        touch = TouchContribution.Neutral
         _state.value = ControllerState.Neutral
     }
 
-    private fun publishButtons() {
+    /**
+     * Compose the published snapshot from the currently authoritative gameplay
+     * origin plus the always-allowed software/meta buttons.
+     *
+     * One function rather than one per input kind: every mutator ends here, so a
+     * new origin cannot accidentally publish a state that omits another origin's
+     * contribution. [MutableStateFlow] drops an unchanged value, so recomposing
+     * the whole snapshot costs no extra emission.
+     */
+    private fun publish() {
         val logical = mutableSetOf<ControllerButton>()
         logical += virtualButtons
-        heldPositionalButtons.mapTo(logical) {
+
+        val positional: Set<ControllerButton>
+        val analog: AnalogFrame
+        val dpad: DpadState
+        when (authority) {
+            InputAuthority.Physical -> {
+                positional = heldPositionalButtons
+                analog = physicalAnalog
+                dpad = DpadState(
+                    up = keyDpad.up || hatDpad.up,
+                    right = keyDpad.right || hatDpad.right,
+                    down = keyDpad.down || hatDpad.down,
+                    left = keyDpad.left || hatDpad.left,
+                )
+            }
+            InputAuthority.Touch -> {
+                positional = touch.positionalButtons
+                logical += touch.logicalButtons
+                analog = AnalogFrame(
+                    leftX = touch.leftX, leftY = touch.leftY,
+                    rightX = touch.rightX, rightY = touch.rightY,
+                    leftTrigger = touch.leftTrigger, rightTrigger = touch.rightTrigger,
+                )
+                dpad = touch.dpad
+            }
+        }
+        positional.mapTo(logical) {
             ControllerLayoutResolver.mapFaceButton(it, resolvedLayout.layout)
         }
-        _state.value = _state.value.copy(buttons = logical)
+
+        _state.value = ControllerState(
+            leftX = analog.leftX, leftY = analog.leftY,
+            rightX = analog.rightX, rightY = analog.rightY,
+            leftTrigger = analog.leftTrigger, rightTrigger = analog.rightTrigger,
+            buttons = logical,
+            dpadUp = dpad.up, dpadRight = dpad.right,
+            dpadDown = dpad.down, dpadLeft = dpad.left,
+        )
     }
 
-    private fun publishDpad() {
-        _state.value = _state.value.copy(
-            dpadUp = keyDpad.up || hatDpad.up,
-            dpadRight = keyDpad.right || hatDpad.right,
-            dpadDown = keyDpad.down || hatDpad.down,
-            dpadLeft = keyDpad.left || hatDpad.left,
+    private companion object {
+        val NEUTRAL_ANALOG = AnalogFrame(
+            leftX = 128, leftY = 128, rightX = 128, rightY = 128,
+            leftTrigger = 0, rightTrigger = 0,
         )
     }
 }

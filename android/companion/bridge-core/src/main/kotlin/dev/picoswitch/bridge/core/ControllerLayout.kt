@@ -46,6 +46,27 @@ data class ControllerSourceIdentity(
     val productId: Int,
 )
 
+/**
+ * A face-diamond slot named by WHERE it is, not by what is printed on it.
+ *
+ * An on-screen controller has no plastic, so it has no printed legend to inherit
+ * — it has four positions and a layout preference that decides what to draw in
+ * them. Naming the positions is what stops a renderer from assuming "A is always
+ * the bottom one", which is false across controller families and is the reason
+ * the existing physical path already reports positions rather than letters.
+ *
+ * [positional] is that same position expressed in the enum the rest of the
+ * bridge already uses, so a software press enters [ControllerLayoutResolver] by
+ * the identical route a physical key does and cannot acquire a second mapping
+ * table of its own.
+ */
+enum class FaceButtonPosition(val positional: ControllerButton) {
+    South(ControllerButton.A),
+    East(ControllerButton.B),
+    West(ControllerButton.X),
+    North(ControllerButton.Y),
+}
+
 data class ResolvedControllerLayout(
     val layout: ControllerFaceLayout,
     val reason: String,
@@ -78,6 +99,17 @@ object ControllerLayoutResolver {
             ResolvedControllerLayout(ControllerFaceLayout.Xbox, "Platforms expose positions, not printed labels")
         }
     }
+
+    /**
+     * The letter a face POSITION should be drawn with under [resolved].
+     *
+     * Derived from [mapFaceButton] rather than from a second table on purpose:
+     * a drawn label that disagrees with the bit that gets sent is the exact
+     * failure a renderer's own `when(layout)` block produces, and it is invisible
+     * until someone presses the button on a console.
+     */
+    fun faceLabel(position: FaceButtonPosition, resolved: ControllerFaceLayout): String =
+        mapFaceButton(position.positional, resolved).name
 
     /** Positional face button -> logical bridge button under [resolved]. */
     fun mapFaceButton(button: ControllerButton, resolved: ControllerFaceLayout): ControllerButton {

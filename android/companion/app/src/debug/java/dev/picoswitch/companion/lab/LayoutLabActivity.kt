@@ -22,7 +22,10 @@ import dev.picoswitch.companion.ui.CompanionViewModel
  * Not in the release variant. Launch it with:
  *
  *   adb shell am start -n dev.picoswitch.companion.debug/dev.picoswitch.companion.lab.LayoutLabActivity \
- *       --es section KEYBOARD [--es overlay DIAGNOSTICS]
+ *       --es section KEYBOARD [--es overlay DIAGNOSTICS] [--ez touch true]
+ *
+ * `--ez touch true` opens the on-screen controller directly, which is how its
+ * geometry is inspected at an arbitrary window size without a paired adapter.
  */
 class LayoutLabActivity : ComponentActivity() {
     private val viewModel: CompanionViewModel by viewModels()
@@ -58,12 +61,18 @@ class LayoutLabActivity : ComponentActivity() {
             )
         }
 
+        // The on-screen controller is a full-screen mode rather than a section,
+        // so the lab enters it the same way the product does. That is the point:
+        // inspecting a mock of it would inspect the mock.
+        if (intent.getBooleanExtra("touch", false)) viewModel.enterTouchGamepad()
+
         setContent {
             CompanionApp(
                 viewModel = viewModel,
                 onConnectAdapter = {}, onPairAdapter = {}, onRepairAdapter = {}, onImportAmiibo = {},
                 onImportAmiiboArchive = {}, onExportAmiiboArchive = {}, onScanAmiibo = {},
-                onImportAmiiboKeys = {}, onPrepareController = {}, onExportDiagnostics = {},
+                onImportAmiiboKeys = {}, onPrepareController = {}, onOpenTouchGamepad = {},
+                onPickTouchBackground = {}, onExportDiagnostics = {},
             )
         }
     }

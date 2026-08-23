@@ -12,6 +12,7 @@ import dev.picoswitch.bridge.core.ControllerInputState
 import dev.picoswitch.bridge.core.ControllerSourceIdentity
 import dev.picoswitch.bridge.core.DeviceCapabilities
 import dev.picoswitch.bridge.core.DpadState
+import dev.picoswitch.bridge.core.InputAuthority
 
 /**
  * Android input APIs -> the bridge's normalized controller state.
@@ -111,6 +112,30 @@ class AndroidInputBackend(
     fun setFaceLayout(layout: ControllerFaceLayout) = controller.setRequestedLayout(layout)
 
     /**
+     * What the ON-SCREEN controller can do.
+     *
+     * A touchscreen has no `InputDevice` descriptor, so [sourceCapabilities]
+     * correctly reports nothing for it — but "nothing" is the wrong answer for a
+     * host whose screen IS the controller. This states the truth about the
+     * on-screen controller instead, in exactly the same half of the capability
+     * model a physical source fills in: the session still composes the host's own
+     * IMU, actuators and battery on top.
+     *
+     * Deliberately NOT solved by inventing a synthetic input device. Something
+     * downstream always ends up trying to resolve a descriptor back to a real
+     * device, and a fabricated one resolves to nothing at exactly the moment it
+     * matters.
+     */
+    val touchCapabilities: DeviceCapabilities = DeviceCapabilities(
+        gamepadButtons = true,
+        analogSticks = 2,
+        // The on-screen triggers publish a full-scale analog value alongside
+        // their digital bit, matching what a physical trigger produces.
+        analogTriggers = true,
+        dpad = true,
+    )
+
+    /**
      * Press or release a button from the on-screen controls.
      *
      * Deliberately delegated straight through and NOT gated on a selected input
@@ -123,6 +148,11 @@ class AndroidInputBackend(
     fun neutralize() = controller.neutralize()
 
     fun onKey(event: KeyEvent): Boolean {
+        // The state machine would discard these anyway while the on-screen
+        // controller is authoritative. Declining them here as well means they are
+        // not silently swallowed on the way to a system that might still want
+        // them, and "not consumed" stays an honest answer.
+        if (controller.authority != InputAuthority.Physical) return false
         val device = event.device ?: return false
         if (device.descriptor != selectedDescriptor || event.repeatCount > 0) return false
         val pressed = event.action == KeyEvent.ACTION_DOWN
@@ -142,6 +172,7 @@ class AndroidInputBackend(
     }
 
     fun onMotion(event: MotionEvent): Boolean {
+        if (controller.authority != InputAuthority.Physical) return false
         val device = event.device ?: return false
         val controllerMotion = event.isFromSource(InputDevice.SOURCE_JOYSTICK) ||
             event.isFromSource(InputDevice.SOURCE_GAMEPAD) || event.isFromSource(InputDevice.SOURCE_DPAD)
