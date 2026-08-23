@@ -521,8 +521,44 @@ static void test_required_key_size_is_not_relaxed(void)
     assert(NS2_BT_REQUIRED_CLASSIC_KEY_SIZE == 16u);
 }
 
+/*
+ * Controller Link is not a standalone transport.
+ *
+ * The Android companion's Classic HID link is a facility of a live management
+ * session. Admitting it without one is not merely off-architecture: the peer is
+ * then unrecognisable as the companion (companion trust is live state), so it
+ * falls through into the ordinary physical-controller security path where this
+ * host starts the same LMP authentication Android's HID Device profile starts --
+ * the captured 0x23 dual-initiation collision.
+ */
+static void test_controller_link_requires_management(void)
+{
+    // The companion with its management session live: admitted, as today.
+    assert(ns2_bt_companion_classic_admission_allowed(true, true));
+
+    // The same companion with management down: refused before an ACL exists.
+    assert(!ns2_bt_companion_classic_admission_allowed(true, false));
+
+    // Physical controllers are single-transport, so the first input is false
+    // for every one of them and admission is unchanged either way. This is the
+    // guarantee that the rule cannot reach a controller.
+    for (int trusted = 0; trusted < 2; trusted++)
+        assert(ns2_bt_companion_classic_admission_allowed(false, trusted != 0));
+
+    // The live-session input is the same peer-bound predicate used by the
+    // stand-downs, so an address-spoofing impostor cannot buy admission with it.
+    bool impostor = ns2_bt_companion_session_trust(true, true, false, true);
+    assert(!ns2_bt_companion_classic_admission_allowed(true, impostor));
+
+    // And the refusal must not be reachable by an unencrypted management link:
+    // bonded-but-not-encrypted is not trust.
+    bool unencrypted = ns2_bt_companion_session_trust(true, true, true, false);
+    assert(!ns2_bt_companion_classic_admission_allowed(true, unencrypted));
+}
+
 int main(void)
 {
+    test_controller_link_requires_management();
     test_defer_classic_authentication_is_narrow();
     test_required_key_size_is_not_relaxed();
     test_encryption_outcome_classification();

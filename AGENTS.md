@@ -515,6 +515,12 @@ or the current documented equivalent.
 
 Do not perform destructive or mutating live UART operations until the required hardware/personality state is known.
 
+Flashing a development build does not require the maintainer. `bootsel` over UART reboots the
+adapter into the USB mass-storage bootloader (`reset_usb_boot`), because the physical BOOTSEL button
+is bound to pairing/personality gestures and is not a bootloader entry. Copy the `.uf2` to the
+mounted drive; the adapter reboots into the new build by itself. Only a build that predates the
+command needs a physical unplug-and-hold.
+
 Prefer passive observation and bounded A/B experiments over repeated firmware guesses.
 
 # Protocol Research Workflow

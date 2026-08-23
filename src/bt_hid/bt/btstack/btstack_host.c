@@ -2287,6 +2287,51 @@ static bool config_ble_accept_connection(hci_con_handle_t handle,
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// CONTROLLER LINK LIFECYCLE: bound to the management relationship
+//
+// See ns2_bt_companion_classic_admission_allowed() for the invariant. These
+// three are its runtime half.
+//
+// The handle is the companion's Classic ACL, latched the moment we recognise
+// the peer as the live management client. It is what makes the teardown exact:
+// on management loss we must disconnect THAT link and nothing else, and by then
+// config_ble no longer holds the identity to look it up with. Cleared on the
+// link's own Disconnection Complete, so a reused handle can never inherit it.
+// ---------------------------------------------------------------------------
+static hci_con_handle_t classic_companion_acl_handle = HCI_CON_HANDLE_INVALID;
+static uint32_t classic_companion_refused_no_mgmt;  // admission refused
+static uint32_t classic_companion_mgmt_teardowns;   // torn down on mgmt loss
+
+static void classic_companion_note_link(hci_con_handle_t handle)
+{
+    if (handle == HCI_CON_HANDLE_INVALID) return;
+    if (classic_companion_acl_handle == handle) return;
+    classic_companion_acl_handle = handle;
+    printf("[BTSTACK_HOST] Controller Link bound to management session (handle=0x%04X)\n",
+           handle);
+}
+
+// Management is gone: the Controller Link it authorised must go with it.
+//
+// This is a plain gap_disconnect, deliberately: the existing Classic teardown
+// path (HID_SUBEVENT_CONNECTION_CLOSED -> bt_on_disconnect_with_generation ->
+// slot memset -> scan resume, plus HCI_EVENT_DISCONNECTION_COMPLETE for the
+// per-handle security state) already releases HID, input ownership and security
+// state correctly. Adding a second teardown mechanism here would create a
+// parallel path that could disagree with it.
+static void classic_companion_release_on_mgmt_loss(void)
+{
+    hci_con_handle_t link = classic_companion_acl_handle;
+    if (link == HCI_CON_HANDLE_INVALID) return;
+    classic_companion_acl_handle = HCI_CON_HANDLE_INVALID;
+    classic_companion_mgmt_teardowns++;
+    printf("[BTSTACK_HOST] Management lost; tearing down Controller Link "
+           "(handle=0x%04X, teardowns=%lu)\n",
+           link, (unsigned long)classic_companion_mgmt_teardowns);
+    gap_disconnect(link);
+}
+
 static bool config_ble_handle_disconnect(
     hci_con_handle_t handle, uint8_t reason)
 {
@@ -2304,6 +2349,12 @@ static bool config_ble_handle_disconnect(
     config_ble.notifications_enabled = false;
     config_ble.tx_requested = false;
     config_wireless_bridge_reset_session();
+
+    // Controller Link is a facility of this relationship, so it does not
+    // outlive it. Ordered before the scan decision on purpose: the Classic link
+    // is still up at this instant, so discovery arbitration here is unchanged,
+    // and the HID close path resumes the scan once the link is actually down.
+    classic_companion_release_on_mgmt_loss();
 
     if (!config_ble.mode_active && !g_usb_config_mode &&
         !btstack_host_controller_connected()) {
@@ -2533,6 +2584,12 @@ static hci_con_handle_t classic_fresh_pairing_security_handle = HCI_CON_HANDLE_I
 // flashed build: there is no HCI trace, printf does not reach the UART diag
 // channel, and the btlife ring records no security events.
 static uint32_t classic_authentication_deferrals;  // we did not start auth
+// 0x23 on the AUTHENTICATION procedure, counted separately from the encryption
+// one. Android absorbed six of these on 2026-08-22 and two landed on encryption
+// instead, where it does not -- so a build that only counts encryption
+// collisions reports success while the actual race is still happening one
+// procedure earlier. An acceptance run has to be able to see both.
+static uint32_t classic_authentication_collisions;
 static uint32_t classic_encryption_deferrals;      // we stood down
 static uint32_t classic_encryption_peer_completed; // peer-led encryption came up
 static uint32_t classic_encryption_collisions;     // 0x23 observed on our side
@@ -2607,7 +2664,32 @@ static struct {
     bool encrypted_ok;           // Encryption Change, enabled, no failure
     uint8_t encryption_key_size; // as reported by the controller
     bool hid_ready;              // HID channels usable for this link
+    bool link_closed;            // this ACL is gone; record is post-mortem
 } last_auth_decision;
+
+// Start a record for one ACL.
+//
+// Every field here describes a single Classic link, so the record must be
+// opened by that link and closed with it. Without this, two things went wrong:
+// the connection-time fields (auth_deferred, auth_had_stored_key) were written
+// with no handle of their own and so attached to whatever handle a PREVIOUS
+// Authentication Complete had recorded, and a link that stood down and then
+// never authenticated left the earlier link's encrypted_ok/hid_ready standing
+// as if they described it. Handles are reused, so neither is hypothetical.
+static void auth_decision_begin(hci_con_handle_t handle)
+{
+    memset(&last_auth_decision, 0, sizeof(last_auth_decision));
+    last_auth_decision.valid = true;
+    last_auth_decision.handle = handle;
+}
+
+// True while the record still describes the live link that opened it. Read
+// before any late field (encryption, HID readiness) is attributed to it.
+static bool auth_decision_owns(hci_con_handle_t handle)
+{
+    return last_auth_decision.valid && !last_auth_decision.link_closed &&
+           last_auth_decision.handle == handle;
+}
 
 // Returns true when the automatic request was actually pending and cleared.
 static bool btstack_host_stand_down_from_encryption(hci_connection_t *conn)
@@ -2655,6 +2737,41 @@ static bool btstack_host_classic_companion_session_trust(const bd_addr_t addr)
         addr_matches && config_ble_link_trusted(config_ble.handle);
     return ns2_bt_companion_session_trust(connected, addr_known, addr_matches,
                                           session_trusted);
+}
+
+// Is this Classic peer an identity that also exists on LE?
+//
+// The Android companion is the only peer this firmware creates that way: it
+// bonds over LE to hold the management session, and its Classic link key is
+// cross-transport-derived from that same LE bond under the same identity
+// address. So an incoming Classic connection from an address that holds an LE
+// bond is the companion arriving for its Controller Link.
+//
+// Physical controllers cannot satisfy this. Classic controllers (DS3/DS4/DS5,
+// Switch Pro, Wiimote/Wii U Pro) never bond over LE, and BLE controllers
+// (Xbox, Switch 2 Pro, MouthPad) never arrive on Classic at all -- so for every
+// one of them this is false and admission is bit-for-bit what it was before.
+//
+// Raw address comparison, matching btstack_host_addr_is_bonded(): a Classic
+// BD_ADDR is public, and the companion's LE identity address is the same public
+// address (that equality is what btstack_host_classic_companion_session_trust()
+// already relies on, and it is what 18 consecutive Controller Links validated
+// on 2026-08-22).
+//
+// Core 1 only: touches the LE device DB.
+static bool btstack_host_classic_peer_is_cross_transport(const bd_addr_t addr)
+{
+    return btstack_host_addr_is_bonded(addr);
+}
+
+// May this Classic peer be admitted at all, given the Controller Link's
+// dependency on a live management session? See
+// ns2_bt_companion_classic_admission_allowed().
+static bool btstack_host_classic_admission_allowed(const bd_addr_t addr)
+{
+    return ns2_bt_companion_classic_admission_allowed(
+        btstack_host_classic_peer_is_cross_transport(addr),
+        btstack_host_classic_companion_session_trust(addr));
 }
 
 // A stored Classic link key is not the only proof this identity was admitted.
@@ -2720,6 +2837,7 @@ bool btstack_host_last_auth_decision(btstack_host_auth_decision_t *out)
     out->encrypted_ok = last_auth_decision.encrypted_ok;
     out->encryption_key_size = last_auth_decision.encryption_key_size;
     out->hid_ready = last_auth_decision.hid_ready;
+    out->link_closed = last_auth_decision.link_closed;
     return true;
 }
 
@@ -2830,6 +2948,19 @@ static int btstack_host_classic_connection_filter(bd_addr_t addr,
                                                    hci_link_type_t link_type)
 {
     UNUSED(link_type);
+    // Refuse before an ACL exists. This is the "cleanly" in "Controller Link
+    // establishment must be refused cleanly when management is disconnected":
+    // no link, no security procedure, so no opportunity for both ends to start
+    // the same one. Counted separately from the pairing-window rejections
+    // because it is a lifecycle refusal, not an admission-policy failure.
+    if (!btstack_host_classic_admission_allowed(addr)) {
+        classic_companion_refused_no_mgmt++;
+        btstack_host_note_admission_reject(addr, btstack_host_classic_has_trust(addr));
+        printf("[BTSTACK_HOST] Refusing Controller Link: no live management session "
+               "(refused=%lu)\n",
+               (unsigned long)classic_companion_refused_no_mgmt);
+        return 0;
+    }
     ns2_bt_admission_t admission = ns2_bt_admission_decide(
         pairing_lockout, hid_pairing_window_open,
         btstack_host_classic_has_trust(addr));
@@ -3587,6 +3718,10 @@ static void btstack_host_clear_transient_radio_state(void)
     config_ble.notifications_enabled = false;
     config_ble.tx_requested = false;
     config_wireless_bridge_reset_session();
+    // Every ACL died with the HCI, so the Controller Link binding is stale
+    // rather than something to tear down: forget it so a reused handle after
+    // recovery cannot inherit it. No gap_disconnect here -- there is no link.
+    classic_companion_acl_handle = HCI_CON_HANDLE_INVALID;
     // A transient HCI loss can arrive between any wake phases. Detach the
     // embedded timer before clearing its callback/list linkage so no stale
     // callback can run against reinitialized state after HCI recovery.
@@ -4207,6 +4342,19 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             printf("[BTSTACK_HOST] Incoming connection: %02X:%02X:%02X:%02X:%02X:%02X COD=0x%06X link=%d\n",
                    addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], (unsigned)cod, link_type);
 
+            // Same lifecycle gate as the registered HCI filter, for the case
+            // where BTstack still forwards the request. See
+            // ns2_bt_companion_classic_admission_allowed().
+            if (!btstack_host_classic_admission_allowed(addr)) {
+                classic_companion_refused_no_mgmt++;
+                btstack_host_note_admission_reject(
+                    addr, btstack_host_classic_has_trust(addr));
+                printf("[BTSTACK_HOST] Refusing Controller Link request: no live "
+                       "management session (refused=%lu)\n",
+                       (unsigned long)classic_companion_refused_no_mgmt);
+                break;
+            }
+
             bool classic_trust_present = btstack_host_classic_has_trust(addr);
             ns2_bt_admission_t classic_admission = ns2_bt_admission_decide(
                 pairing_lockout, hid_pairing_window_open,
@@ -4420,10 +4568,19 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                             // initiates, not what is required -- the HID-ready
                             // gate below still demands authenticated, encrypted
                             // transport at the required key size.
+                            bool peer_is_companion =
+                                btstack_host_classic_companion_session_trust(addr);
+                            if (peer_is_companion) {
+                                // Admission already proved the management
+                                // session is live; bind the link to it so its
+                                // loss can tear exactly this link down.
+                                classic_companion_note_link(handle);
+                            }
                             bool defer_auth = ns2_bt_defer_classic_authentication(
-                                btstack_host_classic_companion_session_trust(addr),
+                                peer_is_companion,
                                 have_incoming_key,
                                 classic_fresh_pairing_security_handle == handle);
+                            auth_decision_begin(handle);
                             last_auth_decision.auth_deferred = defer_auth;
                             last_auth_decision.auth_had_stored_key = have_incoming_key;
                             if (defer_auth) {
@@ -5058,6 +5215,15 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             if (classic_encryption_deferred_handle == handle) {
                 classic_encryption_deferred_handle = HCI_CON_HANDLE_INVALID;
             }
+            if (classic_companion_acl_handle == handle) {
+                classic_companion_acl_handle = HCI_CON_HANDLE_INVALID;
+            }
+            // Keep the record readable for post-mortem, but retire it so a
+            // reused handle cannot have its encryption or HID readiness
+            // attributed to this dead link.
+            if (last_auth_decision.valid && last_auth_decision.handle == handle) {
+                last_auth_decision.link_closed = true;
+            }
             printf("[BTSTACK_HOST] Disconnected: handle=0x%04X reason=0x%02X\n", handle, reason);
 
             ble_connection_t *conn = find_connection_by_handle(handle);
@@ -5422,6 +5588,16 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                             classic_state.pending_addr) == 0;
             printf("[BTSTACK_HOST] Authentication complete: handle=0x%04X status=0x%02X\n", handle, status);
 
+            // Same classification as the encryption side; see
+            // ns2_bt_encryption_collision(). The status code for "both ends ran
+            // this procedure" is identical on either procedure.
+            if (ns2_bt_encryption_collision(status)) {
+                classic_authentication_collisions++;
+                printf("[BTSTACK_HOST] Classic authentication collision 0x23 "
+                       "(handle=0x%04X, collisions=%lu)\n",
+                       handle, (unsigned long)classic_authentication_collisions);
+            }
+
             // Stand down from BTstack's automatic encryption request for the
             // companion's Controller Link. BTstack set BONDING_SEND_ENCRYPTION_REQUEST
             // in the event handler that ran just before this one; hci_run() has
@@ -5432,8 +5608,13 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 bool we_own_fresh_pairing = (classic_fresh_pairing_security_handle == handle);
                 // Capture the deciding inputs before acting on them; see
                 // last_auth_decision for why the counters alone are not enough.
-                last_auth_decision.valid = true;
-                last_auth_decision.handle = handle;
+                // An outgoing link never passed through the incoming path that
+                // opens the record, and a reused handle must not inherit the
+                // previous link's fields, so open one here unless this ACL
+                // already owns it.
+                if (!auth_decision_owns(handle)) {
+                    auth_decision_begin(handle);
+                }
                 last_auth_decision.mgmt_connected =
                     config_ble.handle != HCI_CON_HANDLE_INVALID;
                 last_auth_decision.mgmt_addr_known =
@@ -5537,7 +5718,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 classic_encryption_peer_completed++;
                 classic_encryption_deferred_handle = HCI_CON_HANDLE_INVALID;
             }
-            if (handle == last_auth_decision.handle) {
+            if (auth_decision_owns(handle)) {
                 last_auth_decision.encrypted_ok =
                     (status == ERROR_CODE_SUCCESS) && (enabled != 0);
                 last_auth_decision.encryption_key_size =
@@ -10590,6 +10771,11 @@ void btstack_host_get_mgmt_diag(btstack_host_mgmt_diag_t *out)
     out->classic_encryption_peer_completed = classic_encryption_peer_completed;
     out->classic_encryption_collisions = classic_encryption_collisions;
     out->classic_encryption_unencrypted_active = classic_encryption_unencrypted_active;
+    out->classic_authentication_deferrals = classic_authentication_deferrals;
+    out->classic_authentication_collisions = classic_authentication_collisions;
+    out->classic_companion_handle = classic_companion_acl_handle;
+    out->classic_companion_refused_no_mgmt = classic_companion_refused_no_mgmt;
+    out->classic_companion_mgmt_teardowns = classic_companion_mgmt_teardowns;
     out->fresh_admission_reject_window = fresh_admission_reject_window;
     out->fresh_admission_reject_lockout = fresh_admission_reject_lockout;
     out->wipe_completions = wipe_completions;
@@ -10804,8 +10990,14 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
                 }
 
                 conn->hid_ready = true;
-                if (acl != NULL && acl->con_handle == last_auth_decision.handle) {
+                if (acl != NULL && auth_decision_owns(acl->con_handle)) {
                     last_auth_decision.hid_ready = true;
+                }
+                if (is_companion && acl != NULL) {
+                    // Late binding for a companion link that reached HID
+                    // readiness without passing the incoming-connection latch
+                    // (outgoing/direct-L2CAP paths). Idempotent.
+                    classic_companion_note_link(acl->con_handle);
                 }
 
                 // Check if this is a direct-L2CAP device by profile or name

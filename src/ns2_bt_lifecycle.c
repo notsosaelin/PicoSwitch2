@@ -97,6 +97,12 @@ bool ns2_bt_companion_session_trust(bool session_connected,
            session_bonded_and_encrypted;
 }
 
+bool ns2_bt_companion_classic_admission_allowed(
+    bool peer_is_cross_transport_companion, bool companion_session_trusted)
+{
+    return !peer_is_cross_transport_companion || companion_session_trusted;
+}
+
 uint32_t ns2_bt_inquiry_restart_delay_ms(bool pairing_window_open)
 {
     return pairing_window_open ? 0u : NS2_BT_INQUIRY_IDLE_GAP_MS;

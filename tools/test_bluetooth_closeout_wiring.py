@@ -63,6 +63,7 @@ def main() -> None:
     assert "ns2_bt_install_reset_bootstrap_take(" in working
     assert "&install_reset_bootstrap_consumed" in working
 
+    check_controller_link_is_bound_to_management(source)
     check_management_bond_admission_is_latched(source)
     check_audio_sink_is_independent_of_input_ownership()
     check_controller_discovery_never_touches_management(source)
@@ -144,6 +145,78 @@ def check_controller_discovery_never_touches_management(source: str) -> None:
     assert service.count("bt_health_note_escalation();") == 2, (
         "both the power-cycle and the reboot escalation must record a snapshot "
         "that survives the reboot"
+    )
+
+
+def check_controller_link_is_bound_to_management(source: str) -> None:
+    """Controller Link lives and dies with the management session.
+
+    PRODUCT INVARIANT. BLE management may run by itself; the Android companion's
+    Controller Link may not. It may be established only while that same peer
+    holds a connected, bonded, encrypted management session, and it must be torn
+    down when that session is genuinely lost.
+
+    Observed 2026-08-22: a degraded session left the Controller Link active with
+    management genuinely disconnected. Admission reached the peer through its
+    stored Classic link key alone, where it is no longer recognisable AS the
+    companion -- companion trust is live state -- so it also fell through into
+    the ordinary physical-controller security path and this host raced Android
+    to start LMP authentication (the 0x23 collision).
+
+    Three things are pinned here: the refusal happens at BOTH admission points,
+    the teardown is wired into management disconnect, and the binding is cleared
+    per-handle so a reused handle cannot inherit it.
+    """
+    # Refused at the HCI filter (before an ACL exists) and again at the
+    # forwarded connection request.
+    assert source.count("btstack_host_classic_admission_allowed(addr)") == 2, (
+        "both Classic admission points must apply the management-required rule"
+    )
+    assert "ns2_bt_companion_classic_admission_allowed(" in source
+
+    disconnect = function_body(
+        source,
+        r"static bool config_ble_handle_disconnect\(\s*\n?\s*hci_con_handle_t handle, uint8_t reason\)\s*\{",
+        r"\n\}\s*\n\s*static void config_ble_service_task",
+    )
+    assert "classic_companion_release_on_mgmt_loss();" in disconnect, (
+        "management disconnect must tear the Controller Link down; leaving it "
+        "alive is the invariant violation captured on 2026-08-22"
+    )
+
+    # Teardown goes through the existing Classic close path rather than a second
+    # mechanism that could disagree with it about released state.
+    release = function_body(
+        source,
+        r"static void classic_companion_release_on_mgmt_loss\(void\)\s*\{",
+        r"\n\}",
+    )
+    assert "gap_disconnect(link);" in release
+    assert release.index("classic_companion_acl_handle = HCI_CON_HANDLE_INVALID;") < \
+        release.index("gap_disconnect(link);"), (
+        "clear the binding before disconnecting so the resulting Disconnection "
+        "Complete cannot re-enter the teardown"
+    )
+
+    # The binding is per-handle state: cleared when that ACL drops, and on the
+    # transient-radio reset that follows HCI loss.
+    assert source.count("classic_companion_acl_handle = HCI_CON_HANDLE_INVALID;") == 4, (
+        "the Controller Link binding must be initialised and cleared on its own "
+        "disconnect, on HCI loss, and on teardown -- handles are reused"
+    )
+
+    # btauth attribution is per-ACL: late fields may only be recorded while the
+    # record still owns the live link.
+    for late_field in ("last_auth_decision.encrypted_ok =",
+                       "last_auth_decision.hid_ready = true;"):
+        assert late_field in source
+    assert source.count("auth_decision_owns(") == 4, (
+        "encryption, HID readiness and the Authentication Complete record must "
+        "all check that the record still owns this ACL"
+    )
+    assert "last_auth_decision.link_closed = true;" in source, (
+        "the record must be retired on disconnect so a reused handle cannot "
+        "inherit it"
     )
 
 

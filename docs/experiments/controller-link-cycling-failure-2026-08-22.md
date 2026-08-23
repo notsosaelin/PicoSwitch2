@@ -704,26 +704,46 @@ pwsh -File tools\uart_query.ps1 -Port COM11 -Command 'bridge'   # build id must 
 and in `adb logcat` the app's connect line should now read `hostOk=true` with a major class that is
 not `0x0500`.
 
-**Do not infer anything from `hostOk` alone.** A fresh cryptographic bond is not the same state as a
-fresh remote-device record, and Android may retain remote metadata across bond removal. If
-`hostOk=false` persists, the reason is directly readable rather than guessable -- grep the pairing
-for these three lines, in this order:
+### Status: the Appearance correction is hardware-validated
 
-| line | meaning |
+**Confirmed on hardware 2026-08-22.** Build `4b19842` was flashed, the adapter was forgotten on the
+tablet and paired again, and the full positive chain was observed in one run:
+
+| observation | value |
 |---|---|
-| `btif_update_remote_properties: CoD from storage was zero` | Android started from no stored class. Absent => it kept an old record, and this test cannot evaluate the fix. |
+| advertised LE Appearance | `0x0080` |
+| Android's stored Class of Device | transitioned to `0x000100` (major class 1, Computer) |
+| bond | completed |
+| Controller Link establishments | **18 consecutive, all successful** |
+| `remote device is not hid host, disconnecting` | **zero** after the transition |
+
+That is direct positive evidence, not an inference from a missing line: the adapter advertised a
+host Appearance, Android derived and stored a host class from it, and its HID Device profile stopped
+refusing us. `check_cod_hid()` accepts `0x000100` because `(0x000100 & 0x1F00) == 0x0100`, not
+`0x0500`. **Do not reintroduce a HID-range Appearance.** Both a firmware `_Static_assert` and
+`tools/test_bluetooth_closeout_wiring.py::check_le_appearance_is_a_host` now guard the constant.
+
+### Reading the pairing log on a re-run
+
+**Do not infer anything from `hostOk` alone**, and **do not use absence of a log line as a state
+predicate.** These lines are positive observations only; when one is missing, the correct reading is
+"not observed in this capture", never "therefore the opposite state held".
+
+| line | what its PRESENCE establishes |
+|---|---|
+| `btif_update_remote_properties: CoD from storage was zero` | Android reported no stored class at this point. Its absence establishes nothing about what Android held. |
 | `btm_ble_read_remote_appearance_cmpl: Appearance 0x....` | what the adapter actually advertised. Must read `0x0080`; `0x03c0` means the flash did not take. |
 | `btif_update_remote_properties: ... CoD: 0x... -> 0x...` | the class Android derived and stored. |
 
-Only the combination decides it. `Appearance 0x0080` with a stored class whose major nibble is not
-`5` is the fix working; `Appearance 0x0080` with a `0x0005xx` class would mean the mapping
-assumption is wrong; a missing `CoD from storage was zero` means the record was not fresh and the
-run proves nothing either way.
+The decisive pair is the last two: `Appearance 0x0080` together with a stored class whose major
+nibble is not `5` is the fix working, and that is exactly what the validated run above recorded. A
+`0x0005xx` class alongside `Appearance 0x0080` would falsify the mapping assumption.
 
-**On whether Forget is sufficient**, the only direct evidence is from this device on 2026-08-22: a
-`removeBond()` at 17:45:53 was followed at 17:46:13 by `CoD from storage was zero`, so on that
-occasion the stored class did not survive bond removal. That is one observation on one device, not a
-general rule -- which is exactly why the procedure reads the three lines above instead of assuming.
+**On whether Forget clears stored remote metadata**, one observation exists on this device: a
+`removeBond()` at 17:45:53 was followed at 17:46:13 by `CoD from storage was zero`. **That single
+observation does not establish a general rule about metadata deletion on bond removal** -- not for
+other devices, other Android versions, or even other attempts on this one. It is recorded because it
+is what happened, not as a procedure guarantee.
 
 Useful robustness note: the pre-appearance value in that trace was `0x001f00` (uncategorised).
 `(0x001f00 & 0x1F00) == 0x1F00`, which is not `0x0500`, so even a peer that never maps our new
@@ -812,3 +832,117 @@ session end to end and confirm:
   companion-only changes)
 
 Baseline for comparison: **10 failures in 25 cycles (40 %)**, of which 8 were Type C.
+
+## Controller Link is not a standalone transport
+
+### The invariant
+
+BLE management may run by itself, indefinitely. The Android companion's Controller Link may not. It
+is a facility of a live management relationship:
+
+1. management connected -> Touch Gamepad may establish Controller Link;
+2. with a known companion and a stored Classic key, Android owns initiation of authentication and
+   encryption, and the adapter still fails closed unless that ACL reaches successful authentication,
+   encryption and the required key size before HID becomes usable;
+3. management disconnected -> Controller Link establishment is refused cleanly, and must not fall
+   through into the ordinary physical-controller security path;
+4. management lost while Controller Link is active -> Controller Link tears down cleanly, releasing
+   ACL, HID, security and input ownership;
+5. management reconnected -> Touch Gamepad works again with no reboot, power cycle or accumulated
+   state;
+6. management may run indefinitely with no Controller Link;
+7. physical controllers are unaffected by all of the above.
+
+The state observed during the degraded 2026-08-22 session -- Controller Link active with management
+genuinely disconnected -- is therefore an **invariant violation**, not a product mode to preserve.
+
+### Reproduced on the pre-fix build
+
+*Confirmed, 2026-08-22, adapter running `4b19842`, tablet "onn 8 Core Table".* The question was
+whether existing management-disconnect handling already requested Controller Link teardown and the
+degraded session merely bypassed it. It does not — there was no teardown to bypass.
+
+Method: with management connected and a live Controller Link, force a real management loss from the
+adapter with `mgmt off`. This drops only the LE management ACL and leaves the phone's Classic HID
+link untouched, which is what isolates the invariant; force-stopping the app instead proves nothing,
+because the app owns both ends.
+
+| after `mgmt off` | observed |
+|---|---|
+| `cble.client` | `false` — management genuinely gone (`mgmt.disconnects` 1 -> 2) |
+| `connections.classic_ready` | **`1` — Controller Link still fully up** |
+| `controller_connected` | **`true`** |
+| `btdev` | still lists `onn 8 Core Table` as a connected HID device |
+| `input status` | still reports the tablet (`vid 0x001D`) as the active input source |
+| tablet logcat | `bridge/counters: ... out:sent=41` 18 s after the management ACL dropped |
+
+The LE ACL drop is visible on the tablet as `btif_dm_acl_evt: ... ACL link down ... reason:HCI_ERR_PEER_USER`,
+and the Controller Link kept streaming across it. `mgmt on` restored the advertiser with the Classic
+link never having been disturbed.
+
+*Interpretation.* `config_ble_handle_disconnect()` cleared management session state and re-evaluated
+discovery, and nothing in it referred to the Classic link the session had authorised. Stale ACL, HID
+and input ownership all survived, which is exactly what item 4 forbids.
+
+### The fix
+
+Two narrow changes, plus the counters needed to see them work.
+
+**Refusal (item 3).** `btstack_host_classic_admission_allowed()` refuses an incoming Classic
+connection from a *cross-transport* identity when no live trusted management session exists, at the
+registered HCI connection filter — before an ACL is created. Cross-transport means "this address
+also holds an LE bond": the companion is the only peer this firmware creates that way, since it
+bonds over LE for management and its Classic key is derived from that same bond. Physical
+controllers are single-transport in both directions (Classic controllers hold no LE bond; BLE
+controllers never arrive on Classic), so for every one of them the predicate is false and admission
+is unchanged. Policy lives in `ns2_bt_companion_classic_admission_allowed()` with tests.
+
+This also closes a security-relevant path rather than only an architectural one. A companion
+admitted on its stored Classic key alone is *not recognisable as the companion* — companion trust is
+live state — so the authentication stand-down does not apply and the adapter calls
+`gap_request_security_level(LEVEL_2)` while Android's HID Device profile starts the identical LMP
+procedure. That is the captured `0x23` dual-initiation collision, arriving on a link the product
+says must not exist.
+
+**Teardown (item 4).** The companion's Classic ACL handle is latched when the peer is recognised as
+the live management client (`classic_companion_note_link`), and `config_ble_handle_disconnect()`
+calls `classic_companion_release_on_mgmt_loss()`, which `gap_disconnect()`s it. Deliberately a plain
+disconnect: the existing Classic close path already releases HID, input ownership and per-handle
+security state correctly, and a second teardown mechanism could disagree with it. The latch is
+cleared on its own Disconnection Complete and on the transient-radio reset after HCI loss, so a
+reused handle cannot inherit it.
+
+**Attribution.** `btauth` is now opened and retired per ACL (`auth_decision_begin` /
+`auth_decision_owns` / `link_closed`). Previously the connection-time fields had no handle of their
+own and attached to whatever handle a *previous* Authentication Complete had recorded. `btstate`
+gained `auth:{deferrals,collisions}` — authentication-side `0x23` was not counted anywhere before,
+so a run watching only `enc.collisions` could report success while the race continued one procedure
+earlier — and `clink:{handle,refused_no_mgmt,mgmt_teardowns}`.
+
+Guarded by `tools/test_bluetooth_closeout_wiring.py::check_controller_link_is_bound_to_management`
+and `tools/test_ns2_bt_lifecycle.c::test_controller_link_requires_management`.
+
+### Soak workloads
+
+`tools/controller_link_cycle.py --workload {A,B,C,D}` drives the invariant directly; the original
+force-stop cycle is kept as `legacy` so the recorded baseline stays comparable.
+
+| workload | what it exercises | key failure it can name |
+|---|---|---|
+| A | Controller Link cycling with management continuously connected | `stale_link`, `unbound`, `mgmt_lost` |
+| B | a full management generation around a Controller Link | `stale_link_after_mgmt_loss`, `post_reconnect_*` |
+| C | management alone, no Controller Link | `mgmt_lost`, `unexpected_link` |
+| D | forced real management loss under a LIVE Controller Link (`mgmt off`) | `stale_link_after_mgmt_loss`, `teardown_unattributed` |
+
+Workload D distinguishes "the link went away" from "we released it" by requiring
+`clink.mgmt_teardowns` to advance; a coincidental drop is reported as `teardown_unattributed` rather
+than credited to the fix. Acceptance is evaluated as deltas over the run — `auth.collisions`,
+`enc.collisions`, `enc.unencrypted_active`, `admission.reject_*`, `hci.recovery.attempts`,
+`reboot.requests`, and no Controller Link left bound with management disconnected — so a soak can
+start on an adapter that already has history.
+
+### Not claimed
+
+That the authentication collisions caused the later CYW43/HCI wedge. The preserved snapshot
+establishes only that HCI stopped responding and the bounded power cycle timed out. Whether removing
+the collisions also removes the wedge is what the soak is for.

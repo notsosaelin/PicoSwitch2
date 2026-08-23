@@ -40,6 +40,7 @@
 
 #include <hardware/gpio.h>
 #include <hardware/uart.h>
+#include <pico/bootrom.h>  // dev-only `bootsel`: removes the physical BOOTSEL dependency
 #include <pico/time.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -76,7 +77,12 @@ static bool tx_wait_idle;
 static bool reenumerate_requested;
 static ns2_protocol_trace_record_t trace_format_record;
 static char trace_format_payload[NS2_PROTOCOL_TRACE_PAYLOAD_MAX * 2u + 1u];
-static char trace_format_response[1536];
+// Shared response scratch. btstate is the largest producer and grows whenever a
+// subsystem adds a counter; a silent snprintf truncation there emits invalid
+// JSON, which a soak harness reads as a parse failure rather than as the
+// diagnostic loss it actually is. queue_btstate() checks for truncation
+// explicitly, and this stays comfortably ahead of the tx buffer's 2304.
+static char trace_format_response[2048];
 static sw2_cap_entry_t ble_format_record;
 static char ble_format_payload[SW2_CAP_MAX_DATA * 2u + 1u];
 static char ble_format_response[512];
@@ -300,7 +306,7 @@ static void queue_ble_record(void) {
 static void queue_btstate(void) {
     btstack_host_mgmt_diag_t d;
     btstack_host_get_mgmt_diag(&d);
-    snprintf(trace_format_response, sizeof(trace_format_response),
+    int btstate_len = snprintf(trace_format_response, sizeof(trace_format_response),
         "{\"btstate\":\"status\",\"mgmt_enabled\":%s,\"config_mode\":%s,"
         "\"personality\":\"%s\",\"powered_on\":%s,\"hid_state\":%u,"
         "\"scan_active\":%s,\"inquiry_active\":%s,\"wake_adv\":%s,"
@@ -321,7 +327,11 @@ static void queue_btstate(void) {
         "\"admission\":{\"fresh_accepted\":%lu,\"reject_window\":%lu,"
         "\"reject_lockout\":%lu},"
         "\"enc\":{\"deferrals\":%lu,\"peer_completed\":%lu,\"collisions\":%lu,"
-        "\"unencrypted_active\":%lu},\"wipe_completions\":%lu,"
+        "\"unencrypted_active\":%lu},"
+        "\"auth\":{\"deferrals\":%lu,\"collisions\":%lu},"
+        "\"clink\":{\"handle\":\"0x%04X\",\"refused_no_mgmt\":%lu,"
+        "\"mgmt_teardowns\":%lu},"
+        "\"wipe_completions\":%lu,"
         "\"disc\":{\"ctrl\":%lu,\"hci\":%lu,\"state_losses\":%lu,"
         "\"last_handle\":\"0x%04X\","
         "\"last_reason\":\"0x%02X\"},"
@@ -355,6 +365,11 @@ static void queue_btstate(void) {
         (unsigned long)d.classic_encryption_peer_completed,
         (unsigned long)d.classic_encryption_collisions,
         (unsigned long)d.classic_encryption_unencrypted_active,
+        (unsigned long)d.classic_authentication_deferrals,
+        (unsigned long)d.classic_authentication_collisions,
+        d.classic_companion_handle,
+        (unsigned long)d.classic_companion_refused_no_mgmt,
+        (unsigned long)d.classic_companion_mgmt_teardowns,
         (unsigned long)d.wipe_completions,
         (unsigned long)d.ctrl_disconnects, (unsigned long)d.hci_disconnects,
         (unsigned long)d.hci_state_losses,
@@ -364,6 +379,13 @@ static void queue_btstate(void) {
         d.owner_led_output_on ? "true" : "false",
         (unsigned long)d.owner_led_last_transition_ms,
         (unsigned long)d.owner_led_timer_max_gap_ms);
+    // Say so rather than emitting half an object: a truncated btstate is
+    // indistinguishable from a corrupt link at the reader, and this snapshot is
+    // what a soak run judges every cycle by.
+    if (btstate_len < 0 || (size_t)btstate_len >= sizeof(trace_format_response)) {
+        queue_text("{\"btstate\":\"error\",\"error\":\"response truncated\"}");
+        return;
+    }
     queue_text(trace_format_response);
 }
 
@@ -1046,6 +1068,7 @@ static void handle_command(void) {
                 "\"auth_deferred\":%s,\"auth_had_stored_key\":%s,"
                 "\"auth_completed_ok\":%s,\"encrypted_ok\":%s,"
                 "\"key_size\":%u,\"hid_ready\":%s,"
+                "\"link_closed\":%s,"
                 "\"auth_deferrals\":%lu}",
                 a.handle,
                 a.mgmt_connected ? "true" : "false",
@@ -1061,6 +1084,7 @@ static void handle_command(void) {
                 a.encrypted_ok ? "true" : "false",
                 a.encryption_key_size,
                 a.hid_ready ? "true" : "false",
+                a.link_closed ? "true" : "false",
                 (unsigned long)btstack_host_authentication_deferrals());
             queue_text(trace_format_response);
         }
@@ -1103,6 +1127,31 @@ static void handle_command(void) {
     } else if (strcmp(rx_line, "mgmt off") == 0) {
         g_mgmt_enabled = false;
         queue_text("{\"mgmt\":\"off\"}");
+    } else if (strcmp(rx_line, "bootsel") == 0) {
+        // Dev-only: reboot into the USB mass-storage bootloader so a build can
+        // be flashed without physically holding BOOTSEL.
+        //
+        // Why this exists. Validating the Bluetooth lifecycle means soak runs of
+        // hundreds of connect/disconnect cycles, and every code change between
+        // runs otherwise costs a physical button press on the adapter. That made
+        // the mandated soak workloads (see tools/controller_link_cycle.py)
+        // impossible to run unattended, which is a worse outcome than exposing a
+        // reboot on a wired debug header that already offers `persona` and
+        // `mgmt off`. Same reasoning as the `persona` command below.
+        //
+        // Never reachable from the console, the companion, or any wireless
+        // transport -- UART only, and only in NS2_UART_DIAG builds.
+        // Written directly rather than through queue_text(): the queue is
+        // drained by ns2_uart_diag_task() with a per-tick budget, and this
+        // command never returns to that task.
+        {
+            static const char ack[] = "{\"bootsel\":\"entering\"}\r\n";
+            for (size_t i = 0; i < sizeof(ack) - 1u; i++) {
+                uart_putc_raw(NS2_UART_ID, ack[i]);
+            }
+            uart_tx_wait_blocking(NS2_UART_ID);
+        }
+        reset_usb_boot(0, 0);
     } else if (strncmp(rx_line, "persona ", 8) == 0) {
         // Dev-only: trigger a personality transition over UART (removes the
         // physical-BOOTSEL / config-mode dependency for future investigations).
@@ -2441,7 +2490,7 @@ static void handle_command(void) {
                    "sensitivityy|recenter|invertx|inverty|antideadzone "
                    "<value>\",\"btdev\","
                    "\"btreconnect\",\"btbonds\",\"btfresh\",\"btreject\",\"btauth\","
-                   "\"reenumerate\",\"save\",\"help\"]}");
+                   "\"reenumerate\",\"bootsel\",\"save\",\"help\"]}");
     } else if (rx_length != 0) {
         queue_text("{\"error\":\"unknown command\"}");
     }
