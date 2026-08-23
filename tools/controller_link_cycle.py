@@ -225,9 +225,31 @@ class Adapter:
 # App-side actions
 # ---------------------------------------------------------------------------
 
+# FLAG_ACTIVITY_SINGLE_TOP (0x20000000) | FLAG_ACTIVITY_CLEAR_TOP (0x04000000).
+#
+# A plain `am start -n` does NOT match the task's existing root intent, so under
+# MainActivity's launch mode every harness cycle pushed ANOTHER Activity
+# instance. Confirmed 2026-08-23: `dumpsys activity activities` showed five live
+# MainActivity records in one task, each owning its own management transport,
+# GATT connection and 5-second poller. Two of them were polling the adapter
+# concurrently.
+#
+# The app now also declares launchMode="singleTask", so this is belt and braces
+# on purpose -- the harness must not be the only thing preventing the condition,
+# and it must not hide it on a build that regresses.
+LAUNCH_FLAGS = ("-f", "0x20000000", "-f", "0x04000000")
+
+
 def app_start(settle: float) -> None:
-    adb("shell", "am", "start", "-n", ACTIVITY)
+    adb("shell", "am", "start", "-n", ACTIVITY, *LAUNCH_FLAGS)
     time.sleep(settle + 3.0)
+
+
+def live_activity_instances() -> int:
+    """How many MainActivity records the platform currently holds."""
+    dump = adb("shell", "dumpsys", "activity", "activities")
+    return len(re.findall(r"Hist\s+#\d+: ActivityRecord\{[^}]*" +
+                          re.escape("MainActivity"), dump))
 
 
 def app_restart(settle: float) -> None:
@@ -296,6 +318,57 @@ def await_link(dev: "Adapter | None" = None, timeout: float = 26.0) -> tuple[boo
     return False, round(time.time() - started, 1)
 
 
+def app_believes_connected() -> bool | None:
+    """What the app's own UI says about management, or None if unreadable.
+
+    Read from the Adapter screen's affordances rather than from a log line: a
+    "Reconnect"/"Pair Adapter" control means the app considers itself
+    disconnected, and the Disconnect control means it considers itself
+    connected.
+    """
+    xml = ui_dump()
+    if find_desc(xml, "Disconnect") is not None:
+        return True
+    if find_text(xml, "Reconnect") is not None or find_text(xml, "Pair Adapter") is not None:
+        return False
+    return None
+
+
+def check_state_agreement(dev: Adapter) -> str | None:
+    """Fail loudly when the app and the adapter disagree about management.
+
+    This is the condition that silently invalidated a whole manual campaign on
+    2026-08-23: the app displayed "Not connected" with a Reconnect button while
+    the adapter reported `cble.client: true` and kept answering commands for five
+    hours, because a different Activity instance owned the real session. Every
+    "Controller Link without management" result from that campaign measured
+    nothing. A soak must never run under that contradiction.
+    """
+    adapter_view = dev.mgmt_connected()
+    app_view = app_believes_connected()
+    if app_view is None:
+        return None  # not on a screen that states it; not a disagreement
+    if app_view != adapter_view:
+        return (f"management state disagreement: app={app_view} "
+                f"adapter.cble.client={adapter_view}")
+    return None
+
+
+def check_single_owner() -> str | None:
+    """Exactly one Activity instance, therefore one management transport.
+
+    The app makes this structural (launchMode=singleTask plus an application-
+    scoped ManagementOwner), and the harness launches with SINGLE_TOP|CLEAR_TOP.
+    Asserting it anyway is deliberate: if either protection regresses, a soak
+    would otherwise keep running while two transports drove the adapter.
+    """
+    instances = live_activity_instances()
+    if instances > 1:
+        return (f"duplicate ownership: {instances} live MainActivity instances "
+                "(each owns its own management transport and poller)")
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Workloads
 # ---------------------------------------------------------------------------
@@ -304,7 +377,7 @@ def run_cycle(port: str, settle: float) -> tuple[str, float]:
     """One full lifecycle, 2026-08-22 baseline form. Unchanged on purpose."""
     adb("shell", "am", "force-stop", PKG)
     time.sleep(settle)
-    adb("shell", "am", "start", "-n", ACTIVITY)
+    adb("shell", "am", "start", "-n", ACTIVITY, *LAUNCH_FLAGS)
     time.sleep(settle + 3.0)
 
     xml = ui_dump()
@@ -334,6 +407,9 @@ def cycle_touch_only(dev: Adapter, settle: float) -> tuple[str, float]:
     """Workload A: enter and leave Touch Gamepad; management must never drop."""
     if not dev.mgmt_connected():
         return "mgmt_lost", -1.0
+    owner_problem = check_single_owner()
+    if owner_problem:
+        return "duplicate_owner", -1.0
 
     adb("logcat", "-c")
     if not app_enter_touch(settle):
@@ -450,13 +526,74 @@ def cycle_forced_mgmt_loss(dev: Adapter, settle: float) -> tuple[str, float]:
     return ("ok" if result == "ok" else "post_recovery_" + result), elapsed
 
 
+def cycle_reconnect_abuse(dev: Adapter, settle: float) -> tuple[str, float]:
+    """Workload E: rapid management drop/restore pressure, with a recovery clock.
+
+    Driven from the adapter (`mgmt off`/`mgmt on`) because that is the only
+    primitive that produces a real management loss -- the app's Disconnect
+    control could not, which is what made the manual observation ambiguous.
+
+    The manual report was: spamming reconnect/disconnect could leave management
+    unavailable for ~10-15 s, with the app reporting that the saved adapter did
+    not advertise management services, recovering on its own without a power
+    cycle. The standing hypothesis is that `config_ble_service_task` suppresses
+    the advertiser restart while `hid_state == BLE_STATE_CONNECTING`, and
+    BLE_CONNECT_TIMEOUT_MS is 10000 ms.
+
+    That is a HYPOTHESIS. This workload does not assume it: it records the radio
+    state at the moment advertising is absent and measures how long recovery
+    takes, so the correlation can be observed rather than asserted. A run that
+    self-recovers is classified separately from a hard wedge.
+    """
+    dev.set_mgmt(False)
+    time.sleep(1.0)
+    dev.set_mgmt(True)
+
+    started = time.time()
+    samples = []
+    advertising_at = None
+    while time.time() - started < 40.0:
+        state = dev.state()
+        if not state:
+            return "uart_silent", -1.0
+        samples.append({
+            "t": round(time.time() - started, 1),
+            "hid_state": state.get("hid_state"),
+            "advertising": state.get("cble", {}).get("advertising"),
+            "client": state.get("cble", {}).get("client"),
+            "scan": state.get("scan_active"),
+            "inquiry": state.get("inquiry_active"),
+            "adv": state.get("adv"),
+        })
+        if state.get("cble", {}).get("advertising") or state.get("cble", {}).get("client"):
+            advertising_at = round(time.time() - started, 1)
+            break
+        time.sleep(1.0)
+
+    if advertising_at is None:
+        # Never came back inside the window: that is a wedge, not a stall, and
+        # it is the only outcome here that should stop a campaign.
+        print("    radio never resumed advertising:", json.dumps(samples[-6:]))
+        return "advertiser_wedged", -1.0
+    if advertising_at > 5.0:
+        print(f"    advertiser resumed after {advertising_at}s;",
+              json.dumps(samples[:4]))
+        return "slow_recovery", advertising_at
+    return "ok", advertising_at
+
+
 WORKLOADS = {
     "legacy": ("force-stop each cycle (2026-08-22 baseline)", None),
     "A": ("Controller Link cycling, management stays connected", cycle_touch_only),
     "B": ("full management generation around a Controller Link", cycle_full_lifecycle),
     "C": ("management-only stability, no Controller Link", cycle_management_only),
     "D": ("forced management loss under a live Controller Link", cycle_forced_mgmt_loss),
+    "E": ("rapid management drop/restore pressure", cycle_reconnect_abuse),
 }
+
+# Workloads whose own design takes management down for part of every cycle, so a
+# refusal or a disconnect there is the architecture working rather than a fault.
+MANAGEMENT_LOSS_WORKLOADS = {"D", "E"}
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +602,8 @@ WORKLOADS = {
 
 def verdict(before: dict, after: dict, before_health: dict, after_health: dict,
             tally: dict, last_reject: dict, companion_addr: str,
-            expect_refusals: bool, notes: list[str]) -> list[str]:
+            expect_refusals: bool, notes: list[str],
+            last_auth: dict | None = None) -> list[str]:
     """The stated success criteria, evaluated against adapter counters.
 
     Every one of these is a delta over the run rather than an absolute, so a
@@ -493,6 +631,10 @@ def verdict(before: dict, after: dict, before_health: dict, after_health: dict,
         failures.append(
             "firmware predates the authentication collision counter (no `auth` "
             "in btstate): authentication-side 0x23 was NOT observable")
+    if last_auth and last_auth.get("btauth") == "last" and             "security_ok" not in last_auth:
+        failures.append(
+            "firmware predates the peer-led security verdict (no `security_ok` "
+            "in btauth): the security invariant was NOT observable")
     if delta("auth", "collisions"):
         failures.append(f"authentication 0x23 collisions: {delta('auth', 'collisions')}")
     if delta("enc", "collisions"):
@@ -518,6 +660,26 @@ def verdict(before: dict, after: dict, before_health: dict, after_health: dict,
             f"lockout rejects: {delta('admission', 'reject_lockout')}")
     # This one IS companion-specific by construction: only a cross-transport
     # identity with no live management session can reach it.
+    # Security is judged from the firmware's own verdict on the last link, which
+    # is stated in terms of what exists on the PEER-LED path. Deliberately NOT
+    # `enc.deferrals > 0`: BTstack only schedules its automatic encryption
+    # request from the local Authentication Complete handler, and the
+    # authentication stand-down means that event never arrives, so enc.deferrals
+    # legitimately stays 0 on every intended reconnect. Requiring it would report
+    # "MECHANISM FALSIFIED" on a perfectly healthy build -- observed 2026-08-23,
+    # 50 clean links with enc.deferrals == 0 throughout.
+    auth = last_auth or {}
+    if auth.get("btauth") == "last":
+        if auth.get("auth_outcome") == "observed_failed":
+            failures.append("authentication failed on the last link")
+        if not auth.get("security_ok", False):
+            failures.append(
+                "last link did not satisfy the companion security invariant: "
+                f"auth_outcome={auth.get('auth_outcome')} "
+                f"encrypted_ok={auth.get('encrypted_ok')} "
+                f"key_size={auth.get('key_size')} "
+                f"key_size_valid={auth.get('key_size_valid')} "
+                f"hid_ready={auth.get('hid_ready')}")
     if delta("clink", "refused_no_mgmt") and not expect_refusals:
         failures.append(
             "Controller Link refused for lack of management: "
@@ -610,7 +772,8 @@ def main() -> int:
         # every cycle, so a refusal there is the fix working, not a fault.
         failures = verdict(before, after, before_health, after_health, tally,
                            uart(args.port, "btreject"), args.companion_addr,
-                           args.workload == "D", notes)
+                           args.workload in MANAGEMENT_LOSS_WORKLOADS, notes,
+                           uart(args.port, "btauth"))
         for note in notes:
             print("  note:", note)
         if failures:

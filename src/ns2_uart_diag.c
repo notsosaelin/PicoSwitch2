@@ -22,6 +22,7 @@
 #include "ns2_kbm_status.h"
 #include "ns2_owner_led.h"
 #include "ns2_bt_health.h"
+#include "ns2_bt_lifecycle.h"  // auth-observation naming + peer-led security verdict
 #include "ns2_bt_recovery_runtime.h"
 #include "config.h"  // config_request_save (the shared deferred settings write)
 #include "bt/bthid/bthid.h"                                  // live device table (btdev)
@@ -1090,9 +1091,9 @@ static void handle_command(void) {
                 "\"we_own_fresh_pairing\":%s,\"request_was_pending\":%s,"
                 "\"stood_down\":%s,"
                 "\"auth_deferred\":%s,\"auth_had_stored_key\":%s,"
-                "\"auth_completed_ok\":%s,\"encrypted_ok\":%s,"
-                "\"key_size\":%u,\"hid_ready\":%s,"
-                "\"link_closed\":%s,"
+                "\"auth_outcome\":\"%s\",\"encrypted_ok\":%s,"
+                "\"key_size\":%u,\"key_size_valid\":%s,\"hid_ready\":%s,"
+                "\"security_ok\":%s,\"link_closed\":%s,"
                 "\"auth_deferrals\":%lu}",
                 a.handle,
                 a.mgmt_connected ? "true" : "false",
@@ -1104,10 +1105,14 @@ static void handle_command(void) {
                 a.stood_down ? "true" : "false",
                 a.auth_deferred ? "true" : "false",
                 a.auth_had_stored_key ? "true" : "false",
-                a.auth_completed_ok ? "true" : "false",
+                ns2_bt_auth_observation_name(a.auth_outcome),
                 a.encrypted_ok ? "true" : "false",
                 a.encryption_key_size,
+                a.key_size_valid ? "true" : "false",
                 a.hid_ready ? "true" : "false",
+                ns2_bt_companion_security_satisfied(
+                    a.auth_outcome, a.encrypted_ok, a.key_size_valid,
+                    a.encryption_key_size, a.hid_ready) ? "true" : "false",
                 a.link_closed ? "true" : "false",
                 (unsigned long)btstack_host_authentication_deferrals());
             queue_text(trace_format_response);

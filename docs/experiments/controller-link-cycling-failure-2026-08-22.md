@@ -805,12 +805,17 @@ A cycle "fails" when the Controller Link does not become active within ~25 s. Cl
 
 ### Verdicts
 
-- **Accept Type C fix** - `enc.deferrals > 0`, `enc.peer_completed` tracks deferrals,
-  `enc.collisions == 0`, `enc.unencrypted_active == 0`, and **zero Type C failures** across the
-  campaign. Baseline was 8 Type C in 25 cycles, so ~30 clean cycles is a decisive result.
-- **Mechanism falsified** - links establish normally but `enc.deferrals` stays 0. The stand-down
-  never fired, so the source-established model is wrong. Capture `btstate` + logcat and stop; do not
-  iterate blind.
+> **SUPERSEDED for builds carrying the authentication stand-down (`21193ab` and later).**
+> `enc.deferrals` is no longer a valid acceptance signal; see *The encryption stand-down is
+> structurally unreachable on the reconnect path* below. Use `auth.deferrals`, `auth.collisions`
+> and the `btauth` `security_ok` verdict instead.
+
+- **Accept Type C fix** *(pre-`21193ab` form)* - `enc.deferrals > 0`, `enc.peer_completed` tracks
+  deferrals, `enc.collisions == 0`, `enc.unencrypted_active == 0`, and **zero Type C failures**
+  across the campaign. Baseline was 8 Type C in 25 cycles, so ~30 clean cycles is a decisive result.
+- **Mechanism falsified** *(pre-`21193ab` form only)* - links establish normally but
+  `enc.deferrals` stays 0. On a build with the authentication stand-down this verdict is WRONG and
+  must not be used: `enc.deferrals == 0` is the expected, healthy value there.
 - **Security failure** - `enc.unencrypted_active > 0`. Stop immediately: the peer-enforced
   encryption invariant is false and the stand-down must be reconsidered.
 - **Residual collision** - `enc.collisions > 0` or the Android encryption-failure signature persists.
@@ -832,6 +837,39 @@ session end to end and confirm:
   companion-only changes)
 
 Baseline for comparison: **10 failures in 25 cycles (40 %)**, of which 8 were Type C.
+
+## The encryption stand-down is structurally unreachable on the reconnect path
+
+*Confirmed on hardware 2026-08-23,* across 50 consecutive companion Controller Links:
+`auth.deferrals` reached 50 while `enc.deferrals` stayed **0**, with `enc.collisions == 0`,
+`auth.collisions == 0` and `enc.unencrypted_active == 0`.
+
+That is not a failure, and the reason is mechanical. `HCI_Authentication_Complete` is generated in
+response to *this host's own* `HCI_Authentication_Requested`. The authentication stand-down declines
+to send that command, so the event never arrives; the peer's authentication reaches us as Link Key
+Request followed by Encryption Change instead. BTstack sets `BONDING_SEND_ENCRYPTION_REQUEST` only
+inside its Authentication Complete handler, so with no event there is nothing to stand down from.
+
+**Consequence for acceptance.** `enc.deferrals > 0` must not be required. It is reachable only on
+the fresh-pair path, where no stored Classic key exists, `ns2_bt_defer_classic_authentication()`
+returns false, this host does request security, and the Authentication Complete does arrive. Keep
+`enc.collisions` and `enc.unencrypted_active` as hard failures -- they remain meaningful on every
+path.
+
+### Two telemetry fields were misleading and are fixed
+
+| field | was | now |
+|---|---|---|
+| `btauth.auth_completed_ok` | `false` on every deferred link, reading as "authentication failed" | `auth_outcome`: `not_observed` \| `observed_ok` \| `observed_failed` |
+| `btauth.key_size` | `0` on every link | sampled at the HID-ready acceptance gate, with `key_size_valid` |
+
+`gap_encryption_key_size()` returned 0 because, for Classic, BTstack issues
+`HCI_Read_Encryption_Key_Size` *after* the Encryption Change event and fills the value in on its
+completion — so the old sampling point could never have been valid. The acceptance gate always read
+it later and correctly saw 16; only the telemetry was wrong. `btauth` now also publishes
+`security_ok`, computed by `ns2_bt_companion_security_satisfied()`, which requires encryption, a
+*validly sampled* key size of at least 16, and HID readiness, and rejects an observed authentication
+failure — without requiring an event that no longer occurs.
 
 ## Controller Link is not a standalone transport
 

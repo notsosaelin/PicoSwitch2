@@ -76,6 +76,27 @@ bool ns2_bt_defer_classic_authentication(bool peer_is_companion_session,
            !we_own_fresh_pairing_security;
 }
 
+const char *ns2_bt_auth_observation_name(ns2_bt_auth_observation_t observation)
+{
+    switch (observation) {
+        case NS2_BT_AUTH_OBSERVED_OK:     return "observed_ok";
+        case NS2_BT_AUTH_OBSERVED_FAILED: return "observed_failed";
+        case NS2_BT_AUTH_NOT_OBSERVED:
+        default:                          return "not_observed";
+    }
+}
+
+bool ns2_bt_companion_security_satisfied(ns2_bt_auth_observation_t auth_outcome,
+                                         bool encrypted_ok,
+                                         bool key_size_valid,
+                                         uint8_t key_size,
+                                         bool hid_ready)
+{
+    if (auth_outcome == NS2_BT_AUTH_OBSERVED_FAILED) return false;
+    return encrypted_ok && key_size_valid &&
+           key_size >= NS2_BT_REQUIRED_CLASSIC_KEY_SIZE && hid_ready;
+}
+
 bool ns2_bt_encryption_collision(uint8_t hci_status)
 {
     return hci_status == NS2_BT_HCI_LMP_TRANSACTION_COLLISION;

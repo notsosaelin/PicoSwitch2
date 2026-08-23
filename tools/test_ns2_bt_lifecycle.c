@@ -556,8 +556,68 @@ static void test_controller_link_requires_management(void)
     assert(!ns2_bt_companion_classic_admission_allowed(true, unencrypted));
 }
 
+/*
+ * Security must be judged from state that exists on the peer-led path.
+ *
+ * HCI_Authentication_Complete is generated in response to this host's own
+ * HCI_Authentication_Requested. When the authentication stand-down declines to
+ * send that command -- the intended behaviour on every companion reconnect --
+ * the event never arrives. Recording that as `auth_completed_ok = false` made a
+ * correct, encrypted, fully authenticated link look like an authentication
+ * failure, and it would make an acceptance run demand an event that structurally
+ * no longer occurs.
+ *
+ * Observed on hardware 2026-08-23: 50 consecutive companion links reported
+ * auth.deferrals incrementing, enc.deferrals staying 0, and the old
+ * auth_completed_ok field reading false on every one of them, while the links
+ * were in fact encrypted and HID-ready.
+ */
+static void test_peer_led_security_is_judged_on_observable_state(void)
+{
+    // The intended reconnect path: nothing observed locally, but encryption and
+    // key size were positively confirmed at the acceptance gate.
+    assert(ns2_bt_companion_security_satisfied(NS2_BT_AUTH_NOT_OBSERVED, true,
+                                               true, 16u, true));
+
+    // A locally observed success is equally acceptable (fresh-pair path).
+    assert(ns2_bt_companion_security_satisfied(NS2_BT_AUTH_OBSERVED_OK, true,
+                                               true, 16u, true));
+
+    // An observed FAILURE is never acceptable, however good the rest looks.
+    assert(!ns2_bt_companion_security_satisfied(NS2_BT_AUTH_OBSERVED_FAILED, true,
+                                                true, 16u, true));
+
+    // Not observing authentication must not become a licence to skip the parts
+    // that ARE observable.
+    assert(!ns2_bt_companion_security_satisfied(NS2_BT_AUTH_NOT_OBSERVED, false,
+                                                true, 16u, true));   // unencrypted
+    assert(!ns2_bt_companion_security_satisfied(NS2_BT_AUTH_NOT_OBSERVED, true,
+                                                true, 15u, true));   // short key
+    assert(!ns2_bt_companion_security_satisfied(NS2_BT_AUTH_NOT_OBSERVED, true,
+                                                true, 16u, false));  // no HID
+
+    // An unsampled key size is not a passing key size. This is the specific
+    // trap the old telemetry fell into: gap_encryption_key_size() reads 0 in the
+    // Encryption Change handler because BTstack has not issued
+    // HCI_Read_Encryption_Key_Size yet, so "0" meant "not asked", not "weak".
+    // Treating not-asked as satisfied would silently drop the invariant.
+    assert(!ns2_bt_companion_security_satisfied(NS2_BT_AUTH_NOT_OBSERVED, true,
+                                                false, 0u, true));
+    assert(!ns2_bt_companion_security_satisfied(NS2_BT_AUTH_NOT_OBSERVED, true,
+                                                false, 16u, true));
+
+    // The names are part of the wire format the harness parses.
+    assert(strcmp(ns2_bt_auth_observation_name(NS2_BT_AUTH_NOT_OBSERVED),
+                  "not_observed") == 0);
+    assert(strcmp(ns2_bt_auth_observation_name(NS2_BT_AUTH_OBSERVED_OK),
+                  "observed_ok") == 0);
+    assert(strcmp(ns2_bt_auth_observation_name(NS2_BT_AUTH_OBSERVED_FAILED),
+                  "observed_failed") == 0);
+}
+
 int main(void)
 {
+    test_peer_led_security_is_judged_on_observable_state();
     test_controller_link_requires_management();
     test_defer_classic_authentication_is_narrow();
     test_required_key_size_is_not_relaxed();
