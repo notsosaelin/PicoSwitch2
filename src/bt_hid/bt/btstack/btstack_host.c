@@ -870,9 +870,6 @@ enum {  // btlife_event_t.code
     BTLIFE_ENC_CHANGE,       // Encryption Change (a = status, b = key size)
     BTLIFE_HID_READY,        // both HID channels usable
     BTLIFE_HID_FAIL,         // HID connection opened with a failure (a = status)
-    // EXPERIMENT ONLY, never emitted while the flag is off.
-    BTLIFE_EXP_INQUIRY_HOLD,
-    BTLIFE_EXP_INQUIRY_RESUME,
 };
 
 enum {  // BTLIFE_PAGE_REJECT cause (btlife_event_t.a)
@@ -915,92 +912,6 @@ enum {  // SCAN_SUPPRESS cause (btlife_event_t.a) -- why a scan restart was refu
 // Defined with the ring below; declared here because the page-scan and
 // inquiry call sites sit above it.
 static void btlife_record(uint8_t code, uint8_t a, uint16_t b);
-
-// ===========================================================================
-// EXPERIMENT ONLY -- NOT PRODUCTION BEHAVIOUR
-//
-// Hold Classic inquiry off for the duration of an incoming Classic connection
-// establishment, to test whether inquiry scheduling is causal or merely
-// correlated with the two device failure classes.
-//
-// WHY. The 200-cycle run left two families unexplained: 8 CLASSIC_PAGE_TIMEOUT
-// (no page_rx at all) and 1 CLASSIC_ACL_TIMEOUT (page_rx + page_accept, then
-// 20.274 s of silence and acl_fail 0x08). Source review established that the
-// 20.274 s timer is the CYW43 controller's -- BTstack arms no timer between
-// ACCEPTED_CONNECTION_REQUEST and Connection Complete, and nothing in this
-// firmware generates 0x08. It also established that page scan cannot be
-// suppressed by any local state: hci_stack->connectable has exactly one writer.
-//
-// What IS ours is the inquiry restart. Both restart sites gate only on
-// hid_state.state == BLE_STATE_SCANNING -- the BLE state machine -- so they are
-// blind to a Classic connection being established. During cycle 64's stall the
-// adapter inquired for 15.79 s of 20.274 s (78%).
-//
-// The observational data cannot separate cause from consequence there: a
-// success finishes in ~0.4 s, so few restarts land inside its window, while a
-// 20 s stall accumulates three of them regardless of direction. Only removing
-// inquiry from the window can distinguish the two.
-//
-// DEFAULT OFF. Toggled at runtime over UART (`expmode inquiry off|on`), so both
-// arms run from ONE binary with one pairing -- build, flash and bond are then
-// not variables in the comparison. Production behaviour with the flag off is
-// bit-for-bit what it was.
-//
-// SAFETY. The hold is bounded by EXP_CLASSIC_SETUP_MAX_MS and never cancels a
-// restart, only postpones it: inquiry_restart_at_ms is still set, and the
-// deferred site fires as soon as the hold clears. A leaked window therefore
-// costs at most 30 s of discovery, not discovery forever.
-// ===========================================================================
-#define EXP_CLASSIC_SETUP_MAX_MS 30000u
-static bool exp_inquiry_suppression_enabled;   // runtime flag, default OFF
-static uint32_t exp_classic_setup_since_ms;    // 0 = no establishment in flight
-static bool exp_inquiry_held;                  // a hold is currently in effect
-
-static void exp_classic_setup_begin(void)
-{
-    if (!exp_inquiry_suppression_enabled) return;
-    exp_classic_setup_since_ms = btstack_run_loop_get_time_ms();
-}
-
-static void exp_classic_setup_end(void)
-{
-    if (exp_classic_setup_since_ms == 0u && !exp_inquiry_held) return;
-    exp_classic_setup_since_ms = 0u;
-    if (exp_inquiry_held) {
-        exp_inquiry_held = false;
-        btlife_record(BTLIFE_EXP_INQUIRY_RESUME, 0u, 0u);
-    }
-}
-
-// True while inquiry restarts should be postponed. Bounded; self-clearing.
-static bool exp_inquiry_should_hold(void)
-{
-    if (!exp_inquiry_suppression_enabled) return false;
-    if (exp_classic_setup_since_ms == 0u) return false;
-    uint32_t now = btstack_run_loop_get_time_ms();
-    if ((now - exp_classic_setup_since_ms) >= EXP_CLASSIC_SETUP_MAX_MS) {
-        exp_classic_setup_end();
-        return false;
-    }
-    if (!exp_inquiry_held) {
-        exp_inquiry_held = true;
-        btlife_record(BTLIFE_EXP_INQUIRY_HOLD, 0u, 0u);
-    }
-    return true;
-}
-
-bool btstack_host_experiment_inquiry_suppression(void)
-{
-    return exp_inquiry_suppression_enabled;
-}
-
-void btstack_host_set_experiment_inquiry_suppression(bool enable)
-{
-    exp_inquiry_suppression_enabled = enable;
-    if (!enable) exp_classic_setup_end();
-    printf("[EXPERIMENT] Classic inquiry suppression during establishment: %s\n",
-           enable ? "ON (experimental)" : "off (production behaviour)");
-}
 
 static bool hid_pairing_window_open;
 static bool pairing_lockout;
@@ -3307,6 +3218,7 @@ static void classic_restart_inquiry(void)
 static int btstack_host_classic_connection_filter(bd_addr_t addr,
                                                    hci_link_type_t link_type)
 {
+    UNUSED(link_type);
     // Refuse before an ACL exists. This is the "cleanly" in "Controller Link
     // establishment must be refused cleanly when management is disconnected":
     // no link, no security procedure, so no opportunity for both ends to start
@@ -3336,11 +3248,6 @@ static int btstack_host_classic_connection_filter(bd_addr_t addr,
     // adapter's half of "we answered", against which an Android-side
     // PAGE_TIMEOUT can be read.
     btlife_record_addr(BTLIFE_PAGE_ACCEPT, 0u, 0u, addr);
-    // EXPERIMENT: opens the inquiry-suppression window. ACL only -- the state
-    // under test is ACCEPTED_CONNECTION_REQUEST for an ACL, and a SCO/eSCO
-    // request must not open a window that no Connection Complete for an ACL
-    // will close. No-op with the flag off.
-    if (link_type == HCI_LINK_TYPE_ACL) exp_classic_setup_begin();
     return 1;
 }
 
@@ -3752,14 +3659,6 @@ void btstack_host_process(void)
         hid_state.reconnect_attempt_time = 0;
     }
 
-    // EXPERIMENT: bounded cleanup for the inquiry-suppression window, so a
-    // Connection Complete that never arrives cannot hold discovery off.
-    if (exp_classic_setup_since_ms != 0u &&
-        (btstack_run_loop_get_time_ms() - exp_classic_setup_since_ms)
-            >= EXP_CLASSIC_SETUP_MAX_MS) {
-        exp_classic_setup_end();
-    }
-
     // Deferred Classic inquiry restart. The gap between rounds is what leaves
     // the controller room to answer an incoming page; see
     // ns2_bt_inquiry_restart_delay_ms().
@@ -3767,8 +3666,7 @@ void btstack_host_process(void)
         !classic_state.inquiry_active &&
         hid_state.state == BLE_STATE_SCANNING &&
         (int32_t)(btstack_run_loop_get_time_ms() -
-                  classic_state.inquiry_restart_at_ms) >= 0 &&
-        !exp_inquiry_should_hold()) {
+                  classic_state.inquiry_restart_at_ms) >= 0) {
         classic_restart_inquiry();
     }
 
@@ -4705,7 +4603,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 // Not back to back: see ns2_bt_inquiry_restart_delay_ms().
                 uint32_t delay =
                     ns2_bt_inquiry_restart_delay_ms(hid_pairing_window_open);
-                if (delay == 0u && !exp_inquiry_should_hold()) {
+                if (delay == 0u) {
                     classic_restart_inquiry();
                 } else {
                     classic_state.inquiry_restart_at_ms =
@@ -4791,9 +4689,6 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                    status, handle, addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
             btlife_record_addr(status == 0 ? BTLIFE_ACL_UP : BTLIFE_ACL_FAIL,
                                status, handle, addr);
-            // EXPERIMENT: closes the inquiry-suppression window on either
-            // outcome. No-op with the flag off or no window open.
-            exp_classic_setup_end();
 
             if (classic_state.pending_valid &&
                 bd_addr_cmp(addr, classic_state.pending_addr) == 0) {
@@ -11085,8 +10980,6 @@ const char *btstack_host_life_code_name(uint8_t code)
         case BTLIFE_ENC_CHANGE:      return "enc_change";
         case BTLIFE_HID_READY:       return "hid_ready";
         case BTLIFE_HID_FAIL:        return "hid_fail";
-        case BTLIFE_EXP_INQUIRY_HOLD:   return "exp_inquiry_hold";
-        case BTLIFE_EXP_INQUIRY_RESUME: return "exp_inquiry_resume";
         default:                     return "none";
     }
 }
