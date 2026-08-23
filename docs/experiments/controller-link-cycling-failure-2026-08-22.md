@@ -941,6 +941,40 @@ than credited to the fix. Acceptance is evaluated as deltas over the run — `au
 `reboot.requests`, and no Controller Link left bound with management disconnected — so a soak can
 start on an adapter that already has history.
 
+### Measured baseline on `4b19842` (encryption stand-down only)
+
+*Confirmed on hardware 2026-08-22*, 25 legacy cycles with the corrected harness, adapter running
+`4b19842` — the Appearance fix and the **encryption** stand-down, but **not** the authentication
+stand-down (`21193ab`) and **not** the lifecycle binding (`927f312`).
+
+| | recorded baseline (pre-candidate) | this run (`4b19842`) |
+|---|---|---|
+| cycles | 25 | 25 |
+| failures | **10 (40 %)** | **1 (4 %)** |
+| Type C | 8 | **0** |
+| Mode 1 (`PAGE_TIMEOUT`) | 1 in 35 | 0 |
+| Mode 2 (`reject_window`) | 0 | 0 (unchanged at 9) |
+| Type A (Android BT abort) | — | 1 |
+
+Adapter counters across the run: `enc.deferrals` 6 → 31 (**+25, exactly one per cycle**),
+`enc.peer_completed` 6 → 30 (+24), `enc.collisions` **0**, `enc.unencrypted_active` **0**. The single
+missing peer-completion is the Type A cycle, where Android's Bluetooth process died mid
+establishment — the stand-down fired and the peer never got to finish. Typical link time 3.1 s.
+
+*Interpretation.* The encryption stand-down is no longer merely source-established: it fired on
+**every** companion reconnect and the peer completed encryption every time it survived to do so.
+Promote its mechanism from Strong Evidence to **Confirmed** on this hardware. The single failure is
+Type A, an Android-side defect this candidate does not address, and it is classified by log signature
+only — the per-cycle logcat was cleared by subsequent cycles, so it was not independently verified.
+
+Health across the same run: `probes 242/242`, `recovery.attempts 0`, `reboot.requests 0`,
+`consecutive_boots 0`. **The CYW43/HCI wedge did not recur.** That is absence of recurrence in 25
+cycles, not evidence of its cause, and it must not be joined to the authentication collisions.
+
+This run could not evaluate the lifecycle invariant or authentication-side `0x23` at all: `4b19842`
+publishes neither `clink` nor `auth` in `btstate`, and the harness reports that as *not observable*
+rather than as a pass.
+
 ### Not claimed
 
 That the authentication collisions caused the later CYW43/HCI wedge. The preserved snapshot
