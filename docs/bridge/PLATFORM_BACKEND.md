@@ -16,10 +16,15 @@ specifics.
 ## 1. The shape
 
 ```text
- physical controls / host device APIs
-              |   PLATFORM INPUT BACKEND
-              v
-      ControllerInputState                (Bridge Core)
+ physical controls / host device APIs      touch contacts / pointer APIs
+              |   PLATFORM INPUT BACKEND              |   PLATFORM TOUCH ADAPTER
+              |                                       v
+              |                          TouchContactTracker            (Bridge Core)
+              |                                       v
+              |                           TouchControlEngine            (Bridge Core)
+              |                                       |   TouchContribution
+              v                                       v
+      ControllerInputState                (Bridge Core)   <- ONE of the two, by authority
               |
               v
         BridgeSession                     (Bridge Core)
@@ -29,6 +34,9 @@ specifics.
               v
          PicoSwitch2
 ```
+
+Both input paths terminate in the same normalized state, and the adapter cannot tell them apart —
+which is the point. Touch origin is a host-side concern; the firmware learns nothing new.
 
 and in reverse:
 
@@ -195,7 +203,73 @@ your API cannot change an effect's amplitude in flight; skip it if it can.
 `keepAlive()` is ticked while the link is live, so a repeating effect cannot outlive a bridge that
 went quiet. `stop()` is called on every teardown path.
 
-### 3.7 Expose diagnostics
+### 3.7 Drive the on-screen controller, if the host has a touchscreen (optional)
+
+A touchscreen host is a complete controller source even with no gamepad attached. Bridge Core owns
+the whole of what that means; the platform supplies contacts, a rectangle, and a way to buzz.
+
+**Implement three things and no more:**
+
+```text
+Here is contact #42, Down at x/y.        -> TouchContact(id, TouchPhase.Down, x, y)
+Here is contact #42, Move at x/y.        -> TouchContact(id, TouchPhase.Move, x, y)
+Here is contact #42, Up / cancelled.     -> TouchContact(id, TouchPhase.Up | Cancel, ...)
+The safe interaction rectangle changed.  -> TouchLayoutResolver.resolve(layout, region)
+Perform a light local press haptic.      -> TouchFeedbackBackend
+```
+
+Wire them through `TouchGamepad`, which holds the engine, the contact tracker and the authority
+transitions.
+
+Five rules, all of which have a specific failure behind them:
+
+1. **`TouchContact.id` must be the platform's STABLE contact identifier, never its position in the
+   platform's array.** Every touch platform reorders that array between events. An index-keyed
+   implementation is correct with two contacts and silently swaps which control a thumb is holding
+   the moment a third arrives or the first lifts.
+2. **Each batch must describe every contact the platform currently knows about**, not only the one
+   that changed. `TouchContactTracker` uses the batch to notice a contact the platform stopped
+   mentioning without ever ending — otherwise that control is held down forever with nothing left
+   that could release it. A platform that reports one changed contact per event must accumulate
+   first.
+3. **Coordinates are in the same space the layout was resolved into.** Density, window origin,
+   rotation and system-gesture insets are the platform's to resolve BEFORE building the region. By
+   the time a contact reaches the engine it is a point in the same plane as the control geometry.
+4. **Resolve the layout against the interaction-SAFE rectangle**, not the window. A background may
+   draw edge to edge; a trigger under a back-gesture strip is a control the user cannot press.
+   Re-resolve on every size, rotation or inset change — `TouchControlEngine.setLayout` releases
+   first, because every retained contact position was measured against the previous rectangle.
+5. **Local touch feedback is not console rumble.** `TouchFeedbackBackend` is a UI affordance and
+   must use whatever API respects the user's own haptic setting. Routing it through `OutputBackend`
+   would let the interface mutate bridge output state and fight a game's own effects.
+
+**Input authority.** `ControllerInputState.setAuthority` decides which host control set is the
+gameplay controller. Exactly one contributes; the inactive origin's mutations are discarded rather
+than retained, and every transition neutralizes. Software/meta buttons (`setVirtualButton` — Home,
+Capture, C) are outside the rule and always contribute, because they are host actions rather than a
+second controller. Do not merge two complete controllers: a physical stick left and a touch stick
+right have no defensible combined meaning, and whichever event arrived last would win by accident.
+
+**Capabilities and actuators when the screen is the controller.** Report the on-screen controller's
+own `DeviceCapabilities` (buttons, two sticks, analog triggers, D-pad) — a physical-device probe
+correctly reports nothing for a touchscreen, and "nothing" is the wrong answer. Then call
+`bindSource(null, touchCapabilities)`: binding to no source is what resolves the HOST's own actuator,
+which is the legitimate one when the host itself is the controller. **Do not invent a synthetic input
+device.** Something downstream always tries to resolve a descriptor back to a real device, and a
+fabricated one resolves to nothing at exactly the moment it matters.
+
+**Release on every boundary.** `TouchGamepad.release(reason)` is idempotent and must be called on:
+contact end, gesture cancellation, mode exit, host inactivity (pause/stop/focus loss/screen lock),
+geometry invalidation, authority change, link down, link stop, teardown, and any fault caught at a
+boundary. Order matters while the link is still up: release the engine, THEN neutralize the session,
+so the neutral report actually crosses the transport. Once the link is gone there is no longer a way
+to clear a held input from the console.
+
+**Never persist gameplay state.** Configuration survives a process restart; held contacts, pressed
+buttons, stick positions and D-pad direction must not. A process that came back from the dead and
+immediately told the console a button was down is the worst possible restoration.
+
+### 3.8 Expose diagnostics
 
 Implement `BridgeDiagnostics` over whatever your platform already has (logcat, event log,
 journald, a file). Bridge Core, the transport and the backends all write to it, so the operator
@@ -226,6 +300,10 @@ always-on at report cadence.
 | `ControllerInputState` | Held state, D-pad merging, layout application, neutralization. |
 | `ControllerLayoutResolver` + `ControllerFaceLayout` | The audited handheld identity table and the A/B–X/Y swap. |
 | `ControllerCandidates` | The usability/exclusion rule. |
+| `TouchControlEngine`, `TouchContactTracker`, `TouchGamepad` | Contact ownership, claim/exclusivity rules, release-all, authority transitions. A second host reimplementing "which control does this thumb own" would reproduce the index-versus-identifier bug from scratch. |
+| `TouchStick`, `TouchDpad`, `TouchAxis` | Circular clamping, radial deadzone rescaling, eight-way sectors with radial and angular hysteresis, and the single conversion into bridge units. |
+| `TouchLayout*` + `TouchLayoutAudit` | Declarative geometry, the scale/gutter rule, and mechanical validation of overlap, target size and bounds. |
+| `InputAuthority` | Which host control set is the controller, and that it is never two. |
 | `BridgeSession` | Cadence, motion gating, battery polling, report accounting, teardown ordering. |
 | `AxisRange`, `DpadState.fromAxes`, `MotionScale`, `ScreenOrientation`, `RumbleShaping` | Shared normalization maths. |
 | `SessionResumePolicy` | When it is safe to take the console back after a focus resume. |
@@ -244,6 +322,9 @@ abstraction is wrong and the boundary should move — not your backend.
 - Can it consume `RumbleRequest(left, right)` without knowing anything about Android vibrators?
 - Can it register a HID report descriptor and connect to a paired host as a HID **device**? (This
   is the real feasibility gate, exactly as it was for Android.)
+- If it has a touchscreen: can it report stable contact identifiers, a complete contact set per
+  event, and an interaction-safe rectangle — without the shared layer learning anything about its
+  pointer API?
 
 ## 6. Sketch: the three platforms
 
@@ -252,13 +333,16 @@ Documentation only. No Windows or Linux backend exists, and none is planned in t
 ```text
 Android      (implemented, hardware-validated)
   input      InputDevice / KeyEvent / MotionEvent
+  touch      Compose awaitPointerEventScope, keyed on PointerId; WindowInsets.safeContent
   motion     SensorManager (TYPE_GYROSCOPE, TYPE_ACCELEROMETER) + DisplayManager rotation
   output     InputDevice-scoped VibratorManager, falling back to the system vibrator
+  feedback   View.performHapticFeedback (VIRTUAL_KEY / CLOCK_TICK)
   transport  BluetoothHidDevice (Classic BR/EDR HID Device profile, API 28+)
   battery    ACTION_BATTERY_CHANGED sticky broadcast
 
 Windows      (not implemented)
   input      RawInput / XInput / Windows.Gaming.Input
+  touch      WM_POINTER (pointerId is the stable identifier) or Windows.UI.Input
   motion     Windows.Devices.Sensors, or a handheld's vendor IMU
   output     XInput / Windows.Gaming.Input vibration, or the vendor SDK
   transport  Windows.Devices.Bluetooth — NOTE: acting as a Classic HID *device* is the
@@ -267,6 +351,7 @@ Windows      (not implemented)
 
 Linux        (not implemented)
   input      evdev (/dev/input/event*) or hidraw
+  touch      libinput touch events, or evdev ABS_MT_TRACKING_ID as the stable identifier
   motion     IIO (industrialio) for a handheld IMU
   output     evdev force feedback (FF_RUMBLE)
   transport  BlueZ, exporting a HID device profile record

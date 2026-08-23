@@ -87,6 +87,26 @@ void btstack_host_suppress_scan(bool suppress);
 // Classic device. Returns false until a rejection has occurred.
 bool btstack_host_last_reject(uint8_t *addr_out, bool *trust_present);
 
+// Deciding inputs of the most recent Controller Link refusal.
+//
+// `clink.refused_no_mgmt` is a count, and the predicate behind it is a
+// four-term conjunction. On 2026-08-22 that counter reached 18 against a peer
+// the bond database and `btreject` both identified as the companion, while the
+// phone's own log showed management connected and identity-verified seconds
+// earlier -- unanswerable from counters. These are the terms themselves.
+typedef struct {
+    uint8_t addr[6];
+    bool cross_transport;
+    bool mgmt_connected;
+    bool mgmt_addr_known;
+    bool mgmt_raw_matches;
+    bool mgmt_identity_known;
+    bool mgmt_identity_matches;
+    bool mgmt_link_trusted;
+} btstack_host_link_refusal_t;
+
+bool btstack_host_last_link_refusal(btstack_host_link_refusal_t *out);
+
 // Deciding inputs of the most recent Classic Authentication Complete. Exists
 // because enc.deferrals staying zero while security succeeds is ambiguous on
 // its own: it cannot distinguish "the hook never ran" from "one predicate was

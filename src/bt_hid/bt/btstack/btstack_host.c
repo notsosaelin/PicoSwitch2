@@ -2724,19 +2724,62 @@ bool btstack_host_pairing_locked(void)
 // stored grant, so it cannot outlive the proof that created it.
 //
 // Core 1 only: touches the live connection table.
+// The RESOLVED IDENTITY of the live management client, or false if there is
+// none yet.
+//
+// config_ble.client_addr is the address the phone actually connected WITH, taken
+// from LE Connection Complete. On Android that is routinely a Resolvable Private
+// Address, and an RPA never equals the public BD_ADDR the same phone pages us
+// from on Classic. Comparing the connection address alone therefore fails to
+// recognise the companion on exactly the connections where the RPA has not been
+// resolved into an identity yet -- which is what refused a legitimate Controller
+// Link 18 times after a fresh pairing on 2026-08-22.
+//
+// The identity here is not a claim, it is the outcome of cryptography: the LE
+// device DB index is assigned by SM on successful bonding or IRK resolution, and
+// nothing else writes it. It is also always available when the session is
+// trusted at all -- pinned BTstack implements gap_bonded() for LE as exactly
+// `sm_le_db_index >= 0` (hci.c:9844), the same index read here, and
+// config_ble_link_trusted() already requires gap_bonded().
+//
+// Core 1 only: touches the LE device DB and the live connection table.
+static bool config_ble_identity_addr(bd_addr_t out)
+{
+    if (config_ble.handle == HCI_CON_HANDLE_INVALID) return false;
+    int index = sm_le_device_index(config_ble.handle);
+    if (index < 0 || index >= le_device_db_max_count()) return false;
+    int stored_type = BD_ADDR_TYPE_UNKNOWN;
+    bd_addr_t stored_addr;
+    memset(stored_addr, 0, sizeof(stored_addr));
+    le_device_db_info(index, &stored_type, stored_addr, NULL);
+    if (stored_type == BD_ADDR_TYPE_UNKNOWN) return false;
+    memcpy(out, stored_addr, sizeof(bd_addr_t));
+    return true;
+}
+
 static bool btstack_host_classic_companion_session_trust(const bd_addr_t addr)
 {
     bool connected = config_ble.handle != HCI_CON_HANDLE_INVALID;
     bool addr_known = connected && config_ble.client_addr_valid;
-    bool addr_matches =
+    // Two ways to be the same peer. The identity comparison is the load-bearing
+    // one and the only one that survives LE privacy; the connection-address
+    // comparison is kept because it is correct whenever the phone connects with
+    // its public address, and it costs nothing.
+    bool raw_matches =
         addr_known &&
         memcmp(config_ble.client_addr, addr, sizeof(bd_addr_t)) == 0;
+    bd_addr_t identity;
+    bool identity_known = config_ble_identity_addr(identity);
+    bool identity_matches =
+        identity_known && memcmp(identity, addr, sizeof(bd_addr_t)) == 0;
+    bool addr_matches = raw_matches || identity_matches;
     // Evaluated only for the matching peer: gap_bonded()/gap_encryption_key_size()
     // are keyed on the handle, so asking about a non-match proves nothing.
     bool session_trusted =
         addr_matches && config_ble_link_trusted(config_ble.handle);
-    return ns2_bt_companion_session_trust(connected, addr_known, addr_matches,
-                                          session_trusted);
+    return ns2_bt_companion_session_trust(connected,
+                                          addr_known || identity_known,
+                                          addr_matches, session_trusted);
 }
 
 // Is this Classic peer an identity that also exists on LE?
@@ -2801,6 +2844,59 @@ static bool btstack_host_classic_has_trust(const bd_addr_t addr)
 static bd_addr_t last_reject_addr;
 static bool last_reject_trust_present;
 static bool last_reject_valid;
+
+// Why the most recent Controller Link refusal happened.
+//
+// The counter alone cost a real diagnosis: `clink.refused_no_mgmt` reached 18
+// against a peer the bond database and `btreject` both showed as the companion,
+// while the phone's own log said management was connected and identity-verified
+// seconds earlier. "Some predicate was false" is not a finding, and the
+// conjunction has four terms. Record which one, at the moment it decides.
+static struct {
+    bool valid;
+    bd_addr_t addr;
+    bool cross_transport;      // peer holds an LE bond => companion identity
+    bool mgmt_connected;
+    bool mgmt_addr_known;      // a connection address was recorded
+    bool mgmt_raw_matches;     // ...and it equals this Classic peer
+    bool mgmt_identity_known;  // SM resolved the session to a stored identity
+    bool mgmt_identity_matches;// ...and that identity equals this Classic peer
+    bool mgmt_link_trusted;    // bonded AND encrypted at full key length
+} last_refusal;
+
+static void btstack_host_note_link_refusal(const bd_addr_t addr,
+                                           bool cross_transport)
+{
+    bd_addr_t identity;
+    bool identity_known = config_ble_identity_addr(identity);
+    last_refusal.valid = true;
+    (void)memcpy(last_refusal.addr, addr, sizeof(bd_addr_t));
+    last_refusal.cross_transport = cross_transport;
+    last_refusal.mgmt_connected = config_ble.handle != HCI_CON_HANDLE_INVALID;
+    last_refusal.mgmt_addr_known =
+        last_refusal.mgmt_connected && config_ble.client_addr_valid;
+    last_refusal.mgmt_raw_matches =
+        last_refusal.mgmt_addr_known &&
+        memcmp(config_ble.client_addr, addr, sizeof(bd_addr_t)) == 0;
+    last_refusal.mgmt_identity_known = identity_known;
+    last_refusal.mgmt_identity_matches =
+        identity_known && memcmp(identity, addr, sizeof(bd_addr_t)) == 0;
+    last_refusal.mgmt_link_trusted = config_ble_link_trusted(config_ble.handle);
+}
+
+bool btstack_host_last_link_refusal(btstack_host_link_refusal_t *out)
+{
+    if (!out || !last_refusal.valid) return false;
+    (void)memcpy(out->addr, last_refusal.addr, sizeof(out->addr));
+    out->cross_transport = last_refusal.cross_transport;
+    out->mgmt_connected = last_refusal.mgmt_connected;
+    out->mgmt_addr_known = last_refusal.mgmt_addr_known;
+    out->mgmt_raw_matches = last_refusal.mgmt_raw_matches;
+    out->mgmt_identity_known = last_refusal.mgmt_identity_known;
+    out->mgmt_identity_matches = last_refusal.mgmt_identity_matches;
+    out->mgmt_link_trusted = last_refusal.mgmt_link_trusted;
+    return true;
+}
 
 static void btstack_host_record_fresh_admission(bool accepted)
 {
@@ -2956,6 +3052,7 @@ static int btstack_host_classic_connection_filter(bd_addr_t addr,
     if (!btstack_host_classic_admission_allowed(addr)) {
         classic_companion_refused_no_mgmt++;
         btstack_host_note_admission_reject(addr, btstack_host_classic_has_trust(addr));
+        btstack_host_note_link_refusal(addr, true);
         printf("[BTSTACK_HOST] Refusing Controller Link: no live management session "
                "(refused=%lu)\n",
                (unsigned long)classic_companion_refused_no_mgmt);
@@ -4349,6 +4446,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 classic_companion_refused_no_mgmt++;
                 btstack_host_note_admission_reject(
                     addr, btstack_host_classic_has_trust(addr));
+                btstack_host_note_link_refusal(addr, true);
                 printf("[BTSTACK_HOST] Refusing Controller Link request: no live "
                        "management session (refused=%lu)\n",
                        (unsigned long)classic_companion_refused_no_mgmt);
