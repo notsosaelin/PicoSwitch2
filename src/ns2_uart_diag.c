@@ -474,13 +474,46 @@ static void queue_btlife(uint16_t index) {
         queue_text("{\"btlife\":\"empty\"}");
         return;
     }
-    char response[192];
+    char flags[9];
+    btstack_host_life_flag_names(e.flags, flags);
+    char response[256];
     snprintf(response, sizeof(response),
         "{\"btlife\":\"record\",\"i\":%u,\"t_ms\":%lu,\"code\":\"%s\","
-        "\"cause\":\"%s\",\"a\":%u,\"handle\":\"0x%04X\"}",
+        "\"cause\":\"%s\",\"a\":%u,\"handle\":\"0x%04X\","
+        "\"radio\":\"%s\",\"addr\":\"%02X:%02X:%02X\"}",
         index, (unsigned long)e.t_ms, btstack_host_life_code_name(e.code),
-        btstack_host_life_cause_name(e.a), e.a, e.b);
+        btstack_host_life_cause_name(e.a), e.a, e.b,
+        flags, e.addr3[0], e.addr3[1], e.addr3[2]);
     queue_text(response);
+}
+
+// Bulk read. The ring holds 1024 entries so a soak can be reconstructed after
+// the fact; one record per UART round trip would take about twenty minutes to
+// drain, which is not a usable diagnostic. Emits a compact positional array --
+// [t_ms, code, a, handle, radio, addr] -- for up to BTLIFE_DUMP_SPAN entries.
+#define BTLIFE_DUMP_SPAN 24u
+static void queue_btlife_dump(uint16_t first) {
+    int n = snprintf(trace_format_response, sizeof(trace_format_response),
+                     "{\"btlife\":\"dump\",\"first\":%u,\"events\":[", first);
+    uint16_t emitted = 0;
+    for (uint16_t i = 0; i < BTLIFE_DUMP_SPAN; i++) {
+        btstack_host_life_record_t e;
+        if (!btstack_host_life_get((uint16_t)(first + i), &e)) break;
+        char flags[9];
+        btstack_host_life_flag_names(e.flags, flags);
+        int written = snprintf(
+            trace_format_response + n, sizeof(trace_format_response) - (size_t)n,
+            "%s[%lu,\"%s\",%u,%u,\"%s\",\"%02X%02X%02X\"]",
+            emitted ? "," : "", (unsigned long)e.t_ms,
+            btstack_host_life_code_name(e.code), e.a, e.b, flags,
+            e.addr3[0], e.addr3[1], e.addr3[2]);
+        if (written < 0 || (size_t)(n + written) >= sizeof(trace_format_response) - 32u) break;
+        n += written;
+        emitted++;
+    }
+    snprintf(trace_format_response + n, sizeof(trace_format_response) - (size_t)n,
+             "],\"count\":%u}", emitted);
+    queue_text(trace_format_response);
 }
 
 static void queue_nfc_mirror_status(const char *event) {
@@ -1124,6 +1157,15 @@ static void handle_command(void) {
     } else if (strcmp(rx_line, "btlife clear") == 0) {
         btstack_host_life_clear();
         queue_text("{\"btlife\":\"cleared\"}");
+    } else if (strncmp(rx_line, "btlife dump ", 12) == 0) {
+        unsigned int first;
+        char trailing;
+        if (sscanf(rx_line + 12, "%u%c", &first, &trailing) != 1 ||
+            first > UINT16_MAX) {
+            queue_text("{\"btlife\":\"error\",\"error\":\"usage: btlife dump N\"}");
+        } else {
+            queue_btlife_dump((uint16_t)first);
+        }
     } else if (strncmp(rx_line, "btlife read ", 12) == 0) {
         unsigned int index;
         char trailing;
@@ -2519,6 +2561,7 @@ static void handle_command(void) {
                    "sensitivityy|recenter|invertx|inverty|antideadzone "
                    "<value>\",\"btdev\","
                    "\"btreconnect\",\"btbonds\",\"btfresh\",\"btreject\",\"btrefuse\","
+                   "\"btlife dump N\","
                    "\"btauth\","
                    "\"reenumerate\",\"bootsel\",\"save\",\"help\"]}");
     } else if (rx_length != 0) {

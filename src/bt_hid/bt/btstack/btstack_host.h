@@ -276,6 +276,11 @@ typedef struct {
     uint8_t  code;   // btstack_host_life_code_name()
     uint8_t  a;      // scan-suppress cause (btstack_host_life_cause_name()) or HCI reason
     uint16_t b;      // connection handle (0 when not applicable)
+    // What the radio was doing when the event fired. A page timeout is the
+    // ABSENCE of page_rx and so has no event of its own to carry context;
+    // stamping every entry makes the surrounding state recoverable anyway.
+    uint8_t  flags;  // btstack_host_life_flag_names()
+    uint8_t  addr3[3];  // last three octets of the peer, 0 when not applicable
 } btstack_host_life_record_t;
 
 typedef struct {
@@ -380,6 +385,10 @@ bool btstack_host_life_get(uint16_t index, btstack_host_life_record_t *out);
 void btstack_host_life_clear(void);
 const char *btstack_host_life_code_name(uint8_t code);
 const char *btstack_host_life_cause_name(uint8_t cause);
+// Compact 8-character radio snapshot, one letter per set flag:
+//   i inquiry  s le-scan  c connecting  m mgmt  t mgmt-trusted
+//   C classic  w wake-adv  p pairing-window
+void btstack_host_life_flag_names(uint8_t flags, char out[9]);
 
 // UART diagnostic control: discard only the saved target's BTstack LE bond,
 // disconnect its current link, and arm Nintendo custom ATT pairing. The durable

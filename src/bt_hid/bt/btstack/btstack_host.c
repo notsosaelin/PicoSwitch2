@@ -823,6 +823,71 @@ static struct {
 // user-gesture authorization for accepting a new companion bond -- a READER of
 // the HID pairing window, not a separate window. The old name made that look
 // like companion-only state; it is not.
+enum {  // btlife_event_t.code
+    BTLIFE_NONE = 0,
+    BTLIFE_SCAN_START, BTLIFE_SCAN_STOP, BTLIFE_SCAN_SUPPRESS,
+    BTLIFE_ADV_START, BTLIFE_ADV_STOP,
+    BTLIFE_MGMT_CONNECT, BTLIFE_MGMT_DISCONNECT,
+    BTLIFE_CTRL_DISCONNECT, BTLIFE_HCI_DISCONNECT,
+    // ---- Classic paging (added 2026-08-23, instrumentation only) ----------
+    //
+    // The 100-cycle soak put the failure entirely inside paging: 9 of 101 page
+    // attempts ended in HCI_ERR_PAGE_TIMEOUT with no ACL, no authentication and
+    // no encryption, while successful pages ranged 0.803-5.679 s against a fixed
+    // 5.12 s Android page timeout. Android-side logs cannot say what this
+    // adapter was doing at the time, which is what these record.
+    //
+    // HONEST LIMIT, stated here so nobody over-reads the data: page scan is a
+    // BASEBAND function. The controller answers a page and only then raises
+    // HCI_Connection_Request. A host therefore cannot distinguish "no page
+    // arrived" from "a page arrived and the controller did not answer it" --
+    // both appear as the absence of PAGE_RX. What these events DO settle is
+    // whether the host ever saw the page (Case C vs A-or-B), whether page scan
+    // was even enabled, and what else the radio was doing at that instant.
+    BTLIFE_PAGE_SCAN_ON, BTLIFE_PAGE_SCAN_OFF,
+    BTLIFE_INQUIRY_START, BTLIFE_INQUIRY_STOP,
+    BTLIFE_PAGE_RX,          // HCI_Connection_Request: the page exchange succeeded
+    BTLIFE_PAGE_ACCEPT,      // this host let it through the admission filter
+    BTLIFE_PAGE_REJECT,      // this host refused it (a in the reject cause)
+    BTLIFE_ACL_UP,           // HCI_Connection_Complete, status 0
+    BTLIFE_ACL_FAIL,         // HCI_Connection_Complete, status != 0 (a = reason)
+};
+
+enum {  // BTLIFE_PAGE_REJECT cause (btlife_event_t.a)
+    BTLIFE_REJECT_NONE = 0,
+    BTLIFE_REJECT_NO_MGMT,    // cross-transport peer, no live management
+    BTLIFE_REJECT_ADMISSION,  // unbonded peer outside a pairing window
+    BTLIFE_REJECT_COUNT
+};
+
+enum {  // btlife_event_t.flags -- what the radio was doing when the event fired
+    BTLIFE_F_INQUIRY   = 1u << 0,  // Classic inquiry round in progress
+    BTLIFE_F_LE_SCAN   = 1u << 1,  // LE scan active
+    BTLIFE_F_CONNECTING= 1u << 2,  // an LE connect attempt is outstanding
+    BTLIFE_F_MGMT      = 1u << 3,  // management ACL present
+    BTLIFE_F_MGMT_TRUST= 1u << 4,  // ...and bonded + encrypted
+    BTLIFE_F_CLASSIC   = 1u << 5,  // at least one Classic connection present
+    BTLIFE_F_WAKE_ADV  = 1u << 6,  // wake advertisement owns the radio
+    BTLIFE_F_PAIRING   = 1u << 7,  // controller pairing window open
+};
+enum {  // SCAN_SUPPRESS cause (btlife_event_t.a) -- why a scan restart was refused
+    BTLIFE_CAUSE_NONE = 0, BTLIFE_CAUSE_CONFIG_MODE, BTLIFE_CAUSE_MGMT_ARMED,
+    BTLIFE_CAUSE_WAKE, BTLIFE_CAUSE_LOCKOUT, BTLIFE_CAUSE_APP_SUPPRESS,
+    BTLIFE_CAUSE_NOT_POWERED, BTLIFE_CAUSE_ALREADY, BTLIFE_CAUSE_COUNT
+};
+
+// Sized for a full acceptance soak rather than a single incident. A Controller
+// Link cycle costs roughly 6 events plus 2-3 inquiry transitions across its
+// ~18 s idle gap, so ~9 per cycle; 1024 slots retains about 110 cycles. The
+// previous 48 overflowed inside the first minute of the 100-cycle run
+// (events.dropped passed 200), which is why a failure at cycle 93 could not be
+// explained from the adapter side afterwards. 1024 * 12 B = 12 KB against
+// 236 KB of BSS in a 520 KB part.
+
+// Defined with the ring below; declared here because the page-scan and
+// inquiry call sites sit above it.
+static void btlife_record(uint8_t code, uint8_t a, uint16_t b);
+
 static bool hid_pairing_window_open;
 static bool pairing_lockout;
 static bool install_reset_bootstrap_consumed;
@@ -853,6 +918,10 @@ void btstack_host_set_pairing_window_open(bool open)
         // is answered per admitted attempt in packet_handler().
         gap_discoverable_control(open && !pairing_lockout);
         gap_connectable_control(!pairing_lockout);
+        // Page scan follows connectable. Recorded so a missing PAGE_RX can be
+        // tested against "were we even listening" before anything subtler.
+        btlife_record(pairing_lockout ? BTLIFE_PAGE_SCAN_OFF
+                                      : BTLIFE_PAGE_SCAN_ON, 0u, 0u);
     }
 #endif
 }
@@ -924,21 +993,15 @@ static inline bool config_ble_authorized(void)
 // the ring is diagnostic, so a benign torn read at most mis-renders one line.
 // See docs/bluetooth/in-band-management-plan.md and STATUS.md.
 // ---------------------------------------------------------------------------
-enum {  // btlife_event_t.code
-    BTLIFE_NONE = 0,
-    BTLIFE_SCAN_START, BTLIFE_SCAN_STOP, BTLIFE_SCAN_SUPPRESS,
-    BTLIFE_ADV_START, BTLIFE_ADV_STOP,
-    BTLIFE_MGMT_CONNECT, BTLIFE_MGMT_DISCONNECT,
-    BTLIFE_CTRL_DISCONNECT, BTLIFE_HCI_DISCONNECT,
-};
-enum {  // SCAN_SUPPRESS cause (btlife_event_t.a) -- why a scan restart was refused
-    BTLIFE_CAUSE_NONE = 0, BTLIFE_CAUSE_CONFIG_MODE, BTLIFE_CAUSE_MGMT_ARMED,
-    BTLIFE_CAUSE_WAKE, BTLIFE_CAUSE_LOCKOUT, BTLIFE_CAUSE_APP_SUPPRESS,
-    BTLIFE_CAUSE_NOT_POWERED, BTLIFE_CAUSE_ALREADY, BTLIFE_CAUSE_COUNT
-};
-
-#define BTLIFE_RING_SIZE 48u
-typedef struct { uint32_t t_ms; uint8_t code; uint8_t a; uint16_t b; } btlife_event_t;
+#define BTLIFE_RING_SIZE 1024u
+typedef struct {
+    uint32_t t_ms;
+    uint8_t  code;
+    uint8_t  a;        // cause / HCI reason / detail
+    uint16_t b;        // connection handle, or 0
+    uint8_t  flags;    // BTLIFE_F_* radio snapshot at the moment of the event
+    uint8_t  addr3[3]; // last three octets of the peer, when one is involved
+} btlife_event_t;
 static btlife_event_t btlife_ring[BTLIFE_RING_SIZE];
 static uint16_t btlife_head;    // next write slot
 static uint16_t btlife_count;   // valid entries (<= BTLIFE_RING_SIZE)
@@ -954,7 +1017,34 @@ static struct {
 static uint32_t btlife_last_suppress_ms;
 static uint8_t btlife_last_suppress_cause = 0xFF;
 
-static void btlife_record(uint8_t code, uint8_t a, uint16_t b)
+// What else the radio was doing, captured with the event rather than inferred
+// from neighbouring entries.
+//
+// A page timeout is the ABSENCE of PAGE_RX, so it has no event of its own to
+// carry context. Stamping every recorded event with this makes the surrounding
+// state recoverable anyway: the INQUIRY_START/STOP pair bracketing a missing
+// PAGE_RX is what tests whether inquiry occupancy is starving page scan, which
+// is currently a hypothesis with no adapter-side evidence either way.
+//
+// Reads only. Called from the BTstack thread alongside the existing recorder.
+static uint8_t btlife_radio_flags(void)
+{
+    uint8_t f = 0u;
+    if (classic_state.inquiry_active)              f |= BTLIFE_F_INQUIRY;
+    if (hid_state.scan_active)                     f |= BTLIFE_F_LE_SCAN;
+    if (hid_state.state == BLE_STATE_CONNECTING)   f |= BTLIFE_F_CONNECTING;
+    if (config_ble.handle != HCI_CON_HANDLE_INVALID) {
+        f |= BTLIFE_F_MGMT;
+        if (config_ble_link_trusted(config_ble.handle)) f |= BTLIFE_F_MGMT_TRUST;
+    }
+    if (btstack_classic_get_connection_count() > 0) f |= BTLIFE_F_CLASSIC;
+    if (btstack_host_wake_advertisement_active())    f |= BTLIFE_F_WAKE_ADV;
+    if (hid_pairing_window_open)                    f |= BTLIFE_F_PAIRING;
+    return f;
+}
+
+static void btlife_record_addr(uint8_t code, uint8_t a, uint16_t b,
+                               const bd_addr_t addr)
 {
     uint32_t now = to_ms_since_boot(get_absolute_time());
     // Counters are ALWAYS exact (they are the authoritative totals).
@@ -989,9 +1079,22 @@ static void btlife_record(uint8_t code, uint8_t a, uint16_t b)
     btlife_event_t *e = &btlife_ring[btlife_head];
     e->t_ms = now;
     e->code = code; e->a = a; e->b = b;
+    e->flags = btlife_radio_flags();
+    if (addr != NULL) {
+        e->addr3[0] = addr[3]; e->addr3[1] = addr[4]; e->addr3[2] = addr[5];
+    } else {
+        e->addr3[0] = e->addr3[1] = e->addr3[2] = 0u;
+    }
     btlife_head = (uint16_t)((btlife_head + 1u) % BTLIFE_RING_SIZE);
     if (btlife_count < BTLIFE_RING_SIZE) btlife_count++;
     else btlife_dropped++;  // ring full: we just overwrote the oldest unread event
+}
+
+// Existing call sites keep their three-argument shape; only the paging events
+// need to name a peer.
+static void btlife_record(uint8_t code, uint8_t a, uint16_t b)
+{
+    btlife_record_addr(code, a, b, NULL);
 }
 
 static void config_ble_can_send(void *context)
@@ -2516,6 +2619,10 @@ void btstack_host_start_scan(void)
     gap_inquiry_set_lap(lap);
     gap_inquiry_start(INQUIRY_DURATION);
     classic_state.inquiry_active = true;
+    // Inquiry and page scan are distinct baseband substates. Bracketing every
+    // round is what allows a missing page to be tested against inquiry
+    // occupancy instead of assumed to be caused by it.
+    btlife_record(BTLIFE_INQUIRY_START, classic_state.use_liac ? 1u : 0u, 0u);
 #endif
 }
 
@@ -3070,6 +3177,7 @@ static void classic_restart_inquiry(void)
     gap_inquiry_set_lap(lap);
     gap_inquiry_start(INQUIRY_DURATION);
     classic_state.inquiry_active = true;
+    btlife_record(BTLIFE_INQUIRY_START, classic_state.use_liac ? 1u : 0u, 0u);
 }
 
 static int btstack_host_classic_connection_filter(bd_addr_t addr,
@@ -3085,6 +3193,7 @@ static int btstack_host_classic_connection_filter(bd_addr_t addr,
         classic_companion_refused_no_mgmt++;
         btstack_host_note_admission_reject(addr, btstack_host_classic_has_trust(addr));
         btstack_host_note_link_refusal(addr, true);
+        btlife_record_addr(BTLIFE_PAGE_REJECT, BTLIFE_REJECT_NO_MGMT, 0u, addr);
         printf("[BTSTACK_HOST] Refusing Controller Link: no live management session "
                "(refused=%lu)\n",
                (unsigned long)classic_companion_refused_no_mgmt);
@@ -3096,9 +3205,14 @@ static int btstack_host_classic_connection_filter(bd_addr_t addr,
     if (admission == NS2_BT_ADMISSION_REJECT) {
         btstack_host_record_fresh_admission(false);
         btstack_host_note_admission_reject(addr, btstack_host_classic_has_trust(addr));
+        btlife_record_addr(BTLIFE_PAGE_REJECT, BTLIFE_REJECT_ADMISSION, 0u, addr);
         printf("[BTSTACK_HOST] Rejecting unbonded Classic ACL outside pairing window\n");
         return 0;
     }
+    // Accepted: the page response proceeds. Paired with PAGE_RX this is the
+    // adapter's half of "we answered", against which an Android-side
+    // PAGE_TIMEOUT can be read.
+    btlife_record_addr(BTLIFE_PAGE_ACCEPT, 0u, 0u, addr);
     return 1;
 }
 
@@ -3114,6 +3228,7 @@ void btstack_host_clear_pairing_lockout(void)
 #if !defined(BTSTACK_USE_ESP32) && !defined(BTSTACK_USE_NRF) && !defined(CONFIG_USB2BLE)
     gap_discoverable_control(hid_pairing_window_open ? 1 : 0);
     gap_connectable_control(1);
+    btlife_record(BTLIFE_PAGE_SCAN_ON, 0u, 0u);
 #endif
 }
 
@@ -4444,6 +4559,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
 
         case GAP_EVENT_INQUIRY_COMPLETE:
             classic_state.inquiry_active = false;
+            btlife_record(BTLIFE_INQUIRY_STOP, 0u, 0u);
             classic_state.recovery_start_time = 0;  // BT transport is working
 #ifndef CONFIG_USB2BLE
             // Restart inquiry after it completes (if we're still in scan mode)
@@ -4470,6 +4586,10 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             uint8_t link_type = hci_event_connection_request_get_link_type(packet);
             printf("[BTSTACK_HOST] Incoming connection: %02X:%02X:%02X:%02X:%02X:%02X COD=0x%06X link=%d\n",
                    addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], (unsigned)cod, link_type);
+            // The controller answered a page and completed the FHS exchange.
+            // Its ABSENCE next to a host-side page timeout is what rules Case C
+            // out; its presence would rule Cases A and B out.
+            btlife_record_addr(BTLIFE_PAGE_RX, link_type, 0u, addr);
 
             // Same lifecycle gate as the registered HCI filter, for the case
             // where BTstack still forwards the request. See
@@ -4479,6 +4599,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 btstack_host_note_admission_reject(
                     addr, btstack_host_classic_has_trust(addr));
                 btstack_host_note_link_refusal(addr, true);
+        btlife_record_addr(BTLIFE_PAGE_REJECT, BTLIFE_REJECT_NO_MGMT, 0u, addr);
                 printf("[BTSTACK_HOST] Refusing Controller Link request: no live "
                        "management session (refused=%lu)\n",
                        (unsigned long)classic_companion_refused_no_mgmt);
@@ -4531,6 +4652,8 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             hci_event_connection_complete_get_bd_addr(packet, addr);
             printf("[BTSTACK_HOST] Connection complete: status=%d handle=0x%04X addr=%02X:%02X:%02X:%02X:%02X:%02X\n",
                    status, handle, addr[0], addr[1], addr[2], addr[3], addr[4], addr[5]);
+            btlife_record_addr(status == 0 ? BTLIFE_ACL_UP : BTLIFE_ACL_FAIL,
+                               status, handle, addr);
 
             if (classic_state.pending_valid &&
                 bd_addr_cmp(addr, classic_state.pending_addr) == 0) {
@@ -10793,8 +10916,26 @@ const char *btstack_host_life_code_name(uint8_t code)
         case BTLIFE_MGMT_DISCONNECT: return "mgmt_disconnect";
         case BTLIFE_CTRL_DISCONNECT: return "ctrl_disconnect";
         case BTLIFE_HCI_DISCONNECT:  return "hci_disconnect";
+        case BTLIFE_PAGE_SCAN_ON:    return "page_scan_on";
+        case BTLIFE_PAGE_SCAN_OFF:   return "page_scan_off";
+        case BTLIFE_INQUIRY_START:   return "inquiry_start";
+        case BTLIFE_INQUIRY_STOP:    return "inquiry_stop";
+        case BTLIFE_PAGE_RX:         return "page_rx";
+        case BTLIFE_PAGE_ACCEPT:     return "page_accept";
+        case BTLIFE_PAGE_REJECT:     return "page_reject";
+        case BTLIFE_ACL_UP:          return "acl_up";
+        case BTLIFE_ACL_FAIL:        return "acl_fail";
         default:                     return "none";
     }
+}
+
+void btstack_host_life_flag_names(uint8_t flags, char out[9])
+{
+    static const char letters[8] = { 'i', 's', 'c', 'm', 't', 'C', 'w', 'p' };
+    for (int bit = 0; bit < 8; bit++) {
+        out[bit] = (flags & (1u << bit)) ? letters[bit] : '-';
+    }
+    out[8] = '\0';
 }
 
 const char *btstack_host_life_cause_name(uint8_t cause)
@@ -10823,6 +10964,10 @@ bool btstack_host_life_get(uint16_t index, btstack_host_life_record_t *out)
     out->code = e->code;
     out->a = e->a;
     out->b = e->b;
+    out->flags = e->flags;
+    out->addr3[0] = e->addr3[0];
+    out->addr3[1] = e->addr3[1];
+    out->addr3[2] = e->addr3[2];
     return true;
 }
 
