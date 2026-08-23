@@ -127,7 +127,9 @@ def classify_failure(events: list[dict],
     # paged. If its own reason is not PAGE_TIMEOUT it never put a page on the
     # air, and a missing page_rx says nothing about this adapter.
     reason = (harness_detail or {}).get("connect_fail_reason")
-    if reason and "PAGE_TIMEOUT" not in reason:
+    phone_state = ("CONNECTION_ALREADY_EXISTS", "COMMAND_DISALLOWED",
+                   "CONTROLLER_BUSY", "MEMORY_FULL", "REPEATED_ATTEMPTS")
+    if reason and any(r in reason for r in phone_state):
         detail["phone_reason"] = reason
         detail["adapter_saw_page"] = "page_rx" in codes
         return PHONE_NEVER_PAGED, detail
@@ -203,7 +205,10 @@ def main() -> int:
             if (r["result"] == "ok") != want_ok:
                 continue
             reason = (r.get("detail") or {}).get("connect_fail_reason")
-            if reason and "PAGE_TIMEOUT" not in reason:
+            if reason and any(x in reason for x in
+                              ("CONNECTION_ALREADY_EXISTS", "COMMAND_DISALLOWED",
+                               "CONTROLLER_BUSY", "MEMORY_FULL",
+                               "REPEATED_ATTEMPTS")):
                 continue  # the phone never paged; not a paging sample
             opened = next((wall_seconds(row["at"]) for row in r["timeline"]
                            if row["event"] == "app.touch_opened"), None)
