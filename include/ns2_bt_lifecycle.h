@@ -174,6 +174,42 @@ bool ns2_bt_defer_classic_authentication(bool peer_is_companion_session,
 // never deferred -- whereas peer-led completion is only attributable when it
 // lands on the handle we stood down on, otherwise an ordinary encrypted
 // reconnect would be miscounted as proof the mechanism worked.
+// What this host actually OBSERVED about Classic authentication on a link.
+//
+// Three states, not a bool, because two of them are not failures.
+// HCI_Authentication_Complete is generated in response to this host's own
+// HCI_Authentication_Requested. On the peer-led path -- the intended path
+// whenever ns2_bt_defer_classic_authentication() returns true -- that command
+// is never sent, so the event never arrives and there is nothing to observe.
+// The peer's authentication reaches us as Link Key Request followed by
+// Encryption Change instead.
+//
+// Recording that as `auth_completed_ok = false` made a correct, secure link
+// look like an authentication failure, and would make an acceptance harness
+// demand an event that structurally no longer occurs. Security is judged from
+// state that does exist: encryption enabled, key size at the acceptance gate,
+// and HID readiness.
+typedef enum {
+    NS2_BT_AUTH_NOT_OBSERVED = 0,   // no local Authentication Complete (expected when deferred)
+    NS2_BT_AUTH_OBSERVED_OK,        // local Authentication Complete, status 0
+    NS2_BT_AUTH_OBSERVED_FAILED,    // local Authentication Complete, non-zero status
+} ns2_bt_auth_observation_t;
+
+const char *ns2_bt_auth_observation_name(ns2_bt_auth_observation_t observation);
+
+// Is the Classic security invariant satisfied for a companion Controller Link?
+//
+// Stated in terms of what is observable on the PEER-LED path. Notably it does
+// not require a local Authentication Complete, because deferring initiation is
+// the intended behaviour and that event does not occur; but it never accepts an
+// observed authentication FAILURE, and it always requires encryption and the
+// full key size to have been positively observed at the acceptance gate.
+bool ns2_bt_companion_security_satisfied(ns2_bt_auth_observation_t auth_outcome,
+                                         bool encrypted_ok,
+                                         bool key_size_valid,
+                                         uint8_t key_size,
+                                         bool hid_ready);
+
 #define NS2_BT_HCI_LMP_TRANSACTION_COLLISION 0x23u
 
 bool ns2_bt_encryption_collision(uint8_t hci_status);

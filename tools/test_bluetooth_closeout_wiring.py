@@ -205,19 +205,48 @@ def check_controller_link_is_bound_to_management(source: str) -> None:
         "disconnect, on HCI loss, and on teardown -- handles are reused"
     )
 
-    # btauth attribution is per-ACL: late fields may only be recorded while the
-    # record still owns the live link.
-    for late_field in ("last_auth_decision.encrypted_ok =",
-                       "last_auth_decision.hid_ready = true;"):
-        assert late_field in source
-    assert source.count("auth_decision_owns(") == 4, (
-        "encryption, HID readiness and the Authentication Complete record must "
-        "all check that the record still owns this ACL"
-    )
+    # btauth attribution is per-ACL: every late field may only be recorded while
+    # the record still owns the live link. Checked by call site rather than by a
+    # magic total, so adding a legitimate new observation does not fail the guard
+    # while dropping a guard silently would.
+    assert "static bool auth_decision_owns(" in source
+    for guarded in (
+        "if (!auth_decision_owns(handle)) {",          # Authentication Complete
+        "if (auth_decision_owns(handle)) {",           # Encryption Change
+        "auth_decision_owns(acl->con_handle)",         # HID ready
+        "status != ERROR_CODE_SUCCESS && auth_decision_owns(handle)",  # auth failed
+    ):
+        assert guarded in source, (
+            f"per-ACL attribution missing its ownership check: {guarded!r}"
+        )
     assert "last_auth_decision.link_closed = true;" in source, (
         "the record must be retired on disconnect so a reused handle cannot "
         "inherit it"
     )
+
+    # The key size must be sampled where it is valid. For Classic, BTstack sends
+    # HCI_Read_Encryption_Key_Size AFTER the Encryption Change event, so reading
+    # it in that handler records 0 on every peer-led link and reads as a security
+    # failure. It is sampled at the HID-ready acceptance gate instead, from the
+    # exact value that gate judged.
+    assignments = re.findall(r"last_auth_decision\.encryption_key_size\s*=\s*([^;]+);",
+                             source)
+    assert assignments == ["key_size"], (
+        "the Classic key size must be recorded exactly once, from the value the "
+        f"HID-ready acceptance gate judged; found {assignments!r}. Sampling "
+        "gap_encryption_key_size() in the Encryption Change handler records 0, "
+        "because BTstack only issues HCI_Read_Encryption_Key_Size after that event"
+    )
+    assert "last_auth_decision.key_size_valid = true;" in source
+
+    # Authentication observation is tri-state: "not observed" is the EXPECTED
+    # value on the peer-led path and must never be representable as failure.
+    assert "bool auth_completed_ok" not in source, (
+        "a bool cannot distinguish 'authentication failed' from 'this host "
+        "deliberately never asked'; see ns2_bt_auth_observation_t"
+    )
+    for outcome in ("NS2_BT_AUTH_OBSERVED_OK", "NS2_BT_AUTH_OBSERVED_FAILED"):
+        assert outcome in source
 
 
 def check_management_bond_admission_is_latched(source: str) -> None:

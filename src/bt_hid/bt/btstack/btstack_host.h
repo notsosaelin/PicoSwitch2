@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "bluetooth.h"
+#include "ns2_bt_lifecycle.h"  // ns2_bt_auth_observation_t
 
 #ifdef __cplusplus
 extern "C" {
@@ -122,9 +123,13 @@ typedef struct {
     bool stood_down;
     bool auth_deferred;
     bool auth_had_stored_key;
-    bool auth_completed_ok;
+    // Tri-state: NOT_OBSERVED is the expected value on the peer-led path,
+    // where this host deliberately never sends HCI_Authentication_Requested
+    // and so never receives the completion event. Never read it as failure.
+    ns2_bt_auth_observation_t auth_outcome;
     bool encrypted_ok;
-    uint8_t encryption_key_size;
+    uint8_t encryption_key_size;  // valid only when key_size_valid
+    bool key_size_valid;          // sampled at the HID-ready acceptance gate
     bool hid_ready;
     // The ACL this record describes has disconnected. Every field above is a
     // post-mortem of that link and none of them will be updated again.

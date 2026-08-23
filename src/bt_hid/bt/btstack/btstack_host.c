@@ -2660,9 +2660,20 @@ static struct {
     // the Authentication Complete this struct's other fields describe.
     bool auth_deferred;
     bool auth_had_stored_key;
-    bool auth_completed_ok;      // peer-led Authentication Complete, status 0
+    // Tri-state, NOT a bool. HCI_Authentication_Complete is generated in
+    // response to this host's own HCI_Authentication_Requested. When the
+    // stand-down declines to send that command, the event never arrives -- the
+    // peer's authentication reaches us as Link Key Request plus Encryption
+    // Change instead. A plain `false` there reads as "authentication failed"
+    // when the truth is "not locally observed, and not expected to be".
+    ns2_bt_auth_observation_t auth_outcome;
     bool encrypted_ok;           // Encryption Change, enabled, no failure
-    uint8_t encryption_key_size; // as reported by the controller
+    // Key size as read at the HID-ready acceptance gate, which is the only
+    // point where it is valid. Reading it in the Encryption Change handler
+    // returns 0: for Classic, BTstack issues HCI_Read_Encryption_Key_Size
+    // AFTER that event and fills the value in on its completion.
+    uint8_t encryption_key_size;
+    bool key_size_valid;         // false => never sampled at a valid point
     bool hid_ready;              // HID channels usable for this link
     bool link_closed;            // this ACL is gone; record is post-mortem
 } last_auth_decision;
@@ -2757,29 +2768,52 @@ static bool config_ble_identity_addr(bd_addr_t out)
     return true;
 }
 
-static bool btstack_host_classic_companion_session_trust(const bd_addr_t addr)
+// The individual terms of the companion-session conjunction, evaluated once.
+//
+// Extracted because three separate places need them and they must not drift:
+// the predicate itself, the refusal record, and the per-ACL btauth record. When
+// `clink.refused_no_mgmt` reached 18 on 2026-08-22 the only thing recorded was
+// the count, and "some term was false" is not a diagnosis.
+typedef struct {
+    bool connected;
+    bool addr_known;
+    bool raw_matches;
+    bool identity_known;
+    bool identity_matches;
+    bool link_trusted;
+} companion_terms_t;
+
+static companion_terms_t btstack_host_companion_terms(const bd_addr_t addr)
 {
-    bool connected = config_ble.handle != HCI_CON_HANDLE_INVALID;
-    bool addr_known = connected && config_ble.client_addr_valid;
+    companion_terms_t t;
+    memset(&t, 0, sizeof(t));
+    t.connected = config_ble.handle != HCI_CON_HANDLE_INVALID;
+    t.addr_known = t.connected && config_ble.client_addr_valid;
     // Two ways to be the same peer. The identity comparison is the load-bearing
     // one and the only one that survives LE privacy; the connection-address
     // comparison is kept because it is correct whenever the phone connects with
     // its public address, and it costs nothing.
-    bool raw_matches =
-        addr_known &&
+    t.raw_matches =
+        t.addr_known &&
         memcmp(config_ble.client_addr, addr, sizeof(bd_addr_t)) == 0;
     bd_addr_t identity;
-    bool identity_known = config_ble_identity_addr(identity);
-    bool identity_matches =
-        identity_known && memcmp(identity, addr, sizeof(bd_addr_t)) == 0;
-    bool addr_matches = raw_matches || identity_matches;
+    t.identity_known = config_ble_identity_addr(identity);
+    t.identity_matches =
+        t.identity_known && memcmp(identity, addr, sizeof(bd_addr_t)) == 0;
     // Evaluated only for the matching peer: gap_bonded()/gap_encryption_key_size()
     // are keyed on the handle, so asking about a non-match proves nothing.
-    bool session_trusted =
-        addr_matches && config_ble_link_trusted(config_ble.handle);
-    return ns2_bt_companion_session_trust(connected,
-                                          addr_known || identity_known,
-                                          addr_matches, session_trusted);
+    t.link_trusted = (t.raw_matches || t.identity_matches) &&
+                     config_ble_link_trusted(config_ble.handle);
+    return t;
+}
+
+static bool btstack_host_classic_companion_session_trust(const bd_addr_t addr)
+{
+    companion_terms_t t = btstack_host_companion_terms(addr);
+    return ns2_bt_companion_session_trust(t.connected,
+                                          t.addr_known || t.identity_known,
+                                          t.raw_matches || t.identity_matches,
+                                          t.link_trusted);
 }
 
 // Is this Classic peer an identity that also exists on LE?
@@ -2867,21 +2901,18 @@ static struct {
 static void btstack_host_note_link_refusal(const bd_addr_t addr,
                                            bool cross_transport)
 {
-    bd_addr_t identity;
-    bool identity_known = config_ble_identity_addr(identity);
+    // Same evaluation the predicate itself used, so the recorded terms cannot
+    // drift from the decision they are supposed to explain.
+    companion_terms_t t = btstack_host_companion_terms(addr);
     last_refusal.valid = true;
     (void)memcpy(last_refusal.addr, addr, sizeof(bd_addr_t));
     last_refusal.cross_transport = cross_transport;
-    last_refusal.mgmt_connected = config_ble.handle != HCI_CON_HANDLE_INVALID;
-    last_refusal.mgmt_addr_known =
-        last_refusal.mgmt_connected && config_ble.client_addr_valid;
-    last_refusal.mgmt_raw_matches =
-        last_refusal.mgmt_addr_known &&
-        memcmp(config_ble.client_addr, addr, sizeof(bd_addr_t)) == 0;
-    last_refusal.mgmt_identity_known = identity_known;
-    last_refusal.mgmt_identity_matches =
-        identity_known && memcmp(identity, addr, sizeof(bd_addr_t)) == 0;
-    last_refusal.mgmt_link_trusted = config_ble_link_trusted(config_ble.handle);
+    last_refusal.mgmt_connected = t.connected;
+    last_refusal.mgmt_addr_known = t.addr_known;
+    last_refusal.mgmt_raw_matches = t.raw_matches;
+    last_refusal.mgmt_identity_known = t.identity_known;
+    last_refusal.mgmt_identity_matches = t.identity_matches;
+    last_refusal.mgmt_link_trusted = t.link_trusted;
 }
 
 bool btstack_host_last_link_refusal(btstack_host_link_refusal_t *out)
@@ -2929,9 +2960,10 @@ bool btstack_host_last_auth_decision(btstack_host_auth_decision_t *out)
     out->stood_down = last_auth_decision.stood_down;
     out->auth_deferred = last_auth_decision.auth_deferred;
     out->auth_had_stored_key = last_auth_decision.auth_had_stored_key;
-    out->auth_completed_ok = last_auth_decision.auth_completed_ok;
+    out->auth_outcome = last_auth_decision.auth_outcome;
     out->encrypted_ok = last_auth_decision.encrypted_ok;
     out->encryption_key_size = last_auth_decision.encryption_key_size;
+    out->key_size_valid = last_auth_decision.key_size_valid;
     out->hid_ready = last_auth_decision.hid_ready;
     out->link_closed = last_auth_decision.link_closed;
     return true;
@@ -5728,7 +5760,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 last_auth_decision.request_was_pending =
                     (auth_conn->bonding_flags & BONDING_SEND_ENCRYPTION_REQUEST) != 0;
                 last_auth_decision.stood_down = false;
-                last_auth_decision.auth_completed_ok = true;
+                last_auth_decision.auth_outcome = NS2_BT_AUTH_OBSERVED_OK;
                 if (ns2_bt_defer_classic_encryption(
                         btstack_host_classic_companion_session_trust(auth_conn->address),
                         we_own_fresh_pairing) &&
@@ -5740,6 +5772,12 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                            "(handle=0x%04X, deferrals=%lu)\n",
                            handle, (unsigned long)classic_encryption_deferrals);
                 }
+            }
+            if (status != ERROR_CODE_SUCCESS && auth_decision_owns(handle)) {
+                // A local Authentication Complete that failed IS an observation,
+                // and a different thing from never having asked. See
+                // ns2_bt_auth_observation_t.
+                last_auth_decision.auth_outcome = NS2_BT_AUTH_OBSERVED_FAILED;
             }
             if (classic_fresh_pairing_security_handle == handle) {
                 classic_fresh_pairing_security_handle = HCI_CON_HANDLE_INVALID;
@@ -5819,8 +5857,10 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             if (auth_decision_owns(handle)) {
                 last_auth_decision.encrypted_ok =
                     (status == ERROR_CODE_SUCCESS) && (enabled != 0);
-                last_auth_decision.encryption_key_size =
-                    gap_encryption_key_size(handle);
+                // Deliberately NOT sampling gap_encryption_key_size() here.
+                // See last_auth_decision.encryption_key_size: the controller
+                // has not been asked yet at this point, so it would record 0
+                // on every peer-led link and look like a security failure.
             }
 
             if (switch2_direct_reencrypt_active &&
@@ -11090,6 +11130,13 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
                 conn->hid_ready = true;
                 if (acl != NULL && auth_decision_owns(acl->con_handle)) {
                     last_auth_decision.hid_ready = true;
+                    // The only valid sampling point for the Classic key size,
+                    // and the exact value the acceptance gate above judged. By
+                    // now BTstack's HCI_Read_Encryption_Key_Size has completed;
+                    // in the Encryption Change handler it has not even been
+                    // sent, which is why this used to report 0 on every link.
+                    last_auth_decision.encryption_key_size = key_size;
+                    last_auth_decision.key_size_valid = true;
                 }
                 if (is_companion && acl != NULL) {
                     // Late binding for a companion link that reached HID
