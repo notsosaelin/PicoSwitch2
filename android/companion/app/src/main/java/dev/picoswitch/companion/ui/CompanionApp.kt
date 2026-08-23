@@ -23,6 +23,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.picoswitch.companion.model.ConnectionPhase
+import dev.picoswitch.companion.ui.touch.TouchGamepadScreen
 
 private data class NavItem(val section: AppSection, val icon: ImageVector)
 
@@ -53,6 +54,8 @@ fun CompanionApp(
     onScanAmiibo: () -> Unit,
     onImportAmiiboKeys: () -> Unit,
     onPrepareController: () -> Unit,
+    onOpenTouchGamepad: () -> Unit,
+    onPickTouchBackground: () -> Unit,
     onExportDiagnostics: () -> Unit,
 ) {
     val ui by viewModel.ui.collectAsStateWithLifecycle()
@@ -64,6 +67,14 @@ fun CompanionApp(
     }
 
     CompanionTheme(theme) {
+        // A full-screen application MODE, above the scaffold rather than inside
+        // it. The on-screen controller owns edge-to-edge presentation, hides the
+        // navigation chrome and handles its own back behaviour; rendering it in
+        // the content column would hand it the scaffold's insets and width limit.
+        if (ui.touchGamepadActive) {
+            TouchGamepadScreen(ui, viewModel, onPickTouchBackground, onRetryLink = onPrepareController)
+            return@CompanionTheme
+        }
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val useRail = maxWidth >= LayoutTokens.NavigationBreakpoint
             val windowHeight = maxHeight
@@ -150,7 +161,9 @@ fun CompanionApp(
                                                 ui, viewModel, onImportAmiibo, onImportKeys = onImportAmiiboKeys,
                                                 onScan = onScanAmiibo,
                                             )
-                                            AppSection.Controller -> ControllerScreen(ui, viewModel, onPrepareController)
+                                            AppSection.Controller -> ControllerScreen(
+                                                ui, viewModel, onPrepareController, onOpenTouchGamepad,
+                                            )
                                             AppSection.Settings -> SettingsScreen(
                                                 ui, viewModel, onImportAmiiboKeys, theme,
                                             )

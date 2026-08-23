@@ -26,13 +26,18 @@ import dev.picoswitch.companion.model.CapabilityState
  * choice and this phone's own bridge live together rather than in two places.
  */
 @Composable
-fun ControllerScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onPrepare: () -> Unit) {
+fun ControllerScreen(
+    ui: CompanionUiState,
+    viewModel: CompanionViewModel,
+    onPrepare: () -> Unit,
+    onOpenTouchGamepad: () -> Unit,
+) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val twoColumn = twoColumnLayout(maxWidth)
         val gap = if (LocalShortWindow.current) LayoutTokens.Space3 else LayoutTokens.Space4
 
         val active: @Composable () -> Unit = { ActiveInputCard(ui, viewModel) }
-        val bridge: @Composable () -> Unit = { BridgeCard(ui, viewModel, onPrepare) }
+        val bridge: @Composable () -> Unit = { BridgeCard(ui, viewModel, onPrepare, onOpenTouchGamepad) }
         val source: @Composable () -> Unit = { InputSourceCard(ui, viewModel) }
         val layout: @Composable () -> Unit = { ControllerLayoutCard(ui, viewModel) }
 
@@ -117,7 +122,12 @@ private fun ActiveInputCard(ui: CompanionUiState, viewModel: CompanionViewModel)
 }
 
 @Composable
-private fun BridgeCard(ui: CompanionUiState, viewModel: CompanionViewModel, onPrepare: () -> Unit) {
+private fun BridgeCard(
+    ui: CompanionUiState,
+    viewModel: CompanionViewModel,
+    onPrepare: () -> Unit,
+    onOpenTouchGamepad: () -> Unit,
+) {
     val phase = ui.bridge.phase
     SectionCard(
         title = "This handheld",
@@ -177,6 +187,28 @@ private fun BridgeCard(ui: CompanionUiState, viewModel: CompanionViewModel, onPr
             }
 
             else -> LinearProgressIndicator(Modifier.fillMaxWidth())
+        }
+
+        HorizontalDivider(Modifier.padding(vertical = LayoutTokens.Space1))
+
+        // Deliberately NOT gated on a selected physical input. A phone or tablet
+        // with no gamepad at all is a complete controller source once its own
+        // screen is the controller, and requiring the user to pick a physical
+        // device first would be asking them to choose something that has nothing
+        // to do with what they are about to play with.
+        Text(
+            "Play using this screen instead of a physical controller.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        FilledTonalButton(
+            onClick = onOpenTouchGamepad,
+            enabled = ui.adapterRelationship != null,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(Icons.Default.TouchApp, null, Modifier.size(LayoutTokens.IconSize))
+            Spacer(Modifier.width(LayoutTokens.Space2))
+            Text(if (ui.adapterRelationship == null) "Pair the adapter first" else "Touch Gamepad")
         }
     }
 }
