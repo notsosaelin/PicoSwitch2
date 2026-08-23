@@ -312,7 +312,97 @@ def main() -> int:
         if total:
             print(f"  {label:<8} inquiry active during attempt: "
                   f"{overlaps}/{total} ({100.0*overlaps/total:.0f}%)")
+
+    report_establishment_windows(btlife)
     return 0
+
+
+def establishment_windows(btlife: list[dict]) -> tuple[list[dict], int]:
+    """Every page_accept -> Connection Complete window, adapter-side only.
+
+    This isolates CLASSIC_ACL_TIMEOUT, and it is deliberately built from the
+    firmware event stream alone: no Android timestamps, so no clock alignment,
+    so an alignment residual cannot move a latency figure. The window is exactly
+    the state in which the 20.2-20.6 s stall occurs --
+    ACCEPTED_CONNECTION_REQUEST, from the accept callback returning 1 to
+    HCI_EVENT_CONNECTION_COMPLETE arriving with any status. See
+    CYW43439_Bluetooth_Investigation.md.
+
+    Returns the closed windows plus a count of ones that never closed, which are
+    reported rather than dropped silently -- an unterminated window is either a
+    ring that wrapped mid-establishment or a Connection Complete that genuinely
+    never arrived, and those must not be averaged in as if they were fast.
+    """
+    windows: list[dict] = []
+    unterminated = 0
+    open_at: float | None = None
+    inquiries = 0
+    for e in btlife:
+        code = e["code"]
+        t = e["t_ms"] / 1000.0
+        if code == "page_accept":
+            if open_at is not None:
+                unterminated += 1
+            open_at, inquiries = t, 0
+        elif open_at is None:
+            continue
+        elif code == "inquiry_start":
+            inquiries += 1
+        elif code in ("acl_up", "acl_fail"):
+            windows.append({
+                "latency_s": round(t - open_at, 3),
+                "outcome": code,
+                "reason": e.get("a") if code == "acl_fail" else 0,
+                "inquiry_starts": inquiries,
+            })
+            open_at = None
+    if open_at is not None:
+        unterminated += 1
+    return windows, unterminated
+
+
+def report_establishment_windows(btlife: list[dict]) -> None:
+    windows, unterminated = establishment_windows(btlife)
+    print("\n=== page_accept -> connection complete (ACCEPTED_CONNECTION_REQUEST) ===")
+    if not windows:
+        print("  no closed establishment windows in this ring")
+        return
+    ups = sorted(w["latency_s"] for w in windows if w["outcome"] == "acl_up")
+    fails = [w for w in windows if w["outcome"] == "acl_fail"]
+    # 0x08 is the CYW43 controller's own supervision of the accepted request;
+    # it is the failure class this experiment exists to move.
+    timeouts = [w for w in fails if w["reason"] == 0x08]
+
+    def pct(values: list[float], p: float) -> float:
+        return values[min(len(values) - 1, int(len(values) * p))]
+
+    print(f"  windows {len(windows)}  acl_up {len(ups)}  "
+          f"acl_fail {len(fails)}  unterminated {unterminated}")
+    if ups:
+        print(f"  acl_up latency  n={len(ups)}  min={ups[0]:.3f}  "
+              f"p50={pct(ups, 0.5):.3f}  p90={pct(ups, 0.9):.3f}  "
+              f"p99={pct(ups, 0.99):.3f}  max={ups[-1]:.3f}")
+    print(f"  CLASSIC_ACL_TIMEOUT (0x08): {len(timeouts)}")
+    for w in timeouts:
+        print(f"    stalled {w['latency_s']:.3f}s, "
+              f"inquiry restarts inside window: {w['inquiry_starts']}")
+    other = [w for w in fails if w["reason"] != 0x08]
+    if other:
+        # A new failure class appearing is itself a result of the experiment.
+        print("  other acl_fail reasons (a new class here is itself a result):")
+        for w in other:
+            print(f"    reason 0x{w['reason']:02X} after {w['latency_s']:.3f}s")
+
+    # Inquiry occupancy of the window. Read this against window DURATION, never
+    # on its own: a ~0.63 s success cannot contain a restart when rounds are
+    # 6.4 s apart, while a 20 s stall will contain two or three regardless of
+    # cause. That confound made restarts look causal until an interventional
+    # test removed them and the stall rate did not move
+    # (CYW43439_Bluetooth_Investigation.md).
+    with_inq = sum(1 for w in windows if w["inquiry_starts"] > 0)
+    total_inq = sum(w["inquiry_starts"] for w in windows)
+    print(f"  inquiry restarts during establishment: {total_inq} across "
+          f"{with_inq}/{len(windows)} windows")
 
 
 if __name__ == "__main__":
