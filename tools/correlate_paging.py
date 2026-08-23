@@ -320,12 +320,13 @@ def main() -> int:
 def establishment_windows(btlife: list[dict]) -> tuple[list[dict], int]:
     """Every page_accept -> Connection Complete window, adapter-side only.
 
-    This is the measurement the inquiry-suppression A/B turns on, and it is
-    deliberately built from the firmware event stream alone: no Android
-    timestamps, so no clock alignment, so an alignment residual cannot move a
-    latency figure. The window is exactly the state under test --
+    This isolates CLASSIC_ACL_TIMEOUT, and it is deliberately built from the
+    firmware event stream alone: no Android timestamps, so no clock alignment,
+    so an alignment residual cannot move a latency figure. The window is exactly
+    the state in which the 20.2-20.6 s stall occurs --
     ACCEPTED_CONNECTION_REQUEST, from the accept callback returning 1 to
-    HCI_EVENT_CONNECTION_COMPLETE arriving with any status.
+    HCI_EVENT_CONNECTION_COMPLETE arriving with any status. See
+    CYW43439_Bluetooth_Investigation.md.
 
     Returns the closed windows plus a count of ones that never closed, which are
     reported rather than dropped silently -- an unterminated window is either a
@@ -388,15 +389,16 @@ def report_establishment_windows(btlife: list[dict]) -> None:
     other = [w for w in fails if w["reason"] != 0x08]
     if other:
         # A new failure class appearing is itself a result of the experiment.
-        print("  other acl_fail reasons (watch for classes the OFF arm did not have):")
+        print("  other acl_fail reasons (a new class here is itself a result):")
         for w in other:
             print(f"    reason 0x{w['reason']:02X} after {w['latency_s']:.3f}s")
 
-    # Treatment verification. In the ON arm this must fall to zero, or close to
-    # it; if it does not, the arm did not actually apply and the comparison says
-    # nothing. Non-zero is expected even then for a round already in flight at
-    # page acceptance -- the experiment postpones restarts, it does not stop a
-    # running round.
+    # Inquiry occupancy of the window. Read this against window DURATION, never
+    # on its own: a ~0.63 s success cannot contain a restart when rounds are
+    # 6.4 s apart, while a 20 s stall will contain two or three regardless of
+    # cause. That confound made restarts look causal until an interventional
+    # test removed them and the stall rate did not move
+    # (CYW43439_Bluetooth_Investigation.md).
     with_inq = sum(1 for w in windows if w["inquiry_starts"] > 0)
     total_inq = sum(w["inquiry_starts"] for w in windows)
     print(f"  inquiry restarts during establishment: {total_inq} across "

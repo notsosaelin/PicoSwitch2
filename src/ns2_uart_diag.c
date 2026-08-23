@@ -1175,35 +1175,6 @@ static void handle_command(void) {
         } else {
             queue_btlife((uint16_t)index);
         }
-    } else if (strcmp(rx_line, "expmode") == 0 ||
-               strcmp(rx_line, "expmode status") == 0 ||
-               strcmp(rx_line, "expmode inquiry on") == 0 ||
-               strcmp(rx_line, "expmode inquiry off") == 0) {
-        // EXPERIMENT ONLY. Runtime arm selection for the inquiry-suppression
-        // A/B comparison, so both arms run from ONE binary against ONE pairing
-        // and neither build, flash, nor bond is a variable in the result.
-        //
-        // arm A = production behaviour, unchanged.
-        // arm B = Classic inquiry RESTARTS postponed between page acceptance
-        //         and HCI Connection Complete. Nothing else.
-        //
-        // The arm is echoed on every query so a run's artifacts state which arm
-        // produced them rather than depending on the operator's notes.
-        if (strcmp(rx_line, "expmode inquiry on") == 0) {
-            btstack_host_set_experiment_inquiry_suppression(true);
-        } else if (strcmp(rx_line, "expmode inquiry off") == 0) {
-            btstack_host_set_experiment_inquiry_suppression(false);
-        }
-        bool on = btstack_host_experiment_inquiry_suppression();
-        snprintf(trace_format_response, sizeof(trace_format_response),
-                 "{\"expmode\":\"status\",\"experiment\":\"inquiry-suppression\","
-                 "\"inquiry_suppression\":%s,\"arm\":\"%s\"}",
-                 on ? "true" : "false",
-                 on ? "B-experimental" : "A-production");
-        queue_text(trace_format_response);
-    } else if (strncmp(rx_line, "expmode", 7) == 0) {
-        queue_text("{\"expmode\":\"error\",\"error\":"
-                   "\"usage: expmode [status|inquiry on|inquiry off]\"}");
     } else if (strcmp(rx_line, "pipe") == 0) {
         // core0 report pipeline vs. BT input freshness. reportAgeMs large =>
         // report loop stalled; reportAgeMs small + inputAgeMs large => BT stopped
@@ -2592,7 +2563,6 @@ static void handle_command(void) {
                    "\"btreconnect\",\"btbonds\",\"btfresh\",\"btreject\",\"btrefuse\","
                    "\"btlife dump N\","
                    "\"btauth\","
-                   "\"expmode [status|inquiry on|inquiry off] (EXPERIMENT)\","
                    "\"reenumerate\",\"bootsel\",\"save\",\"help\"]}");
     } else if (rx_length != 0) {
         queue_text("{\"error\":\"unknown command\"}");
