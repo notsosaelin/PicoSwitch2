@@ -39,6 +39,7 @@ import dev.picoswitch.companion.diagnostics.DiagnosticSummary
 import dev.picoswitch.companion.diagnostics.ManagementDiagnosticContext
 import dev.picoswitch.companion.model.*
 import dev.picoswitch.management.WakeResult
+import dev.picoswitch.companion.transport.AdapterResetSignature
 import dev.picoswitch.companion.transport.BleGattManagementTransport
 import dev.picoswitch.companion.protocol.ManagementConnectionContext
 import dev.picoswitch.companion.ui.touch.TouchBackgroundStore
@@ -1855,13 +1856,32 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                 diagnostics.event("relationship", "connect.cancelled", "attempt=${attempt.generation}")
                 throw cancelled
             } catch (error: Throwable) {
-                relationshipCoordinator.connectionFailed(
+                // The adapter erases its bonds on every firmware install, by
+                // design. From here that appears as a connect-stage key failure
+                // against a device Android still considers bonded, and no number
+                // of retries can fix it -- the adapter has no key to
+                // authenticate with. Name it and go straight to repair.
+                val stillBonded = bondState(attempt.relationship.address) == AndroidBondState.Bonded
+                val bondMismatch = AdapterResetSignature.isBondMismatch(error, stillBonded)
+                val decision = relationshipCoordinator.connectionFailed(
                     attempt.generation,
                     error.message ?: "The adapter connection could not be verified.",
+                    bondMismatch = bondMismatch,
                 )
                 publishRelationshipStatus()
-                diagnostics.error("relationship", "connect attempt ${attempt.generation}", error)
-                notice(error.message ?: "The adapter connection could not be verified.")
+                if (bondMismatch) {
+                    diagnostics.event(
+                        "relationship", "repair.adapter_reset",
+                        "attempt=${attempt.generation} bond=Bonded; adapter no longer holds the link key",
+                    )
+                    notice(AdapterResetSignature.REPAIR_MESSAGE)
+                } else {
+                    diagnostics.error("relationship", "connect attempt ${attempt.generation}", error)
+                    notice(error.message ?: "The adapter connection could not be verified.")
+                }
+                if (decision is AdapterLifecycleDecision.RepairRequired) {
+                    diagnostics.event("relationship", "repair.required", decision.message)
+                }
             } finally {
                 // A cancelled generation may finish after its replacement has already been
                 // assigned. It must not clear ownership of that newer job.

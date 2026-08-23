@@ -1,5 +1,7 @@
 package dev.picoswitch.companion.data
 
+import dev.picoswitch.companion.transport.AdapterResetSignature
+
 /** Product-level Android truth; deliberately independent of Bluetooth framework constants. */
 enum class AndroidBondState { Unknown, None, Bonding, Bonded }
 
@@ -290,12 +292,34 @@ class AdapterRelationshipCoordinator(initialRelationship: AdapterRelationship?) 
         return verified
     }
 
+    /**
+     * @param bondMismatch the peer rejected or lacked our link key while Android
+     *   still holds a bond -- see AdapterResetSignature. This is what a firmware
+     *   install looks like from the phone, and it is terminal for the saved
+     *   relationship: retrying cannot succeed, because the adapter has no key to
+     *   authenticate with. Escalate straight to repair rather than leaving the
+     *   attempt in Failed, where foreground-auto will simply try again. Six such
+     *   attempts across fourteen minutes were observed on 2026-08-23 before
+     *   Android dropped its own bond and repair finally triggered.
+     */
     @Synchronized
-    fun connectionFailed(connectionGeneration: Long, message: String) {
-        val attempt = activeAttempt ?: return
-        if (attempt.generation != connectionGeneration) return
+    fun connectionFailed(
+        connectionGeneration: Long,
+        message: String,
+        bondMismatch: Boolean = false,
+    ): AdapterLifecycleDecision {
+        val attempt = activeAttempt ?: return AdapterLifecycleDecision.Ignored
+        if (attempt.generation != connectionGeneration) return AdapterLifecycleDecision.Ignored
         activeAttempt = null
+        if (bondMismatch) {
+            status = status.copy(
+                phase = AdapterRelationshipPhase.RepairRequired,
+                message = AdapterResetSignature.REPAIR_MESSAGE,
+            )
+            return AdapterLifecycleDecision.RepairRequired(AdapterResetSignature.REPAIR_MESSAGE)
+        }
         status = status.copy(phase = AdapterRelationshipPhase.Failed, message = message)
+        return AdapterLifecycleDecision.Ignored
     }
 
     /** A verified session ended without deleting any relationship truth. */
