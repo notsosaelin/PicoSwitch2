@@ -307,6 +307,14 @@ def check_paging_instrumentation_is_observation_only(source: str) -> None:
     assert match and int(match.group(1)) >= 1024, (
         "BTLIFE_RING_SIZE must retain a full soak (>= 1024 entries)"
     )
+    # Suppressed scan restarts are background noise for the paging question and
+    # fired ~9 times per cycle in the 100-cycle soak. Coalescing them tightly
+    # again would spend the enlarged ring on the least informative event.
+    coalesce = re.search(r"#define BTLIFE_SUPPRESS_COALESCE_MS\s+(\d+)u", source)
+    assert coalesce and int(coalesce.group(1)) >= 10000, (
+        "scan-suppress ring coalescing must stay wide enough that paging events "
+        "are not evicted by it"
+    )
 
 
 def check_management_bond_admission_is_latched(source: str) -> None:

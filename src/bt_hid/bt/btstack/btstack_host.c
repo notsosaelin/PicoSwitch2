@@ -994,6 +994,8 @@ static inline bool config_ble_authorized(void)
 // See docs/bluetooth/in-band-management-plan.md and STATUS.md.
 // ---------------------------------------------------------------------------
 #define BTLIFE_RING_SIZE 1024u
+// Ring-only coalescing window for repeated scan-suppress entries.
+#define BTLIFE_SUPPRESS_COALESCE_MS 10000u
 typedef struct {
     uint32_t t_ms;
     uint8_t  code;
@@ -1065,11 +1067,19 @@ static void btlife_record_addr(uint8_t code, uint8_t a, uint16_t b,
     }
 
     // A blocked scan can fire every ~32 ms tick; recording each one floods the
-    // small ring and evicts the meaningful connect/disconnect events (observed:
-    // 641 dropped, the disconnect ordering lost). Coalesce suppress entries in
-    // the RING to a cause-change or ~1 Hz -- the counter above is unaffected.
+    // ring and evicts the meaningful connect/disconnect events (observed: 641
+    // dropped, the disconnect ordering lost). Coalesce suppress entries in the
+    // RING to a cause-change or this interval -- the counter above is
+    // unaffected, so totals stay exact either way.
+    //
+    // Widened from 1 s on 2026-08-23. The 100-cycle soak logged 923 suppress
+    // events, about 9 per Controller Link cycle, which is as many ring slots as
+    // every paging event of that cycle combined and would have halved the
+    // retention the enlarged ring was added to buy. A suppressed scan restart
+    // is background noise for the paging question; the paging events are not.
     if (code == BTLIFE_SCAN_SUPPRESS) {
-        if (a == btlife_last_suppress_cause && (now - btlife_last_suppress_ms) < 1000u) {
+        if (a == btlife_last_suppress_cause &&
+            (now - btlife_last_suppress_ms) < BTLIFE_SUPPRESS_COALESCE_MS) {
             return;
         }
         btlife_last_suppress_cause = a;
