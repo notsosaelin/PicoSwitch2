@@ -1042,7 +1042,11 @@ static void handle_command(void) {
                 "\"mgmt_connected\":%s,\"mgmt_addr_known\":%s,"
                 "\"mgmt_addr_matches\":%s,\"mgmt_link_trusted\":%s,"
                 "\"we_own_fresh_pairing\":%s,\"request_was_pending\":%s,"
-                "\"stood_down\":%s}",
+                "\"stood_down\":%s,"
+                "\"auth_deferred\":%s,\"auth_had_stored_key\":%s,"
+                "\"auth_completed_ok\":%s,\"encrypted_ok\":%s,"
+                "\"key_size\":%u,\"hid_ready\":%s,"
+                "\"auth_deferrals\":%lu}",
                 a.handle,
                 a.mgmt_connected ? "true" : "false",
                 a.mgmt_addr_known ? "true" : "false",
@@ -1050,7 +1054,14 @@ static void handle_command(void) {
                 a.mgmt_link_trusted ? "true" : "false",
                 a.we_own_fresh_pairing ? "true" : "false",
                 a.request_was_pending ? "true" : "false",
-                a.stood_down ? "true" : "false");
+                a.stood_down ? "true" : "false",
+                a.auth_deferred ? "true" : "false",
+                a.auth_had_stored_key ? "true" : "false",
+                a.auth_completed_ok ? "true" : "false",
+                a.encrypted_ok ? "true" : "false",
+                a.encryption_key_size,
+                a.hid_ready ? "true" : "false",
+                (unsigned long)btstack_host_authentication_deferrals());
             queue_text(trace_format_response);
         }
     } else if (strcmp(rx_line, "bthealth") == 0) {

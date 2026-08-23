@@ -100,7 +100,16 @@ typedef struct {
     bool we_own_fresh_pairing;
     bool request_was_pending;
     bool stood_down;
+    bool auth_deferred;
+    bool auth_had_stored_key;
+    bool auth_completed_ok;
+    bool encrypted_ok;
+    uint8_t encryption_key_size;
+    bool hid_ready;
 } btstack_host_auth_decision_t;
+
+// Count of companion links where this host did NOT initiate authentication.
+uint32_t btstack_host_authentication_deferrals(void);
 
 bool btstack_host_last_auth_decision(btstack_host_auth_decision_t *out);
 

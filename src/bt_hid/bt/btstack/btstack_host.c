@@ -2532,6 +2532,7 @@ static hci_con_handle_t classic_fresh_pairing_security_handle = HCI_CON_HANDLE_I
 // Type C observability. Classic security is otherwise entirely invisible on a
 // flashed build: there is no HCI trace, printf does not reach the UART diag
 // channel, and the btlife ring records no security events.
+static uint32_t classic_authentication_deferrals;  // we did not start auth
 static uint32_t classic_encryption_deferrals;      // we stood down
 static uint32_t classic_encryption_peer_completed; // peer-led encryption came up
 static uint32_t classic_encryption_collisions;     // 0x23 observed on our side
@@ -2598,6 +2599,14 @@ static struct {
     bool we_own_fresh_pairing;
     bool request_was_pending;
     bool stood_down;
+    // Authentication side, recorded at HCI_EVENT_CONNECTION_COMPLETE, before
+    // the Authentication Complete this struct's other fields describe.
+    bool auth_deferred;
+    bool auth_had_stored_key;
+    bool auth_completed_ok;      // peer-led Authentication Complete, status 0
+    bool encrypted_ok;           // Encryption Change, enabled, no failure
+    uint8_t encryption_key_size; // as reported by the controller
+    bool hid_ready;              // HID channels usable for this link
 } last_auth_decision;
 
 // Returns true when the automatic request was actually pending and cleared.
@@ -2705,7 +2714,18 @@ bool btstack_host_last_auth_decision(btstack_host_auth_decision_t *out)
     out->we_own_fresh_pairing = last_auth_decision.we_own_fresh_pairing;
     out->request_was_pending = last_auth_decision.request_was_pending;
     out->stood_down = last_auth_decision.stood_down;
+    out->auth_deferred = last_auth_decision.auth_deferred;
+    out->auth_had_stored_key = last_auth_decision.auth_had_stored_key;
+    out->auth_completed_ok = last_auth_decision.auth_completed_ok;
+    out->encrypted_ok = last_auth_decision.encrypted_ok;
+    out->encryption_key_size = last_auth_decision.encryption_key_size;
+    out->hid_ready = last_auth_decision.hid_ready;
     return true;
+}
+
+uint32_t btstack_host_authentication_deferrals(void)
+{
+    return classic_authentication_deferrals;
 }
 
 bool btstack_host_last_reject(uint8_t *addr_out, bool *trust_present)
@@ -4390,7 +4410,25 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                             // detection (Switch vs Sony) determine the connection path.
                             link_key_t incoming_link_key;
                             link_key_type_t incoming_key_type;
-                            if (gap_get_link_key_for_bd_addr(addr, incoming_link_key, &incoming_key_type)) {
+                            bool have_incoming_key = gap_get_link_key_for_bd_addr(
+                                addr, incoming_link_key, &incoming_key_type);
+                            // Stand down from STARTING authentication for the
+                            // trusted live companion: Android's HID Device
+                            // profile is guaranteed to start it, and both hosts
+                            // running the same LMP procedure is what produced
+                            // the captured 0x23 collisions. This changes who
+                            // initiates, not what is required -- the HID-ready
+                            // gate below still demands authenticated, encrypted
+                            // transport at the required key size.
+                            bool defer_auth = ns2_bt_defer_classic_authentication(
+                                btstack_host_classic_companion_session_trust(addr),
+                                have_incoming_key,
+                                classic_fresh_pairing_security_handle == handle);
+                            last_auth_decision.auth_deferred = defer_auth;
+                            last_auth_decision.auth_had_stored_key = have_incoming_key;
+                            if (defer_auth) {
+                                classic_authentication_deferrals++;
+                            } else if (have_incoming_key) {
                                 gap_request_security_level(handle, LEVEL_2);
                             }
                         }
@@ -5411,6 +5449,7 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 last_auth_decision.request_was_pending =
                     (auth_conn->bonding_flags & BONDING_SEND_ENCRYPTION_REQUEST) != 0;
                 last_auth_decision.stood_down = false;
+                last_auth_decision.auth_completed_ok = true;
                 if (ns2_bt_defer_classic_encryption(
                         btstack_host_classic_companion_session_trust(auth_conn->address),
                         we_own_fresh_pairing) &&
@@ -5497,6 +5536,12 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                            handle == classic_encryption_deferred_handle)) {
                 classic_encryption_peer_completed++;
                 classic_encryption_deferred_handle = HCI_CON_HANDLE_INVALID;
+            }
+            if (handle == last_auth_decision.handle) {
+                last_auth_decision.encrypted_ok =
+                    (status == ERROR_CODE_SUCCESS) && (enabled != 0);
+                last_auth_decision.encryption_key_size =
+                    gap_encryption_key_size(handle);
             }
 
             if (switch2_direct_reencrypt_active &&
@@ -10735,25 +10780,32 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
             // Mark connection as ready (HID channels established)
             classic_connection_t* conn = find_classic_connection_by_cid(hid_cid);
             if (conn) {
-                conn->hid_ready = true;
-
-                // Type C invariant check. Standing down from our own encryption
-                // request must not turn "occasionally fails while encrypting"
-                // into "connects but stays unencrypted". Android's HID Device
-                // profile requires encryption before it opens these channels,
-                // so reaching here unencrypted should be impossible -- this
-                // counts it rather than assuming it. Reported as
-                // admission.enc_unencrypted_active over UART.
+                // FAIL CLOSED. Standing down from initiating authentication and
+                // encryption changes WHO STARTS them, never whether they are
+                // required. If the companion did not in fact drive security to
+                // completion, this link must not become usable -- an
+                // unauthenticated or unencrypted Controller Link is a worse
+                // outcome than a failed one.
                 hci_connection_t *acl =
                     hci_connection_for_bd_addr_and_type(conn->addr, BD_ADDR_TYPE_ACL);
-                if (acl != NULL &&
-                    btstack_host_classic_companion_session_trust(conn->addr) &&
-                    gap_encryption_key_size(acl->con_handle) == 0u) {
+                bool is_companion =
+                    btstack_host_classic_companion_session_trust(conn->addr);
+                uint8_t key_size = acl ? gap_encryption_key_size(acl->con_handle) : 0u;
+                if (is_companion && key_size < NS2_BT_REQUIRED_CLASSIC_KEY_SIZE) {
                     classic_encryption_unencrypted_active++;
-                    printf("[BTSTACK_HOST] WARNING: companion HID ready with no Classic "
-                           "encryption (handle=0x%04X, count=%lu)\n",
-                           acl->con_handle,
+                    printf("[BTSTACK_HOST] Refusing companion HID: Classic security "
+                           "incomplete (handle=0x%04X, key_size=%u, count=%lu)\n",
+                           acl ? acl->con_handle : 0xFFFFu, key_size,
                            (unsigned long)classic_encryption_unencrypted_active);
+                    if (acl != NULL) {
+                        gap_disconnect(acl->con_handle);
+                    }
+                    break;
+                }
+
+                conn->hid_ready = true;
+                if (acl != NULL && acl->con_handle == last_auth_decision.handle) {
+                    last_auth_decision.hid_ready = true;
                 }
 
                 // Check if this is a direct-L2CAP device by profile or name
