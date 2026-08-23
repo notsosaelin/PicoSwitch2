@@ -50,6 +50,19 @@ C_AFTER_RESPONSE = "C_RESPONDED_THEN_FAILED"
 D_REFUSED = "D_REFUSED_BY_ADMISSION"
 NO_DATA = "NO_BTLIFE_COVERAGE"
 
+# Post-page phase outcomes. The 40-cycle run showed page_rx + page_accept
+# followed by 20.3 s of silence and then acl_fail 0x08, which the earlier events
+# could locate only by the size of the gap. These name the boundary.
+C1_ACL_NEVER_COMPLETED = "C1_PAGE_ACCEPTED_ACL_NEVER_COMPLETED"
+C2_AUTH_OR_ENC_FAILED = "C2_ACL_UP_SECURITY_FAILED"
+C3_ACL_UP_THEN_DROPPED = "C3_ACL_UP_THEN_DISCONNECTED"
+C4_STALLED_BETWEEN_PHASES = "C4_STALLED_BETWEEN_PHASES"
+
+# Ordered establishment phases, for locating the last one reached and the gap
+# that followed it.
+PHASE_ORDER = ("page_rx", "page_accept", "acl_up", "link_key_req",
+               "auth_start", "auth_done", "enc_change", "hid_ready")
+
 
 def load_timelines(run: pathlib.Path) -> list[dict]:
     path = run / "evidence" / "timelines.jsonl"
@@ -109,13 +122,80 @@ def align(timelines: list[dict], btlife: list[dict]) -> tuple[float, float, int]
                for row in r["timeline"] if row["event"] == "classic.acl_up"]
     android = [a for a in android if a is not None]
     adapter = [e["t_ms"] / 1000.0 for e in btlife if e["code"] == "acl_up"]
-    pairs = min(len(android), len(adapter))
-    if pairs < 5:
-        sys.exit(f"only {pairs} acl_up pairs; cannot align clocks confidently")
-    # Trailing alignment: the ring may have evicted the earliest cycles, so the
-    # LAST n of each series are the ones that certainly correspond.
-    offsets = [a - b for a, b in zip(android[-pairs:], adapter[-pairs:])]
-    return statistics.median(offsets), statistics.pstdev(offsets), pairs
+    if len(android) < 5 or len(adapter) < 5:
+        sys.exit(f"only {min(len(android), len(adapter))} acl_up events; "
+                 "cannot align clocks confidently")
+
+    # Best-offset search rather than positional pairing. The two series are NOT
+    # guaranteed to correspond element for element: the ring may have evicted
+    # early cycles, and a FAILED cycle can still produce an adapter-side acl_up
+    # (a link that comes up and then dies) with no matching Android success. Any
+    # such asymmetry shifts a positional pairing and silently corrupts every
+    # verdict downstream, so the offset is chosen by how many events it actually
+    # reconciles.
+    TOL = 0.5
+    best = (0, 0.0, [])
+    for a in android:
+        for b in adapter:
+            candidate = a - b
+            matched = []
+            for x in android:
+                near = min((abs(x - (y + candidate)), x - (y + candidate))
+                           for y in adapter)
+                if near[0] <= TOL:
+                    matched.append(near[1])
+            if len(matched) > best[0]:
+                best = (len(matched), candidate, matched)
+    count, offset, residuals = best
+    if count < 5:
+        sys.exit(f"only {count} acl_up events reconcile at any offset; "
+                 "cannot align clocks confidently")
+    # Refine on the matched set, and report its spread as the quality measure.
+    offset += statistics.median(residuals)
+    return offset, statistics.pstdev(residuals) if len(residuals) > 1 else 0.0, count
+
+
+def _phase_verdict(events: list[dict], codes: list[str],
+                   detail: dict) -> tuple[str, dict]:
+    """The page was answered. Say which phase it died in, and after how long.
+
+    Every boundary is timestamped, so the longest gap is computed rather than
+    inferred from which events happen to be missing. No timer exists in the
+    firmware for this; the arithmetic lives here.
+    """
+    at = {}
+    for e in events:
+        at.setdefault(e["code"], e["t_ms"] / 1000.0)
+    reached = [p for p in PHASE_ORDER if p in at]
+    detail["phases_reached"] = reached
+    detail["last_phase"] = reached[-1] if reached else None
+
+    # Largest gap between consecutive boundaries: where it stalled.
+    gaps = []
+    for a, b in zip(reached, reached[1:]):
+        gaps.append((round(at[b] - at[a], 3), f"{a}->{b}"))
+    terminal = next((e["code"] for e in events
+                     if e["code"] in ("acl_fail", "hci_disconnect", "hid_fail")), None)
+    if terminal and reached:
+        gaps.append((round(at.get(terminal, at[reached[-1]]) - at[reached[-1]], 3),
+                     f"{reached[-1]}->{terminal}"))
+    if gaps:
+        gaps.sort(reverse=True)
+        detail["longest_gap_s"], detail["longest_gap"] = gaps[0]
+
+    if "acl_up" not in codes:
+        # A: answered the page, Connection Complete never succeeded.
+        return C1_ACL_NEVER_COMPLETED, detail
+    if "hid_ready" in codes and "hci_disconnect" in codes:
+        # C: it came all the way up and then went away.
+        return C3_ACL_UP_THEN_DROPPED, detail
+    if any(at.get(k) is not None for k in ("auth_done", "enc_change")) and             "hid_ready" not in codes:
+        # B: security ran and HID never became usable.
+        return C2_AUTH_OR_ENC_FAILED, detail
+    if "hid_ready" not in codes:
+        # D: stopped between phases with no failure event of its own.
+        return C4_STALLED_BETWEEN_PHASES, detail
+    return C_AFTER_RESPONSE, detail
 
 
 def classify_failure(events: list[dict],
@@ -144,7 +224,7 @@ def classify_failure(events: list[dict],
         detail["accepted"] = "page_accept" in codes
         detail["acl_fail_reason"] = next(
             (e["a"] for e in events if e["code"] == "acl_fail"), None)
-        return C_AFTER_RESPONSE, detail
+        return _phase_verdict(events, codes, detail)
     # No page reached the host. Was the adapter even listening?
     scan_state = None
     for e in events:
@@ -185,8 +265,17 @@ def main() -> int:
             continue
         # The attempt window: from the connection request to a little past the
         # 5.12 s Android page timeout.
+        # Two window widths on purpose. "Did a page arrive at all" is answered
+        # inside Android's 5.12 s page timeout, so a narrow window keeps a
+        # neighbouring cycle from leaking in. But once a page HAS been answered,
+        # the terminal event can be far later -- cycle 3 of the 40-cycle run
+        # failed with acl_fail 24.4 s after the request -- so the window is
+        # widened only in that case, where there is no ambiguity about ownership.
         lo, hi = opened - 1.0, opened + 8.0
         window = [e for e in btlife if lo <= e["t_ms"] / 1000.0 + offset <= hi]
+        if any(e["code"] == "page_rx" for e in window):
+            hi = opened + 30.0
+            window = [e for e in btlife if lo <= e["t_ms"] / 1000.0 + offset <= hi]
         verdict, detail = classify_failure(window, r.get("detail"))
         verdicts[verdict] = verdicts.get(verdict, 0) + 1
         print(f"{r['cycle']:5}  {r['result']:<30}  {verdict}")

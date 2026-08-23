@@ -851,6 +851,25 @@ enum {  // btlife_event_t.code
     BTLIFE_PAGE_REJECT,      // this host refused it (a in the reject cause)
     BTLIFE_ACL_UP,           // HCI_Connection_Complete, status 0
     BTLIFE_ACL_FAIL,         // HCI_Connection_Complete, status != 0 (a = reason)
+    // ---- post-page establishment phases (added 2026-08-23) ---------------
+    //
+    // The 40-cycle run split the device failures into two families that share
+    // nothing but a symptom. One never reaches page_rx at all. The other, cycle
+    // 3, recorded page_rx + page_accept at 10:02:08.846 and then NOTHING for
+    // 20.3 s until acl_fail status 0x08 -- a phase boundary the previous events
+    // could locate only by the size of the gap between them.
+    //
+    // These name each boundary so a failure says which phase it died in rather
+    // than leaving it to be inferred from silence. No timers are added: the gaps
+    // are computed by the analysis from the timestamps, so nothing here can
+    // change when the stack acts.
+    BTLIFE_LINK_KEY_REQ,     // controller asked us for a stored key (a = have it)
+    BTLIFE_AUTH_DEFER,       // we declined to initiate authentication
+    BTLIFE_AUTH_START,       // we requested security on this link
+    BTLIFE_AUTH_DONE,        // Authentication Complete (a = HCI status)
+    BTLIFE_ENC_CHANGE,       // Encryption Change (a = status, b = key size)
+    BTLIFE_HID_READY,        // both HID channels usable
+    BTLIFE_HID_FAIL,         // HID connection opened with a failure (a = status)
 };
 
 enum {  // BTLIFE_PAGE_REJECT cause (btlife_event_t.a)
@@ -883,6 +902,12 @@ enum {  // SCAN_SUPPRESS cause (btlife_event_t.a) -- why a scan restart was refu
 // (events.dropped passed 200), which is why a failure at cycle 93 could not be
 // explained from the adapter side afterwards. 1024 * 12 B = 12 KB against
 // 236 KB of BSS in a 520 KB part.
+//
+// Raised to 4096 on 2026-08-23 for the 200-cycle run. With the post-page phase
+// events a Controller Link cycle costs roughly 16 slots, so 1024 would have
+// retained about 65 cycles and lost any failure in the first two thirds of the
+// run -- which is precisely the failure we would then be unable to explain.
+// 4096 * 12 B = 48 KB.
 
 // Defined with the ring below; declared here because the page-scan and
 // inquiry call sites sit above it.
@@ -993,7 +1018,7 @@ static inline bool config_ble_authorized(void)
 // the ring is diagnostic, so a benign torn read at most mis-renders one line.
 // See docs/bluetooth/in-band-management-plan.md and STATUS.md.
 // ---------------------------------------------------------------------------
-#define BTLIFE_RING_SIZE 1024u
+#define BTLIFE_RING_SIZE 4096u
 // Ring-only coalescing window for repeated scan-suppress entries.
 #define BTLIFE_SUPPRESS_COALESCE_MS 10000u
 typedef struct {
@@ -4848,8 +4873,10 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                             last_auth_decision.auth_had_stored_key = have_incoming_key;
                             if (defer_auth) {
                                 classic_authentication_deferrals++;
+                                btlife_record_addr(BTLIFE_AUTH_DEFER, 1u, handle, addr);
                             } else if (have_incoming_key) {
                                 gap_request_security_level(handle, LEVEL_2);
+                                btlife_record_addr(BTLIFE_AUTH_START, 0u, handle, addr);
                             }
                         }
                     }
@@ -5684,6 +5711,10 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             bool have_key = gap_get_link_key_for_bd_addr(req_addr, link_key, &key_type);
 
             hci_connection_t *conn = hci_connection_for_bd_addr_and_type(req_addr, BD_ADDR_TYPE_ACL);
+            // The controller reached the point of asking for a stored key: a
+            // phase boundary between "page answered" and "authenticating".
+            btlife_record_addr(BTLIFE_LINK_KEY_REQ, have_key ? 1u : 0u,
+                               conn ? conn->con_handle : 0u, req_addr);
             printf("[BTSTACK_HOST] Link key request: %02X:%02X:%02X:%02X:%02X:%02X conn=%s have_key=%d type=%d\n",
                    req_addr[0], req_addr[1], req_addr[2], req_addr[3], req_addr[4], req_addr[5],
                    conn ? "YES" : "NO", have_key, have_key ? key_type : -1);
@@ -5845,6 +5876,8 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             uint8_t status = packet[2];
             hci_con_handle_t handle = little_endian_read_16(packet, 3);
             hci_connection_t *auth_conn = hci_connection_for_handle(handle);
+            btlife_record_addr(BTLIFE_AUTH_DONE, status, handle,
+                               auth_conn ? auth_conn->address : NULL);
             bool pending_identity_matches = classic_state.pending_valid &&
                 auth_conn &&
                 bd_addr_cmp(auth_conn->address,
@@ -5971,6 +6004,11 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
             uint8_t enabled = event_v2 ?
                 hci_event_encryption_change_v2_get_encryption_enabled(packet) :
                 hci_event_encryption_change_get_encryption_enabled(packet);
+            // b carries enabled + key size, so the acceptance gate's input is
+            // visible in the ring and not only in the single-slot btauth record.
+            btlife_record(BTLIFE_ENC_CHANGE, status,
+                          (uint16_t)((enabled ? 0x100u : 0u) |
+                                     gap_encryption_key_size(handle)));
 
             printf("[BTSTACK_HOST] Encryption change: handle=0x%04X status=0x%02X enabled=%d\n",
                    handle, status, enabled);
@@ -10935,6 +10973,13 @@ const char *btstack_host_life_code_name(uint8_t code)
         case BTLIFE_PAGE_REJECT:     return "page_reject";
         case BTLIFE_ACL_UP:          return "acl_up";
         case BTLIFE_ACL_FAIL:        return "acl_fail";
+        case BTLIFE_LINK_KEY_REQ:    return "link_key_req";
+        case BTLIFE_AUTH_DEFER:      return "auth_defer";
+        case BTLIFE_AUTH_START:      return "auth_start";
+        case BTLIFE_AUTH_DONE:       return "auth_done";
+        case BTLIFE_ENC_CHANGE:      return "enc_change";
+        case BTLIFE_HID_READY:       return "hid_ready";
+        case BTLIFE_HID_FAIL:        return "hid_fail";
         default:                     return "none";
     }
 }
@@ -11226,6 +11271,7 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
             classic_pending_security_clear();
 
             if (status != ERROR_CODE_SUCCESS) {
+                btlife_record(BTLIFE_HID_FAIL, status, hid_cid);
                 printf("[BTSTACK_HOST] HID connection failed, cid=0x%04X status=0x%02X\n", hid_cid, status);
                 // Remove connection slot
                 classic_connection_t* conn = find_classic_connection_by_cid(hid_cid);
@@ -11272,6 +11318,8 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
                 uint8_t key_size = acl ? gap_encryption_key_size(acl->con_handle) : 0u;
                 if (is_companion && key_size < NS2_BT_REQUIRED_CLASSIC_KEY_SIZE) {
                     classic_encryption_unencrypted_active++;
+                    btlife_record_addr(BTLIFE_HID_FAIL, key_size,
+                                       acl ? acl->con_handle : 0u, conn->addr);
                     printf("[BTSTACK_HOST] Refusing companion HID: Classic security "
                            "incomplete (handle=0x%04X, key_size=%u, count=%lu)\n",
                            acl ? acl->con_handle : 0xFFFFu, key_size,
@@ -11283,6 +11331,9 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
                 }
 
                 conn->hid_ready = true;
+                // Final phase boundary: both HID channels usable.
+                btlife_record_addr(BTLIFE_HID_READY, key_size,
+                                   acl ? acl->con_handle : 0u, conn->addr);
                 if (acl != NULL && auth_decision_owns(acl->con_handle)) {
                     last_auth_decision.hid_ready = true;
                     // The only valid sampling point for the Classic key size,

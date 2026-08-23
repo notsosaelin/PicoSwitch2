@@ -283,7 +283,13 @@ def check_paging_instrumentation_is_observation_only(source: str) -> None:
     for event in ("BTLIFE_PAGE_SCAN_ON", "BTLIFE_PAGE_SCAN_OFF",
                   "BTLIFE_INQUIRY_START", "BTLIFE_INQUIRY_STOP",
                   "BTLIFE_PAGE_RX", "BTLIFE_PAGE_ACCEPT", "BTLIFE_PAGE_REJECT",
-                  "BTLIFE_ACL_UP", "BTLIFE_ACL_FAIL"):
+                  "BTLIFE_ACL_UP", "BTLIFE_ACL_FAIL",
+                  # Post-page phases. Without these a failure after the page can
+                  # only be located by the size of the silence between events --
+                  # which is how cycle 3's 20.274 s stall had to be read.
+                  "BTLIFE_LINK_KEY_REQ", "BTLIFE_AUTH_DEFER", "BTLIFE_AUTH_START",
+                  "BTLIFE_AUTH_DONE", "BTLIFE_ENC_CHANGE",
+                  "BTLIFE_HID_READY", "BTLIFE_HID_FAIL"):
         assert source.count(event) >= 2, (
             f"{event} must be both defined and recorded somewhere"
         )
@@ -304,8 +310,10 @@ def check_paging_instrumentation_is_observation_only(source: str) -> None:
     # overflowed inside the first minute of the 100-cycle run, which is why a
     # failure at cycle 93 could not be explained afterwards.
     match = re.search(r"#define BTLIFE_RING_SIZE\s+(\d+)u", source)
-    assert match and int(match.group(1)) >= 1024, (
-        "BTLIFE_RING_SIZE must retain a full soak (>= 1024 entries)"
+    assert match and int(match.group(1)) >= 4096, (
+        "BTLIFE_RING_SIZE must retain a full soak. With the post-page phase "
+        "events a cycle costs ~16 slots, so 200 cycles needs >= 4096 entries; "
+        "anything smaller loses the early failures the run exists to explain"
     )
     # Suppressed scan restarts are background noise for the paging question and
     # fired ~9 times per cycle in the 100-cycle soak. Coalescing them tightly
