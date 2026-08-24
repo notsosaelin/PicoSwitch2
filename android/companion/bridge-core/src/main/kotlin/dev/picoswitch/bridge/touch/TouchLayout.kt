@@ -237,6 +237,15 @@ data class ResolvedTouchLayout(
     val scale: Float,
     val fits: Boolean,
     val problem: String? = null,
+    /**
+     * The rectangle itself is below [TouchLayoutResolver.MIN_REGION_WIDTH_UNITS]
+     * or [TouchLayoutResolver.MIN_REGION_HEIGHT_UNITS].
+     *
+     * Distinct from a merely failing audit because no EDIT can clear it: moving
+     * or shrinking controls does not make the window bigger. A surface that
+     * offers layout editing here would be offering a repair that cannot work.
+     */
+    val regionTooSmall: Boolean = false,
 ) {
     /** Built once so the router's per-move owner lookup is not a list scan. */
     private val byId: Map<String, ResolvedTouchControl> = controls.associateBy { it.id }
@@ -251,6 +260,7 @@ data class ResolvedTouchLayout(
             scale = 1f,
             fits = false,
             problem = "No interaction area has been measured yet",
+            regionTooSmall = true,
         )
     }
 }
@@ -298,6 +308,7 @@ object TouchLayoutResolver {
             return ResolvedTouchLayout(
                 layout, region, emptyList(), 1f, fits = false,
                 problem = "The interaction area has no usable size",
+                regionTooSmall = true,
             )
         }
 
@@ -330,6 +341,7 @@ object TouchLayoutResolver {
             scale = scale,
             fits = problem == null,
             problem = problem,
+            regionTooSmall = tooSmall,
         )
     }
 

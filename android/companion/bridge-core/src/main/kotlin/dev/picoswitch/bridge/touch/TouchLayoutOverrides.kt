@@ -10,6 +10,7 @@ import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
 data class TouchLayoutOverride(
@@ -49,8 +50,13 @@ object TouchLayoutOverrideJsonCodec {
         put("profileId", value.profileId.key)
         put("templateId", value.templateId)
         put("basedOnRevision", value.basedOnRevision)
-        put("controls", buildJsonObject {
-            value.controls.toSortedMap().forEach { (id, control) ->
+        put("controls", encodeControls(value.controls))
+    }.toString()
+
+    /** Shared with the profile-library codec so one schema has exactly one writer. */
+    internal fun encodeControls(controls: Map<String, TouchControlOverride>): JsonObject =
+        buildJsonObject {
+            controls.toSortedMap().forEach { (id, control) ->
                 put(id, buildJsonObject {
                     control.anchorX?.let { put("anchorX", it) }
                     control.anchorY?.let { put("anchorY", it) }
@@ -59,8 +65,7 @@ object TouchLayoutOverrideJsonCodec {
                     control.groupOffsetScale?.let { put("groupOffsetScale", it) }
                 })
             }
-        })
-    }.toString()
+        }
 
     fun decode(raw: String): TouchOverrideDecodeResult = runCatching {
         decodeDocument(raw)
@@ -91,41 +96,62 @@ object TouchLayoutOverrideJsonCodec {
             ?: return TouchOverrideDecodeResult.Invalid("Layout override has an invalid template revision")
         val controlsObject = root["controls"] as? JsonObject
             ?: return TouchOverrideDecodeResult.Invalid("Layout override has no controls object")
+        return when (val controls = decodeControls(controlsObject)) {
+            is ControlsDecode.Bad -> TouchOverrideDecodeResult.Invalid(controls.problem)
+            is ControlsDecode.Ok -> TouchOverrideDecodeResult.Valid(
+                TouchLayoutOverride(schema, profile, templateId, revision, controls.controls),
+            )
+        }
+    }
+
+    internal sealed interface ControlsDecode {
+        data class Ok(val controls: Map<String, TouchControlOverride>) : ControlsDecode
+        data class Bad(val problem: String) : ControlsDecode
+    }
+
+    /**
+     * Shared with the profile-library codec.
+     *
+     * Every range check a stored control has to pass lives here exactly once, so
+     * a profile document cannot smuggle in geometry a bare override document
+     * would have been refused for.
+     */
+    internal fun decodeControls(controlsObject: JsonObject): ControlsDecode {
         val controls = linkedMapOf<String, TouchControlOverride>()
         controlsObject.forEach { (id, element) ->
-            if (id.isBlank()) return TouchOverrideDecodeResult.Invalid("Layout override has a blank control id")
+            if (id.isBlank()) return ControlsDecode.Bad("Layout override has a blank control id")
             val objectValue = element as? JsonObject
-                ?: return TouchOverrideDecodeResult.Invalid("Override '$id' is not an object")
+                ?: return ControlsDecode.Bad("Override '$id' is not an object")
             val anchorX = objectValue.optionalFloat("anchorX")
                 ?: if (objectValue.containsKey("anchorX")) {
-                    return TouchOverrideDecodeResult.Invalid("Override '$id' has an invalid anchorX")
+                    return ControlsDecode.Bad("Override '$id' has an invalid anchorX")
                 } else null
             val anchorY = objectValue.optionalFloat("anchorY")
                 ?: if (objectValue.containsKey("anchorY")) {
-                    return TouchOverrideDecodeResult.Invalid("Override '$id' has an invalid anchorY")
+                    return ControlsDecode.Bad("Override '$id' has an invalid anchorY")
                 } else null
             val scale = objectValue.optionalFloat("scale")
                 ?: if (objectValue.containsKey("scale")) {
-                    return TouchOverrideDecodeResult.Invalid("Override '$id' has an invalid scale")
+                    return ControlsDecode.Bad("Override '$id' has an invalid scale")
                 } else null
             val visible = objectValue["visible"]?.jsonPrimitive?.booleanOrNull
                 ?: if (objectValue.containsKey("visible")) {
-                    return TouchOverrideDecodeResult.Invalid("Override '$id' has an invalid visible flag")
+                    return ControlsDecode.Bad("Override '$id' has an invalid visible flag")
                 } else null
             val groupOffsetScale = objectValue.optionalFloat("groupOffsetScale")
                 ?: if (objectValue.containsKey("groupOffsetScale")) {
-                    return TouchOverrideDecodeResult.Invalid("Override '$id' has an invalid groupOffsetScale")
+                    return ControlsDecode.Bad("Override '$id' has an invalid groupOffsetScale")
                 } else null
             if (anchorX != null && anchorX !in 0f..1f || anchorY != null && anchorY !in 0f..1f) {
-                return TouchOverrideDecodeResult.Invalid("Override '$id' has an out-of-range anchor")
+                return ControlsDecode.Bad("Override '$id' has an out-of-range anchor")
             }
             if (scale != null && scale !in TouchLayoutEditor.MIN_SCALE..TouchLayoutEditor.MAX_SCALE) {
-                return TouchOverrideDecodeResult.Invalid("Override '$id' has an out-of-range scale")
+                return ControlsDecode.Bad("Override '$id' has an out-of-range scale")
             }
             if (groupOffsetScale != null &&
                 groupOffsetScale !in TouchLayoutEditor.MIN_SCALE..TouchLayoutEditor.MAX_SCALE
             ) {
-                return TouchOverrideDecodeResult.Invalid("Override '$id' has an out-of-range groupOffsetScale")
+                return ControlsDecode.Bad("Override '$id' has an out-of-range groupOffsetScale")
             }
             val control = TouchControlOverride(
                 anchorX = anchorX,
@@ -136,13 +162,12 @@ object TouchLayoutOverrideJsonCodec {
             )
             if (!control.isEmpty) controls[id] = control
         }
-        return TouchOverrideDecodeResult.Valid(
-            TouchLayoutOverride(schema, profile, templateId, revision, controls),
-        )
+        return ControlsDecode.Ok(controls)
     }
 
-    private fun JsonObject.string(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
-    private fun JsonObject.int(key: String): Int? = this[key]?.jsonPrimitive?.intOrNull
+    internal fun JsonObject.string(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
+    internal fun JsonObject.int(key: String): Int? = this[key]?.jsonPrimitive?.intOrNull
+    internal fun JsonObject.long(key: String): Long? = this[key]?.jsonPrimitive?.longOrNull
     private fun JsonObject.optionalFloat(key: String): Float? =
         this[key]?.jsonPrimitive?.floatOrNull?.takeIf { it.isFinite() }
 }
@@ -235,7 +260,19 @@ object TouchLayoutComposer {
     )
 }
 
-/** Pure operations used by any host's editor. */
+/**
+ * Pure operations used by any host's editor.
+ *
+ * Every entry point takes a SELECTION — a set of control ids — rather than one
+ * id, because "move these four buttons together" and "move this button" differ
+ * only in the size of that set. The single-id conveniences below exist so the
+ * common case reads naturally; they delegate to the same code, so a rule proven
+ * for one selection holds for all of them.
+ *
+ * Orthogonal to the selection, [editGroup] expands each selected control to its
+ * authored [TouchTemplateControl.editGroupId] cluster. A group is an EDITING
+ * unit only: it never changes what a control sends.
+ */
 object TouchLayoutEditor {
     const val MIN_SCALE = 0.55f
     const val MAX_SCALE = 1.75f
@@ -249,15 +286,16 @@ object TouchLayoutEditor {
     fun move(
         profile: TouchControllerProfile,
         current: TouchLayoutOverride,
-        selectedId: String,
+        selection: Set<String>,
         deltaX: Float,
         deltaY: Float,
         editGroup: Boolean,
     ): TouchLayoutOverride {
+        if (!deltaX.isFinite() || !deltaY.isFinite()) return current
         val byId = profile.defaultTemplate.controls.associateBy { it.id }
-        val targets = targetIds(profile.defaultTemplate, selectedId, editGroup).mapNotNull(byId::get)
+        val targets = targetIds(profile.defaultTemplate, selection, editGroup).mapNotNull(byId::get)
         if (targets.isEmpty()) return current
-        // Clamp one delta for the whole group. Clamping each member after the
+        // Clamp one delta for the whole selection. Clamping each member after the
         // move would compress the cluster against an edge and silently destroy
         // its authored relative spacing.
         val allowedX = targets.map { control ->
@@ -290,10 +328,38 @@ object TouchLayoutEditor {
             minimumValue = allowedY.maxOf { (center, extent) -> extent - center },
             maximumValue = allowedY.minOf { (center, extent) -> 1f - extent - center },
         )
-        return updateTargets(profile, current, selectedId, editGroup) { template, override ->
+        return updateTargets(profile, current, selection, editGroup) { template, override ->
             override.copy(
                 anchorX = (override.anchorX ?: template.geometry.anchorX) + appliedX,
                 anchorY = (override.anchorY ?: template.geometry.anchorY) + appliedY,
+            )
+        }
+    }
+
+    fun move(
+        profile: TouchControllerProfile,
+        current: TouchLayoutOverride,
+        selectedId: String,
+        deltaX: Float,
+        deltaY: Float,
+        editGroup: Boolean,
+    ): TouchLayoutOverride = move(profile, current, setOf(selectedId), deltaX, deltaY, editGroup)
+
+    /** Set an absolute size multiplier; used by the slider and by numeric entry. */
+    fun scale(
+        profile: TouchControllerProfile,
+        current: TouchLayoutOverride,
+        selection: Set<String>,
+        scale: Float,
+        editGroup: Boolean,
+    ): TouchLayoutOverride {
+        if (!scale.isFinite()) return current
+        return updateTargets(profile, current, selection, editGroup) { template, override ->
+            val applied = scale.coerceIn(MIN_SCALE, MAX_SCALE)
+            override.copy(
+                scale = applied,
+                groupOffsetScale = applied.takeIf { editGroup && template.editGroupId != null }
+                    ?: override.groupOffsetScale,
             )
         }
     }
@@ -304,13 +370,53 @@ object TouchLayoutEditor {
         selectedId: String,
         scale: Float,
         editGroup: Boolean,
-    ): TouchLayoutOverride = updateTargets(profile, current, selectedId, editGroup) { template, override ->
-        val applied = scale.coerceIn(MIN_SCALE, MAX_SCALE)
-        override.copy(
-            scale = applied,
-            groupOffsetScale = applied.takeIf { editGroup && template.editGroupId != null }
-                ?: override.groupOffsetScale,
-        )
+    ): TouchLayoutOverride = scale(profile, current, setOf(selectedId), scale, editGroup)
+
+    /**
+     * Multiply each target's current size, used by pinch.
+     *
+     * Relative rather than absolute because a pinch has no absolute value to
+     * report and because a multi-selection has no single current size: applying
+     * one absolute scale to controls the user deliberately sized differently
+     * would flatten that difference on the first pinch.
+     */
+    fun scaleBy(
+        profile: TouchControllerProfile,
+        current: TouchLayoutOverride,
+        selection: Set<String>,
+        factor: Float,
+        editGroup: Boolean,
+    ): TouchLayoutOverride {
+        if (!factor.isFinite() || factor <= 0f) return current
+        return updateTargets(profile, current, selection, editGroup) { template, override ->
+            val applied = ((override.scale ?: 1f) * factor).coerceIn(MIN_SCALE, MAX_SCALE)
+            override.copy(
+                scale = applied,
+                groupOffsetScale = (
+                    ((override.groupOffsetScale ?: 1f) * factor).coerceIn(MIN_SCALE, MAX_SCALE)
+                    ).takeIf { editGroup && template.editGroupId != null }
+                    ?: override.groupOffsetScale,
+            )
+        }
+    }
+
+    /**
+     * Show or hide controls.
+     *
+     * Visible is the template's own answer, so showing a control DROPS the
+     * override rather than storing `visible = true`. Otherwise hiding a control
+     * and putting it back would leave a profile that reports itself as customized
+     * while describing exactly the shipped layout — and "Reset" would appear to
+     * do something when there is nothing left to reset.
+     */
+    fun setVisible(
+        profile: TouchControllerProfile,
+        current: TouchLayoutOverride,
+        selection: Set<String>,
+        visible: Boolean,
+        editGroup: Boolean,
+    ): TouchLayoutOverride = updateTargets(profile, current, selection, editGroup) { _, override ->
+        override.copy(visible = if (visible) null else false)
     }
 
     fun setVisible(
@@ -319,8 +425,16 @@ object TouchLayoutEditor {
         selectedId: String,
         visible: Boolean,
         editGroup: Boolean,
-    ): TouchLayoutOverride = updateTargets(profile, current, selectedId, editGroup) { _, override ->
-        override.copy(visible = visible)
+    ): TouchLayoutOverride = setVisible(profile, current, setOf(selectedId), visible, editGroup)
+
+    fun reset(
+        profile: TouchControllerProfile,
+        current: TouchLayoutOverride,
+        selection: Set<String>,
+        editGroup: Boolean,
+    ): TouchLayoutOverride {
+        val ids = targetIds(profile.defaultTemplate, selection, editGroup)
+        return current.copy(controls = current.controls - ids)
     }
 
     fun reset(
@@ -328,17 +442,41 @@ object TouchLayoutEditor {
         current: TouchLayoutOverride,
         selectedId: String,
         editGroup: Boolean,
-    ): TouchLayoutOverride {
-        val ids = targetIds(profile.defaultTemplate, selectedId, editGroup)
-        return current.copy(controls = current.controls - ids)
-    }
+    ): TouchLayoutOverride = reset(profile, current, setOf(selectedId), editGroup)
 
     fun resetAll(profile: TouchControllerProfile): TouchLayoutOverride = empty(profile)
+
+    /**
+     * The controls an operation on this selection actually touches.
+     *
+     * Public because a host has to DRAW it: showing a bounding indicator around
+     * one button while an edit silently moves four is the kind of surprise that
+     * makes a direct-manipulation editor untrustworthy.
+     */
+    fun targetIds(
+        template: TouchLayoutTemplate,
+        selection: Set<String>,
+        editGroup: Boolean,
+    ): Set<String> {
+        val byId = template.controls.associateBy { it.id }
+        val result = linkedSetOf<String>()
+        selection.forEach { id ->
+            val selected = byId[id] ?: return@forEach
+            val group = selected.editGroupId?.takeIf { editGroup }
+            if (group == null) {
+                result += id
+            } else {
+                template.controls.filterTo(mutableListOf()) { it.editGroupId == group }
+                    .forEach { result += it.id }
+            }
+        }
+        return result
+    }
 
     private fun updateTargets(
         profile: TouchControllerProfile,
         current: TouchLayoutOverride,
-        selectedId: String,
+        selection: Set<String>,
         editGroup: Boolean,
         transform: (TouchTemplateControl, TouchControlOverride) -> TouchControlOverride,
     ): TouchLayoutOverride {
@@ -347,22 +485,12 @@ object TouchLayoutEditor {
         }
         val byId = profile.defaultTemplate.controls.associateBy { it.id }
         val next = current.controls.toMutableMap()
-        targetIds(profile.defaultTemplate, selectedId, editGroup).forEach { id ->
+        targetIds(profile.defaultTemplate, selection, editGroup).forEach { id ->
             val template = byId[id] ?: return@forEach
             val changed = transform(template, next[id] ?: TouchControlOverride())
             if (changed.isEmpty) next.remove(id) else next[id] = changed
         }
         return current.copy(controls = next)
-    }
-
-    private fun targetIds(
-        template: TouchLayoutTemplate,
-        selectedId: String,
-        editGroup: Boolean,
-    ): Set<String> {
-        val selected = template.controls.firstOrNull { it.id == selectedId } ?: return emptySet()
-        val group = selected.editGroupId?.takeIf { editGroup } ?: return setOf(selectedId)
-        return template.controls.filter { it.editGroupId == group }.mapTo(linkedSetOf()) { it.id }
     }
 }
 
