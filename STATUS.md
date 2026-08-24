@@ -307,9 +307,9 @@ console-facing protocol owner. Reference hardware is an AYN Thor (Android 13 / A
   `KEYCODE_BUTTON_MODE` physical mapping; Capture and C/GameChat have no default physical-key
   mapping, which matches both audited handhelds. `KEYCODE_BUTTON_C` and `KEYCODE_BUTTON_Z` are
   deliberately unmapped and reserved for a future mapping system.
-- **Touch Gamepad:** personality-aware layout engine implemented and source-tested 2026-08-23;
-  **physical acceptance open.** The touchscreen itself can be the controller, for a host with no
-  gamepad at all. Gamepad -> Touch
+- **Touch Gamepad:** personality-aware layout engine and editor implemented and source-tested;
+  **device-validated 2026-08-24, console-in-the-loop acceptance open.** The touchscreen itself can
+  be the controller, for a host with no gamepad at all. Gamepad -> Touch
   Gamepad opens a full-screen mode whose input terminates in the same `ControllerState` and crosses
   the same transport; firmware sees the declared Android bridge source but cannot distinguish the
   screen from the handheld's built-in controls.
@@ -360,9 +360,13 @@ console-facing protocol owner. Reference hardware is an AYN Thor (Android 13 / A
   Editor behaviour was exercised on an Android 15 emulator through the debug layout lab (selection,
   group selection, long-press multi-select, drag with live snap guides, size stepping, blocking
   audit feedback, grid, all four toolbar docks, profile create/save/persist-across-restart, the
-  unsaved-changes prompt, and the too-small-window refusal). Open: PINCH scaling and multi-touch
-  editing, which the emulator cannot inject; real-device rendering and feel; live profile swaps;
-  the stuck-input torture matrix; and in-game correctness on real hardware.
+  unsaved-changes prompt, and the too-small-window refusal).
+  **Maintainer-validated on two Android devices, 2026-08-24:** pinch scaling, multi-touch editing,
+  live profile swaps, and the interruption behaviour the stuck-input matrix guards — losing focus,
+  sleeping and app-switching each release every held input as intended. Owner-reported rather than
+  capture-proven; no log or capture was taken, and the release path it exercises is the same
+  idempotent release-all the host tests cover. Still open: in-game correctness with a console in the
+  loop.
 - **Hardware state:** the v2.0.0 sanity pass on an AYN Thor confirmed buttons, sticks, triggers,
   D-pad, C/GameChat, battery, motion and rumble with the adapter reporting `v2-bridge`
   identification; the bridge is also confirmed on an Odin 2.
@@ -662,14 +666,17 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
    native versus translated mouse output, persistence across reboot, and Controller-mode regression
    — is in
    [`docs/bluetooth/keyboard-mouse-input.md`](docs/bluetooth/keyboard-mouse-input.md#hardware-validation).
-10. **Touch Gamepad physical acceptance.** The personality-aware engine and editor are source-tested
-   2026-08-23; none of the new profile/template/editor behavior has met a finger. Validate every
-   Pro2, NSO GameCube, Joy-Con Left and Joy-Con Right control on the matching real console
-   personality; per-profile save/restore, resize/hide/group edit, held-contact profile changes with
-   the Classic link retained, D-pad diagonals, both sticks, representative chords and ergonomics.
-   The release-blocking torture matrix remains background, lock, rotate, system bars, disconnect,
-   reconnect, profile change, editor entry and exit while holding controls; the console must be
-   neutral after each and the held contact must lift before it can claim the replacement layout.
+10. **Touch Gamepad physical acceptance — largely closed 2026-08-24 (owner-reported).** The
+   maintainer validated the editor and the interruption behaviour on two Android devices: pinch
+   scaling, multi-touch editing, live profile swaps, and losing focus / sleeping / app-switching
+   while controls are held, each releasing every held input as intended. That closes the part of the
+   stuck-input matrix reachable from the handheld alone, and it is why this gate is no longer
+   release-blocking.
+   Still uncovered, and only a console can supply it: every Pro2, NSO GameCube, Joy-Con Left and
+   Joy-Con Right control checked against the matching real console personality; held-contact profile
+   changes with the Classic link retained; and the console-side half of the torture matrix — after a
+   disconnect, a reconnect, a rotate or a system-bar interruption, the CONSOLE must be neutral, which
+   the handheld cannot observe about itself.
 11. **Remaining Bluetooth wipe/flash matrix.** The strict Xbox Elite Series 2 corrected-wipe retest
    passed. Run the still-uncovered powered-off/reboot/release-UF2 and other-family cases in
    [`docs/bluetooth/VALIDATION.md`](docs/bluetooth/VALIDATION.md). Record bond state before the remote
@@ -940,9 +947,10 @@ HCI/CYW43 OFF/ON recovery it added has still never fired on hardware — its log
 the recovery path itself remains unvalidated in the field.
 
 The open items above are hardware gates to close opportunistically when the relevant hardware is in
-front of the maintainer. Two of them block a claim about a shipped feature rather than a
-nice-to-have: KB/M (gate 9) and the Touch Gamepad (gate 10) are both implementation-complete and
-host-validated with nothing hardware-confirmed. Gate 10 additionally carries a release-blocking
-sub-item — the stuck-input torture matrix — because the failure it guards against is a console left
-holding a control with no finger on the screen. The next accepted engineering work is the current
-development priority in [`PLAN.md`](PLAN.md).
+front of the maintainer. KB/M (gate 9) is implementation-complete and host-validated with nothing
+hardware-confirmed. The Touch Gamepad (gate 10) is no longer release-blocking: the stuck-input
+sub-item was the reason it was, and the maintainer confirmed on 2026-08-24 that losing focus,
+sleeping and app-switching all release held inputs on two Android devices. What is left of gate 10
+needs a console attached, because the remaining question — is the CONSOLE neutral after an
+interruption — is not one the handheld can answer about itself. The next accepted engineering work
+is the current development priority in [`PLAN.md`](PLAN.md).
