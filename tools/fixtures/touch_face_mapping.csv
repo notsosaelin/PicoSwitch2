@@ -1,0 +1,21 @@
+# personality,template,presentation,control_id,label,usage,report_offset,report_mask
+pro2,picoswitch.touch.v1,nintendo,face-south,B,2,2,1
+pro2,picoswitch.touch.v1,nintendo,face-east,A,1,2,2
+pro2,picoswitch.touch.v1,nintendo,face-west,Y,4,2,4
+pro2,picoswitch.touch.v1,nintendo,face-north,X,3,2,8
+pro2,picoswitch.touch.v1,xbox,face-south,A,1,2,2
+pro2,picoswitch.touch.v1,xbox,face-east,B,2,2,1
+pro2,picoswitch.touch.v1,xbox,face-west,X,3,2,8
+pro2,picoswitch.touch.v1,xbox,face-north,Y,4,2,4
+gc,picoswitch.touch.gc.v1,fixed,a,A,1,2,2
+gc,picoswitch.touch.gc.v1,fixed,b,B,2,2,1
+gc,picoswitch.touch.gc.v1,fixed,x,X,3,2,8
+gc,picoswitch.touch.gc.v1,fixed,y,Y,4,2,4
+jcl,picoswitch.touch.jcl.v1,fixed,direction-up,triangle-up,3,2,8
+jcl,picoswitch.touch.jcl.v1,fixed,direction-left,triangle-left,1,2,4
+jcl,picoswitch.touch.jcl.v1,fixed,direction-right,triangle-right,4,2,2
+jcl,picoswitch.touch.jcl.v1,fixed,direction-down,triangle-down,2,2,1
+jcr,picoswitch.touch.jcr.v1,fixed,a,A,1,2,2
+jcr,picoswitch.touch.jcr.v1,fixed,b,B,3,2,1
+jcr,picoswitch.touch.jcr.v1,fixed,x,X,2,2,8
+jcr,picoswitch.touch.jcr.v1,fixed,y,Y,4,2,4

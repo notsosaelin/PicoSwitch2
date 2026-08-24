@@ -1,6 +1,7 @@
 #ifndef _NS2_REMAP_H_
 #define _NS2_REMAP_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 
 // Locked physical-controller -> Switch 2 semantic mapping.
@@ -35,5 +36,15 @@ enum {
 };
 
 extern const uint8_t NS2_BASE_BUTTON_MAP[NS2_SRC_COUNT];
+
+// Resolve one unified JP_BUTTON_* source slot to its canonical destination.
+//
+// Direct controllers keep the locked physical-controller map above. The Android
+// bridge is different by declared contract: its first four HID usages have
+// already been normalized to logical A/B/X/Y by the app. Applying the physical
+// B/A/Y/X position map to those four would swap them a second time. All other
+// bridge usages retain the ordinary base map.
+uint8_t ns2_resolve_button_destination(uint8_t source_index,
+                                       bool from_android_bridge);
 
 #endif  // _NS2_REMAP_H_

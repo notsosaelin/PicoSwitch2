@@ -29,6 +29,7 @@ import dev.picoswitch.companion.data.SystemCompanionAssociation
 import dev.picoswitch.companion.nfc.AndroidNtag215Reader
 import dev.picoswitch.companion.ui.CompanionApp
 import dev.picoswitch.companion.ui.CompanionViewModel
+import dev.picoswitch.companion.ui.applyEdgeToEdgeChrome
 
 class MainActivity : ComponentActivity() {
     private val viewModel: CompanionViewModel by viewModels()
@@ -110,6 +111,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Before setContent: the window's inset behaviour has to be settled
+        // before the first composition reads WindowInsets.safeDrawing.
+        applyEdgeToEdgeChrome()
         viewModel.setNfcReaderAvailable(nfcReader.isAvailable)
         setContent {
             CompanionApp(

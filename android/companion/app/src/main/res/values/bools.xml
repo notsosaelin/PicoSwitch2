@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Starting-window system-bar icon polarity: dark icons over the light window
+      background. Once Compose is running, CompanionTheme takes over and derives
+      the same thing from the RESOLVED application theme, which may differ from
+      the system setting when the user has forced light/dark/OLED in Settings.
+    -->
+    <bool name="system_bar_icons_dark">true</bool>
+</resources>

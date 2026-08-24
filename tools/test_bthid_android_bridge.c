@@ -14,8 +14,10 @@
  *   tools/test_bthid_android_bridge.c \
  *   src/bt_hid/bt/bthid/devices/generic/bthid_gamepad.c \
  *   src/bt_hid/bt/bthid/devices/generic/bthid_gamepad_quirks.c \
+ *   src/bt_hid/bt/bthid/devices/generic/quirks/bitdo/bthid_gamepad_quirk_bitdo_ngc_modkit.c \
  *   src/bt_hid/bt/bthid/devices/generic/bthid_android_bridge.c \
  *   src/bt_hid/usb/usbh/hid/devices/generic/hid_parser.c \
+ *   src/ns2_remap.c \
  *   -Wl,--gc-sections -o build/host-tests/test_bthid_android_bridge.exe
  */
 #include <stdbool.h>
@@ -30,6 +32,7 @@
 #include "core/router/router.h"
 #include "core/services/players/feedback.h"
 #include "fixtures/android_controller_hid.h"
+#include "ns2_remap.h"
 
 static int failures;
 static bthid_device_t device;
@@ -52,7 +55,6 @@ static int player_index_result;
         else { printf("FAIL: %s\n", message); failures++; }                     \
     } while (0)
 
-const gamepad_quirk_t QUIRK_BITDO_NGC_MODKIT = {0};
 const gamepad_quirk_t QUIRK_BITDO_ULTIMATE_MG = {0};
 const gamepad_quirk_t QUIRK_BITDO_M30 = {0};
 const gamepad_quirk_t QUIRK_BITDO_PADDLE = {0};
@@ -85,17 +87,26 @@ bool bthid_send_output_report(uint8_t conn_index, uint8_t report_id,
 
 static void put_le16(uint8_t *p, int16_t v) { p[0] = (uint8_t)(v & 0xFF); p[1] = (uint8_t)((v >> 8) & 0xFF); }
 
-static void attach(const uint8_t *descriptor, uint16_t descriptor_len)
+static void attach_with_identity(const uint8_t *descriptor, uint16_t descriptor_len,
+                                 uint16_t vendor_id, uint16_t product_id,
+                                 const char *name)
 {
     memset(&device, 0, sizeof(device));
     device.active = true;
     device.conn_index = 3;
     device.is_ble = false;
     device.driver = &bthid_gamepad_driver;
-    strcpy(device.name, "AYN Thor");
+    device.vendor_id = vendor_id;
+    device.product_id = product_id;
+    snprintf(device.name, sizeof(device.name), "%s", name);
     submitted = 0;
     bthid_gamepad_driver.init(&device);
     bthid_gamepad_set_descriptor(&device, descriptor, descriptor_len);
+}
+
+static void attach(const uint8_t *descriptor, uint16_t descriptor_len)
+{
+    attach_with_identity(descriptor, descriptor_len, 0, 0, "AYN Thor");
 }
 
 static void send_v2(const uint8_t *report)
@@ -189,6 +200,55 @@ static void test_gamechat_button_routes(void)
 
     send_v2(ANDROID_CONTROLLER_V2_NEUTRAL_REPORT);
     CHECK(last_event.buttons == 0, "releasing C clears it from the routed event");
+}
+
+// ---------------------------------------------------------------------------
+// Touch and physical Android input are normalized to logical A/B/X/Y before
+// this report is encoded. Exercise the production descriptor parser and its
+// provenance flag together with the exact resolver called by ns2_seam.c. The
+// deliberately controller-looking host identity proves that an incidental
+// phone/PC name or VID/PID cannot replace the descriptor-declared bridge
+// contract with a controller-family quirk.
+// ---------------------------------------------------------------------------
+static void test_face_buttons_reach_logical_seam_destinations(void)
+{
+    static const uint32_t expected_source[4] = {
+        JP_BUTTON_B1, JP_BUTTON_B2, JP_BUTTON_B3, JP_BUTTON_B4,
+    };
+    static const uint8_t expected_destination[4] = {
+        NS2_DST_A, NS2_DST_B, NS2_DST_X, NS2_DST_Y,
+    };
+
+    attach_with_identity(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR,
+                         sizeof(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR),
+                         0x2DC8, 0x286A, "8BitDo NGC Bridge Host");
+
+    for (uint8_t phase = 0; phase < 2; phase++) {
+        // First prove descriptor-time selection. Then simulate late SDP identity
+        // resolution and prove it cannot displace the exact descriptor match.
+        if (phase == 1u)
+            bthid_gamepad_update_vid(&device);
+
+        for (uint8_t usage = 1; usage <= 4; usage++) {
+            uint8_t report[ANDROID_CONTROLLER_V2_WIRE_REPORT_LEN];
+            memcpy(report, ANDROID_CONTROLLER_V2_NEUTRAL_REPORT, sizeof(report));
+            report[7] = (uint8_t)(1u << (usage - 1u));
+            send_v2(report);
+
+            CHECK(last_event.from_android_bridge,
+                  "exact bridge descriptor marks the routed event as bridge input");
+            CHECK(last_event.buttons == expected_source[usage - 1u],
+                  "bridge face usage survives parser identity collision as its sequential JP slot");
+            CHECK(!last_event.gc_has_native_layout && !last_event.gc_native_zl &&
+                      !last_event.gc_native_z && !last_event.gc_l_detent &&
+                      !last_event.gc_r_detent,
+                  "bridge report never runs the colliding controller's native extra extractor");
+            CHECK(ns2_resolve_button_destination((uint8_t)(usage - 1u),
+                                                 last_event.from_android_bridge) ==
+                      expected_destination[usage - 1u],
+                  "bridge-aware seam resolver preserves logical A/B/X/Y destination");
+        }
+    }
 }
 
 static void test_motion_ingest(void)
@@ -408,6 +468,7 @@ int main(void)
     test_identify_trace();
     test_v2_descriptor_preserves_v1_layout();
     test_gamechat_button_routes();
+    test_face_buttons_reach_logical_seam_destinations();
     test_motion_ingest();
     test_battery_ingest();
     test_truncated_v2_report_is_atomic();

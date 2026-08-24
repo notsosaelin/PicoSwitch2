@@ -18,7 +18,7 @@ import dev.picoswitch.bridge.core.FaceButtonPosition
  * ## Why the controls are where they are
  *
  * ```text
- * ZL  L   [menu]   ( )( )( )        R  ZR
+ * ZL  L       [capture][home][C]     R  ZR
  *
  *   (D-pad)                          (N)
  *                                 (W)   (E)
@@ -62,6 +62,18 @@ object TouchLayoutV1 {
     const val SCHEMA_VERSION = 1
 
     const val ID = "picoswitch.touch.v1"
+    const val TEMPLATE_REVISION = 2
+    internal const val LEFT_PRIMARY_X_UNITS = 100f
+    internal const val LEFT_PRIMARY_Y_UNITS = 164f
+    internal const val LEFT_SECONDARY_X_UNITS = 216f
+    internal const val LEFT_SECONDARY_Y_UNITS = 312f
+    internal const val RIGHT_SECONDARY_X_UNITS = 584f
+    internal const val RIGHT_SECONDARY_Y_UNITS = 312f
+    internal const val FACE_CLUSTER_X_UNITS = 700f
+    internal const val FACE_CLUSTER_Y_UNITS = 184f
+    private const val FACE_GROUP = "face-cluster"
+    private val FACE_DIAMOND = TouchGroupGeometry(FACE_CLUSTER_X_UNITS, FACE_CLUSTER_Y_UNITS)
+        .squareDiamond(radiusUnits = 60f)
 
     // Control ids. Referenced by the renderer and by tests, so they are constants
     // rather than strings repeated at each site.
@@ -69,7 +81,6 @@ object TouchLayoutV1 {
     const val TRIGGER_RIGHT = "trigger-right"
     const val SHOULDER_LEFT = "shoulder-left"
     const val SHOULDER_RIGHT = "shoulder-right"
-    const val MENU = "menu"
     const val CAPTURE = "capture"
     const val HOME = "home"
     const val CHAT = "chat"
@@ -90,62 +101,104 @@ object TouchLayoutV1 {
         schemaVersion = SCHEMA_VERSION,
         controls = listOf(
             // ------------------------------------------------------- top edge
-            shoulder(TRIGGER_LEFT, TouchControlAction.Trigger(ControlSide.Left), 62f, 42f, TouchControlKind.Trigger),
-            shoulder(SHOULDER_LEFT, TouchControlAction.Logical(ControllerButton.L1), 166f, 42f),
-            spec(
-                id = MENU,
-                kind = TouchControlKind.Button,
-                action = TouchControlAction.SystemMenu,
-                x = 250f, y = 42f, width = 58f, height = 56f,
-                shape = TouchControlShape.Rectangle, margin = 2f, label = "MENU",
+            shoulder(TRIGGER_LEFT, TouchOutputControl.ZL, TouchControlAction.Trigger(ControlSide.Left), 62f, 42f, TouchControlKind.Trigger),
+            shoulder(SHOULDER_LEFT, TouchOutputControl.L, TouchControlAction.Logical(ControllerButton.L1), 166f, 42f),
+            utility(
+                CAPTURE, TouchOutputControl.Capture, TouchControlAction.Logical(ControllerButton.Capture),
+                330f, TouchControlGlyph.Capture,
             ),
-            // Short legends, because these are the smallest text-bearing controls
-            // in the layout and a word that has to be shrunk to fit is less
-            // readable than an abbreviation that does not.
-            small(CAPTURE, TouchControlAction.Logical(ControllerButton.Capture), 330f, 44f, "CAP"),
-            small(HOME, TouchControlAction.Logical(ControllerButton.Home), 400f, 44f, "HOME"),
-            small(CHAT, TouchControlAction.Logical(ControllerButton.C), 470f, 44f, "C"),
-            shoulder(SHOULDER_RIGHT, TouchControlAction.Logical(ControllerButton.R1), 634f, 42f),
-            shoulder(TRIGGER_RIGHT, TouchControlAction.Trigger(ControlSide.Right), 738f, 42f, TouchControlKind.Trigger),
+            utility(
+                HOME, TouchOutputControl.Home, TouchControlAction.Logical(ControllerButton.Home),
+                400f, TouchControlGlyph.Home,
+            ),
+            utility(CHAT, TouchOutputControl.C, TouchControlAction.Logical(ControllerButton.C), 470f, label = "C"),
+            shoulder(SHOULDER_RIGHT, TouchOutputControl.R, TouchControlAction.Logical(ControllerButton.R1), 634f, 42f),
+            shoulder(TRIGGER_RIGHT, TouchOutputControl.ZR, TouchControlAction.Trigger(ControlSide.Right), 738f, 42f, TouchControlKind.Trigger),
 
             // ------------------------------------------------- primary clusters
             spec(
                 id = DPAD,
+                output = TouchOutputControl.Dpad,
                 kind = TouchControlKind.Dpad,
                 action = TouchControlAction.Directions,
-                x = 100f, y = 164f, width = 126f, height = 126f,
+                x = LEFT_SECONDARY_X_UNITS, y = LEFT_SECONDARY_Y_UNITS,
+                width = 146f, height = 146f,
+                visualRole = TouchVisualRole.UnifiedDpad,
             ),
-            face(FACE_NORTH, FaceButtonPosition.North, 700f, 114f),
-            face(FACE_WEST, FaceButtonPosition.West, 634f, 180f),
-            face(FACE_EAST, FaceButtonPosition.East, 766f, 180f),
-            face(FACE_SOUTH, FaceButtonPosition.South, 700f, 246f),
+            face(FACE_NORTH, TouchOutputControl.FaceNorth, FaceButtonPosition.North, FACE_DIAMOND.getValue(TouchCardinalSlot.North)),
+            face(FACE_WEST, TouchOutputControl.FaceWest, FaceButtonPosition.West, FACE_DIAMOND.getValue(TouchCardinalSlot.West)),
+            face(FACE_EAST, TouchOutputControl.FaceEast, FaceButtonPosition.East, FACE_DIAMOND.getValue(TouchCardinalSlot.East)),
+            face(FACE_SOUTH, TouchOutputControl.FaceSouth, FaceButtonPosition.South, FACE_DIAMOND.getValue(TouchCardinalSlot.South)),
 
             // ------------------------------------------------------- centre band
-            centre(MINUS, TouchControlAction.Logical(ControllerButton.Select), 330f, 244f, "-"),
-            centre(PLUS, TouchControlAction.Logical(ControllerButton.Start), 470f, 244f, "+"),
+            centre(MINUS, TouchOutputControl.Minus, TouchControlAction.Logical(ControllerButton.Select), 330f, 244f, "-"),
+            centre(PLUS, TouchOutputControl.Plus, TouchControlAction.Logical(ControllerButton.Start), 470f, 244f, "+"),
 
             // ------------------------------------------------------------ sticks
             spec(
                 id = STICK_LEFT,
+                output = TouchOutputControl.PrimaryStick,
                 kind = TouchControlKind.Stick,
                 action = TouchControlAction.Stick(ControlSide.Left),
-                x = 216f, y = 312f, width = 146f, height = 146f,
+                x = LEFT_PRIMARY_X_UNITS, y = LEFT_PRIMARY_Y_UNITS,
+                width = 146f, height = 146f,
+                visualRole = TouchVisualRole.AnalogStick,
             ),
             spec(
                 id = STICK_RIGHT,
+                output = TouchOutputControl.SecondaryStick,
                 kind = TouchControlKind.Stick,
                 action = TouchControlAction.Stick(ControlSide.Right),
-                x = 584f, y = 312f, width = 146f, height = 146f,
+                x = RIGHT_SECONDARY_X_UNITS, y = RIGHT_SECONDARY_Y_UNITS,
+                width = 146f, height = 146f,
+                visualRole = TouchVisualRole.AnalogStick,
             ),
-            stickClick(STICK_CLICK_LEFT, ControllerButton.LeftStick, 350f, 332f, "L3"),
-            stickClick(STICK_CLICK_RIGHT, ControllerButton.RightStick, 450f, 332f, "R3"),
+            stickClick(STICK_CLICK_LEFT, TouchOutputControl.PrimaryStickClick, ControllerButton.LeftStick, 350f, 332f, "L3"),
+            stickClick(STICK_CLICK_RIGHT, TouchOutputControl.SecondaryStickClick, ControllerButton.RightStick, 450f, 332f, "R3"),
         ),
+        profileId = TouchProfileId.Pro2,
+        templateId = ID,
+        templateRevision = TEMPLATE_REVISION,
+    )
+
+    /** The immutable profile-backed form of the already validated V1 layout. */
+    val template: TouchLayoutTemplate = TouchLayoutTemplate(
+        id = ID,
+        profileId = TouchProfileId.Pro2,
+        schemaVersion = SCHEMA_VERSION,
+        templateRevision = TEMPLATE_REVISION,
+        controls = layout.controls.map { control ->
+            TouchTemplateControl(
+                id = control.id,
+                output = control.output,
+                interaction = control.kind,
+                geometry = TouchControlGeometry(
+                    anchorX = control.anchorX,
+                    anchorY = control.anchorY,
+                    widthUnits = control.widthUnits,
+                    heightUnits = control.heightUnits,
+                    shape = control.shape,
+                    hitMarginUnits = control.hitMarginUnits,
+                    priority = control.priority,
+                    groupOffsetXUnits = control.groupOffsetXUnits,
+                    groupOffsetYUnits = control.groupOffsetYUnits,
+                ),
+                visual = TouchVisualSpec(
+                    control.visualRole,
+                    control.label,
+                    control.glyph,
+                    control.visualRotationDegrees,
+                ),
+                editGroupId = control.editGroupId,
+            )
+        },
     )
 
     // ------------------------------------------------------------------ builders
 
     private fun spec(
         id: String,
+        output: TouchOutputControl,
         kind: TouchControlKind,
         action: TouchControlAction,
         x: Float,
@@ -155,6 +208,12 @@ object TouchLayoutV1 {
         shape: TouchControlShape = TouchControlShape.Circle,
         margin: Float = 0f,
         label: String = "",
+        glyph: TouchControlGlyph? = null,
+        visualRole: TouchVisualRole = TouchVisualRole.Default,
+        visualRotationDegrees: Float = 0f,
+        editGroupId: String? = null,
+        groupOffsetXUnits: Float = 0f,
+        groupOffsetYUnits: Float = 0f,
     ) = TouchControlSpec(
         id = id,
         kind = kind,
@@ -166,6 +225,13 @@ object TouchLayoutV1 {
         shape = shape,
         hitMarginUnits = margin,
         label = label,
+        glyph = glyph,
+        output = output,
+        visualRole = visualRole,
+        visualRotationDegrees = visualRotationDegrees,
+        editGroupId = editGroupId,
+        groupOffsetXUnits = groupOffsetXUnits,
+        groupOffsetYUnits = groupOffsetYUnits,
     )
 
     /**
@@ -176,13 +242,15 @@ object TouchLayoutV1 {
      */
     private fun shoulder(
         id: String,
+        output: TouchOutputControl,
         action: TouchControlAction,
         x: Float,
         y: Float,
         kind: TouchControlKind = TouchControlKind.Button,
     ) = spec(
-        id = id, kind = kind, action = action, x = x, y = y,
+        id = id, output = output, kind = kind, action = action, x = x, y = y,
         width = 92f, height = 56f, shape = TouchControlShape.Rectangle, margin = 2f,
+        visualRole = TouchVisualRole.RectangularButton,
         label = when (action) {
             is TouchControlAction.Trigger ->
                 if (action.side == ControlSide.Left) "ZL" else "ZR"
@@ -192,27 +260,63 @@ object TouchLayoutV1 {
         },
     )
 
-    private fun face(id: String, position: FaceButtonPosition, x: Float, y: Float) = spec(
+    private fun face(
+        id: String,
+        output: TouchOutputControl,
+        position: FaceButtonPosition,
+        placement: TouchGroupPlacement,
+    ) = spec(
         id = id,
+        output = output,
         kind = TouchControlKind.FaceButton,
         action = TouchControlAction.Face(position),
-        x = x, y = y, width = 62f, height = 62f,
-        // No hit margin, deliberately. The four are 66 units apart on centre, so
+        x = placement.anchorX * TouchLayoutResolver.REFERENCE_WIDTH_UNITS,
+        y = placement.anchorY * TouchLayoutResolver.REFERENCE_HEIGHT_UNITS,
+        width = 60f,
+        height = 60f,
+        // No hit margin, deliberately. Adjacent centres are separated by a
+        // consistent square-diamond edge, so
         // any expansion here starts eating the neighbour and z-order would begin
         // deciding which button a roll between them lands on.
         margin = 0f,
+        visualRole = TouchVisualRole.RoundButton,
+        editGroupId = FACE_GROUP,
+        groupOffsetXUnits = placement.offsetXUnits,
+        groupOffsetYUnits = placement.offsetYUnits,
     )
 
-    private fun small(id: String, action: TouchControlAction, x: Float, y: Float, label: String) =
-        spec(id = id, kind = TouchControlKind.Button, action = action, x = x, y = y, width = 54f, height = 54f, margin = 3f, label = label)
+    /** Compact utility controls share one rounded-square silhouette. */
+    private fun utility(
+        id: String,
+        output: TouchOutputControl,
+        action: TouchControlAction,
+        x: Float,
+        glyph: TouchControlGlyph? = null,
+        label: String = "",
+    ) = spec(
+        id = id,
+        output = output,
+        kind = TouchControlKind.Button,
+        action = action,
+        x = x,
+        y = 44f,
+        width = 54f,
+        height = 54f,
+        shape = TouchControlShape.Rectangle,
+        margin = 3f,
+        label = label,
+        glyph = glyph,
+        visualRole = TouchVisualRole.Utility,
+    )
 
-    private fun centre(id: String, action: TouchControlAction, x: Float, y: Float, label: String) =
-        spec(id = id, kind = TouchControlKind.Button, action = action, x = x, y = y, width = 58f, height = 58f, margin = 3f, label = label)
+    private fun centre(id: String, output: TouchOutputControl, action: TouchControlAction, x: Float, y: Float, label: String) =
+        spec(id = id, output = output, kind = TouchControlKind.Button, action = action, x = x, y = y, width = 58f, height = 58f, margin = 3f, label = label, visualRole = TouchVisualRole.RoundButton)
 
-    private fun stickClick(id: String, button: ControllerButton, x: Float, y: Float, label: String) =
+    private fun stickClick(id: String, output: TouchOutputControl, button: ControllerButton, x: Float, y: Float, label: String) =
         spec(
-            id = id, kind = TouchControlKind.Button,
+            id = id, output = output, kind = TouchControlKind.Button,
             action = TouchControlAction.Logical(button),
             x = x, y = y, width = 56f, height = 56f, margin = 3f, label = label,
+            visualRole = TouchVisualRole.RoundButton,
         )
 }

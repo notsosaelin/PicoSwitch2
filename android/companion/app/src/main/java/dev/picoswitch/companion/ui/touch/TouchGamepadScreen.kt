@@ -8,6 +8,8 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -22,6 +24,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
@@ -37,7 +40,6 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -45,9 +47,16 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.picoswitch.bridge.core.ControllerFaceLayout
 import dev.picoswitch.bridge.session.BridgeLinkPhase
 import dev.picoswitch.bridge.touch.ResolvedTouchLayout
+import dev.picoswitch.bridge.touch.TouchLayoutAudit
+import dev.picoswitch.bridge.touch.TouchLayoutAuditMode
+import dev.picoswitch.bridge.touch.TouchLayoutComposer
+import dev.picoswitch.bridge.touch.TouchLayoutEditor
+import dev.picoswitch.bridge.touch.TouchLayoutOverride
 import dev.picoswitch.bridge.touch.TouchLayoutRegion
 import dev.picoswitch.bridge.touch.TouchLayoutResolver
-import dev.picoswitch.bridge.touch.TouchLayoutV1
+import dev.picoswitch.bridge.touch.TouchControllerProfile
+import dev.picoswitch.bridge.touch.TouchProfileCatalog
+import dev.picoswitch.bridge.touch.TouchProfileId
 import dev.picoswitch.bridge.touch.TouchReleaseReason
 import dev.picoswitch.companion.bridge.AndroidTouchFeedback
 import dev.picoswitch.companion.data.TouchGamepadSettings
@@ -99,7 +108,34 @@ fun TouchGamepadScreen(
     val settings = ui.touchSettings
 
     var menuOpen by rememberSaveable { mutableStateOf(false) }
+    var editing by rememberSaveable { mutableStateOf(false) }
     var area by remember { mutableStateOf(IntSize.Zero) }
+    val profileId = ui.touchProfileId
+    val profile = profileId?.let(TouchProfileCatalog::require)
+    var selectedControlId by rememberSaveable(profileId) {
+        mutableStateOf(profile?.defaultTemplate?.controls?.firstOrNull()?.id)
+    }
+    var editGroup by rememberSaveable(profileId) { mutableStateOf(true) }
+    var draftOverride by remember(profileId) {
+        mutableStateOf(profile?.let { ui.touchLayoutOverride ?: TouchLayoutEditor.empty(it) })
+    }
+
+    LaunchedEffect(profileId) {
+        editing = false
+        selectedControlId = profile?.defaultTemplate?.controls?.firstOrNull()?.id
+        draftOverride = profile?.let { ui.touchLayoutOverride ?: TouchLayoutEditor.empty(it) }
+    }
+    LaunchedEffect(ui.touchLayoutOverride) {
+        if (!editing) {
+            draftOverride = profile?.let { ui.touchLayoutOverride ?: TouchLayoutEditor.empty(it) }
+        }
+    }
+
+    fun handleMenuEvent(event: TouchGamepadMenuEvent) {
+        val result = resolveTouchGamepadMenuEvent(menuOpen, event)
+        menuOpen = result.menuOpen
+        if (result.exitTouchGamepad) viewModel.exitTouchGamepad()
+    }
 
     // Visual state is LOCAL and mutated from the pointer handler. Hanging it off
     // the application state would recompose the whole app for every pixel a thumb
@@ -133,12 +169,22 @@ fun TouchGamepadScreen(
     val right = insets.getRight(density, layoutDirection)
     val bottom = insets.getBottom(density)
 
-    val resolved = remember(area, left, top, right, bottom, density.density) {
-        if (area.width == 0 || area.height == 0) {
+    val composition = remember(profile, ui.touchLayoutOverride, draftOverride, editing) {
+        profile?.let {
+            TouchLayoutComposer.compose(
+                it,
+                if (editing) draftOverride else ui.touchLayoutOverride,
+            )
+        }
+    }
+    val attemptedResolved = remember(
+        area, left, top, right, bottom, density.density, composition, editing,
+    ) {
+        if (area.width == 0 || area.height == 0 || composition == null) {
             ResolvedTouchLayout.Empty
         } else {
             TouchLayoutResolver.resolve(
-                TouchLayoutV1.layout,
+                composition.layout,
                 TouchLayoutRegion(
                     left = left.toFloat(),
                     top = top.toFloat(),
@@ -146,15 +192,51 @@ fun TouchGamepadScreen(
                     bottom = (area.height - bottom).toFloat(),
                     unitScale = density.density,
                 ),
+                if (editing) TouchLayoutAuditMode.UserDraft else TouchLayoutAuditMode.Runtime,
             )
         }
     }
+    val defaultResolved = remember(
+        area, left, top, right, bottom, density.density, profile,
+    ) {
+        if (area.width == 0 || area.height == 0 || profile == null) {
+            ResolvedTouchLayout.Empty
+        } else {
+            TouchLayoutResolver.resolve(
+                TouchLayoutComposer.compose(profile).layout,
+                TouchLayoutRegion(
+                    left = left.toFloat(),
+                    top = top.toFloat(),
+                    right = (area.width - right).toFloat(),
+                    bottom = (area.height - bottom).toFloat(),
+                    unitScale = density.density,
+                ),
+                TouchLayoutAuditMode.ShippedTemplate,
+            )
+        }
+    }
+    val runtimeFallback = !editing && ui.touchLayoutOverride != null && !attemptedResolved.fits && defaultResolved.fits
+    val resolved = if (runtimeFallback) defaultResolved else attemptedResolved
+    val layoutWarning = ui.touchLayoutWarning ?: composition?.warning ?: if (runtimeFallback) {
+        "Your saved layout was unsafe here, so the immutable default is active: ${attemptedResolved.problem}"
+    } else null
 
     // Geometry changed: every retained contact position was measured against the
     // previous rectangle and means nothing now.
-    LaunchedEffect(resolved) {
-        gamepad.engine.setLayout(resolved)
-        visual.value = TouchVisualState(enabled = ui.bridge.phase == BridgeLinkPhase.Playing)
+    var installedProfileId by remember { mutableStateOf<TouchProfileId?>(null) }
+    LaunchedEffect(resolved, profileId, editing) {
+        if (!editing) {
+            val reason = if (installedProfileId != null && installedProfileId != profileId) {
+                TouchReleaseReason.PersonalityChanged
+            } else {
+                TouchReleaseReason.GeometryInvalidated
+            }
+            gamepad.setLayout(resolved, reason)
+            installedProfileId = profileId
+        }
+        visual.value = TouchVisualState(
+            enabled = !editing && profile != null && ui.bridge.phase == BridgeLinkPhase.Playing,
+        )
     }
 
     LaunchedEffect(settings.hapticsEnabled) {
@@ -183,14 +265,22 @@ fun TouchGamepadScreen(
     )
 
     BackHandler(enabled = true) {
-        if (menuOpen) menuOpen = false else viewModel.exitTouchGamepad()
+        if (editing) {
+            draftOverride = profile?.let { ui.touchLayoutOverride ?: TouchLayoutEditor.empty(it) }
+            editing = false
+            return@BackHandler
+        }
+        // Android routes either left- or right-edge back gesture here. Gameplay
+        // opens the menu instead of exiting; while the menu is visible, the same
+        // gesture closes it. Leaving is an explicit action inside the menu.
+        handleMenuEvent(TouchGamepadMenuEvent.Back)
     }
 
     val background = rememberTouchBackground(settings.backgroundImage)
     val textMeasurer = rememberTextMeasurer()
     val palette = touchControlPalette()
     val labelStyle = MaterialTheme.typography.titleMedium.copy(
-        fontSize = 15.sp,
+        fontSize = 24.sp,
         fontWeight = FontWeight.SemiBold,
     )
 
@@ -216,7 +306,9 @@ fun TouchGamepadScreen(
             )
         }
 
-        if (!resolved.fits) {
+        if (profile == null) {
+            UnusableWindowNotice(layoutWarning, onExit = viewModel::exitTouchGamepad)
+        } else if (!resolved.fits && !editing) {
             UnusableWindowNotice(resolved.problem, onExit = viewModel::exitTouchGamepad)
         } else {
             Canvas(
@@ -226,6 +318,26 @@ fun TouchGamepadScreen(
                     .then(
                         if (menuOpen) {
                             Modifier
+                        } else if (editing) {
+                            Modifier.editTouchLayout(
+                                key = profileId,
+                                layout = resolved,
+                                selectedId = selectedControlId,
+                                editGroup = editGroup,
+                                onSelect = { selectedControlId = it },
+                                onMove = { id, dx, dy, group ->
+                                    draftOverride?.let { current ->
+                                        draftOverride = TouchLayoutEditor.move(
+                                            profile,
+                                            current,
+                                            id,
+                                            dx / resolved.region.width.coerceAtLeast(1f),
+                                            dy / resolved.region.height.coerceAtLeast(1f),
+                                            group,
+                                        )
+                                    }
+                                },
+                            )
                         } else {
                             Modifier.touchGamepadContacts(
                                 key = resolved,
@@ -246,6 +358,7 @@ fun TouchGamepadScreen(
                     textMeasurer = textMeasurer,
                     labelStyle = labelStyle,
                 )
+                if (editing) drawTouchEditorOverlay(resolved, selectedControlId, palette)
             }
         }
 
@@ -266,29 +379,90 @@ fun TouchGamepadScreen(
             TouchGamepadMenu(
                 settings = settings,
                 faceLayout = ui.touchFaceLayout,
+                profileId = profileId,
+                profileName = profile?.displayName,
+                layoutWarning = layoutWarning,
                 onSettings = viewModel::setTouchSettings,
                 onFaceLayout = viewModel::setTouchFaceLayout,
+                onEditLayout = {
+                    profile?.let { selectedProfile ->
+                        draftOverride = ui.touchLayoutOverride ?: TouchLayoutEditor.empty(selectedProfile)
+                        selectedControlId = selectedControlId
+                            ?.takeIf { id -> selectedProfile.defaultTemplate.controls.any { it.id == id } }
+                            ?: selectedProfile.defaultTemplate.controls.firstOrNull()?.id
+                        editing = true
+                        menuOpen = false
+                        viewModel.beginTouchLayoutEdit()
+                    }
+                },
+                onRestoreDefaults = viewModel::restoreTouchLayoutDefaults,
                 onPickBackground = onPickBackgroundImage,
                 onClearBackground = { viewModel.setTouchBackground(null) },
-                onExit = {
-                    menuOpen = false
-                    viewModel.exitTouchGamepad()
-                },
+                onExit = { handleMenuEvent(TouchGamepadMenuEvent.Exit) },
                 onClose = { menuOpen = false },
+            )
+        }
+
+        if (editing && profile != null && draftOverride != null) {
+            TouchLayoutEditorPanel(
+                profile = profile,
+                draft = requireNotNull(draftOverride),
+                selectedId = selectedControlId,
+                editGroup = editGroup,
+                blockingProblem = attemptedResolved.problem,
+                canSave = attemptedResolved.fits,
+                onSelect = { selectedControlId = it },
+                onEditGroup = { editGroup = it },
+                onDraft = { draftOverride = it },
+                onSave = {
+                    val findings = TouchLayoutAudit.audit(
+                        composition!!.layout,
+                        attemptedResolved.controls,
+                        attemptedResolved.region,
+                        profile,
+                        TouchLayoutAuditMode.UserDraft,
+                    )
+                    if (findings.none { it.blocking } && attemptedResolved.fits) {
+                        viewModel.saveTouchLayoutOverride(requireNotNull(draftOverride))
+                        editing = false
+                    }
+                },
+                onCancel = {
+                    draftOverride = ui.touchLayoutOverride ?: TouchLayoutEditor.empty(profile)
+                    editing = false
+                },
+                onExit = viewModel::exitTouchGamepad,
             )
         }
     }
 
-    // The engine reports a menu tap through the portable path, so the control is
-    // audited for overlap alongside every gameplay control instead of floating
-    // above them where a stray thumb could shadow it.
     DisposableEffect(gamepad) {
-        gamepad.onMenuRequested { menuOpen = true }
         onDispose {
-            gamepad.onMenuRequested { }
             gamepad.release(TouchReleaseReason.Disposed)
         }
     }
+}
+
+internal enum class TouchGamepadMenuEvent { Back, Exit }
+
+internal data class TouchGamepadMenuResult(
+    val menuOpen: Boolean,
+    val exitTouchGamepad: Boolean,
+)
+
+/** Host navigation policy kept separate from the portable gameplay layout. */
+internal fun resolveTouchGamepadMenuEvent(
+    menuOpen: Boolean,
+    event: TouchGamepadMenuEvent,
+): TouchGamepadMenuResult = when (event) {
+    TouchGamepadMenuEvent.Back -> TouchGamepadMenuResult(
+        menuOpen = !menuOpen,
+        exitTouchGamepad = false,
+    )
+    TouchGamepadMenuEvent.Exit -> TouchGamepadMenuResult(
+        menuOpen = false,
+        exitTouchGamepad = true,
+    )
 }
 
 /**
@@ -312,7 +486,13 @@ private fun ImmersivePresentation(landscapePreferred: Boolean) {
         val previousOrientation = activity?.requestedOrientation
         val controller = window?.let { WindowInsetsControllerCompat(it, view) }
 
-        if (window != null) WindowCompat.setDecorFitsSystemWindows(window, false)
+        // Nothing here touches decorFitsSystemWindows. The activity is already
+        // edge-to-edge for its whole life (see applyEdgeToEdgeChrome), and the
+        // old restore-to-true on dispose would have dropped the rest of the app
+        // back out of edge-to-edge on the API levels where that call still does
+        // anything -- leaving the system-bar regions unpainted again after the
+        // on-screen controller was closed. This effect only hides and reshows
+        // the bars.
         controller?.apply {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
@@ -323,7 +503,6 @@ private fun ImmersivePresentation(landscapePreferred: Boolean) {
 
         onDispose {
             controller?.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
-            if (window != null) WindowCompat.setDecorFitsSystemWindows(window, true)
             if (activity != null && previousOrientation != null) {
                 activity.requestedOrientation = previousOrientation
             }
@@ -468,8 +647,13 @@ private fun UnusableWindowNotice(problem: String?, onExit: () -> Unit) {
 private fun TouchGamepadMenu(
     settings: TouchGamepadSettings,
     faceLayout: ControllerFaceLayout,
+    profileId: TouchProfileId?,
+    profileName: String?,
+    layoutWarning: String?,
     onSettings: (TouchGamepadSettings) -> Unit,
     onFaceLayout: (ControllerFaceLayout) -> Unit,
+    onEditLayout: () -> Unit,
+    onRestoreDefaults: () -> Unit,
     onPickBackground: () -> Unit,
     onClearBackground: () -> Unit,
     onExit: () -> Unit,
@@ -502,23 +686,47 @@ private fun TouchGamepadMenu(
                     }
                 }
 
-                Text("Face buttons", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    "Chooses the letters drawn on the diamond and what each position sends.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                // Auto is not offered: it exists to guess a PRINTED legend, and a
-                // drawn control has none.
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(ControllerFaceLayout.Nintendo, ControllerFaceLayout.Xbox).forEach { option ->
-                        FilterChip(
-                            selected = faceLayout == option,
-                            onClick = { onFaceLayout(option) },
-                            label = { Text(option.title) },
-                            modifier = Modifier.heightIn(min = 48.dp),
-                        )
+                profileName?.let {
+                    Text("Controller: $it", style = MaterialTheme.typography.titleSmall)
+                }
+                layoutWarning?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+
+                if (profileId == TouchProfileId.Pro2) {
+                    Text("Face buttons", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "Chooses the letters drawn on the diamond and what each position sends.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    // Auto is not offered: it exists to guess a PRINTED legend, and a
+                    // drawn control has none.
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(ControllerFaceLayout.Nintendo, ControllerFaceLayout.Xbox).forEach { option ->
+                            FilterChip(
+                                selected = faceLayout == option,
+                                onClick = { onFaceLayout(option) },
+                                label = { Text(option.title) },
+                                modifier = Modifier.heightIn(min = 48.dp),
+                            )
+                        }
                     }
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = onEditLayout,
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    ) { Text("Edit layout") }
+                    OutlinedButton(
+                        onClick = onRestoreDefaults,
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    ) { Text("Restore defaults") }
                 }
 
                 SettingSlider(
@@ -576,6 +784,162 @@ private fun TouchGamepadMenu(
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                 ) { Text("Exit Touch Gamepad") }
+            }
+        }
+    }
+}
+
+/** Android pointer adapter for the shared editor operations. */
+private fun Modifier.editTouchLayout(
+    key: Any?,
+    layout: ResolvedTouchLayout,
+    selectedId: String?,
+    editGroup: Boolean,
+    onSelect: (String) -> Unit,
+    onMove: (id: String, deltaX: Float, deltaY: Float, editGroup: Boolean) -> Unit,
+): Modifier = pointerInput(key, layout.region, selectedId, editGroup) {
+    var activeId: String? = null
+    detectDragGestures(
+        onDragStart = { position ->
+            var best = layout.control(selectedId ?: "")?.takeIf { it.hitTest(position.x, position.y) }
+            var bestDistance = best?.normalizedDistance(position.x, position.y) ?: Float.MAX_VALUE
+            layout.controls.forEach { control ->
+                if (!control.hitTest(position.x, position.y)) return@forEach
+                val current = best
+                val distance = control.normalizedDistance(position.x, position.y)
+                if (current == null || control.spec.priority > current.spec.priority ||
+                    control.spec.priority == current.spec.priority && distance < bestDistance
+                ) {
+                    best = control
+                    bestDistance = distance
+                }
+            }
+            activeId = best?.id
+            activeId?.let(onSelect)
+        },
+        onDragCancel = { activeId = null },
+        onDragEnd = { activeId = null },
+        onDrag = { change, amount ->
+            activeId?.let { id ->
+                change.consume()
+                onMove(id, amount.x, amount.y, editGroup)
+            }
+        },
+    )
+}
+
+/** Android UI for editing the platform-neutral sparse override document. */
+@Composable
+private fun BoxScope.TouchLayoutEditorPanel(
+    profile: TouchControllerProfile,
+    draft: TouchLayoutOverride,
+    selectedId: String?,
+    editGroup: Boolean,
+    blockingProblem: String?,
+    canSave: Boolean,
+    onSelect: (String) -> Unit,
+    onEditGroup: (Boolean) -> Unit,
+    onDraft: (TouchLayoutOverride) -> Unit,
+    onSave: () -> Unit,
+    onCancel: () -> Unit,
+    onExit: () -> Unit,
+) {
+    val selected = profile.defaultTemplate.controls.firstOrNull { it.id == selectedId }
+        ?: profile.defaultTemplate.controls.firstOrNull()
+    val selectedOverride = selected?.let { draft.controls[it.id] }
+    val groupAvailable = selected?.editGroupId != null
+
+    Card(
+        Modifier
+            .align(Alignment.BottomCenter)
+            .windowInsetsPadding(WindowInsets.safeContent)
+            .padding(12.dp)
+            .widthIn(max = 820.dp)
+            .fillMaxWidth(),
+    ) {
+        Column(
+            Modifier.padding(16.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Edit ${profile.displayName} layout",
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text("Drag controls above", style = MaterialTheme.typography.bodySmall)
+            }
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                profile.defaultTemplate.controls.forEach { control ->
+                    val hidden = draft.controls[control.id]?.visible == false
+                    FilterChip(
+                        selected = control.id == selected?.id,
+                        onClick = { onSelect(control.id) },
+                        label = {
+                            Text(
+                                (control.visual.label.ifBlank { control.id }) + if (hidden) " (hidden)" else "",
+                            )
+                        },
+                    )
+                }
+            }
+            selected?.let { control ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Edit group", Modifier.weight(1f))
+                    Switch(
+                        checked = editGroup && groupAvailable,
+                        enabled = groupAvailable,
+                        onCheckedChange = onEditGroup,
+                    )
+                    Spacer(Modifier.width(16.dp))
+                    Text("Visible")
+                    Switch(
+                        checked = selectedOverride?.visible != false,
+                        onCheckedChange = {
+                            onDraft(TouchLayoutEditor.setVisible(profile, draft, control.id, it, editGroup))
+                        },
+                    )
+                }
+                Text(
+                    "Size  ${(((selectedOverride?.scale ?: 1f) * 100f).toInt())}%",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Slider(
+                    value = selectedOverride?.scale ?: 1f,
+                    onValueChange = {
+                        onDraft(TouchLayoutEditor.scale(profile, draft, control.id, it, editGroup))
+                    },
+                    valueRange = TouchLayoutEditor.MIN_SCALE..TouchLayoutEditor.MAX_SCALE,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            onDraft(TouchLayoutEditor.reset(profile, draft, control.id, editGroup))
+                        },
+                    ) { Text(if (editGroup && groupAvailable) "Reset group" else "Reset control") }
+                    OutlinedButton(onClick = { onDraft(TouchLayoutEditor.resetAll(profile)) }) {
+                        Text("Reset profile")
+                    }
+                }
+            }
+            if (!canSave) {
+                Text(
+                    blockingProblem ?: "The draft layout is not safe to use",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(onClick = onExit) { Text("Exit Touch Gamepad") }
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = onCancel) { Text("Cancel") }
+                Button(onClick = onSave, enabled = canSave) { Text("Save") }
             }
         }
     }
@@ -647,4 +1011,4 @@ private const val BANNER_BAND = 0.22f
 
 private const val CONTROLLER_DESCRIPTION =
     "On-screen controller. Sticks, D-pad, face buttons, shoulders and triggers are " +
-        "positional touch controls; use the menu control at the top to change settings or exit."
+        "positional touch controls; swipe inward from either screen edge to open the menu."

@@ -3,7 +3,14 @@ package dev.picoswitch.companion.ui
 import android.app.Activity
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Build
+import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
@@ -12,8 +19,8 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
@@ -311,29 +318,90 @@ private fun darkColors(palette: AccentPalette, oled: Boolean): ColorScheme {
     )
 }
 
+/**
+ * Put the window edge-to-edge, with genuinely transparent system bars.
+ *
+ * Every activity in the app calls this before setting content, and it is the
+ * only place the window's inset behaviour is decided.
+ *
+ * Why it exists at all: the app targets SDK 35, where the platform forces
+ * edge-to-edge and turns `statusBarColor` / `navigationBarColor` into no-ops.
+ * Those setters were what used to colour the bars, so on API 35+ they stopped
+ * colouring anything and the bar regions fell through to the window background
+ * -- a near-white strip above and below a dark application. Rather than keep a
+ * legacy path for old devices and a second, different path for new ones, the
+ * app now does on ALL supported API levels what 35+ imposes anyway: transparent
+ * bars, application content drawn underneath them, insets applied in Compose.
+ *
+ * The scrims are transparent because the application paints an opaque surface
+ * of its own behind the bars (see [CompanionTheme]); androidx's default
+ * navigation scrim would sit on top of that surface as a differently-shaded
+ * band.
+ *
+ * Navigation-bar contrast enforcement is then turned off, which is the platform
+ * opt-out for exactly this situation and not a workaround: enforcement exists to
+ * keep the navigation icons legible when an app cannot promise what is behind
+ * them, and this app can. It paints an opaque themed surface there and derives
+ * the icon polarity from the same resolved theme. Left enabled, it was measured
+ * on a 3-button device (Android 16, API 36) compositing a low-alpha overlay over
+ * that surface -- RGB (16,19,26) rendered as (28,21,27) in dark, (247,249,255)
+ * as (254,254,255) in light -- a faint band along the navigation edge with no
+ * legibility to buy. Gesture navigation never draws it either way.
+ */
+fun ComponentActivity.applyEdgeToEdgeChrome() {
+    enableEdgeToEdge(
+        statusBarStyle = SystemBarStyle.auto(
+            android.graphics.Color.TRANSPARENT,
+            android.graphics.Color.TRANSPARENT,
+        ),
+        navigationBarStyle = SystemBarStyle.auto(
+            android.graphics.Color.TRANSPARENT,
+            android.graphics.Color.TRANSPARENT,
+        ),
+    )
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        window.isNavigationBarContrastEnforced = false
+    }
+}
+
+/**
+ * Is the application dark right now?
+ *
+ * The system setting is only consulted for [ThemeMode.System]; a forced choice
+ * in Settings wins over it. Everything that has to agree about light-versus-dark
+ * -- the colour scheme, and the system-bar icon polarity -- is derived from this
+ * one function, so the bars cannot end up disagreeing with the content.
+ */
+internal fun ThemeSelection.resolveDark(systemDark: Boolean): Boolean = when (mode) {
+    ThemeMode.System -> systemDark
+    ThemeMode.Light -> false
+    ThemeMode.Dark, ThemeMode.OledBlack -> true
+}
+
+internal fun ThemeSelection.resolveColorScheme(systemDark: Boolean): ColorScheme = when {
+    mode == ThemeMode.OledBlack -> darkColors(palette, oled = true)
+    resolveDark(systemDark) -> darkColors(palette, oled = false)
+    else -> lightColors(palette)
+}
+
 @Composable
 fun CompanionTheme(
     selection: ThemeSelection = ThemeSelection(),
     content: @Composable () -> Unit,
 ) {
     val systemDark = isSystemInDarkTheme()
-    val dark = when (selection.mode) {
-        ThemeMode.System -> systemDark
-        ThemeMode.Light -> false
-        ThemeMode.Dark, ThemeMode.OledBlack -> true
-    }
-    val colors = when {
-        selection.mode == ThemeMode.OledBlack -> darkColors(selection.palette, oled = true)
-        dark -> darkColors(selection.palette, oled = false)
-        else -> lightColors(selection.palette)
-    }
+    val dark = selection.resolveDark(systemDark)
+    val colors = selection.resolveColorScheme(systemDark)
     val view = LocalView.current
     val context = LocalContext.current
     if (!view.isInEditMode) {
         SideEffect {
+            // Icon polarity is the ONLY thing the app still asks the window for.
+            // The bars' colour is the surface painted below, and their colour on
+            // API 35+ cannot be set at all. Derived from the resolved theme
+            // rather than from the system setting, so forcing dark on a light
+            // device still gets readable light icons.
             (context as? Activity)?.window?.let { window ->
-                window.statusBarColor = colors.background.toArgb()
-                window.navigationBarColor = colors.background.toArgb()
                 WindowCompat.getInsetsController(window, view).apply {
                     isAppearanceLightStatusBars = !dark
                     isAppearanceLightNavigationBars = !dark
@@ -347,6 +415,14 @@ fun CompanionTheme(
             extraSmall = RoundedCornerShape(8.dp), small = RoundedCornerShape(12.dp),
             medium = RoundedCornerShape(LayoutTokens.ControlRadius), large = RoundedCornerShape(LayoutTokens.CardRadius),
         ),
-        content = content,
-    )
+    ) {
+        // The window is edge-to-edge and the bars are transparent, so THIS is
+        // what the status-bar and navigation-bar regions are filled with. It is
+        // a background only: the padding that keeps content clear of the bars
+        // lives further in, on the Scaffold's safeDrawing insets, so nothing
+        // here moves any content.
+        Box(Modifier.fillMaxSize().background(colors.background)) {
+            content()
+        }
+    }
 }

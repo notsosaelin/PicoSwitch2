@@ -119,37 +119,6 @@ reconstruct defaults from source.
 
 These items are accepted directions but should be performed as separate coherent engineering passes.
 
-## Touch Gamepad
-
-Add an optional on-device virtual controller to the companion application.
-
-The Touch Gamepad should use the existing normalized controller/bridge architecture rather than
-creating an independent controller pipeline.
-
-Initial implementation should focus on the currently supported companion platform.
-
-### Core requirements
-
-- [ ] Optional Touch Gamepad input source.
-- [ ] Landscape/full-screen controller layout.
-- [ ] D-pad.
-- [ ] Face buttons.
-- [ ] L/R and ZL/ZR.
-- [ ] Dual analog sticks.
-- [ ] + / -.
-- [ ] Home.
-- [ ] Capture.
-- [ ] C/GameChat.
-- [ ] Real multitouch with stable pointer ownership.
-- [ ] Reliable release of all held state on lifecycle/source/disconnect transitions.
-- [ ] Low-latency input path.
-- [ ] Responsive safe-area-aware layout.
-- [ ] Preserve the existing bridge/core implementation.
-
-Do not combine this pass with unrelated controller, protocol, or platform work.
-
----
-
 # Platform Backend Expansion
 
 The platform-neutral bridge architecture intentionally allows additional host platforms.

@@ -10,7 +10,7 @@ bridge rather than the bridge itself:
 
 | | Package | Android? |
 |---|---|---|
-| `:bridge-core` | `dev.picoswitch.bridge.{core,protocol,session}` | **No.** No Android SDK on its classpath. |
+| `:bridge-core` | `dev.picoswitch.bridge.{core,protocol,session,touch}` | **No.** No Android SDK on its classpath. |
 | `:app` | `dev.picoswitch.companion.bridge` | Yes — the Android backend |
 
 The old `dev.picoswitch.companion.controller` package is gone. Rough map:
@@ -33,6 +33,13 @@ Android-specific in `:bridge-core`** — it will not compile, and `ArchitectureG
 rejects platform vocabulary in identifiers and strings. Contract:
 [`../bridge/PROTOCOL.md`](../bridge/PROTOCOL.md), backend guide:
 [`../bridge/PLATFORM_BACKEND.md`](../bridge/PLATFORM_BACKEND.md).
+
+Touch profiles, immutable templates, sparse overrides, composition, editor operations, audit rules,
+schema metadata and the storage interface belong to `:bridge-core`. Android owns only Canvas
+rendering, Compose pointer/editor UI, lifecycle integration and the `SharedPreferences` backend.
+The module's path under `android/companion/` is historical; do not create a duplicate shared layout
+module. `TouchLayoutOverrideJsonCodec` names the Kotlin JSON implementation explicitly—the document
+schema is portable, kotlinx.serialization is not a cross-platform API.
 
 ## What it is
 
@@ -154,6 +161,14 @@ Two things to preserve if this area is touched again:
   `ordinal + 1`). Append only; never reorder.
 - The button field mask in `encodeCore` is `0x7F` on the high byte, not `0x3F`. A stale mask would
   silently drop C while everything else kept working.
+- The companion has already normalized face usages 1–4 to logical A/B/X/Y. In `ns2_seam.c`,
+  descriptor-proven `from_android_bridge` must keep selecting the face-only direct destination
+  rule; applying `NS2_BASE_BUTTON_MAP` there reverses A/B and X/Y a second time. Directly paired
+  controllers, every non-face bridge usage, and the raw JP bitmap remain unchanged.
+- The exact bridge descriptor outranks the host phone/PC's incidental Bluetooth name and VID/PID.
+  `bthid_gamepad.c` must force the sequential/no-extra generic parse profile for that descriptor,
+  including after a late identity update; otherwise a controller quirk can corrupt the report
+  before `from_android_bridge` reaches the seam.
 
 ### Unassigned physical buttons — durable rule
 

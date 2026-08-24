@@ -296,11 +296,18 @@ void router_submit_input(const input_event_t *e) {
 
     // Apply the stable base mapping. Users can remap the emulated Nintendo
     // identity on the console, which then persists across physical controllers.
+    // The Android bridge's first four usages are already logical A/B/X/Y, so its
+    // declared provenance selects the narrow face-only correction in the
+    // resolver. Direct controllers and every non-face source keep the locked map.
+    // Do not mutate b: personality encoders such as sideways Joy-Con 2 consume
+    // the raw JP source bitmap and own their own explicit face translation.
     const uint8_t slot = NS2_CONSOLE_SLOT;
     const bthid_device_t *dev = bthid_get_device(e->dev_addr);
     for (int src = 0; src < NS2_SRC_COUNT; src++) {
         if (b & SRC_TO_JP[src])
-            ns2_apply_dst(NS2_BASE_BUTTON_MAP[src], &in);
+            ns2_apply_dst(ns2_resolve_button_destination(
+                              (uint8_t)src, e->from_android_bridge),
+                          &in);
     }
 
     // Sticks: 0-255 -> 12-bit; Y inverted (Switch is up-positive, HID is up=0).

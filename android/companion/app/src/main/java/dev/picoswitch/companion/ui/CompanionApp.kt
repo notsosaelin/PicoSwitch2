@@ -137,7 +137,7 @@ fun CompanionApp(
                                     NavigationRailItem(
                                         selected = ui.section == item.section,
                                         onClick = { viewModel.navigate(item.section) },
-                                        icon = { Icon(item.icon, null) },
+                                        icon = { Icon(item.icon, item.section.label) },
                                         label = { Text(item.section.label, maxLines = 1) },
                                     )
                                 }

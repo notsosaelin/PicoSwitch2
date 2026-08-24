@@ -18,8 +18,27 @@ int main(void)
     for (size_t i = 0; i < NS2_SRC_COUNT; ++i) {
         assert(NS2_BASE_BUTTON_MAP[i] == expected[i]);
         assert(NS2_BASE_BUTTON_MAP[i] < NS2_DST_COUNT);
+        assert(ns2_resolve_button_destination((uint8_t)i, false) == expected[i]);
     }
 
-    puts("NS2 locked base mapping tests passed");
+    // The companion has already normalized its four face usages to logical
+    // A/B/X/Y. They must not pass through the positional physical-controller
+    // B/A/Y/X base map a second time.
+    static const uint8_t expected_bridge_faces[4] = {
+        NS2_DST_A, NS2_DST_B, NS2_DST_X, NS2_DST_Y,
+    };
+    for (size_t i = 0; i < 4; ++i)
+        assert(ns2_resolve_button_destination((uint8_t)i, true) ==
+               expected_bridge_faces[i]);
+
+    // Only those four inputs differ. Shoulders, system buttons, C/GameChat and
+    // every future non-face source continue to use the locked map.
+    for (size_t i = 4; i < NS2_SRC_COUNT; ++i)
+        assert(ns2_resolve_button_destination((uint8_t)i, true) == expected[i]);
+
+    assert(ns2_resolve_button_destination(NS2_SRC_COUNT, false) == NS2_DST_NONE);
+    assert(ns2_resolve_button_destination(NS2_SRC_COUNT, true) == NS2_DST_NONE);
+
+    puts("NS2 locked and Android bridge mapping tests passed");
     return 0;
 }

@@ -26,6 +26,11 @@ Release notes describe user-visible behavior. Detailed implementation history re
   translation gain can be tuned against a running game without a management client.
 - Portal card for selecting the input mode and seeing keyboard/mouse connection state, plus `kbm`
   commands on management and UART for the full mapping surface.
+- **Personality-aware Touch Gamepad layouts.** The Android touchscreen now follows the confirmed
+  Pro Controller 2, NSO GameCube, Joy-Con 2 Left, or Joy-Con 2 Right personality with controller-
+  appropriate controls and fixed labels. A per-profile editor can move, resize, group-edit, hide,
+  show and reset controls; explicit Save/Cancel stores only sparse overrides and never mutates the
+  shipped defaults. Live personality changes neutralize held input and keep the controller link.
 
 Hardware-validated 2026-08-16 with a Bluetooth keyboard and mouse: both connect together as one
 controller, either can be switched off and back on and rejoins on its own without re-pairing, and
@@ -49,6 +54,11 @@ the one still connected keeps working throughout. See
 
 ### Fixed
 
+- **Touch Gamepad A/B and X/Y were reversed on the console in both Nintendo and Xbox layouts.**
+  The Android companion already sent logical face-button usages, but the firmware applied its
+  positional physical-controller map to them a second time. Descriptor-proven bridge input now
+  maps only those four usages directly and cannot inherit a controller quirk from the host device's
+  incidental name or VID/PID; directly paired controllers and every non-face control are unchanged.
 - **A bonded Bluetooth peer failed to reconnect after being powered off and on again when a second
   peer stayed connected.** The adapter tracked only one reconnect identity — whichever peer
   connected most recently — so when a keyboard and mouse were both paired, powering one off made

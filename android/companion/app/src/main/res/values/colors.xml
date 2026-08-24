@@ -1,4 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="launcher_background">#000000</color>
+    <!--
+      The starting window's background, and therefore the colour behind the
+      transparent system bars until Compose draws.
+
+      Deliberately duplicates ColorScheme.background from ui/Theme.kt
+      (lightColors / darkColors). The duplication cannot be removed: the starting
+      window is inflated from resources before any application code runs. If the
+      Compose background changes, change this too, or a cold launch will show a
+      seam for one frame.
+    -->
+    <color name="window_background">#FFF7F9FF</color>
 </resources>

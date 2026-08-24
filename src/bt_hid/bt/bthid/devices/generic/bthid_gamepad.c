@@ -50,6 +50,20 @@ static const uint8_t HAT_SWITCH_TO_DIRECTION_BUTTONS[] = {
     0b0001, 0b0011, 0b0010, 0b0110, 0b0100, 0b1100, 0b1000, 0b1001, 0b0000
 };
 
+static const gamepad_quirk_t *resolve_gamepad_quirk(const bthid_device_t *device,
+                                                     const ble_report_map_t *map)
+{
+    // A bridge host exposes its phone/PC identity, which may coincidentally
+    // resemble a supported controller. The exact bridge descriptor is the
+    // authoritative report contract, so identity quirks must not reinterpret
+    // its logical button usages or run controller-specific extractors.
+    if (map && android_bridge_ext_present(&map->bridge))
+        return gamepad_quirks_generic();
+
+    return gamepad_quirks_identify(device->vendor_id, device->product_id,
+                                    device->name, map ? map->buttonCnt : 0);
+}
+
 // ============================================================================
 // ANALOG SCALING (same as USB hid_gamepad.c scale_analog_hid_gamepad)
 // ============================================================================
@@ -249,8 +263,7 @@ void bthid_gamepad_set_descriptor(bthid_device_t* device, const uint8_t* desc, u
         }
     }
 
-    gp->map.quirk = gamepad_quirks_identify(device->vendor_id, device->product_id,
-                                             device->name, gp->map.buttonCnt);
+    gp->map.quirk = resolve_gamepad_quirk(device, &gp->map);
     gp->has_report_map = true;
     printf("[BTHID_GAMEPAD] Parsed: %d btns, report_len=%u, X@%d Y@%d Z@%d RZ@%d RX@%d RY@%d hat@%d(min=%d) sim=%d quirk=%s\n",
            btns_count,
@@ -267,8 +280,7 @@ void bthid_gamepad_update_vid(bthid_device_t* device)
     bthid_gamepad_data_t* gp = (bthid_gamepad_data_t*)device->driver_data;
     if (!gp || !gp->has_report_map) return;
 
-    gp->map.quirk = gamepad_quirks_identify(device->vendor_id, device->product_id,
-                                             device->name, gp->map.buttonCnt);
+    gp->map.quirk = resolve_gamepad_quirk(device, &gp->map);
 }
 
 bool bthid_gamepad_identity_unresolved(const bthid_device_t* device)
@@ -517,8 +529,8 @@ static bool gamepad_init(bthid_device_t* device)
             gamepad_data[i].initialized = true;
             gamepad_data[i].has_report_map = false;
             memset(&gamepad_data[i].map, 0, sizeof(ble_report_map_t));
-            gamepad_data[i].map.quirk = gamepad_quirks_identify(
-                device->vendor_id, device->product_id, device->name, 0);
+            gamepad_data[i].map.quirk = resolve_gamepad_quirk(device,
+                                                               &gamepad_data[i].map);
 
             // Set device info
             gamepad_data[i].event.type = INPUT_TYPE_GAMEPAD;

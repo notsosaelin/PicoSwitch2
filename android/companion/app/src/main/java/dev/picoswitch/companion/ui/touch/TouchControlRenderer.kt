@@ -2,6 +2,7 @@ package dev.picoswitch.companion.ui.touch
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -19,7 +20,11 @@ import dev.picoswitch.bridge.touch.ControlSide
 import dev.picoswitch.bridge.touch.ResolvedTouchControl
 import dev.picoswitch.bridge.touch.ResolvedTouchLayout
 import dev.picoswitch.bridge.touch.TouchControlAction
+import dev.picoswitch.bridge.touch.TouchControlGlyph
 import dev.picoswitch.bridge.touch.TouchDiagnosticsSnapshot
+import dev.picoswitch.bridge.touch.TouchGameCubeGeometry
+import dev.picoswitch.bridge.touch.TouchOutputControl
+import dev.picoswitch.bridge.touch.TouchVisualRole
 import dev.picoswitch.bridge.touch.TouchVector
 
 /**
@@ -60,7 +65,7 @@ data class TouchVisualState(
  * Draws the whole controller in one canvas.
  *
  * One pass rather than a composable per control, for a specific reason: with
- * nineteen independently recomposing nodes, a stick move invalidates layout and
+ * many independently recomposing nodes, a stick move invalidates layout and
  * draw for the node tree around it, and the surface starts competing with the
  * report path it is supposed to be reporting on. Geometry is already resolved,
  * so drawing it is a loop.
@@ -81,25 +86,66 @@ fun DrawScope.drawTouchControls(
     layout.controls.forEach { control ->
         val held = control.id in visual.pressed
         val alpha = if (visual.enabled) opacity else opacity * DISABLED_ALPHA
-        when (val action = control.spec.action) {
-            is TouchControlAction.Stick -> drawStick(
+        when (control.spec.visualRole) {
+            TouchVisualRole.AnalogStick -> drawStick(
                 control = control,
-                displacement = if (action.side == ControlSide.Left) visual.leftStick else visual.rightStick,
+                displacement = if ((control.spec.action as TouchControlAction.Stick).side == ControlSide.Left) {
+                    visual.leftStick
+                } else {
+                    visual.rightStick
+                },
                 palette = palette, alpha = alpha, held = held,
             )
-            TouchControlAction.Directions -> drawDpad(control, visual.dpad, palette, alpha)
-            is TouchControlAction.Face -> drawRound(
+            TouchVisualRole.UnifiedDpad -> drawDpad(control, visual.dpad, palette, alpha)
+            TouchVisualRole.GameCubeLargeA,
+            TouchVisualRole.GameCubeSmallB,
+            TouchVisualRole.JoyConButton,
+            TouchVisualRole.RoundButton -> drawRound(
                 control, held, palette, alpha, textMeasurer, labelStyle,
-                ControllerLayoutResolver.faceLabel(action.position, faceLayout),
+                controlLabel(control, faceLayout),
             )
-            else -> if (control.spec.shape == dev.picoswitch.bridge.touch.TouchControlShape.Rectangle) {
+            TouchVisualRole.JoyConDirectionButton -> drawJoyConDirection(
+                control, held, palette, alpha, textMeasurer, labelStyle,
+            )
+            TouchVisualRole.GameCubeBeanX,
+            TouchVisualRole.GameCubeBeanY -> drawGameCubeBean(
+                control, held, palette, alpha, textMeasurer, labelStyle,
+            )
+            TouchVisualRole.RectangularButton,
+            TouchVisualRole.Utility -> drawPad(control, held, palette, alpha, textMeasurer, labelStyle)
+            TouchVisualRole.Default -> when (val action = control.spec.action) {
+                is TouchControlAction.Stick -> drawStick(
+                    control,
+                    if (action.side == ControlSide.Left) visual.leftStick else visual.rightStick,
+                    palette,
+                    alpha,
+                    held,
+                )
+                TouchControlAction.Directions -> drawDpad(control, visual.dpad, palette, alpha)
+                is TouchControlAction.Face -> drawRound(
+                    control,
+                    held,
+                    palette,
+                    alpha,
+                    textMeasurer,
+                    labelStyle,
+                    ControllerLayoutResolver.faceLabel(action.position, faceLayout),
+                )
+                else -> if (control.spec.shape == dev.picoswitch.bridge.touch.TouchControlShape.Rectangle) {
                 drawPad(control, held, palette, alpha, textMeasurer, labelStyle)
-            } else {
-                drawRound(control, held, palette, alpha, textMeasurer, labelStyle, control.spec.label)
+                } else {
+                    drawRound(control, held, palette, alpha, textMeasurer, labelStyle, control.spec.label)
+                }
             }
         }
     }
 }
+
+private fun controlLabel(control: ResolvedTouchControl, faceLayout: ControllerFaceLayout): String =
+    when (val action = control.spec.action) {
+        is TouchControlAction.Face -> ControllerLayoutResolver.faceLabel(action.position, faceLayout)
+        else -> control.spec.label
+    }
 
 private fun DrawScope.drawRound(
     control: ResolvedTouchControl,
@@ -123,9 +169,18 @@ private fun DrawScope.drawRound(
         center = center,
         style = Stroke(width = OUTLINE_WIDTH),
     )
-    if (label.isNotEmpty()) {
-        drawLabel(label, center, radius * 2f, held, palette, alpha, textMeasurer, style)
-    }
+    drawControlContent(
+        glyph = control.spec.glyph,
+        label = label,
+        center = center,
+        availableWidth = radius * 2f,
+        availableHeight = radius * 2f,
+        held = held,
+        palette = palette,
+        alpha = alpha,
+        textMeasurer = textMeasurer,
+        style = style,
+    )
 }
 
 private fun DrawScope.drawPad(
@@ -148,12 +203,269 @@ private fun DrawScope.drawPad(
         topLeft = topLeft, size = size, cornerRadius = corner,
         style = Stroke(width = OUTLINE_WIDTH),
     )
-    if (control.spec.label.isNotEmpty()) {
-        drawLabel(
-            control.spec.label, Offset(control.centerX, control.centerY),
-            size.width, held, palette, alpha, textMeasurer, style,
-        )
+    drawControlContent(
+        glyph = control.spec.glyph,
+        label = control.spec.label,
+        center = Offset(control.centerX, control.centerY),
+        availableWidth = size.width,
+        availableHeight = size.height,
+        held = held,
+        palette = palette,
+        alpha = alpha,
+        textMeasurer = textMeasurer,
+        style = style,
+    )
+}
+
+/**
+ * Code-native GameCube X/Y silhouette traced from Dolphin's actual `gcpad_x` / `gcpad_y`
+ * alpha boundaries. The source bitmaps are references only and are not bundled in PicoSwitch2.
+ */
+private fun DrawScope.drawGameCubeBean(
+    control: ResolvedTouchControl,
+    held: Boolean,
+    palette: TouchControlPalette,
+    alpha: Float,
+    textMeasurer: TextMeasurer,
+    style: TextStyle,
+) {
+    val left = control.centerX - control.halfWidth
+    val top = control.centerY - control.halfHeight
+    val path = gameCubeFacePath(
+        role = control.spec.visualRole,
+        left = left,
+        top = top,
+        width = control.halfWidth * 2f,
+        height = control.halfHeight * 2f,
+        rotationDegrees = control.spec.visualRotationDegrees,
+    )
+    drawPath(path, (if (held) palette.pressed else palette.idle).copy(alpha = alpha))
+    drawPath(
+        path,
+        (if (held) palette.pressedOutline else palette.idleOutline).copy(alpha = alpha),
+        style = Stroke(width = OUTLINE_WIDTH),
+    )
+    drawControlContent(
+        glyph = control.spec.glyph,
+        label = control.spec.label,
+        center = Offset(control.centerX, control.centerY),
+        availableWidth = control.halfWidth * 2f,
+        availableHeight = control.halfHeight * 2f,
+        held = held,
+        palette = palette,
+        alpha = alpha,
+        textMeasurer = textMeasurer,
+        style = style,
+    )
+}
+
+/** Normalized contours are intentionally visible to tests so the traced silhouettes cannot drift. */
+internal fun gameCubeFaceContour(role: TouchVisualRole): List<Offset> =
+    TouchGameCubeGeometry.contour(role).map { Offset(it.x, it.y) }
+
+private fun gameCubeFacePath(
+    role: TouchVisualRole,
+    left: Float,
+    top: Float,
+    width: Float,
+    height: Float,
+    rotationDegrees: Float,
+): Path {
+    val oriented = orientedGameCubeFaceContour(role, width, height, rotationDegrees)
+    val centerX = left + width / 2f
+    val centerY = top + height / 2f
+    fun point(index: Int): Offset {
+        val source = oriented[(index + oriented.size) % oriented.size]
+        return Offset(centerX + source.x, centerY + source.y)
     }
+
+    return Path().apply {
+        val first = point(0)
+        moveTo(first.x, first.y)
+        oriented.indices.forEach { index ->
+            val previous = point(index - 1)
+            val current = point(index)
+            val next = point(index + 1)
+            val following = point(index + 2)
+            // Uniform Catmull-Rom converted to a cubic. Twenty equal-arc anchors retain
+            // the source contour while keeping the Android path smooth at any scale.
+            cubicTo(
+                current.x + (next.x - previous.x) / 6f,
+                current.y + (next.y - previous.y) / 6f,
+                next.x - (following.x - current.x) / 6f,
+                next.y - (following.y - current.y) / 6f,
+                next.x,
+                next.y,
+            )
+        }
+        close()
+    }
+}
+
+/** Rotates the preserved source silhouette without changing its anchors or template placement. */
+internal fun orientedGameCubeFaceContour(
+    role: TouchVisualRole,
+    width: Float,
+    height: Float,
+    rotationDegrees: Float,
+): List<Offset> {
+    return TouchGameCubeGeometry.orientedContour(role, width, height, rotationDegrees)
+        .map { Offset(it.x, it.y) }
+}
+
+/** Independent Joy-Con direction button with a recessed, centred triangle. */
+private fun DrawScope.drawJoyConDirection(
+    control: ResolvedTouchControl,
+    held: Boolean,
+    palette: TouchControlPalette,
+    alpha: Float,
+    textMeasurer: TextMeasurer,
+    style: TextStyle,
+) {
+    drawRound(control, held, palette, alpha, textMeasurer, style, label = "")
+    val available = minOf(control.halfWidth, control.halfHeight) * 2f
+    val path = Path().apply {
+        val vertices = joyConDirectionTriangle(
+            control.spec.output,
+            Offset(control.centerX, control.centerY),
+            available * JOYCON_TRIANGLE_RADIUS_FRACTION,
+        )
+        moveTo(vertices[0].x, vertices[0].y)
+        lineTo(vertices[1].x, vertices[1].y)
+        lineTo(vertices[2].x, vertices[2].y)
+        close()
+    }
+    val color = (if (held) palette.pressedLabel else palette.label).copy(alpha = alpha)
+    drawPath(path, color.copy(alpha = color.alpha * CAPTURE_DISC_FILL_ALPHA))
+    drawPath(
+        path,
+        color.copy(alpha = color.alpha * CAPTURE_DISC_RIM_ALPHA),
+        style = Stroke(width = available * JOYCON_TRIANGLE_STROKE_FRACTION),
+    )
+}
+
+/** Pure geometry kept visible to JVM tests; no arrow font or glyph is involved. */
+internal fun joyConDirectionTriangle(
+    output: TouchOutputControl,
+    center: Offset,
+    radius: Float,
+): List<Offset> {
+    val point = radius
+    val wing = radius * 0.82f
+    val base = radius * 0.56f
+    return when (output) {
+        TouchOutputControl.DirectionUp -> listOf(
+            Offset(center.x, center.y - point),
+            Offset(center.x - wing, center.y + base),
+            Offset(center.x + wing, center.y + base),
+        )
+        TouchOutputControl.DirectionDown -> listOf(
+            Offset(center.x, center.y + point),
+            Offset(center.x - wing, center.y - base),
+            Offset(center.x + wing, center.y - base),
+        )
+        TouchOutputControl.DirectionLeft -> listOf(
+            Offset(center.x - point, center.y),
+            Offset(center.x + base, center.y - wing),
+            Offset(center.x + base, center.y + wing),
+        )
+        TouchOutputControl.DirectionRight -> listOf(
+            Offset(center.x + point, center.y),
+            Offset(center.x - base, center.y - wing),
+            Offset(center.x - base, center.y + wing),
+        )
+        else -> error("$output is not a Joy-Con direction output")
+    }
+}
+
+private fun DrawScope.drawControlContent(
+    glyph: TouchControlGlyph?,
+    label: String,
+    center: Offset,
+    availableWidth: Float,
+    availableHeight: Float,
+    held: Boolean,
+    palette: TouchControlPalette,
+    alpha: Float,
+    textMeasurer: TextMeasurer,
+    style: TextStyle,
+) {
+    when (glyph) {
+        TouchControlGlyph.Capture -> drawCaptureGlyph(
+            center, minOf(availableWidth, availableHeight), held, palette, alpha,
+        )
+        TouchControlGlyph.Home -> drawHomeGlyph(
+            center, minOf(availableWidth, availableHeight), held, palette, alpha,
+        )
+        null -> if (label.isNotEmpty()) {
+            drawLabel(
+                label, center, availableWidth, availableHeight,
+                held, palette, alpha, textMeasurer, style,
+            )
+        }
+    }
+}
+
+/**
+ * A broad, softly filled capture disc inspired by the recessed mark on a physical
+ * controller button. The subtle fill keeps it from reading as a generic letter O,
+ * while the slimmer rim stays legible against either idle or pressed button faces.
+ * It remains Canvas-native rather than depending on an external image asset.
+ */
+private fun DrawScope.drawCaptureGlyph(
+    center: Offset,
+    available: Float,
+    held: Boolean,
+    palette: TouchControlPalette,
+    alpha: Float,
+) {
+    val color = (if (held) palette.pressedLabel else palette.label).copy(alpha = alpha)
+    val radius = available * CAPTURE_DISC_RADIUS_FRACTION
+    drawCircle(
+        color = color.copy(alpha = color.alpha * CAPTURE_DISC_FILL_ALPHA),
+        radius = radius,
+        center = center,
+    )
+    drawCircle(
+        color = color.copy(alpha = color.alpha * CAPTURE_DISC_RIM_ALPHA),
+        radius = radius,
+        center = center,
+        style = Stroke(width = available * CAPTURE_DISC_STROKE_FRACTION),
+    )
+}
+
+/** Generic house inside a circular outline, also entirely code-native. */
+private fun DrawScope.drawHomeGlyph(
+    center: Offset,
+    available: Float,
+    held: Boolean,
+    palette: TouchControlPalette,
+    alpha: Float,
+) {
+    val color = (if (held) palette.pressedLabel else palette.label).copy(alpha = alpha)
+    drawCircle(
+        color = color,
+        radius = available * HOME_CIRCLE_RADIUS_FRACTION,
+        center = center,
+        style = Stroke(width = available * HOME_CIRCLE_STROKE_FRACTION),
+    )
+
+    val unit = available * HOME_HOUSE_UNIT_FRACTION
+    val house = Path().apply {
+        moveTo(center.x, center.y - unit)
+        lineTo(center.x - unit, center.y - unit * 0.12f)
+        lineTo(center.x - unit * 0.72f, center.y - unit * 0.12f)
+        lineTo(center.x - unit * 0.72f, center.y + unit * 0.78f)
+        lineTo(center.x - unit * 0.25f, center.y + unit * 0.78f)
+        lineTo(center.x - unit * 0.25f, center.y + unit * 0.20f)
+        lineTo(center.x + unit * 0.25f, center.y + unit * 0.20f)
+        lineTo(center.x + unit * 0.25f, center.y + unit * 0.78f)
+        lineTo(center.x + unit * 0.72f, center.y + unit * 0.78f)
+        lineTo(center.x + unit * 0.72f, center.y - unit * 0.12f)
+        lineTo(center.x + unit, center.y - unit * 0.12f)
+        close()
+    }
+    drawPath(house, color)
 }
 
 /**
@@ -180,7 +492,7 @@ private fun DrawScope.drawStick(
         color = palette.idleOutline.copy(alpha = alpha),
         radius = radius, center = center, style = Stroke(width = OUTLINE_WIDTH),
     )
-    val knobRadius = radius * KNOB_FRACTION
+    val knobRadius = radius * TOUCH_STICK_KNOB_FRACTION
     val travel = radius - knobRadius
     val knob = Offset(
         center.x + displacement.x * travel,
@@ -223,32 +535,46 @@ private fun DrawScope.drawDpad(
     val idle = palette.idle.copy(alpha = alpha)
     val held = palette.pressed.copy(alpha = alpha)
 
-    fun bar(color: Color, left: Float, top: Float, width: Float, height: Float) = drawRoundRect(
-        color = color,
-        topLeft = Offset(left, top),
-        size = Size(width, height),
-        cornerRadius = corner,
-    )
+    fun Path.bar(left: Float, top: Float, width: Float, height: Float) {
+        addRoundRect(
+            RoundRect(
+                left = left,
+                top = top,
+                right = left + width,
+                bottom = top + height,
+                cornerRadius = corner,
+            ),
+        )
+    }
 
-    bar(idle, center.x - half, center.y - arm, half * 2f, arm * 2f)
-    bar(idle, center.x - arm, center.y - half, arm * 2f, half * 2f)
-    if (state.up) bar(held, center.x - half, center.y - arm, half * 2f, arm)
-    if (state.down) bar(held, center.x - half, center.y, half * 2f, arm)
-    if (state.left) bar(held, center.x - arm, center.y - half, arm, half * 2f)
-    if (state.right) bar(held, center.x, center.y - half, arm, half * 2f)
+    // One draw per colour. Diagonal arms still meet at the hub, but translucent
+    // paint is no longer composited twice where their visual rectangles overlap.
+    val idleCross = Path().apply {
+        bar(center.x - half, center.y - arm, half * 2f, arm * 2f)
+        bar(center.x - arm, center.y - half, arm * 2f, half * 2f)
+    }
+    drawPath(idleCross, idle)
+    val pressedCross = Path().apply {
+        if (state.up) bar(center.x - half, center.y - arm, half * 2f, arm)
+        if (state.down) bar(center.x - half, center.y, half * 2f, arm)
+        if (state.left) bar(center.x - arm, center.y - half, arm, half * 2f)
+        if (state.right) bar(center.x, center.y - half, arm, half * 2f)
+    }
+    drawPath(pressedCross, held)
 }
 
 /**
  * A legend, measured and centred.
  *
- * Bounded to the control it sits in: a raised system font scale must not push a
- * one-character label past the button drawn around it. The accessible thing here
- * is the hit region, which the layout already guarantees, not an enormous letter.
+ * Bounded on both axes to the control it sits in. Short legends keep the shared
+ * global size; longer legends shrink just enough to preserve visible padding.
+ * A raised system font scale therefore cannot push text into the button outline.
  */
 private fun DrawScope.drawLabel(
     label: String,
     center: Offset,
-    available: Float,
+    availableWidth: Float,
+    availableHeight: Float,
     held: Boolean,
     palette: TouchControlPalette,
     alpha: Float,
@@ -256,9 +582,6 @@ private fun DrawScope.drawLabel(
     style: TextStyle,
 ) {
     val color = (if (held) palette.pressedLabel else palette.label).copy(alpha = alpha)
-    // Room inside the control, not the control's full width: a legend that runs
-    // to the outline reads as damage.
-    val room = (available * LABEL_WIDTH_FRACTION).coerceAtLeast(1f)
 
     fun measure(scale: Float) = textMeasurer.measure(
         text = label,
@@ -266,6 +589,9 @@ private fun DrawScope.drawLabel(
             color = color,
             textAlign = TextAlign.Center,
             fontSize = style.fontSize * scale,
+            // Material titleMedium carries its own line height. Scale it with the
+            // glyphs so a fitted legend cannot retain an oversized line box.
+            lineHeight = style.fontSize * scale,
         ),
         // Unconstrained, so an over-wide legend reports its true width instead of
         // silently wrapping or ellipsising -- which is what makes the shrink below
@@ -275,12 +601,15 @@ private fun DrawScope.drawLabel(
     )
 
     var measured = measure(1f)
-    if (measured.size.width > room) {
-        // One corrective pass. Shrinking is bounded so a raised system font scale
-        // cannot push a legend past the button drawn around it, and cannot make it
-        // microscopic either -- the accessible thing here is the hit region, which
-        // the layout already guarantees.
-        val scale = (room / measured.size.width).coerceAtLeast(MIN_LABEL_SCALE)
+    val scale = fitTouchLabelScale(
+        measuredWidth = measured.size.width.toFloat(),
+        measuredHeight = measured.size.height.toFloat(),
+        availableWidth = availableWidth,
+        availableHeight = availableHeight,
+    )
+    if (scale < 1f) {
+        // One corrective pass is exact enough because text dimensions scale
+        // linearly for a fixed typeface and one unwrapped line.
         measured = measure(scale)
     }
     drawText(
@@ -289,6 +618,27 @@ private fun DrawScope.drawLabel(
             center.x - measured.size.width / 2f,
             center.y - measured.size.height / 2f,
         ),
+    )
+}
+
+/**
+ * Returns a downscale factor that leaves deliberate breathing room around a legend.
+ * The result never exceeds 1: the caller's global type size is the visual target,
+ * while this function only handles unusually long text, small controls, and large
+ * accessibility font scales.
+ */
+internal fun fitTouchLabelScale(
+    measuredWidth: Float,
+    measuredHeight: Float,
+    availableWidth: Float,
+    availableHeight: Float,
+): Float {
+    val widthRoom = (availableWidth * LABEL_WIDTH_FRACTION).coerceAtLeast(1f)
+    val heightRoom = (availableHeight * LABEL_HEIGHT_FRACTION).coerceAtLeast(1f)
+    return minOf(
+        1f,
+        widthRoom / measuredWidth.coerceAtLeast(1f),
+        heightRoom / measuredHeight.coerceAtLeast(1f),
     )
 }
 
@@ -318,13 +668,42 @@ fun ResolvedTouchControl.hitBounds(): Rect = Rect(
     bottom = centerY + hitHalfHeight,
 )
 
+/** Android editor chrome; semantic validation remains in bridge-core. */
+fun DrawScope.drawTouchEditorOverlay(
+    layout: ResolvedTouchLayout,
+    selectedId: String?,
+    palette: TouchControlPalette,
+) {
+    layout.controls.forEach { control ->
+        val bounds = control.hitBounds()
+        val selected = control.id == selectedId
+        drawRect(
+            color = (if (selected) palette.pressedOutline else palette.idleOutline).copy(
+                alpha = if (selected) 0.95f else 0.45f,
+            ),
+            topLeft = bounds.topLeft,
+            size = bounds.size,
+            style = Stroke(width = if (selected) 4f else 2f),
+        )
+    }
+}
+
 private const val OUTLINE_WIDTH = 2f
 private const val WELL_ALPHA = 0.55f
 /** Legends stop short of the outline; text touching the rim reads as damage. */
 private const val LABEL_WIDTH_FRACTION = 0.78f
-/** Below this a legend is decoration rather than a label, so it stops shrinking. */
-private const val MIN_LABEL_SCALE = 0.62f
-private const val KNOB_FRACTION = 0.46f
+/** Vertical padding is slightly more generous because a tight line box looks crowded. */
+private const val LABEL_HEIGHT_FRACTION = 0.68f
+private const val CAPTURE_DISC_RADIUS_FRACTION = 0.28f
+private const val CAPTURE_DISC_FILL_ALPHA = 0.18f
+private const val CAPTURE_DISC_RIM_ALPHA = 0.82f
+private const val CAPTURE_DISC_STROKE_FRACTION = 0.045f
+private const val HOME_CIRCLE_RADIUS_FRACTION = 0.30f
+private const val HOME_CIRCLE_STROKE_FRACTION = 0.05f
+private const val HOME_HOUSE_UNIT_FRACTION = 0.18f
+internal const val TOUCH_STICK_KNOB_FRACTION = 0.46f
+private const val JOYCON_TRIANGLE_RADIUS_FRACTION = 0.19f
+private const val JOYCON_TRIANGLE_STROKE_FRACTION = 0.045f
 private const val ARM_FRACTION = 0.90f
 private const val ARM_HALF_WIDTH = 0.26f
 private const val DISABLED_ALPHA = 0.4f

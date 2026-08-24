@@ -115,6 +115,13 @@ struct ble_report_map_s {
 const gamepad_quirk_t *gamepad_quirks_identify(uint16_t vendor_id, uint16_t product_id,
                                                 const char *name, uint8_t button_count);
 
+// Return the plain descriptor-driven sequential profile. An exact PicoSwitch2
+// bridge descriptor is a stronger statement of report semantics than the host
+// phone/PC's incidental Bluetooth name or VID/PID, so the generic driver uses
+// this profile for that descriptor even if the host identity resembles a known
+// controller family.
+const gamepad_quirk_t *gamepad_quirks_generic(void);
+
 // True when `quirk` is the unmatched fallback rather than a recognized controller
 // family. This is the project's established answer to "has this peer been
 // identified as a supported controller?", and it stays that way: it is derived
