@@ -216,18 +216,34 @@ The profile/layout pipeline is shared core logic:
 confirmed controller personality
   -> TouchProfileCatalog / fixed output bindings
     -> immutable TouchLayoutTemplate
-      + sparse, versioned TouchLayoutOverride
-        -> TouchLayoutComposer -> TouchLayoutAudit -> resolved layout
-          -> PLATFORM renderer and pointer adapter
+      + TouchProfileLibrary: factory profile + user profiles, one selected
+        + that profile's sparse, versioned TouchLayoutOverride
+          -> TouchLayoutComposer -> TouchLayoutAudit -> resolved layout
+            -> PLATFORM renderer and pointer adapter
 ```
 
-`TouchControllerProfile`, templates, composition, editor operations, audit rules, schema metadata,
-and `TouchLayoutOverrideStore` are in `:bridge-core`. A platform owns the store implementation and
-raw storage mechanism, its renderer, pointer/event conversion, and editor widgets. Android's first
-implementation uses app-private `SharedPreferences`, Compose Canvas, and Compose pointer events;
-none is visible to the shared model. `TouchLayoutOverrideJsonCodec` is the Kotlin JSON reference
-codec for the platform-neutral document schema. A non-JVM host implements that JSON schema rather
-than treating a kotlinx.serialization implementation as universal.
+`TouchControllerProfile`, templates, composition, editor operations, alignment/snapping, audit
+rules, schema metadata, the profile library and both store interfaces
+(`TouchLayoutOverrideStore`, `TouchProfileLibraryStore`) are in `:bridge-core`. A platform owns the
+store implementation and raw storage mechanism, its renderer, pointer/event conversion, and editor
+widgets. Android's first implementation uses app-private `SharedPreferences`, Compose Canvas, and
+Compose pointer events; none is visible to the shared model. `TouchLayoutOverrideJsonCodec` and
+`TouchProfileLibraryJsonCodec` are the Kotlin JSON reference codecs for the platform-neutral
+document schemas. A non-JVM host implements those JSON schemas rather than treating a
+kotlinx.serialization implementation as universal.
+
+A profile is an ENVELOPE around an override document, not a second layout representation: its
+personality, template id and template revision are read back off the override rather than stored
+again beside it. The factory profile is synthesized from the shipped template on every read and is
+never persisted, which is what makes its protection structural instead of a flag a stored document
+could clear. Saving onto it creates a new user profile; the editor never has an outcome that
+discards an edit or overwrites the recoverable default.
+
+Alignment assistance (`TouchEditorAlignment`) is pure and operates on already-resolved pixel
+geometry, so grid pitch, snap tolerance and guide matching behave identically on every host and are
+testable at every window shape without a device. Snapping computes one correction from a single
+reference control and applies it to the whole movement, so a multi-control selection cannot be
+pulled apart; a movement larger than the tolerance always wins, so guides never restrict placement.
 
 Compound controls use a normalized group anchor plus logical-unit child offsets. This is not merely
 an editor convenience: independent normalized child anchors distort a square diamond whenever the
@@ -372,8 +388,10 @@ always-on at report cadence.
 | `TouchControlEngine`, `TouchContactTracker`, `TouchGamepad` | Contact ownership, claim/exclusivity rules, release-all, authority transitions. A second host reimplementing "which control does this thumb own" would reproduce the index-versus-identifier bug from scratch. |
 | `TouchStick`, `TouchDpad`, `TouchAxis` | Circular clamping, radial deadzone rescaling, eight-way sectors with radial and angular hysteresis, and the single conversion into bridge units. |
 | `TouchControllerProfile`, `TouchProfileCatalog`, `TouchLayoutTemplate` | Personality contracts, complete output inventories, immutable defaults and fixed bridge bindings. |
-| `TouchLayoutOverride`, `TouchLayoutComposer`, `TouchLayoutEditor`, `TouchLayoutAudit` | Sparse user state, template composition, portable edit operations, schema/template revision policy, and mechanical validation of overlap, target size and bounds. |
-| `TouchLayoutOverrideJsonCodec`, `TouchLayoutOverrideStore` | Kotlin reference implementation of the neutral JSON document plus the storage boundary; the platform implements only the backend. |
+| `TouchLayoutOverride`, `TouchLayoutComposer`, `TouchLayoutEditor`, `TouchLayoutAudit` | Sparse user state, template composition, portable edit operations over a SELECTION of controls, schema/template revision policy, and mechanical validation of overlap, target size and bounds. |
+| `TouchLayoutProfile`, `TouchProfileLibrary`, `TouchProfileLibraryEditor` | Named per-personality profiles, the synthesized immutable factory entry, and the create/duplicate/rename/delete/reset/save/import rules including default-profile protection. |
+| `TouchEditorAlignment` | Grid generation, guide matching and snapping over resolved geometry; assists placement without restricting it. |
+| `TouchLayoutOverrideJsonCodec`, `TouchProfileLibraryJsonCodec`, `TouchLayoutOverrideStore`, `TouchProfileLibraryStore` | Kotlin reference implementations of the neutral JSON documents plus the storage boundaries; the platform implements only the backend. |
 | `InputAuthority` | Which host control set is the controller, and that it is never two. |
 | `BridgeSession` | Cadence, motion gating, battery polling, report accounting, teardown ordering. |
 | `AxisRange`, `DpadState.fromAxes`, `MotionScale`, `ScreenOrientation`, `RumbleShaping` | Shared normalization maths. |

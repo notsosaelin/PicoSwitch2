@@ -28,9 +28,21 @@ Release notes describe user-visible behavior. Detailed implementation history re
   commands on management and UART for the full mapping surface.
 - **Personality-aware Touch Gamepad layouts.** The Android touchscreen now follows the confirmed
   Pro Controller 2, NSO GameCube, Joy-Con 2 Left, or Joy-Con 2 Right personality with controller-
-  appropriate controls and fixed labels. A per-profile editor can move, resize, group-edit, hide,
-  show and reset controls; explicit Save/Cancel stores only sparse overrides and never mutates the
-  shipped defaults. Live personality changes neutralize held input and keep the controller link.
+  appropriate controls and fixed labels. Live personality changes neutralize held input and keep the
+  controller link.
+- **Touch Gamepad layout editor and layout profiles.** Editing the on-screen controller is now a
+  proper edit mode instead of a settings panel: the controller stays on screen, and a small floating
+  toolbar — which you can dock to the bottom, top, left or right — replaces the panel that used to
+  cover the layout you were trying to judge. Tap a control to select it, drag to move it, pinch to
+  resize it, and long-press to add another control to the selection; everything fades out of the way
+  while you are actually moving something. An optional grid and optional snapping line controls up
+  with each other, with the centre of the screen and with the safe edges, and never prevent you from
+  putting a control where you want it.
+  Layouts are now saved as named **profiles**, separate for each controller type. Every controller
+  keeps an untouchable **Default** you can always go back to, plus up to twelve of your own that you
+  can create, copy, rename, reset and delete. Saving changes while Default is selected creates a new
+  profile of your own rather than overwriting it, and leaving with unsaved changes asks first.
+  A layout you had already customized before this release is kept and becomes one of your profiles.
 
 Hardware-validated 2026-08-16 with a Bluetooth keyboard and mouse: both connect together as one
 controller, either can be switched off and back on and rejoins on its own without re-pairing, and

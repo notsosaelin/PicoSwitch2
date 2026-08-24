@@ -34,12 +34,17 @@ rejects platform vocabulary in identifiers and strings. Contract:
 [`../bridge/PROTOCOL.md`](../bridge/PROTOCOL.md), backend guide:
 [`../bridge/PLATFORM_BACKEND.md`](../bridge/PLATFORM_BACKEND.md).
 
-Touch profiles, immutable templates, sparse overrides, composition, editor operations, audit rules,
-schema metadata and the storage interface belong to `:bridge-core`. Android owns only Canvas
-rendering, Compose pointer/editor UI, lifecycle integration and the `SharedPreferences` backend.
-The module's path under `android/companion/` is historical; do not create a duplicate shared layout
-module. `TouchLayoutOverrideJsonCodec` names the Kotlin JSON implementation explicitly—the document
-schema is portable, kotlinx.serialization is not a cross-platform API.
+Touch profiles, immutable templates, sparse overrides, named profile libraries, composition, editor
+operations, alignment/snapping, audit rules, schema metadata and the storage interfaces belong to
+`:bridge-core`. Android owns only Canvas rendering, Compose pointer/editor UI, lifecycle integration
+and the `SharedPreferences` backend. The module's path under `android/companion/` is historical; do
+not create a duplicate shared layout module. `TouchLayoutOverrideJsonCodec` and
+`TouchProfileLibraryJsonCodec` name the Kotlin JSON implementations explicitly—the document schemas
+are portable, kotlinx.serialization is not a cross-platform API.
+
+The layout editor's default profile is never stored: `TouchProfileLibrary` synthesizes it from the
+shipped template on every read. Do not "fix" that by persisting it — its protection depends on it
+not existing in storage.
 
 ## What it is
 
