@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark counterpart of @color/window_background; matches darkColors().background. -->
+    <color name="window_background">#FF10131A</color>
+</resources>

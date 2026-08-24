@@ -95,6 +95,31 @@ Joy-Con 2 references are the left `#9BE1E6` and right `#FF8C5F` accents document
 [`switch2-joycon2/protocol.md`](switch2-joycon2/protocol.md); selecting an inspired palette does
 not issue `body`, `jcl`, or `jcr` firmware commands and is not a hardware identity claim.
 
+### System-bar appearance is drawn by the app, not set on the window
+
+The companion is edge-to-edge on every supported API level, and its status- and navigation-bar
+regions are painted by `CompanionTheme` as `ColorScheme.background` behind fully transparent bars.
+Only the icon polarity is still asked of the window, via `WindowInsetsControllerCompat`, and it is
+derived from the same resolved light/dark decision as the colour scheme — so forcing Dark on a
+light device still gets readable light icons.
+
+This is not stylistic. The app targets SDK 35, where the platform forces edge-to-edge and turns
+`Window.setStatusBarColor` / `setNavigationBarColor` into no-ops. Those setters were what used to
+colour the bars, so on API 35+ they coloured nothing and the bar regions fell through to the
+platform theme's `windowBackground` of `#FAFAFA` — measured on an Android 16 tablet as white
+strips above and below a dark application. Do not reintroduce either setter as a fix: on a modern
+device it does nothing, and the app would silently diverge between API levels again.
+
+Navigation-bar contrast enforcement is disabled, which is the platform opt-out for an app that
+guarantees contrast itself. Left enabled it was measured compositing a low-alpha overlay over the
+app's own surface on a 3-button device — `(16,19,26)` rendered as `(28,21,27)` in dark, `(247,249,255)`
+as `(254,254,255)` in light — a faint band buying no legibility. Gesture navigation draws nothing
+either way.
+
+`res/values-night/` carries only what the starting window needs before Compose exists:
+`@color/window_background` and `@bool/system_bar_icons_dark`. Those duplicate `ColorScheme.background`
+by necessity and must be changed with it, or a cold launch shows a seam for one frame.
+
 Current implementation status is tracked in
 [`android/companion/FEATURE_PARITY.md`](../android/companion/FEATURE_PARITY.md). The intentionally
 short eventual hardware session is

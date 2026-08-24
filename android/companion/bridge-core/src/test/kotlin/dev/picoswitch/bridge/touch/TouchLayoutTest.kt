@@ -100,8 +100,10 @@ class TouchLayoutResolverTest {
         assertTrue(hugeFace.halfWidth / modestFace.halfWidth < 1.3f)
 
         fun gap(layout: ResolvedTouchLayout) =
-            layout.control(TouchLayoutV1.STICK_LEFT)!!.centerX -
-                layout.control(TouchLayoutV1.DPAD)!!.centerX
+            kotlin.math.abs(
+                layout.control(TouchLayoutV1.STICK_LEFT)!!.centerX -
+                    layout.control(TouchLayoutV1.DPAD)!!.centerX,
+            )
         assertTrue("gutters must absorb the extra room", gap(huge) > gap(modest) * 2f)
     }
 
@@ -169,7 +171,6 @@ class TouchLayoutAuditTest {
             )
         }
         assertTrue(actions.any { it is TouchControlAction.Directions })
-        assertTrue(actions.any { it is TouchControlAction.SystemMenu })
 
         val logical = actions.filterIsInstance<TouchControlAction.Logical>().map { it.button }.toSet()
         assertTrue(
@@ -185,6 +186,22 @@ class TouchLayoutAuditTest {
         )
     }
 
+    @Test fun `utility controls are rounded squares with fixed portable content`() {
+        val capture = TouchLayoutV1.layout.controls.single { it.id == TouchLayoutV1.CAPTURE }
+        val home = TouchLayoutV1.layout.controls.single { it.id == TouchLayoutV1.HOME }
+        val chat = TouchLayoutV1.layout.controls.single { it.id == TouchLayoutV1.CHAT }
+
+        listOf(capture, home, chat).forEach {
+            assertEquals(TouchControlShape.Rectangle, it.shape)
+        }
+        assertEquals(TouchControlGlyph.Capture, capture.glyph)
+        assertEquals("", capture.label)
+        assertEquals(TouchControlGlyph.Home, home.glyph)
+        assertEquals("", home.label)
+        assertNull(chat.glyph)
+        assertEquals("C", chat.label)
+    }
+
     @Test fun `overlapping hit regions are reported as blocking`() {
         val overlapping = TouchLayout(
             id = "overlap", schemaVersion = 1,
@@ -197,6 +214,27 @@ class TouchLayoutAuditTest {
         assertFalse(resolved.fits)
         val findings = TouchLayoutAudit.audit(resolved.controls, resolved.region)
         assertTrue(findings.any { it.blocking && it.message.contains("overlapping") })
+    }
+
+    @Test fun `disjoint circular hit regions are not rejected for overlapping boxes`() {
+        val diagonal = TouchLayout(
+            id = "diagonal-circles", schemaVersion = 1,
+            controls = listOf(
+                TouchControlSpec(
+                    "upper", TouchControlKind.Button,
+                    TouchControlAction.Logical(ControllerButton.L1),
+                    0.40f, 0.40f, 78f, 78f,
+                ),
+                TouchControlSpec(
+                    "lower", TouchControlKind.Button,
+                    TouchControlAction.Logical(ControllerButton.R1),
+                    0.48f, 0.535f, 50f, 50f, hitMarginUnits = 4f,
+                ),
+            ),
+        )
+        val resolved = TouchLayoutResolver.resolve(diagonal, region(800f, 400f))
+        val findings = TouchLayoutAudit.audit(resolved.controls, resolved.region)
+        assertFalse(findings.any { it.message.contains("overlapping") })
     }
 
     @Test fun `a target below the accessible minimum is reported`() {

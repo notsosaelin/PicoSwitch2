@@ -70,7 +70,6 @@ data class TouchDiagnosticsSnapshot(
 class TouchControlEngine(
     config: TouchControlConfig = TouchControlConfig.Default,
     private val onContribution: (TouchContribution) -> Unit,
-    private val onMenu: () -> Unit = {},
     private var feedback: TouchFeedbackBackend = TouchFeedbackBackend.None,
 ) {
     var config: TouchControlConfig = config
@@ -120,6 +119,11 @@ class TouchControlEngine(
      */
     fun setLayout(resolved: ResolvedTouchLayout) {
         releaseAll(TouchReleaseReason.GeometryInvalidated)
+        installLayout(resolved)
+    }
+
+    /** Install geometry after [TouchContactTracker] has released and quarantined contacts. */
+    internal fun installLayout(resolved: ResolvedTouchLayout) {
         layout = resolved
     }
 
@@ -196,14 +200,6 @@ class TouchControlEngine(
                     control.spec.kind != TouchControlKind.Dpad
                 ) {
                     feedback.perform(TouchFeedbackEvent.Release)
-                }
-                // A menu tap fires on release, and only when the contact was not
-                // taken away. Firing on Down would open the menu from a thumb
-                // that was on its way somewhere else.
-                if (control.spec.action is TouchControlAction.SystemMenu &&
-                    control.hitTest(contact.x, contact.y)
-                ) {
-                    onMenu()
                 }
             }
         }
@@ -334,7 +330,6 @@ class TouchControlEngine(
                     )
                 }
             }
-            TouchControlAction.SystemMenu -> feedback.perform(TouchFeedbackEvent.Press)
         }
     }
 
@@ -358,7 +353,6 @@ class TouchControlEngine(
                 rightStick = TouchVector.Zero
             }
             TouchControlAction.Directions -> dpad = DpadState.None
-            TouchControlAction.SystemMenu -> Unit
         }
     }
 

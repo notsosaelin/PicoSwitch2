@@ -96,10 +96,12 @@ Settings -> Amiibo). Both are troubleshooting or maintenance surfaces that are v
 should not hold permanent navigation space.
 
 **Touch Gamepad** is neither a destination nor an overlay but a full-screen application *mode*,
-entered deliberately from Gamepad and left by its own menu or by back. It is not a sixth navigation
-item because it is not somewhere you browse to; it owns edge-to-edge presentation, hides the
-navigation chrome, and prefers landscape, none of which the scaffold's content column can give it.
-Nothing covers the app with virtual controls merely because no physical gamepad is present.
+entered deliberately from Gamepad. Android Back — including a committed gesture from either screen
+edge — opens its own menu during play and closes that menu while it is visible; leaving the mode is
+the explicit Exit action inside the menu. It is not a sixth navigation item because it is not
+somewhere you browse to; it owns edge-to-edge presentation, hides the navigation chrome, and prefers
+landscape, none of which the scaffold's content column can give it. Nothing covers the app with
+virtual controls merely because no physical gamepad is present.
 
 Personality and colours moved onto Adapter because they are properties of the one physical device;
 having them on a separate page made changing a colour a navigation task. Diagnostics absorbed the
@@ -217,13 +219,53 @@ rest of the session state on disconnect. A rejected save leaves the marker set.
 
 A phone or tablet with no gamepad attached is still a complete controller, because its screen is
 one. Gamepad -> **Touch Gamepad** opens a full-screen controller whose input travels the existing
-bridge unchanged; the adapter and the firmware learn nothing about where the state came from.
+bridge; the adapter knows it is the declared Android bridge source but cannot distinguish touch
+input from the handheld's built-in controls.
 
 The engineering is split so that the interesting half is portable. `:bridge-core`'s
-`dev.picoswitch.bridge.touch` owns contact ownership, stick and D-pad geometry, the declarative
-layout and the release rules; the app supplies pointer events, a rectangle and a haptic. A future
-touchscreen host implements the same three things — see
+`dev.picoswitch.bridge.touch` owns personality profiles, immutable templates, sparse overrides,
+composition, validation, editor operations, contact ownership, stick/D-pad geometry and release
+rules. The app supplies rendering, pointer events, editor widgets, an interaction-safe rectangle,
+app-private persistence and haptics. Its current directory is historical because Android is the
+first consumer; `:bridge-core` is still a plain JVM shared module and must be relocated rather than
+duplicated when a second host appears. See
 [`docs/bridge/PLATFORM_BACKEND.md` §3.7](../../docs/bridge/PLATFORM_BACKEND.md).
+
+The confirmed management personality selects exactly one profile: Pro Controller 2, NSO GameCube,
+sideways Joy-Con 2 Left, or sideways Joy-Con 2 Right. `Config` and `Unknown` remain neutral. Each
+profile declares every visible output and its fixed bridge binding; GameCube cannot acquire L3/R3,
+and Joy-Con face/direction labels are personality-fixed rather than rewritten by the Pro2 face
+presentation setting. A live personality change releases once, quarantines already-down contacts,
+atomically installs the new profile, and keeps the Classic controller link alive.
+
+Related controls use one normalized group anchor plus logical-unit offsets, rather than unrelated
+normalized points. A Pro2 or Joy-Con Right face diamond therefore stays square when the window aspect
+ratio changes, and group scaling changes both button size and cluster spacing while individual scaling
+leaves the selected button centred. The GameCube face group preserves its native large-A,
+south-west-B, east-X and north-west-Y relationship; its X/Y silhouettes have separate touch-friendly
+bounds. Pro2 and GameCube place the main stick at upper-left and the real D-pad at lower-left; each
+D-pad's outer well, cross and touch region scale together to the main stick's complete footprint.
+GameCube reuses the Pro2 major-control composition directly: main stick at the Pro2 left-stick
+anchor, D-pad at the Pro2 D-pad anchor, C-stick at the Pro2 right-stick anchor, and the complete
+A/B/X/Y compound bounds centred over the Pro2 face-diamond region. Its approved asymmetric internal
+face geometry remains intact. The GameCube touch profile exposes no Select/Minus control; its single
+Start/Plus control is centred on the viewport midline. The Capture/Home/C utility trio is symmetric
+around that same
+midline, and the equal-size D-pad/C-stick pair is mirrored around it at a slightly tighter spacing.
+Joy-Con Left and
+Right place the primary stick on the left and their independent direction or
+face cluster on the right. Left orders `SL L | ZL SR`; Right orders `SL R | ZR SR`; stick clicks are
+labelled L3/R3. Joy-Con directions are recessed triangle indicators, not a text-arrow D-pad. Pro2
+retains one real cross D-pad: its drawing stays separate from touch routing, and diagonal
+pressed arms are composited once so their translucent overlap cannot darken the hub.
+
+Layout customization never mutates the shipped template. The editor works on a sparse, per-profile
+draft with move, uniform scale, group editing, hide/show, per-control/group/profile reset, explicit
+Save/Cancel, hit-bound previews and blocking audit feedback. Android persists one versioned JSON
+override per profile through `AndroidTouchLayoutOverrideStore`; unreadable or future documents are
+kept raw while runtime falls back to the immutable default. The shared Kotlin reference serializer
+is deliberately named `TouchLayoutOverrideJsonCodec`—the JSON schema is portable, the
+kotlinx.serialization implementation is not universal.
 
 **Contacts are owned by identifier, never by position.** Android guarantees a stable `PointerId`
 for a contact's lifetime and explicitly does *not* guarantee its index; a router keyed on the index
@@ -239,11 +281,17 @@ an owned control is ignored rather than stealing it — two contradictory positi
 have no correct answer.
 
 **Face controls are positions, not letters.** `FaceButtonPosition` names South/East/West/North and
-resolves through the same `ControllerLayoutResolver` the physical path uses, so the drawn legend and
-the transmitted bit come from one decision and cannot disagree. The presentation is persisted
-separately (there is no physical descriptor to key the per-device store) and deliberately never
-resolves to `Auto`, which exists to guess a *printed* legend that a drawn control does not have. The
-default is Nintendo, because the diamond being drawn is a Switch controller's.
+resolves through the same `ControllerLayoutResolver` the physical path uses. The companion sends the
+result as logical A/B/X/Y usages; descriptor-proven bridge provenance makes the firmware seam map
+those four directly instead of reapplying the B/A/Y/X map for directly paired physical controllers.
+The presentation is persisted separately (there is no physical descriptor to key the per-device
+store) and deliberately never resolves to `Auto`, which exists to guess a *printed* legend that a
+drawn control does not have. The default is Nintendo, because the diamond being drawn is a Switch
+controller's. Both presentations and every fixed GameCube/Joy-Con face cluster share one exhaustive
+golden fixture. A catalog test requires exact equality with its `(personality, template,
+presentation, control id)` keys, labels and Android HID usages. The C host golden then sends all 20
+cases through the production descriptor parser, source-aware seam and selected final personality
+encoder while also proving the direct-controller base map and raw Joy-Con bitmap remain unchanged.
 
 **Exactly one host control set is the controller.** `InputAuthority` is explicit: entering the mode
 neutralizes through the still-live link, takes authority, and rebinds the session to the host itself
@@ -414,11 +462,13 @@ It is debug-variant only and reachable through:
 
 ```powershell
 adb shell am start -n dev.picoswitch.companion.debug/dev.picoswitch.companion.lab.LayoutLabActivity `
-    --es section Keyboard [--es overlay Diagnostics] [--ez empty true] [--ez touch true]
+    --es section Keyboard [--es overlay Diagnostics] [--ez empty true] [--ez touch true] `
+    [--es personality pro2|gc|jcl|jcr]
 ```
 
-`--ez touch true` opens the real Touch Gamepad mode, which is how its geometry is inspected at an
-arbitrary window size with no adapter paired. It enters the mode the product way rather than
+`--ez touch true` opens the real Touch Gamepad mode, and `--es personality` selects any shipped
+profile, which is how its geometry is inspected at an arbitrary window size with no adapter paired.
+It enters the mode the product way rather than
 rendering a mock, because a mock is what would get inspected otherwise.
 
 Window shapes come from `wm size`/`wm density` overrides on one AVD. Two properties of that
@@ -430,11 +480,12 @@ up, and finally verifies the pulled PNG's own dimensions before accepting it as 
 
 ## Tests
 
-A clean JVM run passed **187 `:app` tests** (identical in the debug and release variants), **201
-`:bridge-core` tests**, and **45 `:management-core` tests**, plus **8 instrumented tests** (every
-top-level destination rendering offline, the Diagnostics overlay opening and closing, and six
-Touch Gamepad pointer-adapter cases), Android lint with zero errors in both variants, and debug and
-release APK assembly. A connected AYN Thor rerun of the UI test on 2026-08-13 did not expose a
+A clean 2026-08-23 JVM run passed **226 `:app` tests** in each of the debug and release variants,
+**217 `:bridge-core` tests**, and **45 `:management-core` tests**. Android lint reported no errors
+in either variant, and both debug and release APKs assembled. The last instrumented suite passed
+**8 tests** (every top-level destination rendering offline, the Diagnostics overlay opening and
+closing, and six Touch Gamepad pointer-adapter cases); it was not rerun for this source-only pass.
+A connected AYN Thor rerun of the UI test on 2026-08-13 did not expose a
 Compose hierarchy to the runner, so that device rerun is not treated as new UI evidence. JVM
 coverage includes:
 
@@ -469,8 +520,10 @@ coverage includes:
   release-all being idempotent and unable to be resumed by a contact held across it;
 - input authority: touch state reaching the wire, physical events discarded while touch is
   authoritative and the reverse, both transitions neutralizing, software Home/Capture/C surviving
-  either, the face layout applying identically to a touch press, and a touch trigger encoding as
-  both the digital bit and the analog byte;
+  either, every Nintendo/Xbox face position producing its drawn logical HID usage, and a touch
+  trigger encoding as both the digital bit and the analog byte; paired production-parser,
+  provenance, and seam-resolver coverage proves bridge face usages bypass only the second
+  physical-layout swap;
 - the default layout resolved at seven representative window shapes and four display densities,
   audited for overlapping hit regions, undersized targets, controls outside the safe rectangle and
   duplicate ids, plus the refusal of a window too small to hold a controller;

@@ -147,13 +147,31 @@ The encoder writes `1 shl ordinal`; the firmware's generic sequential profile re
 `ordinal + 1`. **Append only, never reorder.** The high button byte is masked `0x7F`, not `0x3F` —
 a stale mask silently drops C while everything else keeps working.
 
+Usages 1–4 are logical A/B/X/Y in this bridge contract. The generic firmware parser represents
+them internally as `JP_BUTTON_B1..B4`, which are also the source slots used by directly paired
+physical controllers. The seam therefore uses descriptor-proven `from_android_bridge` provenance
+to map only those four bridge usages directly to canonical A/B/X/Y. Direct controllers retain the
+locked `NS2_BASE_BUTTON_MAP` B/A/Y/X policy, and every non-face bridge usage retains the ordinary
+base map. This is a semantic correction, not a report-layout or contract-version change.
+
+The exact bridge descriptor also selects the plain sequential/no-extra generic parse profile before
+the seam. A host exposes its phone or PC name and VID/PID, and those incidental values may resemble
+a supported physical controller; they must never activate that controller's button table, trigger
+rules, or extra-field extractor for a descriptor that already declares the bridge contract. Late
+identity resolution cannot displace the descriptor-selected profile.
+
 ### 3.2 Physical layout vs logical semantics
 
 Three distinct things, kept distinct:
 
 ```text
-platform key / bit  ->  POSITIONAL ControllerButton  ->  layout mapper  ->  LOGICAL ControllerButton
-     (backend)                 (backend)                   (core)              (wire)
+platform key / touch position
+  -> POSITIONAL ControllerButton
+  -> layout mapper
+  -> LOGICAL ControllerButton / HID usage
+  -> descriptor-proven Android-bridge seam
+  -> canonical controller state
+  -> selected personality encoder
 ```
 
 Hosts report face buttons positionally: the bottom face button is `A` on Android and on XInput
@@ -165,8 +183,11 @@ Held buttons are stored **positionally** and mapped at publish time, so a layout
 leave a key stuck under its old meaning. (Held input is also cleared on a layout change — a stuck
 button on a console is among the worst failures this bridge has.)
 
-Virtual (on-screen) buttons are already logical and are **not** face-swapped. They are a separate
-origin from physical keys: releasing one must not cancel the other.
+Touch face buttons enter the same layout decision as positions; Home, Capture, C and the other
+non-face on-screen actions are already logical and are not face-swapped. Touch and physical input
+remain separate origins: releasing one must not cancel the other. Tests for face correctness must
+continue through the source-aware seam and final personality encoder—matching the drawn label to an
+intermediate Kotlin enum is not sufficient.
 
 ### 3.3 Unmapped physical buttons — durable rule
 

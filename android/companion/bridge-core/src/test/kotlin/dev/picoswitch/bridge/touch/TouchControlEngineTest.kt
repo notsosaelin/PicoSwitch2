@@ -24,16 +24,13 @@ class TouchControlEngineTest {
     private lateinit var engine: TouchControlEngine
     private lateinit var resolved: ResolvedTouchLayout
     private val published = mutableListOf<TouchContribution>()
-    private var menuTaps = 0
     private val feedback = mutableListOf<TouchFeedbackEvent>()
 
     @Before fun setUp() {
         published.clear()
         feedback.clear()
-        menuTaps = 0
         engine = TouchControlEngine(
             onContribution = { published += it },
-            onMenu = { menuTaps++ },
             feedback = { feedback += it },
         )
         resolved = TouchLayoutResolver.resolve(
@@ -271,19 +268,6 @@ class TouchControlEngineTest {
         up(id = 3, control = TouchLayoutV1.FACE_WEST)
         down(id = 4, control = TouchLayoutV1.FACE_NORTH)
         assertEquals(setOf(ControllerButton.Y), latest().positionalButtons)
-    }
-
-    @Test fun `the menu control never reaches the controller state`() {
-        down(id = 1, control = TouchLayoutV1.MENU)
-        assertEquals(TouchContribution.Neutral, engine.contribution)
-        up(id = 1, control = TouchLayoutV1.MENU)
-        assertEquals(1, menuTaps)
-    }
-
-    @Test fun `a cancelled menu contact does not open the menu`() {
-        down(id = 1, control = TouchLayoutV1.MENU)
-        cancel(id = 1)
-        assertEquals(0, menuTaps)
     }
 
     // --------------------------------------------------------------- publishing

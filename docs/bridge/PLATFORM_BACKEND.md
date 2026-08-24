@@ -67,7 +67,9 @@ failure**, not a review finding. `ArchitectureGuardTest` additionally scans the 
 platform vocabulary in identifiers and string literals, which a classpath cannot catch.
 
 > The module currently lives under `android/companion/` because that is where the only consumer is.
-> When a second host appears, move it up a level; nothing in it depends on that path.
+> That path is historical ownership, not an Android architecture boundary. Do not create a second
+> touch-layout core beside it. When a second host appears, relocate this existing module upward
+> without changing its package/API; nothing in it depends on the current path.
 
 A JVM platform (a desktop Kotlin/Java frontend) can depend on `:bridge-core` directly — Level 2
 sharing. A non-JVM platform reimplements the same documented model — Level 1. Both are supported
@@ -208,6 +210,73 @@ went quiet. `stop()` is called on every teardown path.
 A touchscreen host is a complete controller source even with no gamepad attached. Bridge Core owns
 the whole of what that means; the platform supplies contacts, a rectangle, and a way to buzz.
 
+The profile/layout pipeline is shared core logic:
+
+```text
+confirmed controller personality
+  -> TouchProfileCatalog / fixed output bindings
+    -> immutable TouchLayoutTemplate
+      + sparse, versioned TouchLayoutOverride
+        -> TouchLayoutComposer -> TouchLayoutAudit -> resolved layout
+          -> PLATFORM renderer and pointer adapter
+```
+
+`TouchControllerProfile`, templates, composition, editor operations, audit rules, schema metadata,
+and `TouchLayoutOverrideStore` are in `:bridge-core`. A platform owns the store implementation and
+raw storage mechanism, its renderer, pointer/event conversion, and editor widgets. Android's first
+implementation uses app-private `SharedPreferences`, Compose Canvas, and Compose pointer events;
+none is visible to the shared model. `TouchLayoutOverrideJsonCodec` is the Kotlin JSON reference
+codec for the platform-neutral document schema. A non-JVM host implements that JSON schema rather
+than treating a kotlinx.serialization implementation as universal.
+
+Compound controls use a normalized group anchor plus logical-unit child offsets. This is not merely
+an editor convenience: independent normalized child anchors distort a square diamond whenever the
+interaction rectangle is not exactly the authoring aspect ratio. `TouchGroupGeometry` supplies the
+shared square-diamond and irregular-cluster relationships; composition carries those offsets into
+the resolved controls, and a group scale changes the offsets and visual sizes together. Individual
+scale changes only the selected control's visual/hit size. The platform still receives a flat list
+of independent controls for rendering and contact ownership.
+
+The GameCube face-button shape and placement were checked against the maintainer's local controller
+reference and Dolphin's upstream
+[`InputOverlay.kt`](https://github.com/dolphin-emu/dolphin/blob/051133787e77a154c83fcf54c7acc83b76fe7d81/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/overlay/InputOverlay.kt),
+[`InputOverlayDrawableButton.kt`](https://github.com/dolphin-emu/dolphin/blob/051133787e77a154c83fcf54c7acc83b76fe7d81/Source/Android/app/src/main/java/org/dolphinemu/dolphinemu/overlay/InputOverlayDrawableButton.kt),
+and Dolphin's `gcpad_a`, `gcpad_b`, `gcpad_x`, and `gcpad_y` drawable alpha silhouettes.
+The X/Y contours retain those separate silhouettes, then apply template-owned visual rotations so
+each inner concavity points toward A; their interlocking relationship is therefore portable rather
+than an Android-only renderer guess. The shared contour also defines the answerable touch shape,
+allowing the beans to wrap around A without treating their empty concavity as an overlapping target.
+Only geometric relationships were adapted; PicoSwitch2 continues to use its own Canvas renderer,
+touch semantics, and code-native art.
+
+Schema version 1 is a sparse document; absent control fields mean "use the immutable template":
+
+```json
+{
+  "schemaVersion": 1,
+  "profileId": "gc",
+  "templateId": "picoswitch.touch.gc.v1",
+  "basedOnRevision": 2,
+  "controls": {
+    "a": {
+      "anchorX": 0.82,
+      "anchorY": 0.48,
+      "scale": 1.15,
+      "groupOffsetScale": 1.15,
+      "visible": true
+    }
+  }
+}
+```
+
+Anchors are normalized `0..1`; scale and `groupOffsetScale` are bounded by `TouchLayoutEditor`; every
+per-control field is optional. The editor writes `groupOffsetScale` only for a group scale, keeping
+individual resize centred. Unknown control ids are retained in the stored model but ignored during composition, so a
+template revision can remove and later restore an id without destroying user data. Future schema
+versions and older versions without an explicit sequential migration are rejected without deleting
+the raw document. Version 1 has no predecessor to migrate. Profile/template mismatch and a future
+template revision select the immutable matching-profile default, never another personality.
+
 **Implement three things and no more:**
 
 ```text
@@ -302,7 +371,9 @@ always-on at report cadence.
 | `ControllerCandidates` | The usability/exclusion rule. |
 | `TouchControlEngine`, `TouchContactTracker`, `TouchGamepad` | Contact ownership, claim/exclusivity rules, release-all, authority transitions. A second host reimplementing "which control does this thumb own" would reproduce the index-versus-identifier bug from scratch. |
 | `TouchStick`, `TouchDpad`, `TouchAxis` | Circular clamping, radial deadzone rescaling, eight-way sectors with radial and angular hysteresis, and the single conversion into bridge units. |
-| `TouchLayout*` + `TouchLayoutAudit` | Declarative geometry, the scale/gutter rule, and mechanical validation of overlap, target size and bounds. |
+| `TouchControllerProfile`, `TouchProfileCatalog`, `TouchLayoutTemplate` | Personality contracts, complete output inventories, immutable defaults and fixed bridge bindings. |
+| `TouchLayoutOverride`, `TouchLayoutComposer`, `TouchLayoutEditor`, `TouchLayoutAudit` | Sparse user state, template composition, portable edit operations, schema/template revision policy, and mechanical validation of overlap, target size and bounds. |
+| `TouchLayoutOverrideJsonCodec`, `TouchLayoutOverrideStore` | Kotlin reference implementation of the neutral JSON document plus the storage boundary; the platform implements only the backend. |
 | `InputAuthority` | Which host control set is the controller, and that it is never two. |
 | `BridgeSession` | Cadence, motion gating, battery polling, report accounting, teardown ordering. |
 | `AxisRange`, `DpadState.fromAxes`, `MotionScale`, `ScreenOrientation`, `RumbleShaping` | Shared normalization maths. |

@@ -29,9 +29,14 @@ import dev.picoswitch.bridge.session.BridgeLinkPhase
 import dev.picoswitch.bridge.session.BridgeState
 import dev.picoswitch.bridge.session.SessionResumePolicy
 import dev.picoswitch.bridge.touch.TouchControlConfig
+import dev.picoswitch.bridge.touch.TouchLayoutOverride
+import dev.picoswitch.bridge.touch.TouchOverrideDecodeResult
+import dev.picoswitch.bridge.touch.TouchProfileCatalog
+import dev.picoswitch.bridge.touch.TouchProfileId
 import dev.picoswitch.bridge.touch.TouchReleaseReason
 import dev.picoswitch.companion.bridge.AndroidBridge
 import dev.picoswitch.companion.bridge.AndroidBridgeHost
+import dev.picoswitch.companion.bridge.TouchProfileSelector
 import dev.picoswitch.companion.data.*
 import dev.picoswitch.companion.diagnostics.DiagnosticEntry
 import dev.picoswitch.companion.diagnostics.DiagnosticLog
@@ -150,6 +155,12 @@ data class CompanionUiState(
      * per-device preference, same resolver; see [AndroidControllerLayoutStore].
      */
     val touchFaceLayout: ControllerFaceLayout = ControllerFaceLayout.Nintendo,
+    /** Confirmed console personality; null keeps the surface neutral and disabled. */
+    val touchProfileId: TouchProfileId? = null,
+    /** Valid sparse user state for [touchProfileId], never live gameplay state. */
+    val touchLayoutOverride: TouchLayoutOverride? = null,
+    /** Non-blocking persistence/fallback explanation shown in the Touch Gamepad menu. */
+    val touchLayoutWarning: String? = null,
     val adapterRelationship: AdapterRelationship? = null,
     val relationshipStatus: AdapterRelationshipStatus = AdapterRelationshipStatus(AdapterRelationshipPhase.NoRelationship),
     val platform: PlatformDiagnostics = PlatformDiagnostics(),
@@ -208,6 +219,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     private val library = AmiiboLibrary(application)
     private val themeStore = ThemePreferenceStore(application)
     private val touchSettingsStore = TouchGamepadSettingsStore(application)
+    private val touchLayoutStore = AndroidTouchLayoutOverrideStore(application)
     private val relationshipStore = AdapterRelationshipStore(application)
     private val relationshipCoordinator = AdapterRelationshipCoordinator(relationshipStore.load())
     private data class PairingDevice(val generation: Long, val device: BluetoothDevice)
@@ -283,7 +295,23 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         }
         viewModelScope.launch {
             adapter.snapshot.collect { value ->
-                _ui.update { it.copy(snapshot = value) }
+                val loaded = loadTouchProfile(value.personality.current)
+                val previous = _ui.value
+                if (previous.touchGamepadActive && previous.touchProfileId != loaded.profileId) {
+                    // The profile replacement is a live-input boundary. Release
+                    // while the Classic transport can still carry neutral; do
+                    // not stop or re-register that surviving link.
+                    bridge.releaseTouchInput(TouchReleaseReason.PersonalityChanged)
+                    session.neutralize()
+                }
+                _ui.update {
+                    it.copy(
+                        snapshot = value,
+                        touchProfileId = loaded.profileId,
+                        touchLayoutOverride = loaded.override,
+                        touchLayoutWarning = loaded.warning,
+                    )
+                }
                 refreshBridgeCompatibility()
                 refreshAdapterAmiiboCatalog(value.amiibo)
             }
@@ -1524,12 +1552,20 @@ class CompanionViewModel(application: Application, private val savedState: Saved
      * state and the tuning the settings screen owns.
      */
     fun enterTouchGamepad() {
+        val loaded = loadTouchProfile(_ui.value.snapshot.personality.current)
+        if (loaded.profileId == null) {
+            notice("Touch Gamepad needs a confirmed gameplay controller mode")
+            return
+        }
         bridge.enterTouchMode()
         applyTouchSettings(_ui.value.touchSettings)
         _ui.update {
             it.copy(
                 touchGamepadActive = true,
                 touchFaceLayout = inputBackend.requestedFaceLayout,
+                touchProfileId = loaded.profileId,
+                touchLayoutOverride = loaded.override,
+                touchLayoutWarning = loaded.warning,
                 overlay = AppOverlay.None,
                 message = null,
             )
@@ -1605,8 +1641,60 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         diagnostics.event("controller", "touch face layout", layout.key)
     }
 
+    /** Stop gameplay routing while the editor owns the surface. */
+    fun beginTouchLayoutEdit() {
+        bridge.releaseTouchInput(TouchReleaseReason.EditorEntered)
+        session.neutralize()
+    }
+
+    fun saveTouchLayoutOverride(value: TouchLayoutOverride) {
+        val active = _ui.value.touchProfileId ?: return
+        val profile = TouchProfileCatalog.require(active)
+        if (value.profileId != active || value.templateId != profile.defaultTemplate.id) {
+            _ui.update { it.copy(touchLayoutWarning = "The edited layout no longer matches the active controller") }
+            return
+        }
+        bridge.releaseTouchInput(TouchReleaseReason.GeometryInvalidated)
+        session.neutralize()
+        touchLayoutStore.save(value)
+        _ui.update { it.copy(touchLayoutOverride = value, touchLayoutWarning = null) }
+        diagnostics.event("controller", "touch layout", "saved profile=${active.key}")
+    }
+
+    fun restoreTouchLayoutDefaults() {
+        val active = _ui.value.touchProfileId ?: return
+        bridge.releaseTouchInput(TouchReleaseReason.GeometryInvalidated)
+        session.neutralize()
+        touchLayoutStore.delete(active)
+        _ui.update { it.copy(touchLayoutOverride = null, touchLayoutWarning = null) }
+        diagnostics.event("controller", "touch layout", "restored profile=${active.key}")
+    }
+
     private fun applyTouchSettings(settings: TouchGamepadSettings) {
         bridge.touch.setConfig(TouchControlConfig.Default.copy(stickDeadzone = settings.stickDeadzone))
+    }
+
+    private data class LoadedTouchProfile(
+        val profileId: TouchProfileId?,
+        val override: TouchLayoutOverride?,
+        val warning: String?,
+    )
+
+    private fun loadTouchProfile(personality: Personality): LoadedTouchProfile {
+        val profileId = TouchProfileSelector.select(personality)
+            ?: return LoadedTouchProfile(
+                profileId = null,
+                override = null,
+                warning = when (personality) {
+                    Personality.Config -> "Configuration mode has no gameplay touch profile"
+                    else -> "The adapter's controller mode is not confirmed"
+                },
+            )
+        return when (val stored = touchLayoutStore.load(profileId)) {
+            null -> LoadedTouchProfile(profileId, null, null)
+            is TouchOverrideDecodeResult.Valid -> LoadedTouchProfile(profileId, stored.value, null)
+            is TouchOverrideDecodeResult.Invalid -> LoadedTouchProfile(profileId, null, stored.problem)
+        }
     }
 
     /**

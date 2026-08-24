@@ -64,6 +64,12 @@ enum class TouchReleaseReason {
     /** Control geometry changed, so every retained contact position is stale. */
     GeometryInvalidated,
 
+    /** The confirmed console-facing controller profile changed. */
+    PersonalityChanged,
+
+    /** Gameplay routing stopped while the user edits a draft layout. */
+    EditorEntered,
+
     /** Gameplay input moved to another host control set. */
     AuthorityChanged,
 

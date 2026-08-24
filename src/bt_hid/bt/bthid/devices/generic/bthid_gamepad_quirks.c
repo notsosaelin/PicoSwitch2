@@ -48,6 +48,11 @@ static const gamepad_quirk_t QUIRK_GENERIC = {
     .button_map_size = sizeof(SEQ_BUTTON_MAP) / sizeof(SEQ_BUTTON_MAP[0]),
 };
 
+const gamepad_quirk_t *gamepad_quirks_generic(void)
+{
+    return &QUIRK_GENERIC;
+}
+
 // Ordered, most-specific-first -- exact-PID matches before VID-only/name-only fallbacks. This
 // centralizes a priority order that used to be implicit in an if/else if chain in
 // process_report_dynamic(): the NGC Modkit had to be checked before the generic 8BitDo

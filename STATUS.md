@@ -7,14 +7,15 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
-- **Last software verification:** 2026-08-21 — Android/Bluetooth reliability pass. Both board
-  builds, **70/70 declared active host-test targets rebuilt from current source and passed; 9 test
+- **Last software verification:** 2026-08-23 — personality-aware Touch Gamepad layout pass. Both
+  board builds, **71/71 declared active host-test targets rebuilt from current source and passed; 9 test
   sources are explicitly classified outside the active host suite**
   (`pwsh -File tools/run_host_tests.ps1`, inventory in
   [`docs/host-test-inventory.md`](docs/host-test-inventory.md)), the in-band management group plus
-  its four Python boundary suites, descriptor parity, 508 Android JVM tests (app debug 174, app
-  release 174, bridge-core 115, management-core 45), `lintDebug` + `lintRelease`, both APKs, and
-  both install-reset markers. This is not a claim that every test in the tree passes: five of the
+  descriptor parity, controller-link classification, console-slot wiring, Bluetooth identity and
+  the trace/NFC/corpus Python suites, 714 Android JVM test executions (app debug 226, app release
+  226, bridge-core 217, management-core 45), `lintDebug` + `lintRelease`, both APKs, and both
+  install-reset markers. This is not a claim that every test in the tree passes: five of the
   nine excluded sources are uncovered on the host, and three represent coverage lost when the code
   they exercised changed.
 - **Withdrawn claim (negative knowledge, 2026-08-21):** earlier entries citing "76/76", "78/78", or
@@ -296,20 +297,42 @@ console-facing protocol owner. Reference hardware is an AYN Thor (Android 13 / A
   `KEYCODE_BUTTON_MODE` physical mapping; Capture and C/GameChat have no default physical-key
   mapping, which matches both audited handhelds. `KEYCODE_BUTTON_C` and `KEYCODE_BUTTON_Z` are
   deliberately unmapped and reserved for a future mapping system.
-- **Touch Gamepad:** implemented and source-tested 2026-08-21; **physical acceptance open.** The
-  touchscreen itself can be the controller, for a host with no gamepad at all. Gamepad -> Touch
+- **Touch Gamepad:** personality-aware layout engine implemented and source-tested 2026-08-23;
+  **physical acceptance open.** The touchscreen itself can be the controller, for a host with no
+  gamepad at all. Gamepad -> Touch
   Gamepad opens a full-screen mode whose input terminates in the same `ControllerState` and crosses
-  the same transport, so the firmware is unchanged and cannot tell the state came from a screen.
-  The portable half is `:bridge-core`'s `dev.picoswitch.bridge.touch` — contact ownership keyed on
-  the platform's stable contact identifier (never its array index), circular stick clamping with a
+  the same transport; firmware sees the declared Android bridge source but cannot distinguish the
+  screen from the handheld's built-in controls.
+  The portable half is the existing plain-JVM `:bridge-core` module's
+  `dev.picoswitch.bridge.touch`; its current directory under `android/companion/` is historical,
+  not Android ownership. It now owns an exhaustive Pro Controller 2 / NSO GameCube / sideways
+  Joy-Con 2 Left / sideways Joy-Con 2 Right profile catalog, immutable templates and fixed output
+  bindings, sparse versioned per-profile overrides, composition, editor operations, schema policy,
+  validation, and contact quarantine across live personality replacement. Android owns only the
+  Compose renderer/pointer/editor UI and app-private `SharedPreferences` store. `Config` or
+  unconfirmed personalities stay neutral; profile changes release and swap without tearing down
+  the Classic controller link.
+  The editor supports move, bounded uniform scale, group editing, hide/show, reset, explicit
+  Save/Cancel, hit-bound preview and blocking audit feedback without mutating shipped defaults.
+  Contact ownership remains keyed on the platform's stable contact identifier (never its array
+  index), circular stick clamping with a
   rescaling radial deadzone, eight D-pad sectors with radial and angular hysteresis, a declarative
   layout resolved into the interaction-safe rectangle and mechanically audited for overlap/target
   size/bounds, and one idempotent release-all invoked from every invalidating boundary. Physical
   versus touch input is an explicit `InputAuthority`, never a merge; entering rebinds the session
   with `bindSource(null, touchCapabilities)` so console rumble reaches the host's own actuator, and
   no synthetic input device is invented. Face controls are positions resolved through the existing
-  `ControllerLayoutResolver`, so the drawn legend and the transmitted bit cannot disagree. Open:
-  multi-touch, feel, the stuck-input torture matrix and in-game correctness on real hardware.
+  `ControllerLayoutResolver`; the Android bridge seam now preserves those logical A/B/X/Y usages
+  instead of applying the direct-controller B/A/Y/X map a second time. The correction is limited to
+  those four bridge face usages; direct controllers, all non-face controls, and raw Joy-Con source
+  bits are unchanged. The exact bridge descriptor also pins the sequential/no-extra parser profile,
+  so an incidental phone/PC name or VID/PID cannot activate a physical-controller quirk before the
+  seam. A shared 20-row catalog fixture now enforces exact face-key/label/HID-usage coverage and is
+  driven through the production descriptor parser, bridge-aware seam and final Pro2/GameCube/Joy-Con
+  encoders; direct-controller mappings and raw Joy-Con source bits are checked unchanged. Android
+  Back, including either edge gesture, opens/closes the Touch Gamepad menu; leaving now requires its
+  explicit Exit action. Open: real-device editor/rendering, multi-touch, feel, live profile swaps,
+  the stuck-input torture matrix and in-game correctness on real hardware.
 - **Hardware state:** the v2.0.0 sanity pass on an AYN Thor confirmed buttons, sticks, triggers,
   D-pad, C/GameChat, battery, motion and rumble with the adapter reporting `v2-bridge`
   identification; the bridge is also confirmed on an Odin 2.
@@ -609,13 +632,14 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
    native versus translated mouse output, persistence across reboot, and Controller-mode regression
    — is in
    [`docs/bluetooth/keyboard-mouse-input.md`](docs/bluetooth/keyboard-mouse-input.md#hardware-validation).
-10. **Touch Gamepad physical acceptance.** Implemented and source-tested 2026-08-21; nothing about
-   it has met a finger. The uncovered set is exactly the part software cannot answer: every control
-   producing the right console input, the four D-pad diagonals and sliding between them, both sticks
-   through full circular travel simultaneously, movement + trigger + face chords, thumb ergonomics
-   and whether the 0.05 stick deadzone is right, and — release-blocking — the stuck-input torture
-   matrix (background, lock, rotate, swipe the system bars in, disconnect, reconnect, and exit while
-   deliberately holding a control; the console must be neutral after each).
+10. **Touch Gamepad physical acceptance.** The personality-aware engine and editor are source-tested
+   2026-08-23; none of the new profile/template/editor behavior has met a finger. Validate every
+   Pro2, NSO GameCube, Joy-Con Left and Joy-Con Right control on the matching real console
+   personality; per-profile save/restore, resize/hide/group edit, held-contact profile changes with
+   the Classic link retained, D-pad diagonals, both sticks, representative chords and ergonomics.
+   The release-blocking torture matrix remains background, lock, rotate, system bars, disconnect,
+   reconnect, profile change, editor entry and exit while holding controls; the console must be
+   neutral after each and the held contact must lift before it can claim the replacement layout.
 11. **Remaining Bluetooth wipe/flash matrix.** The strict Xbox Elite Series 2 corrected-wipe retest
    passed. Run the still-uncovered powered-off/reboot/release-UF2 and other-family cases in
    [`docs/bluetooth/VALIDATION.md`](docs/bluetooth/VALIDATION.md). Record bond state before the remote

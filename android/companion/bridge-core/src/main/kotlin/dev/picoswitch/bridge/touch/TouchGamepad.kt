@@ -31,12 +31,9 @@ class TouchGamepad(
     private val input: ControllerInputState,
     config: TouchControlConfig = TouchControlConfig.Default,
 ) {
-    private var menuRequest: () -> Unit = {}
-
     val engine = TouchControlEngine(
         config = config,
         onContribution = input::applyTouch,
-        onMenu = { menuRequest() },
     )
 
     val contacts = TouchContactTracker(engine)
@@ -45,14 +42,18 @@ class TouchGamepad(
     var active: Boolean = false
         private set
 
-    /** What the on-screen controller opens when its menu control is tapped. */
-    fun onMenuRequested(action: () -> Unit) {
-        menuRequest = action
-    }
-
     fun setFeedbackBackend(backend: TouchFeedbackBackend) = engine.setFeedbackBackend(backend)
 
     fun setConfig(config: TouchControlConfig) = engine.setConfig(config)
+
+    /** Replace geometry without allowing already-held contacts to claim it. */
+    fun setLayout(
+        layout: ResolvedTouchLayout,
+        reason: TouchReleaseReason = TouchReleaseReason.GeometryInvalidated,
+    ) {
+        contacts.releaseAll(reason)
+        engine.installLayout(layout)
+    }
 
     /** Take gameplay input. Idempotent. */
     fun activate() {

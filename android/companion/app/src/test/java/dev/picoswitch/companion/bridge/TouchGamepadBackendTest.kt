@@ -3,10 +3,12 @@ package dev.picoswitch.companion.bridge
 import android.view.KeyEvent
 import dev.picoswitch.bridge.core.ControllerButton
 import dev.picoswitch.bridge.core.ControllerFaceLayout
+import dev.picoswitch.bridge.core.ControllerLayoutResolver
 import dev.picoswitch.bridge.core.ControllerState
 import dev.picoswitch.bridge.core.FaceButtonPosition
 import dev.picoswitch.bridge.core.InputAuthority
 import dev.picoswitch.bridge.core.TouchContribution
+import dev.picoswitch.bridge.protocol.ControllerReportEncoder
 import dev.picoswitch.bridge.touch.ResolvedTouchLayout
 import dev.picoswitch.bridge.touch.TouchContact
 import dev.picoswitch.bridge.touch.TouchGamepad
@@ -116,23 +118,57 @@ class TouchGamepadBackendTest {
     }
 
     /**
-     * The default draws a Switch controller's letters AND sends what they say.
-     * The two come from the same resolver, so they cannot disagree.
+     * Exhaustive app half of the face-button contract. The paired firmware tests
+     * `test_bthid_android_bridge` and `test_ns2_locked_mapping` prove parser
+     * provenance reaches the bridge-aware resolver, while direct and non-face
+     * mappings stay locked. Stopping at ControllerState alone previously blessed
+     * the exact double-swap this matrix is intended to catch.
      */
-    @Test fun `the default presentation sends what it draws`() {
+    @Test fun `every selectable face presentation sends each drawn label on its logical wire usage`() {
+        data class ExpectedFace(
+            val layout: ControllerFaceLayout,
+            val position: FaceButtonPosition,
+            val label: String,
+            val wireButton: ControllerButton,
+        )
+        val expected = listOf(
+            ExpectedFace(ControllerFaceLayout.Nintendo, FaceButtonPosition.South, "B", ControllerButton.B),
+            ExpectedFace(ControllerFaceLayout.Nintendo, FaceButtonPosition.East, "A", ControllerButton.A),
+            ExpectedFace(ControllerFaceLayout.Nintendo, FaceButtonPosition.West, "Y", ControllerButton.Y),
+            ExpectedFace(ControllerFaceLayout.Nintendo, FaceButtonPosition.North, "X", ControllerButton.X),
+            ExpectedFace(ControllerFaceLayout.Xbox, FaceButtonPosition.South, "A", ControllerButton.A),
+            ExpectedFace(ControllerFaceLayout.Xbox, FaceButtonPosition.East, "B", ControllerButton.B),
+            ExpectedFace(ControllerFaceLayout.Xbox, FaceButtonPosition.West, "X", ControllerButton.X),
+            ExpectedFace(ControllerFaceLayout.Xbox, FaceButtonPosition.North, "Y", ControllerButton.Y),
+        )
         val backend = AndroidInputBackend()
-        backend.setFaceLayout(AndroidControllerLayoutStore.DEFAULT_TOUCH_LAYOUT)
         backend.controller.setAuthority(InputAuthority.Touch)
 
-        backend.controller.applyTouch(
-            TouchContribution(positionalButtons = setOf(FaceButtonPosition.South.positional)),
-        )
-        assertEquals(setOf(ControllerButton.B), backend.state.value.buttons)
+        expected.forEach { face ->
+            backend.setFaceLayout(face.layout)
+            backend.controller.applyTouch(
+                TouchContribution(positionalButtons = setOf(face.position.positional)),
+            )
+            assertEquals(
+                "${face.layout} ${face.position} rendered label",
+                face.label,
+                ControllerLayoutResolver.faceLabel(face.position, face.layout),
+            )
+            assertEquals(
+                "${face.layout} ${face.position} logical bridge button",
+                setOf(face.wireButton),
+                backend.state.value.buttons,
+            )
 
-        backend.controller.applyTouch(
-            TouchContribution(positionalButtons = setOf(FaceButtonPosition.East.positional)),
-        )
-        assertEquals(setOf(ControllerButton.A), backend.state.value.buttons)
+            val report = ControllerReportEncoder.encode(backend.state.value)
+            val wireBits = (report[6].toInt() and 0xFF) or
+                ((report[7].toInt() and 0xFF) shl 8)
+            assertEquals(
+                "${face.layout} ${face.position} exclusive HID usage",
+                1 shl face.wireButton.ordinal,
+                wireBits,
+            )
+        }
     }
 
     // -------------------------------------------------------- end-to-end, no device

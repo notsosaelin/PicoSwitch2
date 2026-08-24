@@ -9,6 +9,7 @@ import dev.picoswitch.companion.ui.AppOverlay
 import dev.picoswitch.companion.ui.AppSection
 import dev.picoswitch.companion.ui.CompanionApp
 import dev.picoswitch.companion.ui.CompanionViewModel
+import dev.picoswitch.companion.ui.applyEdgeToEdgeChrome
 
 /**
  * Debug-only layout lab.
@@ -22,7 +23,7 @@ import dev.picoswitch.companion.ui.CompanionViewModel
  * Not in the release variant. Launch it with:
  *
  *   adb shell am start -n dev.picoswitch.companion.debug/dev.picoswitch.companion.lab.LayoutLabActivity \
- *       --es section KEYBOARD [--es overlay DIAGNOSTICS] [--ez touch true]
+ *       --es section KEYBOARD [--es overlay DIAGNOSTICS] [--ez touch true] [--es personality gc]
  *
  * `--ez touch true` opens the on-screen controller directly, which is how its
  * geometry is inspected at an arbitrary window size without a paired adapter.
@@ -32,6 +33,11 @@ class LayoutLabActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The lab exists to inspect the REAL shell, so it must have the real
+        // window chrome: without this its insets would differ from the product's
+        // and every layout judgement made here would be made against the wrong
+        // rectangle.
+        applyEdgeToEdgeChrome()
         val section = intent.getStringExtra("section")
             ?.let { name -> AppSection.entries.firstOrNull { it.name.equals(name, true) } }
             ?: AppSection.Adapter
@@ -39,6 +45,9 @@ class LayoutLabActivity : ComponentActivity() {
             ?.let { name -> AppOverlay.entries.firstOrNull { it.name.equals(name, true) } }
             ?: AppOverlay.None
         val empty = intent.getBooleanExtra("empty", false)
+        val personality = Personality.fromWire(intent.getStringExtra("personality"))
+            .takeIf { it in TOUCH_LAB_PERSONALITIES }
+            ?: Personality.Pro2
 
         viewModel.applyLayoutLabState { state ->
             state.copy(
@@ -50,7 +59,7 @@ class LayoutLabActivity : ComponentActivity() {
                     address = "F4:12:FA:9C:03:7B",
                 ),
                 adapterRelationship = null,
-                snapshot = sampleSnapshot(),
+                snapshot = sampleSnapshot(personality),
                 kbm = if (empty) emptyKbm() else sampleKbm(),
                 library = if (empty) emptyList() else sampleLibrary(),
                 amiiboCatalogEntries = if (empty) emptyMap() else sampleCatalog(),
@@ -78,7 +87,7 @@ class LayoutLabActivity : ComponentActivity() {
     }
 }
 
-private fun sampleSnapshot() = AdapterSnapshot(
+private fun sampleSnapshot(personality: Personality) = AdapterSnapshot(
     firmware = FirmwareInfo(
         id = "picoswitch", product = "PicoSwitch Config", version = "2.0",
         bridgeContract = 3, build = "a1b9f42+dirty",
@@ -88,7 +97,7 @@ private fun sampleSnapshot() = AdapterSnapshot(
         batteryValid = true, batteryPercent = 72, charging = true,
     ),
     personality = PersonalityState(
-        current = Personality.Pro2,
+        current = personality,
         available = listOf(Personality.Pro2, Personality.GameCube, Personality.JoyConLeft, Personality.JoyConRight),
     ),
     config = AdapterConfig(
@@ -124,6 +133,13 @@ private fun sampleSnapshot() = AdapterSnapshot(
         managementGate = CapabilityState.Available, bonds = CapabilityState.Available,
         wake = CapabilityState.Available, activeInput = CapabilityState.Available,
     ),
+)
+
+private val TOUCH_LAB_PERSONALITIES = setOf(
+    Personality.Pro2,
+    Personality.GameCube,
+    Personality.JoyConLeft,
+    Personality.JoyConRight,
 )
 
 private fun sampleKbm(): KbmState {

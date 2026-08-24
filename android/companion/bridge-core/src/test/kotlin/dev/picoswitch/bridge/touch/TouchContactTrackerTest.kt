@@ -111,11 +111,38 @@ class TouchContactTrackerTest {
 
         gamepad.release(TouchReleaseReason.HostInactive)
         assertEquals(0, gamepad.contacts.activeCount)
+        assertEquals(2, gamepad.contacts.quarantinedCount)
         assertEquals(ControllerState.Neutral, input.state.value)
 
         // A later batch that still mentions the old contacts cannot resurrect them.
         gamepad.contacts.dispatch(listOf(move(1, left.centerX - 60f, left.centerY)))
         assertEquals(ControllerState.Neutral, input.state.value)
+    }
+
+    @Test fun `profile replacement releases and quarantines contacts until lift`() {
+        val oldFace = resolved.control(TouchLayoutV1.FACE_SOUTH)!!
+        gamepad.contacts.dispatch(listOf(down(41, oldFace)))
+        assertNotEquals(ControllerState.Neutral, input.state.value)
+
+        val gameCube = TouchProfileCatalog.require(TouchProfileId.GameCube)
+        val replacement = TouchLayoutResolver.resolve(
+            TouchLayoutComposer.compose(gameCube).layout,
+            profileRegionForTracker(),
+            TouchLayoutAuditMode.ShippedTemplate,
+        )
+        gamepad.setLayout(replacement, TouchReleaseReason.PersonalityChanged)
+        assertEquals(ControllerState.Neutral, input.state.value)
+        assertEquals(1, gamepad.contacts.quarantinedCount)
+        assertEquals(TouchReleaseReason.PersonalityChanged, gamepad.diagnostics().lastReleaseReason)
+
+        val newA = replacement.controls.single { it.spec.output == TouchOutputControl.A }
+        gamepad.contacts.dispatch(listOf(move(41, newA.centerX, newA.centerY)))
+        assertEquals(ControllerState.Neutral, input.state.value)
+        gamepad.contacts.dispatch(listOf(up(41, newA)))
+        assertEquals(0, gamepad.contacts.quarantinedCount)
+
+        gamepad.contacts.dispatch(listOf(down(42, newA)))
+        assertEquals(setOf(ControllerButton.A), input.state.value.buttons)
     }
 
     // ------------------------------------------------------------------ authority
@@ -176,4 +203,6 @@ class TouchContactTrackerTest {
 
     private fun up(id: Long, control: ResolvedTouchControl) =
         TouchContact(id, TouchPhase.Up, control.centerX, control.centerY, id)
+
+    private fun profileRegionForTracker() = TouchLayoutRegion(0f, 0f, 832f, 440f, 1f)
 }

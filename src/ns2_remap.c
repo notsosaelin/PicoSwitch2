@@ -15,3 +15,25 @@ const uint8_t NS2_BASE_BUTTON_MAP[NS2_SRC_COUNT] = {
     NS2_DST_HOME, NS2_DST_CAPTURE, NS2_DST_C, NS2_DST_GL,
     NS2_DST_GL, NS2_DST_GR, NS2_DST_GR, NS2_DST_GL, NS2_DST_GR,
 };
+
+uint8_t ns2_resolve_button_destination(uint8_t source_index,
+                                       bool from_android_bridge) {
+    if (source_index >= NS2_SRC_COUNT)
+        return NS2_DST_NONE;
+
+    // Android's companion descriptor names usages 1..4 as logical A/B/X/Y.
+    // The generic HID parser necessarily exposes those usages through the same
+    // JP_BUTTON_B1..B4 source slots used by positional physical controllers, but
+    // their meaning is already normalized before it reaches the wire. Correct
+    // only the canonical destination. The raw JP bitmap remains unchanged for
+    // personality encoders (notably sideways Joy-Con 2) that consume it.
+    if (from_android_bridge) {
+        static const uint8_t ANDROID_BRIDGE_FACE_MAP[4] = {
+            NS2_DST_A, NS2_DST_B, NS2_DST_X, NS2_DST_Y,
+        };
+        if (source_index < 4u)
+            return ANDROID_BRIDGE_FACE_MAP[source_index];
+    }
+
+    return NS2_BASE_BUTTON_MAP[source_index];
+}

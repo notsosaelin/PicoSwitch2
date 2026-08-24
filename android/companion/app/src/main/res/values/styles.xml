@@ -3,9 +3,32 @@
     <style name="Theme.PicoSwitch.Companion" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowActionModeOverlay">true</item>
-        <!-- Compose applies the selected theme immediately; black avoids an OLED flash during startup. -->
-        <item name="android:navigationBarColor">#000000</item>
-        <item name="android:statusBarColor">#000000</item>
-        <item name="android:windowLightStatusBar">false</item>
+
+        <!--
+          System-bar COLOUR is not decided here.
+
+          From API 35 the platform forces edge-to-edge and both setters below are
+          no-ops, so anything opaque set here would apply on old devices only and
+          silently diverge from new ones. Transparent makes every supported API
+          level behave the way 35+ already does: the bars are glass, and what
+          shows through them is the application's own surface, painted by
+          CompanionTheme. That is the single source of truth for system-bar
+          appearance. See ui/Theme.kt.
+        -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+
+        <!--
+          What the STARTING window shows, before a single Compose frame exists.
+
+          Night-qualified, because the parent theme's own window background is
+          #FAFAFA. Once the bars became transparent that near-white leaked through
+          them as a white strip above and below a dark application, which is the
+          bug this pair of resources exists to close. It also decides whether a
+          cold launch flashes the wrong colour before the app draws.
+        -->
+        <item name="android:windowBackground">@color/window_background</item>
+        <item name="android:windowLightStatusBar">@bool/system_bar_icons_dark</item>
+        <item name="android:windowLightNavigationBar">@bool/system_bar_icons_dark</item>
     </style>
 </resources>

@@ -30,17 +30,6 @@ sealed interface TouchControlAction {
     data class Stick(val side: ControlSide) : TouchControlAction
 
     data class Trigger(val side: ControlSide) : TouchControlAction
-
-    /**
-     * Opens the on-screen controller's own menu (settings, exit).
-     *
-     * A HOST action, not a controller action: it changes nothing in the
-     * controller state and never reaches the bridge. It lives in the layout
-     * anyway so its hit region is placed, audited for overlap and reserved
-     * against the gameplay controls by the same mechanism as everything else —
-     * an exit affordance that a stray thumb can shadow is not an exit.
-     */
-    data object SystemMenu : TouchControlAction
 }
 
 /**
@@ -52,7 +41,36 @@ sealed interface TouchControlAction {
 enum class TouchControlKind { Button, FaceButton, Dpad, Stick, Trigger }
 
 /** Hit-region shape. Visual rendering may differ; this is what the router tests. */
-enum class TouchControlShape { Circle, Rectangle }
+enum class TouchControlShape { Circle, Rectangle, GameCubeContour }
+
+/**
+ * Platform-neutral drawing role.
+ *
+ * The role says what silhouette the control has, not how a host draws it.  In
+ * particular it never contains a resource id or asset path.  This keeps shipped
+ * templates portable while still allowing the GameCube and Joy-Con profiles to
+ * look like the controller they actually produce.
+ */
+enum class TouchVisualRole {
+    Default,
+    RoundButton,
+    RectangularButton,
+    UnifiedDpad,
+    AnalogStick,
+    GameCubeLargeA,
+    GameCubeSmallB,
+    GameCubeBeanX,
+    GameCubeBeanY,
+    JoyConButton,
+    JoyConDirectionButton,
+    Utility,
+}
+
+/**
+ * Platform-neutral glyph role. The host renderer owns the actual drawing paths;
+ * no platform resource id or asset path crosses into `:bridge-core`.
+ */
+enum class TouchControlGlyph { Capture, Home }
 
 /**
  * One control, described declaratively.
@@ -62,7 +80,7 @@ enum class TouchControlShape { Circle, Rectangle }
  *
  * - [action] — the semantic effect on controller state;
  * - the geometry fields — where the hit region is and how big;
- * - everything visual, which lives in the renderer and is not here at all.
+ * - [label]/[glyph] — portable visual content which the host renderer implements.
  *
  * Geometry is platform-neutral. [anchorX]/[anchorY] are normalized within the
  * interaction region so the same layout describes a phone and a tablet, and
@@ -93,6 +111,19 @@ data class TouchControlSpec(
     val priority: Int = 0,
     /** Drawn legend, when the control's label is not derived from a face layout. */
     val label: String = "",
+    /** Optional symbol in place of [label]. */
+    val glyph: TouchControlGlyph? = null,
+    /** The personality-visible output this control represents. */
+    val output: TouchOutputControl = TouchOutputControl.Unspecified,
+    /** Portable visual treatment; the host owns the actual paths and colours. */
+    val visualRole: TouchVisualRole = TouchVisualRole.Default,
+    /** Clockwise visual rotation supplied by the immutable personality template. */
+    val visualRotationDegrees: Float = 0f,
+    /** Controls with the same id may be moved or scaled together by an editor. */
+    val editGroupId: String? = null,
+    /** Logical-unit offset from the group's normalized anchor. */
+    val groupOffsetXUnits: Float = 0f,
+    val groupOffsetYUnits: Float = 0f,
 )
 
 /**
@@ -107,6 +138,9 @@ data class TouchLayout(
     val id: String,
     val schemaVersion: Int,
     val controls: List<TouchControlSpec>,
+    val profileId: TouchProfileId? = null,
+    val templateId: String? = null,
+    val templateRevision: Int = 1,
 )
 
 /**
@@ -161,6 +195,15 @@ data class ResolvedTouchControl(
                 nx * nx + ny * ny <= 1f
             }
             TouchControlShape.Rectangle -> abs(dx) <= hitHalfWidth && abs(dy) <= hitHalfHeight
+            TouchControlShape.GameCubeContour -> TouchGameCubeGeometry.contains(
+                role = spec.visualRole,
+                x = dx,
+                y = dy,
+                width = halfWidth * 2f,
+                height = halfHeight * 2f,
+                rotationDegrees = spec.visualRotationDegrees,
+                margin = hitHalfWidth - halfWidth,
+            )
         }
     }
 
@@ -246,7 +289,11 @@ object TouchLayoutResolver {
     const val MIN_REGION_WIDTH_UNITS = REFERENCE_WIDTH_UNITS * MIN_SCALE
     const val MIN_REGION_HEIGHT_UNITS = REFERENCE_HEIGHT_UNITS * MIN_SCALE
 
-    fun resolve(layout: TouchLayout, region: TouchLayoutRegion): ResolvedTouchLayout {
+    fun resolve(
+        layout: TouchLayout,
+        region: TouchLayoutRegion,
+        auditMode: TouchLayoutAuditMode = TouchLayoutAuditMode.Runtime,
+    ): ResolvedTouchLayout {
         if (region.unitScale <= 0f || region.width <= 0f || region.height <= 0f) {
             return ResolvedTouchLayout(
                 layout, region, emptyList(), 1f, fits = false,
@@ -263,9 +310,17 @@ object TouchLayoutResolver {
 
         val tooSmall = region.widthUnits < MIN_REGION_WIDTH_UNITS ||
             region.heightUnits < MIN_REGION_HEIGHT_UNITS
+        val profile = layout.profileId?.let { TouchProfileCatalog.profiles[it] }
+        val findings = when {
+            layout.profileId != null && profile == null -> listOf(
+                TouchLayoutFinding("No touch profile is registered for ${layout.profileId}", true),
+            )
+            profile != null -> TouchLayoutAudit.audit(layout, controls, region, profile, auditMode)
+            else -> TouchLayoutAudit.audit(controls, region)
+        }
         val problem = when {
             tooSmall -> "This window is too small for the on-screen controller"
-            else -> TouchLayoutAudit.audit(controls, region).firstOrNull { it.blocking }?.message
+            else -> findings.firstOrNull { it.blocking }?.message
         }
 
         return ResolvedTouchLayout(
@@ -288,13 +343,11 @@ object TouchLayoutResolver {
         val halfHeight = spec.heightUnits * unit / 2f
         val margin = spec.hitMarginUnits * unit
 
-        // Keep the whole visual bounds inside the safe rectangle. An anchor near
-        // an edge is an intent ("hug the left"), not a licence to place half a
-        // control under a gesture strip.
-        val centerX = (region.left + spec.anchorX * region.width)
-            .coerceIn(region.left + halfWidth, max(region.left + halfWidth, region.right - halfWidth))
-        val centerY = (region.top + spec.anchorY * region.height)
-            .coerceIn(region.top + halfHeight, max(region.top + halfHeight, region.bottom - halfHeight))
+        // Do not silently repair an out-of-bounds user override. The audit must
+        // see the authored result and block it; otherwise the persisted geometry
+        // says one thing while the control is drawn and hit-tested somewhere else.
+        val centerX = region.left + spec.anchorX * region.width + spec.groupOffsetXUnits * unit
+        val centerY = region.top + spec.anchorY * region.height + spec.groupOffsetYUnits * unit
 
         return ResolvedTouchControl(
             spec = spec,
