@@ -259,13 +259,70 @@ labelled L3/R3. Joy-Con directions are recessed triangle indicators, not a text-
 retains one real cross D-pad: its drawing stays separate from touch routing, and diagonal
 pressed arms are composited once so their translucent overlap cannot darken the hub.
 
-Layout customization never mutates the shipped template. The editor works on a sparse, per-profile
-draft with move, uniform scale, group editing, hide/show, per-control/group/profile reset, explicit
-Save/Cancel, hit-bound previews and blocking audit feedback. Android persists one versioned JSON
-override per profile through `AndroidTouchLayoutOverrideStore`; unreadable or future documents are
-kept raw while runtime falls back to the immutable default. The shared Kotlin reference serializer
-is deliberately named `TouchLayoutOverrideJsonCodec`—the JSON schema is portable, the
-kotlinx.serialization implementation is not universal.
+#### Layout editing
+
+Layout customization never mutates the shipped template. The pipeline is one direction only:
+
+```text
+controller personality -> immutable template -> selected profile's sparse overrides -> resolved layout
+```
+
+**Editing is a mode, not a settings page.** Layout editing is a spatial task, and a panel large
+enough to hold the controls is a panel that hides the layout being judged. Edit mode keeps the whole
+controller drawn and turns it into editable objects: input forwarding pauses, every control gets a
+visible hit-bound outline, and the only chrome is a small floating toolbar plus a contextual bar for
+whatever is selected. The toolbar docks to the bottom, top, left or right — a preference, because
+the right edge depends on which hand is holding the device and where the system's own gesture areas
+are — and it folds itself into two lines rather than pushing Save off a short window. While a
+control is actually being dragged or pinched, the chrome fades to almost nothing so the control
+under it stays visible. The contextual bar itself takes no touches, so a control beneath it can
+still be picked.
+
+**Direct manipulation.** Tap selects, drag moves, pinch resizes, long-press adds a second control to
+the selection. One gesture loop handles all four rather than a stack of competing detectors, and it
+deliberately drops the centroid jump when a second finger lifts instead of forwarding it as
+movement. The **Group** toggle expands a selection to its authored cluster — face diamond, direction
+cluster, utility trio, secondary controls — and what is highlighted is exactly what an edit moves.
+
+**Alignment assists, never restricts.** An optional grid is drawn inside the interaction rectangle
+and anchored to its centre, so a symmetric layout stays symmetric. With snapping on, a moved
+selection is pulled onto nearby guides — the region centre lines, another control's centre, the
+innermost safe edge, a grid line — but any movement larger than the tolerance always wins, so no
+position becomes unreachable. The correction is computed from one reference control and applied to
+the whole movement, so a multi-control selection keeps its internal spacing exactly. Guides are
+drawn only while something is genuinely aligned. All of it is pure logic in
+`TouchEditorAlignment`, operating on resolved pixel geometry, and is therefore tested at every
+window shape without a device.
+
+**Adding a control** means restoring one that was hidden. Templates are immutable and every output
+has a fixed personality binding, so there is nothing else it could mean: a control outside the
+shipped template would have no binding, and the audit refuses that.
+
+**Profiles are per personality.** GameCube's profiles are not Pro Controller 2's. Each personality
+has an immutable **Default** plus up to twelve user profiles; the default is synthesized from the
+shipped template on every read and is never written to storage, which makes "cannot be overwritten,
+cannot be deleted, always available" a property of the type rather than a rule somebody has to
+remember. Saving an edit while Default is selected does not fail and does not overwrite it — it
+names and creates a profile of your own, because the alternatives are discarding the user's work or
+destroying the one layout that is always supposed to be recoverable. Profiles can be created,
+duplicated (including from Default), renamed, reset and deleted; deleting the active one falls back
+to Default. Leaving edit mode or switching profiles with unsaved changes asks first.
+
+`TouchProfileMetadata` carries a reserved `gameKey`, unused by this build, so the per-game profiles
+the architecture anticipates do not require migrating every stored document later.
+`TouchProfileLibraryJsonCodec` also encodes a single profile as a standalone document — the
+export/import foundation; the transport is a separate decision.
+
+Android persists one versioned JSON library per personality through `AndroidTouchProfileStore`.
+The single anonymous override the first release stored is adopted once, on upgrade, as an ordinary
+named profile rather than discarded. Unreadable or future documents are kept raw while the runtime
+falls back to the immutable default. The shared Kotlin reference serializers are deliberately named
+`TouchLayoutOverrideJsonCodec` and `TouchProfileLibraryJsonCodec` — the JSON schemas are portable,
+the kotlinx.serialization implementation is not universal.
+
+The editor refuses to open on a window below the layout engine's minimum interaction rectangle,
+because no edit can make a window bigger; that is a different failure from an audit finding, and
+`ResolvedTouchLayout.regionTooSmall` is what tells the two apart.
 
 **Contacts are owned by identifier, never by position.** Android guarantees a stable `PointerId`
 for a contact's lifetime and explicitly does *not* guarantee its index; a router keyed on the index

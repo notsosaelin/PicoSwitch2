@@ -7,7 +7,17 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
-- **Last software verification:** 2026-08-23 — personality-aware Touch Gamepad layout pass. Both
+- **Last software verification:** 2026-08-24 — Touch Gamepad layout editor and profile pass.
+  **Android only; no firmware source changed**, so the host/firmware suites were not re-run and the
+  2026-08-23 result below remains the current firmware verification. This pass: 777 Android JVM test
+  executions across `:bridge-core`, `:management-core` and both app variants with 0 failures (up
+  from 714; the new coverage is the profile library, its JSON codec and legacy migration, and editor
+  selection/alignment/snapping at four window shapes and three densities), `lintDebug` +
+  `lintRelease` with no new findings, and both APKs assembled. Editor behaviour was additionally
+  driven on an Android 15 emulator through the debug layout lab; the Touch Gamepad entry below
+  records what that covered and what it could not.
+- **Last firmware + full-tree verification:** 2026-08-23 — personality-aware Touch Gamepad layout
+  pass. Both
   board builds, **71/71 declared active host-test targets rebuilt from current source and passed; 9 test
   sources are explicitly classified outside the active host suite**
   (`pwsh -File tools/run_host_tests.ps1`, inventory in
@@ -312,8 +322,23 @@ console-facing protocol owner. Reference hardware is an AYN Thor (Android 13 / A
   Compose renderer/pointer/editor UI and app-private `SharedPreferences` store. `Config` or
   unconfirmed personalities stay neutral; profile changes release and swap without tearing down
   the Classic controller link.
-  The editor supports move, bounded uniform scale, group editing, hide/show, reset, explicit
-  Save/Cancel, hit-bound preview and blocking audit feedback without mutating shipped defaults.
+  The layout editor is a direct-manipulation edit MODE rather than a settings panel: the whole
+  controller stays drawn, input forwarding pauses, and the only chrome is a small floating toolbar
+  (dockable to any edge, wrapping rather than pushing Save off a short window) plus a contextual bar
+  that takes no touches of its own. Tap selects, drag moves, pinch resizes and long-press extends
+  the selection through one gesture loop; the chrome fades while a control is being manipulated.
+  Group editing expands a selection to its authored cluster, and what is outlined is exactly what an
+  edit moves. Optional grid and snapping (`TouchEditorAlignment`, pure, over resolved geometry) pull
+  a movement onto region centre lines, other controls, safe edges or grid lines while never making a
+  position unreachable, and apply one correction to the whole selection so cluster spacing survives.
+  Layouts are organized into per-personality **profiles**: an immutable synthesized `Default` plus up
+  to twelve user profiles, with create/duplicate/rename/reset/delete, unsaved-change confirmation,
+  and a save-onto-Default path that creates a named profile instead of overwriting the one layout
+  that is always recoverable. The factory profile is never persisted, which makes that protection
+  structural. The pre-profile single override document is adopted once on upgrade rather than
+  discarded. `TouchProfileLibraryJsonCodec` also encodes a single profile as a standalone document —
+  the export/import foundation. Bounded uniform scale, hide/show, per-selection/profile reset,
+  hit-bound preview and blocking audit feedback all remain, and none of it mutates a shipped default.
   Contact ownership remains keyed on the platform's stable contact identifier (never its array
   index), circular stick clamping with a
   rescaling radial deadzone, eight D-pad sectors with radial and angular hysteresis, a declarative
@@ -331,8 +356,13 @@ console-facing protocol owner. Reference hardware is an AYN Thor (Android 13 / A
   driven through the production descriptor parser, bridge-aware seam and final Pro2/GameCube/Joy-Con
   encoders; direct-controller mappings and raw Joy-Con source bits are checked unchanged. Android
   Back, including either edge gesture, opens/closes the Touch Gamepad menu; leaving now requires its
-  explicit Exit action. Open: real-device editor/rendering, multi-touch, feel, live profile swaps,
-  the stuck-input torture matrix and in-game correctness on real hardware.
+  explicit Exit action.
+  Editor behaviour was exercised on an Android 15 emulator through the debug layout lab (selection,
+  group selection, long-press multi-select, drag with live snap guides, size stepping, blocking
+  audit feedback, grid, all four toolbar docks, profile create/save/persist-across-restart, the
+  unsaved-changes prompt, and the too-small-window refusal). Open: PINCH scaling and multi-touch
+  editing, which the emulator cannot inject; real-device rendering and feel; live profile swaps;
+  the stuck-input torture matrix; and in-game correctness on real hardware.
 - **Hardware state:** the v2.0.0 sanity pass on an AYN Thor confirmed buttons, sticks, triggers,
   D-pad, C/GameChat, battery, motion and rumble with the adapter reporting `v2-bridge`
   identification; the bridge is also confirmed on an Odin 2.
