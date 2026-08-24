@@ -1,10 +1,12 @@
 package dev.picoswitch.companion.ui.touch
 
 import androidx.compose.ui.geometry.Offset
+import dev.picoswitch.bridge.touch.TouchCardinalSlot
 import dev.picoswitch.bridge.touch.TouchOutputControl
 import dev.picoswitch.bridge.touch.TouchProfileCatalog
 import dev.picoswitch.bridge.touch.TouchProfileId
 import dev.picoswitch.bridge.touch.TouchVisualRole
+import kotlin.math.hypot
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -97,4 +99,87 @@ class TouchControlGeometryTest {
         assertEquals(xGap, yGap, 0.2f)
     }
 
+    // ------------------------------------------------------------- D-pad fill
+    //
+    // The pressed D-pad fill was once four rounded rectangles laid over the
+    // cross, which squared off the body's rounded arm ends and left notches
+    // where two of them met. It is now four wedges that meet at the exact
+    // centre, intersected with the body. These pin the properties that made the
+    // old version wrong, so it cannot come back unnoticed.
+
+    private val dpadCenter = Offset(120f, 90f)
+    private val dpadArm = 40f
+    private val dpadHalf = 12f
+
+    private fun wedge(slot: TouchCardinalSlot, overshoot: Float = 3f) =
+        dpadDirectionWedge(slot, dpadCenter, dpadArm, dpadHalf, overshoot)
+
+    @Test fun `every direction wedge terminates at the exact shared centre`() {
+        TouchCardinalSlot.entries.forEach { slot ->
+            val points = wedge(slot)
+            assertEquals(5, points.size)
+            assertEquals("$slot", 1, points.count { it == dpadCenter })
+        }
+    }
+
+    @Test fun `adjacent wedges share a whole edge so a diagonal unions without a seam`() {
+        // North and East meet along centre -> (+half, -half); North and West
+        // along centre -> (-half, -half); and so on around the hub. A shared
+        // EDGE, not merely a shared point, is what makes the union continuous.
+        fun edges(slot: TouchCardinalSlot): Set<Set<Offset>> {
+            val points = wedge(slot)
+            return points.indices.mapTo(mutableSetOf()) { i ->
+                setOf(points[i], points[(i + 1) % points.size])
+            }
+        }
+        listOf(
+            TouchCardinalSlot.North to TouchCardinalSlot.East,
+            TouchCardinalSlot.East to TouchCardinalSlot.South,
+            TouchCardinalSlot.South to TouchCardinalSlot.West,
+            TouchCardinalSlot.West to TouchCardinalSlot.North,
+        ).forEach { (a, b) ->
+            val shared = edges(a).intersect(edges(b))
+            assertEquals("$a + $b", 1, shared.size)
+            assertTrue("$a + $b", shared.single().contains(dpadCenter))
+        }
+        // Opposite directions touch only at the hub itself.
+        assertTrue(
+            edges(TouchCardinalSlot.North).intersect(edges(TouchCardinalSlot.South)).isEmpty(),
+        )
+    }
+
+    @Test fun `a wedge overshoots only its own arm end and never the perpendicular axis`() {
+        val overshoot = 3f
+        val north = wedge(TouchCardinalSlot.North, overshoot)
+        // Past the flat arm end, so the intersection with the body decides the
+        // rounded tip rather than float noise leaving an unlit hairline.
+        assertEquals(dpadCenter.y - dpadArm - overshoot, north.minOf { it.y }, 0f)
+        // Exact across the arm: a wider wedge would spill into the arm beside it
+        // once it reached the central square.
+        assertEquals(dpadCenter.x - dpadHalf, north.minOf { it.x }, 0f)
+        assertEquals(dpadCenter.x + dpadHalf, north.maxOf { it.x }, 0f)
+
+        val west = wedge(TouchCardinalSlot.West, overshoot)
+        assertEquals(dpadCenter.x - dpadArm - overshoot, west.minOf { it.x }, 0f)
+        assertEquals(dpadCenter.y - dpadHalf, west.minOf { it.y }, 0f)
+        assertEquals(dpadCenter.y + dpadHalf, west.maxOf { it.y }, 0f)
+    }
+
+    @Test fun `the four wedges are congruent rotations, so the fill scales uniformly`() {
+        fun signature(slot: TouchCardinalSlot) = wedge(slot)
+            .map { hypot(it.x - dpadCenter.x, it.y - dpadCenter.y) }
+            .sorted()
+            .map { kotlin.math.round(it * 1000f) / 1000f }
+        val north = signature(TouchCardinalSlot.North)
+        TouchCardinalSlot.entries.forEach { assertEquals("$it", north, signature(it)) }
+    }
+
+    @Test fun `wedge geometry is proportional at any D-pad size`() {
+        val small = dpadDirectionWedge(TouchCardinalSlot.North, Offset.Zero, 10f, 3f, 0.75f)
+        val large = dpadDirectionWedge(TouchCardinalSlot.North, Offset.Zero, 100f, 30f, 7.5f)
+        small.indices.forEach { i ->
+            assertEquals(small[i].x * 10f, large[i].x, 1e-3f)
+            assertEquals(small[i].y * 10f, large[i].y, 1e-3f)
+        }
+    }
 }

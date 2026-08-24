@@ -6,6 +6,7 @@ import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.TextMeasurer
@@ -19,6 +20,7 @@ import dev.picoswitch.bridge.core.DpadState
 import dev.picoswitch.bridge.touch.ControlSide
 import dev.picoswitch.bridge.touch.ResolvedTouchControl
 import dev.picoswitch.bridge.touch.ResolvedTouchLayout
+import dev.picoswitch.bridge.touch.TouchCardinalSlot
 import dev.picoswitch.bridge.touch.TouchControlAction
 import dev.picoswitch.bridge.touch.TouchControlGlyph
 import dev.picoswitch.bridge.touch.TouchDiagnosticsSnapshot
@@ -513,9 +515,35 @@ private fun DrawScope.drawStick(
 /**
  * A cross, with the active arms lit — both of them on a diagonal.
  *
- * Drawn as a whole cross first and then the held halves on top, rather than as
- * four separate wedges. Wedges radiating from a hub read as a star at a glance,
- * and the shape a thumb is looking for is the one it already knows.
+ * The BODY is one cross, not four wedges radiating from a hub: a star is not the
+ * shape a thumb is looking for. The ACTIVE FILL inside it is divided into four
+ * wedges that meet at the exact centre, so a lit arm tapers to a point at the
+ * hub instead of stopping square against the middle, and a diagonal is the
+ * seamless union of two of them.
+ *
+ * ```text
+ *  how the hub divides          Up held           Up + Right held
+ *     ┌──┬──┐                  ┌─────┐              ┌─────┐
+ *     │  │  │                  │#####│              │#####│
+ *  ┌──┼──┼──┼──┐            ┌──┼──┼──┼──┐        ┌──┼──┼──┼──┐
+ *  ├──┼──●──┼──┤            ├──┼──●──┼──┤        ├──┼──●####┤
+ *  └──┼──┼──┼──┘            └──┼──┼──┼──┘        └──┼──┼──┼──┘
+ *     │  │  │                  │     │              │     │
+ *     └──┴──┘                  └─────┘              └─────┘
+ *   four wedges meet         arm tapers to        one continuous
+ *   at one point ●           a point at ●         region, no seam
+ * ```
+ *
+ * Two rules make that safe, and both are easy to undo by accident:
+ *
+ * - The fill is INTERSECTED with the body path. The body's rounded arm ends are
+ *   therefore still the outer boundary of a lit arm. Drawing the wedges without
+ *   that intersection — or, as this once did, drawing a rounded rectangle per
+ *   direction — squares off the rounded ends, adds a second silhouette on top of
+ *   the first, and leaves notches where two overlays meet.
+ * - The lit directions are unioned into ONE path and filled ONCE. Filling them
+ *   separately double-composites translucent paint along the shared diagonal;
+ *   filling them as separate sub-paths risks a hairline seam there.
  */
 private fun DrawScope.drawDpad(
     control: ResolvedTouchControl,
@@ -549,20 +577,77 @@ private fun DrawScope.drawDpad(
         )
     }
 
-    // One draw per colour. Diagonal arms still meet at the hub, but translucent
-    // paint is no longer composited twice where their visual rectangles overlap.
     val idleCross = Path().apply {
         bar(center.x - half, center.y - arm, half * 2f, arm * 2f)
         bar(center.x - arm, center.y - half, arm * 2f, half * 2f)
     }
     drawPath(idleCross, idle)
-    val pressedCross = Path().apply {
-        if (state.up) bar(center.x - half, center.y - arm, half * 2f, arm)
-        if (state.down) bar(center.x - half, center.y, half * 2f, arm)
-        if (state.left) bar(center.x - arm, center.y - half, arm, half * 2f)
-        if (state.right) bar(center.x, center.y - half, arm, half * 2f)
+
+    val lit = buildList {
+        if (state.up) add(TouchCardinalSlot.North)
+        if (state.down) add(TouchCardinalSlot.South)
+        if (state.left) add(TouchCardinalSlot.West)
+        if (state.right) add(TouchCardinalSlot.East)
     }
-    drawPath(pressedCross, held)
+    if (lit.isEmpty()) return
+
+    val region = lit
+        .map { slot ->
+            Path().apply {
+                val wedge = dpadDirectionWedge(slot, center, arm, half, half * DPAD_WEDGE_OVERSHOOT)
+                moveTo(wedge[0].x, wedge[0].y)
+                wedge.drop(1).forEach { lineTo(it.x, it.y) }
+                close()
+            }
+        }
+        .reduce { merged, wedge -> Path().apply { op(merged, wedge, PathOperation.Union) } }
+    drawPath(Path().apply { op(region, idleCross, PathOperation.Intersect) }, held)
+}
+
+/**
+ * One direction's share of the D-pad, as a closed polygon.
+ *
+ * The arm, plus the quarter of the central square that belongs to this
+ * direction: the square is cut by two diagonals through the exact centre, so all
+ * four wedges terminate at one shared point and adjacent wedges share a whole
+ * edge. That shared edge is what lets a diagonal press union into a single
+ * continuous region with no seam through the middle.
+ *
+ * The polygon deliberately overshoots the arm END by [overshoot] and is exact on
+ * the perpendicular axis. The caller intersects it with the body, so overshooting
+ * outward guarantees the lit arm reaches the body's rounded tip with no sliver of
+ * unlit colour left behind, while an exact perpendicular extent keeps the wedge
+ * from spilling into the neighbouring arm's half of the cross.
+ */
+internal fun dpadDirectionWedge(
+    slot: TouchCardinalSlot,
+    center: Offset,
+    armLength: Float,
+    halfWidth: Float,
+    overshoot: Float,
+): List<Offset> {
+    val outer = armLength + overshoot
+    val x = center.x
+    val y = center.y
+    val h = halfWidth
+    return when (slot) {
+        TouchCardinalSlot.North -> listOf(
+            Offset(x - h, y - outer), Offset(x + h, y - outer),
+            Offset(x + h, y - h), center, Offset(x - h, y - h),
+        )
+        TouchCardinalSlot.South -> listOf(
+            Offset(x - h, y + outer), Offset(x + h, y + outer),
+            Offset(x + h, y + h), center, Offset(x - h, y + h),
+        )
+        TouchCardinalSlot.West -> listOf(
+            Offset(x - outer, y - h), Offset(x - outer, y + h),
+            Offset(x - h, y + h), center, Offset(x - h, y - h),
+        )
+        TouchCardinalSlot.East -> listOf(
+            Offset(x + outer, y - h), Offset(x + outer, y + h),
+            Offset(x + h, y + h), center, Offset(x + h, y - h),
+        )
+    }
 }
 
 /**
@@ -762,6 +847,15 @@ private const val JOYCON_TRIANGLE_RADIUS_FRACTION = 0.19f
 private const val JOYCON_TRIANGLE_STROKE_FRACTION = 0.045f
 private const val ARM_FRACTION = 0.90f
 private const val ARM_HALF_WIDTH = 0.26f
+
+/**
+ * How far a lit wedge runs past the arm's flat end, as a fraction of the arm's
+ * half width.
+ *
+ * Any positive value works: the fill is intersected with the body, so this only
+ * has to be enough that float noise cannot leave an unlit hairline at the tip.
+ */
+private const val DPAD_WEDGE_OVERSHOOT = 0.25f
 private const val DISABLED_ALPHA = 0.4f
 
 /** Editor overlay weights: readable over the controls, never louder than them. */
