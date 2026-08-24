@@ -363,10 +363,13 @@ console-facing protocol owner. Reference hardware is an AYN Thor (Android 13 / A
   unsaved-changes prompt, and the too-small-window refusal).
   **Maintainer-validated on two Android devices, 2026-08-24:** pinch scaling, multi-touch editing,
   live profile swaps, and the interruption behaviour the stuck-input matrix guards — losing focus,
-  sleeping and app-switching each release every held input as intended. Owner-reported rather than
-  capture-proven; no log or capture was taken, and the release path it exercises is the same
-  idempotent release-all the host tests cover. Still open: in-game correctness with a console in the
-  loop.
+  sleeping and app-switching each release every held input as intended. **Disconnect/reconnect is
+  additionally confirmed against a real Switch**, which is the half the handheld cannot observe
+  about itself: the console is neutral on the far side of a link interruption, not merely the
+  neutral report sent. Owner-reported rather than capture-proven; no log or capture was taken, and
+  the release path it exercises is the same idempotent release-all the host tests cover.
+  Still open: per-personality control-by-control correctness against the matching console
+  personality, held-contact profile changes with the Classic link retained, and in-game feel.
 - **Hardware state:** the v2.0.0 sanity pass on an AYN Thor confirmed buttons, sticks, triggers,
   D-pad, C/GameChat, battery, motion and rumble with the adapter reporting `v2-bridge`
   identification; the bridge is also confirmed on an Odin 2.
@@ -671,12 +674,12 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
    scaling, multi-touch editing, live profile swaps, and losing focus / sleeping / app-switching
    while controls are held, each releasing every held input as intended. That closes the part of the
    stuck-input matrix reachable from the handheld alone, and it is why this gate is no longer
-   release-blocking.
-   Still uncovered, and only a console can supply it: every Pro2, NSO GameCube, Joy-Con Left and
-   Joy-Con Right control checked against the matching real console personality; held-contact profile
-   changes with the Classic link retained; and the console-side half of the torture matrix — after a
-   disconnect, a reconnect, a rotate or a system-bar interruption, the CONSOLE must be neutral, which
-   the handheld cannot observe about itself.
+   release-blocking. **Disconnect/reconnect was additionally confirmed against a real Switch**, which
+   settles the console-side question the handheld cannot answer about itself — the console is neutral
+   after a link interruption, not merely sent a neutral report.
+   Still uncovered: every Pro2, NSO GameCube, Joy-Con Left and Joy-Con Right control checked against
+   the matching real console personality; held-contact profile changes with the Classic link
+   retained; and in-game correctness and ergonomics.
 11. **Remaining Bluetooth wipe/flash matrix.** The strict Xbox Elite Series 2 corrected-wipe retest
    passed. Run the still-uncovered powered-off/reboot/release-UF2 and other-family cases in
    [`docs/bluetooth/VALIDATION.md`](docs/bluetooth/VALIDATION.md). Record bond state before the remote
@@ -949,8 +952,9 @@ the recovery path itself remains unvalidated in the field.
 The open items above are hardware gates to close opportunistically when the relevant hardware is in
 front of the maintainer. KB/M (gate 9) is implementation-complete and host-validated with nothing
 hardware-confirmed. The Touch Gamepad (gate 10) is no longer release-blocking: the stuck-input
-sub-item was the reason it was, and the maintainer confirmed on 2026-08-24 that losing focus,
-sleeping and app-switching all release held inputs on two Android devices. What is left of gate 10
-needs a console attached, because the remaining question — is the CONSOLE neutral after an
-interruption — is not one the handheld can answer about itself. The next accepted engineering work
-is the current development priority in [`PLAN.md`](PLAN.md).
+sub-item was the reason it was, and on 2026-08-24 the maintainer confirmed that losing focus,
+sleeping and app-switching all release held inputs on two Android devices, and that disconnect and
+reconnect leave a real Switch neutral. What is left of gate 10 is breadth rather than safety —
+control-by-control coverage per console personality, held-contact profile changes with the Classic
+link retained, and in-game feel. The next accepted engineering work is the current development
+priority in [`PLAN.md`](PLAN.md).
