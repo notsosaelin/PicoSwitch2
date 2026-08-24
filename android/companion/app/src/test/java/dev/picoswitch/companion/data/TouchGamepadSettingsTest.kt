@@ -21,7 +21,12 @@ class TouchGamepadSettingsTest {
         haptics: Boolean = true,
         deadzone: Float = TouchGamepadSettings.DEFAULT_DEADZONE,
         background: String? = null,
-    ) = TouchGamepadSettingsCodec.decode(opacity, dim, haptics, deadzone, background)
+        dock: String? = null,
+        grid: Boolean = false,
+        snap: Boolean = true,
+    ) = TouchGamepadSettingsCodec.decode(
+        opacity, dim, haptics, deadzone, background, dock, grid, snap,
+    )
 
     @Test fun `the defaults are usable without visiting the settings`() {
         val settings = TouchGamepadSettings.Default
@@ -78,5 +83,26 @@ class TouchGamepadSettingsTest {
                     fields.any { it.contains(forbidden) },
                 )
             }
+    }
+
+    @Test fun `an unknown or absent toolbar dock resolves to the shipped edge`() {
+        // Persisted by key, never by ordinal: reordering the enum must not move
+        // somebody's toolbar to a different edge, and an unreadable value must
+        // not leave the editor with no toolbar position at all.
+        assertEquals(TouchEditorDock.Bottom, decode().editorToolbarDock)
+        assertEquals(TouchEditorDock.Bottom, decode(dock = "").editorToolbarDock)
+        assertEquals(TouchEditorDock.Bottom, decode(dock = "sideways").editorToolbarDock)
+        TouchEditorDock.entries.forEach { option ->
+            assertEquals(option, decode(dock = option.key).editorToolbarDock)
+        }
+    }
+
+    @Test fun `the editing aids default to snapping on and the grid off`() {
+        // The grid is a drawn texture over the layout being judged, so it is
+        // opt-in; snapping only helps and is invisible until something aligns.
+        assertEquals(false, TouchGamepadSettings.Default.editorGrid)
+        assertEquals(true, TouchGamepadSettings.Default.editorSnap)
+        assertEquals(true, decode(grid = true).editorGrid)
+        assertEquals(false, decode(snap = false).editorSnap)
     }
 }

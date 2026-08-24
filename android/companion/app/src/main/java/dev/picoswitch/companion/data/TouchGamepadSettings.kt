@@ -36,6 +36,21 @@ data class TouchGamepadSettings(
      * default background rather than a crash.
      */
     val backgroundImage: String? = null,
+
+    /**
+     * Where the layout editor's floating toolbar sits.
+     *
+     * A preference rather than a constant because the right answer depends on
+     * the device: which hand holds the phone, whether the window is a tall
+     * freeform one, and which edge the system's own gesture areas are on.
+     */
+    val editorToolbarDock: TouchEditorDock = TouchEditorDock.Bottom,
+
+    /** Draw the editor's alignment grid. */
+    val editorGrid: Boolean = false,
+
+    /** Pull an edited control onto nearby guides. Independent of [editorGrid]. */
+    val editorSnap: Boolean = true,
 ) {
     companion object {
         const val DEFAULT_OPACITY = 0.85f
@@ -72,6 +87,9 @@ object TouchGamepadSettingsCodec {
         haptics: Boolean,
         deadzone: Float,
         backgroundImage: String?,
+        editorToolbarDock: String? = null,
+        editorGrid: Boolean = false,
+        editorSnap: Boolean = true,
     ): TouchGamepadSettings = TouchGamepadSettings(
         controlOpacity = opacity.finiteOr(TouchGamepadSettings.DEFAULT_OPACITY)
             .coerceIn(TouchGamepadSettings.MIN_OPACITY, TouchGamepadSettings.MAX_OPACITY),
@@ -81,9 +99,32 @@ object TouchGamepadSettingsCodec {
         stickDeadzone = deadzone.finiteOr(TouchGamepadSettings.DEFAULT_DEADZONE)
             .coerceIn(0f, TouchGamepadSettings.MAX_DEADZONE),
         backgroundImage = backgroundImage?.takeIf { it.isNotBlank() },
+        editorToolbarDock = TouchEditorDock.fromKey(editorToolbarDock),
+        editorGrid = editorGrid,
+        editorSnap = editorSnap,
     )
 
     private fun Float.finiteOr(fallback: Float) = if (isFinite()) this else fallback
+}
+
+/**
+ * Which edge the layout editor's floating toolbar docks to.
+ *
+ * Persisted by [key], never by ordinal: reordering this enum must not silently
+ * move somebody's toolbar to a different edge.
+ */
+enum class TouchEditorDock(val key: String, val title: String) {
+    Bottom("bottom", "Bottom"),
+    Top("top", "Top"),
+    Left("left", "Left"),
+    Right("right", "Right");
+
+    val vertical: Boolean get() = this == Left || this == Right
+
+    companion object {
+        fun fromKey(value: String?): TouchEditorDock =
+            entries.firstOrNull { it.key == value } ?: Bottom
+    }
 }
 
 /** [TouchGamepadSettings] persisted by the platform. */
@@ -97,6 +138,9 @@ class TouchGamepadSettingsStore(context: Context) {
         haptics = preferences.getBoolean(KEY_HAPTICS, true),
         deadzone = preferences.getFloat(KEY_DEADZONE, TouchGamepadSettings.DEFAULT_DEADZONE),
         backgroundImage = preferences.getString(KEY_BACKGROUND, null),
+        editorToolbarDock = preferences.getString(KEY_EDITOR_DOCK, null),
+        editorGrid = preferences.getBoolean(KEY_EDITOR_GRID, false),
+        editorSnap = preferences.getBoolean(KEY_EDITOR_SNAP, true),
     )
 
     fun save(settings: TouchGamepadSettings) {
@@ -110,6 +154,9 @@ class TouchGamepadSettingsStore(context: Context) {
             } else {
                 putString(KEY_BACKGROUND, settings.backgroundImage)
             }
+            putString(KEY_EDITOR_DOCK, settings.editorToolbarDock.key)
+            putBoolean(KEY_EDITOR_GRID, settings.editorGrid)
+            putBoolean(KEY_EDITOR_SNAP, settings.editorSnap)
         }
     }
 
@@ -120,5 +167,8 @@ class TouchGamepadSettingsStore(context: Context) {
         internal const val KEY_HAPTICS = "haptics"
         internal const val KEY_DEADZONE = "stick_deadzone"
         internal const val KEY_BACKGROUND = "background_image"
+        internal const val KEY_EDITOR_DOCK = "editor_toolbar_dock"
+        internal const val KEY_EDITOR_GRID = "editor_grid"
+        internal const val KEY_EDITOR_SNAP = "editor_snap"
     }
 }
