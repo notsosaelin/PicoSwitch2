@@ -30,9 +30,13 @@ import dev.picoswitch.bridge.session.BridgeState
 import dev.picoswitch.bridge.session.SessionResumePolicy
 import dev.picoswitch.bridge.touch.TouchControlConfig
 import dev.picoswitch.bridge.touch.TouchLayoutOverride
-import dev.picoswitch.bridge.touch.TouchOverrideDecodeResult
 import dev.picoswitch.bridge.touch.TouchProfileCatalog
+import dev.picoswitch.bridge.touch.TouchProfileEdit
 import dev.picoswitch.bridge.touch.TouchProfileId
+import dev.picoswitch.bridge.touch.TouchProfileLibrary
+import dev.picoswitch.bridge.touch.TouchProfileLibraryEditor
+import dev.picoswitch.bridge.touch.TouchProfileLibraryJsonCodec
+import dev.picoswitch.bridge.touch.TouchProfileDecodeResult
 import dev.picoswitch.bridge.touch.TouchReleaseReason
 import dev.picoswitch.companion.bridge.AndroidBridge
 import dev.picoswitch.companion.bridge.AndroidBridgeHost
@@ -157,7 +161,21 @@ data class CompanionUiState(
     val touchFaceLayout: ControllerFaceLayout = ControllerFaceLayout.Nintendo,
     /** Confirmed console personality; null keeps the surface neutral and disabled. */
     val touchProfileId: TouchProfileId? = null,
-    /** Valid sparse user state for [touchProfileId], never live gameplay state. */
+    /**
+     * Every layout profile available for [touchProfileId], and which is active.
+     *
+     * The immutable factory profile is a synthesized member of this value rather
+     * than something storage has to supply, so it is present even when nothing
+     * has ever been saved. Null only while no gameplay personality is confirmed.
+     */
+    val touchProfiles: TouchProfileLibrary? = null,
+    /**
+     * The active profile's sparse user state, never live gameplay state.
+     *
+     * Derived from [touchProfiles]; kept as its own field because the surface
+     * composes against it on every geometry change and should not have to know
+     * how profile selection works.
+     */
     val touchLayoutOverride: TouchLayoutOverride? = null,
     /** Non-blocking persistence/fallback explanation shown in the Touch Gamepad menu. */
     val touchLayoutWarning: String? = null,
@@ -219,7 +237,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     private val library = AmiiboLibrary(application)
     private val themeStore = ThemePreferenceStore(application)
     private val touchSettingsStore = TouchGamepadSettingsStore(application)
-    private val touchLayoutStore = AndroidTouchLayoutOverrideStore(application)
+    private val touchProfileStore = AndroidTouchProfileStore(application)
     private val relationshipStore = AdapterRelationshipStore(application)
     private val relationshipCoordinator = AdapterRelationshipCoordinator(relationshipStore.load())
     private data class PairingDevice(val generation: Long, val device: BluetoothDevice)
@@ -308,6 +326,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                     it.copy(
                         snapshot = value,
                         touchProfileId = loaded.profileId,
+                        touchProfiles = loaded.library,
                         touchLayoutOverride = loaded.override,
                         touchLayoutWarning = loaded.warning,
                     )
@@ -1564,6 +1583,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                 touchGamepadActive = true,
                 touchFaceLayout = inputBackend.requestedFaceLayout,
                 touchProfileId = loaded.profileId,
+                touchProfiles = loaded.library,
                 touchLayoutOverride = loaded.override,
                 touchLayoutWarning = loaded.warning,
                 overlay = AppOverlay.None,
@@ -1647,27 +1667,153 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         session.neutralize()
     }
 
-    fun saveTouchLayoutOverride(value: TouchLayoutOverride) {
+    /**
+     * Commit an edited layout into a profile.
+     *
+     * [targetProfileId] is normally the active profile. Saving onto the
+     * protected factory profile does not fail and does not overwrite it: the
+     * library turns that into a new user profile named [newProfileName], which
+     * is the only outcome that neither discards the user's work nor destroys the
+     * one layout that is always supposed to be recoverable.
+     */
+    fun saveTouchLayoutOverride(
+        value: TouchLayoutOverride,
+        targetProfileId: String? = null,
+        newProfileName: String = TouchProfileLibraryEditor.DEFAULT_NEW_PROFILE_NAME,
+    ) {
         val active = _ui.value.touchProfileId ?: return
         val profile = TouchProfileCatalog.require(active)
         if (value.profileId != active || value.templateId != profile.defaultTemplate.id) {
             _ui.update { it.copy(touchLayoutWarning = "The edited layout no longer matches the active controller") }
             return
         }
-        bridge.releaseTouchInput(TouchReleaseReason.GeometryInvalidated)
-        session.neutralize()
-        touchLayoutStore.save(value)
-        _ui.update { it.copy(touchLayoutOverride = value, touchLayoutWarning = null) }
-        diagnostics.event("controller", "touch layout", "saved profile=${active.key}")
+        val library = _ui.value.touchProfiles ?: TouchProfileLibrary.empty(active)
+        applyTouchProfileEdit(
+            TouchProfileLibraryEditor.save(
+                library = library,
+                profileId = targetProfileId ?: library.selectedProfileId,
+                override = value,
+                nowEpochMs = System.currentTimeMillis(),
+                newProfileName = newProfileName,
+            ),
+            "saved",
+        )
     }
 
+    /**
+     * Put the shipped controller back on screen.
+     *
+     * Selects the factory profile rather than deleting anything: the user's own
+     * profiles are still theirs, and "restore defaults" that quietly destroyed
+     * them would be unrecoverable.
+     */
     fun restoreTouchLayoutDefaults() {
-        val active = _ui.value.touchProfileId ?: return
-        bridge.releaseTouchInput(TouchReleaseReason.GeometryInvalidated)
-        session.neutralize()
-        touchLayoutStore.delete(active)
-        _ui.update { it.copy(touchLayoutOverride = null, touchLayoutWarning = null) }
-        diagnostics.event("controller", "touch layout", "restored profile=${active.key}")
+        val library = _ui.value.touchProfiles ?: return
+        applyTouchProfileEdit(
+            TouchProfileLibraryEditor.select(library, TouchProfileLibrary.FACTORY_PROFILE_ID),
+            "restored the default profile",
+        )
+    }
+
+    fun selectTouchProfile(profileId: String) {
+        val library = _ui.value.touchProfiles ?: return
+        applyTouchProfileEdit(TouchProfileLibraryEditor.select(library, profileId), "selected")
+    }
+
+    fun createTouchProfile(name: String) {
+        val library = _ui.value.touchProfiles ?: return
+        applyTouchProfileEdit(
+            TouchProfileLibraryEditor.create(library, name, System.currentTimeMillis()),
+            "created",
+        )
+    }
+
+    fun duplicateTouchProfile(profileId: String, name: String? = null) {
+        val library = _ui.value.touchProfiles ?: return
+        applyTouchProfileEdit(
+            TouchProfileLibraryEditor.duplicate(library, profileId, name, System.currentTimeMillis()),
+            "duplicated",
+        )
+    }
+
+    fun renameTouchProfile(profileId: String, name: String) {
+        val library = _ui.value.touchProfiles ?: return
+        applyTouchProfileEdit(TouchProfileLibraryEditor.rename(library, profileId, name), "renamed")
+    }
+
+    fun deleteTouchProfile(profileId: String) {
+        val library = _ui.value.touchProfiles ?: return
+        applyTouchProfileEdit(TouchProfileLibraryEditor.delete(library, profileId), "deleted")
+    }
+
+    fun resetTouchProfile(profileId: String) {
+        val library = _ui.value.touchProfiles ?: return
+        applyTouchProfileEdit(
+            TouchProfileLibraryEditor.resetToDefault(library, profileId, System.currentTimeMillis()),
+            "reset",
+        )
+    }
+
+    /**
+     * A profile as a standalone document.
+     *
+     * The export/import foundation the editor architecture calls for: the
+     * transport (a file, a share sheet, the management link) is a separate
+     * decision, and this is the part of it that has to be stable.
+     */
+    fun exportTouchProfile(profileId: String): String? =
+        _ui.value.touchProfiles?.profile(profileId)?.let(TouchProfileLibraryJsonCodec::encodeExport)
+
+    fun importTouchProfile(raw: String) {
+        val library = _ui.value.touchProfiles ?: return
+        when (val decoded = TouchProfileLibraryJsonCodec.decodeExport(raw)) {
+            is TouchProfileDecodeResult.Invalid -> notice(decoded.problem)
+            is TouchProfileDecodeResult.Valid -> applyTouchProfileEdit(
+                TouchProfileLibraryEditor.import(library, decoded.value, System.currentTimeMillis()),
+                "imported",
+            )
+        }
+    }
+
+    /**
+     * One place where a library edit becomes persisted, live state.
+     *
+     * Every one of these can change the geometry the console is being told
+     * about, so each releases held input and neutralizes BEFORE the new layout
+     * can be installed: a contact measured against the previous arrangement
+     * means nothing once the arrangement changes, and leaving it held would send
+     * the console a button the user is not pressing.
+     */
+    private fun applyTouchProfileEdit(edit: TouchProfileEdit, what: String) {
+        when (edit) {
+            is TouchProfileEdit.Rejected -> {
+                // Both surfaces: the scaffold's message for the ordinary app, and
+                // the layout warning, which is what the on-screen controller's own
+                // menu shows. A refusal the user cannot see is a bug that reports
+                // itself as "the button does nothing".
+                notice(edit.reason)
+                _ui.update { it.copy(touchLayoutWarning = edit.reason) }
+                diagnostics.event("controller", "touch layout", "refused: ${edit.reason}")
+                return
+            }
+            is TouchProfileEdit.Applied -> {
+                bridge.releaseTouchInput(TouchReleaseReason.GeometryInvalidated)
+                session.neutralize()
+                touchProfileStore.save(edit.library)
+                _ui.update {
+                    it.copy(
+                        touchProfiles = edit.library,
+                        touchLayoutOverride = edit.library.activeOverride,
+                        touchLayoutWarning = null,
+                    )
+                }
+                diagnostics.event(
+                    "controller",
+                    "touch layout",
+                    "$what profile=${edit.library.personality.key}/${edit.library.selectedProfileId}",
+                )
+            }
+        }
     }
 
     private fun applyTouchSettings(settings: TouchGamepadSettings) {
@@ -1676,6 +1822,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
 
     private data class LoadedTouchProfile(
         val profileId: TouchProfileId?,
+        val library: TouchProfileLibrary?,
         val override: TouchLayoutOverride?,
         val warning: String?,
     )
@@ -1684,17 +1831,20 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         val profileId = TouchProfileSelector.select(personality)
             ?: return LoadedTouchProfile(
                 profileId = null,
+                library = null,
                 override = null,
                 warning = when (personality) {
                     Personality.Config -> "Configuration mode has no gameplay touch profile"
                     else -> "The adapter's controller mode is not confirmed"
                 },
             )
-        return when (val stored = touchLayoutStore.load(profileId)) {
-            null -> LoadedTouchProfile(profileId, null, null)
-            is TouchOverrideDecodeResult.Valid -> LoadedTouchProfile(profileId, stored.value, null)
-            is TouchOverrideDecodeResult.Invalid -> LoadedTouchProfile(profileId, null, stored.problem)
-        }
+        val loaded = touchProfileStore.load(profileId)
+        return LoadedTouchProfile(
+            profileId = profileId,
+            library = loaded.library,
+            override = loaded.library.activeOverride,
+            warning = loaded.warning,
+        )
     }
 
     /**

@@ -22,6 +22,8 @@ import dev.picoswitch.bridge.touch.ResolvedTouchLayout
 import dev.picoswitch.bridge.touch.TouchControlAction
 import dev.picoswitch.bridge.touch.TouchControlGlyph
 import dev.picoswitch.bridge.touch.TouchDiagnosticsSnapshot
+import dev.picoswitch.bridge.touch.TouchGuideKind
+import dev.picoswitch.bridge.touch.TouchGuideLine
 import dev.picoswitch.bridge.touch.TouchGameCubeGeometry
 import dev.picoswitch.bridge.touch.TouchOutputControl
 import dev.picoswitch.bridge.touch.TouchVisualRole
@@ -669,23 +671,77 @@ fun ResolvedTouchControl.hitBounds(): Rect = Rect(
 )
 
 /** Android editor chrome; semantic validation remains in bridge-core. */
+/**
+ * The editing layer: grid, matched guides, every control's answerable bounds,
+ * and what the next edit will actually move.
+ *
+ * Drawn on TOP of the ordinary controls rather than instead of them. Layout
+ * editing is judged by looking at the controller, so the controller has to stay
+ * on screen and keep looking like itself; the overlay only adds what direct
+ * manipulation needs and cannot otherwise be seen — where the hit region really
+ * is, and which controls a drag is about to take with it.
+ *
+ * ```text
+ * grid  ->  guides  ->  every hit region  ->  the edit target  ->  handles
+ * ```
+ */
 fun DrawScope.drawTouchEditorOverlay(
     layout: ResolvedTouchLayout,
-    selectedId: String?,
+    targets: Set<String>,
+    primaryId: String?,
+    grid: List<TouchGuideLine>,
+    guides: List<TouchGuideLine>,
     palette: TouchControlPalette,
 ) {
+    val region = layout.region
+    grid.forEach { line -> drawGuide(line, region, palette.idleOutline.copy(alpha = GRID_ALPHA), GRID_WIDTH) }
+    guides.forEach { line ->
+        drawGuide(
+            line,
+            region,
+            when (line.kind) {
+                TouchGuideKind.RegionCenter -> palette.pressed.copy(alpha = GUIDE_ALPHA)
+                TouchGuideKind.SafeEdge -> palette.disabled.copy(alpha = GUIDE_ALPHA)
+                else -> palette.pressedOutline.copy(alpha = GUIDE_ALPHA)
+            },
+            GUIDE_WIDTH,
+        )
+    }
+
     layout.controls.forEach { control ->
         val bounds = control.hitBounds()
-        val selected = control.id == selectedId
+        val target = control.id in targets
         drawRect(
-            color = (if (selected) palette.pressedOutline else palette.idleOutline).copy(
-                alpha = if (selected) 0.95f else 0.45f,
+            color = (if (target) palette.pressedOutline else palette.idleOutline).copy(
+                alpha = if (target) 0.95f else 0.4f,
             ),
             topLeft = bounds.topLeft,
             size = bounds.size,
-            style = Stroke(width = if (selected) 4f else 2f),
+            style = Stroke(width = if (target) SELECTED_WIDTH else UNSELECTED_WIDTH),
         )
+        // Corner handles on the control the contextual bar is naming, so a
+        // multi-control selection still says which one is the reference.
+        if (control.id == primaryId) drawSelectionHandles(bounds, palette.pressed)
     }
+}
+
+private fun DrawScope.drawGuide(
+    line: TouchGuideLine,
+    region: dev.picoswitch.bridge.touch.TouchLayoutRegion,
+    color: Color,
+    width: Float,
+) {
+    if (line.vertical) {
+        drawLine(color, Offset(line.position, region.top), Offset(line.position, region.bottom), width)
+    } else {
+        drawLine(color, Offset(region.left, line.position), Offset(region.right, line.position), width)
+    }
+}
+
+private fun DrawScope.drawSelectionHandles(bounds: Rect, color: Color) {
+    listOf(
+        bounds.topLeft, bounds.topRight, bounds.bottomLeft, bounds.bottomRight,
+    ).forEach { corner -> drawCircle(color, HANDLE_RADIUS, corner) }
 }
 
 private const val OUTLINE_WIDTH = 2f
@@ -707,3 +763,12 @@ private const val JOYCON_TRIANGLE_STROKE_FRACTION = 0.045f
 private const val ARM_FRACTION = 0.90f
 private const val ARM_HALF_WIDTH = 0.26f
 private const val DISABLED_ALPHA = 0.4f
+
+/** Editor overlay weights: readable over the controls, never louder than them. */
+private const val GRID_ALPHA = 0.16f
+private const val GRID_WIDTH = 1f
+private const val GUIDE_ALPHA = 0.85f
+private const val GUIDE_WIDTH = 2f
+private const val SELECTED_WIDTH = 4f
+private const val UNSELECTED_WIDTH = 2f
+private const val HANDLE_RADIUS = 7f
