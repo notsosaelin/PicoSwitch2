@@ -266,7 +266,7 @@ class TouchProfileCatalogTest {
         assertEquals(directionDegrees(x, a), 165.58f + x.visual.rotationDegrees, 0.15f)
         assertEquals(directionDegrees(y, a), 71.88f + y.visual.rotationDegrees, 0.15f)
         val faceScale = a.geometry.widthUnits / 88f
-        assertEquals(0.80f, faceScale, 1e-6f)
+        assertEquals(1.00963f, faceScale, 1e-6f)
         assertEquals(77f * faceScale, x.geometry.groupOffsetXUnits - a.geometry.groupOffsetXUnits, 1e-5f)
         assertEquals(-5f * faceScale, x.geometry.groupOffsetYUnits - a.geometry.groupOffsetYUnits, 1e-5f)
         assertEquals(-37.5f * faceScale, y.geometry.groupOffsetXUnits - a.geometry.groupOffsetXUnits, 1e-5f)
@@ -298,26 +298,18 @@ class TouchProfileCatalogTest {
         assertEquals(pro2Right.geometry.referenceY, cStick.geometry.referenceY, 0f)
 
         val faceBounds = listOf(a, b, x, y).compoundVisualBounds()
-        val pro2FaceBounds = listOf(
-            TouchOutputControl.FaceNorth,
-            TouchOutputControl.FaceWest,
-            TouchOutputControl.FaceEast,
-            TouchOutputControl.FaceSouth,
-        ).map(pro2::control).compoundVisualBounds()
         assertEquals(
-            "GameCube compound face centre x",
-            pro2FaceBounds.centerX,
+            "approved GameCube compound face centre x",
+            682.737f,
             faceBounds.centerX,
             0.05f,
         )
         assertEquals(
-            "GameCube compound face centre y",
-            main.geometry.referenceY,
+            "approved GameCube compound face centre y",
+            163.02f,
             faceBounds.centerY,
             0.05f,
         )
-        assertTrue("GameCube face group extends left of the Pro2 face region", faceBounds.left >= pro2FaceBounds.left)
-        assertTrue("GameCube face group extends right of the Pro2 face region", faceBounds.right <= pro2FaceBounds.right)
         assertEquals(main.geometry.widthUnits, dpad.geometry.widthUnits, 0f)
         assertEquals(main.geometry.heightUnits, dpad.geometry.heightUnits, 0f)
         assertEquals(main.geometry.hitMarginUnits, dpad.geometry.hitMarginUnits, 0f)
@@ -354,6 +346,50 @@ class TouchProfileCatalogTest {
         assertEquals(1, topUtilities.map { it.geometry.widthUnits }.distinct().size)
         assertEquals(1, topUtilities.map { it.editGroupId }.distinct().size)
         assertNotNull(topUtilities.first().editGroupId)
+    }
+
+    @Test fun `approved GameCube geometry is the shipped no-override default`() {
+        val profile = TouchProfileCatalog.require(TouchProfileId.GameCube)
+        val composed = TouchLayoutComposer.compose(profile, null)
+        assertFalse(composed.overrideApplied)
+        assertNull(composed.warning)
+
+        // Actual tablet interaction region used for the approved gc-final render.
+        // These assertions protect the immutable template itself so a persisted
+        // editor override can never mask a default-layout regression again.
+        val resolved = TouchLayoutResolver.resolve(
+            composed.layout,
+            TouchLayoutRegion(
+                left = 50f,
+                top = 60f,
+                right = 1474f,
+                bottom = 947f,
+                unitScale = 267f / 160f,
+            ),
+            TouchLayoutAuditMode.ShippedTemplate,
+        )
+        assertTrue(resolved.problem.orEmpty(), resolved.fits)
+        val controls = resolved.controls.associateBy { it.spec.output }
+
+        data class ApprovedControl(
+            val output: TouchOutputControl,
+            val centerX: Float,
+            val centerY: Float,
+            val halfWidth: Float,
+            val halfHeight: Float,
+        )
+        listOf(
+            ApprovedControl(TouchOutputControl.A, 1260.38f, 433.08f, 79.07f, 79.07f),
+            ApprovedControl(TouchOutputControl.B, 1137.28f, 536.42f, 50.32f, 50.32f),
+            ApprovedControl(TouchOutputControl.X, 1398.76f, 424.10f, 46.73f, 75.48f),
+            ApprovedControl(TouchOutputControl.Y, 1192.99f, 312.23f, 75.48f, 48.52f),
+        ).forEach { approved ->
+            val actual = controls.getValue(approved.output)
+            assertEquals("${approved.output} center x", approved.centerX, actual.centerX, 0.02f)
+            assertEquals("${approved.output} center y", approved.centerY, actual.centerY, 0.05f)
+            assertEquals("${approved.output} half width", approved.halfWidth, actual.halfWidth, 0.02f)
+            assertEquals("${approved.output} half height", approved.halfHeight, actual.halfHeight, 0.02f)
+        }
     }
 
     @Test fun `Joy-Con sticks and four-button clusters share a visual centerline`() {
@@ -413,14 +449,17 @@ class TouchProfileCatalogTest {
     @Test fun `GameCube Y wraps A visually without creating an ambiguous touch region`() {
         val profile = TouchProfileCatalog.require(TouchProfileId.GameCube)
         val layout = TouchLayoutComposer.compose(profile).layout
-        val region = profileRegion(800f, 400f)
+        val region = TouchLayoutRegion(50f, 60f, 1474f, 947f, 267f / 160f)
         val resolved = TouchLayoutResolver.resolve(layout, region, TouchLayoutAuditMode.ShippedTemplate)
         val a = resolved.controls.single { it.spec.output == TouchOutputControl.A }
         val y = resolved.controls.single { it.spec.output == TouchOutputControl.Y }
 
         assertTrue(kotlin.math.abs(a.centerX - y.centerX) < a.hitHalfWidth + y.hitHalfWidth)
         assertTrue(kotlin.math.abs(a.centerY - y.centerY) < a.hitHalfHeight + y.hitHalfHeight)
-        assertTrue("shape-aware contour audit should accept the intentional box intersection", resolved.fits)
+        assertTrue(
+            resolved.problem ?: "shape-aware contour audit should accept the intentional box intersection",
+            resolved.fits,
+        )
         assertFalse(
             TouchLayoutAudit.audit(layout, resolved.controls, region, profile, TouchLayoutAuditMode.ShippedTemplate)
                 .any { it.message.contains("'a'") && it.message.contains("'y'") },

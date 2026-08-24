@@ -241,20 +241,21 @@ object TouchPersonalityTemplates {
     private const val DIRECTION_GROUP = "direction-cluster"
     private const val UTILITY_GROUP = "utility-cluster"
     private const val SECONDARY_GROUP = "secondary-cluster"
-    private const val GAMECUBE_FACE_SCALE = 0.80f
-    private const val GAMECUBE_FACE_VISUAL_CENTER_OFFSET_Y = -2.70f
+    private const val GAMECUBE_FACE_SCALE = 1.00963f
+    private const val GAMECUBE_FACE_CENTER_X = 682.737f
+    private const val GAMECUBE_FACE_CENTER_Y = 166.4221f
     private const val GAMECUBE_FACE_NUDGE_X = -2.72f
     private const val GAMECUBE_FACE_NUDGE_Y = 2.25f
     private const val GAMECUBE_UTILITY_SPACING = 70f
     private const val GAMECUBE_SECONDARY_OFFSET_X = 170f
     private const val JOYCON_PRIMARY_CENTER_Y = 255f
     private const val JOYCON_BUTTON_CLUSTER_CENTER_X = 636f
-    // Preserve the GameCube internal geometry while placing its complete visual
-    // group opposite the upper-left main stick. The anchor compensates for the
-    // asymmetric cluster's visual centre rather than treating A as its centre.
+    // These are the approved no-override defaults. Keep the complete asymmetric
+    // cluster opposite the upper-left main stick; do not rely on a persisted
+    // editor scale or translation to supply the shipped GameCube geometry.
     private val GAMECUBE_FACE_GROUP = TouchGroupGeometry(
-        TouchLayoutV1.FACE_CLUSTER_X_UNITS,
-        TouchLayoutV1.LEFT_PRIMARY_Y_UNITS - GAMECUBE_FACE_VISUAL_CENTER_OFFSET_Y,
+        GAMECUBE_FACE_CENTER_X,
+        GAMECUBE_FACE_CENTER_Y,
     )
     private val GAMECUBE_TOP_UTILITIES = TouchGroupGeometry(400f, 44f)
     private val GAMECUBE_SECONDARY_CONTROLS = TouchGroupGeometry(
@@ -332,7 +333,7 @@ object TouchPersonalityTemplates {
             ),
             gcFace(
                 "y", TouchOutputControl.Y, gameCubeFaceAt(-37.5f, -67.25f),
-                84f, 54f, "Y", TouchVisualRole.GameCubeBeanY, margin = 7f,
+                84f, 54f, "Y", TouchVisualRole.GameCubeBeanY,
                 rotationDegrees = -11.0f,
             ),
         ),
