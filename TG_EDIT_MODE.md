@@ -1,225 +1,289 @@
-# TG_EDIT_MODE - Touch Gamepad Editing Mode & Profile System Design
+# TG_EDIT_MODE.md
 
-## Autonomous Implementation Task
+# Touch Gamepad Editor Architecture & Profile System High-Level Design Specification
 
-Read this document and implement the Touch Gamepad editing overhaul
-autonomously.
+## Document Purpose
 
-The current controller personality layouts are considered complete and
-correct:
+This document defines the architectural direction for the next Touch
+Gamepad customization pass.
+
+The objective is not a minor UI adjustment. This is a redesign of the
+editing workflow into a production-quality touch layout editor.
+
+The existing controller personalities and default layouts are considered
+complete:
 
 -   Pro Controller 2
 -   GameCube
 -   Joy-Con 2 Left
 -   Joy-Con 2 Right
 
-Do not redesign default layouts during this task.
+This project phase focuses exclusively on:
 
-This pass is specifically for improving customization UX, editing
-workflow, persistence, and profiles.
-
-------------------------------------------------------------------------
-
-# Important Existing Architecture
-
-The existing `TouchLayoutOverride` sparse override architecture is the
-intended foundation.
-
-Do NOT create a separate competing layout system.
-
-The expected architecture:
-
-    Immutable Controller Template
-            |
-            v
-    Named Profile
-            |
-            v
-    Sparse Overrides
-            |
-            v
-    Composed Runtime Layout
-
-Factory/default layouts remain immutable.
-
-Profiles should only store user changes.
-
-A profile should never duplicate the entire controller template unless
-required for export/import.
+-   Editing workflow
+-   User customization
+-   Profile architecture
+-   Persistence
+-   UX consistency
+-   Future extensibility
 
 ------------------------------------------------------------------------
 
-# Current Problem
+# Architectural Constraint
 
-The current editor uses a large modal panel that covers most of the
-touch gamepad.
+The existing layout architecture is the foundation.
+
+The implementation MUST continue using:
+
+Template -\> Profile -\> Sparse Overrides -\> Runtime Composition
+
+The system MUST NOT create a second independent layout representation.
+
+## Required behavior
+
+Default templates:
+
+-   Are immutable.
+-   Represent official/default controller layouts.
+-   Can always be restored.
+
+Profiles:
+
+-   Store user customization only.
+-   Reference a template revision.
+-   Contain sparse overrides.
+-   Never replace the source template.
+
+Runtime:
+
+    Controller Personality
+            |
+            v
+    Default Template
+            |
+            v
+    Selected Profile Overrides
+            |
+            v
+    Resolved Touch Layout
+
+The existing TouchLayoutOverride approach should be extended, not
+replaced.
+
+------------------------------------------------------------------------
+
+# UX Research Basis
+
+This design follows established patterns from mature emulator
+touch-control systems.
+
+Dolphin Emulator's Android overlay system is the primary reference
+because it treats controller overlays as editable objects rather than a
+separate settings screen. Relevant concepts include:
+
+-   Dedicated edit mode.
+-   Visible controls during editing.
+-   Direct manipulation.
+-   Separation between drawable controls and editing behavior.
+
+WatermelonDS and related Android emulator projects similarly prioritize
+keeping the touch surface visible while allowing adjustment.
+
+Community feedback around Android emulator overlays frequently
+identifies grid/snap alignment and direct manipulation as important
+usability improvements. citeturn0search5
+
+------------------------------------------------------------------------
+
+# Current UX Problems
+
+The current editor implementation is not suitable for a complex
+controller layout system.
 
 Problems:
 
--   The user cannot see the layout while editing.
--   Adjusting spacing and alignment is difficult.
--   The editor interrupts the workflow.
--   The design does not scale for advanced customization.
+## Screen obstruction
 
-The editor should become an in-place overlay editor.
+The editor panel covers the majority of the touch surface.
 
-------------------------------------------------------------------------
+Result:
 
-# Reference Projects
+-   Users cannot evaluate spacing.
+-   Users cannot compare alignment.
+-   Users cannot see final composition.
 
-## Dolphin Emulator Android
+## Poor spatial editing
 
-https://github.com/dolphin-emu/dolphin
+Layout editing is a spatial task.
 
-Use this as the primary reference.
+A modal settings panel forces users to mentally map:
 
-Important concepts:
+Editor controls -\> Hidden layout
 
--   Dedicated edit layout mode.
--   Controls remain visible while editing.
--   Direct manipulation of controls.
--   Separate rendering/control definitions from editing behavior.
--   User-adjustable overlay controls.
+A proper editor should allow:
+
+User sees control -\> User moves control -\> User immediately
+understands result
 
 ------------------------------------------------------------------------
 
-## WatermelonDS Android
+# Proposed Editing Mode
 
-https://github.com/SapphireRhodonite/WatermelonDS
-
-Reference:
-
--   Touch-first editing philosophy.
--   Simple mobile customization.
--   Avoiding large blocking configuration screens.
-
-------------------------------------------------------------------------
-
-# New Editing Mode
-
-## Entering Edit Mode
+## Mode switching
 
 Normal mode:
 
--   Touch controls work as controller input.
+-   Touch controls behave as controller input.
 
 Edit mode:
 
--   Touch controls become editable.
--   Layout remains visible.
--   Controller input is temporarily disabled.
--   User manipulates the actual controls.
-
-Do not use a full-screen editor dialog.
+-   Touch controls become editable objects.
+-   Input forwarding is paused.
+-   Layout remains rendered.
+-   User directly manipulates controls.
 
 ------------------------------------------------------------------------
 
-# Floating Editor Toolbar
+# Editor Interface
 
-Replace the current large editor panel.
+## Floating Editor Toolbar
 
-Use a compact floating toolbar.
+Replace the large modal editor.
 
-Default:
+The toolbar should be a small floating component.
 
--   Bottom center.
+Default placement:
 
-Allow toolbar relocation:
+-   Bottom center
+
+User configurable:
 
 -   Bottom
 -   Top
 -   Left
 -   Right
 
-Example:
+Reasoning:
+
+Users have different device orientations, aspect ratios, and hand
+positions.
+
+------------------------------------------------------------------------
+
+## Toolbar Functions
+
+Primary actions:
 
     Profile
-    Add
+    Add Control
     Group
     Grid
     Snap
     Reset
-    Done
+    Save
+    Exit
 
-The toolbar should provide tools without hiding the layout.
-
-------------------------------------------------------------------------
-
-# Control Editing
-
-Selecting a control should show contextual options.
-
-Example:
-
-    Selected:
-    A Button
-
-    Position
-    Size
-    Visibility
-    Group
-    Reset
-
-The edited control must remain visible.
+The toolbar provides tools without becoming the primary visual element.
 
 ------------------------------------------------------------------------
 
-# Direct Manipulation
+# Direct Manipulation System
 
-Support:
+## Selection
 
-## Drag
+Tap a control:
 
-Move controls directly.
+-   Select object.
+-   Show bounding indicator.
+-   Open contextual actions.
 
-## Pinch
+## Movement
 
-Resize controls.
+Drag:
 
-## Group Editing
+-   Move selected control.
 
-Allow editing:
+## Scaling
 
-Individual controls:
+Pinch:
+
+-   Resize selected control.
+
+## Multi-selection
+
+Support editing:
+
+Individual:
 
 -   A
 -   B
 -   X
 -   Y
 
-or groups:
+Groups:
 
-    FaceDiamond
-     A
-     B
-     X
-     Y
-
-    DPad
-     Up
-     Down
-     Left
-     Right
-
-    Stick
-     Analog
-     Click
+-   Face diamond
+-   D-pad
+-   Analog stick assembly
 
 ------------------------------------------------------------------------
 
-# Alignment Tools
+# Group Architecture
 
-Add optional editing assistance:
+Groups are logical editing units.
 
--   Grid overlay.
--   Snap-to-grid.
--   Center horizontal guide.
--   Center vertical guide.
--   Safe edge boundaries.
+Examples:
 
-These are visual aids, not restrictions.
+    FaceDiamond
+     ├ A
+     ├ B
+     ├ X
+     └ Y
 
-Users should still be able to freely position controls.
+    DPad
+     ├ Up
+     ├ Down
+     ├ Left
+     └ Right
+
+    LeftStick
+     ├ Stick
+     └ Click
+
+A group does not change input behavior.
+
+It only affects editing operations.
+
+------------------------------------------------------------------------
+
+# Alignment Assistance
+
+The editor should provide optional visual assistance.
+
+Features:
+
+## Grid
+
+Optional grid overlay.
+
+## Snap
+
+Optional snapping.
+
+## Guides
+
+Display:
+
+-   Horizontal center line.
+-   Vertical center line.
+-   Equal spacing guides.
+-   Safe edge zones.
+
+Important:
+
+Guides assist users.
+
+They do not restrict placement.
 
 ------------------------------------------------------------------------
 
@@ -230,122 +294,147 @@ Profiles must be personality-specific.
 Example:
 
     GameCube
-     ├ Default
-     ├ Smash
-     └ Custom
+
+    Default
+    Smash
+    Custom
 
     Pro Controller 2
-     ├ Default
-     └ FPS
 
-Each personality has independent profile storage.
+    Default
+    FPS
+    RPG
 
 ------------------------------------------------------------------------
 
-# Profile Rules
+# Default Profile Protection
 
-Default profiles:
+Factory profiles:
 
--   Always preserved.
--   Never overwritten.
--   Always restorable.
+-   Cannot be overwritten.
+-   Cannot be deleted.
+-   Always available.
 
 User actions:
 
--   Reset to Default.
--   Duplicate Default.
--   Create Custom Profile.
--   Rename profile.
+-   Reset to default.
+-   Duplicate default.
+-   Create custom profile.
+-   Rename custom profile.
 
 ------------------------------------------------------------------------
 
-# Future Game/Application Profiles
+# Future Per-Game Profiles
 
-Design profiles so future expansion is possible:
+The architecture should support future expansion:
 
 Example:
 
     GameCube
-     ├ Default
-     ├ Smash Ultimate
-     └ Mario Kart
 
-Do not implement automatic game detection yet.
+    Default
+    Smash Ultimate
+    Mario Kart
+
+Automatic game detection is outside this implementation phase.
 
 ------------------------------------------------------------------------
 
-# Data Model Direction
+# Persistence Model
 
-Suggested:
+Recommended structure:
 
     TouchProfile
-    - id
-    - name
-    - personality
-    - templateRevision
-    - overrides
+
+    id
+    name
+    personality
+    templateId
+    templateRevision
+    overrideDocument
+    metadata
 
 Override:
 
-    ControlOverride
-    - position
-    - scale
-    - visibility
-    - group
+    TouchControlOverride
 
-Future compatible:
+    position
+    scale
+    visibility
+    group
 
--   rotation
--   themes
--   import/export
+Future compatible fields:
+
+-   Rotation
+-   Theme
+-   Opacity
+-   Animation behavior
 
 ------------------------------------------------------------------------
 
-# Implementation Phases
+# Implementation Plan
 
-## Phase 1 - Editor Foundation
+## Phase 1: Editor Foundation
 
 Implement:
 
--   Overlay edit mode.
+-   Edit mode state.
 -   Floating toolbar.
--   Control selection.
+-   Selection.
 -   Dragging.
--   Resize gestures.
+-   Scaling.
+-   Save/cancel flow.
 
-## Phase 2 - Editing Quality
+## Phase 2: Editing Quality
 
 Implement:
 
 -   Grid.
 -   Snap.
 -   Groups.
--   Multi-selection.
+-   Multi-select.
 -   Alignment helpers.
 
-## Phase 3 - Profiles
+## Phase 3: Profiles
 
 Implement:
 
--   Save/load profiles.
--   Duplicate profiles.
--   Reset to defaults.
--   Import/export foundation.
+-   Profile creation.
+-   Profile switching.
+-   Profile duplication.
+-   Reset.
+-   Export/import foundation.
 
 ------------------------------------------------------------------------
 
-# Success Criteria
+# Validation Requirements
 
-The final system should feel like a modern emulator touch-control
-editor:
+Before completion:
 
--   The gamepad remains visible while editing.
--   Users directly manipulate controls.
--   Default layouts cannot be destroyed.
--   Profiles allow experimentation.
--   Each personality has separate customization.
--   Future per-game layouts are possible.
--   The existing template/override architecture remains the source of
-    truth.
+Verify:
 
-Proceed autonomously after reading this document.
+-   Existing default layouts are unchanged.
+-   Profile switching does not mutate templates.
+-   Multiple personalities maintain independent profiles.
+-   Editing remains usable on:
+    -   16:9
+    -   16:10
+    -   4:3
+    -   1:1 displays
+-   Large layouts remain editable without toolbar obstruction.
+
+------------------------------------------------------------------------
+
+# Final Goal
+
+The Touch Gamepad editor should feel comparable to a modern emulator
+overlay editor:
+
+-   Visible while editing.
+-   Direct manipulation.
+-   Safe defaults.
+-   Powerful customization.
+-   Future-proof profile architecture.
+
+Implement this as an extension of the existing layout composition
+system.
