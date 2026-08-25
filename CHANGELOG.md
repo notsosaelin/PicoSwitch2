@@ -66,6 +66,15 @@ the one still connected keeps working throughout. See
 
 ### Fixed
 
+- **Controller Link A/B and X/Y were reversed on the console after the Touch Gamepad fix below.**
+  The two sets of face buttons need OPPOSITE corrections — an on-screen button sends the letter it
+  draws, while a physical key has to be interpreted against the plastic the handheld actually
+  prints — and they were sharing one translation, so correcting the on-screen pad inverted every
+  press on the handheld's built-in controls. They are now translated separately. Pressing a face
+  button on the built-in controls once again reaches the button in the same place on the console,
+  on both Nintendo-labelled and Xbox-labelled handhelds. Touch Gamepad is unchanged, no adapter
+  reflash is needed, and both paths are now covered end to end so neither can silently invert the
+  other again.
 - **Touch Gamepad A/B and X/Y were reversed on the console in both Nintendo and Xbox layouts.**
   The Android companion already sent logical face-button usages, but the firmware applied its
   positional physical-controller map to them a second time. Descriptor-proven bridge input now

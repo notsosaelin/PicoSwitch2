@@ -16,14 +16,14 @@ import kotlinx.coroutines.flow.asStateFlow
  * - publishing one complete [ControllerState] snapshot per input event,
  * - neutralizing on every boundary (source change, layout change, teardown).
  *
- * ## Why buttons are held POSITIONALLY
+ * ## Why buttons are held AS REPORTED
  *
- * [pressButton] takes the button in its physical POSITION, before the face
- * layout is applied, and the layout is applied at publish time. That is what
- * makes a layout change safe while keys are held: the same physical key resolves
- * to its new logical meaning instead of a stale one being stuck down. (The state
- * is neutralized on a layout change anyway — belt and braces, because a stuck
- * button on a console is one of the worst failure modes this bridge has.)
+ * [pressButton] takes the button exactly as the platform named it, before the
+ * face layout is applied, and the layout is applied at publish time. That is
+ * what makes a layout change safe while keys are held: the same physical key
+ * resolves to its new logical meaning instead of a stale one being stuck down.
+ * (The state is neutralized on a layout change anyway — belt and braces, because
+ * a stuck button on a console is one of the worst failure modes this bridge has.)
  *
  * ## Why touch buttons are a separate set
  *
@@ -68,7 +68,7 @@ class ControllerInputState {
     var authority: InputAuthority = InputAuthority.Physical
         private set
 
-    private val heldPositionalButtons = mutableSetOf<ControllerButton>()
+    private val heldPhysicalButtons = mutableSetOf<ControllerButton>()
     private val virtualButtons = mutableSetOf<ControllerButton>()
     private var keyDpad = DpadState.None
     private var hatDpad = DpadState.None
@@ -119,10 +119,16 @@ class ControllerInputState {
         neutralize()
     }
 
-    /** A physical button, identified by its POSITION on the pad. */
-    fun pressButton(positional: ControllerButton, pressed: Boolean) {
+    /**
+     * A physical button, named exactly as the source device reported it.
+     *
+     * Face keys are still in the source's own dialect here — positional on an
+     * Xbox-style pad, printed-legend on a Nintendo-labelled handheld — and are
+     * translated by [ControllerLayoutResolver.mapPhysicalFaceKey] at publish time.
+     */
+    fun pressButton(reported: ControllerButton, pressed: Boolean) {
         if (authority != InputAuthority.Physical) return
-        if (pressed) heldPositionalButtons += positional else heldPositionalButtons -= positional
+        if (pressed) heldPhysicalButtons += reported else heldPhysicalButtons -= reported
         publish()
     }
 
@@ -179,7 +185,7 @@ class ControllerInputState {
      * as a stuck button.
      */
     fun neutralize() {
-        heldPositionalButtons.clear()
+        heldPhysicalButtons.clear()
         virtualButtons.clear()
         keyDpad = DpadState.None
         hatDpad = DpadState.None
@@ -201,12 +207,18 @@ class ControllerInputState {
         val logical = mutableSetOf<ControllerButton>()
         logical += virtualButtons
 
-        val positional: Set<ControllerButton>
         val analog: AnalogFrame
         val dpad: DpadState
+        // Each origin brings its face buttons in its own dialect and gets the
+        // mapper for that dialect. They are NOT interchangeable: a physical key
+        // needs the source device's legend corrected, an on-screen slot needs the
+        // drawn presentation honoured, and those are opposite under the same
+        // layout. See the ControllerLayout.kt header.
         when (authority) {
             InputAuthority.Physical -> {
-                positional = heldPositionalButtons
+                heldPhysicalButtons.mapTo(logical) {
+                    ControllerLayoutResolver.mapPhysicalFaceKey(it, resolvedLayout.layout)
+                }
                 analog = physicalAnalog
                 dpad = DpadState(
                     up = keyDpad.up || hatDpad.up,
@@ -216,8 +228,10 @@ class ControllerInputState {
                 )
             }
             InputAuthority.Touch -> {
-                positional = touch.positionalButtons
                 logical += touch.logicalButtons
+                touch.positionalButtons.mapTo(logical) {
+                    ControllerLayoutResolver.mapTouchFacePosition(it, resolvedLayout.layout)
+                }
                 analog = AnalogFrame(
                     leftX = touch.leftX, leftY = touch.leftY,
                     rightX = touch.rightX, rightY = touch.rightY,
@@ -225,9 +239,6 @@ class ControllerInputState {
                 )
                 dpad = touch.dpad
             }
-        }
-        positional.mapTo(logical) {
-            ControllerLayoutResolver.mapFaceButton(it, resolvedLayout.layout)
         }
 
         _state.value = ControllerState(

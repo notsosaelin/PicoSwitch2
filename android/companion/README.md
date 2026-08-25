@@ -633,8 +633,15 @@ rendering. It does not emulate Bluetooth HID Device or a real PicoSwitch2 radio.
   retail keys are accepted only in the exact 160-byte portal format, stored in an app-private file,
   and never sent to firmware, diagnostics, or a library export.
 - Android controller source and Auto/Nintendo/Xbox face layout are persisted by input descriptor.
-  Auto recognizes the audited AYN and Retroid built-in identities as Nintendo-style and otherwise
-  falls back to Android's positional/Xbox convention; explicit selection covers unknown devices.
+  Auto recognizes the audited AYN `0x2020/0x0111` and Retroid built-in identities as legend-reporting
+  and otherwise falls back to Android's positional/Xbox convention; explicit selection covers unknown
+  devices. AYN's button-layout toggle changes the device IDENTITY, so the same handheld in Xbox mode
+  (`0x0112`, "Xbox Wireless Controller") is correctly treated as positional — the two modes send
+  different key codes for the same physical button and must not resolve alike.
+  The setting drives two SEPARATE mappers — the built-in pad's keys are corrected against the
+  legend its plastic prints, while an on-screen slot simply sends the letter it draws — and under a
+  given layout those are opposites. Merging them inverts one origin; see `docs/bridge/PROTOCOL.md`
+  §3.2.
   Capture remains an OEM-specific C/Z choice until a labeled Thor/Retroid input pass is recorded.
 - The Input page reads the firmware's bounded source registry and lets a bonded/encrypted management
   client choose one Active controller. A handoff neutralizes the console output and waits for a fresh

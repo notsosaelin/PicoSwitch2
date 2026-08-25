@@ -226,14 +226,15 @@ class BridgeSessionTest {
             f.listener.onLinkUp("PicoSwitch2")
             f.settle()
 
-            f.input.pressButton(ControllerButton.A, true)
+            f.input.pressButton(ControllerButton.L1, true)
             f.tick(BridgeSession.REPORT_INTERVAL_MS)
 
             assertTrue(f.transport.sent.isNotEmpty())
             val report = f.transport.sent.last()
             assertEquals(ControllerReportEncoder.PAYLOAD_SIZE_V2, report.size)
-            // Button 1 (A) is bit 0 of the first button byte.
-            assertEquals(0x01, report[6].toInt() and 0xFF)
+            // Button 5 (L1) is bit 4 of the first button byte. A shoulder rather
+            // than a face button: this pins the SENDER, not the face mapping.
+            assertEquals(0x10, report[6].toInt() and 0xFF)
             assertEquals(BridgeLinkPhase.Playing, f.session.state.value.phase)
             assertTrue(f.session.state.value.reportCount > 0)
         }

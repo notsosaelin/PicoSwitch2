@@ -110,20 +110,23 @@ class ControllerInputStateTest {
     // ---------------------------------------------------- layout is applied late
 
     /**
-     * Buttons are held POSITIONALLY and resolved through the layout at publish
-     * time. That is what makes the physical bottom face button mean B on a
-     * Nintendo-labelled host without the backend having to know the layout.
+     * Buttons are held AS THE SOURCE REPORTED THEM and resolved through the
+     * layout at publish time, so the backend never has to know the layout.
+     *
+     * A Nintendo-labelled handheld reports its printed letters, so `BUTTON_A` is
+     * already the console's A. A positional source names its bottom button `A`,
+     * and the console's bottom button is B.
      */
-    @Test fun `layout is applied to positional buttons at publish time`() {
+    @Test fun `layout is applied to reported buttons at publish time`() {
         val input = ControllerInputState()
         input.setRequestedLayout(ControllerFaceLayout.Nintendo)
 
         input.pressButton(ControllerButton.A, true)
-        assertEquals(setOf(ControllerButton.B), input.state.value.buttons)
+        assertEquals(setOf(ControllerButton.A), input.state.value.buttons)
 
         input.setRequestedLayout(ControllerFaceLayout.Xbox)
         input.pressButton(ControllerButton.A, true)
-        assertEquals(setOf(ControllerButton.A), input.state.value.buttons)
+        assertEquals(setOf(ControllerButton.B), input.state.value.buttons)
     }
 
     /**

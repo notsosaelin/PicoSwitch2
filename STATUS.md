@@ -7,7 +7,34 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
-- **Last software verification:** 2026-08-24 — Touch Gamepad layout editor and profile pass.
+- **Controller Link face-button inversion — fixed 2026-08-24, hardware replay pending.** The
+  2026-08-23 Touch Gamepad face fix moved the firmware's four bridge face usages onto their logical
+  A/B/X/Y destinations. That is correct for the on-screen pad, but `from_android_bridge` provenance
+  is per device: the adapter sees one bridge stream and cannot tell an on-screen press from a
+  built-in-pad press, so every Controller Link face press inverted on console under both layouts.
+  Root cause was one shared `mapFaceButton` serving two origins that need OPPOSITE corrections — an
+  on-screen slot sends the letter it draws, a physical key must be interpreted against the legend
+  the handheld actually prints. Now `mapTouchFacePosition` and `mapPhysicalFaceKey`, applied per
+  origin in `ControllerInputState.publish()`. **Companion-only; no firmware source changed and no
+  reflash is required.** The physical path gained the cross-layer coverage it never had:
+  `tools/fixtures/controller_link_face_mapping.csv` drives `ControllerLinkFaceMappingTest` (platform
+  key + layout -> usage) and `tools/test_controller_link_face_goldens.c` (usage -> production
+  parser -> bridge seam -> Pro Controller 2 report bit), mirroring the touch catalog fixture, and a
+  resolver test asserts the two mappers can never resolve alike. Bench testing on a live Odin 2 Mini
+  the same day found the second half of the defect: AYN's button-layout toggle changes the device
+  IDENTITY (`0x2020/0x0111` "Odin Controller", legend-reporting, versus `0x0112` "Xbox Wireless
+  Controller", positional) and Auto claimed BOTH as Nintendo, so a handheld left in Xbox mode
+  inverted every face button on its own. Auto now separates the two modes. Touch Gamepad behaviour is
+  byte-identical; the 20-row touch golden is unchanged and green. Console confirmation of the
+  corrected labels is still owed on both origins.
+- **Last software verification:** 2026-08-24 — Controller Link face-button repair. **Companion
+  source only; no firmware source changed and no adapter reflash required.** 72/72 declared active
+  host-test targets rebuilt from current source and passed (up from 71; the new target is
+  `test_controller_link_face_goldens`), 798 Android JVM test executions across `:bridge-core`,
+  `:management-core` and both app variants with 0 failures, and
+  `check_android_descriptor_parity.py` green at bridge contract 3 with an unchanged 161-byte
+  descriptor digest — confirming this is a semantic repair above the wire, not a contract change.
+- **Previous software verification:** 2026-08-24 — Touch Gamepad layout editor and profile pass.
   **Android only; no firmware source changed**, so the host/firmware suites were not re-run and the
   2026-08-23 result below remains the current firmware verification. This pass: 777 Android JVM test
   executions across `:bridge-core`, `:management-core` and both app variants with 0 failures (up
@@ -346,11 +373,12 @@ console-facing protocol owner. Reference hardware is an AYN Thor (Android 13 / A
   size/bounds, and one idempotent release-all invoked from every invalidating boundary. Physical
   versus touch input is an explicit `InputAuthority`, never a merge; entering rebinds the session
   with `bindSource(null, touchCapabilities)` so console rumble reaches the host's own actuator, and
-  no synthetic input device is invented. Face controls are positions resolved through the existing
-  `ControllerLayoutResolver`; the Android bridge seam now preserves those logical A/B/X/Y usages
+  no synthetic input device is invented. Face controls are positions resolved through
+  `ControllerLayoutResolver`; the Android bridge seam preserves those logical A/B/X/Y usages
   instead of applying the direct-controller B/A/Y/X map a second time. The correction is limited to
   those four bridge face usages; direct controllers, all non-face controls, and raw Joy-Con source
-  bits are unchanged. The exact bridge descriptor also pins the sequential/no-extra parser profile,
+  bits are unchanged. **That seam correction is per DEVICE, not per origin**, so it also landed on
+  Controller Link and inverted it (fixed 2026-08-24 — see below). The exact bridge descriptor also pins the sequential/no-extra parser profile,
   so an incidental phone/PC name or VID/PID cannot activate a physical-controller quirk before the
   seam. A shared 20-row catalog fixture now enforces exact face-key/label/HID-usage coverage and is
   driven through the production descriptor parser, bridge-aware seam and final Pro2/GameCube/Joy-Con

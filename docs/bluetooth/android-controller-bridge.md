@@ -560,10 +560,18 @@ Build the smallest possible debug Activity before designing the final UI:
    selected `bthid_gamepad` driver, and normalized event values.
 
 The Thor reached a real game without opening Android Bluetooth Settings. Its first pass also exposed
-that direct Android `KEYCODE_BUTTON_A/B/X/Y` forwarding preserves Android's positional/Xbox
-semantics while this handheld prints Nintendo-style labels. The new layout layer swaps A/B and X/Y
-for Nintendo-style sources before the unchanged HID encoder; that correction still needs its
-focused labeled-button confirmation.
+the face-label inversion: forwarding `KEYCODE_BUTTON_A/B/X/Y` untranslated put the button printed
+`A` on the console's B. That inversion is itself the evidence for how these handhelds report —
+**by printed legend, not by position**. A positional device would have come out correct, because a
+Nintendo-labelled pad's legends already sit in the console's own arrangement.
+
+Two consequences, both durable:
+
+- A Nintendo-labelled source needs **no** face translation; a positional/Xbox-style source needs the
+  A↔B, X↔Y swap. That is the opposite of what an on-screen pad needs under the same layout name, so
+  the two have separate mappers. Full rules and the negative knowledge are in
+  [`../bridge/PROTOCOL.md`](../bridge/PROTOCOL.md) §3.2.
+- The correction still needs its focused labeled-button confirmation on console.
 
 Pico-side preparation completed 2026-08-11: the canonical descriptor parses to a 10-byte wire
 report with report ID 1, six axes at bytes 1..6, 14 buttons at bytes 7..8, and hat at byte 9. Host
@@ -652,7 +660,9 @@ compatibility substantially harder.
       profile feasibility gate and map onto the fixed 14-button contract with no firmware change.
 - [ ] Corrected physical-label A/B/X/Y plus shoulders, D-pad, both sticks, both triggers,
       Start/Select, and stick clicks pass on console. The first in-game pass proved transport and
-      exposed the face-label inversion; the software correction is not yet physically replayed.
+      exposed the face-label inversion. The correction has now been through two software passes --
+      it was inverted again on 2026-08-23 when the on-screen pad's fix was applied to physical keys
+      as well, and separated on 2026-08-24 -- and still has not been physically replayed.
 - [ ] App pause, screen lock, Bluetooth loss, and process death cannot leave a held input on console.
 - [ ] Saved-bond reconnect works after restarting the app, PicoSwitch2, and handheld.
 - [ ] Returning to a validated physical controller does not regress existing adapter behavior.

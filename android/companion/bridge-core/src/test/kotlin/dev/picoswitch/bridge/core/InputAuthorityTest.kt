@@ -101,16 +101,17 @@ class InputAuthorityTest {
         assertEquals(ControllerState.Neutral, input.state.value)
         assertEquals(TouchContribution.Neutral, input.touchContribution)
 
-        // And the physical path works again straight away.
-        input.pressButton(ControllerButton.A, true)
-        assertEquals(setOf(ControllerButton.A), input.state.value.buttons)
+        // And the physical path works again straight away. A shoulder, not a face
+        // button: this is an authority test and must not also pin face mapping.
+        input.pressButton(ControllerButton.L1, true)
+        assertEquals(setOf(ControllerButton.L1), input.state.value.buttons)
     }
 
     @Test fun `setting the same authority twice is not a hidden neutralize`() {
         val input = ControllerInputState()
-        input.pressButton(ControllerButton.A, true)
+        input.pressButton(ControllerButton.L1, true)
         input.setAuthority(InputAuthority.Physical)
-        assertEquals(setOf(ControllerButton.A), input.state.value.buttons)
+        assertEquals(setOf(ControllerButton.L1), input.state.value.buttons)
     }
 
     @Test fun `neutralize clears both origins`() {
@@ -152,11 +153,16 @@ class InputAuthorityTest {
     // ------------------------------------------------------------ face layout
 
     /**
-     * One resolver, one truth. A touch face press enters by the same positional
-     * route a physical key does, so the layout preference applies identically and
-     * the on-screen legend cannot drift away from the bit that is sent.
+     * The two origins take the SAME layout to OPPOSITE conclusions, and this is
+     * where that has to be true or a console press is wrong.
+     *
+     * An on-screen slot sends the letter it draws: under a Nintendo presentation
+     * the south slot is drawn `B` and sends B. A physical key on a
+     * Nintendo-labelled handheld already carries its printed letter, so
+     * `BUTTON_A` sends A untouched. Sharing one mapper here is exactly the defect
+     * that inverted Controller Link on 2026-08-23.
      */
-    @Test fun `the face layout applies to touch presses exactly as to physical ones`() {
+    @Test fun `a touch slot and a physical key resolve by their own rules`() {
         val input = ControllerInputState()
         input.setRequestedLayout(ControllerFaceLayout.Nintendo)
         input.setAuthority(InputAuthority.Touch)
@@ -165,6 +171,10 @@ class InputAuthorityTest {
         assertEquals(setOf(ControllerButton.B), input.state.value.buttons)
 
         input.applyTouch(TouchContribution(positionalButtons = setOf(FaceButtonPosition.East.positional)))
+        assertEquals(setOf(ControllerButton.A), input.state.value.buttons)
+
+        input.setAuthority(InputAuthority.Physical)
+        input.pressButton(ControllerButton.A, true)
         assertEquals(setOf(ControllerButton.A), input.state.value.buttons)
     }
 

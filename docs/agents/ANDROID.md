@@ -190,7 +190,7 @@ Capture therefore has no physical key by default, which is correct: neither audi
 dedicated Capture key, and Capture is reached through its on-screen button. Home keeps
 `KEYCODE_BUTTON_MODE`.
 
-`AndroidInputBackend.positionalButtonForKey()` is the whole table and is deliberately incomplete —
+`AndroidInputBackend.reportedButtonForKey()` is the whole table and is deliberately incomplete —
 anything absent returns null and is ignored. `PhysicalKeyMappingTest` pins it, including a sweep
 asserting that **no** physical key maps to Capture or C.
 
