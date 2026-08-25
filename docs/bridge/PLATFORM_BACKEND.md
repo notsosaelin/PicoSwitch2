@@ -107,7 +107,7 @@ bytes.
 
 | Host event | Call |
 |---|---|
-| Face/shoulder/stick-click/Start/Select/Home key | `pressButton(positional, pressed)` |
+| Face/shoulder/stick-click/Start/Select/Home key | `pressButton(reported, pressed)` |
 | D-pad key | `pressDpad(up=, right=, down=, left=)` — pass only what changed |
 | One analog event (sticks + triggers + hat) | `applyAnalog(AnalogFrame(...))` |
 | On-screen / software button | `setVirtualButton(logical, pressed)` |
@@ -116,9 +116,13 @@ bytes.
 
 Four rules that are easy to get wrong:
 
-1. **`pressButton` takes the POSITIONAL button.** The bottom face button is `A` no matter what the
-   plastic says. `ControllerLayoutResolver` applies the Nintendo/Xbox face mapping at publish
-   time. A backend that pre-swaps A/B breaks the layout setting.
+1. **`pressButton` takes the button AS THE SOURCE REPORTED IT** — forward the platform's own key
+   code meaning and nothing else. `ControllerLayoutResolver.mapPhysicalFaceKey` applies the
+   Nintendo/Xbox correction at publish time, and a backend that pre-swaps A/B breaks the layout
+   setting. Note that "as reported" is not the same as positional: a positional/Xbox-style pad
+   names its bottom button `A`, but a Nintendo-labelled handheld names its keys after the printed
+   legend. Deciding between those two is the layout setting's whole job, and it belongs in the
+   resolver, not in a backend.
 2. **One host event = one `applyAnalog` call.** Publishing sticks, triggers and hat separately
    emits three snapshots per event and lets an observer see a half-applied frame.
 3. **`AnalogFrame.dpad == null` means "this source has no hat axes"**, not "the hat is centered".
@@ -383,7 +387,7 @@ always-on at report cadence.
 | `ControllerReportEncoder` / `BridgeHidDescriptor` | The firmware matches the descriptor **byte for byte**. A second encoder is a second chance to diverge. |
 | `BridgeOutputCodec` | Framing tolerance and strict rejection are protocol properties, not platform workarounds. |
 | `ControllerInputState` | Held state, D-pad merging, layout application, neutralization. |
-| `ControllerLayoutResolver` + `ControllerFaceLayout` | The audited handheld identity table and the A/B–X/Y swap. |
+| `ControllerLayoutResolver` + `ControllerFaceLayout` | The audited handheld identity table, plus the two OPPOSITE A/B–X/Y mappers — one per input origin. See `docs/bridge/PROTOCOL.md` §3.2. |
 | `ControllerCandidates` | The usability/exclusion rule. |
 | `TouchControlEngine`, `TouchContactTracker`, `TouchGamepad` | Contact ownership, claim/exclusivity rules, release-all, authority transitions. A second host reimplementing "which control does this thumb own" would reproduce the index-versus-identifier bug from scratch. |
 | `TouchStick`, `TouchDpad`, `TouchAxis` | Circular clamping, radial deadzone rescaling, eight-way sectors with radial and angular hysteresis, and the single conversion into bridge units. |

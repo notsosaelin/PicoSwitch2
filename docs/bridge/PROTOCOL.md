@@ -154,6 +154,10 @@ to map only those four bridge usages directly to canonical A/B/X/Y. Direct contr
 locked `NS2_BASE_BUTTON_MAP` B/A/Y/X policy, and every non-face bridge usage retains the ordinary
 base map. This is a semantic correction, not a report-layout or contract-version change.
 
+That provenance flag is **per device, not per origin**: the adapter sees one bridge stream and
+cannot tell an on-screen press from a built-in-pad press. Getting both origins into the logical
+contract is therefore entirely the companion's job — see §3.2.
+
 The exact bridge descriptor also selects the plain sequential/no-extra generic parse profile before
 the seam. A host exposes its phone or PC name and VID/PID, and those incidental values may resemble
 a supported physical controller; they must never activate that controller's button table, trigger
@@ -162,32 +166,54 @@ identity resolution cannot displace the descriptor-selected profile.
 
 ### 3.2 Physical layout vs logical semantics
 
-Three distinct things, kept distinct:
+The wire contract above is **logical**: usages 1–4 mean Nintendo A/B/X/Y. Face input reaches it
+from two origins that speak different dialects, so each has its own mapper and the two are
+**opposites under the same layout**:
 
 ```text
-platform key / touch position
-  -> POSITIONAL ControllerButton
-  -> layout mapper
-  -> LOGICAL ControllerButton / HID usage
-  -> descriptor-proven Android-bridge seam
-  -> canonical controller state
-  -> selected personality encoder
+physical face key (source's own dialect) -> mapPhysicalFaceKey   -\
+                                                                   >-- LOGICAL ControllerButton
+on-screen face position (drawn letter)   -> mapTouchFacePosition -/         -> HID usage 1..4
+                                                                           -> Android-bridge seam
+                                                                           -> canonical state
+                                                                           -> personality encoder
 ```
 
-Hosts report face buttons positionally: the bottom face button is `A` on Android and on XInput
-regardless of the printed legend. `ControllerFaceLayout` is `Auto` / `Nintendo` / `Xbox`;
-`Nintendo` swaps A↔B and X↔Y, and `Auto` resolves via a bounded, hardware-audited handheld
-identity table with a manual override that is always authoritative.
+`ControllerFaceLayout` is `Auto` / `Nintendo` / `Xbox`. `Auto` resolves via a bounded,
+hardware-audited handheld identity table; a manual override is always authoritative.
 
-Held buttons are stored **positionally** and mapped at publish time, so a layout change cannot
-leave a key stuck under its old meaning. (Held input is also cleared on a layout change — a stuck
-button on a console is among the worst failures this bridge has.)
+| Layout | Physical key (Controller Link) | On-screen slot (Touch Gamepad) |
+| --- | --- | --- |
+| `Nintendo` | pass-through — the handheld already reports its **printed legend**, so its `A` is the console's A | swap — the south slot is drawn `B` and sends B |
+| `Xbox` | swap A↔B, X↔Y — a positional pad names its **bottom** button `A`, and the console's bottom button is B | pass-through — the south slot is drawn `A` and sends A |
 
-Touch face buttons enter the same layout decision as positions; Home, Capture, C and the other
-non-face on-screen actions are already logical and are not face-swapped. Touch and physical input
-remain separate origins: releasing one must not cancel the other. Tests for face correctness must
-continue through the source-aware seam and final personality encoder—matching the drawn label to an
-intermediate Kotlin enum is not sufficient.
+The physical column is a **source-device quirk correction**, and both of its rows produce the same
+user-visible rule: the face button you press lands on the face button in the same place on the
+Switch. The on-screen column is a **presentation** choice: the letter drawn is the letter sent, and
+`faceLabel()` is derived from the same mapper so a legend cannot drift from its bit.
+
+That a Nintendo-labelled handheld reports by legend rather than by position is evidence, not
+assumption: the first AYN Thor in-game pass forwarded key codes untranslated and came out inverted,
+which is only possible for a legend-reporting device.
+
+> **Do not merge the two mappers.** They were one function until 2026-08-24, and it could only ever
+> be right for one origin at a time: correcting the on-screen pad silently inverted every physical
+> face key on console, with every test still green.
+
+Held physical buttons are stored **as the source reported them** and mapped at publish time, so a
+layout change cannot leave a key stuck under its old meaning. (Held input is also cleared on a
+layout change — a stuck button on a console is among the worst failures this bridge has.)
+
+Home, Capture, C and the other non-face actions are already logical and are never face-swapped, on
+either origin. Touch and physical input remain separate origins: releasing one must not cancel the
+other. Tests for face correctness must continue through the source-aware seam and final personality
+encoder — matching a drawn label to an intermediate Kotlin enum is not sufficient. Both origins now
+have that cross-layer coverage, keyed off a shared fixture:
+
+| Origin | Fixture | Head (Kotlin) | Tail (C) |
+| --- | --- | --- | --- |
+| On-screen | `tools/fixtures/touch_face_mapping.csv` | `TouchProfileCatalogTest` | `tools/test_touch_layout_face_goldens.c` |
+| Physical | `tools/fixtures/controller_link_face_mapping.csv` | `ControllerLinkFaceMappingTest` | `tools/test_controller_link_face_goldens.c` |
 
 ### 3.3 Unmapped physical buttons — durable rule
 

@@ -156,7 +156,7 @@ class AndroidInputBackend(
         val device = event.device ?: return false
         if (device.descriptor != selectedDescriptor || event.repeatCount > 0) return false
         val pressed = event.action == KeyEvent.ACTION_DOWN
-        val button = positionalButtonForKey(event.keyCode)
+        val button = reportedButtonForKey(event.keyCode)
         if (button != null) {
             controller.pressButton(button, pressed)
             return true
@@ -231,9 +231,16 @@ class AndroidInputBackend(
         )
 
         /**
-         * Android key code -> POSITIONAL controller button, before any face-layout
-         * resolution. Pure, so the mapping is pinned by tests rather than needing a
-         * real InputDevice.
+         * Android key code -> the controller button AS THE SOURCE REPORTED IT,
+         * before any face-layout resolution. Pure, so the mapping is pinned by
+         * tests rather than needing a real InputDevice.
+         *
+         * Deliberately NOT called "positional": what `KEYCODE_BUTTON_A` refers to
+         * depends on the device. An Xbox-style pad means its bottom button; a
+         * Nintendo-labelled handheld means the button printed `A`, on the right.
+         * Choosing between those is the face layout's job, and it happens in
+         * `ControllerLayoutResolver.mapPhysicalFaceKey` at publish time — never
+         * here. A backend that pre-swaps A/B breaks the layout setting.
          *
          * DELIBERATELY INCOMPLETE. Only the standard controls this project has an
          * intentional meaning for are listed. Anything else returns null and is
@@ -255,7 +262,7 @@ class AndroidInputBackend(
          * the ADB audits found no dedicated Capture key on either audited handheld,
          * and the on-screen button is how it is reached.
          */
-        internal fun positionalButtonForKey(keyCode: Int): ControllerButton? = when (keyCode) {
+        internal fun reportedButtonForKey(keyCode: Int): ControllerButton? = when (keyCode) {
             KeyEvent.KEYCODE_BUTTON_A -> ControllerButton.A
             KeyEvent.KEYCODE_BUTTON_B -> ControllerButton.B
             KeyEvent.KEYCODE_BUTTON_X -> ControllerButton.X

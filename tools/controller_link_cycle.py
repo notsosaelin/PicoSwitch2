@@ -16,6 +16,10 @@ is optional for the legacy workload; every other workload REQUIRES it, because
 the adapter's own counters are the only place the acceptance invariants are
 observable.
 
+If the same Android device is visible through two ADB transports, select one
+with `--adb-serial`. An ambiguous ADB target is a harness failure, never a
+Bluetooth result.
+
 Pacing is deliberately human-scale. Do not lower it to "stress test" the stack:
 the failure being measured is a race during connection establishment, and a
 zero-delay loop measures something else.
@@ -91,6 +95,10 @@ PNG_MAGIC = bytes((0x89, 0x50, 0x4E, 0x47))
 
 # Set by main() when --evidence-dir is given; None disables capture.
 EVIDENCE_DIR = None
+
+# Set by main() when --adb-serial is given. Keeping this in the one ADB wrapper
+# makes every command use the same transport, including UI dumps and logcat.
+ADB_SERIAL = ""
 
 OK = "ok"
 EXCLUDED = "EXCLUDED"
@@ -178,8 +186,9 @@ def adb_run(*args: str, timeout: int = 90) -> ShellResult:
     a None that looks like a device problem.
     """
     try:
+        serial_args = ("-s", ADB_SERIAL) if ADB_SERIAL else ()
         done = subprocess.run(
-            ("adb",) + args, capture_output=True, timeout=timeout,
+            ("adb",) + serial_args + args, capture_output=True, timeout=timeout,
             encoding="utf-8", errors="replace",
         )
         return ShellResult(done.stdout or "", done.stderr or "",
@@ -274,6 +283,35 @@ def tap_point(point) -> bool:
 
 def tap_text(xml: str, label: str) -> bool:
     return tap_point(find_text(xml, label))
+
+
+def tap_text_with_vertical_scroll(
+    label: str,
+    *,
+    toward_end: bool,
+    attempts: int = 8,
+) -> bool:
+    """Tap text that may be outside the current vertical viewport.
+
+    Compose exposes only visible semantics nodes through uiautomator. The Touch
+    Gamepad menu grew beyond one screen on 2026-08-24, so a direct text lookup
+    can no longer reach its Exit action. This helper checks before every swipe
+    and stays bounded; failure remains an observable harness/UI result.
+    """
+    start_y, end_y = ((900, 250) if toward_end else (250, 900))
+    for attempt in range(attempts + 1):
+        xml, dump_failed = ui_dump_checked()
+        if dump_failed:
+            return False
+        if tap_text(xml, label):
+            return True
+        if attempt < attempts:
+            adb(
+                "shell", "input", "swipe",
+                "1000", str(start_y), "1000", str(end_y), "350",
+            )
+            time.sleep(0.25)
+    return False
 
 
 def tap_desc(xml: str, label: str) -> bool:
@@ -591,8 +629,8 @@ def app_start(settle: float) -> None:
 def live_activity_instances() -> int:
     """How many MainActivity records the platform currently holds."""
     dump = adb("shell", "dumpsys", "activity", "activities")
-    return len(re.findall(r"Hist\s+#\d+: ActivityRecord\{[^}]*" +
-                          re.escape("MainActivity"), dump))
+    return len(re.findall(r"Hist\s+#\d+: ActivityRecord\{[^}]*\b" +
+                          re.escape(ACTIVITY) + r"\b", dump))
 
 
 def app_restart(settle: float) -> None:
@@ -671,13 +709,32 @@ def app_enter_touch(settle: float) -> str | None:
             return dump_failed
     if tap_text(xml, "Touch Gamepad"):
         return None
+    # The Controller screen is vertically scrollable on compact displays. Put
+    # it at the start first, then search toward the end; both searches remain
+    # bounded and prove the control was actually visible before tapping it.
+    if tap_text_with_vertical_scroll("Touch Gamepad", toward_end=False):
+        return None
+    if tap_text_with_vertical_scroll("Touch Gamepad", toward_end=True):
+        return None
     return APP_TOUCH_GAMEPAD_NOT_FOUND
 
 
 def app_exit_touch(settle: float) -> None:
     adb("shell", "input", "keyevent", "KEYCODE_BACK")
-    time.sleep(settle - 1.0)
-    tap_text(ui_dump(), "Stop playing")
+    time.sleep(max(0.25, settle - 1.0))
+
+    # Before the 2026-08-24 editor/menu change, Back exited Touch directly. It
+    # now opens a scrollable menu and leaving is an explicit action at its end.
+    # Support both shapes so old-capture reproduction and the current app keep
+    # exercising the same lifecycle.
+    tap_text_with_vertical_scroll("Exit Touch Gamepad", toward_end=True)
+    time.sleep(0.5)
+
+    # Stop playing may be above or below the restored Controller-screen
+    # viewport. Search both directions; cycle_touch_only() still verifies that
+    # the Classic link actually went down, so a missed control cannot pass.
+    if not tap_text_with_vertical_scroll("Stop playing", toward_end=False):
+        tap_text_with_vertical_scroll("Stop playing", toward_end=True)
     time.sleep(settle)
 
 
@@ -770,7 +827,7 @@ def check_single_owner() -> str | None:
     if not result.ok or "ActivityRecord" not in result.stdout:
         return HARNESS_STATE_UNKNOWN
     instances = len(re.findall(
-        r"Hist\s+#\d+: ActivityRecord\{[^}]*" + re.escape("MainActivity"),
+        r"Hist\s+#\d+: ActivityRecord\{[^}]*\b" + re.escape(ACTIVITY) + r"\b",
         result.stdout))
     if instances == 0:
         # The dump was readable but our own Activity is absent: an app state
@@ -1204,6 +1261,10 @@ def main() -> int:
     parser.add_argument("--cycles", type=int, default=30)
     parser.add_argument("--workload", default="legacy", choices=sorted(WORKLOADS))
     parser.add_argument("--port", default="", help="UART port, e.g. COM11")
+    parser.add_argument(
+        "--adb-serial", default="",
+        help="ADB device serial/transport to use when more than one is attached",
+    )
     parser.add_argument("--settle", type=float, default=4.0,
                         help="seconds between UI steps; approximates human pacing")
     parser.add_argument("--log", default="", help="append per-cycle results here")
@@ -1216,7 +1277,8 @@ def main() -> int:
                              "a label")
     args = parser.parse_args()
 
-    global EVIDENCE_DIR
+    global ADB_SERIAL, EVIDENCE_DIR
+    ADB_SERIAL = args.adb_serial
     if args.evidence_dir:
         EVIDENCE_DIR = pathlib.Path(args.evidence_dir)
         EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)

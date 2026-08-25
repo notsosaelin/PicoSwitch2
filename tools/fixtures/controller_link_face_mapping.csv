@@ -1,0 +1,26 @@
+# Controller Link (built-in physical controls) face-button contract.
+#
+# One row per resolved face layout and platform key. Both halves of the path
+# read this file so the console-facing expectation is written down once:
+#
+#   ControllerLinkFaceMappingTest (Kotlin)   platform_key + layout -> logical_button/usage
+#   tools/test_controller_link_face_goldens  usage -> bridge seam -> Pro Controller 2 report bit
+#
+# The rule every row obeys: the face button you press lands on the face button
+# in the same PLACE on the Switch. The two layouts differ only because the two
+# source families name their keys differently -- a positional/Xbox-style pad
+# names its bottom button A, a Nintendo-labelled handheld reports the printed
+# legend -- so `nintendo` is a pass-through and `xbox` is the A<->B, X<->Y swap.
+#
+# report_offset/report_mask are into the 63-byte report 0x09 body; offset 2 is
+# the first button byte (B=0x01, A=0x02, Y=0x04, X=0x08).
+#
+# layout,platform_key,logical_button,usage,report_offset,report_mask
+nintendo,BUTTON_A,A,1,2,2
+nintendo,BUTTON_B,B,2,2,1
+nintendo,BUTTON_X,X,3,2,8
+nintendo,BUTTON_Y,Y,4,2,4
+xbox,BUTTON_A,B,2,2,1
+xbox,BUTTON_B,A,1,2,2
+xbox,BUTTON_X,Y,4,2,4
+xbox,BUTTON_Y,X,3,2,8

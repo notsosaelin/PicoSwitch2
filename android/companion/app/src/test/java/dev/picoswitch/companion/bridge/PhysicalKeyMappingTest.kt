@@ -23,8 +23,8 @@ class PhysicalKeyMappingTest {
      */
     @Test
     fun `BUTTON_C and BUTTON_Z are unmapped`() {
-        assertNull(AndroidInputBackend.positionalButtonForKey(KeyEvent.KEYCODE_BUTTON_C))
-        assertNull(AndroidInputBackend.positionalButtonForKey(KeyEvent.KEYCODE_BUTTON_Z))
+        assertNull(AndroidInputBackend.reportedButtonForKey(KeyEvent.KEYCODE_BUTTON_C))
+        assertNull(AndroidInputBackend.reportedButtonForKey(KeyEvent.KEYCODE_BUTTON_Z))
     }
 
     /** They must not have been quietly repointed at C / GameChat either. */
@@ -32,7 +32,7 @@ class PhysicalKeyMappingTest {
     fun `no physical key maps to Capture or C`() {
         // Sweep every gamepad key code Android defines, plus the extras.
         for (code in KeyEvent.KEYCODE_BUTTON_A..KeyEvent.KEYCODE_BUTTON_MODE) {
-            val mapped = AndroidInputBackend.positionalButtonForKey(code)
+            val mapped = AndroidInputBackend.reportedButtonForKey(code)
             assertEquals(
                 "key code $code must not map to Capture",
                 false, mapped == ControllerButton.Capture,
@@ -63,7 +63,7 @@ class PhysicalKeyMappingTest {
             KeyEvent.KEYCODE_BUTTON_MODE to ControllerButton.Home,
         )
         expected.forEach { (code, button) ->
-            assertEquals(button, AndroidInputBackend.positionalButtonForKey(code))
+            assertEquals(button, AndroidInputBackend.reportedButtonForKey(code))
         }
     }
 

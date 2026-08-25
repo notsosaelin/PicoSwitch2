@@ -299,6 +299,26 @@ def test_adb_run_survives_undecodable_bytes():
         clc.subprocess.run = real
 
 
+def test_adb_serial_is_applied_to_every_wrapped_command():
+    import subprocess as sp
+    real_run = clc.subprocess.run
+    real_serial = clc.ADB_SERIAL
+    seen = []
+
+    def fake_run(args, **kwargs):
+        seen.append(args)
+        return sp.CompletedProcess(args, 0, "device\n", "")
+
+    clc.subprocess.run = fake_run
+    clc.ADB_SERIAL = "transport-serial"
+    try:
+        assert clc.adb_run("get-state").ok
+        assert seen == [("adb", "-s", "transport-serial", "get-state")]
+    finally:
+        clc.ADB_SERIAL = real_serial
+        clc.subprocess.run = real_run
+
+
 def _with_adb(stub):
     """Swap adb_run for the duration of a test."""
     original = clc.adb_run
@@ -356,6 +376,20 @@ def test_owner_check_names_duplicate_ownership_when_readable():
         clc.adb_run = original
     one = record.format(n=0)
     original = _with_adb(lambda *a, **k: clc.ShellResult(stdout=one, code=0))
+    try:
+        assert clc.check_single_owner() is None
+    finally:
+        clc.adb_run = original
+
+
+def test_owner_check_ignores_other_apps_named_main_activity():
+    companion = ("      * Hist  #0: ActivityRecord{abc u0 "
+                 "dev.picoswitch.companion.debug/"
+                 "dev.picoswitch.companion.MainActivity t515}")
+    launcher = ("      * Hist  #0: ActivityRecord{def u0 "
+                "rip.moth.cocoonshell/.MainActivity t54}")
+    original = _with_adb(lambda *a, **k: clc.ShellResult(
+        stdout=companion + "\n" + launcher, code=0))
     try:
         assert clc.check_single_owner() is None
     finally:

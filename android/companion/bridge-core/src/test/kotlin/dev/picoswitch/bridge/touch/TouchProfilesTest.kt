@@ -577,7 +577,7 @@ class TouchProfileCatalogTest {
                 else -> error("Unknown presentation ${row.presentation}")
             }
             val button = when (action) {
-                is TouchControlAction.Face -> ControllerLayoutResolver.mapFaceButton(
+                is TouchControlAction.Face -> ControllerLayoutResolver.mapTouchFacePosition(
                     action.position.positional,
                     presentation,
                 )
