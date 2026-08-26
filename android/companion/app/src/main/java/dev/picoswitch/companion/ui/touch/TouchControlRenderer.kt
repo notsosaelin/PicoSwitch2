@@ -14,6 +14,8 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Constraints
+import kotlin.math.cos
+import kotlin.math.sin
 import dev.picoswitch.bridge.core.ControllerFaceLayout
 import dev.picoswitch.bridge.core.ControllerLayoutResolver
 import dev.picoswitch.bridge.core.DpadState
@@ -62,6 +64,23 @@ data class TouchVisualState(
     val rightStick: TouchVector = TouchVector.Zero,
     val dpad: DpadState = DpadState.None,
     val pressed: Set<String> = emptySet(),
+    /**
+     * Controls a double tap is holding down with no finger on them.
+     *
+     * Kept apart from [pressed] rather than merged into it because the two are
+     * drawn differently on purpose: a control nobody is touching that is
+     * nevertheless sending a press is the one state on this surface the user
+     * cannot verify by looking at their own hands.
+     */
+    val latched: Set<String> = emptySet(),
+    /**
+     * Controls one deliberate slide away from becoming a hold.
+     *
+     * Its own set rather than a flag on [latched], because armed is not a
+     * weaker kind of held — nothing is held yet, and letting go now simply ends
+     * an ordinary press. Drawing it says what the next movement would do.
+     */
+    val arming: Set<String> = emptySet(),
     val enabled: Boolean = true,
 )
 
@@ -88,7 +107,10 @@ fun DrawScope.drawTouchControls(
     labelStyle: TextStyle,
 ) {
     layout.controls.forEach { control ->
-        val held = control.id in visual.pressed
+        val latched = control.id in visual.latched
+        // effectivePressed, drawn: the picture must not claim a control is at
+        // rest while the console is being told it is down.
+        val held = latched || control.id in visual.pressed
         val alpha = if (visual.enabled) opacity else opacity * DISABLED_ALPHA
         when (control.spec.visualRole) {
             TouchVisualRole.AnalogStick -> drawStick(
@@ -142,7 +164,92 @@ fun DrawScope.drawTouchControls(
                 }
             }
         }
+        // Armed is drawn only while the control is not already held: the two
+        // never overlap, and an open padlock beside a closed one would read as
+        // two states at once.
+        when {
+            latched -> drawLatchBadge(control, palette, alpha, open = false)
+            control.id in visual.arming -> drawLatchBadge(control, palette, alpha, open = true)
+        }
     }
+}
+
+/**
+ * The mark that says "this is held and no finger is doing it".
+ *
+ * Shape first, colour second. A latched control already carries the pressed
+ * fill, but pressed-versus-latched cannot be a colour distinction alone: the two
+ * palettes differ by theme, the controls sit over a user-chosen background at a
+ * user-chosen opacity, and colour vision is not universal. The padlock is
+ * therefore a silhouette that reads at a glance even where the fill does not,
+ * and the ring gives it an edge to sit on when the background is busy.
+ *
+ * Drawn OUTSIDE the control's own content so it never covers the legend: a
+ * latched `Y` must still look like `Y`.
+ *
+ * [open] draws the same padlock with its shackle lifted clear of the body, for
+ * the armed state: the lock the next movement would close. One drawing with one
+ * difference, so the two states are unmistakably the same idea rather than two
+ * unrelated marks the user has to learn separately.
+ */
+private fun DrawScope.drawLatchBadge(
+    control: ResolvedTouchControl,
+    palette: TouchControlPalette,
+    alpha: Float,
+    open: Boolean,
+) {
+    val extent = minOf(control.halfWidth, control.halfHeight)
+    if (extent <= 0f) return
+    val radius = (extent * LATCH_BADGE_RADIUS_FRACTION).coerceIn(
+        LATCH_BADGE_MIN_RADIUS,
+        LATCH_BADGE_MAX_RADIUS,
+    )
+    // Up and to the right, on the diagonal, so the badge clears both a round
+    // control's rim and a rectangular one's corner without a per-shape case.
+    val offset = (extent - radius * LATCH_BADGE_INSET) * DIAGONAL
+    val center = Offset(control.centerX + offset, control.centerY - offset)
+
+    // Inverted against the control it sits on: the disc takes the PRESSED LABEL
+    // colour and the padlock the pressed FILL. Those two are the theme's own
+    // guaranteed-contrast pair — the same pair a legend is drawn with — so the
+    // mark cannot wash out in either theme, and it reads as a knockout rather
+    // than as a second button.
+    drawCircle(palette.pressedLabel.copy(alpha = alpha), radius, center)
+    drawCircle(
+        color = palette.pressed.copy(alpha = alpha),
+        radius = radius - LATCH_BADGE_RIM_FRACTION * radius / 2f,
+        center = center,
+        style = Stroke(width = radius * LATCH_BADGE_RIM_FRACTION),
+    )
+
+    val bodyWidth = radius * LATCH_BODY_WIDTH_FRACTION
+    val bodyHeight = radius * LATCH_BODY_HEIGHT_FRACTION
+    val bodyTop = center.y + radius * LATCH_BODY_CENTER_FRACTION - bodyHeight / 2f
+    drawRoundRect(
+        color = palette.pressed.copy(alpha = alpha),
+        topLeft = Offset(center.x - bodyWidth / 2f, bodyTop),
+        size = Size(bodyWidth, bodyHeight),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(bodyWidth * 0.20f),
+    )
+    // The shackle: a half ring rising out of the body, stroked rather than
+    // filled so it stays a recognizable loop when the badge is drawn at its
+    // smallest on a heavily shrunk control.
+    val shackleRadius = radius * LATCH_SHACKLE_RADIUS_FRACTION
+    // Open: lifted off the body and shifted to one side, the way a real shackle
+    // swings clear. Closed: seated on the body.
+    val shackleLeft = center.x - shackleRadius +
+        if (open) radius * LATCH_SHACKLE_OPEN_OFFSET else 0f
+    val shackleTop = bodyTop - shackleRadius -
+        if (open) radius * LATCH_SHACKLE_OPEN_LIFT else 0f
+    drawArc(
+        color = palette.pressed.copy(alpha = alpha),
+        startAngle = 180f,
+        sweepAngle = 180f,
+        useCenter = false,
+        topLeft = Offset(shackleLeft, shackleTop),
+        size = Size(shackleRadius * 2f, shackleRadius * 2f),
+        style = Stroke(width = radius * LATCH_SHACKLE_STROKE_FRACTION),
+    )
 }
 
 private fun controlLabel(control: ResolvedTouchControl, faceLayout: ControllerFaceLayout): String =
@@ -333,6 +440,7 @@ private fun DrawScope.drawJoyConDirection(
             control.spec.output,
             Offset(control.centerX, control.centerY),
             available * JOYCON_TRIANGLE_RADIUS_FRACTION,
+            control.spec.visualRotationDegrees,
         )
         moveTo(vertices[0].x, vertices[0].y)
         lineTo(vertices[1].x, vertices[1].y)
@@ -348,35 +456,53 @@ private fun DrawScope.drawJoyConDirection(
     )
 }
 
-/** Pure geometry kept visible to JVM tests; no arrow font or glyph is involved. */
+/**
+ * Pure geometry kept visible to JVM tests; no arrow font or glyph is involved.
+ *
+ * The triangle is authored in the JOY-CON'S OWN frame — [output] names the
+ * button on the shell, so `DirectionUp` points up here — and [rotationDegrees]
+ * then turns it with the shell. A direction marking's meaning IS its
+ * orientation, so it has to rotate; a letter's meaning is the letter, so the
+ * Joy-Con (R) face buttons keep theirs upright and only move. Deriving the
+ * arrow from the screen slot instead would work today and quietly break the
+ * moment a template placed one of these anywhere else.
+ */
 internal fun joyConDirectionTriangle(
     output: TouchOutputControl,
     center: Offset,
     radius: Float,
+    rotationDegrees: Float = 0f,
 ): List<Offset> {
     val point = radius
     val wing = radius * 0.82f
     val base = radius * 0.56f
+    val radians = Math.toRadians(rotationDegrees.toDouble())
+    val cosine = cos(radians).toFloat()
+    val sine = sin(radians).toFloat()
+    fun vertex(dx: Float, dy: Float) = Offset(
+        center.x + dx * cosine - dy * sine,
+        center.y + dx * sine + dy * cosine,
+    )
     return when (output) {
         TouchOutputControl.DirectionUp -> listOf(
-            Offset(center.x, center.y - point),
-            Offset(center.x - wing, center.y + base),
-            Offset(center.x + wing, center.y + base),
+            vertex(0f, -point),
+            vertex(-wing, base),
+            vertex(wing, base),
         )
         TouchOutputControl.DirectionDown -> listOf(
-            Offset(center.x, center.y + point),
-            Offset(center.x - wing, center.y - base),
-            Offset(center.x + wing, center.y - base),
+            vertex(0f, point),
+            vertex(-wing, -base),
+            vertex(wing, -base),
         )
         TouchOutputControl.DirectionLeft -> listOf(
-            Offset(center.x - point, center.y),
-            Offset(center.x + base, center.y - wing),
-            Offset(center.x + base, center.y + wing),
+            vertex(-point, 0f),
+            vertex(base, -wing),
+            vertex(base, wing),
         )
         TouchOutputControl.DirectionRight -> listOf(
-            Offset(center.x + point, center.y),
-            Offset(center.x - base, center.y - wing),
-            Offset(center.x - base, center.y + wing),
+            vertex(point, 0f),
+            vertex(-base, -wing),
+            vertex(-base, wing),
         )
         else -> error("$output is not a Joy-Con direction output")
     }
@@ -830,6 +956,25 @@ private fun DrawScope.drawSelectionHandles(bounds: Rect, color: Color) {
 }
 
 private const val OUTLINE_WIDTH = 2f
+
+/** Sized against the control it marks, then bounded so it stays legible either way. */
+private const val LATCH_BADGE_RADIUS_FRACTION = 0.40f
+private const val LATCH_BADGE_MIN_RADIUS = 10f
+private const val LATCH_BADGE_MAX_RADIUS = 18f
+/** How far the badge is pulled back inside the control's own extent. */
+private const val LATCH_BADGE_INSET = 0.35f
+private const val LATCH_BADGE_RIM_FRACTION = 0.14f
+private const val LATCH_BODY_WIDTH_FRACTION = 0.86f
+private const val LATCH_BODY_HEIGHT_FRACTION = 0.60f
+/** Body centre below the badge centre, so the shackle above it stays balanced. */
+private const val LATCH_BODY_CENTER_FRACTION = 0.16f
+private const val LATCH_SHACKLE_RADIUS_FRACTION = 0.26f
+private const val LATCH_SHACKLE_STROKE_FRACTION = 0.18f
+/** How far an OPEN shackle swings clear of the body it would otherwise seat on. */
+private const val LATCH_SHACKLE_OPEN_OFFSET = 0.22f
+private const val LATCH_SHACKLE_OPEN_LIFT = 0.14f
+/** cos(45 degrees); the badge sits on the control's diagonal. */
+private const val DIAGONAL = 0.7071068f
 private const val WELL_ALPHA = 0.55f
 /** Legends stop short of the outline; text touching the rim reads as damage. */
 private const val LABEL_WIDTH_FRACTION = 0.78f

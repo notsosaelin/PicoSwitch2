@@ -44,6 +44,21 @@ class TouchGamepad(
 
     fun setFeedbackBackend(backend: TouchFeedbackBackend) = engine.setFeedbackBackend(backend)
 
+    /** Where double-tap-hold transitions are reported; the host picks its own log. */
+    fun setLatchObserver(observer: TouchLatchObserver) = engine.setLatchObserver(observer)
+
+    /**
+     * What the engine is tuned to right now.
+     *
+     * Exposed so a caller can change ONE tunable without asserting the rest.
+     * Two different owners set config here — the settings screen owns the
+     * deadzone and the latch default, the platform adapter owns the gesture
+     * timings it reads from the toolkit — and rebuilding from
+     * [TouchControlConfig.Default] would let whichever ran last silently discard
+     * the other's values.
+     */
+    val config: TouchControlConfig get() = engine.config
+
     fun setConfig(config: TouchControlConfig) = engine.setConfig(config)
 
     /** Replace geometry without allowing already-held contacts to claim it. */
@@ -73,6 +88,21 @@ class TouchGamepad(
 
     /** Drop every held control without giving up authority. */
     fun release(reason: TouchReleaseReason) = contacts.releaseAll(reason)
+
+    /**
+     * When the engine next has timed gesture work, in the host's contact clock.
+     *
+     * The host is the clock: it stamps contacts, so it is the only thing that
+     * can say what time it is in the same units. Consult this after every
+     * contact batch and after every [tick]; null means purely event-driven.
+     */
+    fun nextDeadlineNanos(): Long? = engine.nextDeadlineNanos()
+
+    /**
+     * Advance timed gesture work. Safe to call late, twice, or after a teardown
+     * — see [TouchControlEngine.onTick].
+     */
+    fun tick(nowNanos: Long) = engine.onTick(nowNanos)
 
     fun diagnostics(): TouchDiagnosticsSnapshot = engine.diagnostics()
 }

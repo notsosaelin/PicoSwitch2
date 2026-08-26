@@ -29,6 +29,16 @@ data class TouchGamepadSettings(
     val stickDeadzone: Float = DEFAULT_DEADZONE,
 
     /**
+     * Whether double-tapping a button and holding the second press toggles a
+     * persistent hold.
+     *
+     * The DEFAULT for controls that state no preference of their own; the layout
+     * editor's per-control choice overrides it either way. This is configuration
+     * — what is currently latched is runtime state and is never written down.
+     */
+    val doubleTapHold: Boolean = true,
+
+    /**
      * The user's chosen background image, as the platform's own reference.
      *
      * Stored as text and re-resolved on use rather than trusted: the picture can
@@ -90,6 +100,7 @@ object TouchGamepadSettingsCodec {
         editorToolbarDock: String? = null,
         editorGrid: Boolean = false,
         editorSnap: Boolean = true,
+        doubleTapHold: Boolean = true,
     ): TouchGamepadSettings = TouchGamepadSettings(
         controlOpacity = opacity.finiteOr(TouchGamepadSettings.DEFAULT_OPACITY)
             .coerceIn(TouchGamepadSettings.MIN_OPACITY, TouchGamepadSettings.MAX_OPACITY),
@@ -102,6 +113,7 @@ object TouchGamepadSettingsCodec {
         editorToolbarDock = TouchEditorDock.fromKey(editorToolbarDock),
         editorGrid = editorGrid,
         editorSnap = editorSnap,
+        doubleTapHold = doubleTapHold,
     )
 
     private fun Float.finiteOr(fallback: Float) = if (isFinite()) this else fallback
@@ -141,6 +153,7 @@ class TouchGamepadSettingsStore(context: Context) {
         editorToolbarDock = preferences.getString(KEY_EDITOR_DOCK, null),
         editorGrid = preferences.getBoolean(KEY_EDITOR_GRID, false),
         editorSnap = preferences.getBoolean(KEY_EDITOR_SNAP, true),
+        doubleTapHold = preferences.getBoolean(KEY_DOUBLE_TAP_HOLD, true),
     )
 
     fun save(settings: TouchGamepadSettings) {
@@ -157,6 +170,7 @@ class TouchGamepadSettingsStore(context: Context) {
             putString(KEY_EDITOR_DOCK, settings.editorToolbarDock.key)
             putBoolean(KEY_EDITOR_GRID, settings.editorGrid)
             putBoolean(KEY_EDITOR_SNAP, settings.editorSnap)
+            putBoolean(KEY_DOUBLE_TAP_HOLD, settings.doubleTapHold)
         }
     }
 
@@ -170,5 +184,6 @@ class TouchGamepadSettingsStore(context: Context) {
         internal const val KEY_EDITOR_DOCK = "editor_toolbar_dock"
         internal const val KEY_EDITOR_GRID = "editor_grid"
         internal const val KEY_EDITOR_SNAP = "editor_snap"
+        internal const val KEY_DOUBLE_TAP_HOLD = "double_tap_hold"
     }
 }

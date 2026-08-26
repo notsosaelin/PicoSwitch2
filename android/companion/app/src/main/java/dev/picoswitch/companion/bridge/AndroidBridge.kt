@@ -6,6 +6,7 @@ import dev.picoswitch.bridge.core.BridgeDiagnostics
 import dev.picoswitch.bridge.core.ControllerFaceLayout
 import dev.picoswitch.bridge.session.BridgeSession
 import dev.picoswitch.bridge.touch.TouchGamepad
+import dev.picoswitch.bridge.touch.TouchLatchEvent
 import dev.picoswitch.bridge.touch.TouchReleaseReason
 
 /**
@@ -82,6 +83,23 @@ class AndroidBridge(
 
     init {
         selfTest.register()
+        // Transitions only -- a double tap, an unlatch, or a boundary that
+        // dropped holds that were still on. This is the one part of the touch
+        // path that can leave the console holding a button with nothing on
+        // screen touching it, so the log that explains a stuck control has to
+        // exist; it stays readable because none of these happen per contact.
+        touch.setLatchObserver { event ->
+            val detail = when (event) {
+                is TouchLatchEvent.Engaged ->
+                    "control=${event.controlId} state=latched reason=double_tap_hold_slide"
+                is TouchLatchEvent.Released ->
+                    "control=${event.controlId} state=released reason=press_hold"
+                is TouchLatchEvent.Cleared ->
+                    "controls=${event.controlIds.sorted().joinToString(",")} " +
+                        "state=released reason=${event.reason.name}"
+            }
+            diagnostics.event("controller", "touch latch", detail)
+        }
         // Object identity, once, at assembly. A refactor can compile perfectly
         // while wiring half the application to a second instance; this is the
         // cheapest proof that the transport, the session and all four backends

@@ -22,6 +22,16 @@ data class TouchDiagnosticsSnapshot(
     val contactsCancelled: Long = 0,
     val releaseAllCount: Long = 0,
     val lastReleaseReason: TouchReleaseReason? = null,
+    /** Controls currently held by a latch rather than by a finger. */
+    val latchedControls: Set<String> = emptySet(),
+    /** Controls whose engage gesture is armed and awaiting a slide. */
+    val armedControls: Set<String> = emptySet(),
+    val latchesArmed: Long = 0,
+    val latchesEngaged: Long = 0,
+    val latchesReleased: Long = 0,
+    val latchesCleared: Long = 0,
+    /** Taps on an already-latched control that produced a fresh press edge. */
+    val retriggerPulses: Long = 0,
     val lastContactTimeNanos: Long = 0,
     val leftStick: TouchVector = TouchVector.Zero,
     val rightStick: TouchVector = TouchVector.Zero,
@@ -57,6 +67,49 @@ data class TouchDiagnosticsSnapshot(
  * and silently taking the newest would make a resting palm beat a deliberate
  * thumb. Independent buttons each take their own contact, so chords are ordinary.
  *
+ * ## Holding without a finger
+ *
+ * A digital control may be double-tapped-AND-HELD into a persistent hold, after
+ * which
+ *
+ * ```text
+ * effectivePressed = (touchPressed || latchedPressed) && !retriggering
+ * ```
+ *
+ * ```text
+ * UNLATCHED   tap                                  ordinary press
+ *             tap, press, hold 2x the base         armed; STILL an ordinary press
+ *             tap, press, hold, slide away         latch
+ *
+ * LATCHED     quick tap                            retrigger: release edge, then held again
+ *             press held 1x the base               unlatch
+ * ```
+ *
+ * The dwell only ARMS the engage gesture; a deliberate slide commits it, because
+ * timing alone cannot be told apart from the ordinary "double tap, then keep
+ * holding" a game may ask for. Creating a hold is deliberately the harder half
+ * of the pair. See [TouchControlLatch].
+ *
+ * The recognizer OBSERVES presses that have already been applied, so it cannot
+ * delay or swallow one; see [TouchControlLatch]. Ownership is unchanged — a
+ * latched control still takes and releases contacts normally — and every global
+ * release drops latches with everything else, because a hold nothing is touching
+ * is exactly the state that must not survive a boundary.
+ *
+ * ## Time
+ *
+ * Two parts of that are TIMED rather than event-driven: the deliberate dwell
+ * that completes a latch gesture, and the brief mask that gives a retrigger its
+ * release edge. A still finger produces no events, so the engine cannot discover
+ * either on its own.
+ *
+ * It does not own a clock either. [nextDeadlineNanos] states when it next has
+ * work, the host sleeps until then and calls [onTick]. A pull model rather than
+ * a scheduler on purpose: there is no queued closure that could carry stale
+ * state across a teardown, so a tick that arrives after [releaseAll] finds
+ * nothing to do and is a no-op. That is the whole of the retrigger's
+ * session-safety.
+ *
  * ## Publishing
  *
  * One [TouchContribution] per event, computed after every change that event
@@ -71,6 +124,7 @@ class TouchControlEngine(
     config: TouchControlConfig = TouchControlConfig.Default,
     private val onContribution: (TouchContribution) -> Unit,
     private var feedback: TouchFeedbackBackend = TouchFeedbackBackend.None,
+    private var latchObserver: TouchLatchObserver = TouchLatchObserver.None,
 ) {
     var config: TouchControlConfig = config
         private set
@@ -79,6 +133,14 @@ class TouchControlEngine(
 
     private val contactToControl = mutableMapOf<Long, String>()
     private val controlToContact = mutableMapOf<String, Long>()
+
+    /**
+     * Per-control latch state and tap recognition, created on first tap.
+     *
+     * Bounded by the layout's control count and cleared at every boundary that
+     * clears input, so it cannot accumulate across sessions or personalities.
+     */
+    private val latches = mutableMapOf<String, TouchControlLatch>()
 
     private val facePresses = mutableSetOf<FaceButtonPosition>()
     private val logicalPresses = mutableSetOf<ControllerButton>()
@@ -97,6 +159,11 @@ class TouchControlEngine(
     private var releaseAllCount = 0L
     private var lastReleaseReason: TouchReleaseReason? = null
     private var lastContactTimeNanos = 0L
+    private var latchesArmed = 0L
+    private var latchesEngaged = 0L
+    private var latchesReleased = 0L
+    private var latchesCleared = 0L
+    private var retriggerPulses = 0L
 
     /** What touch is holding right now, independent of whether it is authoritative. */
     val contribution: TouchContribution get() = published
@@ -105,8 +172,22 @@ class TouchControlEngine(
         feedback = backend
     }
 
+    fun setLatchObserver(observer: TouchLatchObserver) {
+        latchObserver = observer
+    }
+
+    /**
+     * Retune the engine.
+     *
+     * Changing the LATCH configuration drops whatever is currently latched. A
+     * user who has just turned hold-to-latch off means the button that is
+     * stuck down, and a window where the setting says off while a control is
+     * still held would be the exact confusion the setting exists to end.
+     */
     fun setConfig(next: TouchControlConfig) {
+        val latchChanged = next.latch != config.latch
         config = next
+        if (latchChanged) clearLatches(TouchReleaseReason.SettingsChanged)
     }
 
     /**
@@ -165,6 +246,9 @@ class TouchControlEngine(
         controlToContact[target.id] = contact.id
         contactsClaimed++
         engage(target, contact.x, contact.y)
+        // AFTER the press has been applied, so a gesture can only ever change
+        // what happens LATER, never what this press itself sends.
+        noteLatchDown(target, contact.timeNanos, contact.x, contact.y)
         publish()
         return true
     }
@@ -180,7 +264,19 @@ class TouchControlEngine(
                 engage(control, contact.x, contact.y)
                 publish()
             }
-            else -> Unit
+            // A button's movement means one of exactly two things: a drag that
+            // abandons a pending dwell, or the slide that commits an armed one.
+            // Neither changes what is published — the control is already pressed
+            // by this very contact — so nothing is published here.
+            else -> if (latches[controlId]?.onMove(
+                    contact.x,
+                    contact.y,
+                    gestureSlop(),
+                    latchCommitDistance(),
+                ) == true
+            ) {
+                commitLatch(controlId)
+            }
         }
         return true
     }
@@ -191,11 +287,19 @@ class TouchControlEngine(
         controlToContact.remove(controlId)
         val control = layout.control(controlId)
         if (control != null) {
-            disengage(control)
+            noteLatchEnd(control, contact.timeNanos, cancelled)
+            // A latched control keeps its value when the finger leaves; that is
+            // the entire feature, so nothing is disengaged.
+            if (!latches[controlId].isLatched) disengage(control)
             if (!cancelled) {
                 // Buttons only. A stick or D-pad release is the end of a
                 // continuous gesture, and buzzing there turns ordinary play into
                 // a rattle.
+                //
+                // Fired whether or not anything was disengaged: lifting off a
+                // held button is still a release the user performed, and a
+                // latched control that felt dead to the touch would be the
+                // clearest possible way to say "this control is broken now".
                 if (control.spec.kind != TouchControlKind.Stick &&
                     control.spec.kind != TouchControlKind.Dpad
                 ) {
@@ -205,6 +309,184 @@ class TouchControlEngine(
         }
         publish()
         return true
+    }
+
+    // -------------------------------------------------------------------- latch
+
+    /**
+     * Whether this control may be locked into a hold at all.
+     *
+     * Two gates that answer different questions: [supportsLatch] is structural —
+     * a stick has no state to hold — and the spec's own tri-state is the user's
+     * answer, falling back to the global setting when they have not given one.
+     */
+    private fun latchEnabled(control: ResolvedTouchControl): Boolean =
+        control.spec.kind.supportsLatch &&
+            (control.spec.latch ?: config.latch.enabledByDefault)
+
+    private val TouchControlLatch?.isLatched: Boolean get() = this?.latched == true
+
+    /**
+     * How far a dwelling contact may drift, in this layout's real coordinates.
+     *
+     * Converted from logical units through the region's density scale and NOT
+     * through the layout scale: the tolerance is a distance on the glass, so it
+     * must not shrink because the controller was laid out smaller.
+     */
+    private fun gestureSlop(): Float =
+        config.latch.gestureSlopUnits * layout.region.unitScale
+
+    /**
+     * How far an armed contact must slide to lock, in this layout's real
+     * coordinates. Same conversion as [gestureSlop], and for the same reason:
+     * a deliberate motion is a distance on the glass, not a fraction of a
+     * control the user may have resized.
+     */
+    private fun latchCommitDistance(): Float =
+        config.latch.latchCommitDistanceUnits * layout.region.unitScale
+
+    /**
+     * The slide crossed the commit distance.
+     *
+     * Nothing is published: the control is already pressed by the contact that
+     * performed the gesture, so the hold changes only what happens when that
+     * contact eventually lifts. The surface refreshes its picture after every
+     * batch and picks the badge up from there.
+     */
+    private fun commitLatch(controlId: String) {
+        latchesEngaged++
+        feedback.perform(TouchFeedbackEvent.LatchEngaged)
+        latchObserver.onLatchEvent(TouchLatchEvent.Engaged(controlId))
+    }
+
+    private fun noteLatchDown(control: ResolvedTouchControl, timeNanos: Long, x: Float, y: Float) {
+        if (!latchEnabled(control)) {
+            // A control whose latch was turned off while it was held would
+            // otherwise keep the hold with no gesture left to release it, and any
+            // pending dwell or pulse would be work nothing can complete.
+            latches.remove(control.id)?.takeIf { it.latched }?.let {
+                latchesCleared++
+                latchObserver.onLatchEvent(
+                    TouchLatchEvent.Cleared(setOf(control.id), TouchReleaseReason.SettingsChanged),
+                )
+            }
+            return
+        }
+        val latch = latches.getOrPut(control.id) { TouchControlLatch() }
+        // The control is already published as pressed, so `engage` above found
+        // nothing to add and stayed silent. It is still a press the user made.
+        if (latch.latched) feedback.perform(TouchFeedbackEvent.Press)
+        // Arms whichever dwell this press is a candidate for. Nothing toggles
+        // and nothing is masked here; see [TouchControlLatch].
+        latch.onDown(timeNanos, x, y, config.latch)
+    }
+
+    /**
+     * A contact ended. A quick tap on a latched control becomes a retrigger.
+     *
+     * The pulse is started HERE rather than on the press because a press on a
+     * latched control is ambiguous until it ends: quick means "press it again",
+     * held means "stop holding it". Pulsing on the way down would make every
+     * unlatch emit a pointless release/press first. Deferring costs nothing —
+     * the game sees the button as held throughout, which is what the hold is
+     * for — and it does not touch the unlatched path at all, so an ordinary
+     * gameplay press is never delayed.
+     */
+    private fun noteLatchEnd(control: ResolvedTouchControl, timeNanos: Long, cancelled: Boolean) {
+        if (!latchEnabled(control)) return
+        val latch = latches[control.id] ?: return
+        val retrigger = latch.onEnd(timeNanos, cancelled, config.latch)
+        if (retrigger && latch.beginRetrigger(timeNanos, config.latch)) retriggerPulses++
+    }
+
+    /**
+     * The next moment the engine has timed work, in the same clock as
+     * [TouchContact.timeNanos]. Null when it is purely event-driven.
+     *
+     * A deadline can only ever APPEAR as a result of a contact event, so a host
+     * that consults this after every contact batch — and again after each
+     * [onTick] — cannot miss one.
+     */
+    fun nextDeadlineNanos(): Long? {
+        if (latches.isEmpty()) return null
+        var best: Long? = null
+        latches.values.forEach { latch ->
+            val deadline = latch.nextDeadlineNanos() ?: return@forEach
+            if (best == null || deadline < best!!) best = deadline
+        }
+        return best
+    }
+
+    /**
+     * Advance timed gesture work to [nowNanos].
+     *
+     * Safe to call at any time, from anywhere in the host's schedule: it reads
+     * live engine state rather than anything captured when the work was
+     * scheduled, so a tick that lands after a release, a layout change or a
+     * teardown finds an empty map and does nothing. That is deliberately the
+     * only mechanism preventing a pending retrigger from resurrecting a button
+     * after the session ended — there is no queue to invalidate.
+     */
+    fun onTick(nowNanos: Long) {
+        if (latches.isEmpty()) return
+        var changed = false
+        latches.forEach { (id, latch) ->
+            if (latch.holdDeadlineNanos in 1..nowNanos) {
+                when (latch.dwell) {
+                    // Armed only. The control is still an ordinary held button
+                    // and letting go now simply ends the press; the slide is what
+                    // commits. Nothing published changes, so nothing is published.
+                    TouchDwell.Engage -> {
+                        latch.armEngage()
+                        latchesArmed++
+                        feedback.perform(TouchFeedbackEvent.LatchArmed)
+                    }
+                    TouchDwell.Release -> {
+                        latch.completeRelease()
+                        latchesReleased++
+                        feedback.perform(TouchFeedbackEvent.LatchReleased)
+                        latchObserver.onLatchEvent(TouchLatchEvent.Released(id))
+                        // The finger that performed the release gesture is still
+                        // down, and stays authoritative until it lifts: dropping
+                        // the button at this instant would be a release edge the
+                        // user never made. Only a latch with nothing touching it
+                        // — which a boundary clear can produce — rests here.
+                        if (controlToContact[id] == null) layout.control(id)?.let(::disengage)
+                        changed = true
+                    }
+                    TouchDwell.None -> latch.cancelDwell()
+                }
+            }
+            if (latch.retriggerDeadlineNanos in 1..nowNanos) {
+                latch.endRetrigger()
+                changed = true
+            }
+        }
+        if (changed) publish()
+    }
+
+    /**
+     * Drop every latch without touching contact ownership.
+     *
+     * A control a finger is still on stays pressed — that finger is now the only
+     * thing holding it, and it will release normally on lift. Anything else
+     * returns to rest here, which is the point.
+     */
+    private fun clearLatches(reason: TouchReleaseReason) {
+        if (latches.isEmpty()) return
+        val cleared = latches.filterValues { it.latched }.keys.toSet()
+        latches.clear()
+        cleared.forEach { id ->
+            if (controlToContact[id] == null) layout.control(id)?.let(::disengage)
+        }
+        if (cleared.isNotEmpty()) {
+            latchesCleared += cleared.size
+            latchObserver.onLatchEvent(TouchLatchEvent.Cleared(cleared, reason))
+        }
+        // Unconditional: an in-flight retrigger mask that was dropped here would
+        // otherwise leave the published state suppressed with nothing left to
+        // lift it.
+        publish()
     }
 
     /**
@@ -218,6 +500,8 @@ class TouchControlEngine(
     fun releaseAll(reason: TouchReleaseReason) {
         releaseAllCount++
         lastReleaseReason = reason
+        val clearedLatches = latches.filterValues { it.latched }.keys.toSet()
+        latches.clear()
         contactToControl.clear()
         controlToContact.clear()
         facePresses.clear()
@@ -227,6 +511,10 @@ class TouchControlEngine(
         leftTrigger = 0f
         rightTrigger = 0f
         dpad = DpadState.None
+        if (clearedLatches.isNotEmpty()) {
+            latchesCleared += clearedLatches.size
+            latchObserver.onLatchEvent(TouchLatchEvent.Cleared(clearedLatches, reason))
+        }
         publish()
     }
 
@@ -239,11 +527,26 @@ class TouchControlEngine(
         contactsCancelled = contactsCancelled,
         releaseAllCount = releaseAllCount,
         lastReleaseReason = lastReleaseReason,
+        latchedControls = latchedControlIds(),
+        armedControls = armedControlIds(),
+        latchesArmed = latchesArmed,
+        latchesEngaged = latchesEngaged,
+        latchesReleased = latchesReleased,
+        latchesCleared = latchesCleared,
+        retriggerPulses = retriggerPulses,
         lastContactTimeNanos = lastContactTimeNanos,
         leftStick = leftStick,
         rightStick = rightStick,
         dpad = dpad,
     )
+
+    /** The controls a latch is holding down right now. */
+    fun latchedControlIds(): Set<String> =
+        if (latches.isEmpty()) emptySet() else latches.filterValues { it.latched }.keys.toSet()
+
+    /** The controls one deliberate slide away from becoming a hold. */
+    fun armedControlIds(): Set<String> =
+        if (latches.isEmpty()) emptySet() else latches.filterValues { it.armed }.keys.toSet()
 
     /** Which control, if any, currently owns [contactId]. For tests and diagnostics. */
     fun ownerOf(contactId: Long): String? = contactToControl[contactId]
@@ -356,17 +659,54 @@ class TouchControlEngine(
         }
     }
 
+    /**
+     * Compose and emit the whole contribution.
+     *
+     * The retrigger mask is applied HERE rather than by mutating the
+     * accumulators, and that placement is the point: ownership, latch state and
+     * the press/release bookkeeping all stay exactly as they were, and a pulse
+     * is purely a statement about what is published. Nothing has to be undone
+     * when it expires, and no boundary has to know it existed.
+     */
     private fun publish() {
+        var faces: Set<FaceButtonPosition> = facePresses
+        var logicals: Set<ControllerButton> = logicalPresses
+        var maskedLeftTrigger = leftTrigger
+        var maskedRightTrigger = rightTrigger
+
+        if (latches.values.any { it.retriggering }) {
+            val remainingFaces = facePresses.toMutableSet()
+            val remainingLogical = logicalPresses.toMutableSet()
+            latches.forEach { (id, latch) ->
+                if (!latch.retriggering) return@forEach
+                when (val action = layout.control(id)?.spec?.action) {
+                    is TouchControlAction.Face -> remainingFaces -= action.position
+                    is TouchControlAction.Logical -> remainingLogical -= action.button
+                    is TouchControlAction.Trigger -> if (action.side == ControlSide.Left) {
+                        maskedLeftTrigger = 0f
+                        remainingLogical -= ControllerButton.L2
+                    } else {
+                        maskedRightTrigger = 0f
+                        remainingLogical -= ControllerButton.R2
+                    }
+                    // Vector controls never latch, so they never retrigger.
+                    else -> Unit
+                }
+            }
+            faces = remainingFaces
+            logicals = remainingLogical
+        }
+
         val next = TouchContribution(
             leftX = TouchAxis.toBridge(leftStick.x),
             leftY = TouchAxis.toBridge(leftStick.y),
             rightX = TouchAxis.toBridge(rightStick.x),
             rightY = TouchAxis.toBridge(rightStick.y),
-            leftTrigger = TouchAxis.triggerToBridge(leftTrigger),
-            rightTrigger = TouchAxis.triggerToBridge(rightTrigger),
+            leftTrigger = TouchAxis.triggerToBridge(maskedLeftTrigger),
+            rightTrigger = TouchAxis.triggerToBridge(maskedRightTrigger),
             dpad = dpad,
-            positionalButtons = facePresses.mapTo(mutableSetOf()) { it.positional },
-            logicalButtons = logicalPresses.toSet(),
+            positionalButtons = faces.mapTo(mutableSetOf()) { it.positional },
+            logicalButtons = logicals.toSet(),
         )
         if (next == published) return
         published = next

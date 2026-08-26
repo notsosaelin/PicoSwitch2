@@ -17,6 +17,23 @@ enum class TouchFeedbackEvent {
 
     /** The D-pad moved to a different direction while still held. */
     DirectionChange,
+
+    /**
+     * A hold gesture became armed: the dwell elapsed and a slide would now lock
+     * the control.
+     *
+     * The lightest event here on purpose. Nothing has happened yet — the control
+     * is still an ordinary held button — so this has to read as "something is
+     * available" rather than as "something changed", and it fires during the
+     * perfectly ordinary act of holding a button after double-tapping it.
+     */
+    LatchArmed,
+
+    /** A control was slid into a persistent hold. */
+    LatchEngaged,
+
+    /** A control was pressed and held out of its hold. */
+    LatchReleased,
 }
 
 /**

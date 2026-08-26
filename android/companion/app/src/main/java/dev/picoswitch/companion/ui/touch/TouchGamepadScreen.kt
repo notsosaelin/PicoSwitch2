@@ -40,6 +40,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
@@ -81,6 +82,9 @@ import dev.picoswitch.companion.ui.CompanionUiState
 import dev.picoswitch.companion.ui.CompanionViewModel
 import dev.picoswitch.bridge.touch.TouchFeedbackBackend
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.withContext
 
 /**
@@ -122,6 +126,7 @@ fun TouchGamepadScreen(
     val context = LocalContext.current
     val density = LocalDensity.current
     val layoutDirection = LocalLayoutDirection.current
+    val viewConfiguration = LocalViewConfiguration.current
     val settings = ui.touchSettings
 
     var menuOpen by rememberSaveable { mutableStateOf(false) }
@@ -206,8 +211,45 @@ fun TouchGamepadScreen(
             rightStick = snapshot.rightStick,
             dpad = snapshot.dpad,
             pressed = pressedControlIds(layout, snapshot) { gamepad.engine.contactOn(it) != null },
+            // Read from the LATCH, never from what is currently published: a
+            // retrigger pulse momentarily un-presses the control, and blinking
+            // the padlock off while the user taps a button they are deliberately
+            // holding would say the hold had been lost.
+            latched = snapshot.latchedControls,
+            arming = snapshot.armedControls,
         )
         if (next != visual.value) visual.value = next
+    }
+
+    /**
+     * Drives the engine's timed gesture work.
+     *
+     * Two things the engine cannot discover on its own need a clock: the
+     * deliberate dwell that completes a latch, and the brief mask that gives a
+     * retrigger pulse an observable release edge. A still finger produces no
+     * pointer events, so nothing would ever wake the engine.
+     *
+     * A pull loop rather than a scheduled callback, and deliberately so: the
+     * engine is asked what it is waiting for, this sleeps until then, and asks
+     * again. Nothing is captured, so a teardown between the sleep and the tick
+     * cannot resurrect a control — the tick simply finds no work. `collectLatest`
+     * restarts the loop whenever a contact batch may have created or cancelled a
+     * deadline.
+     *
+     * The clock is [touchClockNanos] because the deadlines are absolute values in
+     * the same clock Compose stamps contacts with.
+     */
+    val gestureRevision = remember { MutableStateFlow(0L) }
+    LaunchedEffect(gamepad) {
+        gestureRevision.collectLatest {
+            while (true) {
+                val deadline = gamepad.nextDeadlineNanos() ?: break
+                val waitNanos = deadline - touchClockNanos()
+                if (waitNanos > 0) delay(waitNanos / NANOS_PER_MILLI + 1)
+                gamepad.tick(touchClockNanos())
+                refreshVisual()
+            }
+        }
     }
 
     // The IME is deliberately excluded. Nothing on the gameplay surface takes
@@ -296,6 +338,22 @@ fun TouchGamepadScreen(
     // down -- the window resized, the mode left -- and a permanently faded
     // toolbar is unusable, so both boundaries clear the flag as well.
     LaunchedEffect(editing, resolved.region) { manipulating = false }
+
+    // Platform gesture timing, not invented constants: the same numbers every
+    // other double tap on this device uses, including whatever the user's
+    // accessibility settings have done to them. Set here rather than in the view
+    // model because this is the layer that has a view configuration at all.
+    LaunchedEffect(viewConfiguration) {
+        gamepad.setConfig(
+            gamepad.config.copy(
+                latch = gamepad.config.latch.copy(
+                    doubleTapWindowNanos = viewConfiguration.doubleTapTimeoutMillis * NANOS_PER_MILLI,
+                    minTapGapNanos = viewConfiguration.doubleTapMinTimeMillis * NANOS_PER_MILLI,
+                    maxTapDurationNanos = viewConfiguration.longPressTimeoutMillis * NANOS_PER_MILLI,
+                ),
+            ),
+        )
+    }
 
     LaunchedEffect(settings.hapticsEnabled) {
         gamepad.setFeedbackBackend(
@@ -471,7 +529,10 @@ fun TouchGamepadScreen(
                             Modifier.touchGamepadContacts(
                                 key = resolved,
                                 tracker = gamepad.contacts,
-                                afterBatch = ::refreshVisual,
+                                // A gesture deadline can only ever appear as a
+                                // result of a contact going down, so bumping the
+                                // driver here cannot miss one.
+                                afterBatch = { refreshVisual(); gestureRevision.value++ },
                             )
                         },
                     ),
@@ -620,6 +681,13 @@ fun TouchGamepadScreen(
                         )
                         // A hidden control has no geometry to select or drag.
                         if (!visible) { selection = emptySet(); primaryId = null }
+                    }
+
+                    override fun setLatch(latch: Boolean?) {
+                        if (selection.isEmpty()) return
+                        draftOverride = TouchLayoutEditor.setLatch(
+                            profile, draft, selection, latch, editGroup,
+                        )
                     }
 
                     override fun resetSelection() {
@@ -1108,6 +1176,32 @@ private fun TouchGamepadMenu(
                     range = 0f..TouchGamepadSettings.MAX_DIM,
                     onValue = { onSettings(settings.copy(backgroundDim = it)) },
                 )
+
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    // The explanation is three lines long and would otherwise run
+                    // right up against the switch.
+                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
+                        // Named for the outcome, not the gesture: the gesture is
+                        // three parts now, and the padlock badge is the word the
+                        // rest of the surface already uses for it.
+                        Text("Lock a button held", style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            "Double-tap a supported button, keep the second press down until " +
+                                "it ticks, then slide your finger away to leave it held. Tap a " +
+                                "held button to press it again without letting go, or press and " +
+                                "hold it to let go.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = settings.doubleTapHold,
+                        onCheckedChange = { onSettings(settings.copy(doubleTapHold = it)) },
+                    )
+                }
 
                 Row(
                     Modifier.fillMaxWidth().heightIn(min = 48.dp),

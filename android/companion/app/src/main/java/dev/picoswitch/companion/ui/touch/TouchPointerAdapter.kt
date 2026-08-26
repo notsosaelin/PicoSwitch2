@@ -1,5 +1,6 @@
 package dev.picoswitch.companion.ui.touch
 
+import android.os.SystemClock
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputChange
@@ -117,7 +118,19 @@ private fun PointerInputChange.toContact(): TouchContact {
     )
 }
 
-private const val NANOS_PER_MILLI = 1_000_000L
+/** Shared with the surface, which converts the platform's gesture timeouts too. */
+internal const val NANOS_PER_MILLI = 1_000_000L
+
+/**
+ * The one definition of "now" in the same clock a contact is stamped with.
+ *
+ * Compose reports `uptimeMillis` on every pointer change, and the engine's
+ * gesture deadlines are absolute values in that clock. Anything driving those
+ * deadlines has to read the SAME clock — `System.nanoTime` and
+ * `currentTimeMillis` are both different timelines — so both the stamp above and
+ * the surface's tick driver come from here.
+ */
+internal fun touchClockNanos(): Long = SystemClock.uptimeMillis() * NANOS_PER_MILLI
 
 /** Sized for a comfortable chord; the list grows if a device reports more. */
 private const val MAX_EXPECTED_CONTACTS = 8

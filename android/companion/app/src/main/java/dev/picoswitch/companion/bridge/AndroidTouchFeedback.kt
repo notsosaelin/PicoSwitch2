@@ -29,6 +29,16 @@ class AndroidTouchFeedback(private val view: View) : TouchFeedbackBackend {
             // virtual-key tap for every direction change while sliding a thumb
             // around the ring turns into a rattle.
             TouchFeedbackEvent.DirectionChange -> HapticFeedbackConstants.CLOCK_TICK
+            // Engaging a hold is a state change the user has to be able to feel
+            // without looking, so it is deliberately the heaviest thing here --
+            // one short stronger tap, not a sustained vibration. Releasing it is
+            // the lightest, so the two are told apart by weight rather than by
+            // counting buzzes.
+            // Arming is an offer, not a change: the lightest tick there is, and
+            // the same one a D-pad sector crossing uses.
+            TouchFeedbackEvent.LatchArmed -> HapticFeedbackConstants.CLOCK_TICK
+            TouchFeedbackEvent.LatchEngaged -> HapticFeedbackConstants.LONG_PRESS
+            TouchFeedbackEvent.LatchReleased -> HapticFeedbackConstants.CLOCK_TICK
         }
         runCatching { view.performHapticFeedback(constant) }
     }

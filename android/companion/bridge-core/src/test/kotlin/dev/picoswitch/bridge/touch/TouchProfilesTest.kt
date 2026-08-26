@@ -217,9 +217,18 @@ class TouchProfileCatalogTest {
                 val resolved = TouchLayoutResolver.resolve(
                     layout, profileRegion(width, height), TouchLayoutAuditMode.ShippedTemplate,
                 )
-                val (north, east, south, west) = outputs.map { output ->
+                // Selected by where they LAND, not by what they are called. A
+                // sideways Joy-Con's diamond is the same square turned a quarter
+                // turn, so naming the members by output would make a squareness
+                // test fail on a correct rotation; orientation is pinned
+                // separately, by `TouchSidewaysJoyConTest`.
+                val members = outputs.map { output ->
                     resolved.controls.single { it.spec.output == output }
                 }
+                val north = members.minBy { it.centerY }
+                val south = members.maxBy { it.centerY }
+                val west = members.minBy { it.centerX }
+                val east = members.maxBy { it.centerX }
                 val centerX = (east.centerX + west.centerX) / 2f
                 val centerY = (north.centerY + south.centerY) / 2f
                 val horizontalRadius = east.centerX - centerX

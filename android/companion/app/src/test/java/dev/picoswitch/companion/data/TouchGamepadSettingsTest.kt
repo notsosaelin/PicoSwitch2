@@ -24,8 +24,9 @@ class TouchGamepadSettingsTest {
         dock: String? = null,
         grid: Boolean = false,
         snap: Boolean = true,
+        doubleTapHold: Boolean = true,
     ) = TouchGamepadSettingsCodec.decode(
-        opacity, dim, haptics, deadzone, background, dock, grid, snap,
+        opacity, dim, haptics, deadzone, background, dock, grid, snap, doubleTapHold,
     )
 
     @Test fun `the defaults are usable without visiting the settings`() {
@@ -95,6 +96,18 @@ class TouchGamepadSettingsTest {
         TouchEditorDock.entries.forEach { option ->
             assertEquals(option, decode(dock = option.key).editorToolbarDock)
         }
+    }
+
+    /**
+     * The stored value is the DEFAULT for controls that state no preference; the
+     * layout editor's per-control choice overrides it either way. What is
+     * currently latched is runtime state and is deliberately absent from this
+     * model — see the gameplay-state test above.
+     */
+    @Test fun `double-tap hold is on unless it has been turned off`() {
+        assertEquals(true, TouchGamepadSettings.Default.doubleTapHold)
+        assertEquals(true, decode().doubleTapHold)
+        assertEquals(false, decode(doubleTapHold = false).doubleTapHold)
     }
 
     @Test fun `the editing aids default to snapping on and the grid off`() {

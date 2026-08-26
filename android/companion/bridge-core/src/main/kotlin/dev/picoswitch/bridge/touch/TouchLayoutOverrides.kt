@@ -31,9 +31,17 @@ data class TouchControlOverride(
     val visible: Boolean? = null,
     /** Scales a template's group-relative offset; written only by group scaling. */
     val groupOffsetScale: Float? = null,
+    /**
+     * Hold-to-latch for this control: `null` follows the global setting.
+     *
+     * CONFIGURATION, never the hold itself. Nothing here says a control is
+     * currently down; a document that could would be a document that presses a
+     * button on the console the moment a dead process comes back.
+     */
+    val latch: Boolean? = null,
 ) {
     val isEmpty: Boolean get() = anchorX == null && anchorY == null && scale == null &&
-        visible == null && groupOffsetScale == null
+        visible == null && groupOffsetScale == null && latch == null
 }
 
 sealed interface TouchOverrideDecodeResult {
@@ -63,6 +71,7 @@ object TouchLayoutOverrideJsonCodec {
                     control.scale?.let { put("scale", it) }
                     control.visible?.let { put("visible", it) }
                     control.groupOffsetScale?.let { put("groupOffsetScale", it) }
+                    control.latch?.let { put("latch", it) }
                 })
             }
         }
@@ -153,12 +162,17 @@ object TouchLayoutOverrideJsonCodec {
             ) {
                 return ControlsDecode.Bad("Override '$id' has an out-of-range groupOffsetScale")
             }
+            val latch = objectValue["latch"]?.jsonPrimitive?.booleanOrNull
+                ?: if (objectValue.containsKey("latch")) {
+                    return ControlsDecode.Bad("Override '$id' has an invalid latch flag")
+                } else null
             val control = TouchControlOverride(
                 anchorX = anchorX,
                 anchorY = anchorY,
                 scale = scale,
                 visible = visible,
                 groupOffsetScale = groupOffsetScale,
+                latch = latch,
             )
             if (!control.isEmpty) controls[id] = control
         }
@@ -234,6 +248,7 @@ object TouchLayoutComposer {
                 editGroupId = control.editGroupId,
                 groupOffsetXUnits = geometry.groupOffsetXUnits * groupOffsetScale,
                 groupOffsetYUnits = geometry.groupOffsetYUnits * groupOffsetScale,
+                latch = change?.latch,
             )
         }
         return TouchCompositionResult(
@@ -426,6 +441,40 @@ object TouchLayoutEditor {
         visible: Boolean,
         editGroup: Boolean,
     ): TouchLayoutOverride = setVisible(profile, current, setOf(selectedId), visible, editGroup)
+
+    /**
+     * Choose whether these controls answer to the hold gestures.
+     *
+     * `null` is "follow the global setting" and, like [setVisible]'s `true`,
+     * DROPS the override rather than storing an answer. Storing the value the
+     * setting happens to have today would freeze it: turning the global setting
+     * off later would leave this control latching on its own, for no reason the
+     * user could see.
+     *
+     * Applied to whatever the selection expands to, including a group — a group
+     * is an editing convenience and this is a per-control property, so "these
+     * four buttons" is a perfectly ordinary thing to say. Nothing is shared:
+     * each control still carries its own answer.
+     */
+    fun setLatch(
+        profile: TouchControllerProfile,
+        current: TouchLayoutOverride,
+        selection: Set<String>,
+        latch: Boolean?,
+        editGroup: Boolean,
+    ): TouchLayoutOverride = updateTargets(profile, current, selection, editGroup) { template, override ->
+        // A control that cannot latch must not carry a stored opinion about it;
+        // it would be a setting the editor never shows and nothing ever reads.
+        if (!template.interaction.supportsLatch) override else override.copy(latch = latch)
+    }
+
+    fun setLatch(
+        profile: TouchControllerProfile,
+        current: TouchLayoutOverride,
+        selectedId: String,
+        latch: Boolean?,
+        editGroup: Boolean,
+    ): TouchLayoutOverride = setLatch(profile, current, setOf(selectedId), latch, editGroup)
 
     fun reset(
         profile: TouchControllerProfile,

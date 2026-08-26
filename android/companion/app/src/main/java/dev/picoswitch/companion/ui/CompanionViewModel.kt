@@ -1816,8 +1816,23 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         }
     }
 
+    /**
+     * Push the settings screen's tunables into the engine.
+     *
+     * Copies the CURRENT config rather than rebuilding from
+     * [TouchControlConfig.Default]: the gesture timings come from the platform's
+     * own view configuration and are set by the touch surface, so rebuilding
+     * here would quietly replace them with the stock constants every time a
+     * slider moved.
+     */
     private fun applyTouchSettings(settings: TouchGamepadSettings) {
-        bridge.touch.setConfig(TouchControlConfig.Default.copy(stickDeadzone = settings.stickDeadzone))
+        val current = bridge.touch.config
+        bridge.touch.setConfig(
+            current.copy(
+                stickDeadzone = settings.stickDeadzone,
+                latch = current.latch.copy(enabledByDefault = settings.doubleTapHold),
+            ),
+        )
     }
 
     private data class LoadedTouchProfile(
@@ -1866,6 +1881,17 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             append(" contested=").append(snapshot.contactsContested)
             append(" cancelled=").append(snapshot.contactsCancelled)
             append(" held=").append(snapshot.ownedControls)
+            // The two ways a control can be down with nothing touching it, and
+            // the one way a held control can still send a fresh press. All three
+            // look identical in "held" and are completely different faults.
+            // Armed-versus-engaged separates "the gesture is being offered and
+            // nobody completes it" from "it completes when nobody meant it to".
+            append(" latched=").append(snapshot.latchedControls.size)
+            append(" latch=").append(snapshot.latchesArmed)
+            append("/").append(snapshot.latchesEngaged)
+            append("/").append(snapshot.latchesReleased)
+            append("/").append(snapshot.latchesCleared)
+            append(" retrigger=").append(snapshot.retriggerPulses)
             append(" releaseAll=").append(snapshot.releaseAllCount)
             append("/").append(snapshot.lastReleaseReason?.name ?: "none")
             append(" layoutFits=").append(touch.engine.resolvedLayout.fits)
