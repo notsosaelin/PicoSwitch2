@@ -2,6 +2,7 @@ package dev.picoswitch.companion.ui.touch
 
 import androidx.compose.ui.geometry.Offset
 import dev.picoswitch.bridge.touch.TouchCardinalSlot
+import dev.picoswitch.bridge.touch.TouchClusterRotation
 import dev.picoswitch.bridge.touch.TouchOutputControl
 import dev.picoswitch.bridge.touch.TouchProfileCatalog
 import dev.picoswitch.bridge.touch.TouchProfileId
@@ -33,6 +34,63 @@ class TouchControlGeometryTest {
                 TouchOutputControl.DirectionLeft -> assertEquals(center.x - radius, points[0].x, 0f)
                 else -> error("unreachable")
             }
+        }
+    }
+
+    /**
+     * The marking is authored in the JOY-CON'S own frame and turned with the
+     * shell, so a rotated `DirectionUp` points where the shell's up button now
+     * points. Deriving the arrow from the screen slot instead would look
+     * identical today and silently break the moment a template placed one of
+     * these anywhere else.
+     */
+    @Test fun `a rotated direction marking turns with the shell`() {
+        val center = Offset(50f, 70f)
+        val radius = 10f
+        // Joy-Con (L) is held a quarter turn anticlockwise; its up button then
+        // points at the player's left.
+        val turned = joyConDirectionTriangle(
+            TouchOutputControl.DirectionUp, center, radius,
+            TouchClusterRotation.QuarterCounterClockwise.degrees,
+        )
+        assertEquals(center.x - radius, turned[0].x, 1e-3f)
+        assertEquals(center.y, turned[0].y, 1e-3f)
+        assertEquals(center.x, turned.sumOf { it.x.toDouble() }.toFloat() / 3f, 0.5f)
+        assertEquals(center.y, turned.sumOf { it.y.toDouble() }.toFloat() / 3f, 0.5f)
+    }
+
+    /**
+     * What the player actually sees: on the shipped sideways Joy-Con (L), every
+     * arrow points away from the cluster centre, along the axis its own button
+     * sits on. That is the property that makes the cluster read as a face
+     * diamond rather than as four arrows pointing the wrong way.
+     */
+    @Test fun `every shipped Joy-Con L arrow points along its own screen position`() {
+        val template = TouchProfileCatalog.require(TouchProfileId.JoyConLeft).defaultTemplate
+        val directions = template.controls.filter {
+            it.visual.role == TouchVisualRole.JoyConDirectionButton
+        }
+        assertEquals(4, directions.size)
+        val centerX = directions.map { it.geometry.groupOffsetXUnits }.average().toFloat()
+        val centerY = directions.map { it.geometry.groupOffsetYUnits }.average().toFloat()
+        assertEquals("the cluster is centred on its anchor", 0f, centerX, 1e-3f)
+        assertEquals("the cluster is centred on its anchor", 0f, centerY, 1e-3f)
+
+        directions.forEach { control ->
+            val drawn = Offset(50f, 70f)
+            val apex = joyConDirectionTriangle(
+                control.output, drawn, radius = 10f,
+                rotationDegrees = control.visual.rotationDegrees,
+            )[0] - drawn
+            // The button's own offset from the cluster centre, as a direction.
+            val fromCentre = Offset(
+                control.geometry.groupOffsetXUnits,
+                control.geometry.groupOffsetYUnits,
+            )
+            val length = hypot(fromCentre.x, fromCentre.y)
+            assertTrue("${control.id} sits off the cluster centre", length > 0f)
+            val dot = (apex.x * fromCentre.x + apex.y * fromCentre.y) / (length * 10f)
+            assertEquals("${control.id} arrow must point outward", 1f, dot, 1e-3f)
         }
     }
 

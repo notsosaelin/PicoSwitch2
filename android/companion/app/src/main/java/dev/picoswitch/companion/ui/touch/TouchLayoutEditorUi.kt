@@ -31,6 +31,8 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FormatAlignCenter
 import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenWith
 import androidx.compose.material.icons.filled.Restore
@@ -74,6 +76,7 @@ import dev.picoswitch.bridge.touch.TouchLayoutOverride
 import dev.picoswitch.bridge.touch.TouchLayoutProfile
 import dev.picoswitch.bridge.touch.TouchProfileLibrary
 import dev.picoswitch.bridge.touch.TouchTemplateControl
+import dev.picoswitch.bridge.touch.supportsLatch
 import dev.picoswitch.companion.data.TouchEditorDock
 
 /**
@@ -90,6 +93,8 @@ internal interface TouchEditorActions {
     fun setDock(dock: TouchEditorDock)
     fun nudgeScale(factor: Float)
     fun setVisible(visible: Boolean)
+    /** `null` restores "follow the global Lock a button held setting". */
+    fun setLatch(latch: Boolean?)
     fun resetSelection()
     fun resetProfile()
     fun openProfiles()
@@ -388,9 +393,76 @@ private fun TouchEditorSelectionBar(
                 if (visible) "Hide this control" else "Show this control",
                 { actions.setVisible(!visible) },
             )
+            TouchLatchMenu(
+                profile = profile,
+                draft = draft,
+                effectiveTargets = effectiveTargets,
+                onSelect = actions::setLatch,
+            )
             EditorIcon(Icons.Default.Restore, "Reset this selection", actions::resetSelection)
         }
         EditorButtonFlow(vertical = vertical, count = SELECTION_BAR_ITEMS, content = items)
+    }
+}
+
+/**
+ * Hold-to-latch support for the selected controls.
+ *
+ * A three-way choice on one toolbar button rather than another panel: the
+ * property is per control, and a control is chosen by touching it on the layout,
+ * so the setting belongs beside the other per-control actions. Tri-state is
+ * shown as a menu because a cycling icon button cannot say what its third state
+ * is before you have pressed it twice.
+ *
+ * Disabled outright for a selection that contains nothing latchable — a stick
+ * and the D-pad have no single state to hold — so the menu never offers a
+ * setting that would be silently dropped.
+ */
+@Composable
+private fun TouchLatchMenu(
+    profile: TouchControllerProfile,
+    draft: TouchLayoutOverride,
+    effectiveTargets: Set<String>,
+    onSelect: (Boolean?) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    val latchable = profile.defaultTemplate.controls
+        .filter { it.id in effectiveTargets && it.interaction.supportsLatch }
+    // One answer only when every latchable target agrees; a mixed selection has
+    // no current value to check, and claiming one would be a lie.
+    val values = latchable.mapTo(mutableSetOf()) { draft.controls[it.id]?.latch }
+    val current = values.singleOrNull()
+    Box {
+        EditorIcon(
+            icon = if (current == false) Icons.Default.LockOpen else Icons.Default.Lock,
+            description = "Lock a button held: " + when {
+                latchable.isEmpty() -> "not available for this control"
+                current == true -> "on"
+                current == false -> "off"
+                current == null && values.size == 1 -> "default"
+                else -> "mixed"
+            },
+            onClick = { open = true },
+            active = current == true,
+            enabled = latchable.isNotEmpty(),
+        )
+        DropdownMenu(open, onDismissRequest = { open = false }) {
+            Text(
+                "Lock a button held",
+                Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            LATCH_CHOICES.forEach { (value, title) ->
+                DropdownMenuItem(
+                    text = { Text(title) },
+                    onClick = { onSelect(value); open = false },
+                    trailingIcon = {
+                        if (values.size == 1 && value == current) Icon(Icons.Default.Check, null)
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -702,8 +774,18 @@ private val TOOLBAR_TARGET = 48.dp
 /** Kept beside the toolbar's own content so the wrap arithmetic cannot drift. */
 private const val TOOLBAR_BUTTONS = 9
 
-/** Name plus smaller, larger, visibility and reset. */
-private const val SELECTION_BAR_ITEMS = 5
+/** Name plus smaller, larger, visibility, hold-to-latch and reset. */
+private const val SELECTION_BAR_ITEMS = 6
+
+/**
+ * Ordered so "Default" is first: it is what an untouched control already does,
+ * and it is the answer a user comes back to the menu to restore.
+ */
+private val LATCH_CHOICES: List<Pair<Boolean?, String>> = listOf(
+    null to "Default",
+    true to "Enabled",
+    false to "Disabled",
+)
 
 /** One press of `+` or `-`; small enough to tune, large enough to feel. */
 private const val SCALE_STEP = 1.06f

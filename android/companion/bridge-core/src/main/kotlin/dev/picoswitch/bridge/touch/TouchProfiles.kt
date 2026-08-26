@@ -237,6 +237,18 @@ object TouchProfileCatalog {
 object TouchPersonalityTemplates {
     private const val SCHEMA_VERSION = 1
     private const val REVISION = 2
+
+    /**
+     * Both sideways halves moved their action cluster into the shell's real
+     * orientation, so their shipped geometry is no longer revision 2.
+     *
+     * A revision is metadata, not a schema gate: no control id changed, so a
+     * stored profile written against revision 2 still composes cleanly and every
+     * customized position the user saved is applied exactly as before. What the
+     * bump records is that the DEFAULTS moved, which is the difference between
+     * "this layout is stale" and "this layout is wrong".
+     */
+    private const val JOYCON_REVISION = 3
     private const val FACE_GROUP = "face-cluster"
     private const val DIRECTION_GROUP = "direction-cluster"
     private const val UTILITY_GROUP = "utility-cluster"
@@ -262,16 +274,24 @@ object TouchPersonalityTemplates {
         400f,
         TouchLayoutV1.LEFT_SECONDARY_Y_UNITS,
     )
+    // Both halves are drawn as the physical shell they are, turned the way it is
+    // actually held. Each map is keyed by the button's slot ON THE JOY-CON, so
+    // `getValue(North)` below means "the shell's top button" and the rotation
+    // decides where that lands on screen. Writing screen positions here directly
+    // is what previously put `direction-up` at the top of the display, where it
+    // reads as the X-position button while the console treats it as Y.
+    private val JOYCON_LEFT_ROTATION = TouchClusterRotation.QuarterCounterClockwise
+    private val JOYCON_RIGHT_ROTATION = TouchClusterRotation.QuarterClockwise
     private val JOYCON_LEFT_DIRECTIONS = TouchGroupGeometry(
         JOYCON_BUTTON_CLUSTER_CENTER_X,
         JOYCON_PRIMARY_CENTER_Y,
     )
-        .squareDiamond(radiusUnits = 60f)
+        .squareDiamond(radiusUnits = 60f, rotation = JOYCON_LEFT_ROTATION)
     private val JOYCON_RIGHT_FACE = TouchGroupGeometry(
         JOYCON_BUTTON_CLUSTER_CENTER_X,
         JOYCON_PRIMARY_CENTER_Y,
     )
-        .squareDiamond(radiusUnits = 60f)
+        .squareDiamond(radiusUnits = 60f, rotation = JOYCON_RIGHT_ROTATION)
 
     val gameCube = TouchLayoutTemplate(
         id = "picoswitch.touch.gc.v1",
@@ -343,7 +363,7 @@ object TouchPersonalityTemplates {
         id = "picoswitch.touch.jcl.v1",
         profileId = TouchProfileId.JoyConLeft,
         schemaVersion = SCHEMA_VERSION,
-        templateRevision = REVISION,
+        templateRevision = JOYCON_REVISION,
         controls = listOf(
             pad("sl", TouchOutputControl.SL, 60f, 42f, "SL"),
             pad("l", TouchOutputControl.L, 160f, 42f, "L", TouchControlKind.Trigger),
@@ -356,25 +376,34 @@ object TouchPersonalityTemplates {
                 150f, JOYCON_PRIMARY_CENTER_Y, 150f,
             ),
             round("stick-click", TouchOutputControl.PrimaryStickClick, 285f, 320f, 56f, "L3"),
+            // Slots are the Joy-Con's own: its up button is the north button of
+            // its diamond, and the rotation puts it at the player's left. The
+            // triangles are physical MARKINGS and turn with the shell, so the
+            // one at the left points left -- which is also what makes the
+            // cluster read as an ordinary face diamond in the hand.
             joyButton(
                 "direction-up", TouchOutputControl.DirectionUp,
                 JOYCON_LEFT_DIRECTIONS.getValue(TouchCardinalSlot.North),
                 group = DIRECTION_GROUP, role = TouchVisualRole.JoyConDirectionButton,
+                rotationDegrees = JOYCON_LEFT_ROTATION.degrees,
             ),
             joyButton(
                 "direction-left", TouchOutputControl.DirectionLeft,
                 JOYCON_LEFT_DIRECTIONS.getValue(TouchCardinalSlot.West),
                 group = DIRECTION_GROUP, role = TouchVisualRole.JoyConDirectionButton,
+                rotationDegrees = JOYCON_LEFT_ROTATION.degrees,
             ),
             joyButton(
                 "direction-right", TouchOutputControl.DirectionRight,
                 JOYCON_LEFT_DIRECTIONS.getValue(TouchCardinalSlot.East),
                 group = DIRECTION_GROUP, role = TouchVisualRole.JoyConDirectionButton,
+                rotationDegrees = JOYCON_LEFT_ROTATION.degrees,
             ),
             joyButton(
                 "direction-down", TouchOutputControl.DirectionDown,
                 JOYCON_LEFT_DIRECTIONS.getValue(TouchCardinalSlot.South),
                 group = DIRECTION_GROUP, role = TouchVisualRole.JoyConDirectionButton,
+                rotationDegrees = JOYCON_LEFT_ROTATION.degrees,
             ),
         ),
     )
@@ -383,7 +412,7 @@ object TouchPersonalityTemplates {
         id = "picoswitch.touch.jcr.v1",
         profileId = TouchProfileId.JoyConRight,
         schemaVersion = SCHEMA_VERSION,
-        templateRevision = REVISION,
+        templateRevision = JOYCON_REVISION,
         controls = listOf(
             pad("sl", TouchOutputControl.SL, 60f, 42f, "SL"),
             pad("r", TouchOutputControl.R, 160f, 42f, "R", TouchControlKind.Trigger),
@@ -397,6 +426,11 @@ object TouchPersonalityTemplates {
                 150f, JOYCON_PRIMARY_CENTER_Y, 150f,
             ),
             round("stick-click", TouchOutputControl.PrimaryStickClick, 285f, 320f, 56f, "R3"),
+            // Same rule, opposite turn. The letters are identity markings rather
+            // than direction markings, so they stay upright and readable while
+            // only their POSITIONS rotate: the X printed at the top of an
+            // upright Joy-Con (R) really is at the player's right once the shell
+            // is turned clockwise, and the console reads it as the A position.
             joyButton(
                 "x", TouchOutputControl.X, JOYCON_RIGHT_FACE.getValue(TouchCardinalSlot.North),
                 label = "X", group = FACE_GROUP,
@@ -599,6 +633,8 @@ object TouchPersonalityTemplates {
         label: String = "",
         group: String,
         role: TouchVisualRole = TouchVisualRole.JoyConButton,
+        /** Turns the DRAWN MARKING with the shell; never the label text. */
+        rotationDegrees: Float = 0f,
     ) = TouchTemplateControl(
         id,
         output,
@@ -611,7 +647,7 @@ object TouchPersonalityTemplates {
             groupOffsetXUnits = placement.offsetXUnits,
             groupOffsetYUnits = placement.offsetYUnits,
         ),
-        TouchVisualSpec(role, label),
+        TouchVisualSpec(role, label, rotationDegrees = rotationDegrees),
         editGroupId = group,
     )
 }

@@ -40,6 +40,21 @@ sealed interface TouchControlAction {
  */
 enum class TouchControlKind { Button, FaceButton, Dpad, Stick, Trigger }
 
+/**
+ * Whether a persistent hold is even meaningful for this kind of control.
+ *
+ * Digital only. A stick and the unified D-pad are CONTINUOUS controls whose
+ * value is the contact's position, so there is no single state to hold; a
+ * latched one would also be the most disruptive thing on the layout, because a
+ * direction the user cannot see themselves holding walks the character into a
+ * wall. Excluded structurally rather than by configuration so no stored document
+ * can ask for it.
+ */
+val TouchControlKind.supportsLatch: Boolean
+    get() = this == TouchControlKind.Button ||
+        this == TouchControlKind.FaceButton ||
+        this == TouchControlKind.Trigger
+
 /** Hit-region shape. Visual rendering may differ; this is what the router tests. */
 enum class TouchControlShape { Circle, Rectangle, GameCubeContour }
 
@@ -124,6 +139,15 @@ data class TouchControlSpec(
     /** Logical-unit offset from the group's normalized anchor. */
     val groupOffsetXUnits: Float = 0f,
     val groupOffsetYUnits: Float = 0f,
+    /**
+     * The user's hold-to-latch choice for this control.
+     *
+     * Tri-state on purpose. `null` means "whatever the global setting says", so
+     * changing that setting moves every control the user has not had an opinion
+     * about — which is what a global setting is for. `true`/`false` are explicit
+     * per-control answers that survive it.
+     */
+    val latch: Boolean? = null,
 )
 
 /**

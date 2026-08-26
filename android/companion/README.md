@@ -55,7 +55,8 @@ The debug build provides real implementations for:
   the same bridge: two analog sticks, an eight-way sliding D-pad, a positional face diamond, L/R,
   ZL/ZR, L3/R3, `-`, `+`, Home, Capture and C, all usable simultaneously through one deliberate
   multi-touch router keyed on stable contact identifiers, with responsive safe-area geometry,
-  optional local touch haptics, and an optional private background image;
+  double-tap-to-hold on digital controls, optional local touch haptics, and an optional private
+  background image;
 - the complete Keyboard & Mouse management surface: live device and role status with names resolved
   from the adapter's own source registry, input mode, both mapping profiles with a focused
   per-input editor, mouse-button mapping, sensitivity with linked or independent axes, deadzone
@@ -255,7 +256,23 @@ midline, and the equal-size D-pad/C-stick pair is mirrored around it at a slight
 Joy-Con Left and
 Right place the primary stick on the left and their independent direction or
 face cluster on the right. Left orders `SL L | ZL SR`; Right orders `SL R | ZR SR`; stick clicks are
-labelled L3/R3. Joy-Con directions are recessed triangle indicators, not a text-arrow D-pad. Pro2
+labelled L3/R3. Joy-Con directions are recessed triangle indicators, not a text-arrow D-pad.
+
+**A sideways Joy-Con is a whole controller turned a quarter turn, and its action cluster turns with
+it.** This was wrong until 2026-08-26: the four controls were placed by reading their logical names
+as screen positions, so `direction-up` was drawn at the top of the display. It is the shell's *up*
+button, which points at the player's **left** once the half is held sideways — so the player was
+pressing the button in the X position to get Y, and the layout was misleading in a way nothing
+crashed over. `TouchClusterRotation` now states the turn once (Left anticlockwise, Right clockwise,
+matching the firmware's own `joycon2_pack_sideways_stick`, whose halves rotate opposite ways), and
+`squareDiamond` places a cluster keyed by each control's slot **on the shell**. Direction markings
+turn with the shell because an arrow's meaning *is* its orientation; the Joy-Con Right letters stay
+upright because a letter's meaning is the letter, and four sideways letters would just be
+unreadable. The correction is purely visual — every binding still matches the firmware's sideways
+encoder exactly, and `TouchSidewaysJoyConTest` asserts physical identity, logical action and screen
+position separately, because conflating any two of them is how the defect got in. No control id
+changed, so stored profiles still load and keep every position their owner chose; the two templates
+declare a newer revision to record that the shipped defaults moved. Pro2
 retains one real cross D-pad: its drawing stays separate from touch routing, and diagonal
 pressed arms are composited once so their translucent overlap cannot darken the hub.
 
@@ -337,6 +354,168 @@ because the alternative is a wide turn ending as a face-button press. A second c
 an owned control is ignored rather than stealing it — two contradictory positions for one stick
 have no correct answer.
 
+**Double-tap, hold, and slide to keep a button held.** Some games want one button held while another
+is tapped repeatedly, and a touchscreen has no tactile control a finger can rest on — planting a
+thumb on `Y` costs the grip and the reach that the rest of the layout needs. Double-tapping a digital
+control, holding the second press and then **sliding away** locks it held instead, so the thumb can
+leave. The published state is
+
+```text
+effectivePressed = (touchPressed || latchedPressed) && !retriggering
+```
+
+which is why the transport, the firmware and the console are entirely unaware of the feature: a
+latched button is a button that stays pressed in successive reports.
+
+**Timing alone cannot create a hold, because timing alone collides with real play.** Two gestures
+were tried and shipped before this one, and both were wrong in the same way. A plain double tap
+collides with mashing, which *is* a stream of double taps — gameplay immediately latched whichever
+button a game wanted hammered. A double tap whose second press is merely *held* collides with the
+very ordinary "double tap, then keep holding" that a game may ask for directly, and no dwell,
+however long, separates those two, because they are the same input.
+
+So the dwell no longer commits anything: it only **arms** the gesture. While armed, nothing has
+changed — the control is an ordinary physically held button, and letting go simply ends the press.
+A deliberate **slide** away from where that press began is what locks it. Nothing a game asks a
+player to do involves pressing a button and dragging off it, which is exactly why that motion is
+safe to spend on this. Telling users to disable the feature per button before they know which
+buttons a game hammers was never a solution; making the gesture impossible to perform by accident
+is.
+
+**Creating a hold is deliberately harder than removing one.** A hold the user did not mean is a
+stuck button they have to work out how to clear; a hold they lose by accident is one gesture away
+from coming back. So the two are not symmetric:
+
+```text
+UNLATCHED   tap                                  ordinary press
+            tap, press, hold 2x the base         armed; STILL an ordinary press
+            tap, press, hold, slide away         latch
+
+LATCHED     quick tap                            retrigger: release edge, then held again
+            press held 1x the base               unlatch
+```
+
+Releasing needs no leading tap, no slide, and half the dwell. Both dwells come from one
+`holdThresholdNanos` (180 ms) with `latchEngageThresholdNanos` and `latchReleaseThresholdNanos`
+derived from it by a named rule, so the asymmetry is a stated policy rather than two constants that
+can drift apart, and retuning the base moves both together. The base is well short of the platform's
+500 ms long-press timeout on purpose — this has to stay usable mid-fight, not feel like a context
+menu. The same argument that protects an unlatched button from mashing protects a latched one:
+no mashed press stays down long enough to reach even the shorter dwell.
+
+The commit distance is `latchCommitDistanceUnits` (64 logical units, roughly a centimetre on a
+handset) — a threshold of its own rather than a multiple of the drift tolerance, because the two
+answer different questions: slop is "did the user stay still", this is "did the user perform a
+deliberate motion". Direction is irrelevant; any slide will do. The moment the contact crosses it
+the latch commits, so the instant the button locks is the instant the user feels it, and sliding
+back afterwards cannot undo it — the gesture is over. Releasing while armed but before crossing it
+is not a latch and never was.
+
+Arming is announced rather than silent: the lightest haptic tick the surface has, and the badge
+appears as an **open** padlock that closes when the slide commits. One drawing with one difference,
+so the two states read as the same idea rather than as two marks to learn. Both fire during the
+perfectly ordinary act of holding a button after double-tapping it, which is the point — they are
+what makes an otherwise invisible gesture discoverable at the only moment it matters.
+
+The recognizer **observes** presses that the engine has already applied rather than intercepting
+them. That distinction is the feature's whole latency story: a detector that waited to see what the
+user meant would make every first tap late, which on a gameplay surface is unusable. Instead every
+press and release is published immediately and the gesture is recognized alongside them. The latch
+toggles while the second press is still down, so the control is already pressed at the instant the
+state changes and no transition can produce a blip — in particular, unlatching under a finger keeps
+the button down until that finger lifts.
+
+The double-tap window, its minimum gap, and the long-press timeout that bounds the *first* tap all
+come from the platform (`ViewConfiguration`), not from invented constants, so the gesture matches
+every other double tap on the device including whatever the user's accessibility settings have done
+to it. The dwells have no platform equivalent and are the project's own, kept in `TouchLatchConfig`
+with the rest so they stay tunable from one place; they are deliberately not user-facing settings.
+Recognition is scoped per control — tapping `A` then `B` quickly is two first taps — and one attempt
+consumes one sequence, so a candidate released too early does not leave a half-armed recognizer. A
+platform that reports no contact timestamps gets no gesture rather than one that fires at random.
+
+Both distances are displacement from the contact's own origin, in logical units, and neither has
+anything to do with the control's bounds. Before the dwell, travelling past `gestureSlopUnits`
+abandons the candidate, because a drag is not the hold the gesture asked for — that is what stops a
+thumb that presses a button and sweeps away from arming anything. After arming, travelling past
+`latchCommitDistanceUnits` commits. Natural drift reaches neither. A bounds test for either would
+make the gesture easy on a large button, hard on a small one, and unreliable anywhere near an edge;
+logical units rather than pixels keep both a distance on the glass, so laying the controller out
+smaller does not change how the gesture feels.
+
+**Tapping a held button presses it again.** A latched control is already published as pressed, so an
+ordinary tap on it would produce no edge at all and the game would see nothing — "latch `Y` to keep
+running, then tap `Y` to swing" was impossible without unlatching first. A tap on a latched control
+therefore *retriggers* it: the hold is masked for `retriggerReleaseNanos`, producing a real release
+edge, and then reasserts itself.
+
+```text
+HELD  ->  tap  ->  release edge  ->  press edge  ->  HELD
+```
+
+**The pulse is decided when the press ENDS, not when it starts**, because a press on a latched
+control is ambiguous until then: quick means "press it again", held means "stop holding it". Pulsing
+on the way down would make every unlatch emit a pointless release/press first. Deferring costs
+nothing — the game sees the button as held throughout the decision window, which is exactly what the
+hold is for — and it never touches the unlatched path, so an ordinary gameplay press is still
+published the instant it happens.
+
+Unlatching is equally careful at the other end: when the release dwell elapses the latch clears, but
+the finger that performed the gesture is still down and stays authoritative. The button releases when
+that finger lifts and not a moment earlier, so clearing the hold produces no edge of its own.
+
+The mask is applied at publish time rather than by mutating the accumulators, so ownership, latch
+state and the press/release bookkeeping are all untouched, nothing has to be undone when it expires,
+and no boundary has to know it existed. The duration matters and is not arbitrary: the session
+coalesces state onto a 125 Hz report cadence through a *conflated* mailbox, so a release and a press
+emitted in the same instant collapse into no change at all. 48 ms survives both that and the
+consumer — five report intervals, and longer than one frame at 30 Hz — while being far too short for
+a held run button to visibly stutter. The badge does not blink and the latch haptics do not fire: a
+retrigger is an ordinary press of a button the user is deliberately still holding, and gets exactly
+the press and release haptics any other button contact gets — a held control that felt dead to the
+touch would be the clearest possible way to say "this control is broken now". Repeated taps produce
+repeated fresh presses and cannot unlatch, because unlatching needs the deliberate dwell.
+
+**Two things need a clock, and the engine does not own one.** The dwell and the retrigger mask are
+timed rather than event-driven, and a still finger produces no pointer events. The engine states
+when it next has work (`nextDeadlineNanos`) and the surface sleeps until then and calls `onTick`. A
+pull model rather than a scheduler, deliberately: there is no queued closure carrying a captured
+control, so a tick that lands after a release, a layout change or a teardown finds nothing to do.
+That *is* the session-safety for all three — there is no queue to invalidate. Taking the gesture
+away from a control does the same thing directly: disabling its latch clears the hold, the pending
+dwell and any pulse together, so a button cannot be left down with nothing left that could release
+it. `TouchLatchOutputTest` pins every one of these as published controller-state edges rather than
+as internal flags, because "the hold is briefly masked" is worth nothing if a released snapshot
+never reaches the state machine.
+
+Only digital controls latch. Sticks and the D-pad are excluded structurally, in
+`TouchControlKind.supportsLatch`, rather than by configuration: their value *is* the contact's
+position, and a held direction the user cannot see themselves holding is the most disruptive thing
+on the layout. The global **Lock a button held** setting is the default for controls that state no
+preference; the editor's per-control **Default / Enabled / Disabled** — the padlock beside the
+visibility toggle — overrides it either way, which is what a button somebody mashes needs. That
+choice rides the existing sparse-override schema as one optional `latch` flag, so layouts written
+before the feature load unchanged and the schema version deliberately did not move: a bump would
+make older builds refuse the whole document and discard geometry, to protect a preference that
+degrades to its default anyway.
+
+A latched control is unmistakable. It keeps the pressed fill and gains a padlock badge on its
+diagonal, drawn in the theme's guaranteed-contrast label colour — shape first, because colour alone
+survives neither a user-chosen background nor colour-blind vision — and the badge is placed
+identically for round, rectangular and contoured silhouettes. The badge is read from the latch and
+never from what is currently published, so a retrigger pulse cannot blink it off. Engaging and
+releasing feel different through the existing haptic policy, once per transition and never per
+frame. Latch transitions are the only thing logged: `controller/touch latch` names the control, the
+resulting state and the reason. Retrigger pulses are counted rather than logged — they are ordinary
+presses and would be log volume — and the touch diagnostics line carries `latched=`, `latch=`
+engaged/released/cleared and `retrigger=` beside the contact counters, because "held by a finger",
+"held by a latch" and "held but pulsing" look identical in `held=` and are different faults.
+
+The recognizer is deliberately not Boolean-shaped: it knows about contacts and time only, and the
+dwelling contact's movement is already routed to it. The planned analog-trigger hold, where that
+movement will select a held trigger value, can reuse this gesture rather than growing a parallel
+one.
+
 **Face controls are positions, not letters.** `FaceButtonPosition` names South/East/West/North and
 resolves through the same `ControllerLayoutResolver` the physical path uses. The companion sends the
 result as logical A/B/X/Y usages; descriptor-proven bridge provenance makes the firmware seam map
@@ -362,6 +541,14 @@ reporting, menu open, mode exit, `ON_PAUSE`/`ON_STOP`, geometry invalidation, au
 down, link stop and disposal all call one idempotent release. Ordering is load bearing: the engine
 is released *before* the session neutralizes, so the neutral report still crosses a live transport.
 Configuration is persisted; nothing that describes what is currently held ever is.
+
+Latched holds ride that same single release, which is the only reason the feature is safe: a
+latch is the one thing on this surface that outlives the contact that made it, so it can never be
+given a lifetime of its own. It is additionally dropped when the latch configuration itself changes,
+because a setting that reads "off" above a button that is still down is exactly the confusion the
+setting exists to end. A latch therefore lives only for the lifetime of the active touch session —
+never across a restart, a reconnect, an authority change or a personality change, and never onto a
+control map where the same id means something else.
 
 **Geometry is declarative and audited.** The layout is normalized against the interaction-safe
 rectangle (system gesture insets, cutouts, caption bar) while the background draws edge to edge, so

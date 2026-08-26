@@ -26,9 +26,12 @@ enum class TouchPhase { Down, Move, Up, Cancel }
  * about display density, window origins or rotation; by the time a contact gets
  * here it is just a point in the same plane as the control geometry.
  *
- * [timeNanos] is a monotonic host stamp used only for diagnostics ("how old is
- * the newest contact"). Nothing in the control math reads it, so a platform with
- * no useful clock may pass zero.
+ * [timeNanos] is a monotonic host stamp. Nothing in the CONTROL MATH reads it —
+ * a stick's value is its position and nothing else — but the hold-to-latch
+ * recognizer does, so a platform that passes zero gets diagnostics and no latch
+ * gesture rather than a latch that fires on every second tap. That refusal is
+ * deliberate: a recognizer running on a clock stuck at zero would toggle a
+ * persistent hold at random, which is the worst failure this feature has.
  *
  * Pressure, tool type, contact ellipse and historical samples are deliberately
  * absent: none of them change what a gamepad control does, and every one of them
@@ -81,4 +84,12 @@ enum class TouchReleaseReason {
 
     /** A fault was caught at a boundary and the retained state is not trustworthy. */
     Fault,
+
+    /**
+     * Configuration changed under a hold that outlives contacts.
+     *
+     * Used only for double-tap latches: turning the setting off, or retiming the
+     * gesture, must not leave a control held under rules that no longer apply.
+     */
+    SettingsChanged,
 }

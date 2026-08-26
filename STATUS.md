@@ -7,6 +7,30 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **Stage C dependency modernization — built and under initial hardware endurance 2026-08-25.**
+  The firmware now builds against Pico SDK 2.3.0 (`98a542c1`), BTstack 1.8.2 (`075a0780`),
+  cyw43-driver 1.1.1 (`055d6427`) and Arm GNU 15.2.Rel1, replacing 2.2.0 / 1.6.2 / 1.1.0 / 14.2.Rel1.
+  Four upstream changes needed deliberate adaptation, three of them silent: the `hids_client` →
+  `hids_host` rename **including `MAX_NR_HIDS_CLIENTS` → `MAX_NR_HIDS_HOSTS`** (the old spelling
+  builds a zero-entry pool), the removal of `HID_PROTOCOL_MODE_REPORT_WITH_FALLBACK_TO_BOOT`,
+  `gap_disconnect()` no longer synthesising a disconnection-complete event for an already-released
+  handle, and LE **Secure Connections Only now defaulting ON** — which this host explicitly turns
+  back off, because requesting SC while permitting legacy fallback is the documented policy and
+  SC-Only would also invalidate existing sub-16-byte-key bonds. The HID Host long-report shim was
+  ported: 1.8.2 provides the 16-bit report length natively, so only the pending-send guard and the
+  L2CAP diagnostic hook remain patched. **The CYW43439 Bluetooth firmware blob is byte-identical
+  between the two SDK trees (`2075e3be…8647`), so this migration cannot have fixed a
+  controller-side defect.** Both boards build clean with no warnings outside vendored libopus (and
+  those reproduce identically under GCC 14.2). 72/72 declared active host-test targets passed, plus
+  a new `tools/test_btstack_dependency_contract.py`. The maintainer subsequently flashed a Stage C
+  candidate to a different Pico 2 W and began endurance on a different Android device. At the
+  latest report it had exceeded three hours of established management traffic with five-second
+  replies still completing, no observed HCI `0x08` or management disconnect, no obvious pairing
+  regression, and about 20 successful Touch Gamepad reconnects. The run remains active. This is a
+  material initial reliability improvement, not a complete parity campaign or proof that failure
+  probability is zero. Read-only build inspection still resolves stock BTstack v1.8.2; no later
+  CTKD-fix pin is configured, so the cross-transport risk described below remains live.
+  [`docs/experiments/pico-sdk-2.3-btstack-1.8.2-migration-2026-08-25.md`](docs/experiments/pico-sdk-2.3-btstack-1.8.2-migration-2026-08-25.md)
 - **Controller Link face-button inversion — fixed 2026-08-24, hardware replay pending.** The
   2026-08-23 Touch Gamepad face fix moved the firmware's four bridge face usages onto their logical
   A/B/X/Y destinations. That is correct for the on-screen pad, but `from_android_bridge` provenance
@@ -370,7 +394,62 @@ console-facing protocol owner. Reference hardware is an AYN Thor (Android 13 / A
   index), circular stick clamping with a
   rescaling radial deadzone, eight D-pad sectors with radial and angular hysteresis, a declarative
   layout resolved into the interaction-safe rectangle and mechanically audited for overlap/target
-  size/bounds, and one idempotent release-all invoked from every invalidating boundary. Physical
+  size/bounds, and one idempotent release-all invoked from every invalidating boundary.
+  **Double-tap-hold-slide, with retrigger (added 2026-08-26, device-validated for gesture
+  recognition, mash-immunity, visuals and lifecycle clearing; in-game feel open):** double-tapping a
+  digital control, HOLDING the second press and then SLIDING away locks a persistent hold, so a
+  thumb does not have to stay planted on a run or aim button. It is entirely a `:bridge-core` concern —
+  `effectivePressed = (touchPressed || latchedPressed) && !retriggering` — so no transport,
+  firmware, HID report or cadence changed, and the console cannot tell a latched button from a held
+  one. TIMING ALONE CANNOT CREATE A HOLD, because timing alone collides with real play: a plain
+  double tap collides with mashing (mashing IS a stream of double taps), and a double tap whose
+  second press is merely held collides with the ordinary "double tap, then keep holding" a game may
+  ask for directly — no dwell separates those, because they are the same input. So the dwell only
+  ARMS the gesture and a deliberate slide of `latchCommitDistanceUnits` (64 logical units) from the
+  press origin commits it; nothing a game asks a player to do involves pressing a button and dragging
+  off it. While armed the control is still an ordinary held button and letting go simply ends the
+  press. CREATING a hold is deliberately harder than removing one — engage is a leading tap, a dwell
+  of `2 x holdThresholdNanos` (360 ms) and the slide; release is a single press held for the base
+  itself (180 ms), no leading tap and no slide — because an unwanted hold is a stuck button the user
+  has to diagnose while a lost one is one gesture away from coming back. Both dwells derive from one
+  base by a named rule so they cannot drift apart, and the base sits well below the platform's 500 ms
+  long-press timeout so neither feels like a context menu. Arming is announced by the lightest haptic
+  tick and an OPEN padlock badge that closes on commit, which is what makes the gesture
+  discoverable. Tapping an already-latched control retriggers it — the hold is
+  masked for 48 ms at publish time so a real release edge exists, then reasserts — because a control
+  the game already sees as held produces no edge otherwise; the mask is sized against the session's
+  conflated 125 Hz mailbox and one 30 Hz consumer frame, the badge does not blink, and repeated taps
+  cannot unlatch. The pulse is decided when the press ENDS, since a press on a held control is
+  ambiguous until then, which is what stops every unlatch emitting a pointless release/press first;
+  and when the release dwell elapses the finger stays authoritative, so clearing the hold produces no
+  edge of its own. The recognizer only observes presses the engine has already published, so no tap
+  is delayed. Dwells and the mask are the only timed work: the engine publishes `nextDeadlineNanos`
+  and the surface ticks it, a pull model with no queued closure, which is what makes any pending
+  timed work unable to resurrect a button after teardown. Double-tap window, minimum gap and
+  first-tap bound come from `ViewConfiguration`; the dwells, the mask, the drift tolerance and the
+  commit distance (both displacement from the contact origin in logical units, never a control-bounds
+  test, so button size and where inside it the user touched change nothing) are project constants in
+  `TouchLatchConfig` and are not user-facing. Sticks and
+  the D-pad are excluded structurally by `TouchControlKind.supportsLatch`. A global setting supplies
+  the default and the editor's per-control Default/Enabled/Disabled overrides it, carried as one
+  optional `latch` flag in the existing sparse-override schema — old layouts load unchanged and the
+  schema version deliberately did not move. Latches ride the same release-all as everything else and
+  are additionally dropped when the latch configuration changes; a latched control shows the pressed
+  fill plus a padlock badge, latch transitions are logged as `controller/touch latch`, and the touch
+  diagnostics line carries latch and retrigger counters. `TouchLatchOutputTest` pins every gesture as
+  published controller-state edges over a real `ControllerInputState`, not as internal flags.
+  **Sideways Joy-Con action-cluster orientation (fixed 2026-08-26, device-verified on both halves):**
+  the four action controls were placed by reading their logical names as screen positions, so
+  `direction-up` was drawn at the top of the display when the shell's up button points at the
+  player's LEFT once the half is held sideways — the player pressed the button in the X position and
+  got Y. `TouchClusterRotation` now states each half's turn once (L anticlockwise, R clockwise,
+  agreeing with the firmware's own `joycon2_pack_sideways_stick`) and `squareDiamond` places a
+  cluster keyed by each control's slot on the shell. Direction markings rotate with the shell because
+  an arrow's meaning is its orientation; Joy-Con Right letters stay upright because a letter's
+  meaning is the letter. Purely visual: every binding still matches the firmware's sideways encoder,
+  and `TouchSidewaysJoyConTest` pins physical identity, logical action and screen position
+  separately. No control id changed, so stored profiles keep every position their owner chose; both
+  templates declare a newer revision to record that the shipped defaults moved. Physical
   versus touch input is an explicit `InputAuthority`, never a merge; entering rebinds the session
   with `bindSource(null, touchCapabilities)` so console rumble reaches the host's own actuator, and
   no synthetic input device is invented. Face controls are positions resolved through
@@ -537,6 +616,23 @@ controller drives the console and without a CDC re-enumeration that would drop t
 - Management advertising no longer suppresses controller discovery. A 5.4-hour soak held a Classic
   controller plus a management client through ten USB re-enumerations and three controller
   disconnect/reconnect cycles, with automatic controller recovery and no management disconnects.
+- **Established-session BLE `0x08`: pre-C confirmed; not reproduced after Stage C so far.** In a
+  spontaneous failure Android's lower Bluetooth layer reported LE HCI `0x08` about 3 ms before the
+  companion received write status 133, proving that 133 was downstream of an already-lost ACL. The
+  Classic Controller Link was reported lost 15.000 s later. Source and live traces show one
+  process-wide transport and strict request serialization; a bounded instrumented comparison then
+  completed 75/75 requests (49 background polls and two full Refresh workflows) on one GATT
+  generation with no errors or disconnect. A later management-only Condition F reproduced the same
+  established LE timeout after Classic had been intentionally disconnected, proving Classic is not
+  required. Its post-failure ring proves that the RP2350 rebooted at
+  16:24:49.932-16:24:49.955, immediately before Android surfaced `0x08`; persistent recovery
+  scratch rules out the project's deliberate Bluetooth recovery reboot, but the pre-C build did not
+  expose the generic reset cause. Deliberate pre-C retesting later reproduced failures across
+  approximately 2-14 minute lifetimes. By contrast, the ongoing Stage C candidate had exceeded
+  three hours without reproduction at the latest observation. The leading interpretation is that
+  the host-side SDK/BTstack/cyw43 integration change may have eliminated or dramatically reduced
+  the failure; no exact responsible change is isolated, and the CYW43439 PatchRAM is unchanged.
+  [`docs/experiments/established-management-gatt-failure-2026-08-25.md`](docs/experiments/established-management-gatt-failure-2026-08-25.md)
 
 Remaining gates are listed under [Open validation gates](#open-validation-gates). Reference:
 [`docs/bluetooth/in-band-management-plan.md`](docs/bluetooth/in-band-management-plan.md),
@@ -813,7 +909,21 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
   load, when the CYW43 delayed the command-complete. We share the design flaw, but our telemetry
   shows it has never misfired (`probes 445/445`, `failed 0`, `timeouts 0`, `recovery.attempts 0`),
   so it is a cleanup task, not an incident. Do not remove it without new evidence implicating it.
-- **Stay on Pico SDK 2.2.0 / BTstack 1.6.2 — deliberately, not by neglect (audited 2026-08-22).**
+- **Migrated to Pico SDK 2.3.0 / BTstack 1.8.2 on 2026-08-25; a stock-v1.8.2 Stage C candidate is
+  under initial endurance and the CTKD hazard below remains unresolved.** The audit that follows was
+  written
+  on 2026-08-22 as a reason to stay on 2.2.0; the maintainer chose to modernize anyway, so it is now
+  a **live risk on the candidate build**, not a deferral rationale. Its CTKD mechanism was
+  re-verified from source in the installed `v1.8.2` tree during the migration and holds exactly as
+  written: `sm_ctkd_fetch_br_edr_link_key()` loads the *existing* Classic key into
+  `setup->sm_link_key` byte-reversed, and 1.8.2 now routes the BR/EDR→LE direction through
+  `sm_store_classic_bonding_information()`, which stores it. v1.8.2 *does* carry a
+  `sm_ctkd_from_le_could_update()` guard that is easy to mistake for `a0f82a97c` — it gates on
+  authentication level, not on direction, and does not prevent this. Physical Classic controllers do
+  not run SMP over BR/EDR and are unaffected; the Android companion is the exposed peer. Options and
+  reachability analysis:
+  [`docs/experiments/pico-sdk-2.3-btstack-1.8.2-migration-2026-08-25.md`](docs/experiments/pico-sdk-2.3-btstack-1.8.2-migration-2026-08-25.md)
+- **The 2026-08-22 audit, retained verbatim as the evidence:**
   SDK 2.3.0 pins BTstack `075a0780f` (= `v1.8.2`), which does contain all three upstream fixes that
   looked relevant: `be7469f18` (connection collision — ignore `PAGE_TIMEOUT` after an incoming
   connection event), `9a82d560f` (page scan repetition mode R1), and `232f80e60` (derive the BR/EDR
@@ -828,6 +938,11 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
   plausibly touches our paths at all, and the R1 change is about the *remote's*
   Page_Scan_Repetition_Mode in our outgoing `Create_Connection` — it cannot affect whether a phone
   can page us. Revisit when a Pico SDK ships a BTstack containing `a0f82a97c`.
+
+  *(Still the correct read of the trade. What changed on 2026-08-25 is the decision and the initial
+  hardware evidence, not the CTKD analysis: the host-side stack was modernized and its stock-v1.8.2
+  candidate is under endurance. A later exact upstream pin containing the confirmed CTKD fixes is
+  planned but is not present in the configured build.)*
 
 ## Negative knowledge — settled, do not rediscover
 
@@ -866,7 +981,8 @@ frozen; remaining Bluetooth entries are targeted physical validation, not an ope
   20 s supervision timeout and reported `0x08` anyway only ~8.4 s after the last healthy round trip,
   so Type B's mechanism below the surviving host is **Unknown**; "the controller became
   unavailable" is the honest ceiling, and it is explicitly *not* established as a sleep/wake stall.
-  One radio serves both transports, which is why they always die together. `0x85` is
+  One radio serves both transports, so both can be lost in the same episode; the 2026-08-25 trace
+  reported LE first and Classic 15 s later rather than as simultaneous callbacks. `0x85` is
   *our* label for Android GATT 133 and is downstream; Fluoride separately prints `0x85` constantly
   as a BTM power-mode state, which is unrelated noise. The user-visible ~30–40 s recovery is
   ~2 s of real outage (process restart *and* controller firmware patch reload complete by T+1.9 s),
