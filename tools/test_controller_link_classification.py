@@ -8,6 +8,7 @@ reported as a Bluetooth failure, and no failure can come back as a bare label.
 """
 
 import importlib.util
+import io
 import pathlib
 import sys
 
@@ -394,6 +395,105 @@ def test_owner_check_ignores_other_apps_named_main_activity():
         assert clc.check_single_owner() is None
     finally:
         clc.adb_run = original
+
+
+def test_touch_menu_opens_with_current_left_edge_swipe():
+    closed = ('<hierarchy><node bounds="[0,0][1920,1080]" '
+              'content-desc="On-screen controller" /></hierarchy>')
+    opened = ('<hierarchy><node bounds="[0,0][1920,1080]" '
+              'content-desc="Close the Touch Gamepad menu" /></hierarchy>')
+    dumps = iter(((closed, None), (opened, None)))
+    seen = []
+    original_dump = clc.ui_dump_checked
+    original_adb = clc.adb
+    original_sleep = clc.time.sleep
+    clc.ui_dump_checked = lambda: next(dumps)
+    clc.adb = lambda *args, **kwargs: seen.append(args) or ""
+    clc.time.sleep = lambda *_: None
+    try:
+        assert clc.open_touch_menu(4.0)
+        assert seen == [("shell", "input", "swipe",
+                         "9", "540", "480", "540", "350")]
+    finally:
+        clc.time.sleep = original_sleep
+        clc.adb = original_adb
+        clc.ui_dump_checked = original_dump
+
+
+def test_vertical_scroll_stays_inside_current_scrollview():
+    hidden = ('<hierarchy><node bounds="[0,0][1920,1080]">'
+              '<node scrollable="true" bounds="[222,341][1883,1080]" />'
+              '</node></hierarchy>')
+    visible = ('<hierarchy><node bounds="[0,0][1920,1080]">'
+               '<node scrollable="true" bounds="[222,341][1883,1080]">'
+               '<node text="Stop playing" bounds="[300,500][700,600]" />'
+               '</node></node></hierarchy>')
+    dumps = iter(((hidden, None), (visible, None)))
+    seen = []
+    original_dump = clc.ui_dump_checked
+    original_adb = clc.adb
+    original_sleep = clc.time.sleep
+    clc.ui_dump_checked = lambda: next(dumps)
+    clc.adb = lambda *args, **kwargs: seen.append(args) or ""
+    clc.time.sleep = lambda *_: None
+    try:
+        assert clc.tap_text_with_vertical_scroll(
+            "Stop playing", toward_end=False, attempts=1)
+        assert seen[0] == ("shell", "input", "swipe",
+                           "1052", "488", "1052", "933", "350")
+        assert seen[1] == ("shell", "input", "tap", "500", "550")
+    finally:
+        clc.time.sleep = original_sleep
+        clc.adb = original_adb
+        clc.ui_dump_checked = original_dump
+
+
+def test_fresh_cycle_requires_raw_ready_and_binding_all_down():
+    dev = clc.Adapter("COM-test")
+    down = {
+        "connections": {"classic_raw": 0, "classic_ready": 0},
+        "clink": {"handle": clc.HANDLE_NONE},
+    }
+    assert dev.link_fully_down(down)
+    for stale in (
+        {"connections": {"classic_raw": 1, "classic_ready": 0},
+         "clink": {"handle": clc.HANDLE_NONE}},
+        {"connections": {"classic_raw": 1, "classic_ready": 1},
+         "clink": {"handle": "0x000B"}},
+        {"connections": {"classic_raw": 0, "classic_ready": 0},
+         "clink": {"handle": "0x000B"}},
+    ):
+        assert not dev.link_fully_down(stale)
+
+
+def test_btlife_segment_is_copied_before_diagnostic_clear():
+    calls = []
+    original_uart = clc.uart
+
+    def fake_uart(port, command):
+        calls.append((port, command))
+        if command == "btstate":
+            return {"events": {"count": 2, "dropped": 0}}
+        if command == "btlife dump 0":
+            return {"btlife": "dump", "first": 0,
+                    "events": [[1, "page_rx", 1, 0, "---", "ABCDEF"],
+                               [2, "page_accept", 0, 0, "---", "ABCDEF"]]}
+        if command == "btlife clear":
+            return {"btlife": "cleared"}
+        raise AssertionError(command)
+
+    clc.uart = fake_uart
+    sink = io.StringIO()
+    try:
+        ok, copied, dropped = clc.drain_btlife(
+            "COM-test", sink, cycle=7, clear_after=True)
+        assert (ok, copied, dropped) == (True, 2, 0)
+        record = clc.json.loads(sink.getvalue())
+        assert record["host_cycle"] == 7
+        assert [event[1] for event in record["events"]] == ["page_rx", "page_accept"]
+        assert calls[-1] == ("COM-test", "btlife clear")
+    finally:
+        clc.uart = original_uart
 
 
 def main() -> int:

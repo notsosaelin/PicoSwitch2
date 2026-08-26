@@ -1,0 +1,3 @@
+Root access note: Magisk 30.7 was already installed. During this investigation only the existing [SharedUID] Shell superuser grant was enabled so adb shell could execute read-only root diagnostics.
+No Bluetooth property had been changed and Bluetooth had not been restarted when these files were captured.
+The separate 20260825-current-failure bugreport and BTSNOOZ artifacts predate this audit bundle.

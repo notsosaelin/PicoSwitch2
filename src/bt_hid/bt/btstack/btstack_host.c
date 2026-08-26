@@ -56,7 +56,7 @@ extern void btstack_memory_init(void);
 #include "ble/att_db_util.h"
 #include "ble/att_server.h"
 #include "ble/le_device_db.h"
-#include "ble/gatt-service/hids_client.h"
+#include "ble/gatt-service/hids_host.h"
 #include "ble/gatt-service/device_information_service_client.h"
 #include "ble/gatt-service/battery_service_client.h"
 #include "classic/hid_host.h"
@@ -317,14 +317,14 @@ static struct {
 } hid_state;
 
 // HID descriptor storage (shared across connections)
-static uint8_t hid_descriptor_storage[1024];  // room for 2 BLE HID descriptors (MAX_NR_HIDS_CLIENTS=2)
+static uint8_t hid_descriptor_storage[1024];  // shared by all MAX_NR_HIDS_HOSTS connections
 
 static btstack_packet_callback_registration_t hci_event_callback_registration;
 static btstack_packet_callback_registration_t sm_event_callback_registration;
 static ns2_bt_health_t bt_health;
 static hci_con_handle_t bt_health_probe_handle = HCI_CON_HANDLE_INVALID;
 
-// Direct notification listener for Xbox HID reports (bypasses HIDS client)
+// Direct notification listener for Xbox HID reports (bypasses HIDS Host)
 static gatt_client_notification_t xbox_hid_notification_listener;
 static gatt_client_characteristic_t xbox_hid_characteristic;  // Fake characteristic for listener
 static void xbox_hid_notification_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size);
@@ -635,12 +635,12 @@ static void route_ble_hid_report(uint8_t conn_index,
 
 static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size);
 static void sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size);
-static void hids_client_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size);
+static void hids_host_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size);
 static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size);
 static ble_connection_t* find_connection_by_handle(hci_con_handle_t handle);
 static ble_connection_t* find_connection_by_hids_cid(uint16_t hids_cid);
 static ble_connection_t* find_free_connection(void);
-static void start_hids_client(ble_connection_t *conn);
+static void start_hids_host(ble_connection_t *conn);
 static void register_ble_hid_listener(hci_con_handle_t con_handle);
 static void register_switch2_hid_listener(hci_con_handle_t con_handle);
 enum {
@@ -657,7 +657,7 @@ static void mp_nus_disconnected(hci_con_handle_t handle);
 static void mp_nus_periodic(void);
 
 // Deferred post-HID setup sequencer. After HID report notifications are
-// enabled (0x1C), the hids_client needs a moment to return to CONNECTED before
+// enabled (0x1C), the hids_host needs a moment to return to CONNECTED before
 // it will accept a protocol-mode write, and the other GATT clients must run one
 // at a time. This runs from btstack_host_process(): phase 0 = write REPORT
 // protocol mode (retry until accepted), phase 1 = start DIS/BAS + arm NUS.
@@ -1294,6 +1294,20 @@ static void setup_hid_handlers(void)
     sm_set_io_capabilities(IO_CAPABILITY_NO_INPUT_NO_OUTPUT);
     sm_set_authentication_requirements(SM_AUTHREQ_BONDING | SM_AUTHREQ_SECURE_CONNECTION);
     sm_set_encryption_key_size_range(7, 16);
+    // REQUESTING Secure Connections and REQUIRING it are different policies,
+    // and this host has always meant the first. BTstack 1.8.2 changed the
+    // default: sm_init() now sets sm_sc_only_mode = true whenever
+    // ENABLE_LE_SECURE_CONNECTIONS is defined (sm.c:5230), where 1.6.2 left it
+    // false. SC-Only rejects any pairing whose peer does not offer Secure
+    // Connections (sm.c:1292) and any link whose encryption key is shorter than
+    // 16 bytes (sm.c:1276, 4956) -- which is exactly the legacy fallback the
+    // comment above depends on, and would also invalidate existing bonds formed
+    // under the old default.
+    //
+    // Say it out loud rather than inheriting either version's default. Raising
+    // this to true is a deliberate product decision about which BLE peers are
+    // still supported, not an SDK-migration side effect.
+    sm_set_secure_connections_only_mode(false);
 
     printf("[BTSTACK_HOST] Init GATT client...\n");
     gatt_client_init();
@@ -1302,8 +1316,8 @@ static void setup_hid_handlers(void)
     // on the 30s ATT timeout (see setup_att_server comment).
     setup_att_server();
 
-    printf("[BTSTACK_HOST] Init HIDS client...\n");
-    hids_client_init(hid_descriptor_storage, sizeof(hid_descriptor_storage));
+    printf("[BTSTACK_HOST] Init HIDS Host...\n");
+    hids_host_init(hid_descriptor_storage, sizeof(hid_descriptor_storage));
 
     printf("[BTSTACK_HOST] Init DIS client...\n");
     device_information_service_client_init();
@@ -1526,6 +1540,84 @@ static uint32_t fresh_admission_reject_window;
 static uint32_t fresh_admission_reject_lockout;
 static uint32_t wipe_completions;
 static uint32_t hci_state_losses;
+
+// Times gap_disconnect() was handed a handle the controller had already
+// released. Under BTstack 1.6.2 this was invisible -- the stack answered with a
+// synthetic disconnection-complete event and the ordinary teardown ran. Under
+// 1.8.2 it is a real event with a real consequence, so it is counted and
+// printed: a non-zero value says some record here outlived its ACL, which is
+// worth knowing regardless of whether the convergence below papered over it.
+static uint32_t disconnect_handle_already_gone;
+
+// Request a disconnect for a handle held in a DURABLE LOCAL RECORD.
+//
+// Returns true when HCI_EVENT_DISCONNECTION_COMPLETE will follow and the
+// ordinary teardown path owns the rest; false when no event is coming and the
+// caller must release its own record now. See ns2_bt_disconnect_outcome() for
+// the BTstack 1.6.2 -> 1.8.2 behaviour change this exists for.
+//
+// Event-driven call sites -- the ones that disconnect the very handle the event
+// they are handling just delivered -- deliberately keep calling gap_disconnect()
+// directly. That handle is live by construction, and giving those paths a
+// second teardown mechanism is exactly the parallel-path problem
+// classic_companion_release_on_mgmt_loss() warns about.
+static bool btstack_host_request_disconnect(hci_con_handle_t handle,
+                                            const char *what)
+{
+    uint8_t status = gap_disconnect(handle);
+    if (ns2_bt_disconnect_outcome(status) == NS2_BT_DISCONNECT_EVENT_PENDING)
+        return true;
+
+    disconnect_handle_already_gone++;
+    printf("[BTSTACK_HOST] %s: handle 0x%04X already released by the controller "
+           "(gap_disconnect=0x%02X, count=%lu); converging locally\n",
+           what ? what : "disconnect", handle, status,
+           (unsigned long)disconnect_handle_already_gone);
+    return false;
+}
+
+// Release a BLE controller slot for which no disconnection-complete event will
+// arrive.
+//
+// HCI_EVENT_DISCONNECTION_COMPLETE stays the one ordinary teardown path, and it
+// does considerably more than this: reconnect selection, stale-bond deletion,
+// scan resumption. Those are decisions about a link that just died, and this is
+// not that situation -- here the caller has already decided the peer should go
+// away and the stack has just told us its ACL no longer exists. So this
+// releases resources and nothing else. The host-global GATT/battery scratch
+// state is deliberately left alone: it is shared with any other live BLE
+// connection, and the ordinary path will clear it when its owner drops.
+static void ble_connection_release_orphan(ble_connection_t *conn)
+{
+    if (conn == NULL || conn->handle == HCI_CON_HANDLE_INVALID) return;
+
+    hci_con_handle_t handle = conn->handle;
+    uint8_t conn_index = 0xFFu;
+    uint32_t generation = 0u;
+    uint16_t dcid = conn->hids_cid;
+
+    if (conn->conn_index > 0) {
+        conn_index = conn->conn_index;
+        generation = bthid_get_connection_generation(conn_index);
+        if (ble_report_pending && pending_ble_conn_index == conn_index &&
+            (pending_ble_connection_generation == 0u ||
+             pending_ble_connection_generation == generation)) {
+            ble_report_pending = false;
+        }
+        bt_on_disconnect_with_generation(conn_index, generation);
+    }
+
+    memset(conn, 0, sizeof(*conn));
+    conn->handle = HCI_CON_HANDLE_INVALID;
+
+    if (dcid != 0) hids_host_disconnect(dcid);
+
+    for (int i = 0; i < MAX_BLE_CONNECTIONS; i++) {
+        if (mp_hid_setup[i].handle == handle) mp_hid_setup[i].active = false;
+    }
+    mp_nus_disconnected(handle);
+    switch2_cleanup_on_disconnect(conn_index, generation);
+}
 
 // Authoritative Switch 2 bond-key snapshot read from controller SPI during
 // the custom ATT init sequence. Declared with reconnect persistence because
@@ -1822,7 +1914,12 @@ static void btstack_host_force_switch2_fresh_pairing_run(void *context)
             conn->profile->ble != BT_BLE_CUSTOM) continue;
         printf("[SW2_BLE] UART forcing fresh custom pairing; disconnecting handle 0x%04X\n",
                conn->handle);
-        gap_disconnect(conn->handle);
+        if (!btstack_host_request_disconnect(conn->handle, "btfresh custom link")) {
+            // No disconnect event is coming, so nothing else will free this
+            // slot -- and a stale slot would be mistaken for the live link the
+            // next SYNC advertisement is supposed to replace.
+            ble_connection_release_orphan(conn);
+        }
         return;
     }
 
@@ -2467,7 +2564,11 @@ static void classic_companion_release_on_mgmt_loss(void)
     printf("[BTSTACK_HOST] Management lost; tearing down Controller Link "
            "(handle=0x%04X, teardowns=%lu)\n",
            link, (unsigned long)classic_companion_mgmt_teardowns);
-    gap_disconnect(link);
+    // Nothing to converge on the false path: classic_companion_acl_handle was
+    // already cleared above, and if the ACL is genuinely gone then HID Host was
+    // torn down with it. The counter inside the helper is what makes the case
+    // visible if it ever happens.
+    (void)btstack_host_request_disconnect(link, "Controller Link teardown");
 }
 
 static bool config_ble_handle_disconnect(
@@ -2520,8 +2621,15 @@ static void config_ble_service_task(bool in_config)
         printf("[BTSTACK_HOST] Config/management BLE service disabled (not authorized)\n");
 
         if (config_ble.handle != HCI_CON_HANDLE_INVALID) {
+            hci_con_handle_t closing = config_ble.handle;
             config_ble.closing = true;
-            gap_disconnect(config_ble.handle);
+            if (!btstack_host_request_disconnect(closing, "management session")) {
+                // `closing` latches until the disconnect event clears it. With
+                // no event coming, management would stay permanently "connected
+                // but closing": no advertising, no new session, no scan resume.
+                config_ble_handle_disconnect(
+                    closing, ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER);
+            }
         } else if (!btstack_host_controller_connected()) {
             btstack_host_start_scan();
         }
@@ -4560,13 +4668,12 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                         classic_state.pending_hid_connect = false;
                     }
                 } else {
-                    // Non-Wiimote: use normal hid_host_connect
-                    // Use profile's hid_mode to determine SDP bypass
-                    hid_protocol_mode_t mode = (profile->hid_mode == BT_HID_MODE_FALLBACK)
-                        ? HID_PROTOCOL_MODE_REPORT_WITH_FALLBACK_TO_BOOT
-                        : HID_PROTOCOL_MODE_REPORT;
+                    // Non-Wiimote: use normal hid_host_connect.
+                    // Always REPORT. BTstack 1.8.2 removed the per-profile
+                    // fallback-to-boot mode; see bt_device_db.h for why nothing
+                    // here wanted it.
                     uint16_t hid_cid;
-                    uint8_t status = hid_host_connect(addr, mode, &hid_cid);
+                    uint8_t status = hid_host_connect(addr, HID_PROTOCOL_MODE_REPORT, &hid_cid);
                     if (status == ERROR_CODE_SUCCESS) {
                         printf("[BTSTACK_HOST] hid_host_connect started, cid=0x%04X\n", hid_cid);
 
@@ -5414,12 +5521,10 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                     } else {
                         printf("[BTSTACK_HOST] Deferred connect: %s, using HID Host\n",
                                deferred_profile->name);
-                        // Use profile's hid_mode for SDP bypass
-                        hid_protocol_mode_t mode = (deferred_profile->hid_mode == BT_HID_MODE_FALLBACK)
-                            ? HID_PROTOCOL_MODE_REPORT_WITH_FALLBACK_TO_BOOT
-                            : HID_PROTOCOL_MODE_REPORT;
+                        // Always REPORT -- see the sibling call site above and
+                        // the retired-field note in bt_device_db.h.
                         uint16_t hid_cid;
-                        uint8_t status = hid_host_connect(name_addr, mode, &hid_cid);
+                        uint8_t status = hid_host_connect(name_addr, HID_PROTOCOL_MODE_REPORT, &hid_cid);
                         if (status == ERROR_CODE_SUCCESS) {
                             printf("[BTSTACK_HOST] hid_host_connect started, cid=0x%04X\n", hid_cid);
                             classic_connection_t* conn = find_free_classic_connection();
@@ -5563,9 +5668,9 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 memset(conn, 0, sizeof(*conn));
                 conn->handle = HCI_CON_HANDLE_INVALID;
 
-                // Clean up THIS connection's HIDS client (per-connection cid)
+                // Clean up THIS connection's HIDS Host (per-connection cid)
                 if (dcid != 0) {
-                    hids_client_disconnect(dcid);
+                    hids_host_disconnect(dcid);
                 }
                 if (hid_state.bas_cid != 0) {
                     battery_service_client_disconnect(hid_state.bas_cid);
@@ -6210,7 +6315,7 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *pa
                         register_switch2_hid_listener(handle);
                     } else {
                         printf("[BTSTACK_HOST] BLE controller - starting GATT discovery\n");
-                        start_hids_client(conn);
+                        start_hids_host(conn);
                         // MouthPad NUS is armed later, from the HID
                         // REPORTS_NOTIFICATION (0x1C) handler, so it doesn't
                         // contend with the HID notification enable.
@@ -6259,7 +6364,7 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *pa
                         register_switch2_hid_listener(handle);
                     } else {
                         printf("[BTSTACK_HOST] BLE controller - starting GATT discovery\n");
-                        start_hids_client(conn);
+                        start_hids_host(conn);
                         // MouthPad NUS is armed later, from the HID
                         // REPORTS_NOTIFICATION (0x1C) handler, so it doesn't
                         // contend with the HID notification enable.
@@ -6303,7 +6408,7 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *pa
 // connection-ready path calls only when the device name contains "MouthPad"),
 // so it has no effect on any other controller. Discovery is dynamic by
 // 128-bit UUID (no hardcoded handles) and is deferred ~1.5 s after connect so
-// it runs after the HIDS client has finished its own GATT discovery (the
+// it runs after the HIDS Host has finished its own GATT discovery (the
 // gatt_client allows one query at a time per connection).
 //
 // Device->host NUS notifications fire mp_nus_rx_cb; host->device writes go
@@ -6520,10 +6625,10 @@ static void mp_hid_setup_task(void)
         switch (mp_hid_setup[i].phase) {
             case 0: {
                 // Write REPORT protocol mode FIRST. The MouthPad boots in BOOT mode
-                // and BTstack's hids_client never writes the mode when REPORT is
-                // requested. hids_client only accepts this once back in CONNECTED
+                // and BTstack's hids_host never writes the mode when REPORT is
+                // requested. hids_host only accepts this once back in CONNECTED
                 // state (returns 0x0C COMMAND_DISALLOWED until then), so retry.
-                uint8_t st = hids_client_send_set_protocol_mode(cid, 0, HID_PROTOCOL_MODE_REPORT);
+                uint8_t st = hids_host_send_set_protocol_mode(cid, 0, HID_PROTOCOL_MODE_REPORT);
                 if (st == ERROR_CODE_SUCCESS) {
                     printf("[MP] REPORT protocol-mode write initiated (cid=0x%04X)\n", cid);
                     mp_hid_setup[i].phase = 1;
@@ -6538,9 +6643,9 @@ static void mp_hid_setup_task(void)
             case 1: {
                 // After the write-without-response flushes, enable HID notifications
                 // (NOW that the device is in REPORT mode, so the CCCs stick). Retry
-                // until hids_client accepts it. DIS/BAS/NUS start from the 0x1C event.
+                // until hids_host accepts it. DIS/BAS/NUS start from the 0x1C event.
                 if ((now - mp_hid_setup[i].phase_ms) < 300) break;
-                uint8_t r = hids_client_enable_notifications(cid);
+                uint8_t r = hids_host_enable_notifications(cid);
                 if (r == ERROR_CODE_SUCCESS) {
                     printf("[MP] notifications enabled after REPORT-mode switch (cid=0x%04X)\n", cid);
                     mp_hid_setup[i].active = false;
@@ -10200,7 +10305,19 @@ static void switch2_retry_init_if_needed(void)
                sw2_init_state, SW2_INIT_MAX_RETRIES,
                (unsigned long)SW2_INIT_MAX_RETRIES * SW2_INIT_RETRY_INTERVAL_MS);
         hci_con_handle_t stuck_handle = sw2_init_handle;
-        gap_disconnect(stuck_handle);
+        if (!btstack_host_request_disconnect(stuck_handle, "Switch 2 init recovery")) {
+            // sw2_init_handle is not cleared by anything except
+            // switch2_cleanup_on_disconnect(), which the disconnect event
+            // drives. With no event coming, this recovery would re-run every
+            // SW2_INIT_RETRY_INTERVAL_MS forever and never rearm -- the exact
+            // permanently-stuck state it was added to escape. Converge here.
+            ble_connection_t *stuck = find_connection_by_handle(stuck_handle);
+            if (stuck != NULL) {
+                ble_connection_release_orphan(stuck);
+            } else {
+                switch2_cleanup_on_disconnect(0xFFu, 0u);
+            }
+        }
         return;
     }
 
@@ -10515,17 +10632,17 @@ static void register_switch2_hid_listener(hci_con_handle_t con_handle)
         switch2_ack_ccc_write_callback, con_handle, SW2_ACK_CCC_HANDLE, sizeof(ccc_enable), ccc_enable);
 }
 
-static void start_hids_client(ble_connection_t *conn)
+static void start_hids_host(ble_connection_t *conn)
 {
-    printf("[BTSTACK_HOST] Connecting HIDS client...\n");
+    printf("[BTSTACK_HOST] Connecting HIDS Host...\n");
 
     conn->state = BLE_STATE_DISCOVERING;
     hid_state.gatt_handle = conn->handle;
 
-    uint8_t status = hids_client_connect(conn->handle, hids_client_handler,
+    uint8_t status = hids_host_connect(conn->handle, hids_host_handler,
                                          HID_PROTOCOL_MODE_REPORT, &conn->hids_cid);
 
-    printf("[BTSTACK_HOST] hids_client_connect returned %d, cid=0x%04X\n",
+    printf("[BTSTACK_HOST] hids_host_connect returned %d, cid=0x%04X\n",
            status, conn->hids_cid);
 }
 
@@ -10662,9 +10779,9 @@ static void dis_client_handler(uint8_t packet_type, uint16_t channel, uint8_t *p
     }
 }
 
-static void hids_client_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size)
+static void hids_host_handler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size)
 {
-    UNUSED(packet_type);  // hids_client passes HCI_EVENT_GATTSERVICE_META, not HCI_EVENT_PACKET
+    UNUSED(packet_type);  // hids_host passes HCI_EVENT_GATTSERVICE_META, not HCI_EVENT_PACKET
     UNUSED(channel);
     UNUSED(size);
 
@@ -10706,8 +10823,8 @@ static void hids_client_handler(uint8_t packet_type, uint16_t channel, uint8_t *
                     bt_on_hid_ready(conn->conn_index);
 
                     // Pass THIS device's HID descriptor to bthid (per-connection cid)
-                    const uint8_t* hid_desc = hids_client_descriptor_storage_get_descriptor_data(conn->hids_cid, 0);
-                    uint16_t hid_desc_len = hids_client_descriptor_storage_get_descriptor_len(conn->hids_cid, 0);
+                    const uint8_t* hid_desc = hids_host_descriptor_storage_get_descriptor_data(conn->hids_cid, 0);
+                    uint16_t hid_desc_len = hids_host_descriptor_storage_get_descriptor_len(conn->hids_cid, 0);
                     if (hid_desc && hid_desc_len > 0) {
                         printf("[BTSTACK_HOST] BLE HID descriptor: %d bytes\n", hid_desc_len);
                         // Raw hex dump for the 2026-07-12 BLE-rumble investigation: we've
@@ -10728,7 +10845,7 @@ static void hids_client_handler(uint8_t packet_type, uint16_t channel, uint8_t *
 
                     // NOTE: DIS (PnP VID/PID) and BAS (battery) are intentionally
                     // NOT started here. Each is a gatt_client query, and running
-                    // them concurrently with hids_client_enable_notifications()
+                    // them concurrently with hids_host_enable_notifications()
                     // starves the HID notification enabling on devices with many
                     // report characteristics (e.g. Augmental MouthPad, 4+ reports):
                     // the CCC writes never complete, no reports flow, and the
@@ -10740,7 +10857,7 @@ static void hids_client_handler(uint8_t packet_type, uint16_t channel, uint8_t *
                     // (mirrors the working mouthpad-usb order). The MouthPad boots
                     // in BOOT mode; switching mode AFTER subscribing makes it drop
                     // the report CCCs, so it never streams. The sequencer writes
-                    // the mode (once hids_client is back in CONNECTED), THEN
+                    // the mode (once hids_host is back in CONNECTED), THEN
                     // enables notifications, then the 0x1C handler starts DIS/BAS/NUS.
                     if (slot >= 0) {
                         mp_hid_setup[slot].active   = true;
@@ -10837,7 +10954,7 @@ static ble_connection_t* find_connection_by_handle(hci_con_handle_t handle)
 }
 
 // Find the connection that owns a given BLE HID client id. Used to route
-// hids_client events (connect/notification/report) to the right device when
+// hids_host events (connect/notification/report) to the right device when
 // more than one BLE HID device is connected.
 static ble_connection_t* find_connection_by_hids_cid(uint16_t hids_cid)
 {
@@ -11117,6 +11234,7 @@ void btstack_host_get_mgmt_diag(btstack_host_mgmt_diag_t *out)
     out->fresh_admission_reject_window = fresh_admission_reject_window;
     out->fresh_admission_reject_lockout = fresh_admission_reject_lockout;
     out->wipe_completions = wipe_completions;
+    out->disconnect_handle_already_gone = disconnect_handle_already_gone;
     out->last_disc_handle = btlife.last_disc_handle;
     out->last_disc_reason = btlife.last_disc_reason;
     ns2_owner_led_diag_t led_diag;
@@ -11188,17 +11306,15 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
                 break;
             }
 
-            // Determine protocol mode from device profile (if name is available)
-            hid_protocol_mode_t accept_mode = HID_PROTOCOL_MODE_REPORT_WITH_FALLBACK_TO_BOOT;
-            if (classic_state.pending_valid && classic_state.pending_name[0]) {
-                const bt_device_profile_t* profile = bt_device_lookup_by_name(classic_state.pending_name);
-                if (profile->hid_mode == BT_HID_MODE_REPORT) {
-                    accept_mode = HID_PROTOCOL_MODE_REPORT;
-                }
-            }
-            printf("[BTSTACK_HOST] HID incoming connection, cid=0x%04X - accepting (mode=%s)\n",
-                   hid_cid, accept_mode == HID_PROTOCOL_MODE_REPORT ? "REPORT" : "FALLBACK");
-            hid_host_accept_connection(hid_cid, accept_mode);
+            // REPORT for every incoming peer. This previously defaulted to
+            // REPORT_WITH_FALLBACK_TO_BOOT for any device whose name was not yet
+            // known, but on an INCOMING connection 1.6.2 overwrote the requested
+            // mode with REPORT as soon as SDP returned a HID record -- so the two
+            // only ever differed when SDP failed. BTstack 1.8.2 removed the
+            // enumerator; see bt_device_db.h.
+            printf("[BTSTACK_HOST] HID incoming connection, cid=0x%04X - accepting (mode=REPORT)\n",
+                   hid_cid);
+            hid_host_accept_connection(hid_cid, HID_PROTOCOL_MODE_REPORT);
 
             // Allocate connection slot if needed
             if (!find_classic_connection_by_cid(hid_cid)) {
@@ -11836,14 +11952,14 @@ bool btstack_classic_send_set_report(uint8_t conn_index, uint8_t report_id,
 bool btstack_classic_send_report(uint8_t conn_index, uint8_t report_id,
                                   const uint8_t* data, uint16_t len)
 {
-    // BLE connection — use GATT HIDS client
+    // BLE connection — use GATT HIDS Host
     if (conn_index >= BLE_CONN_INDEX_OFFSET) {
         uint8_t ble_index = conn_index - BLE_CONN_INDEX_OFFSET;
         if (ble_index >= MAX_BLE_CONNECTIONS) return false;
         ble_connection_t* conn = &hid_state.connections[ble_index];
         if (conn->handle == HCI_CON_HANDLE_INVALID || !conn->hid_ready) return false;
         if (conn->hids_cid == 0) return false;
-        uint8_t status = hids_client_send_write_report(conn->hids_cid, report_id,
+        uint8_t status = hids_host_send_write_report(conn->hids_cid, report_id,
                                                         HID_REPORT_TYPE_OUTPUT,
                                                         data, len);
         if (status != ERROR_CODE_SUCCESS) {
@@ -12199,16 +12315,28 @@ void btstack_host_disconnect_all_devices(void)
         // pad into its post-disconnect state where idle-sleep kicks in.
         hci_connection_t* hci_conn = hci_connection_for_bd_addr_and_type(
             c->addr, BD_ADDR_TYPE_ACL);
+        // hci_connection_for_bd_addr_and_type() already answered NULL for a
+        // released link, so this branch is only reached with a live handle; the
+        // helper is used for the counter and for symmetry with the BLE loop.
         if (hci_conn) {
-            gap_disconnect(hci_conn->con_handle);
+            if (!btstack_host_request_disconnect(hci_conn->con_handle,
+                                                 "disconnect-all Classic") &&
+                c->hid_cid != 0 && c->hid_cid != 0xFFFF) {
+                hid_host_disconnect(c->hid_cid);
+            }
         } else if (c->hid_cid != 0 && c->hid_cid != 0xFFFF) {
             hid_host_disconnect(c->hid_cid);  // fallback
         }
     }
     for (int i = 0; i < MAX_BLE_CONNECTIONS; i++) {
-        if (hid_state.connections[i].handle != HCI_CON_HANDLE_INVALID) {
-            gap_disconnect(hid_state.connections[i].handle);
-        }
+        ble_connection_t *c = &hid_state.connections[i];
+        if (c->handle == HCI_CON_HANDLE_INVALID) continue;
+        // "Disconnect all" must actually end with no connections. Before
+        // BTstack 1.8.2 a slot whose ACL had already gone was cleaned up by the
+        // synthetic disconnect event; now it would survive this call and keep
+        // occupying a controller slot for the rest of the boot.
+        if (!btstack_host_request_disconnect(c->handle, "disconnect-all BLE"))
+            ble_connection_release_orphan(c);
     }
 
     // Clear reconnection state so we don't try to reconnect to cleared devices
@@ -12291,8 +12419,12 @@ void btstack_host_delete_all_bonds(void)
     // The shared LE DB also owns the management peripheral bond. Wipe-all is
     // intentionally global, so terminate that link without touching unrelated
     // controller/management lifecycles during ordinary disconnects.
-    if (config_ble.handle != HCI_CON_HANDLE_INVALID)
-        gap_disconnect(config_ble.handle);
+    if (config_ble.handle != HCI_CON_HANDLE_INVALID) {
+        hci_con_handle_t mgmt = config_ble.handle;
+        if (!btstack_host_request_disconnect(mgmt, "management session (wipe)"))
+            config_ble_handle_disconnect(
+                mgmt, ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER);
+    }
 
     wipe_completions++;
     printf("[BTSTACK_HOST] All bonds cleared. Devices will need to re-pair.\n");
@@ -12335,12 +12467,15 @@ static bool btstack_host_forget_device_typed(const uint8_t bd_addr[6],
 
     // Disconnect controller-role BLE links for this identity.
     for (int i = 0; i < MAX_BLE_CONNECTIONS; i++) {
-        if (hid_state.connections[i].handle != HCI_CON_HANDLE_INVALID &&
-            memcmp(hid_state.connections[i].addr, addr, 6) == 0 &&
+        ble_connection_t *c = &hid_state.connections[i];
+        if (c->handle != HCI_CON_HANDLE_INVALID &&
+            memcmp(c->addr, addr, 6) == 0 &&
             (!match_address_type ||
-             hid_state.connections[i].addr_type ==
-                 (bd_addr_type_t)address_type)) {
-            gap_disconnect(hid_state.connections[i].handle);
+             c->addr_type == (bd_addr_type_t)address_type)) {
+            // A forgotten peer must not keep a slot. Same reasoning as
+            // btstack_host_disconnect_all_devices().
+            if (!btstack_host_request_disconnect(c->handle, "forget BLE link"))
+                ble_connection_release_orphan(c);
             affected = true;
         }
     }
@@ -12349,7 +12484,10 @@ static bool btstack_host_forget_device_typed(const uint8_t bd_addr[6],
     if (config_ble.handle != HCI_CON_HANDLE_INVALID &&
         config_ble.client_addr_valid &&
         memcmp(config_ble.client_addr, addr, sizeof(addr)) == 0) {
-        gap_disconnect(config_ble.handle);
+        hci_con_handle_t mgmt = config_ble.handle;
+        if (!btstack_host_request_disconnect(mgmt, "management session (forget)"))
+            config_ble_handle_disconnect(
+                mgmt, ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER);
         affected = true;
     }
 
@@ -12363,7 +12501,9 @@ static bool btstack_host_forget_device_typed(const uint8_t bd_addr[6],
                 continue;
             hci_connection_t *hci_conn = hci_connection_for_bd_addr_and_type(
                 conn->addr, BD_ADDR_TYPE_ACL);
-            if (hci_conn) gap_disconnect(hci_conn->con_handle);
+            if (hci_conn)
+                (void)btstack_host_request_disconnect(hci_conn->con_handle,
+                                                      "forget Classic link");
             affected = true;
         }
     }

@@ -56,3 +56,15 @@ tools/fixtures/amiibo-showgames.json
 # Local-only working prompts and session scratch notes. These are task inputs,
 # not project documentation -- durable guidance belongs in docs/ or AGENTS.md.
 *_PASS.md
+
+# Android bugreports. A bugreport is not a capture: alongside the Bluetooth
+# dumpsys it carries the maintainer's account addresses, home Wi-Fi SSIDs and
+# router BSSIDs, and this repository is public. Extract the Bluetooth sections
+# you need into dumps/ instead; the raw bugreport stays local.
+dumps/*bugreport*.zip
+dumps/*bugreport-extract/
+
+# Local-only task prompts, same rule as *_PASS.md above: these are inputs to a
+# working session, not project documentation.
+/DOUBLE_TAP*.md
+/ANALOG_TRIGGER.md

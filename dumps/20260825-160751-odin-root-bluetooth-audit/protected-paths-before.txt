@@ -1,0 +1,19 @@
+/data/misc/bluetooth/logs:
+total 6
+drwxrwx--- 2 bluetooth bluetooth u:object_r:bluetooth_logs_data_file:s0  3452 1970-01-05 02:57 .
+drwxrwx--- 3 bluetooth bluetooth u:object_r:bluetooth_data_file:s0       3452 2026-08-25 10:18 ..
+
+/data/vendor/bluetooth:
+total 6
+drwxrwx---  2 bluetooth bluetooth u:object_r:vendor_bt_data_file:s0  3452 1970-01-05 02:57 .
+drwxrwx--x 55 root      root      u:object_r:vendor_data_file:s0     3452 1970-01-05 02:57 ..
+
+/data/vendor/ramdump/bluetooth:
+total 6
+drwxrwx--- 2 bluetooth bluetooth u:object_r:vendor_ramdump_vendor_data_file:s0  3452 1970-01-05 02:57 .
+drwxrwx--x 3 root      system    u:object_r:vendor_ramdump_vendor_data_file:s0  3452 1970-01-05 02:57 ..
+
+/data/vendor/ssrdump:
+total 6
+drwxrwx---  2 root system u:object_r:vendor_ramdump_vendor_data_file:s0  3452 1970-01-05 02:57 .
+drwxrwx--x 55 root root   u:object_r:vendor_data_file:s0                 3452 1970-01-05 02:57 ..

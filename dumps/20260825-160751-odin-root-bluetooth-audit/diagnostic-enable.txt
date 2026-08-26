@@ -1,0 +1,11 @@
+Diagnostic enable/restart actions:
+1. Set persist.bluetooth.btsnooplogmode=full.
+2. Set persist.bluetooth.bqr.event_mask=2 (Approaching LSTO only).
+3. Set persist.bluetooth.bqr.min_interval_ms=1000.
+4. Disabled Bluetooth with svc bluetooth disable.
+5. The first host script attempted unsupported command `cmd bluetooth_manager get-state` and stopped after Bluetooth reached OFF.
+6. Confirmed OFF via dumpsys, enabled with svc bluetooth enable, and confirmed ON via dumpsys.
+No bond was removed or reset.
+persist.bluetooth.btsnooplogmode=[full]
+persist.bluetooth.bqr.event_mask=[2]
+persist.bluetooth.bqr.min_interval_ms=[1000]

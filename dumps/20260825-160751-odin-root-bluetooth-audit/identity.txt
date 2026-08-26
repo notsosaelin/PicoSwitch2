@@ -1,0 +1,14 @@
+COMMAND: adb shell getprop ro.build.fingerprint
+qti/kalama/kalama:13/TKQ1.231222.001/eng.Odin2M.20240624.144410:user/release-keys
+COMMAND: adb shell getprop ro.vendor.build.fingerprint
+qti/kalama/kalama:13/TKQ1.231222.001/Odin2Mini06261540:user/release-keys
+COMMAND: adb shell getprop ro.build.version.release
+13
+COMMAND: adb shell getprop ro.build.version.security_patch
+2024-01-01
+COMMAND: adb shell uname -a
+Linux localhost 5.15.123-android13-8-g55ff82ab20b6 #1 SMP PREEMPT Tue Jun 25 06:53:00 UTC 2024 aarch64 Toybox
+COMMAND: adb shell su -c id
+uid=0(root) gid=0(root) groups=0(root) context=u:r:magisk:s0
+COMMAND: adb shell su -c getenforce
+Permissive

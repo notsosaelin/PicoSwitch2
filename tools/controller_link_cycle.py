@@ -113,6 +113,7 @@ DEV_STALE_LINK = "device:STALE_LINK"
 DEV_UNKNOWN_TIMEOUT = "device:UNKNOWN_TIMEOUT"
 
 APP_TOUCH_GAMEPAD_NOT_FOUND = "app:UI_TOUCH_GAMEPAD_NOT_FOUND"
+APP_TOUCH_EXIT_FAILED = "app:UI_TOUCH_EXIT_FAILED"
 APP_UI_STATE_UNEXPECTED = "app:UI_STATE_UNEXPECTED"
 APP_DUPLICATE_OWNER = "app:DUPLICATE_OWNER"
 APP_BT_PROCESS_DIED = "app:ANDROID_BT_PROCESS_DIED"
@@ -285,6 +286,23 @@ def tap_text(xml: str, label: str) -> bool:
     return tap_point(find_text(xml, label))
 
 
+def _scroll_coordinates(xml: str, toward_end: bool) -> tuple[int, int, int, int]:
+    """Choose a gesture wholly inside the current scrollable viewport."""
+    scrollable = re.search(r'<node [^>]*scrollable="true"[^>]*>', xml)
+    node = scrollable.group(0) if scrollable else ""
+    bounds = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', node)
+    if bounds:
+        x1, y1, x2, y2 = (int(group) for group in bounds.groups())
+    else:
+        width, height = _hierarchy_extent(xml)
+        x1, y1, x2, y2 = 0, 0, width, height
+    x = (x1 + x2) // 2
+    upper = y1 + max(1, (y2 - y1) // 5)
+    lower = y2 - max(1, (y2 - y1) // 5)
+    start_y, end_y = (lower, upper) if toward_end else (upper, lower)
+    return x, start_y, x, end_y
+
+
 def tap_text_with_vertical_scroll(
     label: str,
     *,
@@ -298,7 +316,6 @@ def tap_text_with_vertical_scroll(
     can no longer reach its Exit action. This helper checks before every swipe
     and stays bounded; failure remains an observable harness/UI result.
     """
-    start_y, end_y = ((900, 250) if toward_end else (250, 900))
     for attempt in range(attempts + 1):
         xml, dump_failed = ui_dump_checked()
         if dump_failed:
@@ -306,9 +323,11 @@ def tap_text_with_vertical_scroll(
         if tap_text(xml, label):
             return True
         if attempt < attempts:
+            start_x, start_y, end_x, end_y = _scroll_coordinates(
+                xml, toward_end)
             adb(
                 "shell", "input", "swipe",
-                "1000", str(start_y), "1000", str(end_y), "350",
+                str(start_x), str(start_y), str(end_x), str(end_y), "350",
             )
             time.sleep(0.25)
     return False
@@ -316,6 +335,50 @@ def tap_text_with_vertical_scroll(
 
 def tap_desc(xml: str, label: str) -> bool:
     return tap_point(find_desc(xml, label))
+
+
+def _hierarchy_extent(xml: str) -> tuple[int, int]:
+    """Return the current logical display extent from the hierarchy root."""
+    bounds = re.search(r'<hierarchy[^>]*>\s*<node[^>]*bounds="\[0,0\]\[(\d+),(\d+)\]"', xml)
+    if not bounds:
+        return 1920, 1080
+    return int(bounds.group(1)), int(bounds.group(2))
+
+
+def touch_menu_open(xml: str) -> bool:
+    return find_desc(xml, "Close the Touch Gamepad menu") is not None
+
+
+def open_touch_menu(settle: float) -> bool:
+    """Open the current gesture-only Touch Gamepad menu.
+
+    The visible menu button was removed. Android's edge-back gesture now opens
+    the menu, so inject the same left-edge inward swipe a user performs. A Back
+    key remains a compatibility fallback for older installed builds.
+    """
+    xml, dump_failed = ui_dump_checked()
+    if dump_failed:
+        return False
+    if touch_menu_open(xml):
+        return True
+
+    width, height = _hierarchy_extent(xml)
+    y = max(1, height // 2)
+    start_x = max(1, width // 200)
+    end_x = max(start_x + 200, width // 4)
+    adb(
+        "shell", "input", "swipe",
+        str(start_x), str(y), str(end_x), str(y), "350",
+    )
+    time.sleep(max(0.5, settle - 1.0))
+    xml, dump_failed = ui_dump_checked()
+    if not dump_failed and touch_menu_open(xml):
+        return True
+
+    adb("shell", "input", "keyevent", "KEYCODE_BACK")
+    time.sleep(max(0.5, settle - 1.0))
+    xml, dump_failed = ui_dump_checked()
+    return not dump_failed and touch_menu_open(xml)
 
 
 def uart(port: str, command: str) -> dict:
@@ -590,6 +653,16 @@ class Adapter:
             return True
         return state["clink"].get("handle", HANDLE_NONE) != HANDLE_NONE
 
+    def link_fully_down(self, state: dict | None = None) -> bool:
+        """No raw ACL, no HID-ready link, and no management-session binding."""
+        state = self.state() if state is None else state
+        connections = state.get("connections", {})
+        return (
+            connections.get("classic_raw", 0) == 0
+            and connections.get("classic_ready", 0) == 0
+            and not self.link_bound(state)
+        )
+
     def wait(self, predicate, timeout: float, poll: float = 2.0) -> bool:
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -600,6 +673,49 @@ class Adapter:
 
     def set_mgmt(self, enabled: bool) -> None:
         uart(self.port, "mgmt on" if enabled else "mgmt off")
+
+
+def drain_btlife(
+    port: str,
+    sink,
+    *,
+    cycle: int,
+    clear_after: bool,
+) -> tuple[bool, int, int]:
+    """Copy the complete diagnostic ring before it can wrap.
+
+    Clearing after a successful copy resets only the diagnostic lifecycle ring
+    and its presentation counters; it does not change Bluetooth behaviour.
+    Adapter uptime timestamps remain monotonic, so concatenated segments still
+    correlate directly with Android logcat.
+    """
+    state = uart(port, "btstate")
+    if not state:
+        return False, 0, 0
+    event_state = state.get("events", {})
+    dropped = int(event_state.get("dropped", 0))
+    copied = 0
+    first = 0
+    while first <= 65535:
+        page = uart(port, f"btlife dump {first}")
+        if page.get("btlife") != "dump":
+            return False, copied, dropped
+        events = page.get("events", [])
+        if not events:
+            break
+        page["host_cycle"] = cycle
+        page["host_captured_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        sink.write(json.dumps(page) + "\n")
+        sink.flush()
+        copied += len(events)
+        if len(events) < 24:
+            break
+        first += len(events)
+    if clear_after:
+        cleared = uart(port, "btlife clear")
+        if cleared.get("btlife") != "cleared":
+            return False, copied, dropped
+    return True, copied, dropped
 
 
 # ---------------------------------------------------------------------------
@@ -684,7 +800,9 @@ def capture_ui_evidence(tag: str) -> None:
     (stem.with_suffix(".ui.txt")).write_text("\n".join(report), encoding="utf-8")
     # screencap is binary, so it bypasses adb_run()'s text decoding.
     try:
-        raw = subprocess.run(("adb", "exec-out", "screencap", "-p"),
+        serial_args = ("-s", ADB_SERIAL) if ADB_SERIAL else ()
+        raw = subprocess.run(("adb",) + serial_args +
+                             ("exec-out", "screencap", "-p"),
                              capture_output=True, timeout=60)
         if raw.returncode == 0 and raw.stdout[:4] == PNG_MAGIC:
             (stem.with_suffix(".png")).write_bytes(raw.stdout)
@@ -719,23 +837,25 @@ def app_enter_touch(settle: float) -> str | None:
     return APP_TOUCH_GAMEPAD_NOT_FOUND
 
 
-def app_exit_touch(settle: float) -> None:
-    adb("shell", "input", "keyevent", "KEYCODE_BACK")
-    time.sleep(max(0.25, settle - 1.0))
-
-    # Before the 2026-08-24 editor/menu change, Back exited Touch directly. It
-    # now opens a scrollable menu and leaving is an explicit action at its end.
-    # Support both shapes so old-capture reproduction and the current app keep
-    # exercising the same lifecycle.
-    tap_text_with_vertical_scroll("Exit Touch Gamepad", toward_end=True)
+def app_exit_touch(settle: float) -> bool:
+    # The current full-screen controller has no dedicated menu button. Open its
+    # menu through the same left-edge inward swipe used by a person, then use the
+    # explicit Exit action. open_touch_menu() retains a Back-key fallback for
+    # older installed builds.
+    if not open_touch_menu(settle):
+        return False
+    if not tap_text_with_vertical_scroll("Exit Touch Gamepad", toward_end=True):
+        return False
     time.sleep(0.5)
 
     # Stop playing may be above or below the restored Controller-screen
     # viewport. Search both directions; cycle_touch_only() still verifies that
     # the Classic link actually went down, so a missed control cannot pass.
-    if not tap_text_with_vertical_scroll("Stop playing", toward_end=False):
-        tap_text_with_vertical_scroll("Stop playing", toward_end=True)
+    stopped = tap_text_with_vertical_scroll("Stop playing", toward_end=False)
+    if not stopped:
+        stopped = tap_text_with_vertical_scroll("Stop playing", toward_end=True)
     time.sleep(settle)
+    return stopped
 
 
 def await_link(dev: "Adapter | None" = None, timeout: float = 26.0) -> tuple[bool, float]:
@@ -917,7 +1037,14 @@ def cycle_touch_only(dev: Adapter, settle: float) -> tuple[str, float, dict]:
     if not dev.mgmt_connected(state):
         info["mgmt_lost"] = True
         info["adapter_state"] = {k: state.get(k) for k in ("cble", "clink", "connections")}
+        log_read = adb_run("logcat", "-d", "-v", "time", "-t", "4000")
+        if log_read.ok:
+            info["timeline"] = build_timeline(log_read.stdout)
+            info["acl_down_reason"] = acl_down_reason(log_read.stdout)
         return DEV_MGMT_LE_TIMEOUT, -1.0, info
+    if not dev.link_fully_down(state):
+        info["adapter_state"] = {k: state.get(k) for k in ("cble", "clink", "connections")}
+        return DEV_STALE_LINK, -1.0, info
 
     # 3. Ownership. "Cannot determine" is its own answer, never a pass.
     owner_problem = check_single_owner()
@@ -976,8 +1103,11 @@ def cycle_touch_only(dev: Adapter, settle: float) -> tuple[str, float, dict]:
     else:
         result = OK
 
-    app_exit_touch(settle)
-    if not dev.wait(lambda s: not dev.link_up(s), 12.0):
+    exit_ok = app_exit_touch(settle)
+    if linked and not exit_ok and result == OK:
+        capture_ui_evidence(f"exit-{time.strftime('%H%M%S')}")
+        result = APP_TOUCH_EXIT_FAILED
+    if not dev.wait(dev.link_fully_down, 12.0):
         result = DEV_STALE_LINK if result == OK else result
     after = dev.state()
     if not after:
@@ -1275,6 +1405,20 @@ def main() -> int:
                         help="write per-attempt timelines, recorded events and "
                              "UI evidence here; without it a failure leaves only "
                              "a label")
+    parser.add_argument(
+        "--stop-on-management-loss", action="store_true",
+        help="freeze the run on an unexpected management loss instead of "
+             "performing the legacy one-reconnect recovery",
+    )
+    parser.add_argument(
+        "--btlife-log", default="",
+        help="append lossless, periodically drained Pico lifecycle JSON here",
+    )
+    parser.add_argument(
+        "--btlife-drain-every", type=int, default=0,
+        help="cycles per lifecycle-ring segment when --btlife-log is used; "
+             "0 drains only after the run",
+    )
     args = parser.parse_args()
 
     global ADB_SERIAL, EVIDENCE_DIR
@@ -1291,6 +1435,9 @@ def main() -> int:
         print("workloads A-D require --port: the acceptance invariants are only "
               "observable in the adapter's own counters", file=sys.stderr)
         return 2
+    if args.btlife_log and args.btlife_drain_every < 0:
+        print("--btlife-drain-every cannot be negative", file=sys.stderr)
+        return 2
 
     dev = Adapter(args.port)
     before = dev.state()
@@ -1304,6 +1451,20 @@ def main() -> int:
         if not dev.mgmt_connected():
             app_reconnect_management(args.settle)
             dev.wait(dev.mgmt_connected, 30.0)
+        initial = dev.state()
+        if not initial:
+            print(f"{HARNESS_UART_FAILED}: no initial adapter state", file=sys.stderr)
+            return 2
+        if not dev.mgmt_connected(initial):
+            print(f"{DEV_MGMT_LE_TIMEOUT}: management precondition is down",
+                  file=sys.stderr)
+            return 2
+        if not dev.link_fully_down(initial):
+            print(f"{DEV_STALE_LINK}: Classic precondition is not fully down: "
+                  f"{json.dumps(initial.get('connections', {}))} "
+                  f"clink={json.dumps(initial.get('clink', {}))}",
+                  file=sys.stderr)
+            return 2
 
     runner = WORKLOADS[args.workload][1]
     tally: dict[str, int] = {}
@@ -1311,11 +1472,16 @@ def main() -> int:
     sink = open(args.log, "a", encoding="utf-8") if args.log else None
     timelines = (open(EVIDENCE_DIR / "timelines.jsonl", "a", encoding="utf-8")
                  if EVIDENCE_DIR else None)
+    btlife_sink = (open(args.btlife_log, "a", encoding="utf-8")
+                   if args.btlife_log else None)
     stop_reason = None
+    last_cycle = 0
+    interrupted = False
     print(f"workload {args.workload}: {WORKLOADS[args.workload][0]}")
     print("cycle | result                          | link_s | paging_s")
     try:
         for index in range(1, args.cycles + 1):
+            last_cycle = index
             if runner is None:
                 result, elapsed = run_cycle(args.port, args.settle)
                 info: dict = {}
@@ -1349,14 +1515,20 @@ def main() -> int:
                     "hci_reason": info.get("acl_down_reason"),
                     "adapter_state": info.get("adapter_state"),
                 }
-                print(f"      | management loss: {event['hci_reason']}; "
-                      "one controlled reconnect", flush=True)
-                app_reconnect_management(args.settle)
-                event["recovered"] = dev.wait(dev.mgmt_connected, 40.0)
+                if args.stop_on_management_loss:
+                    print(f"      | management loss: {event['hci_reason']}; "
+                          "freezing without reconnect", flush=True)
+                    event["recovered"] = None
+                    stop_reason = "management loss captured; recovery suppressed"
+                else:
+                    print(f"      | management loss: {event['hci_reason']}; "
+                          "one controlled reconnect", flush=True)
+                    app_reconnect_management(args.settle)
+                    event["recovered"] = dev.wait(dev.mgmt_connected, 40.0)
                 events.append(event)
                 # The interrupted cycle proves nothing either way.
                 recorded = EXCLUDED
-                if not event["recovered"]:
+                if not args.stop_on_management_loss and not event["recovered"]:
                     stop_reason = ("management did not recover after one "
                                    "controlled reconnect")
 
@@ -1374,6 +1546,12 @@ def main() -> int:
                 if not restored:
                     stop_reason = f"{result} could not be recovered"
 
+            # A failed UI teardown leaves the Classic ACL intentionally alive.
+            # Continuing would turn that known automation residue into bogus
+            # stale-link device failures on every later cycle.
+            elif result == APP_TOUCH_EXIT_FAILED:
+                stop_reason = "Touch teardown automation failed; later cycles would not be fresh"
+
             tally[recorded] = tally.get(recorded, 0) + 1
             paging = info.get("t_paging")
             shown = elapsed if elapsed is not None else -1.0
@@ -1383,12 +1561,53 @@ def main() -> int:
             if sink:
                 sink.write(line + "\n")
                 sink.flush()
+
+            if btlife_sink and (
+                (args.btlife_drain_every > 0
+                 and index % args.btlife_drain_every == 0)
+                or stop_reason
+            ):
+                clear_after = not stop_reason and index < args.cycles
+                captured, copied, dropped = drain_btlife(
+                    args.port, btlife_sink, cycle=index,
+                    clear_after=clear_after,
+                )
+                print(f"      | btlife segment: copied={copied} "
+                      f"dropped={dropped} clear={clear_after}", flush=True)
+                if not captured:
+                    stop_reason = "lossless btlife drain failed"
+                elif dropped:
+                    stop_reason = f"btlife ring overwrote {dropped} event(s)"
             if stop_reason:
                 print(f"\nSTOPPING: {stop_reason}", flush=True)
                 break
     except KeyboardInterrupt:
+        interrupted = True
         print("\ninterrupted; reporting what was measured")
     finally:
+        if interrupted and args.workload == "A":
+            interrupted_state = dev.state()
+            if interrupted_state and not dev.link_fully_down(interrupted_state):
+                print("      | interrupt cleanup: exiting Touch and stopping Classic",
+                      flush=True)
+                cleanup_ok = app_exit_touch(args.settle)
+                down = cleanup_ok and dev.wait(dev.link_fully_down, 12.0)
+                print(f"      | interrupt cleanup: {'down' if down else 'FAILED'}",
+                      flush=True)
+                if not down and stop_reason is None:
+                    stop_reason = "interrupt cleanup did not fully release Classic"
+        if btlife_sink:
+            captured, copied, dropped = drain_btlife(
+                args.port, btlife_sink, cycle=last_cycle,
+                clear_after=False,
+            )
+            print(f"      | final btlife segment: copied={copied} "
+                  f"dropped={dropped}", flush=True)
+            if not captured and stop_reason is None:
+                stop_reason = "final lossless btlife drain failed"
+            elif dropped and stop_reason is None:
+                stop_reason = f"btlife ring overwrote {dropped} event(s)"
+            btlife_sink.close()
         if sink:
             sink.close()
         if timelines:
@@ -1438,6 +1657,8 @@ def main() -> int:
                            uart(args.port, "btreject"), args.companion_addr,
                            args.workload in MANAGEMENT_LOSS_WORKLOADS, notes,
                            uart(args.port, "btauth"))
+        if stop_reason and not failures:
+            failures.append(stop_reason)
         for note in notes:
             print("  note:", note)
         if failures:

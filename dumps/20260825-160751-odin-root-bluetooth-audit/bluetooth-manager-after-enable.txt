@@ -1,0 +1,350 @@
+Bluetooth Status
+  enabled: true
+  state: ON
+  address: 50:CF:14:24:EF:B0
+  name: PocketPad
+  time since enabled: 00:00:20.309
+
+Enable log:
+  08-24 11:53:39  Enabled  due to SYSTEM_BOOT by android
+  08-25 16:08:49 Disabled  due to APPLICATION_REQUEST by android
+  08-25 16:09:26  Enabled  due to APPLICATION_REQUEST by android
+
+Bluetooth crashed 0 times
+
+0 BLE apps registered
+
+BluetoothManagerService:
+  mEnable:true
+  mQuietEnable:false
+  mEnableExternal:true
+  mQuietEnableExternal:false
+
+
+AdapterProperties
+  Name: PocketPad
+  Address: 50:CF:14:24:EF:B0
+  BluetoothClass: null
+  ScanMode: SCAN_MODE_CONNECTABLE
+  ConnectionState: STATE_DISCONNECTED
+  State: ON
+  MaxConnectedAudioDevices: 5
+  A2dpOffloadEnabled: true
+  Discovering: false
+  DiscoveryEndMs: 0
+  Bonded devices:
+    14:18:C3:47:C4:89 [BR/EDR] YGGSDRASIL
+    88:A2:9E:D1:77:78 [ DUAL ] PicoSwitch2
+    88:A2:9E:0F:0E:B6 [ DUAL ] PicoSwitch2
+mSnoopLogSettingAtEnable = full
+mDefaultSnoopLogSettingAtEnable = null
+
+AdapterState:
+ total records=4
+ rec[0]: time=08-25 16:09:26.502 processed=OffState org=OffState dest=TurningBleOnState what=3(0x3) BLE_TURN_ON
+ rec[1]: time=08-25 16:09:28.137 processed=TurningBleOnState org=TurningBleOnState dest=BleOnState what=7(0x7) BLE_STARTED
+ rec[2]: time=08-25 16:09:28.142 processed=BleOnState org=BleOnState dest=TurningOnState what=1(0x1) USER_TURN_ON
+ rec[3]: time=08-25 16:09:28.376 processed=TurningOnState org=TurningOnState dest=OnState what=5(0x5) BREDR_STARTED
+curState=OnState
+
+SilenceDeviceManager:
+  Address            | Is silenced?
+
+Profile: GattService
+  mAdvertisingServiceUuids:
+  mMaxScanFilters: 0
+
+Registered App
+  Scanner:
+  Client:
+  Server:
+
+
+GATT Scanner Map
+  Entries: 0
+
+GATT Client Map
+  Entries: 0
+
+GATT Server Map
+  Entries: 0
+
+GATT Handle Map
+  Entries: 0
+  Requests: 0
+
+Profile: HeadsetService
+  mMaxHeadsetConnections: 5
+  DefaultMaxHeadsetConnections: 5
+  mActiveDevice: null
+  isInbandRingingEnabled: false
+  isInbandRingingSupported: true
+  mInbandRingingRuntimeDisable: false
+  mAudioRouteAllowed: true
+  mVoiceRecognitionStarted: false
+  mVoiceRecognitionTimeoutEvent: null
+  mVirtualCallStarted: false
+  mDialingOutTimeoutEvent: null
+  mForceScoAudio: false
+  mCreated: true
+  mStarted: true
+  AudioManager.isBluetoothScoOn(): false
+  Telecom.isInCall(): false
+  Telecom.isRinging(): false
+
+Profile: A2dpService
+  mActiveDevice: null
+AVRCP:
+  mMediaAttributes: [MediaAttributes: none]
+  mCurrentPlayState: PlaybackState {state=2, position=-1, buffered position=0, speed=0.0, updated=101771698, actions=0, custom actions=[], active item id=-1, error=null}
+  mPlayStatusChangedNT: 1
+  mTrackChangedNT: 1
+  mLastStateUpdate: 101771698
+  mSongLengthMs: 0
+  mPlaybackIntervalMs: 0
+  mPlayPosChangedNT: 1
+  mNextPosMs: -1
+  mPrevPosMs: -1
+  mFeatures: 0
+  mRemoteVolume: -1
+  mLastRemoteVolume: -1
+  mLastDirection: 0
+  mAudioStreamMax: 15
+  mVolCmdSetInProgress: false
+  mVolCmdAdjustInProgress: false
+  mAbsVolRetryTimes: 0
+  mMediaAttributes: [MediaAttributes: none]
+  mCurrentPlayState: PlaybackState {state=2, position=-1, buffered position=0, speed=0.0, updated=101771698, actions=0, custom actions=[], active item id=-1, error=null}
+  mPlayStatusChangedNT: 1
+  mTrackChangedNT: 1
+  mLastStateUpdate: 101771698
+  mSongLengthMs: 0
+  mPlaybackIntervalMs: 0
+  mPlayPosChangedNT: 1
+  mNextPosMs: -1
+  mPrevPosMs: -1
+  mFeatures: 0
+  mRemoteVolume: -1
+  mLastRemoteVolume: -1
+  mLastDirection: 0
+  mAudioStreamMax: 15
+  mVolCmdSetInProgress: false
+  mVolCmdAdjustInProgress: false
+  mAbsVolRetryTimes: 0
+  mMediaAttributes: [MediaAttributes: none]
+  mCurrentPlayState: PlaybackState {state=2, position=-1, buffered position=0, speed=0.0, updated=101771698, actions=0, custom actions=[], active item id=-1, error=null}
+  mPlayStatusChangedNT: 1
+  mTrackChangedNT: 1
+  mLastStateUpdate: 101771698
+  mSongLengthMs: 0
+  mPlaybackIntervalMs: 0
+  mPlayPosChangedNT: 1
+  mNextPosMs: -1
+  mPrevPosMs: -1
+  mFeatures: 0
+  mRemoteVolume: -1
+  mLastRemoteVolume: -1
+  mLastDirection: 0
+  mAudioStreamMax: 15
+  mVolCmdSetInProgress: false
+  mVolCmdAdjustInProgress: false
+  mAbsVolRetryTimes: 0
+  mMediaAttributes: [MediaAttributes: none]
+  mCurrentPlayState: PlaybackState {state=2, position=-1, buffered position=0, speed=0.0, updated=101771698, actions=0, custom actions=[], active item id=-1, error=null}
+  mPlayStatusChangedNT: 1
+  mTrackChangedNT: 1
+  mLastStateUpdate: 101771698
+  mSongLengthMs: 0
+  mPlaybackIntervalMs: 0
+  mPlayPosChangedNT: 1
+  mNextPosMs: -1
+  mPrevPosMs: -1
+  mFeatures: 0
+  mRemoteVolume: -1
+  mLastRemoteVolume: -1
+  mLastDirection: 0
+  mAudioStreamMax: 15
+  mVolCmdSetInProgress: false
+  mVolCmdAdjustInProgress: false
+  mAbsVolRetryTimes: 0
+  mMediaAttributes: [MediaAttributes: none]
+  mCurrentPlayState: PlaybackState {state=2, position=-1, buffered position=0, speed=0.0, updated=101771698, actions=0, custom actions=[], active item id=-1, error=null}
+  mPlayStatusChangedNT: 1
+  mTrackChangedNT: 1
+  mLastStateUpdate: 101771698
+  mSongLengthMs: 0
+  mPlaybackIntervalMs: 0
+  mPlayPosChangedNT: 1
+  mNextPosMs: -1
+  mPrevPosMs: -1
+  mFeatures: 0
+  mRemoteVolume: -1
+  mLastRemoteVolume: -1
+  mLastDirection: 0
+  mAudioStreamMax: 15
+  mVolCmdSetInProgress: false
+  mVolCmdAdjustInProgress: false
+  mAbsVolRetryTimes: 0
+  
+  Media Players:
+    #1: MediaPlayerInfo com.android.bluetooth (as 'Bluetooth') Type = 1, SubType = 0, Status = 0 Feature Bits [40 41 42 44 45 47 48 58] Controller: null
+    #2: MediaPlayerInfo com.stremio.one (as 'Stremio') Type = 1, SubType = 0, Status = 0 Feature Bits [40 41 42 44 45 47 48 58] Controller: null
+  
+  AddressedPlayer info:
+  mLastTrackIdSent: -1
+  mNowPlayingList: 0 elements
+  
+  Runtime Blacklisted Devices (absolute volume):
+    None
+
+Profile: HidHostService
+  mTargetDevice: null
+  mInputDevices:
+
+Profile: PanService
+  mMaxPanDevices: 5
+  mPanIfName: bt-pan
+  mTetherOn: false
+  mPanDevices:
+
+Profile: BluetoothMapService
+  mRemoteDevice: null
+  sRemoteDeviceName: null
+  mState: 0
+  mAppObserver: com.android.bluetooth.map.BluetoothMapAppObserver@2f4b721
+  mIsWaitingAuthorization: false
+  mRemoveTimeoutMsg: false
+  mPermission: 0
+  mAccountChanged: false
+  mBluetoothMnsObexClient: null
+  mMasInstanceMap:
+    null : MasId: 0 Uri:null SMS/MMS:true
+  mEnabledAccounts:
+
+Profile: AvrcpControllerService
+  Devices Tracked = 0
+
+  sBrowseTree: Size: 2
+Profile: SapService
+
+Profile: HidDeviceService
+
+Profile: BluetoothOppService
+
+Profile: BluetoothPbapService
+
+Profile: HearingAidService
+
+Profile: CsipSetCoordinatorService
+
+Profile: AcmService
+
+Profile: StreamAudioService
+
+Profile: LeAudioService
+  State machines: 
+
+Profile: VolumeControlService
+
+Profile: McpService
+
+Profile: CCService
+
+Profile: BCService
+
+Profile: BroadcastService
+
+Profile: PCService
+
+Profile: BassClientService
+
+Connection Events:
+  None
+
+Bond Events: 
+  Total Number of events: 0
+
+A2DP State:
+  TxQueue:
+  Counts (enqueue/dequeue/readbuf)                        : 0 / 0 / 0
+  Last update time ago in ms (enqueue/dequeue/readbuf)    : 0 / 0 / 0
+  Frames per packet (total/max/ave)                       : 0 / 0 / 0
+  Counts (flushed/dropped/dropouts)                       : 0 / 0 / 0
+  Counts (max dropped)                                    : 0
+  Last update time ago in ms (flushed/dropped)            : 0 / 0
+  Counts (underflow)                                      : 0
+  Bytes (underflow)                                       : 0
+  Last update time ago in ms (underflow)                  : 0
+  Enqueue deviation counts (overdue/premature)            : 0 / 0
+  Enqueue overdue scheduling time in ms (total/max/ave)   : 0 / 0 / 0
+  Enqueue premature scheduling time in ms (total/max/ave) : 0 / 0 / 0
+  Dequeue deviation counts (overdue/premature)            : 0 / 0
+  Dequeue overdue scheduling time in ms (total/max/ave)   : 0 / 0 / 0
+  Dequeue premature scheduling time in ms (total/max/ave) : 0 / 0 / 0
+
+Bluetooth Config:
+  Config Source: Original file
+  Devices loaded: 3
+  File created/tagged: 2026-07-12 20:38:39
+  File source: Empty
+
+Bluetooth HF Client BTA Statistics
+
+Bluetooth Wakelock Statistics:
+  Is acquired                    : false
+  Acquired/released count        : 54 / 54
+  Acquired/released error count  : 0 / 0
+  Last acquire/release error code: 0 / 0
+  Last acquired time (ms)        : 3000
+  Acquired time min/max/avg (ms) : 0 / 3000 / 83
+  Total acquired time (ms)       : 4535
+  Total run time (ms)            : 20076
+
+Bluetooth Memory Allocation Statistics:
+  Total allocated/free/used counts : 0 / 0 / 0
+  Total allocated/free/used octets : 0 / 0 / 0
+
+Bluetooth Alarms Statistics:
+  Total Alarms: 1
+
+  Alarm : btm_ble_addr.refresh_raddr_timer (SINGLE)
+    Action counts (sched/resched/exec/cancel)      : 1 / 0 / 0 / 0
+    Deviation counts (overdue/premature)           : 0 / 0
+    Time in ms (since creation/interval/remaining) : 18513 / 664809 / 646296
+    Callback execution time in ms (total/max/avg)  : 0 / 0 / 0
+    Overdue scheduling time in ms (total/max/avg)  : 0 / 0 / 0
+    Premature scheduling time in ms (total/max/avg): 0 / 0 / 0
+
+Hearing Aid Manager:
+  Hearing Aid Audio HAL:
+    Counts (underflow)                                      : 0
+    Bytes (underflow)                                       : 0
+    Last update time ago in ms (underflow)                  : 0
+
+
+connection_manager state:
+
+	no Low Energy connection attempts
+
+BT Quality Report Events: 
+Event queue is empty.
+--- BEGIN:BTSNOOP_LOG_SUMMARY (7565 bytes in) ---
+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
+AqwECYI=
+--- END:BTSNOOP_LOG_SUMMARY ---

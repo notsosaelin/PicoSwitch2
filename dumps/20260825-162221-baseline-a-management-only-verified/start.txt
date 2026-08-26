@@ -1,0 +1,11 @@
+host=2026-08-25T16:22:21.1033383-04:00
+device=1787689342.794067004
+adb_serial=192.168.68.56:43331
+uart=COM11
+duration_seconds=45
+scenario=baseline-a-management-only-verified
+persist.bluetooth.btsnooplogmode=[full]
+persist.bluetooth.bqr.event_mask=[2]
+persist.bluetooth.bqr.min_interval_ms=[1000]
+persist.vendor.qcom.bluetooth.soc=[hamilton]
+ro.bluetooth.library_name=[libbluetooth_qti.so]

@@ -22,4 +22,17 @@ class DiagnosticLogTest {
         assertEquals(3, log.entries.value.size)
         assertEquals("9", log.entries.value.last().detail)
     }
+
+    @Test fun `summary and export carry independent chronology`() {
+        val log = DiagnosticLog()
+        log.commandStarted("input")
+        log.commandFinished("input", 162)
+        log.error("management", "background input poll", IllegalStateException("failed"))
+
+        val summary = log.summary.value
+        assertNotEquals("Never", summary.lastCommandAtUtc)
+        assertNotEquals("Never", summary.lastResultAtUtc)
+        assertNotEquals("Never", summary.lastErrorAtUtc)
+        assertTrue(log.export(emptyMap()).contains("monoMs="))
+    }
 }

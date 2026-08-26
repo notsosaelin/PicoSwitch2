@@ -1,0 +1,92 @@
+{
+  "schema": "picoswitch2-lab/v1",
+  "tool": "rooted Odin Bluetooth audit",
+  "scenario": "odin-root-bluetooth-audit",
+  "timestamp": "2026-08-25T16:08:17.3721720-04:00",
+  "kind": "observation",
+  "hypothesis": "The Odin stack exposes controller-boundary diagnostics below GATT without modifying the Pico.",
+  "variable": "Root-only visibility versus ordinary adb visibility; no radio configuration change.",
+  "expectation": "Identify HAL/controller family, existing snoop/BQR state, and retrievable protected logs.",
+  "action": "Read-only identification of Android Bluetooth host stack, Qualcomm HAL, kernel components, diagnostic properties, and protected log paths.",
+  "port": "",
+  "baseline": "",
+  "conditions": null,
+  "git": {
+    "branch": "ns2-testing",
+    "commit": "2272cb5e6eae4dc79d3eb986ea923e8419f6ce3c",
+    "dirty": true,
+    "dirty_count": 19,
+    "dirty_files": [
+      " M STATUS.md",
+      " M android/companion/app/src/main/java/dev/picoswitch/companion/diagnostics/DiagnosticLog.kt",
+      " M android/companion/app/src/main/java/dev/picoswitch/companion/transport/BleGattManagementTransport.kt",
+      " M android/companion/app/src/main/java/dev/picoswitch/companion/ui/DiagnosticsScreen.kt",
+      " M android/companion/app/src/test/java/dev/picoswitch/companion/diagnostics/DiagnosticLogTest.kt",
+      " M tools/mgmt_watch.ps1",
+      "?? docs/experiments/established-management-gatt-failure-2026-08-25.md",
+      "?? dumps/20260825-160751-odin-root-bluetooth-audit/",
+      "?? dumps/20260825-current-failure-btlife.jsonl",
+      "?? dumps/20260825-current-failure-btsnooz-decoded.log",
+      "?? dumps/20260825-current-failure-btsnooz.log",
+      "?? dumps/20260825-current-failure-btstate.jsonl",
+      "?? dumps/20260825-current-failure-bugreport-extract/",
+      "?? dumps/20260825-current-failure-bugreport.zip",
+      "?? dumps/20260825-current-failure-hci.jsonl",
+      "?? dumps/20260825-current-failure-logcat-all.txt",
+      "?? dumps/management-gatt-20260825-uart.jsonl",
+      "?? dumps/picoswitch-management-20260825.log",
+      "?? tools/bluetooth_hci_timeline.py"
+    ]
+  },
+  "diagnostics": {
+    "android_serial": "192.168.68.56:43331",
+    "root": "uid 0 confirmed",
+    "hci_snoop_before": "disabled/empty",
+    "bqr_before": "properties empty; framework dump present",
+    "hal": "android.hardware.bluetooth@1.1-service-qti",
+    "controller_family": "Qualcomm hamilton"
+  },
+  "verdict": "Root access exposes protected Bluetooth state and logs. Full snoop and BQR were not enabled in this bundle.",
+  "artifacts": [
+    {
+      "path": "bluetooth-manager-before.txt",
+      "bytes": 51535,
+      "sha256": "DA3798D85E40C6E8E56D82904B281E05C29C041D31370685F0C3BF114A39BA2D"
+    },
+    {
+      "path": "bt-stack-conf.txt",
+      "bytes": 6062,
+      "sha256": "AA972CC37118B942145F31F7D2CB6804E4615147A3A221C91AE8A6ED3C581329"
+    },
+    {
+      "path": "identity.txt",
+      "bytes": 671,
+      "sha256": "34F4F148E7BAD1301A3D7BA4379C02EEC5DE4FC09BF0FEEDFB02C5E808300867"
+    },
+    {
+      "path": "kernel-modules.txt",
+      "bytes": 27884,
+      "sha256": "9BBE21BACA219998240A976ED9098ECED74A8E8837FB81583FCACA80F0052B74"
+    },
+    {
+      "path": "lshal-bluetooth.txt",
+      "bytes": 37036,
+      "sha256": "69C1B5C8C238C59B60B33FF68013AC2395E6E7936D57C5E34C3E0FBD8B803E0E"
+    },
+    {
+      "path": "notes.txt",
+      "bytes": 406,
+      "sha256": "F8FE297FFDB1C724613CC60EBE5C4E38042F1F414085917F3860DF269E087E4D"
+    },
+    {
+      "path": "properties-before.txt",
+      "bytes": 444,
+      "sha256": "8B9696CA1F43EFCF0C4CB76B91BD6CB063B0D487656A3AED072EC8EC1D62B8DE"
+    },
+    {
+      "path": "protected-paths-before.txt",
+      "bytes": 945,
+      "sha256": "2CC1EF45F34502EF0E22D015EABDD82F35673EFCE4439928DB88EA0E18E3F11D"
+    }
+  ]
+}

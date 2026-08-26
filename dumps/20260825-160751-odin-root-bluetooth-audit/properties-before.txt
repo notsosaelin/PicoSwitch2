@@ -1,0 +1,10 @@
+Captured before any Bluetooth diagnostic property change.
+persist.bluetooth.bqr.event_mask=[]
+persist.bluetooth.bqr.min_interval_ms=[]
+persist.bluetooth.btsnooplogmode=[]
+persist.bluetooth.btsnoopdefaultmode=[]
+persist.bluetooth.btsnoopenable=[]
+persist.vendor.qcom.bluetooth.soc=[hamilton]
+ro.bluetooth.library_name=[libbluetooth_qti.so]
+init.svc.vendor.bluetooth-1-1-qti=[running]
+init.svc_debug_pid.vendor.bluetooth-1-1-qti=[1174]

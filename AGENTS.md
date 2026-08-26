@@ -366,6 +366,14 @@ python tools\test_ns2_nfc_semantics.py
 python tools\test_amiibo_corpus.py
 ```
 
+Run this one for any change to the build system, `btstack_config.h`, the HID Host
+shim, or Bluetooth security/disconnect wiring. It guards the Pico SDK 2.3.0 /
+BTstack 1.8.2 dependency contract, where every wrong answer still compiles:
+
+```powershell
+python tools\test_btstack_dependency_contract.py
+```
+
 Do not rely on this short list as the complete subsystem test inventory.
 
 Use:

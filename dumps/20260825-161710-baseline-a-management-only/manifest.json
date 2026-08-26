@@ -1,0 +1,145 @@
+{
+  "schema": "picoswitch2-lab/v1",
+  "tool": "collect_bluetooth_lower_layer.ps1",
+  "scenario": "baseline-a-management-only",
+  "timestamp": "2026-08-25T16:18:15.8572429-04:00",
+  "kind": "observation",
+  "hypothesis": "A synchronized Android HCI/HAL/kernel and Pico UART window can locate the first observable lower-layer failure.",
+  "variable": "The human-selected condition named by -Scenario; collector settings remain fixed.",
+  "expectation": "Preserve HCI handle lifetimes, BQR events, HAL/kernel health, and Pico lifecycle state in one timestamped bundle.",
+  "action": "Observe one bounded 60s condition without changing Bluetooth behavior.",
+  "port": "COM11",
+  "baseline": "Full HCI snoop enabled; BQR Approaching LSTO requested; no bond wipe and no Pico firmware change.",
+  "conditions": {
+    "android_serial": "192.168.68.56:43331",
+    "duration_seconds": 60,
+    "rooted": true,
+    "bugreport": false
+  },
+  "git": {
+    "branch": "ns2-testing",
+    "commit": "2272cb5e6eae4dc79d3eb986ea923e8419f6ce3c",
+    "dirty": true,
+    "dirty_count": 22,
+    "dirty_files": [
+      " M STATUS.md",
+      " M android/companion/app/src/main/java/dev/picoswitch/companion/diagnostics/DiagnosticLog.kt",
+      " M android/companion/app/src/main/java/dev/picoswitch/companion/transport/BleGattManagementTransport.kt",
+      " M android/companion/app/src/main/java/dev/picoswitch/companion/ui/DiagnosticsScreen.kt",
+      " M android/companion/app/src/test/java/dev/picoswitch/companion/diagnostics/DiagnosticLogTest.kt",
+      " M tools/mgmt_watch.ps1",
+      "?? docs/experiments/established-management-gatt-failure-2026-08-25.md",
+      "?? dumps/20260825-160751-odin-root-bluetooth-audit/",
+      "?? dumps/20260825-161402-collector-smoke/",
+      "?? dumps/20260825-161710-baseline-a-management-only/",
+      "?? dumps/20260825-current-failure-btlife.jsonl",
+      "?? dumps/20260825-current-failure-btsnooz-decoded.log",
+      "?? dumps/20260825-current-failure-btsnooz.log",
+      "?? dumps/20260825-current-failure-btstate.jsonl",
+      "?? dumps/20260825-current-failure-bugreport-extract/",
+      "?? dumps/20260825-current-failure-bugreport.zip",
+      "?? dumps/20260825-current-failure-hci.jsonl",
+      "?? dumps/20260825-current-failure-logcat-all.txt",
+      "?? dumps/management-gatt-20260825-uart.jsonl",
+      "?? dumps/picoswitch-management-20260825.log",
+      "?? tools/bluetooth_hci_timeline.py",
+      "?? tools/collect_bluetooth_lower_layer.ps1"
+    ]
+  },
+  "diagnostics": {
+    "collection_error": null,
+    "hci_files": [
+      "/data/misc/bluetooth/logs/btsnoop_hci.log",
+      "/data/misc/bluetooth/logs/hci_snoop20260825160927.cfa"
+    ],
+    "output": "E:\\PicoSwitch2\\dumps\\20260825-161710-baseline-a-management-only"
+  },
+  "verdict": "Bounded collection completed and freeze artifacts were written.",
+  "artifacts": [
+    {
+      "path": "android-kernel-live.stderr.txt",
+      "bytes": 0,
+      "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+    },
+    {
+      "path": "android-kernel-live.txt",
+      "bytes": 4227208,
+      "sha256": "6C3206558C54364DD64BDD8084FC65B54F41E9A1677453000510C17588D3016E"
+    },
+    {
+      "path": "android-logcat-all.stderr.txt",
+      "bytes": 0,
+      "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+    },
+    {
+      "path": "android-logcat-all.txt",
+      "bytes": 3117437,
+      "sha256": "1CEBDCDA45D21D6F44F14A030BC7D779A07CD8C44B44BDD3B2351018902B2E9B"
+    },
+    {
+      "path": "bluetooth-hal-processes.txt",
+      "bytes": 50229,
+      "sha256": "CB6BE4F9751270D9863D22DCDCB1B1B0F09378FA1A82C5D49C41045318D2C283"
+    },
+    {
+      "path": "bluetooth-manager.txt",
+      "bytes": 28329,
+      "sha256": "449A3CFDB6F26460CB596C273C9C45A5E144E5E62A355DD129431A15080A7306"
+    },
+    {
+      "path": "btsnoop_hci.log",
+      "bytes": 16,
+      "sha256": "D84508918B119F344867A68DCB1F7B3DB941FFF741B345ADCBDAC28971760116"
+    },
+    {
+      "path": "freeze-time.txt",
+      "bytes": 88,
+      "sha256": "8F47CB4F815032D2CCAFD7B71F74714E5A1F4D4E5E491582338A87D60CD2C49E"
+    },
+    {
+      "path": "hci_snoop20260825160927.cfa",
+      "bytes": 286815,
+      "sha256": "D5AD9DE267A8C3D0315CEF0662097043CAFCA0CD7BB5C09F8F576010DB01E7B3"
+    },
+    {
+      "path": "hci_snoop20260825160927.cfa.jsonl",
+      "bytes": 504485,
+      "sha256": "2D36881C4A52651EDD93F674333B7B548B6F953FA25EC692AA9148BEBE3452DF"
+    },
+    {
+      "path": "hci_snoop20260825160927.cfa.summary.txt",
+      "bytes": 8886,
+      "sha256": "63DB687E4E67A6314F9C53BCCF6777A00A3B7D724E9559596A552E33F4C80839"
+    },
+    {
+      "path": "kernel-freeze.txt",
+      "bytes": 4218419,
+      "sha256": "377376D1744F0C78F4A4E4B6C2B8946464149B095DFB2251DD1729FA6D842BA4"
+    },
+    {
+      "path": "pico-uart-collector.stderr.txt",
+      "bytes": 0,
+      "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+    },
+    {
+      "path": "pico-uart-collector.txt",
+      "bytes": 9160,
+      "sha256": "DC0EA6AF96E42E1035B69354F8469CB875793C29CE2E1C6AEC57F4974A153D57"
+    },
+    {
+      "path": "pico-uart.jsonl",
+      "bytes": 212031,
+      "sha256": "08F06FED1F0B49B35E96734CDAE885690FD814C620A4C548542C4BD9D45E1D79"
+    },
+    {
+      "path": "protected-log-list.txt",
+      "bytes": 24,
+      "sha256": "A4398D7357E96535D2F62A2216CBC9CE8933AB7F4C905CC80FACC15E08B1A00E"
+    },
+    {
+      "path": "start.txt",
+      "bytes": 391,
+      "sha256": "D89CF92E7D99D2500787937671AB2CEF02E73C961BA7E3A251CB01B646E8EF16"
+    }
+  ]
+}

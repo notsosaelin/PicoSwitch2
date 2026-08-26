@@ -4,9 +4,9 @@ if(WIN32)
 else()
     set(USERHOME $ENV{HOME})
 endif()
-set(sdkVersion 2.2.0)
-set(toolchainVersion 14_2_Rel1)
-set(picotoolVersion 2.2.0-a4)
+set(sdkVersion 2.3.0)
+set(toolchainVersion 15_2_Rel1)
+set(picotoolVersion 2.3.0)
 set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
 if (EXISTS ${picoVscode})
     include(${picoVscode})
@@ -21,8 +21,9 @@ set(PICO_BOARD pico_w CACHE STRING "Board type")
 
 cmake_minimum_required(VERSION 3.13)
 
-# Use the BTstack bundled with the Pico SDK (current 2.x; no external btstack wiring).
-set(BTSTACK_ROOT ${PICO_SDK_PATH}/lib/btstack)
+# BTSTACK_ROOT is resolved after pico_sdk_init(), where it can be checked
+# against the tree the SDK's own pico_btstack targets compile. See
+# "Canonical BTstack root" below.
 
 # initialize the SDK based on PICO_SDK_PATH
 # note: this must happen before project()
@@ -34,6 +35,42 @@ set(CMAKE_CXX_STANDARD 17)
 
 # initialize the Raspberry Pi Pico SDK
 pico_sdk_init()
+
+# ---------------------------------------------------------------------------
+# Canonical BTstack root
+# ---------------------------------------------------------------------------
+# PicoSwitch reaches into BTstack directly in three ways: private include paths
+# (bluedroid codec headers and ${BTSTACK_ROOT}/src), the HID Host translation
+# unit it substitutes for live DualSense audio, and the BTstack internals that
+# substituted file depends on. Those must resolve the SAME tree the SDK's
+# pico_btstack_* targets compile, or headers and sources silently skew -- a
+# header/ABI mismatch that links cleanly and then misbehaves on the radio.
+#
+# The SDK resolves PICO_BTSTACK_PATH inside src/rp2_common/pico_btstack, a
+# subdirectory scope, so its value is not visible here. Reproduce its precedence
+# exactly (CMake variable, then environment, then the SDK's bundled copy) and
+# then verify the result against a source the SDK target actually builds, so a
+# future PICO_BTSTACK_PATH override cannot split the build in two silently.
+if(NOT PICO_BTSTACK_PATH)
+    if(DEFINED ENV{PICO_BTSTACK_PATH})
+        set(PICO_BTSTACK_PATH $ENV{PICO_BTSTACK_PATH})
+    else()
+        set(PICO_BTSTACK_PATH ${PICO_SDK_PATH}/lib/btstack)
+    endif()
+endif()
+file(TO_CMAKE_PATH "${PICO_BTSTACK_PATH}" BTSTACK_ROOT)
+
+get_target_property(_ps2_btstack_base_sources pico_btstack_base INTERFACE_SOURCES)
+set(_ps2_btstack_witness "${BTSTACK_ROOT}/src/hci.c")
+file(TO_CMAKE_PATH "${_ps2_btstack_witness}" _ps2_btstack_witness)
+if(NOT "${_ps2_btstack_witness}" IN_LIST _ps2_btstack_base_sources)
+    message(FATAL_ERROR
+            "BTstack root skew: PicoSwitch resolved BTSTACK_ROOT=${BTSTACK_ROOT}, "
+            "but pico_btstack_base does not compile ${_ps2_btstack_witness}. "
+            "PicoSwitch's direct BTstack includes and its hid_host.c substitution "
+            "would use a different BTstack tree than the SDK targets.")
+endif()
+message(STATUS "PicoSwitch BTstack root: ${BTSTACK_ROOT}")
 
 # Re-run configuration when a source file is added or removed. Without
 # CONFIGURE_DEPENDS, an existing build directory silently omits new modules.
@@ -200,11 +237,17 @@ if(NS2_PRO AND NS2_AUDIO AND
    PICO_PLATFORM MATCHES "^rp2350")
     target_compile_definitions(PicoSwitchWGA PRIVATE NS2_DS5_AUDIO=1)
 
-    # Pico SDK 2.2.0's BTstack HID Host accepts only an 8-bit report length at
-    # its public API even though the internal connection state and L2CAP path
-    # use 16 bits. Bonded DualSense reconnects are owned by HID Host, so replace
-    # just that upstream translation unit with a compatibility wrapper which
-    # adds a 16-bit entry point for the 547-byte audio report.
+    # Bonded DualSense reconnects are owned by BTstack's HID Host, and the live
+    # audio path needs two things that translation unit does not expose: a send
+    # entry point that refuses to overwrite a report already pending in
+    # W2_SEND_REPORT, and observation of the actual L2CAP submission. Both need
+    # private HID Host state, so build the upstream source inside our own file
+    # and remove it from pico_btstack_classic here. See
+    # cmake/btstack_hid_host_long_report.c for exactly what remains patched.
+    #
+    # (BTstack 1.8.2 widened hid_host_send_report() to a uint16_t report length
+    # upstream, so the original 547-byte-report reason for this file is gone;
+    # the pending-send guard is not.)
     get_target_property(_ns2_btstack_classic_sources
                         pico_btstack_classic INTERFACE_SOURCES)
     set(_ns2_btstack_hid_host_source
@@ -215,7 +258,9 @@ if(NS2_PRO AND NS2_AUDIO AND
          "${_ns2_btstack_hid_host_source}" _ns2_btstack_hid_host_index)
     if(_ns2_btstack_hid_host_index EQUAL -1)
         message(FATAL_ERROR
-                "Cannot locate BTstack hid_host.c for the NS2 long-report compatibility extension")
+                "Cannot locate ${_ns2_btstack_hid_host_source} in pico_btstack_classic. "
+                "Without the removal, upstream hid_host.c and the NS2 substitution "
+                "would both be compiled and collide at link time.")
     endif()
     list(REMOVE_ITEM _ns2_btstack_classic_sources
          "${_ns2_btstack_hid_host_source}")

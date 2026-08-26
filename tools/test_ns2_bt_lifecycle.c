@@ -615,8 +615,37 @@ static void test_peer_led_security_is_judged_on_observable_state(void)
                   "observed_failed") == 0);
 }
 
+// BTstack 1.8.2 stopped synthesising a disconnection-complete event for an
+// already-released handle. Pin which statuses still leave one in flight, so a
+// caller cannot go back to assuming the event always arrives -- nor start
+// converging on a handle whose event is genuinely still coming.
+static void test_disconnect_convergence_after_btstack_1_8(void)
+{
+    // Requested now: the event is what completes the teardown.
+    assert(ns2_bt_disconnect_outcome(0x00u) == NS2_BT_DISCONNECT_EVENT_PENDING);
+
+    // Already requested or already sent. Converging here would run teardown
+    // twice: once now and once when the real event lands.
+    assert(ns2_bt_disconnect_outcome(NS2_BT_HCI_COMMAND_DISALLOWED) ==
+           NS2_BT_DISCONNECT_EVENT_PENDING);
+
+    // The 1.8.2 behaviour change itself. 1.6.2 answered this case with a
+    // synthetic event and status 0; there is no event now.
+    assert(ns2_bt_disconnect_outcome(NS2_BT_HCI_UNKNOWN_CONNECTION_IDENTIFIER) ==
+           NS2_BT_DISCONNECT_CONVERGE_LOCALLY);
+
+    // Fail safe: an unrecognised status is not a promise of an event.
+    for (unsigned status = 0x01u; status <= 0xFFu; ++status) {
+        if (status == NS2_BT_HCI_COMMAND_DISALLOWED)
+            continue;
+        assert(ns2_bt_disconnect_outcome((uint8_t)status) ==
+               NS2_BT_DISCONNECT_CONVERGE_LOCALLY);
+    }
+}
+
 int main(void)
 {
+    test_disconnect_convergence_after_btstack_1_8();
     test_peer_led_security_is_judged_on_observable_state();
     test_controller_link_requires_management();
     test_defer_classic_authentication_is_narrow();

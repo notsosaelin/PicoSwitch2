@@ -1,0 +1,19 @@
+mgmt_watch on COM11 -> E:\PicoSwitch2\dumps\20260825-161402-collector-smoke\pico-uart.jsonl (interval 500ms, ring every 10s). Ctrl-C to stop.
+[16:14:04] ctrl=False ble(raw/ready)=0/0 scan=True adv=True client=False supp.mgmt=0 disc(c/h)=0/0
+[16:14:04] ctrl=False ble(raw/ready)=0/0 scan=True adv=True client=False supp.mgmt=0 disc(c/h)=0/0
+[16:14:05] ctrl=False ble(raw/ready)=0/0 scan=True adv=True client=False supp.mgmt=0 disc(c/h)=0/0
+[16:14:06] ctrl=False ble(raw/ready)=0/0 scan=True adv=True client=False supp.mgmt=0 disc(c/h)=0/0
+[16:14:06] ctrl=False ble(raw/ready)=0/0 scan=True adv=True client=False supp.mgmt=0 disc(c/h)=0/0
+[16:14:07] ctrl=False ble(raw/ready)=0/0 scan=True adv=True client=False supp.mgmt=0 disc(c/h)=0/0
+[16:14:08] ctrl=False ble(raw/ready)=0/0 scan=True adv=True client=False supp.mgmt=0 disc(c/h)=0/0
+[16:14:08] ctrl=False ble(raw/ready)=0/0 scan=True adv=True client=False supp.mgmt=0 disc(c/h)=0/0
+[16:14:09] ctrl=False ble(raw/ready)=0/0 scan=True adv=True client=False supp.mgmt=0 disc(c/h)=0/0
+[16:14:09] ctrl=False ble(raw/ready)=0/0 scan=True adv=True client=False supp.mgmt=0 disc(c/h)=0/0
+[16:14:10] ctrl=False ble(raw/ready)=0/0 scan=True adv=True client=False supp.mgmt=0 disc(c/h)=0/0
+[16:14:11] ctrl=False ble(raw/ready)=0/0 scan=True adv=True client=False supp.mgmt=0 disc(c/h)=0/0
+[16:14:11] ctrl=False ble(raw/ready)=0/0 scan=True adv=True client=False supp.mgmt=0 disc(c/h)=0/0
+[16:14:12] ctrl=False ble(raw/ready)=0/0 scan=True adv=True client=False supp.mgmt=0 disc(c/h)=0/0
+[16:14:12] ctrl=False ble(raw/ready)=0/0 scan=True adv=True client=False supp.mgmt=0 disc(c/h)=0/0
+[16:14:13] ctrl=False ble(raw/ready)=0/0 scan=True adv=True client=False supp.mgmt=0 disc(c/h)=0/0
+[16:14:14] ctrl=False ble(raw/ready)=0/0 scan=True adv=True client=False supp.mgmt=0 disc(c/h)=0/0
+mgmt_watch stopped. Log: E:\PicoSwitch2\dumps\20260825-161402-collector-smoke\pico-uart.jsonl

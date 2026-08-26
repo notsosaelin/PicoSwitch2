@@ -1,0 +1,303 @@
+| All HIDL binderized services (registered with hwservicemanager)
+VINTF    R Interface                                                                                              Thread Use Server Clients
+FM       Y android.frameworks.cameraservice.service@2.0::ICameraService/default                                   0/2        1784   
+FM       Y android.frameworks.cameraservice.service@2.1::ICameraService/default                                   0/2        1784   
+FM       Y android.frameworks.cameraservice.service@2.2::ICameraService/default                                   0/2        1784   
+DC,FM    Y android.frameworks.sensorservice@1.0::ISensorManager/default                                           0/5        2163   
+DM,FC    Y android.hardware.atrace@1.0::IAtraceDevice/default                                                     0/1        976    
+DM,FC    Y android.hardware.audio.effect@7.0::IEffectsFactory/default                                             0/6        2275   
+DM,FC    Y android.hardware.audio@7.0::IDevicesFactory/default                                                    0/6        2275   
+DM,FC    Y android.hardware.audio@7.1::IDevicesFactory/default                                                    0/6        2275   
+DM,FC    Y android.hardware.bluetooth@1.0::IBluetoothHci/default                                                  0/1        1174   
+DM,FC    Y android.hardware.bluetooth@1.1::IBluetoothHci/default                                                  0/1        1174   
+DM       Y android.hardware.boot@1.0::IBootControl/default                                                        0/1        983    
+DM       Y android.hardware.boot@1.1::IBootControl/default                                                        0/1        983    
+DM,FC    Y android.hardware.boot@1.2::IBootControl/default                                                        0/1        983    
+DM       Y android.hardware.cas@1.0::IMediaCasService/default                                                     0/3        1176   
+DM,FC    Y android.hardware.cas@1.1::IMediaCasService/default                                                     0/3        1176   
+DM,FC    Y android.hardware.cas@1.2::IMediaCasService/default                                                     0/3        1176   
+DM       Y android.hardware.drm@1.0::ICryptoFactory/wfdhdcp                                                       0/3        19771  
+DM       Y android.hardware.drm@1.0::IDrmFactory/wfdhdcp                                                          0/3        19771  
+DM       Y android.hardware.drm@1.1::ICryptoFactory/wfdhdcp                                                       0/3        19771  
+DM       Y android.hardware.drm@1.1::IDrmFactory/wfdhdcp                                                          0/3        19771  
+DM       Y android.hardware.drm@1.2::ICryptoFactory/wfdhdcp                                                       0/3        19771  
+DM       Y android.hardware.drm@1.2::IDrmFactory/wfdhdcp                                                          0/3        19771  
+DM,FC    Y android.hardware.drm@1.3::ICryptoFactory/wfdhdcp                                                       0/3        19771  
+DM,FC    Y android.hardware.drm@1.3::IDrmFactory/wfdhdcp                                                          0/3        19771  
+DM,FC    Y android.hardware.gatekeeper@1.0::IGatekeeper/default                                                   0/1        1825   
+DM,FC    Y android.hardware.graphics.allocator@4.0::IAllocator/default                                            0/4        1274   
+DM,FC    Y android.hardware.graphics.composer@2.1::IComposer/default                                              0/4        1281   
+DM,FC    Y android.hardware.graphics.composer@2.2::IComposer/default                                              0/4        1281   
+DM,FC    Y android.hardware.graphics.composer@2.3::IComposer/default                                              0/4        1281   
+DM,FC    Y android.hardware.graphics.composer@2.4::IComposer/default                                              0/4        1281   
+DM,FC    Y android.hardware.keymaster@4.0::IKeymasterDevice/strongbox                                             0/1        782    
+DM,FC    Y android.hardware.media.c2@1.0::IComponentStore/default                                                 0/7        1317   
+DM,FC    Y android.hardware.media.c2@1.0::IComponentStore/default2                                                0/6        1318   
+DM,FM,FC Y android.hardware.media.c2@1.0::IComponentStore/software                                                0/18       1911   
+FM       Y android.hardware.media.c2@1.1::IComponentStore/software                                                0/18       1911   
+FM,FC    Y android.hardware.media.c2@1.2::IComponentStore/software                                                0/18       1911   
+DM,FC    Y android.hardware.media.omx@1.0::IOmx/default                                                           0/3        1862   
+DM,FC    Y android.hardware.media.omx@1.0::IOmxStore/default                                                      0/3        1862   
+DM,FC    Y android.hardware.nfc@1.0::INfc/default                                                                 0/1        985    
+DM       Y android.hardware.nfc@1.1::INfc/default                                                                 0/1        985    
+DM,FC    Y android.hardware.nfc@1.2::INfc/default                                                                 0/1        985    
+DM,FC    Y android.hardware.secure_element@1.0::ISecureElement/eSE1                                               0/2        1345   
+DM,FC    Y android.hardware.secure_element@1.1::ISecureElement/eSE1                                               0/2        1345   
+DM,FC    Y android.hardware.secure_element@1.2::ISecureElement/eSE1                                               0/2        1345   
+DM       Y android.hardware.soundtrigger@2.0::ISoundTriggerHw/default                                             0/6        2275   
+DM       Y android.hardware.soundtrigger@2.1::ISoundTriggerHw/default                                             0/6        2275   
+DM       Y android.hardware.soundtrigger@2.2::ISoundTriggerHw/default                                             0/6        2275   
+DM,FC    Y android.hardware.soundtrigger@2.3::ISoundTriggerHw/default                                             0/6        2275   
+DM,FC    Y android.hardware.tetheroffload.config@1.0::IOffloadConfig/default                                      0/1        1878   
+DM       Y android.hardware.tetheroffload.control@1.0::IOffloadControl/default                                    0/1        1878   
+DM,FC    Y android.hardware.tetheroffload.control@1.1::IOffloadControl/default                                    0/1        1878   
+DM       Y android.hardware.thermal@1.0::IThermal/default                                                         0/1        1198   
+DM,FC    Y android.hardware.thermal@2.0::IThermal/default                                                         0/1        1198   
+DM,FC    Y android.hardware.usb.gadget@1.0::IUsbGadget/default                                                    0/1        1199   
+DM,FC    Y android.hardware.usb.gadget@1.1::IUsbGadget/default                                                    0/1        1199   
+DM,FC    Y android.hardware.usb@1.0::IUsb/default                                                                 0/1        1202   
+DM,FC    Y android.hardware.usb@1.1::IUsb/default                                                                 0/1        1202   
+DM,FC    Y android.hardware.usb@1.2::IUsb/default                                                                 0/1        1202   
+DM       Y android.hardware.wifi@1.0::IWifi/default                                                               0/1        1217   
+DM       Y android.hardware.wifi@1.1::IWifi/default                                                               0/1        1217   
+DM       Y android.hardware.wifi@1.2::IWifi/default                                                               0/1        1217   
+DM,FC    Y android.hardware.wifi@1.3::IWifi/default                                                               0/1        1217   
+DM,FC    Y android.hardware.wifi@1.4::IWifi/default                                                               0/1        1217   
+DM,FC    Y android.hardware.wifi@1.5::IWifi/default                                                               0/1        1217   
+DM,FC    Y android.hardware.wifi@1.6::IWifi/default                                                               0/1        1217   
+DC,FM    Y android.hidl.allocator@1.0::IAllocator/ashmem                                                          0/1        1170   
+X        Y android.hidl.base@1.0::IBase/DpmService                                                                0/1        1829   
+X        Y android.hidl.base@1.0::IBase/MwqemAdapter                                                              0/1        1864   
+X        Y android.hidl.base@1.0::IBase/ashmem                                                                    0/1        1170   
+X        Y android.hidl.base@1.0::IBase/com.qualcomm.qti.uceservice                                               0/1        1874   
+X        Y android.hidl.base@1.0::IBase/default                                                                   0/2        1289   
+X        Y android.hidl.base@1.0::IBase/default2                                                                  0/6        1318   
+X        Y android.hidl.base@1.0::IBase/dpmQmiService                                                             0/1        1827   
+X        Y android.hidl.base@1.0::IBase/dspservice                                                                0/3        1286   
+X        Y android.hidl.base@1.0::IBase/eSE1                                                                      0/2        1345   
+X        Y android.hidl.base@1.0::IBase/imsrtpservice                                                             0/2        1873   
+X        Y android.hidl.base@1.0::IBase/pasrhal                                                                   0/1        1330   
+X        Y android.hidl.base@1.0::IBase/qccsyshal                                                                 0/3        1172   
+X        Y android.hidl.base@1.0::IBase/qccvndhal                                                                 0/1        1937   
+X        Y android.hidl.base@1.0::IBase/qtee-vm                                                                   0/1        1307   
+X        Y android.hidl.base@1.0::IBase/qti-tee                                                                   0/1        1297   
+X        Y android.hidl.base@1.0::IBase/qti.ims.connectionmanagerservice                                          0/1        1874   
+X        Y android.hidl.base@1.0::IBase/software                                                                  0/18       1911   
+X        Y android.hidl.base@1.0::IBase/strongbox                                                                 0/1        782    
+X        Y android.hidl.base@1.0::IBase/vppService                                                                0/3        1348   
+X        Y android.hidl.base@1.0::IBase/wfdhdcp                                                                   0/3        19771  
+X        Y android.hidl.base@1.0::IBase/wifidisplaysession                                                        0/3        1866   
+X        Y android.hidl.base@1.0::IBase/wifidisplaysessionaudiotrack                                              0/3        1866   
+X        Y android.hidl.base@1.0::IBase/wifidisplaysessionimagetrack                                              0/3        1866   
+X        Y android.hidl.base@1.0::IBase/wifidisplaysessionvideotrack                                              0/3        1866   
+DC,FM    Y android.hidl.manager@1.0::IServiceManager/default                                                      1/1        741    
+FM       Y android.hidl.manager@1.1::IServiceManager/default                                                      1/1        741    
+FM       Y android.hidl.manager@1.2::IServiceManager/default                                                      1/1        741    
+DC,FM    Y android.hidl.token@1.0::ITokenManager/default                                                          1/1        741    
+FM       Y android.system.net.netd@1.0::INetd/default                                                             0/1        1855   
+FM       Y android.system.net.netd@1.1::INetd/default                                                             0/1        1855   
+DC,FM    Y android.system.wifi.keystore@1.0::IKeystore/default                                                    0/1        1786   
+DM,FC    Y com.dsi.ant@1.0::IAnt/default                                                                          0/1        1174   
+DM,FC    Y com.qualcomm.qti.dpm.api@1.0::IdpmQmi/dpmQmiService                                                    0/1        1827   
+DM,FC    Y com.qualcomm.qti.imscmservice@2.0::IImsCmService/qti.ims.connectionmanagerservice                      0/1        1874   
+DM,FC    Y com.qualcomm.qti.imscmservice@2.1::IImsCmService/qti.ims.connectionmanagerservice                      0/1        1874   
+DM,FC    Y com.qualcomm.qti.imscmservice@2.2::IImsCmService/qti.ims.connectionmanagerservice                      0/1        1874   
+DM,FC    Y com.qualcomm.qti.uceservice@2.0::IUceService/com.qualcomm.qti.uceservice                               0/1        1874   
+DM,FC    Y com.qualcomm.qti.uceservice@2.1::IUceService/com.qualcomm.qti.uceservice                               0/1        1874   
+DM,FC    Y com.qualcomm.qti.uceservice@2.2::IUceService/com.qualcomm.qti.uceservice                               0/1        1874   
+DM,FC    Y com.qualcomm.qti.uceservice@2.3::IUceService/com.qualcomm.qti.uceservice                               0/1        1874   
+DM,FC    Y vendor.display.config@2.0::IDisplayConfig/default                                                      0/4        1281   
+DM,FC    Y vendor.nxp.hardware.nfc@2.0::INqNfc/default                                                            0/1        985    
+DM,FC    Y vendor.qti.data.factory@2.0::IFactory/default                                                          0/1        1864   
+DM,FC    Y vendor.qti.data.factory@2.1::IFactory/default                                                          0/1        1864   
+DM,FC    Y vendor.qti.data.factory@2.2::IFactory/default                                                          0/1        1864   
+DM,FC    Y vendor.qti.data.factory@2.3::IFactory/default                                                          0/1        1864   
+DM,FC    Y vendor.qti.data.factory@2.4::IFactory/default                                                          0/1        1864   
+DM,FC    Y vendor.qti.data.factory@2.5::IFactory/default                                                          0/1        1864   
+DM,FC    Y vendor.qti.data.factory@2.6::IFactory/default                                                          0/1        1864   
+DM,FC    Y vendor.qti.data.factory@2.7::IFactory/default                                                          0/1        1864   
+DM,FC    Y vendor.qti.esepowermanager@1.0::IEsePowerManager/default                                               0/1        1257   
+DM,FC    Y vendor.qti.esepowermanager@1.1::IEsePowerManager/default                                               0/1        1257   
+DM,FC    Y vendor.qti.hardware.AGMIPC@1.0::IAGM/default                                                           0/6        2275   
+DM,FC    Y vendor.qti.hardware.ListenSoundModel@1.0::IListenSoundModel/default                                    0/6        2275   
+DM,FC    Y vendor.qti.hardware.bluetooth_audio@2.0::IBluetoothAudioProvidersFactory/default                       0/6        2275   
+DM,FC    Y vendor.qti.hardware.bluetooth_audio@2.1::IBluetoothAudioProvidersFactory/default                       0/6        2275   
+DM,FC    Y vendor.qti.hardware.bluetooth_sar@1.0::IBluetoothSar/default                                           0/1        1174   
+DM,FC    Y vendor.qti.hardware.bluetooth_sar@1.1::IBluetoothSar/default                                           0/1        1174   
+DM,FC    Y vendor.qti.hardware.btconfigstore@2.0::IBTConfigStore/default                                          0/1        1174   
+DM,FC    Y vendor.qti.hardware.cacert@1.0::IService/default                                                       0/1        2774   
+DM,FC    Y vendor.qti.hardware.capabilityconfigstore@1.0::ICapabilityConfigStore/default                          0/2        1261   
+DM,FC    Y vendor.qti.hardware.data.latency@1.0::ILinkLatency/default                                             0/1        1864   
+DM,FC    Y vendor.qti.hardware.display.allocator@4.0::IQtiAllocator/default                                       0/4        1274   
+DM,FC    Y vendor.qti.hardware.display.composer@3.0::IQtiComposer/default                                         0/4        1281   
+DM,FC    Y vendor.qti.hardware.display.composer@3.1::IQtiComposer/default                                         0/4        1281   
+DM,FC    Y vendor.qti.hardware.dpmservice@1.0::IDpmService/DpmService                                             0/1        1829   
+DM,FC    Y vendor.qti.hardware.dpmservice@1.1::IDpmService/DpmService                                             0/1        1829   
+DM,FC    Y vendor.qti.hardware.dsp@1.0::IDspService/dspservice                                                    0/3        1286   
+DM,FC    Y vendor.qti.hardware.fm@1.0::IFmHci/default                                                             0/1        1174   
+DM,FC    Y vendor.qti.hardware.iop@2.0::IIop/default                                                              0/2        1289   
+DM,FC    Y vendor.qti.hardware.limits@1.0::ILimits/default                                                        0/2        1294   
+DM,FC    Y vendor.qti.hardware.limits@1.1::ILimits/default                                                        0/2        1294   
+DM,FC    Y vendor.qti.hardware.limits@1.2::ILimits/default                                                        0/2        1294   
+DM,FC    Y vendor.qti.hardware.mwqemadapter@1.0::IMwqemAdapter/MwqemAdapter                                       0/1        1864   
+DM,FC    Y vendor.qti.hardware.pal@1.0::IPAL/default                                                              0/6        2275   
+DM,FC    Y vendor.qti.hardware.perf@2.0::IPerf/default                                                            0/1        1296   
+DM,FC    Y vendor.qti.hardware.perf@2.1::IPerf/default                                                            0/1        1296   
+DM,FC    Y vendor.qti.hardware.perf@2.2::IPerf/default                                                            0/1        1296   
+DM,FC    Y vendor.qti.hardware.perf@2.3::IPerf/default                                                            0/1        1296   
+DM,FC    Y vendor.qti.hardware.power.powermodule@1.0::IPowerModule/default                                        0/1        1253   
+DC,FM    Y vendor.qti.hardware.qccsyshal@1.0::IQccsyshal/qccsyshal                                                0/3        1172   
+DC,FM    Y vendor.qti.hardware.qccsyshal@1.1::IQccsyshal/qccsyshal                                                0/3        1172   
+DC,FM    Y vendor.qti.hardware.qccsyshal@1.2::IQccsyshal/qccsyshal                                                0/3        1172   
+DM,FC    Y vendor.qti.hardware.qccvndhal@1.0::IQccvndhal/qccvndhal                                                0/1        1937   
+DM,FC    Y vendor.qti.hardware.qconfig@1.0::IQConfig/default                                                      0/3        1255   
+DM,FC    Y vendor.qti.hardware.qseecom@1.0::IQSEECom/default                                                      0/3        785    
+DM,FC    Y vendor.qti.hardware.secureprocessor.device@1.0::ISecureProcessor/qti-tee                               0/1        1297   
+DM,FC    Y vendor.qti.hardware.sensorscalibrate@1.0::ISensorsCalibrate/default                                    0/1        1300   
+DM,FC    Y vendor.qti.hardware.servicetracker@1.0::IServicetracker/default                                        0/6        1301   
+DM,FC    Y vendor.qti.hardware.servicetracker@1.1::IServicetracker/default                                        0/6        1301   
+DM,FC    Y vendor.qti.hardware.servicetracker@1.2::IServicetracker/default                                        0/6        1301   
+DM,FC    Y vendor.qti.hardware.soter@1.0::ISoter/default                                                          0/1        1302   
+FM,FC    N vendor.qti.hardware.systemhelper@1.0::ISystemEvent/default                                             0/1        3529   
+FM,FC    N vendor.qti.hardware.systemhelper@1.0::ISystemResource/default                                          0/1        3529   
+DM,FC    Y vendor.qti.hardware.trustedui@1.0::ITrustedInput/default                                               0/1        1307   
+DM,FC    Y vendor.qti.hardware.trustedui@1.0::ITrustedInput/qtee-vm                                               0/1        1307   
+DM,FC    Y vendor.qti.hardware.trustedui@1.0::ITrustedUI/default                                                  0/1        1307   
+DM,FC    Y vendor.qti.hardware.trustedui@1.0::ITrustedUI/qtee-vm                                                  0/1        1307   
+DM,FC    Y vendor.qti.hardware.trustedui@1.1::ITrustedInput/default                                               0/1        1307   
+DM,FC    Y vendor.qti.hardware.trustedui@1.1::ITrustedInput/qtee-vm                                               0/1        1307   
+DM,FC    Y vendor.qti.hardware.trustedui@1.1::ITrustedUI/default                                                  0/1        1307   
+DM,FC    Y vendor.qti.hardware.trustedui@1.1::ITrustedUI/qtee-vm                                                  0/1        1307   
+DM,FC    Y vendor.qti.hardware.trustedui@1.2::ITrustedUI/default                                                  0/1        1307   
+DM,FC    Y vendor.qti.hardware.trustedui@1.2::ITrustedUI/qtee-vm                                                  0/1        1307   
+DM,FC    Y vendor.qti.hardware.vpp@2.0::IHidlVppService/vppService                                                0/3        1348   
+DM,FC    Y vendor.qti.hardware.wifidisplaysession@1.0::IWifiDisplaySession/wifidisplaysession                     0/3        1866   
+DM,FC    Y vendor.qti.hardware.wifidisplaysession@1.0::IWifiDisplaySessionAudioTrack/wifidisplaysessionaudiotrack 0/3        1866   
+DM,FC    Y vendor.qti.hardware.wifidisplaysession@1.0::IWifiDisplaySessionImageTrack/wifidisplaysessionimagetrack 0/3        1866   
+DM,FC    Y vendor.qti.hardware.wifidisplaysession@1.0::IWifiDisplaySessionVideoTrack/wifidisplaysessionvideotrack 0/3        1866   
+DM,FC    Y vendor.qti.ims.callinfo@1.0::IService/default                                                          0/1        1874   
+DM,FC    Y vendor.qti.ims.factory@1.0::IImsFactory/default                                                        0/1        1874   
+DM,FC    Y vendor.qti.ims.factory@1.1::IImsFactory/default                                                        0/1        1874   
+DM,FC    Y vendor.qti.ims.factory@2.0::IImsFactory/default                                                        0/1        1874   
+DM,FC    Y vendor.qti.ims.factory@2.1::IImsFactory/default                                                        0/1        1874   
+DM,FC    Y vendor.qti.ims.factory@2.2::IImsFactory/default                                                        0/1        1874   
+DM,FC    Y vendor.qti.imsrtpservice@3.0::IRTPService/imsrtpservice                                                0/2        1873   
+DM,FC    Y vendor.qti.imsrtpservice@3.1::IRTPService/imsrtpservice                                                0/2        1873   
+DM,FC    Y vendor.qti.memory.pasrmanager@1.0::IPasrManager/pasrhal                                                0/1        1330   
+DM,FC    Y vendor.qti.memory.pasrmanager@1.1::IPasrManager/pasrhal                                                0/1        1330   
+DM,FC    Y vendor.qti.qspmhal@1.0::IQspmhal/default                                                               0/1        1342   
+DM,FC    Y vendor.qti.spu@1.0::ISPUManager/default                                                                0/3        1240   
+DM,FC    Y vendor.qti.spu@1.1::ISPUManager/default                                                                0/3        1240   
+DM,FC    Y vendor.qti.spu@2.0::ISPUManager/default                                                                0/3        1225   
+
+| All HIDL interfaces getService() has ever returned as a passthrough interface;
+| PIDs / processes shown below might be inaccurate because the process
+| might have relinquished the interface or might have died.
+| The Server / Server CMD column can be ignored.
+| The Clients / Clients CMD column shows all process that have ever dlopen'ed 
+| the library and successfully fetched the passthrough implementation.
+VINTF R Interface                                                                        Thread Use Server Clients
+FC    ? android.hardware.audio.effect@7.0::IEffectsFactory/default                       N/A        N/A    2275
+FC    ? android.hardware.audio@7.1::IDevicesFactory/default                              N/A        N/A    2275
+X     ? android.hardware.bluetooth.audio@2.0::IBluetoothAudioProvidersFactory/default    N/A        2275   2275
+FC    ? android.hardware.bluetooth@1.1::IBluetoothHci/default                            N/A        1174   1174
+FC    ? android.hardware.boot@1.2::IBootControl/default                                  N/A        983    983
+FC    ? android.hardware.gatekeeper@1.0::IGatekeeper/default                             N/A        1825   1825
+FC    ? android.hardware.soundtrigger@2.3::ISoundTriggerHw/default                       N/A        2275   2275
+DC,FM ? android.hidl.memory@1.0::IMapper/ashmem                                          N/A        2289   2289
+FC    ? com.dsi.ant@1.0::IAnt/default                                                    N/A        1174   1174
+FC    ? vendor.qti.esepowermanager@1.1::IEsePowerManager/default                         N/A        1257   1257
+FC    ? vendor.qti.hardware.bluetooth_audio@2.0::IBluetoothAudioProvidersFactory/default N/A        2275   2275
+FC    ? vendor.qti.hardware.bluetooth_audio@2.1::IBluetoothAudioProvidersFactory/default N/A        2275   2275
+FC    ? vendor.qti.hardware.bluetooth_sar@1.1::IBluetoothSar/default                     N/A        1174   1174
+FC    ? vendor.qti.hardware.btconfigstore@2.0::IBTConfigStore/default                    N/A        1174   1174
+FC    ? vendor.qti.hardware.capabilityconfigstore@1.0::ICapabilityConfigStore/default    N/A        1261   1261
+DM,FC ? vendor.qti.hardware.display.mapper@4.0::IQtiMapper/default                       N/A        N/A    1281 1911 2163 2290 2560 2771 2844 2909 3440 16973 17566 19150
+FC    ? vendor.qti.hardware.fm@1.0::IFmHci/default                                       N/A        1174   1174
+FC    ? vendor.qti.hardware.qseecom@1.0::IQSEECom/default                                N/A        785    785
+FC    ? vendor.qti.hardware.sensorscalibrate@1.0::ISensorsCalibrate/default              N/A        1300   1300
+FC    ? vendor.qti.hardware.servicetracker@1.2::IServicetracker/default                  N/A        1301   1301
+FC    ? vendor.qti.hardware.soter@1.0::ISoter/default                                    N/A        1302   1302
+
+| All available HIDL passthrough implementations (all -impl.so files).
+| These may return subclasses through their respective HIDL_FETCH_I* functions.
+VINTF R Interface                                                                     Thread Use Server Clients
+X     ? android.hardware.audio.effect@2.0::I*/* (/vendor/lib/hw/)                     N/A        N/A    
+X     ? android.hardware.audio.effect@2.0::I*/* (/vendor/lib64/hw/)                   N/A        N/A    
+X     ? android.hardware.audio.effect@4.0::I*/* (/vendor/lib/hw/)                     N/A        N/A    
+X     ? android.hardware.audio.effect@4.0::I*/* (/vendor/lib64/hw/)                   N/A        N/A    
+X     ? android.hardware.audio.effect@5.0::I*/* (/vendor/lib/hw/)                     N/A        N/A    
+X     ? android.hardware.audio.effect@5.0::I*/* (/vendor/lib64/hw/)                   N/A        N/A    
+X     ? android.hardware.audio.effect@6.0::I*/* (/vendor/lib/hw/)                     N/A        N/A    
+X     ? android.hardware.audio.effect@6.0::I*/* (/vendor/lib64/hw/)                   N/A        N/A    
+X     ? android.hardware.audio.effect@7.0::I*/* (/vendor/lib/hw/)                     N/A        N/A    
+X     ? android.hardware.audio.effect@7.0::I*/* (/vendor/lib64/hw/)                   N/A        N/A    
+X     ? android.hardware.audio@2.0::I*/* (/vendor/lib/hw/)                            N/A        N/A    
+X     ? android.hardware.audio@2.0::I*/* (/vendor/lib64/hw/)                          N/A        N/A    
+X     ? android.hardware.audio@4.0::I*/* (/vendor/lib/hw/)                            N/A        N/A    
+X     ? android.hardware.audio@4.0::I*/* (/vendor/lib64/hw/)                          N/A        N/A    
+X     ? android.hardware.audio@5.0::I*/* (/vendor/lib/hw/)                            N/A        N/A    
+X     ? android.hardware.audio@5.0::I*/* (/vendor/lib64/hw/)                          N/A        N/A    
+X     ? android.hardware.audio@6.0::I*/* (/vendor/lib/hw/)                            N/A        N/A    
+X     ? android.hardware.audio@6.0::I*/* (/vendor/lib64/hw/)                          N/A        N/A    
+X     ? android.hardware.audio@7.0::I*/* (/vendor/lib/hw/)                            N/A        N/A    
+X     ? android.hardware.audio@7.0::I*/* (/vendor/lib64/hw/)                          N/A        N/A    
+X     ? android.hardware.audio@7.1::I*/* (/vendor/lib/hw/)                            N/A        N/A    
+X     ? android.hardware.audio@7.1::I*/* (/vendor/lib64/hw/)                          N/A        N/A    
+X     ? android.hardware.bluetooth.audio@2.0::I*/* (/vendor/lib/hw/)                  N/A        N/A    
+X     ? android.hardware.bluetooth.audio@2.0::I*/* (/vendor/lib64/hw/)                N/A        N/A    
+X     ? android.hardware.bluetooth@1.0::I*/* (/vendor/lib/hw/) (-qti)                 N/A        N/A    
+X     ? android.hardware.bluetooth@1.0::I*/* (/vendor/lib64/hw/) (-qti)               N/A        N/A    
+X     ? android.hardware.bluetooth@1.1::I*/* (/vendor/lib/hw/) (-qti)                 N/A        N/A    
+X     ? android.hardware.bluetooth@1.1::I*/* (/vendor/lib64/hw/) (-qti)               N/A        N/A    
+X     ? android.hardware.boot@1.0::I*/* (/vendor/lib/hw/) (-1.2-qti)                  N/A        N/A    
+X     ? android.hardware.boot@1.0::I*/* (/vendor/lib64/hw/) (-1.2-qti)                N/A        N/A    
+X     ? android.hardware.gatekeeper@1.0::I*/* (/vendor/lib/hw/) (-qti)                N/A        N/A    
+X     ? android.hardware.gatekeeper@1.0::I*/* (/vendor/lib64/hw/) (-qti)              N/A        N/A    
+X     ? android.hardware.graphics.mapper@4.0::I*/* (/vendor/lib/hw/) (-qti-display)   N/A        N/A    
+X     ? android.hardware.graphics.mapper@4.0::I*/* (/vendor/lib64/hw/) (-qti-display) N/A        N/A    
+X     ? android.hardware.renderscript@1.0::I*/* (/vendor/lib/hw/)                     N/A        N/A    
+X     ? android.hardware.renderscript@1.0::I*/* (/vendor/lib64/hw/)                   N/A        N/A    
+X     ? android.hardware.soundtrigger@2.1::I*/* (/vendor/lib/hw/)                     N/A        N/A    
+X     ? android.hardware.soundtrigger@2.2::I*/* (/vendor/lib/hw/)                     N/A        N/A    
+X     ? android.hardware.soundtrigger@2.2::I*/* (/vendor/lib64/hw/)                   N/A        N/A    
+X     ? android.hardware.soundtrigger@2.3::I*/* (/vendor/lib/hw/)                     N/A        N/A    
+X     ? android.hardware.soundtrigger@2.3::I*/* (/vendor/lib64/hw/)                   N/A        N/A    
+X     ? android.hidl.memory@1.0::I*/* (/apex/com.android.vndk.v33/lib/hw/)            N/A        N/A    
+X     ? android.hidl.memory@1.0::I*/* (/apex/com.android.vndk.v33/lib64/hw/)          N/A        N/A    
+X     ? android.hidl.memory@1.0::I*/* (/system/lib/hw/)                               N/A        N/A    
+X     ? android.hidl.memory@1.0::I*/* (/system/lib64/hw/)                             N/A        N/A    
+X     ? com.dsi.ant@1.0::I*/* (/vendor/lib/hw/)                                       N/A        N/A    
+X     ? com.dsi.ant@1.0::I*/* (/vendor/lib64/hw/)                                     N/A        N/A    
+X     ? vendor.qti.esepowermanager@1.1::I*/* (/vendor/lib/hw/)                        N/A        N/A    
+X     ? vendor.qti.esepowermanager@1.1::I*/* (/vendor/lib64/hw/)                      N/A        N/A    
+X     ? vendor.qti.hardware.alarm@1.0::I*/* (/vendor/lib/hw/)                         N/A        N/A    
+X     ? vendor.qti.hardware.alarm@1.0::I*/* (/vendor/lib64/hw/)                       N/A        N/A    
+X     ? vendor.qti.hardware.bluetooth_audio@2.0::I*/* (/vendor/lib/hw/)               N/A        N/A    
+X     ? vendor.qti.hardware.bluetooth_audio@2.0::I*/* (/vendor/lib64/hw/)             N/A        N/A    
+X     ? vendor.qti.hardware.bluetooth_audio@2.1::I*/* (/vendor/lib/hw/)               N/A        N/A    
+X     ? vendor.qti.hardware.bluetooth_audio@2.1::I*/* (/vendor/lib64/hw/)             N/A        N/A    
+X     ? vendor.qti.hardware.bluetooth_sar@1.1::I*/* (/vendor/lib/hw/)                 N/A        N/A    
+X     ? vendor.qti.hardware.bluetooth_sar@1.1::I*/* (/vendor/lib64/hw/)               N/A        N/A    
+X     ? vendor.qti.hardware.btconfigstore@1.0::I*/* (/vendor/lib/hw/)                 N/A        N/A    
+X     ? vendor.qti.hardware.btconfigstore@1.0::I*/* (/vendor/lib64/hw/)               N/A        N/A    
+X     ? vendor.qti.hardware.btconfigstore@2.0::I*/* (/vendor/lib/hw/)                 N/A        N/A    
+X     ? vendor.qti.hardware.btconfigstore@2.0::I*/* (/vendor/lib64/hw/)               N/A        N/A    
+X     ? vendor.qti.hardware.capabilityconfigstore@1.0::I*/* (/vendor/lib/hw/)         N/A        N/A    
+X     ? vendor.qti.hardware.capabilityconfigstore@1.0::I*/* (/vendor/lib64/hw/)       N/A        N/A    
+X     ? vendor.qti.hardware.fm@1.0::I*/* (/vendor/lib/hw/)                            N/A        N/A    
+X     ? vendor.qti.hardware.fm@1.0::I*/* (/vendor/lib64/hw/)                          N/A        N/A    
+X     ? vendor.qti.hardware.qccvndhal@1.0::I*/* (/vendor/lib/hw/)                     N/A        N/A    
+X     ? vendor.qti.hardware.qccvndhal@1.0::I*/* (/vendor/lib64/hw/)                   N/A        N/A    
+X     ? vendor.qti.hardware.qseecom@1.0::I*/* (/vendor/lib/hw/)                       N/A        N/A    
+X     ? vendor.qti.hardware.qseecom@1.0::I*/* (/vendor/lib64/hw/)                     N/A        N/A    
+X     ? vendor.qti.hardware.sensorscalibrate@1.0::I*/* (/vendor/lib/hw/)              N/A        N/A    
+X     ? vendor.qti.hardware.sensorscalibrate@1.0::I*/* (/vendor/lib64/hw/)            N/A        N/A    
+X     ? vendor.qti.hardware.servicetracker@1.2::I*/* (/vendor/lib/hw/)                N/A        N/A    
+X     ? vendor.qti.hardware.servicetracker@1.2::I*/* (/vendor/lib64/hw/)              N/A        N/A    
+X     ? vendor.qti.hardware.soter@1.0::I*/* (/vendor/lib/hw/)                         N/A        N/A    
+X     ? vendor.qti.hardware.soter@1.0::I*/* (/vendor/lib64/hw/)                       N/A        N/A    
+X     ? vendor.qti.hardware.wifidisplaysession@1.0::I*/* (/vendor/lib64/hw/)          N/A        N/A    
+X     ? vendor.qti.memory.pasrmanager@1.0::I*/* (/vendor/lib/hw/)                     N/A        N/A    
+X     ? vendor.qti.memory.pasrmanager@1.0::I*/* (/vendor/lib64/hw/)                   N/A        N/A    
+

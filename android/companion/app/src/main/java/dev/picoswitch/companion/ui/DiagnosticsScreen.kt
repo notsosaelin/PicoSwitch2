@@ -75,9 +75,20 @@ fun DiagnosticsScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onExp
                 )
                 LabelValueRow("Protocol", "BLE GATT · newline JSON v${BuildConfig.MGMT_PROTOCOL_VERSION}")
                 LabelValueRow("Wireless management", if (ui.snapshot.managementEnabled == true) "On" else "Off")
-                LabelValueRow("Last command", ui.diagnosticSummary.lastCommand, monospace = true)
-                LabelValueRow("Last result", ui.diagnosticSummary.lastResult, monospace = true)
-                LabelValueRow("Last error", ui.diagnosticSummary.lastError)
+                LabelValueRow(
+                    "Last command",
+                    "${ui.diagnosticSummary.lastCommand} · ${ui.diagnosticSummary.lastCommandAtUtc}",
+                    monospace = true,
+                )
+                LabelValueRow(
+                    "Last result",
+                    "${ui.diagnosticSummary.lastResult} · ${ui.diagnosticSummary.lastResultAtUtc}",
+                    monospace = true,
+                )
+                LabelValueRow(
+                    "Last error",
+                    "${ui.diagnosticSummary.lastError} · ${ui.diagnosticSummary.lastErrorAtUtc}",
+                )
                 }
             }
         }
@@ -327,8 +338,11 @@ private fun diagnosticsSummary(ui: CompanionUiState): String = buildString {
     appendLine("kbm=${ui.kbm.available.name} mode=${ui.kbm.status.mode.wire} profile=${ui.kbm.status.profile.wire}")
     appendLine("kbm roles: keyboard=${ui.kbm.status.keyboardConnected} mouse=${ui.kbm.status.mouseConnected}")
     appendLine("lastCommand=${ui.diagnosticSummary.lastCommand}")
+    appendLine("lastCommandAtUtc=${ui.diagnosticSummary.lastCommandAtUtc}")
     appendLine("lastResult=${ui.diagnosticSummary.lastResult}")
+    appendLine("lastResultAtUtc=${ui.diagnosticSummary.lastResultAtUtc}")
     appendLine("lastError=${ui.diagnosticSummary.lastError}")
+    appendLine("lastErrorAtUtc=${ui.diagnosticSummary.lastErrorAtUtc}")
 }
 
 private val NfcScanPhaseUnavailable = dev.picoswitch.companion.model.NfcScanPhase.Unavailable
