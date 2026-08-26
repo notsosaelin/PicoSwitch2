@@ -359,6 +359,11 @@ typedef struct {
     uint32_t classic_companion_refused_no_mgmt; // refused: management not live
     uint32_t classic_companion_mgmt_teardowns;  // torn down on management loss
     uint32_t wipe_completions;
+    // gap_disconnect() calls that named a handle the controller had already
+    // released. BTstack 1.6.2 hid these behind a synthetic disconnection
+    // event; 1.8.2 reports them, and this firmware converges the affected
+    // record itself. Non-zero means some record outlived its ACL.
+    uint32_t disconnect_handle_already_gone;
     uint16_t last_disc_handle;
     uint8_t last_disc_reason;
     uint8_t owner_led_reason;

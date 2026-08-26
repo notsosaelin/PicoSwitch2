@@ -74,13 +74,34 @@ $serial.ReadTimeout = 2500; $serial.WriteTimeout = 2500; $serial.NewLine = "`n";
 
 function Log([string]$line) { [System.IO.File]::AppendAllText($OutputPath, "$line`n", $enc) }
 function Cmd([string]$c) {
-    try { $serial.DiscardInBuffer(); $serial.Write("$c`n"); return $serial.ReadLine().Trim() }
+    try {
+        # Do not discard pending input here. BTstack's lifecycle/LE-parameter
+        # printf lines are precisely the controller-boundary evidence this
+        # monitor exists to preserve. Read through them until this command's
+        # one-line JSON response arrives, timestamping each unsolicited line.
+        $serial.Write("$c`n")
+        $deadline = [DateTime]::UtcNow.AddMilliseconds($serial.ReadTimeout)
+        while ([DateTime]::UtcNow -lt $deadline) {
+            $line = $serial.ReadLine().Trim()
+            if ($line -match '^\s*\{') { return $line }
+            if ($line) {
+                Log (([ordered]@{
+                    host_ts = (Now)
+                    why = 'uart.unsolicited'
+                    line = $line
+                } | ConvertTo-Json -Compress))
+            }
+        }
+        return "{`"error`":`"timeout`",`"cmd`":`"$c`"}"
+    }
     catch { return "{`"error`":`"timeout`",`"cmd`":`"$c`"}" }
 }
 function Now { (Get-Date).ToString('o') }
 function DumpRing([string]$why) {
     $st = Cmd 'btstate'
     Log "{`"host_ts`":`"$(Now)`",`"why`":`"$why`",`"resp`":$st}"
+    $health = Cmd 'bthealth'
+    Log "{`"host_ts`":`"$(Now)`",`"why`":`"$why.health`",`"resp`":$health}"
     $count = 0; try { $count = [int](($st | ConvertFrom-Json).events.count) } catch {}
     for ($i = 0; $i -lt $count; $i++) {
         $e = Cmd "btlife read $i"
@@ -112,7 +133,7 @@ try {
                 if ([int]$s.disc.hci      -gt [int]$prev.disc.hci)          { $flags += "disc.hci+=$([int]$s.disc.hci-[int]$prev.disc.hci)(reason=$($s.disc.last_reason))" }
                 if ([int]$s.mgmt.disconnects -gt [int]$prev.mgmt.disconnects) { $flags += "mgmt.disc+=$([int]$s.mgmt.disconnects-[int]$prev.mgmt.disconnects)" }
             }
-            $tag = "ctrl=$($s.controller_connected) ble=$($s.ble_conns) scan=$($s.scan_active) adv=$($s.cble.advertising) client=$($s.cble.client) supp.mgmt=$($s.suppress.mgmt_armed) disc(c/h)=$($s.disc.ctrl)/$($s.disc.hci)"
+            $tag = "ctrl=$($s.controller_connected) ble(raw/ready)=$($s.connections.ble_raw)/$($s.connections.ble_ready) scan=$($s.scan_active) adv=$($s.cble.advertising) client=$($s.cble.client) supp.mgmt=$($s.suppress.mgmt_armed) disc(c/h)=$($s.disc.ctrl)/$($s.disc.hci)"
             if ($flags.Count) {
                 Write-Host "[$(Get-Date -Format HH:mm:ss)] *** $($flags -join ', ') | $tag" -ForegroundColor Yellow
                 DumpRing ("transition:" + ($flags -join ';')) | Out-Null

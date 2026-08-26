@@ -13,7 +13,6 @@ const bt_device_profile_t BT_PROFILE_DEFAULT = {
     .name = "Generic",
     .classic = BT_CLASSIC_HID_HOST,
     .ble = BT_BLE_GATT_HIDS,
-    .hid_mode = BT_HID_MODE_REPORT,
     .pin_type = BT_PIN_NONE,
 };
 
@@ -21,7 +20,6 @@ const bt_device_profile_t BT_PROFILE_WIIMOTE = {
     .name = "Wiimote",
     .classic = BT_CLASSIC_DIRECT_L2CAP,
     .ble = BT_BLE_NONE,
-    .hid_mode = BT_HID_MODE_REPORT,
     .pin_type = BT_PIN_BDADDR,
     .classic_only = true,
     .default_vid = 0x057E,
@@ -32,7 +30,6 @@ const bt_device_profile_t BT_PROFILE_WII_U_PRO = {
     .name = "Wii U Pro",
     .classic = BT_CLASSIC_DIRECT_L2CAP,
     .ble = BT_BLE_NONE,
-    .hid_mode = BT_HID_MODE_REPORT,
     .pin_type = BT_PIN_BDADDR,
     .classic_only = true,
     .default_vid = 0x057E,
@@ -43,7 +40,6 @@ const bt_device_profile_t BT_PROFILE_XBOX = {
     .name = "Xbox",
     .classic = BT_CLASSIC_HID_HOST,
     .ble = BT_BLE_GATT_HIDS,
-    .hid_mode = BT_HID_MODE_FALLBACK,
     .pin_type = BT_PIN_NONE,
 };
 
@@ -51,7 +47,6 @@ const bt_device_profile_t BT_PROFILE_DS3 = {
     .name = "DS3",
     .classic = BT_CLASSIC_HID_HOST,
     .ble = BT_BLE_NONE,
-    .hid_mode = BT_HID_MODE_REPORT,
     .pin_type = BT_PIN_NONE,
     .classic_only = true,
     .default_vid = 0x054C,
@@ -61,7 +56,6 @@ const bt_device_profile_t BT_PROFILE_SONY = {
     .name = "Sony",
     .classic = BT_CLASSIC_HID_HOST,
     .ble = BT_BLE_NONE,
-    .hid_mode = BT_HID_MODE_REPORT,
     .pin_type = BT_PIN_NONE,
     .classic_only = true,
     .default_vid = 0x054C,
@@ -71,7 +65,6 @@ const bt_device_profile_t BT_PROFILE_SWITCH = {
     .name = "Switch",
     .classic = BT_CLASSIC_DIRECT_L2CAP,
     .ble = BT_BLE_GATT_HIDS,
-    .hid_mode = BT_HID_MODE_REPORT,
     .pin_type = BT_PIN_NONE,
     .default_vid = 0x057E,
 };
@@ -80,7 +73,6 @@ const bt_device_profile_t BT_PROFILE_SWITCH2 = {
     .name = "Switch 2",
     .classic = BT_CLASSIC_HID_HOST,
     .ble = BT_BLE_CUSTOM,
-    .hid_mode = BT_HID_MODE_REPORT,
     .pin_type = BT_PIN_NONE,
 };
 
@@ -88,7 +80,6 @@ const bt_device_profile_t BT_PROFILE_STADIA = {
     .name = "Stadia",
     .classic = BT_CLASSIC_HID_HOST,
     .ble = BT_BLE_GATT_HIDS,
-    .hid_mode = BT_HID_MODE_REPORT,
     .pin_type = BT_PIN_NONE,
 };
 

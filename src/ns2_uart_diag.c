@@ -334,6 +334,7 @@ static void queue_btstate(void) {
         "\"mgmt_teardowns\":%lu},"
         "\"wipe_completions\":%lu,"
         "\"disc\":{\"ctrl\":%lu,\"hci\":%lu,\"state_losses\":%lu,"
+        "\"already_gone\":%lu,"
         "\"last_handle\":\"0x%04X\","
         "\"last_reason\":\"0x%02X\"},"
         "\"owner_led\":{\"reason\":\"%s\",\"on\":%s,"
@@ -374,6 +375,7 @@ static void queue_btstate(void) {
         (unsigned long)d.wipe_completions,
         (unsigned long)d.ctrl_disconnects, (unsigned long)d.hci_disconnects,
         (unsigned long)d.hci_state_losses,
+        (unsigned long)d.disconnect_handle_already_gone,
         d.last_disc_handle, d.last_disc_reason,
         ns2_owner_led_reason_name(
             (ns2_owner_led_reason_t)d.owner_led_reason),

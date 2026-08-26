@@ -29,18 +29,36 @@ typedef enum {
     BT_PIN_BDADDR, // PIN = host BD_ADDR reversed (Wiimote/Wii U Pro)
 } bt_pin_type_t;
 
-// HID protocol mode for hid_host_connect()
-typedef enum {
-    BT_HID_MODE_REPORT,   // HID_PROTOCOL_MODE_REPORT
-    BT_HID_MODE_FALLBACK, // HID_PROTOCOL_MODE_REPORT_WITH_FALLBACK_TO_BOOT
-} bt_hid_mode_t;
+// RETIRED FIELD: bt_hid_mode_t / .hid_mode. Do not reintroduce it without
+// evidence of a device that needs it.
+//
+// It existed only to pass HID_PROTOCOL_MODE_REPORT_WITH_FALLBACK_TO_BOOT to
+// hid_host_connect(). BTstack 1.8.2 removed that enumerator, and inspecting
+// what 1.6.2 actually did with it shows nothing worth reproducing:
+//
+//   - Outgoing, SDP succeeded: it forced the standard interrupt PSM instead of
+//     the SDP-advertised one and transmitted SET_PROTOCOL with parameter 2 --
+//     not a defined HID protocol mode (0 = Boot, 1 = Report). Malformed.
+//   - Outgoing, SDP failed or carried no HID record: it retried on the
+//     well-known PSMs in Boot protocol mode.
+//   - Incoming, SDP succeeded: identical to REPORT; 1.6.2 overwrote the
+//     requested mode with REPORT anyway.
+//
+// Only the second bullet was a real capability, and it is not one this project
+// can use: Boot protocol delivers keyboard/mouse boot reports, and PicoSwitch
+// has no boot-report parsing at any layer -- HID_PROTOCOL_MODE_BOOT appears
+// nowhere in this firmware. The single profile that requested it (Xbox) is
+// inherited from the Joypad-OS-derived original with no capture, experiment, or
+// document behind the choice, and Xbox pads reach this firmware over BLE HOGP.
+//
+// Loss on record: a Classic device whose SDP HID record is missing or
+// unreadable is now refused instead of being retried in Boot mode.
 
 // Device profile — describes how to connect to a BT device type
 typedef struct {
     const char* name;              // Human-readable profile name (for logging)
     bt_classic_strategy_t classic;
     bt_ble_strategy_t ble;
-    bt_hid_mode_t hid_mode;
     bt_pin_type_t pin_type;
     bool classic_only;             // True = skip BLE advertising (connect via classic only)
     uint16_t default_vid;          // Default VID (0 = use SDP/advertising)

@@ -111,7 +111,7 @@ def wall_seconds(stamp: str | None) -> float | None:
             + float(match.group(3)))
 
 
-def align(timelines: list[dict], btlife: list[dict]) -> tuple[float, float, int]:
+def align(timelines: list[dict], btlife: list[dict]) -> tuple[float, float, int, str]:
     """Offset such that wall = t_ms/1000 + offset, from acl_up <-> ACL up.
 
     Matched in order: both sides see the same successful establishments in the
@@ -122,6 +122,19 @@ def align(timelines: list[dict], btlife: list[dict]) -> tuple[float, float, int]
                for row in r["timeline"] if row["event"] == "classic.acl_up"]
     android = [a for a in android if a is not None]
     adapter = [e["t_ms"] / 1000.0 for e in btlife if e["code"] == "acl_up"]
+    alignment_name = "Android classic.acl_up <-> Pico acl_up"
+    # Some current Fluoride log levels omit BTA_DM_LINK_UP_EVT even though the
+    # app callback and Pico HID-ready event remain visible. Those two boundaries
+    # are the same successful establishment observed from opposite hosts and are
+    # a valid fallback when the direct ACL marker is absent.
+    if len(android) < 5 or len(adapter) < 5:
+        android = [wall_seconds(row["at"])
+                   for r in timelines if r["result"] == "ok"
+                   for row in r["timeline"] if row["event"] == "app.link_up"]
+        android = [a for a in android if a is not None]
+        adapter = [e["t_ms"] / 1000.0 for e in btlife
+                   if e["code"] == "hid_ready"]
+        alignment_name = "Android app.link_up <-> Pico hid_ready"
     if len(android) < 5 or len(adapter) < 5:
         sys.exit(f"only {min(len(android), len(adapter))} acl_up events; "
                  "cannot align clocks confidently")
@@ -152,7 +165,9 @@ def align(timelines: list[dict], btlife: list[dict]) -> tuple[float, float, int]
                  "cannot align clocks confidently")
     # Refine on the matched set, and report its spread as the quality measure.
     offset += statistics.median(residuals)
-    return offset, statistics.pstdev(residuals) if len(residuals) > 1 else 0.0, count
+    return (offset,
+            statistics.pstdev(residuals) if len(residuals) > 1 else 0.0,
+            count, alignment_name)
 
 
 def _phase_verdict(events: list[dict], codes: list[str],
@@ -245,9 +260,10 @@ def main() -> int:
     run = pathlib.Path(sys.argv[1])
     timelines = load_timelines(run)
     btlife = load_btlife(run)
-    offset, spread, pairs = align(timelines, btlife)
+    offset, spread, pairs, alignment_name = align(timelines, btlife)
 
-    print(f"clock alignment: {pairs} acl_up pairs, offset {offset:.3f}s, "
+    print(f"clock alignment: {pairs} pairs via {alignment_name}, "
+          f"offset {offset:.3f}s, "
           f"residual sd {spread:.3f}s")
     if spread > 0.5:
         print("  WARNING: residual spread is large; treat verdicts as suspect")

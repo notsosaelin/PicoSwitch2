@@ -46,7 +46,10 @@
 #define MAX_NR_GATT_CLIENTS 4
 #define MAX_NR_HCI_CONNECTIONS 4
 #define MAX_NR_HID_HOST_CONNECTIONS 4
-#define MAX_NR_HIDS_CLIENTS 4
+// BTstack 1.8 renamed hids_client to hids_host; this pool macro moved with it.
+// The old MAX_NR_HIDS_CLIENTS is silently ignored by 1.8.2, which then compiles
+// a zero-entry pool, so do not "restore" the old spelling.
+#define MAX_NR_HIDS_HOSTS 4
 #define MAX_NR_HFP_CONNECTIONS 1
 #define MAX_NR_L2CAP_CHANNELS 6
 #define MAX_NR_L2CAP_SERVICES 5

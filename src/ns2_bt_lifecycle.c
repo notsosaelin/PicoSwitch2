@@ -205,6 +205,18 @@ bool ns2_bt_forget_matches_address_type(bool match_address_type,
            requested_address_type == candidate_address_type;
 }
 
+ns2_bt_disconnect_outcome_t ns2_bt_disconnect_outcome(uint8_t gap_disconnect_status)
+{
+    switch (gap_disconnect_status) {
+        case 0x00u:  // ERROR_CODE_SUCCESS: disconnect requested, or already in
+                     // RECEIVED_DISCONNECTION_COMPLETE with the event pending
+        case NS2_BT_HCI_COMMAND_DISALLOWED:  // already requested/sent
+            return NS2_BT_DISCONNECT_EVENT_PENDING;
+        default:
+            return NS2_BT_DISCONNECT_CONVERGE_LOCALLY;
+    }
+}
+
 int ns2_bt_find_bond_slot(ns2_bt_bond_entry_at_fn entry_at,
                           void *context,
                           int slot_count,

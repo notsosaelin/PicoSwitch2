@@ -192,9 +192,17 @@ def check_controller_link_is_bound_to_management(source: str) -> None:
         r"static void classic_companion_release_on_mgmt_loss\(void\)\s*\{",
         r"\n\}",
     )
-    assert "gap_disconnect(link);" in release
+    # btstack_host_request_disconnect() is gap_disconnect() plus the BTstack
+    # 1.8.2 already-released-handle check; it adds no teardown of its own here.
+    # See ns2_bt_disconnect_outcome().
+    disconnect_call = 'btstack_host_request_disconnect(link, "Controller Link teardown");'
+    assert disconnect_call in release
+    assert "ble_connection_release_orphan" not in release, (
+        "the Controller Link teardown must stay a plain ACL disconnect; a second "
+        "release mechanism here could disagree with the Classic close path"
+    )
     assert release.index("classic_companion_acl_handle = HCI_CON_HANDLE_INVALID;") < \
-        release.index("gap_disconnect(link);"), (
+        release.index(disconnect_call), (
         "clear the binding before disconnecting so the resulting Disconnection "
         "Complete cannot re-enter the teardown"
     )

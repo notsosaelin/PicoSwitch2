@@ -910,7 +910,7 @@ bool bthid_send_output_report(uint8_t conn_index, uint8_t report_id,
     // Diagnostic for the 2026-07-12 BLE-rumble investigation: this is the one
     // choke point every non-DS4/DS5 driver's output report passes through
     // before it reaches btstack_classic_send_report() (which, despite the
-    // name, branches to hids_client_send_write_report() for BLE conn_index
+    // name, branches to hids_host_send_write_report() for BLE conn_index
     // values). Logging here proves whether a send was even attempted and
     // what conn_index/report_id it used, independent of whatever the BTstack
     // call itself reports back.

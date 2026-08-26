@@ -351,6 +351,38 @@ bool ns2_bt_forget_matches_address_type(bool match_address_type,
                                         int requested_address_type,
                                         int candidate_address_type);
 
+// Does a gap_disconnect() call still guarantee a disconnection-complete event?
+//
+// BTstack 1.6.2 synthesised one when handed a handle the controller had already
+// released:
+//
+//     uint8_t gap_disconnect(hci_con_handle_t handle){
+//         hci_connection_t * conn = hci_connection_for_handle(handle);
+//         if (!conn){ hci_emit_disconnection_complete(handle, 0); return 0; }
+//
+// (hci.c:9076). Every teardown in this firmware converges its own record from
+// HCI_EVENT_DISCONNECTION_COMPLETE, so a stale handle still cleaned itself up.
+// BTstack 1.8.2 returns ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER and emits
+// nothing (hci.c:9834). A caller that keeps waiting for the event now waits
+// forever, and the record it owns -- a BLE controller slot, the management
+// handle, an init state machine -- stays occupied for the rest of the boot.
+//
+// Classified here rather than at each call site so the rule is pinned by tests
+// and stated once. Note that COMMAND_DISALLOWED is NOT a local-convergence
+// case: it means a disconnect is already requested or sent on that handle, so
+// the event is still coming and converging early would tear down twice.
+// Anything unrecognised converges locally, because only the two statuses above
+// are documented to leave an event in flight.
+typedef enum {
+    NS2_BT_DISCONNECT_EVENT_PENDING = 0,  // wait for HCI_EVENT_DISCONNECTION_COMPLETE
+    NS2_BT_DISCONNECT_CONVERGE_LOCALLY,   // no event is coming; release the record now
+} ns2_bt_disconnect_outcome_t;
+
+#define NS2_BT_HCI_UNKNOWN_CONNECTION_IDENTIFIER 0x02u
+#define NS2_BT_HCI_COMMAND_DISALLOWED            0x0Cu
+
+ns2_bt_disconnect_outcome_t ns2_bt_disconnect_outcome(uint8_t gap_disconnect_status);
+
 typedef bool (*ns2_bt_bond_entry_at_fn)(void *context, int slot,
                                         int *address_type,
                                         uint8_t address[6]);

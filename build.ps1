@@ -41,11 +41,11 @@ $PSNativeCommandUseErrorActionPreference = $false
 
 # Versions match those installed by the Pico VS Code extension (see CMakeLists.txt header).
 $pico = "$env:USERPROFILE\.pico-sdk"
-$sdkVersion = '2.2.0'
-$toolchainVersion = '14_2_Rel1'
-$cmakeVersion = 'v3.31.5'
-$ninjaVersion = 'v1.12.1'
-$picotoolVersion = '2.2.0-a4'
+$sdkVersion = '2.3.0'
+$toolchainVersion = '15_2_Rel1'
+$cmakeVersion = 'v4.3.4'
+$ninjaVersion = 'v1.13.2'
+$picotoolVersion = '2.3.0'
 
 $cmake = "$pico\cmake\$cmakeVersion\bin\cmake.exe"
 $ninja = "$pico\ninja\$ninjaVersion\ninja.exe"
@@ -121,6 +121,21 @@ foreach ($b in $Boards) {
     Write-Host "=== Configuring $b$dirSuffix ===" -ForegroundColor Cyan
     & $cmake -S $root -B $bdir -G Ninja "-DCMAKE_MAKE_PROGRAM=$ninja" "-DPICO_BOARD=$b" @boardArgs 2>&1 | ForEach-Object { "$_" }
     if ($LASTEXITCODE -ne 0) { throw "configure failed for $b$dirSuffix" }
+
+    # The SDK version is declared twice: here, and as $sdkVersion in
+    # CMakeLists.txt's Pico VS Code header. When pico-vscode.cmake exists it
+    # sets PICO_SDK_PATH as a CMake variable BEFORE pico_sdk_import.cmake reads
+    # the environment, so CMakeLists.txt silently wins and this script's
+    # $env:PICO_SDK_PATH is ignored. That is fine while they agree and invisible
+    # when they do not -- which is how a build can quietly compile against the
+    # wrong SDK. Fail loudly instead of trusting the two to stay in sync.
+    $expectedSdk = "$pico\sdk\$sdkVersion".Replace('\', '/')
+    $resolvedSdk = (Select-String -Path "$bdir\CMakeCache.txt" `
+                                  -Pattern '^PICO_SDK_PATH:[^=]*=(.*)$').Matches.Groups[1].Value
+    if ($resolvedSdk.Replace('\', '/').TrimEnd('/') -ne $expectedSdk.TrimEnd('/')) {
+        throw "SDK selection skew for ${b}${dirSuffix}: build.ps1 wants '$expectedSdk' but CMake resolved '$resolvedSdk'. Check sdkVersion in CMakeLists.txt."
+    }
+
     Write-Host "=== Building $b$dirSuffix ===" -ForegroundColor Cyan
     & $cmake --build $bdir 2>&1 | ForEach-Object { "$_" }
     if ($LASTEXITCODE -ne 0) { throw "build failed for $b$dirSuffix" }
