@@ -390,6 +390,70 @@ class TouchControlEngineTest {
 
     // ------------------------------------------------------------------ helpers
 
+    // --------------------------------------------------- optional GL/GR controls
+
+    /**
+     * An added grip is an ordinary digital control end to end.
+     *
+     * The layout here is composed WITH the grips revealed, which is what a user
+     * who added them in the editor gets; the engine has no idea they were
+     * optional. What it publishes must be the real logical grip inputs, the ones
+     * the firmware already routes to SWITCH_EXTRA_GL/GR — not an alias of
+     * anything, and not a synthetic action.
+     */
+    @Test fun `an added grip presses and releases like any other button`() {
+        withGripsRevealed()
+
+        down(id = 9_101, control = TouchLayoutV1.GRIP_LEFT)
+        assertEquals(setOf(ControllerButton.GL), latest().logicalButtons)
+        down(id = 9_102, control = TouchLayoutV1.GRIP_RIGHT)
+        assertEquals(
+            setOf(ControllerButton.GL, ControllerButton.GR),
+            latest().logicalButtons,
+        )
+
+        up(id = 9_101, control = TouchLayoutV1.GRIP_LEFT)
+        assertEquals(setOf(ControllerButton.GR), latest().logicalButtons)
+        up(id = 9_102, control = TouchLayoutV1.GRIP_RIGHT)
+        assertTrue(latest().logicalButtons.isEmpty())
+    }
+
+    /** They ride the same release-all as everything else. */
+    @Test fun `a boundary releases a held grip`() {
+        withGripsRevealed()
+        down(id = 9_103, control = TouchLayoutV1.GRIP_RIGHT)
+        assertEquals(setOf(ControllerButton.GR), latest().logicalButtons)
+
+        engine.releaseAll(TouchReleaseReason.HostInactive)
+        assertTrue(latest().logicalButtons.isEmpty())
+        assertEquals(0, engine.diagnostics().ownedControls)
+    }
+
+    /** Digital buttons are latch-eligible, and a grip is an ordinary one. */
+    @Test fun `a grip is eligible for the hold gesture`() {
+        assertTrue(TouchControlKind.Button.supportsLatch)
+        withGripsRevealed()
+        assertEquals(
+            TouchControlKind.Button,
+            resolved.control(TouchLayoutV1.GRIP_LEFT)!!.spec.kind,
+        )
+    }
+
+    /** Recompose the layout with the two optional controls added, as the editor would. */
+    private fun withGripsRevealed() {
+        val pro2 = TouchProfileCatalog.require(TouchProfileId.Pro2)
+        val composed = TouchLayoutComposer.compose(pro2, withOptionalControls(pro2))
+        assertNull(composed.warning)
+        resolved = TouchLayoutResolver.resolve(
+            composed.layout,
+            TouchLayoutRegion(0f, 0f, 832f, 440f, 1f),
+            TouchLayoutAuditMode.UserDraft,
+        )
+        assertTrue(resolved.problem ?: "", resolved.fits)
+        engine.setLayout(resolved)
+        published.clear()
+    }
+
     private fun latest(): TouchContribution = engine.contribution
 
     private fun down(id: Long, control: String) {

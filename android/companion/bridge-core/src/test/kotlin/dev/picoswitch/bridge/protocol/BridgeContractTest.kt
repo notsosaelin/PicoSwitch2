@@ -153,13 +153,15 @@ class BridgeContractTest {
      * nothing, and readable anchors document what contract 3 actually is.
      */
     @Test fun `the digest covers the whole descriptor`() {
-        assertEquals(3, BridgeContract.VERSION)
+        assertEquals(4, BridgeContract.VERSION)
         assertEquals(161, BridgeHidDescriptor.bytes.size)
-        // Contract 3's defining bytes, kept as documentation. The digest above is
-        // what enforces; these say what changed and where.
-        assertEquals(0x0F.toByte(), BridgeHidDescriptor.bytes[36]) // Usage Maximum (15)
-        assertEquals(0x0F.toByte(), BridgeHidDescriptor.bytes[44]) // Report Count (15)
-        assertEquals(0x01.toByte(), BridgeHidDescriptor.bytes[50]) // one pad bit
+        // Contract 4's defining bytes, kept as documentation. The digest above is
+        // what enforces; these say what changed and where. Note the length did
+        // NOT move -- three bytes changed value inside the same 161 -- which is
+        // exactly why a length check would have missed this and a digest does not.
+        assertEquals(0x11.toByte(), BridgeHidDescriptor.bytes[36]) // Usage Maximum (17)
+        assertEquals(0x11.toByte(), BridgeHidDescriptor.bytes[44]) // Report Count (17)
+        assertEquals(0x07.toByte(), BridgeHidDescriptor.bytes[50]) // seven pad bits
 
         // Flipping any single byte must move the digest -- including bytes far
         // from the ones above, which is the whole point.

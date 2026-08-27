@@ -34,17 +34,36 @@ rejects platform vocabulary in identifiers and strings. Contract:
 [`../bridge/PROTOCOL.md`](../bridge/PROTOCOL.md), backend guide:
 [`../bridge/PLATFORM_BACKEND.md`](../bridge/PLATFORM_BACKEND.md).
 
-Touch profiles, immutable templates, sparse overrides, named profile libraries, composition, editor
-operations, alignment/snapping, audit rules, schema metadata and the storage interfaces belong to
-`:bridge-core`. Android owns only Canvas rendering, Compose pointer/editor UI, lifecycle integration
-and the `SharedPreferences` backend. The module's path under `android/companion/` is historical; do
-not create a duplicate shared layout module. `TouchLayoutOverrideJsonCodec` and
-`TouchProfileLibraryJsonCodec` name the Kotlin JSON implementations explicitly—the document schemas
-are portable, kotlinx.serialization is not a cross-platform API.
+Touch profiles, control catalogs, authored default layouts, instance documents, named profile
+libraries, composition, editor operations, undo/redo, toolbar placement, alignment/snapping, audit
+rules, schema metadata and the storage interfaces belong to `:bridge-core`. Android owns only Canvas
+rendering, Compose pointer/editor UI, lifecycle integration and the `SharedPreferences` backend. The
+module's path under `android/companion/` is historical; do not create a duplicate shared layout
+module. `TouchProfileLibraryJsonCodec` names the Kotlin JSON implementation explicitly—the document
+schema is portable, kotlinx.serialization is not a cross-platform API.
 
 The layout editor's default profile is never stored: `TouchProfileLibrary` synthesizes it from the
 shipped template on every read. Do not "fix" that by persisting it — its protection depends on it
 not existing in storage.
+
+### 🔴 Two invariants the touch editor rests on
+
+**Control instance identity is not logical button identity.** A layout is a list of
+`TouchControlInstance`s; several may share a `catalogId`, and therefore a binding, while remaining
+separate objects. Anything that keys runtime state by BINDING rather than by INSTANCE brings back
+the defect the instance model exists to prevent: a second A button whose release also releases the
+first. `TouchControlEngine` aggregates per binding only at `publish()`, and
+`TouchDuplicateControlTest` pins it.
+
+**Default layout membership is not personality capability.** `TouchControllerProfile.catalog` says
+what may be instantiated; `TouchTemplateControl.inDefaultLayout` says only whether the shipped
+arrangement places one. Add Control offers the whole catalog unconditionally. There is no
+hidden-and-revealable template control — that was schema 1, and it is why an optional control could
+not be deleted.
+
+Schema **2** is the instance document. Schema 1 is read only to be migrated
+(`TouchLayoutMigration`), and `AndroidTouchProfileStore` keeps the pre-migration text under a `.v1`
+key. Do not add a schema-1 writer.
 
 ## What it is
 

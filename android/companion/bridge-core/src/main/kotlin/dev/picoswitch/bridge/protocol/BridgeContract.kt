@@ -33,8 +33,14 @@ package dev.picoswitch.bridge.protocol
  * contents. Do not bump for comments, formatting or internal refactors.
  */
 object BridgeContract {
-    /** See the version history in the C fixture. 3 = 15 buttons, 100 us motion ticks. */
-    const val VERSION = 3
+    /**
+     * See the version history in the C fixture.
+     *
+     * 3 = 15 buttons, 100 us motion ticks.
+     * 4 = 17 buttons (16 = GL, 17 = GR); the button field grew to three bytes,
+     *     which moved the hat and the entire vendor extension one byte later.
+     */
+    const val VERSION = 4
 
     /**
      * SHA-256 of the complete descriptor, registered per contract version.
@@ -58,6 +64,10 @@ object BridgeContract {
         // Contract 1 and 2 predate this registry; their descriptors are not
         // reproduced here because no build that speaks them is supported.
         3 to "6e94932f4cdd741a13fee02d0ad4e085d20970d5a1dba61df825952729b67e3a",
+        // 4: buttons 1..17. Same 161 bytes -- only three of them changed (usage
+        // maximum, report count, pad count) -- which is precisely why a digest
+        // is the guard and not a length check.
+        4 to "f27315bfdf48b7ab5f76336f065fa27d9e04a45fdd17f96e4e752473a6725054",
     )
 
     /** The digest this build's descriptor must have. Null if the version is unregistered. */

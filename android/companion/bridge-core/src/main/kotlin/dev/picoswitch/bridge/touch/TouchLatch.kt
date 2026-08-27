@@ -3,6 +3,24 @@ package dev.picoswitch.bridge.touch
 /** Which gesture the press in progress is a candidate for. */
 internal enum class TouchDwell { None, Engage, Release }
 
+/** What a movement did to the hold, if anything. */
+internal enum class TouchLatchMove {
+    None,
+
+    /** The slide reached the commit distance and the control is now held. */
+    Committed,
+
+    /**
+     * The same contact came back to where it started and took the hold away
+     * again.
+     *
+     * Distinct from a release: the finger is still down and the control is still
+     * physically pressed, so nothing about what the console sees changes here.
+     * Only the hold that would have OUTLIVED the finger is gone.
+     */
+    Cancelled,
+}
+
 /** No first tap is pending, so no gap can fall inside the double-tap window. */
 private const val NO_PENDING_TAP = Long.MAX_VALUE
 
@@ -24,10 +42,32 @@ private const val NO_PENDING_TAP = Long.MAX_VALUE
  * UNLATCHED   tap                                        ordinary press
  *             tap, press, hold                           armed; STILL an ordinary press
  *             tap, press, hold, slide away               latch
+ *             ... and slide back to where it began       cancel; armed again
  *
  * LATCHED     quick tap                                  retrigger: release edge, then held again
  *             press held 1x the base                     unlatch
  * ```
+ *
+ * ## The slide is reversible until the finger lifts
+ *
+ * Committing on the way OUT and cancelling on the way BACK costs nothing and
+ * removes the one moment this gesture was unforgiving: a slide that has already
+ * passed the commit distance used to be final, so a user who changed their mind
+ * had to lift off and then press and hold the control to undo a hold they never
+ * wanted. Now the same continuous motion undoes it.
+ *
+ * Two distances rather than one, and that is the whole of the hysteresis:
+ *
+ * ```text
+ *   0                    cancel                     commit
+ *   |----- cancelled -----|------ unchanged ---------|----- committed ----->
+ *          (<= 24u)              (the band)                (>= 64u)
+ * ```
+ *
+ * A single threshold would flap: a thumb resting exactly on it produces a
+ * stream of lock/unlock transitions, each one a real change to what the console
+ * is told after the finger lifts. With the band, returning has to be as
+ * deliberate as leaving was.
  *
  * ## Why timing alone cannot create a hold
  *
@@ -125,6 +165,18 @@ internal class TouchControlLatch {
     private var tapSequenceOpen = true
 
     /**
+     * The hold currently standing was committed by the contact still down.
+     *
+     * The gate on cancelling, and it is load-bearing rather than bookkeeping: a
+     * press on an ALREADY-held control begins inside the cancel radius by
+     * definition — the finger is on the control it is about to press — so
+     * without this, the smallest jitter would silently drop a hold the user made
+     * earlier and is now merely touching. Only a hold this gesture created may
+     * be undone by this gesture.
+     */
+    private var committedHere = false
+
+    /**
      * A press began. Returns true when it is a candidate for either gesture,
      * which starts the corresponding dwell.
      *
@@ -140,6 +192,7 @@ internal class TouchControlLatch {
         originY = y
         lastTapEndNanos = 0L
         armed = false
+        committedHere = false
 
         if (latched) {
             // Already held, so there is nothing to build up to: one press is the
@@ -165,6 +218,25 @@ internal class TouchControlLatch {
         armed = true
     }
 
+    /**
+     * The armed candidate was spent on something else; no slide may commit it.
+     *
+     * The one caller is an analog trigger whose full-pull fallback won: the
+     * press waited out the selection window without moving, so it has already
+     * been answered as an ordinary held trigger. Leaving the arm standing would
+     * let a slide made AFTER that answer still lock a partial hold, which is a
+     * persistent state reached through a gesture the recognizer had already
+     * resolved as something else.
+     *
+     * Final for this contact by construction rather than by a flag: [armEngage]
+     * is only ever reached from a dwell, and this cancels the dwell too, so
+     * nothing short of a new press can arm the control again.
+     */
+    fun abandonArm() {
+        cancelDwell()
+        armed = false
+    }
+
     /** The dwell elapsed on a release candidate. */
     fun completeRelease() {
         cancelDwell()
@@ -187,22 +259,58 @@ internal class TouchControlLatch {
      * unreliable anywhere near an edge; none of which the user asked for.
      *
      * Commit is immediate rather than confirmed on lift, so the moment the
-     * button locks is the moment the user feels it, and sliding back afterwards
-     * cannot undo it: the gesture is over.
+     * button locks is the moment the user feels it. Sliding back to where the
+     * press began undoes it again — see [cancelDistance] — but only inside a
+     * radius small enough that the return is as deliberate as the departure.
+     *
+     * [commitTravel] is how much of the slide COUNTS toward committing, when
+     * that is not simply how far the contact moved. Null — every digital control
+     * — means straight-line displacement, because for a button any deliberate
+     * slide will do. An analog trigger supplies its projection onto its own
+     * inward axis instead: there the slide is not merely a confirmation, it is
+     * the act that CHOOSES the held level, so a sideways or outward slide must
+     * not be able to lock a trigger to a level nobody selected.
+     *
+     * [cancelDistance] undoes a hold this same contact just made, and is always
+     * a plain RADIUS around the origin even for an analog trigger. "Back where I
+     * started" is a question about the finger's position, not about the
+     * trigger's axis: a slide that returned along the axis but ended half a
+     * screen sideways is not the user putting the control back. Deliberately
+     * smaller than [commitDistance]; see the class doc for why the band exists.
      */
-    fun onMove(x: Float, y: Float, slop: Float, commitDistance: Float): Boolean {
+    fun onMove(
+        x: Float,
+        y: Float,
+        slop: Float,
+        commitDistance: Float,
+        cancelDistance: Float,
+        commitTravel: Float? = null,
+    ): TouchLatchMove {
         val dx = x - originX
         val dy = y - originY
         val travelled = dx * dx + dy * dy
         if (armed) {
-            if (travelled < commitDistance * commitDistance) return false
+            val reached = commitTravel?.let { it >= commitDistance }
+                ?: (travelled >= commitDistance * commitDistance)
+            if (!reached) return TouchLatchMove.None
             armed = false
             latched = true
-            return true
+            committedHere = true
+            return TouchLatchMove.Committed
         }
-        if (holdDeadlineNanos == 0L) return false
+        if (committedHere && latched) {
+            if (travelled > cancelDistance * cancelDistance) return TouchLatchMove.None
+            latched = false
+            committedHere = false
+            // Straight back to ARMED rather than to nothing, so the user who
+            // overshot can simply slide out again. That is what makes the band
+            // above a hysteresis rather than a one-way door.
+            armed = true
+            return TouchLatchMove.Cancelled
+        }
+        if (holdDeadlineNanos == 0L) return TouchLatchMove.None
         if (travelled > slop * slop) cancelDwell()
-        return false
+        return TouchLatchMove.None
     }
 
     /**
@@ -221,6 +329,7 @@ internal class TouchControlLatch {
         val retrigger = !cancelled && dwell == TouchDwell.Release
         cancelDwell()
         armed = false
+        committedHere = false
         val duration = nowNanos - pressStartNanos
         val tapped = !cancelled && tapSequenceOpen && nowNanos > 0L && pressStartNanos > 0L &&
             duration in 0..config.maxTapDurationNanos
@@ -269,11 +378,32 @@ internal class TouchControlLatch {
  * that explains a stuck button has to stay readable.
  */
 sealed interface TouchLatchEvent {
-    /** The user slid an armed contact far enough to commit [controlId] into a hold. */
-    data class Engaged(val controlId: String) : TouchLatchEvent
+    /**
+     * The user slid an armed contact far enough to commit [controlId] into a
+     * hold.
+     *
+     * [analogValue] is the level an analog trigger was locked at, and null for
+     * every digital control, where "held" has no level to state. Reported at
+     * COMMIT rather than at release, so the log records the moment the console
+     * started being told something no finger is doing; the slide may still move
+     * the level before the thumb lifts.
+     */
+    data class Engaged(val controlId: String, val analogValue: Float? = null) : TouchLatchEvent
 
     /** The user pressed and held [controlId] out of its hold. */
     data class Released(val controlId: String) : TouchLatchEvent
+
+    /**
+     * The user slid back to where the committing gesture began and took the hold
+     * off again, without ever lifting the finger.
+     *
+     * Kept apart from [Released] because the two answer different questions
+     * about a control that is no longer held: one is a deliberate press-and-hold
+     * some time later, the other is the same gesture being taken back. A log
+     * that conflated them could not tell "the user changed their mind" from "the
+     * user came back and undid it".
+     */
+    data class Cancelled(val controlId: String) : TouchLatchEvent
 
     /**
      * Every hold was dropped at a boundary.

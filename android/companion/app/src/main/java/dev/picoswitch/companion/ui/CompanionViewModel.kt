@@ -29,7 +29,8 @@ import dev.picoswitch.bridge.session.BridgeLinkPhase
 import dev.picoswitch.bridge.session.BridgeState
 import dev.picoswitch.bridge.session.SessionResumePolicy
 import dev.picoswitch.bridge.touch.TouchControlConfig
-import dev.picoswitch.bridge.touch.TouchLayoutOverride
+import dev.picoswitch.bridge.touch.TouchLayoutComposer
+import dev.picoswitch.bridge.touch.TouchLayoutDocument
 import dev.picoswitch.bridge.touch.TouchProfileCatalog
 import dev.picoswitch.bridge.touch.TouchProfileEdit
 import dev.picoswitch.bridge.touch.TouchProfileId
@@ -155,8 +156,14 @@ data class CompanionUiState(
     val touchGamepadActive: Boolean = false,
     val touchSettings: TouchGamepadSettings = TouchGamepadSettings.Default,
     /**
-     * Face presentation for the DRAWN diamond. Separate persistence from the
-     * per-device preference, same resolver; see [AndroidControllerLayoutStore].
+     * Face presentation for the DRAWN diamond.
+     *
+     * No longer user-selectable: the Touch Gamepad menu offers the real
+     * controller personality instead, and the drawn diamond follows whichever
+     * controller the adapter is actually presenting. Kept because the renderer
+     * still has to resolve label positions through the shared resolver, and
+     * pinned to the Nintendo arrangement because every personality this surface
+     * can draw IS a Nintendo controller.
      */
     val touchFaceLayout: ControllerFaceLayout = ControllerFaceLayout.Nintendo,
     /** Confirmed console personality; null keeps the surface neutral and disabled. */
@@ -170,13 +177,13 @@ data class CompanionUiState(
      */
     val touchProfiles: TouchProfileLibrary? = null,
     /**
-     * The active profile's sparse user state, never live gameplay state.
+     * The active profile's layout document, never live gameplay state.
      *
      * Derived from [touchProfiles]; kept as its own field because the surface
      * composes against it on every geometry change and should not have to know
      * how profile selection works.
      */
-    val touchLayoutOverride: TouchLayoutOverride? = null,
+    val touchLayoutDocument: TouchLayoutDocument? = null,
     /** Non-blocking persistence/fallback explanation shown in the Touch Gamepad menu. */
     val touchLayoutWarning: String? = null,
     val adapterRelationship: AdapterRelationship? = null,
@@ -327,7 +334,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                         snapshot = value,
                         touchProfileId = loaded.profileId,
                         touchProfiles = loaded.library,
-                        touchLayoutOverride = loaded.override,
+                        touchLayoutDocument = loaded.document,
                         touchLayoutWarning = loaded.warning,
                     )
                 }
@@ -1584,7 +1591,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                 touchFaceLayout = inputBackend.requestedFaceLayout,
                 touchProfileId = loaded.profileId,
                 touchProfiles = loaded.library,
-                touchLayoutOverride = loaded.override,
+                touchLayoutDocument = loaded.document,
                 touchLayoutWarning = loaded.warning,
                 overlay = AppOverlay.None,
                 message = null,
@@ -1649,16 +1656,30 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         )
     }
 
-    /** The drawn diamond's presentation. Same resolver as the physical path. */
-    fun setTouchFaceLayout(layout: ControllerFaceLayout) {
-        bridge.setFaceLayout(layout)
-        _ui.update {
-            it.copy(
-                touchFaceLayout = inputBackend.requestedFaceLayout,
-                controllerState = ControllerState.Neutral,
-            )
+    /**
+     * Change the emulated controller from inside the Touch Gamepad.
+     *
+     * Deliberately the SAME [switchPersonality] the adapter screen calls, and
+     * nothing else: the transition re-enumerates USB, may drop and re-establish
+     * management, and reports its own failures. A second, Touch-only personality
+     * state would be a second answer to "which controller is this" — and the one
+     * the console believes is not the one a local flag would hold.
+     *
+     * Held input is released BEFORE the request goes out, while the link can
+     * still carry a neutral report. Everything after that is the existing
+     * lifecycle: the adapter snapshot arrives with the new personality, the
+     * touch profile follows it, and the layout for that personality loads.
+     */
+    fun switchTouchPersonality(personality: Personality) {
+        if (_ui.value.snapshot.personality.current == personality) return
+        if (personality !in TouchProfileSelector.gameplayPersonalities) {
+            notice("${personality.title} has no on-screen controller")
+            return
         }
-        diagnostics.event("controller", "touch face layout", layout.key)
+        bridge.releaseTouchInput(TouchReleaseReason.PersonalityChanged)
+        session.neutralize()
+        diagnostics.event("controller", "touch personality", "requested ${personality.wireName}")
+        switchPersonality(personality)
     }
 
     /** Stop gameplay routing while the editor owns the surface. */
@@ -1676,8 +1697,8 @@ class CompanionViewModel(application: Application, private val savedState: Saved
      * is the only outcome that neither discards the user's work nor destroys the
      * one layout that is always supposed to be recoverable.
      */
-    fun saveTouchLayoutOverride(
-        value: TouchLayoutOverride,
+    fun saveTouchLayout(
+        value: TouchLayoutDocument,
         targetProfileId: String? = null,
         newProfileName: String = TouchProfileLibraryEditor.DEFAULT_NEW_PROFILE_NAME,
     ) {
@@ -1692,7 +1713,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             TouchProfileLibraryEditor.save(
                 library = library,
                 profileId = targetProfileId ?: library.selectedProfileId,
-                override = value,
+                document = value,
                 nowEpochMs = System.currentTimeMillis(),
                 newProfileName = newProfileName,
             ),
@@ -1803,14 +1824,36 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                 _ui.update {
                     it.copy(
                         touchProfiles = edit.library,
-                        touchLayoutOverride = edit.library.activeOverride,
+                        touchLayoutDocument = edit.library.activeDocument,
                         touchLayoutWarning = null,
                     )
                 }
+                // Counted, not sampled: the composition is what says whether the
+                // layout the user is about to play is the one they built, and a
+                // dropped control is otherwise invisible until they press it.
+                val composition = TouchLayoutComposer.compose(
+                    TouchProfileCatalog.require(edit.library.personality),
+                    edit.library.activeDocument,
+                )
                 diagnostics.event(
                     "controller",
                     "touch layout",
-                    "$what profile=${edit.library.personality.key}/${edit.library.selectedProfileId}",
+                    buildString {
+                        append(what)
+                        append(" profile=").append(edit.library.personality.key)
+                        append('/').append(edit.library.selectedProfileId)
+                        append(" controls=").append(composition.layout.controls.size)
+                        append(" groups=").append(edit.library.activeDocument.groups.size)
+                        // Instances beyond one per binding: the number that says
+                        // whether duplicate-safe aggregation is being exercised
+                        // at all on this device.
+                        append(" duplicates=").append(
+                            composition.layout.controls.size -
+                                composition.layout.controls.distinctBy { it.output }.size,
+                        )
+                        if (composition.degraded) append(" DEGRADED")
+                        composition.warning?.let { append(" warning=").append(it) }
+                    },
                 )
             }
         }
@@ -1838,7 +1881,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     private data class LoadedTouchProfile(
         val profileId: TouchProfileId?,
         val library: TouchProfileLibrary?,
-        val override: TouchLayoutOverride?,
+        val document: TouchLayoutDocument?,
         val warning: String?,
     )
 
@@ -1847,17 +1890,23 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             ?: return LoadedTouchProfile(
                 profileId = null,
                 library = null,
-                override = null,
+                document = null,
                 warning = when (personality) {
                     Personality.Config -> "Configuration mode has no gameplay touch profile"
                     else -> "The adapter's controller mode is not confirmed"
                 },
             )
         val loaded = touchProfileStore.load(profileId)
+        // A document that could not be read is the one failure here a user can
+        // see and cannot explain: the controller comes back as the shipped
+        // default and their own layout is simply gone from the picker.
+        loaded.warning?.let {
+            diagnostics.event("controller", "touch layout", "decode failed (${profileId.key}): $it")
+        }
         return LoadedTouchProfile(
             profileId = profileId,
             library = loaded.library,
-            override = loaded.library.activeOverride,
+            document = loaded.library.activeDocument,
             warning = loaded.warning,
         )
     }
@@ -1885,13 +1934,25 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             // the one way a held control can still send a fresh press. All three
             // look identical in "held" and are completely different faults.
             // Armed-versus-engaged separates "the gesture is being offered and
-            // nobody completes it" from "it completes when nobody meant it to".
+            // nobody completes it" from "it completes when nobody meant it to",
+            // and cancelled separates both from "it completes and the user keeps
+            // taking it back", which is a gesture that is too easy to trip.
             append(" latched=").append(snapshot.latchedControls.size)
             append(" latch=").append(snapshot.latchesArmed)
             append("/").append(snapshot.latchesEngaged)
+            append("/").append(snapshot.latchesCancelled)
             append("/").append(snapshot.latchesReleased)
             append("/").append(snapshot.latchesCleared)
             append(" retrigger=").append(snapshot.retriggerPulses)
+            // An analog trigger held with nothing touching it looks identical to
+            // one at rest in every counter above, so the LEVELS are named. The
+            // two counters either side separate "the terminal click never fired"
+            // from "a tap never produced a pull".
+            append(" trigger=").append(snapshot.triggerDetents)
+            append("/").append(snapshot.triggerPulses)
+            snapshot.analogTriggers.filterValues { it > 0f }.toSortedMap().forEach { (id, level) ->
+                append(' ').append(id).append('=').append("%.2f".format(level))
+            }
             append(" releaseAll=").append(snapshot.releaseAllCount)
             append("/").append(snapshot.lastReleaseReason?.name ?: "none")
             append(" layoutFits=").append(touch.engine.resolvedLayout.fits)

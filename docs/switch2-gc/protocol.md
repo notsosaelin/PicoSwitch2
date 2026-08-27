@@ -153,10 +153,36 @@ Report" command requests report ID **`0x05`**, never `0x0A` — this is now the 
 fact for anything targeting a PC/Steam host: report `0x0A` is real and implemented, but likely only
 ever consumed by an actual Switch 2 console (Stage G, still untested). **Implemented**:
 `switch_gc_encode_report05()` (`src/switch_gc/switch_gc_encode.c`) — same common bit layout as
-`switch_pro2.c`'s own `ns2_build_report_05()` (A/B/X/Y, D-pad, Plus/Minus/Home/Capture/C, ZL), plus
-the GC-specific analog-trigger tail at `0x3C`/`0x3D` below. Native GameCube Z and the independent
-L/R trigger detents have no representable bit in this shared format and are simply omitted when
-streaming `0x05` — only report `0x0A` can carry them.
+`switch_pro2.c`'s own `ns2_build_report_05()` (A/B/X/Y, D-pad, Plus/Minus/Home/Capture/C, ZL and
+**Z in the ZR slot**), plus the GC-specific analog-trigger tail at `0x3C`/`0x3D` below.
+
+**GameCube `Z` IS the ZR control — corrected 2026-08-26.** Keep the physical legend and the
+host-facing semantic apart for this button:
+
+| | |
+|---|---|
+| Physical control / shell legend / Touch Gamepad legend | **`Z`** |
+| Host-facing logical control, both reports | **ZR** |
+
+Evidence: a real Switch 2's Test Input screen names this control "ZR" (the same screen whose
+evidence fixed report `0x0A`'s nibble — see `mapping.md`, "the console displays as ZR"), and a
+genuine NSO GameCube Controller's `Z` is recognized as ZR by Windows/Steam. Since report `0x05` is
+the only report a PC host ever selects, the genuine unit can only be setting this format's ZR bit
+(byte0 `0x80`).
+
+An earlier version of this section claimed "Native GameCube Z and the independent L/R trigger
+detents have no representable bit in this shared format and are simply omitted when streaming
+`0x05`". **That was an assumption and it was wrong for Z**, and it was the entire reason this
+personality's `Z` worked on a Switch 2 and did nothing at all on PC/Steam. It also left the format
+lopsided — `ZL` was always emitted — which is the asymmetry `ns2_seam.c`'s generic GC-mode block
+already had to work around. Do not reintroduce it.
+
+It remains true for the **trigger detents**, which are a different control from `Z`: they have no
+slot in this format and only report `0x0A` carries them. A PC sees trigger travel through the
+continuous analog tail at `0x3C`/`0x3D` instead.
+
+Both reports source `Z` from `gc_extra` alone, so the console and a PC can never disagree about
+whether it is pressed; `tools/test_switch_gc_report.c` case 16 pins that parity.
 
 | Offset | Size | Field |
 |---|---|---|

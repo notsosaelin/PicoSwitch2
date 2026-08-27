@@ -34,6 +34,20 @@ enum class TouchFeedbackEvent {
 
     /** A control was pressed and held out of its hold. */
     LatchReleased,
+
+    /**
+     * An analog trigger reached the end of its travel and clicked.
+     *
+     * The one moment in this feature that a physical trigger would supply for
+     * free, and the reason the gesture is usable without looking: a GameCube
+     * trigger tells the thumb where full travel is with a switch under it, and a
+     * pane of glass tells it nothing at all.
+     *
+     * Fired on ENTERING the detent only. Leaving it is silent, and the value
+     * hysteresis is what stops a thumb resting on the boundary from producing a
+     * stream of these; a tick per frame while sliding would be a rattle.
+     */
+    TriggerDetent,
 }
 
 /**

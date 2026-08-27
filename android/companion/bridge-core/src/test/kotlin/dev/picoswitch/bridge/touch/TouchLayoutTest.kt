@@ -202,34 +202,51 @@ class TouchLayoutAuditTest {
         assertEquals("C", chat.label)
     }
 
-    @Test fun `overlapping hit regions are reported as blocking`() {
+    @Test fun `overlapping artwork is reported as blocking`() {
         val overlapping = TouchLayout(
             id = "overlap", schemaVersion = 1,
             controls = listOf(
-                TouchControlSpec("a", TouchControlKind.Button, TouchControlAction.Logical(ControllerButton.L1), 0.5f, 0.5f, 80f, 80f),
-                TouchControlSpec("b", TouchControlKind.Button, TouchControlAction.Logical(ControllerButton.R1), 0.52f, 0.5f, 80f, 80f),
+                button("a", ControllerButton.L1, 0.5f, 0.5f, 80f),
+                button("b", ControllerButton.R1, 0.52f, 0.5f, 80f),
             ),
         )
         val resolved = TouchLayoutResolver.resolve(overlapping, region(832f, 440f))
         assertFalse(resolved.fits)
         val findings = TouchLayoutAudit.audit(resolved.controls, resolved.region)
-        assertTrue(findings.any { it.blocking && it.message.contains("overlapping") })
+        assertTrue(findings.any { it.blocking && it.message.contains("overlap") })
+    }
+
+    /**
+     * Margins meeting is not artwork colliding.
+     *
+     * Both controls stay reliably pressable by aiming at what is drawn, so the
+     * layout is reported and still played. The shipped GameCube arrangement
+     * relies on exactly this between `z` and the `Y` bean.
+     */
+    @Test fun `touching hit margins are reported without blocking`() {
+        // 60-unit circles 66 apart: the drawn discs clear each other by 6 units,
+        // and a 6-unit margin each closes that gap exactly.
+        val touching = TouchLayout(
+            id = "margins", schemaVersion = 1,
+            controls = listOf(
+                button("a", ControllerButton.L1, 0.40f, 0.5f, 60f, margin = 6f),
+                button("b", ControllerButton.R1, 0.40f + 66f / 832f, 0.5f, 60f, margin = 6f),
+            ),
+        )
+        val resolved = TouchLayoutResolver.resolve(touching, region(832f, 440f))
+        val findings = TouchLayoutAudit.audit(resolved.controls, resolved.region)
+        val overlap = findings.filter { it.message.contains("margin") }
+        assertEquals(1, overlap.size)
+        assertFalse("margins meeting must not refuse the layout", overlap.single().blocking)
+        assertTrue(findings.none { it.blocking })
     }
 
     @Test fun `disjoint circular hit regions are not rejected for overlapping boxes`() {
         val diagonal = TouchLayout(
             id = "diagonal-circles", schemaVersion = 1,
             controls = listOf(
-                TouchControlSpec(
-                    "upper", TouchControlKind.Button,
-                    TouchControlAction.Logical(ControllerButton.L1),
-                    0.40f, 0.40f, 78f, 78f,
-                ),
-                TouchControlSpec(
-                    "lower", TouchControlKind.Button,
-                    TouchControlAction.Logical(ControllerButton.R1),
-                    0.48f, 0.535f, 50f, 50f, hitMarginUnits = 4f,
-                ),
+                button("upper", ControllerButton.L1, 0.40f, 0.40f, 78f),
+                button("lower", ControllerButton.R1, 0.48f, 0.535f, 50f, margin = 4f),
             ),
         )
         val resolved = TouchLayoutResolver.resolve(diagonal, region(800f, 400f))
@@ -241,7 +258,7 @@ class TouchLayoutAuditTest {
         val tiny = TouchLayout(
             id = "tiny", schemaVersion = 1,
             controls = listOf(
-                TouchControlSpec("a", TouchControlKind.Button, TouchControlAction.Logical(ControllerButton.L1), 0.5f, 0.5f, 20f, 20f),
+                button("a", ControllerButton.L1, 0.5f, 0.5f, 20f),
             ),
         )
         val resolved = TouchLayoutResolver.resolve(tiny, region(832f, 440f))
@@ -253,8 +270,8 @@ class TouchLayoutAuditTest {
         val duplicated = TouchLayout(
             id = "dup", schemaVersion = 1,
             controls = listOf(
-                TouchControlSpec("same", TouchControlKind.Button, TouchControlAction.Logical(ControllerButton.L1), 0.2f, 0.2f, 80f, 80f),
-                TouchControlSpec("same", TouchControlKind.Button, TouchControlAction.Logical(ControllerButton.R1), 0.8f, 0.8f, 80f, 80f),
+                button("same", ControllerButton.L1, 0.2f, 0.2f, 80f),
+                button("same", ControllerButton.R1, 0.8f, 0.8f, 80f),
             ),
         )
         val resolved = TouchLayoutResolver.resolve(duplicated, region(832f, 440f))
@@ -280,4 +297,27 @@ class TouchLayoutAuditTest {
         assertEquals(TouchLayoutV1.SCHEMA_VERSION, TouchLayoutV1.layout.schemaVersion)
         assertEquals(1, TouchLayoutV1.SCHEMA_VERSION)
     }
+
+    /**
+     * A synthetic digital button, for the audit cases that need a shape rather
+     * than a real control. Named parameters everywhere it matters, so adding a
+     * field to [TouchControlSpec] cannot silently shift these arguments.
+     */
+    private fun button(
+        id: String,
+        output: ControllerButton,
+        anchorX: Float,
+        anchorY: Float,
+        size: Float,
+        margin: Float = 0f,
+    ) = TouchControlSpec(
+        id = id,
+        kind = TouchControlKind.Button,
+        action = TouchControlAction.Logical(output),
+        anchorX = anchorX,
+        anchorY = anchorY,
+        widthUnits = size,
+        heightUnits = size,
+        hitMarginUnits = margin,
+    )
 }

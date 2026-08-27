@@ -20,16 +20,21 @@ object ControllerReportEncoder {
     /** v1 payload length, retained so the compatibility test can pin it. */
     const val PAYLOAD_SIZE = 9
 
-    /** v2 payload: v1 fields plus motion, battery, flags and timestamp. */
-    const val PAYLOAD_SIZE_V2 = 25
+    /**
+     * v2 payload: v1 fields plus motion, battery, flags and timestamp.
+     *
+     * One byte longer since bridge contract 4, which grew the button field from
+     * two bytes to three so it could carry GL/GR.
+     */
+    const val PAYLOAD_SIZE_V2 = 26
 
     // Wire offsets WITHIN THE PAYLOAD. The report ID is not part of the payload a
     // transport sends, so these are the C contract offsets minus one.
-    private const val OFF_GYRO = 9
-    private const val OFF_ACCEL = 15
-    private const val OFF_BATTERY = 21
-    private const val OFF_FLAGS = 22
-    private const val OFF_TIMESTAMP = 23
+    private const val OFF_GYRO = 10
+    private const val OFF_ACCEL = 16
+    private const val OFF_BATTERY = 22
+    private const val OFF_FLAGS = 23
+    private const val OFF_TIMESTAMP = 24
 
     const val FLAG_CHARGING = 0x01
     const val FLAG_MOTION_VALID = 0x02
@@ -61,20 +66,50 @@ object ControllerReportEncoder {
         return out
     }
 
-    /** The original nine-byte report, kept for the v1 compatibility test. */
-    fun encodeV1(state: ControllerState): ByteArray =
-        ByteArray(PAYLOAD_SIZE).also { encodeCore(state, it) }
-
-    private fun encodeCore(state: ControllerState, out: ByteArray) {
-        var bits = 0
-        state.buttons.forEach { bits = bits or (1 shl it.ordinal) }
-        out[0] = state.leftX.u8(); out[1] = state.leftY.u8()
-        out[2] = state.rightX.u8(); out[3] = state.rightY.u8()
-        out[4] = state.leftTrigger.u8(); out[5] = state.rightTrigger.u8()
+    /**
+     * The original nine-byte report, kept for the v1 compatibility test.
+     *
+     * No longer a prefix of [encode]. Through contract 3 the first nine bytes of
+     * both were identical, because every button still fitted in two bytes;
+     * contract 4 needed a third for GL/GR, which moved the hat and everything
+     * after it by one. A v1 peer is unaffected — it reads the v1 descriptor,
+     * whose items still describe exactly these nine bytes — but the two layouts
+     * are now genuinely different and are written separately rather than one
+     * pretending to be a truncation of the other.
+     */
+    fun encodeV1(state: ControllerState): ByteArray {
+        val out = ByteArray(PAYLOAD_SIZE)
+        encodeAxes(state, out)
+        val bits = buttonBits(state)
         out[6] = (bits and 0xFF).toByte()
         // 0x7F, not 0x3F: bit 14 is C / GameChat, the fifteenth button.
         out[7] = ((bits ushr 8) and 0x7F).toByte()
         out[8] = hat(state).toByte()
+        return out
+    }
+
+    private fun encodeCore(state: ControllerState, out: ByteArray) {
+        encodeAxes(state, out)
+        val bits = buttonBits(state)
+        out[6] = (bits and 0xFF).toByte()
+        out[7] = ((bits ushr 8) and 0xFF).toByte()
+        // Bit 16 is GR, the seventeenth and last button; the remaining seven bits
+        // of this byte are the descriptor's padding and must stay clear.
+        out[8] = ((bits ushr 16) and 0x01).toByte()
+        out[9] = hat(state).toByte()
+    }
+
+    private fun encodeAxes(state: ControllerState, out: ByteArray) {
+        out[0] = state.leftX.u8(); out[1] = state.leftY.u8()
+        out[2] = state.rightX.u8(); out[3] = state.rightY.u8()
+        out[4] = state.leftTrigger.u8(); out[5] = state.rightTrigger.u8()
+    }
+
+    /** `1 shl ordinal` per pressed button; see `ControllerButton`. */
+    private fun buttonBits(state: ControllerState): Int {
+        var bits = 0
+        state.buttons.forEach { bits = bits or (1 shl it.ordinal) }
+        return bits
     }
 
     /** The four retained D-pad directions collapsed to a HID hat code; 8 = neutral. */

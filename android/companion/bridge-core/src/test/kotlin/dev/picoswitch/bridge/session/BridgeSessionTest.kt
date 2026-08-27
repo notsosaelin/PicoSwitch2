@@ -274,12 +274,13 @@ class BridgeSessionTest {
                 "expected repeated reports while motion streams, got ${f.transport.sent.size - before}",
                 f.transport.sent.size - before >= 5,
             )
-            // The sample really is in the report: gyro X at payload offset 9.
+            // The sample really is in the report: gyro X at payload offset 10
+            // (9 before contract 4 gave the button field its third byte).
             val report = f.transport.sent.last()
-            assertEquals(5, report[9].toInt() and 0xFF)
+            assertEquals(5, report[10].toInt() and 0xFF)
             assertEquals(
                 ControllerReportEncoder.FLAG_MOTION_VALID,
-                report[22].toInt() and ControllerReportEncoder.FLAG_MOTION_VALID,
+                report[23].toInt() and ControllerReportEncoder.FLAG_MOTION_VALID,
             )
         }
     }
@@ -288,8 +289,8 @@ class BridgeSessionTest {
         withSession(testScheduler) { f ->
             f.motion.running = true // sensors live, but no request from the console
             val report = f.listener.currentReport()
-            assertEquals(0, report[22].toInt() and ControllerReportEncoder.FLAG_MOTION_VALID)
-            assertEquals(0, report[9].toInt())
+            assertEquals(0, report[23].toInt() and ControllerReportEncoder.FLAG_MOTION_VALID)
+            assertEquals(0, report[10].toInt())
         }
     }
 
@@ -429,10 +430,24 @@ class BridgeSessionTest {
         }
     }
 
+    /**
+     * The axes, buttons and hat of what was sent really are at rest.
+     *
+     * Compared against [ControllerReportEncoder.encode], not `encodeV1`: since
+     * bridge contract 4 the v1 report is no longer a prefix of the v2 one — the
+     * button field gained a third byte for GL/GR and the hat moved with it — so
+     * a v1 comparison would now be checking the wrong offsets rather than a
+     * shorter version of the right ones.
+     */
     private fun assertNeutralPrefix(actual: ByteArray) {
-        val expected = ControllerReportEncoder.encodeV1(ControllerState.Neutral)
+        // Axes, buttons and hat only. The vendor extension after them carries
+        // battery and motion, which are real readings and stay real across a
+        // neutralize -- the point of that call is that nothing is PRESSED, not
+        // that the controller stopped having a battery.
+        val core = 10
+        val expected = ControllerReportEncoder.encode(ControllerState.Neutral)
         assertTrue("report too short: ${actual.size}", actual.size >= expected.size)
-        expected.indices.forEach { index ->
+        repeat(core) { index ->
             assertEquals("byte $index", expected[index], actual[index])
         }
     }

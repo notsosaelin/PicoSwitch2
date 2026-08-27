@@ -17,9 +17,17 @@ import kotlin.math.roundToInt
  * SWITCH_EXTRA_C). Most host devices have no physical key for it, which is
  * exactly why backends are expected to offer it as a virtual button alongside
  * Home and Capture.
+ *
+ * [GL] and [GR] are the Pro Controller 2 GRIP buttons (usages 16/17 ->
+ * JP_BUTTON_A4/A5 -> NS2_DST_GL/GR -> SWITCH_EXTRA_GL/GR). Those destinations
+ * long predate this enum; what was missing was any way for the bridge to reach
+ * them, which is what bridge contract 4 added. Like [C], almost no host device
+ * has a physical key for them, so they arrive from the on-screen controller or
+ * from a virtual press.
  */
 enum class ControllerButton {
     A, B, X, Y, L1, R1, L2, R2, Select, Start, LeftStick, RightStick, Home, Capture, C,
+    GL, GR,
 }
 
 /**

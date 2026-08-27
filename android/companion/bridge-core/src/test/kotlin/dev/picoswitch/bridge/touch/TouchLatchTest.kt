@@ -979,71 +979,95 @@ class TouchLatchTest {
 class TouchLatchPersistenceTest {
 
     private val profile = TouchProfileCatalog.require(TouchProfileId.Pro2)
-    private val empty get() = TouchLayoutEditor.empty(profile)
+    private val base get() = authored(profile)
+
+    private fun latchOf(document: TouchLayoutDocument, id: String) =
+        requireNotNull(document.instance(id)).latch
 
     @Test fun `the editor writes the choice and Default erases it`() {
         val disabled = TouchLayoutEditor.setLatch(
-            profile, empty, TouchLayoutV1.FACE_SOUTH, latch = false, editGroup = false,
+            base, profile, setOf(TouchLayoutV1.FACE_SOUTH), latch = false, editGroup = false,
         )
-        assertEquals(false, disabled.controls[TouchLayoutV1.FACE_SOUTH]?.latch)
+        assertEquals(false, latchOf(disabled, TouchLayoutV1.FACE_SOUTH))
 
         val restored = TouchLayoutEditor.setLatch(
-            profile, disabled, TouchLayoutV1.FACE_SOUTH, latch = null, editGroup = false,
+            disabled, profile, setOf(TouchLayoutV1.FACE_SOUTH), latch = null, editGroup = false,
         )
-        // Not stored as "null": the whole entry goes, so a layout that has only
-        // ever been set back to Default reports itself as untouched.
-        assertEquals(emptyMap<String, TouchControlOverride>(), restored.controls)
+        // Not stored as "false": the answer goes back to null, so the control
+        // follows the global setting again instead of freezing today's value.
+        assertNull(latchOf(restored, TouchLayoutV1.FACE_SOUTH))
+        assertEquals(base, restored)
     }
 
     @Test fun `a group edit gives each control its own answer`() {
         val grouped = TouchLayoutEditor.setLatch(
-            profile, empty, TouchLayoutV1.FACE_SOUTH, latch = true, editGroup = true,
+            base, profile, setOf(TouchLayoutV1.FACE_SOUTH), latch = true, editGroup = true,
         )
         val faces = setOf(
             TouchLayoutV1.FACE_NORTH, TouchLayoutV1.FACE_SOUTH,
             TouchLayoutV1.FACE_EAST, TouchLayoutV1.FACE_WEST,
         )
-        assertEquals(faces, grouped.controls.keys)
-        assertTrue(grouped.controls.values.all { it.latch == true })
+        assertTrue(faces.all { latchOf(grouped, it) == true })
+        assertTrue(grouped.controls.filterNot { it.instanceId in faces }.all { it.latch == null })
 
         val one = TouchLayoutEditor.setLatch(
-            profile, grouped, TouchLayoutV1.FACE_SOUTH, latch = false, editGroup = false,
+            grouped, profile, setOf(TouchLayoutV1.FACE_SOUTH), latch = false, editGroup = false,
         )
-        assertEquals(false, one.controls[TouchLayoutV1.FACE_SOUTH]?.latch)
-        assertEquals(true, one.controls[TouchLayoutV1.FACE_NORTH]?.latch)
+        assertEquals(false, latchOf(one, TouchLayoutV1.FACE_SOUTH))
+        assertEquals(true, latchOf(one, TouchLayoutV1.FACE_NORTH))
     }
 
     @Test fun `a control that cannot latch never stores an opinion about it`() {
         val attempted = TouchLayoutEditor.setLatch(
-            profile, empty, TouchLayoutV1.STICK_LEFT, latch = true, editGroup = false,
+            base, profile, setOf(TouchLayoutV1.STICK_LEFT), latch = true, editGroup = false,
         )
-        assertEquals(emptyMap<String, TouchControlOverride>(), attempted.controls)
+        assertEquals(base, attempted)
+    }
+
+    @Test fun `two instances of one binding hold independently`() {
+        val (document, duplicate) = withDuplicate(profile, TouchLayoutV1.FACE_SOUTH, 0.5f, 0.7f)
+        val chosen = TouchLayoutEditor.setLatch(
+            document, profile, setOf(duplicate), latch = false, editGroup = false,
+        )
+        // The point of instance-scoped behaviour: one A may hold and the other
+        // may not, because they are separate objects rather than one binding.
+        assertEquals(false, latchOf(chosen, duplicate))
+        assertNull(latchOf(chosen, TouchLayoutV1.FACE_SOUTH))
     }
 
     @Test fun `the choice reaches the composed control the engine reads`() {
-        val override = TouchLayoutEditor.setLatch(
-            profile, empty, TouchLayoutV1.FACE_SOUTH, latch = false, editGroup = false,
+        val document = TouchLayoutEditor.setLatch(
+            base, profile, setOf(TouchLayoutV1.FACE_SOUTH), latch = false, editGroup = false,
         )
-        val composed = TouchLayoutComposer.compose(profile, override).layout
+        val composed = TouchLayoutComposer.compose(profile, document).layout
         assertEquals(false, composed.controls.first { it.id == TouchLayoutV1.FACE_SOUTH }.latch)
         // Everything else stays on "follow the global setting".
         assertTrue(composed.controls.filter { it.id != TouchLayoutV1.FACE_SOUTH }.all { it.latch == null })
     }
 
     @Test fun `the choice survives a round trip through the document`() {
-        val override = TouchLayoutEditor.setLatch(
-            profile,
+        val document = TouchLayoutEditor.setLatch(
             TouchLayoutEditor.setLatch(
-                profile, empty, TouchLayoutV1.FACE_SOUTH, latch = false, editGroup = false,
+                base, profile, setOf(TouchLayoutV1.FACE_SOUTH), latch = false, editGroup = false,
             ),
-            TouchLayoutV1.SHOULDER_RIGHT,
+            profile,
+            setOf(TouchLayoutV1.SHOULDER_RIGHT),
             latch = true,
             editGroup = false,
         )
-        val decoded = TouchLayoutOverrideJsonCodec.decode(
-            TouchLayoutOverrideJsonCodec.encode(override),
+        val library = TouchProfileLibrary(
+            personality = TouchProfileId.Pro2,
+            userProfiles = listOf(TouchLayoutProfile("p1", "Mine", document)),
+            selectedProfileId = "p1",
         )
-        assertEquals(TouchOverrideDecodeResult.Valid(override), decoded)
+        val decoded = TouchProfileLibraryJsonCodec.decode(
+            TouchProfileLibraryJsonCodec.encode(library),
+            TouchProfileId.Pro2,
+        )
+        assertEquals(
+            document,
+            (decoded as TouchProfileLibraryDecodeResult.Valid).value.activeDocument,
+        )
     }
 
     /**
@@ -1071,12 +1095,13 @@ class TouchLatchPersistenceTest {
     }
 
     /**
-     * Adding the field did NOT bump the schema version, on purpose: a bump would
-     * make every older build refuse the whole document ("written by a newer
+     * Adding the field did NOT bump the retired schema, on purpose: a bump would
+     * have made every older build refuse the whole document ("written by a newer
      * app") and throw away geometry the user spent time on, to protect one
-     * optional preference that degrades to its default anyway.
+     * optional preference that degrades to its default anyway. Pinned because
+     * the schema-1 decoder still has to read exactly what was written.
      */
-    @Test fun `adding the field did not change the schema version`() {
+    @Test fun `adding the field did not change the retired schema version`() {
         assertEquals(1, TouchLayoutOverride.CURRENT_SCHEMA_VERSION)
     }
 
@@ -1095,9 +1120,14 @@ class TouchLatchPersistenceTest {
 
     /** Configuration is persisted; what is currently HELD is not, and cannot be. */
     @Test fun `no persisted field can say a control is currently held`() {
-        val encoded = TouchLayoutOverrideJsonCodec.encode(
-            TouchLayoutEditor.setLatch(
-                profile, empty, TouchLayoutV1.FACE_SOUTH, latch = true, editGroup = false,
+        val document = TouchLayoutEditor.setLatch(
+            base, profile, setOf(TouchLayoutV1.FACE_SOUTH), latch = true, editGroup = false,
+        )
+        val encoded = TouchProfileLibraryJsonCodec.encode(
+            TouchProfileLibrary(
+                personality = TouchProfileId.Pro2,
+                userProfiles = listOf(TouchLayoutProfile("p1", "Mine", document)),
+                selectedProfileId = "p1",
             ),
         )
         assertFalse("latched" in encoded)

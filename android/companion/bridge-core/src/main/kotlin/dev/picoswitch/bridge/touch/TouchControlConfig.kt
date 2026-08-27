@@ -35,8 +35,137 @@ data class TouchControlConfig(
 
     /** Double-tap-to-hold timing and the default for controls that state none. */
     val latch: TouchLatchConfig = TouchLatchConfig(),
+
+    /** Travel, slop and detent for the triggers that have real travel. */
+    val trigger: TouchTriggerConfig = TouchTriggerConfig(),
 ) {
     companion object { val Default = TouchControlConfig() }
+}
+
+/**
+ * Geometry and thresholds for an analog trigger's invisible travel axis.
+ *
+ * Separate from [TouchLatchConfig] because they answer different questions:
+ * that one is about time and deliberate motion, this one is about distance and
+ * where the trigger currently sits. The two DURATIONS an analog trigger needs —
+ * how long a still press must last to be a deliberate full pull, and how long a
+ * tap pulse must last to be observable — are deliberately NOT here: both already
+ * exist in [TouchLatchConfig] with the same meaning, and a second copy of a
+ * number is a second thing to keep in step.
+ *
+ * ## The detent numbers are a wire contract, not a feel preference
+ *
+ * On the NSO GameCube personality the touch path has no separate digital trigger
+ * bit at all. The firmware's GameCube seam derives the terminal click from the
+ * ANALOG BYTE for a generic bridge source (`ns2_seam.c`: `analog[ANALOG_L2] >
+ * 224`) and discards the `L2`/`R2` button bits entirely, because a real pad's
+ * own click bit would otherwise stack a second path on top of the same physical
+ * action.
+ *
+ * That has one consequence worth stating plainly, because it is easy to
+ * "simplify" away: a hysteresis band on a local Boolean would be decorative.
+ * Whatever value is published IS the detent. So the band is enforced on the
+ * PUBLISHED VALUE — below the detent the value is capped at
+ * [subDetentCeiling], which is the largest byte the firmware still reads as
+ * open — and the click can only ever be asserted by the detent itself.
+ *
+ * ```text
+ *   0                        .84   .88  .92                1.0
+ *   |-------- travel ---------|-----|----|------ detent ----|
+ *                             ^     ^    ^
+ *          release below .84 -+     |    +- engage at or above .92
+ *                 published value capped here (byte 224)
+ * ```
+ */
+data class TouchTriggerConfig(
+    /**
+     * Full travel for a purely HORIZONTAL pull, as a fraction of the region's
+     * SHORTER side.
+     *
+     * Scaled by the shorter side rather than by the width so the number cannot
+     * drift with the handset's aspect ratio: half the WIDTH of a 20:9 panel is a
+     * swipe longer than the screen is tall.
+     *
+     * One number, deliberately not a user-facing setting in this pass: the
+     * gesture has to be judged in a game first. Everything downstream reads
+     * `fullTravelPx`, so a travel setting later has exactly one thing to change.
+     */
+    val travelFraction: Float = 0.50f,
+
+    /**
+     * Full travel for a purely VERTICAL pull, relative to the horizontal one.
+     *
+     * Hardware feel testing, not a derivation: with one shared distance for
+     * every direction — which is what this control shipped with — horizontal and
+     * diagonal pulls felt right and near-vertical ones felt like they had to be
+     * dragged the whole way down the glass. The cause is that the same absolute
+     * distance is a very different fraction of a landscape screen in each
+     * direction, roughly a quarter of the width but half of the height, and the
+     * thumb has correspondingly less room and less mechanical range vertically.
+     *
+     * A half puts the two references at the same fraction of the extent the pull
+     * actually travels along on the roughly 2:1 rectangle a handset gives. Raise
+     * it toward `1` for a longer vertical pull; that value restores the old
+     * single-distance behaviour exactly. See [TouchTriggerTravel.fullTravelPx]
+     * for how the two combine, and why a diagonal is a blend rather than a
+     * branch.
+     */
+    val verticalTravelRatio: Float = 0.50f,
+
+    /**
+     * How close to the middle of the region a control has to be before its
+     * inward vector stops being meaningful, in LOGICAL UNITS. See
+     * [TouchTriggerTravel.inwardAxis].
+     */
+    val centerEpsilonUnits: Float = 16f,
+
+    /**
+     * How far a contact must move to become a pull rather than a tap, in
+     * LOGICAL UNITS.
+     *
+     * A PLATFORM CONVENTION, not an invented constant: a host adapter is
+     * expected to overwrite it with its own toolkit's drag slop, so starting a
+     * trigger pull takes the same movement as starting any other drag on the
+     * device. The default is the stock Android value. Deliberately smaller than
+     * [TouchLatchConfig.gestureSlopUnits], which asks the different question of
+     * whether a contact stayed STILL for a third of a second.
+     */
+    val dragSlopUnits: Float = 8f,
+
+    /** Travel at which the terminal click engages. */
+    val detentEngageFraction: Float = 0.92f,
+
+    /** Travel at which it lets go again; see the class doc for why it is lower. */
+    val detentReleaseFraction: Float = 0.84f,
+
+    /**
+     * The most travel that may be published while the detent is open.
+     *
+     * `224/255` exactly, because the firmware seam's threshold is `> 224`. Above
+     * this the console would see the click regardless of what this side
+     * believes, which would make the hysteresis band above a local fiction.
+     */
+    val subDetentCeiling: Float = SUB_DETENT_BYTE / 255f,
+) {
+    init {
+        require(detentReleaseFraction < detentEngageFraction) {
+            "The detent must let go below the travel that engages it, or it chatters"
+        }
+        require(subDetentCeiling < detentEngageFraction) {
+            "Sub-detent travel must stay below the value that asserts the click on the wire"
+        }
+        require(verticalTravelRatio > 0f && verticalTravelRatio <= 1f) {
+            "A vertical pull must be reachable and no longer than a horizontal one"
+        }
+    }
+
+    companion object {
+        /**
+         * The largest trigger byte the firmware's GameCube seam still reads as
+         * "not clicked". Mirrors `ns2_seam.c`; see the class doc.
+         */
+        const val SUB_DETENT_BYTE = 224f
+    }
 }
 
 /**
@@ -173,6 +302,30 @@ data class TouchLatchConfig(
      */
     val latchCommitDistanceUnits: Float = 64f,
 ) {
+    init {
+        require(latchCancelDistanceUnits < latchCommitDistanceUnits) {
+            "The cancel radius must sit inside the commit distance, or the gesture flaps"
+        }
+    }
+
+    /**
+     * How close to where it began an already-committed contact must return to
+     * take the hold back off, in LOGICAL UNITS.
+     *
+     * The SAME distance that decides whether a dwelling contact stayed still,
+     * because it is the same question asked twice: is this finger still
+     * essentially where it started? A second constant would be a second thing to
+     * keep in step, and the two would drift the moment either was tuned.
+     *
+     * Being well inside [latchCommitDistanceUnits] is what stops the gesture
+     * flapping. A thumb parked on a single threshold produces a stream of
+     * lock/unlock transitions, and each one is a real change to what the console
+     * is told once the finger lifts; with a band, coming back has to be as
+     * deliberate as leaving was. The `init` block above refuses a configuration
+     * that closes the band.
+     */
+    val latchCancelDistanceUnits: Float get() = gestureSlopUnits
+
     /**
      * How long the second press must be held before a slide can commit a hold.
      *

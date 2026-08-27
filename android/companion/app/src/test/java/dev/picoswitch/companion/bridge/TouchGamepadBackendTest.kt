@@ -18,6 +18,7 @@ import dev.picoswitch.bridge.touch.TouchLayoutV1
 import dev.picoswitch.bridge.touch.TouchPhase
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -93,27 +94,23 @@ class TouchGamepadBackendTest {
     // ---------------------------------------------------------- face presentation
 
     /**
-     * Auto exists to guess a PRINTED legend. A drawn diamond has none, so
-     * inheriting Auto would let the on-screen letters be decided by which pad
-     * happened to be connected — or, with none connected, by the positional
-     * fallback, which is not what a Switch controller looks like.
+     * The on-screen diamond is drawn with the letters of the controller being
+     * emulated, and is no longer separately selectable.
+     *
+     * Auto in particular must never reach it: Auto exists to guess a PRINTED
+     * legend, and a drawn diamond has none, so inheriting it would let the
+     * on-screen letters be decided by which pad happened to be connected — or,
+     * with none connected, by the positional fallback, which is not what a
+     * Switch controller looks like.
      */
-    @Test fun `the on-screen face presentation never resolves to Auto`() {
+    @Test fun `the on-screen face presentation is fixed and is never Auto`() {
         assertEquals(
             ControllerFaceLayout.Nintendo,
-            AndroidControllerLayoutStore.touchLayoutFrom(null),
+            AndroidControllerLayoutStore.DEFAULT_TOUCH_LAYOUT,
         )
-        assertEquals(
-            ControllerFaceLayout.Nintendo,
-            AndroidControllerLayoutStore.touchLayoutFrom(ControllerFaceLayout.Auto.key),
-        )
-        assertEquals(
-            ControllerFaceLayout.Xbox,
-            AndroidControllerLayoutStore.touchLayoutFrom(ControllerFaceLayout.Xbox.key),
-        )
-        assertEquals(
-            ControllerFaceLayout.Nintendo,
-            AndroidControllerLayoutStore.touchLayoutFrom("nonsense-from-an-older-build"),
+        assertNotEquals(
+            ControllerFaceLayout.Auto,
+            AndroidControllerLayoutStore.DEFAULT_TOUCH_LAYOUT,
         )
     }
 

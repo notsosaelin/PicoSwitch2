@@ -6,6 +6,9 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+/** What every personality template declared before any of them was corrected. */
+private const val PERSONALITY_BASELINE_REVISION = 2
+
 /**
  * The sideways Joy-Con action clusters, pinned to the shell they represent.
  *
@@ -259,13 +262,21 @@ class TouchSidewaysJoyConTest {
      * revision still composes and keeps every position its owner chose — the
      * bump is metadata, not a schema gate.
      */
+    /**
+     * Revision 2 was the shared personality baseline before any correction. Both
+     * sideways halves moved their action cluster past it, and the constant is
+     * written out here rather than read from another personality: GameCube has
+     * since moved its own top row for an unrelated reason, so comparing against
+     * a live sibling would pass or fail for reasons that have nothing to do with
+     * the Joy-Con correction this test exists for.
+     */
     @Test fun `the corrected halves declare a newer template revision`() {
         val gameCube = TouchProfileCatalog.require(TouchProfileId.GameCube).defaultTemplate
         listOf(TouchProfileId.JoyConLeft, TouchProfileId.JoyConRight).forEach { id ->
             val template = TouchProfileCatalog.require(id).defaultTemplate
             assertTrue(
                 "$id geometry moved, so its revision must be past the shared baseline",
-                template.templateRevision > gameCube.templateRevision,
+                template.templateRevision > PERSONALITY_BASELINE_REVISION,
             )
             assertEquals("$id schema is unchanged", gameCube.schemaVersion, template.schemaVersion)
         }
@@ -280,8 +291,12 @@ class TouchSidewaysJoyConTest {
             basedOnRevision = profile.defaultTemplate.templateRevision - 1,
             controls = mapOf("direction-up" to TouchControlOverride(anchorX = 0.5f, anchorY = 0.5f)),
         )
-        val composed = TouchLayoutComposer.compose(profile, stored)
-        assertTrue("stored layouts must not be refused", composed.overrideApplied)
+        // Migrated exactly as an upgrading install would migrate it.
+        val composed = TouchLayoutComposer.compose(
+            profile,
+            TouchLayoutMigration.fromOverride(profile, stored),
+        )
+        assertTrue("stored layouts must not be refused", composed.customized)
         assertEquals(null, composed.warning)
         val moved = composed.layout.controls.single { it.id == "direction-up" }
         assertEquals(0.5f, moved.anchorX, 0f)

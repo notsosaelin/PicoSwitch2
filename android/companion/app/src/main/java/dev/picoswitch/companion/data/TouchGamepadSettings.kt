@@ -3,6 +3,8 @@ package dev.picoswitch.companion.data
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.core.content.edit
+import dev.picoswitch.bridge.touch.TouchToolbarEdge
+import dev.picoswitch.bridge.touch.TouchToolbarPlacement
 
 /**
  * Everything the on-screen controller lets the user change.
@@ -48,13 +50,22 @@ data class TouchGamepadSettings(
     val backgroundImage: String? = null,
 
     /**
-     * Where the layout editor's floating toolbar sits.
+     * Where the layout editor's toolbar sits, in a landscape window.
      *
      * A preference rather than a constant because the right answer depends on
      * the device: which hand holds the phone, whether the window is a tall
      * freeform one, and which edge the system's own gesture areas are on.
+     *
+     * Two slots rather than one because a placement that suits a wide window
+     * rarely suits a tall one — a toolbar docked to the right edge of a landscape
+     * phone is over the face buttons once the same phone is turned upright, and
+     * making the user move it back on every rotation is worse than remembering
+     * both answers.
      */
-    val editorToolbarDock: TouchEditorDock = TouchEditorDock.Bottom,
+    val editorToolbarLandscape: TouchToolbarPlacement = TouchToolbarPlacement.Default,
+
+    /** Where the toolbar sits in a portrait window; see [editorToolbarLandscape]. */
+    val editorToolbarPortrait: TouchToolbarPlacement = TouchToolbarPlacement.Default,
 
     /** Draw the editor's alignment grid. */
     val editorGrid: Boolean = false,
@@ -79,6 +90,14 @@ data class TouchGamepadSettings(
 
         val Default = TouchGamepadSettings()
     }
+
+    /** The toolbar placement for the window shape currently on screen. */
+    fun editorToolbar(landscape: Boolean): TouchToolbarPlacement =
+        if (landscape) editorToolbarLandscape else editorToolbarPortrait
+
+    fun withEditorToolbar(landscape: Boolean, placement: TouchToolbarPlacement) =
+        if (landscape) copy(editorToolbarLandscape = placement)
+        else copy(editorToolbarPortrait = placement)
 }
 
 /**
@@ -97,7 +116,8 @@ object TouchGamepadSettingsCodec {
         haptics: Boolean,
         deadzone: Float,
         backgroundImage: String?,
-        editorToolbarDock: String? = null,
+        editorToolbarLandscape: String? = null,
+        editorToolbarPortrait: String? = null,
         editorGrid: Boolean = false,
         editorSnap: Boolean = true,
         doubleTapHold: Boolean = true,
@@ -110,33 +130,46 @@ object TouchGamepadSettingsCodec {
         stickDeadzone = deadzone.finiteOr(TouchGamepadSettings.DEFAULT_DEADZONE)
             .coerceIn(0f, TouchGamepadSettings.MAX_DEADZONE),
         backgroundImage = backgroundImage?.takeIf { it.isNotBlank() },
-        editorToolbarDock = TouchEditorDock.fromKey(editorToolbarDock),
+        editorToolbarLandscape = decodePlacement(editorToolbarLandscape),
+        editorToolbarPortrait = decodePlacement(editorToolbarPortrait),
         editorGrid = editorGrid,
         editorSnap = editorSnap,
         doubleTapHold = doubleTapHold,
     )
 
-    private fun Float.finiteOr(fallback: Float) = if (isFinite()) this else fallback
-}
-
-/**
- * Which edge the layout editor's floating toolbar docks to.
- *
- * Persisted by [key], never by ordinal: reordering this enum must not silently
- * move somebody's toolbar to a different edge.
- */
-enum class TouchEditorDock(val key: String, val title: String) {
-    Bottom("bottom", "Bottom"),
-    Top("top", "Top"),
-    Left("left", "Left"),
-    Right("right", "Right");
-
-    val vertical: Boolean get() = this == Left || this == Right
-
-    companion object {
-        fun fromKey(value: String?): TouchEditorDock =
-            entries.firstOrNull { it.key == value } ?: Bottom
+    /**
+     * A toolbar placement as one short, self-describing string.
+     *
+     * ```text
+     * "bottom"          docked to that safe edge
+     * "float:0.42,0.77" free, normalized within the safe region
+     * ```
+     *
+     * Text rather than several preference keys so a placement is written and
+     * read as ONE value: two keys could be half-updated by an interrupted
+     * commit and describe a toolbar that is docked and floating at once.
+     * Anything unrecognized falls back to the default rather than failing, since
+     * the worst case is a toolbar the user has to move again.
+     */
+    fun encodePlacement(placement: TouchToolbarPlacement): String = when (placement) {
+        is TouchToolbarPlacement.Docked -> placement.edge.key
+        is TouchToolbarPlacement.Floating -> "$FLOAT_PREFIX${placement.x},${placement.y}"
     }
+
+    fun decodePlacement(raw: String?): TouchToolbarPlacement {
+        if (raw.isNullOrBlank()) return TouchToolbarPlacement.Default
+        TouchToolbarEdge.fromKey(raw)?.let { return TouchToolbarPlacement.Docked(it) }
+        if (!raw.startsWith(FLOAT_PREFIX)) return TouchToolbarPlacement.Default
+        val parts = raw.removePrefix(FLOAT_PREFIX).split(',')
+        if (parts.size != 2) return TouchToolbarPlacement.Default
+        val x = parts[0].toFloatOrNull()?.takeIf { it.isFinite() } ?: return TouchToolbarPlacement.Default
+        val y = parts[1].toFloatOrNull()?.takeIf { it.isFinite() } ?: return TouchToolbarPlacement.Default
+        return TouchToolbarPlacement.Floating(x.coerceIn(0f, 1f), y.coerceIn(0f, 1f))
+    }
+
+    private const val FLOAT_PREFIX = "float:"
+
+    private fun Float.finiteOr(fallback: Float) = if (isFinite()) this else fallback
 }
 
 /** [TouchGamepadSettings] persisted by the platform. */
@@ -150,7 +183,12 @@ class TouchGamepadSettingsStore(context: Context) {
         haptics = preferences.getBoolean(KEY_HAPTICS, true),
         deadzone = preferences.getFloat(KEY_DEADZONE, TouchGamepadSettings.DEFAULT_DEADZONE),
         backgroundImage = preferences.getString(KEY_BACKGROUND, null),
-        editorToolbarDock = preferences.getString(KEY_EDITOR_DOCK, null),
+        // The retired single-dock key is the fallback for both, so an upgrading
+        // install keeps the edge it had until the toolbar is moved again.
+        editorToolbarLandscape = preferences.getString(KEY_EDITOR_TOOLBAR_LANDSCAPE, null)
+            ?: preferences.getString(KEY_EDITOR_DOCK, null),
+        editorToolbarPortrait = preferences.getString(KEY_EDITOR_TOOLBAR_PORTRAIT, null)
+            ?: preferences.getString(KEY_EDITOR_DOCK, null),
         editorGrid = preferences.getBoolean(KEY_EDITOR_GRID, false),
         editorSnap = preferences.getBoolean(KEY_EDITOR_SNAP, true),
         doubleTapHold = preferences.getBoolean(KEY_DOUBLE_TAP_HOLD, true),
@@ -167,7 +205,14 @@ class TouchGamepadSettingsStore(context: Context) {
             } else {
                 putString(KEY_BACKGROUND, settings.backgroundImage)
             }
-            putString(KEY_EDITOR_DOCK, settings.editorToolbarDock.key)
+            putString(
+                KEY_EDITOR_TOOLBAR_LANDSCAPE,
+                TouchGamepadSettingsCodec.encodePlacement(settings.editorToolbarLandscape),
+            )
+            putString(
+                KEY_EDITOR_TOOLBAR_PORTRAIT,
+                TouchGamepadSettingsCodec.encodePlacement(settings.editorToolbarPortrait),
+            )
             putBoolean(KEY_EDITOR_GRID, settings.editorGrid)
             putBoolean(KEY_EDITOR_SNAP, settings.editorSnap)
             putBoolean(KEY_DOUBLE_TAP_HOLD, settings.doubleTapHold)
@@ -181,7 +226,10 @@ class TouchGamepadSettingsStore(context: Context) {
         internal const val KEY_HAPTICS = "haptics"
         internal const val KEY_DEADZONE = "stick_deadzone"
         internal const val KEY_BACKGROUND = "background_image"
+        /** Retired: one dock for every window shape. Still READ, never written. */
         internal const val KEY_EDITOR_DOCK = "editor_toolbar_dock"
+        internal const val KEY_EDITOR_TOOLBAR_LANDSCAPE = "editor_toolbar_landscape"
+        internal const val KEY_EDITOR_TOOLBAR_PORTRAIT = "editor_toolbar_portrait"
         internal const val KEY_EDITOR_GRID = "editor_grid"
         internal const val KEY_EDITOR_SNAP = "editor_snap"
         internal const val KEY_DOUBLE_TAP_HOLD = "double_tap_hold"

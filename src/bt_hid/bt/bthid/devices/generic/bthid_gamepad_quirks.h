@@ -26,7 +26,12 @@
 // through the standard usage-number table, so their extract_extra() needs the full descriptor-
 // derived field map, not just the raw report bytes.
 
-#define BLE_MAX_BUTTONS 16
+// 17 since bridge contract 4: the Android companion declares usages 16/17 as the
+// Pro Controller 2 grip buttons GL/GR, and a usage the parser does not record a
+// location for can never be read. Purely additive capacity -- a device that
+// declares fewer buttons is unaffected, and nothing infers meaning from the
+// bound itself.
+#define BLE_MAX_BUTTONS 17
 
 typedef struct {
     uint8_t byteIndex;
@@ -121,6 +126,15 @@ const gamepad_quirk_t *gamepad_quirks_identify(uint16_t vendor_id, uint16_t prod
 // this profile for that descriptor even if the host identity resembles a known
 // controller family.
 const gamepad_quirk_t *gamepad_quirks_generic(void);
+
+// The PicoSwitch2 Android companion bridge's own profile.
+//
+// The sequential table above plus usages 16/17, which the bridge contract names
+// GL/GR (Pro Controller 2 grip buttons). Separate from gamepad_quirks_generic()
+// on purpose: SEQ_BUTTON_MAP is shared by every unrecognized pad, and a device
+// that declares seventeen buttons for reasons of its own must not thereby
+// acquire grip presses. Only the exact bridge descriptor selects this.
+const gamepad_quirk_t *gamepad_quirks_android_bridge(void);
 
 // True when `quirk` is the unmatched fallback rather than a recognized controller
 // family. This is the project's established answer to "has this peer been

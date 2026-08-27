@@ -81,10 +81,29 @@ void switch_gc_encode_report(const switch_pro_input_t *in, uint8_t counter, uint
 // across controller types") and is intentionally duplicated here, not shared code -- see that
 // function for the byte-for-byte-identical button bit assignments this mirrors.
 //
+// GameCube Z IS the ZR control (byte0 0x80). The shell prints "Z"; the protocol slot is ZR, and
+// both hosts agree on that: a real Switch 2's Test Input screen names this control "ZR" (the same
+// screen whose evidence fixed report 0x0A's nibble above, and see docs/switch2-gc/mapping.md),
+// and a genuine NSO GameCube Controller's Z is recognized by Windows/Steam -- which it could only
+// be if the genuine unit sets this bit, since report 0x05 is the only report a PC host ever
+// selects.
+//
+// An earlier version of this function hardcoded ZR to 0, reasoning that GC's Z had "no
+// representable bit position in this shared format". That was an assumption, it was wrong, and it
+// was the whole reason this personality's Z worked on a Switch 2 and did nothing at all on
+// PC/Steam: report 0x0A carries Z in its own GC slot, report 0x05 carried nothing. It also left
+// this format lopsided -- ZL below was always emitted -- which is the same asymmetry
+// ns2_seam.c's generic GC-mode block already had to work around in its own comment
+// ("SWITCH_MASK_ZL has a live bit in the GC encoder, SWITCH_MASK_ZR does not").
+//
+// Sourced from gc_extra ONLY, exactly as report 0x0A sources it, so the two reports carry
+// identical semantics and no path can make a PC see a press the console does not.
+//
 // Bits with no real GC hardware are hardcoded to 0, never read from the shared struct:
-//   - ZR (byte0 0x80) and plain L/R shoulder (byte0 0x40, byte2 0x40): Pro2-only concepts with no
-//     GC equivalent bit position in this shared format at all (GC's own Z/L-detent/R-detent have
-//     no representable bit here -- report 0x05 simply cannot carry them; only report 0x0A can).
+//   - plain L/R shoulder (byte0 0x40, byte2 0x40): Pro2-only concepts; GC has no plain shoulder
+//     bit at all. The independent L/R trigger DETENTS are a different control from Z and do
+//     genuinely have no slot in this format -- only report 0x0A can carry them, while the
+//     continuous analog values reach a PC through the GC-specific tail at 0x3C/0x3D instead.
 //   - L3/R3 (byte1 0x08/0x04) and GL/GR (byte3 0x02/0x01): genuine NSO GameCube Controller has
 //     none of these -- same rule as switch_gc_encode_report()'s stick-click bits.
 void switch_gc_encode_report05(const switch_pro_input_t *in, uint32_t counter, uint8_t out[63]) {
@@ -96,6 +115,7 @@ void switch_gc_encode_report05(const switch_pro_input_t *in, uint32_t counter, u
 
     uint8_t s0 = in->buttons[0], s1 = in->buttons[1], s2 = in->buttons[2];
     uint8_t b0 = 0, b1 = 0, b2 = 0;
+    if (in->gc_extra & GC_MASK_Z) b0 |= 0x80;  // GC Z occupies the ZR slot; see the note above.
     if (s0 & SWITCH_MASK_A) b0 |= 0x08;
     if (s0 & SWITCH_MASK_B) b0 |= 0x04;
     if (s0 & SWITCH_MASK_X) b0 |= 0x02;
