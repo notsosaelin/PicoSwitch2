@@ -124,8 +124,17 @@ the Modkit) while in GameCube output mode: face buttons, D-pad, and sticks worke
 already share the same generic `SWITCH_MASK_*` code path as every other mode), but the shoulder
 buttons and triggers were wrong — the Pro2-style pairing (shoulders → plain L/R, trigger analog
 fold → ZL/ZR) is the **reverse** of what GameCube mode needs, since GC has no plain L/R shoulder
-bit at all (dead output) and no ZR bit either (only Z, which the console displays as "ZR" — see
-`switch2-gc/protocol.md`).
+bit at all (dead output). It does have ZR: that control is the button the GameCube shell prints as
+**`Z`**. Physical legend and host-facing semantic are different facts about it —
+
+| Physical control / shell legend / Touch Gamepad legend | Host-facing logical control |
+|---|---|
+| `Z` | **ZR** |
+
+— which is why the console's Test Input screen names it "ZR" and why a genuine NSO GameCube
+Controller's `Z` is recognized as ZR by Windows/Steam. `GC_MASK_Z` is this project's name for that
+control, and it reaches report `0x0A`'s GC slot for a console and report `0x05`'s ZR bit for a PC.
+See `switch2-gc/protocol.md`, "GameCube `Z` IS the ZR control".
 
 **Fixed** in `router_submit_input()` (`src/bt_hid/ns2_seam.c`), gated on `g_usb_personality ==
 USB_PERSONALITY_NSO_GAMECUBE && !event->gc_has_native_layout` (i.e. any device *except* the Modkit,
@@ -134,7 +143,7 @@ which keeps its own real per-button signals untouched by this synthesis):
 | Generic source | Pro2-mode destination (unchanged) | GameCube-mode destination (fixed 2026-07-13) |
 |---|---|---|
 | Shoulder LB/L1 | `SWITCH_MASK_L` (plain L) | `SWITCH_MASK_ZL` — shows as "ZL" |
-| Shoulder RB/R1 | `SWITCH_MASK_R` (plain R) | `GC_MASK_Z` — shows as "ZR" |
+| Shoulder RB/R1 | `SWITCH_MASK_R` (plain R) | `GC_MASK_Z` — the control the shell prints as "Z"; shows as "ZR" on a console and on a PC |
 | Analog trigger LT/L2 | Continuous fold → `SWITCH_MASK_ZL` past a low threshold (`>64`) | Continuous passthrough to `left_trigger` (already unconditional) **+** `GC_MASK_L_DETENT` past a high threshold (`>224`, approximating the real mechanical detent's near-full-travel position) |
 | Analog trigger RT/R2 | Continuous fold → `SWITCH_MASK_ZR` past a low threshold | Continuous passthrough to `right_trigger` **+** `GC_MASK_R_DETENT` past the same high threshold |
 
@@ -143,6 +152,18 @@ trigger-to-detent curve data exists for a substitute controller's analog range, 
 expected to need retuning once real detent-feel feedback comes in. L3/R3 remain unmapped for
 generic controllers in GC mode (same rule as the Modkit — no real output bit exists to alias them
 to without an explicit per-device decision, not made yet).
+
+> **Second consumer of the `224` threshold — retune both together.** The Android companion's Touch
+> Gamepad reaches this branch as a generic bridge source, so for the on-screen GameCube `L`/`R` the
+> published byte is the *only* thing that says whether the trigger clicked: the `L2`/`R2` button
+> bits this block clears never arrive. Its analog-trigger gesture therefore caps every sub-detent
+> value at exactly `224` and publishes `255` only when its own detent engages, so its local
+> hysteresis band is real end to end rather than a Boolean the wire ignores. That constant lives in
+> `TouchTriggerConfig.SUB_DETENT_BYTE` (`:bridge-core`) and mirrors this one deliberately. **If the
+> threshold here is retuned, change that too**, or the touch trigger will either assert the click
+> early or become unable to reach it. Both are pinned by
+> `TouchAnalogTriggerGeometryTest.sub-detent travel can never reach the byte the firmware calls
+> clicked`.
 
 ### 8BitDo NGC Modkit specifically
 

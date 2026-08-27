@@ -11,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateRotation
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.exclude
@@ -54,18 +55,18 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import dev.picoswitch.bridge.core.ControllerFaceLayout
 import dev.picoswitch.bridge.session.BridgeLinkPhase
 import dev.picoswitch.bridge.touch.ResolvedTouchControl
 import dev.picoswitch.bridge.touch.ResolvedTouchLayout
 import dev.picoswitch.bridge.touch.TouchAlignmentSettings
 import dev.picoswitch.bridge.touch.TouchEditorAlignment
 import dev.picoswitch.bridge.touch.TouchEditorDelta
+import dev.picoswitch.bridge.touch.TouchEditorHistory
 import dev.picoswitch.bridge.touch.TouchLayoutAudit
 import dev.picoswitch.bridge.touch.TouchLayoutAuditMode
 import dev.picoswitch.bridge.touch.TouchLayoutComposer
+import dev.picoswitch.bridge.touch.TouchLayoutDocument
 import dev.picoswitch.bridge.touch.TouchLayoutEditor
-import dev.picoswitch.bridge.touch.TouchLayoutOverride
 import dev.picoswitch.bridge.touch.TouchLayoutRegion
 import dev.picoswitch.bridge.touch.TouchLayoutResolver
 import dev.picoswitch.bridge.touch.TouchControllerProfile
@@ -75,9 +76,13 @@ import dev.picoswitch.bridge.touch.TouchProfileId
 import dev.picoswitch.bridge.touch.TouchProfileLibrary
 import dev.picoswitch.bridge.touch.TouchProfileLibraryEditor
 import dev.picoswitch.bridge.touch.TouchReleaseReason
+import dev.picoswitch.bridge.touch.TouchToolbarEdge
+import dev.picoswitch.bridge.touch.TouchToolbarPlacement
 import dev.picoswitch.companion.bridge.AndroidTouchFeedback
-import dev.picoswitch.companion.data.TouchEditorDock
+import dev.picoswitch.companion.bridge.TouchProfileSelector
 import dev.picoswitch.companion.data.TouchGamepadSettings
+import dev.picoswitch.companion.model.title
+import dev.picoswitch.management.Personality
 import dev.picoswitch.companion.ui.CompanionUiState
 import dev.picoswitch.companion.ui.CompanionViewModel
 import dev.picoswitch.bridge.touch.TouchFeedbackBackend
@@ -131,16 +136,27 @@ fun TouchGamepadScreen(
 
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     var editing by rememberSaveable { mutableStateOf(false) }
+    /**
+     * Editing, but with gameplay routing temporarily switched back on.
+     *
+     * A mode of its own rather than "editing = false", because everything the
+     * editor is holding — the draft, the selection, the undo history — has to
+     * survive the round trip. That short edit/play/edit loop is the difference
+     * between tuning a layout and guessing at one.
+     */
+    var previewing by remember { mutableStateOf(false) }
     var area by remember { mutableStateOf(IntSize.Zero) }
     val profileId = ui.touchProfileId
     val profile = profileId?.let(TouchProfileCatalog::require)
     val library = ui.touchProfiles
 
-    // Ordered so the LAST control added is the primary one: the contextual bar
-    // names it, and alignment guides are computed from it.
+    // Ordered so the LAST control added is the primary one: the inspector names
+    // it, and alignment guides are computed from it.
     var selection by remember(profileId) { mutableStateOf<Set<String>>(emptySet()) }
     var primaryId by remember(profileId) { mutableStateOf<String?>(null) }
     var editGroup by rememberSaveable(profileId) { mutableStateOf(true) }
+    /** Explicit multi-select, so long-press stays free for the toolbar handle. */
+    var multiSelect by rememberSaveable(profileId) { mutableStateOf(false) }
     /**
      * The authored layout the draft started from.
      *
@@ -149,25 +165,102 @@ fun TouchGamepadScreen(
      * editor" are different questions and the answer to the first must not
      * change just because the second happened.
      */
-    val authored = profile?.let { ui.touchLayoutOverride ?: TouchLayoutEditor.empty(it) }
+    val authored = profile?.let { ui.touchLayoutDocument ?: TouchLayoutEditor.authoredDefault(it) }
     var baseline by remember(profileId) { mutableStateOf(authored) }
-    var draftOverride by remember(profileId) { mutableStateOf(authored) }
+    /**
+     * Undo/redo for this editor session.
+     *
+     * A stack of whole documents rather than of invertible commands: every
+     * editor operation is already a pure function from one document to the next,
+     * so a revision stack cannot desynchronize from what it is undoing and needs
+     * no inverse written for each new operation. Coalescing a drag into one
+     * entry is then a question of WHEN a revision is pushed, which the gesture
+     * boundaries already answer.
+     *
+     * Seeded with an empty document when no personality is confirmed yet. That
+     * value is never edited — the editor block below runs only once a real
+     * document exists, and the effect that adopts one resets the history — it
+     * exists so the type has no nullable state to reason about.
+     */
+    val history = remember(profileId) {
+        TouchEditorHistory(authored ?: EMPTY_LAYOUT_DOCUMENT)
+    }
+    var draft by remember(profileId) { mutableStateOf(authored) }
+    /**
+     * Whether undo and redo have anything to do.
+     *
+     * Mirrored into composition state rather than read off [history] directly:
+     * the history is a mutable object with a stable identity, so nothing about
+     * pushing a revision would tell Compose to redraw the two buttons that
+     * report it. Every path that touches the history goes through
+     * [syncHistoryState], so the mirror cannot drift.
+     */
+    var canUndo by remember(profileId) { mutableStateOf(false) }
+    var canRedo by remember(profileId) { mutableStateOf(false) }
     var profilesOpen by remember { mutableStateOf(false) }
     var addControlOpen by remember { mutableStateOf(false) }
+    var inspectorOpen by remember { mutableStateOf(false) }
     var nameRequest by remember { mutableStateOf<TouchProfileNameRequest?>(null) }
     var pendingConfirm by remember { mutableStateOf<TouchEditorConfirm?>(null) }
+    var deletedNotice by remember { mutableStateOf<TouchDeleteNotice?>(null) }
     /** True while a finger is actually moving or resizing something. */
     var manipulating by remember { mutableStateOf(false) }
-    val dirty = editing && draftOverride != baseline
+    /**
+     * The document as it was when the live gesture began.
+     *
+     * A continuous drag, pinch or rotation is ONE undo entry, so the working
+     * document is mutated freely while a finger is down and a single revision is
+     * pushed when it lifts. Pushing per pointer frame would fill the history
+     * with sixty indistinguishable steps and make undo useless exactly when it
+     * is most wanted.
+     *
+     * Declared beside [manipulating] because the effect that cleans up an
+     * interrupted gesture has to clear both, and that effect runs long before
+     * the gesture handlers are built.
+     */
+    var gestureStart by remember { mutableStateOf<TouchLayoutDocument?>(null) }
+    var gestureLabel by remember { mutableStateOf("Move") }
+    /** True while a rotation is currently held on a snap target; buzz on acquisition only. */
+    var rotationSnapped by remember { mutableStateOf(false) }
+    /**
+     * The angle the live gesture has described, before snapping.
+     *
+     * The gesture's own memory, kept here because the DOCUMENT cannot hold it:
+     * a snapped rotation is deliberately not what the fingers asked for, so the
+     * stored angle is the wrong thing to add the next frame's delta to. Seeded
+     * from the reference control when a rotation starts and cleared with the
+     * rest of the gesture state; see [TouchLayoutEditor.snappedRotationDelta].
+     */
+    var rotationIntent by remember { mutableStateOf<Float?>(null) }
+    val dirty = editing && draft != baseline
 
+    fun syncHistoryState() {
+        canUndo = history.canUndo
+        canRedo = history.canRedo
+    }
+
+    /** Adopt a new revision and keep the undo affordances in step with it. */
+    fun commit(next: TouchLayoutDocument, label: String) {
+        if (next == history.current) return
+        history.push(next, label)
+        draft = next
+        syncHistoryState()
+    }
+
+    /** Replace the working document outright; the history it had no longer applies. */
     fun resetDraft() {
-        draftOverride = baseline
+        val document = baseline
+        draft = document
+        if (document != null) history.reset(document)
+        syncHistoryState()
         selection = emptySet()
         primaryId = null
+        deletedNotice = null
     }
 
     LaunchedEffect(profileId) {
         editing = false
+        previewing = false
         resetDraft()
     }
     // A profile switch, a save or an import replaces the authored layout. Adopt
@@ -175,8 +268,10 @@ fun TouchGamepadScreen(
     // left alone until the user has answered for it, because silently replacing
     // an edit in progress is how an editor loses somebody's work.
     LaunchedEffect(authored) {
-        if (!editing || draftOverride == baseline) {
-            draftOverride = authored
+        if (!editing || draft == baseline) {
+            draft = authored
+            authored?.let(history::reset)
+            syncHistoryState()
             selection = emptySet()
             primaryId = null
         }
@@ -217,6 +312,12 @@ fun TouchGamepadScreen(
             // holding would say the hold had been lost.
             latched = snapshot.latchedControls,
             arming = snapshot.armedControls,
+            // The published LEVEL, so a partially pulled trigger is drawn at the
+            // depth the console is actually being told, detent cap included.
+            analogTriggers = snapshot.analogTriggers,
+            // And which way that level grows, decided by the engine off the axis
+            // it froze for the gesture in progress.
+            analogTriggerFills = snapshot.analogTriggerFills,
         )
         if (next != visual.value) visual.value = next
     }
@@ -263,16 +364,30 @@ fun TouchGamepadScreen(
     val right = insets.getRight(density, layoutDirection)
     val bottom = insets.getBottom(density)
 
-    val composition = remember(profile, ui.touchLayoutOverride, draftOverride, editing) {
+    /**
+     * The three modes the surface can be in, and what each one owns.
+     *
+     * ```text
+     * Gameplay    touches produce controller input from the SAVED layout
+     * Edit        touches manipulate scene objects; no controller output at all
+     * Preview     touches produce controller input from the WORKING draft
+     * ```
+     *
+     * Kept as two derived booleans rather than one flag because the questions
+     * differ: "is the draft the thing on screen" is true in Edit and Preview,
+     * while "may a touch reach the console" is true in Gameplay and Preview.
+     * Conflating them is precisely how an edit drag becomes an A press.
+     */
+    val showingDraft = editing
+    val playable = !editing || previewing
+
+    val composition = remember(profile, ui.touchLayoutDocument, draft, showingDraft) {
         profile?.let {
-            TouchLayoutComposer.compose(
-                it,
-                if (editing) draftOverride else ui.touchLayoutOverride,
-            )
+            TouchLayoutComposer.compose(it, if (showingDraft) draft else ui.touchLayoutDocument)
         }
     }
     val attemptedResolved = remember(
-        area, left, top, right, bottom, density.density, composition, editing,
+        area, left, top, right, bottom, density.density, composition, showingDraft,
     ) {
         if (area.width == 0 || area.height == 0 || composition == null) {
             ResolvedTouchLayout.Empty
@@ -286,7 +401,7 @@ fun TouchGamepadScreen(
                     bottom = (area.height - bottom).toFloat(),
                     unitScale = density.density,
                 ),
-                if (editing) TouchLayoutAuditMode.UserDraft else TouchLayoutAuditMode.Runtime,
+                if (showingDraft) TouchLayoutAuditMode.UserDraft else TouchLayoutAuditMode.Runtime,
             )
         }
     }
@@ -309,7 +424,8 @@ fun TouchGamepadScreen(
             )
         }
     }
-    val runtimeFallback = !editing && ui.touchLayoutOverride != null && !attemptedResolved.fits && defaultResolved.fits
+    val runtimeFallback = !showingDraft && ui.touchLayoutDocument != null &&
+        !attemptedResolved.fits && defaultResolved.fits
     val resolved = if (runtimeFallback) defaultResolved else attemptedResolved
     val layoutWarning = ui.touchLayoutWarning ?: composition?.warning ?: if (runtimeFallback) {
         "Your saved layout was unsafe here, so the immutable default is active: ${attemptedResolved.problem}"
@@ -318,8 +434,11 @@ fun TouchGamepadScreen(
     // Geometry changed: every retained contact position was measured against the
     // previous rectangle and means nothing now.
     var installedProfileId by remember { mutableStateOf<TouchProfileId?>(null) }
-    LaunchedEffect(resolved, profileId, editing) {
-        if (!editing) {
+    LaunchedEffect(resolved, profileId, playable) {
+        // Installing the layout ALSO releases every held contact, which is what
+        // makes each mode transition safe in both directions: leaving preview
+        // cannot leave a button down, and entering it starts from neutral.
+        if (playable) {
             val reason = if (installedProfileId != null && installedProfileId != profileId) {
                 TouchReleaseReason.PersonalityChanged
             } else {
@@ -327,29 +446,47 @@ fun TouchGamepadScreen(
             }
             gamepad.setLayout(resolved, reason)
             installedProfileId = profileId
+        } else {
+            gamepad.release(TouchReleaseReason.EditorEntered)
         }
         visual.value = TouchVisualState(
-            enabled = !editing && profile != null && ui.bridge.phase == BridgeLinkPhase.Playing,
+            enabled = playable && profile != null && ui.bridge.phase == BridgeLinkPhase.Playing,
         )
     }
 
-    // The chrome fades while something is being manipulated and is restored when
-    // the gesture ends. A gesture can also end by having its pointer input torn
-    // down -- the window resized, the mode left -- and a permanently faded
-    // toolbar is unusable, so both boundaries clear the flag as well.
-    LaunchedEffect(editing, resolved.region) { manipulating = false }
+    // Every way an editor gesture can end WITHOUT its own end callback: the
+    // window resized, the mode changed, preview opened. A gesture torn down mid
+    // flight would otherwise leave the chrome permanently faded and, worse,
+    // leave `gestureStart` holding a document from before the interruption --
+    // so the NEXT drag would coalesce into one undo step reaching back across
+    // it. Clearing all three here is what makes a torn-down gesture equivalent
+    // to a cancelled one.
+    LaunchedEffect(editing, previewing, resolved.region) {
+        manipulating = false
+        gestureStart = null
+        rotationSnapped = false
+        rotationIntent = null
+    }
 
     // Platform gesture timing, not invented constants: the same numbers every
     // other double tap on this device uses, including whatever the user's
     // accessibility settings have done to them. Set here rather than in the view
     // model because this is the layer that has a view configuration at all.
-    LaunchedEffect(viewConfiguration) {
+    LaunchedEffect(viewConfiguration, density) {
         gamepad.setConfig(
             gamepad.config.copy(
                 latch = gamepad.config.latch.copy(
                     doubleTapWindowNanos = viewConfiguration.doubleTapTimeoutMillis * NANOS_PER_MILLI,
                     minTapGapNanos = viewConfiguration.doubleTapMinTimeMillis * NANOS_PER_MILLI,
                     maxTapDurationNanos = viewConfiguration.longPressTimeoutMillis * NANOS_PER_MILLI,
+                ),
+                // The device's own drag slop, for the same reason as the timings
+                // above: starting a trigger pull should take exactly as much
+                // movement as starting any other drag on this device. Reported in
+                // pixels, stored in logical units, because the portable layer's
+                // distances are physical ones.
+                trigger = gamepad.config.trigger.copy(
+                    dragSlopUnits = viewConfiguration.touchSlop / density.density,
                 ),
             ),
         )
@@ -381,6 +518,11 @@ fun TouchGamepadScreen(
     )
 
     BackHandler(enabled = true) {
+        if (previewing) {
+            // Back out of a test run into the editor, not out of the editor.
+            previewing = false
+            return@BackHandler
+        }
         if (editing) {
             if (dirty) pendingConfirm = TouchEditorConfirm.Exit else editing = false
             return@BackHandler
@@ -393,18 +535,18 @@ fun TouchGamepadScreen(
 
     // Group expansion is applied ONCE, here, so what is highlighted, what the
     // guides are computed from, and what an edit actually moves are the same set.
-    val effectiveTargets = remember(profile, selection, editGroup) {
-        profile?.let { TouchLayoutEditor.targetIds(it.defaultTemplate, selection, editGroup) }
-            .orEmpty()
+    val editingCanvas = editing && !previewing
+    val effectiveTargets = remember(draft, selection, editGroup) {
+        draft?.let { TouchLayoutEditor.expand(it, selection, editGroup) }.orEmpty()
     }
     val alignment = remember(settings.editorGrid, settings.editorSnap) {
         TouchAlignmentSettings(grid = settings.editorGrid, snap = settings.editorSnap)
     }
-    val gridLines = remember(resolved.region, alignment, editing) {
-        if (editing) TouchEditorAlignment.gridLines(resolved.region, alignment) else emptyList()
+    val gridLines = remember(resolved.region, alignment, editingCanvas) {
+        if (editingCanvas) TouchEditorAlignment.gridLines(resolved.region, alignment) else emptyList()
     }
-    val guides = remember(resolved, effectiveTargets, primaryId, alignment, editing) {
-        if (editing) {
+    val guides = remember(resolved, effectiveTargets, primaryId, alignment, editingCanvas) {
+        if (editingCanvas) {
             TouchEditorAlignment.matchedGuides(resolved, effectiveTargets, primaryId, alignment)
         } else {
             emptyList()
@@ -429,8 +571,16 @@ fun TouchGamepadScreen(
     val gestures = rememberUpdatedState(
         TouchEditorGestures(
             onTap = { id ->
-                selection = if (id == null) emptySet() else setOf(id)
-                primaryId = id
+                selection = when {
+                    id == null -> emptySet()
+                    // Explicit multi-select: tapping toggles membership rather
+                    // than replacing the selection, so long-press stays free for
+                    // the toolbar handle and nothing is hidden behind a gesture.
+                    multiSelect && id in selection -> selection - id
+                    multiSelect -> selection + id
+                    else -> setOf(id)
+                }
+                primaryId = if (id != null && id in selection) id else selection.lastOrNull()
             },
             onLongPress = { id ->
                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -446,12 +596,34 @@ fun TouchGamepadScreen(
                 if (id !in selection) selection = setOf(id)
                 primaryId = id
                 manipulating = true
+                if (gestureStart == null) gestureStart = draft
             },
-            onGestureEnd = { manipulating = false },
+            onGestureEnd = {
+                manipulating = false
+                rotationSnapped = false
+                // The next gesture reseeds from whatever it is then pointed at.
+                rotationIntent = null
+                val before = gestureStart
+                gestureStart = null
+                val after = draft
+                // One revision for the whole gesture.
+                //
+                // A drag mutates `draft` directly and never touches the history,
+                // so `history.current` is still the document the gesture started
+                // from: pushing the endpoint here is all that is needed, and
+                // `commit` drops it if the gesture ended where it began. It must
+                // NOT reset the history first — reset clears the undo stack, so
+                // doing that here destroyed every earlier step the moment the
+                // user dragged anything.
+                if (before != null && after != null && after != before) {
+                    commit(after, gestureLabel)
+                }
+            },
             onMove = { layout, deltaX, deltaY ->
-                val current = draftOverride
+                val current = draft
                 val active = primaryId
-                if (profile != null && current != null && active != null) {
+                if (current != null && active != null) {
+                    gestureLabel = "Move"
                     val adjusted = TouchEditorAlignment.snap(
                         layout = layout,
                         selection = effectiveTargets,
@@ -459,22 +631,58 @@ fun TouchGamepadScreen(
                         delta = TouchEditorDelta(deltaX, deltaY),
                         settings = alignment,
                     )
-                    draftOverride = TouchLayoutEditor.move(
-                        profile,
+                    draft = TouchLayoutEditor.move(
                         current,
+                        layout,
                         selection,
-                        adjusted.x / layout.region.width.coerceAtLeast(1f),
-                        adjusted.y / layout.region.height.coerceAtLeast(1f),
+                        adjusted.x,
+                        adjusted.y,
                         editGroup,
                     )
                 }
             },
-            onZoom = { factor ->
+            onTransform = { factor, degrees ->
                 manipulating = true
-                val current = draftOverride
-                if (profile != null && current != null && selection.isNotEmpty()) {
-                    draftOverride =
-                        TouchLayoutEditor.scaleBy(profile, current, selection, factor, editGroup)
+                if (gestureStart == null) gestureStart = draft
+                val current = draft
+                if (current != null && selection.isNotEmpty()) {
+                    gestureLabel = if (degrees != 0f) "Rotate" else "Resize"
+                    var next = current
+                    if (factor != 1f) {
+                        next = TouchLayoutEditor.scaleBy(
+                            next, layoutState.value, selection, factor, editGroup,
+                        )
+                    }
+                    if (degrees != 0f) {
+                        // Magnetic, not discrete: every angle in between is kept
+                        // and only the useful ones pull. Computed from the one
+                        // reference control and applied to the whole selection,
+                        // or a cluster's members would all snap onto the same
+                        // angle and stop being a composition.
+                        //
+                        // The raw angle accumulates HERE rather than being
+                        // re-derived from the snapped result, which is what lets
+                        // a control leave the detent it started in.
+                        val intent = (
+                            rotationIntent
+                                ?: primaryId?.let { next.instance(it) }?.rotationDegrees
+                                ?: 0f
+                            ) + degrees
+                        rotationIntent = intent
+                        val applied = TouchLayoutEditor.snappedRotationDelta(
+                            next, primaryId, degrees, intent,
+                        )
+                        if (applied != degrees && !rotationSnapped) {
+                            rotationSnapped = true
+                            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        } else if (applied == degrees) {
+                            rotationSnapped = false
+                        }
+                        next = TouchLayoutEditor.rotateBy(
+                            next, layoutState.value, selection, applied, editGroup,
+                        )
+                    }
+                    draft = next
                 }
             },
         ),
@@ -502,7 +710,7 @@ fun TouchGamepadScreen(
             )
         }
 
-        val unusable = profile == null || !resolved.fits && (!editing || resolved.regionTooSmall)
+        val unusable = profile == null || !resolved.fits && (!editingCanvas || resolved.regionTooSmall)
         if (profile == null) {
             UnusableWindowNotice(layoutWarning, onExit = viewModel::exitTouchGamepad)
         } else if (unusable) {
@@ -518,7 +726,7 @@ fun TouchGamepadScreen(
                     .then(
                         if (menuOpen) {
                             Modifier
-                        } else if (editing) {
+                        } else if (editingCanvas) {
                             Modifier.editTouchLayout(
                                 key = profileId,
                                 region = resolved.region,
@@ -548,7 +756,7 @@ fun TouchGamepadScreen(
                     textMeasurer = textMeasurer,
                     labelStyle = labelStyle,
                 )
-                if (editing) {
+                if (editingCanvas) {
                     drawTouchEditorOverlay(
                         layout = resolved,
                         targets = effectiveTargets,
@@ -580,17 +788,19 @@ fun TouchGamepadScreen(
         if (menuOpen) {
             TouchGamepadMenu(
                 settings = settings,
-                faceLayout = ui.touchFaceLayout,
+                personality = ui.snapshot.personality.current,
+                busy = ui.busy,
                 profileId = profileId,
                 profileName = profile?.displayName,
                 library = library,
                 layoutWarning = layoutWarning,
                 onSettings = viewModel::setTouchSettings,
-                onFaceLayout = viewModel::setTouchFaceLayout,
+                onPersonality = { menuOpen = false; viewModel.switchTouchPersonality(it) },
                 onEditLayout = {
                     profile?.let {
                         resetDraft()
                         editing = true
+                        previewing = false
                         menuOpen = false
                         viewModel.beginTouchLayoutEdit()
                     }
@@ -604,14 +814,15 @@ fun TouchGamepadScreen(
             )
         }
 
-        if (editing && profile != null && draftOverride != null && library != null &&
+        if (editing && profile != null && draft != null && library != null &&
             !resolved.regionTooSmall
         ) {
-            val draft = requireNotNull(draftOverride)
+            val working = requireNotNull(draft)
             val activeProfile = library.selected
+            val landscape = resolved.region.width >= resolved.region.height
 
             /** Commit the draft; the library decides whether that needs a new profile. */
-            fun commit(targetId: String, newName: String) {
+            fun persist(targetId: String, newName: String) {
                 val findings = TouchLayoutAudit.audit(
                     requireNotNull(composition).layout,
                     attemptedResolved.controls,
@@ -620,112 +831,290 @@ fun TouchGamepadScreen(
                     TouchLayoutAuditMode.UserDraft,
                 )
                 if (findings.none { it.blocking } && attemptedResolved.fits) {
-                    viewModel.saveTouchLayoutOverride(draft, targetId, newName)
+                    viewModel.saveTouchLayout(working, targetId, newName)
                     editing = false
+                    previewing = false
                 }
             }
 
             fun requestSave() {
-                if (activeProfile.isFactory && draft.controls.isNotEmpty()) {
+                if (activeProfile.isFactory && working != TouchLayoutEditor.authoredDefault(profile)) {
                     // The shipped layout is never written. Name the copy instead
                     // of failing, so the edit that has just been made survives.
                     nameRequest = TouchProfileNameRequest.SaveAsNew(
                         TouchProfileLibraryEditor.DEFAULT_NEW_PROFILE_NAME,
                     )
                 } else {
-                    commit(activeProfile.id, TouchProfileLibraryEditor.DEFAULT_NEW_PROFILE_NAME)
+                    persist(activeProfile.id, TouchProfileLibraryEditor.DEFAULT_NEW_PROFILE_NAME)
                 }
             }
 
-            TouchEditorChrome(
-                profile = profile,
-                draft = draft,
-                selection = selection,
-                effectiveTargets = effectiveTargets,
-                primaryId = primaryId,
-                dock = settings.editorToolbarDock,
-                editGroup = editGroup,
-                grid = settings.editorGrid,
-                snap = settings.editorSnap,
-                profileName = activeProfile.name,
-                canSave = attemptedResolved.fits,
-                blockingProblem = attemptedResolved.problem.takeIf { !attemptedResolved.fits },
-                dirty = dirty,
-                manipulating = manipulating,
-                actions = object : TouchEditorActions {
-                    override fun setEditGroup(value: Boolean) { editGroup = value }
+            /** Apply one immediate (non-gesture) operation as its own undo step. */
+            fun apply(label: String, transform: (TouchLayoutDocument) -> TouchLayoutDocument) {
+                commit(transform(requireNotNull(draft)), label)
+            }
 
-                    override fun setGrid(value: Boolean) {
-                        viewModel.setTouchSettings(settings.copy(editorGrid = value))
+            val editorActions = object : TouchEditorActions {
+                override fun setEditGroup(value: Boolean) { editGroup = value }
+
+                override fun setMultiSelect(value: Boolean) {
+                    multiSelect = value
+                    // Leaving multi-select keeps only the control the user last
+                    // touched, so the inspector never names a set that is no
+                    // longer being edited as a set.
+                    if (!value) {
+                        primaryId?.let { selection = setOf(it) } ?: run { selection = emptySet() }
                     }
+                }
 
-                    override fun setSnap(value: Boolean) {
-                        viewModel.setTouchSettings(settings.copy(editorSnap = value))
+                override fun setGrid(value: Boolean) {
+                    viewModel.setTouchSettings(settings.copy(editorGrid = value))
+                }
+
+                override fun setSnap(value: Boolean) {
+                    viewModel.setTouchSettings(settings.copy(editorSnap = value))
+                }
+
+                override fun setToolbar(placement: TouchToolbarPlacement) {
+                    viewModel.setTouchSettings(settings.withEditorToolbar(landscape, placement))
+                }
+
+                override fun nudgeScale(factor: Float) {
+                    if (selection.isEmpty()) return
+                    apply("Resize") {
+                        TouchLayoutEditor.scaleBy(it, resolved, selection, factor, editGroup)
                     }
+                }
 
-                    override fun setDock(dock: TouchEditorDock) {
-                        viewModel.setTouchSettings(settings.copy(editorToolbarDock = dock))
+                override fun nudgeRotation(degrees: Float) {
+                    if (selection.isEmpty()) return
+                    apply("Rotate") {
+                        TouchLayoutEditor.rotateBy(it, resolved, selection, degrees, editGroup)
                     }
+                }
 
-                    override fun nudgeScale(factor: Float) {
-                        if (selection.isEmpty()) return
-                        draftOverride = TouchLayoutEditor.scaleBy(
-                            profile, draft, selection, factor, editGroup,
-                        )
+                override fun resetRotation() {
+                    if (selection.isEmpty()) return
+                    apply("Reset orientation") {
+                        TouchLayoutEditor.resetRotation(it, selection, editGroup)
                     }
+                }
 
-                    override fun setVisible(visible: Boolean) {
-                        if (selection.isEmpty()) return
-                        draftOverride = TouchLayoutEditor.setVisible(
-                            profile, draft, selection, visible, editGroup,
-                        )
-                        // A hidden control has no geometry to select or drag.
-                        if (!visible) { selection = emptySet(); primaryId = null }
+                override fun duplicate() {
+                    if (selection.isEmpty()) return
+                    val result = TouchLayoutEditor.duplicate(working, selection, editGroup)
+                    if (!result.changed) return
+                    commit(result.document, "Duplicate")
+                    selection = result.created.toSet()
+                    primaryId = result.created.lastOrNull()
+                }
+
+                override fun delete() {
+                    if (selection.isEmpty()) return
+                    // The EFFECTIVE targets, not the tapped ids. With whole-group
+                    // editing on, one tap deletes a whole cluster, and counting
+                    // the taps had a destructive action under-report itself:
+                    // four face buttons vanished and the notice said "A deleted".
+                    val removed = TouchLayoutEditor.expand(working, selection, editGroup)
+                    val result = TouchLayoutEditor.delete(working, selection, editGroup)
+                    if (!result.changed) return
+                    // The document BEFORE the delete is what Undo restores, and
+                    // it restores every field -- transform, rotation, group, z
+                    // order, latch -- because a revision is the whole scene.
+                    deletedNotice = TouchDeleteNotice(
+                        message = if (removed.size == 1) {
+                            val id = removed.single()
+                            val name = working.instance(id)
+                                ?.let { profile.catalogEntry(it.catalogId) }
+                                ?.let { controlTitle(profile, it, id) }
+                            if (name != null) "$name deleted" else "Control deleted"
+                        } else {
+                            "${removed.size} controls deleted"
+                        },
+                        restore = working,
+                    )
+                    commit(result.document, "Delete")
+                    selection = emptySet()
+                    primaryId = null
+                }
+
+                override fun group() {
+                    val result = TouchLayoutEditor.group(working, selection)
+                    if (result.changed) commit(result.document, "Group")
+                }
+
+                override fun ungroup() {
+                    val result = TouchLayoutEditor.ungroup(working, effectiveTargets)
+                    if (result.changed) commit(result.document, "Ungroup")
+                }
+
+                override fun bringForward() {
+                    if (selection.isEmpty()) return
+                    apply("Bring forward") {
+                        TouchLayoutEditor.bringForward(it, selection, editGroup)
                     }
+                }
 
-                    override fun setLatch(latch: Boolean?) {
-                        if (selection.isEmpty()) return
-                        draftOverride = TouchLayoutEditor.setLatch(
-                            profile, draft, selection, latch, editGroup,
-                        )
+                override fun sendBackward() {
+                    if (selection.isEmpty()) return
+                    apply("Send backward") {
+                        TouchLayoutEditor.sendBackward(it, selection, editGroup)
                     }
+                }
 
-                    override fun resetSelection() {
-                        if (selection.isEmpty()) return
-                        draftOverride = TouchLayoutEditor.reset(profile, draft, selection, editGroup)
+                /**
+                 * Step to a neighbouring revision, and drop anything selected
+                 * that no longer exists there.
+                 *
+                 * Undoing an Add would otherwise leave the inspector acting on
+                 * an instance that is not in the layout — every operation would
+                 * silently do nothing, which looks exactly like a frozen editor.
+                 */
+                private fun step(next: TouchLayoutDocument?) {
+                    val document = next ?: return
+                    draft = document
+                    syncHistoryState()
+                    selection = selection.filterTo(mutableSetOf()) {
+                        document.instance(it) != null
                     }
+                    primaryId = primaryId?.takeIf { document.instance(it) != null }
+                    deletedNotice = null
+                }
 
-                    override fun resetProfile() {
-                        draftOverride = TouchLayoutEditor.resetAll(profile)
-                        selection = emptySet()
-                        primaryId = null
+                override fun undo() = step(history.undo())
+
+                override fun redo() = step(history.redo())
+
+                override fun setLatch(latch: Boolean?) {
+                    if (selection.isEmpty()) return
+                    apply("Hold setting") {
+                        TouchLayoutEditor.setLatch(it, profile, selection, latch, editGroup)
                     }
+                }
 
-                    override fun openProfiles() { profilesOpen = true }
-
-                    override fun openAddControl() { addControlOpen = true }
-
-                    override fun save() = requestSave()
-
-                    override fun exit() {
-                        if (dirty) pendingConfirm = TouchEditorConfirm.Exit else editing = false
+                override fun resetSelection() {
+                    if (selection.isEmpty()) return
+                    apply("Reset control") {
+                        TouchLayoutEditor.reset(it, profile, selection, editGroup)
                     }
-                },
-            )
+                }
+
+                override fun resetProfile() {
+                    commit(TouchLayoutEditor.resetAll(profile), "Reset layout")
+                    selection = emptySet()
+                    primaryId = null
+                }
+
+                override fun openProfiles() { profilesOpen = true }
+
+                override fun openAddControl() { addControlOpen = true }
+
+                override fun openInspector() { inspectorOpen = primaryId != null }
+
+                override fun preview() {
+                    // Editor-owned contacts end with the gesture surface; the
+                    // layout install on the way in neutralizes anything else.
+                    selection = emptySet()
+                    primaryId = null
+                    manipulating = false
+                    previewing = true
+                }
+
+                override fun save() = requestSave()
+
+                override fun exit() {
+                    if (dirty) pendingConfirm = TouchEditorConfirm.Exit else editing = false
+                }
+            }
+
+            if (!previewing) {
+                TouchEditorChrome(
+                    state = TouchEditorUiState(
+                        profile = profile,
+                        document = working,
+                        selection = selection,
+                        effectiveTargets = effectiveTargets,
+                        primaryId = primaryId,
+                        placement = settings.editorToolbar(landscape),
+                        editGroup = editGroup,
+                        multiSelect = multiSelect,
+                        grid = settings.editorGrid,
+                        snap = settings.editorSnap,
+                        profileName = activeProfile.name,
+                        canSave = attemptedResolved.fits,
+                        canUndo = canUndo,
+                        canRedo = canRedo,
+                        // Read off the SAME resolved layout the canvas paints
+                        // red and the audit refuses, so the three cannot
+                        // disagree about whether this control fits.
+                        selectionProblem = primaryId?.let(attemptedResolved::problemFor),
+                        dirty = dirty,
+                        manipulating = manipulating,
+                    ),
+                    region = resolved.region,
+                    actions = editorActions,
+                )
+
+                deletedNotice?.let { notice ->
+                    TouchUndoSnackbar(
+                        message = notice.message,
+                        // Both are bottom-anchored, so a bottom-docked toolbar
+                        // and this notice land on top of each other -- and the
+                        // buttons it covers are Delete, Undo and Redo, which is
+                        // exactly what a user deleting several controls in a row
+                        // reaches for next.
+                        clearBottomToolbar = settings.editorToolbar(landscape) ==
+                            TouchToolbarPlacement.Docked(TouchToolbarEdge.Bottom),
+                        onUndo = {
+                            commit(notice.restore, "Undo delete")
+                            deletedNotice = null
+                        },
+                        onDismiss = { deletedNotice = null },
+                    )
+                }
+            } else {
+                TouchPreviewBanner(onDone = { previewing = false })
+            }
 
             if (addControlOpen) {
                 TouchAddControlDialog(
                     profile = profile,
-                    draft = draft,
-                    onRestore = { id ->
-                        draftOverride = TouchLayoutEditor.setVisible(
-                            profile, draft, setOf(id), true, editGroup = false,
+                    document = working,
+                    onAdd = { catalogId ->
+                        val result = TouchLayoutEditor.add(
+                            working,
+                            profile,
+                            catalogId,
+                            // The visible centre is the fallback placement, used
+                            // whenever the authored home is already occupied.
+                            0.5f,
+                            0.5f,
                         )
-                        selection = setOf(id)
-                        primaryId = id
+                        if (result.changed) {
+                            commit(result.document, "Add control")
+                            selection = result.created.toSet()
+                            primaryId = result.created.lastOrNull()
+                        }
                     },
                     onDismiss = { addControlOpen = false },
                 )
+            }
+
+            if (inspectorOpen) {
+                primaryId?.let { id ->
+                    TouchControlInspectorDialog(
+                        profile = profile,
+                        document = working,
+                        instanceId = id,
+                        onApply = { x, y, scale, rotation ->
+                            var next = TouchLayoutEditor.place(working, setOf(id), x, y)
+                            next = TouchLayoutEditor.setScale(next, setOf(id), scale, editGroup = false)
+                            next = TouchLayoutEditor.setRotation(next, setOf(id), rotation)
+                            commit(next, "Precise edit")
+                        },
+                        onDismiss = { inspectorOpen = false },
+                    )
+                }
             }
 
             nameRequest?.let { request ->
@@ -738,7 +1127,7 @@ fun TouchGamepadScreen(
                         confirmLabel = "Save",
                         onConfirm = { name ->
                             nameRequest = null
-                            commit(TouchProfileLibrary.FACTORY_PROFILE_ID, name)
+                            persist(TouchProfileLibrary.FACTORY_PROFILE_ID, name)
                         },
                         onDismiss = { nameRequest = null },
                     )
@@ -968,7 +1357,7 @@ private fun LinkStatusBanner(
     val working = phase == BridgeLinkPhase.Preparing || phase == BridgeLinkPhase.Registering ||
         phase == BridgeLinkPhase.Connecting || phase == BridgeLinkPhase.Ready
     Surface(
-        modifier = modifier.padding(8.dp),
+        modifier = modifier.padding(SPACE_M).widthIn(max = NOTICE_MAX_WIDTH),
         // A container colour rather than a translucent surface: over a black
         // background or a dark photograph, "surface at 86%" is indistinguishable
         // from nothing at all, and an unreadable status is worse than none.
@@ -976,32 +1365,34 @@ private fun LinkStatusBanner(
         else MaterialTheme.colorScheme.secondaryContainer,
         contentColor = if (failed) MaterialTheme.colorScheme.onErrorContainer
         else MaterialTheme.colorScheme.onSecondaryContainer,
-        shape = MaterialTheme.shapes.small,
-        tonalElevation = 3.dp,
+        shape = MaterialTheme.shapes.large,
+        tonalElevation = ELEVATION,
     ) {
         Row(
             Modifier
-                .padding(horizontal = 14.dp, vertical = 8.dp)
+                // A trailing button brings its own inset, so the end padding is
+                // smaller when there is one. Without it the strip would be
+                // visibly heavier on the right than on the left.
+                .padding(start = SPACE_XL, end = if (working) SPACE_XL else SPACE_S)
                 .semantics { liveRegion = LiveRegionMode.Polite },
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(SPACE_M),
         ) {
             when {
                 working -> CircularProgressIndicator(
-                    Modifier.size(14.dp),
+                    Modifier.size(NOTICE_ICON),
                     strokeWidth = 2.dp,
                     color = LocalContentColor.current,
                 )
-                failed -> Icon(Icons.Default.Warning, null, Modifier.size(16.dp))
-                else -> Icon(Icons.Default.LinkOff, null, Modifier.size(16.dp))
+                failed -> Icon(Icons.Default.Warning, null, Modifier.size(NOTICE_ICON))
+                else -> Icon(Icons.Default.LinkOff, null, Modifier.size(NOTICE_ICON))
             }
-            Spacer(Modifier.width(8.dp))
             Text(text, style = MaterialTheme.typography.labelLarge)
             // A link that is not going to fix itself must be actionable from
             // here. Leaving the only recovery outside the mode would mean the
             // answer to "it says it cannot connect" is "leave and come back".
             if (!working) {
-                Spacer(Modifier.width(8.dp))
-                TextButton(onClick = onRetry, modifier = Modifier.heightIn(min = 48.dp)) {
+                TextButton(onClick = onRetry, modifier = Modifier.heightIn(min = TOUCH_TARGET)) {
                     Text("Retry")
                 }
             }
@@ -1060,13 +1451,14 @@ private fun UnusableWindowNotice(problem: String?, onExit: () -> Unit) {
 @Composable
 private fun TouchGamepadMenu(
     settings: TouchGamepadSettings,
-    faceLayout: ControllerFaceLayout,
+    personality: Personality,
+    busy: Boolean,
     profileId: TouchProfileId?,
     profileName: String?,
     library: TouchProfileLibrary?,
     layoutWarning: String?,
     onSettings: (TouchGamepadSettings) -> Unit,
-    onFaceLayout: (ControllerFaceLayout) -> Unit,
+    onPersonality: (Personality) -> Unit,
     onEditLayout: () -> Unit,
     onProfiles: () -> Unit,
     onRestoreDefaults: () -> Unit,
@@ -1088,8 +1480,8 @@ private fun TouchGamepadMenu(
                 .windowInsetsPadding(WindowInsets.safeContent),
         ) {
             Column(
-                Modifier.padding(20.dp).verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                Modifier.padding(SPACE_XL).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(SPACE_L),
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -1097,21 +1489,54 @@ private fun TouchGamepadMenu(
                         Modifier.weight(1f),
                         style = MaterialTheme.typography.titleLarge,
                     )
-                    IconButton(onClick = onClose, modifier = Modifier.size(48.dp)) {
+                    IconButton(onClick = onClose, modifier = Modifier.size(TOUCH_TARGET)) {
                         Icon(Icons.Default.Close, "Close the Touch Gamepad menu")
                     }
                 }
 
-                profileName?.let {
-                    Text("Controller: $it", style = MaterialTheme.typography.titleSmall)
+                /**
+                 * The emulated controller itself, changed through the real
+                 * adapter lifecycle.
+                 *
+                 * This replaces the old Nintendo/Xbox face-layout toggle, which
+                 * asked which LETTERS to draw on one personality's diamond. That
+                 * question stopped being a product-level one once the surface
+                 * could present four genuine controllers: the letters follow the
+                 * controller, and asking for them separately made it possible to
+                 * label a Joy-Con with an Xbox diamond.
+                 *
+                 * The heading is the only text. Four named chips with one
+                 * selected do not need a sentence saying they choose a
+                 * controller; what they DO need is the re-enumeration warning
+                 * below, which is a consequence the chips cannot show.
+                 */
+                Text("Controller", style = MaterialTheme.typography.titleSmall)
+                // BOTH arrangements. A flow row spaces its wrapped LINES only if
+                // asked to, so with horizontal spacing alone the fourth chip
+                // sat flush against the first row and the list read as three
+                // controllers and an afterthought.
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(SPACE_M),
+                    verticalArrangement = Arrangement.spacedBy(SPACE_M),
+                ) {
+                    TouchProfileSelector.gameplayPersonalities.forEach { option ->
+                        FilterChip(
+                            selected = personality == option,
+                            onClick = { if (personality != option) onPersonality(option) },
+                            label = { Text(option.title) },
+                            enabled = !busy,
+                            modifier = Modifier.heightIn(min = TOUCH_TARGET),
+                        )
+                    }
                 }
-                library?.let {
-                    Text(
-                        "Layout profile: ${it.selected.name}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                // Kept: a personality switch re-enumerates USB and replaces the
+                // layout, which is a consequence the chips above cannot show and
+                // the user would otherwise meet as a surprise.
+                Text(
+                    "Switching re-enumerates USB and loads that controller's own layout.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 layoutWarning?.let {
                     Text(
                         it,
@@ -1120,43 +1545,25 @@ private fun TouchGamepadMenu(
                     )
                 }
 
-                if (profileId == TouchProfileId.Pro2) {
-                    Text("Face buttons", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        "Chooses the letters drawn on the diamond and what each position sends.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    // Auto is not offered: it exists to guess a PRINTED legend, and a
-                    // drawn control has none.
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf(ControllerFaceLayout.Nintendo, ControllerFaceLayout.Xbox).forEach { option ->
-                            FilterChip(
-                                selected = faceLayout == option,
-                                onClick = { onFaceLayout(option) },
-                                label = { Text(option.title) },
-                                modifier = Modifier.heightIn(min = 48.dp),
-                            )
-                        }
-                    }
+                library?.let {
+                    Text("Layout", style = MaterialTheme.typography.titleSmall)
                 }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(SPACE_M)) {
                     Button(
                         onClick = onEditLayout,
-                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
-                    ) { Text("Edit layout") }
+                        modifier = Modifier.weight(1f).heightIn(min = TOUCH_TARGET),
+                    ) { Text("Edit") }
                     OutlinedButton(
                         onClick = onProfiles,
-                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                        modifier = Modifier.weight(1f).heightIn(min = TOUCH_TARGET),
                         enabled = library != null,
-                    ) { Text("Profiles") }
+                    ) { Text(library?.selected?.name ?: "Profiles") }
                 }
                 OutlinedButton(
                     onClick = onRestoreDefaults,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = TOUCH_TARGET),
                     enabled = library?.selected?.isFactory == false,
-                ) { Text("Use the default layout") }
+                ) { Text("Use the default") }
 
                 SettingSlider(
                     label = "Control opacity",
@@ -1177,70 +1584,76 @@ private fun TouchGamepadMenu(
                     onValue = { onSettings(settings.copy(backgroundDim = it)) },
                 )
 
-                Row(
-                    Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    // The explanation is three lines long and would otherwise run
-                    // right up against the switch.
-                    Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                        // Named for the outcome, not the gesture: the gesture is
-                        // three parts now, and the padlock badge is the word the
-                        // rest of the surface already uses for it.
-                        Text("Lock a button held", style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            "Double-tap a supported button, keep the second press down until " +
-                                "it ticks, then slide your finger away to leave it held. Tap a " +
-                                "held button to press it again without letting go, or press and " +
-                                "hold it to let go.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Switch(
-                        checked = settings.doubleTapHold,
-                        onCheckedChange = { onSettings(settings.copy(doubleTapHold = it)) },
-                    )
-                }
+                // Kept, and it is the longest text on this surface for a reason:
+                // the gesture is three parts and cannot be guessed. Everything
+                // else here names itself.
+                SettingSwitch(
+                    // Named for the outcome, not the gesture: the padlock badge
+                    // is the word the rest of the surface already uses for it.
+                    title = "Lock a button held",
+                    detail = "Double-tap a button, hold the second press until it ticks, then " +
+                        "slide away. Tap a held button to re-press it; press and hold to let go.",
+                    checked = settings.doubleTapHold,
+                    onChange = { onSettings(settings.copy(doubleTapHold = it)) },
+                )
 
-                Row(
-                    Modifier.fillMaxWidth().heightIn(min = 48.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Touch feedback", style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            "A short local buzz when a control is pressed. Console rumble is separate.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Switch(
-                        checked = settings.hapticsEnabled,
-                        onCheckedChange = { onSettings(settings.copy(hapticsEnabled = it)) },
-                    )
-                }
+                SettingSwitch(
+                    title = "Touch feedback",
+                    detail = "Local buzz only; console rumble is separate.",
+                    checked = settings.hapticsEnabled,
+                    onChange = { onSettings(settings.copy(hapticsEnabled = it)) },
+                )
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(SPACE_M)) {
                     OutlinedButton(
                         onClick = onPickBackground,
-                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
-                    ) { Text("Background image") }
+                        modifier = Modifier.weight(1f).heightIn(min = TOUCH_TARGET),
+                    ) { Text("Background") }
                     if (settings.backgroundImage != null) {
                         OutlinedButton(
                             onClick = onClearBackground,
-                            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                            modifier = Modifier.weight(1f).heightIn(min = TOUCH_TARGET),
                         ) { Text("Remove") }
                     }
                 }
 
                 Button(
                     onClick = onExit,
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = TOUCH_TARGET),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                 ) { Text("Exit Touch Gamepad") }
             }
         }
+    }
+}
+
+/**
+ * A titled switch with one line of detail.
+ *
+ * One composable so the two settings that need it reserve the same target,
+ * indent the same amount and keep the same gap from the switch — the sort of
+ * thing that drifts the moment each is laid out by hand.
+ */
+@Composable
+private fun SettingSwitch(
+    title: String,
+    detail: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = TOUCH_TARGET),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f).padding(end = SPACE_L)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                detail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }
 
@@ -1256,7 +1669,8 @@ private class TouchEditorGestures(
     val onLongPress: (String) -> Unit,
     val onDragStart: (String) -> Unit,
     val onMove: (ResolvedTouchLayout, Float, Float) -> Unit,
-    val onZoom: (Float) -> Unit,
+    /** Zoom factor and rotation delta from one two-finger frame, applied together. */
+    val onTransform: (Float, Float) -> Unit,
     val onGestureEnd: () -> Unit,
 )
 
@@ -1344,9 +1758,18 @@ private fun Modifier.editTouchLayout(
             val countChanged = pressed != previousPressed
             previousPressed = pressed
             if (pressed > 1) {
+                // Scale AND turn from the same frame, using the toolkit's own
+                // multi-touch arithmetic rather than a hand-rolled angle: two
+                // fingers converging produce a degenerate centroid, and every
+                // custom version of this eventually divides by it.
                 val zoom = event.calculateZoom()
-                if (!countChanged && zoom.isFinite() && zoom > 0f && zoom != 1f) {
-                    gestures.value.onZoom(zoom)
+                val rotation = event.calculateRotation()
+                if (!countChanged) {
+                    val scaled = if (zoom.isFinite() && zoom > 0f) zoom else 1f
+                    val turned = if (rotation.isFinite()) rotation else 0f
+                    if (scaled != 1f || turned != 0f) {
+                        gestures.value.onTransform(scaled, turned)
+                    }
                 }
                 event.changes.forEach { if (it.positionChanged()) it.consume() }
                 continue
@@ -1381,10 +1804,18 @@ internal fun ResolvedTouchLayout.pick(x: Float, y: Float): String? {
     controls.forEach { control ->
         if (!control.hitTest(x, y)) return@forEach
         val current = best
+        if (current == null) {
+            best = control
+            bestDistance = control.normalizedDistance(x, y)
+            return@forEach
+        }
+        // Priority, then z-order, then centrality: exactly the router's rule.
+        // Editing and playing must agree about what is under a thumb, and once
+        // controls may be freely stacked, the one drawn in front is the one the
+        // user means in both modes.
+        val order = compareValuesBy(control, current, { it.spec.priority }, { it.spec.zIndex })
         val distance = control.normalizedDistance(x, y)
-        if (current == null || control.spec.priority > current.spec.priority ||
-            control.spec.priority == current.spec.priority && distance < bestDistance
-        ) {
+        if (order > 0 || order == 0 && distance < bestDistance) {
             best = control
             bestDistance = distance
         }
@@ -1406,6 +1837,115 @@ private sealed interface TouchProfileNameRequest {
 private sealed interface TouchEditorConfirm {
     data object Exit : TouchEditorConfirm
     data class SelectProfile(val profileId: String) : TouchEditorConfirm
+}
+
+/**
+ * A just-deleted selection, and the document that brings it back.
+ *
+ * The whole PRE-DELETE document rather than the removed instances: restoring it
+ * returns every field each control had — transform, rotation, group membership,
+ * z-order, hold setting — because a revision is the whole scene rather than a
+ * patch that has to remember what it touched.
+ */
+private data class TouchDeleteNotice(
+    val message: String,
+    val restore: TouchLayoutDocument,
+)
+
+/**
+ * Transient confirmation with one action, over the layout.
+ *
+ * A snackbar rather than a confirmation dialog, deliberately: deleting a control
+ * in a layout editor is an ordinary, frequent, obviously reversible act, and
+ * asking "are you sure?" every time trains the user to dismiss without reading.
+ *
+ * Built as a surface rather than with Material's [Snackbar], which lays itself
+ * out at the width it is OFFERED: over a full-screen layout that is the whole
+ * window, so "A deleted UNDO" arrived as a bar most of the screen wide with the
+ * two words marooned at one end. The colours are still the snackbar's, because
+ * this is still a snackbar; only the measuring is ours, and it is the same
+ * measuring [TouchPreviewBanner] already uses.
+ */
+@Composable
+private fun BoxScope.TouchUndoSnackbar(
+    message: String,
+    clearBottomToolbar: Boolean,
+    onUndo: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    // Times out on its own so it cannot sit over the layout being edited.
+    LaunchedEffect(message) {
+        delay(UNDO_SNACKBAR_MILLIS)
+        onDismiss()
+    }
+    Surface(
+        modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .windowInsetsPadding(WindowInsets.safeContent)
+            .padding(
+                start = SPACE_XL,
+                end = SPACE_XL,
+                top = SPACE_XL,
+                bottom = if (clearBottomToolbar) TOOLBAR_BAND else SPACE_XL,
+            )
+            // A ceiling, not a width: a long message wraps instead of running
+            // to the screen edges, and a short one stays short.
+            .widthIn(max = NOTICE_MAX_WIDTH),
+        shape = MaterialTheme.shapes.large,
+        // The editor's own chrome colours, like the toolbar it sits beside. The
+        // Material snackbar's inverse surface is a near-white slab here, which
+        // is the one piece of chrome in this mode that would not look like the
+        // rest of it.
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        tonalElevation = ELEVATION,
+        shadowElevation = ELEVATION,
+    ) {
+        Row(
+            Modifier
+                .padding(start = SPACE_XL, end = SPACE_S)
+                .semantics { liveRegion = LiveRegionMode.Polite },
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(SPACE_M),
+        ) {
+            Text(message, style = MaterialTheme.typography.bodyMedium)
+            TextButton(onClick = onUndo, modifier = Modifier.heightIn(min = TOUCH_TARGET)) {
+                Text("Undo")
+            }
+        }
+    }
+}
+
+/**
+ * The only editor chrome that survives into Preview.
+ *
+ * Everything else is gone — no toolbar, no outlines, no guides — because the
+ * point of a test run is to see the layout as it will be played. One button
+ * back, so the mode is never a place the user can get stuck.
+ */
+@Composable
+private fun BoxScope.TouchPreviewBanner(onDone: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .align(Alignment.TopCenter)
+            .windowInsetsPadding(WindowInsets.safeContent)
+            .padding(SPACE_M),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.primaryContainer,
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        tonalElevation = ELEVATION,
+    ) {
+        Row(
+            Modifier.padding(start = SPACE_XL, end = SPACE_S),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(SPACE_M),
+        ) {
+            Text("Testing", style = MaterialTheme.typography.labelLarge)
+            TextButton(onClick = onDone, modifier = Modifier.heightIn(min = TOUCH_TARGET)) {
+                Text("Back to editing")
+            }
+        }
+    }
 }
 
 @Composable
@@ -1451,6 +1991,7 @@ private fun touchControlPalette(): TouchControlPalette {
             label = scheme.onSurface,
             pressedLabel = scheme.onPrimary,
             disabled = scheme.outline,
+            error = scheme.error,
         )
     }
 }
@@ -1471,6 +2012,54 @@ private fun Context.findActivity(): Activity? {
  * top row of shoulders and centre controls, above `-` and `+`.
  */
 private const val BANNER_BAND = 0.22f
+
+/** Long enough to notice and act on, short enough not to sit over the layout. */
+private const val UNDO_SNACKBAR_MILLIS = 6_000L
+
+/**
+ * The same spacing scale the editor chrome uses, so the menu, the notices and
+ * the toolbar share one rhythm rather than three sets of hand-picked numbers.
+ */
+private val SPACE_S = 4.dp
+private val SPACE_M = 8.dp
+private val SPACE_L = 12.dp
+private val SPACE_XL = 16.dp
+
+/** The 48dp accessibility floor, named once. */
+private val TOUCH_TARGET = 48.dp
+
+/** One raised surface height for every piece of editor chrome. */
+private val ELEVATION = 6.dp
+
+/**
+ * The widest a transient notice may grow before its text wraps.
+ *
+ * A CEILING and never a width: these strips size to what they say. A fixed or
+ * offered width is how "A deleted UNDO" ends up spanning a 1920-pixel window.
+ */
+private val NOTICE_MAX_WIDTH = 420.dp
+
+/** The glyph in a notice strip: smaller than a button icon, larger than text. */
+private val NOTICE_ICON = 16.dp
+
+/**
+ * Height a bottom-docked toolbar occupies: one button row plus its own padding
+ * and the gap a notice keeps from it. What the undo notice steps over.
+ */
+private val TOOLBAR_BAND = 72.dp
+
+/**
+ * A placeholder document for the moment before a personality is confirmed.
+ *
+ * Never edited and never composed: the editor opens only once a real document
+ * exists. It is here so the undo history has no nullable state, which is worth
+ * more than avoiding one unused value.
+ */
+private val EMPTY_LAYOUT_DOCUMENT = TouchLayoutDocument(
+    profileId = TouchProfileId.Pro2,
+    templateId = "",
+    basedOnRevision = 1,
+)
 
 private const val CONTROLLER_DESCRIPTION =
     "On-screen controller. Sticks, D-pad, face buttons, shoulders and triggers are " +

@@ -54,6 +54,15 @@ enum class TouchOutputControl {
     Home,
     Capture,
     C,
+    /**
+     * Pro Controller 2 grip buttons.
+     *
+     * Real inputs on that controller, carried to the adapter as bridge usages
+     * 16/17 since contract 4. Deliberately NOT offered by any personality whose
+     * hardware has no grips; see [TouchProfileCatalog].
+     */
+    GL,
+    GR,
 }
 
 /** Geometry authored in the reference layout's logical coordinate system. */
@@ -79,17 +88,68 @@ data class TouchVisualSpec(
     val rotationDegrees: Float = 0f,
 )
 
-/** One immutable, shipped control before a profile binding is applied. */
+/**
+ * Where a catalog entry appears in the editor's Add Control picker.
+ *
+ * Presentation grouping only. It never affects bindings, geometry or audit, and
+ * two personalities are free to file the same output differently — a GameCube
+ * `Z` is a shoulder, a Joy-Con `SL` is a rail control.
+ */
+enum class TouchControlCategory(val title: String) {
+    Face("Face buttons"),
+    Directions("D-pad"),
+    Sticks("Sticks"),
+    Shoulders("Shoulders and triggers"),
+    System("System"),
+    Grip("Grip"),
+}
+
+/**
+ * One entry in a personality's control CATALOG.
+ *
+ * The catalog answers "what may this controller produce, and what does such a
+ * control look like?". It is emphatically NOT the layout: a user document holds
+ * [TouchControlInstance]s, any number of which may point at the same entry.
+ *
+ * ```text
+ *   the profile BINDS it            -> the personality has the hardware
+ *   inDefaultLayout                 -> the SHIPPED layout instantiates one
+ *   a user document instantiates it -> it is on screen, once per instance
+ * ```
+ *
+ * Those three are independent. In particular [inDefaultLayout] is a statement
+ * about the authored starting point and nothing else: a control absent from the
+ * default layout is still fully addable, and one present there may be deleted.
+ */
 data class TouchTemplateControl(
     val id: String,
     val output: TouchOutputControl,
     val interaction: TouchControlKind,
     val geometry: TouchControlGeometry,
     val visual: TouchVisualSpec,
+    /** The authored cluster this control belongs to in the shipped layout. */
     val editGroupId: String? = null,
+    /**
+     * Whether the SHIPPED layout places an instance of this control.
+     *
+     * `false` means the personality supports the control and the authored
+     * default simply does not use it — Pro Controller 2's grips are the shipped
+     * example. It does not make the control second-class: Add Control offers it
+     * from this catalog like any other, and everything downstream treats the
+     * resulting instance identically.
+     */
+    val inDefaultLayout: Boolean = true,
+    val category: TouchControlCategory = TouchControlCategory.System,
 )
 
-/** Immutable shipped default.  User changes are sparse overrides, never mutations of this value. */
+/**
+ * A personality's shipped control catalog and its authored default layout.
+ *
+ * One value carries both because they are authored together, but the code must
+ * keep them apart: [controls] is the catalog (everything instantiable) and the
+ * subset marked [TouchTemplateControl.inDefaultLayout] is what a fresh layout
+ * document starts with. See [TouchLayoutDocument.authoredDefault].
+ */
 data class TouchLayoutTemplate(
     val id: String,
     val profileId: TouchProfileId,
@@ -109,6 +169,14 @@ data class TouchControllerProfile(
         require(defaultTemplate.profileId == id)
         require(outputs == bindings.keys)
     }
+
+    /** Everything this personality can instantiate, in authored order. */
+    val catalog: List<TouchTemplateControl> get() = defaultTemplate.controls
+
+    private val catalogById: Map<String, TouchTemplateControl> =
+        defaultTemplate.controls.associateBy { it.id }
+
+    fun catalogEntry(id: String): TouchTemplateControl? = catalogById[id]
 }
 
 /** The complete, exhaustive shipped touch-profile catalog. */
@@ -143,6 +211,14 @@ object TouchProfileCatalog {
             TouchOutputControl.Home to TouchControlAction.Logical(ControllerButton.Home),
             TouchOutputControl.Capture to TouchControlAction.Logical(ControllerButton.Capture),
             TouchOutputControl.C to TouchControlAction.Logical(ControllerButton.C),
+            // The grip buttons. Bound like any other digital control, straight to
+            // the logical inputs the firmware already routes to SWITCH_EXTRA_GL/GR
+            // -- no alias, no synthetic action. Shipped HIDDEN in the template
+            // below rather than omitted from it, because the editor's vocabulary
+            // is show/hide/move/scale over an immutable template: a control that
+            // is not in the template cannot be added at all.
+            TouchOutputControl.GL to TouchControlAction.Logical(ControllerButton.GL),
+            TouchOutputControl.GR to TouchControlAction.Logical(ControllerButton.GR),
         )
         return TouchControllerProfile(
             id = TouchProfileId.Pro2,
@@ -163,12 +239,20 @@ object TouchProfileCatalog {
             TouchOutputControl.PrimaryStick to TouchControlAction.Stick(ControlSide.Left),
             TouchOutputControl.SecondaryStick to TouchControlAction.Stick(ControlSide.Right),
             // The firmware's GameCube policy maps generic L/R shoulders to ZL/Z.
+            //
+            // `Z` is the control the GameCube shell PRINTS as Z; the host-facing
+            // semantic is ZR — a Switch 2's Test Input screen names it that, and
+            // so does Windows/Steam. The legend stays the shell's, because
+            // nothing on the device the user is holding says ZR. See
+            // docs/switch2-gc/protocol.md, "GameCube `Z` IS the ZR control".
             TouchOutputControl.ZL to TouchControlAction.Logical(ControllerButton.L1),
             TouchOutputControl.Z to TouchControlAction.Logical(ControllerButton.R1),
-            // A touch trigger is a full analog pull plus the digital trigger bit;
-            // the GameCube seam turns that endpoint into native travel + detent.
-            TouchOutputControl.L to TouchControlAction.Trigger(ControlSide.Left),
-            TouchOutputControl.R to TouchControlAction.Trigger(ControlSide.Right),
+            // The only two touch controls in the catalog with REAL travel: the
+            // GameCube encoder passes the trigger byte through continuously and
+            // the firmware seam derives the terminal detent from it. Everything
+            // else that looks like a trigger is digital on the far side.
+            TouchOutputControl.L to TouchControlAction.Trigger(ControlSide.Left, analog = true),
+            TouchOutputControl.R to TouchControlAction.Trigger(ControlSide.Right, analog = true),
             TouchOutputControl.Plus to TouchControlAction.Logical(ControllerButton.Start),
             TouchOutputControl.Home to TouchControlAction.Logical(ControllerButton.Home),
             TouchOutputControl.Capture to TouchControlAction.Logical(ControllerButton.Capture),
@@ -249,6 +333,20 @@ object TouchPersonalityTemplates {
      * "this layout is stale" and "this layout is wrong".
      */
     private const val JOYCON_REVISION = 3
+
+    /**
+     * Centre of the GameCube shoulder/trigger strip.
+     *
+     * 42 is the established, hardware-validated position and must stay there.
+     * An Editor 2.0 pass briefly moved it to 34 because the audit — newly taught
+     * to measure rotated geometry — reported `z` overlapping the `Y` bean. The
+     * overlap is real, but it lies entirely between the two controls' HIT
+     * MARGINS: the drawn shapes clear each other by about a unit. Courtesy
+     * margins meeting is not a control the user cannot press, and
+     * [TouchLayoutAudit] now says so rather than refusing the layout. See its
+     * `overlaps` documentation.
+     */
+    private const val GAMECUBE_TOP_ROW_Y = 42f
     private const val FACE_GROUP = "face-cluster"
     private const val DIRECTION_GROUP = "direction-cluster"
     private const val UTILITY_GROUP = "utility-cluster"
@@ -299,8 +397,8 @@ object TouchPersonalityTemplates {
         schemaVersion = SCHEMA_VERSION,
         templateRevision = REVISION,
         controls = listOf(
-            pad("zl", TouchOutputControl.ZL, 60f, 42f, "ZL"),
-            pad("trigger-l", TouchOutputControl.L, 160f, 42f, "L", TouchControlKind.Trigger),
+            pad("trigger-l", TouchOutputControl.L, 60f, GAMECUBE_TOP_ROW_Y, "L", TouchControlKind.Trigger),
+            pad("zl", TouchOutputControl.ZL, 160f, GAMECUBE_TOP_ROW_Y, "ZL"),
             groupUtility(
                 "capture", TouchOutputControl.Capture,
                 GAMECUBE_TOP_UTILITIES.at(-GAMECUBE_UTILITY_SPACING, 0f),
@@ -316,8 +414,8 @@ object TouchPersonalityTemplates {
                 GAMECUBE_TOP_UTILITIES.at(GAMECUBE_UTILITY_SPACING, 0f),
                 label = "C",
             ),
-            pad("z", TouchOutputControl.Z, 640f, 42f, "Z"),
-            pad("trigger-r", TouchOutputControl.R, 740f, 42f, "R", TouchControlKind.Trigger),
+            pad("z", TouchOutputControl.Z, 640f, GAMECUBE_TOP_ROW_Y, "Z"),
+            pad("trigger-r", TouchOutputControl.R, 740f, GAMECUBE_TOP_ROW_Y, "R", TouchControlKind.Trigger),
             // GameCube controls substitute directly into the proven Pro2 major-
             // control composition; only their personality-specific art differs.
             vector(
@@ -375,7 +473,10 @@ object TouchPersonalityTemplates {
                 "primary-stick", TouchOutputControl.PrimaryStick, TouchControlKind.Stick,
                 150f, JOYCON_PRIMARY_CENTER_Y, 150f,
             ),
-            round("stick-click", TouchOutputControl.PrimaryStickClick, 285f, 320f, 56f, "L3"),
+            round(
+                "stick-click", TouchOutputControl.PrimaryStickClick, 285f, 320f, 56f, "L3",
+                TouchControlCategory.Sticks,
+            ),
             // Slots are the Joy-Con's own: its up button is the north button of
             // its diamond, and the rotation puts it at the player's left. The
             // triangles are physical MARKINGS and turn with the shell, so the
@@ -425,7 +526,10 @@ object TouchPersonalityTemplates {
                 "primary-stick", TouchOutputControl.PrimaryStick, TouchControlKind.Stick,
                 150f, JOYCON_PRIMARY_CENTER_Y, 150f,
             ),
-            round("stick-click", TouchOutputControl.PrimaryStickClick, 285f, 320f, 56f, "R3"),
+            round(
+                "stick-click", TouchOutputControl.PrimaryStickClick, 285f, 320f, 56f, "R3",
+                TouchControlCategory.Sticks,
+            ),
             // Same rule, opposite turn. The letters are identity markings rather
             // than direction markings, so they stay upright and readable while
             // only their POSITIONS rotate: the X printed at the top of an
@@ -483,6 +587,7 @@ object TouchPersonalityTemplates {
         kind,
         geometry(x, y, 88f, 56f, TouchControlShape.Rectangle, 2f),
         TouchVisualSpec(TouchVisualRole.RectangularButton, label),
+        category = TouchControlCategory.Shoulders,
     )
 
     private fun utility(
@@ -497,6 +602,7 @@ object TouchPersonalityTemplates {
         TouchControlKind.Button,
         geometry(x, 44f, 50f, 50f, TouchControlShape.Rectangle, 3f),
         TouchVisualSpec(TouchVisualRole.Utility, label, glyph),
+        category = TouchControlCategory.System,
     )
 
     private fun groupUtility(
@@ -521,6 +627,7 @@ object TouchPersonalityTemplates {
         ),
         TouchVisualSpec(TouchVisualRole.Utility, label, glyph),
         editGroupId = UTILITY_GROUP,
+        category = TouchControlCategory.System,
     )
 
     private fun round(
@@ -530,12 +637,14 @@ object TouchPersonalityTemplates {
         y: Float,
         size: Float,
         label: String,
+        category: TouchControlCategory = TouchControlCategory.System,
     ) = TouchTemplateControl(
         id,
         output,
         TouchControlKind.Button,
         geometry(x, y, size, size, margin = 2f),
         TouchVisualSpec(TouchVisualRole.RoundButton, label),
+        category = category,
     )
 
     private fun vector(
@@ -556,6 +665,7 @@ object TouchPersonalityTemplates {
             visualRole ?: if (kind == TouchControlKind.Dpad) TouchVisualRole.UnifiedDpad
             else TouchVisualRole.AnalogStick,
         ),
+        category = vectorCategory(kind),
     )
 
     private fun groupVector(
@@ -581,7 +691,12 @@ object TouchPersonalityTemplates {
             else TouchVisualRole.AnalogStick,
         ),
         editGroupId = SECONDARY_GROUP,
+        category = vectorCategory(kind),
     )
+
+    private fun vectorCategory(kind: TouchControlKind) =
+        if (kind == TouchControlKind.Dpad) TouchControlCategory.Directions
+        else TouchControlCategory.Sticks
 
     private fun gameCubeFaceAt(x: Float, y: Float) = GAMECUBE_FACE_GROUP.at(
         x + GAMECUBE_FACE_NUDGE_X,
@@ -623,6 +738,7 @@ object TouchPersonalityTemplates {
             ),
             TouchVisualSpec(role, label, rotationDegrees = rotationDegrees),
             editGroupId = FACE_GROUP,
+            category = TouchControlCategory.Face,
         )
     }
 
@@ -649,5 +765,6 @@ object TouchPersonalityTemplates {
         ),
         TouchVisualSpec(role, label, rotationDegrees = rotationDegrees),
         editGroupId = group,
+        category = TouchControlCategory.Face,
     )
 }

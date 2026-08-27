@@ -8,6 +8,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
@@ -25,11 +27,14 @@ import dev.picoswitch.bridge.touch.ResolvedTouchLayout
 import dev.picoswitch.bridge.touch.TouchCardinalSlot
 import dev.picoswitch.bridge.touch.TouchControlAction
 import dev.picoswitch.bridge.touch.TouchControlGlyph
+import dev.picoswitch.bridge.touch.TouchControlShape
 import dev.picoswitch.bridge.touch.TouchDiagnosticsSnapshot
+import dev.picoswitch.bridge.touch.TouchFillDirection
 import dev.picoswitch.bridge.touch.TouchGuideKind
 import dev.picoswitch.bridge.touch.TouchGuideLine
 import dev.picoswitch.bridge.touch.TouchGameCubeGeometry
 import dev.picoswitch.bridge.touch.TouchOutputControl
+import dev.picoswitch.bridge.touch.TouchTriggerTravel
 import dev.picoswitch.bridge.touch.TouchVisualRole
 import dev.picoswitch.bridge.touch.TouchVector
 
@@ -48,6 +53,8 @@ data class TouchControlPalette(
     val label: Color,
     val pressedLabel: Color,
     val disabled: Color,
+    /** Editor only: the control that does not fit where the user has put it. */
+    val error: Color,
 )
 
 /**
@@ -81,6 +88,24 @@ data class TouchVisualState(
      * an ordinary press. Drawing it says what the next movement would do.
      */
     val arming: Set<String> = emptySet(),
+    /**
+     * How far each analog trigger is currently pulled, `0..1`, by control id.
+     *
+     * Its own map rather than a place in [pressed] because a trigger is not a
+     * Boolean: the whole feature is the difference between 30% and 90%, and the
+     * user is choosing it by eye. Empty for every personality but the GameCube,
+     * whose `L` and `R` are the only controls in the catalog with real travel.
+     */
+    val analogTriggers: Map<String, Float> = emptyMap(),
+    /**
+     * Which way each of those fills grows, from the engine.
+     *
+     * Not recomputed here from the layout, even though the geometry to do it is
+     * public: while a gesture is live the engine is drawing this from the axis
+     * it FROZE at pointer-down, and a second derivation would agree with it
+     * right up until the moment the two could differ.
+     */
+    val analogTriggerFills: Map<String, TouchFillDirection> = emptyMap(),
     val enabled: Boolean = true,
 )
 
@@ -112,66 +137,235 @@ fun DrawScope.drawTouchControls(
         // rest while the console is being told it is down.
         val held = latched || control.id in visual.pressed
         val alpha = if (visual.enabled) opacity else opacity * DISABLED_ALPHA
-        when (control.spec.visualRole) {
-            TouchVisualRole.AnalogStick -> drawStick(
-                control = control,
-                displacement = if ((control.spec.action as TouchControlAction.Stick).side == ControlSide.Left) {
-                    visual.leftStick
-                } else {
-                    visual.rightStick
-                },
-                palette = palette, alpha = alpha, held = held,
-            )
-            TouchVisualRole.UnifiedDpad -> drawDpad(control, visual.dpad, palette, alpha)
-            TouchVisualRole.GameCubeLargeA,
-            TouchVisualRole.GameCubeSmallB,
-            TouchVisualRole.JoyConButton,
-            TouchVisualRole.RoundButton -> drawRound(
-                control, held, palette, alpha, textMeasurer, labelStyle,
-                controlLabel(control, faceLayout),
-            )
-            TouchVisualRole.JoyConDirectionButton -> drawJoyConDirection(
-                control, held, palette, alpha, textMeasurer, labelStyle,
-            )
-            TouchVisualRole.GameCubeBeanX,
-            TouchVisualRole.GameCubeBeanY -> drawGameCubeBean(
-                control, held, palette, alpha, textMeasurer, labelStyle,
-            )
-            TouchVisualRole.RectangularButton,
-            TouchVisualRole.Utility -> drawPad(control, held, palette, alpha, textMeasurer, labelStyle)
-            TouchVisualRole.Default -> when (val action = control.spec.action) {
-                is TouchControlAction.Stick -> drawStick(
+        // Every control is drawn INSIDE its own rotation, so the silhouette and
+        // the hit region are turned by exactly the same angle from exactly the
+        // same field. The roles that already draw their own rotated artwork --
+        // the GameCube beans, the Joy-Con direction triangles -- are excluded,
+        // or the turn would be applied twice.
+        withControlRotation(control) {
+            // Decided by what the control IS, never by whether a level happens
+            // to have been reported for it: a trigger that has not been touched
+            // yet still has to be the same control it will be a moment later.
+            if ((control.spec.action as? TouchControlAction.Trigger)?.analog == true) {
+                // A trigger with travel is drawn as travel, whatever silhouette
+                // its template gave it. Falling through to the ordinary pressed
+                // fill would show a control that is fully down while the console
+                // is being told it is a third of the way there.
+                drawAnalogTrigger(
                     control,
-                    if (action.side == ControlSide.Left) visual.leftStick else visual.rightStick,
-                    palette,
-                    alpha,
-                    held,
+                    visual.analogTriggers[control.id] ?: 0f,
+                    visual.analogTriggerFills[control.id] ?: TouchFillDirection.Down,
+                    palette, alpha, textMeasurer, labelStyle,
                 )
-                TouchControlAction.Directions -> drawDpad(control, visual.dpad, palette, alpha)
-                is TouchControlAction.Face -> drawRound(
-                    control,
-                    held,
-                    palette,
-                    alpha,
-                    textMeasurer,
-                    labelStyle,
-                    ControllerLayoutResolver.faceLabel(action.position, faceLayout),
+                return@withControlRotation
+            }
+            when (control.spec.visualRole) {
+                TouchVisualRole.AnalogStick -> drawStick(
+                    control = control,
+                    displacement = if ((control.spec.action as TouchControlAction.Stick).side == ControlSide.Left) {
+                        visual.leftStick
+                    } else {
+                        visual.rightStick
+                    },
+                    palette = palette, alpha = alpha, held = held,
                 )
-                else -> if (control.spec.shape == dev.picoswitch.bridge.touch.TouchControlShape.Rectangle) {
-                drawPad(control, held, palette, alpha, textMeasurer, labelStyle)
-                } else {
-                    drawRound(control, held, palette, alpha, textMeasurer, labelStyle, control.spec.label)
+                TouchVisualRole.UnifiedDpad -> drawDpad(control, visual.dpad, palette, alpha)
+                TouchVisualRole.GameCubeLargeA,
+                TouchVisualRole.GameCubeSmallB,
+                TouchVisualRole.JoyConButton,
+                TouchVisualRole.RoundButton -> drawRound(
+                    control, held, palette, alpha, textMeasurer, labelStyle,
+                    controlLabel(control, faceLayout),
+                )
+                TouchVisualRole.JoyConDirectionButton -> drawJoyConDirection(
+                    control, held, palette, alpha, textMeasurer, labelStyle,
+                )
+                TouchVisualRole.GameCubeBeanX,
+                TouchVisualRole.GameCubeBeanY -> drawGameCubeBean(
+                    control, held, palette, alpha, textMeasurer, labelStyle,
+                )
+                TouchVisualRole.RectangularButton,
+                TouchVisualRole.Utility -> drawPad(control, held, palette, alpha, textMeasurer, labelStyle)
+                TouchVisualRole.Default -> when (val action = control.spec.action) {
+                    is TouchControlAction.Stick -> drawStick(
+                        control,
+                        if (action.side == ControlSide.Left) visual.leftStick else visual.rightStick,
+                        palette,
+                        alpha,
+                        held,
+                    )
+                    TouchControlAction.Directions -> drawDpad(control, visual.dpad, palette, alpha)
+                    is TouchControlAction.Face -> drawRound(
+                        control,
+                        held,
+                        palette,
+                        alpha,
+                        textMeasurer,
+                        labelStyle,
+                        ControllerLayoutResolver.faceLabel(action.position, faceLayout),
+                    )
+                    else -> if (control.spec.shape == TouchControlShape.Rectangle) {
+                        drawPad(control, held, palette, alpha, textMeasurer, labelStyle)
+                    } else {
+                        drawRound(control, held, palette, alpha, textMeasurer, labelStyle, control.spec.label)
+                    }
                 }
             }
         }
-        // Armed is drawn only while the control is not already held: the two
-        // never overlap, and an open padlock beside a closed one would read as
-        // two states at once.
-        when {
-            latched -> drawLatchBadge(control, palette, alpha, open = false)
-            control.id in visual.arming -> drawLatchBadge(control, palette, alpha, open = true)
+        // Outside the rotation, deliberately: a padlock is a status indicator
+        // rather than part of the control, and a sideways one is harder to read
+        // for no gain.
+        drawLatchBadgeFor(control, latched, visual, palette, alpha)
+    }
+}
+
+/**
+ * Draw a control's artwork turned the way its geometry is turned.
+ *
+ * One place, applied to every role, so a renderer and a hit tester can never
+ * disagree about how far a control is rotated — the failure mode being a button
+ * that visibly points one way and answers to a region pointing another.
+ *
+ * The two roles that already build their own rotated paths are excluded rather
+ * than special-cased inside them: their artwork is authored in the control's
+ * own frame and turned by the shared contour helper, so a second rotation here
+ * would double the angle.
+ */
+private inline fun DrawScope.withControlRotation(
+    control: ResolvedTouchControl,
+    crossinline block: DrawScope.() -> Unit,
+) {
+    val degrees = control.artworkRotationDegrees
+    if (degrees == 0f) {
+        block()
+        return
+    }
+    rotate(degrees, Offset(control.centerX, control.centerY)) { block() }
+}
+
+/**
+ * The angle [withControlRotation] actually applies to this control's artwork.
+ *
+ * Zero for the roles that build their own already-rotated paths — the GameCube
+ * beans through the shared contour helper, the Joy-Con direction triangles
+ * through their own vertex math. Turning those again here would double the
+ * angle; counter-rotating their legends by it would tilt letters that were
+ * never turned in the first place.
+ *
+ * One property, read by both the wrap and the legend's counter-turn, because
+ * the bug it prevents is exactly the two disagreeing.
+ */
+private val ResolvedTouchControl.artworkRotationDegrees: Float
+    get() = when (spec.visualRole) {
+        TouchVisualRole.GameCubeBeanX,
+        TouchVisualRole.GameCubeBeanY,
+        TouchVisualRole.JoyConDirectionButton,
+        -> 0f
+        else -> spec.visualRotationDegrees
+    }
+
+/**
+ * Armed is drawn only while the control is not already held: the two never
+ * overlap, and an open padlock beside a closed one would read as two states at
+ * once.
+ */
+private fun DrawScope.drawLatchBadgeFor(
+    control: ResolvedTouchControl,
+    latched: Boolean,
+    visual: TouchVisualState,
+    palette: TouchControlPalette,
+    alpha: Float,
+) {
+    when {
+        latched -> drawLatchBadge(control, palette, alpha, open = false)
+        control.id in visual.arming -> drawLatchBadge(control, palette, alpha, open = true)
+    }
+}
+
+/**
+ * A trigger drawn as the thing it is: a pad that fills the way the thumb pulls
+ * it.
+ *
+ * The fill grows in the cardinal direction the gesture pulls, so the picture and
+ * the input agree by construction — a trigger the user drags to the bottom of
+ * the screen fills upward, without anything here knowing which trigger it is.
+ * [direction] arrives already decided, from the engine, off the axis frozen for
+ * the gesture in progress; see [TouchTriggerTravel.fillDirection] for why it is
+ * a cardinal rather than a rotated diagonal bar.
+ *
+ * That is also the whole visual affordance: no rail, no track, no percentage
+ * readout and no permanent gameplay UI, just the control the user is already
+ * touching showing how far it has gone.
+ *
+ * The legend flips to its pressed colour at half travel, which is exactly where
+ * the fill reaches the middle of the pad and starts sitting behind the text.
+ */
+private fun DrawScope.drawAnalogTrigger(
+    control: ResolvedTouchControl,
+    level: Float,
+    direction: TouchFillDirection,
+    palette: TouchControlPalette,
+    alpha: Float,
+    textMeasurer: TextMeasurer,
+    style: TextStyle,
+) {
+    val width = control.halfWidth * 2f
+    val height = control.halfHeight * 2f
+    val left = control.centerX - control.halfWidth
+    val top = control.centerY - control.halfHeight
+    val corner = androidx.compose.ui.geometry.CornerRadius(control.halfHeight * 0.45f)
+    val topLeft = Offset(left, top)
+    val size = Size(width, height)
+
+    drawRoundRect(color = palette.idle.copy(alpha = alpha), topLeft = topLeft, size = size, cornerRadius = corner)
+
+    val filled = level.coerceIn(0f, 1f)
+    if (filled > 0f) {
+        // Clipped to the pad's own rounded silhouette rather than drawn as a
+        // second rounded rect, so a partial fill keeps the control's outline
+        // instead of growing a squared-off edge inside it.
+        val outline = Path().apply {
+            addRoundRect(
+                RoundRect(left, top, left + width, top + height, cornerRadius = corner),
+            )
+        }
+        clipPath(outline) {
+            // One extent, four anchors. The bar always starts at the edge the
+            // finger is pulling AWAY from, so the pad empties behind the thumb
+            // and fills ahead of it.
+            val fill = when (direction) {
+                TouchFillDirection.Down ->
+                    Offset(left, top) to Size(width, height * filled)
+                TouchFillDirection.Up ->
+                    Offset(left, top + height * (1f - filled)) to Size(width, height * filled)
+                TouchFillDirection.Right ->
+                    Offset(left, top) to Size(width * filled, height)
+                TouchFillDirection.Left ->
+                    Offset(left + width * (1f - filled), top) to Size(width * filled, height)
+            }
+            drawRect(color = palette.pressed.copy(alpha = alpha), topLeft = fill.first, size = fill.second)
         }
     }
+
+    drawRoundRect(
+        color = (if (filled >= ANALOG_TRIGGER_LABEL_FLIP) palette.pressedOutline else palette.idleOutline)
+            .copy(alpha = alpha),
+        topLeft = topLeft, size = size, cornerRadius = corner,
+        style = Stroke(width = OUTLINE_WIDTH),
+    )
+    drawControlContent(
+        glyph = control.spec.glyph,
+        label = control.spec.label,
+        center = Offset(control.centerX, control.centerY),
+        availableWidth = width,
+        availableHeight = height,
+        held = filled >= ANALOG_TRIGGER_LABEL_FLIP,
+        palette = palette,
+        alpha = alpha,
+        textMeasurer = textMeasurer,
+        style = style,
+        uprightIn = control.artworkRotationDegrees,
+    )
 }
 
 /**
@@ -291,6 +485,7 @@ private fun DrawScope.drawRound(
         alpha = alpha,
         textMeasurer = textMeasurer,
         style = style,
+        uprightIn = control.artworkRotationDegrees,
     )
 }
 
@@ -325,6 +520,7 @@ private fun DrawScope.drawPad(
         alpha = alpha,
         textMeasurer = textMeasurer,
         style = style,
+        uprightIn = control.artworkRotationDegrees,
     )
 }
 
@@ -367,6 +563,7 @@ private fun DrawScope.drawGameCubeBean(
         alpha = alpha,
         textMeasurer = textMeasurer,
         style = style,
+        uprightIn = control.artworkRotationDegrees,
     )
 }
 
@@ -508,6 +705,19 @@ internal fun joyConDirectionTriangle(
     }
 }
 
+/**
+ * A control's legend, drawn UPRIGHT inside a rotated control.
+ *
+ * The silhouette and the hit region turn; the letter does not. A legend is an
+ * identity marking — the button labelled X is X at any angle — so turning it
+ * only makes it harder to read. Direction MARKINGS are the exception, and they
+ * are drawn by the roles that own their own rotated artwork rather than through
+ * here.
+ *
+ * [uprightIn] is the angle the caller has already rotated by; the counter-turn
+ * is taken about the same centre, so the legend stays exactly where the shape
+ * puts it and merely does not lean.
+ */
 private fun DrawScope.drawControlContent(
     glyph: TouchControlGlyph?,
     label: String,
@@ -519,21 +729,25 @@ private fun DrawScope.drawControlContent(
     alpha: Float,
     textMeasurer: TextMeasurer,
     style: TextStyle,
+    uprightIn: Float = 0f,
 ) {
-    when (glyph) {
-        TouchControlGlyph.Capture -> drawCaptureGlyph(
-            center, minOf(availableWidth, availableHeight), held, palette, alpha,
-        )
-        TouchControlGlyph.Home -> drawHomeGlyph(
-            center, minOf(availableWidth, availableHeight), held, palette, alpha,
-        )
-        null -> if (label.isNotEmpty()) {
-            drawLabel(
-                label, center, availableWidth, availableHeight,
-                held, palette, alpha, textMeasurer, style,
+    val content = {
+        when (glyph) {
+            TouchControlGlyph.Capture -> drawCaptureGlyph(
+                center, minOf(availableWidth, availableHeight), held, palette, alpha,
             )
+            TouchControlGlyph.Home -> drawHomeGlyph(
+                center, minOf(availableWidth, availableHeight), held, palette, alpha,
+            )
+            null -> if (label.isNotEmpty()) {
+                drawLabel(
+                    label, center, availableWidth, availableHeight,
+                    held, palette, alpha, textMeasurer, style,
+                )
+            }
         }
     }
+    if (uprightIn == 0f) content() else rotate(-uprightIn, center) { content() }
 }
 
 /**
@@ -919,20 +1133,48 @@ fun DrawScope.drawTouchEditorOverlay(
         )
     }
 
+    // Straight from the resolved layout, so the control drawn as broken is by
+    // construction the control the validator refused. Recomputing here is what
+    // would let the canvas and the audit disagree.
+    val invalid = layout.invalidControlIds
+
     layout.controls.forEach { control ->
         val bounds = control.hitBounds()
         val target = control.id in targets
-        drawRect(
-            color = (if (target) palette.pressedOutline else palette.idleOutline).copy(
-                alpha = if (target) 0.95f else 0.4f,
-            ),
-            topLeft = bounds.topLeft,
-            size = bounds.size,
-            style = Stroke(width = if (target) SELECTED_WIDTH else UNSELECTED_WIDTH),
-        )
-        // Corner handles on the control the contextual bar is naming, so a
-        // multi-control selection still says which one is the reference.
-        if (control.id == primaryId) drawSelectionHandles(bounds, palette.pressed)
+        val broken = control.id in invalid
+        // Turned by the angle the control's BOX is turned by, which is not the
+        // same as the angle its artwork carries: a bean's contour is rotated
+        // inside an upright box, and a round button is rotation-invariant.
+        // See ResolvedTouchControl.outlineRotationDegrees.
+        rotate(control.outlineRotationDegrees, Offset(control.centerX, control.centerY)) {
+            if (broken) {
+                // A wash rather than a fill, so the artwork underneath stays
+                // readable: the user has to recognize WHICH control this is in
+                // order to fix it.
+                drawRect(
+                    color = palette.error.copy(alpha = ERROR_TINT_ALPHA),
+                    topLeft = bounds.topLeft,
+                    size = bounds.size,
+                )
+            }
+            drawRect(
+                color = when {
+                    broken -> palette.error
+                    target -> palette.pressedOutline.copy(alpha = SELECTED_ALPHA)
+                    else -> palette.idleOutline.copy(alpha = UNSELECTED_ALPHA)
+                },
+                topLeft = bounds.topLeft,
+                size = bounds.size,
+                style = Stroke(
+                    width = if (broken || target) SELECTED_WIDTH else UNSELECTED_WIDTH,
+                ),
+            )
+            // Corner handles on the control the menu is naming, so a
+            // multi-control selection still says which one is the reference.
+            if (control.id == primaryId) {
+                drawSelectionHandles(bounds, if (broken) palette.error else palette.pressed)
+            }
+        }
     }
 }
 
@@ -954,6 +1196,9 @@ private fun DrawScope.drawSelectionHandles(bounds: Rect, color: Color) {
         bounds.topLeft, bounds.topRight, bounds.bottomLeft, bounds.bottomRight,
     ).forEach { corner -> drawCircle(color, HANDLE_RADIUS, corner) }
 }
+
+/** Where the fill reaches the centre of the pad and starts sitting behind the legend. */
+private const val ANALOG_TRIGGER_LABEL_FLIP = 0.5f
 
 private const val OUTLINE_WIDTH = 2f
 
@@ -1011,3 +1256,10 @@ private const val GUIDE_WIDTH = 2f
 private const val SELECTED_WIDTH = 4f
 private const val UNSELECTED_WIDTH = 2f
 private const val HANDLE_RADIUS = 7f
+
+/** Selected outlines are near-solid; unselected ones only hint at the region. */
+private const val SELECTED_ALPHA = 0.95f
+private const val UNSELECTED_ALPHA = 0.4f
+
+/** A wash over a control that does not fit, faint enough to read through. */
+private const val ERROR_TINT_ALPHA = 0.22f

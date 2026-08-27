@@ -1,14 +1,18 @@
 package dev.picoswitch.companion.data
 
 import android.content.Context
-import androidx.core.content.edit
-import dev.picoswitch.bridge.touch.TouchLayoutOverride
 import dev.picoswitch.bridge.touch.TouchLayoutOverrideJsonCodec
 import dev.picoswitch.bridge.touch.TouchLayoutOverrideStore
 import dev.picoswitch.bridge.touch.TouchOverrideDecodeResult
 import dev.picoswitch.bridge.touch.TouchProfileId
 
-/** One versioned, app-private sparse override document per touch profile. */
+/**
+ * The very first release's single sparse override document, per personality.
+ *
+ * Read-only and read once: [AndroidTouchProfileStore] migrates whatever is here
+ * into an instance document the first time a personality is opened. The file is
+ * never written or deleted, so the pre-2.0 layout stays recoverable by hand.
+ */
 class AndroidTouchLayoutOverrideStore(context: Context) : TouchLayoutOverrideStore {
     private val preferences = context.getSharedPreferences(FILE_NAME, Context.MODE_PRIVATE)
 
@@ -25,14 +29,6 @@ class AndroidTouchLayoutOverrideStore(context: Context) : TouchLayoutOverrideSto
         }
         // Deliberately do not delete an invalid/future raw document here. A
         // later app may understand it, and runtime safely uses the shipped default.
-    }
-
-    override fun save(value: TouchLayoutOverride) {
-        preferences.edit { putString(key(value.profileId), TouchLayoutOverrideJsonCodec.encode(value)) }
-    }
-
-    override fun delete(profileId: TouchProfileId) {
-        preferences.edit { remove(key(profileId)) }
     }
 
     private fun key(profileId: TouchProfileId) = "profile_${profileId.key}"

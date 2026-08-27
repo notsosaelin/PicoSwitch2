@@ -1,5 +1,7 @@
 package dev.picoswitch.companion.data
 
+import dev.picoswitch.bridge.touch.TouchToolbarEdge
+import dev.picoswitch.bridge.touch.TouchToolbarPlacement
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -21,12 +23,12 @@ class TouchGamepadSettingsTest {
         haptics: Boolean = true,
         deadzone: Float = TouchGamepadSettings.DEFAULT_DEADZONE,
         background: String? = null,
-        dock: String? = null,
+        toolbar: String? = null,
         grid: Boolean = false,
         snap: Boolean = true,
         doubleTapHold: Boolean = true,
     ) = TouchGamepadSettingsCodec.decode(
-        opacity, dim, haptics, deadzone, background, dock, grid, snap, doubleTapHold,
+        opacity, dim, haptics, deadzone, background, toolbar, toolbar, grid, snap, doubleTapHold,
     )
 
     @Test fun `the defaults are usable without visiting the settings`() {
@@ -86,16 +88,52 @@ class TouchGamepadSettingsTest {
             }
     }
 
-    @Test fun `an unknown or absent toolbar dock resolves to the shipped edge`() {
+    @Test fun `an unknown or absent toolbar placement resolves to the shipped edge`() {
         // Persisted by key, never by ordinal: reordering the enum must not move
         // somebody's toolbar to a different edge, and an unreadable value must
         // not leave the editor with no toolbar position at all.
-        assertEquals(TouchEditorDock.Bottom, decode().editorToolbarDock)
-        assertEquals(TouchEditorDock.Bottom, decode(dock = "").editorToolbarDock)
-        assertEquals(TouchEditorDock.Bottom, decode(dock = "sideways").editorToolbarDock)
-        TouchEditorDock.entries.forEach { option ->
-            assertEquals(option, decode(dock = option.key).editorToolbarDock)
+        val fallback = TouchToolbarPlacement.Default
+        assertEquals(fallback, decode().editorToolbarLandscape)
+        assertEquals(fallback, decode(toolbar = "").editorToolbarLandscape)
+        assertEquals(fallback, decode(toolbar = "sideways").editorToolbarLandscape)
+        assertEquals(fallback, decode(toolbar = "float:").editorToolbarLandscape)
+        assertEquals(fallback, decode(toolbar = "float:nope,0.5").editorToolbarLandscape)
+        TouchToolbarEdge.entries.forEach { option ->
+            assertEquals(
+                TouchToolbarPlacement.Docked(option),
+                decode(toolbar = option.key).editorToolbarLandscape,
+            )
         }
+    }
+
+    @Test fun `a floating toolbar placement round trips and stays inside the region`() {
+        val floating = TouchToolbarPlacement.Floating(0.42f, 0.77f)
+        val encoded = TouchGamepadSettingsCodec.encodePlacement(floating)
+        assertEquals(floating, TouchGamepadSettingsCodec.decodePlacement(encoded))
+        // Out-of-range text is clamped rather than refused: the worst case is a
+        // toolbar the user has to move again, not an editor with no toolbar.
+        assertEquals(
+            TouchToolbarPlacement.Floating(1f, 0f),
+            TouchGamepadSettingsCodec.decodePlacement("float:9.0,-4.0"),
+        )
+    }
+
+    /**
+     * Landscape and portrait are remembered separately, because a placement that
+     * suits a wide window rarely suits a tall one.
+     */
+    @Test fun `the two window shapes keep their own toolbar placement`() {
+        val settings = TouchGamepadSettings.Default
+            .withEditorToolbar(landscape = true, TouchToolbarPlacement.Docked(TouchToolbarEdge.Right))
+            .withEditorToolbar(landscape = false, TouchToolbarPlacement.Floating(0.1f, 0.2f))
+        assertEquals(
+            TouchToolbarPlacement.Docked(TouchToolbarEdge.Right),
+            settings.editorToolbar(landscape = true),
+        )
+        assertEquals(
+            TouchToolbarPlacement.Floating(0.1f, 0.2f),
+            settings.editorToolbar(landscape = false),
+        )
     }
 
     /**

@@ -424,11 +424,28 @@ host tests, and (mirrored) the Kotlin encoder: [`tools/fixtures/android_controll
 `tools/check_android_descriptor_parity.py` fails loudly if the two languages ever drift — a one-sided
 edit would not break a build, it would silently stop the handheld being recognized.
 
-**Input report 1 (26 bytes on the wire):** report ID, six axes, two button bytes, hat (v1, bytes 0–9),
-then gyro X/Y/Z and accel X/Y/Z as `int16` LE (10–21), battery (22), flags (23), and a 16-bit
-millisecond motion timestamp (24–25). Flags: `0x01` charging, `0x02` motion valid, `0x04` battery
-valid. Motion and battery are published only when their validity bit is set, so idled sensors clear
-rather than latch a stale sample.
+**Input report 1 (27 bytes on the wire, bridge contract 4):** report ID, six axes (1–6), **three**
+button bytes (7–9), hat (10), then gyro X/Y/Z and accel X/Y/Z as `int16` LE (11–22), battery (23),
+flags (24), and a 16-bit motion timestamp in 100 µs ticks (25–26). Flags: `0x01` charging, `0x02`
+motion valid, `0x04` battery valid. Motion and battery are published only when their validity bit is
+set, so idled sensors clear rather than latch a stale sample.
+
+> **Contract 4 moved every field after the buttons by one byte.** Buttons 1..17 no longer fit in two
+> bytes: usage 15 is C/GameChat and usages **16/17 are the Pro Controller 2 grip buttons GL/GR**,
+> added 2026-08-26. Contract 3 had exactly one pad bit left and two buttons were needed, so the
+> field became three bytes wide and the hat moved from 9 to 10. This is the first offset-shifting
+> change since v2 — a contract-3 app against contract-4 firmware would read motion and battery from
+> the wrong offsets, which is precisely why identification is an exact descriptor match: the older
+> descriptor simply is not this one, so the firmware falls back to the v1 profile and the version
+> mismatch is reported rather than silently misparsed. **Reflash the adapter when updating the APK
+> across this boundary.**
+>
+> GL/GR reuse destinations that already existed rather than inventing any: the bridge's own button
+> profile names usages 16/17 as `JP_BUTTON_A4`/`A5`, which `NS2_BASE_BUTTON_MAP` already routed to
+> `NS2_DST_GL`/`NS2_DST_GR` and `ns2_kbm_apply_destination` raises as `SWITCH_EXTRA_GL`/`GR` — the
+> same bits `switch_pro2_encode.c` has always written. Only the naming is new. That profile is
+> deliberately separate from the shared sequential fallback, so a generic pad declaring seventeen
+> buttons does not thereby acquire grip presses.
 
 **Output report 2 (5 bytes):** report ID, rumble left, rumble right, player number (0 = none), flags
 (`0x01` = motion wanted).

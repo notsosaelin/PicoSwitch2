@@ -390,6 +390,156 @@ class TouchLatchOutputTest {
     // ------------------------------------------------------------------ helpers
 
     /** The host's tick driver: ask for the deadline, tick at exactly that instant, repeat. */
+    // ------------------------------------------------------------------- cancel
+
+    /**
+     * The slide is reversible until the finger lifts.
+     *
+     * Committing on the way out and cancelling on the way back is the same
+     * continuous motion, and it removes the one unforgiving moment in this
+     * gesture: a slide that had passed the commit distance used to be final, so
+     * a user who changed their mind had to lift off and then press and hold the
+     * control to undo a hold they never wanted.
+     */
+    @Test fun `sliding back to the origin cancels the hold it just made`() = runTest {
+        start(backgroundScope)
+        val second = armEngage(MS)
+        val settled = second + config.latchEngageThresholdNanos
+
+        slide(commitDistance() * 1.2f, settled + 20 * MS)
+        assertEquals("out past the commit distance locks it", latched, engagedIds())
+        assertEquals(1, gamepad.diagnostics().latchesEngaged)
+
+        // Back toward the origin, but still outside the cancel radius: the hold
+        // is untouched. Halfway is deliberately inside the BAND, which is the
+        // whole reason the band exists.
+        slide(cancelDistance() * 1.8f, settled + 30 * MS)
+        assertEquals("still held in the band", latched, engagedIds())
+        assertEquals(0, gamepad.diagnostics().latchesCancelled)
+
+        // Inside the radius: the hold comes off.
+        slide(cancelDistance() * 0.5f, settled + 40 * MS)
+        assertEquals("back home cancels it", emptySet<String>(), engagedIds())
+        assertEquals(1, gamepad.diagnostics().latchesCancelled)
+        assertEquals(
+            "and the control is offered again rather than simply dropped",
+            latched,
+            gamepad.engine.armedControlIds(),
+        )
+    }
+
+    /**
+     * The console must not be able to tell that any of it happened while the
+     * finger is down, and the release afterwards has to be an ordinary one.
+     */
+    @Test fun `a cancelled gesture releases like an ordinary press`() = runTest {
+        start(backgroundScope)
+        val second = armEngage(MS)
+        val settled = second + config.latchEngageThresholdNanos
+        slide(commitDistance() * 1.2f, settled + 20 * MS)
+        slide(cancelDistance() * 0.5f, settled + 40 * MS)
+
+        assertEquals(
+            "no edge from committing, and none from cancelling",
+            listOf(true, false, true),
+            held,
+        )
+        up(settled + 60 * MS)
+        advanceTo(settled + 5 * SECOND)
+
+        assertEquals("one release, at the finger's own lift", listOf(true, false, true, false), held)
+        assertEquals(emptySet<String>(), gamepad.engine.latchedControlIds())
+        assertNull("nothing timed is left over", gamepad.nextDeadlineNanos())
+    }
+
+    /**
+     * The other half of the hysteresis: cancelling returns the contact to ARMED,
+     * so a user who overshot can simply slide out again without lifting off.
+     */
+    @Test fun `sliding out again after a cancel locks it once more`() = runTest {
+        start(backgroundScope)
+        val second = armEngage(MS)
+        val settled = second + config.latchEngageThresholdNanos
+        slide(commitDistance() * 1.2f, settled + 20 * MS)
+        slide(cancelDistance() * 0.5f, settled + 40 * MS)
+        assertEquals(emptySet<String>(), engagedIds())
+
+        slide(commitDistance() * 1.2f, settled + 60 * MS)
+        assertEquals(latched, engagedIds())
+        assertEquals(2, gamepad.diagnostics().latchesEngaged)
+        assertEquals(1, gamepad.diagnostics().latchesCancelled)
+
+        up(settled + 80 * MS)
+        advanceTo(settled + 5 * SECOND)
+        assertEquals("and it outlives the finger", latched, gamepad.engine.latchedControlIds())
+    }
+
+    /**
+     * The reason there are two distances and not one.
+     *
+     * A thumb parked on a single threshold produces a stream of lock/unlock
+     * transitions, and every one of them is a real change to what the console is
+     * told once the finger lifts. Here the contact crosses the COMMIT distance
+     * repeatedly and never comes near the cancel radius, so nothing after the
+     * first crossing may change at all.
+     */
+    @Test fun `jitter across the commit distance cannot flap the hold`() = runTest {
+        start(backgroundScope)
+        val second = armEngage(MS)
+        val settled = second + config.latchEngageThresholdNanos
+        slide(commitDistance() * 1.02f, settled + 20 * MS)
+        assertEquals(latched, engagedIds())
+
+        var time = settled + 30 * MS
+        listOf(0.98f, 1.03f, 0.95f, 1.10f, 0.90f, 1.01f, 0.99f).forEach { fraction ->
+            slide(commitDistance() * fraction, time)
+            time += 10 * MS
+            assertEquals("at ${fraction}x the commit distance", latched, engagedIds())
+        }
+        assertEquals("locked exactly once", 1, gamepad.diagnostics().latchesEngaged)
+        assertEquals("and never cancelled", 0, gamepad.diagnostics().latchesCancelled)
+        assertEquals("no edges either", listOf(true, false, true), held)
+    }
+
+    /**
+     * A boundary during the reversible window is the same boundary as any other:
+     * everything goes, and nothing pending can bring it back.
+     */
+    @Test fun `a boundary during a cancellable hold cannot resurrect it`() = runTest {
+        TouchReleaseReason.entries.forEach { reason ->
+            states.clear()
+            start(backgroundScope)
+            val second = armEngage(MS)
+            val settled = second + config.latchEngageThresholdNanos
+            slide(commitDistance() * 1.2f, settled + 20 * MS)
+            assertEquals("$reason: locked first", latched, engagedIds())
+
+            gamepad.release(reason)
+            assertEquals("$reason left it held", emptySet<String>(), engagedIds())
+            assertEquals("$reason left it pressed", false, held.last())
+
+            // The finger is still on the glass as far as the platform knows, so
+            // the rest of the gesture still arrives. None of it may bring the
+            // hold back.
+            slide(cancelDistance() * 0.5f, settled + 40 * MS)
+            slide(commitDistance() * 1.4f, settled + 60 * MS)
+            up(settled + 80 * MS)
+            advanceTo(settled + 5 * SECOND)
+
+            assertEquals("$reason: still nothing held", emptySet<String>(), engagedIds())
+            assertEquals("$reason: still nothing pressed", false, held.last())
+            assertNull("$reason left timed work behind", gamepad.nextDeadlineNanos())
+        }
+    }
+
+    /** The one control this suite drives, as a set, for the assertions above. */
+    private val latched = setOf(TouchLayoutV1.SHOULDER_LEFT)
+
+    private fun engagedIds() = gamepad.engine.latchedControlIds()
+
+    private fun cancelDistance(): Float =
+        config.latchCancelDistanceUnits * resolved.region.unitScale
+
     private fun advanceTo(nowNanos: Long) {
         while (true) {
             val deadline = gamepad.nextDeadlineNanos() ?: return

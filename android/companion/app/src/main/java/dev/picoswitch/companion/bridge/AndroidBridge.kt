@@ -91,9 +91,14 @@ class AndroidBridge(
         touch.setLatchObserver { event ->
             val detail = when (event) {
                 is TouchLatchEvent.Engaged ->
-                    "control=${event.controlId} state=latched reason=double_tap_hold_slide"
+                    "control=${event.controlId} state=latched reason=double_tap_hold_slide" +
+                        // Only an analog trigger has a level; for everything else
+                        // "held" is the whole statement.
+                        (event.analogValue?.let { " level=%.2f".format(it) } ?: "")
                 is TouchLatchEvent.Released ->
                     "control=${event.controlId} state=released reason=press_hold"
+                is TouchLatchEvent.Cancelled ->
+                    "control=${event.controlId} state=unlatched reason=slid_back"
                 is TouchLatchEvent.Cleared ->
                     "controls=${event.controlIds.sorted().joinToString(",")} " +
                         "state=released reason=${event.reason.name}"
@@ -186,12 +191,14 @@ class AndroidBridge(
         input.setFaceLayout(layoutStore.load(input.selectedDescriptor))
     }
 
+    /**
+     * Choose a PHYSICAL source's face presentation.
+     *
+     * Only physical: the on-screen controller's diamond follows the emulated
+     * personality now and is not separately selectable, so there is no touch
+     * branch here to keep in step with it.
+     */
     fun setFaceLayout(layout: ControllerFaceLayout) {
-        if (touch.active) {
-            layoutStore.saveTouch(layout)
-            applyLayout(layout)
-            return
-        }
         val descriptor = input.selectedDescriptor ?: return
         layoutStore.save(descriptor, layout)
         applyLayout(layout)

@@ -158,6 +158,51 @@ returns directly to Pro2. Config is never part of the single-tap cycle, and the 
 persisted across power cycles. Host-visible identity changes (colors) require the management
 `reenumerate` command; they are not picked up without a re-enumeration.
 
+**Android bridge contract 4 — GL/GR (added 2026-08-26; source-verified, hardware validation open).**
+The Pro Controller 2 grip buttons are now reachable from the companion. They always existed below
+the bridge: `switch_pro2_encode.c` writes `SWITCH_EXTRA_GL`/`GR` to report `0x09`, `ns2_build_report_05`
+to report `0x05`, and `NS2_BASE_BUTTON_MAP` already routed `JP_BUTTON_A4`/`A5` to `NS2_DST_GL`/`GR`.
+What was missing was any way for the Android bridge to reach them: `ControllerButton` had fifteen
+entries, the wire's button field was two bytes carrying exactly fifteen usages, and the descriptor
+had ONE pad bit left. Two buttons did not fit, so contract 4 widens the field to three bytes —
+**the first offset-shifting change since v2**: the hat moved from wire byte 9 to 10 and the whole
+vendor extension (motion, battery, flags, timestamp) with it, so the v1 report is no longer a prefix
+of the v2 one. Strict identification is unchanged and is what makes that safe: a contract-3 APK
+against contract-4 firmware fails the exact descriptor match, falls back to the v1 profile and
+reports the skew, rather than silently reading motion from the wrong offsets. **Reflash when
+updating the APK across this boundary.** The firmware change is one table: `gamepad_quirks_android_bridge()`
+names usages 16/17 as `A4`/`A5`, kept separate from the shared `SEQ_BUTTON_MAP` so no generic pad
+declaring seventeen buttons acquires grip presses; `BLE_MAX_BUTTONS` went 16 → 17 so a location is
+recorded for usage 17. On the touch side GL/GR are **optional** Pro2 controls — bound by the profile,
+present in the CATALOG, `inDefaultLayout = false` — so the shipped layout is byte-for-byte unchanged
+and saved layouts load unmodified, while the editor can add, move, scale, rotate, latch and delete
+them like any other digital button. No other personality exposes them.
+Under Editor 2.0 "optional" no longer means "present and hidden": the catalog and the layout are
+separate things, so an unplaced control is simply absent and Add Control offers the whole catalog
+unconditionally. Adding one at its authored spot restores its cluster membership too, so
+delete-then-re-add is not a way to quietly break a group. Verified on device (pre-2.0 UI): the
+default Pro2 layout is unchanged, the dialog offers "GL / GR — Optional, not in the default layout",
+and adding each places it in the outer bottom corners.
+
+**NSO GameCube `Z` on PC/Steam — fixed 2026-08-26, source-verified, PC hardware validation open.**
+`Z` worked on a Switch 2 and did nothing at all on PC/Steam. Root cause:
+`switch_gc_encode_report05()` hardcoded the ZR bit (byte0 `0x80`) to zero, on the written
+assumption that GameCube `Z` had "no representable bit position in this shared format". Report
+`0x0A` — the console path — carries `Z` in its own GC slot, so the console was unaffected; report
+`0x05` is the only report a PC host ever selects, and it carried nothing. `ZL` was emitted all
+along, which is the same lopsidedness `ns2_seam.c` already had to work around
+("`SWITCH_MASK_ZL` has a live bit in the GC encoder, `SWITCH_MASK_ZR` does not"). **The assumption
+was wrong: GameCube `Z` IS the ZR control** — the console's own Test Input screen names it "ZR",
+and a genuine NSO GameCube Controller's `Z` is recognized as ZR by Windows/Steam, which it could
+only be by setting that bit. Physical legend and host semantic are separate facts and both are now
+stated wherever this control is described: the shell (and the Touch Gamepad) print **`Z`**, the
+host-facing logical control is **ZR**. The fix is one line — report `0x05` now sets ZR from
+`GC_MASK_Z`, sourced from `gc_extra` alone exactly as report `0x0A` does, so the two reports cannot
+disagree about whether it is pressed. Nothing on the console path changed; trigger detents really
+do have no slot in `0x05` and are unchanged (a PC reads travel from the analog tail at
+`0x3C`/`0x3D`). Pinned by `tools/test_switch_gc_report.c` cases 13/15/16/17 and, on the touch side,
+by `TouchProfilesTest`'s legend-versus-binding test.
+
 ## Input sources
 
 The console-facing stream has exactly one active logical owner. The firmware keeps a bounded
@@ -368,33 +413,106 @@ console-facing protocol owner. Reference hardware is an AYN Thor (Android 13 / A
   `dev.picoswitch.bridge.touch`; its current directory under `android/companion/` is historical,
   not Android ownership. It now owns an exhaustive Pro Controller 2 / NSO GameCube / sideways
   Joy-Con 2 Left / sideways Joy-Con 2 Right profile catalog, immutable templates and fixed output
-  bindings, sparse versioned per-profile overrides, composition, editor operations, schema policy,
+  bindings, versioned per-profile layout documents, composition, editor operations, schema policy,
   validation, and contact quarantine across live personality replacement. Android owns only the
   Compose renderer/pointer/editor UI and app-private `SharedPreferences` store. `Config` or
   unconfirmed personalities stay neutral; profile changes release and swap without tearing down
   the Classic controller link.
+  **Editor 2.0 (added 2026-08-26, source-tested; device and console validation open):** a layout is
+  now an INSTANCE-BASED scene rather than a sparse patch over an immutable stencil. Two statements
+  carry the whole design and are pinned by `TouchLayoutDocumentTest`: *control instance identity is
+  not logical button identity* (several instances may share a binding and stay separate objects),
+  and *default layout membership is not personality capability* (the catalog says what may exist,
+  `inDefaultLayout` says only what the shipped arrangement places). Schema version **2** stores a
+  list of instances; version 1 is read once and migrated by `TouchLayoutMigration`, with the
+  pre-migration text kept beside it under a `.v1` key.
+  What that buys: duplicate controls (two A buttons, both pressing A), real delete-and-re-add
+  instead of hide/show, arbitrary grouping of any controls at all, free rotation with magnetic snap
+  to the authored orientation and its quarter turns, explicit z-order, session undo/redo over whole
+  revisions, a Preview mode that plays the working draft without leaving the editor, and a toolbar
+  that floats anywhere or docks to any of the four safe edges. The runtime aggregates per INSTANCE
+  and resolves per binding only at publish — digital by OR, triggers by max, sticks and the D-pad by
+  contact ownership with hand-off — so releasing one of two A buttons cannot release the other
+  (`TouchDuplicateControlTest`). Rotation is visual and hit geometry only: hit testing
+  inverse-transforms the point, the audit measures rotated screen-space extents, and no binding,
+  D-pad direction or analog-trigger travel axis moves with it.
   The layout editor is a direct-manipulation edit MODE rather than a settings panel: the whole
-  controller stays drawn, input forwarding pauses, and the only chrome is a small floating toolbar
-  (dockable to any edge, wrapping rather than pushing Save off a short window) plus a contextual bar
-  that takes no touches of its own. Tap selects, drag moves, pinch resizes and long-press extends
-  the selection through one gesture loop; the chrome fades while a control is being manipulated.
-  Group editing expands a selection to its authored cluster, and what is outlined is exactly what an
+  controller stays drawn, input forwarding pauses, and the only chrome is ONE small movable toolbar
+  of twelve constant slots (`handle | Add | Select several | Duplicate | Group | Delete | Undo |
+  Redo | More | Preview | Save | Done`). A selection changes what those buttons DO and what the More
+  menu contains; it never adds a second bar and never changes the slot count, so the toolbar cannot
+  reflow under a finger. Everything contextual — size, rotation, z-order, hold mode, exact numbers,
+  reset — lives in the More menu, headed by the name of the control it will act on. Tap selects, an
+  explicit Select mode extends the selection, drag moves, and two fingers scale and rotate together
+  through one gesture loop; a whole gesture is one undo entry. The toolbar is dragged by a handle
+  after a long press, previews its dock candidate with a haptic tick, remembers landscape and
+  portrait placements separately, and its top-left is coerced into the interaction-safe rectangle
+  unconditionally by `TouchToolbarLayout.topLeft` — a toolbar that cannot be reached has no Done
+  button, so reachability is a post-condition rather than a special case
+  (`TouchToolbarPlacementTest`).
+  Geometry problems are drawn ON the offending control — red outline, translucent red fill, corner
+  handles in the error colour — from `ResolvedTouchLayout.invalidControlIds`, which is derived from
+  the same findings that decide whether the layout may be played. An editor that recomputed its own
+  idea of validity could paint a control red while the layout played, and the user would have no way
+  to tell which of the two was lying (`TouchInvalidControlTest`).
+  Controls are named the way they are DRAWN wherever a person reads them — the Add picker, the menu
+  header, the inspector title, the delete notice and the audit's own sentences all resolve through
+  `TouchControlNaming`. Pro Controller 2's face controls carry no authored legend (their letter comes
+  from the binding at draw time), so anything naming them from their ids produced "face-north" and
+  "face-east"; those are internal cardinal slots and not buttons anyone has pressed. Duplicates keep
+  the name and gain a copy number (`B (2)`), while findings still identify instances by id
+  (`TouchControlNamingTest`).
+  Group editing expands a selection to its cluster, and what is outlined is exactly what an
   edit moves. Optional grid and snapping (`TouchEditorAlignment`, pure, over resolved geometry) pull
   a movement onto region centre lines, other controls, safe edges or grid lines while never making a
   position unreachable, and apply one correction to the whole selection so cluster spacing survives.
+  The obsolete Nintendo/Xbox face-layout toggle is **gone**; the Touch Gamepad menu now switches the
+  real controller personality through `switchPersonality`, the same lifecycle the adapter screen
+  uses, with no Touch-only personality state.
   Layouts are organized into per-personality **profiles**: an immutable synthesized `Default` plus up
   to twelve user profiles, with create/duplicate/rename/reset/delete, unsaved-change confirmation,
   and a save-onto-Default path that creates a named profile instead of overwriting the one layout
   that is always recoverable. The factory profile is never persisted, which makes that protection
   structural. The pre-profile single override document is adopted once on upgrade rather than
   discarded. `TouchProfileLibraryJsonCodec` also encodes a single profile as a standalone document —
-  the export/import foundation. Bounded uniform scale, hide/show, per-selection/profile reset,
-  hit-bound preview and blocking audit feedback all remain, and none of it mutates a shipped default.
+  the export/import foundation. Bounded uniform scale, precise numeric position/size/rotation entry,
+  per-selection/profile reset, hit-bound preview and blocking audit feedback all remain, and none of
+  it mutates a shipped default.
   Contact ownership remains keyed on the platform's stable contact identifier (never its array
   index), circular stick clamping with a
   rescaling radial deadzone, eight D-pad sectors with radial and angular hysteresis, a declarative
   layout resolved into the interaction-safe rectangle and mechanically audited for overlap/target
   size/bounds, and one idempotent release-all invoked from every invalidating boundary.
+  **Editor 2.0 production-polish pass (2026-08-27, source-tested and device-verified on the
+  companion UI; console-in-the-loop still open).** Six defects fixed, each with regression coverage:
+  1. *Rotation was effectively impossible to start.* The magnetic snap computed its target from the
+     STORED angle plus one frame's delta, so a control sitting on a snap target could never leave
+     it — every frame proposed stored-plus-a-fraction, the magnet pulled it back, the stored angle
+     never moved, and the next frame asked the identical question. Rotation only escaped when a
+     single frame happened to carry more than the 6° snap radius, which on a 120 Hz panel means
+     flinging a whole hand. `snappedRotationDelta` now takes the gesture's own accumulated raw
+     intent, which makes the magnet a DETENT rather than a wall. No saved semantics, snap radius or
+     snap target changed; scale and rotation still both apply from the same frame.
+  2. The GameCube X/Y bean LETTERS were drawn tilted and selection outlines were drawn rotated,
+     because artwork rotation, outline rotation and total visual rotation had been collapsed into
+     one angle. They are three separate questions and are now three properties
+     (`artworkRotationDegrees`, `outlineRotationDegrees`, `visualRotationDegrees`).
+  3. Any drag destroyed the undo history: the gesture-end handler called `history.reset` to "rebase"
+     onto the pre-drag document, which clears both stacks. Pushing the endpoint is all that was ever
+     needed (`TouchEditorHistoryTest`).
+  4. Deleting a grouped control counted the TAPPED ids rather than the effective targets, so four
+     face buttons vanished and the notice said "A deleted" — a destructive action under-reporting
+     itself (`TouchGroupTransformTest`).
+  5. The undo notice used Material's `Snackbar`, which lays itself out at the width it is offered —
+     the whole window here — so "A deleted UNDO" arrived as a bar most of the screen wide. It is now
+     content-sized with a ceiling, in the editor's own chrome colours, and steps over a
+     bottom-docked toolbar instead of covering Delete/Undo/Redo.
+  6. The personality chips wrapped without vertical spacing, so the fourth controller sat flush
+     against the first row.
+  Copy was cut to what the headings and controls do not already say — the re-enumeration warning,
+  the hold gesture, recovery and migration text are kept because none of them can be guessed — and
+  the More menu's three bare latch rows (`Default / Enabled / Disabled`) gained the one caption that
+  makes them mean anything.
   **Double-tap-hold-slide, with retrigger (added 2026-08-26, device-validated for gesture
   recognition, mash-immunity, visuals and lifecycle clearing; in-game feel open):** double-tapping a
   digital control, HOLDING the second press and then SLIDING away locks a persistent hold, so a
@@ -408,7 +526,24 @@ console-facing protocol owner. Reference hardware is an AYN Thor (Android 13 / A
   ARMS the gesture and a deliberate slide of `latchCommitDistanceUnits` (64 logical units) from the
   press origin commits it; nothing a game asks a player to do involves pressing a button and dragging
   off it. While armed the control is still an ordinary held button and letting go simply ends the
-  press. CREATING a hold is deliberately harder than removing one — engage is a leading tap, a dwell
+  press. **The slide is reversible until the finger lifts (added 2026-08-26, device-verified):**
+  bringing the same contact back within `latchCancelDistanceUnits` of where the press began takes
+  the hold off again, returns the contact to ARMED so sliding out re-locks it, and leaves an
+  ordinary press that releases normally on lift. Nothing is published across either transition —
+  the finger is still down, so the control is physically pressed throughout and the console sees no
+  edge at all; only the hold that would have OUTLIVED the finger changes. The cancel radius is
+  `gestureSlopUnits` (24 logical units) rather than a new constant, because it is the same question
+  that constant already answers — is this finger still essentially where it started? — and it sits
+  well inside the 64-unit commit distance so the pair is a hysteresis band rather than one
+  threshold a resting thumb can flap across; `TouchLatchConfig` refuses a configuration that closes
+  the band. Cancelling is gated on the hold having been committed BY THE CONTACT STILL DOWN, which
+  is load-bearing rather than bookkeeping: a press on an already-held control begins inside the
+  radius by definition, so without that gate the smallest jitter would silently drop a hold made
+  earlier. It fires one `LatchReleased` tick and reopens the padlock, logs
+  `state=unlatched reason=slid_back`, and carries its own `latchesCancelled` counter in the touch
+  diagnostics line — "the gesture completes and the user keeps taking it back" is a different fault
+  from "it completes when nobody meant it to". An analog trigger cancels the same way and its held
+  LEVEL goes with the hold. CREATING a hold is deliberately harder than removing one — engage is a leading tap, a dwell
   of `2 x holdThresholdNanos` (360 ms) and the slide; release is a single press held for the base
   itself (180 ms), no leading tap and no slide — because an unwanted hold is a stuck button the user
   has to diagnose while a lost one is one gesture away from coming back. Both dwells derive from one
@@ -438,6 +573,150 @@ console-facing protocol owner. Reference hardware is an AYN Thor (Android 13 / A
   fill plus a padlock badge, latch transitions are logged as `controller/touch latch`, and the touch
   diagnostics line carries latch and retrigger counters. `TouchLatchOutputTest` pins every gesture as
   published controller-state edges over a real `ControllerInputState`, not as internal flags.
+  **Analog trigger travel on the NSO GameCube personality (added 2026-08-26; travel geometry
+  root-caused against device measurement and replaced 2026-08-26; console-in-the-loop acceptance
+  open):** the on-screen `L` and `R` now have real travel. Touch the
+  trigger and pull it toward the middle of the screen; how far you pull is how deep the trigger
+  goes, full travel reaches the GameCube terminal click, and the SAME tap-dwell-slide hold gesture
+  every digital control uses locks the trigger at the level the slide ends on. No visible rail,
+  slider or track was added — the trigger is the handle and the travel space is gesture space,
+  costing no permanent gameplay screen area — and no firmware, transport, HID report or cadence
+  changed. **The gesture direction is derived from the control's current position**, never from
+  which trigger it is: the axis points from the resolved control centre at the middle of the
+  interaction-safe rectangle, so a trigger the user drags to the bottom-left pulls up-and-right on
+  the very next gesture with nothing to configure. That direction is taken in the layout's
+  NORMALIZED space, not in pixels, and the difference was measured rather than reasoned: derived in
+  pixels the shipped `L` resolved to `(0.818, 0.575)` on a 1920x1025 handheld, `(0.772, 0.635)` on
+  a 16:10 tablet and `(0.712, 0.703)` on a 4:3 one, so the same authored control produced a gesture
+  ten degrees apart between devices purely because a wider window puts its centre further right.
+  Dividing by the region's extents first makes the pull a property of the LAYOUT — `(0.605, 0.796)`
+  for that control on every window shape — and for top-placed triggers it leans DOWN, which is
+  where a thumb was already going. The visible fill follows the same axis, so it now grows downward
+  on the shipped placement instead of across it. It is frozen for the duration of each gesture
+  (a recomposition or an animating inset must not rotate the axis under a thumb already pulling)
+  and a control parked on the exact centre falls back to the nearest edge's inward normal rather
+  than normalizing noise. Value is the vector PROJECTION onto that axis, so a thumb's natural arc
+  costs nothing and no invisible corridor exists to fall out of; the owning contact keeps the
+  trigger until it lifts, however far outside the visible control it wanders. Full travel is TWO BUDGETS, and the pull ends
+  when it spends either: `Rx = travelFraction (0.50) * min(width, height)` across,
+  `Ry = Rx * verticalTravelRatio (0.50)` down, and
+  `fullTravel(axis) = min(Rx / |axis.x|, Ry / |axis.y|)`. The guarantee that buys is the one the
+  complaint was about: **completing a pull never displaces the finger by more than `Ry` vertically
+  or `Rx` horizontally, whatever direction the axis points.** A purely horizontal axis still
+  resolves to exactly `Rx` and a purely vertical one to exactly `Ry`, unchanged on every region.
+  Two earlier versions are recorded here because both were plausible and both are disproven. One
+  shared distance for every direction (`min(width, height) * 0.50`) came first, and feel testing
+  rejected it: the same pixels are a quarter of a landscape screen's width but half of its height.
+  A weighted BLEND, `|axis.x| * Rx + |axis.y| * Ry`, replaced it and DEVICE MEASUREMENT rejected
+  that too — it charges the horizontal budget in proportion to how much of the AXIS lies along X,
+  but a thumb pulling a top-placed trigger moves down, spends no width, and still paid for it. See
+  `docs/experiments/touch-analog-trigger-vertical-travel-2026-08-26.md`: on an Odin 2 Mini in
+  landscape the shipped `L` needed 985 px of a 1025 px usable height for a downward stroke, and the
+  same stroke on the shipped geometry now needs 404 px (39%), measured the same way. The
+  coordinate pipeline was cleared by the same capture and is NOT a factor: pointer positions arrive
+  in exactly the pixel space the region is built in, with no rotation, density or inset term
+  between them. Which triggers have travel is a property of the PROFILE, not the control:
+  `TouchControlAction.Trigger(analog = true)` is set only on the GameCube `L`/`R`, because only
+  `switch_gc_encode` passes a trigger byte the console acts on; Pro2 and Joy-Con triggers are
+  digital on the far side and still answer fully on the way down. **Nothing is published at
+  pointer-down**, because on this personality full travel IS the terminal click and a speculative
+  press would fire the detent at the start of every deliberate pull; the press resolves later —
+  into a pull past the platform's drag slop, into a deliberate full pull after the same
+  `holdThresholdNanos` base both latch dwells derive from (so "tap it then keep holding it" stays
+  an ordinary held trigger), or into a tap on release that publishes a full pull for one
+  `retriggerReleaseNanos` pulse so the conflating 125 Hz mailbox cannot swallow it. **A press that
+  is DEFINING a hold resolves in a different order**, which was the second correction from device
+  testing. That press — the second of a double tap, which the latch recognizer has already
+  classified as an Engage candidate — is on its way to CHOOSING a level, so resolving it into a
+  full pull first put `255` and the terminal detent on the wire before the slide had selected
+  anything, and a 40% hold arrived as full-click-then-slide-down. On the GameCube personality that
+  click is a gameplay action a partial pull does not have. So a latch-defining press starts with no
+  full-pull resolve pending at all and gets one only when the gesture ARMS, one `holdThresholdNanos`
+  later, by which point the slide that selects the level is available and the arming tick has said
+  so. A press that never slides is still an ordinary held trigger; it just arrives at full travel
+  one base later. **That fallback is a state transition, not only an output.** When it wins it
+  CONSUMES the hold candidate on that contact (`TouchControlLatch.abandonArm`), because otherwise a
+  slide made afterwards could still lock a partial hold — persistent state reached through a
+  gesture the recognizer had already answered as "you are holding the trigger down", which reads as
+  the trigger spontaneously dropping from full to a level nobody chose. After it, the same contact
+  behaves like any other live pull: the value follows the finger and lifting off leaves nothing
+  held. Consumption is scoped to the contact, so lifting and repeating the gesture latches
+  normally. The detent's
+  hysteresis is enforced on the PUBLISHED VALUE and not on a local Boolean, which is the one
+  non-obvious thing here: the firmware seam derives the GameCube click from the trigger byte alone
+  (`> 224`) and discards the `L2`/`R2` bits for a generic bridge source, so every sub-detent value
+  is capped at exactly byte `224` and only the detent itself reaches `255` — see the retune warning
+  in `docs/switch2-gc/mapping.md`. The hold is the SHARED one, not a second system:
+  `TouchControlLatch` still decides *whether* a control is held and the trigger only remembers at
+  what *level*; the single specialization is that an analog trigger measures its commit slide as
+  the projection onto its own axis, so a sideways or outward slide cannot lock a trigger to
+  nothing. A finger always outranks a hold and the hold returns on lift; a tap on a held trigger
+  pulses full (or, when it is already full, pulses a release edge, exactly as the digital retrigger
+  mask does); and pressing-and-holding a held trigger removes the hold AND leaves the same contact
+  armed, so a slide immediately chooses a new level without lifting off. Latched levels ride the
+  same idempotent release-all as every other hold and are dropped at every boundary including a
+  personality change. Visually the pad fills in the CARDINAL direction the USER ACTUALLY SWIPED —
+  down, up, right or left — rather than a rotated diagonal wipe across a rounded pad, which reads
+  as a shading artefact rather than as a level. **What the picture reads and what the value reads
+  are deliberately different questions**, and a diagonal axis is where they part company: the
+  shipped `R` has an inward axis of about `(-0.732, +0.681)`, so a straight downward swipe projects
+  positively onto it and correctly increases travel — but choosing the fill from that axis drew a
+  bar growing LEFT while the thumb moved DOWN. So:
+
+  ```text
+  value  <- projection onto the position-derived inward axis   (unchanged)
+  fill   <- cardinal of the actual swipe displacement          (presentation only)
+  ```
+
+  The swipe direction is established EXACTLY ONCE per contact, at the moment it crosses the same
+  drag slop that turns the press into a pull, from the whole displacement since pointer-down, and
+  is frozen from then on — a thumb sweeps an arc, and re-reading it per frame would flip the bar
+  mid-pull. It is discarded on release, so the next gesture decides again. Before a swipe exists —
+  at rest, or during a press that has not moved far enough to mean anything — the position-derived
+  inward axis supplies the default, which is also what makes an editor move re-present a control
+  immediately without waiting to be pressed. The ENGINE publishes all of it per control
+  (`TouchDiagnosticsSnapshot.analogTriggerFills`) rather than the renderer re-deriving anything,
+  because only the engine holds the frozen values. Nothing about a control's identity or its
+  authored position is encoded, and none of it reaches travel, the detent, the latch or ownership.
+
+  One thing about the RESTING default is worth stating so it is not later mistaken for a rendering
+  bug: untouched, the shipped `L` shows a rightward fill and `R` a leftward one. Both analog
+  triggers occupy the outer slots (`trigger-l`, anchor 0.075; `trigger-r`, anchor 0.925), so they
+  mirror each other and both axes lean across. `zl` now occupies the inner-left slot at anchor
+  0.200 and mirrors `z` in the inner-right slot. `TouchAnalogTriggerGeometryTest` pins both mirror
+  pairs. As soon as either trigger is swiped, the swipe wins. The padlock badge is unchanged; the
+  detent gets one haptic tick on entry only. The
+  diagnostics line carries detent/pulse counters and the live levels by control id, and latch
+  engage events now log `level=`. The authored default swaps only the left-side `L` and `ZL` slots:
+  `L` is at x=60 and `ZL` at x=160; every other control position and all scales are unchanged.
+  Stored layouts load unchanged — no schema field was added. (`TouchAnalogTriggerOutputTest`'s commit
+  assertion is stated against the detent rather than against a particular step of one slide.)
+  **GameCube `z`/`Y` proximity: real, but only in the hit MARGINS (settled 2026-08-27,
+  source-verified; GameCube template revision 2, unchanged from the shipped geometry).** Teaching
+  `TouchLayoutAudit` to measure rotated screen-space extents — needed anyway once any control can be
+  turned — immediately reported `z` overlapping the `Y` bean, which the pre-2.0 audit could not see
+  because it bounded the bean with its UNROTATED box and the bean is authored at −11°. An Editor 2.0
+  pass responded by moving the whole top row from y=42 to y=34. That was the wrong call and has been
+  reverted: the overlap is real but lies ENTIRELY between the two controls' hit MARGINS. Their drawn
+  shapes clear each other by about a unit, which a dense probe through `containsVisual` confirms
+  (`TouchGameCubeDefaultTest`). Both controls therefore remain reliably pressable by aiming at what
+  is drawn, and the established top-row height and every non-L/ZL control position remain unchanged.
+  The audit now classifies an overlap three ways — none, margin-only, artwork — and only an ARTWORK
+  collision blocks. That is the property that actually matters: when drawn shapes collide the router
+  has to let z-order decide what the user pressed, and a control that answers unpredictably is worse
+  than a layout that refuses to load and says why. A courtesy margin, by contrast, is an invitation
+  rather than a claim on space. **Negative knowledge worth keeping:** an audit finding is not on its
+  own a reason to move approved artwork; check first whether the finding is about the drawn shapes or
+  about the margins around them.
+  **KNOWN, pre-existing, unfixed — GameCube `c-stick`/`b` artwork collision near 2:1
+  (characterised 2026-08-27, source-verified).** Separately from the above, at aspect ratios in the
+  band ≈1.945–2.057 the `c-stick` and the small `B` button genuinely overlap in their DRAWN circles,
+  by about four units at the worst point, and the shipped GameCube controller refuses to draw there.
+  That band includes 18:9 displays. It is not an Editor 2.0 regression — the pre-2.0 audit reported
+  it too, and slightly sooner — but no probe shape in the project's established list lands inside the
+  band, so the check had never run there. Fixing it means moving or shrinking approved GameCube
+  artwork, which is a product decision rather than a polish-pass one, so it is pinned by a
+  deliberately named KNOWN-defect test that fails when someone fixes it.
   **Sideways Joy-Con action-cluster orientation (fixed 2026-08-26, device-verified on both halves):**
   the four action controls were placed by reading their logical names as screen positions, so
   `direction-up` was drawn at the top of the display when the shell's up button points at the
@@ -1045,7 +1324,7 @@ concentrated on initialization. The corpus counts and the ranked capture gaps ar
 Standard families, with commands and the current inventory in [`AGENTS.md`](AGENTS.md):
 
 - compiled C host tests — **one manifest, one command**: `pwsh -File tools/run_host_tests.ps1`
-  builds all 70 declared tests from current source into a freshly emptied `build/host-tests` and
+  builds all 72 declared tests from current source into a freshly emptied `build/host-tests` and
   runs only what it built. Covers protocol codecs, report encoders, motion PDU/seam invariants,
   BOOTSEL policy, wake identity, battery, audio control/resampler, virtual-tag store and v3 runtime
   replay, the keyboard/mouse mapping model, keyboard HID report decoding, settings-schema migration,

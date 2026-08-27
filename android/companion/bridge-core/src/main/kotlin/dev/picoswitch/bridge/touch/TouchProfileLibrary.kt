@@ -1,39 +1,37 @@
 package dev.picoswitch.bridge.touch
 
 /**
- * A named set of user customizations for one console-facing controller.
+ * A named layout for one console-facing controller.
  *
  * ```text
  * TouchProfileId (personality)
  *        |
  *        v
- * TouchLayoutTemplate      immutable, shipped
+ * TouchLayoutTemplate           immutable catalog + authored default
  *        |
  *        v
- * TouchLayoutProfile.override    sparse, user-owned
+ * TouchLayoutProfile.document   the user's own scene of instances
  *        |
  *        v
  * TouchLayoutComposer -> TouchLayoutResolver -> ResolvedTouchLayout
  * ```
  *
- * A profile is an ENVELOPE around the existing [TouchLayoutOverride] document,
- * not a second layout representation. The personality, template identity and
- * template revision a profile was authored against are read back off that
- * override rather than stored again beside it: two copies of the same fact drift,
- * and the composer already refuses an override whose template identity does not
- * match the shipped one. The design specification names those fields on the
- * profile, and they are present here — as derived properties.
+ * A profile is an ENVELOPE around a [TouchLayoutDocument], not a second layout
+ * representation. The personality, template identity and template revision it
+ * was authored against are read back off that document rather than stored again
+ * beside it: two copies of the same fact drift, and the composer already refuses
+ * a document whose template identity does not match the shipped one.
  */
 data class TouchLayoutProfile(
     val id: String,
     val name: String,
-    /** The sparse user document. For the factory profile this is always empty. */
-    val override: TouchLayoutOverride,
+    /** The user's layout. For the factory profile this is the authored default. */
+    val document: TouchLayoutDocument,
     val metadata: TouchProfileMetadata = TouchProfileMetadata(),
 ) {
-    val personality: TouchProfileId get() = override.profileId
-    val templateId: String get() = override.templateId
-    val templateRevision: Int get() = override.basedOnRevision
+    val personality: TouchProfileId get() = document.profileId
+    val templateId: String get() = document.templateId
+    val templateRevision: Int get() = document.basedOnRevision
 
     /**
      * Factory profiles are the shipped defaults.
@@ -45,8 +43,10 @@ data class TouchLayoutProfile(
      */
     val isFactory: Boolean get() = id == TouchProfileLibrary.FACTORY_PROFILE_ID
 
-    /** True when the profile changes nothing about the shipped template. */
-    val isPristine: Boolean get() = override.controls.isEmpty()
+    /** True when the profile still describes exactly the shipped arrangement. */
+    val isPristine: Boolean
+        get() = document.controls ==
+            TouchLayoutDocument.authoredDefault(TouchProfileCatalog.require(personality)).controls
 }
 
 /**
@@ -81,7 +81,7 @@ data class TouchProfileLibrary(
     val factoryProfile: TouchLayoutProfile = TouchLayoutProfile(
         id = FACTORY_PROFILE_ID,
         name = FACTORY_PROFILE_NAME,
-        override = TouchLayoutEditor.empty(TouchProfileCatalog.require(personality)),
+        document = TouchLayoutDocument.authoredDefault(TouchProfileCatalog.require(personality)),
     )
 
     /** Factory first, then user profiles in creation order. */
@@ -90,8 +90,8 @@ data class TouchProfileLibrary(
     val selected: TouchLayoutProfile =
         profiles.firstOrNull { it.id == selectedProfileId } ?: factoryProfile
 
-    /** The override the runtime should compose with; `null` means the shipped default. */
-    val activeOverride: TouchLayoutOverride? = selected.override.takeIf { it.controls.isNotEmpty() }
+    /** The layout the runtime should compose. Always a real document now. */
+    val activeDocument: TouchLayoutDocument = selected.document
 
     fun profile(id: String): TouchLayoutProfile? = profiles.firstOrNull { it.id == id }
 
@@ -134,7 +134,7 @@ object TouchProfileLibraryEditor {
             else -> TouchProfileEdit.Applied(library.copy(selectedProfileId = profileId), profileId)
         }
 
-    /** A new empty profile: identical to the shipped default until it is edited. */
+    /** A new profile: identical to the shipped default until it is edited. */
     fun create(
         library: TouchProfileLibrary,
         name: String,
@@ -142,7 +142,7 @@ object TouchProfileLibraryEditor {
     ): TouchProfileEdit = insert(
         library,
         name,
-        TouchLayoutEditor.empty(TouchProfileCatalog.require(library.personality)),
+        TouchLayoutDocument.authoredDefault(TouchProfileCatalog.require(library.personality)),
         nowEpochMs,
     )
 
@@ -161,7 +161,7 @@ object TouchProfileLibraryEditor {
     ): TouchProfileEdit {
         val source = library.profile(sourceId)
             ?: return TouchProfileEdit.Rejected("That layout profile no longer exists")
-        return insert(library, name ?: source.name, source.override, nowEpochMs)
+        return insert(library, name ?: source.name, source.document, nowEpochMs)
     }
 
     fun rename(library: TouchProfileLibrary, profileId: String, name: String): TouchProfileEdit {
@@ -203,7 +203,7 @@ object TouchProfileLibraryEditor {
     }
 
     /**
-     * Store an edited override into a profile.
+     * Store an edited layout into a profile.
      *
      * Saving onto the factory profile does not fail and does not overwrite it:
      * it creates a new user profile carrying the edit and selects that. Refusing
@@ -213,16 +213,16 @@ object TouchProfileLibraryEditor {
     fun save(
         library: TouchProfileLibrary,
         profileId: String,
-        override: TouchLayoutOverride,
+        document: TouchLayoutDocument,
         nowEpochMs: Long,
         newProfileName: String = DEFAULT_NEW_PROFILE_NAME,
     ): TouchProfileEdit {
         val template = TouchProfileCatalog.require(library.personality).defaultTemplate
-        if (override.profileId != library.personality || override.templateId != template.id) {
+        if (document.profileId != library.personality || document.templateId != template.id) {
             return TouchProfileEdit.Rejected("That layout belongs to another controller")
         }
         if (profileId == TouchProfileLibrary.FACTORY_PROFILE_ID) {
-            return insert(library, newProfileName, override, nowEpochMs)
+            return insert(library, newProfileName, document, nowEpochMs)
         }
         val target = library.userProfiles.firstOrNull { it.id == profileId }
             ?: return TouchProfileEdit.Rejected("That layout profile no longer exists")
@@ -231,7 +231,7 @@ object TouchProfileLibraryEditor {
                 userProfiles = library.userProfiles.map {
                     if (it.id != profileId) it
                     else it.copy(
-                        override = override,
+                        document = document,
                         metadata = it.metadata.copy(updatedAtEpochMs = nowEpochMs),
                     )
                 },
@@ -242,7 +242,7 @@ object TouchProfileLibraryEditor {
     }
 
     /**
-     * Drop a user profile's customizations without deleting the profile.
+     * Put a user profile's layout back to the shipped arrangement.
      *
      * On the factory profile this is already true, so it succeeds and changes
      * nothing — "Reset to default" should never report an error.
@@ -255,8 +255,9 @@ object TouchProfileLibraryEditor {
         if (profileId == TouchProfileLibrary.FACTORY_PROFILE_ID) {
             return TouchProfileEdit.Applied(library, profileId)
         }
-        val empty = TouchLayoutEditor.empty(TouchProfileCatalog.require(library.personality))
-        return save(library, profileId, empty, nowEpochMs)
+        val authored =
+            TouchLayoutDocument.authoredDefault(TouchProfileCatalog.require(library.personality))
+        return save(library, profileId, authored, nowEpochMs)
     }
 
     /** Adopt an imported document as a new profile of this personality. */
@@ -268,16 +269,17 @@ object TouchProfileLibraryEditor {
         if (profile.personality != library.personality) {
             return TouchProfileEdit.Rejected("That layout was exported for another controller")
         }
-        return insert(library, profile.name, profile.override, nowEpochMs)
+        return insert(library, profile.name, profile.document, nowEpochMs)
     }
 
     /**
      * Adopt the single pre-profile override document as a user profile.
      *
-     * The first release stored exactly one override per personality with no name
-     * and no identity. Discarding it on upgrade would silently throw away every
-     * layout anybody had already tuned, so it becomes a normal profile and is
-     * selected, which is what the user last saw.
+     * The first release stored exactly one sparse override per personality with
+     * no name and no identity. Discarding it on upgrade would silently throw
+     * away every layout anybody had already tuned, so it is migrated to an
+     * instance document, becomes a normal profile and is selected — which is
+     * what the user last saw.
      */
     fun adoptLegacyOverride(
         personality: TouchProfileId,
@@ -287,7 +289,14 @@ object TouchProfileLibraryEditor {
     ): TouchProfileLibrary {
         val library = TouchProfileLibrary.empty(personality)
         if (override.controls.isEmpty() || override.profileId != personality) return library
-        return when (val edit = insert(library, name, override, nowEpochMs)) {
+        val profile = TouchProfileCatalog.require(personality)
+        val document = TouchLayoutMigration.fromOverride(profile, override)
+        // A migration that produced exactly the shipped layout is not worth a
+        // profile of its own: the override said nothing the default does not.
+        if (document.controls == TouchLayoutDocument.authoredDefault(profile).controls) {
+            return library
+        }
+        return when (val edit = insert(library, name, document, nowEpochMs)) {
             is TouchProfileEdit.Applied -> edit.library
             is TouchProfileEdit.Rejected -> library
         }
@@ -296,7 +305,7 @@ object TouchProfileLibraryEditor {
     private fun insert(
         library: TouchProfileLibrary,
         name: String,
-        override: TouchLayoutOverride,
+        document: TouchLayoutDocument,
         nowEpochMs: Long,
     ): TouchProfileEdit {
         if (library.userProfiles.size >= TouchProfileLibrary.MAX_USER_PROFILES) {
@@ -308,7 +317,7 @@ object TouchProfileLibraryEditor {
         val profile = TouchLayoutProfile(
             id = id,
             name = uniqueName(sanitizeName(name), library.userProfiles, exceptId = null),
-            override = override,
+            document = document,
             metadata = TouchProfileMetadata(
                 createdAtEpochMs = nowEpochMs,
                 updatedAtEpochMs = nowEpochMs,

@@ -7,6 +7,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -132,8 +133,19 @@ class TouchProfileCatalogTest {
     @Test fun `Pro2 profile composition is byte-for-value geometry parity with V1`() {
         val composed = TouchLayoutComposer.compose(TouchProfileCatalog.require(TouchProfileId.Pro2))
         assertNull(composed.warning)
-        assertFalse(composed.overrideApplied)
-        assertEquals(TouchLayoutV1.layout, composed.layout)
+        assertFalse(composed.customized)
+        // Modulo z-order only: V1 is the hand-authored reference and predates
+        // explicit stacking, so it states every control at zero while the
+        // authored document numbers them in list order. Every other field --
+        // identity, binding, geometry, art -- must match exactly.
+        assertEquals(
+            TouchLayoutV1.layout.controls,
+            composed.layout.controls.map { it.copy(zIndex = 0) },
+        )
+        assertEquals(
+            TouchLayoutV1.layout.controls.indices.toList(),
+            composed.layout.controls.map { it.zIndex },
+        )
     }
 
     @Test fun `every shipped template audits at every probe and density`() {
@@ -191,12 +203,268 @@ class TouchProfileCatalogTest {
             TouchOutputControl.PrimaryStick,
             TouchOutputControl.SecondaryStick,
         )))
-        assertEquals(TouchControlAction.Trigger(ControlSide.Left), profile.bindings.getValue(TouchOutputControl.L))
-        assertEquals(TouchControlAction.Trigger(ControlSide.Right), profile.bindings.getValue(TouchOutputControl.R))
+        // The only two controls in the whole catalog with real travel. The
+        // GameCube encoder passes their byte through continuously and the
+        // firmware seam derives the terminal click from it; every other trigger
+        // in the catalog is digital on the far side, so a travel gesture there
+        // would let a stray drag send nothing at all.
+        assertEquals(
+            TouchControlAction.Trigger(ControlSide.Left, analog = true),
+            profile.bindings.getValue(TouchOutputControl.L),
+        )
+        assertEquals(
+            TouchControlAction.Trigger(ControlSide.Right, analog = true),
+            profile.bindings.getValue(TouchOutputControl.R),
+        )
+        TouchProfileCatalog.profiles.forEach { (id, other) ->
+            if (id == TouchProfileId.GameCube) return@forEach
+            other.bindings.values.filterIsInstance<TouchControlAction.Trigger>().forEach {
+                assertFalse("$id declared an analog trigger", it.analog)
+            }
+        }
         assertTrue(profile.outputs.contains(TouchOutputControl.Plus))
         assertFalse(profile.outputs.contains(TouchOutputControl.Minus))
         assertFalse(profile.outputs.contains(TouchOutputControl.PrimaryStickClick))
         assertFalse(profile.outputs.contains(TouchOutputControl.SecondaryStickClick))
+    }
+
+    /**
+     * The physical legend and the host-facing semantic are separate facts about
+     * this one control, and both are pinned here because conflating them is what
+     * broke it.
+     *
+     * A GameCube shell prints `Z`. The protocol slot it occupies is the Switch
+     * ZR control: a real Switch 2's Test Input screen names it "ZR", and a
+     * genuine NSO GameCube Controller's Z is what Windows/Steam recognizes as
+     * ZR. So the touch control keeps the legend the shell has, and its BINDING
+     * is the shoulder the firmware's GameCube policy turns into that slot --
+     * `R1`, which `ns2_seam.c` folds into `GC_MASK_Z` and both reports then
+     * carry (report `0x0A`'s GC slot for the console, report `0x05`'s ZR bit for
+     * a PC). Renaming the legend to "ZR" would be the wrong repair: nothing on
+     * the device the user is holding says ZR.
+     */
+    @Test fun `GameCube Z keeps its shell legend and binds to the shoulder that becomes ZR`() {
+        val profile = TouchProfileCatalog.require(TouchProfileId.GameCube)
+
+        assertEquals(
+            "Z binds to the shoulder the GameCube policy folds into GC_MASK_Z",
+            TouchControlAction.Logical(ControllerButton.R1),
+            profile.bindings.getValue(TouchOutputControl.Z),
+        )
+        // Its mirror, so the pair cannot drift apart the way the two reports did.
+        assertEquals(
+            TouchControlAction.Logical(ControllerButton.L1),
+            profile.bindings.getValue(TouchOutputControl.ZL),
+        )
+
+        val z = profile.defaultTemplate.control(TouchOutputControl.Z)
+        assertEquals("the legend is the shell's, not the protocol's", "Z", z.visual.label)
+        assertEquals(TouchControlKind.Button, z.interaction)
+
+        // The protocol semantic must never leak into the presentation.
+        profile.defaultTemplate.controls.forEach { control ->
+            assertNotEquals(
+                "${control.id} shows a protocol name the GameCube shell does not print",
+                "ZR",
+                control.visual.label,
+            )
+        }
+    }
+
+    // ------------------------------------------------- optional GL/GR controls
+
+    /**
+     * Supporting a control and placing one are separate claims, and this pins
+     * both halves for the Pro Controller 2 grips.
+     *
+     * The personality HAS them -- they are real inputs on that controller, and
+     * bridge contract 4 is what finally gave the companion a way to send them --
+     * so the profile binds them and the editor can offer them. The shipped
+     * layout does not USE them, so nothing about the default changes.
+     */
+    @Test fun `Pro2 supports GL and GR without placing them in the default layout`() {
+        val pro2 = TouchProfileCatalog.require(TouchProfileId.Pro2)
+
+        assertTrue("advertised as addable", pro2.outputs.containsAll(setOf(
+            TouchOutputControl.GL, TouchOutputControl.GR,
+        )))
+        assertEquals(
+            TouchControlAction.Logical(ControllerButton.GL),
+            pro2.bindings.getValue(TouchOutputControl.GL),
+        )
+        assertEquals(
+            TouchControlAction.Logical(ControllerButton.GR),
+            pro2.bindings.getValue(TouchOutputControl.GR),
+        )
+
+        // Present in the CATALOG, and marked as not part of the shipped layout.
+        val gl = pro2.defaultTemplate.control(TouchOutputControl.GL)
+        val gr = pro2.defaultTemplate.control(TouchOutputControl.GR)
+        assertFalse("GL is optional", gl.inDefaultLayout)
+        assertFalse("GR is optional", gr.inDefaultLayout)
+        assertEquals("GL", gl.visual.label)
+        assertEquals("GR", gr.visual.label)
+        assertEquals(TouchControlKind.Button, gl.interaction)
+        assertEquals(TouchControlKind.Button, gr.interaction)
+
+        // And absent from what a fresh install actually draws.
+        val shipped = TouchLayoutComposer.compose(pro2).layout
+        assertTrue(
+            "the default layout must be unchanged",
+            shipped.controls.none {
+                it.output == TouchOutputControl.GL || it.output == TouchOutputControl.GR
+            },
+        )
+        assertEquals(
+            "byte-for-byte the shipped V1 layout",
+            TouchLayoutV1.layout.controls,
+            shipped.controls.map { it.copy(zIndex = 0) },
+        )
+    }
+
+    /**
+     * Added independently, exactly like any other override, and each one alone.
+     * A layout that gained a control genuinely IS customized, so the override is
+     * stored rather than dropped -- which is also what makes Reset able to take
+     * it away again.
+     */
+    @Test fun `GL and GR can each be added on their own`() {
+        val pro2 = TouchProfileCatalog.require(TouchProfileId.Pro2)
+
+        listOf(
+            TouchLayoutV1.GRIP_LEFT to TouchOutputControl.GL,
+            TouchLayoutV1.GRIP_RIGHT to TouchOutputControl.GR,
+        ).forEach { (id, output) ->
+            val added = TouchLayoutEditor.add(authored(pro2), pro2, id, 0.5f, 0.5f).document
+            assertNotNull("adding is a real customization", added.instance(id))
+            val layout = TouchLayoutComposer.compose(pro2, added).layout
+            val control = layout.controls.single { it.output == output }
+            assertEquals(id, control.id)
+            assertEquals(if (output == TouchOutputControl.GL) "GL" else "GR", control.label)
+            assertEquals(
+                "the added control publishes the real grip input",
+                pro2.bindings.getValue(output),
+                control.action,
+            )
+            // Only that one appeared; the other stays optional.
+            assertEquals(
+                TouchLayoutV1.layout.controls.size + 1,
+                layout.controls.size,
+            )
+        }
+    }
+
+    /**
+     * What the editor's Add Control picker is built from.
+     *
+     * The CATALOG, unconditionally — not "what is missing from the layout".
+     * Default layout membership is not personality capability, so every control
+     * this personality has stays addable however many of it are already on
+     * screen. That is what makes duplicates possible at all.
+     */
+    @Test fun `the add-control picker offers the whole catalog, always`() {
+        val pro2 = TouchProfileCatalog.require(TouchProfileId.Pro2)
+        val fresh = authored(pro2)
+
+        // Everything the shipped layout places, plus the two it does not.
+        assertEquals(
+            pro2.catalog.mapTo(mutableSetOf()) { it.id },
+            (
+                fresh.controls.mapTo(mutableSetOf()) { it.catalogId } +
+                    setOf(TouchLayoutV1.GRIP_LEFT, TouchLayoutV1.GRIP_RIGHT)
+                ),
+        )
+        assertEquals(
+            setOf(TouchLayoutV1.GRIP_LEFT, TouchLayoutV1.GRIP_RIGHT),
+            pro2.catalog.filterNot { it.inDefaultLayout }.mapTo(mutableSetOf()) { it.id },
+        )
+
+        // Adding one that IS already on screen is legal and produces a second
+        // instance with its own identity and the same binding.
+        val twice = TouchLayoutEditor.add(fresh, pro2, TouchLayoutV1.HOME, 0.5f, 0.5f)
+        val second = twice.created.single()
+        assertNotEquals(TouchLayoutV1.HOME, second)
+        val layout = TouchLayoutComposer.compose(pro2, twice.document).layout
+        assertEquals(2, layout.controls.count { it.output == TouchOutputControl.Home })
+        assertEquals(
+            layout.controls.first { it.id == TouchLayoutV1.HOME }.action,
+            layout.controls.first { it.id == second }.action,
+        )
+    }
+
+    /** Deleting an added grip returns the layout to the shipped default exactly. */
+    @Test fun `deleting an added GL restores the default layout`() {
+        val pro2 = TouchProfileCatalog.require(TouchProfileId.Pro2)
+        val added = TouchLayoutEditor.add(
+            authored(pro2), pro2, TouchLayoutV1.GRIP_LEFT, 0.5f, 0.5f,
+        ).document
+        assertEquals(
+            1,
+            TouchLayoutComposer.compose(pro2, added).layout.controls.size -
+                TouchLayoutV1.layout.controls.size,
+        )
+
+        val removed = TouchLayoutEditor.delete(
+            added, setOf(TouchLayoutV1.GRIP_LEFT), editGroup = false,
+        ).document
+        // Structurally back to the shipped document, so the profile reports
+        // itself as untouched and Reset genuinely has nothing left to do.
+        assertEquals(authored(pro2), removed)
+        assertEquals(
+            TouchLayoutV1.layout.controls,
+            TouchLayoutComposer.compose(pro2, removed).layout.controls.map { it.copy(zIndex = 0) },
+        )
+    }
+
+    /**
+     * A layout that never mentions the grips keeps them off screen.
+     *
+     * Absent from the document means absent from the layout — there is no
+     * template ghost that could reappear, which is exactly the property the
+     * instance model was adopted for.
+     */
+    @Test fun `a saved layout that predates the grips loads unchanged`() {
+        val pro2 = TouchProfileCatalog.require(TouchProfileId.Pro2)
+        val saved = TouchLayoutEditor.setScale(
+            authored(pro2), setOf(TouchLayoutV1.HOME), 1.2f, editGroup = false,
+        )
+        val result = TouchLayoutComposer.compose(pro2, saved)
+        assertTrue(result.customized)
+        assertNull(result.warning)
+        assertEquals(TouchLayoutV1.layout.controls.size, result.layout.controls.size)
+        assertTrue(result.layout.controls.none { it.output == TouchOutputControl.GL })
+    }
+
+    /** No other personality has grips, so none of them may offer these. */
+    @Test fun `only Pro2 exposes the grip buttons`() {
+        TouchProfileCatalog.profiles.forEach { (id, profile) ->
+            if (id == TouchProfileId.Pro2) return@forEach
+            assertFalse("$id offers GL", profile.outputs.contains(TouchOutputControl.GL))
+            assertFalse("$id offers GR", profile.outputs.contains(TouchOutputControl.GR))
+            assertTrue(
+                "$id placed a grip control",
+                profile.defaultTemplate.controls.none {
+                    it.output == TouchOutputControl.GL || it.output == TouchOutputControl.GR
+                },
+            )
+        }
+    }
+
+    /**
+     * The other personalities own `ZR` outright and are untouched by any of the
+     * GameCube Z work: their `ZR` is a real, separately labelled control bound to
+     * the real `R2`, never to the shoulder GameCube mode reroutes.
+     */
+    @Test fun `no other personality routes ZR through the GameCube Z path`() {
+        TouchProfileCatalog.profiles.forEach { (id, profile) ->
+            if (id == TouchProfileId.GameCube) return@forEach
+            val zr = profile.bindings[TouchOutputControl.ZR] ?: return@forEach
+            assertEquals(
+                "$id's ZR must stay a real ZR",
+                TouchControlAction.Trigger(ControlSide.Right, analog = false),
+                zr,
+            )
+        }
     }
 
     @Test fun `Pro2 and Joy-Con Right diamonds remain square at every aspect ratio`() {
@@ -360,7 +628,7 @@ class TouchProfileCatalogTest {
     @Test fun `approved GameCube geometry is the shipped no-override default`() {
         val profile = TouchProfileCatalog.require(TouchProfileId.GameCube)
         val composed = TouchLayoutComposer.compose(profile, null)
-        assertFalse(composed.overrideApplied)
+        assertFalse(composed.customized)
         assertNull(composed.warning)
 
         // Actual tablet interaction region used for the approved gc-final render.
@@ -688,68 +956,84 @@ class TouchLayoutOverrideTest {
         )
     }
 
-    @Test fun `composition applies known ids and retains but ignores unknown ids`() {
-        val override = TouchLayoutOverride(
-            profileId = profile.id,
-            templateId = profile.defaultTemplate.id,
-            basedOnRevision = 1,
-            controls = mapOf(
-                TouchLayoutV1.FACE_SOUTH to TouchControlOverride(anchorX = 0.82f),
-                "removed-by-template-v2" to TouchControlOverride(anchorX = 0.1f),
-            ),
+    @Test fun `composition applies known instances and drops ones with no catalog entry`() {
+        val document = authored(profile).let { base ->
+            base.copy(
+                controls = TouchLayoutEditor.place(
+                    base, setOf(TouchLayoutV1.FACE_SOUTH), 0.82f, 0.4f,
+                ).controls + TouchControlInstance(
+                    instanceId = "ghost",
+                    catalogId = "removed-by-template-v2",
+                    anchorX = 0.1f,
+                    anchorY = 0.1f,
+                ),
+            )
+        }
+        val result = TouchLayoutComposer.compose(profile, document)
+        assertTrue(result.customized)
+        assertTrue(result.degraded)
+        assertEquals(
+            0.82f,
+            result.layout.controls.single { it.id == TouchLayoutV1.FACE_SOUTH }.anchorX,
         )
-        val result = TouchLayoutComposer.compose(profile, override)
-        assertTrue(result.overrideApplied)
-        assertEquals(0.82f, result.layout.controls.single { it.id == TouchLayoutV1.FACE_SOUTH }.anchorX)
-        assertFalse(result.layout.controls.any { it.id == "removed-by-template-v2" })
-        assertTrue(override.controls.containsKey("removed-by-template-v2"))
+        assertFalse(result.layout.controls.any { it.id == "ghost" })
+        // Everything else survived: one dangling reference costs one control.
+        assertEquals(
+            TouchLayoutV1.layout.controls.size,
+            result.layout.controls.size,
+        )
     }
 
     @Test fun `an older template revision applies by stable id and new defaults survive`() {
         val revisedProfile = profile.copy(
             defaultTemplate = profile.defaultTemplate.copy(templateRevision = 2),
         )
-        val old = TouchLayoutEditor.empty(profile).copy(
-            basedOnRevision = 1,
-            controls = mapOf(
-                TouchLayoutV1.HOME to TouchControlOverride(scale = 1.1f),
-                "removed-control" to TouchControlOverride(visible = false),
-            ),
-        )
+        val old = TouchLayoutEditor.setScale(
+            authored(profile), setOf(TouchLayoutV1.HOME), 1.1f, editGroup = false,
+        ).copy(basedOnRevision = 1)
         val result = TouchLayoutComposer.compose(revisedProfile, old)
-        assertTrue(result.overrideApplied)
-        assertEquals(profile.defaultTemplate.controls.size, result.layout.controls.size)
-        assertEquals(1.1f * 54f, result.layout.controls.single { it.id == TouchLayoutV1.HOME }.widthUnits, 1e-4f)
-        assertTrue(result.warning?.contains("removed control") == true)
+        assertTrue(result.customized)
+        // The catalog's optional controls stay off screen: a document that never
+        // instantiated them cannot make them appear.
+        assertEquals(
+            profile.defaultTemplate.controls.count { it.inDefaultLayout },
+            result.layout.controls.size,
+        )
+        assertEquals(
+            1.1f * 54f,
+            result.layout.controls.single { it.id == TouchLayoutV1.HOME }.widthUnits,
+            1e-4f,
+        )
     }
 
-    @Test fun `an override from a future template revision cannot alter current defaults`() {
-        val future = TouchLayoutEditor.empty(profile).copy(
-            basedOnRevision = profile.defaultTemplate.templateRevision + 1,
-            controls = mapOf(TouchLayoutV1.HOME to TouchControlOverride(scale = 1.4f)),
-        )
+    @Test fun `a document from a future template revision cannot alter current defaults`() {
+        val future = TouchLayoutEditor.setScale(
+            authored(profile), setOf(TouchLayoutV1.HOME), 1.4f, editGroup = false,
+        ).copy(basedOnRevision = profile.defaultTemplate.templateRevision + 1)
         val result = TouchLayoutComposer.compose(profile, future)
-        assertFalse(result.overrideApplied)
+        assertFalse(result.customized)
         assertNotNull(result.warning)
-        assertEquals(TouchLayoutV1.layout, result.layout)
+        assertEquals(
+            TouchLayoutV1.layout.controls,
+            result.layout.controls.map { it.copy(zIndex = 0) },
+        )
     }
 
     @Test fun `profile or template mismatch falls back to immutable default`() {
-        val wrong = TouchLayoutEditor.empty(profile).copy(templateId = "another-template")
+        val wrong = authored(profile).copy(templateId = "another-template")
         val result = TouchLayoutComposer.compose(profile, wrong)
-        assertFalse(result.overrideApplied)
+        assertFalse(result.customized)
         assertNotNull(result.warning)
-        assertEquals(TouchLayoutV1.layout, result.layout)
+        assertEquals(
+            TouchLayoutV1.layout.controls,
+            result.layout.controls.map { it.copy(zIndex = 0) },
+        )
     }
 
-    @Test fun `hidden controls have no runtime geometry and only warn in a user draft`() {
-        val hidden = TouchLayoutEditor.setVisible(
-            profile,
-            TouchLayoutEditor.empty(profile),
-            TouchLayoutV1.HOME,
-            visible = false,
-            editGroup = false,
-        )
+    @Test fun `deleted controls have no runtime geometry and only warn in a user draft`() {
+        val hidden = TouchLayoutEditor.delete(
+            authored(profile), setOf(TouchLayoutV1.HOME), editGroup = false,
+        ).document
         val composed = TouchLayoutComposer.compose(profile, hidden).layout
         assertNull(composed.controls.firstOrNull { it.id == TouchLayoutV1.HOME })
         val resolved = TouchLayoutResolver.resolve(
@@ -769,48 +1053,54 @@ class TouchLayoutOverrideTest {
     }
 
     @Test fun `editor moves and scales a group without changing its bindings`() {
-        val base = TouchLayoutEditor.empty(profile)
+        val base = authored(profile)
+        val layout = TouchLayoutResolver.resolve(
+            TouchLayoutComposer.compose(profile, base).layout,
+            profileRegion(),
+            TouchLayoutAuditMode.UserDraft,
+        )
         val moved = TouchLayoutEditor.move(
-            profile, base, TouchLayoutV1.FACE_SOUTH, 0.01f, -0.02f, editGroup = true,
+            base, layout, setOf(TouchLayoutV1.FACE_SOUTH), 8f, -16f, editGroup = true,
         )
-        val scaled = TouchLayoutEditor.scale(
-            profile, moved, TouchLayoutV1.FACE_SOUTH, 1.15f, editGroup = true,
+        val scaled = TouchLayoutEditor.scaleBy(
+            moved, layout, setOf(TouchLayoutV1.FACE_SOUTH), 1.15f, editGroup = true,
         )
-        val faceIds = profile.defaultTemplate.controls
+        val faceIds = profile.catalog
             .filter { it.editGroupId == "face-cluster" }
             .mapTo(mutableSetOf()) { it.id }
-        assertEquals(faceIds, scaled.controls.keys)
-        assertTrue(scaled.controls.values.all { it.scale == 1.15f })
-        assertTrue(scaled.controls.values.all { it.groupOffsetScale == 1.15f })
+        assertEquals(
+            faceIds,
+            base.controls.filter { scaled.instance(it.instanceId) != it }
+                .mapTo(mutableSetOf()) { it.instanceId },
+        )
+        assertTrue(faceIds.all { scaled.instance(it)?.scale == 1.15f })
+
         val composed = TouchLayoutComposer.compose(profile, scaled).layout
         composed.controls.filter { it.id in faceIds }.forEach { control ->
             assertEquals(profile.bindings.getValue(control.output), control.action)
-            val template = profile.defaultTemplate.controls.single { it.id == control.id }
-            assertEquals(
-                template.geometry.groupOffsetXUnits * 1.15f,
-                control.groupOffsetXUnits,
-                1e-5f,
-            )
-            assertEquals(
-                template.geometry.groupOffsetYUnits * 1.15f,
-                control.groupOffsetYUnits,
-                1e-5f,
-            )
         }
-        assertTrue(TouchLayoutEditor.reset(profile, scaled, TouchLayoutV1.FACE_SOUTH, true).controls.isEmpty())
+        // Scaling a cluster spreads it: every member's displacement from the
+        // shared anchor grew by the same factor, so the diamond stays a diamond.
+        faceIds.forEach { id ->
+            val before = requireNotNull(base.instance(id))
+            val after = requireNotNull(scaled.instance(id))
+            assertEquals(before.offsetXUnits * 1.15f, after.offsetXUnits, 1e-3f)
+            assertEquals(before.offsetYUnits * 1.15f, after.offsetYUnits, 1e-3f)
+        }
+        assertEquals(
+            base.controls.toSet(),
+            TouchLayoutEditor.reset(
+                scaled, profile, setOf(TouchLayoutV1.FACE_SOUTH), editGroup = true,
+            ).controls.toSet(),
+        )
     }
 
     @Test fun `individual scaling changes button size without moving it inside its group`() {
-        val baseLayout = TouchLayoutComposer.compose(profile).layout
-        val base = baseLayout.controls.single { it.id == TouchLayoutV1.FACE_EAST }
-        val edited = TouchLayoutEditor.scale(
-            profile,
-            TouchLayoutEditor.empty(profile),
-            TouchLayoutV1.FACE_EAST,
-            1.25f,
-            editGroup = false,
+        val base = TouchLayoutComposer.compose(profile).layout
+            .controls.single { it.id == TouchLayoutV1.FACE_EAST }
+        val edited = TouchLayoutEditor.setScale(
+            authored(profile), setOf(TouchLayoutV1.FACE_EAST), 1.25f, editGroup = false,
         )
-        assertNull(edited.controls.getValue(TouchLayoutV1.FACE_EAST).groupOffsetScale)
         val changed = TouchLayoutComposer.compose(profile, edited).layout.controls
             .single { it.id == TouchLayoutV1.FACE_EAST }
         assertEquals(base.anchorX, changed.anchorX, 0f)
@@ -819,34 +1109,39 @@ class TouchLayoutOverrideTest {
     }
 
     @Test fun `group movement clamps once and preserves relative spacing at an edge`() {
-        val face = profile.defaultTemplate.controls.filter { it.editGroupId == "face-cluster" }
-        val before = face.associate { it.id to it.geometry.anchorX }
-        val moved = TouchLayoutEditor.move(
-            profile,
-            TouchLayoutEditor.empty(profile),
-            TouchLayoutV1.FACE_EAST,
-            deltaX = 1f,
-            deltaY = 0f,
-            editGroup = true,
+        val base = authored(profile)
+        val layout = TouchLayoutResolver.resolve(
+            TouchLayoutComposer.compose(profile, base).layout,
+            profileRegion(),
+            TouchLayoutAuditMode.UserDraft,
         )
-        val after = face.associate { control ->
-            control.id to requireNotNull(moved.controls.getValue(control.id).anchorX)
-        }
-        face.forEach { a ->
-            face.forEach { b ->
+        val faceIds = profile.catalog
+            .filter { it.editGroupId == "face-cluster" }
+            .map { it.id }
+        val before = faceIds.associateWith { requireNotNull(base.instance(it)).anchorX }
+        // Far more than the rectangle can take: the clamp is what is under test.
+        val moved = TouchLayoutEditor.move(
+            base, layout, setOf(TouchLayoutV1.FACE_EAST), layout.region.width, 0f, editGroup = true,
+        )
+        val after = faceIds.associateWith { requireNotNull(moved.instance(it)).anchorX }
+        faceIds.forEach { a ->
+            faceIds.forEach { b ->
                 assertEquals(
-                    "${a.id} to ${b.id}",
-                    before.getValue(a.id) - before.getValue(b.id),
-                    after.getValue(a.id) - after.getValue(b.id),
+                    "$a to $b",
+                    before.getValue(a) - before.getValue(b),
+                    after.getValue(a) - after.getValue(b),
                     1e-6f,
                 )
             }
         }
-        val east = face.first { it.id == TouchLayoutV1.FACE_EAST }
-        val eastCenter = after.getValue(east.id) +
-            east.geometry.groupOffsetXUnits / TouchLayoutResolver.REFERENCE_WIDTH_UNITS
-        val eastExtent = (east.geometry.widthUnits / 2f + east.geometry.hitMarginUnits) /
-            TouchLayoutResolver.REFERENCE_WIDTH_UNITS
-        assertEquals(1f - eastExtent, eastCenter, 1e-6f)
+        // The rightmost member ends flush against the safe edge, not past it.
+        val east = requireNotNull(
+            TouchLayoutResolver.resolve(
+                TouchLayoutComposer.compose(profile, moved).layout,
+                profileRegion(),
+                TouchLayoutAuditMode.UserDraft,
+            ).control(TouchLayoutV1.FACE_EAST),
+        )
+        assertEquals(layout.region.right, east.centerX + east.hitExtentX, 1e-2f)
     }
 }

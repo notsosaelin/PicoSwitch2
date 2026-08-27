@@ -218,30 +218,118 @@ The profile/layout pipeline is shared core logic:
 
 ```text
 confirmed controller personality
-  -> TouchProfileCatalog / fixed output bindings
-    -> immutable TouchLayoutTemplate
+  -> TouchControllerProfile: fixed output bindings + a control CATALOG
+    -> TouchLayoutDocument.authoredDefault  (the shipped starting point)
       + TouchProfileLibrary: factory profile + user profiles, one selected
-        + that profile's sparse, versioned TouchLayoutOverride
+        + that profile's versioned TouchLayoutDocument (a list of INSTANCES)
           -> TouchLayoutComposer -> TouchLayoutAudit -> resolved layout
             -> PLATFORM renderer and pointer adapter
 ```
 
-`TouchControllerProfile`, templates, composition, editor operations, alignment/snapping, audit
-rules, schema metadata, the profile library and both store interfaces
-(`TouchLayoutOverrideStore`, `TouchProfileLibraryStore`) are in `:bridge-core`. A platform owns the
-store implementation and raw storage mechanism, its renderer, pointer/event conversion, and editor
-widgets. Android's first implementation uses app-private `SharedPreferences`, Compose Canvas, and
-Compose pointer events; none is visible to the shared model. `TouchLayoutOverrideJsonCodec` and
-`TouchProfileLibraryJsonCodec` are the Kotlin JSON reference codecs for the platform-neutral
-document schemas. A non-JVM host implements those JSON schemas rather than treating a
+#### Two statements that keep the model honest
+
+> **Control instance identity is not logical button identity.**
+> A `TouchControlInstance` is an on-screen object. Its `instanceId` is unique within a layout; its
+> `catalogId` says what kind of thing it is, and is not. Any number of instances may name the same
+> catalog entry and therefore the same binding, and they remain separate objects with separate hit
+> regions, transforms, latches and contacts. Anything downstream that keys state by BINDING rather
+> than by INSTANCE reintroduces the bug this model exists to prevent: a second A button whose
+> release also releases the first.
+
+> **Default layout membership is not personality capability.**
+> `TouchControllerProfile.catalog` says what may be instantiated. `inDefaultLayout` says only
+> whether the SHIPPED arrangement places one. A control absent from a layout is simply not on
+> screen — it is still fully addable, and one that is present may be genuinely deleted. There is no
+> hidden template ghost that "showing" reveals; that was the version 1 model and it is why an
+> optional control could not be removed.
+
+`TouchControllerProfile`, the catalog, authored defaults, composition, editor operations,
+undo/redo, toolbar placement, alignment/snapping, audit rules, schema metadata, the profile library
+and both store interfaces (`TouchLayoutOverrideStore`, `TouchProfileLibraryStore`) are in
+`:bridge-core`. A platform owns the store implementation and raw storage mechanism, its renderer,
+pointer/event conversion, and editor widgets. Android's implementation uses app-private
+`SharedPreferences`, Compose Canvas, and Compose pointer events; none is visible to the shared
+model. `TouchProfileLibraryJsonCodec` is the Kotlin JSON reference codec for the platform-neutral
+document schema. A non-JVM host implements that JSON schema rather than treating a
 kotlinx.serialization implementation as universal.
 
-A profile is an ENVELOPE around an override document, not a second layout representation: its
-personality, template id and template revision are read back off the override rather than stored
+A profile is an ENVELOPE around a layout document, not a second layout representation: its
+personality, template id and template revision are read back off the document rather than stored
 again beside it. The factory profile is synthesized from the shipped template on every read and is
 never persisted, which is what makes its protection structural instead of a flag a stored document
 could clear. Saving onto it creates a new user profile; the editor never has an outcome that
 discards an edit or overwrites the recoverable default.
+
+#### Instance geometry, and why it has two position terms
+
+```text
+centre = region.left + anchorX * region.width + offsetXUnits * unit
+```
+
+`anchorX`/`anchorY` are NORMALIZED, so they follow the rectangle and keep a control at the edge a
+thumb can reach. `offsetXUnits`/`offsetYUnits` are in LOGICAL UNITS, so they are immune to
+aspect-ratio distortion — which is what keeps a square button diamond square on a display the
+layout was not authored for. An ungrouped control normally carries only an anchor; a member of a
+cluster shares its anchor with its siblings and differs by its offset.
+
+Group transforms exploit exactly that. Grouping and ungrouping are pure `groupId` changes and never
+touch geometry, so they are lossless on any window shape; a group scale or rotation writes the
+displacement into the offsets, where it stays rigid. `groupId` lives on the instance rather than in
+a separate group table, which makes "an instance in two groups" and "a group with a dangling
+member" states this model cannot represent.
+
+#### Rotation
+
+`TouchControlInstance.rotationDegrees` is the USER's rotation, RELATIVE to the catalog entry's
+authored orientation, normalized to `[-180, 180)`. The composer adds the two into
+`TouchControlSpec.visualRotationDegrees` — one total, so a renderer and a hit tester cannot read
+different angles — and carries the authored value separately so "reset orientation" means the
+authored angle rather than a blind zero.
+
+Rotation is visual and hit geometry ONLY. It never changes a binding, never re-labels a D-pad
+direction, and never turns an analog trigger's position-derived travel axis. `ResolvedTouchControl`
+hit-tests a rotated control by inverse-transforming the POINT rather than by building a rotated
+polygon, so the same local shape test serves both cases and nothing is allocated on the contact
+path. `hitExtentX`/`hitExtentY` are the answerable region's screen-space half-extents after
+rotation, computed per shape, and every screen-space question — inside the safe rectangle? could
+these two overlap? how far may this be dragged? — is asked with those rather than with the
+control's own unrotated frame.
+
+> Measuring a rotated control with its unrotated box is not hypothetical. The shipped GameCube
+> layout brings `z` and the `Y` bean close enough to touch at every aspect ratio at or squatter
+> than the 2:1 authoring reference — that is, on every ordinary phone in landscape — and the pre-2.0
+> audit could not see it at all, because the bean is authored at −11° and its unrotated box is 3.7
+> units shorter than the shape reaches.
+>
+> What the corrected measurement then showed is that the contact is entirely between the two
+> controls' hit MARGINS; the drawn shapes clear each other by about a unit. So the shipped geometry
+> is fine and stayed at y=42 (GameCube template revision 2). An earlier pass moved the row to y=34
+> on the strength of the finding alone and was reverted. The audit now separates the two cases —
+> only an ARTWORK collision blocks, a margin contact is reported and playable — because that is the
+> distinction that decides whether the router has to let z-order pick what the user pressed. See
+> `TouchGameCubeDefaultTest` for the probe that establishes it.
+
+#### Duplicate-safe runtime aggregation
+
+`TouchControlEngine` keys every contribution by INSTANCE and aggregates at publish:
+
+```text
+digital   any live instance holding a binding keeps that binding pressed
+trigger   the deepest live instance of that side wins (max)
+stick     the owning instance speaks; the others say nothing
+D-pad     the owning instance speaks; the others say nothing
+```
+
+Sticks and the D-pad cannot be ORed — two full deflections in different directions have no
+meaningful sum, and averaging invents a third direction nobody asked for — so ownership arbitrates:
+the first instance to move one wins it until its contact ends, then the next instance still being
+touched takes over, chosen in layout order so the answer is deterministic. The retrigger mask is a
+set of instance ids applied at publish, so tapping one held A to re-fire it cannot silence another.
+
+The router picks by priority, then z-order, then centrality. Z-order sits above centrality because
+once instances may be freely stacked, the control the user can SEE on top is the one they believe
+they are pressing. Two instances of the SAME output may overlap freely and the audit permits it;
+overlap between DIFFERENT outputs stays blocking.
 
 Alignment assistance (`TouchEditorAlignment`) is pure and operates on already-resolved pixel
 geometry, so grid pitch, snap tolerance and guide matching behave identically on every host and are
@@ -249,13 +337,25 @@ testable at every window shape without a device. Snapping computes one correctio
 reference control and applies it to the whole movement, so a multi-control selection cannot be
 pulled apart; a movement larger than the tolerance always wins, so guides never restrict placement.
 
-Compound controls use a normalized group anchor plus logical-unit child offsets. This is not merely
-an editor convenience: independent normalized child anchors distort a square diamond whenever the
-interaction rectangle is not exactly the authoring aspect ratio. `TouchGroupGeometry` supplies the
-shared square-diamond and irregular-cluster relationships; composition carries those offsets into
-the resolved controls, and a group scale changes the offsets and visual sizes together. Individual
-scale changes only the selected control's visual/hit size. The platform still receives a flat list
-of independent controls for rendering and contact ownership.
+`TouchGroupGeometry` supplies the shipped square-diamond and irregular-cluster relationships that
+the authored templates are written against; the anchor-plus-offset representation those produce is
+the same one every user group uses, described above. A group scale changes offsets and member sizes
+together; an individual scale changes only that control's visual/hit size. The platform still
+receives a flat list of independent controls for rendering and contact ownership.
+
+The editor's toolbar placement is shared logic too (`TouchToolbarLayout`), because every rule in it
+is a rule about REACHABILITY — which safe edge is close enough to dock to, whether a remembered
+floating position still lies inside the window — and a reachability rule that lives in one
+platform's UI layer is a rule the next platform gets wrong. A toolbar off the edge of the window is
+a toolbar with no Done button.
+
+Undo/redo (`TouchEditorHistory`) is a bounded stack of whole DOCUMENTS rather than of invertible
+commands. Every editor operation is already a pure total function from one document to the next, so
+a revision stack cannot desynchronize from what it is undoing, needs no inverse written and kept
+correct for each new operation, and makes gesture coalescing a question of when a revision is
+pushed rather than of merging command objects. Undoing a delete restores every field the control
+had — transform, rotation, group membership, z-order, hold setting — because a revision is the
+whole scene.
 
 The GameCube face-button shape and placement were checked against the maintainer's local controller
 reference and Dolphin's upstream
@@ -269,33 +369,67 @@ allowing the beans to wrap around A without treating their empty concavity as an
 Only geometric relationships were adapted; PicoSwitch2 continues to use its own Canvas renderer,
 touch semantics, and code-native art.
 
-Schema version 1 is a sparse document; absent control fields mean "use the immutable template":
+#### The persisted schema
+
+Schema version **2** stores a list of instances. Absent optional fields mean the stated default, so
+a control the user only moved writes an anchor and nothing else and a round trip stays lossless:
 
 ```json
 {
-  "schemaVersion": 1,
-  "profileId": "gc",
-  "templateId": "picoswitch.touch.gc.v1",
-  "basedOnRevision": 2,
-  "controls": {
-    "a": {
-      "anchorX": 0.82,
-      "anchorY": 0.48,
-      "scale": 1.15,
-      "groupOffsetScale": 1.15,
-      "visible": true
+  "schemaVersion": 2,
+  "personality": "gc",
+  "selectedProfileId": "p1",
+  "profiles": [
+    {
+      "id": "p1",
+      "name": "Smash",
+      "templateId": "picoswitch.touch.gc.v1",
+      "templateRevision": 3,
+      "controls": [
+        { "instanceId": "a", "catalogId": "a", "anchorX": 0.85, "anchorY": 0.42,
+          "offsetXUnits": -2.7, "offsetYUnits": 2.3, "zIndex": 12, "groupId": "face-cluster" },
+        { "instanceId": "a#2", "catalogId": "a", "anchorX": 0.5, "anchorY": 0.5,
+          "scale": 1.15, "rotationDegrees": 30.0, "zIndex": 18, "latch": false }
+      ]
     }
-  }
+  ]
 }
 ```
 
-Anchors are normalized `0..1`; scale and `groupOffsetScale` are bounded by `TouchLayoutEditor`; every
-per-control field is optional. The editor writes `groupOffsetScale` only for a group scale, keeping
-individual resize centred. Unknown control ids are retained in the stored model but ignored during composition, so a
-template revision can remove and later restore an id without destroying user data. Future schema
-versions and older versions without an explicit sequential migration are rejected without deleting
-the raw document. Version 1 has no predecessor to migrate. Profile/template mismatch and a future
-template revision select the immutable matching-profile default, never another personality.
+Anchors are normalized `0..1`; scale, offset and rotation are bounded by `TouchLayoutLimits`, and
+the codec applies exactly the checks an editor operation would have enforced, so a hand-edited file
+cannot construct geometry the editor refuses to make.
+
+Two kinds of damage are handled differently, on purpose:
+
+| | Handled by | Outcome |
+|---|---|---|
+| A value that is not a number, or out of range | `TouchProfileLibraryJsonCodec` | Document refused; raw text kept |
+| Duplicate instance id, dangling `catalogId`, impossible transform | `TouchLayoutDocumentValidator` | That instance dropped, layout `degraded`, everything else intact |
+
+An unreadable number means the document is corrupt; an instance naming a control this build no
+longer has is simply a control that is gone, and must not cost the user a whole layout.
+
+**Schema version 1** — the retired sparse-override model — is still READ, and is migrated on decode
+by `TouchLayoutMigration`. The conversion is deterministic and one-way:
+
+```text
+legacy control hidden      -> no instance; Add Control can bring it back
+legacy control visible     -> one instance, id = the template control id
+anchor / scale override    -> the instance's anchor / scale
+groupOffsetScale override  -> baked into the instance's offset
+latch override             -> the instance's latch
+template editGroupId       -> the instance's group
+```
+
+Android's store writes the migrated document back on the first read and copies the original to a
+`.v1` key in the same atomic commit, so a migration that produced something unusable costs nothing
+that cannot be read back out of storage by hand. The very first release's single anonymous override
+file is never touched at all.
+
+Future schema versions are rejected without deleting the raw document. Profile/template mismatch
+and a future template revision select the shipped matching-profile default, never another
+personality.
 
 **Implement three things and no more:**
 
@@ -331,6 +465,29 @@ Five rules, all of which have a specific failure behind them:
 5. **Local touch feedback is not console rumble.** `TouchFeedbackBackend` is a UI affordance and
    must use whatever API respects the user's own haptic setting. Routing it through `OutputBackend`
    would let the interface mutate bridge output state and fight a game's own effects.
+
+**Two platform conventions to overwrite, not invent.** `TouchLatchConfig`'s double-tap window,
+minimum gap and first-tap bound, and `TouchTriggerConfig.dragSlopUnits`, all default to the stock
+Android values so a host that never sets them still behaves conventionally — but a host with a
+toolkit should pass its own (`ViewConfiguration.doubleTapTimeoutMillis`, `doubleTapMinTimeMillis`,
+`longPressTimeoutMillis`, `touchSlop`), so the gestures match every other gesture on the device
+including whatever the user's accessibility settings have done to them. Slop is reported in pixels
+and stored in logical units; convert.
+
+**Analog triggers are a profile property, not a control kind.** `TouchControlAction.Trigger(analog
+= true)` means the CONSOLE-FACING controller has real trigger travel, which today is only the NSO
+GameCube `L`/`R`. Such a control publishes nothing on the way down — its value comes from finger
+displacement projected onto a position-derived axis — while every other trigger presses fully the
+instant it is touched. A backend needs no new call for any of this; it is entirely inside the
+engine. What a backend MUST NOT do is assume a trigger asserts on `Down`.
+
+Both halves of the gesture are derived from the REGION — the direction from the control's
+normalized position within it, and the distance from two budgets scaled by its shorter side — so
+rule 3 above is load-bearing here in a way it is not for a button: a region that disagrees with the
+space contacts are reported in does not merely misplace a hit box, it silently rotates the pull and
+rescales trigger sensitivity, differently in each direction. Both were verified end to end against
+a real device before the geometry was last changed; if you are porting this, capture the same
+values rather than assuming.
 
 **Input authority.** `ControllerInputState.setAuthority` decides which host control set is the
 gameplay controller. Exactly one contributes; the inactive origin's mutations are discarded rather

@@ -53,6 +53,51 @@ const gamepad_quirk_t *gamepad_quirks_generic(void)
     return &QUIRK_GENERIC;
 }
 
+// The PicoSwitch2 Android companion bridge (contract 4 and later). Identical to
+// SEQ_BUTTON_MAP through usage 15, then the two grip buttons.
+//
+// A4 and A5 are not invented destinations: NS2_BASE_BUTTON_MAP already routes
+// them to NS2_DST_GL and NS2_DST_GR, which ns2_kbm_apply_destination raises as
+// SWITCH_EXTRA_GL/GR -- the same bits switch_pro2_encode.c has always written to
+// report 0x09 and ns2_build_report_05 to report 0x05. This table only names the
+// two usages; every layer below it is untouched.
+//
+// A copy rather than an extension of SEQ_BUTTON_MAP: that table is the fallback
+// for every pad nobody recognizes, and usages 16/17 there mean nothing in
+// particular. Only a descriptor that matched the bridge byte-for-byte gets this
+// interpretation.
+static const uint32_t ANDROID_BRIDGE_BUTTON_MAP[18] = {
+    0,                  // usage 0: invalid
+    JP_BUTTON_B1,       // usage 1: face 1 (A/Cross)
+    JP_BUTTON_B2,       // usage 2: face 2 (B/Circle)
+    JP_BUTTON_B3,       // usage 3: face 3 (X/Square)
+    JP_BUTTON_B4,       // usage 4: face 4 (Y/Triangle)
+    JP_BUTTON_L1,       // usage 5: left shoulder
+    JP_BUTTON_R1,       // usage 6: right shoulder
+    JP_BUTTON_L2,       // usage 7: left trigger (digital)
+    JP_BUTTON_R2,       // usage 8: right trigger (digital)
+    JP_BUTTON_S1,       // usage 9: select/back
+    JP_BUTTON_S2,       // usage 10: start/menu
+    JP_BUTTON_L3,       // usage 11: left stick
+    JP_BUTTON_R3,       // usage 12: right stick
+    JP_BUTTON_A1,       // usage 13: guide/home
+    JP_BUTTON_A2,       // usage 14: capture/share
+    JP_BUTTON_A3,       // usage 15: C / GameChat
+    JP_BUTTON_A4,       // usage 16: GL  -> NS2_DST_GL -> SWITCH_EXTRA_GL
+    JP_BUTTON_A5,       // usage 17: GR  -> NS2_DST_GR -> SWITCH_EXTRA_GR
+};
+
+static const gamepad_quirk_t QUIRK_ANDROID_BRIDGE = {
+    .name = "picoswitch-bridge",
+    .button_map = ANDROID_BRIDGE_BUTTON_MAP,
+    .button_map_size = sizeof(ANDROID_BRIDGE_BUTTON_MAP) / sizeof(ANDROID_BRIDGE_BUTTON_MAP[0]),
+};
+
+const gamepad_quirk_t *gamepad_quirks_android_bridge(void)
+{
+    return &QUIRK_ANDROID_BRIDGE;
+}
+
 // Ordered, most-specific-first -- exact-PID matches before VID-only/name-only fallbacks. This
 // centralizes a priority order that used to be implicit in an if/else if chain in
 // process_report_dynamic(): the NGC Modkit had to be checked before the generic 8BitDo

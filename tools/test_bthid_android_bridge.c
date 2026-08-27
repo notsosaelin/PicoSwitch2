@@ -91,6 +91,15 @@ static void attach_with_identity(const uint8_t *descriptor, uint16_t descriptor_
                                  uint16_t vendor_id, uint16_t product_id,
                                  const char *name)
 {
+    // Release the previous attachment first. gamepad_init() claims one of only
+    // BTHID_MAX_DEVICES slots and never reuses a live one, so a suite that
+    // attaches more times than that silently keeps running against the LAST
+    // successfully allocated slot -- every later test then reads a stale map and
+    // whether it passes depends on which descriptor happened to be parsed into
+    // that slot. Disconnecting makes each test independent, which is what the
+    // per-test attach was always meant to mean.
+    if (device.driver_data) bthid_gamepad_driver.disconnect(&device);
+
     memset(&device, 0, sizeof(device));
     device.active = true;
     device.conn_index = 3;
@@ -116,15 +125,19 @@ static void send_v2(const uint8_t *report)
 }
 
 // ---------------------------------------------------------------------------
-// The v1 FIELD OFFSETS must survive verbatim inside the v2 descriptor. This is
+// The v1 AXIS offsets must survive verbatim inside the v2 descriptor. Those are
 // the regression that matters most: v1 is already hardware-validated in a game.
 //
-// The button COUNT is allowed to grow, and did: usage 15 (C / GameChat) was
-// appended inside the existing two button bytes, turning 14 buttons + 2 pad bits
-// into 15 + 1. Every later field therefore keeps its byte offset, which is what
-// the offset assertions below actually protect. Growing the count is safe
-// precisely because the parser computes each item's bit offset from the
-// descriptor rather than assuming a layout.
+// The button COUNT is allowed to grow, and has twice. Usage 15 (C / GameChat)
+// was appended inside the existing two button bytes -- 14 + 2 pad became 15 + 1
+// -- and every later field kept its offset. Contract 4 could not do that: GL/GR
+// are two buttons and one pad bit remained, so the field became three bytes and
+// THE HAT MOVED FROM BYTE 9 TO BYTE 10, taking the whole vendor extension with
+// it. That is deliberate and is why contract 4 exists.
+//
+// This is safe only because the parser computes every item's bit offset from the
+// descriptor rather than assuming a layout -- which is exactly what these
+// assertions prove, now that the layout has actually moved for the first time.
 // ---------------------------------------------------------------------------
 static void test_v2_descriptor_preserves_v1_layout(void)
 {
@@ -134,9 +147,9 @@ static void test_v2_descriptor_preserves_v1_layout(void)
     char map[1024];
     CHECK(bthid_gamepad_dump_map(device.conn_index, map, sizeof(map)),
           "v2 descriptor parses through the production HID parser");
-    CHECK(strstr(map, "\"report_id\":1") && strstr(map, "\"button_cnt\":15") &&
-          strstr(map, "\"x\":{\"byte\":1") && strstr(map, "\"hat\":{\"byte\":9"),
-          "v2 keeps the v1 axis/hat offsets byte-identical and carries 15 buttons");
+    CHECK(strstr(map, "\"report_id\":1") && strstr(map, "\"button_cnt\":17") &&
+          strstr(map, "\"x\":{\"byte\":1") && strstr(map, "\"hat\":{\"byte\":10"),
+          "v2 keeps the v1 axis offsets, carries 17 buttons, and moved the hat to 10");
 
     send_v2(ANDROID_CONTROLLER_V2_NEUTRAL_REPORT);
     CHECK(submitted == 1 && last_event.buttons == 0 &&
@@ -150,12 +163,65 @@ static void test_v2_descriptor_preserves_v1_layout(void)
     memcpy(report, ANDROID_CONTROLLER_V2_NEUTRAL_REPORT, sizeof(report));
     report[1] = 0; report[2] = 255; report[5] = 64;
     report[7] = 0x01;   // usage 1
-    report[9] = 2;      // hat east
+    report[10] = 2;     // hat east -- byte 10 since contract 4
     send_v2(report);
     CHECK(last_event.analog[ANALOG_LX] == 0 && last_event.analog[ANALOG_LY] == 255 &&
           last_event.analog[ANALOG_L2] == 64 &&
           last_event.buttons == (JP_BUTTON_B1 | JP_BUTTON_DR),
           "v1 axes/buttons/hat still decode correctly alongside the extension");
+}
+
+// ---------------------------------------------------------------------------
+// GL/GR are wire button usages 16/17: the Pro Controller 2 grip buttons. Like C
+// they are console controls almost no handheld has a physical key for, so they
+// reach the bridge from the on-screen controller.
+//
+// The destinations are NOT new. NS2_BASE_BUTTON_MAP already routed JP_BUTTON_A4
+// to NS2_DST_GL and JP_BUTTON_A5 to NS2_DST_GR; what contract 4 added is a way
+// for the bridge to reach them at all. This checks the naming, and that it is
+// the BRIDGE's own profile doing it -- the shared sequential table must not
+// acquire the same interpretation, or any pad declaring 17 buttons would start
+// sending grip presses.
+// ---------------------------------------------------------------------------
+static void test_grip_buttons(void)
+{
+    attach(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR,
+           sizeof(ANDROID_CONTROLLER_V2_HID_DESCRIPTOR));
+
+    uint8_t report[ANDROID_CONTROLLER_V2_WIRE_REPORT_LEN];
+
+    memcpy(report, ANDROID_CONTROLLER_V2_NEUTRAL_REPORT, sizeof(report));
+    report[8] = 0x80;   // usage 16 -- the last bit of the second button byte
+    send_v2(report);
+    CHECK(last_event.buttons == JP_BUTTON_A4, "usage 16 is GL (JP_BUTTON_A4)");
+    CHECK(ns2_resolve_button_destination(19, true) == NS2_DST_GL,
+          "and A4's source slot still resolves to the existing GL destination");
+
+    memcpy(report, ANDROID_CONTROLLER_V2_NEUTRAL_REPORT, sizeof(report));
+    report[9] = 0x01;   // usage 17 -- the first bit of the new third byte
+    send_v2(report);
+    CHECK(last_event.buttons == JP_BUTTON_A5, "usage 17 is GR (JP_BUTTON_A5)");
+    CHECK(ns2_resolve_button_destination(22, true) == NS2_DST_GR,
+          "and A5's source slot still resolves to the existing GR destination");
+
+    memcpy(report, ANDROID_CONTROLLER_V2_NEUTRAL_REPORT, sizeof(report));
+    report[8] = 0x80;
+    report[9] = 0x01;
+    report[7] = 0x01;   // usage 1, to prove they coexist with ordinary buttons
+    send_v2(report);
+    CHECK(last_event.buttons == (JP_BUTTON_A4 | JP_BUTTON_A5 | JP_BUTTON_B1),
+          "both grips and a face button report together");
+
+    send_v2(ANDROID_CONTROLLER_V2_NEUTRAL_REPORT);
+    CHECK(last_event.buttons == 0, "and they release");
+
+    // The shared fallback table is untouched: it still stops at usage 15, so an
+    // unrecognized pad declaring more buttons gains nothing from this change.
+    const gamepad_quirk_t *generic = gamepad_quirks_generic();
+    CHECK(generic->button_map_size == 16,
+          "the generic sequential table still ends at usage 15");
+    CHECK(gamepad_quirks_android_bridge()->button_map_size == 18,
+          "and only the bridge's own profile names 16/17");
 }
 
 // ---------------------------------------------------------------------------
@@ -468,6 +534,7 @@ int main(void)
     test_identify_trace();
     test_v2_descriptor_preserves_v1_layout();
     test_gamechat_button_routes();
+    test_grip_buttons();
     test_face_buttons_reach_logical_seam_destinations();
     test_motion_ingest();
     test_battery_ingest();

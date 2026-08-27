@@ -57,8 +57,12 @@ static const gamepad_quirk_t *resolve_gamepad_quirk(const bthid_device_t *device
     // resemble a supported controller. The exact bridge descriptor is the
     // authoritative report contract, so identity quirks must not reinterpret
     // its logical button usages or run controller-specific extractors.
+    //
+    // Its own profile rather than the plain sequential one since bridge contract
+    // 4: the bridge declares usages 16/17 as the Pro Controller 2 grip buttons,
+    // and only a descriptor that matched byte-for-byte may be read that way.
     if (map && android_bridge_ext_present(&map->bridge))
-        return gamepad_quirks_generic();
+        return gamepad_quirks_android_bridge();
 
     return gamepad_quirks_identify(device->vendor_id, device->product_id,
                                     device->name, map ? map->buttonCnt : 0);

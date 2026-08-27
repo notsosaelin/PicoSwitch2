@@ -39,6 +39,13 @@ class AndroidTouchFeedback(private val view: View) : TouchFeedbackBackend {
             TouchFeedbackEvent.LatchArmed -> HapticFeedbackConstants.CLOCK_TICK
             TouchFeedbackEvent.LatchEngaged -> HapticFeedbackConstants.LONG_PRESS
             TouchFeedbackEvent.LatchReleased -> HapticFeedbackConstants.CLOCK_TICK
+            // The end of an analog trigger's travel, where a real GameCube
+            // trigger has a switch under the thumb and a pane of glass has
+            // nothing. A virtual-key tap rather than the heavier hold buzz: it is
+            // a mechanical edge inside one continuous gesture, not a state the
+            // user has to be told about, and it can legitimately happen several
+            // times in a fight.
+            TouchFeedbackEvent.TriggerDetent -> HapticFeedbackConstants.VIRTUAL_KEY
         }
         runCatching { view.performHapticFeedback(constant) }
     }

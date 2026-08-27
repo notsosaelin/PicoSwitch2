@@ -63,12 +63,22 @@
 //   1  v1: buttons 1..14, sticks, triggers, hat. No vendor extension.
 //   2  v2: vendor extension added -- motion, battery, flags, millisecond motion
 //      timestamp -- plus output report 2 (rumble, player LED, motion-wanted).
-//   3  current: buttons 1..15 (15 = C / GameChat, inside the same two bytes) and
-//      the motion timestamp redefined to 100 us ticks.
+//   3  buttons 1..15 (15 = C / GameChat, inside the same two bytes) and the
+//      motion timestamp redefined to 100 us ticks.
+//   4  current: buttons 1..17 (16 = GL, 17 = GR -- the Pro Controller 2 grip
+//      buttons). Unlike C, these did NOT fit: contract 3 had exactly one pad bit
+//      left and two buttons were needed, so the button field grew from two bytes
+//      to three and EVERY LATER FIELD MOVED BY ONE BYTE. That is the first
+//      offset-shifting change since v2, which is why the digest guard matters
+//      here more than it ever has -- a v3 app against v4 firmware would not
+//      merely lose a feature, it would read motion and battery from the wrong
+//      offsets. The exact-match identify makes that impossible: a v3 descriptor
+//      simply is not this one, so the firmware falls back to the v1 profile and
+//      the version mismatch is reported.
 //
 // The Kotlin side mirrors this as BridgeContract.VERSION and
 // tools/check_android_descriptor_parity.py fails the build if the two disagree.
-#define ANDROID_BRIDGE_CONTRACT_VERSION 3u
+#define ANDROID_BRIDGE_CONTRACT_VERSION 4u
 
 // Single source of truth for the descriptor and wire layout. The firmware parser
 // test (tools/test_bthid_android_controller.c) compiles this directly; the Kotlin
@@ -93,22 +103,37 @@
 //     on Bluetooth VID/PID: an Android handheld reports its phone identity, which
 //     varies per OEM and cannot authorize output.
 //
-// Wire layout, INPUT report 1 (Android -> PicoSwitch2), 26 bytes:
+// Wire layout, INPUT report 1 (Android -> PicoSwitch2), 27 bytes:
 //   [0]      report ID (1)
 //   [1..6]   X, Y, Z, Rz, Rx, Ry           (sticks, then triggers; 0..255)   v1
-//   [7..8]   buttons 1..15 + 1 pad bit                                        v1+
-//   [9]      hat (low nibble, 8 = neutral) + 4 pad bits                       v1
+//   [7..9]   buttons 1..17 + 7 pad bits                                        v4
+//   [10]     hat (low nibble, 8 = neutral) + 4 pad bits                       v1
+//   [11..22] gyro X,Y,Z then accel X,Y,Z   (int16 little-endian)              v2
+//   [23]     battery level 0..100                                             v2
+//   [24]     flags (see ANDROID_BRIDGE_FLAG_*)                                v2
+//   [25..26] motion timestamp, 100 us ticks (uint16 LE, free-running/wrapping) v2
 //
 // Button usage 15 is the Switch 2 "C" (GameChat) button. It was appended inside
-// the EXISTING two button bytes -- 14 buttons + 2 pad became 15 + 1 -- so every
-// later field keeps its byte offset and only the button count changed. The
-// firmware needs no change for it: the generic sequential profile already maps
-// usage 15 to JP_BUTTON_A3, which NS2_BASE_BUTTON_MAP routes to NS2_DST_C and
-// ns2_seam.c raises as SWITCH_EXTRA_C.
-//   [10..21] gyro X,Y,Z then accel X,Y,Z   (int16 little-endian)              v2
-//   [22]     battery level 0..100                                             v2
-//   [23]     flags (see ANDROID_BRIDGE_FLAG_*)                                v2
-//   [24..25] motion timestamp, 100 us ticks (uint16 LE, free-running/wrapping) v2
+// the two button bytes contract 2 already had -- 14 buttons + 2 pad became 15 +
+// 1 -- so every later field kept its byte offset and only the button count
+// changed. The firmware needs no change for it: the generic sequential profile
+// already maps usage 15 to JP_BUTTON_A3, which NS2_BASE_BUTTON_MAP routes to
+// NS2_DST_C and ns2_seam.c raises as SWITCH_EXTRA_C.
+//
+// Button usages 16 and 17 are the Pro Controller 2 GRIP buttons, GL and GR.
+// They are real inputs on that controller (switch_pro2_encode.c writes them to
+// report 0x09 byte2 0x08/0x04, and ns2_build_report_05 to byte 0x7 0x02/0x01),
+// and until contract 4 the bridge had no way to carry them at all. Adding them
+// is what forced the field to three bytes: contract 3 had ONE pad bit left.
+//
+// Their destinations already existed and are reused verbatim rather than
+// invented here -- NS2_BASE_BUTTON_MAP already routes JP_BUTTON_A4 to
+// NS2_DST_GL and JP_BUTTON_A5 to NS2_DST_GR, and ns2_kbm.c raises those as
+// SWITCH_EXTRA_GL/GR. The only firmware change is the bridge's own button map
+// (gamepad_quirks_android_bridge), which names usages 16/17 as A4/A5. It is
+// deliberately NOT the shared SEQ_BUTTON_MAP: that table is used by every
+// generic pad, and a device declaring 17 buttons for its own reasons must not
+// suddenly acquire grip presses.
 //
 // Wire layout, OUTPUT report 2 (PicoSwitch2 -> Android), 5 bytes:
 //   [0] report ID (2)
@@ -131,26 +156,28 @@
 #define ANDROID_CONTROLLER_PAYLOAD_LEN 9u
 #define ANDROID_CONTROLLER_WIRE_REPORT_LEN (1u + ANDROID_CONTROLLER_PAYLOAD_LEN)
 
-// v2 payload/wire lengths.
-#define ANDROID_CONTROLLER_V2_PAYLOAD_LEN 25u
+// v2 payload/wire lengths. One byte longer since contract 4: the button field
+// is three bytes, not two.
+#define ANDROID_CONTROLLER_V2_PAYLOAD_LEN 26u
 #define ANDROID_CONTROLLER_V2_WIRE_REPORT_LEN (1u + ANDROID_CONTROLLER_V2_PAYLOAD_LEN)
 #define ANDROID_CONTROLLER_OUTPUT_PAYLOAD_LEN 4u
 #define ANDROID_CONTROLLER_OUTPUT_WIRE_LEN (1u + ANDROID_CONTROLLER_OUTPUT_PAYLOAD_LEN)
 
 // Wire offsets of the v2 extension, INCLUDING the leading report-ID byte.
-#define ANDROID_BRIDGE_OFF_GYRO 10u    // 3 x int16 LE
-#define ANDROID_BRIDGE_OFF_ACCEL 16u   // 3 x int16 LE
-#define ANDROID_BRIDGE_OFF_BATTERY 22u
-#define ANDROID_BRIDGE_OFF_FLAGS 23u
+// All shifted by one at contract 4; see the wire layout above.
+#define ANDROID_BRIDGE_OFF_GYRO 11u    // 3 x int16 LE
+#define ANDROID_BRIDGE_OFF_ACCEL 17u   // 3 x int16 LE
+#define ANDROID_BRIDGE_OFF_BATTERY 23u
+#define ANDROID_BRIDGE_OFF_FLAGS 24u
 // uint16 LE, 100 us ticks, free-running and wrapping (6.5536 s period).
 // NOT milliseconds: at the 125 Hz report cadence a 1 ms quantum is 12.5% of the
 // interval, which is the same order as the arrival jitter this timestamp exists
 // to eliminate. 100 us keeps the quantization an order of magnitude below the
 // effect being corrected while still fitting the existing 16-bit field.
-#define ANDROID_BRIDGE_OFF_TIMESTAMP 24u
+#define ANDROID_BRIDGE_OFF_TIMESTAMP 25u
 #define ANDROID_BRIDGE_TIMESTAMP_TICK_US 100u
 
-// Input flags (wire byte 23).
+// Input flags (wire byte 24).
 #define ANDROID_BRIDGE_FLAG_CHARGING 0x01u
 #define ANDROID_BRIDGE_FLAG_MOTION_VALID 0x02u
 #define ANDROID_BRIDGE_FLAG_BATTERY_VALID 0x04u
@@ -250,14 +277,14 @@ static const uint8_t ANDROID_CONTROLLER_V2_HID_DESCRIPTOR[] = {
 
     0x05, 0x09,       // Usage Page (Button)
     0x19, 0x01,
-    0x29, 0x0F,       // Usage Maximum (15) -- 15 is C / GameChat
+    0x29, 0x11,       // Usage Maximum (17) -- 15 = C, 16 = GL, 17 = GR
     0x15, 0x00,
     0x25, 0x01,
     0x75, 0x01,
-    0x95, 0x0F,       // Report Count (15)
+    0x95, 0x11,       // Report Count (17)
     0x81, 0x02,
     0x75, 0x01,
-    0x95, 0x01,       // one pad bit; the field stays two bytes wide
+    0x95, 0x07,       // seven pad bits; the field is three bytes wide
     0x81, 0x03,
 
     0x05, 0x01,       // Usage Page (Generic Desktop)
@@ -332,7 +359,7 @@ ANDROID_CONTROLLER_V2_NEUTRAL_REPORT[ANDROID_CONTROLLER_V2_WIRE_REPORT_LEN] = {
     ANDROID_CONTROLLER_REPORT_ID,
     128, 128, 128, 128, // sticks
     0, 0,               // triggers
-    0, 0,               // buttons 1..14
+    0, 0, 0,            // buttons 1..17 (three bytes since contract 4)
     8,                  // neutral hat + padding
     0, 0, 0, 0, 0, 0,   // gyro X,Y,Z
     0, 0, 0, 0, 0, 0,   // accel X,Y,Z

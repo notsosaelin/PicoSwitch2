@@ -292,6 +292,16 @@ int main(void) {
         in = neutral_input(); in.gc_extra = GC_MASK_ZL;
         switch_gc_encode_report05(&in, 0, out); CHECK(out[0x6] == 0x80, "report05: native ZL -> byte0x6 0x80");
 
+        // GameCube Z is the ZR control: the shell prints "Z", the protocol slot is ZR. This bit is
+        // the one a PC/Steam host reads -- report 0x05 is the only report such a host ever selects
+        // -- and it was hardcoded to 0 until 2026-08-26, which is exactly why this personality's Z
+        // worked on a Switch 2 and did nothing on PC. The ZL checks above are its mirror; the two
+        // sides of this format must not disagree about whether their control exists.
+        in = neutral_input(); in.gc_extra = GC_MASK_Z;
+        switch_gc_encode_report05(&in, 0, out);
+        CHECK(out[0x4] == 0x80, "report05: native Z -> byte0x4 0x80 (the ZR slot), nothing else");
+        CHECK(out[0x5] == 0 && out[0x6] == 0, "report05: native Z alone -> bytes 0x5,0x6 untouched");
+
         in = neutral_input(); in.buttons[2] = SWITCH_MASK_DPAD_UP;
         switch_gc_encode_report05(&in, 0, out); CHECK(out[0x6] == 0x02, "report05: D-pad Up -> byte0x6 0x02");
         in = neutral_input(); in.buttons[2] = SWITCH_MASK_DPAD_DOWN;
@@ -329,8 +339,12 @@ int main(void) {
         CHECK(out[0x3C] == 0xFF && out[0x3D] == 0xFF, "report05: analog L/R at 0xFF exact");
     }
 
-    // 15. No accidental L3/R3 (or GL/GR, or ZR/plain-shoulder -- bits with no GC hardware
-    // equivalent in this shared format) output, even when the source sets them.
+    // 15. No accidental L3/R3, GL/GR or plain-shoulder output, even when the source sets them.
+    //
+    // The ZR check is the one that matters most and it is NOT "this bit is dead": byte0x4 0x80 is
+    // GameCube Z, and case 13 proves gc_extra reaches it. What must never reach it is
+    // SWITCH_MASK_ZR, because report 0x0A sources Z from gc_extra alone -- a second source here
+    // would let a PC see a press the console does not.
     {
         switch_pro_input_t in = neutral_input();
         in.buttons[1] = SWITCH_MASK_L3 | SWITCH_MASK_R3;
@@ -340,10 +354,50 @@ int main(void) {
         switch_gc_encode_report05(&in, 0, out);
         CHECK((out[0x5] & 0x08) == 0, "report05: SWITCH_MASK_L3 never sets byte0x5 0x08");
         CHECK((out[0x5] & 0x04) == 0, "report05: SWITCH_MASK_R3 never sets byte0x5 0x04");
-        CHECK((out[0x4] & 0x80) == 0, "report05: SWITCH_MASK_ZR never sets byte0x4 0x80 (no GC equivalent bit)");
+        CHECK((out[0x4] & 0x80) == 0, "report05: SWITCH_MASK_ZR never sets byte0x4 0x80 (gc_extra owns Z)");
         CHECK((out[0x4] & 0x40) == 0, "report05: SWITCH_MASK_R never sets byte0x4 0x40 (no GC equivalent bit)");
         CHECK((out[0x6] & 0x40) == 0, "report05: SWITCH_MASK_L never sets byte0x6 0x40 (no GC equivalent bit)");
         CHECK(out[0x7] == 0, "report05: GL/GR never touch byte0x7 -- GC has no grip hardware");
+    }
+
+    // 16. Z parity across the two reports, which is the invariant the PC fix turns on: ONE input
+    // must reach the console's GC slot in report 0x0A and the PC's ZR slot in report 0x05. If a
+    // future change moves one of them, the personality silently works on one host and not the
+    // other -- which is precisely the bug this case exists to prevent recurring.
+    {
+        switch_pro_input_t in = neutral_input();
+        in.gc_extra = GC_MASK_Z;
+        uint8_t out0a[63];
+        switch_gc_encode_report(&in, 0, out0a);
+        switch_gc_encode_report05(&in, 0, out);
+        CHECK(out0a[0x2] == 0x20, "Z parity: report 0x0A carries it in the GC slot (byte0 0x20)");
+        CHECK(out[0x4] == 0x80, "Z parity: report 0x05 carries the same press in the ZR slot");
+
+        // Neutral in, neutral out, on BOTH -- the bit is a press, not a constant.
+        in = neutral_input();
+        switch_gc_encode_report(&in, 0, out0a);
+        switch_gc_encode_report05(&in, 0, out);
+        CHECK((out0a[0x2] & 0x20) == 0, "Z parity: released is released in report 0x0A");
+        CHECK((out[0x4] & 0x80) == 0, "Z parity: released is released in report 0x05");
+    }
+
+    // 17. Z does not disturb the analog triggers or their detents, in either report. The detents
+    // are a DIFFERENT control from Z and still have no slot in report 0x05; the continuous values
+    // reach a PC through the GC-specific tail instead, unchanged by this pass.
+    {
+        switch_pro_input_t in = neutral_input();
+        in.gc_extra = GC_MASK_Z | GC_MASK_L_DETENT | GC_MASK_R_DETENT;
+        in.left_trigger = 0x7F; in.right_trigger = 0xFF;
+
+        uint8_t out0a[63];
+        switch_gc_encode_report(&in, 0, out0a);
+        CHECK(out0a[0x2] == (0x20 | 0x10), "Z + R detent still coexist in report 0x0A byte0");
+        CHECK(out0a[0x3] == 0x10, "L detent still lands in report 0x0A byte1 0x10");
+        CHECK(out0a[0xC] == 0x7F && out0a[0xD] == 0xFF, "analog L/R untouched by Z in report 0x0A");
+
+        switch_gc_encode_report05(&in, 0, out);
+        CHECK(out[0x4] == 0x80, "report05: Z present; the detents add nothing to the button field");
+        CHECK(out[0x3C] == 0x7F && out[0x3D] == 0xFF, "report05: analog L/R tail untouched by Z");
     }
 
     printf("\n%s\n", failures == 0 ? "All checks passed." : "One or more checks FAILED.");

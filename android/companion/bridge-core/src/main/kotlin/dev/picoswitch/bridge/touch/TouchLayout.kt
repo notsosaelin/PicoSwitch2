@@ -1,10 +1,16 @@
 package dev.picoswitch.bridge.touch
 
 import dev.picoswitch.bridge.core.ControllerButton
+import dev.picoswitch.bridge.core.ControllerFaceLayout
+import dev.picoswitch.bridge.core.ControllerLayoutResolver
 import dev.picoswitch.bridge.core.FaceButtonPosition
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 /** Which side of a two-of-a-kind control this is. */
 enum class ControlSide { Left, Right }
@@ -29,7 +35,22 @@ sealed interface TouchControlAction {
 
     data class Stick(val side: ControlSide) : TouchControlAction
 
-    data class Trigger(val side: ControlSide) : TouchControlAction
+    /**
+     * A trigger, and whether the personality behind it has real travel.
+     *
+     * [analog] is a statement about the CONSOLE-FACING controller, not about the
+     * on-screen control: only the NSO GameCube personality carries a continuous
+     * trigger byte the console acts on (`switch_gc_encode` writes it, and the
+     * firmware's GameCube seam derives the terminal detent from it). Pro
+     * Controller 2 and Joy-Con triggers are digital on the far side however hard
+     * they are pulled, so giving them a travel gesture would let a stray drag
+     * silently send nothing at all.
+     *
+     * The profile catalog is where this is decided, because the profile is what
+     * knows which console controller a binding produces. See
+     * [TouchAnalogTriggerState] for what the flag switches on.
+     */
+    data class Trigger(val side: ControlSide, val analog: Boolean = false) : TouchControlAction
 }
 
 /**
@@ -104,7 +125,10 @@ enum class TouchControlGlyph { Capture, Home }
  * whichever device it was authored on.
  */
 data class TouchControlSpec(
+    /** The INSTANCE id. Unique within a layout; not a binding and not a kind. */
     val id: String,
+    /** Which catalog entry this instance was made from. Not unique. */
+    val catalogId: String = id,
     val kind: TouchControlKind,
     val action: TouchControlAction,
     /** Centre within the interaction region, `0..1`. */
@@ -124,6 +148,16 @@ data class TouchControlSpec(
     val hitMarginUnits: Float = 0f,
     /** Higher wins when two hit regions still overlap. */
     val priority: Int = 0,
+    /**
+     * Draw and hit order within the layout, low to high.
+     *
+     * A real layout property rather than incidental list position, because once
+     * duplicate and freely placed instances exist, "which one is in front" is a
+     * question the user can answer and the arrangement has to remember. The
+     * router reads the same number the renderer does, so the control drawn on
+     * top is the control a thumb lands on.
+     */
+    val zIndex: Int = 0,
     /** Drawn legend, when the control's label is not derived from a face layout. */
     val label: String = "",
     /** Optional symbol in place of [label]. */
@@ -132,9 +166,22 @@ data class TouchControlSpec(
     val output: TouchOutputControl = TouchOutputControl.Unspecified,
     /** Portable visual treatment; the host owns the actual paths and colours. */
     val visualRole: TouchVisualRole = TouchVisualRole.Default,
-    /** Clockwise visual rotation supplied by the immutable personality template. */
+    /**
+     * TOTAL clockwise rotation: the catalog entry's authored orientation plus
+     * whatever the user has turned this instance by.
+     *
+     * One number because rendering and hit testing must never disagree about
+     * how far the silhouette is turned, and a renderer that had to remember to
+     * add two fields is a renderer that will eventually add one.
+     */
     val visualRotationDegrees: Float = 0f,
-    /** Controls with the same id may be moved or scaled together by an editor. */
+    /**
+     * The catalog entry's own orientation, carried alongside the total so the
+     * editor can offer "reset orientation" and can snap to the authored angle
+     * rather than blindly to zero.
+     */
+    val authoredRotationDegrees: Float = 0f,
+    /** Instances sharing this id are transformed together by an editor. */
     val editGroupId: String? = null,
     /** Logical-unit offset from the group's normalized anchor. */
     val groupOffsetXUnits: Float = 0f,
@@ -149,6 +196,58 @@ data class TouchControlSpec(
      */
     val latch: Boolean? = null,
 )
+
+/**
+ * What to call a control in words a person reads.
+ *
+ * ```text
+ * a face binding      the letter it is DRAWN with   A, B, X, Y
+ * an authored legend  that legend                   ZL, L3, GL, Z
+ * anything else       its id, made readable         Stick left, Dpad
+ * a second instance   the same name, numbered       B (2)
+ * ```
+ *
+ * In the shared module, and used by BOTH the editor's labels and the audit's
+ * messages, because those are the same claim made twice. Pro Controller 2's face
+ * controls carry no authored legend — their letter is resolved at draw time —
+ * so naming them from their ids produced "face-north", "face-east" and so on in
+ * every sentence the user was shown. Cardinal slots are an internal way to keep
+ * a position separate from the bit it sends; nobody has ever pressed a button
+ * called Face East.
+ */
+object TouchControlNaming {
+
+    /**
+     * The presentation every drawn diamond uses.
+     *
+     * Fixed rather than chosen: every controller this surface can emulate is a
+     * Nintendo one, and the retired Nintendo/Xbox mode is not coming back.
+     */
+    val FACE_LAYOUT = ControllerFaceLayout.Nintendo
+
+    /**
+     * [instanceId] contributes only the copy number. Two instances of the same
+     * catalog entry are the same control to a user, so they get the same name —
+     * but a message about one of them still has to say WHICH, and "B (2)" is
+     * the readable form of the `b#2` the document actually stores.
+     */
+    fun nameFor(action: TouchControlAction?, label: String, instanceId: String): String {
+        val base = when {
+            action is TouchControlAction.Face ->
+                ControllerLayoutResolver.faceLabel(action.position, FACE_LAYOUT)
+            label.isNotBlank() -> label
+            else -> instanceId.substringBefore('#')
+                .replace('-', ' ')
+                .replaceFirstChar { it.uppercase() }
+        }
+        val copy = instanceId.substringAfter('#', "")
+        return if (copy.isBlank()) base else "$base ($copy)"
+    }
+}
+
+/** What to call this control in a message or a label. See [TouchControlNaming]. */
+val TouchControlSpec.displayName: String
+    get() = TouchControlNaming.nameFor(action, label, id)
 
 /**
  * A complete on-screen controller, versioned.
@@ -208,17 +307,136 @@ data class ResolvedTouchControl(
     /** Travel radius for the vector controls; the smaller half-extent keeps it circular. */
     val trackingRadius: Float get() = min(halfWidth, halfHeight)
 
-    fun hitTest(x: Float, y: Float): Boolean {
+    /**
+     * Axis-aligned half-extents of the answerable region AFTER rotation.
+     *
+     * Not the same as [hitHalfWidth]/[hitHalfHeight] once a control is turned:
+     * those are the control's own frame. Every screen-space question — is this
+     * inside the safe rectangle, can these two possibly overlap, how far may
+     * this be dragged — has to be asked in screen space, and asking it with the
+     * unrotated extents is how a rotated control ends up half under a system
+     * gesture strip.
+     *
+     * Computed per shape rather than with one conservative circumscribed radius,
+     * because the GameCube beans are authored at a non-zero angle and a
+     * needlessly loose bound there would report overlaps the shipped layout does
+     * not have.
+     */
+    val hitExtentX: Float get() = rotatedExtents.first
+    val hitExtentY: Float get() = rotatedExtents.second
+
+    // Computed once per resolve, never per contact: geometry changes only when
+    // the window or the layout does.
+    private val rotatedExtents: Pair<Float, Float> = computeRotatedExtents()
+
+    private fun computeRotatedExtents(): Pair<Float, Float> {
+        val degrees = spec.visualRotationDegrees
+        if (degrees == 0f && spec.shape != TouchControlShape.GameCubeContour) {
+            return hitHalfWidth to hitHalfHeight
+        }
+        val radians = degrees.toDouble() * PI / 180.0
+        val cosine = abs(cos(radians)).toFloat()
+        val sine = abs(sin(radians)).toFloat()
+        return when (spec.shape) {
+            TouchControlShape.Rectangle ->
+                (hitHalfWidth * cosine + hitHalfHeight * sine) to
+                    (hitHalfWidth * sine + hitHalfHeight * cosine)
+            TouchControlShape.Circle -> {
+                val x = hitHalfWidth * cosine
+                val y = hitHalfHeight * sine
+                val u = hitHalfWidth * sine
+                val v = hitHalfHeight * cosine
+                sqrt(x * x + y * y) to sqrt(u * u + v * v)
+            }
+            // A bean is inscribed in its box and already rotated by the shared
+            // contour helper, so its real extent comes from the contour itself.
+            // The touch margin expands it in every direction.
+            TouchControlShape.GameCubeContour -> {
+                val margin = hitHalfWidth - halfWidth
+                val points = TouchGameCubeGeometry.orientedContour(
+                    role = spec.visualRole,
+                    width = halfWidth * 2f,
+                    height = halfHeight * 2f,
+                    rotationDegrees = degrees,
+                )
+                val x = points.maxOfOrNull { abs(it.x) } ?: hitHalfWidth
+                val y = points.maxOfOrNull { abs(it.y) } ?: hitHalfHeight
+                (x + margin) to (y + margin)
+            }
+        }
+    }
+
+    /**
+     * How far the control's axis-aligned box must be turned to describe its
+     * screen-space region — which is NOT always [visualRotationDegrees].
+     *
+     * The distinction is whether the shape test rotates the POINT or whether the
+     * shape itself already carries the angle:
+     *
+     * ```text
+     * Rectangle          the box IS the region      -> turn it
+     * Circle, round      rotation-invariant         -> do not
+     * Circle, elliptical the box IS the region      -> turn it
+     * GameCubeContour    the contour is rotated
+     *                    INSIDE an upright box      -> do not
+     * ```
+     *
+     * Here rather than in a renderer because a selection outline, a debug
+     * overlay and any future chrome all have to agree with the router about
+     * where a control actually is. Drawing a tilted box around an upright
+     * bean — or around a circle, where it means nothing at all — is how an
+     * editor starts lying about its own geometry.
+     */
+    val outlineRotationDegrees: Float get() = when (spec.shape) {
+        TouchControlShape.Rectangle -> spec.visualRotationDegrees
+        TouchControlShape.Circle ->
+            if (hitHalfWidth == hitHalfHeight) 0f else spec.visualRotationDegrees
+        TouchControlShape.GameCubeContour -> 0f
+    }
+
+    /**
+     * Hit test in the control's own frame.
+     *
+     * A rotated control is tested by rotating the POINT backwards rather than by
+     * building a rotated polygon: one inverse transform reuses the same local
+     * shape test the unrotated case uses, so the two can never drift apart, and
+     * nothing is allocated on the contact path.
+     */
+    fun hitTest(x: Float, y: Float): Boolean = contains(x, y, includeMargin = true)
+
+    /**
+     * The DRAWN shape, without the courtesy touch margin around it.
+     *
+     * Used by the layout audit to tell two genuinely colliding controls from two
+     * whose margins merely meet; see [TouchLayoutAudit]. Never used for routing
+     * a contact — a control answers to its margin, which is the whole point of
+     * having one.
+     */
+    fun containsVisual(x: Float, y: Float): Boolean = contains(x, y, includeMargin = false)
+
+    private fun contains(x: Float, y: Float, includeMargin: Boolean): Boolean {
+        val halfW = if (includeMargin) hitHalfWidth else halfWidth
+        val halfH = if (includeMargin) hitHalfHeight else halfHeight
+        if (halfW <= 0f || halfH <= 0f) return false
         val dx = x - centerX
         val dy = y - centerY
-        if (hitHalfWidth <= 0f || hitHalfHeight <= 0f) return false
         return when (spec.shape) {
+            // Rotation-invariant when the two half-extents are equal, which is
+            // every circular control in the shipped catalog. Rotating the point
+            // anyway costs a sin/cos per contact for no change in the answer.
             TouchControlShape.Circle -> {
-                val nx = dx / hitHalfWidth
-                val ny = dy / hitHalfHeight
+                val (lx, ly) = if (halfW == halfH) dx to dy else localPoint(dx, dy)
+                val nx = lx / halfW
+                val ny = ly / halfH
                 nx * nx + ny * ny <= 1f
             }
-            TouchControlShape.Rectangle -> abs(dx) <= hitHalfWidth && abs(dy) <= hitHalfHeight
+            TouchControlShape.Rectangle -> {
+                val (lx, ly) = localPoint(dx, dy)
+                abs(lx) <= halfW && abs(ly) <= halfH
+            }
+            // The contour test does its own inverse rotation from the same total
+            // angle, so the point arrives here unrotated. The contour is always
+            // the DRAWN one; the margin is what the courtesy expansion adds.
             TouchControlShape.GameCubeContour -> TouchGameCubeGeometry.contains(
                 role = spec.visualRole,
                 x = dx,
@@ -226,7 +444,7 @@ data class ResolvedTouchControl(
                 width = halfWidth * 2f,
                 height = halfHeight * 2f,
                 rotationDegrees = spec.visualRotationDegrees,
-                margin = hitHalfWidth - halfWidth,
+                margin = if (includeMargin) hitHalfWidth - halfWidth else 0f,
             )
         }
     }
@@ -239,9 +457,19 @@ data class ResolvedTouchControl(
      * to whichever happens to be later in the list.
      */
     fun normalizedDistance(x: Float, y: Float): Float {
-        val nx = if (hitHalfWidth > 0f) (x - centerX) / hitHalfWidth else Float.MAX_VALUE
-        val ny = if (hitHalfHeight > 0f) (y - centerY) / hitHalfHeight else Float.MAX_VALUE
-        return max(abs(nx), abs(ny))
+        if (hitHalfWidth <= 0f || hitHalfHeight <= 0f) return Float.MAX_VALUE
+        val (lx, ly) = localPoint(x - centerX, y - centerY)
+        return max(abs(lx / hitHalfWidth), abs(ly / hitHalfHeight))
+    }
+
+    /** A screen-space offset from the centre, expressed in the control's frame. */
+    private fun localPoint(dx: Float, dy: Float): Pair<Float, Float> {
+        val degrees = spec.visualRotationDegrees
+        if (degrees == 0f) return dx to dy
+        val radians = (-degrees).toDouble() * PI / 180.0
+        val cosine = cos(radians).toFloat()
+        val sine = sin(radians).toFloat()
+        return (dx * cosine - dy * sine) to (dx * sine + dy * cosine)
     }
 }
 
@@ -270,11 +498,35 @@ data class ResolvedTouchLayout(
      * offers layout editing here would be offering a repair that cannot work.
      */
     val regionTooSmall: Boolean = false,
+    /**
+     * Everything the audit said about this exact geometry.
+     *
+     * Carried on the resolved layout rather than recomputed by whoever wants it,
+     * so an editor highlighting a broken control and the runtime deciding
+     * whether to play the layout are reading one answer. Recomputing invited the
+     * failure where the canvas says a control fits and the validator refuses it.
+     */
+    val findings: List<TouchLayoutFinding> = emptyList(),
 ) {
     /** Built once so the router's per-move owner lookup is not a list scan. */
     private val byId: Map<String, ResolvedTouchControl> = controls.associateBy { it.id }
 
     fun control(id: String): ResolvedTouchControl? = byId[id]
+
+    /**
+     * The instances a blocking finding names, for a surface to mark as broken.
+     *
+     * Blocking only: a non-blocking finding is information, and painting a
+     * control red for one would teach the user to ignore the colour.
+     */
+    val invalidControlIds: Set<String> = findings
+        .filter { it.blocking }
+        .flatMapTo(mutableSetOf()) { it.controlIds }
+
+    /** The shortest true thing to say about [id], when it is broken. */
+    fun problemFor(id: String): String? = findings
+        .firstOrNull { it.blocking && id in it.controlIds }
+        ?.message
 
     companion object {
         val Empty = ResolvedTouchLayout(
@@ -366,6 +618,7 @@ object TouchLayoutResolver {
             fits = problem == null,
             problem = problem,
             regionTooSmall = tooSmall,
+            findings = findings,
         )
     }
 

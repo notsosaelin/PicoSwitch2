@@ -96,6 +96,10 @@ object TouchLayoutV1 {
     const val STICK_CLICK_LEFT = "stick-click-left"
     const val STICK_CLICK_RIGHT = "stick-click-right"
 
+    /** Optional; present in the template, hidden until the user adds them. */
+    const val GRIP_LEFT = "grip-left"
+    const val GRIP_RIGHT = "grip-right"
+
     val layout: TouchLayout = TouchLayout(
         id = ID,
         schemaVersion = SCHEMA_VERSION,
@@ -161,6 +165,28 @@ object TouchLayoutV1 {
         templateRevision = TEMPLATE_REVISION,
     )
 
+    /**
+     * Controls this personality HAS but the shipped layout does not place.
+     *
+     * Catalog entries, appended to [template] and never to [layout]: the default
+     * document instantiates only what the shipped controller shows, and Add
+     * Control offers everything in the catalog. That is the whole mechanism —
+     * there is no hidden ghost instance sitting in the layout waiting to be
+     * revealed. See [TouchTemplateControl.inDefaultLayout].
+     *
+     * GL/GR are real Pro Controller 2 grip buttons. Their authored position is
+     * the outer BOTTOM corners — below the sticks and outboard of the D-pad and
+     * the face diamond — which is both the closest a flat screen gets to where
+     * the hands already are and the only region wide enough that adding BOTH
+     * still passes the overlap audit at authored size. Every other outer
+     * position collides: level with the sticks runs into the left stick, and
+     * level with the centre band runs into the face diamond.
+     */
+    private val OPTIONAL_TEMPLATE_CONTROLS: List<TouchTemplateControl> = listOf(
+        grip(GRIP_LEFT, TouchOutputControl.GL, 48f, 352f, "GL"),
+        grip(GRIP_RIGHT, TouchOutputControl.GR, 752f, 352f, "GR"),
+    )
+
     /** The immutable profile-backed form of the already validated V1 layout. */
     val template: TouchLayoutTemplate = TouchLayoutTemplate(
         id = ID,
@@ -190,8 +216,46 @@ object TouchLayoutV1 {
                     control.visualRotationDegrees,
                 ),
                 editGroupId = control.editGroupId,
+                category = categoryOf(control),
             )
-        },
+        } + OPTIONAL_TEMPLATE_CONTROLS,
+    )
+
+    private fun categoryOf(control: TouchControlSpec): TouchControlCategory = when (control.output) {
+        TouchOutputControl.FaceNorth, TouchOutputControl.FaceEast,
+        TouchOutputControl.FaceSouth, TouchOutputControl.FaceWest,
+        -> TouchControlCategory.Face
+        TouchOutputControl.Dpad -> TouchControlCategory.Directions
+        TouchOutputControl.PrimaryStick, TouchOutputControl.SecondaryStick,
+        TouchOutputControl.PrimaryStickClick, TouchOutputControl.SecondaryStickClick,
+        -> TouchControlCategory.Sticks
+        TouchOutputControl.L, TouchOutputControl.R,
+        TouchOutputControl.ZL, TouchOutputControl.ZR,
+        -> TouchControlCategory.Shoulders
+        else -> TouchControlCategory.System
+    }
+
+    private fun grip(
+        id: String,
+        output: TouchOutputControl,
+        x: Float,
+        y: Float,
+        label: String,
+    ) = TouchTemplateControl(
+        id = id,
+        output = output,
+        interaction = TouchControlKind.Button,
+        geometry = TouchControlGeometry(
+            anchorX = x / TouchLayoutResolver.REFERENCE_WIDTH_UNITS,
+            anchorY = y / TouchLayoutResolver.REFERENCE_HEIGHT_UNITS,
+            widthUnits = 64f,
+            heightUnits = 64f,
+            shape = TouchControlShape.Rectangle,
+            hitMarginUnits = 2f,
+        ),
+        visual = TouchVisualSpec(TouchVisualRole.RectangularButton, label),
+        inDefaultLayout = false,
+        category = TouchControlCategory.Grip,
     )
 
     // ------------------------------------------------------------------ builders

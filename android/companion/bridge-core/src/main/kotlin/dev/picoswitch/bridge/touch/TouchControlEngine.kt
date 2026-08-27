@@ -32,6 +32,30 @@ data class TouchDiagnosticsSnapshot(
     val latchesCleared: Long = 0,
     /** Taps on an already-latched control that produced a fresh press edge. */
     val retriggerPulses: Long = 0,
+    /** Holds taken back off by sliding to where the committing gesture began. */
+    val latchesCancelled: Long = 0,
+    /** Analog triggers that reached the terminal click. */
+    val triggerDetents: Long = 0,
+    /** Taps on an analog trigger that published a brief full pull. */
+    val triggerPulses: Long = 0,
+    /**
+     * What each analog trigger is publishing, `0..1`, by control id.
+     *
+     * A value rather than a counter because it is the only part of this feature
+     * a user can see being wrong: a trigger held at some level with nothing
+     * touching it looks identical to one at rest in every other diagnostic.
+     */
+    val analogTriggers: Map<String, Float> = emptyMap(),
+    /**
+     * Which way each analog trigger's fill should grow, by control id.
+     *
+     * Reported next to the levels, and by the engine rather than by the
+     * renderer, for one reason: while a gesture is live this is the axis FROZEN
+     * at pointer-down, and only the engine has that. A surface deriving it from
+     * the layout every frame would agree with the engine right up until the
+     * moment the two could differ.
+     */
+    val analogTriggerFills: Map<String, TouchFillDirection> = emptyMap(),
     val lastContactTimeNanos: Long = 0,
     val leftStick: TouchVector = TouchVector.Zero,
     val rightStick: TouchVector = TouchVector.Zero,
@@ -90,6 +114,16 @@ data class TouchDiagnosticsSnapshot(
  * holding" a game may ask for. Creating a hold is deliberately the harder half
  * of the pair. See [TouchControlLatch].
  *
+ * ## Triggers with real travel
+ *
+ * The GameCube personality's `L` and `R` are the same gesture with a value
+ * attached. A pull along an invisible position-derived axis is the trigger's
+ * travel; the same slide that locks a digital button locks a trigger AT THE
+ * LEVEL IT ENDS ON, which is the one thing a Boolean hold cannot express. The
+ * recognizer is unchanged and shared — only the distance that counts toward
+ * committing is projected onto the trigger's own axis, so a sideways slide
+ * cannot lock a trigger to nothing. See [TouchAnalogTriggerState].
+ *
  * The recognizer OBSERVES presses that have already been applied, so it cannot
  * delay or swallow one; see [TouchControlLatch]. Ownership is unchanged — a
  * latched control still takes and releases contacts normally — and every global
@@ -142,13 +176,46 @@ class TouchControlEngine(
      */
     private val latches = mutableMapOf<String, TouchControlLatch>()
 
-    private val facePresses = mutableSetOf<FaceButtonPosition>()
-    private val logicalPresses = mutableSetOf<ControllerButton>()
-    private var leftStick = TouchVector.Zero
-    private var rightStick = TouchVector.Zero
-    private var leftTrigger = 0f
-    private var rightTrigger = 0f
-    private var dpad = DpadState.None
+    /**
+     * Per-control travel state for the triggers that have any, created on first
+     * touch and bounded and cleared exactly like [latches].
+     *
+     * Keyed by CONTROL, not by side, so two triggers pulled at once are two
+     * independent gestures with two frozen axes and two owning contacts. One
+     * shared "the trigger gesture" would make the second finger fight the first.
+     */
+    private val analogTriggers = mutableMapOf<String, TouchAnalogTriggerState>()
+
+    /**
+     * What each INSTANCE is contributing, never what each binding is doing.
+     *
+     * This is the whole of duplicate safety. Two A buttons are two keys in
+     * [facePresses]; releasing one removes one key and the other still maps to
+     * the same position, so the aggregate at [publish] stays pressed. Keyed by
+     * binding — which is what a set of positions is — the second release would
+     * have taken the first one's press with it.
+     */
+    private val facePresses = mutableMapOf<String, FaceButtonPosition>()
+    private val logicalPresses = mutableMapOf<String, ControllerButton>()
+
+    /** Per-instance trigger level, by side, aggregated with `max` at publish. */
+    private val leftTriggerLevels = mutableMapOf<String, Float>()
+    private val rightTriggerLevels = mutableMapOf<String, Float>()
+
+    /**
+     * Per-instance stick and direction values, plus which instance currently
+     * SPEAKS for each logical control.
+     *
+     * Sticks and the D-pad cannot be aggregated the way buttons can: two full
+     * deflections in different directions have no meaningful sum, and averaging
+     * them would invent a third direction the user never asked for. Ownership
+     * instead — the first instance to move one wins it until its contact ends,
+     * then the next instance still being touched takes over.
+     */
+    private val stickVectors = mutableMapOf<String, TouchVector>()
+    private val stickOwners = mutableMapOf<ControlSide, String>()
+    private val dpadStates = mutableMapOf<String, DpadState>()
+    private var dpadOwner: String? = null
 
     private var published = TouchContribution.Neutral
 
@@ -164,6 +231,9 @@ class TouchControlEngine(
     private var latchesReleased = 0L
     private var latchesCleared = 0L
     private var retriggerPulses = 0L
+    private var latchesCancelled = 0L
+    private var triggerDetents = 0L
+    private var triggerPulses = 0L
 
     /** What touch is holding right now, independent of whether it is authoritative. */
     val contribution: TouchContribution get() = published
@@ -249,6 +319,10 @@ class TouchControlEngine(
         // AFTER the press has been applied, so a gesture can only ever change
         // what happens LATER, never what this press itself sends.
         noteLatchDown(target, contact.timeNanos, contact.x, contact.y)
+        // AFTER the latch, because whether the control is already held is what
+        // decides whether a still press here means "pull it fully" or "let go of
+        // it", and only one of those two may be armed at a time.
+        beginAnalogTrigger(target, contact)
         publish()
         return true
     }
@@ -264,18 +338,32 @@ class TouchControlEngine(
                 engage(control, contact.x, contact.y)
                 publish()
             }
-            // A button's movement means one of exactly two things: a drag that
-            // abandons a pending dwell, or the slide that commits an armed one.
-            // Neither changes what is published — the control is already pressed
-            // by this very contact — so nothing is published here.
-            else -> if (latches[controlId]?.onMove(
-                    contact.x,
-                    contact.y,
-                    gestureSlop(),
-                    latchCommitDistance(),
-                ) == true
-            ) {
-                commitLatch(controlId)
+            // An analog trigger tracks movement like a vector control AND
+            // recognizes the hold gesture like a button, because for it they are
+            // the same motion: the slide that locks the control is the slide
+            // that chooses what it locks at.
+            else -> if (control.isAnalogTrigger) {
+                moveAnalogTrigger(control, contact)
+            } else {
+                // A button's movement means one of exactly three things: a
+                // drag that abandons a pending dwell, the slide that commits an
+                // armed one, or the slide back that takes it off again. NONE of
+                // them changes what is published — the control is already
+                // pressed by this very contact, and stays pressed either way —
+                // so nothing is published here.
+                when (
+                    latches[controlId]?.onMove(
+                        contact.x,
+                        contact.y,
+                        gestureSlop(),
+                        latchCommitDistance(),
+                        latchCancelDistance(),
+                    )
+                ) {
+                    TouchLatchMove.Committed -> commitLatch(controlId)
+                    TouchLatchMove.Cancelled -> cancelLatch(controlId)
+                    else -> Unit
+                }
             }
         }
         return true
@@ -288,6 +376,7 @@ class TouchControlEngine(
         val control = layout.control(controlId)
         if (control != null) {
             noteLatchEnd(control, contact.timeNanos, cancelled)
+            endAnalogTrigger(control, contact, cancelled)
             // A latched control keeps its value when the finger leaves; that is
             // the entire feature, so nothing is disengaged.
             if (!latches[controlId].isLatched) disengage(control)
@@ -346,17 +435,52 @@ class TouchControlEngine(
         config.latch.latchCommitDistanceUnits * layout.region.unitScale
 
     /**
+     * How close to its origin a committed contact must return to take the hold
+     * back off, in this layout's real coordinates. Same conversion as the two
+     * above, and for the same reason.
+     */
+    private fun latchCancelDistance(): Float =
+        config.latch.latchCancelDistanceUnits * layout.region.unitScale
+
+    /** How far a contact must move to become a trigger pull, in real coordinates. */
+    private fun analogDragSlop(): Float =
+        config.trigger.dragSlopUnits * layout.region.unitScale
+
+    /**
      * The slide crossed the commit distance.
      *
      * Nothing is published: the control is already pressed by the contact that
      * performed the gesture, so the hold changes only what happens when that
      * contact eventually lifts. The surface refreshes its picture after every
-     * batch and picks the badge up from there.
+     * batch and picks the badge up from there. (An analog trigger publishes from
+     * its own path either way, because the same slide is still moving its
+     * value.)
      */
-    private fun commitLatch(controlId: String) {
+    private fun commitLatch(controlId: String, analogValue: Float? = null) {
         latchesEngaged++
         feedback.perform(TouchFeedbackEvent.LatchEngaged)
-        latchObserver.onLatchEvent(TouchLatchEvent.Engaged(controlId))
+        latchObserver.onLatchEvent(TouchLatchEvent.Engaged(controlId, analogValue))
+    }
+
+    /**
+     * The committing contact came back to where it started; the hold is off.
+     *
+     * Nothing is published, and that is the point: the finger is still down, so
+     * the control is still physically pressed and the console sees no edge at
+     * all. Only the hold that would have outlived the finger is gone, and
+     * lifting off now ends the press like any other.
+     *
+     * The recognizer has already put the contact back to ARMED, so the open
+     * padlock reappears and a slide out would lock it again. Deliberately only
+     * ONE tick for that — the same [TouchFeedbackEvent.LatchReleased] a
+     * press-and-hold unlatch gives, because "the hold is gone" is what the user
+     * needs to feel. Adding the arming tick on top of it would put two events on
+     * one action, which reads as one blurred buzz rather than two states.
+     */
+    private fun cancelLatch(controlId: String) {
+        latchesCancelled++
+        feedback.perform(TouchFeedbackEvent.LatchReleased)
+        latchObserver.onLatchEvent(TouchLatchEvent.Cancelled(controlId))
     }
 
     private fun noteLatchDown(control: ResolvedTouchControl, timeNanos: Long, x: Float, y: Float) {
@@ -366,6 +490,7 @@ class TouchControlEngine(
             // pending dwell or pulse would be work nothing can complete.
             latches.remove(control.id)?.takeIf { it.latched }?.let {
                 latchesCleared++
+                analogTriggers[control.id]?.clearLatch()
                 latchObserver.onLatchEvent(
                     TouchLatchEvent.Cleared(setOf(control.id), TouchReleaseReason.SettingsChanged),
                 )
@@ -375,7 +500,10 @@ class TouchControlEngine(
         val latch = latches.getOrPut(control.id) { TouchControlLatch() }
         // The control is already published as pressed, so `engage` above found
         // nothing to add and stayed silent. It is still a press the user made.
-        if (latch.latched) feedback.perform(TouchFeedbackEvent.Press)
+        // An analog trigger is excluded because it acknowledges EVERY press from
+        // its own path — it never publishes on the way down, latched or not — and
+        // two ticks for one touch read as one blurred buzz.
+        if (latch.latched && !control.isAnalogTrigger) feedback.perform(TouchFeedbackEvent.Press)
         // Arms whichever dwell this press is a candidate for. Nothing toggles
         // and nothing is masked here; see [TouchControlLatch].
         latch.onDown(timeNanos, x, y, config.latch)
@@ -396,7 +524,212 @@ class TouchControlEngine(
         if (!latchEnabled(control)) return
         val latch = latches[control.id] ?: return
         val retrigger = latch.onEnd(timeNanos, cancelled, config.latch)
+        // An analog trigger re-fires by PUBLISHING a value rather than by having
+        // its hold masked away, so it runs its own pulse and must not also take
+        // the digital mask; two of them would cancel out. That is also why
+        // `retriggering` is structurally always false for an analog trigger, and
+        // why `publish` does not have to exclude it from the mask.
+        if (control.isAnalogTrigger) return
         if (retrigger && latch.beginRetrigger(timeNanos, config.latch)) retriggerPulses++
+    }
+
+    // ------------------------------------------------------------ analog trigger
+
+    /**
+     * Whether this control has real travel on the far side; see
+     * [TouchControlAction.Trigger].
+     */
+    private val ResolvedTouchControl.isAnalogTrigger: Boolean
+        get() = (spec.action as? TouchControlAction.Trigger)?.analog == true
+
+    /**
+     * A contact claimed an analog trigger.
+     *
+     * Deliberately publishes nothing at all — see [TouchAnalogTriggerState]. The
+     * press haptic still fires, because the user did hit a control and a control
+     * that feels dead to the touch reads as broken.
+     */
+    private fun beginAnalogTrigger(control: ResolvedTouchControl, contact: TouchContact) {
+        if (!control.isAnalogTrigger) return
+        val state = analogTriggers.getOrPut(control.id) { TouchAnalogTriggerState() }
+        val latch = latches[control.id]
+        state.onDown(
+            contact = contact,
+            control = control,
+            region = layout.region,
+            latched = latch.isLatched,
+            // The recognizer has already classified this press; read its answer
+            // rather than re-deriving one. An Engage candidate is the second
+            // press of a double tap, so it is on its way to CHOOSING a held
+            // level and must not resolve into a full pull first. See
+            // [TouchAnalogTriggerState.onDown].
+            latchSelecting = latch?.dwell == TouchDwell.Engage,
+            config = config.trigger,
+            // The SAME deliberate-hold base both latch dwells derive from: a
+            // press held that long is deliberate, whichever gesture it turns out
+            // to belong to. A second copy of the number would be a second thing
+            // to keep in step.
+            holdResolveNanos = config.latch.holdThresholdNanos,
+        )
+        feedback.perform(TouchFeedbackEvent.Press)
+        applyAnalogTrigger(control)
+    }
+
+    private fun moveAnalogTrigger(control: ResolvedTouchControl, contact: TouchContact) {
+        val state = analogTriggers[control.id] ?: return
+        val detentWas = state.physicalDetent
+        val travel = state.onMove(contact, config.trigger, analogDragSlop())
+        if (state.physicalDetent && !detentWas) {
+            triggerDetents++
+            feedback.perform(TouchFeedbackEvent.TriggerDetent)
+        }
+        when (
+            latches[control.id]?.onMove(
+                contact.x,
+                contact.y,
+                gestureSlop(),
+                latchCommitDistance(),
+                latchCancelDistance(),
+                commitTravel = travel,
+            )
+        ) {
+            TouchLatchMove.Committed -> {
+                state.commitLatch()
+                commitLatch(control.id, state.latchedValue)
+            }
+            // The level goes with the hold. Nothing published moves: the finger
+            // is still down and a live pull outranks a held level anyway, so the
+            // console sees the same byte across the transition.
+            TouchLatchMove.Cancelled -> {
+                state.clearLatch()
+                cancelLatch(control.id)
+            }
+            else -> Unit
+        }
+        applyAnalogTrigger(control)
+        publish()
+    }
+
+    private fun endAnalogTrigger(
+        control: ResolvedTouchControl,
+        contact: TouchContact,
+        cancelled: Boolean,
+    ) {
+        if (!control.isAnalogTrigger) return
+        val state = analogTriggers[control.id] ?: return
+        val latched = latches[control.id].isLatched
+        val pulsed = state.onEnd(
+            contact = contact,
+            cancelled = cancelled,
+            // Read AFTER the recognizer has seen the release, so a press that
+            // removed the hold is recognizable as the release gesture it was and
+            // does not also fire a trigger click on the way out.
+            latched = latched,
+            maxTapDurationNanos = config.latch.maxTapDurationNanos,
+            pulseNanos = config.latch.retriggerReleaseNanos,
+        )
+        if (pulsed) triggerPulses++
+        applyAnalogTrigger(control)
+    }
+
+    /**
+     * Push one analog trigger's effective state into the published accumulators.
+     *
+     * Assigns rather than adjusts, exactly like [disengage]: the trigger's value
+     * and its terminal click are both derived from one place every time, so no
+     * path can leave half of the pair behind.
+     */
+    private fun applyAnalogTrigger(control: ResolvedTouchControl) {
+        val action = control.spec.action as? TouchControlAction.Trigger ?: return
+        if (!action.analog) return
+        val state = analogTriggers[control.id]
+        val latched = latches[control.id].isLatched
+        val detent = state?.effectiveDetent(latched, config.trigger) ?: false
+        // Capped below the detent, because on this personality the published
+        // BYTE is the only thing that says whether the trigger clicked; see
+        // [TouchTriggerConfig].
+        val value = when {
+            state == null -> 0f
+            detent -> 1f
+            else -> minOf(state.effectiveValue(latched), config.trigger.subDetentCeiling)
+        }
+        // Per INSTANCE, exactly like every other contributor: two L triggers on
+        // screen are two independent gestures, and the console is told the
+        // deeper of the two rather than whichever moved last.
+        triggerLevels(action.side)[control.id] = value
+        val button =
+            if (action.side == ControlSide.Left) ControllerButton.L2 else ControllerButton.R2
+        if (detent) logicalPresses[control.id] = button else logicalPresses -= control.id
+    }
+
+    /** Every analog trigger's published level, for the surface and diagnostics. */
+    private fun analogTriggerLevels(): Map<String, Float> {
+        if (analogTriggers.isEmpty()) return emptyMap()
+        val levels = mutableMapOf<String, Float>()
+        analogTriggers.forEach { (id, state) ->
+            val control = layout.control(id) ?: return@forEach
+            if (!control.isAnalogTrigger) return@forEach
+            val latched = latches[id].isLatched
+            levels[id] = if (state.effectiveDetent(latched, config.trigger)) {
+                1f
+            } else {
+                minOf(state.effectiveValue(latched), config.trigger.subDetentCeiling)
+            }
+        }
+        return levels
+    }
+
+    /**
+     * Which way each analog trigger's fill grows, for the surface.
+     *
+     * Every analog trigger in the layout, not only the ones that have been
+     * touched: a control at rest still has to know which way it WOULD fill, and
+     * a trigger the user has just dragged somewhere else must re-present itself
+     * without waiting to be pressed first.
+     *
+     * Three sources, in order, and the order is the point:
+     *
+     * ```text
+     *   a swipe has declared itself   the SWIPE's own direction, frozen
+     *   a contact but no swipe yet    the axis frozen at pointer-down
+     *   nothing touching it           the axis for where the control now is
+     * ```
+     *
+     * The first is what a user actually sees themselves doing; the other two are
+     * the only statement available when there is no swipe to read. Routing all
+     * three through here rather than letting a surface re-derive them is what
+     * makes the freeze real: a thumb arcing across the dominance boundary
+     * mid-pull cannot flip the picture, because what is being drawn from stopped
+     * moving when the swipe was recognized.
+     */
+    private fun analogTriggerFills(): Map<String, TouchFillDirection> {
+        val fills = mutableMapOf<String, TouchFillDirection>()
+        layout.controls.forEach { control ->
+            if (!control.isAnalogTrigger) return@forEach
+            val live = analogTriggers[control.id]?.takeIf {
+                it.pointerId != TouchAnalogTriggerState.NO_POINTER
+            }
+            fills[control.id] = live?.swipeFill ?: TouchTriggerTravel.fillDirection(
+                live?.axis ?: TouchTriggerTravel.inwardAxis(
+                    control.centerX,
+                    control.centerY,
+                    layout.region,
+                    config.trigger.centerEpsilonUnits,
+                ),
+            )
+        }
+        return fills
+    }
+
+    /** Drop every trigger's travel state and the levels any hold was carrying. */
+    private fun clearAnalogTriggers() {
+        if (analogTriggers.isEmpty()) return
+        analogTriggers.keys.forEach { id ->
+            leftTriggerLevels -= id
+            rightTriggerLevels -= id
+            logicalPresses -= id
+        }
+        analogTriggers.clear()
     }
 
     /**
@@ -408,12 +741,13 @@ class TouchControlEngine(
      * [onTick] — cannot miss one.
      */
     fun nextDeadlineNanos(): Long? {
-        if (latches.isEmpty()) return null
         var best: Long? = null
-        latches.values.forEach { latch ->
-            val deadline = latch.nextDeadlineNanos() ?: return@forEach
+        fun consider(deadline: Long?) {
+            if (deadline == null) return
             if (best == null || deadline < best!!) best = deadline
         }
+        latches.values.forEach { consider(it.nextDeadlineNanos()) }
+        analogTriggers.values.forEach { consider(it.nextDeadlineNanos()) }
         return best
     }
 
@@ -428,7 +762,7 @@ class TouchControlEngine(
      * after the session ended — there is no queue to invalidate.
      */
     fun onTick(nowNanos: Long) {
-        if (latches.isEmpty()) return
+        if (latches.isEmpty() && analogTriggers.isEmpty()) return
         var changed = false
         latches.forEach { (id, latch) ->
             if (latch.holdDeadlineNanos in 1..nowNanos) {
@@ -440,18 +774,45 @@ class TouchControlEngine(
                         latch.armEngage()
                         latchesArmed++
                         feedback.perform(TouchFeedbackEvent.LatchArmed)
+                        // A trigger's arming press deferred its full-pull
+                        // resolve so the level the slide selects is the first
+                        // thing it ever publishes. Restart it from HERE: the
+                        // slide is available now, and a press that never takes
+                        // it is an ordinary hold that still has to end up
+                        // pulled. Nothing published changes at this instant.
+                        analogTriggers[id]?.armLatchSelection(
+                            nowNanos,
+                            config.latch.holdThresholdNanos,
+                        )
                     }
                     TouchDwell.Release -> {
                         latch.completeRelease()
                         latchesReleased++
                         feedback.perform(TouchFeedbackEvent.LatchReleased)
                         latchObserver.onLatchEvent(TouchLatchEvent.Released(id))
+                        val control = layout.control(id)
+                        analogTriggers[id]?.clearLatch()
                         // The finger that performed the release gesture is still
                         // down, and stays authoritative until it lifts: dropping
                         // the button at this instant would be a release edge the
                         // user never made. Only a latch with nothing touching it
                         // — which a boundary clear can produce — rests here.
-                        if (controlToContact[id] == null) layout.control(id)?.let(::disengage)
+                        if (controlToContact[id] == null) {
+                            control?.let(::disengage)
+                        } else if (control != null && control.isAnalogTrigger) {
+                            // The hold is gone but the finger that removed it is
+                            // still on the trigger. Re-arm, so the SAME contact
+                            // can slide to a new level: replacing a held value
+                            // must not mean lifting off and starting the whole
+                            // engage gesture again. Silently — the release tick
+                            // has just fired, and a second identical tick on top
+                            // of it reads as one blurred buzz rather than two
+                            // states. The open padlock says what a slide would
+                            // now do.
+                            latch.armEngage()
+                            latchesArmed++
+                        }
+                        control?.takeIf { it.isAnalogTrigger }?.let(::applyAnalogTrigger)
                         changed = true
                     }
                     TouchDwell.None -> latch.cancelDwell()
@@ -459,6 +820,40 @@ class TouchControlEngine(
             }
             if (latch.retriggerDeadlineNanos in 1..nowNanos) {
                 latch.endRetrigger()
+                changed = true
+            }
+        }
+        analogTriggers.forEach { (id, state) ->
+            val control = layout.control(id) ?: return@forEach
+            if (state.holdResolveDeadlineNanos in 1..nowNanos) {
+                // Runs for an arming press too, but only AFTER it has armed:
+                // [TouchAnalogTriggerState.onDown] withholds the deadline and
+                // the Engage branch above restarts it. "Tap it, then keep
+                // holding it" is ordinary play that games ask for directly, and
+                // the digital design's whole answer to it is that an arming
+                // press stays an ordinary held button; a trigger that published
+                // nothing for as long as the thumb stayed down would break
+                // exactly that. Ordering it after the arm is what stops the
+                // other half — a press on its way to selecting a PARTIAL level —
+                // sending a full pull and the detent first.
+                //
+                // The residual cost is a user who arms, waits out a further
+                // base without moving, and only then slides to a lower level:
+                // they see the trigger drop to it. That is honest rather than
+                // guessed — by then the press really had become a still hold.
+                // The fallback WINNING is what consumes the hold candidate: the
+                // press has now been answered as an ordinary held trigger, and a
+                // slide made after that answer must not still be able to lock a
+                // partial level. Nothing else can re-arm this contact.
+                if (state.resolveFullPull()) latches[id]?.abandonArm()
+                triggerDetents++
+                feedback.perform(TouchFeedbackEvent.TriggerDetent)
+                applyAnalogTrigger(control)
+                changed = true
+            }
+            if (state.pulseDeadlineNanos in 1..nowNanos) {
+                state.endPulse()
+                applyAnalogTrigger(control)
                 changed = true
             }
         }
@@ -477,7 +872,11 @@ class TouchControlEngine(
         val cleared = latches.filterValues { it.latched }.keys.toSet()
         latches.clear()
         cleared.forEach { id ->
+            // The level goes with the hold. A trigger that kept it would republish
+            // it the moment any later gesture latched the same control.
+            analogTriggers[id]?.clearLatch()
             if (controlToContact[id] == null) layout.control(id)?.let(::disengage)
+            layout.control(id)?.takeIf { it.isAnalogTrigger }?.let(::applyAnalogTrigger)
         }
         if (cleared.isNotEmpty()) {
             latchesCleared += cleared.size
@@ -502,15 +901,17 @@ class TouchControlEngine(
         lastReleaseReason = reason
         val clearedLatches = latches.filterValues { it.latched }.keys.toSet()
         latches.clear()
+        clearAnalogTriggers()
         contactToControl.clear()
         controlToContact.clear()
         facePresses.clear()
         logicalPresses.clear()
-        leftStick = TouchVector.Zero
-        rightStick = TouchVector.Zero
-        leftTrigger = 0f
-        rightTrigger = 0f
-        dpad = DpadState.None
+        leftTriggerLevels.clear()
+        rightTriggerLevels.clear()
+        stickVectors.clear()
+        stickOwners.clear()
+        dpadStates.clear()
+        dpadOwner = null
         if (clearedLatches.isNotEmpty()) {
             latchesCleared += clearedLatches.size
             latchObserver.onLatchEvent(TouchLatchEvent.Cleared(clearedLatches, reason))
@@ -534,10 +935,15 @@ class TouchControlEngine(
         latchesReleased = latchesReleased,
         latchesCleared = latchesCleared,
         retriggerPulses = retriggerPulses,
+        latchesCancelled = latchesCancelled,
+        triggerDetents = triggerDetents,
+        triggerPulses = triggerPulses,
+        analogTriggers = analogTriggerLevels(),
+        analogTriggerFills = analogTriggerFills(),
         lastContactTimeNanos = lastContactTimeNanos,
-        leftStick = leftStick,
-        rightStick = rightStick,
-        dpad = dpad,
+        leftStick = publishedStick(ControlSide.Left),
+        rightStick = publishedStick(ControlSide.Right),
+        dpad = publishedDpad(),
     )
 
     /** The controls a latch is holding down right now. */
@@ -559,11 +965,18 @@ class TouchControlEngine(
     /**
      * Pick the control a Down at this point claims.
      *
-     * Highest declared priority wins; if two still tie, the one the point is most
-     * plainly inside wins. A layout that reaches the tie-break at all has already
-     * failed [TouchLayoutAudit], so this is a deterministic fallback rather than
-     * a design: the alternative is letting draw order decide what the user
-     * pressed.
+     * ```text
+     * 1  highest declared priority        authored, rarely used
+     * 2  highest z-order                  the control drawn in front
+     * 3  most plainly inside              a deterministic last resort
+     * ```
+     *
+     * Z-order sits above centrality on purpose: once instances may be freely
+     * placed and stacked, the control the user can SEE on top is the one they
+     * believe they are pressing, and any other answer is a surprise. Two
+     * controls of different bindings reaching this at all still fails
+     * [TouchLayoutAudit], so the tie-break is a guarantee of determinism rather
+     * than a substitute for a layout that makes sense.
      */
     private fun hitTest(x: Float, y: Float): ResolvedTouchControl? {
         var best: ResolvedTouchControl? = null
@@ -571,12 +984,18 @@ class TouchControlEngine(
         layout.controls.forEach { control ->
             if (!control.hitTest(x, y)) return@forEach
             val current = best
-            if (current == null || control.spec.priority > current.spec.priority) {
+            if (current == null) {
                 best = control
                 bestDistance = control.normalizedDistance(x, y)
                 return@forEach
             }
-            if (control.spec.priority < current.spec.priority) return@forEach
+            val order = compareValuesBy(control, current, { it.spec.priority }, { it.spec.zIndex })
+            if (order > 0) {
+                best = control
+                bestDistance = control.normalizedDistance(x, y)
+                return@forEach
+            }
+            if (order < 0) return@forEach
             val distance = control.normalizedDistance(x, y)
             if (distance < bestDistance) {
                 best = control
@@ -588,45 +1007,64 @@ class TouchControlEngine(
 
     /** Apply a control's value for a contact at this point. */
     private fun engage(control: ResolvedTouchControl, x: Float, y: Float) {
+        val id = control.id
         when (val action = control.spec.action) {
             is TouchControlAction.Face -> {
-                if (facePresses.add(action.position)) feedback.perform(TouchFeedbackEvent.Press)
+                if (facePresses.put(id, action.position) == null) {
+                    feedback.perform(TouchFeedbackEvent.Press)
+                }
             }
             is TouchControlAction.Logical -> {
-                if (logicalPresses.add(action.button)) feedback.perform(TouchFeedbackEvent.Press)
+                if (logicalPresses.put(id, action.button) == null) {
+                    feedback.perform(TouchFeedbackEvent.Press)
+                }
             }
             is TouchControlAction.Trigger -> {
+                // A trigger with real travel says nothing on the way down: what
+                // the press means is not known yet, and full travel IS the
+                // terminal click on the one personality that has one. Its whole
+                // lifecycle lives in [TouchAnalogTriggerState] instead.
+                if (action.analog) return
                 // Both halves, coherently. A physical trigger publishes its
                 // digital bit AND its analog value, and the adapter's seam reads
                 // either; a touch trigger that published only one would be a
                 // second contract for the same control.
-                if (action.side == ControlSide.Left) {
-                    leftTrigger = 1f
-                    if (logicalPresses.add(ControllerButton.L2)) feedback.perform(TouchFeedbackEvent.Press)
-                } else {
-                    rightTrigger = 1f
-                    if (logicalPresses.add(ControllerButton.R2)) feedback.perform(TouchFeedbackEvent.Press)
+                triggerLevels(action.side)[id] = 1f
+                val button =
+                    if (action.side == ControlSide.Left) ControllerButton.L2 else ControllerButton.R2
+                if (logicalPresses.put(id, button) == null) {
+                    feedback.perform(TouchFeedbackEvent.Press)
                 }
             }
             is TouchControlAction.Stick -> {
-                val vector = TouchStick.resolve(
+                stickVectors[id] = TouchStick.resolve(
                     dx = x - control.centerX,
                     dy = y - control.centerY,
                     radius = control.trackingRadius,
                     deadzone = config.stickDeadzone,
                 )
-                if (action.side == ControlSide.Left) leftStick = vector else rightStick = vector
+                // First mover wins, and keeps it until its contact ends. A
+                // second stick instance being touched at the same time is not an
+                // error and is not a steal: it simply says nothing yet.
+                stickOwners.getOrPut(action.side) { id }
             }
             TouchControlAction.Directions -> {
+                val owned = dpadOwner == null || dpadOwner == id
                 val next = TouchDpad.resolve(
                     dx = x - control.centerX,
                     dy = y - control.centerY,
                     radius = control.trackingRadius,
                     config = config,
-                    previous = dpad,
+                    // Hysteresis is a property of the gesture in progress, so it
+                    // reads THIS instance's previous direction rather than the
+                    // published one, which may belong to a different instance.
+                    previous = dpadStates[id] ?: DpadState.None,
                 )
-                if (next != dpad) {
-                    dpad = next
+                val changed = dpadStates.put(id, next) != next
+                if (dpadOwner == null) dpadOwner = id
+                // Only the instance the console is listening to may buzz; a
+                // second D-pad being brushed must not rattle.
+                if (changed && owned) {
                     feedback.perform(
                         if (next == DpadState.None) TouchFeedbackEvent.Release
                         else TouchFeedbackEvent.DirectionChange,
@@ -638,75 +1076,131 @@ class TouchControlEngine(
 
     /** Return a control to rest. Assigns rest values rather than undoing a delta. */
     private fun disengage(control: ResolvedTouchControl) {
+        val id = control.id
         when (val action = control.spec.action) {
-            is TouchControlAction.Face -> facePresses -= action.position
-            is TouchControlAction.Logical -> logicalPresses -= action.button
-            is TouchControlAction.Trigger -> if (action.side == ControlSide.Left) {
-                leftTrigger = 0f
-                logicalPresses -= ControllerButton.L2
+            is TouchControlAction.Face -> facePresses -= id
+            is TouchControlAction.Logical -> logicalPresses -= id
+            // An analog trigger's rest value is not necessarily zero — a hold may
+            // still be on it — and [applyAnalogTrigger] is the one place that
+            // decides. Two writers for one axis is how half a state survives.
+            is TouchControlAction.Trigger -> if (action.analog) {
+                applyAnalogTrigger(control)
             } else {
-                rightTrigger = 0f
-                logicalPresses -= ControllerButton.R2
+                triggerLevels(action.side) -= id
+                logicalPresses -= id
             }
-            is TouchControlAction.Stick -> if (action.side == ControlSide.Left) {
+            is TouchControlAction.Stick -> {
                 // Exact centre immediately. A knob may animate home for looks,
                 // but the axis is neutral the instant the thumb leaves.
-                leftStick = TouchVector.Zero
-            } else {
-                rightStick = TouchVector.Zero
+                stickVectors -= id
+                if (stickOwners[action.side] == id) {
+                    stickOwners -= action.side
+                    handOffStick(action.side)
+                }
             }
-            TouchControlAction.Directions -> dpad = DpadState.None
+            TouchControlAction.Directions -> {
+                dpadStates -= id
+                if (dpadOwner == id) {
+                    dpadOwner = null
+                    handOffDpad()
+                }
+            }
         }
+    }
+
+    private fun triggerLevels(side: ControlSide) =
+        if (side == ControlSide.Left) leftTriggerLevels else rightTriggerLevels
+
+    /**
+     * Give a released stick to another instance that is still being held.
+     *
+     * In layout order, so the answer is deterministic rather than whatever the
+     * hash map happened to iterate first. Without this, letting go of one of two
+     * duplicated sticks would leave the other one dead until the thumb on it
+     * moved again.
+     */
+    private fun handOffStick(side: ControlSide) {
+        val next = layout.controls.firstOrNull { candidate ->
+            val action = candidate.spec.action
+            action is TouchControlAction.Stick && action.side == side &&
+                controlToContact.containsKey(candidate.id)
+        } ?: return
+        stickOwners[side] = next.id
+    }
+
+    private fun handOffDpad() {
+        dpadOwner = layout.controls.firstOrNull { candidate ->
+            candidate.spec.action == TouchControlAction.Directions &&
+                controlToContact.containsKey(candidate.id)
+        }?.id
+    }
+
+    /** What the console is being told each vector control is doing. */
+    private fun publishedStick(side: ControlSide): TouchVector =
+        stickOwners[side]?.let { stickVectors[it] } ?: TouchVector.Zero
+
+    private fun publishedDpad(): DpadState =
+        dpadOwner?.let { dpadStates[it] } ?: DpadState.None
+
+    /** Highest level any live instance of this trigger is asking for. */
+    private fun publishedTrigger(side: ControlSide, masked: Set<String>): Float {
+        val levels = triggerLevels(side)
+        if (levels.isEmpty()) return 0f
+        var best = 0f
+        levels.forEach { (id, value) -> if (id !in masked && value > best) best = value }
+        return best
     }
 
     /**
      * Compose and emit the whole contribution.
      *
-     * The retrigger mask is applied HERE rather than by mutating the
-     * accumulators, and that placement is the point: ownership, latch state and
-     * the press/release bookkeeping all stay exactly as they were, and a pulse
-     * is purely a statement about what is published. Nothing has to be undone
-     * when it expires, and no boundary has to know it existed.
+     * ## Aggregation
+     *
+     * ```text
+     * digital   any live instance holding a binding keeps that binding pressed
+     * trigger   the deepest live instance of that side wins
+     * stick     the owning instance speaks; the others say nothing
+     * D-pad     the owning instance speaks; the others say nothing
+     * ```
+     *
+     * The digital rule is what makes duplicates behave: pressing a second A and
+     * then releasing the first leaves one contributor, so the console never sees
+     * a release edge the user did not make.
+     *
+     * ## The retrigger mask
+     *
+     * Applied HERE as a set of INSTANCE ids to skip, rather than by mutating the
+     * accumulators. Ownership, latch state and the press/release bookkeeping all
+     * stay exactly as they were; a pulse is purely a statement about what is
+     * published. Nothing has to be undone when it expires, no boundary has to
+     * know it existed, and — because the mask is per instance — tapping one
+     * held A to re-fire it cannot silence the other one.
      */
     private fun publish() {
-        var faces: Set<FaceButtonPosition> = facePresses
-        var logicals: Set<ControllerButton> = logicalPresses
-        var maskedLeftTrigger = leftTrigger
-        var maskedRightTrigger = rightTrigger
-
-        if (latches.values.any { it.retriggering }) {
-            val remainingFaces = facePresses.toMutableSet()
-            val remainingLogical = logicalPresses.toMutableSet()
-            latches.forEach { (id, latch) ->
-                if (!latch.retriggering) return@forEach
-                when (val action = layout.control(id)?.spec?.action) {
-                    is TouchControlAction.Face -> remainingFaces -= action.position
-                    is TouchControlAction.Logical -> remainingLogical -= action.button
-                    is TouchControlAction.Trigger -> if (action.side == ControlSide.Left) {
-                        maskedLeftTrigger = 0f
-                        remainingLogical -= ControllerButton.L2
-                    } else {
-                        maskedRightTrigger = 0f
-                        remainingLogical -= ControllerButton.R2
-                    }
-                    // Vector controls never latch, so they never retrigger.
-                    else -> Unit
-                }
-            }
-            faces = remainingFaces
-            logicals = remainingLogical
+        val masked: Set<String> = if (latches.values.none { it.retriggering }) {
+            emptySet()
+        } else {
+            latches.filterValues { it.retriggering }.keys
         }
+
+        val faces = mutableSetOf<FaceButtonPosition>()
+        facePresses.forEach { (id, position) -> if (id !in masked) faces += position }
+        val logicals = mutableSetOf<ControllerButton>()
+        logicalPresses.forEach { (id, button) -> if (id !in masked) logicals += button }
+
+        val leftStick = publishedStick(ControlSide.Left)
+        val rightStick = publishedStick(ControlSide.Right)
 
         val next = TouchContribution(
             leftX = TouchAxis.toBridge(leftStick.x),
             leftY = TouchAxis.toBridge(leftStick.y),
             rightX = TouchAxis.toBridge(rightStick.x),
             rightY = TouchAxis.toBridge(rightStick.y),
-            leftTrigger = TouchAxis.triggerToBridge(maskedLeftTrigger),
-            rightTrigger = TouchAxis.triggerToBridge(maskedRightTrigger),
-            dpad = dpad,
+            leftTrigger = TouchAxis.triggerToBridge(publishedTrigger(ControlSide.Left, masked)),
+            rightTrigger = TouchAxis.triggerToBridge(publishedTrigger(ControlSide.Right, masked)),
+            dpad = publishedDpad(),
             positionalButtons = faces.mapTo(mutableSetOf()) { it.positional },
-            logicalButtons = logicals.toSet(),
+            logicalButtons = logicals,
         )
         if (next == published) return
         published = next

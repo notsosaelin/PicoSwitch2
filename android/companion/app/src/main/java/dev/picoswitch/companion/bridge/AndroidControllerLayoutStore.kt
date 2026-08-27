@@ -22,45 +22,33 @@ class AndroidControllerLayoutStore(context: Context) : ControllerLayoutStore {
     /**
      * The on-screen controller's face presentation.
      *
-     * SEPARATE PERSISTENCE, not a second mapping system: the value is the same
-     * [ControllerFaceLayout] and it is applied by the same resolver. It needs its
-     * own slot only because the per-source store is keyed by a physical device
-     * descriptor and a touchscreen has none — and because letting a `null`
-     * descriptor decide the drawn diamond's letters would mean the on-screen
-     * legend was chosen by an accident of which pad happened to be plugged in.
+     * A CONSTANT since Editor 2.0, and no longer a stored preference. It used to
+     * be a user choice in the Touch Gamepad menu — Nintendo or Xbox letters on
+     * the drawn diamond — and that question stopped being a product-level one
+     * once the same menu could switch between four genuine controller
+     * personalities: the letters belong to whichever controller is being
+     * emulated, and offering them separately made it possible to label a Joy-Con
+     * with an Xbox diamond.
      *
-     * [ControllerFaceLayout.Auto] is deliberately not offered here. Auto exists
-     * to guess what is PRINTED on hardware; a drawn control has no printed
-     * legend, so the honest default is the presentation this project's target
-     * console actually uses.
+     * SEPARATE from the per-source store rather than a second mapping system:
+     * the value is the same [ControllerFaceLayout], applied by the same
+     * resolver. It needs its own answer only because that store is keyed by a
+     * physical device descriptor and a touchscreen has none — and letting a
+     * `null` descriptor decide the drawn diamond's letters would mean the
+     * on-screen legend was chosen by an accident of which pad happened to be
+     * plugged in.
+     *
+     * [ControllerFaceLayout.Auto] is deliberately not used. Auto exists to guess
+     * what is PRINTED on hardware; a drawn control has no printed legend.
      */
-    fun loadTouch(): ControllerFaceLayout = touchLayoutFrom(preferences.getString(TOUCH_KEY, null))
-
-    fun saveTouch(layout: ControllerFaceLayout) {
-        preferences.edit { putString(TOUCH_KEY, layout.key) }
-    }
+    fun loadTouch(): ControllerFaceLayout = DEFAULT_TOUCH_LAYOUT
 
     private fun key(descriptor: String) = "source_$descriptor"
 
     companion object {
         internal const val FILE_NAME = "controller_layouts"
-        internal const val TOUCH_KEY = "touch_gamepad"
 
-        /** Nintendo labels, because the diamond being drawn is a Switch controller's. */
+        /** Nintendo labels, because every controller this surface draws is one. */
         val DEFAULT_TOUCH_LAYOUT = ControllerFaceLayout.Nintendo
-
-        /**
-         * Stored key -> the on-screen controller's face presentation.
-         *
-         * Pure, so the one rule that matters here is pinned without a device:
-         * [ControllerFaceLayout.Auto] never survives. Auto resolves against a
-         * physical source identity, and letting a drawn diamond inherit that
-         * would mean its letters were chosen by which pad happened to be
-         * connected — including "none", whose fallback is positional order.
-         */
-        internal fun touchLayoutFrom(key: String?): ControllerFaceLayout {
-            val stored = ControllerFaceLayout.fromKey(key)
-            return if (stored == ControllerFaceLayout.Auto) DEFAULT_TOUCH_LAYOUT else stored
-        }
     }
 }
