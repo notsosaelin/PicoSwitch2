@@ -422,6 +422,21 @@ class AdapterRepository(private val transport: ManagementTransport) {
         }
     }
 
+    /**
+     * Forget one peer, then re-read the inventory.
+     *
+     * The re-read is not optional. The adapter is authoritative about what it
+     * still holds, and a cache left claiming "forgotten" after a partial delete
+     * would show the user a pairing that is still there. The refresh runs even
+     * when the forget failed, for the same reason: whatever the adapter now
+     * believes is what the user must see.
+     */
+    suspend fun forgetPeer(peerId: String): PeerForgetOutcome {
+        val outcome = client.forgetPeer(peerId)
+        runCatching { refreshPeers() }
+        return outcome
+    }
+
     suspend fun listBonds(): List<BondInfo> {
         markBondsUnknown()
         val enumeration = client.listBonds()

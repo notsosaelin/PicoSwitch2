@@ -93,6 +93,7 @@ state. A client MUST NOT synthesize or merge source identities.
 | `bonds list v2 [cursor]` | paged read; BLE, Config CDC | `v:2`, `total`, `bonds[]`, `next` integer or null | follow `next` until null; validate stable total and unique indices | `mgmt_bonds_format_page`; `bonds_page` vector |
 | `bonds remove <index>` | mutation; BLE, Config CDC | `{"ok":true}` or error | removes an adapter-side LE bond; list again. It is distinct from Android association/bond state and may interrupt the affected peer | `cmd_bonds`; workflow tests |
 | `peers list [cursor]` | paged read; BLE, Config CDC | `v:1`, `total`, `peers[]`, `next` integer or null | read-only logical peer inventory; follow `next` until null | `cmd_peers`, `mgmt_peers_format_page`; `peersPage` vector |
+| `peers forget <id>` | mutation; BLE, Config CDC | `ok`, `id`, `result`, `bonded`, `tr` | atomic; refuses the management companion; verified by re-enumeration; idempotent | `cmd_peers`, `peers_forget_run`; `peersForget` vector |
 | `save` | mutation; BLE, Config CDC | BLE: `ok`, `queued:true`, `requested`; CDC: `ok`, `requested` only after the synchronous wait, or `save timeout` | `requested` is the session-local unsigned 32-bit identity assigned to this persistence request. BLE acceptance is not durable completion | `handle_line`; `saveQueued` vector |
 | `save status` | read; BLE, Config CDC | `pending`, `requested`, `completed` | authoritative general-settings persistence snapshot; `pending` is exactly `requested != completed` | `handle_line`; `saveStatus` vector |
 
@@ -165,6 +166,48 @@ role store — see `docs/android-companion.md`.
 **No key material appears in any peer field, in any protocol version.** Link keys, LTKs, IRKs and
 CSRKs MUST NOT be exposed. The firmware's peer record has no field capable of holding one; that is
 the mechanism, not merely the intention.
+
+### Forgetting one peer
+
+`peers forget <id>` removes every credential one logical device holds and reports what the adapter
+observed **afterwards**.
+
+| Field | Meaning |
+|---|---|
+| `ok` | True for `removed` and `already_absent`. Both are successes. |
+| `id` | The peer id that was addressed, echoed back. |
+| `result` | `removed`, `already_absent`, `management_peer`, or `incomplete`. |
+| `bonded` | Whether the peer still holds any security record, **re-read after the delete**. |
+| `tr` | The transports it still holds; `0` when nothing remains. |
+
+Rules a client must respect:
+
+- **`already_absent` is a success.** A management reply can be lost after the command has already
+  executed, so a retry must be safe and must not report failure for completed work. Clients MUST NOT
+  treat it as an error.
+- **`bonded` is the authority, not `result`.** It is what the adapter saw when it re-enumerated. A
+  client that trusts an optimistic acknowledgement over this will show a pairing that still exists.
+- **Tolerate unknown `result` values** and fall back to `bonded`. A newer adapter may name an outcome
+  this client does not know; refusing the reply would leave it unable to say whether the delete
+  happened.
+- **A malformed id is a usage error, not `already_absent`.** The id must be exactly `p_` plus eight
+  uppercase hex digits, and the adapter rejects anything else rather than reporting a removal that
+  addressed nothing.
+- **Re-read `peers list` afterwards.** This reply describes one peer; the firmware is authoritative
+  about the whole inventory.
+
+The operation is atomic in the sense that matters: resolve, guard, disconnect live links, delete on
+both transports, and verify all run inside one firmware operation, so nothing can race between the
+steps the way an app-issued disconnect-then-delete pair could.
+
+**The management companion cannot be forgotten through this command.** It is refused with
+`management_peer`, guarded twice — once structurally on the companion's durable identity and once on
+role, which also covers the same phone in its Controller Link relationship. Clearing the companion's
+credential is a separate, explicitly named product action.
+
+The peer id is a one-way hash of the identity address, so the adapter resolves it by rebuilding the
+inventory and recomputing each id. A client can therefore address only a peer the adapter itself
+reported, and cannot smuggle in a raw address.
 
 `bridge_contract` belongs to Controller Bridge compatibility. There is no separate negotiated
 management protocol version. Compatibility is currently exact command behavior, optional-family

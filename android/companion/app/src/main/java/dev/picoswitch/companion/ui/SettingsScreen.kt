@@ -47,6 +47,7 @@ fun SettingsScreen(
     var removeTarget by remember { mutableStateOf<AdapterRecord?>(null) }
     var removeBond by remember { mutableStateOf<BondInfo?>(null) }
     var removeHistory by remember { mutableStateOf<PeerListing?>(null) }
+    var forgetPeer by remember { mutableStateOf<PeerListing?>(null) }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val twoColumn = twoColumnLayout(maxWidth)
@@ -174,6 +175,7 @@ fun SettingsScreen(
                 ui = ui,
                 viewModel = viewModel,
                 onRemoveHistory = { removeHistory = it },
+                onForgetPeer = { forgetPeer = it },
             )
         }
 
@@ -288,6 +290,27 @@ fun SettingsScreen(
         )
     }
 
+    forgetPeer?.let { listing ->
+        ConfirmDialog(
+            onDismiss = { forgetPeer = null },
+            title = "Forget ${listing.displayName}?",
+            // Design section 53: say the consequence, not a factory-reset scare.
+            // The extra sentence appears only for a controller that is connected
+            // right now, because that is the only case with an immediate effect.
+            body = buildString {
+                append("It will need to be paired again before it can reconnect. ")
+                if (listing.connected) append("This will disconnect it now. ")
+                append("Its history entry is kept, so it will still appear under Recent.")
+            },
+            confirmLabel = "Forget",
+            destructive = true,
+            onConfirm = {
+                viewModel.forgetPeer(listing.peerId, listing.displayName)
+                forgetPeer = null
+            },
+        )
+    }
+
     removeHistory?.let { listing ->
         ConfirmDialog(
             onDismiss = { removeHistory = null },
@@ -360,6 +383,7 @@ private fun PairedControllersCard(
     ui: CompanionUiState,
     viewModel: CompanionViewModel,
     onRemoveHistory: (PeerListing) -> Unit,
+    onForgetPeer: (PeerListing) -> Unit,
 ) {
     val inventory = ui.controllerInventory
     SectionCard(
@@ -393,14 +417,26 @@ private fun PairedControllersCard(
             !inventory.hasControllers ->
                 InlineNotice("This adapter has no paired controllers.")
             else -> {
+                // Forget is offered on both, because a controller that is
+                // connected right now is exactly the one a user most often wants
+                // rid of. The confirmation says it will be disconnected.
+                val forgetAction: @Composable (PeerListing) -> (@Composable RowScope.() -> Unit) =
+                    { listing ->
+                        {
+                            IconButton(
+                                onClick = { onForgetPeer(listing) },
+                                enabled = ui.connection.connected && !ui.busy,
+                            ) { Icon(Icons.Default.LinkOff, "Forget ${listing.displayName}") }
+                        }
+                    }
                 if (inventory.connected.isNotEmpty()) {
                     SubsectionLabel("Connected")
-                    inventory.connected.forEach { PeerRow(it) }
+                    inventory.connected.forEach { PeerRow(it, trailing = forgetAction(it)) }
                 }
                 if (inventory.saved.isNotEmpty()) {
                     if (inventory.connected.isNotEmpty()) HorizontalDivider()
                     SubsectionLabel("Saved pairings")
-                    inventory.saved.forEach { PeerRow(it) }
+                    inventory.saved.forEach { PeerRow(it, trailing = forgetAction(it)) }
                 }
                 if (inventory.recent.isNotEmpty()) {
                     HorizontalDivider()

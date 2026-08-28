@@ -51,6 +51,10 @@
 // driver name; see src/bt_hid/bt/bthid/devices/.
 #define MGMT_PEERS_CLASS_MAX 40u
 
+// "p_" plus eight hex digits plus NUL, with room to spare. Matches the buffer
+// mgmt_peers_format_id() is called with.
+#define MGMT_PEERS_ID_MAX 16u
+
 // Peer roles.  UNKNOWN is a real answer and the correct one for a stored bond
 // whose owner has not been seen since boot: this adapter has no persistent role
 // metadata yet, and inventing a role from a bond entry alone would be exactly
@@ -127,13 +131,76 @@ typedef struct {
 typedef enum {
     MGMT_PEERS_INVALID = 0,
     MGMT_PEERS_LIST,
+    MGMT_PEERS_FORGET,
 } mgmt_peers_action_t;
 
-// Parse the argument after the "peers " command prefix.  Only "list" and
-// "list <cursor>" exist; the cursor is a peer index, never a database slot.
+/*
+ * What a forget attempt did.  These are OUTCOMES, not error codes: three of the
+ * four are successes, because "forget" is a request for an end state rather than
+ * for an event.
+ */
+typedef enum {
+    // A record existed and is gone.  Verified by re-enumeration, not assumed.
+    MGMT_PEER_FORGET_REMOVED = 0,
+    // Nothing to do.  Deliberately a SUCCESS: management replies can be lost
+    // after the command was executed, so the app must be able to retry without
+    // the retry reporting a failure for work that already happened.
+    MGMT_PEER_FORGET_ALREADY_ABSENT,
+    // The peer is this adapter's management companion.  Refused here on
+    // purpose: clearing the companion's credential is a different, explicitly
+    // named product action, and offering it beside the controllers is how a
+    // user ends up cutting off the app that is talking to them.
+    MGMT_PEER_FORGET_PROTECTED,
+    // The delete ran but the peer still holds a record.  Reported rather than
+    // smoothed over: a client that believes a stale "forgotten" will show a
+    // pairing the adapter still has.
+    MGMT_PEER_FORGET_INCOMPLETE,
+} mgmt_peer_forget_outcome_t;
+
+/*
+ * Parse the argument after the "peers " command prefix.
+ *
+ * Grammar:
+ *   list            -> MGMT_PEERS_LIST, cursor 0
+ *   list <cursor>   -> MGMT_PEERS_LIST, cursor is a peer index, never a slot
+ *   forget <peerId> -> MGMT_PEERS_FORGET, id copied to `id`
+ *
+ * `id` may be NULL when the caller only wants the action.  A syntactically
+ * invalid id is rejected here rather than being looked up and reported absent,
+ * so a typo cannot masquerade as "already forgotten".
+ */
 bool mgmt_peers_parse_command(const char *arg,
                               mgmt_peers_action_t *action,
-                              int *cursor);
+                              int *cursor,
+                              char *id, size_t id_capacity);
+
+// Is this the exact shape mgmt_peers_format_id() produces?  "p_" + 8 uppercase
+// hex digits and nothing else.
+bool mgmt_peers_id_valid(const char *id);
+
+/*
+ * Resolve an opaque peer id to its index in `peers`, or -1.
+ *
+ * The id is a one-way hash of the identity address, so resolution is by
+ * recomputing every peer's id and comparing.  That is deliberate: it keeps the
+ * id opaque to clients, and it means a client can never address a peer the
+ * adapter did not just report.
+ */
+int mgmt_peers_find_by_id(const mgmt_peer_t *peers, size_t count, const char *id);
+
+/*
+ * Format the reply for a forget attempt.
+ *
+ * Always reports the VERIFIED post-state, so a client refreshes into agreement
+ * rather than trusting an optimistic acknowledgement.  Returns the length
+ * written, or 0 if the buffer was too small.
+ */
+size_t mgmt_peers_format_forget_result(const char *id,
+                                       mgmt_peer_forget_outcome_t outcome,
+                                       unsigned remaining_transports,
+                                       char *output, size_t capacity);
+
+const char *mgmt_peer_forget_outcome_name(mgmt_peer_forget_outcome_t outcome);
 
 /*
  * Decide a peer's role from live evidence, most confident first.

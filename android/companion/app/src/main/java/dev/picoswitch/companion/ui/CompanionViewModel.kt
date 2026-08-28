@@ -1244,6 +1244,45 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     }
 
     /**
+     * Forget one controller's pairing on the adapter.
+     *
+     * Deliberately distinct from [removePeerFromHistory]: this removes a
+     * security credential and the controller must be paired again, while that
+     * removes only what this app remembers. History is KEPT here on purpose --
+     * a forgotten controller becomes a "Recent" row rather than vanishing, which
+     * is what lets the user see what they did and what it used to be.
+     *
+     * The adapter's verified answer decides the message. An optimistic
+     * "Forgotten" over a partial delete would be the one outcome the user cannot
+     * detect for themselves.
+     */
+    fun forgetPeer(peerId: String, displayName: String) = launch("Forgetting $displayName") {
+        val outcome = adapter.forgetPeer(peerId)
+        diagnostics.event(
+            "peers", "forget",
+            "adapter=${registry.activeId?.shortLabel ?: "none"} result=${outcome.result.wireName} " +
+                "stillBonded=${outcome.stillBonded}",
+        )
+        when (outcome.result) {
+            PeerForgetResult.Removed ->
+                notice("$displayName was forgotten. It will need to be paired again to reconnect.")
+            // Not phrased as a failure: the end state the user asked for is the
+            // end state the adapter is in.
+            PeerForgetResult.AlreadyAbsent ->
+                notice("$displayName was already not paired with this adapter.")
+            PeerForgetResult.ManagementPeer ->
+                notice("That is this phone's own connection to the adapter, not a controller. " +
+                    "Use Repair pairing if you want to reset it.")
+            PeerForgetResult.Incomplete ->
+                notice("$displayName could not be fully forgotten; the adapter still has a " +
+                    "pairing for it. The list has been refreshed with what it actually holds.")
+            PeerForgetResult.Unknown ->
+                notice("The adapter reported an outcome this app does not recognise. " +
+                    "The list has been refreshed with what it actually holds.")
+        }
+    }
+
+    /**
      * Forget one row of this app's own history.
      *
      * Not a Bluetooth operation and deliberately not offered under the same

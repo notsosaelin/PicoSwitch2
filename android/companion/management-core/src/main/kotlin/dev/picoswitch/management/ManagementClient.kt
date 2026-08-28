@@ -242,6 +242,20 @@ class ManagementClient(
         return PeerInventory(entries, complete = true, total = total)
     }
 
+    /**
+     * Forget one peer, and read the adapter's verified answer.
+     *
+     * One command, not a disconnect-then-delete pair: the adapter sequences the
+     * whole operation internally so nothing can race between the steps. The
+     * caller is still expected to re-read the inventory afterwards -- the
+     * firmware is authoritative about what remains, and this reply describes one
+     * peer rather than the whole picture.
+     */
+    suspend fun forgetPeer(peerId: String): PeerForgetOutcome = exchange(
+        ManagementCommands.peersForget(peerId),
+        ManagementProtocol::peersForget,
+    )
+
     suspend fun save(): PersistenceAcknowledgement {
         val acknowledgement = acknowledge(ManagementCommands.SAVE)
         return PersistenceAcknowledgement(

@@ -593,8 +593,8 @@ const char *btstack_host_bonds_list_json(void);
 bool btstack_host_bonds_list_complete(void);
 bool btstack_host_bonds_remove_ok(void);
 
-// Logical peer inventory, read-only. Same core0 -> core1 marshalling as the bond
-// list above, and for the same reason: both security databases and the live
+// Logical peer inventory. Same core0 -> core1 marshalling as the bond list
+// above, and for the same reason: both security databases and the live
 // connection tables are owned by the BTstack thread.
 //
 // This is NOT a second bond list. `bonds` enumerates LE device-DB slots; this
@@ -602,6 +602,18 @@ bool btstack_host_bonds_remove_ok(void);
 // annotated with the role the adapter can currently prove, and never carrying
 // key material. See mgmt_peers.h for why the two models differ.
 bool btstack_host_peers_request_page(int start_peer);
+// Forget one logical peer, atomically, by its opaque id.
+//
+// The whole sequence -- resolve the id, refuse the management companion,
+// disconnect live links, delete every credential the identity holds on BOTH
+// transports, then re-enumerate to VERIFY -- runs inside one run-loop callback.
+// That is why it is a firmware operation rather than an app-issued
+// disconnect-then-delete pair: nothing can race between the steps.
+//
+// Shares the single operation slot with the page read, so the two can never run
+// concurrently against the same workspace. Returns false for a malformed id or
+// while another peers operation is in flight.
+bool btstack_host_peers_request_forget(const char *peer_id);
 bool btstack_host_peers_done(void);
 const char *btstack_host_peers_json(void);
 bool btstack_host_peers_ok(void);

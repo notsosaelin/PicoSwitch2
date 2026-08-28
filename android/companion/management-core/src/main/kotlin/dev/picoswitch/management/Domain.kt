@@ -187,6 +187,53 @@ enum class PeerTransport(val bit: Int) {
     }
 }
 
+/**
+ * What a forget attempt did, as the adapter verified it.
+ *
+ * Three of these are outcomes rather than errors, because "forget" asks for an
+ * end state, not for an event.
+ */
+enum class PeerForgetResult(val wireName: String) {
+    /** A record existed and is gone. The adapter re-enumerated to confirm it. */
+    Removed("removed"),
+
+    /**
+     * Nothing to do, and a SUCCESS. A management reply can be lost after the
+     * command already ran, so a retry must not report failure for completed
+     * work.
+     */
+    AlreadyAbsent("already_absent"),
+
+    /** The adapter refused: this peer is its management companion. */
+    ManagementPeer("management_peer"),
+
+    /** The delete ran and the peer still holds a credential. Never smoothed over. */
+    Incomplete("incomplete"),
+
+    /** A result this build does not recognise. Treated as "refresh and look". */
+    Unknown("unknown");
+
+    val succeeded: Boolean get() = this == Removed || this == AlreadyAbsent
+
+    companion object {
+        fun fromWire(value: String?): PeerForgetResult =
+            entries.firstOrNull { it.wireName == value } ?: Unknown
+    }
+}
+
+/**
+ * The adapter's verified answer to one forget.
+ *
+ * [stillBonded] is the state the adapter observed AFTER deleting, not what it
+ * intended. A client must trust this over its own optimism.
+ */
+data class PeerForgetOutcome(
+    val peerId: String,
+    val result: PeerForgetResult,
+    val stillBonded: Boolean,
+    val transports: Set<PeerTransport> = emptySet(),
+)
+
 data class PeerPage(val entries: List<PeerInfo>, val total: Int, val next: Int?)
 data class PeerInventory(
     val peers: List<PeerInfo> = emptyList(),

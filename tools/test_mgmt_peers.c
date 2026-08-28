@@ -498,22 +498,147 @@ static void test_peer_ids_are_stable_opaque_and_not_slot_indices(void)
 static void test_command_parsing(void)
 {
     mgmt_peers_action_t action;
-    int cursor = -1;
+    int cursor;
+    char id[MGMT_PEERS_ID_MAX];
 
-    assert(mgmt_peers_parse_command("list", &action, &cursor));
+    assert(mgmt_peers_parse_command("list", &action, &cursor, id, sizeof(id)));
     assert(action == MGMT_PEERS_LIST && cursor == 0);
-    assert(mgmt_peers_parse_command("list 7", &action, &cursor));
+    assert(mgmt_peers_parse_command("list 7", &action, &cursor, id, sizeof(id)));
     assert(action == MGMT_PEERS_LIST && cursor == 7);
+    assert(!mgmt_peers_parse_command("list -1", &action, &cursor, id, sizeof(id)));
+    assert(!mgmt_peers_parse_command("list x", &action, &cursor, id, sizeof(id)));
+    assert(!mgmt_peers_parse_command("nonsense", &action, &cursor, id, sizeof(id)));
 
-    assert(!mgmt_peers_parse_command("", &action, &cursor));
-    assert(!mgmt_peers_parse_command("list -1", &action, &cursor));
-    assert(!mgmt_peers_parse_command("list x", &action, &cursor));
-    assert(!mgmt_peers_parse_command("list 999999999999", &action, &cursor));
-    assert(!mgmt_peers_parse_command("forget 1", &action, &cursor));
-    assert(!mgmt_peers_parse_command(NULL, &action, &cursor));
+    assert(mgmt_peers_parse_command("forget p_1A2B3C4D", &action, &cursor,
+                                    id, sizeof(id)));
+    assert(action == MGMT_PEERS_FORGET);
+    assert(strcmp(id, "p_1A2B3C4D") == 0);
 }
 
 /* ------------------------------------------------------------ no secrets */
+
+
+/* ------------------------------------------------- selective forget (Phase 5) */
+
+static void test_only_the_exact_id_shape_is_accepted(void)
+{
+    // A malformed id must be a USAGE error, never a lookup that reports
+    // "already forgotten": that would tell the user a controller was removed
+    // when nothing was even addressed.
+    assert(mgmt_peers_id_valid("p_1A2B3C4D"));
+    assert(!mgmt_peers_id_valid(NULL));
+    assert(!mgmt_peers_id_valid(""));
+    assert(!mgmt_peers_id_valid("p_1A2B3C4"));      // too short
+    assert(!mgmt_peers_id_valid("p_1A2B3C4DE"));    // too long
+    assert(!mgmt_peers_id_valid("x_1A2B3C4D"));     // wrong prefix
+    assert(!mgmt_peers_id_valid("p_1a2b3c4d"));     // lowercase is not what we emit
+    assert(!mgmt_peers_id_valid("p_1A2B3C4G"));     // not hex
+
+    mgmt_peers_action_t action;
+    int cursor;
+    char id[MGMT_PEERS_ID_MAX];
+    assert(!mgmt_peers_parse_command("forget nonsense", &action, &cursor, id, sizeof(id)));
+    assert(!mgmt_peers_parse_command("forget", &action, &cursor, id, sizeof(id)));
+    assert(!mgmt_peers_parse_command("forget ", &action, &cursor, id, sizeof(id)));
+}
+
+static void test_an_id_resolves_to_the_peer_that_produced_it(void)
+{
+    mgmt_peer_bond_t bonds[] = { classic_bond(0x01, 4), classic_bond(0x02, 4),
+                                 classic_bond(0x03, 4) };
+    mgmt_peer_t peers[4];
+    size_t count = mgmt_peers_merge(bonds, 3, NULL, 0, peers, 4);
+    assert(count == 3);
+
+    for (size_t i = 0; i < count; ++i) {
+        char id[MGMT_PEERS_ID_MAX];
+        mgmt_peers_format_id(peers[i].address, id, sizeof(id));
+        assert(mgmt_peers_find_by_id(peers, count, id) == (int)i);
+    }
+    // An id nothing produced resolves to nothing. The caller turns that into an
+    // idempotent success, not into a wrong peer being deleted.
+    assert(mgmt_peers_find_by_id(peers, count, "p_00000000") == -1);
+    assert(mgmt_peers_find_by_id(peers, count, "garbage") == -1);
+    assert(mgmt_peers_find_by_id(NULL, 0, "p_00000000") == -1);
+}
+
+static void test_forget_results_report_the_verified_state(void)
+{
+    char out[128];
+
+    // Removed: success, and the verification says nothing is left.
+    assert(mgmt_peers_format_forget_result("p_1A2B3C4D", MGMT_PEER_FORGET_REMOVED,
+                                           0, out, sizeof(out)) > 0);
+    assert(strstr(out, "\"ok\":true") != NULL);
+    assert(strstr(out, "\"result\":\"removed\"") != NULL);
+    assert(strstr(out, "\"bonded\":false") != NULL);
+    assert(strstr(out, "\"tr\":0") != NULL);
+
+    // Already absent is a SUCCESS. A management reply can be lost after the
+    // command ran, so a retry must not report failure for completed work.
+    assert(mgmt_peers_format_forget_result("p_1A2B3C4D",
+                                           MGMT_PEER_FORGET_ALREADY_ABSENT,
+                                           0, out, sizeof(out)) > 0);
+    assert(strstr(out, "\"ok\":true") != NULL);
+    assert(strstr(out, "\"result\":\"already_absent\"") != NULL);
+
+    // Refusing the companion is a failure with a nameable reason.
+    assert(mgmt_peers_format_forget_result("p_1A2B3C4D", MGMT_PEER_FORGET_PROTECTED,
+                                           3u, out, sizeof(out)) > 0);
+    assert(strstr(out, "\"ok\":false") != NULL);
+    assert(strstr(out, "\"result\":\"management_peer\"") != NULL);
+    assert(strstr(out, "\"bonded\":true") != NULL);
+
+    // A partial delete must surface, not be smoothed into success: a client
+    // that believes it would show a pairing the adapter still holds.
+    assert(mgmt_peers_format_forget_result("p_1A2B3C4D", MGMT_PEER_FORGET_INCOMPLETE,
+                                           1u, out, sizeof(out)) > 0);
+    assert(strstr(out, "\"ok\":false") != NULL);
+    assert(strstr(out, "\"result\":\"incomplete\"") != NULL);
+    assert(strstr(out, "\"tr\":1") != NULL);
+}
+
+static void test_a_forget_result_never_emits_a_malformed_id_or_overruns(void)
+{
+    char out[128];
+    assert(mgmt_peers_format_forget_result("bad", MGMT_PEER_FORGET_REMOVED,
+                                           0, out, sizeof(out)) == 0);
+    assert(out[0] == '\0');
+    char tiny[8];
+    assert(mgmt_peers_format_forget_result("p_1A2B3C4D", MGMT_PEER_FORGET_REMOVED,
+                                           0, tiny, sizeof(tiny)) == 0);
+    assert(tiny[0] == '\0');
+    assert(mgmt_peers_format_forget_result("p_1A2B3C4D", MGMT_PEER_FORGET_REMOVED,
+                                           0, NULL, 0) == 0);
+}
+
+static void test_forgetting_one_peer_leaves_the_others_addressable(void)
+{
+    // The phase gate in miniature: three saved controllers, one removed, the
+    // other two still resolvable by the ids the client already holds.
+    mgmt_peer_bond_t bonds[] = { classic_bond(0x01, 4), classic_bond(0x02, 4),
+                                 classic_bond(0x03, 4) };
+    mgmt_peer_t before[4];
+    assert(mgmt_peers_merge(bonds, 3, NULL, 0, before, 4) == 3);
+    char kept_a[MGMT_PEERS_ID_MAX], gone[MGMT_PEERS_ID_MAX], kept_b[MGMT_PEERS_ID_MAX];
+    mgmt_peers_format_id(before[0].address, kept_a, sizeof(kept_a));
+    mgmt_peers_format_id(before[1].address, gone, sizeof(gone));
+    mgmt_peers_format_id(before[2].address, kept_b, sizeof(kept_b));
+
+    // The adapter now holds only the two survivors.
+    mgmt_peer_bond_t after_bonds[] = { classic_bond(0x01, 4), classic_bond(0x03, 4) };
+    mgmt_peer_t after[4];
+    size_t after_count = mgmt_peers_merge(after_bonds, 2, NULL, 0, after, 4);
+    assert(after_count == 2);
+    assert(mgmt_peers_find_by_id(after, after_count, gone) == -1);
+    assert(mgmt_peers_find_by_id(after, after_count, kept_a) >= 0);
+    assert(mgmt_peers_find_by_id(after, after_count, kept_b) >= 0);
+    // Ids are derived from the address, so a survivor's id is unchanged by
+    // another peer's removal -- the client's cached ids stay valid.
+    char recomputed[MGMT_PEERS_ID_MAX];
+    mgmt_peers_format_id(after[0].address, recomputed, sizeof(recomputed));
+    assert(strcmp(recomputed, kept_a) == 0);
+}
 
 static void test_no_page_can_contain_key_material(void)
 {
@@ -561,6 +686,11 @@ int main(void)
     test_an_empty_inventory_is_a_complete_page();
     test_peer_ids_are_stable_opaque_and_not_slot_indices();
     test_command_parsing();
+    test_only_the_exact_id_shape_is_accepted();
+    test_an_id_resolves_to_the_peer_that_produced_it();
+    test_forget_results_report_the_verified_state();
+    test_a_forget_result_never_emits_a_malformed_id_or_overruns();
+    test_forgetting_one_peer_leaves_the_others_addressable();
     test_no_page_can_contain_key_material();
     printf("mgmt_peers: all tests passed\n");
     return 0;

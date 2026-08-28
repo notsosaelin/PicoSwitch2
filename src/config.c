@@ -1258,11 +1258,20 @@ static void reply_peers_result(void) {
 static void cmd_peers(const char *arg) {
     mgmt_peers_action_t action;
     int cursor;
-    if (!mgmt_peers_parse_command(arg, &action, &cursor)) {
-        reply("{\"error\":\"usage: peers list [cursor]\"}");
+    char peer_id[MGMT_PEERS_ID_MAX];
+    if (!mgmt_peers_parse_command(arg, &action, &cursor,
+                                  peer_id, sizeof(peer_id))) {
+        reply("{\"error\":\"usage: peers list [cursor]|forget <id>\"}");
         return;
     }
-    if (!btstack_host_peers_request_page(cursor)) {
+    // Both forms use the same deferred reply: the answer is built on core1 and
+    // collected on a later poll, so core0 keeps servicing the console. `forget`
+    // is the mutating form and carries its own verified result, including the
+    // refusal when the target is this adapter's management companion.
+    bool requested = action == MGMT_PEERS_FORGET
+        ? btstack_host_peers_request_forget(peer_id)
+        : btstack_host_peers_request_page(cursor);
+    if (!requested) {
         reply("{\"error\":\"busy\"}");
         return;
     }

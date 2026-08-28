@@ -2,6 +2,7 @@ package dev.picoswitch.management
 
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -263,6 +264,89 @@ class PeerInventoryTest {
 
     @Test fun `a blank name is treated as no name at all`() {
         assertEquals("Controller • EEFF", PeerNaming.label(address = "AABBCCDDEEFF", alias = "  ", name = ""))
+    }
+
+
+    /* ------------------------------------------ selective forget (Phase 5) */
+
+    @Test fun `a forget reply carries the adapter's verified state`() {
+        val outcome = ManagementProtocol.peersForget(
+            "peers forget p_5E6F7A8B",
+            """{"ok":true,"id":"p_5E6F7A8B","result":"removed","bonded":false,"tr":0}""",
+        )
+        assertEquals("p_5E6F7A8B", outcome.peerId)
+        assertEquals(PeerForgetResult.Removed, outcome.result)
+        assertFalse(outcome.stillBonded)
+        assertTrue(outcome.transports.isEmpty())
+        assertTrue(outcome.result.succeeded)
+    }
+
+    @Test fun `already absent is a success, not a failure`() {
+        // A management reply can be lost after the command has already run. A
+        // retry must not tell the user the forget failed.
+        val outcome = ManagementProtocol.peersForget(
+            "peers forget p_5E6F7A8B",
+            """{"ok":true,"id":"p_5E6F7A8B","result":"already_absent","bonded":false,"tr":0}""",
+        )
+        assertEquals(PeerForgetResult.AlreadyAbsent, outcome.result)
+        assertTrue(outcome.result.succeeded)
+    }
+
+    @Test fun `a refused management peer is reported as such, not as a generic error`() {
+        val outcome = ManagementProtocol.peersForget(
+            "peers forget p_1A2B3C4D",
+            """{"ok":false,"id":"p_1A2B3C4D","result":"management_peer","bonded":true,"tr":3}""",
+        )
+        assertEquals(PeerForgetResult.ManagementPeer, outcome.result)
+        assertFalse(outcome.result.succeeded)
+        assertTrue(outcome.stillBonded)
+    }
+
+    @Test fun `a partial delete surfaces as incomplete with what remains`() {
+        val outcome = ManagementProtocol.peersForget(
+            "peers forget p_5E6F7A8B",
+            """{"ok":false,"id":"p_5E6F7A8B","result":"incomplete","bonded":true,"tr":1}""",
+        )
+        assertEquals(PeerForgetResult.Incomplete, outcome.result)
+        assertFalse(outcome.result.succeeded)
+        assertEquals(setOf(PeerTransport.Classic), outcome.transports)
+    }
+
+    @Test fun `an unrecognised outcome still yields the verified bond state`() {
+        // A newer adapter may name an outcome this build does not know.
+        // Rejecting the reply would leave the client unable to say whether the
+        // delete happened; `bonded` is the part that decides what is shown.
+        val outcome = ManagementProtocol.peersForget(
+            "peers forget p_5E6F7A8B",
+            """{"ok":false,"id":"p_5E6F7A8B","result":"deferred","bonded":true,"tr":2}""",
+        )
+        assertEquals(PeerForgetResult.Unknown, outcome.result)
+        assertTrue(outcome.stillBonded)
+        assertFalse(outcome.result.succeeded)
+    }
+
+    @Test fun `a forget reply without the verified state is rejected`() {
+        // Without `bonded` there is nothing to trust over the app's optimism.
+        assertThrowsForget("""{"ok":true,"id":"p_5E6F7A8B","result":"removed"}""")
+        assertThrowsForget("""{"ok":true,"result":"removed","bonded":false}""")
+        assertThrowsForget("""{"ok":true,"id":"","result":"removed","bonded":false}""")
+    }
+
+    @Test fun `the forget command names the peer by its opaque id`() {
+        assertEquals("peers forget p_1A2B3C4D", ManagementCommands.peersForget("p_1A2B3C4D"))
+        // The id is the adapter's, not something the client may compose.
+        listOf("p_1a2b3c4d", "p_123", "1A2B3C4D", "", "p_1A2B3C4D ").forEach { bad ->
+            assertThrows(IllegalArgumentException::class.java) {
+                ManagementCommands.peersForget(bad)
+            }
+        }
+    }
+
+    private fun assertThrowsForget(reply: String) {
+        val error = runCatching {
+            ManagementProtocol.peersForget("peers forget p_5E6F7A8B", reply)
+        }.exceptionOrNull()
+        assertTrue("expected a protocol rejection for $reply, got $error", error is ManagementException)
     }
 
 
