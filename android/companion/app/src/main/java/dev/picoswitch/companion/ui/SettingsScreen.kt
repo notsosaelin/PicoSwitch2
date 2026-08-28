@@ -147,18 +147,6 @@ fun SettingsScreen(
                 }
                 HorizontalDivider()
                 LabelValueRow(
-                    "Android companion association",
-                    when (ui.associationStates[ui.activeAdapterId] ?: ui.relationshipStatus.companionAssociation) {
-                        CompanionAssociationState.Present -> "Present"
-                        CompanionAssociationState.Missing -> "Not present"
-                        // No longer "multiple adapters": several adapters are
-                        // normal. This is two association records claiming the
-                        // SAME adapter, which repair resolves.
-                        CompanionAssociationState.Ambiguous -> "Duplicate records; repair needed"
-                        CompanionAssociationState.Unknown -> "Not checked"
-                    },
-                )
-                LabelValueRow(
                     "Android Bluetooth pairing",
                     when (ui.relationshipStatus.bond) {
                         AndroidBondState.Bonded -> "Paired"
@@ -167,6 +155,16 @@ fun SettingsScreen(
                         AndroidBondState.Unknown -> "Not checked"
                     },
                 )
+                // The CompanionDeviceManager association row is deliberately NOT
+                // here any more. Pairing goes through this app's own BLE scan
+                // (`beginAdapterPairing` -> `discoverForPairing`), and nothing in
+                // the app ever calls CompanionDeviceManager.associate() -- only
+                // `disassociate` and a read of `myAssociations` for
+                // reconciliation. So for an adapter paired the normal way the row
+                // reads "Not present" permanently, which looks like a fault on a
+                // perfectly healthy adapter. It still matters when reconciling a
+                // record that DOES exist, so it lives in Diagnostics, where
+                // "not present" is information rather than an accusation.
             }
         }
 
@@ -516,13 +514,22 @@ private fun PeerStateChip(listing: PeerListing) {
  * adapter once proved is not the same claim as asserting it now.
  */
 private fun peerSupportingText(listing: PeerListing): String {
+    // "Controller" whether the adapter can prove it right now or this app
+    // remembers it, because the difference is ours and not the user's.
+    //
+    // It also is not a difference between the CONTROLLERS. The adapter's only
+    // persistent role hint is the single `JPLC` last-connected record, which
+    // holds one BLE peer -- so a BLE controller keeps a live `controller` role
+    // while disconnected purely by being the reconnect target, and a Classic
+    // controller never can. Two equally paired controllers were being described
+    // differently because of which transport they happen to use.
     val role = when {
         listing.role == PeerRole.ManagementCompanion -> "This phone — management"
         listing.role == PeerRole.ControllerLink -> "This phone — Controller Link"
-        listing.role == PeerRole.PhysicalController -> "Controller"
-        listing.rememberedRole == PeerRole.ManagementCompanion -> "This phone — management, remembered"
-        listing.rememberedRole == PeerRole.ControllerLink -> "This phone — Controller Link, remembered"
-        listing.rememberedRole == PeerRole.PhysicalController -> "Controller, remembered"
+        listing.rememberedRole == PeerRole.ManagementCompanion -> "This phone — management"
+        listing.rememberedRole == PeerRole.ControllerLink -> "This phone — Controller Link"
+        listing.role == PeerRole.PhysicalController ||
+            listing.rememberedRole == PeerRole.PhysicalController -> "Controller"
         // Deliberately not "unrecognised device": the adapter holds a credential
         // for it, so the honest statement is that it cannot say what it is YET.
         // Role is live evidence, and after a reboot every paired controller
