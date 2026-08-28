@@ -268,6 +268,8 @@ enum class PairingReason(val wireName: String) {
     ManagementDisabled("management_disabled"),
     Busy("busy"),
     LockedOut("locked_out"),
+    /** Both security stores are full; the user must forget a controller first. */
+    StorageFull("storage_full"),
     Unknown("unknown");
 
     companion object {
@@ -335,6 +337,17 @@ data class AdapterCapabilities(
     val managementGate: CapabilityState = CapabilityState.Unknown,
     val bonds: CapabilityState = CapabilityState.Unknown,
     val peers: CapabilityState = CapabilityState.Unknown,
+    /**
+     * Selective forget and remote pairing, probed separately from [peers].
+     *
+     * An adapter can list peers without being able to forget one: `peers list`
+     * shipped a phase before `peers forget`. Treating them as one capability
+     * would either hide a working list or offer a Forget button that answers
+     * `unknown command`, and design §87 is explicit that one missing capability
+     * must not hide the whole adapter.
+     */
+    val peerForget: CapabilityState = CapabilityState.Unknown,
+    val remotePairing: CapabilityState = CapabilityState.Unknown,
     val wake: CapabilityState = CapabilityState.Unknown,
     val activeInput: CapabilityState = CapabilityState.Unknown,
     val kbm: CapabilityState = CapabilityState.Unknown,

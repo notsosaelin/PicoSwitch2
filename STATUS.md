@@ -7,6 +7,28 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **Bluetooth Management 2.0 — Phase 7 shipped 2026-08-28; the pass is COMPLETE through all seven
+  documented phases; REQUIRES A REFLASH; device validation pending.** Compatibility and degradation.
+  `peerForget` and `remotePairing` are probed **independently** of `peers`, because they shipped in
+  different phases: an adapter can list peers without being able to forget one, and one flag would
+  either hide a working list or draw a button that answers `unknown command`. **An unprobed
+  capability stays `Unknown`, never `Unsupported`** — a probe that could not run must not cost the
+  adapter a feature. The probes avoid side effects rather than avoiding the question: `remotePairing`
+  uses read-only `pairing status` instead of opening a real 30 s window to find out whether the verb
+  exists, and `peerForget` uses `p_00000000`, the all-zero hash that no identity address produces, so
+  firmware that has the command answers `already_absent` and deletes nothing. New `storage_full`
+  pairing reason: with both security stores full, pairing is **refused rather than started**, because
+  a window that could only end in a silent eviction is worse than a refusal that names the fix — and
+  the fix is the selective forget the user now has. Corrupt-registry recovery was already total and
+  already tested (unparseable documents decode to empty, individual bad rows are dropped rather than
+  the file, a future schema is refused, text is re-sanitised on read); it was verified rather than
+  rebuilt. Firmware-side declared capabilities are deliberately **not** added: `unknown command` is
+  the protocol's own authority, and a declaration would be a second thing to keep in step. **Both
+  boards rebuild clean from scratch with no new warnings**, 74/74 host-test targets passed, 1317
+  Android JVM test executions with 0 failures, both install-reset markers verified, lint 0 errors,
+  both APKs assembled, descriptor parity green at bridge contract 4 with an unchanged 161-byte
+  digest.
+  [`docs/bluetooth/bt-management-2.0-phase0-audit.md`](docs/bluetooth/bt-management-2.0-phase0-audit.md)
 - **Bluetooth Management 2.0 — Phase 6 remote controller pairing shipped 2026-08-28; REQUIRES A
   REFLASH; device validation pending.** The adapter can be told to pair a controller from the app, so
   a unit behind a TV or inside a dock never has to be reached. **There is no second pairing flow**:

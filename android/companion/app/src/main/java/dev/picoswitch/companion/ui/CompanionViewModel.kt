@@ -1334,6 +1334,10 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             PairingReason.Busy -> "The adapter is already pairing. Wait for it to finish."
             PairingReason.ManagementDisabled -> "Wireless management is off, so the adapter will not accept this."
             PairingReason.LockedOut -> "The adapter is clearing its pairings. Try again in a moment."
+            // Points at the fix rather than just the fault: the list below is
+            // exactly where the user forgets one to make room.
+            PairingReason.StorageFull ->
+                "The adapter has no room for another controller. Forget one below, then try again."
             else -> "The adapter would not start pairing."
         }
         PairingState.Idle -> "The adapter is not pairing."
@@ -2861,6 +2865,11 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                 // is not a user action and must not raise the modal progress
                 // overlay over a connection that just succeeded.
                 try {
+                    // Learn what this firmware can do before the UI offers it.
+                    // Ordered before the inventory read so a Forget button is
+                    // never drawn against firmware that would answer `unknown
+                    // command` to it.
+                    adapter.probeManagementCapabilities()
                     readPeerInventory(explicit = false)
                 } catch (cancelled: kotlinx.coroutines.CancellationException) {
                     // Never swallowed: this runs inside the connect job, whose

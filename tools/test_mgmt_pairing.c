@@ -39,26 +39,33 @@ static void test_admission_policy_and_precedence(void)
 {
     mgmt_pairing_reason_t reason;
 
-    assert(mgmt_pairing_start_allowed(true, false, false, &reason));
+    assert(mgmt_pairing_start_allowed(true, false, false, false, &reason));
     assert(reason == MGMT_PAIRING_REASON_NONE);
 
     // Management disabled outranks everything: a disabled management plane
     // could not have started the operation that would make it busy.
-    assert(!mgmt_pairing_start_allowed(false, true, true, &reason));
+    assert(!mgmt_pairing_start_allowed(false, true, true, true, &reason));
     assert(reason == MGMT_PAIRING_REASON_MANAGEMENT_DISABLED);
 
     // A wipe in progress outranks busy for the same shape of reason.
-    assert(!mgmt_pairing_start_allowed(true, true, true, &reason));
+    assert(!mgmt_pairing_start_allowed(true, true, true, true, &reason));
     assert(reason == MGMT_PAIRING_REASON_LOCKED_OUT);
 
     // Already pairing -- including a window the USER opened with the gesture,
     // because it is the same window. Refused rather than silently re-armed:
-    // re-arming would extend a window the user physically opened.
-    assert(!mgmt_pairing_start_allowed(true, true, false, &reason));
+    // re-arming would extend a window the user physically opened. Outranks
+    // storage-full: an operation already running is the more immediate thing.
+    assert(!mgmt_pairing_start_allowed(true, true, false, true, &reason));
     assert(reason == MGMT_PAIRING_REASON_BUSY);
 
+    // Nowhere to put a new bond. Refused rather than started, because a window
+    // that could only end in a silent eviction is worse than a refusal that
+    // names what to do about it (design §90).
+    assert(!mgmt_pairing_start_allowed(true, false, false, true, &reason));
+    assert(reason == MGMT_PAIRING_REASON_STORAGE_FULL);
+
     // The reason pointer is optional.
-    assert(mgmt_pairing_start_allowed(true, false, false, NULL));
+    assert(mgmt_pairing_start_allowed(true, false, false, false, NULL));
 }
 
 static void test_remaining_time_is_wrap_safe(void)
@@ -160,7 +167,7 @@ static void test_every_state_and_reason_has_a_stable_name(void)
     const mgmt_pairing_reason_t reasons[] = {
         MGMT_PAIRING_REASON_NONE, MGMT_PAIRING_REASON_NO_CONTROLLER,
         MGMT_PAIRING_REASON_MANAGEMENT_DISABLED, MGMT_PAIRING_REASON_BUSY,
-        MGMT_PAIRING_REASON_LOCKED_OUT,
+        MGMT_PAIRING_REASON_LOCKED_OUT, MGMT_PAIRING_REASON_STORAGE_FULL,
     };
     for (size_t i = 0; i < sizeof(reasons) / sizeof(reasons[0]); ++i) {
         const char *name = mgmt_pairing_reason_name(reasons[i]);

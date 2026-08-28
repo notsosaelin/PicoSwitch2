@@ -77,6 +77,16 @@ typedef enum {
     // Trust admission is locked out (a wipe is in progress, or the radio is
     // deliberately refusing new relationships).
     MGMT_PAIRING_REASON_LOCKED_OUT,
+    /*
+     * Both security stores are full, so no new bond of any kind could be kept.
+     *
+     * Reported instead of starting a window that could only end in a silent
+     * eviction (design §90). The app's answer is to offer the paired-controller
+     * list so the user forgets one deliberately -- which is exactly the
+     * capability Phase 5 added, and why this reason is worth distinguishing
+     * from a generic failure.
+     */
+    MGMT_PAIRING_REASON_STORAGE_FULL,
 } mgmt_pairing_reason_t;
 
 typedef enum {
@@ -124,6 +134,7 @@ const char *mgmt_pairing_reason_name(mgmt_pairing_reason_t reason);
 bool mgmt_pairing_start_allowed(bool management_enabled,
                                 bool already_active,
                                 bool pairing_locked_out,
+                                bool security_storage_full,
                                 mgmt_pairing_reason_t *reason);
 
 /*

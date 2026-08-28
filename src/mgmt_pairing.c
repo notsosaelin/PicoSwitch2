@@ -55,6 +55,8 @@ const char *mgmt_pairing_reason_name(mgmt_pairing_reason_t reason)
         return "busy";
     case MGMT_PAIRING_REASON_LOCKED_OUT:
         return "locked_out";
+    case MGMT_PAIRING_REASON_STORAGE_FULL:
+        return "storage_full";
     case MGMT_PAIRING_REASON_NONE:
     default:
         return "none";
@@ -64,6 +66,7 @@ const char *mgmt_pairing_reason_name(mgmt_pairing_reason_t reason)
 bool mgmt_pairing_start_allowed(bool management_enabled,
                                 bool already_active,
                                 bool pairing_locked_out,
+                                bool security_storage_full,
                                 mgmt_pairing_reason_t *reason)
 {
     mgmt_pairing_reason_t why = MGMT_PAIRING_REASON_NONE;
@@ -71,13 +74,19 @@ bool mgmt_pairing_start_allowed(bool management_enabled,
 
     // Ordered most-fundamental first, so the reason a client is told is the one
     // it can actually act on. "Management disabled" outranks "busy" because a
-    // disabled management plane could not have started the busy operation.
+    // disabled management plane could not have started the busy operation, and
+    // "busy" outranks "storage full" because an operation already running is
+    // the more immediate thing to resolve.
     if (!management_enabled) {
         why = MGMT_PAIRING_REASON_MANAGEMENT_DISABLED;
     } else if (pairing_locked_out) {
         why = MGMT_PAIRING_REASON_LOCKED_OUT;
     } else if (already_active) {
         why = MGMT_PAIRING_REASON_BUSY;
+    } else if (security_storage_full) {
+        // Refused rather than started: a window that could only end in a silent
+        // eviction is worse than a refusal that names what to do about it.
+        why = MGMT_PAIRING_REASON_STORAGE_FULL;
     } else {
         allowed = true;
     }
