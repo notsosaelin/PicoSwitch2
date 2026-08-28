@@ -14,6 +14,7 @@ import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.unit.dp
 import dev.picoswitch.companion.BuildConfig
+import dev.picoswitch.companion.data.CompanionAssociationState
 import dev.picoswitch.companion.model.BondInfo
 import dev.picoswitch.companion.model.CapabilityState
 import dev.picoswitch.companion.model.PeerRole
@@ -78,6 +79,22 @@ fun DiagnosticsScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onExp
                     copyable = ui.connection.address != null,
                 )
                 LabelValueRow("Protocol", "BLE GATT · newline JSON v${BuildConfig.MGMT_PROTOCOL_VERSION}")
+                // Expected to read "Not present" for an adapter paired the normal
+                // way: pairing uses this app's own BLE scan and nothing here ever
+                // calls CompanionDeviceManager.associate(). It is reported because
+                // a record that DOES exist has to be reconcilable, not because its
+                // absence is a fault.
+                LabelValueRow(
+                    "Companion association",
+                    when (ui.associationStates[ui.activeAdapterId] ?: ui.relationshipStatus.companionAssociation) {
+                        CompanionAssociationState.Present -> "Present"
+                        CompanionAssociationState.Missing -> "Not present (expected)"
+                        // Not "multiple adapters": several adapters are normal.
+                        // This is two records claiming the SAME adapter.
+                        CompanionAssociationState.Ambiguous -> "Duplicate records; repair needed"
+                        CompanionAssociationState.Unknown -> "Not checked"
+                    },
+                )
                 LabelValueRow("Wireless management", if (ui.snapshot.managementEnabled == true) "On" else "Off")
                 LabelValueRow(
                     "Last command",
