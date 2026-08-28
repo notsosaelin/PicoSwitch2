@@ -352,6 +352,28 @@ object ManagementProtocol {
         PeerPage(entries, total, next)
     }
 
+    /**
+     * One forget result.
+     *
+     * Deliberately strict about the verified fields and tolerant about the
+     * outcome vocabulary: a newer adapter may name an outcome this build does
+     * not know, and refusing the whole reply would leave the client unable to
+     * tell whether the delete happened. An unknown outcome still carries
+     * `bonded`, which is the part that decides what the user is shown.
+     */
+    fun peersForget(command: String, response: String): PeerForgetOutcome =
+        decode(command, response) { value ->
+            val id = value.optionalString("id")?.takeIf(String::isNotBlank)
+                ?: throw incomplete(command)
+            val stillBonded = value.optionalBoolean("bonded") ?: throw incomplete(command)
+            PeerForgetOutcome(
+                peerId = id,
+                result = PeerForgetResult.fromWire(value.optionalString("result")),
+                stillBonded = stillBonded,
+                transports = PeerTransport.fromMask(value.optionalInt("tr") ?: 0),
+            )
+        }
+
     fun legacyBonds(command: String, response: String): BondEnumeration = decode(command, response) { value ->
         val array = value["bonds"]?.jsonArray ?: throw incomplete(command)
         BondEnumeration(
@@ -571,6 +593,20 @@ object ManagementCommands {
         require(cursor == null || cursor >= 0) { "Peer cursor cannot be negative" }
         return "peers list" + (cursor?.let { " $it" } ?: "")
     }
+
+    /**
+     * Forget one peer by the opaque id the adapter issued for it.
+     *
+     * The id is validated here as well as by the firmware, because the local
+     * failure is a thrown precondition the developer sees, while the remote one
+     * is a usage error the user sees.
+     */
+    fun peersForget(peerId: String): String {
+        require(PEER_ID.matches(peerId)) { "Not a peer id: $peerId" }
+        return "peers forget $peerId"
+    }
+
+    private val PEER_ID = Regex("p_[0-9A-F]{8}")
 
     fun kbmMap(profile: KbmProfile, page: Int): String {
         require(page in 0..32)

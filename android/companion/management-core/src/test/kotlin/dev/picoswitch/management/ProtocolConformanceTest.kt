@@ -43,6 +43,7 @@ class ProtocolConformanceTest {
             "setPersonality" to ManagementCommands.personality(Personality.JoyConRight),
             "bondPage" to ManagementCommands.bondsPage(3),
             "peerPage" to ManagementCommands.peersPage(2),
+            "peerForget" to ManagementCommands.peersForget("p_5E6F7A8B"),
             "kbmDefault" to ManagementCommands.kbmBind(
                 KbmProfile.KeyboardMouse,
                 KbmSource(KbmSourceKind.Key, 0x1A),
@@ -213,6 +214,21 @@ class ProtocolConformanceTest {
         listOf("key", "ltk", "irk", "csrk").forEach { forbidden ->
             assertTrue(
                 "peer vector must not contain '$forbidden'",
+                !vector.reply.contains(forbidden, ignoreCase = true),
+            )
+        }
+    }
+
+    @Test fun `the forget vector carries a verified post-state and no key material`() {
+        val vector = vector("peersForget")
+        val outcome = ManagementProtocol.peersForget(vector.command, vector.reply)
+        assertEquals(PeerForgetResult.Removed, outcome.result)
+        // The claim that matters is the adapter's own re-read, not its intent.
+        assertFalse(outcome.stillBonded)
+        assertTrue(outcome.transports.isEmpty())
+        listOf("key", "ltk", "irk", "csrk").forEach { forbidden ->
+            assertTrue(
+                "forget vector must not contain '$forbidden'",
                 !vector.reply.contains(forbidden, ignoreCase = true),
             )
         }

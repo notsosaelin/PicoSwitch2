@@ -32,15 +32,31 @@ static bool parse_decimal(const char *text, int *value)
     return true;
 }
 
+bool mgmt_peers_id_valid(const char *id)
+{
+    if (!id || id[0] != 'p' || id[1] != '_')
+        return false;
+    for (int i = 0; i < 8; ++i) {
+        char c = id[2 + i];
+        bool hex = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'F');
+        if (!hex)
+            return false;
+    }
+    return id[10] == '\0';
+}
+
 bool mgmt_peers_parse_command(const char *arg,
                               mgmt_peers_action_t *action,
-                              int *cursor)
+                              int *cursor,
+                              char *id, size_t id_capacity)
 {
     if (!arg || !action || !cursor)
         return false;
 
     *action = MGMT_PEERS_INVALID;
     *cursor = 0;
+    if (id && id_capacity > 0)
+        id[0] = '\0';
 
     if (strcmp(arg, "list") == 0) {
         *action = MGMT_PEERS_LIST;
@@ -50,7 +66,82 @@ bool mgmt_peers_parse_command(const char *arg,
         *action = MGMT_PEERS_LIST;
         return true;
     }
+    if (strncmp(arg, "forget ", 7) == 0) {
+        const char *wanted = arg + 7;
+        // Validated here rather than at lookup time. A malformed id must be a
+        // usage error: reported as "already forgotten" it would tell the user a
+        // controller was removed when nothing was even addressed.
+        if (!mgmt_peers_id_valid(wanted))
+            return false;
+        if (id) {
+            if (id_capacity < MGMT_PEERS_ID_MAX)
+                return false;
+            snprintf(id, id_capacity, "%s", wanted);
+        }
+        *action = MGMT_PEERS_FORGET;
+        return true;
+    }
     return false;
+}
+
+int mgmt_peers_find_by_id(const mgmt_peer_t *peers, size_t count, const char *id)
+{
+    if (!peers || !mgmt_peers_id_valid(id))
+        return -1;
+    for (size_t i = 0; i < count; ++i) {
+        char candidate[MGMT_PEERS_ID_MAX];
+        mgmt_peers_format_id(peers[i].address, candidate, sizeof(candidate));
+        if (strcmp(candidate, id) == 0)
+            return (int)i;
+    }
+    return -1;
+}
+
+const char *mgmt_peer_forget_outcome_name(mgmt_peer_forget_outcome_t outcome)
+{
+    switch (outcome) {
+    case MGMT_PEER_FORGET_REMOVED:
+        return "removed";
+    case MGMT_PEER_FORGET_ALREADY_ABSENT:
+        return "already_absent";
+    case MGMT_PEER_FORGET_PROTECTED:
+        return "management_peer";
+    case MGMT_PEER_FORGET_INCOMPLETE:
+    default:
+        return "incomplete";
+    }
+}
+
+size_t mgmt_peers_format_forget_result(const char *id,
+                                       mgmt_peer_forget_outcome_t outcome,
+                                       unsigned remaining_transports,
+                                       char *output, size_t capacity)
+{
+    if (!output || capacity == 0)
+        return 0;
+    output[0] = '\0';
+    if (!mgmt_peers_id_valid(id))
+        return 0;
+
+    // `ok` is false only for the refusal and the unverified delete. "Already
+    // absent" is a success: the caller asked for an end state and the adapter
+    // is in it.
+    bool ok = outcome == MGMT_PEER_FORGET_REMOVED ||
+              outcome == MGMT_PEER_FORGET_ALREADY_ABSENT;
+    // The verified post-state travels with every outcome, so a client never has
+    // to infer what happened from the outcome name alone.
+    int written = snprintf(
+        output, capacity,
+        "{\"ok\":%s,\"id\":\"%s\",\"result\":\"%s\",\"bonded\":%s,\"tr\":%u}",
+        ok ? "true" : "false", id,
+        mgmt_peer_forget_outcome_name(outcome),
+        remaining_transports ? "true" : "false",
+        remaining_transports);
+    if (written < 0 || (size_t)written >= capacity) {
+        output[0] = '\0';
+        return 0;
+    }
+    return (size_t)written;
 }
 
 mgmt_peer_role_t mgmt_peers_classify(const mgmt_peer_observation_t *observation)

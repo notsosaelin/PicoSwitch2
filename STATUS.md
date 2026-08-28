@@ -7,8 +7,43 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
-- **Management LE identity canonicalised and the companion bond protected, 2026-08-28; REQUIRES A
-  REFLASH; hardware validation pending.** Investigating the Phase 4 post-reboot
+- **Bluetooth Management 2.0 — Phase 5 selective forget shipped 2026-08-28; REQUIRES A REFLASH;
+  device validation pending.** The user can now remove one controller's pairing without disturbing
+  anything else. `peers forget <id>` is **one atomic firmware operation**, not an app-issued
+  disconnect-then-delete pair: resolve the opaque id, guard, drop live links, delete on **both**
+  transports, then **re-enumerate to verify** — all inside a single run-loop callback, so nothing can
+  race between the steps. It reuses `btstack_host_forget_device_typed()`, which the Phase 0 audit
+  identified two years of phases ago as already being the right sequence; the phase was a command
+  surface, a guard and a verification rather than new Bluetooth machinery. **The untyped form is
+  used deliberately**: "forget this controller" means the device, so a cross-transport peer loses
+  every credential it holds. Leaving half would let it reconnect on the surviving transport and look
+  like the forget silently failed. **The reply reports what the adapter observed after deleting, not
+  what it intended** — `bonded` and `tr` come from a second enumeration, and `incomplete` exists so a
+  partial failure is visible instead of a client cache claiming a pairing is gone while the adapter
+  still holds one. **`already_absent` is a success**, because a management reply can be lost after
+  the command has already executed and a retry must not report failure for completed work; a
+  *malformed* id is still a usage error, since reporting it as already-forgotten would tell the user
+  a controller was removed when nothing was addressed. **The management companion cannot be forgotten
+  here** — refused twice over, structurally on its durable identity and again on role, which also
+  catches the same phone in its Controller Link relationship; getting that wrong would cut off the
+  app issuing the command. The peer id stays one-way: the adapter resolves it by rebuilding the
+  inventory and recomputing each id, so a client can address only a peer the adapter itself reported
+  and cannot smuggle in a raw address. App: Forget appears on Connected and Saved rows with
+  consequence-first confirmation copy (the disconnect sentence only where it applies), the inventory
+  is re-read after every attempt including failures, and **history is kept on purpose** so a
+  forgotten controller becomes a Recent row rather than vanishing. **Both boards rebuild clean from
+  scratch with no new warnings.** 73/73 host-test targets passed (`test_mgmt_peers` +5 cases,
+  including the phase gate in miniature), 1301 Android JVM test executions with 0 failures (up from
+  1293), a `peersForget` vector added to the shared conformance fixture and asserted to carry no key
+  material, both install-reset markers verified, lint 0 errors, both APKs assembled, descriptor
+  parity green at bridge contract 4 with an unchanged 161-byte digest. Not yet validated on hardware:
+  the nine-step checklist in the audit document's §15. Next: Phase 6, remote pairing — which owes one
+  product decision first, whether the management bonding window may keep sharing
+  `pairing_window_open` with controller pairing.
+  [`docs/bluetooth/bt-management-2.0-phase0-audit.md`](docs/bluetooth/bt-management-2.0-phase0-audit.md)
+- **Management LE identity canonicalised and the companion bond protected, 2026-08-28;
+  HARDWARE-CONFIRMED.** The reboot regression is resolved: the adapter reconnects across ordinary
+  power cycles and the companion is one peer, not two. Investigating the Phase 4 post-reboot
   `RepairRequired` report found several proven defects in how the firmware identifies its management
   companion. **The cause of the first post-reboot 0x05/0x06 is NOT established, and this checkpoint
   does not claim to have root-caused that regression** — it fixes what the source proves is wrong and
@@ -44,7 +79,7 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
   bridge contract 4 with an unchanged 161-byte digest.
   [`docs/bluetooth/PERSISTENCE.md`](docs/bluetooth/PERSISTENCE.md)
 - **Bluetooth Management 2.0 — Phase 4 names, classification and history shipped 2026-08-28;
-  REQUIRES A REFLASH; device validation pending.** The adapter can now say what a controller *is*,
+  HARDWARE-CONFIRMED.** The adapter can now say what a controller *is*,
   and the app remembers it. `peers list` gained three optional fields: `class` — the bthid driver
   identity the adapter derived for a live connection, "Sony DualSense" rather than the "Wireless
   Controller" the device calls itself — plus `vid`/`pid`. **`class` outranks `name` deliberately**:

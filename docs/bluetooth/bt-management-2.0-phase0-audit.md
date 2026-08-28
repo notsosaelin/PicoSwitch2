@@ -16,7 +16,7 @@ one place where the design's own recommendation was tried and withdrawn (§8c).
 | 2 — switching | Complete 2026-08-27 | no | no |
 | 3 — peer inventory | Complete 2026-08-27 | yes | yes |
 | 4 — names, classification, history | Complete 2026-08-28 | yes | yes |
-| 5 — selective forget | Not started | — | — |
+| 5 — selective forget | Complete 2026-08-28 | yes | yes |
 
 Every phase's software validation is in §10; each phase's hardware gate is a checklist the
 maintainer runs (§§11–14) and is **not** claimed as performed here.
@@ -537,13 +537,59 @@ operation and forgetting a controller is not, and a single card carrying both in
 read a destructive action against the wrong list. The Controllers page keeps its subject — who is
 driving right now.
 
-## 8d. What Phase 5 should do
+## 8d. Phase 5 — done 2026-08-28
 
-Selective forget. Firmware: atomic `forget_peer` over the existing
-`btstack_host_forget_device_typed()` boundary, Classic and LE deletion, active-connection handling,
-multi-entry peers. App: confirmation, refresh after result, history retained across a forget, and
-the management peer protected. The role model and the peer id it will address are already in place;
-the missing half is entirely the mutating firmware path.
+Selective forget. The prediction held: `btstack_host_forget_device_typed()` was already the atomic
+sequence, so the phase was a command surface, a guard, and a verification rather than new Bluetooth
+machinery.
+
+| Planned | Outcome |
+|---|---|
+| Atomic `forget_peer` (§63) | `peers forget <id>` → `peers_forget_run()`. Resolve, guard, disconnect, delete, verify, all inside one run-loop callback. |
+| Classic delete (§26) | `gap_drop_link_key_for_bd_addr()` via the address-only form, after the live ACL is dropped. |
+| LE delete (§27) | `gap_delete_bonding()` on the stored slot, which also refreshes the controller resolving list. |
+| Active connection handling | Existing sequence: cancel in-flight connect, drop BLE links, drop Classic links, then delete. |
+| Multi-entry peers (§91) | The **address-only** form deliberately, so one physical device loses every credential it holds. |
+| App confirmation (§53) | Consequence, not factory-reset language; the disconnect sentence appears only for a connected controller. |
+| Refresh after result (§92) | `AdapterRepository.forgetPeer()` re-reads the inventory even when the forget failed. |
+| History retained (§30) | Untouched. A forgotten controller becomes a `Recent` row. |
+| Management protected (§27, §28) | Refused with `management_peer`. |
+
+### The address-only form is the whole point
+
+`btstack_host_forget_device_typed()` has a typed form that removes one transport of a
+cross-transport peer. Forget uses the **untyped** form on purpose: "forget this controller" means the
+device, not one of its credentials. A peer left holding half its keys reconnects on the surviving
+transport and looks like the forget silently failed — §91's partial-delete hazard, avoided by never
+creating the partial state rather than by reporting it well.
+
+### Verification is a re-enumeration, not an assumption
+
+§63 step 8 asks the operation to confirm the peer is no longer bonded. It does: after the delete it
+rebuilds the inventory and looks the id up again, and the reply carries `bonded` and `tr` from that
+second read. `incomplete` exists so a partial failure is visible instead of a client cache claiming a
+pairing is gone while the adapter still holds one.
+
+### Idempotency is a success, deliberately
+
+§64 requires that forgetting an already-forgotten peer succeed. An unresolvable id returns
+`already_absent` with `ok:true`, because a management reply can be lost after the command has already
+run and a retry must not report failure for completed work. A **malformed** id is still a usage
+error: reported as `already_absent` it would tell the user a controller was removed when nothing was
+addressed.
+
+### Two guards, not one
+
+The companion is refused on its durable identity (structural, immune to a classification mistake)
+**and** on role (which also catches the same phone in its Controller Link relationship). Getting this
+wrong would cut off the app issuing the command, so it is worth the redundancy.
+
+## 8e. What Phase 6 should do
+
+Remote physical-controller pairing. The Phase 0 audit's decisive positive result still stands: opening
+the pairing window does not tear down BLE management. The product decision owed before starting is
+§7.3's — whether `mgmt_accept_bonding()` sharing `pairing_window_open` with controller pairing is
+acceptable, or must be split.
 
 ## 9. Remaining unknowns
 
@@ -615,6 +661,20 @@ The history model is testable without a radio and without Android: `AdapterPeerH
 types, so the rules that matter — a reboot must not erase a proven role, a partial read must not be
 recorded, the phone must never reach the controller list — are pinned by ordinary JVM tests.
 
+**Phase 5 (2026-08-28):** firmware and companion. Both boards rebuild clean from scratch with no new
+warnings. 73/73 declared active host-test targets passed; `test_mgmt_peers` grew by five cases
+covering id-shape validation, id→peer resolution, the verified-state reply for all four outcomes,
+buffer and malformed-id refusals, and the phase gate in miniature — forgetting one of three peers
+leaves the other two addressable by the ids the client already holds. 1301 Android JVM test
+executions with 0 failures, up from 1293, the new cases pinning that `already_absent` is a success,
+that a refusal is nameable, that a partial delete surfaces, that an unknown outcome still yields
+`bonded`, and that a reply without the verified state is rejected. The shared conformance fixture
+gained a `peersForget` vector, asserted to carry no key material. Lint unchanged at 0 errors, both
+APKs assembled, descriptor parity green at bridge contract 4 with the same 161-byte digest.
+
+**A reflash is required for Phase 5**, as for Phases 3 and 4: `peers forget` does not exist in older
+firmware, and the client's optional-family probe maps `unknown command` to unsupported.
+
 **A reflash is required for Phase 4**, as for Phase 3: `class`, `vid` and `pid` do not exist in
 older firmware. The envelope version deliberately did not move, so a Phase 4 app against a Phase 3
 adapter degrades to remote-supplied names rather than failing to read the page.
@@ -623,8 +683,8 @@ adapter degrades to remote-supplied names rather than failing to read the page.
 older firmware, and the app reports that honestly rather than showing an empty list: an adapter that
 cannot answer says "Update the adapter firmware to see its saved pairings here."
 
-No hardware action was taken in any phase (HLD §109). The Phase 1, 2, 3 and 4 gates are hardware
-checks the maintainer runs; see §11, §12, §13 and §14.
+No hardware action was taken in any phase (HLD §109). The Phase 1, 2, 3, 4 and 5 gates are hardware
+checks the maintainer runs; see §11–§15.
 
 ## 11. Phase 1 hardware checklist
 
@@ -720,3 +780,29 @@ confirm that adapter is still present and still selected, without re-pairing.
 10. Point the app at an adapter running Phase 3 firmware. Confirm the list still renders — the
     envelope version did not move, so the only difference should be that names fall back to the
     remote-supplied ones.
+
+## 15. Phase 5 hardware checklist
+
+**Requires a reflash.** Phase 5 adds a mutating firmware command.
+
+1. Flash, pair the phone, then pair **three** controllers. Confirm all three appear under Settings →
+   Paired controllers with readable names.
+2. Forget one that is **not** connected. Confirm the dialog says it will need pairing again and does
+   **not** mention disconnecting. Confirm it disappears from Saved pairings and reappears under
+   **Recent** — history is kept on purpose.
+3. **The phase gate:** confirm the other two still connect normally, and that the forgotten one is
+   refused until it is paired again. Compare against the adapter with `btpeers` over UART: it must
+   show two peers, not three.
+4. Forget a controller that is **connected**. Confirm the dialog adds "This will disconnect it now",
+   that it does disconnect, and that the row moves to Recent.
+5. **Confirm management survives every forget** — the app must stay connected throughout. This is the
+   half that would be most damaging to get wrong.
+6. Attempt to forget this phone. It is not offered in Paired controllers at all; if it can be reached
+   any other way the adapter must refuse with the "this is this phone's own connection" message and
+   the session must stay up.
+7. Forget the same controller twice (tap Forget, then re-issue after a reconnect). The second attempt
+   must report that it was already not paired, **not** an error.
+8. Power-cycle the adapter. Confirm the forgotten controllers are still absent and the kept ones still
+   reconnect — the deletion must be persistent, not just in RAM.
+9. Point the app at an adapter running Phase 4 firmware. Confirm the Forget action reports the
+   firmware does not support it rather than appearing to succeed.

@@ -7040,6 +7040,11 @@ static volatile bool peers_op_ok;
 static volatile int peers_page_start;
 static volatile int peers_known_total;
 static char peers_json[MGMT_PEERS_RESPONSE_CAPACITY];
+// A forget rides the SAME single-slot operation as a list read, so the two can
+// never run concurrently against the shared workspace, and a forget can never
+// interleave with the enumeration that verifies it.
+static volatile bool peers_op_is_forget;
+static char peers_forget_id[MGMT_PEERS_ID_MAX];
 
 static size_t peers_collect_bonds(mgmt_peer_bond_t *out, size_t capacity)
 {
@@ -7262,19 +7267,111 @@ _Static_assert(sizeof(peers_ws_bonds) + sizeof(peers_ws_observed) +
                "peer workspace is larger than the Pico W core-1 stack and must "
                "stay in static storage");
 
+// Rebuild the logical inventory into the shared workspace. Both the list read
+// and the forget verification need exactly this, and a forget that verified
+// against a differently-built view would not be verifying anything.
+static size_t peers_build_inventory(void)
+{
+    size_t bond_count = peers_collect_bonds(peers_ws_bonds, MGMT_PEERS_MAX_ENTRIES);
+    size_t observation_count =
+        peers_collect_observations(peers_ws_observed, MGMT_PEERS_MAX_ENTRIES);
+    return mgmt_peers_merge(peers_ws_bonds, bond_count, peers_ws_observed,
+                            observation_count, peers_ws_peers,
+                            MGMT_PEERS_MAX_ENTRIES);
+}
+
+/*
+ * Forget one logical peer, atomically, on the BTstack thread.
+ *
+ * "Atomic" here means the whole sequence -- resolve, guard, disconnect, delete
+ * both transports, verify -- runs inside one run-loop callback with nothing else
+ * able to touch the security databases in between. That is the point of doing it
+ * in firmware rather than as an app-issued disconnect-then-delete pair, which
+ * another connection could race (design section 63).
+ *
+ * The peer id is a one-way hash of the identity address, so the only way to
+ * resolve it is to rebuild the inventory and recompute each id. That is a
+ * feature: a client can address only a peer the adapter itself just reported,
+ * and it cannot smuggle in a raw address.
+ */
+static void peers_forget_run(void)
+{
+    size_t peer_count = peers_build_inventory();
+    int index = mgmt_peers_find_by_id(peers_ws_peers, peer_count, peers_forget_id);
+
+    if (index < 0) {
+        // No record for that id. Idempotent success: a management reply can be
+        // lost after the command has already run, and a retry must not report a
+        // failure for work that is done.
+        peers_op_ok = mgmt_peers_format_forget_result(
+            peers_forget_id, MGMT_PEER_FORGET_ALREADY_ABSENT, 0,
+            peers_json, sizeof(peers_json)) > 0;
+        return;
+    }
+
+    const mgmt_peer_t *target = &peers_ws_peers[index];
+    bd_addr_t addr;
+    memcpy(addr, target->address, sizeof(addr));
+
+    // Two independent guards for the same rule, because getting this wrong cuts
+    // off the app issuing the command. The address test is structural and cannot
+    // be fooled by a classification mistake; the role test also catches the
+    // Controller Link relationship, which is the same phone wearing its other
+    // hat. Clearing the companion's credential is a separate, explicitly named
+    // action and is deliberately not reachable from the controller list.
+    if (config_ble_addr_is_companion(addr) ||
+        target->role == (uint8_t)MGMT_PEER_ROLE_MANAGEMENT_COMPANION ||
+        target->role == (uint8_t)MGMT_PEER_ROLE_CONTROLLER_LINK) {
+        printf("[BTSTACK_HOST] Refusing to forget the management companion\n");
+        peers_op_ok = false;
+        (void)mgmt_peers_format_forget_result(
+            peers_forget_id, MGMT_PEER_FORGET_PROTECTED, target->transport,
+            peers_json, sizeof(peers_json));
+        return;
+    }
+
+    // Address-only form on purpose: one physical device, every credential it
+    // holds. The typed form exists to remove ONE transport of a cross-transport
+    // peer, which is not what "forget this controller" means -- a peer left with
+    // half its keys reconnects on the surviving transport and looks like the
+    // forget silently failed (design section 91).
+    (void)btstack_host_forget_device_typed(addr, BD_ADDR_TYPE_UNKNOWN, false);
+
+    // Verify by re-enumeration rather than trusting the delete. This is the step
+    // that makes a partial failure visible instead of leaving the app's cache
+    // claiming a pairing is gone while the adapter still holds one.
+    size_t after_count = peers_build_inventory();
+    int still = mgmt_peers_find_by_id(peers_ws_peers, after_count, peers_forget_id);
+    unsigned remaining = 0;
+    if (still >= 0)
+        remaining = peers_ws_peers[still].transport;
+
+    mgmt_peer_forget_outcome_t outcome = remaining == 0
+        ? MGMT_PEER_FORGET_REMOVED
+        : MGMT_PEER_FORGET_INCOMPLETE;
+    if (outcome == MGMT_PEER_FORGET_INCOMPLETE) {
+        printf("[BTSTACK_HOST] Forget incomplete: %s still holds transports 0x%02X\n",
+               peers_forget_id, remaining);
+    }
+    peers_op_ok = outcome == MGMT_PEER_FORGET_REMOVED;
+    if (mgmt_peers_format_forget_result(peers_forget_id, outcome, remaining,
+                                        peers_json, sizeof(peers_json)) == 0) {
+        peers_op_ok = false;
+    }
+}
+
 static void peers_op_run(void *ctx)  // BTstack thread (core1)
 {
     (void)ctx;
-    mgmt_peer_bond_t *bonds = peers_ws_bonds;
-    mgmt_peer_observation_t *observed = peers_ws_observed;
-    mgmt_peer_t *peers = peers_ws_peers;
+    if (peers_op_is_forget) {
+        peers_forget_run();
+        peers_op_pending = false;
+        peers_op_done = true;
+        return;
+    }
 
-    size_t bond_count = peers_collect_bonds(bonds, MGMT_PEERS_MAX_ENTRIES);
-    size_t observation_count =
-        peers_collect_observations(observed, MGMT_PEERS_MAX_ENTRIES);
-    size_t peer_count = mgmt_peers_merge(bonds, bond_count, observed,
-                                         observation_count, peers,
-                                         MGMT_PEERS_MAX_ENTRIES);
+    mgmt_peer_t *peers = peers_ws_peers;
+    size_t peer_count = peers_build_inventory();
     peers_known_total = (int)peer_count;
 
     mgmt_peers_page_info_t info;
@@ -7290,10 +7387,26 @@ static void peers_op_run(void *ctx)  // BTstack thread (core1)
     peers_op_done = true;
 }
 
+bool btstack_host_peers_request_forget(const char *peer_id)
+{
+    if (!mgmt_peers_id_valid(peer_id) || peers_op_pending)
+        return false;
+    snprintf(peers_forget_id, sizeof(peers_forget_id), "%s", peer_id);
+    peers_op_is_forget = true;
+    peers_op_done = false;
+    peers_op_ok = false;
+    peers_op_pending = true;
+    peers_cb.callback = &peers_op_run;
+    peers_cb.context = NULL;
+    btstack_run_loop_execute_on_main_thread(&peers_cb);
+    return true;
+}
+
 bool btstack_host_peers_request_page(int start_peer)
 {
     if (start_peer < 0 || peers_op_pending)
         return false;
+    peers_op_is_forget = false;
     peers_page_start = start_peer;
     peers_op_done = false;
     peers_op_ok = false;
