@@ -305,6 +305,33 @@ bool ns2_bt_classic_key_commit_allowed(bool pairing_lockout,
                                        bool key_update_admitted);
 
 /*
+ * Has the Classic authentication behind a notified link key actually succeeded?
+ *
+ * TWO events prove it and NEITHER is guaranteed to arrive.
+ *
+ * HCI_Authentication_Complete is generated in response to this host's own
+ * HCI_Authentication_Requested (Core spec Vol 4 Part E 7.1.15). This firmware
+ * sends that command only for the Wiimote family and the one Classic name that
+ * needs early SSP; BTstack's HID Host registers its L2CAP services at LEVEL_0
+ * (see gap_set_security_level() before hid_host_init()), so it never asks
+ * either. Every other Classic controller -- DualSense included -- drives SSP
+ * itself, and its authentication reaches this host as Link Key Notification
+ * plus Encryption Change with NO Authentication Complete at all. Waiting only
+ * for the local event means waiting forever.
+ *
+ * Encryption Change reporting encryption ENABLED is equally conclusive and is
+ * the event peer-led pairings do produce: a Classic link cannot be encrypted
+ * except with a link key both ends already hold and authenticated against.
+ *
+ * This does NOT relax admission. The key being proven here was already admitted
+ * by ns2_bt_classic_key_update_admitted(); this answers only "did the pairing
+ * that produced it succeed", and accepting the peer-led proof is what makes a
+ * first pairing durable instead of good for one session.
+ */
+bool ns2_bt_classic_authentication_proven(bool local_auth_complete_ok,
+                                          bool encryption_enabled_ok);
+
+/*
  * May an automatic recovery path delete a durable bond because authentication
  * failed with this HCI status?
  *

@@ -3450,6 +3450,40 @@ static void classic_commit_notified_key_if_authenticated(void)
     printf("[BTSTACK_HOST] Authenticated Classic link-key update committed\n");
 }
 
+/*
+ * Record proof that the pairing behind the parked link key succeeded, and
+ * commit the key if that was the last thing it was waiting for.
+ *
+ * Called from BOTH Authentication Complete (this host drove authentication) and
+ * Encryption Change (the peer drove it). See
+ * ns2_bt_classic_authentication_proven() for why neither event can be relied on
+ * alone -- and why a build that waited only for the local one never persisted a
+ * DualSense's key, so every session re-ran SSP and the controller could only
+ * ever reconnect through the pairing window.
+ *
+ * Matching is by ADDRESS, not by classic_state.pending_valid: HID open clears
+ * that bookkeeping flag while this security exchange may still be in flight.
+ * The parked key already carries its own admission proof and was only parked
+ * after its identity matched pending_addr, so the address test is what keeps
+ * this bound to the right peer.
+ */
+static void classic_note_security_proof(hci_con_handle_t handle,
+                                        bool local_auth_complete_ok,
+                                        bool encryption_enabled_ok)
+{
+    if (!ns2_bt_classic_authentication_proven(local_auth_complete_ok,
+                                              encryption_enabled_ok)) {
+        return;
+    }
+    hci_connection_t *conn = hci_connection_for_handle(handle);
+    if (!conn ||
+        bd_addr_cmp(conn->address, classic_state.pending_addr) != 0) {
+        return;
+    }
+    classic_state.pending_auth_succeeded = true;
+    classic_commit_notified_key_if_authenticated();
+}
+
 // Start the next Classic inquiry round, alternating GIAC/LIAC so both normally
 // discoverable and SYNC-button (limited) devices stay reachable.
 static void classic_restart_inquiry(void)
@@ -5951,6 +5985,18 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 if (classic_state.pending_valid) {
                     classic_state.pending_valid = false;
                     classic_state.pending_hid_connect = false;
+                }
+                // The security half outlives pending_valid (HID open clears that
+                // while the exchange may still be running), so release it here
+                // instead: an ACL that is gone can no longer prove the key it
+                // parked. Scoped by "does this peer still have an ACL" rather
+                // than by the disconnecting handle, because a second Classic
+                // device dropping must not discard the first one's in-flight
+                // key. Erring towards keeping it is harmless -- the key is RAM
+                // only until proven, and prepare() clears it before any new
+                // admission.
+                if (!hci_connection_for_bd_addr_and_type(
+                        classic_state.pending_addr, BD_ADDR_TYPE_ACL)) {
                     classic_pending_security_clear();
                 }
             }
@@ -6299,6 +6345,13 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 classic_encryption_peer_completed++;
                 classic_encryption_deferred_handle = HCI_CON_HANDLE_INVALID;
             }
+            // Peer-led Classic pairings prove themselves here and nowhere else.
+            // Without this the notified key stays parked until HID open discards
+            // it, and the pairing is good for exactly one session.
+            classic_note_security_proof(
+                handle, false,
+                (status == ERROR_CODE_SUCCESS) && (enabled != 0));
+
             if (auth_decision_owns(handle)) {
                 last_auth_decision.encrypted_ok =
                     (status == ERROR_CODE_SUCCESS) && (enabled != 0);
@@ -12241,9 +12294,16 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
                 classic_state.pending_hid_connect = false;
             }
 
-            // Clear pending connection info now that HID is established
+            // Clear pending CONNECTION bookkeeping now that HID is established.
+            //
+            // The SECURITY half deliberately survives this point. HID channels
+            // are registered at LEVEL_0, so they can open before -- or without
+            // -- encryption, and discarding the parked link key here threw away
+            // a first pairing that was still one Encryption Change away from
+            // being durable. It is cleared when the ACL that owns it drops, and
+            // classic_pending_security_prepare() clears it before any new
+            // admission, so nothing can inherit it.
             classic_state.pending_valid = false;
-            classic_pending_security_clear();
 
             if (status != ERROR_CODE_SUCCESS) {
                 btlife_record(BTLIFE_HID_FAIL, status, hid_cid);
