@@ -179,6 +179,34 @@ bool mgmt_peers_parse_command(const char *arg,
 bool mgmt_peers_id_valid(const char *id);
 
 /*
+ * May this peer's driver classification be published yet?
+ *
+ * Classic identity resolves ASYNCHRONOUSLY and AFTER the controller is already
+ * usable: the HID descriptor arrives first, the generic gamepad driver claims
+ * the device from it, and only then does the PnP SDP query return the VID/PID
+ * that rebinds it to its real driver.  During that gap the bound driver's name
+ * is a PROVISIONAL fallback, not this adapter's answer.
+ *
+ * Publishing it anyway is what made a DualSense show up as the generic gamepad:
+ * the companion reads the inventory once, the instant pairing completes, which
+ * is inside that gap -- and its peer history keeps the first classification it
+ * was given for a peer it has no newer answer for.  Pairing a second time
+ * "fixed" it only because by then the identity had long since resolved.
+ *
+ * So while the fallback is bound AND resolution is still outstanding, the
+ * honest answer is the one this module already documents for a bonded-but-not-
+ * connected peer: say nothing.  The caller omits the field, the app falls back
+ * to the remote name, and the real classification is published the moment it
+ * exists.  Once resolution concludes, the fallback IS the answer for a device
+ * no vendor driver claims, and it is published normally.
+ *
+ * Only the generic fallback is withheld.  A vendor driver has already matched
+ * on real evidence, so its name is authoritative immediately.
+ */
+bool mgmt_peers_classification_publishable(bool driver_is_generic_fallback,
+                                           bool identity_resolution_outstanding);
+
+/*
  * Resolve an opaque peer id to its index in `peers`, or -1.
  *
  * The id is a one-way hash of the identity address, so resolution is by

@@ -163,6 +163,12 @@ bthid_device_t* bthid_get_device(uint8_t conn_index);
 // that must not wait for each of them to send another report.
 bthid_device_t* bthid_get_device_slot(uint8_t slot);
 
+// Is this device still on the generic HID-descriptor fallback rather than a
+// driver that matched real vendor evidence? Callers that report identity
+// outward use this to tell a PROVISIONAL classification from an authoritative
+// one; see mgmt_peers_classification_publishable().
+bool bthid_device_is_generic_fallback(const bthid_device_t* device);
+
 // Get device count
 uint8_t bthid_get_device_count(void);
 
