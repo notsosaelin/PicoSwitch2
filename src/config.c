@@ -525,6 +525,14 @@ static void cmd_amiibo(char *arg) {
         }
         *hex++ = '\0';
         char *end;
+        // Require a bare decimal run: strtoul() alone would accept an empty
+        // field ("amiibo chunk  AABB" splits to offset ""), leading whitespace,
+        // and a sign, silently landing the write at offset 0 or at a wrapped
+        // huge offset instead of reporting the malformed command.
+        if (arg[6] < '0' || arg[6] > '9') {
+            reply("{\"error\":\"bad chunk offset\"}");
+            return;
+        }
         unsigned long offset = strtoul(arg + 6, &end, 10);
         if (*end != '\0') {
             reply("{\"error\":\"bad chunk offset\"}");

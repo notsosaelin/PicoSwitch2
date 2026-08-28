@@ -297,6 +297,21 @@ def main() -> int:
                 f"config_wireless_command_allowed() rejects it -- works over USB CDC and "
                 f"UART, answers `unknown command` over BLE. This is the `pairing` bug.")
 
+    # Inverse direction: anything the allowlist admits must also be dispatchable. An entry
+    # allowed over BLE but absent from handle_line() answers `unknown command` -- which the
+    # companion reads as "this firmware lacks the feature", the same misleading outcome as the
+    # `pairing` bug, reached from the other side.
+    for entry in sorted(allow_exact):
+        if not accepted(entry, False, dispatch_exact, dispatch_prefixes):
+            failures.append(
+                f"config_wireless_command_allowed() admits {entry!r} over BLE, but "
+                f"handle_line() does not dispatch it -- it can only answer `unknown command`")
+    for entry in sorted(allow_prefixes):
+        if not accepted(entry, True, dispatch_exact, dispatch_prefixes):
+            failures.append(
+                f"config_wireless_command_allowed() admits {entry!r}... over BLE, but "
+                f"handle_line() does not dispatch it -- it can only answer `unknown command`")
+
     if not quiet:
         print(f"{'command':<24} {'form':<7} {'BLE':<5} dispatcher")
         print("-" * 52)
