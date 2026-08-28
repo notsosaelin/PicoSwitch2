@@ -76,6 +76,10 @@ $tests = @(
     @{ g='bluetooth'; n='test_ns2_pairing_crypto';                  src='tools/test_ns2_pairing_crypto.c src/ns2_pairing_crypto.c';                     flags='' }
     @{ g='bluetooth'; n='test_ns2_wake_protocol';                   src='tools/test_ns2_wake_protocol.c src/ns2_wake_protocol.c';                       flags='' }
     @{ g='bluetooth'; n='test_bootsel_gesture';                     src='tools/test_bootsel_gesture.c src/bootsel_gesture.c';                           flags='' }
+    # Compiles the real src/bootsel.c against the pico-sdk stubs in tools/host_stubs and drives
+    # its two cores as threads. A regression here is a HANG (the remote-pairing freeze), not a
+    # wrong value, so the test carries its own watchdog and this recipe must stay in the suite.
+    @{ g='bluetooth'; n='test_bootsel_park';                        src='tools/test_bootsel_park.c src/bootsel.c src/bootsel_gesture.c tools/host_stubs/pico_host_hooks.c'; flags='-Itools/host_stubs -pthread' }
     @{ g='bluetooth'; n='test_bootsel_action';                      src='tools/test_bootsel_action.c src/bootsel_action.c';                             flags='' }
     # core/input_event.h carries inline helpers whose parameters are unused in
     # some build configurations; every test that includes it needs this.
