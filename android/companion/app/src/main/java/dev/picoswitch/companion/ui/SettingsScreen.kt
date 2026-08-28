@@ -1,5 +1,6 @@
 package dev.picoswitch.companion.ui
 
+import android.text.format.DateUtils
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -18,8 +19,11 @@ import dev.picoswitch.companion.data.AdapterAlias
 import dev.picoswitch.companion.data.AdapterRecord
 import dev.picoswitch.companion.data.AndroidBondState
 import dev.picoswitch.companion.data.CompanionAssociationState
+import dev.picoswitch.companion.data.PeerListing
 import dev.picoswitch.companion.model.BondInfo
 import dev.picoswitch.companion.model.CapabilityState
+import dev.picoswitch.companion.model.PeerRole
+import dev.picoswitch.companion.model.PeerTransport
 
 /**
  * Ordinary product settings.
@@ -42,6 +46,7 @@ fun SettingsScreen(
     var renameTarget by remember { mutableStateOf<AdapterRecord?>(null) }
     var removeTarget by remember { mutableStateOf<AdapterRecord?>(null) }
     var removeBond by remember { mutableStateOf<BondInfo?>(null) }
+    var removeHistory by remember { mutableStateOf<PeerListing?>(null) }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val twoColumn = twoColumnLayout(maxWidth)
@@ -94,8 +99,13 @@ fun SettingsScreen(
             }
         }
 
-        val adapter: @Composable () -> Unit = {
-            SectionCard(title = "Adapters", icon = Icons.Default.Link) {
+        // Two cards, not one. "Which adapters does this app know" and "what has
+        // this adapter paired with" are different subjects with different
+        // consequences -- removing an adapter is app-local, forgetting a
+        // controller is not -- and one card carrying both invited the user to
+        // read a destructive action against the wrong list.
+        val pairedAdapters: @Composable () -> Unit = {
+            SectionCard(title = "Paired adapters", icon = Icons.Default.Link) {
                 if (ui.adapters.isEmpty()) {
                     InlineNotice("No adapters yet. Use Pair Adapter to add one.")
                 } else {
@@ -156,35 +166,16 @@ fun SettingsScreen(
                         AndroidBondState.Unknown -> "Not checked"
                     },
                 )
-                HorizontalDivider()
-                SubsectionLabel("Adapter Bluetooth LE bonds")
-                when {
-                    ui.snapshot.capabilities.bonds == CapabilityState.Unsupported ->
-                        InlineNotice("This firmware does not report stored pairings.")
-                    !ui.connection.connected ->
-                        InlineNotice("Connect to the adapter to review its stored pairings.")
-                    // Never present a partial enumeration as the whole list: a
-                    // missing entry here is an entry the user cannot revoke.
-                    ui.snapshot.bondsComplete != true ->
-                        InlineNotice(
-                            "The stored-pairing list could not be read completely, so none are shown.",
-                            tone = ChipTone.Error,
-                        )
-                    ui.snapshot.bonds.isEmpty() -> InlineNotice("No Bluetooth LE bonds are stored on this adapter.")
-                    else -> ui.snapshot.bonds.forEach { bond ->
-                        SettingsRow(
-                            title = bond.name?.takeIf(String::isNotBlank) ?: bond.address,
-                            supporting = bond.name?.takeIf(String::isNotBlank)?.let { bond.address },
-                            enabled = !ui.busy,
-                            trailing = {
-                                IconButton(onClick = { removeBond = bond }, enabled = !ui.busy) {
-                                    Icon(Icons.Default.LinkOff, "Remove pairing ${bond.index}")
-                                }
-                            },
-                        )
-                    }
-                }
             }
+        }
+
+        val pairedControllers: @Composable () -> Unit = {
+            PairedControllersCard(
+                ui = ui,
+                viewModel = viewModel,
+                onRemoveBond = { removeBond = it },
+                onRemoveHistory = { removeHistory = it },
+            )
         }
 
         val about: @Composable () -> Unit = {
@@ -213,7 +204,7 @@ fun SettingsScreen(
                         appearance(); amiibo()
                     }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(gap)) {
-                        adapter(); about()
+                        pairedAdapters(); pairedControllers(); about()
                     }
                 }
             } else {
@@ -221,7 +212,7 @@ fun SettingsScreen(
                     Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(gap),
                 ) {
-                    appearance(); amiibo(); adapter(); about()
+                    appearance(); amiibo(); pairedAdapters(); pairedControllers(); about()
                     Spacer(Modifier.height(LayoutTokens.Space5))
                 }
             }
@@ -298,6 +289,25 @@ fun SettingsScreen(
         )
     }
 
+    removeHistory?.let { listing ->
+        ConfirmDialog(
+            onDismiss = { removeHistory = null },
+            title = "Remove ${listing.displayName} from history?",
+            // Explicitly not a Bluetooth operation, and said so plainly: the
+            // adapter already holds no key for this device. Confusing this with
+            // "Forget pairing" is how a user believes a controller was unpaired
+            // when nothing on the adapter changed.
+            body = "This app forgets that ${listing.displayName} was ever connected to this adapter. " +
+                "The adapter already has no saved pairing for it, so nothing on the adapter changes.",
+            confirmLabel = "Remove",
+            destructive = true,
+            onConfirm = {
+                viewModel.removePeerFromHistory(listing.peerId)
+                removeHistory = null
+            },
+        )
+    }
+
     removeBond?.let { bond ->
         ConfirmDialog(
             onDismiss = { removeBond = null },
@@ -313,6 +323,212 @@ fun SettingsScreen(
         )
     }
 }
+
+/**
+ * What the adapter has paired with, as opposed to what is connected right now.
+ *
+ * Four separations the copy has to keep straight, because collapsing any of them
+ * is how a user ends up acting on the wrong device:
+ *
+ *  * **Bonded is not connected.** A saved controller that is switched off is
+ *    still saved, and belongs under Saved pairings rather than nowhere.
+ *  * **A controller is not the phone.** This phone appears in the adapter's
+ *    inventory in up to two roles -- BLE management and Controller Link -- and
+ *    neither belongs in a list of controllers.
+ *  * **Unknown is not "none".** After the adapter reboots it can see its stored
+ *    keys but cannot yet say whose they are. That is reported as unidentified,
+ *    never guessed into a controller; where this app has seen the adapter
+ *    identify the device before, the row says the name is remembered.
+ *  * **Recent is not saved.** A row under Recent has no key on the adapter at
+ *    all. Its only action removes an app-local memory, which is why it says
+ *    "Remove from history" and not "Forget".
+ *
+ * Forgetting an actual pairing is a later phase and is deliberately not offered
+ * here: the firmware cannot yet perform it atomically, and an action that half
+ * works is worse than one that is absent.
+ */
+@Composable
+private fun PairedControllersCard(
+    ui: CompanionUiState,
+    viewModel: CompanionViewModel,
+    onRemoveBond: (BondInfo) -> Unit,
+    onRemoveHistory: (PeerListing) -> Unit,
+) {
+    val inventory = ui.controllerInventory
+    SectionCard(
+        title = "Paired controllers",
+        icon = Icons.Default.Bluetooth,
+        trailing = {
+            IconButton(
+                onClick = viewModel::refreshPeers,
+                enabled = ui.connection.connected && !ui.busy,
+            ) { Icon(Icons.Default.Refresh, "Refresh paired controllers") }
+        },
+    ) {
+        when {
+            ui.snapshot.capabilities.peers == CapabilityState.Unsupported ->
+                InlineNotice("Update the adapter firmware to see its paired controllers here.")
+            // Recent survives a disconnect on purpose: it is this app's memory,
+            // not the adapter's, and it is the only thing there is to show while
+            // the adapter is away. Everything else needs the adapter present.
+            !ui.connection.connected && inventory.recent.isEmpty() ->
+                InlineNotice("Connect to the adapter to see what it has paired.")
+            inventory.isEmpty && ui.snapshot.capabilities.peers == CapabilityState.Unknown ->
+                InlineNotice("Tap refresh to read the adapter's paired controllers.")
+            inventory.isEmpty ->
+                InlineNotice("This adapter has no paired controllers.")
+            else -> {
+                if (inventory.connected.isNotEmpty()) {
+                    SubsectionLabel("Connected")
+                    inventory.connected.forEach { PeerRow(it) }
+                }
+                if (inventory.saved.isNotEmpty()) {
+                    if (inventory.connected.isNotEmpty()) HorizontalDivider()
+                    SubsectionLabel("Saved pairings")
+                    inventory.saved.forEach { PeerRow(it) }
+                }
+                if (inventory.recent.isNotEmpty()) {
+                    HorizontalDivider()
+                    SubsectionLabel("Recent")
+                    inventory.recent.forEach { listing ->
+                        PeerRow(
+                            listing,
+                            trailing = {
+                                IconButton(
+                                    onClick = { onRemoveHistory(listing) },
+                                    enabled = !ui.busy,
+                                ) {
+                                    // Deliberately not the icon a bond removal
+                                    // uses. One trash can for both meanings is
+                                    // exactly what the design forbids.
+                                    Icon(
+                                        Icons.Default.HistoryToggleOff,
+                                        "Remove ${listing.displayName} from history",
+                                    )
+                                }
+                            },
+                        )
+                    }
+                }
+                if (inventory.companion.isNotEmpty()) {
+                    HorizontalDivider()
+                    // Explicitly not "controllers". This is where the phone's own
+                    // relationships live, plus anything the adapter holds a key
+                    // for but cannot identify.
+                    SubsectionLabel("This phone and unidentified peers")
+                    inventory.companion.forEach { PeerRow(it) }
+                }
+            }
+        }
+
+        HorizontalDivider()
+        SubsectionLabel("Advanced: adapter Bluetooth LE bonds")
+        Text(
+            // Says why this list disagrees with the one above, because it will:
+            // one device holding two records appears once above and twice here.
+            "Raw security records rather than devices. One controller can hold more than one.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        when {
+            ui.snapshot.capabilities.bonds == CapabilityState.Unsupported ->
+                InlineNotice("This firmware does not report stored pairings.")
+            !ui.connection.connected ->
+                InlineNotice("Connect to the adapter to review its stored pairings.")
+            // Never present a partial enumeration as the whole list: a missing
+            // entry here is an entry the user cannot revoke.
+            ui.snapshot.bondsComplete != true ->
+                InlineNotice(
+                    "The stored-pairing list could not be read completely, so none are shown.",
+                    tone = ChipTone.Error,
+                )
+            ui.snapshot.bonds.isEmpty() -> InlineNotice("No Bluetooth LE bonds are stored on this adapter.")
+            else -> ui.snapshot.bonds.forEach { bond ->
+                SettingsRow(
+                    title = bond.name?.takeIf(String::isNotBlank) ?: bond.address,
+                    supporting = bond.name?.takeIf(String::isNotBlank)?.let { bond.address },
+                    enabled = !ui.busy,
+                    trailing = {
+                        IconButton(onClick = { onRemoveBond(bond) }, enabled = !ui.busy) {
+                            Icon(Icons.Default.LinkOff, "Remove pairing ${bond.index}")
+                        }
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PeerRow(
+    listing: PeerListing,
+    trailing: @Composable (RowScope.() -> Unit)? = null,
+) {
+    SettingsRow(
+        title = listing.displayName,
+        supporting = peerSupportingText(listing),
+        // Read-only rows. Nothing here is tappable until selective forget
+        // exists, and a row that highlights but does nothing reads as broken.
+        enabled = trailing != null,
+        trailing = trailing ?: {
+            when {
+                listing.connected -> StatusChip("Connected", tone = ChipTone.Positive)
+                listing.bonded -> StatusChip("Saved", tone = ChipTone.Neutral)
+                else -> StatusChip("Not paired", tone = ChipTone.Neutral)
+            }
+        },
+    )
+}
+
+/**
+ * One line describing a peer, sourced honestly.
+ *
+ * Anything the adapter cannot currently prove is attributed to this app's
+ * memory in the text itself. The protocol requires that an `unknown` role be
+ * rendered as unidentified rather than promoted, and remembering what the
+ * adapter once proved is not the same claim as asserting it now.
+ */
+private fun peerSupportingText(listing: PeerListing): String {
+    val role = when {
+        listing.role == PeerRole.ManagementCompanion -> "This phone — management"
+        listing.role == PeerRole.ControllerLink -> "This phone — Controller Link"
+        listing.role == PeerRole.PhysicalController -> "Controller"
+        listing.rememberedRole == PeerRole.ManagementCompanion -> "This phone — management, remembered"
+        listing.rememberedRole == PeerRole.ControllerLink -> "This phone — Controller Link, remembered"
+        listing.rememberedRole == PeerRole.PhysicalController -> "Controller, remembered"
+        // Deliberately not "unrecognised device": the adapter holds a key for
+        // it, so the honest statement is that it cannot say what it is yet.
+        else -> "Saved pairing, not yet identified"
+    }
+    val transports = when {
+        // A row that exists only in history describes a device the adapter no
+        // longer stores anything for, so it has no transport to report.
+        listing.historyOnly -> null
+        listing.transports.size > 1 -> "Bluetooth Classic + LE"
+        listing.transports.contains(PeerTransport.Classic) -> "Bluetooth Classic"
+        listing.transports.contains(PeerTransport.Le) -> "Bluetooth LE"
+        // Connected with no stored key: a controller part-way through pairing.
+        else -> "Not saved"
+    }
+    val lastConnected = listing.lastConnectedAtMillis
+        ?.takeIf { !listing.connected }
+        ?.let { "Last connected ${relativeTime(it)}" }
+    return listOfNotNull(role, transports, lastConnected).joinToString(" · ")
+}
+
+/**
+ * Human phrasing for a timestamp this app recorded itself.
+ *
+ * Only ever applied to app-side history. The adapter has no real-time clock and
+ * no time sync, so it never supplies a wall-clock time and none is invented for
+ * it; every value formatted here was stamped on this phone.
+ */
+private fun relativeTime(millis: Long): String = DateUtils.getRelativeTimeSpanString(
+    millis,
+    System.currentTimeMillis(),
+    DateUtils.MINUTE_IN_MILLIS,
+    DateUtils.FORMAT_ABBREV_RELATIVE,
+).toString()
 
 /**
  * Two rows reading "Living Room" are not a list.

@@ -7,6 +7,47 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **Bluetooth Management 2.0 — Phase 4 names, classification and history shipped 2026-08-28;
+  REQUIRES A REFLASH; device validation pending.** The adapter can now say what a controller *is*,
+  and the app remembers it. `peers list` gained three optional fields: `class` — the bthid driver
+  identity the adapter derived for a live connection, "Sony DualSense" rather than the "Wireless
+  Controller" the device calls itself — plus `vid`/`pid`. **`class` outranks `name` deliberately**:
+  the remote name is a claim by the device that its owner can change, while the classification is
+  the conclusion this firmware reached from VID/PID and the HID descriptor, which is the same
+  decision that determines how the controller is parsed. **The envelope stayed at `v:1`.** The new
+  fields are optional on an existing shape, so an older app ignores them and a newer app reads an
+  older adapter's pages unchanged; bumping the version would have broken both directions to describe
+  a change that breaks neither. The other half is app-side: per-adapter history (`PeerHistoryRecord`
+  / `AdapterPeerHistory` / `PeerHistoryCodec` / `PeerHistoryStore`), which closes the gap Phase 3
+  documented — the adapter classifies from live evidence only, so after a power cycle every saved
+  controller that has not reconnected was reported `unknown` and nameless. History remembers the
+  strongest role the adapter ever *proved* and the best name it ever gave, and `ControllerInventory`
+  merges the two into **Connected / Saved pairings / Recent / This phone**. **History never rewrites
+  the adapter's answer**: the live role is carried through verbatim, the remembered one travels
+  beside it, and the row says "remembered" — the protocol's rule that `unknown` must be rendered as
+  unidentified and never promoted to `controller` is preserved literally. The one decision memory
+  makes alone is exclusion: a peer proven to be the user's own phone stays out of the controller
+  list even when the adapter can no longer identify it, because being wrong there costs a row under
+  "This phone" while being wrong the other way offers to forget the management relationship. **Only
+  a complete inventory read is recorded** — a partial one is indistinguishable from an adapter that
+  has forgotten a controller, and recording it would tell the user their controllers had been
+  unpaired. One read happens automatically per verified session so history advances without the user
+  pressing refresh. **Adapter-side peer metadata (design §24.2) is deliberately NOT implemented**:
+  it was built after this phase's first pass, destabilised the Bluetooth core, and was withdrawn;
+  the storage audit's capacity finding still stands but capacity was never the binding constraint,
+  and what actually broke is an open unknown that must be answered before anyone tries again. UI:
+  Settings now carries **Paired adapters** and **Paired controllers** as two separate cards — the
+  saved-pairings card moved off the Controllers page, which keeps its subject of who is driving
+  right now — and Recent's only action is "Remove from history", which is app-local and is not and
+  does not read as a forget. Selective forget remains Phase 5. **Both boards rebuild clean from
+  scratch with no new warnings.** 73/73 declared active host-test targets passed (`test_mgmt_peers`
+  grew by 5 cases), 1283 Android JVM test executions with 0 failures, up from 1222 (app debug 321, app release 321,
+  `:bridge-core` 568, `:management-core` 73), peer vectors in the shared conformance fixture carry
+  the new fields, lint unchanged at 0 errors, both APKs
+  assembled, and descriptor parity green at bridge contract 4 with an unchanged 161-byte digest. Not
+  yet validated on hardware: the ten-step checklist in the audit document's §14. Next: Phase 5,
+  selective forget.
+  [`docs/bluetooth/bt-management-2.0-phase0-audit.md`](docs/bluetooth/bt-management-2.0-phase0-audit.md)
 - **Bluetooth Management 2.0 — Phase 3 read-only peer inventory shipped 2026-08-27; REQUIRES A
   REFLASH; device validation pending.** The adapter can now report what it has paired.
   `peers list [cursor]` merges the Classic link-key store and the LE device DB into one row per

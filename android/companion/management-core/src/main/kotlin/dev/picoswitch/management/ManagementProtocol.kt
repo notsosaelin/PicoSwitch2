@@ -298,6 +298,12 @@ object ManagementProtocol {
     /**
      * One page of the logical peer inventory.
      *
+     * The envelope stays at version 1 across the Phase 4 additions. `class`,
+     * `vid` and `pid` are optional fields on an existing shape, so an older app
+     * ignores them and a newer app reads an older adapter's pages unchanged;
+     * bumping the version would break both directions to describe a change that
+     * breaks neither.
+     *
      * Shape validation is deliberately as strict as the bond pager's, and for
      * the same reason: a client that follows a cursor it cannot trust either
      * loops forever or silently drops a peer, and a dropped peer is one the user
@@ -330,6 +336,13 @@ object ManagementProtocol {
                 bonded = item.optionalBoolean("bonded") ?: false,
                 connected = item.optionalBoolean("conn") ?: false,
                 name = item.optionalString("name")?.takeIf(String::isNotBlank),
+                // Optional on the wire and absent rather than empty when the
+                // adapter has no driver bound, which is every bonded peer that
+                // is not currently connected. Absent must stay distinguishable
+                // from blank: one means "cannot say", the other would be a name.
+                classification = item.optionalString("class")?.takeIf(String::isNotBlank),
+                vendorId = item.optionalInt("vid") ?: 0,
+                productId = item.optionalInt("pid") ?: 0,
             )
         }
         requireShape(entries.size <= total && (next == null || entries.isNotEmpty()), command)

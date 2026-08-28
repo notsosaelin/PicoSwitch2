@@ -6918,6 +6918,47 @@ static size_t peers_collect_bonds(mgmt_peer_bond_t *out, size_t capacity)
     return count;
 }
 
+/*
+ * What the adapter's own driver stack decided a live peer IS.
+ *
+ * This is the second entry in the design's name hierarchy (HLD S20) and it
+ * outranks the remote-supplied name for a reason: the remote name is whatever
+ * the device chose to call itself, while the driver identity is the answer
+ * this firmware reached from VID/PID, HID descriptor and class of device --
+ * the same decision that determines how the controller is actually parsed.
+ *
+ * Nothing is invented when no driver has claimed the device. An empty
+ * classification means "this adapter cannot say", which is the honest answer
+ * for a peer that is bonded but not connected, and the caller omits the field
+ * entirely rather than sending an empty one.
+ *
+ * Read on the BTstack thread, which is the same thread that owns the bthid
+ * device table, so no snapshot or lock is needed here.
+ */
+static void peers_identity_for(const uint8_t addr[6], mgmt_peer_observation_t *o)
+{
+    for (uint8_t slot = 0; slot < BTHID_MAX_DEVICES; ++slot) {
+        bthid_device_t *device = bthid_get_device_slot(slot);
+        if (!device || !device->active)
+            continue;
+        if (memcmp(device->bd_addr, addr, 6) != 0)
+            continue;
+        const bthid_driver_t *driver = (const bthid_driver_t *)device->driver;
+        if (driver && driver->name) {
+            mgmt_peers_sanitize_name(driver->name, o->classification,
+                                     sizeof(o->classification));
+        }
+        o->vendor_id = device->vendor_id;
+        o->product_id = device->product_id;
+        // The bthid table's name is the one SDP/inquiry actually resolved. Only
+        // used when the transport's own connection record has none, so a
+        // resolved name is never replaced by a staler copy of itself.
+        if (o->name[0] == '\0')
+            mgmt_peers_sanitize_name(device->name, o->name, sizeof(o->name));
+        return;
+    }
+}
+
 static void peers_add_observation(mgmt_peer_observation_t *out, size_t capacity,
                                   size_t *count, const uint8_t addr[6],
                                   const char *name, bool connected,
@@ -6936,6 +6977,7 @@ static void peers_add_observation(mgmt_peer_observation_t *out, size_t capacity,
     o->is_last_connected = last_connected ? 1u : 0u;
     if (name)
         mgmt_peers_sanitize_name(name, o->name, sizeof(o->name));
+    peers_identity_for(addr, o);
 }
 
 // Is this address the Android Controller Bridge rather than a real controller?

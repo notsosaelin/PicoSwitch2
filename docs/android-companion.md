@@ -108,6 +108,64 @@ The ordering is testable without a radio — `AdapterSwitch` drives an `AdapterS
 The design this implements, and the audit of what it replaced, are in
 [`bluetooth/bt-management-2.0-phase0-audit.md`](bluetooth/bt-management-2.0-phase0-audit.md).
 
+### Controller names and per-adapter history
+
+The adapter's peer inventory is authoritative about what exists, and amnesiac about what it is. Role
+classification is live evidence only, so a rebooted adapter reports every saved controller that has
+not reconnected as `unknown` with no name, and a controller the user unpaired last week is simply
+absent from the list. Two things close that gap.
+
+**Derived identity on the wire.** `peers list` now carries `class` (the bthid driver identity the
+adapter reached, e.g. `Sony DualSense`) alongside `name` (whatever the device calls itself), plus
+`vid`/`pid`. `class` outranks `name` because the remote name is a claim by the device and its owner
+can change it. The full hierarchy is in `PeerNaming.label`: user alias, `class`, `name`, USB
+identity, then a four-character suffix of the address — never the bare address, which reads as a
+name when rendered where a name belongs.
+
+**App-side history**, which is the design's §24.1 and is required rather than optional:
+
+| Concept | Type | Owns |
+|---|---|---|
+| One remembered peer | `PeerHistoryRecord` | Best name and classification ever seen, strongest role ever *proven*, accumulated transports, first/last seen, last connected, whether the adapter still held a key at the last complete read. |
+| One adapter's memory | `AdapterPeerHistory` | The fold of a complete inventory read into the above, and the `forgotten` set behind the Recent section. |
+| Every adapter's memory | `PeerHistoryBook` | Keyed by `AdapterId`; dropped with the adapter. |
+| Storage | `PeerHistoryStore` | Where and when, only. Schema and tolerance are in `PeerHistoryCodec`. |
+| Presentation | `ControllerInventory` | Merges the live inventory and history into Connected / Saved pairings / Recent / This phone. |
+
+Rules that must not be re-litigated:
+
+- **History never rewrites the adapter's answer.** `PeerListing.role` is always the adapter's live
+  classification. What memory supplies is a *label* and a `rememberedRole` beside it, and the row
+  says so ("Controller, remembered"). The protocol's requirement that `unknown` be rendered as
+  unidentified and never promoted to `controller` is preserved literally.
+- **Memory is allowed to exclude, because the cost is asymmetric.** A peer this app has seen proven
+  to be the user's own phone stays out of the controller list even when the adapter can no longer
+  identify it. Being wrong there costs a row under "This phone"; being wrong the other way offers to
+  forget the management relationship.
+- **Only a COMPLETE read is recorded.** `AdapterPeerHistory.observing` refuses a partial inventory.
+  A missing row is indistinguishable from a peer the adapter has forgotten, so recording one would
+  move live saved pairings into Recent and tell the user controllers were unpaired when nothing
+  happened.
+- **Absence from a complete read is what creates a Recent row**, not a timer and not the app's own
+  guess. The record is kept and marked unbonded.
+- **Sections are decided by bond and connection state, not by role.** Role decides only whether a
+  row is a controller at all or the phone.
+- **"Remove from history" is not "Forget".** It deletes an app-local memory of a device the adapter
+  already holds no key for. Selective forget of a live pairing is a later phase and is deliberately
+  absent from the UI until the firmware can perform it atomically.
+- **Timestamps are the phone's.** The adapter has no RTC and no time sync; it never supplies a
+  wall-clock time and none is invented for it.
+
+One inventory read happens automatically per verified management session, so history advances
+without the user pressing refresh — otherwise Recent would stay permanently empty. It is deliberately
+not routed through the modal progress path: it is not a user action.
+
+**Why there is no firmware half.** The design offers persisting the same metadata on the adapter
+(§24.2), which would make it survive being managed from a different phone. It was attempted after
+Phase 4's first pass, destabilised the Bluetooth core, and was withdrawn. §24.2 is explicitly
+conditional and names app-side history as sufficient for release. Do not reintroduce adapter flash
+writes for peer metadata without new evidence about that failure.
+
 ### The management bond is always started on the LE transport
 
 The adapter is genuinely dual-mode on one public BD_ADDR, so once a phone has observed its Classic

@@ -197,6 +197,14 @@ data class CompanionUiState(
     val adapterRelationship: AdapterRelationship? = null,
     /** Every adapter this app knows, in registry order. */
     val adapters: List<AdapterRecord> = emptyList(),
+    /**
+     * The active adapter's controllers, as Connected / Saved / Recent.
+     *
+     * Derived from the adapter's own peer inventory plus this app's per-adapter
+     * history. Kept as its own field because the derivation has to happen when
+     * EITHER source changes, and a screen should not have to know that.
+     */
+    val controllerInventory: ControllerInventoryView = ControllerInventoryView(),
     val activeAdapterId: AdapterId? = null,
     /** A switch between adapters is in progress; the active adapter is chosen but not yet reached. */
     val adapterSwitchInProgress: Boolean = false,
@@ -278,6 +286,16 @@ class CompanionViewModel(application: Application, private val savedState: Saved
      * mutation goes through [updateRegistry], which persists and republishes.
      */
     @Volatile private var registry: AdapterRegistry = registryStore.load()
+    private val peerHistoryStore = PeerHistoryStore(application)
+    /**
+     * What each adapter's peers have been, per adapter.
+     *
+     * The adapter is authoritative about which peers exist; this is the only
+     * place that remembers what they WERE, because the adapter's role
+     * classification is live evidence only and forgets across a reboot. Every
+     * mutation goes through [updatePeerHistory], which persists and republishes.
+     */
+    @Volatile private var peerHistory: PeerHistoryBook = peerHistoryStore.load()
     private val relationshipCoordinator = AdapterRelationshipCoordinator(activeRelationship())
     /**
      * Which adapter is active, and the ordered handover between two of them.
@@ -400,6 +418,10 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                     )
                 }
                 refreshBridgeCompatibility()
+                // The inventory arrives inside the snapshot, so the derived
+                // Connected / Saved / Recent view is recomputed here rather than
+                // only where a read is issued.
+                publishControllerInventory()
                 refreshAdapterAmiiboCatalog(value.amiibo)
                 // Only from a live, settled session belonging to the adapter this
                 // would be cached against. A snapshot carries no address, so
@@ -547,6 +569,41 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     private fun activeRelationship(): AdapterRelationship? = registry.active?.toRelationship()
 
     /**
+     * The one place peer history changes.
+     *
+     * Persist-then-publish under a lock, for the same reason the registry does
+     * it: an inventory read landing while the user removes a history row must
+     * not interleave into a lost update. Nothing is written when the transform
+     * is a no-op.
+     */
+    @Synchronized
+    private fun updatePeerHistory(transform: (PeerHistoryBook) -> PeerHistoryBook) {
+        val next = transform(peerHistory)
+        if (next != peerHistory) {
+            peerHistory = next
+            peerHistoryStore.save(next)
+        }
+        publishControllerInventory()
+    }
+
+    /**
+     * Recompute the Connected / Saved / Recent view.
+     *
+     * Called whenever EITHER of its two inputs moves: the adapter's inventory
+     * (which arrives in the snapshot) and this app's history. The active adapter
+     * is part of the key, so a switch republishes it against the new adapter
+     * rather than leaving the previous adapter's controllers on screen.
+     */
+    private fun publishControllerInventory() {
+        val history = peerHistory.forAdapter(registry.activeId)
+        _ui.update { current ->
+            current.copy(
+                controllerInventory = ControllerInventory.build(current.snapshot.peers, history),
+            )
+        }
+    }
+
+    /**
      * The one place the registry changes.
      *
      * Persist-then-publish, under a lock, so a reconciliation arriving while the
@@ -585,6 +642,10 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                 adapterSwitchFailure = active.failure,
             )
         }
+        // The controller view is keyed by adapter, so it has to follow the
+        // active-adapter authority; otherwise a switch leaves the previous
+        // adapter's controllers on screen under the new adapter's name.
+        publishControllerInventory()
     }
 
     /**
@@ -1069,6 +1130,9 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             activeAdapter.cleared()
         }
         updateRegistry { it.without(id) }
+        // History is keyed by adapter, so an adapter the app no longer knows
+        // leaves behind rows nothing can ever attribute or display.
+        updatePeerHistory { it.without(id) }
         diagnostics.event(
             "relationship", "adapter.removed",
             "adapter=${id.shortLabel} wasActive=$wasActive remaining=${registry.records.size}",
@@ -1138,17 +1202,59 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     /**
      * Re-read the adapter's saved pairings.
      *
-     * Always from the adapter. The app keeps no idea of its own about what the
-     * adapter has stored, because it has no way to know: a controller can be
-     * paired from the adapter's own pairing button with no phone present.
+     * What EXISTS always comes from the adapter, and the app never guesses at
+     * it: a controller can be paired from the adapter's own pairing button with
+     * no phone present. What the app keeps is a memory of what each peer WAS,
+     * which is a different claim and is only ever shown as one -- see
+     * [PeerHistoryRecord].
      */
-    fun refreshPeers() = launch("Reading saved pairings") {
+    fun refreshPeers() = launch("Reading saved pairings") { readPeerInventory(explicit = true) }
+
+    /**
+     * Read the inventory and fold it into this adapter's history.
+     *
+     * Only a COMPLETE read is recorded. A partial one is indistinguishable from
+     * an adapter that has forgotten a controller, and recording it would move a
+     * live saved pairing into "Recent" -- telling the user a controller was
+     * unpaired when nothing of the sort happened.
+     *
+     * The adapter identity is captured BEFORE the read and re-checked after it,
+     * because a switch can complete while the read is in flight and writing one
+     * adapter's controllers into another adapter's history would be a permanent
+     * corruption rather than a transient display error.
+     */
+    private suspend fun readPeerInventory(explicit: Boolean) {
+        val target = registry.activeId
         val inventory = adapter.refreshPeers()
+        if (!inventory.complete) {
+            diagnostics.event("peers", "refresh.incomplete", "explicit=$explicit")
+            return
+        }
+        if (target != null && registry.activeId == target) {
+            updatePeerHistory { book ->
+                book.with(target, book.forAdapter(target).observing(inventory, System.currentTimeMillis()))
+            }
+        }
         diagnostics.event(
             "peers", "refreshed",
             "total=${inventory.total} controllers=${inventory.controllers.size} " +
-                "companion=${inventory.peers.count { it.role != PeerRole.PhysicalController }}",
+                "companion=${inventory.peers.count { it.role != PeerRole.PhysicalController }} " +
+                "remembered=${peerHistory.forAdapter(target).records.size} explicit=$explicit",
         )
+    }
+
+    /**
+     * Forget one row of this app's own history.
+     *
+     * Not a Bluetooth operation and deliberately not offered under the same
+     * word as forgetting a pairing: this removes what the app remembers about a
+     * device the adapter has already stopped storing a key for. Selective
+     * forget of a live pairing is Phase 5 and does not exist yet.
+     */
+    fun removePeerFromHistory(peerId: String) {
+        val id = registry.activeId ?: return
+        updatePeerHistory { book -> book.with(id, book.forAdapter(id).without(peerId)) }
+        diagnostics.event("peers", "history.removed", "adapter=${id.shortLabel}")
     }
     // Report what the adapter actually did, never merely that the command was
     // transmitted. Each outcome is distinct and actionable: "advertised" is the
@@ -2608,6 +2714,25 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                 // ready. Exercise it immediately while the user's Pico pairing window is still
                 // open; the ownership read prevents stealing an already-active controller.
                 requestAutomaticControllerResume()
+                // One inventory read per verified session, quietly. History that
+                // only advanced when the user pressed refresh would almost never
+                // advance, and "Recent" would stay permanently empty; and reading
+                // it here is what lets a rebooted adapter still show readable
+                // controller names. Deliberately not routed through launch(): it
+                // is not a user action and must not raise the modal progress
+                // overlay over a connection that just succeeded.
+                try {
+                    readPeerInventory(explicit = false)
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    // Never swallowed: this runs inside the connect job, whose
+                    // own handler re-throws cancellation so the attempt unwinds.
+                    throw cancelled
+                } catch (error: Throwable) {
+                    // A failed inventory read is not a failed connection. The
+                    // session is already verified at this point and must not be
+                    // torn down because an optional read did not answer.
+                    diagnostics.error("peers", "refresh.session", error)
+                }
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 diagnostics.event("relationship", "connect.cancelled", "attempt=${attempt.generation}")
                 throw cancelled

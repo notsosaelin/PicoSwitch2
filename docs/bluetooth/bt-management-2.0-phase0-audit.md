@@ -1,15 +1,25 @@
-# Bluetooth Management 2.0 — Phase 0 audit, and the Phase 1 record
+# Bluetooth Management 2.0 — Phase 0 audit, and the phase record
 
-Date: 2026-08-27
-Scope: `BT_MANAGEMENT_UPGRADE_PASS.md` §96 Phase 0 ("Repository and Protocol Audit"), and the
-Phase 1 pass that followed it.
+Date: 2026-08-27, last extended 2026-08-28
+Scope: `BT_MANAGEMENT_UPGRADE_PASS.md` §96 Phase 0 ("Repository and Protocol Audit"), and each
+implementation phase that has followed it.
 
 Phase 0's deliverable is §§1–7: the HLD's concepts mapped onto the files and functions that exist,
-and the §111 stop conditions answered. §§8–11 record what Phase 1 then did, including two places
-where the implementation deliberately departs from the obvious reading of the design.
+and the §111 stop conditions answered. §8 onwards records what each phase then did — including the
+places where an implementation deliberately departs from the obvious reading of the design, and the
+one place where the design's own recommendation was tried and withdrawn (§8c).
 
-**Phase 0 changed no source.** **Phase 1 changed companion source only** — no firmware source, and
-no adapter reflash is required.
+| Phase | State | Firmware changed | Reflash |
+|---|---|---|---|
+| 0 — audit | Complete 2026-08-27 | no | no |
+| 1 — registry | Complete 2026-08-27 | no | no |
+| 2 — switching | Complete 2026-08-27 | no | no |
+| 3 — peer inventory | Complete 2026-08-27 | yes | yes |
+| 4 — names, classification, history | Complete 2026-08-28 | yes | yes |
+| 5 — selective forget | Not started | — | — |
+
+Every phase's software validation is in §10; each phase's hardware gate is a checklist the
+maintainer runs (§§11–14) and is **not** claimed as performed here.
 
 Evidence classes follow [`../re-methodology/evidence-standards.md`](../re-methodology/evidence-standards.md).
 
@@ -211,6 +221,12 @@ All six sectors are allocated; there is no free sector. Two viable homes for pee
 **Conclusion: storage capacity is sufficient; §111 stop condition 6 does not fire.** Option 1 is the
 recommendation. Either way the record must be schema-versioned and advisory — §57's rule that
 security data is authoritative and metadata is never allowed to delete a valid key.
+
+> **Superseded in practice by Phase 4 (2026-08-28).** Capacity was never the binding constraint.
+> Adapter-side peer metadata was implemented and it **destabilised the Bluetooth core**; it was
+> withdrawn and Phase 4 shipped the app-side half alone. This section's capacity finding still
+> stands and is still what a future attempt would build on, but "storage permits it" is not on its
+> own a reason to build it. See §8c.
 
 Note for §93 (timestamps): the adapter has no RTC and no time sync. Firmware metadata must store
 monotonic/coarse sequence values only; wall-clock `lastSeenAt` belongs to the app.
@@ -459,12 +475,75 @@ validated as UTF-8, which costs accents in a non-English controller name and buy
 no remote name can terminate a JSON string or inject a log line; a real device that needs the
 accents is the trigger for a proper validator.
 
-## 8c. What Phase 4 should do
+## 8c. Phase 4 — done 2026-08-28
 
-Name and classification capture, app-side per-adapter history, and — only after the storage audit in
-§6 is acted on — optional firmware peer metadata that would let a rebooted adapter answer `role` for
-a peer that has not reconnected. Connected / Saved / Recent sections (§25). Forget stays disabled
-until Phase 5.
+Names, classification and history. Two thirds firmware-cheap and one third deliberately not done.
+
+| Planned | Outcome |
+|---|---|
+| Classified name capture (§20, §21) | The adapter now reports `class` — the bthid driver identity it derived for a live connection — beside the remote-supplied `name`, plus `vid`/`pid`. `peers_identity_for()` reads the bthid device table on the BTstack thread, which already owns it. |
+| Name hierarchy (§20) | `PeerNaming.label`: alias, `class`, `name`, USB identity, four-character address suffix. Never the bare address. |
+| Sanitised metadata (§22) | The classification goes through the same sanitiser as a remote name, and app-side history re-sanitises on read. |
+| App-side history (§24.1) | `PeerHistoryRecord` / `AdapterPeerHistory` / `PeerHistoryBook` / `PeerHistoryCodec` / `PeerHistoryStore`, keyed `adapterId + peerId`. |
+| Connected / Saved / Recent (§25) | `ControllerInventory` builds them; the card is `PairedControllersCard` on the Settings page. Recent's only action is "Remove from history" (§54), which is not and does not read as a forget. |
+| Firmware peer metadata (§24.2) | **Deliberately not done.** See below. |
+| Forget | Still absent, as the phase gate requires. |
+
+### No active name acquisition, and no inquiry
+
+§21 offers issuing a remote-name request for a stored peer. It is not done, and the reason is that
+it does not pay for itself here: the adapter already learns the name of every peer that connects,
+history keeps it, and a remote-name request for a device that is switched off returns nothing while
+still costing radio time during a management session. The name gap this phase actually had to close
+was "the adapter rebooted", and history closes it without touching the radio at all.
+
+### Why the firmware half was not built, and must not be rebuilt casually
+
+§6 concluded storage capacity was sufficient and recommended project TLV tags. That conclusion is
+still correct about *capacity*. It is not the whole answer: adapter-side peer metadata was
+implemented after this phase's first pass, **destabilised the Bluetooth core, and was withdrawn**.
+The end-of-Phase-3 commit records the same fact.
+
+This is worth preserving as negative knowledge because the idea is attractive and will be
+rediscovered: it is the clean way to make history adapter-centric so a second management phone
+inherits it, and §6 appears to bless it. §24.2 is explicitly conditional — "recommended if storage
+audit permits", "app-side history is sufficient for initial release" — and app-side history is the
+required half. Anyone returning to this should first establish *what* destabilised the core (TLV
+write contention with the security databases on the same banks is the obvious first hypothesis, and
+is untested), rather than reimplementing the same shape and hoping.
+
+Consequence to keep in mind: history lives on one phone. A different management phone sees the
+adapter's live answers only, which is exactly the Phase 3 behaviour.
+
+### How history avoids lying about the adapter
+
+The protocol says a client MUST render `unknown` as unidentified and MUST NOT promote it to
+`controller`. History does not: `PeerListing.role` is always the adapter's live answer, and the
+remembered role travels beside it as `rememberedRole` with the UI saying "remembered". The one
+decision memory does make on its own is **exclusion** — a peer this app has seen proven to be the
+user's own phone stays out of the controller list even when the adapter cannot currently identify
+it. That asymmetry is deliberate: being wrong costs a row under "This phone", and being wrong the
+other way offers to forget the management relationship.
+
+The other load-bearing rule is that only a **complete** inventory read is recorded. A partial read
+is indistinguishable from an adapter that has forgotten a controller, so recording one would move
+live saved pairings into Recent and tell the user their controllers had been unpaired.
+
+### UI move
+
+The saved-pairings card left the Controllers page for Settings, where it is now **Paired
+controllers**, beside **Paired adapters**. Two cards, not one: removing an adapter is an app-local
+operation and forgetting a controller is not, and a single card carrying both invited the user to
+read a destructive action against the wrong list. The Controllers page keeps its subject — who is
+driving right now.
+
+## 8d. What Phase 5 should do
+
+Selective forget. Firmware: atomic `forget_peer` over the existing
+`btstack_host_forget_device_typed()` boundary, Classic and LE deletion, active-connection handling,
+multi-entry peers. App: confirmation, refresh after result, history retained across a forget, and
+the management peer protected. The role model and the peer id it will address are already in place;
+the missing half is entirely the mutating firmware path.
 
 ## 9. Remaining unknowns
 
@@ -475,6 +554,12 @@ until Phase 5.
 - Whether the shared pairing window's management-bonding side effect is acceptable product
   behaviour, or must be split (§7.3). Product decision, owed before Phase 6.
 - Live radio behaviour of management during a remotely-triggered inquiry, on hardware.
+- **What actually destabilised the Bluetooth core when adapter-side peer metadata was added**
+  (§8c). Untested first hypothesis: TLV write contention with the security databases sharing the
+  same flash banks. Nobody should reattempt §24.2 without answering this.
+- Whether any real controller produces a name that ASCII-only sanitisation mangles badly enough to
+  justify a UTF-8 validator. Unchanged from Phase 3; Phase 4 added a second string (`class`) through
+  the same sanitiser, but that one is firmware-controlled today.
 
 ## 10. Validation performed
 
@@ -513,12 +598,33 @@ Lint unchanged at 0 errors / 13 warnings with no findings in the changed files; 
 descriptor parity green at bridge contract 4 with the same 161-byte digest, confirming the Controller
 Bridge wire is untouched.
 
+**Phase 4 (2026-08-28):** firmware and companion. Both boards rebuild clean from scratch with no new
+warnings — the only warnings emitted are the four pre-existing `third_party/opus` ones. 73/73
+declared active host-test targets rebuilt from source and passed; `test_mgmt_peers` grew by 5 cases
+covering classification carry-through, the rule that a later observation cannot erase a known
+classification, absent-rather-than-empty optional fields, sanitisation of the classification string,
+and a widest-possible row still fitting a page. 1283 Android JVM test executions with 0 failures — up from 1222; app debug 321,
+app release 321, `:bridge-core` 568, `:management-core` 73 — the new cases being `PeerHistoryTest`, `ControllerInventoryTest`, and naming and
+classification cases in `PeerInventoryTest`; the shared conformance fixture's peer vectors gained
+`class`/`vid`/`pid` so a non-Kotlin client inherits them. Lint unchanged at 0 errors / 13 warnings
+with no findings in the changed files; both APKs assembled; descriptor parity green at bridge
+contract 4 with the same 161-byte digest.
+
+The history model is testable without a radio and without Android: `AdapterPeerHistory`,
+`PeerHistoryCodec` and `ControllerInventory` are plain Kotlin over the management-core domain
+types, so the rules that matter — a reboot must not erase a proven role, a partial read must not be
+recorded, the phone must never reach the controller list — are pinned by ordinary JVM tests.
+
+**A reflash is required for Phase 4**, as for Phase 3: `class`, `vid` and `pid` do not exist in
+older firmware. The envelope version deliberately did not move, so a Phase 4 app against a Phase 3
+adapter degrades to remote-supplied names rather than failing to read the page.
+
 **A reflash is required for Phase 3**, unlike Phases 1 and 2. The `peers` command does not exist in
 older firmware, and the app reports that honestly rather than showing an empty list: an adapter that
 cannot answer says "Update the adapter firmware to see its saved pairings here."
 
-No hardware action was taken in any phase (HLD §109). The Phase 1, 2 and 3 gates are hardware checks
-the maintainer runs; see §11, §12 and §13.
+No hardware action was taken in any phase (HLD §109). The Phase 1, 2, 3 and 4 gates are hardware
+checks the maintainer runs; see §11, §12, §13 and §14.
 
 ## 11. Phase 1 hardware checklist
 
@@ -582,3 +688,35 @@ confirm that adapter is still present and still selected, without re-pairing.
 8. Optional, if a controller with a non-ASCII name is available: confirm the name renders with
    replaced characters rather than breaking the row. That is the documented cost of ASCII-only
    sanitisation, and seeing it in practice is what would justify a real UTF-8 validator.
+
+## 14. Phase 4 hardware checklist
+
+**Requires a reflash.** Phase 4 adds fields to a firmware reply.
+
+1. Flash the new firmware. Connect a controller the project has a driver for (DualSense, Switch Pro,
+   Xbox). Open Settings → Paired controllers. Confirm the controller appears under **Connected**
+   with its **driver identity** as the name — "Sony DualSense", not "Wireless Controller". **This is
+   the phase gate for naming.**
+2. Compare against the adapter: `btpeers` over the UART diagnostic link now carries `class` and
+   `vid`/`pid` for the same peer. Confirm they match what the app shows.
+3. Power the controller off and refresh. Confirm it moves to **Saved pairings**, keeps its name, and
+   the row reads "Last connected" with a plausible time.
+4. **Power-cycle the adapter** and reconnect management without reconnecting the controller. Confirm
+   the controller still shows its name, the row says the identification is *remembered*, and it is
+   still not called a live controller. This is the gap history exists to close; before Phase 4 this
+   row read "Saved pairing, not yet identified" with no name.
+5. Confirm **this phone is still not under saved controllers** after that power cycle — it is the
+   case where the adapter cannot identify anything, so it is the case where exclusion has to come
+   from memory.
+6. Connect a controller with no matching driver (a generic BT gamepad). Confirm it falls back to its
+   Bluetooth name, and if it has none, to `Controller • XXXX` rather than to a raw address.
+7. Forget the controller from the adapter (physical/`bonds remove`), then refresh. Confirm it moves
+   to **Recent**, reads "Not paired", and that its only action is **Remove from history**. Use it and
+   confirm the row disappears and nothing on the adapter changed (`btpeers` unchanged).
+8. Restart the app. Confirm Recent and the remembered names survive.
+9. With two adapters registered, confirm history is per adapter: switching adapters must show the
+   second adapter's controllers, not the first's. Remove one adapter from the app and confirm the
+   other's history is untouched.
+10. Point the app at an adapter running Phase 3 firmware. Confirm the list still renders — the
+    envelope version did not move, so the only difference should be that names fall back to the
+    remote-supplied ones.

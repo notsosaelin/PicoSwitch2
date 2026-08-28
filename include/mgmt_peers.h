@@ -46,6 +46,11 @@
 #define MGMT_PEERS_MAX_ENTRIES 32u
 #define MGMT_PEERS_NAME_MAX 32u
 
+// The bthid driver name that claimed a live connection ("Sony DualSense",
+// "Nintendo Switch 2 Controller (BLE)"). Long enough for the longest registered
+// driver name; see src/bt_hid/bt/bthid/devices/.
+#define MGMT_PEERS_CLASS_MAX 40u
+
 // Peer roles.  UNKNOWN is a real answer and the correct one for a stored bond
 // whose owner has not been seen since boot: this adapter has no persistent role
 // metadata yet, and inventing a role from a bond entry alone would be exactly
@@ -88,6 +93,11 @@ typedef struct {
     uint8_t is_last_connected;    // matches the JPLC reconnect record
     uint8_t connected;
     char name[MGMT_PEERS_NAME_MAX];
+    // What the adapter's own driver stack decided this device IS, as opposed to
+    // what the device called itself. Empty when no driver has claimed it.
+    char classification[MGMT_PEERS_CLASS_MAX];
+    uint16_t vendor_id;
+    uint16_t product_id;
 } mgmt_peer_observation_t;
 
 typedef struct {
@@ -99,6 +109,13 @@ typedef struct {
     uint8_t le_address_type;
     uint8_t classic_key_type;
     char name[MGMT_PEERS_NAME_MAX];
+    // Identity the adapter DERIVED rather than was told. See §20 of the
+    // Bluetooth Management 2.0 design: a classifier answer outranks a
+    // remote-supplied name, because the remote name is whatever the device says
+    // it is and can be changed by its owner or spoofed outright.
+    char classification[MGMT_PEERS_CLASS_MAX];
+    uint16_t vendor_id;
+    uint16_t product_id;
 } mgmt_peer_t;
 
 typedef struct {

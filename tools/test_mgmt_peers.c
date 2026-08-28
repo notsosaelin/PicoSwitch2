@@ -190,6 +190,100 @@ static void test_a_weaker_observation_cannot_demote_a_stronger_one(void)
     assert(peers[0].role == MGMT_PEER_ROLE_MANAGEMENT_COMPANION);
 }
 
+/* --------------------------------------------------- classification (Phase 4) */
+
+static void test_classification_and_identifiers_survive_the_merge(void)
+{
+    mgmt_peer_bond_t bonds[] = { classic_bond(0x01, 4) };
+    mgmt_peer_observation_t live = observation(0x01, "Wireless Controller");
+    live.is_direct_source = 1;
+    live.connected = 1;
+    snprintf(live.classification, sizeof(live.classification), "Sony DualSense");
+    live.vendor_id = 0x054C;
+    live.product_id = 0x0CE6;
+    mgmt_peer_t peers[4];
+    assert(mgmt_peers_merge(bonds, 1, &live, 1, peers, 4) == 1);
+    assert(strcmp(peers[0].classification, "Sony DualSense") == 0);
+    assert(peers[0].vendor_id == 0x054C && peers[0].product_id == 0x0CE6);
+}
+
+static void test_a_later_observation_cannot_erase_a_known_classification(void)
+{
+    // Two live records for one device -- the case a composite source or a
+    // reconnect mid-enumeration produces. Only one of them may have had a
+    // driver bound, and the answer must not depend on which arrives last.
+    mgmt_peer_observation_t seen[2];
+    seen[0] = observation(0x01, "Pad");
+    seen[0].is_direct_source = 1;
+    snprintf(seen[0].classification, sizeof(seen[0].classification), "Sony DualSense");
+    seen[0].vendor_id = 0x054C;
+    seen[0].product_id = 0x0CE6;
+    seen[1] = observation(0x01, "Pad");
+    seen[1].is_direct_source = 1;
+    mgmt_peer_t peers[4];
+    assert(mgmt_peers_merge(NULL, 0, seen, 2, peers, 4) == 1);
+    assert(strcmp(peers[0].classification, "Sony DualSense") == 0);
+    assert(peers[0].vendor_id == 0x054C);
+}
+
+static void test_an_unclassified_peer_reports_nothing_rather_than_empty(void)
+{
+    mgmt_peer_bond_t bonds[] = { classic_bond(0x01, 4) };
+    mgmt_peer_t peers[2];
+    assert(mgmt_peers_merge(bonds, 1, NULL, 0, peers, 2) == 1);
+    assert(peers[0].classification[0] == '\0');
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+    assert(mgmt_peers_format_page(peers, 1, 0, out, sizeof(out), &info) > 0);
+    // Absent, not empty: the client must be able to tell "the adapter cannot
+    // say" from "the adapter says it is called nothing".
+    assert(strstr(out, "\"class\"") == NULL);
+    assert(strstr(out, "\"vid\"") == NULL);
+}
+
+static void test_a_classification_is_sanitised_like_a_remote_name(void)
+{
+    // A driver name is firmware-controlled today, but it reaches the same JSON
+    // string as an untrusted remote name and is treated identically so that a
+    // future driver name sourced from a device cannot break the envelope.
+    mgmt_peer_observation_t live = observation(0x01, "Pad");
+    live.is_direct_source = 1;
+    snprintf(live.classification, sizeof(live.classification), "Ev\"il\\pad");
+    mgmt_peer_t peers[2];
+    assert(mgmt_peers_merge(NULL, 0, &live, 1, peers, 2) == 1);
+    assert(strchr(peers[0].classification, '"') == NULL);
+    assert(strchr(peers[0].classification, '\\') == NULL);
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+    size_t length = mgmt_peers_format_page(peers, 1, 0, out, sizeof(out), &info);
+    assert(length > 0 && info.complete);
+}
+
+static void test_a_widest_possible_row_still_fits_a_page(void)
+{
+    // The widest row the formatter can be asked to emit: a full-length name, a
+    // full-length classification and both identifiers. If this cannot make
+    // progress the pager fails closed and the whole inventory becomes
+    // unreadable, so the row budget is pinned here rather than assumed.
+    mgmt_peer_t peer;
+    memset(&peer, 0, sizeof(peer));
+    peer.address[0] = 0xAA;
+    peer.address[5] = 0x01;
+    peer.transport = MGMT_PEER_TRANSPORT_BREDR | MGMT_PEER_TRANSPORT_LE;
+    peer.le_slot = 3;
+    peer.role = MGMT_PEER_ROLE_PHYSICAL_CONTROLLER;
+    peer.vendor_id = 0xFFFF;
+    peer.product_id = 0xFFFF;
+    memset(peer.name, 'N', sizeof(peer.name) - 1);
+    memset(peer.classification, 'C', sizeof(peer.classification) - 1);
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+    size_t length = mgmt_peers_format_page(&peer, 1, 0, out, sizeof(out), &info);
+    assert(length > 0 && info.complete && info.next == -1);
+    assert(strstr(out, "\"class\":\"CCC") != NULL);
+    assert(strstr(out, "\"vid\":65535,\"pid\":65535") != NULL);
+}
+
 static void test_merge_is_bounded_by_capacity(void)
 {
     mgmt_peer_bond_t bonds[MGMT_PEERS_MAX_ENTRIES];
@@ -406,6 +500,11 @@ int main(void)
     test_connected_peer_without_a_key_is_still_reported();
     test_live_evidence_names_and_marks_a_stored_peer();
     test_a_weaker_observation_cannot_demote_a_stronger_one();
+    test_classification_and_identifiers_survive_the_merge();
+    test_a_later_observation_cannot_erase_a_known_classification();
+    test_an_unclassified_peer_reports_nothing_rather_than_empty();
+    test_a_classification_is_sanitised_like_a_remote_name();
+    test_a_widest_possible_row_still_fits_a_page();
     test_merge_is_bounded_by_capacity();
     test_untrusted_names_cannot_break_out_of_json();
     test_names_are_bounded_and_never_unterminated();
