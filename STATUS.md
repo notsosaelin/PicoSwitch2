@@ -7,6 +7,33 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **Bluetooth Management 2.0 — Phase 6 remote controller pairing shipped 2026-08-28; REQUIRES A
+  REFLASH; device validation pending.** The adapter can be told to pair a controller from the app, so
+  a unit behind a TV or inside a dock never has to be reached. **There is no second pairing flow**:
+  `pairing start` records a request that the existing control tick consumes and passes to the same
+  `open_pairing_window()` the BOOTSEL gesture calls, so the radio behaves identically whichever
+  trigger started it. **The firmware owns the deadline** — losing the app, the session or the phone
+  cannot leave the adapter discoverable, and `pairing cancel` is a courtesy rather than a safety
+  mechanism. `op` is a generation, not a handle, so a status belonging to an older attempt cannot
+  describe the current one and switching adapters mid-operation drops the client's view outright.
+  Failures name themselves — `no_controller`, `management_disabled`, `busy`, `locked_out` — instead
+  of collapsing into "pairing failed", and a second start while a window is open is refused as `busy`
+  **including when the user opened it with the button**, because re-arming would silently extend
+  something they did physically. **Phase 0's last open product decision is answered: the two pairing
+  authorities are now split.** `mgmt_accept_bonding()` read the same flag as controller pairing, so
+  opening a controller window also admitted a new management bond; locally that is defensible because
+  someone was holding the adapter, but a request arriving over the air would have opened a window in
+  which a *different phone* could claim the management relationship. Remote pairing now grants
+  controller discovery and no management authority; only the local gesture grants both. The window
+  stays at 30 s rather than the design's suggested 60 s, deliberately: it is the same window the
+  physical gesture uses, and changing it to satisfy a recommendation about a number would alter
+  behaviour the user relies on. **Both boards rebuild clean from scratch with no new warnings**,
+  74/74 host-test targets passed (the new target is `test_mgmt_pairing`), 1311 Android JVM test
+  executions with 0 failures, a `pairingStatus` vector added to the shared conformance fixture and
+  asserted to carry no identity, both install-reset markers verified, `peers_op_run` frames unchanged
+  at 36/44 bytes, lint 0 errors, both APKs assembled, descriptor parity green at bridge contract 4
+  with an unchanged 161-byte digest. Not yet validated on hardware.
+  [`docs/bluetooth/bt-management-2.0-phase0-audit.md`](docs/bluetooth/bt-management-2.0-phase0-audit.md)
 - **Automatic bond destruction removed 2026-08-28; REQUIRES A REFLASH; device validation pending.**
   On the latest firmware an adapter holding three bonds reported `btbonds: []` **in the same powered
   session, with no reflash and no power cycle**, and then stopped answering UART entirely — `ping`

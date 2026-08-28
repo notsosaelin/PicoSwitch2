@@ -195,6 +195,14 @@ data class CompanionUiState(
      * adapter, and what is it called".
      */
     val adapterRelationship: AdapterRelationship? = null,
+    /**
+     * The adapter's controller-pairing operation, when one is running.
+     *
+     * Null means "not pairing", which is different from an idle status the app
+     * happens to be holding: a switch or a disconnect clears this outright
+     * rather than leaving a stale countdown on screen.
+     */
+    val pairing: PairingStatus? = null,
     /** Every adapter this app knows, in registry order. */
     val adapters: List<AdapterRecord> = emptyList(),
     /**
@@ -1241,6 +1249,98 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                 "companion=${inventory.peers.count { it.role != PeerRole.PhysicalController }} " +
                 "remembered=${peerHistory.forAdapter(target).records.size} explicit=$explicit",
         )
+    }
+
+    /**
+     * Ask the adapter to open its controller pairing window, then follow it.
+     *
+     * The polling loop is bounded by the ADAPTER's answer, not by a timer here:
+     * it stops as soon as the status is no longer active, and in any case after
+     * [PAIRING_POLL_LIMIT] reads. The adapter owns the deadline, so even if
+     * this app is killed mid-operation the window still closes on its own --
+     * which is why nothing in this function is load-bearing for safety.
+     *
+     * The operation generation guards the whole loop: a status belonging to an
+     * older operation, or arriving after the user switched adapters, is
+     * discarded rather than allowed to describe the current one.
+     */
+    fun startControllerPairing() = launch("Opening pairing window") {
+        val adapterAtStart = registry.activeId
+        val started = adapter.startPairing()
+        _ui.update { it.copy(pairing = started) }
+        diagnostics.event(
+            "pairing", "start",
+            "op=${started.operation} state=${started.state.wireName} reason=${started.reason.wireName}",
+        )
+        if (!started.active) {
+            notice(pairingMessage(started))
+            return@launch
+        }
+        var polls = 0
+        var latest = started
+        while (latest.active && polls++ < PAIRING_POLL_LIMIT) {
+            delay(PAIRING_POLL_MILLIS)
+            if (registry.activeId != adapterAtStart) {
+                // The user switched adapters mid-operation. Stop describing an
+                // operation that belongs to a different adapter entirely.
+                _ui.update { it.copy(pairing = null) }
+                return@launch
+            }
+            latest = runCatching { adapter.pairingStatus() }.getOrElse { error ->
+                diagnostics.error("pairing", "status", error)
+                _ui.update { it.copy(pairing = null) }
+                return@launch
+            }
+            if (latest.operation != started.operation) {
+                // A different operation is running now -- someone pressed the
+                // adapter's own pairing button, or a second client started one.
+                diagnostics.event("pairing", "superseded", "was=${started.operation} now=${latest.operation}")
+                break
+            }
+            _ui.update { it.copy(pairing = latest) }
+        }
+        _ui.update { it.copy(pairing = latest.takeIf { s -> s.active }) }
+        notice(pairingMessage(latest))
+        // A controller that completed is a new peer; read the inventory so the
+        // list shows it without the user refreshing.
+        if (latest.state == PairingState.Paired) {
+            runCatching { readPeerInventory(explicit = false) }
+                .onFailure { diagnostics.error("peers", "refresh.after_pairing", it) }
+        }
+    }
+
+    /**
+     * Ask the adapter to close the window early.
+     *
+     * A courtesy, not a safety mechanism: the firmware's deadline is what
+     * guarantees the window closes. Idempotent, so a cancel that races the
+     * timeout reports idle rather than failing.
+     */
+    fun cancelControllerPairing() = launch("Stopping pairing") {
+        val status = adapter.cancelPairing()
+        _ui.update { it.copy(pairing = status.takeIf { s -> s.active }) }
+        diagnostics.event("pairing", "cancel", "op=${status.operation} state=${status.state.wireName}")
+    }
+
+    /**
+     * What to tell the user, per design §40: name the failure rather than
+     * collapsing everything into "pairing failed".
+     */
+    private fun pairingMessage(status: PairingStatus): String = when (status.state) {
+        PairingState.Paired -> "Controller paired."
+        PairingState.TimedOut -> "No controller was paired. Put the controller in pairing mode and try again."
+        PairingState.Cancelled -> "Pairing stopped."
+        PairingState.Blocked -> when (status.reason) {
+            PairingReason.Busy -> "The adapter is already pairing. Wait for it to finish."
+            PairingReason.ManagementDisabled -> "Wireless management is off, so the adapter will not accept this."
+            PairingReason.LockedOut -> "The adapter is clearing its pairings. Try again in a moment."
+            else -> "The adapter would not start pairing."
+        }
+        PairingState.Idle -> "The adapter is not pairing."
+        // Still running when the app stopped following it, or a state this
+        // build does not recognise. Neither is a failure to report as one.
+        PairingState.Discovering, PairingState.Connecting, PairingState.Unknown ->
+            "Pairing is still running on the adapter."
     }
 
     /**
@@ -2999,6 +3099,13 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         private const val MAX_LIBRARY_ARCHIVE_BYTES = AmiiboLibraryArchive.MAX_ARCHIVE_BYTES
         private const val RETAIL_KEY_BYTES = 160
         private const val ADAPTER_POLL_MILLIS = 5_000L
+        // Pairing progress polling. One second reads as live without flooding a
+        // single-flight management carrier, and the limit is a backstop only:
+        // the loop normally ends because the ADAPTER says the window closed.
+        // Sized well past the firmware's 30 s window so the backstop never
+        // fires first and reports "still running" for a finished operation.
+        private const val PAIRING_POLL_MILLIS = 1_000L
+        private const val PAIRING_POLL_LIMIT = 45
         // Long enough that a slider drag issues a handful of commands rather
         // than hundreds, short enough that the change still reads as live while
         // the finger is down.

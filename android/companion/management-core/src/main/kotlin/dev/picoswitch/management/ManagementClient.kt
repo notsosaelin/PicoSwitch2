@@ -256,6 +256,23 @@ class ManagementClient(
         ManagementProtocol::peersForget,
     )
 
+    /**
+     * Ask the adapter to open its controller pairing window.
+     *
+     * The adapter owns the deadline, so the app is never responsible for
+     * closing it: losing this session, or the phone, cannot leave the adapter
+     * discoverable. [cancelPairing] is a courtesy, not a safety mechanism.
+     */
+    suspend fun startPairing(): PairingStatus =
+        exchange(ManagementCommands.PAIRING_START, ManagementProtocol::pairingStatus)
+
+    suspend fun pairingStatus(): PairingStatus =
+        exchange(ManagementCommands.PAIRING_STATUS, ManagementProtocol::pairingStatus)
+
+    /** Idempotent: cancelling when idle succeeds and reports idle. */
+    suspend fun cancelPairing(): PairingStatus =
+        exchange(ManagementCommands.PAIRING_CANCEL, ManagementProtocol::pairingStatus)
+
     suspend fun save(): PersistenceAcknowledgement {
         val acknowledgement = acknowledge(ManagementCommands.SAVE)
         return PersistenceAcknowledgement(

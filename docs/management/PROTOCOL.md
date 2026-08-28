@@ -94,6 +94,7 @@ state. A client MUST NOT synthesize or merge source identities.
 | `bonds remove <index>` | mutation; BLE, Config CDC | `{"ok":true}` or error | removes an adapter-side LE bond; list again. It is distinct from Android association/bond state and may interrupt the affected peer | `cmd_bonds`; workflow tests |
 | `peers list [cursor]` | paged read; BLE, Config CDC | `v:1`, `total`, `peers[]`, `next` integer or null | read-only logical peer inventory; follow `next` until null | `cmd_peers`, `mgmt_peers_format_page`; `peersPage` vector |
 | `peers forget <id>` | mutation; BLE, Config CDC | `ok`, `id`, `result`, `bonded`, `tr` | atomic; refuses the management companion; verified by re-enumeration; idempotent | `cmd_peers`, `peers_forget_run`; `peersForget` vector |
+| `pairing start\|status\|cancel` | mutation (start/cancel), read (status); BLE, Config CDC | `ok`, `op`, `state`, `reason`, `remaining_ms`, `candidates` | opens the SAME window the adapter's pairing button opens; firmware owns the deadline; `cancel` idempotent | `cmd_pairing`, `mgmt_pairing_format_status`; `pairingStatus` vector |
 | `save` | mutation; BLE, Config CDC | BLE: `ok`, `queued:true`, `requested`; CDC: `ok`, `requested` only after the synchronous wait, or `save timeout` | `requested` is the session-local unsigned 32-bit identity assigned to this persistence request. BLE acceptance is not durable completion | `handle_line`; `saveQueued` vector |
 | `save status` | read; BLE, Config CDC | `pending`, `requested`, `completed` | authoritative general-settings persistence snapshot; `pending` is exactly `requested != completed` | `handle_line`; `saveStatus` vector |
 
@@ -221,6 +222,46 @@ credential is a separate, explicitly named product action.
 The peer id is a one-way hash of the identity address, so the adapter resolves it by rebuilding the
 inventory and recomputing each id. A client can therefore address only a peer the adapter itself
 reported, and cannot smuggle in a raw address.
+
+### Remote controller pairing
+
+`pairing start` opens the adapter's controller pairing window — **the same window its own pairing
+button opens**, driven by the same state machine. There is no second pairing flow, so the radio
+behaves identically whichever trigger started it.
+
+| Field | Meaning |
+|---|---|
+| `op` | Operation generation. Increments on every start. |
+| `state` | `idle`, `discovering`, `connecting`, `paired`, `timed_out`, `cancelled`, `blocked`. |
+| `reason` | `none`, `no_controller`, `management_disabled`, `busy`, `locked_out`. |
+| `remaining_ms` | Milliseconds left in the window; `0` unless running. |
+| `candidates` | Controllers seen during this operation. |
+
+Rules a client must respect:
+
+- **The firmware owns the deadline.** `cancel` is a courtesy, never a safety mechanism: losing the
+  app, the session or the phone cannot leave the adapter discoverable. Clients MUST NOT rely on
+  sending a cancel to close the window.
+- **`op` is a generation, not a handle.** A status naming an older operation describes the *current*
+  one; clients MUST discard a status whose `op` differs from the one they started, rather than
+  letting it describe their attempt.
+- **`ok` describes the command, not the outcome.** A status read that reports `timed_out` succeeded.
+  Only an explicit refusal is `ok:false`.
+- **Tolerate unknown `state` and `reason` values.** A newer adapter may name one this client does not
+  know; degrade to unknown rather than refusing a reply that still carries the generation and
+  countdown.
+- **A second `start` while pairing is running is refused with `busy`**, including when the window was
+  opened by the adapter's own button. Re-arming would silently extend something the user did
+  physically.
+- **No identity appears in a pairing status.** It is progress, not an inventory: no address, no name,
+  no key material, in any state.
+
+**Management bonding authority is separate from controller pairing authority.** They shared one flag
+until Phase 6, so opening a controller window also admitted a new management bond. Locally that is
+defensible — someone was holding the adapter. Remotely it is not: a request arriving over the air
+would open a window in which a *different* phone could claim the management relationship. Remote
+pairing therefore opens controller discovery and grants **no** management authority. Only the local
+gesture does both.
 
 `bridge_contract` belongs to Controller Bridge compatibility. There is no separate negotiated
 management protocol version. Compatibility is currently exact command behavior, optional-family

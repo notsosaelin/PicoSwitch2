@@ -25,6 +25,7 @@
 #include "config_wireless_bridge.h"
 #include "mgmt_bonds.h"
 #include "mgmt_peers.h"
+#include "mgmt_pairing.h"
 #include "usb.h"  // g_usb_personality (personality query command)
 #include "ns2_wake.h"  // ns2_wake_manual_request (wake command)
 #include "ns2_active_input.h" // source registry / explicit active input
@@ -370,6 +371,15 @@ static struct {
     uint32_t session;
     absolute_time_t deadline;
 } wireless_peers;
+
+// Remote pairing uses the same deferred shape again, and its own record for the
+// same reason: a pairing reply and a peer read must never be mistaken for one
+// another when both are outstanding across a reconnect.
+static struct {
+    bool active;
+    uint32_t session;
+    absolute_time_t deadline;
+} wireless_pairing;
 
 static void reply(const char *s) {
     if (reply_transport == CONFIG_REPLY_WIRELESS) {
@@ -1291,6 +1301,37 @@ static void cmd_peers(const char *arg) {
     reply_peers_result();
 }
 
+// Remote controller pairing. Drives the SAME pairing state machine the BOOTSEL
+// gesture drives -- there is no second flow -- and differs only in authority:
+// a request arriving over the air opens controller discovery without admitting
+// a new management bond. The firmware owns the deadline, so losing the app can
+// never leave the adapter discoverable.
+static void cmd_pairing(const char *arg) {
+    mgmt_pairing_action_t action;
+    if (!mgmt_pairing_parse_command(arg, &action)) {
+        reply("{\"error\":\"usage: pairing start|status|cancel\"}");
+        return;
+    }
+    if (!btstack_host_pairing_request((uint8_t)action)) {
+        reply("{\"error\":\"busy\"}");
+        return;
+    }
+    if (reply_transport == CONFIG_REPLY_WIRELESS) {
+        wireless_pairing.active = true;
+        wireless_pairing.session = wireless_reply_session;
+        wireless_pairing.deadline = make_timeout_time_ms(1000);
+        return;
+    }
+    absolute_time_t deadline = make_timeout_time_ms(1000);
+    while (!btstack_host_pairing_done() && !time_reached(deadline))
+        tud_task();
+    if (!btstack_host_pairing_done()) {
+        reply("{\"error\":\"timeout\"}");
+        return;
+    }
+    reply(btstack_host_pairing_json());
+}
+
 // Raw HID report of the connected controller (hex) for the debug view. Lets us
 // reverse-engineer inputs a driver doesn't parse yet (e.g. Xbox Elite paddles).
 static void cmd_raw(void) {
@@ -1561,6 +1602,8 @@ static void handle_line(char *cmd) {
         cmd_bonds(cmd + 6);
     } else if (strncmp(cmd, "peers ", 6) == 0) {
         cmd_peers(cmd + 6);
+    } else if (strncmp(cmd, "pairing ", 8) == 0) {
+        cmd_pairing(cmd + 8);
     } else if (strcmp(cmd, "mgmt") == 0) {
         cmd_mgmt(NULL);
     } else if (strncmp(cmd, "mgmt ", 5) == 0) {
@@ -1730,6 +1773,31 @@ void config_wireless_task(void) {
                 reply("{\"error\":\"timeout\"}");
             } else {
                 reply_peers_result();
+            }
+            reply_transport = previous;
+            return;
+        }
+    }
+
+    if (wireless_pairing.active) {
+        if (!config_wireless_bridge_session_active(wireless_pairing.session)) {
+            wireless_pairing.active = false;
+        } else if (!btstack_host_pairing_done() &&
+                   !time_reached(wireless_pairing.deadline)) {
+            return;
+        } else {
+            config_reply_transport_t previous = reply_transport;
+            reply_transport = CONFIG_REPLY_WIRELESS;
+            wireless_reply_session = wireless_pairing.session;
+            bool timed_out = !btstack_host_pairing_done();
+            wireless_pairing.active = false;
+            if (timed_out) {
+                // The pairing WINDOW is unaffected: the firmware owns its
+                // deadline, so a lost reply costs the client a status read and
+                // nothing else. The next `pairing status` reports the truth.
+                reply("{\"error\":\"timeout\"}");
+            } else {
+                reply(btstack_host_pairing_json());
             }
             reply_transport = previous;
             return;

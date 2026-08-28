@@ -234,6 +234,65 @@ data class PeerForgetOutcome(
     val transports: Set<PeerTransport> = emptySet(),
 )
 
+/**
+ * Where a remote controller-pairing operation has got to.
+ *
+ * The adapter runs ONE pairing state machine — the same one its own pairing
+ * button drives — so these states describe that machine, not a second flow the
+ * app owns.
+ */
+enum class PairingState(val wireName: String) {
+    Idle("idle"),
+    Discovering("discovering"),
+    Connecting("connecting"),
+    Paired("paired"),
+    TimedOut("timed_out"),
+    Cancelled("cancelled"),
+    /** The adapter refused to start; [PairingStatus.reason] says why. */
+    Blocked("blocked"),
+    Unknown("unknown");
+
+    /** Still running, so the app should keep polling. */
+    val active: Boolean get() = this == Discovering || this == Connecting
+
+    companion object {
+        fun fromWire(value: String?): PairingState =
+            entries.firstOrNull { it.wireName == value } ?: Unknown
+    }
+}
+
+/** Machine-readable failure causes. The adapter names them; the app words them. */
+enum class PairingReason(val wireName: String) {
+    None("none"),
+    NoController("no_controller"),
+    ManagementDisabled("management_disabled"),
+    Busy("busy"),
+    LockedOut("locked_out"),
+    Unknown("unknown");
+
+    companion object {
+        fun fromWire(value: String?): PairingReason =
+            entries.firstOrNull { it.wireName == value } ?: Unknown
+    }
+}
+
+/**
+ * One pairing operation as the adapter reports it.
+ *
+ * [operation] is a generation, not a handle. A status arriving for an older
+ * operation — after an adapter switch, or a reply the app missed — must never
+ * be allowed to describe the current one.
+ */
+data class PairingStatus(
+    val operation: Long = 0,
+    val state: PairingState = PairingState.Idle,
+    val reason: PairingReason = PairingReason.None,
+    val remainingMillis: Long = 0,
+    val candidates: Int = 0,
+) {
+    val active: Boolean get() = state.active
+}
+
 data class PeerPage(val entries: List<PeerInfo>, val total: Int, val next: Int?)
 data class PeerInventory(
     val peers: List<PeerInfo> = emptyList(),

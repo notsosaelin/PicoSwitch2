@@ -234,6 +234,23 @@ class ProtocolConformanceTest {
         }
     }
 
+    @Test fun `the pairing vector carries a generation, a countdown and no identity`() {
+        val vector = vector("pairingStatus")
+        val status = ManagementProtocol.pairingStatus(vector.command, vector.reply)
+        assertEquals(7L, status.operation)
+        assertEquals(PairingState.Discovering, status.state)
+        assertTrue(status.active)
+        assertEquals(24000L, status.remainingMillis)
+        // Pairing status is progress, not an inventory: no address, no name, no
+        // key material, so a non-Kotlin client inherits that guarantee too.
+        listOf("addr", "name", "key", "ltk", "irk").forEach { forbidden ->
+            assertTrue(
+                "pairing vector must not contain '$forbidden'",
+                !vector.reply.contains(forbidden, ignoreCase = true),
+            )
+        }
+    }
+
     @Test fun `Amiibo and wake fixtures decode exact semantics`() {
         val amiiboVector = vector("amiiboStatus")
         val amiibo = ManagementProtocol.amiibo(amiiboVector.command, amiiboVector.reply)
