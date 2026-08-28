@@ -257,6 +257,19 @@ class ManagementClient(
     )
 
     /**
+     * Is selective forget available on this firmware?
+     *
+     * Probed with a well-formed id that no adapter can hold — the peer id space
+     * is a hash of an identity address, and this one addresses nothing — so a
+     * firmware that HAS the command answers `already_absent` and deletes
+     * nothing, while one that lacks it answers `unknown command`. There is no
+     * read-only form of a mutation to probe with, so the probe is made harmless
+     * instead.
+     */
+    suspend fun probePeerForget(): CapabilityState =
+        optional { forgetPeer(UNADDRESSABLE_PEER_ID) }.state
+
+    /**
      * Ask the adapter to open its controller pairing window.
      *
      * The adapter owns the deadline, so the app is never responsible for
@@ -265,6 +278,17 @@ class ManagementClient(
      */
     suspend fun startPairing(): PairingStatus =
         exchange(ManagementCommands.PAIRING_START, ManagementProtocol::pairingStatus)
+
+    /**
+     * Probe remote pairing without starting one.
+     *
+     * `pairing status` is read-only and answers `unknown command` on firmware
+     * that predates Phase 6, which is exactly the signal the optional-family
+     * probe already turns into `Unsupported`. Probing with `start` instead
+     * would open a real pairing window just to find out whether it exists.
+     */
+    suspend fun probeRemotePairing(): CapabilityState =
+        optional { pairingStatus() }.state
 
     suspend fun pairingStatus(): PairingStatus =
         exchange(ManagementCommands.PAIRING_STATUS, ManagementProtocol::pairingStatus)
@@ -481,6 +505,10 @@ class ManagementClient(
     private data class OptionalResult<T>(val value: T?, val state: CapabilityState)
 
     private companion object {
+        // A syntactically valid peer id that cannot name a real peer: ids are a
+        // hash of an identity address and this is the all-zero hash, which no
+        // address produces. Used only to probe whether `peers forget` exists.
+        const val UNADDRESSABLE_PEER_ID = "p_00000000"
         const val MAX_KBM_MAP_PAGES = 32
         const val MAX_BOND_PAGES = 128
         // 32 possible peers and at least one per page, so this bound can only be

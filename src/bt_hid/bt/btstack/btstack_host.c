@@ -7508,6 +7508,37 @@ bool btstack_host_pairing_active(void)
            pairing_state == MGMT_PAIRING_CONNECTING;
 }
 
+/*
+ * Can this adapter still store a bond of ANY kind?
+ *
+ * "Full" means both stores are full: a Classic-only controller can still be
+ * paired while the LE database is full and vice versa, so refusing on either
+ * alone would block pairings that would have worked. Only when neither
+ * transport has a free slot is there genuinely nowhere to put a new
+ * relationship (design §90).
+ *
+ * Counted from the same enumeration the peer inventory uses, so this answer
+ * cannot drift from what the user is shown.
+ */
+static bool btstack_host_security_storage_full(void)
+{
+    mgmt_peer_bond_t bonds[MGMT_PEERS_MAX_ENTRIES];
+    size_t count = peers_collect_bonds(bonds, MGMT_PEERS_MAX_ENTRIES);
+    size_t le_used = 0;
+    size_t classic_used = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (bonds[i].transport & MGMT_PEER_TRANSPORT_LE) le_used++;
+        if (bonds[i].transport & MGMT_PEER_TRANSPORT_BREDR) classic_used++;
+    }
+    bool le_full = le_used >= (size_t)le_device_db_max_count();
+#ifdef ENABLE_CLASSIC
+    bool classic_full = classic_used >= (size_t)NVM_NUM_LINK_KEYS;
+#else
+    bool classic_full = true;
+#endif
+    return le_full && classic_full;
+}
+
 // Deferred management reply, same single-slot shape as peers/bonds.
 static btstack_context_callback_registration_t pairing_cb;
 static volatile bool pairing_op_pending;
@@ -7529,7 +7560,9 @@ static void pairing_op_run(void *ctx)   // BTstack thread (core1)
         // remotely would silently extend something the user did physically.
         if (!mgmt_pairing_start_allowed(g_mgmt_enabled,
                                         btstack_host_pairing_active(),
-                                        pairing_lockout, &why)) {
+                                        pairing_lockout,
+                                        btstack_host_security_storage_full(),
+                                        &why)) {
             mgmt_pairing_snapshot_t blocked;
             btstack_host_pairing_snapshot(&blocked, now);
             blocked.state = MGMT_PAIRING_BLOCKED;

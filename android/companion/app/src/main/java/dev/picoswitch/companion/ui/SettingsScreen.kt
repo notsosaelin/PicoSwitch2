@@ -398,7 +398,11 @@ private fun PairedControllersCard(
         // Pair New Controller (design §31). Offered only over a live management
         // session, because that session IS the authority for the request.
         val pairing = ui.pairing
-        if (pairing != null && pairing.active) {
+        if (ui.snapshot.capabilities.remotePairing == CapabilityState.Unsupported) {
+            // Named, not hidden: the user should know the feature exists and
+            // what would give it to them (design §87).
+            InlineNotice("Update the adapter firmware to pair controllers from here.")
+        } else if (pairing != null && pairing.active) {
             InlineNotice(
                 if (pairing.state == PairingState.Connecting) {
                     "Connecting to a controller…"
@@ -457,13 +461,19 @@ private fun PairedControllersCard(
                 // Forget is offered on both, because a controller that is
                 // connected right now is exactly the one a user most often wants
                 // rid of. The confirmation says it will be disconnected.
-                val forgetAction: @Composable (PeerListing) -> (@Composable RowScope.() -> Unit) =
+                // Not offered at all on firmware that cannot perform it: a
+                // Forget button that answers `unknown command` is worse than an
+                // absent one, and the list itself still works (design §87).
+                val canForget = ui.snapshot.capabilities.peerForget != CapabilityState.Unsupported
+                val forgetAction: @Composable (PeerListing) -> (@Composable RowScope.() -> Unit)? =
                     { listing ->
-                        {
-                            IconButton(
-                                onClick = { onForgetPeer(listing) },
-                                enabled = ui.connection.connected && !ui.busy,
-                            ) { Icon(Icons.Default.LinkOff, "Forget ${listing.displayName}") }
+                        if (!canForget) null else {
+                            {
+                                IconButton(
+                                    onClick = { onForgetPeer(listing) },
+                                    enabled = ui.connection.connected && !ui.busy,
+                                ) { Icon(Icons.Default.LinkOff, "Forget ${listing.displayName}") }
+                            }
                         }
                     }
                 if (inventory.connected.isNotEmpty()) {

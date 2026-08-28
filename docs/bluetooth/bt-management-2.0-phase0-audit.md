@@ -18,6 +18,7 @@ one place where the design's own recommendation was tried and withdrawn (§8c).
 | 4 — names, classification, history | Complete 2026-08-28 | yes | yes |
 | 5 — selective forget | Complete 2026-08-28 | yes | yes |
 | 6 — remote pairing | Complete 2026-08-28 | yes | yes |
+| 7 — hardening / UX / compatibility | Complete 2026-08-28 | yes | yes |
 
 Every phase's software validation is in §10; each phase's hardware gate is a checklist the
 maintainer runs (§§11–14) and is **not** claimed as performed here.
@@ -620,7 +621,35 @@ and that machine's duration is what the physical gesture already uses; changing 
 behaviour the user relies on in order to satisfy a recommendation about a number. The client is told
 the real remaining time rather than a nominal one.
 
-## 8f. What Phase 7 should do
+## 8f. Phase 7 — done 2026-08-28
+
+Compatibility, degradation and the storage-full case. Much of what §96 lists was already true; this
+records what was verified and what was added.
+
+| Planned | Outcome |
+|---|---|
+| Old-firmware capability gating (§42, §87) | `peerForget` and `remotePairing` are probed INDEPENDENTLY of `peers`. They shipped in different phases, so one flag would either hide a working list or offer a button that answers `unknown command`. |
+| Corrupt registry recovery | Already total and already tested: `AdapterRegistryCodec.decode` and `PeerHistoryCodec.decode` return an empty document for unparseable input, drop individual bad rows rather than the whole file, refuse a future schema, and re-sanitise text on read. Verified, not rebuilt. |
+| Storage-full UX (§89, §90) | New `storage_full` pairing reason. Refused rather than started, because a window that could only end in a silent eviction is worse than a refusal naming the fix — and the fix is the Phase 5 forget the user now has. |
+| Detailed error codes (§40) | Complete: `no_controller`, `management_disabled`, `busy`, `locked_out`, `storage_full`. |
+| Downgrade behaviour (§88) | An unprobed capability stays `Unknown`, never `Unsupported`, so a probe that could not run does not cost the adapter a feature. Alias and history survive a downgrade; pinned by `CapabilityDegradationTest`. |
+
+### How the probes avoid side effects
+
+`remotePairing` is probed with `pairing status`, which is read-only — probing with `start` would open
+a real 30 s window just to discover whether the verb exists. `peerForget` has no read-only form, so
+it is probed with `p_00000000`: syntactically valid, and the all-zero hash that no identity address
+produces. Firmware that has the command answers `already_absent` and deletes nothing; firmware that
+lacks it answers `unknown command`. The probe is made harmless rather than avoided.
+
+### Deliberately not done
+
+Firmware-side declared capabilities (§42's named constant set). The probe-based model already
+answers every question the UI asks, and `unknown command` is the protocol's own authority rather than
+a second, weaker source of the same fact. Adding a declaration would create two things to keep in
+step. Recorded as an optimisation, not a gap.
+
+## 8g. Bluetooth Management 2.0 is complete
 
 Remote physical-controller pairing. The Phase 0 audit's decisive positive result still stands: opening
 the pairing window does not tear down BLE management. The product decision owed before starting is

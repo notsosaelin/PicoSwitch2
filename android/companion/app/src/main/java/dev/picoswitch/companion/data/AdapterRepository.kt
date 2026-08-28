@@ -444,6 +444,31 @@ class AdapterRepository(private val transport: ManagementTransport) {
      * machine, so there is nothing here to keep in step with it. The app polls
      * and renders; it never has to close anything for safety.
      */
+    /**
+     * Learn which of the newer management verbs this firmware actually has.
+     *
+     * Probed once per session alongside the inventory rather than inferred from
+     * a firmware version string: the protocol's own `unknown command` reply is
+     * the authority, and a version comparison would be a second, weaker source
+     * of the same fact (design §42).
+     *
+     * Failure to probe leaves the capability `Unknown`, which the UI renders as
+     * "not checked" rather than as absent — an adapter must not lose a feature
+     * because one probe did not answer (design §87).
+     */
+    suspend fun probeManagementCapabilities() {
+        val forget = runCatching { client.probePeerForget() }
+            .getOrDefault(CapabilityState.Unknown)
+        val pairing = runCatching { client.probeRemotePairing() }
+            .getOrDefault(CapabilityState.Unknown)
+        _snapshot.value = _snapshot.value.copy(
+            capabilities = _snapshot.value.capabilities.copy(
+                peerForget = forget,
+                remotePairing = pairing,
+            ),
+        )
+    }
+
     suspend fun startPairing(): PairingStatus = client.startPairing()
 
     suspend fun pairingStatus(): PairingStatus = client.pairingStatus()
