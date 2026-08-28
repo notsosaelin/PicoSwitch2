@@ -977,13 +977,35 @@ static bool install_reset_bootstrap_consumed;
 // NO pairing authority: hid_pairing_window_open is untouched, so admission,
 // SSP response and fresh-key commit all behave exactly as if it were closed.
 // It only makes us answer inquiry, which is what carries the CoD.
+/*
+ * Opens CONTROLLER discovery only. Management bonding is a separate, explicit
+ * grant -- see btstack_host_set_management_bond_window_open().
+ *
+ * This is the shared transport hook (`bt_set_pairing_mode`), reached by BOTH
+ * the local gesture and remote pairing, so it must grant the SMALLER authority
+ * and let the local path add to it. Phase 6 had it the other way round: this
+ * function granted both, and the remote path called
+ * btstack_host_set_controller_pairing_window_open(true) afterwards intending to
+ * "downgrade" -- which does nothing, because that function only ever CLEARS the
+ * management window on close. Remote pairing therefore opened management
+ * bonding authority, the exact grant Phase 6 exists to withhold, and for the
+ * whole 30 s window another phone could have claimed the management
+ * relationship.
+ *
+ * Fail-safe by default: the shared path gives the least authority, and the
+ * larger one has to be asked for by name.
+ */
 void btstack_host_set_pairing_window_open(bool open)
 {
-    // The LOCAL gesture path. Physical presence is what authorises a new
-    // management bond, so this entry point grants both; the remote entry point
-    // below grants only controller discovery. Closing always clears both.
-    mgmt_bond_window_open = open;
     btstack_host_set_controller_pairing_window_open(open);
+}
+
+// Physical presence at the adapter is what authorises a NEW management bond.
+// Only the local gesture may call this with `true`; closing the controller
+// window clears it unconditionally.
+void btstack_host_set_management_bond_window_open(bool open)
+{
+    mgmt_bond_window_open = open;
 }
 
 void btstack_host_set_controller_pairing_window_open(bool open)

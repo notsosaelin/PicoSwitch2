@@ -126,7 +126,19 @@ static bool kbm_source_present(void) {
     return status.keyboard_connected || status.mouse_connected;
 }
 
-static void open_pairing_window(uint32_t now_ms) {
+/*
+ * The one controller-pairing operation. Both triggers call it, so the radio
+ * behaves identically either way; `grant_management_bonding` is the only
+ * difference between them and it is passed explicitly rather than patched up
+ * afterwards.
+ *
+ * true  -- the local BOOTSEL gesture. Someone is holding the adapter, and
+ *          physical presence is the authority for handing out a NEW management
+ *          relationship as well as a controller one.
+ * false -- a management client asked over the air. It may open controller
+ *          discovery and nothing else.
+ */
+static void open_pairing_window(uint32_t now_ms, bool grant_management_bonding) {
     // Don't stomp an already-admitted candidate that's still finishing a
     // connection from a *previous* window (see btstack_host_close_pairing_window):
     // re-arming the scan here would overwrite hid_state.state out from under
@@ -151,7 +163,10 @@ static void open_pairing_window(uint32_t now_ms) {
     if (pairing_wait_for_disconnect) {
         btstack_host_disconnect_all_devices();
     }
-    bt_set_pairing_mode(true);  // start scanning for new controllers
+    bt_set_pairing_mode(true);  // controller discovery only
+    // Ordered after, and in the same run-loop callback, so no security
+    // procedure can observe the intermediate state.
+    btstack_host_set_management_bond_window_open(grant_management_bonding);
     pairing_until_ms = now_ms + PAIRING_WINDOW_MS;
 }
 
@@ -181,7 +196,9 @@ static void service_bootsel_gestures(uint32_t now) {
 #endif
             break;
         case BOOTSEL_ACTION_OPEN_PAIRING:
-            open_pairing_window(now);
+            // Local gesture: the user is at the adapter, so this is the one
+            // trigger allowed to admit a new management bond as well.
+            open_pairing_window(now, true);
             break;
         case BOOTSEL_ACTION_WIPE_DEVICES:
             pairing_until_ms = 0;
@@ -309,11 +326,11 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
     // it (design §32). The difference is authority, not behaviour: the remote
     // path opens controller discovery WITHOUT admitting a new management bond.
     if (btstack_host_pairing_take_remote_start()) {
-        open_pairing_window(now);
+        // Controller discovery only. Passed in rather than opened-then-
+        // downgraded: the downgrade did not work, because the function it
+        // called only ever clears the management window on CLOSE.
+        open_pairing_window(now, false);
         if (pairing_until_ms) {
-            // Downgrade the grant the local gesture would have made. Ordered
-            // after open_pairing_window() because that path opens both.
-            btstack_host_set_controller_pairing_window_open(true);
             btstack_host_pairing_note_state(MGMT_PAIRING_DISCOVERING,
                                             MGMT_PAIRING_REASON_NONE,
                                             pairing_until_ms);
