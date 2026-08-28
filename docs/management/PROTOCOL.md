@@ -142,7 +142,20 @@ cannot handle, or for any change to the meaning of an existing field.
 Pagination rules are identical to `bonds list v2`, and so are the failure conditions: a changed
 `total`, a repeated `id`, a non-progressing cursor, an empty page with a non-null cursor, or a final
 count different from `total`. Clients MUST treat any of these as a failure rather than as a shorter
-inventory — a dropped row is a saved controller the user cannot see.
+inventory — a dropped row is a paired controller the user cannot see.
+
+**A page reserves room for its own suffix, and the reserve is applied to the row budget.** Rows are
+appended against `capacity - SUFFIX_RESERVE`, never against the full capacity. Checking the reserve
+only *before* appending a row reserves nothing: the row that follows the check is then measured
+against the whole buffer, so it can land the page inside the reserve and leave the closing
+`],"next":N}` unable to fit — and a suffix that cannot be written discards the entire page as
+`response_too_large`.
+
+That was a real defect, reproduced on hardware 2026-08-28 with four peers of 164, 182, 129 and 92
+bytes: the page from cursor 0 filled to 502 of 512 and failed, while cursors 1 through 4 all
+succeeded. It looked like a size problem and was a budgeting one. `response_too_large` for an
+inventory that can validly paginate is always a serialization bug, never a reason to grow the
+buffer; the same reserve discipline applies to `bonds list` and `bonds list v2`.
 
 **`role` is evidence, not a label.** The adapter classifies from what it can currently observe: the
 connected management client, the Controller Link peer identified from its HID descriptor, connected

@@ -437,6 +437,121 @@ static void test_a_full_inventory_pages_and_every_peer_appears_once(void)
         assert(seen[i] == 1);
 }
 
+/*
+ * The live inventory that returned response_too_large on 2026-08-28.
+ *
+ * Four peers whose encoded rows are 164, 182, 129 and 92 bytes. The page from
+ * cursor 0 fills to 502 of 512 and then cannot fit its 11-byte `],"next":3}`.
+ * Before the fix the whole page was discarded; the inventory paginates
+ * perfectly well, and cursors 1..4 all succeeded, which is what made the
+ * failure look like a size problem rather than a budgeting one.
+ */
+static size_t build_live_inventory(mgmt_peer_t *out)
+{
+    static const struct {
+        uint8_t first;
+        uint8_t transport;
+        mgmt_peer_role_t role;
+        uint8_t connected;
+        const char *name;
+        const char *cls;
+        uint16_t vid, pid;
+    } rows[] = {
+        { 0x2C, 3, MGMT_PEER_ROLE_MANAGEMENT_COMPANION, 1,
+          "Pixel Tablet", "Generic BT Gamepad", 0x18D1, 0x0001 },
+        { 0x58, 1, MGMT_PEER_ROLE_PHYSICAL_CONTROLLER, 1,
+          "DualSense Edge Wireless Control", "Sony DualSense", 0x054C, 0x0DF2 },
+        { 0x98, 3, MGMT_PEER_ROLE_PHYSICAL_CONTROLLER, 0,
+          "Xbox Wireless Controller", NULL, 0, 0 },
+        { 0xB4, 3, MGMT_PEER_ROLE_UNKNOWN, 0, NULL, NULL, 0, 0 },
+    };
+    for (size_t i = 0; i < 4; ++i) {
+        memset(&out[i], 0, sizeof(out[i]));
+        memset(out[i].address, rows[i].first, sizeof(out[i].address));
+        out[i].transport = rows[i].transport;
+        out[i].role = (uint8_t)rows[i].role;
+        out[i].connected = rows[i].connected;
+        out[i].le_slot = -1;
+        if (rows[i].name)
+            snprintf(out[i].name, sizeof(out[i].name), "%s", rows[i].name);
+        if (rows[i].cls)
+            snprintf(out[i].classification, sizeof(out[i].classification), "%s", rows[i].cls);
+        out[i].vendor_id = rows[i].vid;
+        out[i].product_id = rows[i].pid;
+    }
+    return 4;
+}
+
+static void test_the_live_inventory_paginates_instead_of_failing(void)
+{
+    mgmt_peer_t peers[4];
+    size_t count = build_live_inventory(peers);
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+
+    size_t length = mgmt_peers_format_page(peers, count, 0, out, sizeof(out), &info);
+    assert(length > 0);            // the regression: this returned 0
+    assert(!info.complete);
+    assert(info.next > 0);
+    assert(info.total == 4);
+    assert(strstr(out, "\"next\":") != NULL);
+    assert(out[length - 1] == '}');
+}
+
+static void test_every_page_keeps_room_for_its_own_suffix(void)
+{
+    // The property the reserve is supposed to guarantee, asserted directly
+    // across every cursor and every plausible capacity rather than only at the
+    // one size that happened to fail.
+    mgmt_peer_t peers[4];
+    size_t count = build_live_inventory(peers);
+    for (size_t capacity = 128; capacity <= MGMT_PEERS_RESPONSE_CAPACITY; ++capacity) {
+        char out[MGMT_PEERS_RESPONSE_CAPACITY];
+        for (int start = 0; start <= (int)count; ++start) {
+            mgmt_peers_page_info_t info;
+            size_t length = mgmt_peers_format_page(peers, count, start, out,
+                                                   capacity, &info);
+            if (length == 0)
+                continue;   // legitimately too small for even one row
+            assert(length < capacity);
+            assert(out[length] == '\0');
+            // A page always closes, and always says where the next one starts.
+            assert(out[length - 1] == '}');
+            assert(strstr(out, "],\"next\":") != NULL);
+            assert(info.complete == (info.next < 0));
+        }
+    }
+}
+
+static void test_following_the_cursor_visits_every_peer_exactly_once(void)
+{
+    mgmt_peer_t peers[4];
+    size_t count = build_live_inventory(peers);
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+    int cursor = 0;
+    int pages = 0;
+    int seen = 0;
+    while (1) {
+        size_t length = mgmt_peers_format_page(peers, count, cursor, out,
+                                               sizeof(out), &info);
+        assert(length > 0);
+        assert(++pages <= 8);
+        // Count the rows on this page by counting their ids.
+        for (const char *p = out; (p = strstr(p, "\"id\":\"")) != NULL; ++p)
+            ++seen;
+        if (info.complete) {
+            assert(info.next == -1);
+            assert(strstr(out, "\"next\":null") != NULL);
+            break;
+        }
+        assert(info.next > cursor);   // progress, always
+        cursor = info.next;
+    }
+    assert(seen == (int)count);
+    assert(pages >= 2);               // this inventory genuinely needs two
+}
+
 static void test_a_page_that_cannot_progress_fails_closed(void)
 {
     mgmt_peer_t peers[1];
@@ -681,6 +796,9 @@ int main(void)
     test_a_name_that_sanitises_to_nothing_is_dropped();
     test_a_small_inventory_fits_one_complete_page();
     test_a_full_inventory_pages_and_every_peer_appears_once();
+    test_the_live_inventory_paginates_instead_of_failing();
+    test_every_page_keeps_room_for_its_own_suffix();
+    test_following_the_cursor_visits_every_peer_exactly_once();
     test_a_page_that_cannot_progress_fails_closed();
     test_an_out_of_range_cursor_is_rejected();
     test_an_empty_inventory_is_a_complete_page();

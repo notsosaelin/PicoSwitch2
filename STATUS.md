@@ -7,6 +7,38 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **Peer pagination and controller routing fixed 2026-08-28; REQUIRES A REFLASH; device validation
+  pending.** Refreshing Paired Controllers with a DualSense Edge connected returned
+  `response_too_large` and the list never updated. **Reproduced over UART and then in a host
+  harness**, so the cause is established rather than inferred: the live inventory is four peers whose
+  encoded rows are 164, 182, 129 and 92 bytes, and the page from cursor 0 filled to 502 of 512 and
+  then could not fit its 11-byte `],"next":3}`. Cursors 1 through 4 all succeeded, which is exactly
+  what made it look like a size problem. **It was a budgeting one.** `MGMT_PEERS_SUFFIX_RESERVE` was
+  tested at the top of each loop iteration — against the length left by the *previous* row — and the
+  next row was then appended against the **full** capacity, so the reserve reserved nothing. Rows are
+  now appended against `capacity - SUFFIX_RESERVE`; cursor 0 returns two rows with `next:2` and the
+  inventory paginates. **No buffer was enlarged.** `mgmt_bonds` had the identical defect at both its
+  page and legacy sites and was corrected the same way. Routing: a bonded, non-companion peer is now
+  a **paired controller whether or not the adapter can currently name it**. Routing on role was wrong
+  and hid real hardware — role is live evidence only, so after a reboot every paired controller reads
+  `unknown` until it reconnects, and the DualSense sat in Diagnostics while genuinely bonded on both
+  transports. Terminology follows actual state now that there is no manual save action anywhere:
+  **Connected / Pairing / Paired / Not paired**, and a Classic controller between its ACL and its
+  link key reads "Pairing · Completing pairing" rather than implying the user must save it.
+  Diagnostics keeps the management relationship, raw LE bond slots and genuinely unattributable
+  records. **A cross-core BTstack dispatch race reported earlier in this investigation does not
+  exist and was withdrawn** — `btstack_host_init()`'s embedded run loop is USB-dongle only
+  (`btstack_host.c:1408`); CYW43 builds link `btstack_run_loop_async_context`, whose
+  `execute_on_main_thread` wraps the callback-list mutation in
+  `async_context_acquire_lock_blocking()`, and the linked context is
+  `async_context_threadsafe_background` with a real multicore-safe recursive mutex. No migration was
+  performed. **Both boards rebuild clean from scratch with no new warnings**, 73/73 host-test targets
+  passed, BTstack dependency contract passed, both install-reset markers verified, `peers_op_run`
+  frames remain 36 bytes (Pico W) and 44 bytes (Pico 2 W), 1303 Android JVM test executions with 0
+  failures, lint 0 errors, both APKs assembled, descriptor parity green at bridge contract 4 with an
+  unchanged 161-byte digest. The adapter hang seen while spamming refresh remains **unexplained**;
+  its most likely trigger — every refresh failing outright — is now gone, but no cause was proven.
+  [`docs/management/PROTOCOL.md`](docs/management/PROTOCOL.md)
 - **Bluetooth Management 2.0 — Phase 5 selective forget shipped 2026-08-28; REQUIRES A REFLASH;
   device validation pending.** The user can now remove one controller's pairing without disturbing
   anything else. `peers forget <id>` is **one atomic firmware operation**, not an app-issued

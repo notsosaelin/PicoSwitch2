@@ -259,9 +259,9 @@ fun DiagnosticsScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onExp
                         )
                     }
                 }
-                if (inventory.unidentified.isNotEmpty()) {
+                if (inventory.unattributed.isNotEmpty()) {
                     SubsectionLabel("Unattributed records")
-                    inventory.unidentified.forEach { listing ->
+                    inventory.unattributed.forEach { listing ->
                         LabelValueRow(
                             listing.address.ifBlank { listing.peerId },
                             listing.transports.joinToString("+") { it.name }.ifBlank { "no key" },

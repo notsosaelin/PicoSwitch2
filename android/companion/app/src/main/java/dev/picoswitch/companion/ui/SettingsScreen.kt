@@ -407,12 +407,12 @@ private fun PairedControllersCard(
             !inventory.hasControllers && ui.snapshot.capabilities.peers == CapabilityState.Unknown ->
                 InlineNotice("Tap refresh to read the adapter's paired controllers.")
             !inventory.hasControllers && inventory.hasDiagnosticPeers ->
-                // The adapter holds records, but none of them is a controller.
-                // Saying "no controllers" would be true and unhelpful; the rows
-                // it does hold are in Diagnostics, and this says where.
+                // The adapter holds records, but none of them is a controller
+                // pairing. Saying "no controllers" alone would be true and
+                // unhelpful; this says where the rows it does hold went.
                 InlineNotice(
-                    "No paired controllers. This adapter's remaining Bluetooth records are this " +
-                        "phone's own, or ones it cannot identify; both are in Diagnostics.",
+                    "No paired controllers. The Bluetooth records this adapter holds are this " +
+                        "phone's own management relationship; it is shown in Diagnostics.",
                 )
             !inventory.hasControllers ->
                 InlineNotice("This adapter has no paired controllers.")
@@ -433,10 +433,10 @@ private fun PairedControllersCard(
                     SubsectionLabel("Connected")
                     inventory.connected.forEach { PeerRow(it, trailing = forgetAction(it)) }
                 }
-                if (inventory.saved.isNotEmpty()) {
+                if (inventory.paired.isNotEmpty()) {
                     if (inventory.connected.isNotEmpty()) HorizontalDivider()
-                    SubsectionLabel("Saved pairings")
-                    inventory.saved.forEach { PeerRow(it, trailing = forgetAction(it)) }
+                    SubsectionLabel("Paired")
+                    inventory.paired.forEach { PeerRow(it, trailing = forgetAction(it)) }
                 }
                 if (inventory.recent.isNotEmpty()) {
                     HorizontalDivider()
@@ -478,14 +478,33 @@ private fun PeerRow(
         // Read-only rows. Nothing here is tappable until selective forget
         // exists, and a row that highlights but does nothing reads as broken.
         enabled = trailing != null,
-        trailing = trailing ?: {
-            when {
-                listing.connected -> StatusChip("Connected", tone = ChipTone.Positive)
-                listing.bonded -> StatusChip("Saved", tone = ChipTone.Neutral)
-                else -> StatusChip("Not paired", tone = ChipTone.Neutral)
-            }
-        },
+        trailing = trailing ?: { PeerStateChip(listing) },
     )
+}
+
+/**
+ * The peer's state in the user's vocabulary.
+ *
+ * There is no manual save action anywhere in this product, so "Saved" was never
+ * a state the user could reach or reason about. These are the four states that
+ * actually exist:
+ *
+ *  * **Connected** — linked now, with a durable credential.
+ *  * **Pairing** — linked now, credential not committed yet. A Classic
+ *    controller genuinely passes through this between the ACL coming up and its
+ *    link key being written, and the row must not imply the user has to do
+ *    something about it.
+ *  * **Paired** — the adapter holds a credential; the controller is elsewhere.
+ *  * **Not paired** — remembered by this app only.
+ */
+@Composable
+private fun PeerStateChip(listing: PeerListing) {
+    when {
+        listing.connected && listing.bonded -> StatusChip("Connected", tone = ChipTone.Positive)
+        listing.connected -> StatusChip("Pairing", tone = ChipTone.Attention)
+        listing.bonded -> StatusChip("Paired", tone = ChipTone.Neutral)
+        else -> StatusChip("Not paired", tone = ChipTone.Neutral)
+    }
 }
 
 /**
@@ -504,9 +523,11 @@ private fun peerSupportingText(listing: PeerListing): String {
         listing.rememberedRole == PeerRole.ManagementCompanion -> "This phone — management, remembered"
         listing.rememberedRole == PeerRole.ControllerLink -> "This phone — Controller Link, remembered"
         listing.rememberedRole == PeerRole.PhysicalController -> "Controller, remembered"
-        // Deliberately not "unrecognised device": the adapter holds a key for
-        // it, so the honest statement is that it cannot say what it is yet.
-        else -> "Saved pairing, not yet identified"
+        // Deliberately not "unrecognised device": the adapter holds a credential
+        // for it, so the honest statement is that it cannot say what it is YET.
+        // Role is live evidence, and after a reboot every paired controller
+        // reads like this until it reconnects.
+        else -> "Not yet identified"
     }
     val transports = when {
         // A row that exists only in history describes a device the adapter no
@@ -515,8 +536,10 @@ private fun peerSupportingText(listing: PeerListing): String {
         listing.transports.size > 1 -> "Bluetooth Classic + LE"
         listing.transports.contains(PeerTransport.Classic) -> "Bluetooth Classic"
         listing.transports.contains(PeerTransport.Le) -> "Bluetooth LE"
-        // Connected with no stored key: a controller part-way through pairing.
-        else -> "Not saved"
+        // Connected with no credential yet: mid-pairing, not a state the user
+        // has to act on, so it is named for what it is rather than as an absence.
+        listing.connected -> "Completing pairing"
+        else -> null
     }
     val lastConnected = listing.lastConnectedAtMillis
         ?.takeIf { !listing.connected }
