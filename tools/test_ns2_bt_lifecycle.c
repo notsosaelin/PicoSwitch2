@@ -134,8 +134,28 @@ static void test_classic_key_replacement(void)
                                                 true, true, true));
     assert(!ns2_bt_classic_key_commit_allowed(true, true, true, true));
 
-    assert(!ns2_bt_classic_auth_failure_forgets_existing(0x05));
-    assert(ns2_bt_classic_auth_failure_forgets_existing(0x06));
+    /*
+     * NO automatic recovery path may delete a durable bond because
+     * authentication failed. Not for 0x05 Authentication Failure, and -- since
+     * 2026-08-28 -- not for 0x06 PIN_OR_KEY_MISSING either.
+     *
+     * 0x06 used to qualify, on the reasoning that it specifically means the
+     * peer no longer holds the relationship. That is a correct reading of the
+     * status and the wrong conclusion about what to do: it is still a report
+     * from the far end of a failed radio link, and acting on it destroys a
+     * pairing the user made, silently and permanently.
+     *
+     * An adapter holding three bonds reported `btbonds: []` in the same powered
+     * session with no reflash and no power cycle. Each 0x05/0x06 recovery site
+     * deletes one, and there were enough of them across LE disconnect, LE
+     * re-encryption and Classic authentication to account for all three. The
+     * trigger was never proven; the response did not need proving to be wrong.
+     *
+     * Every status, including ones the spec has not assigned, must answer false.
+     */
+    for (unsigned status = 0; status <= 0xFF; ++status) {
+        assert(!ns2_bt_classic_auth_failure_forgets_existing((uint8_t)status));
+    }
 }
 
 static void test_switch2_custom_admission(void)

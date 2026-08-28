@@ -154,7 +154,9 @@ bool ns2_bt_classic_key_commit_allowed(bool pairing_lockout,
 
 bool ns2_bt_classic_auth_failure_forgets_existing(uint8_t hci_status)
 {
-    return hci_status == 0x06;
+    // No status qualifies. See the header for why 0x06 no longer does.
+    (void)hci_status;
+    return false;
 }
 
 ns2_bt_custom_admission_t ns2_bt_custom_admission_decide(

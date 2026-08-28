@@ -304,9 +304,37 @@ bool ns2_bt_classic_key_commit_allowed(bool pairing_lockout,
                                        bool pending_key_present,
                                        bool key_update_admitted);
 
-// Authentication Failure (0x05) is generic and must not destroy a previously
-// usable local key. PIN_OR_KEY_MISSING (0x06) specifically establishes that
-// the peer no longer has the relationship.
+/*
+ * May an automatic recovery path delete a durable bond because authentication
+ * failed with this HCI status?
+ *
+ * **No, for every status.** This is now a constant `false`, kept as a function
+ * so the rule has one name, one place, and one test.
+ *
+ * It used to return true for 0x06 PIN_OR_KEY_MISSING, on the reasoning that the
+ * status specifically means the peer no longer holds the relationship. The
+ * reasoning is sound about the PEER and wrong about the consequence: 0x06 is
+ * still a report from the other end of a radio link, arriving on a connection
+ * that has already failed, and treating it as authority to mutate persistent
+ * storage means one bad handshake permanently destroys a pairing the user made.
+ *
+ * Observed 2026-08-28: an adapter that had three bonds earlier in the same
+ * powered session reported `btbonds: []` with no reflash and no power cycle.
+ * Each 0x05/0x06 recovery site deletes one bond, and there were enough sites
+ * across LE disconnect, LE re-encryption and Classic authentication to account
+ * for all of them. The exact trigger was never proven; the destructive response
+ * to it did not need proving to be wrong.
+ *
+ * The replacement policy: a failed authentication drops the LINK and leaves the
+ * CREDENTIAL alone. If the bond really is stale the next attempt fails the same
+ * way -- bounded, visible, and recoverable -- and the user resolves it with an
+ * explicit action. Destroying durable state is reserved for things the user
+ * asked for: selective forget, `bonds remove`, the BOOTSEL wipe, and the
+ * install reset.
+ *
+ * Retained rather than deleted so that reintroducing automatic deletion has to
+ * come past this comment and its test.
+ */
 bool ns2_bt_classic_auth_failure_forgets_existing(uint8_t hci_status);
 
 typedef enum {

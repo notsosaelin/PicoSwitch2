@@ -119,6 +119,69 @@ and the two collapse into one row.
 **Rule: the live RPA is connection-local metadata. Anything durable — a bond record, a Classic
 address, a peer row, history — uses the resolved identity.**
 
+### Automatic recovery may never delete a durable bond
+
+**Destroying persistent pairing state is an explicit user action, never an error handler's idea.**
+
+Four sites used to delete a bond automatically when authentication failed, each with locally
+reasonable logic and no view of the others:
+
+| Site | Trigger | Was |
+|---|---|---|
+| LE disconnect handler | reason 0x05 / 0x06 | deleted the dropped peer's bond |
+| LE `SM_EVENT_REENCRYPTION_COMPLETE` | any failure status | deleted the peer's bond, then re-paired if the window was open |
+| Switch 2 direct-HCI re-encryption | any failure status | deleted the custom bond and forced fresh pairing |
+| Classic authentication complete | 0x06 only | dropped the durable link key |
+
+Together they can empty the database. Observed 2026-08-28: an adapter holding three bonds reported
+`btbonds: []` in the same powered session, with no reflash and no power cycle. The trigger was never
+proven and did not need to be — the response was wrong regardless.
+
+All four now preserve the credential and drop only the link. A genuinely stale bond therefore fails
+the same way every attempt: bounded, visible, and recoverable by an explicit act. The reconnect
+cascade is already bounded and already declines to chase a peer that left deliberately, so nothing
+loops.
+
+Note the Switch 2 pair specifically: the SM path already preserved the custom bond ("an SM failure
+can be a local state/timing error") while the direct-HCI path deleted it. Which half of the same
+recovery ran decided whether the pairing survived. They agree now.
+
+Destructive paths that remain, all explicitly user-driven: Phase 5 `peers forget`, `bonds remove`,
+the BOOTSEL triple-tap wipe, the `btfresh` diagnostic, the MouthPad clear-bond command, and the
+first-boot install reset.
+
+`ns2_bt_classic_auth_failure_forgets_existing()` states the rule once and is pinned across all 256
+status values. Reintroducing automatic deletion has to come past it.
+
+### The TLV store is transaction-safe; one interrupted write cannot empty it
+
+Worth recording, because "every bond vanished" invites the theory that a half-finished flash write
+corrupted the database. It cannot, and that matters: it is what rules out storage corruption and
+points at deletion-by-code instead.
+
+BTstack's `btstack_tlv_flash_bank` is A/B with an epoch. Deleting one tag writes zeros into that
+entry's delete field **in place** — no bank rewrite. Compaction erases the *other* bank, copies the
+live entries, and writes the new bank's header **last**. The header is the commit marker: until it
+exists the new bank fails its magic check and `get_latest_bank()` keeps selecting the old one. An
+interruption at any point leaves the previous bank intact and selected.
+
+The project's runtime `btstack_erase_flash_banks()` is compiled out entirely on CYW43
+(`#if !defined(BTSTACK_USE_CYW43)`), so no runtime mass-erase path exists on this hardware either.
+
+### Flash writes park the other core, so error paths should not write flash
+
+`flash_safe_execute()` is called from core 1 (the BTstack worker) by every TLV mutation, and parks
+core 0 through `multicore_lockout_victim_init()`, registered in `usb.c` inside the TinyUSB loop —
+where an existing in-tree note already records that core 0 "cannot grant a lockout promptly from
+this tight TinyUSB loop while streaming". `pico_flash_bank` passes `UINT32_MAX` as the enter/exit
+timeout, so neither core gives up.
+
+No lock-order defect was proven: core 0 waits on the async-context mutex with interrupts enabled, so
+the lockout IRQ can still park it, and the sequence resolves. But the exposure is real and scales
+with how often error handling writes flash. Removing automatic bond deletion removes that class of
+write almost entirely — normal authentication and reconnect failures are now RAM and state-machine
+operations. That is the containment actually available without redesigning persistence.
+
 ### Controller bond-recovery must never reach the companion
 
 `SM_EVENT_REENCRYPTION_COMPLETE` with a failure status deletes the peer's bond so the next attempt

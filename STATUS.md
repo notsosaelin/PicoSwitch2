@@ -7,6 +7,35 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **Automatic bond destruction removed 2026-08-28; REQUIRES A REFLASH; device validation pending.**
+  On the latest firmware an adapter holding three bonds reported `btbonds: []` **in the same powered
+  session, with no reflash and no power cycle**, and then stopped answering UART entirely — `ping`
+  included, which is pure core 0 and touches no BTstack marshalling. **The trigger is still not
+  proven and is not claimed.** What is proven is the response: **four separate sites deleted a
+  durable bond automatically when authentication failed**, each locally reasonable and none aware of
+  the others — the LE disconnect handler on reason 0x05/0x06, the LE `SM_EVENT_REENCRYPTION_COMPLETE`
+  failure branch, the Switch 2 direct-HCI re-encryption path, and Classic authentication on 0x06.
+  Between them they can empty the database, and three bonds is three deletions. **All four now
+  preserve the credential and drop only the link.** A genuinely stale bond fails the same way every
+  attempt — bounded, visible, recoverable by an explicit act — instead of erasing itself silently;
+  the reconnect cascade was already bounded and already declines to chase a peer that left
+  deliberately, so nothing loops. The Switch 2 pair is worth singling out: the SM path already
+  preserved the custom bond while the direct-HCI path deleted it, so **which half of the same
+  recovery ran decided whether the pairing survived**. Destructive paths that remain are all
+  user-driven: `peers forget`, `bonds remove`, the BOOTSEL wipe, `btfresh`, MouthPad clear-bond, and
+  the install reset. Two audits closed alongside it. **TLV storage is transaction-safe**: deleting a
+  tag writes zeros in place, compaction writes the new bank's header *last* as the commit marker, and
+  an interruption leaves the previous bank selected — so an interrupted write **cannot** make every
+  bond vanish, which is what rules out corruption and points at deletion-by-code. The runtime
+  `btstack_erase_flash_banks()` is compiled out on CYW43 entirely. **`flash_safe_execute()`** runs on
+  core 1 and parks core 0 via a lockout registered inside the TinyUSB loop, with `UINT32_MAX`
+  timeouts on both sides; no lock-order defect was proven, but the exposure scales with how often
+  error handling writes flash, and removing automatic deletion makes normal authentication failures
+  RAM-only. That is the containment available without redesigning persistence. Both boards rebuild
+  clean with no new warnings, 73/73 host targets, the policy pinned across all 256 HCI status values,
+  `peers_op_run` frames unchanged at 36/44 bytes, 1303 Android JVM executions with 0 failures, lint 0
+  errors, descriptor parity green.
+  [`docs/bluetooth/PERSISTENCE.md`](docs/bluetooth/PERSISTENCE.md)
 - **Peer pagination and controller routing fixed 2026-08-28; REQUIRES A REFLASH; device validation
   pending.** Refreshing Paired Controllers with a DualSense Edge connected returned
   `response_too_large` and the list never updated. **Reproduced over UART and then in a host
