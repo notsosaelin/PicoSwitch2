@@ -23,6 +23,7 @@
 #include "bootsel_action.h"
 #include "config.h"
 #include "ds5_audio_bridge.h"
+#include "mgmt_pairing.h"
 #include "ns2_kbm_runtime.h"
 #include "ns2_owner_led.h"
 #include "ns2_bt_recovery_runtime.h"
@@ -302,10 +303,48 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
     // cancelling it outright -- see btstack_host.c. pairing_until_ms is
     // cleared either way; the LED's "pairing" blink below independently
     // checks the deferred flag so it keeps blinking through the grace period.
+    // A management client asked to pair a controller. This is the ONLY place
+    // that acts on it, and it calls the same open_pairing_window() the BOOTSEL
+    // gesture calls, so the radio behaves identically whichever trigger started
+    // it (design §32). The difference is authority, not behaviour: the remote
+    // path opens controller discovery WITHOUT admitting a new management bond.
+    if (btstack_host_pairing_take_remote_start()) {
+        open_pairing_window(now);
+        if (pairing_until_ms) {
+            // Downgrade the grant the local gesture would have made. Ordered
+            // after open_pairing_window() because that path opens both.
+            btstack_host_set_controller_pairing_window_open(true);
+            btstack_host_pairing_note_state(MGMT_PAIRING_DISCOVERING,
+                                            MGMT_PAIRING_REASON_NONE,
+                                            pairing_until_ms);
+        } else {
+            // open_pairing_window() declined -- a previous candidate is still
+            // finishing. Report it rather than leaving the client watching a
+            // window that never opened.
+            btstack_host_pairing_note_state(MGMT_PAIRING_BLOCKED,
+                                            MGMT_PAIRING_REASON_BUSY, now);
+        }
+    }
+    if (btstack_host_pairing_take_remote_cancel() && pairing_until_ms) {
+        bt_set_pairing_mode(false);
+        pairing_until_ms = 0;
+        pairing_wait_for_disconnect = false;
+        btstack_host_pairing_note_state(MGMT_PAIRING_CANCELLED,
+                                        MGMT_PAIRING_REASON_NONE, now);
+    }
+
     if (pairing_until_ms && now >= pairing_until_ms) {
         bt_set_pairing_mode(false);
         pairing_until_ms = 0;
         pairing_wait_for_disconnect = false;
+        // Firmware owns the deadline. The app never has to send a cancel for
+        // safety, and losing the app cannot leave the adapter discoverable
+        // (design §34).
+        if (btstack_host_pairing_active()) {
+            btstack_host_pairing_note_state(MGMT_PAIRING_TIMED_OUT,
+                                            MGMT_PAIRING_REASON_NO_CONTROLLER,
+                                            now);
+        }
     }
 
     // One dongle serves one controller: a controller finishing connection
@@ -323,6 +362,13 @@ static void control_timer_handler(btstack_timer_source_t *ts) {
         logical_source_complete()) {
         bt_set_pairing_mode(false);
         pairing_until_ms = 0;
+        // A controller completed during this window: success, whichever trigger
+        // opened it. The bond is already persisted by the ordinary pairing
+        // path; nothing extra is written here (design §39).
+        if (btstack_host_pairing_active()) {
+            btstack_host_pairing_note_state(MGMT_PAIRING_PAIRED,
+                                            MGMT_PAIRING_REASON_NONE, now);
+        }
     }
 
     // ---------------------------------------------------------------------

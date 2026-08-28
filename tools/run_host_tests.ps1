@@ -58,6 +58,7 @@ $tests = @(
     @{ g='management'; n='test_bonds_command';                      src='tools/test_bonds_command.c src/mgmt_bonds.c';                                  flags='' }
     @{ g='management'; n='test_mgmt_bonds';                         src='tools/test_mgmt_bonds.c src/mgmt_bonds.c';                                     flags='' }
     @{ g='management'; n='test_mgmt_peers';                         src='tools/test_mgmt_peers.c src/mgmt_peers.c';                                     flags='' }
+    @{ g='management'; n='test_mgmt_pairing';                       src='tools/test_mgmt_pairing.c src/mgmt_pairing.c';                                 flags='' }
     @{ g='management'; n='test_config_save_tracker';                src='tools/test_config_save_tracker.c src/config_save_tracker.c';                   flags='' }
     @{ g='management'; n='test_ns2_kbm_config_persistence';         src='tools/test_ns2_kbm_config_persistence.c src/config_persist.c src/ns2_kbm.c';   flags='' }
 

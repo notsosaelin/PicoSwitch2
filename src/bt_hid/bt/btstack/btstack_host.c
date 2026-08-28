@@ -8,6 +8,7 @@
 #include "btstack_host.h"
 #include "mgmt_bonds.h"
 #include "mgmt_peers.h"
+#include "mgmt_pairing.h"
 #include "ns2_bt_lifecycle.h"
 #include "ns2_ble_reconnect.h"
 #include "ns2_owner_led.h"
@@ -940,6 +941,23 @@ enum {  // SCAN_SUPPRESS cause (btlife_event_t.a) -- why a scan restart was refu
 static void btlife_record(uint8_t code, uint8_t a, uint16_t b);
 
 static bool hid_pairing_window_open;
+/*
+ * May a NEW management/companion bond be admitted right now?
+ *
+ * Split from hid_pairing_window_open by Phase 6. They used to be the same flag,
+ * so opening a controller pairing window also admitted a new management bond.
+ * Locally that is defensible: someone was holding the adapter and pressed the
+ * button, and physical presence is the authority. Remotely it is not -- a "pair
+ * a controller" request arriving over the air would open a window in which a
+ * DIFFERENT phone could claim the management relationship, which is a much
+ * larger grant than the user asked for.
+ *
+ * So management bonding follows the LOCAL gesture only. Remote pairing opens
+ * controller discovery and grants no management authority whatsoever. Phase 0
+ * recorded this as a product decision owed before Phase 6 (audit §7.3); this is
+ * the decision.
+ */
+static bool mgmt_bond_window_open;
 static bool pairing_lockout;
 static bool install_reset_bootstrap_consumed;
 
@@ -961,7 +979,18 @@ static bool install_reset_bootstrap_consumed;
 // It only makes us answer inquiry, which is what carries the CoD.
 void btstack_host_set_pairing_window_open(bool open)
 {
+    // The LOCAL gesture path. Physical presence is what authorises a new
+    // management bond, so this entry point grants both; the remote entry point
+    // below grants only controller discovery. Closing always clears both.
+    mgmt_bond_window_open = open;
+    btstack_host_set_controller_pairing_window_open(open);
+}
+
+void btstack_host_set_controller_pairing_window_open(bool open)
+{
     hid_pairing_window_open = open;
+    if (!open)
+        mgmt_bond_window_open = false;
 #if !defined(BTSTACK_USE_ESP32) && !defined(BTSTACK_USE_NRF) && !defined(CONFIG_USB2BLE)
     if (hid_state.powered_on) {
         // Bonded controllers remain connectable outside the window. New
@@ -1004,7 +1033,11 @@ static bool config_ble_bond_admission_open(void)
         .console_awake = true,
         .wake_active = false,
         .scanning = false,
-        .pairing_window_open = hid_pairing_window_open,
+        // The MANAGEMENT bonding window, not the controller one. These were the
+        // same flag until Phase 6, so a remote "pair a controller" request would
+        // have opened a window in which another phone could claim management.
+        // See mgmt_bond_window_open.
+        .pairing_window_open = mgmt_bond_window_open,
         .client_connected = config_ble.handle != HCI_CON_HANDLE_INVALID,
         .client_bonded = config_ble.handle != HCI_CON_HANDLE_INVALID &&
             gap_bonded(config_ble.handle),
@@ -7395,6 +7428,171 @@ static void peers_forget_run(void)
         peers_op_ok = false;
     }
 }
+
+// ============================================================================
+// REMOTE CONTROLLER PAIRING (management -> the one pairing state machine)
+// ============================================================================
+//
+// There is no second pairing flow here. `open_pairing_window()` in
+// ns2_bt_host.c is the authoritative operation and the BOOTSEL gesture's only
+// entry point; this records a request that the SAME state machine picks up on
+// its next control tick, so the radio behaves identically whichever trigger
+// started it (design §32).
+//
+// Everything below is core1-owned. The request flag is written from the
+// run-loop callback dispatched by core0, and read by control_timer_handler(),
+// which is itself a run-loop timer -- so both sit in one context and need no
+// synchronisation beyond that.
+static uint32_t pairing_operation_id;
+static uint8_t pairing_state = MGMT_PAIRING_IDLE;
+static uint8_t pairing_reason = MGMT_PAIRING_REASON_NONE;
+static uint8_t pairing_candidates;
+static uint32_t pairing_deadline_ms;
+static bool pairing_remote_start_pending;
+static bool pairing_remote_cancel_pending;
+
+void btstack_host_pairing_note_state(uint8_t state, uint8_t reason,
+                                     uint32_t deadline_ms)
+{
+    pairing_state = state;
+    pairing_reason = reason;
+    pairing_deadline_ms = deadline_ms;
+    if (state == MGMT_PAIRING_DISCOVERING)
+        pairing_candidates = 0;
+}
+
+void btstack_host_pairing_note_candidate(void)
+{
+    if (pairing_candidates < 255u &&
+        (pairing_state == MGMT_PAIRING_DISCOVERING ||
+         pairing_state == MGMT_PAIRING_CONNECTING)) {
+        pairing_candidates++;
+    }
+}
+
+bool btstack_host_pairing_take_remote_start(void)
+{
+    bool wanted = pairing_remote_start_pending;
+    pairing_remote_start_pending = false;
+    return wanted;
+}
+
+bool btstack_host_pairing_take_remote_cancel(void)
+{
+    bool wanted = pairing_remote_cancel_pending;
+    pairing_remote_cancel_pending = false;
+    return wanted;
+}
+
+uint32_t btstack_host_pairing_begin_operation(void)
+{
+    return ++pairing_operation_id;
+}
+
+void btstack_host_pairing_snapshot(mgmt_pairing_snapshot_t *out, uint32_t now_ms)
+{
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->operation = pairing_operation_id;
+    out->state = pairing_state;
+    out->reason = pairing_reason;
+    out->candidates = pairing_candidates;
+    bool active = pairing_state == MGMT_PAIRING_DISCOVERING ||
+                  pairing_state == MGMT_PAIRING_CONNECTING;
+    out->remaining_ms = mgmt_pairing_remaining_ms(pairing_deadline_ms, now_ms, active);
+}
+
+bool btstack_host_pairing_active(void)
+{
+    return pairing_state == MGMT_PAIRING_DISCOVERING ||
+           pairing_state == MGMT_PAIRING_CONNECTING;
+}
+
+// Deferred management reply, same single-slot shape as peers/bonds.
+static btstack_context_callback_registration_t pairing_cb;
+static volatile bool pairing_op_pending;
+static volatile bool pairing_op_done;
+static volatile bool pairing_op_ok;
+static volatile uint8_t pairing_op_action;
+static char pairing_json[MGMT_PAIRING_RESPONSE_CAPACITY];
+
+static void pairing_op_run(void *ctx)   // BTstack thread (core1)
+{
+    (void)ctx;
+    uint32_t now = btstack_run_loop_get_time_ms();
+    mgmt_pairing_action_t action = (mgmt_pairing_action_t)pairing_op_action;
+
+    if (action == MGMT_PAIRING_START) {
+        mgmt_pairing_reason_t why = MGMT_PAIRING_REASON_NONE;
+        // `already_active` covers a window the USER opened with the gesture as
+        // well as one a client started: it is the same window, and re-arming it
+        // remotely would silently extend something the user did physically.
+        if (!mgmt_pairing_start_allowed(g_mgmt_enabled,
+                                        btstack_host_pairing_active(),
+                                        pairing_lockout, &why)) {
+            mgmt_pairing_snapshot_t blocked;
+            btstack_host_pairing_snapshot(&blocked, now);
+            blocked.state = MGMT_PAIRING_BLOCKED;
+            blocked.reason = (uint8_t)why;
+            pairing_op_ok = false;
+            (void)mgmt_pairing_format_status(&blocked, pairing_json,
+                                             sizeof(pairing_json));
+        } else {
+            // The control tick performs the actual open, so one code path --
+            // the gesture's -- still owns every radio side effect.
+            pairing_remote_start_pending = true;
+            pairing_operation_id++;
+            pairing_state = MGMT_PAIRING_DISCOVERING;
+            pairing_reason = MGMT_PAIRING_REASON_NONE;
+            pairing_candidates = 0;
+            pairing_deadline_ms = now + MGMT_PAIRING_WINDOW_MS;
+            mgmt_pairing_snapshot_t started;
+            btstack_host_pairing_snapshot(&started, now);
+            pairing_op_ok = mgmt_pairing_format_status(&started, pairing_json,
+                                                       sizeof(pairing_json)) > 0;
+        }
+    } else if (action == MGMT_PAIRING_CANCEL) {
+        // Idempotent by design (§64): cancelling when idle is a success that
+        // reports idle, because the caller asked for an end state and that is
+        // the end state.
+        if (btstack_host_pairing_active()) {
+            pairing_remote_cancel_pending = true;
+            pairing_state = MGMT_PAIRING_CANCELLED;
+            pairing_reason = MGMT_PAIRING_REASON_NONE;
+            pairing_deadline_ms = now;
+        }
+        mgmt_pairing_snapshot_t cancelled;
+        btstack_host_pairing_snapshot(&cancelled, now);
+        pairing_op_ok = mgmt_pairing_format_status(&cancelled, pairing_json,
+                                                   sizeof(pairing_json)) > 0;
+    } else {
+        mgmt_pairing_snapshot_t status;
+        btstack_host_pairing_snapshot(&status, now);
+        pairing_op_ok = mgmt_pairing_format_status(&status, pairing_json,
+                                                   sizeof(pairing_json)) > 0;
+    }
+
+    if (!pairing_op_ok && pairing_json[0] == '\0')
+        strcpy(pairing_json, "{\"error\":\"response_too_large\",\"code\":413}");
+    pairing_op_pending = false;
+    pairing_op_done = true;
+}
+
+bool btstack_host_pairing_request(uint8_t action)
+{
+    if (pairing_op_pending) return false;
+    pairing_op_action = action;
+    pairing_op_done = false;
+    pairing_op_ok = false;
+    pairing_op_pending = true;
+    pairing_cb.callback = &pairing_op_run;
+    pairing_cb.context = NULL;
+    btstack_run_loop_execute_on_main_thread(&pairing_cb);
+    return true;
+}
+
+bool btstack_host_pairing_done(void) { return pairing_op_done; }
+const char *btstack_host_pairing_json(void) { return pairing_json; }
 
 static void peers_op_run(void *ctx)  // BTstack thread (core1)
 {

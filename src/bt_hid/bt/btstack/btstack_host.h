@@ -71,8 +71,33 @@ bool btstack_host_pairing_close_deferred(void);
 // Management first-bond admission follows the same explicit BOOTSEL pairing
 // window as controller discovery. The transport sets this edge when pairing
 // mode opens/closes; bonded management reconnects do not require it.
+// Opens the controller pairing window AND admits a new management bond. This
+// is the LOCAL gesture's entry point: physical presence at the adapter is what
+// authorises a new management relationship.
 void btstack_host_set_pairing_window_open(bool open);
+// Opens controller discovery ONLY. Remote pairing uses this: a request arriving
+// over the air must not open a window in which a different phone could claim
+// the management relationship. Closing clears both windows.
+void btstack_host_set_controller_pairing_window_open(bool open);
 bool btstack_host_pairing_window_open(void);
+
+// --- Remote controller pairing -------------------------------------------
+// The management side of the ONE pairing state machine. `request` marshals a
+// start/status/cancel onto the BTstack thread the same way peers/bonds do; the
+// control tick in ns2_bt_host.c performs the actual window open, so the radio
+// behaves identically whichever trigger started it.
+bool btstack_host_pairing_request(uint8_t action);   // mgmt_pairing_action_t
+bool btstack_host_pairing_done(void);
+const char *btstack_host_pairing_json(void);
+// Consumed by the control tick (core1) to learn a management client asked.
+bool btstack_host_pairing_take_remote_start(void);
+bool btstack_host_pairing_take_remote_cancel(void);
+// Reported by the control tick as the shared state machine advances.
+void btstack_host_pairing_note_state(uint8_t state, uint8_t reason,
+                                     uint32_t deadline_ms);
+void btstack_host_pairing_note_candidate(void);
+uint32_t btstack_host_pairing_begin_operation(void);
+bool btstack_host_pairing_active(void);
 
 // Start scanning with a timeout (auto-stops after timeout_ms)
 void btstack_host_start_timed_scan(uint32_t timeout_ms);

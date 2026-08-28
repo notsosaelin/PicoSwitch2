@@ -17,6 +17,7 @@ one place where the design's own recommendation was tried and withdrawn (§8c).
 | 3 — peer inventory | Complete 2026-08-27 | yes | yes |
 | 4 — names, classification, history | Complete 2026-08-28 | yes | yes |
 | 5 — selective forget | Complete 2026-08-28 | yes | yes |
+| 6 — remote pairing | Complete 2026-08-28 | yes | yes |
 
 Every phase's software validation is in §10; each phase's hardware gate is a checklist the
 maintainer runs (§§11–14) and is **not** claimed as performed here.
@@ -584,7 +585,42 @@ The companion is refused on its durable identity (structural, immune to a classi
 **and** on role (which also catches the same phone in its Controller Link relationship). Getting this
 wrong would cut off the app issuing the command, so it is worth the redundancy.
 
-## 8e. What Phase 6 should do
+## 8e. Phase 6 — done 2026-08-28
+
+Remote physical-controller pairing, and the product decision Phase 0 said was owed first.
+
+| Planned | Outcome |
+|---|---|
+| One state machine (§32) | `pairing start` sets a request the existing control tick consumes and calls the SAME `open_pairing_window()` the BOOTSEL gesture calls. No second flow, no duplicated radio behaviour. |
+| Bounded window (§34) | Firmware-owned, the established 30 s controller window. |
+| State machine (§35) | Mapped onto the existing one: `idle / discovering / connecting / paired / timed_out / cancelled / blocked`. |
+| Management API (§36) | `pairing start\|status\|cancel`, deferred-reply shape shared with `peers`/`bonds`. |
+| Polling (§37) | Command/response only, so the app polls at 1 s through the existing serialized session. No new GATT surface. |
+| Success (§39) | The ordinary pairing path persists the bond; the app re-reads the inventory. Nothing extra is written. |
+| Failure codes (§40) | `no_controller`, `management_disabled`, `busy`, `locked_out` — named, not collapsed. |
+| Idempotent cancel (§64) | Cancelling when idle succeeds and reports idle. |
+| Operation generations (§65) | `op` increments per start; a status for an older one cannot describe the current attempt, and an adapter switch mid-operation drops the client's view. |
+
+### The §7.3 decision: split the two pairing authorities
+
+`mgmt_accept_bonding()` read the same flag as controller pairing, so opening a controller window also
+admitted a new management bond. Locally that is defensible — someone was holding the adapter and
+pressed the button, and physical presence is the authority. Remotely it is not: a "pair a controller"
+request travelling over the air would open a window in which a **different phone** could claim the
+management relationship, which is a far larger grant than the user asked for.
+
+So they are split. `btstack_host_set_pairing_window_open()` (the local gesture) grants both;
+`btstack_host_set_controller_pairing_window_open()` (remote) grants controller discovery only.
+Closing clears both. This is the last of Phase 0's open product decisions.
+
+### Deliberately not done
+
+The window stays at 30 s rather than §34's suggested 60 s default. §32 requires one state machine,
+and that machine's duration is what the physical gesture already uses; changing it would alter
+behaviour the user relies on in order to satisfy a recommendation about a number. The client is told
+the real remaining time rather than a nominal one.
+
+## 8f. What Phase 7 should do
 
 Remote physical-controller pairing. The Phase 0 audit's decisive positive result still stands: opening
 the pairing window does not tear down BLE management. The product decision owed before starting is

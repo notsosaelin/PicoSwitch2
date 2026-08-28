@@ -22,6 +22,7 @@ import dev.picoswitch.companion.data.CompanionAssociationState
 import dev.picoswitch.companion.data.PeerListing
 import dev.picoswitch.companion.model.BondInfo
 import dev.picoswitch.companion.model.CapabilityState
+import dev.picoswitch.companion.model.PairingState
 import dev.picoswitch.companion.model.PeerRole
 import dev.picoswitch.companion.model.PeerTransport
 
@@ -394,6 +395,44 @@ private fun PairedControllersCard(
             ) { Icon(Icons.Default.Refresh, "Refresh paired controllers") }
         },
     ) {
+        // Pair New Controller (design §31). Offered only over a live management
+        // session, because that session IS the authority for the request.
+        val pairing = ui.pairing
+        if (pairing != null && pairing.active) {
+            InlineNotice(
+                if (pairing.state == PairingState.Connecting) {
+                    "Connecting to a controller…"
+                } else {
+                    "Looking for a controller. Put it in pairing mode. " +
+                        "${(pairing.remainingMillis / 1000).coerceAtLeast(0)}s left."
+                },
+                icon = Icons.Default.BluetoothSearching,
+                tone = ChipTone.Attention,
+            )
+            OutlinedButton(
+                onClick = viewModel::cancelControllerPairing,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Stop pairing") }
+        } else {
+            FilledTonalButton(
+                onClick = viewModel::startControllerPairing,
+                enabled = ui.connection.connected && !ui.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(Icons.Default.Add, null, Modifier.size(LayoutTokens.IconSize))
+                Spacer(Modifier.width(LayoutTokens.Space2))
+                Text("Pair new controller")
+            }
+            // Says where the controller has to be, since the adapter may be
+            // behind a TV and the user is holding neither.
+            Text(
+                "Opens pairing on the adapter for 30 seconds. You do not need to touch it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        HorizontalDivider()
+
         when {
             ui.snapshot.capabilities.peers == CapabilityState.Unsupported ->
                 InlineNotice("Update the adapter firmware to see its paired controllers here.")

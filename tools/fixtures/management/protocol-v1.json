@@ -46,6 +46,10 @@
       "command": "peers forget p_5E6F7A8B",
       "reply": {"ok":true,"id":"p_5E6F7A8B","result":"removed","bonded":false,"tr":0}
     },
+    "pairingStatus": {
+      "command": "pairing status",
+      "reply": {"ok":true,"op":7,"state":"discovering","reason":"none","remaining_ms":24000,"candidates":1}
+    },
     "amiiboStatus": {
       "command": "amiibo status",
       "reply": {"loaded":false,"dirty":false,"presented":false,"v3loaded":true,"persisted":true,"persistPending":false,"size":2048,"signature":true,"hasSave2":false,"usingSave2":false,"generation":42,"payloadCrc":"A1B2C3D4","uid":"04112233445566","figureId":"0000000000000003","upload":{"active":false,"received":0,"size":0}}

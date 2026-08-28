@@ -437,6 +437,19 @@ class AdapterRepository(private val transport: ManagementTransport) {
         return outcome
     }
 
+    /**
+     * Remote controller pairing.
+     *
+     * Thin on purpose: the adapter owns the window, the deadline and the state
+     * machine, so there is nothing here to keep in step with it. The app polls
+     * and renders; it never has to close anything for safety.
+     */
+    suspend fun startPairing(): PairingStatus = client.startPairing()
+
+    suspend fun pairingStatus(): PairingStatus = client.pairingStatus()
+
+    suspend fun cancelPairing(): PairingStatus = client.cancelPairing()
+
     suspend fun listBonds(): List<BondInfo> {
         markBondsUnknown()
         val enumeration = client.listBonds()

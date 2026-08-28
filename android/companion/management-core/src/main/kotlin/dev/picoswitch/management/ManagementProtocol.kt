@@ -374,6 +374,26 @@ object ManagementProtocol {
             )
         }
 
+    /**
+     * One controller-pairing status.
+     *
+     * Tolerant about vocabulary and strict about the operation generation: a
+     * newer adapter may name a state or reason this build does not know, and
+     * rendering that as `Unknown` is better than refusing a reply that still
+     * carries the generation and the countdown.
+     */
+    fun pairingStatus(command: String, response: String): PairingStatus =
+        decode(command, response) { value ->
+            val operation = value.optionalLong("op") ?: throw incomplete(command)
+            PairingStatus(
+                operation = operation,
+                state = PairingState.fromWire(value.optionalString("state")),
+                reason = PairingReason.fromWire(value.optionalString("reason")),
+                remainingMillis = value.optionalLong("remaining_ms") ?: 0,
+                candidates = value.optionalInt("candidates") ?: 0,
+            )
+        }
+
     fun legacyBonds(command: String, response: String): BondEnumeration = decode(command, response) { value ->
         val array = value["bonds"]?.jsonArray ?: throw incomplete(command)
         BondEnumeration(
@@ -587,6 +607,18 @@ object ManagementCommands {
         require(index >= 0)
         return "bonds remove $index"
     }
+
+    /**
+     * Remote controller pairing.
+     *
+     * No duration argument: the window is the firmware's to choose, and the
+     * same window the adapter's own pairing button opens. Letting a client set
+     * it would make the physical gesture's behaviour depend on what an app
+     * asked for earlier.
+     */
+    const val PAIRING_START = "pairing start"
+    const val PAIRING_STATUS = "pairing status"
+    const val PAIRING_CANCEL = "pairing cancel"
 
     /** The cursor is a peer index, never a database slot; slots are reused, peers are sorted. */
     fun peersPage(cursor: Int? = null): String {
