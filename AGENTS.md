@@ -471,6 +471,16 @@ If the task changes the web portal or management protocol:
 - run existing portal/static tests
 - run relevant management host tests
 - check wire compatibility if command formats change
+- run `python tools/check_management_command_parity.py` whenever a command verb is added,
+  renamed, or removed on either side
+
+A command reaches `handle_line()` in `src/config.c` and, separately, must be accepted by
+`config_wireless_command_allowed()` in `src/config_wireless_bridge.c`. Only the second gates BLE.
+A verb added to the dispatcher alone compiles, passes every test, and works over USB CDC and UART
+while answering `unknown command` over BLE — so the companion, which probes capabilities by
+looking for exactly that reply, reports the feature missing and asks the user to update firmware
+that already has it. `pairing start`/`status`/`cancel` shipped that way. The parity check compares
+the companion's `ManagementCommands` against both C surfaces and fails loudly on the mismatch.
 - verify browser-visible state is not merely cached stale state when testing synchronization behavior
 
 Do not add a second configuration protocol when the existing management path can be extended cleanly.
