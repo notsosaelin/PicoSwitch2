@@ -39,8 +39,17 @@ void bootsel_sample_core0(void);
 
 // CORE1 ONLY. Initialize and service the cooperative SRAM park point. Service returns immediately
 // unless core0 has requested a sample and must be called frequently from the BTstack run loop.
+//
+// The park is BOUNDED and withdraws if core0 does not sample in time. It has to be: it runs under
+// the async_context lock that core0 blocks on for every BTstack-touching management command, so an
+// unbounded wait here deadlocks both cores and freezes the adapter outright. See bootsel.c.
 void bootsel_core1_lockout_init(void);
 void bootsel_core1_service(void);
+
+// Number of sample rounds core1 withdrew from because core0 did not reach it in time. Expected to
+// stay at 0 in normal operation; a rising count means core0's loop is being blocked for
+// milliseconds at a time, which is worth investigating even though it is no longer fatal.
+uint32_t bootsel_park_abandon_count(void);
 
 // Run the gesture state machine once. This Pico wrapper passes the latest published hardware
 // sample into the pure bootsel_gesture_update() recognizer. Call periodically (~30 ms) or at HID
