@@ -13479,6 +13479,18 @@ static bool btstack_host_forget_device_typed(const uint8_t bd_addr[6],
     if (ns2_bt_forget_matches_address_type(
             match_address_type, address_type, BD_ADDR_TYPE_ACL)) {
 #ifdef ENABLE_CLASSIC
+        // Report it as an effect. A Classic-ONLY controller -- now the normal
+        // case for any peer-led pairing, since its key is durable -- has no LE
+        // bond, no live ACL and need not be last_connected, so without this the
+        // function answered "nothing was affected" for a forget that really did
+        // delete the credential.
+        link_key_t existing;
+        link_key_type_t existing_type;
+        if (gap_get_link_key_for_bd_addr((uint8_t *)addr, existing,
+                                         &existing_type)) {
+            affected = true;
+        }
+        memset(existing, 0, sizeof(existing));
         gap_drop_link_key_for_bd_addr(addr);
 #endif
     }

@@ -61,8 +61,54 @@ privacy resolution is enabled. Wipe and forget MUST preserve those side effects.
 | Reboot of same installed image | preserve | preserve | preserve | preserve | preserve | preserve | existing policy |
 | Full-chip erase | erase | erase | erase | erase | erase | erase | closed by default fresh-admission policy |
 
-The management `bonds remove <index>` surface is LE-only. Classic per-device deletion has no public
-management command; triple-tap remains the user-facing global operation.
+The management `bonds remove <index>` surface is LE-only. Classic per-device deletion is reached
+through `peers forget <id>`, which is deliberately address-only and removes every credential one
+physical device holds — LE bond and Classic link key together — because "forget this controller"
+does not mean "forget half of it". Triple-tap remains the user-facing global operation.
+
+## Classic link keys are committed on proof, not on notification
+
+A Classic Link Key Notification is not proof of anything: BTstack stores the key from that event
+before the application sees it, so an unadmitted replacement would silently overwrite a good
+credential. The firmware therefore undoes that store, parks the key, and commits it only once the
+pairing behind it is known to have succeeded.
+
+**Two events prove that, and neither is guaranteed to arrive.**
+
+| Proof | When it arrives | Who drives the pairing |
+|---|---|---|
+| `HCI_Authentication_Complete` | only in response to this host's own `HCI_Authentication_Requested` | this adapter |
+| `HCI_Encryption_Change`, encryption enabled | whenever the link becomes encrypted | either end |
+
+This firmware requests authentication only for the Wiimote family and for the one Classic device
+that reports the name `Xbox Wireless Controller`; BTstack's HID Host registers its L2CAP services at
+`LEVEL_0`, so it never asks either. **Every other Classic controller drives SSP itself**, and its
+authentication reaches this host as Link Key Notification plus Encryption Change with no
+Authentication Complete at all.
+
+Waiting only for the local event is why a DualSense paired, worked, and was never durable: the key
+was parked, BTstack's copy had already been deleted, and HID open discarded the parked one. The
+peer inventory had no BR/EDR bond to report, the app showed *completing pairing* indefinitely, and
+the next connection was an unknown Classic device that `ns2_bt_admission_decide()` correctly refused
+with the pairing window closed. Reopening the window re-ran SSP and produced the same
+non-durable session.
+
+Encryption enabled is exactly as conclusive as the local event: a Classic link cannot be encrypted
+except with a link key both ends hold and have authenticated against. It is now accepted as proof
+(`ns2_bt_classic_authentication_proven()`).
+
+**This did not relax admission.** The key being proven was already admitted by
+`ns2_bt_classic_key_update_admitted()` — a fresh pairing window, or existing trust plus an identical
+or authenticated-changed key. Proof answers only *did that pairing succeed*.
+
+The parked security state also outlives `pending_valid`. HID channels are registered at `LEVEL_0`
+and can open before or without encryption, so clearing the parked key at HID open threw away a
+pairing that was one event short of durable. It is released when the peer's ACL is gone.
+
+**Rule: a Classic controller is remembered when its link key is committed. Admission decides
+whether a key may be written; proof decides whether it is. Do not conflate them, and do not treat
+the locally observed Authentication Complete as a requirement — for most controllers it never
+happens.**
 
 ## Peer roles
 
@@ -86,6 +132,15 @@ user's own phone in a list of things to forget.
 a reboot a stored bond whose owner has not yet reconnected is `unknown`. That is the correct answer,
 not a gap to be papered over with a guess: the security databases record an address, a key and a key
 type, and nothing about what the device is.
+
+What carries a controller's identity across that gap is the **companion's per-adapter peer history**
+(Phase 4), not the adapter. The app remembers the last name and classification it was told for each
+peer id and shows them for a peer that is bonded but offline. That is why the adapter must never
+publish a provisional classification as though it were an answer: the app has no way to tell a
+first guess from a settled one, and it keeps whatever it was given until something better arrives.
+While Classic identity is still resolving — the generic HID-descriptor driver is bound and the PnP
+SDP query has not returned — the classification is omitted entirely
+(`mgmt_peers_classification_publishable()`), which the app reads as "not yet" rather than "generic".
 
 Since Phase 4 the adapter also reports, for a **connected** peer only, the bthid driver identity it
 derived (`class`) and the resolved `vid`/`pid`. Those are live too, and are absent for a peer that is
