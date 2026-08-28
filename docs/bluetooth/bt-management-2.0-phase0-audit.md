@@ -651,10 +651,57 @@ step. Recorded as an optimisation, not a gap.
 
 ## 8g. Bluetooth Management 2.0 is complete
 
-Remote physical-controller pairing. The Phase 0 audit's decisive positive result still stands: opening
-the pairing window does not tear down BLE management. The product decision owed before starting is
-§7.3's — whether `mgmt_accept_bonding()` sharing `pairing_window_open` with controller pairing is
-acceptable, or must be split.
+All seven documented phases are implemented, and every product decision Phase 0 recorded as owed has
+been answered — the last was §7.3's, resolved in Phase 6 by splitting management bonding authority
+from controller pairing authority.
+
+## 8h. Hardening audit, 2026-08-28
+
+A dedicated pass after the final phase. No new features; findings and their evidence only.
+
+### Exit criteria
+
+| Criterion | State | Evidence |
+|---|---|---|
+| No automatic destructive bond deletion from ordinary connectivity failures | **Met** | All four sites removed; `ns2_bt_classic_auth_failure_forgets_existing()` pinned across all 256 status values. |
+| No raw-RPA durable comparisons | **Met** | One raw `client_addr` comparison remains, in `btstack_host_companion_terms()`, and it is `raw_matches \|\| identity_matches` — correct by construction. Everything else routes through `config_ble_durable_addr()`. |
+| No peer-pagination overflow paths | **Met** | The reserve is applied to the row budget, not merely tested before a row. Pinned across every capacity from 128 to 512 and every cursor. |
+| No permanent busy-state paths | **Met, with the mechanism stated** — see below. |
+| No management/controller identity crossover | **Met** | Companion excluded from the controller list on durable identity; forget refuses the companion on identity *and* role. |
+| No Pico W stack overflow in peer inventory | **Met** | Workspace is static; `peers_op_run` frames are 36 B (Pico W) and 44 B (Pico 2 W). |
+| Explicit destructive operations scoped and tested | **Met** | Six paths, all user-driven, enumerated in [`PERSISTENCE.md`](PERSISTENCE.md). |
+| Remaining persistent writes enumerated and justified | **Met** | Successful bond creation/update and the `JPLC` reconnect record. Both are required for a bond to exist and survive a reboot. |
+
+### Why a pending flag cannot stick on its own
+
+`peers_op_pending`, `bonds_op_pending` and `pairing_op_pending` are cleared only inside their
+run-loop callback, which invites the question of whether a lost callback strands the command family
+as permanently busy.
+
+It cannot, and the reason is a code property rather than an assumption.
+`btstack_run_loop_base_execute_callbacks()` pops until the list is empty and invokes each entry, and
+the only function that clears the list without running it is `btstack_run_loop_base_init()`, reached
+solely from `btstack_run_loop_init()` at startup. So a queued callback runs as long as the run loop
+lives, and the flag sticks **if and only if** the run loop has stopped — at which point Bluetooth is
+dead and a busy flag is not the user-visible failure.
+
+Retirement-by-timeout was considered and **rejected**: each operation has one static
+`btstack_context_callback_registration_t`, and re-dispatching it while the old one is still queued
+would add the same node to the list twice, which corrupts it. A cheap-looking safety net would have
+introduced exactly the class of defect this pass exists to remove.
+
+### Deferred replies always retire
+
+Each `wireless_*.active` record clears on all three exits — dead session, timeout, delivery — and
+the "still waiting" branch returns without taking a new command, so a deferred reply is always
+delivered or abandoned before another can replace it.
+
+### Still unexplained
+
+The terminal hang observed on 2026-08-28 — every bond gone, then both cores silent — has **no proven
+cause**. The mechanism that could destroy the bonds has been removed and the error paths that wrote
+flash no longer do, which removes the most likely trigger and contains the damage. That is not the
+same as knowing what happened, and this document does not claim otherwise.
 
 ## 9. Remaining unknowns
 

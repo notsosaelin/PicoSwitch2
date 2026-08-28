@@ -755,6 +755,136 @@ static void test_forgetting_one_peer_leaves_the_others_addressable(void)
     assert(strcmp(recomputed, kept_a) == 0);
 }
 
+/* ------------------------------------------- adversarial (hardening pass) */
+
+static void test_a_peer_removed_between_pages_does_not_corrupt_the_walk(void)
+{
+    // Real between-request change: the client holds a cursor from a page built
+    // when four peers existed, and by the next request one is gone. The page
+    // must still be well-formed and must not read past the end.
+    mgmt_peer_t before[4];
+    size_t count = build_live_inventory(before);
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+    assert(mgmt_peers_format_page(before, count, 0, out, sizeof(out), &info) > 0);
+    int cursor = info.next;
+    assert(cursor > 0);
+
+    // Now only two remain, and the cursor points past them.
+    mgmt_peer_t after[4];
+    build_live_inventory(after);
+    size_t shrunk = 2;
+    size_t length = mgmt_peers_format_page(after, shrunk, cursor, out,
+                                           sizeof(out), &info);
+    if (cursor > (int)shrunk) {
+        // Out of range: refused rather than reading past the array.
+        assert(length == 0);
+    } else {
+        assert(length > 0 && out[length] == '\0');
+    }
+    // The total is re-read each time, so a client comparing totals detects the
+    // change rather than silently assembling a mixed inventory.
+    assert(info.total == (int)shrunk);
+}
+
+static void test_a_full_inventory_of_rich_rows_still_terminates(void)
+{
+    // 32 peers, every one carrying a maximum name, maximum classification and
+    // both identifiers -- the largest inventory the types allow. Walking it
+    // must visit each peer exactly once and finish.
+    mgmt_peer_t peers[MGMT_PEERS_MAX_ENTRIES];
+    for (unsigned i = 0; i < MGMT_PEERS_MAX_ENTRIES; ++i) {
+        memset(&peers[i], 0, sizeof(peers[i]));
+        peers[i].address[0] = 0xAA;
+        peers[i].address[5] = (uint8_t)(i + 1);
+        peers[i].transport = MGMT_PEER_TRANSPORT_BREDR | MGMT_PEER_TRANSPORT_LE;
+        peers[i].role = MGMT_PEER_ROLE_PHYSICAL_CONTROLLER;
+        peers[i].le_slot = (int16_t)i;
+        peers[i].vendor_id = 0xFFFF;
+        peers[i].product_id = 0xFFFF;
+        memset(peers[i].name, 'N', sizeof(peers[i].name) - 1);
+        memset(peers[i].classification, 'C', sizeof(peers[i].classification) - 1);
+    }
+    char out[MGMT_PEERS_RESPONSE_CAPACITY];
+    mgmt_peers_page_info_t info;
+    int cursor = 0;
+    int pages = 0;
+    int seen = 0;
+    while (1) {
+        size_t length = mgmt_peers_format_page(peers, MGMT_PEERS_MAX_ENTRIES,
+                                               cursor, out, sizeof(out), &info);
+        assert(length > 0);
+        assert(length < sizeof(out));
+        assert(out[length - 1] == '}');
+        assert(++pages <= 64);           // must terminate, and well before this
+        for (const char *p = out; (p = strstr(p, "\"id\":\"")) != NULL; ++p)
+            ++seen;
+        if (info.complete) break;
+        assert(info.next > cursor);      // always advances
+        cursor = info.next;
+    }
+    assert(seen == (int)MGMT_PEERS_MAX_ENTRIES);
+}
+
+static void test_forget_resolution_survives_the_peer_disappearing(void)
+{
+    // The peer is resolved from a rebuilt inventory, so one that vanished
+    // between the client reading the list and the adapter acting on it simply
+    // does not resolve -- which the caller reports as already_absent, not as a
+    // failure and not by deleting something else.
+    mgmt_peer_bond_t bonds[] = { classic_bond(0x01, 4), classic_bond(0x02, 4) };
+    mgmt_peer_t peers[4];
+    size_t count = mgmt_peers_merge(bonds, 2, NULL, 0, peers, 4);
+    char gone[MGMT_PEERS_ID_MAX];
+    mgmt_peers_format_id(peers[1].address, gone, sizeof(gone));
+
+    mgmt_peer_bond_t remaining[] = { classic_bond(0x01, 4) };
+    mgmt_peer_t after[4];
+    size_t after_count = mgmt_peers_merge(remaining, 1, NULL, 0, after, 4);
+    assert(mgmt_peers_find_by_id(after, after_count, gone) == -1);
+    // The survivor is untouched and still addressable by its original id.
+    char kept[MGMT_PEERS_ID_MAX];
+    mgmt_peers_format_id(peers[0].address, kept, sizeof(kept));
+    assert(mgmt_peers_find_by_id(after, after_count, kept) == 0);
+    (void)count;
+}
+
+static void test_single_transport_peers_resolve_and_report_correctly(void)
+{
+    // Classic-only, LE-only and both. Selective forget is device-level, so each
+    // must be one addressable peer reporting exactly the transports it holds.
+    mgmt_peer_bond_t classic_only[] = { classic_bond(0x01, 4) };
+    mgmt_peer_bond_t le_only[] = { le_bond(0x02, 5, 0) };
+    mgmt_peer_bond_t both[] = { classic_bond(0x03, 4), le_bond(0x03, 6, 0) };
+
+    mgmt_peer_t p[4];
+    assert(mgmt_peers_merge(classic_only, 1, NULL, 0, p, 4) == 1);
+    assert(p[0].transport == MGMT_PEER_TRANSPORT_BREDR);
+    assert(mgmt_peers_merge(le_only, 1, NULL, 0, p, 4) == 1);
+    assert(p[0].transport == MGMT_PEER_TRANSPORT_LE);
+    assert(mgmt_peers_merge(both, 2, NULL, 0, p, 4) == 1);
+    assert(p[0].transport == (MGMT_PEER_TRANSPORT_BREDR | MGMT_PEER_TRANSPORT_LE));
+    assert(p[0].le_slot == 6);
+}
+
+static void test_repeated_forget_of_the_same_id_is_stable(void)
+{
+    // Idempotence at the layer that can be tested purely: resolving the same id
+    // twice against an inventory that no longer holds it gives the same answer
+    // both times, so a retry after a lost reply cannot behave differently.
+    mgmt_peer_t none[1];
+    for (int attempt = 0; attempt < 3; ++attempt)
+        assert(mgmt_peers_find_by_id(none, 0, "p_1A2B3C4D") == -1);
+
+    char out[128];
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        assert(mgmt_peers_format_forget_result("p_1A2B3C4D",
+                                               MGMT_PEER_FORGET_ALREADY_ABSENT,
+                                               0, out, sizeof(out)) > 0);
+        assert(strstr(out, "\"ok\":true") != NULL);
+    }
+}
+
 static void test_no_page_can_contain_key_material(void)
 {
     // Structural, not textual: mgmt_peer_t has nowhere to put a key, so a page
@@ -809,6 +939,11 @@ int main(void)
     test_forget_results_report_the_verified_state();
     test_a_forget_result_never_emits_a_malformed_id_or_overruns();
     test_forgetting_one_peer_leaves_the_others_addressable();
+    test_a_peer_removed_between_pages_does_not_corrupt_the_walk();
+    test_a_full_inventory_of_rich_rows_still_terminates();
+    test_forget_resolution_survives_the_peer_disappearing();
+    test_single_transport_peers_resolve_and_report_correctly();
+    test_repeated_forget_of_the_same_id_is_stable();
     test_no_page_can_contain_key_material();
     printf("mgmt_peers: all tests passed\n");
     return 0;
