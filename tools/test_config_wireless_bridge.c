@@ -99,6 +99,16 @@ static void test_wireless_command_policy(void)
     assert(config_wireless_command_allowed("bonds remove 0"));
     assert(config_wireless_command_allowed("peers list"));
     assert(config_wireless_command_allowed("peers list 4"));
+    // Every management verb the companion uses must be reachable over BLE.
+    // A verb that reaches handle_line() but not this allowlist answers
+    // `unknown command` over the wireless transport ONLY -- so it works over
+    // USB CDC and over UART, and the app reports the feature as unsupported on
+    // firmware that plainly has it. That is exactly how `pairing` shipped
+    // broken; these assertions are what stop the next verb doing the same.
+    assert(config_wireless_command_allowed("peers forget p_1A2B3C4D"));
+    assert(config_wireless_command_allowed("pairing start"));
+    assert(config_wireless_command_allowed("pairing status"));
+    assert(config_wireless_command_allowed("pairing cancel"));
     assert(config_wireless_command_allowed("save"));
     assert(config_wireless_command_allowed("amiibo status"));
     assert(config_wireless_command_allowed("amiibo chunk 0 0011"));
@@ -114,6 +124,11 @@ static void test_wireless_command_policy(void)
     assert(!config_wireless_command_allowed("btid desc 0"));
     assert(!config_wireless_command_allowed("state"));
     assert(!config_wireless_command_allowed("input active"));
+    // The prefixes are exact: a bare verb, or one that merely starts with the
+    // same letters, must not slip through.
+    assert(!config_wireless_command_allowed("pairing"));
+    assert(!config_wireless_command_allowed("pairingx start"));
+    assert(!config_wireless_command_allowed("peers"));
     assert(!config_wireless_command_allowed("input activex 1"));
     assert(!config_wireless_command_allowed("raw"));
     assert(!config_wireless_command_allowed("getns2map 0"));

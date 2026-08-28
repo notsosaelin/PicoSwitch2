@@ -228,9 +228,20 @@ bool config_wireless_command_allowed(const char *command)
            strcmp(command, "mgmt") == 0 ||
            strncmp(command, "mgmt ", 5) == 0 ||
            strncmp(command, "bonds ", 6) == 0 ||
-           // Read-only peer inventory. Carries identity and role, never key
-           // material, and has no mutating form in this protocol version.
+           // Peer inventory and selective forget. Carries identity and role,
+           // never key material. `peers forget` IS a mutating form -- included
+           // deliberately, on the same reasoning as the KB/M writes above:
+           // wireless RX has already passed mgmt_allow_write(), and removing a
+           // controller pairing from the companion is the whole point of the
+           // feature. The firmware refuses to forget the management companion
+           // itself, so this cannot be turned against the session issuing it.
            strncmp(command, "peers ", 6) == 0 ||
+           // Remote controller pairing. Mutating (start/cancel) and read
+           // (status). Opens the SAME window the adapter's own pairing button
+           // opens, and grants no management bonding authority, so the worst a
+           // holder of an authorised session can do is make the adapter
+           // discoverable for its bounded, firmware-owned window.
+           strncmp(command, "pairing ", 8) == 0 ||
            strcmp(command, "save") == 0 ||
            strcmp(command, "save status") == 0 ||
            strncmp(command, "amiibo ", 7) == 0 ||
