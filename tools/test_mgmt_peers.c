@@ -903,8 +903,46 @@ static void test_no_page_can_contain_key_material(void)
     assert(strstr(out, "irk") == NULL);
 }
 
+/*
+ * A provisional classification must never be published as if it were an answer.
+ *
+ * Classic identity arrives in two stages: the HID descriptor binds the generic
+ * gamepad fallback, then the PnP SDP query returns the VID/PID that rebinds the
+ * device to its real driver. Pairing reports success at the first stage, and
+ * the companion reads the inventory the instant that happens -- inside the gap.
+ * Publishing the fallback there is what recorded a DualSense as the generic
+ * gamepad, which only a second pairing appeared to fix.
+ */
+static void test_a_provisional_classification_is_withheld_until_it_settles(void)
+{
+    // The defect: generic fallback bound, identity still on its way. The
+    // adapter cannot say yet, so it says nothing.
+    assert(!mgmt_peers_classification_publishable(true, true));
+
+    // Resolution concluded and no vendor driver claimed it. The fallback IS the
+    // answer now, and withholding it forever would lose a real classification.
+    assert(mgmt_peers_classification_publishable(true, false));
+
+    // A vendor driver matched on real evidence. Authoritative immediately --
+    // an outstanding query must not suppress a classification that is already
+    // better than anything the query could produce.
+    assert(mgmt_peers_classification_publishable(false, true));
+    assert(mgmt_peers_classification_publishable(false, false));
+
+    // Order-independence: whichever way the two inputs arrive, the only
+    // withheld combination is provisional-and-unsettled.
+    for (int fallback = 0; fallback <= 1; ++fallback) {
+        for (int outstanding = 0; outstanding <= 1; ++outstanding) {
+            bool expected = !(fallback && outstanding);
+            assert(mgmt_peers_classification_publishable(
+                       fallback != 0, outstanding != 0) == expected);
+        }
+    }
+}
+
 int main(void)
 {
+    test_a_provisional_classification_is_withheld_until_it_settles();
     test_role_order_puts_management_first();
     test_unseen_peer_is_unknown_not_guessed();
     test_one_device_with_two_key_records_is_one_peer();

@@ -214,6 +214,14 @@ bthid_device_t* bthid_get_device_slot(uint8_t slot)
     return devices[slot].active ? &devices[slot] : NULL;
 }
 
+bool bthid_device_is_generic_fallback(const bthid_device_t* device)
+{
+    // The same identity test bthid_update_device_info() uses to decide a device
+    // is still open to re-evaluation, so "provisional" means exactly what the
+    // rebind path means by it.
+    return device && (const bthid_driver_t*)device->driver == &bthid_gamepad_driver;
+}
+
 uint8_t bthid_get_device_count(void)
 {
     uint8_t count = 0;

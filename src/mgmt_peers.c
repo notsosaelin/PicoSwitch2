@@ -60,6 +60,14 @@ bool mgmt_peers_id_valid(const char *id)
     return id[10] == '\0';
 }
 
+bool mgmt_peers_classification_publishable(bool driver_is_generic_fallback,
+                                           bool identity_resolution_outstanding)
+{
+    // See the header. A provisional fallback is withheld only while the
+    // evidence that could replace it is still on its way.
+    return !(driver_is_generic_fallback && identity_resolution_outstanding);
+}
+
 bool mgmt_peers_parse_command(const char *arg,
                               mgmt_peers_action_t *action,
                               int *cursor,

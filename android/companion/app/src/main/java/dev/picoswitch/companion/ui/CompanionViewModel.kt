@@ -1303,11 +1303,41 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         notice(pairingMessage(latest))
         // A controller that completed is a new peer; read the inventory so the
         // list shows it without the user refreshing.
+        //
+        // Read more than once. The adapter identifies a Classic controller in
+        // two stages -- the HID descriptor binds a generic driver, then a PnP
+        // SDP query returns the VID/PID that rebinds it to its real one -- and
+        // pairing reports Paired at the first stage. A single read here lands
+        // inside that gap, so the controller was recorded without its identity
+        // and only a second pairing appeared to fix it. The adapter withholds a
+        // provisional classification rather than publishing the fallback, so
+        // "still absent" is exactly the signal to look again.
         if (latest.state == PairingState.Paired) {
-            runCatching { readPeerInventory(explicit = false) }
-                .onFailure { diagnostics.error("peers", "refresh.after_pairing", it) }
+            repeat(IDENTITY_SETTLE_READS) { attempt ->
+                val ok = runCatching { readPeerInventory(explicit = false) }
+                    .onFailure { diagnostics.error("peers", "refresh.after_pairing", it) }
+                    .isSuccess
+                // Stop as soon as every connected controller has an identity, or
+                // if the read itself failed -- retrying a broken session buys
+                // nothing. Bounded either way; this is cosmetic convergence, and
+                // an explicit refresh always remains available.
+                if (!ok || identityHasSettled()) return@repeat
+                if (attempt < IDENTITY_SETTLE_READS - 1) delay(IDENTITY_SETTLE_MILLIS)
+            }
         }
     }
+
+    /**
+     * Has every connected controller reported a classification?
+     *
+     * Absence is the adapter saying "not yet" rather than "unknown for good"
+     * (see the firmware's mgmt_peers_classification_publishable), so this is a
+     * convergence test, not a health check.
+     */
+    private fun identityHasSettled(): Boolean =
+        _ui.value.snapshot.peers.controllers
+            .filter { it.connected }
+            .all { !it.classification.isNullOrBlank() }
 
     /**
      * Ask the adapter to close the window early.
@@ -3115,6 +3145,14 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         // fires first and reports "still running" for a finished operation.
         private const val PAIRING_POLL_MILLIS = 1_000L
         private const val PAIRING_POLL_LIMIT = 45
+
+        // Re-reads allowed after pairing completes, while the adapter finishes
+        // identifying a Classic controller (HID descriptor first, PnP SDP
+        // after). Small and bounded on purpose: this only makes the list
+        // correct without a manual refresh, and an unidentified controller is
+        // still fully usable.
+        private const val IDENTITY_SETTLE_READS = 4
+        private const val IDENTITY_SETTLE_MILLIS = 1_000L
         // Long enough that a slider drag issues a handful of commands rather
         // than hundreds, short enough that the change still reads as live while
         // the finger is down.

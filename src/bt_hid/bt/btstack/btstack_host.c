@@ -4193,6 +4193,28 @@ static void classic_identity_query_schedule(const bd_addr_t addr)
     classic_identity_query.active = false;
 }
 
+/*
+ * Is the PnP SDP identity query for this address still going to produce an
+ * answer?
+ *
+ * True only while a query is scheduled or running for this exact peer, has not
+ * exhausted its attempts, and has not already yielded a VID/PID. That is the
+ * window in which a generic-fallback classification is PROVISIONAL rather than
+ * final -- see mgmt_peers_classification_publishable().
+ *
+ * A BLE peer's address never matches this record, so BLE classification is
+ * unaffected and is published exactly as before.
+ */
+static bool classic_identity_unresolved(const uint8_t addr[6])
+{
+    if (!addr || memcmp(classic_identity_query.addr, addr, sizeof(bd_addr_t)) != 0)
+        return false;
+    if (classic_identity_query.vendor_id || classic_identity_query.product_id)
+        return false;
+    return (classic_identity_query.pending || classic_identity_query.active) &&
+           classic_identity_query.attempts < 3u;
+}
+
 static void classic_identity_query_service(void)
 {
     if (!classic_identity_query.pending ||
@@ -7261,7 +7283,14 @@ static void peers_identity_for(const uint8_t addr[6], mgmt_peer_observation_t *o
         if (memcmp(device->bd_addr, addr, 6) != 0)
             continue;
         const bthid_driver_t *driver = (const bthid_driver_t *)device->driver;
-        if (driver && driver->name) {
+        // A generic-fallback name while the PnP SDP query is still outstanding
+        // is provisional, and saying it out loud is what left a DualSense
+        // recorded as the generic gamepad: the companion reads this inventory
+        // once, the instant pairing completes, which is inside that window.
+        if (driver && driver->name &&
+            mgmt_peers_classification_publishable(
+                bthid_device_is_generic_fallback(device),
+                classic_identity_unresolved(addr))) {
             mgmt_peers_sanitize_name(driver->name, o->classification,
                                      sizeof(o->classification));
         }
