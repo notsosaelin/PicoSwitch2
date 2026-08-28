@@ -71,14 +71,17 @@ bool btstack_host_pairing_close_deferred(void);
 // Management first-bond admission follows the same explicit BOOTSEL pairing
 // window as controller discovery. The transport sets this edge when pairing
 // mode opens/closes; bonded management reconnects do not require it.
-// Opens the controller pairing window AND admits a new management bond. This
-// is the LOCAL gesture's entry point: physical presence at the adapter is what
-// authorises a new management relationship.
+// The shared transport hook (`bt_set_pairing_mode`). Opens CONTROLLER discovery
+// only -- the least authority -- because both the local gesture and remote
+// pairing reach it. Management bonding must be asked for by name.
 void btstack_host_set_pairing_window_open(bool open);
-// Opens controller discovery ONLY. Remote pairing uses this: a request arriving
-// over the air must not open a window in which a different phone could claim
-// the management relationship. Closing clears both windows.
+// Same thing, named for callers that are explicit about it.
 void btstack_host_set_controller_pairing_window_open(bool open);
+// Admits a NEW management bond. Only the LOCAL pairing gesture may pass true:
+// physical presence at the adapter is the authority for handing out the
+// management relationship, and a request arriving over the air is not. Closing
+// the controller window clears this unconditionally.
+void btstack_host_set_management_bond_window_open(bool open);
 bool btstack_host_pairing_window_open(void);
 
 // --- Remote controller pairing -------------------------------------------
