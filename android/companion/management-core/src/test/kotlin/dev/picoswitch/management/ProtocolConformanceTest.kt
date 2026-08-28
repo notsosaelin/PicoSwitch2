@@ -25,6 +25,7 @@ class ProtocolConformanceTest {
         assertEquals(BleManagementContract.MAX_REPLY_PAYLOAD_BYTES, limits["bleReplyPayloadBytes"]!!.jsonPrimitive.int)
         assertEquals(ManagementProtocol.AMIIBO_CHUNK_BYTES, limits["amiiboChunkBytes"]!!.jsonPrimitive.int)
         assertEquals(ManagementProtocol.BONDS_PROTOCOL_VERSION, limits["bondEnvelopeVersion"]!!.jsonPrimitive.int)
+        assertEquals(ManagementProtocol.PEERS_PROTOCOL_VERSION, limits["peerEnvelopeVersion"]!!.jsonPrimitive.int)
 
         val ble = fixtureRoot["ble"]!!.jsonObject
         assertEquals(BleManagementContract.SERVICE_UUID, ble["serviceUuid"]!!.jsonPrimitive.content)
@@ -41,6 +42,7 @@ class ProtocolConformanceTest {
             "inputNone" to ManagementCommands.inputActive(0),
             "setPersonality" to ManagementCommands.personality(Personality.JoyConRight),
             "bondPage" to ManagementCommands.bondsPage(3),
+            "peerPage" to ManagementCommands.peersPage(2),
             "kbmDefault" to ManagementCommands.kbmBind(
                 KbmProfile.KeyboardMouse,
                 KbmSource(KbmSourceKind.Key, 0x1A),
@@ -76,6 +78,25 @@ class ProtocolConformanceTest {
         }
         assertEquals(listOf(3, null), bonds.map { it.next })
         assertEquals(2, bonds.sumOf { it.entries.size })
+
+        val peers = paging["peers"]!!.jsonArray.map { value ->
+            val item = value.jsonObject
+            ManagementProtocol.peersPage(
+                item["command"]!!.jsonPrimitive.content,
+                item["reply"]!!.toString(),
+            )
+        }
+        assertEquals(listOf(2, null), peers.map { it.next })
+        assertEquals(3, peers.sumOf { it.entries.size })
+        assertEquals(listOf(3, 3), peers.map { it.total })
+        // The vectors carry the shape that matters: the management phone holds
+        // records on both transports, a controller holds one, and a stored peer
+        // the adapter cannot identify is reported as unknown rather than guessed.
+        val all = peers.flatMap { it.entries }
+        assertEquals(PeerRole.ManagementCompanion, all[0].role)
+        assertTrue(all[0].multiTransport)
+        assertEquals(PeerRole.PhysicalController, all[1].role)
+        assertEquals(PeerRole.Unknown, all[2].role)
 
         val kbm = paging["kbm"]!!.jsonArray.map { value ->
             val item = value.jsonObject
@@ -167,6 +188,26 @@ class ProtocolConformanceTest {
         assertEquals(2, page.total)
         assertEquals(3, page.next)
         assertEquals("001122334455", page.entries.single().address)
+    }
+
+    @Test fun `peer fixture exposes identity, role and cursor without key material`() {
+        val vector = vector("peersPage")
+        val page = ManagementProtocol.peersPage(vector.command, vector.reply)
+        assertEquals(3, page.total)
+        assertEquals(2, page.next)
+        assertEquals("p_1A2B3C4D", page.entries.first().id)
+        assertEquals("DualSense Wireless Controller", page.entries[1].name)
+        // The gate, stated against the shared vector rather than only in code:
+        // the management relationship is on the wire as management.
+        assertEquals(PeerRole.ManagementCompanion, page.entries.first().role)
+        // No key material crosses the management protocol. Asserted against the
+        // shared vector so a non-Kotlin client's fixture carries the same claim.
+        listOf("key", "ltk", "irk", "csrk").forEach { forbidden ->
+            assertTrue(
+                "peer vector must not contain '$forbidden'",
+                !vector.reply.contains(forbidden, ignoreCase = true),
+            )
+        }
     }
 
     @Test fun `Amiibo and wake fixtures decode exact semantics`() {

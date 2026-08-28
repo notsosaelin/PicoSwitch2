@@ -24,6 +24,7 @@
 #include "virtual_amiibo_store.h"
 #include "config_wireless_bridge.h"
 #include "mgmt_bonds.h"
+#include "mgmt_peers.h"
 #include "usb.h"  // g_usb_personality (personality query command)
 #include "ns2_wake.h"  // ns2_wake_manual_request (wake command)
 #include "ns2_active_input.h" // source registry / explicit active input
@@ -358,6 +359,17 @@ static struct {
     uint32_t session;
     absolute_time_t deadline;
 } wireless_bonds;
+
+// The peer inventory uses the same deferred-reply shape as `bonds`, and for the
+// same reason: the databases live on core1 and core0 must keep servicing the
+// console while the answer is built. Kept as its own record rather than folded
+// into wireless_bonds so a peer read and a bond read can never be mistaken for
+// one another when both are in flight across a reconnect.
+static struct {
+    bool active;
+    uint32_t session;
+    absolute_time_t deadline;
+} wireless_peers;
 
 static void reply(const char *s) {
     if (reply_transport == CONFIG_REPLY_WIRELESS) {
@@ -1227,6 +1239,49 @@ static void cmd_bonds(const char *arg) {
     reply_bonds_result(is_remove, is_page);
 }
 
+// Read-only logical peer inventory for the management app.
+//
+// Distinct from `bonds`, which enumerates raw LE device-DB slots. This merges
+// the Classic link-key store and the LE device DB into one row per physical
+// device, annotates each with the role the adapter can currently PROVE, and
+// carries no key material of any kind. A peer whose owner has not been seen
+// since boot is reported with role "unknown" rather than assumed to be a
+// controller; persistent role metadata is deliberately not part of this pass.
+// Success and failure are both already fully described by the buffer core1
+// produced -- a page, or the compact response_too_large error the formatter
+// writes when it cannot make progress. Re-deriving a second wording here would
+// give the same condition two descriptions.
+static void reply_peers_result(void) {
+    reply(btstack_host_peers_json());
+}
+
+static void cmd_peers(const char *arg) {
+    mgmt_peers_action_t action;
+    int cursor;
+    if (!mgmt_peers_parse_command(arg, &action, &cursor)) {
+        reply("{\"error\":\"usage: peers list [cursor]\"}");
+        return;
+    }
+    if (!btstack_host_peers_request_page(cursor)) {
+        reply("{\"error\":\"busy\"}");
+        return;
+    }
+    if (reply_transport == CONFIG_REPLY_WIRELESS) {
+        wireless_peers.active = true;
+        wireless_peers.session = wireless_reply_session;
+        wireless_peers.deadline = make_timeout_time_ms(1000);
+        return;
+    }
+    absolute_time_t deadline = make_timeout_time_ms(1000);
+    while (!btstack_host_peers_done() && !time_reached(deadline))
+        tud_task();
+    if (!btstack_host_peers_done()) {
+        reply("{\"error\":\"timeout\"}");
+        return;
+    }
+    reply_peers_result();
+}
+
 // Raw HID report of the connected controller (hex) for the debug view. Lets us
 // reverse-engineer inputs a driver doesn't parse yet (e.g. Xbox Elite paddles).
 static void cmd_raw(void) {
@@ -1495,6 +1550,8 @@ static void handle_line(char *cmd) {
         cmd_reenumerate();
     } else if (strncmp(cmd, "bonds ", 6) == 0) {
         cmd_bonds(cmd + 6);
+    } else if (strncmp(cmd, "peers ", 6) == 0) {
+        cmd_peers(cmd + 6);
     } else if (strcmp(cmd, "mgmt") == 0) {
         cmd_mgmt(NULL);
     } else if (strncmp(cmd, "mgmt ", 5) == 0) {
@@ -1640,6 +1697,30 @@ void config_wireless_task(void) {
                 reply("{\"error\":\"timeout\"}");
             } else {
                 reply_bonds_result(is_remove, is_page);
+            }
+            reply_transport = previous;
+            return;
+        }
+    }
+
+    if (wireless_peers.active) {
+        if (!config_wireless_bridge_session_active(wireless_peers.session)) {
+            // Same rule as the bond read: a late core1 result must never cross
+            // into a session that did not ask for it.
+            wireless_peers.active = false;
+        } else if (!btstack_host_peers_done() &&
+                   !time_reached(wireless_peers.deadline)) {
+            return;
+        } else {
+            config_reply_transport_t previous = reply_transport;
+            reply_transport = CONFIG_REPLY_WIRELESS;
+            wireless_reply_session = wireless_peers.session;
+            bool timed_out = !btstack_host_peers_done();
+            wireless_peers.active = false;
+            if (timed_out) {
+                reply("{\"error\":\"timeout\"}");
+            } else {
+                reply_peers_result();
             }
             reply_transport = previous;
             return;

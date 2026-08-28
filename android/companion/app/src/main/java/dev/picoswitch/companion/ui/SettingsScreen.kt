@@ -14,6 +14,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.picoswitch.companion.BuildConfig
+import dev.picoswitch.companion.data.AdapterAlias
+import dev.picoswitch.companion.data.AdapterRecord
 import dev.picoswitch.companion.data.AndroidBondState
 import dev.picoswitch.companion.data.CompanionAssociationState
 import dev.picoswitch.companion.model.BondInfo
@@ -37,7 +39,8 @@ fun SettingsScreen(
 ) {
     var themeOpen by rememberSaveable { mutableStateOf(false) }
     var paletteOpen by rememberSaveable { mutableStateOf(false) }
-    var forgetOpen by rememberSaveable { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<AdapterRecord?>(null) }
+    var removeTarget by remember { mutableStateOf<AdapterRecord?>(null) }
     var removeBond by remember { mutableStateOf<BondInfo?>(null) }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -92,23 +95,55 @@ fun SettingsScreen(
         }
 
         val adapter: @Composable () -> Unit = {
-            SectionCard(title = "Adapter pairing", icon = Icons.Default.Link) {
-                SettingsRow(
-                    title = "Saved adapter",
-                    supporting = ui.adapterRelationship?.displayName ?: "None saved",
-                    trailing = {
-                        if (ui.adapterRelationship != null) {
-                            TextButton(onClick = { forgetOpen = true }, enabled = !ui.busy) { Text("Forget") }
-                        }
-                    },
-                )
+            SectionCard(title = "Adapters", icon = Icons.Default.Link) {
+                if (ui.adapters.isEmpty()) {
+                    InlineNotice("No adapters yet. Use Pair Adapter to add one.")
+                } else {
+                    // Several adapters may be known; exactly one is active. The
+                    // row says which, because "connected" alone cannot: an
+                    // adapter can be the selected one and still be powered off.
+                    ui.adapters.forEach { record ->
+                        val active = record.id == ui.activeAdapterId
+                        SettingsRow(
+                            title = if (ui.adapters.needsShortLabel(record)) {
+                                "${record.displayName} • ${record.id.shortLabel}"
+                            } else record.displayName,
+                            supporting = adapterSupportingText(ui, record, active),
+                            enabled = !ui.busy && !ui.relationshipStatus.attemptActive,
+                            // Tapping the selected-but-disconnected row retries it.
+                            // The coordinator refuses to tear down a healthy
+                            // session, so this is safe on the connected row too.
+                            onClick = { viewModel.selectAdapter(record.id) },
+                            trailing = {
+                                if (active && ui.connection.connected) {
+                                    StatusChip("Connected", tone = ChipTone.Positive)
+                                } else if (record.repairRequired) {
+                                    StatusChip("Repair", tone = ChipTone.Error)
+                                } else if (active) {
+                                    StatusChip("Selected", tone = ChipTone.Neutral)
+                                }
+                                IconButton(
+                                    onClick = { renameTarget = record },
+                                    enabled = !ui.busy,
+                                ) { Icon(Icons.Default.DriveFileRenameOutline, "Rename ${record.displayName}") }
+                                IconButton(
+                                    onClick = { removeTarget = record },
+                                    enabled = !ui.busy,
+                                ) { Icon(Icons.Default.Delete, "Remove ${record.displayName} from this app") }
+                            },
+                        )
+                    }
+                }
                 HorizontalDivider()
                 LabelValueRow(
                     "Android companion association",
-                    when (ui.relationshipStatus.companionAssociation) {
+                    when (ui.associationStates[ui.activeAdapterId] ?: ui.relationshipStatus.companionAssociation) {
                         CompanionAssociationState.Present -> "Present"
                         CompanionAssociationState.Missing -> "Not present"
-                        CompanionAssociationState.Ambiguous -> "Multiple; repair needed"
+                        // No longer "multiple adapters": several adapters are
+                        // normal. This is two association records claiming the
+                        // SAME adapter, which repair resolves.
+                        CompanionAssociationState.Ambiguous -> "Duplicate records; repair needed"
                         CompanionAssociationState.Unknown -> "Not checked"
                     },
                 )
@@ -236,14 +271,32 @@ fun SettingsScreen(
         }
     }
 
-    if (forgetOpen) ConfirmDialog(
-        onDismiss = { forgetOpen = false },
-        title = "Forget this adapter?",
-        body = "This clears the app's saved adapter and its PicoSwitch2 companion associations. Android Bluetooth pairing and the adapter's own LE bonds remain until you remove them explicitly.",
-        confirmLabel = "Forget",
-        destructive = true,
-        onConfirm = { forgetOpen = false; viewModel.forgetAdapterRelationship() },
-    )
+    renameTarget?.let { record ->
+        AdapterRenameDialog(
+            record = record,
+            onDismiss = { renameTarget = null },
+            onConfirm = { alias ->
+                renameTarget = null
+                viewModel.renameAdapter(record.id, alias)
+            },
+        )
+    }
+
+    removeTarget?.let { record ->
+        ConfirmDialog(
+            onDismiss = { removeTarget = null },
+            title = "Remove ${record.displayName}?",
+            // Say exactly what survives. This removes an app record; it is not a
+            // Bluetooth operation, and claiming otherwise would leave the user
+            // believing bonds were deleted that are still there.
+            body = "This app forgets its name and saved details for this adapter. " +
+                "Android Bluetooth pairing and the adapter's own stored pairings are not changed, " +
+                "and your other adapters are unaffected.",
+            confirmLabel = "Remove",
+            destructive = true,
+            onConfirm = { removeTarget = null; viewModel.removeAdapterFromApp(record.id) },
+        )
+    }
 
     removeBond?.let { bond ->
         ConfirmDialog(
@@ -257,6 +310,70 @@ fun SettingsScreen(
             confirmLabel = "Remove",
             destructive = true,
             onConfirm = { viewModel.removeBond(bond.index); removeBond = null },
+        )
+    }
+}
+
+/**
+ * Two rows reading "Living Room" are not a list.
+ *
+ * Duplicate aliases are allowed on purpose — the user may genuinely own two
+ * adapters they think of the same way — so the disambiguation is additive
+ * rather than a validation error.
+ */
+private fun List<AdapterRecord>.needsShortLabel(record: AdapterRecord): Boolean =
+    count { it.displayName.equals(record.displayName, ignoreCase = true) } > 1
+
+/**
+ * What a row can honestly say about an adapter that may not be connected.
+ *
+ * Everything here except the live connection state is cache from the last
+ * verified session, so it is phrased as history ("Last connected") rather than
+ * as current truth.
+ */
+private fun adapterSupportingText(
+    ui: CompanionUiState,
+    record: AdapterRecord,
+    active: Boolean,
+): String {
+    if (active && ui.connection.connected) {
+        return listOfNotNull(
+            record.lastFirmwareVersion?.let { "Firmware $it" },
+            record.lastPersonality,
+        ).joinToString(" · ").ifBlank { "Connected" }
+    }
+    // A failed switch is reported against the adapter that was chosen, and says
+    // so plainly rather than pretending the previous adapter is still the one.
+    if (active && ui.adapterSwitchFailure != null) return "Selected, not connected · tap to retry"
+    if (record.repairRequired) return "Needs to be paired with this phone again"
+    return when (ui.associationStates[record.id] ?: CompanionAssociationState.Unknown) {
+        CompanionAssociationState.Ambiguous -> "Duplicate companion records; repair to resolve"
+        else -> if (record.lastConnectedAtMillis != null) "Saved" else "Not connected yet"
+    }
+}
+
+/** Local rename. The alias never leaves this phone and never becomes Bluetooth identity. */
+@Composable
+private fun AdapterRenameDialog(
+    record: AdapterRecord,
+    onDismiss: () -> Unit,
+    onConfirm: (String?) -> Unit,
+) {
+    var text by rememberSaveable(record.id.value) { mutableStateOf(record.userAlias.orEmpty()) }
+    PicoDialog(
+        onDismiss = onDismiss,
+        title = "Adapter name",
+        confirmLabel = "Save",
+        onConfirm = { onConfirm(text) },
+    ) {
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it.take(AdapterAlias.MAX_LENGTH) },
+            singleLine = true,
+            label = { Text("Name on this phone") },
+            placeholder = { Text(record.lastKnownName) },
+            supportingText = { Text("Leave empty to use ${record.lastKnownName} • ${record.id.shortLabel}") },
+            modifier = Modifier.fillMaxWidth(),
         )
     }
 }

@@ -228,6 +228,9 @@ bool config_wireless_command_allowed(const char *command)
            strcmp(command, "mgmt") == 0 ||
            strncmp(command, "mgmt ", 5) == 0 ||
            strncmp(command, "bonds ", 6) == 0 ||
+           // Read-only peer inventory. Carries identity and role, never key
+           // material, and has no mutating form in this protocol version.
+           strncmp(command, "peers ", 6) == 0 ||
            strcmp(command, "save") == 0 ||
            strcmp(command, "save status") == 0 ||
            strncmp(command, "amiibo ", 7) == 0 ||

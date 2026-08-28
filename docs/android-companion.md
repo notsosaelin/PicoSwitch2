@@ -18,14 +18,95 @@ session rules, and conformance material are indexed at
 local files, NFC, and presentation; it consumes portable command/reply and workflow behavior from
 `:management-core`.
 
-The UI now models these transports as one saved adapter relationship, while keeping four underlying
-truths explicit: app relationship, app-owned CompanionDeviceManager association, Android Bluetooth
-bond, and adapter-side LE bond database. One generation-owned coordinator arbitrates association,
-bond, foreground/manual reconnect, and verified management progression. Android 13+ documents that
-association success is delivered through both `onAssociationCreated` and the Activity result; that
-duplicate is idempotent, and `BOND_BONDING` never starts GATT. First use says **Pair Adapter**,
-returning use reconnects without a chooser, a missing platform bond becomes **Repair pairing**, and
-controller mode reuses the saved Classic bond without a second chooser.
+The UI models these transports as a registry of known adapters with one selected, while keeping four
+underlying truths explicit: app registry record, app-owned CompanionDeviceManager association,
+Android Bluetooth bond, and adapter-side LE bond database. One generation-owned coordinator
+arbitrates association, bond, foreground/manual reconnect, and verified management progression.
+Android 13+ documents that association success is delivered through both `onAssociationCreated` and
+the Activity result; that duplicate is idempotent, and `BOND_BONDING` never starts GATT. First use
+says **Pair Adapter**, returning use reconnects without a chooser, a missing platform bond becomes
+**Repair pairing**, and controller mode reuses the saved Classic bond without a second chooser.
+
+### The adapter registry
+
+Several adapters may be known; at most one holds a management session. That split is the whole
+model, and it exists because the previous one-adapter design forced anyone who owned two adapters
+into a *Forget / Pair / Forget / Pair* cycle.
+
+| Concept | Type | Owns |
+|---|---|---|
+| Identity | `AdapterId` | The adapter's public BD_ADDR, normalized. Never the alias, never a list position. |
+| Registry row | `AdapterRecord` | Alias, last known name, association ID, cached firmware/personality, last-connected, per-adapter repair flag. |
+| Document | `AdapterRegistry` | The rows plus which one is active. |
+| Storage | `AdapterRegistryStore` | Where and when, only. Schema, migration and tolerance are in `AdapterRegistryCodec`. |
+| System reconciliation | `AdapterRegistryReconciler` | Registry against `CompanionDeviceManager.myAssociations`. |
+| Connection lifecycle | `AdapterRelationshipCoordinator` | One attempt at a time, for the active adapter. Unchanged by the registry. |
+
+Rules that must not be re-litigated:
+
+- **Adapter identity is not adapter display name.** The alias is app-local, sanitised on entry, and
+  is never written to the adapter or into its advertised name. Duplicate aliases are allowed and
+  disambiguated with a four-character identity suffix.
+- **Connecting to one adapter never unregisters another.** A verified connect used to delete the
+  previously saved adapter's CompanionDeviceManager association whenever the association ID
+  differed. That one call was the cause of the Forget/Pair churn. Adapters are unregistered only
+  when the user asks.
+- **Repair, remove and reconcile are all per-adapter.** Reflashing one adapter marks only that
+  record `repairRequired`; repair keeps the row so the alias and history survive and the repaired
+  unit rebinds to it; removing an adapter from the app drops one association, never all of them.
+- **Losing an association never deletes a record.** An adapter that is powered off, or whose
+  association the user removed in system settings, keeps its alias and cached state.
+- **`Ambiguous` no longer means plurality.** It means two association records claim *one* adapter.
+  It is reported and offers Repair; it does not block connecting, because the registry always has a
+  definite address to dial.
+- **Adoption never elects.** Reconciliation creates records from associations this app owns, but
+  will not choose the active adapter — except for the one case that cannot be ambiguous, a registry
+  holding exactly one adapter and no selection.
+
+Live adapter state (`AdapterSnapshot`) belongs to the one active session and is cleared on
+disconnect. The registry caches only what an adapter list can honestly say about a unit that is not
+currently connected, and phrases it as history.
+
+### Switching the active adapter
+
+A switch from adapter A to adapter B is **one generation-owned transition**, owned by
+`ActiveAdapterCoordinator` and executed by `AdapterSwitch`:
+
+```text
+begin(B)                      generation++, B is selected from this instant
+  -> selectionCommitted(B, A) UI can name the choice before anything is dismantled
+  -> stopControllerLink(A)    a controller session belongs to the adapter it was established on
+  -> retireManagement(A)      AWAITED, including joining any in-flight connect job
+  -> retirementComplete(gen)  false if a newer switch replaced this one; stop without activating
+  -> clearAdapterScopedState()
+  -> beginActivation(B)
+```
+
+Four rules, and where each is enforced:
+
+- **A is retired completely before B becomes authoritative.** `retireManagement` returns only after
+  `AdapterRepository.disconnect()` completes, which returns only after the transport has retired its
+  GATT generation and emitted its final state. This is the primary guarantee; everything else is
+  defence in depth.
+- **No stale event from A can reach B.** `ActiveAdapterCoordinator.accepts(address)` gates the
+  connection collector — nothing during a retirement, unattributed events only outside one,
+  otherwise the active adapter's own address.
+- **A result for A cannot settle B.** `activationSucceeded` / `activationFailed` are guarded by
+  adapter identity rather than by generation, because the connect path is shared with ordinary
+  reconnects that never involved a switch.
+- **A failed switch never falls back.** `activeId` becomes the target when the switch begins and
+  stays there on failure. The registry's selection follows the coordinator, so the two cannot
+  disagree. The user sees "Selected, not connected · tap to retry" against the adapter they chose.
+
+`AdapterRelationshipCoordinator` is untouched by this and still owns one attempt at one
+relationship. The counters are separate on purpose: merged, a connection retry would be
+indistinguishable from a change of adapter.
+
+The ordering is testable without a radio — `AdapterSwitch` drives an `AdapterSwitchPort`, and
+`AdapterSwitchTest` asserts the sequence against a recording fake.
+
+The design this implements, and the audit of what it replaced, are in
+[`bluetooth/bt-management-2.0-phase0-audit.md`](bluetooth/bt-management-2.0-phase0-audit.md).
 
 ### The management bond is always started on the LE transport
 

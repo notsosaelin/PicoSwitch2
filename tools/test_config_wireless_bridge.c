@@ -97,6 +97,8 @@ static void test_wireless_command_policy(void)
     assert(config_wireless_command_allowed("mgmt off"));
     assert(config_wireless_command_allowed("bonds list"));
     assert(config_wireless_command_allowed("bonds remove 0"));
+    assert(config_wireless_command_allowed("peers list"));
+    assert(config_wireless_command_allowed("peers list 4"));
     assert(config_wireless_command_allowed("save"));
     assert(config_wireless_command_allowed("amiibo status"));
     assert(config_wireless_command_allowed("amiibo chunk 0 0011"));

@@ -26,6 +26,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.picoswitch.companion.data.AdapterId
 import dev.picoswitch.companion.model.ConnectionPhase
 import dev.picoswitch.companion.ui.touch.TouchGamepadScreen
 
@@ -51,7 +52,7 @@ fun CompanionApp(
     viewModel: CompanionViewModel,
     onConnectAdapter: () -> Unit,
     onPairAdapter: () -> Unit,
-    onRepairAdapter: () -> Unit,
+    onRepairAdapter: (AdapterId?) -> Unit,
     onImportAmiibo: () -> Unit,
     onImportAmiiboArchive: () -> Unit,
     onExportAmiiboArchive: () -> Unit,
@@ -235,7 +236,7 @@ private fun ConnectionStrip(
     viewModel: CompanionViewModel,
     onConnect: () -> Unit,
     onPairAdapter: () -> Unit,
-    onRepairAdapter: () -> Unit,
+    onRepairAdapter: (AdapterId?) -> Unit,
 ) {
     val connected = ui.connection.connected
     val busyPhase = ui.connection.phase == ConnectionPhase.Associating ||
@@ -320,7 +321,12 @@ private fun ConnectionStrip(
                             enabled = actionEnabled,
                         ) { Text("Bluetooth settings") }
                         Spacer(Modifier.width(LayoutTokens.Space2))
-                        Button(onClick = onRepairAdapter, enabled = actionEnabled) { Text("Repair pairing") }
+                        // Repair targets the adapter whose pairing actually
+                        // broke, never "whatever adapters this app owns".
+                        Button(
+                            onClick = { onRepairAdapter(ui.activeAdapterId) },
+                            enabled = actionEnabled,
+                        ) { Text("Repair pairing") }
                     } else {
                         Button(onClick = onConnect, enabled = actionEnabled) {
                             Text(if (ui.adapterRelationship == null) "Pair Adapter" else "Reconnect")
@@ -337,6 +343,10 @@ private fun phaseLabel(ui: CompanionUiState) = when (ui.connection.phase) {
     ConnectionPhase.Bonding -> "Securing Android pairing…"
     ConnectionPhase.Scanning -> "Finding PicoSwitch2…"
     ConnectionPhase.Connecting -> "Connecting…"
+    // The transition names the adapter being switched to in its message; the
+    // label only has to stop reading as "offline", which is what a switch in
+    // progress is not.
+    ConnectionPhase.Disconnecting -> "Switching adapter…"
     ConnectionPhase.Reconnecting -> "Adapter disconnected"
     ConnectionPhase.RepairRequired -> "Pairing repair needed"
     ConnectionPhase.Failed -> "Connection failed"

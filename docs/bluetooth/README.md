@@ -16,6 +16,7 @@ are:
 | Automated and physical regression gates | [`VALIDATION.md`](VALIDATION.md) |
 | Detailed implementation history and controller-specific notes | [`btstack-implementation.md`](btstack-implementation.md) |
 | Keyboard / mouse composite-source behavior | [`keyboard-mouse-input.md`](keyboard-mouse-input.md) |
+| Bluetooth Management 2.0 audit and phase record (multi-adapter, peer inventory, remote pairing) | [`bt-management-2.0-phase0-audit.md`](bt-management-2.0-phase0-audit.md) |
 
 The first six documents describe current contracts. `btstack-implementation.md` remains the deeper
 implementation record; when an older passage conflicts with the current source or these contracts,
