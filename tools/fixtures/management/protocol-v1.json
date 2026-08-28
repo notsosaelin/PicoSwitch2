@@ -40,7 +40,7 @@
     },
     "peersPage": {
       "command": "peers list",
-      "reply": {"v":1,"total":3,"peers":[{"id":"p_1A2B3C4D","addr":"001122334455","tr":3,"role":"management","bonded":true,"conn":true},{"id":"p_5E6F7A8B","addr":"AABBCCDDEEFF","tr":1,"role":"controller","bonded":true,"conn":false,"name":"DualSense Wireless Controller"}],"next":2}
+      "reply": {"v":1,"total":3,"peers":[{"id":"p_1A2B3C4D","addr":"001122334455","tr":3,"role":"management","bonded":true,"conn":true},{"id":"p_5E6F7A8B","addr":"AABBCCDDEEFF","tr":1,"role":"controller","bonded":true,"conn":false,"name":"DualSense Wireless Controller","class":"Sony DualSense","vid":1356,"pid":3302}],"next":2}
     },
     "amiiboStatus": {
       "command": "amiibo status",
@@ -94,7 +94,7 @@
       {"command":"bonds list v2 3","reply":{"v":2,"total":2,"bonds":[{"i":3,"type":0,"addr":"AABBCCDDEEFF"}],"next":null}}
     ],
     "peers": [
-      {"command":"peers list","reply":{"v":1,"total":3,"peers":[{"id":"p_1A2B3C4D","addr":"001122334455","tr":3,"role":"management","bonded":true,"conn":true},{"id":"p_5E6F7A8B","addr":"AABBCCDDEEFF","tr":1,"role":"controller","bonded":true,"conn":false,"name":"DualSense Wireless Controller"}],"next":2}},
+      {"command":"peers list","reply":{"v":1,"total":3,"peers":[{"id":"p_1A2B3C4D","addr":"001122334455","tr":3,"role":"management","bonded":true,"conn":true},{"id":"p_5E6F7A8B","addr":"AABBCCDDEEFF","tr":1,"role":"controller","bonded":true,"conn":false,"name":"DualSense Wireless Controller","class":"Sony DualSense","vid":1356,"pid":3302}],"next":2}},
       {"command":"peers list 2","reply":{"v":1,"total":3,"peers":[{"id":"p_9C0D1E2F","addr":"112233445566","tr":2,"role":"unknown","bonded":true,"conn":false}],"next":null}}
     ],
     "kbm": [

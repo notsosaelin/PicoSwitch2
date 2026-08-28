@@ -227,6 +227,19 @@ size_t mgmt_peers_merge(const mgmt_peer_bond_t *bonds, size_t bond_count,
             peer->connected = 1u;
         if (peer->name[0] == '\0' && observation->name[0] != '\0')
             mgmt_peers_sanitize_name(observation->name, peer->name, sizeof(peer->name));
+        // Classification and VID/PID are additive facts about one device, so the
+        // first observation carrying them wins and a later one that does not know
+        // them cannot erase them. A peer observed twice in one pass is the case
+        // this protects: only one of those records may have had a driver bound,
+        // and the answer must not depend on which arrived last.
+        if (peer->classification[0] == '\0' && observation->classification[0] != '\0') {
+            mgmt_peers_sanitize_name(observation->classification, peer->classification,
+                                     sizeof(peer->classification));
+        }
+        if (peer->vendor_id == 0 && peer->product_id == 0) {
+            peer->vendor_id = observation->vendor_id;
+            peer->product_id = observation->product_id;
+        }
     }
 
     // Sort by address so the page cursor addresses the same peer between calls.
@@ -262,7 +275,10 @@ static bool append_peer(char *output, size_t capacity, size_t *length,
                         const mgmt_peer_t *peer, bool comma)
 {
     char id[16];
-    char encoded[192];
+    // Widest possible row: the fixed keys, a 32-char name, a 40-char
+    // classification and both identifiers. Sized with headroom so a row is never
+    // rejected by this buffer before the page budget has had its say.
+    char encoded[256];
     mgmt_peers_format_id(peer->address, id, sizeof(id));
 
     int written = snprintf(
@@ -283,6 +299,24 @@ static bool append_peer(char *output, size_t capacity, size_t *length,
         // The name is already sanitised, so it cannot close this string.
         int extra = snprintf(encoded + written, sizeof(encoded) - (size_t)written,
                              ",\"name\":\"%s\"", peer->name);
+        if (extra < 0 || (size_t)(written + extra) >= sizeof(encoded))
+            return false;
+        written += extra;
+    }
+    // Optional and omitted when unknown rather than sent empty: an absent
+    // field says "this adapter cannot tell you", which is what the client must
+    // render, and every byte here competes with another peer for the same page.
+    if (peer->classification[0] != '\0') {
+        int extra = snprintf(encoded + written, sizeof(encoded) - (size_t)written,
+                             ",\"class\":\"%s\"", peer->classification);
+        if (extra < 0 || (size_t)(written + extra) >= sizeof(encoded))
+            return false;
+        written += extra;
+    }
+    if (peer->vendor_id != 0 || peer->product_id != 0) {
+        int extra = snprintf(encoded + written, sizeof(encoded) - (size_t)written,
+                             ",\"vid\":%u,\"pid\":%u",
+                             (unsigned)peer->vendor_id, (unsigned)peer->product_id);
         if (extra < 0 || (size_t)(written + extra) >= sizeof(encoded))
             return false;
         written += extra;

@@ -197,6 +197,14 @@ class ProtocolConformanceTest {
         assertEquals(2, page.next)
         assertEquals("p_1A2B3C4D", page.entries.first().id)
         assertEquals("DualSense Wireless Controller", page.entries[1].name)
+        // Derived identity travels beside the claimed name, not instead of it,
+        // so a non-Kotlin client inherits both halves of the naming hierarchy.
+        assertEquals("Sony DualSense", page.entries[1].classification)
+        assertEquals(1356, page.entries[1].vendorId)
+        assertEquals(3302, page.entries[1].productId)
+        // A peer the adapter cannot identify carries neither, and carries them
+        // as absent rather than as empty strings.
+        assertEquals(null, page.entries.first().classification)
         // The gate, stated against the shared vector rather than only in code:
         // the management relationship is on the wire as management.
         assertEquals(PeerRole.ManagementCompanion, page.entries.first().role)

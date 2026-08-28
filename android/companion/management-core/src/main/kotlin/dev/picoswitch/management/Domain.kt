@@ -117,10 +117,64 @@ data class PeerInfo(
     val transports: Set<PeerTransport> = emptySet(),
     val bonded: Boolean = false,
     val connected: Boolean = false,
+    /** Remote-supplied name, sanitised by the adapter. Whatever the device calls itself. */
     val name: String? = null,
+    /**
+     * What the adapter's own driver stack decided the device IS, e.g.
+     * `Sony DualSense`. Derived identity rather than a claim by the device,
+     * which is why it outranks [name] when labelling a controller.
+     *
+     * Null means the adapter cannot say. A bonded peer that is not connected has
+     * no driver bound and therefore never carries one; that gap is what the
+     * app-side history exists to cover.
+     */
+    val classification: String? = null,
+    val vendorId: Int = 0,
+    val productId: Int = 0,
 ) {
     /** A peer with entries on both transports, which selective forget must treat as one device. */
     val multiTransport: Boolean get() = transports.size > 1
+
+    /** 0/0 means the adapter has no identity for this peer, not that it is device 0000:0000. */
+    val hasUsbIdentity: Boolean get() = vendorId != 0 || productId != 0
+}
+
+/**
+ * The display-name hierarchy for one remote device (design §20).
+ *
+ * Ordered by how much anyone can actually vouch for the answer:
+ *
+ *  1. a user alias, which is the user's own decision and outranks everything;
+ *  2. the adapter's classification, derived from VID/PID and the HID descriptor
+ *     rather than supplied by the device;
+ *  3. the remote-supplied name, which is only ever a claim by the device;
+ *  4. the USB identity, when the adapter has one but no driver name for it;
+ *  5. a short identity suffix, so two unnamed devices stay distinguishable.
+ *
+ * The final fallback is deliberately not the bare address. An address rendered
+ * where a name belongs reads as a name, and this one is not one.
+ */
+object PeerNaming {
+    fun label(
+        address: String,
+        alias: String? = null,
+        classification: String? = null,
+        name: String? = null,
+        vendorId: Int = 0,
+        productId: Int = 0,
+    ): String = alias?.takeIf(String::isNotBlank)
+        ?: classification?.takeIf(String::isNotBlank)
+        ?: name?.takeIf(String::isNotBlank)
+        ?: usbIdentity(vendorId, productId)
+        ?: "Controller • ${shortLabel(address)}"
+
+    /** Four hex characters of the identity address. Presentation only, never identity. */
+    fun shortLabel(address: String): String =
+        address.filter { it.isLetterOrDigit() }.takeLast(4).uppercase().ifBlank { "????" }
+
+    private fun usbIdentity(vendorId: Int, productId: Int): String? =
+        if (vendorId == 0 && productId == 0) null
+        else "Device %04X:%04X".format(vendorId, productId)
 }
 
 enum class PeerTransport(val bit: Int) {

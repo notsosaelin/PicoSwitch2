@@ -49,10 +49,12 @@ so a new test cannot be quietly forgotten.
 
 | Added | Target | Subsystem |
 |---|---|---|
+| 2026-08-23 | `test_bthid_android_bridge` | Controller Link source classification |
+| 2026-08-23 | `test_touch_layout_face_goldens` | Touch Gamepad layout goldens |
 | 2026-08-24 | `test_controller_link_face_goldens` | Controller Link face mapping |
 | 2026-08-27 | `test_mgmt_peers` | logical peer inventory (Bluetooth Management 2.0 Phase 3) |
 
-70 declared active host-test targets rebuild from current source and pass. The 9 remaining sources
+73 declared active host-test targets rebuild from current source and pass. The 9 remaining sources
 are declared in `$notHostTests` with a reason, and the runner refuses to start if any
 `tools/test_*.c` is in neither table.
 

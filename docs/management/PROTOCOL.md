@@ -121,7 +121,22 @@ Peer entries carry:
 | `role` | `management`, `controller_link`, `controller`, or `unknown`. |
 | `bonded` | Whether any security record exists for this peer. |
 | `conn` | Whether the peer is connected right now. |
-| `name` | Optional. Sanitised to printable ASCII by the adapter. |
+| `name` | Optional. The name the device supplies for itself, sanitised to printable ASCII by the adapter. |
+| `class` | Optional. The bthid driver identity the adapter DERIVED for a live connection, e.g. `Sony DualSense`. Absent, never empty, for any peer with no driver bound — which is every bonded peer that is not connected. |
+| `vid`, `pid` | Optional pair. USB identity as the adapter resolved it. Absent when unknown; `0`/`0` is not a valid device identity. |
+
+`class` outranks `name` when a client labels a controller. `name` is a claim by the device and its
+owner can change it; `class` is the conclusion this firmware reached from VID/PID, the HID
+descriptor and the class of device — the same decision that determines how the controller is
+parsed. The full hierarchy a client should use is: user alias, then `class`, then `name`, then
+`vid`/`pid`, then a short suffix of `addr`. A client MUST NOT render the bare address where a name
+belongs.
+
+**The envelope stayed at `v:1` when `class`, `vid` and `pid` were added.** They are optional fields
+on an existing shape: an older client ignores them, and a newer client reads an older adapter's
+pages unchanged. Bumping the version would have broken both directions in order to describe a
+change that breaks neither. A version bump remains required for a field whose ABSENCE a client
+cannot handle, or for any change to the meaning of an existing field.
 
 Pagination rules are identical to `bonds list v2`, and so are the failure conditions: a changed
 `total`, a repeated `id`, a non-progressing cursor, an empty page with a non-null cursor, or a final
@@ -140,6 +155,12 @@ unreadable.
 one, because a single phone can hold the management session and the Controller Link relationship at
 the same time. Presenting that phone under saved controllers is the specific error the ordering
 prevents.
+
+A client is permitted to remember what the adapter previously reported for a peer and to label an
+`unknown` peer from that memory, provided the presentation attributes it. That is not a promotion:
+the adapter's live answer is still `unknown` and must still be rendered as unidentified. The
+companion does exactly this, and it is also the reason the adapter is allowed to have no persistent
+role store — see `docs/android-companion.md`.
 
 **No key material appears in any peer field, in any protocol version.** Link keys, LTKs, IRKs and
 CSRKs MUST NOT be exposed. The firmware's peer record has no field capable of holding one; that is

@@ -17,9 +17,6 @@ import dev.picoswitch.bridge.core.ControllerFaceLayout
 import dev.picoswitch.bridge.protocol.BridgeContract
 import dev.picoswitch.bridge.session.BridgeLinkPhase
 import dev.picoswitch.companion.model.CapabilityState
-import dev.picoswitch.companion.model.PeerInfo
-import dev.picoswitch.companion.model.PeerRole
-import dev.picoswitch.companion.model.PeerTransport
 
 /**
  * Using this handheld as the controller, and choosing which controller the
@@ -42,7 +39,6 @@ fun ControllerScreen(
         val active: @Composable () -> Unit = { ActiveInputCard(ui, viewModel) }
         val bridge: @Composable () -> Unit = { BridgeCard(ui, viewModel, onPrepare, onOpenTouchGamepad) }
         val source: @Composable () -> Unit = { InputSourceCard(ui, viewModel) }
-        val saved: @Composable () -> Unit = { SavedPairingsCard(ui, viewModel) }
         val layout: @Composable () -> Unit = { ControllerLayoutCard(ui, viewModel) }
 
         Column(Modifier.fillMaxSize()) {
@@ -54,7 +50,7 @@ fun ControllerScreen(
                     horizontalArrangement = Arrangement.spacedBy(gap),
                 ) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(gap)) {
-                        active(); source(); saved()
+                        active(); source()
                     }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(gap)) {
                         bridge(); layout()
@@ -65,7 +61,7 @@ fun ControllerScreen(
                     Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(gap),
                 ) {
-                    active(); bridge(); source(); saved(); layout()
+                    active(); bridge(); source(); layout()
                     Spacer(Modifier.height(LayoutTokens.Space5))
                 }
             }
@@ -233,103 +229,6 @@ private fun BridgeLinkPhase.productLabel(): String = when (this) {
     BridgeLinkPhase.Playing -> "Playing"
     BridgeLinkPhase.Unsupported -> "Not supported"
     BridgeLinkPhase.Failed -> "Failed"
-}
-
-/**
- * What the adapter has stored, as opposed to what is plugged in right now.
- *
- * Three separations the copy has to keep straight, because collapsing any of
- * them is how a user ends up forgetting the wrong thing:
- *
- *  * **Bonded is not connected.** A saved controller that is switched off is
- *    still saved.
- *  * **A controller is not the phone.** This phone appears in the inventory in
- *    up to two roles -- BLE management and Controller Link -- and neither
- *    belongs in a list headed "Saved controllers".
- *  * **Unknown is not "none".** After a reboot the adapter can see its stored
- *    keys but cannot yet say whose they are; that is reported as unknown rather
- *    than guessed into the controller list.
- *
- * Read-only in this pass. Forgetting a pairing is a later phase, and offering
- * the action before the firmware can perform it safely would be worse than not
- * offering it.
- */
-@Composable
-private fun SavedPairingsCard(ui: CompanionUiState, viewModel: CompanionViewModel) {
-    val inventory = ui.snapshot.peers
-    SectionCard(
-        title = "Saved pairings",
-        icon = Icons.Default.Bluetooth,
-        trailing = {
-            IconButton(
-                onClick = viewModel::refreshPeers,
-                enabled = ui.connection.connected && !ui.busy,
-            ) { Icon(Icons.Default.Refresh, "Refresh saved pairings") }
-        },
-    ) {
-        when {
-            !ui.connection.connected ->
-                InlineNotice("Connect to the adapter to see what it has paired.")
-            ui.snapshot.capabilities.peers == CapabilityState.Unsupported ->
-                InlineNotice("Update the adapter firmware to see its saved pairings here.")
-            ui.snapshot.capabilities.peers == CapabilityState.Unknown ->
-                InlineNotice("Tap refresh to read the adapter's saved pairings.")
-            inventory.peers.isEmpty() ->
-                InlineNotice("This adapter has no saved pairings.")
-            else -> {
-                val controllers = inventory.controllers
-                if (controllers.isEmpty()) {
-                    InlineNotice("No saved controller has been identified on this adapter yet.")
-                } else {
-                    controllers.forEach { peer -> PeerRow(peer) }
-                }
-                val others = inventory.companionsAndUnknown
-                if (others.isNotEmpty()) {
-                    HorizontalDivider()
-                    // Explicitly not "controllers". This section is where the
-                    // phone's own two relationships live, plus anything the
-                    // adapter cannot yet name.
-                    SubsectionLabel("This phone and unidentified peers")
-                    others.forEach { peer -> PeerRow(peer) }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PeerRow(peer: PeerInfo) {
-    SettingsRow(
-        title = peer.name?.takeIf(String::isNotBlank)
-            // Never the raw address as a name. A short suffix is enough to tell
-            // two unnamed devices apart and reads as an identifier, not a label.
-            ?: "Controller • ${peer.address.takeLast(4)}",
-        supporting = peerSupportingText(peer),
-        enabled = false,
-        trailing = {
-            if (peer.connected) StatusChip("Connected", tone = ChipTone.Positive)
-            else if (peer.bonded) StatusChip("Saved", tone = ChipTone.Neutral)
-        },
-    )
-}
-
-private fun peerSupportingText(peer: PeerInfo): String {
-    val role = when (peer.role) {
-        PeerRole.ManagementCompanion -> "This phone — management"
-        PeerRole.ControllerLink -> "This phone — Controller Link"
-        PeerRole.PhysicalController -> "Controller"
-        // Deliberately not "unrecognised device": the adapter holds a key for
-        // it, so the honest statement is that it cannot say what it is yet.
-        PeerRole.Unknown -> "Saved pairing, not yet identified"
-    }
-    val transports = when {
-        peer.multiTransport -> "Bluetooth Classic + LE"
-        peer.transports.contains(PeerTransport.Classic) -> "Bluetooth Classic"
-        peer.transports.contains(PeerTransport.Le) -> "Bluetooth LE"
-        // Connected with no stored key: a controller part-way through pairing.
-        else -> "Not saved"
-    }
-    return "$role · $transports"
 }
 
 @Composable

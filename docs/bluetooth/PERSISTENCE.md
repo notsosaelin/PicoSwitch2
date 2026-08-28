@@ -85,9 +85,29 @@ user's own phone in a list of things to forget.
 **Role classification is live evidence only.** There is no persistent per-peer role store, so after
 a reboot a stored bond whose owner has not yet reconnected is `unknown`. That is the correct answer,
 not a gap to be papered over with a guess: the security databases record an address, a key and a key
-type, and nothing about what the device is. Persisting non-secret peer metadata is a possible future
-addition — it would live in a project-owned TLV tag beside `JPLC`/`JPLK`, would be advisory rather
-than authoritative, and would be erased by the install reset exactly as bonds are.
+type, and nothing about what the device is.
+
+Since Phase 4 the adapter also reports, for a **connected** peer only, the bthid driver identity it
+derived (`class`) and the resolved `vid`/`pid`. Those are live too, and are absent for a peer that is
+merely bonded.
+
+### Persisting peer metadata was tried, and withdrawn
+
+> **Do not reimplement this without new evidence.** Storing non-secret peer metadata on the adapter
+> — a project-owned TLV tag beside `JPLC`/`JPLK`, advisory rather than authoritative, erased by the
+> install reset exactly as bonds are — is the obvious way to make role and name survive a reboot,
+> and it is what the design document recommends (`BT_MANAGEMENT_UPGRADE_PASS.md` §24.2). It was
+> implemented after Phase 4's first pass and it **destabilised the Bluetooth core**. It was
+> withdrawn, and Phase 4 shipped with the companion remembering peer metadata instead.
+>
+> The storage audit's capacity finding still stands; capacity was never what failed. What actually
+> destabilised the core has **not** been established. The untested first hypothesis is TLV write
+> contention with the security databases, which share the same flash banks. Establish the cause
+> before rebuilding the same shape.
+
+The consequence to accept meanwhile: peer names and roles that survive a reboot live on the
+management phone, so a different phone sees only the adapter's live answers. See
+[`../android-companion.md`](../android-companion.md).
 
 ### Known limitation
 
