@@ -91,6 +91,55 @@ Since Phase 4 the adapter also reports, for a **connected** peer only, the bthid
 derived (`class`) and the resolved `vid`/`pid`. Those are live too, and are absent for a peer that is
 merely bonded.
 
+### Management identity is the resolved identity, never the connection address
+
+`config_ble.client_addr` is the over-the-air address from
+`HCI_SUBEVENT_LE_CONNECTION_COMPLETE`. For a phone using LE privacy that is a Resolvable Private
+Address which rotates roughly every quarter hour, and it is **never** equal to the identity the LE
+device DB stores or to the phone's Classic BD_ADDR.
+
+Durable comparisons therefore use `config_ble_durable_addr()`, which prefers
+`config_ble_identity_addr()` (the record `sm_le_device_index()` says this link is authenticated
+against), then the identity captured from `SM_EVENT_IDENTITY_RESOLVING_SUCCEEDED`, and only then the
+connection address — which is correct in that last case precisely because no resolution happened, so
+the peer connected under its identity. BTstack does the resolution
+(`ENABLE_LE_PRIVACY_ADDRESS_RESOLUTION`); nothing here re-derives it.
+
+Three comparisons were previously made against the raw connection address and so were permanently
+false: the reconnect selector could not exclude the connected companion, the Classic authentication
+path could never recognise the companion's own Controller Link, and an explicit forget of the
+companion's bond left its session running. `btstack_host_companion_terms()` was already correct — it
+tests `raw_matches || identity_matches`.
+
+The same mistake produced the peer inventory's most visible symptom: one phone appeared as two
+logical peers, its bonded identity (Classic + LE, role `unknown`) and an unbonded RPA (role
+`management`). Peers merge by address, so the observation is now emitted under the durable identity
+and the two collapse into one row.
+
+**Rule: the live RPA is connection-local metadata. Anything durable — a bond record, a Classic
+address, a peer row, history — uses the resolved identity.**
+
+### Controller bond-recovery must never reach the companion
+
+`SM_EVENT_REENCRYPTION_COMPLETE` with a failure status deletes the peer's bond so the next attempt
+becomes a real pairing. That is correct **for controllers**: a controller whose stored key no longer
+works has usually been re-paired elsewhere.
+
+It is wrong for the **management companion**, and it reached it by omission. The management
+peripheral is a *peripheral-role* link and is deliberately absent from the central-role connection
+table (the invariant `btstack_host_pick_reconnect()` also relies on), so
+`find_connection_by_handle()` returns NULL for it — and NULL fell through to "an ordinary controller
+with a stale bond".
+
+Reaching that branch is **unrecoverable**, which is what makes it worth guarding regardless of how
+often it fires: the companion excludes HCI 0x05/0x06 from its retry set by design and goes straight
+to a terminal repair state, so one transient security failure would cost a manual re-pair.
+
+**Invariant: no automatic recovery path may delete the management companion's bond.** Clearing it is
+always deliberate — Repair pairing, `bonds remove`, or the BOOTSEL triple-tap wipe. When adding any
+future automatic `gap_delete_bonding()`, check the handle against `config_ble.handle` first;
+`find_connection_by_handle() == NULL` does **not** mean "unknown controller".
+
 ### Persisting peer metadata was tried, and withdrawn
 
 > **Do not reimplement this without new evidence.** Storing non-secret peer metadata on the adapter

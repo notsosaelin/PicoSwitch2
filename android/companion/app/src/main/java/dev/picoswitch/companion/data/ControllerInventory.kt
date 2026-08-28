@@ -27,6 +27,14 @@ enum class PeerSection {
 
     /** This phone, in either of its relationships. Never offered as a controller. */
     Companion,
+
+    /**
+     * A security record the adapter holds but cannot attribute to a controller,
+     * and this app has never seen identified either. Diagnostics, not product:
+     * presenting it beside real controllers invites the user to act on
+     * something neither side can name.
+     */
+    Unidentified,
 }
 
 /**
@@ -66,9 +74,17 @@ data class ControllerInventoryView(
     val saved: List<PeerListing> = emptyList(),
     val recent: List<PeerListing> = emptyList(),
     val companion: List<PeerListing> = emptyList(),
+    val unidentified: List<PeerListing> = emptyList(),
 ) {
-    val isEmpty: Boolean
-        get() = connected.isEmpty() && saved.isEmpty() && recent.isEmpty() && companion.isEmpty()
+    /** What Paired Controllers may render: physical controllers, and nothing else. */
+    val hasControllers: Boolean
+        get() = connected.isNotEmpty() || saved.isNotEmpty() || recent.isNotEmpty()
+
+    /** What Diagnostics renders: this phone's own relationships and unattributable records. */
+    val hasDiagnosticPeers: Boolean
+        get() = companion.isNotEmpty() || unidentified.isNotEmpty()
+
+    val isEmpty: Boolean get() = !hasControllers && !hasDiagnosticPeers
 }
 
 /**
@@ -97,6 +113,7 @@ object ControllerInventory {
             saved = live.filter { it.section == PeerSection.Saved }.sortedBy { it.displayName },
             recent = recent,
             companion = live.filter { it.section == PeerSection.Companion }.sortedBy { it.displayName },
+            unidentified = live.filter { it.section == PeerSection.Unidentified }.sortedBy { it.address },
         )
     }
 
@@ -110,8 +127,13 @@ object ControllerInventory {
         val effectiveRole = strongerRole(peer.role, rememberedRole)
         val companion = effectiveRole == PeerRole.ManagementCompanion ||
             effectiveRole == PeerRole.ControllerLink
+        // Only a device something can actually name reaches the controller
+        // sections. A peer neither the adapter nor this app has ever identified
+        // is a raw security record, and belongs in Diagnostics with the other
+        // unattributable ones.
         val section = when {
             companion -> PeerSection.Companion
+            effectiveRole != PeerRole.PhysicalController -> PeerSection.Unidentified
             peer.connected -> PeerSection.Connected
             else -> PeerSection.Saved
         }

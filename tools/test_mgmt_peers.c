@@ -284,6 +284,49 @@ static void test_a_widest_possible_row_still_fits_a_page(void)
     assert(strstr(out, "\"vid\":65535,\"pid\":65535") != NULL);
 }
 
+
+static void test_one_identity_with_a_live_observation_is_one_peer(void)
+{
+    // The management companion: a stored bond under its identity address, plus
+    // a live observation the firmware now emits under that SAME identity
+    // because BTstack resolved the connection's RPA to it. One physical phone
+    // must be one row, carrying the merged transports and role=management.
+    mgmt_peer_bond_t bonds[2];
+    bonds[0] = classic_bond(0x01, 4);            // CTKD-derived Classic key
+    bonds[1] = le_bond(0x01, 2, 0);              // the LE management bond
+    mgmt_peer_observation_t live = observation(0x01, NULL);
+    live.is_management_client = 1;
+    live.connected = 1;
+
+    mgmt_peer_t peers[4];
+    assert(mgmt_peers_merge(bonds, 2, &live, 1, peers, 4) == 1);
+    assert(peers[0].role == MGMT_PEER_ROLE_MANAGEMENT_COMPANION);
+    assert(peers[0].connected == 1);
+    assert(peers[0].transport ==
+           (MGMT_PEER_TRANSPORT_BREDR | MGMT_PEER_TRANSPORT_LE));
+}
+
+static void test_an_unresolved_observation_still_splits_the_peer(void)
+{
+    // The pre-fix shape, pinned so the cost of regressing the firmware's
+    // identity handling is visible here rather than only on hardware: an
+    // observation at a DIFFERENT address than the bond is a second logical
+    // peer, bonded on one row and role-bearing on the other. The merge is not
+    // wrong to do this -- it cannot invent an association it was never given --
+    // which is exactly why the address handed to it has to be the identity.
+    mgmt_peer_bond_t bonds[] = { le_bond(0x01, 2, 0) };
+    mgmt_peer_observation_t live = observation(0x02, NULL);   // an RPA
+    live.is_management_client = 1;
+    live.connected = 1;
+
+    mgmt_peer_t peers[4];
+    assert(mgmt_peers_merge(bonds, 1, &live, 1, peers, 4) == 2);
+    assert(peers[0].transport == MGMT_PEER_TRANSPORT_LE);
+    assert(peers[0].role == MGMT_PEER_ROLE_UNKNOWN);
+    assert(peers[1].transport == 0);
+    assert(peers[1].role == MGMT_PEER_ROLE_MANAGEMENT_COMPANION);
+}
+
 static void test_merge_is_bounded_by_capacity(void)
 {
     mgmt_peer_bond_t bonds[MGMT_PEERS_MAX_ENTRIES];
@@ -500,6 +543,8 @@ int main(void)
     test_connected_peer_without_a_key_is_still_reported();
     test_live_evidence_names_and_marks_a_stored_peer();
     test_a_weaker_observation_cannot_demote_a_stronger_one();
+    test_one_identity_with_a_live_observation_is_one_peer();
+    test_an_unresolved_observation_still_splits_the_peer();
     test_classification_and_identifiers_survive_the_merge();
     test_a_later_observation_cannot_erase_a_known_classification();
     test_an_unclassified_peer_reports_nothing_rather_than_empty();

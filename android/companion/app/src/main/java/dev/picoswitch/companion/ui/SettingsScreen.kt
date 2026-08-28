@@ -173,7 +173,6 @@ fun SettingsScreen(
             PairedControllersCard(
                 ui = ui,
                 viewModel = viewModel,
-                onRemoveBond = { removeBond = it },
                 onRemoveHistory = { removeHistory = it },
             )
         }
@@ -346,12 +345,20 @@ fun SettingsScreen(
  * Forgetting an actual pairing is a later phase and is deliberately not offered
  * here: the firmware cannot yet perform it atomically, and an action that half
  * works is worse than one that is absent.
+ *
+ * **This card holds physical controllers and nothing else.** The management
+ * phone is not a controller, and neither is a raw LE bond slot, a CTKD-derived
+ * Classic record, or a security record nothing can attribute. Those are real,
+ * and they are in Diagnostics, where a reader is asking a different question.
+ * Note this is a presentation boundary resting on a corrected firmware identity
+ * model, not a filter hiding one: the adapter now reports the companion under
+ * its resolved identity, so it is one peer with role `management` rather than
+ * an identity row plus a stray RPA row.
  */
 @Composable
 private fun PairedControllersCard(
     ui: CompanionUiState,
     viewModel: CompanionViewModel,
-    onRemoveBond: (BondInfo) -> Unit,
     onRemoveHistory: (PeerListing) -> Unit,
 ) {
     val inventory = ui.controllerInventory
@@ -373,9 +380,17 @@ private fun PairedControllersCard(
             // the adapter is away. Everything else needs the adapter present.
             !ui.connection.connected && inventory.recent.isEmpty() ->
                 InlineNotice("Connect to the adapter to see what it has paired.")
-            inventory.isEmpty && ui.snapshot.capabilities.peers == CapabilityState.Unknown ->
+            !inventory.hasControllers && ui.snapshot.capabilities.peers == CapabilityState.Unknown ->
                 InlineNotice("Tap refresh to read the adapter's paired controllers.")
-            inventory.isEmpty ->
+            !inventory.hasControllers && inventory.hasDiagnosticPeers ->
+                // The adapter holds records, but none of them is a controller.
+                // Saying "no controllers" would be true and unhelpful; the rows
+                // it does hold are in Diagnostics, and this says where.
+                InlineNotice(
+                    "No paired controllers. This adapter's remaining Bluetooth records are this " +
+                        "phone's own, or ones it cannot identify; both are in Diagnostics.",
+                )
+            !inventory.hasControllers ->
                 InlineNotice("This adapter has no paired controllers.")
             else -> {
                 if (inventory.connected.isNotEmpty()) {
@@ -410,52 +425,9 @@ private fun PairedControllersCard(
                         )
                     }
                 }
-                if (inventory.companion.isNotEmpty()) {
-                    HorizontalDivider()
-                    // Explicitly not "controllers". This is where the phone's own
-                    // relationships live, plus anything the adapter holds a key
-                    // for but cannot identify.
-                    SubsectionLabel("This phone and unidentified peers")
-                    inventory.companion.forEach { PeerRow(it) }
-                }
             }
         }
 
-        HorizontalDivider()
-        SubsectionLabel("Advanced: adapter Bluetooth LE bonds")
-        Text(
-            // Says why this list disagrees with the one above, because it will:
-            // one device holding two records appears once above and twice here.
-            "Raw security records rather than devices. One controller can hold more than one.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        when {
-            ui.snapshot.capabilities.bonds == CapabilityState.Unsupported ->
-                InlineNotice("This firmware does not report stored pairings.")
-            !ui.connection.connected ->
-                InlineNotice("Connect to the adapter to review its stored pairings.")
-            // Never present a partial enumeration as the whole list: a missing
-            // entry here is an entry the user cannot revoke.
-            ui.snapshot.bondsComplete != true ->
-                InlineNotice(
-                    "The stored-pairing list could not be read completely, so none are shown.",
-                    tone = ChipTone.Error,
-                )
-            ui.snapshot.bonds.isEmpty() -> InlineNotice("No Bluetooth LE bonds are stored on this adapter.")
-            else -> ui.snapshot.bonds.forEach { bond ->
-                SettingsRow(
-                    title = bond.name?.takeIf(String::isNotBlank) ?: bond.address,
-                    supporting = bond.name?.takeIf(String::isNotBlank)?.let { bond.address },
-                    enabled = !ui.busy,
-                    trailing = {
-                        IconButton(onClick = { onRemoveBond(bond) }, enabled = !ui.busy) {
-                            Icon(Icons.Default.LinkOff, "Remove pairing ${bond.index}")
-                        }
-                    },
-                )
-            }
-        }
     }
 }
 
