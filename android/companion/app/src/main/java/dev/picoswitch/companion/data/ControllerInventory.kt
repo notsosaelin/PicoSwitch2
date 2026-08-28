@@ -19,22 +19,32 @@ enum class PeerSection {
     /** Connected to the adapter right now. */
     Connected,
 
-    /** The adapter holds a security record; the controller is simply not here. */
-    Saved,
+    /**
+     * The adapter holds a credential; the controller is simply not here.
+     *
+     * A peer lands here whether or not the adapter can currently NAME it. Role
+     * is live evidence, so after a reboot every paired controller reads
+     * `unknown` until it reconnects — routing on that would empty this list on
+     * every power cycle and hide real pairings from the person who made them.
+     * Being bonded and not being this phone is enough.
+     */
+    Paired,
 
-    /** No security record any more. Remembered by this app, not by the adapter. */
+    /** No credential any more. Remembered by this app, not by the adapter. */
     Recent,
 
     /** This phone, in either of its relationships. Never offered as a controller. */
     Companion,
 
     /**
-     * A security record the adapter holds but cannot attribute to a controller,
-     * and this app has never seen identified either. Diagnostics, not product:
-     * presenting it beside real controllers invites the user to act on
-     * something neither side can name.
+     * Neither bonded nor connected, and not this phone.
+     *
+     * Defensive only: a live inventory should not produce one, because a peer
+     * exists in it precisely by holding a credential or a link. Kept as an
+     * explicit destination so an unexpected row goes to Diagnostics rather than
+     * silently into the product list.
      */
-    Unidentified,
+    Unattributed,
 }
 
 /**
@@ -71,18 +81,18 @@ data class PeerListing(
 
 data class ControllerInventoryView(
     val connected: List<PeerListing> = emptyList(),
-    val saved: List<PeerListing> = emptyList(),
+    val paired: List<PeerListing> = emptyList(),
     val recent: List<PeerListing> = emptyList(),
     val companion: List<PeerListing> = emptyList(),
-    val unidentified: List<PeerListing> = emptyList(),
+    val unattributed: List<PeerListing> = emptyList(),
 ) {
-    /** What Paired Controllers may render: physical controllers, and nothing else. */
+    /** What Paired Controllers renders. */
     val hasControllers: Boolean
-        get() = connected.isNotEmpty() || saved.isNotEmpty() || recent.isNotEmpty()
+        get() = connected.isNotEmpty() || paired.isNotEmpty() || recent.isNotEmpty()
 
     /** What Diagnostics renders: this phone's own relationships and unattributable records. */
     val hasDiagnosticPeers: Boolean
-        get() = companion.isNotEmpty() || unidentified.isNotEmpty()
+        get() = companion.isNotEmpty() || unattributed.isNotEmpty()
 
     val isEmpty: Boolean get() = !hasControllers && !hasDiagnosticPeers
 }
@@ -110,10 +120,10 @@ object ControllerInventory {
 
         return ControllerInventoryView(
             connected = live.filter { it.section == PeerSection.Connected }.sortedBy { it.displayName },
-            saved = live.filter { it.section == PeerSection.Saved }.sortedBy { it.displayName },
+            paired = live.filter { it.section == PeerSection.Paired }.sortedBy { it.displayName },
             recent = recent,
             companion = live.filter { it.section == PeerSection.Companion }.sortedBy { it.displayName },
-            unidentified = live.filter { it.section == PeerSection.Unidentified }.sortedBy { it.address },
+            unattributed = live.filter { it.section == PeerSection.Unattributed }.sortedBy { it.address },
         )
     }
 
@@ -127,15 +137,20 @@ object ControllerInventory {
         val effectiveRole = strongerRole(peer.role, rememberedRole)
         val companion = effectiveRole == PeerRole.ManagementCompanion ||
             effectiveRole == PeerRole.ControllerLink
-        // Only a device something can actually name reaches the controller
-        // sections. A peer neither the adapter nor this app has ever identified
-        // is a raw security record, and belongs in Diagnostics with the other
-        // unattributable ones.
+        // Bonding, not naming, decides whether this is a controller pairing.
+        //
+        // Routing on role was wrong and hid real hardware: role is live evidence
+        // only, so after the adapter reboots EVERY paired controller reads
+        // `unknown` until it reconnects. The person who paired it would open
+        // Paired Controllers and find it empty. A peer that holds a credential
+        // and is not this phone is a controller pairing whether or not the
+        // adapter can currently say which controller it is; the row says
+        // "Not yet identified" instead of pretending to know.
         val section = when {
             companion -> PeerSection.Companion
-            effectiveRole != PeerRole.PhysicalController -> PeerSection.Unidentified
             peer.connected -> PeerSection.Connected
-            else -> PeerSection.Saved
+            peer.bonded -> PeerSection.Paired
+            else -> PeerSection.Unattributed
         }
         val liveName = PeerNaming.label(
             address = peer.address,

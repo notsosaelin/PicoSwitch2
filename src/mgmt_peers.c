@@ -7,7 +7,22 @@
 enum {
     MGMT_PEERS_MAX_DECIMAL = 100000,
     // Room for the closing array, the page cursor and the terminating NUL even
-    // when the cursor is the widest value the parser accepts.
+    // when the cursor is the widest value the parser accepts. The widest suffix
+    // is `],"next":100000}` at 16 bytes, so 32 is comfortable.
+    //
+    // This is a RESERVE, and it has to be enforced where rows are appended
+    // rather than only checked before one. It previously was not: the loop
+    // tested `length + RESERVE >= capacity` at the top of an iteration, which
+    // asks whether the reserve survives the PREVIOUS row, and then appended the
+    // next row against the FULL capacity. A row landing the page between
+    // `capacity - RESERVE` and `capacity - strlen(suffix)` therefore passed both
+    // checks and left too little room for the suffix -- and a failed suffix
+    // discards the entire page as `response_too_large`.
+    //
+    // Reproduced on hardware 2026-08-28 with four peers (164 + 182 + 129 + 92
+    // bytes): the page filled to 502 of 512 and then could not fit its 11-byte
+    // `],"next":3}`, so a perfectly paginatable inventory returned an error at
+    // cursor 0 while cursors 1..4 all succeeded.
     MGMT_PEERS_SUFFIX_RESERVE = 32,
 };
 
@@ -447,9 +462,16 @@ size_t mgmt_peers_format_page(const mgmt_peer_t *peers, size_t peer_count,
         }
     }
 
+    // Rows are appended against the budget MINUS the suffix reserve, so a row
+    // can never consume the space the closing `],"next":N}` needs. Checking the
+    // reserve only before the append -- which is what this loop used to do --
+    // reserves nothing, because the row that follows the check is then measured
+    // against the full capacity.
+    const size_t row_budget = capacity > (size_t)MGMT_PEERS_SUFFIX_RESERVE
+        ? capacity - (size_t)MGMT_PEERS_SUFFIX_RESERVE
+        : 0;
     for (size_t i = (size_t)start; i < peer_count; ++i) {
-        if (length + MGMT_PEERS_SUFFIX_RESERVE >= capacity ||
-            !append_peer(output, capacity, &length, &peers[i], shown != 0)) {
+        if (!append_peer(output, row_budget, &length, &peers[i], shown != 0)) {
             next = (int)i;
             break;
         }

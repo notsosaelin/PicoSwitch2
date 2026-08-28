@@ -15,6 +15,23 @@ enum {
     MGMT_BONDS_LEGACY_SUFFIX_RESERVE = 40,
 };
 
+// A reserve is only a reserve if entries are appended against the budget it
+// leaves behind. Subtracting it here, once, is what keeps that true at both
+// call sites.
+static size_t page_entry_budget(size_t capacity)
+{
+    return capacity > (size_t)MGMT_BONDS_PAGE_SUFFIX_RESERVE
+        ? capacity - (size_t)MGMT_BONDS_PAGE_SUFFIX_RESERVE
+        : 0;
+}
+
+static size_t legacy_entry_budget(size_t capacity)
+{
+    return capacity > (size_t)MGMT_BONDS_LEGACY_SUFFIX_RESERVE
+        ? capacity - (size_t)MGMT_BONDS_LEGACY_SUFFIX_RESERVE
+        : 0;
+}
+
 static bool parse_decimal(const char *text, int *value)
 {
     if (!text || !*text)
@@ -148,8 +165,15 @@ size_t mgmt_bonds_format_legacy(mgmt_bonds_entry_at_fn entry_at,
             continue;
         // Do not use the last bytes of the array for an entry: the suffix
         // and terminating NUL must fit too.  A failed append is never sent.
-        if (length + MGMT_BONDS_LEGACY_SUFFIX_RESERVE >= capacity ||
-            !append_entry(output, capacity, &length, &entry, shown != 0)) {
+        //
+        // The reserve is applied to the ENTRY BUDGET, not merely tested before
+        // the entry. Testing it beforehand and then appending against the full
+        // capacity reserves nothing: an entry can land the buffer inside the
+        // reserve and leave the suffix unable to fit, which discards the whole
+        // response. Same defect as mgmt_peers_format_page(), where it was
+        // reproduced on hardware; see the reserve's comment there.
+        if (!append_entry(output, legacy_entry_budget(capacity), &length,
+                          &entry, shown != 0)) {
             fit = false;
             break;
         }
@@ -208,8 +232,9 @@ size_t mgmt_bonds_format_page(mgmt_bonds_entry_at_fn entry_at,
         mgmt_bond_entry_t entry;
         if (!entry_at(context, slot, &entry))
             continue;
-        if (length + MGMT_BONDS_PAGE_SUFFIX_RESERVE >= capacity ||
-            !append_entry(output, capacity, &length, &entry, shown != 0)) {
+        // Budgeted, not merely pre-checked -- see legacy_entry_budget().
+        if (!append_entry(output, page_entry_budget(capacity), &length,
+                          &entry, shown != 0)) {
             next = slot;
             break;
         }
