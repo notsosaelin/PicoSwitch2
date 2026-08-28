@@ -7,6 +7,7 @@
 
 #include "btstack_host.h"
 #include "mgmt_bonds.h"
+#include "mgmt_peers.h"
 #include "ns2_bt_lifecycle.h"
 #include "ns2_ble_reconnect.h"
 #include "ns2_owner_led.h"
@@ -6851,6 +6852,205 @@ bool btstack_host_bonds_done(void) { return bonds_op_done; }
 const char *btstack_host_bonds_list_json(void) { return bonds_list_json; }
 bool btstack_host_bonds_list_complete(void) { return bonds_list_complete; }
 bool btstack_host_bonds_remove_ok(void) { return bonds_remove_ok; }
+
+// ============================================================================
+// PEER INVENTORY (management app, core0 -> core1 marshaled, read-only)
+// ============================================================================
+// Collects both security databases plus live connection state on the BTstack
+// thread, hands them to mgmt_peers (which has no BTstack dependency) to be
+// merged into logical peers, and formats one bounded page.
+//
+// The Classic link-key iterator hands back the link key itself. It is written
+// into a local that is never read, never copied, and never leaves this
+// function: mgmt_peer_bond_t has no field for it, which is what makes "no key
+// bytes cross the management protocol" a property of the types rather than of
+// this code remembering to be careful.
+static btstack_context_callback_registration_t peers_cb;
+static volatile bool peers_op_pending;
+static volatile bool peers_op_done;
+static volatile bool peers_op_ok;
+static volatile int peers_page_start;
+static volatile int peers_known_total;
+static char peers_json[MGMT_PEERS_RESPONSE_CAPACITY];
+
+static size_t peers_collect_bonds(mgmt_peer_bond_t *out, size_t capacity)
+{
+    size_t count = 0;
+
+    for (int slot = 0; slot < le_device_db_max_count() && count < capacity; ++slot) {
+        int type = BD_ADDR_TYPE_UNKNOWN;
+        bd_addr_t addr;
+        if (!btstack_host_le_bond_entry_at(NULL, slot, &type, addr))
+            continue;
+        mgmt_peer_bond_t *bond = &out[count++];
+        memset(bond, 0, sizeof(*bond));
+        memcpy(bond->address, addr, sizeof(bond->address));
+        bond->transport = MGMT_PEER_TRANSPORT_LE;
+        bond->le_slot = (int16_t)slot;
+        bond->le_address_type = (uint8_t)type;
+        bond->classic_key_type = 0xFFu;
+    }
+
+#ifdef ENABLE_CLASSIC
+    btstack_link_key_iterator_t it;
+    if (gap_link_key_iterator_init(&it)) {
+        bd_addr_t addr;
+        link_key_t link_key;
+        link_key_type_t key_type;
+        while (count < capacity &&
+               gap_link_key_iterator_get_next(&it, addr, link_key, &key_type)) {
+            mgmt_peer_bond_t *bond = &out[count++];
+            memset(bond, 0, sizeof(*bond));
+            memcpy(bond->address, addr, sizeof(bond->address));
+            bond->transport = MGMT_PEER_TRANSPORT_BREDR;
+            bond->le_slot = -1;
+            bond->le_address_type = 0xFFu;
+            bond->classic_key_type = (uint8_t)key_type;
+        }
+        gap_link_key_iterator_done(&it);
+        // The iterator requires somewhere to put the key; nothing here reads it,
+        // and mgmt_peer_bond_t has no field it could be copied into. Wiped
+        // anyway so a stack frame that held real key material does not simply
+        // get reused with it still in place.
+        memset(link_key, 0, sizeof(link_key));
+    }
+#endif
+    return count;
+}
+
+static void peers_add_observation(mgmt_peer_observation_t *out, size_t capacity,
+                                  size_t *count, const uint8_t addr[6],
+                                  const char *name, bool connected,
+                                  bool management, bool bridge, bool direct,
+                                  bool last_connected)
+{
+    if (*count >= capacity)
+        return;
+    mgmt_peer_observation_t *o = &out[(*count)++];
+    memset(o, 0, sizeof(*o));
+    memcpy(o->address, addr, sizeof(o->address));
+    o->connected = connected ? 1u : 0u;
+    o->is_management_client = management ? 1u : 0u;
+    o->is_bridge_source = bridge ? 1u : 0u;
+    o->is_direct_source = direct ? 1u : 0u;
+    o->is_last_connected = last_connected ? 1u : 0u;
+    if (name)
+        mgmt_peers_sanitize_name(name, o->name, sizeof(o->name));
+}
+
+// Is this address the Android Controller Bridge rather than a real controller?
+// The arbiter is the authority: the bridge is identified from its HID
+// descriptor, which only the input seam sees, and the answer is recorded there
+// as a source class.
+static bool peers_source_class_for(const uint8_t addr[6], bool *is_bridge)
+{
+    ns2_input_arbiter_status_t status;
+    ns2_active_input_status(&status);
+    for (unsigned i = 0; i < status.source_count &&
+                         i < NS2_INPUT_ARBITER_MAX_SOURCES; ++i) {
+        const ns2_input_source_info_t *source = &status.sources[i];
+        if (!source->present || !source->key.stable_addr_valid)
+            continue;
+        if (memcmp(source->key.stable_addr, addr, 6) != 0)
+            continue;
+        if (is_bridge)
+            *is_bridge = source->source_class == NS2_INPUT_SOURCE_CLASS_BRIDGE;
+        return true;
+    }
+    return false;
+}
+
+static size_t peers_collect_observations(mgmt_peer_observation_t *out,
+                                         size_t capacity)
+{
+    size_t count = 0;
+
+    // (1) The management companion. Certain while it is connected, and checked
+    //     first so a phone that is ALSO driving Controller Link is never
+    //     reported as a controller.
+    if (config_ble.handle != HCI_CON_HANDLE_INVALID && config_ble.client_addr_valid) {
+        peers_add_observation(out, capacity, &count, config_ble.client_addr,
+                              NULL, true, true, false, false, false);
+    }
+
+    // (2) Live Classic HID links. The arbiter says which of them is the bridge.
+    for (int i = 0; i < MAX_CLASSIC_CONNECTIONS; ++i) {
+        const classic_connection_t *c = &classic_state.connections[i];
+        if (!c->active)
+            continue;
+        bool bridge = false;
+        bool known = peers_source_class_for(c->addr, &bridge);
+        peers_add_observation(out, capacity, &count, c->addr, c->name, true,
+                              false, known && bridge, !(known && bridge), false);
+    }
+
+    // (3) Live BLE HID links. Always controllers; the management peripheral is
+    //     a different table and was handled above.
+    for (int i = 0; i < MAX_BLE_CONNECTIONS; ++i) {
+        const ble_connection_t *c = &hid_state.connections[i];
+        if (c->handle == HCI_CON_HANDLE_INVALID)
+            continue;
+        peers_add_observation(out, capacity, &count, c->addr, c->name, true,
+                              false, false, true, false);
+    }
+
+    // (4) The stored reconnect record. It only ever holds a controller, so it
+    //     is real evidence about a peer that is not currently connected --
+    //     which is otherwise the case where nothing can be said at all.
+    if (hid_state.has_last_connected) {
+        peers_add_observation(out, capacity, &count, hid_state.last_connected_addr,
+                              hid_state.last_connected_name, false,
+                              false, false, false, true);
+    }
+    return count;
+}
+
+static void peers_op_run(void *ctx)  // BTstack thread (core1)
+{
+    (void)ctx;
+    mgmt_peer_bond_t bonds[MGMT_PEERS_MAX_ENTRIES];
+    mgmt_peer_observation_t observed[MGMT_PEERS_MAX_ENTRIES];
+    mgmt_peer_t peers[MGMT_PEERS_MAX_ENTRIES];
+
+    size_t bond_count = peers_collect_bonds(bonds, MGMT_PEERS_MAX_ENTRIES);
+    size_t observation_count =
+        peers_collect_observations(observed, MGMT_PEERS_MAX_ENTRIES);
+    size_t peer_count = mgmt_peers_merge(bonds, bond_count, observed,
+                                         observation_count, peers,
+                                         MGMT_PEERS_MAX_ENTRIES);
+    peers_known_total = (int)peer_count;
+
+    mgmt_peers_page_info_t info;
+    size_t length = mgmt_peers_format_page(peers, peer_count, peers_page_start,
+                                           peers_json, sizeof(peers_json), &info);
+    if (length == 0) {
+        strcpy(peers_json, "{\"error\":\"response_too_large\",\"code\":413}");
+        peers_op_ok = false;
+    } else {
+        peers_op_ok = true;
+    }
+    peers_op_pending = false;
+    peers_op_done = true;
+}
+
+bool btstack_host_peers_request_page(int start_peer)
+{
+    if (start_peer < 0 || peers_op_pending)
+        return false;
+    peers_page_start = start_peer;
+    peers_op_done = false;
+    peers_op_ok = false;
+    peers_op_pending = true;
+    peers_cb.callback = &peers_op_run;
+    peers_cb.context = NULL;
+    btstack_run_loop_execute_on_main_thread(&peers_cb);
+    return true;
+}
+
+bool btstack_host_peers_done(void) { return peers_op_done; }
+const char *btstack_host_peers_json(void) { return peers_json; }
+bool btstack_host_peers_ok(void) { return peers_op_ok; }
+int btstack_host_peers_total(void) { return peers_known_total; }
 
 // ============================================================================
 // GATT CLIENT

@@ -17,6 +17,9 @@ object ManagementProtocol {
     const val MAX_COMMAND_BYTES = 127
     const val AMIIBO_CHUNK_BYTES = 32
     const val BONDS_PROTOCOL_VERSION = 2
+    // Peer inventory version 1. Independent of the bond envelope's version on
+    // purpose: they describe different models and will not move together.
+    const val PEERS_PROTOCOL_VERSION = 1
     private const val UINT32_MAX = 0xFFFF_FFFFL
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -292,6 +295,50 @@ object ManagementProtocol {
         BondPage(entries, total, next)
     }
 
+    /**
+     * One page of the logical peer inventory.
+     *
+     * Shape validation is deliberately as strict as the bond pager's, and for
+     * the same reason: a client that follows a cursor it cannot trust either
+     * loops forever or silently drops a peer, and a dropped peer is one the user
+     * cannot see or act on.
+     *
+     * Unknown roles and unknown transport bits are tolerated rather than
+     * rejected. A newer adapter is allowed to know about things this build does
+     * not, and the honest rendering of that is "unknown", not a parse error that
+     * hides every peer on the page.
+     */
+    fun peersPage(command: String, response: String): PeerPage = decode(command, response) { value ->
+        requireShape(value.requiredInt("v") == PEERS_PROTOCOL_VERSION, command)
+        val total = value.requiredInt("total")
+        val array = value["peers"]?.jsonArray ?: throw incomplete(command)
+        val nextElement = value["next"] ?: throw incomplete(command)
+        val next: Int? = when (nextElement) {
+            JsonNull -> null
+            is JsonPrimitive -> nextElement.takeUnless { it.isString }?.intOrNull ?: throw incomplete(command)
+            else -> throw incomplete(command)
+        }
+        requireShape(total >= 0 && (next == null || next >= 0), command)
+        val entries = array.map { element ->
+            val item = element.jsonObject
+            val id = item.optionalString("id")?.takeIf(String::isNotBlank) ?: throw incomplete(command)
+            PeerInfo(
+                id = id,
+                address = item.optionalString("addr").orEmpty(),
+                role = PeerRole.fromWire(item.optionalString("role")),
+                transports = PeerTransport.fromMask(item.optionalInt("tr") ?: 0),
+                bonded = item.optionalBoolean("bonded") ?: false,
+                connected = item.optionalBoolean("conn") ?: false,
+                name = item.optionalString("name")?.takeIf(String::isNotBlank),
+            )
+        }
+        requireShape(entries.size <= total && (next == null || entries.isNotEmpty()), command)
+        // A repeated id inside one page means the adapter's own merge failed;
+        // accepting it would show one device twice.
+        requireShape(entries.map { it.id }.toSet().size == entries.size, command)
+        PeerPage(entries, total, next)
+    }
+
     fun legacyBonds(command: String, response: String): BondEnumeration = decode(command, response) { value ->
         val array = value["bonds"]?.jsonArray ?: throw incomplete(command)
         BondEnumeration(
@@ -504,6 +551,12 @@ object ManagementCommands {
     fun bondRemove(index: Int): String {
         require(index >= 0)
         return "bonds remove $index"
+    }
+
+    /** The cursor is a peer index, never a database slot; slots are reused, peers are sorted. */
+    fun peersPage(cursor: Int? = null): String {
+        require(cursor == null || cursor >= 0) { "Peer cursor cannot be negative" }
+        return "peers list" + (cursor?.let { " $it" } ?: "")
     }
 
     fun kbmMap(profile: KbmProfile, page: Int): String {

@@ -22,6 +22,8 @@ enum class AdapterConnectReason(val diagnosticName: String) {
     Manual("manual"),
     AfterBond("after-bond"),
     AfterPersonality("after-personality"),
+    /** The activation half of a switch between two known adapters. */
+    AdapterSwitch("adapter-switch"),
 }
 
 data class AdapterRelationshipStatus(
@@ -392,15 +394,28 @@ class AdapterRelationshipCoordinator(initialRelationship: AdapterRelationship?) 
             phase = when {
                 status.attemptActive -> status.phase
                 status.phase == AdapterRelationshipPhase.Connected && relationship != null -> AdapterRelationshipPhase.Connected
-                relationship == null && associationState == CompanionAssociationState.Ambiguous -> AdapterRelationshipPhase.RepairRequired
+                // Ambiguous deliberately no longer forces a phase.
+                //
+                // It used to mean "this phone owns more than one PicoSwitch2
+                // association", which really did block connecting: with one
+                // saved relationship and several association records, the app
+                // could not tell which adapter was its adapter, so it had no
+                // address to dial and RepairRequired was the honest answer.
+                //
+                // The registry always holds a definite address per adapter, and
+                // Ambiguous now means only that two association records claim
+                // ONE adapter. That is stale bookkeeping, not a broken pairing:
+                // connecting works fine. Reporting it and offering Repair is
+                // right; refusing to connect over it would be a regression.
                 relationship == null -> AdapterRelationshipPhase.NoRelationship
                 else -> AdapterRelationshipPhase.Idle
             },
             companionAssociation = associationState,
             bond = bond,
             message = when {
-                relationship == null && associationState == CompanionAssociationState.Ambiguous ->
-                    "Android has multiple PicoSwitch2 companion associations; choose Repair pairing before reconnecting."
+                relationship != null && associationState == CompanionAssociationState.Ambiguous ->
+                    "Android has two companion records for ${relationship.displayName}. " +
+                        "Repair pairing tidies this up; it is safe to keep using the adapter."
                 status.phase == AdapterRelationshipPhase.Connected -> status.message
                 else -> null
             },

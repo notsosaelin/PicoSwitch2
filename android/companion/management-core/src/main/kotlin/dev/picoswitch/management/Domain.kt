@@ -76,6 +76,75 @@ data class BondInfo(val index: Int, val address: String, val name: String? = nul
 data class BondPage(val entries: List<BondInfo>, val total: Int, val next: Int?)
 data class BondEnumeration(val entries: List<BondInfo>, val complete: Boolean, val total: Int? = null)
 
+/**
+ * What a stored peer is to the user.
+ *
+ * `Unknown` is a real answer, not a parse failure. The adapter has no persistent
+ * role metadata, so a bond whose owner has not been seen since the adapter
+ * booted genuinely cannot be classified — and a controller list that guessed
+ * would eventually offer to forget the user's own phone.
+ *
+ * Unrecognised wire values also land here, which is the same statement: this
+ * build does not know what that is.
+ */
+enum class PeerRole(val wireName: String) {
+    ManagementCompanion("management"),
+    ControllerLink("controller_link"),
+    PhysicalController("controller"),
+    Unknown("unknown");
+
+    companion object {
+        fun fromWire(value: String?): PeerRole =
+            entries.firstOrNull { it.wireName == value } ?: Unknown
+    }
+}
+
+/**
+ * One logical remote device the adapter knows.
+ *
+ * Not a bond row. One peer may hold a Classic link key, an LE bond, or both —
+ * the management phone routinely holds both — and [transports] is how that is
+ * expressed without showing one device twice.
+ *
+ * Contains no key material and never will: the firmware's peer record has
+ * nowhere to put any.
+ */
+data class PeerInfo(
+    /** Opaque, stable, firmware-assigned. Not a database index; those get reused. */
+    val id: String,
+    val address: String,
+    val role: PeerRole = PeerRole.Unknown,
+    val transports: Set<PeerTransport> = emptySet(),
+    val bonded: Boolean = false,
+    val connected: Boolean = false,
+    val name: String? = null,
+) {
+    /** A peer with entries on both transports, which selective forget must treat as one device. */
+    val multiTransport: Boolean get() = transports.size > 1
+}
+
+enum class PeerTransport(val bit: Int) {
+    Classic(0x01),
+    Le(0x02);
+
+    companion object {
+        fun fromMask(mask: Int): Set<PeerTransport> =
+            entries.filter { mask and it.bit != 0 }.toSet()
+    }
+}
+
+data class PeerPage(val entries: List<PeerInfo>, val total: Int, val next: Int?)
+data class PeerInventory(
+    val peers: List<PeerInfo> = emptyList(),
+    val complete: Boolean = false,
+    val total: Int = 0,
+) {
+    /** What the Controllers page shows. Deliberately excludes this phone in either of its roles. */
+    val controllers: List<PeerInfo> get() = peers.filter { it.role == PeerRole.PhysicalController }
+    /** Companion/advanced rows: the management phone, Controller Link, and anything unclassified. */
+    val companionsAndUnknown: List<PeerInfo> get() = peers.filterNot { it.role == PeerRole.PhysicalController }
+}
+
 data class AdapterInputSource(
     val id: Long,
     val connection: Int,
@@ -105,6 +174,7 @@ data class AdapterCapabilities(
     val amiibo: CapabilityState = CapabilityState.Unknown,
     val managementGate: CapabilityState = CapabilityState.Unknown,
     val bonds: CapabilityState = CapabilityState.Unknown,
+    val peers: CapabilityState = CapabilityState.Unknown,
     val wake: CapabilityState = CapabilityState.Unknown,
     val activeInput: CapabilityState = CapabilityState.Unknown,
     val kbm: CapabilityState = CapabilityState.Unknown,
@@ -120,6 +190,8 @@ data class AdapterSnapshot(
     val bonds: List<BondInfo> = emptyList(),
     val bondsComplete: Boolean? = null,
     val bondsTotal: Int? = null,
+    /** Logical peers, as the adapter reports them. Never inferred by the app. */
+    val peers: PeerInventory = PeerInventory(),
     val input: AdapterInputState = AdapterInputState(),
     val capabilities: AdapterCapabilities = AdapterCapabilities(),
     val refreshedAtMillis: Long = 0,

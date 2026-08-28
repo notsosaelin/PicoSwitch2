@@ -42,6 +42,16 @@ The category-A baseline is the working tree at the start of the audit: 22 recipe
 `tools/run_mgmt_tests.ps1`, plus `test_ns2_lifecycle_model`, which arrived with the in-flight
 Bluetooth reliability work and shipped with its own recipe.
 
+**These totals are the audit's snapshot, not a running count.** Targets added since are listed
+below; the authoritative figure is always what `tools/run_host_tests.ps1` declares, and the runner
+refuses to start if any `tools/test_*.c` is in neither its manifest nor its `$notHostTests` table,
+so a new test cannot be quietly forgotten.
+
+| Added | Target | Subsystem |
+|---|---|---|
+| 2026-08-24 | `test_controller_link_face_goldens` | Controller Link face mapping |
+| 2026-08-27 | `test_mgmt_peers` | logical peer inventory (Bluetooth Management 2.0 Phase 3) |
+
 70 declared active host-test targets rebuild from current source and pass. The 9 remaining sources
 are declared in `$notHostTests` with a reason, and the runner refuses to start if any
 `tools/test_*.c` is in neither table.

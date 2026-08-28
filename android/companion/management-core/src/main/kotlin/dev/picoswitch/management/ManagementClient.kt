@@ -200,6 +200,48 @@ class ManagementClient(
         return listBonds()
     }
 
+    /**
+     * Read the adapter's complete logical peer inventory.
+     *
+     * All-or-nothing by design. A partially read inventory is worse than none:
+     * the missing row is a device the user cannot see, and on this page that
+     * means a saved controller they would conclude is already gone. Any
+     * pagination inconsistency is therefore an exception, not a shorter list.
+     */
+    suspend fun listPeers(): PeerInventory {
+        val entries = mutableListOf<PeerInfo>()
+        val seen = mutableSetOf<String>()
+        var cursor = 0
+        var expectedTotal: Int? = null
+        var pages = 0
+        while (true) {
+            val page = exchange(
+                ManagementCommands.peersPage(cursor.takeIf { it != 0 }),
+                ManagementProtocol::peersPage,
+            )
+            if (expectedTotal == null) expectedTotal = page.total
+            if (expectedTotal != page.total) {
+                throw ManagementPaginationException("Adapter changed the peer-list total during pagination")
+            }
+            page.entries.forEach { entry ->
+                if (!seen.add(entry.id)) {
+                    throw ManagementPaginationException("Adapter repeated a peer during pagination")
+                }
+                entries += entry
+            }
+            val next = page.next ?: break
+            if (next <= cursor || ++pages > MAX_PEER_PAGES) {
+                throw ManagementPaginationException("Adapter returned a non-progressing peer-list cursor")
+            }
+            cursor = next
+        }
+        val total = expectedTotal ?: 0
+        if (entries.size != total) {
+            throw ManagementPaginationException("Adapter returned an incomplete peer list")
+        }
+        return PeerInventory(entries, complete = true, total = total)
+    }
+
     suspend fun save(): PersistenceAcknowledgement {
         val acknowledgement = acknowledge(ManagementCommands.SAVE)
         return PersistenceAcknowledgement(
@@ -410,6 +452,9 @@ class ManagementClient(
     private companion object {
         const val MAX_KBM_MAP_PAGES = 32
         const val MAX_BOND_PAGES = 128
+        // 32 possible peers and at least one per page, so this bound can only be
+        // reached by an adapter that is misbehaving.
+        const val MAX_PEER_PAGES = 64
         const val WAKE_STATUS_POLLS = 6
         const val WAKE_STATUS_POLL_MILLIS = 150L
         const val AMIIBO_PERSIST_TIMEOUT_MILLIS = 6_000L

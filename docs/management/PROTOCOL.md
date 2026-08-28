@@ -92,6 +92,7 @@ state. A client MUST NOT synthesize or merge source identities.
 | `bonds list` | read; BLE, Config CDC | if bounded: v2 envelope described below; if not: error 413 | no partial success | `cmd_bonds`, `mgmt_bonds_format_legacy` |
 | `bonds list v2 [cursor]` | paged read; BLE, Config CDC | `v:2`, `total`, `bonds[]`, `next` integer or null | follow `next` until null; validate stable total and unique indices | `mgmt_bonds_format_page`; `bonds_page` vector |
 | `bonds remove <index>` | mutation; BLE, Config CDC | `{"ok":true}` or error | removes an adapter-side LE bond; list again. It is distinct from Android association/bond state and may interrupt the affected peer | `cmd_bonds`; workflow tests |
+| `peers list [cursor]` | paged read; BLE, Config CDC | `v:1`, `total`, `peers[]`, `next` integer or null | read-only logical peer inventory; follow `next` until null | `cmd_peers`, `mgmt_peers_format_page`; `peersPage` vector |
 | `save` | mutation; BLE, Config CDC | BLE: `ok`, `queued:true`, `requested`; CDC: `ok`, `requested` only after the synchronous wait, or `save timeout` | `requested` is the session-local unsigned 32-bit identity assigned to this persistence request. BLE acceptance is not durable completion | `handle_line`; `saveQueued` vector |
 | `save status` | read; BLE, Config CDC | `pending`, `requested`, `completed` | authoritative general-settings persistence snapshot; `pending` is exactly `requested != completed` | `handle_line`; `saveStatus` vector |
 
@@ -100,6 +101,49 @@ the historical `index`/`address` aliases. A v2 total changing between pages, a r
 non-progressing cursor, empty page with non-null cursor, or final count different from `total` is a
 pagination failure. A legacy/unversioned bounded list cannot prove completeness and must be labeled
 accordingly.
+
+### Peers are not bonds
+
+`bonds` enumerates LE device-DB **slots**. `peers` enumerates logical **devices**: the Classic
+link-key store and the LE device DB merged by identity address, so one physical device is one row
+however many security records it holds. That distinction is load-bearing, not cosmetic — this
+firmware builds with cross-transport key derivation, and the management phone routinely holds a
+Classic record *and* an LE record. The two commands answer different questions and neither replaces
+the other.
+
+Peer entries carry:
+
+| Field | Meaning |
+|---|---|
+| `id` | Opaque, stable, non-secret handle derived from the identity address. Deterministic across reboots. Clients MUST treat it as opaque and MUST NOT parse it, and MUST NOT substitute a database index, which is reused. |
+| `addr` | Identity address, 12 uppercase hex digits. |
+| `tr` | Transport bitmask: `1` BR/EDR, `2` LE, `3` both. `0` means connected with no stored key. |
+| `role` | `management`, `controller_link`, `controller`, or `unknown`. |
+| `bonded` | Whether any security record exists for this peer. |
+| `conn` | Whether the peer is connected right now. |
+| `name` | Optional. Sanitised to printable ASCII by the adapter. |
+
+Pagination rules are identical to `bonds list v2`, and so are the failure conditions: a changed
+`total`, a repeated `id`, a non-progressing cursor, an empty page with a non-null cursor, or a final
+count different from `total`. Clients MUST treat any of these as a failure rather than as a shorter
+inventory — a dropped row is a saved controller the user cannot see.
+
+**`role` is evidence, not a label.** The adapter classifies from what it can currently observe: the
+connected management client, the Controller Link peer identified from its HID descriptor, connected
+controllers, and the stored reconnect record. It has no persistent role metadata, so a stored bond
+whose owner has not been seen since boot is reported `unknown`. Clients MUST render `unknown` as
+unidentified and MUST NOT promote it to `controller`. Clients MUST also tolerate role values they do
+not recognise by treating them as `unknown`, so a newer adapter's vocabulary cannot make a page
+unreadable.
+
+`management` outranks `controller_link` and `controller` when one device qualifies for more than
+one, because a single phone can hold the management session and the Controller Link relationship at
+the same time. Presenting that phone under saved controllers is the specific error the ordering
+prevents.
+
+**No key material appears in any peer field, in any protocol version.** Link keys, LTKs, IRKs and
+CSRKs MUST NOT be exposed. The firmware's peer record has no field capable of holding one; that is
+the mechanism, not merely the intention.
 
 `bridge_contract` belongs to Controller Bridge compatibility. There is no separate negotiated
 management protocol version. Compatibility is currently exact command behavior, optional-family

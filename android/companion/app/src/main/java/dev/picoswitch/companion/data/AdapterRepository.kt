@@ -387,6 +387,41 @@ class AdapterRepository(private val transport: ManagementTransport) {
         _snapshot.value = _snapshot.value.copy(managementEnabled = client.setManagementEnabled(enabled))
     }
 
+    /**
+     * Read the adapter's logical peer inventory.
+     *
+     * Firmware is authoritative here; nothing is cached across a refresh. The
+     * inventory describes what the adapter has stored and what it can currently
+     * see, and the app has no way to know either without asking.
+     */
+    suspend fun refreshPeers(): PeerInventory {
+        _snapshot.value = _snapshot.value.copy(
+            capabilities = _snapshot.value.capabilities.copy(peers = CapabilityState.Unknown),
+        )
+        return try {
+            val inventory = client.listPeers()
+            _snapshot.value = _snapshot.value.copy(
+                peers = inventory,
+                capabilities = _snapshot.value.capabilities.copy(peers = CapabilityState.Available),
+                refreshedAtMillis = System.currentTimeMillis(),
+            )
+            inventory
+        } catch (error: AdapterCommandException) {
+            // Firmware without the peer surface answers `unknown command`. Say
+            // so, rather than showing an empty list that reads as "no saved
+            // controllers" on an adapter that has several.
+            if (error.isUnsupported()) {
+                _snapshot.value = _snapshot.value.copy(
+                    peers = PeerInventory(),
+                    capabilities = _snapshot.value.capabilities.copy(peers = CapabilityState.Unsupported),
+                )
+                PeerInventory()
+            } else {
+                throw error
+            }
+        }
+    }
+
     suspend fun listBonds(): List<BondInfo> {
         markBondsUnknown()
         val enumeration = client.listBonds()

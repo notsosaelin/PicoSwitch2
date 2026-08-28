@@ -59,6 +59,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -186,7 +188,31 @@ data class CompanionUiState(
     val touchLayoutDocument: TouchLayoutDocument? = null,
     /** Non-blocking persistence/fallback explanation shown in the Touch Gamepad menu. */
     val touchLayoutWarning: String? = null,
+    /**
+     * The active adapter as the connection lifecycle sees it, or null when the
+     * user has not selected one. Derived from [adapters] and [activeAdapterId];
+     * kept as its own field because most screens only ever ask "is there an
+     * adapter, and what is it called".
+     */
     val adapterRelationship: AdapterRelationship? = null,
+    /** Every adapter this app knows, in registry order. */
+    val adapters: List<AdapterRecord> = emptyList(),
+    val activeAdapterId: AdapterId? = null,
+    /** A switch between adapters is in progress; the active adapter is chosen but not yet reached. */
+    val adapterSwitchInProgress: Boolean = false,
+    /**
+     * Why the active adapter could not be reached, if it could not.
+     *
+     * Present specifically so a failed switch reads as "the adapter you chose is
+     * not connected" rather than being hidden behind a fallback to the previous
+     * adapter, which this design does not do.
+     */
+    val adapterSwitchFailure: String? = null,
+    /**
+     * Per-adapter CompanionDeviceManager state. Keyed by adapter because one
+     * adapter losing its association says nothing about the others.
+     */
+    val associationStates: Map<AdapterId, CompanionAssociationState> = emptyMap(),
     val relationshipStatus: AdapterRelationshipStatus = AdapterRelationshipStatus(AdapterRelationshipPhase.NoRelationship),
     val platform: PlatformDiagnostics = PlatformDiagnostics(),
     val diagnosticSummary: DiagnosticSummary = DiagnosticSummary(),
@@ -245,8 +271,26 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     private val themeStore = ThemePreferenceStore(application)
     private val touchSettingsStore = TouchGamepadSettingsStore(application)
     private val touchProfileStore = AndroidTouchProfileStore(application)
-    private val relationshipStore = AdapterRelationshipStore(application)
-    private val relationshipCoordinator = AdapterRelationshipCoordinator(relationshipStore.load())
+    private val registryStore = AdapterRegistryStore(application)
+    /**
+     * Every adapter this app knows. Held here rather than read from disk on
+     * demand because it is consulted on nearly every lifecycle decision; every
+     * mutation goes through [updateRegistry], which persists and republishes.
+     */
+    @Volatile private var registry: AdapterRegistry = registryStore.load()
+    private val relationshipCoordinator = AdapterRelationshipCoordinator(activeRelationship())
+    /**
+     * Which adapter is active, and the ordered handover between two of them.
+     *
+     * Sits above [relationshipCoordinator], which still owns one attempt at one
+     * relationship. Separate counters on purpose: merged, a connection retry
+     * would be indistinguishable from a change of adapter.
+     */
+    private val activeAdapter = ActiveAdapterCoordinator(registry.activeId)
+    private val adapterSwitch = AdapterSwitch(activeAdapter, AdapterSwitchExecutor())
+    /** One switch at a time. Overlapping switches are also generation-guarded; this keeps them cheap. */
+    private val switchLock = Mutex()
+    private var adapterSwitchJob: Job? = null
     private data class PairingDevice(val generation: Long, val device: BluetoothDevice)
     @Volatile private var pairingDevice: PairingDevice? = null
     private var relationshipPairingJob: Job? = null
@@ -278,7 +322,9 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             selectedAmiiboId = savedState[KEY_AMIIBO],
             amiiboKeysLoaded = amiiboKeyStore.read() != null,
             selectedSourceDescriptor = savedState[KEY_SOURCE],
-            adapterRelationship = relationshipStore.load(),
+            adapterRelationship = activeRelationship(),
+            adapters = registry.records,
+            activeAdapterId = registry.activeId,
             relationshipStatus = relationshipCoordinator.status,
             identityRefreshPending = savedState[KEY_IDENTITY_PENDING] ?: false,
             // Configuration only. Nothing about what is currently HELD survives a
@@ -293,6 +339,21 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         diagnostics.event("app", "created", "version ${BuildConfig.VERSION_NAME}")
         viewModelScope.launch {
             adapter.connection.collect { value ->
+                // One authority decides whether this event may speak for the
+                // active adapter. Retirement is awaited before activation, so a
+                // rejection here is defence in depth rather than the primary
+                // guarantee -- but it is the guarantee that survives someone
+                // later reordering the switch.
+                if (!activeAdapter.accepts(value.address)) {
+                    diagnostics.event(
+                        "relationship", "connection.ignored",
+                        "address=${value.address?.takeLast(5) ?: "none"} phase=${value.phase} " +
+                            "active=${activeAdapter.state.activeId?.shortLabel ?: "none"} " +
+                            "switch=${activeAdapter.state.phase}",
+                    )
+                    return@collect
+                }
+                if (!value.connected && activeAdapter.markDisconnected()) publishAdapterState()
                 if (value.connected) {
                     // The lifecycle coordinator persists a relationship only after AdapterRepository
                     // has verified the management identity. A ready CCC subscription alone is not
@@ -340,6 +401,17 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                 }
                 refreshBridgeCompatibility()
                 refreshAdapterAmiiboCatalog(value.amiibo)
+                // Only from a live, settled session belonging to the adapter this
+                // would be cached against. A snapshot carries no address, so
+                // without the settled check the outgoing adapter's firmware
+                // could be written onto the incoming adapter's record.
+                if (_ui.value.connection.connected && activeAdapter.state.connected) {
+                    cacheActiveAdapterState(
+                        firmware = value.firmware.version,
+                        personality = value.personality.current
+                            .takeIf { it != Personality.Unknown }?.wireName,
+                    )
+                }
             }
         }
         viewModelScope.launch {
@@ -464,10 +536,258 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         refreshSelectedAmiiboDetails()
     }
 
+    // -----------------------------------------------------------------------
+    // Adapter registry
+    // -----------------------------------------------------------------------
+    // Many known adapters, at most one active management session. The registry
+    // is app-local truth about which adapters exist and what the user calls
+    // them; it never asserts anything about live Bluetooth state.
+
+    /** The active adapter, as the connection lifecycle consumes it. */
+    private fun activeRelationship(): AdapterRelationship? = registry.active?.toRelationship()
+
+    /**
+     * The one place the registry changes.
+     *
+     * Persist-then-publish, under a lock, so a reconciliation arriving while the
+     * user is renaming cannot interleave into a lost update. Nothing is written
+     * when the transform is a no-op, which keeps a five-second association
+     * refresh from rewriting the document forever.
+     */
+    @Synchronized
+    private fun updateRegistry(transform: (AdapterRegistry) -> AdapterRegistry): AdapterRegistry {
+        val next = transform(registry)
+        if (next != registry) {
+            registry = next
+            registryStore.save(next)
+        }
+        publishAdapterState()
+        return next
+    }
+
+    /**
+     * Publish the registry and the active-adapter authority together.
+     *
+     * They are one picture. Publishing the registry without the switch state
+     * would let the UI show an adapter as selected with no indication that it is
+     * mid-transition or that reaching it failed, which is the ambiguity this
+     * phase exists to remove.
+     */
+    private fun publishAdapterState() {
+        val snapshot = registry
+        val active = activeAdapter.state
+        _ui.update {
+            it.copy(
+                adapters = snapshot.records,
+                activeAdapterId = snapshot.activeId,
+                adapterRelationship = snapshot.active?.toRelationship(),
+                adapterSwitchInProgress = active.transitioning,
+                adapterSwitchFailure = active.failure,
+            )
+        }
+    }
+
+    /**
+     * Switch the active adapter.
+     *
+     * One generation-owned transition, executed by [AdapterSwitch]: the outgoing
+     * adapter is retired completely before the incoming one is connected, and if
+     * the incoming one cannot be reached the app settles at "selected, not
+     * connected" for it rather than returning to the previous adapter.
+     */
+    fun selectAdapter(id: AdapterId) {
+        if (registry.record(id) == null) return
+        adapterSwitchJob = viewModelScope.launch {
+            switchLock.withLock {
+                when (val outcome = adapterSwitch.switchTo(id)) {
+                    SwitchOutcome.AlreadyActive -> Unit
+                    is SwitchOutcome.Superseded -> diagnostics.event(
+                        "relationship", "adapter.switch_superseded",
+                        "adapter=${id.shortLabel} generation=${outcome.generation}",
+                    )
+                    is SwitchOutcome.Activating -> diagnostics.event(
+                        "relationship", "adapter.switch_activating",
+                        "adapter=${id.shortLabel} " +
+                            "previous=${outcome.plan.previous?.shortLabel ?: "none"} " +
+                            "generation=${outcome.plan.generation}",
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * The Android side of one adapter switch.
+     *
+     * Every method here is a step [AdapterSwitch] calls in a fixed order; none
+     * of them decides anything. The ordering guarantees live in that class and
+     * are covered by `AdapterSwitchTest`, which drives this same interface with
+     * a recording fake.
+     */
+    private inner class AdapterSwitchExecutor : AdapterSwitchPort {
+        override fun selectionCommitted(target: AdapterId, previous: AdapterId?) {
+            val record = registry.record(target)
+            updateRegistry { it.selecting(target) }
+            autoReconnectAttempted = false
+            // A screen bound to the previous adapter must not survive the
+            // switch: an Amiibo or keyboard page belongs to the adapter whose
+            // contents it is showing.
+            if (previous != null) {
+                _ui.update {
+                    it.copy(
+                        section = AppSection.Adapter,
+                        overlay = AppOverlay.None,
+                        message = null,
+                        connection = ConnectionState(
+                            phase = ConnectionPhase.Disconnecting,
+                            deviceName = record?.displayName,
+                            message = "Switching to ${record?.displayName ?: "the selected adapter"}",
+                        ),
+                    )
+                }
+                savedState[KEY_SECTION] = AppSection.Adapter.name
+            }
+            publishAdapterState()
+            diagnostics.event(
+                "relationship", "adapter.selected",
+                "adapter=${target.shortLabel} previous=${previous?.shortLabel ?: "none"} " +
+                    "known=${registry.records.size}",
+            )
+        }
+
+        override suspend fun stopControllerLink(previous: AdapterId) {
+            exitTouchGamepad()
+            stopControllerBridge()
+            cancelAutomaticControllerResume()
+        }
+
+        override suspend fun retireManagement(previous: AdapterId) {
+            // Captured before cancelling: the connect job clears its own field
+            // in a finally block, so re-reading it to join would sometimes find
+            // null and skip the wait -- turning the retirement back into a
+            // request, which is the one thing it must not be.
+            val pairing = relationshipPairingJob
+            val connecting = relationshipConnectionJob
+            pairing?.cancel()
+            connecting?.cancel()
+            pairingDevice = null
+            relationshipCoordinator.cancelAndRetainRelationship()
+            // Joining is what makes the retirement a real wait. A connect job
+            // still unwinding would otherwise publish the previous adapter's
+            // failure or success after the next adapter had become authoritative.
+            runCatching { pairing?.join() }
+            runCatching { connecting?.join() }
+            relationshipPairingJob = null
+            relationshipConnectionJob = null
+            relationshipRetirementJob?.takeIf { it.isActive }?.let { runCatching { it.join() } }
+            // AdapterRepository.disconnect() returns only after the transport has
+            // retired its GATT generation and emitted its final state, so the
+            // outgoing adapter has nothing left in flight once this returns.
+            runCatching { adapter.disconnect() }
+                .onFailure { diagnostics.error("management", "adapter switch disconnect", it) }
+        }
+
+        override fun clearAdapterScopedState() {
+            adapter.clearDisconnectedSnapshot()
+            kbmMappingsLoaded = false
+        }
+
+        override fun beginActivation(target: AdapterId) {
+            val record = registry.record(target) ?: return
+            relationshipCoordinator.restore(
+                record.toRelationship(),
+                associationStateOf(target),
+                bondState(record.address),
+            )
+            publishAdapterState()
+            publishRelationshipStatus()
+            reconnectKnownAdapter(AdapterConnectReason.AdapterSwitch)
+        }
+    }
+
+    /**
+     * Record a verified adapter into the registry and make it the active one.
+     *
+     * A verified management connection is the only evidence strong enough to
+     * create or rebind a registry entry: it means the identity was checked over
+     * an encrypted session, not merely that something advertised nearby. It is
+     * also what clears [AdapterRecord.repairRequired] — the adapter answering
+     * with a working key is the proof that the repair worked.
+     *
+     * The user's alias is never overwritten here. The adapter's own name is
+     * cache; what the user called it is not.
+     */
+    private fun adoptVerifiedAdapter(relationship: AdapterRelationship): AdapterRecord? {
+        val id = AdapterId.fromAddress(relationship.address) ?: return null
+        // A first pair selects the adapter it just verified. A switch already
+        // selected its target, and adopt() will not disturb a live transition.
+        activeAdapter.adopt(id, connected = true)
+        // The registry's selection follows the active-adapter authority rather
+        // than being decided here, so the two can never disagree about which
+        // adapter is active. A verification that the authority did not accept --
+        // one belonging to an adapter a switch has moved away from -- updates
+        // that adapter's cached details and nothing else.
+        val selectThis = activeAdapter.state.activeId == id
+        val now = System.currentTimeMillis()
+        val next = updateRegistry { current ->
+            val existing = current.record(id)
+            val record = (existing ?: AdapterRecord(id = id, address = id.value)).copy(
+                associationId = relationship.associationId ?: existing?.associationId,
+                lastKnownName = relationship.displayName
+                    .takeIf { it.isNotBlank() && it != existing?.userAlias }
+                    ?: existing?.lastKnownName
+                    ?: AdapterRecord.DEFAULT_PRODUCT_NAME,
+                lastSeenAtMillis = now,
+                lastConnectedAtMillis = now,
+                repairRequired = false,
+            )
+            current.with(record).let { if (selectThis) it.selecting(id) else it }
+        }
+        return next.record(id)
+    }
+
+    /**
+     * Cache what the connected adapter reports, against that adapter.
+     *
+     * Only enough to let the adapter list say something honest about a unit that
+     * is not currently connected. Live truth stays in `AdapterSnapshot`, which
+     * belongs to the one active session and is cleared on disconnect.
+     */
+    private fun cacheActiveAdapterState(firmware: String?, personality: String?) {
+        val id = registry.activeId ?: return
+        if (firmware.isNullOrBlank() && personality.isNullOrBlank()) return
+        updateRegistry { current ->
+            current.update(id) { record ->
+                record.copy(
+                    lastFirmwareVersion = firmware?.takeIf(String::isNotBlank) ?: record.lastFirmwareVersion,
+                    lastPersonality = personality?.takeIf(String::isNotBlank) ?: record.lastPersonality,
+                )
+            }
+        }
+    }
+
+    /**
+     * Rename one adapter, locally.
+     *
+     * The alias is app-local presentation state and is never written to the
+     * adapter or into its advertised name: doing that would make a display
+     * preference into Bluetooth identity, with the cache and cross-host
+     * ambiguity that implies. A blank name clears the alias rather than storing
+     * an empty one, which is how the user gets the adapter's own name back.
+     */
+    fun renameAdapter(id: AdapterId, alias: String?) {
+        val cleaned = AdapterAlias.sanitize(alias)
+        updateRegistry { it.update(id) { record -> record.copy(userAlias = cleaned) } }
+        diagnostics.event(
+            "relationship", "adapter.renamed",
+            "adapter=${id.shortLabel} alias=${if (cleaned == null) "cleared" else "set"}",
+        )
+    }
+
     fun connect() = reconnectKnownAdapter(AdapterConnectReason.Manual)
 
     fun reconnectKnownAdapter(reason: AdapterConnectReason = AdapterConnectReason.Manual) {
-        val relationship = relationshipStore.load() ?: return
+        val relationship = activeRelationship() ?: return
         val decision = relationshipCoordinator.requestReconnect(relationship, reason, bondState(relationship.address))
         publishRelationshipStatus()
         executeLifecycleDecision(decision)
@@ -475,7 +795,11 @@ class CompanionViewModel(application: Application, private val savedState: Saved
 
     fun tryAutoReconnect() {
         if (autoReconnectAttempted || _ui.value.connection.connected || _ui.value.busy) return
-        if (relationshipStore.load() == null) return
+        // A switch already owns the connection lifecycle and will activate its
+        // own target. A foreground pass landing in the middle of one must not
+        // start a second connection attempt beside it.
+        if (activeAdapter.state.transitioning) return
+        if (registry.active == null) return
         autoReconnectAttempted = true
         reconnectKnownAdapter(AdapterConnectReason.ForegroundAuto)
     }
@@ -692,40 +1016,104 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             return
         }
         // HID-device hosts are consoles paired to the phone's Controller Bridge, not management
-        // adapters. Never use that unrelated Bluetooth truth to reconstruct this relationship.
-        val result = AdapterRelationshipReconciler.reconcile(relationshipStore.load(), associations)
-        result.relationship?.let(relationshipStore::save)
+        // adapters. Never use that unrelated Bluetooth truth to reconstruct the registry.
+        if (activeAdapter.state.transitioning) {
+            diagnostics.event("relationship", "association.reconcile", "deferred during an adapter switch")
+            return
+        }
+        val result = AdapterRegistryReconciler.reconcile(registry, associations)
+        updateRegistry { result.registry }
+        val active = registry.active
+        // Reconciliation may adopt the first adapter this app has ever known.
+        activeAdapter.adopt(registry.activeId, connected = _ui.value.connection.connected)
         relationshipCoordinator.restore(
-            result.relationship,
-            result.associationState,
-            result.relationship?.let { bondState(it.address) } ?: AndroidBondState.Unknown,
+            active?.toRelationship(),
+            result.stateOf(active?.id),
+            active?.let { bondState(it.address) } ?: AndroidBondState.Unknown,
         )
-        _ui.update { it.copy(adapterRelationship = result.relationship, relationshipStatus = relationshipCoordinator.status) }
+        _ui.update {
+            it.copy(
+                associationStates = result.states,
+                relationshipStatus = relationshipCoordinator.status,
+            )
+        }
         diagnostics.event(
             "relationship", "association.reconciled",
-            "source=${result.source} records=${associations.size} association=${result.relationship?.associationId ?: "none"} state=${result.associationState}",
+            "associations=${associations.size} known=${registry.records.size} " +
+                "adopted=${result.adopted.size} active=${active?.id?.shortLabel ?: "none"} " +
+                "state=${result.stateOf(active?.id)}",
         )
     }
 
-    fun forgetAdapterRelationship() {
-        // Historical builds created CDM records only through a PicoSwitch2 name-filtered chooser.
-        // Explicit Forget is the safe lifecycle point to remove those stale app-owned records as
-        // well as the selected relationship, while retaining platform/Pico bonds.
-        clearOwnedRelationship(relationshipStore.load(), removeAllCompanionAssociations = true)
+    private fun associationStateOf(id: AdapterId?): CompanionAssociationState =
+        id?.let { _ui.value.associationStates[it] } ?: CompanionAssociationState.Unknown
+
+    /**
+     * Remove one adapter from this app.
+     *
+     * Not a Bluetooth operation. The alias, cached state and app-owned
+     * CompanionDeviceManager record for this adapter go; the Android bond and
+     * the adapter's own stored bonds are untouched, and the user is told so.
+     *
+     * Only this adapter's association is removed. Earlier builds cleared every
+     * app-owned association here, which was defensible when the app could only
+     * ever own one; with a registry it would delete the user's other adapters.
+     */
+    fun removeAdapterFromApp(id: AdapterId) {
+        val record = registry.record(id) ?: return
+        val wasActive = registry.activeId == id
+        // Advance the switch generation before anything else, so a transition
+        // targeting the adapter being deleted cannot go on to activate it.
+        if (wasActive) {
+            adapterSwitchJob?.cancel()
+            activeAdapter.cleared()
+        }
+        updateRegistry { it.without(id) }
+        diagnostics.event(
+            "relationship", "adapter.removed",
+            "adapter=${id.shortLabel} wasActive=$wasActive remaining=${registry.records.size}",
+        )
+        if (wasActive) {
+            clearOwnedRelationship(record.toRelationship())
+        } else {
+            // A background adapter has no live session to retire, so this must
+            // NOT claim relationshipRetirementJob: that slot tracks teardown of
+            // the active session, and overwriting it would let a later connect
+            // join a job that never disconnected anything.
+            viewModelScope.launch { disassociate(record.toRelationship()) }
+        }
     }
 
-    fun prepareRepairPairing(onReady: (needsAndroidSettings: Boolean) -> Unit) {
-        val relationship = relationshipStore.load()
-        val ambiguousAssociations = relationshipCoordinator.status.companionAssociation == CompanionAssociationState.Ambiguous
-        val needsSettings = relationship?.let { bondState(it.address) == AndroidBondState.Bonded } == true
+    /**
+     * Repair one adapter's management pairing.
+     *
+     * Scoped to a single adapter: the other registry entries keep their alias,
+     * cached state, association and Android bond. That isolation is the whole
+     * point — reflashing one adapter must not cost the user the others.
+     */
+    fun prepareRepairPairing(id: AdapterId?, onReady: (needsAndroidSettings: Boolean) -> Unit) {
+        val record = id?.let { registry.record(it) } ?: registry.active
+        if (record == null) {
+            onReady(false)
+            return
+        }
+        val ambiguous = associationStateOf(record.id) == CompanionAssociationState.Ambiguous
+        val needsSettings = bondState(record.address) == AndroidBondState.Bonded
         diagnostics.event(
             "relationship",
             "repair.started",
-            "association=${relationship?.associationId ?: "none"} ambiguous=$ambiguousAssociations platformBond=$needsSettings",
+            "adapter=${record.id.shortLabel} association=${record.associationId ?: "none"} " +
+                "ambiguous=$ambiguous platformBond=$needsSettings",
         )
+        // Repair keeps the registry entry so the alias and history survive and
+        // the repaired unit can be rebound to it. Only the association, which is
+        // the part that is stale or duplicated, is dropped.
+        updateRegistry {
+            it.update(record.id) { existing -> existing.copy(associationId = null, repairRequired = true) }
+        }
         clearOwnedRelationship(
-            relationship,
-            removeAllCompanionAssociations = ambiguousAssociations,
+            record.toRelationship(),
+            retainRegistryEntry = true,
             onComplete = { onReady(needsSettings) },
         )
     }
@@ -746,6 +1134,22 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         }
     }
     fun refresh() = launch("Refreshing adapter") { adapter.refreshAll() }
+
+    /**
+     * Re-read the adapter's saved pairings.
+     *
+     * Always from the adapter. The app keeps no idea of its own about what the
+     * adapter has stored, because it has no way to know: a controller can be
+     * paired from the adapter's own pairing button with no phone present.
+     */
+    fun refreshPeers() = launch("Reading saved pairings") {
+        val inventory = adapter.refreshPeers()
+        diagnostics.event(
+            "peers", "refreshed",
+            "total=${inventory.total} controllers=${inventory.controllers.size} " +
+                "companion=${inventory.peers.count { it.role != PeerRole.PhysicalController }}",
+        )
+    }
     // Report what the adapter actually did, never merely that the command was
     // transmitted. Each outcome is distinct and actionable: "advertised" is the
     // only one that means a wake was really attempted on the radio, and even that
@@ -1466,7 +1870,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
      */
     @SuppressLint("MissingPermission")
     fun knownControllerHost(): BridgeHost? {
-        val relationship = relationshipStore.load() ?: return null
+        val relationship = activeRelationship() ?: return null
         val adapter = getApplication<Application>().getSystemService(BluetoothManager::class.java)?.adapter ?: return null
         return runCatching { adapter.getRemoteDevice(relationship.address) }
             .getOrNull()?.takeIf { it.bondState == BluetoothDevice.BOND_BONDED }
@@ -1483,7 +1887,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
      */
     fun requestAutomaticControllerResume() {
         automaticControllerResumeJob?.cancel()
-        val hasRelationship = relationshipStore.load() != null
+        val hasRelationship = registry.active != null
         // A touchscreen-only host has no physical descriptor and is still a
         // complete controller source, so the on-screen controller being open
         // satisfies the same precondition a selected pad does.
@@ -1502,7 +1906,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                     ) return@withTimeoutOrNull
                     if (SessionResumePolicy.canQueryAdapter(
                             hasSelectedSource = state.selectedSourceDescriptor != null || bridge.touch.active,
-                            hasRelationship = relationshipStore.load() != null,
+                            hasRelationship = registry.active != null,
                             managementConnected = state.connection.connected,
                             busy = state.busy,
                             phase = state.bridge.phase,
@@ -2001,6 +2405,16 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             "CompanionDeviceManager" to ui.platform.companionDeviceManager.toString(),
             "Management state" to ui.connection.phase.name,
             "Adapter relationship" to if (ui.adapterRelationship == null) "none" else "saved",
+            // Identities, never aliases: a diagnostic export is shared, and the
+            // name a user gave a room in their home is not ours to include.
+            "Known adapters" to ui.adapters.joinToString(", ") { record ->
+                buildString {
+                    append(record.id.shortLabel)
+                    if (record.id == ui.activeAdapterId) append("*")
+                    if (record.repairRequired) append(" repair")
+                    append(" assoc=").append(ui.associationStates[record.id] ?: CompanionAssociationState.Unknown)
+                }
+            }.ifBlank { "none" },
             "Relationship lifecycle" to ui.relationshipStatus.toString(),
             "Firmware" to ui.snapshot.firmware.version.ifBlank { "unknown" },
             // The single line that would have ended the 2026-08-15 investigation
@@ -2119,15 +2533,27 @@ class CompanionViewModel(application: Application, private val savedState: Saved
             is AdapterLifecycleDecision.AwaitBond -> Unit
             is AdapterLifecycleDecision.Connect -> startVerifiedManagementConnection(decision.attempt)
             is AdapterLifecycleDecision.RelationshipMetadataUpdated -> {
-                relationshipStore.save(decision.relationship)
-                _ui.update { it.copy(adapterRelationship = decision.relationship) }
+                val id = AdapterId.fromAddress(decision.relationship.address)
+                if (id != null) {
+                    updateRegistry { current ->
+                        current.update(id) { record ->
+                            record.copy(associationId = decision.relationship.associationId ?: record.associationId)
+                        }
+                    }
+                }
                 diagnostics.event(
                     "relationship",
                     "association.metadata",
-                    "association=${decision.relationship.associationId ?: "legacy"}",
+                    "adapter=${id?.shortLabel ?: "unknown"} association=${decision.relationship.associationId ?: "legacy"}",
                 )
             }
             is AdapterLifecycleDecision.RepairRequired -> {
+                // Repair is a property of one adapter. Marking it on the record
+                // is what lets the adapter list show a per-unit badge instead of
+                // putting the whole app into a repair state.
+                registry.activeId?.let { id ->
+                    updateRegistry { current -> current.update(id) { it.copy(repairRequired = true) } }
+                }
                 diagnostics.event("relationship", "repair.required", decision.message)
                 notice(decision.message)
             }
@@ -2158,20 +2584,25 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                     )
                 }
                 val verified = relationshipCoordinator.connectionSucceeded(attempt.generation) ?: return@launch
-                val previous = relationshipStore.load()
-                relationshipStore.save(verified)
-                if (previous?.associationId != null && previous.associationId != verified.associationId) {
-                    disassociate(previous)
-                }
-                _ui.update {
-                    it.copy(
-                        adapterRelationship = verified,
-                        relationshipStatus = relationshipCoordinator.status,
-                    )
-                }
+                // The previous adapter's CompanionDeviceManager association used
+                // to be deleted right here, whenever a connect landed on a
+                // different association ID. That single call is what forced the
+                // Forget/Pair cycle on anyone who owned two adapters: connecting
+                // to the second unregistered the first. Adapters are a registry
+                // now, and an adapter is unregistered only when the user asks.
+                // Do not restore this.
+                val record = adoptVerifiedAdapter(verified)
+                // Settles the switch, if this connection was one. Guarded by
+                // identity, so a result belonging to the adapter we switched
+                // away from cannot settle the adapter we switched to.
+                record?.id?.let(activeAdapter::activationSucceeded)
+                publishAdapterState()
+                _ui.update { it.copy(relationshipStatus = relationshipCoordinator.status) }
                 diagnostics.event(
                     "relationship", "connect.verified",
-                    "attempt=${attempt.generation} reason=${attempt.reason.diagnosticName} association=${verified.associationId ?: "legacy"}",
+                    "adapter=${record?.id?.shortLabel ?: "unknown"} attempt=${attempt.generation} " +
+                        "reason=${attempt.reason.diagnosticName} association=${verified.associationId ?: "legacy"} " +
+                        "known=${registry.records.size}",
                 )
                 // A fresh BLE management bond is not proof that the Classic HID-device path is
                 // ready. Exercise it immediately while the user's Pico pairing window is still
@@ -2188,11 +2619,21 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                 // authenticate with. Name it and go straight to repair.
                 val stillBonded = bondState(attempt.relationship.address) == AndroidBondState.Bonded
                 val bondMismatch = AdapterResetSignature.isBondMismatch(error, stillBonded)
+                val message = error.message ?: "The adapter connection could not be verified."
                 val decision = relationshipCoordinator.connectionFailed(
                     attempt.generation,
-                    error.message ?: "The adapter connection could not be verified.",
+                    message,
                     bondMismatch = bondMismatch,
                 )
+                // Settle the switch at "selected, not connected" for the adapter
+                // the user chose. There is deliberately no fallback to the
+                // previous adapter: reconnecting something other than what was
+                // asked for, while the UI names the choice, is the lie this
+                // whole transition design exists to prevent.
+                AdapterId.fromAddress(attempt.relationship.address)?.let {
+                    activeAdapter.activationFailed(it, message)
+                }
+                publishAdapterState()
                 publishRelationshipStatus()
                 if (bondMismatch) {
                     diagnostics.event(
@@ -2254,27 +2695,37 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         else -> AndroidBondState.Unknown
     }
 
+    /**
+     * Retire the live session belonging to one adapter and drop its association.
+     *
+     * [retainRegistryEntry] is what separates Repair from Remove: repair keeps
+     * the row so alias, cached state and history survive and the repaired unit
+     * rebinds to it, while remove has already deleted the row before getting
+     * here. Either way the Android bond and the adapter's own bonds are left
+     * alone; the app cannot delete the platform bond and must not pretend to.
+     */
     private fun clearOwnedRelationship(
         relationship: AdapterRelationship?,
-        removeAllCompanionAssociations: Boolean = false,
+        retainRegistryEntry: Boolean = false,
         onComplete: (() -> Unit)? = null,
     ) {
         relationshipPairingJob?.cancel()
         relationshipConnectionJob?.cancel()
         pairingDevice = null
         autoReconnectAttempted = false
-        relationshipStore.clear()
         relationshipCoordinator.forget()
         _ui.update {
             it.copy(
-                adapterRelationship = null,
                 relationshipStatus = relationshipCoordinator.status,
                 connection = ConnectionState(),
             )
         }
+        publishAdapterState()
         diagnostics.event(
             "relationship", "relationship.clear",
-            "app record cleared; Android bond and adapter bonds retained",
+            "adapter=${AdapterId.fromAddress(relationship?.address)?.shortLabel ?: "none"} " +
+                "registryEntry=${if (retainRegistryEntry) "retained" else "removed"}; " +
+                "Android bond and adapter bonds retained",
         )
         val priorRetirement = relationshipRetirementJob
         relationshipRetirementJob = viewModelScope.launch {
@@ -2284,8 +2735,7 @@ class CompanionViewModel(application: Application, private val savedState: Saved
                 runCatching { adapter.disconnect() }
                     .onFailure { diagnostics.error("management", "relationship clear disconnect", it) }
             }
-            if (removeAllCompanionAssociations) disassociateAllCompanionAssociations()
-            else relationship?.let(::disassociate)
+            relationship?.let(::disassociate)
             onComplete?.invoke()
         }
     }
@@ -2312,21 +2762,13 @@ class CompanionViewModel(application: Application, private val savedState: Saved
     }
 
     @SuppressLint("MissingPermission")
-    private fun disassociateAllCompanionAssociations() {
-        val manager = getApplication<Application>().getSystemService(CompanionDeviceManager::class.java) ?: return
-        runCatching {
-            // This app has one CDM association call site and it is name-filtered to PicoSwitch2's
-            // current/legacy identities. Clearing all app-owned records is reserved for the
-            // explicit ambiguous Repair flow; ordinary Forget removes only the saved relationship.
-            val count = if (Build.VERSION.SDK_INT >= 33) {
-                manager.myAssociations.onEach { manager.disassociate(it.id) }.size
-            } else {
-                @Suppress("DEPRECATION")
-                manager.associations.onEach { manager.disassociate(it) }.size
-            }
-            diagnostics.event("relationship", "association.repair_clear", "removed=$count; Android bonds retained")
-        }.onFailure { diagnostics.error("relationship", "association.repair_clear", it) }
-    }
+    // A "clear every app-owned association" helper used to live here, invoked by
+    // Forget and by ambiguous Repair. It was correct while the app could own
+    // exactly one adapter and every extra record was therefore stale. With a
+    // registry it is not: every other adapter the user owns has an association
+    // too, and clearing them all would silently unregister hardware the user
+    // never touched. Both callers now disassociate one adapter by identity.
+    // Do not reintroduce it.
 
     private fun launch(label: String, action: suspend () -> Unit) {
         // Admission happens synchronously, before the coroutine can be queued.

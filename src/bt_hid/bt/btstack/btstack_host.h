@@ -593,6 +593,21 @@ const char *btstack_host_bonds_list_json(void);
 bool btstack_host_bonds_list_complete(void);
 bool btstack_host_bonds_remove_ok(void);
 
+// Logical peer inventory, read-only. Same core0 -> core1 marshalling as the bond
+// list above, and for the same reason: both security databases and the live
+// connection tables are owned by the BTstack thread.
+//
+// This is NOT a second bond list. `bonds` enumerates LE device-DB slots; this
+// enumerates PEERS -- Classic link keys and LE bonds merged by identity address,
+// annotated with the role the adapter can currently prove, and never carrying
+// key material. See mgmt_peers.h for why the two models differ.
+bool btstack_host_peers_request_page(int start_peer);
+bool btstack_host_peers_done(void);
+const char *btstack_host_peers_json(void);
+bool btstack_host_peers_ok(void);
+// Count of peers currently known, for the UART diagnostic summary.
+int btstack_host_peers_total(void);
+
 #ifdef __cplusplus
 }
 #endif

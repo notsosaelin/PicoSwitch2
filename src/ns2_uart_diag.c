@@ -76,6 +76,10 @@ static size_t tx_length;
 static size_t tx_position;
 static bool tx_wait_idle;
 static bool reenumerate_requested;
+// One outstanding `btpeers` read. The inventory is built on the BTstack thread
+// and collected on a later poll; see service_pending_peers_request().
+static bool peers_request_pending;
+static absolute_time_t peers_request_deadline;
 static ns2_protocol_trace_record_t trace_format_record;
 static char trace_format_payload[NS2_PROTOCOL_TRACE_PAYLOAD_MAX * 2u + 1u];
 // Shared response scratch. btstate is the largest producer and grows whenever a
@@ -1156,6 +1160,25 @@ static void handle_command(void) {
         queue_bthealth();
     } else if (strcmp(rx_line, "btbonds") == 0) {
         queue_btbonds();
+    } else if (strcmp(rx_line, "btpeers") == 0 ||
+               strncmp(rx_line, "btpeers ", 8) == 0) {
+        // The developer-facing half of the peer inventory. Deliberately the SAME
+        // core1 producer the management command uses, so "does the app agree
+        // with the adapter?" is answerable by comparing two renderings of one
+        // computation rather than two independent implementations of it.
+        unsigned int cursor = 0;
+        char trailing;
+        if (rx_line[7] == ' ' &&
+            sscanf(rx_line + 8, "%u%c", &cursor, &trailing) != 1) {
+            queue_text("{\"btpeers\":\"error\",\"error\":\"usage: btpeers [cursor]\"}");
+        } else if (peers_request_pending) {
+            queue_text("{\"btpeers\":\"error\",\"error\":\"busy\"}");
+        } else if (!btstack_host_peers_request_page((int)cursor)) {
+            queue_text("{\"btpeers\":\"error\",\"error\":\"busy\"}");
+        } else {
+            peers_request_pending = true;
+            peers_request_deadline = make_timeout_time_ms(1000);
+        }
     } else if (strcmp(rx_line, "btlife clear") == 0) {
         btstack_host_life_clear();
         queue_text("{\"btlife\":\"cleared\"}");
@@ -2562,7 +2585,7 @@ static void handle_command(void) {
                    "\"kbm mouse\",\"kbm mouse sensitivity|sensitivityx|"
                    "sensitivityy|recenter|invertx|inverty|antideadzone "
                    "<value>\",\"btdev\","
-                   "\"btreconnect\",\"btbonds\",\"btfresh\",\"btreject\",\"btrefuse\","
+                   "\"btreconnect\",\"btbonds\",\"btpeers [cursor]\",\"btfresh\",\"btreject\",\"btrefuse\","
                    "\"btlife dump N\","
                    "\"btauth\","
                    "\"reenumerate\",\"bootsel\",\"save\",\"help\"]}");
@@ -2600,11 +2623,32 @@ bool ns2_uart_diag_take_reenumerate_request(void) {
     return requested;
 }
 
+// Collect a finished `btpeers` read.
+//
+// The two security databases and the live connection tables belong to the
+// BTstack thread, so the command marshals the work to core1 and the answer is
+// emitted here on a later poll. It is NOT waited on: this task runs inside
+// core0's report loop and the one rule it has is that it never blocks, so a
+// busy-wait for another core would trade a diagnostic for a console hitch.
+static void service_pending_peers_request(void) {
+    if (!peers_request_pending || tx_pending())
+        return;
+    if (btstack_host_peers_done()) {
+        peers_request_pending = false;
+        queue_text(btstack_host_peers_json());
+    } else if (time_reached(peers_request_deadline)) {
+        peers_request_pending = false;
+        queue_text("{\"btpeers\":\"error\",\"error\":\"timeout\"}");
+    }
+}
+
 void ns2_uart_diag_task(void) {
     if (tx_wait_idle) {
         if (uart_get_hw(NS2_UART_ID)->fr & UART_UARTFR_BUSY_BITS) return;
         tx_wait_idle = false;
     }
+
+    service_pending_peers_request();
 
     uint8_t tx_budget = NS2_UART_TASK_TX_BUDGET;
     uint8_t tx_sent = 0;

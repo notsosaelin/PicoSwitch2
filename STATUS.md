@@ -7,6 +7,119 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **Bluetooth Management 2.0 — Phase 3 read-only peer inventory shipped 2026-08-27; REQUIRES A
+  REFLASH; device validation pending.** The adapter can now report what it has paired.
+  `peers list [cursor]` merges the Classic link-key store and the LE device DB into one row per
+  physical device — the first use of `gap_link_key_iterator_*` in this project — annotates each with
+  the role the adapter can currently prove, and carries **no key material in any field**. That last
+  point is structural rather than careful: `mgmt_peer_t` has nowhere to put a key, and the Classic
+  iterator's key output is written to a local that nothing reads and is then wiped. Peers are
+  deliberately a different model from bonds: with cross-transport key derivation configured, the
+  management phone holds both an LE bond and a Classic link key, so a bond-shaped list would show the
+  user's own phone twice and call it a controller. **Role is live evidence only** — the connected
+  management client, the Controller Link peer identified from its HID descriptor, connected
+  controllers, and the `JPLC` reconnect record — so a stored bond whose owner has not been seen since
+  boot is reported `unknown` and the UI says "Saved pairing, not yet identified" rather than guessing
+  it into the controller list. That is also what keeps the phase gate true in the hardest case: a
+  freshly booted adapter cannot misclassify the management bond as a controller because it declines
+  to classify it at all. One bug was caught by its own test: the merge resolved competing
+  observations by comparing role enum values numerically, and the enum's declaration order is the
+  reverse of the precedence order, so a phone that was both the management companion and a connected
+  input source came out as a **controller** — exactly the misclassification the gate forbids.
+  Precedence is now an explicit function, written separately so reordering the enum cannot silently
+  change the answer. Read-only: `peers` has no mutating form in protocol version 1, and selective
+  forget remains Phase 5. New surfaces: `peers list` over BLE/CDC, `btpeers [cursor]` over UART
+  (deferred, never blocking core0), and a Saved pairings card on the Controllers page. **Both boards
+  build clean with no new warnings.** 73/73 declared active host-test targets passed (up from 72; the
+  new target is `test_mgmt_peers`), 1222 Android JVM test executions with 0 failures (app debug 295,
+  app release 295, `:bridge-core` 568, `:management-core` 65), peer vectors added to the shared
+  conformance fixture so a non-Kotlin client inherits the same guards, lint unchanged at 0 errors,
+  both APKs assembled, and descriptor parity green at bridge contract 4 with an unchanged 161-byte
+  digest. Not yet validated on hardware: the eight-step checklist in the audit document's §13, whose
+  gate is comparing the app's list against the adapter's own `btpeers` output. Next: Phase 4, names,
+  classification and history.
+  [`docs/bluetooth/bt-management-2.0-phase0-audit.md`](docs/bluetooth/bt-management-2.0-phase0-audit.md)
+- **Bluetooth Management 2.0 — Phase 2 generation-safe adapter switching shipped 2026-08-27; device
+  validation pending.** Switching the active adapter is now one generation-owned transition:
+  `ActiveAdapterCoordinator` owns which adapter is active and the `Settled / Retiring / Activating`
+  phase, and `AdapterSwitch` executes the ordered handover. **The outgoing adapter is retired
+  completely before the incoming one becomes authoritative** — the retirement awaits
+  `AdapterRepository.disconnect()`, which returns only after the transport has retired its GATT
+  generation and emitted its final state, and it joins any in-flight connect job first so a job
+  still unwinding cannot publish the previous adapter's outcome afterwards. Three further guards:
+  `accepts(address)` gates the connection collector so nothing is accepted during a retirement and
+  only the active adapter's own address is accepted outside one; activation outcomes are guarded by
+  adapter **identity** rather than generation, because the connect path is shared with ordinary
+  reconnects, so a result for A cannot settle B; and the registry's selection follows the
+  coordinator so the two can never disagree. **A failed switch does not fall back** — the chosen
+  adapter stays selected and reads "Selected, not connected · tap to retry", because quietly
+  reconnecting something other than what was asked for while the UI names the choice is the failure
+  mode this design exists to prevent. Controller Link and the on-screen controller are stopped
+  before management is retired and are never carried across; a switch also closes overlays and drops
+  to the Adapter section so no screen stays bound to the previous adapter. `AdapterRelationship-
+  Coordinator` is unchanged and still owns one attempt at one relationship; the counters are
+  deliberately separate, because merged, a connection retry would be indistinguishable from a change
+  of adapter. One design bug was caught by its own test: `begin` treated an already-selected adapter
+  as "already active" even when disconnected, which made the truthful failed-switch state a dead
+  end; the guard now also requires `connected`. **Companion source only; no firmware source changed
+  and no reflash is required.** 1203 Android JVM test executions with 0 failures (app debug 295, app
+  release 295, `:bridge-core` 568, `:management-core` 45), the 20 new cases pinning the ordering
+  property against a recording fake rather than a radio; lint unchanged at 0 errors with no findings
+  in changed files; both APKs assembled; descriptor parity green at bridge contract 4 with an
+  unchanged 161-byte digest. Not yet validated on hardware: the eight-step switching checklist in
+  the audit document's §12. Next: Phase 3, read-only peer inventory — which is the first phase
+  needing firmware work, since Classic link-key enumeration does not exist yet.
+  [`docs/bluetooth/bt-management-2.0-phase0-audit.md`](docs/bluetooth/bt-management-2.0-phase0-audit.md)
+- **Bluetooth Management 2.0 — Phase 1 multi-adapter registry shipped 2026-08-27; device validation
+  pending.** The companion now remembers many adapters instead of one. `AdapterRegistry` /
+  `AdapterRegistryCodec` (schema 1) / `AdapterRegistryStore` replace the single-record
+  `AdapterRelationshipStore`, migrating the existing saved adapter on first read and leaving the old
+  preferences file on disk so a bad migration is recoverable by hand.
+  `AdapterRegistryReconciler` replaces the single-relationship reconciler with a set reconciliation
+  over `CompanionDeviceManager.myAssociations`. **The defect that forced the Forget/Pair cycle is
+  gone:** a verified connect used to call `disassociate()` on the previously saved adapter whenever
+  the association ID differed, so connecting to the second adapter unregistered the first. Adapters
+  are now unregistered only when the user asks, and repair/remove/reconcile are all per-adapter, so
+  reflashing one adapter cannot disturb another. Adapters carry an app-local sanitised alias
+  (duplicates allowed, disambiguated by a four-character identity suffix), and Settings gained an
+  Adapters list with select, rename and remove-from-app. Two deliberate departures from the design's
+  obvious reading, both recorded with their rationale: `Ambiguous` no longer blocks connecting (it
+  now means two association records claim ONE adapter — stale bookkeeping, not a broken pairing,
+  because the registry always has a definite address to dial), and selecting an adapter does not
+  chain into a connect, because a teardown followed immediately by a connect is precisely the race
+  Phase 2's switch coordinator exists to own. `ManagementOwner`'s one-transport invariant is
+  untouched. **Companion source only; no firmware source changed and no reflash is required.** 1163
+  Android JVM test executions with 0 failures (app debug 275, app release 275, `:bridge-core` 568,
+  `:management-core` 45), 32 of them new; `lintDebug`/`lintRelease` 0 errors and no findings in the
+  changed files; both APKs assembled; descriptor parity green at bridge contract 4 with an unchanged
+  161-byte digest, confirming no wire contract moved. Not yet validated on hardware: the two-adapter
+  checklist in the audit document's §11 is the maintainer's to run. Next: Phase 2, the
+  generation-safe active-adapter switch.
+  [`docs/bluetooth/bt-management-2.0-phase0-audit.md`](docs/bluetooth/bt-management-2.0-phase0-audit.md)
+- **Bluetooth Management 2.0 — Phase 0 audit complete 2026-08-27; no code changed.** The
+  multi-adapter / peer-inventory / remote-pairing upgrade described in
+  `BT_MANAGEMENT_UPGRADE_PASS.md` has had its repository audit performed and recorded in
+  [`docs/bluetooth/bt-management-2.0-phase0-audit.md`](docs/bluetooth/bt-management-2.0-phase0-audit.md).
+  None of the eight documented stop conditions fired, so Phase 1 may proceed. Three findings change
+  what the later phases must do. (1) The companion already uses `CompanionDeviceManager` as a
+  load-bearing part of its relationship model and treats **more than one association as
+  `Ambiguous` -> `RepairRequired`**, so the registry must widen `AdapterRelationshipReconciler`
+  rather than be added beside it. (2) `CompanionViewModel` **actively `disassociate()`s the
+  previously saved adapter** on every verified connect whose association ID differs — that single
+  call is what forces the Forget/Pair churn, and it must be retired as part of Phase 1, not after.
+  (3) The management phone is simultaneously the LE management peer and the Classic Controller Link
+  peer with `ENABLE_CROSS_TRANSPORT_KEY_DERIVATION` enabled, so the cross-transport multi-entry peer
+  is the project's common case rather than an edge case and the Phase 3 role model must handle it
+  from its first version. Decisive positive results: the adapter already has a stable identity (the
+  management peripheral advertises with `BD_ADDR_TYPE_LE_PUBLIC` and the app already keys on it, so
+  nothing new needs broadcasting), `btstack_host_forget_device_typed()` is already the atomic
+  forget-peer sequence the design asks for, `bonds list v2` is a reusable pagination precedent for
+  peer inventory, and opening the controller pairing window does **not** tear down BLE management —
+  `btstack_host_disconnect_all_devices()` walks only the controller tables and never touches
+  `config_ble.handle`, which is what makes remote pairing feasible. One product decision is owed
+  before Phase 6: `mgmt_accept_bonding()` reads the same `pairing_window_open` flag as controller
+  admission, so an app-started pairing window would also admit a **new management phone** for 30 s.
+  Audit only — no firmware, companion, or test source was touched, and no hardware action was taken.
 - **Stage C dependency modernization — built and under initial hardware endurance 2026-08-25.**
   The firmware now builds against Pico SDK 2.3.0 (`98a542c1`), BTstack 1.8.2 (`075a0780`),
   cyw43-driver 1.1.1 (`055d6427`) and Arm GNU 15.2.Rel1, replacing 2.2.0 / 1.6.2 / 1.1.0 / 14.2.Rel1.

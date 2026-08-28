@@ -64,6 +64,37 @@ privacy resolution is enabled. Wipe and forget MUST preserve those side effects.
 The management `bonds remove <index>` surface is LE-only. Classic per-device deletion has no public
 management command; triple-tap remains the user-facing global operation.
 
+## Peer roles
+
+A bond entry is one security record for one transport. A **peer** is one physical device, and may
+own several entries — with `ENABLE_CROSS_TRANSPORT_KEY_DERIVATION` configured, the management phone
+normally owns two. `peers list` (see [management/PROTOCOL.md](../management/PROTOCOL.md)) reports
+peers, merged by identity address, read-only, and without key material of any kind.
+
+| Role | Evidence that establishes it | Persistent? |
+|---|---|---|
+| `management` | Connected as the BLE peripheral's management client (`config_ble.client_addr`) | No |
+| `controller_link` | A connected Classic HID peer the arbiter classified as the Android bridge from its HID descriptor | No |
+| `controller` | A connected controller source, or a match against the `JPLC` reconnect record | Partly — `JPLC` survives reboot |
+| `unknown` | Everything else | n/a |
+
+The roles are ordered: `management` wins over `controller_link`, which wins over `controller`. One
+phone can hold both relationships simultaneously, and reporting it as a controller would put the
+user's own phone in a list of things to forget.
+
+**Role classification is live evidence only.** There is no persistent per-peer role store, so after
+a reboot a stored bond whose owner has not yet reconnected is `unknown`. That is the correct answer,
+not a gap to be papered over with a guess: the security databases record an address, a key and a key
+type, and nothing about what the device is. Persisting non-secret peer metadata is a possible future
+addition — it would live in a project-owned TLV tag beside `JPLC`/`JPLK`, would be advisory rather
+than authoritative, and would be erased by the install reset exactly as bonds are.
+
+### Known limitation
+
+Merging is by identity address. A dual-mode device whose LE identity address differs from its
+Classic BD_ADDR appears as two `unknown` peers rather than one. That is incomplete rather than
+wrong, and is preferred over asserting an association the adapter cannot demonstrate.
+
 ## Install-reset marker
 
 Every UF2 carries a dedicated pending marker page in the application image. On the first boot after

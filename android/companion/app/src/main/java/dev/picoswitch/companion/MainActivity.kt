@@ -24,6 +24,7 @@ import androidx.activity.viewModels
 import androidx.core.content.FileProvider
 import dev.picoswitch.bridge.session.BridgeLinkPhase
 import dev.picoswitch.companion.data.AdapterConnectReason
+import dev.picoswitch.companion.data.AdapterId
 import dev.picoswitch.companion.data.AndroidBondState
 import dev.picoswitch.companion.data.SystemCompanionAssociation
 import dev.picoswitch.companion.nfc.AndroidNtag215Reader
@@ -283,8 +284,8 @@ class MainActivity : ComponentActivity() {
         viewModel.reconcileAdapterRelationships(associations)
     }
 
-    private fun requestAdapterRepair() {
-        viewModel.prepareRepairPairing { needsAndroidSettings ->
+    private fun requestAdapterRepair(adapterId: AdapterId?) {
+        viewModel.prepareRepairPairing(adapterId) { needsAndroidSettings ->
             if (needsAndroidSettings) {
                 Toast.makeText(
                     this,
