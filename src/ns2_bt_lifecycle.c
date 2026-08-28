@@ -152,6 +152,15 @@ bool ns2_bt_classic_key_commit_allowed(bool pairing_lockout,
            pending_key_present && key_update_admitted;
 }
 
+bool ns2_bt_classic_authentication_proven(bool local_auth_complete_ok,
+                                          bool encryption_enabled_ok)
+{
+    // See the header: the local event never arrives for a peer-led pairing, and
+    // encryption cannot be enabled without a successful authentication against
+    // the key in question. Either one is proof.
+    return local_auth_complete_ok || encryption_enabled_ok;
+}
+
 bool ns2_bt_classic_auth_failure_forgets_existing(uint8_t hci_status)
 {
     // No status qualifies. See the header for why 0x06 no longer does.

@@ -108,6 +108,104 @@ static void test_classic_ssp_attempt_admission(void)
     assert(!ns2_bt_classic_ssp_response_admitted(true, true, true));
 }
 
+/*
+ * A first Classic pairing must become DURABLE, whichever end drove security.
+ *
+ * The defect this pins: the key commit waited for HCI_Authentication_Complete,
+ * which is only generated in response to this host's own
+ * HCI_Authentication_Requested. BTstack's HID Host registers LEVEL_0 and this
+ * firmware only requests authentication for the Wiimote family and one named
+ * Classic device, so a DualSense -- which drives SSP itself -- produced Link
+ * Key Notification and Encryption Change and no Authentication Complete ever.
+ * The notified key was parked, BTstack's own stored copy was deleted to stop an
+ * unadmitted replacement, and nothing ever committed it. The controller worked
+ * for that session and could never reconnect without the pairing window.
+ */
+static void test_classic_authentication_proof_sources(void)
+{
+    // Neither event observed: nothing is proven, and the key stays uncommitted.
+    assert(!ns2_bt_classic_authentication_proven(false, false));
+    assert(!ns2_bt_classic_key_commit_allowed(
+        false, ns2_bt_classic_authentication_proven(false, false), true, true));
+
+    // This host drove authentication: the local event proves it.
+    assert(ns2_bt_classic_authentication_proven(true, false));
+
+    // The PEER drove it: encryption enabled is equally conclusive, because a
+    // Classic link cannot be encrypted except with a link key both ends hold
+    // and have authenticated against. This is the case that never committed.
+    assert(ns2_bt_classic_authentication_proven(false, true));
+    assert(ns2_bt_classic_key_commit_allowed(
+        false, ns2_bt_classic_authentication_proven(false, true), true, true));
+
+    // Both observed is still just proven, not doubly so.
+    assert(ns2_bt_classic_authentication_proven(true, true));
+
+    // Proof is NOT admission. An unadmitted key stays uncommitted however
+    // convincingly its pairing succeeded, and the post-wipe lockout still wins.
+    assert(!ns2_bt_classic_key_commit_allowed(
+        false, ns2_bt_classic_authentication_proven(false, true), true, false));
+    assert(!ns2_bt_classic_key_commit_allowed(
+        true, ns2_bt_classic_authentication_proven(true, true), true, true));
+
+    // ...and proof without a parked key commits nothing.
+    assert(!ns2_bt_classic_key_commit_allowed(
+        false, ns2_bt_classic_authentication_proven(true, true), false, true));
+}
+
+/*
+ * The commit must converge for every legal ordering of the two proof events and
+ * the notification, because BTstack guarantees no single order here.
+ */
+static void test_classic_first_pairing_orderings(void)
+{
+    // Each case: (notified+admitted, local auth ok, encryption ok) applied in
+    // some order. The commit predicate is order-free by construction -- it reads
+    // accumulated state -- so what is pinned is that every legal combination
+    // that includes a proof commits, and no combination without one does.
+    struct {
+        bool local_auth;
+        bool encrypted;
+        bool expect_commit;
+        const char *order;
+    } cases[] = {
+        { true,  false, true,  "notify -> auth complete (host-driven pairing)" },
+        { false, true,  true,  "notify -> encryption change (peer-driven SSP)" },
+        { true,  true,  true,  "notify -> auth complete -> encryption change" },
+        { false, true,  true,  "encryption change -> notify (late key change)" },
+        { false, false, false, "notify only, link drops before either proof" },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        bool proven = ns2_bt_classic_authentication_proven(cases[i].local_auth,
+                                                           cases[i].encrypted);
+        bool committed = ns2_bt_classic_key_commit_allowed(false, proven,
+                                                            true, true);
+        assert(committed == cases[i].expect_commit);
+    }
+
+    // A remembered Classic controller reconnecting with the pairing window
+    // CLOSED is admitted on its stored key alone, and its peer-led re-encryption
+    // is enough to keep that key maintained. This is the reconnect the defect
+    // made impossible.
+    assert(ns2_bt_admission_decide(false, false, true) ==
+           NS2_BT_ADMISSION_RECONNECT);
+    assert(ns2_bt_classic_key_update_admitted(false, true, false,
+                                               true, true, false));
+    assert(ns2_bt_classic_key_commit_allowed(
+        false, ns2_bt_classic_authentication_proven(false, true), true, true));
+
+    // An UNKNOWN Classic controller with the window closed is still refused --
+    // accepting peer-led proof must not become a way in.
+    assert(ns2_bt_admission_decide(false, false, false) ==
+           NS2_BT_ADMISSION_REJECT);
+    assert(!ns2_bt_classic_key_update_admitted(false, true, false,
+                                                false, false, false));
+
+    // ...and the pairing window is what admits a genuinely new one.
+    assert(ns2_bt_admission_decide(false, true, false) ==
+           NS2_BT_ADMISSION_FRESH);
+}
+
 static void test_classic_key_replacement(void)
 {
     // Fresh pairing admits a new key, but notification alone is never enough
@@ -682,6 +780,8 @@ int main(void)
     test_boot_lockout();
     test_install_reset_bootstrap_is_one_shot();
     test_classic_ssp_attempt_admission();
+    test_classic_authentication_proof_sources();
+    test_classic_first_pairing_orderings();
     test_classic_key_replacement();
     test_switch2_custom_admission();
     test_typed_forget_scope();
