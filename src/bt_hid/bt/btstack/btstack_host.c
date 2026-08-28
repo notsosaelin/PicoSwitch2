@@ -5808,33 +5808,38 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                     reason != ERROR_CODE_REMOTE_USER_TERMINATED_CONNECTION &&
                     reason != ERROR_CODE_REMOTE_DEVICE_TERMINATED_CONNECTION_DUE_TO_POWER_OFF;
 
-                // Confirmed 2026-07-15 (project owner report + code trace): a genuine controller
-                // whose BLE key relationship gets re-established elsewhere (e.g. re-paired to its
-                // actual Switch 2 between test sessions with this dongle) makes OUR stored bond
-                // stale. `SM_EVENT_REENCRYPTION_COMPLETE`'s failure branch already auto-deletes a
-                // stale bond and re-pairs (see that handler, further down this file) -- but that
-                // only fires if the failed re-encryption attempt reaches a *clean* SM completion
-                // event. If the peer instead just drops the link outright (the more likely real
-                // behavior for a genuine key mismatch -- an authentication failure or missing-key
-                // condition at the HCI level), the disconnect lands here instead, and this block
-                // was blindly retrying the SAME stale bond up to 5 times before giving up -- a
-                // real, reproducible-from-code fit for "reconnect doesn't work, only a bond wipe
-                // (BOOTSEL triple-tap) fixes it," reported directly by the project owner. Fixed:
-                // treat these two reasons as "stale key, not a real link-quality problem" and
-                // delete the local bond before retrying, so the very next connect attempt (still
-                // using the same stored address) performs a genuinely fresh pairing instead of
-                // repeating the same doomed handshake. Scoped narrowly to these two reasons only
-                // -- a real supervision timeout or generic link loss must still just retry with
-                // the existing bond unchanged, since that connection was never actually broken at
-                // the key/authentication level.
+                // NO AUTOMATIC BOND DELETION HERE.
+                //
+                // This block used to delete the dropped peer's bond on reason
+                // 0x05/0x06, reasoning that those two statuses mean a stale key
+                // rather than a link-quality problem, so deleting it made the
+                // next attempt a real pairing instead of a repeat of the same
+                // doomed handshake. The diagnosis was right and the remedy was
+                // far too destructive: it turned one bad handshake into the
+                // permanent loss of a pairing the user made, silently.
+                //
+                // Observed 2026-08-28: an adapter that held three bonds earlier
+                // in the same powered session reported `btbonds: []` with no
+                // reflash and no power cycle. This site, the LE re-encryption
+                // site and the Classic authentication site each delete one bond
+                // on 0x05/0x06 -- between them they can empty the database. The
+                // trigger was never proven. The response did not need proving to
+                // be wrong: an authentication error is not a mandate to mutate
+                // persistent storage.
+                //
+                // The reconnect cascade below is already bounded and already
+                // refuses to chase a peer that left deliberately, so a genuinely
+                // stale bond now fails visibly and repeatedly rather than
+                // erasing itself. The user resolves it with an explicit action --
+                // Forget, `bonds remove`, or the BOOTSEL wipe -- which is where
+                // authority over durable pairing state belongs.
+                //
+                // See ns2_bt_classic_auth_failure_forgets_existing() for the
+                // same rule stated once, and tested.
                 if (reason == ERROR_CODE_AUTHENTICATION_FAILURE ||
                     reason == ERROR_CODE_PIN_OR_KEY_MISSING) {
-                    printf("[BTSTACK_HOST] Disconnect reason 0x%02X looks like a stale/mismatched "
-                           "bond, not a link-quality problem; deleting local bond before retrying\n",
-                           reason);
-                    // Scoped to the peer that actually dropped, not to
-                    // last_connected -- see the capture above.
-                    gap_delete_bonding((bd_addr_type_t)disconnected_addr_type, disconnected_addr);
+                    printf("[BTSTACK_HOST] Disconnect reason 0x%02X suggests a stale key; "
+                           "bond PRESERVED, dropping the link only\n", reason);
                 }
 
                 // Reconnect a bonded peer that is actually ABSENT.
@@ -6170,16 +6175,25 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 }
 
                 // 0x05 Authentication Failure is generic: preserve the known
-                // local key. 0x06 PIN_OR_KEY_MISSING specifically says the peer
-                // no longer has it, so only that status invalidates old trust.
+                // local key. 0x06 PIN_OR_KEY_MISSING used to invalidate it; it no
+                // longer does, and the predicate is now false for every status.
+                // See ns2_bt_classic_auth_failure_forgets_existing().
+                //
+                // The branch is kept rather than deleted so the policy has one
+                // switch. Turning it back on means changing that one function,
+                // past its comment and its test, rather than editing this site.
                 if (ns2_bt_classic_auth_failure_forgets_existing(status)) {
                     printf("[BTSTACK_HOST] Peer reports PIN/key missing; deleting stale Classic key\n");
                     gap_drop_link_key_for_bd_addr(classic_state.pending_addr);
                     classic_state.pending_existing_link_key_valid = false;
                     classic_state.pending_trust_present = false;
                 } else {
+                    // Restores the key BTstack may already have overwritten from
+                    // the notification. This is a REPLACE-BACK, not a delete:
+                    // net effect is the durable key the peer had before.
                     classic_restore_existing_key();
-                    printf("[BTSTACK_HOST] Classic authentication failed; preserving existing key\n");
+                    printf("[BTSTACK_HOST] Classic authentication failed (0x%02X); "
+                           "existing key PRESERVED\n", status);
                 }
                 classic_state.pending_notified_link_key_valid = false;
                 classic_state.pending_notified_link_key_admitted = false;
@@ -6264,8 +6278,18 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                     hid_state.reencryption_failures++;
                     printf("[SW2_BLE] Direct HCI encryption failed: phase=%u status=0x%02X enabled=%u\n",
                            encrypt_phase, status, enabled);
+                    // Aligned with the SM re-encryption path, which already
+                    // preserves the custom bond and says why: an SM failure can
+                    // be a local state or timing error and must not silently
+                    // force the user back through SYNC pairing. The two halves
+                    // of the same Switch 2 recovery disagreed -- this one
+                    // deleted the bond, its sibling kept it -- so which one ran
+                    // decided whether the pairing survived.
+                    //
+                    // The fresh-pairing latch is kept: the next attempt may
+                    // establish new trust, and doing so REPLACES the key rather
+                    // than requiring it to be absent first.
                     if (conn) {
-                        gap_delete_bonding(conn->addr_type, conn->addr);
                         switch2_force_fresh_custom_pairing = true;
                     }
                     gap_disconnect(handle);
@@ -6549,17 +6573,29 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *pa
                     btstack_host_install_switch2_ltk();
                     gap_disconnect(handle);
                 } else {
-                    // Remove only the failed relationship. Creating replacement
-                    // trust still requires the explicit pairing window that was
-                    // latched when this connection was admitted.
-                    bd_addr_t addr;
-                    sm_event_reencryption_complete_get_address(packet, addr);
-                    bd_addr_type_t addr_type = sm_event_reencryption_complete_get_addr_type(packet);
-                    gap_delete_bonding(addr_type, addr);
+                    // The bond is PRESERVED here too, for the same reason the
+                    // companion's is: a re-encryption failure is a failed
+                    // handshake, not a licence to destroy durable state. This
+                    // branch used to delete it and then re-pair if the pairing
+                    // window happened to be open -- so an ordinary transient
+                    // failure with the window shut cost the user the pairing and
+                    // gave nothing back.
+                    //
+                    // A peer whose key really is gone still cannot connect, and
+                    // fails the same way every time until the user forgets it
+                    // explicitly. That is bounded and visible; silent deletion
+                    // was neither.
                     if (conn && conn->fresh_pairing_admitted) {
+                        // The user has an open pairing window, which IS an
+                        // explicit act: re-pairing is what they asked for. SM
+                        // replaces the key on success; nothing is deleted first,
+                        // so a failed re-pair leaves the old bond usable.
+                        printf("[BTSTACK_HOST] LE re-encryption failed; pairing window open, "
+                               "requesting fresh pairing with the bond intact\n");
                         sm_request_pairing(handle);
                     } else {
-                        printf("[BTSTACK_HOST] Stale LE bond removed; fresh pairing remains closed\n");
+                        printf("[BTSTACK_HOST] LE re-encryption failed; bond PRESERVED, "
+                               "dropping the link\n");
                         gap_disconnect(handle);
                     }
                 }
