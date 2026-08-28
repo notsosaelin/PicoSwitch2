@@ -113,12 +113,17 @@ class ControllerInventoryTest {
     }
 
     @Test fun `an unknown peer this app has never seen stays unidentified`() {
+        // Updated with the identity fix: a record nothing can attribute is no
+        // longer offered under saved controllers. It is a raw security record
+        // and belongs in Diagnostics -- but it is still reported, still
+        // unpromoted, and still labelled without inventing a name.
         val view = ControllerInventory.build(inventory(peer("p_1", role = PeerRole.Unknown)), AdapterPeerHistory())
-        val row = view.saved.single()
+        val row = view.unidentified.single()
         assertEquals(PeerRole.Unknown, row.role)
         assertEquals(PeerRole.Unknown, row.rememberedRole)
         assertFalse(row.identifiedFromHistory)
         assertEquals("Controller • EE01", row.displayName)
+        assertTrue(view.saved.isEmpty())
     }
 
     @Test fun `a peer still in the inventory is never duplicated into Recent`() {
@@ -138,6 +143,94 @@ class ControllerInventoryTest {
         assertEquals(listOf("p_1"), view.saved.map { it.peerId })
         assertTrue(view.recent.isEmpty())
     }
+
+    /* --------------------- identity canonicalisation (Phase 4 regression) */
+
+    @Test fun `one phone reported under one identity is one management peer`() {
+        // The firmware now emits the management observation under the RESOLVED
+        // identity, so the bond row and the live row share an address and merge.
+        // Before that the phone arrived as an identity row (bonded, role
+        // unknown) plus an RPA row (role management, no stored key), and the
+        // identity half landed under saved controllers.
+        val merged = PeerInfo(
+            id = "p_ident",
+            address = "2C002A159CF7",
+            role = PeerRole.ManagementCompanion,
+            transports = setOf(PeerTransport.Classic, PeerTransport.Le),
+            bonded = true,
+            connected = true,
+        )
+        val view = ControllerInventory.build(inventory(merged), AdapterPeerHistory())
+        assertEquals(listOf("p_ident"), view.companion.map { it.peerId })
+        assertTrue(view.saved.isEmpty())
+        assertTrue(view.connected.isEmpty())
+        assertFalse(view.hasControllers)
+        // CTKD data survives the merge: one device, both transports, one row.
+        assertEquals(
+            setOf(PeerTransport.Classic, PeerTransport.Le),
+            view.companion.single().transports,
+        )
+    }
+
+    @Test fun `the management phone never reaches the controller sections`() {
+        val view = ControllerInventory.build(
+            inventory(peer("p_phone", role = PeerRole.ManagementCompanion, connected = true)),
+            AdapterPeerHistory(),
+        )
+        assertTrue(view.connected.isEmpty())
+        assertTrue(view.saved.isEmpty())
+        assertTrue(view.recent.isEmpty())
+        assertTrue(view.hasDiagnosticPeers)
+    }
+
+    @Test fun `an unattributable record is diagnostics, not a controller`() {
+        // A security record neither the adapter nor this app can name must not
+        // sit beside real controllers inviting the user to act on it.
+        val view = ControllerInventory.build(
+            inventory(peer("p_raw", role = PeerRole.Unknown)),
+            AdapterPeerHistory(),
+        )
+        assertEquals(listOf("p_raw"), view.unidentified.map { it.peerId })
+        assertTrue(view.saved.isEmpty())
+        assertFalse(view.hasControllers)
+        assertTrue(view.hasDiagnosticPeers)
+    }
+
+    @Test fun `a remembered controller still counts as a controller after a reboot`() {
+        // The unidentified routing must not swallow a real controller the
+        // adapter has simply not re-identified since it rebooted.
+        val history = AdapterPeerHistory()
+            .observing(inventory(peer("p_1", classification = "Sony DualSense", connected = true)), 1_000)
+        val view = ControllerInventory.build(inventory(peer("p_1", role = PeerRole.Unknown)), history)
+        assertEquals(listOf("p_1"), view.saved.map { it.peerId })
+        assertTrue(view.unidentified.isEmpty())
+        assertEquals("Sony DualSense", view.saved.single().displayName)
+    }
+
+    @Test fun `controller classification, name and identity survive the split`() {
+        val view = ControllerInventory.build(
+            inventory(
+                PeerInfo(
+                    id = "p_pad",
+                    address = "987A14C17834",
+                    role = PeerRole.PhysicalController,
+                    transports = setOf(PeerTransport.Classic, PeerTransport.Le),
+                    bonded = true,
+                    connected = true,
+                    name = "Xbox Wireless Controller",
+                    classification = "Xbox Wireless Controller (BLE)",
+                    vendorId = 0x045E,
+                    productId = 0x0B13,
+                ),
+            ),
+            AdapterPeerHistory(),
+        )
+        val row = view.connected.single()
+        assertEquals("Xbox Wireless Controller (BLE)", row.displayName)
+        assertEquals(setOf(PeerTransport.Classic, PeerTransport.Le), row.transports)
+        assertTrue(view.hasControllers)
+    }
+
 
     @Test fun `an empty everything is empty`() {
         assertTrue(ControllerInventory.build(inventory(), AdapterPeerHistory()).isEmpty)

@@ -14,7 +14,9 @@ import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.unit.dp
 import dev.picoswitch.companion.BuildConfig
+import dev.picoswitch.companion.model.BondInfo
 import dev.picoswitch.companion.model.CapabilityState
+import dev.picoswitch.companion.model.PeerRole
 import dev.picoswitch.companion.model.title
 import kotlinx.coroutines.launch
 
@@ -32,6 +34,8 @@ import kotlinx.coroutines.launch
  */
 @Composable
 fun DiagnosticsScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onExportDiagnostics: () -> Unit) {
+    var removeBond by remember { mutableStateOf<BondInfo?>(null) }
+
     val clipboard = LocalClipboard.current
     val scope = rememberCoroutineScope()
     var managementOpen by rememberSaveable { mutableStateOf(false) }
@@ -229,6 +233,85 @@ fun DiagnosticsScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onExp
             }
         }
 
+        val records: @Composable () -> Unit = {
+            SectionCard(title = "Bluetooth records", icon = Icons.Default.Bluetooth) {
+                Text(
+                    "Security records rather than products. This phone's own management and " +
+                        "Controller Link relationships live here, together with records the adapter " +
+                        "holds but cannot attribute. Physical controllers are under Settings.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                val inventory = ui.controllerInventory
+                if (inventory.companion.isNotEmpty()) {
+                    SubsectionLabel("This phone")
+                    inventory.companion.forEach { listing ->
+                        LabelValueRow(
+                            listing.displayName,
+                            listOfNotNull(
+                                when (listing.role) {
+                                    PeerRole.ManagementCompanion -> "management"
+                                    PeerRole.ControllerLink -> "Controller Link"
+                                    else -> "remembered"
+                                },
+                                listing.transports.joinToString("+") { it.name }.ifBlank { null },
+                            ).joinToString(" \u00b7 "),
+                        )
+                    }
+                }
+                if (inventory.unidentified.isNotEmpty()) {
+                    SubsectionLabel("Unattributed records")
+                    inventory.unidentified.forEach { listing ->
+                        LabelValueRow(
+                            listing.address.ifBlank { listing.peerId },
+                            listing.transports.joinToString("+") { it.name }.ifBlank { "no key" },
+                            monospace = true,
+                        )
+                    }
+                }
+                if (!inventory.hasDiagnosticPeers) {
+                    InlineNotice("No management or unattributed Bluetooth records.")
+                }
+
+                HorizontalDivider()
+                SubsectionLabel("Adapter Bluetooth LE bonds")
+                Text(
+                    // Says why this list disagrees with the peer view above: one
+                    // device holding two records appears once there and twice here.
+                    "Raw LE device-database slots. One device can hold more than one.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                when {
+                    ui.snapshot.capabilities.bonds == CapabilityState.Unsupported ->
+                        InlineNotice("This firmware does not report stored pairings.")
+                    !ui.connection.connected ->
+                        InlineNotice("Connect to the adapter to review its stored pairings.")
+                    // Never present a partial enumeration as the whole list: a
+                    // missing entry here is an entry the user cannot revoke.
+                    ui.snapshot.bondsComplete != true ->
+                        InlineNotice(
+                            "The stored-pairing list could not be read completely, so none are shown.",
+                            tone = ChipTone.Error,
+                        )
+                    ui.snapshot.bonds.isEmpty() ->
+                        InlineNotice("No Bluetooth LE bonds are stored on this adapter.")
+                    else -> ui.snapshot.bonds.forEach { bond ->
+                        SettingsRow(
+                            title = bond.name?.takeIf(String::isNotBlank) ?: bond.address,
+                            supporting = bond.name?.takeIf(String::isNotBlank)?.let { bond.address },
+                            enabled = !ui.busy,
+                            trailing = {
+                                IconButton(onClick = { removeBond = bond }, enabled = !ui.busy) {
+                                    Icon(Icons.Default.LinkOff, "Remove pairing ${bond.index}")
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+        }
+
         val tools: @Composable () -> Unit = {
             SectionCard(title = "Tools", icon = Icons.Default.Build) {
                 SettingsRow(
@@ -290,7 +373,7 @@ fun DiagnosticsScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onExp
                         identity(); link(); platform(); tools()
                     }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(gap)) {
-                        bridge(); kbm(); adapterState(); live()
+                        bridge(); kbm(); adapterState(); records(); live()
                     }
                 }
             } else {
@@ -298,11 +381,26 @@ fun DiagnosticsScreen(ui: CompanionUiState, viewModel: CompanionViewModel, onExp
                     Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(gap),
                 ) {
-                    identity(); link(); bridge(); kbm(); adapterState(); platform(); live(); tools()
+                    identity(); link(); bridge(); kbm(); adapterState(); records(); platform(); live(); tools()
                     Spacer(Modifier.height(LayoutTokens.Space5))
                 }
             }
         }
+    }
+
+    removeBond?.let { bond ->
+        ConfirmDialog(
+            onDismiss = { removeBond = null },
+            title = "Remove this pairing?",
+            // The app cannot tell whether the entry is this phone -- Android
+            // does not expose our own Bluetooth address -- so the honest
+            // statement is that it might be, and the session reconciles for real
+            // afterwards rather than staying optimistically "Connected".
+            body = "If this entry is this phone, the management session ends immediately and you will need to pair again.",
+            confirmLabel = "Remove",
+            destructive = true,
+            onConfirm = { viewModel.removeBond(bond.index); removeBond = null },
+        )
     }
 
     if (managementOpen) ConfirmDialog(

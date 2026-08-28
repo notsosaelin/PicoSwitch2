@@ -788,8 +788,33 @@ static struct {
     // roles -- so a companion bond sits in the same database the reconnect
     // selector enumerates. A companion that is connected must not be counted as
     // an absent peer. See btstack_host_pick_reconnect().
+    // CONNECTION-LOCAL. This is the over-the-air address from
+    // HCI_SUBEVENT_LE_CONNECTION_COMPLETE, which for a phone using LE privacy
+    // is a Resolvable Private Address that changes roughly every 15 minutes.
+    // It identifies THIS ACL and nothing more durable. Never compare it against
+    // anything stored -- see client_identity_addr.
     bd_addr_t client_addr;
     bool client_addr_valid;
+    // DURABLE. The bonded identity BTstack resolved that RPA to, taken from
+    // SM_EVENT_IDENTITY_RESOLVING_SUCCEEDED. This is the address the LE device
+    // DB actually stores, so it is the only one that can be compared against a
+    // bond record, a Classic BD_ADDR, or anything that outlives the connection.
+    //
+    // Everything durable used to compare client_addr instead. Because an RPA is
+    // never equal to a stored identity, every one of those comparisons was
+    // permanently false: the reconnect selector could not exclude the connected
+    // companion, the Classic authentication path could never recognise the
+    // companion's own Controller Link, an explicit forget could not drop the
+    // management session, and the peer inventory reported the phone twice --
+    // once as its bonded identity and once as an unbonded RPA.
+    //
+    // Only populated when the peer actually uses privacy AND resolution
+    // succeeds. A peer connecting with its identity address directly leaves
+    // this clear, and config_ble_durable_addr() then falls back to client_addr,
+    // which in that case IS the identity.
+    bd_addr_t client_identity_addr;
+    uint8_t client_identity_addr_type;
+    bool client_identity_valid;
     // Per-attempt fresh-bond admission, latched when this connection was
     // ACCEPTED. Controller BLE candidates already work this way
     // (conn->fresh_pairing_admitted, latched from
@@ -965,6 +990,13 @@ static bool config_ble_link_trusted(hci_con_handle_t handle)
 
 // Evaluated at CONNECTION ADMISSION, not at SM confirmation.
 // See config_ble.fresh_bond_admitted.
+// Durable identity of the management companion. Defined after
+// config_ble_identity_addr(), which does the authoritative lookup; declared
+// here because the reconnect selector above needs it. See the definitions for
+// why an RPA must never be used for a durable comparison.
+static bool config_ble_durable_addr(bd_addr_t out);
+static bool config_ble_addr_is_companion(const uint8_t addr[6]);
+
 static bool config_ble_bond_admission_open(void)
 {
     mgmt_state_t state = {
@@ -2194,8 +2226,12 @@ static ns2_ble_reconnect_decision_t btstack_host_pick_reconnect(void)
         // is a peripheral-role link and so never appears in the central-role
         // connection table that `connected` is derived from, which would
         // otherwise make a live companion look like a missing controller.
-        if (config_ble.client_addr_valid &&
-            memcmp(a, config_ble.client_addr, sizeof(bd_addr_t)) == 0)
+        //
+        // `a` is a bond-database identity, so this must compare against the
+        // companion's IDENTITY. It used to compare config_ble.client_addr,
+        // which under LE privacy is an RPA and therefore never equal to a
+        // stored identity -- the exclusion silently never fired.
+        if (config_ble_addr_is_companion(a))
             continue;
 
         memcpy(candidates[n].addr, a, sizeof(candidates[n].addr));
@@ -2585,6 +2621,9 @@ static bool config_ble_handle_disconnect(
     config_ble.handle = HCI_CON_HANDLE_INVALID;
     config_ble.fresh_bond_admitted = false;
     config_ble.client_addr_valid = false;
+    // The resolved identity belongs to the ACL that resolved it. A reused
+    // handle must never inherit the previous companion's identity.
+    config_ble.client_identity_valid = false;
     config_ble.closing = false;
     config_ble.notifications_enabled = false;
     config_ble.tx_requested = false;
@@ -3017,6 +3056,54 @@ static bool config_ble_identity_addr(bd_addr_t out)
     if (stored_type == BD_ADDR_TYPE_UNKNOWN) return false;
     memcpy(out, stored_addr, sizeof(bd_addr_t));
     return true;
+}
+
+/*
+ * The management client's address for any DURABLE comparison.
+ *
+ * Preference order, most authoritative first:
+ *
+ *  1. config_ble_identity_addr() -- the LE device DB record this link is
+ *     actually authenticated against, via sm_le_device_index(). This is the
+ *     answer BTstack itself is using, so it cannot disagree with the bond.
+ *  2. The identity captured from SM_EVENT_IDENTITY_RESOLVING_SUCCEEDED. Covers
+ *     the window before a db index is available.
+ *  3. config_ble.client_addr -- correct only because a peer that produced no
+ *     resolution connected with its identity address in the first place.
+ *
+ * Nothing here re-derives an identity. BTstack resolves the RPA (see
+ * ENABLE_LE_PRIVACY_ADDRESS_RESOLUTION); this only reads the result.
+ *
+ * Returns false when nothing is known, so a caller cannot silently compare
+ * against a zeroed buffer.
+ */
+static bool config_ble_durable_addr(bd_addr_t out)
+{
+    if (config_ble_identity_addr(out)) return true;
+    if (config_ble.client_identity_valid) {
+        memcpy(out, config_ble.client_identity_addr, sizeof(bd_addr_t));
+        return true;
+    }
+    if (config_ble.client_addr_valid) {
+        memcpy(out, config_ble.client_addr, sizeof(bd_addr_t));
+        return true;
+    }
+    return false;
+}
+
+/*
+ * Is `addr` the management companion?
+ *
+ * Compared on durable identity, never on the connection address. An RPA rotates
+ * roughly every 15 minutes and is never equal to a stored identity or to a
+ * Classic BD_ADDR, so a raw client_addr comparison against anything durable is
+ * not merely unreliable -- it is permanently false.
+ */
+static bool config_ble_addr_is_companion(const uint8_t addr[6])
+{
+    bd_addr_t durable;
+    if (addr == NULL || !config_ble_durable_addr(durable)) return false;
+    return memcmp(durable, addr, sizeof(bd_addr_t)) == 0;
 }
 
 // The individual terms of the companion-session conjunction, evaluated once.
@@ -4102,6 +4189,9 @@ static void btstack_host_clear_transient_radio_state(void)
     config_ble.handle = HCI_CON_HANDLE_INVALID;
     config_ble.fresh_bond_admitted = false;
     config_ble.client_addr_valid = false;
+    // The resolved identity belongs to the ACL that resolved it. A reused
+    // handle must never inherit the previous companion's identity.
+    config_ble.client_identity_valid = false;
     config_ble.closing = false;
     config_ble.notifications_enabled = false;
     config_ble.tx_requested = false;
@@ -6019,11 +6109,20 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                 }
                 last_auth_decision.mgmt_connected =
                     config_ble.handle != HCI_CON_HANDLE_INVALID;
+                // Durable identity, not the LE connection address. auth_conn
+                // ->address is a Classic BD_ADDR; an LE RPA can never equal
+                // one, so the old raw client_addr comparison was permanently
+                // false and this companion was never recognised as its own
+                // Controller Link peer. With cross-transport key derivation the
+                // phone's Classic address IS its LE identity, so comparing
+                // against the identity is what makes the match possible at all.
+                bd_addr_t mgmt_identity;
                 last_auth_decision.mgmt_addr_known =
-                    last_auth_decision.mgmt_connected && config_ble.client_addr_valid;
+                    last_auth_decision.mgmt_connected &&
+                    config_ble_durable_addr(mgmt_identity);
                 last_auth_decision.mgmt_addr_matches =
                     last_auth_decision.mgmt_addr_known &&
-                    memcmp(config_ble.client_addr, auth_conn->address,
+                    memcmp(mgmt_identity, auth_conn->address,
                            sizeof(bd_addr_t)) == 0;
                 last_auth_decision.mgmt_link_trusted =
                     last_auth_decision.mgmt_addr_matches &&
@@ -6333,6 +6432,33 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *pa
             hid_state.reencryption_started++;
             break;
 
+        case SM_EVENT_IDENTITY_RESOLVING_SUCCEEDED: {
+            // BTstack already did the resolution; this only records the answer.
+            // ENABLE_LE_PRIVACY_ADDRESS_RESOLUTION makes SM match a connecting
+            // RPA against the IRKs in the LE device DB, and this event carries
+            // the identity it matched. Nothing here re-derives it -- writing a
+            // second resolver would be inventing a fact BTstack already has.
+            //
+            // Recorded for the management link only. Controller links already
+            // carry their own identity in ble_connection_t, and the reconnect
+            // and forget paths use that.
+            hci_con_handle_t handle =
+                sm_event_identity_resolving_succeeded_get_handle(packet);
+            if (handle == config_ble.handle) {
+                bd_addr_t identity;
+                sm_event_identity_resolving_succeeded_get_identity_address(packet, identity);
+                memcpy(config_ble.client_identity_addr, identity,
+                       sizeof(config_ble.client_identity_addr));
+                config_ble.client_identity_addr_type =
+                    sm_event_identity_resolving_succeeded_get_identity_addr_type(packet);
+                config_ble.client_identity_valid = true;
+                printf("[BTSTACK_HOST] Management identity resolved: %s (type=%u)\n",
+                       bd_addr_to_str(identity),
+                       (unsigned)config_ble.client_identity_addr_type);
+            }
+            break;
+        }
+
         case SM_EVENT_REENCRYPTION_COMPLETE: {
             hci_con_handle_t handle = sm_event_reencryption_complete_get_handle(packet);
             uint8_t status = sm_event_reencryption_complete_get_status(packet);
@@ -6373,7 +6499,49 @@ static void sm_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *pa
                 }
             } else {
                 ble_connection_t* conn = find_connection_by_handle(handle);
-                if (conn && conn->profile && conn->profile->ble == BT_BLE_CUSTOM) {
+                if (handle == config_ble.handle) {
+                    // THE MANAGEMENT LINK MUST NEVER LOSE ITS BOND HERE.
+                    //
+                    // Everything below this branch is controller-recovery
+                    // policy: a peer whose stored key no longer works is a
+                    // controller that was re-paired elsewhere, so deleting the
+                    // stale bond is the only way to make the next attempt a
+                    // real pairing. That reasoning does not transfer to the
+                    // companion, and applying it to the companion is a one-way
+                    // door -- the credential the app needs to reconnect is
+                    // destroyed by the very failure it should have survived.
+                    //
+                    // It reached the companion by omission, not by intent. The
+                    // management peripheral is a PERIPHERAL-role link and so is
+                    // deliberately absent from the central-role connection
+                    // table (see btstack_host_pick_reconnect(), which documents
+                    // the same invariant). find_connection_by_handle() there-
+                    // fore returns NULL for it, and NULL fell through to "an
+                    // ordinary controller with a stale bond".
+                    //
+                    // Scope of this guard, stated exactly. It is NOT known to be
+                    // the trigger of any observed failure: what has been traced
+                    // is that reaching this branch is UNRECOVERABLE. Deleting
+                    // the companion's key here means every later connect fails
+                    // at the HCI layer with 0x05/0x06, and the companion treats
+                    // that pair of statuses as terminal by design -- 0x05/0x06
+                    // are deliberately excluded from GattRecoveryPolicy's retry
+                    // set, so the app goes straight to RepairRequired and does
+                    // not try again. One transient security failure would
+                    // therefore cost the user a manual re-pair.
+                    //
+                    // Dropping the link without touching the bond keeps that
+                    // failure recoverable instead of terminal. It does not by
+                    // itself make the app retry -- the app's 0x05/0x06 policy is
+                    // a separate question -- but it leaves a working credential
+                    // for the next attempt, which is the difference between a
+                    // hiccup and a re-pair. Clearing a companion bond stays a
+                    // deliberate act: Repair pairing, `bonds remove`, and the
+                    // BOOTSEL triple-tap wipe. None of those is this handler.
+                    printf("[BTSTACK_HOST] Management re-encryption failed (status=0x%02X); "
+                           "companion bond preserved, dropping link for retry\n", status);
+                    gap_disconnect(handle);
+                } else if (conn && conn->profile && conn->profile->ble == BT_BLE_CUSTOM) {
                     // Preserve the durable Nintendo custom bond. An SM failure
                     // can be a local state/timing error and must not silently
                     // force the user back through SYNC pairing.
@@ -7010,9 +7178,23 @@ static size_t peers_collect_observations(mgmt_peer_observation_t *out,
     // (1) The management companion. Certain while it is connected, and checked
     //     first so a phone that is ALSO driving Controller Link is never
     //     reported as a controller.
-    if (config_ble.handle != HCI_CON_HANDLE_INVALID && config_ble.client_addr_valid) {
-        peers_add_observation(out, capacity, &count, config_ble.client_addr,
-                              NULL, true, true, false, false, false);
+    if (config_ble.handle != HCI_CON_HANDLE_INVALID) {
+        // Reported under the companion's DURABLE identity, not the address this
+        // ACL happens to be using. Under LE privacy those differ, and keying
+        // the observation on the RPA split one phone into two logical peers:
+        // its bonded identity (Classic + LE, role unknown, nothing connected)
+        // and an unbonded RPA (role management, no stored key). The user saw
+        // both, and the identity half landed under saved controllers because
+        // nothing could prove it was the phone.
+        //
+        // Merging is by address, so emitting the identity is what collapses
+        // them: the observation now lands on the same row as the bond record,
+        // giving one peer with role=management and the real transport mask.
+        bd_addr_t companion;
+        if (config_ble_durable_addr(companion)) {
+            peers_add_observation(out, capacity, &count, companion,
+                                  NULL, true, true, false, false, false);
+        }
     }
 
     // (2) Live Classic HID links. The arbiter says which of them is the bridge.
@@ -7047,12 +7229,45 @@ static size_t peers_collect_observations(mgmt_peer_observation_t *out,
     return count;
 }
 
+/*
+ * Peer-enumeration workspace, deliberately NOT on the call stack.
+ *
+ * A full inventory is three bounded arrays: 32 bond rows, 32 observations and
+ * 32 merged peers. Since the peer record grew a classification and VID/PID
+ * those total 6080 bytes, and as stack locals they made peers_op_run()'s frame
+ * 6132 bytes.
+ *
+ * That is safe on Pico 2 W, which runs core 1 on an explicit 48 KiB stack, and
+ * NOT safe on Pico W, where core 1 gets the SDK default PICO_CORE1_STACK_SIZE
+ * of 2048 bytes in SCRATCH_X. Measured from the linked image: core 1 has 4096
+ * bytes of SCRATCH_X plus a 2292-byte unallocated gap below it before the heap
+ * begins, so 6388 bytes of headroom -- and the frame plus the nested
+ * mgmt_peers_format_page() frame (408 bytes) and snprintf crossed it.
+ *
+ * Static storage is the right answer rather than a bigger stack: the arrays are
+ * a fixed, known size, they are only ever touched from the BTstack thread (this
+ * callback is the sole user, serialised by peers_op_pending), and moving them
+ * costs the same RAM it would have cost transiently while making the depth
+ * independent of which board is running. Peer semantics are unchanged --
+ * identical arrays, identical capacities, identical calls.
+ */
+static mgmt_peer_bond_t peers_ws_bonds[MGMT_PEERS_MAX_ENTRIES];
+static mgmt_peer_observation_t peers_ws_observed[MGMT_PEERS_MAX_ENTRIES];
+static mgmt_peer_t peers_ws_peers[MGMT_PEERS_MAX_ENTRIES];
+
+// The whole point of the workspace is that it is not on the stack; a future
+// edit that shrinks it back onto the frame has to come past this.
+_Static_assert(sizeof(peers_ws_bonds) + sizeof(peers_ws_observed) +
+                   sizeof(peers_ws_peers) > 2048u,
+               "peer workspace is larger than the Pico W core-1 stack and must "
+               "stay in static storage");
+
 static void peers_op_run(void *ctx)  // BTstack thread (core1)
 {
     (void)ctx;
-    mgmt_peer_bond_t bonds[MGMT_PEERS_MAX_ENTRIES];
-    mgmt_peer_observation_t observed[MGMT_PEERS_MAX_ENTRIES];
-    mgmt_peer_t peers[MGMT_PEERS_MAX_ENTRIES];
+    mgmt_peer_bond_t *bonds = peers_ws_bonds;
+    mgmt_peer_observation_t *observed = peers_ws_observed;
+    mgmt_peer_t *peers = peers_ws_peers;
 
     size_t bond_count = peers_collect_bonds(bonds, MGMT_PEERS_MAX_ENTRIES);
     size_t observation_count =
@@ -12723,9 +12938,12 @@ static bool btstack_host_forget_device_typed(const uint8_t bd_addr[6],
     }
 
     // The management peripheral shares the LE DB but not the controller table.
+    //
+    // `addr` is the identity the caller asked to forget, so the match is on the
+    // companion's durable identity. Comparing the live RPA meant an explicit
+    // forget of the companion's bond left its session running.
     if (config_ble.handle != HCI_CON_HANDLE_INVALID &&
-        config_ble.client_addr_valid &&
-        memcmp(config_ble.client_addr, addr, sizeof(addr)) == 0) {
+        config_ble_addr_is_companion(addr)) {
         hci_con_handle_t mgmt = config_ble.handle;
         if (!btstack_host_request_disconnect(mgmt, "management session (forget)"))
             config_ble_handle_disconnect(

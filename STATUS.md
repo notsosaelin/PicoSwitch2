@@ -7,6 +7,42 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **Management LE identity canonicalised and the companion bond protected, 2026-08-28; REQUIRES A
+  REFLASH; hardware validation pending.** Investigating the Phase 4 post-reboot
+  `RepairRequired` report found several proven defects in how the firmware identifies its management
+  companion. **The cause of the first post-reboot 0x05/0x06 is NOT established, and this checkpoint
+  does not claim to have root-caused that regression** — it fixes what the source proves is wrong and
+  leaves the question open until hardware says otherwise. `config_ble.client_addr` is the
+  over-the-air address from `HCI_SUBEVENT_LE_CONNECTION_COMPLETE`, which under LE privacy is a
+  rotating RPA, and it was being used for durable comparisons where only the resolved identity is
+  valid. Three of them were therefore **permanently false**: the reconnect selector could not exclude
+  the connected companion, the Classic authentication path could never recognise the companion's own
+  Controller Link, and an explicit forget left the management session running.
+  `btstack_host_companion_terms()` was already correct. `config_ble_durable_addr()` now answers with
+  the record `sm_le_device_index()` says the link is authenticated against, falling back to the
+  identity from the newly handled `SM_EVENT_IDENTITY_RESOLVING_SUCCEEDED`, then to the connection
+  address. **BTstack does the resolution; nothing re-derives it.** The same mistake was why one phone
+  showed as two peers — a bonded identity row plus an unbonded RPA row — so the peer observation is
+  emitted under the durable identity and the two collapse into one `management` peer carrying the
+  real Classic + LE transport mask. Separately, `SM_EVENT_REENCRYPTION_COMPLETE`'s failure branch
+  could delete the **companion's** bond: the management peripheral is absent from the central-role
+  connection table by design, so `find_connection_by_handle()` returned NULL and NULL fell through to
+  controller stale-key recovery. Reaching it is unrecoverable — the app excludes 0x05/0x06 from retry
+  and goes straight to a terminal repair state — so management re-encryption failures now drop the
+  link and keep the bond. Also fixed: the Phase 4 peer structures made `peers_op_run`'s frame 6132
+  bytes, which is safe on Pico 2 W's 48 KiB core-1 stack but **overflowed Pico W**, whose core 1 gets
+  the SDK default 2048 bytes in SCRATCH_X with 6388 bytes of headroom before allocated memory; the
+  workspace moved to static BT-owned storage, taking the frame to 52 bytes with identical peer
+  semantics and a `_Static_assert` guarding the move. UI: Paired Controllers now holds physical
+  controllers only — the management phone, unattributable records and raw LE bond slots moved to a
+  Diagnostics **Bluetooth records** card. That boundary rests on the corrected firmware identity
+  model rather than hiding it. Android retry policy deliberately **unchanged** for this checkpoint,
+  so hardware can show whether the firmware fixes alone resolve the reboot regression. **Both boards
+  rebuild clean from scratch with no new warnings**, 73/73 host-test targets passed, BTstack
+  dependency contract passed, both install-reset markers verified, 1293 Android JVM test executions
+  with 0 failures (up from 1283), lint 0 errors, both APKs assembled, descriptor parity green at
+  bridge contract 4 with an unchanged 161-byte digest.
+  [`docs/bluetooth/PERSISTENCE.md`](docs/bluetooth/PERSISTENCE.md)
 - **Bluetooth Management 2.0 — Phase 4 names, classification and history shipped 2026-08-28;
   REQUIRES A REFLASH; device validation pending.** The adapter can now say what a controller *is*,
   and the app remembers it. `peers list` gained three optional fields: `class` — the bthid driver
