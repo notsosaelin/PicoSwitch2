@@ -115,14 +115,29 @@
                         </Grid>
 
                         <!-- The keyboard itself. Built in code because the layout is
-                             data, not markup. Scrolls in its own container so a
+                             geometry, not markup. Scrolls in its own container so a
                              narrow window never scrolls the page sideways. -->
                         <ScrollViewer
                             HorizontalScrollBarVisibility="Auto"
                             HorizontalScrollMode="Auto"
                             VerticalScrollMode="Disabled">
-                            <StackPanel x:Name="KeyboardHost" Spacing="4" />
+                            <StackPanel x:Name="KeyboardHost" Orientation="Horizontal" Spacing="20" />
                         </ScrollViewer>
+
+                        <StackPanel x:Name="OtherKeysSection" Spacing="4">
+                            <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="ISO and international keys" />
+                            <TextBlock
+                                Style="{StaticResource CaptionTextBlockStyle}"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                TextWrapping="Wrap"
+                                Text="Keys on European and Japanese keyboards that a US layout has no place for. Bind them here if your keyboard has them." />
+                            <ScrollViewer
+                                HorizontalScrollBarVisibility="Auto"
+                                HorizontalScrollMode="Auto"
+                                VerticalScrollMode="Disabled">
+                                <StackPanel x:Name="OtherKeysHost" Orientation="Horizontal" Spacing="4" />
+                            </ScrollViewer>
+                        </StackPanel>
 
                         <StackPanel x:Name="MouseButtonSection" Spacing="4">
                             <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Mouse buttons" />

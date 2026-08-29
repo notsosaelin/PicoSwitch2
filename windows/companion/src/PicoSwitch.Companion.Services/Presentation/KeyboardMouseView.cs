@@ -75,7 +75,20 @@ public sealed record KeyboardMouseView
 
     public required KbmProfile Profile { get; init; }
 
+    /// <summary>Every drawn key, flat. Used for counting and lookup.</summary>
     public required IReadOnlyList<KeyBindingCell> Keys { get; init; }
+
+    /// <summary>The same cells grouped by physical cluster, for drawing.</summary>
+    public required IReadOnlyList<KeyClusterCells> Clusters { get; init; }
+
+    /// <summary>
+    /// ISO and Japanese keys, which an ANSI picture has no honest position for.
+    ///
+    /// Kept separate rather than omitted: a European or Japanese keyboard really
+    /// has these, and a key that cannot be drawn is still a key the user may want
+    /// to bind.
+    /// </summary>
+    public required KeyClusterCells OtherKeys { get; init; }
 
     public required IReadOnlyList<KeyBindingCell> MouseButtons { get; init; }
 
@@ -130,6 +143,16 @@ public sealed record KeyboardMouseView
     };
 }
 
+/// <summary>One cluster's cells, with the geometry needed to draw it.</summary>
+public sealed record KeyClusterCells(KeyboardCluster Cluster, IReadOnlyList<KeyBindingCell> Cells)
+{
+    public string Name => Cluster.Name;
+
+    public double Columns => Cluster.Columns;
+
+    public double Rows => Cluster.Rows;
+}
+
 public static class KeyboardMouse
 {
     public static KeyboardMouseView Project(
@@ -145,7 +168,7 @@ public static class KeyboardMouse
             .Where(binding => binding.Source.Kind == KbmSourceKind.MouseButton)
             .ToDictionary(binding => binding.Source.Code);
 
-        var drawnKeys = KeyboardLayout.Rows.SelectMany(row => row).Select(cap => cap.Usage).ToHashSet();
+        var drawnKeys = KeyboardLayout.AllKeys.Select(cap => cap.Usage).ToHashSet();
 
         // Supported unless the adapter said otherwise. Unknown keeps the page.
         var supported = state.Capability != CapabilityState.Unsupported;
@@ -167,10 +190,15 @@ public static class KeyboardMouse
             KeyboardConnected = state.Status.KeyboardConnected,
             MouseConnected = state.Status.MouseConnected,
             Profile = profile,
-            Keys = KeyboardLayout.Rows
-                .SelectMany(row => row)
-                .Select(cap => Cell(cap, byKey))
+            Keys = KeyboardLayout.AllKeys.Select(cap => Cell(cap, byKey)).ToArray(),
+            Clusters = KeyboardLayout.Clusters
+                .Select(cluster => new KeyClusterCells(
+                    cluster,
+                    cluster.Keys.Select(cap => Cell(cap, byKey)).ToArray()))
                 .ToArray(),
+            OtherKeys = new KeyClusterCells(
+                KeyboardLayout.Other,
+                KeyboardLayout.Other.Keys.Select(cap => Cell(cap, byKey)).ToArray()),
             MouseButtons = KeyboardLayout.MouseButtons
                 .Select(cap => Cell(cap, byButton))
                 .ToArray(),
@@ -188,7 +216,9 @@ public static class KeyboardMouse
                     !drawnKeys.Contains(binding.Source.Code) &&
                     binding.Destination != KbmDestination.None)
                 .Select(binding => new KeyBindingCell(
-                    new KeyCap(binding.Source.Code, KeyboardLayout.Describe(binding.Source)),
+                    // Position is meaningless for a key with no drawn place; the
+                    // undrawn list is a plain list, not a picture.
+                    new KeyCap(binding.Source.Code, KeyboardLayout.Describe(binding.Source), 0, 0),
                     binding.Destination,
                     binding.Custom))
                 .ToArray(),
