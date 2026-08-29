@@ -112,22 +112,43 @@ public sealed partial class AdapterPage : Page
             return;
         }
 
+        // The consequence, stated exactly. This copy previously promised that the
+        // Windows pairing was untouched, which stopped being true when Remove was
+        // corrected to match WINDOWS_PASS.md §16.2 -- and a confirmation that
+        // misdescribes what it is about to do is worse than none at all.
         var dialog = new ContentDialog
         {
             XamlRoot = XamlRoot,
             Title = "Remove this adapter?",
             Content =
-                "It is removed from this app only. The Windows pairing and the adapter's " +
-                "own paired controllers are untouched.",
-            PrimaryButtonText = "Remove",
+                "This app forgets the adapter and its controller history, and Windows " +
+                "drops its pairing with it. You will need to pair again, with the " +
+                "adapter's pairing window open.\n\n" +
+                "The controllers paired to the adapter itself are not affected.",
+            PrimaryButtonText = "Remove and unpair",
             CloseButtonText = "Cancel",
             DefaultButton = ContentDialogButton.Close,
         };
 
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary)
         {
-            await SafeAsync(() => adapters.RemoveAsync(id));
+            return;
         }
+
+        await SafeAsync(async () =>
+        {
+            var removal = await adapters.RemoveAsync(id);
+            if (removal.LeftOrphanPairing)
+            {
+                // The row is gone but Windows kept its pairing -- radio off, or the
+                // device could not be resolved. Say so: the user now has a bond
+                // this app can no longer see, and only Windows settings can clear
+                // it.
+                throw new ManagementException(
+                    "The adapter was removed from this app, but Windows could not drop its " +
+                    "pairing. Remove it from Windows Bluetooth settings as well.");
+            }
+        });
     }
 
     private static AdapterId? RowId(object sender) =>
