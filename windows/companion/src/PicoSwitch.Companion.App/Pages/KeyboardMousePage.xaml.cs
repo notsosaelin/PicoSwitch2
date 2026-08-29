@@ -24,7 +24,10 @@ namespace PicoSwitch.Companion.App.Pages;
 /// </summary>
 public sealed partial class KeyboardMousePage : Page
 {
-    private const double KeyUnit = 44;
+    /// <summary>One key unit, in pixels. Everything in the layout is a multiple.</summary>
+    private const double KeyUnit = 46;
+
+    /// <summary>Taken OUT of each key rather than added between them, so 2u spans 2u.</summary>
     private const double KeyGap = 4;
 
     /// <summary>How long a slider must be still before its value is sent.</summary>
@@ -279,21 +282,51 @@ public sealed partial class KeyboardMousePage : Page
         UndrawnList.ItemsSource = view.Undrawn;
     }
 
+    /// <summary>
+    /// Draw each cluster on its own canvas, positioned from the layout's geometry.
+    ///
+    /// A canvas rather than stacked rows because the layout has gaps, half-unit
+    /// offsets and two-unit-tall keys, none of which a row of buttons can express.
+    /// The three clusters share row origins, so they line up without this file
+    /// knowing anything about where a numpad goes.
+    /// </summary>
     private void BuildKeyboard(KeyboardMouseView current, bool enabled)
     {
         KeyboardHost.Children.Clear();
-        var cells = current.Keys.ToDictionary(cell => cell.Cap.Usage);
-
-        foreach (var row in KeyboardLayout.Rows)
+        foreach (var cluster in current.Clusters)
         {
-            var panel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = KeyGap };
-            foreach (var cap in row)
-            {
-                panel.Children.Add(KeyButton(cells[cap.Usage], enabled));
-            }
-
-            KeyboardHost.Children.Add(panel);
+            KeyboardHost.Children.Add(ClusterCanvas(cluster, enabled));
         }
+
+        OtherKeysHost.Children.Clear();
+        foreach (var cell in current.OtherKeys.Cells)
+        {
+            OtherKeysHost.Children.Add(KeyButton(cell, enabled));
+        }
+    }
+
+    private Canvas ClusterCanvas(KeyClusterCells cluster, bool enabled)
+    {
+        var canvas = new Canvas
+        {
+            Width = cluster.Columns * KeyUnit,
+            Height = cluster.Rows * KeyUnit,
+        };
+
+        foreach (var cell in cluster.Cells)
+        {
+            var button = KeyButton(cell, enabled);
+
+            // The gap is taken out of the key, not added between them, so a 2u key
+            // still spans exactly two units of the grid.
+            button.Width = (cell.Cap.Width * KeyUnit) - KeyGap;
+            button.Height = (cell.Cap.Height * KeyUnit) - KeyGap;
+            Canvas.SetLeft(button, cell.Cap.Column * KeyUnit);
+            Canvas.SetTop(button, cell.Cap.Row * KeyUnit);
+            canvas.Children.Add(button);
+        }
+
+        return canvas;
     }
 
     private void BuildMouseButtons(KeyboardMouseView current, bool enabled)
@@ -313,7 +346,7 @@ public sealed partial class KeyboardMousePage : Page
 
         foreach (var cell in current.MouseButtons)
         {
-            MouseButtonHost.Children.Add(KeyButton(cell, enabled, width: 2.0, mouse: true));
+            MouseButtonHost.Children.Add(KeyButton(cell, enabled, width: cell.Cap.Width, mouse: true));
         }
     }
 
@@ -342,8 +375,8 @@ public sealed partial class KeyboardMousePage : Page
         var button = new Button
         {
             Content = caption,
-            Width = (width ?? cell.Cap.Width) * KeyUnit,
-            Height = 52,
+            Width = (width ?? cell.Cap.Width) * KeyUnit - KeyGap,
+            Height = KeyUnit - KeyGap,
             Padding = new Thickness(2),
             IsEnabled = enabled,
             Tag = cell.Cap.Usage,
