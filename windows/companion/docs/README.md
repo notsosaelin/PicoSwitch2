@@ -307,6 +307,17 @@ the happy path does not produce.
 The repair ACTION (`UnpairAsync` → re-pair → reconnect) is also unexecuted,
 because reaching it requires (1) first.
 
+The prepared sequence — what to do, what to capture, and what would falsify each
+— is `docs/experiments/windows-phase2-boundaries-2026-08-29.md`.
+
+**An audit before booking bench time found the signature could not fire at all**:
+thrown WinRT failures were never wrapped, so the `HRESULT` half had nothing to
+inspect; "Windows still paired" was read off a connection object already disposed
+by the time a failure is classified; and "peer answered" was set only on the scan
+path, while a remembered adapter connects directly without one. Fixed, with
+`StaleBondLadderTests` pinning the wiring. That makes the condition set
+*evaluable*, not *right*.
+
 Two deliberate departures from the Kotlin original, both caught by their own
 tests:
 

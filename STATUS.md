@@ -1263,6 +1263,20 @@ page, Pair/Refresh/Disconnect, the remembered-adapter list with Connect/Repair/R
 state, the peer inventory and the Diagnostics page. That glue is real and stays; Phase 3 is an audit
 of what remains on top of it.
 
+- **An audit before spending bench time found the signature could not fire at all.** Three
+  independent wiring defects, each of which would have read as "the hypothesis was wrong" if it had
+  surfaced on hardware: thrown WinRT failures were never wrapped, so the `HRESULT` half had nothing
+  to inspect; "Windows still paired" was read off a connection object that is already disposed by the
+  time a failure is classified; and "peer answered" was set only on the scan path and cleared by
+  teardown, while a remembered adapter connects directly without a scan. All three are fixed, plus
+  two consequences — a conclusive bond mismatch now ends the recovery ladder instead of running a
+  futile retry and fallback scan, and the failure walker follows both branches of the ladder's
+  aggregate report. `StaleBondLadderTests` pins the corrected wiring. **This does not make the
+  condition set right; it makes it evaluable.**
+
+The prepared hardware sequence for the four boundaries, with what to capture and what would falsify
+each, is [`docs/experiments/windows-phase2-boundaries-2026-08-29.md`](docs/experiments/windows-phase2-boundaries-2026-08-29.md).
+
 Reference: [`windows/companion/docs/README.md`](windows/companion/docs/README.md), `WINDOWS_PASS.md`.
 
 ## Bluetooth, pairing, and wake
