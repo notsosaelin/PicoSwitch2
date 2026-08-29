@@ -2048,6 +2048,52 @@ static bool btstack_host_ble_addr_connected(const bd_addr_t addr)
 // succeeded. Switch 2 controllers use a custom ATT pairing sequence and never
 // emit BTstack's SM_EVENT_PAIRING_COMPLETE, so relying on the SM callbacks alone
 // silently left them without a durable reconnect target.
+/*
+ * Promote a resolved driver identity into the remembered controller record.
+ *
+ * The remembered name is captured when the peer is persisted, which happens at
+ * bonding/encryption -- BEFORE the HID descriptor has been read and a driver has
+ * claimed the device. For a BLE controller whose advertisement carries no name,
+ * what gets stored at that moment is the ADVERTISING-TIME PLACEHOLDER the scan
+ * handler substituted ("Generic BLE Gamepad"), not a name the device ever
+ * reported.
+ *
+ * While the controller is connected that placeholder is invisible: the peer
+ * inventory reports the live driver as the classification, and the app shows
+ * "Xbox Wireless Controller". The moment it disconnects there is no live driver,
+ * the row falls back to the remembered name, and a controller this adapter had
+ * positively identified reappears as the placeholder. Hardware, 2026-08-29:
+ * `btpeers` reported the offline Xbox as {"role":"controller","bonded":true,
+ * "conn":false,"name":"Generic BLE Gamepad"}.
+ *
+ * So when a driver that matched real evidence claims the peer, its identity
+ * replaces the placeholder. Flash is written only when the stored record
+ * actually changes, so an ordinary reconnect that resolves the same identity
+ * costs nothing.
+ */
+void btstack_host_note_controller_identity(const uint8_t addr[6],
+                                           const char *identity,
+                                           bool authoritative)
+{
+    if (!addr || !identity || identity[0] == '\0')
+        return;
+    if (!hid_state.has_last_connected)
+        return;
+    if (memcmp(hid_state.last_connected_addr, addr, sizeof(bd_addr_t)) != 0)
+        return;
+    bool differs = strncmp(hid_state.last_connected_name, identity,
+                           sizeof(hid_state.last_connected_name)) != 0;
+    if (!mgmt_peers_remembered_identity_should_replace(authoritative, differs))
+        return;
+
+    printf("[BTSTACK_HOST] Remembered identity: '%s' -> '%s'\n",
+           hid_state.last_connected_name, identity);
+    strncpy(hid_state.last_connected_name, identity,
+            sizeof(hid_state.last_connected_name) - 1);
+    hid_state.last_connected_name[sizeof(hid_state.last_connected_name) - 1] = '\0';
+    btstack_host_save_last_connected();
+}
+
 static void btstack_host_remember_ble_connection(ble_connection_t *conn)
 {
     if (!conn) return;

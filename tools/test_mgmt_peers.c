@@ -940,8 +940,55 @@ static void test_a_provisional_classification_is_withheld_until_it_settles(void)
     }
 }
 
+/*
+ * A controller that has been identified must not be forgotten when it goes
+ * offline.
+ *
+ * The remembered name is captured at bonding, before any driver has claimed the
+ * peer. For a controller whose advertisement carries no name that is the scan
+ * handler's placeholder, and it is invisible while connected -- the inventory
+ * reports the live driver as the classification. It becomes visible the moment
+ * the peer disconnects: no live driver, so the row falls back to the remembered
+ * name. Hardware, 2026-08-29: `btpeers` reported the offline Xbox as
+ * role=controller, bonded=true, conn=false, name="Generic BLE Gamepad", while
+ * the same controller read "Xbox Wireless Controller" whenever it was connected.
+ */
+static void test_a_known_controller_is_not_downgraded_when_it_goes_offline(void)
+{
+    // The fix: a driver that matched real evidence replaces the placeholder.
+    assert(mgmt_peers_remembered_identity_should_replace(true, true));
+
+    // THE INVARIANT. The generic fallback is never authoritative, so it can
+    // never overwrite an identity already resolved -- this is what stops a
+    // known controller being downgraded by a later, weaker observation.
+    assert(!mgmt_peers_remembered_identity_should_replace(false, true));
+
+    // Nothing to do when the resolved identity is what is already remembered.
+    // Guarding on this is what keeps an ordinary reconnect from rewriting flash.
+    assert(!mgmt_peers_remembered_identity_should_replace(true, false));
+    assert(!mgmt_peers_remembered_identity_should_replace(false, false));
+
+    // The rule is strictly one-directional over every input combination: a
+    // replacement requires authority AND an actual change, in that order.
+    for (int authoritative = 0; authoritative <= 1; ++authoritative) {
+        for (int differs = 0; differs <= 1; ++differs) {
+            bool expected = authoritative && differs;
+            assert(mgmt_peers_remembered_identity_should_replace(
+                       authoritative != 0, differs != 0) == expected);
+        }
+    }
+
+    // Related but separate rule, asserted together so the two cannot drift: a
+    // still-unresolved peer publishes NO classification rather than the
+    // fallback, and a settled one publishes whatever it actually resolved to.
+    // A controller that is genuinely generic therefore still reports as such.
+    assert(!mgmt_peers_classification_publishable(true, true));
+    assert(mgmt_peers_classification_publishable(true, false));
+}
+
 int main(void)
 {
+    test_a_known_controller_is_not_downgraded_when_it_goes_offline();
     test_a_provisional_classification_is_withheld_until_it_settles();
     test_role_order_puts_management_first();
     test_unseen_peer_is_unknown_not_guessed();

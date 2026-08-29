@@ -604,6 +604,17 @@ void btstack_host_delete_all_bonds(void);
 // Forget a specific device by address — disconnects if connected, removes bond
 void btstack_host_forget_device(const uint8_t bd_addr[6]);
 
+// Replace the remembered controller name with a driver identity that matched
+// real evidence. The remembered name is captured at bonding, before any driver
+// has claimed the device, so for a controller whose advertisement carried no
+// name it is the scan handler's placeholder ("Generic BLE Gamepad") -- which is
+// what an OFFLINE peer then reports, undoing an identification the adapter had
+// already made. No-op unless this is the remembered peer and the identity
+// actually differs; flash is written only on a real change.
+void btstack_host_note_controller_identity(const uint8_t addr[6],
+                                           const char *identity,
+                                           bool authoritative);
+
 // Management-app LE bond list/remove. A core0 caller marshals a one-shot op onto
 // the BTstack thread (core1) and polls btstack_host_bonds_done(); the LE device
 // DB is not touched from core0. is_remove=false enumerates a complete,
