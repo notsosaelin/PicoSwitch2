@@ -416,9 +416,11 @@ tests:
 
 ## 8. Phase 3 — the adapter dashboard (the MVP)
 
-Implemented 2026-08-29. **Software-validated only:** nothing on this surface has
-been exercised against an adapter, and §31 Phase 3's exit criteria require
-exactly that.
+Implemented and hardware smoke-tested 2026-08-29. Remote controller pairing,
+personality switching, colour changes, the Paired Controllers inventory and
+selective Forget were all exercised against a real adapter, and the dashboard
+renders. **That is not exhaustive qualification** — the §26.5 manual UX and
+edge-state pass is still outstanding and tracked separately.
 
 ### How it is put together
 
@@ -489,8 +491,73 @@ theme switching while connected, DPI changes, and disconnecting the adapter
 during every workflow). What is already covered in software is the last of those:
 every section disables with a stated reason rather than spinning.
 
-## 9. Next
+## 9. Phase 4 — keyboard and mouse
 
-Phase 4 (Keyboard and Mouse). Phase 6 remains gated on the §14.5 HOGP
-peripheral-role experiment, which has not been run. Boundary D whenever a second
-adapter is available.
+Implemented 2026-08-29. **Software-validated only;** §31 Phase 4's exit criteria
+need hardware (H9).
+
+Phase 1 already had the protocol, including §13.3's anti-livelock paging. Phase 4
+is the state, the operations, the projections and the page.
+
+### The keyboard is drawn, and the layout is data
+
+§16.3 asks for the desktop advantage: the Android app pages through a list
+because a phone cannot show 104 keys, and Windows should draw the keyboard.
+
+`Presentation/KeyboardLayout.cs` owns which HID usage sits where and how wide it
+is, and it is unit-tested — every drawn usage is one `KbmSource` accepts, no key
+appears twice, and the letters and digits are all present. Two hundred lines of
+hand-written XAML buttons would carry the same information in a form nothing can
+check.
+
+Keys the adapter has bound but this build does not draw are **listed**, not
+dropped. A binding the user cannot see is one they cannot remove, and a newer
+adapter is allowed to know keys this build does not.
+
+### Section-scoped busy
+
+`KeyboardMouseBusy` is deliberately separate from any global busy flag. Mouse
+tuning is dragged, so it fires continuously; a modal overlay per step would make
+the sliders unusable and hide the preview being adjusted against.
+
+It is **not a lock**. Exclusion is still the service's operation gate, and
+single-flight is still the transport's (I2). It only says what to paint, and it
+clears on failure so one error cannot leave the section spinning forever.
+
+Slider values are **debounced**, not sent per tick. At drag rate a per-tick send
+floods the single-flight session and makes the slider fight the readback that is
+correcting it; committing on pointer release instead would miss the keyboard and
+touch paths entirely.
+
+### Two protocol semantics worth not re-learning
+
+- **`none` and `default` are different operations.** A null destination is the
+  wire's `default` — put this key back to what the adapter shipped with.
+  `KbmDestination.None` is "this key does nothing". Offering only one of them
+  either wipes a key the user wanted restored or restores one they wanted silent.
+  The bind dialog offers both, and a test pins which wire word each sends.
+- **Sensitivity always arrives with a range.** The decoder requires
+  `sensitivityMax > sensitivityMin`, so an unavailable sensitivity slider means
+  "not read yet", never "old firmware". Velocity window and anti-deadzone *can*
+  be genuinely degenerate, because the decoder permits equal bounds and a zero
+  max. All three bounds come from the reply; client-side constants would drift
+  from firmware silently.
+
+### Paging guards
+
+One test per §13.3 KB/M failure mode. Two of them record that the decoder and the
+paginator guard **different** over-counts: a malformed single page — more rows
+than its own page or total allows — never reaches the paginator, while an
+accumulated overshoot across individually valid pages is only visible to it.
+
+### What Phase 4 still needs
+
+Hardware H9, and the three exit criteria: a binding survives a reload and a
+reconnect, reset restores adapter defaults, and live mouse tuning never blocks
+the window.
+
+## 10. Next
+
+Phase 5 (Virtual Amiibo), whose precondition is the shared crypto fixture in
+§16.7. Phase 6 remains gated on the §14.5 HOGP peripheral-role experiment, which
+has not been run. Boundary D whenever a second adapter is available.
