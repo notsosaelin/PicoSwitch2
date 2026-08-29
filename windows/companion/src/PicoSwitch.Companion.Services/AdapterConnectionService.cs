@@ -470,6 +470,20 @@ public sealed class AdapterConnectionService
                 "connect",
                 $"failed [{DescribeFailure(error)}] " +
                 $"[{AdapterResetSignature.Explain(error, trust)}] {error.Message}");
+
+            if (bondMismatch)
+            {
+                // Report the DIAGNOSIS, not the symptom. The relationship already
+                // reached RepairRequired and the banner already says what to do; a
+                // caller that rethrows the raw transport message puts "the adapter
+                // did not expose its management service" in the most prominent
+                // element on the page and contradicts it. Observed 2026-08-29.
+                //
+                // The tagged failure is kept as the inner exception, so the
+                // diagnostic trail above loses nothing.
+                throw new AdapterBondMismatchException(repairMessage, error);
+            }
+
             throw;
         }
 
