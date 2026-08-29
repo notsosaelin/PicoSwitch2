@@ -7,6 +7,36 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **Classic controller lifecycle and controller identity — pass COMPLETE 2026-08-29; hardware
+  confirmed.** Five defects, found in order and each one exposing the next. **(1)** The BOOTSEL
+  sample park waited for core 0 with interrupts disabled from inside a BTstack run-loop callback,
+  which holds the async_context lock core 0 blocks on for every BTstack-touching management command —
+  so remote pairing froze both cores outright. The park is now bounded, withdrawing through a Dekker
+  handshake because core 0 tri-states flash CS on the strength of core 1 being parked.
+  **(2)** `HCI_Authentication_Complete` only arrives in response to this host's own
+  `HCI_Authentication_Requested`, which this firmware sends for the Wiimote family and one named
+  device only — BTstack's HID Host registers `LEVEL_0` and never asks. Every other Classic
+  controller drives SSP itself, so the key commit waited for an event that never came and no link key
+  was ever stored. Encryption Change is now accepted as equally conclusive proof.
+  **(3)** With the pairing window open, inquiry restarts with no gap while a controller stays
+  discoverable through its own pairing, and an inquiry result for a connection already in flight was
+  re-admitted — rebuilding the candidate from a frequently nameless EIR, clearing the parked link key
+  and starting a second HID connection. That single mistake produced the whole DualSense symptom
+  cluster at once: no durable key, generic classification, and no vendor-driver initialisation, hence
+  no player-slot LED and no configured colour. **(4)** A generic-fallback classification was published
+  while the PnP SDP query was still outstanding, and the companion reads the inventory once, the
+  instant pairing completes — inside that window. **(5)** The remembered controller name is captured
+  at bonding, before any driver has claimed the peer, so a controller advertising no name persisted
+  the scan handler's display placeholder and reverted to it whenever it went offline. Identity
+  promotion is now one-directional: an authoritative driver identity may replace what is remembered;
+  the generic fallback never may. **Confirmed on hardware:** one DualSense pairing reaches the DS5
+  driver with correct player LED and configured colour, its Classic key persists (`btpeers` reports
+  it `tr:1`, bonded, offline), it reconnects on that stored key with the pairing window closed
+  (`btauth`: `auth_had_stored_key`, `observed_ok`, `key_size:16`) and survives adapter reboot; Xbox
+  BLE connect/reconnect, Forget, and remote pairing all behave; and an offline Xbox keeps its
+  identity. Nothing matches on a device name anywhere in these fixes.
+  [`docs/experiments/classic-first-pair-readmission-2026-08-29.md`](docs/experiments/classic-first-pair-readmission-2026-08-29.md),
+  [`docs/bluetooth/PERSISTENCE.md`](docs/bluetooth/PERSISTENCE.md)
 - **Bluetooth Management 2.0 — Phase 7 shipped 2026-08-28; the pass is COMPLETE through all seven
   documented phases; REQUIRES A REFLASH; device validation pending.** Compatibility and degradation.
   `peerForget` and `remotePairing` are probed **independently** of `peers`, because they shipped in
@@ -1706,6 +1736,22 @@ BLE management coexistence, Controller Link ↔ physical-controller source switc
 mixed soak with continuous controller audio and no controller, management, or bond loss. The bounded
 HCI/CYW43 OFF/ON recovery it added has still never fired on hardware — its logic is host-tested, but
 the recovery path itself remains unvalidated in the field.
+
+The Classic controller lifecycle pass is physically accepted (see the lead entry). One measurement
+from that investigation is unexplained and worth knowing before it is rediscovered: on 2026-08-29,
+**every background `input sources` poll took ~8.0 s against the app's 10 s timeout** — 40+
+consecutive samples, while foreground `peers` (352 bytes) and `device` on the same GATT link and the
+same callback thread completed in 153 ms and 164 ms. One Paired Controllers refresh timed out during
+that session; the ring shows `mgmt_disconnect` reason `0x13`, so **Android closed the link and the
+adapter re-advertised 26 ms later** — the firmware did not stall, and the peers/pagination/session
+paths were audited and found sound. Ruled out for the 8 s: `cmd_input_sources` is fully inline, core
+0 was responsive, no USB host was attached so the documented TinyUSB ISO-endpoint starvation path was
+inactive, and the LE management link requests latency 0 with a 7.5–50 ms interval. The firmware has
+no concept of foreground versus background, so the difference originates on the Android side —
+possibly aggravated by the adapter's continuous Classic inquiry (3 s bursts every ~13 s while idle,
+by design). **Unproven, and deliberately not "fixed" by raising a timeout.** The decisive next step
+is a timestamp across the management exchange (write received → reply published) so a slow adapter
+and a slow transport stop being indistinguishable.
 
 The open items above are hardware gates to close opportunistically when the relevant hardware is in
 front of the maintainer. KB/M (gate 9) is implementation-complete and host-validated with nothing
