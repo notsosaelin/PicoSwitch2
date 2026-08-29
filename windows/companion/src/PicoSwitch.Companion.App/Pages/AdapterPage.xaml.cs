@@ -164,12 +164,8 @@ public sealed partial class AdapterPage : Page
         }
     }
 
-    private static string Unwrap(Exception error) => error switch
-    {
-        AggregateException aggregate =>
-            string.Join(" · ", aggregate.InnerExceptions.Select(inner => inner.Message)),
-        _ => error.Message,
-    };
+    // Shared with any other front end over this service, and unit-tested there.
+    private static string Unwrap(Exception error) => ManagementErrorText.Summarize(error);
 
     private void SetBusy(bool busy)
     {
