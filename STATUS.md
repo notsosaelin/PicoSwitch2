@@ -1159,13 +1159,13 @@ Briefs: [`docs/agents/ANDROID.md`](docs/agents/ANDROID.md),
 [`docs/bluetooth/android-controller-bridge.md`](docs/bluetooth/android-controller-bridge.md),
 [`docs/android-companion.md`](docs/android-companion.md).
 
-## Windows companion — Phases 0–2 implemented; happy path and boundary C hardware-confirmed 2026-08-29
+## Windows companion — Phases 0–2 implemented; boundaries A, B and C hardware-confirmed 2026-08-29
 
 Second host platform, designed in `WINDOWS_PASS.md` and implemented under `windows/companion/`.
 C# on .NET 9 with WinUI 3. The Roadmap's own numbering is used below so the gap between what exists
 and what is designed stays explicit.
 
-- **Delivered. 413 tests pass.**
+- **Delivered. 420 tests pass.**
   - *Phase 0* — the project skeleton with the architecture boundaries enforced from day one, plus a
     WinUI shell that builds x64/ARM64, packages as MSIX, and satisfies the single-instance exit
     criterion when run.
@@ -1245,8 +1245,11 @@ and what is designed stays explicit.
   a ~42 s effective host sample gap, too coarse to ORDER a connect/disconnect pair. Read the ring,
   not the poll deltas.
 
-- **Boundaries A and B ran 2026-08-29, disproved a documented hypothesis, and found two defects.**
-  Both are source-corrected and awaiting one confirming retest. Neither is passed yet.
+- **Boundaries A and B — Confirmed PASS, 2026-08-29 17:40.** Each cost a defect on the first run
+  and was confirmed on a retest the same day. On the retest the **first Connect press after the
+  flash** reached `RepairRequired` in 2.4 s, with every predicate resolving as the corrected model
+  predicts (`paired=True observed=True answeredGatt=False linkFailures=2/2 -> BOND MISMATCH`), and
+  `[repair] unpair <addr>: removed` appeared — the line that was entirely absent before.
   - **A. The bond-mismatch signature was wrong for this platform.** It expected the refusal at the
     ATTRIBUTE layer — `AccessDenied` or an authentication `HRESULT`. Against a genuinely reflashed
     adapter Windows produced neither: four attempts, every one `stage=services
@@ -1283,12 +1286,25 @@ and what is designed stays explicit.
     physical double-tap window. Observed in both directions — `AuthenticationTimeout` with the
     window shut, `Paired` with it open — matching `mgmt_accept_bonding` exactly.
 
-- **Two Phase 2 boundaries remain unproven, plus the A/B retest.**
-  1. the real recovery-ladder timing — the retry and the 350 ms backoff still have not executed on
-     hardware, because every observed failure was at a non-retryable stage;
+- **The mechanism is now measured, not inferred.** A diagnostic added for the retest read, four
+  times identically, `link status=Unreachable connection=Connected session=Closed maxPdu=23`.
+  Windows established the LE link (`Connected`), the GATT session never opened (`Closed`), and the
+  ATT MTU never left its 23-byte default — so **no ATT transaction of any kind occurred**. A link
+  that comes up and carries no attribute traffic is the shape of encryption failing immediately
+  after connection. *That* Windows encrypts a bonded peer before any ATT exchange is Confirmed by
+  observation; that the failure is specifically SMP remains inference, because Windows exposes no
+  SMP or HCI detail. Nothing in the implementation depends on the inference.
+- **One promotion criterion is half met and deliberately not acted on.** `connection=Connected`
+  during the failure was the first half; `connection=Disconnected` for a genuinely absent adapter
+  was never observed. Promoting on half a criterion is exactly what produced the wrong signature the
+  first time, so `ConnectionStatus` stays diagnostic-only. Completing it costs no flash cycle:
+  power the adapter off, press Connect once, read the `link` line.
+- **Still open after A, B and C, and neither blocks Phase 3.**
+  1. the recovery ladder's retry and 350 ms backoff have still never executed on hardware — every
+     observed failure was at a non-retryable stage, so the retry has correctly never been taken;
   2. the A → B active-adapter handoff under real asynchronous callbacks, with two adapters.
 
-Next: retest A and B against a reflashed adapter, then D with the second unit, then Phase 3 (the adapter dashboard, which is the MVP). Some
+Next: D with the second unit, then Phase 3 (the adapter dashboard, which is the MVP). Some
 Phase 3-shaped UI already exists because Phase 2 could not be exercised without it — the Adapter
 page, Pair/Refresh/Disconnect, the remembered-adapter list with Connect/Repair/Remove, live session
 state, the peer inventory and the Diagnostics page. That glue is real and stays; Phase 3 is an audit
