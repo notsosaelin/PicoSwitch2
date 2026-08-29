@@ -204,13 +204,19 @@ public sealed class AdapterConnectionService
             WindowsBluetoothRadio.RequireManagementCapable(radio.Value);
 
             active.Adopt(id);
+
+            // Read the real state rather than assuming one. A row with no cached
+            // device path is not a paired row -- it is the state a Repair leaves
+            // behind, and assuming Paired there would drive a connect against an
+            // adapter Windows no longer trusts and report the result as a mystery.
+            //
+            // Unknown is safe: RequestReconnect attempts the connection anyway and
+            // lets the failure classify itself.
             var pairingState = record.DeviceId is { } deviceId
                 ? MapPairing((await WindowsAdapterPairing.ReadAsync(deviceId).ConfigureAwait(false)).State)
-
-                // No cached device path yet: Windows pairing is confirmed by the
-                // connect itself, and an Unknown here would be reported as a
-                // repair rather than attempted.
-                : WindowsPairingState.Paired;
+                : MapPairing((await WindowsAdapterPairing
+                    .ReadByAddressAsync(id.ToBluetoothAddress(), cancellationToken)
+                    .ConfigureAwait(false)).State);
 
             var decision = lifecycle.RequestReconnect(
                 record.ToRelationship(),

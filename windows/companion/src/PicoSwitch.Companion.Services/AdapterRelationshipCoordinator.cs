@@ -458,17 +458,24 @@ public sealed class AdapterRelationshipCoordinator(AdapterRelationship? initialR
                     return new AdapterLifecycleDecision.RepairRequired(PairingLostMessage);
 
                 default:
-                    const string message = "Windows could not report this adapter's pairing state.";
+                    // Unknown means the PROBE did not establish an answer -- not
+                    // that the pairing is gone. Demanding a repair here would offer
+                    // to destroy a working trust relationship on the strength of a
+                    // status read that failed, and an adapter that is merely out of
+                    // range reads exactly like this.
+                    //
+                    // Attempt the connection instead. The connect is the authority:
+                    // if the pairing really has gone, the attempt fails and
+                    // AdapterResetSignature classifies it from evidence.
                     status = new AdapterRelationshipStatus
                     {
-                        Phase = AdapterRelationshipPhase.Failed,
+                        Phase = AdapterRelationshipPhase.Connecting,
                         Generation = generation,
                         Reason = reason,
                         Pairing = pairing,
-                        Message = message,
+                        Message = $"Connecting to {relationship.DisplayName}.",
                     };
-                    activeAttempt = null;
-                    return new AdapterLifecycleDecision.RepairRequired(message);
+                    return new AdapterLifecycleDecision.Connect(attempt);
             }
         }
     }
