@@ -60,6 +60,14 @@ bool mgmt_peers_id_valid(const char *id)
     return id[10] == '\0';
 }
 
+bool mgmt_peers_remembered_identity_should_replace(bool resolved_is_authoritative,
+                                                   bool identity_differs)
+{
+    // One-directional by construction: the generic fallback is never
+    // authoritative, so it can never overwrite a resolved identity.
+    return resolved_is_authoritative && identity_differs;
+}
+
 bool mgmt_peers_classification_publishable(bool driver_is_generic_fallback,
                                            bool identity_resolution_outstanding)
 {

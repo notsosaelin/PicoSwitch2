@@ -207,6 +207,32 @@ bool mgmt_peers_classification_publishable(bool driver_is_generic_fallback,
                                            bool identity_resolution_outstanding);
 
 /*
+ * May a newly resolved identity replace the one remembered for this peer?
+ *
+ * The remembered name is captured when a controller is persisted, at
+ * bonding/encryption -- before any driver has read its HID descriptor and
+ * claimed it. For a controller whose advertisement carries no name, what is
+ * stored at that moment is the scan handler's PLACEHOLDER ("Generic BLE
+ * Gamepad"), which the device never reported about itself.
+ *
+ * That placeholder is invisible while the peer is connected, because the
+ * inventory reports the live driver as the classification. It becomes visible
+ * the instant the peer goes offline: there is no live driver, the row falls
+ * back to the remembered name, and a controller the adapter had positively
+ * identified reappears as the placeholder. Hardware, 2026-08-29: `btpeers`
+ * reported the offline Xbox as role=controller, bonded, name="Generic BLE
+ * Gamepad".
+ *
+ * The rule is one-directional, which is the whole point: an AUTHORITATIVE
+ * identity -- a driver that matched real evidence rather than the generic
+ * fallback -- may replace what is remembered. The generic fallback may never
+ * replace an authoritative identity, so a peer cannot be downgraded by a later,
+ * weaker observation.
+ */
+bool mgmt_peers_remembered_identity_should_replace(bool resolved_is_authoritative,
+                                                   bool identity_differs);
+
+/*
  * Resolve an opaque peer id to its index in `peers`, or -1.
  *
  * The id is a one-way hash of the identity address, so resolution is by

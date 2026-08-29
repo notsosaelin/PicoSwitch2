@@ -22,6 +22,7 @@
 #include "ns2_input_arbiter.h"                   // source classes + display-name rule
 #include "switch_pro.h"                           // switch_pro_input_t, SWITCH_MASK_*, pack_stick
 #include "bt/bthid/bthid.h"                       // bthid_get_device() — connected controller identity
+#include "bt/btstack/btstack_host.h"              // remembered-identity promotion on driver bind
 #include "bt/bthid/devices/vendors/sony/ds5_bt.h" // exact decoder provenance (not late SDP PID)
 #include "bt/bthid/devices/vendors/nintendo/wiimote_bt.h" // Wii motion provenance
 #include "bt/bthid/devices/vendors/nintendo/switch_pro_bt.h" // Switch 1 motion provenance
@@ -487,6 +488,23 @@ void bthid_on_raw_report(uint8_t conn_index, uint32_t connection_generation,
 
 void bthid_on_hid_rebind(uint8_t conn_index) {
     ns2_active_input_rebind(conn_index);
+
+    // A driver that matched real evidence has claimed this peer. Promote that
+    // identity into the remembered controller record, replacing the
+    // advertising-time placeholder captured at bonding -- otherwise the peer
+    // reports the placeholder the moment it goes offline and the adapter
+    // appears to forget a controller it had already identified. Only a
+    // non-generic driver is authoritative; the fallback is what we are
+    // replacing. See btstack_host_note_controller_identity().
+    bthid_device_t *device = bthid_get_device(conn_index);
+    if (!device)
+        return;
+    const bthid_driver_t *driver = (const bthid_driver_t *)device->driver;
+    if (!driver || !driver->name)
+        return;
+    btstack_host_note_controller_identity(
+        device->bd_addr, driver->name,
+        !bthid_device_is_generic_fallback(device));
 }
 
 // Strong override of the generic driver's weak motion-demand hook. A source that
