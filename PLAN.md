@@ -184,11 +184,17 @@ Open and unchanged:
   state, §14.4) is the sanctioned fallback and would need its own firmware pass.
 - **The Phase 2 happy path is hardware-confirmed** (2026-08-29): discovery, Windows pairing, the
   encrypted management session, the identity gate, firmware/personality reads, a complete peer
-  inventory, and registry/history persistence. **Four boundaries remain unproven** and are listed in
-  `STATUS.md`: the stale-bond → `RepairRequired` path and the repair action behind it, real
-  recovery-ladder behaviour, one-client/no-churn under `mgmt_watch.ps1`, and the A → B handoff with
-  two adapters. The Windows bond-mismatch signature (`WINDOWS_PASS.md` §12.2) stays a **Hypothesis**
-  until a reflashed adapter reaches `RepairRequired` on the first attempt.
+  inventory, and registry/history persistence. **Boundary C — one management client, no churn — is
+  a confirmed PASS.**
+- **Boundaries A and B ran on 2026-08-29 and cost the pre-test hypothesis.** Against a reflashed
+  adapter Windows reports a bond mismatch as `services / Unreachable` with no ATT byte and no
+  `HRESULT`, not as the `AccessDenied` the signature expected, because the link fails below the
+  attribute layer. The signature is rewritten as a compound condition from that evidence, and the
+  same run exposed that Repair had never executed an unpair at all. Both are corrected in source and
+  need **one confirming retest**; details and the retest sequence are in `STATUS.md` and
+  `docs/experiments/windows-phase2-boundaries-2026-08-29.md`.
+- **Still unproven after that:** the recovery ladder's retry and backoff, which no observed failure
+  has yet reached, and the A → B handoff with two adapters.
 
 Do not choose a universal cross-platform UI framework merely to support this port.
 

@@ -1159,14 +1159,13 @@ Briefs: [`docs/agents/ANDROID.md`](docs/agents/ANDROID.md),
 [`docs/bluetooth/android-controller-bridge.md`](docs/bluetooth/android-controller-bridge.md),
 [`docs/android-companion.md`](docs/android-companion.md).
 
-## Windows companion — Phases 0–2 implemented; Phase 2 happy path hardware-confirmed 2026-08-29
+## Windows companion — Phases 0–2 implemented; happy path and boundary C hardware-confirmed 2026-08-29
 
 Second host platform, designed in `WINDOWS_PASS.md` and implemented under `windows/companion/`.
-C# on .NET 9 with WinUI 3. **Nothing here has been executed against an adapter**, and the
-Roadmap's own numbering is used below so the gap between what exists and what is designed stays
-explicit.
+C# on .NET 9 with WinUI 3. The Roadmap's own numbering is used below so the gap between what exists
+and what is designed stays explicit.
 
-- **Delivered (software-validated only). 366 tests pass.**
+- **Delivered. 413 tests pass.**
   - *Phase 0* — the project skeleton with the architecture boundaries enforced from day one, plus a
     WinUI shell that builds x64/ARM64, packages as MSIX, and satisfies the single-instance exit
     criterion when run.
@@ -1236,43 +1235,77 @@ explicit.
   evidence** rather than on live `role`. Routing on role would have shown the user an empty list with
   four real pairings hidden behind it.
 
-- **Four Phase 2 boundaries remain specifically unproven.** The happy path working says nothing
-  about any of them, because each needs a condition the happy path does not produce:
-  1. a stale Windows pairing after an adapter flash/reset reaching `RepairRequired` on the **first**
-     attempt (and the repair action that follows it, which is unreachable without it);
-  2. the real recovery-ladder timing and failure behaviour — nothing failed, so the retry, the
-     350 ms backoff and the address-restricted fallback scan have never executed on hardware;
-  3. one management client with no churn, under `tools/mgmt_watch.ps1` / UART diagnostics across
-     connect, Refresh, navigation, Disconnect and reconnect;
-  4. the A → B active-adapter handoff under real asynchronous callbacks, with two adapters.
+- **Boundary C — Confirmed PASS, 2026-08-29.** One management client, no churn, read from the
+  adapter's own `btlife` ring rather than from host counters: 21 lifecycle records on a single
+  handle, strictly alternating, **zero** alternation violations; two Refreshes, all five
+  destinations and a minimise/restore produced **no** transition at all; Disconnect retired the
+  session exactly once; every disconnect carried `cause=none` and `disc.ctrl`/`disc.hci` never
+  moved. Evidence: [`dumps/windows-phase2-oneclient-2026-08-29.md`](dumps/windows-phase2-oneclient-2026-08-29.md).
+  Method note for whoever repeats it: `mgmt_watch.ps1` at `-IntervalMs 1500 -RingEverySec 60` gives
+  a ~42 s effective host sample gap, too coarse to ORDER a connect/disconnect pair. Read the ring,
+  not the poll deltas.
 
-- **The one open hypothesis in the management half is the Windows bond-mismatch signature.**
-  Windows does not expose HCI status codes to user mode, so the Android detection (HCI 0x05/0x06 at
-  the connect stage) has no equivalent. The Windows signature is reconstructed from three facts held
-  together: Windows reports the peer as paired, an advertisement was seen inside the attempt window,
-  and an operation against an encrypted attribute returns `AccessDenied` or an authentication
-  `HRESULT`. Two deliberate departures from the Kotlin original, each caught by its own test: the
-  signature is **not** stage-restricted, because on Windows the refusal surfaces wherever encryption
-  is first required; and an identity rejection is now **terminal** rather than falling through to the
-  fallback scan, because the address was reached and something answered. Its exit criterion is
-  first-attempt `RepairRequired` against a genuinely reflashed adapter.
+- **Boundaries A and B ran 2026-08-29, disproved a documented hypothesis, and found two defects.**
+  Both are source-corrected and awaiting one confirming retest. Neither is passed yet.
+  - **A. The bond-mismatch signature was wrong for this platform.** It expected the refusal at the
+    ATTRIBUTE layer — `AccessDenied` or an authentication `HRESULT`. Against a genuinely reflashed
+    adapter Windows produced neither: four attempts, every one `stage=services
+    GattCommunicationStatus=Unreachable`, no ATT byte, no `HRESULT`, because the status was
+    *returned* rather than thrown. **`Unreachable` after the device resolves is the Windows shape of
+    a bond mismatch here** — Windows encrypts the link for a bonded peer before any ATT transaction
+    exists, so the failure is below the attribute layer. Corroborated by elimination: `Uncached` is
+    proven from source, so it is not a cache artefact; `mgmt_access.h` gates advertising and
+    connection on neither bonding nor the pairing window, so no firmware rule refuses service
+    discovery; and an unpair plus re-pair fixed it instantly with no firmware change.
+    The corrected signature is **compound**, because `Unreachable` is also what a powered-off
+    adapter produces: Windows still paired, the exact address seen advertising by the
+    service-UUID-restricted watcher, `Unreachable` after the device resolved, and that happening on
+    **two independently resolved device objects**. Nine negative tests pin that an absent,
+    never-seen, unpaired or transiently failing adapter cannot reach `RepairRequired`.
+    One consequence corrects a documented expectation: the attribute shape still ends the ladder at
+    the first failure, but the link shape **must** let the fallback scan run, because the fallback
+    is what produces the corroborating second observation.
+  - **B. Repair did nothing at all.** It resolved the Windows pairing through
+    `AdapterRecord.DeviceId`, a cached WinRT device path that **nothing had ever populated** — so it
+    took its null branch every time, logged `no Windows device path cached`, cleared the repair flag
+    and reported success while the stale bond survived. A repair test existed and passed, because it
+    asserted only that the row survived, and the row survived a no-op. Repair now resolves the
+    paired device fresh from the **address**, unpairs once, **verifies** Windows agrees, and clears
+    the flag only then; `DeviceId` is removed outright, and `IAdapterPairingGateway` puts a seam
+    under the call so the unpair is asserted rather than assumed.
+  - Two adjacent findings, both from the same log. **Pair silently reuses a stale OS bond** — with
+    Windows already paired the ceremony is skipped entirely, so four Pair presses ran no ceremony at
+    all; the flow now says so, and a stale bond met through Pair reports a message that names a way
+    out, since there is no remembered row to repair. **Remove is local-only and that is correct**
+    (WINDOWS_PASS.md §19.5) — behaviour unchanged, diagnostic line now says what it did not do,
+    semantics pinned by test.
+  - **Confirmed as a security property:** the adapter admits a new management bond only inside its
+    physical double-tap window. Observed in both directions — `AuthenticationTimeout` with the
+    window shut, `Paired` with it open — matching `mgmt_accept_bonding` exactly.
 
-Next: close the four boundaries above, then Phase 3 (the adapter dashboard, which is the MVP). Some
+- **Two Phase 2 boundaries remain unproven, plus the A/B retest.**
+  1. the real recovery-ladder timing — the retry and the 350 ms backoff still have not executed on
+     hardware, because every observed failure was at a non-retryable stage;
+  2. the A → B active-adapter handoff under real asynchronous callbacks, with two adapters.
+
+Next: retest A and B against a reflashed adapter, then D with the second unit, then Phase 3 (the adapter dashboard, which is the MVP). Some
 Phase 3-shaped UI already exists because Phase 2 could not be exercised without it — the Adapter
 page, Pair/Refresh/Disconnect, the remembered-adapter list with Connect/Repair/Remove, live session
 state, the peer inventory and the Diagnostics page. That glue is real and stays; Phase 3 is an audit
 of what remains on top of it.
 
-- **An audit before spending bench time found the signature could not fire at all.** Three
-  independent wiring defects, each of which would have read as "the hypothesis was wrong" if it had
-  surfaced on hardware: thrown WinRT failures were never wrapped, so the `HRESULT` half had nothing
-  to inspect; "Windows still paired" was read off a connection object that is already disposed by the
-  time a failure is classified; and "peer answered" was set only on the scan path and cleared by
-  teardown, while a remembered adapter connects directly without a scan. All three are fixed, plus
-  two consequences — a conclusive bond mismatch now ends the recovery ladder instead of running a
-  futile retry and fallback scan, and the failure walker follows both branches of the ladder's
-  aggregate report. `StaleBondLadderTests` pins the corrected wiring. **This does not make the
-  condition set right; it makes it evaluable.**
+- **An audit before spending bench time found the signature could not fire at all**, and it was
+  worth running: three independent wiring defects, each of which would have read as "the hypothesis
+  was wrong" on the bench. Thrown WinRT failures were never wrapped, so the `HRESULT` half had
+  nothing to inspect; "Windows still paired" was read off a connection object already disposed by
+  classification time; and "peer answered" was set only on the scan path, while a remembered adapter
+  connects directly. Fixing them is what made the hardware run produce a usable answer rather than a
+  second mystery — though the answer turned out to be that the condition set itself was wrong.
+  The evidence the transport records is now three separate facts rather than one conflated
+  `PeerReachable`: an advertisement for the exact address, an attribute-layer answer, and a count of
+  independently resolved devices that failed at the link. They are accumulated per **logical**
+  attempt — spanning the direct connect, any retry and the fallback — and reset when that attempt
+  changes, so a session from ten minutes ago cannot vouch for a peer that is now switched off.
 
 The prepared hardware sequence for the four boundaries, with what to capture and what would falsify
 each, is [`docs/experiments/windows-phase2-boundaries-2026-08-29.md`](docs/experiments/windows-phase2-boundaries-2026-08-29.md).
