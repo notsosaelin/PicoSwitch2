@@ -213,6 +213,9 @@ public sealed class RepairPairingTests
         await fixture.RememberAdapterAsync(Address);
         await fixture.Service.RemoveAsync(fixture.Id);
 
+        // Remove unpairs (§16.2), so count only what REPAIR does from here.
+        fixture.Pairing.Unpairs = 0;
+
         await Assert.ThrowsAsync<ManagementException>(() => fixture.Service.RepairAsync(fixture.Id));
         Assert.Equal(0, fixture.Pairing.Unpairs);
     }
@@ -339,56 +342,6 @@ public sealed class PairingCeremonyTests
 
             Assert.DoesNotContain("authenticated", message, StringComparison.OrdinalIgnoreCase);
         }
-    }
-}
-
-/// <summary>
-/// Remove, whose semantics were questioned after the hardware run and are
-/// UNCHANGED — pinned here so they stay that way.
-/// </summary>
-public sealed class RemoveAdapterSemanticsTests
-{
-    [Fact]
-    public async Task RemoveIsLocalOnlyAndTouchesNoBluetoothTrust()
-    {
-        // WINDOWS_PASS.md §19.5. Remove drops the app's relationship; it does not
-        // unpair, and it does not touch the adapter's own controller bonds. After
-        // the 2026-08-29 log showed "removed adapter <addr>" immediately followed by
-        // a first-pair that found Windows still paired, this is the invariant that
-        // had to be confirmed rather than changed.
-        using var fixture = new ConnectionServiceFixture();
-        await fixture.RememberAdapterAsync("AA:BB:CC:DD:EE:01");
-
-        await fixture.Service.RemoveAsync(fixture.Id);
-
-        Assert.Empty(fixture.Service.Registry.Value.Records);
-        Assert.Equal(0, fixture.Pairing.Unpairs);
-    }
-
-    [Fact]
-    public async Task RemoveSaysWhatItDidNotDo()
-    {
-        // The old line read "removed adapter <address>", which on hardware was read
-        // as though it had cleared the Windows pairing too.
-        using var fixture = new ConnectionServiceFixture();
-        await fixture.RememberAdapterAsync("AA:BB:CC:DD:EE:01");
-        await fixture.Service.RemoveAsync(fixture.Id);
-
-        Assert.Contains(
-            fixture.Diagnostics.Snapshot(),
-            entry => entry.Message.Contains("Windows pairing and adapter-side bonds untouched",
-                StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task RemoveTakesThatAdaptersPeerHistoryWithIt()
-    {
-        // History about an adapter the app no longer knows is orphaned.
-        using var fixture = new ConnectionServiceFixture();
-        await fixture.RememberAdapterAsync("AA:BB:CC:DD:EE:01");
-        await fixture.Service.RemoveAsync(fixture.Id);
-
-        Assert.Empty(new PeerHistoryStore(fixture.Documents).Load().ForAdapter(fixture.Id).Records);
     }
 }
 

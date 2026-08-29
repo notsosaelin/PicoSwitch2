@@ -367,36 +367,244 @@ public sealed class AdapterConnectionService
         });
 
     /// <summary>
-    /// Remove one adapter from the app.
+    /// Remove one adapter from the app, and drop its Windows pairing with it.
     ///
-    /// Not a Bluetooth operation: the Windows pairing and the adapter's own bonds
-    /// are untouched. Its peer history goes with it, because history about an
-    /// adapter the app no longer knows is orphaned.
+    /// **The unpair is part of Remove, per WINDOWS_PASS.md §16.2** — "Remove
+    /// adapter is per-adapter, unpairs that Windows relationship after
+    /// confirmation, and deletes that row and its peer history". The confirmation
+    /// belongs to the caller; this method assumes it has already happened, which is
+    /// why nothing here is reachable from an automatic path.
+    ///
+    /// It was previously local-only, and that was a misreading of §19.5 on my part:
+    /// the sentence "it never unregisters, unpairs or deletes the prior row" is
+    /// about what PAIRING ANOTHER UNIT must not do to an existing row, not about
+    /// what Remove does to its own. Leaving the OS pairing behind strands a bond
+    /// the app can no longer see or offer to clear.
+    ///
+    /// <paramref name="unpairWindows"/> exists for the deliberate "forget locally
+    /// only" case, and the caller must be explicit about wanting it.
+    ///
+    /// The row is removed even if the unpair fails, because Remove must reliably do
+    /// what it says; the outcome reports whether Windows trust actually went, so
+    /// the caller can say so rather than implying more than happened.
     /// </summary>
-    public Task RemoveAsync(AdapterId id) => RunExclusiveAsync(async () =>
-    {
-        if (active.State.ActiveId == id)
+    public Task<AdapterRemoval> RemoveAsync(AdapterId id, bool unpairWindows = true) =>
+        RunExclusiveAsync(async () =>
         {
-            await repository.DisconnectAsync().ConfigureAwait(false);
-            lifecycle.Forget();
-            active.Cleared();
+            if (active.State.ActiveId == id)
+            {
+                await repository.DisconnectAsync().ConfigureAwait(false);
+                lifecycle.Forget();
+                active.Cleared();
+            }
+
+            AdapterUnpairResult? unpaired = null;
+            if (unpairWindows)
+            {
+                try
+                {
+                    unpaired = await pairing.UnpairAsync(id.ToBluetoothAddress()).ConfigureAwait(false);
+                }
+                catch (Exception error)
+                {
+                    // A radio that is off must not strand the row in the list.
+                    diagnostics.Warn("app", $"unpair during remove failed: {error.Message}");
+                    unpaired = AdapterUnpairResult.Failed;
+                }
+            }
+
+            UpdateRegistry(current => current.Without(id));
+            var trimmed = history.Value.Without(id);
+            history.Set(trimmed);
+            historyStore.Save(trimmed);
+
+            Publish();
+            diagnostics.Info(
+                "app",
+                $"removed adapter {id.Value} from this app; windows-pairing=" +
+                (unpaired is { } outcome ? outcome.DiagnosticName() : "kept-by-request") +
+                "; adapter-side controller bonds untouched");
+
+            return new AdapterRemoval(unpairWindows, unpaired);
+        });
+
+    /* ------------------------------------------------ Phase 3 dashboard */
+
+    /// <summary>
+    /// Switch the emulated controller and make it host-visible.
+    ///
+    /// The re-enumeration usually drops the management link, so this reconnects
+    /// afterwards with <see cref="AdapterConnectReason.AfterPersonality"/>. That
+    /// reason exists so a support log says WHY a reconnect happened; a reconnect
+    /// with no cause reads as instability.
+    /// </summary>
+    public Task<PersonalitySwitchOutcome> SetPersonalityAsync(
+        Personality personality,
+        CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(async () =>
+        {
+            var outcome = await repository
+                .SetPersonalityAsync(personality, cancellationToken)
+                .ConfigureAwait(false);
+
+            diagnostics.Info(
+                "personality",
+                $"{personality.WireName()}: unchanged={outcome.Unchanged} " +
+                $"reenumerated={outcome.Reenumerated}" +
+                (outcome.ReenumerationError is { } reason ? $" error={reason}" : string.Empty));
+
+            if (outcome.Reenumerated)
+            {
+                // The adapter detached from USB. The management link may or may not
+                // have survived; reconnecting is cheap and idempotent, and doing it
+                // here means the dashboard is never left showing a session that has
+                // already gone.
+                await ReconnectAfterAsync(AdapterConnectReason.AfterPersonality, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            CacheDisplayState();
+            return outcome;
+        });
+
+    /// <summary>
+    /// Set one colour and publish the adapter's readback (I8).
+    ///
+    /// No re-enumeration: doing it per slider release would detach USB every time
+    /// the user drags. <see cref="ApplyAppearanceAsync"/> is the explicit action
+    /// that makes pending colours host-visible (I7).
+    /// </summary>
+    public Task<AdapterConfig> SetColorAsync(
+        ColorTarget target,
+        RgbColor color,
+        CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(async () =>
+        {
+            var config = await repository.SetColorAsync(target, color, persist: true, cancellationToken)
+                .ConfigureAwait(false);
+            diagnostics.Info(
+                "color",
+                $"{target} -> body=({config.BodyColor.Wire()}) left=({config.LeftAccent.Wire()}) " +
+                $"right=({config.RightAccent.Wire()})");
+            return config;
+        });
+
+    /// <summary>Re-enumerate so pending colour changes reach the console (I7).</summary>
+    public Task ApplyAppearanceAsync(CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(async () =>
+        {
+            await repository.ReenumerateAsync(cancellationToken).ConfigureAwait(false);
+            diagnostics.Info("color", "re-enumerated so the console sees the new colours");
+            await ReconnectAfterAsync(AdapterConnectReason.AfterPersonality, cancellationToken)
+                .ConfigureAwait(false);
+            return (object?)null;
+        });
+
+    public Task<AdapterInputState> SetActiveInputAsync(
+        long sourceId,
+        CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(async () =>
+        {
+            var input = await repository.SetActiveInputAsync(sourceId, cancellationToken)
+                .ConfigureAwait(false);
+            diagnostics.Info("input", $"active source -> {input.ActiveId}");
+            CacheDisplayState();
+            return input;
+        });
+
+    /// <summary>
+    /// Wake the console.
+    ///
+    /// <c>Unknown</c> is "the adapter could not tell us", not failure — older
+    /// firmware has no <c>wake status</c> — and the caller must not present it as
+    /// an error.
+    /// </summary>
+    public Task<WakeStatus> WakeConsoleAsync(CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(async () =>
+        {
+            var status = await repository.WakeConsoleAsync(cancellationToken).ConfigureAwait(false);
+            diagnostics.Info(
+                "wake",
+                $"result={status.Result} asleep={status.ConsoleAsleep} attempts={status.Attempts}");
+            return status;
+        });
+
+    /// <summary>
+    /// Turn the adapter's in-band management gate off or on.
+    ///
+    /// Turning it OFF ends this session and locks out every future one until it is
+    /// re-enabled over UART or by the physical gesture — the app cannot undo it.
+    /// Only ever reached from an explicit confirmation.
+    /// </summary>
+    public Task<bool?> SetManagementEnabledAsync(
+        bool enabled,
+        CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(async () =>
+        {
+            var reported = await repository.SetManagementEnabledAsync(enabled, cancellationToken)
+                .ConfigureAwait(false);
+            diagnostics.Warn(
+                "gate",
+                $"management gate set to {enabled}; adapter reports {reported?.ToString() ?? "unknown"}");
+            return reported;
+        });
+
+    /// <summary>Raw LE bond slots, for Diagnostics only. Never drives Paired Controllers.</summary>
+    public Task<BondEnumeration> RefreshBondDiagnosticsAsync(
+        CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(() => repository.RefreshBondDiagnosticsAsync(cancellationToken));
+
+    public Task<BondEnumeration> RemoveBondAsync(
+        int index,
+        CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(async () =>
+        {
+            var bonds = await repository.RemoveBondAsync(index, cancellationToken).ConfigureAwait(false);
+            diagnostics.Warn("bonds", $"removed raw LE bond slot {index}");
+            return bonds;
+        });
+
+    /// <summary>
+    /// Reconnect after an operation that detaches the adapter from USB.
+    ///
+    /// Best-effort by design: the operation itself already succeeded, and a failed
+    /// reconnect is a session problem the user can retry, not a reason to report
+    /// the personality switch or colour apply as failed.
+    /// </summary>
+    private async Task ReconnectAfterAsync(
+        AdapterConnectReason reason,
+        CancellationToken cancellationToken)
+    {
+        if (active.State.ActiveId is not { } id || registry.Value.Record(id) is not { } record)
+        {
+            return;
         }
 
-        UpdateRegistry(current => current.Without(id));
-        var trimmed = history.Value.Without(id);
-        history.Set(trimmed);
-        historyStore.Save(trimmed);
+        try
+        {
+            await repository.DisconnectAsync().ConfigureAwait(false);
+            lifecycle.ConnectionEnded(null);
+            var decision = lifecycle.RequestReconnect(
+                record.ToRelationship(),
+                reason,
+                WindowsPairingState.Paired);
+            Publish();
 
-        Publish();
-        // Say what it did NOT do. Remove is local-only by design (WINDOWS_PASS.md
-        // §19.5) and the log line that read "removed adapter <addr>" was read on
-        // 2026-08-29 as though it had cleared the Windows pairing too.
-        diagnostics.Info(
-            "app",
-            $"removed adapter {id.Value} from this app; " +
-            "Windows pairing and adapter-side bonds untouched");
-        return (object?)null;
-    });
+            if (decision is AdapterLifecycleDecision.Connect connect)
+            {
+                await CompleteConnectionAsync(
+                    record.Address,
+                    record.DisplayName,
+                    connect.Attempt.Generation,
+                    firstPair: false,
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (Exception error)
+        {
+            diagnostics.Warn("connect", $"reconnect after {reason} failed: {error.Message}");
+        }
+    }
 
     public Task RenameAsync(AdapterId id, string? alias) => RunExclusiveAsync(() =>
     {

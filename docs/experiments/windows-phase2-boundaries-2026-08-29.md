@@ -447,13 +447,23 @@ stale bond met through Pair reports `StalePairingMessage`, which names a way out
 Reached through Pair there is no remembered row and therefore no Repair button,
 which is why the message differs from the remembered-adapter one.
 
-**Remove is local-only, and that is correct** (16:47:39). The log line
+**Remove left an orphan Windows pairing** (16:47:39). The log line
 `removed adapter 88:A2:9E:D1:77:78` was immediately followed by a first-pair that
-found Windows still paired, which reads as though Remove had failed. It had not:
-Remove is defined as dropping the app's relationship without touching Windows
-trust or the adapter's own bonds (WINDOWS_PASS.md §19.5), and the UI copy already
-said so. **Behaviour unchanged.** The diagnostic line now says what it did not
-do, and the semantics are pinned by test.
+found Windows still paired.
+
+This was first written up as correct-by-design, citing WINDOWS_PASS.md §19.5.
+**That was a misreading**, corrected during the Phase 3 audit: §19.5's "it never
+unregisters, unpairs or deletes the prior row" constrains what *pairing another
+unit* may do to an existing row, not what Remove does to its own. §16.2 is
+explicit — "Remove adapter is per-adapter, **unpairs that Windows relationship
+after confirmation**, and deletes that row and its peer history."
+
+So the observed behaviour was a real gap, not a design decision: removing the row
+while leaving the OS pairing strands a bond the app can no longer see or offer to
+clear, which is exactly the dead end the rest of this session was spent escaping.
+Fixed in Phase 3, where Remove gained its confirmation and its unpair. Preserved
+here because the wrong conclusion was documented and pinned by a test, and that
+combination is harder to notice than no documentation at all.
 
 **Physical pairing authorisation is Confirmed** (16:47:56 → 16:48:12). With the
 window shut, `AuthenticationTimeout` and the double-tap instruction. With it

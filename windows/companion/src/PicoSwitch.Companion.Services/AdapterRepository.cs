@@ -16,6 +16,43 @@ namespace PicoSwitch.Companion.Services;
 public sealed class AdapterIdentityException(string message) : ManagementException(message);
 
 /// <summary>
+/// What a personality switch actually did.
+///
+/// Three outcomes that a bool cannot carry, and the distinction is the feature:
+/// a switch the adapter reported as <c>unchanged</c> does not need a
+/// re-enumeration, a switch that re-enumerated is live on the console, and a
+/// switch whose re-enumeration failed has changed the adapter's mind but NOT the
+/// console's view of it (I7). The last case needs its own instruction, so it must
+/// not be reported as either success or failure.
+/// </summary>
+/// <summary>
+/// What removing an adapter actually did.
+///
+/// Remove promises two things -- the app forgets the row, and Windows drops its
+/// pairing -- and the second can fail independently (radio off, device
+/// unresolvable). Reporting them separately lets the caller say what happened
+/// instead of implying more than did.
+/// </summary>
+public sealed record AdapterRemoval(bool UnpairRequested, AdapterUnpairResult? Unpaired)
+{
+    /// <summary>Windows now holds no pairing for this adapter.</summary>
+    public bool WindowsTrustRemoved => Unpaired is { } outcome && outcome.TrustRemoved();
+
+    /// <summary>The row is gone but an OS pairing survived it, and the user should be told.</summary>
+    public bool LeftOrphanPairing => UnpairRequested && !WindowsTrustRemoved;
+}
+
+public sealed record PersonalitySwitchOutcome(
+    Personality Personality,
+    bool Unchanged,
+    bool Reenumerated,
+    string? ReenumerationError = null)
+{
+    /// <summary>Is the console now seeing this personality?</summary>
+    public bool HostVisible => Unchanged || Reenumerated;
+}
+
+/// <summary>
 /// The application-level operation surface for one adapter.
 ///
 /// Wraps <see cref="ManagementClient"/> and owns the observable
@@ -361,6 +398,151 @@ public sealed class AdapterRepository(IManagementTransport transport)
                 RemotePairing = remotePairing,
             },
         });
+    }
+
+    /* -------------------------------------------------- Phase 3 dashboard */
+
+    /// <summary>
+    /// Switch the emulated controller, then re-enumerate USB.
+    ///
+    /// I7: a personality change is NOT host-visible until the adapter
+    /// re-enumerates. Sending the switch and stopping there leaves the console
+    /// seeing the old controller while the app claims the new one, which is the
+    /// single easiest way to make this feature look broken.
+    ///
+    /// The re-enumeration is expected to drop the management link — the adapter
+    /// detaches from USB, and on some paths the BLE link goes with it. That is
+    /// reported, not treated as a fault: the caller reconnects with
+    /// <c>AdapterConnectReason.AfterPersonality</c>, which exists so a support
+    /// log says WHY a reconnect happened.
+    /// </summary>
+    public async Task<PersonalitySwitchOutcome> SetPersonalityAsync(
+        Personality personality,
+        CancellationToken cancellationToken = default)
+    {
+        var acknowledgement = await client.SetPersonalityAsync(personality, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (acknowledgement.Unchanged)
+        {
+            // Already this personality. Re-enumerating would drop the console's
+            // connection to prove nothing.
+            return new PersonalitySwitchOutcome(personality, Unchanged: true, Reenumerated: false);
+        }
+
+        try
+        {
+            await client.ReenumerateUsbAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            // The switch was accepted; only the re-enumeration failed to confirm.
+            // Report both facts rather than collapsing them, because "the console
+            // still sees the old controller" is the user-visible consequence and it
+            // needs a different instruction from "the switch was rejected".
+            return new PersonalitySwitchOutcome(
+                personality,
+                Unchanged: false,
+                Reenumerated: false,
+                ReenumerationError: error.Message);
+        }
+
+        return new PersonalitySwitchOutcome(personality, Unchanged: false, Reenumerated: true);
+    }
+
+    /// <summary>
+    /// Set one colour, persist it, and publish the adapter's READBACK.
+    ///
+    /// I8: the reply is the truth, never the value that was sent. The adapter may
+    /// clamp, ignore or reinterpret a channel, and a UI that shows what it asked
+    /// for rather than what the adapter holds will disagree with the hardware and
+    /// never notice.
+    ///
+    /// I7 applies here too — a colour is not host-visible until re-enumeration —
+    /// but re-enumerating on every slider release would be unusable, so the
+    /// caller decides when to apply. <see cref="ReenumerateAsync"/> is the action.
+    /// </summary>
+    public async Task<AdapterConfig> SetColorAsync(
+        ColorTarget target,
+        RgbColor color,
+        bool persist = true,
+        CancellationToken cancellationToken = default)
+    {
+        var (config, _) = await client.SetColorAsync(target, color, persist, cancellationToken)
+            .ConfigureAwait(false);
+        snapshot.Set(snapshot.Value with { Config = config });
+        return config;
+    }
+
+    /// <summary>Make pending colour/personality state host-visible.</summary>
+    public Task ReenumerateAsync(CancellationToken cancellationToken = default) =>
+        client.ReenumerateUsbAsync(cancellationToken);
+
+    /// <summary>
+    /// Wake the console.
+    ///
+    /// The client polls <c>wake status</c> until it settles, so the outcome is a
+    /// real result rather than "the command was accepted". Firmware without the
+    /// status command answers <c>Unknown</c>, which the UI must present as
+    /// "could not tell", never as failure.
+    /// </summary>
+    public Task<WakeStatus> WakeConsoleAsync(CancellationToken cancellationToken = default) =>
+        client.WakeConsoleAsync(cancellationToken);
+
+    /// <summary>
+    /// Turn the adapter's in-band management gate off or on.
+    ///
+    /// Turning it OFF ends this session and every future one until it is re-enabled
+    /// over UART or by the physical gesture. The caller must confirm destructively;
+    /// the repository does not second-guess an explicit instruction, but it does
+    /// publish the adapter's own readback rather than the requested value.
+    /// </summary>
+    public async Task<bool?> SetManagementEnabledAsync(
+        bool enabled,
+        CancellationToken cancellationToken = default)
+    {
+        var reported = await client.SetManagementEnabledAsync(enabled, cancellationToken)
+            .ConfigureAwait(false);
+        snapshot.Set(snapshot.Value with { ManagementEnabled = reported });
+        return reported;
+    }
+
+    /// <summary>
+    /// The raw LE bond slots, for Diagnostics only.
+    ///
+    /// **This must never drive Paired Controllers.** Bond slots are an LE-only,
+    /// index-addressed view of one credential store; logical peers are the
+    /// adapter's own account of what it is paired with, across both transports.
+    /// Deriving paired truth from this list is the exact defect Bluetooth
+    /// Management 2.0 exists to prevent, and it is why this lives here under a
+    /// name that says diagnostics.
+    /// </summary>
+    public async Task<BondEnumeration> RefreshBondDiagnosticsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        var bonds = await client.ListBondsAsync(cancellationToken).ConfigureAwait(false);
+        snapshot.Set(snapshot.Value with
+        {
+            Bonds = bonds.Entries,
+            BondsComplete = bonds.Complete,
+            BondsTotal = bonds.Total,
+        });
+        return bonds;
+    }
+
+    /// <summary>Remove one raw LE bond slot by index. Diagnostics only; see above.</summary>
+    public async Task<BondEnumeration> RemoveBondAsync(
+        int index,
+        CancellationToken cancellationToken = default)
+    {
+        var bonds = await client.RemoveBondAsync(index, cancellationToken).ConfigureAwait(false);
+        snapshot.Set(snapshot.Value with
+        {
+            Bonds = bonds.Entries,
+            BondsComplete = bonds.Complete,
+            BondsTotal = bonds.Total,
+        });
+        return bonds;
     }
 
     public Task<PairingStatus> StartPairingAsync(CancellationToken cancellationToken = default) =>
