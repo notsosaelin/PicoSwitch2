@@ -78,9 +78,13 @@ public sealed class AdapterRepository(IManagementTransport transport)
 
     private readonly StateValue<AdapterSnapshot> snapshot = new(new AdapterSnapshot());
 
+    private readonly StateValue<KeyboardMouseState> keyboardMouse = new(new KeyboardMouseState());
+
     public IReadOnlyStateValue<ConnectionState> Connection => transport.Connection;
 
     public IReadOnlyStateValue<AdapterSnapshot> Snapshot => snapshot;
+
+    public IReadOnlyStateValue<KeyboardMouseState> KeyboardMouse => keyboardMouse;
 
     public ManagementClient Client => client;
 
@@ -279,7 +283,15 @@ public sealed class AdapterRepository(IManagementTransport transport)
     /// A new connection must start from the adapter's authoritative state rather
     /// than inheriting anything from the last one.
     /// </summary>
-    public void ClearDisconnectedSnapshot() => snapshot.Set(new AdapterSnapshot());
+    public void ClearDisconnectedSnapshot()
+    {
+        snapshot.Set(new AdapterSnapshot());
+
+        // The KB/M state belongs to the adapter that was connected. Carrying a
+        // keyboard map across a disconnect would show one adapter's bindings under
+        // another's name, and a bind against them would edit the wrong device.
+        keyboardMouse.Set(new KeyboardMouseState());
+    }
 
     public async Task<ManagementRefresh> RefreshAllAsync(CancellationToken cancellationToken = default)
     {
@@ -543,6 +555,131 @@ public sealed class AdapterRepository(IManagementTransport transport)
             BondsTotal = bonds.Total,
         });
         return bonds;
+    }
+
+    /* -------------------------------------------------- Phase 4 keyboard/mouse */
+
+    /// <summary>
+    /// Read the whole KB/M picture: status, mouse tuning, and both profiles.
+    ///
+    /// One call rather than four, because a half-read KB/M page is worse than an
+    /// unread one — a mapping screen showing one profile's bindings under the
+    /// other profile's name would have the user rebind the wrong thing.
+    ///
+    /// The capability is decided by the STATUS probe alone. If `kbm status`
+    /// answers, the family exists; a mapping that then fails to load is a
+    /// transport problem, not an absent feature, and must not disable the page.
+    /// </summary>
+    public async Task<KeyboardMouseState> RefreshKeyboardMouseAsync(
+        CancellationToken cancellationToken = default)
+    {
+        KbmStatus status;
+        try
+        {
+            status = await client.KbmStatusAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (AdapterCommandException error) when (error.IsUnsupported())
+        {
+            keyboardMouse.Set(new KeyboardMouseState { Capability = CapabilityState.Unsupported });
+            return keyboardMouse.Value;
+        }
+
+        var mouse = await client.KbmMouseAsync(cancellationToken).ConfigureAwait(false);
+
+        var mappings = new List<KbmMapping>();
+        foreach (var profile in KbmProfiles.All)
+        {
+            mappings.Add(await client.LoadKbmMappingAsync(profile, cancellationToken)
+                .ConfigureAwait(false));
+        }
+
+        keyboardMouse.Set(new KeyboardMouseState
+        {
+            Status = status,
+            Mouse = mouse,
+            Mappings = new ValueList<KbmMapping>(mappings),
+            Loaded = true,
+            Capability = CapabilityState.Available,
+        });
+
+        snapshot.Set(snapshot.Value with
+        {
+            Capabilities = snapshot.Value.Capabilities with { Kbm = CapabilityState.Available },
+        });
+
+        return keyboardMouse.Value;
+    }
+
+    public async Task<KbmStatus> SetKbmModeAsync(KbmMode mode, CancellationToken cancellationToken = default)
+    {
+        var status = await client.SetKbmModeAsync(mode, cancellationToken).ConfigureAwait(false);
+        keyboardMouse.Set(keyboardMouse.Value with { Status = status, Loaded = true });
+        return status;
+    }
+
+    /// <summary>
+    /// Bind one source, then reload the WHOLE profile.
+    ///
+    /// The reload is not belt-and-braces. A bind can change more than the one row
+    /// requested — the adapter owns conflict resolution, and a destination already
+    /// held by another key may be moved or cleared — so trusting the request would
+    /// leave the UI describing a mapping the adapter does not have. This is I8 for
+    /// a paged surface: the reply is the truth.
+    /// </summary>
+    public async Task<KbmMapping> BindKbmAsync(
+        KbmProfile profile,
+        KbmSource source,
+        KbmDestination? destination,
+        CancellationToken cancellationToken = default)
+    {
+        var mapping = await client.BindKbmAsync(profile, source, destination, cancellationToken)
+            .ConfigureAwait(false);
+        keyboardMouse.Set(keyboardMouse.Value.With(mapping));
+        return mapping;
+    }
+
+    public async Task<KbmMapping> ResetKbmProfileAsync(
+        KbmProfile profile,
+        CancellationToken cancellationToken = default)
+    {
+        var mapping = await client.ResetKbmProfileAsync(profile, cancellationToken).ConfigureAwait(false);
+        keyboardMouse.Set(keyboardMouse.Value.With(mapping));
+        return mapping;
+    }
+
+    /// <summary>Reset every profile and the mouse tuning to adapter defaults.</summary>
+    public async Task<KeyboardMouseState> ResetAllKbmAsync(CancellationToken cancellationToken = default)
+    {
+        var (status, mouse, mappings) = await client.ResetAllKbmAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        keyboardMouse.Set(new KeyboardMouseState
+        {
+            Status = status,
+            Mouse = mouse,
+            Mappings = new ValueList<KbmMapping>(mappings.Values.OrderBy(mapping => mapping.Profile)),
+            Loaded = true,
+            Capability = CapabilityState.Available,
+        });
+
+        return keyboardMouse.Value;
+    }
+
+    /// <summary>
+    /// Set one mouse field and publish the adapter's readback (I8).
+    ///
+    /// Live: this is dragged, so it runs often and must stay cheap. It reads back
+    /// the whole mouse config rather than assuming the field took the value sent,
+    /// because the adapter clamps to its own reported range.
+    /// </summary>
+    public async Task<KbmMouseConfig> SetKbmMouseAsync(
+        KbmMouseField field,
+        int value,
+        CancellationToken cancellationToken = default)
+    {
+        var mouse = await client.SetKbmMouseAsync(field, value, cancellationToken).ConfigureAwait(false);
+        keyboardMouse.Set(keyboardMouse.Value with { Mouse = mouse, Loaded = true });
+        return mouse;
     }
 
     public Task<PairingStatus> StartPairingAsync(CancellationToken cancellationToken = default) =>
