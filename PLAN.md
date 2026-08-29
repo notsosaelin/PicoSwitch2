@@ -192,11 +192,16 @@ Open and unchanged:
   attribute layer; the signature was rewritten as a compound condition from that evidence and then
   confirmed. The same run exposed that Repair had never executed an unpair at all; that is fixed and
   confirmed too. **Phase 2's management half is hardware-qualified on a single-adapter setup.**
-- **Still unproven, neither blocking Phase 3:** the recovery ladder's retry and backoff, which no
-  observed failure has yet reached; and the A → B handoff (boundary D), **deferred for want of a
-  second adapter**. The multi-adapter handoff is unit-tested but has never run on hardware and is
-  **not** hardware qualified. It is a carried-forward validation item, to run before a second
-  adapter is advertised as supported.
+- **Still unproven:** the recovery ladder's retry and backoff, which no observed failure has yet
+  reached; and the A → B handoff (boundary D), **deferred for want of a second adapter**. The
+  multi-adapter handoff is unit-tested but has never run on hardware and is **not** hardware
+  qualified. It is a carried-forward validation item, to run before a second adapter is advertised
+  as supported.
+- **Phase 3, the adapter dashboard, is implemented** (2026-08-29). Status with the bridge-contract
+  verdict, controller mode with re-enumeration, appearance, console input, wake, Paired Controllers
+  with selective Forget and remote pairing, the management gate, low-level bond diagnostics and the
+  redacted support bundle. **Software-validated only:** none of the Phase 3 surface has been
+  exercised against an adapter yet, and its exit criteria (§31 Phase 3) require exactly that.
 
 Do not choose a universal cross-platform UI framework merely to support this port.
 

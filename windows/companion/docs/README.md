@@ -414,14 +414,83 @@ tests:
   wherever encryption is first required — service resolution, the CCC write, or
   the first command — so the stage is not part of the condition.
 
-## 8. Next
+## 8. Phase 3 — the adapter dashboard (the MVP)
 
-The four boundaries above, then Phase 3. Some Phase 3-shaped UI already exists
-because Phase 2 could not be exercised without it — the Adapter page, Pair /
-Refresh / Disconnect, the remembered-adapter list with Connect / Repair /
-Remove, live session state, the peer inventory, and the Diagnostics page. That
-glue is real and stays; Phase 3 is an audit of what remains on top of it, not a
-rewrite of it.
+Implemented 2026-08-29. **Software-validated only:** nothing on this surface has
+been exercised against an adapter, and §31 Phase 3's exit criteria require
+exactly that.
 
-Phase 6 remains gated on the §14.5 HOGP peripheral-role experiment, which has not
-been run.
+### How it is put together
+
+The pages hold no logic. Every "is this enabled", "what does this say" and
+"should this warn" is a pure projection in
+`PicoSwitch.Companion.Services/Presentation/`, and each page's only job is to
+paint the record it gets back.
+
+That is not decoration. The Phase 2 page grew its rules inline and none of them
+could be tested; as pure functions, every state the UI can be in is reachable
+from a unit test instead of by clicking, including the ones that need a
+disconnected adapter, an old firmware, or a probe that timed out.
+
+| Projection | Covers |
+|---|---|
+| `AdapterDashboard` | status, the bridge-contract verdict, the controller row, and the controller-mode / appearance / console-input sections with their availability |
+| `RememberedAdapters` | the four history-qualified adapter row states |
+| `ControllerList` | Paired Controllers, and per-family capability degradation |
+| `PeerRows` | one controller row: state, transport badges, identity attribution |
+| `RemotePairing` | the adapter-owned pairing operation |
+| `SupportBundle` | the redacted export |
+
+### Rules the projections enforce
+
+- **The `Pending` silence rule (I15).** `ContractVerdict.Visible` IS the rule.
+  Pending — "we have not asked yet" — is a transient state on every healthy
+  connection, and warning during it trains people to ignore the warning that
+  matters. Unknown — "we asked, and this firmware reports no contract" — warns.
+- **Unknown is not Unsupported.** Only an explicit `Unsupported` disables a
+  control and names the missing firmware feature. A probe that merely failed
+  leaves it enabled. The same rule governs whether Paired Controllers is hidden.
+- **Capability families degrade independently.** An unsupported peer list hides
+  the card but not the adapter; a working list with unsupported Forget stays
+  visible and read-only; unsupported remote pairing keeps the list and points at
+  the adapter's physical button.
+- **A battery that is not reported renders as nothing, never 0 %** — a false flat
+  battery is an alarm about the user's own hardware.
+- **A connection without a durable credential is *Completing pairing*, not
+  Paired.** The bond can still fail.
+- **A remembered name is attributed as remembered.** Presenting it as the
+  adapter's live answer is the promotion the protocol forbids.
+
+### Placement decisions worth keeping
+
+**Raw LE bond slots live in Diagnostics, never in Paired Controllers.** They are
+an LE-only, slot-addressed view of one credential store; logical peers are the
+adapter's own account across both transports. Letting the former drive the latter
+is the exact defect Bluetooth Management 2.0 exists to prevent.
+
+**The management gate lives in Diagnostics too, behind a confirmation that says
+the app cannot undo it** — turning it off would require this very channel to turn
+it back on.
+
+**Remembered adapters and Paired Controllers are separate cards with deliberately
+different copy.** One is this PC's relationship with an adapter; the other is the
+adapter's relationship with a controller. Different devices, different credential
+stores, different destructive operations.
+
+**The pairing dialog is a view of an adapter-owned operation.** Firmware closes
+its own window, so Cancel is a courtesy, and every poll is pinned to the `op`
+generation it started with.
+
+### What Phase 3 still needs
+
+Hardware acceptance: H6–H8, H11, H21 and H22, plus the §26.5 UX pass — which is a
+manual exercise (keyboard-only traversal, Narrator, 200 % text, high contrast,
+theme switching while connected, DPI changes, and disconnecting the adapter
+during every workflow). What is already covered in software is the last of those:
+every section disables with a stated reason rather than spinning.
+
+## 9. Next
+
+Phase 4 (Keyboard and Mouse). Phase 6 remains gated on the §14.5 HOGP
+peripheral-role experiment, which has not been run. Boundary D whenever a second
+adapter is available.
