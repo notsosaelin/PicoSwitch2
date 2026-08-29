@@ -1,21 +1,187 @@
 <Page
     x:Class="PicoSwitch.Companion.App.Pages.KeyboardMousePage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls">
+
+    <Page.Resources>
+        <Style x:Key="CardStyle" TargetType="Border">
+            <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
+            <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="16" />
+        </Style>
+    </Page.Resources>
 
     <ScrollViewer Padding="24">
-        <StackPanel MaxWidth="1000" HorizontalAlignment="Left" Spacing="8">
-            <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Keyboard &amp; Mouse" />
-            <TextBlock
-                Style="{StaticResource BodyTextBlockStyle}"
-                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                TextWrapping="Wrap"
-                Text="Mode, bindings and mouse tuning for a keyboard and mouse attached to the adapter." />
-            <TextBlock
-                Margin="0,16,0,0"
-                Style="{StaticResource BodyTextBlockStyle}"
-                TextWrapping="Wrap"
-                Text="Phase 4 fills this page: paged mapping load, bind and reload, reset, and adapter-reported slider ranges. The management session it needs is built." />
+        <StackPanel MaxWidth="1100" HorizontalAlignment="Left" Spacing="16">
+
+            <StackPanel Spacing="4">
+                <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Keyboard and mouse" />
+                <TextBlock
+                    Style="{StaticResource BodyTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    TextWrapping="Wrap"
+                    Text="Map a USB keyboard and mouse plugged into the adapter onto controller buttons. Click a key to change what it does." />
+            </StackPanel>
+
+            <muxc:InfoBar
+                x:Name="UnsupportedBar"
+                IsOpen="False"
+                IsClosable="False"
+                Severity="Informational"
+                Title="Not available on this adapter" />
+
+            <muxc:InfoBar
+                x:Name="OperationBar"
+                IsOpen="False"
+                IsClosable="True"
+                Severity="Error"
+                Title="Keyboard and mouse" />
+
+            <StackPanel x:Name="Body" Spacing="16">
+
+                <!-- Status and mode -->
+                <Border Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="12">
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Spacing="2">
+                                <TextBlock x:Name="ModeText" Style="{StaticResource BodyStrongTextBlockStyle}" Text="Not read yet" />
+                                <TextBlock
+                                    x:Name="DevicesText"
+                                    Style="{StaticResource CaptionTextBlockStyle}"
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </StackPanel>
+
+                            <!-- Section-scoped, never a window-wide overlay: the mouse
+                                 sliders below are dragged and must stay usable. -->
+                            <muxc:ProgressRing
+                                Grid.Column="1"
+                                x:Name="BusyRing"
+                                Width="20"
+                                Height="20"
+                                IsActive="False"
+                                VerticalAlignment="Top" />
+                        </Grid>
+
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <ComboBox x:Name="ModeBox" Header="Mode" MinWidth="220">
+                                <ComboBoxItem Content="Automatic" />
+                                <ComboBoxItem Content="Controller only" />
+                                <ComboBoxItem Content="Keyboard" />
+                                <ComboBoxItem Content="Keyboard and mouse" />
+                            </ComboBox>
+                            <Button x:Name="ModeApply" Content="Set mode" Click="OnSetMode" VerticalAlignment="Bottom" />
+                            <Button x:Name="RefreshButton" Content="Reload" Click="OnRefresh" VerticalAlignment="Bottom" />
+                        </StackPanel>
+
+                        <TextBlock
+                            x:Name="DisabledReason"
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            TextWrapping="Wrap"
+                            Visibility="Collapsed" />
+                    </StackPanel>
+                </Border>
+
+                <!-- The mapping grid -->
+                <Border Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="12">
+                        <Grid ColumnSpacing="12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Spacing="2">
+                                <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Key mapping" />
+                                <TextBlock
+                                    x:Name="MappingSummary"
+                                    Style="{StaticResource CaptionTextBlockStyle}"
+                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                <ComboBox x:Name="ProfileBox" MinWidth="200" SelectionChanged="OnProfileChanged">
+                                    <ComboBoxItem Content="Keyboard profile" />
+                                    <ComboBoxItem Content="Keyboard and mouse profile" />
+                                </ComboBox>
+                                <Button x:Name="ResetProfile" Content="Reset profile" Click="OnResetProfile" />
+                            </StackPanel>
+                        </Grid>
+
+                        <!-- The keyboard itself. Built in code because the layout is
+                             data, not markup. Scrolls in its own container so a
+                             narrow window never scrolls the page sideways. -->
+                        <ScrollViewer
+                            HorizontalScrollBarVisibility="Auto"
+                            HorizontalScrollMode="Auto"
+                            VerticalScrollMode="Disabled">
+                            <StackPanel x:Name="KeyboardHost" Spacing="4" />
+                        </ScrollViewer>
+
+                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Mouse buttons" />
+                        <StackPanel x:Name="MouseButtonHost" Orientation="Horizontal" Spacing="4" />
+
+                        <StackPanel x:Name="UndrawnSection" Spacing="4" Visibility="Collapsed">
+                            <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Other bound keys" />
+                            <TextBlock
+                                Style="{StaticResource CaptionTextBlockStyle}"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                TextWrapping="Wrap"
+                                Text="Keys the adapter has bound that this app does not draw. They still work, and can be changed here." />
+                            <ItemsControl x:Name="UndrawnList">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,4,0,4" ColumnSpacing="12">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" VerticalAlignment="Center" Text="{Binding AccessibleName}" />
+                                            <Button Grid.Column="1" Content="Change" Click="OnEditUndrawn" Tag="{Binding Cap.Usage}" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- Mouse tuning -->
+                <Border Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="12">
+                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Mouse tuning" />
+                        <TextBlock
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            TextWrapping="Wrap"
+                            Text="Ranges come from the adapter, so they match the firmware you are running." />
+                        <StackPanel x:Name="SliderHost" Spacing="12" />
+
+                        <StackPanel Orientation="Horizontal" Spacing="16">
+                            <CheckBox x:Name="InvertXBox" Content="Invert horizontal" Click="OnInvertX" />
+                            <CheckBox x:Name="InvertYBox" Content="Invert vertical" Click="OnInvertY" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- Reset everything -->
+                <Border Style="{StaticResource CardStyle}">
+                    <StackPanel Spacing="8">
+                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Reset" />
+                        <TextBlock
+                            Style="{StaticResource CaptionTextBlockStyle}"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            TextWrapping="Wrap"
+                            Text="Restore the adapter's own defaults for both profiles and the mouse tuning." />
+                        <Button x:Name="ResetAll" Content="Reset everything" Click="OnResetAll" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
         </StackPanel>
     </ScrollViewer>
 </Page>

@@ -43,6 +43,8 @@ public sealed class AdapterConnectionService
 
     private readonly IAdapterPairingGateway pairing;
 
+    private readonly StateValue<bool> keyboardMouseBusy = new(false);
+
     /// <param name="probeRadio">
     /// Injectable so the service is testable without a radio. Production passes
     /// nothing; a test that had to depend on the developing machine's own
@@ -428,6 +430,127 @@ public sealed class AdapterConnectionService
 
             return new AdapterRemoval(unpairWindows, unpaired);
         });
+
+    /* --------------------------------------------- Phase 4 keyboard and mouse */
+
+    public IReadOnlyStateValue<KeyboardMouseState> KeyboardMouse => repository.KeyboardMouse;
+
+    /// <summary>
+    /// Whether a KB/M operation is in flight.
+    ///
+    /// **Section-scoped on purpose, and separate from any global busy flag.** Mouse
+    /// tuning is dragged, so it fires continuously; covering the window with a
+    /// modal progress overlay for each step would make the sliders unusable and
+    /// hide the very preview the user is adjusting against. The page shows this
+    /// inside the KB/M section and nowhere else.
+    ///
+    /// It is not a lock. Exclusion is still <see cref="RunExclusiveAsync"/>, and
+    /// single-flight is still the transport's (I2). This only says what to paint.
+    /// </summary>
+    public IReadOnlyStateValue<bool> KeyboardMouseBusy => keyboardMouseBusy;
+
+    public Task<KeyboardMouseState> RefreshKeyboardMouseAsync(
+        CancellationToken cancellationToken = default) =>
+        RunKbmAsync(async () =>
+        {
+            var state = await repository.RefreshKeyboardMouseAsync(cancellationToken)
+                .ConfigureAwait(false);
+            diagnostics.Info(
+                "kbm",
+                $"mode={state.Status.Mode.Wire()} profile={state.Status.Profile.Wire()} " +
+                $"keyboard={state.Status.KeyboardConnected} mouse={state.Status.MouseConnected} " +
+                $"bindings={state.Mappings.Sum(mapping => mapping.Bindings.Count)}");
+            return state;
+        });
+
+    public Task<KbmStatus> SetKeyboardMouseModeAsync(
+        KbmMode mode,
+        CancellationToken cancellationToken = default) =>
+        RunKbmAsync(async () =>
+        {
+            var status = await repository.SetKbmModeAsync(mode, cancellationToken).ConfigureAwait(false);
+
+            // The adapter's own answer, which may differ from the request: a mode
+            // needing a device that is not connected resolves elsewhere.
+            diagnostics.Info(
+                "kbm",
+                $"mode requested={mode.Wire()} adapter reports={status.Mode.Wire()} " +
+                $"override={status.ModeOverride.Wire()}");
+            return status;
+        });
+
+    /// <summary>
+    /// Bind one key or mouse button, or clear it by passing a null destination.
+    /// </summary>
+    public Task<KbmMapping> BindAsync(
+        KbmProfile profile,
+        KbmSource source,
+        KbmDestination? destination,
+        CancellationToken cancellationToken = default) =>
+        RunKbmAsync(async () =>
+        {
+            var mapping = await repository
+                .BindKbmAsync(profile, source, destination, cancellationToken)
+                .ConfigureAwait(false);
+            diagnostics.Info(
+                "kbm",
+                $"bind {profile.Wire()} {source.Wire} -> " +
+                $"{destination?.Wire() ?? "none"} ({mapping.Bindings.Count} bindings)");
+            return mapping;
+        });
+
+    public Task<KbmMapping> ResetProfileAsync(
+        KbmProfile profile,
+        CancellationToken cancellationToken = default) =>
+        RunKbmAsync(async () =>
+        {
+            var mapping = await repository.ResetKbmProfileAsync(profile, cancellationToken)
+                .ConfigureAwait(false);
+            diagnostics.Warn("kbm", $"reset profile {profile.Wire()} to adapter defaults");
+            return mapping;
+        });
+
+    public Task<KeyboardMouseState> ResetAllKeyboardMouseAsync(
+        CancellationToken cancellationToken = default) =>
+        RunKbmAsync(async () =>
+        {
+            var state = await repository.ResetAllKbmAsync(cancellationToken).ConfigureAwait(false);
+            diagnostics.Warn("kbm", "reset ALL profiles and mouse tuning to adapter defaults");
+            return state;
+        });
+
+    public Task<KbmMouseConfig> SetMouseAsync(
+        KbmMouseField field,
+        int value,
+        CancellationToken cancellationToken = default) =>
+        RunKbmAsync(async () =>
+        {
+            var mouse = await repository.SetKbmMouseAsync(field, value, cancellationToken)
+                .ConfigureAwait(false);
+
+            // Debug, not Info: this is dragged, and at slider rate an Info line
+            // would flood the ring and evict the entries a support report needs.
+            diagnostics.Debug("kbm", $"mouse {field} := {value} (adapter reports readback)");
+            return mouse;
+        });
+
+    /// <summary>
+    /// Run a KB/M operation under the ordinary exclusion, with the busy flag scoped
+    /// to this section.
+    /// </summary>
+    private async Task<T> RunKbmAsync<T>(Func<Task<T>> operation)
+    {
+        keyboardMouseBusy.Set(true);
+        try
+        {
+            return await RunExclusiveAsync(operation).ConfigureAwait(false);
+        }
+        finally
+        {
+            keyboardMouseBusy.Set(false);
+            Publish();
+        }
+    }
 
     /* -------------------------------------------- Phase 3 paired controllers */
 
