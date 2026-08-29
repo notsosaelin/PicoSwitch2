@@ -299,7 +299,7 @@ Built and software-verified:
 | A | Stale Windows pairing after an adapter flash/reset → `RepairRequired` | **Confirmed PASS** | Ran 2026-08-29, disproved the pre-test hypothesis, signature rewritten from the evidence, confirmed on retest the same day: first Connect press after the flash reached `RepairRequired` in 2.4 s. See below. |
 | B | The repair action (unpair → re-pair → reconnect) | **Confirmed PASS** | Ran 2026-08-29. Repair had never worked; fixed and confirmed on retest. See below. |
 | C | One management client, no churn | **Confirmed PASS** | 2026-08-29, from the adapter's own `btlife` ring: 21 lifecycle records, one handle, zero alternation violations, no transition across two Refreshes and full navigation. `dumps/windows-phase2-oneclient-2026-08-29.md`. |
-| D | A → B active-adapter handoff under real asynchronous callbacks | **Unknown** | Two adapters. The ordering is unit-tested over a fake port; whether a real trailing callback from A can reach B's state is not. |
+| D | A → B active-adapter handoff under real asynchronous callbacks | **Unknown — deferred** | No second adapter available. Unit-tested over a fake port, including the ordering rule and generation-based rejection of stale callbacks; whether a real trailing callback from A can reach B's state is untested. **Not hardware qualified.** Run before a second adapter is advertised as supported. |
 
 The signature is confirmed in **both** directions: it fires on a genuine
 mismatch, and with the adapter powered off it correctly declines

@@ -1312,7 +1312,15 @@ and what is designed stays explicit.
 - **Still open after A, B and C, and neither blocks Phase 3.**
   1. the recovery ladder's retry and 350 ms backoff have still never executed on hardware — every
      observed failure was at a non-retryable stage, so the retry has correctly never been taken;
-  2. the A → B active-adapter handoff under real asynchronous callbacks, with two adapters.
+  2. the A → B active-adapter handoff (boundary D) — **deferred, no second adapter available**.
+     Nothing has been executed against two adapters, so the multi-adapter handoff is **not**
+     hardware qualified and must not be described as such. Confidence is software only: the
+     relationship and active-adapter coordinators are unit-tested over a fake port, including the
+     ordering rule and generation-based rejection of stale callbacks, and no source evidence
+     suggests a defect. What that cannot show is whether a real trailing asynchronous callback from
+     A can reach B's state, because a fake port completes deterministically and a radio does not.
+     Carried forward as a hardware validation item, to run before a second adapter is advertised as
+     supported.
 
 Next: D with the second unit, then Phase 3 (the adapter dashboard, which is the MVP). Some
 Phase 3-shaped UI already exists because Phase 2 could not be exercised without it — the Adapter

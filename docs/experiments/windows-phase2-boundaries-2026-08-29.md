@@ -488,7 +488,30 @@ cannot show is whether a real trailing callback from A can reach B's state.
 - neither switch unpairs or forgets the other adapter at the OS level;
 - switching back works.
 
-**Result:** _not yet run_
+### Result — DEFERRED, 2026-08-29
+
+Not run: no second adapter is available. **Nothing here has been executed against
+two adapters**, and the multi-adapter handoff is therefore **not** hardware
+qualified. Do not describe it as such anywhere.
+
+The basis for current confidence is software only, and is worth naming precisely
+so nobody mistakes it for more than it is:
+
+- `AdapterRelationshipCoordinator` and `ActiveAdapterCoordinator` are unit-tested
+  over a fake port, including the ordering rule (stop A, fully retire A, clear
+  A-scoped state, then activate B) and generation-based rejection of stale
+  callbacks;
+- `GattCallbackAuthority` pins that only the current generation of a live owner
+  may mutate session state;
+- no source evidence currently suggests the handoff is defective.
+
+What that cannot show is the thing D exists to test: whether a **real trailing
+asynchronous callback** from adapter A can reach adapter B's state on live
+hardware. A fake port completes deterministically; a radio does not.
+
+**Carried forward as a hardware validation item.** Run it when a second
+PicoSwitch2 is available, before a second adapter is advertised as supported. It
+does not block Phase 3 on a single-adapter setup.
 
 ---
 
