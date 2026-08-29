@@ -12,6 +12,21 @@ Non-JVM clients implement the language-neutral protocol and verify it against
 `tools/fixtures/management/protocol-v1.json`. Do not translate Android repository or ViewModel code;
 those are consumers, not authorities.
 
+There is now a worked example of the second path: `PicoSwitch.Management.Core` under
+`windows/companion/` is a C# reimplementation whose `ProtocolConformanceTests` runs the same cases
+as the Kotlin `ProtocolConformanceTest` against that same fixture file. Two details from it are
+worth copying rather than rediscovering:
+
+- **Parse strictly, and read the JSON value KIND before reading the value.** A string where an
+  integer is expected is an error, never a coercion. The one exception is `batteryValid` and
+  `charging`, where the firmware genuinely emits both a boolean and an integer form; a `boolInt`
+  reader used anywhere else is a bug.
+- **Capability probing keys off the adapter's own error SHAPE**, not an exception type:
+  `unknown command`, `unavailable`, `unavailable in …` and `command unavailable over Bluetooth` mean
+  "this firmware does not have that command" and degrade one capability. Everything else propagates
+  and fails the refresh. That distinction is what keeps an older adapter usable instead of turning a
+  half-supported firmware into a dead one.
+
 ## 2. Establish a usable session
 
 For BLE:

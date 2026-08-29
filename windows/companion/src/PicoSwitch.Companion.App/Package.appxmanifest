@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="PicoSwitch2.Companion"
+    Publisher="CN=PicoSwitch2"
+    Version="0.1.0.0" />
+
+  <Properties>
+    <DisplayName>PicoSwitch2 Companion</DisplayName>
+    <PublisherDisplayName>PicoSwitch2</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <!--
+      10.0.22000.0 is the SUPPORTED FLOOR (WINDOWS_PASS.md §28.1), not the SDK
+      targeting version. MaxVersionTested is the SDK the build targets.
+    -->
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22000.0" MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="x-generate" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App" Executable="$targetnametoken$.exe" EntryPoint="$targetentrypoint$">
+      <uap:VisualElements
+        DisplayName="PicoSwitch2 Companion"
+        Description="Manage a PicoSwitch2 adapter and use this PC as a controller source"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!--
+      `bluetooth` covers both the GATT client used for management and, if
+      WINDOWS_PASS.md §14.5 passes, the peripheral role used for Controller Link.
+
+      There is deliberately no `internetClient`: the app talks to an adapter over
+      Bluetooth and to nothing else, and the Wi-Fi prohibition in
+      docs/bluetooth/android-audio-feasibility-2026-08-13.md applies to this host
+      too. No broad file-system capability either: the pickers grant per-file
+      access.
+
+      `runFullTrust` is NOT a privilege choice and is not elevation.
+
+      WINDOWS_PASS.md §27.3 says "exactly `bluetooth`, nothing else", which was
+      written before MakeAppx had ever been run against this manifest. It is not
+      achievable: a WinUI 3 DESKTOP app packaged as MSIX declares
+      `Executable`/`EntryPoint` under <Application>, and MakeAppx rejects that
+      shape without `runFullTrust`:
+
+        error 80080204: App manifest validation error: Line 28, Column 6,
+        Reason: The element or attribute or attribute value specified requires
+        "runFullTrust" capability.
+
+      The capability is what marks the package as a full-trust Win32 app rather
+      than a UWP one. It runs at medium integrity like any ordinary desktop
+      program, so §27.5's "must never require elevation" is untouched.
+    -->
+    <rescap:Capability Name="runFullTrust" />
+    <DeviceCapability Name="bluetooth" />
+  </Capabilities>
+
+</Package>

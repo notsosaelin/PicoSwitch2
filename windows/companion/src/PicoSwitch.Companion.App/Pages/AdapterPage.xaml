@@ -1,0 +1,151 @@
+<Page
+    x:Class="PicoSwitch.Companion.App.Pages.AdapterPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls">
+
+    <ScrollViewer Padding="24">
+        <StackPanel MaxWidth="1000" HorizontalAlignment="Left" Spacing="16">
+
+            <StackPanel Spacing="4">
+                <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Adapter" />
+                <TextBlock
+                    Style="{StaticResource BodyTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    TextWrapping="Wrap"
+                    Text="Phase 2 test surface: discovery, Windows pairing, the management session, and the logical-peer inventory. The Phase 3 dashboard replaces this layout." />
+            </StackPanel>
+
+            <!-- Radio capability. Probed, never assumed. -->
+            <muxc:InfoBar
+                x:Name="RadioBar"
+                IsOpen="True"
+                IsClosable="False"
+                Severity="Informational"
+                Title="Bluetooth radio"
+                Message="Probing." />
+
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button x:Name="PairButton" Click="OnPair" Style="{StaticResource AccentButtonStyle}">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <muxc:ProgressRing x:Name="PairProgress" Width="16" Height="16" IsActive="False" />
+                        <TextBlock Text="Pair an adapter" />
+                    </StackPanel>
+                </Button>
+                <Button x:Name="RefreshButton" Content="Refresh" Click="OnRefresh" />
+                <Button x:Name="DisconnectButton" Content="Disconnect" Click="OnDisconnect" />
+                <Button x:Name="ProbeRadioButton" Content="Re-probe radio" Click="OnProbeRadio" />
+            </StackPanel>
+
+            <TextBlock
+                x:Name="PairingHint"
+                Style="{StaticResource CaptionTextBlockStyle}"
+                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                TextWrapping="Wrap"
+                Text="A new management pairing is admitted only while the adapter's pairing window is open — double-tap its pairing button first. Windows will show its own consent prompt." />
+
+            <muxc:InfoBar
+                x:Name="OperationBar"
+                IsOpen="False"
+                IsClosable="True"
+                Severity="Error"
+                Title="Adapter" />
+
+            <!-- Live session -->
+            <Border
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="16">
+                <StackPanel Spacing="8">
+                    <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="Session" />
+                    <TextBlock x:Name="SessionPhase" Style="{StaticResource BodyStrongTextBlockStyle}" Text="Idle" />
+                    <TextBlock
+                        x:Name="SessionDetail"
+                        Style="{StaticResource BodyTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextWrapping="Wrap"
+                        Text="No adapter connected." />
+                    <TextBlock
+                        x:Name="SnapshotDetail"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        FontFamily="Consolas"
+                        TextWrapping="Wrap"
+                        Text="" />
+                </StackPanel>
+            </Border>
+
+            <!-- Remembered adapters -->
+            <Border
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="16">
+                <StackPanel Spacing="8">
+                    <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="Remembered adapters" />
+                    <TextBlock
+                        x:Name="RegistryEmpty"
+                        Style="{StaticResource BodyTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="None yet." />
+                    <ItemsControl x:Name="RegistryList">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,8,0,8" ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Spacing="2">
+                                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="{Binding Title}" />
+                                        <TextBlock
+                                            Style="{StaticResource CaptionTextBlockStyle}"
+                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                            Text="{Binding Detail}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                        <Button Content="Connect" Click="OnConnectRow" Tag="{Binding Id}" />
+                                        <Button Content="Repair" Click="OnRepairRow" Tag="{Binding Id}" />
+                                        <Button Content="Remove" Click="OnRemoveRow" Tag="{Binding Id}" />
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+
+            <!-- Paired controllers -->
+            <Border
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="16">
+                <StackPanel Spacing="8">
+                    <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="Paired controllers" />
+                    <TextBlock
+                        x:Name="PeersEmpty"
+                        Style="{StaticResource BodyTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="Refresh a connected adapter to read its logical-peer inventory." />
+                    <ItemsControl x:Name="PeerList">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Margin="0,6,0,6" Spacing="2">
+                                    <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="{Binding Title}" />
+                                    <TextBlock
+                                        Style="{StaticResource CaptionTextBlockStyle}"
+                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                        Text="{Binding Detail}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

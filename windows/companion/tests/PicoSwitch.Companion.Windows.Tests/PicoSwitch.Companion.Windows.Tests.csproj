@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Fake WinRT seams; no radio required (WINDOWS_PASS.md §26.3).
+
+    Also the home of the guard that scans the App project's sources: the App
+    project itself has no test project of its own until the WinAppDriver suite in
+    Phase 8, and this is the project that is already allowed to know what
+    Windows.Devices.Bluetooth is.
+  -->
+  <PropertyGroup>
+    <TargetFramework>$(PicoSwitchWindowsTargetFramework)</TargetFramework>
+    <SupportedOSPlatformVersion>$(PicoSwitchSupportedOSPlatformVersion)</SupportedOSPlatformVersion>
+    <RootNamespace>PicoSwitch.Companion.Windows.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <Platforms>AnyCPU;x64;arm64</Platforms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/PicoSwitch.Companion.Windows/PicoSwitch.Companion.Windows.csproj" />
+  </ItemGroup>
+
+</Project>

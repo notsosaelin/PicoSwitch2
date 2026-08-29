@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The ONLY project allowed to touch WinRT.
+
+    Everything platform-specific about the Windows host lives here: the BLE GATT
+    management transport, the radio capability probe, Windows.Gaming.Input, raw
+    HID, and the storage boundaries. It exposes those to the layers above as the
+    portable SPIs the two Core projects define, so a ViewModel never sees a
+    GattCharacteristic. See WINDOWS_PASS.md §10.1 and §10.2.
+  -->
+  <PropertyGroup>
+    <TargetFramework>$(PicoSwitchWindowsTargetFramework)</TargetFramework>
+    <SupportedOSPlatformVersion>$(PicoSwitchSupportedOSPlatformVersion)</SupportedOSPlatformVersion>
+    <RootNamespace>PicoSwitch.Companion.Windows</RootNamespace>
+    <AssemblyName>PicoSwitch.Companion.Windows</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../PicoSwitch.Bridge.Core/PicoSwitch.Bridge.Core.csproj" />
+    <ProjectReference Include="../PicoSwitch.Management.Core/PicoSwitch.Management.Core.csproj" />
+  </ItemGroup>
+
+</Project>

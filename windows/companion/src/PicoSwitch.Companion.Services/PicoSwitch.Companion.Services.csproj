@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Application-level operations and ownership: ManagementOwner, AdapterRepository,
+    the registry and the coordinators, Controller Link and Touch Gamepad services,
+    the Amiibo library, and DiagnosticLog.
+
+    Windows-targeted because it composes the platform layer, but it must contain
+    no XAML and no WinUI type: presentation lives above it.
+  -->
+  <PropertyGroup>
+    <TargetFramework>$(PicoSwitchWindowsTargetFramework)</TargetFramework>
+    <SupportedOSPlatformVersion>$(PicoSwitchSupportedOSPlatformVersion)</SupportedOSPlatformVersion>
+    <RootNamespace>PicoSwitch.Companion.Services</RootNamespace>
+    <AssemblyName>PicoSwitch.Companion.Services</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../PicoSwitch.Bridge.Core/PicoSwitch.Bridge.Core.csproj" />
+    <ProjectReference Include="../PicoSwitch.Management.Core/PicoSwitch.Management.Core.csproj" />
+    <ProjectReference Include="../PicoSwitch.Companion.Windows/PicoSwitch.Companion.Windows.csproj" />
+  </ItemGroup>
+
+</Project>

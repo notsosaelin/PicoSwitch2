@@ -421,8 +421,9 @@ audio, but only because its client link is UDP over WiFi — not applicable here
 
 The canonical descriptor, wire layout, and sensor scale live in one file shared by the firmware, the
 host tests, and (mirrored) the Kotlin encoder: [`tools/fixtures/android_controller_hid.h`](../../tools/fixtures/android_controller_hid.h).
-`tools/check_android_descriptor_parity.py` fails loudly if the two languages ever drift — a one-sided
-edit would not break a build, it would silently stop the handheld being recognized.
+`tools/check_android_descriptor_parity.py` fails loudly if the languages ever drift — C, Kotlin and,
+since the Windows companion, C# — because a one-sided edit would not break a build, it would silently
+stop the host being recognized.
 
 **Input report 1 (27 bytes on the wire, bridge contract 4):** report ID, six axes (1–6), **three**
 button bytes (7–9), hat (10), then gyro X/Y/Z and accel X/Y/Z as `int16` LE (11–22), battery (23),

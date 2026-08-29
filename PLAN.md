@@ -155,11 +155,36 @@ Do not begin this work as part of unrelated firmware or Android tasks.
 
 ## Windows
 
-A Windows backend remains an accepted future platform direction.
+A Windows companion is now an accepted and started platform direction. The design is
+`WINDOWS_PASS.md`; the implementation lives under `windows/companion/` and its current state is
+`windows/companion/docs/README.md`.
 
-Before implementation, verify the transport approach required by the current Pico bridge protocol.
+Settled by the design pass and the first implementation pass:
 
-Reuse shared bridge/session/protocol logic where practical.
+- **Stack.** C# on .NET 9 with WinUI 3, chosen because the Bluetooth surface is the hard part and
+  C#/WinRT makes it free. No universal cross-platform UI framework, per the rule below.
+- **Sharing level.** The C# side reimplements the documented contracts (Level 1) rather than
+  relocating `:bridge-core` and `:management-core`. The relocation trigger named in
+  `docs/bridge/PLATFORM_BACKEND.md` is a *JVM* second consumer, which a C# host is not; moving those
+  modules would deliver churn and zero reuse. The cost of the duplication is paid down by the shared
+  fixtures under `tools/fixtures/`, which both languages read.
+- **Delivered.** Roadmap Phases 0, 1 and 2, with 366 passing tests and
+  `tools/check_android_descriptor_parity.py` extended to a third language. Phase 0: project
+  skeleton, architecture guards, and a WinUI shell that builds x64/ARM64, packages as MSIX and
+  satisfies the single-instance exit criterion when run. Phase 1: both Core projects' protocol and
+  models. Phase 2: the BLE management transport, the adapter registry and peer history with their
+  stores, the relationship and active-adapter coordinators, and the ordered adapter switch —
+  **implementation complete, hardware validation pending.**
+
+Open and unchanged:
+
+- **Controller Link on Windows is still gated** on the HOGP peripheral-role experiment in
+  `WINDOWS_PASS.md` §14.5, which has not been run. Until it is, no Phase 6 work may be scheduled and
+  the Windows product is a management client. Path C (companion-provided normalized controller
+  state, §14.4) is the sanctioned fallback and would need its own firmware pass.
+- **No hardware validation exists** for any Windows code. Every Phase 2 exit criterion needs an
+  adapter, and the Windows bond-mismatch signature (`WINDOWS_PASS.md` §12.2) remains a
+  **Hypothesis** until a reflashed adapter reaches `RepairRequired` on the first attempt.
 
 Do not choose a universal cross-platform UI framework merely to support this port.
 
