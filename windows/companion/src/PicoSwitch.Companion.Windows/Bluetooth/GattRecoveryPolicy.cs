@@ -199,17 +199,41 @@ public static class GattRecoveryPolicy
     public static bool ShouldRetry(Exception error, int retriesUsed) =>
         retriesUsed < MaxCleanRetries && IsRetryable(error);
 
+    /// <summary>
+    /// The first tagged transport failure anywhere in the exception, including
+    /// across an <see cref="AggregateException"/>'s branches.
+    ///
+    /// The branches matter: the recovery ladder reports the direct failure and the
+    /// fallback failure together, and the bond-mismatch evidence is in the DIRECT
+    /// one. Following only <c>InnerException</c> would inspect whichever branch
+    /// happened to be first and could miss it entirely.
+    /// </summary>
     internal static GattTransportException? FirstTransportFailure(Exception? error)
     {
-        for (var cursor = error; cursor is not null; cursor = cursor.InnerException)
+        if (error is null)
         {
-            if (cursor is GattTransportException failure)
-            {
-                return failure;
-            }
+            return null;
         }
 
-        return null;
+        if (error is GattTransportException failure)
+        {
+            return failure;
+        }
+
+        if (error is AggregateException aggregate)
+        {
+            foreach (var branch in aggregate.InnerExceptions)
+            {
+                if (FirstTransportFailure(branch) is { } found)
+                {
+                    return found;
+                }
+            }
+
+            return null;
+        }
+
+        return FirstTransportFailure(error.InnerException);
     }
 }
 

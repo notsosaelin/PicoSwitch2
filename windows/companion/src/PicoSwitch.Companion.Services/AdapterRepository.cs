@@ -108,6 +108,23 @@ public sealed class AdapterRepository(IManagementTransport transport)
                 directFailure = error;
             }
 
+            // A conclusive bond mismatch ends the attempt HERE.
+            //
+            // The adapter has no key for us, so neither a clean retry nor an
+            // address-restricted fallback scan can succeed -- they can only spend
+            // the deadline and bury the one diagnosis that leads somewhere. This is
+            // the Windows form of the Android defect where six futile attempts ran
+            // across fourteen minutes before the OS dropped its own bond and repair
+            // finally triggered.
+            var trust = transport.Trust;
+            if (AdapterResetSignature.IsBondMismatch(
+                    directFailure,
+                    trust.WindowsPaired,
+                    trust.PeerReachable))
+            {
+                throw directFailure;
+            }
+
             if (!GattRecoveryPolicy.ShouldRetry(directFailure, retriesUsed))
             {
                 break;
