@@ -41,9 +41,16 @@ public sealed class ControllerPairingDialog
     {
         this.adapters = adapters;
 
-        detail.Foreground = (Microsoft.UI.Xaml.Media.Brush)Application.Current
-            .Resources["TextFillColorSecondaryBrush"];
-        remaining.Foreground = detail.Foreground;
+        // Theme brushes live in the XAML resource dictionaries, not necessarily at
+        // Application scope. A missing key here would throw while CONSTRUCTING the
+        // dialog, turning a cosmetic detail into a crash on a button press, so the
+        // lookup is attempted and the default colour is an acceptable answer.
+        if (Application.Current.Resources.TryGetValue("TextFillColorSecondaryBrush", out var brush) &&
+            brush is Microsoft.UI.Xaml.Media.Brush secondary)
+        {
+            detail.Foreground = secondary;
+            remaining.Foreground = secondary;
+        }
 
         dialog = new ContentDialog
         {

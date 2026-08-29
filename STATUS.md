@@ -1159,13 +1159,13 @@ Briefs: [`docs/agents/ANDROID.md`](docs/agents/ANDROID.md),
 [`docs/bluetooth/android-controller-bridge.md`](docs/bluetooth/android-controller-bridge.md),
 [`docs/android-companion.md`](docs/android-companion.md).
 
-## Windows companion — Phases 0–2 implemented; boundaries A, B and C hardware-confirmed 2026-08-29
+## Windows companion — Phase 3 (the MVP) implemented; boundaries A, B and C hardware-confirmed 2026-08-29
 
 Second host platform, designed in `WINDOWS_PASS.md` and implemented under `windows/companion/`.
 C# on .NET 9 with WinUI 3. The Roadmap's own numbering is used below so the gap between what exists
 and what is designed stays explicit.
 
-- **Delivered. 420 tests pass.**
+- **Delivered. 499 tests pass.**
   - *Phase 0* — the project skeleton with the architecture boundaries enforced from day one, plus a
     WinUI shell that builds x64/ARM64, packages as MSIX, and satisfies the single-instance exit
     criterion when run.
@@ -1322,7 +1322,8 @@ and what is designed stays explicit.
      Carried forward as a hardware validation item, to run before a second adapter is advertised as
      supported.
 
-Next: D with the second unit, then Phase 3 (the adapter dashboard, which is the MVP). Some
+Next: hardware acceptance of the Phase 3 surface (H6–H8, H11, H21, H22 and the §26.5 UX pass), then
+Phase 4 (Keyboard and Mouse). Boundary D whenever a second adapter exists (the adapter dashboard, which is the MVP). Some
 Phase 3-shaped UI already exists because Phase 2 could not be exercised without it — the Adapter
 page, Pair/Refresh/Disconnect, the remembered-adapter list with Connect/Repair/Remove, live session
 state, the peer inventory and the Diagnostics page. That glue is real and stays; Phase 3 is an audit

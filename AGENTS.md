@@ -470,6 +470,8 @@ If the task changes the Windows companion under `windows/companion/`:
 - run `windows/companion/build.ps1`, which builds and tests every project except the WinUI shell and then runs the descriptor parity check
 - keep the two Core projects on `net9.0`; that target framework IS the guard that a Windows API cannot reach the platform-neutral layer
 - the C# side is a Level 1 reimplementation of the documented contracts, never a translation of Android repository or ViewModel code
+- UI rules live in `PicoSwitch.Companion.Services/Presentation/` as pure projections, never in a page: a rule in a
+  code-behind cannot be tested, and every state the UI can reach must be reachable from a unit test
 - a protocol change must move the shared fixture and BOTH languages in the same commit; the fixtures under `tools/fixtures/` are the only anti-drift mechanism this duplication has
 - if `XamlCompiler.exe` fails with a bare `MSB3073 ... exited with code 1` and no message, rebuild with `-p:UseXamlCompilerExecutable=false` to get the real XAML error; a silent exit is a REPORTING failure and usually still means a genuine authoring mistake
 - MSIX packaging (`build.ps1 -Msix`) needs .NET Framework MSBuild; `windows/companion/docs/README.md` §4 records why, so it is not rediagnosed
