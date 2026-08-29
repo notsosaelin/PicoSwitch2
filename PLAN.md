@@ -193,7 +193,10 @@ Open and unchanged:
   confirmed. The same run exposed that Repair had never executed an unpair at all; that is fixed and
   confirmed too. **Phase 2's management half is hardware-qualified on a single-adapter setup.**
 - **Still unproven, neither blocking Phase 3:** the recovery ladder's retry and backoff, which no
-  observed failure has yet reached, and the A → B handoff with two adapters.
+  observed failure has yet reached; and the A → B handoff (boundary D), **deferred for want of a
+  second adapter**. The multi-adapter handoff is unit-tested but has never run on hardware and is
+  **not** hardware qualified. It is a carried-forward validation item, to run before a second
+  adapter is advertised as supported.
 
 Do not choose a universal cross-platform UI framework merely to support this port.
 
