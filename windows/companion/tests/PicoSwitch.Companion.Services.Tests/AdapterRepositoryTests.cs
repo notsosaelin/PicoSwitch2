@@ -138,14 +138,20 @@ public sealed class AdapterRepositoryTests
     [Fact]
     public async Task ANonRetryableFailureSkipsTheCleanRetryAndGoesStraightToTheFallback()
     {
-        // AccessDenied is the bond-mismatch shape. Retrying it is what produced six
-        // futile attempts over fourteen minutes on the Android side.
+        // A protocol error at the services stage is neither transient (so no clean
+        // retry) nor the bond-mismatch shape (so the ladder is not short-circuited).
+        // It goes straight to the one address-restricted fallback scan.
+        //
+        // AccessDenied deliberately does NOT belong here any more: while Windows is
+        // paired and the peer answered, that IS the bond-mismatch shape and
+        // StaleBondLadderTests owns it.
         var transport = new FakeTransport
         {
             FailDirectConnect = new GattTransportException(
-                "refused",
+                "malformed",
                 GattFailureStage.Services,
-                GattCommunicationOutcome.AccessDenied),
+                GattCommunicationOutcome.ProtocolError,
+                protocolError: 0x0D),
         };
         transport.Replies["info"] = Info;
 
@@ -153,6 +159,7 @@ public sealed class AdapterRepositoryTests
         await repository.ConnectKnownAsync("AA:BB:CC:DD:EE:01");
 
         Assert.Equal(1, transport.DirectConnects);
+        Assert.Equal("AA:BB:CC:DD:EE:01", transport.ScannedAddress);
     }
 
     [Fact]
@@ -298,7 +305,12 @@ public sealed class ManagementOwnerTests : IDisposable
 /// Scripted by COMMAND rather than by sequence, because most of these tests care
 /// which commands were sent and in what order, not about a fixed conversation.
 /// </summary>
-public sealed class FakeTransport : IManagementTransport
+public sealed class FakeTransport : FakeTransportBase
+{
+    public override TransportTrustSnapshot Trust => new(WindowsPaired: true, PeerReachable: true);
+}
+
+public abstract class FakeTransportBase : IManagementTransport
 {
     private readonly StateValue<ConnectionState> connection = new(new ConnectionState());
 
@@ -308,9 +320,12 @@ public sealed class FakeTransport : IManagementTransport
 
     public List<string> Sent { get; } = [];
 
-    public Exception? FailDirectConnect { get; init; }
+    // Settable rather than init-only: a stale-bond test changes the adapter's
+    // behaviour MID-FIXTURE, which is exactly the situation being modelled -- the
+    // adapter worked, then it was reflashed.
+    public Exception? FailDirectConnect { get; set; }
 
-    public Exception? FailScanConnect { get; init; }
+    public Exception? FailScanConnect { get; set; }
 
     public int DirectConnects { get; private set; }
 
@@ -326,7 +341,7 @@ public sealed class FakeTransport : IManagementTransport
 
     public IReadOnlyStateValue<ConnectionState> Connection => connection;
 
-    public TransportTrustSnapshot Trust => new(WindowsPaired: true, PeerReachable: true);
+    public abstract TransportTrustSnapshot Trust { get; }
 
     public void PrepareConnection(ManagementConnectionContext context) => LastContext = context;
 
@@ -355,6 +370,21 @@ public sealed class FakeTransport : IManagementTransport
     }
 
     public void MarkValidated() => Validated = true;
+
+    /// <summary>
+    /// Forget what happened during fixture setup.
+    ///
+    /// A test that asserts "exactly one connect attempt" means one attempt in the
+    /// scenario, not one since the object was constructed -- and seeding a
+    /// remembered adapter necessarily connects once.
+    /// </summary>
+    public void ResetCounters()
+    {
+        DirectConnects = 0;
+        Disconnects = 0;
+        ScannedAddress = null;
+        Sent.Clear();
+    }
 
     public Task<string> TransactAsync(
         string command,

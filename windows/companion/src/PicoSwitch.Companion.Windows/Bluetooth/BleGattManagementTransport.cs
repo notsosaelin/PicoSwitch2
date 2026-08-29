@@ -62,8 +62,21 @@ public sealed class BleGattManagementTransport : IManagementTransport
     private long generation;
     private ManagementConnectionContext context = new();
     private bool disposed;
-    private bool sawAdvertisement;
     private bool validated;
+
+    /*
+     * The two facts AdapterResetSignature needs, recorded per ATTEMPT rather than
+     * read off the live connection.
+     *
+     * This is not a style choice. Reading them from the connection could never
+     * work: by the time a caller asks whether a failure was a bond mismatch, the
+     * failed attempt's objects have already been disposed, so `WindowsPaired`
+     * would always read false and the signature could never fire. They are set at
+     * the start of an attempt, updated as it progresses, and deliberately NOT
+     * cleared by teardown -- the question is asked after the attempt has failed.
+     */
+    private bool attemptPaired;
+    private bool peerAnswered;
 
     /// <summary>
     /// The reply currently being assembled, if any.
@@ -84,9 +97,7 @@ public sealed class BleGattManagementTransport : IManagementTransport
         {
             lock (gate)
             {
-                return new TransportTrustSnapshot(
-                    owned?.WindowsPaired ?? false,
-                    sawAdvertisement);
+                return new TransportTrustSnapshot(attemptPaired, peerAnswered);
             }
         }
     }
@@ -221,7 +232,7 @@ public sealed class BleGattManagementTransport : IManagementTransport
 
             lock (gate)
             {
-                sawAdvertisement = true;
+                peerAnswered = true;
             }
 
             sender.Stop();
@@ -285,6 +296,11 @@ public sealed class BleGattManagementTransport : IManagementTransport
             attemptGeneration = ++generation;
             validated = false;
             expectsPairing = context.PairingState is "notpaired" or "pairing";
+
+            // A fresh attempt starts with no evidence. `peerAnswered` may already
+            // be true from a scan that just found this device, which is exactly the
+            // signal it is meant to carry, so only the paired flag resets here.
+            attemptPaired = false;
         }
 
         Publish(ConnectionPhase.Connecting, displayName, text, "Connecting.");
@@ -335,7 +351,10 @@ public sealed class BleGattManagementTransport : IManagementTransport
         long attemptGeneration,
         CancellationToken cancellationToken)
     {
-        var device = await BluetoothLEDevice.FromBluetoothAddressAsync(address).AsTask(cancellationToken)
+        var device = await GuardAsync(
+            GattFailureStage.Connect,
+            "Windows could not open a connection to that adapter.",
+            () => BluetoothLEDevice.FromBluetoothAddressAsync(address).AsTask(cancellationToken))
             .ConfigureAwait(false) ??
             throw new GattTransportException(
                 "Windows could not open a connection to that adapter.",
@@ -355,8 +374,18 @@ public sealed class BleGattManagementTransport : IManagementTransport
             // fire, which is the safe direction: it never invents a repair.
         }
 
-        var gattSession = await GattSession.FromDeviceIdAsync(device.BluetoothDeviceId)
-            .AsTask(cancellationToken).ConfigureAwait(false);
+        lock (gate)
+        {
+            attemptPaired = paired;
+        }
+
+        Log("open", $"device resolved paired={paired}");
+
+        var gattSession = await GuardAsync(
+            GattFailureStage.Connect,
+            "Windows could not open a GATT session with that adapter.",
+            () => GattSession.FromDeviceIdAsync(device.BluetoothDeviceId).AsTask(cancellationToken))
+            .ConfigureAwait(false);
 
         // The only way to ask Windows to keep the link up. It is also the only way
         // to ask it to stop: clearing this and disposing the session is what
@@ -368,9 +397,11 @@ public sealed class BleGattManagementTransport : IManagementTransport
         {
             // Uncached on the first resolution of every session. A reflashed
             // adapter can otherwise be served the shape it had before the flash.
-            var services = await device
-                .GetGattServicesForUuidAsync(ServiceUuid, BluetoothCacheMode.Uncached)
-                .AsTask(cancellationToken).ConfigureAwait(false);
+            var services = await GuardAsync(
+                GattFailureStage.Services,
+                "The adapter refused service discovery.",
+                () => device.GetGattServicesForUuidAsync(ServiceUuid, BluetoothCacheMode.Uncached)
+                    .AsTask(cancellationToken)).ConfigureAwait(false);
             RequireSuccess(services.Status, services.ProtocolError, GattFailureStage.Services,
                 "The adapter did not expose its management service.");
 
@@ -391,10 +422,13 @@ public sealed class BleGattManagementTransport : IManagementTransport
 
             // The session is NOT ready until this succeeds. Subscribing after the
             // first command would let a reply arrive with nobody listening.
-            var ccc = await owner.Tx
-                .WriteClientCharacteristicConfigurationDescriptorWithResultAsync(
-                    GattClientCharacteristicConfigurationDescriptorValue.Notify)
-                .AsTask(cancellationToken).ConfigureAwait(false);
+            var ccc = await GuardAsync(
+                GattFailureStage.Subscribe,
+                "The adapter refused to enable management notifications.",
+                () => owner.Tx
+                    .WriteClientCharacteristicConfigurationDescriptorWithResultAsync(
+                        GattClientCharacteristicConfigurationDescriptorValue.Notify)
+                    .AsTask(cancellationToken)).ConfigureAwait(false);
             RequireSuccess(ccc.Status, ccc.ProtocolError, GattFailureStage.Subscribe,
                 "The adapter refused to enable management notifications.");
 
@@ -407,13 +441,16 @@ public sealed class BleGattManagementTransport : IManagementTransport
         }
     }
 
-    private static async Task<GattCharacteristic> RequireCharacteristicAsync(
+    private async Task<GattCharacteristic> RequireCharacteristicAsync(
         GattDeviceService service,
         Guid uuid,
         CancellationToken cancellationToken)
     {
-        var result = await service.GetCharacteristicsForUuidAsync(uuid, BluetoothCacheMode.Uncached)
-            .AsTask(cancellationToken).ConfigureAwait(false);
+        var result = await GuardAsync(
+            GattFailureStage.Services,
+            "The adapter refused to expose a management characteristic.",
+            () => service.GetCharacteristicsForUuidAsync(uuid, BluetoothCacheMode.Uncached)
+                .AsTask(cancellationToken)).ConfigureAwait(false);
         RequireSuccess(result.Status, result.ProtocolError, GattFailureStage.Services,
             $"The adapter's management service is missing characteristic {uuid}.");
 
@@ -448,9 +485,12 @@ public sealed class BleGattManagementTransport : IManagementTransport
             {
                 var writer = new DataWriter();
                 writer.WriteBytes(chunk);
-                var result = await owner.Rx!
-                    .WriteValueWithResultAsync(writer.DetachBuffer(), GattWriteOption.WriteWithResponse)
-                    .AsTask().ConfigureAwait(false);
+                var result = await GuardAsync(
+                    GattFailureStage.Command,
+                    "The adapter refused a management command.",
+                    () => owner.Rx!
+                        .WriteValueWithResultAsync(writer.DetachBuffer(), GattWriteOption.WriteWithResponse)
+                        .AsTask()).ConfigureAwait(false);
                 RequireSuccess(result.Status, result.ProtocolError, GattFailureStage.Command,
                     $"The adapter refused the command '{command}'.");
             }
@@ -525,7 +565,10 @@ public sealed class BleGattManagementTransport : IManagementTransport
             retiring = owned;
             owned = null;
             validated = false;
-            sawAdvertisement = false;
+
+            // attemptPaired / peerAnswered are deliberately NOT reset here.
+            // Teardown runs BEFORE the caller classifies the failure, and clearing
+            // them would delete the evidence the classification depends on.
             if (retiring is not null)
             {
                 generation += 1;
@@ -551,18 +594,65 @@ public sealed class BleGattManagementTransport : IManagementTransport
 
     /* --------------------------------------------------------------- helpers */
 
-    private static void RequireSuccess(
+    /// <summary>
+    /// Run one WinRT call and turn ANY thrown failure into a tagged
+    /// <see cref="GattTransportException"/> carrying its <c>HRESULT</c>.
+    ///
+    /// Without this the HRESULT half of <see cref="AdapterResetSignature"/> is
+    /// unreachable. A stale-bond refusal that surfaces as a thrown
+    /// <c>E_BLUETOOTH_ATT_INSUFFICIENT_AUTHENTICATION</c> would propagate as a
+    /// bare exception, the signature would find no transport failure to inspect,
+    /// and the user would get an ordinary connect error and a pointless retry
+    /// instead of Repair.
+    /// </summary>
+    private async Task<T> GuardAsync<T>(
+        GattFailureStage stage,
+        string message,
+        Func<Task<T>> operation)
+    {
+        try
+        {
+            return await operation().ConfigureAwait(false);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            var failure = new GattTransportException(
+                message,
+                stage,
+                outcome: null,
+                protocolError: null,
+                hresult: error.HResult,
+                innerException: error);
+            Log("fail", failure.Describe());
+            throw failure;
+        }
+    }
+
+    private void RequireSuccess(
         GattCommunicationStatus status,
         byte? protocolError,
         GattFailureStage stage,
         string message)
     {
+        if (status != GattCommunicationStatus.Unreachable)
+        {
+            // The peer said SOMETHING -- even a refusal. That is what separates
+            // "the adapter is present and rejecting us", which is the bond-mismatch
+            // shape, from "the adapter is not here", which is not.
+            lock (gate)
+            {
+                peerAnswered = true;
+            }
+        }
+
         if (status == GattCommunicationStatus.Success)
         {
             return;
         }
 
-        throw new GattTransportException(message, stage, ToOutcome(status), protocolError);
+        var failure = new GattTransportException(message, stage, ToOutcome(status), protocolError);
+        Log("fail", failure.Describe());
+        throw failure;
     }
 
     private static GattCommunicationOutcome ToOutcome(GattCommunicationStatus status) => status switch

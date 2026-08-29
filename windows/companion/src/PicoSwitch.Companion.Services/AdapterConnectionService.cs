@@ -37,15 +37,25 @@ public sealed class AdapterConnectionService
     private readonly AdapterRelationshipCoordinator lifecycle;
     private readonly SemaphoreSlim operationGate = new(1, 1);
 
+    private readonly Func<Task<BluetoothRadioCapabilities>> probeRadio;
+
+    /// <param name="probeRadio">
+    /// Injectable so the service is testable without a radio. Production passes
+    /// nothing; a test that had to depend on the developing machine's own
+    /// Bluetooth hardware would be a test that fails on a build agent for reasons
+    /// unrelated to the code.
+    /// </param>
     public AdapterConnectionService(
         AdapterRepository repository,
         WindowsDocumentStore documents,
         DiagnosticLog diagnostics,
-        Func<long>? nowMillis = null)
+        Func<long>? nowMillis = null,
+        Func<Task<BluetoothRadioCapabilities>>? probeRadio = null)
     {
         this.repository = repository;
         this.diagnostics = diagnostics;
         this.nowMillis = nowMillis ?? (() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        this.probeRadio = probeRadio ?? WindowsBluetoothRadio.ProbeAsync;
 
         registryStore = new AdapterRegistryStore(documents);
         historyStore = new PeerHistoryStore(documents);
@@ -102,7 +112,7 @@ public sealed class AdapterConnectionService
 
     public async Task<BluetoothRadioCapabilities> ProbeRadioAsync()
     {
-        var capabilities = await WindowsBluetoothRadio.ProbeAsync().ConfigureAwait(false);
+        var capabilities = await probeRadio().ConfigureAwait(false);
         radio.Set(capabilities);
         diagnostics.Info("radio", capabilities.Describe());
         return capabilities;
@@ -396,9 +406,15 @@ public sealed class AdapterConnectionService
                 active.ActivationFailed(target, error.Message);
             }
 
+            // The full WinRT detail, not just the friendly message. This is the
+            // line the stale-bond experiment reads: without the stage, the
+            // GattCommunicationStatus, the ATT byte and the HRESULT, "it refused"
+            // is unactionable and the signature cannot be judged right or wrong.
             diagnostics.Error(
                 "connect",
-                $"failed{(bondMismatch ? " (bond mismatch)" : string.Empty)}: {error.Message}");
+                $"failed{(bondMismatch ? " (BOND MISMATCH)" : string.Empty)} " +
+                $"paired={trust.WindowsPaired} peerAnswered={trust.PeerReachable} " +
+                $"[{DescribeFailure(error)}] {error.Message}");
             throw;
         }
 
@@ -497,6 +513,40 @@ public sealed class AdapterConnectionService
         WindowsPairingKnown.NotPaired => WindowsPairingState.NotPaired,
         _ => WindowsPairingState.Unknown,
     };
+
+    /// <summary>
+    /// Render every tagged transport failure in an exception, including both
+    /// branches of the ladder's aggregate report.
+    /// </summary>
+    private static string DescribeFailure(Exception error)
+    {
+        var parts = new List<string>();
+        Walk(error);
+        return parts.Count == 0 ? error.GetType().Name : string.Join(" | ", parts);
+
+        void Walk(Exception? cursor)
+        {
+            switch (cursor)
+            {
+                case null:
+                    return;
+                case GattTransportException failure:
+                    parts.Add(failure.Describe());
+                    Walk(failure.InnerException);
+                    return;
+                case AggregateException aggregate:
+                    foreach (var branch in aggregate.InnerExceptions)
+                    {
+                        Walk(branch);
+                    }
+
+                    return;
+                default:
+                    Walk(cursor.InnerException);
+                    return;
+            }
+        }
+    }
 
     private static string Describe(AdapterSnapshot snapshot) =>
         $"fw={snapshot.Firmware.Version} build={snapshot.Firmware.Build} " +
