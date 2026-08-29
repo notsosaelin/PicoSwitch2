@@ -307,7 +307,8 @@ public sealed class ManagementOwnerTests : IDisposable
 /// </summary>
 public sealed class FakeTransport : FakeTransportBase
 {
-    public override TransportTrustSnapshot Trust => new(WindowsPaired: true, PeerReachable: true);
+    public override TransportTrustSnapshot Trust =>
+        new(WindowsPaired: true, PeerObserved: true, PeerAnsweredGatt: true);
 }
 
 public abstract class FakeTransportBase : IManagementTransport
@@ -348,7 +349,7 @@ public abstract class FakeTransportBase : IManagementTransport
     public Task<DiscoveredManagementPeer> DiscoverAsync(CancellationToken cancellationToken = default) =>
         Task.FromResult(new DiscoveredManagementPeer(0xAABBCCDDEE01, "AA:BB:CC:DD:EE:01"));
 
-    public Task ScanAndConnectAsync(
+    public virtual Task ScanAndConnectAsync(
         string? expectedAddress = null,
         CancellationToken cancellationToken = default)
     {
@@ -356,7 +357,7 @@ public abstract class FakeTransportBase : IManagementTransport
         return FailScanConnect is { } failure ? Task.FromException(failure) : Task.CompletedTask;
     }
 
-    public Task ConnectKnownAsync(string address, CancellationToken cancellationToken = default)
+    public virtual Task ConnectKnownAsync(string address, CancellationToken cancellationToken = default)
     {
         DirectConnects++;
         return FailDirectConnect is { } failure ? Task.FromException(failure) : Task.CompletedTask;

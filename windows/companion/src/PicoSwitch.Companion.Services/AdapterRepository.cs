@@ -108,7 +108,7 @@ public sealed class AdapterRepository(IManagementTransport transport)
                 directFailure = error;
             }
 
-            // A conclusive bond mismatch ends the attempt HERE.
+            // A CONCLUSIVE bond mismatch ends the attempt HERE.
             //
             // The adapter has no key for us, so neither a clean retry nor an
             // address-restricted fallback scan can succeed -- they can only spend
@@ -116,11 +116,14 @@ public sealed class AdapterRepository(IManagementTransport transport)
             // the Windows form of the Android defect where six futile attempts ran
             // across fourteen minutes before the OS dropped its own bond and repair
             // finally triggered.
-            var trust = transport.Trust;
-            if (AdapterResetSignature.IsBondMismatch(
-                    directFailure,
-                    trust.WindowsPaired,
-                    trust.PeerReachable))
+            //
+            // Only the attribute-layer shape is conclusive at this point. The
+            // link-layer shape -- which is what this hardware actually produces --
+            // requires two independently resolved devices to fail the same way, and
+            // the fallback below is what produces the second one. So it correctly
+            // does NOT short-circuit here; it classifies after the ladder, in
+            // AdapterConnectionService. See AdapterResetSignature.
+            if (AdapterResetSignature.IsBondMismatch(directFailure, transport.Trust))
             {
                 throw directFailure;
             }

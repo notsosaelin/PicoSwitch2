@@ -74,45 +74,58 @@ public sealed class GattRecoveryPolicyTests
 }
 
 /// <summary>
-/// The Windows bond-mismatch signature.
+/// The Windows bond-mismatch signature, pinned to what the hardware did.
 ///
-/// **Confidence: Hypothesis.** Reasoned from the Windows API surface and from the
-/// hardware-confirmed Android behaviour, and NOT yet observed against a reflashed
-/// adapter on Windows. These tests pin the CONDITION SET so the thing under test
-/// is written down; they do not establish that the condition set is right. The
-/// exit criterion for that is first-attempt <c>RepairRequired</c> against a
-/// genuinely reflashed adapter (WINDOWS_PASS.md §31 Phase 2).
+/// **Confidence: the observable shape is Confirmed.** On 2026-08-29 an adapter
+/// was reflashed with the Windows pairing left in place, and four connect
+/// attempts produced <c>services / Unreachable</c> with no ATT byte and no
+/// <c>HRESULT</c> — never the <c>AccessDenied</c> the first version of this
+/// signature was written to expect. An unpair and re-pair fixed it instantly,
+/// with no firmware change.
+///
+/// These tests therefore do two jobs, and the second is the important one:
+/// they pin the corrected condition set, and they prove it cannot fire on the
+/// ordinary failures that share its status value.
 /// </summary>
 public sealed class AdapterResetSignatureTests
 {
+    /// <summary>The exact evidence the 2026-08-29 run produced, second attempt.</summary>
+    private static TransportTrustSnapshot Reflashed => new(
+        WindowsPaired: true,
+        PeerObserved: true,
+        PeerAnsweredGatt: false,
+        LinkFailuresAfterResolve: 2);
+
     [Fact]
-    public void AllThreeFactsAreRequired()
+    public void TheHardwareShapeIsRecognised()
     {
-        // Without a held pairing this is simply "not paired", which is a different
-        // message and a different flow.
-        Assert.False(AdapterResetSignature.IsBondMismatch(
+        // 16:47:09 on 2026-08-29, reconstructed exactly: Windows reports the
+        // adapter paired, the address-restricted fallback scan sees that exact
+        // adapter advertising, and service discovery returns Unreachable on both
+        // the direct and the scan-resolved device.
+        Assert.True(AdapterResetSignature.IsBondMismatch(
             GattFailureStage.Services,
-            GattCommunicationOutcome.AccessDenied,
+            GattCommunicationOutcome.Unreachable,
             hresult: null,
-            windowsStillPaired: false,
-            peerReachable: true));
+            Reflashed));
+    }
 
-        // Without reachability, an out-of-range adapter would be misdiagnosed as
-        // reflashed.
-        Assert.False(AdapterResetSignature.IsBondMismatch(
-            GattFailureStage.Services,
-            GattCommunicationOutcome.AccessDenied,
-            hresult: null,
-            windowsStillPaired: true,
-            peerReachable: false));
-
-        // With all three, it fires.
+    [Fact]
+    public void TheAttributeLayerShapeIsStillRecognised()
+    {
+        // Retained even though this hardware never produced it. A different radio,
+        // driver or Windows build may surface the refusal at the attribute layer,
+        // and it costs nothing to keep. One resolved-device failure is enough here:
+        // an explicit AccessDenied is conclusive on its own.
         Assert.True(AdapterResetSignature.IsBondMismatch(
             GattFailureStage.Services,
             GattCommunicationOutcome.AccessDenied,
             hresult: null,
-            windowsStillPaired: true,
-            peerReachable: true));
+            new TransportTrustSnapshot(
+                WindowsPaired: true,
+                PeerObserved: false,
+                PeerAnsweredGatt: true,
+                LinkFailuresAfterResolve: 0)));
     }
 
     [Theory]
@@ -124,31 +137,150 @@ public sealed class AdapterResetSignatureTests
             GattFailureStage.Command,
             outcome: null,
             hresult: hresult,
-            windowsStillPaired: true,
-            peerReachable: true));
+            new TransportTrustSnapshot(true, PeerObserved: true)));
+
+    [Theory]
+    [InlineData(GattFailureStage.Services)]
+    [InlineData(GattFailureStage.Subscribe)]
+    [InlineData(GattFailureStage.Command)]
+    public void TheSignatureIsNotRestrictedToOneStage(GattFailureStage stage) =>
+        // Android matches HCI 0x05/0x06 at the CONNECT stage. Windows exposes no
+        // HCI to user mode, and the refusal surfaces wherever the stack first needs
+        // the key. Pinning all three stops a future tidy-up from reintroducing
+        // Android's stage restriction.
+        Assert.True(AdapterResetSignature.IsBondMismatch(
+            stage,
+            GattCommunicationOutcome.Unreachable,
+            hresult: null,
+            Reflashed));
+
+    /* --------------------------------------------------------------------
+     * The negative half. Unreachable is ALSO what an absent adapter produces,
+     * so every one of these must stay false or the app would offer to destroy
+     * a working pairing on ordinary bad luck.
+     * ------------------------------------------------------------------ */
 
     [Fact]
-    public void AnOrdinaryUnreachableFailureIsNotTheSignature()
+    public void APoweredOffAdapterIsNotABondMismatch()
     {
-        // Otherwise every out-of-range adapter would offer to unpair itself.
+        // Nothing advertised, so nothing was observed. This is the single most
+        // important negative: a switched-off adapter produces exactly the same
+        // GattCommunicationStatus as a reflashed one.
+        Assert.False(AdapterResetSignature.IsBondMismatch(
+            GattFailureStage.Services,
+            GattCommunicationOutcome.Unreachable,
+            hresult: null,
+            new TransportTrustSnapshot(
+                WindowsPaired: true,
+                PeerObserved: false,
+                PeerAnsweredGatt: false,
+                LinkFailuresAfterResolve: 2)));
+    }
+
+    [Fact]
+    public void AnAdapterThatWasNeverSeenIsNotABondMismatch() =>
+        Assert.False(AdapterResetSignature.IsBondMismatch(
+            GattFailureStage.Services,
+            GattCommunicationOutcome.Unreachable,
+            hresult: null,
+            new TransportTrustSnapshot(WindowsPaired: true, PeerObserved: false)));
+
+    [Fact]
+    public void ASingleTransientLinkFailureIsNotEnough()
+    {
+        // One resolved-device failure against a present adapter is noise: a
+        // momentary link collision looks identical. The corroboration is the
+        // direct connect and the fresh scan-resolved connect INDEPENDENTLY
+        // agreeing, which is why the ladder is allowed to run its fallback.
+        Assert.False(AdapterResetSignature.IsBondMismatch(
+            GattFailureStage.Services,
+            GattCommunicationOutcome.Unreachable,
+            hresult: null,
+            Reflashed with { LinkFailuresAfterResolve = 1 }));
+
+        Assert.Equal(2, AdapterResetSignature.CorroboratingLinkFailures);
+    }
+
+    [Fact]
+    public void AnUnpairedAdapterIsNotABondMismatchHoweverItFails()
+    {
+        // Without a held pairing this is simply "not paired": a different message,
+        // a different flow, and nothing to repair. Covers the first-time pairing
+        // attempt made outside the adapter's physical pairing window.
+        Assert.False(AdapterResetSignature.IsBondMismatch(
+            GattFailureStage.Services,
+            GattCommunicationOutcome.Unreachable,
+            hresult: null,
+            Reflashed with { WindowsPaired = false }));
+
+        Assert.False(AdapterResetSignature.IsBondMismatch(
+            GattFailureStage.Services,
+            GattCommunicationOutcome.AccessDenied,
+            hresult: null,
+            new TransportTrustSnapshot(false, PeerObserved: true, PeerAnsweredGatt: true)));
+    }
+
+    [Fact]
+    public void AFailureBeforeTheDeviceResolvedIsNotABondMismatch()
+    {
+        // A connect-stage failure means Windows never opened the device, so it
+        // never got as far as needing a key. Retryable, and handled by the clean
+        // retry instead.
         Assert.False(AdapterResetSignature.IsBondMismatch(
             GattFailureStage.Connect,
             GattCommunicationOutcome.Unreachable,
             hresult: null,
-            windowsStillPaired: true,
-            peerReachable: true));
-    }
+            Reflashed));
 
-    [Fact]
-    public void AConnectFailureWithNoStatusAtAllCannotBeTheSignature()
-    {
-        // A bare timeout carries no evidence about keys either way.
+        // A bare timeout carries no evidence about keys in either direction.
         Assert.False(AdapterResetSignature.IsBondMismatch(
             GattFailureStage.Connect,
             outcome: null,
             hresult: null,
-            windowsStillPaired: true,
-            peerReachable: true));
+            Reflashed));
+    }
+
+    [Fact]
+    public void AProtocolErrorThatIsNotAnAuthenticationRefusalIsNotTheSignature()
+    {
+        // The adapter answered at the attribute layer with an ordinary ATT error.
+        // It has a key; it simply refused this request.
+        Assert.False(AdapterResetSignature.IsBondMismatch(
+            GattFailureStage.Command,
+            GattCommunicationOutcome.ProtocolError,
+            hresult: null,
+            new TransportTrustSnapshot(true, PeerObserved: true, PeerAnsweredGatt: true)));
+    }
+
+    [Fact]
+    public void ASuccessfulRetryNeverReachesTheSignatureAtAll()
+    {
+        // Nothing to classify without a tagged transport failure -- which is what a
+        // recovered attempt leaves behind.
+        Assert.False(AdapterResetSignature.IsBondMismatch(
+            new ManagementException("no transport detail"),
+            Reflashed));
+    }
+
+    [Fact]
+    public void TheExplanationNamesEveryPredicateAndTheVerdict()
+    {
+        // The 2026-08-29 log said only "paired=True peerAnswered=False", which was
+        // not enough to tell WHICH clause rejected the classification. The next run
+        // must not have that problem.
+        var failure = new GattTransportException(
+            "unreachable",
+            GattFailureStage.Services,
+            GattCommunicationOutcome.Unreachable);
+
+        var explained = AdapterResetSignature.Explain(failure, Reflashed);
+        Assert.Equal(
+            "paired=True observed=True answeredGatt=False linkFailures=2/2 -> BOND MISMATCH",
+            explained);
+
+        Assert.Contains(
+            "linkFailures=1/2 -> not a bond mismatch",
+            AdapterResetSignature.Explain(failure, Reflashed with { LinkFailuresAfterResolve = 1 }));
     }
 
     [Fact]
@@ -159,6 +291,15 @@ public sealed class AdapterResetSignatureTests
         // privileged @SystemApi. Here the app can unpair itself.
         Assert.Contains("Repair pairing", AdapterResetSignature.RepairMessage);
         Assert.DoesNotContain("settings", AdapterResetSignature.RepairMessage);
+    }
+
+    [Fact]
+    public void TheStalePairingMessageExistsForTheCaseWithNoRowToRepair()
+    {
+        // Reached through the PAIR flow after the row was removed, where there is
+        // no Repair button to point at. It must still name a way out.
+        Assert.Contains("Repair pairing", AdapterResetSignature.StalePairingMessage);
+        Assert.NotEqual(AdapterResetSignature.RepairMessage, AdapterResetSignature.StalePairingMessage);
     }
 }
 

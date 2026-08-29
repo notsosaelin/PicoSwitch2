@@ -65,18 +65,29 @@ public sealed class BleGattManagementTransport : IManagementTransport
     private bool validated;
 
     /*
-     * The two facts AdapterResetSignature needs, recorded per ATTEMPT rather than
-     * read off the live connection.
+     * The evidence AdapterResetSignature weighs, recorded per LOGICAL ATTEMPT
+     * rather than read off the live connection.
      *
      * This is not a style choice. Reading them from the connection could never
      * work: by the time a caller asks whether a failure was a bond mismatch, the
      * failed attempt's objects have already been disposed, so `WindowsPaired`
-     * would always read false and the signature could never fire. They are set at
-     * the start of an attempt, updated as it progresses, and deliberately NOT
-     * cleared by teardown -- the question is asked after the attempt has failed.
+     * would always read false and the signature could never fire. They are
+     * deliberately NOT cleared by teardown -- teardown runs BEFORE the caller
+     * classifies the failure.
+     *
+     * They are cleared when the LOGICAL attempt changes (see PrepareConnection),
+     * not per physical connect: one logical attempt spans the direct connect, any
+     * clean retry and the address-restricted fallback, and the corroboration the
+     * signature needs is precisely that those separate connects agree. Clearing
+     * per physical connect would erase the advertisement the fallback scan just
+     * found; never clearing would let a session from ten minutes ago vouch for a
+     * peer that is now switched off.
      */
+    private long evidenceAttempt = long.MinValue;
     private bool attemptPaired;
-    private bool peerAnswered;
+    private bool peerObserved;
+    private bool peerAnsweredGatt;
+    private int linkFailuresAfterResolve;
 
     /// <summary>
     /// The reply currently being assembled, if any.
@@ -97,7 +108,11 @@ public sealed class BleGattManagementTransport : IManagementTransport
         {
             lock (gate)
             {
-                return new TransportTrustSnapshot(attemptPaired, peerAnswered);
+                return new TransportTrustSnapshot(
+                    attemptPaired,
+                    peerObserved,
+                    peerAnsweredGatt,
+                    linkFailuresAfterResolve);
             }
         }
     }
@@ -107,6 +122,17 @@ public sealed class BleGattManagementTransport : IManagementTransport
         lock (gate)
         {
             context = next;
+
+            // A NEW logical attempt starts with no evidence. Within one logical
+            // attempt -- direct, retry, fallback -- it accumulates.
+            if (next.LogicalAttempt != evidenceAttempt)
+            {
+                evidenceAttempt = next.LogicalAttempt;
+                attemptPaired = false;
+                peerObserved = false;
+                peerAnsweredGatt = false;
+                linkFailuresAfterResolve = 0;
+            }
         }
 
         Log("prepare",
@@ -232,14 +258,16 @@ public sealed class BleGattManagementTransport : IManagementTransport
 
             lock (gate)
             {
-                peerAnswered = true;
+                // The exact expected address, seen advertising the management
+                // service. On the remembered-adapter path `wanted` is set, so this
+                // cannot be some other Pico standing in for the user's.
+                peerObserved = true;
             }
 
             sender.Stop();
             completion.TrySetResult(new DiscoveredManagementPeer(
                 args.BluetoothAddress,
                 text,
-                DeviceId: null,
                 DisplayName: string.IsNullOrWhiteSpace(args.Advertisement.LocalName)
                     ? null
                     : args.Advertisement.LocalName,
@@ -297,9 +325,8 @@ public sealed class BleGattManagementTransport : IManagementTransport
             validated = false;
             expectsPairing = context.PairingState is "notpaired" or "pairing";
 
-            // A fresh attempt starts with no evidence. `peerAnswered` may already
-            // be true from a scan that just found this device, which is exactly the
-            // signal it is meant to carry, so only the paired flag resets here.
+            // Re-read per physical connect; the rest of the evidence belongs to the
+            // logical attempt and is reset in PrepareConnection.
             attemptPaired = false;
         }
 
@@ -397,11 +424,21 @@ public sealed class BleGattManagementTransport : IManagementTransport
         {
             // Uncached on the first resolution of every session. A reflashed
             // adapter can otherwise be served the shape it had before the flash.
+            //
+            // This is load-bearing for the stale-bond diagnosis, not a nicety: it
+            // is the reason a `services Unreachable` cannot be explained away as a
+            // cache artefact. A cache hit would SUCCEED, returning the pre-flash
+            // shape; it could not return Unreachable.
             var services = await GuardAsync(
                 GattFailureStage.Services,
                 "The adapter refused service discovery.",
                 () => device.GetGattServicesForUuidAsync(ServiceUuid, BluetoothCacheMode.Uncached)
                     .AsTask(cancellationToken)).ConfigureAwait(false);
+            if (services.Status != GattCommunicationStatus.Success)
+            {
+                LogLinkState(device, gattSession, services.Status);
+            }
+
             RequireSuccess(services.Status, services.ProtocolError, GattFailureStage.Services,
                 "The adapter did not expose its management service.");
 
@@ -634,14 +671,21 @@ public sealed class BleGattManagementTransport : IManagementTransport
         GattFailureStage stage,
         string message)
     {
-        if (status != GattCommunicationStatus.Unreachable)
+        lock (gate)
         {
-            // The peer said SOMETHING -- even a refusal. That is what separates
-            // "the adapter is present and rejecting us", which is the bond-mismatch
-            // shape, from "the adapter is not here", which is not.
-            lock (gate)
+            if (status != GattCommunicationStatus.Unreachable)
             {
-                peerAnswered = true;
+                // The peer answered at the ATTRIBUTE layer -- even a refusal.
+                peerAnsweredGatt = true;
+            }
+            else if (stage != GattFailureStage.Connect)
+            {
+                // Windows opened the device and then could not reach its GATT
+                // server. Counted per resolved device object: two of these inside
+                // one logical attempt is the direct connect and the fresh
+                // scan-resolved connect independently agreeing, which is the
+                // corroboration the link-refusal shape requires.
+                linkFailuresAfterResolve += 1;
             }
         }
 
@@ -653,6 +697,43 @@ public sealed class BleGattManagementTransport : IManagementTransport
         var failure = new GattTransportException(message, stage, ToOutcome(status), protocolError);
         Log("fail", failure.Describe());
         throw failure;
+    }
+
+    /// <summary>
+    /// What the LINK was doing when service discovery failed.
+    ///
+    /// Added after the 2026-08-29 stale-bond run, which established the observable
+    /// shape (`services Unreachable`, no ATT byte, no HRESULT) but could not
+    /// distinguish "Windows never established a link" from "Windows established a
+    /// link and it dropped when encryption failed". Both are consistent with a
+    /// bond mismatch; only the second would let the DIRECT connect prove the peer
+    /// is physically present, which would in turn allow first-attempt
+    /// classification without waiting for the fallback scan to see an
+    /// advertisement.
+    ///
+    /// Diagnostic ONLY. It is deliberately not part of
+    /// <see cref="AdapterResetSignature"/> yet: what these properties read at this
+    /// exact moment has not been measured, and encoding a guess is how the first
+    /// version of that signature came to be wrong. Promote it only if a run shows
+    /// it reads reliably.
+    /// </summary>
+    private void LogLinkState(
+        BluetoothLEDevice device,
+        GattSession session,
+        GattCommunicationStatus status)
+    {
+        try
+        {
+            Log("link",
+                $"status={status} connection={device.ConnectionStatus} " +
+                $"session={session.SessionStatus} maxPdu={session.MaxPduSize}");
+        }
+        catch (Exception error)
+        {
+            // Reading a disposed or torn-down projection must never replace the
+            // failure it was trying to describe.
+            Log("link", $"status={status} unreadable ({error.GetType().Name})");
+        }
     }
 
     private static GattCommunicationOutcome ToOutcome(GattCommunicationStatus status) => status switch
