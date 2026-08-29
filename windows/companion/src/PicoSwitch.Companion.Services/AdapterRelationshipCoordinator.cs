@@ -12,15 +12,12 @@ namespace PicoSwitch.Companion.Services;
 /// </summary>
 public sealed record AdapterRelationship(
     string Address,
-    string DisplayName = AdapterRecord.DefaultProductName,
-
-    // The Windows device interface path, when one is known. Not identity.
-    string? DeviceId = null);
+    string DisplayName = AdapterRecord.DefaultProductName);
 
 public static class AdapterRelationshipExtensions
 {
     public static AdapterRelationship ToRelationship(this AdapterRecord record) =>
-        new(record.Address, record.DisplayName, record.DeviceId);
+        new(record.Address, record.DisplayName);
 }
 
 /// <summary>
@@ -238,8 +235,9 @@ public sealed class AdapterRelationshipCoordinator(AdapterRelationship? initialR
                 status.Phase != AdapterRelationshipPhase.Discovering)
             {
                 // A watcher can report the same advertisement again while the
-                // first result is still being acted on. It may improve the device
-                // id, but it must never start a second pairing or connection.
+                // first result is still being acted on. It may improve the
+                // display name, but it must never start a second pairing or
+                // connection.
                 if (discoveryGeneration == generation &&
                     SameAddress(candidate?.Address, relationship.Address) &&
                     candidate is not null)
@@ -490,10 +488,17 @@ public sealed class AdapterRelationshipCoordinator(AdapterRelationship? initialR
     /// attempts across fourteen minutes were observed on the Android side before
     /// the OS dropped its own bond and repair finally triggered.
     /// </param>
+    /// <param name="repairMessage">
+    /// What to tell the user when <paramref name="bondMismatch"/> holds. Defaults
+    /// to the remembered-adapter wording, which names the Repair action. The pair
+    /// flow overrides it, because a stale bond met there has no remembered row and
+    /// therefore no Repair button to point at.
+    /// </param>
     public AdapterLifecycleDecision ConnectionFailed(
         long connectionGeneration,
         string message,
-        bool bondMismatch = false)
+        bool bondMismatch = false,
+        string? repairMessage = null)
     {
         lock (gate)
         {
@@ -505,12 +510,13 @@ public sealed class AdapterRelationshipCoordinator(AdapterRelationship? initialR
             activeAttempt = null;
             if (bondMismatch)
             {
+                var repair = repairMessage ?? AdapterResetSignature.RepairMessage;
                 status = status with
                 {
                     Phase = AdapterRelationshipPhase.RepairRequired,
-                    Message = AdapterResetSignature.RepairMessage,
+                    Message = repair,
                 };
-                return new AdapterLifecycleDecision.RepairRequired(AdapterResetSignature.RepairMessage);
+                return new AdapterLifecycleDecision.RepairRequired(repair);
             }
 
             status = status with { Phase = AdapterRelationshipPhase.Failed, Message = message };
@@ -654,7 +660,6 @@ public sealed class AdapterRelationshipCoordinator(AdapterRelationship? initialR
 
     private static AdapterRelationship Merge(AdapterRelationship old, AdapterRelationship fresh) => old with
     {
-        DeviceId = fresh.DeviceId ?? old.DeviceId,
         DisplayName = string.IsNullOrWhiteSpace(fresh.DisplayName) ? old.DisplayName : fresh.DisplayName,
     };
 }

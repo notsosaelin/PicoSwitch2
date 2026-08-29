@@ -43,7 +43,7 @@ public sealed record AdapterPairingResult(
 ///   encrypted, WITHOUT MITM protection. Every string here says "bonded" or
 ///   "encrypted" and none says "authenticated" or "secure", and that is a copy
 ///   rule, not a style preference.
-/// - **Never auto-repair.** <see cref="UnpairAsync"/> destroys a trust
+/// - **Never auto-repair.** <see cref="UnpairByAddressAsync"/> destroys a trust
 ///   relationship and is only ever called behind an explicit user confirmation.
 ///
 /// ## Why <c>ConfirmOnly</c>
@@ -55,37 +55,19 @@ public sealed record AdapterPairingResult(
 /// </summary>
 public static class WindowsAdapterPairing
 {
-    public static async Task<WindowsPairingSnapshot> ReadAsync(string deviceId)
-    {
-        try
-        {
-            var information = await DeviceInformation.CreateFromIdAsync(deviceId);
-            return new WindowsPairingSnapshot(
-                information.Pairing.IsPaired
-                    ? WindowsPairingKnown.Paired
-                    : WindowsPairingKnown.NotPaired,
-                information.Pairing.CanPair,
-                information.Name);
-        }
-        catch (Exception)
-        {
-            // An unreadable pairing state is reported as Unknown rather than
-            // guessed. Guessing "not paired" would offer a pairing flow for a
-            // working adapter; guessing "paired" would let the bond-mismatch
-            // signature fire on a device that was never paired at all.
-            return new WindowsPairingSnapshot(WindowsPairingKnown.Unknown, false, null);
-        }
-    }
-
     /// <summary>
-    /// Read the pairing state for a peer that has only just been discovered.
+    /// Read Windows' pairing state for one adapter, by address.
     ///
-    /// A fresh advertisement carries an address and no device path, so the device
-    /// has to be opened to reach <c>DeviceInformation.Pairing</c>. Unknown on
-    /// failure rather than a guess in either direction: guessing "not paired"
-    /// would start a pairing ceremony for a working adapter, and guessing "paired"
-    /// would let the bond-mismatch signature fire on a device that was never
-    /// paired at all.
+    /// The address is the only identifier the app persists, and it is sufficient:
+    /// <c>BluetoothLEDevice.FromBluetoothAddressAsync</c> resolves the device --
+    /// and with it <c>DeviceInformation.Pairing</c> -- with no live session and no
+    /// cached path. A device-path overload used to exist beside this one and was
+    /// unreachable, because nothing ever cached a path to pass it.
+    ///
+    /// Unknown on failure rather than a guess in either direction: guessing "not
+    /// paired" would start a pairing ceremony for a working adapter, and guessing
+    /// "paired" would let the bond-mismatch signature fire on a device that was
+    /// never paired at all.
     /// </summary>
     public static async Task<WindowsPairingSnapshot> ReadByAddressAsync(
         ulong bluetoothAddress,
@@ -160,7 +142,7 @@ public static class WindowsAdapterPairing
     }
 
     /// <summary>
-    /// Drop the Windows pairing for one adapter.
+    /// Drop the Windows pairing for one adapter, resolved from its ADDRESS.
     ///
     /// **This is the one place Windows is better than Android.** The Kotlin
     /// backend cannot do this at all — <c>BluetoothDevice.removeBond()</c> is a
@@ -169,21 +151,52 @@ public static class WindowsAdapterPairing
     /// what makes <see cref="AdapterResetSignature.RepairMessage"/> an action
     /// rather than an instruction.
     ///
+    /// ## Why the address, and not a saved device path
+    ///
+    /// It used to take a WinRT device path that the app cached at pairing time.
+    /// It never did: nothing in the codebase ever populated that field, so Repair
+    /// always took its "no device path" branch, logged a warning, cleared the
+    /// repair flag and returned — reporting success while leaving the stale
+    /// Windows bond exactly where it was. Observed on hardware 2026-08-29.
+    ///
+    /// The address is the identifier the app actually persists, and Windows will
+    /// re-resolve the paired device from it at any time, with no live management
+    /// session and no cached state. That is what the transport already does on
+    /// every connect, which is why the same run could report <c>paired=True</c>
+    /// four times while Repair claimed it could not find the device.
+    ///
     /// Scoped to one adapter. The caller retains that row's alias, peer history
     /// and selected identity; only the Windows-side trust is replaced.
     /// </summary>
-    public static async Task<bool> UnpairAsync(
-        string deviceId,
+    public static async Task<AdapterUnpairResult> UnpairByAddressAsync(
+        ulong bluetoothAddress,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            var information = await DeviceInformation.CreateFromIdAsync(deviceId)
+            using var device = await BluetoothLEDevice.FromBluetoothAddressAsync(bluetoothAddress)
                 .AsTask(cancellationToken).ConfigureAwait(false);
-            var result = await information.Pairing.UnpairAsync().AsTask(cancellationToken)
-                .ConfigureAwait(false);
-            return result.Status is DeviceUnpairingResultStatus.Unpaired or
-                DeviceUnpairingResultStatus.AlreadyUnpaired;
+            if (device is null)
+            {
+                return AdapterUnpairResult.Unresolved;
+            }
+
+            var pairing = device.DeviceInformation.Pairing;
+            if (!pairing.IsPaired)
+            {
+                // Idempotent: there is nothing to remove, and the caller's goal --
+                // no stale Windows trust for this adapter -- already holds.
+                return AdapterUnpairResult.AlreadyUnpaired;
+            }
+
+            var result = await pairing.UnpairAsync().AsTask(cancellationToken).ConfigureAwait(false);
+            return result.Status switch
+            {
+                DeviceUnpairingResultStatus.Unpaired => AdapterUnpairResult.Unpaired,
+                DeviceUnpairingResultStatus.AlreadyUnpaired => AdapterUnpairResult.AlreadyUnpaired,
+                DeviceUnpairingResultStatus.AccessDenied => AdapterUnpairResult.AccessDenied,
+                _ => AdapterUnpairResult.Failed,
+            };
         }
         catch (Exception error)
         {
@@ -226,6 +239,63 @@ public static class WindowsAdapterPairing
             AdapterPairingOutcome.Failed,
             status,
             $"Windows could not pair with the adapter ({status})."),
+    };
+}
+
+/// <summary>
+/// What an unpair actually did.
+///
+/// A bool cannot carry this. "Windows could not resolve the device" and "Windows
+/// removed the pairing" both used to return false and true respectively, with no
+/// way to distinguish either from "there was nothing paired" — and Repair has to
+/// tell them apart, because only a genuine removal may clear the repair flag.
+/// </summary>
+public enum AdapterUnpairResult
+{
+    /// <summary>The pairing existed and was removed.</summary>
+    Unpaired,
+
+    /// <summary>Windows held no pairing for this adapter. Idempotent success.</summary>
+    AlreadyUnpaired,
+
+    /// <summary>Windows could not open the device at all — usually radio-off.</summary>
+    Unresolved,
+
+    AccessDenied,
+
+    Failed,
+}
+
+public static class AdapterUnpairResults
+{
+    /// <summary>
+    /// Whether Windows now holds no pairing for the adapter.
+    ///
+    /// The ONLY condition under which Repair may clear the repair flag: reporting
+    /// a repair that did not happen is what the 2026-08-29 run actually did.
+    /// </summary>
+    public static bool TrustRemoved(this AdapterUnpairResult value) =>
+        value is AdapterUnpairResult.Unpaired or AdapterUnpairResult.AlreadyUnpaired;
+
+    public static string DiagnosticName(this AdapterUnpairResult value) => value switch
+    {
+        AdapterUnpairResult.Unpaired => "removed",
+        AdapterUnpairResult.AlreadyUnpaired => "already-unpaired",
+        AdapterUnpairResult.Unresolved => "unresolved",
+        AdapterUnpairResult.AccessDenied => "access-denied",
+        _ => "failed",
+    };
+
+    public static string Message(this AdapterUnpairResult value) => value switch
+    {
+        AdapterUnpairResult.Unpaired or AdapterUnpairResult.AlreadyUnpaired =>
+            "Pairing removed. Pair the adapter again.",
+        AdapterUnpairResult.Unresolved =>
+            "Windows could not reach that adapter to remove its pairing. " +
+            "Check that Bluetooth is on and try again.",
+        AdapterUnpairResult.AccessDenied =>
+            "Windows refused to remove the pairing for this adapter.",
+        _ => "Windows could not remove the pairing for this adapter.",
     };
 }
 

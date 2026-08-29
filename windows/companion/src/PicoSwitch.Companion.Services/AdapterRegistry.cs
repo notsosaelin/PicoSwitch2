@@ -115,15 +115,25 @@ public sealed record AdapterRecord
 
     public required string Address { get; init; }
 
-    /// <summary>
-    /// The Windows device interface path, when one has been resolved.
-    ///
-    /// Cached because <c>DeviceInformationPairing</c> and
-    /// <c>GattSession.FromDeviceIdAsync</c> both want it, and re-resolving it
-    /// costs a discovery pass. It is NOT identity: it can change across a stack
-    /// reinstall while the adapter stays the same adapter.
-    /// </summary>
-    public string? DeviceId { get; init; }
+    /*
+     * There is deliberately NO cached Windows device path here.
+     *
+     * One used to exist, on the reasoning that DeviceInformationPairing and
+     * GattSession.FromDeviceIdAsync both want a path and re-resolving costs a
+     * discovery pass. Nothing ever populated it -- the single construction site
+     * left it null and no code path ever assigned one -- so every consumer took
+     * its null branch forever. Repair's null branch logged a warning, cleared the
+     * repair flag and returned WITHOUT unpairing, reporting a repair that had not
+     * happened. Observed on hardware 2026-08-29.
+     *
+     * The Address below is the durable identifier, and Windows re-resolves the
+     * device (and its pairing object) from it on demand. Do not reintroduce a
+     * cached path: it was never identity anyway -- it can change across a stack
+     * reinstall while the adapter stays the same adapter.
+     *
+     * Documents written before 2026-08-29 may still carry a "device" key. It is
+     * ignored on load rather than migrated; there is nothing in it worth keeping.
+     */
 
     public string? UserAlias { get; init; }
 
@@ -154,7 +164,7 @@ public sealed record AdapterRecord
         : !string.IsNullOrWhiteSpace(LastKnownName) ? LastKnownName
         : $"{DefaultProductName} {Id.ShortLabel}";
 
-    public static AdapterRecord? Of(string address, string? name = null, string? deviceId = null)
+    public static AdapterRecord? Of(string address, string? name = null)
     {
         if (AdapterId.FromAddress(address) is not { } id)
         {
@@ -165,7 +175,6 @@ public sealed record AdapterRecord
         {
             Id = id,
             Address = id.Value,
-            DeviceId = deviceId,
             LastKnownName = string.IsNullOrWhiteSpace(name) ? DefaultProductName : name,
         };
     }
@@ -303,11 +312,6 @@ public static class AdapterRegistryCodec
                 writer.WriteStartObject();
                 writer.WriteString("id", record.Id.Value);
                 writer.WriteString("address", record.Address);
-                if (record.DeviceId is { } deviceId)
-                {
-                    writer.WriteString("device", deviceId);
-                }
-
                 if (record.UserAlias is { } alias)
                 {
                     writer.WriteString("alias", alias);
@@ -422,7 +426,6 @@ public static class AdapterRegistryCodec
         {
             Id = id,
             Address = id.Value,
-            DeviceId = Truncate(Text(row, "device"), 256),
 
             // Re-sanitize on read: the document may have been hand-edited, and a
             // value that entered clean is not proof the bytes on disk still are.

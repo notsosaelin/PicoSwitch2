@@ -34,15 +34,21 @@ public sealed record ConnectionState
 /// <summary>
 /// One advertised management endpoint, as discovery found it.
 ///
-/// Carries the WinRT device id rather than a device object: the transport
-/// resolves the object when it is ready to connect, and holding a
-/// <c>BluetoothLEDevice</c> across a discovery result is how a stale handle
-/// survives into the next attempt.
+/// Carries the address rather than a device object: the transport resolves the
+/// object when it is ready to connect, and holding a <c>BluetoothLEDevice</c>
+/// across a discovery result is how a stale handle survives into the next
+/// attempt.
+///
+/// It deliberately carries no WinRT device path either. An advertisement does not
+/// have one, so the field that used to be here was always null — and code that
+/// branched on it therefore always took the null path. That is what made Repair
+/// silently do nothing; see <c>WindowsAdapterPairing.UnpairByAddressAsync</c>.
+/// The Bluetooth address is the durable identifier, and it is enough to re-resolve
+/// everything Windows knows.
 /// </summary>
 public sealed record DiscoveredManagementPeer(
     ulong BluetoothAddress,
     string Address,
-    string? DeviceId = null,
     string? DisplayName = null,
     short? SignalStrengthDbm = null);
 
@@ -102,15 +108,44 @@ public interface IManagementTransport : IManagementChannel, IAsyncDisposable
     void MarkValidated();
 
     /// <summary>
-    /// Whether Windows currently reports this adapter as paired, and whether it
-    /// was seen advertising inside the attempt window.
+    /// The evidence <see cref="AdapterResetSignature"/> weighs beside the failure
+    /// itself, accumulated across one LOGICAL attempt.
     ///
-    /// Both halves feed <see cref="AdapterResetSignature"/>, which cannot decide
-    /// anything without them: a refusal from an unpaired device is "not paired",
-    /// and a refusal from a device that was never heard from is "out of range".
+    /// Read after the attempt has failed and its objects are disposed, which is
+    /// why the transport records these rather than exposing the live connection.
     /// </summary>
     TransportTrustSnapshot Trust { get; }
 }
 
-/// <summary>The two facts the bond-mismatch signature needs beside the failure itself.</summary>
-public readonly record struct TransportTrustSnapshot(bool WindowsPaired, bool PeerReachable);
+/// <summary>
+/// What one logical connect attempt established about the peer.
+///
+/// The first version of this record carried a single <c>PeerReachable</c> flag
+/// set by two unrelated events — an advertisement arriving, and a GATT operation
+/// returning something other than <c>Unreachable</c>. Those are different facts
+/// with different force, and flattening them made the one shape the hardware
+/// actually produces inexpressible. They are separate here, deliberately.
+/// </summary>
+/// <param name="WindowsPaired">
+/// Windows reported the peer as paired when the device was opened.
+/// </param>
+/// <param name="PeerObserved">
+/// The EXACT expected address was seen advertising the management service inside
+/// this attempt. A powered-off, absent or out-of-range adapter cannot satisfy
+/// this, which is what makes it safe to reason from.
+/// </param>
+/// <param name="PeerAnsweredGatt">
+/// A GATT operation returned an attribute-layer answer — even a refusal. This is
+/// strictly stronger than <paramref name="PeerObserved"/> but is produced by a
+/// different layer, and this hardware never produces it during a bond mismatch.
+/// </param>
+/// <param name="LinkFailuresAfterResolve">
+/// How many separately resolved <c>BluetoothLEDevice</c> objects failed with
+/// <c>Unreachable</c> at or after service discovery. One is noise; two is the
+/// direct connect and the fresh scan-resolved connect agreeing.
+/// </param>
+public readonly record struct TransportTrustSnapshot(
+    bool WindowsPaired,
+    bool PeerObserved,
+    bool PeerAnsweredGatt = false,
+    int LinkFailuresAfterResolve = 0);

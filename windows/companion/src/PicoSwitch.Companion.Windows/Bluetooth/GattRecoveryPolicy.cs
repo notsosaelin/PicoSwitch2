@@ -246,71 +246,151 @@ public static class GattRecoveryPolicy
 /// three-party relationship with only one party cleared: the host keeps its LTK
 /// and the app keeps its saved relationship.
 ///
-/// ## The Windows detection is NOT the Android one
+/// ## What Windows actually does — measured, 2026-08-29
 ///
-/// Android surfaces the HCI disconnect reason to the app, so the Kotlin side
-/// matches on status 0x05 (`AUTHENTICATION_FAILURE`) or 0x06
-/// (`PIN_OR_KEY_MISSING`) at the connect stage. **Windows does not expose HCI
-/// status codes to user mode at all.** What is available is
-/// <c>GattCommunicationStatus</c> plus the <c>HRESULT</c> on a thrown exception,
-/// so the signature has to be reconstructed from three facts held together:
+/// The first version of this class was reasoned from the API surface and was
+/// WRONG. It expected the refusal to surface at the attribute layer, as
+/// <c>AccessDenied</c> or an authentication <c>HRESULT</c>. Against a genuinely
+/// reflashed adapter, Windows produced neither. What it produced, repeatedly,
+/// was:
 ///
-/// 1. Windows reports the peer as **paired**;
-/// 2. the device was **reachable** — an advertisement was seen inside the attempt
-///    window, so this is not simply an absent adapter;
-/// 3. an operation against an **encrypted attribute** returned <c>AccessDenied</c>
-///    or threw <c>E_ACCESSDENIED</c> /
-///    <c>E_BLUETOOTH_ATT_INSUFFICIENT_AUTHENTICATION</c>.
+/// <code>
+/// open device resolved paired=True
+/// fail stage=services GattCommunicationStatus=Unreachable
+/// </code>
 ///
-/// All three are load-bearing. Without (1) this is simply "not paired", which is a
-/// different message and a different flow. Without (2) an out-of-range adapter
-/// would be misdiagnosed as reflashed. Without (3) any ordinary connect failure
-/// would trip it.
+/// with no ATT byte and no <c>HRESULT</c> at all — the status was RETURNED by
+/// <c>GetGattServicesForUuidAsync</c>, not thrown, so there was never an
+/// exception to carry one.
 ///
-/// **Confidence: Hypothesis.** Reasoned from the Windows API surface and from the
-/// hardware-confirmed Android behaviour, and NOT yet observed on Windows against a
-/// reflashed adapter. WINDOWS_PASS.md §12.2 and §31 Phase 2 name the exit
-/// criterion: first-attempt <c>RepairRequired</c> against a genuinely reflashed
-/// adapter. Until that runs, treat the specific condition set below as the thing
-/// under test.
+/// The mechanism explains the shape. Windows holds an LTK for a bonded peer and
+/// encrypts the link on connection, before any ATT transaction exists. The
+/// reflashed adapter has no matching key, SMP fails and the link drops. The
+/// failure is therefore BELOW the attribute layer, and WinRT's word for "the
+/// operation could not complete over the air" is <c>Unreachable</c>. There is no
+/// attribute-layer error because no attribute was ever reached.
+///
+/// The adapter's own firmware corroborates this by elimination: `mgmt_access.h`
+/// gates ADVERTISING and CONNECTION on neither bonding nor the pairing window,
+/// and gates only command WRITES on a bonded, encrypted client. No firmware rule
+/// refuses service discovery, so the refusal cannot come from the application
+/// layer.
+///
+/// **Confidence: Strong Evidence.** The observable behaviour is Confirmed —
+/// reproduced across four connect attempts and cleared instantly by an unpair and
+/// re-pair with no firmware change. The SMP-level mechanism is inference, because
+/// Windows exposes no HCI or SMP detail to user mode, and nothing here depends on
+/// the inference being right.
+///
+/// ## Why the signature must be compound
+///
+/// <c>Unreachable</c> is ALSO what a powered-off adapter produces. It is not, on
+/// its own, evidence of anything. Two shapes are recognised, and each carries its
+/// own corroboration:
+///
+/// **Shape 1, the attribute-layer refusal.** Windows still reports the peer as
+/// paired, the peer answered SOMETHING at the attribute layer, and that answer
+/// was <c>AccessDenied</c> or an authentication/encryption <c>HRESULT</c>. This is
+/// conclusive on its own and is retained even though this hardware did not
+/// produce it: a different radio, driver or Windows build may, and it costs
+/// nothing to keep.
+///
+/// **Shape 2, the link-layer refusal — what this hardware does.** All four facts
+/// are required:
+///
+/// 1. Windows still reports the peer as **paired**;
+/// 2. the **exact remembered address** was seen advertising by the
+///    service-UUID-restricted watcher inside this attempt — a powered-off,
+///    absent or out-of-range adapter can never satisfy this;
+/// 3. the failure was <c>Unreachable</c> at a stage AFTER the device resolved, so
+///    Windows opened the device and then could not reach its GATT server;
+/// 4. that happened at least **twice** on separately resolved device objects —
+///    the direct connect and the fresh scan-resolved connect — so a single
+///    transient link failure cannot trip it.
+///
+/// Fact 4 is why the recovery ladder deliberately does NOT short-circuit on this
+/// shape: the fallback scan is what PRODUCES the corroboration. Shape 1 still
+/// ends the ladder immediately, because it is conclusive at the first failure.
 /// </summary>
 public static class AdapterResetSignature
 {
+    /// <summary>
+    /// How many independently resolved device objects must fail the same way
+    /// before a link-layer refusal counts as evidence rather than noise.
+    ///
+    /// Two, which is exactly what one logical attempt can produce: the direct
+    /// connect and the address-restricted fallback. Raising this would make the
+    /// signature unreachable; lowering it to one would let a single momentary link
+    /// failure against a present adapter offer to destroy a working pairing.
+    /// </summary>
+    public const int CorroboratingLinkFailures = 2;
+
     public static bool IsBondMismatch(
         GattFailureStage stage,
         GattCommunicationOutcome? outcome,
         int? hresult,
-        bool windowsStillPaired,
-        bool peerReachable)
+        TransportTrustSnapshot trust)
     {
-        if (!windowsStillPaired || !peerReachable)
+        if (!trust.WindowsPaired)
         {
+            // Without a held pairing this is simply "not paired": a different
+            // message, a different flow, and nothing to repair.
             return false;
         }
 
-        // Any stage qualifies EXCEPT a pure discovery failure: the refusal can
-        // surface when services are resolved, when the CCC is written, or on the
-        // first command, depending on where encryption is first required.
-        if (stage == GattFailureStage.Connect && outcome is null && hresult is null)
+        // Shape 1 -- the attribute layer refused us. Conclusive on its own,
+        // provided the peer was actually there to refuse.
+        if (trust.PeerObserved || trust.PeerAnsweredGatt)
         {
-            return false;
+            if (outcome == GattCommunicationOutcome.AccessDenied)
+            {
+                return true;
+            }
+
+            if (hresult is
+                GattStatusFormatter.EAccessDenied or
+                GattStatusFormatter.EBluetoothAttInsufficientAuthentication or
+                GattStatusFormatter.EBluetoothAttInsufficientEncryption)
+            {
+                return true;
+            }
         }
 
-        if (outcome == GattCommunicationOutcome.AccessDenied)
-        {
-            return true;
-        }
-
-        return hresult is
-            GattStatusFormatter.EAccessDenied or
-            GattStatusFormatter.EBluetoothAttInsufficientAuthentication or
-            GattStatusFormatter.EBluetoothAttInsufficientEncryption;
+        // Shape 2 -- the link layer refused us, which is all Windows reports.
+        // Every clause is load-bearing; see the class comment.
+        return trust.PeerObserved &&
+            outcome == GattCommunicationOutcome.Unreachable &&
+            stage != GattFailureStage.Connect &&
+            trust.LinkFailuresAfterResolve >= CorroboratingLinkFailures;
     }
 
     /// <summary>As above, for a thrown transport failure.</summary>
-    public static bool IsBondMismatch(Exception error, bool windowsStillPaired, bool peerReachable) =>
+    public static bool IsBondMismatch(Exception error, TransportTrustSnapshot trust) =>
         GattRecoveryPolicy.FirstTransportFailure(error) is { } failure &&
-        IsBondMismatch(failure.Stage, failure.Outcome, failure.Hresult, windowsStillPaired, peerReachable);
+        IsBondMismatch(failure.Stage, failure.Outcome, failure.Hresult, trust);
+
+    /// <summary>
+    /// Render the decision with every predicate that fed it.
+    ///
+    /// The 2026-08-29 hardware run cost a flash cycle and produced a log that said
+    /// only <c>paired=True peerAnswered=False</c>, which was not enough to tell
+    /// WHICH clause rejected the classification. This exists so the next run does
+    /// not have that problem: it names each fact and the verdict together.
+    /// </summary>
+    public static string Explain(Exception error, TransportTrustSnapshot trust)
+    {
+        var failure = GattRecoveryPolicy.FirstTransportFailure(error);
+        var verdict = failure is null
+            ? "no tagged transport failure"
+            : IsBondMismatch(failure.Stage, failure.Outcome, failure.Hresult, trust)
+                ? "BOND MISMATCH"
+                : "not a bond mismatch";
+
+        return $"paired={trust.WindowsPaired} observed={trust.PeerObserved} " +
+            $"answeredGatt={trust.PeerAnsweredGatt} " +
+            $"linkFailures={trust.LinkFailuresAfterResolve}/{CorroboratingLinkFailures} " +
+            $"-> {verdict}";
+    }
 
     /// <summary>
     /// What the user has to do, and why.
@@ -325,8 +405,20 @@ public static class AdapterResetSignature
     public const string RepairMessage =
         "The adapter was reset and no longer recognises this pairing. " +
         "Repair pairing to continue.";
-}
 
+    /// <summary>
+    /// The same condition reached through the pairing flow, where there is no
+    /// remembered row to repair.
+    ///
+    /// Observed 2026-08-29: after Remove, pressing Pair found the adapter, Windows
+    /// reported the stale bond as paired, the ceremony was skipped entirely and the
+    /// connect failed the same way — with no route out, because Repair belongs to a
+    /// row that no longer existed. The message names the actual action instead.
+    /// </summary>
+    public const string StalePairingMessage =
+        "Windows still holds an old pairing for this adapter, which the adapter no " +
+        "longer recognises. Add the adapter again and use Repair pairing to replace it.";
+}
 /// <summary>Pure authority check used before any WinRT callback may mutate session state.</summary>
 public static class GattCallbackAuthority
 {

@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using PicoSwitch.Bridge.Core;
 using PicoSwitch.Companion.Services.Diagnostics;
 using PicoSwitch.Companion.Windows.Bluetooth;
@@ -39,23 +40,34 @@ public sealed class AdapterConnectionService
 
     private readonly Func<Task<BluetoothRadioCapabilities>> probeRadio;
 
+    private readonly IAdapterPairingGateway pairing;
+
     /// <param name="probeRadio">
     /// Injectable so the service is testable without a radio. Production passes
     /// nothing; a test that had to depend on the developing machine's own
     /// Bluetooth hardware would be a test that fails on a build agent for reasons
     /// unrelated to the code.
     /// </param>
+    /// <param name="pairing">
+    /// Injectable for the same reason as <paramref name="probeRadio"/>, and for a
+    /// sharper one: the repair path's whole job is to call Windows' unpair, so a
+    /// test that cannot observe that call cannot tell a working repair from one
+    /// that silently does nothing. That is precisely the defect found on hardware
+    /// on 2026-08-29.
+    /// </param>
     public AdapterConnectionService(
         AdapterRepository repository,
         WindowsDocumentStore documents,
         DiagnosticLog diagnostics,
         Func<long>? nowMillis = null,
-        Func<Task<BluetoothRadioCapabilities>>? probeRadio = null)
+        Func<Task<BluetoothRadioCapabilities>>? probeRadio = null,
+        IAdapterPairingGateway? pairing = null)
     {
         this.repository = repository;
         this.diagnostics = diagnostics;
         this.nowMillis = nowMillis ?? (() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
         this.probeRadio = probeRadio ?? WindowsBluetoothRadio.ProbeAsync;
+        this.pairing = pairing ?? new WindowsPairingGateway();
 
         registryStore = new AdapterRegistryStore(documents);
         historyStore = new PeerHistoryStore(documents);
@@ -157,13 +169,27 @@ public sealed class AdapterConnectionService
                 $"name={peer.DisplayName ?? "(none)"}");
 
             var pairingState = await ReadPairingStateAsync(peer.BluetoothAddress).ConfigureAwait(false);
+            if (pairingState == WindowsPairingState.Paired)
+            {
+                // No ceremony will run: Windows already holds a bond, so PairAsync
+                // is skipped entirely and the flow goes straight to connect. If that
+                // bond is stale the connect fails, and this line is what tells the
+                // difference between "pairing succeeded" and "pairing never
+                // happened". Observed 2026-08-29, where four Pair presses in a row
+                // reused a bond the adapter had already forgotten.
+                diagnostics.Info(
+                    "pair",
+                    $"{peer.Address}: Windows already holds a pairing; " +
+                    "no new pairing ceremony will run");
+            }
+
             var found = new AdapterRelationship(peer.Address, peer.DisplayName ?? AdapterRecord.DefaultProductName);
             var decision = lifecycle.DeviceDiscovered(generation, found, pairingState);
             Publish();
 
             if (decision is AdapterLifecycleDecision.AwaitPairing)
             {
-                var result = await WindowsAdapterPairing
+                var result = await pairing
                     .PairAsync(peer.BluetoothAddress, cancellationToken).ConfigureAwait(false);
                 diagnostics.Info("pair", $"{result.Outcome} ({result.Status}) {result.Message}");
 
@@ -205,18 +231,14 @@ public sealed class AdapterConnectionService
 
             active.Adopt(id);
 
-            // Read the real state rather than assuming one. A row with no cached
-            // device path is not a paired row -- it is the state a Repair leaves
-            // behind, and assuming Paired there would drive a connect against an
-            // adapter Windows no longer trusts and report the result as a mystery.
+            // Read the real state rather than assuming one, from the address --
+            // the only identifier this app persists.
             //
             // Unknown is safe: RequestReconnect attempts the connection anyway and
             // lets the failure classify itself.
-            var pairingState = record.DeviceId is { } deviceId
-                ? MapPairing((await WindowsAdapterPairing.ReadAsync(deviceId).ConfigureAwait(false)).State)
-                : MapPairing((await WindowsAdapterPairing
-                    .ReadByAddressAsync(id.ToBluetoothAddress(), cancellationToken)
-                    .ConfigureAwait(false)).State);
+            var pairingState = MapPairing((await pairing
+                .ReadAsync(id.ToBluetoothAddress(), cancellationToken)
+                .ConfigureAwait(false)).State);
 
             var decision = lifecycle.RequestReconnect(
                 record.ToRelationship(),
@@ -303,27 +325,43 @@ public sealed class AdapterConnectionService
 
             await repository.DisconnectAsync().ConfigureAwait(false);
 
-            if (record.DeviceId is { } deviceId)
+            // Resolve the Windows pairing object FRESH, from the address. Repair
+            // must work with no live management session and no cached state --
+            // that is the whole situation it exists for.
+            var outcome = await pairing
+                .UnpairAsync(id.ToBluetoothAddress(), cancellationToken)
+                .ConfigureAwait(false);
+            diagnostics.Info("repair", $"unpair {record.Address}: {outcome.DiagnosticName()}");
+
+            if (!outcome.TrustRemoved())
             {
-                var removed = await WindowsAdapterPairing.UnpairAsync(deviceId, cancellationToken)
-                    .ConfigureAwait(false);
-                diagnostics.Info("repair", $"unpair {record.Address}: {(removed ? "removed" : "refused")}");
+                // The stale bond is still there, so the row is still broken. The
+                // repair flag deliberately STAYS set: clearing it while the pairing
+                // survived is exactly the defect this replaced -- it reported a
+                // repair that had not happened.
+                RepairFailed(record.Address, outcome.Message());
             }
-            else
+
+            // Verify rather than assume. UnpairAsync reporting success and Windows
+            // still holding the pairing would leave the user in the loop this whole
+            // change exists to break, and the check costs one resolve.
+            var after = await pairing
+                .ReadAsync(id.ToBluetoothAddress(), cancellationToken)
+                .ConfigureAwait(false);
+            if (after.State == WindowsPairingKnown.Paired)
             {
-                diagnostics.Warn(
-                    "repair",
-                    $"no Windows device path cached for {record.Address}; " +
-                    "pair again to re-establish trust");
+                RepairFailed(
+                    record.Address,
+                    "Windows still reports this adapter as paired after removing the pairing. " +
+                    "Remove it from Windows Bluetooth settings and try again.");
             }
 
             UpdateRegistry(current => current.Update(id, row => row with
             {
                 RepairRequired = false,
-                DeviceId = null,
             }));
 
-            lifecycle.CancelAndRetainRelationship("Pairing removed. Pair the adapter again.");
+            lifecycle.CancelAndRetainRelationship(outcome.Message());
             Publish();
             return (object?)null;
         });
@@ -350,7 +388,13 @@ public sealed class AdapterConnectionService
         historyStore.Save(trimmed);
 
         Publish();
-        diagnostics.Info("app", $"removed adapter {id.Value}");
+        // Say what it did NOT do. Remove is local-only by design (WINDOWS_PASS.md
+        // §19.5) and the log line that read "removed adapter <addr>" was read on
+        // 2026-08-29 as though it had cleared the Windows pairing too.
+        diagnostics.Info(
+            "app",
+            $"removed adapter {id.Value} from this app; " +
+            "Windows pairing and adapter-side bonds untouched");
         return (object?)null;
     });
 
@@ -394,22 +438,28 @@ public sealed class AdapterConnectionService
         catch (Exception error)
         {
             var trust = repository.Trust;
-            var bondMismatch = AdapterResetSignature.IsBondMismatch(
-                error,
-                trust.WindowsPaired,
-                trust.PeerReachable);
+            var bondMismatch = AdapterResetSignature.IsBondMismatch(error, trust);
+            var id = AdapterId.FromAddress(address);
+            var remembered = id is { } candidate && registry.Value.Record(candidate) is not null;
 
-            lifecycle.ConnectionFailed(generation, error.Message, bondMismatch);
+            // A stale Windows bond reached through the PAIR flow has no remembered
+            // row and therefore no Repair button. Saying "the adapter did not expose
+            // its management service" there sent the user round the same loop four
+            // times on 2026-08-29; name the actual problem and the actual way out.
+            var repairMessage = remembered
+                ? AdapterResetSignature.RepairMessage
+                : AdapterResetSignature.StalePairingMessage;
+
+            lifecycle.ConnectionFailed(generation, error.Message, bondMismatch, repairMessage);
             Publish();
 
-            var id = AdapterId.FromAddress(address);
-            if (bondMismatch && id is { } known && registry.Value.Record(known) is not null)
+            if (bondMismatch && remembered && id is { } known)
             {
-                MarkRepairRequired(known, AdapterResetSignature.RepairMessage);
+                MarkRepairRequired(known, repairMessage);
             }
             else if (id is { } target)
             {
-                active.ActivationFailed(target, error.Message);
+                active.ActivationFailed(target, bondMismatch ? repairMessage : error.Message);
             }
 
             // The full WinRT detail, not just the friendly message. This is the
@@ -418,9 +468,8 @@ public sealed class AdapterConnectionService
             // is unactionable and the signature cannot be judged right or wrong.
             diagnostics.Error(
                 "connect",
-                $"failed{(bondMismatch ? " (BOND MISMATCH)" : string.Empty)} " +
-                $"paired={trust.WindowsPaired} peerAnswered={trust.PeerReachable} " +
-                $"[{DescribeFailure(error)}] {error.Message}");
+                $"failed [{DescribeFailure(error)}] " +
+                $"[{AdapterResetSignature.Explain(error, trust)}] {error.Message}");
             throw;
         }
 
@@ -458,6 +507,23 @@ public sealed class AdapterConnectionService
             "connect",
             $"connected {address} as {verified?.DisplayName ?? row.DisplayName}: {Describe(Snapshot.Value)}");
         return adapterId;
+    }
+
+    /// <summary>
+    /// A repair that did not remove the Windows pairing.
+    ///
+    /// Leaves the repair flag set and reports the real reason. It does NOT drive
+    /// the lifecycle through ConnectionFailed: there is no active connection
+    /// attempt during a repair, so that call would be ignored and the user would be
+    /// told nothing.
+    /// </summary>
+    [DoesNotReturn]
+    private void RepairFailed(string address, string message)
+    {
+        lifecycle.CancelAndRetainRelationship(message);
+        Publish();
+        diagnostics.Warn("repair", $"{address}: {message}");
+        throw new ManagementException(message);
     }
 
     private void MarkRepairRequired(AdapterId id, string message)
@@ -510,8 +576,8 @@ public sealed class AdapterConnectionService
     /// A freshly discovered peer has no cached device path, so its pairing state
     /// is read through the address. Unknown stays Unknown.
     /// </summary>
-    private static async Task<WindowsPairingState> ReadPairingStateAsync(ulong address) =>
-        MapPairing((await WindowsAdapterPairing.ReadByAddressAsync(address).ConfigureAwait(false)).State);
+    private async Task<WindowsPairingState> ReadPairingStateAsync(ulong address) =>
+        MapPairing((await pairing.ReadAsync(address).ConfigureAwait(false)).State);
 
     private static WindowsPairingState MapPairing(WindowsPairingKnown known) => known switch
     {
