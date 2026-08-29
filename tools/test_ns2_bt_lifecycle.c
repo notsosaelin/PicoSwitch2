@@ -121,6 +121,46 @@ static void test_classic_ssp_attempt_admission(void)
  * unadmitted replacement, and nothing ever committed it. The controller worked
  * for that session and could never reconnect without the pairing window.
  */
+/*
+ * One inquiry result must never restart a connection already under way.
+ *
+ * Hardware, 2026-08-29 (build a05083ec): a single DualSense pairing recorded
+ * inquiry_start three times between acl_up and Encryption Change. Each of those
+ * rediscoveries re-admitted the device being connected, and re-admission
+ * rebuilds the candidate from the new result -- overwriting the pending name
+ * (frequently empty, since an EIR need not repeat it) that the connection slot
+ * and driver match are built from, clearing the parked link key, and starting a
+ * second HID connection.
+ *
+ * The session ended with all three symptoms together: empty link-key database,
+ * generic classification, and no vendor-driver initialisation -- so no
+ * player-slot LED and no configured colour. They are ONE defect, not three.
+ */
+static void test_a_live_classic_attempt_is_not_readmitted(void)
+{
+    // The regression: an OUTGOING attempt in flight to this same device. The
+    // old guard recognised only an incoming duplicate, so this returned false
+    // and the candidate was rebuilt from scratch mid-pairing.
+    assert(ns2_bt_classic_inquiry_admission_is_duplicate(true, true, false));
+
+    // Direction is irrelevant, and so is which stage the attempt has reached:
+    // before the ACL exists the pending record is the evidence, after HID open
+    // clears that record the ACL is.
+    assert(ns2_bt_classic_inquiry_admission_is_duplicate(false, false, true));
+    assert(ns2_bt_classic_inquiry_admission_is_duplicate(true, true, true));
+
+    // A DIFFERENT device seen while one attempt is in flight is not a duplicate;
+    // suppressing it would make a second controller undiscoverable.
+    assert(!ns2_bt_classic_inquiry_admission_is_duplicate(true, false, false));
+
+    // Nothing in flight and no link: an ordinary first admission, and the retry
+    // path after a failed attempt, both still proceed.
+    assert(!ns2_bt_classic_inquiry_admission_is_duplicate(false, false, false));
+
+    // A stale pending record for another device must not gate this one.
+    assert(!ns2_bt_classic_inquiry_admission_is_duplicate(false, true, false));
+}
+
 static void test_classic_authentication_proof_sources(void)
 {
     // Neither event observed: nothing is proven, and the key stays uncommitted.
@@ -780,6 +820,7 @@ int main(void)
     test_boot_lockout();
     test_install_reset_bootstrap_is_one_shot();
     test_classic_ssp_attempt_admission();
+    test_a_live_classic_attempt_is_not_readmitted();
     test_classic_authentication_proof_sources();
     test_classic_first_pairing_orderings();
     test_classic_key_replacement();

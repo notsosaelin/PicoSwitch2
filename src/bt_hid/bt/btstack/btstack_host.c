@@ -4778,11 +4778,53 @@ static void packet_handler(uint8_t packet_type, uint16_t channel, uint8_t *packe
                     classic_trust_present);
                 if (classic_admission == NS2_BT_ADMISSION_REJECT)
                     break;
-                // Skip if we already have an active incoming connection to this device
-                // (the device connected to us before we found it in inquiry)
-                if (classic_state.pending_valid && !classic_state.pending_outgoing &&
-                    memcmp(classic_state.pending_addr, addr, 6) == 0) {
-                    printf("[BTSTACK_HOST] Already have incoming connection from this device, skipping outgoing\n");
+                /*
+                 * Never re-admit a device this adapter is already connecting to
+                 * or already connected to.
+                 *
+                 * The guard used to cover only an INCOMING attempt, so a device
+                 * we were dialling OUTGOING could be admitted again every time
+                 * inquiry came round -- and while the pairing window is open
+                 * inquiry restarts with no gap at all
+                 * (ns2_bt_inquiry_restart_delay_ms), so a controller that stays
+                 * discoverable throughout pairing gets rediscovered repeatedly
+                 * mid-connection.
+                 *
+                 * Re-admission is DESTRUCTIVE, not merely redundant. It:
+                 *   - overwrites pending_name with the new result's name, which
+                 *     is often empty because an EIR need not carry one. That is
+                 *     the name the connection slot is built from and therefore
+                 *     the name the driver match sees, so the controller binds
+                 *     the generic gamepad driver instead of its vendor driver
+                 *     and never runs that driver's initialisation -- no player
+                 *     LED, no configured colour, generic classification;
+                 *   - calls classic_pending_security_prepare(), which clears the
+                 *     parked link key that a peer-led SSP was about to have
+                 *     committed, so the pairing never becomes durable;
+                 *   - issues a second hid_host_connect() and allocates another
+                 *     connection slot for the same address.
+                 *
+                 * Hardware evidence (2026-08-29, build a05083ec): a single
+                 * DualSense pairing recorded inquiry_start three times between
+                 * acl_up and Encryption Change, and ended with an empty link-key
+                 * database, a generic classification and no DS5 LED setup. One
+                 * cause, all three symptoms.
+                 *
+                 * A genuinely failed attempt still gets retried: pending_valid is
+                 * cleared on ACL failure and disconnect, and the ACL is gone by
+                 * then, so this only suppresses duplicates of a LIVE attempt.
+                 */
+                bool pending_is_this_device =
+                    memcmp(classic_state.pending_addr, addr, 6) == 0;
+                bool acl_present =
+                    hci_connection_for_bd_addr_and_type(addr, BD_ADDR_TYPE_ACL) != NULL;
+                if (ns2_bt_classic_inquiry_admission_is_duplicate(
+                        classic_state.pending_valid, pending_is_this_device,
+                        acl_present)) {
+                    printf("[BTSTACK_HOST] Skipping duplicate inquiry admission "
+                           "(attempt_in_flight=%d acl=%d)\n",
+                           (classic_state.pending_valid && pending_is_this_device) ? 1 : 0,
+                           acl_present ? 1 : 0);
                     break;
                 }
 
