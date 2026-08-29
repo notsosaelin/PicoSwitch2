@@ -296,14 +296,15 @@ Built and software-verified:
 
 | # | Item | Confidence | State |
 |---|---|---|---|
-| A | Stale Windows pairing after an adapter flash/reset → `RepairRequired` | **Confirmed** shape; signature **corrected**, retest pending | Ran 2026-08-29. Disproved the pre-test hypothesis and rewrote the signature from the evidence. See below. |
-| B | The repair action (unpair → re-pair → reconnect) | **Defect found and fixed**, retest pending | Ran 2026-08-29. Repair had never worked; see below. |
+| A | Stale Windows pairing after an adapter flash/reset → `RepairRequired` | **Confirmed PASS** | Ran 2026-08-29, disproved the pre-test hypothesis, signature rewritten from the evidence, confirmed on retest the same day: first Connect press after the flash reached `RepairRequired` in 2.4 s. See below. |
+| B | The repair action (unpair → re-pair → reconnect) | **Confirmed PASS** | Ran 2026-08-29. Repair had never worked; fixed and confirmed on retest. See below. |
 | C | One management client, no churn | **Confirmed PASS** | 2026-08-29, from the adapter's own `btlife` ring: 21 lifecycle records, one handle, zero alternation violations, no transition across two Refreshes and full navigation. `dumps/windows-phase2-oneclient-2026-08-29.md`. |
 | D | A → B active-adapter handoff under real asynchronous callbacks | **Unknown** | Two adapters. The ordering is unit-tested over a fake port; whether a real trailing callback from A can reach B's state is not. |
 
-One thing the happy path was expected to settle and did not: **the recovery
-ladder's retry and 350 ms backoff still have not executed on hardware**, because
-every failure observed so far was at a non-retryable stage.
+Still open, neither blocking Phase 3: **the recovery ladder's retry and 350 ms
+backoff have still never executed on hardware**, because every failure observed
+so far was at a non-retryable stage; and whether `ConnectionStatus` discriminates
+an absent adapter (below).
 
 #### A — what Windows actually does
 
@@ -329,6 +330,25 @@ ladder is that the attribute shape still ends it at the first failure, while the
 link shape must let the fallback scan run: the fallback is what produces the
 corroborating second observation.
 
+The retest confirmed all of it, and a diagnostic added for it measured the
+mechanism instead of inferring it — four times identically:
+
+```
+link status=Unreachable connection=Connected session=Closed maxPdu=23
+```
+
+Windows established the LE link, the GATT session never opened, and the ATT MTU
+never left its 23-byte default, so **no ATT transaction of any kind occurred**.
+A link that comes up and carries no attribute traffic is the shape of encryption
+failing immediately after connection.
+
+**One promotion criterion is half met, and is deliberately not acted on.**
+`connection=Connected` during the failure was the first half; the second —
+`connection=Disconnected` for a genuinely absent adapter — was never observed.
+Promoting on half a criterion is what produced the wrong signature the first
+time, so `ConnectionStatus` stays diagnostic-only. Completing it costs no flash
+cycle: power the adapter off, press Connect once, read the `link` line.
+
 #### B — Repair had never worked
 
 Repair resolved the Windows pairing through `AdapterRecord.DeviceId`, a cached
@@ -342,6 +362,13 @@ device fresh from the address, unpairs once, verifies Windows agrees, and clears
 the flag only then. `DeviceId` is gone, and `IAdapterPairingGateway` is the seam
 that makes the unpair assertable.
 
+Confirmed on the retest by `[repair] unpair <addr>: removed`, and more
+convincingly by what followed: the subsequent Pair found the adapter **not**
+paired, ran a real ceremony, and required the physical double-tap — which the
+adapter only demands for a NEW bond. On the broken run the same step had found
+`pairing=paired` and skipped the ceremony entirely. A no-op cannot produce that
+difference.
+
 #### Before spending more bench time
 
 An audit before the run found the signature could not fire at all: thrown WinRT
@@ -351,8 +378,20 @@ remembered adapter connects directly. Fixing those is what made the run produce 
 usable answer rather than a second mystery. It is worth doing again before the
 next hardware session.
 
-The retest sequence — one flash cycle settles both A and B — is in
+Full evidence, the confounder table, and the two remaining open questions are in
 `docs/experiments/windows-phase2-boundaries-2026-08-29.md`.
+
+#### One more thing the retest exposed
+
+The classification was right and the **user was told something else**. The
+relationship reached `RepairRequired` and the banner said *Repair pairing to
+continue*, while the error surface — the most prominent element on the page —
+said `The adapter did not expose its management service`, twice, because both
+ladder branches failed identically and were joined verbatim. A classified bond
+mismatch now surfaces as `AdapterBondMismatchException` carrying the actionable
+message, with the tagged failure retained as its inner exception, and
+`ManagementErrorText.Summarize` de-duplicates identical branch messages without
+collapsing genuinely different ones.
 
 Two deliberate departures from the Kotlin original, both caught by their own
 tests:

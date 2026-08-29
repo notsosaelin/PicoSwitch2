@@ -1,7 +1,7 @@
 # Windows companion — the four remaining Phase 2 boundaries
 
-**Status:** C passed. A and B ran 2026-08-29 and found two defects; both are
-source-corrected and awaiting a confirming retest. D outstanding.
+**Status:** A, B and C **PASSED**. A and B each cost a defect on the first run
+and were confirmed on the retest the same day. D outstanding.
 
 **Build under test:** `windows/companion`. A/B/C were run against `9486c9d`;
 the corrections are in the commit that records this result.
@@ -239,7 +239,83 @@ Diagnostic only. **Promotion criterion:** if a repeat of this experiment shows
 established from the direct attempt and fact 2 may accept it in place of an
 advertisement. Until then it stays out of the signature.
 
-**Status: source-corrected from evidence; awaiting confirming retest.**
+### Retest — PASS, 2026-08-29 17:40
+
+Same conditions, corrected build. The **first Connect press after the flash**
+reached `RepairRequired`, 2.4 s from press to diagnosis:
+
+```
+17:40:21.310 open device resolved paired=True
+17:40:22.333 link status=Unreachable connection=Connected session=Closed maxPdu=23
+17:40:22.334 fail stage=services GattCommunicationStatus=Unreachable
+17:40:22.336 prepare reason=scan-fallback attempt=3 priorRetired=True
+17:40:22.734 open device resolved paired=True
+17:40:23.682 link status=Unreachable connection=Connected session=Closed maxPdu=23
+17:40:23.682 fail stage=services GattCommunicationStatus=Unreachable
+17:40:23.688 WARN [repair] ... The adapter was reset and no longer recognises this pairing.
+17:40:23.688 ERROR [connect] failed [...] [paired=True observed=True answeredGatt=False
+                                          linkFailures=2/2 -> BOND MISMATCH]
+```
+
+Reproduced identically on a second press (attempt 4). No clean retry ran, which
+is correct — the failure stage is not retryable.
+
+**Every predicate resolved as the corrected model predicts:** `paired=True`
+(Windows kept its bond), `observed=True` (the restricted scan saw this exact
+address), `answeredGatt=False` (nothing ever answered at the attribute layer —
+the old signature's entire basis, absent again), `linkFailures=2/2` (the direct
+and scan-resolved devices agreed).
+
+### The mechanism, now measured rather than inferred
+
+The `link` line was added specifically to settle this, and it did, four times
+identically:
+
+```
+link status=Unreachable connection=Connected session=Closed maxPdu=23
+```
+
+- **`connection=Connected`** — Windows established the LE link. The adapter is
+  physically present and reachable, and the DIRECT attempt can prove it without
+  waiting for an advertisement.
+- **`session=Closed`** — the `GattSession` is closed despite
+  `MaintainConnection = true`. The link exists; GATT over it does not.
+- **`maxPdu=23`** — the default ATT_MTU. **No MTU exchange ever completed**,
+  which means no ATT transaction of any kind occurred.
+
+A link that comes up and carries no ATT traffic at all is exactly the shape of
+encryption failing immediately after connection. The interpretation
+"Windows encrypts a bonded peer before any ATT transaction; the reflashed adapter
+has no matching key; the link is unusable" is now supported by direct observation
+of all three properties rather than by reasoning from the API surface alone.
+
+Windows still exposes no SMP or HCI detail, so *"SMP specifically"* remains
+inference. **Confidence: Confirmed** for the observable behaviour and the
+compound signature; **Strong Evidence** for the SMP-level cause. Nothing in the
+implementation depends on the latter.
+
+### The open unknown is HALF answered — deliberately not promoted
+
+The promotion criterion written before this run had two halves:
+
+1. `connection=Connected` at the moment of a services-stage `Unreachable` — **met,
+   four times**;
+2. `connection=Disconnected` for a genuinely absent adapter — **not observed**.
+
+Half a criterion is not a criterion, and promoting on the strength of "the API
+contract obviously implies it" is precisely what produced the wrong signature in
+the first place. `ConnectionStatus` therefore stays **diagnostic only**.
+
+Completing it costs no flash cycle: **power the adapter off, press Connect once,
+read the `link` line.** If it reads `connection=Disconnected`, presence can be
+established from the direct attempt, `PeerObserved` may accept it in place of an
+advertisement, and the signature gains first-attempt classification for an
+adapter that is present but not currently advertising. If it reads `Connected`
+for an absent adapter, the property is worthless as a discriminator and the note
+should say so.
+
+**Status: PASS.** Signature confirmed against hardware; one bounded follow-up
+question recorded above.
 
 ---
 
@@ -292,7 +368,31 @@ had been told anything, because there was no seam through which to ask.
 - `IAdapterPairingGateway` puts a seam under the three Windows pairing calls the
   service makes, so the unpair can be asserted rather than assumed.
 
-**Status: source-corrected; awaiting confirming retest.**
+### Retest — PASS, 2026-08-29 17:40
+
+```
+17:40:45.897 INFO [repair] unpair 88:A2:9E:D1:77:78: removed
+```
+
+The line that was entirely absent from the first run. `UnpairAsync` executed
+against a device resolved from the **address**, with no live management session
+and no cached path, and Windows confirmed the removal.
+
+**Independently corroborated by what happened next**, which is stronger than the
+log line itself. Compare the two runs at the same point:
+
+| | first run, broken repair | retest, fixed repair |
+|---|---|---|
+| after Repair, Pair reports | `pairing=paired` | `pairing=unknown` → NotPaired |
+| pairing ceremony | **skipped entirely** | ran |
+| physical double-tap | not required | **required** — `TimedOut` at 17:40:51, then `Paired` at 17:40:55 |
+| result | `services Unreachable`, loop | connected, identity/firmware/personality read |
+
+The bond really was gone: the adapter demanded its physical pairing window again,
+which it only does for a NEW bond (`mgmt_accept_bonding`). A no-op could not
+produce that.
+
+**Status: PASS.**
 
 ### Two adjacent findings from the same log
 
@@ -361,37 +461,22 @@ Fill in each **Result** above with what was observed, then update:
 - `AdapterResetSignature`'s doc comment — if A produced different values, the
   Hypothesis marker comes off and the real condition set goes in, with tests.
 
-Phase 2 may be marked **hardware-qualified** only when A, B and C have passed.
-C has. A and B have RUN, and are the reason this document exists — but a boundary
-is not passed by having its defect found and fixed. Both need one confirming
-retest against a genuinely reflashed adapter.
+**A, B and C have passed.** Phase 2's management half is hardware-qualified on a
+single-adapter setup.
 
 D is required before a second adapter is advertised as supported, but does not
 block Phase 3 on a single-adapter setup.
 
-## The smallest retest that settles A and B
+## What is still open after A, B and C
 
-One flash cycle covers both, because B is only reachable from the state A leaves.
+Neither blocks Phase 3.
 
-1. Connect normally, then Disconnect.
-2. Flash the adapter as usual.
-3. Leave the Windows pairing alone.
-4. Press **Connect**. If it fails, press **Connect** once more — the link-layer
-   shape needs the fallback scan to see the adapter, and on 2026-08-29 the first
-   attempt's scan timed out.
-5. The row should now say *repair required* and the banner should offer
-   *Repair pairing*.
-6. Press **Repair**, confirm, then double-tap the adapter and press **Connect**.
-7. Copy the Diagnostics log.
-
-What the log must show, and what each line settles:
-
-| Line | Settles |
-|---|---|
-| `[ble] link status=Unreachable connection=...` | whether the direct attempt can establish presence — the open question in A |
-| `[connect] failed [...] [paired=True observed=True answeredGatt=False linkFailures=2/2 -> BOND MISMATCH]` | A: the corrected signature fires on real evidence |
-| `[repair] unpair <addr>: removed` | B: the unpair actually executed — the line that was missing entirely |
-| `[pair] Paired (Paired) ...` then `[connect] connected ...` | the repaired relationship completes |
-
-If the signature still does not fire, the `Explain(...)` clause in that same line
-names which predicate rejected it. That is the whole reason it was added.
+1. **The recovery ladder's retry and 350 ms backoff have still never executed on
+   hardware.** Every failure observed across both sessions was at a
+   non-retryable stage, so the clean retry has correctly never been taken. It
+   needs a *connect-stage* failure to exercise, which no natural scenario has
+   produced yet.
+2. **Whether `ConnectionStatus` discriminates an absent adapter** — the half-met
+   promotion criterion in § A. One 60-second test: power the adapter off, press
+   Connect once, read the `link` line.
+3. **D**, the A → B handoff, which needs the second unit.
