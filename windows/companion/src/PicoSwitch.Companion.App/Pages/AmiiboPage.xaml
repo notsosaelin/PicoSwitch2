@@ -4,7 +4,8 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <ScrollViewer Padding="24">
-        <StackPanel MaxWidth="1000" HorizontalAlignment="Left" Spacing="8">
+        <Grid>
+            <StackPanel MaxWidth="1180" HorizontalAlignment="Stretch" Spacing="8">
             <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Amiibo" />
             <TextBlock
                 Style="{StaticResource BodyTextBlockStyle}"
@@ -16,6 +17,7 @@
                 Style="{StaticResource BodyTextBlockStyle}"
                 TextWrapping="Wrap"
                 Text="Phase 5 fills this page: import, upload with progress, present/eject, save slots, and CRC-verified download. The management session it needs is built." />
-        </StackPanel>
+            </StackPanel>
+        </Grid>
     </ScrollViewer>
 </Page>

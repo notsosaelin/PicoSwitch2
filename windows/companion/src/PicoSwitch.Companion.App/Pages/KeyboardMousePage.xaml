@@ -15,7 +15,8 @@
     </Page.Resources>
 
     <ScrollViewer Padding="24">
-        <StackPanel MaxWidth="1100" HorizontalAlignment="Left" Spacing="16">
+        <Grid>
+            <StackPanel MaxWidth="1240" HorizontalAlignment="Stretch" Spacing="16">
 
             <StackPanel Spacing="4">
                 <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Keyboard and mouse" />
@@ -123,8 +124,10 @@
                             <StackPanel x:Name="KeyboardHost" Spacing="4" />
                         </ScrollViewer>
 
-                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Mouse buttons" />
-                        <StackPanel x:Name="MouseButtonHost" Orientation="Horizontal" Spacing="4" />
+                        <StackPanel x:Name="MouseButtonSection" Spacing="4">
+                            <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Mouse buttons" />
+                            <StackPanel x:Name="MouseButtonHost" Orientation="Horizontal" Spacing="4" />
+                        </StackPanel>
 
                         <StackPanel x:Name="UndrawnSection" Spacing="4" Visibility="Collapsed">
                             <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Other bound keys" />
@@ -182,6 +185,7 @@
                     </StackPanel>
                 </Border>
             </StackPanel>
-        </StackPanel>
+            </StackPanel>
+        </Grid>
     </ScrollViewer>
 </Page>

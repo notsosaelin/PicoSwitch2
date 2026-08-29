@@ -79,6 +79,15 @@ public sealed record KeyboardMouseView
 
     public required IReadOnlyList<KeyBindingCell> MouseButtons { get; init; }
 
+    /// <summary>
+    /// Whether mouse buttons are part of THIS profile.
+    ///
+    /// The keyboard profile is what the adapter uses when only a keyboard is
+    /// attached, so a mouse button in it can never fire. Drawing five dead
+    /// controls invites the user to bind something that will silently do nothing.
+    /// </summary>
+    public required bool ShowMouseButtons { get; init; }
+
     /// <summary>Bindings the adapter reports for keys this build does not draw.</summary>
     public required IReadOnlyList<KeyBindingCell> Undrawn { get; init; }
 
@@ -91,7 +100,13 @@ public sealed record KeyboardMouseView
     /// <summary>True once status has been read; an empty map before that is not "no bindings".</summary>
     public required bool Loaded { get; init; }
 
-    public int BoundCount => Keys.Count(cell => cell.Bound) + MouseButtons.Count(cell => cell.Bound);
+    /// <summary>Bound inputs, counting only what this profile actually shows.</summary>
+    public int BoundCount =>
+        Keys.Count(cell => cell.Bound) +
+        (ShowMouseButtons ? MouseButtons.Count(cell => cell.Bound) : 0);
+
+    /// <summary>The denominator behind it, so the two always agree.</summary>
+    public int MappableCount => Keys.Count + (ShowMouseButtons ? MouseButtons.Count : 0);
 
     public static string Describe(KbmDestination destination) => destination switch
     {
@@ -159,6 +174,9 @@ public static class KeyboardMouse
             MouseButtons = KeyboardLayout.MouseButtons
                 .Select(cap => Cell(cap, byButton))
                 .ToArray(),
+
+            // Only the keyboard-and-mouse profile has a mouse to press.
+            ShowMouseButtons = profile == KbmProfile.KeyboardMouse,
 
             // Everything the adapter reports that this build cannot draw. Listed
             // rather than dropped: a binding the user cannot see is one they cannot

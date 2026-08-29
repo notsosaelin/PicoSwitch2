@@ -16,7 +16,8 @@
     </Page.Resources>
 
     <ScrollViewer Padding="24">
-        <StackPanel MaxWidth="1000" HorizontalAlignment="Left" Spacing="16">
+        <Grid>
+            <StackPanel MaxWidth="1180" HorizontalAlignment="Stretch" Spacing="16">
 
             <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Settings" />
 
@@ -236,6 +237,7 @@
                     <Button Content="Open Diagnostics" Click="OnOpenDiagnostics" />
                 </StackPanel>
             </Border>
-        </StackPanel>
+            </StackPanel>
+        </Grid>
     </ScrollViewer>
 </Page>
