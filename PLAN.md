@@ -197,11 +197,18 @@ Open and unchanged:
   multi-adapter handoff is unit-tested but has never run on hardware and is **not** hardware
   qualified. It is a carried-forward validation item, to run before a second adapter is advertised
   as supported.
-- **Phase 3, the adapter dashboard, is implemented** (2026-08-29). Status with the bridge-contract
-  verdict, controller mode with re-enumeration, appearance, console input, wake, Paired Controllers
-  with selective Forget and remote pairing, the management gate, low-level bond diagnostics and the
-  redacted support bundle. **Software-validated only:** none of the Phase 3 surface has been
-  exercised against an adapter yet, and its exit criteria (§31 Phase 3) require exactly that.
+- **Phase 3, the adapter dashboard, is implemented and hardware smoke-tested** (2026-08-29). Status
+  with the bridge-contract verdict, controller mode with re-enumeration, appearance, console input,
+  wake, Paired Controllers with selective Forget and remote pairing, the management gate, low-level
+  bond diagnostics and the redacted support bundle. Remote controller pairing, personality
+  switching, colour changes, the peer inventory and selective Forget were all exercised against a
+  real adapter. **Not exhaustive qualification:** the manual UX and edge-state pass (§26.5) is still
+  outstanding and tracked separately.
+- **Phase 4, keyboard and mouse, is implemented** (2026-08-29). Status and mode, both paged profiles
+  with the strict page contract, bind and reload, per-profile and full reset, mouse tuning bounded by
+  adapter-reported ranges, and a drawn keyboard rather than a paged list. **Software-validated only;**
+  its exit criteria need hardware (H9): a binding surviving a reload and a reconnect, reset restoring
+  adapter defaults, and live mouse tuning never blocking the window.
 
 Do not choose a universal cross-platform UI framework merely to support this port.
 
