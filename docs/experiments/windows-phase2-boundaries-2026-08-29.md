@@ -1,6 +1,6 @@
 # Windows companion — the four remaining Phase 2 boundaries
 
-**Status:** prepared, not yet run. Results go in this file.
+**Status:** C passed 2026-08-29. A, B and D outstanding. Results go in this file.
 
 **Build under test:** `windows/companion`, commit `9486c9d`.
 Run `./build.ps1 -App` and launch
@@ -39,12 +39,11 @@ an adapter. The Android defect this guards against — two live transports, with
 Disconnect appearing to do nothing — was invisible from the app side and only
 showed up in the adapter's own view.
 
-**Setup.** UART on the adapter's GP0/GP1. The CP210x on `COM11` is present but
-the adapter did not answer `btstate`, so the wiring or adapter power needs
-attention before this runs.
+**Setup.** UART on the adapter's GP0/GP1.
 
 ```powershell
-pwsh -File tools/mgmt_watch.ps1 -Port COM11 -IntervalMs 2000
+pwsh -File tools/mgmt_watch.ps1 -Port COM11 -IntervalMs 1500 -RingEverySec 60 `
+  -DurationSec 300 -OutputPath dumps/<name>.jsonl
 ```
 
 **Sequence**, in the app, while the watch runs:
@@ -68,7 +67,34 @@ pwsh -File tools/mgmt_watch.ps1 -Port COM11 -IntervalMs 2000
 **Fails if** the watch shows churn during Refresh or navigation, or two clients
 at any point.
 
-**Result:** _not yet run_
+### Result — PASS, 2026-08-29 16:13–16:18
+
+Evidence: [`dumps/windows-phase2-oneclient-2026-08-29.md`](../../dumps/windows-phase2-oneclient-2026-08-29.md).
+
+- **Maximum concurrent management clients: 1.** 21 lifecycle records in the
+  adapter's own ring, all on a single handle `0x0040`, strictly alternating
+  connect/disconnect with **zero** alternation violations. Two GATT owners would
+  have produced a second connect with no disconnect between, or a second handle.
+  Neither appears.
+- **Refresh, navigation and window activity create no session.** From 16:13:06 to
+  16:13:46 — two Refreshes, all five destinations, and a minimise/restore — the
+  adapter reported no transition of any kind.
+- **Disconnect actually retires the session.** `cble.client` went true → false
+  with `mgmt.disconnects` incrementing exactly once.
+- **Reconnect creates one new session**, `cble.client` false → true with a single
+  `mgmt.connects` increment.
+- **No hidden loop.** Every disconnect carries `cause=none`, an application-level
+  teardown rather than a link failure, and `disc.ctrl` / `disc.hci` never moved
+  during the entire run — so no HCI-level disconnect occurred at all. The
+  inter-event gaps are irregular and human-paced (4 s, 7 s, 17 s, 22 s, 110 s); a
+  reconnect loop would show a regular cadence and would not stop.
+
+**Method note for whoever runs this next.** `mgmt_watch.ps1` at
+`-IntervalMs 1500 -RingEverySec 60` produced an effective host sample gap of
+~42 s, because each ring dump dominates the cadence. That is too coarse to ORDER
+a connect/disconnect pair, and the host-side counters alone were inconclusive.
+The adapter's own `btlife` ring has millisecond resolution and settled it. Read
+the ring, not the poll deltas.
 
 ---
 
