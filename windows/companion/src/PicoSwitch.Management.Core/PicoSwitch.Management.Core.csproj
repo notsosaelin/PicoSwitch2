@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Platform-neutral management core. Kotlin counterpart: `:management-core`.
+
+    `net9.0`, and no ProjectReference to PicoSwitch.Bridge.Core. Management and
+    Controller Link are two INDEPENDENT relationships with the same adapter
+    (WINDOWS_PASS.md §3.4); the Kotlin modules keep them apart and so does this.
+  -->
+  <PropertyGroup>
+    <TargetFramework>$(PicoSwitchPortableTargetFramework)</TargetFramework>
+    <RootNamespace>PicoSwitch.Management</RootNamespace>
+    <AssemblyName>PicoSwitch.Management.Core</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="PicoSwitch.Management.Core.Tests" />
+  </ItemGroup>
+
+</Project>

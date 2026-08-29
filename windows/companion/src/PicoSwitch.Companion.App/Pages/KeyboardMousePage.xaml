@@ -1,0 +1,21 @@
+<Page
+    x:Class="PicoSwitch.Companion.App.Pages.KeyboardMousePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <ScrollViewer Padding="24">
+        <StackPanel MaxWidth="1000" HorizontalAlignment="Left" Spacing="8">
+            <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Keyboard &amp; Mouse" />
+            <TextBlock
+                Style="{StaticResource BodyTextBlockStyle}"
+                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                TextWrapping="Wrap"
+                Text="Mode, bindings and mouse tuning for a keyboard and mouse attached to the adapter." />
+            <TextBlock
+                Margin="0,16,0,0"
+                Style="{StaticResource BodyTextBlockStyle}"
+                TextWrapping="Wrap"
+                Text="Phase 4 fills this page: paged mapping load, bind and reload, reset, and adapter-reported slider ranges. The management session it needs is built." />
+        </StackPanel>
+    </ScrollViewer>
+</Page>

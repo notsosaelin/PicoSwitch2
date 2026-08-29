@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>$(PicoSwitchWindowsTargetFramework)</TargetFramework>
+    <SupportedOSPlatformVersion>$(PicoSwitchSupportedOSPlatformVersion)</SupportedOSPlatformVersion>
+    <RootNamespace>PicoSwitch.Companion.Services.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <Platforms>AnyCPU;x64;arm64</Platforms>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/PicoSwitch.Companion.Services/PicoSwitch.Companion.Services.csproj" />
+  </ItemGroup>
+
+</Project>

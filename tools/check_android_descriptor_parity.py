@@ -1,19 +1,28 @@
 #!/usr/bin/env python3
-"""Verify the Android bridge HID descriptor is byte-identical on both sides.
+"""Verify the bridge HID descriptor is byte-identical in every language.
 
 The firmware identifies the companion bridge by an EXACT match against the
 canonical descriptor (see bthid_android_bridge.c), so a one-sided edit would not
-fail to compile or fail a unit test -- it would silently stop the handheld's
+fail to compile or fail a unit test -- it would silently stop the host's
 motion/battery/rumble/LED from ever being recognized. This check makes that
 failure loud and cheap.
 
 Sources compared:
   tools/fixtures/android_controller_hid.h  -> ANDROID_CONTROLLER_V2_HID_DESCRIPTOR
   android/companion/bridge-core/.../protocol/BridgeHidDescriptor.kt -> BridgeHidDescriptor.bytes
+  windows/companion/src/PicoSwitch.Bridge.Core/Protocol/BridgeHidDescriptor.cs -> Descriptor
 
-The Kotlin side lives in Bridge Core, the platform-neutral module, because the
-descriptor is a BRIDGE artifact rather than an Android one -- every platform
-backend registers these same bytes.
+The Kotlin and C# sides both live in their platform-neutral bridge core, because
+the descriptor is a BRIDGE artifact rather than any one platform's -- every
+platform backend registers these same bytes. The C# copy exists because a C#
+host is a Level 1 consumer of the documented contract (WINDOWS_PASS.md #9.4): it
+cannot link Kotlin bytecode, so the duplication is deliberate and this script is
+what makes it safe.
+
+The C# side is OPTIONAL: the Windows companion is a separate host and may not be
+present in every checkout or every sparse clone. When the file is missing the
+check reports two-way parity and still passes; when it is present a one-sided
+edit fails on all three.
 
 Usage: python tools/check_android_descriptor_parity.py
 Exit code 0 when identical, 1 otherwise.
@@ -29,6 +38,10 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 C_HEADER = ROOT / "tools" / "fixtures" / "android_controller_hid.h"
 KOTLIN = (ROOT / "android" / "companion" / "bridge-core" / "src" / "main" / "kotlin" /
           "dev" / "picoswitch" / "bridge" / "protocol" / "BridgeHidDescriptor.kt")
+CSHARP = (ROOT / "windows" / "companion" / "src" / "PicoSwitch.Bridge.Core" /
+          "Protocol" / "BridgeHidDescriptor.cs")
+CONTRACT_CSHARP = (ROOT / "windows" / "companion" / "src" / "PicoSwitch.Bridge.Core" /
+                   "Protocol" / "BridgeContract.cs")
 
 BYTE_RE = re.compile(r"0[xX][0-9a-fA-F]{1,2}")
 
@@ -72,6 +85,19 @@ def _kotlin_bytes() -> list[int]:
     return [int(value, 16) for value in BYTE_RE.findall(body)]
 
 
+def _csharp_bytes() -> list[int] | None:
+    """The C# descriptor, or None when the Windows companion is not checked out."""
+    if not CSHARP.is_file():
+        return None
+    text = _strip_comments(CSHARP.read_text(encoding="utf-8"))
+    # A C# collection expression, not a brace-delimited initializer, so the
+    # array is bounded by its own square brackets.
+    start = text.index("Descriptor =")
+    open_index = text.index("[", start)
+    close_index = text.index("];", open_index)
+    return [int(value, 16) for value in BYTE_RE.findall(text[open_index:close_index])]
+
+
 CONTRACT_KOTLIN = (ROOT / "android" / "companion" / "bridge-core" / "src" / "main" /
                    "kotlin" / "dev" / "picoswitch" / "bridge" / "protocol" /
                    "BridgeContract.kt")
@@ -93,6 +119,16 @@ def _kotlin_contract() -> int:
     return int(match.group(1))
 
 
+def _csharp_contract() -> int | None:
+    if not CONTRACT_CSHARP.is_file():
+        return None
+    text = _strip_comments(CONTRACT_CSHARP.read_text(encoding="utf-8"))
+    match = re.search(r"const\s+int\s+Version\s*=\s*(\d+)", text)
+    if not match:
+        raise SystemExit("BridgeContract.Version not found in the C# source")
+    return int(match.group(1))
+
+
 def _registered_digest(version: int) -> str | None:
     """The digest BridgeContract registers for `version`, or None."""
     text = _strip_comments(CONTRACT_KOTLIN.read_text(encoding="utf-8"))
@@ -105,61 +141,105 @@ def _registered_digest(version: int) -> str | None:
     return None
 
 
+def _csharp_registered_digest(version: int) -> str | None:
+    """The digest the C# BridgeContract registers for `version`, or None.
+
+    A separate registry rather than a shared one on purpose: the C# side is a
+    Level 1 reimplementation, so it has to state the digest itself for the claim
+    to mean anything. Comparing the two registries is what proves neither drifted.
+    """
+    if not CONTRACT_CSHARP.is_file():
+        return None
+    text = _strip_comments(CONTRACT_CSHARP.read_text(encoding="utf-8"))
+    block = re.search(r"DescriptorDigests[^=]*=\s*new Dictionary<int, string>\s*\{(.*?)\};", text, re.S)
+    if not block:
+        raise SystemExit("BridgeContract.DescriptorDigests not found in the C# source")
+    for entry_version, digest in re.findall(r"\[(\d+)\]\s*=\s*\"([0-9a-fA-F]{64})\"", block.group(1)):
+        if int(entry_version) == version:
+            return digest.lower()
+    return None
+
+
 def main() -> int:
     # Contract version first: a descriptor change without a version bump is the
     # failure this check exists to prevent, and reporting it before the byte diff
     # makes the required fix obvious.
     c_contract = _c_contract()
     kt_contract = _kotlin_contract()
-    if c_contract != kt_contract:
-        print("android bridge CONTRACT MISMATCH", file=sys.stderr)
-        print(f"  C  : ANDROID_BRIDGE_CONTRACT_VERSION = {c_contract}", file=sys.stderr)
-        print(f"  Kt : BridgeContract.VERSION          = {kt_contract}", file=sys.stderr)
+    cs_contract = _csharp_contract()
+    contracts = [("C  : ANDROID_BRIDGE_CONTRACT_VERSION", c_contract),
+                 ("Kt : BridgeContract.VERSION         ", kt_contract)]
+    if cs_contract is not None:
+        contracts.append(("C# : BridgeContract.Version         ", cs_contract))
+    if len({value for _, value in contracts}) != 1:
+        print("bridge CONTRACT MISMATCH", file=sys.stderr)
+        for label, value in contracts:
+            print(f"  {label} = {value}", file=sys.stderr)
         return 1
 
     c = _c_bytes()
     kt = _kotlin_bytes()
+    cs = _csharp_bytes()
 
     # Whole-descriptor digest, pinned per contract version. Byte-for-byte parity
-    # between the two languages is not enough on its own: a coordinated edit to
-    # BOTH sides keeps them equal while silently changing what goes on the wire.
-    # This is the check that forces a deliberate version bump for ANY byte.
+    # between the languages is not enough on its own: a coordinated edit to ALL
+    # sides keeps them equal while silently changing what goes on the wire. This
+    # is the check that forces a deliberate version bump for ANY byte.
     digest = hashlib.sha256(bytes(c)).hexdigest()
     registered = _registered_digest(c_contract)
     if registered is None:
-        print(f"android bridge contract {c_contract} has NO registered descriptor digest",
+        print(f"bridge contract {c_contract} has NO registered descriptor digest",
               file=sys.stderr)
         print(f'  add to BridgeContract.DESCRIPTOR_DIGESTS: {c_contract} to "{digest}",',
               file=sys.stderr)
         return 1
     if digest != registered:
-        print("android descriptor CHANGED WITHOUT A CONTRACT BUMP", file=sys.stderr)
+        print("descriptor CHANGED WITHOUT A CONTRACT BUMP", file=sys.stderr)
         print(f"  contract {c_contract} registers sha256 {registered}", file=sys.stderr)
         print(f"  the descriptor now hashes to  {digest}", file=sys.stderr)
         print("  If the change is intentional and observable by a peer:", file=sys.stderr)
-        print("    1. bump ANDROID_BRIDGE_CONTRACT_VERSION and BridgeContract.VERSION",
+        print("    1. bump ANDROID_BRIDGE_CONTRACT_VERSION, BridgeContract.VERSION",
               file=sys.stderr)
-        print(f'    2. register {c_contract + 1} to "{digest}",', file=sys.stderr)
-        print("    3. reflash the adapter before testing a new APK.", file=sys.stderr)
+        print("       and the C# BridgeContract.Version", file=sys.stderr)
+        print(f'    2. register {c_contract + 1} to "{digest}", in BOTH digest registries',
+              file=sys.stderr)
+        print("    3. reflash the adapter before testing a new host build.", file=sys.stderr)
         print("  If not, revert the descriptor.", file=sys.stderr)
         return 1
 
-    if c == kt:
-        print(f"android descriptor parity OK ({len(c)} bytes identical, "
-              f"bridge contract {c_contract}, sha256 {digest[:16]}...)")
-        return 0
+    # The C# registry is separate because the C# side is a Level 1
+    # reimplementation: it has to make the digest claim itself for the claim to
+    # mean anything. Comparing the two registries proves neither drifted.
+    cs_registered = _csharp_registered_digest(c_contract)
+    if cs is not None and cs_registered != registered:
+        print("C# descriptor digest registry DISAGREES", file=sys.stderr)
+        print(f"  Kt registers contract {c_contract} as {registered}", file=sys.stderr)
+        print(f"  C# registers contract {c_contract} as {cs_registered}", file=sys.stderr)
+        return 1
 
-    print("android descriptor MISMATCH", file=sys.stderr)
-    print(f"  C  : {len(c)} bytes", file=sys.stderr)
-    print(f"  Kt : {len(kt)} bytes", file=sys.stderr)
-    for index in range(max(len(c), len(kt))):
-        left = f"{c[index]:#04x}" if index < len(c) else "--"
-        right = f"{kt[index]:#04x}" if index < len(kt) else "--"
-        if left != right:
-            print(f"  first difference at index {index}: C={left} Kotlin={right}",
-                  file=sys.stderr)
-            break
-    return 1
+    languages = [("Kotlin", kt)]
+    if cs is not None:
+        languages.append(("C#", cs))
+
+    for name, other in languages:
+        if c == other:
+            continue
+        print("descriptor MISMATCH", file=sys.stderr)
+        print(f"  C     : {len(c)} bytes", file=sys.stderr)
+        print(f"  {name:6}: {len(other)} bytes", file=sys.stderr)
+        for index in range(max(len(c), len(other))):
+            left = f"{c[index]:#04x}" if index < len(c) else "--"
+            right = f"{other[index]:#04x}" if index < len(other) else "--"
+            if left != right:
+                print(f"  first difference at index {index}: C={left} {name}={right}",
+                      file=sys.stderr)
+                break
+        return 1
+
+    spoken = "C/Kotlin/C#" if cs is not None else "C/Kotlin (C# host not checked out)"
+    print(f"bridge descriptor parity OK ({len(c)} bytes identical across {spoken}, "
+          f"bridge contract {c_contract}, sha256 {digest[:16]}...)")
+    return 0
 
 
 if __name__ == "__main__":

@@ -1,0 +1,23 @@
+<Page
+    x:Class="PicoSwitch.Companion.App.Pages.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <ScrollViewer Padding="24">
+        <StackPanel MaxWidth="1000" HorizontalAlignment="Left" Spacing="8">
+            <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Settings" />
+            <TextBlock
+                Style="{StaticResource BodyTextBlockStyle}"
+                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                TextWrapping="Wrap"
+                Text="Remembered adapters, paired controllers, and application preferences." />
+            <TextBlock
+                Margin="0,16,0,0"
+                Style="{StaticResource BodyTextBlockStyle}"
+                TextWrapping="Wrap"
+                Text="Phase 3 fills this page with remembered adapters and Paired Controllers. Diagnostics is reached from here rather than from the rail: it is not a daily destination." />
+
+            <Button Margin="0,8,0,0" Content="Open Diagnostics" Click="OnOpenDiagnostics" />
+        </StackPanel>
+    </ScrollViewer>
+</Page>

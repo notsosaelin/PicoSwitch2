@@ -8,6 +8,19 @@
 *.json text eol=lf
 *.jsonl text eol=lf
 *.ndjson text eol=lf
+*.csv text eol=lf
+*.kt text eol=lf
+
+# Windows companion (C#/WinUI). LF in the repository like every other source
+# tree here; MSBuild, Roslyn and the XAML compiler are all indifferent to it.
+*.cs text eol=lf
+*.csproj text eol=lf
+*.props text eol=lf
+*.targets text eol=lf
+*.xaml text eol=lf
+*.appxmanifest text eol=lf
+*.manifest text eol=lf
+*.sln text eol=crlf
 
 # Captures, firmware, executables, recordings, and raw image planes are binary
 # evidence. Never pass them through line-ending or textual diff filters.

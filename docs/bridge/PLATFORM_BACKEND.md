@@ -75,6 +75,39 @@ A JVM platform (a desktop Kotlin/Java frontend) can depend on `:bridge-core` dir
 sharing. A non-JVM platform reimplements the same documented model — Level 1. Both are supported
 outcomes; this document is written so Level 1 is sufficient.
 
+### 2.1 The second host arrived, and did NOT trigger the relocation
+
+**Settled 2026-08-29.** A Windows companion now exists under `windows/companion/` (design:
+`WINDOWS_PASS.md`). It is **C#**, so it cannot link Kotlin/JVM bytecode: it is a **Level 1**
+consumer, and relocating `:bridge-core` upward would have delivered churn and zero reuse. The
+relocation trigger in the quotation above is specifically a **JVM** second consumer. `:bridge-core`
+and `:management-core` therefore stay exactly where they are.
+
+Recorded here because the sentence above reads as an instruction to relocate on the arrival of
+*any* second host, and a future contributor should not spend a pass carrying out a move this
+project already declined for a stated reason.
+
+What makes Level 1 safe is that both implementations read the **same fixtures**, not copies of
+them:
+
+| Fixture | Guards |
+|---|---|
+| `tools/fixtures/android_controller_hid.h` | descriptor bytes, offsets, contract version |
+| `tools/fixtures/bridge_report_goldens.csv` | **normalized state → wire bytes**, in both encoders |
+| `tools/fixtures/controller_link_face_mapping.csv` | physical key + layout → logical button/usage |
+| `tools/fixtures/touch_face_mapping.csv` | on-screen slot + layout → usage |
+| `tools/fixtures/management/protocol-v1.json` | management encode/decode conformance |
+
+`tools/check_android_descriptor_parity.py` covers C, Kotlin and C#; a one-sided edit to any of the
+three fails it. The report goldens are new with the Windows pass and close a gap the descriptor
+guard could not: the descriptor proves both ends **describe** the same report, the goldens prove
+they **fill** it identically.
+
+A Windows *backend* — the transport and the input/motion/battery/output implementations this
+document specifies — does not exist yet; it is Roadmap Phase 2 and Phase 6, and Phase 6 is gated on
+the peripheral-role experiment in `WINDOWS_PASS.md` §14.5. This section will gain the Windows
+backend's capability notes when that work lands.
+
 ---
 
 ## 3. What you must implement

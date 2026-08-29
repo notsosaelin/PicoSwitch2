@@ -11,8 +11,9 @@ implementation should be writable from this document plus
 
 The C-side source of truth for the byte layout remains
 [`tools/fixtures/android_controller_hid.h`](../../tools/fixtures/android_controller_hid.h);
-`tools/check_android_descriptor_parity.py` fails loudly if the Kotlin and C descriptors ever
-diverge.
+`tools/check_android_descriptor_parity.py` fails loudly if the C, Kotlin and C# descriptors ever
+diverge. (The C# copy lives in the Windows companion and is optional: on a checkout without
+`windows/`, the script reports two-way parity and still passes.)
 
 ---
 
@@ -20,8 +21,9 @@ diverge.
 
 The bridge carries a single integer contract version, defined once in
 [`tools/fixtures/android_controller_hid.h`](../../tools/fixtures/android_controller_hid.h) as
-`ANDROID_BRIDGE_CONTRACT_VERSION` and mirrored by `BridgeContract.VERSION` in Kotlin.
-`tools/check_android_descriptor_parity.py` fails if the two disagree.
+`ANDROID_BRIDGE_CONTRACT_VERSION`, mirrored by `BridgeContract.VERSION` in Kotlin and
+`BridgeContract.Version` in C#. `tools/check_android_descriptor_parity.py` fails if any of them
+disagree.
 
 | Version | Meaning |
 |---|---|
@@ -55,9 +57,10 @@ Two independent checks, covering both languages:
 | Check | Catches |
 |---|---|
 | `BridgeContractTest` (JVM) | any change to the Kotlin descriptor without a bump |
-| `check_android_descriptor_parity.py` | any change to the **C** descriptor without a bump, plus C↔Kotlin divergence |
+| `BridgeContractTests` (C#) | any change to the C# descriptor without a bump |
+| `check_android_descriptor_parity.py` | any change to the **C** descriptor without a bump, plus C↔Kotlin↔C# divergence and a disagreement between the Kotlin and C# digest registries |
 
-Byte-for-byte parity between the two languages is deliberately **not** sufficient on its own: a
+Byte-for-byte parity between the languages is deliberately **not** sufficient on its own: a
 coordinated edit to both sides keeps them equal while silently changing what goes on the wire. The
 digest is what makes that case fail. Verified by mutating one byte in the vendor motion block — far
 from the three that define contract 3 — in both languages at once: both checks failed and printed
@@ -215,6 +218,12 @@ have that cross-layer coverage, keyed off a shared fixture:
 | On-screen | `tools/fixtures/touch_face_mapping.csv` | `TouchProfileCatalogTest` | `tools/test_touch_layout_face_goldens.c` |
 | Physical | `tools/fixtures/controller_link_face_mapping.csv` | `ControllerLinkFaceMappingTest` | `tools/test_controller_link_face_goldens.c` |
 
+The physical fixture gained a third consumer with the Windows companion:
+`ControllerLinkFaceMappingTests` (C#). It also carries the property behind the table rather than
+only its rows — that `mapPhysicalFaceKey` and `mapTouchFacePosition` can **never** resolve alike for
+a face button. Collapsing the two mappers is what broke both origins in turn, and asserting the
+property is what stops a future simplification from doing it again.
+
 ### 3.3 Unmapped physical buttons — durable rule
 
 > Unknown or additional physical controller buttons are preserved as candidates for future custom
@@ -222,6 +231,31 @@ have that cross-layer coverage, keyed off a shared fixture:
 
 Capture has no physical key by default on any audited device; it is reached through a virtual
 button, as are Home (which also accepts a platform "mode" key) and C/GameChat.
+
+### 3.4 Encoder goldens — `tools/fixtures/bridge_report_goldens.csv`
+
+**Added 2026-08-29 with the Windows companion.** The descriptor guard proves that every
+implementation **describes** the same report. It cannot show that they **fill** it identically, and
+two implementations can agree on all 161 descriptor bytes while disagreeing about which bit `GR`
+sets, where the hat byte moved to in contract 4, or whether a battery level is clamped before or
+after the valid flag is decided. None of that is visible until a console misbehaves.
+
+The file is 47 vectors of `normalized state -> wire bytes`, generated from
+`ControllerReportEncoder` (Kotlin) and read by both encoders:
+
+| Consumer | Test |
+| --- | --- |
+| Kotlin | `BridgeReportGoldenTest` |
+| C# | `BridgeReportGoldenTests` |
+
+Coverage is asserted by the tests themselves, not left to inspection: every logical button pressed
+alone, every hat code 0..8 including opposites cancelling, axis and battery clamping at both ends,
+both flag halves independently, and the 16-bit motion timestamp wrap.
+
+Regenerating the file is a protocol change, not maintenance. `BridgeReportGoldenTest.regenerate()`
+exists but is deliberately **not** a test: a suite that silently rewrote its own goldens would erase
+the evidence of exactly the divergence the file exists to catch. Rewrite it by hand, together with
+the contract bump the change requires.
 
 ## 4. Capabilities
 

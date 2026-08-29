@@ -1159,6 +1159,93 @@ Briefs: [`docs/agents/ANDROID.md`](docs/agents/ANDROID.md),
 [`docs/bluetooth/android-controller-bridge.md`](docs/bluetooth/android-controller-bridge.md),
 [`docs/android-companion.md`](docs/android-companion.md).
 
+## Windows companion — Phases 0–2 implemented; first hardware session observed 2026-08-29
+
+Second host platform, designed in `WINDOWS_PASS.md` and implemented under `windows/companion/`.
+C# on .NET 9 with WinUI 3. **Nothing here has been executed against an adapter**, and the
+Roadmap's own numbering is used below so the gap between what exists and what is designed stays
+explicit.
+
+- **Delivered (software-validated only). 366 tests pass.**
+  - *Phase 0* — the project skeleton with the architecture boundaries enforced from day one, plus a
+    WinUI shell that builds x64/ARM64, packages as MSIX, and satisfies the single-instance exit
+    criterion when run.
+  - *Phase 1* — `PicoSwitch.Management.Core` in full (protocol, commands, client, pagination,
+    single-flight session, BLE carrier constants and reply assembly, domain), and
+    `PicoSwitch.Bridge.Core`'s `Core/` and `Protocol/` (button/axis model, input state machine,
+    face-layout resolver, candidate rule, motion convention, rumble shaping, counters, contract,
+    descriptor, encoder, output codec).
+  - *Phase 2* — the BLE GATT management transport, radio capability probe, pairing/unpair helper,
+    recovery and bond-mismatch policies, `ManagementOwner`, `AdapterRepository`, the adapter
+    registry and peer-history books with their codecs and atomic stores, the relationship and
+    active-adapter coordinators, and the ordered `AdapterSwitch`.
+  - The bridge session, the input/motion/battery/output backends and the whole touch layer are
+    Phase 6/6a and do not exist.
+- **Sharing level.** Level 1: the C# reimplements the documented contracts rather than linking the
+  Kotlin modules, because the relocation trigger in `docs/bridge/PLATFORM_BACKEND.md` is a *JVM*
+  second consumer. `:bridge-core` and `:management-core` were deliberately **not** moved.
+- **Anti-drift.** Both languages read the same fixtures. `tools/check_android_descriptor_parity.py`
+  now covers **three** languages, including a separate C# digest registry, and was verified to fail
+  on a one-sided C# descriptor edit. A new shared fixture,
+  `tools/fixtures/bridge_report_goldens.csv`, closes the gap the descriptor guard could not: 47
+  vectors of normalized state → wire bytes, generated from the Kotlin encoder and consumed by both
+  encoders, so a divergence in how the report is *filled* fails in the other language's suite.
+- **Controller Link is still gated.** The HOGP peripheral-role experiment (`WINDOWS_PASS.md` §14.5)
+  has not been run, so whether this PC can act as a controller source is **Unknown**. Nothing in
+  Phase 6 may be scheduled until it is.
+- **The shell builds, packages and runs.** x64 and ARM64 unpackaged, plus an unsigned MSIX. Verified
+  by running it on 2026-08-29: the window appears with the custom title bar, Mica, the
+  `NavigationView` rail and the connection banner, and **a second launch exits 0 leaving exactly one
+  instance** — the Phase 0 exit criterion for single-instance activation, which is the Windows
+  enforcement of "one process, one active management session".
+- **Two toolchain traps, recorded so they are not rediagnosed** (`windows/companion/docs/README.md`
+  §4). First: `XamlCompiler.exe` reports XAML errors by **exiting 1 in complete silence** — no
+  output, no `output.json`, and it still emits every `*.g.cs`, so it reads as a tooling crash when it
+  is a reporting failure over real authoring errors. Rebuild with
+  `-p:UseXamlCompilerExecutable=false` to get the message. Second: MSIX packaging needs **.NET
+  Framework MSBuild**, because the Windows App SDK's `WinAppSdkValidateAppxManifestItems` task loads
+  `System.Security.Permissions` and the .NET SDK's own MSBuild cannot resolve it; `build.ps1 -Msix`
+  finds a Visual Studio MSBuild and says so plainly when there is none.
+- **One specification correction.** `WINDOWS_PASS.md` §27.3 requires the manifest declare "exactly
+  `bluetooth`, nothing else". `MakeAppx` rejects that: a WinUI 3 **desktop** app packaged as MSIX
+  must also declare `runFullTrust`, which marks the package as full-trust Win32 rather than UWP and
+  does **not** imply elevation. The manifest declares exactly those two and a guard test asserts the
+  exact set.
+
+- **First hardware session, 2026-08-29 — the happy path works.** The maintainer ran the Phase 2
+  build against a real adapter. Observed from the persisted artifacts rather than from a live
+  capture, so treat it as **Strong Evidence** for the happy path and nothing more:
+  - discovery on the management service UUID, the Windows pairing ceremony, connect, and the
+    identity gate all completed; a registry row was created only after `info` answered
+    `id == "picoswitch"`;
+  - firmware `2.0` and personality `pro2` were read back and cached as display-only state;
+  - a **complete** logical-peer inventory read succeeded — five bonded peers, folded into history;
+  - the registry and peer-history documents were written and reload cleanly.
+  - One detail worth keeping: four of the five peers reported `role: unknown` while bonded, and the
+    only identified controller came back as `Xbox Wireless Controller`. That is exactly the
+    post-reboot shape the design predicts, and it is live confirmation that routing Paired
+    Controllers on **bonded** rather than on role is right — routing on role would have shown the
+    user an empty list with four real pairings hidden behind it.
+  - Still unobserved: the recovery ladder (nothing failed), the bond-mismatch signature, repair,
+    the A → B switch, and `mgmt_watch.ps1` confirmation of one client with no churn.
+
+- **The one open hypothesis in the management half is the Windows bond-mismatch signature.**
+  Windows does not expose HCI status codes to user mode, so the Android detection (HCI 0x05/0x06 at
+  the connect stage) has no equivalent. The Windows signature is reconstructed from three facts held
+  together: Windows reports the peer as paired, an advertisement was seen inside the attempt window,
+  and an operation against an encrypted attribute returns `AccessDenied` or an authentication
+  `HRESULT`. Two deliberate departures from the Kotlin original, each caught by its own test: the
+  signature is **not** stage-restricted, because on Windows the refusal surfaces wherever encryption
+  is first required; and an identity rejection is now **terminal** rather than falling through to the
+  fallback scan, because the address was reached and something answered. Its exit criterion is
+  first-attempt `RepairRequired` against a genuinely reflashed adapter.
+
+Next: Phase 3 (the adapter dashboard, which is the MVP), after Phase 2 is validated on hardware —
+the recovery ladder, the bond-mismatch signature and the A → B switch ordering are all reasoned
+rather than observed.
+
+Reference: [`windows/companion/docs/README.md`](windows/companion/docs/README.md), `WINDOWS_PASS.md`.
+
 ## Bluetooth, pairing, and wake
 
 - Exactly one logical input source owns the console stream at a time (see

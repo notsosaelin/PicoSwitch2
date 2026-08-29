@@ -1,0 +1,77 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The WinUI 3 shell.
+
+    Two flavours from one project: an UNPACKAGED build for development (fast
+    F5, no deployment step) and an MSIX package for release. `WindowsPackageType`
+    selects between them, so the packaged path is not a separate project that can
+    drift from the one people actually run.
+
+    This project may NOT reference Windows.Devices.Bluetooth. A guard test scans
+    for it (WINDOWS_PASS.md §11.1): the App calls AdapterRepository and nothing
+    below it.
+  -->
+  <PropertyGroup>
+    <TargetFramework>$(PicoSwitchWindowsTargetFramework)</TargetFramework>
+    <SupportedOSPlatformVersion>$(PicoSwitchSupportedOSPlatformVersion)</SupportedOSPlatformVersion>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>PicoSwitch.Companion.App</RootNamespace>
+    <AssemblyName>PicoSwitch.Companion.App</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <!--
+      WinUI 3 has no AnyCPU: the runtime ships per-architecture. x86 is
+      deliberately absent (WINDOWS_PASS.md §28.2) - no modern Windows 11 device
+      needs it and it doubles the test matrix for no user.
+
+      RuntimeIdentifier is selected FROM Platform rather than left to inference:
+      with more than one entry in RuntimeIdentifiers the SDK does not derive it,
+      and `-p:Platform=arm64` then fails with NETSDK1032 against a win-x64 RID.
+    -->
+    <Platforms>x64;arm64</Platforms>
+    <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
+    <RuntimeIdentifier Condition="'$(Platform)' == 'x64'">win-x64</RuntimeIdentifier>
+    <RuntimeIdentifier Condition="'$(Platform)' == 'arm64' or '$(Platform)' == 'ARM64'">win-arm64</RuntimeIdentifier>
+
+    <UseWinUI>true</UseWinUI>
+    <EnableMsixTooling>true</EnableMsixTooling>
+
+    <!--
+      Unpackaged by default so `dotnet build` and `dotnet run` work with no
+      deployment step. CI overrides this for the MSIX flavour:
+        dotnet build -p:WindowsPackageType=MSIX -p:Platform=x64
+    -->
+    <WindowsPackageType Condition="'$(WindowsPackageType)' == ''">None</WindowsPackageType>
+    <WindowsAppSDKSelfContained Condition="'$(WindowsPackageType)' == 'None'">true</WindowsAppSDKSelfContained>
+    <SelfContained Condition="'$(WindowsPackageType)' == 'None'">true</SelfContained>
+
+    <IsPackable>false</IsPackable>
+    <NoWarn>$(NoWarn);NETSDK1206</NoWarn>
+
+    <!--
+      The generated Main cannot be used: single-instance redirection has to run
+      BEFORE Application.Start creates a XAML runtime. See App.xaml.cs.
+    -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="$(PicoSwitchWindowsAppSdkVersion)" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../PicoSwitch.Bridge.Core/PicoSwitch.Bridge.Core.csproj" />
+    <ProjectReference Include="../PicoSwitch.Management.Core/PicoSwitch.Management.Core.csproj" />
+    <ProjectReference Include="../PicoSwitch.Companion.Services/PicoSwitch.Companion.Services.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Manifest Include="$(ApplicationManifest)" />
+    <None Update="Package.appxmanifest" Condition="'$(WindowsPackageType)' == 'None'">
+      <Pack>false</Pack>
+    </None>
+  </ItemGroup>
+
+</Project>

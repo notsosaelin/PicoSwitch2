@@ -1,0 +1,16 @@
+# The root .gitignore excludes `*.app` under "Executables" (macOS bundles). That
+# pattern also matches the DIRECTORY `PicoSwitch.Companion.App`, which would
+# silently drop the entire WinUI project from version control. Git cannot
+# re-include a file whose parent directory is excluded, so the directory itself
+# has to be un-excluded first -- and this negation must come BEFORE the build
+# output rules below, because the last matching pattern wins.
+!companion/src/PicoSwitch.Companion.App/
+
+# .NET build output. The Windows companion is built from source on every
+# machine; nothing under these directories is an input to anything.
+bin/
+obj/
+
+# Local MSIX signing material must never reach version control (WINDOWS_PASS.md §27.2).
+*.pfx
+*.snk

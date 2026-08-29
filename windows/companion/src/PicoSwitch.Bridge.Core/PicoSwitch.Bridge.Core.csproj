@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Platform-neutral bridge core. Kotlin counterpart: `:bridge-core`.
+
+    TargetFramework is `net9.0` ON PURPOSE and must not become `net9.0-windows`.
+    That single line is the C# equivalent of keeping the Android SDK off
+    `:bridge-core`'s classpath: it turns "someone referenced a Windows API in the
+    portable layer" from a review catch into a compile error.
+    See WINDOWS_PASS.md §10.2 and §11.1.
+  -->
+  <PropertyGroup>
+    <TargetFramework>$(PicoSwitchPortableTargetFramework)</TargetFramework>
+    <RootNamespace>PicoSwitch.Bridge.Core</RootNamespace>
+    <AssemblyName>PicoSwitch.Bridge.Core</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="PicoSwitch.Bridge.Core.Tests" />
+  </ItemGroup>
+
+</Project>
