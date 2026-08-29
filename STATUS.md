@@ -1294,11 +1294,21 @@ and what is designed stays explicit.
   after connection. *That* Windows encrypts a bonded peer before any ATT exchange is Confirmed by
   observation; that the failure is specifically SMP remains inference, because Windows exposes no
   SMP or HCI detail. Nothing in the implementation depends on the inference.
-- **One promotion criterion is half met and deliberately not acted on.** `connection=Connected`
-  during the failure was the first half; `connection=Disconnected` for a genuinely absent adapter
-  was never observed. Promoting on half a criterion is exactly what produced the wrong signature the
-  first time, so `ConnectionStatus` stays diagnostic-only. Completing it costs no flash cycle:
-  power the adapter off, press Connect once, read the `link` line.
+- **The negative case is hardware-confirmed too, which is the property that actually protects the
+  user.** With the adapter powered off (2026-08-29 17:52) the classifier correctly declined:
+  `paired=True observed=False answeredGatt=False linkFailures=1/2 -> not a bond mismatch`, with
+  `link ... connection=Disconnected`. A switched-off adapter returns the same
+  `GattCommunicationStatus` as a reflashed one, so this is the case where a wrong signature would
+  offer to destroy a working pairing to recover from a flat battery. The exact observed values are
+  pinned as a regression test.
+- **A promotion criterion was fully met and promotion was declined anyway.** `ConnectionStatus`
+  reads `Connected` for a present adapter and `Disconnected` for an absent one, so it IS a valid
+  presence discriminator. But working it through every attempt observed across both sessions, it
+  would change no outcome: the binding constraint is the two-resolved-devices corroboration, not
+  presence. Relaxing *that* given proven presence is the tempting next step and is refused — a
+  transient discovery failure on a healthy adapter produces the identical shape, and one
+  observation does not establish that `Connected + Unreachable` is conclusive. `ConnectionStatus`
+  stays diagnostic-only, now as a confirmed diagnostic rather than a speculative one.
 - **Still open after A, B and C, and neither blocks Phase 3.**
   1. the recovery ladder's retry and 350 ms backoff have still never executed on hardware — every
      observed failure was at a non-retryable stage, so the retry has correctly never been taken;

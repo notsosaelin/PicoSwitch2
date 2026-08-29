@@ -163,9 +163,28 @@ public sealed class AdapterResetSignatureTests
     [Fact]
     public void APoweredOffAdapterIsNotABondMismatch()
     {
-        // Nothing advertised, so nothing was observed. This is the single most
-        // important negative: a switched-off adapter produces exactly the same
-        // GattCommunicationStatus as a reflashed one.
+        // THE EXACT EVIDENCE a powered-off adapter produced on hardware,
+        // 2026-08-29 17:52. This is the single most important negative: a
+        // switched-off adapter returns the same GattCommunicationStatus as a
+        // reflashed one, and getting it wrong would offer to destroy a working
+        // pairing to recover from a flat battery.
+        //
+        //   [ble] link status=Unreachable connection=Disconnected session=Closed maxPdu=23
+        //   [ble] fail stage=services GattCommunicationStatus=Unreachable
+        //   [connect] failed [...] [paired=True observed=False answeredGatt=False
+        //                           linkFailures=1/2 -> not a bond mismatch]
+        Assert.False(AdapterResetSignature.IsBondMismatch(
+            GattFailureStage.Services,
+            GattCommunicationOutcome.Unreachable,
+            hresult: null,
+            new TransportTrustSnapshot(
+                WindowsPaired: true,
+                PeerObserved: false,
+                PeerAnsweredGatt: false,
+                LinkFailuresAfterResolve: 1)));
+
+        // And it must stay false even if the fallback HAD produced a second
+        // resolved-device failure, because the presence fact is what is missing.
         Assert.False(AdapterResetSignature.IsBondMismatch(
             GattFailureStage.Services,
             GattCommunicationOutcome.Unreachable,

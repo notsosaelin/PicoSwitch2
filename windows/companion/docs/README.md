@@ -301,10 +301,16 @@ Built and software-verified:
 | C | One management client, no churn | **Confirmed PASS** | 2026-08-29, from the adapter's own `btlife` ring: 21 lifecycle records, one handle, zero alternation violations, no transition across two Refreshes and full navigation. `dumps/windows-phase2-oneclient-2026-08-29.md`. |
 | D | A → B active-adapter handoff under real asynchronous callbacks | **Unknown** | Two adapters. The ordering is unit-tested over a fake port; whether a real trailing callback from A can reach B's state is not. |
 
-Still open, neither blocking Phase 3: **the recovery ladder's retry and 350 ms
+The signature is confirmed in **both** directions: it fires on a genuine
+mismatch, and with the adapter powered off it correctly declines
+(`observed=False ... -> not a bond mismatch`). That negative is the property that
+protects the user, since a switched-off adapter returns the same
+`GattCommunicationStatus` as a reflashed one; the observed values are pinned as a
+regression test.
+
+Still open, and not blocking Phase 3: **the recovery ladder's retry and 350 ms
 backoff have still never executed on hardware**, because every failure observed
-so far was at a non-retryable stage; and whether `ConnectionStatus` discriminates
-an absent adapter (below).
+so far was at a non-retryable stage.
 
 #### A — what Windows actually does
 
@@ -342,12 +348,15 @@ never left its 23-byte default, so **no ATT transaction of any kind occurred**.
 A link that comes up and carries no attribute traffic is the shape of encryption
 failing immediately after connection.
 
-**One promotion criterion is half met, and is deliberately not acted on.**
-`connection=Connected` during the failure was the first half; the second —
-`connection=Disconnected` for a genuinely absent adapter — was never observed.
-Promoting on half a criterion is what produced the wrong signature the first
-time, so `ConnectionStatus` stays diagnostic-only. Completing it costs no flash
-cycle: power the adapter off, press Connect once, read the `link` line.
+**`ConnectionStatus` is a confirmed presence discriminator, and is deliberately
+still not in the signature.** Both halves of the criterion were observed:
+`Connected` for a present reflashed adapter, `Disconnected` for one powered off.
+But it would change no outcome that has ever been observed — the binding
+constraint is the two-resolved-devices corroboration, not presence. Relaxing
+*that* given proven presence is the tempting next step and is refused: a
+transient discovery failure on a healthy adapter has the identical shape, and the
+cost of a false positive is offering to destroy a working pairing. See the
+experiment record for the attempt-by-attempt working.
 
 #### B — Repair had never worked
 
