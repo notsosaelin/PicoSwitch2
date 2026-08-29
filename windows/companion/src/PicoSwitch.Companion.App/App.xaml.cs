@@ -32,7 +32,8 @@ public partial class App : Application
 {
     private const string InstanceKey = "PicoSwitch.Companion";
 
-    private Window? window;
+    /// <summary>The single window, so the theme can be applied to its content root.</summary>
+    public static Window? Window { get; private set; }
 
     public App() => InitializeComponent();
 
@@ -70,8 +71,9 @@ public partial class App : Application
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
-        window = new MainWindow();
-        window.Activate();
+        Window = new MainWindow();
+        AppTheme.Restore();
+        Window.Activate();
     }
 
     /// <summary>

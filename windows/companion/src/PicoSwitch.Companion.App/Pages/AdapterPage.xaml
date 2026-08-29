@@ -2,47 +2,43 @@
     x:Class="PicoSwitch.Companion.App.Pages.AdapterPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:muxc="using:Microsoft.UI.Xaml.Controls">
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
+    xmlns:automation="using:Microsoft.UI.Xaml.Automation">
+
+    <Page.Resources>
+        <Style x:Key="CardStyle" TargetType="Border">
+            <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
+            <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="16" />
+        </Style>
+    </Page.Resources>
 
     <ScrollViewer Padding="24">
         <StackPanel MaxWidth="1000" HorizontalAlignment="Left" Spacing="16">
 
-            <StackPanel Spacing="4">
-                <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Adapter" />
-                <TextBlock
-                    Style="{StaticResource BodyTextBlockStyle}"
-                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                    TextWrapping="Wrap"
-                    Text="Phase 2 test surface: discovery, Windows pairing, the management session, and the logical-peer inventory. The Phase 3 dashboard replaces this layout." />
-            </StackPanel>
+            <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Adapter" />
 
-            <!-- Radio capability. Probed, never assumed. -->
+            <!-- Radio problems, probed rather than assumed. Hidden when healthy. -->
             <muxc:InfoBar
                 x:Name="RadioBar"
-                IsOpen="True"
+                IsOpen="False"
                 IsClosable="False"
-                Severity="Informational"
-                Title="Bluetooth radio"
-                Message="Probing." />
+                Severity="Warning"
+                Title="Bluetooth" />
 
-            <StackPanel Orientation="Horizontal" Spacing="8">
-                <Button x:Name="PairButton" Click="OnPair" Style="{StaticResource AccentButtonStyle}">
-                    <StackPanel Orientation="Horizontal" Spacing="8">
-                        <muxc:ProgressRing x:Name="PairProgress" Width="16" Height="16" IsActive="False" />
-                        <TextBlock Text="Pair an adapter" />
-                    </StackPanel>
-                </Button>
-                <Button x:Name="RefreshButton" Content="Refresh" Click="OnRefresh" />
-                <Button x:Name="DisconnectButton" Content="Disconnect" Click="OnDisconnect" />
-                <Button x:Name="ProbeRadioButton" Content="Re-probe radio" Click="OnProbeRadio" />
-            </StackPanel>
-
-            <TextBlock
-                x:Name="PairingHint"
-                Style="{StaticResource CaptionTextBlockStyle}"
-                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                TextWrapping="Wrap"
-                Text="A new management pairing is admitted only while the adapter's pairing window is open — double-tap its pairing button first. Windows will show its own consent prompt." />
+            <!--
+                The bridge-contract verdict. Its visibility IS the silence rule:
+                Pending must never render, because it is a transient state on every
+                healthy connection.
+            -->
+            <muxc:InfoBar
+                x:Name="ContractBar"
+                IsOpen="False"
+                IsClosable="False"
+                Severity="Warning"
+                Title="Firmware compatibility" />
 
             <muxc:InfoBar
                 x:Name="OperationBar"
@@ -51,99 +47,183 @@
                 Severity="Error"
                 Title="Adapter" />
 
-            <!-- Live session -->
-            <Border
-                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                BorderThickness="1"
-                CornerRadius="8"
-                Padding="16">
-                <StackPanel Spacing="8">
-                    <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="Session" />
-                    <TextBlock x:Name="SessionPhase" Style="{StaticResource BodyStrongTextBlockStyle}" Text="Idle" />
+            <!-- Status -->
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel Spacing="12">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Spacing="2">
+                            <TextBlock x:Name="AdapterTitle" Style="{StaticResource SubtitleTextBlockStyle}" Text="No adapter" />
+                            <TextBlock
+                                x:Name="PhaseText"
+                                Style="{StaticResource BodyStrongTextBlockStyle}"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                Text="Not connected" />
+                            <TextBlock
+                                x:Name="PhaseDetail"
+                                Style="{StaticResource CaptionTextBlockStyle}"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                TextWrapping="Wrap"
+                                Visibility="Collapsed" />
+                            <TextBlock
+                                x:Name="FirmwareText"
+                                Style="{StaticResource CaptionTextBlockStyle}"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                Visibility="Collapsed" />
+                        </StackPanel>
+                        <muxc:ProgressRing
+                            Grid.Column="1"
+                            x:Name="BusyRing"
+                            automation:AutomationProperties.Name="Working"
+                            Width="20"
+                            Height="20"
+                            IsActive="False"
+                            VerticalAlignment="Top" />
+                    </Grid>
+
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="ConnectButton" Content="Connect" Click="OnConnect" Style="{StaticResource AccentButtonStyle}" />
+                        <Button x:Name="DisconnectButton" Content="Disconnect" Click="OnDisconnect" />
+                        <Button x:Name="RefreshButton" Content="Refresh" Click="OnRefresh" />
+                        <Button x:Name="WakeButton" Content="Wake console" Click="OnWake" />
+                    </StackPanel>
+
                     <TextBlock
-                        x:Name="SessionDetail"
-                        Style="{StaticResource BodyTextBlockStyle}"
-                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                        TextWrapping="Wrap"
-                        Text="No adapter connected." />
-                    <TextBlock
-                        x:Name="SnapshotDetail"
+                        x:Name="NoAdapterHint"
                         Style="{StaticResource CaptionTextBlockStyle}"
-                        FontFamily="Consolas"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                         TextWrapping="Wrap"
-                        Text="" />
+                        Visibility="Collapsed"
+                        Text="No adapter is remembered yet. Add one from Settings." />
                 </StackPanel>
             </Border>
 
-            <!-- Remembered adapters -->
-            <Border
-                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                BorderThickness="1"
-                CornerRadius="8"
-                Padding="16">
-                <StackPanel Spacing="8">
-                    <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="Remembered adapters" />
+            <!-- Attached controller -->
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel Spacing="4">
+                    <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Controller driving the console" />
+                    <TextBlock x:Name="ControllerText" Style="{StaticResource BodyTextBlockStyle}" Text="No controller" />
                     <TextBlock
-                        x:Name="RegistryEmpty"
-                        Style="{StaticResource BodyTextBlockStyle}"
+                        x:Name="BatteryText"
+                        Style="{StaticResource CaptionTextBlockStyle}"
                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                        Text="None yet." />
-                    <ItemsControl x:Name="RegistryList">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <Grid Margin="0,8,0,8" ColumnSpacing="12">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel Grid.Column="0" Spacing="2">
-                                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="{Binding Title}" />
-                                        <TextBlock
-                                            Style="{StaticResource CaptionTextBlockStyle}"
-                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                            Text="{Binding Detail}" />
-                                    </StackPanel>
-                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                                        <Button Content="Connect" Click="OnConnectRow" Tag="{Binding Id}" />
-                                        <Button Content="Repair" Click="OnRepairRow" Tag="{Binding Id}" />
-                                        <Button Content="Remove" Click="OnRemoveRow" Tag="{Binding Id}" />
-                                    </StackPanel>
-                                </Grid>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
+                        Visibility="Collapsed" />
                 </StackPanel>
             </Border>
 
-            <!-- Paired controllers -->
-            <Border
-                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                BorderThickness="1"
-                CornerRadius="8"
-                Padding="16">
+            <!-- Controller mode -->
+            <Border Style="{StaticResource CardStyle}">
                 <StackPanel Spacing="8">
-                    <TextBlock Style="{StaticResource SubtitleTextBlockStyle}" Text="Paired controllers" />
+                    <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Controller mode" />
                     <TextBlock
-                        x:Name="PeersEmpty"
-                        Style="{StaticResource BodyTextBlockStyle}"
+                        Style="{StaticResource CaptionTextBlockStyle}"
                         Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                        Text="Refresh a connected adapter to read its logical-peer inventory." />
-                    <ItemsControl x:Name="PeerList">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <StackPanel Margin="0,6,0,6" Spacing="2">
-                                    <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="{Binding Title}" />
-                                    <TextBlock
-                                        Style="{StaticResource CaptionTextBlockStyle}"
-                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                        Text="{Binding Detail}" />
-                                </StackPanel>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
+                        TextWrapping="Wrap"
+                        Text="What the console sees the adapter as. Switching re-enumerates USB, so the console briefly loses the controller." />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <ComboBox x:Name="PersonalityBox" automation:AutomationProperties.Name="Controller mode" MinWidth="220" />
+                        <Button x:Name="PersonalityApply" Content="Switch" Click="OnSwitchPersonality" />
+                    </StackPanel>
+                    <TextBlock
+                        x:Name="PersonalityReason"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextWrapping="Wrap"
+                        Visibility="Collapsed" />
+                </StackPanel>
+            </Border>
+
+            <!-- Appearance -->
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel Spacing="8">
+                    <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Appearance" />
+                    <TextBlock
+                        x:Name="AppearanceHint"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextWrapping="Wrap" />
+
+                    <Grid ColumnSpacing="12" RowSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="140" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <Border Grid.Row="0" Grid.Column="0" x:Name="BodySwatch" automation:AutomationProperties.Name="Body colour" Width="28" Height="28" CornerRadius="4" BorderThickness="1" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" />
+                        <TextBlock Grid.Row="0" Grid.Column="1" VerticalAlignment="Center" Text="Body" />
+                        <Button Grid.Row="0" Grid.Column="2" x:Name="BodyEdit" Content="Change" automation:AutomationProperties.Name="Change body colour" Click="OnEditBody" />
+
+                        <Border Grid.Row="1" Grid.Column="0" x:Name="LeftSwatch" automation:AutomationProperties.Name="Left accent colour" Width="28" Height="28" CornerRadius="4" BorderThickness="1" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" VerticalAlignment="Center" Text="Left accent" />
+                        <Button Grid.Row="1" Grid.Column="2" x:Name="LeftEdit" Content="Change" automation:AutomationProperties.Name="Change left accent colour" Click="OnEditLeft" />
+
+                        <Border Grid.Row="2" Grid.Column="0" x:Name="RightSwatch" automation:AutomationProperties.Name="Right accent colour" Width="28" Height="28" CornerRadius="4" BorderThickness="1" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" VerticalAlignment="Center" Text="Right accent" />
+                        <Button Grid.Row="2" Grid.Column="2" x:Name="RightEdit" Content="Change" automation:AutomationProperties.Name="Change right accent colour" Click="OnEditRight" />
+                    </Grid>
+
+                    <Button x:Name="AppearanceApply" Content="Show on console now" Click="OnApplyAppearance" />
+                    <TextBlock
+                        x:Name="AppearanceReason"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextWrapping="Wrap"
+                        Visibility="Collapsed" />
+                </StackPanel>
+            </Border>
+
+            <!-- Console input -->
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel Spacing="8">
+                    <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Console input source" />
+                    <TextBlock
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextWrapping="Wrap"
+                        Text="Exactly one source drives the console at a time." />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <ComboBox x:Name="InputBox" automation:AutomationProperties.Name="Console input source" MinWidth="260" />
+                        <Button x:Name="InputApply" Content="Use this source" Click="OnSetInput" />
+                    </StackPanel>
+                    <TextBlock
+                        x:Name="InputReason"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextWrapping="Wrap"
+                        Visibility="Collapsed" />
+                    <muxc:InfoBar
+                        x:Name="InputTruncated"
+                        IsOpen="False"
+                        IsClosable="False"
+                        Severity="Informational"
+                        Title="Some sources were not listed"
+                        Message="The adapter reported more input sources than fit in one reply." />
+                </StackPanel>
+            </Border>
+
+            <!-- Console buttons -->
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel Spacing="8">
+                    <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Console buttons" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="HomeButton" Content="Home" IsEnabled="False" />
+                        <Button x:Name="CaptureButton" Content="Capture" IsEnabled="False" />
+                        <Button x:Name="CButton" Content="C" IsEnabled="False" />
+                    </StackPanel>
+                    <TextBlock
+                        x:Name="ConsoleButtonsReason"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextWrapping="Wrap" />
                 </StackPanel>
             </Border>
         </StackPanel>

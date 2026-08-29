@@ -30,6 +30,9 @@ public sealed record RememberedAdapterRow
 {
     public required AdapterId Id { get; init; }
 
+    /// <summary>The normalized address, which is what a view round-trips as a tag.</summary>
+    public string Address => Id.Value;
+
     /// <summary>Alias, then last known name, then <c>PicoSwitch2 · &lt;short-id&gt;</c>.</summary>
     public required string Title { get; init; }
 
@@ -50,6 +53,23 @@ public sealed record RememberedAdapterRow
     public bool CanRepair => true;
 
     public bool CanConnect => State != RememberedAdapterState.Connected;
+
+    /*
+     * Accessible names for the row actions.
+     *
+     * Every row renders the same four words, so a screen reader announces
+     * "Connect, Connect, Connect" down a list of adapters and voice control
+     * cannot address one of them. The visible label stays short; the accessible
+     * name carries the row identity, which is what makes the control usable
+     * without sight of the layout.
+     */
+    public string ConnectLabel => $"Connect to {Title}";
+
+    public string RenameLabel => $"Rename {Title}";
+
+    public string RepairLabel => $"Repair pairing with {Title}";
+
+    public string RemoveLabel => $"Remove {Title}";
 }
 
 public static class RememberedAdapters
@@ -242,4 +262,101 @@ public static class RemotePairing
             ? $"{status.Candidates} controller{(status.Candidates == 1 ? "" : "s")} responding"
             : null,
     };
+}
+
+
+/// <summary>
+/// One controller row, ready to render.
+///
+/// The label hierarchy and the attribution rules are here because both are
+/// protocol-meaningful and easy to get subtly wrong in XAML.
+/// </summary>
+public sealed record PeerRow
+{
+    public required string PeerId { get; init; }
+
+    public required string Title { get; init; }
+
+    public required string Detail { get; init; }
+
+    public required bool CanForget { get; init; }
+
+    /// <summary>See the note on the adapter row: one shared verb per list is
+    /// unusable by screen reader or by voice.</summary>
+    public string ForgetLabel => $"Forget {Title}";
+
+    public string RemoveFromHistoryLabel => $"Remove {Title} from history";
+}
+
+public static class PeerRows
+{
+    public static IReadOnlyList<PeerRow> Project(
+        IReadOnlyList<PeerListing> listings,
+        bool canForget) =>
+        listings.Select(listing => Row(listing, canForget)).ToArray();
+
+    private static PeerRow Row(PeerListing listing, bool canForget) => new()
+    {
+        PeerId = listing.PeerId,
+        Title = listing.DisplayName,
+        Detail = Detail(listing),
+
+        // Recent rows have no adapter credential left to delete; their only action
+        // is to leave local history.
+        CanForget = canForget && !listing.HistoryOnly,
+    };
+
+    private static string Detail(PeerListing listing)
+    {
+        var parts = new List<string> { StateText(listing) };
+
+        if (Transports(listing) is { } transports)
+        {
+            // Informational only. A Classic-only peer is no less Paired than an
+            // LE-only one, and the badge must never read as a downgrade.
+            parts.Add(transports);
+        }
+
+        if (listing.IdentifiedFromHistory)
+        {
+            // A remembered identity shown as a live one is exactly the promotion
+            // the protocol forbids, so it is attributed rather than presented as
+            // the adapter's own answer.
+            parts.Add("name remembered by this app");
+        }
+
+        if (listing.Classification is { } classification && !string.IsNullOrWhiteSpace(classification))
+        {
+            parts.Add(classification);
+        }
+
+        return string.Join(" · ", parts);
+    }
+
+    /// <summary>
+    /// A connection without a durable credential is **Completing pairing**, never
+    /// silently treated as Paired: the bond may still fail, and showing it as done
+    /// would have the user walk away from a pairing that never finished.
+    /// </summary>
+    private static string StateText(PeerListing listing) => listing switch
+    {
+        { Connected: true, Bonded: false } => "Pairing · completing pairing",
+        { Connected: true } => "Connected",
+        { HistoryOnly: true } => "Not paired",
+        { Bonded: true } => "Paired",
+        _ => "Not paired",
+    };
+
+    private static string? Transports(PeerListing listing)
+    {
+        var classic = listing.Transports.Contains(PeerTransport.Classic);
+        var le = listing.Transports.Contains(PeerTransport.Le);
+        return (classic, le) switch
+        {
+            (true, true) => "Bluetooth Classic and LE",
+            (true, false) => "Bluetooth Classic",
+            (false, true) => "Bluetooth LE",
+            _ => null,
+        };
+    }
 }
