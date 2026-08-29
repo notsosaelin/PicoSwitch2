@@ -1159,7 +1159,7 @@ Briefs: [`docs/agents/ANDROID.md`](docs/agents/ANDROID.md),
 [`docs/bluetooth/android-controller-bridge.md`](docs/bluetooth/android-controller-bridge.md),
 [`docs/android-companion.md`](docs/android-companion.md).
 
-## Windows companion — Phases 0–2 implemented; first hardware session observed 2026-08-29
+## Windows companion — Phases 0–2 implemented; Phase 2 happy path hardware-confirmed 2026-08-29
 
 Second host platform, designed in `WINDOWS_PASS.md` and implemented under `windows/companion/`.
 C# on .NET 9 with WinUI 3. **Nothing here has been executed against an adapter**, and the
@@ -1212,22 +1212,39 @@ explicit.
   does **not** imply elevation. The manifest declares exactly those two and a guard test asserts the
   exact set.
 
-- **First hardware session, 2026-08-29 — the happy path works.** The maintainer ran the Phase 2
-  build against a real adapter. Observed from the persisted artifacts rather than from a live
-  capture, so treat it as **Strong Evidence** for the happy path and nothing more:
-  - discovery on the management service UUID, the Windows pairing ceremony, connect, and the
-    identity gate all completed; a registry row was created only after `info` answered
-    `id == "picoswitch"`;
-  - firmware `2.0` and personality `pro2` were read back and cached as display-only state;
-  - a **complete** logical-peer inventory read succeeded — five bonded peers, folded into history;
-  - the registry and peer-history documents were written and reload cleanly.
-  - One detail worth keeping: four of the five peers reported `role: unknown` while bonded, and the
-    only identified controller came back as `Xbox Wireless Controller`. That is exactly the
-    post-reboot shape the design predicts, and it is live confirmation that routing Paired
-    Controllers on **bonded** rather than on role is right — routing on role would have shown the
-    user an empty list with four real pairings hidden behind it.
-  - Still unobserved: the recovery ladder (nothing failed), the bond-mismatch signature, repair,
-    the A → B switch, and `mgmt_watch.ps1` confirmation of one client with no churn.
+- **Happy path — Confirmed on hardware, 2026-08-29.** The maintainer ran the Phase 2 build against
+  a real adapter. Reconstructed from the persisted artifacts rather than from a live capture; every
+  item below is a state that could not exist unless the step before it worked, which is why these
+  are Confirmed rather than Strong Evidence. What is NOT claimed is anything about timing, retries,
+  or repeated sessions.
+  - BLE discovery on the management service UUID — the row exists for an adapter found by UUID
+    filter, not by name;
+  - the Windows pairing ceremony (`ConfirmOnly` + `Encryption`);
+  - an encrypted management GATT session;
+  - the `info.id == "picoswitch"` identity gate **before** any registry persistence — a row is
+    written only on the far side of that check;
+  - firmware (`2.0`) and personality (`pro2`) reads, cached as display-only state;
+  - a **complete** five-peer logical inventory, folded into history, which refuses a partial read
+    outright;
+  - registry persistence and reload (`adapters.json`);
+  - peer-history persistence and reload (`peer-history.json`).
+
+- **One Bluetooth Management 2.0 assumption confirmed rather than reasoned.** Four of the five peers
+  reported `role: "unknown"` while `bonded: true`, and only one carried a live identity
+  (`Xbox Wireless Controller`). That is exactly the offline/post-reboot shape the model predicts, and
+  it is direct hardware evidence that Paired Controllers must route on **durable bonded/trust
+  evidence** rather than on live `role`. Routing on role would have shown the user an empty list with
+  four real pairings hidden behind it.
+
+- **Four Phase 2 boundaries remain specifically unproven.** The happy path working says nothing
+  about any of them, because each needs a condition the happy path does not produce:
+  1. a stale Windows pairing after an adapter flash/reset reaching `RepairRequired` on the **first**
+     attempt (and the repair action that follows it, which is unreachable without it);
+  2. the real recovery-ladder timing and failure behaviour — nothing failed, so the retry, the
+     350 ms backoff and the address-restricted fallback scan have never executed on hardware;
+  3. one management client with no churn, under `tools/mgmt_watch.ps1` / UART diagnostics across
+     connect, Refresh, navigation, Disconnect and reconnect;
+  4. the A → B active-adapter handoff under real asynchronous callbacks, with two adapters.
 
 - **The one open hypothesis in the management half is the Windows bond-mismatch signature.**
   Windows does not expose HCI status codes to user mode, so the Android detection (HCI 0x05/0x06 at
@@ -1240,9 +1257,11 @@ explicit.
   fallback scan, because the address was reached and something answered. Its exit criterion is
   first-attempt `RepairRequired` against a genuinely reflashed adapter.
 
-Next: Phase 3 (the adapter dashboard, which is the MVP), after Phase 2 is validated on hardware —
-the recovery ladder, the bond-mismatch signature and the A → B switch ordering are all reasoned
-rather than observed.
+Next: close the four boundaries above, then Phase 3 (the adapter dashboard, which is the MVP). Some
+Phase 3-shaped UI already exists because Phase 2 could not be exercised without it — the Adapter
+page, Pair/Refresh/Disconnect, the remembered-adapter list with Connect/Repair/Remove, live session
+state, the peer inventory and the Diagnostics page. That glue is real and stays; Phase 3 is an audit
+of what remains on top of it.
 
 Reference: [`windows/companion/docs/README.md`](windows/companion/docs/README.md), `WINDOWS_PASS.md`.
 

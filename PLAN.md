@@ -182,9 +182,13 @@ Open and unchanged:
   `WINDOWS_PASS.md` §14.5, which has not been run. Until it is, no Phase 6 work may be scheduled and
   the Windows product is a management client. Path C (companion-provided normalized controller
   state, §14.4) is the sanctioned fallback and would need its own firmware pass.
-- **No hardware validation exists** for any Windows code. Every Phase 2 exit criterion needs an
-  adapter, and the Windows bond-mismatch signature (`WINDOWS_PASS.md` §12.2) remains a
-  **Hypothesis** until a reflashed adapter reaches `RepairRequired` on the first attempt.
+- **The Phase 2 happy path is hardware-confirmed** (2026-08-29): discovery, Windows pairing, the
+  encrypted management session, the identity gate, firmware/personality reads, a complete peer
+  inventory, and registry/history persistence. **Four boundaries remain unproven** and are listed in
+  `STATUS.md`: the stale-bond → `RepairRequired` path and the repair action behind it, real
+  recovery-ladder behaviour, one-client/no-churn under `mgmt_watch.ps1`, and the A → B handoff with
+  two adapters. The Windows bond-mismatch signature (`WINDOWS_PASS.md` §12.2) stays a **Hypothesis**
+  until a reflashed adapter reaches `RepairRequired` on the first attempt.
 
 Do not choose a universal cross-platform UI framework merely to support this port.
 

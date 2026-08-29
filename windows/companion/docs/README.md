@@ -244,7 +244,33 @@ C# does **not** mirror the Kotlin line for line, and why.
 ## 7. Phase 2 — what is built, and what is not proven
 
 Everything in Phase 2's component list exists and is unit- and
-integration-tested over fake transports. **None of it has touched an adapter.**
+integration-tested over fake transports. **The happy path has since been
+exercised against a real adapter; four specific boundaries have not.**
+
+### Hardware-observed, 2026-08-29 — Confirmed
+
+One session against a real PicoSwitch2, reconstructed from the persisted
+artifacts it left behind rather than from a live capture. Everything in this
+list is a state that could not exist unless the step before it worked:
+
+| Step | Evidence |
+|---|---|
+| BLE discovery on the management service UUID | a registry row exists for an adapter that was found by UUID filter, not by name |
+| Windows pairing ceremony (`ConfirmOnly` + `Encryption`) | the encrypted session below it could not otherwise have opened |
+| Encrypted management GATT session | `info` was answered |
+| `info.id == "picoswitch"` identity gate **before** persistence | a row is written only on the far side of that check |
+| Firmware and personality reads | `firmware: "2.0"`, `personality: "pro2"` cached |
+| Complete five-peer logical inventory | folded into history, which refuses a partial read outright |
+| Registry persistence and reload | `adapters.json` written and re-read on the next launch |
+| Peer-history persistence and reload | `peer-history.json` written and re-read |
+
+**One design assumption confirmed, not merely reasoned.** Four of the five
+peers reported `role: "unknown"` while `bonded: true`, and only one carried a
+live identity (`Xbox Wireless Controller`). That is the post-reboot shape
+Bluetooth Management 2.0 predicts, and it is direct evidence that Paired
+Controllers must route on **durable bonded/trust evidence** rather than on live
+`role`. Routing on role would have shown the user an empty list with four real
+pairings hidden behind it.
 
 Built and software-verified:
 
@@ -266,13 +292,20 @@ Built and software-verified:
 - `WindowsAdapterPairing` — `ConfirmOnly` + `Encryption`, and `UnpairAsync`,
   which is what makes the repair message an action rather than an instruction.
 
-**Open, and named as the thing under test:**
+### Still unproven — the four remaining Phase 2 boundaries
 
-| Item | Confidence | How it gets settled |
-|---|---|---|
-| The Windows bond-mismatch signature (`AdapterResetSignature`) | **Hypothesis** | First-attempt `RepairRequired` against a genuinely reflashed adapter. Windows does not expose HCI status codes, so the signature is reconstructed from *paired* + *reachable* + `AccessDenied`/auth `HRESULT`. The condition set is pinned by tests; whether it is the RIGHT set is not. |
-| One client, no churn | Unverified | `tools/mgmt_watch.ps1` against a live session. |
-| Everything else in Phase 2's exit criteria | Unverified | Needs an adapter. |
+The happy path working says nothing about any of these. Each needs a condition
+the happy path does not produce.
+
+| # | Item | Confidence | What settles it |
+|---|---|---|---|
+| 1 | Stale Windows pairing after an adapter flash/reset → first-attempt `RepairRequired` | **Hypothesis** | Flash the adapter (which clears its credentials by design) while Windows keeps its pairing, then connect once. Windows exposes no HCI status to user mode, so `AdapterResetSignature` is reconstructed from *paired* + *reachable* + `AccessDenied`/auth `HRESULT`. The condition set is pinned by tests; whether it is the RIGHT set is not. |
+| 2 | Real recovery-ladder timing and failure behaviour | **Unknown** | Nothing failed in the observed session, so the retry, the 350 ms backoff and the address-restricted fallback scan have never executed against hardware. |
+| 3 | One management client, no churn | **Unknown** | `tools/mgmt_watch.ps1` / UART diagnostics across connect, Refresh, navigation, Disconnect and reconnect. |
+| 4 | A → B active-adapter handoff under real asynchronous callbacks | **Unknown** | Two adapters. The ordering is unit-tested over a fake port; whether a real trailing callback from A can reach B's state is not. |
+
+The repair ACTION (`UnpairAsync` → re-pair → reconnect) is also unexecuted,
+because reaching it requires (1) first.
 
 Two deliberate departures from the Kotlin original, both caught by their own
 tests:
@@ -288,9 +321,12 @@ tests:
 
 ## 8. Next
 
-Phase 3, the adapter dashboard, which is the MVP. It needs Phase 2 validated
-against real hardware first: the ladder, the signature and the switch ordering
-are all reasoned rather than observed.
+The four boundaries above, then Phase 3. Some Phase 3-shaped UI already exists
+because Phase 2 could not be exercised without it — the Adapter page, Pair /
+Refresh / Disconnect, the remembered-adapter list with Connect / Repair /
+Remove, live session state, the peer inventory, and the Diagnostics page. That
+glue is real and stays; Phase 3 is an audit of what remains on top of it, not a
+rewrite of it.
 
 Phase 6 remains gated on the §14.5 HOGP peripheral-role experiment, which has not
 been run.
