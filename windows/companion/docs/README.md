@@ -292,31 +292,67 @@ Built and software-verified:
 - `WindowsAdapterPairing` — `ConfirmOnly` + `Encryption`, and `UnpairAsync`,
   which is what makes the repair message an action rather than an instruction.
 
-### Still unproven — the four remaining Phase 2 boundaries
+### The four Phase 2 boundaries
 
-The happy path working says nothing about any of these. Each needs a condition
-the happy path does not produce.
-
-| # | Item | Confidence | What settles it |
+| # | Item | Confidence | State |
 |---|---|---|---|
-| 1 | Stale Windows pairing after an adapter flash/reset → first-attempt `RepairRequired` | **Hypothesis** | Flash the adapter (which clears its credentials by design) while Windows keeps its pairing, then connect once. Windows exposes no HCI status to user mode, so `AdapterResetSignature` is reconstructed from *paired* + *reachable* + `AccessDenied`/auth `HRESULT`. The condition set is pinned by tests; whether it is the RIGHT set is not. |
-| 2 | Real recovery-ladder timing and failure behaviour | **Unknown** | Nothing failed in the observed session, so the retry, the 350 ms backoff and the address-restricted fallback scan have never executed against hardware. |
-| 3 | One management client, no churn | **Unknown** | `tools/mgmt_watch.ps1` / UART diagnostics across connect, Refresh, navigation, Disconnect and reconnect. |
-| 4 | A → B active-adapter handoff under real asynchronous callbacks | **Unknown** | Two adapters. The ordering is unit-tested over a fake port; whether a real trailing callback from A can reach B's state is not. |
+| A | Stale Windows pairing after an adapter flash/reset → `RepairRequired` | **Confirmed** shape; signature **corrected**, retest pending | Ran 2026-08-29. Disproved the pre-test hypothesis and rewrote the signature from the evidence. See below. |
+| B | The repair action (unpair → re-pair → reconnect) | **Defect found and fixed**, retest pending | Ran 2026-08-29. Repair had never worked; see below. |
+| C | One management client, no churn | **Confirmed PASS** | 2026-08-29, from the adapter's own `btlife` ring: 21 lifecycle records, one handle, zero alternation violations, no transition across two Refreshes and full navigation. `dumps/windows-phase2-oneclient-2026-08-29.md`. |
+| D | A → B active-adapter handoff under real asynchronous callbacks | **Unknown** | Two adapters. The ordering is unit-tested over a fake port; whether a real trailing callback from A can reach B's state is not. |
 
-The repair ACTION (`UnpairAsync` → re-pair → reconnect) is also unexecuted,
-because reaching it requires (1) first.
+One thing the happy path was expected to settle and did not: **the recovery
+ladder's retry and 350 ms backoff still have not executed on hardware**, because
+every failure observed so far was at a non-retryable stage.
 
-The prepared sequence — what to do, what to capture, and what would falsify each
-— is `docs/experiments/windows-phase2-boundaries-2026-08-29.md`.
+#### A — what Windows actually does
 
-**An audit before booking bench time found the signature could not fire at all**:
-thrown WinRT failures were never wrapped, so the `HRESULT` half had nothing to
-inspect; "Windows still paired" was read off a connection object already disposed
-by the time a failure is classified; and "peer answered" was set only on the scan
-path, while a remembered adapter connects directly without one. Fixed, with
-`StaleBondLadderTests` pinning the wiring. That makes the condition set
-*evaluable*, not *right*.
+The pre-test signature expected the refusal at the ATTRIBUTE layer:
+`AccessDenied` or an authentication `HRESULT`. Windows produced neither. Four
+attempts against a genuinely reflashed adapter all gave:
+
+```
+open device resolved paired=True
+fail stage=services GattCommunicationStatus=Unreachable
+```
+
+with no ATT byte and no `HRESULT` — the status was *returned* by
+`GetGattServicesForUuidAsync`, not thrown, so there was never an exception to
+carry one. Windows encrypts the link for a bonded peer before any ATT
+transaction exists; the reflashed adapter has no matching key, so the failure is
+BELOW the attribute layer and `Unreachable` is all WinRT has to say about it.
+
+`Unreachable` is also what a powered-off adapter produces, so the corrected
+signature is **compound** — see `AdapterResetSignature` for the full condition
+set and the negative cases each clause exists to reject. The consequence for the
+ladder is that the attribute shape still ends it at the first failure, while the
+link shape must let the fallback scan run: the fallback is what produces the
+corroborating second observation.
+
+#### B — Repair had never worked
+
+Repair resolved the Windows pairing through `AdapterRecord.DeviceId`, a cached
+WinRT device path that **nothing ever populated**. It took its null branch every
+time, logged `no Windows device path cached`, cleared the repair flag and
+reported success with the stale bond untouched.
+
+A repair test existed and passed. It asserted that the row kept its alias and
+address, and it did — because nothing had happened to it. Repair now resolves the
+device fresh from the address, unpairs once, verifies Windows agrees, and clears
+the flag only then. `DeviceId` is gone, and `IAdapterPairingGateway` is the seam
+that makes the unpair assertable.
+
+#### Before spending more bench time
+
+An audit before the run found the signature could not fire at all: thrown WinRT
+failures were never wrapped, "Windows still paired" was read off an already
+disposed connection, and "peer answered" was set only on the scan path while a
+remembered adapter connects directly. Fixing those is what made the run produce a
+usable answer rather than a second mystery. It is worth doing again before the
+next hardware session.
+
+The retest sequence — one flash cycle settles both A and B — is in
+`docs/experiments/windows-phase2-boundaries-2026-08-29.md`.
 
 Two deliberate departures from the Kotlin original, both caught by their own
 tests:
