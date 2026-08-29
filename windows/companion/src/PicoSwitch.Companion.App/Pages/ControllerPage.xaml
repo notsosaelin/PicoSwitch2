@@ -4,7 +4,8 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <ScrollViewer Padding="24">
-        <StackPanel MaxWidth="1000" HorizontalAlignment="Left" Spacing="8">
+        <Grid>
+            <StackPanel MaxWidth="1180" HorizontalAlignment="Stretch" Spacing="8">
             <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Gamepad" />
             <TextBlock
                 Style="{StaticResource BodyTextBlockStyle}"
@@ -16,6 +17,7 @@
                 Style="{StaticResource BodyTextBlockStyle}"
                 TextWrapping="Wrap"
                 Text="Phase 6 fills this page, and only if the HOGP peripheral-role experiment in WINDOWS_PASS.md 14.5 passes. The Touch Gamepad surface (Phase 6a) is opened from here and does not depend on that outcome." />
-        </StackPanel>
+            </StackPanel>
+        </Grid>
     </ScrollViewer>
 </Page>

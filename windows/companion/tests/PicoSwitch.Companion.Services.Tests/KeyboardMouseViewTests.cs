@@ -249,6 +249,49 @@ public sealed class KeyboardMouseViewTests
     }
 
     [Fact]
+    public void TheKeyboardOnlyProfileDoesNotOfferMouseButtons()
+    {
+        // That profile is what the adapter uses when only a keyboard is attached,
+        // so a mouse binding in it can never fire. Drawing five dead controls
+        // invites the user to bind something that silently does nothing.
+        var keyboardOnly = KeyboardMouse.Project(State(), KbmProfile.Keyboard, true);
+        Assert.False(keyboardOnly.ShowMouseButtons);
+
+        var both = KeyboardMouse.Project(State(profile: KbmProfile.KeyboardMouse), KbmProfile.KeyboardMouse, true);
+        Assert.True(both.ShowMouseButtons);
+    }
+
+    [Fact]
+    public void TheMappedCountMatchesWhatTheProfileActuallyShows()
+    {
+        // "27 of 88" must not count five inputs the user cannot see or press.
+        var keyboardOnly = KeyboardMouse.Project(State(), KbmProfile.Keyboard, true);
+        var both = KeyboardMouse.Project(
+            State(profile: KbmProfile.KeyboardMouse),
+            KbmProfile.KeyboardMouse,
+            true);
+
+        Assert.Equal(keyboardOnly.Keys.Count, keyboardOnly.MappableCount);
+        Assert.Equal(both.Keys.Count + both.MouseButtons.Count, both.MappableCount);
+    }
+
+    [Fact]
+    public void AMouseBindingIsNotCountedInTheKeyboardOnlyProfile()
+    {
+        // Even if the adapter reports one, it cannot fire there, so it must not
+        // inflate the profile's mapped count.
+        var view = KeyboardMouse.Project(
+            State(bindings:
+            [
+                new KbmBinding(new KbmSource(KbmSourceKind.MouseButton, 1), KbmDestination.Zr, false),
+            ]),
+            KbmProfile.Keyboard,
+            true);
+
+        Assert.Equal(0, view.BoundCount);
+    }
+
+    [Fact]
     public void TheTwoProfilesAreProjectedSeparately()
     {
         // Showing one profile's bindings under the other's name would have the

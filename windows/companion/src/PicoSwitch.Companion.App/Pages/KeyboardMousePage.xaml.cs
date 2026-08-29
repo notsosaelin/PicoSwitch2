@@ -265,7 +265,7 @@ public sealed partial class KeyboardMousePage : Page
             : Visibility.Visible;
 
         MappingSummary.Text = view.Loaded
-            ? $"{view.BoundCount} of {view.Keys.Count + view.MouseButtons.Count} inputs mapped"
+            ? $"{view.BoundCount} of {view.MappableCount} inputs mapped"
             : "Not read yet";
 
         InvertXBox.IsChecked = view.InvertX;
@@ -298,7 +298,19 @@ public sealed partial class KeyboardMousePage : Page
 
     private void BuildMouseButtons(KeyboardMouseView current, bool enabled)
     {
+        // Hidden entirely in the keyboard-only profile: those bindings can never
+        // fire there, and five dead controls invite a binding that silently does
+        // nothing.
+        MouseButtonSection.Visibility = current.ShowMouseButtons
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
         MouseButtonHost.Children.Clear();
+        if (!current.ShowMouseButtons)
+        {
+            return;
+        }
+
         foreach (var cell in current.MouseButtons)
         {
             MouseButtonHost.Children.Add(KeyButton(cell, enabled, width: 2.0, mouse: true));
