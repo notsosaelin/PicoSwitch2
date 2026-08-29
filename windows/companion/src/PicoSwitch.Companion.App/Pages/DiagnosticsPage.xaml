@@ -1,10 +1,12 @@
 <Page
     x:Class="PicoSwitch.Companion.App.Pages.DiagnosticsPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls">
 
     <Grid Padding="24" RowSpacing="12">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
@@ -19,20 +21,74 @@
                 Text="One stream, every layer. Bounded ring; the dropped count is always stated so this is never read as a complete history." />
         </StackPanel>
 
-        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8">
-            <Button Content="Copy" Click="OnCopy" />
-            <Button Content="Clear" Click="OnClear" />
+        <muxc:InfoBar
+            Grid.Row="1"
+            x:Name="OperationBar"
+            IsOpen="False"
+            IsClosable="True"
+            Severity="Informational"
+            Title="Diagnostics" />
+
+        <StackPanel Grid.Row="2" Spacing="12">
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Content="Copy log" Click="OnCopy" />
+                <Button Content="Copy support bundle" Click="OnCopyBundle" Style="{StaticResource AccentButtonStyle}" />
+                <Button Content="Clear" Click="OnClear" />
+                <TextBlock
+                    x:Name="Summary"
+                    VerticalAlignment="Center"
+                    Style="{StaticResource CaptionTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
+
             <TextBlock
-                x:Name="Summary"
-                VerticalAlignment="Center"
                 Style="{StaticResource CaptionTextBlockStyle}"
-                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                TextWrapping="Wrap"
+                Text="The support bundle adds your Windows and radio details to this log. Bluetooth addresses appear only as a short suffix, and adapter nicknames are never included." />
+
+            <!-- Low-level LE bonds. Diagnostics only; never Paired Controllers. -->
+            <Expander Header="Low-level Bluetooth bonds" HorizontalAlignment="Stretch">
+                <StackPanel Spacing="8" Padding="0,8,0,0">
+                    <TextBlock
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextWrapping="Wrap"
+                        Text="The adapter's raw LE bond slots. This is a low-level view for support, not the controller list: it shows only LE credentials, addressed by slot. Use Paired controllers in Settings for anything routine." />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="BondsRefresh" Content="Read bond slots" Click="OnReadBonds" />
+                    </StackPanel>
+                    <TextBlock
+                        x:Name="BondsText"
+                        FontFamily="Consolas"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        IsTextSelectionEnabled="True"
+                        TextWrapping="Wrap"
+                        Text="Not read." />
+                </StackPanel>
+            </Expander>
+
+            <!-- The management gate. Destructive and one-way from the app's side. -->
+            <Expander Header="In-band management" HorizontalAlignment="Stretch">
+                <StackPanel Spacing="8" Padding="0,8,0,0">
+                    <TextBlock
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextWrapping="Wrap"
+                        Text="Whether the adapter accepts management over Bluetooth at all. Turning this off ends this session and every future one — the app cannot turn it back on, because it would need this very channel to do it." />
+                    <TextBlock
+                        x:Name="GateState"
+                        Style="{StaticResource BodyStrongTextBlockStyle}"
+                        Text="Unknown" />
+                    <Button x:Name="GateDisable" Content="Turn off management over Bluetooth" Click="OnDisableGate" />
+                </StackPanel>
+            </Expander>
         </StackPanel>
 
         <!-- Wide content scrolls inside its own container; the window body never
              scrolls horizontally. -->
         <ScrollViewer
-            Grid.Row="2"
+            Grid.Row="3"
             x:Name="LogScroller"
             HorizontalScrollBarVisibility="Auto"
             HorizontalScrollMode="Auto"

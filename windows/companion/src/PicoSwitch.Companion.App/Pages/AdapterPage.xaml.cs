@@ -1,26 +1,37 @@
+using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Navigation;
+using Microsoft.UI.Xaml.Media;
 using PicoSwitch.Companion.Services;
+using PicoSwitch.Companion.Services.Presentation;
 using PicoSwitch.Management;
+using Windows.UI;
 
 namespace PicoSwitch.Companion.App.Pages;
 
 /// <summary>
-/// Phase 2's test surface.
+/// The adapter dashboard (§16.1). Phase 3's MVP surface.
 ///
-/// Deliberately not the Phase 3 dashboard. What this page exists to do is
-/// exercise the parts of Phase 2 that can only be judged against real hardware:
-/// the radio probe, discovery, the Windows pairing ceremony, the identity gate,
-/// the recovery ladder, the peer inventory, and the repair path. Phase 3 replaces
-/// the layout with the real dashboard and keeps the same service calls.
+/// The page paints <see cref="AdapterDashboardView"/> and calls
+/// <see cref="AdapterConnectionService"/>. It makes no decisions of its own: every
+/// "is this enabled", "what does this say" and "should this warn" is decided in
+/// <see cref="AdapterDashboard"/>, where it is unit-tested. A rule that appears in
+/// this file is a rule in the wrong place — the Phase 2 version of this page grew
+/// its logic inline and none of it could be tested.
 ///
-/// It calls <see cref="AdapterConnectionService"/> and nothing below it — no GATT
-/// object, no management command string.
+/// It calls the service and nothing below it — no GATT object, no management
+/// command string.
 /// </summary>
 public sealed partial class AdapterPage : Page
 {
     private readonly AdapterConnectionService adapters = AppServices.Adapters;
+
+    /// <summary>Input source ids, positionally matched to <c>InputBox</c>.</summary>
+    private readonly List<long> inputIds = [];
+
+    private readonly List<Personality> personalities = [];
+
+    private AdapterDashboardView? view;
 
     public AdapterPage()
     {
@@ -52,82 +63,119 @@ public sealed partial class AdapterPage : Page
         adapters.Radio.Changed -= OnStateChanged;
     }
 
-    protected override void OnNavigatedTo(NavigationEventArgs e) => Render();
-
     // Every observable this page watches is written from a WinRT pool thread.
     private void OnStateChanged() => AppServices.OnUiThread(Render);
 
-    private async void OnPair(object sender, RoutedEventArgs e) =>
-        await SafeAsync(() => adapters.PairNewAdapterAsync());
+    /* ------------------------------------------------------------- actions */
 
-    private async void OnRefresh(object sender, RoutedEventArgs e) =>
-        await SafeAsync(() => adapters.RefreshAsync());
+    private async void OnConnect(object sender, RoutedEventArgs e)
+    {
+        if (SelectedAdapter() is not { } record)
+        {
+            return;
+        }
+
+        await SafeAsync(() => adapters.ConnectAsync(record.Id));
+    }
 
     private async void OnDisconnect(object sender, RoutedEventArgs e) =>
         await SafeAsync(() => adapters.DisconnectAsync());
 
-    private async void OnProbeRadio(object sender, RoutedEventArgs e) =>
-        await SafeAsync(() => adapters.ProbeRadioAsync());
+    private async void OnRefresh(object sender, RoutedEventArgs e) =>
+        await SafeAsync(() => adapters.RefreshAsync());
 
-    private async void OnConnectRow(object sender, RoutedEventArgs e)
-    {
-        if (RowId(sender) is { } id)
+    private async void OnWake(object sender, RoutedEventArgs e) =>
+        await SafeAsync(async () =>
         {
-            await SafeAsync(() => adapters.ConnectAsync(id));
-        }
-    }
+            var status = await adapters.WakeConsoleAsync();
 
-    private async void OnRepairRow(object sender, RoutedEventArgs e)
+            // Unknown means the adapter could not tell us -- older firmware has no
+            // `wake status`. Reporting that as failure would be a lie about the
+            // console, so it is reported as exactly what it is.
+            Report(
+                status.Result switch
+                {
+                    WakeResult.ConsoleAwake => "The console is awake.",
+                    WakeResult.Advertised => "Wake sent. The console should wake shortly.",
+                    WakeResult.NoIdentity =>
+                        "The adapter has no saved console identity, so it cannot wake one. " +
+                        "Connect it to the console once first.",
+                    WakeResult.RadioBusy =>
+                        "The adapter's radio was busy. Try again in a moment.",
+                    WakeResult.Unknown =>
+                        "Wake was sent, but this adapter's firmware cannot report the result.",
+                    _ => "The adapter is still trying to wake the console.",
+                },
+                status.Result is WakeResult.ConsoleAwake or WakeResult.Advertised
+                    ? InfoBarSeverity.Success
+                    : InfoBarSeverity.Informational);
+        });
+
+    private async void OnSwitchPersonality(object sender, RoutedEventArgs e)
     {
-        if (RowId(sender) is not { } id)
+        if (PersonalityBox.SelectedIndex < 0 || PersonalityBox.SelectedIndex >= personalities.Count)
         {
             return;
         }
 
-        // Unpairing destroys a trust relationship, so it is never automatic and
-        // the confirmation names the consequence.
-        var dialog = new ContentDialog
+        var personality = personalities[PersonalityBox.SelectedIndex];
+        await SafeAsync(async () =>
         {
-            XamlRoot = XamlRoot,
-            Title = "Repair pairing?",
-            Content =
-                "Windows will forget its pairing with this adapter. You will need to " +
-                "double-tap the adapter's pairing button and pair again. The adapter's " +
-                "name and its remembered controllers are kept.",
-            PrimaryButtonText = "Repair",
-            CloseButtonText = "Cancel",
-            DefaultButton = ContentDialogButton.Close,
+            var outcome = await adapters.SetPersonalityAsync(personality);
+
+            // Three outcomes, three different things to say. "Switched, but the
+            // console has not seen it" needs its own instruction: the user is
+            // looking at a console that still shows the old controller.
+            if (outcome.Unchanged)
+            {
+                Report("The adapter was already in that mode.", InfoBarSeverity.Informational);
+            }
+            else if (outcome.Reenumerated)
+            {
+                Report(
+                    $"Switched to {ControllerModeSection.Label(outcome.Personality)}.",
+                    InfoBarSeverity.Success);
+            }
+            else
+            {
+                Report(
+                    $"The adapter switched to {ControllerModeSection.Label(outcome.Personality)}, " +
+                    "but the console has not seen the change yet. Unplug the adapter and plug it " +
+                    "back in.",
+                    InfoBarSeverity.Warning);
+            }
+        });
+    }
+
+    private async void OnEditBody(object sender, RoutedEventArgs e) =>
+        await EditColorAsync(ColorTarget.Body, view?.Appearance.Body);
+
+    private async void OnEditLeft(object sender, RoutedEventArgs e) =>
+        await EditColorAsync(ColorTarget.LeftAccent, view?.Appearance.LeftAccent);
+
+    private async void OnEditRight(object sender, RoutedEventArgs e) =>
+        await EditColorAsync(ColorTarget.RightAccent, view?.Appearance.RightAccent);
+
+    private async Task EditColorAsync(ColorTarget target, RgbColor? current)
+    {
+        var picker = new ColorPicker
+        {
+            IsAlphaEnabled = false,
+            IsColorSliderVisible = true,
+            IsHexInputVisible = true,
+            Color = current is { } value
+                ? Color.FromArgb(255, (byte)value.Red, (byte)value.Green, (byte)value.Blue)
+                : Colors.Black,
         };
 
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
-        {
-            await SafeAsync(() => adapters.RepairAsync(id));
-        }
-    }
-
-    private async void OnRemoveRow(object sender, RoutedEventArgs e)
-    {
-        if (RowId(sender) is not { } id)
-        {
-            return;
-        }
-
-        // The consequence, stated exactly. This copy previously promised that the
-        // Windows pairing was untouched, which stopped being true when Remove was
-        // corrected to match WINDOWS_PASS.md §16.2 -- and a confirmation that
-        // misdescribes what it is about to do is worse than none at all.
         var dialog = new ContentDialog
         {
             XamlRoot = XamlRoot,
-            Title = "Remove this adapter?",
-            Content =
-                "This app forgets the adapter and its controller history, and Windows " +
-                "drops its pairing with it. You will need to pair again, with the " +
-                "adapter's pairing window open.\n\n" +
-                "The controllers paired to the adapter itself are not affected.",
-            PrimaryButtonText = "Remove and unpair",
+            Title = "Choose a colour",
+            Content = picker,
+            PrimaryButtonText = "Set",
             CloseButtonText = "Cancel",
-            DefaultButton = ContentDialogButton.Close,
+            DefaultButton = ContentDialogButton.Primary,
         };
 
         if (await dialog.ShowAsync() != ContentDialogResult.Primary)
@@ -135,36 +183,165 @@ public sealed partial class AdapterPage : Page
             return;
         }
 
-        await SafeAsync(async () =>
-        {
-            var removal = await adapters.RemoveAsync(id);
-            if (removal.LeftOrphanPairing)
-            {
-                // The row is gone but Windows kept its pairing -- radio off, or the
-                // device could not be resolved. Say so: the user now has a bond
-                // this app can no longer see, and only Windows settings can clear
-                // it.
-                throw new ManagementException(
-                    "The adapter was removed from this app, but Windows could not drop its " +
-                    "pairing. Remove it from Windows Bluetooth settings as well.");
-            }
-        });
+        var chosen = picker.Color;
+        await SafeAsync(() =>
+            adapters.SetColorAsync(target, new RgbColor(chosen.R, chosen.G, chosen.B)));
     }
 
-    private static AdapterId? RowId(object sender) =>
-        sender is FrameworkElement { Tag: string value } ? AdapterId.FromAddress(value) : null;
+    private async void OnApplyAppearance(object sender, RoutedEventArgs e) =>
+        await SafeAsync(async () =>
+        {
+            await adapters.ApplyAppearanceAsync();
+            Report("The console now sees the new colours.", InfoBarSeverity.Success);
+        });
+
+    private async void OnSetInput(object sender, RoutedEventArgs e)
+    {
+        if (InputBox.SelectedIndex < 0 || InputBox.SelectedIndex >= inputIds.Count)
+        {
+            return;
+        }
+
+        var id = inputIds[InputBox.SelectedIndex];
+        await SafeAsync(() => adapters.SetActiveInputAsync(id));
+    }
+
+    /* ------------------------------------------------------------- painting */
+
+    private AdapterRecord? SelectedAdapter()
+    {
+        var registry = adapters.Registry.Value;
+        return registry.ActiveId is { } id
+            ? registry.Record(id)
+            : registry.Records.FirstOrDefault();
+    }
+
+    private void Render()
+    {
+        var selected = SelectedAdapter();
+
+        view = AdapterDashboard.Project(
+            adapters.Snapshot.Value,
+            adapters.Relationship.Value,
+            adapters.Connection.Value,
+            selected);
+
+        var radio = adapters.Radio.Value;
+        RadioBar.IsOpen = radio.ManagementBlockedReason is not null;
+        RadioBar.Message = radio.ManagementBlockedReason ?? string.Empty;
+
+        // The silence rule, expressed as one assignment.
+        ContractBar.IsOpen = view.Contract.Visible;
+        ContractBar.Message = view.Contract.Summary;
+
+        AdapterTitle.Text = view.Title;
+        PhaseText.Text = view.PhaseText;
+        SetOptionalText(PhaseDetail, view.PhaseDetail);
+        SetOptionalText(FirmwareText, view.FirmwareLine);
+
+        ControllerText.Text = view.ControllerLine;
+        SetOptionalText(BatteryText, view.BatteryLine);
+
+        ConnectButton.IsEnabled = selected is not null && !view.Connected;
+        DisconnectButton.IsEnabled = view.Connected;
+        RefreshButton.IsEnabled = view.Connected;
+        WakeButton.IsEnabled = view.Connected;
+        NoAdapterHint.Visibility = selected is null ? Visibility.Visible : Visibility.Collapsed;
+
+        RenderPersonality(view.ControllerMode);
+        RenderAppearance(view.Appearance);
+        RenderInput(view.ConsoleInput);
+
+        ConsoleButtonsReason.Text = view.ConsoleButtons.DisabledReason ?? string.Empty;
+    }
+
+    private void RenderPersonality(ControllerModeSection section)
+    {
+        personalities.Clear();
+        personalities.AddRange(section.Available);
+
+        PersonalityBox.Items.Clear();
+        foreach (var personality in personalities)
+        {
+            PersonalityBox.Items.Add(ControllerModeSection.Label(personality));
+        }
+
+        PersonalityBox.SelectedIndex = personalities.IndexOf(section.Current);
+        Gate(section.Availability, PersonalityReason, PersonalityBox, PersonalityApply);
+    }
+
+    private void RenderAppearance(AppearanceSection section)
+    {
+        AppearanceHint.Text = section.ApplyHint;
+        Paint(BodySwatch, section.Body);
+        Paint(LeftSwatch, section.LeftAccent);
+        Paint(RightSwatch, section.RightAccent);
+        Gate(section.Availability, AppearanceReason, BodyEdit, LeftEdit, RightEdit, AppearanceApply);
+    }
+
+    private void RenderInput(ConsoleInputSection section)
+    {
+        inputIds.Clear();
+        InputBox.Items.Clear();
+        foreach (var source in section.Sources)
+        {
+            inputIds.Add(source.Id);
+            InputBox.Items.Add(source.IsActive ? $"{source.Label} (in use)" : source.Label);
+        }
+
+        InputBox.SelectedIndex = inputIds.IndexOf(section.ActiveId);
+        InputTruncated.IsOpen = section.Truncated;
+        Gate(section.Availability, InputReason, InputBox, InputApply);
+    }
+
+    /// <summary>
+    /// Enable or disable a section, and show its reason when disabled.
+    ///
+    /// A disabled control with no reason is the worst of both worlds: the user can
+    /// neither act nor find out why. The reason itself is decided in the
+    /// projection, not here.
+    /// </summary>
+    private static void Gate(
+        SectionAvailability availability,
+        TextBlock reason,
+        params Control[] controls)
+    {
+        foreach (var control in controls)
+        {
+            control.IsEnabled = availability.Enabled;
+        }
+
+        SetOptionalText(reason, availability.DisabledReason);
+    }
+
+    private static void Paint(Border swatch, RgbColor color) =>
+        swatch.Background = new SolidColorBrush(
+            Color.FromArgb(255, (byte)color.Red, (byte)color.Green, (byte)color.Blue));
+
+    private static void SetOptionalText(TextBlock block, string? text)
+    {
+        block.Text = text ?? string.Empty;
+        block.Visibility = string.IsNullOrWhiteSpace(text) ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private void Report(string message, InfoBarSeverity severity)
+    {
+        OperationBar.Severity = severity;
+        OperationBar.Message = message;
+        OperationBar.IsOpen = true;
+    }
 
     /// <summary>
     /// Run one adapter operation, reporting a failure instead of crashing the page.
     ///
     /// Every error is logged before it is rendered, and the text shown is the one
     /// the service produced — the layers below already word their failures for a
-    /// person ("Bluetooth is turned off", "Double-tap its pairing button"), and
+    /// person ("Bluetooth is turned off", "Repair pairing to continue"), and
     /// replacing them with "Something went wrong" would throw that away.
     /// </summary>
     private async Task SafeAsync(Func<Task> operation)
     {
-        SetBusy(true);
+        BusyRing.IsActive = true;
         OperationBar.IsOpen = false;
         try
         {
@@ -172,91 +349,14 @@ public sealed partial class AdapterPage : Page
         }
         catch (Exception error)
         {
-            var message = Unwrap(error);
+            var message = ManagementErrorText.Summarize(error);
             adapters.Diagnostics.Error("ui", message);
-            OperationBar.Severity = InfoBarSeverity.Error;
-            OperationBar.Message = message;
-            OperationBar.IsOpen = true;
+            Report(message, InfoBarSeverity.Error);
         }
         finally
         {
-            SetBusy(false);
+            BusyRing.IsActive = false;
             Render();
         }
     }
-
-    // Shared with any other front end over this service, and unit-tested there.
-    private static string Unwrap(Exception error) => ManagementErrorText.Summarize(error);
-
-    private void SetBusy(bool busy)
-    {
-        PairProgress.IsActive = busy;
-        PairButton.IsEnabled = !busy;
-        RefreshButton.IsEnabled = !busy;
-        DisconnectButton.IsEnabled = !busy;
-        ProbeRadioButton.IsEnabled = !busy;
-    }
-
-    private void Render()
-    {
-        var radio = adapters.Radio.Value;
-        RadioBar.Message = radio.ManagementBlockedReason ??
-            $"Ready. {(radio.PeripheralRoleSupported ? "Peripheral role available." : "No peripheral role, so Controller Link is unavailable on this PC.")}";
-        RadioBar.Severity = radio.ManagementBlockedReason is null
-            ? InfoBarSeverity.Success
-            : InfoBarSeverity.Warning;
-
-        var connection = adapters.Connection.Value;
-        var relationship = adapters.Relationship.Value;
-        SessionPhase.Text = $"{relationship.Phase} · carrier {connection.Phase}";
-        SessionDetail.Text = relationship.Message ?? connection.Message ??
-            (connection.Connected ? "Connected." : "No adapter connected.");
-
-        var snapshot = adapters.Snapshot.Value;
-        SnapshotDetail.Text = snapshot.Firmware.Id.Length == 0
-            ? string.Empty
-            : $"id={snapshot.Firmware.Id}  version={snapshot.Firmware.Version}  " +
-              $"build={snapshot.Firmware.Build}  bridgeContract={snapshot.Firmware.BridgeContract}\n" +
-              $"personality={snapshot.Personality.Current.WireName()}  " +
-              $"controller={snapshot.Controller.Name}  " +
-              $"battery={(snapshot.Controller.BatteryValid ? snapshot.Controller.BatteryPercent + "%" : "n/a")}\n" +
-              $"capabilities: peers={snapshot.Capabilities.Peers} forget={snapshot.Capabilities.PeerForget} " +
-              $"pairing={snapshot.Capabilities.RemotePairing} kbm={snapshot.Capabilities.Kbm} " +
-              $"amiibo={snapshot.Capabilities.Amiibo}";
-
-        var registry = adapters.Registry.Value;
-        var rows = registry.Records.Select(record => new Row(
-            record.Id.Value,
-            registry.NeedsShortLabel(record)
-                ? $"{record.DisplayName} · {record.Id.ShortLabel}"
-                : record.DisplayName,
-            $"{record.Address}" +
-            (registry.ActiveId == record.Id ? "  · selected" : string.Empty) +
-            (record.RepairRequired ? "  · repair required" : string.Empty) +
-            (record.LastFirmwareVersion is { } version ? $"  · last seen on {version}" : string.Empty)))
-            .ToList();
-        RegistryList.ItemsSource = rows;
-        RegistryEmpty.Visibility = rows.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-
-        var inventory = adapters.Inventory;
-        var peers = new List<Row>();
-        peers.AddRange(inventory.Connected.Select(peer => Peer(peer, "Connected")));
-        peers.AddRange(inventory.Paired.Select(peer => Peer(peer, "Paired")));
-        peers.AddRange(inventory.Recent.Select(peer => Peer(peer, "Recent")));
-        peers.AddRange(inventory.Companion.Select(peer => Peer(peer, "This PC")));
-        peers.AddRange(inventory.Unattributed.Select(peer => Peer(peer, "Unattributed")));
-        PeerList.ItemsSource = peers;
-        PeersEmpty.Visibility = peers.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    private static Row Peer(PeerListing listing, string section) => new(
-        listing.PeerId,
-        listing.DisplayName,
-        $"{section} · {listing.PeerId} · {listing.Address} · transports {listing.Transports}" +
-        // A remembered identity shown as a live one is the promotion the protocol
-        // forbids, so the row says which it is.
-        (listing.IdentifiedFromHistory ? " · name from this app's history" : string.Empty) +
-        (listing.Role == PeerRole.Unknown ? " · not yet identified by the adapter" : string.Empty));
-
-    private sealed record Row(string Id, string Title, string Detail);
 }

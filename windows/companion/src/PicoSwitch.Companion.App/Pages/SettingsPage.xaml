@@ -1,23 +1,241 @@
 <Page
     x:Class="PicoSwitch.Companion.App.Pages.SettingsPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:muxc="using:Microsoft.UI.Xaml.Controls"
+    xmlns:automation="using:Microsoft.UI.Xaml.Automation">
+
+    <Page.Resources>
+        <Style x:Key="CardStyle" TargetType="Border">
+            <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}" />
+            <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="16" />
+        </Style>
+    </Page.Resources>
 
     <ScrollViewer Padding="24">
-        <StackPanel MaxWidth="1000" HorizontalAlignment="Left" Spacing="8">
-            <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Settings" />
-            <TextBlock
-                Style="{StaticResource BodyTextBlockStyle}"
-                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                TextWrapping="Wrap"
-                Text="Remembered adapters, paired controllers, and application preferences." />
-            <TextBlock
-                Margin="0,16,0,0"
-                Style="{StaticResource BodyTextBlockStyle}"
-                TextWrapping="Wrap"
-                Text="Phase 3 fills this page with remembered adapters and Paired Controllers. Diagnostics is reached from here rather than from the rail: it is not a daily destination." />
+        <StackPanel MaxWidth="1000" HorizontalAlignment="Left" Spacing="16">
 
-            <Button Margin="0,8,0,0" Content="Open Diagnostics" Click="OnOpenDiagnostics" />
+            <TextBlock Style="{StaticResource TitleTextBlockStyle}" Text="Settings" />
+
+            <muxc:InfoBar
+                x:Name="OperationBar"
+                IsOpen="False"
+                IsClosable="True"
+                Severity="Error"
+                Title="Settings" />
+
+            <!-- Remembered adapters -->
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel Spacing="12">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Spacing="2">
+                            <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Remembered adapters" />
+                            <TextBlock
+                                Style="{StaticResource CaptionTextBlockStyle}"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                TextWrapping="Wrap"
+                                Text="This app can remember several adapters. Only one is connected at a time." />
+                        </StackPanel>
+                        <Button Grid.Column="1" x:Name="PairButton" Content="Add an adapter" Click="OnPair" Style="{StaticResource AccentButtonStyle}" />
+                    </Grid>
+
+                    <TextBlock
+                        x:Name="PairingHint"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextWrapping="Wrap"
+                        Text="A new adapter is only admitted while its pairing window is open — double-tap its pairing button first. Windows will show its own consent prompt." />
+
+                    <TextBlock
+                        x:Name="AdaptersEmpty"
+                        Style="{StaticResource BodyTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        Text="None yet." />
+
+                    <ItemsControl x:Name="AdapterList">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,8,0,8" ColumnSpacing="12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Spacing="2">
+                                        <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="{Binding Title}" />
+                                        <TextBlock
+                                            Style="{StaticResource CaptionTextBlockStyle}"
+                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                            Text="{Binding StateText}" />
+                                        <TextBlock
+                                            Style="{StaticResource CaptionTextBlockStyle}"
+                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                            Text="{Binding Detail}" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                        <Button Content="Connect" automation:AutomationProperties.Name="{Binding ConnectLabel}" Click="OnConnectRow" Tag="{Binding Address}" IsEnabled="{Binding CanConnect}" />
+                                        <Button Content="Rename" automation:AutomationProperties.Name="{Binding RenameLabel}" Click="OnRenameRow" Tag="{Binding Address}" />
+                                        <Button Content="Repair pairing" automation:AutomationProperties.Name="{Binding RepairLabel}" Click="OnRepairRow" Tag="{Binding Address}" />
+                                        <Button Content="Remove" automation:AutomationProperties.Name="{Binding RemoveLabel}" Click="OnRemoveRow" Tag="{Binding Address}" />
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+
+            <!-- Paired controllers -->
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel Spacing="12">
+                    <Grid ColumnSpacing="12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Spacing="2">
+                            <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Paired controllers" />
+                            <TextBlock
+                                Style="{StaticResource CaptionTextBlockStyle}"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                TextWrapping="Wrap"
+                                Text="Controllers the adapter itself knows about. Separate from this PC's own Bluetooth pairings." />
+                        </StackPanel>
+                        <Button Grid.Column="1" x:Name="PairControllerButton" Content="Pair a controller" Click="OnPairController" />
+                    </Grid>
+
+                    <TextBlock
+                        x:Name="PairControllerReason"
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextWrapping="Wrap"
+                        Visibility="Collapsed" />
+
+                    <muxc:InfoBar
+                        x:Name="PeersUnsupported"
+                        IsOpen="False"
+                        IsClosable="False"
+                        Severity="Informational"
+                        Title="Controller list unavailable" />
+
+                    <StackPanel x:Name="PeerSections" Spacing="12">
+                        <StackPanel x:Name="ConnectedSection" Spacing="4">
+                            <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Connected" />
+                            <ItemsControl x:Name="ConnectedList">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,4,0,4" ColumnSpacing="12">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" Spacing="2">
+                                                <TextBlock Style="{StaticResource BodyTextBlockStyle}" Text="{Binding Title}" />
+                                                <TextBlock
+                                                    Style="{StaticResource CaptionTextBlockStyle}"
+                                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                    Text="{Binding Detail}" />
+                                            </StackPanel>
+                                            <Button Grid.Column="1" Content="Forget" automation:AutomationProperties.Name="{Binding ForgetLabel}" Click="OnForgetPeer" Tag="{Binding PeerId}" IsEnabled="{Binding CanForget}" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+
+                        <StackPanel x:Name="PairedSection" Spacing="4">
+                            <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Paired" />
+                            <ItemsControl x:Name="PairedList">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,4,0,4" ColumnSpacing="12">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" Spacing="2">
+                                                <TextBlock Style="{StaticResource BodyTextBlockStyle}" Text="{Binding Title}" />
+                                                <TextBlock
+                                                    Style="{StaticResource CaptionTextBlockStyle}"
+                                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                    Text="{Binding Detail}" />
+                                            </StackPanel>
+                                            <Button Grid.Column="1" Content="Forget" automation:AutomationProperties.Name="{Binding ForgetLabel}" Click="OnForgetPeer" Tag="{Binding PeerId}" IsEnabled="{Binding CanForget}" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+
+                        <StackPanel x:Name="RecentSection" Spacing="4">
+                            <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Recent" />
+                            <TextBlock
+                                Style="{StaticResource CaptionTextBlockStyle}"
+                                Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                TextWrapping="Wrap"
+                                Text="Seen before, but the adapter is no longer paired with them." />
+                            <ItemsControl x:Name="RecentList">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Margin="0,4,0,4" ColumnSpacing="12">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel Grid.Column="0" Spacing="2">
+                                                <TextBlock Style="{StaticResource BodyTextBlockStyle}" Text="{Binding Title}" />
+                                                <TextBlock
+                                                    Style="{StaticResource CaptionTextBlockStyle}"
+                                                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                                    Text="{Binding Detail}" />
+                                            </StackPanel>
+                                            <Button Grid.Column="1" Content="Remove from history" automation:AutomationProperties.Name="{Binding RemoveFromHistoryLabel}" Click="OnRemoveHistory" Tag="{Binding PeerId}" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+
+                        <TextBlock
+                            x:Name="PeersEmpty"
+                            Style="{StaticResource BodyTextBlockStyle}"
+                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                            TextWrapping="Wrap"
+                            Text="Connect an adapter and refresh to read its controllers." />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Appearance -->
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel Spacing="8">
+                    <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Appearance" />
+                    <ComboBox x:Name="ThemeBox" Header="Theme" MinWidth="200" SelectionChanged="OnThemeChanged">
+                        <ComboBoxItem Content="Use system setting" />
+                        <ComboBoxItem Content="Light" />
+                        <ComboBoxItem Content="Dark" />
+                    </ComboBox>
+                </StackPanel>
+            </Border>
+
+            <!-- Diagnostics -->
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel Spacing="8">
+                    <TextBlock Style="{StaticResource BodyStrongTextBlockStyle}" Text="Diagnostics" />
+                    <TextBlock
+                        Style="{StaticResource CaptionTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextWrapping="Wrap"
+                        Text="The log, low-level Bluetooth bond slots, the management gate, and the support bundle." />
+                    <Button Content="Open Diagnostics" Click="OnOpenDiagnostics" />
+                </StackPanel>
+            </Border>
         </StackPanel>
     </ScrollViewer>
 </Page>

@@ -1,5 +1,6 @@
 using Microsoft.UI.Dispatching;
 using PicoSwitch.Companion.Services;
+using PicoSwitch.Companion.Windows.Storage;
 using PicoSwitch.Companion.Services.Diagnostics;
 
 namespace PicoSwitch.Companion.App;
@@ -19,6 +20,7 @@ public static class AppServices
     private static AdapterConnectionService? adapters;
     private static DiagnosticLog? diagnostics;
     private static DispatcherQueue? dispatcher;
+    private static WindowsDocumentStore? documents;
 
     public static DiagnosticLog Diagnostics
     {
@@ -27,6 +29,23 @@ public static class AppServices
             lock (Gate)
             {
                 return diagnostics ??= new DiagnosticLog();
+            }
+        }
+    }
+
+    /// <summary>
+    /// The app-private documents directory, shared with the services layer.
+    ///
+    /// One settled place for state that survives a restart. A second store (the
+    /// registry, say) would mean two things to migrate and two things to clear.
+    /// </summary>
+    public static WindowsDocumentStore Documents
+    {
+        get
+        {
+            lock (Gate)
+            {
+                return documents ??= new WindowsDocumentStore();
             }
         }
     }

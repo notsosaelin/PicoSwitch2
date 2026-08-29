@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using PicoSwitch.Bridge.Core;
 using PicoSwitch.Companion.Services.Diagnostics;
+using PicoSwitch.Companion.Services.Presentation;
 using PicoSwitch.Companion.Windows.Bluetooth;
 using PicoSwitch.Companion.Windows.Storage;
 using PicoSwitch.Management;
@@ -427,6 +428,136 @@ public sealed class AdapterConnectionService
 
             return new AdapterRemoval(unpairWindows, unpaired);
         });
+
+    /* -------------------------------------------- Phase 3 paired controllers */
+
+    /// <summary>
+    /// The Paired Controllers card, projected from the live inventory and this
+    /// adapter's history.
+    /// </summary>
+    public ControllerListView Controllers() => ControllerList.Project(
+        Snapshot.Value,
+        history.Value.ForAdapter(active.State.ActiveId),
+        Connection.Value.Connected);
+
+    public IReadOnlyList<RememberedAdapterRow> RememberedAdapters() =>
+        Presentation.RememberedAdapters.Project(
+            registry.Value,
+            active.State.ActiveId,
+            Connection.Value.Connected,
+            DescribeAge);
+
+    /// <summary>
+    /// Delete one controller's credential from the ADAPTER.
+    ///
+    /// The inventory is re-read afterwards even when the reported outcome is an
+    /// error, because the adapter is authoritative about what remains and an
+    /// optimistic client list is how a forgotten controller keeps appearing.
+    /// <c>already_absent</c> is an idempotent success; <c>incomplete</c> stays
+    /// visible rather than being smoothed over.
+    ///
+    /// The history row deliberately SURVIVES, moving to Recent. It records that
+    /// this controller was once here, which is still true.
+    /// </summary>
+    public Task<PeerForgetOutcome> ForgetControllerAsync(
+        string peerId,
+        CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(async () =>
+        {
+            var outcome = await repository.ForgetPeerAsync(peerId, cancellationToken)
+                .ConfigureAwait(false);
+            diagnostics.Info("peers", $"forget {peerId}: {outcome.Result.WireName()}");
+            FoldPeerHistory();
+            Publish();
+            return outcome;
+        });
+
+    /// <summary>
+    /// Drop one Recent row from local history.
+    ///
+    /// Changes no adapter credential -- it only exists for rows the adapter has
+    /// already forgotten, and its whole purpose is tidying a list this app owns.
+    /// </summary>
+    public Task RemoveFromHistoryAsync(string peerId) => RunExclusiveAsync(() =>
+    {
+        if (active.State.ActiveId is { } id)
+        {
+            var updated = history.Value.With(id, history.Value.ForAdapter(id).Without(peerId));
+            history.Set(updated);
+            historyStore.Save(updated);
+            diagnostics.Info("peers", $"removed {peerId} from local history only");
+            Publish();
+        }
+
+        return Task.FromResult<object?>(null);
+    });
+
+    /// <summary>
+    /// Open the adapter's own controller-pairing window.
+    ///
+    /// The window belongs to the ADAPTER, not to this app: firmware closes it on
+    /// its own timer, which is why Cancel is a courtesy rather than the mechanism.
+    /// </summary>
+    public Task<PairingStatus> StartControllerPairingAsync(
+        CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(async () =>
+        {
+            var status = await repository.StartPairingAsync(cancellationToken).ConfigureAwait(false);
+            diagnostics.Info(
+                "pairing",
+                $"start op={status.Operation} state={status.State.WireName()} " +
+                $"reason={status.Reason.WireName()}");
+            return status;
+        });
+
+    public Task<PairingStatus> ControllerPairingStatusAsync(
+        CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(() => repository.PairingStatusAsync(cancellationToken));
+
+    public Task<PairingStatus> CancelControllerPairingAsync(
+        CancellationToken cancellationToken = default) =>
+        RunExclusiveAsync(async () =>
+        {
+            var status = await repository.CancelPairingAsync(cancellationToken).ConfigureAwait(false);
+            diagnostics.Info("pairing", $"cancel op={status.Operation}");
+            return status;
+        });
+
+    /// <summary>
+    /// Fold a COMPLETE inventory into history. A partial read is never folded: a
+    /// missing row is indistinguishable from a peer the adapter has forgotten, and
+    /// history would then demote a live saved controller to Recent.
+    /// </summary>
+    private void FoldPeerHistory()
+    {
+        var peers = Snapshot.Value.Peers;
+        if (!peers.Complete || active.State.ActiveId is not { } id)
+        {
+            return;
+        }
+
+        var updated = history.Value.With(id, history.Value.ForAdapter(id).Observing(peers, nowMillis()));
+        history.Set(updated);
+        historyStore.Save(updated);
+    }
+
+    /// <summary>
+    /// How long ago, in words. Coarse on purpose: an exact timestamp on a list row
+    /// is noise, and the decision it supports is only ever "recently or not".
+    /// </summary>
+    private string DescribeAge(long millis)
+    {
+        var elapsed = TimeSpan.FromMilliseconds(Math.Max(nowMillis() - millis, 0));
+        return elapsed switch
+        {
+            { TotalMinutes: < 2 } => "just now",
+            { TotalHours: < 1 } => $"{(int)elapsed.TotalMinutes} minutes ago",
+            { TotalHours: < 24 } => $"{(int)elapsed.TotalHours} hours ago",
+            { TotalDays: < 2 } => "yesterday",
+            { TotalDays: < 30 } => $"{(int)elapsed.TotalDays} days ago",
+            _ => "over a month ago",
+        };
+    }
 
     /* ------------------------------------------------ Phase 3 dashboard */
 
