@@ -294,28 +294,69 @@ inference. **Confidence: Confirmed** for the observable behaviour and the
 compound signature; **Strong Evidence** for the SMP-level cause. Nothing in the
 implementation depends on the latter.
 
-### The open unknown is HALF answered — deliberately not promoted
+### The open unknown — criterion fully met, promotion declined anyway
 
-The promotion criterion written before this run had two halves:
+The promotion criterion was written before the retest and had two halves. Both
+have now been observed:
 
-1. `connection=Connected` at the moment of a services-stage `Unreachable` — **met,
-   four times**;
-2. `connection=Disconnected` for a genuinely absent adapter — **not observed**.
+| Half | Result |
+|---|---|
+| `connection=Connected` during a services-stage `Unreachable` against a present, reflashed adapter | **met**, 4 observations, 17:40 |
+| `connection=Disconnected` for a genuinely absent adapter | **met**, 17:52:42, adapter powered off |
 
-Half a criterion is not a criterion, and promoting on the strength of "the API
-contract obviously implies it" is precisely what produced the wrong signature in
-the first place. `ConnectionStatus` therefore stays **diagnostic only**.
+So `BluetoothLEDevice.ConnectionStatus` **is** a valid presence discriminator on
+this platform. The direct connect alone can establish that the peer is physically
+there, without waiting for an advertisement.
 
-Completing it costs no flash cycle: **power the adapter off, press Connect once,
-read the `link` line.** If it reads `connection=Disconnected`, presence can be
-established from the direct attempt, `PeerObserved` may accept it in place of an
-advertisement, and the signature gains first-attempt classification for an
-adapter that is present but not currently advertising. If it reads `Connected`
-for an absent adapter, the property is worthless as a discriminator and the note
-should say so.
+**It is still not going into the signature, and this is not an oversight.**
+Working through what promotion would actually change, against every attempt
+observed across both sessions:
 
-**Status: PASS.** Signature confirmed against hardware; one bounded follow-up
-question recorded above.
+| Attempt | With `ConnectionStatus` in the signature |
+|---|---|
+| 17:40 att. 3 and 4 (reflashed, present) | already classified on the first press — no change |
+| 16:46 att. 1 (reflashed, direct 8.0 s, scan timed out) | presence not established either way; only ONE resolved-device failure, so fact 4 still fails — no change |
+| 16:47 att. 2 (reflashed, present) | already classified — no change |
+| 17:52 (powered off, `Disconnected`) | presence correctly absent — no change |
+
+The binding constraint is fact 4, the two-independently-resolved-devices
+corroboration, and presence is not what limits it. Promotion would buy nothing
+that has ever been observed.
+
+Relaxing fact 4 *given* proven presence is the tempting next step — "the link
+came up and GATT was unusable, that is conclusive" — and it is exactly the move
+to refuse. A transient discovery failure on a perfectly healthy adapter produces
+the identical shape, and the cost of a false positive is offering to destroy a
+working pairing. One observation of `Connected` during a genuine mismatch does
+not establish that `Connected + Unreachable` is conclusive.
+
+`ConnectionStatus` therefore stays **diagnostic only** — but it is now a
+*confirmed* diagnostic rather than a speculative one, which is what makes the
+`link` line worth reading in any future investigation.
+
+### A timing observation that closes the last loose end
+
+Direct-connect durations, across both sessions:
+
+| Condition | Direct connect before `Unreachable` | `connection` |
+|---|---|---|
+| powered off, 17:52 | **8.0 s** | `Disconnected` |
+| reflashed, first run att. 1, 16:46 | **8.0 s** | not instrumented |
+| reflashed, present, 17:40 | 1.0 s | `Connected` |
+| reflashed, present, 16:47 | 0.5 s | not instrumented |
+
+Eight seconds is Windows failing to establish a link at all; sub-second is a link
+that came up and then became unusable. That retroactively explains the one thing
+left unexplained from the first run: **attempt 1 at 16:46 was not a missed
+diagnosis.** The adapter had just been reflashed and was not yet advertising, so
+Windows never got a link and the fallback scan timed out for the same reason.
+`observed=False` was the correct answer to the question actually being asked.
+
+Recorded as an observation only. Nothing is built on it: n is small and timing is
+environment-dependent.
+
+**Status: PASS.** Signature confirmed against hardware in both directions — it
+fires on a genuine mismatch and does not fire on an absent adapter.
 
 ---
 
@@ -476,7 +517,4 @@ Neither blocks Phase 3.
    non-retryable stage, so the clean retry has correctly never been taken. It
    needs a *connect-stage* failure to exercise, which no natural scenario has
    produced yet.
-2. **Whether `ConnectionStatus` discriminates an absent adapter** — the half-met
-   promotion criterion in § A. One 60-second test: power the adapter off, press
-   Connect once, read the `link` line.
-3. **D**, the A → B handoff, which needs the second unit.
+2. **D**, the A → B handoff, which needs the second unit.
