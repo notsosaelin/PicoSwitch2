@@ -152,6 +152,16 @@ bool ns2_bt_classic_key_commit_allowed(bool pairing_lockout,
            pending_key_present && key_update_admitted;
 }
 
+bool ns2_bt_classic_inquiry_admission_is_duplicate(bool attempt_pending,
+                                                   bool pending_is_this_device,
+                                                   bool acl_present)
+{
+    // Either half is enough: an attempt in flight to this device has not
+    // produced an ACL yet, and an established ACL outlives the pending record
+    // (it is cleared once HID opens).
+    return (attempt_pending && pending_is_this_device) || acl_present;
+}
+
 bool ns2_bt_classic_authentication_proven(bool local_auth_complete_ok,
                                           bool encryption_enabled_ok)
 {

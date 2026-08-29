@@ -305,6 +305,33 @@ bool ns2_bt_classic_key_commit_allowed(bool pairing_lockout,
                                        bool key_update_admitted);
 
 /*
+ * Is this Classic inquiry result a duplicate of an attempt already under way?
+ *
+ * While the pairing window is open, inquiry restarts with no gap at all, and a
+ * controller stays discoverable throughout its own pairing -- so the device
+ * being connected is rediscovered repeatedly, mid-connection.
+ *
+ * Admitting it again is DESTRUCTIVE. The admission path rebuilds the candidate
+ * from the new inquiry result: it overwrites the pending name (an EIR need not
+ * repeat it, so this is frequently empty), which is the name the connection slot
+ * and therefore the DRIVER MATCH are built from; it re-runs the pending security
+ * prepare, clearing a parked link key that a peer-led SSP was about to have
+ * committed; and it starts a second HID connection to the same address.
+ *
+ * That single mistake produced all three symptoms of the 2026-08-29 DualSense
+ * capture at once: no durable link key, a generic classification, and no
+ * vendor-driver initialisation (hence no player-slot LED and no configured
+ * colour). The old guard only recognised a duplicate INCOMING attempt.
+ *
+ * A genuinely failed attempt is still retried -- pending state is cleared on ACL
+ * failure and disconnect, and the ACL is gone by then, so only duplicates of a
+ * LIVE attempt are suppressed.
+ */
+bool ns2_bt_classic_inquiry_admission_is_duplicate(bool attempt_pending,
+                                                   bool pending_is_this_device,
+                                                   bool acl_present);
+
+/*
  * Has the Classic authentication behind a notified link key actually succeeded?
  *
  * TWO events prove it and NEITHER is guaranteed to arrive.
