@@ -113,6 +113,20 @@ UX_PASS owns the polished Keyboard / Keyboard + Mouse remapping editor. It consu
 pass and must not need to restructure the Bluetooth input path, edit firmware constants, or
 reconstruct defaults from source.
 
+### Accepted: mode / template / custom-profile system
+
+Designed 2026-08-29; implementation not started. The two mapping profiles are **derived** from which
+peer roles are filled and cannot be selected — which produced a hardware-observed silent failure
+where a binding saved, read back, and did nothing because the adapter was resolving the other
+profile. The design separates **mode** (which peers may own the console), **layout** (keyboard, or
+keyboard and mouse — a fact, still derived) and **profile** (a named override set the user selects,
+several per layout). Templates are immutable ROM starting points applied *into* a profile, never
+selected or edited.
+
+Design, including the storage schema, migration, wire surface, test matrix, staged implementation
+order and the open product decisions:
+[`docs/architecture/kbm-profile-system-hld.md`](docs/architecture/kbm-profile-system-hld.md).
+
 ---
 
 # Near-Term Product Work
