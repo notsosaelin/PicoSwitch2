@@ -240,13 +240,20 @@ int ns2_kbm_format_active(const ns2_kbm_config_t *config, char *out,
     for (uint8_t i = 0; i < NS2_KBM_LAYOUT_COUNT; ++i) {
         ns2_kbm_layout_t layout = (ns2_kbm_layout_t)i;
         const ns2_kbm_active_t *active = &config->active[i];
+        // `sourceId` is what is RUNNING; `bootId` is what the next power-up will
+        // run. They differ whenever a profile-switch key has been pressed, and a
+        // client that assumed the persisted choice was the live one would report
+        // the wrong profile as active for the rest of the session.
+        //
         // Bounded by NS2_KBM_LAYOUT_COUNT, so a deferred row here is a buffer
         // that cannot hold the reply -- not a page boundary.
         if (!writer_row(&w,
-                        "%s{\"layout\":\"%s\",\"sourceId\":%u,\"revision\":%u,"
-                        "\"fingerprint\":%lu,\"matchesSaved\":%s}",
+                        "%s{\"layout\":\"%s\",\"sourceId\":%u,\"bootId\":%u,"
+                        "\"revision\":%u,\"fingerprint\":%lu,"
+                        "\"matchesSaved\":%s}",
                         i ? "," : "", ns2_kbm_layout_name(layout),
                         (unsigned)active->source_id,
+                        (unsigned)config->boot_profile_id[i],
                         (unsigned)active->source_revision,
                         (unsigned long)ns2_kbm_content_fingerprint(
                             &active->content, layout),
@@ -257,6 +264,48 @@ int ns2_kbm_format_active(const ns2_kbm_config_t *config, char *out,
     }
 
     int written = snprintf(w.out + w.used, capacity - (size_t)w.used, "]}");
+    if (written < 0 || (size_t)written >= capacity - (size_t)w.used) return -1;
+    return w.used + written;
+}
+
+// ---------------------------------------------------------------------------
+// Profile-switch bindings
+// ---------------------------------------------------------------------------
+
+int ns2_kbm_format_switches(const ns2_kbm_config_t *config,
+                            ns2_kbm_layout_t layout, char *out,
+                            size_t capacity) {
+    if (!config || !out || capacity == 0 || layout >= NS2_KBM_LAYOUT_COUNT)
+        return -1;
+
+    kbm_writer_t w;
+    writer_init(&w, out, capacity, sizeof("],\"max\":6}") - 1u);
+    if (!writer_head(&w, "{\"layout\":\"%s\",\"switches\":[",
+                     ns2_kbm_layout_name(layout))) {
+        return -1;
+    }
+
+    // Bounded by NS2_KBM_SWITCH_BINDINGS_MAX (6) rows of ~40 bytes, so this is
+    // deliberately not paginated; the host test pins the worst case against the
+    // wire limit.
+    bool first = true;
+    for (uint8_t i = 0; i < NS2_KBM_SWITCH_BINDINGS_MAX; ++i) {
+        const ns2_kbm_switch_binding_t *entry = &config->switches[layout][i];
+        if (!entry->used) continue;
+        char source[12];
+        ns2_kbm_source_t src = {entry->kind, entry->code};
+        ns2_kbm_source_format(src, source, sizeof(source));
+        if (!writer_row(&w, "%s{\"src\":\"%s\",\"profileId\":%u}",
+                        first ? "" : ",", source,
+                        (unsigned)entry->profile_id)) {
+            return -1;
+        }
+        first = false;
+    }
+
+    int written = snprintf(w.out + w.used, capacity - (size_t)w.used,
+                           "],\"max\":%u}",
+                           (unsigned)NS2_KBM_SWITCH_BINDINGS_MAX);
     if (written < 0 || (size_t)written >= capacity - (size_t)w.used) return -1;
     return w.used + written;
 }

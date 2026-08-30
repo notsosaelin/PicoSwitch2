@@ -73,6 +73,23 @@ bool ns2_kbm_runtime_profile_delete(uint8_t profile_id);
 // Realize a profile (or NS2_KBM_PROFILE_ID_DEFAULT) into a layout's active
 // mapping. `changed` is false when the content was already realized, in which
 // case no configuration write happened at all.
+// Persist which resident slot a layout realizes at power-up, and realize it.
+// The ONLY profile selection worth a flash write: Apply and a profile-switch key
+// are both runtime-only.
+bool ns2_kbm_runtime_set_boot_profile(ns2_kbm_layout_t layout,
+                                      uint8_t profile_id, bool *changed);
+
+// Assign or clear one profile-switch key. NS2_KBM_PROFILE_ID_NONE clears.
+bool ns2_kbm_runtime_switch_bind(ns2_kbm_layout_t layout,
+                                 ns2_kbm_source_t source, uint8_t profile_id);
+
+// The slot this layout is realizing RIGHT NOW, which a switch key changes
+// without touching stored configuration.
+uint8_t ns2_kbm_runtime_active_profile(ns2_kbm_layout_t layout);
+
+// How many times a switch key has selected a profile this session.
+uint32_t ns2_kbm_runtime_switch_count(void);
+
 bool ns2_kbm_runtime_apply(ns2_kbm_layout_t layout, uint8_t profile_id,
                            bool *changed);
 void ns2_kbm_runtime_reset_all(void);

@@ -1478,6 +1478,85 @@ static void cmd_kbm(char *arg) {
         return;
     }
 
+    // --- resident-slot selection and standalone switching ------------------
+    //
+    // `apply` is the RUNTIME change (see cmd_kbm_apply): it costs no flash and
+    // does not survive a power cycle. `boot` is the persisted choice. They are
+    // deliberately separate commands because conflating them would either put a
+    // flash erase on every activation or make a runtime switch permanent.
+
+    if (strncmp(arg, "boot ", 5) == 0) {
+        char name[8] = {0};
+        char target[12] = {0};
+        ns2_kbm_layout_t layout;
+        uint8_t id = 0;
+        if (sscanf(arg + 5, "%7s %11s", name, target) != 2 ||
+            !kbm_layout_arg(name, &layout) || !kbm_profile_arg(target, &id)) {
+            reply("{\"error\":\"usage: kbm boot <kb|kbm> <id|default>\"}");
+            return;
+        }
+        bool changed = false;
+        if (!ns2_kbm_runtime_set_boot_profile(layout, id, &changed)) {
+            reply("{\"error\":\"profile not found for that layout\"}");
+            return;
+        }
+        // Only a real change is worth persisting.
+        if (changed) config_request_save();
+        snprintf(out, sizeof(out), "{\"ok\":true,\"changed\":%s}",
+                 changed ? "true" : "false");
+        reply(out);
+        return;
+    }
+
+    if (strncmp(arg, "switches ", 9) == 0) {
+        ns2_kbm_layout_t layout;
+        char name[8] = {0};
+        if (sscanf(arg + 9, "%7s", name) != 1 || !kbm_layout_arg(name, &layout)) {
+            reply("{\"error\":\"usage: kbm switches <kb|kbm>\"}");
+            return;
+        }
+        ns2_kbm_config_t snapshot;
+        ns2_kbm_runtime_config_snapshot(&snapshot);
+        char wire[NS2_KBM_REPLY_MAX_BYTES + 1u];
+        if (ns2_kbm_format_switches(&snapshot, layout, wire, sizeof(wire)) < 0) {
+            reply("{\"error\":\"switch list does not fit a reply\"}");
+            return;
+        }
+        reply(wire);
+        return;
+    }
+
+    if (strncmp(arg, "switch ", 7) == 0) {
+        char name[8] = {0};
+        char source_text[16] = {0};
+        char target[12] = {0};
+        ns2_kbm_layout_t layout;
+        ns2_kbm_source_t source;
+        uint8_t id = 0;
+        if (sscanf(arg + 7, "%7s %15s %11s", name, source_text, target) != 3 ||
+            !kbm_layout_arg(name, &layout) ||
+            !ns2_kbm_source_parse(source_text, &source)) {
+            reply("{\"error\":\"usage: kbm switch <kb|kbm> <key:NN> "
+                  "<id|none>\"}");
+            return;
+        }
+        if (strcmp(target, "none") == 0) {
+            id = (uint8_t)NS2_KBM_PROFILE_ID_NONE;
+        } else if (!kbm_profile_arg(target, &id)) {
+            reply("{\"error\":\"usage: kbm switch <kb|kbm> <key:NN> "
+                  "<id|none>\"}");
+            return;
+        }
+        if (!ns2_kbm_runtime_switch_bind(layout, source, id)) {
+            reply("{\"error\":\"profile not found for that layout or switch "
+                  "table full\"}");
+            return;
+        }
+        config_request_save();
+        reply("{\"ok\":true}");
+        return;
+    }
+
     if (strncmp(arg, "apply ", 6) == 0) {
         cmd_kbm_apply(arg + 6);
         return;
