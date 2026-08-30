@@ -72,18 +72,24 @@ _Static_assert(offsetof(config_record_v12_t, kbm) +
                    sizeof(config_record_v12_t),
                "the v12 KB/M block must fit inside the record it is stored in");
 
-// Schema 14 replaces the KB/M container: one override set per layout becomes a
-// table of NAMED PROFILE SLOTS, several per layout, with a persisted active
-// selection. The override table inside a slot is byte-identical to what v13
-// stored per layout, which is what makes the migration below a field-by-field
-// move rather than a reinterpretation.
-_Static_assert(sizeof(((ns2_kbm_profile_slot_t *)0)->overrides) ==
+// Schema 14 replaces the KB/M container entirely: one override set per layout
+// becomes a library of six NAMED CUSTOM profiles plus a separately stored
+// REALIZED mapping per layout. The override table inside them is byte-identical
+// to what v13 stored per layout, which is what makes the migration below a
+// field-by-field move rather than a reinterpretation.
+_Static_assert(sizeof(((ns2_kbm_content_t *)0)->overrides) ==
                    sizeof(((ns2_kbm_config_v13_t *)0)->profiles[0]),
-               "v14 slots must carry v13's override table unchanged");
-_Static_assert(NS2_KBM_MAX_PROFILES >= NS2_KBM_LAYOUT_COUNT,
-               "every layout needs a reserved Default slot");
+               "v14 content must carry v13's override table unchanged");
+_Static_assert(sizeof(((ns2_kbm_content_t *)0)->mouse) ==
+                   sizeof(((ns2_kbm_config_v13_t *)0)->mouse),
+               "v14 content must carry v13's mouse block unchanged");
 _Static_assert(sizeof(config_record_t) > sizeof(config_record_v13_t),
                "v14 appends to v13");
+// The whole feature has to fit the widened record. If this ever fails, compact
+// the representation before widening further -- the sector is 4096 but the
+// programmed region is deliberately the smallest thing that holds the model.
+_Static_assert(sizeof(config_record_t) <= 2048u,
+               "the settings record must fit CONFIG_RECORD_BYTES (2048)");
 
 // Schema 13 appends the management-companion table. Unlike v12 this IS a strict
 // size increase -- v12's record had no trailing room left -- so a stored v12
@@ -190,20 +196,67 @@ bool config_mgmt_companion_forget(config_mgmt_companion_t *table,
     return true;
 }
 
-// Lift a v12/v13 KB/M block into the v14 profile table.
+// Lift a v12/v13 KB/M block into the v14 library + realized-mapping model.
 //
-// The two per-layout override sets become the two reserved Default profiles,
-// which are also the ones activated. So an upgraded adapter resolves exactly
-// the bindings it resolved before -- that equivalence is the migration's whole
-// job and is what its test asserts.
+// The migration's whole job is that an upgraded adapter resolves EXACTLY the
+// bindings it resolved before, and that no user work is thrown away. Two cases,
+// decided per layout by what the user actually had:
+//
+//   the stored mapping is the canonical default
+//       -> realize the built-in Default template. No custom slot is consumed,
+//          because there is nothing of the user's to keep.
+//
+//   the stored mapping differs
+//       -> keep it as a NAMED CUSTOM PROFILE and realize it. The user's mapping
+//          survives, gains a name they can see, and is immediately the one in
+//          use -- so nothing about their console changes on upgrade.
+//
+// Mouse settings were global in v13 and are profile-owned in v14, so they are
+// copied into BOTH layouts. That preserves behaviour exactly: whichever layout
+// the adapter resolves, it finds the settings the user had.
 static void migrate_kbm_from_v13(const ns2_kbm_config_v13_t *old,
                                  ns2_kbm_config_t *out) {
+    static const char *const MIGRATED_NAME[NS2_KBM_LAYOUT_COUNT] = {
+        "Current Keyboard",
+        "Current KB + Mouse",
+    };
+
     ns2_kbm_config_defaults(out);
     out->mode = old->mode;
-    out->mouse = old->mouse;
+
     for (uint8_t i = 0; i < NS2_KBM_LAYOUT_COUNT; ++i) {
-        out->profiles[i].overrides = old->profiles[i];
-        out->active[i] = i;
+        ns2_kbm_layout_t layout = (ns2_kbm_layout_t)i;
+
+        ns2_kbm_content_t content;
+        memset(&content, 0, sizeof(content));
+        content.overrides = old->profiles[i];
+        content.mouse = old->mouse;
+        ns2_kbm_content_canonicalize(&content, layout);
+
+        ns2_kbm_content_t canonical;
+        ns2_kbm_template_default(layout, &canonical);
+        ns2_kbm_content_canonicalize(&canonical, layout);
+
+        if (memcmp(&content, &canonical, sizeof(content)) == 0) {
+            // Identical to Default in every profile-owned respect. Realizing
+            // the template is the same mapping and costs no slot.
+            (void)ns2_kbm_apply(out, layout, NS2_KBM_PROFILE_ID_DEFAULT, NULL);
+            continue;
+        }
+
+        uint8_t id = ns2_kbm_profile_create(out, layout, MIGRATED_NAME[i],
+                                            &content);
+        if (id == NS2_KBM_PROFILE_ID_NONE) {
+            // Cannot happen with six free slots and two layouts, but a silent
+            // fallback to Default would discard the user's mapping. Realize the
+            // content directly instead: behaviour is preserved even if the
+            // library row could not be created.
+            out->active[i].source_id = (uint8_t)NS2_KBM_PROFILE_ID_NONE;
+            out->active[i].source_revision = 0u;
+            out->active[i].content = content;
+            continue;
+        }
+        (void)ns2_kbm_apply(out, layout, id, NULL);
     }
 }
 
@@ -252,24 +305,28 @@ config_persist_load_t config_persist_load(const void *stored, uint32_t stored_le
                sizeof(out->joycon2_right_accent));
         out->wake_valid = header.wake_valid;
         out->wake_identity = header.wake_identity;
-        // The KB/M block is copied FIELD BY FIELD, not as a blob: v12 resized
-        // the mouse settings, so a memcpy would land the old bytes on the new
-        // layout and invent a setting out of the user's inversion flags.
-        out->kbm.mode = v11.kbm.mode;
-        // v11's two per-layout override sets become the two Default profiles.
-        for (uint8_t i = 0; i < NS2_KBM_LAYOUT_COUNT; ++i) {
-            out->kbm.profiles[i].overrides = v11.kbm.profiles[i];
-            out->kbm.active[i] = i;
-        }
-        out->kbm.mouse.sensitivity_x = v11.kbm.mouse.sensitivity_x;
-        out->kbm.mouse.sensitivity_y = v11.kbm.mouse.sensitivity_y;
-        out->kbm.mouse.recenter_ms = v11.kbm.mouse.recenter_ms;
-        out->kbm.mouse.invert_x = v11.kbm.mouse.invert_x;
-        out->kbm.mouse.invert_y = v11.kbm.mouse.invert_y;
+        // The KB/M block is rebuilt FIELD BY FIELD, not copied as a blob: v12
+        // resized the mouse settings, so a memcpy would land the old bytes on
+        // the new layout and invent a setting out of the user's inversion flags.
+        //
+        // Lifted to v13's shape first, then through the one v13 -> v14
+        // migration, so a v11 adapter and a v13 adapter with the same mapping
+        // reach byte-identical v14 state by the same code path.
+        ns2_kbm_config_v13_t lifted;
+        memset(&lifted, 0, sizeof(lifted));
+        lifted.mode = v11.kbm.mode;
+        for (uint8_t i = 0; i < NS2_KBM_LAYOUT_COUNT; ++i)
+            lifted.profiles[i] = v11.kbm.profiles[i];
+        lifted.mouse.sensitivity_x = v11.kbm.mouse.sensitivity_x;
+        lifted.mouse.sensitivity_y = v11.kbm.mouse.sensitivity_y;
+        lifted.mouse.recenter_ms = v11.kbm.mouse.recenter_ms;
+        lifted.mouse.invert_x = v11.kbm.mouse.invert_x;
+        lifted.mouse.invert_y = v11.kbm.mouse.invert_y;
         // The one genuinely new setting. OFF, so upgrading an existing adapter
         // cannot change how it already feels: anti-deadzone 0 is exactly the
         // hardware-validated linear response.
-        out->kbm.mouse.anti_deadzone = (uint8_t)NS2_KBM_MOUSE_ADZ_DEFAULT;
+        lifted.mouse.anti_deadzone = (uint8_t)NS2_KBM_MOUSE_ADZ_DEFAULT;
+        migrate_kbm_from_v13(&lifted, &out->kbm);
         result = CONFIG_PERSIST_MIGRATED;
     } else if (header.version == 12u) {
         if (stored_len < sizeof(config_record_v12_t))

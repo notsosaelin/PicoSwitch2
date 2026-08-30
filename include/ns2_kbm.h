@@ -319,85 +319,180 @@ typedef struct {
 } ns2_kbm_mouse_config_t;
 
 // ---------------------------------------------------------------------------
-// Complete persistable configuration
+// Profile library and active realized mapping
 // ---------------------------------------------------------------------------
-// One POD blob. config.c stores it verbatim and never interprets its contents;
-// ns2_kbm owns validation.
-// How many named profiles the adapter holds, shared across both layouts.
+// Three things are deliberately kept apart, because collapsing any two of them
+// is what produced the hardware failure this feature exists to fix -- a binding
+// that saved, read back correctly, reported success everywhere, and did nothing
+// at the console.
 //
-// Six is Default plus two spare per layout. The cost is 1296 bytes, which is
-// what takes the persisted record past one 1 KiB program and to two; the
-// settings sector is erased whole on every save either way, so the marginal
-// cost is four extra page programs.
-#define NS2_KBM_MAX_PROFILES 6u
-#define NS2_KBM_PROFILE_NAME_MAX 16u  // bytes including the NUL
-#define NS2_KBM_PROFILE_NONE 0xFFu
+//   TEMPLATE   immutable canonical content in ROM. One Default per layout.
+//              Never edited, never stored, never consumes a slot.
+//
+//   PROFILE    a named user mapping in the library, belonging to exactly one
+//              layout. Six custom profiles exist across both layouts.
+//
+//   ACTIVE     the REALIZED mapping the adapter is actually resolving against,
+//              stored per layout as its own copy of the content.
+//
+// Active is a SNAPSHOT, not a pointer into a profile slot. That is the whole
+// point: saving an edit to the profile that is currently applied must not change
+// what the console does until the user deliberately applies it. A pointer model
+// cannot express "saved but not applied" at all.
+#define NS2_KBM_MAX_PROFILES 6u  // CUSTOM profiles; Defaults are built in
+// Bytes including the NUL, so 19 usable characters. Sized so the migration's
+// own names fit whole -- "Current Keyboard" and "Current KB + Mouse" -- because
+// a user upgrading should recognise their existing mapping, not find it under a
+// truncated abbreviation.
+#define NS2_KBM_PROFILE_NAME_MAX 20u
 
-// One named mapping the user can select.
+// Stable profile identity, independent of which storage slot holds it.
 //
-// A profile belongs to exactly ONE layout and may never be applied to another:
-// the bindable source domain differs (mouse buttons exist only in Keyboard +
-// Mouse) and the two canonical default maps are deliberately not supersets of
-// each other.
+// A companion caches drafts against an id. If ids were slot indexes, deleting a
+// profile and creating another would silently rebind a stale draft to an
+// unrelated mapping.
+#define NS2_KBM_PROFILE_ID_NONE 0u     // no profile / invalid
+#define NS2_KBM_PROFILE_ID_DEFAULT 1u  // the built-in Default of some layout
+#define NS2_KBM_PROFILE_ID_FIRST 2u    // first id a custom profile may take
+#define NS2_KBM_PROFILE_ID_MAX 254u
+
+// Everything a profile OWNS, and therefore everything Apply realizes and the
+// fingerprint covers.
+//
+// The mouse block is profile-owned rather than global: sensitivity, inversion
+// and anti-deadzone are exactly what a user expects to differ between a mapping
+// built for one game and a mapping built for another. Velocity/idle constants
+// stay compile-time properties of the transport and are not here.
+typedef struct {
+    ns2_kbm_profile_overrides_t overrides;
+    ns2_kbm_mouse_config_t mouse;
+} ns2_kbm_content_t;
+
 typedef struct {
     uint8_t used;
-    uint8_t layout;  // ns2_kbm_layout_t
+    uint8_t layout;       // ns2_kbm_layout_t
+    uint8_t profile_id;   // stable, NS2_KBM_PROFILE_ID_FIRST..MAX
+    uint8_t reserved;
+    // Bumped by every successful save. A client sends the revision its draft
+    // was based on; a mismatch is a conflict, never a silent overwrite.
+    uint16_t revision;
     char name[NS2_KBM_PROFILE_NAME_MAX];
-    uint8_t reserved[2];  // keeps the override table 4-byte aligned
-    ns2_kbm_profile_overrides_t overrides;
+    ns2_kbm_content_t content;
 } ns2_kbm_profile_slot_t;
+
+// What the adapter is really resolving against for one layout.
+typedef struct {
+    // Which profile produced this snapshot: a custom id, or
+    // NS2_KBM_PROFILE_ID_DEFAULT for the built-in template.
+    uint8_t source_id;
+    uint8_t reserved;
+    uint16_t source_revision;
+    ns2_kbm_content_t content;
+} ns2_kbm_active_t;
 
 typedef struct {
     uint8_t mode;  // ns2_kbm_mode_t
-    // Which profile each layout is currently resolving against. Persisted, so
-    // a selection survives a reboot and a disconnect.
-    //
-    // This is the field whose absence produced the hardware failure: with the
-    // mapping derived and unselectable, a user could bind into one mapping
-    // while the adapter resolved the other, and every operation reported
-    // success. There is always exactly one active profile per layout.
-    uint8_t active[NS2_KBM_LAYOUT_COUNT];
-    uint8_t reserved;
+    // Next stable id to hand out. Monotonic, wrapping past
+    // NS2_KBM_PROFILE_ID_MAX and skipping ids still in use.
+    uint8_t next_profile_id;
+    uint8_t reserved[2];
     ns2_kbm_profile_slot_t profiles[NS2_KBM_MAX_PROFILES];
-    ns2_kbm_mouse_config_t mouse;
+    ns2_kbm_active_t active[NS2_KBM_LAYOUT_COUNT];
 } ns2_kbm_config_t;
 
-// The profile index a layout currently resolves against. Always valid: the
-// sanitizer guarantees slot 0 and 1 exist as that layout's Default.
-uint8_t ns2_kbm_active_profile(const ns2_kbm_config_t *config,
-                               ns2_kbm_layout_t layout);
+// ---------------------------------------------------------------------------
+// Content fingerprint
+// ---------------------------------------------------------------------------
+// A deterministic 32-bit digest of canonicalized profile-owned content.
+//
+// Exists so a client can answer "is what I saved what is actually running?"
+// without trusting a local flag, and so Apply can skip a flash write when the
+// content is already realized. NOT a security primitive, and NOT the config
+// record's integrity check -- the record has neither.
+//
+// The canonical form sorts overrides by (kind, code) and drops entries that
+// merely restate the layout's default, so two profiles that behave identically
+// fingerprint identically however they were built.
+uint32_t ns2_kbm_content_fingerprint(const ns2_kbm_content_t *content,
+                                     ns2_kbm_layout_t layout);
 
-// Select which profile a layout resolves against. False when the index names no
-// profile, or one belonging to a different layout.
-bool ns2_kbm_set_active_profile(ns2_kbm_config_t *config,
-                                ns2_kbm_layout_t layout, uint8_t index);
+// Canonicalize in place: sort overrides, drop redundant ones, clamp settings.
+// Applied before storing and before fingerprinting, so the two cannot disagree.
+void ns2_kbm_content_canonicalize(ns2_kbm_content_t *content,
+                                  ns2_kbm_layout_t layout);
 
-// Create a profile for `layout`. Returns its index, or NS2_KBM_PROFILE_NONE
-// when every slot is in use. A new profile starts with NO overrides, so it is
-// that layout's canonical default until the user changes something.
+// The built-in Default template for a layout: zero overrides plus default mouse
+// settings. Canonical content lives in ROM, so this is what "apply Default"
+// realizes and what "reset draft from Default" produces.
+void ns2_kbm_template_default(ns2_kbm_layout_t layout,
+                              ns2_kbm_content_t *out);
+
+// ---------------------------------------------------------------------------
+// Profile library operations
+// ---------------------------------------------------------------------------
+// All operate on the LIBRARY only. None of them changes what the console is
+// doing; that is exclusively ns2_kbm_apply().
+
+// Find a profile by stable id. NULL when no live profile carries it.
+const ns2_kbm_profile_slot_t *ns2_kbm_profile_find(
+    const ns2_kbm_config_t *config, uint8_t profile_id);
+
+// Create an empty custom profile for `layout`, seeded from `content` (NULL for
+// the layout's Default). Returns the new stable id, or
+// NS2_KBM_PROFILE_ID_NONE when storage is full or the name is unusable.
 uint8_t ns2_kbm_profile_create(ns2_kbm_config_t *config,
-                               ns2_kbm_layout_t layout, const char *name);
+                               ns2_kbm_layout_t layout, const char *name,
+                               const ns2_kbm_content_t *content);
 
-// Rename. False for an unused slot, a reserved Default slot, or a name that
-// sanitizes to nothing.
-bool ns2_kbm_profile_rename(ns2_kbm_config_t *config, uint8_t index,
+// Store `content` into an existing profile, guarded by `expected_revision`.
+// Returns the resulting revision, or 0 when rejected -- a stale revision, an
+// unknown id, or content that fails validation. Never partially applied.
+uint16_t ns2_kbm_profile_save(ns2_kbm_config_t *config, uint8_t profile_id,
+                              uint16_t expected_revision, const char *name,
+                              const ns2_kbm_content_t *content);
+
+bool ns2_kbm_profile_rename(ns2_kbm_config_t *config, uint8_t profile_id,
                             const char *name);
+bool ns2_kbm_profile_delete(ns2_kbm_config_t *config, uint8_t profile_id);
 
-// Delete. False for an unused slot or a reserved Default slot. Deleting the
-// active profile activates that layout's Default.
-bool ns2_kbm_profile_delete(ns2_kbm_config_t *config, uint8_t index);
+// Is `name` already taken by another profile of this layout? Names are unique
+// within a layout so a user can identify a profile by what they called it; the
+// same name in the other layout is fine and common ("Default" is both).
+bool ns2_kbm_profile_name_taken(const ns2_kbm_config_t *config,
+                                ns2_kbm_layout_t layout, const char *name,
+                                uint8_t ignore_profile_id);
 
-// Is this slot one of the two reserved Default profiles? They may be edited and
-// reset but never renamed or deleted, which is what guarantees every layout
-// always has an active profile to fall back to.
-bool ns2_kbm_profile_is_default(uint8_t index);
+// ---------------------------------------------------------------------------
+// Apply: the only operation that changes console behaviour
+// ---------------------------------------------------------------------------
+// Copies a profile's content (or the layout's Default, for
+// NS2_KBM_PROFILE_ID_DEFAULT) into that layout's realized snapshot, in one step.
+//
+// `changed` reports whether anything actually differed, so a caller can skip a
+// flash erase when the content is already realized. False return means the
+// request was refused -- unknown id, or a profile belonging to another layout --
+// and nothing was touched.
+bool ns2_kbm_apply(ns2_kbm_config_t *config, ns2_kbm_layout_t layout,
+                   uint8_t profile_id, bool *changed);
 
-// Reset to canonical defaults (Controller mode, no overrides, default mouse).
+// The realized content a layout is resolving against right now.
+const ns2_kbm_content_t *ns2_kbm_active_content(const ns2_kbm_config_t *config,
+                                                ns2_kbm_layout_t layout);
+
+// Does the realized snapshot still match the saved profile that produced it?
+// False after the source profile has been edited and saved without applying,
+// and after a legacy per-binding write has mutated the realized mapping.
+bool ns2_kbm_active_matches_source(const ns2_kbm_config_t *config,
+                                   ns2_kbm_layout_t layout);
+
+// Reset to canonical defaults (Controller mode, no custom profiles, both
+// layouts realizing their Default template).
 void ns2_kbm_config_defaults(ns2_kbm_config_t *config);
 
-// Reset exactly one profile's overrides, restoring its layout's canonical
-// defaults. Every other setting is untouched.
-void ns2_kbm_config_reset_profile(ns2_kbm_config_t *config, uint8_t index);
+// Clamp profile-owned mouse settings into range. True when nothing had to be
+// repaired. Exposed because canonicalization, the library and the realized
+// snapshots must all agree on what is in range.
+bool ns2_kbm_mouse_sanitize(ns2_kbm_mouse_config_t *mouse);
 
 // Fail-closed validation of persisted or management-supplied configuration.
 // Returns true when `config` was already entirely usable. Returns false when
@@ -407,26 +502,30 @@ void ns2_kbm_config_reset_profile(ns2_kbm_config_t *config, uint8_t index);
 // destination. Unknown future identifiers therefore never become current ones.
 bool ns2_kbm_config_sanitize(ns2_kbm_config_t *config);
 
-// Effective binding for one source in one profile: the override if present,
-// otherwise the canonical default.
-uint8_t ns2_kbm_binding(const ns2_kbm_config_t *config, uint8_t profile,
-                        ns2_kbm_source_t source);
+// Effective binding for one source in some content: the override if present,
+// otherwise the layout's canonical default.
+//
+// Takes CONTENT rather than a profile, because the same question is asked of a
+// saved profile, of a staged draft, and of the realized active snapshot. Making
+// those three share one function is what keeps them from drifting.
+uint8_t ns2_kbm_binding(const ns2_kbm_content_t *content,
+                        ns2_kbm_layout_t layout, ns2_kbm_source_t source);
 
 // Canonical default binding, ignoring user overrides.
-uint8_t ns2_kbm_default_binding(ns2_kbm_layout_t profile,
+uint8_t ns2_kbm_default_binding(ns2_kbm_layout_t layout,
                                 ns2_kbm_source_t source);
 
 // Set / clear / revert one binding.
 //   destination == NS2_DST_NONE  -> explicit unassign (stored as an override)
 //   ns2_kbm_clear_binding()      -> drop the override, restoring the default
 // Returns false when the identifiers are invalid or the override table is full.
-bool ns2_kbm_set_binding(ns2_kbm_config_t *config, uint8_t profile,
+bool ns2_kbm_set_binding(ns2_kbm_content_t *content, ns2_kbm_layout_t layout,
                          ns2_kbm_source_t source, uint8_t destination);
-bool ns2_kbm_clear_binding(ns2_kbm_config_t *config, uint8_t profile,
+bool ns2_kbm_clear_binding(ns2_kbm_content_t *content, ns2_kbm_layout_t layout,
                            ns2_kbm_source_t source);
 
 // Bounded enumeration of every source that currently has a non-NONE effective
-// binding in `profile`, so a UI can list the profile without reconstructing
+// binding in `content`, so a UI can list a mapping without reconstructing
 // defaults from firmware source. Returns the number written.
 #define NS2_KBM_MAX_EFFECTIVE 96u
 typedef struct {
@@ -434,8 +533,8 @@ typedef struct {
     uint8_t destination;
     uint8_t overridden;  // 1 when a user override supplied this destination
 } ns2_kbm_effective_t;
-uint16_t ns2_kbm_effective_bindings(const ns2_kbm_config_t *config,
-                                    uint8_t profile,
+uint16_t ns2_kbm_effective_bindings(const ns2_kbm_content_t *content,
+                                    ns2_kbm_layout_t layout,
                                     ns2_kbm_effective_t *out,
                                     uint16_t capacity);
 

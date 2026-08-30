@@ -36,7 +36,10 @@ int ns2_kbm_status_format(const ns2_kbm_runtime_status_t *status, char *out,
         "\"rejectedNoRole\":%lu,"
         "\"undecodedReports\":%lu,"
         "\"activeProfile\":%u,"
-        "\"activeProfileName\":\"%.15s\","
+        "\"activeProfileName\":\"%.19s\","
+        "\"activeRevision\":%u,"
+        "\"activeFingerprint\":%lu,"
+        "\"activeMatchesSaved\":%s,"
         "\"rollover\":%lu,"
         "\"roleLosses\":%lu,"
         "\"mapGeneration\":%lu,"
@@ -65,6 +68,9 @@ int ns2_kbm_status_format(const ns2_kbm_runtime_status_t *status, char *out,
         (unsigned long)status->undecoded_reports,
         (unsigned)status->active_profile,
         status->active_profile_name,
+        (unsigned)status->active_revision,
+        (unsigned long)status->active_fingerprint,
+        status->active_matches_source ? "true" : "false",
         (unsigned long)status->rollover_reports,
         (unsigned long)status->role_losses,
         (unsigned long)status->config_generation,
