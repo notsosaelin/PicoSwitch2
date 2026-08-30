@@ -306,6 +306,32 @@ static void test_one_identity_with_a_live_observation_is_one_peer(void)
            (MGMT_PEER_TRANSPORT_BREDR | MGMT_PEER_TRANSPORT_LE));
 }
 
+static void test_a_remembered_companion_is_not_a_paired_controller(void)
+{
+    // The defect this covers: role used to be LIVE evidence only, so the moment
+    // a management session ended its bond reported role `unknown`. A bonded,
+    // non-connected, roleless peer is exactly what a companion routes into the
+    // PAIRED CONTROLLER list -- so with two front ends, whichever one was
+    // connected showed the other as a controller the user never paired, and
+    // offered to forget it out of its own management relationship.
+    //
+    // The firmware now emits an observation for every REMEMBERED companion,
+    // with connected=0 because it is not connected and is_management_client=1
+    // because the adapter recorded that membership when it last authenticated.
+    mgmt_peer_bond_t bonds[] = { le_bond(0x02, 2, 0) };
+    mgmt_peer_observation_t remembered = observation(0x02, NULL);
+    remembered.is_management_client = 1;
+    remembered.connected = 0;
+
+    mgmt_peer_t peers[4];
+    assert(mgmt_peers_merge(bonds, 1, &remembered, 1, peers, 4) == 1);
+    assert(peers[0].role == MGMT_PEER_ROLE_MANAGEMENT_COMPANION);
+    // Bonded and NOT connected -- the exact combination that used to be routed
+    // as a paired controller, now carrying a role that says otherwise.
+    assert(peers[0].connected == 0);
+    assert(peers[0].transport == MGMT_PEER_TRANSPORT_LE);
+}
+
 static void test_an_unresolved_observation_still_splits_the_peer(void)
 {
     // The pre-fix shape, pinned so the cost of regressing the firmware's
@@ -999,6 +1025,7 @@ int main(void)
     test_live_evidence_names_and_marks_a_stored_peer();
     test_a_weaker_observation_cannot_demote_a_stronger_one();
     test_one_identity_with_a_live_observation_is_one_peer();
+    test_a_remembered_companion_is_not_a_paired_controller();
     test_an_unresolved_observation_still_splits_the_peer();
     test_classification_and_identifiers_survive_the_merge();
     test_a_later_observation_cannot_erase_a_known_classification();

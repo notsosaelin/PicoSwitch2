@@ -607,9 +607,15 @@ fix both reports decode and an undeclared id is still rejected.
 
 ### Status
 
-Root cause **confirmed** (live counters + source). Fix **source- and
-test-validated**; end-to-end keyboard-to-console input on this device is not yet
-re-confirmed on hardware.
+Root cause **confirmed** (live counters + source). Fix **confirmed on hardware**
+the same day: with the fixed firmware the same keyboard read
+
+```
+keyboardReports:153  publishes:153  undecodedReports:0
+```
+
+— 153 keypresses decoded, admitted and published, and not one undecoded report.
+Every admission counter stayed at zero.
 
 ### What this cost, and why
 

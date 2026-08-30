@@ -96,6 +96,30 @@ public sealed class ControllerInventoryTests
     }
 
     [Fact]
+    public void ASecondManagementClientIsNotAPairedController()
+    {
+        // The firmware-side half of the same rule, and the case local history
+        // cannot cover: ANOTHER front end's management bond, which this PC has
+        // never seen live and therefore remembers nothing about.
+        //
+        // Role used to be live evidence only, so that bond reported `unknown`
+        // and arrived here bonded and disconnected -- indistinguishable from a
+        // paired controller. The adapter now remembers management membership
+        // durably and reports role=management for it even while it is offline,
+        // which is what keeps it out of the controller list with no local
+        // history at all.
+        var view = ControllerInventory.Build(
+            Inventory(Peer("p_other_pc",
+                           role: PeerRole.ManagementCompanion,
+                           connected: false)),
+            new AdapterPeerHistory());
+
+        Assert.Single(view.Companion);
+        Assert.Empty(view.Paired);
+        Assert.Empty(view.Connected);
+    }
+
+    [Fact]
     public void ALiveNameAlwaysBeatsARememberedOne()
     {
         var history = new AdapterPeerHistory().Observing(

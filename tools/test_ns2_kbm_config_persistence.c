@@ -186,7 +186,10 @@ static void test_v11_migration(void) {
     assert(config_persist_load(sector, sizeof(sector), &record) ==
            CONFIG_PERSIST_MIGRATED);
     assert(record.version == CONFIG_PERSIST_VERSION);
-    assert(CONFIG_PERSIST_VERSION == 12u);
+    // Deliberate tripwire: bumping the schema must bring whoever did it here to
+    // confirm every older layout still has a migration. v11 now upgrades two
+    // steps in one load, so this test covers 11 -> 13, not 11 -> 12.
+    assert(CONFIG_PERSIST_VERSION == 13u);
 
     // Unrelated settings survive.
     assert(record.body_color[0] == 0x11 && record.body_color[1] == 0x22 &&
@@ -227,7 +230,7 @@ static void test_v11_migration(void) {
     // A truncated v11 record is refused rather than partially interpreted.
     assert(config_persist_load(sector, sizeof(config_record_v11_t) - 1u,
                                &record) == CONFIG_PERSIST_DEFAULTED);
-    puts("  schema 11 -> 12 migration");
+    puts("  schema 11 -> 13 migration");
 }
 
 // A v12 record round-trips the new setting, and an out-of-range stored value is
@@ -353,12 +356,126 @@ static void test_corrupt_mapping_fails_safe(void) {
     puts("  corrupt mapping fails safe");
 }
 
+
+static void test_v12_migration(void) {
+    config_record_v12_t old;
+    memset(&old, 0, sizeof(old));
+    old.magic = CONFIG_PERSIST_MAGIC;
+    old.version = 12u;
+    old.body_color[0] = 0x71;
+    old.joycon2_left_accent[1] = 0x72;
+    old.joycon2_right_accent[2] = 0x73;
+    old.wake_valid = 0x5Au;
+    old.wake_identity.product_id = 0x2069u;
+    ns2_kbm_config_defaults(&old.kbm);
+    old.kbm.mode = (uint8_t)NS2_KBM_MODE_KEYBOARD;
+    old.kbm.mouse.sensitivity_x = 777u;
+    old.kbm.mouse.anti_deadzone = 12u;
+
+    uint8_t sector[512];
+    memset(sector, 0xFF, sizeof(sector));
+    memcpy(sector, &old, sizeof(old));
+
+    config_record_t record;
+    assert(config_persist_load(sector, sizeof(sector), &record) ==
+           CONFIG_PERSIST_MIGRATED);
+
+    // Every v12 setting survives.
+    assert(record.version == CONFIG_PERSIST_VERSION);
+    assert(record.body_color[0] == 0x71);
+    assert(record.joycon2_left_accent[1] == 0x72);
+    assert(record.joycon2_right_accent[2] == 0x73);
+    assert(record.wake_valid == 0x5Au);
+    assert(record.wake_identity.product_id == 0x2069u);
+    assert(record.kbm.mode == (uint8_t)NS2_KBM_MODE_KEYBOARD);
+    assert(record.kbm.mouse.sensitivity_x == 777u);
+    assert(record.kbm.mouse.anti_deadzone == 12u);
+
+    // And the new table starts EMPTY. An upgraded adapter must not claim a role
+    // it never observed -- each companion re-registers on its next session.
+    for (unsigned i = 0; i < CONFIG_MGMT_COMPANIONS_MAX; ++i)
+        assert(!record.mgmt_companions[i].valid);
+
+    // A truncated v12 record is refused rather than partially interpreted.
+    assert(config_persist_load(sector, sizeof(config_record_v12_t) - 1u,
+                               &record) == CONFIG_PERSIST_DEFAULTED);
+    puts("  schema 12 -> 13 migration");
+}
+
+static void test_mgmt_companion_membership(void) {
+    config_mgmt_companion_t table[CONFIG_MGMT_COMPANIONS_MAX];
+    memset(table, 0, sizeof(table));
+
+    const uint8_t a[6] = {1, 0, 0, 0, 0, 0};
+    const uint8_t b[6] = {2, 0, 0, 0, 0, 0};
+    const uint8_t zero[6] = {0, 0, 0, 0, 0, 0};
+
+    assert(!config_mgmt_companion_known(table, CONFIG_MGMT_COMPANIONS_MAX, a));
+
+    // Registering is a change; re-registering the same peer is not, so a
+    // companion reconnecting costs no flash write.
+    assert(config_mgmt_companion_remember(table, CONFIG_MGMT_COMPANIONS_MAX, a, 0u));
+    assert(!config_mgmt_companion_remember(table, CONFIG_MGMT_COMPANIONS_MAX, a, 0u));
+    assert(config_mgmt_companion_known(table, CONFIG_MGMT_COMPANIONS_MAX, a));
+    assert(!config_mgmt_companion_known(table, CONFIG_MGMT_COMPANIONS_MAX, b));
+
+    // A zero address is not an identity: BTstack hands one out for unresolved
+    // peers, and storing it would match every other unresolved peer.
+    assert(!config_mgmt_companion_remember(table, CONFIG_MGMT_COMPANIONS_MAX, zero, 0u));
+    assert(!config_mgmt_companion_known(table, CONFIG_MGMT_COMPANIONS_MAX, zero));
+
+    // Forgetting removes exactly one, and only reports a change when it did.
+    assert(config_mgmt_companion_forget(table, CONFIG_MGMT_COMPANIONS_MAX, a));
+    assert(!config_mgmt_companion_forget(table, CONFIG_MGMT_COMPANIONS_MAX, a));
+    assert(!config_mgmt_companion_known(table, CONFIG_MGMT_COMPANIONS_MAX, a));
+
+    // Full table evicts the OLDEST, never the newest.
+    for (unsigned i = 0; i < CONFIG_MGMT_COMPANIONS_MAX; ++i) {
+        uint8_t addr[6] = {(uint8_t)(0x10u + i), 0, 0, 0, 0, 0};
+        assert(config_mgmt_companion_remember(table, CONFIG_MGMT_COMPANIONS_MAX,
+                                              addr, 0u));
+    }
+    const uint8_t oldest[6] = {0x10u, 0, 0, 0, 0, 0};
+    const uint8_t newest[6] = {(uint8_t)(0x10u + CONFIG_MGMT_COMPANIONS_MAX - 1u),
+                               0, 0, 0, 0, 0};
+    const uint8_t extra[6] = {0x99u, 0, 0, 0, 0, 0};
+    assert(config_mgmt_companion_remember(table, CONFIG_MGMT_COMPANIONS_MAX,
+                                          extra, 0u));
+    assert(!config_mgmt_companion_known(table, CONFIG_MGMT_COMPANIONS_MAX, oldest));
+    assert(config_mgmt_companion_known(table, CONFIG_MGMT_COMPANIONS_MAX, newest));
+    assert(config_mgmt_companion_known(table, CONFIG_MGMT_COMPANIONS_MAX, extra));
+    puts("  management-companion membership");
+}
+
+static void test_mgmt_companions_round_trip(void) {
+    config_record_t record;
+    config_persist_defaults(&record);
+    const uint8_t phone[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+    assert(config_mgmt_companion_remember(record.mgmt_companions,
+                                          CONFIG_MGMT_COMPANIONS_MAX, phone, 1u));
+
+    uint8_t sector[512];
+    memset(sector, 0xFF, sizeof(sector));
+    memcpy(sector, &record, sizeof(record));
+
+    config_record_t again;
+    assert(config_persist_load(sector, sizeof(sector), &again) ==
+           CONFIG_PERSIST_CURRENT);
+    assert(config_mgmt_companion_known(again.mgmt_companions,
+                                       CONFIG_MGMT_COMPANIONS_MAX, phone));
+    assert(again.mgmt_companions[0].addr_type == 1u);
+    puts("  management companions survive a reboot");
+}
+
 int main(void) {
     puts("config persistence:");
     test_defaults();
     test_blank_and_foreign_records();
     test_v10_migration();
     test_v11_migration();
+    test_v12_migration();
+    test_mgmt_companion_membership();
+    test_mgmt_companions_round_trip();
     test_anti_deadzone_persistence();
     test_mapping_round_trip();
     test_corrupt_mapping_fails_safe();

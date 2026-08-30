@@ -22,7 +22,26 @@
 #include "ns2_kbm.h"  // ns2_kbm_config_t
 
 #define CONFIG_PERSIST_MAGIC 0x50535731u  // 'PSW1'
-#define CONFIG_PERSIST_VERSION 12u
+#define CONFIG_PERSIST_VERSION 13u
+
+// How many management companions an adapter remembers.
+//
+// Four covers every realistic setup -- a phone, a tablet and two PCs -- and the
+// table is the ONLY durable role evidence this firmware has, so it is
+// deliberately small and bounded rather than growing with the bond database.
+#define CONFIG_MGMT_COMPANIONS_MAX 4u
+
+// One remembered management companion.
+//
+// Stored as the durable IDENTITY address, never a connection address: under LE
+// privacy the connection address is a rotating RPA that is never equal to
+// anything durable, so persisting one would store a fact that is false within
+// fifteen minutes.
+typedef struct {
+    uint8_t valid;
+    uint8_t addr_type;
+    uint8_t addr[6];
+} config_mgmt_companion_t;
 
 // Schema 10 (PicoSwitch2 v2.0.0 and earlier). Frozen: it describes bytes that
 // already exist on real adapters. Never edit it.
@@ -74,6 +93,19 @@ typedef struct {
 } config_record_v11_t;
 
 // Schema 12 adds the mouse-to-stick anti-deadzone (inside the KB/M block).
+// Schema 12 (the KB/M mouse block's final 10-byte form). Frozen: it describes
+// bytes that already exist on real adapters. Never edit it.
+typedef struct {
+    uint32_t magic;
+    uint8_t version;
+    uint8_t body_color[3];
+    uint8_t joycon2_left_accent[3];
+    uint8_t joycon2_right_accent[3];
+    uint8_t wake_valid;
+    config_wake_identity_t wake_identity;
+    ns2_kbm_config_t kbm;
+} config_record_v12_t;
+
 typedef struct {
     uint32_t magic;
     uint8_t version;
@@ -83,6 +115,20 @@ typedef struct {
     uint8_t wake_valid;
     config_wake_identity_t wake_identity;
     ns2_kbm_config_t kbm;            // v11; mouse block extended in v12
+
+    // v13: which bonds belong to a management companion rather than a
+    // controller.
+    //
+    // Before this, role was live evidence only -- mgmt_peers.h said so -- so a
+    // management bond that was not connected at that moment was reported with
+    // role `unknown`. A companion reads a bonded, non-connected, roleless peer
+    // as a PAIRED CONTROLLER, which is correct for a controller and wrong here:
+    // a second management client showed up in the controller list as a device
+    // the user never paired, offering to forget a management relationship.
+    //
+    // This is remembered fact, not inference: an entry is written only after a
+    // management session has actually authenticated under a resolved identity.
+    config_mgmt_companion_t mgmt_companions[CONFIG_MGMT_COMPANIONS_MAX];
 } config_record_t;
 
 typedef enum {
@@ -94,6 +140,36 @@ typedef enum {
 
 // Canonical factory defaults for every field.
 void config_persist_defaults(config_record_t *out);
+
+// ---------------------------------------------------------------------------
+// Management-companion membership
+// ---------------------------------------------------------------------------
+// Kept here, beside the record they live in, and written as pure functions so
+// the rules are host-testable without a Bluetooth stack. The firmware calls
+// them; it does not reimplement them.
+
+// Remember `addr` as a management companion. Returns true when the table
+// CHANGED, which is the caller's signal to persist -- a companion reconnecting
+// must not cost a flash write on every session.
+//
+// Oldest-first eviction: the table is small on purpose, and a companion that
+// has not been seen for longer than three others is the one whose absence costs
+// least. Re-registering an existing entry is idempotent and reports no change.
+bool config_mgmt_companion_remember(config_mgmt_companion_t *table,
+                                    uint8_t capacity, const uint8_t addr[6],
+                                    uint8_t addr_type);
+
+// Is `addr` a remembered management companion?
+bool config_mgmt_companion_known(const config_mgmt_companion_t *table,
+                                 uint8_t capacity, const uint8_t addr[6]);
+
+// Drop `addr` from the table. Returns true when it CHANGED.
+//
+// Called when a bond is deleted: the remembered role must not outlive the
+// credential it describes, or a forgotten companion would keep a row the user
+// can neither see nor remove.
+bool config_mgmt_companion_forget(config_mgmt_companion_t *table,
+                                  uint8_t capacity, const uint8_t addr[6]);
 
 // Interpret a stored record. `stored` may be any bytes at all — including an
 // erased sector or a future schema — and this never reads past `stored_len`.

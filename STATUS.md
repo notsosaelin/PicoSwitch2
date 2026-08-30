@@ -7,6 +7,42 @@ records belong under [`docs/`](docs/README.md). User-visible release history bel
 [`CHANGELOG.md`](CHANGELOG.md). Narrative history through 2026-07-15 is archived in
 [`docs/archive/status-through-2026-07-15.archived.md`](docs/archive/status-through-2026-07-15.archived.md).
 
+- **BLE keyboard input — root-caused and fixed 2026-08-29; HARDWARE-CONFIRMED.** An 8BitDo
+  2DC8:2028 keyboard paired, held the keyboard role, reported `keyboard=true`, and produced no
+  console input whatsoever. Three investigation passes went to the transport, the role model and the
+  runtime admission path; **all three were correct**, and the BLE HOGP report-ID theory in particular
+  is disproven and must not be reopened (BTstack already supplies the id; prepending another would
+  break every BLE HID device). The failing stage incremented no counter, which is why it hid.
+  Adding one found it in a single command: `undecodedReports` reached 380 with every admission
+  counter at zero. `bthid_keyboard_decode_report()` can only fail two ways — bad arguments, or a
+  report id that is not THE one declared id — so 380 failures proved the parser had locked onto the
+  wrong report. It followed exactly one keyboard report id by design; a keyboard commonly declares a
+  boot-compatible 6-key report **and** a vendor NKRO report and the DEVICE picks which to send. Every
+  declared keyboard report is now followed, each parsed field carries its report id so the arriving
+  id selects the layout, and an undeclared id is still refused. Also fixed in the same region: the
+  parser defined `HID_TAG_PUSH`/`HID_TAG_POP` and ignored them while this repository's own USB parser
+  has always implemented them — a keyboard bracketing its LED block that way had its key array read
+  under Usage Page (LEDs). Confirmed on hardware afterwards: `keyboardReports:153 publishes:153
+  undecodedReports:0`. `ns2_kbm_runtime.c` is now host-testable (`test_kbm_runtime_lifecycle`), and
+  the three formerly silent admission exits plus `undecodedReports` are in `kbm status` and the
+  Windows companion. **Lesson: instrument the boundary before theorising across it.**
+  [`docs/experiments/ble-keyboard-classified-as-mouse-2026-08-29.md`](docs/experiments/ble-keyboard-classified-as-mouse-2026-08-29.md)
+- **Management companions are remembered across boots 2026-08-29; REQUIRES A REFLASH; device
+  validation pending.** A second front end's management bond appeared in Paired Controllers as a
+  device the user never paired, offering to forget it. Role was **live evidence only**: the
+  observation asserting `management` was gated on a live management handle, and `config_ble`'s
+  durable identity is cleared on disconnect — so an offline management bond reported role `unknown`,
+  and a bonded, non-connected, roleless peer is precisely what a companion routes to Paired. Worse,
+  the forget guard's "two independent guards" were **both** live-only, so the protection existed only
+  for the client issuing the command; the other one could be forgotten out of its own management
+  relationship. Schema 13 adds a bounded four-entry companion table storing the durable IDENTITY
+  address (never an RPA). An entry is written only after a management session actually authenticated
+  — remembered fact, not inference — and is dropped when the bond is deleted, so a role can never
+  outlive its credential. Upgraded adapters start with an EMPTY table on purpose: each companion
+  re-registers on its next session rather than having membership invented from an existing bond.
+  Windows needed no change; it already routes `management` to This PC, and now does so with no local
+  history at all. 77/77 host tests, 568 Windows tests, both parity guards green, Pico 2 W builds.
+
 - **Classic controller lifecycle and controller identity — pass COMPLETE 2026-08-29; hardware
   confirmed.** Five defects, found in order and each one exposing the next. **(1)** The BOOTSEL
   sample park waited for core 0 with interrupts disabled from inside a BTstack run-loop callback,

@@ -56,9 +56,17 @@
 #define MGMT_PEERS_ID_MAX 16u
 
 // Peer roles.  UNKNOWN is a real answer and the correct one for a stored bond
-// whose owner has not been seen since boot: this adapter has no persistent role
-// metadata yet, and inventing a role from a bond entry alone would be exactly
-// the kind of guess the project's evidence rules forbid.
+// whose owner has not been seen since boot: inventing a role from a bond entry
+// alone would be exactly the kind of guess the project's evidence rules forbid.
+//
+// The single exception is MANAGEMENT_COMPANION, which the adapter now DOES
+// remember across boots (`config_record_t::mgmt_companions`). That is not a
+// guess from a bond entry -- it is a fact the adapter observed when that peer
+// last authenticated a management session, and it exists because the honest
+// `unknown` had a wrong consequence: a companion reads a bonded, non-connected,
+// roleless peer as a PAIRED CONTROLLER, so a second front end showed up in the
+// controller list as a device the user never paired, offering to forget a
+// management relationship. No other role is remembered.
 //
 // These values carry NO precedence meaning.  When two observations describe one
 // peer, the winner is decided by role_precedence() in mgmt_peers.c, which is
@@ -88,7 +96,11 @@ typedef struct {
 } mgmt_peer_bond_t;
 
 // What the adapter can currently SEE about a device, as opposed to what it has
-// stored about one.  Live evidence is the only role evidence this phase has.
+// stored about one.
+//
+// Mostly live evidence, with ONE durable exception: `is_management_client` may
+// also be set for a remembered companion that is not connected. See the role
+// enum's note below for why that exception exists and why it is not a guess.
 typedef struct {
     uint8_t address[6];
     uint8_t is_management_client; // drives our BLE peripheral role right now

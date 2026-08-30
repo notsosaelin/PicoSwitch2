@@ -274,6 +274,45 @@ void config_store_wake_identity(const config_wake_identity_t *identity) {
     (void)config_save_tracker_request(&save_tracker);
 }
 
+void config_note_management_companion(const uint8_t addr[6], uint8_t addr_type) {
+    critical_section_enter_blocking(&cfg_lock);
+    bool changed = config_mgmt_companion_remember(
+        cfg.mgmt_companions, CONFIG_MGMT_COMPANIONS_MAX, addr, addr_type);
+    critical_section_exit(&cfg_lock);
+    // A companion reconnects constantly. Only a genuinely new membership is
+    // worth an erase/program cycle.
+    if (changed) (void)config_save_tracker_request(&save_tracker);
+}
+
+bool config_is_management_companion(const uint8_t addr[6]) {
+    critical_section_enter_blocking(&cfg_lock);
+    bool known = config_mgmt_companion_known(cfg.mgmt_companions,
+                                             CONFIG_MGMT_COMPANIONS_MAX, addr);
+    critical_section_exit(&cfg_lock);
+    return known;
+}
+
+void config_forget_management_companion(const uint8_t addr[6]) {
+    critical_section_enter_blocking(&cfg_lock);
+    bool changed = config_mgmt_companion_forget(
+        cfg.mgmt_companions, CONFIG_MGMT_COMPANIONS_MAX, addr);
+    critical_section_exit(&cfg_lock);
+    if (changed) (void)config_save_tracker_request(&save_tracker);
+}
+
+bool config_management_companion_at(uint8_t index, uint8_t addr[6],
+                                    uint8_t *addr_type) {
+    if (index >= CONFIG_MGMT_COMPANIONS_MAX || !addr) return false;
+    critical_section_enter_blocking(&cfg_lock);
+    bool valid = cfg.mgmt_companions[index].valid != 0u;
+    if (valid) {
+        memcpy(addr, cfg.mgmt_companions[index].addr, 6u);
+        if (addr_type) *addr_type = cfg.mgmt_companions[index].addr_type;
+    }
+    critical_section_exit(&cfg_lock);
+    return valid;
+}
+
 uint32_t config_request_save(void) {
     // An explicit save overrides any deferred automatic save.
     //
