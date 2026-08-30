@@ -9,7 +9,6 @@
 
 #include "ns2_kbm_runtime.h"
 
-#include <stdio.h>
 #include <string.h>
 
 #include "bt/bthid/bthid.h"
@@ -537,31 +536,13 @@ static void apply_pending_mode_change(void) {
 
 // Admit the peer to the composite source and confirm it currently owns the
 // console. Returns false (having counted the reason) when either gate fails.
-/*
- * Why the last keyboard ingress attempt ended as it did.
- *
- * Three of admit_and_route()'s exits incremented no counter -- no peer key, a
- * classification still pending, and a role the peer does not hold -- so a
- * keyboard that produced nothing left `kbm status` showing keyboardReports == 0
- * and no way to tell which stage dropped it. Recorded here and printed only on a
- * CHANGE, so a steady state costs nothing.
- */
-static void trace_admit(const char *outcome) {
-    static const char *last;
-    if (last == outcome) return;
-    last = outcome;
-    printf("[KBM_TRACE] keyboard admit: %s\n", outcome);
-}
-
 static bool admit_and_route(const input_event_t *event, bool from_keyboard) {
     apply_pending_mode_change();
 
     ns2_kbm_peer_key_t key;
     if (!peer_key_for_connection(event->dev_addr, event->connection_generation,
-                                 &key)) {
-        if (from_keyboard) trace_admit("no-peer-key");
+                                 &key))
         return false;
-    }
 
     // A report proves CAPABILITY -- a peer that just sent a keyboard report can
     // emit keyboard reports -- but never the primary role. A gaming mouse
@@ -578,10 +559,8 @@ static bool admit_and_route(const input_event_t *event, bool from_keyboard) {
         // partial view. A BLE peer on the keyboard driver has caps of exactly
         // {keyboard} until its descriptor is parsed; latching that would turn a
         // gaming mouse into a keyboard for the life of the connection.
-        if (primary_authority_pending(bthid_get_device(event->dev_addr))) {
-            if (from_keyboard) trace_admit("classification-pending");
+        if (primary_authority_pending(bthid_get_device(event->dev_addr)))
             return false;
-        }
         // Genuine last resort: a peer nothing will classify later -- a Classic
         // device whose descriptor never arrived. Decided from the ACCUMULATED
         // capabilities, not this one report, so a pointer-capable peer stays a
@@ -593,29 +572,20 @@ static bool admit_and_route(const input_event_t *event, bool from_keyboard) {
     ns2_kbm_admit_t admit =
         ns2_kbm_roles_admit(&s_roles, role_policy(), primary, caps, &key);
     if (admit == NS2_KBM_ADMIT_REJECT_MODE ||
-        admit == NS2_KBM_ADMIT_REJECT_DUPLICATE) {
-        if (from_keyboard)
-            trace_admit(admit == NS2_KBM_ADMIT_REJECT_MODE ? "reject-mode"
-                                                           : "reject-duplicate");
+        admit == NS2_KBM_ADMIT_REJECT_DUPLICATE)
         return false;
-    }
 
     bool keyboard_role = admit == NS2_KBM_ADMIT_KEYBOARD ||
                          admit == NS2_KBM_ADMIT_BOTH;
     bool mouse_role = admit == NS2_KBM_ADMIT_MOUSE || admit == NS2_KBM_ADMIT_BOTH;
-    if (from_keyboard && !keyboard_role) {
-        trace_admit("no-keyboard-role");
-        return false;
-    }
+    if (from_keyboard && !keyboard_role) return false;
     if (!from_keyboard && !mouse_role) return false;
 
     ns2_input_route_decision_t decision;
     if (!ns2_active_input_submit_group(event, s_roles.group_id, &decision)) {
         s_rejected_not_owner++;
-        if (from_keyboard) trace_admit("not-active-source");
         return false;
     }
-    if (from_keyboard) trace_admit("accepted");
     // Only resolve the opaque source handle when it is not already known: the
     // lookup snapshots the whole registry, which is not something to repeat on
     // every report of a 125 Hz stream.
