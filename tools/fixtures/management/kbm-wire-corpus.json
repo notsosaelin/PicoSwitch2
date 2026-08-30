@@ -33,5 +33,13 @@
     {"label":"profiles","command":"kbm profiles 4","bytes":273,"reply":{"cursor":4,"total":6,"max":6,"profiles":[{"id":6,"layout":"kb","name":"EWWWWWWWWWWWWWWWWWW","revision":65535,"overrides":48,"fingerprint":4240637055},{"id":7,"layout":"kbm","name":"FWWWWWWWWWWWWWWWWWW","revision":65535,"overrides":48,"fingerprint":165105524}],"next":null}},
     {"label":"active","command":"kbm active","bytes":268,"reply":{"active":[{"layout":"kb","sourceId":2,"bootPosition":0,"runtimePosition":1,"revision":65535,"fingerprint":4240637055,"matchesSaved":true},{"layout":"kbm","sourceId":3,"bootPosition":0,"runtimePosition":1,"revision":65535,"fingerprint":165105524,"matchesSaved":true}]}},
     {"label":"switches","command":"kbm switches","bytes":148,"reply":{"switches":[{"src":"key:3A","position":0},{"src":"key:3B","position":1},{"src":"key:3C","position":2},{"src":"key:3D","position":3}],"positions":3}}
+  ],
+  "fingerprints": [
+    {"label":"kb-default","layout":"kb","overrides":[],"mouse":{"sensitivityX":512,"sensitivityY":512,"velocityWindowMs":120,"invertX":false,"invertY":false,"antiDeadzone":0},"fingerprint":3961536447},
+    {"label":"kbm-default","layout":"kbm","overrides":[],"mouse":{"sensitivityX":512,"sensitivityY":512,"velocityWindowMs":120,"invertX":false,"invertY":false,"antiDeadzone":0},"fingerprint":3371851588},
+    {"label":"kb-one-rebind","layout":"kb","overrides":[{"src":"key:04","dst":"zr"}],"mouse":{"sensitivityX":512,"sensitivityY":512,"velocityWindowMs":120,"invertX":false,"invertY":false,"antiDeadzone":0},"fingerprint":2244890535},
+    {"label":"kb-unsorted-rebinds","layout":"kb","overrides":[{"src":"key:05","dst":"b"},{"src":"key:0C","dst":"y"},{"src":"key:1A","dst":"x"},{"src":"key:20","dst":"a"}],"mouse":{"sensitivityX":512,"sensitivityY":512,"velocityWindowMs":120,"invertX":false,"invertY":false,"antiDeadzone":0},"fingerprint":38927314},
+    {"label":"kbm-mouse-only","layout":"kbm","overrides":[],"mouse":{"sensitivityX":1234,"sensitivityY":777,"velocityWindowMs":42,"invertX":false,"invertY":true,"antiDeadzone":17},"fingerprint":1097036714},
+    {"label":"kb-cleared-binding","layout":"kb","overrides":[{"src":"key:1A","dst":"none"}],"mouse":{"sensitivityX":512,"sensitivityY":512,"velocityWindowMs":120,"invertX":false,"invertY":false,"antiDeadzone":0},"fingerprint":1262523905}
   ]
 }
