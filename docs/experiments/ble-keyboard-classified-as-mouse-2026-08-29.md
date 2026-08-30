@@ -1,7 +1,9 @@
 # A BLE keyboard is classified as a mouse
 
-**Status:** root cause traced in firmware source. **No firmware change made** —
-the fix reopens a previously fixed defect and needs a decision, not a patch.
+**Status:** FIXED in firmware, 2026-08-29. Awaiting one hardware smoke test.
+
+The discriminator is the report descriptor's OPENING application collection plus
+the shape of its keyboard half — see "The fix" below.
 
 **Reported:** 2026-08-29, an 8BitDo Retro (Xbox edition) keyboard paired to the
 adapter over BLE and appeared in the Windows companion as a mouse.
@@ -81,32 +83,76 @@ output matches exactly. What has *not* been captured is the 8BitDo's actual
 report descriptor, which would turn this from "the only path that produces this
 output" into a direct confirmation.
 
-## Why no fix was made
+## The fix
 
-The obvious change — let a BLE peer reach COMBO when it declares both — reopens
-the KERIS II defect verbatim: a gaming mouse with macro keys would take the
-keyboard role and lock out the user's real keyboard. That is a regression of
-something already fixed, so it needs a decision rather than a patch.
+The naive change — let a BLE peer reach COMBO when it declares both — reopens the
+KERIS II defect verbatim. What was needed was a discriminator, and the strongest
+one is not the keyboard collection's size but **which application collection the
+descriptor OPENS with**.
 
-A discriminator that separates the two would have to look at the SHAPE of the
-keyboard collection rather than its presence. A real keyboard declares a modifier
-byte plus a 6-usage rollover array; a mouse's macro collection is typically a
-short bitmap. The parser already distinguishes these — `bthid_keyboard_report_map_t`
-carries `bitmap_count` and `array_count` — so the raw material exists. Whether
-that separation holds across real hardware is exactly the question that needs
-evidence before anything is changed.
+That is the closest a report descriptor comes to a Class of Device: the device
+stating what it primarily is. A keyboard opens with `Usage(Keyboard)`; a gaming
+mouse opens with `Usage(Mouse)` and declares its macro keys afterwards. It is a
+self-declaration, which is exactly the kind of evidence the COMBO rule has always
+required — only carried by the descriptor instead of by CoD.
 
-## What would settle it
+`bthid_keyboard_shape()` requires three facts to agree, and each rules out a
+different wrong answer:
 
-1. Capture the 8BitDo's report descriptor from the adapter's UART during pairing
-   (`[BTHID_KEYBOARD] Parsed report ...` already prints `bitmap_count` and
-   `array_count`).
-2. Capture the same for a gaming mouse with macro keys, if one is to hand.
-3. If the array/bitmap shapes separate the two cleanly, the precedence rule can
-   consult that for BLE peers only, leaving the Classic path untouched.
+1. **the descriptor opens with a keyboard application collection** — keeps the
+   gaming mouse out no matter how complete its macro collection is;
+2. **a standard 8-bit modifier field over 0xE0..0xE7** — something a keyboard has
+   and a handful of macro buttons does not;
+3. **real key capacity**: a rollover array of 4+ slots, *or* — for an NKRO board
+   with no array at all — 32+ key-bitmap bits. Requiring the array alone would
+   fail every NKRO keyboard.
 
-Until then the observed behaviour is: **a BLE keyboard with a pointer collection
-is used as a mouse, and its keys do not reach the keyboard role.**
+A controller carrying keyboard usages is excluded by `has_gamepad_collection`, as
+it already was.
+
+`ns2_kbm_primary_from_evidence()` then grants COMBO when a peer with both
+capabilities carries EITHER a Classic combo Class of Device or strong keyboard
+shape. `ns2_kbm_primary_from_caps()` is untouched, so capability-only resolution
+still answers MOUSE — the clause that protects the keyboard role.
+
+**Why this does not reopen the KERIS defect:** that mouse opens with
+`Usage(Mouse)`, so clause 1 fails and it can never reach COMBO. A test pins the
+hardest version of this — a mouse whose macro half declares a *complete* boot
+keyboard, passing clauses 2 and 3 — and it still resolves to MOUSE.
+
+**Role semantics.** COMBO rather than keyboard-primary, because the keyboard
+driver already decodes both halves of such a descriptor
+(`bthid_keyboard_set_descriptor` parses the pointer collection into
+`kb->has_pointer` and forwards pointer input), and COMBO is what a Classic combo
+peripheral has always resolved to. Keyboard-primary would work but would discard
+pointer input the device genuinely provides.
+
+**Diagnostics.** One UART line per descriptor arrival, and only for a peer that
+actually has both capabilities:
+
+```
+[BTHID_KEYBOARD] kb+pointer: primary_usage=0x06 strong=1 modifier=1 rollover=6 bitmap=0 cod_combo=0 -> COMBO
+[BTHID_KEYBOARD] kb+pointer: primary_usage=0x02 strong=0 modifier=1 rollover=6 bitmap=0 cod_combo=0 -> MOUSE (macro-safe fallback)
+```
+
+## What the capture actually contained
+
+`dumps/kbm-pairing-8bitdo-keyboard-20260829-201415.jsonl` was taken before this
+fix, and it holds **no descriptor**: the adapter answered `{"error":"unknown
+command"}` to `btid clear`, `btid desc` and `btid dump`, because the flashed build
+(`d531b8b7+dirty`) predates the `btid` command that exists in current source.
+`kbm status` in the same capture shows `keyboard=false mouse=false` — the keyboard
+was not connected at the time.
+
+So the fix was derived from source and from descriptor structure, not from a
+captured 8BitDo descriptor. Recorded plainly because a later reader would
+otherwise assume the fixture in `test_bthid_keyboard_report.c` came off the
+device; it did not. It is the standard shape a keyboard-plus-pointer composite
+presents, and the rule is written against the structure rather than against one
+device.
+
+A firmware built from this change does carry `btid`, so a future capture will
+return the real bytes — useful confirmation, not a prerequisite.
 
 ## The unrelated timeout in the same session
 

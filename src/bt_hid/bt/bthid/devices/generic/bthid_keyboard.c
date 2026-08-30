@@ -104,6 +104,7 @@ void bthid_keyboard_set_descriptor(bthid_device_t *device, const uint8_t *desc,
     if (!kb) return;
     kb->has_report_map = bthid_keyboard_parse_descriptor(desc, desc_len, &kb->map);
     kb->has_pointer = bthid_mouse_parse_descriptor(desc, desc_len, &kb->pointer);
+    bthid_keyboard_shape_t shape = bthid_keyboard_shape(&kb->map);
     if (kb->has_report_map) {
         printf("[BTHID_KEYBOARD] Parsed report %u: %u bitmap field(s), "
                "%u array field(s), pointer=%d\n",
@@ -120,10 +121,29 @@ void bthid_keyboard_set_descriptor(bthid_device_t *device, const uint8_t *desc,
     // and lock out the user's actual keyboard. Only the Class-of-Device combo
     // peripheral type is a statement by the device itself; BLE has no Class of
     // Device, so a BLE peer is never classified combo here.
+    bool declares_combo = classic_cod_declares_combo(device);
+
+    // One line, only when the answer was not obvious -- a keyboard with no
+    // pointer needs no explanation, and this runs on every descriptor arrival.
+    // Says WHY, because a support report that only shows the outcome cannot
+    // distinguish "misclassified" from "correctly classified, wrong device".
+    if (kb->has_pointer) {
+        printf("[BTHID_KEYBOARD] kb+pointer: primary_usage=0x%02X strong=%d "
+               "modifier=%d rollover=%u bitmap=%u cod_combo=%d -> %s\n",
+               kb->map.primary_application_usage,
+               shape.strong_keyboard ? 1 : 0,
+               shape.has_modifier_byte ? 1 : 0,
+               shape.rollover_slots, shape.key_bitmap_bits,
+               declares_combo ? 1 : 0,
+               (declares_combo || shape.strong_keyboard)
+                   ? "COMBO"
+                   : "MOUSE (macro-safe fallback)");
+    }
+
     ns2_kbm_runtime_note_classification(device->conn_index,
                                         device->connection_generation,
                                         true, kb->has_pointer,
-                                        classic_cod_declares_combo(device));
+                                        declares_combo, shape.strong_keyboard);
 }
 
 // Mouse buttons are reported in HID Usage Page 0x09 order. The generic mouse

@@ -1045,6 +1045,17 @@ bool ns2_kbm_source_parse(const char *text, ns2_kbm_source_t *out) {
 // Peer roles and admission
 // ---------------------------------------------------------------------------
 
+ns2_kbm_primary_t ns2_kbm_primary_from_evidence(ns2_kbm_peer_caps_t caps,
+                                                bool declares_combo,
+                                                bool strong_keyboard) {
+    // COMBO is never INFERRED from having both capabilities -- see below. It is
+    // granted only when the device has said so, through its Class of Device or
+    // through a report descriptor that is unmistakably a keyboard's.
+    if ((declares_combo || strong_keyboard) && caps.keyboard && caps.pointer)
+        return NS2_KBM_PRIMARY_COMBO;
+    return ns2_kbm_primary_from_caps(caps);
+}
+
 ns2_kbm_primary_t ns2_kbm_primary_from_caps(ns2_kbm_peer_caps_t caps) {
     // Pointer wins. A gaming mouse declaring keyboard usages for its macro
     // buttons is still a mouse, and treating it as a combo would let it consume

@@ -80,6 +80,109 @@ static const uint8_t DESC_GAMEPAD[] = {
     0xC0
 };
 
+
+// ---------------------------------------------------------------------------
+// The keyboard-versus-mouse ambiguity (docs/experiments/
+// ble-keyboard-classified-as-mouse-2026-08-29.md).
+//
+// These two descriptors declare the SAME capabilities -- keyboard and pointer --
+// and need opposite roles. What separates them is which application collection
+// the descriptor OPENS with, plus whether the keyboard half has real capacity.
+// ---------------------------------------------------------------------------
+
+// A real keyboard that also carries a pointing device: opens with
+// Usage(Keyboard), full modifier byte and 6-key rollover, then a mouse
+// collection. This is the shape an 8BitDo Retro keyboard presents.
+static const uint8_t DESC_KEYBOARD_WITH_POINTER[] = {
+    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01,   // Usage Page (Desktop), Usage (Keyboard)
+    0x85, 0x01,                            //   Report ID (1)
+    0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01,
+    0x75, 0x01, 0x95, 0x08, 0x81, 0x02,   //   8 modifier bits
+    0x95, 0x01, 0x75, 0x08, 0x81, 0x01,   //   reserved
+    0x95, 0x06, 0x75, 0x08, 0x15, 0x00, 0x25, 0x65,
+    0x19, 0x00, 0x29, 0x65, 0x81, 0x00,   //   6-key rollover array
+    0xC0,
+    0x05, 0x01, 0x09, 0x02, 0xA1, 0x01,   // Usage (Mouse)
+    0x85, 0x02, 0x09, 0x01, 0xA1, 0x00,
+    0x05, 0x09, 0x19, 0x01, 0x29, 0x03, 0x15, 0x00, 0x25, 0x01,
+    0x75, 0x01, 0x95, 0x03, 0x81, 0x02,
+    0x95, 0x01, 0x75, 0x05, 0x81, 0x03,
+    0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x15, 0x81, 0x25, 0x7F,
+    0x75, 0x08, 0x95, 0x02, 0x81, 0x06,
+    0xC0, 0xC0
+};
+
+// A gaming mouse with macro keys -- the ASUS ROG KERIS II class. Opens with
+// Usage(Mouse); its keyboard collection comes second and carries a modifier
+// byte plus a SINGLE key slot, which is all a macro needs.
+static const uint8_t DESC_MOUSE_WITH_MACRO_KEYS[] = {
+    0x05, 0x01, 0x09, 0x02, 0xA1, 0x01,   // Usage Page (Desktop), Usage (Mouse)
+    0x85, 0x01, 0x09, 0x01, 0xA1, 0x00,
+    0x05, 0x09, 0x19, 0x01, 0x29, 0x05, 0x15, 0x00, 0x25, 0x01,
+    0x75, 0x01, 0x95, 0x05, 0x81, 0x02,
+    0x95, 0x01, 0x75, 0x03, 0x81, 0x03,
+    0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x15, 0x81, 0x25, 0x7F,
+    0x75, 0x08, 0x95, 0x02, 0x81, 0x06,
+    0xC0,
+    0xC0,
+    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01,   // Usage (Keyboard) -- the macro half
+    0x85, 0x02,
+    0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01,
+    0x75, 0x01, 0x95, 0x08, 0x81, 0x02,   //   modifier byte
+    0x95, 0x01, 0x75, 0x08, 0x15, 0x00, 0x25, 0x65,
+    0x19, 0x00, 0x29, 0x65, 0x81, 0x00,   //   ONE key slot
+    0xC0
+};
+
+// A mouse whose macro half declares a full boot keyboard -- the hardest case
+// for the rule, and the reason the opening collection is load-bearing.
+static const uint8_t DESC_MOUSE_WITH_FULL_KEYBOARD[] = {
+    0x05, 0x01, 0x09, 0x02, 0xA1, 0x01,   // opens as a MOUSE
+    0x85, 0x01, 0x09, 0x01, 0xA1, 0x00,
+    0x05, 0x09, 0x19, 0x01, 0x29, 0x05, 0x15, 0x00, 0x25, 0x01,
+    0x75, 0x01, 0x95, 0x05, 0x81, 0x02,
+    0x95, 0x01, 0x75, 0x03, 0x81, 0x03,
+    0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x15, 0x81, 0x25, 0x7F,
+    0x75, 0x08, 0x95, 0x02, 0x81, 0x06,
+    0xC0, 0xC0,
+    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01,
+    0x85, 0x02,
+    0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01,
+    0x75, 0x01, 0x95, 0x08, 0x81, 0x02,
+    0x95, 0x01, 0x75, 0x08, 0x81, 0x01,
+    0x95, 0x06, 0x75, 0x08, 0x15, 0x00, 0x25, 0x65,
+    0x19, 0x00, 0x29, 0x65, 0x81, 0x00,   //   a FULL 6-key rollover
+    0xC0
+};
+
+// An NKRO keyboard that also has a pointer: no rollover array at all, so the
+// bitmap clause is the only thing that can carry it.
+static const uint8_t DESC_NKRO_WITH_POINTER[] = {
+    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01,
+    0x85, 0x01,
+    0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01,
+    0x75, 0x01, 0x95, 0x08, 0x81, 0x02,
+    0x05, 0x07, 0x19, 0x00, 0x29, 0x67, 0x15, 0x00, 0x25, 0x01,
+    0x75, 0x01, 0x95, 0x68, 0x81, 0x02,
+    0xC0,
+    0x05, 0x01, 0x09, 0x02, 0xA1, 0x01,
+    0x85, 0x02, 0x09, 0x01, 0xA1, 0x00,
+    0x05, 0x09, 0x19, 0x01, 0x29, 0x03, 0x15, 0x00, 0x25, 0x01,
+    0x75, 0x01, 0x95, 0x03, 0x81, 0x02,
+    0x95, 0x01, 0x75, 0x05, 0x81, 0x03,
+    0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x15, 0x81, 0x25, 0x7F,
+    0x75, 0x08, 0x95, 0x02, 0x81, 0x06,
+    0xC0, 0xC0
+};
+
+// A keyboard collection with NO modifier byte and one key slot -- a macro pad.
+static const uint8_t DESC_MACRO_PAD_ONLY[] = {
+    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01,
+    0x05, 0x07, 0x95, 0x01, 0x75, 0x08, 0x15, 0x00, 0x25, 0x65,
+    0x19, 0x00, 0x29, 0x65, 0x81, 0x00,
+    0xC0
+};
+
 static bool held(const uint8_t *bitmap, uint8_t usage) {
     return (bitmap[usage >> 3] & (uint8_t)(1u << (usage & 7u))) != 0u;
 }
@@ -152,6 +255,93 @@ static void test_classification(void) {
         assert(partial.array_count <= BTHID_KEYBOARD_MAX_ARRAY_FIELDS);
     }
     puts("  classification");
+}
+
+
+// The descriptor-shape discriminator: which of two peers declaring the SAME
+// capabilities is really a keyboard.
+//
+// This is the regression boundary for the BLE-keyboard-as-mouse defect. It has
+// to hold in both directions at once -- a real keyboard must win the keyboard
+// role, and a gaming mouse with macro keys must not -- so every case below is
+// paired against its opposite.
+static void test_keyboard_shape(void) {
+    bthid_keyboard_report_map_t map;
+    bthid_keyboard_shape_t shape;
+
+    // An ordinary boot keyboard: strong on every clause.
+    assert(bthid_keyboard_parse_descriptor(DESC_BOOT, sizeof(DESC_BOOT), &map));
+    shape = bthid_keyboard_shape(&map);
+    assert(shape.strong_keyboard);
+    assert(shape.has_modifier_byte);
+    assert(shape.keyboard_is_primary_collection);
+    assert(shape.rollover_slots == 6u);
+
+    // A real keyboard that also carries a pointer. THE CASE THIS EXISTS FOR:
+    // capability precedence alone would make this a mouse.
+    assert(bthid_keyboard_parse_descriptor(DESC_KEYBOARD_WITH_POINTER,
+                                           sizeof(DESC_KEYBOARD_WITH_POINTER), &map));
+    shape = bthid_keyboard_shape(&map);
+    assert(shape.strong_keyboard);
+    assert(shape.rollover_slots == 6u);
+    assert(map.primary_application_usage == BTHID_HID_USAGE_KEYBOARD);
+
+    // A gaming mouse with macro keys. Same two capabilities, opposite answer.
+    assert(bthid_keyboard_parse_descriptor(DESC_MOUSE_WITH_MACRO_KEYS,
+                                           sizeof(DESC_MOUSE_WITH_MACRO_KEYS), &map));
+    shape = bthid_keyboard_shape(&map);
+    assert(!shape.strong_keyboard);
+    assert(!shape.keyboard_is_primary_collection);
+    assert(map.primary_application_usage == BTHID_HID_USAGE_MOUSE);
+
+    // The hardest case: a mouse whose macro half is a COMPLETE boot keyboard.
+    // Every capacity clause passes; it is still a mouse, because it opened as
+    // one. This is what makes the opening collection load-bearing rather than
+    // decorative -- without it, this device would take the keyboard role.
+    assert(bthid_keyboard_parse_descriptor(DESC_MOUSE_WITH_FULL_KEYBOARD,
+                                           sizeof(DESC_MOUSE_WITH_FULL_KEYBOARD), &map));
+    shape = bthid_keyboard_shape(&map);
+    assert(shape.has_modifier_byte);
+    assert(shape.rollover_slots == 6u);
+    assert(!shape.keyboard_is_primary_collection);
+    assert(!shape.strong_keyboard);
+
+    // An NKRO keyboard with a pointer has NO rollover array; the bitmap clause
+    // is the only thing that can carry it, and it must.
+    assert(bthid_keyboard_parse_descriptor(DESC_NKRO_WITH_POINTER,
+                                           sizeof(DESC_NKRO_WITH_POINTER), &map));
+    shape = bthid_keyboard_shape(&map);
+    assert(shape.rollover_slots == 0u);
+    assert(shape.key_bitmap_bits >= BTHID_KEYBOARD_STRONG_BITMAP_BITS);
+    assert(shape.strong_keyboard);
+
+    // A bare macro pad: opens as a keyboard, but no modifier byte and one key.
+    // Capacity alone is not enough either.
+    assert(bthid_keyboard_parse_descriptor(DESC_MACRO_PAD_ONLY,
+                                           sizeof(DESC_MACRO_PAD_ONLY), &map));
+    shape = bthid_keyboard_shape(&map);
+    assert(shape.keyboard_is_primary_collection);
+    assert(!shape.has_modifier_byte);
+    assert(!shape.strong_keyboard);
+
+    // A controller carrying keyboard usages is excluded, as it already was.
+    memset(&map, 0, sizeof(map));
+    map.has_gamepad_collection = true;
+    map.primary_application_usage = BTHID_HID_USAGE_KEYBOARD;
+    map.bitmap_count = 1u;
+    map.bitmaps[0].usage_min = 0xE0u;
+    map.bitmaps[0].count = 8u;
+    map.array_count = 1u;
+    map.arrays[0].count = 6u;
+    assert(!bthid_keyboard_shape(&map).strong_keyboard);
+
+    // Ambiguity fails closed: a descriptor this build cannot read at all must
+    // never produce strong evidence.
+    assert(!bthid_keyboard_shape(NULL).strong_keyboard);
+    memset(&map, 0, sizeof(map));
+    assert(!bthid_keyboard_shape(&map).strong_keyboard);
+
+    printf("  keyboard shape discriminator ok\n");
 }
 
 static void test_boot_decode(void) {
@@ -275,6 +465,7 @@ static void test_boot_fallback(void) {
 int main(void) {
     puts("bthid_keyboard_report:");
     test_classification();
+    test_keyboard_shape();
     test_boot_decode();
     test_nkro_decode();
     test_boot_fallback();

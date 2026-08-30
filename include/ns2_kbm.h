@@ -551,6 +551,28 @@ typedef enum {
 // a Class-of-Device combo declaration -- may override the result.
 ns2_kbm_primary_t ns2_kbm_primary_from_caps(ns2_kbm_peer_caps_t caps);
 
+// Resolve a peer's role from its capabilities AND whatever self-declaration the
+// transport could supply.
+//
+// `ns2_kbm_primary_from_caps()` decides on capabilities alone, and for a peer
+// with both it must keep answering MOUSE -- that is what stops a gaming mouse
+// with macro keys from consuming the keyboard role. This wraps it with the two
+// ways a device can positively declare that it supplies BOTH roles:
+//
+//   `declares_combo`   a Classic Class-of-Device "combo keyboard/pointing"
+//                      peripheral;
+//   `strong_keyboard`  a report descriptor that opens as a keyboard, carries a
+//                      standard modifier byte and has real key capacity
+//                      (bthid_keyboard_shape()).
+//
+// The second exists because BLE has no Class of Device, so without it a genuine
+// BLE keyboard that also declares a pointer collection loses the keyboard role.
+// Neither is "both capabilities are present": that is exactly the gaming mouse,
+// which opens as a mouse and therefore never sets `strong_keyboard`.
+ns2_kbm_primary_t ns2_kbm_primary_from_evidence(ns2_kbm_peer_caps_t caps,
+                                                bool declares_combo,
+                                                bool strong_keyboard);
+
 // Which roles the current configuration permits a peer to take. Derived by the
 // runtime from the explicit override plus the native-Joy-Con-mouse exception;
 // kept out of this module so the portable model has no personality knowledge.

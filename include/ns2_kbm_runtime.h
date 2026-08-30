@@ -73,15 +73,26 @@ void ns2_kbm_runtime_note_ready(uint8_t conn_index);
 bool ns2_kbm_runtime_wants_peripheral(bool cod_keyboard, bool cod_pointing);
 
 // --- report ingress (core 1) -------------------------------------------------
-// Record what a peer's descriptor declares. `declares_combo` must be set ONLY
-// from a positive statement by the device that it supplies both roles (a
-// Class-of-Device "combo keyboard/pointing" peripheral) -- never from the mere
-// presence of both capabilities, because gaming mice routinely declare keyboard
-// usages for their macro buttons and must leave the keyboard role free.
+// Record what a peer's descriptor declares.
+//
+// `declares_combo` must be set ONLY from a positive statement by the device that
+// it supplies both roles (a Class-of-Device "combo keyboard/pointing"
+// peripheral) -- never from the mere presence of both capabilities, because
+// gaming mice routinely declare keyboard usages for their macro buttons and must
+// leave the keyboard role free.
+//
+// `strong_keyboard` is the same KIND of statement, made through the report
+// descriptor instead of the Class of Device: the peer opens with a keyboard
+// application collection, declares a standard modifier byte, and has real key
+// capacity (see bthid_keyboard_shape()). It exists because BLE has no Class of
+// Device at all, so without it a genuine BLE keyboard that also declares a
+// pointer collection loses the keyboard role to capability precedence. It is
+// deliberately NOT "both capabilities are present": that is exactly the gaming
+// mouse, which opens with Usage(Mouse) and therefore never sets this.
 void ns2_kbm_runtime_note_classification(uint8_t conn_index,
                                          uint32_t connection_generation,
                                          bool has_keyboard, bool has_pointer,
-                                         bool declares_combo);
+                                         bool declares_combo, bool strong_keyboard);
 
 // Keyboard report. `usage_bitmap` is NS2_KBM_KEY_BITMAP_BYTES of held HID usage
 // page 0x07 ids and is borrowed for the duration of the call.
