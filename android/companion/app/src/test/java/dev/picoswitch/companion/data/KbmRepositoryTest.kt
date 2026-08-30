@@ -40,7 +40,7 @@ class KbmRepositoryTest {
         // half-loaded page would show a mapping without being able to say
         // whether it is the one in use.
         assertEquals(
-            listOf("kbm status", "kbm mouse", "kbm profiles", "kbm active"),
+            listOf("kbm status", "kbm counters", "kbm mouse", "kbm profiles 0", "kbm active"),
             transport.commands,
         )
         val state = repository.kbm.value
@@ -236,6 +236,7 @@ private class KbmTransport(
         }
         return when {
             command == "kbm status" -> status()
+            command == "kbm counters" -> counters()
             command == "kbm mouse" -> mouse()
             command.startsWith("kbm mouse ") -> {
                 val (field, value) = command.removePrefix("kbm mouse ").split(" ")
@@ -248,10 +249,10 @@ private class KbmTransport(
             command.startsWith("kbm map ") -> mapPage(command)
             // Only CUSTOM profiles are stored; Default is a template the client
             // synthesises, which is what keeps all six adapter slots for the user.
-            command == "kbm profiles" -> """
-                {"profiles":[
+            command == "kbm profiles 0" -> """
+                {"page":0,"total":1,"max":6,"profiles":[
                   {"id":2,"layout":"kb","name":"Work","revision":3,"overrides":3,"fingerprint":111}
-                ],"max":6,"more":false}
+                ],"more":false}
             """.trimIndent()
             // What each layout is REALLY running.
             command == "kbm active" -> """
@@ -268,12 +269,19 @@ private class KbmTransport(
         }
     }
 
+    // Product state and counters are TWO replies: one reply carrying both is 729
+    // bytes worst case against a 512-byte wireless slot, and an oversized reply
+    // is refused whole rather than truncated.
     private fun status() = """
         {"mode":"kbmouse","override":"auto","profile":"kb","keyboard":true,"mouse":true,
-         "nativeMouse":false,"keyboardConn":1,"mouseConn":2,"group":1,"source":1,
-         "keyboardReports":0,"mouseReports":0,"rejectedMode":0,"rejectedDuplicate":0,
-         "rejectedNotOwner":0,"rollover":0,"roleLosses":0,"mapGeneration":1,
-         "neutralizations":0,"publishes":0,"recenters":0}
+         "nativeMouse":false,"keyboardConn":1,"mouseConn":2,"group":1,"source":1}
+    """.trimIndent().replace("\n", "")
+
+    private fun counters() = """
+        {"keyboardReports":0,"mouseReports":0,"rejectedMode":0,"rejectedDuplicate":0,
+         "rejectedNotOwner":0,"rejectedNoPeerKey":0,"rejectedUnclassified":0,
+         "rejectedNoRole":0,"undecodedReports":0,"rollover":0,"roleLosses":0,
+         "mapGeneration":1,"neutralizations":0,"publishes":0,"recenters":0}
     """.trimIndent().replace("\n", "")
 
     private fun mouse() = """

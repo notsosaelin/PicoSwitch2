@@ -24,7 +24,19 @@
     },
     "kbmStatus": {
       "command": "kbm status",
-      "reply": {"mode":"kbmouse","override":"auto","profile":"kbm","keyboard":true,"mouse":true,"nativeMouse":false,"keyboardConn":2,"mouseConn":3,"keyboardReports":10,"mouseReports":20,"rejectedMode":1,"rejectedDuplicate":2,"rejectedNotOwner":3,"rollover":4,"roleLosses":5,"mapGeneration":6,"publishes":7,"recenters":8}
+      "reply": {"mode":"kbmouse","override":"auto","profile":"kb","keyboard":true,"mouse":true,"nativeMouse":false,"keyboardConn":2,"mouseConn":3,"group":1,"source":7,"activeProfile":2,"activeProfileName":"Splatoon","activeRevision":3,"activeFingerprint":111,"activeMatchesSaved":true}
+    },
+    "kbmCounters": {
+      "command": "kbm counters",
+      "reply": {"keyboardReports":10,"mouseReports":20,"rejectedMode":1,"rejectedDuplicate":2,"rejectedNotOwner":3,"rejectedNoPeerKey":4,"rejectedUnclassified":5,"rejectedNoRole":6,"undecodedReports":7,"rollover":8,"roleLosses":9,"mapGeneration":10,"neutralizations":11,"publishes":12,"recenters":13}
+    },
+    "kbmProfiles": {
+      "command": "kbm profiles 0",
+      "reply": {"page":0,"total":2,"max":6,"profiles":[{"id":2,"layout":"kb","name":"Splatoon","revision":3,"overrides":3,"fingerprint":111},{"id":3,"layout":"kbm","name":"Zelda","revision":1,"overrides":9,"fingerprint":222}],"more":false}
+    },
+    "kbmActive": {
+      "command": "kbm active",
+      "reply": {"active":[{"layout":"kb","sourceId":2,"revision":3,"fingerprint":111,"matchesSaved":true},{"layout":"kbm","sourceId":1,"revision":0,"fingerprint":900,"matchesSaved":true}]}
     },
     "kbmMap": {
       "command": "kbm map kbm 0",

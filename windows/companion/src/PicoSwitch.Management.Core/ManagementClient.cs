@@ -76,8 +76,54 @@ public sealed class ManagementClient(
     public Task<bool?> ManagementEnabledAsync(CancellationToken ct = default) =>
         ExchangeAsync(ManagementCommands.ManagementStatus, ManagementProtocol.ManagementEnabled, ct);
 
-    public Task<KbmStatus> KbmStatusAsync(CancellationToken ct = default) =>
-        ExchangeAsync(ManagementCommands.KbmStatus, ManagementProtocol.KbmStatus, ct);
+    /// <summary>
+    /// KB/M status, with the ingress counters merged in.
+    /// </summary>
+    /// <remarks>
+    /// Two commands, because the combined reply outgrew the 512-byte wireless
+    /// response slot and the bridge answered <c>response_too_large</c> — which
+    /// failed the whole Keyboard &amp; Mouse read rather than one field. The split
+    /// is a wire detail, so it is hidden here and every caller is unchanged.
+    ///
+    /// Counters are tolerated as absent: firmware that predates the split still
+    /// returns them inside <c>kbm status</c>, and the merge below leaves those
+    /// values alone.
+    /// </remarks>
+    public async Task<KbmStatus> KbmStatusAsync(CancellationToken ct = default)
+    {
+        var status = await ExchangeAsync(ManagementCommands.KbmStatus,
+                                         ManagementProtocol.KbmStatus, ct)
+            .ConfigureAwait(false);
+        KbmCounters counters;
+        try
+        {
+            counters = await ExchangeAsync(ManagementCommands.KbmCounters,
+                                           ManagementProtocol.KbmCounters, ct)
+                .ConfigureAwait(false);
+        }
+        catch (AdapterCommandException error) when (error.IsUnsupported())
+        {
+            return status;
+        }
+
+        return status with
+        {
+            KeyboardReports = counters.KeyboardReports,
+            MouseReports = counters.MouseReports,
+            RejectedMode = counters.RejectedMode,
+            RejectedDuplicate = counters.RejectedDuplicate,
+            RejectedNotOwner = counters.RejectedNotOwner,
+            RejectedNoPeerKey = counters.RejectedNoPeerKey,
+            RejectedUnclassified = counters.RejectedUnclassified,
+            RejectedNoRole = counters.RejectedNoRole,
+            UndecodedReports = counters.UndecodedReports,
+            Rollover = counters.Rollover,
+            RoleLosses = counters.RoleLosses,
+            MapGeneration = counters.MapGeneration,
+            Publishes = counters.Publishes,
+            Recenters = counters.Recenters,
+        };
+    }
 
     public Task<KbmMouseConfig> KbmMouseAsync(CancellationToken ct = default) =>
         ExchangeAsync(ManagementCommands.KbmMouseStatus, ManagementProtocol.KbmMouse, ct);
@@ -325,22 +371,64 @@ public sealed class ManagementClient(
         return await LoadKbmMappingAsync(profile, ct).ConfigureAwait(false);
     }
 
-    /// <summary>The profile library and both realized mappings.</summary>
+    /// <summary>
+    /// The profile library and both realized mappings.
+    /// </summary>
+    /// <remarks>
+    /// The library is paged: six rows do not fit one 512-byte reply, and
+    /// formatting them into the adapter's 4096-byte local buffer is exactly how
+    /// <c>kbm status</c> came to be refused over Bluetooth. Guarded the same way
+    /// as the mapping pages — a non-progressing or total-shifting adapter fails
+    /// loudly rather than looping.
+    /// </remarks>
     public async Task<KbmProfiles> KbmProfilesAsync(CancellationToken ct = default)
     {
-        var profiles = await ExchangeAsync(ManagementCommands.KbmProfileList,
+        var profiles = new List<KbmProfileInfo>();
+        var pageNumber = 0;
+        int? expectedTotal = null;
+        var max = 0;
+        while (true)
+        {
+            var command = ManagementCommands.KbmProfilePage(pageNumber);
+            var page = await ExchangeAsync(command,
                                            ManagementProtocol.KbmProfileList, ct)
-            .ConfigureAwait(false);
+                .ConfigureAwait(false);
+            if (page.Page != pageNumber)
+            {
+                throw new ManagementPaginationException(
+                    "Adapter returned a different KB/M profile page");
+            }
+
+            expectedTotal ??= page.Total;
+            if (expectedTotal != page.Total ||
+                profiles.Count + page.Profiles.Count > page.Total)
+            {
+                throw new ManagementPaginationException(
+                    "Adapter changed the KB/M profile total during pagination");
+            }
+
+            max = page.Max;
+            profiles.AddRange(page.Profiles);
+            if (!page.More)
+            {
+                break;
+            }
+
+            if (page.Profiles.Count == 0 || ++pageNumber > MaxKbmMapPages)
+            {
+                throw new ManagementPaginationException(
+                    "Adapter returned a non-progressing KB/M profile list");
+            }
+        }
+
         var active = await ExchangeAsync(ManagementCommands.KbmActive,
                                          ManagementProtocol.KbmActive, ct)
             .ConfigureAwait(false);
-        // Max is the adapter's own capacity, echoed by the list reply; six here
-        // and read from the wire rather than hardcoded so a future firmware can
-        // change it without a client update.
-        return new KbmProfiles(profiles, active, Max: KbmProfileCapacity);
+        // Capacity comes from the adapter, so a future firmware can change it
+        // without a client update.
+        return new KbmProfiles(new ValueList<KbmProfileInfo>(profiles), active,
+                               Max: max);
     }
-
-    private const int KbmProfileCapacity = 6;
 
     /// <summary>
     /// APPLY. The only call that changes what the console is doing.

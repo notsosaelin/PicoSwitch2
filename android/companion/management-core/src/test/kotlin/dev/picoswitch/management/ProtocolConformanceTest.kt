@@ -163,6 +163,17 @@ class ProtocolConformanceTest {
         val status = ManagementProtocol.kbmStatus(statusVector.command, statusVector.reply)
         assertEquals(KbmMode.KeyboardMouse, status.mode)
         assertEquals(KbmMode.Automatic, status.modeOverride)
+        // The counters are their own reply and their own vector: together with the
+        // product state they exceed the 512-byte wireless slot. Distinct values per
+        // field are what catch a shifted argument list in the firmware formatter,
+        // which still emits valid JSON.
+        val countersVector = vector("kbmCounters")
+        val counters = ManagementProtocol.kbmCounters(countersVector.command, countersVector.reply)
+        assertEquals(10L, counters.keyboardReports)
+        assertEquals(4L, counters.rejectedNoPeerKey)
+        assertEquals(7L, counters.undecodedReports)
+        assertEquals(13L, counters.recenters)
+
         val mapVector = vector("kbmMap")
         val page = ManagementProtocol.kbmMapPage(mapVector.command, mapVector.reply)
         assertEquals(KbmDestination.LStickUp, page.bindings.first().destination)

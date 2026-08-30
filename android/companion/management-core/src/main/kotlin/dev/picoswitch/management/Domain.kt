@@ -406,6 +406,40 @@ enum class KbmProfile(val wire: String) {
     }
 }
 
+/**
+ * The KB/M ingress counters.
+ *
+ * A separate reply from [KbmStatus] because the two together outgrew the
+ * 512-byte wireless response slot, which made the adapter answer
+ * `response_too_large` and fail the whole page read. The client merges them back
+ * so nothing above the transport has to know.
+ */
+data class KbmCounters(
+    val keyboardReports: Long = 0,
+    val mouseReports: Long = 0,
+    val rejectedMode: Long = 0,
+    val rejectedDuplicate: Long = 0,
+    val rejectedNotOwner: Long = 0,
+    val rejectedNoPeerKey: Long = 0,
+    val rejectedUnclassified: Long = 0,
+    val rejectedNoRole: Long = 0,
+    val undecodedReports: Long = 0,
+    val rollover: Long = 0,
+    val roleLosses: Long = 0,
+    val mapGeneration: Long = 0,
+    val publishes: Long = 0,
+    val recenters: Long = 0,
+)
+
+/** One page of the profile library. */
+data class KbmProfilePage(
+    val profiles: List<KbmProfileInfo>,
+    val page: Int,
+    val total: Int,
+    val max: Int,
+    val more: Boolean,
+)
+
 /** Reserved profile identities. Custom profiles are numbered from 2. */
 object KbmProfileIds {
     const val NONE = 0
@@ -503,6 +537,14 @@ data class KbmStatus(
     val rejectedMode: Long = 0,
     val rejectedDuplicate: Long = 0,
     val rejectedNotOwner: Long = 0,
+
+    // Admission outcomes that used to increment nothing at all, plus reports
+    // that reached the keyboard driver and decoded as neither a keyboard nor a
+    // pointer report -- what a mis-parsed report descriptor looks like.
+    val rejectedNoPeerKey: Long = 0,
+    val rejectedUnclassified: Long = 0,
+    val rejectedNoRole: Long = 0,
+    val undecodedReports: Long = 0,
     val rollover: Long = 0,
     val roleLosses: Long = 0,
     val mapGeneration: Long = 0,

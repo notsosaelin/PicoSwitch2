@@ -3,6 +3,22 @@
 #include <stdio.h>
 #include <string.h>
 
+// WHY THIS IS SPLIT IN TWO.
+//
+// Every management reply must fit CONFIG_WIRELESS_RESPONSE_CAPACITY (512 bytes)
+// or the bridge refuses it and the client gets `response_too_large` -- which
+// fails the whole Keyboard & Mouse read, not just one field.
+//
+// The combined reply had grown to 729 bytes at worst case: nineteen unsigned
+// counters, each up to ten digits, plus a name. It fit in practice only while
+// the counters were small, so it passed every test and then failed on an
+// adapter that had actually been used. Bounding it by hoping counters stay
+// short is not a bound.
+//
+// So the product state -- what the page needs to render -- is one reply, and the
+// diagnostic counters are another. Both are now bounded by construction, and
+// ns2_kbm_status_max_bytes() is asserted against the wire limit in the tests.
+//
 // Keep every field on its own line, paired with its argument, so an added field
 // is a one-line change in two adjacent places rather than an edit that can slip
 // a whole argument list out of alignment.
@@ -26,26 +42,11 @@ int ns2_kbm_status_format(const ns2_kbm_runtime_status_t *status, char *out,
         "\"mouseConn\":%u,"
         "\"group\":%lu,"
         "\"source\":%lu,"
-        "\"keyboardReports\":%lu,"
-        "\"mouseReports\":%lu,"
-        "\"rejectedMode\":%lu,"
-        "\"rejectedDuplicate\":%lu,"
-        "\"rejectedNotOwner\":%lu,"
-        "\"rejectedNoPeerKey\":%lu,"
-        "\"rejectedUnclassified\":%lu,"
-        "\"rejectedNoRole\":%lu,"
-        "\"undecodedReports\":%lu,"
         "\"activeProfile\":%u,"
         "\"activeProfileName\":\"%.19s\","
         "\"activeRevision\":%u,"
         "\"activeFingerprint\":%lu,"
-        "\"activeMatchesSaved\":%s,"
-        "\"rollover\":%lu,"
-        "\"roleLosses\":%lu,"
-        "\"mapGeneration\":%lu,"
-        "\"neutralizations\":%lu,"
-        "\"publishes\":%lu,"
-        "\"recenters\":%lu"
+        "\"activeMatchesSaved\":%s"
         "}",
         ns2_kbm_mode_name((ns2_kbm_mode_t)status->mode),
         ns2_kbm_mode_name((ns2_kbm_mode_t)status->mode_override),
@@ -57,6 +58,42 @@ int ns2_kbm_status_format(const ns2_kbm_runtime_status_t *status, char *out,
         (unsigned)status->mouse_conn,
         (unsigned long)status->group_id,
         (unsigned long)status->source_id,
+        (unsigned)status->active_profile,
+        status->active_profile_name,
+        (unsigned)status->active_revision,
+        (unsigned long)status->active_fingerprint,
+        status->active_matches_source ? "true" : "false");
+}
+
+// The ingress counters, which a page reads on demand rather than on every
+// refresh. Split out of `kbm status` so neither reply can outgrow the 512-byte
+// wire slot; see the note above.
+int ns2_kbm_counters_format(const ns2_kbm_runtime_status_t *status, char *out,
+                            size_t len) {
+    if (!out || len == 0) return 0;
+    if (!status) {
+        out[0] = '\0';
+        return 0;
+    }
+    return snprintf(
+        out, len,
+        "{"
+        "\"keyboardReports\":%lu,"
+        "\"mouseReports\":%lu,"
+        "\"rejectedMode\":%lu,"
+        "\"rejectedDuplicate\":%lu,"
+        "\"rejectedNotOwner\":%lu,"
+        "\"rejectedNoPeerKey\":%lu,"
+        "\"rejectedUnclassified\":%lu,"
+        "\"rejectedNoRole\":%lu,"
+        "\"undecodedReports\":%lu,"
+        "\"rollover\":%lu,"
+        "\"roleLosses\":%lu,"
+        "\"mapGeneration\":%lu,"
+        "\"neutralizations\":%lu,"
+        "\"publishes\":%lu,"
+        "\"recenters\":%lu"
+        "}",
         (unsigned long)status->keyboard_reports,
         (unsigned long)status->mouse_reports,
         (unsigned long)status->rejected_mode,
@@ -66,11 +103,6 @@ int ns2_kbm_status_format(const ns2_kbm_runtime_status_t *status, char *out,
         (unsigned long)status->rejected_unclassified,
         (unsigned long)status->rejected_no_role,
         (unsigned long)status->undecoded_reports,
-        (unsigned)status->active_profile,
-        status->active_profile_name,
-        (unsigned)status->active_revision,
-        (unsigned long)status->active_fingerprint,
-        status->active_matches_source ? "true" : "false",
         (unsigned long)status->rollover_reports,
         (unsigned long)status->role_losses,
         (unsigned long)status->config_generation,

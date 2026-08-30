@@ -32,6 +32,7 @@ class ManagementWorkflowTest {
         val channel = ScriptedChannel(
             "kbm mode keyboard" to """{"ok":true,"mode":"keyboard"}""",
             "kbm status" to kbmStatus("keyboard", "keyboard", "kb"),
+            "kbm counters" to kbmCounters(),
         )
         val status = ManagementClient(channel).setKbmMode(KbmMode.Keyboard)
         assertEquals(KbmMode.Keyboard, status.mode)
@@ -88,8 +89,14 @@ class ManagementWorkflowTest {
         channel.assertDrained()
     }
 
+    // Product state and counters are two replies: one reply carrying both is 729
+    // bytes worst case against the 512-byte wireless slot, and an oversized reply
+    // is refused whole with `response_too_large` rather than truncated.
     private fun kbmStatus(mode: String, override: String, profile: String) =
-        """{"mode":"$mode","override":"$override","profile":"$profile","keyboard":true,"mouse":false,"nativeMouse":false,"keyboardConn":1,"mouseConn":0,"keyboardReports":0,"mouseReports":0,"rejectedMode":0,"rejectedDuplicate":0,"rejectedNotOwner":0,"rollover":0,"roleLosses":0,"mapGeneration":0,"publishes":0,"recenters":0}"""
+        """{"mode":"$mode","override":"$override","profile":"$profile","keyboard":true,"mouse":false,"nativeMouse":false,"keyboardConn":1,"mouseConn":0}"""
+
+    private fun kbmCounters() =
+        """{"keyboardReports":0,"mouseReports":0,"rejectedMode":0,"rejectedDuplicate":0,"rejectedNotOwner":0,"rejectedNoPeerKey":0,"rejectedUnclassified":0,"rejectedNoRole":0,"undecodedReports":0,"rollover":0,"roleLosses":0,"mapGeneration":0,"neutralizations":0,"publishes":0,"recenters":0}"""
 
     private fun amiiboStatus(loaded: Boolean) =
         """{"loaded":$loaded,"dirty":false,"presented":false,"v3loaded":false,"persisted":false,"persistPending":false,"size":0,"signature":false,"hasSave2":false,"usingSave2":false,"generation":0,"payloadCrc":"00000000","uid":"","figureId":"","upload":{"active":false,"received":0,"size":0}}"""

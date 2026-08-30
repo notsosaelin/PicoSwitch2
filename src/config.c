@@ -1012,23 +1012,32 @@ static void cmd_kbm_map(const ns2_kbm_content_t *content,
                      "\"pageSize\":%u,\"total\":%u,\"bindings\":[",
                      ns2_kbm_layout_name(layout), profile_id, page,
                      (unsigned)KBM_MAP_PAGE_SIZE, (unsigned)total);
+    // Budgeted against the WIRE slot, not against `out`.
+    //
+    // `out` is 4096 because the UART console can take that; the wireless bridge
+    // cannot, and formatting to the local buffer is exactly how `kbm status`
+    // came to be refused over Bluetooth with `response_too_large`. `more` is
+    // computed from what was actually emitted, so a short page still paginates
+    // correctly instead of dropping rows.
+    const int budget = (int)NS2_KBM_REPLY_MAX_BYTES;
+    const int suffix_reserve = 24;
+    uint16_t emitted = 0;
     for (uint16_t i = first;
-         i < total && i < first + KBM_MAP_PAGE_SIZE && j < (int)sizeof(out) - 64;
-         ++i) {
+         i < total && emitted < KBM_MAP_PAGE_SIZE; ++i, ++emitted) {
         char source[12];
         ns2_kbm_source_format(effective[i].source, source, sizeof(source));
-        j += snprintf(out + j, sizeof(out) - (size_t)j,
-                      "%s{\"src\":\"%s\",\"dst\":\"%s\",\"custom\":%s}",
-                      i > first ? "," : "", source,
-                      ns2_kbm_destination_name(effective[i].destination),
-                      effective[i].overridden ? "true" : "false");
-        if (j < 0 || (size_t)j >= sizeof(out)) {
-            j = (int)sizeof(out) - 1;
-            break;
-        }
+        int room = budget - suffix_reserve - j;
+        if (room <= 0) break;
+        int written = snprintf(out + j, (size_t)room,
+                               "%s{\"src\":\"%s\",\"dst\":\"%s\",\"custom\":%s}",
+                               emitted ? "," : "", source,
+                               ns2_kbm_destination_name(effective[i].destination),
+                               effective[i].overridden ? "true" : "false");
+        if (written < 0 || written >= room) break;
+        j += written;
     }
     snprintf(out + j, sizeof(out) - (size_t)j, "],\"more\":%s}",
-             (first + KBM_MAP_PAGE_SIZE) < total ? "true" : "false");
+             (uint16_t)(first + emitted) < total ? "true" : "false");
     reply(out);
 }
 
@@ -1263,22 +1272,41 @@ static void cmd_kbm_draft(const char *arg) {
     reply("{\"error\":\"usage: kbm draft begin|bind|mouse|commit|abort\"}");
 }
 
-static void cmd_kbm_profiles(void) {
+// Three profiles per page.
+//
+// A row is at most ~95 bytes (19-character name, ten-digit fingerprint) and the
+// wire slot is 512, so three rows plus the wrapper always fit with room to
+// spare. Deliberately budgeted against the WIRE limit rather than the 4096-byte
+// `out` buffer: `out` is what the UART console can take, and formatting to that
+// is exactly how `kbm status` came to be refused over Bluetooth.
+#define KBM_PROFILE_PAGE_SIZE 3u
+
+static void cmd_kbm_profiles(unsigned page) {
     ns2_kbm_config_t snapshot;
     ns2_kbm_runtime_config_snapshot(&snapshot);
-    // Bounded at six, but formatted defensively anyway: the peers inventory bug
-    // was a budgeting mistake, not a size one, and reserving the suffix before
-    // appending each row is what prevents the same class of failure here.
-    const int suffix_reserve = 24;
+
+    // Reserve the suffix BEFORE appending each row, against the wire budget.
+    // The peers inventory bug was a budgeting mistake, not a size one: it tested
+    // the reserve against the length left by the PREVIOUS row and then appended
+    // against full capacity, so the reserve reserved nothing.
+    const int budget = (int)NS2_KBM_REPLY_MAX_BYTES;
+    const int suffix_reserve = 40;
+
+    uint8_t live[NS2_KBM_MAX_PROFILES];
+    uint8_t count = 0;
+    for (uint8_t i = 0; i < NS2_KBM_MAX_PROFILES; ++i)
+        if (snapshot.profiles[i].used) live[count++] = i;
+
+    uint8_t first_row = (uint8_t)(page * KBM_PROFILE_PAGE_SIZE);
     int j = snprintf(out, sizeof(out), "{\"profiles\":[");
     bool first = true;
-    bool truncated = false;
-    for (uint8_t i = 0; i < NS2_KBM_MAX_PROFILES; ++i) {
-        const ns2_kbm_profile_slot_t *slot = &snapshot.profiles[i];
-        if (!slot->used) continue;
+    uint8_t emitted = 0;
+    for (uint8_t n = first_row;
+         n < count && emitted < KBM_PROFILE_PAGE_SIZE; ++n, ++emitted) {
+        const ns2_kbm_profile_slot_t *slot = &snapshot.profiles[live[n]];
         ns2_kbm_layout_t layout = (ns2_kbm_layout_t)slot->layout;
-        int room = (int)sizeof(out) - suffix_reserve - j;
-        if (room <= 0) { truncated = true; break; }
+        int room = budget - suffix_reserve - j;
+        if (room <= 0) break;
         int written = snprintf(
             out + j, (size_t)room,
             "%s{\"id\":%u,\"layout\":\"%s\",\"name\":\"%.19s\",\"revision\":%u,"
@@ -1286,13 +1314,15 @@ static void cmd_kbm_profiles(void) {
             first ? "" : ",", slot->profile_id, ns2_kbm_layout_name(layout),
             slot->name, slot->revision, slot->content.overrides.count,
             (unsigned long)ns2_kbm_content_fingerprint(&slot->content, layout));
-        if (written < 0 || written >= room) { truncated = true; break; }
+        if (written < 0 || written >= room) break;
         j += written;
         first = false;
     }
+    bool more = (uint16_t)(first_row + emitted) < count;
     snprintf(out + j, sizeof(out) - (size_t)j,
-             "],\"max\":%u,\"more\":%s}", (unsigned)NS2_KBM_MAX_PROFILES,
-             truncated ? "true" : "false");
+             "],\"page\":%u,\"total\":%u,\"max\":%u,\"more\":%s}", page,
+             (unsigned)count, (unsigned)NS2_KBM_MAX_PROFILES,
+             more ? "true" : "false");
     reply(out);
 }
 
@@ -1470,7 +1500,25 @@ static void cmd_kbm(char *arg) {
     }
 
     if (strcmp(arg, "profiles") == 0) {
-        cmd_kbm_profiles();
+        cmd_kbm_profiles(0);
+        return;
+    }
+
+    if (strncmp(arg, "profiles ", 9) == 0) {
+        unsigned page = 0;
+        if (sscanf(arg + 9, "%u", &page) != 1 || page > 32u) {
+            reply("{\"error\":\"usage: kbm profiles [page]\"}");
+            return;
+        }
+        cmd_kbm_profiles(page);
+        return;
+    }
+
+    if (strcmp(arg, "counters") == 0) {
+        ns2_kbm_runtime_status_t status;
+        ns2_kbm_runtime_status(&status);
+        (void)ns2_kbm_counters_format(&status, out, sizeof(out));
+        reply(out);
         return;
     }
 

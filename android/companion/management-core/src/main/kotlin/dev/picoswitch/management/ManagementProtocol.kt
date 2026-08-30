@@ -191,11 +191,32 @@ object ManagementProtocol {
         )
     }
 
-    fun kbmProfileList(command: String, response: String): List<KbmProfileInfo> =
+    /** The ingress counters, merged back into KbmStatus by the client. */
+    fun kbmCounters(command: String, response: String): KbmCounters =
+        decode(command, response) { value ->
+            KbmCounters(
+                keyboardReports = value.long("keyboardReports"),
+                mouseReports = value.long("mouseReports"),
+                rejectedMode = value.long("rejectedMode"),
+                rejectedDuplicate = value.long("rejectedDuplicate"),
+                rejectedNotOwner = value.long("rejectedNotOwner"),
+                rejectedNoPeerKey = value.long("rejectedNoPeerKey"),
+                rejectedUnclassified = value.long("rejectedUnclassified"),
+                rejectedNoRole = value.long("rejectedNoRole"),
+                undecodedReports = value.long("undecodedReports"),
+                rollover = value.long("rollover"),
+                roleLosses = value.long("roleLosses"),
+                mapGeneration = value.long("mapGeneration"),
+                publishes = value.long("publishes"),
+                recenters = value.long("recenters"),
+            )
+        }
+
+    fun kbmProfilePage(command: String, response: String): KbmProfilePage =
         decode(command, response) { value ->
             val entries = value["profiles"] as? JsonArray
             requireShape(entries != null && value.containsKey("max"), command)
-            entries!!.mapNotNull { element ->
+            val rows = entries!!.mapNotNull { element ->
                 val item = element.jsonObject
                 val layout = KbmProfile.fromWire(item.string("layout"))
                 val name = item.optionalString("name")
@@ -217,6 +238,13 @@ object ManagementProtocol {
                     )
                 }
             }
+            KbmProfilePage(
+                profiles = rows,
+                page = value.int("page"),
+                total = value.int("total"),
+                max = value.int("max"),
+                more = value.bool("more"),
+            )
         }
 
     fun kbmActive(command: String, response: String): List<KbmActiveMapping> =
@@ -715,7 +743,22 @@ object ManagementCommands {
 
     // --- profile library ------------------------------------------------------
 
+    /**
+     * The ingress counters, split out of `kbm status` because the two together
+     * outgrew the 512-byte wireless response slot.
+     */
+    const val KBM_COUNTERS = "kbm counters"
+
     const val KBM_PROFILES = "kbm profiles"
+
+    /**
+     * One page of the profile library. Paginated against the WIRE limit, not a
+     * local buffer: six rows do not fit one 512-byte reply.
+     */
+    fun kbmProfilePage(page: Int): String {
+        require(page in 0..32)
+        return "kbm profiles $page"
+    }
 
     /** The realized mapping of each layout, and its divergence state. */
     const val KBM_ACTIVE = "kbm active"

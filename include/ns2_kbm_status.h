@@ -17,11 +17,25 @@
 
 #include "ns2_kbm_runtime.h"
 
+// Every management reply must fit the wireless bridge's response slot
+// (CONFIG_WIRELESS_RESPONSE_CAPACITY, 512 bytes) or the bridge refuses it and
+// the client sees `response_too_large` -- which fails a whole page read, not one
+// field. Pinned here so a formatter change is checked against the WIRE limit
+// rather than against whatever local buffer a test happened to use.
+#define NS2_KBM_REPLY_MAX_BYTES 512u
+
 // Render `status` as a single JSON object into `out`. Returns the number of
 // characters that WOULD have been written (snprintf semantics), so a caller can
 // detect truncation. `out` is always NUL-terminated when `len > 0`.
+//
+// Product state only. The ingress counters are a separate reply because the two
+// together outgrew the wire slot; see ns2_kbm_status.c.
 int ns2_kbm_status_format(const ns2_kbm_runtime_status_t *status, char *out,
                           size_t len);
+
+// The ingress counters, read on demand rather than on every refresh.
+int ns2_kbm_counters_format(const ns2_kbm_runtime_status_t *status, char *out,
+                            size_t len);
 
 // ---------------------------------------------------------------------------
 // Mouse-translation settings command
