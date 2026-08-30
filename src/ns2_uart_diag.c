@@ -2160,6 +2160,31 @@ static void handle_command(void) {
         snprintf(trace_format_response + j,
                  sizeof(trace_format_response) - (size_t)j, "]}");
         queue_text(trace_format_response);
+    } else if (strncmp(rx_line, "cfg ", 4) == 0) {
+        // Run one MANAGEMENT command and report its reply and true byte length.
+        //
+        // This console has its own small dispatcher; the full management surface
+        // lives in src/config.c behind BLE or the CDC Config personality. That
+        // gap is why an oversized `kbm status` and a mapping-pagination defect
+        // both had to be diagnosed from source and confirmed by a user with a
+        // companion app open, rather than measured here.
+        //
+        // `bytes` is the length the WIRELESS bridge would see, so an over-limit
+        // reply is visible directly:
+        //
+        //   cfg kbm map kb 0   ->  {"bytes":488,"limit":511,"reply":{...}}
+        //
+        // Diagnostic only, and deliberately off the BLE allowlist: it would let a
+        // remote caller re-enter the command parser.
+        size_t length = config_execute_captured(
+            rx_line + 4, trace_format_response, sizeof(trace_format_response));
+        static char framed[2048];
+        snprintf(framed, sizeof(framed),
+                 "{\"bytes\":%u,\"limit\":%u,\"fits\":%s,\"reply\":%s}",
+                 (unsigned)length, (unsigned)NS2_KBM_REPLY_MAX_BYTES,
+                 length <= NS2_KBM_REPLY_MAX_BYTES ? "true" : "false",
+                 trace_format_response[0] ? trace_format_response : "null");
+        queue_text(framed);
     } else if (strcmp(rx_line, "kbm") == 0 ||
                strcmp(rx_line, "kbm status") == 0) {
         // One bounded snapshot answering the cross-layer questions for a KB/M
@@ -2581,6 +2606,7 @@ static void handle_command(void) {
                    "\"button y\","
                    "\"motionauto\",\"motionusb\",\"ds5motion status|on|off|frame body|world|carrier switch2|dscale|legacy|map SX SY SZ|probe rate AXIS VALUE|probe off|pdu40 on|off|status|accel live|half|zero\",\"input status\",\"input sources\",\"input active ID|none\",\"audio status|clear|headset\",\"ds5codec status|lock on|lock off\","
                    "\"pro2audio on|off|status|live on|live off|complexity 0-10|analysis on|analysis off|replay|replay stop\","
+                   "\"cfg COMMAND (run any management command, report reply size)\","
                    "\"kbm status\",\"kbm mode auto|controller|keyboard|kbmouse\","
                    "\"kbm mouse\",\"kbm mouse sensitivity|sensitivityx|"
                    "sensitivityy|recenter|invertx|inverty|antideadzone "
