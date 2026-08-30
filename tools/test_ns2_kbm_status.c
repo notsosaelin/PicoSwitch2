@@ -42,6 +42,8 @@ static void test_exact_output(void) {
     status.rejected_unclassified = 22u;
     status.rejected_no_role = 23u;
     status.undecoded_reports = 24u;
+    status.active_profile = 2u;
+    memcpy(status.active_profile_name, "Splatoon", 9u);
     status.rollover_reports = 3u;
     status.role_losses = 4u;
     status.config_generation = 5u;
@@ -73,6 +75,8 @@ static void test_exact_output(void) {
         "\"rejectedUnclassified\":22,"
         "\"rejectedNoRole\":23,"
         "\"undecodedReports\":24,"
+        "\"activeProfile\":2,"
+        "\"activeProfileName\":\"Splatoon\","
         "\"rollover\":3,"
         "\"roleLosses\":4,"
         "\"mapGeneration\":5,"
@@ -112,6 +116,8 @@ static void test_every_field_is_distinct(void) {
     status.rejected_unclassified = 27u;
     status.rejected_no_role = 28u;
     status.undecoded_reports = 29u;
+    status.active_profile = 30u;
+    memcpy(status.active_profile_name, "Zelda", 6u);
     status.rollover_reports = 20u;
     status.role_losses = 21u;
     status.config_generation = 22u;
@@ -134,6 +140,7 @@ static void test_every_field_is_distinct(void) {
         "\"publishes\":24",        "\"recenters\":25",
         "\"rejectedNoPeerKey\":26", "\"rejectedUnclassified\":27",
         "\"rejectedNoRole\":28",    "\"undecodedReports\":29",
+        "\"activeProfile\":30",     "\"activeProfileName\":\"Zelda\"",
     };
     for (unsigned i = 0; i < sizeof(pairs) / sizeof(pairs[0]); ++i) {
         if (!strstr(out, pairs[i])) {

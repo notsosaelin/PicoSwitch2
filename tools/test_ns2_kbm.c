@@ -161,7 +161,7 @@ static void test_canonical_defaults(void) {
     ns2_kbm_config_defaults(&config);
     // Auto by default: an ordinary HID device must work without a mode command.
     assert(config.mode == NS2_KBM_MODE_AUTO);
-    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].count == 0);
+    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count == 0);
     assert(config.mouse.sensitivity_x == NS2_KBM_MOUSE_SENS_DEFAULT);
 
     // Keyboard profile: WASD walk, IJKL aim, the documented face layout.
@@ -330,10 +330,10 @@ static void test_overrides_and_profile_independence(void) {
            NS2_DST_B);
 
     // Requesting exactly the default stores no override.
-    uint8_t before = config.profiles[NS2_KBM_LAYOUT_KEYBOARD].count;
+    uint8_t before = config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count;
     assert(ns2_kbm_set_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_E),
                                NS2_DST_X));
-    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].count == before);
+    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count == before);
 
     // A new binding for a source with no canonical default shows up in the
     // effective listing, so a UI never has to guess it exists.
@@ -387,7 +387,7 @@ static void test_overrides_and_profile_independence(void) {
             break;
     }
     assert(added == NS2_KBM_MAX_OVERRIDES);
-    assert(full.profiles[NS2_KBM_LAYOUT_KEYBOARD].count == NS2_KBM_MAX_OVERRIDES);
+    assert(full.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count == NS2_KBM_MAX_OVERRIDES);
     puts("  overrides and profile independence");
 }
 
@@ -1348,22 +1348,22 @@ static void test_config_validation(void) {
     // An impossible override count discards the whole table rather than
     // reinterpreting whatever bytes survive.
     ns2_kbm_config_defaults(&config);
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].count = 200u;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count = 200u;
     assert(!ns2_kbm_config_sanitize(&config));
-    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].count == 0);
+    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count == 0);
 
     // Individual bad entries are dropped, good ones survive.
     ns2_kbm_config_defaults(&config);
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].count = 3;
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[0].source = key(KEY_F);
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[0].destination = NS2_DST_X;
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[1].source.kind = 99u;
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[1].source.code = 5u;
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[1].destination = NS2_DST_A;
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[2].source = key(KEY_E);
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[2].destination = 250u;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count = 3;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[0].source = key(KEY_F);
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[0].destination = NS2_DST_X;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[1].source.kind = 99u;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[1].source.code = 5u;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[1].destination = NS2_DST_A;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[2].source = key(KEY_E);
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[2].destination = 250u;
     assert(!ns2_kbm_config_sanitize(&config));
-    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].count == 1);
+    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count == 1);
     assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
            NS2_DST_X);
     assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_E)) ==
@@ -1371,13 +1371,13 @@ static void test_config_validation(void) {
 
     // Duplicate sources collapse to the first.
     ns2_kbm_config_defaults(&config);
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].count = 2;
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[0].source = key(KEY_F);
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[0].destination = NS2_DST_X;
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[1].source = key(KEY_F);
-    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].entries[1].destination = NS2_DST_Y;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count = 2;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[0].source = key(KEY_F);
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[0].destination = NS2_DST_X;
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[1].source = key(KEY_F);
+    config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.entries[1].destination = NS2_DST_Y;
     assert(!ns2_kbm_config_sanitize(&config));
-    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].count == 1);
+    assert(config.profiles[NS2_KBM_LAYOUT_KEYBOARD].overrides.count == 1);
     assert(ns2_kbm_binding(&config, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
            NS2_DST_X);
 
@@ -1399,11 +1399,11 @@ static void test_config_validation(void) {
     (void)ns2_kbm_config_sanitize(&config);
     assert(config.mode < NS2_KBM_MODE_COUNT);
     for (unsigned p = 0; p < NS2_KBM_LAYOUT_COUNT; ++p) {
-        assert(config.profiles[p].count <= NS2_KBM_MAX_OVERRIDES);
-        for (uint8_t i = 0; i < config.profiles[p].count; ++i) {
-            assert(ns2_kbm_source_valid(config.profiles[p].entries[i].source));
+        assert(config.profiles[p].overrides.count <= NS2_KBM_MAX_OVERRIDES);
+        for (uint8_t i = 0; i < config.profiles[p].overrides.count; ++i) {
+            assert(ns2_kbm_source_valid(config.profiles[p].overrides.entries[i].source));
             assert(ns2_kbm_destination_valid(
-                config.profiles[p].entries[i].destination));
+                config.profiles[p].overrides.entries[i].destination));
         }
     }
     ns2_kbm_state_t state;

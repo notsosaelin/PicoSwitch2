@@ -35,6 +35,8 @@ int ns2_kbm_status_format(const ns2_kbm_runtime_status_t *status, char *out,
         "\"rejectedUnclassified\":%lu,"
         "\"rejectedNoRole\":%lu,"
         "\"undecodedReports\":%lu,"
+        "\"activeProfile\":%u,"
+        "\"activeProfileName\":\"%.15s\","
         "\"rollover\":%lu,"
         "\"roleLosses\":%lu,"
         "\"mapGeneration\":%lu,"
@@ -61,6 +63,8 @@ int ns2_kbm_status_format(const ns2_kbm_runtime_status_t *status, char *out,
         (unsigned long)status->rejected_unclassified,
         (unsigned long)status->rejected_no_role,
         (unsigned long)status->undecoded_reports,
+        (unsigned)status->active_profile,
+        status->active_profile_name,
         (unsigned long)status->rollover_reports,
         (unsigned long)status->role_losses,
         (unsigned long)status->config_generation,

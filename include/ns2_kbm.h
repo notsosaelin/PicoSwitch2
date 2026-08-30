@@ -323,19 +323,81 @@ typedef struct {
 // ---------------------------------------------------------------------------
 // One POD blob. config.c stores it verbatim and never interprets its contents;
 // ns2_kbm owns validation.
+// How many named profiles the adapter holds, shared across both layouts.
+//
+// Six is Default plus two spare per layout. The cost is 1296 bytes, which is
+// what takes the persisted record past one 1 KiB program and to two; the
+// settings sector is erased whole on every save either way, so the marginal
+// cost is four extra page programs.
+#define NS2_KBM_MAX_PROFILES 6u
+#define NS2_KBM_PROFILE_NAME_MAX 16u  // bytes including the NUL
+#define NS2_KBM_PROFILE_NONE 0xFFu
+
+// One named mapping the user can select.
+//
+// A profile belongs to exactly ONE layout and may never be applied to another:
+// the bindable source domain differs (mouse buttons exist only in Keyboard +
+// Mouse) and the two canonical default maps are deliberately not supersets of
+// each other.
+typedef struct {
+    uint8_t used;
+    uint8_t layout;  // ns2_kbm_layout_t
+    char name[NS2_KBM_PROFILE_NAME_MAX];
+    uint8_t reserved[2];  // keeps the override table 4-byte aligned
+    ns2_kbm_profile_overrides_t overrides;
+} ns2_kbm_profile_slot_t;
+
 typedef struct {
     uint8_t mode;  // ns2_kbm_mode_t
-    uint8_t reserved[3];
-    ns2_kbm_profile_overrides_t profiles[NS2_KBM_LAYOUT_COUNT];
+    // Which profile each layout is currently resolving against. Persisted, so
+    // a selection survives a reboot and a disconnect.
+    //
+    // This is the field whose absence produced the hardware failure: with the
+    // mapping derived and unselectable, a user could bind into one mapping
+    // while the adapter resolved the other, and every operation reported
+    // success. There is always exactly one active profile per layout.
+    uint8_t active[NS2_KBM_LAYOUT_COUNT];
+    uint8_t reserved;
+    ns2_kbm_profile_slot_t profiles[NS2_KBM_MAX_PROFILES];
     ns2_kbm_mouse_config_t mouse;
 } ns2_kbm_config_t;
+
+// The profile index a layout currently resolves against. Always valid: the
+// sanitizer guarantees slot 0 and 1 exist as that layout's Default.
+uint8_t ns2_kbm_active_profile(const ns2_kbm_config_t *config,
+                               ns2_kbm_layout_t layout);
+
+// Select which profile a layout resolves against. False when the index names no
+// profile, or one belonging to a different layout.
+bool ns2_kbm_set_active_profile(ns2_kbm_config_t *config,
+                                ns2_kbm_layout_t layout, uint8_t index);
+
+// Create a profile for `layout`. Returns its index, or NS2_KBM_PROFILE_NONE
+// when every slot is in use. A new profile starts with NO overrides, so it is
+// that layout's canonical default until the user changes something.
+uint8_t ns2_kbm_profile_create(ns2_kbm_config_t *config,
+                               ns2_kbm_layout_t layout, const char *name);
+
+// Rename. False for an unused slot, a reserved Default slot, or a name that
+// sanitizes to nothing.
+bool ns2_kbm_profile_rename(ns2_kbm_config_t *config, uint8_t index,
+                            const char *name);
+
+// Delete. False for an unused slot or a reserved Default slot. Deleting the
+// active profile activates that layout's Default.
+bool ns2_kbm_profile_delete(ns2_kbm_config_t *config, uint8_t index);
+
+// Is this slot one of the two reserved Default profiles? They may be edited and
+// reset but never renamed or deleted, which is what guarantees every layout
+// always has an active profile to fall back to.
+bool ns2_kbm_profile_is_default(uint8_t index);
 
 // Reset to canonical defaults (Controller mode, no overrides, default mouse).
 void ns2_kbm_config_defaults(ns2_kbm_config_t *config);
 
-// Reset exactly one profile's overrides. Every other setting is untouched.
-void ns2_kbm_config_reset_profile(ns2_kbm_config_t *config,
-                                  ns2_kbm_layout_t profile);
+// Reset exactly one profile's overrides, restoring its layout's canonical
+// defaults. Every other setting is untouched.
+void ns2_kbm_config_reset_profile(ns2_kbm_config_t *config, uint8_t index);
 
 // Fail-closed validation of persisted or management-supplied configuration.
 // Returns true when `config` was already entirely usable. Returns false when
@@ -347,8 +409,7 @@ bool ns2_kbm_config_sanitize(ns2_kbm_config_t *config);
 
 // Effective binding for one source in one profile: the override if present,
 // otherwise the canonical default.
-uint8_t ns2_kbm_binding(const ns2_kbm_config_t *config,
-                        ns2_kbm_layout_t profile,
+uint8_t ns2_kbm_binding(const ns2_kbm_config_t *config, uint8_t profile,
                         ns2_kbm_source_t source);
 
 // Canonical default binding, ignoring user overrides.
@@ -359,9 +420,9 @@ uint8_t ns2_kbm_default_binding(ns2_kbm_layout_t profile,
 //   destination == NS2_DST_NONE  -> explicit unassign (stored as an override)
 //   ns2_kbm_clear_binding()      -> drop the override, restoring the default
 // Returns false when the identifiers are invalid or the override table is full.
-bool ns2_kbm_set_binding(ns2_kbm_config_t *config, ns2_kbm_layout_t profile,
+bool ns2_kbm_set_binding(ns2_kbm_config_t *config, uint8_t profile,
                          ns2_kbm_source_t source, uint8_t destination);
-bool ns2_kbm_clear_binding(ns2_kbm_config_t *config, ns2_kbm_layout_t profile,
+bool ns2_kbm_clear_binding(ns2_kbm_config_t *config, uint8_t profile,
                            ns2_kbm_source_t source);
 
 // Bounded enumeration of every source that currently has a non-NONE effective
@@ -374,7 +435,7 @@ typedef struct {
     uint8_t overridden;  // 1 when a user override supplied this destination
 } ns2_kbm_effective_t;
 uint16_t ns2_kbm_effective_bindings(const ns2_kbm_config_t *config,
-                                    ns2_kbm_layout_t profile,
+                                    uint8_t profile,
                                     ns2_kbm_effective_t *out,
                                     uint16_t capacity);
 

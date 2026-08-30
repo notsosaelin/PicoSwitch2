@@ -68,7 +68,16 @@ typedef config_record_t pico_config_t;
 // The record no longer fits one flash page. The settings sector is 4 KiB and is
 // erased whole on every save, so widening the programmed region costs nothing
 // but a slightly longer program; keep it a whole number of pages.
-#define CONFIG_RECORD_BYTES (4u * FLASH_PAGE_SIZE)
+//
+// Widened to 8 pages for the KB/M profile table (schema 14). Verified against
+// the persistence map in virtual_amiibo_store.c before doing so: this sector
+// (SIZE-4S) is ours alone, its neighbours are BTstack's TLV bank A above and
+// the amiibo journal below, and the erase already covers all 4096 bytes
+// whatever this value is -- so the window in which a power loss costs the
+// settings is unchanged. What does grow is the number of pages a torn program
+// can leave half-written, and the record carries no CRC; ns2_kbm_config_sanitize()
+// is what fails that closed.
+#define CONFIG_RECORD_BYTES (8u * FLASH_PAGE_SIZE)
 
 // Every UF2 contains this pending marker in its own dedicated flash page.
 // First boot consumes it with a 1->0 page program after erasing all six
@@ -986,17 +995,23 @@ static void cmd_kbm_status(void) {
     reply(out);
 }
 
-static void cmd_kbm_map(ns2_kbm_layout_t profile, unsigned page) {
+static void cmd_kbm_map(uint8_t profile, unsigned page) {
     ns2_kbm_config_t config;
     ns2_kbm_runtime_config_get(&config);
     static ns2_kbm_effective_t effective[NS2_KBM_MAX_EFFECTIVE];
     uint16_t total = ns2_kbm_effective_bindings(&config, profile, effective,
                                                 NS2_KBM_MAX_EFFECTIVE);
     uint16_t first = (uint16_t)(page * KBM_MAP_PAGE_SIZE);
+    // `profile` stays the LAYOUT name so every existing client keeps parsing
+    // this reply unchanged; `profileId` is the new, unambiguous identity.
+    ns2_kbm_layout_t layout =
+        profile < NS2_KBM_MAX_PROFILES && config.profiles[profile].used
+            ? (ns2_kbm_layout_t)config.profiles[profile].layout
+            : NS2_KBM_LAYOUT_KEYBOARD;
     int j = snprintf(out, sizeof(out),
-                     "{\"profile\":\"%s\",\"page\":%u,\"pageSize\":%u,"
-                     "\"total\":%u,\"bindings\":[",
-                     ns2_kbm_layout_name(profile), page,
+                     "{\"profile\":\"%s\",\"profileId\":%u,\"page\":%u,"
+                     "\"pageSize\":%u,\"total\":%u,\"bindings\":[",
+                     ns2_kbm_layout_name(layout), profile, page,
                      (unsigned)KBM_MAP_PAGE_SIZE, (unsigned)total);
     for (uint16_t i = first;
          i < total && i < first + KBM_MAP_PAGE_SIZE && j < (int)sizeof(out) - 64;
@@ -1036,6 +1051,145 @@ static bool kbm_mouse_apply(const char *args) {
     return ns2_kbm_runtime_set_mouse(&mouse);
 }
 
+// Resolve a mapping target: a layout name means THAT LAYOUT'S ACTIVE PROFILE,
+// and a decimal index means that profile directly.
+//
+// Keeping `kb` and `kbm` working is not politeness to old clients -- it is what
+// makes the profile system invisible to anyone who does not want it. A user with
+// one mapping per layout keeps typing exactly what they typed before.
+static bool kbm_target(const char *name, uint8_t *out) {
+    if (!name || !out) return false;
+    ns2_kbm_layout_t layout;
+    if (ns2_kbm_layout_from_name(name, &layout)) {
+        *out = ns2_kbm_runtime_active_profile(layout);
+        return true;
+    }
+    if (name[0] >= '0' && name[0] <= '9' && name[1] == '\0') {
+        uint8_t index = (uint8_t)(name[0] - '0');
+        if (index >= NS2_KBM_MAX_PROFILES) return false;
+        *out = index;
+        return true;
+    }
+    return false;
+}
+
+static void cmd_kbm_profiles(void) {
+    ns2_kbm_config_t snapshot;
+    ns2_kbm_runtime_config_get(&snapshot);
+    int j = snprintf(out, sizeof(out), "{\"profiles\":[");
+    bool first = true;
+    for (uint8_t i = 0; i < NS2_KBM_MAX_PROFILES; ++i) {
+        if (!snapshot.profiles[i].used) continue;
+        ns2_kbm_layout_t layout = (ns2_kbm_layout_t)snapshot.profiles[i].layout;
+        j += snprintf(out + j, sizeof(out) - j,
+                      "%s{\"id\":%u,\"layout\":\"%s\",\"name\":\"%.15s\","
+                      "\"active\":%s,\"builtin\":%s,\"overrides\":%u}",
+                      first ? "" : ",", i, ns2_kbm_layout_name(layout),
+                      snapshot.profiles[i].name,
+                      ns2_kbm_active_profile(&snapshot, layout) == i ? "true"
+                                                                    : "false",
+                      ns2_kbm_profile_is_default(i) ? "true" : "false",
+                      snapshot.profiles[i].overrides.count);
+        first = false;
+    }
+    snprintf(out + j, sizeof(out) - j, "],\"max\":%u}",
+             (unsigned)NS2_KBM_MAX_PROFILES);
+    reply(out);
+}
+
+static void cmd_kbm_profile(const char *arg) {
+    char verb[8] = {0};
+    char rest[48] = {0};
+    if (sscanf(arg, "%7s %47[^\n]", verb, rest) < 1) {
+        reply("{\"error\":\"usage: kbm profile use|new|rename|delete ...\"}");
+        return;
+    }
+
+    if (strcmp(verb, "use") == 0) {
+        char layout_name[8] = {0};
+        unsigned index = 0;
+        if (sscanf(rest, "%7s %u", layout_name, &index) != 2) {
+            reply("{\"error\":\"usage: kbm profile use <kb|kbm> <id>\"}");
+            return;
+        }
+        ns2_kbm_layout_t layout;
+        if (!ns2_kbm_layout_from_name(layout_name, &layout)) {
+            reply("{\"error\":\"unknown layout\"}");
+            return;
+        }
+        if (index >= NS2_KBM_MAX_PROFILES ||
+            !ns2_kbm_runtime_set_active_profile(layout, (uint8_t)index)) {
+            // The common cause is naming a profile belonging to the OTHER
+            // layout; say so rather than reporting a generic failure.
+            reply("{\"error\":\"no such profile for that layout\"}");
+            return;
+        }
+        snprintf(out, sizeof(out), "{\"ok\":true,\"layout\":\"%s\",\"id\":%u}",
+                 ns2_kbm_layout_name(layout), index);
+        reply(out);
+        return;
+    }
+
+    if (strcmp(verb, "new") == 0) {
+        char layout_name[8] = {0};
+        char name[NS2_KBM_PROFILE_NAME_MAX] = {0};
+        if (sscanf(rest, "%7s %15[^\n]", layout_name, name) != 2) {
+            reply("{\"error\":\"usage: kbm profile new <kb|kbm> <name>\"}");
+            return;
+        }
+        ns2_kbm_layout_t layout;
+        if (!ns2_kbm_layout_from_name(layout_name, &layout)) {
+            reply("{\"error\":\"unknown layout\"}");
+            return;
+        }
+        uint8_t index = ns2_kbm_runtime_profile_create(layout, name);
+        if (index == NS2_KBM_PROFILE_NONE) {
+            reply("{\"error\":\"profile storage full\"}");
+            return;
+        }
+        snprintf(out, sizeof(out), "{\"ok\":true,\"id\":%u}", index);
+        reply(out);
+        return;
+    }
+
+    if (strcmp(verb, "rename") == 0) {
+        unsigned index = 0;
+        char name[NS2_KBM_PROFILE_NAME_MAX] = {0};
+        if (sscanf(rest, "%u %15[^\n]", &index, name) != 2 ||
+            index >= NS2_KBM_MAX_PROFILES ||
+            !ns2_kbm_runtime_profile_rename((uint8_t)index, name)) {
+            reply("{\"error\":\"usage: kbm profile rename <id> <name>\"}");
+            return;
+        }
+        reply("{\"ok\":true}");
+        return;
+    }
+
+    if (strcmp(verb, "delete") == 0) {
+        unsigned index = 0;
+        if (sscanf(rest, "%u", &index) != 1 ||
+            index >= NS2_KBM_MAX_PROFILES ||
+            !ns2_kbm_runtime_profile_delete((uint8_t)index)) {
+            reply("{\"error\":\"usage: kbm profile delete <id>\"}");
+            return;
+        }
+        // Report the resulting selection. Deleting the active profile activates
+        // that layout's Default, and a client that assumed otherwise would show
+        // the wrong mapping until its next read.
+        ns2_kbm_config_t snapshot;
+        ns2_kbm_runtime_config_get(&snapshot);
+        snprintf(out, sizeof(out),
+                 "{\"ok\":true,\"active\":{\"kb\":%u,\"kbm\":%u}}",
+                 ns2_kbm_active_profile(&snapshot, NS2_KBM_LAYOUT_KEYBOARD),
+                 ns2_kbm_active_profile(&snapshot,
+                                        NS2_KBM_LAYOUT_KEYBOARD_MOUSE));
+        reply(out);
+        return;
+    }
+
+    reply("{\"error\":\"usage: kbm profile use|new|rename|delete ...\"}");
+}
+
 static void cmd_kbm(char *arg) {
     if (!arg || !arg[0] || strcmp(arg, "status") == 0) {
         cmd_kbm_status();
@@ -1068,6 +1222,16 @@ static void cmd_kbm(char *arg) {
         return;
     }
 
+    if (strncmp(arg, "profile ", 8) == 0) {
+        cmd_kbm_profile(arg + 8);
+        return;
+    }
+
+    if (strcmp(arg, "profiles") == 0) {
+        cmd_kbm_profiles();
+        return;
+    }
+
     if (strncmp(arg, "map ", 4) == 0) {
         char name[8] = {0};
         unsigned page = 0;
@@ -1077,9 +1241,9 @@ static void cmd_kbm(char *arg) {
             reply("{\"error\":\"usage: kbm map <kb|kbm> [page]\"}");
             return;
         }
-        ns2_kbm_layout_t profile;
-        if (!ns2_kbm_layout_from_name(name, &profile) || page > 32u) {
-            reply("{\"error\":\"usage: kbm map <kb|kbm> [page]\"}");
+        uint8_t profile;
+        if (!kbm_target(name, &profile) || page > 32u) {
+            reply("{\"error\":\"usage: kbm map <kb|kbm|id> [page]\"}");
             return;
         }
         cmd_kbm_map(profile, page);
@@ -1095,9 +1259,9 @@ static void cmd_kbm(char *arg) {
                   "<dest|none|default>\"}");
             return;
         }
-        ns2_kbm_layout_t profile;
+        uint8_t profile;
         ns2_kbm_source_t source;
-        if (!ns2_kbm_layout_from_name(name, &profile)) {
+        if (!kbm_target(name, &profile)) {
             reply("{\"error\":\"unknown profile\"}");
             return;
         }
@@ -1121,8 +1285,8 @@ static void cmd_kbm(char *arg) {
             return;
         }
         snprintf(out, sizeof(out),
-                 "{\"ok\":true,\"profile\":\"%s\",\"src\":\"%s\",\"dst\":\"%s\"}",
-                 ns2_kbm_layout_name(profile), source_text, dest_text);
+                 "{\"ok\":true,\"profile\":%u,\"src\":\"%s\",\"dst\":\"%s\"}",
+                 profile, source_text, dest_text);
         reply(out);
         return;
     }
@@ -1134,14 +1298,13 @@ static void cmd_kbm(char *arg) {
             reply("{\"ok\":true,\"reset\":\"all\"}");
             return;
         }
-        ns2_kbm_layout_t profile;
-        if (!ns2_kbm_layout_from_name(what, &profile)) {
-            reply("{\"error\":\"usage: kbm reset kb|kbm|all\"}");
+        uint8_t profile;
+        if (!kbm_target(what, &profile)) {
+            reply("{\"error\":\"usage: kbm reset kb|kbm|id|all\"}");
             return;
         }
         ns2_kbm_runtime_reset_profile(profile);
-        snprintf(out, sizeof(out), "{\"ok\":true,\"reset\":\"%s\"}",
-                 ns2_kbm_layout_name(profile));
+        snprintf(out, sizeof(out), "{\"ok\":true,\"reset\":%u}", profile);
         reply(out);
         return;
     }

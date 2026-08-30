@@ -41,11 +41,21 @@ bool ns2_kbm_runtime_config_load(const ns2_kbm_config_t *config);
 void ns2_kbm_runtime_config_get(ns2_kbm_config_t *out);
 uint32_t ns2_kbm_runtime_config_generation(void);
 
-bool ns2_kbm_runtime_set_binding(ns2_kbm_layout_t profile,
-                                 ns2_kbm_source_t source, uint8_t destination);
-bool ns2_kbm_runtime_clear_binding(ns2_kbm_layout_t profile,
-                                   ns2_kbm_source_t source);
-void ns2_kbm_runtime_reset_profile(ns2_kbm_layout_t profile);
+// Mapping edits name a PROFILE INDEX, never a layout: after the profile system
+// a layout has several mappings and only one of them is live, so a caller must
+// say which one it means. ns2_kbm_runtime_active_profile() resolves the one the
+// adapter is currently resolving against.
+bool ns2_kbm_runtime_set_binding(uint8_t profile, ns2_kbm_source_t source,
+                                 uint8_t destination);
+bool ns2_kbm_runtime_clear_binding(uint8_t profile, ns2_kbm_source_t source);
+void ns2_kbm_runtime_reset_profile(uint8_t profile);
+
+uint8_t ns2_kbm_runtime_active_profile(ns2_kbm_layout_t layout);
+bool ns2_kbm_runtime_set_active_profile(ns2_kbm_layout_t layout, uint8_t index);
+uint8_t ns2_kbm_runtime_profile_create(ns2_kbm_layout_t layout,
+                                       const char *name);
+bool ns2_kbm_runtime_profile_rename(uint8_t index, const char *name);
+bool ns2_kbm_runtime_profile_delete(uint8_t index);
 void ns2_kbm_runtime_reset_all(void);
 bool ns2_kbm_runtime_set_mouse(const ns2_kbm_mouse_config_t *mouse);
 void ns2_kbm_runtime_get_mouse(ns2_kbm_mouse_config_t *out);
@@ -141,6 +151,11 @@ typedef struct {
     uint32_t mouse_reports;
     uint32_t rejected_mode;
     uint32_t rejected_duplicate;
+    // Which named profile the live layout is resolving against, and what it is
+    // called. A client showing a mapping without these cannot say whether the
+    // mapping it is displaying is the one in use.
+    uint8_t active_profile;
+    char active_profile_name[NS2_KBM_PROFILE_NAME_MAX];
     uint32_t rejected_not_owner;
     // Outcomes that used to be silent; see ns2_kbm_runtime.c.
     uint32_t rejected_no_peer_key;

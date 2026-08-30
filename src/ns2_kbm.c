@@ -230,19 +230,144 @@ static void mouse_defaults(ns2_kbm_mouse_config_t *mouse) {
     mouse->reserved = 0;
 }
 
+static bool profile_store_name(ns2_kbm_profile_slot_t *slot, const char *name);
+
 void ns2_kbm_config_defaults(ns2_kbm_config_t *config) {
     if (!config) return;
     memset(config, 0, sizeof(*config));
     // Auto is the default: pairing an ordinary HID device must work without
     // the user first predicting and selecting a mode.
     config->mode = (uint8_t)NS2_KBM_MODE_AUTO;
+    // Slot 0 and slot 1 are the two layouts' Default profiles, and both start
+    // active. See ns2_kbm_profile_is_default().
+    for (uint8_t i = 0; i < NS2_KBM_LAYOUT_COUNT; ++i) {
+        config->profiles[i].used = 1u;
+        config->profiles[i].layout = i;
+        (void)profile_store_name(&config->profiles[i], "Default");
+        config->active[i] = i;
+    }
     mouse_defaults(&config->mouse);
 }
 
-void ns2_kbm_config_reset_profile(ns2_kbm_config_t *config,
-                                  ns2_kbm_layout_t profile) {
-    if (!config || profile >= NS2_KBM_LAYOUT_COUNT) return;
-    memset(&config->profiles[profile], 0, sizeof(config->profiles[profile]));
+// The overrides of one profile, or NULL when the index names no live profile.
+// Every binding operation goes through this, so an index that does not exist
+// can never be turned into a silent read or write of slot 0.
+static ns2_kbm_profile_overrides_t *profile_overrides(ns2_kbm_config_t *config,
+                                                      uint8_t index) {
+    if (!config || index >= NS2_KBM_MAX_PROFILES) return NULL;
+    if (!config->profiles[index].used) return NULL;
+    return &config->profiles[index].overrides;
+}
+
+static const ns2_kbm_profile_overrides_t *profile_overrides_const(
+    const ns2_kbm_config_t *config, uint8_t index) {
+    return profile_overrides((ns2_kbm_config_t *)config, index);
+}
+
+// Which layout's defaults a profile sits on top of.
+static ns2_kbm_layout_t profile_layout(const ns2_kbm_config_t *config,
+                                       uint8_t index) {
+    if (!config || index >= NS2_KBM_MAX_PROFILES) return NS2_KBM_LAYOUT_KEYBOARD;
+    uint8_t layout = config->profiles[index].layout;
+    return layout < NS2_KBM_LAYOUT_COUNT ? (ns2_kbm_layout_t)layout
+                                         : NS2_KBM_LAYOUT_KEYBOARD;
+}
+
+bool ns2_kbm_profile_is_default(uint8_t index) {
+    // Slot 0 is the Keyboard default and slot 1 the Keyboard + Mouse default.
+    // Reserving them by INDEX rather than by a flag is what makes "every layout
+    // always has an active profile" true by construction: the fallback target
+    // cannot be deleted because there is no code path that deletes these.
+    return index < NS2_KBM_LAYOUT_COUNT;
+}
+
+uint8_t ns2_kbm_active_profile(const ns2_kbm_config_t *config,
+                               ns2_kbm_layout_t layout) {
+    if (!config || layout >= NS2_KBM_LAYOUT_COUNT) return 0u;
+    uint8_t index = config->active[layout];
+    // Fall back to the layout's Default rather than resolving against a profile
+    // that is gone or belongs elsewhere. Sanitize normally prevents this; the
+    // check costs nothing and the alternative is silently wrong bindings.
+    if (index >= NS2_KBM_MAX_PROFILES || !config->profiles[index].used ||
+        config->profiles[index].layout != (uint8_t)layout)
+        return (uint8_t)layout;
+    return index;
+}
+
+bool ns2_kbm_set_active_profile(ns2_kbm_config_t *config,
+                                ns2_kbm_layout_t layout, uint8_t index) {
+    if (!config || layout >= NS2_KBM_LAYOUT_COUNT) return false;
+    if (index >= NS2_KBM_MAX_PROFILES || !config->profiles[index].used)
+        return false;
+    // A profile belongs to one layout. Its source domain and its defaults are
+    // layout-specific, so applying it to the other one would silently resolve
+    // bindings against the wrong canonical map.
+    if (config->profiles[index].layout != (uint8_t)layout) return false;
+    config->active[layout] = index;
+    return true;
+}
+
+// Copy a caller-supplied name into a slot. Returns false when nothing printable
+// survives, so a profile can never end up nameless.
+static bool profile_store_name(ns2_kbm_profile_slot_t *slot, const char *name) {
+    if (!slot || !name) return false;
+    uint8_t written = 0;
+    for (const char *c = name;
+         *c != '\0' && written < NS2_KBM_PROFILE_NAME_MAX - 1u; ++c) {
+        // Printable ASCII only: this string is echoed into a JSON reply and
+        // rendered by two companions.
+        if (*c < 0x20 || *c > 0x7E || *c == '"' || *c == '\\') continue;
+        slot->name[written++] = *c;
+    }
+    if (written == 0u) return false;
+    while (written < NS2_KBM_PROFILE_NAME_MAX) slot->name[written++] = '\0';
+    return true;
+}
+
+uint8_t ns2_kbm_profile_create(ns2_kbm_config_t *config,
+                               ns2_kbm_layout_t layout, const char *name) {
+    if (!config || layout >= NS2_KBM_LAYOUT_COUNT) return NS2_KBM_PROFILE_NONE;
+    for (uint8_t i = 0; i < NS2_KBM_MAX_PROFILES; ++i) {
+        if (config->profiles[i].used) continue;
+        ns2_kbm_profile_slot_t candidate;
+        memset(&candidate, 0, sizeof(candidate));
+        if (!profile_store_name(&candidate, name)) return NS2_KBM_PROFILE_NONE;
+        candidate.used = 1u;
+        candidate.layout = (uint8_t)layout;
+        // No overrides: a new profile IS its layout's canonical default until
+        // the user changes something, which is also what makes it cheap.
+        config->profiles[i] = candidate;
+        return i;
+    }
+    return NS2_KBM_PROFILE_NONE;
+}
+
+bool ns2_kbm_profile_rename(ns2_kbm_config_t *config, uint8_t index,
+                            const char *name) {
+    if (!config || index >= NS2_KBM_MAX_PROFILES) return false;
+    if (!config->profiles[index].used) return false;
+    if (ns2_kbm_profile_is_default(index)) return false;
+    ns2_kbm_profile_slot_t candidate = config->profiles[index];
+    if (!profile_store_name(&candidate, name)) return false;
+    config->profiles[index] = candidate;
+    return true;
+}
+
+bool ns2_kbm_profile_delete(ns2_kbm_config_t *config, uint8_t index) {
+    if (!config || index >= NS2_KBM_MAX_PROFILES) return false;
+    if (!config->profiles[index].used) return false;
+    if (ns2_kbm_profile_is_default(index)) return false;
+    ns2_kbm_layout_t layout = profile_layout(config, index);
+    memset(&config->profiles[index], 0, sizeof(config->profiles[index]));
+    // Deleting what was active must leave a valid selection, not an empty one.
+    if (config->active[layout] == index) config->active[layout] = (uint8_t)layout;
+    return true;
+}
+
+void ns2_kbm_config_reset_profile(ns2_kbm_config_t *config, uint8_t index) {
+    ns2_kbm_profile_overrides_t *overrides = profile_overrides(config, index);
+    if (!overrides) return;
+    memset(overrides, 0, sizeof(*overrides));
 }
 
 static bool sanitize_profile(ns2_kbm_profile_overrides_t *profile) {
@@ -300,10 +425,64 @@ bool ns2_kbm_config_sanitize(ns2_kbm_config_t *config) {
         config->mode = (uint8_t)NS2_KBM_MODE_AUTO;
         clean = false;
     }
-    config->reserved[0] = config->reserved[1] = config->reserved[2] = 0;
+    config->reserved = 0;
 
-    for (unsigned p = 0; p < NS2_KBM_LAYOUT_COUNT; ++p) {
-        if (!sanitize_profile(&config->profiles[p])) clean = false;
+    // The two reserved Default slots must exist and must belong to their own
+    // layout, because every fallback in this module resolves to them. A torn
+    // flash write is the realistic way they could be wrong, and the settings
+    // record has no CRC -- it programs eight pages and only the magic and this
+    // function stand between a partial write and invented bindings.
+    for (uint8_t i = 0; i < NS2_KBM_LAYOUT_COUNT; ++i) {
+        ns2_kbm_profile_slot_t *slot = &config->profiles[i];
+        if (!slot->used || slot->layout != i) {
+            slot->used = 1u;
+            slot->layout = i;
+            clean = false;
+        }
+        if (slot->name[0] == '\0') {
+            (void)profile_store_name(slot, "Default");
+            clean = false;
+        }
+    }
+
+    for (uint8_t i = 0; i < NS2_KBM_MAX_PROFILES; ++i) {
+        ns2_kbm_profile_slot_t *slot = &config->profiles[i];
+        if (!slot->used) {
+            // An unused slot must be entirely zero, so a stale name or override
+            // table cannot reappear when the slot is reused.
+            ns2_kbm_profile_slot_t empty;
+            memset(&empty, 0, sizeof(empty));
+            if (memcmp(slot, &empty, sizeof(empty)) != 0) {
+                *slot = empty;
+                clean = false;
+            }
+            continue;
+        }
+        if (slot->layout >= NS2_KBM_LAYOUT_COUNT) {
+            // A profile whose layout is unreadable cannot be resolved against
+            // any canonical map. Dropping it is the only honest answer; keeping
+            // it would silently apply the wrong defaults.
+            memset(slot, 0, sizeof(*slot));
+            clean = false;
+            continue;
+        }
+        slot->name[NS2_KBM_PROFILE_NAME_MAX - 1u] = '\0';
+        if (slot->name[0] == '\0') {
+            (void)profile_store_name(slot, "Profile");
+            clean = false;
+        }
+        slot->reserved[0] = slot->reserved[1] = 0;
+        if (!sanitize_profile(&slot->overrides)) clean = false;
+    }
+
+    // Every layout always has exactly one active profile.
+    for (uint8_t i = 0; i < NS2_KBM_LAYOUT_COUNT; ++i) {
+        uint8_t active = config->active[i];
+        if (active >= NS2_KBM_MAX_PROFILES || !config->profiles[active].used ||
+            config->profiles[active].layout != i) {
+            config->active[i] = i;
+            clean = false;
+        }
     }
 
     if (!clamp_u16(&config->mouse.sensitivity_x, NS2_KBM_MOUSE_SENS_MIN,
@@ -342,31 +521,32 @@ uint8_t ns2_kbm_default_binding(ns2_kbm_layout_t profile,
     return NS2_DST_NONE;
 }
 
-uint8_t ns2_kbm_binding(const ns2_kbm_config_t *config,
-                        ns2_kbm_layout_t profile, ns2_kbm_source_t source) {
-    if (!config || profile >= NS2_KBM_LAYOUT_COUNT) return NS2_DST_NONE;
-    const ns2_kbm_profile_overrides_t *overrides = &config->profiles[profile];
+uint8_t ns2_kbm_binding(const ns2_kbm_config_t *config, uint8_t profile,
+                        ns2_kbm_source_t source) {
+    const ns2_kbm_profile_overrides_t *overrides =
+        profile_overrides_const(config, profile);
+    if (!overrides) return NS2_DST_NONE;
     uint8_t count = overrides->count <= NS2_KBM_MAX_OVERRIDES
                         ? overrides->count : 0u;
     for (uint8_t i = 0; i < count; ++i) {
         if (ns2_kbm_source_equal(overrides->entries[i].source, source))
             return overrides->entries[i].destination;
     }
-    return ns2_kbm_default_binding(profile, source);
+    return ns2_kbm_default_binding(profile_layout(config, profile), source);
 }
 
-bool ns2_kbm_set_binding(ns2_kbm_config_t *config, ns2_kbm_layout_t profile,
+bool ns2_kbm_set_binding(ns2_kbm_config_t *config, uint8_t profile,
                          ns2_kbm_source_t source, uint8_t destination) {
-    if (!config || profile >= NS2_KBM_LAYOUT_COUNT) return false;
+    ns2_kbm_profile_overrides_t *overrides = profile_overrides(config, profile);
+    if (!overrides) return false;
     if (!ns2_kbm_source_valid(source)) return false;
     if (!ns2_kbm_destination_valid(destination)) return false;
-
-    ns2_kbm_profile_overrides_t *overrides = &config->profiles[profile];
     if (overrides->count > NS2_KBM_MAX_OVERRIDES) return false;
 
     // Requesting exactly the canonical default is stored as "no override" so a
     // user who reverts a binding by hand reaches the same state as a reset.
-    if (destination == ns2_kbm_default_binding(profile, source))
+    if (destination ==
+        ns2_kbm_default_binding(profile_layout(config, profile), source))
         return ns2_kbm_clear_binding(config, profile, source);
 
     for (uint8_t i = 0; i < overrides->count; ++i) {
@@ -383,11 +563,11 @@ bool ns2_kbm_set_binding(ns2_kbm_config_t *config, ns2_kbm_layout_t profile,
     return true;
 }
 
-bool ns2_kbm_clear_binding(ns2_kbm_config_t *config, ns2_kbm_layout_t profile,
+bool ns2_kbm_clear_binding(ns2_kbm_config_t *config, uint8_t profile,
                            ns2_kbm_source_t source) {
-    if (!config || profile >= NS2_KBM_LAYOUT_COUNT) return false;
+    ns2_kbm_profile_overrides_t *overrides = profile_overrides(config, profile);
+    if (!overrides) return false;
     if (!ns2_kbm_source_valid(source)) return false;
-    ns2_kbm_profile_overrides_t *overrides = &config->profiles[profile];
     if (overrides->count > NS2_KBM_MAX_OVERRIDES) return false;
     for (uint8_t i = 0; i < overrides->count; ++i) {
         if (!ns2_kbm_source_equal(overrides->entries[i].source, source))
@@ -403,14 +583,16 @@ bool ns2_kbm_clear_binding(ns2_kbm_config_t *config, ns2_kbm_layout_t profile,
 }
 
 uint16_t ns2_kbm_effective_bindings(const ns2_kbm_config_t *config,
-                                    ns2_kbm_layout_t profile,
+                                    uint8_t profile,
                                     ns2_kbm_effective_t *out,
                                     uint16_t capacity) {
-    if (!config || !out || profile >= NS2_KBM_LAYOUT_COUNT) return 0;
+    const ns2_kbm_profile_overrides_t *overrides =
+        profile_overrides_const(config, profile);
+    if (!overrides || !out) return 0;
     uint16_t written = 0;
     uint16_t default_count = 0;
-    const kbm_default_binding_t *table = default_table(profile, &default_count);
-    const ns2_kbm_profile_overrides_t *overrides = &config->profiles[profile];
+    const kbm_default_binding_t *table =
+        default_table(profile_layout(config, profile), &default_count);
     uint8_t override_count = overrides->count <= NS2_KBM_MAX_OVERRIDES
                                  ? overrides->count : 0u;
 
@@ -792,7 +974,11 @@ void ns2_kbm_resolve(ns2_kbm_state_t *state, const ns2_kbm_config_t *config,
         mode == NS2_KBM_MODE_AUTO || mode >= NS2_KBM_MODE_COUNT)
         return;
 
-    ns2_kbm_layout_t profile = ns2_kbm_mode_layout(mode);
+    // The mode picks the layout; the layout's ACTIVE profile picks the mapping.
+    // Before the profile system this was one step, which is why a user could
+    // edit a mapping the adapter was not resolving.
+    uint8_t profile =
+        ns2_kbm_active_profile(config, ns2_kbm_mode_layout(mode));
     bool held[NS2_DST_COUNT];
     memset(held, 0, sizeof(held));
 
