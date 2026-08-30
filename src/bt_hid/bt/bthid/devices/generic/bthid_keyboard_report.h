@@ -23,12 +23,17 @@
 #define BTHID_KEYBOARD_USAGE_BYTES 32u  // covers HID usage page 0x07 ids 0x00..0xFF
 #define BTHID_KEYBOARD_MAX_BITMAP_FIELDS 4u
 #define BTHID_KEYBOARD_MAX_ARRAY_FIELDS 2u
+// Distinct report ids that may carry keyboard fields. Two covers the common
+// boot + NKRO pair; the extra room costs nothing and absorbs a descriptor that
+// splits its keys further.
+#define BTHID_KEYBOARD_MAX_REPORT_IDS 4u
 
 // A run of one-bit key flags (boot-protocol modifier byte, or an NKRO bitmap).
 typedef struct {
     uint16_t bit_offset;
     uint16_t count;
     uint8_t usage_min;
+    uint8_t report_id;  // which report this field lives in
 } bthid_keyboard_bitmap_field_t;
 
 // A run of 8-bit key slots carrying the usage of a held key (boot-protocol
@@ -36,10 +41,27 @@ typedef struct {
 typedef struct {
     uint16_t bit_offset;
     uint8_t count;
+    uint8_t report_id;  // which report this field lives in
 } bthid_keyboard_array_field_t;
 
 typedef struct {
+    // The FIRST keyboard report id declared. Kept for diagnostics and for the
+    // report-id-less case; decoding matches against every declared id below.
     uint8_t report_id;
+
+    // Every report id that carries keyboard fields.
+    //
+    // A keyboard may declare more than one -- most commonly a boot-compatible
+    // 6-key report AND a vendor NKRO report -- and it decides which one to
+    // SEND. This build used to follow exactly the first declared id and reject
+    // every report carrying another, which silently discarded 100% of the input
+    // from any keyboard that transmits on its alternate report. Confirmed on
+    // hardware 2026-08-29: an 8BitDo 2DC8:2028 held the keyboard role with
+    // `kbcap=true` while 380 consecutive reports were dropped at exactly that
+    // comparison.
+    uint8_t report_ids[BTHID_KEYBOARD_MAX_REPORT_IDS];
+    uint8_t report_id_count;
+
     bool using_report_ids;
     uint8_t bitmap_count;
     uint8_t array_count;
