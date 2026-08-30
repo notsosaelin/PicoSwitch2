@@ -230,6 +230,17 @@ int ns2_kbm_format_profiles(const ns2_kbm_config_t *config, uint16_t cursor,
 // Realized mappings
 // ---------------------------------------------------------------------------
 
+// Which POSITION a layout's realized snapshot came from, derived rather than
+// stored: the snapshot already names its source profile, and the profile knows
+// its position. Deriving it keeps one source of truth.
+static uint8_t runtime_position(const ns2_kbm_config_t *config,
+                                ns2_kbm_layout_t layout) {
+    uint8_t id = config->active[layout].source_id;
+    if (id == NS2_KBM_PROFILE_ID_DEFAULT) return NS2_KBM_POSITION_DEFAULT;
+    const ns2_kbm_profile_slot_t *slot = ns2_kbm_profile_find(config, id);
+    return slot ? slot->position : (uint8_t)NS2_KBM_POSITION_DEFAULT;
+}
+
 int ns2_kbm_format_active(const ns2_kbm_config_t *config, char *out,
                           size_t capacity) {
     if (!config || !out || capacity == 0) return -1;
@@ -248,12 +259,14 @@ int ns2_kbm_format_active(const ns2_kbm_config_t *config, char *out,
         // Bounded by NS2_KBM_LAYOUT_COUNT, so a deferred row here is a buffer
         // that cannot hold the reply -- not a page boundary.
         if (!writer_row(&w,
-                        "%s{\"layout\":\"%s\",\"sourceId\":%u,\"bootId\":%u,"
+                        "%s{\"layout\":\"%s\",\"sourceId\":%u,"
+                        "\"bootPosition\":%u,\"runtimePosition\":%u,"
                         "\"revision\":%u,\"fingerprint\":%lu,"
                         "\"matchesSaved\":%s}",
                         i ? "," : "", ns2_kbm_layout_name(layout),
                         (unsigned)active->source_id,
-                        (unsigned)config->boot_profile_id[i],
+                        (unsigned)config->boot_position[i],
+                        (unsigned)runtime_position(config, layout),
                         (unsigned)active->source_revision,
                         (unsigned long)ns2_kbm_content_fingerprint(
                             &active->content, layout),
@@ -272,40 +285,34 @@ int ns2_kbm_format_active(const ns2_kbm_config_t *config, char *out,
 // Profile-switch bindings
 // ---------------------------------------------------------------------------
 
-int ns2_kbm_format_switches(const ns2_kbm_config_t *config,
-                            ns2_kbm_layout_t layout, char *out,
+int ns2_kbm_format_switches(const ns2_kbm_config_t *config, char *out,
                             size_t capacity) {
-    if (!config || !out || capacity == 0 || layout >= NS2_KBM_LAYOUT_COUNT)
-        return -1;
+    if (!config || !out || capacity == 0) return -1;
 
     kbm_writer_t w;
-    writer_init(&w, out, capacity, sizeof("],\"max\":6}") - 1u);
-    if (!writer_head(&w, "{\"layout\":\"%s\",\"switches\":[",
-                     ns2_kbm_layout_name(layout))) {
-        return -1;
-    }
+    writer_init(&w, out, capacity, sizeof("],\"positions\":3}") - 1u);
+    if (!writer_head(&w, "{\"switches\":[")) return -1;
 
-    // Bounded by NS2_KBM_SWITCH_BINDINGS_MAX (6) rows of ~40 bytes, so this is
-    // deliberately not paginated; the host test pins the worst case against the
-    // wire limit.
+    // ONE table for both layouts: a binding names a semantic POSITION, and the
+    // layout is applied when the key is pressed. Bounded by four rows of ~35
+    // bytes, so deliberately not paginated; the host test pins the worst case.
     bool first = true;
     for (uint8_t i = 0; i < NS2_KBM_SWITCH_BINDINGS_MAX; ++i) {
-        const ns2_kbm_switch_binding_t *entry = &config->switches[layout][i];
+        const ns2_kbm_switch_binding_t *entry = &config->switches[i];
         if (!entry->used) continue;
         char source[12];
         ns2_kbm_source_t src = {entry->kind, entry->code};
         ns2_kbm_source_format(src, source, sizeof(source));
-        if (!writer_row(&w, "%s{\"src\":\"%s\",\"profileId\":%u}",
-                        first ? "" : ",", source,
-                        (unsigned)entry->profile_id)) {
+        if (!writer_row(&w, "%s{\"src\":\"%s\",\"position\":%u}",
+                        first ? "" : ",", source, (unsigned)entry->position)) {
             return -1;
         }
         first = false;
     }
 
     int written = snprintf(w.out + w.used, capacity - (size_t)w.used,
-                           "],\"max\":%u}",
-                           (unsigned)NS2_KBM_SWITCH_BINDINGS_MAX);
+                           "],\"positions\":%u}",
+                           (unsigned)NS2_KBM_POSITIONS_PER_LAYOUT);
     if (written < 0 || (size_t)written >= capacity - (size_t)w.used) return -1;
     return w.used + written;
 }

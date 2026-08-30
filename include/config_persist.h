@@ -23,8 +23,13 @@
 
 #define CONFIG_PERSIST_MAGIC 0x50535731u  // 'PSW1'
 // v15: profile-switch key bindings and the persisted boot-active resident slot.
-// Both are appended to the KB/M block; every earlier field keeps its offset.
-#define CONFIG_PERSIST_VERSION 15u
+// v16: those become LAYOUT + POSITION semantics rather than storage-slot ids --
+//      a record carries which position of its layout's bank it occupies, the
+//      switch table is one shared list of semantic actions, and the boot choice
+//      is a position. The byte layout is unchanged in size; the MEANING of three
+//      fields changed, which is exactly why it is a version bump and not a
+//      silent reinterpretation.
+#define CONFIG_PERSIST_VERSION 16u
 
 // How many management companions an adapter remembers.
 //

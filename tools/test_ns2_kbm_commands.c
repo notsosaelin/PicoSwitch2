@@ -481,25 +481,18 @@ static void test_switch_list_fits_without_pagination(FILE *corpus) {
     ns2_kbm_config_defaults(&config);
     fill_profile_library(&config);
 
-    // Bind as many Keyboard switch keys as the table and the library allow.
+    // Every semantic action bound to a key: Default plus the three positions.
     unsigned bound = 0;
-    for (uint8_t usage = 0x3Au; usage < 0x60u; ++usage) {
-        ns2_kbm_source_t source = {NS2_KBM_SRC_KEY, usage};
-        for (uint8_t i = 0; i < NS2_KBM_MAX_PROFILES; ++i) {
-            const ns2_kbm_profile_slot_t *slot = &config.profiles[i];
-            if (slot->used && slot->layout == NS2_KBM_LAYOUT_KEYBOARD &&
-                ns2_kbm_switch_bind(&config, NS2_KBM_LAYOUT_KEYBOARD, source,
-                                    slot->profile_id)) {
-                bound++;
-                break;
-            }
-        }
-        if (bound >= NS2_KBM_SWITCH_BINDINGS_MAX) break;
+    for (uint8_t position = 0; position < NS2_KBM_SWITCH_BINDINGS_MAX;
+         ++position) {
+        ns2_kbm_source_t source = {NS2_KBM_SRC_KEY, (uint8_t)(0x3Au + position)};
+        if (ns2_kbm_switch_bind(&config, source, position)) bound++;
     }
-    CHECK(bound > 0, "expected at least one switch binding");
+    CHECK(bound == NS2_KBM_SWITCH_BINDINGS_MAX,
+          "expected every action bound, got %u", bound);
 
     char reply[NS2_KBM_REPLY_MAX_BYTES + 64u];
-    int len = ns2_kbm_format_switches(&config, NS2_KBM_LAYOUT_KEYBOARD, reply,
+    int len = ns2_kbm_format_switches(&config, reply,
                                       NS2_KBM_REPLY_MAX_BYTES + 1u);
     CHECK(len > 0, "format_switches failed");
     CHECK((size_t)len <= NS2_KBM_REPLY_MAX_BYTES,
@@ -608,19 +601,15 @@ static void emit_corpus(FILE *corpus) {
                                     NS2_KBM_REPLY_MAX_BYTES + 1u);
     if (len > 0) corpus_emit(corpus, "active", "kbm active", len, reply);
 
-    // One layout's switch keys, so the clients have real bytes for these too.
-    for (uint8_t i = 0; i < NS2_KBM_MAX_PROFILES; ++i) {
-        const ns2_kbm_profile_slot_t *slot = &config.profiles[i];
-        if (slot->used && slot->layout == NS2_KBM_LAYOUT_KEYBOARD) {
-            ns2_kbm_source_t source = {NS2_KBM_SRC_KEY, 0x3Au};
-            (void)ns2_kbm_switch_bind(&config, NS2_KBM_LAYOUT_KEYBOARD, source,
-                                      slot->profile_id);
-            break;
-        }
+    // The four semantic switch actions, so the clients have real bytes too.
+    for (uint8_t position = 0; position < NS2_KBM_SWITCH_BINDINGS_MAX;
+         ++position) {
+        ns2_kbm_source_t source = {NS2_KBM_SRC_KEY, (uint8_t)(0x3Au + position)};
+        (void)ns2_kbm_switch_bind(&config, source, position);
     }
-    len = ns2_kbm_format_switches(&config, NS2_KBM_LAYOUT_KEYBOARD, reply,
+    len = ns2_kbm_format_switches(&config, reply,
                                   NS2_KBM_REPLY_MAX_BYTES + 1u);
-    if (len > 0) corpus_emit(corpus, "switches", "kbm switches kb", len, reply);
+    if (len > 0) corpus_emit(corpus, "switches", "kbm switches", len, reply);
 }
 
 int main(void) {

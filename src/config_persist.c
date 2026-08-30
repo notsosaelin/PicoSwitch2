@@ -362,6 +362,18 @@ config_persist_load_t config_persist_load(const void *stored, uint32_t stored_le
         // companion re-registers itself on its next authenticated session.
         memset(out->mgmt_companions, 0, sizeof(out->mgmt_companions));
         result = CONFIG_PERSIST_MIGRATED;
+    } else if (header.version == 15u) {
+        // v15 -> v16. Same size and same field offsets; three fields change
+        // MEANING (slot id -> position). v15 was never released, but it is
+        // migrated explicitly rather than reinterpreted, because a record whose
+        // bytes are read under new semantics without a version gate is exactly
+        // the failure config_persist.h exists to prevent.
+        if (stored_len < sizeof(config_record_t)) return CONFIG_PERSIST_DEFAULTED;
+        memcpy(out, stored, sizeof(*out));
+        // Positions and the boot position are recomputed below by the shared
+        // migration rule; the v15 switch table addressed slot ids and cannot be
+        // translated to actions, so it is dropped rather than guessed.
+        result = CONFIG_PERSIST_MIGRATED;
     } else if (header.version == 14u) {
         // v14 -> v15. The six stored profiles ARE the adapter's resident slots;
         // nothing about them changes. What is added is the persisted boot-active
@@ -418,18 +430,42 @@ config_persist_load_t config_persist_load(const void *stored, uint32_t stored_le
     out->magic = CONFIG_PERSIST_MAGIC;
     out->version = CONFIG_PERSIST_VERSION;
 
-    // EVERY migrated schema predates the boot/runtime split, so its record says
-    // what the layout was realizing but not what it should realize at power-up.
-    // The answer is the same thing: an upgraded adapter must come back doing
-    // exactly what it did before. Defaulting these to Default instead would
-    // silently discard a migrated mapping -- which is precisely what happened
-    // when only the v14 branch set them.
+    // EVERY migrated schema predates the layout+position model, so its records
+    // carry no position and its boot choice is meaningless. Positions are
+    // assigned DETERMINISTICALLY: in slot order, within each record's own
+    // layout. A profile is never moved between layouts, and nothing is dropped
+    // while a position remains -- over-capacity is repaired by sanitize, not by
+    // silent deletion here.
     //
-    // No switch key is invented on any path. Reserving F1..F6 would steal six
-    // keys out of a mapping the user already has.
+    // The boot position is then the position of whatever each layout was
+    // ALREADY realizing, so an upgraded adapter comes back doing exactly what it
+    // did before. Defaulting it instead would silently discard a migrated
+    // mapping, which is what happened when only the v14 branch set it.
+    //
+    // No switch key is invented on any path. Reserving F1..F4 would steal keys
+    // out of a mapping the user already has.
     if (result == CONFIG_PERSIST_MIGRATED) {
-        for (uint8_t i = 0; i < NS2_KBM_LAYOUT_COUNT; ++i)
-            out->kbm.boot_profile_id[i] = out->kbm.active[i].source_id;
+        uint8_t next[NS2_KBM_LAYOUT_COUNT] = {1u, 1u};
+        for (uint8_t i = 0; i < NS2_KBM_MAX_PROFILES; ++i) {
+            ns2_kbm_profile_slot_t *slot = &out->kbm.profiles[i];
+            if (!slot->used || slot->layout >= NS2_KBM_LAYOUT_COUNT) continue;
+            slot->position = next[slot->layout] <= NS2_KBM_POSITIONS_PER_LAYOUT
+                                 ? next[slot->layout]
+                                 : 0u;
+            if (next[slot->layout] <= NS2_KBM_POSITIONS_PER_LAYOUT)
+                next[slot->layout]++;
+        }
+
+        for (uint8_t i = 0; i < NS2_KBM_LAYOUT_COUNT; ++i) {
+            uint8_t realized = out->kbm.active[i].source_id;
+            out->kbm.boot_position[i] = (uint8_t)NS2_KBM_POSITION_DEFAULT;
+            if (realized != NS2_KBM_PROFILE_ID_DEFAULT) {
+                const ns2_kbm_profile_slot_t *slot =
+                    ns2_kbm_profile_find(&out->kbm, realized);
+                if (slot && slot->position >= 1u)
+                    out->kbm.boot_position[i] = slot->position;
+            }
+        }
         memset(out->kbm.switches, 0, sizeof(out->kbm.switches));
     }
 
