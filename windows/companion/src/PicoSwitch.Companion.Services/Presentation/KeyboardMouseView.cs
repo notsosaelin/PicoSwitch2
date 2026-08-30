@@ -108,23 +108,88 @@ public sealed record KeyboardMouseView
     public required KbmLayout Profile { get; init; }
 
     /// <summary>
-    /// The named profiles of the layout being edited, and which one is live.
+    /// Every profile of the layout being edited, built-in Default first.
     ///
-    /// Empty on firmware without named profiles, which is not a degraded state:
-    /// that adapter has exactly one mapping per layout and the selector is
-    /// simply not shown.
+    /// Empty on firmware without a profile library, which is not a degraded
+    /// state: that adapter has exactly one mapping per layout and the profile
+    /// controls are simply not shown.
     /// </summary>
     public required IReadOnlyList<KbmProfileInfo> Profiles { get; init; }
 
-    public KbmProfileInfo? ActiveProfile =>
-        Profiles.FirstOrDefault(profile => profile.Active);
+    /// <summary>Whether this adapter has a profile library at all.</summary>
+    public required bool ProfilesSupported { get; init; }
+
+    /// <summary>Which profile the editor currently has open. Never null when supported.</summary>
+    public KbmProfileInfo? SelectedProfile { get; init; }
+
+    /// <summary>What the console is really running for this layout.</summary>
+    public KbmActiveMapping? ActiveMapping { get; init; }
+
+    /// <summary>Where the local draft stands against adapter truth.</summary>
+    public required KbmDraftState DraftState { get; init; }
+
+    public bool Dirty => DraftState == KbmDraftState.Dirty;
 
     /// <summary>
-    /// Whether to offer the profile selector at all. One profile is not a
-    /// choice, and a control with a single option invites the user to look for
-    /// meaning that is not there.
+    /// Saved to the library, but the console is still running something else.
+    /// The state that exists because Save and Apply are different acts.
     /// </summary>
-    public bool ShowProfiles => Profiles.Count > 1;
+    public bool SavedNotApplied => DraftState == KbmDraftState.SavedNotApplied;
+
+    public bool Conflicted => DraftState == KbmDraftState.Conflict;
+
+    /// <summary>
+    /// Save is offered for a real edit, and for turning the built-in Default
+    /// into a profile of the user's own. It is never offered for an unchanged
+    /// draft, because there would be nothing to write.
+    /// </summary>
+    public bool CanSave => DraftState == KbmDraftState.Dirty ||
+                           (SelectedProfile?.Builtin == true &&
+                            DraftState != KbmDraftState.Disconnected);
+
+    /// <summary>
+    /// Apply is offered whenever the selected profile is not what the console is
+    /// running. Never automatic: applying is the user saying "use this now".
+    /// </summary>
+    public bool CanApply =>
+        ProfilesSupported && SelectedProfile is not null &&
+        DraftState is not (KbmDraftState.Disconnected or KbmDraftState.Dirty) &&
+        DraftState != KbmDraftState.Active;
+
+    public bool CanRename =>
+        SelectedProfile is { Builtin: false } &&
+        DraftState != KbmDraftState.Disconnected;
+
+    public bool CanDelete => CanRename;
+
+    /// <summary>One line saying exactly where this profile stands.</summary>
+    public string StatusText => DraftState switch
+    {
+        KbmDraftState.Active => "Active",
+        KbmDraftState.Dirty => "Unsaved changes",
+        KbmDraftState.SavedNotApplied => "Saved — not applied",
+        KbmDraftState.Conflict => "Changed on another device",
+        KbmDraftState.Disconnected => "Not connected",
+        _ => "Saved",
+    };
+
+    /// <summary>The explanation a one-word status cannot carry.</summary>
+    public string? StatusDetail => DraftState switch
+    {
+        KbmDraftState.Dirty =>
+            "Nothing has been sent to the adapter yet. Save to store these " +
+            "changes, or Discard to go back to the saved profile.",
+        KbmDraftState.SavedNotApplied =>
+            "The adapter has these changes saved, but the console is still " +
+            "using the mapping that was applied earlier. Set Active to use them.",
+        KbmDraftState.Conflict =>
+            "This profile was changed from another device since you opened it. " +
+            "Reload to see those changes, or save this as a new profile.",
+        KbmDraftState.Disconnected =>
+            "Showing the last mapping read from this adapter. What the console " +
+            "is using right now cannot be confirmed while disconnected.",
+        _ => null,
+    };
 
     /// <summary>
     /// The LAYOUT the adapter is actually resolving against right now.
@@ -243,18 +308,34 @@ public sealed record KeyClusterCells(KeyboardCluster Cluster, IReadOnlyList<KeyB
 
 public static class KeyboardMouse
 {
+    /// <param name="draft">
+    /// The editor's local copy, when one is open. The grid renders the DRAFT
+    /// rather than the adapter's stored mapping, which is what lets an edit show
+    /// immediately without any adapter write.
+    /// </param>
     public static KeyboardMouseView Project(
         KeyboardMouseState state,
         KbmLayout profile,
-        bool connected)
+        bool connected,
+        KeyboardMouseDraft? draft = null)
     {
-        var mapping = state.Mapping(profile);
-        var byKey = mapping.Bindings
+        var bindings = draft is not null
+            ? (IReadOnlyList<KbmBinding>)draft.Bindings
+            : state.Mapping(profile).Bindings;
+        var byKey = bindings
             .Where(binding => binding.Source.Kind == KbmSourceKind.Key)
             .ToDictionary(binding => binding.Source.Code);
-        var byButton = mapping.Bindings
+        var byButton = bindings
             .Where(binding => binding.Source.Kind == KbmSourceKind.MouseButton)
             .ToDictionary(binding => binding.Source.Code);
+
+        var profileRows = state.Profiles.For(profile);
+        var selected = draft is not null
+            ? profileRows.FirstOrDefault(row => row.Id == draft.ProfileId)
+            : null;
+        var draftState = draft is null
+            ? (connected ? KbmDraftState.Clean : KbmDraftState.Disconnected)
+            : draft.StateAgainst(state.Profiles, connected);
 
         var drawnKeys = KeyboardLayout.AllKeys.Select(cap => cap.Usage).ToHashSet();
 
@@ -279,7 +360,11 @@ public static class KeyboardMouse
             MouseConnected = state.Status.MouseConnected,
             Profile = profile,
             ActiveLayout = state.Status.Profile,
-            Profiles = state.Profiles.For(profile).ToArray(),
+            Profiles = profileRows,
+            ProfilesSupported = state.Profiles.Supported,
+            SelectedProfile = selected,
+            ActiveMapping = state.Profiles.ActiveFor(profile),
+            DraftState = draftState,
             Keys = KeyboardLayout.AllKeys.Select(cap => Cell(cap, byKey)).ToArray(),
             Clusters = KeyboardLayout.Clusters
                 .Select(cluster => new KeyClusterCells(
@@ -300,7 +385,7 @@ public static class KeyboardMouse
             // rather than dropped: a binding the user cannot see is one they cannot
             // remove, and a newer adapter is allowed to know keys this build does
             // not.
-            Undrawn = mapping.Bindings
+            Undrawn = bindings
                 .Where(binding =>
                     binding.Source.Kind == KbmSourceKind.Key &&
                     !drawnKeys.Contains(binding.Source.Code) &&
@@ -312,9 +397,21 @@ public static class KeyboardMouse
                     binding.Destination,
                     binding.Custom))
                 .ToArray(),
-            MouseSliders = Sliders(state.Mouse),
-            InvertX = state.Mouse.InvertX,
-            InvertY = state.Mouse.InvertY,
+            // Sliders follow the DRAFT when one is open, so dragging one shows
+            // immediately and costs no adapter write. The RANGES still come from
+            // the adapter's reply -- inventing client-side bounds would let the
+            // user drag to a value the adapter clamps.
+            MouseSliders = Sliders(draft is not null
+                                       ? state.Mouse with
+                                         {
+                                             SensitivityX = draft.Mouse.SensitivityX,
+                                             SensitivityY = draft.Mouse.SensitivityY,
+                                             VelocityWindowMs = draft.Mouse.VelocityWindowMs,
+                                             AntiDeadzone = draft.Mouse.AntiDeadzone,
+                                         }
+                                       : state.Mouse),
+            InvertX = draft?.Mouse.InvertX ?? state.Mouse.InvertX,
+            InvertY = draft?.Mouse.InvertY ?? state.Mouse.InvertY,
             Loaded = state.Loaded,
             Counters = state.Loaded ? Counters(state.Status) : null,
         };

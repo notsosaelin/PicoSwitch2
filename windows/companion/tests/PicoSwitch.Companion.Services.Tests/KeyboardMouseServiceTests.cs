@@ -20,13 +20,23 @@ public sealed class KeyboardMouseServiceTests
     private const string Mouse =
         """{"ok":true,"sensitivityX":256,"sensitivityY":256,"recenterMs":8,"invertX":false,"invertY":false,"antiDeadzone":10,"sensitivityMin":64,"sensitivityMax":1024,"recenterMinMs":2,"recenterMaxMs":32,"antiDeadzoneMax":100}""";
 
+    // Only CUSTOM profiles are stored; Default is a template the client
+    // synthesises, which is what keeps all six adapter slots for the user.
     private const string Profiles =
         """
         {"profiles":[
-          {"id":0,"layout":"kb","name":"Default","active":true,"builtin":true,"overrides":0},
-          {"id":1,"layout":"kbm","name":"Default","active":true,"builtin":true,"overrides":0},
-          {"id":2,"layout":"kb","name":"Splatoon","active":false,"builtin":false,"overrides":3}
-        ],"max":6}
+          {"id":2,"layout":"kb","name":"Splatoon","revision":3,"overrides":3,"fingerprint":111}
+        ],"max":6,"more":false}
+        """;
+
+    // What each layout is REALLY running. The Keyboard layout is running the
+    // built-in Default here, not the Splatoon profile.
+    private const string Active =
+        """
+        {"active":[
+          {"layout":"kb","sourceId":1,"revision":0,"fingerprint":900,"matchesSaved":true},
+          {"layout":"kbm","sourceId":1,"revision":0,"fingerprint":901,"matchesSaved":true}
+        ]}
         """;
 
     private static string Page(string profile, string source, string destination) =>
@@ -37,6 +47,7 @@ public sealed class KeyboardMouseServiceTests
         fixture.Transport.Replies["kbm status"] = Status;
         fixture.Transport.Replies["kbm mouse"] = Mouse;
         fixture.Transport.Replies["kbm profiles"] = Profiles;
+        fixture.Transport.Replies["kbm active"] = Active;
         fixture.Transport.Replies["kbm map kb 0"] = Page("kb", "key:04", "a");
         fixture.Transport.Replies["kbm map kbm 0"] = Page("kbm", "key:05", "b");
     }
@@ -275,4 +286,159 @@ public sealed class KeyboardMouseServiceTests
         Assert.Equal(KbmMode.Controller, status.Mode);
         Assert.Equal(KbmMode.KeyboardMouse, status.ModeOverride);
     }
+
+    // ----------------------------------------------------------- profile writes
+
+    [Fact]
+    public async Task EditingADraftSendsNothingAtAll()
+    {
+        // THE requirement. The previous editor wrote `kbm bind` per keystroke,
+        // which erased flash once per changed key and made Save and Discard
+        // meaningless. Thirty edits must cost zero commands.
+        using var fixture = new ConnectionServiceFixture();
+        await fixture.RememberAdapterAsync(Address);
+        ScriptFullRead(fixture);
+        await fixture.Service.RefreshKeyboardMouseAsync();
+
+        var library = fixture.Service.KeyboardMouse.Value.Profiles;
+        var row = library.For(KbmLayout.Keyboard).First(p => p.Id == 2);
+        var draft = KeyboardMouseDraft.From(row, [], new KbmMouseConfig());
+
+        fixture.Transport.Sent.Clear();
+        for (var usage = 0x04; usage < 0x22; usage++)
+        {
+            draft = draft.With(new KbmSource(KbmSourceKind.Key, usage),
+                               KbmDestination.A);
+        }
+
+        draft = draft
+            .WithName("Renamed locally")
+            .WithMouse(new KbmMouseConfig(SensitivityX: 900, SensitivityY: 900));
+        Assert.True(draft.Dirty);
+
+        // Discard is local too: there is nothing on the adapter to undo.
+        Assert.False(draft.Discard().Dirty);
+        Assert.Empty(fixture.Transport.Sent);
+    }
+
+    [Fact]
+    public async Task SaveIsOneTransactionAndDoesNotApply()
+    {
+        using var fixture = new ConnectionServiceFixture();
+        await fixture.RememberAdapterAsync(Address);
+        ScriptFullRead(fixture);
+        fixture.Transport.Replies["kbm draft begin kb 2 3 Work"] = Ok;
+        fixture.Transport.Replies["kbm draft bind key:04 a"] = Ok;
+        fixture.Transport.Replies["kbm draft mouse sensitivityx 0"] = Ok;
+        fixture.Transport.Replies["kbm draft mouse sensitivityy 0"] = Ok;
+        fixture.Transport.Replies["kbm draft mouse recenter 0"] = Ok;
+        fixture.Transport.Replies["kbm draft mouse invertx 0"] = Ok;
+        fixture.Transport.Replies["kbm draft mouse inverty 0"] = Ok;
+        fixture.Transport.Replies["kbm draft mouse antideadzone 0"] = Ok;
+        fixture.Transport.Replies["kbm draft commit"] =
+            """{"ok":true,"id":2,"revision":4}""";
+        await fixture.Service.RefreshKeyboardMouseAsync();
+
+        var row = fixture.Service.KeyboardMouse.Value.Profiles
+            .For(KbmLayout.Keyboard).First(p => p.Id == 2);
+        var draft = KeyboardMouseDraft
+            .From(row, [], new KbmMouseConfig())
+            .WithName("Work")
+            .With(new KbmSource(KbmSourceKind.Key, 0x04), KbmDestination.A);
+
+        fixture.Transport.Sent.Clear();
+        var saved = await fixture.Service.SaveKeyboardMouseProfileAsync(draft);
+
+        // The draft is clean against the revision the ADAPTER reported, not one
+        // the client assumed.
+        Assert.Equal(4, saved.BaseRevision);
+        Assert.False(saved.Dirty);
+
+        // Exactly one staged transaction, and NO apply. Saving must not change
+        // what the console is running.
+        Assert.Contains("kbm draft begin kb 2 3 Work", fixture.Transport.Sent);
+        Assert.Contains("kbm draft commit", fixture.Transport.Sent);
+        Assert.DoesNotContain(fixture.Transport.Sent,
+                              sent => sent.StartsWith("kbm apply",
+                                                      StringComparison.Ordinal));
+        Assert.DoesNotContain(fixture.Transport.Sent,
+                              sent => sent.StartsWith("kbm bind",
+                                                      StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task AFailedSaveAbortsTheDraftRatherThanLeavingItStaged()
+    {
+        // A half-transferred mapping left staged is one the next Commit would
+        // store by accident.
+        using var fixture = new ConnectionServiceFixture();
+        await fixture.RememberAdapterAsync(Address);
+        ScriptFullRead(fixture);
+        fixture.Transport.Replies["kbm draft begin kb 2 3 Work"] = Ok;
+        fixture.Transport.Failures["kbm draft bind key:04 a"] =
+            new AdapterCommandException("kbm draft bind", null, "mapping storage full");
+        fixture.Transport.Replies["kbm draft abort"] = Ok;
+        await fixture.Service.RefreshKeyboardMouseAsync();
+
+        var row = fixture.Service.KeyboardMouse.Value.Profiles
+            .For(KbmLayout.Keyboard).First(p => p.Id == 2);
+        var draft = KeyboardMouseDraft
+            .From(row, [], new KbmMouseConfig())
+            .WithName("Work")
+            .With(new KbmSource(KbmSourceKind.Key, 0x04), KbmDestination.A);
+
+        await Assert.ThrowsAsync<AdapterCommandException>(
+            () => fixture.Service.SaveKeyboardMouseProfileAsync(draft));
+
+        Assert.Contains("kbm draft abort", fixture.Transport.Sent);
+        Assert.DoesNotContain("kbm draft commit", fixture.Transport.Sent);
+    }
+
+    [Fact]
+    public async Task ApplyIsItsOwnCommandAndRereadsTheResult()
+    {
+        using var fixture = new ConnectionServiceFixture();
+        await fixture.RememberAdapterAsync(Address);
+        ScriptFullRead(fixture);
+        fixture.Transport.Replies["kbm apply kb 2"] =
+            """{"ok":true,"layout":"kb","id":2,"changed":true}""";
+        fixture.Transport.Replies["kbm active"] =
+            """
+            {"active":[
+              {"layout":"kb","sourceId":2,"revision":3,"fingerprint":111,"matchesSaved":true},
+              {"layout":"kbm","sourceId":1,"revision":0,"fingerprint":901,"matchesSaved":true}
+            ]}
+            """;
+        await fixture.Service.RefreshKeyboardMouseAsync();
+
+        fixture.Transport.Sent.Clear();
+        var state = await fixture.Service.ApplyKeyboardMouseProfileAsync(
+            KbmLayout.Keyboard, 2);
+
+        Assert.Contains("kbm apply kb 2", fixture.Transport.Sent);
+        // Verified by READBACK, not by the acknowledgement.
+        Assert.Contains("kbm active", fixture.Transport.Sent);
+        Assert.Equal(2, state.Profiles.ActiveFor(KbmLayout.Keyboard)?.SourceId);
+    }
+
+    [Fact]
+    public async Task AnAdapterWithoutAProfileLibraryStillLoads()
+    {
+        // Older firmware answers "unknown command" and must degrade to the
+        // single-mapping behaviour rather than failing the whole read.
+        using var fixture = new ConnectionServiceFixture();
+        await fixture.RememberAdapterAsync(Address);
+        ScriptFullRead(fixture);
+        fixture.Transport.Replies.Remove("kbm profiles");
+        fixture.Transport.Failures["kbm profiles"] =
+            new AdapterCommandException("kbm profiles", null, "unknown command");
+
+        var state = await fixture.Service.RefreshKeyboardMouseAsync();
+
+        Assert.True(state.Loaded);
+        Assert.False(state.Profiles.Supported);
+        Assert.Equal(CapabilityState.Available, state.Capability);
+    }
+
+    private const string Ok = """{"ok":true}""";
 }

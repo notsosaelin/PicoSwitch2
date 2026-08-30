@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace PicoSwitch.Management;
@@ -133,22 +134,61 @@ public static partial class ManagementCommands
 
     public const string KbmProfileList = "kbm profiles";
 
-    /// <summary>
-    /// Select which profile a layout resolves against. This changes what the
-    /// ADAPTER is using, not merely what the app is editing — which is the whole
-    /// point: the editor's target and the console's behaviour become the same
-    /// thing rather than two states that can silently disagree.
-    /// </summary>
-    public static string KbmProfileUse(KbmLayout layout, int id) =>
-        $"kbm profile use {layout.Wire()} {id}";
+    /// <summary>The realized mapping of each layout, and its divergence state.</summary>
+    public const string KbmActive = "kbm active";
 
-    public static string KbmProfileNew(KbmLayout layout, string name) =>
-        $"kbm profile new {layout.Wire()} {name}";
+    /// <summary>
+    /// APPLY. The only command that changes what the console is doing.
+    ///
+    /// Deliberately separate from saving: a user who edits and saves a profile
+    /// has changed the library, not the adapter's behaviour, and conflating the
+    /// two is what made a mapping edit feel like it had silently failed.
+    /// </summary>
+    public static string KbmApply(KbmLayout layout, int id) =>
+        $"kbm apply {layout.Wire()} {Target(id)}";
 
     public static string KbmProfileRename(int id, string name) =>
         $"kbm profile rename {id} {name}";
 
+    public static string KbmProfileDuplicate(int id, string name) =>
+        $"kbm profile dup {id} {name}";
+
     public static string KbmProfileDelete(int id) => $"kbm profile delete {id}";
+
+    /// <summary>Read one STORED profile's mapping, not the realized one.</summary>
+    public static string KbmProfileMap(int id, int page) =>
+        $"kbm pmap {id} {page}";
+
+    // --- staged profile write -------------------------------------------------
+    // A profile does not fit one management frame, and a loop of per-binding
+    // writes is not a transaction: a disconnect halfway leaves the adapter
+    // running half of one mapping and half of another. Nothing between Begin and
+    // Commit touches stored or realized state.
+
+    /// <param name="id">
+    /// The profile being written, or <see cref="KbmProfileIds.None"/> to create.
+    /// </param>
+    /// <param name="baseRevision">
+    /// The revision the draft was built from. The adapter rejects the commit if
+    /// its stored profile has moved on, rather than overwriting it.
+    /// </param>
+    public static string KbmDraftBegin(KbmLayout layout, int id,
+                                       int baseRevision, string name) =>
+        $"kbm draft begin {layout.Wire()} {(id == KbmProfileIds.None ? "new" : id.ToString(CultureInfo.InvariantCulture))} {baseRevision} {name}";
+
+    public static string KbmDraftBind(KbmSource source, KbmDestination destination) =>
+        $"kbm draft bind {source.Wire} {destination.Wire()}";
+
+    public static string KbmDraftMouse(KbmMouseField field, int value) =>
+        $"kbm draft mouse {field.Wire()} {value.ToString(CultureInfo.InvariantCulture)}";
+
+    public const string KbmDraftCommit = "kbm draft commit";
+    public const string KbmDraftAbort = "kbm draft abort";
+
+    private static string Target(int id) =>
+        id == KbmProfileIds.Default
+            ? "default"
+            : id.ToString(CultureInfo.InvariantCulture);
 
     public static string KbmBind(KbmLayout profile, KbmSource source, KbmDestination? destination) =>
         $"kbm bind {profile.Wire()} {source.Wire} {(destination is null ? "default" : destination.Value.Wire())}";

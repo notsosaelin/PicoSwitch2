@@ -689,6 +689,21 @@ public static class KbmLayouts
 }
 
 /// <summary>
+/// Reserved profile identities. Custom profiles are numbered from 2.
+/// </summary>
+public static class KbmProfileIds
+{
+    public const int None = 0;
+
+    /// <summary>
+    /// The built-in Default template of a layout. Not a stored profile: it
+    /// consumes no slot, cannot be renamed or deleted, and is always available
+    /// as the fallback.
+    /// </summary>
+    public const int Default = 1;
+}
+
+/// <summary>
 /// One named mapping the user can select, within one layout.
 ///
 /// A profile is NOT a layout. The layout is the shape of the mapping — keyboard,
@@ -697,34 +712,80 @@ public static class KbmLayouts
 /// choice. Collapsing the two is what let a binding be saved into a mapping the
 /// adapter was not resolving, report success, and do nothing at the console.
 /// </summary>
-/// <param name="Builtin">
-/// One of the two reserved Default profiles. Editable and resettable, never
-/// renameable or deletable — which is what guarantees every layout always has an
-/// active profile to fall back to.
+/// <param name="Id">
+/// Stable across storage-slot reuse, so a cached draft can never come back
+/// referring to an unrelated mapping.
+/// </param>
+/// <param name="Revision">
+/// Bumped by every successful save. A draft carries the revision it was based
+/// on; a mismatch is a conflict rather than a silent overwrite.
+/// </param>
+/// <param name="Fingerprint">
+/// The adapter's digest of this profile's saved content. Compared against the
+/// realized mapping's fingerprint to answer "is what I saved what is running?"
 /// </param>
 public sealed record KbmProfileInfo(
     int Id,
     KbmLayout Layout,
     string Name,
-    bool Active,
-    bool Builtin,
-    int Overrides);
+    int Revision,
+    int Overrides,
+    long Fingerprint)
+{
+    /// <summary>Built-in Defaults are synthesised locally, never stored.</summary>
+    public bool Builtin => Id == KbmProfileIds.Default;
+}
 
-/// <summary>The adapter's profile table, and how many slots it has.</summary>
+/// <summary>
+/// What a layout is REALLY resolving against.
+///
+/// <see cref="MatchesSaved"/> is the field a UI must believe. An id alone cannot
+/// express "saved but not applied": the id survives a save that was never
+/// applied, and a legacy per-binding write changes the realized mapping without
+/// touching any saved profile at all.
+/// </summary>
+public sealed record KbmActiveMapping(
+    KbmLayout Layout,
+    int SourceId,
+    int Revision,
+    long Fingerprint,
+    bool MatchesSaved);
+
+/// <summary>The adapter's profile library and both realized mappings.</summary>
 public sealed record KbmProfiles(
     ValueList<KbmProfileInfo> Profiles,
+    ValueList<KbmActiveMapping> Active,
     int Max)
 {
     public static readonly KbmProfiles Empty =
-        new(ValueList<KbmProfileInfo>.Empty, 0);
+        new(ValueList<KbmProfileInfo>.Empty, ValueList<KbmActiveMapping>.Empty, 0);
+
+    /// <summary>True when the adapter reported a profile library at all.</summary>
+    public bool Supported => Max > 0;
 
     public bool Full => Profiles.Count >= Max && Max > 0;
 
-    public KbmProfileInfo? ActiveFor(KbmLayout layout) =>
-        Profiles.FirstOrDefault(p => p.Layout == layout && p.Active);
+    public KbmActiveMapping? ActiveFor(KbmLayout layout) =>
+        Active.FirstOrDefault(a => a.Layout == layout);
 
-    public IEnumerable<KbmProfileInfo> For(KbmLayout layout) =>
-        Profiles.Where(p => p.Layout == layout);
+    /// <summary>
+    /// Every profile a layout can offer, with its built-in Default first.
+    ///
+    /// Default is synthesised rather than read: the adapter does not store it,
+    /// which is exactly what keeps all six slots available to the user.
+    /// </summary>
+    public IReadOnlyList<KbmProfileInfo> For(KbmLayout layout)
+    {
+        var rows = new List<KbmProfileInfo>
+        {
+            new(KbmProfileIds.Default, layout, "Default", Revision: 0,
+                Overrides: 0, Fingerprint: 0),
+        };
+        rows.AddRange(Profiles.Where(p => p.Layout == layout));
+        return rows;
+    }
+
+    public KbmProfileInfo? Find(int id) => Profiles.FirstOrDefault(p => p.Id == id);
 }
 
 public sealed record KbmStatus(
@@ -768,11 +829,17 @@ public sealed record KbmStatus(
     long Publishes = 0,
     long Recenters = 0,
 
-    // Which named profile the live layout is resolving against. A client that
-    // shows a mapping without this cannot say whether what it is showing is the
-    // mapping actually in use.
+    // What the live layout is REALLY running.
+    //
+    // ActiveMatchesSaved is the one a UI must believe: it is false after the
+    // source profile was edited and saved without applying, and after a legacy
+    // per-binding write mutated the realized mapping. An id alone expresses
+    // neither.
     int ActiveProfile = 0,
-    string ActiveProfileName = "")
+    string ActiveProfileName = "",
+    int ActiveRevision = 0,
+    long ActiveFingerprint = 0,
+    bool ActiveMatchesSaved = false)
 {
     public bool AnyDeviceConnected => KeyboardConnected || MouseConnected;
 }
@@ -974,6 +1041,26 @@ public static class KbmMouseFields
         KbmMouseField.InvertY => "inverty",
         _ => "antideadzone",
     };
+
+    /// <summary>
+    /// Every profile-owned mouse setting as (field, value), for writing a whole
+    /// mapping in one staged transaction.
+    ///
+    /// X and Y are sent separately rather than through the combined
+    /// <see cref="KbmMouseField.Sensitivity"/>, which sets both: a profile may
+    /// legitimately carry different axis sensitivities, and the combined form
+    /// would silently flatten them.
+    /// </summary>
+    public static IEnumerable<(KbmMouseField Field, int Value)> Values(
+        KbmMouseConfig mouse) =>
+    [
+        (KbmMouseField.SensitivityX, mouse.SensitivityX),
+        (KbmMouseField.SensitivityY, mouse.SensitivityY),
+        (KbmMouseField.VelocityWindow, mouse.VelocityWindowMs),
+        (KbmMouseField.InvertX, mouse.InvertX ? 1 : 0),
+        (KbmMouseField.InvertY, mouse.InvertY ? 1 : 0),
+        (KbmMouseField.AntiDeadzone, mouse.AntiDeadzone),
+    ];
 }
 
 public enum WakeResult

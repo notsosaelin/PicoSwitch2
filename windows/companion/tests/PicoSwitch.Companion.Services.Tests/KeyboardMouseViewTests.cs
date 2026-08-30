@@ -402,53 +402,197 @@ public sealed class KeyboardMouseViewTests
         Assert.Null(view.Counters);
     }
 
+    // ---------------------------------------------------------------- profiles
+
+    private static KbmProfiles Library(bool activeMatchesSaved = true,
+                                       int activeSourceId = 2) =>
+        new(
+            new ValueList<KbmProfileInfo>(
+            [
+                new KbmProfileInfo(2, KbmLayout.Keyboard, "Work", Revision: 3,
+                                   Overrides: 3, Fingerprint: 111),
+                new KbmProfileInfo(3, KbmLayout.KeyboardMouse, "Zelda",
+                                   Revision: 1, Overrides: 1, Fingerprint: 222),
+            ]),
+            new ValueList<KbmActiveMapping>(
+            [
+                new KbmActiveMapping(KbmLayout.Keyboard, activeSourceId,
+                                     Revision: 3, Fingerprint: 111,
+                                     MatchesSaved: activeMatchesSaved),
+                new KbmActiveMapping(KbmLayout.KeyboardMouse,
+                                     KbmProfileIds.Default, 0, 0, true),
+            ]),
+            Max: 6);
+
+    private static KeyboardMouseDraft Draft(KbmProfiles library, int id = 2,
+                                            KbmLayout layout = KbmLayout.Keyboard)
+    {
+        var row = library.For(layout).First(p => p.Id == id);
+        return KeyboardMouseDraft.From(row, [], new KbmMouseConfig());
+    }
+
     [Fact]
-    public void TheProfileSelectorOffersOnlyThisLayoutsProfiles()
+    public void TheProfileListOffersThisLayoutsProfilesWithDefaultFirst()
     {
         // A profile belongs to one layout: its source domain and its canonical
         // defaults are layout-specific, so offering the other layout's profiles
-        // would let the user activate a mapping the adapter must refuse.
-        var state = State() with
-        {
-            Profiles = new KbmProfiles(
-                new ValueList<KbmProfileInfo>(
-                [
-                    new KbmProfileInfo(0, KbmLayout.Keyboard, "Default", true, true, 0),
-                    new KbmProfileInfo(1, KbmLayout.KeyboardMouse, "Default", true, true, 0),
-                    new KbmProfileInfo(2, KbmLayout.Keyboard, "Splatoon", false, false, 3),
-                ]),
-                Max: 6),
-        };
-
+        // would let the user apply a mapping the adapter must refuse.
+        //
+        // Default is synthesised rather than stored, which is exactly what keeps
+        // all six adapter slots available to the user.
+        var state = State() with { Profiles = Library() };
         var view = KeyboardMouse.Project(state, KbmLayout.Keyboard, connected: true);
 
         Assert.Equal(2, view.Profiles.Count);
         Assert.All(view.Profiles, p => Assert.Equal(KbmLayout.Keyboard, p.Layout));
-        Assert.Equal("Default", view.ActiveProfile?.Name);
-        Assert.True(view.ShowProfiles);
+        Assert.True(view.Profiles[0].Builtin);
+        Assert.Equal("Default", view.Profiles[0].Name);
+        Assert.Equal("Work", view.Profiles[1].Name);
+        Assert.True(view.ProfilesSupported);
     }
 
     [Fact]
-    public void OneProfileIsNotAChoice()
+    public void FirmwareWithoutAProfileLibraryDegradesRatherThanBreaking()
     {
-        // Firmware without named profiles reports none, and an adapter with a
-        // single profile per layout has nothing to pick between. Showing a
-        // one-option control invites the user to look for meaning that is not
-        // there.
-        var none = KeyboardMouse.Project(State(), KbmLayout.Keyboard, connected: true);
-        Assert.Empty(none.Profiles);
-        Assert.False(none.ShowProfiles);
+        // Not a degraded state to apologise for: that adapter has exactly one
+        // mapping per layout and behaves as this app always did. The profile
+        // controls are simply not offered.
+        var view = KeyboardMouse.Project(State(), KbmLayout.Keyboard, connected: true);
+        Assert.False(view.ProfilesSupported);
+        Assert.False(view.CanApply);
+    }
 
-        var single = State() with
+    [Fact]
+    public void EditingADraftChangesTheGridAndNothingElse()
+    {
+        // THE central requirement. Editing must send zero management commands,
+        // which is why the grid renders the DRAFT rather than the adapter's
+        // stored mapping.
+        var library = Library();
+        var state = State() with { Profiles = library };
+        var draft = Draft(library);
+
+        var clean = KeyboardMouse.Project(state, KbmLayout.Keyboard, true, draft);
+        Assert.False(clean.Dirty);
+        Assert.False(clean.CanSave);
+
+        var edited = draft
+            .With(new KbmSource(KbmSourceKind.Key, 0x04), KbmDestination.Zr)
+            .With(new KbmSource(KbmSourceKind.Key, 0x05), KbmDestination.Zl);
+        var view = KeyboardMouse.Project(state, KbmLayout.Keyboard, true, edited);
+
+        Assert.True(view.Dirty);
+        Assert.True(view.CanSave);
+        Assert.Equal(KbmDestination.Zr,
+                     view.Keys.Single(c => c.Cap.Usage == 0x04).Destination);
+        // Apply is NOT offered for an unsaved draft: there is nothing stored to
+        // apply, and offering it would imply the edits are on the adapter.
+        Assert.False(view.CanApply);
+    }
+
+    [Fact]
+    public void PuttingAnEditBackMakesTheDraftCleanAgain()
+    {
+        // Dirty is computed from content, not tracked with a flag, so undoing an
+        // edit by hand correctly disables Save.
+        var library = Library();
+        var draft = Draft(library);
+        var source = new KbmSource(KbmSourceKind.Key, 0x04);
+
+        var there = draft.With(source, KbmDestination.Zr);
+        Assert.True(there.Dirty);
+        Assert.False(there.Discard().Dirty);
+    }
+
+    [Fact]
+    public void SavedButNotAppliedIsItsOwnVisibleState()
+    {
+        // The state the whole feature exists to express. The profile is the one
+        // that produced the realized mapping, and its saved content has moved on
+        // since — so the console is still running the old behaviour.
+        var library = Library(activeMatchesSaved: false);
+        var state = State() with { Profiles = library };
+        var draft = Draft(library);
+
+        var view = KeyboardMouse.Project(state, KbmLayout.Keyboard, true, draft);
+
+        Assert.Equal(KbmDraftState.SavedNotApplied, view.DraftState);
+        Assert.True(view.SavedNotApplied);
+        Assert.True(view.CanApply);
+        Assert.False(view.CanSave);
+        Assert.Contains("not applied", view.StatusText, StringComparison.OrdinalIgnoreCase);
+        Assert.NotNull(view.StatusDetail);
+    }
+
+    [Fact]
+    public void ActiveRequiresBothTheIdAndTheContentToMatch()
+    {
+        // An id match alone is what would let the UI claim "Active" for a
+        // profile that was saved and never applied.
+        var applied = State() with { Profiles = Library(activeMatchesSaved: true) };
+        Assert.Equal(KbmDraftState.Active,
+                     KeyboardMouse.Project(applied, KbmLayout.Keyboard, true,
+                                           Draft(Library())).DraftState);
+
+        // A different profile produced the realized mapping.
+        var other = State() with { Profiles = Library(activeSourceId: 9) };
+        Assert.Equal(KbmDraftState.SavedNotApplied,
+                     KeyboardMouse.Project(other, KbmLayout.Keyboard, true,
+                                           Draft(Library())).DraftState);
+    }
+
+    [Fact]
+    public void AnotherCompanionsSaveShowsAsAConflict()
+    {
+        // The draft was based on revision 3; the adapter now reports 5. Saving
+        // over that would discard whatever the other companion stored.
+        var library = Library();
+        var draft = Draft(library);
+        var moved = library with
         {
-            Profiles = new KbmProfiles(
-                new ValueList<KbmProfileInfo>(
-                [
-                    new KbmProfileInfo(0, KbmLayout.Keyboard, "Default", true, true, 0),
-                ]),
-                Max: 6),
+            Profiles = new ValueList<KbmProfileInfo>(
+            [
+                library.Profiles[0] with { Revision = 5 },
+                library.Profiles[1],
+            ]),
         };
-        Assert.False(KeyboardMouse.Project(single, KbmLayout.Keyboard, true).ShowProfiles);
+
+        var view = KeyboardMouse.Project(State() with { Profiles = moved },
+                                         KbmLayout.Keyboard, true, draft);
+        Assert.Equal(KbmDraftState.Conflict, view.DraftState);
+        Assert.True(view.Conflicted);
+        Assert.Contains("another device", view.StatusDetail!,
+                        StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DisconnectedNeverClaimsActive()
+    {
+        // A cached "Active" is exactly the lie this model exists to prevent.
+        var library = Library(activeMatchesSaved: true);
+        var view = KeyboardMouse.Project(State() with { Profiles = library },
+                                         KbmLayout.Keyboard, connected: false,
+                                         Draft(library));
+
+        Assert.Equal(KbmDraftState.Disconnected, view.DraftState);
+        Assert.False(view.CanApply);
+        Assert.False(view.CanSave);
+    }
+
+    [Fact]
+    public void TheBuiltInDefaultCannotBeRenamedOrDeletedButCanSeedAProfile()
+    {
+        var library = Library();
+        var view = KeyboardMouse.Project(State() with { Profiles = library },
+                                         KbmLayout.Keyboard, true,
+                                         Draft(library, KbmProfileIds.Default));
+
+        Assert.False(view.CanRename);
+        Assert.False(view.CanDelete);
+        // Save on the built-in template means "make this a profile of mine",
+        // which is the only way to keep Default immutable and still let a user
+        // start from it.
+        Assert.True(view.CanSave);
     }
 }
 

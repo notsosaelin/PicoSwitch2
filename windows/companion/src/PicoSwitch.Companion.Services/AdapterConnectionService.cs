@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using PicoSwitch.Bridge.Core;
 using PicoSwitch.Companion.Services.Diagnostics;
 using PicoSwitch.Companion.Services.Presentation;
@@ -511,21 +512,68 @@ public sealed class AdapterConnectionService
         });
 
     /// <summary>
-    /// Activate a named profile for one layout on the adapter.
+    /// SAVE a draft into the adapter's profile library, in one transaction.
     ///
-    /// This is a change to what the ADAPTER resolves, not a local view
-    /// preference, which is exactly why it goes through the same serialized
-    /// KB/M path as a binding edit.
+    /// Does NOT change what the console is running. Returns the draft rebased on
+    /// what the adapter actually stored, so the editor is clean against the real
+    /// revision rather than an assumed one.
     /// </summary>
-    public Task<KeyboardMouseState> UseKeyboardMouseProfileAsync(
+    public Task<KeyboardMouseDraft> SaveKeyboardMouseProfileAsync(
+        KeyboardMouseDraft draft) =>
+        RunKbmAsync(async () =>
+        {
+            var saved = await repository.SaveKbmProfileAsync(draft)
+                .ConfigureAwait(false);
+            diagnostics.Info(
+                "kbm",
+                $"saved profile '{saved.Name}' revision {saved.BaseRevision} " +
+                "(not applied)");
+            return saved;
+        });
+
+    /// <summary>
+    /// APPLY. The only call here that changes what the console is doing.
+    /// </summary>
+    public Task<KeyboardMouseState> ApplyKeyboardMouseProfileAsync(
         KbmLayout layout,
         int id) =>
         RunKbmAsync(async () =>
         {
-            var state = await repository.UseKbmProfileAsync(layout, id)
+            var state = await repository.ApplyKbmProfileAsync(layout, id)
                 .ConfigureAwait(false);
+            // Trust the readback, not the acknowledgement.
+            var active = state.Profiles.ActiveFor(layout);
+            if (active is null || active.SourceId != id)
+            {
+                diagnostics.Warn(
+                    "kbm",
+                    $"applied profile {id} but the adapter reports " +
+                    $"{active?.SourceId.ToString(CultureInfo.InvariantCulture) ?? "nothing"}");
+            }
+
             return state;
         });
+
+    public Task<KeyboardMouseState> RenameKeyboardMouseProfileAsync(
+        int id, string name) =>
+        RunKbmAsync(() => repository.RenameKbmProfileAsync(id, name));
+
+    public Task<KeyboardMouseState> DuplicateKeyboardMouseProfileAsync(
+        int id, string name) =>
+        RunKbmAsync(() => repository.DuplicateKbmProfileAsync(id, name));
+
+    public Task<KeyboardMouseState> DeleteKeyboardMouseProfileAsync(int id) =>
+        RunKbmAsync(async () =>
+        {
+            var state = await repository.DeleteKbmProfileAsync(id)
+                .ConfigureAwait(false);
+            diagnostics.Warn("kbm", $"deleted profile {id}");
+            return state;
+        });
+
+    /// <summary>Open one profile's stored mapping in the editor.</summary>
+    public Task<KbmMapping> LoadKeyboardMouseProfileAsync(KbmProfileInfo profile) =>
+        RunKbmAsync(() => repository.LoadKbmProfileAsync(profile));
 
     public Task<KeyboardMouseState> ResetAllKeyboardMouseAsync(
         CancellationToken cancellationToken = default) =>
