@@ -2,6 +2,9 @@ package dev.picoswitch.companion.data
 
 import dev.picoswitch.companion.model.*
 import dev.picoswitch.companion.protocol.*
+import dev.picoswitch.management.KbmDraft
+import dev.picoswitch.management.KbmProfileInfo
+import dev.picoswitch.management.KbmProfiles
 import dev.picoswitch.management.ManagementClient
 import dev.picoswitch.management.WakeStatus
 import dev.picoswitch.management.isUnsupported
@@ -260,9 +263,19 @@ class AdapterRepository(private val transport: ManagementTransport) {
         return try {
             val status = client.kbmStatus()
             val mouse = client.kbmMouse()
+            // The profile library is newer than the rest of the KB/M surface. An
+            // adapter without it is not degraded -- it has exactly one mapping
+            // per layout, which is what this app did for its whole life until
+            // now -- so its absence must not fail the whole read.
+            val profiles = try {
+                client.kbmProfiles()
+            } catch (error: AdapterCommandException) {
+                if (error.isUnsupported()) KbmProfiles() else throw error
+            }
             _kbm.value = _kbm.value.copy(
                 status = status,
                 mouse = mouse,
+                profiles = profiles,
                 available = CapabilityState.Available,
                 loading = false,
             )
@@ -302,6 +315,94 @@ class AdapterRepository(private val transport: ManagementTransport) {
         val status = client.setKbmMode(mode)
         _kbm.value = _kbm.value.copy(status = status)
         markKbmDirty()
+    }
+
+    // ------------------------------------------------------------- profiles
+    // Business rules live here and in the ViewModel, never in a composable.
+
+    /**
+     * Open one profile's stored mapping into a fresh local draft.
+     *
+     * The built-in Default is not stored, so "its mapping" is the canonical one
+     * the adapter reports for an unmodified layout.
+     */
+    suspend fun openKbmProfile(profile: KbmProfileInfo): KbmDraft {
+        val mapping = if (profile.builtin) {
+            client.loadKbmMapping(profile.layout)
+        } else {
+            client.loadKbmProfileMapping(profile)
+        }
+        val draft = KbmDraft.from(profile, mapping.bindings, _kbm.value.mouse)
+        _kbm.value = _kbm.value.copy(draft = draft)
+        return draft
+    }
+
+    /** Edit the draft. Sends nothing. */
+    fun editKbmDraft(transform: (KbmDraft) -> KbmDraft) {
+        val draft = _kbm.value.draft ?: return
+        _kbm.value = _kbm.value.copy(draft = transform(draft))
+    }
+
+    /** Throw the local edits away. Sends nothing. */
+    fun discardKbmDraft() = editKbmDraft { it.discard() }
+
+    /**
+     * SAVE. Writes the draft to the adapter's profile library in ONE staged
+     * transaction and does NOT change what the console is running.
+     */
+    suspend fun saveKbmDraft(): KbmDraft? {
+        val draft = _kbm.value.draft ?: return null
+        val (id, revision) = client.saveKbmProfile(draft)
+        val rebased = draft.rebased(id, revision, draft.name)
+        _kbm.value = _kbm.value.copy(
+            draft = rebased,
+            profiles = client.kbmProfiles(),
+            status = client.kbmStatus(),
+        )
+        return rebased
+    }
+
+    /** APPLY. The only repository call that changes what the console is doing. */
+    suspend fun applyKbmProfile(layout: KbmProfile, id: Int) {
+        val profiles = client.applyKbmProfile(layout, id)
+        val mapping = client.loadKbmMapping(layout)
+        _kbm.value = _kbm.value.copy(
+            profiles = profiles,
+            status = client.kbmStatus(),
+            mappings = _kbm.value.mappings + (layout to mapping),
+        )
+    }
+
+    suspend fun renameKbmProfile(id: Int, name: String) {
+        val profiles = client.renameKbmProfile(id, name)
+        val draft = _kbm.value.draft
+        _kbm.value = _kbm.value.copy(
+            profiles = profiles,
+            draft = if (draft?.profileId == id) {
+                draft.rebased(id, draft.baseRevision, name)
+            } else {
+                draft
+            },
+        )
+    }
+
+    suspend fun duplicateKbmProfile(id: Int, name: String) {
+        _kbm.value = _kbm.value.copy(profiles = client.duplicateKbmProfile(id, name))
+    }
+
+    /**
+     * Delete a profile. If it produced the realized mapping, the adapter falls
+     * that layout back to Default, so the mappings are re-read too.
+     */
+    suspend fun deleteKbmProfile(id: Int) {
+        val profiles = client.deleteKbmProfile(id)
+        val mappings = KbmProfile.entries.associateWith { client.loadKbmMapping(it) }
+        _kbm.value = _kbm.value.copy(
+            profiles = profiles,
+            status = client.kbmStatus(),
+            mappings = mappings,
+            draft = _kbm.value.draft?.takeIf { it.profileId != id },
+        )
     }
 
     /**

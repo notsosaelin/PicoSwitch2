@@ -387,6 +387,16 @@ enum class KbmMode(val wire: String) {
     }
 }
 
+/**
+ * The SHAPE of a mapping: which source inputs exist and which canonical defaults
+ * apply. Derived from which peer roles are filled and never chosen by the user —
+ * asserting Keyboard + Mouse with no mouse would silently drop the right stick.
+ *
+ * Deliberately not called a profile. A profile is a named override set the user
+ * selects WITHIN a layout; conflating the two is what let a binding be saved into
+ * a mapping the adapter was not resolving, report success, and do nothing at the
+ * console. The wire names are unchanged.
+ */
 enum class KbmProfile(val wire: String) {
     Keyboard("kb"),
     KeyboardMouse("kbm");
@@ -394,6 +404,89 @@ enum class KbmProfile(val wire: String) {
     companion object {
         fun fromWire(value: String?): KbmProfile? = entries.firstOrNull { it.wire == value }
     }
+}
+
+/** Reserved profile identities. Custom profiles are numbered from 2. */
+object KbmProfileIds {
+    const val NONE = 0
+
+    /**
+     * The built-in Default template of a layout. Not a stored profile: it
+     * consumes no slot, cannot be renamed or deleted, and is always available as
+     * the fallback.
+     */
+    const val DEFAULT = 1
+}
+
+/**
+ * One named mapping the user can select, within one layout.
+ *
+ * [id] is stable across storage-slot reuse, so a cached draft can never come back
+ * referring to an unrelated mapping. [revision] guards saves: a draft carries the
+ * revision it was based on, and a mismatch is a conflict rather than a silent
+ * overwrite of what another companion stored.
+ */
+data class KbmProfileInfo(
+    val id: Int,
+    val layout: KbmProfile,
+    val name: String,
+    val revision: Int,
+    val overrides: Int,
+    val fingerprint: Long,
+) {
+    /** Built-in Defaults are synthesised locally, never stored. */
+    val builtin: Boolean get() = id == KbmProfileIds.DEFAULT
+}
+
+/**
+ * What a layout is REALLY resolving against.
+ *
+ * [matchesSaved] is the field a UI must believe. An id alone cannot express
+ * "saved but not applied": it survives a save that was never applied, and a
+ * legacy per-binding write changes the realized mapping without touching any
+ * saved profile at all.
+ */
+data class KbmActiveMapping(
+    val layout: KbmProfile,
+    val sourceId: Int,
+    val revision: Int,
+    val fingerprint: Long,
+    val matchesSaved: Boolean,
+)
+
+/** The adapter's profile library and both realized mappings. */
+data class KbmProfiles(
+    val profiles: List<KbmProfileInfo> = emptyList(),
+    val active: List<KbmActiveMapping> = emptyList(),
+    val max: Int = 0,
+) {
+    /** True when the adapter reported a profile library at all. */
+    val supported: Boolean get() = max > 0
+
+    val full: Boolean get() = max > 0 && profiles.size >= max
+
+    fun activeFor(layout: KbmProfile): KbmActiveMapping? =
+        active.firstOrNull { it.layout == layout }
+
+    fun find(id: Int): KbmProfileInfo? = profiles.firstOrNull { it.id == id }
+
+    /**
+     * Every profile a layout can offer, with its built-in Default first.
+     *
+     * Default is synthesised rather than read: the adapter does not store it,
+     * which is exactly what keeps all six slots available to the user.
+     */
+    fun forLayout(layout: KbmProfile): List<KbmProfileInfo> =
+        listOf(
+            KbmProfileInfo(
+                id = KbmProfileIds.DEFAULT,
+                layout = layout,
+                name = "Default",
+                revision = 0,
+                overrides = 0,
+                fingerprint = 0,
+            ),
+        ) + profiles.filter { it.layout == layout }
 }
 
 data class KbmStatus(
@@ -415,6 +508,16 @@ data class KbmStatus(
     val mapGeneration: Long = 0,
     val publishes: Long = 0,
     val recenters: Long = 0,
+
+    // What the live layout is REALLY running. activeMatchesSaved is the one a UI
+    // must believe: false after the source profile was edited and saved without
+    // applying, and after a legacy per-binding write mutated the realized
+    // mapping. An id alone expresses neither.
+    val activeProfile: Int = 0,
+    val activeProfileName: String = "",
+    val activeRevision: Int = 0,
+    val activeFingerprint: Long = 0,
+    val activeMatchesSaved: Boolean = false,
 ) {
     val anyDeviceConnected: Boolean get() = keyboardConnected || mouseConnected
 }
@@ -518,7 +621,26 @@ enum class KbmMouseField(val wire: String) {
     VelocityWindow("recenter"),
     InvertX("invertx"),
     InvertY("inverty"),
-    AntiDeadzone("antideadzone"),
+    AntiDeadzone("antideadzone");
+
+    companion object {
+        /**
+         * Every profile-owned mouse setting as (field, value), for writing a
+         * whole mapping in one staged transaction.
+         *
+         * X and Y are sent separately rather than through the combined
+         * [Sensitivity], which sets both: a profile may legitimately carry
+         * different axis sensitivities, and the combined form would flatten them.
+         */
+        fun profileOwned(mouse: KbmMouseConfig): List<Pair<KbmMouseField, Int>> = listOf(
+            SensitivityX to mouse.sensitivityX,
+            SensitivityY to mouse.sensitivityY,
+            VelocityWindow to mouse.velocityWindowMs,
+            InvertX to if (mouse.invertX) 1 else 0,
+            InvertY to if (mouse.invertY) 1 else 0,
+            AntiDeadzone to mouse.antiDeadzone,
+        )
+    }
 }
 
 enum class WakeResult { Pending, Advertised, ConsoleAwake, NoIdentity, RadioBusy, Unknown }

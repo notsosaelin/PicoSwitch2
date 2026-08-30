@@ -1597,11 +1597,75 @@ class CompanionViewModel(application: Application, private val savedState: Saved
         adapter.setKbmMode(mode)
     }
 
-    /** `null` destination restores this input's canonical binding. */
+    /**
+     * `null` destination restores this input's canonical binding.
+     *
+     * Legacy path. Used only when the adapter has no profile library: it writes
+     * the realized mapping immediately, which is genuinely the only mapping
+     * surface such firmware has. With a library open, edits go to the DRAFT.
+     */
     fun bindKbm(profile: KbmProfile, source: KbmSource, destination: KbmDestination?) =
         kbmOperation("Updating binding") {
             adapter.bindKbm(profile, source, destination)
         }
+
+    // ------------------------------------------------------------- profiles
+
+    /** Open a profile for viewing and editing. Does NOT apply it. */
+    fun openKbmProfile(profile: KbmProfileInfo) = kbmOperation("Opening ${profile.name}") {
+        adapter.openKbmProfile(profile)
+    }
+
+    /**
+     * Rebind one input in the open draft.
+     *
+     * Sends nothing. Thirty edits cost zero management commands and zero flash
+     * erases, which is what makes Save and Discard mean anything.
+     */
+    fun editKbmBinding(source: KbmSource, destination: KbmDestination) =
+        adapter.editKbmDraft { it.with(source, destination) }
+
+    fun editKbmDraftName(name: String) = adapter.editKbmDraft { it.withName(name) }
+
+    fun editKbmDraftMouse(mouse: KbmMouseConfig) =
+        adapter.editKbmDraft { it.withMouse(mouse) }
+
+    /** Throw the local edits away. Sends nothing. */
+    fun discardKbmDraft() = adapter.discardKbmDraft()
+
+    /**
+     * SAVE. Stores the draft in the adapter's profile library.
+     *
+     * Deliberately does not apply it: the console keeps running whatever it was
+     * running until the user presses Set Active.
+     */
+    fun saveKbmDraft() = kbmOperation("Saving profile") {
+        val saved = adapter.saveKbmDraft()
+        if (saved != null) notice("Saved '${saved.name}' — not applied yet")
+    }
+
+    /** APPLY. The only call here that changes what the console is doing. */
+    fun applyKbmProfile(layout: KbmProfile, id: Int) = kbmOperation("Applying profile") {
+        adapter.applyKbmProfile(layout, id)
+        // Trust the readback, not the acknowledgement.
+        val active = _ui.value.kbm.profiles.activeFor(layout)
+        if (active?.sourceId != id) {
+            notice("The adapter did not report this profile as active")
+        }
+    }
+
+    fun renameKbmProfile(id: Int, name: String) = kbmOperation("Renaming profile") {
+        adapter.renameKbmProfile(id, name)
+    }
+
+    fun duplicateKbmProfile(id: Int, name: String) = kbmOperation("Duplicating profile") {
+        adapter.duplicateKbmProfile(id, name)
+    }
+
+    fun deleteKbmProfile(id: Int) = kbmOperation("Deleting profile") {
+        adapter.deleteKbmProfile(id)
+        notice("Profile deleted")
+    }
 
     fun resetKbmProfile(profile: KbmProfile) = kbmOperation("Restoring ${profile.title} defaults") {
         adapter.resetKbmProfile(profile)

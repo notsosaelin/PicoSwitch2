@@ -52,11 +52,26 @@ fun KeyboardMouseScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
     var resetProfileOpen by rememberSaveable { mutableStateOf<KbmProfile?>(null) }
     var advancedOpen by rememberSaveable { mutableStateOf(false) }
     var selectedProfile by rememberSaveable { mutableStateOf(kbm.activeProfile) }
+    var nameDialog by remember { mutableStateOf<NameDialog?>(null) }
+    var deleteOpen by rememberSaveable { mutableStateOf(false) }
 
-    // Follow the adapter when the active profile changes underneath the page
+    // Follow the adapter when the active layout changes underneath the page
     // (plugging a mouse in switches it), but never fight a deliberate choice
-    // made while looking at the other profile.
+    // made while looking at the other layout.
     LaunchedEffect(kbm.activeProfile) { selectedProfile = kbm.activeProfile }
+
+    // Open this layout's applied profile on arrival, so what is on screen is
+    // what the console is using rather than an arbitrary row.
+    LaunchedEffect(selectedProfile, kbm.profiles) {
+        if (!kbm.profiles.supported) return@LaunchedEffect
+        if (kbm.draft?.layout == selectedProfile) return@LaunchedEffect
+        val applied = kbm.profiles.activeFor(selectedProfile)?.sourceId
+            ?: KbmProfileIds.DEFAULT
+        val row = kbm.profiles.forLayout(selectedProfile)
+            .firstOrNull { it.id == applied }
+            ?: kbm.profiles.forLayout(selectedProfile).first()
+        viewModel.openKbmProfile(row)
+    }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val twoColumn = twoColumnLayout(maxWidth)
@@ -105,6 +120,21 @@ fun KeyboardMouseScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
 
                 else -> {
                     val status: @Composable () -> Unit = { KbmStatusCard(kbm, ui, viewModel) }
+                    val profiles: @Composable () -> Unit = {
+                        ProfilesCard(
+                            kbm = kbm,
+                            layout = selectedProfile,
+                            connected = ui.connection.connected,
+                            enabled = !ui.kbmBusy,
+                            onOpen = viewModel::openKbmProfile,
+                            onSave = viewModel::saveKbmDraft,
+                            onDiscard = viewModel::discardKbmDraft,
+                            onApply = { viewModel.applyKbmProfile(selectedProfile, it) },
+                            onNew = { nameDialog = NameDialog.New },
+                            onRename = { nameDialog = NameDialog.Rename },
+                            onDelete = { deleteOpen = true },
+                        )
+                    }
                     val mapping: @Composable () -> Unit = {
                         MappingCard(
                             kbm = kbm,
@@ -139,14 +169,14 @@ fun KeyboardMouseScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
                             Column(
                                 Modifier.weight(1f),
                                 verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space4),
-                            ) { mapping() }
+                            ) { profiles(); mapping() }
                         }
                     } else {
                         Column(
                             Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
                             verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space4),
                         ) {
-                            status(); mapping(); mouse()
+                            status(); profiles(); mapping(); mouse()
                             Spacer(Modifier.height(LayoutTokens.Space5))
                         }
                     }
@@ -160,11 +190,23 @@ fun KeyboardMouseScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
             target = target,
             onDismiss = { editing = null },
             onApply = { destination ->
-                viewModel.bindKbm(target.profile, target.source, destination)
+                // With a draft open this edits the LOCAL copy and sends nothing.
+                // Without one -- firmware with no profile library -- the
+                // per-binding command is genuinely the only mapping surface
+                // that adapter has.
+                if (kbm.draft?.layout == target.profile && destination != null) {
+                    viewModel.editKbmBinding(target.source, destination)
+                } else {
+                    viewModel.bindKbm(target.profile, target.source, destination)
+                }
                 editing = null
             },
             onRestoreDefault = {
-                viewModel.bindKbm(target.profile, target.source, null)
+                if (kbm.draft?.layout == target.profile) {
+                    viewModel.editKbmBinding(target.source, KbmDestination.None)
+                } else {
+                    viewModel.bindKbm(target.profile, target.source, null)
+                }
                 editing = null
             },
         )
@@ -194,7 +236,124 @@ fun KeyboardMouseScreen(ui: CompanionUiState, viewModel: CompanionViewModel) {
             onConfirm = { resetProfileOpen = null; viewModel.resetKbmProfile(profile) },
         )
     }
+
+    nameDialog?.let { which ->
+        val existing = kbm.profiles.forLayout(selectedProfile).map { it.name }
+        val draft = kbm.draft
+        ProfileNameDialog(
+            title = if (which == NameDialog.New) "New profile" else "Rename profile",
+            body = when {
+                which == NameDialog.Rename -> "Only the name changes. The mapping " +
+                    "the console is using is not affected."
+                draft?.isBuiltin != false -> "Starts from the built-in Default mapping."
+                else -> "Starts as a copy of the profile you are viewing."
+            },
+            initial = if (which == NameDialog.Rename) draft?.name.orEmpty()
+                      else suggestProfileName(existing, "My mapping"),
+            taken = existing.filter { which == NameDialog.New || it != draft?.name },
+            onDismiss = { nameDialog = null },
+            onConfirm = { name ->
+                nameDialog = null
+                when {
+                    which == NameDialog.Rename -> draft?.let {
+                        viewModel.renameKbmProfile(it.profileId, name)
+                    }
+                    // From the built-in template there is nothing stored to
+                    // duplicate: save the draft under a new name instead.
+                    draft?.isBuiltin != false -> {
+                        viewModel.editKbmDraftName(name)
+                        viewModel.saveKbmDraft()
+                    }
+                    else -> viewModel.duplicateKbmProfile(draft.profileId, name)
+                }
+            },
+        )
+    }
+
+    if (deleteOpen) {
+        val draft = kbm.draft
+        val applied =
+            kbm.profiles.activeFor(selectedProfile)?.sourceId == draft?.profileId
+        ConfirmDialog(
+            onDismiss = { deleteOpen = false },
+            title = "Delete '${draft?.name.orEmpty()}'?",
+            body = if (applied) {
+                "This profile is what the console is using. Deleting it switches " +
+                    "this layout back to the built-in Default mapping."
+            } else {
+                "This profile is removed from the adapter. The mapping the console " +
+                    "is using does not change."
+            },
+            confirmLabel = "Delete",
+            destructive = true,
+            icon = Icons.Default.RestartAlt,
+            onConfirm = {
+                deleteOpen = false
+                draft?.let { viewModel.deleteKbmProfile(it.profileId) }
+            },
+        )
+    }
 }
+
+/** A name that is not already taken in this layout. */
+private fun suggestProfileName(taken: List<String>, basis: String): String {
+    if (taken.none { it.equals(basis, ignoreCase = true) }) return basis
+    return (2..99).asSequence()
+        .map { "$basis $it" }
+        .firstOrNull { candidate -> taken.none { it.equals(candidate, ignoreCase = true) } }
+        ?: basis
+}
+
+/**
+ * Ask for a profile name.
+ *
+ * Bounded to what the adapter can store and checked for collisions here as well
+ * as in firmware, so the user is told before they press OK rather than after the
+ * adapter refuses.
+ */
+@Composable
+private fun ProfileNameDialog(
+    title: String,
+    body: String,
+    initial: String,
+    taken: List<String>,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var text by rememberSaveable { mutableStateOf(initial) }
+    val trimmed = text.trim()
+    val collision = taken.any { it.equals(trimmed, ignoreCase = true) }
+    val valid = trimmed.isNotEmpty() && !collision
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(LayoutTokens.Space3)) {
+                Text(body, style = MaterialTheme.typography.bodyMedium)
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { if (it.length <= KBM_PROFILE_NAME_MAX) text = it },
+                    singleLine = true,
+                    isError = collision,
+                    supportingText = {
+                        if (collision) Text("That name is already used in this layout.")
+                    },
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(trimmed) }, enabled = valid) { Text("OK") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** Matches NS2_KBM_PROFILE_NAME_MAX minus its NUL. */
+private const val KBM_PROFILE_NAME_MAX = 19
+
+/** Which naming prompt is open. */
+private enum class NameDialog { New, Rename }
 
 /** Which input, in which profile, the focused editor is currently editing. */
 private data class EditTarget(
@@ -262,6 +421,116 @@ private fun KbmStatusCard(kbm: KbmState, ui: CompanionUiState, viewModel: Compan
                 "This adapter mode sends real pointer movement, so mouse tuning below is not in effect.",
                 icon = Icons.Default.Usb,
                 tone = ChipTone.Attention,
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Profiles
+// ---------------------------------------------------------------------------
+
+/**
+ * The profile library for one layout.
+ *
+ * Three separate ideas, kept visibly separate because collapsing any two is what
+ * made a mapping edit feel like it had silently failed:
+ *
+ *  - selecting a profile OPENS it. It does not apply it.
+ *  - Save stores it in the adapter's library. It does not change the console.
+ *  - Set Active is what changes the console.
+ *
+ * All the rules live in the ViewModel and the draft model; this composable reads
+ * state and raises events.
+ */
+@Composable
+private fun ProfilesCard(
+    kbm: KbmState,
+    layout: KbmProfile,
+    connected: Boolean,
+    enabled: Boolean,
+    onOpen: (KbmProfileInfo) -> Unit,
+    onSave: () -> Unit,
+    onDiscard: () -> Unit,
+    onApply: (Int) -> Unit,
+    onNew: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    // Firmware without a profile library is not degraded: it has exactly one
+    // mapping per layout and the controls are simply not offered.
+    if (!kbm.profiles.supported) return
+
+    val rows = kbm.profiles.forLayout(layout)
+    val draft = kbm.draft?.takeIf { it.layout == layout }
+    val state = kbm.draftState(connected)
+    val selected = rows.firstOrNull { it.id == draft?.profileId }
+
+    SectionCard(title = "Profile", icon = Icons.Default.Tune) {
+        SegmentedSelector(
+            options = rows,
+            selected = selected ?: rows.first(),
+            label = { if (it.builtin) "${it.name} (built-in)" else it.name },
+            onSelect = onOpen,
+            enabled = enabled,
+        )
+
+        val (headline, detail) = when (state) {
+            KbmDraftState.Active -> "Active" to null
+            KbmDraftState.Dirty -> "Unsaved changes" to
+                "Nothing has been sent to the adapter yet. Save to store these " +
+                "changes, or Discard to go back to the saved profile."
+            KbmDraftState.SavedNotApplied -> "Saved — not applied" to
+                "The adapter has these changes saved, but the console is still " +
+                "using the mapping that was applied earlier. Set Active to use them."
+            KbmDraftState.Conflict -> "Changed on another device" to
+                "This profile was changed elsewhere since you opened it. Reload " +
+                "to see those changes, or save it as a new profile."
+            KbmDraftState.Disconnected -> "Not connected" to
+                "Showing the last mapping read from this adapter. What the " +
+                "console is using right now cannot be confirmed while disconnected."
+            KbmDraftState.Clean -> "Saved" to null
+        }
+
+        Text(headline, style = MaterialTheme.typography.titleSmall)
+        if (detail != null) InlineNotice(detail)
+
+        val live = connected && enabled
+        Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
+            Button(
+                onClick = onSave,
+                // Save is offered for a real edit, and for turning the built-in
+                // Default into a profile of the user's own.
+                enabled = live && (state == KbmDraftState.Dirty || selected?.builtin == true),
+            ) { Text("Save") }
+            TextButton(
+                onClick = onDiscard,
+                enabled = live && state == KbmDraftState.Dirty,
+            ) { Text("Discard") }
+            TextButton(
+                onClick = { selected?.let { onApply(it.id) } },
+                // Never automatic: applying is the user saying "use this now".
+                enabled = live && selected != null &&
+                    state != KbmDraftState.Dirty && state != KbmDraftState.Active,
+            ) { Text("Set Active") }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(LayoutTokens.Space2)) {
+            TextButton(onClick = onNew, enabled = live && !kbm.profiles.full) { Text("New") }
+            TextButton(
+                onClick = onRename,
+                enabled = live && selected != null && !selected.builtin,
+            ) { Text("Rename") }
+            TextButton(
+                onClick = onDelete,
+                enabled = live && selected != null && !selected.builtin,
+            ) { Text("Delete") }
+        }
+
+        if (kbm.profiles.full) {
+            InlineNotice(
+                "All ${kbm.profiles.max} profile slots are in use. Delete one to " +
+                    "make room for another.",
             )
         }
     }

@@ -5,6 +5,7 @@ import dev.picoswitch.companion.model.CapabilityState
 import dev.picoswitch.companion.model.KbmDestination
 import dev.picoswitch.companion.model.KbmMode
 import dev.picoswitch.companion.model.KbmMouseField
+import dev.picoswitch.companion.model.KbmProfileIds
 import dev.picoswitch.companion.model.KbmProfile
 import dev.picoswitch.companion.model.KbmSource
 import dev.picoswitch.companion.model.KbmSourceKind
@@ -35,12 +36,25 @@ class KbmRepositoryTest {
         val repository = AdapterRepository(transport)
         repository.refreshKbm()
 
-        assertEquals(listOf("kbm status", "kbm mouse"), transport.commands)
+        // Status, mouse limits, and the profile library are one read: a
+        // half-loaded page would show a mapping without being able to say
+        // whether it is the one in use.
+        assertEquals(
+            listOf("kbm status", "kbm mouse", "kbm profiles", "kbm active"),
+            transport.commands,
+        )
         val state = repository.kbm.value
         assertEquals(CapabilityState.Available, state.available)
         assertEquals(KbmMode.KeyboardMouse, state.status.mode)
         assertEquals(512, state.mouse.sensitivityX)
         assertEquals(8192, state.mouse.sensitivityMax)
+        assertTrue(state.profiles.supported)
+        assertEquals("Work", state.profiles.forLayout(KbmProfile.Keyboard)[1].name)
+        // The Keyboard layout is running its built-in Default, not Work.
+        assertEquals(
+            KbmProfileIds.DEFAULT,
+            state.profiles.activeFor(KbmProfile.Keyboard)?.sourceId,
+        )
     }
 
     @Test
@@ -232,6 +246,20 @@ private class KbmTransport(
                 mouse()
             }
             command.startsWith("kbm map ") -> mapPage(command)
+            // Only CUSTOM profiles are stored; Default is a template the client
+            // synthesises, which is what keeps all six adapter slots for the user.
+            command == "kbm profiles" -> """
+                {"profiles":[
+                  {"id":2,"layout":"kb","name":"Work","revision":3,"overrides":3,"fingerprint":111}
+                ],"max":6,"more":false}
+            """.trimIndent()
+            // What each layout is REALLY running.
+            command == "kbm active" -> """
+                {"active":[
+                  {"layout":"kb","sourceId":1,"revision":0,"fingerprint":900,"matchesSaved":true},
+                  {"layout":"kbm","sourceId":1,"revision":0,"fingerprint":901,"matchesSaved":true}
+                ]}
+            """.trimIndent()
             command.startsWith("kbm bind ") -> """{"ok":true}"""
             command.startsWith("kbm mode ") -> """{"ok":true,"mode":"auto"}"""
             command.startsWith("kbm reset") -> """{"ok":true,"reset":"all"}"""

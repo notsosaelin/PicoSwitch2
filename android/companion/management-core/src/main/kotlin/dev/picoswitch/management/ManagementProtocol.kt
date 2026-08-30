@@ -183,8 +183,69 @@ object ManagementProtocol {
             mapGeneration = value.long("mapGeneration"),
             publishes = value.long("publishes"),
             recenters = value.long("recenters"),
+            activeProfile = value.int("activeProfile"),
+            activeProfileName = value.optionalString("activeProfileName") ?: "",
+            activeRevision = value.int("activeRevision"),
+            activeFingerprint = value.long("activeFingerprint"),
+            activeMatchesSaved = value.bool("activeMatchesSaved"),
         )
     }
+
+    fun kbmProfileList(command: String, response: String): List<KbmProfileInfo> =
+        decode(command, response) { value ->
+            val entries = value["profiles"] as? JsonArray
+            requireShape(entries != null && value.containsKey("max"), command)
+            entries!!.mapNotNull { element ->
+                val item = element.jsonObject
+                val layout = KbmProfile.fromWire(item.string("layout"))
+                val name = item.optionalString("name")
+                val id = item.int("id")
+                // A row this build cannot make sense of is skipped rather than
+                // shown as a profile the user could select and the adapter would
+                // refuse. An id colliding with the reserved Default is refused
+                // for the same reason.
+                if (layout == null || name.isNullOrBlank() || id <= KbmProfileIds.DEFAULT) {
+                    null
+                } else {
+                    KbmProfileInfo(
+                        id = id,
+                        layout = layout,
+                        name = name,
+                        revision = item.int("revision"),
+                        overrides = item.int("overrides"),
+                        fingerprint = item.long("fingerprint"),
+                    )
+                }
+            }
+        }
+
+    fun kbmActive(command: String, response: String): List<KbmActiveMapping> =
+        decode(command, response) { value ->
+            val entries = value["active"] as? JsonArray
+            requireShape(entries != null, command)
+            entries!!.mapNotNull { element ->
+                val item = element.jsonObject
+                val layout = KbmProfile.fromWire(item.string("layout")) ?: return@mapNotNull null
+                KbmActiveMapping(
+                    layout = layout,
+                    sourceId = item.int("sourceId"),
+                    revision = item.int("revision"),
+                    fingerprint = item.long("fingerprint"),
+                    matchesSaved = item.bool("matchesSaved"),
+                )
+            }
+        }
+
+    /**
+     * The id and revision a completed draft produced. Read back rather than
+     * assumed: a mutation returning `ok` is not evidence the adapter stored what
+     * was sent.
+     */
+    fun kbmDraftResult(command: String, response: String): Pair<Int, Int> =
+        decode(command, response) { value ->
+            requireShape(value.containsKey("id") && value.containsKey("revision"), command)
+            value.int("id") to value.int("revision")
+        }
 
     fun kbmMapPage(command: String, response: String): KbmMapPage = decode(command, response) { value ->
         val profile = KbmProfile.fromWire(value.string("profile"))
@@ -651,6 +712,59 @@ object ManagementCommands {
     fun kbmReset(profile: KbmProfile) = "kbm reset ${profile.wire}"
     const val KBM_RESET_ALL = "kbm reset all"
     fun kbmMouse(field: KbmMouseField, value: Int) = "kbm mouse ${field.wire} $value"
+
+    // --- profile library ------------------------------------------------------
+
+    const val KBM_PROFILES = "kbm profiles"
+
+    /** The realized mapping of each layout, and its divergence state. */
+    const val KBM_ACTIVE = "kbm active"
+
+    /**
+     * APPLY. The only command that changes what the console is doing.
+     *
+     * Deliberately separate from saving: a user who edits and saves a profile has
+     * changed the library, not the adapter's behaviour.
+     */
+    // Built as whole command strings rather than assembled from a bare "default"
+    // literal: the parity checker reads string literals in this object as
+    // commands, and a fragment would look like a verb the firmware never
+    // dispatches.
+    fun kbmApply(layout: KbmProfile, id: Int) =
+        if (id == KbmProfileIds.DEFAULT) "kbm apply ${layout.wire} default"
+        else "kbm apply ${layout.wire} $id"
+
+    fun kbmProfileRename(id: Int, name: String) = "kbm profile rename $id $name"
+    fun kbmProfileDuplicate(id: Int, name: String) = "kbm profile dup $id $name"
+    fun kbmProfileDelete(id: Int) = "kbm profile delete $id"
+
+    /** Read one STORED profile's mapping, not the realized one. */
+    fun kbmProfileMap(id: Int, page: Int): String {
+        require(page in 0..32)
+        return "kbm pmap $id $page"
+    }
+
+    // --- staged profile write -------------------------------------------------
+    // A profile does not fit one management frame, and a loop of per-binding
+    // writes is not a transaction: a disconnect halfway leaves the adapter
+    // running half of one mapping and half of another. Nothing between begin and
+    // commit touches stored or realized state.
+
+    fun kbmDraftBegin(layout: KbmProfile, id: Int, baseRevision: Int, name: String) =
+        if (id == KbmProfileIds.NONE) {
+            "kbm draft begin ${layout.wire} new $baseRevision $name"
+        } else {
+            "kbm draft begin ${layout.wire} $id $baseRevision $name"
+        }
+
+    fun kbmDraftBind(source: KbmSource, destination: KbmDestination) =
+        "kbm draft bind ${source.wire} ${destination.wire}"
+
+    fun kbmDraftMouse(field: KbmMouseField, value: Int) =
+        "kbm draft mouse ${field.wire} $value"
+
+    const val KBM_DRAFT_COMMIT = "kbm draft commit"
+    const val KBM_DRAFT_ABORT = "kbm draft abort"
 
     fun color(target: ColorTarget, color: RgbColor) = "${target.command} ${color.wire()}"
     fun amiiboBegin(size: Int, crc32: String): String {
