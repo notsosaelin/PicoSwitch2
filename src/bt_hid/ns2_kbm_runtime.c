@@ -64,6 +64,18 @@ static volatile uint32_t s_mode_change_request;
 static uint32_t s_mode_change_applied;
 
 static uint32_t s_rejected_not_owner;
+// The admission outcomes that used to be silent.
+//
+// Three of admit_and_route()'s exits incremented nothing, so a keyboard that
+// produced no console input left `kbm status` showing keyboardReports == 0 with
+// no way to tell which stage dropped the report -- or whether one ever arrived.
+// s_undecoded_reports sits further upstream still, in the keyboard driver: it
+// counts reports that reached the driver and decoded as neither a keyboard nor
+// a pointer report, which is what a mis-parsed descriptor looks like from here.
+static uint32_t s_rejected_no_peer_key;
+static uint32_t s_rejected_unclassified;
+static uint32_t s_rejected_no_role;
+static uint32_t s_undecoded_reports;
 static uint32_t s_rollover_reports;
 static uint32_t s_remap_neutralizations;
 static uint32_t s_publishes;
@@ -119,6 +131,10 @@ void ns2_kbm_runtime_init(void) {
     s_active_valid = false;
     s_active_generation = 0u;
     s_rejected_not_owner = 0u;
+    s_rejected_no_peer_key = 0u;
+    s_rejected_unclassified = 0u;
+    s_rejected_no_role = 0u;
+    s_undecoded_reports = 0u;
     s_rollover_reports = 0u;
     s_remap_neutralizations = 0u;
     s_publishes = 0u;
@@ -541,8 +557,10 @@ static bool admit_and_route(const input_event_t *event, bool from_keyboard) {
 
     ns2_kbm_peer_key_t key;
     if (!peer_key_for_connection(event->dev_addr, event->connection_generation,
-                                 &key))
+                                 &key)) {
+        s_rejected_no_peer_key++;
         return false;
+    }
 
     // A report proves CAPABILITY -- a peer that just sent a keyboard report can
     // emit keyboard reports -- but never the primary role. A gaming mouse
@@ -559,8 +577,10 @@ static bool admit_and_route(const input_event_t *event, bool from_keyboard) {
         // partial view. A BLE peer on the keyboard driver has caps of exactly
         // {keyboard} until its descriptor is parsed; latching that would turn a
         // gaming mouse into a keyboard for the life of the connection.
-        if (primary_authority_pending(bthid_get_device(event->dev_addr)))
+        if (primary_authority_pending(bthid_get_device(event->dev_addr))) {
+            s_rejected_unclassified++;
             return false;
+        }
         // Genuine last resort: a peer nothing will classify later -- a Classic
         // device whose descriptor never arrived. Decided from the ACCUMULATED
         // capabilities, not this one report, so a pointer-capable peer stays a
@@ -578,8 +598,17 @@ static bool admit_and_route(const input_event_t *event, bool from_keyboard) {
     bool keyboard_role = admit == NS2_KBM_ADMIT_KEYBOARD ||
                          admit == NS2_KBM_ADMIT_BOTH;
     bool mouse_role = admit == NS2_KBM_ADMIT_MOUSE || admit == NS2_KBM_ADMIT_BOTH;
-    if (from_keyboard && !keyboard_role) return false;
-    if (!from_keyboard && !mouse_role) return false;
+    // Admitted, but not to the role this report needs. For a keyboard report
+    // that means the peer holds the mouse slot and nothing else -- correct for a
+    // pointer-capable peer classified MOUSE, and a defect for anything else.
+    if (from_keyboard && !keyboard_role) {
+        s_rejected_no_role++;
+        return false;
+    }
+    if (!from_keyboard && !mouse_role) {
+        s_rejected_no_role++;
+        return false;
+    }
 
     ns2_input_route_decision_t decision;
     if (!ns2_active_input_submit_group(event, s_roles.group_id, &decision)) {
@@ -868,6 +897,10 @@ void ns2_kbm_runtime_status(ns2_kbm_runtime_status_t *out) {
     out->rejected_mode = s_roles.rejected_mode;
     out->rejected_duplicate = s_roles.rejected_duplicate;
     out->rejected_not_owner = s_rejected_not_owner;
+    out->rejected_no_peer_key = s_rejected_no_peer_key;
+    out->rejected_unclassified = s_rejected_unclassified;
+    out->rejected_no_role = s_rejected_no_role;
+    out->undecoded_reports = s_undecoded_reports;
     out->rollover_reports = s_rollover_reports;
     out->role_losses = s_roles.role_losses;
     out->config_generation = atomic_load_u32(&s_config_generation);
@@ -880,3 +913,12 @@ void ns2_kbm_runtime_status(ns2_kbm_runtime_status_t *out) {
 // retained. Count it: a keyboard that rolls over constantly is a real hardware
 // limitation a user needs to be able to see.
 void ns2_kbm_runtime_note_rollover(void) { s_rollover_reports++; }
+
+// A report reached the keyboard driver and decoded as neither a keyboard report
+// nor a pointer report.
+//
+// This is the counter that makes a mis-parsed descriptor visible. Before it, a
+// keyboard whose descriptor parsed well enough to classify but not well enough
+// to decode was indistinguishable from a keyboard that was sending nothing at
+// all: no counter anywhere moved.
+void ns2_kbm_runtime_note_undecoded(void) { s_undecoded_reports++; }

@@ -371,7 +371,9 @@ public sealed class KeyboardMouseViewTests
                 SourceId: 7,
                 KeyboardReports: 17,
                 Publishes: 42,
-                RejectedNotOwner: 3)),
+                RejectedNotOwner: 3,
+                RejectedUnclassified: 5,
+                UndecodedReports: 9)),
             KbmProfile.Keyboard,
             connected: true);
 
@@ -381,7 +383,10 @@ public sealed class KeyboardMouseViewTests
             "mode=keyboard profile=kb keyboard=yes (conn 5) mouse=no group=2 source=7",
             counters!.Roles);
         Assert.Equal("accepted(keyboard=17 mouse=0) published=42 rollover=0", counters.Accepted);
-        Assert.Equal("rejected(mode=0 duplicate=0 notOwner=3) roleLosses=0", counters.Rejected);
+        Assert.Equal(
+            "rejected(mode=0 duplicate=0 notOwner=3 noPeerKey=0 unclassified=5 noRole=0) " +
+            "undecoded=9 roleLosses=0",
+            counters.Rejected);
     }
 
     [Fact]

@@ -56,6 +56,21 @@
 
 #define KB_MAX_REPORT_IDS 8u
 
+// Push/Pop nesting depth. The HID spec sets no limit; real descriptors nest one
+// or two levels, and overflowing simply stops saving rather than corrupting the
+// state that is already correct.
+#define KB_MAX_STATE_DEPTH 4u
+
+// The Global item state Push/Pop saves and restores. Report ID is a Global item
+// too, so it belongs here: a descriptor may Push, switch report id for a
+// secondary block, and Pop back to the first one.
+typedef struct {
+    uint16_t usage_page;
+    uint16_t report_size;
+    uint16_t report_count;
+    uint8_t report_id;
+} kb_global_state_t;
+
 typedef struct {
     uint8_t report_id;
     uint16_t input_bits;
@@ -102,6 +117,10 @@ bool bthid_keyboard_parse_descriptor(const uint8_t *desc, uint16_t desc_len,
     uint8_t offset_count = 0;
     memset(offsets, 0, sizeof(offsets));
 
+    kb_global_state_t saved[KB_MAX_STATE_DEPTH];
+    uint8_t state_depth = 0;
+    memset(saved, 0, sizeof(saved));
+
     uint16_t index = 0;
     while (index < desc_len) {
         uint8_t prefix = desc[index];
@@ -129,7 +148,34 @@ bool bthid_keyboard_parse_descriptor(const uint8_t *desc, uint16_t desc_len,
                     report_id = (uint8_t)data;
                     out->using_report_ids = true;
                     break;
-                default: break;  // PUSH/POP and ranges are not needed here
+                case HID_TAG_PUSH:
+                    // Save the Global state. A descriptor uses this to borrow
+                    // the state for a nested block -- most often an LED output
+                    // report between the modifier byte and the key array -- and
+                    // expects Pop to put back the Usage Page and field sizes the
+                    // keys are declared under. Ignoring it silently reads every
+                    // later field under the wrong page at the wrong offsets,
+                    // which looks exactly like a keyboard that types nothing.
+                    if (state_depth < KB_MAX_STATE_DEPTH) {
+                        saved[state_depth].usage_page = usage_page;
+                        saved[state_depth].report_size = report_size;
+                        saved[state_depth].report_count = report_count;
+                        saved[state_depth].report_id = report_id;
+                        state_depth++;
+                    }
+                    break;
+                case HID_TAG_POP:
+                    // An unmatched Pop is a malformed descriptor; keep the
+                    // current state rather than inventing one.
+                    if (state_depth > 0u) {
+                        state_depth--;
+                        usage_page = saved[state_depth].usage_page;
+                        report_size = saved[state_depth].report_size;
+                        report_count = saved[state_depth].report_count;
+                        report_id = saved[state_depth].report_id;
+                    }
+                    break;
+                default: break;  // Logical/Physical ranges and units are not needed here
             }
             continue;
         }

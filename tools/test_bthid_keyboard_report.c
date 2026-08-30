@@ -112,6 +112,40 @@ static const uint8_t DESC_KEYBOARD_WITH_POINTER[] = {
     0xC0, 0xC0
 };
 
+// A keyboard that brackets its LED output report with Push/Pop, which is what
+// the HID spec provides Push/Pop FOR and what a real keyboard descriptor
+// commonly does.
+//
+// Push saves the global item state; the LED block then overwrites Usage Page,
+// Report Size and Report Count; Pop restores all three so the key array that
+// follows inherits Usage Page (Keyboard) and the sizes set before the Push.
+//
+// A parser that ignores Push/Pop reads that array under Usage Page (LEDs) with
+// the LED block's Report Size/Count still in force: the keys are not recognised
+// as keyboard usages at all, and every bit offset after the Push is wrong.
+// The device still parses as "a keyboard" on its modifier byte alone, so it is
+// admitted, classified and given the keyboard role -- and then types nothing.
+static const uint8_t DESC_KEYBOARD_PUSH_POP[] = {
+    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01,   // Usage Page (Desktop), Usage (Keyboard)
+    0x85, 0x01,                            //   Report ID (1)
+    0x05, 0x07, 0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01,
+    0x75, 0x01, 0x95, 0x08, 0x81, 0x02,   //   8 modifier bits
+    0x95, 0x01, 0x75, 0x08, 0x81, 0x01,   //   reserved byte
+
+    0xA4,                                  //   Push
+    0x05, 0x08,                            //     Usage Page (LEDs)
+    0x19, 0x01, 0x29, 0x05,                //     Usage Min/Max (1..5)
+    0x95, 0x05, 0x75, 0x01, 0x91, 0x02,   //     Output (5 x 1 bit)
+    0x95, 0x01, 0x75, 0x03, 0x91, 0x01,   //     Output padding (3 bits)
+    0xB4,                                  //   Pop  -- restores Keyboard page,
+                                           //          Report Size 8, Count 1
+
+    0x95, 0x06,                            //   Report Count (6)
+    0x15, 0x00, 0x25, 0x65,
+    0x19, 0x00, 0x29, 0x65, 0x81, 0x00,   //   6-key rollover array
+    0xC0
+};
+
 // A gaming mouse with macro keys -- the ASUS ROG KERIS II class. Opens with
 // Usage(Mouse); its keyboard collection comes second and carries a modifier
 // byte plus a SINGLE key slot, which is all a macro needs.
@@ -462,6 +496,39 @@ static void test_boot_fallback(void) {
     puts("  boot fallback");
 }
 
+static void test_push_pop_restores_global_state(void) {
+    // Push/Pop is the one HID global-state mechanism this parser used to define
+    // constants for and then ignore, while the project's own USB descriptor
+    // parser (hid_parser.c) has always implemented it. A keyboard that brackets
+    // its LED output block that way looked like a keyboard, classified as one,
+    // took the keyboard role -- and decoded no keys, because everything after
+    // the Push was read with the LED block's Usage Page and field sizes.
+    bthid_keyboard_report_map_t map;
+    assert(bthid_keyboard_parse_descriptor(DESC_KEYBOARD_PUSH_POP,
+                                           sizeof(DESC_KEYBOARD_PUSH_POP), &map));
+    assert(map.using_report_ids && map.report_id == 1u);
+
+    // The array after the Pop must be seen, and at the offset it really has:
+    // 8 modifier bits + 8 reserved bits. Output items occupy no INPUT bits, so
+    // the LED block between them must not move it.
+    assert(map.array_count == 1u);
+    assert(map.arrays[0].count == 6u);
+    assert(map.arrays[0].bit_offset == 16u);
+
+    bthid_keyboard_shape_t shape = bthid_keyboard_shape(&map);
+    assert(shape.has_modifier_byte);
+    assert(shape.rollover_slots == 6u);
+    assert(shape.strong_keyboard);
+
+    // And a real report decodes: report id, modifiers, reserved, then keys.
+    uint8_t bitmap[BTHID_KEYBOARD_USAGE_BYTES];
+    const uint8_t report[9] = {0x01, 0x00, 0x00, KEY_W, 0, 0, 0, 0, 0};
+    assert(bthid_keyboard_decode_report(&map, report, sizeof(report), bitmap) ==
+           BTHID_KEYBOARD_DECODE_OK);
+    assert(held(bitmap, KEY_W));
+    puts("  push/pop restores usage page and field sizes");
+}
+
 int main(void) {
     puts("bthid_keyboard_report:");
     test_classification();
@@ -469,6 +536,7 @@ int main(void) {
     test_boot_decode();
     test_nkro_decode();
     test_boot_fallback();
+    test_push_pop_restores_global_state();
     puts("bthid_keyboard_report tests passed");
     return 0;
 }

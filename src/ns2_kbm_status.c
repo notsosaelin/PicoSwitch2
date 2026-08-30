@@ -31,6 +31,10 @@ int ns2_kbm_status_format(const ns2_kbm_runtime_status_t *status, char *out,
         "\"rejectedMode\":%lu,"
         "\"rejectedDuplicate\":%lu,"
         "\"rejectedNotOwner\":%lu,"
+        "\"rejectedNoPeerKey\":%lu,"
+        "\"rejectedUnclassified\":%lu,"
+        "\"rejectedNoRole\":%lu,"
+        "\"undecodedReports\":%lu,"
         "\"rollover\":%lu,"
         "\"roleLosses\":%lu,"
         "\"mapGeneration\":%lu,"
@@ -53,6 +57,10 @@ int ns2_kbm_status_format(const ns2_kbm_runtime_status_t *status, char *out,
         (unsigned long)status->rejected_mode,
         (unsigned long)status->rejected_duplicate,
         (unsigned long)status->rejected_not_owner,
+        (unsigned long)status->rejected_no_peer_key,
+        (unsigned long)status->rejected_unclassified,
+        (unsigned long)status->rejected_no_role,
+        (unsigned long)status->undecoded_reports,
         (unsigned long)status->rollover_reports,
         (unsigned long)status->role_losses,
         (unsigned long)status->config_generation,

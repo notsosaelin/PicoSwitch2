@@ -192,9 +192,20 @@ static void keyboard_process_report(bthid_device_t *device, const uint8_t *data,
 
     // Not a keyboard report. A combo peer interleaves pointer reports on the
     // same connection; route those through the ordinary mouse path.
-    if (!kb->has_pointer) return;
+    //
+    // Anything that decodes as neither is counted rather than dropped in
+    // silence: a descriptor that parses well enough to classify the peer as a
+    // keyboard but not well enough to decode its keys produces exactly this,
+    // and used to be invisible from every diagnostic the adapter has.
+    if (!kb->has_pointer) {
+        ns2_kbm_runtime_note_undecoded();
+        return;
+    }
     bthid_mouse_report_t pointer;
-    if (!bthid_mouse_decode_report(&kb->pointer, data, len, &pointer)) return;
+    if (!bthid_mouse_decode_report(&kb->pointer, data, len, &pointer)) {
+        ns2_kbm_runtime_note_undecoded();
+        return;
+    }
 
     input_event_t mouse_event = kb->event;
     mouse_event.type = INPUT_TYPE_MOUSE;

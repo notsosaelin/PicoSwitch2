@@ -88,6 +88,7 @@ $tests = @(
     # -- Keyboard / mouse ------------------------------------------------------
     @{ g='management'; n='test_ns2_kbm';                            src='tools/test_ns2_kbm.c src/ns2_kbm.c';                                           flags='' }
     @{ g='management'; n='test_bthid_keyboard_report';              src='tools/test_bthid_keyboard_report.c src/bt_hid/bt/bthid/devices/generic/bthid_keyboard_report.c'; flags='-Isrc/bt_hid' }
+    @{ g='management'; n='test_kbm_runtime_lifecycle';              src='tools/test_kbm_runtime_lifecycle.c src/bt_hid/ns2_kbm_runtime.c src/ns2_kbm.c'; flags='-Isrc/bt_hid -Itools/host_stubs -Wno-unused-parameter' }
     @{ g='management'; n='test_kbm_keyboard_pipeline';              src='tools/test_kbm_keyboard_pipeline.c src/ns2_kbm.c src/bt_hid/bt/bthid/devices/generic/bthid_keyboard_report.c'; flags='-Isrc/bt_hid' }
     # The KB/M status snapshot is rendered by ONE formatter shared by the
     # management and UART surfaces. Both previously had their own printf, and a

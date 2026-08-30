@@ -202,11 +202,21 @@ public sealed class ProtocolConformanceTests
             """
             {"mode":"keyboard","override":"auto","profile":"kb",
              "keyboard":true,"mouse":false,"nativeMouse":false,
-             "keyboardConn":5,"mouseConn":0,"group":2,"source":7}
+             "keyboardConn":5,"mouseConn":0,"group":2,"source":7,
+             "rejectedNoPeerKey":1,"rejectedUnclassified":2,"rejectedNoRole":3,
+             "undecodedReports":4}
             """);
 
         Assert.Equal(2, status.GroupId);
         Assert.Equal(7, status.SourceId);
+
+        // The formerly-silent admission outcomes, each in its own field: a
+        // shifted argument list in the firmware formatter still emits valid
+        // JSON, so distinct values are what catch it.
+        Assert.Equal(1, status.RejectedNoPeerKey);
+        Assert.Equal(2, status.RejectedUnclassified);
+        Assert.Equal(3, status.RejectedNoRole);
+        Assert.Equal(4, status.UndecodedReports);
 
         // An older adapter that omits them still parses; zero is also the real
         // value the firmware reports for "no composite" and "not owning".
@@ -214,6 +224,8 @@ public sealed class ProtocolConformanceTests
             Vector("kbmStatus").Command, Vector("kbmStatus").Reply);
         Assert.Equal(0, older.GroupId);
         Assert.Equal(0, older.SourceId);
+        Assert.Equal(0, older.RejectedNoPeerKey);
+        Assert.Equal(0, older.UndecodedReports);
     }
 
     [Fact]

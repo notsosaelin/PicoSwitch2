@@ -317,7 +317,9 @@ public static class KeyboardMouse
             $"published={status.Publishes} rollover={status.Rollover}",
 
             $"rejected(mode={status.RejectedMode} duplicate={status.RejectedDuplicate} " +
-            $"notOwner={status.RejectedNotOwner}) roleLosses={status.RoleLosses}");
+            $"notOwner={status.RejectedNotOwner} noPeerKey={status.RejectedNoPeerKey} " +
+            $"unclassified={status.RejectedUnclassified} noRole={status.RejectedNoRole}) " +
+            $"undecoded={status.UndecodedReports} roleLosses={status.RoleLosses}");
     }
 
     private static KeyBindingCell Cell(KeyCap cap, IReadOnlyDictionary<int, KbmBinding> bound) =>
