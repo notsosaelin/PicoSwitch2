@@ -339,7 +339,29 @@ typedef struct {
 // point: saving an edit to the profile that is currently applied must not change
 // what the console does until the user deliberately applies it. A pointer model
 // cannot express "saved but not applied" at all.
+// ---------------------------------------------------------------------------
+// Profile positions
+// ---------------------------------------------------------------------------
+// The user chooses a POSITION WITHIN A LAYOUT, never a storage slot number.
+//
+//     Keyboard bank:        Default, Profile 1, Profile 2, Profile 3
+//     Keyboard+Mouse bank:  Default, Profile 1, Profile 2, Profile 3
+//
+// Physical storage remains six generic records; the position is what a user and
+// a switch key address, and the mapping between the two lives in
+// ns2_kbm_profile_at(). Exposing slot numbers would make "Profile 1" mean
+// different things in different layouts and force the user to think about
+// firmware storage.
+//
+// Default is built in and occupies no record, which is what keeps all three
+// custom positions per layout available.
+#define NS2_KBM_POSITIONS_PER_LAYOUT 3u
+#define NS2_KBM_POSITION_DEFAULT 0u  // the built-in template of the layout
+
 #define NS2_KBM_MAX_PROFILES 6u  // CUSTOM profiles; Defaults are built in
+_Static_assert(NS2_KBM_MAX_PROFILES ==
+                   NS2_KBM_POSITIONS_PER_LAYOUT * 2u,
+               "six records is exactly three positions in each of two layouts");
 // Bytes including the NUL, so 19 usable characters. Sized so the migration's
 // own names fit whole -- "Current Keyboard" and "Current KB + Mouse" -- because
 // a user upgrading should recognise their existing mapping, not find it under a
@@ -372,7 +394,13 @@ typedef struct {
     uint8_t used;
     uint8_t layout;       // ns2_kbm_layout_t
     uint8_t profile_id;   // stable, NS2_KBM_PROFILE_ID_FIRST..MAX
-    uint8_t reserved;
+    // WHICH POSITION OF ITS LAYOUT'S BANK THIS RECORD OCCUPIES: 1..3.
+    //
+    // The user-facing identity. `profile_id` remains the stable handle a client
+    // caches; `position` is what a switch key and the UI address, and it is what
+    // makes "Profile 1" mean the same thing to a person in both layouts.
+    // Occupies v15's reserved byte, which was always written as zero.
+    uint8_t position;
     // Bumped by every successful save. A client sends the revision its draft
     // was based on; a mismatch is a conflict, never a silent overwrite.
     uint16_t revision;
@@ -406,13 +434,22 @@ typedef struct {
 //
 // No usage is reserved or hardcoded. F1..F6 are a convenient default the UI may
 // offer; the user may bind any source the model accepts.
-#define NS2_KBM_SWITCH_BINDINGS_MAX NS2_KBM_MAX_PROFILES
+// One binding per selectable position, plus Default.
+#define NS2_KBM_SWITCH_BINDINGS_MAX (NS2_KBM_POSITIONS_PER_LAYOUT + 1u)
 
 typedef struct {
-    uint8_t used;         // 0 when this entry is unassigned
-    uint8_t kind;         // ns2_kbm_source_kind_t
-    uint8_t code;         // HID usage, or mouse button number
-    uint8_t profile_id;   // the resident slot to select
+    uint8_t used;    // 0 when this entry is unassigned
+    uint8_t kind;    // ns2_kbm_source_kind_t
+    uint8_t code;    // HID usage, or mouse button number
+    // The SEMANTIC ACTION: NS2_KBM_POSITION_DEFAULT, or 1..3.
+    //
+    // Not a storage slot and not a profile id. One table serves both layouts,
+    // and the key resolves through whichever layout is derived at the moment it
+    // is pressed -- so F2 means "Profile 1" and selects the Keyboard bank's
+    // Profile 1 or the Keyboard+Mouse bank's, according to what is connected.
+    // Binding to a slot id instead would force the user to configure two
+    // disjoint key ranges and to know which record lives where.
+    uint8_t position;
 } ns2_kbm_switch_binding_t;
 
 typedef struct {
@@ -426,7 +463,7 @@ typedef struct {
 
     // v15 -------------------------------------------------------------------
 
-    // Which resident slot each layout realizes AT BOOT.
+    // Which POSITION each layout realizes AT BOOT (0 = Default, 1..3).
     //
     // Separate from `active[]` on purpose. `active[]` is the RUNTIME realized
     // snapshot and a profile-switch key rewrites it in RAM with no flash write
@@ -434,39 +471,57 @@ typedef struct {
     // is the persisted choice, written only by the explicit companion action,
     // and it is what init realizes. So a power cycle always returns to a
     // deterministic profile rather than to whatever key was pressed last.
-    uint8_t boot_profile_id[NS2_KBM_LAYOUT_COUNT];
+    uint8_t boot_position[NS2_KBM_LAYOUT_COUNT];
     uint8_t reserved2[2];
 
-    ns2_kbm_switch_binding_t switches[NS2_KBM_LAYOUT_COUNT]
-                                     [NS2_KBM_SWITCH_BINDINGS_MAX];
+    // ONE table, shared by both layouts. See ns2_kbm_switch_binding_t.
+    ns2_kbm_switch_binding_t switches[NS2_KBM_SWITCH_BINDINGS_MAX];
+    uint8_t reserved3[NS2_KBM_SWITCH_BINDINGS_MAX * 4u];
 } ns2_kbm_config_t;
 
-// Find the resident slot a source selects in this layout, or
-// NS2_KBM_PROFILE_ID_NONE when the source is not a switch key here.
-//
-// Pure and layout-scoped: a Keyboard switch key must never reach the
-// Keyboard+Mouse active state, and vice versa.
-uint8_t ns2_kbm_switch_target(const ns2_kbm_config_t *config,
-                              ns2_kbm_layout_t layout, ns2_kbm_source_t source);
+// The record occupying one position of a layout's bank, or NULL when that
+// position is empty. Position 0 (Default) is built in and has no record, so it
+// always returns NULL -- callers resolve it through ns2_kbm_template_default().
+const ns2_kbm_profile_slot_t *ns2_kbm_profile_at(const ns2_kbm_config_t *config,
+                                                 ns2_kbm_layout_t layout,
+                                                 uint8_t position);
 
-// Assign or clear one switch binding. `profile_id` of NS2_KBM_PROFILE_ID_NONE
-// clears any binding on that source. Returns false when the source is invalid,
-// the table is full, or the target is not a resident slot of `layout`.
-bool ns2_kbm_switch_bind(ns2_kbm_config_t *config, ns2_kbm_layout_t layout,
-                         ns2_kbm_source_t source, uint8_t profile_id);
+// The lowest unoccupied position in a layout's bank, or 0 when the bank is full.
+uint8_t ns2_kbm_free_position(const ns2_kbm_config_t *config,
+                              ns2_kbm_layout_t layout);
+
+// The semantic action a source invokes, or NS2_KBM_SWITCH_NONE.
+//
+// NOT layout-scoped: one physical key means the same ACTION everywhere, and the
+// layout is applied when the action is resolved, not when it is looked up.
+#define NS2_KBM_SWITCH_NONE 0xFFu
+uint8_t ns2_kbm_switch_action(const ns2_kbm_config_t *config,
+                              ns2_kbm_source_t source);
+
+// Assign or clear one switch binding. `position` of NS2_KBM_SWITCH_NONE clears.
+// Returns false when the source is invalid, the position is out of range, or the
+// table is full.
+bool ns2_kbm_switch_bind(ns2_kbm_config_t *config, ns2_kbm_source_t source,
+                         uint8_t position);
+
+// Resolve a position to the profile id ns2_kbm_apply() takes, THROUGH a layout.
+// This is where the semantic action becomes a concrete profile, and it is the
+// only place the layout is applied. NS2_KBM_PROFILE_ID_NONE when that layout's
+// position is empty.
+uint8_t ns2_kbm_position_profile_id(const ns2_kbm_config_t *config,
+                                    ns2_kbm_layout_t layout, uint8_t position);
 
 // Detect a profile-switch KEY-DOWN EDGE between two keyboard bitmaps.
 //
-// Returns the resident slot to select, or NS2_KBM_PROFILE_ID_NONE. Held keys do
-// not repeat: only a transition from clear to set fires.
+// Returns the semantic ACTION (NS2_KBM_POSITION_DEFAULT or 1..3), or
+// NS2_KBM_SWITCH_NONE. Held keys do not repeat: only clear-to-set fires. The
+// caller resolves the action through the CURRENT derived layout.
 uint8_t ns2_kbm_switch_edge(const ns2_kbm_config_t *config,
-                            ns2_kbm_layout_t layout, const uint8_t *previous,
-                            const uint8_t *current);
+                            const uint8_t *previous, const uint8_t *current);
 
 // Clear every bound switch source from a keyboard bitmap, so the key is
 // consumed by the switch and never also emits its gameplay binding.
-void ns2_kbm_switch_mask(const ns2_kbm_config_t *config,
-                         ns2_kbm_layout_t layout, uint8_t *bitmap);
+void ns2_kbm_switch_mask(const ns2_kbm_config_t *config, uint8_t *bitmap);
 
 // Choose the slot this layout realizes AT POWER-UP, and realize it now.
 //
@@ -475,8 +530,8 @@ void ns2_kbm_switch_mask(const ns2_kbm_config_t *config,
 // Activate and a profile-switch key both do, and it costs no persistence.
 // `changed` reports whether anything actually moved, so a caller can skip the
 // save entirely when it did not.
-bool ns2_kbm_set_boot_profile(ns2_kbm_config_t *config, ns2_kbm_layout_t layout,
-                              uint8_t profile_id, bool *changed);
+bool ns2_kbm_set_boot_position(ns2_kbm_config_t *config, ns2_kbm_layout_t layout,
+                               uint8_t position, bool *changed);
 
 // Realize each layout's PERSISTED boot-active slot into its runtime snapshot.
 // Called once at load, so power-up is deterministic no matter which profile a

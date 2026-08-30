@@ -99,10 +99,10 @@ int ns2_kbm_format_profiles(const ns2_kbm_config_t *config, uint16_t cursor,
 int ns2_kbm_format_active(const ns2_kbm_config_t *config, char *out,
                           size_t capacity);
 
-// One layout's profile-switch key assignments. Bounded by
-// NS2_KBM_SWITCH_BINDINGS_MAX, so this is not paginated either.
-int ns2_kbm_format_switches(const ns2_kbm_config_t *config,
-                            ns2_kbm_layout_t layout, char *out,
+// The profile-switch key assignments. ONE table for both layouts: a binding
+// names a semantic position, resolved through whichever layout is derived when
+// the key is pressed. Bounded, so not paginated.
+int ns2_kbm_format_switches(const ns2_kbm_config_t *config, char *out,
                             size_t capacity);
 
 // The number of logical items each walk should yield. Exposed so a test can

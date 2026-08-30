@@ -185,9 +185,9 @@ static void test_v11_migration(void) {
            CONFIG_PERSIST_MIGRATED);
     assert(record.version == CONFIG_PERSIST_VERSION);
     // Deliberate tripwire: bumping the schema must bring whoever did it here to
-    // confirm every older layout still has a migration. v11 upgrades four
+    // confirm every older layout still has a migration. v11 upgrades five
     // steps in one load.
-    assert(CONFIG_PERSIST_VERSION == 15u);
+    assert(CONFIG_PERSIST_VERSION == 16u);
 
     assert(record.body_color[0] == 0x11);
     assert(record.wake_valid == 0xA5u);
@@ -380,18 +380,37 @@ static void test_profile_library(void) {
     assert(ns2_kbm_profile_create(c, NS2_KBM_LAYOUT_KEYBOARD, "\x01\x02",
                                   NULL) == NS2_KBM_PROFILE_ID_NONE);
 
-    // Six CUSTOM profiles, then storage full.
-    unsigned created = 2;
-    while (created < NS2_KBM_MAX_PROFILES) {
-        char name[NS2_KBM_PROFILE_NAME_MAX];
-        snprintf(name, sizeof(name), "P%u", created);
-        assert(ns2_kbm_profile_create(c, NS2_KBM_LAYOUT_KEYBOARD, name, NULL) !=
-               NS2_KBM_PROFILE_ID_NONE);
-        created++;
-    }
-    assert(created == NS2_KBM_MAX_PROFILES);
-    assert(ns2_kbm_profile_create(c, NS2_KBM_LAYOUT_KEYBOARD, "Seventh",
+    // THREE POSITIONS PER LAYOUT, not six in a flat pool.
+    //
+    // Six records is exactly three positions in each of two layouts. A layout
+    // whose bank is full is full even while records remain free, because the
+    // user addresses "Keyboard Profile 1..3", never a storage slot -- and
+    // reporting a Keyboard refusal as "storage full" would be a fact they could
+    // not act on.
+    //
+    // One profile exists in each layout at this point, both called "Work".
+    assert(ns2_kbm_profile_create(c, NS2_KBM_LAYOUT_KEYBOARD, "KB2", NULL) !=
+           NS2_KBM_PROFILE_ID_NONE);
+    assert(ns2_kbm_profile_create(c, NS2_KBM_LAYOUT_KEYBOARD, "KB3", NULL) !=
+           NS2_KBM_PROFILE_ID_NONE);
+    assert(ns2_kbm_profile_create(c, NS2_KBM_LAYOUT_KEYBOARD, "KB4", NULL) ==
+           NS2_KBM_PROFILE_ID_NONE);
+    assert(ns2_kbm_free_position(c, NS2_KBM_LAYOUT_KEYBOARD) == 0u);
+
+    // The other layout's bank is untouched by that and holds its own three.
+    assert(ns2_kbm_free_position(c, NS2_KBM_LAYOUT_KEYBOARD_MOUSE) == 2u);
+    assert(ns2_kbm_profile_create(c, NS2_KBM_LAYOUT_KEYBOARD_MOUSE, "KBM2",
+                                  NULL) != NS2_KBM_PROFILE_ID_NONE);
+    assert(ns2_kbm_profile_create(c, NS2_KBM_LAYOUT_KEYBOARD_MOUSE, "KBM3",
+                                  NULL) != NS2_KBM_PROFILE_ID_NONE);
+    assert(ns2_kbm_profile_create(c, NS2_KBM_LAYOUT_KEYBOARD_MOUSE, "KBM4",
                                   NULL) == NS2_KBM_PROFILE_ID_NONE);
+
+    // Every record is now spoken for: three positions in each bank.
+    for (uint8_t p = 1u; p <= NS2_KBM_POSITIONS_PER_LAYOUT; ++p) {
+        assert(ns2_kbm_profile_at(c, NS2_KBM_LAYOUT_KEYBOARD, p));
+        assert(ns2_kbm_profile_at(c, NS2_KBM_LAYOUT_KEYBOARD_MOUSE, p));
+    }
 
     // Rename is metadata only and does not bump the revision, because no
     // draft's mapping content became stale.
@@ -400,7 +419,7 @@ static void test_profile_library(void) {
     assert(ns2_kbm_profile_find(c, work)->revision == before);
     assert(strcmp(ns2_kbm_profile_find(c, work)->name, "Work 2") == 0);
     // ...and cannot collide within the layout.
-    assert(!ns2_kbm_profile_rename(c, work, "P3"));
+    assert(!ns2_kbm_profile_rename(c, work, "KB2"));
 
     // Deleting frees a slot.
     assert(ns2_kbm_profile_delete(c, work));
@@ -698,8 +717,9 @@ static void test_round_trip(void) {
     // and it deliberately does not survive a power cycle. Only an explicit boot
     // choice does -- otherwise whichever profile a hotkey happened to select
     // would become the boot profile the next time anything was saved.
-    assert(ns2_kbm_set_boot_profile(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD, work,
-                                    NULL));
+    // Position 1 of the Keyboard bank, which is where "Work" landed.
+    assert(ns2_kbm_set_boot_position(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD, 1u,
+                                     NULL));
 
     uint8_t sector[2048];
     memset(sector, 0xFF, sizeof(sector));
@@ -866,7 +886,7 @@ static void test_v14_migration(void) {
     config_record_t record;
     assert(config_persist_load(sector, sizeof(sector), &record) ==
            CONFIG_PERSIST_MIGRATED);
-    assert(record.version == 15u);
+    assert(record.version == 16u);
 
     // (1) Unrelated settings and the companion table survive.
     assert(record.body_color[0] == 0x77);
@@ -891,17 +911,20 @@ static void test_v14_migration(void) {
     // (3) THE CONSOLE BEHAVES IDENTICALLY. The boot choice takes the profile the
     // layout was ALREADY realizing, so a firmware update does not silently
     // change what the adapter does at power-up.
-    assert(record.kbm.boot_profile_id[NS2_KBM_LAYOUT_KEYBOARD] == work_id);
-    assert(record.kbm.boot_profile_id[NS2_KBM_LAYOUT_KEYBOARD_MOUSE] ==
-           NS2_KBM_PROFILE_ID_DEFAULT);
+    // Positions are assigned deterministically, in slot order within each
+    // layout, and a profile is never moved between layouts.
+    assert(work_slot->position == 1u);
+    assert(desk_slot->position == 1u);  // first of ITS OWN layout's bank
+    assert(record.kbm.boot_position[NS2_KBM_LAYOUT_KEYBOARD] == 1u);
+    assert(record.kbm.boot_position[NS2_KBM_LAYOUT_KEYBOARD_MOUSE] ==
+           NS2_KBM_POSITION_DEFAULT);
     assert(realized_binding(&record, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
            NS2_DST_X);
 
-    // (4) No switch key is invented. Reserving F1..F6 on an upgrade would
-    // silently steal six keys out of the user's existing mapping.
-    for (unsigned l = 0; l < NS2_KBM_LAYOUT_COUNT; ++l)
-        for (unsigned i = 0; i < NS2_KBM_SWITCH_BINDINGS_MAX; ++i)
-            assert(record.kbm.switches[l][i].used == 0u);
+    // (4) No switch key is invented. Reserving F1..F4 on an upgrade would
+    // silently steal keys out of the user's existing mapping.
+    for (unsigned i = 0; i < NS2_KBM_SWITCH_BINDINGS_MAX; ++i)
+        assert(record.kbm.switches[i].used == 0u);
 }
 
 // Boot-active and runtime-active are different facts, and only one is persisted.
@@ -918,13 +941,13 @@ static void test_boot_active_is_what_power_up_realizes(void) {
 
     // A hotkey switch changes the RUNTIME snapshot only; the persisted boot
     // choice stays Default. Simulated here by applying without touching
-    // boot_profile_id, which is exactly what the runtime does.
+    // boot_position, which is exactly what the runtime does.
     bool changed = false;
     assert(ns2_kbm_apply(&record.kbm, NS2_KBM_LAYOUT_KEYBOARD, id, &changed));
     assert(realized_binding(&record, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
            NS2_DST_Y);
-    assert(record.kbm.boot_profile_id[NS2_KBM_LAYOUT_KEYBOARD] ==
-           NS2_KBM_PROFILE_ID_DEFAULT);
+    assert(record.kbm.boot_position[NS2_KBM_LAYOUT_KEYBOARD] ==
+           NS2_KBM_POSITION_DEFAULT);
 
     // Now persist and reload: power-up follows the BOOT choice, not the runtime
     // one. Without this, an unrelated save would silently promote whichever
@@ -940,9 +963,9 @@ static void test_boot_active_is_what_power_up_realizes(void) {
     assert(realized_binding(&reloaded, NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)) ==
            ns2_kbm_default_binding(NS2_KBM_LAYOUT_KEYBOARD, key(KEY_F)));
 
-    // Setting the boot slot explicitly is what makes it survive.
-    assert(ns2_kbm_set_boot_profile(&reloaded.kbm, NS2_KBM_LAYOUT_KEYBOARD, id,
-                                    NULL));
+    // Setting the boot POSITION explicitly is what makes it survive.
+    assert(ns2_kbm_set_boot_position(&reloaded.kbm, NS2_KBM_LAYOUT_KEYBOARD, 1u,
+                                     NULL));
     memset(sector, 0xFF, sizeof(sector));
     memcpy(sector, &reloaded, sizeof(reloaded));
     config_record_t again;

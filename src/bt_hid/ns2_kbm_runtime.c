@@ -91,7 +91,7 @@ static uint8_t s_prev_keys[NS2_KBM_KEY_BITMAP_BYTES];
 // Distinct from the persisted boot choice: a switch key changes this and nothing
 // else. A companion must be able to report what the adapter is actually running
 // rather than assuming it is still the profile that was last persisted.
-static uint8_t s_runtime_profile_id[NS2_KBM_LAYOUT_COUNT];
+static uint8_t s_runtime_position[NS2_KBM_LAYOUT_COUNT];
 static uint32_t s_runtime_switches;
 static uint32_t s_publishes;
 static uint32_t s_stick_recenters;
@@ -157,7 +157,7 @@ void ns2_kbm_runtime_init(void) {
     // Power-up runs the PERSISTED boot choice for each layout. config_persist
     // has already realized it into the record this snapshots from.
     for (uint8_t i = 0; i < NS2_KBM_LAYOUT_COUNT; ++i)
-        s_runtime_profile_id[i] = s_config.boot_profile_id[i];
+        s_runtime_position[i] = s_config.boot_position[i];
     s_publishes = 0u;
     s_stick_recenters = 0u;
     s_source_id = 0u;
@@ -697,20 +697,26 @@ bool ns2_kbm_runtime_submit_keyboard(const input_event_t *event,
     //
     // Entirely RAM. No config save, no flash erase -- switching profiles mid-game
     // must not wear the sector. The persisted boot choice is untouched.
+    // THE SAME KEY MEANS THE SAME ACTION IN BOTH LAYOUTS. The binding names a
+    // POSITION (Default, 1, 2, 3); the layout derived from what is actually
+    // connected decides which bank that position is read from. So one set of
+    // keys serves both, and switching from keyboard-only to keyboard+mouse
+    // naturally changes what they select without any reconfiguration.
     ns2_kbm_layout_t layout = ns2_kbm_mode_layout(ns2_kbm_runtime_mode());
-    uint8_t target = ns2_kbm_switch_edge(&s_active, layout, s_prev_keys,
-                                         usage_bitmap);
+    uint8_t action = ns2_kbm_switch_edge(&s_active, s_prev_keys, usage_bitmap);
 
     uint8_t gameplay[NS2_KBM_KEY_BITMAP_BYTES];
     memcpy(gameplay, usage_bitmap, sizeof(gameplay));
-    ns2_kbm_switch_mask(&s_active, layout, gameplay);
+    ns2_kbm_switch_mask(&s_active, gameplay);
     memcpy(s_prev_keys, usage_bitmap, sizeof(s_prev_keys));
 
-    if (target != NS2_KBM_PROFILE_ID_NONE) {
+    if (action != NS2_KBM_SWITCH_NONE) {
         bool changed = false;
-        // An empty or wrong-layout slot is refused by ns2_kbm_apply, which is
-        // where that rule already lives. A refused switch changes nothing.
-        if (ns2_kbm_apply(&s_active, layout, target, &changed)) {
+        uint8_t target = ns2_kbm_position_profile_id(&s_active, layout, action);
+        // An empty position in THIS layout's bank is rejected safely: the key
+        // simply does nothing, rather than reaching into the other layout.
+        if (target != NS2_KBM_PROFILE_ID_NONE &&
+            ns2_kbm_apply(&s_active, layout, target, &changed)) {
             // Neutralize BEFORE the new mapping takes effect. A key held across
             // the switch would otherwise leave the destination it drove in the
             // OLD profile latched, with no report coming to release it.
@@ -719,7 +725,7 @@ bool ns2_kbm_runtime_submit_keyboard(const input_event_t *event,
             report_neutralize_slot(0);
             ns2_native_motion_clear();
             s_remap_neutralizations++;
-            s_runtime_profile_id[layout] = target;
+            s_runtime_position[layout] = action;
             s_runtime_switches++;
             // The releasing report re-establishes whatever is genuinely held.
             memset(gameplay, 0, sizeof(gameplay));
@@ -1004,14 +1010,14 @@ bool ns2_kbm_runtime_apply(ns2_kbm_layout_t layout, uint8_t profile_id,
     return true;
 }
 
-bool ns2_kbm_runtime_set_boot_profile(ns2_kbm_layout_t layout,
-                                      uint8_t profile_id, bool *changed) {
+bool ns2_kbm_runtime_set_boot_position(ns2_kbm_layout_t layout,
+                                       uint8_t position, bool *changed) {
     if (changed) *changed = false;
     ns2_kbm_config_t candidate;
     uint32_t generation = 0;
     config_snapshot(&candidate, &generation);
     bool did_change = false;
-    if (!ns2_kbm_set_boot_profile(&candidate, layout, profile_id, &did_change))
+    if (!ns2_kbm_set_boot_position(&candidate, layout, position, &did_change))
         return false;
     // Unchanged: no generation bump and therefore no flash write. Choosing the
     // boot profile that is already the boot profile must cost nothing.
@@ -1023,24 +1029,22 @@ bool ns2_kbm_runtime_set_boot_profile(ns2_kbm_layout_t layout,
     return true;
 }
 
-bool ns2_kbm_runtime_switch_bind(ns2_kbm_layout_t layout,
-                                 ns2_kbm_source_t source, uint8_t profile_id) {
+bool ns2_kbm_runtime_switch_bind(ns2_kbm_source_t source, uint8_t position) {
     ns2_kbm_config_t candidate;
     uint32_t generation = 0;
     config_snapshot(&candidate, &generation);
-    if (!ns2_kbm_switch_bind(&candidate, layout, source, profile_id))
-        return false;
+    if (!ns2_kbm_switch_bind(&candidate, source, position)) return false;
     config_write_begin();
     s_config = candidate;
     config_write_end();
     return true;
 }
 
-uint8_t ns2_kbm_runtime_active_profile(ns2_kbm_layout_t layout) {
-    if (layout >= NS2_KBM_LAYOUT_COUNT) return NS2_KBM_PROFILE_ID_NONE;
-    // The RUNTIME slot, which a profile-switch key moves without touching the
-    // stored configuration at all.
-    return s_runtime_profile_id[layout];
+uint8_t ns2_kbm_runtime_active_position(ns2_kbm_layout_t layout) {
+    if (layout >= NS2_KBM_LAYOUT_COUNT) return NS2_KBM_POSITION_DEFAULT;
+    // The RUNTIME position, which a profile-switch key moves without touching
+    // the stored configuration at all.
+    return s_runtime_position[layout];
 }
 
 uint32_t ns2_kbm_runtime_switch_count(void) { return s_runtime_switches; }
